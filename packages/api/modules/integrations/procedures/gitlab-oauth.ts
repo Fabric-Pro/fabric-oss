@@ -34,9 +34,10 @@ import { encryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
 	Permissions,
-	publicProcedure,
+	protectedProcedure,
 	requireInputOrgPermission,
 	requirePermission,
+	resolveOrganizationIdForCaller,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { startCodeIndexingForProject } from "../../projects/lib/code-indexing-trigger";
@@ -62,9 +63,14 @@ import {
 	persistGitLabToken,
 } from "../lib/gitlab-token";
 import {
+	assertOAuthStateBoundToCaller,
+	consumeOAuthStateOnce,
+} from "../lib/oauth-callback-guard";
+import {
 	getOAuthCredentialsWithDb,
 	getOAuthProvider,
 } from "../lib/oauth-providers";
+import { assertOAuthStartOrganization } from "../lib/oauth-start-organization";
 import { decodeOAuthState, encodeOAuthState } from "../lib/oauth-state";
 
 /**
@@ -147,7 +153,14 @@ export const gitlabOAuthProcedures = {
 	 * - Pass null explicitly when in personal context
 	 */
 	start: tenantProtectedProcedure
-		.use(requireInputOrgPermission(Permissions.INTEGRATION_USE))
+		.use(
+			requireInputOrgPermission(Permissions.INTEGRATION_USE, {
+				// Integration OAuth has no personal arm (ADR-018): an explicit
+				// `organizationId: null` must not skip the role check and mint
+				// a state that later stores an organization-less token.
+				requireOrganization: true,
+			}),
+		)
 		.route({
 			method: "POST",
 			path: "/integrations/gitlab/oauth/start",
@@ -188,9 +201,26 @@ export const gitlabOAuthProcedures = {
 		)
 		.output(z.object({ authorizationUrl: z.string().url() }))
 		.handler(async ({ input, context }) => {
+			const userId = context.user.id;
+			// The organization signed into the state is where the callback will
+			// store the token, so it is resolved and membership-checked here by
+			// the shared helper rather than read straight off the input.
+			// `requireInputOrgPermission` above already refuses a non-member;
+			// this keeps the signed value identical to the authorized one, and
+			// the credential lookup below reads the same resolved value.
+			const organizationId = await resolveOrganizationIdForCaller(
+				input.organizationId,
+				context.session,
+				userId,
+			);
+			// The middleware refused a missing organization before the handler
+			// ran; this is the handler's own fail-closed copy of the rule, and
+			// it narrows the type so no state is ever minted without one.
+			assertOAuthStartOrganization(organizationId);
+
 			const { clientId } = await getGitLabConfigWithDb(
-				context.user.id,
-				input.organizationId ?? context.session.activeOrganizationId,
+				userId,
+				organizationId,
 			);
 
 			if (!clientId) {
@@ -199,13 +229,6 @@ export const gitlabOAuthProcedures = {
 						"GitLab OAuth not configured. Please set GITLAB_CLIENT_ID environment variable.",
 				});
 			}
-
-			const userId = context.user.id;
-			// Use explicit organizationId from input for proper tenant isolation
-			const organizationId =
-				input.organizationId !== undefined
-					? input.organizationId
-					: context.session.activeOrganizationId;
 
 			// A project-target flow stores repositoryUrl in signed state, and the
 			// callback later derives authenticated API calls from it. Pin it to
@@ -237,7 +260,7 @@ export const gitlabOAuthProcedures = {
 			// Generate signed state (include redirectUri so callback uses same value)
 			const state = encodeOAuthState({
 				userId,
-				organizationId: organizationId ?? undefined,
+				organizationId,
 				provider: "gitlab",
 				returnUrl: input.returnUrl,
 				redirectUri: input.redirectUri,
@@ -264,9 +287,13 @@ export const gitlabOAuthProcedures = {
 
 	/**
 	 * Handle GitLab OAuth callback
-	 * This is a public procedure because it's called by GitLab's redirect
+	 *
+	 * GitLab redirects the user's browser here, so the request carries the
+	 * session cookie and the procedure requires it: the session must be the
+	 * user named in the signed state (see `assertOAuthStateBoundToCaller`). A
+	 * public callback let anyone who started a flow have a victim finish it.
 	 */
-	callback: publicProcedure
+	callback: protectedProcedure
 		.use(requirePermission(Permissions.INTEGRATION_USE))
 		.route({
 			method: "GET",
@@ -289,7 +316,7 @@ export const gitlabOAuthProcedures = {
 				returnUrl: z.string().optional(),
 			}),
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			// Handle OAuth errors from GitLab
 			if (input.error) {
 				return {
@@ -320,6 +347,15 @@ export const gitlabOAuthProcedures = {
 					success: false,
 					message: "Invalid OAuth provider in state",
 				};
+			}
+
+			// The session must be the user who started the flow, and still a
+			// member of the organization the flow targets. Then the nonce is
+			// spent, before the code exchange, so a replayed state stops here.
+			await assertOAuthStateBoundToCaller(state, context.user);
+			const replayed = await consumeOAuthStateOnce(state);
+			if (replayed) {
+				return replayed;
 			}
 
 			const { clientId, clientSecret } = await getGitLabConfigWithDb(

@@ -133,9 +133,11 @@ vi.mock("../../../../orpc/procedures", () => {
 	};
 	return {
 		tenantProtectedProcedure: chain,
-		publicProcedure: chain,
+		protectedProcedure: chain,
 		requirePermission: () => (handler: unknown) => handler,
 		requireInputOrgPermission: () => (handler: unknown) => handler,
+		requireOrganizationMembership: vi.fn(),
+		resolveOrganizationIdForCaller: vi.fn(),
 		Permissions: { INTEGRATION_USE: "integration:use" },
 	};
 });

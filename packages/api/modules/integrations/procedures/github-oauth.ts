@@ -23,9 +23,10 @@ import { z } from "zod";
 import { userHasProjectPermission } from "../../../lib/project-permissions";
 import {
 	Permissions,
-	publicProcedure,
+	protectedProcedure,
 	requireInputOrgPermission,
 	requirePermission,
+	resolveOrganizationIdForCaller,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { startCodeIndexingForProject } from "../../projects/lib/code-indexing-trigger";
@@ -37,6 +38,11 @@ import {
 	getGitHubUser,
 	listGitHubBranches,
 } from "../lib/github-oauth";
+import {
+	assertOAuthStateBoundToCaller,
+	consumeOAuthStateOnce,
+} from "../lib/oauth-callback-guard";
+import { assertOAuthStartOrganization } from "../lib/oauth-start-organization";
 import { decodeOAuthState, encodeOAuthState } from "../lib/oauth-state";
 
 /**
@@ -75,7 +81,14 @@ export const githubOAuthProcedures = {
 	 * - Pass null explicitly when in personal context
 	 */
 	start: tenantProtectedProcedure
-		.use(requireInputOrgPermission(Permissions.INTEGRATION_USE))
+		.use(
+			requireInputOrgPermission(Permissions.INTEGRATION_USE, {
+				// Integration OAuth has no personal arm (ADR-018): an explicit
+				// `organizationId: null` must not skip the role check and mint
+				// a state that later stores an organization-less token.
+				requireOrganization: true,
+			}),
+		)
 		.route({
 			method: "POST",
 			path: "/integrations/github/oauth/start",
@@ -133,16 +146,25 @@ export const githubOAuthProcedures = {
 			}
 
 			const userId = context.user.id;
-			// Use explicit organizationId from input for proper tenant isolation
-			const organizationId =
-				input.organizationId !== undefined
-					? input.organizationId
-					: context.session.activeOrganizationId;
+			// The organization signed into the state is where the callback will
+			// store the token, so it is resolved and membership-checked here by
+			// the shared helper rather than read straight off the input.
+			// `requireInputOrgPermission` above already refuses a non-member;
+			// this keeps the signed value identical to the authorized one.
+			const organizationId = await resolveOrganizationIdForCaller(
+				input.organizationId,
+				context.session,
+				userId,
+			);
+			// The middleware refused a missing organization before the handler
+			// ran; this is the handler's own fail-closed copy of the rule, and
+			// it narrows the type so no state is ever minted without one.
+			assertOAuthStartOrganization(organizationId);
 
 			// Generate signed state (include redirectUri so callback uses same value)
 			const state = encodeOAuthState({
 				userId,
-				organizationId: organizationId ?? undefined,
+				organizationId,
 				provider: "github",
 				returnUrl: input.returnUrl,
 				redirectUri: input.redirectUri,
@@ -167,9 +189,13 @@ export const githubOAuthProcedures = {
 
 	/**
 	 * Handle GitHub OAuth callback
-	 * This is a public procedure because it's called by GitHub's redirect
+	 *
+	 * GitHub redirects the user's browser here, so the request carries the
+	 * session cookie and the procedure requires it: the session must be the
+	 * user named in the signed state (see `assertOAuthStateBoundToCaller`). A
+	 * public callback let anyone who started a flow have a victim finish it.
 	 */
-	callback: publicProcedure
+	callback: protectedProcedure
 		.use(requirePermission(Permissions.INTEGRATION_USE))
 		.route({
 			method: "GET",
@@ -192,7 +218,7 @@ export const githubOAuthProcedures = {
 				returnUrl: z.string().optional(),
 			}),
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			// Handle OAuth errors from GitHub
 			if (input.error) {
 				return {
@@ -223,6 +249,15 @@ export const githubOAuthProcedures = {
 					success: false,
 					message: "Invalid OAuth provider in state",
 				};
+			}
+
+			// The session must be the user who started the flow, and still a
+			// member of the organization the flow targets. Then the nonce is
+			// spent, before the code exchange, so a replayed state stops here.
+			await assertOAuthStateBoundToCaller(state, context.user);
+			const replayed = await consumeOAuthStateOnce(state);
+			if (replayed) {
+				return replayed;
 			}
 
 			const { clientId, clientSecret } = getGitHubConfig();

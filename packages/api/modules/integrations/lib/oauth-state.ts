@@ -2,14 +2,24 @@
  * Secure OAuth State Management
  *
  * Uses HMAC-SHA256 to sign OAuth state, preventing tampering.
- * Includes timestamp to prevent replay attacks.
+ * Includes a timestamp so a state expires, and a random nonce that the
+ * callback consumes once through `oauth-state-store.ts` so a state cannot be
+ * redeemed twice inside that window. The signature and age checks live here;
+ * the single-use check lives in the store because it needs shared memory.
+ *
+ * A state always names the organization the flow was started from. There is
+ * no organization-less integration OAuth (ADR-018): every `start` refuses to
+ * mint one, and `decodeOAuthState` refuses to accept one, so a callback never
+ * reaches the nonce, the code exchange or the credential write with a state
+ * that would land the provider token in a row no tenant can see or revoke.
  */
 
 import crypto from "node:crypto";
 
-interface OAuthStatePayload {
+export interface OAuthStatePayload {
 	userId: string;
-	organizationId?: string;
+	/** The organization the flow was started from; never absent (ADR-018). */
+	organizationId: string;
 	provider: string;
 	nonce: string;
 	timestamp: number;
@@ -34,7 +44,11 @@ interface OAuthStatePayload {
 	codeVerifier?: string;
 }
 
-const STATE_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
+export const STATE_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
+
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0;
+}
 
 /**
  * Get secret key for HMAC signing
@@ -74,7 +88,7 @@ function generateNonce(): string {
  */
 export function encodeOAuthState(payload: {
 	userId: string;
-	organizationId?: string;
+	organizationId: string;
 	provider: string;
 	returnUrl?: string;
 	redirectUri?: string;
@@ -108,7 +122,8 @@ export function encodeOAuthState(payload: {
 
 /**
  * Decode and verify OAuth state
- * Returns null if signature is invalid or state has expired
+ * Returns null if the signature is invalid, the state has expired, or the
+ * state does not name the user and organization it belongs to.
  */
 export function decodeOAuthState(
 	encodedState: string,
@@ -153,6 +168,17 @@ export function decodeOAuthState(
 		// Check timestamp (prevent replay attacks)
 		const age = Date.now() - payload.timestamp;
 		if (age > STATE_MAX_AGE_MS || age < 0) {
+			return null;
+		}
+
+		// A state that names no user or no organization is not one this
+		// codebase mints. Refusing it here, before any callback consumes the
+		// nonce or exchanges the code, closes the organization-less arm for
+		// legacy or hand-built states as well as freshly minted ones.
+		if (!isNonEmptyString(payload.userId)) {
+			return null;
+		}
+		if (!isNonEmptyString(payload.organizationId)) {
 			return null;
 		}
 

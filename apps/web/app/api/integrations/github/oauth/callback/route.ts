@@ -1,6 +1,7 @@
 import { orpcClient } from "@shared/lib/orpc-client";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { oauthCallbackFailureMessage } from "./callback-error";
 import {
 	appendQuery,
 	htmlEscape,
@@ -44,7 +45,12 @@ export async function GET(req: NextRequest) {
 		const error_description =
 			url.searchParams.get("error_description") ?? undefined;
 
-		// Call oRPC OAuth callback (public procedure)
+		// The callback procedure is session-bound (the token is stored under the
+		// user the signed state names, and the caller must BE that user), and the
+		// provider redirected the user's own browser here, so the request carries
+		// their session cookie. `orpcClient` forwards the incoming request's
+		// headers on the server (`next/headers`), which is how that cookie reaches
+		// the procedure's `protectedProcedure` session check.
 		const result = await orpcClient.integrations.github.callback({
 			code,
 			state,
@@ -126,10 +132,14 @@ export async function GET(req: NextRequest) {
 		if (e instanceof Error) {
 			console.error("[GitHub OAuth callback] unexpected error:", e);
 		}
-		const errorMessage =
+		// A refused session (not signed in / a different account) is the user's
+		// situation to fix, so it gets its own copy even in production.
+		const errorMessage = oauthCallbackFailureMessage(
+			e,
 			e instanceof Error && process.env.NODE_ENV === "development"
 				? e.message
-				: "GitHub OAuth callback failed";
+				: "GitHub OAuth callback failed",
+		);
 
 		const fallbackRedirect = `/app/settings/integrations?github_oauth=error&message=${encodeURIComponent(errorMessage)}`;
 

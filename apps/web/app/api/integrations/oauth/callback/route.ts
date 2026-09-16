@@ -8,6 +8,7 @@
 import { orpcClient } from "@shared/lib/orpc-client";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { oauthCallbackFailureMessage } from "../../github/oauth/callback/callback-error";
 import {
 	appendQuery,
 	htmlEscape,
@@ -26,7 +27,12 @@ export async function GET(req: NextRequest) {
 		url.searchParams.get("error_description") ?? undefined;
 
 	try {
-		// Call generic OAuth callback procedure
+		// The callback procedure is session-bound (the token is stored under the
+		// user the signed state names, and the caller must BE that user), and the
+		// provider redirected the user's own browser here, so the request carries
+		// their session cookie. `orpcClient` forwards the incoming request's
+		// headers on the server (`next/headers`), which is how that cookie reaches
+		// the procedure's `protectedProcedure` session check.
 		const result = await orpcClient.integrations.oauth.callback({
 			code,
 			state,
@@ -52,8 +58,10 @@ export async function GET(req: NextRequest) {
 			headers: { "Content-Type": "text/html" },
 		});
 	} catch (e: unknown) {
-		const errorMessage =
-			e instanceof Error ? e.message : "OAuth callback failed";
+		const errorMessage = oauthCallbackFailureMessage(
+			e,
+			e instanceof Error ? e.message : "OAuth callback failed",
+		);
 
 		const html = generateCallbackHtml({
 			success: false,

@@ -115,14 +115,28 @@ vi.mock("@repo/database", () => ({
 		},
 		dataConnection: { updateMany: mockDataConnectionUpdateMany },
 	},
+	// The callback guard's live membership check for the organization the
+	// state names; this suite is about the breaker, so the caller is always
+	// still a member there.
+	getOrganizationMembership: vi
+		.fn()
+		.mockImplementation(async (organizationId: string) => ({
+			organization: { id: organizationId },
+			role: "member",
+		})),
 	getProjectMemberRole: vi.fn(),
 	logRepoIntegrationActivity: vi.fn(),
 	syncLegacyProjectRepoOnConnect: vi.fn(),
 }));
 
 vi.mock("@repo/permissions", () => ({
-	hasPermission: vi.fn(),
+	// The guard resolves the caller's role to its permission set and asks
+	// for INTEGRATION_USE; the role → permission table is stubbed permissive
+	// here because this suite is about the breaker, not the guard (the
+	// session-binding suite exercises the real table).
+	hasPermission: vi.fn().mockReturnValue(true),
 	Permissions: {},
+	resolveOrgPermissions: vi.fn().mockReturnValue([]),
 	resolveProjectPermissions: vi.fn(),
 }));
 
@@ -143,7 +157,8 @@ vi.mock("../../lib/gitlab-oauth", () => ({
 	listGitLabProjects: vi.fn(),
 	recordToolIngestError: vi.fn(),
 	refreshGitLabToken: vi.fn(),
-	resolveOrgIdForQuery: () => null,
+	resolveOrgIdForQuery: (state: { organizationId?: string | null }) =>
+		state.organizationId ?? null,
 }));
 
 vi.mock("../../lib/enable-gitlab-pm-for-project", () => ({
@@ -160,6 +175,12 @@ vi.mock("../../lib/oauth-state", () => ({
 	encodeOAuthState: vi.fn(),
 }));
 
+// The callback spends its state nonce through the shared store; this suite is
+// about the breaker, so the store always answers "first presentation".
+vi.mock("../../lib/oauth-state-store", () => ({
+	consumeOAuthStateNonce: vi.fn().mockResolvedValue("consumed"),
+}));
+
 vi.mock("../../../../orpc/procedures", () => {
 	const chain = {
 		route: () => chain,
@@ -170,9 +191,11 @@ vi.mock("../../../../orpc/procedures", () => {
 	};
 	return {
 		tenantProtectedProcedure: chain,
-		publicProcedure: chain,
+		protectedProcedure: chain,
 		requirePermission: () => (handler: unknown) => handler,
 		requireInputOrgPermission: () => (handler: unknown) => handler,
+		requireOrganizationMembership: vi.fn(),
+		resolveOrganizationIdForCaller: vi.fn(),
 		Permissions: { INTEGRATION_USE: "integration:use" },
 	};
 });
@@ -457,16 +480,25 @@ describe("integrations.gitlab.callback — the path that DOES hold a fresh grant
 			gitlabOAuthProcedures.callback as unknown as {
 				handler: (args: {
 					input: { code?: string; state?: string };
+					context: typeof baseCtx;
 				}) => Promise<{ success: boolean; message: string }>;
 			}
-		).handler({ input: { code: "auth-code", state: "signed-state" } });
+		).handler({
+			input: { code: "auth-code", state: "signed-state" },
+			// The callback is session-bound: the caller must be the user the
+			// state names, which `baseCtx` is.
+			context: baseCtx,
+		});
 	}
 
 	beforeEach(() => {
+		// A state always names the organization the flow was started from;
+		// the decoder refuses one that does not (ADR-018).
 		mockDecodeOAuthState.mockReturnValue({
 			provider: "gitlab",
+			nonce: "nonce-1",
 			userId: "user-1",
-			organizationId: null,
+			organizationId: "org-1",
 			redirectUri: "https://app.example.com/oauth/callback",
 			codeVerifier: "pkce-verifier",
 		});
@@ -496,7 +528,7 @@ describe("integrations.gitlab.callback — the path that DOES hold a fresh grant
 		expect(mockPersistGitLabToken).toHaveBeenCalledOnce();
 		expect(mockPersistGitLabToken.mock.calls[0]![1]).toMatchObject({
 			userId: "user-1",
-			organizationId: null,
+			organizationId: "org-1",
 			token: expect.objectContaining({
 				accessToken: "brand-new-access",
 				refreshToken: "brand-new-refresh",

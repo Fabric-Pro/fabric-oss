@@ -24,12 +24,17 @@ import { decryptApiKey, encryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
 	Permissions,
-	publicProcedure,
+	protectedProcedure,
 	requireInputOrgPermission,
 	requirePermission,
 	resolveOrganizationId,
+	resolveOrganizationIdForCaller,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import {
+	assertOAuthStateBoundToCaller,
+	consumeOAuthStateOnce,
+} from "../lib/oauth-callback-guard";
 import {
 	exchangeCodeForTokens,
 	generateAuthorizationUrl,
@@ -39,6 +44,7 @@ import {
 	mapOAuthToWorkflowProvider,
 	type OAuthProviderType,
 } from "../lib/oauth-providers";
+import { assertOAuthStartOrganization } from "../lib/oauth-start-organization";
 import { decodeOAuthState, encodeOAuthState } from "../lib/oauth-state";
 
 const OAuthProviderEnum = z.enum([
@@ -224,7 +230,14 @@ export const genericOAuthProcedures = {
 	 * - Pass null explicitly when in personal context
 	 */
 	start: tenantProtectedProcedure
-		.use(requireInputOrgPermission(Permissions.INTEGRATION_USE))
+		.use(
+			requireInputOrgPermission(Permissions.INTEGRATION_USE, {
+				// Integration OAuth has no personal arm (ADR-018): an explicit
+				// `organizationId: null` must not skip the role check and mint
+				// a state that later stores an organization-less token.
+				requireOrganization: true,
+			}),
+		)
 		.route({
 			method: "POST",
 			path: "/integrations/oauth/:provider/start",
@@ -249,11 +262,21 @@ export const genericOAuthProcedures = {
 			}
 
 			const userId = context.user.id;
-			// Use explicit organizationId from input for proper tenant isolation
-			const organizationId =
-				input.organizationId !== undefined
-					? input.organizationId
-					: context.session.activeOrganizationId;
+			// The organization signed into the state is where the callback will
+			// store the provider token, so it is resolved and membership-checked
+			// here, by the same helper the callback's counterpart uses, rather
+			// than read straight off the input. `requireInputOrgPermission`
+			// above already refuses a non-member; this keeps the value that is
+			// signed identical to the value that was authorized.
+			const organizationId = await resolveOrganizationIdForCaller(
+				input.organizationId,
+				context.session,
+				userId,
+			);
+			// The middleware refused a missing organization before the handler
+			// ran; this is the handler's own fail-closed copy of the rule, and
+			// it narrows the type so no state is ever minted without one.
+			assertOAuthStartOrganization(organizationId);
 
 			const { clientId } = await getOAuthCredentialsWithDb(
 				provider,
@@ -269,7 +292,7 @@ export const genericOAuthProcedures = {
 			// Generate signed state
 			const state = encodeOAuthState({
 				userId,
-				organizationId: organizationId ?? undefined,
+				organizationId,
 				provider: input.provider,
 				returnUrl: input.returnUrl,
 				redirectUri: input.redirectUri,
@@ -288,9 +311,14 @@ export const genericOAuthProcedures = {
 
 	/**
 	 * Handle OAuth callback for any provider
-	 * This is a public procedure because it's called by the provider's redirect
+	 *
+	 * The provider redirects the user's browser here, so the request carries the
+	 * user's session cookie and the procedure requires it: the token that comes
+	 * back is stored under the user named in the signed state, and the session
+	 * must be that user (see `assertOAuthStateBoundToCaller`). A public callback
+	 * let anyone who started a flow have a victim's browser finish it.
 	 */
-	callback: publicProcedure
+	callback: protectedProcedure
 		.use(requirePermission(Permissions.INTEGRATION_USE))
 		.route({
 			method: "GET",
@@ -314,7 +342,7 @@ export const genericOAuthProcedures = {
 				returnUrl: z.string().optional(),
 			}),
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			// Handle OAuth errors
 			if (input.error) {
 				return {
@@ -348,6 +376,15 @@ export const genericOAuthProcedures = {
 					message: `Unknown OAuth provider: ${state.provider}`,
 					provider: state.provider,
 				};
+			}
+
+			// The session must be the user who started the flow, and still a
+			// member of the organization the flow targets. Then the nonce is
+			// spent, before the code exchange, so a replayed state stops here.
+			await assertOAuthStateBoundToCaller(state, context.user);
+			const replayed = await consumeOAuthStateOnce(state);
+			if (replayed) {
+				return { ...replayed, provider: provider.name };
 			}
 
 			const { clientId, clientSecret } = await getOAuthCredentialsWithDb(

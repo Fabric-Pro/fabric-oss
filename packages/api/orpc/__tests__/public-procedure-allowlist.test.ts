@@ -41,10 +41,6 @@ const ALLOWED: Record<string, string> = {
 		"The caller has not verified their email yet, so by definition has no usable session.",
 	"auth/procedures/revoke-email-change.ts":
 		"Reached from a link in an email by someone who may not be signed in — that is the point of the revoke path.",
-	"integrations/procedures/github-oauth.ts":
-		"OAuth callback: the provider redirects here without the app's session cookie.",
-	"integrations/procedures/gitlab-oauth.ts": "OAuth callback, as GitHub.",
-	"integrations/procedures/oauth.ts": "OAuth callback, as above.",
 	"integrations/procedures/teams-events.ts":
 		"Receives Teams event callbacks from Microsoft, authenticated by the request's own signature.",
 	"kanban/procedures/webhook.ts":
