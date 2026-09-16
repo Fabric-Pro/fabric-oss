@@ -54,7 +54,7 @@ This document defines the official technology stack for the Fabric Portal projec
 
 | Category | Technology | Version | Purpose |
 |----------|------------|---------|---------|
-| **AI SDK** | Vercel AI SDK | 5.0.87 | Unified AI interface |
+| **AI SDK** | Vercel AI SDK | 6.0.283 | Unified AI interface |
 | **OpenAI** | OpenAI SDK | 6.8.0 | GPT models |
 | **Anthropic** | Anthropic SDK | Latest | Claude models |
 | **Agent UI** | CopilotKit | 1.10.6 | AI copilot interface |

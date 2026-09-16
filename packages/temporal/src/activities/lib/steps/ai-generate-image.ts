@@ -16,7 +16,7 @@
 
 import {
 	createGateway,
-	experimental_generateImage as generateImage,
+	generateImage,
 	generateText,
 	getAIModelWithMetadata,
 	getRAGProviderConfig,

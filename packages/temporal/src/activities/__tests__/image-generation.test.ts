@@ -20,7 +20,7 @@ vi.mock("@repo/ai", () => ({
 		).imageModel = (m: string) => ({ modelId: m });
 		return gateway;
 	},
-	experimental_generateImage: vi.fn(),
+	generateImage: vi.fn(),
 	generateText: vi.fn(),
 	getRAGProviderConfig: vi.fn(),
 }));

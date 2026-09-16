@@ -54,8 +54,8 @@ export {
 	createTextStreamResponse,
 	embed,
 	embedMany,
-	// Image generation (experimental)
-	experimental_generateImage,
+	// Image generation
+	generateImage,
 	generateObject,
 	generateText,
 	jsonSchema,
