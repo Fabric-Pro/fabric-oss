@@ -4,7 +4,7 @@
 		"@ai-sdk/cerebras": "^2.0.5",
 		"@ai-sdk/deepseek": "^2.0.0",
 		"@ai-sdk/groq": "^3.0.1",
-		"@ai-sdk/openai": "^3.0.0",
+		"@ai-sdk/openai": "^3.0.107",
 		"@repo/agent-prompts": "workspace:*",
 		"@repo/config": "workspace:*",
 		"@repo/database": "workspace:*",

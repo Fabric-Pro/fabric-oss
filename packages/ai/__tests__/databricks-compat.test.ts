@@ -1,3 +1,4 @@
+import { createOpenAI } from "@ai-sdk/openai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	applyDatabricksChatBodyCompat,
@@ -478,6 +479,111 @@ describe("normalizeDatabricksUsageFields", () => {
 		});
 	});
 
+	// ---------------------------------------------------------------------
+	// Cache-WRITE mapping (cache_creation_input_tokens -> cache_write_tokens).
+	// Read and write are mapped independently — see the file-header comment
+	// on @ai-sdk/openai's cache_write_tokens support.
+	// ---------------------------------------------------------------------
+
+	it("maps cache_read_input_tokens AND cache_creation_input_tokens independently when both are present", () => {
+		const payload = {
+			usage: {
+				cache_read_input_tokens: 300,
+				cache_creation_input_tokens: 700,
+				prompt_tokens: 1200,
+				completion_tokens: 10,
+			},
+		};
+		expect(normalizeDatabricksUsageFields(payload)).toBe(true);
+		expect(payload.usage.prompt_tokens_details).toEqual({
+			cached_tokens: 300,
+			cache_write_tokens: 700,
+		});
+	});
+
+	it("maps a write-only call without fabricating cached_tokens", () => {
+		const payload = {
+			usage: {
+				cache_read_input_tokens: 0,
+				cache_creation_input_tokens: 700,
+				prompt_tokens: 1200,
+			},
+		};
+		expect(normalizeDatabricksUsageFields(payload)).toBe(true);
+		expect(payload.usage.prompt_tokens_details).toEqual({
+			cache_write_tokens: 700,
+		});
+		expect(
+			(payload.usage.prompt_tokens_details as Record<string, unknown>)
+				.cached_tokens,
+		).toBeUndefined();
+	});
+
+	it("is a no-op for a cache-write miss (cache_creation_input_tokens: 0)", () => {
+		const payload = {
+			usage: { cache_creation_input_tokens: 0, prompt_tokens: 10 },
+		};
+		expect(normalizeDatabricksUsageFields(payload)).toBe(false);
+		expect(
+			(payload.usage as Record<string, unknown>).prompt_tokens_details,
+		).toBeUndefined();
+	});
+
+	it("is a no-op for a negative or non-numeric cache_creation_input_tokens", () => {
+		expect(
+			normalizeDatabricksUsageFields({
+				usage: { cache_creation_input_tokens: -5 },
+			}),
+		).toBe(false);
+		expect(
+			normalizeDatabricksUsageFields({
+				usage: { cache_creation_input_tokens: "700" },
+			}),
+		).toBe(false);
+		expect(
+			normalizeDatabricksUsageFields({
+				usage: { cache_creation_input_tokens: Number.NaN },
+			}),
+		).toBe(false);
+		expect(
+			normalizeDatabricksUsageFields({
+				usage: { cache_creation_input_tokens: null },
+			}),
+		).toBe(false);
+	});
+
+	it("does not overwrite an existing numeric cache_write_tokens", () => {
+		const payload = {
+			usage: {
+				cache_creation_input_tokens: 700,
+				prompt_tokens_details: { cache_write_tokens: 999 },
+			},
+		};
+		expect(normalizeDatabricksUsageFields(payload)).toBe(false);
+		expect(
+			(
+				payload.usage.prompt_tokens_details as {
+					cache_write_tokens: number;
+				}
+			).cache_write_tokens,
+		).toBe(999);
+	});
+
+	it("maps a fresh cache_read_input_tokens onto an existing cache_write_tokens without disturbing it", () => {
+		const payload = {
+			usage: {
+				cache_read_input_tokens: 300,
+				cache_creation_input_tokens: 700,
+				prompt_tokens_details: { cache_write_tokens: 999 },
+			},
+		};
+		expect(normalizeDatabricksUsageFields(payload)).toBe(true);
+		expect(payload.usage.prompt_tokens_details).toEqual({
+			cache_write_tokens: 999,
+			cached_tokens: 300,
+		});
+	});
+
 	it("is a no-op for a malformed payload", () => {
 		expect(normalizeDatabricksUsageFields(null)).toBe(false);
 		expect(normalizeDatabricksUsageFields(undefined)).toBe(false);
@@ -524,16 +630,21 @@ describe("createDatabricksFetch — usage normalization", () => {
 		);
 		const json = (await res.json()) as {
 			usage: {
-				prompt_tokens_details?: { cached_tokens?: number };
+				prompt_tokens_details?: {
+					cached_tokens?: number;
+					cache_write_tokens?: number;
+				};
 				cache_read_input_tokens: number;
 				cache_creation_input_tokens: number;
 				prompt_tokens: number;
 				completion_tokens: number;
 			};
 		};
-		// A cache-WRITE (no read) call: no prompt_tokens_details is fabricated,
-		// since cache_read_input_tokens is 0.
-		expect(json.usage.prompt_tokens_details).toBeUndefined();
+		// A cache-WRITE (no read) call: cache_write_tokens is mapped, but no
+		// cached_tokens is fabricated, since cache_read_input_tokens is 0.
+		expect(json.usage.prompt_tokens_details).toEqual({
+			cache_write_tokens: 4570,
+		});
 		expect(json.usage.cache_creation_input_tokens).toBe(4570);
 		expect(json.usage.prompt_tokens).toBe(4573);
 		expect(json.usage.completion_tokens).toBe(4);
@@ -621,7 +732,7 @@ describe("createDatabricksSseTransform — usage normalization", () => {
 		const out = await runThroughSseTransform([chunk]);
 		expect(out).toBe(
 			'data: {"choices":[{"delta":{"content":"hi"},"index":0,"finish_reason":null}],"usage":{"completion_tokens":null,"prompt_tokens":4573,"total_tokens":null}}\n\n' +
-				'data: {"choices":[],"usage":{"cache_read_input_tokens":0,"cache_creation_input_tokens":4570,"completion_tokens":null,"prompt_tokens":4573,"total_tokens":null}}\n\n' +
+				'data: {"choices":[],"usage":{"cache_read_input_tokens":0,"cache_creation_input_tokens":4570,"completion_tokens":null,"prompt_tokens":4573,"total_tokens":null,"prompt_tokens_details":{"cache_write_tokens":4570}}}\n\n' +
 				"data: [DONE]\n\n",
 		);
 	});
@@ -748,6 +859,125 @@ describe("createDatabricksSseTransform — usage normalization", () => {
 		// native usage event only.
 		const occurrences = out.split("cache_read_input_tokens").length - 1;
 		expect(occurrences).toBe(1);
+	});
+});
+
+// =============================================================================
+// End-to-end through the REAL @ai-sdk/openai provider (Fizzy #2522). Unlike the
+// unit tests above, this proves the installed `@ai-sdk/openai` version's own
+// zod usage schema actually keeps `prompt_tokens_details.cache_write_tokens`
+// (added in @ai-sdk/openai@3.0.84) rather than stripping it as an unrecognized
+// key, and that `convertOpenAIChatUsage` reads it into `inputTokens.cacheWrite`
+// with the subset-of-`prompt_tokens` semantics the file-header comment on
+// `normalizeDatabricksUsageFields` documents. A future SDK bump that drops or
+// renames the field fails HERE instead of silently reverting the card's fix.
+// =============================================================================
+
+describe("@ai-sdk/openai end-to-end via createDatabricksFetch (Fizzy #2522)", () => {
+	const minimalPrompt = [
+		{
+			role: "user" as const,
+			content: [{ type: "text" as const, text: "Hello" }],
+		},
+	];
+
+	function buildDatabricksModel(fakeFetch: typeof fetch) {
+		// Mirrors packages/ai/model-factory.ts's Databricks branch: createOpenAI
+		// wired with createDatabricksFetch, `.chat()` to force the
+		// chat-completions API.
+		return createOpenAI({
+			apiKey: "test",
+			baseURL: "https://example.com/serving-endpoints",
+			fetch: createDatabricksFetch(fakeFetch),
+		}).chat("databricks-claude-sonnet-4-5");
+	}
+
+	it("doGenerate: maps cache_read_input_tokens / cache_creation_input_tokens onto inputTokens.cacheRead/cacheWrite", async () => {
+		const fakeFetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						id: "chatcmpl-test",
+						created: 1700000000,
+						model: "databricks-claude-sonnet-4-5",
+						choices: [
+							{
+								index: 0,
+								message: {
+									role: "assistant",
+									content: "Hi there",
+								},
+								finish_reason: "stop",
+							},
+						],
+						usage: {
+							prompt_tokens: 1200,
+							completion_tokens: 10,
+							total_tokens: 1210,
+							cache_read_input_tokens: 300,
+							cache_creation_input_tokens: 700,
+						},
+					}),
+					{
+						status: 200,
+						headers: { "content-type": "application/json" },
+					},
+				),
+		) as unknown as typeof fetch;
+
+		const model = buildDatabricksModel(fakeFetch);
+		const result = await model.doGenerate({ prompt: minimalPrompt });
+
+		expect(result.usage.inputTokens.cacheRead).toBe(300);
+		expect(result.usage.inputTokens.cacheWrite).toBe(700);
+		expect(result.usage.inputTokens.total).toBe(1200);
+		// prompt_tokens (1200) minus both the cache read (300) and the cache
+		// write (700) — cache-write tokens are a SUBSET of prompt_tokens, not
+		// additional to it (matches Databricks' own accounting).
+		expect(result.usage.inputTokens.noCache).toBe(200);
+	});
+
+	it("doStream: a synthesized trailing usage event maps cache_creation_input_tokens onto the finish part's inputTokens.cacheWrite", async () => {
+		const sseBody =
+			'data: {"id":"chatcmpl-test","created":1700000000,"model":"databricks-claude-sonnet-4-5","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1200,"completion_tokens":10,"total_tokens":1210,"cache_read_input_tokens":300,"cache_creation_input_tokens":700}}\n\n' +
+			"data: [DONE]\n\n";
+		const fakeFetch = vi.fn(
+			async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(
+								new TextEncoder().encode(sseBody),
+							);
+							controller.close();
+						},
+					}),
+					{
+						status: 200,
+						headers: { "content-type": "text/event-stream" },
+					},
+				),
+		) as unknown as typeof fetch;
+
+		const model = buildDatabricksModel(fakeFetch);
+		const { stream } = await model.doStream({ prompt: minimalPrompt });
+
+		const reader = stream.getReader();
+		let cacheWrite: number | undefined;
+		let cacheRead: number | undefined;
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) {
+				break;
+			}
+			if (value.type === "finish") {
+				cacheWrite = value.usage.inputTokens.cacheWrite;
+				cacheRead = value.usage.inputTokens.cacheRead;
+			}
+		}
+
+		expect(cacheWrite).toBe(700);
+		expect(cacheRead).toBe(300);
 	});
 });
 
