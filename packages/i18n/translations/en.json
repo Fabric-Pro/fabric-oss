@@ -889,8 +889,8 @@
 					"title": "Connect your own tools"
 				},
 				"assistant": {
-					"body": "Nexus is your always-on AI teammate. Ask it to plan work, draft specs, or answer questions about your projects — right from the sidebar.",
-					"title": "Meet Nexus, your AI assistant"
+					"body": "Advisor is your always-on AI teammate. Ask it to plan work, draft specs, or answer questions about your projects — right from the sidebar.",
+					"title": "Meet Advisor, your AI assistant"
 				},
 				"atlas": {
 					"body": "Atlas maps your repository into an interactive graph of modules, dependencies, and how they connect — so you can understand any codebase fast.",

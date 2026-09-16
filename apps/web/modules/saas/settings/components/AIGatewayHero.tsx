@@ -10,7 +10,7 @@ export function AIGatewayHero() {
 		<PageHeader
 			label="AI infrastructure"
 			title="Model Configuration"
-			description="Connect AI providers and credentials to enable agents, Nexus, document generation, and workflows."
+			description="Connect AI providers and credentials to enable agents, Advisor, document generation, and workflows."
 			actions={
 				<Button variant="outline" asChild className="gap-2">
 					<Link
