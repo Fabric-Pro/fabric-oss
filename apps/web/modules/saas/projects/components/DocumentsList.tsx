@@ -668,7 +668,7 @@ export function DocumentsList({
 									</p>
 								</div>
 								<div className="rounded-2xl border border-border/60 bg-background/50 p-3 text-center">
-									<p className="text-2xl font-semibold tabular-nums text-primary">
+									<p className="text-2xl font-semibold tabular-nums text-foreground">
 										{activeCount}
 									</p>
 									<p className="mt-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
