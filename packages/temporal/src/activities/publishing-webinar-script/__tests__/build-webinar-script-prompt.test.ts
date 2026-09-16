@@ -1,3 +1,4 @@
+import type { SettledDecision } from "@repo/utils/publishing-restrictions";
 import {
 	SOURCE_DATA_CLOSE_MARKER,
 	SOURCE_DATA_OPEN_PREFIX,
@@ -8,6 +9,10 @@ import {
 	buildWebinarScriptLockedClauses,
 	buildWebinarScriptPrompt,
 } from "../build-webinar-script-prompt";
+import {
+	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
+	SETTLED_DECISIONS_HEADING,
+} from "../../publishing-shared/settled-approvals";
 
 /**
  * The pure half of Webinar / Demo Script generation (Fizzy #1988, Phase 2D
@@ -134,6 +139,7 @@ describe("buildWebinarScriptPrompt", () => {
 		currentDraft: null,
 		restrictedSubjects: [] as string[],
 		openQuestionSubjects: [] as string[],
+		settledApprovals: [] as SettledDecision[],
 	};
 
 	it("renders the bound body and appends the locked clauses", async () => {
@@ -227,6 +233,106 @@ describe("buildWebinarScriptPrompt", () => {
 		});
 		expect(fresh.prompt).not.toContain("SAVED-DRAFT-CANARY");
 		expect(refined.prompt).toContain("SAVED-DRAFT-CANARY");
+	});
+});
+
+describe("buildWebinarScriptLockedClauses — the settled-decisions block", () => {
+	const collapseWhitespace = (text: string) => text.replace(/\s+/g, " ");
+	const customerName: SettledDecision = {
+		subject: "example-org",
+		decisionKind: "CUSTOMER_NAME",
+		answer: "Yes, the customer agreed to be named in public material.",
+	};
+
+	it("renders a settled decision after the two restriction blocks", () => {
+		const clauses = buildWebinarScriptLockedClauses({
+			restrictedSubjects: ["the adoption metric"],
+			openQuestionSubjects: ["who this session is for"],
+			settledApprovals: [customerName],
+		});
+		const restricted = clauses.indexOf(
+			"## Unresolved approvals for this topic",
+		);
+		const open = clauses.indexOf(
+			"## Open questions that constrain this content type",
+		);
+		const settled = clauses.indexOf(SETTLED_DECISIONS_HEADING);
+
+		expect(restricted).toBeGreaterThan(-1);
+		expect(open).toBeGreaterThan(restricted);
+		expect(settled).toBeGreaterThan(open);
+		expect(clauses.slice(settled)).toContain(
+			'- "example-org" - "Yes, the customer agreed to be named in public material."',
+		);
+	});
+
+	it("renders the empty state when nothing is settled", () => {
+		expect(buildWebinarScriptLockedClauses()).toContain(
+			`${SETTLED_DECISIONS_HEADING}\n\nNone recorded.`,
+		);
+	});
+
+	it("points the approval rule at an AFFIRMATIVE settled decision", () => {
+		const flat = collapseWhitespace(buildWebinarScriptLockedClauses());
+		expect(flat).toContain(
+			"Do NOT treat any of the following as approved for use unless a decision in the settled-decisions block below affirmatively confirms it: a customer name,",
+		);
+		expect(flat).not.toContain(
+			"unless the context above explicitly confirms it",
+		);
+	});
+
+	it("keeps confirmedAssets reachable for an asset no decision names — and keeps this type's 'safe to show'", () => {
+		// The rule still sources existence and safety from the context for an
+		// asset nobody questioned — a `supportingAssets.recommended` entry mints
+		// no decision, so "only where the block approves it" would make the
+		// confirmed list unreachable.
+		expect(collapseWhitespace(buildWebinarScriptLockedClauses())).toContain(
+			"An asset belongs in the confirmed list ONLY where the context above shows it exists and is safe to show, and - for any asset a decision in the settled-decisions block below names - only where that decision affirmatively approves it. Everything else goes in the needs-confirmation list",
+		);
+	});
+
+	it("voids the editable body's disclosure exception", () => {
+		expect(buildWebinarScriptLockedClauses()).toContain(
+			BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
+		);
+	});
+
+	it("buildWebinarScriptPrompt hands the settled decisions to its locked clauses", async () => {
+		const composed = await buildWebinarScriptPrompt({
+			templateBody: "Write about {{{topic_title}}}.",
+			format: "HANDLEBARS",
+			topic: {
+				id: "topic-1",
+				title: "Faster incremental builds",
+				pitch: "Builds now reuse a warm cache.",
+				angle: null,
+				subject: null,
+				relevantFunctionTags: [],
+				postTypeRecommendations: null,
+				contributors: [],
+			},
+			context: {
+				stories: [],
+				documents: [],
+				transcripts: [],
+				repoPrs: [],
+			},
+			analysisProse: "",
+			analysisData: {},
+			decisions: [],
+			guidance: null,
+			currentDraft: null,
+			restrictedSubjects: [],
+			openQuestionSubjects: [],
+			settledApprovals: [customerName],
+		});
+		const locked = composed.prompt.slice(
+			composed.prompt.indexOf("## Rules that override anything above"),
+		);
+		expect(locked).toContain(
+			'- "example-org" - "Yes, the customer agreed to be named in public material."',
+		);
 	});
 });
 
@@ -357,6 +463,7 @@ const SOURCED = {
 	currentDraft: null as string | null,
 	restrictedSubjects: [] as string[],
 	openQuestionSubjects: [] as string[],
+	settledApprovals: [] as SettledDecision[],
 };
 
 /** One canary per interpolated variable the default body fences. */

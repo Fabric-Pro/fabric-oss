@@ -28,6 +28,7 @@ import {
 import { buildRefinementSection } from "@repo/utils/publishing-refinement";
 import {
 	renderSubjectBullet,
+	type SettledDecision,
 	toSingleLineSubject,
 } from "@repo/utils/publishing-restrictions";
 import { z } from "zod";
@@ -37,6 +38,10 @@ import {
 	type PlanningAnalysisTopic,
 } from "../publishing-planning/build-planning-analysis-prompt";
 import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
+import {
+	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
+	renderSettledDecisionsBlock,
+} from "../publishing-shared/settled-approvals";
 import {
 	buildShortPostVariables,
 	type ShortPostDecision,
@@ -147,8 +152,10 @@ export type PublishingCaseStudy = z.infer<typeof PublishingCaseStudySchema>;
  * around it, generalize it, or leave it out" is the right instruction for every
  * one of them. The case study adds three kinds no other type restricts
  * (`CLAIM_STRENGTH`, `AUDIENCE_SCOPE`, `CODEBASE_DETAIL`, see
- * `EXTRA_RESTRICTING_KINDS_BY_POST_TYPE`), and those are QUESTIONS about how the
- * piece is framed rather than things to omit.
+ * `EXTRA_RESTRICTING_KINDS_BY_POST_TYPE`), and while unresolved those are
+ * QUESTIONS to leave unsettled rather than things to omit: two decide how the
+ * piece is framed, and `CODEBASE_DETAIL` decides how much of the implementation
+ * it may describe.
  *
  * Feeding them into the subject-shaped block is actively harmful. "Audience
  * scope" under "NOT approved for use. Write around each one … or leave it out"
@@ -167,13 +174,32 @@ export type PublishingCaseStudy = z.infer<typeof PublishingCaseStudySchema>;
  * edit away while rewording a prompt; this is the copy that survives, which
  * matters most on the content type that pulls the widest source set and is the
  * most likely to be published outside the org.
+ *
+ * THE SETTLED-DECISIONS BLOCK. The approval and confirmed-assets rules below,
+ * and the customer-identity and metrics-basis reports, used to allow something
+ * "unless the context above explicitly confirms it", and to a model a sentence
+ * in a project document reads like that confirmation. All four now require a
+ * decision in the settled-decisions block that AFFIRMATIVELY grants permission
+ * — the block lists refusals too. The
+ * generator selects the decisions (`selectSettledApprovals`); this builder
+ * renders them last, after both restriction blocks
+ * (`renderSettledDecisionsBlock`). The editable body carries a disclosure
+ * exception in its own words that no migration can reach in an organization's
+ * edited copy, so `BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS` voids that
+ * exception here — never the prohibition it qualifies.
  */
 export function buildCaseStudyLockedClauses({
 	restrictedSubjects = [],
 	openQuestionSubjects = [],
+	settledApprovals = [],
 }: {
 	restrictedSubjects?: string[];
 	openQuestionSubjects?: string[];
+	/**
+	 * The approval-relevant decisions a project member settled, already
+	 * selected and ordered by the generator (`selectSettledApprovals`).
+	 */
+	settledApprovals?: readonly SettledDecision[];
 } = {}): string {
 	// Collapsed to one line, THEN neutralized. A thread subject is model-authored
 	// (never typed by a project member) and lands in a bullet OUTSIDE any fence,
@@ -220,9 +246,11 @@ around it exactly as you would any other.
 ${restricted.map(renderSubjectBullet).join("\n")}`
 			: "";
 
-	// Deliberately NOT the wording above. These constrain how the piece is
-	// framed; instructing the model to "leave out" an audience or a claim
-	// strength produces a vaguer draft, not a safer one.
+	// Deliberately NOT the wording above. These are unsettled QUESTIONS, not
+	// subjects to omit: two decide how the piece is framed and CODEBASE_DETAIL
+	// decides how much of the implementation it may describe; instructing the
+	// model to "leave out" an audience, a claim strength or an implementation
+	// detail produces a vaguer or less useful draft, not a safer one.
 	const openQuestionBlock =
 		openQuestions.length > 0
 			? `
@@ -266,15 +294,19 @@ ${openQuestions.map(renderSubjectBullet).join("\n")}`
   publishing.
 - Do not repeat the title inside the body. It is its own field and is placed
   above it.
-- Do NOT treat any of the following as approved for publication unless the
-  context above explicitly confirms it: a customer name, a customer logo, a
-  customer or stakeholder quote, a screenshot, an internal UI capture, an
-  outcome metric, an endorsement claim, an implementation claim, an AI voice or
-  video likeness, or permission for public use. Where one would strengthen the
-  case study, write around it and record what is missing under inputs needed.
+- Do NOT treat any of the following as approved for publication unless a
+  decision in the settled-decisions block below affirmatively confirms it: a
+  customer name, a customer logo, a customer or stakeholder quote, a screenshot,
+  an internal UI capture, an outcome metric, an endorsement claim, an
+  implementation claim, an AI voice or video likeness, or permission for public
+  use. Where one would strengthen the case study, write around it and record
+  what is missing under inputs needed.
+${BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS}
 - An asset belongs in the confirmed list ONLY where the context above shows it
-  exists and is safe to use. Everything else goes in the needs-confirmation list
-  and says what has to be confirmed. When in doubt it needs confirmation.
+  exists and is safe to use, and - for any asset a decision in the
+  settled-decisions block below names - only where that decision affirmatively
+  approves it. Everything else goes in the needs-confirmation list and says what
+  has to be confirmed. When in doubt it needs confirmation.
 - Do NOT invent facts, metrics, dates, before/after results, ROI, adoption
   numbers, release status or outcomes. If the source context does not support a
   claim, the claim does not go in the case study.
@@ -286,16 +318,17 @@ ${openQuestions.map(renderSubjectBullet).join("\n")}`
 - Where a required fact is missing, use a short bracketed placeholder in the
   narrative and list the fact under inputs needed rather than filling the gap
   with a plausible substitute.
-- Report the customer identity honestly: APPROVED only where the context shows
-  the customer is identified for public use, ANONYMIZED where you deliberately
-  wrote around the name, APPROVAL_NEEDED where the story leans on an identity
-  nobody has approved.
+- Report the customer identity honestly: APPROVED only where a decision in the
+  settled-decisions block below affirmatively approves identifying the customer
+  for public use, ANONYMIZED where you deliberately wrote around the name,
+  APPROVAL_NEEDED where the story leans on an identity no such decision approves.
 - Report the metrics basis honestly: CONFIRMED only where the context supports
-  the numbers, QUALITATIVE where you described an outcome without asserting one,
-  PLACEHOLDER where a number is bracketed and still owed.
+  the numbers and a decision in the settled-decisions block below affirmatively
+  approves publishing them, QUALITATIVE where you described an outcome without
+  asserting one, PLACEHOLDER where a number is bracketed and still owed.
 - Where you generalized rather than asserted something, say so in your safety
   note. A generalized draft that does not say it was generalized reads as a
-  complete one.${restrictedBlock}${openQuestionBlock}`;
+  complete one.${restrictedBlock}${openQuestionBlock}${renderSettledDecisionsBlock(settledApprovals)}`;
 }
 
 // =============================================================================
@@ -355,6 +388,7 @@ export async function composeCaseStudyPrompt({
 	currentDraft,
 	restrictedSubjects,
 	openQuestionSubjects,
+	settledApprovals,
 }: {
 	templateBody: string;
 	format: TemplateFormat;
@@ -382,6 +416,12 @@ export async function composeCaseStudyPrompt({
 	currentDraft: string | null;
 	restrictedSubjects: string[];
 	openQuestionSubjects: string[];
+	/**
+	 * The approval-relevant decisions a project member settled, selected and
+	 * ordered by the activity (`selectSettledApprovals`). Rendered only in the
+	 * locked clauses; the body's decisions block is built from `decisions`.
+	 */
+	settledApprovals: SettledDecision[];
 }): Promise<ComposedCaseStudyPrompt> {
 	// Both builders reused, never reimplemented. `buildShortPostVariables` is
 	// misnamed for this shared use — it has been the family's second-layer
@@ -447,6 +487,7 @@ export async function composeCaseStudyPrompt({
 	const locked = buildCaseStudyLockedClauses({
 		restrictedSubjects,
 		openQuestionSubjects,
+		settledApprovals,
 	});
 
 	// BEFORE the locked clauses, never after: "Rules that override anything

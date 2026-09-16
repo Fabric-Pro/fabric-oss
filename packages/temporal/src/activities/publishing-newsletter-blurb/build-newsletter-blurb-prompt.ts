@@ -49,6 +49,7 @@ import {
 import { buildRefinementSection } from "@repo/utils/publishing-refinement";
 import {
 	renderSubjectBullet,
+	type SettledDecision,
 	toSingleLineSubject,
 } from "@repo/utils/publishing-restrictions";
 import { neutralizeSourceDataMarkers } from "@repo/utils/publishing-source-data-markers";
@@ -58,6 +59,10 @@ import {
 	type PlanningAnalysisTopic,
 } from "../publishing-planning/build-planning-analysis-prompt";
 import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
+import {
+	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
+	renderSettledDecisionsBlock,
+} from "../publishing-shared/settled-approvals";
 import {
 	buildShortPostVariables,
 	type ShortPostDecision,
@@ -127,13 +132,31 @@ export type NewsletterBlurbDecision = ShortPostDecision;
  * The untrusted-data clause is restated here rather than left to the editable
  * body. The body's `<<<SOURCE DATA: … >>>` fencing is a mitigation an org can
  * edit away while rewording a prompt; this is the copy that survives.
+ *
+ * THE SETTLED-DECISIONS BLOCK. The disclosure, approval and confirmed-assets
+ * rules below used to allow something "unless the context above" confirmed it
+ * or marked it safe to share, and to a model a sentence in a project document
+ * reads like that. They now require a decision in the settled-decisions block
+ * that AFFIRMATIVELY grants permission — the block lists refusals too. The
+ * generator selects the decisions (`selectSettledApprovals`); this builder
+ * renders them last, after both restriction blocks
+ * (`renderSettledDecisionsBlock`). The editable body carries the disclosure
+ * exception in its own words, which no migration can reach in an
+ * organization's edited copy, so `BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS`
+ * voids that exception here — never the prohibition it qualifies.
  */
 export function buildNewsletterBlurbLockedClauses({
 	restrictedSubjects = [],
 	openQuestionSubjects = [],
+	settledApprovals = [],
 }: {
 	restrictedSubjects?: string[];
 	openQuestionSubjects?: string[];
+	/**
+	 * The approval-relevant decisions a project member settled, already
+	 * selected and ordered by the generator (`selectSettledApprovals`).
+	 */
+	settledApprovals?: readonly SettledDecision[];
 } = {}): string {
 	// Collapsed to one line, THEN neutralized. A thread subject is model-authored
 	// (never typed by a project member) and lands in a bullet OUTSIDE any fence,
@@ -237,15 +260,20 @@ ${openQuestions.map(renderSubjectBullet).join("\n")}`
   history, emotions or words.
 - Do NOT expose internal implementation details, code names, private links,
   ticket IDs, confidential customer information or proprietary code details
-  unless the context above explicitly marks them safe to share.
-- Do NOT treat any of the following as approved for use unless the context above
-  explicitly confirms it: a customer name, a customer logo, a customer or
-  stakeholder quote, a screenshot, an internal UI capture, a recording, an
-  outcome metric or an endorsement claim. Where one would strengthen the item,
-  write around it and record what is missing under inputs needed.
+  unless a decision in the settled-decisions block below affirmatively marks them
+  safe to share.
+${BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS}
+- Do NOT treat any of the following as approved for use unless a decision in the
+  settled-decisions block below affirmatively confirms it: a customer name, a
+  customer logo, a customer or stakeholder quote, a screenshot, an internal UI
+  capture, a recording, an outcome metric or an endorsement claim. Where one
+  would strengthen the item, write around it and record what is missing under
+  inputs needed.
 - An asset belongs in the confirmed list ONLY where the context above shows it
-  exists and is safe to use. Everything else goes in the needs-confirmation list
-  and says what has to be confirmed. When in doubt it needs confirmation.
+  exists and is safe to use, and - for any asset a decision in the
+  settled-decisions block below names - only where that decision affirmatively
+  approves it. Everything else goes in the needs-confirmation list and says what
+  has to be confirmed. When in doubt it needs confirmation.
 - Report the release status honestly, and MATCH THE BLURB'S LANGUAGE TO IT,
   using exactly one of the seven values the schema defines: SHIPPED only where
   the context shows the work is delivered and in use; IN_PROGRESS, PLANNED,
@@ -281,7 +309,7 @@ ${openQuestions.map(renderSubjectBullet).join("\n")}`
   note. A blurb that quietly wrote around a sensitive detail otherwise reads as
   fully cleared to send — and this is the format in this family most likely to
   be pasted into a template and sent to a list without a second read, because it
-  is short enough to look already checked.${restrictedBlock}${openQuestionBlock}`;
+  is short enough to look already checked.${restrictedBlock}${openQuestionBlock}${renderSettledDecisionsBlock(settledApprovals)}`;
 }
 
 // =============================================================================
@@ -342,6 +370,7 @@ export async function buildNewsletterBlurbPrompt({
 	currentDraft,
 	restrictedSubjects,
 	openQuestionSubjects,
+	settledApprovals,
 }: {
 	templateBody: string;
 	format: TemplateFormat;
@@ -369,6 +398,12 @@ export async function buildNewsletterBlurbPrompt({
 	currentDraft: string | null;
 	restrictedSubjects: string[];
 	openQuestionSubjects: string[];
+	/**
+	 * The approval-relevant decisions a project member settled, selected and
+	 * ordered by the activity (`selectSettledApprovals`). Rendered only in the
+	 * locked clauses; the body's decisions block is built from `decisions`.
+	 */
+	settledApprovals: SettledDecision[];
 }): Promise<ComposedNewsletterBlurbPrompt> {
 	// Both builders reused, never reimplemented. `buildShortPostVariables` is
 	// misnamed for this shared use — it has been the family's second-layer
@@ -434,6 +469,7 @@ export async function buildNewsletterBlurbPrompt({
 	const locked = buildNewsletterBlurbLockedClauses({
 		restrictedSubjects,
 		openQuestionSubjects,
+		settledApprovals,
 	});
 
 	// BEFORE the locked clauses, never after: "Rules that override anything

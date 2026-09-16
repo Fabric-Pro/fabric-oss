@@ -34,6 +34,7 @@ import {
 	type PlanningAnalysisTopic,
 } from "../publishing-planning/build-planning-analysis-prompt";
 import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
+import { BODY_EXCEPTION_OVERRIDE_WITHOUT_SETTLED_DECISIONS } from "../publishing-shared/settled-approvals";
 import {
 	buildShortPostVariables,
 	type ShortPostDecision,
@@ -139,6 +140,17 @@ export function composeWorkingDraftBody(post: {
  * depends on: the suggestions are FIELDS, not sections of the post. A model that
  * writes "## Suggested Keywords" into `body` produces a draft whose author has
  * to delete it, and nothing downstream would report that as wrong.
+ *
+ * THE EDITABLE BODY'S DISCLOSURE EXCEPTION. The body forbids exposing internal
+ * details, code names, private links, ticket IDs and confidential customer
+ * information "unless the context above explicitly marks them safe to
+ * share", and a sentence in a project document reads to a model like that
+ * mark. This type has no settled-decisions block —
+ * its approval rule is unconditional, and a block would loosen it — so
+ * `BODY_EXCEPTION_OVERRIDE_WITHOUT_SETTLED_DECISIONS` states that the exception
+ * is never satisfied while the prohibition stands. It targets the exception,
+ * never the rule: these locked clauses do not otherwise mention code names,
+ * private links or ticket IDs, so voiding the rule would loosen this type.
  */
 export function buildBlogPostLockedClauses(
 	restrictedSubjects: string[] = [],
@@ -190,6 +202,7 @@ ${restricted.map(renderSubjectBullet).join("\n")}`
   screenshot, internal UI capture, outcome metric, or AI voice or video likeness
   as approved for publication. Where one would strengthen the post, write around
   it and record what is missing under inputs needed.
+${BODY_EXCEPTION_OVERRIDE_WITHOUT_SETTLED_DECISIONS}
 - Do NOT invent facts, metrics, dates, release status or outcomes. If the source
   context does not support a claim, the claim does not go in the post.
 - Do NOT state or imply that unshipped work has shipped.

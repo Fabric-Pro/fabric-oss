@@ -36,6 +36,7 @@ import type { AnalysisData } from "@repo/utils/publishing-analysis-prose";
 import { buildRefinementSection } from "@repo/utils/publishing-refinement";
 import {
 	renderSubjectBullet,
+	type SettledDecision,
 	toSingleLineSubject,
 } from "@repo/utils/publishing-restrictions";
 import { neutralizeSourceDataMarkers } from "@repo/utils/publishing-source-data-markers";
@@ -49,6 +50,10 @@ import {
 	type PlanningAnalysisTopic,
 } from "../publishing-planning/build-planning-analysis-prompt";
 import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
+import {
+	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
+	renderSettledDecisionsBlock,
+} from "../publishing-shared/settled-approvals";
 import {
 	buildShortPostVariables,
 	type ShortPostDecision,
@@ -80,8 +85,9 @@ export type WebinarScriptDecision = ShortPostDecision;
  * screenshot — and "write around it, generalize it, or leave it out" is right
  * for every one of them. The threads that pass only
  * `EXTRA_RESTRICTING_KINDS_BY_POST_TYPE` (`CLAIM_STRENGTH`, `AUDIENCE_SCOPE`,
- * `CODEBASE_DETAIL` for this type) are QUESTIONS about how the session is
- * framed, and feeding them into the subject-shaped block is actively harmful:
+ * `CODEBASE_DETAIL` for this type) are, while unresolved, QUESTIONS about how
+ * the session is framed or how much implementation detail it may show, and
+ * feeding them into the subject-shaped block is actively harmful:
  * "Recommended audience" under "NOT approved for use. Write around each one …
  * or leave it out" instructs the model to strip the audience framing, which is
  * the opposite of caution on a format the presenter reads from live. Same for
@@ -104,13 +110,31 @@ export type WebinarScriptDecision = ShortPostDecision;
  * The untrusted-data clause is restated here rather than left to the editable
  * body. The body's `<<<SOURCE DATA: … >>>` fencing is a mitigation an org can
  * edit away while rewording a prompt; this is the copy that survives.
+ *
+ * THE SETTLED-DECISIONS BLOCK. The approval and confirmed-assets rules below
+ * used to allow something "unless the context above explicitly confirms it",
+ * and to a model a sentence in a project document reads like that
+ * confirmation. They now require a decision in the settled-decisions block
+ * that AFFIRMATIVELY grants permission — the block lists refusals too. The
+ * generator selects the decisions (`selectSettledApprovals`); this builder
+ * renders them last, after both restriction blocks
+ * (`renderSettledDecisionsBlock`). The editable body carries a disclosure
+ * exception in its own words that no migration can reach in an organization's
+ * edited copy, so `BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS` voids that
+ * exception here — never the prohibition it qualifies.
  */
 export function buildWebinarScriptLockedClauses({
 	restrictedSubjects = [],
 	openQuestionSubjects = [],
+	settledApprovals = [],
 }: {
 	restrictedSubjects?: string[];
 	openQuestionSubjects?: string[];
+	/**
+	 * The approval-relevant decisions a project member settled, already
+	 * selected and ordered by the generator (`selectSettledApprovals`).
+	 */
+	settledApprovals?: readonly SettledDecision[];
 } = {}): string {
 	// Collapsed to one line, THEN neutralized. A thread subject is model-authored
 	// (never typed by a project member) and lands in a bullet OUTSIDE any fence,
@@ -157,9 +181,12 @@ around it exactly as you would any other.
 ${restricted.map(renderSubjectBullet).join("\n")}`
 			: "";
 
-	// Deliberately NOT the wording above. These constrain how the session is
-	// framed; instructing the model to "leave out" the audience or the
-	// strength of a claim produces a vaguer script, not a safer one.
+	// Deliberately NOT the wording above. These are unsettled QUESTIONS, not
+	// subjects to omit: two decide how the session is framed and
+	// `CODEBASE_DETAIL` decides how much implementation detail it may show;
+	// instructing the model to "leave out" an audience, a claim strength or an
+	// implementation detail produces a vaguer or less useful script, not a
+	// safer one.
 	const openQuestionBlock =
 		openQuestions.length > 0
 			? `
@@ -206,15 +233,19 @@ ${openQuestions.map(renderSubjectBullet).join("\n")}`
   presenter has to delete before rehearsing.
 - Do not repeat the title inside another field. It is its own field and is
   placed above the rest.
-- Do NOT treat any of the following as approved for use unless the context
-  above explicitly confirms it: a customer name, a customer logo, a customer or
-  stakeholder quote, a screenshot, an internal UI capture, a recording, an
-  outcome metric, an endorsement claim, an implementation claim, or an AI voice
-  or video likeness. Where one would strengthen the session, write around it and
-  record what is missing under inputs needed.
+- Do NOT treat any of the following as approved for use unless a decision in the
+  settled-decisions block below affirmatively confirms it: a customer name, a
+  customer logo, a customer or stakeholder quote, a screenshot, an internal UI
+  capture, a recording, an outcome metric, an endorsement claim, an
+  implementation claim, or an AI voice or video likeness. Where one would
+  strengthen the session, write around it and record what is missing under
+  inputs needed.
+${BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS}
 - An asset belongs in the confirmed list ONLY where the context above shows it
-  exists and is safe to show. Everything else goes in the needs-confirmation
-  list and says what has to be confirmed. When in doubt it needs confirmation.
+  exists and is safe to show, and - for any asset a decision in the
+  settled-decisions block below names - only where that decision affirmatively
+  approves it. Everything else goes in the needs-confirmation list and says what
+  has to be confirmed. When in doubt it needs confirmation.
 - Do NOT invent facts, metrics, dates, outcomes, release status or
   implementation claims. If the source context does not support a claim, the
   claim does not go in the script.
@@ -237,7 +268,7 @@ ${openQuestions.map(renderSubjectBullet).join("\n")}`
   not a planning worksheet exists for this topic.
 - Where you generalized, omitted or hedged something, say so in your safety
   note. A script that quietly wrote around a sensitive detail otherwise reads
-  as fully cleared to present.${restrictedBlock}${openQuestionBlock}`;
+  as fully cleared to present.${restrictedBlock}${openQuestionBlock}${renderSettledDecisionsBlock(settledApprovals)}`;
 }
 
 // =============================================================================
@@ -297,6 +328,7 @@ export async function buildWebinarScriptPrompt({
 	currentDraft,
 	restrictedSubjects,
 	openQuestionSubjects,
+	settledApprovals,
 }: {
 	templateBody: string;
 	format: TemplateFormat;
@@ -324,6 +356,12 @@ export async function buildWebinarScriptPrompt({
 	currentDraft: string | null;
 	restrictedSubjects: string[];
 	openQuestionSubjects: string[];
+	/**
+	 * The approval-relevant decisions a project member settled, selected and
+	 * ordered by the activity (`selectSettledApprovals`). Rendered only in the
+	 * locked clauses; the body's decisions block is built from `decisions`.
+	 */
+	settledApprovals: SettledDecision[];
 }): Promise<ComposedWebinarScriptPrompt> {
 	// Both builders reused, never reimplemented. `buildShortPostVariables` is
 	// misnamed for this shared use — it has been the family's second-layer
@@ -389,6 +427,7 @@ export async function buildWebinarScriptPrompt({
 	const locked = buildWebinarScriptLockedClauses({
 		restrictedSubjects,
 		openQuestionSubjects,
+		settledApprovals,
 	});
 
 	// BEFORE the locked clauses, never after: "Rules that override anything

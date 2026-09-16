@@ -5,6 +5,7 @@ import {
 } from "@repo/utils/publishing-analysis-prose";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { databaseValueImports } from "../../publishing-shared/__tests__/_ast-guards";
+import { SETTLED_DECISIONS_HEADING } from "../../publishing-shared/settled-approvals";
 
 /**
  * The Case Study LLM activity (Fizzy #1854, Phase 2C).
@@ -13,8 +14,9 @@ import { databaseValueImports } from "../../publishing-shared/__tests__/_ast-gua
  * and therefore what most of this file is about, is three things:
  *
  *  1. THE RESTRICTION SPLIT. `restrictsPostType(thread, "CASE_STUDY")` matches
- *     three kinds no other content type restricts, and those are questions about
- *     framing rather than subjects to omit — so they must land in
+ *     three kinds no other content type restricts, and while unresolved none of
+ *     them is a subject to omit — two are framing questions and
+ *     `CODEBASE_DETAIL` is a disclosure question — so they must land in
  *     `openQuestionSubjects`, never in the "NOT approved for use" list.
  *  2. THE CLAMP. `customerIdentity`, `metricsBasis` and `confirmedAssets` are
  *     MODEL claims a downstream reader trusts without re-reading the narrative.
@@ -114,9 +116,10 @@ vi.mock("@repo/database", async (importOriginal) => {
 	};
 });
 
-vi.mock("@repo/logs", () => ({
+const { logger } = vi.hoisted(() => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
+vi.mock("@repo/logs", () => ({ logger }));
 
 const collectPlanningContext = vi.fn();
 vi.mock("../../publishing-planning/collect-planning-context", () => ({
@@ -193,9 +196,12 @@ function answeredQuestion(
 	decisionKind: string,
 	subject: string,
 	answer: string,
+	createdAt = "2026-09-01T09:00:00Z",
 ) {
 	return {
 		root: {
+			id: `root-${decisionKind}-${subject}`,
+			createdAt: new Date(createdAt),
 			kind: "QUESTION",
 			status: "RESOLVED",
 			decisionKind,
@@ -204,8 +210,8 @@ function answeredQuestion(
 		},
 		replies: [
 			{
-				id: "reply-1",
-				createdAt: new Date("2026-09-01T10:00:00Z"),
+				id: `reply-${decisionKind}-${subject}`,
+				createdAt: new Date(createdAt),
 				status: "RESOLVED",
 				authorType: "USER",
 				content: answer,
@@ -1297,5 +1303,84 @@ describe("generateCaseStudyActivity — the effective analysis reaches the promp
 		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("AI ANGLE");
 		expect(prompt).toContain(renderAnalysisProse(AI));
+	});
+});
+
+describe("generateCaseStudyActivity — the settled-decisions block", () => {
+	const promptSent = () =>
+		generateObject.mock.calls[0]?.[0]?.prompt as string;
+	const settledSection = () => {
+		const prompt = promptSent();
+		const at = prompt.indexOf(SETTLED_DECISIONS_HEADING);
+		expect(at).toBeGreaterThan(-1);
+		return prompt.slice(at);
+	};
+
+	it("passes only the approval-relevant settled decisions to its locked clauses", async () => {
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"AUDIENCE_SCOPE",
+				"who this case study is for",
+				"Engineering leaders at example-org.",
+			),
+			answeredQuestion(
+				"CUSTOMER_NAME",
+				"example-org",
+				"Yes, the customer agreed to be named.",
+			),
+		]);
+
+		await run();
+
+		expect(settledSection()).toContain(
+			'- "example-org" - "Yes, the customer agreed to be named."',
+		);
+		expect(settledSection()).not.toContain(
+			"Engineering leaders at example-org.",
+		);
+		// Still a settled decision: the body's decisions block carries it.
+		expect(promptSent()).toContain("Engineering leaders at example-org.");
+	});
+
+	it("admits a settled CODEBASE_DETAIL decision — this type's approval rule names an implementation claim", async () => {
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"CODEBASE_DETAIL",
+				"how much of the resolver to describe",
+				"Describe the caching layer; do not name internal services.",
+			),
+		]);
+
+		await run();
+
+		expect(settledSection()).toContain(
+			'- "how much of the resolver to describe" - "Describe the caching layer; do not name internal services."',
+		);
+	});
+
+	it("logs when the block cannot list every settled decision", async () => {
+		listTopicDecisions.mockResolvedValue(
+			Array.from({ length: 21 }, (_, i) =>
+				answeredQuestion(
+					"ASSET_APPROVAL",
+					`asset ${String(i).padStart(2, "0")}`,
+					"Approved.",
+				),
+			),
+		);
+
+		await run();
+
+		expect(logger.warn).toHaveBeenCalledWith(
+			"[publishing-case-study] settled-decisions block truncated",
+			{
+				draftId: "draft-1",
+				topicId: "topic-1",
+				projectId: "proj-1",
+				contentType: "CASE_STUDY",
+				listed: 20,
+				omitted: 1,
+			},
+		);
 	});
 });
