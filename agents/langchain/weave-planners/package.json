@@ -13,19 +13,17 @@
 		"typecheck": "pnpm run type-check"
 	},
 	"dependencies": {
-		"@ai-sdk/openai": "^2.0.0",
 		"@hono/node-server": "^2.0.11",
 		"@langchain/core": "^1.2.9",
 		"@langchain/langgraph": "^1.4.14",
 		"@repo/agent-core": "workspace:*",
 		"@repo/agent-runtime": "workspace:*",
 		"@repo/database": "workspace:*",
+		"@repo/observability": "workspace:*",
 		"@repo/rag": "workspace:*",
-		"ai": "^6.0.116",
 		"hono": "^4.13.7",
 		"undici": "^8.5.0",
-		"zod": "^3.22.4",
-		"@repo/observability": "workspace:*"
+		"zod": "^3.22.4"
 	},
 	"devDependencies": {
 		"@types/node": "^20.10.0",

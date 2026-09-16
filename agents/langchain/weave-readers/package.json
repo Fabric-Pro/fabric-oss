@@ -17,7 +17,7 @@
 		"@repo/agent-runtime": "workspace:*",
 		"@repo/ai": "workspace:*",
 		"@repo/observability": "workspace:*",
-		"ai": "^6.0.116",
+		"ai": "^6.0.283",
 		"hono": "^4.13.7",
 		"nunjucks": "^3.2.4",
 		"stripe": "^19.2.0",
