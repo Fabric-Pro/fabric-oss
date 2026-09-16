@@ -1330,7 +1330,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "agents-featured",
 				anchor: "agents-featured",
 				title: "Start with Fabric Loom",
-				body: "Loom is the orchestrator — rather than answering itself, it reads your task and routes it to the best specialist agent. Not sure which agent you need? Start here. (Clicking any agent drops you into a Nexus chat with it.)",
+				body: "Loom is the orchestrator — rather than answering itself, it reads your task and routes it to the best specialist agent. Not sure which agent you need? Start here. (Clicking any agent drops you into an Advisor chat with it.)",
 			},
 		],
 	},
