@@ -1,7 +1,9 @@
 import {
 	convertToModelMessages,
-	stepCountIs,
+	createUIMessageStreamResponse,
+	isStepCount,
 	streamText,
+	toUIMessageStream,
 	type LanguageModel,
 	type ToolSet,
 } from "ai";
@@ -349,7 +351,16 @@ export async function POST(req: Request) {
 			return handleClaudeAgents(context);
 		}
 
-		// Default: Vercel AI SDK with MCP
+		// Default: Vercel AI SDK with MCP.
+		//
+		// This uses the SDK's built-in HTTP transport, so `@ai-sdk/mcp` 2's
+		// `redirect` default applies here: it is `'error'`, not `'follow'` as
+		// in 1.x, and a redirect response now fails the request instead of
+		// being chased. That default is deliberately left alone. The URL is
+		// minted by Fabric's own tool-router session endpoint and points
+		// straight at the gateway, so a redirect here would mean the routing
+		// changed underneath us — which is worth failing on rather than
+		// following to wherever it leads.
 		client = await createMCPClient({
 			transport: {
 				type: "http",
@@ -364,15 +375,22 @@ export async function POST(req: Request) {
 		const result = streamText({
 			model,
 			messages: coreMessages,
-			system: SYSTEM_PROMPT,
+			instructions: SYSTEM_PROMPT,
 			tools: mcpTools as ToolSet,
-			stopWhen: stepCountIs(20),
-			onFinish: async () => {
+			stopWhen: isStepCount(20),
+			onEnd: async () => {
 				await client?.close().catch(() => {});
 			},
 		});
 
-		return result.toUIMessageStreamResponse();
+		// SDK 7 deprecates the `streamText` result helpers in favour of the
+		// stateless `toUIMessageStream` / `createUIMessageStreamResponse` pair.
+		// Both take an options object: the migration guide's positional
+		// `createUIMessageStreamResponse(uiStream)` does not match the shipped
+		// declaration, which destructures `{ stream }`.
+		return createUIMessageStreamResponse({
+			stream: toUIMessageStream({ stream: result.stream }),
+		});
 	} catch (error) {
 		await client?.close().catch(() => {});
 		console.error("Chat API Error:", error);
