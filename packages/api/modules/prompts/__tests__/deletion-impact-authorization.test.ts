@@ -51,6 +51,21 @@ const {
 	mountedPermissions: [] as string[],
 }));
 
+/**
+ * A stand-in for the oRPC procedure builder that survives more than one
+ * `.use()`. The real builder returns itself, so a chain of middlewares keeps
+ * building; a stub whose `use()` returned the terminal object modelled a
+ * one-middleware procedure and failed at import as soon as a second was
+ * mounted — a TypeError during collection, not a failing assertion.
+ */
+function chainableProcedure<TTerminal extends object>(terminal: TTerminal) {
+	const builder = {
+		use: () => builder,
+		...terminal,
+	};
+	return builder;
+}
+
 vi.mock("@repo/database", () => ({
 	getPlatformWidePromptDeletionImpact,
 	getPromptById,
@@ -76,15 +91,17 @@ vi.mock("../../../orpc/procedures", () => ({
 		mountedPermissions.push(permission);
 		return (next: unknown) => next;
 	},
-	tenantProtectedProcedure: {
-		use: () => ({
-			route: () => ({
-				input: () => ({
-					output: () => ({ handler: (fn: unknown) => fn }),
-				}),
+	// Chainable on purpose: the real builder returns itself from `.use()`, and
+	// these procedures now mount two middlewares. A stub that modelled exactly
+	// one turned "a middleware was added" into a collection-time TypeError
+	// rather than a test result.
+	tenantProtectedProcedure: chainableProcedure({
+		route: () => ({
+			input: () => ({
+				output: () => ({ handler: (fn: unknown) => fn }),
 			}),
 		}),
-	},
+	}),
 }));
 
 import { deletionImpactProcedure } from "../procedures/deletion-impact";

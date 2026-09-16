@@ -3,6 +3,7 @@ import { deletePrompt, getPromptById } from "@repo/database";
 import { logger } from "@repo/logs";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../lib/audit";
+import { resolveUnambiguousOrganization } from "../../../orpc/middleware/resolve-unambiguous-organization";
 import {
 	Permissions,
 	requirePermission,
@@ -85,6 +86,13 @@ function isMissingRetirementTable(error: unknown): boolean {
 }
 
 export const deleteProcedure = tenantProtectedProcedure
+	// Resolve an organization when the session names none and the answer is
+	// not in doubt, BEFORE the permission check below — a role can only be
+	// evaluated against the organization the request actually runs in, and
+	// `requirePermission` waves a context-less caller through without
+	// evaluating one. Leaves a genuinely ambiguous account untouched for
+	// `assertOrganizationContext` to refuse (Fizzy #2403, QA).
+	.use(resolveUnambiguousOrganization)
 	.use(requirePermission(Permissions.PROMPT_DELETE))
 	.route({
 		method: "DELETE",
