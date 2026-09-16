@@ -554,7 +554,9 @@ describe("CliConnectionNudge — when it renders", () => {
 		expect(
 			screen.getByText(/dismissing this is permanent/i),
 		).toBeInTheDocument();
-		expect(screen.getByText(/"API Key for CLI"/)).toBeInTheDocument();
+		expect(
+			screen.getByText(/"Organization connected over MCP"/),
+		).toBeInTheDocument();
 	});
 
 	/**
@@ -1133,7 +1135,9 @@ describe("CliConnectionNudge — what the prompt claims", () => {
 		expect(
 			screen.getByText(/dismissing this is permanent/i),
 		).toBeInTheDocument();
-		expect(screen.getByText(/"API Key for CLI"/)).toBeInTheDocument();
+		expect(
+			screen.getByText(/"Organization connected over MCP"/),
+		).toBeInTheDocument();
 	});
 
 	/**
