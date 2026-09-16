@@ -518,52 +518,55 @@ export function normalizeContentArrays(payload: unknown): boolean {
  * Databricks' Foundation Model API serves Claude through the OpenAI-compatible
  * chat-completions surface, but reports Anthropic-style prompt-cache usage in
  * TOP-LEVEL fields (`cache_read_input_tokens`, `cache_creation_input_tokens`,
- * `cache_creation`) instead of the OpenAI shape — `usage.prompt_tokens_details
- * .cached_tokens` — that `@ai-sdk/openai`'s `convertOpenAIChatUsage` and
- * `@langchain/openai`'s completions parser both read. Cache-READ savings were
- * therefore invisible in AI usage logging: the OpenAI-shaped parsers never look
- * at the Anthropic-named fields, so a cached call billed and displayed
- * identically to an uncached one.
+ * `cache_creation`) instead of the OpenAI shape: `usage.prompt_tokens_details
+ * .cached_tokens`, which `@ai-sdk/openai`'s `convertOpenAIChatUsage` and
+ * `@langchain/openai`'s completions parser both read, and `.cache_write_tokens`,
+ * which only `@ai-sdk/openai` reads. Cache-READ savings were therefore
+ * invisible in AI usage logging on both paths, and cache-WRITE usage on the
+ * `@ai-sdk/openai` path: the OpenAI-shaped parsers never look at the
+ * Anthropic-named fields, so a cached call billed and displayed identically
+ * to an uncached one.
  *
- * Maps `usage.cache_read_input_tokens` onto `usage.prompt_tokens_details
- * .cached_tokens` in place, when present. This needs no adjustment to
- * `prompt_tokens` itself — Databricks' `prompt_tokens` already counts the
- * cached portion, matching OpenAI's own `prompt_tokens_details.cached_tokens`
- * semantics (a subset of `prompt_tokens`, not additional to it).
+ * Maps, independently and in place, whichever of these is present:
+ *  - `usage.cache_read_input_tokens` onto `usage.prompt_tokens_details
+ *    .cached_tokens`.
+ *  - `usage.cache_creation_input_tokens` onto `usage.prompt_tokens_details
+ *    .cache_write_tokens`.
+ *
+ * Neither mapping needs any adjustment to `prompt_tokens` itself — Databricks'
+ * `prompt_tokens` already counts both the cached-read and cache-write
+ * portions, matching OpenAI's own `prompt_tokens_details` semantics (each a
+ * subset of `prompt_tokens`, not additional to it).
+ *
+ * `@ai-sdk/openai` ≥3.0.84 ("feat(provider/openai): add GPT-5.6 reasoning and
+ * prompt cache controls") added `prompt_tokens_details.cache_write_tokens` to
+ * its response schema and reads it into `inputTokens.cacheWrite` using this
+ * same subset-of-`prompt_tokens` semantics — so aliasing the Databricks field
+ * onto that name is all `@repo/ai`'s `usage-logging-middleware.ts` needs to
+ * see cache-write usage (it already reads `inputTokens.cacheWrite`). The
+ * LangChain path (this bundle's `usage-logging.ts`) is untouched by this
+ * alias: `@langchain/openai`'s completions parser spreads the raw wire
+ * `usage` object verbatim onto `response_metadata.usage`, so it keeps reading
+ * `cache_creation_input_tokens` directly — which is why the Anthropic-named
+ * fields are left on the object below, unmodified, alongside the new alias.
  *
  * Leaves the Anthropic-style fields on the (non-streaming, or choices-less
  * streaming usage event — see {@link applyChunkCacheUsageHandling}) usage
- * object untouched. Cache-WRITE tokens (`cache_creation_input_tokens`) have
- * no OpenAI-shape equivalent, so
- * they can only ever be read from those Anthropic-named fields directly —
- * and that is possible on ONE of the two consumer paths, not both:
- *  - This bundle's `usage-logging.ts` (the LangChain/agent path) reads it,
- *    because `@langchain/openai`'s completions parser spreads the raw wire
- *    `usage` object verbatim onto `response_metadata.usage`, so the
- *    Anthropic-named field survives to that extractor unmapped.
- *  - `@repo/ai`'s `usage-logging-middleware.ts` (the `@ai-sdk/openai` path)
- *    CANNOT read it. `@ai-sdk/openai@3.0.0` validates every response and
- *    chunk against a CLOSED `z.object` schema (`dist/internal/index.mjs`,
- *    the `usage` sub-schema) listing only OpenAI-named fields; Zod strips
- *    unknown keys on a plain (non-`.passthrough()`) object by default, so
- *    `cache_creation_input_tokens` is gone from `usage` before
- *    `convertOpenAIChatUsage` — and its `raw: usage` passthrough — ever see
- *    it. There is no recognized OpenAI usage field free to smuggle it
- *    through either (repurposing e.g. `completion_tokens_details
- *    .accepted_prediction_tokens` would corrupt an unrelated, real metric).
- *    Cache-WRITE visibility for Databricks-served Claude is therefore
- *    LangChain-path-only; an `@ai-sdk/openai` caller sees a cache-write call
- *    exactly like an ordinary uncached one.
+ * object untouched.
  *
- * Never fabricates the `cached_tokens` field on a cache miss
- * (`cache_read_input_tokens` absent, zero, or non-numeric) — a miss must read
- * exactly like any other provider's non-cached usage, not synthesize a zero
- * `cached_tokens`. Never overwrites an existing numeric `cached_tokens`
- * (future-proofing; Databricks does not send one today).
+ * Never fabricates `cached_tokens` on a cache-READ miss
+ * (`cache_read_input_tokens` absent, zero, or non-numeric), and never
+ * fabricates `cache_write_tokens` on a cache-WRITE miss
+ * (`cache_creation_input_tokens` absent, zero, or non-numeric) — either miss
+ * must read exactly like any other provider's non-cached usage, not
+ * synthesize a zero-valued field. Never overwrites an existing numeric
+ * `cached_tokens` or `cache_write_tokens` (future-proofing; Databricks does
+ * not send either today). Returns true iff at least one of the two mappings
+ * actually applied.
  *
- * No model/Claude gating and no env kill-switch: this only reads a response
- * field already on the wire and adds an OpenAI-shaped alias for it, so a
- * non-Claude response without the field is simply a no-op.
+ * No model/Claude gating and no env kill-switch: this only reads response
+ * fields already on the wire and adds OpenAI-shaped aliases for them, so a
+ * response carrying neither field is simply a no-op.
  *
  * STREAMING CALLERS: do not call this directly on every SSE chunk — see
  * {@link applyChunkCacheUsageHandling} / {@link buildSynthesizedUsageEvent},
@@ -581,25 +584,34 @@ export function normalizeDatabricksUsageFields(payload: unknown): boolean {
 		return false;
 	}
 	const usageObj = usage as Record<string, unknown>;
-	const cacheRead = usageObj.cache_read_input_tokens;
-	if (
-		typeof cacheRead !== "number" ||
-		!Number.isFinite(cacheRead) ||
-		cacheRead <= 0
-	) {
-		return false;
-	}
 	const existing = usageObj.prompt_tokens_details;
 	const existingDetails =
 		existing && typeof existing === "object" && !Array.isArray(existing)
 			? (existing as Record<string, unknown>)
 			: undefined;
-	if (typeof existingDetails?.cached_tokens === "number") {
+
+	const cacheRead = usageObj.cache_read_input_tokens;
+	const mapRead =
+		typeof cacheRead === "number" &&
+		Number.isFinite(cacheRead) &&
+		cacheRead > 0 &&
+		typeof existingDetails?.cached_tokens !== "number";
+
+	const cacheWrite = usageObj.cache_creation_input_tokens;
+	const mapWrite =
+		typeof cacheWrite === "number" &&
+		Number.isFinite(cacheWrite) &&
+		cacheWrite > 0 &&
+		typeof existingDetails?.cache_write_tokens !== "number";
+
+	if (!mapRead && !mapWrite) {
 		return false;
 	}
+
 	usageObj.prompt_tokens_details = {
 		...existingDetails,
-		cached_tokens: cacheRead,
+		...(mapRead ? { cached_tokens: cacheRead } : {}),
+		...(mapWrite ? { cache_write_tokens: cacheWrite } : {}),
 	};
 	return true;
 }

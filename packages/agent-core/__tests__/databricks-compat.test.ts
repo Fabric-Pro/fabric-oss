@@ -411,6 +411,111 @@ describe("normalizeDatabricksUsageFields", () => {
 		});
 	});
 
+	// ---------------------------------------------------------------------
+	// Cache-WRITE mapping (cache_creation_input_tokens -> cache_write_tokens).
+	// Read and write are mapped independently — see the file-header comment
+	// on @ai-sdk/openai's cache_write_tokens support.
+	// ---------------------------------------------------------------------
+
+	it("maps cache_read_input_tokens AND cache_creation_input_tokens independently when both are present", () => {
+		const payload = {
+			usage: {
+				cache_read_input_tokens: 300,
+				cache_creation_input_tokens: 700,
+				prompt_tokens: 1200,
+				completion_tokens: 10,
+			},
+		};
+		expect(normalizeDatabricksUsageFields(payload)).toBe(true);
+		expect(payload.usage.prompt_tokens_details).toEqual({
+			cached_tokens: 300,
+			cache_write_tokens: 700,
+		});
+	});
+
+	it("maps a write-only call without fabricating cached_tokens", () => {
+		const payload = {
+			usage: {
+				cache_read_input_tokens: 0,
+				cache_creation_input_tokens: 700,
+				prompt_tokens: 1200,
+			},
+		};
+		expect(normalizeDatabricksUsageFields(payload)).toBe(true);
+		expect(payload.usage.prompt_tokens_details).toEqual({
+			cache_write_tokens: 700,
+		});
+		expect(
+			(payload.usage.prompt_tokens_details as Record<string, unknown>)
+				.cached_tokens,
+		).toBeUndefined();
+	});
+
+	it("is a no-op for a cache-write miss (cache_creation_input_tokens: 0)", () => {
+		const payload = {
+			usage: { cache_creation_input_tokens: 0, prompt_tokens: 10 },
+		};
+		expect(normalizeDatabricksUsageFields(payload)).toBe(false);
+		expect(
+			(payload.usage as Record<string, unknown>).prompt_tokens_details,
+		).toBeUndefined();
+	});
+
+	it("is a no-op for a negative or non-numeric cache_creation_input_tokens", () => {
+		expect(
+			normalizeDatabricksUsageFields({
+				usage: { cache_creation_input_tokens: -5 },
+			}),
+		).toBe(false);
+		expect(
+			normalizeDatabricksUsageFields({
+				usage: { cache_creation_input_tokens: "700" },
+			}),
+		).toBe(false);
+		expect(
+			normalizeDatabricksUsageFields({
+				usage: { cache_creation_input_tokens: Number.NaN },
+			}),
+		).toBe(false);
+		expect(
+			normalizeDatabricksUsageFields({
+				usage: { cache_creation_input_tokens: null },
+			}),
+		).toBe(false);
+	});
+
+	it("does not overwrite an existing numeric cache_write_tokens", () => {
+		const payload = {
+			usage: {
+				cache_creation_input_tokens: 700,
+				prompt_tokens_details: { cache_write_tokens: 999 },
+			},
+		};
+		expect(normalizeDatabricksUsageFields(payload)).toBe(false);
+		expect(
+			(
+				payload.usage.prompt_tokens_details as {
+					cache_write_tokens: number;
+				}
+			).cache_write_tokens,
+		).toBe(999);
+	});
+
+	it("maps a fresh cache_read_input_tokens onto an existing cache_write_tokens without disturbing it", () => {
+		const payload = {
+			usage: {
+				cache_read_input_tokens: 300,
+				cache_creation_input_tokens: 700,
+				prompt_tokens_details: { cache_write_tokens: 999 },
+			},
+		};
+		expect(normalizeDatabricksUsageFields(payload)).toBe(true);
+		expect(payload.usage.prompt_tokens_details).toEqual({
+			cache_write_tokens: 999,
+			cached_tokens: 300,
+		});
+	});
+
 	it("is a no-op for a malformed payload", () => {
 		expect(normalizeDatabricksUsageFields(null)).toBe(false);
 		expect(normalizeDatabricksUsageFields(undefined)).toBe(false);
@@ -460,16 +565,21 @@ describe("createDatabricksFetch — usage normalization", () => {
 		);
 		const json = (await res.json()) as {
 			usage: {
-				prompt_tokens_details?: { cached_tokens?: number };
+				prompt_tokens_details?: {
+					cached_tokens?: number;
+					cache_write_tokens?: number;
+				};
 				cache_read_input_tokens: number;
 				cache_creation_input_tokens: number;
 				prompt_tokens: number;
 				completion_tokens: number;
 			};
 		};
-		// A cache-WRITE (no read) call: no prompt_tokens_details is fabricated,
-		// since cache_read_input_tokens is 0.
-		expect(json.usage.prompt_tokens_details).toBeUndefined();
+		// A cache-WRITE (no read) call: cache_write_tokens is mapped, but no
+		// cached_tokens is fabricated, since cache_read_input_tokens is 0.
+		expect(json.usage.prompt_tokens_details).toEqual({
+			cache_write_tokens: 4570,
+		});
 		expect(json.usage.cache_creation_input_tokens).toBe(4570);
 		expect(json.usage.prompt_tokens).toBe(4573);
 		expect(json.usage.completion_tokens).toBe(4);
@@ -560,7 +670,7 @@ describe("createDatabricksSseTransform — usage normalization", () => {
 		const out = await runThroughSseTransform([chunk]);
 		expect(out).toBe(
 			'data: {"choices":[{"delta":{"content":"hi"},"index":0,"finish_reason":null}],"usage":{"completion_tokens":null,"prompt_tokens":4573,"total_tokens":null}}\n\n' +
-				'data: {"choices":[],"usage":{"cache_read_input_tokens":0,"cache_creation_input_tokens":4570,"completion_tokens":null,"prompt_tokens":4573,"total_tokens":null}}\n\n' +
+				'data: {"choices":[],"usage":{"cache_read_input_tokens":0,"cache_creation_input_tokens":4570,"completion_tokens":null,"prompt_tokens":4573,"total_tokens":null,"prompt_tokens_details":{"cache_write_tokens":4570}}}\n\n' +
 				"data: [DONE]\n\n",
 		);
 	});
