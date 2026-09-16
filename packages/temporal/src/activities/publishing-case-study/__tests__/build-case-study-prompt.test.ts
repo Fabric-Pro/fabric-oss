@@ -3,12 +3,17 @@ import {
 	SOURCE_DATA_CLOSE_MARKER,
 	SOURCE_DATA_OPEN_PREFIX,
 } from "@repo/utils/publishing-case-study-prompt";
+import type { SettledDecision } from "@repo/utils/publishing-restrictions";
 import { describe, expect, it } from "vitest";
 import {
 	buildCaseStudyLockedClauses,
 	composeCaseStudyPrompt,
 	PublishingCaseStudySchema,
 } from "../build-case-study-prompt";
+import {
+	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
+	SETTLED_DECISIONS_HEADING,
+} from "../../publishing-shared/settled-approvals";
 
 /**
  * The pure half of Case Study generation (Fizzy #1854, Phase 2C).
@@ -324,8 +329,9 @@ describe("buildCaseStudyLockedClauses", () => {
 	});
 
 	it("tells the model not to settle an open question by assumption", () => {
-		// The correct behaviour for a framing question is to state the result
-		// qualitatively and record the assumption — NOT to drop it.
+		// The correct behaviour for an open per-type question — framing or
+		// disclosure — is to state the result qualitatively and record the
+		// assumption, NOT to drop it.
 		const clauses = buildCaseStudyLockedClauses({
 			openQuestionSubjects: ["Codebase detail"],
 		});
@@ -350,6 +356,117 @@ describe("buildCaseStudyLockedClauses", () => {
 	});
 });
 
+describe("buildCaseStudyLockedClauses — the settled-decisions block", () => {
+	const collapseWhitespace = (text: string) => text.replace(/\s+/g, " ");
+	const customerName: SettledDecision = {
+		subject: "example-org",
+		decisionKind: "CUSTOMER_NAME",
+		answer: "Yes, the customer agreed to be named in public material.",
+	};
+
+	it("renders a settled decision after the two restriction blocks", () => {
+		const clauses = buildCaseStudyLockedClauses({
+			restrictedSubjects: ["the adoption metric"],
+			openQuestionSubjects: ["who this case study is for"],
+			settledApprovals: [customerName],
+		});
+		const restricted = clauses.indexOf(
+			"## Unresolved approvals for this topic",
+		);
+		const open = clauses.indexOf(
+			"## Open questions that constrain this content type",
+		);
+		const settled = clauses.indexOf(SETTLED_DECISIONS_HEADING);
+
+		expect(restricted).toBeGreaterThan(-1);
+		expect(open).toBeGreaterThan(restricted);
+		expect(settled).toBeGreaterThan(open);
+		expect(clauses.slice(settled)).toContain(
+			'- "example-org" - "Yes, the customer agreed to be named in public material."',
+		);
+	});
+
+	it("renders the empty state when nothing is settled", () => {
+		expect(buildCaseStudyLockedClauses()).toContain(
+			`${SETTLED_DECISIONS_HEADING}\n\nNone recorded.`,
+		);
+	});
+
+	it("points the approval rule at an AFFIRMATIVE settled decision", () => {
+		const flat = collapseWhitespace(buildCaseStudyLockedClauses());
+		expect(flat).toContain(
+			"Do NOT treat any of the following as approved for publication unless a decision in the settled-decisions block below affirmatively confirms it: a customer name,",
+		);
+		expect(flat).not.toContain(
+			"unless the context above explicitly confirms it",
+		);
+	});
+
+	it("keeps confirmedAssets reachable for an asset no decision names", () => {
+		// The rule still sources existence and safety from the context for an
+		// asset nobody questioned — a `supportingAssets.recommended` entry mints
+		// no decision, so "only where the block approves it" would make the
+		// confirmed list unreachable.
+		expect(collapseWhitespace(buildCaseStudyLockedClauses())).toContain(
+			"An asset belongs in the confirmed list ONLY where the context above shows it exists and is safe to use, and - for any asset a decision in the settled-decisions block below names - only where that decision affirmatively approves it. Everything else goes in the needs-confirmation list",
+		);
+	});
+
+	it("voids the editable body's disclosure exception", () => {
+		expect(buildCaseStudyLockedClauses()).toContain(
+			BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
+		);
+	});
+
+	it("reports the customer as APPROVED and metrics as CONFIRMED only on an affirmative settled decision", () => {
+		const flat = collapseWhitespace(buildCaseStudyLockedClauses());
+		expect(flat).toContain(
+			"Report the customer identity honestly: APPROVED only where a decision in the settled-decisions block below affirmatively approves identifying the customer for public use,",
+		);
+		expect(flat).toContain(
+			"Report the metrics basis honestly: CONFIRMED only where the context supports the numbers and a decision in the settled-decisions block below affirmatively approves publishing them,",
+		);
+		expect(flat).not.toContain("APPROVED only where the context");
+	});
+
+	it("composeCaseStudyPrompt hands the settled decisions to its locked clauses", async () => {
+		const composed = await composeCaseStudyPrompt({
+			templateBody: "Write about {{{topic_title}}}.",
+			format: "HANDLEBARS",
+			topic: {
+				id: "topic-1",
+				title: "Faster incremental builds",
+				pitch: "Builds now reuse a warm cache.",
+				angle: null,
+				subject: null,
+				relevantFunctionTags: [],
+				postTypeRecommendations: null,
+				contributors: [],
+			},
+			context: {
+				stories: [],
+				documents: [],
+				transcripts: [],
+				repoPrs: [],
+			},
+			analysisProse: "",
+			analysisData: {},
+			decisions: [],
+			guidance: null,
+			currentDraft: null,
+			restrictedSubjects: [],
+			openQuestionSubjects: [],
+			settledApprovals: [customerName],
+		});
+		const locked = composed.prompt.slice(
+			composed.prompt.indexOf("## Rules that override anything above"),
+		);
+		expect(locked).toContain(
+			'- "example-org" - "Yes, the customer agreed to be named in public material."',
+		);
+	});
+});
+
 describe("composeCaseStudyPrompt", () => {
 	const base = {
 		topic: TOPIC,
@@ -361,6 +478,7 @@ describe("composeCaseStudyPrompt", () => {
 		currentDraft: null,
 		restrictedSubjects: [],
 		openQuestionSubjects: [],
+		settledApprovals: [],
 	};
 
 	it("renders the bound body and appends the locked clauses", async () => {
@@ -653,6 +771,7 @@ const SOURCED = {
 	currentDraft: null as string | null,
 	restrictedSubjects: [] as string[],
 	openQuestionSubjects: [] as string[],
+	settledApprovals: [] as SettledDecision[],
 };
 
 /** One canary per interpolated variable the default body fences. */
@@ -848,6 +967,7 @@ describe("composeCaseStudyPrompt — refinement (Fizzy #1851, A7)", () => {
 		currentDraft: null,
 		restrictedSubjects: [],
 		openQuestionSubjects: [],
+		settledApprovals: [],
 		templateBody: "Write about {{{topic_title}}}.",
 		format: "HANDLEBARS" as const,
 	};

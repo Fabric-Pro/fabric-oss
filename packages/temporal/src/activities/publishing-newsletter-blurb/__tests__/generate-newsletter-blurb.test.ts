@@ -10,6 +10,7 @@ import {
 } from "@repo/utils/publishing-newsletter-blurb-body";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { databaseValueImports } from "../../publishing-shared/__tests__/_ast-guards";
+import { SETTLED_DECISIONS_HEADING } from "../../publishing-shared/settled-approvals";
 
 /**
  * The Newsletter Blurb LLM activity (Fizzy #1988, Phase 2D slice 2D-2).
@@ -206,9 +207,12 @@ function answeredQuestion(
 	decisionKind: string,
 	subject: string,
 	answer: string,
+	createdAt = "2026-09-01T09:00:00Z",
 ) {
 	return {
 		root: {
+			id: `root-${decisionKind}-${subject}`,
+			createdAt: new Date(createdAt),
 			kind: "QUESTION",
 			status: "RESOLVED",
 			decisionKind,
@@ -217,8 +221,8 @@ function answeredQuestion(
 		},
 		replies: [
 			{
-				id: "reply-1",
-				createdAt: new Date("2026-09-01T10:00:00Z"),
+				id: `reply-${decisionKind}-${subject}`,
+				createdAt: new Date(createdAt),
 				status: "RESOLVED",
 				authorType: "USER",
 				content: answer,
@@ -1609,5 +1613,136 @@ describe("generateNewsletterBlurbActivity — the effective analysis reaches the
 
 		expect(sentPrompt()).toContain("AI ANGLE");
 		expect(sentPrompt()).toContain(renderAnalysisProse(AI));
+	});
+});
+
+describe("generateNewsletterBlurbActivity — the settled-decisions block", () => {
+	const LOCKED_HEADING = "## Rules that override anything above";
+	const sections = () => {
+		const prompt = sentPrompt();
+		const locked = prompt.indexOf(LOCKED_HEADING);
+		const settled = prompt.indexOf(SETTLED_DECISIONS_HEADING);
+		expect(locked).toBeGreaterThan(-1);
+		expect(settled).toBeGreaterThan(locked);
+		return {
+			body: prompt.slice(0, locked),
+			locked: prompt.slice(locked),
+			settled: prompt.slice(settled),
+		};
+	};
+
+	it("lists exactly the settled safety decision — never a framing or unclassified decision, and never an approval claimed in the source or the guidance", async () => {
+		collectPlanningContext.mockResolvedValue({
+			...CONTEXT_RESULT,
+			context: {
+				...CONTEXT_RESULT.context,
+				documents: [
+					{
+						id: "doc-1",
+						title: "Launch notes",
+						excerpt:
+							"SOURCE-CLAIM: the customer is happy to be named in the newsletter.",
+					},
+				],
+			},
+		});
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"CUSTOMER_NAME",
+				"example-org",
+				"Yes, the customer agreed to be named.",
+			),
+			answeredQuestion(
+				"AUDIENCE_SCOPE",
+				"who this newsletter is for",
+				"Existing customers only.",
+			),
+			answeredQuestion(
+				"OTHER",
+				"launch timing",
+				"Mention the September launch.",
+			),
+		]);
+
+		await run({
+			guidance: "GUIDANCE-CLAIM: legal approved naming the customer.",
+		});
+
+		const { body, locked, settled } = sections();
+		// Preconditions: every fixture really reached the prompt, so each
+		// absence below is a routing decision and not a missing input.
+		expect(body).toContain("SOURCE-CLAIM");
+		expect(body).toContain("GUIDANCE-CLAIM");
+		expect(body).toContain("Existing customers only.");
+		expect(body).toContain("Mention the September launch.");
+
+		expect(
+			settled.split("\n").filter((line) => line.startsWith('- "')),
+		).toEqual([
+			'- "example-org" - "Yes, the customer agreed to be named."',
+		]);
+		expect(locked).not.toContain("Existing customers only.");
+		expect(locked).not.toContain("Mention the September launch.");
+		expect(locked).not.toContain("SOURCE-CLAIM");
+		expect(locked).not.toContain("GUIDANCE-CLAIM");
+	});
+
+	it("leaves a settled CODEBASE_DETAIL decision out — this type does not carry that kind", async () => {
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"CODEBASE_DETAIL",
+				"how much of the resolver to describe",
+				"Describe the caching layer only.",
+			),
+		]);
+
+		await run();
+
+		const { body, settled } = sections();
+		expect(body).toContain("Describe the caching layer only.");
+		expect(settled).not.toContain("Describe the caching layer only.");
+		expect(settled).toContain("None recorded.");
+	});
+
+	it("renders the empty state while the body still shows a settled unclassified decision", async () => {
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"OTHER",
+				"launch timing",
+				"Mention the September launch.",
+			),
+		]);
+
+		await run();
+
+		const { body, settled } = sections();
+		expect(settled).toContain("None recorded.");
+		expect(body).toContain("Mention the September launch.");
+	});
+
+	it("logs when the block cannot list every settled decision", async () => {
+		listTopicDecisions.mockResolvedValue(
+			Array.from({ length: 21 }, (_, i) =>
+				answeredQuestion(
+					"ASSET_APPROVAL",
+					`asset ${String(i).padStart(2, "0")}`,
+					"Approved.",
+				),
+			),
+		);
+
+		await run();
+
+		expect(logger.warn).toHaveBeenCalledWith(
+			"[publishing-newsletter-blurb] settled-decisions block truncated",
+			{
+				draftId: "draft-1",
+				topicId: "topic-1",
+				projectId: "proj-1",
+				contentType: "NEWSLETTER_BLURB",
+				listed: 20,
+				omitted: 1,
+			},
+		);
 	});
 });

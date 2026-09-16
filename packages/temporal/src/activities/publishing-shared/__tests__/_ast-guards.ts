@@ -412,3 +412,42 @@ export function resolvedCallCount(
 	visit(source);
 	return count;
 }
+
+/**
+ * Every production `publishing-*` file that reads a topic's decisions — calls
+ * `listTopicDecisions` from `@repo/database` — as activity-relative paths.
+ *
+ * Discovery by the SHAPE being policed, so an eighth content type that reads
+ * decisions is found without anyone adding it to a list. `publishing-shared`
+ * and `__tests__` are skipped. Resolution limits are `resolvedCallCount`'s.
+ */
+export function publishingDecisionReaders(): string[] {
+	const found: string[] = [];
+	const walk = (rel: string): void => {
+		for (const entry of readdirSync(join(ACTIVITIES_DIR, rel), {
+			withFileTypes: true,
+		})) {
+			const child = `${rel}/${entry.name}`;
+			if (entry.isDirectory()) {
+				if (entry.name !== "__tests__") {
+					walk(child);
+				}
+			} else if (
+				entry.name.endsWith(".ts") &&
+				resolvedCallCount(
+					join(ACTIVITIES_DIR, child),
+					"listTopicDecisions",
+					["@repo/database"],
+				) > 0
+			) {
+				found.push(child);
+			}
+		}
+	};
+	for (const dir of readdirSync(ACTIVITIES_DIR)) {
+		if (dir.startsWith("publishing-") && dir !== "publishing-shared") {
+			walk(dir);
+		}
+	}
+	return found.sort();
+}

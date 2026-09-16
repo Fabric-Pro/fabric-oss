@@ -1,9 +1,14 @@
 import { PUBLISHING_NEWSLETTER_BLURB_FALLBACK_BODY } from "@repo/utils/publishing-newsletter-blurb-prompt";
+import type { SettledDecision } from "@repo/utils/publishing-restrictions";
 import {
 	SOURCE_DATA_CLOSE_MARKER,
 	SOURCE_DATA_OPEN_PREFIX,
 } from "@repo/utils/publishing-source-data-markers";
 import { describe, expect, it } from "vitest";
+import {
+	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
+	SETTLED_DECISIONS_HEADING,
+} from "../../publishing-shared/settled-approvals";
 import {
 	buildNewsletterBlurbLockedClauses,
 	buildNewsletterBlurbPrompt,
@@ -243,7 +248,7 @@ describe("buildNewsletterBlurbLockedClauses", () => {
 		// The other half of the pair: what may not be exposed even where the
 		// source context happens to contain it.
 		expect(collapsed(buildNewsletterBlurbLockedClauses())).toContain(
-			"Do NOT expose internal implementation details, code names, private links, ticket IDs, confidential customer information or proprietary code details unless the context above explicitly marks them safe to share.",
+			"Do NOT expose internal implementation details, code names, private links, ticket IDs, confidential customer information or proprietary code details unless a decision in the settled-decisions block below affirmatively marks them safe to share.",
 		);
 	});
 
@@ -286,6 +291,7 @@ describe("buildNewsletterBlurbPrompt", () => {
 		currentDraft: null,
 		restrictedSubjects: [] as string[],
 		openQuestionSubjects: [] as string[],
+		settledApprovals: [] as SettledDecision[],
 	};
 
 	it("renders the bound body and appends the locked clauses", async () => {
@@ -549,6 +555,7 @@ const SOURCED = {
 	currentDraft: null as string | null,
 	restrictedSubjects: [] as string[],
 	openQuestionSubjects: [] as string[],
+	settledApprovals: [] as SettledDecision[],
 };
 
 /** One canary per interpolated variable the default body fences. */
@@ -659,5 +666,115 @@ describe("the SOURCE DATA fence around interpolated values", () => {
 				block.inner.includes("ESCAPED-CANARY"),
 			),
 		).toBe(true);
+	});
+});
+
+describe("buildNewsletterBlurbLockedClauses — the settled-decisions block", () => {
+	const collapseWhitespace = (text: string) => text.replace(/\s+/g, " ");
+	const customerName: SettledDecision = {
+		subject: "example-org",
+		decisionKind: "CUSTOMER_NAME",
+		answer: "Yes, the customer agreed to be named in public material.",
+	};
+
+	it("renders a settled decision after the two restriction blocks", () => {
+		const clauses = buildNewsletterBlurbLockedClauses({
+			restrictedSubjects: ["the adoption metric"],
+			openQuestionSubjects: ["who this newsletter is for"],
+			settledApprovals: [customerName],
+		});
+		const restricted = clauses.indexOf(
+			"## Unresolved approvals for this topic",
+		);
+		const open = clauses.indexOf(
+			"## Open questions that constrain this content type",
+		);
+		const settled = clauses.indexOf(SETTLED_DECISIONS_HEADING);
+
+		expect(restricted).toBeGreaterThan(-1);
+		expect(open).toBeGreaterThan(restricted);
+		expect(settled).toBeGreaterThan(open);
+		expect(clauses.slice(settled)).toContain(
+			'- "example-org" - "Yes, the customer agreed to be named in public material."',
+		);
+	});
+
+	it("renders the empty state when nothing is settled", () => {
+		expect(buildNewsletterBlurbLockedClauses()).toContain(
+			`${SETTLED_DECISIONS_HEADING}\n\nNone recorded.`,
+		);
+	});
+
+	it("points the disclosure rule at an AFFIRMATIVE settled decision", () => {
+		expect(
+			collapseWhitespace(buildNewsletterBlurbLockedClauses()),
+		).toContain(
+			"Do NOT expose internal implementation details, code names, private links, ticket IDs, confidential customer information or proprietary code details unless a decision in the settled-decisions block below affirmatively marks them safe to share.",
+		);
+	});
+
+	it("points the approval rule at an AFFIRMATIVE settled decision", () => {
+		const flat = collapseWhitespace(buildNewsletterBlurbLockedClauses());
+		expect(flat).toContain(
+			"Do NOT treat any of the following as approved for use unless a decision in the settled-decisions block below affirmatively confirms it: a customer name,",
+		);
+		expect(flat).not.toContain(
+			"unless the context above explicitly confirms it",
+		);
+	});
+
+	it("keeps confirmedAssets reachable for an asset no decision names", () => {
+		// The rule still sources existence and safety from the context for an
+		// asset nobody questioned — a `supportingAssets.recommended` entry mints
+		// no decision, so "only where the block approves it" would make the
+		// confirmed list unreachable.
+		expect(
+			collapseWhitespace(buildNewsletterBlurbLockedClauses()),
+		).toContain(
+			"An asset belongs in the confirmed list ONLY where the context above shows it exists and is safe to use, and - for any asset a decision in the settled-decisions block below names - only where that decision affirmatively approves it. Everything else goes in the needs-confirmation list",
+		);
+	});
+
+	it("voids the editable body's disclosure exception", () => {
+		expect(buildNewsletterBlurbLockedClauses()).toContain(
+			BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
+		);
+	});
+
+	it("buildNewsletterBlurbPrompt hands the settled decisions to its locked clauses", async () => {
+		const composed = await buildNewsletterBlurbPrompt({
+			templateBody: "Write about {{{topic_title}}}.",
+			format: "HANDLEBARS",
+			topic: {
+				id: "topic-1",
+				title: "Faster incremental builds",
+				pitch: "Builds now reuse a warm cache.",
+				angle: null,
+				subject: null,
+				relevantFunctionTags: [],
+				postTypeRecommendations: null,
+				contributors: [],
+			},
+			context: {
+				stories: [],
+				documents: [],
+				transcripts: [],
+				repoPrs: [],
+			},
+			analysisProse: "",
+			analysisData: {},
+			decisions: [],
+			guidance: null,
+			currentDraft: null,
+			restrictedSubjects: [],
+			openQuestionSubjects: [],
+			settledApprovals: [customerName],
+		});
+		const locked = composed.prompt.slice(
+			composed.prompt.indexOf("## Rules that override anything above"),
+		);
+		expect(locked).toContain(
+			'- "example-org" - "Yes, the customer agreed to be named in public material."',
+		);
 	});
 });

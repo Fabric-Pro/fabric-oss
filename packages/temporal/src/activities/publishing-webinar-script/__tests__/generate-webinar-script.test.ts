@@ -5,6 +5,7 @@ import {
 } from "@repo/utils/publishing-analysis-prose";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { databaseValueImports } from "../../publishing-shared/__tests__/_ast-guards";
+import { SETTLED_DECISIONS_HEADING } from "../../publishing-shared/settled-approvals";
 
 /**
  * The Webinar / Demo Script LLM activity (Fizzy #1988, Phase 2D-1).
@@ -15,9 +16,10 @@ import { databaseValueImports } from "../../publishing-shared/__tests__/_ast-gua
  *  1. THE RESTRICTION SPLIT, on this type's own extra set.
  *     `restrictsPostType(thread, "WEBINAR_SCRIPT")` matches the same three extra
  *     kinds the case study's set does — CLAIM_STRENGTH, AUDIENCE_SCOPE,
- *     CODEBASE_DETAIL — and those are questions about framing rather than
- *     subjects to omit, so they must land in `openQuestionSubjects`, never in
- *     the "NOT approved for use" list.
+ *     CODEBASE_DETAIL — and while unresolved none of them is a subject to omit
+ *     (two are framing questions, CODEBASE_DETAIL is a disclosure question), so
+ *     they must land in `openQuestionSubjects`, never in the "NOT approved for
+ *     use" list.
  *  2. THE ASSET CLAMP, shared with the case study's algorithm but with its own
  *     call site: `suggestedAssets.confirmed` / `.needsConfirmation` are NESTED
  *     under `suggestedAssets`, unlike the case study's top-level
@@ -109,9 +111,10 @@ vi.mock("@repo/database", async (importOriginal) => {
 	};
 });
 
-vi.mock("@repo/logs", () => ({
+const { logger } = vi.hoisted(() => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
+vi.mock("@repo/logs", () => ({ logger }));
 
 const collectPlanningContext = vi.fn();
 vi.mock("../../publishing-planning/collect-planning-context", () => ({
@@ -206,9 +209,12 @@ function answeredQuestion(
 	decisionKind: string,
 	subject: string,
 	answer: string,
+	createdAt = "2026-09-01T09:00:00Z",
 ) {
 	return {
 		root: {
+			id: `root-${decisionKind}-${subject}`,
+			createdAt: new Date(createdAt),
 			kind: "QUESTION",
 			status: "RESOLVED",
 			decisionKind,
@@ -217,8 +223,8 @@ function answeredQuestion(
 		},
 		replies: [
 			{
-				id: "reply-1",
-				createdAt: new Date("2026-09-01T10:00:00Z"),
+				id: `reply-${decisionKind}-${subject}`,
+				createdAt: new Date(createdAt),
 				status: "RESOLVED",
 				authorType: "USER",
 				content: answer,
@@ -1181,5 +1187,84 @@ describe("generateWebinarScriptActivity — the effective analysis reaches the p
 		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("AI ANGLE");
 		expect(prompt).toContain(renderAnalysisProse(AI));
+	});
+});
+
+describe("generateWebinarScriptActivity — the settled-decisions block", () => {
+	const promptSent = () =>
+		generateObject.mock.calls[0]?.[0]?.prompt as string;
+	const settledSection = () => {
+		const prompt = promptSent();
+		const at = prompt.indexOf(SETTLED_DECISIONS_HEADING);
+		expect(at).toBeGreaterThan(-1);
+		return prompt.slice(at);
+	};
+
+	it("passes only the approval-relevant settled decisions to its locked clauses", async () => {
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"AUDIENCE_SCOPE",
+				"who this session is for",
+				"Platform engineers at example-org.",
+			),
+			answeredQuestion(
+				"CUSTOMER_NAME",
+				"example-org",
+				"Yes, the customer agreed to be named.",
+			),
+		]);
+
+		await run();
+
+		expect(settledSection()).toContain(
+			'- "example-org" - "Yes, the customer agreed to be named."',
+		);
+		expect(settledSection()).not.toContain(
+			"Platform engineers at example-org.",
+		);
+		// Still a settled decision: the body's decisions block carries it.
+		expect(promptSent()).toContain("Platform engineers at example-org.");
+	});
+
+	it("admits a settled CODEBASE_DETAIL decision — this type's approval rule names an implementation claim", async () => {
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"CODEBASE_DETAIL",
+				"how much of the resolver to show",
+				"Show the cache dashboard; do not open the source.",
+			),
+		]);
+
+		await run();
+
+		expect(settledSection()).toContain(
+			'- "how much of the resolver to show" - "Show the cache dashboard; do not open the source."',
+		);
+	});
+
+	it("logs when the block cannot list every settled decision", async () => {
+		listTopicDecisions.mockResolvedValue(
+			Array.from({ length: 21 }, (_, i) =>
+				answeredQuestion(
+					"ASSET_APPROVAL",
+					`asset ${String(i).padStart(2, "0")}`,
+					"Approved.",
+				),
+			),
+		);
+
+		await run();
+
+		expect(logger.warn).toHaveBeenCalledWith(
+			"[publishing-webinar-script] settled-decisions block truncated",
+			{
+				draftId: "draft-1",
+				topicId: "topic-1",
+				projectId: "proj-1",
+				contentType: "WEBINAR_SCRIPT",
+				listed: 20,
+				omitted: 1,
+			},
+		);
 	});
 });

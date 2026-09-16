@@ -23,9 +23,14 @@
  * is the most approval-sensitive type in the suite:
  *
  *  - The restriction pass SPLITS. `restrictsPostType(thread, "CASE_STUDY")`
- *    matches three kinds no other type restricts, and those are questions about
- *    framing rather than subjects to omit — so they go into a second list with
- *    its own locked-clause wording. See `buildCaseStudyLockedClauses`.
+ *    matches three kinds no other type restricts, and while UNRESOLVED none of
+ *    them is a subject to omit: `CLAIM_STRENGTH` and `AUDIENCE_SCOPE` decide how
+ *    the piece is framed, and `CODEBASE_DETAIL` decides how much of the
+ *    implementation it may describe — so all three go into a second list with
+ *    its own locked-clause wording. Once SETTLED, `CODEBASE_DETAIL` is the one of
+ *    the three that grants or refuses a disclosure, so it is the one the
+ *    settled-decisions block admits (`selectSettledApprovals`). See
+ *    `buildCaseStudyLockedClauses`.
  *  - The output is CLAMPED against the same thread snapshot before it is
  *    written. See the clamp below.
  *
@@ -70,6 +75,10 @@ import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
 } from "../publishing-shared";
+import {
+	boundSettledApprovals,
+	selectSettledApprovals,
+} from "../publishing-shared/settled-approvals";
 import {
 	type CaseStudyDecision,
 	composeCaseStudyPrompt,
@@ -233,10 +242,12 @@ export async function generateCaseStudyActivity(
 	// `isRestrictingThread`: the shared safety-critical kinds plus
 	// CLAIM_STRENGTH / AUDIENCE_SCOPE / CODEBASE_DETAIL. A thread that matches
 	// the shared predicate is a SUBJECT the draft must write around; a thread
-	// that matches only the per-type extra is a QUESTION about how the piece is
-	// framed. Routing them into one list would put "Audience scope" under "NOT
-	// approved for use … leave it out", which tells the model to strip the
-	// audience framing — the opposite of caution on this content type.
+	// that matches only the per-type extra is an unsettled QUESTION the draft
+	// must not resolve by assumption — how the piece is framed, or how much of
+	// the implementation it may describe. Routing them into one list would put
+	// "Audience scope" under "NOT approved for use … leave it out", which tells
+	// the model to strip the audience framing — the opposite of caution on this
+	// content type.
 	const decisions: CaseStudyDecision[] = [];
 	const restricted: RestrictedSubjectRecord[] = [];
 	const openQuestionSubjects: string[] = [];
@@ -265,6 +276,31 @@ export async function generateCaseStudyActivity(
 		}
 	}
 
+	// The settled-decisions block: the approval-relevant decisions a member
+	// settled, from the SAME read. `selectSettledApprovals` applies
+	// `settledDecision`, this type's admitted kinds and a total order. A
+	// thread the restriction branch above consumed is never RESOLVED, so
+	// reading every thread again here cannot admit a restricting one.
+	const settledApprovals = selectSettledApprovals(threads, "CASE_STUDY");
+	const settledApprovalsOmitted =
+		boundSettledApprovals(settledApprovals).omitted;
+	if (settledApprovalsOmitted > 0) {
+		// The overflow line lives only inside the prompt string, so this is the
+		// one signal an operator gets that a topic's prompt no longer lists
+		// every decision a member settled.
+		logger.warn(
+			"[publishing-case-study] settled-decisions block truncated",
+			{
+				draftId,
+				topicId,
+				projectId,
+				contentType: "CASE_STUDY",
+				listed: settledApprovals.length - settledApprovalsOmitted,
+				omitted: settledApprovalsOmitted,
+			},
+		);
+	}
+
 	const composed = await composeCaseStudyPrompt({
 		templateBody:
 			boundPrompt?.version?.content ??
@@ -289,6 +325,7 @@ export async function generateCaseStudyActivity(
 		currentDraft: input.currentDraft ?? null,
 		restrictedSubjects: restricted.map((r) => r.label),
 		openQuestionSubjects,
+		settledApprovals,
 	});
 
 	const prompt = composed.prompt + (roleClause ? `\n\n${roleClause}` : "");
@@ -431,8 +468,9 @@ export async function generateCaseStudyActivity(
 	// confirmation", which is the safe direction, while a miss leaves an
 	// unapproved asset labelled ready to publish.
 	//
-	// Restricted subjects only, not open questions: a framing question is not a
-	// claim about whether an asset exists and may be used.
+	// Restricted subjects only, not open questions: an open per-type question -
+	// how the piece is framed, or how much of the implementation it may
+	// describe - is not a claim about whether an asset exists and may be used.
 	const assetClamp = clampConfirmedAssets({
 		confirmed: document.confirmedAssets,
 		needsConfirmation: document.assetsNeedingConfirmation,

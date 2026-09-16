@@ -1,7 +1,6 @@
-import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolvedCallCount } from "./_ast-guards";
+import { publishingDecisionReaders, resolvedCallCount } from "./_ast-guards";
 
 /**
  * Every publishing activity that reads a topic's decisions settles them through
@@ -17,7 +16,6 @@ import { resolvedCallCount } from "./_ast-guards";
  * a nested same-named local that shadows the import.
  */
 const activitiesDir = join(__dirname, "..", "..");
-const DATABASE_MODULES = ["@repo/database"];
 const HELPER_MODULES = ["@repo/utils/publishing-restrictions", "@repo/utils"];
 const KNOWN = [
 	"publishing-blog-post/generate-blog-post.ts",
@@ -29,46 +27,17 @@ const KNOWN = [
 	"publishing-webinar-script/generate-webinar-script.ts",
 ];
 
-function decisionReaders(): string[] {
-	const found: string[] = [];
-	const walk = (rel: string): void => {
-		for (const entry of readdirSync(join(activitiesDir, rel), {
-			withFileTypes: true,
-		})) {
-			const child = `${rel}/${entry.name}`;
-			if (entry.isDirectory()) {
-				if (entry.name !== "__tests__") {
-					walk(child);
-				}
-			} else if (
-				entry.name.endsWith(".ts") &&
-				resolvedCallCount(
-					join(activitiesDir, child),
-					"listTopicDecisions",
-					DATABASE_MODULES,
-				) > 0
-			) {
-				found.push(child);
-			}
-		}
-	};
-	for (const dir of readdirSync(activitiesDir)) {
-		if (dir.startsWith("publishing-") && dir !== "publishing-shared") {
-			walk(dir);
-		}
-	}
-	return found.sort();
-}
-
 describe("settledDecision is the one way a publishing activity settles a decision", () => {
 	it("discovers at least the seven known decision readers", () => {
-		expect(decisionReaders()).toEqual(expect.arrayContaining(KNOWN));
+		expect(publishingDecisionReaders()).toEqual(
+			expect.arrayContaining(KNOWN),
+		);
 	});
 
 	it("every decision reader calls settledDecision exactly once", () => {
 		// Collected, then asserted once, so a failure names EVERY file that
 		// does not settle through the helper rather than stopping at the first.
-		const mismatches = decisionReaders()
+		const mismatches = publishingDecisionReaders()
 			.map((rel) => ({
 				rel,
 				settles: resolvedCallCount(

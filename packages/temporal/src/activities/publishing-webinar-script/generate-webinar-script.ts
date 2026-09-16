@@ -22,9 +22,13 @@
  * THE RESTRICTION PASS SPLITS, exactly as the case study's and the stakeholder
  * email's do. `restrictsPostType(thread, "WEBINAR_SCRIPT")` matches the same
  * three extra kinds the case study's set does — `CLAIM_STRENGTH`,
- * `AUDIENCE_SCOPE`, `CODEBASE_DETAIL` — and those are questions about framing
- * rather than subjects to omit, so they go into a second list with its own
- * locked-clause wording. See `buildWebinarScriptLockedClauses`.
+ * `AUDIENCE_SCOPE`, `CODEBASE_DETAIL` — and while UNRESOLVED none of them is a
+ * subject to omit: two decide how the session is framed, and `CODEBASE_DETAIL`
+ * decides how much implementation detail it may show — so they go into a second
+ * list with its own locked-clause wording. Once SETTLED, `CODEBASE_DETAIL` is
+ * the one of the three that grants or refuses a disclosure, so it is the one the
+ * settled-decisions block admits (`selectSettledApprovals`). See
+ * `buildWebinarScriptLockedClauses`.
  *
  * THE ASSET CLAMP, shared with the case study rather than reimplemented. A demo
  * script is the type most likely to reference a screen recording or a live
@@ -88,6 +92,10 @@ import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
 } from "../publishing-shared";
+import {
+	boundSettledApprovals,
+	selectSettledApprovals,
+} from "../publishing-shared/settled-approvals";
 import {
 	buildWebinarScriptPrompt,
 	PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
@@ -252,11 +260,12 @@ export async function generateWebinarScriptActivity(
 	// `isRestrictingThread`: the shared safety-critical kinds plus
 	// CLAIM_STRENGTH / AUDIENCE_SCOPE / CODEBASE_DETAIL. A thread that matches
 	// the shared predicate is a SUBJECT the draft must write around; a thread
-	// that matches only the per-type extra is a QUESTION about how the session
-	// is framed. Routing them into one list would put "Recommended audience"
-	// under "NOT approved for use … leave it out", which tells the model to
-	// strip the audience framing — the opposite of caution on a format read
-	// aloud, live, to the audience it describes.
+	// that matches only the per-type extra is an unsettled QUESTION the draft
+	// must not resolve by assumption — how the session is framed, or how much
+	// implementation detail it may show. Routing them into one list would put
+	// "Recommended audience" under "NOT approved for use … leave it out", which
+	// tells the model to strip the audience framing — the opposite of caution on
+	// a format read aloud, live, to the audience it describes.
 	const decisions: WebinarScriptDecision[] = [];
 	const restricted: RestrictedSubjectRecord[] = [];
 	const openQuestionSubjects: string[] = [];
@@ -285,6 +294,31 @@ export async function generateWebinarScriptActivity(
 		}
 	}
 
+	// The settled-decisions block: the approval-relevant decisions a member
+	// settled, from the SAME read. `selectSettledApprovals` applies
+	// `settledDecision`, this type's admitted kinds and a total order. A
+	// thread the restriction branch above consumed is never RESOLVED, so
+	// reading every thread again here cannot admit a restricting one.
+	const settledApprovals = selectSettledApprovals(threads, "WEBINAR_SCRIPT");
+	const settledApprovalsOmitted =
+		boundSettledApprovals(settledApprovals).omitted;
+	if (settledApprovalsOmitted > 0) {
+		// The overflow line lives only inside the prompt string, so this is the
+		// one signal an operator gets that a topic's prompt no longer lists
+		// every decision a member settled.
+		logger.warn(
+			"[publishing-webinar-script] settled-decisions block truncated",
+			{
+				draftId,
+				topicId,
+				projectId,
+				contentType: "WEBINAR_SCRIPT",
+				listed: settledApprovals.length - settledApprovalsOmitted,
+				omitted: settledApprovalsOmitted,
+			},
+		);
+	}
+
 	const composed = await buildWebinarScriptPrompt({
 		templateBody:
 			boundPrompt?.version?.content ??
@@ -309,6 +343,7 @@ export async function generateWebinarScriptActivity(
 		currentDraft: input.currentDraft ?? null,
 		restrictedSubjects: restricted.map((r) => r.label),
 		openQuestionSubjects,
+		settledApprovals,
 	});
 
 	const prompt = composed.prompt + (roleClause ? `\n\n${roleClause}` : "");
@@ -389,8 +424,9 @@ export async function generateWebinarScriptActivity(
 	// model call clear a draft that was written as though it were still
 	// unresolved (or flag one that was not).
 	//
-	// Restricted subjects only, not open questions: a framing question is not a
-	// claim about whether an asset exists and may be used.
+	// Restricted subjects only, not open questions: an unsettled question about
+	// framing or technical depth is not a claim about whether an asset exists
+	// and may be used.
 	const document = { ...parsed.data };
 	const clamped: PublishingClampRecord = {};
 	const assetClamp = clampConfirmedAssets({

@@ -107,6 +107,10 @@ import {
 	resolveContributorNames,
 } from "../publishing-shared";
 import {
+	boundSettledApprovals,
+	selectSettledApprovals,
+} from "../publishing-shared/settled-approvals";
+import {
 	composeStakeholderEmailPrompt,
 	PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
 	PUBLISHING_STAKEHOLDER_EMAIL_FALLBACK_BODY,
@@ -302,6 +306,34 @@ export async function generateStakeholderEmailActivity(
 		}
 	}
 
+	// The settled-decisions block: the approval-relevant decisions a member
+	// settled, from the SAME read. `selectSettledApprovals` applies
+	// `settledDecision`, this type's admitted kinds and a total order. A
+	// thread the restriction branch above consumed is never RESOLVED, so
+	// reading every thread again here cannot admit a restricting one.
+	const settledApprovals = selectSettledApprovals(
+		threads,
+		"STAKEHOLDER_EMAIL",
+	);
+	const settledApprovalsOmitted =
+		boundSettledApprovals(settledApprovals).omitted;
+	if (settledApprovalsOmitted > 0) {
+		// The overflow line lives only inside the prompt string, so this is the
+		// one signal an operator gets that a topic's prompt no longer lists
+		// every decision a member settled.
+		logger.warn(
+			"[publishing-stakeholder-email] settled-decisions block truncated",
+			{
+				draftId,
+				topicId,
+				projectId,
+				contentType: "STAKEHOLDER_EMAIL",
+				listed: settledApprovals.length - settledApprovalsOmitted,
+				omitted: settledApprovalsOmitted,
+			},
+		);
+	}
+
 	const composed = await composeStakeholderEmailPrompt({
 		templateBody:
 			boundPrompt?.version?.content ??
@@ -326,6 +358,7 @@ export async function generateStakeholderEmailActivity(
 		currentDraft: input.currentDraft ?? null,
 		restrictedSubjects: restricted.map((r) => r.label),
 		openQuestionSubjects,
+		settledApprovals,
 	});
 
 	const prompt = composed.prompt + (roleClause ? `\n\n${roleClause}` : "");

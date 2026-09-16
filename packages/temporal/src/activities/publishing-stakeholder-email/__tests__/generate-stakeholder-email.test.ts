@@ -5,6 +5,7 @@ import {
 } from "@repo/utils/publishing-analysis-prose";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { databaseValueImports } from "../../publishing-shared/__tests__/_ast-guards";
+import { SETTLED_DECISIONS_HEADING } from "../../publishing-shared/settled-approvals";
 
 /**
  * The Stakeholder Email LLM activity (Fizzy #1854, Phase 2C-2).
@@ -114,9 +115,10 @@ vi.mock("@repo/database", async (importOriginal) => {
 	};
 });
 
-vi.mock("@repo/logs", () => ({
+const { logger } = vi.hoisted(() => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
+vi.mock("@repo/logs", () => ({ logger }));
 
 const collectPlanningContext = vi.fn();
 vi.mock("../../publishing-planning/collect-planning-context", () => ({
@@ -188,9 +190,12 @@ function answeredQuestion(
 	decisionKind: string,
 	subject: string,
 	answer: string,
+	createdAt = "2026-09-01T09:00:00Z",
 ) {
 	return {
 		root: {
+			id: `root-${decisionKind}-${subject}`,
+			createdAt: new Date(createdAt),
 			kind: "QUESTION",
 			status: "RESOLVED",
 			decisionKind,
@@ -199,8 +204,8 @@ function answeredQuestion(
 		},
 		replies: [
 			{
-				id: "reply-1",
-				createdAt: new Date("2026-09-01T10:00:00Z"),
+				id: `reply-${decisionKind}-${subject}`,
+				createdAt: new Date(createdAt),
 				status: "RESOLVED",
 				authorType: "USER",
 				content: answer,
@@ -1139,5 +1144,86 @@ describe("generateStakeholderEmailActivity — the effective analysis reaches th
 		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).toContain("AI ANGLE");
 		expect(prompt).toContain(renderAnalysisProse(AI));
+	});
+});
+
+describe("generateStakeholderEmailActivity — the settled-decisions block", () => {
+	const promptSent = () =>
+		generateObject.mock.calls[0]?.[0]?.prompt as string;
+	const settledSection = () => {
+		const prompt = promptSent();
+		const at = prompt.indexOf(SETTLED_DECISIONS_HEADING);
+		expect(at).toBeGreaterThan(-1);
+		return prompt.slice(at);
+	};
+
+	it("passes only the approval-relevant settled decisions to its locked clauses", async () => {
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"AUDIENCE_SCOPE",
+				"who this email is addressed to",
+				"The client sponsor at example-org.",
+			),
+			answeredQuestion(
+				"CUSTOMER_NAME",
+				"example-org",
+				"Yes, the customer agreed to be named.",
+			),
+		]);
+
+		await run();
+
+		expect(settledSection()).toContain(
+			'- "example-org" - "Yes, the customer agreed to be named."',
+		);
+		expect(settledSection()).not.toContain(
+			"The client sponsor at example-org.",
+		);
+		// Still a settled decision: the body's decisions block carries it.
+		expect(promptSent()).toContain("The client sponsor at example-org.");
+	});
+
+	it("leaves a settled CODEBASE_DETAIL decision out — this type does not carry that kind", async () => {
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"CODEBASE_DETAIL",
+				"how much of the resolver to describe",
+				"Describe the caching layer only.",
+			),
+		]);
+
+		await run();
+
+		expect(promptSent()).toContain("Describe the caching layer only.");
+		expect(settledSection()).not.toContain(
+			"Describe the caching layer only.",
+		);
+		expect(settledSection()).toContain("None recorded.");
+	});
+
+	it("logs when the block cannot list every settled decision", async () => {
+		listTopicDecisions.mockResolvedValue(
+			Array.from({ length: 21 }, (_, i) =>
+				answeredQuestion(
+					"ASSET_APPROVAL",
+					`asset ${String(i).padStart(2, "0")}`,
+					"Approved.",
+				),
+			),
+		);
+
+		await run();
+
+		expect(logger.warn).toHaveBeenCalledWith(
+			"[publishing-stakeholder-email] settled-decisions block truncated",
+			{
+				draftId: "draft-1",
+				topicId: "topic-1",
+				projectId: "proj-1",
+				contentType: "STAKEHOLDER_EMAIL",
+				listed: 20,
+				omitted: 1,
+			},
+		);
 	});
 });

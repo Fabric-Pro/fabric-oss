@@ -23,6 +23,7 @@ import type { AnalysisData } from "@repo/utils/publishing-analysis-prose";
 import { buildRefinementSection } from "@repo/utils/publishing-refinement";
 import {
 	renderSubjectBullet,
+	type SettledDecision,
 	toSingleLineSubject,
 } from "@repo/utils/publishing-restrictions";
 import { neutralizeSourceDataMarkers } from "@repo/utils/publishing-source-data-markers";
@@ -37,6 +38,10 @@ import {
 	type PlanningAnalysisTopic,
 } from "../publishing-planning/build-planning-analysis-prompt";
 import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
+import {
+	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
+	renderSettledDecisionsBlock,
+} from "../publishing-shared/settled-approvals";
 import {
 	buildShortPostVariables,
 	type ShortPostDecision,
@@ -179,13 +184,32 @@ export type PublishingStakeholderEmail = z.infer<
  * The untrusted-data clause is restated here rather than left to the editable
  * body. The body's `<<<SOURCE DATA: … >>>` fencing is a mitigation an org can
  * edit away while rewording a prompt; this is the copy that survives.
+ *
+ * THE SETTLED-DECISIONS BLOCK. The disclosure rule below used to allow
+ * something "unless the context above explicitly marks them safe to share",
+ * and to a model a sentence in a project document reads like that. It now
+ * requires a decision in the settled-decisions block that AFFIRMATIVELY marks
+ * it safe — the block lists refusals too. Code names, private links and ticket
+ * IDs match no decision kind, and `CODEBASE_DETAIL` is not in this type's set,
+ * so for those items no decision can satisfy the rule and it is absolute in
+ * practice; the rule says a decision CAN mark something safe, never that one
+ * exists for every item it lists. The generator selects the decisions
+ * (`selectSettledApprovals`); this builder renders them last
+ * (`renderSettledDecisionsBlock`). `BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS`
+ * voids the editable body's own copy of the exception — never the prohibition.
  */
 export function buildStakeholderEmailLockedClauses({
 	restrictedSubjects = [],
 	openQuestionSubjects = [],
+	settledApprovals = [],
 }: {
 	restrictedSubjects?: string[];
 	openQuestionSubjects?: string[];
+	/**
+	 * The approval-relevant decisions a project member settled, already
+	 * selected and ordered by the generator (`selectSettledApprovals`).
+	 */
+	settledApprovals?: readonly SettledDecision[];
 } = {}): string {
 	// Collapsed to one line, THEN neutralized. A thread subject is model-authored
 	// (never typed by a project member) and lands in a bullet OUTSIDE any fence,
@@ -284,8 +308,9 @@ ${openQuestions.map(renderSubjectBullet).join("\n")}`
 - Do NOT invent an author's beliefs, worldview, language competency, personal
   history, emotions or words.
 - Do NOT expose internal implementation details, code names, private links,
-  ticket IDs or confidential customer information unless the context above
-  explicitly marks them safe to share.
+  ticket IDs or confidential customer information unless a decision in the
+  settled-decisions block below affirmatively marks them safe to share.
+${BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS}
 - Report the release status honestly, and MATCH THE EMAIL'S LANGUAGE TO IT. This
   is the failure this content type causes most easily: an email is addressed and
   usually sent without a second reader, so a confident "we shipped it" about
@@ -309,7 +334,7 @@ ${openQuestions.map(renderSubjectBullet).join("\n")}`
   safe to forward.
 - Where you generalized, omitted or hedged something, say so in your safety
   note. An email that quietly wrote around a sensitive detail reads as a
-  complete one.${restrictedBlock}${openQuestionBlock}`;
+  complete one.${restrictedBlock}${openQuestionBlock}${renderSettledDecisionsBlock(settledApprovals)}`;
 }
 
 // =============================================================================
@@ -369,6 +394,7 @@ export async function composeStakeholderEmailPrompt({
 	currentDraft,
 	restrictedSubjects,
 	openQuestionSubjects,
+	settledApprovals,
 }: {
 	templateBody: string;
 	format: TemplateFormat;
@@ -396,6 +422,12 @@ export async function composeStakeholderEmailPrompt({
 	currentDraft: string | null;
 	restrictedSubjects: string[];
 	openQuestionSubjects: string[];
+	/**
+	 * The approval-relevant decisions a project member settled, selected and
+	 * ordered by the activity (`selectSettledApprovals`). Rendered only in the
+	 * locked clauses; the body's decisions block is built from `decisions`.
+	 */
+	settledApprovals: SettledDecision[];
 }): Promise<ComposedStakeholderEmailPrompt> {
 	// Both builders reused, never reimplemented. `buildShortPostVariables` is
 	// misnamed for this shared use — it has been the family's second-layer
@@ -463,6 +495,7 @@ export async function composeStakeholderEmailPrompt({
 	const locked = buildStakeholderEmailLockedClauses({
 		restrictedSubjects,
 		openQuestionSubjects,
+		settledApprovals,
 	});
 
 	// BEFORE the locked clauses, never after: "Rules that override anything
