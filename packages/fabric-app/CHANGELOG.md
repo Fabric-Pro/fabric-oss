@@ -1,5 +1,13 @@
 # fabric-app
 
+## 1.16.1
+
+### Patch Changes
+
+- 1674913: The data analyst agent now runs on Vercel AI SDK 7, so its streamed chat replies and its MCP tool calls keep working on the SDK's current major release.
+- 2c30a74: Point a publishing prompt's approval rules at the decisions a project member actually settled, so an approval claimed only in source material no longer clears them and only a decision that grants permission can.
+- 9ebbe5a: A publishing question the analysis stopped raising no longer counts as one you still have to answer.
+
 ## 1.16.0
 
 ### Minor Changes
