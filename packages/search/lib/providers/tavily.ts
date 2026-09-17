@@ -12,6 +12,7 @@ import type {
 	TestConnectionResult,
 } from "../types";
 import { BaseSearchProvider } from "./base";
+import { fetchSearchEndpoint } from "./outbound";
 
 /**
  * Tavily API response types
@@ -156,13 +157,16 @@ export class TavilySearchProvider extends BaseSearchProvider {
 			}
 
 			// Make API request
-			const response = await fetch(`${this.baseUrl}/search`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
+			const response = await fetchSearchEndpoint(
+				`${this.baseUrl}/search`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify(requestBody),
 				},
-				body: JSON.stringify(requestBody),
-			});
+			);
 
 			if (!response.ok) {
 				const errorText = await response.text();
@@ -232,16 +236,19 @@ export class TavilySearchProvider extends BaseSearchProvider {
 		}
 
 		try {
-			const response = await fetch(`${this.baseUrl}/extract`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
+			const response = await fetchSearchEndpoint(
+				`${this.baseUrl}/extract`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({
+						api_key: this.apiKey,
+						urls: [url],
+					}),
 				},
-				body: JSON.stringify({
-					api_key: this.apiKey,
-					urls: [url],
-				}),
-			});
+			);
 
 			if (!response.ok) {
 				return null;
@@ -291,17 +298,20 @@ export class TavilySearchProvider extends BaseSearchProvider {
 		}
 
 		try {
-			const response = await fetch(`${this.baseUrl}/search`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
+			const response = await fetchSearchEndpoint(
+				`${this.baseUrl}/search`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({
+						api_key: this.apiKey,
+						query: "test",
+						max_results: 1,
+					}),
 				},
-				body: JSON.stringify({
-					api_key: this.apiKey,
-					query: "test",
-					max_results: 1,
-				}),
-			});
+			);
 
 			if (!response.ok) {
 				const errorText = await response.text();

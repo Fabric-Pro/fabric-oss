@@ -4,6 +4,10 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { auth } from "@repo/auth";
 import { getMcpConfigByIdInternal, getValidAccessToken } from "@repo/database";
 import { type ApiKeyMethod, buildAuthHeaders } from "@repo/mcp";
+import {
+	assertMcpServerUrlResolved,
+	fetchMcpServer,
+} from "@repo/mcp/lib/server-url-guard";
 import { decryptApiKey } from "@repo/utils";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -232,16 +236,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 			}
 		}
 
-		// Basic SSRF protection: block private / local addresses
-		if (isPrivateOrLocalAddress(effectiveInput.baseUrl)) {
+		// SSRF guard, shared with the persisted-config client in @repo/mcp so
+		// a URL that passes the test here is the same URL the client will
+		// later accept. Resolves the hostname; the only exceptions are the
+		// operator's MCP_SERVER_ALLOWED_HOSTS and Fabric's own /api/mcp/* routes.
+		try {
+			await assertMcpServerUrlResolved(effectiveInput.baseUrl);
+		} catch (error) {
 			return NextResponse.json(
 				{
 					success: false,
 					message: "Base URL is not allowed",
 					error: {
 						type: "URL_NOT_ALLOWED",
-						message:
-							"Testing connections to private, loopback, or local network addresses is not allowed.",
+						message: `Testing connections to private, loopback, or local network addresses is not allowed. ${error instanceof Error ? error.message : String(error)}`,
 					},
 				} satisfies TestResult,
 				{ status: 400 },
@@ -305,91 +313,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 	}
 }
 
-function isPrivateOrLocalAddress(urlString: string): boolean {
-	try {
-		const url = new URL(urlString);
-
-		if (url.protocol !== "http:" && url.protocol !== "https:") {
-			return true;
-		}
-
-		// Allow Fabric-hosted MCP routes under `/api/mcp/*` — these resolve to
-		// the same Fabric instance, so loopback/localhost is expected and safe.
-		// (The legacy in-process GitLab MCP shim that lived at `/api/mcp/gitlab`
-		// has been removed in favor of GitLab's official remote MCP server, but
-		// other Fabric-hosted MCP routes may still appear under this prefix.)
-		if (url.pathname.startsWith("/api/mcp/")) {
-			const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
-			try {
-				if (siteUrl) {
-					const allowed = new URL(siteUrl);
-					if (
-						allowed.host === url.host &&
-						allowed.protocol === url.protocol
-					) {
-						return false;
-					}
-				}
-			} catch {
-				// fall through to normal SSRF check
-			}
-		}
-
-		const hostname = url.hostname.toLowerCase();
-
-		// Localhost and loopback
-		if (
-			hostname === "localhost" ||
-			hostname === "127.0.0.1" ||
-			hostname === "::1"
-		) {
-			return true;
-		}
-
-		// Simple IPv4 private range checks
-		const ipv4Match = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-		if (ipv4Match) {
-			const octets = ipv4Match.slice(1).map((o) => Number(o));
-			const [a, b] = octets;
-
-			if (Number.isNaN(a) || Number.isNaN(b)) {
-				return true;
-			}
-
-			// 10.0.0.0/8
-			if (a === 10) {
-				return true;
-			}
-			// 127.0.0.0/8
-			if (a === 127) {
-				return true;
-			}
-			// 172.16.0.0/12
-			if (a === 172 && b >= 16 && b <= 31) {
-				return true;
-			}
-			// 192.168.0.0/16
-			if (a === 192 && b === 168) {
-				return true;
-			}
-			// 169.254.0.0/16 (link-local)
-			if (a === 169 && b === 254) {
-				return true;
-			}
-		}
-
-		// Block obvious local-only hostnames
-		if (hostname.endsWith(".local")) {
-			return true;
-		}
-
-		return false;
-	} catch {
-		// Treat invalid URLs as unsafe
-		return true;
-	}
-}
-
 /**
  * Test MCP server connection using raw MCP SDK Client
  * This allows us to access server info (name, version) from the handshake
@@ -440,15 +363,19 @@ async function testMcpConnection(
 		const url = new URL(input.baseUrl);
 
 		// Create transport based on type
+		// Every request the transport makes goes through the guarded fetch:
+		// re-checked at DNS-lookup time, redirects refused.
 		const transport =
 			input.transport === "SSE"
 				? new SSEClientTransport(url, {
+						fetch: fetchMcpServer,
 						requestInit:
 							Object.keys(headers).length > 0
 								? { headers }
 								: undefined,
 					})
 				: new StreamableHTTPClientTransport(url, {
+						fetch: fetchMcpServer,
 						requestInit:
 							Object.keys(headers).length > 0
 								? { headers }

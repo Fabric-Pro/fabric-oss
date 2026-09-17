@@ -140,5 +140,11 @@ export { BaseSearchProvider, type ISearchProvider } from "./base";
 export { ExaSearchProvider } from "./exa";
 export { FirecrawlSearchProvider } from "./firecrawl";
 export { JinaSearchProvider } from "./jina";
+export {
+	assertSearchEndpointAllowed,
+	fetchSearchEndpoint,
+	getSearchEndpointBlockReason,
+	SEARCH_PROVIDER_ALLOWED_HOSTS_ENV,
+} from "./outbound";
 export { ParallelSearchProvider } from "./parallel";
 export { TavilySearchProvider } from "./tavily";

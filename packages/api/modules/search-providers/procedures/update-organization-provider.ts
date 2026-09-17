@@ -3,6 +3,7 @@ import {
 	getOrganizationById,
 	upsertOrganizationSearchProvider,
 } from "@repo/database";
+import { getSearchEndpointBlockReason } from "@repo/search";
 import { encryptApiKey, isValidApiKeyFormat, maskApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
@@ -99,6 +100,17 @@ export const updateOrganizationProvider = tenantProtectedProcedure
 				throw new ORPCError("BAD_REQUEST", {
 					message: `Invalid provider name. Must be one of: ${VALID_PROVIDERS.join(", ")}`,
 				});
+			}
+
+			// A stored endpoint is fetched later on paths with no caller present
+			// to refuse it: check it at the write as well as on every request.
+			if (endpoint) {
+				const blockReason = getSearchEndpointBlockReason(endpoint);
+				if (blockReason) {
+					throw new ORPCError("BAD_REQUEST", {
+						message: `Provider endpoint rejected: ${blockReason}`,
+					});
+				}
 			}
 
 			// Encrypt API key if provided

@@ -2,10 +2,32 @@
  * Generate PDF Activity
  *
  * Renders frame content to PDF using Playwright.
+ *
+ * The content is tenant-authored and `html` blocks are rendered as HTML,
+ * so the page is treated as hostile: it is rendered in a context with
+ * JavaScript disabled, offline, with every outbound request aborted before
+ * it leaves the browser, and after `sanitizeFrameHtml` has stripped script,
+ * frames, handlers and script URLs. The export is a static rendering of
+ * what the tenant wrote; it is never a way to run code or reach a network
+ * from the worker's host.
  */
 
 import type { FrameDocument } from "@repo/database";
-import { chromium } from "playwright";
+import { type BrowserContextOptions, chromium } from "playwright";
+import { sanitizeFrameHtml } from "./sanitize-frame-html";
+
+/**
+ * The context the export renders in. JavaScript off so nothing in the
+ * content executes; offline and service workers blocked so the page has no
+ * network path of its own; the catch-all abort route in the activity
+ * refuses every request Chromium still tries to make (a stylesheet, an
+ * image, a font).
+ */
+export const PDF_EXPORT_CONTEXT_OPTIONS: BrowserContextOptions = {
+	javaScriptEnabled: false,
+	offline: true,
+	serviceWorkers: "block",
+};
 
 export interface GeneratePDFInput {
 	content: FrameDocument;
@@ -20,7 +42,7 @@ function renderFrameToHTML(document: FrameDocument): string {
 		.map((block) => {
 			switch (block.type) {
 				case "html":
-					return block.content;
+					return sanitizeFrameHtml(block.content);
 				case "markdown":
 					// Simple markdown to HTML (in production, use a proper converter)
 					return `<div class="markdown-content">${escapeHtml(block.content)}</div>`;
@@ -36,14 +58,15 @@ function renderFrameToHTML(document: FrameDocument): string {
 		.join("\n");
 
 	const isDark = document.theme?.mode === "dark";
-	const accentColor = document.theme?.accentColor || "#3b82f6";
+	// The accent colour is written into the style block, so only a hex
+	// colour is accepted; anything else falls back to the default.
+	const accentColor = safeHexColor(document.theme?.accentColor) ?? "#3b82f6";
 
 	return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <title>${escapeHtml(document.title)}</title>
-  <script src="https://cdn.tailwindcss.com"></script>
   <style>
     @page {
       margin: 20mm;
@@ -86,6 +109,7 @@ function renderFrameToHTML(document: FrameDocument): string {
     th {
       background: ${isDark ? "#333" : "#f5f5f5"};
     }
+${PDF_TEMPLATE_UTILITY_CSS}
   </style>
 </head>
 <body>
@@ -96,6 +120,26 @@ function renderFrameToHTML(document: FrameDocument): string {
   </div>
 </body>
 </html>`;
+}
+
+/**
+ * The Tailwind utility classes this template itself emits, as plain CSS.
+ * The export used to load the Tailwind CDN script to style them; the page
+ * now renders with JavaScript off and no network, so the few utilities the
+ * template uses are inlined with Tailwind's values. Tailwind classes that
+ * tenant-authored frame HTML uses are not styled.
+ */
+export const PDF_TEMPLATE_UTILITY_CSS = `    .text-gray-600 {
+      color: rgb(75 85 99);
+    }
+    .mb-4 {
+      margin-bottom: 1rem;
+    }`;
+
+function safeHexColor(value: string | undefined): string | undefined {
+	return value && /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(value)
+		? value
+		: undefined;
 }
 
 function escapeHtml(text: string): string {
@@ -122,12 +166,15 @@ export async function generatePDFActivity(
 	});
 
 	try {
-		const context = await browser.newContext();
+		const context = await browser.newContext(PDF_EXPORT_CONTEXT_OPTIONS);
+		// Nothing the content references is fetched: every request is
+		// aborted here, before Chromium resolves or connects anywhere.
+		await context.route("**/*", (route) => route.abort("blockedbyclient"));
 		const page = await context.newPage();
 
 		// Render HTML content
 		const html = renderFrameToHTML(input.content);
-		await page.setContent(html, { waitUntil: "networkidle" });
+		await page.setContent(html, { waitUntil: "load" });
 
 		// Generate PDF
 		const pdf = await page.pdf({

@@ -1,5 +1,9 @@
 import { ORPCError } from "@orpc/server";
-import { createProvider, type TestConnectionResult } from "@repo/search";
+import {
+	createProvider,
+	getSearchEndpointBlockReason,
+	type TestConnectionResult,
+} from "@repo/search";
 import { z } from "zod";
 import {
 	Permissions,
@@ -50,6 +54,17 @@ export const testProviderConnection = tenantProtectedProcedure
 			throw new ORPCError("BAD_REQUEST", {
 				message: `Invalid provider name. Must be one of: ${VALID_PROVIDERS.join(", ")}`,
 			});
+		}
+
+		// A custom endpoint is a URL the server will fetch on the caller's
+		// behalf: refuse internal destinations before any request leaves.
+		if (endpoint) {
+			const blockReason = getSearchEndpointBlockReason(endpoint);
+			if (blockReason) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: `Provider endpoint rejected: ${blockReason}`,
+				});
+			}
 		}
 
 		// Create provider instance

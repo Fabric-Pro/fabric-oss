@@ -15,11 +15,11 @@ import { createMCPClient, type OAuthClientProvider } from "@ai-sdk/mcp";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { getMcpConfigById, getValidAccessToken } from "@repo/database";
-import { getUnsafeUrlReason } from "@repo/utils/url-security";
 import {
 	createOAuthClientProvider,
 	OAuthAuthorizationRequiredError,
 } from "./oauth-provider";
+import { assertMcpServerUrlResolved, fetchMcpServer } from "./server-url-guard";
 
 export type McpClientType = Awaited<ReturnType<typeof createMCPClient>>;
 
@@ -187,23 +187,21 @@ export async function createMcpClient(
 		});
 	}
 
-	// SSRF guard (SOC 2 CC6.1/CC6.6): the server URL is tenant-supplied, so
-	// block connections to internal/private hosts (cloud metadata, loopback,
-	// private ranges) before we connect. Covers the HTTP and SSE transports and
-	// the OAuth authProvider path (all use serverUrl). Gated so self-hosted
-	// deployments can still reach private/localhost MCP servers: enforced only
-	// in production, and overridable with MCP_ALLOW_PRIVATE_URLS=true.
-	if (
-		process.env.NODE_ENV === "production" &&
-		process.env.MCP_ALLOW_PRIVATE_URLS !== "true"
-	) {
-		const unsafeReason = getUnsafeUrlReason(serverUrl);
-		if (unsafeReason) {
-			throw new McpClientError({
-				message: `MCP server URL is not allowed: ${unsafeReason}`,
-				code: "BLOCKED_URL",
-			});
-		}
+	// SSRF guard (SOC 2 CC6.1/CC6.6): the server URL is tenant-supplied and
+	// persisted, so refuse internal destinations — cloud metadata, loopback,
+	// private ranges — before anything connects. The check resolves the
+	// hostname, so a public name that resolves to a private address is
+	// refused too. The block is unconditional; the only exception is the
+	// operator's MCP_SERVER_ALLOWED_HOSTS (loopback by default outside
+	// production, none in production). Nothing in the request can widen it.
+	try {
+		await assertMcpServerUrlResolved(serverUrl);
+	} catch (error) {
+		throw new McpClientError({
+			message: `MCP server URL is not allowed: ${error instanceof Error ? error.message : String(error)}`,
+			code: "BLOCKED_URL",
+			cause: error instanceof Error ? error : undefined,
+		});
 	}
 
 	// Only log in development mode (avoid exposing server details in production)
@@ -219,20 +217,40 @@ export async function createMcpClient(
 		finalHeaders["Mcp-Session-Id"] = sessionId;
 	}
 
-	// If authProvider is provided, use the transport config pattern for AI SDK v6
-	// This enables automatic token management and refresh
-	if (authProvider) {
-		const transportConfig = {
-			type: (transport === "SSE" ? "sse" : "http") as "sse" | "http",
-			url: serverUrl,
-			headers:
-				Object.keys(finalHeaders).length > 0 ? finalHeaders : undefined,
-			authProvider,
-		};
+	// Helper to create a fresh transport (must be new for each connection
+	// attempt). Every request the transport makes — initialize, the SSE
+	// stream, each JSON-RPC POST, and on the OAuth path the metadata
+	// discovery, token refresh and token exchange the SDK's `auth()` performs
+	// — goes through the guarded fetch, which re-checks the destination at
+	// DNS-lookup time and refuses redirects. The `@ai-sdk/mcp` transport
+	// config is not used for OAuth because it accepts no fetch implementation:
+	// the SDK would resolve and connect on its own, and a name that answered
+	// a public address to the check above could answer a private one to it.
+	const createTransport = () => {
+		const requestInit =
+			Object.keys(finalHeaders).length > 0
+				? { headers: finalHeaders }
+				: undefined;
+		return transport === "SSE"
+			? new SSEClientTransport(url, {
+					fetch: fetchMcpServer,
+					requestInit,
+					authProvider,
+				})
+			: new StreamableHTTPClientTransport(url, {
+					fetch: fetchMcpServer,
+					requestInit,
+					authProvider,
+				});
+	};
 
+	// OAuth: the SDK transport carries the provider, so tokens are attached,
+	// refreshed on 401 and, when no valid token can be obtained,
+	// `redirectToAuthorization` raises OAuthAuthorizationRequiredError.
+	if (authProvider) {
 		try {
 			return await createMCPClient({
-				transport: transportConfig,
+				transport: createTransport(),
 			});
 		} catch (error) {
 			// Check if this is an auth-required error
@@ -264,24 +282,7 @@ export async function createMcpClient(
 		}
 	}
 
-	// Legacy path: manual transport creation (for non-OAuth or API key auth)
-	// Helper to create a fresh transport (must be new for each connection attempt)
-	const createTransport = () => {
-		return transport === "SSE"
-			? new SSEClientTransport(url, {
-					requestInit:
-						Object.keys(finalHeaders).length > 0
-							? { headers: finalHeaders }
-							: undefined,
-				})
-			: new StreamableHTTPClientTransport(url, {
-					requestInit:
-						Object.keys(finalHeaders).length > 0
-							? { headers: finalHeaders }
-							: undefined,
-				});
-	};
-
+	// Non-OAuth (none / API key) path with retries for transient failures.
 	// Retry configuration for transient failures
 	const MAX_RETRIES = 2;
 	const RETRY_DELAY_MS = 1000;

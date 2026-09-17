@@ -10,6 +10,7 @@
 	},
 	"dependencies": {
 		"@repo/logs": "workspace:*",
+		"@repo/utils": "workspace:*",
 		"ai": "^6.0.283",
 		"exa-js": "^2.0.0",
 		"zod": "^4.0.0-beta.2"

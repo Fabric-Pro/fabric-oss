@@ -12,6 +12,7 @@ import type {
 	TestConnectionResult,
 } from "../types";
 import { BaseSearchProvider } from "./base";
+import { fetchSearchEndpoint } from "./outbound";
 
 const FIRECRAWL_API_BASE = "https://api.firecrawl.dev/v1";
 
@@ -78,17 +79,20 @@ export class FirecrawlSearchProvider extends BaseSearchProvider {
 		});
 
 		try {
-			const response = await fetch(`${this.getEndpoint()}/search`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${this.apiKey}`,
+			const response = await fetchSearchEndpoint(
+				`${this.getEndpoint()}/search`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: `Bearer ${this.apiKey}`,
+					},
+					body: JSON.stringify({
+						query,
+						limit: maxResults,
+					}),
 				},
-				body: JSON.stringify({
-					query,
-					limit: maxResults,
-				}),
-			});
+			);
 
 			if (!response.ok) {
 				const errorText = await response.text();
@@ -151,17 +155,20 @@ export class FirecrawlSearchProvider extends BaseSearchProvider {
 		logger.info(`[FirecrawlSearchProvider] Scraping URL: ${url}`);
 
 		try {
-			const response = await fetch(`${this.getEndpoint()}/scrape`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${this.apiKey}`,
+			const response = await fetchSearchEndpoint(
+				`${this.getEndpoint()}/scrape`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: `Bearer ${this.apiKey}`,
+					},
+					body: JSON.stringify({
+						url,
+						formats: ["markdown"],
+					}),
 				},
-				body: JSON.stringify({
-					url,
-					formats: ["markdown"],
-				}),
-			});
+			);
 
 			if (!response.ok) {
 				const errorText = await response.text();
@@ -218,17 +225,20 @@ export class FirecrawlSearchProvider extends BaseSearchProvider {
 
 		try {
 			// Perform a minimal scrape to test the connection
-			const response = await fetch(`${this.getEndpoint()}/scrape`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${this.apiKey}`,
+			const response = await fetchSearchEndpoint(
+				`${this.getEndpoint()}/scrape`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: `Bearer ${this.apiKey}`,
+					},
+					body: JSON.stringify({
+						url: "https://example.com",
+						formats: ["markdown"],
+					}),
 				},
-				body: JSON.stringify({
-					url: "https://example.com",
-					formats: ["markdown"],
-				}),
-			});
+			);
 
 			const responseTime = Date.now() - startTime;
 

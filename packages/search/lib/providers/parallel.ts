@@ -12,6 +12,7 @@ import type {
 	TestConnectionResult,
 } from "../types";
 import { BaseSearchProvider } from "./base";
+import { fetchSearchEndpoint } from "./outbound";
 
 /**
  * Parallel API response types
@@ -108,14 +109,17 @@ export class ParallelSearchProvider extends BaseSearchProvider {
 			};
 
 			// Make API request
-			const response = await fetch(`${this.baseUrl}/v1beta/search`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					"x-api-key": this.apiKey,
+			const response = await fetchSearchEndpoint(
+				`${this.baseUrl}/v1beta/search`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"x-api-key": this.apiKey,
+					},
+					body: JSON.stringify(requestBody),
 				},
-				body: JSON.stringify(requestBody),
-			});
+			);
 
 			if (!response.ok) {
 				const errorText = await response.text();
@@ -186,20 +190,23 @@ export class ParallelSearchProvider extends BaseSearchProvider {
 		}
 
 		try {
-			const response = await fetch(`${this.baseUrl}/v1beta/search`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					"x-api-key": this.apiKey,
+			const response = await fetchSearchEndpoint(
+				`${this.baseUrl}/v1beta/search`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"x-api-key": this.apiKey,
+					},
+					body: JSON.stringify({
+						objective: "test connection",
+						search_queries: ["test"],
+						processor: "base",
+						max_results: 1,
+						max_chars_per_result: 100,
+					}),
 				},
-				body: JSON.stringify({
-					objective: "test connection",
-					search_queries: ["test"],
-					processor: "base",
-					max_results: 1,
-					max_chars_per_result: 100,
-				}),
-			});
+			);
 
 			if (!response.ok) {
 				const errorText = await response.text();
