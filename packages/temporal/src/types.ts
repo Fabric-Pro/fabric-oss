@@ -328,6 +328,13 @@ export interface DirectChatWorkflowInput {
 	attachedDocumentIds?: string[];
 	/** Custom system prompt to prepend/replace the default system instructions */
 	systemPrompt?: string;
+	/**
+	 * Route-derived project summary and focused-entity content (the story,
+	 * document or task the user is viewing). Authored by whoever wrote those
+	 * records, not by the operator, so the activity wraps it as retrieved,
+	 * untrusted context; it is never part of the trusted system instructions.
+	 */
+	projectContext?: string;
 	/** Workspace IDs for workspace document RAG retrieval */
 	workspaceIds?: string[];
 	/** Optional document IDs to scope workspace retrieval to */
