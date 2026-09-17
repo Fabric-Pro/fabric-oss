@@ -248,6 +248,52 @@ describe("TopicQuestionsPanel — the four states (DV14)", () => {
 		expect(screen.getByText(/no open questions/i)).toBeVisible();
 	});
 
+	it("says a run is under way rather than that there is nothing to ask", () => {
+		// An empty list DURING a run means "not yet" — the questions land with
+		// the analysis. The flat empty line told the reader the opposite while
+		// their own regeneration was still writing.
+		render(
+			<TopicQuestionsPanel {...BASE} threads={[]} isGeneratingAnalysis />,
+		);
+
+		expect(
+			screen.getByText(/generating the planning analysis/i),
+		).toBeVisible();
+		expect(
+			screen.getByTestId("topic-questions-generating"),
+		).toHaveAttribute("aria-busy", "true");
+		expect(screen.queryByText(/no open questions yet/i)).toBeNull();
+	});
+
+	it("keeps the failure explanation even if a stale GENERATING row is passed", () => {
+		// One `latestAttempt` row cannot be both, but the failure is the fact
+		// worth telling and must not be swallowed by a waiting state.
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[]}
+				isGeneratingAnalysis
+				analysisFailed
+			/>,
+		);
+
+		expect(screen.getByText(/could not be generated/i)).toBeVisible();
+	});
+
+	it("shows an all-clear instead of dead space once every question is answered", () => {
+		// `open` is empty but `questions` is not, so the open-questions section
+		// rendered `null` — a blank strip under the readiness bar, which reads
+		// as a section that failed to load rather than one with nothing left.
+		render(<TopicQuestionsPanel {...BASE} threads={[RESOLVED_THREAD]} />);
+
+		expect(screen.getByText(/no open questions right now/i)).toBeVisible();
+	});
+
+	it("shows no all-clear while a question is still open", () => {
+		render(<TopicQuestionsPanel {...BASE} threads={[OPEN_THREAD]} />);
+		expect(screen.queryByText(/no open questions right now/i)).toBeNull();
+	});
+
 	it("explains the failure rather than looking empty", () => {
 		// An analysis that failed and one that raised nothing are different facts,
 		// and an empty list that means "we could not ask" is the worse of the two

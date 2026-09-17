@@ -44,6 +44,7 @@ export {
 } from "./planning-analysis";
 export { restorePublishingQuestionProcedure } from "./restore-question";
 export { setPublishingQuestionAssigneesProcedure } from "./set-question-assignees";
+export { setPublishingTopicNotesProcedure } from "./set-topic-notes";
 export { setTopicReadStateProcedure } from "./set-topic-read-state";
 export { setTopicSnoozeProcedure } from "./set-topic-snooze";
 export {
@@ -70,6 +71,7 @@ export { updatePublishingTopicAssigneesProcedure } from "./update-topic-assignee
 export { updatePublishingTopicContributorsProcedure } from "./update-topic-contributors";
 export { updatePublishingTopicPostTypesProcedure } from "./update-topic-post-types";
 export { updatePublishingTopicStatusProcedure } from "./update-topic-status";
+export { updatePublishingTopicSummaryProcedure } from "./update-topic-summary";
 export {
 	adoptWebinarScriptDraftProcedure,
 	generateWebinarScriptProcedure,

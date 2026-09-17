@@ -307,14 +307,23 @@ describe("StakeholderEmailPanel — the generate control", () => {
 		);
 	});
 
-	it("switches to Regenerate once a draft exists", () => {
+	it("switches to Regenerate once a draft exists", async () => {
+		// The promise that a regeneration leaves saved work alone moved
+		// INTO the popover with the field it qualifies: it is read at the
+		// moment of deciding, not as a standing paragraph about an action
+		// nobody has taken yet.
+		const user = userEvent.setup();
 		renderPanel({ draft: readyDraft() });
 
+		const trigger = screen.getByRole("button", {
+			name: /regenerate draft/i,
+		});
+		expect(trigger).toBeEnabled();
+
+		await user.click(trigger);
+
 		expect(
-			screen.getByRole("button", { name: /regenerate draft/i }),
-		).toBeEnabled();
-		expect(
-			screen.getByText(
+			within(await screen.findByRole("dialog")).getByText(
 				/stakeholder email you have saved is not affected/i,
 			),
 		).toBeInTheDocument();
@@ -393,6 +402,36 @@ describe("StakeholderEmailPanel — the generate control", () => {
 		expect(screen.getByRole("alert")).toHaveTextContent(
 			"The provider timed out.",
 		);
+	});
+
+	it("collapses guidance behind the button once a draft exists", async () => {
+		// The field is not merely moved, it is PUT AWAY. Above the draft it was
+		// an input asking to be filled in before every regeneration; the common
+		// case is regenerating with nothing more to say, and the field charged
+		// that case a permanent box over the content it acts on.
+		const user = userEvent.setup();
+		renderPanel({ draft: readyDraft() });
+
+		expect(screen.queryByLabelText(/guidance/i)).not.toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("button", { name: /regenerate draft/i }),
+		);
+
+		expect(
+			within(await screen.findByRole("dialog")).getByLabelText(
+				/guidance/i,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the guidance field on the page before the first run", () => {
+		// With no draft on screen there is nothing for the button to sit on,
+		// and someone who has never run this tab should be shown what steers it
+		// rather than have to find it behind a popover.
+		renderPanel();
+
+		expect(screen.getByLabelText(/guidance/i)).toBeInTheDocument();
 	});
 });
 
@@ -1029,13 +1068,29 @@ describe("StakeholderEmailPanel — what a viewer sees", () => {
 });
 
 describe("StakeholderEmailPanel — refining the saved draft (Fizzy #1851, A7)", () => {
+	/**
+	 * Opens the refine popover and hands back a scope inside it.
+	 *
+	 * The instruction now lives behind "Refine with AI" in the draft's own
+	 * action row, so every assertion about the FIELD has to open it first.
+	 * Assertions about the control EXISTING query the trigger instead — behind
+	 * a popover the field is absent either way, so querying for it would pass
+	 * with the button sitting there offering a refinement of nothing.
+	 */
+	async function openRefine(user: ReturnType<typeof userEvent.setup>) {
+		await user.click(
+			screen.getByRole("button", { name: /refine with ai/i }),
+		);
+		return within(await screen.findByRole("dialog"));
+	}
+
 	it("does NOT offer refine before anything is saved", () => {
 		// With no working draft the action has no input, and offering it would
 		// be a regeneration wearing a label that promises otherwise.
 		renderPanel({ draft: readyDraft() });
 
 		expect(
-			screen.queryByRole("button", { name: /refine draft/i }),
+			screen.queryByRole("button", { name: /refine with ai/i }),
 		).not.toBeInTheDocument();
 	});
 
@@ -1043,7 +1098,7 @@ describe("StakeholderEmailPanel — refining the saved draft (Fizzy #1851, A7)",
 		renderPanel({ working: { ...working(), hasBody: false, body: "" } });
 
 		expect(
-			screen.queryByRole("button", { name: /refine draft/i }),
+			screen.queryByRole("button", { name: /refine with ai/i }),
 		).not.toBeInTheDocument();
 	});
 
@@ -1053,7 +1108,7 @@ describe("StakeholderEmailPanel — refining the saved draft (Fizzy #1851, A7)",
 		renderPanel({ draft: readyDraft(), working: working() });
 
 		expect(
-			screen.getByRole("button", { name: /refine draft/i }),
+			screen.getByRole("button", { name: /refine with ai/i }),
 		).toBeInTheDocument();
 		expect(
 			screen.getByRole("button", { name: /regenerate draft/i }),
@@ -1064,11 +1119,12 @@ describe("StakeholderEmailPanel — refining the saved draft (Fizzy #1851, A7)",
 		const user = userEvent.setup();
 		renderPanel({ working: working() });
 
-		const button = screen.getByRole("button", { name: /refine draft/i });
+		const popover = await openRefine(user);
+		const button = popover.getByRole("button", { name: /refine draft/i });
 		expect(button).toBeDisabled();
 
 		await user.type(
-			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			popover.getByRole("textbox", { name: /refine the saved draft/i }),
 			"Make it shorter.",
 		);
 		expect(button).toBeEnabled();
@@ -1079,11 +1135,14 @@ describe("StakeholderEmailPanel — refining the saved draft (Fizzy #1851, A7)",
 		const user = userEvent.setup();
 		renderPanel({ working: working() });
 
+		const popover = await openRefine(user);
 		await user.type(
-			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			popover.getByRole("textbox", { name: /refine the saved draft/i }),
 			"Warmer tone.",
 		);
-		await user.click(screen.getByRole("button", { name: /refine draft/i }));
+		await user.click(
+			popover.getByRole("button", { name: /refine draft/i }),
+		);
 
 		expect(mutate.generate).toHaveBeenCalledWith({
 			projectId: "p1",
@@ -1100,12 +1159,20 @@ describe("StakeholderEmailPanel — refining the saved draft (Fizzy #1851, A7)",
 		const user = userEvent.setup();
 		renderPanel({ draft: readyDraft(), working: working() });
 
+		const refine = await openRefine(user);
 		await user.type(
-			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			refine.getByRole("textbox", { name: /refine the saved draft/i }),
 			"Warmer tone.",
 		);
+		await user.keyboard("{Escape}");
+
 		await user.click(
 			screen.getByRole("button", { name: /regenerate draft/i }),
+		);
+		await user.click(
+			within(await screen.findByRole("dialog")).getByRole("button", {
+				name: "Regenerate",
+			}),
 		);
 
 		expect(mutate.generate).toHaveBeenCalledWith(
@@ -1116,11 +1183,17 @@ describe("StakeholderEmailPanel — refining the saved draft (Fizzy #1851, A7)",
 		);
 	});
 
-	it("says the saved draft is safe until the result is adopted", () => {
+	it("says the saved draft is safe until the result is adopted", async () => {
+		// The promise moved INTO the popover with the field it qualifies.
+		const user = userEvent.setup();
 		renderPanel({ working: working() });
 
+		const popover = await openRefine(user);
+
 		expect(
-			screen.getByText(/nothing you have saved changes until you adopt/i),
+			popover.getByText(
+				/nothing you have saved changes until you adopt/i,
+			),
 		).toBeInTheDocument();
 	});
 
@@ -1128,7 +1201,7 @@ describe("StakeholderEmailPanel — refining the saved draft (Fizzy #1851, A7)",
 		renderPanel({ working: working(), canEdit: false });
 
 		expect(
-			screen.queryByRole("button", { name: /refine draft/i }),
+			screen.queryByRole("button", { name: /refine with ai/i }),
 		).not.toBeInTheDocument();
 	});
 });

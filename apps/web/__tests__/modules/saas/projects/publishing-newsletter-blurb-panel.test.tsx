@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -395,14 +395,23 @@ describe("NewsletterBlurbPanel — the generate control", () => {
 		});
 	});
 
-	it("switches to Regenerate once a draft exists", () => {
+	it("switches to Regenerate once a draft exists", async () => {
+		// The promise that a regeneration leaves saved work alone moved
+		// INTO the popover with the field it qualifies: it is read at the
+		// moment of deciding, not as a standing paragraph about an action
+		// nobody has taken yet.
+		const user = userEvent.setup();
 		renderPanel({ draft: readyDraft() });
 
+		const trigger = screen.getByRole("button", {
+			name: /regenerate draft/i,
+		});
+		expect(trigger).toBeEnabled();
+
+		await user.click(trigger);
+
 		expect(
-			screen.getByRole("button", { name: /regenerate draft/i }),
-		).toBeEnabled();
-		expect(
-			screen.getByText(
+			within(await screen.findByRole("dialog")).getByText(
 				/newsletter blurb you have saved is not affected/i,
 			),
 		).toBeInTheDocument();
@@ -514,6 +523,36 @@ describe("NewsletterBlurbPanel — the generate control", () => {
 		expect(screen.getByRole("alert")).toHaveTextContent(
 			"The provider timed out.",
 		);
+	});
+
+	it("collapses guidance behind the button once a draft exists", async () => {
+		// The field is not merely moved, it is PUT AWAY. Above the draft it was
+		// an input asking to be filled in before every regeneration; the common
+		// case is regenerating with nothing more to say, and the field charged
+		// that case a permanent box over the content it acts on.
+		const user = userEvent.setup();
+		renderPanel({ draft: readyDraft() });
+
+		expect(screen.queryByLabelText(/guidance/i)).not.toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("button", { name: /regenerate draft/i }),
+		);
+
+		expect(
+			within(await screen.findByRole("dialog")).getByLabelText(
+				/guidance/i,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the guidance field on the page before the first run", () => {
+		// With no draft on screen there is nothing for the button to sit on,
+		// and someone who has never run this tab should be shown what steers it
+		// rather than have to find it behind a popover.
+		renderPanel();
+
+		expect(screen.getByLabelText(/guidance/i)).toBeInTheDocument();
 	});
 });
 
@@ -1244,11 +1283,27 @@ describe("NewsletterBlurbPanel — copying and downloading the draft", () => {
 });
 
 describe("NewsletterBlurbPanel — refining the saved draft", () => {
+	/**
+	 * Opens the refine popover and hands back a scope inside it.
+	 *
+	 * The instruction now lives behind "Refine with AI" in the draft's own
+	 * action row, so every assertion about the FIELD has to open it first.
+	 * Assertions about the control EXISTING query the trigger instead — behind
+	 * a popover the field is absent either way, so querying for it would pass
+	 * with the button sitting there offering a refinement of nothing.
+	 */
+	async function openRefine(user: ReturnType<typeof userEvent.setup>) {
+		await user.click(
+			screen.getByRole("button", { name: /refine with ai/i }),
+		);
+		return within(await screen.findByRole("dialog"));
+	}
+
 	it("does NOT offer refine before anything is saved", () => {
 		renderPanel({ draft: readyDraft() });
 
 		expect(
-			screen.queryByRole("button", { name: /refine draft/i }),
+			screen.queryByRole("button", { name: /refine with ai/i }),
 		).not.toBeInTheDocument();
 	});
 
@@ -1256,7 +1311,7 @@ describe("NewsletterBlurbPanel — refining the saved draft", () => {
 		renderPanel({ draft: readyDraft(), working: working() });
 
 		expect(
-			screen.getByRole("button", { name: /refine draft/i }),
+			screen.getByRole("button", { name: /refine with ai/i }),
 		).toBeInTheDocument();
 		expect(
 			screen.getByRole("button", { name: /regenerate draft/i }),
@@ -1267,11 +1322,14 @@ describe("NewsletterBlurbPanel — refining the saved draft", () => {
 		const user = userEvent.setup();
 		renderPanel({ working: working() });
 
+		const popover = await openRefine(user);
 		await user.type(
-			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			popover.getByRole("textbox", { name: /refine the saved draft/i }),
 			"Make it one sentence.",
 		);
-		await user.click(screen.getByRole("button", { name: /refine draft/i }));
+		await user.click(
+			popover.getByRole("button", { name: /refine draft/i }),
+		);
 
 		expect(mutate.generate).toHaveBeenCalledWith({
 			projectId: "p1",
@@ -1558,10 +1616,14 @@ describe("NewsletterBlurbPanel — what a viewer sees", () => {
 				name: /working newsletter blurb/i,
 			}),
 		).not.toBeInTheDocument();
-		// The refine section's field, which the query above cannot reach: its
-		// label is "Refine the saved draft", a different accessible name, and
-		// the fixture's `hasBody: true` satisfies the second half of that
-		// section's guard — so `canEdit` alone is holding it back.
+		// The refine instruction, which the query above cannot reach: its label
+		// is "Refine the saved draft", a different accessible name, and the
+		// fixture's `hasBody: true` satisfies the second half of that control's
+		// guard — so `canEdit` alone is holding it back.
+		//
+		// It now lives inside a popover, so its ABSENCE here proves less than
+		// it used to: a closed popover has no field either. The trigger below
+		// is what actually pins this.
 		expect(
 			screen.queryByRole("textbox", {
 				name: /refine the saved draft/i,
@@ -1572,14 +1634,19 @@ describe("NewsletterBlurbPanel — what a viewer sees", () => {
 		// added a second matching button would surface as a
 		// `TestingLibraryElementError` instead of this assertion's own message.
 		//
-		// `/refine draft/i` is its own entry and NOT covered by `/generate/i`:
-		// the refine control's accessible name is "Refine draft", it fires a
-		// real `generate.mutate({ refineFromWorkingDraft: true })`, and without
-		// this line dropping `canEdit &&` from its section would hand a viewer
-		// a working mutation control with the suite still green.
+		// `/refine with ai/i` is its own entry and NOT covered by
+		// `/generate/i`: it is the trigger for a control that fires a real
+		// `generate.mutate({ refineFromWorkingDraft: true })`, and without this
+		// line dropping `canEdit &&` from its branch would hand a viewer a
+		// working mutation control with the suite still green.
+		//
+		// The TRIGGER, not the submit inside it. `/refine draft/i` would match
+		// nothing here whether or not a viewer had been handed the control,
+		// because the popover that holds it is closed — an assertion that
+		// cannot fail is not a guard.
 		for (const name of [
 			/generate/i,
-			/refine draft/i,
+			/refine with ai/i,
 			/use this version/i,
 			/save changes/i,
 			/copy draft/i,

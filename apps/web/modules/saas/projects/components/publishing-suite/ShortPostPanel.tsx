@@ -3,6 +3,11 @@
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@ui/components/popover";
 import { Textarea } from "@ui/components/textarea";
 import {
 	Loader2Icon,
@@ -22,6 +27,18 @@ import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
 
 /** Mirrors the API's own bound, so the field cannot submit what it would reject. */
 const GUIDANCE_MAX = 2000;
+
+/**
+ * The saved draft gets a working area, not a four-row box.
+ *
+ * The same idiom the Planning & Analysis editor uses for its region: a floor so
+ * the draft stays editable on a laptop, viewport-relative between the bounds so
+ * a tall screen is actually used, and a ceiling so a maximised window does not
+ * run the text past where the eye tracks. A short post is under a hard ceiling
+ * and still gets the room — the editing happens in the last hundred characters,
+ * which is exactly what a four-row box scrolled out of sight.
+ */
+const WORKING_DRAFT_HEIGHT_CLASS = "h-[clamp(24rem,60vh,44rem)]";
 
 /**
  * The Short Post / Tweet generation panel (Fizzy #1853, Phase 2B-2).
@@ -149,6 +166,13 @@ export function ShortPostPanel({
 	 * is what records it on the attempt row.
 	 */
 	const [refineInstruction, setRefineInstruction] = useState("");
+	/**
+	 * Both instructions live behind a button now, so each owns its open state
+	 * and closes on submit. A popover left standing over the panel covers the
+	 * drafts the reader just asked it to change.
+	 */
+	const [guidanceOpen, setGuidanceOpen] = useState(false);
+	const [refineOpen, setRefineOpen] = useState(false);
 
 	const attempt = draft?.latestAttempt ?? null;
 	// `isExpired` splits GENERATING in two: a LIVE run is genuinely in flight, a
@@ -358,6 +382,40 @@ export function ShortPostPanel({
 		});
 	};
 
+	/** Live in one place: the run is one run wherever it was started. */
+	const generatingStatus = isGenerating ? (
+		<span className="text-muted-foreground text-sm" role="status">
+			Writing three drafts…
+		</span>
+	) : null;
+
+	/**
+	 * One field with two homes: the first-run block under the empty state, and
+	 * the "Regenerate drafts" popover once candidates exist. Built once so the
+	 * two cannot drift — they share an `id`, and a second copy of that is a
+	 * second chance for the label to stop naming the field it points at. Only
+	 * ever one of them is mounted, so the id stays unique on the page.
+	 */
+	const guidanceField = (
+		<div className="space-y-2">
+			<label
+				className="publishing-label block"
+				htmlFor="short-post-guidance"
+			>
+				Guidance (optional)
+			</label>
+			<Textarea
+				id="short-post-guidance"
+				value={guidance}
+				onChange={(e) => setGuidance(e.target.value)}
+				maxLength={GUIDANCE_MAX}
+				rows={3}
+				placeholder="Tone, audience, platform, hashtags, a call to action, or a target character count."
+				disabled={isGenerating || generate.isPending}
+			/>
+		</div>
+	);
+
 	// Advisory only: it says who else is in the draft and never refuses a write.
 	const editLock = useDraftEditLock({
 		projectId,
@@ -375,139 +433,6 @@ export function ShortPostPanel({
 				heldBy={editLock.heldBy}
 				onTakeOver={editLock.takeOver}
 			/>
-			{canEdit ? (
-				<section className="space-y-2">
-					<label
-						className="publishing-label block"
-						htmlFor="short-post-guidance"
-					>
-						Guidance (optional)
-					</label>
-					<Textarea
-						id="short-post-guidance"
-						value={guidance}
-						onChange={(e) => setGuidance(e.target.value)}
-						maxLength={GUIDANCE_MAX}
-						rows={3}
-						placeholder="Tone, audience, platform, hashtags, a call to action, or a target character count."
-						disabled={isGenerating || generate.isPending}
-					/>
-					<div className="flex items-center gap-3">
-						<Button
-							type="button"
-							onClick={() =>
-								generate.mutate({
-									projectId,
-									topicId,
-									organizationId,
-									guidance: guidance.trim() || null,
-								})
-							}
-							disabled={isGenerating || generate.isPending}
-						>
-							{isGenerating || generate.isPending ? (
-								<Loader2Icon
-									className="mr-2 size-4 motion-safe:animate-spin"
-									aria-hidden="true"
-								/>
-							) : (
-								<SparklesIcon
-									className="mr-2 size-4"
-									aria-hidden="true"
-								/>
-							)}
-							{doc ? "Regenerate drafts" : "Generate short post"}
-						</Button>
-						{isGenerating ? (
-							<span
-								className="text-muted-foreground text-sm"
-								role="status"
-							>
-								Writing three drafts…
-							</span>
-						) : null}
-					</div>
-					{doc ? (
-						<p className="text-muted-foreground text-xs">
-							Regenerating replaces these candidates. A short post
-							you have already saved is not affected.
-						</p>
-					) : null}
-				</section>
-			) : null}
-
-			{/*
-			 * A SECOND action, never a replacement for the one above.
-			 * Regenerate rebuilds the short post from the planning analysis; this
-			 * one revises the saved text. Both are useful and they answer
-			 * different questions, so the panel offers both — and offers this
-			 * one only once there is something saved to revise, since without a
-			 * working draft it has no input and would just be a regeneration
-			 * with a confusing label.
-			 */}
-			{canEdit && working?.hasBody ? (
-				<section className="space-y-2">
-					<label
-						className="publishing-label block"
-						htmlFor="short-post-refine"
-					>
-						Refine the saved draft
-					</label>
-					<Textarea
-						id="short-post-refine"
-						value={refineInstruction}
-						onChange={(e) => setRefineInstruction(e.target.value)}
-						maxLength={GUIDANCE_MAX}
-						rows={2}
-						placeholder="Make it shorter. Warmer tone. Lead with the metric."
-						disabled={isGenerating || generate.isPending}
-					/>
-					<div className="flex items-center gap-3">
-						<Button
-							type="button"
-							variant="outline"
-							onClick={() =>
-								generate.mutate({
-									projectId,
-									topicId,
-									organizationId,
-									guidance: refineInstruction.trim() || null,
-									refineFromWorkingDraft: true,
-								})
-							}
-							// Required here where it is optional above: a
-							// refinement with no instruction is a rewrite of
-							// the draft for no stated reason, which is the one
-							// thing this action cannot usefully do.
-							disabled={
-								!refineInstruction.trim() ||
-								isGenerating ||
-								generate.isPending
-							}
-						>
-							{isGenerating || generate.isPending ? (
-								<Loader2Icon
-									className="mr-2 size-4 motion-safe:animate-spin"
-									aria-hidden="true"
-								/>
-							) : (
-								<PencilLineIcon
-									className="mr-2 size-4"
-									aria-hidden="true"
-								/>
-							)}
-							Refine draft
-						</Button>
-					</div>
-					<p className="text-muted-foreground text-xs">
-						Starts from the short post you have saved and changes
-						only what you ask for. The result arrives as a new
-						version to compare against; nothing you have saved
-						changes until you adopt it.
-					</p>
-				</section>
-			) : null}
-
 			{isStranded ? (
 				<p className="text-muted-foreground text-sm" role="alert">
 					The last run didn't report back within its time limit.
@@ -536,7 +461,7 @@ export function ShortPostPanel({
 								aria-label="Working short post"
 								value={bodyValue}
 								onChange={(e) => setEditedBody(e.target.value)}
-								rows={4}
+								className={WORKING_DRAFT_HEIGHT_CLASS}
 								disabled={saveBody.isPending}
 							/>
 						) : (
@@ -574,6 +499,115 @@ export function ShortPostPanel({
 											Discard changes
 										</Button>
 									) : null}
+									{/*
+									 * A SECOND action, never a replacement for
+									 * regeneration. Regenerate rebuilds the post
+									 * from the planning analysis; this one
+									 * revises the saved text, which is why it
+									 * belongs in that text's own action row. As
+									 * a field above the draft it asked the
+									 * reader to describe a change to something
+									 * they could not see while typing it.
+									 */}
+									<Popover
+										open={refineOpen}
+										onOpenChange={setRefineOpen}
+									>
+										<PopoverTrigger asChild>
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+											>
+												<PencilLineIcon
+													className="mr-2 size-4"
+													aria-hidden="true"
+												/>
+												Refine with AI
+											</Button>
+										</PopoverTrigger>
+										<PopoverContent
+											align="start"
+											className="w-[min(24rem,calc(100vw-2rem))] space-y-3 p-3"
+										>
+											<div className="space-y-1">
+												<label
+													className="publishing-label block"
+													htmlFor="short-post-refine"
+												>
+													Refine the saved draft
+												</label>
+												<p className="text-muted-foreground text-xs leading-relaxed">
+													Starts from the short post
+													you have saved and changes
+													only what you ask for. The
+													result arrives as a new
+													version to compare against;
+													nothing you have saved
+													changes until you adopt it.
+												</p>
+											</div>
+											<Textarea
+												id="short-post-refine"
+												value={refineInstruction}
+												onChange={(e) =>
+													setRefineInstruction(
+														e.target.value,
+													)
+												}
+												maxLength={GUIDANCE_MAX}
+												rows={3}
+												placeholder="Make it shorter. Warmer tone. Lead with the metric."
+												disabled={
+													isGenerating ||
+													generate.isPending
+												}
+											/>
+											<Button
+												type="button"
+												size="sm"
+												onClick={() => {
+													generate.mutate({
+														projectId,
+														topicId,
+														organizationId,
+														guidance:
+															refineInstruction.trim() ||
+															null,
+														refineFromWorkingDraft: true,
+													});
+													setRefineOpen(false);
+												}}
+												// Required here where it is
+												// optional for a generation: a
+												// refinement with no
+												// instruction is a rewrite of
+												// the draft for no stated
+												// reason, which is the one
+												// thing this action cannot
+												// usefully do.
+												disabled={
+													!refineInstruction.trim() ||
+													isGenerating ||
+													generate.isPending
+												}
+											>
+												{isGenerating ||
+												generate.isPending ? (
+													<Loader2Icon
+														className="mr-2 size-4 motion-safe:animate-spin"
+														aria-hidden="true"
+													/>
+												) : (
+													<PencilLineIcon
+														className="mr-2 size-4"
+														aria-hidden="true"
+													/>
+												)}
+												Refine draft
+											</Button>
+										</PopoverContent>
+									</Popover>
 								</>
 							) : null}
 							<CopyDraftButton markdown={bodyValue} />
@@ -676,18 +710,99 @@ export function ShortPostPanel({
 					 * screenshot of a network.
 					 */}
 					<section className="space-y-3">
-						<div className="space-y-1">
-							<h3 className="publishing-label">
-								Candidate drafts{" "}
-								{draft?.latestReady
-									? `(version ${draft.latestReady.version})`
-									: null}
-							</h3>
-							<p className="text-muted-foreground text-xs leading-relaxed">
-								Three ways of writing the same post. Pick the
-								one to work from — nothing is saved until you
-								do.
-							</p>
+						<div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+							<div className="space-y-1">
+								<h3 className="publishing-label">
+									Candidate drafts{" "}
+									{draft?.latestReady
+										? `(version ${draft.latestReady.version})`
+										: null}
+								</h3>
+								<p className="text-muted-foreground text-xs leading-relaxed">
+									Three ways of writing the same post. Pick
+									the one to work from — nothing is saved
+									until you do.
+								</p>
+							</div>
+							{/*
+							 * Regeneration belongs WITH the candidates it replaces.
+							 * Above the working draft it was a guidance field
+							 * floating over content it does not act on; here the
+							 * button sits on the section it rewrites, and the
+							 * guidance that steers it is one click away instead of
+							 * permanently on screen.
+							 */}
+							{canEdit ? (
+								<div className="flex items-center gap-3">
+									{generatingStatus}
+									<Popover
+										open={guidanceOpen}
+										onOpenChange={setGuidanceOpen}
+									>
+										<PopoverTrigger asChild>
+											<Button
+												type="button"
+												size="sm"
+												disabled={
+													isGenerating ||
+													generate.isPending
+												}
+											>
+												{isGenerating ||
+												generate.isPending ? (
+													<Loader2Icon
+														className="mr-2 size-4 motion-safe:animate-spin"
+														aria-hidden="true"
+													/>
+												) : (
+													<SparklesIcon
+														className="mr-2 size-4"
+														aria-hidden="true"
+													/>
+												)}
+												Regenerate drafts
+											</Button>
+										</PopoverTrigger>
+										<PopoverContent
+											align="end"
+											className="w-[min(24rem,calc(100vw-2rem))] space-y-3 p-3"
+										>
+											<p className="text-muted-foreground text-xs leading-relaxed">
+												Regenerating replaces these
+												candidates. A short post you
+												have already saved is not
+												affected.
+											</p>
+											{guidanceField}
+											<Button
+												type="button"
+												size="sm"
+												onClick={() => {
+													generate.mutate({
+														projectId,
+														topicId,
+														organizationId,
+														guidance:
+															guidance.trim() ||
+															null,
+													});
+													setGuidanceOpen(false);
+												}}
+												disabled={
+													isGenerating ||
+													generate.isPending
+												}
+											>
+												<SparklesIcon
+													className="mr-2 size-4"
+													aria-hidden="true"
+												/>
+												Regenerate
+											</Button>
+										</PopoverContent>
+									</Popover>
+								</div>
+							) : null}
 						</div>
 						{/* THREE COLUMNS, not a stack.
 						 *
@@ -833,6 +948,48 @@ export function ShortPostPanel({
 				<p className="text-muted-foreground text-sm">
 					No short post drafts yet.
 				</p>
+			) : null}
+
+			{/*
+			 * The FIRST run keeps its field on the page. There are no
+			 * candidates yet for a button to sit on, and someone who has never
+			 * run this tab should be shown what steers it rather than have to
+			 * find it behind a popover. Once a draft exists the same field
+			 * moves into the "Regenerate drafts" popover above — the two are
+			 * one `guidanceField`, never two copies.
+			 */}
+			{canEdit && !doc ? (
+				<section className="space-y-2">
+					{guidanceField}
+					<div className="flex items-center gap-3">
+						<Button
+							type="button"
+							onClick={() =>
+								generate.mutate({
+									projectId,
+									topicId,
+									organizationId,
+									guidance: guidance.trim() || null,
+								})
+							}
+							disabled={isGenerating || generate.isPending}
+						>
+							{isGenerating || generate.isPending ? (
+								<Loader2Icon
+									className="mr-2 size-4 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : (
+								<SparklesIcon
+									className="mr-2 size-4"
+									aria-hidden="true"
+								/>
+							)}
+							Generate short post
+						</Button>
+						{generatingStatus}
+					</div>
+				</section>
 			) : null}
 		</div>
 	);

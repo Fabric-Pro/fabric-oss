@@ -512,13 +512,33 @@ const COVERED = new Set([
  * Builders that render no user-authored subject, and why. A builder belongs
  * here only because it CANNOT take one — not because nobody got round to
  * testing it.
+ *
+ * ONE ENTRY IS AN EXEMPTION FROM THIS FILE, NOT FROM COVERAGE. The planning
+ * builder below renders a subject and is neutralized like every other; it is
+ * simply pinned somewhere else, because its bullet is not the shape this
+ * file's shared `BUILDERS` loop asserts against. An entry here must say which.
  */
 const RENDERS_NO_SUBJECT = new Map([
 	[
 		"buildAgendaLockedClauses",
 		"takes an AgendaContext and emits fixed clause strings; no subject list",
 	],
-	["buildPlanningAnalysisLockedClauses", "takes no arguments at all"],
+	[
+		"buildPlanningAnalysisLockedClauses",
+		// Was recorded as "takes no arguments at all". That stopped being true
+		// when the settled-decisions block landed: it takes
+		// `{ autoProposeAnswers, settledDecisions }` and renders a
+		// model-authored subject through `decisionLabel`. It is exempt from
+		// THIS file because its bullet is `- "label" — answered: "answer"`,
+		// a second untrusted half the shared loop has no shape for — not
+		// because nothing renders. The fold, the quote downgrade and the blank
+		// -answer drop are pinned in
+		// `publishing-planning/__tests__/build-planning-analysis-prompt.test.ts`
+		// ("keeps a multi-line answer on one line among the rules",
+		// "downgrades a quote that would close the label early", "drops a
+		// decision whose answer is blank").
+		"renders a subject, but as a two-part answered bullet this file's shared loop cannot assert against; neutralization is pinned in build-planning-analysis-prompt.test.ts",
+	],
 	[
 		"buildTopicSuggestionLockedClauses",
 		"takes no arguments at all — topic suggestion runs BEFORE any topic exists, so there is no subject to render",

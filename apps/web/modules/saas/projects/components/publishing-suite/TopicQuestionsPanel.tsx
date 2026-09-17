@@ -88,6 +88,9 @@ type Props = {
 	/** The latest analysis attempt is FAILED — an empty list means "we could
 	 * not ask", not "there was nothing to ask". */
 	analysisFailed?: boolean;
+	/** A run is in flight — an empty list means "not yet", not "nothing to
+	 * ask", and the reader is one poll away from a list. */
+	isGeneratingAnalysis?: boolean;
 	threads: TopicDecisionThread[];
 	/**
 	 * The project's members, for the per-question assignee picker.
@@ -301,6 +304,7 @@ export function TopicQuestionsPanel({
 	canEdit,
 	isLoading = false,
 	analysisFailed = false,
+	isGeneratingAnalysis = false,
 	threads,
 	members = [],
 }: Props) {
@@ -489,6 +493,25 @@ export function TopicQuestionsPanel({
 	const isGrouped = worthGrouping(openGroups);
 
 	if (questions.length === 0) {
+		// A run in flight is not a topic that raised nothing: the questions
+		// land WITH the analysis, so this reader is one poll away from a list
+		// and the flat empty line below tells them the opposite.
+		if (isGeneratingAnalysis && !analysisFailed) {
+			return (
+				<div
+					data-testid="topic-questions-generating"
+					className="space-y-3"
+					aria-busy="true"
+				>
+					<p className="text-muted-foreground text-sm">
+						Generating the planning analysis. This usually takes a
+						minute or two.
+					</p>
+					<div className="h-16 rounded-lg bg-muted motion-safe:animate-pulse" />
+					<div className="h-16 rounded-lg bg-muted motion-safe:animate-pulse" />
+				</div>
+			);
+		}
 		return (
 			<EmptyState>
 				{analysisFailed
@@ -547,7 +570,15 @@ export function TopicQuestionsPanel({
 						</div>
 					))}
 				</div>
-			) : null}
+			) : (
+				// Not `null`: the readiness bar directly above says the topic is
+				// clear, and a blank strip under it reads as a section that
+				// failed to load rather than as one with nothing left in it.
+				<EmptyState>
+					No open questions right now. New questions and gaps will
+					surface here as the topic is reviewed.
+				</EmptyState>
+			)}
 
 			{resolved.length > 0 ? (
 				<section aria-label="Answered questions">
@@ -1113,6 +1144,11 @@ function ReadOnlySuggestedOptions({
  *
  * The LIVE answer, not the first: amending appends a superseding reply, and
  * noticing the amendment is the whole point.
+ *
+ * BLOCKERS count too, not just questions. A blocker answer is the case that
+ * most needs the prompt: the quote or the approval it records reaches the
+ * draft writers ONLY through a regenerated analysis, so skipping it left the
+ * banner silent exactly where staleness costs the most.
  */
 export function countAnswersRecordedAfter(
 	aiCreatedAt: Date | string | null,
@@ -1124,7 +1160,7 @@ export function countAnswersRecordedAfter(
 		return 0;
 	}
 	return (threads ?? []).filter((thread) => {
-		if (thread.root.kind !== "QUESTION") {
+		if (thread.root.kind !== "QUESTION" && thread.root.kind !== "BLOCKER") {
 			return false;
 		}
 		const answer = liveAnswerReply(thread);

@@ -145,8 +145,8 @@ export function TopicBlockers({
 												setDraft(e.target.value)
 											}
 											rows={2}
-											aria-label="How this was cleared"
-											placeholder="Where it came from, or who provided it…"
+											aria-label="Your answer"
+											placeholder="Briefly — the AI writes it up from here."
 											disabled={settle.isPending}
 										/>
 										<div className="flex items-center justify-end gap-2">
@@ -170,7 +170,7 @@ export function TopicBlockers({
 													settleBlocker(thread, draft)
 												}
 											>
-												Mark provided
+												Save answer
 											</Button>
 										</div>
 									</div>
@@ -188,7 +188,7 @@ export function TopicBlockers({
 												);
 											}}
 										>
-											Mark provided
+											Answer
 										</Button>
 										<Button
 											type="button"

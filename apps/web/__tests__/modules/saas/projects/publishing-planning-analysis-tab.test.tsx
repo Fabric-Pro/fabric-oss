@@ -1645,6 +1645,39 @@ describe("countAnswersRecordedAfter — answers the analysis predates", () => {
 			count([answered({ analysisVersion: 1, answeredAt: AFTER })]),
 		).toBe(1);
 	});
+
+	/**
+	 * A BLOCKER is the case that most needs the banner, and the predicate used
+	 * to drop it: the quote or approval its answer records reaches the draft
+	 * writers ONLY through a regenerated analysis, so a topic could be cleared
+	 * of blockers with the analysis still writing as if nothing had arrived.
+	 */
+	it("counts a blocker answered after the analysis was written", () => {
+		const thread = answered({ analysisVersion: 1, answeredAt: AFTER });
+		expect(
+			count([
+				{
+					root: { ...thread.root, kind: "BLOCKER" as const },
+					replies: thread.replies.map((r) => ({
+						...r,
+						kind: "BLOCKER" as const,
+					})),
+				},
+			]),
+		).toBe(1);
+	});
+
+	it("still ignores a kind that is neither, so the count stays a decision count", () => {
+		const thread = answered({ analysisVersion: 1, answeredAt: AFTER });
+		expect(
+			count([
+				{
+					root: { ...thread.root, kind: "NOTE" as const },
+					replies: thread.replies,
+				},
+			]),
+		).toBe(0);
+	});
 });
 
 describe("PlanningAnalysisTab — the assistant's proposed rewrite", () => {

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -214,17 +214,56 @@ describe("LinkedInPostPanel — the generate control", () => {
 		);
 	});
 
-	it("does not send refineFromWorkingDraft on an ordinary generation", () => {
+	it("does not send refineFromWorkingDraft on an ordinary generation", async () => {
 		// The flag is what makes the server read saved text into the prompt. A
 		// plain generate that set it would silently turn every regeneration into
 		// a revision of the draft the reader was trying to replace.
+		const user = userEvent.setup();
 		renderPanel({ draft: readyDraft() });
 
-		screen.getByRole("button", { name: /regenerate drafts/i }).click();
+		await user.click(
+			screen.getByRole("button", { name: /regenerate drafts/i }),
+		);
+		await user.click(
+			within(await screen.findByRole("dialog")).getByRole("button", {
+				name: "Regenerate",
+			}),
+		);
 
 		expect(mutate.generate).toHaveBeenCalledWith(
 			expect.not.objectContaining({ refineFromWorkingDraft: true }),
 		);
+	});
+
+	it("collapses guidance behind the button once drafts exist", async () => {
+		// The field is not merely moved, it is PUT AWAY. Above the drafts it
+		// was an input asking to be filled in before every regeneration; the
+		// common case is regenerating with nothing more to say, and the field
+		// charged that case a permanent box over the content it acts on.
+		const user = userEvent.setup();
+		renderPanel({ draft: readyDraft() });
+
+		expect(screen.queryByLabelText(/guidance/i)).not.toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("button", { name: /regenerate drafts/i }),
+		);
+
+		expect(
+			within(await screen.findByRole("dialog")).getByLabelText(
+				/guidance/i,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the guidance field on the page before the first run", () => {
+		// The other half of the rule above, and the reason it is not simply
+		// "guidance lives in a popover": with no candidates on screen there is
+		// nothing for the button to sit on, and someone who has never run this
+		// tab should be shown what steers it rather than have to find it.
+		renderPanel();
+
+		expect(screen.getByLabelText(/guidance/i)).toBeInTheDocument();
 	});
 });
 
@@ -238,21 +277,35 @@ describe("LinkedInPostPanel — refining the saved draft", () => {
 		updatedAt: new Date(),
 	};
 
+	/** Opens the refine popover and hands back a scope inside it. */
+	async function openRefine(user: ReturnType<typeof userEvent.setup>) {
+		await user.click(
+			screen.getByRole("button", { name: /refine with ai/i }),
+		);
+		return within(await screen.findByRole("dialog"));
+	}
+
 	it("offers no refine control until something is saved", () => {
+		// The TRIGGER, not the field inside it: behind a popover the field is
+		// absent whether or not the control exists, so querying for it would
+		// pass with the button sitting there offering a refinement of nothing.
 		renderPanel({ draft: readyDraft() });
 
 		expect(
-			screen.queryByRole("button", { name: /refine draft/i }),
+			screen.queryByRole("button", { name: /refine with ai/i }),
 		).not.toBeInTheDocument();
 	});
 
-	it("keeps refine disabled until an instruction is typed", () => {
+	it("keeps refine disabled until an instruction is typed", async () => {
 		// A refinement with no instruction is a rewrite of the draft for no
 		// stated reason, which is the one thing this action cannot usefully do.
+		const user = userEvent.setup();
 		renderPanel({ draft: readyDraft(), working });
 
+		const popover = await openRefine(user);
+
 		expect(
-			screen.getByRole("button", { name: /refine draft/i }),
+			popover.getByRole("button", { name: /refine draft/i }),
 		).toBeDisabled();
 	});
 
@@ -260,11 +313,14 @@ describe("LinkedInPostPanel — refining the saved draft", () => {
 		const user = userEvent.setup();
 		renderPanel({ draft: readyDraft(), working });
 
+		const popover = await openRefine(user);
 		await user.type(
-			screen.getByLabelText(/refine the saved draft/i),
+			popover.getByLabelText(/refine the saved draft/i),
 			"Stronger opening line",
 		);
-		await user.click(screen.getByRole("button", { name: /refine draft/i }));
+		await user.click(
+			popover.getByRole("button", { name: /refine draft/i }),
+		);
 
 		expect(mutate.generate).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -274,18 +330,48 @@ describe("LinkedInPostPanel — refining the saved draft", () => {
 		);
 	});
 
-	it("keeps the refine instruction out of the plain generate call", async () => {
-		// Two fields rather than one: a shared box would carry "make it
-		// shorter" into a generation that has nothing to shorten.
+	it("closes the popover once the refinement is away", async () => {
+		// It sits over the draft it just changed. Left open, it hides the
+		// result the reader asked for.
 		const user = userEvent.setup();
 		renderPanel({ draft: readyDraft(), working });
 
+		const popover = await openRefine(user);
 		await user.type(
-			screen.getByLabelText(/refine the saved draft/i),
+			popover.getByLabelText(/refine the saved draft/i),
 			"Warmer tone",
 		);
 		await user.click(
+			popover.getByRole("button", { name: /refine draft/i }),
+		);
+
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+	});
+
+	it("keeps the refine instruction out of the plain generate call", async () => {
+		// Two fields rather than one: a shared box would carry "make it
+		// shorter" into a generation that has nothing to shorten. Two popovers
+		// now, which makes the separation easier to see and no less load
+		// bearing — they write the same `guidance` key on the wire.
+		const user = userEvent.setup();
+		renderPanel({ draft: readyDraft(), working });
+
+		const refine = await openRefine(user);
+		await user.type(
+			refine.getByLabelText(/refine the saved draft/i),
+			"Warmer tone",
+		);
+		await user.keyboard("{Escape}");
+
+		await user.click(
 			screen.getByRole("button", { name: /regenerate drafts/i }),
+		);
+		await user.click(
+			within(await screen.findByRole("dialog")).getByRole("button", {
+				name: "Regenerate",
+			}),
 		);
 
 		expect(mutate.generate).toHaveBeenCalledWith(
@@ -396,6 +482,75 @@ describe("LinkedInPostPanel — what a reader without edit rights sees", () => {
 		expect(
 			screen.queryByRole("button", { name: /use this draft/i }),
 		).not.toBeInTheDocument();
+		// Per name, not one alternation: `queryByRole` THROWS on multiple
+		// matches rather than returning them, so a regression handing a viewer
+		// a second control would surface as a `TestingLibraryElementError`
+		// instead of this assertion's own message.
+		for (const name of [/regenerate drafts/i, /refine with ai/i]) {
+			expect(
+				screen.queryByRole("button", { name }),
+			).not.toBeInTheDocument();
+		}
+	});
+});
+
+describe("LinkedInPostPanel — the working draft is a working area", () => {
+	const working = {
+		postType: "LINKEDIN_POST" as const,
+		hasBody: true,
+		body: "CI dropped from 14 minutes to 4.",
+		sourceDraftId: "d1",
+		sourceOptionLabel: "Result first",
+		updatedAt: new Date(),
+	};
+
+	it("gives the editor a viewport-relative height, not four rows", () => {
+		// The one assertion in this file on a CLASS rather than a role or a
+		// text, and deliberately: "big enough to work in" has no accessible
+		// expression to assert against. `rows={4}` was the complaint — a
+		// keyhole over a post usually longer than itself — and the fix is the
+		// same clamp the Planning & Analysis editor sizes its region with.
+		renderPanel({ draft: readyDraft(), working });
+
+		expect(
+			screen.getByRole("textbox", { name: /working linkedin post/i }),
+		).toHaveClass("h-[clamp(24rem,60vh,44rem)]");
+	});
+
+	it("puts the generation controls BELOW the draft they do not act on", async () => {
+		// The complaint this layout answers, asserted as ORDER rather than as
+		// presence: both AI inputs used to sit above the working draft, so the
+		// thing being edited was a small box underneath two fields that act on
+		// something else. Document order is the only way to state that.
+		renderPanel({ draft: readyDraft(), working });
+
+		const editor = screen.getByRole("textbox", {
+			name: /working linkedin post/i,
+		});
+		const regenerate = screen.getByRole("button", {
+			name: /regenerate drafts/i,
+		});
+
+		expect(
+			editor.compareDocumentPosition(regenerate) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+	});
+
+	it("puts Refine with AI in the draft's own action row", () => {
+		// Beside Save changes and Copy draft, not above the draft: the action
+		// belongs to the text it rewrites.
+		renderPanel({ draft: readyDraft(), working });
+
+		const actions = screen.getByRole("button", {
+			name: /refine with ai/i,
+		}).parentElement;
+
+		expect(
+			within(actions as HTMLElement).getByRole("button", {
+				name: /save changes/i,
+			}),
+		).toBeInTheDocument();
 	});
 });
 

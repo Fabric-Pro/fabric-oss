@@ -66,6 +66,7 @@
 import type { ChatHistoryGroupItem } from "@saas/ai/components/ChatHistoryGroup";
 import { ChatHistoryGroup } from "@saas/ai/components/ChatHistoryGroup";
 import { RenameChatDialog } from "@saas/ai/components/RenameChatDialog";
+import type { DocumentRefKind } from "@saas/projects/hooks/useDocumentAssistantHistory";
 import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import {
 	AlertDialog,
@@ -176,7 +177,7 @@ type PersistedMessage = PersistedConversationMessage;
 export interface CopilotHistoryDrawerProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
-	documentRefKind: "PROJECT_DOCUMENT" | "USER_STORY";
+	documentRefKind: DocumentRefKind;
 	documentRefId: string;
 	projectId: string;
 	organizationId: string | null;

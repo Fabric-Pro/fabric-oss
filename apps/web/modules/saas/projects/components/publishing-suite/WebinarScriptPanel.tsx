@@ -8,6 +8,11 @@ import {
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@ui/components/popover";
 import { Textarea } from "@ui/components/textarea";
 import { Loader2Icon, PencilLineIcon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
@@ -620,6 +625,13 @@ export function WebinarScriptPanel({
 	 */
 	const [refineInstruction, setRefineInstruction] = useState("");
 	/**
+	 * Both instructions live behind a button now, so each owns its open state
+	 * and closes on submit. A popover left standing over the panel covers the
+	 * draft the reader just asked it to change.
+	 */
+	const [guidanceOpen, setGuidanceOpen] = useState(false);
+	const [refineOpen, setRefineOpen] = useState(false);
+	/**
 	 * The editor's text, or null for "showing what the server last returned".
 	 * Null rather than a copy of the body, so a poll landing while the reader
 	 * has NOT typed shows the newer text, and one landing while they HAVE
@@ -802,6 +814,39 @@ export function WebinarScriptPanel({
 	};
 
 	const candidateBody = doc ? composeWebinarScriptWorkingDraftBody(doc) : "";
+	/** Live in one place: the run is one run wherever it was started. */
+	const generatingStatus = isGenerating ? (
+		<span className="text-muted-foreground text-sm" role="status">
+			Writing the draft…
+		</span>
+	) : null;
+
+	/**
+	 * One field with two homes: the first-run block in the drafts section, and
+	 * the "Regenerate draft" popover once a draft exists. Built once so the two
+	 * cannot drift — they share an `id`, and a second copy of that is a second
+	 * chance for the label to stop naming the field it points at. Only ever one
+	 * of them is mounted, so the id stays unique on the page.
+	 */
+	const guidanceField = (
+		<div className="space-y-2">
+			<label
+				className="publishing-label block"
+				htmlFor="webinar-script-guidance"
+			>
+				Guidance (optional)
+			</label>
+			<Textarea
+				id="webinar-script-guidance"
+				value={guidance}
+				onChange={(e) => setGuidance(e.target.value)}
+				maxLength={GUIDANCE_MAX}
+				rows={3}
+				placeholder="Audience, session length, which demo steps to include, tone."
+				disabled={isGenerating || generate.isPending}
+			/>
+		</div>
+	);
 	const candidate =
 		hasUnadoptedVersion && doc ? (
 			<CandidateDraft
@@ -884,6 +929,95 @@ export function WebinarScriptPanel({
 								Discard changes
 							</Button>
 						) : null}
+						{/*
+						 * A SECOND action, never a replacement for regeneration. Regenerate
+						 * rebuilds the webinar script from the planning analysis; this one revises the
+						 * saved text, which is why it belongs in that text's own action row. As a
+						 * field above the draft it asked the reader to describe a change to
+						 * something they could not see while typing it.
+						 */}
+						<Popover open={refineOpen} onOpenChange={setRefineOpen}>
+							<PopoverTrigger asChild>
+								<Button type="button" variant="outline">
+									<PencilLineIcon
+										className="mr-2 size-4"
+										aria-hidden="true"
+									/>
+									Refine with AI
+								</Button>
+							</PopoverTrigger>
+							<PopoverContent
+								align="start"
+								className="w-[min(24rem,calc(100vw-2rem))] space-y-3 p-3"
+							>
+								<div className="space-y-1">
+									<label
+										className="publishing-label block"
+										htmlFor="webinar-script-refine"
+									>
+										Refine the saved draft
+									</label>
+									<p className="text-muted-foreground text-xs leading-relaxed">
+										Starts from the webinar script you have
+										saved and changes only what you ask for.
+										The result arrives as a new version to
+										compare against; nothing you have saved
+										changes until you adopt it.
+									</p>
+								</div>
+								<Textarea
+									id="webinar-script-refine"
+									value={refineInstruction}
+									onChange={(e) =>
+										setRefineInstruction(e.target.value)
+									}
+									maxLength={GUIDANCE_MAX}
+									rows={3}
+									placeholder="Cut the demo to five minutes. Warmer tone. Lead with the metric."
+									disabled={
+										isGenerating || generate.isPending
+									}
+								/>
+								<Button
+									type="button"
+									size="sm"
+									onClick={() => {
+										generate.mutate({
+											projectId,
+											topicId,
+											organizationId,
+											guidance:
+												refineInstruction.trim() ||
+												null,
+											refineFromWorkingDraft: true,
+										});
+										setRefineOpen(false);
+									}}
+									// Required here where it is optional for a generation: a
+									// refinement with no instruction is a rewrite of the draft for no
+									// stated reason, which is the one thing this action cannot
+									// usefully do.
+									disabled={
+										!refineInstruction.trim() ||
+										isGenerating ||
+										generate.isPending
+									}
+								>
+									{isGenerating || generate.isPending ? (
+										<Loader2Icon
+											className="mr-2 size-4 motion-safe:animate-spin"
+											aria-hidden="true"
+										/>
+									) : (
+										<PencilLineIcon
+											className="mr-2 size-4"
+											aria-hidden="true"
+										/>
+									)}
+									Refine draft
+								</Button>
+							</PopoverContent>
+						</Popover>
 						<CopyDraftButton markdown={bodyValue} />
 						<DraftDownloadDropdown
 							markdown={composeExportMarkdown({
@@ -927,129 +1061,6 @@ export function WebinarScriptPanel({
 				heldBy={editLock.heldBy}
 				onTakeOver={editLock.takeOver}
 			/>
-			{canEdit ? (
-				<section className="space-y-2">
-					<label
-						className="publishing-label block"
-						htmlFor="webinar-script-guidance"
-					>
-						Guidance (optional)
-					</label>
-					<Textarea
-						id="webinar-script-guidance"
-						value={guidance}
-						onChange={(e) => setGuidance(e.target.value)}
-						maxLength={GUIDANCE_MAX}
-						rows={3}
-						placeholder="Audience, session length, which demo steps to include, tone."
-						disabled={isGenerating || generate.isPending}
-					/>
-					<div className="flex items-center gap-3">
-						<Button
-							type="button"
-							onClick={() =>
-								generate.mutate({
-									projectId,
-									topicId,
-									organizationId,
-									guidance: guidance.trim() || null,
-								})
-							}
-							disabled={isGenerating || generate.isPending}
-						>
-							{isGenerating || generate.isPending ? (
-								<Loader2Icon
-									className="mr-2 size-4 motion-safe:animate-spin"
-									aria-hidden="true"
-								/>
-							) : (
-								<SparklesIcon
-									className="mr-2 size-4"
-									aria-hidden="true"
-								/>
-							)}
-							{doc
-								? "Regenerate draft"
-								: "Generate webinar script"}
-						</Button>
-						{isGenerating ? (
-							<span
-								className="text-muted-foreground text-sm"
-								role="status"
-							>
-								Writing the draft…
-							</span>
-						) : null}
-					</div>
-					{doc ? (
-						<p className="text-muted-foreground text-xs">
-							Regenerating writes a new version to compare
-							against. The webinar script you have saved is not
-							affected until you adopt it.
-						</p>
-					) : null}
-				</section>
-			) : null}
-
-			{canEdit && working?.hasBody ? (
-				<section className="space-y-2">
-					<label
-						className="publishing-label block"
-						htmlFor="webinar-script-refine"
-					>
-						Refine the saved draft
-					</label>
-					<Textarea
-						id="webinar-script-refine"
-						value={refineInstruction}
-						onChange={(e) => setRefineInstruction(e.target.value)}
-						maxLength={GUIDANCE_MAX}
-						rows={2}
-						placeholder="Cut the demo to five minutes. Warmer tone. Lead with the metric."
-						disabled={isGenerating || generate.isPending}
-					/>
-					<div className="flex items-center gap-3">
-						<Button
-							type="button"
-							variant="outline"
-							onClick={() =>
-								generate.mutate({
-									projectId,
-									topicId,
-									organizationId,
-									guidance: refineInstruction.trim() || null,
-									refineFromWorkingDraft: true,
-								})
-							}
-							disabled={
-								!refineInstruction.trim() ||
-								isGenerating ||
-								generate.isPending
-							}
-						>
-							{isGenerating || generate.isPending ? (
-								<Loader2Icon
-									className="mr-2 size-4 motion-safe:animate-spin"
-									aria-hidden="true"
-								/>
-							) : (
-								<PencilLineIcon
-									className="mr-2 size-4"
-									aria-hidden="true"
-								/>
-							)}
-							Refine draft
-						</Button>
-					</div>
-					<p className="text-muted-foreground text-xs">
-						Starts from the webinar script you have saved and
-						changes only what you ask for. The result arrives as a
-						new version to compare against; nothing you have saved
-						changes until you adopt it.
-					</p>
-				</section>
-			) : null}
-
 			{isStranded ? (
 				<p className="text-muted-foreground text-sm" role="alert">
 					The last run didn't report back within its time limit.
@@ -1177,6 +1188,139 @@ export function WebinarScriptPanel({
 			) : null}
 
 			<DraftComparison saved={savedDraft} candidate={candidate} />
+
+			{/*
+			 * Regeneration belongs WITH the drafts it produces, not above the
+			 * editor it does not act on. `DraftComparison` shows the newest
+			 * candidate only until it is adopted, so the candidate is not a stable
+			 * place to hang a control — this section is.
+			 *
+			 * "Drafts" rather than the short-form panels' "Candidate drafts",
+			 * because here the candidate is NOT in this section: it renders beside
+			 * the editor above, in `DraftComparison`. What this section holds is the
+			 * control that makes the next draft and the list of earlier ones, and a
+			 * heading promising candidates over a region containing none sends a
+			 * reader looking for something that is already on screen.
+			 */}
+			{canEdit ? (
+				<section className="space-y-3">
+					<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+						<h3 className="publishing-label">Drafts</h3>
+						{doc ? (
+							<div className="flex items-center gap-3">
+								{generatingStatus}
+								<Popover
+									open={guidanceOpen}
+									onOpenChange={setGuidanceOpen}
+								>
+									<PopoverTrigger asChild>
+										<Button
+											type="button"
+											size="sm"
+											disabled={
+												isGenerating ||
+												generate.isPending
+											}
+										>
+											{isGenerating ||
+											generate.isPending ? (
+												<Loader2Icon
+													className="mr-2 size-4 motion-safe:animate-spin"
+													aria-hidden="true"
+												/>
+											) : (
+												<SparklesIcon
+													className="mr-2 size-4"
+													aria-hidden="true"
+												/>
+											)}
+											Regenerate draft
+										</Button>
+									</PopoverTrigger>
+									<PopoverContent
+										align="end"
+										className="w-[min(24rem,calc(100vw-2rem))] space-y-3 p-3"
+									>
+										<p className="text-muted-foreground text-xs leading-relaxed">
+											Regenerating writes a new version to
+											compare against. The webinar script
+											you have saved is not affected until
+											you adopt it.
+										</p>
+										{guidanceField}
+										<Button
+											type="button"
+											size="sm"
+											onClick={() => {
+												generate.mutate({
+													projectId,
+													topicId,
+													organizationId,
+													guidance:
+														guidance.trim() || null,
+												});
+												setGuidanceOpen(false);
+											}}
+											disabled={
+												isGenerating ||
+												generate.isPending
+											}
+										>
+											<SparklesIcon
+												className="mr-2 size-4"
+												aria-hidden="true"
+											/>
+											Regenerate
+										</Button>
+									</PopoverContent>
+								</Popover>
+							</div>
+						) : null}
+					</div>
+					{/*
+					 * The FIRST run keeps its field on the page. There is no draft yet
+					 * for a button to sit on, and someone who has never run this tab
+					 * should be shown what steers it rather than have to find it behind
+					 * a popover. Once a draft exists the same field moves into the
+					 * popover above — one `guidanceField`, never two copies.
+					 */}
+					{doc ? null : (
+						<div className="space-y-2">
+							{guidanceField}
+							<div className="flex items-center gap-3">
+								<Button
+									type="button"
+									onClick={() =>
+										generate.mutate({
+											projectId,
+											topicId,
+											organizationId,
+											guidance: guidance.trim() || null,
+										})
+									}
+									disabled={
+										isGenerating || generate.isPending
+									}
+								>
+									{isGenerating || generate.isPending ? (
+										<Loader2Icon
+											className="mr-2 size-4 motion-safe:animate-spin"
+											aria-hidden="true"
+										/>
+									) : (
+										<SparklesIcon
+											className="mr-2 size-4"
+											aria-hidden="true"
+										/>
+									)}
+									Generate webinar script
+								</Button>
+								{generatingStatus}
+							</div>
+						</div>
+					)}
+				</section>
+			) : null}
 
 			{/*
 			   OUTSIDE the `doc` gate below, alone among these blocks, and

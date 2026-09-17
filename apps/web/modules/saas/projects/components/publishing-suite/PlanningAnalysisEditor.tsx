@@ -54,6 +54,10 @@ import {
 	repairMarkdownDocument,
 } from "@saas/projects/lib/diff-utils";
 import { getEditorMarkdownForSave } from "@saas/projects/lib/editor-markdown-save";
+import {
+	isEditorDirty,
+	shouldWarnBeforeUnload,
+} from "@saas/projects/lib/stories/unsaved-changes-guard";
 import { advancedExtensions } from "@saas/projects/lib/tiptap-extensions-advanced";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation } from "@tanstack/react-query";
@@ -67,7 +71,7 @@ import {
 	EyeIcon,
 	Loader2Icon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 // Every diff rule in this stylesheet is scoped under `.streaming-diff-active`,
 // so without the import the `diffInsert` / `diffDelete` marks are in the
@@ -225,6 +229,18 @@ export function PlanningAnalysisEditor({
 	const [viewMode, setViewMode] = useState<"rich" | "raw">("rich");
 	const [rawContent, setRawContent] = useState(prose);
 	const [saveError, setSaveError] = useState<string | null>(null);
+	/**
+	 * What the server holds, as text this editor can be compared against.
+	 *
+	 * Seeded from `prose` and advanced only by a save this component confirmed.
+	 * Derived rather than a blind boolean for the reason `isEditorDirty`'s own
+	 * docblock gives: a flag set on keystroke and cleared whenever any save
+	 * resolves goes false while the author kept typing through an in-flight
+	 * save, which is easy to hit because the editor stays editable during one.
+	 */
+	const [lastSavedProse, setLastSavedProse] = useState(prose);
+	/** The body of the save currently in flight, promoted on confirmation. */
+	const pendingSaveBodyRef = useRef<string | null>(null);
 
 	const editor = useEditor({
 		extensions: advancedExtensions,
@@ -269,6 +285,13 @@ export function PlanningAnalysisEditor({
 		orpc.projects.publishingSuite.saveAnalysisRevision.mutationOptions({
 			onSuccess: (result: SaveAnalysisRevisionResult) => {
 				setSaveError(null);
+				// Promote only what the server actually took. Reading the
+				// editor here instead would mark clean any keystroke made
+				// while this save was in flight.
+				if (pendingSaveBodyRef.current !== null) {
+					setLastSavedProse(pendingSaveBodyRef.current);
+					pendingSaveBodyRef.current = null;
+				}
 				toast.success("Planning analysis saved.");
 				onSaved?.(result.version);
 			},
@@ -323,6 +346,7 @@ export function PlanningAnalysisEditor({
 			// markdown by hand gets exactly what they typed saved back, not a
 			// "repaired" rewrite of it.
 			setSaveError(null);
+			pendingSaveBodyRef.current = rawContent;
 			saveMutation.mutate({
 				projectId,
 				topicId,
@@ -345,6 +369,7 @@ export function PlanningAnalysisEditor({
 		}
 
 		setSaveError(null);
+		pendingSaveBodyRef.current = markdown;
 		saveMutation.mutate({
 			projectId,
 			topicId,
@@ -359,6 +384,57 @@ export function PlanningAnalysisEditor({
 	// revision against a source version that is already being superseded.
 	const saveDisabled =
 		sourceAnalysisVersion === null || saveMutation.isPending || isLocked;
+
+	/**
+	 * Warn before a tab close that would discard an unsaved edit.
+	 *
+	 * THIS SURFACE DOES NOT AUTOSAVE, and that is deliberate — Fizzy #1929's
+	 * worst defect was an autosave racing an in-flight agent and overwriting
+	 * the server with pre-answer text, so an explicit Save is the only writer
+	 * here. The assistant's accept path leans on that: `onAcceptAll` re-seeds
+	 * this editor with the merged document and saves nothing.
+	 *
+	 * The consequence was that a rewrite somebody had just accepted — a few
+	 * hundred changes, in the case that prompted this — sat in the editor with
+	 * nothing between it and the next navigation. Feature Maturation has both
+	 * halves of the guard; this surface had neither, which left the deliberate
+	 * no-autosave decision resting on the author remembering.
+	 *
+	 * FMv2's OTHER half is not copied. It flushes a silent save on unmount to
+	 * cover App Router navigation, which it can afford because it autosaves
+	 * anyway. Doing that here would reintroduce exactly the write #1929
+	 * removed. So a client-side navigation away still loses the edit — the
+	 * dirty marker beside Save is what makes that visible beforehand, and
+	 * closing that gap properly needs a navigation guard rather than a write.
+	 */
+	const isDirty = isEditorDirty(
+		viewMode === "raw" ? rawContent : getEditorMarkdownForSave(editor),
+		lastSavedProse,
+	);
+	const isDirtyRef = useRef(isDirty);
+	isDirtyRef.current = isDirty;
+	const isSavingRef = useRef(saveMutation.isPending);
+	isSavingRef.current = saveMutation.isPending;
+
+	useEffect(() => {
+		const onBeforeUnload = (event: BeforeUnloadEvent) => {
+			if (
+				!shouldWarnBeforeUnload({
+					hasUnsavedChanges: isDirtyRef.current,
+					isSaving: isSavingRef.current,
+				})
+			) {
+				return;
+			}
+			// Browsers ignore custom text and show their own copy; both the
+			// assignment and preventDefault are required for cross-browser
+			// support.
+			event.preventDefault();
+			event.returnValue = "";
+		};
+		window.addEventListener("beforeunload", onBeforeUnload);
+		return () => window.removeEventListener("beforeunload", onBeforeUnload);
+	}, []);
 
 	return (
 		<div className="flex flex-col gap-3">
@@ -560,6 +636,25 @@ export function PlanningAnalysisEditor({
 							Generate a planning analysis before you can save
 							edits.
 						</p>
+					) : null}
+					{/* The only thing standing between an accepted rewrite and
+					    a navigation that discards it. `beforeunload` covers a
+					    tab close; nothing covers an in-app link, and this
+					    surface must not autosave (see the guard above), so the
+					    remaining defence is saying plainly that the work is
+					    not on the server yet. */}
+					{/* Plain text, deliberately: this region already contains a
+					    polite live region, and a second one announcing on
+					    every keystroke would talk over it. The marker is a
+					    standing label on the state, not an event — the Save
+					    button beside it is what a keyboard user acts on. */}
+					{isDirty && !saveMutation.isPending ? (
+						<span
+							className="text-highlight text-xs"
+							data-testid="planning-analysis-unsaved"
+						>
+							Unsaved changes
+						</span>
 					) : null}
 					<Button
 						type="button"

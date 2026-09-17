@@ -15,6 +15,7 @@ import {
 	PopoverTrigger,
 } from "@ui/components/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
+import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
 import { Loader2Icon, PlusIcon, SparklesIcon } from "lucide-react";
 import dynamic from "next/dynamic";
@@ -37,7 +38,11 @@ import {
 import type { TopicAssistantContext } from "./TopicAssistant";
 import { TopicBlockers } from "./TopicBlockers";
 import { TopicDecisionLog } from "./TopicDecisionLog";
-import { MeetingParticipants, TopicDetails } from "./TopicDetails";
+import {
+	MeetingParticipants,
+	TopicDetails,
+	TopicRankReason,
+} from "./TopicDetails";
 import {
 	countAnswersRecordedAfter,
 	TopicQuestionsPanel,
@@ -484,6 +489,34 @@ export function TopicItemPage({
 	);
 
 	/**
+	 * The OTHER way an analysis goes stale: its source text changed.
+	 *
+	 * The summary is now editable, and the analysis is derived from it — so an
+	 * edit leaves the analysis describing a topic that no longer says what it
+	 * said. That is the same staleness an unfolded answer causes and it earns
+	 * the same notice; without one the only signal is the author remembering
+	 * what they changed.
+	 *
+	 * A separate boolean rather than something folded into the answer count:
+	 * the count is a count, and "1 answer was recorded" is a sentence that must
+	 * not start meaning "1 answer, or possibly a summary edit".
+	 */
+	const analysisWrittenAt = analysisQuery.data?.aiCreatedAt ?? null;
+	const summaryEditedAfterAnalysis = (() => {
+		const pitchAt = topicQuery.data?.topic?.pitchUpdatedAt;
+		if (!pitchAt || analysisWrittenAt === null) {
+			return false;
+		}
+		const edited = new Date(pitchAt).getTime();
+		const written = new Date(analysisWrittenAt).getTime();
+		return (
+			!Number.isNaN(edited) && !Number.isNaN(written) && edited > written
+		);
+	})();
+	const analysisIsBehind =
+		answersBehindAnalysis > 0 || summaryEditedAfterAnalysis;
+
+	/**
 	 * A run is already in flight, read from the SERVER's row rather than from
 	 * any one button's pending state.
 	 *
@@ -808,6 +841,35 @@ export function TopicItemPage({
 		}),
 	);
 
+	/**
+	 * Edit the SUMMARY — `pitch`, the paragraph under the title and the text
+	 * every generation prompt is handed.
+	 *
+	 * `invalidateTopic` like its neighbours rather than reading a response:
+	 * the procedure returns `{ saved: true }`, not the topic.
+	 */
+	const updateSummary = useMutation(
+		orpc.projects.publishingSuite.updateTopicSummary.mutationOptions({
+			onSuccess: invalidateTopic,
+			onError: () => {
+				toast.error("We couldn't save the summary. Please try again.");
+			},
+		}),
+	);
+
+	/**
+	 * Save the private notebook. Fired on blur, so a failure must say so — the
+	 * person has already looked away from the field by the time it lands.
+	 */
+	const saveNotes = useMutation(
+		orpc.projects.publishingSuite.setTopicNotes.mutationOptions({
+			onSuccess: invalidateTopic,
+			onError: () => {
+				toast.error("We couldn't save your notes. Please try again.");
+			},
+		}),
+	);
+
 	const updateContributors = useMutation(
 		orpc.projects.publishingSuite.updateTopicContributors.mutationOptions({
 			// Same contract as `updatePostTypes` above: the mutation response
@@ -967,12 +1029,24 @@ export function TopicItemPage({
 							</span>
 						) : null}
 					</div>
-					<span
-						className="shrink-0 rounded-full border border-border bg-muted px-3 py-1 text-muted-foreground text-xs"
-						data-testid="topic-status"
-					>
-						{statusLabel}
-					</span>
+					{/* The rank reason rides the title row instead of taking a
+					    full-width line of its own in the metadata block below.
+					    As a left-barred `rule` paragraph in the flow it read as
+					    a section opener and cost a whole band of vertical space
+					    for four words; beside the status chip it reads as what
+					    it is — a note about why this topic surfaced. The block
+					    below is told not to render it again
+					    (`showRankReason={false}`), the same lift the Inbox row
+					    already does. */}
+					<div className="flex shrink-0 items-center gap-2">
+						<TopicRankReason topic={topic} variant="pill" />
+						<span
+							className="shrink-0 rounded-full border border-border bg-muted px-3 py-1 text-muted-foreground text-xs"
+							data-testid="topic-status"
+						>
+							{statusLabel}
+						</span>
+					</div>
 				</div>
 				{topic.declineReason ? (
 					<p className="border-destructive border-l-2 pl-3 text-muted-foreground text-sm">
@@ -996,65 +1070,81 @@ export function TopicItemPage({
 			{/* The metadata block is `TopicDetails`, the SAME component
 				    the Inbox row mounts — not a copy of it. The two views
 				    show the same fields, so a second implementation would
-				    drift the first time either changed. */}
-			<TopicDetails
-				topic={topic}
-				canEdit={canEdit}
-				isPending={
-					postTypesPending ||
-					urlPending ||
-					contributorsPending ||
-					assigneesPending
-				}
-				onEditUrl={() => setUrlOpen(true)}
-				contributorsControl={
-					<ContributorsPicker
-						topicTitle={topic.title}
-						open={contributorsOpen}
-						onOpenChange={setContributorsOpen}
-						members={members}
-						contributors={topic.contributors}
-						initialSelected={contributorIds}
-						hasOverride={topic.userContributorUserIds !== null}
-						viewerUserId={viewerUserId}
-						membersPending={membersQuery.isPending}
-						membersError={membersQuery.isError}
-						onSubmit={handleContributorsSubmit}
-						isPending={contributorsPending}
-					/>
-				}
-				assigneesControl={
-					<AssigneesPicker
-						topicTitle={topic.title}
-						open={assigneesOpen}
-						onOpenChange={setAssigneesOpen}
-						members={members}
-						assignees={topic.assignees}
-						initialSelected={assigneeIds}
-						viewerUserId={viewerUserId}
-						membersPending={membersQuery.isPending}
-						membersError={membersQuery.isError}
-						onSubmit={handleAssigneesSubmit}
-						isPending={assigneesPending}
-					/>
-				}
-				showMeetingParticipants={false}
-				showEditPostTypes={false}
-			/>
+				    drift the first time either changed.
+
+				    WRAPPED, and the wrapper is the fix rather than decoration.
+				    `TopicDetails` returns a bare fragment, so its eight-odd
+				    conditional children inherit whatever rhythm the mount
+				    supplies: the Inbox gives them `space-y-1`, this page's
+				    outer column gives them `space-y-6`. At 24px apiece the
+				    people rows and the picker row each claimed a band of their
+				    own and the header sprawled. Tightening it here changes
+				    nothing for the row, and nothing inside the shared
+				    component. */}
+			<div className="space-y-1.5">
+				<TopicDetails
+					topic={topic}
+					canEdit={canEdit}
+					isPending={
+						postTypesPending ||
+						urlPending ||
+						contributorsPending ||
+						assigneesPending
+					}
+					onEditUrl={() => setUrlOpen(true)}
+					contributorsControl={
+						<ContributorsPicker
+							topicTitle={topic.title}
+							open={contributorsOpen}
+							onOpenChange={setContributorsOpen}
+							members={members}
+							contributors={topic.contributors}
+							initialSelected={contributorIds}
+							hasOverride={topic.userContributorUserIds !== null}
+							viewerUserId={viewerUserId}
+							membersPending={membersQuery.isPending}
+							membersError={membersQuery.isError}
+							onSubmit={handleContributorsSubmit}
+							isPending={contributorsPending}
+						/>
+					}
+					assigneesControl={
+						<AssigneesPicker
+							topicTitle={topic.title}
+							open={assigneesOpen}
+							onOpenChange={setAssigneesOpen}
+							members={members}
+							assignees={topic.assignees}
+							initialSelected={assigneeIds}
+							viewerUserId={viewerUserId}
+							membersPending={membersQuery.isPending}
+							membersError={membersQuery.isError}
+							onSubmit={handleAssigneesSubmit}
+							isPending={assigneesPending}
+						/>
+					}
+					showMeetingParticipants={false}
+					showEditPostTypes={false}
+					showRankReason={false}
+					showContributorLabel
+				/>
+			</div>
 			{/* ABOVE the tabs, so it is on screen wherever the person is —
 			    including Summary & Questions, which is where answering a
 			    question makes it true. The action lives IN it, as Feature
 			    Maturation's does: a notice that can only point at a control on
 			    another tab is a notice you have to take on trust. */}
-			{answersBehindAnalysis > 0 ? (
+			{analysisIsBehind ? (
 				<div
 					className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-highlight/40 bg-highlight/10 px-4 py-2.5 text-foreground text-sm"
 					data-testid="analysis-behind-decisions"
 				>
 					<p>
-						{answersBehindAnalysis === 1
-							? "1 answer was recorded after the analysis was written"
-							: `${answersBehindAnalysis} answers were recorded after the analysis was written`}
+						{answersBehindAnalysis === 0
+							? "The summary changed after the analysis was written"
+							: answersBehindAnalysis === 1
+								? `1 answer was recorded${summaryEditedAfterAnalysis ? ", and the summary changed," : ""} after the analysis was written`
+								: `${answersBehindAnalysis} answers were recorded${summaryEditedAfterAnalysis ? ", and the summary changed," : ""} after the analysis was written`}
 						{canEdit
 							? " — regenerate to fold it in."
 							: " and are not reflected in it yet."}
@@ -1246,13 +1336,19 @@ export function TopicItemPage({
 					value="summaryQuestions"
 					className={cn(REVIEW_MEASURE_CLASS, "space-y-6")}
 				>
-					{topic.pitch ? (
-						<p className="max-w-3xl text-foreground text-sm leading-relaxed">
-							{topic.pitch}
-						</p>
-					) : (
-						<EmptyState>This topic has no summary yet.</EmptyState>
-					)}
+					<TopicSummary
+						pitch={topic.pitch}
+						canEdit={canEdit}
+						isSaving={updateSummary.isPending}
+						onSave={(pitch) =>
+							updateSummary.mutateAsync({
+								projectId,
+								topicId,
+								organizationId,
+								pitch,
+							})
+						}
+					/>
 					{/* No content-types list here. It used to render in full
 					    above the questions, which put the same checklist on
 					    screen twice: `+ Add type` in the tab strip opens the
@@ -1281,8 +1377,21 @@ export function TopicItemPage({
 						canEdit={canEdit}
 						isLoading={decisionsQuery.isLoading}
 						analysisFailed={latestAttempt?.status === "FAILED"}
+						isGeneratingAnalysis={isGeneratingAnalysis}
 						threads={decisionsQuery.data?.threads ?? []}
 						members={members}
+					/>
+					<TopicNotes
+						notes={topic.notes}
+						canEdit={canEdit}
+						onSave={(notes) =>
+							saveNotes.mutate({
+								projectId,
+								topicId,
+								organizationId,
+								notes,
+							})
+						}
 					/>
 				</TabsContent>
 
@@ -1291,7 +1400,7 @@ export function TopicItemPage({
 					className={REVIEW_MEASURE_CLASS}
 				>
 					<PlanningAnalysisTab
-						generateActionIsElsewhere={answersBehindAnalysis > 0}
+						generateActionIsElsewhere={analysisIsBehind}
 						projectId={projectId}
 						topicId={topicId}
 						organizationId={organizationId}
@@ -1382,6 +1491,185 @@ export function TopicItemPage({
 				onApplyRewrite={handleApplyRewrite}
 			/>
 		</div>
+	);
+}
+
+/**
+ * The topic's summary, editable in place.
+ *
+ * Inline rather than a dialog: it is one paragraph, it is the first thing on
+ * the tab, and it is the text every generation prompt is handed — so the cost
+ * of correcting it has to be a click, not a modal.
+ *
+ * The editor closes only AFTER the write lands, the contract the post-types
+ * and URL dialogs on this page already keep: a failed save that closed over
+ * the field would discard the only copy of what the person typed.
+ */
+function TopicSummary({
+	pitch,
+	canEdit,
+	isSaving,
+	onSave,
+}: {
+	pitch: string | null;
+	canEdit: boolean;
+	isSaving: boolean;
+	onSave: (pitch: string | null) => Promise<unknown>;
+}) {
+	const [isEditing, setIsEditing] = useState(false);
+	const [draft, setDraft] = useState("");
+
+	if (isEditing) {
+		const commit = async () => {
+			const trimmed = draft.trim();
+			try {
+				// The RAW text, or `null` to clear. The column is not trimmed
+				// server-side, so an all-whitespace draft sent as-is would
+				// persist as a summary made of spaces.
+				await onSave(trimmed.length > 0 ? draft : null);
+				setIsEditing(false);
+			} catch {
+				// The toast on the mutation says what happened; the draft stays
+				// on screen because it is the only copy of it.
+			}
+		};
+		return (
+			<div className="max-w-3xl space-y-2">
+				<Textarea
+					value={draft}
+					onChange={(e) => setDraft(e.target.value)}
+					rows={3}
+					maxLength={500}
+					aria-label="Topic summary"
+					placeholder="What this topic is about, in a paragraph."
+					disabled={isSaving}
+				/>
+				<div className="flex items-center justify-end gap-2">
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						disabled={isSaving}
+						onClick={() => setIsEditing(false)}
+					>
+						Cancel
+					</Button>
+					<Button
+						type="button"
+						size="sm"
+						disabled={isSaving}
+						onClick={commit}
+					>
+						Save summary
+					</Button>
+				</div>
+			</div>
+		);
+	}
+
+	return (
+		<div className="max-w-3xl space-y-2">
+			{pitch ? (
+				<p className="text-foreground text-sm leading-relaxed">
+					{pitch}
+				</p>
+			) : (
+				<EmptyState>This topic has no summary yet.</EmptyState>
+			)}
+			{canEdit ? (
+				<div className="flex justify-end">
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						onClick={() => {
+							setDraft(pitch ?? "");
+							setIsEditing(true);
+						}}
+					>
+						{pitch ? "Edit summary" : "Add a summary"}
+					</Button>
+				</div>
+			) : null}
+		</div>
+	);
+}
+
+/**
+ * The private notebook, and the one field on a topic the AI never touches.
+ *
+ * The same shape as Feature Maturation's notes section, down to saving on
+ * blur: a notebook with a Save button is one people forget to press. The hint
+ * is a promise, not a description — `notes` must stay out of every prompt
+ * builder and every AI-facing context on this page, including the assistant
+ * rail's `context` prop.
+ *
+ * The local mirror is re-seeded only when the SERVER value actually changes,
+ * so a refetch landing mid-sentence cannot clobber what is being typed.
+ */
+function TopicNotes({
+	notes,
+	canEdit,
+	onSave,
+}: {
+	notes: string | null;
+	canEdit: boolean;
+	onSave: (notes: string) => void;
+}) {
+	const [draft, setDraft] = useState(notes ?? "");
+	const [lastSaved, setLastSaved] = useState(notes ?? "");
+
+	useEffect(() => {
+		const incoming = notes ?? "";
+		if (incoming !== lastSaved) {
+			setLastSaved(incoming);
+			setDraft(incoming);
+		}
+	}, [notes, lastSaved]);
+
+	if (!canEdit) {
+		// Writing needs the same permission every other edit on this page does,
+		// so a reader gets the text without a field that would 403 on blur.
+		return notes ? (
+			<section aria-labelledby="topic-notes-heading">
+				<h3 id="topic-notes-heading" className="publishing-label">
+					Notes
+				</h3>
+				<p className="mt-3 whitespace-pre-wrap text-foreground text-sm leading-relaxed">
+					{notes}
+				</p>
+			</section>
+		) : null;
+	}
+
+	return (
+		<section aria-labelledby="topic-notes-heading">
+			<h3 id="topic-notes-heading" className="publishing-label">
+				Notes
+			</h3>
+			<p className="mt-1 text-muted-foreground text-xs">
+				Your private notebook for this topic. Jot down context, open
+				thoughts, or reminders — the AI never reads or edits this.
+			</p>
+			<Textarea
+				value={draft}
+				onChange={(e) => setDraft(e.target.value)}
+				onBlur={() => {
+					// Nothing typed, nothing sent — a blur that changed nothing
+					// must not write. The RAW text goes up: the procedure trims
+					// only to TEST emptiness and stores what it was given, so a
+					// client-side trim would eat the trailing blank line every
+					// notebook grows.
+					if (draft !== lastSaved) {
+						setLastSaved(draft);
+						onSave(draft);
+					}
+				}}
+				placeholder="Add your own notes about this topic…"
+				aria-label="Notes"
+				className="mt-3 min-h-[160px] resize-y"
+			/>
+		</section>
 	);
 }
 

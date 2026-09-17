@@ -63,6 +63,7 @@
  * is the correctness floor when SSE is unavailable.
  */
 
+import type { DocumentRefKind } from "@saas/projects/hooks/useDocumentAssistantHistory";
 import { useQueryClient } from "@tanstack/react-query";
 import {
 	createContext,
@@ -113,7 +114,7 @@ interface ProviderProps {
 	 * empties the historical set.
 	 */
 	activeConversationId: string | null;
-	documentRefKind: "PROJECT_DOCUMENT" | "USER_STORY";
+	documentRefKind: DocumentRefKind;
 	documentRefId: string;
 	projectId: string;
 	organizationId: string | null;
