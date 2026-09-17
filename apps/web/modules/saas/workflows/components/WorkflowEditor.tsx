@@ -13,7 +13,7 @@ import {
 } from "@ui/components/tooltip";
 import { ArrowLeftIcon, PanelRightCloseIcon } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { workflowExecutionsKey } from "../lib/query-keys";
 import type { WorkflowEdge, WorkflowNode } from "../lib/types";
@@ -76,8 +76,8 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 				// run is inspectable rather than invisible.
 				//
 				// An unconfirmed start means the engine may be running it: the
-				// panel polls that execution, and the user is told not to
-				// start it again (a second click would be a second run).
+				// panel polls that execution, and the idempotency key is kept
+				// so another click resolves to this run, not a second one.
 				if (result.status === "failed") {
 					toast.error(
 						result.message ?? "Failed to start workflow execution",
@@ -128,16 +128,41 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 		[workflowId, organizationId, updateMutation],
 	);
 
+	// One idempotency key per run *intent*. The toolbar disables the button
+	// while a start is pending, but a second click can land before React
+	// re-renders; reusing the key lets the server resolve that click to the
+	// run already started instead of a second one.
+	//
+	// The key is released only when the server has settled the intent: a
+	// confirmed start or a confirmed not-started failure. An unconfirmed
+	// start, or an error (which may be a lost response for a row the server
+	// did create), keeps it, so the user's retry reuses it and the server
+	// hands back that run rather than starting another.
+	const runIdempotencyKeyRef = useRef<string | null>(null);
+
 	// Handle run - pass current nodes/edges to execute with unsaved changes
 	const handleRun = useCallback(
 		(nodes: WorkflowNode[], edges: WorkflowEdge[]) => {
-			executeMutation.mutate({
-				id: workflowId,
-				organizationId,
-				// Pass current nodes/edges so execution uses latest state
-				nodes: nodes as unknown[],
-				edges: edges as unknown[],
-			});
+			const idempotencyKey =
+				runIdempotencyKeyRef.current ?? crypto.randomUUID();
+			runIdempotencyKeyRef.current = idempotencyKey;
+			executeMutation.mutate(
+				{
+					id: workflowId,
+					organizationId,
+					// Pass current nodes/edges so execution uses latest state
+					nodes: nodes as unknown[],
+					edges: edges as unknown[],
+					idempotencyKey,
+				},
+				{
+					onSuccess: (result) => {
+						if (result.status !== "unconfirmed") {
+							runIdempotencyKeyRef.current = null;
+						}
+					},
+				},
+			);
 		},
 		[workflowId, organizationId, executeMutation],
 	);

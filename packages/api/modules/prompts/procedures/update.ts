@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/server";
 import { getPromptById, updatePrompt } from "@repo/database";
 import type { TemplateFormat } from "@repo/utils";
 import { z } from "zod";
+import { INPUT_BOUNDS, labelArray } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -33,10 +34,10 @@ export const updateProcedure = tenantProtectedProcedure
 		z.object({
 			id: z.string(),
 			name: z.string().min(1).max(255).optional(),
-			description: z.string().optional(),
+			description: z.string().max(INPUT_BOUNDS.description).optional(),
 			format: PromptFormatSchema.optional(),
-			category: z.string().optional(),
-			tags: z.array(z.string()).optional(),
+			category: z.string().max(INPUT_BOUNDS.name).optional(),
+			tags: labelArray().optional(),
 			isPublic: z.boolean().optional(),
 		}),
 	)

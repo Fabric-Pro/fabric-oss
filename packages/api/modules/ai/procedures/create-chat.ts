@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/client";
 import { createAiChat, hasProjectAccess } from "@repo/database";
 import { z } from "zod";
+import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -20,7 +21,7 @@ export const createChat = tenantProtectedProcedure
 	})
 	.input(
 		z.object({
-			title: z.string().optional(),
+			title: z.string().max(INPUT_BOUNDS.name).optional(),
 			organizationId: z.string().nullable().optional(),
 			projectId: z.string().optional(),
 		}),

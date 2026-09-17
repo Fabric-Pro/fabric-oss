@@ -16,6 +16,7 @@ import { logger } from "@repo/logs";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import { fanOut } from "../../../../lib/notification-service";
+import { INPUT_BOUNDS } from "../../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -44,8 +45,16 @@ export const updateStoryProcedure = tenantProtectedProcedure
 			storyId: z.string(),
 			organizationId: z.string().nullable().optional(),
 			title: z.string().min(1).max(500).optional(),
-			description: z.string().optional().nullable(),
-			acceptanceCriteria: z.string().optional().nullable(),
+			description: z
+				.string()
+				.max(INPUT_BOUNDS.text)
+				.optional()
+				.nullable(),
+			acceptanceCriteria: z
+				.string()
+				.max(INPUT_BOUNDS.text)
+				.optional()
+				.nullable(),
 			priority: z
 				.enum(["P0_CRITICAL", "P1_HIGH", "P2_MEDIUM", "P3_LOW"])
 				.optional(),

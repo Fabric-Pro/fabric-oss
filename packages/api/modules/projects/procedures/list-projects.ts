@@ -1,6 +1,7 @@
 import { listProjects } from "@repo/database";
 import { ProjectStatusSchema } from "@repo/database/prisma/zod";
 import { z } from "zod";
+import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermissionAllowGuest,
@@ -32,7 +33,7 @@ export const listProjectsProcedure = tenantProtectedProcedure
 			limit: z.number().min(1).max(100).optional().default(10),
 			offset: z.number().min(0).optional().default(0),
 			status: ProjectStatusSchema.optional(),
-			search: z.string().optional(),
+			search: z.string().max(INPUT_BOUNDS.name).optional(),
 			deletedOnly: z.boolean().optional().default(false),
 			includeDeleted: z.boolean().optional().default(false),
 			includeDraft: z.boolean().optional().default(false),

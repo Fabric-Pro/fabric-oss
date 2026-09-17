@@ -11,6 +11,7 @@ import {
 	searchUsersForWorkspace,
 } from "@repo/database";
 import { z } from "zod";
+import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -180,7 +181,7 @@ export const searchUsersForWorkspaceProcedure = tenantProtectedProcedure
 	.input(
 		z.object({
 			workspaceId: z.string(),
-			query: z.string().min(1),
+			query: z.string().min(1).max(INPUT_BOUNDS.name),
 			limit: z.number().min(1).max(20).optional(),
 		}),
 	)

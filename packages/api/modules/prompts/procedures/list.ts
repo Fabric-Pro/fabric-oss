@@ -6,6 +6,7 @@ import {
 	listPrompts,
 } from "@repo/database";
 import { z } from "zod";
+import { INPUT_BOUNDS, labelArray } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -39,9 +40,9 @@ export const listProcedure = tenantProtectedProcedure
 		z.object({
 			organizationId: z.string().nullable().optional(),
 			scope: PromptScopeSchema.optional(),
-			category: z.string().optional(),
-			tags: z.array(z.string()).optional(),
-			search: z.string().optional(),
+			category: z.string().max(INPUT_BOUNDS.name).optional(),
+			tags: labelArray().optional(),
+			search: z.string().max(INPUT_BOUNDS.name).optional(),
 			format: PromptFormatSchema.optional(),
 			documentType: z.string().optional(),
 			limit: z.number().min(1).max(100).default(50),

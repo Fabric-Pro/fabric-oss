@@ -16,6 +16,7 @@ import { getTemporalClient } from "@repo/temporal";
 import { resolveWorkspaceDocumentMime } from "@repo/utils";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
+import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -56,7 +57,7 @@ export const listDocumentsProcedure = tenantProtectedProcedure
 				.optional(),
 			limit: z.number().min(1).max(100).optional(),
 			offset: z.number().min(0).optional(),
-			search: z.string().optional(),
+			search: z.string().max(INPUT_BOUNDS.name).optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {

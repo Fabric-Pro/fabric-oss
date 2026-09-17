@@ -1,5 +1,6 @@
 import { getProjectCodeIndexes } from "@repo/database";
 import { z } from "zod";
+import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -30,7 +31,7 @@ export const searchCodeFilesProcedure = tenantProtectedProcedure
 	.input(
 		z.object({
 			projectId: z.string(),
-			query: z.string(),
+			query: z.string().max(INPUT_BOUNDS.name),
 			organizationId: z.string().nullable().optional(),
 		}),
 	)

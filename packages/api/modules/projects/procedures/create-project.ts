@@ -15,6 +15,7 @@ import { getTemporalClient } from "@repo/temporal";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../lib/audit";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
+import { INPUT_BOUNDS, labelArray } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -36,7 +37,7 @@ export const createProjectProcedure = tenantProtectedProcedure
 	.input(
 		z.object({
 			name: z.string().min(1).max(255),
-			description: z.string().optional(),
+			description: z.string().max(INPUT_BOUNDS.description).optional(),
 			/**
 			 * Which readiness checklist the project is graded against (Fizzy #2165).
 			 *
@@ -51,12 +52,12 @@ export const createProjectProcedure = tenantProtectedProcedure
 				.optional(),
 			/** Only meaningful for Discovery projects; must not be in the past. */
 			expectedDevelopmentStartDate: z.coerce.date().optional(),
-			goals: z.string().optional(),
-			techStack: z.array(z.string()).optional(),
-			features: z.array(z.string()).optional(),
-			projectTypes: z.array(z.string()).optional(),
+			goals: z.string().max(INPUT_BOUNDS.description).optional(),
+			techStack: labelArray().optional(),
+			features: labelArray().optional(),
+			projectTypes: labelArray().optional(),
 			organizationId: z.string().nullable().optional(),
-			tags: z.array(z.string()).optional(),
+			tags: labelArray().optional(),
 			color: z.string().optional(),
 			icon: z.string().optional(),
 			// Optional: wizard session ID for migrating temp contexts

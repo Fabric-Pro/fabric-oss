@@ -28,6 +28,7 @@ import { z } from "zod";
 import { recordAuditFromRequest } from "../../../lib/audit";
 import { resolveEffectiveProjectPermissions } from "../../../lib/effective-project-permissions";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
+import { INPUT_BOUNDS, labelArray } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -64,7 +65,7 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			id: z.string(),
 			organizationId: z.string().nullable().optional(),
 			name: z.string().min(1).max(255).optional(),
-			description: z.string().optional(),
+			description: z.string().max(INPUT_BOUNDS.description).optional(),
 			/**
 			 * Which readiness checklist grades this project (Fizzy #2165).
 			 *
@@ -82,12 +83,12 @@ export const updateProjectProcedure = tenantProtectedProcedure
 				.optional(),
 			/** Cleared automatically when the phase leaves Discovery. */
 			expectedDevelopmentStartDate: z.coerce.date().nullable().optional(),
-			goals: z.string().optional(),
-			techStack: z.array(z.string()).optional(),
-			features: z.array(z.string()).optional(),
-			projectTypes: z.array(z.string()).optional(),
+			goals: z.string().max(INPUT_BOUNDS.description).optional(),
+			techStack: labelArray().optional(),
+			features: labelArray().optional(),
+			projectTypes: labelArray().optional(),
 			status: ProjectStatusSchema.optional(),
-			tags: z.array(z.string()).optional(),
+			tags: labelArray().optional(),
 			color: z.string().optional(),
 			icon: z.string().optional(),
 			// Project Management settings

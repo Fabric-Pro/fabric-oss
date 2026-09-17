@@ -16,6 +16,7 @@
 import { ORPCError } from "@orpc/server";
 import { previewAgentTurn } from "@repo/temporal/activities";
 import { z } from "zod";
+import { INPUT_BOUNDS, idArray } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -40,15 +41,15 @@ export const previewDraftAgent = tenantProtectedProcedure
 	.input(
 		z.object({
 			/** The agent's system prompt / instructions */
-			systemPrompt: z.string(),
+			systemPrompt: z.string().max(INPUT_BOUNDS.text),
 			/** User test message */
-			userMessage: z.string().min(1),
+			userMessage: z.string().min(1).max(INPUT_BOUNDS.text),
 			/** Optional model override (canonical name) */
 			model: z.string().optional(),
 			/** Capability IDs (e.g. "web-search-browse", "agent-memory") used as built-in tool names */
-			capabilityIds: z.array(z.string()).optional(),
+			capabilityIds: idArray().optional(),
 			/** MCP config IDs to load tools from */
-			mcpConfigIds: z.array(z.string()).optional(),
+			mcpConfigIds: idArray().optional(),
 			/** Max tool iterations (capped at 5 for preview) */
 			maxIterations: z.number().min(1).max(5).optional(),
 			organizationId: z.string().nullable().optional(),

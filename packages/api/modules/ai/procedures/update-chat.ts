@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/client";
 import { updateAiChatForTenant } from "@repo/database";
 import { z } from "zod";
+import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -25,7 +26,7 @@ export const updateChat = tenantProtectedProcedure
 	.input(
 		z.object({
 			id: z.string(),
-			title: z.string().optional(),
+			title: z.string().max(INPUT_BOUNDS.name).optional(),
 			pinned: z.boolean().optional(),
 			messages: z.array(z.record(z.string(), z.unknown())).optional(),
 			organizationId: z.string().nullable().optional(),

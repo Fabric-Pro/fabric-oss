@@ -28,6 +28,7 @@ import {
 import { getTemporalClient } from "@repo/temporal";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
+import { INPUT_BOUNDS } from "../../../..//lib/zod-bounds";
 import {
 	Permissions,
 	protectedProcedure,
@@ -71,7 +72,7 @@ export const createRegisteredAgent = protectedProcedure
 		z.object({
 			name: z.string().min(1).max(100),
 			displayName: z.string().min(1).max(200),
-			description: z.string().optional(),
+			description: z.string().max(INPUT_BOUNDS.description).optional(),
 			framework: ExtendedFrameworkSchema.default("LANGGRAPH"),
 			organizationId: z.string().nullable().optional(),
 			scope: z.enum(["USER", "ORGANIZATION", "SYSTEM"]).optional(),
