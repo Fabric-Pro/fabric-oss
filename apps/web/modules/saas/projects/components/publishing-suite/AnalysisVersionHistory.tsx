@@ -24,6 +24,38 @@
  * from the current side — it is the compare-and-set token, not part of the
  * content being restored, and it is read from the `currentVersion` prop
  * rather than the fetched list (which can be a request behind).
+ *
+ * ── Why this reads TWO queries ──────────────────────────────────────────────
+ *
+ * What is DISPLAYED comes from `listAnalysisTimeline`: one dense sequence
+ * across AI runs and hand-saved revisions, because two independent counters
+ * made a first manual save after six AI runs read as "Version 1 · AI v6" —
+ * the version going backwards. That read is deliberately light and carries no
+ * `body` ("Entries are light — no bodies"), which is the whole reason it can
+ * scan both tables in full to compute a dense ordinal.
+ *
+ * But a diff needs prose and a restore posts prose, so `listAnalysisRevisions`
+ * stays exactly as it was and supplies the two fields the timeline has no
+ * business carrying: `body` and `authorUserId`. They are joined on
+ * `revisionVersion`, the stored number both reads agree on. EVERYTHING else —
+ * including `sourceAnalysisVersion` — is taken from the timeline entry, so
+ * there is one source of truth per field rather than two that can disagree.
+ *
+ * The join is safe under paging because the timeline is a superset of the
+ * revisions and both pages are 25: the revisions inside the first N timeline
+ * pages are always inside the first N revision pages. "Load older" advances
+ * both, and the lookup is still guarded — a revision entry whose body has not
+ * arrived renders as a row without Compare or Restore rather than throwing.
+ *
+ * ── `seq` IS DISPLAY ONLY ───────────────────────────────────────────────────
+ *
+ * No write accepts it. `expectedVersion` is the `currentVersion` prop and
+ * `sourceAnalysisVersion` is the entry's stored value; both ride in the
+ * timeline response under their own names precisely so a caller reaching for a
+ * write token finds the real one. The only new `seq` that reaches the database
+ * is the prose inside `changeSummary`, which is a sentence rather than a
+ * reference — older rows already hold that sentence with numbers from the old
+ * scale, and no migration can correct prose, so the two coexist by design.
  */
 
 import type { ApiRouterClient } from "@repo/api/orpc/router";
@@ -62,6 +94,7 @@ import {
 	Loader2Icon,
 	RotateCcwIcon,
 	SparklesIcon,
+	TriangleAlertIcon,
 	UserIcon,
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
@@ -81,15 +114,36 @@ const UNKNOWN_AUTHOR_LABEL = "Unknown author";
  * compile time instead of silently drifting, matching `PublishingTopic` in
  * `topic-shared.ts`.
  *
- * `author` is a relation (`onDelete: SetNull`), so it can legitimately be
- * `null` for a departed author — the row stays, and the UI renders an
- * "unknown author" label rather than hiding the version.
+ * Read ONLY for `body` and `authorUserId` now. Everything the drawer displays
+ * comes off the timeline entry instead.
  */
 type AnalysisRevision = Awaited<
 	ReturnType<
 		ApiRouterClient["projects"]["publishingSuite"]["listAnalysisRevisions"]
 	>
 >["revisions"][number];
+
+/** One entry of the unified sequence, discriminated on `kind`. */
+type AnalysisTimelineEntry = Awaited<
+	ReturnType<
+		ApiRouterClient["projects"]["publishingSuite"]["listAnalysisTimeline"]
+	>
+>["entries"][number];
+
+type RevisionEntry = Extract<AnalysisTimelineEntry, { kind: "revision" }>;
+
+/**
+ * A revision entry joined to the prose only the revisions read carries.
+ *
+ * Deliberately narrow: `body` and `authorUserId` and nothing else. Anything
+ * else copied across would be a second copy of a field the entry already has,
+ * and the two reads can be a request apart.
+ */
+type RestorableRevision = {
+	entry: RevisionEntry;
+	body: string;
+	authorUserId: string | null;
+};
 
 type SaveAnalysisRevisionResult = Awaited<
 	ReturnType<
@@ -111,9 +165,16 @@ export interface AnalysisVersionHistoryProps {
 	 * back off it would reintroduce the stale-token race the compare-and-set
 	 * in `saveAnalysisRevision` exists to catch. `null` before any revision
 	 * has ever been saved.
+	 *
+	 * The STORED revision version, never a `seq`. The two are different scales
+	 * and only coincide when no AI run was ever interleaved.
 	 */
 	currentVersion: number | null;
-	/** Called after a successful restore with the version it landed on. */
+	/**
+	 * Called after a successful restore with the version it landed on. The
+	 * STORED revision version — `PlanningAnalysisTab` uses it as a concurrency
+	 * token, so it must stay on the scale the server writes.
+	 */
 	onRestore?: (version: number) => void;
 }
 
@@ -122,7 +183,7 @@ export interface AnalysisVersionHistoryProps {
  * person — there is no AI-agent writer for analysis revisions — so this
  * always maps to `HUMAN` rather than inspecting the name for a sentinel. */
 function toDiffAuthor(
-	author: AnalysisRevision["author"],
+	author: RevisionEntry["author"],
 ): DocumentVersionAuthor | null {
 	return author ? { kind: "HUMAN", name: author.name } : null;
 }
@@ -136,12 +197,11 @@ export function AnalysisVersionHistory({
 	currentVersion,
 	onRestore,
 }: AnalysisVersionHistoryProps) {
-	const [restoreTarget, setRestoreTarget] = useState<AnalysisRevision | null>(
-		null,
-	);
+	const [restoreTarget, setRestoreTarget] =
+		useState<RestorableRevision | null>(null);
 	const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
 	const [showDiffViewer, setShowDiffViewer] = useState(false);
-	const [diffVersion, setDiffVersion] = useState<AnalysisRevision | null>(
+	const [diffVersion, setDiffVersion] = useState<RestorableRevision | null>(
 		null,
 	);
 
@@ -170,10 +230,60 @@ export function AnalysisVersionHistory({
 		enabled: open,
 	});
 
-	const { isLoading } = listQuery;
+	// The displayed sequence. Cursored on `seq`, which is this read's own
+	// scale — the revisions query above is cursored on `version`, and the two
+	// cursors are never interchangeable even though both are numbers.
+	const timelineQuery = useInfiniteQuery({
+		...orpc.projects.publishingSuite.listAnalysisTimeline.infiniteOptions({
+			input: (cursor: number | undefined) => ({
+				...listInput,
+				cursor,
+			}),
+			initialPageParam: undefined as number | undefined,
+			getNextPageParam: (lastPage: {
+				nextCursor: number | null;
+			}): number | undefined => lastPage.nextCursor ?? undefined,
+		}),
+		enabled: open,
+	});
+
+	// Both, not either: the timeline decides what rows exist and the revisions
+	// read decides which of them can be compared or restored. Rendering on the
+	// first alone would flash a list whose controls appear a moment later.
+	const isLoading = timelineQuery.isLoading || listQuery.isLoading;
+
 	const revisions = useMemo(
 		() => listQuery.data?.pages.flatMap((page) => page.revisions) ?? [],
 		[listQuery.data],
+	);
+	const entries = useMemo(
+		() => timelineQuery.data?.pages.flatMap((page) => page.entries) ?? [],
+		[timelineQuery.data],
+	);
+
+	// Keyed on the STORED revision version, the only number both reads share.
+	// Keying on `seq` would be a category error: the revisions read has never
+	// heard of it.
+	const bodyByRevisionVersion = useMemo(() => {
+		const map = new Map<number, AnalysisRevision>();
+		for (const revision of revisions) {
+			map.set(revision.version, revision);
+		}
+		return map;
+	}, [revisions]);
+
+	const mergeRevision = useCallback(
+		(entry: RevisionEntry): RestorableRevision | null => {
+			const row = bodyByRevisionVersion.get(entry.revisionVersion);
+			return row
+				? {
+						entry,
+						body: row.body,
+						authorUserId: row.authorUserId,
+					}
+				: null;
+		},
+		[bodyByRevisionVersion],
 	);
 
 	// What "current" means for the diff viewer's left-hand pane. The highest
@@ -182,12 +292,8 @@ export function AnalysisVersionHistory({
 	// newest row) is enough; there is no separate "live" body to thread
 	// through as a prop.
 	//
-	// Resolved as ONE row rather than as parallel lookups for body and
-	// version: the pane's label must name the row the pane is showing. The
-	// two can otherwise disagree, because `currentVersion` is the caller's
-	// view and this list is its own query — when another client saves a
-	// revision, `currentVersion` is still null while the list already has
-	// rows, and independent fallbacks would render real text labelled "v0".
+	// Still resolved from the REVISIONS list rather than the timeline, because
+	// what this is for is a body, and the timeline carries none.
 	const currentRevision = useMemo(
 		() =>
 			revisions.find((r) => r.version === currentVersion) ??
@@ -196,16 +302,40 @@ export function AnalysisVersionHistory({
 		[revisions, currentVersion],
 	);
 	const currentBody = currentRevision?.body ?? "";
-	// Display only. The compare-and-set token stays the `currentVersion`
-	// prop — see `performRestore` — so a stale caller still loses the race
-	// it should lose.
-	const currentDisplayVersion = currentRevision?.version ?? 0;
+
+	// Display only — and now on the unified scale, so the pane's label agrees
+	// with the numbers in the list behind it. The `kind` guard is load-bearing:
+	// an `ai_run` entry has no `revisionVersion` at all, and matching without
+	// it would compare `undefined` against a number on every AI row.
+	//
+	// The compare-and-set token stays the `currentVersion` prop — see
+	// `performRestore` — so a stale caller still loses the race it should lose.
+	const currentDisplaySeq = useMemo(() => {
+		if (!currentRevision) {
+			return 0;
+		}
+		const match = entries.find(
+			(e) =>
+				e.kind === "revision" &&
+				e.revisionVersion === currentRevision.version,
+		);
+		return match?.seq ?? 0;
+	}, [entries, currentRevision]);
 
 	const restoreMutation = useMutation(
 		orpc.projects.publishingSuite.saveAnalysisRevision.mutationOptions({
 			onSuccess: (result: SaveAnalysisRevisionResult) => {
-				toast.success(`Restored to version ${result.version}`);
-				queryClient.invalidateQueries({
+				// No number in the message. `result.version` is the STORED
+				// revision version, and the seq the new entry will occupy is
+				// not known until the timeline refetches — naming the stored
+				// one here would contradict every number in the list behind
+				// the toast.
+				toast.success("Restored. A new version has been saved.");
+				// BOTH lists. They are separate cache entries on separate
+				// scales, and a restore writes a row that belongs in each;
+				// invalidating only one leaves the drawer showing history
+				// without the version it has just written.
+				for (const queryKey of [
 					// `key()`, NOT `queryKey()`. The two are not
 					// interchangeable, and the difference is invisible at
 					// runtime: `queryKey({ input })` stamps `type: "query"`
@@ -216,16 +346,20 @@ export function AnalysisVersionHistory({
 					// history without the version it had just written.
 					// `key()` is the partial form built for invalidation and
 					// matches whatever type the entry carries.
-					queryKey:
-						orpc.projects.publishingSuite.listAnalysisRevisions.key(
-							{
-								input: listInput,
-							},
-						),
-				});
+					orpc.projects.publishingSuite.listAnalysisRevisions.key({
+						input: listInput,
+					}),
+					orpc.projects.publishingSuite.listAnalysisTimeline.key({
+						input: listInput,
+					}),
+				]) {
+					queryClient.invalidateQueries({ queryKey });
+				}
 				setRestoreConfirmOpen(false);
 				setRestoreTarget(null);
 				setShowDiffViewer(false);
+				// The STORED version, not a seq: the caller holds this as a
+				// concurrency token.
 				onRestore?.(result.version);
 			},
 			onError: (error: unknown) => {
@@ -245,33 +379,39 @@ export function AnalysisVersionHistory({
 	);
 
 	const performRestore = useCallback(
-		(revision: AnalysisRevision) => {
+		(target: RestorableRevision) => {
 			restoreMutation.mutate({
 				projectId,
 				topicId,
 				organizationId,
-				body: revision.body,
+				body: target.body,
 				// The compare-and-set token: the version CURRENT state is at,
-				// not the restored revision's own version.
+				// not the restored revision's own version — and never `seq`,
+				// which no write on this endpoint accepts.
 				expectedVersion: currentVersion,
 				// The restored revision's OWN source — never `currentVersion`'s.
 				// Copying this is the one behaviour that makes a restore
 				// correct: it is what brings the stale-analysis banner back
-				// when the restored body predates the newest AI analysis.
-				sourceAnalysisVersion: revision.sourceAnalysisVersion,
-				changeSummary: `Restored from version ${revision.version}`,
+				// when the restored body predates the newest AI analysis. The
+				// STORED value off the entry, not its `sourceSeq` twin.
+				sourceAnalysisVersion: target.entry.sourceAnalysisVersion,
+				// Prose, not a reference — so this one takes the number the
+				// reader actually saw. Rows written before the unified scale
+				// hold the old number in this same sentence; the two coexist,
+				// and no migration can correct prose.
+				changeSummary: `Restored from version ${target.entry.seq}`,
 			});
 		},
 		[restoreMutation, projectId, topicId, organizationId, currentVersion],
 	);
 
 	const handleRestoreClick = useCallback(
-		(e: React.MouseEvent, revision: AnalysisRevision) => {
+		(e: React.MouseEvent, target: RestorableRevision) => {
 			// Stops the row's own onClick (which opens the fullscreen compare
 			// view) from also firing — Restore and Compare are two different
 			// actions layered on one row.
 			e.stopPropagation();
-			setRestoreTarget(revision);
+			setRestoreTarget(target);
 			setRestoreConfirmOpen(true);
 		},
 		[],
@@ -284,8 +424,8 @@ export function AnalysisVersionHistory({
 	}, [restoreTarget, performRestore]);
 
 	const handleVersionClick = useCallback(
-		(revision: AnalysisRevision) => {
-			setDiffVersion(revision);
+		(target: RestorableRevision) => {
+			setDiffVersion(target);
 			setShowDiffViewer(true);
 			onOpenChange(false);
 		},
@@ -297,6 +437,18 @@ export function AnalysisVersionHistory({
 			performRestore(diffVersion);
 		}
 	}, [diffVersion, performRestore]);
+
+	// One control, two cursors. The timeline decides whether there is more to
+	// show, because it is the superset; the revisions query is advanced in step
+	// so the bodies for the newly-revealed rows arrive with them. Calling into
+	// an exhausted revisions query is the right no-op when everything left in
+	// the timeline is an AI run.
+	const handleLoadOlder = useCallback(() => {
+		timelineQuery.fetchNextPage();
+		if (listQuery.hasNextPage) {
+			listQuery.fetchNextPage();
+		}
+	}, [timelineQuery, listQuery]);
 
 	const formatDate = (dateValue: string | Date) =>
 		new Intl.DateTimeFormat("en-US", {
@@ -317,7 +469,8 @@ export function AnalysisVersionHistory({
 							Version history
 						</SheetTitle>
 						<SheetDescription>
-							Click a version to compare it with the current
+							Every AI run and saved edit, in one sequence. Click
+							a saved version to compare it with the current
 							analysis
 						</SheetDescription>
 					</SheetHeader>
@@ -330,7 +483,7 @@ export function AnalysisVersionHistory({
 									aria-hidden="true"
 								/>
 							</div>
-						) : revisions.length === 0 ? (
+						) : entries.length === 0 ? (
 							<div className="py-8 text-center text-muted-foreground">
 								<HistoryIcon
 									className="mx-auto mb-3 size-12 opacity-50"
@@ -340,76 +493,187 @@ export function AnalysisVersionHistory({
 									No version history yet
 								</p>
 								<p className="mt-1 text-sm">
-									Versions are created the first time you save
-									an edit or restore a previous one
+									Versions are created by an AI run, and the
+									first time you save an edit or restore a
+									previous one
 								</p>
 							</div>
 						) : (
 							<ScrollArea className="h-[calc(100vh-240px)] [&>[data-radix-scroll-area-viewport]>div]:w-full">
 								<div className="space-y-2 pr-4">
-									{revisions.map((revision) => {
-										const isCurrent =
-											revision.version === currentVersion;
-										const authorLabel =
-											revision.author?.name.trim() ||
-											UNKNOWN_AUTHOR_LABEL;
+									{entries.map((entry) => {
+										// An AI run is a NUMBER IN THE SEQUENCE,
+										// not a place to go. Its prose lives in
+										// `publishing_topic_planning_analysis`,
+										// which this drawer's diff and restore
+										// paths cannot read — so the row is a
+										// plain div with no role, no tabIndex
+										// and no handlers, for EVERY status
+										// rather than only the failed ones. A
+										// READY run is just as unrestorable
+										// here as a failed one, and an
+										// interactive row that does nothing is
+										// worse than a static one.
+										if (entry.kind === "ai_run") {
+											const requestedByLabel =
+												entry.requestedBy?.name.trim() ||
+												UNKNOWN_AUTHOR_LABEL;
+											return (
+												<div
+													key={entry.analysisId}
+													className={cn(
+														"w-full rounded-lg border border-dashed p-4 text-left",
+														entry.status ===
+															"FAILED" &&
+															"border-destructive/40 bg-destructive/5",
+													)}
+												>
+													<div className="flex items-start justify-between gap-2">
+														<div className="flex min-w-0 flex-wrap items-center gap-2">
+															<span className="font-semibold text-sm">
+																v{entry.seq}
+															</span>
+															<Badge
+																variant="outline"
+																className="px-1.5 py-0 text-[10px]"
+															>
+																<SparklesIcon
+																	className="mr-1 size-2.5"
+																	aria-hidden="true"
+																/>
+																AI run
+															</Badge>
+															{entry.status ===
+															"FAILED" ? (
+																<Badge
+																	variant="destructive"
+																	className="px-1.5 py-0 text-[10px]"
+																>
+																	<TriangleAlertIcon
+																		className="mr-1 size-2.5"
+																		aria-hidden="true"
+																	/>
+																	Failed
+																</Badge>
+															) : null}
+															{entry.status ===
+															"GENERATING" ? (
+																<Badge
+																	variant="outline"
+																	className="px-1.5 py-0 text-[10px]"
+																>
+																	<Loader2Icon
+																		className="mr-1 size-2.5 motion-safe:animate-spin"
+																		aria-hidden="true"
+																	/>
+																	Generating
+																</Badge>
+															) : null}
+														</div>
+													</div>
 
-										return (
-											// biome-ignore lint/a11y/useSemanticElements: list row with nested controls; cannot use <button>
-											<div
-												role="button"
-												tabIndex={0}
-												key={revision.id}
-												// An explicit label, not the default
-												// content-derived name: without it this
-												// row's accessible name would swallow its
-												// nested Restore button's own label,
-												// making the two indistinguishable to
-												// anything that queries by name.
-												aria-label={`Compare version ${revision.version}${isCurrent ? " (current)" : ""}`}
-												className={cn(
-													"group w-full cursor-pointer rounded-lg border p-4 text-left transition-colors",
-													"hover:border-primary/40 hover:bg-primary/5",
-													isCurrent &&
-														"border-primary/40 bg-primary/5",
-													diffVersion?.id ===
-														revision.id &&
-														showDiffViewer &&
-														"ring-2 ring-primary/50",
-												)}
-												onClick={() =>
-													handleVersionClick(revision)
-												}
-												onKeyDown={(e) => {
-													if (
-														e.key === "Enter" ||
-														e.key === " "
-													) {
-														e.preventDefault();
-														handleVersionClick(
-															revision,
-														);
-													}
-												}}
-											>
+													<p className="mt-1.5 text-muted-foreground text-sm">
+														{entry.status ===
+														"FAILED"
+															? "This run failed. It keeps its number because the number was taken when the run started."
+															: entry.status ===
+																	"GENERATING"
+																? "This run is still generating."
+																: "Analysis generated by AI."}
+													</p>
+
+													<div className="mt-2 flex items-center gap-3 text-muted-foreground text-xs">
+														<time
+															className="flex items-center gap-1"
+															dateTime={new Date(
+																entry.createdAt,
+															).toISOString()}
+															title={formatDate(
+																entry.createdAt,
+															)}
+														>
+															<ClockIcon
+																className="size-3"
+																aria-hidden="true"
+															/>
+															{formatDistanceToNow(
+																new Date(
+																	entry.createdAt,
+																),
+																{
+																	addSuffix: true,
+																},
+															)}
+														</time>
+														<span className="flex items-center gap-1">
+															<UserIcon
+																className="size-3"
+																aria-hidden="true"
+															/>
+															{requestedByLabel}
+														</span>
+													</div>
+												</div>
+											);
+										}
+
+										const isCurrent =
+											entry.revisionVersion ===
+											currentVersion;
+										const authorLabel =
+											entry.author?.name.trim() ||
+											UNKNOWN_AUTHOR_LABEL;
+										// Null when the body page has not
+										// arrived yet. The row still renders —
+										// it holds a number in the sequence —
+										// but Compare and Restore both need
+										// prose, so they stay off until it has.
+										const target = mergeRevision(entry);
+
+										const rowClassName = cn(
+											"group w-full rounded-lg border p-4 text-left transition-colors",
+											isCurrent &&
+												"border-primary/40 bg-primary/5",
+											diffVersion?.entry.revisionId ===
+												entry.revisionId &&
+												showDiffViewer &&
+												"ring-2 ring-primary/50",
+										);
+
+										// Written once and rendered by either
+										// branch below. The two differ only in
+										// whether the wrapper is a control, and
+										// duplicating forty lines of markup to
+										// say that is how the two drift apart.
+										const rowContent = (
+											<>
 												<div className="flex items-start justify-between gap-2">
 													<div className="flex min-w-0 items-center gap-2 overflow-hidden">
 														<span className="font-semibold text-sm">
-															v{revision.version}
+															v{entry.seq}
 														</span>
-														<Badge
-															variant="outline"
-															className="px-1.5 py-0 text-[10px]"
-														>
-															<SparklesIcon
-																className="mr-1 size-2.5"
-																aria-hidden="true"
-															/>
-															AI v
-															{
-																revision.sourceAnalysisVersion
-															}
-														</Badge>
+														{/* Omitted rather than guessed
+														    when the referenced analysis
+														    row is absent — the server
+														    sends null for exactly that
+														    case, and a wrong number here
+														    is worse than none. */}
+														{entry.sourceSeq !==
+														null ? (
+															<Badge
+																variant="outline"
+																className="px-1.5 py-0 text-[10px]"
+															>
+																<SparklesIcon
+																	className="mr-1 size-2.5"
+																	aria-hidden="true"
+																/>
+																From v
+																{
+																	entry.sourceSeq
+																}
+															</Badge>
+														) : null}
 														{isCurrent ? (
 															<Badge
 																variant="outline"
@@ -421,14 +685,17 @@ export function AnalysisVersionHistory({
 													</div>
 
 													<div className="flex shrink-0 items-center gap-1">
-														<span className="flex items-center gap-1 text-muted-foreground text-xs opacity-0 transition-opacity group-hover:opacity-100">
-															<ArrowLeftRight
-																className="size-3"
-																aria-hidden="true"
-															/>
-															Compare
-														</span>
-														{isCurrent ? null : (
+														{target ? (
+															<span className="flex items-center gap-1 text-muted-foreground text-xs opacity-0 transition-opacity group-hover:opacity-100">
+																<ArrowLeftRight
+																	className="size-3"
+																	aria-hidden="true"
+																/>
+																Compare
+															</span>
+														) : null}
+														{target &&
+														!isCurrent ? (
 															<Button
 																type="button"
 																variant="ghost"
@@ -437,7 +704,7 @@ export function AnalysisVersionHistory({
 																onClick={(e) =>
 																	handleRestoreClick(
 																		e,
-																		revision,
+																		target,
 																	)
 																}
 															>
@@ -447,13 +714,13 @@ export function AnalysisVersionHistory({
 																/>
 																Restore
 															</Button>
-														)}
+														) : null}
 													</div>
 												</div>
 
-												{revision.changeSummary ? (
+												{entry.changeSummary ? (
 													<p className="mt-1.5 text-muted-foreground text-sm">
-														{revision.changeSummary}
+														{entry.changeSummary}
 													</p>
 												) : null}
 
@@ -461,10 +728,10 @@ export function AnalysisVersionHistory({
 													<time
 														className="flex items-center gap-1"
 														dateTime={new Date(
-															revision.createdAt,
+															entry.createdAt,
 														).toISOString()}
 														title={formatDate(
-															revision.createdAt,
+															entry.createdAt,
 														)}
 													>
 														<ClockIcon
@@ -473,7 +740,7 @@ export function AnalysisVersionHistory({
 														/>
 														{formatDistanceToNow(
 															new Date(
-																revision.createdAt,
+																entry.createdAt,
 															),
 															{ addSuffix: true },
 														)}
@@ -486,21 +753,74 @@ export function AnalysisVersionHistory({
 														{authorLabel}
 													</span>
 												</div>
+											</>
+										);
+
+										// A row whose body has not arrived is
+										// not a control. Two elements rather
+										// than one with conditional attributes:
+										// a conditional `role` reads to the
+										// linter as a static div carrying click
+										// handlers, which is the exact bug that
+										// rule exists to catch, and suppressing
+										// it would blind the rule to a real one.
+										if (!target) {
+											return (
+												<div
+													key={entry.revisionId}
+													className={rowClassName}
+												>
+													{rowContent}
+												</div>
+											);
+										}
+
+										return (
+											// biome-ignore lint/a11y/useSemanticElements: list row with nested controls; cannot use <button>
+											<div
+												role="button"
+												tabIndex={0}
+												key={entry.revisionId}
+												// An explicit label, not the default
+												// content-derived name: without it this
+												// row's accessible name would swallow its
+												// nested Restore button's own label,
+												// making the two indistinguishable to
+												// anything that queries by name.
+												aria-label={`Compare version ${entry.seq}${isCurrent ? " (current)" : ""}`}
+												className={cn(
+													rowClassName,
+													"cursor-pointer hover:border-primary/40 hover:bg-primary/5",
+												)}
+												onClick={() =>
+													handleVersionClick(target)
+												}
+												onKeyDown={(e) => {
+													if (
+														e.key === "Enter" ||
+														e.key === " "
+													) {
+														e.preventDefault();
+														handleVersionClick(
+															target,
+														);
+													}
+												}}
+											>
+												{rowContent}
 											</div>
 										);
 									})}
-									{listQuery.hasNextPage ? (
+									{timelineQuery.hasNextPage ? (
 										<Button
 											variant="outline"
 											className="w-full"
-											onClick={() =>
-												listQuery.fetchNextPage()
-											}
+											onClick={handleLoadOlder}
 											disabled={
-												listQuery.isFetchingNextPage
+												timelineQuery.isFetchingNextPage
 											}
 										>
-											{listQuery.isFetchingNextPage ? (
+											{timelineQuery.isFetchingNextPage ? (
 												<>
 													<Loader2Icon
 														className="mr-2 size-4 motion-safe:animate-spin"
@@ -528,10 +848,10 @@ export function AnalysisVersionHistory({
 				<DialogContent>
 					<DialogHeader>
 						<DialogTitle>
-							Restore version {restoreTarget?.version}?
+							Restore version {restoreTarget?.entry.seq}?
 						</DialogTitle>
 						<DialogDescription>
-							This saves version {restoreTarget?.version}'s text
+							This saves version {restoreTarget?.entry.seq}'s text
 							as a new revision. The current text stays in history
 							— nothing is overwritten.
 						</DialogDescription>
@@ -568,18 +888,20 @@ export function AnalysisVersionHistory({
 					open={showDiffViewer}
 					onOpenChange={setShowDiffViewer}
 					selectedVersion={{
-						id: diffVersion.id,
-						version: diffVersion.version,
+						id: diffVersion.entry.revisionId,
+						// The unified number, so the pane agrees with the list
+						// it was opened from.
+						version: diffVersion.entry.seq,
 						content: diffVersion.body,
-						changeDescription: diffVersion.changeSummary,
+						changeDescription: diffVersion.entry.changeSummary,
 						changedBy: diffVersion.authorUserId,
-						author: toDiffAuthor(diffVersion.author),
+						author: toDiffAuthor(diffVersion.entry.author),
 						createdAt: new Date(
-							diffVersion.createdAt,
+							diffVersion.entry.createdAt,
 						).toISOString(),
 					}}
 					currentContent={currentBody}
-					currentVersion={currentDisplayVersion}
+					currentVersion={currentDisplaySeq}
 					onRestore={handleDiffViewerRestore}
 					isRestoring={restoreMutation.isPending}
 				/>

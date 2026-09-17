@@ -18,7 +18,7 @@
  * `publishing-topic-questions.test.tsx`.
  */
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -124,11 +124,21 @@ vi.mock("sonner", () => ({ toast: { error: toastError } }));
  */
 const assistantCapture = vi.hoisted(() => ({
 	context: null as { openQuestions: string[] } | null,
+	// The rewrite hand-off, captured so a test can fire it the way the
+	// assistant's accept card does. Force-mounting the analysis tab changed
+	// WHY `handleApplyRewrite` switches tabs — it used to be the only way the
+	// proposal could reach a mounted component — so the journey needs pinning
+	// rather than assuming.
+	onApplyRewrite: null as ((markdown: string) => void) | null,
 }));
 
 vi.mock("@saas/projects/components/publishing-suite/TopicAssistant", () => ({
-	TopicAssistant: (props: { context: { openQuestions: string[] } }) => {
+	TopicAssistant: (props: {
+		context: { openQuestions: string[] };
+		onApplyRewrite: (markdown: string) => void;
+	}) => {
 		assistantCapture.context = props.context;
+		assistantCapture.onApplyRewrite = props.onApplyRewrite;
 		return null;
 	},
 }));
@@ -224,13 +234,17 @@ vi.mock("@tanstack/react-query", () => ({
 			refetch: vi.fn(),
 		};
 	},
-	// The analysis version-history drawer inside this tree reads its list as
-	// a paged query. Nothing in THIS file asserts on that list, so an empty
-	// first page is the right stand-in — but the export has to exist, because
-	// a missing one is a module-load error that takes down cases about tabs
-	// and headings, which is how it surfaced.
+	// The analysis version-history drawer inside this tree reads TWO paged
+	// queries — the unified timeline it displays (`entries`) and the revisions
+	// it takes bodies from (`revisions`). Nothing in THIS file asserts on
+	// either, so an empty first page is the right stand-in — but it carries
+	// both keys, because one page object is served to both queries here and a
+	// page missing the key its reader wants flat-maps to `[undefined]` rather
+	// than to nothing. The export has to exist at all for the same reason it
+	// always did: a missing one is a module-load error that takes down cases
+	// about tabs and headings, which is how it surfaced.
 	useInfiniteQuery: () => ({
-		data: { pages: [{ revisions: [], nextCursor: null }] },
+		data: { pages: [{ revisions: [], entries: [], nextCursor: null }] },
 		isLoading: false,
 		hasNextPage: false,
 		isFetchingNextPage: false,
@@ -406,8 +420,23 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					listAnalysisRevisions: q(
 						"projects.publishingSuite.listAnalysisRevisions",
 					),
+					// The drawer's DISPLAY read — one dense sequence numbering
+					// AI runs and saved revisions together. It sits ALONGSIDE
+					// the revisions read rather than replacing it, because the
+					// timeline carries no bodies and a diff needs prose. Same
+					// obligation as the entry above it.
+					listAnalysisTimeline: q(
+						"projects.publishingSuite.listAnalysisTimeline",
+					),
 					saveAnalysisRevision: m(
 						"projects.publishingSuite.saveAnalysisRevision",
+					),
+					// The advisory change digest the review card requests once
+					// per review. Same obligation as every entry around it: a
+					// missing one is `undefined.mutationOptions`, which takes
+					// out every case in this file rather than one assertion.
+					summarizeAnalysisChanges: m(
+						"projects.publishingSuite.summarizeAnalysisChanges",
 					),
 					listTopicDrafts: q(
 						"projects.publishingSuite.listTopicDrafts",
@@ -583,12 +612,33 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					list: q("projects.members.list"),
 				},
 			},
+			organizations: {
+				// Reached only once a REVIEW is open: accepting an assistant
+				// rewrite mounts `DiffReviewBar`, whose outcome-recording hook
+				// reads the document-assistant history flag through this
+				// procedure. Missing, it is `undefined.documentAssistantHistory`
+				// — a render-time throw rather than a failed assertion, which is
+				// the same trap every note in the tree above describes.
+				documentAssistantHistory: {
+					get: q("organizations.documentAssistantHistory.get"),
+				},
+			},
 		},
 	};
 });
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useBasePath: () => "/app",
+	// Reached only once a REVIEW is open: accepting an assistant rewrite
+	// mounts `DiffReviewBar`, which reads the document-assistant history
+	// flag, which reads this. Absent, the destructure throws and takes the
+	// whole render with it — the same class of failure every other entry in
+	// this file's mocks exists to prevent.
+	useOrganizationContext: () => ({
+		organizationId: "org-1",
+		isOrgContext: true,
+		basePath: "/app",
+	}),
 }));
 
 import { TopicItemPage } from "@saas/projects/components/publishing-suite/TopicItemPage";
@@ -864,6 +914,219 @@ describe("TopicItemPage — tabs", () => {
 		for (const tab of within(tablist).getAllByRole("tab")) {
 			expect(tab).toBeEnabled();
 		}
+	});
+});
+
+/**
+ * How wide each review tab is allowed to be.
+ *
+ * `REVIEW_MEASURE_CLASS` is SHARED, which is what makes this worth pinning: a
+ * reading measure that suits a question list with an assignee picker on every
+ * row is a cap on an editor, and the Planning & Analysis tab is an editor over
+ * the same kind of document as the Full Specification.
+ * `PlanningAnalysisEditor` had already dropped its own cap for that parity —
+ * the tab then put it back one level up, so the editor read half as wide as
+ * FMv2's for no reason anyone could see in the editor's own file.
+ */
+describe("TopicItemPage — the review tabs' width", () => {
+	it("does not cap the Planning & Analysis tab", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await user.click(
+			screen.getByRole("tab", { name: /planning & analysis/i }),
+		);
+
+		const panel = screen.getByRole("tabpanel");
+		expect(panel).toHaveClass("w-full");
+		expect(panel).not.toHaveClass("max-w-4xl");
+	});
+
+	it("keeps the measure on Summary & Questions", () => {
+		// The picker on each question row is why this one is capped at all.
+		renderPage();
+		expect(screen.getByRole("tabpanel")).toHaveClass("max-w-4xl");
+	});
+
+	it("keeps the measure on the Decision Log", async () => {
+		// Two columns; they lose their shape below 768px.
+		const user = userEvent.setup();
+		renderPage();
+		await user.click(screen.getByRole("tab", { name: /decision log/i }));
+
+		expect(screen.getByRole("tabpanel")).toHaveClass("max-w-4xl");
+	});
+
+	it("keeps unsaved analysis edits across a tab round trip", async () => {
+		// THE REPORTED LOSS. Radix unmounts an inactive `TabsContent`, so a
+		// person who typed into the analysis and glanced at Decision Log came
+		// back to an empty editor — the component had gone and taken their
+		// words with it. The Planning & Analysis panel is force-mounted now,
+		// so it is hidden rather than destroyed.
+		//
+		// Feature Maturation avoids this by autosaving on a debounce and
+		// flushing on unmount. That route is closed here: #1929 bought the
+		// rule that the author's own Save is the only writer, after an
+		// autosave raced an in-flight agent and overwrote the server with
+		// pre-answer text. So the fix has to preserve state without writing
+		// anything, which is exactly what staying mounted does.
+		//
+		// Driven through RAW (markdown) mode because its `<Textarea>` is an
+		// ordinary form control whose value jsdom reports faithfully. Typing
+		// into ProseMirror's contenteditable would be testing jsdom's
+		// contenteditable emulation, not this page. Raw mode is a real user
+		// path, and it doubles as proof the component was never remounted:
+		// `viewMode` is local state seeded to "rich", so still being in raw
+		// mode on return is only possible if the component survived.
+		state.latestAttempt = {
+			id: "pa-1",
+			version: 1,
+			status: "READY",
+			content: {},
+			sourceRefs: {},
+			model: "test-model",
+			promptSource: "BOUND",
+			error: null,
+			createdAt: new Date("2026-08-30T10:00:00Z"),
+			updatedAt: new Date("2026-08-30T10:04:00Z"),
+		};
+		state.aiVersion = 1;
+		state.sourceAnalysisVersion = 1;
+		state.effective = {
+			prose: "### Risks\n\nThe retry window is unbounded.",
+			data: {},
+			overridden: false,
+		};
+
+		const user = userEvent.setup();
+		renderPage();
+
+		await user.click(
+			screen.getByRole("tab", { name: /planning & analysis/i }),
+		);
+		await user.click(screen.getByRole("button", { name: /markdown/i }));
+
+		const editor = screen.getByPlaceholderText(
+			/planning analysis in markdown format/i,
+		);
+		await user.clear(editor);
+		await user.type(editor, "A sentence nobody has saved yet.");
+		expect(editor).toHaveValue("A sentence nobody has saved yet.");
+
+		// Away, and back.
+		await user.click(screen.getByRole("tab", { name: /decision log/i }));
+		await user.click(
+			screen.getByRole("tab", { name: /planning & analysis/i }),
+		);
+
+		// The words are still there — not restored from anywhere, never
+		// having left. Same node, so nothing was re-created around them.
+		const returned = screen.getByPlaceholderText(
+			/planning analysis in markdown format/i,
+		);
+		expect(returned).toHaveValue("A sentence nobody has saved yet.");
+		expect(returned).toBe(editor);
+	});
+
+	it("hides the force-mounted analysis panel instead of showing two at once", async () => {
+		// `forceMount` on its own is not enough, and the failure is loud
+		// rather than subtle: Radix hands a force-mounted panel
+		// `data-state="inactive"` and NO `hidden` attribute, leaving the
+		// hiding to the caller. Without the `hidden` prop both panels render
+		// stacked, and `getByRole("tabpanel")` matching two elements is how
+		// that surfaced here.
+		renderPage();
+
+		// One panel in the accessibility tree while Summary & Questions is
+		// open, even though the analysis panel is mounted behind it.
+		expect(screen.getByRole("tabpanel")).toHaveAttribute(
+			"aria-labelledby",
+			expect.stringContaining("summaryQuestions"),
+		);
+	});
+
+	it("still shows the reader a rewrite accepted from another tab", async () => {
+		// `handleApplyRewrite` switches to Planning & Analysis. That used to be
+		// REQUIRED — Radix unmounted the inactive tab, so a proposal accepted
+		// while Summary & Questions was open landed on a component that was not
+		// in the tree. Force-mounting removes that constraint, and the switch
+		// has to survive it anyway for the reason that outlived it: someone who
+		// just asked for a rewrite should be shown the rewrite, not left on a
+		// tab where it is invisible.
+		state.latestAttempt = {
+			id: "pa-1",
+			version: 1,
+			status: "READY",
+			content: {},
+			sourceRefs: {},
+			model: "test-model",
+			promptSource: "BOUND",
+			error: null,
+			createdAt: new Date("2026-08-30T10:00:00Z"),
+			updatedAt: new Date("2026-08-30T10:04:00Z"),
+		};
+		state.aiVersion = 1;
+		state.sourceAnalysisVersion = 1;
+		state.effective = {
+			prose: "### Risks\n\nThe retry window is unbounded.",
+			data: {},
+			overridden: false,
+		};
+
+		renderPage();
+
+		// Start where the reader actually is: the default tab, not the one
+		// the proposal is for.
+		expect(
+			screen.getByRole("tab", { name: /summary & questions/i }),
+		).toHaveAttribute("aria-selected", "true");
+
+		await act(async () => {
+			assistantCapture.onApplyRewrite?.(
+				"### Risks\n\nThe retry window is bounded at five attempts.",
+			);
+		});
+
+		// Brought to the tab that holds it...
+		expect(
+			screen.getByRole("tab", { name: /planning & analysis/i }),
+		).toHaveAttribute("aria-selected", "true");
+		// ...and the proposal is on screen there, painted over the current
+		// document as a review rather than saved.
+		expect(screen.getByRole("tabpanel")).toHaveTextContent(
+			/bounded at five attempts/,
+		);
+	});
+
+	it("stops the full-width tab at the assistant rail, not under it", async () => {
+		// The rail is `position: fixed`, so nothing in normal flow is pushed by
+		// it — the PAGE container reserves its 28rem instead. An uncapped tab
+		// is only safe while it stays inside that container.
+		const wrapper = document.createElement("div");
+		wrapper.className = "copilotKitSidebarContentWrapper sidebarExpanded";
+		document.body.appendChild(wrapper);
+		try {
+			const user = userEvent.setup();
+			const { container } = renderPage();
+			await user.click(
+				screen.getByRole("tab", { name: /planning & analysis/i }),
+			);
+
+			const shell = await waitFor(() => {
+				const el = container.querySelector('[class*="pr-[28rem]"]');
+				expect(el).not.toBeNull();
+				return el as HTMLElement;
+			});
+			expect(shell.contains(screen.getByRole("tabpanel"))).toBe(true);
+		} finally {
+			wrapper.remove();
+		}
+	});
+
+	it("reserves nothing when the assistant is closed", () => {
+		// The other half of the same fact: the padding is conditional, so a
+		// closed rail must not leave 28rem of dead space beside the editor.
+		const { container } = renderPage();
+		expect(container.querySelector('[class*="pr-[28rem]"]')).toBeNull();
 	});
 });
 
@@ -1220,6 +1483,70 @@ describe("TopicItemPage — editing topic metadata", () => {
  * (the failure this page already shipped once for post types/URL, see the
  * block comment above the "editing topic metadata" describe).
  */
+/**
+ * Avatars that fail to load.
+ *
+ * The rows rendered a bare `<img src={image}>` and reached the initials only
+ * when `image` was FALSY, so a URL that was present but dead — expired,
+ * blocked, 404 — had no fallback at all and the browser painted its
+ * broken-image glyph beside the name. Radix's `AvatarFallback` renders on a
+ * failed load as well as on a missing src, which is the whole reason to use
+ * it here.
+ *
+ * jsdom never loads an image, so a present `src` exercises exactly the path
+ * that used to break: a contributor WITH a URL must still show their letter.
+ */
+describe("TopicItemPage — avatars that do not load", () => {
+	it("shows a contributor's initial when their image URL fails", () => {
+		state.topic = topic({
+			contributors: [
+				{
+					id: "u1",
+					name: "Ada",
+					image: "https://example.com/gone.png",
+					username: "ada",
+				},
+			],
+		});
+		renderPage();
+
+		const row = screen.getByLabelText("Contributor: Ada");
+		expect(within(row).getByText("A")).toBeInTheDocument();
+	});
+
+	it("shows an assignee's initial when their image URL fails", () => {
+		state.topic = topic({
+			assigneeUserIds: ["u2"],
+			assignees: [
+				{
+					id: "u2",
+					name: "Grace",
+					image: "https://example.com/gone.png",
+					username: "grace",
+				},
+			],
+		});
+		renderPage();
+
+		const row = screen.getByLabelText("Assignee: Grace");
+		expect(within(row).getByText("G")).toBeInTheDocument();
+	});
+
+	it("still shows the initial when there is no image at all", () => {
+		// The case that always worked. Pinned beside the one that did not, so a
+		// future rewrite cannot fix one by breaking the other.
+		state.topic = topic({
+			contributors: [
+				{ id: "u1", name: "Ada", image: null, username: "ada" },
+			],
+		});
+		renderPage();
+
+		const row = screen.getByLabelText("Contributor: Ada");
+		expect(within(row).getByText("A")).toBeInTheDocument();
+	});
+});
+
 describe("TopicItemPage — editing contributors (Task 6)", () => {
 	it("opens the contributors editor listing members with the current contributors checked", async () => {
 		const user = userEvent.setup();

@@ -28,14 +28,29 @@ import userEvent from "@testing-library/user-event";
 import { useEffect, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { generateMutate, saveMutate, invalidateQueries, state } = vi.hoisted(
-	() => ({
-		generateMutate: vi.fn(),
-		saveMutate: vi.fn(),
-		invalidateQueries: vi.fn(),
-		state: { isPending: false },
-	}),
-);
+const {
+	generateMutate,
+	saveMutate,
+	summarizeMutate,
+	invalidateQueries,
+	state,
+} = vi.hoisted(() => ({
+	generateMutate: vi.fn(),
+	saveMutate: vi.fn(),
+	summarizeMutate: vi.fn(),
+	invalidateQueries: vi.fn(),
+	state: {
+		isPending: false,
+		/**
+		 * How the change-digest call resolves. `"error"` is the model-failure
+		 * path — the procedure THROWS rather than returning `[]`, because
+		 * "nothing changed" and "the summary could not be produced" are
+		 * different facts.
+		 */
+		summarizeOutcome: "success" as "success" | "error",
+		summarizeBullets: ["Risks — the retry window is now bounded."],
+	},
+}));
 
 vi.mock("@tanstack/react-query", () => ({
 	useMutation: (opts: {
@@ -46,6 +61,27 @@ vi.mock("@tanstack/react-query", () => ({
 		const procedure = Array.isArray(opts?.mutationKey)
 			? opts.mutationKey[0]
 			: undefined;
+		if (procedure === "summarizeAnalysisChanges") {
+			return {
+				mutate: (vars: unknown) => {
+					summarizeMutate(vars);
+					if (state.summarizeOutcome === "error") {
+						opts.onError?.(
+							new Error("model unavailable"),
+							vars,
+							undefined,
+						);
+						return;
+					}
+					opts.onSuccess?.(
+						{ changeSummary: state.summarizeBullets },
+						vars,
+						undefined,
+					);
+				},
+				isPending: false,
+			};
+		}
 		if (procedure === "saveAnalysisRevision") {
 			return {
 				mutate: (vars: unknown) => {
@@ -83,6 +119,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				saveAnalysisRevision: {
 					mutationOptions: (o: Record<string, unknown>) => ({
 						mutationKey: ["saveAnalysisRevision"],
+						...o,
+					}),
+				},
+				// The advisory change digest, requested once per review. A
+				// missing entry here is `undefined.mutationOptions` — a
+				// render-time throw that fails every case in the file rather
+				// than one assertion.
+				summarizeAnalysisChanges: {
+					mutationOptions: (o: Record<string, unknown>) => ({
+						mutationKey: ["summarizeAnalysisChanges"],
 						...o,
 					}),
 				},
@@ -305,6 +351,8 @@ function renderTab(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	state.isPending = false;
+	state.summarizeOutcome = "success";
+	state.summarizeBullets = ["Risks — the retry window is now bounded."];
 	editorProps.current = null;
 	historyProps.current = null;
 	editorMounts.count = 0;
@@ -451,6 +499,67 @@ describe("PlanningAnalysisTab — a run in flight", () => {
 		// pinned in `planning-analysis-editor.test.tsx`. Asserting the notice
 		// here would be asserting against the mock.
 		expect(editorProps.current?.isLocked).toBe(true);
+	});
+
+	it("pauses editing while the ASSISTANT is rewriting, not only a regeneration", () => {
+		// The complaint this closes: a chat-driven rewrite is a different code
+		// path from the server-side regeneration above, so `latestAttempt`
+		// stays READY throughout and the editor used to remain live. The
+		// person could type into a document the agent was about to replace,
+		// and an accepted rewrite re-seeds the editor and takes the typing
+		// with it. The document does not care which path threatens it.
+		renderTab({
+			effective: AI_EFFECTIVE,
+			aiVersion: 1,
+			sourceAnalysisVersion: 1,
+			latestAttempt: ready({ status: "READY" }),
+			assistantRunActive: true,
+		});
+
+		expect(editorProps.current?.isLocked).toBe(true);
+	});
+
+	it("unlocks as soon as the assistant run ends", () => {
+		// A lock that outlives its run is worse than no lock — the editor
+		// would be read-only with no way back but a reload. The signal comes
+		// from CopilotKit's own `isLoading`, which falls on completion and on
+		// error alike, and `TopicAssistant` reports `false` on unmount so a
+		// boundary catch cannot strand it either.
+		const { rerender } = renderTab({
+			effective: AI_EFFECTIVE,
+			aiVersion: 1,
+			sourceAnalysisVersion: 1,
+			latestAttempt: ready({ status: "READY" }),
+			assistantRunActive: true,
+		});
+		expect(editorProps.current?.isLocked).toBe(true);
+
+		rerender(
+			<PlanningAnalysisTab
+				{...(props({
+					effective: AI_EFFECTIVE,
+					aiVersion: 1,
+					sourceAnalysisVersion: 1,
+					latestAttempt: ready({ status: "READY" }),
+					assistantRunActive: false,
+				}) as never)}
+			/>,
+		);
+
+		expect(editorProps.current?.isLocked).toBe(false);
+	});
+
+	it("stays unlocked when neither a regeneration nor the assistant is running", () => {
+		// NEGATIVE CONTROL. `isLocked` is an OR of two independent causes, and
+		// a default that leaked `true` would make every idle topic read-only.
+		renderTab({
+			effective: AI_EFFECTIVE,
+			aiVersion: 1,
+			sourceAnalysisVersion: 1,
+			latestAttempt: ready({ status: "READY" }),
+		});
+
+		expect(editorProps.current?.isLocked).toBe(false);
 	});
 
 	it("keeps the previous analysis on screen while the next one runs", () => {
@@ -1840,5 +1949,125 @@ describe("PlanningAnalysisTab — the assistant's proposed rewrite", () => {
 		expect(screen.getByTestId("editor-prose")).toHaveTextContent(
 			"An engineering reliability story.",
 		);
+	});
+});
+
+describe("PlanningAnalysisTab — the change digest for an open review", () => {
+	// Local copies: the originals are scoped to the rewrite describe above, and
+	// a review opened by the assistant is exactly the trigger under test here.
+	const PROPOSAL = "### Topic angle\n\nA sharper angle, as instructed.";
+	const withAnalysis = (overrides: Record<string, unknown> = {}) => ({
+		latestAttempt: ready(),
+		effective: AI_EFFECTIVE,
+		aiVersion: 1,
+		...overrides,
+	});
+
+	it("asks for it once per review, not once per render", async () => {
+		// The effect that fires this re-runs on every render that touches its
+		// dependencies, and the page behind it polls. Without the ref guard
+		// this is a model call per render — the exact cost the guard exists to
+		// stop, and invisible in the UI because each answer looks the same.
+		const { rerender } = renderTab(
+			withAnalysis({
+				assistantProposal: PROPOSAL,
+				onAssistantProposalConsumed: vi.fn(),
+			}),
+		);
+		expect(summarizeMutate).toHaveBeenCalledTimes(1);
+
+		rerender(
+			<PlanningAnalysisTab
+				{...(props(
+					withAnalysis({
+						assistantProposal: PROPOSAL,
+						onAssistantProposalConsumed: vi.fn(),
+					}),
+				) as never)}
+			/>,
+		);
+		rerender(
+			<PlanningAnalysisTab
+				{...(props(
+					withAnalysis({
+						assistantProposal: PROPOSAL,
+						onAssistantProposalConsumed: vi.fn(),
+					}),
+				) as never)}
+			/>,
+		);
+
+		expect(summarizeMutate).toHaveBeenCalledTimes(1);
+	});
+
+	it("sends the two versions the review already holds", () => {
+		// No serializer round-trip: `beginReview` was handed both texts, so the
+		// request needs nothing read back out of the editor.
+		renderTab(
+			withAnalysis({
+				assistantProposal: PROPOSAL,
+				onAssistantProposalConsumed: vi.fn(),
+			}),
+		);
+
+		expect(summarizeMutate).toHaveBeenCalledWith(
+			expect.objectContaining({ after: PROPOSAL }),
+		);
+	});
+
+	it("asks again for the NEXT review", async () => {
+		// The guard re-arms when the review closes. A guard that latched would
+		// leave every later review explaining the first one's changes.
+		renderTab(
+			withAnalysis({
+				assistantProposal: PROPOSAL,
+				onAssistantProposalConsumed: vi.fn(),
+			}),
+		);
+		expect(summarizeMutate).toHaveBeenCalledTimes(1);
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /reject all changes/i }),
+		);
+
+		expect(summarizeMutate).toHaveBeenCalledTimes(1);
+	});
+
+	it("leaves accept and reject working when the digest fails", async () => {
+		// ADVISORY, NEVER BLOCKING. The procedure throws on model failure, and
+		// a review whose summary could not be produced is still a review the
+		// author has to be able to finish.
+		state.summarizeOutcome = "error";
+		renderTab(
+			withAnalysis({
+				sourceAnalysisVersion: 1,
+				assistantProposal: PROPOSAL,
+				onAssistantProposalConsumed: vi.fn(),
+			}),
+		);
+
+		// It was asked for, and it failed.
+		expect(summarizeMutate).toHaveBeenCalledTimes(1);
+		// The card shows nothing — a failure banner over a diff someone is
+		// mid-review on costs more than it tells them.
+		expect(editorProps.current?.changeSummary).toMatchObject({
+			bullets: null,
+			isLoading: false,
+		});
+
+		// And the decision still lands.
+		await userEvent.click(
+			screen.getByRole("button", { name: /accept all changes/i }),
+		);
+		expect(editorProps.current?.prose).toBe(MERGED_TEXT);
+	});
+
+	it("hands the editor nothing at all when no review is open", () => {
+		// The digest describes a review, so outside one it has no meaning and
+		// the card must not occupy space above a document nobody is reviewing.
+		renderTab(withAnalysis({}));
+
+		expect(summarizeMutate).not.toHaveBeenCalled();
+		expect(editorProps.current?.changeSummary).toBeNull();
 	});
 });

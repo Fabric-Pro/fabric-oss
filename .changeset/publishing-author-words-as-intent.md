@@ -40,3 +40,21 @@ same agent, so the missing pieces were props, not capability: the reasoning and
 tool trace now render, the agent can ask clarifying questions in the chat, and
 `DocumentRefKind` gains a third value so a topic's conversation persists through
 the same polymorphic history stack Feature Maturation runs on.
+
+**Round two, from a second pass on staging.** The draft workspace is now a
+working area rather than a four-row box: Refine with AI is a popover on the
+draft's own action row, guidance collapses behind Regenerate once a draft
+exists, and a refined draft is reviewed as a diff against the working copy it
+came from — accepted change by change, not taken whole. Version history reads as
+a grid, says why Restore does not apply where it does not, and no longer offers
+a route that bypasses that review.
+
+Manual draft edits are versioned for the first time; they were overwriting each
+other in a single row, so restoring an older version discarded whatever had been
+typed on top. A topic's analysis now has ONE version sequence instead of two
+counters that made a first hand save read as "Version 1 · AI v6".
+
+Switching tabs no longer discards analysis edits, the editor locks while the
+assistant is rewriting it and says which lock it is, and an assistant rewrite
+opens with a summary of what changed whose bullets jump to the section they
+name. The chat keeps its earlier conversations and can reopen them.

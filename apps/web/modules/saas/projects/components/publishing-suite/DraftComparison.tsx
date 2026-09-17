@@ -122,6 +122,56 @@ export function CandidateDraft({
 	);
 }
 
+/** What a candidate records about the refinement run that produced it. */
+interface CandidateRefinement {
+	/** The author's edit instruction for that run, when the row kept one. */
+	instruction: string | null;
+}
+
+/**
+ * Whether a candidate is a REVISION of the saved working draft — and if so,
+ * what was asked of it.
+ *
+ * Read off the stored document rather than remembered by the panel that pressed
+ * Refine. Every generation activity already records
+ * `generation.refinedFromWorkingDraft` on the draft it writes, with its own
+ * comment explaining why: the two are indistinguishable once written, nothing
+ * else on the row says which question the model was asked, and `guidance` reads
+ * the same either way. A refinement takes minutes to arrive, and in that time
+ * the tab can be reloaded, the topic reopened, or the result collected by a
+ * colleague in another browser — none of which local state survives, and all of
+ * which the row does.
+ *
+ * Defensive for the same reason every `read…Document` in this folder is:
+ * `content` is `Json?`, so a row written before that field existed carries no
+ * `generation` block at all. That reads as "not a refinement" and renders the
+ * ordinary comparison, which is the right way to be wrong — a candidate shown
+ * plainly is exactly what shipped before this review existed.
+ */
+export function readCandidateRefinement(
+	content: unknown,
+): CandidateRefinement | null {
+	if (content == null || typeof content !== "object") {
+		return null;
+	}
+	const generation = (content as { generation?: unknown }).generation;
+	if (generation == null || typeof generation !== "object") {
+		return null;
+	}
+	const record = generation as {
+		refinedFromWorkingDraft?: unknown;
+		guidance?: unknown;
+	};
+	if (record.refinedFromWorkingDraft !== true) {
+		return null;
+	}
+	const instruction =
+		typeof record.guidance === "string" && record.guidance.trim()
+			? record.guidance.trim()
+			: null;
+	return { instruction };
+}
+
 /**
  * Said under the working draft's heading while a candidate sits beside it.
  *

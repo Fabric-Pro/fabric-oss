@@ -15,7 +15,7 @@ import {
 	ScissorsIcon,
 	SparklesIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CopyDraftButton } from "./CopyDraftButton";
 import { DraftDownloadDropdown } from "./DraftDownloadDropdown";
@@ -188,6 +188,44 @@ export function LinkedInPostPanel({
 	const isStranded = attempt?.status === "GENERATING" && attempt.isExpired;
 	const isGenerating = attempt?.status === "GENERATING" && !isStranded;
 
+	/**
+	 * This tab pressed Refine, and the run it started has not come back.
+	 *
+	 * The pending state used to live only in the drafts section further down the
+	 * page, wording itself around the run that writes candidates. Refine is
+	 * submitted from the working draft's own action row and CLOSES its popover on
+	 * submit, so pressing it left that row looking exactly as it had a moment
+	 * before — no spinner, no sentence, nothing to distinguish a run in flight
+	 * from a click that missed.
+	 *
+	 * Local state, legitimately: it records what THIS tab just did rather than a
+	 * fact about the topic. A reload drops it back to the neutral line in the
+	 * drafts section, which is still true — the cost of being wrong here is a
+	 * less specific sentence, never a false one.
+	 *
+	 * NOT combined with `isGenerating` at the point of use. The mutation resolves
+	 * before the invalidated query returns a GENERATING row, and a conjunction
+	 * blinks off for exactly that window — reproducing the "nothing is happening"
+	 * this indicator exists to answer.
+	 */
+	const [refineInFlight, setRefineInFlight] = useState(false);
+
+	/**
+	 * Cleared on the FALLING EDGE of the run, never on the mere absence of one.
+	 *
+	 * The flag is set before a row exists to observe, so clearing whenever
+	 * nothing is generating would clear it in the same breath it was set. A
+	 * stranded run still clears this: `isStranded` flips `isGenerating` false
+	 * once the deadline passes, which is the edge below.
+	 */
+	const wasGenerating = useRef(isGenerating);
+	useEffect(() => {
+		if (wasGenerating.current && !isGenerating) {
+			setRefineInFlight(false);
+		}
+		wasGenerating.current = isGenerating;
+	}, [isGenerating]);
+
 	const invalidateDrafts = () => {
 		void queryClient.invalidateQueries({
 			queryKey: orpc.projects.publishingSuite.listTopicDrafts.queryKey({
@@ -204,6 +242,10 @@ export function LinkedInPostPanel({
 				// Reporting either as an error would send the reader looking for
 				// a fault that is not theirs.
 				if (!result.started) {
+					// Nothing was started, so there is no run to report on. Left
+					// standing, the indicator would sit there until the next
+					// unrelated generation gave it a falling edge to clear on.
+					setRefineInFlight(false);
 					toast.info(
 						result.reason === "unavailable"
 							? "Generation is unavailable right now. Try again in a few minutes."
@@ -503,6 +545,10 @@ export function LinkedInPostPanel({
 												type="button"
 												variant="outline"
 												size="sm"
+												disabled={
+													isGenerating ||
+													generate.isPending
+												}
 											>
 												<PencilLineIcon
 													className="mr-2 size-4"
@@ -562,6 +608,7 @@ export function LinkedInPostPanel({
 															null,
 														refineFromWorkingDraft: true,
 													});
+													setRefineInFlight(true);
 													setRefineOpen(false);
 												}}
 												// Required here where it is
@@ -594,6 +641,17 @@ export function LinkedInPostPanel({
 											</Button>
 										</PopoverContent>
 									</Popover>
+									{/* The pending state where the press happened, rather than
+									    only in the drafts section further down. */}
+									{refineInFlight ? (
+										<output className="flex items-center gap-2 text-muted-foreground text-sm">
+											<Loader2Icon
+												className="size-4 motion-safe:animate-spin"
+												aria-hidden="true"
+											/>
+											Revising your saved LinkedIn post…
+										</output>
+									) : null}
 								</>
 							) : null}
 							<CopyDraftButton markdown={bodyValue} />
@@ -602,6 +660,31 @@ export function LinkedInPostPanel({
 								filename="linkedin-post"
 							/>
 						</div>
+						{/* Which AI does what, said where the two meet.
+
+						    The AI Assistant rail stays docked on this tab and opens with
+						    "tell me how to change the planning analysis" — true of what
+						    it does, and easy to read on a draft tab as an offer to change
+						    THIS text. It cannot: its readable context carries the topic
+						    and the analysis and no draft at all, and the one thing it
+						    writes is the analysis editor.
+
+						    Said here rather than by hiding the rail, because the rail is a
+						    working tool on this page — it answers questions about the
+						    topic — and a tool removed because it does less than a reader
+						    hoped teaches nothing. Named, not placed: the rail closes
+						    itself on a narrow viewport, so "on the right" is wrong on a
+						    phone the way naming a column is.
+
+						    Gated, because the action row above is not: both affordances
+						    it names belong to someone who can edit. */}
+						{canEdit ? (
+							<p className="text-muted-foreground text-xs leading-relaxed">
+								Refine with AI is what edits this LinkedIn post
+								— the AI Assistant works on the planning
+								analysis, not on drafts.
+							</p>
+						) : null}
 						{working.sourceOptionLabel ? (
 							<p className="text-muted-foreground text-xs">
 								From “{working.sourceOptionLabel}”.

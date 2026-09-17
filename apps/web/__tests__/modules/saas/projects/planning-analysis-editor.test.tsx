@@ -66,6 +66,12 @@ const { fakeEditor, capturedEditorOptionsRef } = vi.hoisted(() => ({
 		on: vi.fn(),
 		off: vi.fn(),
 		isEditable: true,
+		/**
+		 * A REAL element, because the change-digest's section matcher reads
+		 * `editor.view.dom` and queries headings out of it. Tests populate it
+		 * with the heading markup the diff actually produces.
+		 */
+		view: { dom: document.createElement("div") },
 	},
 	capturedEditorOptionsRef: {
 		current: null as {
@@ -90,6 +96,21 @@ vi.mock("@tiptap/react", () => ({
 // `EditorToolbar` is an existing, separately-tested component the brief
 // forbids touching. Its own button-level behavior is out of scope here — it
 // is stubbed so this file only exercises PlanningAnalysisEditor's own logic.
+// The change-digest card is a shared component and translates its chrome.
+// Keys through, because what is under test is which bullet was clicked, not
+// how the heading above them reads.
+vi.mock("next-intl", () => ({
+	useTranslations: () => (key: string) => key,
+}));
+
+// `DiffReviewBar` is separately tested and drags the whole document-assistant
+// history stack in with it (its outcome-recording hook reads an org-scoped
+// feature flag). Stubbed so this file exercises the digest card that sits
+// ABOVE it, not the bar.
+vi.mock("@saas/projects/components/DiffReviewBar", () => ({
+	DiffReviewBar: () => <div data-testid="diff-review-bar-stub" />,
+}));
+
 vi.mock("@saas/projects/components/EditorToolbar", () => ({
 	EditorToolbar: () => <div data-testid="editor-toolbar-stub" />,
 }));
@@ -576,5 +597,180 @@ describe("PlanningAnalysisEditor — unsaved work is visible", () => {
 		window.dispatchEvent(event);
 
 		expect(event.defaultPrevented).toBe(false);
+	});
+});
+
+/**
+ * The lock has to say WHY, and the two reasons make different promises.
+ */
+describe("PlanningAnalysisEditor — the lock explains itself", () => {
+	it("promises replacement for a regeneration, which is what happens", () => {
+		render(<PlanningAnalysisEditor {...baseProps} isLocked />);
+
+		expect(
+			screen.getByTestId("planning-analysis-locked"),
+		).toHaveTextContent(/new analysis is being written/i);
+	});
+
+	it("does NOT promise replacement for an assistant rewrite, which may be rejected", () => {
+		render(
+			<PlanningAnalysisEditor
+				{...baseProps}
+				isLocked
+				lockReason="assistant"
+			/>,
+		);
+
+		const notice = screen.getByTestId("planning-analysis-locked");
+		expect(notice).toHaveTextContent(/assistant is rewriting/i);
+		expect(notice).toHaveTextContent(/accept or discard/i);
+		// The regeneration sentence claims the text is about to be replaced.
+		// Saying that about a proposal the reader can still reject would be
+		// untrue half the time.
+		expect(notice).not.toHaveTextContent(/replaces this one/i);
+	});
+});
+
+/**
+ * The confirm-time change digest, and the click that takes you to a section.
+ *
+ * The heading markup below is not invented — it is what
+ * `fromMarkdown(diffPartialText(before, after, true))` actually emits, measured
+ * before this was written. That matters for the renamed-section case: the
+ * concatenated `textContent` is `"RisksRisk register"`, which starts with
+ * neither heading, so matching on `textContent` alone (what
+ * `StoryWorkspace.tsx`'s `scrollDiffToSection` does) silently finds nothing.
+ */
+describe("PlanningAnalysisEditor — the change digest", () => {
+	const reviewProps = {
+		...baseProps,
+		diffReview: { onAcceptAll: vi.fn(), onRejectAll: vi.fn() },
+	};
+
+	function seedDocument(html: string) {
+		fakeEditor.view.dom.innerHTML = html;
+	}
+
+	beforeEach(() => {
+		seedDocument("");
+		Element.prototype.scrollIntoView = vi.fn();
+	});
+
+	it("lists the bullets while a review is open", () => {
+		render(
+			<PlanningAnalysisEditor
+				{...reviewProps}
+				changeSummary={{
+					bullets: ["Risks — the retry window is now bounded."],
+					isLoading: false,
+				}}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", {
+				name: /the retry window is now bounded/i,
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("scrolls to the section a bullet names, and flashes it", async () => {
+		seedDocument("<h2>Risks</h2><p>a</p><h2>Scope</h2><p>b</p>");
+		render(
+			<PlanningAnalysisEditor
+				{...reviewProps}
+				changeSummary={{
+					bullets: ["Scope — one more service is covered."],
+					isLoading: false,
+				}}
+			/>,
+		);
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /one more service/i }),
+		);
+
+		const headings = fakeEditor.view.dom.querySelectorAll("h2");
+		const scope = headings[1] as HTMLElement;
+		expect(scope.scrollIntoView).toHaveBeenCalled();
+		// The keyframes are global and shared with Feature Maturation; what is
+		// asserted here is that the class lands on the RIGHT heading.
+		expect(scope.classList.contains("maturation-section-flash")).toBe(true);
+		expect(
+			(headings[0] as HTMLElement).classList.contains(
+				"maturation-section-flash",
+			),
+		).toBe(false);
+	});
+
+	it("finds a section the rewrite RENAMED, which textContent alone cannot", async () => {
+		// The divergence from Feature Maturation, and the reason for it. Under
+		// review the document is the diff, so a renamed heading holds both the
+		// old and the new text and reads as one concatenated string.
+		seedDocument(
+			'<h2><del class="diff-del">Risks</del><ins class="diff-ins">Risk register</ins></h2><p>a</p>',
+		);
+		render(
+			<PlanningAnalysisEditor
+				{...reviewProps}
+				changeSummary={{
+					bullets: ["Risk register — renamed from Risks."],
+					isLoading: false,
+				}}
+			/>,
+		);
+
+		const heading = fakeEditor.view.dom.querySelector("h2") as HTMLElement;
+		// Precondition: the naive match really would fail here.
+		expect(heading.textContent).toBe("RisksRisk register");
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /renamed from risks/i }),
+		);
+
+		expect(heading.scrollIntoView).toHaveBeenCalled();
+	});
+
+	it("does nothing when a bullet names no section in the document", async () => {
+		// Best-effort by design: a summary is advisory, and a dead click is a
+		// far better failure than a thrown error over a missing heading.
+		seedDocument("<h2>Risks</h2><p>a</p>");
+		render(
+			<PlanningAnalysisEditor
+				{...reviewProps}
+				changeSummary={{
+					bullets: ["Appendix — a section that is not here."],
+					isLoading: false,
+				}}
+			/>,
+		);
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /a section that is not here/i }),
+		);
+
+		const heading = fakeEditor.view.dom.querySelector("h2") as HTMLElement;
+		expect(heading.scrollIntoView).not.toHaveBeenCalled();
+		expect(heading.classList.contains("maturation-section-flash")).toBe(
+			false,
+		);
+	});
+
+	it("shows nothing at all outside a review", () => {
+		// No `diffReview`, so no digest: it describes a review and has no
+		// meaning without one.
+		render(
+			<PlanningAnalysisEditor
+				{...baseProps}
+				changeSummary={{
+					bullets: ["Risks — should never be seen."],
+					isLoading: false,
+				}}
+			/>,
+		);
+
+		expect(
+			screen.queryByRole("button", { name: /should never be seen/i }),
+		).not.toBeInTheDocument();
 	});
 });

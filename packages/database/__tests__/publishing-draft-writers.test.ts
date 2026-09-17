@@ -26,6 +26,9 @@ const h = vi.hoisted(() => ({
 	workingUpdate: vi.fn(),
 	workingUpdateMany: vi.fn(),
 	workingFindUniqueOrThrow: vi.fn(),
+	// The draft-revision writer these two now append through.
+	revisionAggregate: vi.fn(),
+	revisionCreate: vi.fn(),
 }));
 
 vi.mock("../prisma/client", () => {
@@ -46,6 +49,10 @@ vi.mock("../prisma/client", () => {
 			update: h.workingUpdate,
 			updateMany: h.workingUpdateMany,
 			findUniqueOrThrow: h.workingFindUniqueOrThrow,
+		},
+		publishingTopicDraftRevision: {
+			aggregate: h.revisionAggregate,
+			create: h.revisionCreate,
 		},
 	};
 	return {
@@ -133,6 +140,8 @@ beforeEach(() => {
 	h.workingUpdate.mockResolvedValue({ updatedAt: new Date() });
 	h.workingUpdateMany.mockResolvedValue({ count: 1 });
 	h.workingFindUniqueOrThrow.mockResolvedValue({ updatedAt: new Date() });
+	h.revisionAggregate.mockResolvedValue({ _max: { version: 0 } });
+	h.revisionCreate.mockResolvedValue({ id: "rev-1", version: 1 });
 });
 
 describe("startTopicDraftAttempt — tenancy", () => {

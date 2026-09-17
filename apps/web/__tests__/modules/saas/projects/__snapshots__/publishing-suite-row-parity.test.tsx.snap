@@ -87,10 +87,16 @@ exports[`PublishingSuiteList row parity > renders the flag-off row exactly as it
           class="flex items-center gap-1"
         >
           <span
-            aria-hidden="true"
-            class="flex size-4 items-center justify-center rounded-full bg-muted text-[9px] font-medium text-muted-foreground"
+            class="relative flex shrink-0 overflow-hidden rounded-full size-4"
+            data-slot="avatar"
           >
-            E
+            <span
+              aria-hidden="true"
+              class="bg-muted flex size-full items-center justify-center rounded-full font-medium text-[9px] text-muted-foreground"
+              data-slot="avatar-fallback"
+            >
+              E
+            </span>
           </span>
           <span
             class="text-xs text-muted-foreground"
@@ -113,10 +119,16 @@ exports[`PublishingSuiteList row parity > renders the flag-off row exactly as it
           class="flex items-center gap-1"
         >
           <span
-            aria-hidden="true"
-            class="flex size-4 items-center justify-center rounded-full bg-muted text-[9px] font-medium text-muted-foreground"
+            class="relative flex shrink-0 overflow-hidden rounded-full size-4"
+            data-slot="avatar"
           >
-            A
+            <span
+              aria-hidden="true"
+              class="bg-muted flex size-full items-center justify-center rounded-full font-medium text-[9px] text-muted-foreground"
+              data-slot="avatar-fallback"
+            >
+              A
+            </span>
           </span>
           <span
             class="text-xs text-muted-foreground"

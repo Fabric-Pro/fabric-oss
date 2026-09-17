@@ -674,6 +674,113 @@ export async function failTopicDraft(input: {
 	});
 }
 
+/**
+ * Append one row to a topic's draft-revision history, inside the caller's
+ * transaction and under the project lock the caller already holds.
+ *
+ * `max(version) + 1` per `(topicId, postType)`, the same allocation
+ * `startTopicDraftAttempt` uses for the generated side. Both are safe for the
+ * same reason and only that reason: every writer of these tables takes
+ * `lockProjectTenant` first, so the read and the insert cannot interleave with
+ * another allocation for this project.
+ *
+ * Tenancy comes from the LOCKED project row, never from client input.
+ */
+async function appendDraftRevision(
+	tx: Parameters<Parameters<typeof db.$transaction>[0]>[0],
+	input: {
+		topicId: string;
+		projectId: string;
+		postType: DraftPostType;
+		tenant: { organizationId: string | null; userId: string | null };
+		body: string;
+		kind: "EDITED" | "RESTORED";
+		sourceDraftVersion: number | null;
+		authorUserId: string | null;
+		changeSummary: string | null;
+	},
+): Promise<number> {
+	const { _max } = await tx.publishingTopicDraftRevision.aggregate({
+		where: {
+			topicId: input.topicId,
+			projectId: input.projectId,
+			postType: input.postType,
+		},
+		_max: { version: true },
+	});
+	const version = (_max?.version ?? 0) + 1;
+	await tx.publishingTopicDraftRevision.create({
+		data: {
+			topicId: input.topicId,
+			projectId: input.projectId,
+			organizationId: input.tenant.organizationId,
+			userId: input.tenant.userId,
+			postType: input.postType,
+			version,
+			body: input.body,
+			kind: input.kind,
+			sourceDraftVersion: input.sourceDraftVersion,
+			authorUserId: input.authorUserId,
+			changeSummary: input.changeSummary,
+		},
+	});
+	return version;
+}
+
+/**
+ * Record the body that is ABOUT TO BE REPLACED, if no revision has ever been
+ * written for this content type.
+ *
+ * The one-shot backstop for bodies that predate the history table. Without it
+ * this feature would prevent loss only from tomorrow: a working draft carrying
+ * a hand edit made before the table existed has no revision, and the first
+ * restore after deploy would discard exactly the text the feature exists to
+ * protect.
+ *
+ * Runs at most once per `(topicId, postType)` — after it, a revision exists and
+ * the condition is false forever. Attributed to whoever last wrote the row
+ * (`updatedById`), which is the most faithful claim available; its `createdAt`
+ * is necessarily now rather than when the text was written, and the summary
+ * says so rather than implying a precision the row cannot support.
+ */
+async function captureOutgoingBodyIfUnrecorded(
+	tx: Parameters<Parameters<typeof db.$transaction>[0]>[0],
+	input: {
+		topicId: string;
+		projectId: string;
+		postType: DraftPostType;
+		tenant: { organizationId: string | null; userId: string | null };
+		outgoingBody: string | null;
+		outgoingAuthorId: string | null;
+	},
+): Promise<void> {
+	if (!input.outgoingBody || input.outgoingBody.length === 0) {
+		return;
+	}
+	const existing = await tx.publishingTopicDraftRevision.findFirst({
+		where: {
+			topicId: input.topicId,
+			projectId: input.projectId,
+			postType: input.postType,
+		},
+		select: { id: true },
+	});
+	if (existing) {
+		return;
+	}
+	await appendDraftRevision(tx, {
+		topicId: input.topicId,
+		projectId: input.projectId,
+		postType: input.postType,
+		tenant: input.tenant,
+		body: input.outgoingBody,
+		kind: "EDITED",
+		sourceDraftVersion: null,
+		authorUserId: input.outgoingAuthorId,
+		changeSummary: "Saved before version history was kept",
+	});
+}
+
 export type SaveWorkingDraftResult =
 	| { status: "saved"; updatedAt: Date }
 	| { status: "project_ineligible" }
@@ -716,6 +823,14 @@ export type SaveWorkingDraftResult =
  * has to remember: no writer here can replace a body without being handed the
  * version it believes it is replacing, and the one writer generation calls
  * cannot replace a body at all.
+ *
+ * HISTORY: the first two append to `publishing_topic_draft_revision`, the third
+ * deliberately does not. A seed CREATES the first body — it replaces nothing,
+ * so there is nothing to lose — and the generation that produced it is already
+ * an entry in the unified sequence in its own right. Minting a revision there
+ * would put two entries on screen for one act. The rule is the same one
+ * `saveWorkingDraft` applies to a first adoption: history records a body being
+ * REPLACED, not a body arriving where there was none.
  */
 export async function saveWorkingDraft(input: {
 	topicId: string;
@@ -772,7 +887,10 @@ export async function saveWorkingDraft(input: {
 				postType: input.postType,
 				status: "READY",
 			},
-			select: { id: true },
+			// `version` as well as `id`: the revision this write appends records
+			// which generated version the body came from, and that number is
+			// read from the candidate rather than taken from the caller.
+			select: { id: true, version: true },
 		});
 		if (!source) {
 			return { status: "source_not_found" as const };
@@ -781,6 +899,10 @@ export async function saveWorkingDraft(input: {
 		// Optimistic concurrency, read INSIDE the transaction that holds the
 		// project lock — so between this read and the write below nothing else
 		// can commit a selection for this project.
+		//
+		// `body` and `updatedById` ride along for the one-shot backstop below:
+		// the body this write is about to replace has to be recorded before it
+		// goes, if nothing ever recorded it.
 		const current = await tx.publishingTopicWorkingDraft.findUnique({
 			where: {
 				topicId_postType: {
@@ -788,7 +910,7 @@ export async function saveWorkingDraft(input: {
 					postType: input.postType,
 				},
 			},
-			select: { updatedAt: true },
+			select: { updatedAt: true, body: true, updatedById: true },
 		});
 		// Compared by time VALUE, not by identity: the caller's copy has been
 		// through JSON and is a different Date object for the same instant.
@@ -832,6 +954,38 @@ export async function saveWorkingDraft(input: {
 			},
 			select: { updatedAt: true },
 		});
+
+		// HISTORY. Only when this write actually replaces a DIFFERENT body.
+		//
+		// The first adoption of a generated candidate — picking a short-post
+		// option, or the blog editor opening on the run that seeded it — replaces
+		// nothing and loses nothing, and the candidate is already an entry in the
+		// sequence in its own right. Minting a revision for it would put two
+		// entries on screen for one act and make the count read high.
+		//
+		// A restore is the case that matters: the body on screen is being
+		// swapped for an earlier one, and without this the swap left no trace.
+		if (current && current.body !== input.body) {
+			await captureOutgoingBodyIfUnrecorded(tx, {
+				topicId: input.topicId,
+				projectId: input.projectId,
+				postType: input.postType,
+				tenant,
+				outgoingBody: current.body,
+				outgoingAuthorId: current.updatedById,
+			});
+			await appendDraftRevision(tx, {
+				topicId: input.topicId,
+				projectId: input.projectId,
+				postType: input.postType,
+				tenant,
+				body: input.body,
+				kind: "RESTORED",
+				sourceDraftVersion: source.version,
+				authorUserId: input.updatedById,
+				changeSummary: `Restored from version ${source.version}`,
+			});
+		}
 
 		return { status: "saved" as const, updatedAt: saved.updatedAt };
 	});
@@ -1003,7 +1157,16 @@ export async function updateWorkingDraftBody(input: {
 				projectId: input.projectId,
 				postType: input.postType,
 			},
-			select: { id: true },
+			// `body`, `updatedById` and `sourceDraftId` ride along for the
+			// history append below — the outgoing text for the one-shot
+			// backstop, and the candidate this draft traces back to so an edit
+			// records the generated version it descends from.
+			select: {
+				id: true,
+				body: true,
+				updatedById: true,
+				sourceDraftId: true,
+			},
 		});
 		if (!current) {
 			return { status: "not_found" as const };
@@ -1045,6 +1208,52 @@ export async function updateWorkingDraftBody(input: {
 		const saved = await tx.publishingTopicWorkingDraft.findUniqueOrThrow({
 			where: { id: current.id },
 			select: { updatedAt: true },
+		});
+
+		// HISTORY — the half this feature exists for.
+		//
+		// A hand-typed edit used to be versioned NOWHERE: this row is a single
+		// upsert target, so every save overwrote the last and a restore
+		// discarded the lot behind a confirm dialog. The append runs only after
+		// the compare-and-set above has already WON (`written.count > 0`), so a
+		// losing write leaves no history entry — the revision is a consequence
+		// of the won CAS, never a second chance at one.
+		//
+		// The source version is read from the row's own `sourceDraftId` rather
+		// than derived from the newest candidate: an edit descends from whatever
+		// seeded the draft, and stamping the latest run would claim the author
+		// worked from something they never saw.
+		const sourceVersion = current.sourceDraftId
+			? ((
+					await tx.publishingTopicDraft.findFirst({
+						where: {
+							id: current.sourceDraftId,
+							topicId: input.topicId,
+							projectId: input.projectId,
+						},
+						select: { version: true },
+					})
+				)?.version ?? null)
+			: null;
+
+		await captureOutgoingBodyIfUnrecorded(tx, {
+			topicId: input.topicId,
+			projectId: input.projectId,
+			postType: input.postType,
+			tenant,
+			outgoingBody: current.body,
+			outgoingAuthorId: current.updatedById,
+		});
+		await appendDraftRevision(tx, {
+			topicId: input.topicId,
+			projectId: input.projectId,
+			postType: input.postType,
+			tenant,
+			body: input.body,
+			kind: "EDITED",
+			sourceDraftVersion: sourceVersion,
+			authorUserId: input.updatedById,
+			changeSummary: null,
 		});
 
 		return { status: "saved" as const, updatedAt: saved.updatedAt };
