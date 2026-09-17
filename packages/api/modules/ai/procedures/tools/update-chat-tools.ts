@@ -4,6 +4,7 @@ import {
 	replaceAiChatMcpConfigsForTenant,
 } from "@repo/database";
 import { z } from "zod";
+import { idArray } from "../../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -28,7 +29,7 @@ export const updateChatTools = tenantProtectedProcedure
 		z.object({
 			id: z.string(),
 			toolSelectionMode: z.enum(["DEFAULT", "ONLY_SELECTED", "DISABLED"]),
-			selectedMcpConfigIds: z.array(z.string()),
+			selectedMcpConfigIds: idArray(),
 			organizationId: z.string().nullable().optional(),
 		}),
 	)

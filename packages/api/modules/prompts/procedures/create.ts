@@ -3,6 +3,7 @@ import { createPrompt } from "@repo/database";
 import { logger } from "@repo/logs";
 import type { TemplateFormat } from "@repo/utils";
 import { z } from "zod";
+import { INPUT_BOUNDS, labelArray } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -81,14 +82,14 @@ export const createProcedure = tenantProtectedProcedure
 		z.object({
 			key: z.string().min(1).max(255),
 			name: z.string().min(1).max(255),
-			description: z.string().optional(),
+			description: z.string().max(INPUT_BOUNDS.description).optional(),
 			scope: PromptScopeSchema,
 			organizationId: z.string().nullable().optional(),
 			format: PromptFormatSchema.default("PLAIN_TEXT"),
-			category: z.string().optional(),
-			tags: z.array(z.string()).default([]),
+			category: z.string().max(INPUT_BOUNDS.name).optional(),
+			tags: labelArray().default([]),
 			isPublic: z.boolean().default(false),
-			initialContent: z.string().optional(),
+			initialContent: z.string().max(INPUT_BOUNDS.text).optional(),
 			initialVariables: z.record(z.string(), z.any()).optional(),
 		}),
 	)

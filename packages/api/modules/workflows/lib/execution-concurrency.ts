@@ -65,7 +65,7 @@ export function resolveDefaultConcurrencyLimit(): number {
  * already exists for agent deployments — reusing it avoids a second one),
  * otherwise the instance default.
  */
-async function resolveExecutionConcurrencyLimit(
+export async function resolveExecutionConcurrencyLimit(
 	organizationId?: string | null,
 ): Promise<number> {
 	const quota = organizationId

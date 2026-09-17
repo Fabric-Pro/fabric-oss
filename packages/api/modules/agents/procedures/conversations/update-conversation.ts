@@ -5,6 +5,7 @@ import {
 	updateConversationTrajectory,
 } from "@repo/database";
 import { z } from "zod";
+import { INPUT_BOUNDS } from "../../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -51,7 +52,7 @@ export type MessageAttachment = z.infer<typeof MessageAttachmentSchema>;
 export const MessageSchema = z.object({
 	id: z.string(),
 	role: z.enum(["user", "assistant", "system"]),
-	content: z.string(),
+	content: z.string().max(INPUT_BOUNDS.text),
 	timestamp: z.string(),
 	toolCalls: z
 		.array(
@@ -168,7 +169,7 @@ export const updateConversation = tenantProtectedProcedure
 		z.object({
 			id: z.string(),
 			organizationId: z.string().nullable().optional(),
-			title: z.string().nullish(),
+			title: z.string().max(INPUT_BOUNDS.name).nullish(),
 			messages: z.array(MessageSchema).optional(),
 			trajectory: TrajectorySchema.nullish(),
 			metadata: z.record(z.string(), z.unknown()).optional(),

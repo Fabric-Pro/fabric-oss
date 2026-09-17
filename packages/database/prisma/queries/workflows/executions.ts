@@ -183,6 +183,165 @@ export async function reserveWorkflowExecutionWithin(
 }
 
 /**
+ * Advisory-lock class id for idempotent manual execution starts (arbitrary
+ * but stable). Its own class in the `(int4, int4)` space the rest of this
+ * package uses — see `lib/refresh-lock-key.ts` for why a lock must never
+ * live in both the two-int and the bigint spaces.
+ */
+const EXECUTION_IDEMPOTENCY_ADVISORY_CLASS = 0x57584944; // "WXID"
+
+/** Where the client's key is kept on the row. `triggerInput` is the JSON
+ *  column the manual start already fills with `{ triggerData, variables }`;
+ *  the key rides alongside them so no schema change is needed. */
+export const EXECUTION_IDEMPOTENCY_KEY_PATH = ["idempotencyKey"] as const;
+
+export type IdempotentWorkflowExecutionResult =
+	| { outcome: "existing"; execution: WorkflowExecution }
+	| {
+			outcome: "created";
+			execution: WorkflowExecution;
+			inFlight: number;
+			limit: number;
+	  }
+	| { outcome: "limit-reached"; inFlight: number; limit: number };
+
+/**
+ * Resolve a client idempotency key to the execution it already names, or
+ * reserve capacity and create a new one — in that order, in one transaction.
+ *
+ * Why a transaction and an advisory lock rather than a plain read-then-write:
+ * the case this exists for is a double-click, and the second request arrives
+ * while the first is still between its own read and its insert. Serialising
+ * on the key (per user + workflow) makes the second request wait for the
+ * first to commit and then find its row. The lock is transaction-scoped, so
+ * nothing is left behind if either side fails.
+ *
+ * The key is resolved BEFORE the tenant's in-flight cap is consulted, and
+ * only a NEW row reserves capacity. A retry that carries the key of a run
+ * already started asks for nothing new, so it must get that run back even
+ * when the tenant is at its cap — the case where the first request started
+ * the last permitted run and its response was lost. Checking the cap first
+ * turned that retry into a 429, which the browser-retry contract this key
+ * exists for cannot tolerate. Lock order is key first, tenant second
+ * (`reserveWorkflowExecutionWithin`), on every path.
+ *
+ * Every row that still carries the key is a match, whatever its status. The
+ * key is released only by `releasedIdempotencyTriggerInput`, applied in the
+ * same write that records a CONFIRMED not-started run (Temporal confirmed no
+ * execution exists under the row's deterministic id, or the engine was
+ * unavailable before any start was sent). The lookup used to infer that from
+ * the row's shape — FAILED with no `temporalRunId` — but a run the engine DID
+ * accept can reach that shape too: the starter's run-id write fails, and the
+ * workflow later records FAILED. A same-key retry then created a second row
+ * and a second run. An accepted-but-unconfirmed start leaves its row PENDING
+ * and keyed, so a same-key retry finds it here as well.
+ *
+ * Tenant scoping is the XOR rule used everywhere else: `organizationId` set
+ * matches only that organisation's rows, unset matches only personal ones.
+ */
+export async function createWorkflowExecutionIdempotent(data: {
+	workflowId: string;
+	version: number;
+	triggerType: WorkflowTriggerType;
+	triggerInput: Record<string, Prisma.InputJsonValue | undefined>;
+	userId: string;
+	organizationId?: string;
+	idempotencyKey: string;
+	windowMs: number;
+	/** The tenant's in-flight ceiling, applied only when a row is created. */
+	limit: number;
+}): Promise<IdempotentWorkflowExecutionResult> {
+	const lockKey = `wfexec:${data.userId}:${data.workflowId}:${data.idempotencyKey}`;
+	const since = new Date(Date.now() - data.windowMs);
+
+	return await db.$transaction(
+		async (tx) => {
+			// `$executeRaw`, not `$queryRaw`: the function returns `void`, which
+			// the driver adapter's `$queryRaw` cannot deserialise (see
+			// `acquirePromptKeyRetirementLock`).
+			await tx.$executeRaw`SELECT pg_advisory_xact_lock(${EXECUTION_IDEMPOTENCY_ADVISORY_CLASS}::int, ${advisoryObjectKey(lockKey)}::int)`;
+
+			const existing = await tx.workflowExecution.findFirst({
+				where: {
+					workflowId: data.workflowId,
+					userId: data.userId,
+					organizationId: data.organizationId ?? null,
+					startedAt: { gte: since },
+					triggerInput: {
+						path: [...EXECUTION_IDEMPOTENCY_KEY_PATH],
+						equals: data.idempotencyKey,
+					},
+				},
+				orderBy: { startedAt: "desc" },
+			});
+
+			if (existing) {
+				return { outcome: "existing", execution: existing };
+			}
+
+			const reservation = await reserveWorkflowExecutionWithin(tx, {
+				userId: data.userId,
+				organizationId: data.organizationId,
+				limit: data.limit,
+				data: {
+					workflowId: data.workflowId,
+					version: data.version,
+					triggerType: data.triggerType,
+					triggerInput: {
+						...data.triggerInput,
+						[EXECUTION_IDEMPOTENCY_KEY_PATH[0]]:
+							data.idempotencyKey,
+					} as Prisma.InputJsonValue,
+				},
+			});
+			if (!reservation.reserved) {
+				return {
+					outcome: "limit-reached",
+					inFlight: reservation.inFlight,
+					limit: reservation.limit,
+				};
+			}
+			return {
+				outcome: "created",
+				execution: reservation.execution,
+				inFlight: reservation.inFlight,
+				limit: reservation.limit,
+			};
+		},
+		{ maxWait: 5_000, timeout: 10_000 },
+	);
+}
+
+/**
+ * The `triggerInput` to write alongside a CONFIRMED not-started FAILED status:
+ * the same input with the client idempotency key moved out of the path
+ * `createWorkflowExecutionIdempotent` matches on, so a same-key retry may
+ * start a fresh run. The key is kept under `releasedIdempotencyKey` for the
+ * run history. Only that one write releases a key; see the lookup's comment.
+ */
+export function releasedIdempotencyTriggerInput(
+	triggerInput: Prisma.JsonValue | null | undefined,
+): Prisma.InputJsonValue | undefined {
+	if (
+		!triggerInput ||
+		typeof triggerInput !== "object" ||
+		Array.isArray(triggerInput)
+	) {
+		return undefined;
+	}
+	const input = triggerInput as Record<string, Prisma.JsonValue>;
+	const key = EXECUTION_IDEMPOTENCY_KEY_PATH[0];
+	if (!(key in input)) {
+		return undefined;
+	}
+	const { [key]: released, ...rest } = input;
+	return {
+		...rest,
+		releasedIdempotencyKey: released,
+	} as Prisma.InputJsonValue;
+}
+
+/**
  * Record that the engine accepted the run behind an execution row: store the
  * Temporal workflow id and move the row PENDING → RUNNING — and ONLY from
  * PENDING.

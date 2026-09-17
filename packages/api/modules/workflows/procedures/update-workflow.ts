@@ -5,6 +5,7 @@ import {
 	WorkflowTriggerTypeSchema,
 } from "@repo/database/prisma/zod";
 import { z } from "zod";
+import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -31,7 +32,7 @@ export const updateWorkflowProcedure = tenantProtectedProcedure
 			id: z.string(),
 			organizationId: z.string().nullable().optional(),
 			name: z.string().min(1).max(255).optional(),
-			description: z.string().optional(),
+			description: z.string().max(INPUT_BOUNDS.description).optional(),
 			status: WorkflowBuilderStatusSchema.optional(),
 			triggerType: WorkflowTriggerTypeSchema.optional(),
 			triggerConfig: JsonValueSchema.optional(),

@@ -4,6 +4,7 @@ import {
 	getRegisteredAgentByAgentId,
 } from "@repo/database";
 import { z } from "zod";
+import { INPUT_BOUNDS } from "../../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requireInputOrgPermission,
@@ -41,7 +42,7 @@ export const createConversation = tenantProtectedProcedure
 			// (`fabric-workspace-assistant`) is 26 chars; 128 leaves
 			// room for namespaced future ids.
 			agentId: z.string().trim().min(1).max(128),
-			title: z.string().optional(),
+			title: z.string().max(INPUT_BOUNDS.name).optional(),
 			messages: z.array(MessageSchema).optional(),
 			metadata: z.record(z.string(), z.unknown()).optional(),
 		}),

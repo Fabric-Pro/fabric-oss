@@ -1,5 +1,6 @@
 import { getWorkspaceStats, listWorkspaces } from "@repo/database";
 import { z } from "zod";
+import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -26,7 +27,7 @@ export const listWorkspacesProcedure = tenantProtectedProcedure
 			offset: z.number().min(0).optional(),
 			status: z.enum(["ACTIVE", "ARCHIVED"]).optional(),
 			type: z.enum(["PERSONAL", "CUSTOM"]).optional(),
-			search: z.string().optional(),
+			search: z.string().max(INPUT_BOUNDS.name).optional(),
 			includeShared: z.boolean().optional(),
 		}),
 	)

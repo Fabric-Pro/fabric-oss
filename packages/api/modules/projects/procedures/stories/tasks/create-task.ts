@@ -24,7 +24,8 @@ export const createTaskProcedure = tenantProtectedProcedure
 			storyId: z.string(),
 			organizationId: z.string().nullable().optional(),
 			title: z.string().min(1).max(500),
-			description: z.string().optional(),
+			// Same ceiling `update-task` already enforces.
+			description: z.string().max(2000).optional(),
 			estimatedHours: z.number().min(0).max(1000).optional(),
 		}),
 	)

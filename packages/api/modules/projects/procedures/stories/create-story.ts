@@ -20,6 +20,7 @@ import { createStoryFromProposal, getTemporalClient } from "@repo/temporal";
 import { PromptKindMismatchError } from "@repo/temporal/prompt-kind-guard";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
+import { INPUT_BOUNDS } from "../../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -75,8 +76,8 @@ export const createStoryProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 			statusId: z.string().optional(),
 			title: z.string().min(1).max(500).optional(),
-			description: z.string().optional(),
-			acceptanceCriteria: z.string().optional(),
+			description: z.string().max(INPUT_BOUNDS.text).optional(),
+			acceptanceCriteria: z.string().max(INPUT_BOUNDS.text).optional(),
 			kind: StoryKindSchema.optional(),
 			priority: z
 				.enum(["P0_CRITICAL", "P1_HIGH", "P2_MEDIUM", "P3_LOW"])

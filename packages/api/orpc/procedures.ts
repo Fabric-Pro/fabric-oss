@@ -29,6 +29,7 @@ import { auditErrorMiddleware } from "./middleware/audit-error-middleware";
 import { auditTimingMiddleware } from "./middleware/audit-timing-middleware";
 import { errorMetricsMiddleware } from "./middleware/error-metrics-middleware";
 import { requestCounterMiddleware } from "./middleware/request-counter-middleware";
+import { rpcRateLimitMiddleware } from "./middleware/rpc-rate-limit-middleware";
 import {
 	getOrganizationIdFromContext,
 	getTenantFilterFromContext,
@@ -37,7 +38,7 @@ import {
 import { touchLastSeenMiddleware } from "./middleware/touch-last-seen";
 
 /**
- * Root public procedure.
+ * Root of every procedure chain — observability only, no policy.
  *
  * Three middlewares are mounted here, in this order:
  *   1. {@link requestCounterMiddleware} — increments `http_requests_total`
@@ -55,10 +56,26 @@ import { touchLastSeenMiddleware } from "./middleware/touch-last-seen";
  * All three middlewares must run BEFORE auth so that procedures throwing
  * UNAUTHORIZED still increment the right counters / capture the right
  * audit rows.
+ *
+ * Both {@link publicProcedure} and {@link protectedProcedure} build on this
+ * directly rather than one on the other, because each mounts the global
+ * request limiter ({@link rpcRateLimitMiddleware}) at the point where its
+ * key is known: the public chain has only a client IP, the protected chain
+ * has a user once the session middleware has run. Deriving protected from
+ * public would charge every authenticated call to BOTH buckets, and an
+ * office behind one NAT address would then share a single budget.
+ *
+ * Not exported: every module procedure must pick `publicProcedure` or a
+ * protected builder, and `orpc/__tests__/public-procedure-allowlist.test.ts`
+ * polices the former. A third choice would be a way around both.
  */
-export const publicProcedure = os
+const rootProcedure = os
 	.$context<{
 		headers: Headers;
+		/** Injected by `ResponseHeadersPlugin` on the HTTP handlers (see
+		 *  `./handler.ts`); the rate limiter writes `Retry-After` through it.
+		 *  Absent for in-process callers. */
+		resHeaders?: Headers;
 	}>()
 	// Declares the meta vocabulary so a procedure can override the automatic
 	// activity-capture decision with `.meta({ auditActivity: "never" })`. The
@@ -75,6 +92,16 @@ export const publicProcedure = os
 	// or throws; recordAuditFromRequest reads `getAuditTimingDurationMs`
 	// synchronously while assembling the row.
 	.use(auditTimingMiddleware);
+
+/**
+ * Root public procedure.
+ *
+ * Unauthenticated, so the global request limiter is keyed by client IP —
+ * the only identity available. Procedures that need a tighter public budget
+ * layer {@link rateLimitedPublicProcedure} on top; its per-path key is
+ * separate from this one, so its behaviour is unchanged.
+ */
+export const publicProcedure = rootProcedure.use(rpcRateLimitMiddleware);
 
 /**
  * Rate limited public procedure
@@ -180,7 +207,7 @@ const domainErrorMapper = os
 		}
 	});
 
-export const protectedProcedure = publicProcedure
+export const protectedProcedure = rootProcedure
 	.use(domainErrorMapper)
 	.use(async ({ context, next }) => {
 		const session = await auth.api.getSession({
@@ -198,6 +225,13 @@ export const protectedProcedure = publicProcedure
 			},
 		});
 	})
+	// Global per-user request limiter. Mounted immediately AFTER the session
+	// middleware — it keys on `context.user.id` — and BEFORE anything that
+	// does work on the caller's behalf, so a limited request costs one
+	// session lookup and nothing else. Every authenticated builder below
+	// (`tenantProtectedProcedure`, `adminProcedure`, the `*RateLimited*`
+	// variants) inherits it from here; none of them needs to mount it again.
+	.use(rpcRateLimitMiddleware)
 	// Every authenticated oRPC call (from a browser session)
 	// updates the caller's lastSeenAt (throttled, un-awaited). Must stay
 	// AFTER the session middleware — it reads context.user.
@@ -313,26 +347,40 @@ export const aiRateLimitedProcedure = protectedProcedure.use(
 );
 
 /**
+ * The workflow rate limit as a callable, for the same reason as
+ * {@link enforceAiRateLimit}: `workflowRateLimitedProcedure` is built on
+ * `protectedProcedure`, so a tenant-scoped procedure (which is every
+ * workflow procedure) could not adopt it without losing tenant resolution —
+ * and so none did. Call it from a `.use()` on any builder.
+ */
+export async function enforceWorkflowRateLimit(
+	userId: string,
+	path: readonly string[] | string,
+	preset: { limit: number; windowMs: number } = RATE_LIMIT_PRESETS.workflow,
+): Promise<void> {
+	const key = `workflow:${userId}:${path}`;
+
+	const result = await checkRateLimit(key, preset.limit, preset.windowMs);
+	if (result.allowed) {
+		return;
+	}
+	if (result.statusCode === 503) {
+		throw new ORPCError("SERVICE_UNAVAILABLE", {
+			message: "Rate limit service temporarily unavailable",
+		});
+	}
+	throw new ORPCError("TOO_MANY_REQUESTS", {
+		message: `Workflow rate limit exceeded. Please try again in ${result.resetInSeconds} seconds.`,
+		data: { retryAfter: result.resetInSeconds },
+	});
+}
+
+/**
  * Rate limited procedure for workflow operations
  */
 export const workflowRateLimitedProcedure = protectedProcedure.use(
 	async ({ context, next, path }) => {
-		const key = `workflow:${context.user.id}:${path}`;
-		const { limit, windowMs } = RATE_LIMIT_PRESETS.workflow;
-
-		const result = await checkRateLimit(key, limit, windowMs);
-
-		if (!result.allowed) {
-			if (result.statusCode === 503) {
-				throw new ORPCError("SERVICE_UNAVAILABLE", {
-					message: "Rate limit service temporarily unavailable",
-				});
-			}
-			throw new ORPCError("TOO_MANY_REQUESTS", {
-				message: `Workflow rate limit exceeded. Please try again in ${result.resetInSeconds} seconds.`,
-			});
-		}
-
+		await enforceWorkflowRateLimit(context.user.id, path);
 		return await next();
 	},
 );

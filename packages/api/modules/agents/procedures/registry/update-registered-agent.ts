@@ -13,6 +13,7 @@ import {
 	updateRegisteredAgent as updateRegisteredAgentQuery,
 } from "@repo/database";
 import { z } from "zod";
+import { INPUT_BOUNDS } from "../../../..//lib/zod-bounds";
 import {
 	Permissions,
 	protectedProcedure,
@@ -45,7 +46,7 @@ export const updateRegisteredAgent = protectedProcedure
 			organizationId: z.string().nullable().optional(),
 			name: z.string().min(1).max(100).optional(),
 			displayName: z.string().min(1).max(200).optional(),
-			description: z.string().optional(),
+			description: z.string().max(INPUT_BOUNDS.description).optional(),
 			deploymentUrl: z.string().url().optional(),
 			status: z.string().optional(),
 			config: z.any().optional(),

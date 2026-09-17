@@ -22,6 +22,7 @@ import {
 } from "@repo/temporal";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
+import { INPUT_BOUNDS, idArray } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -40,7 +41,7 @@ const UIMessageSchema = z.object({
 			.object({
 				type: z.string(),
 				// text is optional because some part types (tool-call, tool-result, etc.) don't have text
-				text: z.string().optional(),
+				text: z.string().max(INPUT_BOUNDS.text).optional(),
 			})
 			.passthrough(), // Allow additional properties for different part types
 	),
@@ -62,7 +63,7 @@ export const addMessageToChat = tenantProtectedProcedure
 			chatId: z.string(),
 			messages: z.array(UIMessageSchema),
 			model: z.string().optional(),
-			documentIds: z.array(z.string()).optional(),
+			documentIds: idArray().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {

@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/server";
 import { createPromptVersion, getPromptById } from "@repo/database";
 import type { TemplateFormat } from "@repo/utils";
 import { z } from "zod";
+import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requirePermission,
@@ -23,7 +24,7 @@ export const versionProcedures = {
 		.input(
 			z.object({
 				id: z.string(),
-				content: z.string().min(1),
+				content: z.string().min(1).max(INPUT_BOUNDS.text),
 				variables: z.record(z.string(), z.any()).optional(),
 				changeNote: z.string().max(500).optional(),
 			}),
