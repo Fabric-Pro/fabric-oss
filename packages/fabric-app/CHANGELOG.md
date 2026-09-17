@@ -1,5 +1,20 @@
 # fabric-app
 
+## 1.16.2
+
+### Patch Changes
+
+- b867f12: The chat entry points now bind a client-supplied organization to the caller's memberships
+- 23be7df: Direct chat now marks retrieved context as data rather than instructions
+- c2df859: The Active count in a project's Document State card is readable in dark mode
+- 41078a1: Integration OAuth callbacks now belong to the session that started them, and a state can be redeemed once
+- fca1e7a: Orchestrator authority check fails closed, tool memory and trajectories are tenant-scoped, and column automations actually run
+- fa62c8a: MCP App frames no longer run third-party HTML in the app's own origin
+- 406db68: Every RPC call now has a per-caller ceiling, workflow starts are quota'd and idempotent, and the busiest user-typed inputs have a size limit
+- 54d67ee: Fix typo and action badge pluralization on integration provider detail pages.
+- 18b465f: MCP servers, search-provider endpoints, OpenID discovery and browser automation no longer let the server be aimed at internal addresses
+- c6847ff: Workflow-builder runs no longer die at the heartbeat timeout, start under the wrong name, or spin forever on a join they cannot reach
+
 ## 1.16.1
 
 ### Patch Changes
