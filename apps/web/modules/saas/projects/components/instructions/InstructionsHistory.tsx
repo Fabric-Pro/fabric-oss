@@ -46,6 +46,18 @@ export type HistorySnapshot = {
 	createdAt: string | Date;
 	rejection?: InstructionRejection[] | null;
 	user?: { name: string | null } | null;
+	/**
+	 * The version this one was edited FROM, set when it came from editing,
+	 * adding or deleting a file rather than from a folder upload. That is the
+	 * question someone reading a history of near-identical versions is
+	 * actually asking.
+	 *
+	 * The stored VERSION NUMBER rather than a lookup through
+	 * `baseSnapshotId`: that column is `SetNull` and the base may have been
+	 * deleted or pruned out of the kept window, which used to drop the line
+	 * from exactly the rows whose provenance is hardest to guess.
+	 */
+	baseVersion?: number | null;
 };
 
 /**
@@ -162,6 +174,11 @@ export function InstructionsHistory({
 											{t("filesStored", {
 												count: s.fileCount,
 											})}
+											{typeof s.baseVersion === "number"
+												? ` · ${t("editedFrom", {
+														version: s.baseVersion,
+													})}`
+												: ""}
 										</p>
 									</div>
 									<div className="flex shrink-0 gap-2">

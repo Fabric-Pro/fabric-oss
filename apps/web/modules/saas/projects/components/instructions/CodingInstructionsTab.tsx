@@ -33,10 +33,18 @@ type PollSnapshot = {
 export function CodingInstructionsTab({
 	projectId,
 	projectName,
+	canEdit = false,
 }: {
 	projectId: string;
 	/** Threaded down to the "Connect your agent" dialog's starter instruction. */
 	projectName: string;
+	/**
+	 * Whether this viewer's project role may change the published files
+	 * (Edit, Delete file, Add file). A UI gate only: `derive` re-checks
+	 * `INSTRUCTION_CREATE` and the project's source of truth server-side on
+	 * every save.
+	 */
+	canEdit?: boolean;
 }) {
 	const queryClient = useQueryClient();
 	const [uploadOpen, setUploadOpen] = useState(false);
@@ -206,6 +214,16 @@ export function CodingInstructionsTab({
 				snapshots={snapshots as unknown as InstructionsSnapshot[]}
 				onReplaceClick={() => setUploadOpen(true)}
 				onChanged={invalidate}
+				canEdit={canEdit}
+				// Spec §6.12: a repository-backed project's instructions are
+				// changed in git and refreshed by sync, so the tab does not
+				// offer to edit them. Treated as repository-backed until the
+				// setting has loaded, so the actions cannot appear and then
+				// vanish — and the server refuses either way.
+				repositoryBacked={
+					settings.isLoading ||
+					settings.data?.sourceOfTruth === "REPOSITORY"
+				}
 			/>
 		</>
 	);

@@ -837,8 +837,15 @@ describe("reapInstructionSnapshots: the failure-path prune", () => {
 			{ projectId: "p1", organizationId: "o1" },
 			{ projectId: "p2", organizationId: "o2" },
 		]);
+		// Real promoted keys, not toy strings: the prune filters its delete
+		// set to the pruned snapshot's OWN prefixes, because a derived
+		// snapshot's inherited rows carry the BASE's keys until promotion
+		// rewrites them (Fizzy #2546).
 		mocks.listPrunable.mockResolvedValue([
-			{ id: "old_1", storageKeys: ["k1"] },
+			{
+				id: "old_1",
+				storageKeys: ["projects/p1/instructions/snapshots/old_1/f1"],
+			},
 		]);
 
 		const result = await reapInstructionSnapshots();
@@ -1322,12 +1329,25 @@ describe("reapInstructionSnapshots: the global run budgets", () => {
 							id: "big",
 							storageKeys: Array.from(
 								{ length: 20_000 },
-								(_, i) => `k${i}`,
+								(_, i) =>
+									`projects/p1/instructions/snapshots/big/f${i}`,
 							),
 						},
-						{ id: "next", storageKeys: ["k_next"] },
+						{
+							id: "next",
+							storageKeys: [
+								"projects/p1/instructions/snapshots/next/f1",
+							],
+						},
 					]
-				: [{ id: "other", storageKeys: ["k_other"] }],
+				: [
+						{
+							id: "other",
+							storageKeys: [
+								"projects/p2/instructions/snapshots/other/f1",
+							],
+						},
+					],
 		);
 
 		const result = await reapInstructionSnapshots();

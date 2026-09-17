@@ -1,0 +1,7 @@
+---
+"fabric-app": patch
+---
+
+Project members can now fix, remove or add a single coding-instructions file from the Coding Instructions tab instead of re-uploading the whole folder, and each change publishes as a new version that has passed the same secret and integrity checks an upload does.
+
+Edit opens a plain text editor on any text file under the inline-size limit, with "Save and publish" or "Save as a new version"; Delete file and Add file sit beside it. Each action creates a snapshot derived from the published one: only the changed paths are uploaded, every other file is inherited from the base without the browser sending a byte, and the new version then runs the ordinary verify, scan, finalize and publish workflow — so the secret gate reads every file, including the inherited ones, and history, retention and the rejection banner behave exactly as for a folder upload. A project whose instructions come from its repository refuses these actions and says to change the files in git; a save that would publish over a version someone else published in the meantime is refused rather than reverting their work; and `.fabricignore` still changes only by uploading the folder again, because it decides what the version leaves out. History shows which version an edited one came from. If someone else publishes while your change is already being checked, your version is kept and left unpublished with an explanation rather than replacing theirs, and an editor left open when that happens keeps what you typed and asks you to reopen it on the new version.

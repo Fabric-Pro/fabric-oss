@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	exportKey,
 	exportKeyPrefix,
+	isKeyOwnedBySnapshot,
 	isStagingKey,
 	snapshotKey,
 	stagingKey,
@@ -37,5 +38,47 @@ describe("storage keys", () => {
 	it("recognises staging keys", () => {
 		expect(isStagingKey(stagingKey("p", "s", "f"))).toBe(true);
 		expect(isStagingKey(snapshotKey("p", "s", "f"))).toBe(false);
+	});
+
+	/**
+	 * Fizzy #2546. A derived snapshot's inherited rows carry the BASE's
+	 * immutable promoted keys until its own promotion rewrites them, so every
+	 * code path that deletes objects BY ROW KEY filters the set through this.
+	 * Without it, cleaning up an edit that was rejected — or that aged out of
+	 * retention before it finished — deletes the bytes of the version it was
+	 * edited from, which is normally the published one.
+	 */
+	it("owns exactly its own staging, snapshot and export prefixes", () => {
+		for (const key of [
+			stagingKey("p1", "s1", "f1"),
+			snapshotKey("p1", "s1", "f1"),
+			exportKey("p1", "s1", "digest"),
+		]) {
+			expect(isKeyOwnedBySnapshot(key, "p1", "s1")).toBe(true);
+		}
+	});
+
+	it("disowns another snapshot's keys, including a base it inherits from", () => {
+		expect(
+			isKeyOwnedBySnapshot(snapshotKey("p1", "base", "bf1"), "p1", "s1"),
+		).toBe(false);
+		expect(
+			isKeyOwnedBySnapshot(stagingKey("p1", "other", "f1"), "p1", "s1"),
+		).toBe(false);
+		expect(
+			isKeyOwnedBySnapshot(exportKey("p1", "other", "d"), "p1", "s1"),
+		).toBe(false);
+	});
+
+	it("disowns another project's keys, and a prefix that merely starts the same", () => {
+		expect(
+			isKeyOwnedBySnapshot(snapshotKey("p2", "s1", "f1"), "p1", "s1"),
+		).toBe(false);
+		// `s1` must not own `s10`'s objects: the snapshot prefix ends in a
+		// separator precisely so a longer id cannot be swallowed by a shorter
+		// one.
+		expect(
+			isKeyOwnedBySnapshot(snapshotKey("p1", "s10", "f1"), "p1", "s1"),
+		).toBe(false);
 	});
 });

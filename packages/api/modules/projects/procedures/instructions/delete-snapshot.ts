@@ -1,12 +1,13 @@
 import { ORPCError } from "@orpc/client";
 import { config } from "@repo/config";
 import {
+	countInFlightDerivedSnapshots,
 	deleteInstructionSnapshot,
 	getInstructionSnapshot,
 	getPublishedInstructionSnapshot,
 	listInstructionFiles,
 } from "@repo/database";
-import { exportKeyPrefix } from "@repo/instructions";
+import { exportKeyPrefix, isKeyOwnedBySnapshot } from "@repo/instructions";
 import {
 	type DeleteObjectsResult,
 	getStorageProvider,
@@ -140,6 +141,26 @@ export const deleteSnapshotProcedure = tenantProtectedProcedure
 					"This upload is still being checked and cannot be deleted yet",
 			});
 		}
+		// An unfinished edit of this version inherits its unchanged files by
+		// POINTING at this snapshot's promoted objects, so deleting it now
+		// takes the bytes that validation is about to read. "Unfinished"
+		// includes a FAILED edit, which is retryable and reads the very same
+		// keys on its next attempt; deleting that edit is how the user gives
+		// up on it and releases this version.
+		// The fast, friendly half — the refusal in `deleteInstructionSnapshot`'s
+		// own DELETE predicate is the authority, for the same reason the
+		// published-pointer check below is only the fast path.
+		const deriving = await countInFlightDerivedSnapshots(
+			snapshot.id,
+			input.projectId,
+			organizationId,
+		);
+		if (deriving > 0) {
+			throw new ORPCError("CONFLICT", {
+				message:
+					"An edit of this version is unfinished, so it cannot be deleted yet. Delete that edit first if you are not going to retry it",
+			});
+		}
 		// The fast, friendly path only. It is a read-then-delete check, so a
 		// publish committing between it and the delete would slip past it —
 		// the `onDelete: Restrict` foreign key below is what actually stops
@@ -155,8 +176,20 @@ export const deleteSnapshotProcedure = tenantProtectedProcedure
 
 		// Storage keys are read BEFORE the rows go, because the rows are the
 		// only record of where a snapshot's objects live.
+		//
+		// FILTERED to this snapshot's own objects. A derived snapshot's
+		// inherited rows carry the BASE's immutable promoted keys until its
+		// own promotion rewrites them, so deleting a rejected or failed edit
+		// by row key would delete the bytes of the version it was edited FROM
+		// — in the ordinary case the project's published coding instructions.
+		// Leaving an unreferenced object for the bucket lifecycle rule is
+		// recoverable; this is not.
 		const files = await listInstructionFiles(snapshot.id, organizationId);
-		const keys = files.map((f) => f.storageKey);
+		const keys = files
+			.map((f) => f.storageKey)
+			.filter((key) =>
+				isKeyOwnedBySnapshot(key, input.projectId, snapshot.id),
+			);
 
 		// Rows FIRST. The old order deleted the objects and only then the
 		// rows, so a publish that won the race against the check above left
@@ -180,6 +213,14 @@ export const deleteSnapshotProcedure = tenantProtectedProcedure
 			throw new ORPCError("CONFLICT", {
 				message:
 					"This upload is still being checked and cannot be deleted yet",
+			});
+		}
+		// A derivation that started between the check above and the DELETE.
+		// Nothing was deleted, and nothing in storage has been touched yet.
+		if (removal.reason === "base_in_flight") {
+			throw new ORPCError("CONFLICT", {
+				message:
+					"An edit of this version is unfinished, so it cannot be deleted yet. Delete that edit first if you are not going to retry it",
 			});
 		}
 

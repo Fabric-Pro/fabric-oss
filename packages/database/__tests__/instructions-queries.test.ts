@@ -22,6 +22,9 @@ const mocks = vi.hoisted(() => ({
 		findMany: vi.fn(),
 		updateMany: vi.fn(),
 		deleteMany: vi.fn(),
+		// The derived-snapshot interlock's "is anything deriving from this?"
+		// read, inside the delete transaction.
+		count: vi.fn(),
 	},
 	file: {
 		createMany: vi.fn(),
@@ -343,6 +346,232 @@ describe("publishInstructionSnapshot", () => {
 });
 
 /**
+ * BLOCKING (round 5). The version rule is not enough for a DERIVED snapshot.
+ *
+ * An edit is a base plus a change set: its unchanged files are the base's,
+ * inherited by pointing at that version's promoted objects. Two people
+ * editing published v7 therefore get v8 and v9, each holding v7's other
+ * files. Under the version rule both publish in turn, and v9 — which never
+ * saw the first edit — silently reverts it. The derive-time check cannot
+ * close this: both derivations pass it, because at derive time v7 really is
+ * published for both.
+ *
+ * So the AUTOMATIC publish is a fast-forward, in the conditional write
+ * itself: the project's published pointer must still be the exact base this
+ * snapshot was derived from. The base is read from the snapshot ROW, so a
+ * retried Temporal activity cannot hand in a different one and the workflow
+ * needs no new input.
+ */
+describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
+	const input = {
+		projectId: "p",
+		organizationId: "o",
+		requireBaseUnmoved: true,
+	};
+
+	it("publishes two edits of the same base in version order, and only the first moves the pointer", async () => {
+		// A derives v8 from the published v7; B derives v9 from the same v7.
+		// Both are READY, both are publishOnReady, and they finish in version
+		// order.
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v8",
+			status: "READY",
+			version: 8,
+			baseSnapshotId: "v7",
+			baseVersion: 7,
+		});
+		mocks.project.updateMany.mockResolvedValue({ count: 1 });
+
+		expect(
+			await publishInstructionSnapshot({ ...input, snapshotId: "v8" }),
+		).toEqual({ published: true, changed: true });
+		// The CAS is on the BASE's id, not on the version — and it is the
+		// whole predicate, so there is no `OR` arm left for a newer version
+		// to satisfy.
+		expect(mocks.project.updateMany).toHaveBeenCalledWith({
+			where: {
+				id: "p",
+				organizationId: "o",
+				publishedInstructionSnapshotId: "v7",
+			},
+			data: { publishedInstructionSnapshotId: "v8" },
+		});
+
+		mocks.snapshot.update.mockClear();
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v9",
+			status: "READY",
+			version: 9,
+			baseSnapshotId: "v7",
+			baseVersion: 7,
+		});
+		// The pointer is v8 now, so B's write matches nothing — where the
+		// version rule would have matched, 8 < 9.
+		mocks.project.updateMany.mockResolvedValue({ count: 0 });
+		mocks.project.findUnique.mockResolvedValue({
+			publishedInstructionSnapshotId: "v8",
+		});
+
+		expect(
+			await publishInstructionSnapshot({ ...input, snapshotId: "v9" }),
+		).toEqual({
+			published: false,
+			changed: false,
+			// Distinct from `older_than_current`: v9 is NEWER, it is intact,
+			// and it is still in History to be published deliberately.
+			reason: "base_moved",
+		});
+		// Nothing was written: no pointer move, no publishedAt stamp.
+		expect(mocks.snapshot.update).not.toHaveBeenCalled();
+	});
+
+	it("stays idempotent for the Temporal retry of an edit that already published", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v8",
+			status: "READY",
+			version: 8,
+			baseSnapshotId: "v7",
+			baseVersion: 7,
+		});
+		// The fast-forward's own condition is necessarily false once this
+		// snapshot holds the pointer, so the retry falls through to the
+		// already-published read exactly as it did under the version rule.
+		mocks.project.updateMany.mockResolvedValue({ count: 0 });
+		mocks.project.findUnique.mockResolvedValue({
+			publishedInstructionSnapshotId: "v8",
+		});
+
+		expect(
+			await publishInstructionSnapshot({ ...input, snapshotId: "v8" }),
+		).toEqual({ published: true, changed: false });
+		expect(mocks.snapshot.update).not.toHaveBeenCalled();
+	});
+
+	it("keeps the version rule for a full upload, which replaces the whole tree", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "s",
+			status: "READY",
+			version: 8,
+			baseSnapshotId: null,
+			baseVersion: null,
+		});
+		mocks.project.updateMany.mockResolvedValue({ count: 1 });
+
+		expect(
+			await publishInstructionSnapshot({ ...input, snapshotId: "s" }),
+		).toEqual({ published: true, changed: true });
+		// An upload IS the whole tree — it inherits nothing — so replacing a
+		// newer pointer loses nothing that was not being replaced anyway.
+		expect(mocks.project.updateMany).toHaveBeenCalledWith({
+			where: {
+				id: "p",
+				organizationId: "o",
+				OR: [
+					{ publishedInstructionSnapshotId: null },
+					{ publishedInstructionSnapshot: { version: { lt: 8 } } },
+				],
+			},
+			data: { publishedInstructionSnapshotId: "s" },
+		});
+	});
+
+	/**
+	 * BLOCKING, round two. `baseSnapshotId` is `ON DELETE SET NULL` and a
+	 * READY derived snapshot does NOT pin its base — it stands on its own
+	 * promoted objects — so the base can be deleted or pruned in the window
+	 * between READY and the publish activity. Deciding "is this derived?" by
+	 * the id there meant such a snapshot read itself as a full upload,
+	 * published on the version rule, and reverted the edit that had taken the
+	 * pointer in the meantime, with nothing in the tab to explain it.
+	 */
+	it("refuses a derived version whose base has been deleted, without writing anything", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v9",
+			status: "READY",
+			version: 9,
+			// v7 was deleted or pruned after this row reached READY.
+			baseSnapshotId: null,
+			// The durable half. Nothing in the lifecycle clears it, so it
+			// still says this version is an EDIT of v7 and not a tree of its
+			// own.
+			baseVersion: 7,
+		});
+		mocks.project.findUnique.mockResolvedValue({
+			publishedInstructionSnapshotId: "v8",
+		});
+
+		expect(
+			await publishInstructionSnapshot({ ...input, snapshotId: "v9" }),
+		).toEqual({
+			published: false,
+			changed: false,
+			reason: "base_moved",
+		});
+		// No conditional write at all: a vanished base certainly is not the
+		// published pointer, and there is no predicate that would make this
+		// publication safe. Emphatically NOT the version rule, which 8 < 9
+		// would have satisfied.
+		expect(mocks.project.updateMany).not.toHaveBeenCalled();
+		expect(mocks.snapshot.update).not.toHaveBeenCalled();
+	});
+
+	it("still reports the retry of a published edit whose base has since gone as published", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v9",
+			status: "READY",
+			version: 9,
+			baseSnapshotId: null,
+			baseVersion: 7,
+		});
+		// This snapshot IS the pointer: it published, and then its base aged
+		// out of retention. A Temporal retry landing here must be idempotent
+		// rather than reporting a conflict against itself.
+		mocks.project.findUnique.mockResolvedValue({
+			publishedInstructionSnapshotId: "v9",
+		});
+
+		expect(
+			await publishInstructionSnapshot({ ...input, snapshotId: "v9" }),
+		).toEqual({ published: true, changed: false });
+		expect(mocks.project.updateMany).not.toHaveBeenCalled();
+		expect(mocks.snapshot.update).not.toHaveBeenCalled();
+	});
+
+	it("leaves the manual History publish on the version rule", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v9",
+			status: "READY",
+			version: 9,
+			baseSnapshotId: "v7",
+			baseVersion: 7,
+		});
+		mocks.project.updateMany.mockResolvedValue({ count: 1 });
+
+		// No `requireBaseUnmoved`: someone opened History and chose this
+		// version knowing what is published, which is the deliberate act the
+		// fast-forward is meant to leave available.
+		expect(
+			await publishInstructionSnapshot({
+				snapshotId: "v9",
+				projectId: "p",
+				organizationId: "o",
+			}),
+		).toEqual({ published: true, changed: true });
+		expect(mocks.project.updateMany).toHaveBeenCalledWith({
+			where: {
+				id: "p",
+				organizationId: "o",
+				OR: [
+					{ publishedInstructionSnapshotId: null },
+					{ publishedInstructionSnapshot: { version: { lt: 9 } } },
+				],
+			},
+			data: { publishedInstructionSnapshotId: "v9" },
+		});
+	});
+});
+
+/**
  * I3: the published pointer's foreign key is `onDelete: Restrict`, so the
  * database refuses to delete a published snapshot. It was `SetNull`, which
  * made the delete succeed and silently clear the pointer — leaving the project
@@ -369,6 +598,15 @@ describe("deleteInstructionSnapshot", () => {
 				// itself rather than by a read above it or by the tab hiding
 				// the button.
 				status: { in: ["READY", "REJECTED", "FAILED"] },
+				// A snapshot an in-flight EDIT is deriving from cannot go
+				// either: that edit's inherited rows point at this snapshot's
+				// promoted objects until its own promotion rewrites them, and
+				// the storage delete after this transaction would take them.
+				derivedSnapshots: {
+					none: {
+						status: { in: ["RECEIVING", "VALIDATING", "FAILED"] },
+					},
+				},
 			},
 		});
 	});
@@ -378,6 +616,57 @@ describe("deleteInstructionSnapshot", () => {
 		// The status predicate matched nothing, but the row is still there.
 		mocks.snapshot.deleteMany.mockResolvedValue({ count: 0 });
 		mocks.snapshot.findFirst.mockResolvedValue({ id: "s" });
+
+		expect(await deleteInstructionSnapshot("s", "p", "org_1")).toEqual({
+			deleted: false,
+			reason: "active",
+		});
+	});
+
+	/**
+	 * The derived-snapshot interlock. A READY snapshot an in-flight edit is
+	 * deriving from survives the DELETE's relation filter, and the caller has
+	 * to learn WHICH refusal it hit: the delete procedure says "an edit of
+	 * this version is still being checked", which is actionable, where
+	 * "still being checked" about the snapshot itself is not true and not
+	 * actionable.
+	 */
+	// The set includes FAILED: a failed edit is retryable ("Try again" moves
+	// it back to VALIDATING) and the retry reads the same inherited keys, so
+	// the base stays pinned until that edit is itself deleted or pruned.
+	it("refuses a snapshot an unfinished edit is deriving from, and says so", async () => {
+		mocks.file.deleteMany.mockResolvedValue({ count: 3 });
+		mocks.snapshot.deleteMany.mockResolvedValue({ count: 0 });
+		// The row is there and IS in a deletable status — so the relation
+		// filter is what matched nothing.
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "s",
+			status: "READY",
+		});
+		mocks.snapshot.count.mockResolvedValue(1);
+
+		expect(await deleteInstructionSnapshot("s", "p", "org_1")).toEqual({
+			deleted: false,
+			reason: "base_in_flight",
+		});
+		expect(mocks.snapshot.count).toHaveBeenCalledWith({
+			where: {
+				baseSnapshotId: "s",
+				projectId: "p",
+				organizationId: "org_1",
+				status: { in: ["RECEIVING", "VALIDATING", "FAILED"] },
+			},
+		});
+	});
+
+	it("still reports `active` for a deletable-looking row with no derivations", async () => {
+		mocks.file.deleteMany.mockResolvedValue({ count: 3 });
+		mocks.snapshot.deleteMany.mockResolvedValue({ count: 0 });
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "s",
+			status: "READY",
+		});
+		mocks.snapshot.count.mockResolvedValue(0);
 
 		expect(await deleteInstructionSnapshot("s", "p", "org_1")).toEqual({
 			deleted: false,
@@ -983,9 +1272,19 @@ describe("listPrunableInstructionSnapshots", () => {
 			rejected: 2,
 		});
 
+		// The SNAPSHOT'S OWN status filter, not the whole serialized
+		// argument: the derived-snapshot interlock added a RELATION filter
+		// that names those two statuses on purpose (a base with an in-flight
+		// edit is kept), and a string search over the argument cannot tell
+		// the two apart.
 		for (const call of mocks.snapshot.findMany.mock.calls) {
-			expect(JSON.stringify(call[0])).not.toContain("RECEIVING");
-			expect(JSON.stringify(call[0])).not.toContain("VALIDATING");
+			const where = (call[0] as { where: Record<string, unknown> }).where;
+			expect(JSON.stringify(where.status)).not.toContain("RECEIVING");
+			expect(JSON.stringify(where.status)).not.toContain("VALIDATING");
+			// And the interlock itself is on both windows.
+			expect(where.derivedSnapshots).toEqual({
+				none: { status: { in: ["RECEIVING", "VALIDATING", "FAILED"] } },
+			});
 		}
 	});
 });
@@ -1386,6 +1685,17 @@ describe("listProjectsWithPrunableInstructionSnapshots", () => {
 		expect(sql).toContain(
 			"WHERE s.\"status\" IN ('REJECTED', 'FAILED') AND p.\"id\" IS NULL",
 		);
+		// The derived-snapshot interlock, spelled the same way on BOTH arms:
+		// a version something unfinished was edited FROM is not prunable,
+		// because that edit's inherited rows still point at this version's
+		// promoted objects. FAILED is in the list because a failed edit is
+		// RETRYABLE — `finalize` moves it back to VALIDATING and the retry
+		// reads the same keys.
+		expect(
+			sql.match(
+				/NOT EXISTS \( SELECT 1 FROM "project_instruction_snapshot" d WHERE d\."baseSnapshotId" = s\."id" AND d\."status" IN \('RECEIVING', 'VALIDATING', 'FAILED'\) \)/g,
+			),
+		).toHaveLength(2);
 		// `UNION`, not `UNION ALL`: a project over both windows is ONE unit of
 		// work, because the prune helper handles both windows in one pass.
 		expect(sql).toContain("UNION SELECT");
@@ -1459,12 +1769,33 @@ describe("listProjectsWithPrunableInstructionSnapshots", () => {
  * disagreeing rather than as two mocks that were updated together. The SQL
  * text itself is asserted by the candidate query's own describe above.
  */
-type RetentionRow = { id: string; version: number; status: string };
+type RetentionRow = {
+	id: string;
+	version: number;
+	status: string;
+	/**
+	 * The statuses of the snapshots DERIVED from this one — the in-tab edits
+	 * made from this version. Both queries have to exclude a row that an
+	 * unfinished edit is still reading, so both sides of this harness model
+	 * the relation.
+	 */
+	derivedStatuses?: string[];
+};
 
 type SnapshotWhere = {
 	status?: string | { in: string[] };
 	publishedFor?: null;
+	derivedSnapshots?: { none: { status: { in: string[] } } };
 };
+
+/**
+ * The statuses the CANDIDATE query's `NOT EXISTS` names, as its SQL text
+ * spells them. The helper passes the same set as a Prisma relation filter and
+ * this harness applies whichever the caller actually used, so the two drift
+ * apart as a disagreement here rather than silently. The literal is asserted
+ * against the statement text itself in the describe above.
+ */
+const DERIVING_IN_SQL = ["RECEIVING", "VALIDATING", "FAILED"];
 
 type FindManyArgs = { where: SnapshotWhere; skip: number; take: number };
 
@@ -1487,6 +1818,14 @@ function matchesWhere(
 	// `publishedFor: null` is the relation back to `Project`: the row is NOT
 	// any project's published pointer.
 	if (where.publishedFor === null && row.id === publishedId) {
+		return false;
+	}
+	// The derived-snapshot interlock, as the self-relation both sides carry.
+	const unfinished = where.derivedSnapshots?.none.status.in;
+	if (
+		unfinished &&
+		(row.derivedStatuses ?? []).some((s) => unfinished.includes(s))
+	) {
 		return false;
 	}
 	return true;
@@ -1542,6 +1881,32 @@ describe.each([
 		expected: ["v1"],
 	},
 	{
+		name: "seven READY rows, the oldest one the base of a FAILED edit",
+		rows: readySnapshots(7).map((r) =>
+			r.id === "v1" ? { ...r, derivedStatuses: ["FAILED"] } : r,
+		),
+		publishedId: "v7",
+		// IMPORTANT (round 5). Without v1's edit, v1 is exactly what the
+		// seven-row case above prunes. The edit FAILED before promotion, so
+		// its inherited rows still point at v1's promoted objects and
+		// "Try again" — which `finalize` serves by moving FAILED back to
+		// VALIDATING — would find every one of them missing. Both queries
+		// have to agree about that: the helper must not return v1, and the
+		// candidate query must not nominate the project for work the helper
+		// will not do.
+		expected: [],
+	},
+	{
+		name: "seven READY rows whose edit was REJECTED, which releases the base",
+		rows: readySnapshots(7).map((r) =>
+			r.id === "v1" ? { ...r, derivedStatuses: ["REJECTED"] } : r,
+		),
+		publishedId: "v7",
+		// The other terminal status, and the one the pipeline never reopens:
+		// a rejected edit will not read its base again, so it pins nothing.
+		expected: ["v1"],
+	},
+	{
 		name: "five READY rows and four REJECTED/FAILED ones",
 		rows: [
 			...readySnapshots(5),
@@ -1577,8 +1942,18 @@ describe.each([
 				const [keepReady, keepRejected, offset, limit] =
 					values as number[];
 				const window = (where: SnapshotWhere) =>
-					rows.filter((r) => matchesWhere(r, where, publishedId))
-						.length;
+					rows.filter((r) =>
+						matchesWhere(
+							r,
+							{
+								...where,
+								derivedSnapshots: {
+									none: { status: { in: DERIVING_IN_SQL } },
+								},
+							},
+							publishedId,
+						),
+					).length;
 				const isCandidate =
 					window({ status: "READY", publishedFor: null }) >
 						(keepReady as number) ||

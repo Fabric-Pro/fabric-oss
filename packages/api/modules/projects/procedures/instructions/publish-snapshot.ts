@@ -20,6 +20,11 @@ import { requireHostingOrganizationId } from "./hosting-organization";
  * case) always resolves the same way; only the API-side reason mapping below
  * distinguishes NOT_FOUND / BAD_REQUEST / CONFLICT for a refusal, and only
  * `changed` decides whether an audit row is written.
+ *
+ * Deliberately WITHOUT `requireBaseUnmoved`. That fast-forward rule exists to
+ * stop an automatic publish-on-ready from silently reverting someone else's
+ * edit; here a person has opened History and chosen this version knowing what
+ * is published, so the ordinary "newer version wins" rule is the right one.
  */
 export const publishSnapshotProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.INSTRUCTION_UPDATE))

@@ -16634,6 +16634,19 @@ model ProjectInstructionSnapshot {
   sourceRef               String?
   sourceCommitSha         String?
 
+  /// The READY snapshot this one was derived from: an in-tab file edit, a
+  /// file added or deleted, or (later) a CLI push. Unchanged files are
+  /// inherited from that snapshot rather than re-uploaded. SetNull, because a
+  /// base that ages out of retention must not take the version it produced
+  /// with it — so this answers "which snapshot", never "was this derived".
+  baseSnapshotId String?
+  /// The base's `version` at derive time. Written once and never updated, and
+  /// deliberately NOT a foreign key, so it survives the base being deleted or
+  /// pruned: it is the durable answer to "is this row derived?", which the
+  /// publish fast-forward and the history line both need after `SetNull` has
+  /// cleared `baseSnapshotId`.
+  baseVersion    Int?
+
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   readyAt     DateTime?
@@ -16645,6 +16658,9 @@ model ProjectInstructionSnapshot {
   publishedFor Project?     @relation("PublishedInstructionSnapshot")
   files        ProjectInstructionFile[]
 
+  baseSnapshot      ProjectInstructionSnapshot?  @relation("DerivedInstructionSnapshots", fields: [baseSnapshotId], references: [id], onDelete: SetNull)
+  derivedSnapshots  ProjectInstructionSnapshot[] @relation("DerivedInstructionSnapshots")
+
   /// Target of the child's composite FK: a file can only point at a snapshot
   /// in its own project.
   @@unique([id, projectId])
@@ -16652,6 +16668,10 @@ model ProjectInstructionSnapshot {
   @@index([projectId, status])
   @@index([organizationId])
   @@index([userId])
+  /// Answers "is anything still deriving from this snapshot?" — the question
+  /// the delete procedure and the retention prune ask before they remove a
+  /// snapshot whose objects an in-flight derived snapshot still reads.
+  @@index([baseSnapshotId])
   @@map("project_instruction_snapshot")
 }
 
@@ -16676,6 +16696,22 @@ model ProjectInstructionFile {
   isText      Boolean
   /// Unix mode when the source can supply it (repository sync). Null for browser uploads.
   mode        Int?
+
+  /// The base snapshot's file row this row was copied from, for a derived
+  /// snapshot. Null for a row whose bytes this snapshot's own upload carries.
+  ///
+  /// Explicit, rather than inferred from `storageKey`: until promotion
+  /// rewrites it, an inherited row's key is the BASE's immutable object, and
+  /// the validation gate has to know that a key outside this snapshot's own
+  /// prefixes is legitimate (and which one it should be) rather than a row
+  /// pointing somewhere no activity ever wrote it.
+  ///
+  /// Deliberately NOT a foreign key. The base's rows are deleted when it ages
+  /// out of retention, and the derived snapshot is READY and standing on its
+  /// own promoted objects long before that; a SetNull would rewrite thousands
+  /// of settled rows, and a Restrict would let a finished edit pin its base
+  /// in the bucket forever.
+  inheritedFromFileId String?
 
   createdAt DateTime @default(now())
 

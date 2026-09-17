@@ -16,7 +16,8 @@
  */
 import en from "@repo/i18n/translations/en.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -81,6 +82,28 @@ const TEXT_FILE = {
 	url: null,
 };
 
+// The one call an Edit / Delete file save makes. Mocked at the module
+// boundary: what matters here is the CHANGE SET the component sends and
+// whether it sends one at all, not the derive → PUT → finalize transport,
+// which `edit-snapshot.ts` owns and the API tests cover.
+const editMocks = vi.hoisted(() => ({
+	editInstructionSnapshot: vi.fn(),
+	toastInfo: vi.fn(),
+	toastSuccess: vi.fn(),
+	toastError: vi.fn(),
+}));
+vi.mock("@saas/projects/lib/edit-snapshot", () => ({
+	editInstructionSnapshot: (...a: unknown[]) =>
+		editMocks.editInstructionSnapshot(...a),
+}));
+vi.mock("sonner", () => ({
+	toast: {
+		info: (...a: unknown[]) => editMocks.toastInfo(...a),
+		success: (...a: unknown[]) => editMocks.toastSuccess(...a),
+		error: (...a: unknown[]) => editMocks.toastError(...a),
+	},
+}));
+
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
@@ -110,6 +133,13 @@ function TestQueryProvider({ children }: { children: ReactNode }) {
 describe("InstructionFileView", () => {
 	beforeEach(() => {
 		fileResponse.current = { ...TEXT_FILE };
+		for (const fn of Object.values(editMocks)) {
+			fn.mockReset();
+		}
+		editMocks.editInstructionSnapshot.mockResolvedValue({
+			snapshotId: "snap_new",
+			version: 8,
+		});
 	});
 
 	it("renders frontmatter as a header and the body without the frontmatter block", async () => {
@@ -210,5 +240,318 @@ describe("InstructionFileView", () => {
 		expect(
 			screen.queryByText(/Download the snapshot for the full file/),
 		).not.toBeInTheDocument();
+	});
+	/**
+	 * Fizzy #2546. Editing a file in the tab has to produce a NEW VERSION
+	 * through the ordinary upload path, not an in-place write — so what this
+	 * suite asserts is the change set the component hands to
+	 * `editInstructionSnapshot`, and, just as important, the cases where it
+	 * hands over nothing at all.
+	 */
+	describe("editing", () => {
+		it("offers no Edit or Delete without edit rights", async () => {
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await screen.findByRole("heading", { name: "example-qa-test" });
+			expect(
+				screen.queryByRole("button", { name: "Edit" }),
+			).not.toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", { name: "Delete file" }),
+			).not.toBeInTheDocument();
+		});
+
+		it("saves the edited body as a put and publishes it", async () => {
+			const user = userEvent.setup();
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit" }),
+			);
+			const editor = screen.getByRole("textbox");
+			await user.clear(editor);
+			await user.type(editor, "# Replaced");
+			await user.click(
+				screen.getByRole("button", { name: "Save and publish" }),
+			);
+
+			await waitFor(() =>
+				expect(editMocks.editInstructionSnapshot).toHaveBeenCalled(),
+			);
+			const call = editMocks.editInstructionSnapshot.mock
+				.calls[0]![0] as {
+				projectId: string;
+				baseSnapshotId: string;
+				publishOnReady: boolean;
+				edits: Array<{ op: string; path: string; body: Blob }>;
+			};
+			expect(call).toMatchObject({
+				projectId: "p",
+				baseSnapshotId: "s",
+				publishOnReady: true,
+			});
+			expect(call.edits).toHaveLength(1);
+			expect(call.edits[0]).toMatchObject({
+				op: "put",
+				path: ".claude/skills/example-qa-test/SKILL.md",
+			});
+			expect(await call.edits[0]!.body.text()).toBe("# Replaced");
+		});
+
+		it('"Save as a new version" does not claim the published pointer', async () => {
+			const user = userEvent.setup();
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit" }),
+			);
+			const editor = screen.getByRole("textbox");
+			await user.type(editor, "\nmore");
+			await user.click(
+				screen.getByRole("button", { name: "Save as a new version" }),
+			);
+
+			await waitFor(() =>
+				expect(editMocks.editInstructionSnapshot).toHaveBeenCalledWith(
+					expect.objectContaining({ publishOnReady: false }),
+				),
+			);
+		});
+
+		it("makes no version at all when the body is unchanged", async () => {
+			const user = userEvent.setup();
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit" }),
+			);
+			await user.click(
+				screen.getByRole("button", { name: "Save and publish" }),
+			);
+
+			expect(editMocks.editInstructionSnapshot).not.toHaveBeenCalled();
+			expect(editMocks.toastInfo).toHaveBeenCalledWith(
+				"Nothing changed, so no new version was made.",
+			);
+		});
+
+		it("sends a delete change once the confirmation is accepted", async () => {
+			const user = userEvent.setup();
+			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Delete file" }),
+			);
+
+			await waitFor(() =>
+				expect(editMocks.editInstructionSnapshot).toHaveBeenCalledWith(
+					expect.objectContaining({
+						edits: [
+							{
+								op: "delete",
+								path: ".claude/skills/example-qa-test/SKILL.md",
+							},
+						],
+					}),
+				),
+			);
+			confirm.mockRestore();
+		});
+
+		it("deletes nothing when the confirmation is declined", async () => {
+			const user = userEvent.setup();
+			const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Delete file" }),
+			);
+
+			expect(editMocks.editInstructionSnapshot).not.toHaveBeenCalled();
+			confirm.mockRestore();
+		});
+
+		it("refuses to edit a binary file and says why", async () => {
+			const user = userEvent.setup();
+			fileResponse.current = {
+				...TEXT_FILE,
+				path: "assets/logo.png",
+				kind: "OTHER",
+				name: null,
+				description: null,
+				isText: false,
+				body: null,
+				url: "https://storage.example.com/signed/logo.png",
+			};
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path="assets/logo.png"
+					canEdit
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit" }),
+			);
+
+			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+			expect(editMocks.toastInfo).toHaveBeenCalledWith(
+				"This file is not text. Use Add file to replace it.",
+			);
+		});
+
+		it("refuses to edit .fabricignore, which decides what the version excludes", async () => {
+			const user = userEvent.setup();
+			fileResponse.current = {
+				...TEXT_FILE,
+				path: ".fabricignore",
+				kind: "OTHER",
+				name: null,
+				description: null,
+				size: 40,
+				body: "tasks/\n",
+			};
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".fabricignore"
+					canEdit
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit" }),
+			);
+
+			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+			expect(editMocks.editInstructionSnapshot).not.toHaveBeenCalled();
+		});
+
+		/**
+		 * IMPORTANT (round 5). The draft used to be keyed by PATH alone, and
+		 * this component is not remounted when `snapshotId` changes: the
+		 * tab's poll swaps in a teammate's newly published version while the
+		 * editor is open. The draft was read from the old version, the save
+		 * would claim the new one as its base — a base the server agrees is
+		 * published — and the teammate's change would be overwritten by text
+		 * that never saw it.
+		 */
+		it("will not save a draft against a version published after the draft was opened", async () => {
+			const user = userEvent.setup();
+			const { rerender } = render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit" }),
+			);
+			await user.clear(screen.getByRole("textbox"));
+			await user.type(screen.getByRole("textbox"), "# Mine");
+
+			// The teammate publishes; the tab's poll rerenders this component
+			// with the new published snapshot id, in place.
+			fileResponse.current = { ...TEXT_FILE, body: "# Theirs" };
+			rerender(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s2"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+				/>,
+			);
+
+			// The typed text is still on screen — nothing of theirs is lost
+			// by protecting the teammate's change, and nothing of the
+			// teammate's is lost by keeping it.
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				"Someone published a new version while you were editing",
+			);
+			expect(screen.getByRole("textbox")).toHaveValue("# Mine");
+			// ...and there is no way at all to save it.
+			expect(
+				screen.queryByRole("button", { name: "Save and publish" }),
+			).not.toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", {
+					name: "Save as a new version",
+				}),
+			).not.toBeInTheDocument();
+			expect(editMocks.editInstructionSnapshot).not.toHaveBeenCalled();
+
+			// Discarding returns the reader, and Edit then starts from the
+			// version that is actually published — which is the only way a
+			// save can carry the new id.
+			await user.click(screen.getByRole("button", { name: "Discard" }));
+			await user.click(
+				await screen.findByRole("button", { name: "Edit" }),
+			);
+			await user.type(screen.getByRole("textbox"), " plus mine");
+			await user.click(
+				screen.getByRole("button", { name: "Save and publish" }),
+			);
+
+			await waitFor(() =>
+				expect(editMocks.editInstructionSnapshot).toHaveBeenCalledTimes(
+					1,
+				),
+			);
+			const call = editMocks.editInstructionSnapshot.mock
+				.calls[0]![0] as {
+				baseSnapshotId: string;
+				edits: Array<{ op: string; path: string; body: Blob }>;
+			};
+			expect(call.baseSnapshotId).toBe("s2");
+			expect(await call.edits[0]!.body.text()).toBe("# Theirs plus mine");
+		});
 	});
 });

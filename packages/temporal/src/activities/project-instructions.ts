@@ -296,9 +296,16 @@ async function cleanupStagingObjects(
 		);
 	}
 	const known = new Set(deterministicKeys);
+	// THIS snapshot's staging prefix, not `isStagingKey`'s repo-wide "is a
+	// staging key anywhere" test. The listing is already scoped to that
+	// prefix, so this changes nothing today; it is here because a derived
+	// snapshot's rows can legitimately name another snapshot's objects, and
+	// every delete set in this feature now states in one line which snapshot
+	// it may touch.
+	const ownStagingPrefix = stagingPrefix(ref.projectId, ref.snapshotId);
 	const leftover = (await listAllStagingObjects(storage, ref))
 		.map((object) => object.key)
-		.filter((key) => isStagingKey(key) && !known.has(key));
+		.filter((key) => key.startsWith(ownStagingPrefix) && !known.has(key));
 	if (leftover.length > 0) {
 		heartbeat({ phase: "delete-staging-leftover", count: leftover.length });
 		assertAllDeleted(
@@ -347,11 +354,31 @@ function decodeUtf8Text(data: Buffer): string | null {
  * an already-promoted file as "missing" purely because it has left the
  * staging prefix. Anywhere else is not a location any activity in this module
  * ever wrote it to.
+ *
+ * A DERIVED snapshot adds one more legitimate location, and exactly one: an
+ * inherited row sits at the BASE's immutable promoted key until this
+ * snapshot's own promotion re-writes it. That key is outside this snapshot's
+ * staging prefix, so it is not in the staging listing and its existence and
+ * length come from the HEAD the caller makes next rather than from that
+ * listing. It is RECONSTRUCTED from `(projectId, baseSnapshotId,
+ * inheritedFromFileId)` and compared, never trusted as stored: the row's
+ * `storageKey` is a column, and accepting whatever it holds would let any key
+ * in the bucket be read — and then promoted into a published snapshot — by a
+ * row that claimed to be inherited. Both halves of that triple have to be
+ * there; a row claiming inheritance on a snapshot with no base resolves to
+ * nothing and is refused.
  */
 function resolveReadableKey(
 	ref: SnapshotRef,
-	file: { id: string; path: string; size: number; storageKey: string },
+	file: {
+		id: string;
+		path: string;
+		size: number;
+		storageKey: string;
+		inheritedFromFileId?: string | null;
+	},
 	staged: Map<string, number>,
+	baseSnapshotId: string | null,
 ): { key: string } | { rejection: InstructionRejection } {
 	if (isStagingKey(file.storageKey)) {
 		const size = staged.get(file.storageKey);
@@ -374,7 +401,63 @@ function resolveReadableKey(
 	) {
 		return { key: file.storageKey };
 	}
+	if (
+		file.inheritedFromFileId &&
+		baseSnapshotId &&
+		file.storageKey ===
+			snapshotKey(ref.projectId, baseSnapshotId, file.inheritedFromFileId)
+	) {
+		return { key: file.storageKey };
+	}
 	return { rejection: { path: file.path, reason: "missing" } };
+}
+
+/**
+ * Refuses a file row whose `storageKey` is not one of the THREE locations an
+ * activity in this module could legitimately have written it to, for
+ * promotion's benefit.
+ *
+ * The gate answers the same question through `resolveReadableKey`, which also
+ * has to consult the staging listing; promotion does not, so this is the
+ * comparison on its own. Both reconstruct every acceptable key from ids —
+ * `(projectId, snapshotId, fileId)` for this snapshot's staging and promoted
+ * objects, `(projectId, baseSnapshotId, inheritedFromFileId)` for an inherited
+ * row — rather than trusting the column, because promotion writes what it
+ * reads into an immutable prefix that may be published seconds later.
+ *
+ * `missing` rather than a new reason: a key that is not one of those three is
+ * not a place this snapshot's bytes are, which is the same thing the caller
+ * would report if the object were simply absent.
+ *
+ * Deliberately NOT exported: every export from this module becomes a
+ * schedulable Temporal activity.
+ */
+function unexpectedSourceKey(
+	ref: SnapshotRef,
+	file: {
+		id: string;
+		path: string;
+		storageKey: string;
+		inheritedFromFileId?: string | null;
+	},
+	baseSnapshotId: string | null,
+): InstructionRejection | null {
+	const acceptable = [
+		stagingKey(ref.projectId, ref.snapshotId, file.id),
+		snapshotKey(ref.projectId, ref.snapshotId, file.id),
+		...(file.inheritedFromFileId && baseSnapshotId
+			? [
+					snapshotKey(
+						ref.projectId,
+						baseSnapshotId,
+						file.inheritedFromFileId,
+					),
+				]
+			: []),
+	];
+	return acceptable.includes(file.storageKey)
+		? null
+		: { path: file.path, reason: "missing" };
 }
 
 /**
@@ -710,7 +793,12 @@ export async function verifyAndScanInstructionFiles(
 			});
 			continue;
 		}
-		const located = resolveReadableKey(ref, f, staged);
+		const located = resolveReadableKey(
+			ref,
+			f,
+			staged,
+			snapshot.baseSnapshotId,
+		);
 		if ("rejection" in located) {
 			rejections.push(located.rejection);
 			continue;
@@ -838,11 +926,20 @@ export async function verifyAndScanInstructionFiles(
  * `storedBytes` and the digest are both derived from the rows, and the digest
  * from the per-file hashes this pass has just re-confirmed against the actual
  * bytes at the destination.
+ *
+ * A DERIVED snapshot's inherited row starts at the BASE's immutable promoted
+ * key, so for those files this is a re-hash of bytes that were already checked
+ * once, written into this snapshot's own prefix. It is not a copy the row can
+ * steer: `assertExpectedSourceKey` reconstructs every acceptable source key
+ * from ids and refuses anything else, and the base's object is only ever READ
+ * — never moved, never deleted. The same full gate ran over it a moment ago,
+ * so an inherited file is not trusted because it was trusted before.
  */
 export async function finalizeInstructionSnapshot(
 	ref: SnapshotRef,
 ): Promise<GateResult> {
-	assertNotAlreadyRejected(await loadVerifiedSnapshot(ref), ref.snapshotId);
+	const snapshot = await loadVerifiedSnapshot(ref);
+	assertNotAlreadyRejected(snapshot, ref.snapshotId);
 	const storage = getStorageProvider();
 	const files = await listInstructionFiles(
 		ref.snapshotId,
@@ -853,6 +950,17 @@ export async function finalizeInstructionSnapshot(
 	for (const f of files) {
 		heartbeat({ path: f.path });
 		const dest = snapshotKey(ref.projectId, ref.snapshotId, f.id);
+		// The source key is RECONSTRUCTED and compared before anything reads
+		// it. Promotion writes whatever it reads into the immutable prefix of
+		// a snapshot that may publish seconds later, so "read the key the row
+		// happens to hold" is the one thing it must not do — and a derived
+		// snapshot is the first case where a legitimate source key is outside
+		// this snapshot's own prefixes at all.
+		const unexpected = unexpectedSourceKey(ref, f, snapshot.baseSnapshotId);
+		if (unexpected) {
+			rejections.push(unexpected);
+			continue;
+		}
 		// Same two length checks as the gate, for the same reason: the key is
 		// still writable, so promotion must not be the step that buffers and
 		// stores an object larger than the client registered.
@@ -1128,10 +1236,21 @@ export async function publishInstructionSnapshotActivity(
 	if (!snapshot.publishOnReady) {
 		return { published: false, reason: "manual" };
 	}
+	// AUTO-publish, so it is a fast-forward: if this snapshot was derived
+	// from another, the project's published pointer must still be that base
+	// or the write matches nothing. Two edits of the same published version
+	// otherwise both publish in turn and the later one, which never saw the
+	// earlier edit, reverts it. The base is read from the snapshot row inside
+	// the query, so this needs nothing from the workflow.
+	//
+	// A refused fast-forward leaves the snapshot READY and unpublished, which
+	// History shows and "Publish this version" can still override as a
+	// deliberate act.
 	const r = await publishInstructionSnapshot({
 		snapshotId: ref.snapshotId,
 		projectId: ref.projectId,
 		organizationId: ref.organizationId,
+		requireBaseUnmoved: true,
 	});
 	// `publishOnReady` defaults to true, so THIS is the ordinary publish —
 	// the manual oRPC `publish` procedure audits, this path did not, and the
