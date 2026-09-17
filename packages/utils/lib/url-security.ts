@@ -363,12 +363,14 @@ const safeOutboundLookup = createSafeOutboundLookup();
 
 export async function assertSafeOutboundUrlResolved(
 	urlString: string,
+	resolveAddresses: ResolveAllAddresses = resolveAllAddresses,
 ): Promise<void> {
-	await resolveSafeOutboundAddresses(urlString);
+	await resolveSafeOutboundAddresses(urlString, resolveAddresses);
 }
 
 export async function resolveSafeOutboundAddresses(
 	urlString: string,
+	resolveAddresses: ResolveAllAddresses = resolveAllAddresses,
 ): Promise<string[]> {
 	assertSafeOutboundUrl(urlString);
 	const hostname = new URL(urlString).hostname.replace(/^\[|\]$/g, "");
@@ -377,7 +379,7 @@ export async function resolveSafeOutboundAddresses(
 	}
 
 	return await new Promise<string[]>((resolve, reject) => {
-		resolveAllAddresses(
+		resolveAddresses(
 			hostname,
 			{ all: true, order: "verbatim" },
 			(error, addresses) => {
@@ -436,7 +438,7 @@ export async function safeFetchOutbound(
 	return fetch(url, requestInit);
 }
 
-// =============================================================================
+// ======================================================================
 // Pinned outbound fetch (plan Slice 4 prerequisite)
 // =============================================================================
 //
@@ -545,11 +547,22 @@ export interface PinnedFetchOptions {
 	/**
 	 * Allowed response media types (compared case-insensitively against the
 	 * `content-type` header without parameters). A missing header is
-	 * rejected. Default: JSON, YAML and plain text.
+	 * rejected. Default: JSON, YAML and plain text. The wildcard entry
+	 * `PINNED_FETCH_ANY_CONTENT_TYPE` accepts every media type, including a
+	 * missing header, for callers that relay arbitrary responses — a browser
+	 * proxy — rather than parse them.
 	 */
 	allowedContentTypes?: string[];
 	/** Maximum redirects to follow, each re-validated (default 3). */
 	maxRedirects?: number;
+	/**
+	 * Follow redirects here, re-validating every hop (default `true`). When
+	 * `false` a redirect response is returned as-is — status, `Location` and
+	 * headers, no body — so the caller can hand it to a client that will
+	 * issue the next request back through this guard itself. The response
+	 * is never followed silently either way.
+	 */
+	followRedirects?: boolean;
 	/**
 	 * Test hook: a dispatcher used instead of the pinned Agent. DNS
 	 * validation still runs. Never pass this from production code.
@@ -574,6 +587,8 @@ export const PINNED_FETCH_DEFAULT_CONTENT_TYPES = [
 	"text/yaml",
 	"text/plain",
 ];
+/** `allowedContentTypes` entry that accepts any (or no) response media type. */
+export const PINNED_FETCH_ANY_CONTENT_TYPE = "*/*";
 
 export class UnsafeOutboundUrlError extends Error {
 	readonly code = "UNSAFE_OUTBOUND_URL" as const;
@@ -599,6 +614,32 @@ export class OutboundResponseRejectedError extends Error {
 async function defaultLookup(hostname: string): Promise<ResolvedAddress[]> {
 	const answers = await dnsPromises.lookup(hostname, { all: true });
 	return answers.map((a) => ({ address: a.address, family: a.family }));
+}
+
+/**
+ * Settle `promise` or, if `signal` aborts first, reject with the signal's
+ * reason. `dns.promises.lookup` has no timeout of its own, so without this
+ * a stalled resolver would hold a pinned fetch (and anything waiting on it,
+ * such as an intercepted browser request) past the caller's deadline.
+ */
+function settleBefore<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) {
+		return Promise.reject(signal.reason);
+	}
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
 }
 
 /**
@@ -719,11 +760,84 @@ async function readBodyCapped(
 }
 
 /**
+ * Copy response headers into a fresh `Headers`, keeping every `Set-Cookie`
+ * as its own entry (`forEach` would hand them back joined by a comma, which
+ * a cookie's `Expires` date also contains).
+ */
+function copyResponseHeaders(source: {
+	forEach(callback: (value: string, key: string) => void): void;
+	getSetCookie?: () => string[];
+}): Headers {
+	const headers = new Headers();
+	source.forEach((value, key) => {
+		if (key.toLowerCase() !== "set-cookie") {
+			headers.set(key, value);
+		}
+	});
+	for (const cookie of source.getSetCookie?.() ?? []) {
+		headers.append("set-cookie", cookie);
+	}
+	return headers;
+}
+
+/** Request headers that carry credentials scoped to one origin. */
+export const CROSS_ORIGIN_CREDENTIAL_HEADERS = [
+	"authorization",
+	"cookie",
+	"proxy-authorization",
+] as const;
+
+/** A copy of `headers` without the credential headers, for another origin. */
+export function withoutCrossOriginCredentials(
+	headers: RequestInit["headers"],
+): Headers {
+	const copy = new Headers(headers);
+	for (const name of CROSS_ORIGIN_CREDENTIAL_HEADERS) {
+		copy.delete(name);
+	}
+	return copy;
+}
+
+/**
+ * The `connect.lookup` that pins a socket to one validated address.
+ *
+ * Node calls a socket's lookup with `{ all: true }` whenever
+ * `autoSelectFamily` is on, which is the default since Node 20, and then
+ * expects an array of `{ address, family }`. Answering that call with a
+ * bare address leaves Node reading `undefined` as the IP
+ * (`ERR_INVALID_IP_ADDRESS`), so every pinned request failed as
+ * "fetch failed". Both call shapes get the same single pinned address.
+ */
+export function pinnedConnectLookup(address: ResolvedAddress) {
+	return (
+		_hostname: string,
+		options: { all?: boolean } | number | undefined,
+		callback: (
+			err: Error | null,
+			address: string | ResolvedAddress[],
+			family?: number,
+		) => void,
+	): void => {
+		if (typeof options === "object" && options?.all) {
+			callback(null, [
+				{ address: address.address, family: address.family },
+			]);
+			return;
+		}
+		callback(null, address.address, address.family);
+	};
+}
+
+/**
  * Fetch `input` with DNS-pinned SSRF protection (see the module comment).
  * The body is buffered (capped at `maxBytes`) and returned as a standard
  * `Response` so callers can use `.text()` / `.json()` as usual. Redirect
  * responses are followed manually — the returned response is never a
  * redirect.
+ *
+ * `timeoutMs` is one deadline for the whole call: DNS resolution, every
+ * redirect hop, connection, headers and body. A lookup that never answers
+ * rejects with the same `TimeoutError` as a stalled connection.
  */
 export async function safeFetchOutboundPinned(
 	input: string | URL,
@@ -737,8 +851,15 @@ export async function safeFetchOutboundPinned(
 	const allowed = (
 		opts.allowedContentTypes ?? PINNED_FETCH_DEFAULT_CONTENT_TYPES
 	).map((t) => t.toLowerCase());
+	const anyContentType = allowed.includes(PINNED_FETCH_ANY_CONTENT_TYPE);
+	const followRedirects = opts.followRedirects ?? true;
 	const lookup = opts.lookup ?? defaultLookup;
 
+	// The deadline starts now, before the first lookup, and the lookup is
+	// raced against it: `dns.promises.lookup` cannot be cancelled and has no
+	// timeout, so a resolver that never answers would otherwise hold this
+	// call open indefinitely, outside the deadline the caller was promised.
+	const deadlineAt = Date.now() + timeoutMs;
 	const deadline = AbortSignal.timeout(timeoutMs);
 	const signals: AbortSignal[] = [deadline];
 	if (init?.signal) {
@@ -749,9 +870,19 @@ export async function safeFetchOutboundPinned(
 	let currentUrl = typeof input === "string" ? input : input.toString();
 	let method = init?.method ?? "GET";
 	let body = init?.body ?? undefined;
+	let requestHeaders: RequestInit["headers"] = init?.headers;
 
 	for (let hop = 0; hop <= maxRedirects; hop++) {
-		const { url, address } = await resolvePinnedAddress(currentUrl, lookup);
+		if (signal.aborted) {
+			throw signal.reason;
+		}
+		const { url, address } = await settleBefore(
+			resolvePinnedAddress(currentUrl, lookup),
+			signal,
+		);
+		// Whatever the lookup left of the budget bounds each connection
+		// phase; the shared signal still ends the call as a whole.
+		const remainingMs = Math.max(1, deadlineAt - Date.now());
 
 		const ownAgent = opts.dispatcher
 			? null
@@ -759,19 +890,11 @@ export async function safeFetchOutboundPinned(
 					connect: {
 						// Pin the connection to the pre-validated address while
 						// `servername` / `Host` stay on the original hostname.
-						lookup: (
-							_hostname: string,
-							_options: unknown,
-							callback: (
-								err: Error | null,
-								address: string,
-								family: number,
-							) => void,
-						) => callback(null, address.address, address.family),
-						timeout: timeoutMs,
+						lookup: pinnedConnectLookup(address),
+						timeout: remainingMs,
 					},
-					headersTimeout: timeoutMs,
-					bodyTimeout: timeoutMs,
+					headersTimeout: remainingMs,
+					bodyTimeout: remainingMs,
 				});
 		const dispatcher = opts.dispatcher ?? (ownAgent as Dispatcher);
 
@@ -779,6 +902,7 @@ export async function safeFetchOutboundPinned(
 		try {
 			response = await undiciFetch(url.toString(), {
 				...(init as Parameters<typeof undiciFetch>[1]),
+				headers: requestHeaders as never,
 				method,
 				body: body as never,
 				signal,
@@ -790,6 +914,13 @@ export async function safeFetchOutboundPinned(
 				const location = response.headers.get("location");
 				// Drain so the connection can be reused/closed cleanly.
 				await response.body?.cancel().catch(() => {});
+				if (!followRedirects) {
+					return new Response(null, {
+						status: response.status,
+						statusText: response.statusText,
+						headers: copyResponseHeaders(response.headers),
+					});
+				}
 				if (!location) {
 					throw new OutboundResponseRejectedError(
 						"REDIRECT_WITHOUT_LOCATION",
@@ -802,7 +933,15 @@ export async function safeFetchOutboundPinned(
 						`More than ${maxRedirects} redirects`,
 					);
 				}
-				currentUrl = new URL(location, url).toString();
+				const nextUrl = new URL(location, url);
+				// A browser does not carry credentials to another origin on a
+				// redirect, and neither does this: the Authorization header
+				// and cookies the caller set were meant for this origin only.
+				if (nextUrl.origin !== url.origin) {
+					requestHeaders =
+						withoutCrossOriginCredentials(requestHeaders);
+				}
+				currentUrl = nextUrl.toString();
 				// 303 (and 301/302 for POST) switch to GET without a body.
 				if (
 					response.status === 303 ||
@@ -818,7 +957,10 @@ export async function safeFetchOutboundPinned(
 			const contentType = normalizeContentType(
 				response.headers.get("content-type"),
 			);
-			if (!contentType || !allowed.includes(contentType)) {
+			if (
+				!anyContentType &&
+				(!contentType || !allowed.includes(contentType))
+			) {
 				await response.body?.cancel().catch(() => {});
 				throw new OutboundResponseRejectedError(
 					"CONTENT_TYPE_NOT_ALLOWED",
@@ -827,10 +969,7 @@ export async function safeFetchOutboundPinned(
 			}
 
 			const bytes = await readBodyCapped(response, maxBytes);
-			const headers = new Headers();
-			response.headers.forEach((value, key) => {
-				headers.set(key, value);
-			});
+			const headers = copyResponseHeaders(response.headers);
 			const arrayBuffer = bytes.buffer.slice(
 				bytes.byteOffset,
 				bytes.byteOffset + bytes.byteLength,
@@ -851,4 +990,227 @@ export async function safeFetchOutboundPinned(
 		"TOO_MANY_REDIRECTS",
 		`More than ${maxRedirects} redirects`,
 	);
+}
+
+/**
+ * Does this error come from the safe dispatcher refusing a destination at
+ * DNS-lookup time? Node's `fetch` surfaces that as a `TypeError: fetch failed`
+ * whose `cause` is the `EACCES` error raised by the guarded lookup. Callers
+ * that map errors to HTTP statuses use this to report a blocked address as the
+ * caller's mistake rather than as a server fault.
+ */
+export function getBlockedOutboundReason(error: unknown): string | null {
+	let current: unknown = error;
+	for (let depth = 0; depth < 5 && current; depth++) {
+		if (typeof current !== "object") {
+			return null;
+		}
+		const candidate = current as NodeJS.ErrnoException & {
+			cause?: unknown;
+		};
+		if (
+			candidate.code === "EACCES" &&
+			typeof candidate.message === "string" &&
+			candidate.message.startsWith("Blocked outbound connection")
+		) {
+			return candidate.message;
+		}
+		current = candidate.cause;
+	}
+	return null;
+}
+
+/**
+ * Hosts a non-production deployment may reach when its allowlist variable is
+ * unset. Loopback only — a developer's own machine is where their local
+ * servers run, and nothing here reaches another host. Link-local and LAN
+ * addresses stay refused: cloud metadata is reachable from a laptop on a
+ * corporate network too.
+ */
+export const LOOPBACK_DEVELOPMENT_HOSTS: readonly string[] = [
+	"localhost",
+	"127.0.0.1",
+	"::1",
+	"host.docker.internal",
+];
+
+export interface OutboundHostAllowlistOptions {
+	/**
+	 * Environment variable holding the operator's comma-separated hostnames.
+	 * Read at call time, not module load: tests and the Next dev server both
+	 * set the environment after modules are first imported.
+	 */
+	envVar: string;
+	/**
+	 * Hosts permitted outside production when `envVar` is unset. Defaults to
+	 * `LOOPBACK_DEVELOPMENT_HOSTS`. Pass `[]` for a guard with no default
+	 * exception anywhere.
+	 */
+	nonProductionDefaultHosts?: readonly string[];
+	/** DNS resolver, injectable for tests. */
+	resolve?: ResolveAllAddresses;
+}
+
+export interface OutboundHostAllowlist {
+	readonly envVar: string;
+	/** The hosts currently permitted, lower-cased, in declaration order. */
+	hosts(): string[];
+	/**
+	 * Is this URL's host one the operator explicitly permitted? Hostname only:
+	 * an operator who has declared a host reachable should not have to
+	 * enumerate its ports, and the host is what decides whether a request
+	 * leaves the trust boundary.
+	 */
+	isAllowedHost(urlString: string): boolean;
+	/**
+	 * Why this URL must not be fetched, or `null` if it is public or
+	 * allowlisted. The reason names the variable that would permit it so a
+	 * self-hoster reads it as a setting, not as the product refusing their
+	 * setup.
+	 */
+	getUnsafeReason(urlString: string): string | null;
+	/** Throw unless the URL is public or allowlisted. Hostname check only. */
+	assert(urlString: string): void;
+	/**
+	 * Throw unless the URL is public or allowlisted, resolving the hostname
+	 * and refusing any answer that contains a private address. Use before
+	 * handing a URL to a client whose `fetch` cannot be replaced.
+	 */
+	assertResolved(urlString: string): Promise<void>;
+	/**
+	 * Fetch, refusing destinations the deployment has not permitted. An
+	 * allowlisted host is fetched without the safe dispatcher — blocking
+	 * private addresses at lookup time is exactly what the operator said
+	 * not to do for that host — but redirects are refused for it all the
+	 * same, since a 302 would carry the request somewhere nobody declared.
+	 * Everything else goes through `safeFetchOutbound`, so a public name
+	 * that resolves to a private address, or a public host that 302s to
+	 * one, is still refused.
+	 */
+	fetch(input: string | URL, init?: RequestInit): Promise<Response>;
+}
+
+function normalizeHostname(urlString: string | URL): string | null {
+	try {
+		const url =
+			typeof urlString === "string" ? new URL(urlString) : urlString;
+		return url.hostname
+			.toLowerCase()
+			.replace(/^\[|\]$/g, "")
+			.replace(/\.$/, "");
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Build an outbound guard whose only exception is an operator-declared host
+ * list. The block is unconditional; the exception is explicit and lives in
+ * the environment, so nothing in a request can widen it.
+ *
+ *   const guard = createOutboundHostAllowlist({
+ *     envVar: "MCP_SERVER_ALLOWED_HOSTS",
+ *   });
+ *   await guard.assertResolved(serverUrl);
+ *   const response = await guard.fetch(serverUrl, init);
+ *
+ * In production an unset variable means no exceptions. Outside production it
+ * falls back to `nonProductionDefaultHosts` (loopback by default) so a fresh
+ * checkout works unconfigured. An explicitly empty variable means no
+ * exceptions in any environment.
+ */
+export function createOutboundHostAllowlist(
+	options: OutboundHostAllowlistOptions,
+): OutboundHostAllowlist {
+	const { envVar } = options;
+	const nonProductionDefaultHosts =
+		options.nonProductionDefaultHosts ?? LOOPBACK_DEVELOPMENT_HOSTS;
+	const resolve = options.resolve ?? resolveAllAddresses;
+
+	const hosts = (): string[] => {
+		const configured = process.env[envVar];
+		if (configured !== undefined) {
+			return configured
+				.split(",")
+				.map((host) => host.trim().toLowerCase())
+				.filter(Boolean);
+		}
+		return process.env.NODE_ENV === "production"
+			? []
+			: [...nonProductionDefaultHosts];
+	};
+
+	const isAllowedHost = (urlString: string): boolean => {
+		const hostname = normalizeHostname(urlString);
+		return hostname !== null && hosts().includes(hostname);
+	};
+
+	const getUnsafeReason = (urlString: string): string | null => {
+		// The scheme is checked before the allowlist: the operator permitted a
+		// host, not `file:` or `javascript:` on that host.
+		let protocol: string;
+		try {
+			protocol = new URL(urlString).protocol;
+		} catch {
+			return "Invalid URL format";
+		}
+		if (protocol !== "http:" && protocol !== "https:") {
+			return `Protocol ${protocol} is not allowed`;
+		}
+		if (isAllowedHost(urlString)) {
+			return null;
+		}
+		const reason = getUnsafeUrlReason(urlString);
+		if (!reason) {
+			return null;
+		}
+		return `${reason}. If this address is intended, add its host to ${envVar}.`;
+	};
+
+	const assert = (urlString: string): void => {
+		const reason = getUnsafeReason(urlString);
+		if (reason) {
+			throw new Error(reason);
+		}
+	};
+
+	return {
+		envVar,
+		hosts,
+		isAllowedHost,
+		getUnsafeReason,
+		assert,
+		async assertResolved(urlString) {
+			assert(urlString);
+			if (isAllowedHost(urlString)) {
+				return;
+			}
+			try {
+				await assertSafeOutboundUrlResolved(urlString, resolve);
+			} catch (error) {
+				const message =
+					error instanceof Error ? error.message : String(error);
+				throw new Error(
+					`${message}. If this address is intended, add its host to ${envVar}.`,
+				);
+			}
+		},
+		async fetch(input, init) {
+			const urlString =
+				typeof input === "string" ? input : input.toString();
+			assert(urlString);
+			if (isAllowedHost(urlString)) {
+				// The exception is the declared host, not wherever it points:
+				// a redirect would carry the request to a destination nobody
+				// declared, so it is refused here exactly as it is for
+				// everything else. `manual` stays available to a caller that
+				// validates the next hop itself.
+				return fetch(urlString, {
+					...init,
+					redirect: init?.redirect === "manual" ? "manual" : "error",
+				});
+			}
+			return safeFetchOutbound(urlString, init);
+		},
+	};
 }

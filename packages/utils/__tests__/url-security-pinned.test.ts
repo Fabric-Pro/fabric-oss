@@ -24,9 +24,12 @@ import {
 import {
 	isPrivateIp,
 	OutboundResponseRejectedError,
+	PINNED_FETCH_ANY_CONTENT_TYPE,
+	pinnedConnectLookup,
 	resolvePinnedAddress,
 	safeFetchOutboundPinned,
 	UnsafeOutboundUrlError,
+	withoutCrossOriginCredentials,
 } from "../lib/url-security";
 
 const PUBLIC_V4 = "93.184.216.34";
@@ -312,6 +315,229 @@ describe("safeFetchOutboundPinned", () => {
 				dispatcher: loop,
 			}),
 		).rejects.toMatchObject({ code: "TOO_MANY_REDIRECTS" });
+	});
+});
+
+describe("pinnedConnectLookup", () => {
+	it("answers Node's all-addresses call with an array holding only the pinned address", () => {
+		const callback = vi.fn();
+		pinnedConnectLookup({ address: PUBLIC_V4, family: 4 })(
+			"site.example.com",
+			{ all: true },
+			callback,
+		);
+		expect(callback).toHaveBeenCalledWith(null, [
+			{ address: PUBLIC_V4, family: 4 },
+		]);
+	});
+
+	it("answers a single-address call with the pinned address and family", () => {
+		const callback = vi.fn();
+		pinnedConnectLookup({ address: "2606:2800:220:1::1", family: 6 })(
+			"site.example.com",
+			{},
+			callback,
+		);
+		expect(callback).toHaveBeenCalledWith(null, "2606:2800:220:1::1", 6);
+	});
+});
+
+describe("safeFetchOutboundPinned redirect credentials", () => {
+	it("drops Authorization and Cookie when a followed redirect changes origin, and keeps other headers", async () => {
+		const agent = mockAgentWithNoNetwork();
+		const seen: Record<string, string>[] = [];
+		agent
+			.get("https://a.example.com")
+			.intercept({ path: "/go", method: "GET" })
+			.reply((options) => {
+				seen.push(options.headers as Record<string, string>);
+				return {
+					statusCode: 302,
+					data: "",
+					responseOptions: {
+						headers: { location: "https://b.example.com/landing" },
+					},
+				};
+			});
+		agent
+			.get("https://b.example.com")
+			.intercept({ path: "/landing", method: "GET" })
+			.reply((options) => {
+				seen.push(options.headers as Record<string, string>);
+				return {
+					statusCode: 200,
+					data: "ok",
+					responseOptions: {
+						headers: { "content-type": "text/plain" },
+					},
+				};
+			});
+		const response = await safeFetchOutboundPinned(
+			"https://a.example.com/go",
+			{
+				headers: {
+					authorization: "Bearer a-secret",
+					cookie: "session=a",
+					"x-request-id": "r1",
+				},
+			},
+			{ dispatcher: agent },
+		);
+		expect(await response.text()).toBe("ok");
+		const lower = (h: Record<string, string>) =>
+			Object.fromEntries(
+				Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]),
+			);
+		expect(lower(seen[0])).toMatchObject({
+			authorization: "Bearer a-secret",
+			cookie: "session=a",
+		});
+		expect(lower(seen[1]).authorization).toBeUndefined();
+		expect(lower(seen[1]).cookie).toBeUndefined();
+		expect(lower(seen[1])["x-request-id"]).toBe("r1");
+	});
+
+	it("strips only credential headers", () => {
+		const out = withoutCrossOriginCredentials({
+			Authorization: "a",
+			Cookie: "b",
+			"Proxy-Authorization": "c",
+			Accept: "text/html",
+		});
+		const names: string[] = [];
+		out.forEach((_value, name) => {
+			names.push(name);
+		});
+		expect(names).toEqual(["accept"]);
+	});
+});
+
+describe("safeFetchOutboundPinned deadline", () => {
+	it("times out a lookup that never answers, without attempting a fetch", async () => {
+		// `AbortSignal.timeout` schedules on Node's internal timer, which fake
+		// timers do not reach, so the deadline here is short and real.
+		const agent = mockAgentWithNoNetwork();
+		const lookup = vi.fn(
+			() => new Promise<never>(() => {}) as Promise<never>,
+		);
+		const started = Date.now();
+		await expect(
+			safeFetchOutboundPinned("https://stalled.example.com/", undefined, {
+				dispatcher: agent,
+				lookup,
+				timeoutMs: 50,
+			}),
+		).rejects.toMatchObject({ name: "TimeoutError" });
+		expect(Date.now() - started).toBeLessThan(5_000);
+		expect(lookup).toHaveBeenCalledTimes(1);
+		// A fetch against the MockAgent with no interceptor would have thrown
+		// a mock-not-matched error rather than the timeout; none was made.
+		expect(agent.pendingInterceptors()).toHaveLength(0);
+	});
+
+	it("rejects at once when the caller's signal is already aborted, before any lookup", async () => {
+		const lookup = vi.fn();
+		const controller = new AbortController();
+		controller.abort(new Error("caller gave up"));
+		await expect(
+			safeFetchOutboundPinned(
+				"https://site.example.com/",
+				{ signal: controller.signal },
+				{ dispatcher: mockAgentWithNoNetwork(), lookup },
+			),
+		).rejects.toThrow("caller gave up");
+		expect(lookup).not.toHaveBeenCalled();
+	});
+});
+
+describe("safeFetchOutboundPinned as a relay (browser guard options)", () => {
+	it("accepts any or no content type when asked to, keeping every Set-Cookie", async () => {
+		const agent = mockAgentWithNoNetwork();
+		agent
+			.get("https://site.example.com")
+			.intercept({ path: "/page", method: "GET" })
+			.reply(200, "<html></html>", {
+				headers: {
+					"content-type": "text/html",
+					"set-cookie": [
+						"a=1; Path=/",
+						"b=2; Expires=Wed, 21 Oct 2026 07:28:00 GMT",
+					],
+				},
+			});
+		agent
+			.get("https://site.example.com")
+			.intercept({ path: "/untyped", method: "GET" })
+			.reply(200, "raw");
+		const options = {
+			dispatcher: agent,
+			allowedContentTypes: [PINNED_FETCH_ANY_CONTENT_TYPE],
+		};
+
+		const page = await safeFetchOutboundPinned(
+			"https://site.example.com/page",
+			undefined,
+			options,
+		);
+		expect(page.status).toBe(200);
+		expect(page.headers.getSetCookie()).toEqual([
+			"a=1; Path=/",
+			"b=2; Expires=Wed, 21 Oct 2026 07:28:00 GMT",
+		]);
+		await expect(page.text()).resolves.toBe("<html></html>");
+
+		const untyped = await safeFetchOutboundPinned(
+			"https://site.example.com/untyped",
+			undefined,
+			options,
+		);
+		await expect(untyped.text()).resolves.toBe("raw");
+	});
+
+	it("still rejects a disallowed type unless the wildcard is given", async () => {
+		const agent = mockAgentWithNoNetwork();
+		agent
+			.get("https://site.example.com")
+			.intercept({ path: "/page", method: "GET" })
+			.reply(200, "<html></html>", {
+				headers: { "content-type": "text/html" },
+			});
+		await expect(
+			safeFetchOutboundPinned(
+				"https://site.example.com/page",
+				undefined,
+				{
+					dispatcher: agent,
+				},
+			),
+		).rejects.toBeInstanceOf(OutboundResponseRejectedError);
+	});
+
+	it("returns a redirect to the caller instead of following it when asked to", async () => {
+		const agent = mockAgentWithNoNetwork();
+		agent
+			.get("https://site.example.com")
+			.intercept({ path: "/go", method: "GET" })
+			.reply(302, "", {
+				headers: { location: "http://169.254.169.254/latest/" },
+			});
+		const response = await safeFetchOutboundPinned(
+			"https://site.example.com/go",
+			undefined,
+			{
+				dispatcher: agent,
+				allowedContentTypes: [PINNED_FETCH_ANY_CONTENT_TYPE],
+				followRedirects: false,
+			},
+		);
+		expect(response.status).toBe(302);
+		expect(response.headers.get("location")).toBe(
+			"http://169.254.169.254/latest/",
+		);
+		// Nothing was fetched from the redirect target: the only lookup was
+		// for the origin.
+		expect(mockLookup).toHaveBeenCalledTimes(1);
+		expect(agent.pendingInterceptors()).toHaveLength(0);
 	});
 });
 

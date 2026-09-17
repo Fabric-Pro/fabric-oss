@@ -28,15 +28,20 @@ export {
 } from "./lib/orchestrator";
 // Providers
 export {
+	assertSearchEndpointAllowed,
 	BaseSearchProvider,
 	createProvider,
 	createProvidersFromConfig,
 	ExaSearchProvider,
+	FirecrawlSearchProvider,
 	getAllProviderMetadata,
 	getAvailableProviderNames,
 	getConfiguredProviders,
 	getProviderMetadata,
+	getSearchEndpointBlockReason,
 	type ISearchProvider,
+	JinaSearchProvider,
+	ParallelSearchProvider,
 	searchProviderRegistry,
 	TavilySearchProvider,
 } from "./lib/providers";

@@ -1,4 +1,9 @@
 import { ORPCError } from "@orpc/server";
+import {
+	fetchMcpServer,
+	getMcpServerBlockedReason,
+	getMcpServerUrlBlockReason,
+} from "@repo/mcp/lib/server-url-guard";
 import { z } from "zod";
 import {
 	Permissions,
@@ -50,6 +55,16 @@ export const discoveryProcedures = {
 				});
 			}
 
+			// The caller supplies this URL and the server fetches it, returning
+			// the status and body: refuse internal destinations before any
+			// request leaves. Same allowlist as the MCP server URL itself.
+			const blockReason = getMcpServerUrlBlockReason(input.discoveryUrl);
+			if (blockReason) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: `Discovery URL rejected: ${blockReason}`,
+				});
+			}
+
 			const lastCall = lastDiscoveryCallByUser.get(userId) ?? 0;
 			if (now - lastCall < DISCOVERY_MIN_INTERVAL_MS) {
 				throw new ORPCError("TOO_MANY_REQUESTS", {
@@ -65,7 +80,8 @@ export const discoveryProcedures = {
 			);
 
 			try {
-				const res = await fetch(input.discoveryUrl, {
+				// Re-checked at DNS-lookup time; redirects are refused.
+				const res = await fetchMcpServer(input.discoveryUrl, {
 					method: "GET",
 					headers: {
 						accept: "application/json",
@@ -112,6 +128,15 @@ export const discoveryProcedures = {
 
 				if (err instanceof ORPCError) {
 					throw err;
+				}
+
+				// A public hostname that resolved to a private address is the
+				// caller's URL being refused, not a server fault.
+				const blockedReason = getMcpServerBlockedReason(err);
+				if (blockedReason) {
+					throw new ORPCError("BAD_REQUEST", {
+						message: `Discovery URL rejected: ${blockedReason}`,
+					});
 				}
 
 				throw new ORPCError("INTERNAL_SERVER_ERROR", {

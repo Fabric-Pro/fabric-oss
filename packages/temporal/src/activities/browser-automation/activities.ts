@@ -24,6 +24,7 @@ import type {
 	NavigateInput,
 	TakeScreenshotInput,
 } from "./types";
+import { assertBrowserNavigationAllowed } from "./url-guard";
 
 // =============================================================================
 // S3 Client for Screenshot Uploads
@@ -160,6 +161,10 @@ export async function navigateToUrl(
 
 	try {
 		console.log(`[Browser] Navigating to ${input.url}`);
+
+		// Resolves the hostname and refuses private destinations before the
+		// browser moves; the context's request guard covers what follows.
+		await assertBrowserNavigationAllowed(input.url);
 
 		await session.page.goto(input.url, {
 			waitUntil: "domcontentloaded",
@@ -493,6 +498,7 @@ export async function authenticate(
 			}
 
 			if (input.loginUrl) {
+				await assertBrowserNavigationAllowed(input.loginUrl);
 				await session.page.goto(input.loginUrl, {
 					waitUntil: "domcontentloaded",
 				});

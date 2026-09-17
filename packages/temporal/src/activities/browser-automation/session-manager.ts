@@ -12,6 +12,7 @@
 import { randomUUID } from "node:crypto";
 import type { Browser, BrowserContext, Page } from "playwright";
 import type { BrowserSessionOptions } from "./types";
+import { installOutboundRequestGuard } from "./url-guard";
 
 // =============================================================================
 // Session Store
@@ -165,11 +166,18 @@ export async function createSession(
 	const contextOptions: Parameters<Browser["newContext"]>[0] = {
 		viewport,
 		userAgent: options.userAgent,
+		// A service worker's fetches are not seen by `context.route`, so a
+		// page could register one to reach an internal address around the
+		// outbound guard below. Nothing this worker drives needs one.
+		serviceWorkers: "block",
 	};
 
 	const context = await browser.newContext(contextOptions);
 
-	// Block unwanted resources if specified
+	// Block unwanted resources if specified. This handler only ever sees
+	// requests to declared hosts, which the guard below hands down with
+	// `route.fallback`; relayed requests are fulfilled by the guard itself,
+	// so the same list is given to the guard, which applies it first.
 	if (options.blockResources?.length) {
 		await context.route("**/*", (route) => {
 			const resourceType = route.request().resourceType();
@@ -179,6 +187,18 @@ export async function createSession(
 			return route.continue();
 		});
 	}
+
+	// Registered after the resource blocker on purpose: Playwright runs route
+	// handlers newest-first, so this is the handler that judges every request
+	// — navigation, redirects, subresources, page-script fetches — before
+	// anything else. Requests to undeclared hosts are relayed through a
+	// DNS-pinned fetch in this process rather than connected by Chromium;
+	// those aimed at private or link-local addresses are aborted, and
+	// WebSockets to undeclared hosts are closed. Blocked resource types are
+	// aborted here before any of that, on every host.
+	await installOutboundRequestGuard(context, undefined, {
+		blockResourceTypes: options.blockResources,
+	});
 
 	const page = await context.newPage();
 

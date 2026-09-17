@@ -21,6 +21,7 @@ vi.mock("playwright", () => ({
 			const context = {
 				newPage: vi.fn(async () => page),
 				route: vi.fn(async () => undefined),
+				routeWebSocket: vi.fn(async () => undefined),
 				storageState: vi.fn(async () => ({
 					cookies: [],
 					origins: [],
@@ -95,6 +96,80 @@ describe("Browser Session Manager", () => {
 			await expect(
 				createSession(foreignId, "user-1", "org-1"),
 			).rejects.toThrow(/does not match the requesting tenant/);
+		});
+
+		it("blocks service workers and guards both HTTP and WebSocket traffic on the context", async () => {
+			const { chromium } = await import("playwright");
+			const { closeSession, createSession, generateSessionId } =
+				await import(
+					"../src/activities/browser-automation/session-manager"
+				);
+
+			const id = generateSessionId("user-1", "org-1");
+			await createSession(id, "user-1", "org-1");
+			try {
+				const launch = vi.mocked(chromium.launch);
+				const browser = await launch.mock.results.at(-1)?.value;
+				expect(browser.newContext).toHaveBeenCalledWith(
+					expect.objectContaining({ serviceWorkers: "block" }),
+				);
+				const context = await browser.newContext.mock.results[0].value;
+				// The outbound guard is the last (so first-run) HTTP route, and
+				// every WebSocket is routed too.
+				expect(context.route).toHaveBeenLastCalledWith(
+					"**/*",
+					expect.any(Function),
+				);
+				expect(context.routeWebSocket).toHaveBeenCalledTimes(1);
+			} finally {
+				await closeSession(id, "user-1", "org-1").catch(
+					() => undefined,
+				);
+			}
+		});
+
+		it("applies blockResources inside the outbound guard, so a relayed public image is aborted rather than fetched", async () => {
+			const { chromium } = await import("playwright");
+			const { closeSession, createSession, generateSessionId } =
+				await import(
+					"../src/activities/browser-automation/session-manager"
+				);
+
+			const id = generateSessionId("user-1", "org-1");
+			await createSession(id, "user-1", "org-1", {
+				blockResources: ["image"],
+			});
+			try {
+				const launch = vi.mocked(chromium.launch);
+				const browser = await launch.mock.results.at(-1)?.value;
+				const context = await browser.newContext.mock.results[0].value;
+				// Two handlers: the resource blocker, then the guard (last
+				// registered, so first run).
+				expect(context.route).toHaveBeenCalledTimes(2);
+				const guard = context.route.mock.calls.at(-1)?.[1] as (
+					route: unknown,
+				) => Promise<void>;
+				const route = {
+					request: () => ({
+						url: () => "https://public.example.com/hero.png",
+						method: () => "GET",
+						resourceType: () => "image",
+						allHeaders: async () => ({}),
+						postDataBuffer: () => null,
+					}),
+					abort: vi.fn(async () => undefined),
+					fallback: vi.fn(async () => undefined),
+					fulfill: vi.fn(async () => undefined),
+				};
+				await guard(route);
+				expect(route.abort).toHaveBeenCalledWith("blockedbyclient");
+				expect(route.fulfill).not.toHaveBeenCalled();
+				expect(route.fallback).not.toHaveBeenCalled();
+			} finally {
+				await closeSession(id, "user-1", "org-1").catch(
+					() => undefined,
+				);
+			}
 		});
 	});
 

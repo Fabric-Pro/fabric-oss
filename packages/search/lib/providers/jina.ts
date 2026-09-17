@@ -16,6 +16,7 @@ import type {
 	TestConnectionResult,
 } from "../types";
 import { BaseSearchProvider } from "./base";
+import { fetchSearchEndpoint } from "./outbound";
 
 const JINA_SEARCH_URL = "https://s.jina.ai";
 const JINA_READER_URL = "https://r.jina.ai";
@@ -68,7 +69,7 @@ export class JinaSearchProvider extends BaseSearchProvider {
 				DEFAULT_TIMEOUT,
 			);
 
-			const response = await fetch(url, {
+			const response = await fetchSearchEndpoint(url, {
 				method: "GET",
 				headers: {
 					Authorization: `Bearer ${this.apiKey}`,
@@ -201,7 +202,7 @@ export class JinaSearchProvider extends BaseSearchProvider {
 				DEFAULT_TIMEOUT,
 			);
 
-			const response = await fetch(readerUrl, {
+			const response = await fetchSearchEndpoint(readerUrl, {
 				method: "GET",
 				headers: {
 					Authorization: `Bearer ${this.apiKey}`,
@@ -264,7 +265,7 @@ export class JinaSearchProvider extends BaseSearchProvider {
 			// Test using the Reader API with a simple, fast-loading URL
 			const testUrl = `${JINA_READER_URL}/https://example.com`;
 
-			const response = await fetch(testUrl, {
+			const response = await fetchSearchEndpoint(testUrl, {
 				method: "GET",
 				headers: {
 					Authorization: `Bearer ${this.apiKey}`,

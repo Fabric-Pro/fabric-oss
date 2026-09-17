@@ -34,9 +34,28 @@ vi.mock("@repo/utils/oauth-refresh", () => ({
 	},
 }));
 
+// The outbound guard is not under test here; stub it permissive so the
+// example.com config never triggers a DNS lookup.
 vi.mock("@repo/utils/url-security", () => ({
 	getUnsafeUrlReason: function getUnsafeUrlReason() {
 		return null;
+	},
+	getBlockedOutboundReason: function getBlockedOutboundReason() {
+		return null;
+	},
+	createOutboundHostAllowlist: function createOutboundHostAllowlist(options: {
+		envVar: string;
+	}) {
+		return {
+			envVar: options.envVar,
+			hosts: () => [],
+			isAllowedHost: () => false,
+			getUnsafeReason: () => null,
+			assert: () => undefined,
+			assertResolved: async () => undefined,
+			fetch: (input: string | URL, init?: RequestInit) =>
+				fetch(input, init),
+		};
 	},
 }));
 

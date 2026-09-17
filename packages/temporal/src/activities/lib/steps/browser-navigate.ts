@@ -12,6 +12,9 @@ import {
 	extractContent,
 	navigateToUrl,
 } from "../../browser-automation";
+// Imported from the module, not the barrel: the barrel is registered
+// wholesale as Temporal activities, and this is a check, not an activity.
+import { assertBrowserNavigationAllowed } from "../../browser-automation/url-guard";
 import type { NodeExecutionResult, StepParams } from "../../types";
 import { interpolateTemplate } from "./utils";
 
@@ -33,6 +36,19 @@ export async function executeBrowserNavigateStep(
 	}
 
 	const interpolatedUrl = interpolateTemplate(config.url, params.inputs);
+
+	// The URL is workflow-authored and may be interpolated from inputs: refuse
+	// private destinations before paying for a browser launch. `navigateToUrl`
+	// checks again, and the context's request guard covers redirects.
+	try {
+		await assertBrowserNavigationAllowed(interpolatedUrl);
+	} catch (error) {
+		return {
+			success: false,
+			error: `URL rejected: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+
 	const taskId = `workflow-${Date.now()}`;
 	let sessionId: string | null = null;
 

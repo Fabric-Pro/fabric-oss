@@ -2873,6 +2873,9 @@ importers:
       '@repo/logs':
         specifier: workspace:*
         version: link:../logs
+      '@repo/utils':
+        specifier: workspace:*
+        version: link:../utils
       ai:
         specifier: ^6.0.283
         version: 6.0.283(zod@4.2.1)

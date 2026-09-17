@@ -571,6 +571,10 @@ jobs:
           # each package the four cores its per-test timeouts were calibrated
           # for (see the note above runs-on).
           TURBO_CONCURRENCY: '1'
+          # The real-Chromium security suite in @repo/temporal fails rather
+          # than skips when no browser is installed. The shards install none;
+          # the `browser-security` job below installs Chromium and runs it.
+          FABRIC_SKIP_BROWSER_E2E: '1'
         run: |
           set -euo pipefail
           read -r -a shard_packages <<< "$SHARD_PACKAGES"
@@ -583,6 +587,80 @@ jobs:
           else
             pnpm turbo run test --concurrency="$TURBO_CONCURRENCY" "${filters[@]}"
           fi
+
+  # The browser relay's security regressions (`packages/temporal/__tests__/
+  # browser-automation-redirect-credentials.e2e.test.ts`) only mean anything
+  # against a real Chromium: a fulfilled redirect is followed by the browser's
+  # own network stack, which no mock reproduces. The suite fails without a
+  # browser, so the shards opt out of it (FABRIC_SKIP_BROWSER_E2E) and this
+  # job installs Chromium and runs just that file. Its own small job so the
+  # shards do not pay for the browser download and system packages.
+  #
+  # Runs whenever the shards could run (a code change, or a dispatch), not
+  # only when @repo/temporal is affected: the relay depends on
+  # @repo/utils/url-security, and a one-file run is cheap.
+  browser-security:
+    name: Browser relay security (real Chromium)
+    needs: changes
+    if: >-
+      (github.repository != 'Fabric-Pro/fabric-dev' ||
+       github.event_name == 'workflow_dispatch') &&
+      github.event_name != 'push' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.code == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Same placeholders as the shards: modules on the import path read
+      # them at load. Nothing connects to this URL.
+      DATABASE_URL: 'postgresql://test:test@localhost:5432/test'
+      DIRECT_URL: 'postgresql://test:test@localhost:5432/test'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        # Version is read from root package.json's `packageManager` field.
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          # Same npm audit stall as the shards: skip it.
+          npm_config_audit: "false"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The browser build must match the Playwright @repo/temporal resolves,
+      # so the cache key is that version, read from the installed package.
+      - name: Resolve Playwright version
+        id: playwright
+        run: |
+          version="$(pnpm --filter @repo/temporal exec node -p "require('playwright/package.json').version")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-chromium-${{ steps.playwright.outputs.version }}
+
+      - name: Install Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @repo/temporal exec playwright install chromium
+
+      # System libraries are not in the browser cache, so they are installed
+      # on every run.
+      - name: Install Chromium system dependencies
+        run: pnpm --filter @repo/temporal exec playwright install-deps chromium
+
+      - name: Run browser relay security suite
+        run: pnpm --filter @repo/temporal exec vitest run __tests__/browser-automation-redirect-credentials.e2e.test.ts
 
   # Seeds the caches a relay PR's one and only run restores (see header).
   # Installs and generates; runs no tests, so it takes minutes rather than
@@ -651,7 +729,7 @@ jobs:
   # touched, and which are conditionally skipped altogether.
   unit-tests:
     name: unit-tests
-    needs: [changes, plan, vitest]
+    needs: [changes, plan, vitest, browser-security]
     # Not on push: the master run warms caches and runs no tests, so it has
     # no verdict to report (and `changes` is skipped there, which the
     # fail-closed check below would otherwise flag). Skipped entirely in the
@@ -668,6 +746,7 @@ jobs:
       PLAN_RESULT: ${{ needs.plan.result }}
       HAS_SHARDS: ${{ needs.plan.outputs.has_shards }}
       VITEST_RESULT: ${{ needs.vitest.result }}
+      BROWSER_SECURITY_RESULT: ${{ needs.browser-security.result }}
     steps:
       - name: Aggregate
         env:
@@ -686,6 +765,14 @@ jobs:
           if [[ "$EVENT_NAME" == "pull_request" && "$CODE_CHANGED" != "true" ]]; then
             echo "No test-relevant changes — unit tests not required."
             exit 0
+          fi
+
+          # The real-Chromium relay suite runs in its own job whenever tests
+          # are required, and must have passed; a skip here means the job's
+          # condition drifted from this one, which is a failure, not a pass.
+          if [[ "$BROWSER_SECURITY_RESULT" != "success" ]]; then
+            echo "::error::Browser relay security job did not succeed (result: $BROWSER_SECURITY_RESULT)."
+            exit 1
           fi
 
           # Same fail-closed reasoning: without a plan there is no shard set,
