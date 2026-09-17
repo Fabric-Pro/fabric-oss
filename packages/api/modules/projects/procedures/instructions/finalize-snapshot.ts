@@ -3,6 +3,7 @@ import {
 	getInstructionSnapshot,
 	startInstructionSnapshotValidation,
 } from "@repo/database";
+import { instructionSnapshotWorkflowId } from "@repo/instructions";
 import { getTemporalClient } from "@repo/temporal";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
@@ -48,10 +49,9 @@ function isWorkflowAlreadyStartedError(error: unknown): boolean {
  * finalize call short-circuits on `status !== "RECEIVING"`, so nothing
  * would ever retry the start. Starting first means a failed start leaves
  * the row in RECEIVING, which a retried finalize call naturally repairs.
- * The workflow id is deterministic, so RECEIVING (first attempt),
- * VALIDATING (a retry after a previously failed start) and FAILED (the
- * workflow ran and its terminal-failure marker fired) all re-attempt the
- * start; any other status still short-circuits and returns the snapshot's
+ * The workflow id is deterministic, so RECEIVING (first attempt) and FAILED
+ * (the workflow ran and its terminal-failure marker fired) both re-attempt
+ * the start; any other status short-circuits and returns the snapshot's
  * current status unchanged. The transition itself is conditional
  * (`startInstructionSnapshotValidation`), so a workflow that finished while
  * this handler was mid-flight keeps its terminal status and the handler
@@ -62,8 +62,21 @@ function isWorkflowAlreadyStartedError(error: unknown): boolean {
  * FAILED, where it means the previous execution is still closing and no new
  * run exists to move the row for; that case returns FAILED and writes
  * nothing. Any other start failure propagates
- * unchanged and leaves the snapshot exactly where it was (RECEIVING,
- * VALIDATING or FAILED), for the next finalize call to retry.
+ * unchanged and leaves the snapshot exactly where it was (RECEIVING or
+ * FAILED), for the next finalize call to retry.
+ *
+ * VALIDATING is NOT one of them (round 8, finding 1). A VALIDATING row is
+ * owned by a live run, and this handler has no way to tell a live one from
+ * a dead one — so it reports the status and starts nothing. Starting a new
+ * execution from an UNCHANGED VALIDATING row was the unsafe case: the row
+ * looked exactly like the stale one the reaper's watchdog phase was about
+ * to fail, because nothing about it had moved, and the watchdog would then
+ * have written FAILED over a live run. If the previous run really is dead,
+ * that watchdog marks the row FAILED within about a sweep cycle, and the
+ * tab's "Try again" restarts it FROM FAILED — the only path that puts a
+ * fresh generation on the row, and the one the watchdog's compare-and-set
+ * can see. A retried finalize whose response was merely lost gets the same
+ * VALIDATING answer it would have got before, without a redundant start.
  *
  * FAILED is accepted because it is this feature's "Try again" — the tab
  * renders that button for a FAILED snapshot and it calls this procedure.
@@ -100,11 +113,14 @@ export const finalizeSnapshotProcedure = tenantProtectedProcedure
 		if (!snapshot) {
 			throw new ORPCError("NOT_FOUND", { message: "Upload not found" });
 		}
-		if (
-			snapshot.status !== "RECEIVING" &&
-			snapshot.status !== "VALIDATING" &&
-			snapshot.status !== "FAILED"
-		) {
+		// A live run already owns this row, and nothing here can prove it is
+		// dead. Report it and start nothing: see the note above on why a new
+		// execution from an unchanged VALIDATING row is the unsafe case, and
+		// why recovery goes through the reaper's FAILED marker instead.
+		if (snapshot.status === "VALIDATING") {
+			return { status: "VALIDATING" as const };
+		}
+		if (snapshot.status !== "RECEIVING" && snapshot.status !== "FAILED") {
 			return { status: snapshot.status };
 		}
 
@@ -121,7 +137,12 @@ export const finalizeSnapshotProcedure = tenantProtectedProcedure
 					// document generation let three uploads hold 60% of it.
 					// Registered in `packages/temporal/src/worker.ts`.
 					taskQueue: "project-instructions",
-					workflowId: `project-instruction-snapshot-${snapshot.id}`,
+					// The shared builder, not a template literal: the
+					// scheduled reaper asks Temporal about this exact id
+					// before it closes a stale RECEIVING row out, and a
+					// drifted copy there would answer "nothing is running"
+					// for every snapshot.
+					workflowId: instructionSnapshotWorkflowId(snapshot.id),
 					args: [
 						{
 							snapshotId: snapshot.id,
@@ -153,10 +174,11 @@ export const finalizeSnapshotProcedure = tenantProtectedProcedure
 		//
 		// So the status is preserved and reported, and the user retries once
 		// the previous run has closed (Temporal's default id-reuse policy
-		// allows the same workflow id again at that point). RECEIVING and
-		// VALIDATING keep the existing tolerance: there `AlreadyStarted` means
-		// an earlier attempt's start genuinely succeeded and only its status
-		// write was lost, so the transition is the repair.
+		// allows the same workflow id again at that point). RECEIVING keeps
+		// the existing tolerance: there `AlreadyStarted` means an earlier
+		// attempt's start genuinely succeeded and only its status write was
+		// lost, so the transition is the repair. VALIDATING never reaches
+		// this line — it returned above.
 		if (alreadyStarted && snapshot.status === "FAILED") {
 			return { status: "FAILED" as const };
 		}

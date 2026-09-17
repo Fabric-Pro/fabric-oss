@@ -10,8 +10,8 @@
  * retried finalize call to repair, instead of stranding it in VALIDATING
  * forever. A retry that hits `WorkflowExecutionAlreadyStartedError` (the
  * earlier attempt's start actually succeeded) is treated as success, not
- * re-thrown. A snapshot already in VALIDATING (a prior attempt whose start
- * failed) re-attempts the start rather than short-circuiting.
+ * re-thrown. A snapshot already in VALIDATING is reported as-is: a live run
+ * owns that row (round 8, finding 1).
  *
  * `getTemporalClient` is imported from `@repo/temporal` (not
  * `@repo/temporal/client`) and `withCorrelationMemo` from
@@ -162,7 +162,15 @@ describe("projects.instructions.finalize", () => {
 		expect(result).toEqual({ status: "VALIDATING" });
 	});
 
-	it("re-attempts the start for a snapshot already in VALIDATING (a prior attempt's start failed) instead of short-circuiting", async () => {
+	// Round 8, finding 1. A VALIDATING row is owned by a live run, and this
+	// handler cannot tell a live one from a dead one. Starting a new execution
+	// from an UNCHANGED VALIDATING row left the row indistinguishable from the
+	// stale one the reaper's watchdog phase was about to fail — nothing about
+	// it had moved — so the watchdog would have written FAILED over a run that
+	// had only just begun. Recovery goes the other way: the watchdog marks a
+	// genuinely dead row FAILED, and "Try again" restarts it from there, which
+	// is the only path that establishes a fresh generation.
+	it("reports VALIDATING without starting a workflow or writing a status", async () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "snap_1",
 			status: "VALIDATING",
@@ -173,13 +181,13 @@ describe("projects.instructions.finalize", () => {
 			context: ctx,
 		});
 
-		expect(m.workflowStart).toHaveBeenCalledTimes(1);
-		expect(m.startInstructionSnapshotValidation).toHaveBeenCalledWith({
-			snapshotId: "snap_1",
-			projectId: "proj_1",
-			organizationId: "org_1",
-		});
 		expect(result).toEqual({ status: "VALIDATING" });
+		expect(m.workflowStart).not.toHaveBeenCalled();
+		expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
+		// Not even a Temporal client: there is nothing to ask it.
+		expect(m.getTemporalClient).not.toHaveBeenCalled();
+		// The tenant-scoped pre-read, and nothing after it.
+		expect(m.getInstructionSnapshot).toHaveBeenCalledTimes(1);
 	});
 
 	// R30/I2: FAILED is this feature's "Try again". The tab renders that
@@ -235,22 +243,24 @@ describe("projects.instructions.finalize", () => {
 		expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
 	});
 
-	it("still transitions on AlreadyStarted when the pre-read status was VALIDATING (a lost status write, not a closing run)", async () => {
+	// The retry whose response was merely lost: the first call started the
+	// workflow and wrote VALIDATING, and the client asks again. It gets the
+	// same answer it always did — without a redundant start, and without the
+	// `AlreadyStarted` round trip that used to produce it.
+	it("answers a repeated finalize for an already-VALIDATING snapshot with VALIDATING", async () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "snap_1",
 			status: "VALIDATING",
 		});
-		const alreadyStarted = new Error("workflow already started");
-		alreadyStarted.name = "WorkflowExecutionAlreadyStartedError";
-		m.workflowStart.mockRejectedValue(alreadyStarted);
 
-		const result = await m.handlers.finalize!({
-			input: baseInput,
-			context: ctx,
-		});
-
-		expect(result).toEqual({ status: "VALIDATING" });
-		expect(m.startInstructionSnapshotValidation).toHaveBeenCalled();
+		expect(
+			await m.handlers.finalize!({ input: baseInput, context: ctx }),
+		).toEqual({ status: "VALIDATING" });
+		expect(
+			await m.handlers.finalize!({ input: baseInput, context: ctx }),
+		).toEqual({ status: "VALIDATING" });
+		expect(m.workflowStart).not.toHaveBeenCalled();
+		expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
 	});
 
 	// I2: the workflow is started BEFORE the status write, so a small upload
@@ -296,7 +306,7 @@ describe("projects.instructions.finalize", () => {
 		expect(result).toEqual({ status: "REJECTED" });
 	});
 
-	it("is idempotent: a snapshot already past RECEIVING/VALIDATING returns its current status without restarting the workflow", async () => {
+	it("is idempotent: a snapshot already past RECEIVING returns its current status without restarting the workflow", async () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "snap_1",
 			status: "READY",

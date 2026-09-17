@@ -1,12 +1,10 @@
 import { createHash } from "node:crypto";
-import { config } from "@repo/config";
 import {
-	deleteInstructionSnapshot,
+	claimInstructionSnapshotValidation,
 	failInstructionSnapshot,
 	getInstructionSnapshotById,
 	type InstructionRejection,
 	listInstructionFiles,
-	listPrunableInstructionSnapshots,
 	markInstructionSnapshotReady,
 	markInstructionSnapshotRejected,
 	publishInstructionSnapshot,
@@ -14,11 +12,13 @@ import {
 	updateInstructionFileMetadata,
 } from "@repo/database";
 import {
+	buildIgnoreMatcher,
 	classifyPath,
 	computeSnapshotDigest,
-	exportKeyPrefix,
+	FABRIC_IGNORE_FILE,
 	isSecretFileName,
 	isStagingKey,
+	parseFabricIgnore,
 	parseFrontmatter,
 	SNAPSHOT_LIMITS,
 	scanTextForSecrets,
@@ -28,24 +28,15 @@ import {
 } from "@repo/instructions";
 import { logger } from "@repo/logs";
 import {
-	type DeleteObjectsResult,
 	getStorageProvider,
 	type StorageProviderInterface,
 } from "@repo/storage";
 import { ApplicationFailure, heartbeat } from "@temporalio/activity";
-
-const BUCKET = config.storage.bucketNames.skills;
-
-/** READY snapshots beyond this many, per project, are prunable (spec §6.3.6). */
-const SNAPSHOT_RETENTION = 5;
-
-/**
- * REJECTED/FAILED snapshots beyond this many are prunable. Deliberately much
- * shorter than the READY window: a refused upload is a diagnostic to read
- * once, not history to roll back to, and counting it against the READY
- * window let a run of bad uploads evict every kept version.
- */
-const FAILED_SNAPSHOT_RETENTION = 2;
+import {
+	assertAllDeleted,
+	INSTRUCTIONS_BUCKET as BUCKET,
+	pruneProjectInstructionSnapshots,
+} from "./lib/instruction-prune";
 
 /**
  * Caps a gate's rejection list so a pathological upload (thousands of
@@ -116,23 +107,127 @@ async function loadVerifiedSnapshot(ref: SnapshotRef) {
 }
 
 /**
- * `deleteObjects` is best-effort: it NEVER throws on a delete failure and
- * reports per-key failures in `errors` (`packages/storage/types.ts`). Every
- * call site in this feature discarded that result, so a snapshot could become
- * terminally REJECTED while the secret-bearing staging object it was rejected
- * for was still in the bucket, and a pruned snapshot could lose its rows while
- * its objects stayed. Failing here makes Temporal retry the activity, which is
- * the behaviour the cleanup always assumed it had.
+ * Refuse to do PRE-VERDICT work on a snapshot something else has already
+ * rejected.
  *
- * The message carries the COUNT only. A key names a project, a snapshot and a
- * file id, and this string reaches Temporal history and the worker log.
+ * The scheduled reaper closes out uploads abandoned in RECEIVING, and it
+ * checks Temporal for a live execution before it does. That check and its
+ * conditional write are two statements, though, so a `finalize` landing in
+ * the gap can start a workflow for a row the reaper rejects milliseconds
+ * later. Without this the run would scan and promote a snapshot the database
+ * says is REJECTED — writing immutable objects and file metadata for a
+ * verdict nobody will ever read, and possibly returning READY for a row that
+ * says REJECTED.
+ *
+ * Non-retryable: REJECTED is terminal, so retrying only re-reads the same
+ * answer. The workflow's boundary catch marks FAILED from RECEIVING and
+ * VALIDATING only, so failing here leaves the reaper's REJECTED row exactly
+ * as it is.
+ *
+ * Deliberately NOT applied to the post-verdict activities. Publish and prune
+ * run after a verdict this workflow itself produced, and a REJECTED snapshot
+ * reaching them is the ordinary rejection path, not a race.
  */
-function assertAllDeleted(result: DeleteObjectsResult, phase: string): void {
-	if (result.errors.length > 0) {
-		throw new Error(
-			`Storage delete failed for ${result.errors.length} object(s) during ${phase}`,
+function assertNotAlreadyRejected(
+	snapshot: { status: string },
+	snapshotId: string,
+): void {
+	if (snapshot.status === "REJECTED") {
+		throw ApplicationFailure.nonRetryable(
+			`Instruction snapshot ${snapshotId} was already rejected; this run has nothing to validate`,
+			"INSTRUCTION_SNAPSHOT_ALREADY_REJECTED",
 		);
 	}
+}
+
+/**
+ * This run's CLAIM on the snapshot, written before it touches storage.
+ *
+ * It closes the last gap between the scheduled reaper and a live upload at
+ * the database rather than in a comment. `finalize` starts this workflow
+ * BEFORE it writes VALIDATING and tolerates losing that write, so a row this
+ * run owns can still read RECEIVING — and RECEIVING past the cutoff is
+ * exactly what the reaper's conditional write requires. Its Temporal
+ * liveness check narrows that to the sub-second gap between its `describe`
+ * and its write, but two statements are two statements.
+ *
+ * So the claim is a conditional transition, RECEIVING -> VALIDATING. The
+ * reaper's CAS and this one are then two conditional writes against the same
+ * row and the same from-state, and exactly one of them can win: whichever
+ * commits first leaves the other matching zero rows.
+ *
+ * It is DELIBERATELY narrower than `startInstructionSnapshotValidation`, the
+ * RECEIVING/FAILED transition `finalize` uses. An activity attempt must never
+ * make the FAILED arm: Temporal delivers AT LEAST ONCE, so an attempt that
+ * stalled before its claim can wake up after its retries exhausted, after the
+ * workflow's boundary catch wrote FAILED, and after the workflow closed. A
+ * claim that accepted FAILED would then write VALIDATING with nothing left
+ * alive to reach a verdict — a permanently stuck row, with a zombie attempt
+ * possibly still writing storage objects behind it.
+ *
+ * `observed` is the status this run's own `loadVerifiedSnapshot` read. When it
+ * is already VALIDATING there is nothing to claim and no write is made at all:
+ * the row is in the target state, and the only writer that could have put it
+ * there is `finalize` or this run's own earlier attempt.
+ *
+ * `changed: false` means the write matched nothing, and the re-read says why.
+ * Every status is handled, because proceeding from a state this run does not
+ * own is the bug this guard exists to prevent:
+ *
+ *  - VALIDATING: `finalize` (or an earlier attempt) wrote it in the gap. This
+ *    run owns the row; proceed.
+ *  - REJECTED: something else reached a verdict, the reaper being the only
+ *    thing that can. Non-retryable — REJECTED is terminal, and the workflow's
+ *    boundary catch writes FAILED only from RECEIVING/VALIDATING, so the
+ *    reaper's row is left exactly as it is.
+ *  - READY: a verdict already exists for these bytes. Scanning and promoting
+ *    over it would write objects and file rows nobody reads, so it is
+ *    non-retryable too.
+ *  - FAILED or RECEIVING: this run has no claim on the row. RETRYABLE, and the
+ *    retry is the recovery: on a "Try again" run the API's post-start
+ *    transition is what moves FAILED -> VALIDATING, so the activity simply
+ *    retries until it sees VALIDATING. The consequence, accepted knowingly: a
+ *    FAILED-retry whose API status write is lost entirely is NOT recovered
+ *    automatically — the activity keeps seeing FAILED and the run ends in the
+ *    same FAILED row, leaving the tab's "Try again" as the path back. Fixing
+ *    that automatically needs an ownership token on the row (a validation
+ *    generation the claim and the failure marker both bind to), because
+ *    without one a stale attempt and a freshly started retry are
+ *    indistinguishable once both see FAILED.
+ *  - a row that has since disappeared: `loadVerifiedSnapshot` fails it
+ *    non-retryably, the same as any other tenant mismatch.
+ */
+async function claimSnapshotForValidation(
+	ref: SnapshotRef,
+	observed: { status: string },
+): Promise<void> {
+	if (observed.status === "VALIDATING") {
+		return;
+	}
+	const { changed } = await claimInstructionSnapshotValidation({
+		snapshotId: ref.snapshotId,
+		projectId: ref.projectId,
+		organizationId: ref.organizationId,
+	});
+	if (changed) {
+		return;
+	}
+	// The status this run raced, not the one it read before the claim.
+	const current = await loadVerifiedSnapshot(ref);
+	assertNotAlreadyRejected(current, ref.snapshotId);
+	if (current.status === "VALIDATING") {
+		return;
+	}
+	if (current.status === "READY") {
+		throw ApplicationFailure.nonRetryable(
+			`Instruction snapshot ${ref.snapshotId} already reached a verdict; this run has nothing to validate`,
+			"INSTRUCTION_SNAPSHOT_ALREADY_VERIFIED",
+		);
+	}
+	throw ApplicationFailure.retryable(
+		`Instruction snapshot ${ref.snapshotId} is ${current.status}, not claimed by this run; waiting for the transition that hands it over`,
+		"INSTRUCTION_SNAPSHOT_AWAITING_FINALIZE",
+	);
 }
 
 /**
@@ -165,35 +260,6 @@ async function listAllStagingObjects(
 		continuationToken = page.nextContinuationToken;
 	} while (continuationToken);
 	return objects;
-}
-
-/**
- * Deletes every object under a prefix, paginated to completion. Heartbeats
- * per page so a wide prefix cannot outlast the shared 60s heartbeatTimeout.
- * Already-deleted keys are tolerated, so this is safe on an empty prefix and
- * on a retry; a key that genuinely could not be deleted throws.
- */
-async function deleteObjectsUnderPrefix(
-	storage: StorageProviderInterface,
-	prefix: string,
-): Promise<void> {
-	let continuationToken: string | undefined;
-	do {
-		heartbeat({ phase: "delete-prefix", prefix });
-		const page = await storage.listObjects({
-			bucket: BUCKET,
-			prefix,
-			continuationToken,
-		});
-		const keys = page.objects.map((o) => o.key);
-		if (keys.length > 0) {
-			assertAllDeleted(
-				await storage.deleteObjects(keys, { bucket: BUCKET }),
-				"prefix sweep",
-			);
-		}
-		continuationToken = page.nextContinuationToken;
-	} while (continuationToken);
 }
 
 /**
@@ -429,6 +495,143 @@ async function persistVerifiedFileMetadata(
 }
 
 /**
+ * The `{ ignoreGlobs, layer }` pair `begin-snapshot.ts` froze into
+ * `ProjectInstructionSnapshot.settingsFrozen`, or null when the column does
+ * not hold that shape.
+ *
+ * `settingsFrozen` is a `Json` column: nothing in the database constrains it,
+ * an older row predating a shape change can hold anything, and this runs
+ * inside a gate whose job is to REFUSE uploads. An unexpected shape must
+ * therefore skip the provenance check and say so, never throw — failing the
+ * activity here would turn a column-shape surprise into a retried,
+ * ultimately-FAILED upload of files that are perfectly fine.
+ */
+type FrozenIgnoreSettings = { layer: string; ignoreGlobs: string[] };
+
+function readFrozenIgnoreSettings(
+	settingsFrozen: unknown,
+): FrozenIgnoreSettings | null {
+	if (
+		settingsFrozen === null ||
+		typeof settingsFrozen !== "object" ||
+		Array.isArray(settingsFrozen)
+	) {
+		return null;
+	}
+	const { layer, ignoreGlobs } = settingsFrozen as Record<string, unknown>;
+	if (typeof layer !== "string") {
+		return null;
+	}
+	if (
+		!Array.isArray(ignoreGlobs) ||
+		ignoreGlobs.some((glob) => typeof glob !== "string")
+	) {
+		return null;
+	}
+	return { layer, ignoreGlobs: ignoreGlobs as string[] };
+}
+
+/**
+ * Whether the STORED `.fabricignore` still parses to the rules the snapshot
+ * was created from — and a rejection when it does not.
+ *
+ * `projects.instructions.begin` computes the exclusion set from the
+ * `fabricIgnoreText` the CLIENT sends in the begin payload, freezes the
+ * result into `settingsFrozen`, and then registers `.fabricignore` as an
+ * ordinary file the client uploads separately. Nothing tied the two together:
+ * a caller could preview (and have frozen) a permissive rule set, then upload
+ * a `.fabricignore` whose real contents exclude nothing — or the reverse —
+ * and the snapshot would carry, serve and explain exclusions that its own
+ * stored file does not state. The tab renders `settingsFrozen.layer` and
+ * `ignoreGlobs` as the reason files are missing, so the provenance is
+ * user-visible, not merely internal bookkeeping.
+ *
+ * Both sides come from `parseFabricIgnore`, so the comparison is exact —
+ * same length, same order — rather than set-equality: two rule lists that
+ * differ only in order are still not the same file, and a parser that is
+ * order-preserving on one side and not the other is the bug this would hide.
+ *
+ * The expectation is `[]` for any layer OTHER than `fabricignore`: the
+ * project-glob and default layers are chosen precisely because the upload
+ * carried no usable `.fabricignore` (`resolveIgnoreGlobs` falls through when
+ * `parseFabricIgnore` returns nothing), so a comment-only or empty file is
+ * the matching case and a file with real rules is not.
+ *
+ * `text === null` means the object did not decode as text at all. That cannot
+ * be the file the frozen rules were parsed from, and `parseFabricIgnore("")`
+ * is `[]` — the right reading of "no rules are recoverable from these bytes"
+ * — so the same comparison covers it.
+ *
+ * `detail` carries COUNTS only. It is persisted into the `rejection` column
+ * and rendered in the tab; the rules themselves are user content that has no
+ * business being duplicated there.
+ */
+function ignoreProvenanceRejection(
+	frozen: FrozenIgnoreSettings,
+	text: string | null,
+): InstructionRejection | null {
+	const expected = frozen.layer === "fabricignore" ? frozen.ignoreGlobs : [];
+	const actual = parseFabricIgnore(text ?? "");
+	if (
+		expected.length === actual.length &&
+		expected.every((glob, i) => glob === actual[i])
+	) {
+		return null;
+	}
+	return {
+		path: FABRIC_IGNORE_FILE,
+		reason: "ignore_mismatch",
+		detail: `${expected.length} rules frozen, ${actual.length} in file`,
+	};
+}
+
+/**
+ * The absent-file half of the same provenance question: whether a snapshot
+ * whose frozen layer is `fabricignore` may legitimately store no root
+ * `.fabricignore` at all.
+ *
+ * `ignoreProvenanceRejection` can only compare a file that is THERE, so a
+ * caller that sent `fabricIgnoreText` to `begin` and then left
+ * `.fabricignore` out of the manifest froze — and had the tab render as the
+ * reason files are missing — exclusion rules that no stored byte states. That
+ * is the same unexplainable snapshot the present-file check refuses, reached
+ * by omission instead of by contradiction.
+ *
+ * Absence IS legitimate in exactly one case: the frozen rules exclude
+ * `.fabricignore` itself, so the upload was never asked for it. That question
+ * is put to the matcher the upload's own rules build — `buildIgnoreMatcher`
+ * over the frozen globs, with the same `always` layer every other caller
+ * applies — rather than to the glob strings, because `**\/.fabricignore`,
+ * `.fabricignore` and `*` are all self-excluding and only the compiled
+ * matcher knows it. The browser preview
+ * (`apps/web/modules/saas/projects/lib/read-folder.ts`) decided what to
+ * upload with that very matcher, so this asks the question the way the
+ * omission was made.
+ *
+ * `detail` carries the frozen COUNT only, like the mismatch case: the rules
+ * are user content and this string is persisted and rendered.
+ */
+function missingIgnoreFileRejection(
+	frozen: FrozenIgnoreSettings,
+): InstructionRejection | null {
+	if (frozen.layer !== "fabricignore") {
+		return null;
+	}
+	const excludesItself = buildIgnoreMatcher({
+		globs: frozen.ignoreGlobs,
+		layer: "fabricignore",
+	})(FABRIC_IGNORE_FILE);
+	if (excludesItself !== null) {
+		return null;
+	}
+	return {
+		path: FABRIC_IGNORE_FILE,
+		reason: "ignore_mismatch",
+		detail: `${frozen.ignoreGlobs.length} rules frozen, file missing`,
+	};
+}
+
+/**
  * The gate: integrity, secrets AND classification, in ONE download per staged
  * object.
  *
@@ -478,7 +681,12 @@ async function persistVerifiedFileMetadata(
 export async function verifyAndScanInstructionFiles(
 	ref: SnapshotRef,
 ): Promise<GateResult> {
-	await loadVerifiedSnapshot(ref);
+	const snapshot = await loadVerifiedSnapshot(ref);
+	assertNotAlreadyRejected(snapshot, ref.snapshotId);
+	// The claim, BEFORE any storage work: it is what makes this run and the
+	// reaper's conditional write mutually exclusive.
+	await claimSnapshotForValidation(ref, snapshot);
+	const frozen = readFrozenIgnoreSettings(snapshot.settingsFrozen);
 	const storage = getStorageProvider();
 	const files = await listInstructionFiles(
 		ref.snapshotId,
@@ -557,7 +765,46 @@ export async function verifyAndScanInstructionFiles(
 				continue;
 			}
 		}
+		// Provenance for the ONE file whose content decided this snapshot's
+		// exclusions. Rejected exactly like a secret hit — the whole snapshot
+		// is REJECTED and nothing durable is stored — because a snapshot whose
+		// frozen rules do not come from its own stored `.fabricignore` cannot
+		// be explained to the person reading the tab.
+		//
+		// Root path, exactly: a nested `docs/.fabricignore` is content.
+		if (f.path === FABRIC_IGNORE_FILE) {
+			if (frozen === null) {
+				// Skipped, not failed: see `readFrozenIgnoreSettings`. Logged
+				// once — `.fabricignore` is a single root path, so this loop
+				// reaches here at most once per snapshot.
+				logger.warn(
+					{
+						event: "project.instructions.settings_frozen_unreadable",
+						snapshotId: ref.snapshotId,
+						projectId: ref.projectId,
+						organizationId: ref.organizationId,
+					},
+					"[CodingInstructions] settingsFrozen is not the expected shape; skipping the .fabricignore provenance check",
+				);
+			} else {
+				const mismatch = ignoreProvenanceRejection(frozen, text);
+				if (mismatch) {
+					rejections.push(mismatch);
+					continue;
+				}
+			}
+		}
 		await persistVerifiedFileMetadata(ref, f, text);
+	}
+	// Provenance for a `.fabricignore` that was never uploaded. The loop
+	// above never runs for a file the manifest does not carry, so this is
+	// the one place the omission can be refused; an unreadable
+	// `settingsFrozen` skips it for the same reason the in-loop check does.
+	if (frozen !== null && !files.some((f) => f.path === FABRIC_IGNORE_FILE)) {
+		const missing = missingIgnoreFileRejection(frozen);
+		if (missing) {
+			rejections.push(missing);
+		}
 	}
 	return {
 		ok: rejections.length === 0,
@@ -595,7 +842,7 @@ export async function verifyAndScanInstructionFiles(
 export async function finalizeInstructionSnapshot(
 	ref: SnapshotRef,
 ): Promise<GateResult> {
-	await loadVerifiedSnapshot(ref);
+	assertNotAlreadyRejected(await loadVerifiedSnapshot(ref), ref.snapshotId);
 	const storage = getStorageProvider();
 	const files = await listInstructionFiles(
 		ref.snapshotId,
@@ -922,52 +1169,23 @@ export async function publishInstructionSnapshotActivity(
 		: { published: false, reason: r.reason };
 }
 
+/**
+ * The workflow's prune step: its tenant gate, then the shared per-project
+ * pass.
+ *
+ * The body moved to `lib/instruction-prune.ts` unchanged so the scheduled
+ * reaper can run exactly the same pass off its own candidate query. What
+ * stays here is the part that is specific to being called from a snapshot's
+ * own workflow: `loadVerifiedSnapshot` proves this run's project and
+ * organization are the snapshot's own before anything is deleted.
+ */
 export async function pruneInstructionSnapshots(
 	ref: SnapshotRef,
-): Promise<{ deleted: number }> {
+): Promise<{ deleted: number; storageTruncated: boolean }> {
 	await loadVerifiedSnapshot(ref);
-	const storage = getStorageProvider();
-	const prunable = await listPrunableInstructionSnapshots(
+	return await pruneProjectInstructionSnapshots(
+		getStorageProvider(),
 		ref.projectId,
 		ref.organizationId,
-		{ ready: SNAPSHOT_RETENTION, rejected: FAILED_SNAPSHOT_RETENTION },
 	);
-	let deleted = 0;
-	for (const s of prunable) {
-		heartbeat({ snapshotId: s.id, phase: "row-delete" });
-		// Rows FIRST, then the objects they name. The old order deleted the
-		// objects and only then the rows, so a publish that landed on a
-		// candidate between its selection and its deletion left the project
-		// pointing at a snapshot whose bytes were already gone.
-		//
-		// `listPrunableInstructionSnapshots` already excludes the published
-		// pointer, so this is the race, not the ordinary case: the
-		// `onDelete: Restrict` foreign key refuses the delete and the
-		// candidate is skipped with its objects untouched. It will be a
-		// candidate again the next time it is no longer published.
-		const removal = await deleteInstructionSnapshot(
-			s.id,
-			ref.projectId,
-			ref.organizationId,
-		);
-		if (!removal.deleted) {
-			continue;
-		}
-		deleted++;
-		if (s.storageKeys.length > 0) {
-			assertAllDeleted(
-				await storage.deleteObjects(s.storageKeys, { bucket: BUCKET }),
-				"prune",
-			);
-		}
-		// The export zips built from this snapshot. Nothing records which
-		// ones exist — the file rows only know their own keys — so they are
-		// found by prefix, which also collects objects an earlier
-		// wall-clock-stamped build wrote.
-		await deleteObjectsUnderPrefix(
-			storage,
-			exportKeyPrefix(ref.projectId, s.id),
-		);
-	}
-	return { deleted };
 }

@@ -538,6 +538,50 @@ export async function startInstructionSnapshotValidation(input: {
 }
 
 /**
+ * The SAME move, narrowed to RECEIVING, for the Temporal gate activity.
+ *
+ * Deliberately not `startInstructionSnapshotValidation`: that one also accepts
+ * FAILED, which is correct for the API (the tab's "Try again" re-runs the
+ * workflow from a FAILED row, and the request that does it is by definition
+ * live), and unsafe for an activity attempt, which is not.
+ *
+ * Temporal delivers an activity AT LEAST ONCE, so a timed-out attempt keeps
+ * running while its retries proceed without it. Give such an attempt the
+ * FAILED arm and this becomes reachable:
+ *
+ *  1. an attempt loads the snapshot, then stalls before its claim commits;
+ *  2. its retries exhaust, the workflow's boundary catch writes FAILED, and
+ *     the workflow closes;
+ *  3. the stalled attempt wakes and its claim — which FAILED now satisfies —
+ *     writes VALIDATING.
+ *
+ * Nothing is left to reach a verdict, so the row sits in VALIDATING forever
+ * while the zombie attempt may go on writing storage objects behind it. A
+ * statement already blocked on the row lock hits the same end: PostgreSQL
+ * rechecks the predicate after the FAILED marker commits, and a predicate
+ * that admits FAILED still matches.
+ *
+ * RECEIVING is the only from-state an activity can own on its own evidence,
+ * so it is the only one here.
+ */
+export async function claimInstructionSnapshotValidation(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+}): Promise<{ changed: boolean }> {
+	const { count } = await db.projectInstructionSnapshot.updateMany({
+		where: {
+			id: input.snapshotId,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			status: "RECEIVING",
+		},
+		data: { status: "VALIDATING" },
+	});
+	return { changed: count > 0 };
+}
+
+/**
  * The FAILED transition, as a single conditional write.
  *
  * The workflow's boundary catch calls this to stop a snapshot whose run died
@@ -574,6 +618,59 @@ export async function failInstructionSnapshot(input: {
 			projectId: input.projectId,
 			organizationId: input.organizationId,
 			status: { in: ["RECEIVING", "VALIDATING"] },
+		},
+		data: { status: "FAILED", rejection: Prisma.JsonNull },
+	});
+	return { changed: count > 0 };
+}
+
+/**
+ * The reaper's FAILED transition for a row stranded in VALIDATING, as a
+ * compare-and-set on the version the sweep actually inspected.
+ *
+ * Round 8, finding 1. The reaper's phase 0 decides a row is dead by asking
+ * Temporal whether the snapshot's workflow is still running, and `describe()`
+ * and the write that follows are two separate operations. `failInstructionSnapshot`
+ * would accept any RECEIVING/VALIDATING row, so anything that happened in
+ * between was invisible to it:
+ *
+ *  1. phase 0 sees the old execution CLOSED; `finalize` then starts a new
+ *     execution for the same snapshot and the row goes to VALIDATING again;
+ *     the broad write then FAILs a row a live run owns.
+ *  2. reaper attempt A sees the old execution closed and stalls. Its retry,
+ *     attempt B, writes FAILED; the user presses "Try again"; a new run moves
+ *     the row back to VALIDATING; attempt A wakes — Temporal delivers an
+ *     activity AT LEAST ONCE — and its write matches the NEWER generation.
+ *
+ * `updatedAt: observedUpdatedAt` is what closes both. Postgres stamps
+ * `updatedAt` on every write to the row (Prisma's `@updatedAt`), so the value
+ * the candidate query returned identifies the exact version phase 0 described.
+ * Any write since — a newer generation's VALIDATING, an activity claim, a real
+ * verdict — moves it, the predicate matches zero rows, and the sweep reports
+ * `changed: false` rather than overwriting work it never looked at.
+ *
+ * `status: "VALIDATING"` rather than the marker's `{ in: ["RECEIVING",
+ * "VALIDATING"] }`: this transition heals exactly one population, and a
+ * RECEIVING row is phase 1's business, not phase 0's.
+ *
+ * The written columns mirror `failInstructionSnapshot` exactly — FAILED with
+ * `rejection` nulled — because this produces the same row the workflow's own
+ * boundary catch would have produced, and the tab's "Try again" reads it the
+ * same way.
+ */
+export async function failStaleValidatingInstructionSnapshot(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+	observedUpdatedAt: Date;
+}): Promise<{ changed: boolean }> {
+	const { count } = await db.projectInstructionSnapshot.updateMany({
+		where: {
+			id: input.snapshotId,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			status: "VALIDATING",
+			updatedAt: input.observedUpdatedAt,
 		},
 		data: { status: "FAILED", rejection: Prisma.JsonNull },
 	});
@@ -679,21 +776,62 @@ export async function publishInstructionSnapshot(input: {
 // ---------------------------------------------------------------------------
 
 /**
- * Snapshots whose rows and objects may be deleted, never the published one.
+ * THE RETENTION PREDICATE. Written out once here because TWO queries have to
+ * implement exactly it — `listPrunableInstructionSnapshots`, which selects
+ * the rows to delete, and `listProjectsWithPrunableInstructionSnapshots`,
+ * which counts the same rows to decide which projects the scheduled reaper
+ * should even visit. Both doc comments point back at this one; change the
+ * rule here and change both.
+ *
+ * A project KEEPS:
+ *
+ *  - the newest `keep.ready` UNPUBLISHED READY snapshots, by version; PLUS
+ *  - the published snapshot, whatever its version; PLUS
+ *  - the newest `keep.rejected` REJECTED/FAILED snapshots, by version.
+ *
+ * Everything else is prunable.
  *
  * Two windows, because the two kinds of row answer different questions.
  * `keep.ready` is spec §6.3.6's "keep the last 5 READY snapshots plus the
  * published one": history someone may still want to roll back to. A REJECTED
  * or FAILED snapshot never became history — it is a diagnostic for an upload
  * that was refused — so it is kept only long enough to read its rejection
- * list, on its own shorter window.
- *
- * One shared window let five consecutive rejected uploads evict every READY
- * snapshot except the published pointer, which is the opposite of what the
- * retention rule promises.
+ * list, on its own shorter window. One shared window let five consecutive
+ * rejected uploads evict every READY snapshot except the published pointer,
+ * which is the opposite of what the retention rule promises.
  *
  * RECEIVING/VALIDATING rows are in neither window: an in-flight snapshot must
  * never be pruned out from under its own workflow.
+ *
+ * "UNPUBLISHED, then newest five" and not "newest five, then drop the
+ * published one" is the part that had to be settled. The second reading makes
+ * the published row occupy a retention slot, which is invisible until the
+ * published row is the OLDEST of six: the selector skipped the newest five,
+ * found only the published row behind them and deleted nothing, while the
+ * candidate query counted six and nominated the project again on the next run
+ * and every run after it. A hundred such projects filled the reaper's
+ * per-run slice with permanent no-ops. Under the predicate above the
+ * published row is outside the window entirely, so the two sides agree on
+ * every arrangement and the `onDelete: Restrict` foreign key on
+ * `Project.publishedInstructionSnapshotId` goes back to being a backstop
+ * rather than the mechanism that protects it.
+ */
+/**
+ * The most snapshots ONE call will return per window, so a single project
+ * cannot hand the caller an unbounded result set — and, through the nested
+ * `files` selection, an unbounded number of storage keys to delete.
+ *
+ * A project with years of history behind its retention windows is drained
+ * across runs rather than in one pass: the scheduled reaper comes back every
+ * hour, and a successful upload prunes at the end of its own workflow. Both
+ * of those re-query, so whatever this leaves is simply the next call's work.
+ */
+const PRUNE_WINDOW_TAKE = 50;
+
+/**
+ * Snapshots whose rows and objects may be deleted. Implements THE RETENTION
+ * PREDICATE above; `listProjectsWithPrunableInstructionSnapshots` counts
+ * exactly what this returns.
  */
 export async function listPrunableInstructionSnapshots(
 	projectId: string,
@@ -719,9 +857,20 @@ export async function listPrunableInstructionSnapshots(
 	} satisfies Prisma.ProjectInstructionSnapshot$filesArgs;
 	const [ready, rejected] = await Promise.all([
 		db.projectInstructionSnapshot.findMany({
-			where: { projectId, organizationId, status: "READY" },
+			// `publishedFor: null` goes in the WHERE, ahead of `skip`, so the
+			// published row never occupies one of the kept slots and never
+			// reaches the result. Excluding it afterwards instead is what let
+			// a published-oldest project be nominated forever while this
+			// query had nothing to give back.
+			where: {
+				projectId,
+				organizationId,
+				status: "READY",
+				publishedFor: null,
+			},
 			orderBy: { version: "desc" },
 			skip: keep.ready,
+			take: PRUNE_WINDOW_TAKE,
 			select: { id: true, files },
 		}),
 		db.projectInstructionSnapshot.findMany({
@@ -732,15 +881,545 @@ export async function listPrunableInstructionSnapshots(
 			},
 			orderBy: { version: "desc" },
 			skip: keep.rejected,
+			take: PRUNE_WINDOW_TAKE,
 			select: { id: true, files },
 		}),
 	]);
-	return [...ready, ...rejected]
-		.filter((r) => r.id !== project?.publishedInstructionSnapshotId)
-		.map((r) => ({
-			id: r.id,
-			storageKeys: r.files.map((f) => f.storageKey),
-		}));
+	return [
+		...ready,
+		// Only a READY snapshot can be the published pointer, so this is a
+		// fail-closed backstop on the REJECTED/FAILED window rather than a
+		// second retention rule. The READY window needs no post-filter: its
+		// own WHERE already excluded the pointer.
+		...rejected.filter(
+			(r) => r.id !== project?.publishedInstructionSnapshotId,
+		),
+	].map((r) => ({
+		id: r.id,
+		storageKeys: r.files.map((f) => f.storageKey),
+	}));
+}
+
+/**
+ * Projects that have prunable instruction snapshots at all, as ONE ordered,
+ * deduplicated page of the candidate population plus that population's size,
+ * for the scheduled reaper's failure-path sweep.
+ *
+ * `pruneInstructionSnapshots` only ever runs at the END of a SUCCESSFUL
+ * validation workflow, so a project whose uploads keep failing accumulates
+ * REJECTED/FAILED rows — and their staged copies — with nothing bounding
+ * them. This is the candidate query for running the same prune on a schedule
+ * instead: the prune itself is unchanged, so this only has to answer "which
+ * projects have anything to prune".
+ *
+ * Deliberately a SYSTEM-WIDE sweep with no tenant in scope, like the
+ * attachment sweeps. It returns each project's own `organizationId` so every
+ * write the caller then makes is tenant-bound by values that came out of the
+ * row, never out of a request.
+ *
+ * It implements THE RETENTION PREDICATE documented above
+ * `listPrunableInstructionSnapshots`, and has to implement exactly it: this
+ * query decides which projects the reaper spends its per-run slice on, and
+ * the helper decides what gets deleted once it is there. Either side being
+ * looser than the other is a bug — too strict and a prunable snapshot is
+ * never visited, too loose and a project is nominated every run for work that
+ * cannot happen. The `LEFT JOIN ... WHERE p.id IS NULL` is that predicate's
+ * "unpublished" half: on the READY side it is the predicate itself, counting
+ * the unpublished rows the helper actually windows by version (counting the
+ * published row here as well was the loose direction — six READY rows whose
+ * oldest was the published one counted as six forever while the helper had
+ * nothing to delete), and on the REJECTED/FAILED side it is a fail-closed
+ * no-op, since only a READY snapshot can be the published pointer. `HAVING`
+ * counts the rows the `WHERE` already narrowed, so the thresholds are
+ * strict: MORE than `keep.ready` unpublished READY rows, or more than
+ * `keep.rejected` REJECTED/FAILED rows.
+ *
+ * RAW SQL, and one statement, because the shape is what makes the rotation
+ * honest. Two Prisma `groupBy` calls cannot express this: skipping each
+ * window separately rotates two different lists and then interleaves them, so
+ * a page is not a window of one canonical order — with twenty-five sticky
+ * READY-only projects and twenty-five sticky rejected-only ones, offset 0
+ * returned half of each and offset 25 returned nothing at all, forever.
+ * `UNION` dedupes (a project over both windows is ONE unit of work, because
+ * the prune helper handles both windows in a single pass), `ORDER BY` fixes
+ * the one canonical order the offset walks, and `count(*) OVER ()` carries
+ * the population size back with the page — so the caller can wrap its offset
+ * without a second query, and nothing is materialised in Node beyond the
+ * page itself. Every value is BOUND, never interpolated.
+ *
+ * `offset`/`limit` are the ROTATION and the per-run budget. Without them
+ * every run takes the same first page: a hundred projects with deep backlogs,
+ * or with a per-project failure that never clears, would be re-nominated
+ * every hour and every project behind them would be starved indefinitely. The
+ * caller advances the offset per run and wraps it at `total` (see the
+ * reaper), so with the population stable every candidate is reached within
+ * `ceil(total / limit)` runs.
+ *
+ * `total` is read off the page, so an offset that ran PAST the end reports
+ * zero: the caller learns the real size from its head page, which is the one
+ * page that is non-empty whenever the population is.
+ */
+export async function listProjectsWithPrunableInstructionSnapshots(
+	keep: { ready: number; rejected: number },
+	limit: number,
+	offset: number,
+): Promise<{
+	candidates: Array<{ projectId: string; organizationId: string }>;
+	total: number;
+}> {
+	const rows = await db.$queryRaw<
+		Array<{ projectId: string; organizationId: string; total: bigint }>
+	>`
+		WITH candidates AS (
+			SELECT s."projectId", s."organizationId"
+			FROM "project_instruction_snapshot" s
+			LEFT JOIN "project" p
+				ON p."publishedInstructionSnapshotId" = s."id"
+			WHERE s."status" = 'READY' AND p."id" IS NULL
+			GROUP BY s."projectId", s."organizationId"
+			HAVING count(*) > ${keep.ready}
+			UNION
+			SELECT s."projectId", s."organizationId"
+			FROM "project_instruction_snapshot" s
+			LEFT JOIN "project" p
+				ON p."publishedInstructionSnapshotId" = s."id"
+			WHERE s."status" IN ('REJECTED', 'FAILED') AND p."id" IS NULL
+			GROUP BY s."projectId", s."organizationId"
+			HAVING count(*) > ${keep.rejected}
+		)
+		SELECT "projectId", "organizationId", count(*) OVER () AS total
+		FROM candidates
+		ORDER BY "projectId", "organizationId"
+		OFFSET ${offset}
+		LIMIT ${limit}
+	`;
+	return {
+		candidates: rows.map((row) => ({
+			projectId: row.projectId,
+			organizationId: row.organizationId,
+		})),
+		total: Number(rows[0]?.total ?? 0),
+	};
+}
+
+/**
+ * Snapshots stuck in RECEIVING past the abandonment cutoff, oldest first.
+ *
+ * A RECEIVING row means `begin` created it and `finalize` was never called —
+ * the upload dialog was closed part-way through. Nothing in the feature ever
+ * moved such a row: the tab reads it as work in progress and polls it
+ * forever, and its staged objects are referenced by a row that will never
+ * reach a verdict.
+ *
+ * SYSTEM-WIDE, with no tenant in scope, for the same reason as
+ * `listProjectsWithPrunableInstructionSnapshots`: it is a sweep, and it hands
+ * the caller each row's own `projectId`/`organizationId` so that every write
+ * that follows is bound to the tenant the ROW names.
+ *
+ * Oldest first so a backlog larger than one run's budget drains in age order
+ * rather than being re-scanned from the same end every hour.
+ */
+export async function listAbandonedReceivingInstructionSnapshots(
+	cutoff: Date,
+	limit: number,
+): Promise<
+	Array<{
+		id: string;
+		projectId: string;
+		organizationId: string;
+		createdAt: Date;
+	}>
+> {
+	return db.projectInstructionSnapshot.findMany({
+		where: { status: "RECEIVING", createdAt: { lt: cutoff } },
+		orderBy: { createdAt: "asc" },
+		take: limit,
+		select: {
+			id: true,
+			projectId: true,
+			organizationId: true,
+			createdAt: true,
+		},
+	});
+}
+
+/**
+ * Snapshots stuck in VALIDATING past the staleness cutoff, oldest-touched
+ * first.
+ *
+ * VALIDATING means a validation workflow owns the row, so normally nothing
+ * outside that workflow may write a verdict over it. What this selects is the
+ * population where that stopped being true: the execution is gone and its
+ * failure marker never landed. `finalize` starts the workflow BEFORE it writes
+ * VALIDATING, so a status write that lands after the run has already closed
+ * leaves exactly this row — VALIDATING, with nothing behind it. A worker that
+ * died between the claim and the boundary catch leaves the same shape.
+ *
+ * The caller decides row by row, by asking Temporal about the snapshot's
+ * deterministic workflow id; this query only narrows the population to rows
+ * old enough that the question is worth asking at all.
+ *
+ * `updatedAt`, not `createdAt`, because the claim that moved the row into
+ * VALIDATING is itself a write: the age that matters is how long the row has
+ * been in this state, not how long ago the upload began.
+ *
+ * `updatedAt` is also SELECTED, not just filtered on. Every write to this row
+ * moves it, so the value read here is the version the caller observed, and
+ * `failStaleValidatingInstructionSnapshot` puts it back in the WHERE clause of
+ * the write. A row that moved on in between — a newer generation, an activity
+ * claim, any other write — no longer matches, so the sweep cannot land a
+ * verdict on a row it never actually inspected.
+ *
+ * SYSTEM-WIDE, with no tenant in scope, like the other sweep queries here, and
+ * it hands the caller each row's own `projectId`/`organizationId` so every
+ * write that follows is bound to the tenant the ROW names.
+ */
+export async function listStaleValidatingInstructionSnapshots(
+	cutoff: Date,
+	limit: number,
+): Promise<
+	Array<{
+		id: string;
+		projectId: string;
+		organizationId: string;
+		updatedAt: Date;
+	}>
+> {
+	return db.projectInstructionSnapshot.findMany({
+		where: { status: "VALIDATING", updatedAt: { lt: cutoff } },
+		orderBy: { updatedAt: "asc" },
+		take: limit,
+		select: {
+			id: true,
+			projectId: true,
+			organizationId: true,
+			updatedAt: true,
+		},
+	});
+}
+
+/**
+ * Closes out an abandoned RECEIVING snapshot, and records the same audit
+ * event a refused upload records, in ONE transaction.
+ *
+ * REJECTED rather than FAILED, deliberately. FAILED is re-attemptable — the
+ * tab offers "Try again", which re-runs the validation workflow — and there
+ * is nothing to re-attempt here: `finalize` was never called, so no workflow
+ * exists and the staged bytes are about to be deleted. REJECTED is terminal,
+ * already prunable, already deletable, and already the status the tab knows
+ * how to explain, and `failInstructionSnapshot` nulls `rejection`, so it
+ * could not carry the reason even if the state were right. The reason travels
+ * in the rejection array the tab already renders; there is no failure-reason
+ * column and this is not the change that should add one.
+ *
+ * The predicate is the WRITE's own, not a read above it. A `finalize` racing
+ * this call moves the row to VALIDATING, and that row must be left strictly
+ * alone: `status: "RECEIVING"` in the WHERE clause is what guarantees it,
+ * where a read-then-write would happily reject an upload that had just come
+ * back to life. `createdAt: { lt: cutoff }` is in the same clause for the
+ * same reason — the candidate list is a moment that has already passed by the
+ * time this runs.
+ *
+ * The audit row goes through `recordAuditTx` inside the transaction and only
+ * when the conditional write matched, exactly as `markInstructionSnapshotRejected`
+ * does: the reaper is a Temporal activity, Temporal delivers activities AT
+ * LEAST ONCE, and a best-effort write after the status write would either
+ * duplicate the row on a retry or lose it when the process dies in the gap.
+ * The action is the existing `project.instructions.rejected` — the audit
+ * taxonomy gains nothing from a second way to say the same thing — and
+ * `metadata.source` is what distinguishes the sweep from a refused upload.
+ */
+export async function rejectAbandonedInstructionSnapshot(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+	cutoff: Date;
+}): Promise<{ changed: boolean }> {
+	const rejections: InstructionRejection[] = [
+		{
+			// The whole upload was abandoned, not one file in it; a blank path
+			// renders as an empty row, so name the upload the way the
+			// "(truncated)" sentinel does.
+			path: "(upload)",
+			reason: "abandoned",
+			// The staging prefix has NOT been swept yet at this point: this
+			// statement commits the verdict, and the objects go afterwards.
+			// The mark is what phase 1b of the reaper selects on, and what
+			// `markAbandonedInstructionSnapshotSwept` clears once the prefix
+			// is actually gone.
+			detail: ABANDONED_STAGING_PENDING,
+		},
+	];
+	return db.$transaction(async (tx) => {
+		const { count } = await tx.projectInstructionSnapshot.updateMany({
+			where: {
+				id: input.snapshotId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				status: "RECEIVING",
+				createdAt: { lt: input.cutoff },
+			},
+			data: {
+				status: "REJECTED",
+				rejection: rejections as unknown as Prisma.InputJsonValue,
+			},
+		});
+		if (count === 0) {
+			return { changed: false };
+		}
+		// Read AFTER the write and inside the same transaction, purely to
+		// name the actor and the version in the audit row. The verdict is
+		// still the one conditional statement above; nothing here decides it.
+		const snapshot = await tx.projectInstructionSnapshot.findFirst({
+			where: {
+				id: input.snapshotId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+			},
+			select: { userId: true, version: true },
+		});
+		await recordAuditTx(tx, {
+			action: "project.instructions.rejected",
+			category: "project",
+			severity: "warning",
+			outcome: "failure",
+			// The person whose upload this was, as the refusal path records
+			// it. The sweep is what TRIGGERED the row, which `metadata.source`
+			// says; it is not the actor whose upload is being closed out.
+			actor: { type: "user", userId: snapshot?.userId ?? null },
+			organizationId: input.organizationId,
+			projectId: input.projectId,
+			resource: {
+				type: "project_instruction_snapshot",
+				id: input.snapshotId,
+				name: snapshot === null ? undefined : `v${snapshot.version}`,
+			},
+			metadata: {
+				rejectionCount: rejections.length,
+				reasonCounts: { abandoned: 1 },
+				rules: [],
+				source: "abandoned_receiving_reaper",
+			},
+		});
+		return { changed: true };
+	});
+}
+
+/**
+ * The two values `detail` carries on an abandonment's single rejection
+ * element. Together they are this feature's staging-cleanup state, and the
+ * reason it needs no new column and no time window.
+ *
+ * `rejectAbandonedInstructionSnapshot` writes PENDING along with the verdict,
+ * because the objects are deleted AFTER it commits;
+ * `markAbandonedInstructionSnapshotSwept` rewrites it to CLEARED once the
+ * prefix has actually been swept. Eligibility for the re-sweep is therefore a
+ * value ON the row, which nothing but a completed sweep changes, and
+ * `updatedAt` is left with exactly one job: ordering the queue.
+ *
+ * A row whose sweep keeps failing STAYS pending. It is retried on every
+ * hourly run and rotated to the back of the queue after each failure, so one
+ * undeletable prefix cannot block the rows behind it, and nothing expires it:
+ * a prefix that will not delete for days is an operations signal — the
+ * `errorCount` in the reaper's result is where it surfaces — not something to
+ * time out and forget. Such a row leaves the pending set only when the
+ * retention prune deletes it, which takes its whole prefix with it.
+ *
+ * Neither value reaches a user. The rejected banner
+ * (`InstructionsRejectedBanner.tsx`) renders `detail` only for
+ * `reason === "secret"` and for the `truncated` sentinel row; every other
+ * reason, `abandoned` included, renders its translated `reasonLabels` entry
+ * and ignores `detail` entirely.
+ */
+export const ABANDONED_STAGING_PENDING = "staging pending";
+export const ABANDONED_STAGING_CLEARED = "staging cleared";
+
+/**
+ * Closed abandonments whose staging prefix has not been swept clean yet,
+ * oldest first.
+ *
+ * `rejectAbandonedInstructionSnapshot` commits the verdict and its audit row
+ * first and the objects are deleted second, which is the ordering the feature
+ * needs — a row whose staged bytes were deleted while it still said RECEIVING
+ * is an upload the tab offers to finish and that cannot be finished. The cost
+ * is the gap: an attempt that commits the transition and then dies, or gets a
+ * non-empty `deleteObjects.errors`, leaves partially uploaded — possibly
+ * secret-bearing — objects behind, and the RECEIVING candidate query cannot
+ * see that row any more, because it is REJECTED now.
+ *
+ * So the sweep rediscovers those rows by the mark they still carry: REJECTED,
+ * first rejection reason `abandoned` (the shape
+ * `rejectAbandonedInstructionSnapshot` writes, and the only path that writes
+ * it), first rejection detail still `ABANDONED_STAGING_PENDING`. There is no
+ * time window, deliberately: a window keyed on `updatedAt` cannot coexist
+ * with using `updatedAt` as the rotation cursor — every successful sweep
+ * would renew the eligibility it was supposed to end, and rows that were
+ * finished long ago would circle the queue forever, spending the budget that
+ * the genuinely unfinished rows need.
+ *
+ * `excludeIds` is how the caller drops the rows it has just handled in phase
+ * 1 of the same run, IN THE QUERY rather than by skipping them afterwards, so
+ * that `take` still returns a full page of real work and a full page still
+ * means a real backlog.
+ *
+ * Deleting under such a row's prefix races nothing: REJECTED is terminal —
+ * `startInstructionSnapshotValidation` moves RECEIVING/FAILED only — so no
+ * workflow can adopt those bytes afterwards.
+ *
+ * SYSTEM-WIDE with no tenant in scope, like the other sweep queries, and it
+ * returns each row's own `projectId`/`organizationId` so the prefix the
+ * caller builds is the one that row names.
+ */
+export async function listPendingAbandonedInstructionSnapshots(
+	limit: number,
+	excludeIds: string[],
+): Promise<Array<{ id: string; projectId: string; organizationId: string }>> {
+	return db.projectInstructionSnapshot.findMany({
+		where: {
+			status: "REJECTED",
+			// The JSON path into the stored rejection array: element 0's
+			// `reason`. An ordinary refused upload's first rejection is a
+			// `secret`, `hash_mismatch` or `ignore_mismatch`, so it is not
+			// selected here and its staged copies are the retention prune's
+			// work, not this phase's.
+			rejection: { path: ["0", "reason"], equals: "abandoned" },
+			// The completion mark, in `AND` because one object literal cannot
+			// carry two filters on the same `rejection` field.
+			AND: [
+				{
+					rejection: {
+						path: ["0", "detail"],
+						equals: ABANDONED_STAGING_PENDING,
+					},
+				},
+			],
+			id: { notIn: excludeIds },
+		},
+		// The rotation, and the ONLY thing `updatedAt` decides here: the row
+		// whose sweep failed longest ago is retried first, and each failure
+		// re-dates it to the back so it cannot monopolize the budget.
+		orderBy: { updatedAt: "asc" },
+		take: limit,
+		select: { id: true, projectId: true, organizationId: true },
+	});
+}
+
+/**
+ * Records that a closed abandonment's staging prefix has been swept, by
+ * rewriting the completion mark on the rejection element the reaper owns.
+ *
+ * This is what takes a row OUT of
+ * `listPendingAbandonedInstructionSnapshots`, and it is deliberately not a
+ * timestamp: the previous design reused `updatedAt` as both the eligibility
+ * cutoff and the rotation cursor, so every successful sweep renewed the
+ * eligibility it meant to end and no clean row ever left the population.
+ *
+ * ONE conditional, tenant-bound statement, like every other write in this
+ * file. The predicate names the tenant columns, `status: "REJECTED"`, the
+ * `abandoned` reason AND the still-PENDING mark, so this can only ever
+ * rewrite the single-element array the reaper itself wrote — never a refused
+ * upload's list of per-file rejections — and only from the one state the
+ * rewrite is defined for. No audit row: the verdict was recorded once, by the
+ * attempt that made it, and this changes nothing a user or an auditor reads.
+ *
+ * The PENDING half of that predicate is what makes it a true compare-and-set.
+ * Temporal delivers an activity at least once, so two attempts can be
+ * sweeping the same prefix at the same time; without it the second one
+ * rewrites a mark the first already cleared, which is harmless today and
+ * stops being harmless the moment anything reads when the mark was written.
+ * The loser now matches nothing and reports `changed: false`.
+ *
+ * A truncated sweep counts as swept. Its residue is the bucket-lifecycle
+ * follow-up's work, and re-listing an already-emptied page budget every hour
+ * would starve the rows behind it.
+ */
+export async function markAbandonedInstructionSnapshotSwept(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+}): Promise<{ changed: boolean }> {
+	const rejections: InstructionRejection[] = [
+		{
+			path: "(upload)",
+			reason: "abandoned",
+			detail: ABANDONED_STAGING_CLEARED,
+		},
+	];
+	const { count } = await db.projectInstructionSnapshot.updateMany({
+		where: {
+			id: input.snapshotId,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			status: "REJECTED",
+			rejection: { path: ["0", "reason"], equals: "abandoned" },
+			// The from-state, in `AND` because one object literal cannot
+			// carry two filters on the same `rejection` field.
+			AND: [
+				{
+					rejection: {
+						path: ["0", "detail"],
+						equals: ABANDONED_STAGING_PENDING,
+					},
+				},
+			],
+		},
+		data: { rejection: rejections as unknown as Prisma.InputJsonValue },
+	});
+	return { changed: count > 0 };
+}
+
+/**
+ * Moves a still-pending abandonment to the BACK of the re-sweep queue by
+ * giving it a fresh `updatedAt`, after its staging prefix FAILED to sweep.
+ *
+ * The queue is ordered oldest-first, so without this one prefix that cannot
+ * be deleted — a bucket permission lost, a key that will not go — would sit
+ * at the front of every hourly run and the rows behind it would never be
+ * reached. Rotating a failure to the back keeps it in the population, where
+ * it belongs until someone fixes the storage, without letting it own the
+ * budget.
+ *
+ * ONE conditional, tenant-bound statement naming its full from-state:
+ * `status: "REJECTED"`, the `abandoned` reason and the still-PENDING mark,
+ * all in the predicate rather than in a read above it. The explicit
+ * `updatedAt` is what Prisma writes in place of its own `@updatedAt` value.
+ * No other column, and no audit row: the rotation is the sweep's own
+ * bookkeeping, and in particular it does NOT touch the completion mark — the
+ * row is still pending, which is the point.
+ *
+ * Status alone was too loose for a queue cursor. Activities are delivered at
+ * least once, so a second attempt could re-date a row a first attempt had
+ * already swept and CLEARED, pushing a finished row's `updatedAt` forward for
+ * no reason; worse, it could re-date an ordinary refused upload that this
+ * sweep does not own at all. Both arms now have to still be pending, which is
+ * exactly the population `listPendingAbandonedInstructionSnapshots` orders.
+ */
+export async function rotateAbandonedInstructionSnapshot(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+}): Promise<{ rotated: boolean }> {
+	const { count } = await db.projectInstructionSnapshot.updateMany({
+		where: {
+			id: input.snapshotId,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			status: "REJECTED",
+			rejection: { path: ["0", "reason"], equals: "abandoned" },
+			// In `AND` because one object literal cannot carry two filters on
+			// the same `rejection` field.
+			AND: [
+				{
+					rejection: {
+						path: ["0", "detail"],
+						equals: ABANDONED_STAGING_PENDING,
+					},
+				},
+			],
+		},
+		data: { updatedAt: new Date() },
+	});
+	return { rotated: count > 0 };
 }
 
 /**

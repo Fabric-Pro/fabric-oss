@@ -15,11 +15,20 @@ import {
 import { UploadFolderDialog } from "./UploadFolderDialog";
 
 /**
- * The three fields the polling decision reads off a snapshot row. Declared
+ * The four fields the polling decision reads off a snapshot row. Declared
  * here rather than inferred from the query, because both `refetchInterval`
  * closures are built before their own query's data exists.
+ *
+ * `createdAt` is what retires a RECEIVING row whose upload was abandoned:
+ * `finalize` was never called, so no workflow will ever move it and there is
+ * nothing to wait for (see `instructions-poll.ts`).
  */
-type PollSnapshot = { id: string; status: string; publishOnReady?: boolean };
+type PollSnapshot = {
+	id: string;
+	status: string;
+	publishOnReady?: boolean;
+	createdAt?: string | Date | null;
+};
 
 export function CodingInstructionsTab({ projectId }: { projectId: string }) {
 	const queryClient = useQueryClient();
@@ -60,6 +69,7 @@ export function CodingInstructionsTab({ projectId }: { projectId: string }) {
 		const now = Date.now();
 		const elapsedMs = now - mountedAt.current;
 		return instructionsPollInterval(snapshots, elapsedMs, {
+			now,
 			awaitingPublish: instructionsAwaitsPublish({
 				snapshots,
 				publishedId: publishedIdRef.current,

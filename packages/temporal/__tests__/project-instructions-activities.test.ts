@@ -5,6 +5,7 @@ const m = vi.hoisted(() => ({
 	failInstructionSnapshot: vi.fn(),
 	markInstructionSnapshotReady: vi.fn(),
 	markInstructionSnapshotRejected: vi.fn(),
+	claimInstructionSnapshotValidation: vi.fn(),
 	updateInstructionFileMetadata: vi.fn(),
 	getInstructionSnapshotById: vi.fn(),
 	publishInstructionSnapshot: vi.fn(),
@@ -32,6 +33,16 @@ vi.mock("@repo/storage", () => ({
 vi.mock("@repo/config", () => ({
 	config: { storage: { bucketNames: { skills: "skills" } } },
 }));
+// The `.fabricignore` provenance check WARNS and skips when `settingsFrozen`
+// does not hold the shape it froze, rather than failing the activity; the
+// structured event is the only evidence that path was taken.
+const logMocks = vi.hoisted(() => ({
+	warn: vi.fn(),
+	info: vi.fn(),
+	error: vi.fn(),
+	debug: vi.fn(),
+}));
+vi.mock("@repo/logs", () => ({ logger: logMocks }));
 
 // Separate hoisted holder for the `@temporalio/activity` mock so the
 // heartbeat spy (Important 3) can be asserted on from test bodies, without
@@ -41,6 +52,9 @@ const activityMocks = vi.hoisted(() => ({ heartbeat: vi.fn() }));
 // mismatch as a non-retryable Temporal failure; the real class lives in
 // `@temporalio/common` and is re-exported here, so the mock must carry a
 // shape close enough to assert `nonRetryable: true` on the thrown value.
+// `retryable` carries the same shape with the flag cleared: round 6's claim
+// uses it for a row this run does not own yet, and the distinction between
+// the two is the whole point of that branch.
 vi.mock("@temporalio/activity", () => ({
 	heartbeat: activityMocks.heartbeat,
 	ApplicationFailure: {
@@ -50,6 +64,15 @@ vi.mock("@temporalio/activity", () => ({
 				type?: string | null;
 			};
 			error.nonRetryable = true;
+			error.type = type;
+			return error;
+		},
+		retryable: (message?: string | null, type?: string | null) => {
+			const error = new Error(message ?? undefined) as Error & {
+				nonRetryable: boolean;
+				type?: string | null;
+			};
+			error.nonRetryable = false;
 			error.type = type;
 			return error;
 		},
@@ -200,6 +223,10 @@ beforeEach(() => {
 	m.markInstructionSnapshotReady.mockResolvedValue({ changed: true });
 	m.markInstructionSnapshotRejected.mockResolvedValue({ changed: true });
 	m.failInstructionSnapshot.mockResolvedValue({ changed: true });
+	// Default: the gate's claim on the row is the write that moves it into
+	// VALIDATING. The cases below override it with `{ changed: false }` to
+	// stand in for a row something else already moved.
+	m.claimInstructionSnapshotValidation.mockResolvedValue({ changed: true });
 	// Default: the snapshot exists and belongs to `snap`'s project/org, so
 	// every activity's R16 tenant check passes and the existing behavioral
 	// tests below exercise their intended logic rather than the gate.
@@ -210,8 +237,29 @@ beforeEach(() => {
 		publishOnReady: true,
 		version: 7,
 		fileCount: 3,
+		// Every existing case uploads no `.fabricignore`, and the default
+		// layer expects none — so this default leaves them all unaffected.
+		settingsFrozen: {
+			layer: "default",
+			ignoreGlobs: ["**/node_modules/**"],
+			limits: {},
+		},
 	});
+	logMocks.warn.mockReset();
 });
+
+/** The snapshot row with a different frozen `{ layer, ignoreGlobs }`. */
+function freezeIgnoreSettings(settingsFrozen: unknown) {
+	m.getInstructionSnapshotById.mockResolvedValue({
+		id: "s",
+		projectId: "p",
+		organizationId: "o",
+		publishOnReady: true,
+		version: 7,
+		fileCount: 3,
+		settingsFrozen,
+	});
+}
 
 // ---------------------------------------------------------------------------
 // C1 — integrity and secrets are ONE pass over ONE download per object.
@@ -598,6 +646,217 @@ describe("verifyAndScanInstructionFiles", () => {
 
 			expect(r).toEqual({ ok: true, rejections: [] });
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Fizzy #2549 — the snapshot's frozen exclusion rules must come from the
+// `.fabricignore` the snapshot actually stores.
+//
+// `projects.instructions.begin` parses the rules out of the `fabricIgnoreText`
+// the CLIENT sends and freezes them into `settingsFrozen`; `.fabricignore` is
+// then uploaded as an ordinary file and nothing compared the two. A caller
+// could have one rule set frozen (and rendered in the tab as the reason files
+// are missing) while storing a file that states something else entirely.
+// ---------------------------------------------------------------------------
+describe("the .fabricignore provenance check (Fizzy #2549)", () => {
+	const GLOBS = ["docs/**", "*.log"];
+	/**
+	 * A frozen rule set that excludes `.fabricignore` itself, which is the
+	 * ONE reason a `fabricignore`-layer snapshot may legitimately store no
+	 * root `.fabricignore`. Root-anchored, so a nested `docs/.fabricignore`
+	 * is still ordinary content the upload carries.
+	 */
+	const SELF_EXCLUDING = [".fabricignore"];
+	const ignoreFile = (text: string) => ({
+		id: "ign",
+		path: ".fabricignore",
+		data: Buffer.from(text),
+	});
+
+	it("passes when the stored file parses to exactly the frozen rules", async () => {
+		freezeIgnoreSettings({ layer: "fabricignore", ignoreGlobs: GLOBS });
+		await stage([
+			ignoreFile("# project rules\ndocs/**\n\n*.log\n"),
+			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+		]);
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+	});
+
+	it("rejects exactly once when the stored file parses to a different rule list", async () => {
+		freezeIgnoreSettings({ layer: "fabricignore", ignoreGlobs: GLOBS });
+		// Same file path, same hash-and-size integrity — the bytes are simply
+		// not the ones the frozen rules were parsed from.
+		await stage([
+			ignoreFile("docs/**\n"),
+			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+		]);
+
+		const r = await verifyAndScanInstructionFiles(snap);
+
+		expect(r).toEqual({
+			ok: false,
+			rejections: [
+				{
+					path: ".fabricignore",
+					reason: "ignore_mismatch",
+					// Counts only: the rules themselves are user content and
+					// this string is persisted and rendered.
+					detail: "2 rules frozen, 1 in file",
+				},
+			],
+		});
+		// Rejected like a secret hit: no metadata is persisted for it.
+		expect(m.updateInstructionFileMetadata).not.toHaveBeenCalledWith(
+			"ign",
+			expect.anything(),
+			expect.anything(),
+		);
+	});
+
+	it("rejects a rule-bearing .fabricignore when the frozen layer is not fabricignore", async () => {
+		// The `default` layer is chosen precisely BECAUSE the begin payload
+		// carried no usable `.fabricignore`. A stored file with real rules
+		// therefore contradicts the layer the tab is showing.
+		freezeIgnoreSettings({
+			layer: "default",
+			ignoreGlobs: ["**/node_modules/**"],
+		});
+		await stage([ignoreFile("docs/**\n")]);
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: false,
+			rejections: [
+				{
+					path: ".fabricignore",
+					reason: "ignore_mismatch",
+					detail: "0 rules frozen, 1 in file",
+				},
+			],
+		});
+	});
+
+	it("passes a comment-only .fabricignore against a non-fabricignore layer", async () => {
+		freezeIgnoreSettings({
+			layer: "default",
+			ignoreGlobs: ["**/node_modules/**"],
+		});
+		// `resolveIgnoreGlobs` falls through to the default layer for exactly
+		// this file, so it is the MATCHING case, not a contradiction.
+		await stage([ignoreFile("# nothing to exclude\n\n!keep-me\n")]);
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+	});
+
+	it("accepts an absent .fabricignore when the frozen rules exclude the file itself", async () => {
+		// The upload was never asked for the file, so there is nothing to
+		// compare and nothing unexplained: the rules the tab renders are the
+		// rules that kept it out.
+		freezeIgnoreSettings({
+			layer: "fabricignore",
+			ignoreGlobs: SELF_EXCLUDING,
+		});
+		await stage([
+			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+		]);
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+	});
+
+	it("rejects an absent .fabricignore when the frozen rules do not exclude it", async () => {
+		// The hole this closes: the comparison ran only while iterating an
+		// uploaded root `.fabricignore`, so a caller could send
+		// `fabricIgnoreText` to `begin`, omit the file from the manifest, and
+		// freeze arbitrary exclusions that no stored byte states. Neither
+		// `docs/**` nor `*.log` keeps `.fabricignore` out of the upload, so
+		// its absence is unexplained.
+		freezeIgnoreSettings({ layer: "fabricignore", ignoreGlobs: GLOBS });
+		await stage([
+			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+		]);
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: false,
+			rejections: [
+				{
+					path: ".fabricignore",
+					reason: "ignore_mismatch",
+					// Counts only, like the mismatch case.
+					detail: "2 rules frozen, file missing",
+				},
+			],
+		});
+	});
+
+	it("puts the absence question to the compiled matcher, not to the glob strings", async () => {
+		// `**/.fabricignore` excludes the file at any depth and is nothing
+		// like a literal match on the path; only the matcher the upload's own
+		// rules build knows that.
+		freezeIgnoreSettings({
+			layer: "fabricignore",
+			ignoreGlobs: ["**/.fabricignore"],
+		});
+		await stage([
+			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+		]);
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+	});
+
+	it("ignores a nested docs/.fabricignore — the check is the exact root path", async () => {
+		// Root-anchored frozen rules: the root file is excluded (so its
+		// absence is legitimate) and the nested one is ordinary content.
+		freezeIgnoreSettings({
+			layer: "fabricignore",
+			ignoreGlobs: SELF_EXCLUDING,
+		});
+		await stage([
+			{
+				id: "nested",
+				path: "docs/.fabricignore",
+				data: Buffer.from("anything\n"),
+			},
+		]);
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+	});
+
+	it("skips the check and warns once when settingsFrozen is not the shape begin froze", async () => {
+		// `settingsFrozen` is a `Json` column with no database constraint. An
+		// unreadable shape must not fail an upload whose files are fine.
+		freezeIgnoreSettings({ layer: 7, ignoreGlobs: "docs/**" });
+		await stage([ignoreFile("docs/**\n")]);
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		expect(logMocks.warn).toHaveBeenCalledTimes(1);
+		expect(logMocks.warn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event: "project.instructions.settings_frozen_unreadable",
+				snapshotId: "s",
+				projectId: "p",
+				organizationId: "o",
+			}),
+			expect.any(String),
+		);
 	});
 });
 
@@ -1178,7 +1437,7 @@ describe("pruneInstructionSnapshots", () => {
 			{ id: "old-2", storageKeys: [] },
 		]);
 		const r = await pruneInstructionSnapshots(snap);
-		expect(r).toEqual({ deleted: 2 });
+		expect(r).toEqual({ deleted: 2, storageTruncated: false });
 		// I3: the ROWS go first, then the objects they name. The old order
 		// deleted the objects and only then the rows, so a publish landing on
 		// a candidate between its selection and its deletion left the project
@@ -1241,7 +1500,7 @@ describe("pruneInstructionSnapshots", () => {
 		const r = await pruneInstructionSnapshots(snap);
 
 		// Only the candidate that was actually removed is counted.
-		expect(r).toEqual({ deleted: 1 });
+		expect(r).toEqual({ deleted: 1, storageTruncated: false });
 		expect(m.deleteObjects).not.toHaveBeenCalledWith(
 			["projects/p/instructions/snapshots/now-published/f1"],
 			{ bucket: "skills" },
@@ -1256,6 +1515,39 @@ describe("pruneInstructionSnapshots", () => {
 				prefix: "projects/p/instructions/exports/now-published-",
 			}),
 		);
+	});
+
+	/**
+	 * The row-level budgets bound how many snapshots a run selects, not how
+	 * much storage work ONE selected snapshot is: an export prefix collects
+	 * every zip ever built from that snapshot, including the legacy
+	 * wall-clock-stamped ones, and nothing bounds how many exist. Paginating
+	 * it to exhaustion is how a single row could spend a whole activity
+	 * attempt.
+	 */
+	it("stops an export-prefix sweep at its page budget and reports the truncation", async () => {
+		m.listPrunableInstructionSnapshots.mockResolvedValue([
+			{ id: "old-1", storageKeys: [] },
+		]);
+		// A prefix that never stops paginating.
+		m.listObjects.mockImplementation(async () => ({
+			objects: [
+				{
+					key: "projects/p/instructions/exports/old-1-digest.zip",
+					size: 10,
+				},
+			],
+			nextContinuationToken: "more",
+		}));
+
+		const r = await pruneInstructionSnapshots(snap);
+
+		// MAX_PREFIX_PAGES, and then it stops rather than running forever.
+		expect(m.listObjects).toHaveBeenCalledTimes(20);
+		// The row still counts as pruned — rows go before storage, and the
+		// row is gone. What is left under the prefix is the bucket-lifecycle
+		// rule's work, which the flag is there to make visible.
+		expect(r).toEqual({ deleted: 1, storageTruncated: true });
 	});
 
 	// R32/I4: the export zips are not in `storageKeys` — nothing records
@@ -1728,5 +2020,251 @@ describe("tenant verification (R16)", () => {
 			},
 		);
 		expect(m.listInstructionFiles).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The workflow side of the reaper's liveness guard.
+//
+// The scheduled reaper asks Temporal whether an execution exists before it
+// closes a stale RECEIVING row out, but that describe and its conditional
+// write are two statements. A `finalize` landing in the gap starts a workflow
+// for a row the reaper rejects milliseconds later, and without a guard here
+// that run would scan and PROMOTE a snapshot the database says is REJECTED —
+// writing immutable objects and file metadata for a verdict nobody reads, and
+// possibly returning READY for a row that says REJECTED.
+//
+// Two mechanisms, and the CLAIM below is the one that decides it: the gate
+// moves the row RECEIVING -> VALIDATING before it reads any object, against
+// the same from-state the reaper's write requires, so exactly one of the two
+// can win. Refusing an already-REJECTED snapshot is what a run that LOST then
+// does.
+//
+// RECEIVING is the ONLY from-state the claim accepts. A retry from FAILED
+// waits for the finalize API's own transition instead, because an activity
+// attempt cannot prove on its own evidence that it still owns a FAILED row —
+// a stalled attempt whose retries have already exhausted would otherwise
+// reopen the very row its workflow's boundary catch had just closed.
+// ---------------------------------------------------------------------------
+describe("the pre-verdict activities refuse an already-REJECTED snapshot", () => {
+	function rejectedSnapshot() {
+		m.getInstructionSnapshotById.mockResolvedValue({
+			id: "s",
+			projectId: "p",
+			organizationId: "o",
+			status: "REJECTED",
+			publishOnReady: true,
+			version: 7,
+			fileCount: 3,
+			settingsFrozen: {
+				layer: "default",
+				ignoreGlobs: ["**/node_modules/**"],
+				limits: {},
+			},
+		});
+	}
+
+	const cases: Array<[string, () => Promise<unknown>]> = [
+		[
+			"verifyAndScanInstructionFiles",
+			() => verifyAndScanInstructionFiles(snap),
+		],
+		[
+			"finalizeInstructionSnapshot",
+			() => finalizeInstructionSnapshot(snap),
+		],
+	];
+
+	it.each(cases)(
+		"%s fails non-retryably and persists nothing",
+		async (_name, run) => {
+			rejectedSnapshot();
+
+			// Non-retryable: REJECTED is terminal, so a retry only re-reads
+			// the same answer. The workflow's boundary catch marks FAILED
+			// from RECEIVING/VALIDATING only, so the reaper's REJECTED row is
+			// left exactly as it is.
+			await expect(run()).rejects.toMatchObject({
+				nonRetryable: true,
+				type: "INSTRUCTION_SNAPSHOT_ALREADY_REJECTED",
+			});
+			expect(m.listInstructionFiles).not.toHaveBeenCalled();
+			expect(m.downloadFile).not.toHaveBeenCalled();
+			expect(m.uploadFile).not.toHaveBeenCalled();
+			expect(m.copyFile).not.toHaveBeenCalled();
+			expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+			expect(m.deleteObjects).not.toHaveBeenCalled();
+		},
+	);
+
+	it("leaves the POST-verdict activities alone — a REJECTED snapshot is their ordinary path", async () => {
+		// Publish and prune run after a verdict this workflow itself
+		// produced; refusing them would break the normal rejection path,
+		// which is not what this guard is for.
+		rejectedSnapshot();
+		m.listPrunableInstructionSnapshots.mockResolvedValue([]);
+
+		await expect(pruneInstructionSnapshots(snap)).resolves.toEqual({
+			deleted: 0,
+			storageTruncated: false,
+		});
+	});
+});
+
+describe("the gate CLAIMS the snapshot before it touches storage", () => {
+	const row = (status: string) => ({
+		id: "s",
+		projectId: "p",
+		organizationId: "o",
+		status,
+		publishOnReady: true,
+		version: 7,
+		fileCount: 3,
+		settingsFrozen: { layer: "default", ignoreGlobs: [], limits: {} },
+	});
+
+	/** The status this run's OWN load reads, before it attempts a claim. */
+	function statusBeforeClaim(status: string) {
+		m.getInstructionSnapshotById.mockResolvedValue(row(status));
+	}
+
+	/**
+	 * The re-read after a claim that changed nothing: the status this run
+	 * raced, not the one it read before the claim.
+	 */
+	function statusAfterClaim(status: string) {
+		m.claimInstructionSnapshotValidation.mockResolvedValue({
+			changed: false,
+		});
+		m.getInstructionSnapshotById
+			.mockResolvedValueOnce(row("RECEIVING"))
+			.mockResolvedValue(row(status));
+	}
+
+	it("writes the claim, tenant-bound, before it lists or downloads anything", async () => {
+		await stage([
+			{ id: "f1", path: "AGENTS.md", data: Buffer.from("# hi\n") },
+		]);
+		statusBeforeClaim("RECEIVING");
+
+		await expect(
+			verifyAndScanInstructionFiles(snap),
+		).resolves.toMatchObject({ ok: true });
+
+		// RECEIVING-only, so the reaper's CAS and this one are two writes on
+		// one row from one from-state and exactly one of them can win.
+		expect(m.claimInstructionSnapshotValidation).toHaveBeenCalledWith({
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "o",
+		});
+		// Before the storage work, not after it: the point is that a row the
+		// reaper could still reject is claimed before its bytes are read.
+		expect(
+			m.claimInstructionSnapshotValidation.mock.invocationCallOrder[0]!,
+		).toBeLessThan(m.listObjects.mock.invocationCallOrder[0]!);
+		expect(
+			m.claimInstructionSnapshotValidation.mock.invocationCallOrder[0]!,
+		).toBeLessThan(m.downloadFile.mock.invocationCallOrder[0]!);
+	});
+
+	it("makes NO claim write at all when the row it loaded is already VALIDATING", async () => {
+		// `finalize` wrote it, or this activity's own earlier attempt did —
+		// Temporal delivers activities AT LEAST ONCE. Either way the row is
+		// already in the target state, so there is nothing to claim.
+		await stage([
+			{ id: "f1", path: "AGENTS.md", data: Buffer.from("# hi\n") },
+		]);
+		statusBeforeClaim("VALIDATING");
+
+		await expect(
+			verifyAndScanInstructionFiles(snap),
+		).resolves.toMatchObject({ ok: true });
+		expect(m.claimInstructionSnapshotValidation).not.toHaveBeenCalled();
+		expect(m.downloadFile).toHaveBeenCalled();
+	});
+
+	it("proceeds when the claim changed nothing because the row is already VALIDATING", async () => {
+		// The claim raced `finalize`'s own post-start transition and lost.
+		// The row is still one this run owns, so it goes on.
+		await stage([
+			{ id: "f1", path: "AGENTS.md", data: Buffer.from("# hi\n") },
+		]);
+		statusAfterClaim("VALIDATING");
+
+		await expect(
+			verifyAndScanInstructionFiles(snap),
+		).resolves.toMatchObject({ ok: true });
+		expect(m.downloadFile).toHaveBeenCalled();
+	});
+
+	it("fails RETRYABLY, before any download, when the row is FAILED at claim time", async () => {
+		// The finding: a stale attempt waking after the boundary catch wrote
+		// FAILED must NOT move that row back to VALIDATING. It has no claim,
+		// so it retries and waits for the transition that hands it over.
+		await stage([
+			{ id: "f1", path: "AGENTS.md", data: Buffer.from("# hi\n") },
+		]);
+		statusAfterClaim("FAILED");
+
+		await expect(verifyAndScanInstructionFiles(snap)).rejects.toMatchObject(
+			{
+				nonRetryable: false,
+				type: "INSTRUCTION_SNAPSHOT_AWAITING_FINALIZE",
+			},
+		);
+		expect(m.downloadFile).not.toHaveBeenCalled();
+		expect(m.listObjects).not.toHaveBeenCalled();
+		expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+	});
+
+	it("fails RETRYABLY when the re-read still says RECEIVING", async () => {
+		// Lost a concurrent claim in the same instant. Ownership was never
+		// established, so proceeding is exactly what must not happen.
+		await stage([
+			{ id: "f1", path: "AGENTS.md", data: Buffer.from("# hi\n") },
+		]);
+		statusAfterClaim("RECEIVING");
+
+		await expect(verifyAndScanInstructionFiles(snap)).rejects.toMatchObject(
+			{
+				nonRetryable: false,
+				type: "INSTRUCTION_SNAPSHOT_AWAITING_FINALIZE",
+			},
+		);
+		expect(m.downloadFile).not.toHaveBeenCalled();
+	});
+
+	it("fails non-retryably, before any download, when the reaper won the row", async () => {
+		await stage([
+			{ id: "f1", path: "AGENTS.md", data: Buffer.from("# hi\n") },
+		]);
+		statusAfterClaim("REJECTED");
+
+		await expect(verifyAndScanInstructionFiles(snap)).rejects.toMatchObject(
+			{
+				nonRetryable: true,
+				type: "INSTRUCTION_SNAPSHOT_ALREADY_REJECTED",
+			},
+		);
+		expect(m.downloadFile).not.toHaveBeenCalled();
+		expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+	});
+
+	it("fails non-retryably when a verdict already exists", async () => {
+		// READY is a verdict these bytes already have. Scanning and promoting
+		// over it would write objects and file rows nobody reads.
+		await stage([
+			{ id: "f1", path: "AGENTS.md", data: Buffer.from("# hi\n") },
+		]);
+		statusAfterClaim("READY");
+
+		await expect(verifyAndScanInstructionFiles(snap)).rejects.toMatchObject(
+			{
+				nonRetryable: true,
+				type: "INSTRUCTION_SNAPSHOT_ALREADY_VERIFIED",
+			},
+		);
+		expect(m.downloadFile).not.toHaveBeenCalled();
 	});
 });
