@@ -13,8 +13,10 @@ import { z } from "zod";
 import {
 	Permissions,
 	requirePermission,
+	resolveOrganizationIdForCaller,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { assertOAuthStartOrganization } from "../../integrations/lib/oauth-start-organization";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 
 /**
@@ -337,20 +339,20 @@ export const connectProcedures = {
 		)
 		.handler(async ({ input, context }) => {
 			const userId = context.user.id;
-			const { provider, organizationId, returnUrl } = input;
+			const { provider, returnUrl } = input;
 
-			// Verify org membership if in org context
-			if (organizationId) {
-				const membership = await verifyOrganizationMembership(
-					organizationId,
-					userId,
-				);
-				if (!membership) {
-					throw new ORPCError("FORBIDDEN", {
-						message: "You are not a member of this organization",
-					});
-				}
-			}
+			// The organization signed into the state is where the callback
+			// will store the token. Resolve it from the input or the session
+			// with the shared caller ratchet (a non-member is refused), then
+			// refuse to mint a state without one: integration OAuth has no
+			// organization-less arm (ADR-018), and the callback's decoder
+			// rejects such a state anyway.
+			const organizationId = await resolveOrganizationIdForCaller(
+				input.organizationId,
+				context.session,
+				userId,
+			);
+			assertOAuthStartOrganization(organizationId);
 
 			// Import OAuth utilities
 			const { encodeOAuthState } = await import(
@@ -396,7 +398,7 @@ export const connectProcedures = {
 			// Encode state for security
 			const state = encodeOAuthState({
 				userId,
-				organizationId: organizationId ?? undefined,
+				organizationId,
 				provider: provider.toLowerCase(),
 				returnUrl,
 				redirectUri,

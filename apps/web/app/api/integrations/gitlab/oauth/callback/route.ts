@@ -1,6 +1,7 @@
 import { orpcClient } from "@shared/lib/orpc-client";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { oauthCallbackFailureMessage } from "../../../github/oauth/callback/callback-error";
 
 export const runtime = "nodejs";
 
@@ -22,7 +23,12 @@ export async function GET(req: NextRequest) {
 		const error_description =
 			url.searchParams.get("error_description") ?? undefined;
 
-		// Call oRPC OAuth callback (public procedure)
+		// The callback procedure is session-bound (the token is stored under the
+		// user the signed state names, and the caller must BE that user), and the
+		// provider redirected the user's own browser here, so the request carries
+		// their session cookie. `orpcClient` forwards the incoming request's
+		// headers on the server (`next/headers`), which is how that cookie reaches
+		// the procedure's `protectedProcedure` session check.
 		const result = await orpcClient.integrations.gitlab.callback({
 			code,
 			state,
@@ -111,8 +117,10 @@ export async function GET(req: NextRequest) {
 			headers: { "Content-Type": "text/html" },
 		});
 	} catch (e: unknown) {
-		const errorMessage =
-			e instanceof Error ? e.message : "GitLab OAuth callback failed";
+		const errorMessage = oauthCallbackFailureMessage(
+			e,
+			e instanceof Error ? e.message : "GitLab OAuth callback failed",
+		);
 
 		// On unexpected error, return error HTML
 		const html = `

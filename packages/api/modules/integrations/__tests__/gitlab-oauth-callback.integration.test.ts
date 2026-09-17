@@ -68,6 +68,12 @@ vi.mock("@repo/database", async (importOriginal) => {
 		syncLegacyProjectRepoOnConnect: vi.fn(),
 		createProjectRepoIntegration: vi.fn(),
 		getProjectMemberRole: vi.fn().mockResolvedValue("admin"),
+		// The callback guard's live organization check. `@repo/permissions`
+		// is stubbed permissive below, so any membership row passes it.
+		getOrganizationMembership: vi.fn().mockResolvedValue({
+			organization: { id: "org_1" },
+			role: "admin",
+		}),
 	};
 });
 
@@ -85,13 +91,15 @@ vi.mock("../../../orpc/procedures", () => ({
 		output: vi.fn().mockReturnThis(),
 		handler: vi.fn().mockReturnThis(),
 	},
-	publicProcedure: {
+	protectedProcedure: {
 		use: vi.fn().mockReturnThis(),
 		route: vi.fn().mockReturnThis(),
 		input: vi.fn().mockReturnThis(),
 		output: vi.fn().mockReturnThis(),
 		handler: vi.fn().mockReturnThis(),
 	},
+	requireOrganizationMembership: vi.fn(),
+	resolveOrganizationIdForCaller: vi.fn(),
 	requirePermission: vi
 		.fn()
 		.mockReturnValue({ use: vi.fn().mockReturnThis() }),
