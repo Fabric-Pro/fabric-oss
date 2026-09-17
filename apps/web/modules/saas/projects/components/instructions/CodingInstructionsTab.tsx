@@ -30,7 +30,14 @@ type PollSnapshot = {
 	createdAt?: string | Date | null;
 };
 
-export function CodingInstructionsTab({ projectId }: { projectId: string }) {
+export function CodingInstructionsTab({
+	projectId,
+	projectName,
+}: {
+	projectId: string;
+	/** Threaded down to the "Connect your agent" dialog's starter instruction. */
+	projectName: string;
+}) {
 	const queryClient = useQueryClient();
 	const [uploadOpen, setUploadOpen] = useState(false);
 	// When this tab was opened, so the poll can slow down rather than stay at
@@ -175,6 +182,7 @@ export function CodingInstructionsTab({ projectId }: { projectId: string }) {
 				{dialog}
 				<InstructionsEmptyState
 					projectId={projectId}
+					projectName={projectName}
 					onUploadClick={() => setUploadOpen(true)}
 				/>
 			</>
@@ -189,6 +197,7 @@ export function CodingInstructionsTab({ projectId }: { projectId: string }) {
 			{dialog}
 			<InstructionsPublishedView
 				projectId={projectId}
+				projectName={projectName}
 				published={
 					(published.data as unknown as
 						| InstructionsSnapshot

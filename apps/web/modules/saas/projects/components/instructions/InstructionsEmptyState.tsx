@@ -1,26 +1,43 @@
 "use client";
 
+import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { ConnectCliDialog } from "@saas/projects/components/cli-connection/ConnectCliDialog";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
 import {
 	FolderIcon,
 	GitBranchIcon,
+	PlugIcon,
 	RefreshCwIcon,
 	ShieldCheckIcon,
 	TerminalSquareIcon,
 	UploadIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { useState } from "react";
 
 export function InstructionsEmptyState({
+	projectName,
 	onUploadClick,
 	repositoryName,
 }: {
 	projectId: string;
+	/** Named in the "Connect your agent" starter instruction. */
+	projectName: string;
 	onUploadClick: () => void;
 	repositoryName?: string | null;
 }) {
 	const t = useTranslations("projects.codingInstructions.emptyState");
+	const [connectOpen, setConnectOpen] = useState(false);
+	// Fails closed the same way InstructionsPublishedView does: with no
+	// organization id there is nothing to mint the key against. An invited
+	// guest views this project under the HOST organization's thin record
+	// (`isGuest: true`) and has no membership row there, so the create
+	// procedure's host-membership check would refuse them — hide the
+	// action for them instead of surfacing a FORBIDDEN.
+	const { organizationId, organizationSlug, isGuest } =
+		useOrganizationContext();
+	const canConnectAgent = Boolean(organizationId) && !isGuest;
 	return (
 		<div className="flex flex-col gap-6">
 			<div className="flex flex-col gap-1">
@@ -100,8 +117,29 @@ export function InstructionsEmptyState({
 					<p className="text-muted-foreground">
 						{t("developersDescription")}
 					</p>
+					{canConnectAgent ? (
+						<Button
+							className="w-fit"
+							size="sm"
+							variant="outline"
+							onClick={() => setConnectOpen(true)}
+						>
+							<PlugIcon className="size-4" aria-hidden="true" />
+							{t("connectButton")}
+						</Button>
+					) : null}
 				</Card>
 			</div>
+			{canConnectAgent && organizationId ? (
+				<ConnectCliDialog
+					open={connectOpen}
+					onOpenChange={setConnectOpen}
+					organizationId={organizationId}
+					organizationSlug={organizationSlug ?? undefined}
+					projectName={projectName}
+					purpose="coding-instructions"
+				/>
+			) : null}
 		</div>
 	);
 }

@@ -898,6 +898,13 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				title: "Every upload, kept",
 				body: "Every upload is kept as its own version, showing which one is published, when each was checked, and why a rejected upload failed — publish, download, or delete any version from here.",
 			},
+			{
+				id: "coding-instructions-connect",
+				anchor: "coding-instructions-connect",
+				title: "Point your coding agent here",
+				body: "Mints a read-only key scoped to this organization and hands you a ready-to-paste MCP configuration, plus a starter sentence telling your tool to load this project's published instructions.",
+				conditional: true,
+			},
 		],
 	},
 	{

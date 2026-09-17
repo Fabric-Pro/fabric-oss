@@ -5120,7 +5120,8 @@
 				"historyTitle": "History folders stay out",
 				"historyDescription": "Folders like <tasksDir>tasks/</tasksDir> and log files are skipped by default. Add a <fabricignore>.fabricignore</fabricignore> to the folder to decide yourself.",
 				"developersTitle": "Developers stay current",
-				"developersDescription": "Agents read files through Fabric MCP; a CLI sync command follows in a later release."
+				"developersDescription": "Coding agents read the published files over the Fabric MCP server. A CLI sync command follows in a later release.",
+				"connectButton": "Connect your agent"
 			},
 			"uploadDialog": {
 				"pickTitle": "Upload a folder",
@@ -5266,6 +5267,7 @@
 				"historyButton": "History",
 				"downloadButton": "Download",
 				"settingsButton": "Settings",
+				"connectButton": "Connect your agent",
 				"replaceButton": "Replace",
 				"uploadButton": "Upload folder",
 				"selectFilePrompt": "Select a file to read it."

@@ -96,6 +96,20 @@ To scope all tools to a specific organization, add the `X-Organization-Id` heade
 
 Or use `fabric_switch_organization` after connecting to switch context dynamically.
 
+### Coding Instructions
+
+A project's **Coding Instructions** tab publishes one version of its skills, agents, rules,
+and setup files, and serves them to a connected client over the tools below. Rather than
+building the configuration above by hand, open that tab and click **Connect your agent**: it
+mints a read-only key (the `mcp:read` scope, which covers every read-only platform tool,
+these three included), shows the same configuration block, and gives you a starter sentence
+to paste into your tool:
+
+```
+Use the Fabric MCP server to load the published coding instructions for the project
+"Your Project" and follow them while you help me work on it.
+```
+
 ## What Tools Are Available?
 
 When your client connects, it receives two categories of tools:
@@ -117,6 +131,9 @@ These give the AI direct access to your Fabric data — no extra setup needed:
 | `fabric_get_document` | Get full document content in markdown |
 | `fabric_list_project_contexts` | List a project's Context tab sources — uploads, meeting transcripts, crawled links, notes |
 | `fabric_get_project_context` | Read one context source in full: transcript text, extracted file text, or crawled markdown |
+| `fabric_list_project_instructions` | List a project's published coding-instruction files — path, kind, name, description, size |
+| `fabric_get_project_instruction` | Read one published coding-instruction file by path, paged for large files |
+| `fabric_get_project_instruction_bundle` | Fetch every published coding-instruction file as one zip |
 | `fabric_list_workspaces` | List your knowledge base workspaces |
 | `fabric_get_workspace` | Get workspace details and document list |
 | `fabric_query_workspace` | Semantic search (RAG) across workspace documents |

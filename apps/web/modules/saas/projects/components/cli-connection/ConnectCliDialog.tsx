@@ -118,15 +118,30 @@ const INSTRUCTION_INTRO =
 	"Copy this sentence and send it in the tool you just configured. It only works there: the configuration above is what gives the tool access to this project.";
 
 /**
+ * Which entry point opened this dialog, so the one pasted sentence names the
+ * thing that surface actually promised — full project context from the
+ * project-level prompt/checklist, or specifically the published coding
+ * instructions from the Coding Instructions tab. Everything else about the
+ * dialog (the mint, the scopes, the configuration) is identical either way.
+ */
+export type ConnectCliPurpose = "project" | "coding-instructions";
+
+/**
  * The one sentence a reader pastes into their coding tool.
  *
- * Deliberately one sentence and no more. The gateway already ships a handshake
- * `instructions` block to every client that connects, and the tool descriptions
- * chain the first calls themselves, so re-teaching any of that here would spend
- * the only sentence the reader will actually paste on something they are being
- * told twice.
+ * Deliberately one sentence and no more, for either purpose. The gateway
+ * already ships a handshake `instructions` block to every client that
+ * connects, and the tool descriptions chain the first calls themselves, so
+ * re-teaching any of that here would spend the only sentence the reader will
+ * actually paste on something they are being told twice.
  */
-function buildStarterInstruction(projectName: string): string {
+function buildStarterInstruction(
+	projectName: string,
+	purpose: ConnectCliPurpose,
+): string {
+	if (purpose === "coding-instructions") {
+		return `Use the Fabric MCP server to load the published coding instructions for the project "${projectName}" and follow them while you help me work on it.`;
+	}
 	return `Use the Fabric MCP server to load the context for the project "${projectName}" and help me work on it.`;
 }
 
@@ -236,6 +251,13 @@ interface ConnectCliDialogProps {
 	/** Named in the starter instruction so the tool opens on the right project. */
 	projectName: string;
 	/**
+	 * Which entry point opened this dialog. Changes only the starter
+	 * instruction's wording — the mint, the scopes, and the configuration are
+	 * the same either way. Defaults to `"project"`, the original prompt/
+	 * checklist wording, so every existing caller is unaffected.
+	 */
+	purpose?: ConnectCliPurpose;
+	/**
 	 * Fired once, after a key is successfully issued.
 	 *
 	 * The "key issued" funnel event belongs to whichever surface opened this
@@ -269,6 +291,7 @@ export function ConnectCliDialog({
 	organizationId,
 	organizationSlug,
 	projectName,
+	purpose = "project",
 	onKeyIssued,
 }: ConnectCliDialogProps) {
 	const [rawKey, setRawKey] = useState<string | null>(null);
@@ -366,7 +389,7 @@ export function ConnectCliDialog({
 	};
 
 	const configuration = rawKey ? buildMcpConfiguration(origin, rawKey) : null;
-	const starterInstruction = buildStarterInstruction(projectName);
+	const starterInstruction = buildStarterInstruction(projectName, purpose);
 	const issueError = createKeyMutation.error;
 
 	/**

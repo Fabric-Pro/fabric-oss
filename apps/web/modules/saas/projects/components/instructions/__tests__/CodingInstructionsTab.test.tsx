@@ -136,7 +136,13 @@ afterEach(() => {
 
 describe("CodingInstructionsTab publication convergence", () => {
 	it("re-reads the published pointer on seeing READY and keeps polling until it matches", async () => {
-		render(<CodingInstructionsTab projectId="p" />, { wrapper: Wrapper });
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
 		await tick(0);
 		expect(screen.getByTestId("published-id")).toHaveTextContent("snap_1");
 		const publishedAfterMount = state.publishedCalls;
@@ -185,7 +191,13 @@ describe("CodingInstructionsTab publication convergence", () => {
 	// READY write and the publish activity never moves the pointer, and the
 	// tab must give up rather than poll that project forever, for every viewer.
 	it("gives up after the bounded run of polls when publication never lands", async () => {
-		render(<CodingInstructionsTab projectId="p" />, { wrapper: Wrapper });
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
 		await tick(0);
 
 		state.snapshots = [snapshot("snap_2", "READY")];
@@ -209,9 +221,15 @@ describe("CodingInstructionsTab publication convergence", () => {
 	it.each(["REJECTED", "FAILED"])(
 		"stops polling on %s, which never publishes",
 		async (status) => {
-			render(<CodingInstructionsTab projectId="p" />, {
-				wrapper: Wrapper,
-			});
+			render(
+				<CodingInstructionsTab
+					projectId="p"
+					projectName="Checkout Rewrite"
+				/>,
+				{
+					wrapper: Wrapper,
+				},
+			);
 			await tick(0);
 			expect(screen.getByTestId("published-id")).toHaveTextContent(
 				"snap_1",
