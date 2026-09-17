@@ -147,6 +147,37 @@ export function classifyToolAccessLevel(toolName: string): "READ" | "WRITE" {
 	return "WRITE"; // Conservative default
 }
 
+const ACCESS_LEVEL_RANK: Record<"READ" | "WRITE", number> = {
+	READ: 0,
+	WRITE: 1,
+};
+
+/**
+ * Classify a whole step by the most privileged tool it may call.
+ *
+ * A step's tool list is a set, not a sequence: `[list_issues, delete_repo]`
+ * needs WRITE authority even though the first entry is a read. Classifying
+ * by the first tool alone under-states the grant the step actually requires,
+ * so this folds every tool through `classifyToolAccessLevel` and keeps the
+ * maximum. An empty list is treated as WRITE — the conservative default the
+ * per-tool classifier already uses for anything it cannot name.
+ */
+export function maxToolAccessLevel(
+	toolNames: readonly string[],
+): "READ" | "WRITE" {
+	if (toolNames.length === 0) {
+		return "WRITE";
+	}
+	let max: "READ" | "WRITE" = "READ";
+	for (const toolName of toolNames) {
+		const level = classifyToolAccessLevel(toolName);
+		if (ACCESS_LEVEL_RANK[level] > ACCESS_LEVEL_RANK[max]) {
+			max = level;
+		}
+	}
+	return max;
+}
+
 /**
  * Classify an integration operation as READ or WRITE.
  *

@@ -84,6 +84,18 @@ type TaskStep = TaskStepType;
 type OrchestratorWorkflowInput = OrchestratorWorkflowInputType;
 
 /**
+ * Options for the workflow's `waitForApproval` closure.
+ */
+export interface WaitForApprovalOptions {
+	/**
+	 * When true the checkpoint is not covered by the `autoApproveAll` signal
+	 * and blocks until the user decides. Used for runtime-authority grants,
+	 * which "approve all" (a plan-step convenience) must never satisfy.
+	 */
+	requireExplicitDecision?: boolean;
+}
+
+/**
  * Orchestrator workflow status type
  */
 export type OrchestratorWorkflowStatus =

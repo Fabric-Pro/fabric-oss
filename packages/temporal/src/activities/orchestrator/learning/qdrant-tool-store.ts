@@ -54,17 +54,86 @@ interface QdrantToolCallPayload {
 	timestamp: string;
 }
 
+/** Tenant identity a store instance reads and writes on behalf of. */
+export interface ToolStoreTenant {
+	userId: string;
+	organizationId?: string;
+}
+
+/**
+ * The subset of Qdrant filter conditions this store emits. `is_empty` is how
+ * Qdrant expresses "payload key absent", which is what a personal-context
+ * row looks like: `organizationId` is `undefined` at write time and JSON
+ * serialisation drops it.
+ */
+type QdrantCondition =
+	| { key: string; match: { value: string | boolean } }
+	| { is_empty: { key: string } };
+
 // =============================================================================
 // Qdrant Tool Usage Store
 // =============================================================================
 
 export class QdrantToolUsageStore {
 	private apiKey: string;
+	private userId: string;
 	private organizationId?: string;
 
-	constructor(apiKey: string, organizationId?: string) {
+	constructor(apiKey: string, tenant: ToolStoreTenant) {
 		this.apiKey = apiKey;
-		this.organizationId = organizationId;
+		this.userId = tenant.userId;
+		this.organizationId = tenant.organizationId;
+	}
+
+	/**
+	 * Tenant conditions every read of the shared collection must carry.
+	 *
+	 * `fabric_orchestrator_memory` holds every tenant's tool calls side by
+	 * side, and the payload records `userId` / `organizationId` on each row —
+	 * but a search that filters only on `type` / `toolId` / `success` returns
+	 * whichever tenant's rows score highest. Argument suggestions are then
+	 * built from another organization's past calls: their repository names,
+	 * channel ids, ticket keys. The shape is the repo's XOR tenant filter: in
+	 * an organization match on `organizationId`; otherwise match the user AND
+	 * require no `organizationId` at all, so a user's personal context never
+	 * sees rows they wrote while acting inside an organization.
+	 */
+	private tenantConditions(): QdrantCondition[] {
+		if (this.organizationId) {
+			return [
+				{
+					key: "organizationId",
+					match: { value: this.organizationId },
+				},
+			];
+		}
+		return [
+			{ key: "userId", match: { value: this.userId } },
+			{ is_empty: { key: "organizationId" } },
+		];
+	}
+
+	/**
+	 * Deterministic point id for a tool's aggregated pattern. Organization
+	 * patterns keep their historical `<toolId>-<organizationId>` id; personal
+	 * patterns are scoped to the user rather than the former shared `global`
+	 * bucket, which let every personal-context user read and overwrite one
+	 * another's aggregated argument signatures and error messages.
+	 */
+	private patternPointId(toolId: string): string {
+		const scope = this.organizationId ?? `user-${this.userId}`;
+		return `tool-pattern-${toolId}-${scope}`;
+	}
+
+	/** Defensive check that a retrieved-by-id row belongs to this tenant. */
+	private belongsToTenant(payload: {
+		userId?: string;
+		organizationId?: string;
+	}): boolean {
+		if (this.organizationId) {
+			return payload.organizationId === this.organizationId;
+		}
+		return !payload.organizationId && payload.userId === this.userId;
 	}
 
 	/**
@@ -218,7 +287,7 @@ export class QdrantToolUsageStore {
 			};
 
 			// Use deterministic ID for pattern to enable updates
-			const patternId = `tool-pattern-${record.toolId}-${this.organizationId || "global"}`;
+			const patternId = this.patternPointId(record.toolId);
 
 			await qdrantClient.upsert(ORCHESTRATOR_MEMORY_COLLECTION, {
 				wait: true,
@@ -326,7 +395,7 @@ export class QdrantToolUsageStore {
 				return null;
 			}
 
-			const patternId = `tool-pattern-${toolId}-${this.organizationId || "global"}`;
+			const patternId = this.patternPointId(toolId);
 
 			const result = await qdrantClient.retrieve(
 				ORCHESTRATOR_MEMORY_COLLECTION,
@@ -339,7 +408,10 @@ export class QdrantToolUsageStore {
 			if (result.length > 0 && result[0].payload) {
 				const payload = result[0]
 					.payload as unknown as QdrantToolPatternPayload;
-				if (payload.type === "tool_pattern") {
+				if (
+					payload.type === "tool_pattern" &&
+					this.belongsToTenant(payload)
+				) {
 					return payload.pattern;
 				}
 			}
@@ -383,13 +455,14 @@ export class QdrantToolUsageStore {
 						limit: 10,
 						filter: {
 							must: [
+								...this.tenantConditions(),
 								{ key: "type", match: { value: "tool_call" } },
 								{
 									key: "toolId",
 									match: { value: query.toolId },
 								},
 								{ key: "success", match: { value: true } },
-							],
+							] satisfies QdrantCondition[],
 						},
 						with_payload: true,
 					},
@@ -461,10 +534,11 @@ export class QdrantToolUsageStore {
 				return [];
 			}
 
-			const filter: {
-				must: Array<{ key: string; match: { value: string } }>;
-			} = {
-				must: [{ key: "type", match: { value: "tool_call" } }],
+			const filter: { must: QdrantCondition[] } = {
+				must: [
+					...this.tenantConditions(),
+					{ key: "type", match: { value: "tool_call" } },
+				],
 			};
 
 			if (toolId) {
@@ -707,10 +781,10 @@ export class QdrantToolUsageStore {
 export async function recordToolUsageActivity(
 	record: ToolCallRecord & { apiKey: string },
 ): Promise<void> {
-	const store = new QdrantToolUsageStore(
-		record.apiKey,
-		record.organizationId,
-	);
+	const store = new QdrantToolUsageStore(record.apiKey, {
+		userId: record.userId,
+		organizationId: record.organizationId,
+	});
 	await store.recordCall(record);
 }
 
@@ -718,37 +792,45 @@ export async function recordToolUsageActivity(
  * Query tool learnings from persistent storage.
  */
 export async function queryToolLearningsActivity(
-	query: ToolLearningQuery & { apiKey: string; organizationId?: string },
+	query: ToolLearningQuery & { apiKey: string } & ToolStoreTenant,
 ): Promise<ToolLearningResult> {
-	const store = new QdrantToolUsageStore(query.apiKey, query.organizationId);
+	const store = new QdrantToolUsageStore(query.apiKey, {
+		userId: query.userId,
+		organizationId: query.organizationId,
+	});
 	return store.queryLearnings(query);
 }
 
 /**
  * Get tool pattern from persistent storage.
  */
-export async function getToolPatternActivity(input: {
-	toolId: string;
-	apiKey: string;
-	organizationId?: string;
-}): Promise<ToolUsagePattern | null> {
-	const store = new QdrantToolUsageStore(input.apiKey, input.organizationId);
+export async function getToolPatternActivity(
+	input: { toolId: string; apiKey: string } & ToolStoreTenant,
+): Promise<ToolUsagePattern | null> {
+	const store = new QdrantToolUsageStore(input.apiKey, {
+		userId: input.userId,
+		organizationId: input.organizationId,
+	});
 	return store.getPattern(input.toolId);
 }
 
 /**
  * Search for similar tool usage contexts.
  */
-export async function searchSimilarToolContextsActivity(input: {
-	context: string;
-	toolId?: string;
-	apiKey: string;
-	organizationId?: string;
-	limit?: number;
-}): Promise<
+export async function searchSimilarToolContextsActivity(
+	input: {
+		context: string;
+		toolId?: string;
+		apiKey: string;
+		limit?: number;
+	} & ToolStoreTenant,
+): Promise<
 	Array<{ context: string; args: Record<string, unknown>; success: boolean }>
 > {
-	const store = new QdrantToolUsageStore(input.apiKey, input.organizationId);
+	const store = new QdrantToolUsageStore(input.apiKey, {
+		userId: input.userId,
+		organizationId: input.organizationId,
+	});
 	return store.searchSimilarContexts(
 		input.context,
 		input.toolId,

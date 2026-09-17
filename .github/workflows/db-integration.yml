@@ -715,6 +715,40 @@ jobs:
           if (passed !== 6) { console.error(`::error::expected exactly 6 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
+      - name: Run the runtime authority suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+          VITEST_INCLUDE_INTEGRATION: '1'
+        # Runtime authority sessions and grants: tenant isolation, the
+        # conditional approve/deny/revoke/complete transitions (a decision that
+        # lands second must not overwrite the first; an expired request is
+        # settled as EXPIRED, not denied), the expiry sweep, and run-bound
+        # session resolution under a burst of concurrent attempts (the
+        # advisory lock must yield exactly one session row per run). Only real
+        # Postgres honours the lock and the conditional writes.
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/authority.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=authority-results.json
+
+      - name: 'Guard: assert the runtime authority suite executed (exact count, zero skips)'
+        # Same anti-false-pass shape as the guards above, and the count is
+        # exact so a dropped case is noticed. Update it with the suite.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("packages/database/authority-results.json", "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(`authority-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
+          if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/authority.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite did not execute against Postgres`); process.exit(1); }
+          if (passed !== 48) { console.error(`::error::expected exactly 48 passing tests, got ${passed}`); process.exit(1); }
+          EOF
+
       - name: Run the chat-delivery kind-partitioning suite against real Postgres
         env:
           RUN_DB_INTEGRATION: '1'

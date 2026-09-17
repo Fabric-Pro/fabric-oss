@@ -175,7 +175,22 @@ export function extractRequiredProviders(
 		providerKey: string;
 		accessLevel: "READ" | "WRITE";
 	}> = [];
-	const seen = new Set<string>();
+	const seen = new Map<string, { accessLevel: "READ" | "WRITE" }>();
+
+	// A provider reached by several tools needs the level of its most
+	// privileged one: `[list_issues, delete_repo]` on one server is a WRITE
+	// step whichever tool happens to be listed first, so a repeat sighting
+	// can only raise the level, never lower it.
+	const require = (providerKey: string, accessLevel: "READ" | "WRITE") => {
+		const existing = seen.get(providerKey);
+		if (!existing) {
+			const entry = { providerKey, accessLevel };
+			seen.set(providerKey, entry);
+			providers.push(entry);
+		} else if (accessLevel === "WRITE") {
+			existing.accessLevel = "WRITE";
+		}
+	};
 
 	// From MCP tools
 	if (step.toolsToUse && toolToConfig) {
@@ -185,13 +200,7 @@ export function extractRequiredProviders(
 				const providerKey = resolveProviderKey(
 					config.serverName || config.configId,
 				);
-				if (!seen.has(providerKey)) {
-					seen.add(providerKey);
-					providers.push({
-						providerKey,
-						accessLevel: classifyToolAccessLevel(toolName),
-					});
-				}
+				require(providerKey, classifyToolAccessLevel(toolName));
 			}
 		}
 	}
@@ -202,11 +211,8 @@ export function extractRequiredProviders(
 			const providerKey = resolveIntegrationProviderKey(
 				integration.provider,
 			);
-			if (!seen.has(providerKey)) {
-				seen.add(providerKey);
-				// Integration steps are generally write operations
-				providers.push({ providerKey, accessLevel: "WRITE" });
-			}
+			// Integration steps are generally write operations
+			require(providerKey, "WRITE");
 		}
 	}
 

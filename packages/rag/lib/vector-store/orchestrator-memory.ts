@@ -211,12 +211,18 @@ export async function searchSimilarExecutions(
 
 		// Build filter for multi-tenancy (additional safety layer within collection)
 		const filter: {
-			must: Array<{ key: string; match: { value: string } }>;
+			must: Array<
+				| { key: string; match: { value: string } }
+				| { is_empty: { key: string } }
+			>;
 		} = {
 			must: [],
 		};
 
-		// User/org isolation - match either userId OR organizationId
+		// User/org isolation — strict XOR, same shape as the Prisma tenant
+		// filter. Organization data normally lives in its own collection, but
+		// the base collection is also written to directly by the orchestrator
+		// tool-learning store, so the payload filter has to stand on its own.
 		if (organizationId) {
 			// For org users, match on organizationId
 			filter.must.push({
@@ -224,11 +230,16 @@ export async function searchSimilarExecutions(
 				match: { value: organizationId },
 			});
 		} else {
-			// For personal users, match on userId
-			filter.must.push({
-				key: "userId",
-				match: { value: userId },
-			});
+			// For personal users, match on userId AND require that the row
+			// carries no organizationId — the user's own work inside an
+			// organization must not surface in their personal context.
+			filter.must.push(
+				{
+					key: "userId",
+					match: { value: userId },
+				},
+				{ is_empty: { key: "organizationId" } },
+			);
 		}
 
 		// Optional outcome filter

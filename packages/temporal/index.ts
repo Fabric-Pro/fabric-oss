@@ -235,6 +235,8 @@ export {
 	upsertWorkflowSchedule,
 	WORKFLOW_BUILDER_SCHEDULE_PREFIX,
 } from "./src/schedules/workflow-builder-schedule";
+// Task queue names — shared by the worker and every starter so they cannot drift
+export { ORCHESTRATOR_TASK_QUEUE } from "./src/task-queues";
 // Type exports
 export type {
 	ActivityHeartbeatDetails,
