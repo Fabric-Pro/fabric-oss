@@ -459,3 +459,186 @@ describe("InstructionsPublishedView — connect your agent", () => {
 		).not.toBeInTheDocument();
 	});
 });
+
+/**
+ * Fizzy #2546. "Add file" and the per-file Edit/Delete actions exist only for
+ * someone who may change the published files AND only when the project's
+ * instructions are not repository-backed — spec §6.12 makes git the single
+ * source of truth for such a project, and the server refuses an edit there.
+ */
+describe("InstructionsPublishedView — editing entry points", () => {
+	function renderPublished(props: Record<string, unknown> = {}) {
+		return render(
+			<InstructionsPublishedView
+				projectId="p"
+				projectName="Checkout Rewrite"
+				published={
+					{
+						id: "s7",
+						version: 7,
+						status: "READY",
+						fileCount: 4,
+						excludedCount: 0,
+						createdAt: new Date(),
+						source: "UPLOAD",
+						user: { id: "u", name: "A. Member" },
+					} as never
+				}
+				snapshots={[] as never}
+				onReplaceClick={() => undefined}
+				onChanged={() => undefined}
+				{...props}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+	}
+
+	it("offers Add file to an editor", () => {
+		renderPublished({ canEdit: true });
+		expect(
+			screen.getByRole("button", { name: "Add file" }),
+		).toBeInTheDocument();
+	});
+
+	it("offers nothing to a viewer without edit rights", () => {
+		renderPublished();
+		expect(
+			screen.queryByRole("button", { name: "Add file" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("offers nothing for a repository-backed project, even to an editor", () => {
+		renderPublished({ canEdit: true, repositoryBacked: true });
+		expect(
+			screen.queryByRole("button", { name: "Add file" }),
+		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * BLOCKING (round 5). Two people editing the same published version each get
+ * a new version holding the other's unchanged files, so the automatic
+ * publish is a fast-forward: the second one does NOT take the pointer
+ * (`publishInstructionSnapshot`, `requireBaseUnmoved`). It stays READY and
+ * unpublished, and without this line the tab simply showed the older tree
+ * with nothing to say about the version that had just been saved.
+ */
+describe("InstructionsPublishedView — an edit the published version outran", () => {
+	function renderWithNewest(newest: Record<string, unknown>) {
+		return render(
+			<InstructionsPublishedView
+				projectId="p"
+				projectName="Checkout Rewrite"
+				published={
+					{
+						id: "s8",
+						version: 8,
+						status: "READY",
+						fileCount: 4,
+						excludedCount: 0,
+						createdAt: new Date(),
+						source: "UPLOAD",
+						user: { id: "u", name: "A. Member" },
+						baseSnapshotId: "s7",
+						baseVersion: 7,
+					} as never
+				}
+				snapshots={[newest] as never}
+				onReplaceClick={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+	}
+
+	it("says a READY edit was not published because its base stopped being the published version", () => {
+		// v9 was derived from v7, but v8 — derived from the same v7 — got
+		// there first.
+		renderWithNewest({
+			id: "s9",
+			version: 9,
+			status: "READY",
+			source: "UPLOAD",
+			fileCount: 4,
+			excludedCount: 0,
+			createdAt: new Date(),
+			publishOnReady: true,
+			baseSnapshotId: "s7",
+			baseVersion: 7,
+		});
+
+		expect(
+			screen.getByText(
+				/Version 9 passed its checks but was not published: it was edited from version 7, and version 8 has been published since/,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Open History" }),
+		).toBeInTheDocument();
+	});
+
+	it("says nothing for a version deliberately saved without publishing", () => {
+		// "Save as a new version" is unpublished on purpose. The pointer did
+		// not outrun anything and there is nothing to report.
+		renderWithNewest({
+			id: "s9",
+			version: 9,
+			status: "READY",
+			source: "UPLOAD",
+			fileCount: 4,
+			excludedCount: 0,
+			createdAt: new Date(),
+			publishOnReady: false,
+			baseSnapshotId: "s8",
+			baseVersion: 8,
+		});
+
+		expect(screen.queryByText(/was not published/)).not.toBeInTheDocument();
+	});
+
+	/**
+	 * BLOCKING, round two: the base can be deleted or pruned between READY and
+	 * the publish activity, which nulls `baseSnapshotId`. The row is still an
+	 * edit, it still did not publish, and this is the case with nothing else
+	 * on the page to explain it — so the line has to key on `baseVersion`.
+	 */
+	it("says so for an edit whose base version was deleted entirely", () => {
+		renderWithNewest({
+			id: "s9",
+			version: 9,
+			status: "READY",
+			source: "UPLOAD",
+			fileCount: 4,
+			excludedCount: 0,
+			createdAt: new Date(),
+			publishOnReady: true,
+			baseSnapshotId: null,
+			baseVersion: 7,
+		});
+
+		expect(
+			screen.getByText(
+				/Version 9 passed its checks but was not published: it was edited from version 7/,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("says nothing while an edit of the CURRENT published version is still converging", () => {
+		// The ordinary case, one poll before the pointer moves: v9 was
+		// derived from v8, which is still published.
+		renderWithNewest({
+			id: "s9",
+			version: 9,
+			status: "READY",
+			source: "UPLOAD",
+			fileCount: 4,
+			excludedCount: 0,
+			createdAt: new Date(),
+			publishOnReady: true,
+			baseSnapshotId: "s8",
+			baseVersion: 8,
+		});
+
+		expect(screen.queryByText(/was not published/)).not.toBeInTheDocument();
+	});
+});

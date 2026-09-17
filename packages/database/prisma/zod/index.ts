@@ -1872,13 +1872,13 @@ export type DiagramScalarFieldEnum = z.infer<typeof DiagramScalarFieldEnumSchema
 
 // File: ProjectInstructionSnapshotScalarFieldEnum.schema.ts
 
-export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'rejection', 'settingsFrozen', 'publishOnReady', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
+export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'rejection', 'settingsFrozen', 'publishOnReady', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'baseSnapshotId', 'baseVersion', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
 
 export type ProjectInstructionSnapshotScalarFieldEnum = z.infer<typeof ProjectInstructionSnapshotScalarFieldEnumSchema>;
 
 // File: ProjectInstructionFileScalarFieldEnum.schema.ts
 
-export const ProjectInstructionFileScalarFieldEnumSchema = z.enum(['id', 'snapshotId', 'projectId', 'organizationId', 'userId', 'path', 'kind', 'name', 'description', 'storageKey', 'sha256', 'size', 'mimeType', 'isText', 'mode', 'createdAt'])
+export const ProjectInstructionFileScalarFieldEnumSchema = z.enum(['id', 'snapshotId', 'projectId', 'organizationId', 'userId', 'path', 'kind', 'name', 'description', 'storageKey', 'sha256', 'size', 'mimeType', 'isText', 'mode', 'inheritedFromFileId', 'createdAt'])
 
 export type ProjectInstructionFileScalarFieldEnum = z.infer<typeof ProjectInstructionFileScalarFieldEnumSchema>;
 
@@ -10612,6 +10612,8 @@ export const ProjectInstructionSnapshotSchema = z.object({
   repositoryIntegrationId: z.string().nullish(),
   sourceRef: z.string().nullish(),
   sourceCommitSha: z.string().nullish(),
+  baseSnapshotId: z.string().nullish(),
+  baseVersion: z.number().int().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
   readyAt: z.date().nullish(),
@@ -10639,6 +10641,7 @@ export const ProjectInstructionFileSchema = z.object({
   mimeType: z.string(),
   isText: z.boolean(),
   mode: z.number().int().nullish(),
+  inheritedFromFileId: z.string().nullish(),
   createdAt: z.date(),
 });
 

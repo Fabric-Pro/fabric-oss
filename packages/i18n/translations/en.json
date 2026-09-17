@@ -5161,6 +5161,20 @@
 				"copyMcpCall": "Copy MCP call",
 				"copied": "MCP call copied",
 				"copyFailed": "Could not copy — select the text and copy it manually",
+				"editButton": "Edit",
+				"deleteButton": "Delete file",
+				"deleteConfirm": "Delete {path} and publish a new version?",
+				"editorLabel": "Contents of {path}",
+				"saveAndPublishButton": "Save and publish",
+				"saveAsVersionButton": "Save as a new version",
+				"cancelButton": "Cancel",
+				"discardButton": "Discard",
+				"staleNotice": "Someone published a new version while you were editing, so this draft can no longer be saved — it would undo their change. Copy anything you need, discard it, then press Edit again on the new version.",
+				"saved": "Saved. Checking the new version.",
+				"noChanges": "Nothing changed, so no new version was made.",
+				"editBinary": "This file is not text. Use Add file to replace it.",
+				"editTooLarge": "This file is too large to edit here. Upload the folder again to replace it.",
+				"editFabricignore": "This file decides what the version leaves out, so it can only be changed by uploading the folder again.",
 				"couldNotLoad": "Could not load this file.",
 				"binaryFile": "This is a binary file.",
 				"downloadIt": "Download it",
@@ -5237,7 +5251,8 @@
 				"publishConfirm": "Publish version {version} as the project's coding instructions?",
 				"deleteConfirm": "Delete version {version}? This cannot be undone.",
 				"anonymousUser": "a member",
-				"filesStored": "{count} files stored"
+				"filesStored": "{count} files stored",
+				"editedFrom": "edited from version {version}"
 			},
 			"settingsDialog": {
 				"title": "Coding-instructions settings",
@@ -5269,8 +5284,27 @@
 				"settingsButton": "Settings",
 				"connectButton": "Connect your agent",
 				"replaceButton": "Replace",
+				"addFileButton": "Add file",
 				"uploadButton": "Upload folder",
-				"selectFilePrompt": "Select a file to read it."
+				"selectFilePrompt": "Select a file to read it.",
+				"supersededBody": "Version {version} passed its checks but was not published: it was edited from version {baseVersion}, and version {publishedVersion} has been published since. Publishing it now would undo that change. Open History to publish it anyway, or make your change again on version {publishedVersion}.",
+				"supersededHistoryButton": "Open History"
+			},
+			"addFileDialog": {
+				"title": "Add a file",
+				"description": "Pick one file and say where it goes. Everything else in the published version stays as it is.",
+				"fileLabel": "File",
+				"pathLabel": "Where it goes",
+				"pathPlaceholder": ".claude/skills/review/SKILL.md",
+				"pathHint": "A path inside the instructions folder. An existing path replaces that file.",
+				"publishOnReady": "Publish as soon as the new version passes checks",
+				"cancel": "Cancel",
+				"addButton": "Add file",
+				"added": "Added. Checking the new version.",
+				"tooLarge": "This file is larger than {limit} MB.",
+				"pathInvalid": "That path cannot be used ({reason}).",
+				"pathSecret": "Fabric never stores credential files ({rule}).",
+				"pathFabricignore": "The .fabricignore file can only be changed by uploading the folder again."
 			}
 		},
 		"proposals": {

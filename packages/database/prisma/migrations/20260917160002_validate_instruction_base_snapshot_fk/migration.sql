@@ -1,0 +1,11 @@
+-- Validate the self-referencing base-snapshot foreign key added NOT VALID in
+-- 20260917160000 (Coding Instructions: derived snapshots).
+--
+-- Separate migration so the ADD COLUMN transaction stays short and this scan
+-- runs under ShareUpdateExclusiveLock rather than the ACCESS EXCLUSIVE lock
+-- ADD CONSTRAINT holds until its transaction commits. Same release as the NOT
+-- VALID addition, so no entry in prisma/pending-constraint-validations.json.
+--
+-- The scan finds nothing to reject: the column was created in that same
+-- release and holds NULL on every existing row.
+ALTER TABLE "project_instruction_snapshot" VALIDATE CONSTRAINT "project_instruction_snapshot_baseSnapshotId_fkey";

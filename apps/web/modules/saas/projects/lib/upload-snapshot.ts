@@ -6,10 +6,21 @@ const UPLOAD_CONCURRENCY = 6;
 const UPLOAD_RETRIES = 3;
 const UPLOAD_RETRY_BASE_DELAY_MS = 500;
 
-async function putWithRetry(
+/**
+ * PUTs one file to its signed URL, retrying a handful of times with backoff.
+ *
+ * Exported for `edit-snapshot.ts`, which drives the same
+ * derive → createUploadUrls → PUT → finalize transport for a single-file
+ * change: a second copy of the retry-and-name-the-path rule would eventually
+ * report failures differently for an edit than for an upload.
+ *
+ * `body` is a `Blob` rather than a `File` because an in-tab edit has no File
+ * to send — the bytes come out of a textarea.
+ */
+export async function putWithRetry(
 	path: string,
 	url: string,
-	file: File,
+	body: Blob,
 	contentType: string,
 ): Promise<void> {
 	let lastError: unknown;
@@ -17,7 +28,7 @@ async function putWithRetry(
 		try {
 			const res = await fetch(url, {
 				method: "PUT",
-				body: file,
+				body,
 				headers: { "Content-Type": contentType },
 			});
 			if (res.ok) {

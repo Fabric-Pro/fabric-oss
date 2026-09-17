@@ -330,4 +330,48 @@ describe("InstructionsHistory", () => {
 		// M4: the version line goes through `t()` like every other string.
 		expect(screen.getByText("versionLabel:4")).toBeTruthy();
 	});
+
+	/**
+	 * The provenance line reads the STORED base version, not a lookup of
+	 * `baseSnapshotId` in this list. The base may have been deleted or pruned
+	 * — `baseSnapshotId` is `SetNull` in the database and the id would be
+	 * gone — and those are exactly the rows whose provenance nobody can
+	 * reconstruct by eye.
+	 */
+	it("names the version an edit came from even when that version is no longer listed", async () => {
+		render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={[
+					{
+						id: "edited",
+						version: 9,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 10,
+						createdAt: new Date(),
+						baseVersion: 7,
+					},
+					{
+						id: "uploaded",
+						version: 8,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 10,
+						createdAt: new Date(),
+					},
+				]}
+				publishedId={null}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+
+		// `t()` echoes `key:values`, so this is the interpolated version.
+		expect(screen.getByText(/editedFrom:7/)).toBeTruthy();
+		// The plain upload beside it claims no provenance at all.
+		expect(screen.queryByText(/editedFrom:8/)).toBeNull();
+	});
 });

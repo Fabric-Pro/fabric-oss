@@ -16,7 +16,7 @@ import {
 	deleteInstructionSnapshot,
 	listPrunableInstructionSnapshots,
 } from "@repo/database";
-import { exportKeyPrefix } from "@repo/instructions";
+import { exportKeyPrefix, isKeyOwnedBySnapshot } from "@repo/instructions";
 import type {
 	DeleteObjectsResult,
 	StorageProviderInterface,
@@ -239,7 +239,18 @@ export async function pruneProjectInstructionSnapshots(
 		// The row is gone, so these keys are unreferenced whatever happens
 		// next. Deleting the part the budget covers and leaving the rest to
 		// the lifecycle rule is strictly better than skipping them all.
-		let keys = s.storageKeys;
+		//
+		// FILTERED to this snapshot's own objects first. A derived snapshot's
+		// inherited rows carry the BASE's immutable promoted keys until its
+		// own promotion rewrites them, so a delete set taken straight from the
+		// rows of a derived snapshot that was rejected — or that failed before
+		// promotion — would delete the base's bytes: in the ordinary case the
+		// project's PUBLISHED coding instructions, destroyed by cleaning up an
+		// edit that never finished. Leaving an unreferenced object for the
+		// bucket lifecycle rule is recoverable; this is not.
+		let keys = s.storageKeys.filter((key) =>
+			isKeyOwnedBySnapshot(key, projectId, s.id),
+		);
 		if (budget !== undefined && keys.length > budget.remaining) {
 			keys = keys.slice(0, Math.max(0, budget.remaining));
 			storageTruncated = true;

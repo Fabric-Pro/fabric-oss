@@ -180,6 +180,7 @@ import { beginSnapshotProcedure } from "./procedures/instructions/begin-snapshot
 import { createDownloadUrlProcedure } from "./procedures/instructions/create-download-url";
 import { createUploadUrlsProcedure } from "./procedures/instructions/create-upload-urls";
 import { deleteSnapshotProcedure } from "./procedures/instructions/delete-snapshot";
+import { deriveSnapshotProcedure } from "./procedures/instructions/derive-snapshot";
 import { finalizeSnapshotProcedure } from "./procedures/instructions/finalize-snapshot";
 import { getFileProcedure } from "./procedures/instructions/get-file";
 import { getPublishedSnapshotProcedure } from "./procedures/instructions/get-published";
@@ -313,6 +314,7 @@ import {
 	setProjectTabVisibilityProcedure,
 } from "./procedures/project-tabs";
 import {
+	acceptRefinementProcedure,
 	adoptBlogPostDraftProcedure,
 	adoptCaseStudyDraftProcedure,
 	adoptNewsletterBlurbDraftProcedure,
@@ -329,9 +331,6 @@ import {
 	generatePlanningAnalysisProcedure,
 	generatePublishingTopicsNowProcedure,
 	generateShortPostProcedure,
-	refineDraftProcedure,
-	acceptRefinementProcedure,
-	rejectRefinementProcedure,
 	generateStakeholderEmailProcedure,
 	generateWebinarScriptProcedure,
 	getPlanningAnalysisProcedure,
@@ -348,6 +347,8 @@ import {
 	listTopicDecisionsProcedure,
 	listTopicDraftsProcedure,
 	markTopicDraftReadProcedure,
+	refineDraftProcedure,
+	rejectRefinementProcedure,
 	releaseDraftLockProcedure,
 	restorePublishingQuestionProcedure,
 	saveAnalysisRevisionProcedure,
@@ -1890,6 +1891,10 @@ export const projectsRouter = {
 	// Coding Instructions (project instruction snapshots)
 	instructions: {
 		begin: beginSnapshotProcedure,
+		// A new version seeded from an existing READY one: the changed paths
+		// are uploaded, the rest inherited. `createUploadUrls` and `finalize`
+		// then run unchanged over the staged rows it returns.
+		derive: deriveSnapshotProcedure,
 		createUploadUrls: createUploadUrlsProcedure,
 		finalize: finalizeSnapshotProcedure,
 		list: listSnapshotsProcedure,

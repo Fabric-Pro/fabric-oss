@@ -45,6 +45,16 @@ const summarySelect = {
 	digest: true,
 	sourceRef: true,
 	sourceCommitSha: true,
+	// The snapshot this one was derived from (a single-file edit, add or
+	// delete in the tab). Read by the validation gate, which needs it to
+	// rebuild an inherited row's key in the BASE's immutable prefix, and by
+	// the publish fast-forward, which requires it to still be the published
+	// pointer.
+	baseSnapshotId: true,
+	// The base's version number, kept after `SetNull` has cleared the id
+	// above. It is what says a row is derived at all, and what the history
+	// list renders as "Edited from version N".
+	baseVersion: true,
 	createdAt: true,
 	readyAt: true,
 	publishedAt: true,
@@ -164,6 +174,387 @@ function allocateAndCreateSnapshot(input: CreateInstructionSnapshotInput) {
 		});
 		return { id: snapshot.id, version: snapshot.version, files };
 	});
+}
+
+// ---------------------------------------------------------------------------
+// Create (derived)
+// ---------------------------------------------------------------------------
+
+/**
+ * One change a derived snapshot applies to its base.
+ *
+ * A `put` carries everything `createInstructionSnapshot` needs for a file row
+ * — including the server-generated provisional `storageKey` and the
+ * classification — because those are computed by the same code in the same
+ * place for both paths (`begin-snapshot.ts` / `derive-snapshot.ts`) and this
+ * package deliberately does not depend on `@repo/instructions`.
+ */
+export type DerivedInstructionChange =
+	| {
+			op: "put";
+			path: string;
+			size: number;
+			sha256: string;
+			mimeType: string;
+			isText: boolean;
+			kind: InstructionFileKind;
+			/** Server-generated. The client never supplies a storage key. */
+			storageKey: string;
+	  }
+	| { op: "delete"; path: string };
+
+/**
+ * Why a derived snapshot was refused. Every one of these is a statement about
+ * the BASE and the resulting file set — the checks that need the base's rows
+ * loaded inside the same transaction that writes the new snapshot.
+ *
+ * The payload-shaped refusals (an invalid relative path, a path the frozen
+ * ignore rules exclude, a secret-shaped filename, a single file over the
+ * per-file cap, a change touching `.fabricignore`, a duplicated path inside
+ * the change set) are the PROCEDURE's, because they need
+ * `@repo/instructions` and none of them needs the base's rows. See
+ * `derive-snapshot.ts`.
+ */
+export type DerivedInstructionRefusal =
+	| "base_not_found"
+	| "base_not_ready"
+	| "base_key_unexpected"
+	| "delete_path_missing"
+	| "path_collision"
+	| "empty_result"
+	| "too_many_files"
+	| "too_large";
+
+export type CreateDerivedInstructionSnapshotResult =
+	| {
+			ok: true;
+			id: string;
+			version: number;
+			fileCount: number;
+			inheritedCount: number;
+			/**
+			 * The rows the client still has to PUT — the `put` changes only.
+			 * An inherited row must NEVER be handed to `createUploadUrls`:
+			 * its key is the base's immutable object, and that procedure
+			 * refuses to point a non-staging key back at writable storage.
+			 */
+			staged: Array<{ id: string; path: string }>;
+	  }
+	| { ok: false; reason: DerivedInstructionRefusal; detail?: string };
+
+type CreateDerivedInstructionSnapshotInput = {
+	projectId: string;
+	organizationId: string;
+	userId: string;
+	baseSnapshotId: string;
+	publishOnReady: boolean;
+	changes: DerivedInstructionChange[];
+	/**
+	 * `SNAPSHOT_LIMITS.maxFiles` / `maxTotalBytes`, passed in rather than
+	 * imported: the caps live in `@repo/instructions`, which this package does
+	 * not depend on, and they are frozen per snapshot anyway.
+	 */
+	limits: { maxFiles: number; maxTotalBytes: number };
+	/**
+	 * `snapshotPrefix(projectId, baseSnapshotId)`. Every inherited row's key
+	 * has to start with it, and a base row that does not refuses the whole
+	 * derivation: an inherited row is a pointer into another snapshot's
+	 * storage, and the ONE thing that makes that safe is that the pointer can
+	 * only ever name the base's own immutable prefix.
+	 */
+	baseKeyPrefix: string;
+};
+
+/**
+ * Creates a snapshot SEEDED from a READY one: the changed paths become
+ * ordinary RECEIVING rows the client uploads, and every other path is
+ * inherited from the base — same bytes, same hash, same promoted object — with
+ * nothing crossing the network.
+ *
+ * The whole point is that what comes out is indistinguishable, to every step
+ * downstream, from a full upload: the same verify → scan → finalize → publish
+ * workflow runs, the same secret gate reads every file (inherited ones
+ * included — the rule set may have tightened since the base was scanned), the
+ * same digest is computed, and the same history and retention rules apply.
+ * Nothing here is a shortcut past a check; it is a shortcut past the TRANSFER.
+ *
+ * ONE transaction, and the base is read inside it. Every refusal below is a
+ * statement about the base's own file set, so answering it from a read taken
+ * before the transaction would be answering about a moment that has passed.
+ *
+ * `settingsFrozen` is copied from the base VERBATIM: the inherited files were
+ * admitted under those ignore rules and those caps, so re-resolving the
+ * project's live settings here would produce a snapshot whose stored
+ * `.fabricignore` no longer matches its frozen rules — which the validation
+ * gate's provenance check refuses, correctly. `excludedCount` is copied for
+ * the same reason: it counts what that upload left out, and this derivation
+ * left out nothing further.
+ *
+ * Version allocation is the same read-then-write inside the transaction as
+ * `createInstructionSnapshot`, with the same P2002 retry around it.
+ */
+export async function createDerivedInstructionSnapshot(
+	input: CreateDerivedInstructionSnapshotInput,
+): Promise<CreateDerivedInstructionSnapshotResult> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt < VERSION_ALLOCATION_ATTEMPTS; attempt++) {
+		try {
+			return await allocateAndCreateDerivedSnapshot(input);
+		} catch (error) {
+			if (!isVersionCollision(error)) {
+				throw error;
+			}
+			lastError = error;
+		}
+	}
+	throw lastError;
+}
+
+function allocateAndCreateDerivedSnapshot(
+	input: CreateDerivedInstructionSnapshotInput,
+): Promise<CreateDerivedInstructionSnapshotResult> {
+	return db.$transaction(
+		async (tx): Promise<CreateDerivedInstructionSnapshotResult> => {
+			// Tenant-scoped on BOTH columns, like every other read here: the
+			// caller has already resolved the project's hosting organization,
+			// and a base row naming this project while carrying another
+			// tenant must not be readable through it.
+			const base = await tx.projectInstructionSnapshot.findFirst({
+				where: {
+					id: input.baseSnapshotId,
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+				},
+				select: {
+					id: true,
+					status: true,
+					source: true,
+					version: true,
+					settingsFrozen: true,
+					excludedCount: true,
+				},
+			});
+			if (!base) {
+				return { ok: false, reason: "base_not_found" };
+			}
+			// Only a READY snapshot has promoted, hashed, scanned objects to
+			// inherit. Anything else is either still in flight (its bytes are
+			// in mutable staging) or a verdict against its contents.
+			if (base.status !== "READY") {
+				return { ok: false, reason: "base_not_ready" };
+			}
+
+			const baseFiles = await tx.projectInstructionFile.findMany({
+				where: {
+					snapshotId: base.id,
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+				},
+				select: {
+					id: true,
+					path: true,
+					kind: true,
+					name: true,
+					description: true,
+					storageKey: true,
+					sha256: true,
+					size: true,
+					mimeType: true,
+					isText: true,
+					mode: true,
+				},
+			});
+
+			const puts = new Map<string, DerivedInstructionChange>();
+			const deletions = new Set<string>();
+			for (const change of input.changes) {
+				if (change.op === "delete") {
+					deletions.add(change.path);
+				} else {
+					puts.set(change.path, change);
+				}
+			}
+
+			// A delete names a path that has to BE there. Silently accepting
+			// one that is not would publish a version whose only change is a
+			// version number, which is exactly how a stale editor's "delete"
+			// would look after a teammate already removed the file.
+			const basePaths = new Set(baseFiles.map((f) => f.path));
+			for (const path of deletions) {
+				if (!basePaths.has(path)) {
+					return {
+						ok: false,
+						reason: "delete_path_missing",
+						detail: path,
+					};
+				}
+			}
+
+			const inherited = baseFiles.filter(
+				(f) => !puts.has(f.path) && !deletions.has(f.path),
+			);
+			// The pointer-safety invariant, checked rather than assumed: an
+			// inherited row keeps the BASE's key until promotion rewrites it,
+			// so a base row sitting anywhere other than the base's own
+			// immutable prefix would make this snapshot point at storage no
+			// activity in this feature ever wrote.
+			const stray = inherited.find(
+				(f) => !f.storageKey.startsWith(input.baseKeyPrefix),
+			);
+			if (stray) {
+				return {
+					ok: false,
+					reason: "base_key_unexpected",
+					detail: stray.path,
+				};
+			}
+
+			const putList = [...puts.values()].filter(
+				(c): c is Extract<DerivedInstructionChange, { op: "put" }> =>
+					c.op === "put",
+			);
+			if (inherited.length + putList.length === 0) {
+				return { ok: false, reason: "empty_result" };
+			}
+			// Case-insensitive across the RESULT, not across the change set:
+			// adding `Claude.md` to a base that already stores `CLAUDE.md`
+			// produces two rows that are one file on a case-insensitive
+			// filesystem, and whichever lands second wins on the developer's
+			// machine.
+			const seen = new Map<string, string>();
+			for (const path of [
+				...inherited.map((f) => f.path),
+				...putList.map((c) => c.path),
+			]) {
+				const lower = path.toLowerCase();
+				const previous = seen.get(lower);
+				if (previous !== undefined) {
+					return {
+						ok: false,
+						reason: "path_collision",
+						detail: `${previous} / ${path}`,
+					};
+				}
+				seen.set(lower, path);
+			}
+
+			const fileCount = inherited.length + putList.length;
+			if (fileCount > input.limits.maxFiles) {
+				return {
+					ok: false,
+					reason: "too_many_files",
+					detail: String(fileCount),
+				};
+			}
+			const totalBytes =
+				inherited.reduce((sum, f) => sum + f.size, 0) +
+				putList.reduce((sum, c) => sum + c.size, 0);
+			if (totalBytes > input.limits.maxTotalBytes) {
+				return {
+					ok: false,
+					reason: "too_large",
+					detail: String(totalBytes),
+				};
+			}
+
+			const latest = await tx.projectInstructionSnapshot.findFirst({
+				where: {
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+				},
+				orderBy: { version: "desc" },
+				select: { version: true },
+			});
+			const snapshot = await tx.projectInstructionSnapshot.create({
+				data: {
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+					userId: input.userId,
+					version: (latest?.version ?? 0) + 1,
+					// The bytes that DID move came through the browser, as
+					// they do for an upload. The provenance of the rest is
+					// `baseSnapshotId`, not the source enum.
+					source: "UPLOAD",
+					status: "RECEIVING",
+					baseSnapshotId: base.id,
+					// The DURABLE half of the provenance. `baseSnapshotId` is
+					// `SetNull`, so it is gone the moment the base is deleted
+					// or pruned — and "was this derived?" still has to be
+					// answerable then, both for the publish fast-forward and
+					// for the history line. Written once here and never
+					// updated.
+					baseVersion: base.version,
+					settingsFrozen:
+						base.settingsFrozen as Prisma.InputJsonValue,
+					publishOnReady: input.publishOnReady,
+					excludedCount: base.excludedCount,
+					fileCount,
+				},
+				select: { id: true, version: true },
+			});
+			await tx.projectInstructionFile.createMany({
+				data: [
+					...inherited.map((f) => ({
+						snapshotId: snapshot.id,
+						projectId: input.projectId,
+						organizationId: input.organizationId,
+						// The EDITOR, not the base's uploader: this row is
+						// this snapshot's, and `userId` is a tenant column
+						// every row in a snapshot shares.
+						userId: input.userId,
+						path: f.path,
+						kind: f.kind,
+						name: f.name,
+						description: f.description,
+						// The base's immutable promoted object. Promotion
+						// rewrites this to THIS snapshot's own key once it has
+						// re-hashed and re-written the bytes.
+						storageKey: f.storageKey,
+						sha256: f.sha256,
+						size: f.size,
+						mimeType: f.mimeType,
+						isText: f.isText,
+						mode: f.mode,
+						inheritedFromFileId: f.id,
+					})),
+					...putList.map((c) => ({
+						snapshotId: snapshot.id,
+						projectId: input.projectId,
+						organizationId: input.organizationId,
+						userId: input.userId,
+						path: c.path,
+						kind: c.kind,
+						storageKey: c.storageKey,
+						sha256: c.sha256,
+						size: c.size,
+						mimeType: c.mimeType,
+						isText: c.isText,
+						inheritedFromFileId: null,
+					})),
+				],
+			});
+			// Only the rows that still need bytes. `inheritedFromFileId:
+			// null` is the discriminator, and it is the same one the gate
+			// uses — there is no second definition of "this row was uploaded".
+			const staged = await tx.projectInstructionFile.findMany({
+				where: {
+					snapshotId: snapshot.id,
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+					inheritedFromFileId: null,
+				},
+				select: { id: true, path: true },
+			});
+			return {
+				ok: true,
+				id: snapshot.id,
+				version: snapshot.version,
+				fileCount,
+				inheritedCount: inherited.length,
+				staged,
+			};
+		},
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -482,6 +873,11 @@ export function listInstructionFiles(
 			sha256: true,
 			storageKey: true,
 			mode: true,
+			// Set only on a derived snapshot's inherited rows. The validation
+			// gate needs it to rebuild the key such a row legitimately sits
+			// at — `snapshotKey(projectId, baseSnapshotId, inheritedFromFileId)`
+			// — which cannot be recovered by parsing `storageKey`.
+			inheritedFromFileId: true,
 		},
 	});
 }
@@ -917,11 +1313,46 @@ export async function failStaleValidatingInstructionSnapshot(input: {
  * pointer move and both claim it. `count === 1` is true for exactly one
  * caller, which is what lets the publish activity emit one audit row per
  * real publication and none for an idempotent Temporal retry.
+ *
+ * `requireBaseUnmoved` makes the write a FAST-FORWARD for a derived
+ * snapshot: the project's published pointer must still be the exact snapshot
+ * this one was edited from. The version rule alone is not enough for an
+ * edit, because an edit is not a whole tree — it is a base plus a change
+ * set, and its unchanged files are the base's. Two people editing the same
+ * published v7 get v8 and v9; under the version rule both publish in turn
+ * and v9, which never saw the first edit, silently reverts it. Requiring the
+ * base in the same UPDATE makes the second publication match nothing.
+ *
+ * Both halves are read from the SNAPSHOT ROW, not from the caller, so a
+ * Temporal retry cannot hand in a different base and the publish activity
+ * needs no new workflow input.
+ *
+ * WHETHER a row is derived is decided by `baseVersion`, never by
+ * `baseSnapshotId`. That column is `ON DELETE SET NULL`, and a READY derived
+ * snapshot does not pin its base (it no longer reads the base's objects), so
+ * the base can be deleted or pruned in the window between READY and the
+ * publish activity. Keying on the id there meant a derived snapshot whose
+ * base had just been removed read itself as a full upload and published on
+ * the version rule — reverting the edit that had taken the pointer in the
+ * meantime, with nothing in the tab to say so. `baseVersion` is written once
+ * at derive time and no lifecycle clears it.
+ *
+ * So a derived snapshot whose `baseSnapshotId` is null cannot publish
+ * automatically at all: the base is gone, so it certainly is not the
+ * published pointer, and there is no predicate that could make the write
+ * safe. It stays READY and unpublished like any other refused fast-forward —
+ * intact, still in History, where "Publish this version" is the deliberate
+ * act that overrides this rule by design.
+ *
+ * Non-derived snapshots keep the version rule under this flag: a full upload
+ * IS the whole tree, so replacing a newer pointer loses nothing that was not
+ * being replaced anyway.
  */
 export async function publishInstructionSnapshot(input: {
 	snapshotId: string;
 	projectId: string;
 	organizationId: string;
+	requireBaseUnmoved?: boolean;
 }) {
 	return db.$transaction(async (tx) => {
 		const snapshot = await tx.projectInstructionSnapshot.findFirst({
@@ -930,7 +1361,13 @@ export async function publishInstructionSnapshot(input: {
 				projectId: input.projectId,
 				organizationId: input.organizationId,
 			},
-			select: { id: true, status: true, version: true },
+			select: {
+				id: true,
+				status: true,
+				version: true,
+				baseSnapshotId: true,
+				baseVersion: true,
+			},
 		});
 		if (!snapshot) {
 			return {
@@ -946,21 +1383,49 @@ export async function publishInstructionSnapshot(input: {
 				reason: "not_ready" as const,
 			};
 		}
-		const { count } = await tx.project.updateMany({
-			where: {
-				id: input.projectId,
-				organizationId: input.organizationId,
-				OR: [
-					{ publishedInstructionSnapshotId: null },
-					{
-						publishedInstructionSnapshot: {
-							version: { lt: snapshot.version },
-						},
+		// One predicate or the other, never both, and always inside the
+		// single conditional write — a pre-read of the pointer would be the
+		// very race this exists to close.
+		//
+		// `baseVersion` decides this, not `baseSnapshotId`: see the doc
+		// comment. A derived row whose base has since been deleted or pruned
+		// takes the third arm, which writes nothing at all rather than
+		// falling back to a version rule that does not hold for an edit.
+		const derived =
+			input.requireBaseUnmoved === true &&
+			typeof snapshot.baseVersion === "number";
+		const base =
+			typeof snapshot.baseSnapshotId === "string"
+				? snapshot.baseSnapshotId
+				: null;
+		const fastForward = derived && base !== null;
+		const baseGone = derived && base === null;
+		const { count } = baseGone
+			? { count: 0 }
+			: await tx.project.updateMany({
+					where: {
+						id: input.projectId,
+						organizationId: input.organizationId,
+						...(fastForward
+							? { publishedInstructionSnapshotId: base }
+							: {
+									OR: [
+										{
+											publishedInstructionSnapshotId:
+												null,
+										},
+										{
+											publishedInstructionSnapshot: {
+												version: {
+													lt: snapshot.version,
+												},
+											},
+										},
+									],
+								}),
 					},
-				],
-			},
-			data: { publishedInstructionSnapshotId: snapshot.id },
-		});
+					data: { publishedInstructionSnapshotId: snapshot.id },
+				});
 		if (count === 1) {
 			await tx.projectInstructionSnapshot.update({
 				where: { id: snapshot.id },
@@ -968,9 +1433,15 @@ export async function publishInstructionSnapshot(input: {
 			});
 			return { published: true as const, changed: true as const };
 		}
-		// The conditional write matched nothing: either this snapshot is
-		// already the published pointer (idempotent retry — not an error), or
-		// a newer snapshot has since taken the pointer (a real conflict).
+		// The conditional write matched nothing — or was never made, for a
+		// derived row whose base is gone. Either this snapshot is already the
+		// published pointer (idempotent retry — not an error), or something
+		// else has the pointer (a real conflict). The idempotent arm is
+		// checked first and is what keeps a retried Temporal activity quiet
+		// under every predicate: once this snapshot is the pointer, the
+		// fast-forward's own condition is necessarily false, and the
+		// base-is-gone arm has to answer the same way a completed publish
+		// does rather than reporting a conflict against itself.
 		const project = await tx.project.findUnique({
 			where: {
 				id: input.projectId,
@@ -984,7 +1455,14 @@ export async function publishInstructionSnapshot(input: {
 		return {
 			published: false as const,
 			changed: false as const,
-			reason: "older_than_current" as const,
+			// Distinguishable on purpose: `base_moved` means the edit is
+			// intact but was written against a version that is no longer
+			// published — whether someone else's version took the pointer or
+			// the base is gone entirely — which is a different thing to tell
+			// someone than a stale full upload losing a pointer race.
+			reason: derived
+				? ("base_moved" as const)
+				: ("older_than_current" as const),
 		};
 	});
 }
@@ -992,6 +1470,36 @@ export async function publishInstructionSnapshot(input: {
 // ---------------------------------------------------------------------------
 // Prune / delete
 // ---------------------------------------------------------------------------
+
+/**
+ * The statuses in which a DERIVED snapshot still reads its base's objects.
+ *
+ * A derived snapshot inherits unchanged files by pointing its rows at the
+ * base's immutable promoted keys, and those pointers only stop mattering when
+ * `finalizeInstructionSnapshot` has re-hashed and re-written every one of them
+ * under the derived snapshot's own prefix. Until then, deleting or pruning the
+ * base removes the bytes an in-flight validation is about to read — the gate
+ * would report every inherited path as `missing` and reject an edit that was
+ * perfectly good.
+ *
+ * FAILED belongs here even though it is a terminal-looking status, because it
+ * is the one terminal status that is RETRYABLE: `finalizeInstructionSnapshot`
+ * moves FAILED back to VALIDATING for another attempt, and that attempt reads
+ * exactly the same inherited keys. If the base were released the moment a
+ * derived child failed, "Try again" would come back with every inherited path
+ * reported as `missing` — the failure would be permanent and unexplainable. A
+ * FAILED child releases its base by being deleted or pruned itself, which is
+ * the same act that gives up on the retry.
+ *
+ * READY and REJECTED are absent on purpose. READY no longer depends on the
+ * base at all — promotion rewrote every inherited row under its own prefix —
+ * and REJECTED is the one terminal status the pipeline never reopens.
+ */
+const DERIVING_STATUSES: InstructionSnapshotStatus[] = [
+	"RECEIVING",
+	"VALIDATING",
+	"FAILED",
+];
 
 /**
  * THE RETENTION PREDICATE. Written out once here because TWO queries have to
@@ -1005,9 +1513,19 @@ export async function publishInstructionSnapshot(input: {
  *
  *  - the newest `keep.ready` UNPUBLISHED READY snapshots, by version; PLUS
  *  - the published snapshot, whatever its version; PLUS
- *  - the newest `keep.rejected` REJECTED/FAILED snapshots, by version.
+ *  - the newest `keep.rejected` REJECTED/FAILED snapshots, by version; PLUS
+ *  - any snapshot an in-flight DERIVED snapshot is still reading.
  *
  * Everything else is prunable.
+ *
+ * The fourth clause is the derived-snapshot interlock (`DERIVING_STATUSES`).
+ * An edit made in the tab creates a snapshot whose unchanged files are
+ * inherited by POINTING at this one's promoted objects, so pruning it while
+ * that edit is still RECEIVING or VALIDATING deletes the bytes the gate is
+ * about to read — and the edit is rejected for files that were never wrong.
+ * It is a short exclusion, not a permanent one: the derived snapshot owns its
+ * own copies the moment it is READY, and `pruneInstructionSnapshots` runs
+ * again at the end of every successful validation.
  *
  * Two windows, because the two kinds of row answer different questions.
  * `keep.ready` is spec §6.3.6's "keep the last 5 READY snapshots plus the
@@ -1085,6 +1603,15 @@ export async function listPrunableInstructionSnapshots(
 				organizationId,
 				status: "READY",
 				publishedFor: null,
+				// The derived-snapshot interlock, in the WHERE alongside
+				// `publishedFor: null` and ahead of `skip` for the same
+				// reason: a base that must be kept has to be outside the
+				// window entirely, not filtered out of its result, or it
+				// occupies a retention slot and the candidate query below
+				// nominates the project for work this one cannot do.
+				derivedSnapshots: {
+					none: { status: { in: DERIVING_STATUSES } },
+				},
 			},
 			orderBy: { version: "desc" },
 			skip: keep.ready,
@@ -1096,6 +1623,14 @@ export async function listPrunableInstructionSnapshots(
 				projectId,
 				organizationId,
 				status: { in: ["REJECTED", "FAILED"] },
+				// Fail-closed on this window too. A REJECTED/FAILED snapshot
+				// is never a legitimate base — `createDerivedInstructionSnapshot`
+				// refuses anything but READY — so this matches everything
+				// today; it is here so the two windows cannot drift apart if
+				// that ever changes.
+				derivedSnapshots: {
+					none: { status: { in: DERIVING_STATUSES } },
+				},
 			},
 			orderBy: { version: "desc" },
 			skip: keep.rejected,
@@ -1194,6 +1729,11 @@ export async function listProjectsWithPrunableInstructionSnapshots(
 			LEFT JOIN "project" p
 				ON p."publishedInstructionSnapshotId" = s."id"
 			WHERE s."status" = 'READY' AND p."id" IS NULL
+				AND NOT EXISTS (
+					SELECT 1 FROM "project_instruction_snapshot" d
+					WHERE d."baseSnapshotId" = s."id"
+						AND d."status" IN ('RECEIVING', 'VALIDATING', 'FAILED')
+				)
 			GROUP BY s."projectId", s."organizationId"
 			HAVING count(*) > ${keep.ready}
 			UNION
@@ -1202,6 +1742,11 @@ export async function listProjectsWithPrunableInstructionSnapshots(
 			LEFT JOIN "project" p
 				ON p."publishedInstructionSnapshotId" = s."id"
 			WHERE s."status" IN ('REJECTED', 'FAILED') AND p."id" IS NULL
+				AND NOT EXISTS (
+					SELECT 1 FROM "project_instruction_snapshot" d
+					WHERE d."baseSnapshotId" = s."id"
+						AND d."status" IN ('RECEIVING', 'VALIDATING', 'FAILED')
+				)
 			GROUP BY s."projectId", s."organizationId"
 			HAVING count(*) > ${keep.rejected}
 		)
@@ -1664,6 +2209,30 @@ const DELETABLE_STATUSES: InstructionSnapshotStatus[] = [
 ];
 
 /**
+ * How many snapshots are currently DERIVING from this one — the friendly
+ * pre-check for the delete procedure, which wants to say "an edit of this
+ * version is still being checked" rather than the generic conflict.
+ *
+ * Tenant-scoped on both columns. It is a read, so it is a read-then-delete
+ * check like the published-pointer one beside it; the authority is the
+ * predicate inside `deleteInstructionSnapshot`'s own DELETE.
+ */
+export async function countInFlightDerivedSnapshots(
+	baseSnapshotId: string,
+	projectId: string,
+	organizationId: string,
+): Promise<number> {
+	return db.projectInstructionSnapshot.count({
+		where: {
+			baseSnapshotId,
+			projectId,
+			organizationId,
+			status: { in: DERIVING_STATUSES },
+		},
+	});
+}
+
+/**
  * Thrown inside `deleteInstructionSnapshot`'s transaction to ROLL BACK the
  * file deletion when the snapshot row itself turns out not to be deletable.
  *
@@ -1671,7 +2240,7 @@ const DELETABLE_STATUSES: InstructionSnapshotStatus[] = [
  * survived, which is worse than either outcome it is reporting.
  */
 class InstructionSnapshotNotDeleted extends Error {
-	constructor(readonly snapshotReason?: "active") {
+	constructor(readonly snapshotReason?: "active" | "base_in_flight") {
 		super("instruction snapshot not deleted");
 	}
 }
@@ -1715,7 +2284,10 @@ export async function deleteInstructionSnapshot(
 	id: string,
 	projectId: string,
 	organizationId: string,
-): Promise<{ deleted: boolean; reason?: "published" | "active" }> {
+): Promise<{
+	deleted: boolean;
+	reason?: "published" | "active" | "base_in_flight";
+}> {
 	try {
 		return await db.$transaction(async (tx) => {
 			await tx.projectInstructionFile.deleteMany({
@@ -1727,22 +2299,48 @@ export async function deleteInstructionSnapshot(
 					projectId,
 					organizationId,
 					status: { in: DELETABLE_STATUSES },
+					// A snapshot that something is still DERIVING from cannot
+					// go: the derived snapshot's inherited rows point at THIS
+					// snapshot's promoted objects until its own promotion
+					// rewrites them, and the storage delete that follows this
+					// transaction would take those objects with it. In the
+					// DELETE's own predicate, not in a read above it, for the
+					// same reason the status check is: a derivation that
+					// starts between a caller's check and this statement must
+					// still be refused.
+					derivedSnapshots: {
+						none: { status: { in: DERIVING_STATUSES } },
+					},
 				},
 			});
 			if (count === 0) {
-				// Two different answers hide behind zero rows — no such
-				// snapshot in this tenant, or one whose workflow is still
-				// running — and only a read can tell them apart. Throw either
-				// way: the file deletion above must not commit for a snapshot
-				// row that is still there.
+				// Three different answers hide behind zero rows — no such
+				// snapshot in this tenant, one whose workflow is still
+				// running, or one an in-flight edit is deriving from — and
+				// only a read can tell them apart. Throw in every case: the
+				// file deletion above must not commit for a snapshot row that
+				// is still there.
 				const surviving = await tx.projectInstructionSnapshot.findFirst(
 					{
 						where: { id, projectId, organizationId },
-						select: { id: true },
+						select: { id: true, status: true },
 					},
 				);
+				if (!surviving) {
+					throw new InstructionSnapshotNotDeleted();
+				}
+				const deriving = DELETABLE_STATUSES.includes(surviving.status)
+					? await tx.projectInstructionSnapshot.count({
+							where: {
+								baseSnapshotId: id,
+								projectId,
+								organizationId,
+								status: { in: DERIVING_STATUSES },
+							},
+						})
+					: 0;
 				throw new InstructionSnapshotNotDeleted(
-					surviving ? "active" : undefined,
+					deriving > 0 ? "base_in_flight" : "active",
 				);
 			}
 			return { deleted: true };

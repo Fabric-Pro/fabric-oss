@@ -138,6 +138,12 @@ type StageSpec = {
 	/** Override the deterministic staging key (e.g. an already-promoted row). */
 	storageKey?: string;
 	mimeType?: string;
+	/**
+	 * The BASE row this one was copied from, for a DERIVED snapshot. Set it
+	 * together with `storageKey` pointing at the base's promoted object to
+	 * stand in for an inherited file (Fizzy #2546).
+	 */
+	inheritedFromFileId?: string | null;
 };
 
 async function stage(specs: StageSpec[]) {
@@ -158,6 +164,7 @@ async function stage(specs: StageSpec[]) {
 			id: spec.id,
 			path: spec.path,
 			storageKey: key,
+			inheritedFromFileId: spec.inheritedFromFileId ?? null,
 			size,
 			sha256: spec.sha256 ?? (await sha(data)),
 			isText: spec.isText ?? true,
@@ -1305,11 +1312,34 @@ describe("publishInstructionSnapshotActivity", () => {
 		});
 		const r = await publishInstructionSnapshotActivity(snap);
 		expect(r).toEqual({ published: true });
+		// `requireBaseUnmoved` is what makes the AUTOMATIC publish a
+		// fast-forward: a snapshot derived from another may only take the
+		// pointer while its base still holds it. Without it, two edits of the
+		// same published version both published in turn and the later one —
+		// which never saw the earlier edit — reverted it. The flag is set
+		// here, not passed down from the workflow, so the base is read from
+		// the snapshot row and the workflow signature is unchanged.
 		expect(m.publishInstructionSnapshot).toHaveBeenCalledWith({
 			snapshotId: "s",
 			projectId: "p",
 			organizationId: "o",
+			requireBaseUnmoved: true,
 		});
+	});
+
+	it("passes the refused fast-forward back as the reason, and audits nothing", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: false,
+			changed: false,
+			reason: "base_moved",
+		});
+
+		const r = await publishInstructionSnapshotActivity(snap);
+
+		// The snapshot stays READY and unpublished. It is intact and still in
+		// History, where "Publish this version" is the deliberate override.
+		expect(r).toEqual({ published: false, reason: "base_moved" });
+		expect(m.recordAudit).not.toHaveBeenCalled();
 	});
 
 	it("skips the publish call when the snapshot is manual (publishOnReady false)", async () => {
@@ -2266,5 +2296,233 @@ describe("the gate CLAIMS the snapshot before it touches storage", () => {
 			},
 		);
 		expect(m.downloadFile).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Fizzy #2546 — DERIVED snapshots.
+//
+// An in-tab edit creates a snapshot whose changed paths are uploaded and whose
+// every other path is INHERITED: the row points at the base snapshot's
+// immutable promoted object until this snapshot's own promotion re-writes it.
+//
+// Three properties have to hold, and each one is a way this could go wrong:
+//
+//  1. the inherited file is READ from the base's key and gated in FULL — the
+//     rule set may have tightened since the base was scanned, and a uniform
+//     gate is the property the feature promises;
+//  2. promotion writes it into THIS snapshot's prefix, so the base's object is
+//     only ever read; and
+//  3. no cleanup path deletes the base's key, whatever happens to the edit.
+// ---------------------------------------------------------------------------
+describe("derived snapshots (Fizzy #2546)", () => {
+	const BASE_KEY = "projects/p/instructions/snapshots/base/bf1";
+
+	/** The snapshot row of a derived snapshot: same shape, plus its base. */
+	function derivedSnapshotRow() {
+		m.getInstructionSnapshotById.mockResolvedValue({
+			id: "s",
+			projectId: "p",
+			organizationId: "o",
+			publishOnReady: true,
+			version: 8,
+			fileCount: 2,
+			baseSnapshotId: "base",
+			settingsFrozen: {
+				layer: "default",
+				ignoreGlobs: ["**/node_modules/**"],
+				limits: {},
+			},
+		});
+	}
+
+	it("gates an inherited file from the BASE's key, with the full scan", async () => {
+		derivedSnapshotRow();
+		await stage([
+			{ id: "up1", path: "CLAUDE.md", data: Buffer.from("# edited") },
+			{
+				id: "inh1",
+				path: "AGENTS.md",
+				data: Buffer.from("# inherited"),
+				storageKey: BASE_KEY,
+				inheritedFromFileId: "bf1",
+			},
+		]);
+
+		const r = await verifyAndScanInstructionFiles(snap);
+
+		expect(r.ok).toBe(true);
+		// Read from the base's key, not reported missing for being outside
+		// this snapshot's staging prefix.
+		expect(m.downloadFile).toHaveBeenCalledWith(BASE_KEY, {
+			bucket: "skills",
+		});
+		// And gated exactly like an upload: classified and metadata persisted
+		// from the buffer this pass hashed.
+		expect(m.updateInstructionFileMetadata).toHaveBeenCalledWith(
+			"inh1",
+			"o",
+			expect.objectContaining({ kind: "INSTRUCTIONS" }),
+		);
+	});
+
+	it("runs the SECRET scan over an inherited file, so a tightened rule set still catches it", async () => {
+		derivedSnapshotRow();
+		await stage([
+			{
+				id: "inh1",
+				path: "AGENTS.md",
+				data: Buffer.from(
+					`aws_access_key_id = ${AWS_EXAMPLE_ACCESS_KEY}\n`,
+				),
+				storageKey: BASE_KEY,
+				inheritedFromFileId: "bf1",
+			},
+		]);
+
+		const r = await verifyAndScanInstructionFiles(snap);
+
+		expect(r.ok).toBe(false);
+		expect(r.rejections).toEqual([
+			expect.objectContaining({ path: "AGENTS.md", reason: "secret" }),
+		]);
+	});
+
+	/**
+	 * The key is RECONSTRUCTED from `(projectId, baseSnapshotId,
+	 * inheritedFromFileId)` and compared, never trusted as stored. Without
+	 * that, a row claiming inheritance could name any key in the bucket and
+	 * have it promoted into a published snapshot.
+	 */
+	it("refuses an inherited row whose key is not the base's reconstructed one", async () => {
+		derivedSnapshotRow();
+		await stage([
+			{
+				id: "inh1",
+				path: "AGENTS.md",
+				data: Buffer.from("# elsewhere"),
+				storageKey: "projects/other/instructions/snapshots/x/y",
+				inheritedFromFileId: "bf1",
+			},
+		]);
+
+		const r = await verifyAndScanInstructionFiles(snap);
+
+		expect(r.ok).toBe(false);
+		expect(r.rejections).toEqual([
+			{ path: "AGENTS.md", reason: "missing" },
+		]);
+		expect(m.downloadFile).not.toHaveBeenCalled();
+	});
+
+	it("refuses a row claiming inheritance on a snapshot with no base", async () => {
+		// Default snapshot row: `baseSnapshotId` is absent.
+		await stage([
+			{
+				id: "inh1",
+				path: "AGENTS.md",
+				data: Buffer.from("# inherited"),
+				storageKey: BASE_KEY,
+				inheritedFromFileId: "bf1",
+			},
+		]);
+
+		const r = await verifyAndScanInstructionFiles(snap);
+
+		expect(r.ok).toBe(false);
+		expect(r.rejections).toEqual([
+			{ path: "AGENTS.md", reason: "missing" },
+		]);
+	});
+
+	it("promotes an inherited file into THIS snapshot's prefix and never deletes the base's key", async () => {
+		derivedSnapshotRow();
+		await stage([
+			{
+				id: "inh1",
+				path: "AGENTS.md",
+				data: Buffer.from("# inherited"),
+				storageKey: BASE_KEY,
+				inheritedFromFileId: "bf1",
+			},
+		]);
+
+		const r = await finalizeInstructionSnapshot(snap);
+
+		expect(r.ok).toBe(true);
+		// Re-hashed from the base's object and WRITTEN to this snapshot's own
+		// key; never a server-side copy and never a move.
+		expect(m.uploadFile).toHaveBeenCalledWith(
+			snapshotKey("p", "s", "inh1"),
+			expect.any(Buffer),
+			expect.objectContaining({ bucket: "skills" }),
+		);
+		expect(m.updateInstructionFileMetadata).toHaveBeenCalledWith(
+			"inh1",
+			"o",
+			expect.objectContaining({
+				storageKey: snapshotKey("p", "s", "inh1"),
+			}),
+		);
+		// The staging cleanup runs on DETERMINISTIC keys for this snapshot
+		// plus a sweep of its own prefix, so the base's object is untouched.
+		for (const call of m.deleteObjects.mock.calls) {
+			expect(call[0]).not.toContain(BASE_KEY);
+		}
+	});
+
+	it("does not delete the base's key when the derived snapshot is REJECTED", async () => {
+		derivedSnapshotRow();
+		await stage([
+			{
+				id: "inh1",
+				path: "AGENTS.md",
+				data: Buffer.from("# inherited"),
+				storageKey: BASE_KEY,
+				inheritedFromFileId: "bf1",
+			},
+		]);
+
+		await rejectInstructionSnapshot({
+			...snap,
+			rejections: [{ path: "CLAUDE.md", reason: "secret" }],
+		});
+
+		for (const call of m.deleteObjects.mock.calls) {
+			expect(call[0]).not.toContain(BASE_KEY);
+		}
+	});
+
+	/**
+	 * The trap. `listPrunableInstructionSnapshots` returns the storage keys
+	 * of a snapshot's ROWS, and a derived snapshot that never promoted still
+	 * holds the base's keys — so pruning it by row key would delete the
+	 * version it was edited from, normally the published one.
+	 */
+	it("prunes only keys under the pruned snapshot's own prefixes", async () => {
+		m.listPrunableInstructionSnapshots.mockResolvedValue([
+			{
+				id: "rejected-edit",
+				storageKeys: [
+					"projects/p/instructions/staging/rejected-edit/f1",
+					"projects/p/instructions/snapshots/rejected-edit/f2",
+					// The base's promoted object, carried by an inherited row.
+					BASE_KEY,
+				],
+			},
+		]);
+
+		await pruneInstructionSnapshots(snap);
+
+		expect(m.deleteObjects).toHaveBeenCalledWith(
+			[
+				"projects/p/instructions/staging/rejected-edit/f1",
+				"projects/p/instructions/snapshots/rejected-edit/f2",
+			],
+			{ bucket: "skills" },
+		);
+		for (const call of m.deleteObjects.mock.calls) {
+			expect(call[0]).not.toContain(BASE_KEY);
+		}
 	});
 });

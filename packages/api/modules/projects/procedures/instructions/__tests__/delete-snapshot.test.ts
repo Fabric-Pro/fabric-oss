@@ -20,6 +20,7 @@ const m = vi.hoisted(() => ({
 	handlers: {} as Record<string, (...a: unknown[]) => unknown>,
 	getInstructionSnapshot: vi.fn(),
 	getPublishedInstructionSnapshot: vi.fn(),
+	countInFlightDerivedSnapshots: vi.fn(),
 	listInstructionFiles: vi.fn(),
 	deleteInstructionSnapshot: vi.fn(),
 	deleteObjects: vi.fn(),
@@ -31,6 +32,8 @@ const m = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	countInFlightDerivedSnapshots: (...a: unknown[]) =>
+		m.countInFlightDerivedSnapshots(...a),
 	getInstructionSnapshot: (...a: unknown[]) => m.getInstructionSnapshot(...a),
 	getPublishedInstructionSnapshot: (...a: unknown[]) =>
 		m.getPublishedInstructionSnapshot(...a),
@@ -91,11 +94,20 @@ import "../delete-snapshot";
 
 const ctx = { user: { id: "u" }, session: { activeOrganizationId: "org_1" } };
 const baseInput = { projectId: "p", snapshotId: "s" };
+/**
+ * The snapshot's OWN promoted prefix. Fixtures use real keys because the
+ * handler now filters the delete set through `isKeyOwnedBySnapshot`: a
+ * derived snapshot's inherited rows carry the BASE's keys until promotion
+ * rewrites them, and deleting a rejected edit by row key would take the base's
+ * bytes — in the ordinary case the project's published instructions.
+ */
+const OWN_PREFIX = "projects/p/instructions/snapshots/s/";
 
 beforeEach(() => {
 	for (const f of [
 		m.getInstructionSnapshot,
 		m.getPublishedInstructionSnapshot,
+		m.countInFlightDerivedSnapshots,
 		m.listInstructionFiles,
 		m.deleteInstructionSnapshot,
 		m.deleteObjects,
@@ -113,6 +125,8 @@ beforeEach(() => {
 	});
 	m.listObjects.mockResolvedValue({ objects: [] });
 	m.deleteInstructionSnapshot.mockResolvedValue({ deleted: true });
+	// Default: nothing is deriving from the snapshot under test.
+	m.countInFlightDerivedSnapshots.mockResolvedValue(0);
 	// Default: the permission gate allows. Individual tests override this
 	// to simulate a denial.
 	m.permissionMiddleware.mockResolvedValue(undefined);
@@ -207,7 +221,9 @@ describe("projects.instructions.delete", () => {
 			status: "FAILED",
 		});
 		m.getPublishedInstructionSnapshot.mockResolvedValue({ id: "other" });
-		m.listInstructionFiles.mockResolvedValue([{ storageKey: "k1" }]);
+		m.listInstructionFiles.mockResolvedValue([
+			{ storageKey: `${OWN_PREFIX}f1` },
+		]);
 		m.deleteInstructionSnapshot.mockResolvedValue({
 			deleted: false,
 			reason: "active",
@@ -230,8 +246,8 @@ describe("projects.instructions.delete", () => {
 		// A different snapshot is published — this one is free to delete.
 		m.getPublishedInstructionSnapshot.mockResolvedValue({ id: "other" });
 		m.listInstructionFiles.mockResolvedValue([
-			{ storageKey: "k1" },
-			{ storageKey: "k2" },
+			{ storageKey: `${OWN_PREFIX}f1` },
+			{ storageKey: `${OWN_PREFIX}f2` },
 		]);
 		m.deleteObjects.mockResolvedValue({ deleted: 2, errors: [] });
 
@@ -241,9 +257,10 @@ describe("projects.instructions.delete", () => {
 		});
 		expect(result).toEqual({ deleted: true });
 
-		expect(m.deleteObjects).toHaveBeenCalledWith(["k1", "k2"], {
-			bucket: "skills",
-		});
+		expect(m.deleteObjects).toHaveBeenCalledWith(
+			[`${OWN_PREFIX}f1`, `${OWN_PREFIX}f2`],
+			{ bucket: "skills" },
+		);
 		expect(m.deleteInstructionSnapshot).toHaveBeenCalledWith(
 			"s",
 			"p",
@@ -290,7 +307,9 @@ describe("projects.instructions.delete", () => {
 			status: "READY",
 		});
 		m.getPublishedInstructionSnapshot.mockResolvedValue({ id: "other" });
-		m.listInstructionFiles.mockResolvedValue([{ storageKey: "k1" }]);
+		m.listInstructionFiles.mockResolvedValue([
+			{ storageKey: `${OWN_PREFIX}f1` },
+		]);
 		m.deleteObjects.mockResolvedValue({
 			deleted: 0,
 			errors: [{ key: "k1", message: "AccessDenied" }],
@@ -306,7 +325,7 @@ describe("projects.instructions.delete", () => {
 
 		expect(error?.code).toBe("INTERNAL_SERVER_ERROR");
 		expect(error?.message).toContain("1 stored object(s)");
-		expect(error?.message).not.toContain("k1");
+		expect(error?.message).not.toContain(`${OWN_PREFIX}f1`);
 	});
 
 	// I3: the pre-check above is a read-then-delete guard, and a publish
@@ -324,7 +343,9 @@ describe("projects.instructions.delete", () => {
 		// The pre-check sees a DIFFERENT snapshot published; the publish
 		// lands before the delete runs.
 		m.getPublishedInstructionSnapshot.mockResolvedValue({ id: "other" });
-		m.listInstructionFiles.mockResolvedValue([{ storageKey: "k1" }]);
+		m.listInstructionFiles.mockResolvedValue([
+			{ storageKey: `${OWN_PREFIX}f1` },
+		]);
 		m.deleteInstructionSnapshot.mockResolvedValue({
 			deleted: false,
 			reason: "published",
@@ -351,7 +372,9 @@ describe("projects.instructions.delete", () => {
 			status: "READY",
 		});
 		m.getPublishedInstructionSnapshot.mockResolvedValue({ id: "other" });
-		m.listInstructionFiles.mockResolvedValue([{ storageKey: "k1" }]);
+		m.listInstructionFiles.mockResolvedValue([
+			{ storageKey: `${OWN_PREFIX}f1` },
+		]);
 		m.deleteObjects.mockResolvedValue({ deleted: 1, errors: [] });
 		// Two pages, and a stale wall-clock-stamped object from before the
 		// key became deterministic — the prefix finds both shapes.
@@ -385,5 +408,92 @@ describe("projects.instructions.delete", () => {
 			["projects/p/instructions/exports/s-1757000000000.zip"],
 			{ bucket: "skills" },
 		);
+	});
+	/**
+	 * Fizzy #2546. A derived snapshot's inherited rows point at the BASE's
+	 * promoted objects until its own promotion rewrites them. Deleting a
+	 * rejected or failed EDIT must therefore never delete a key by row alone:
+	 * the base is normally the project's published version, and the object
+	 * store has no undo.
+	 */
+	describe("the base-key guard", () => {
+		it("deletes only keys under this snapshot's own prefixes", async () => {
+			m.getInstructionSnapshot.mockResolvedValue({
+				id: "s",
+				version: 9,
+				status: "REJECTED",
+			});
+			m.getPublishedInstructionSnapshot.mockResolvedValue({
+				id: "base",
+			});
+			m.listInstructionFiles.mockResolvedValue([
+				// This snapshot's own staged upload.
+				{ storageKey: "projects/p/instructions/staging/s/f1" },
+				// An inherited row: the BASE's immutable promoted object.
+				{ storageKey: "projects/p/instructions/snapshots/base/bf1" },
+				// And one from another project entirely, which no code path
+				// should ever produce and none may act on.
+				{ storageKey: "projects/other/instructions/snapshots/x/y" },
+			]);
+			m.deleteObjects.mockResolvedValue({ deleted: 1, errors: [] });
+			m.listObjects.mockResolvedValue({ objects: [] });
+
+			await m.handlers.delete!({ input: baseInput, context: ctx });
+
+			expect(m.deleteObjects).toHaveBeenCalledWith(
+				["projects/p/instructions/staging/s/f1"],
+				{ bucket: "skills" },
+			);
+			for (const call of m.deleteObjects.mock.calls) {
+				expect(call[0]).not.toContain(
+					"projects/p/instructions/snapshots/base/bf1",
+				);
+			}
+		});
+
+		it("refuses to delete a version an in-flight edit is deriving from", async () => {
+			m.getInstructionSnapshot.mockResolvedValue({
+				id: "s",
+				version: 4,
+				status: "READY",
+			});
+			m.countInFlightDerivedSnapshots.mockResolvedValue(1);
+
+			await expect(
+				m.handlers.delete!({ input: baseInput, context: ctx }),
+			).rejects.toMatchObject({ code: "CONFLICT" });
+			expect(m.countInFlightDerivedSnapshots).toHaveBeenCalledWith(
+				"s",
+				"p",
+				"org_1",
+			);
+			expect(m.deleteInstructionSnapshot).not.toHaveBeenCalled();
+			expect(m.deleteObjects).not.toHaveBeenCalled();
+		});
+
+		it("reports the same conflict when a derivation starts after the check", async () => {
+			m.getInstructionSnapshot.mockResolvedValue({
+				id: "s",
+				version: 4,
+				status: "READY",
+			});
+			m.getPublishedInstructionSnapshot.mockResolvedValue({
+				id: "other",
+			});
+			m.listInstructionFiles.mockResolvedValue([
+				{ storageKey: `${OWN_PREFIX}f1` },
+			]);
+			// The read said zero; the DELETE's own predicate disagreed.
+			m.deleteInstructionSnapshot.mockResolvedValue({
+				deleted: false,
+				reason: "base_in_flight",
+			});
+
+			await expect(
+				m.handlers.delete!({ input: baseInput, context: ctx }),
+			).rejects.toMatchObject({ code: "CONFLICT" });
+			expect(m.deleteObjects).not.toHaveBeenCalled();
+			expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		});
 	});
 });
