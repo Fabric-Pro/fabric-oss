@@ -2,7 +2,7 @@
  * Coding Instructions queries.
  *
  * Tenant rule: every top-level accessor filters by `projectId` AND
- * `organizationId` (never OR'd). The two functions below that only take an
+ * `organizationId` (never OR'd). The few functions below that take only an
  * `id`/`projectId` are UNSCOPED by design and say so in their own comment;
  * every other exported function here filters by the tenant columns it is
  * given.
@@ -210,6 +210,224 @@ export async function getPublishedInstructionSnapshot(projectId: string) {
 		select: { publishedInstructionSnapshot: { select: summarySelect } },
 	});
 	return project?.publishedInstructionSnapshot ?? null;
+}
+
+/**
+ * The published snapshot of MANY projects at once, as the summary the MCP
+ * project tools advertise on each project they return.
+ *
+ * UNSCOPED by tenant, for the same reason as `getPublishedInstructionSnapshot`
+ * above: the published snapshot is a project-level pointer, and the caller has
+ * already access-filtered the ids it passes (the MCP handlers pass only ids
+ * that `listProjects`/`getProjectSummaryById` returned for this caller).
+ *
+ * ONE query for the whole page: the project rows carry the pointer, so the
+ * snapshot comes back through the relation rather than through a second round
+ * trip per project.
+ *
+ * A project maps to a summary only when its pointer resolves to a READY
+ * snapshot that carries a digest AND whose `organizationId` is the project's
+ * own — the integrity check `resolvePublishedInstructionSnapshot` makes on the
+ * single-project path, repeated here so the two surfaces cannot disagree.
+ * Anything else maps to `null`, which the caller reports as "nothing
+ * published" rather than as an error: a caller must not be able to learn from
+ * this that a snapshot exists but is mis-tenanted.
+ *
+ * A project id with no row at all is simply absent from the map.
+ */
+export type PublishedInstructionSummary = {
+	version: number;
+	fileCount: number;
+	digest: string;
+	publishedAt: Date | null;
+};
+
+export async function getPublishedInstructionSummariesForProjects(
+	projectIds: string[],
+): Promise<Map<string, PublishedInstructionSummary | null>> {
+	const summaries = new Map<string, PublishedInstructionSummary | null>();
+	if (projectIds.length === 0) {
+		return summaries;
+	}
+	const projects = await db.project.findMany({
+		where: { id: { in: projectIds } },
+		select: {
+			id: true,
+			organizationId: true,
+			publishedInstructionSnapshot: {
+				select: {
+					organizationId: true,
+					status: true,
+					version: true,
+					fileCount: true,
+					digest: true,
+					publishedAt: true,
+				},
+			},
+		},
+	});
+	for (const project of projects) {
+		const snapshot = project.publishedInstructionSnapshot;
+		summaries.set(
+			project.id,
+			snapshot &&
+				snapshot.status === "READY" &&
+				snapshot.digest !== null &&
+				snapshot.organizationId === project.organizationId
+				? {
+						version: snapshot.version,
+						fileCount: snapshot.fileCount,
+						digest: snapshot.digest,
+						publishedAt: snapshot.publishedAt,
+					}
+				: null,
+		);
+	}
+	return summaries;
+}
+
+/** One manifest entry, reduced to what a diff is decided on. */
+export type InstructionManifestEntry = { path: string; sha256: string };
+
+/** What changed between two manifests, by path. Each list is sorted. */
+export type InstructionManifestChanges = {
+	added: string[];
+	removed: string[];
+	changed: string[];
+};
+
+/**
+ * The PURE diff of two manifests, by path: added is head-only, removed is
+ * base-only, changed is both sides at a different `sha256`.
+ *
+ * Separated from the queries below so the rule itself is testable without a
+ * database, and so both callers — the list tool and the bundle tool — decide
+ * "what changed" exactly once.
+ *
+ * Every list is sorted, so a caller diffing two responses sees a stable order
+ * rather than whatever order the rows came back in.
+ *
+ * MODES are deliberately not part of this diff, and are not part of the
+ * snapshot digest either: an upload carries no modes, so a file's `mode` is
+ * DERIVED from its content at upload time (a shebang makes it 0755), and a
+ * mode change therefore implies a content change that `sha256` already
+ * reports. If a future source ever carries real modes — a git import, a
+ * tarball — the digest has to include them before this diff can, or two
+ * manifests that differ only in mode would share a digest and read as
+ * unchanged.
+ */
+export function diffInstructionManifests(
+	base: InstructionManifestEntry[],
+	head: InstructionManifestEntry[],
+): InstructionManifestChanges {
+	const baseByPath = new Map(base.map((f) => [f.path, f.sha256]));
+	const headByPath = new Map(head.map((f) => [f.path, f.sha256]));
+	const added: string[] = [];
+	const changed: string[] = [];
+	for (const [path, sha256] of headByPath) {
+		const before = baseByPath.get(path);
+		if (before === undefined) {
+			added.push(path);
+		} else if (before !== sha256) {
+			changed.push(path);
+		}
+	}
+	const removed = [...baseByPath.keys()].filter(
+		(path) => !headByPath.has(path),
+	);
+	added.sort();
+	removed.sort();
+	changed.sort();
+	return { added, removed, changed };
+}
+
+/**
+ * What changed between the snapshot a caller last installed — named by its
+ * DIGEST, which is the only handle an installed copy keeps — and the snapshot
+ * published now.
+ *
+ * Scoped by `projectId` AND `organizationId`, never OR'd, like every other
+ * top-level accessor in this file. The project filter alone already stops a
+ * digest belonging to another project from matching; the organization filter
+ * is what stops a row that names this project while carrying another tenant's
+ * `organizationId` from being read at all. Both are in the WHERE clause rather
+ * than checked afterwards, so a mismatch is indistinguishable from an unknown
+ * base — the caller is told `null` and takes a full copy, and learns nothing
+ * about a snapshot it may not see.
+ *
+ * The caller passes the hosting organization it has ALREADY verified — on the
+ * MCP surface, the organization `resolvePublishedInstructionSnapshot` compared
+ * to the caller's project access — never one taken from a request.
+ *
+ * `null` also covers a base that has been pruned away by the retention sweep.
+ * The caller treats every `null` the same way: it cannot say what changed, so
+ * it should take a full copy.
+ *
+ * The base is the NEWEST READY snapshot carrying that digest. Two snapshots
+ * with the same digest have, by construction, the same manifest — the digest
+ * is computed over the file set — so which of them is chosen cannot change the
+ * diff; taking the newest just makes the `base` metadata the most recent
+ * publication of that content.
+ *
+ * Both file reads filter on `projectId` and `organizationId` as well as on the
+ * snapshot, for the reason on `listInstructionFiles`: the child's foreign key
+ * binds `(snapshotId, projectId)` only, so a row carrying the wrong
+ * `organizationId` satisfies the constraint and would otherwise be served off
+ * the parent check alone.
+ */
+export async function getInstructionManifestDiff(input: {
+	projectId: string;
+	organizationId: string;
+	baseDigest: string;
+	headSnapshotId: string;
+}): Promise<
+	| ({
+			base: { id: string; version: number; digest: string };
+	  } & InstructionManifestChanges)
+	| null
+> {
+	const base = await db.projectInstructionSnapshot.findFirst({
+		where: {
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			digest: input.baseDigest,
+			status: "READY",
+		},
+		orderBy: { version: "desc" },
+		select: {
+			id: true,
+			version: true,
+			files: {
+				where: {
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+				},
+				select: { path: true, sha256: true },
+			},
+		},
+	});
+	if (!base) {
+		return null;
+	}
+	const head = await db.projectInstructionFile.findMany({
+		where: {
+			snapshotId: input.headSnapshotId,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+		},
+		select: { path: true, sha256: true },
+	});
+	return {
+		// `digest` is not re-read off the row: the WHERE clause above pinned it
+		// to exactly this value, so echoing the input is the same answer with
+		// one fewer column.
+		base: {
+			id: base.id,
+			version: base.version,
+			digest: input.baseDigest,
+		},
+		...diffInstructionManifests(base.files, head),
+	};
 }
 
 /**

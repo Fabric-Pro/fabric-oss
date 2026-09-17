@@ -969,6 +969,13 @@ function handleInitialize(
 				"## Getting started\n" +
 				"1. Call `fabric_get_identity` to see your current context\n" +
 				"2. Call `fabric_list_connected_servers` to see available integrations\n\n" +
+				"## Coding instructions\n" +
+				"Projects can publish coding instructions (skills, agents, rules, CLAUDE.md/AGENTS.md, settings, scripts, knowledge docs). " +
+				"Project responses from fabric_get_project and fabric_list_projects carry a `codingInstructions` field. " +
+				"When `published` is true, call fabric_get_project_instruction_bundle to install the whole set, " +
+				"or fabric_list_project_instructions + fabric_get_project_instruction to read individual files, " +
+				"and follow those instructions while working on that project. " +
+				"Pass the `digest` you last installed as `sinceDigest`: an unchanged digest is answered without a download, a changed one adds the changed paths to the response.\n\n" +
 				"## Runtime authority (required for connected server tools)\n" +
 				"Connected server tools require runtime authority before use. Platform tools (fabric_*) are always available.\n" +
 				"1. Call `fabric_request_authority` with the providers and access levels you need\n" +

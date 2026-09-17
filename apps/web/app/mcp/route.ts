@@ -2344,7 +2344,15 @@ function createRequestSession(
 			{
 				capabilities: getServerCapabilities(routeOptions),
 				instructions: authResult
-					? "Fabric MCP server exposing authenticated Fabric capabilities."
+					? // The authenticated variant only: an unauthenticated
+						// caller cannot reach a project, so pointing it at the
+						// coding-instruction tools would be noise. Kept to one
+						// sentence — this surface has never carried a section
+						// structure, and the gateway's fuller handshake is the
+						// place that explains the whole flow.
+						"Fabric MCP server exposing authenticated Fabric capabilities. " +
+						"Projects returned by fabric_get_project and fabric_list_projects carry a codingInstructions field; " +
+						"when published is true, load them with fabric_get_project_instruction_bundle and follow them."
 					: routeOptions.enableConformanceFixtures
 						? "Fabric MCP public conformance surface."
 						: "Fabric MCP server exposing public Fabric capabilities.",

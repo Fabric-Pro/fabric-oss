@@ -323,6 +323,33 @@ describe("hosted MCP server — caller-supplied organization", () => {
 		expect(payload.result.instructions).toContain("public");
 		expect(isOrganizationMember).not.toHaveBeenCalled();
 	});
+
+	// The hosted route serves the same platform tools as the gateway, so an
+	// AUTHENTICATED caller is told the same thing about published coding
+	// instructions (Fizzy #2568). An unauthenticated one cannot reach a
+	// project at all, so its variant is deliberately left alone — which is
+	// what the two halves of this test pin.
+	it("points an authenticated caller at a project's published coding instructions", async () => {
+		const { body } = await initialize({
+			authorization: "Bearer personal-key",
+			"x-organization-id": MEMBER_ORG,
+		});
+
+		const instructions = (
+			readSsePayload(body) as { result: { instructions: string } }
+		).result.instructions;
+		expect(instructions).toContain("codingInstructions");
+		expect(instructions).toContain("fabric_get_project_instruction_bundle");
+	});
+
+	it("leaves the public variant without that hint", async () => {
+		const { body } = await initialize({});
+
+		expect(
+			(readSsePayload(body) as { result: { instructions: string } })
+				.result.instructions,
+		).not.toContain("codingInstructions");
+	});
 });
 
 describe("hosted MCP server — stored sessions re-check the caller", () => {
