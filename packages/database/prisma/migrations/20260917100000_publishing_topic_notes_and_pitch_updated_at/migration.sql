@@ -1,0 +1,27 @@
+-- Two independent additions to a publishing topic, both nullable and both
+-- unset for every existing row.
+--
+-- `notes` is the topic's PRIVATE NOTEBOOK: the person's own working text, and
+-- the one column on this table the AI neither reads nor writes. It is a column
+-- of its own rather than more room inside `pitch` precisely because of that —
+-- the summary is generation input, so anything stored there reaches a prompt,
+-- and the promise made about this one is that nothing stored here ever does.
+-- TEXT to match `pitch`, which is `@db.Text` for the same reason: neither is a
+-- label and neither should inherit a ceiling nobody chose.
+--
+-- `pitchUpdatedAt` records when the summary was last edited BY HAND, so a
+-- planning analysis generated before that edit can be shown as predating it —
+-- the same staleness signal an answer recorded after the analysis already
+-- gives. It deliberately does NOT track the AI's own writes: a topic arrives
+-- from a suggestion cycle carrying a `pitch` that nobody has touched, so `null`
+-- is the honest answer there and reads as "never hand-edited" rather than as a
+-- missing timestamp.
+--
+-- No backfill for either, and none is possible: an empty notebook and an
+-- unedited summary are the correct answers for every row that exists today,
+-- and no earlier state records when a summary changed. No index either —
+-- `notes` is read on rows already loaded by id and never filtered on, and
+-- `pitchUpdatedAt` is compared against an analysis timestamp in application
+-- code, never in a WHERE clause.
+ALTER TABLE "publishing_topic" ADD COLUMN     "notes" TEXT,
+ADD COLUMN     "pitchUpdatedAt" TIMESTAMP(3);

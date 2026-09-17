@@ -192,6 +192,7 @@ export function TopicDetails({
 	showRankReason = true,
 	showMeetingParticipants = true,
 	showEditPostTypes = true,
+	showContributorLabel = false,
 	onEditUrl,
 	onChangePostTypes,
 	contributorsControl,
@@ -228,6 +229,23 @@ export function TopicDetails({
 	 * dialog itself stays rather than being deleted outright.
 	 */
 	showEditPostTypes?: boolean;
+	/**
+	 * Give the contributor row the visible prefix the assignee row has had
+	 * since A8.
+	 *
+	 * The asymmetry was the bug: assignees render an "Assigned" `<li>`, so a
+	 * sighted reader knows what that list of names claims, while contributors
+	 * render a bare `username ?? name` with the meaning carried only by
+	 * `aria-label`. On the topic page — one avatar, one word, nothing else near
+	 * it — the reported reaction was simply not knowing what the name WAS.
+	 *
+	 * Defaults to false rather than true, and not only to leave the flag-off
+	 * row's parity snapshot alone. The Inbox row is dense and stacks four grey
+	 * lines already; a prefix there spends horizontal room on a list whose
+	 * meaning the surrounding row context supplies. The topic page has the
+	 * space and none of that context.
+	 */
+	showContributorLabel?: boolean;
 	onEditUrl: () => void;
 	/**
 	 * Write a new post-type selection, or `null` to hand the topic back to the
@@ -320,6 +338,11 @@ export function TopicDetails({
 					className="flex flex-wrap items-center gap-1.5 pt-1"
 					aria-label="Contributors"
 				>
+					{showContributorLabel ? (
+						<li className="text-[11px] text-muted-foreground uppercase tracking-[0.15em]">
+							Contributors
+						</li>
+					) : null}
 					{topic.contributors.map((c) => (
 						<li
 							key={c.id}

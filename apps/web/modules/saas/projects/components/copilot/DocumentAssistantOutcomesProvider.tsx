@@ -33,6 +33,7 @@
  * No additional plumbing required — React Query does the heavy lifting.
  */
 
+import type { DocumentRefKind } from "@saas/projects/hooks/useDocumentAssistantHistory";
 import { createContext, type ReactNode, useContext, useMemo } from "react";
 import { useActiveDocumentAssistantConversation } from "../../hooks/useDocumentAssistantHistory";
 import type { DiffOutcomeChipToolCall } from "./DiffOutcomeChip";
@@ -54,7 +55,7 @@ const DocumentAssistantOutcomesContext =
 	createContext<DocumentAssistantOutcomesApi | null>(null);
 
 interface ProviderProps {
-	documentRefKind: "PROJECT_DOCUMENT" | "USER_STORY";
+	documentRefKind: DocumentRefKind;
 	documentRefId: string;
 	projectId: string;
 	organizationId: string | null;

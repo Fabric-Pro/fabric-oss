@@ -29,6 +29,8 @@ const {
 	updatePostTypesMutate,
 	updateStatusMutate,
 	updateContributorsMutate,
+	updateSummaryMutate,
+	setNotesMutate,
 	toastError,
 	invalidateQueries,
 } = vi.hoisted(() => ({
@@ -86,12 +88,17 @@ const {
 		// Same, for the post-type override write: a failed save must keep
 		// the dialog (and the user's checkboxes) rather than close over it.
 		postTypesRejects: false,
+		// And for the summary write, for the same reason: a failed save must
+		// leave the editor open on the text the person typed.
+		summaryRejects: false,
 	},
 	refetchTopic: vi.fn(),
 	setReadStateMutate: vi.fn(),
 	updatePostTypesMutate: vi.fn(),
 	updateStatusMutate: vi.fn(),
 	updateContributorsMutate: vi.fn(),
+	updateSummaryMutate: vi.fn(),
+	setNotesMutate: vi.fn(),
 	toastError: vi.fn(),
 }));
 
@@ -279,6 +286,42 @@ vi.mock("@tanstack/react-query", () => ({
 				updateStatusMutate(vars);
 				await opts.onSuccess?.(undefined, vars, undefined);
 				return undefined;
+			};
+			return {
+				mutate: (vars: unknown) => {
+					void run(vars).catch(() => {});
+				},
+				mutateAsync: run,
+				isPending: false,
+			};
+		}
+		// The summary edit and the notes save. Both drive the real lifecycle:
+		// the summary editor closes on `onSuccess` and only then, and the notes
+		// field reports its failure through the component's own `onError`.
+		if (procedure === "projects.publishingSuite.updateTopicSummary") {
+			const run = async (vars: unknown) => {
+				updateSummaryMutate(vars);
+				if (state.summaryRejects) {
+					const err = new Error("rejected");
+					await opts.onError?.(err, vars, undefined);
+					throw err;
+				}
+				await opts.onSuccess?.({ saved: true }, vars, undefined);
+				return { saved: true };
+			};
+			return {
+				mutate: (vars: unknown) => {
+					void run(vars).catch(() => {});
+				},
+				mutateAsync: run,
+				isPending: false,
+			};
+		}
+		if (procedure === "projects.publishingSuite.setTopicNotes") {
+			const run = async (vars: unknown) => {
+				setNotesMutate(vars);
+				await opts.onSuccess?.({ saved: true }, vars, undefined);
+				return { saved: true };
 			};
 			return {
 				mutate: (vars: unknown) => {
@@ -520,6 +563,10 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 						"projects.publishingSuite.updateTopicStatus",
 					),
 					// Task 6: the contributors override write.
+					updateTopicSummary: m(
+						"projects.publishingSuite.updateTopicSummary",
+					),
+					setTopicNotes: m("projects.publishingSuite.setTopicNotes"),
 					updateTopicContributors: m(
 						"projects.publishingSuite.updateTopicContributors",
 					),
@@ -585,6 +632,11 @@ function topic(overrides: Record<string, unknown> = {}) {
 			username: string | null;
 		}>,
 		meetingSpeakers: null,
+		// The private notebook, always on the wire — it rides
+		// `TOPIC_LIST_SELECT`, so a fixture omitting it is a shape the API
+		// never returns.
+		notes: null as string | null,
+		pitchUpdatedAt: null as string | null,
 		...overrides,
 	};
 }
@@ -641,11 +693,14 @@ beforeEach(() => {
 	state.error = false;
 	state.readStateRejects = false;
 	state.postTypesRejects = false;
+	state.summaryRejects = false;
 	refetchTopic.mockReset();
 	setReadStateMutate.mockReset();
 	updatePostTypesMutate.mockReset();
 	updateStatusMutate.mockReset();
 	updateContributorsMutate.mockReset();
+	updateSummaryMutate.mockReset();
+	setNotesMutate.mockReset();
 	toastError.mockReset();
 });
 
@@ -1828,6 +1883,36 @@ describe("TopicItemPage — the analysis is behind the answers", () => {
 		).toHaveLength(1);
 	});
 
+	it("counts a BLOCKER answered after the analysis, not just questions", () => {
+		// The case that most needs the prompt: what a blocker answer records —
+		// the quote, the approval — reaches the draft writers ONLY through a
+		// regenerated analysis, and the banner used to skip it entirely.
+		const answeredBlocker = answeredAt("2026-09-02T10:00:00Z");
+		state.aiCreatedAt = new Date("2026-09-01T10:00:00Z");
+		state.decisionThreads = [
+			{
+				root: {
+					...answeredBlocker.root,
+					kind: "BLOCKER",
+					decisionKind: "MISSING_QUOTE",
+					summary: "We have no approved customer quote.",
+					status: "RESOLVED",
+				},
+				replies: answeredBlocker.replies.map((r) => ({
+					...r,
+					kind: "BLOCKER",
+				})),
+			},
+		];
+		renderPage();
+
+		expect(
+			screen.getByTestId("analysis-behind-decisions"),
+		).toHaveTextContent(
+			"1 answer was recorded after the analysis was written",
+		);
+	});
+
 	it("stays silent when every answer predates the analysis", () => {
 		state.aiCreatedAt = new Date("2026-09-03T10:00:00Z");
 		state.decisionThreads = [answeredAt("2026-09-02T10:00:00Z")];
@@ -1953,6 +2038,231 @@ describe("TopicItemPage — adding a content type from the tab strip", () => {
  * artifact that does not exist yet. They read identically until one of them
  * says so.
  */
+/**
+ * The summary, editable where it is read.
+ *
+ * `pitch` is the paragraph under the title AND the text every generation
+ * prompt is handed, so a wrong one is wrong in seven drafts. It was
+ * read-only: the only way to fix it was to decline the topic and let the
+ * generator raise it again.
+ */
+describe("TopicItemPage — editing the summary", () => {
+	it("shows a reader the summary with no way to change it", () => {
+		renderPage(false);
+
+		expect(
+			screen.getByText(/we cut duplicate deliveries/i),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /edit summary/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("opens an editor seeded with the summary on record", async () => {
+		const user = userEvent.setup();
+		renderPage();
+
+		await user.click(screen.getByRole("button", { name: /edit summary/i }));
+
+		expect(screen.getByLabelText("Topic summary")).toHaveValue(
+			"We cut duplicate deliveries by bounding the retry window.",
+		);
+	});
+
+	it("sends the edited text, and caps it where the server does", async () => {
+		const user = userEvent.setup();
+		renderPage();
+
+		await user.click(screen.getByRole("button", { name: /edit summary/i }));
+		const field = screen.getByLabelText("Topic summary");
+		// 500, matching `z.string().max(500)` — a field that accepts more than
+		// the route does turns a typo into a rejected save.
+		expect(field).toHaveAttribute("maxlength", "500");
+
+		await user.clear(field);
+		await user.type(field, "A sharper summary.");
+		await user.click(screen.getByRole("button", { name: /save summary/i }));
+
+		expect(updateSummaryMutate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "proj-1",
+				topicId: "topic-1",
+				pitch: "A sharper summary.",
+			}),
+		);
+		// Closed, and only after the write landed.
+		expect(
+			screen.queryByLabelText("Topic summary"),
+		).not.toBeInTheDocument();
+	});
+
+	it("clears with null rather than an empty string", async () => {
+		// `pitch` is NOT trimmed server-side, so a blank string would persist as
+		// a summary made of spaces. `null` is the documented clear.
+		const user = userEvent.setup();
+		renderPage();
+
+		await user.click(screen.getByRole("button", { name: /edit summary/i }));
+		await user.clear(screen.getByLabelText("Topic summary"));
+		await user.type(screen.getByLabelText("Topic summary"), "   ");
+		await user.click(screen.getByRole("button", { name: /save summary/i }));
+
+		expect(updateSummaryMutate).toHaveBeenCalledWith(
+			expect.objectContaining({ pitch: null }),
+		);
+	});
+
+	it("keeps the typed text on screen when the save fails", async () => {
+		// The draft is the only copy of it. Closing the editor over a failed
+		// write discards what the person wrote and says nothing about why.
+		state.summaryRejects = true;
+		const user = userEvent.setup();
+		renderPage();
+
+		await user.click(screen.getByRole("button", { name: /edit summary/i }));
+		await user.clear(screen.getByLabelText("Topic summary"));
+		await user.type(screen.getByLabelText("Topic summary"), "Not saved.");
+		await user.click(screen.getByRole("button", { name: /save summary/i }));
+
+		expect(screen.getByLabelText("Topic summary")).toHaveValue(
+			"Not saved.",
+		);
+		expect(toastError).toHaveBeenCalled();
+	});
+
+	it("writes nothing on Cancel", async () => {
+		const user = userEvent.setup();
+		renderPage();
+
+		await user.click(screen.getByRole("button", { name: /edit summary/i }));
+		await user.type(
+			screen.getByLabelText("Topic summary"),
+			" and abandoned",
+		);
+		await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+		expect(updateSummaryMutate).not.toHaveBeenCalled();
+		expect(
+			screen.getByText(/we cut duplicate deliveries/i),
+		).toBeInTheDocument();
+	});
+
+	it("offers to add one when the topic has no summary", async () => {
+		state.topic = topic({ pitch: null });
+		const user = userEvent.setup();
+		renderPage();
+
+		expect(screen.getByText(/no summary yet/i)).toBeInTheDocument();
+		await user.click(
+			screen.getByRole("button", { name: /add a summary/i }),
+		);
+		expect(screen.getByLabelText("Topic summary")).toHaveValue("");
+	});
+});
+
+/**
+ * The private notebook.
+ *
+ * The hint says the AI never reads or edits this, which makes it a CONTRACT
+ * rather than a description of today — the last case below is what keeps it
+ * one from this page's side.
+ */
+describe("TopicItemPage — private notes", () => {
+	it("says whose notebook it is, and that the AI stays out", () => {
+		renderPage();
+
+		expect(
+			screen.getByText(/your private notebook for this topic/i),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/the ai never reads or edits this/i),
+		).toBeInTheDocument();
+	});
+
+	it("shows the notes on record", () => {
+		state.topic = topic({ notes: "Ask Dana about the numbers." });
+		renderPage();
+
+		expect(screen.getByRole("textbox", { name: "Notes" })).toHaveValue(
+			"Ask Dana about the numbers.",
+		);
+	});
+
+	it("saves on blur, through setTopicNotes", async () => {
+		const user = userEvent.setup();
+		renderPage();
+
+		await user.type(
+			screen.getByRole("textbox", { name: "Notes" }),
+			"Check the graph.",
+		);
+		await user.tab();
+
+		expect(setNotesMutate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "proj-1",
+				topicId: "topic-1",
+				notes: "Check the graph.",
+			}),
+		);
+	});
+
+	it("sends the text UNTRIMMED, as the column stores it", async () => {
+		// The procedure trims only to TEST emptiness. A client-side trim would
+		// eat the trailing blank line every notebook grows.
+		const user = userEvent.setup();
+		renderPage();
+
+		await user.type(
+			screen.getByRole("textbox", { name: "Notes" }),
+			"  padded  ",
+		);
+		await user.tab();
+
+		expect(setNotesMutate).toHaveBeenCalledWith(
+			expect.objectContaining({ notes: "  padded  " }),
+		);
+	});
+
+	it("writes nothing when a blur changed nothing", async () => {
+		state.topic = topic({ notes: "Unchanged." });
+		const user = userEvent.setup();
+		renderPage();
+
+		await user.click(screen.getByRole("textbox", { name: "Notes" }));
+		await user.tab();
+
+		expect(setNotesMutate).not.toHaveBeenCalled();
+	});
+
+	it("gives a reader the notes without a field that would 403 on blur", () => {
+		state.topic = topic({ notes: "Reader can see this." });
+		renderPage(false);
+
+		expect(screen.getByText("Reader can see this.")).toBeInTheDocument();
+		expect(
+			screen.queryByRole("textbox", { name: "Notes" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("never hands the notes to the assistant", async () => {
+		// The hint is a promise. This page's only AI-facing consumer is the
+		// assistant rail's `context` prop, and the notes must not be anywhere
+		// in it — not under a key of their own, and not smuggled in by
+		// spreading the topic.
+		state.topic = topic({ notes: "SECRET-NOTEBOOK-TEXT" });
+		renderPage();
+
+		// WAIT for the hand-off first. The rail arrives through `next/dynamic`,
+		// so a synchronous read here is `null` and the assertion below passes
+		// against a context that was never captured — proving nothing.
+		await waitFor(() => expect(assistantCapture.context).not.toBeNull());
+		expect(JSON.stringify(assistantCapture.context)).not.toContain(
+			"SECRET-NOTEBOOK-TEXT",
+		);
+	});
+});
+
 describe("TopicItemPage — blockers", () => {
 	const blocker = (overrides: Record<string, unknown> = {}) => ({
 		root: {
@@ -1993,13 +2303,16 @@ describe("TopicItemPage — blockers", () => {
 		).toBeInTheDocument();
 	});
 
-	it("offers both ways out — provide it, or say it is not needed", () => {
+	it("offers both ways out — answer it, or say it is not needed", () => {
 		state.decisionThreads = [blocker()];
 		renderPage();
 
+		// "Answer", not "Mark provided": the text it opens is a real answer the
+		// regenerated analysis writes from, and bookkeeping wording taught
+		// people the click alone was the whole act.
 		const section = screen.getByLabelText("Before this can be published");
 		expect(
-			within(section).getByRole("button", { name: /mark provided/i }),
+			within(section).getByRole("button", { name: "Answer" }),
 		).toBeInTheDocument();
 		expect(
 			within(section).getByRole("button", { name: /not needed/i }),
@@ -2278,5 +2591,75 @@ describe("TopicItemPage — what the assistant is told is still open (Fizzy #198
 				"the customer name",
 			]),
 		);
+	});
+});
+
+/**
+ * The header block, after the density pass.
+ *
+ * Two separate complaints, both about a reader not being able to place what
+ * they were looking at: the rank reason took a full-width band of its own for
+ * four words, and a lone avatar with a bare username beside it said nothing
+ * about what that name claimed.
+ */
+describe("TopicItemPage — the header says what it is, once", () => {
+	it("puts the rank reason on the title row and nowhere else", () => {
+		// `TopicDetails` renders it too unless told not to, and the page used
+		// to let it: hoisting without `showRankReason={false}` would put the
+		// same sentence on screen twice.
+		state.topic = topic({
+			rankReason: { kind: "contributed" },
+		});
+		renderPage();
+
+		expect(screen.getAllByText(/based on your contribution/i)).toHaveLength(
+			1,
+		);
+	});
+
+	it("labels the contributor list, as the assignee list already was", () => {
+		state.topic = topic({
+			contributors: [
+				{ id: "u1", name: "Ada", image: null, username: "ada" },
+			],
+		});
+		renderPage();
+
+		const list = screen.getByRole("list", { name: "Contributors" });
+		expect(within(list).getByText("Contributors")).toBeInTheDocument();
+		expect(within(list).getByText("ada")).toBeInTheDocument();
+	});
+});
+
+/**
+ * An analysis goes stale two ways, and the second one arrived with the
+ * editable summary: the analysis is derived from that text, so an edit leaves
+ * it describing a topic that no longer says what it said.
+ */
+describe("TopicItemPage — a summary edit makes the analysis stale too", () => {
+	it("raises the notice when the summary changed after the analysis was written", () => {
+		state.topic = topic({
+			pitchUpdatedAt: "2026-02-02T00:00:00.000Z",
+		});
+		state.aiCreatedAt = new Date("2026-01-01T00:00:00.000Z");
+		renderPage();
+
+		expect(
+			screen.getByTestId("analysis-behind-decisions"),
+		).toHaveTextContent(/the summary changed after the analysis/i);
+	});
+
+	it("stays quiet when the summary was edited BEFORE the analysis ran", () => {
+		// The negative control: the column is stamped on every summary write,
+		// including ones the analysis has already folded in.
+		state.topic = topic({
+			pitchUpdatedAt: "2026-01-01T00:00:00.000Z",
+		});
+		state.aiCreatedAt = new Date("2026-02-02T00:00:00.000Z");
+		renderPage();
+
+		expect(
+			screen.queryByTestId("analysis-behind-decisions"),
+		).not.toBeInTheDocument();
 	});
 });

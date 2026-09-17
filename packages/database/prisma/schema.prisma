@@ -7445,6 +7445,24 @@ model PublishingTopic {
   cycleId                 String? // null for manually-created topics
   title                   String
   pitch                   String?                   @db.Text
+  /// When the summary above was last edited BY HAND. null = never, which is
+  /// every topic a suggestion cycle wrote and nobody has touched since — so it
+  /// reads as "unedited" rather than as a missing value, and the AI's own
+  /// writes deliberately do not stamp it.
+  ///
+  /// Exists so a planning analysis generated BEFORE the edit can be shown as
+  /// predating the current summary, the same staleness signal an answer
+  /// recorded after that analysis already gives. Nothing schedules off it and
+  /// nothing filters on it in SQL.
+  pitchUpdatedAt          DateTime?
+  /// The topic's PRIVATE NOTEBOOK — the person's own working text, and the one
+  /// field on this model the AI neither reads nor writes.
+  ///
+  /// Deliberately NOT more room inside `pitch`: the summary is generation
+  /// input, so anything stored there reaches a prompt. The product promises in
+  /// as many words that this column does not, which makes it a contract rather
+  /// than a current fact. No generation select lists it — keep it that way.
+  notes                   String?                   @db.Text
   status                  PublishingTopicStatus     @default(SUGGESTION)
   origin                  PublishingTopicOrigin
   createdById             String? // creating user (manual topics)
@@ -12351,6 +12369,7 @@ model ProjectConversation {
 enum DocumentRefKind {
   PROJECT_DOCUMENT
   USER_STORY
+  PUBLISHING_TOPIC
 }
 
 enum DocumentAssistantVisibility {

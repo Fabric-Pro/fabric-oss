@@ -222,6 +222,36 @@ describe("ShortPostPanel — the generate control", () => {
 		);
 	});
 
+	it("keeps the guidance field on the page before the first run", () => {
+		// With no candidates on screen there is nothing for the button to sit
+		// on, and someone who has never run this tab should be shown what
+		// steers it rather than have to find it behind a popover.
+		renderPanel();
+
+		expect(screen.getByLabelText(/guidance/i)).toBeInTheDocument();
+	});
+
+	it("collapses guidance behind the button once drafts exist", async () => {
+		// The field is not merely moved, it is PUT AWAY. Above the drafts it
+		// was an input asking to be filled in before every regeneration; the
+		// common case is regenerating with nothing more to say, and the field
+		// charged that case a permanent box over the content it acts on.
+		const user = userEvent.setup();
+		renderPanel({ draft: readyDraft() });
+
+		expect(screen.queryByLabelText(/guidance/i)).not.toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("button", { name: /regenerate drafts/i }),
+		);
+
+		expect(
+			within(await screen.findByRole("dialog")).getByLabelText(
+				/guidance/i,
+			),
+		).toBeInTheDocument();
+	});
+
 	it("DISABLES the button while a live run is in flight", () => {
 		const draft = readyDraft();
 		draft.latestAttempt = {
@@ -342,6 +372,19 @@ describe("ShortPostPanel — the working draft", () => {
 		sourceOptionLabel: "Direct",
 		updatedAt: new Date(),
 	};
+
+	it("gives the editor a viewport-relative height, not four rows", () => {
+		// The one assertion in this file on a CLASS rather than a role or a
+		// text, and deliberately: "big enough to work in" has no accessible
+		// expression to assert against. `rows={4}` was the complaint, and the
+		// fix is the clamp the Planning & Analysis editor sizes its region
+		// with.
+		renderPanel({ working });
+
+		expect(
+			screen.getByRole("textbox", { name: /working short post/i }),
+		).toHaveClass("h-[clamp(24rem,60vh,44rem)]");
+	});
 
 	it("takes a candidate from an EARLIER version, not just the newest", async () => {
 		// "Maybe I realised the previous proposals were better." A short-form
@@ -747,13 +790,29 @@ const REFINE_WORKING = {
 };
 
 describe("ShortPostPanel — refining the saved draft (Fizzy #1851, A7)", () => {
+	/**
+	 * Opens the refine popover and hands back a scope inside it.
+	 *
+	 * The instruction now lives behind "Refine with AI" in the draft's own
+	 * action row, so every assertion about the FIELD has to open it first.
+	 * Assertions about the control EXISTING query the trigger instead — behind
+	 * a popover the field is absent either way, so querying for it would pass
+	 * with the button sitting there offering a refinement of nothing.
+	 */
+	async function openRefine(user: ReturnType<typeof userEvent.setup>) {
+		await user.click(
+			screen.getByRole("button", { name: /refine with ai/i }),
+		);
+		return within(await screen.findByRole("dialog"));
+	}
+
 	it("does NOT offer refine before anything is saved", () => {
 		// With no working draft the action has no input, and offering it would
 		// be a regeneration wearing a label that promises otherwise.
 		renderPanel({ draft: readyDraft() });
 
 		expect(
-			screen.queryByRole("button", { name: /refine draft/i }),
+			screen.queryByRole("button", { name: /refine with ai/i }),
 		).not.toBeInTheDocument();
 	});
 
@@ -763,17 +822,19 @@ describe("ShortPostPanel — refining the saved draft (Fizzy #1851, A7)", () => 
 		});
 
 		expect(
-			screen.queryByRole("button", { name: /refine draft/i }),
+			screen.queryByRole("button", { name: /refine with ai/i }),
 		).not.toBeInTheDocument();
 	});
 
 	it("offers refine ALONGSIDE regenerate once a draft is saved", () => {
 		// A second action, not a replacement: the two answer different
-		// questions and both stay reachable.
+		// questions and both stay reachable. They no longer sit in one column
+		// of fields — refine is on the draft it revises, regenerate is on the
+		// candidates it replaces — but reachable is reachable.
 		renderPanel({ draft: readyDraft(), working: REFINE_WORKING });
 
 		expect(
-			screen.getByRole("button", { name: /refine draft/i }),
+			screen.getByRole("button", { name: /refine with ai/i }),
 		).toBeInTheDocument();
 		expect(
 			screen.getByRole("button", { name: /regenerate drafts/i }),
@@ -784,11 +845,12 @@ describe("ShortPostPanel — refining the saved draft (Fizzy #1851, A7)", () => 
 		const user = userEvent.setup();
 		renderPanel({ working: REFINE_WORKING });
 
-		const button = screen.getByRole("button", { name: /refine draft/i });
+		const popover = await openRefine(user);
+		const button = popover.getByRole("button", { name: /refine draft/i });
 		expect(button).toBeDisabled();
 
 		await user.type(
-			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			popover.getByRole("textbox", { name: /refine the saved draft/i }),
 			"Make it shorter.",
 		);
 		expect(button).toBeEnabled();
@@ -796,14 +858,19 @@ describe("ShortPostPanel — refining the saved draft (Fizzy #1851, A7)", () => 
 
 	it("sends the instruction with the refine flag, and no body", async () => {
 		// The panel names the intent; the server reads the text it revises.
+		// The payload is what it always was — this move changed where the
+		// field lives, not a byte of what it sends.
 		const user = userEvent.setup();
 		renderPanel({ working: REFINE_WORKING });
 
+		const popover = await openRefine(user);
 		await user.type(
-			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			popover.getByRole("textbox", { name: /refine the saved draft/i }),
 			"Warmer tone.",
 		);
-		await user.click(screen.getByRole("button", { name: /refine draft/i }));
+		await user.click(
+			popover.getByRole("button", { name: /refine draft/i }),
+		);
 
 		expect(mutate.generate).toHaveBeenCalledWith({
 			projectId: "p1",
@@ -820,12 +887,20 @@ describe("ShortPostPanel — refining the saved draft (Fizzy #1851, A7)", () => 
 		const user = userEvent.setup();
 		renderPanel({ draft: readyDraft(), working: REFINE_WORKING });
 
+		const refine = await openRefine(user);
 		await user.type(
-			screen.getByRole("textbox", { name: /refine the saved draft/i }),
+			refine.getByRole("textbox", { name: /refine the saved draft/i }),
 			"Warmer tone.",
 		);
+		await user.keyboard("{Escape}");
+
 		await user.click(
 			screen.getByRole("button", { name: /regenerate drafts/i }),
+		);
+		await user.click(
+			within(await screen.findByRole("dialog")).getByRole("button", {
+				name: "Regenerate",
+			}),
 		);
 
 		expect(mutate.generate).toHaveBeenCalledWith(
@@ -836,11 +911,19 @@ describe("ShortPostPanel — refining the saved draft (Fizzy #1851, A7)", () => 
 		);
 	});
 
-	it("says the saved draft is safe until the result is adopted", () => {
+	it("says the saved draft is safe until the result is adopted", async () => {
+		// The promise moved INTO the popover with the field it qualifies.
+		// Under an always-visible field it was a standing paragraph about an
+		// action nobody had taken yet.
+		const user = userEvent.setup();
 		renderPanel({ working: REFINE_WORKING });
 
+		const popover = await openRefine(user);
+
 		expect(
-			screen.getByText(/nothing you have saved changes until you adopt/i),
+			popover.getByText(
+				/nothing you have saved changes until you adopt/i,
+			),
 		).toBeInTheDocument();
 	});
 
@@ -848,7 +931,7 @@ describe("ShortPostPanel — refining the saved draft (Fizzy #1851, A7)", () => 
 		renderPanel({ working: REFINE_WORKING, canEdit: false });
 
 		expect(
-			screen.queryByRole("button", { name: /refine draft/i }),
+			screen.queryByRole("button", { name: /refine with ai/i }),
 		).not.toBeInTheDocument();
 	});
 });

@@ -826,6 +826,15 @@ export interface PublishingTopicListItem {
 	 * it is a forced ranking rather than a score.
 	 */
 	highlightReason: string | null;
+	/** When `pitch` was last edited BY HAND; null = never. The Topic Item Page
+	 *  compares it against the planning analysis to decide whether the analysis
+	 *  predates the summary it was built from. The AI's own writes do not stamp
+	 *  it, so `null` on an AI-suggested topic means "as written", not "unknown". */
+	pitchUpdatedAt: Date | null;
+	/** The topic's private notebook. The one field here the AI neither reads nor
+	 *  writes: no generation select lists it, and none may — see the column's
+	 *  own comment. */
+	notes: string | null;
 	subject: string | null;
 	whySuggested: PublishingWhySuggested;
 	userPostTypes: PublishingTopicPostType[] | null;
@@ -857,6 +866,8 @@ const TOPIC_LIST_SELECT = {
 	postTypeRecommendations: true,
 	angle: true,
 	highlightReason: true,
+	pitchUpdatedAt: true,
+	notes: true,
 	subject: true,
 	provenance: true,
 	postTypesOverridden: true,
@@ -2083,6 +2094,66 @@ export async function updatePublishingTopicAssignees(i: {
 		select: TOPIC_SELECT,
 	});
 	return topic ? { topic, addedUserIds } : null;
+}
+
+/**
+ * Replace a topic's SUMMARY (`pitch`) and stamp when it was hand-edited.
+ *
+ * The two columns move together on purpose. `pitchUpdatedAt` exists to say "the
+ * summary changed after that analysis was written", so a write that set one
+ * without the other would make it lie.
+ *
+ * Clearing the summary stamps the time TOO. Deleting a summary is an edit, and
+ * it invalidates an analysis built from the old text exactly as surely as
+ * rewriting it does. This is the opposite of `setPublishingTopicSnooze` above,
+ * which clears both its columns together — and the difference is the point:
+ * there the rationale describes a state the row is no longer in, so keeping it
+ * would be stale; here the timestamp describes the EDIT, which did happen.
+ *
+ * Project-scoped `updateMany` like every sibling, and writes no tenant columns:
+ * a topic id from another project matches nothing and returns 0 rather than
+ * reaching across. `now` is injectable for tests only; callers omit it.
+ *
+ * The TITLE is deliberately not writable here — `dedupeKey` is derived from it
+ * and backs `@@unique([projectId, dedupeKey])`, so a rename needs the key
+ * recomputed and the resulting collision handled.
+ */
+export async function updatePublishingTopicSummary(i: {
+	id: string;
+	projectId: string;
+	pitch: string | null;
+	now?: Date;
+}): Promise<number> {
+	const { count } = await db.publishingTopic.updateMany({
+		where: { id: i.id, projectId: i.projectId }, // project-scoped guard
+		data: { pitch: i.pitch, pitchUpdatedAt: i.now ?? new Date() },
+	});
+	return count;
+}
+
+/**
+ * Set or clear a topic's PRIVATE NOTEBOOK (`notes`).
+ *
+ * The only writer of this column, and the notebook model is the whole reason it
+ * exists: the text is the person's own, and the AI neither reads it nor writes
+ * it. That is stricter than `setWorkingNotes` on a feature, where the AI reads
+ * the notes and only never writes them — and the product states this one in as
+ * many words, which makes it a contract. `notes` must stay out of every prompt
+ * variable builder, every planning/draft context, and every AI-facing select.
+ *
+ * Project-scoped `updateMany` like every sibling, and writes no tenant columns.
+ * Returns the affected count; 0 means the id does not belong to this project.
+ */
+export async function setPublishingTopicNotes(i: {
+	id: string;
+	projectId: string;
+	notes: string | null;
+}): Promise<number> {
+	const { count } = await db.publishingTopic.updateMany({
+		where: { id: i.id, projectId: i.projectId }, // project-scoped guard
+		data: { notes: i.notes },
+	});
+	return count;
 }
 
 /**

@@ -846,7 +846,7 @@ export type PublishingListPreferenceScalarFieldEnum = z.infer<typeof PublishingL
 
 // File: PublishingTopicScalarFieldEnum.schema.ts
 
-export const PublishingTopicScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'cycleId', 'title', 'pitch', 'status', 'origin', 'createdById', 'declineReason', 'snoozedUntil', 'snoozeReason', 'publishedUrl', 'provenance', 'suggestedPostTypes', 'contributorUserIds', 'contributorsOverridden', 'userContributorUserIds', 'assigneeUserIds', 'relevantFunctionTags', 'postTypeRecommendations', 'postTypesOverridden', 'userPostTypes', 'highlightReason', 'angle', 'subject', 'subjectKey', 'dedupeKey', 'createdAt', 'updatedAt'])
+export const PublishingTopicScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'cycleId', 'title', 'pitch', 'pitchUpdatedAt', 'notes', 'status', 'origin', 'createdById', 'declineReason', 'snoozedUntil', 'snoozeReason', 'publishedUrl', 'provenance', 'suggestedPostTypes', 'contributorUserIds', 'contributorsOverridden', 'userContributorUserIds', 'assigneeUserIds', 'relevantFunctionTags', 'postTypeRecommendations', 'postTypesOverridden', 'userPostTypes', 'highlightReason', 'angle', 'subject', 'subjectKey', 'dedupeKey', 'createdAt', 'updatedAt'])
 
 export type PublishingTopicScalarFieldEnum = z.infer<typeof PublishingTopicScalarFieldEnumSchema>;
 
@@ -2976,7 +2976,7 @@ export type WorkspaceAccessLevel = z.infer<typeof WorkspaceAccessLevelSchema>;
 
 // File: DocumentRefKind.schema.ts
 
-export const DocumentRefKindSchema = z.enum(['PROJECT_DOCUMENT', 'USER_STORY'])
+export const DocumentRefKindSchema = z.enum(['PROJECT_DOCUMENT', 'USER_STORY', 'PUBLISHING_TOPIC'])
 
 export type DocumentRefKind = z.infer<typeof DocumentRefKindSchema>;
 
@@ -6703,6 +6703,8 @@ export const PublishingTopicSchema = z.object({
   cycleId: z.string().nullish(),
   title: z.string(),
   pitch: z.string().nullish(),
+  pitchUpdatedAt: z.date().nullish(),
+  notes: z.string().nullish(),
   status: PublishingTopicStatusSchema.default("SUGGESTION"),
   origin: PublishingTopicOriginSchema,
   createdById: z.string().nullish(),

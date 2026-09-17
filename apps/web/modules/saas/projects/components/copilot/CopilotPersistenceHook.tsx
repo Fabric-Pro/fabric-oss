@@ -68,6 +68,7 @@
  *     itself is not blocked — persistence is best-effort.
  */
 
+import type { DocumentRefKind } from "@saas/projects/hooks/useDocumentAssistantHistory";
 // CopilotKit 1.52 — `useCopilotChatInternal()` is the only correct read
 // hook for the live message store. Short version:
 //   - `useCopilotChat()` Omits `messages` from its public return type
@@ -112,7 +113,7 @@ export interface PendingAttachment {
 }
 
 interface CopilotPersistenceHookProps {
-	documentRefKind: "PROJECT_DOCUMENT" | "USER_STORY";
+	documentRefKind: DocumentRefKind;
 	documentRefId: string;
 	projectId: string;
 	organizationId: string | null;

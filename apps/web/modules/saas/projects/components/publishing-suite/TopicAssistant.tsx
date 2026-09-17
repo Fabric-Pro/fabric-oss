@@ -9,9 +9,14 @@ import {
 import { CopilotSidebar, useChatContext } from "@copilotkit/react-ui";
 import "@copilotkit/react-ui/styles.css";
 import { useSession } from "@saas/auth/hooks/use-session";
+import { useActiveDocumentAssistantConversation } from "@saas/projects/hooks/useDocumentAssistantHistory";
+import { AttachmentRegistryProvider } from "@saas/shared/components/copilot/AttachmentRegistry";
+import { CopilotAssistantMessage } from "@saas/shared/components/copilot/CopilotAssistantMessage";
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
+import { useClarifyingQuestions } from "@saas/shared/components/copilot/useClarifyingQuestions";
 import { Button } from "@ui/components/button";
+import { useParams } from "next/navigation";
 import type { ErrorInfo, ReactNode } from "react";
 import {
 	Component,
@@ -21,7 +26,15 @@ import {
 	useRef,
 	useState,
 } from "react";
+import {
+	CopilotPersistenceHook,
+	type PendingAttachment,
+} from "../copilot/CopilotPersistenceHook";
 import { createCopilotSidebarLauncher } from "../copilot/CopilotSidebarLauncher";
+import { CustomMessages } from "../copilot/CustomMessages";
+import { DocumentAssistantOutcomesProvider } from "../copilot/DocumentAssistantOutcomesProvider";
+import type { HydratedMessage } from "../copilot/HydratedMessagesContext";
+import { HydratedMessagesProvider } from "../copilot/HydratedMessagesContext";
 
 /**
  * The assistant rail beside a publishing topic (Fizzy #1851, finding #15).
@@ -37,11 +50,13 @@ import { createCopilotSidebarLauncher } from "../copilot/CopilotSidebarLauncher"
  * document under discussion, lets the agent rewrite it through its own
  * `write_document_local` (a predictive-state tool, so the text streams back
  * into co-agent state), and renders the agent's `confirm_changes` tool call as
- * an accept/reject card. Exactly one frontend action is registered there, and
- * exactly one is registered here. Writing a bespoke "propose a rewrite" action
- * instead would have put a second, unprompted tool beside the agent's own
- * blessed one and left the model to choose — the failure being a chat that
- * says it rewrote the analysis while nothing reaches the page.
+ * an accept/reject card. Every frontend action registered here is one the
+ * agent's own prompt already names — `confirm_changes` and
+ * `ask_clarifying_question`, the same two FMv2 registers. Writing a bespoke
+ * "propose a rewrite" action instead would have put an UNPROMPTED tool beside
+ * the agent's blessed ones and left the model to choose — the failure being a
+ * chat that says it rewrote the analysis while nothing reaches the page. The
+ * count is not the rule; "the agent asked for this tool by name" is.
  *
  * WHAT IS DELIBERATELY DIFFERENT: accepting does not save. FMv2 autosaves;
  * this suite does not, because #1929's worst defect was an autosave racing an
@@ -49,11 +64,22 @@ import { createCopilotSidebarLauncher } from "../copilot/CopilotSidebarLauncher"
  * revision here is defined as "what a person saved". So accept SEEDS the
  * Planning & Analysis editor and the existing Save stays the only writer.
  *
- * THE CONVERSATION IS EPHEMERAL. The document editor persists its thread
- * through `CopilotPersistenceHook`, a hydration provider and an attachment
- * registry; none of that is wired here, so leaving the page ends the
- * conversation. That is a scoped gap in this first cut, not a defect to
- * diagnose later.
+ * THE CONVERSATION PERSISTS, on the same stack the document editor uses:
+ * `CopilotPersistenceHook` writes each terminal turn, `HydratedMessagesProvider`
+ * plus `CustomMessages` replay the stored thread above the live one, and
+ * `DocumentAssistantOutcomesProvider` carries the accept/reject stamps into the
+ * live bubble. `PUBLISHING_TOPIC` is a first-class `DocumentRefKind`, so none of
+ * that needed a publishing-specific branch.
+ *
+ * HYDRATION IS CLIENT-SIDE HERE, and that is the one real divergence from FMv2,
+ * which threads an SSR-loaded transcript down from its route. This component is
+ * loaded dynamically and is handed no such payload, so it resolves the active
+ * conversation with `useActiveDocumentAssistantConversation` and lets
+ * `HydratedMessagesProvider` fetch the turns itself — the path that provider
+ * already takes whenever its own query resolves, SSR seed or not. The only cost
+ * is first paint: FMv2 renders history immediately, this renders an empty thread
+ * for one round trip. Adding the SSR seed later is additive and changes nothing
+ * below.
  */
 class TopicAssistantErrorBoundary extends Component<
 	{ children: ReactNode },
@@ -148,11 +174,6 @@ export function TopicAssistant({
 		[organizationId],
 	);
 
-	const Launcher = useMemo(
-		() => createCopilotSidebarLauncher({ label: "AI Assistant" }),
-		[],
-	);
-
 	return (
 		<TopicAssistantErrorBoundary>
 			<CopilotKit
@@ -180,7 +201,168 @@ export function TopicAssistant({
 						canEdit={canEdit}
 						onApplyRewrite={onApplyRewrite}
 					/>
+					<TopicAssistantConversation
+						projectId={projectId}
+						organizationId={organizationId}
+					/>
+				</CopilotChatSessionProvider>
+			</CopilotKit>
+		</TopicAssistantErrorBoundary>
+	);
+}
+
+/**
+ * Module-scope so the reference never changes. `HydratedMessagesProvider` lists
+ * `initialMessages` in a `useMemo` dependency array, and this component
+ * re-renders on every streaming tick — a fresh `[]` literal would recompute the
+ * historical message set on each one.
+ *
+ * Always empty: that prop is the SSR first-paint seed, and this surface has no
+ * SSR payload to seed it with (see the component docblock).
+ */
+const NO_SSR_MESSAGES: ReadonlyArray<HydratedMessage> = Object.freeze([]);
+
+/** This surface's `DocumentRefKind`. Hoisted so the literal narrows once. */
+const TOPIC_REF_KIND = "PUBLISHING_TOPIC" as const;
+
+/**
+ * The persisted conversation, and the sidebar that renders it.
+ *
+ * WHY THIS IS ITS OWN COMPONENT and not part of `TopicAssistant`: every hook
+ * below has to sit INSIDE `TopicAssistantErrorBoundary`, whose whole purpose is
+ * that a provider which cannot start costs the assistant and not the topic page.
+ * Hooks called in `TopicAssistant`'s own body are above that boundary, where a
+ * throw takes the page with it. `AttachmentRegistryProvider` also reads
+ * `useCopilotChatSession()`, so it has to be below the session provider too.
+ *
+ * THE TOPIC ID COMES FROM THE ROUTE, not a prop. This component is rendered by
+ * `TopicItemPage`, which has the id, but reading it from `useParams` keeps the
+ * persistence wiring self-contained instead of widening that component's
+ * contract. The route is `/app/.../projects/[id]/publishing/[topicId]`, and the
+ * assistant only ever mounts underneath it; `CopilotAssistantMessage` derives
+ * its own project context the same way. Without a `topicId` there is nothing to
+ * key a conversation on, so persistence stays off and the chat still works —
+ * which is the pre-existing behaviour, not a regression.
+ *
+ * NO FEATURE-FLAG GATE HERE, deliberately, and this diverges from
+ * `StoryWorkspace`, which gates its `<CopilotPersistenceHook>` mount on
+ * `documentAssistantHistoryEnabled`. The gate is unnecessary: every read hook in
+ * `useDocumentAssistantHistory` sets `enabled: featureEnabled && ...` and the
+ * append mutation throws when the flag is off, so the stack already fails closed
+ * from the inside. Repeating it here would couple the publishing suite to a
+ * kill switch it does not own, for no behavioural difference.
+ */
+function TopicAssistantConversation({
+	projectId,
+	organizationId,
+}: {
+	projectId: string;
+	organizationId: string | null;
+}) {
+	const params = useParams<{ topicId?: string }>();
+	const topicId = params?.topicId ?? null;
+
+	const Launcher = useMemo(
+		() => createCopilotSidebarLauncher({ label: "AI Assistant" }),
+		[],
+	);
+
+	// Memoised because it is the query key for the active-conversation read and
+	// is passed to three providers; a fresh literal per render would refetch and
+	// re-render the whole persisted thread on every streaming tick.
+	const scope = useMemo(
+		() => ({
+			documentRefKind: TOPIC_REF_KIND,
+			documentRefId: topicId ?? "",
+			projectId,
+			organizationId,
+		}),
+		[topicId, projectId, organizationId],
+	);
+
+	const { data: activeConversation } = useActiveDocumentAssistantConversation(
+		scope,
+		{ enabled: topicId !== null },
+	);
+	const serverConversationId = activeConversation?.conversation?.id ?? null;
+
+	// The id `CopilotPersistenceHook` lazy-creates on the first turn, or the
+	// continuation id it spills to at the 200-turn cap. Null until one of those
+	// happens, which is why the server's id is the fallback rather than the
+	// other way round: once this surface has resolved an id, that is the thread
+	// the user is actually typing into.
+	const [resolvedConversationId, setResolvedConversationId] = useState<
+		string | null
+	>(null);
+	const conversationId = resolvedConversationId ?? serverConversationId;
+
+	// Ids already in the database, so the persistence walker does not re-append
+	// the hydrated turns it sees on its first tick. The server is idempotent on
+	// message id, so this saves round trips rather than preventing corruption.
+	const persistedMessageIds = useMemo<ReadonlyArray<string>>(() => {
+		const messages = activeConversation?.conversation?.messages;
+		if (!Array.isArray(messages)) {
+			return [];
+		}
+		const ids: string[] = [];
+		for (const message of messages) {
+			const id = (message as { id?: unknown })?.id;
+			if (typeof id === "string" && id.length > 0) {
+				ids.push(id);
+			}
+		}
+		return ids;
+	}, [activeConversation]);
+
+	// INERT ON THIS SURFACE, and mounted anyway. The registry is a derivation of
+	// (this FIFO, the message stream), and the FIFO is filled by
+	// `CopilotSidebarInput`'s `onAttachmentsForNextMessage` — which this sidebar
+	// does not use, because it keeps CopilotKit's default input. So nothing ever
+	// pushes a batch and the registry stays empty. It is here because
+	// `CopilotPersistenceHook` reads the registry to attach files to a persisted
+	// turn, and that is the seam that has to already exist the day this surface
+	// gains an attachment-capable input. It costs one ref and one context.
+	const pendingAttachmentsRef = useRef<PendingAttachment[][]>([]);
+
+	return (
+		<AttachmentRegistryProvider
+			pendingAttachmentsRef={pendingAttachmentsRef}
+		>
+			<DocumentAssistantOutcomesProvider
+				documentRefKind={TOPIC_REF_KIND}
+				documentRefId={topicId ?? ""}
+				projectId={projectId}
+				organizationId={organizationId}
+			>
+				<HydratedMessagesProvider
+					initialMessages={NO_SSR_MESSAGES}
+					// No SSR transcript to be stale against, so the provider's
+					// "is the seed still the active thread" check is simply
+					// false and it renders what its own query returns.
+					ssrConversationId={null}
+					activeConversationId={conversationId}
+					documentRefKind={TOPIC_REF_KIND}
+					documentRefId={topicId ?? ""}
+					projectId={projectId}
+					organizationId={organizationId}
+				>
 					<CopilotSidebar
+						// The agent already streams `reasoningByTurn` and
+						// `toolCallsByTurn` into co-agent state; without this
+						// prop CopilotKit's default bubble renders and the
+						// trace is thrown away, so the chat sat silent for the
+						// seconds a tool call takes. The shared renderer is a
+						// module-scope constant bound to
+						// `project_document_generator` — the agent mounted
+						// above — so its identity is already stable and
+						// wrapping it in `useMemo` would be the bug, not the
+						// fix.
+						AssistantMessage={CopilotAssistantMessage}
+						// Replays the persisted thread above the live one.
+						// Reads the hydration context directly, and falls back
+						// to live-only when none is mounted, so it is the half
+						// of persistence the user actually sees.
+						Messages={CustomMessages}
 						// DOCKED OPEN, as the Feature Assistant is. The
 						// assistant was reachable from every tab already —
 						// mounted at page level, outside `<Tabs>` — but behind
@@ -196,10 +378,38 @@ export function TopicAssistant({
 						}}
 					>
 						<CloseAssistantOnNarrowViewport />
+						{/* Writes each terminal turn through
+						    `appendTurnForDocument`. Renders null; it is a
+						    child of the sidebar so its
+						    `useCopilotChatSession()` read resolves against the
+						    same session the sidebar renders from. Skipped
+						    without a topic id, since there would be no
+						    document to key the conversation to. */}
+						{topicId !== null ? (
+							<CopilotPersistenceHook
+								documentRefKind={TOPIC_REF_KIND}
+								documentRefId={topicId}
+								projectId={projectId}
+								organizationId={organizationId}
+								conversationId={conversationId}
+								onConversationIdResolved={
+									setResolvedConversationId
+								}
+								onSpilled={setResolvedConversationId}
+								// No visibility chip on this surface, so every
+								// topic thread is SHARED — matching the rest of
+								// the publishing suite, where a topic is a team
+								// artefact rather than one person's draft.
+								requestedVisibility="SHARED"
+								agentId="project_document_generator"
+								pendingAttachmentsRef={pendingAttachmentsRef}
+								initialPersistedMessageIds={persistedMessageIds}
+							/>
+						) : null}
 					</CopilotSidebar>
-				</CopilotChatSessionProvider>
-			</CopilotKit>
-		</TopicAssistantErrorBoundary>
+				</HydratedMessagesProvider>
+			</DocumentAssistantOutcomesProvider>
+		</AttachmentRegistryProvider>
 	);
 }
 
@@ -354,6 +564,18 @@ function TopicAssistantAgent({
 		}
 		return true;
 	}, [analysisMarkdown]);
+
+	// Lets the agent ask instead of guess — the second half of "AI chat to the
+	// right, same as in FMv2", where a rewrite that misreads the brief costs a
+	// whole turn. FMv2 reads the project's configured tier; this surface is
+	// handed only a `projectId`, so it takes the hook's own BALANCED default
+	// rather than plumbing a project query through the page for one enum. The
+	// org id still travels, because the policy prompt behind it is
+	// tenant-scoped and dropping it resolves another tenant's wording.
+	useClarifyingQuestions({
+		frequency: "BALANCED",
+		organizationId: organizationId ?? null,
+	});
 
 	useCopilotAction(
 		{

@@ -275,8 +275,18 @@ export function useDocumentAssistantHistoryRealtimeSync(
 const HISTORY_DISABLED_ERROR_MESSAGE =
 	"Document assistant history is disabled for this organization";
 
-/** Mirrors `DocumentRefKindSchema` in `_shared.ts`. */
-export type DocumentRefKind = "PROJECT_DOCUMENT" | "USER_STORY";
+/**
+ * Mirrors `DocumentRefKindSchema` in `_shared.ts`.
+ *
+ * `PUBLISHING_TOPIC` joins the two originals rather than getting a stack of
+ * its own: every procedure and component behind this hook is polymorphic over
+ * the (kind, id) pair, so a publishing topic reuses the machinery Feature
+ * Maturation runs on under `USER_STORY`.
+ */
+export type DocumentRefKind =
+	| "PROJECT_DOCUMENT"
+	| "USER_STORY"
+	| "PUBLISHING_TOPIC";
 
 /** Mirrors `DocumentAssistantVisibilitySchema` in `_shared.ts`. */
 type DocumentAssistantVisibility = "SHARED" | "PRIVATE";

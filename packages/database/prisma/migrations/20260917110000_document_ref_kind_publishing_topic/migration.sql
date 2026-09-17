@@ -1,0 +1,18 @@
+-- Let a publishing topic's assistant conversation be persisted (Fizzy #1851).
+--
+-- The document-assistant history stack is already polymorphic: a conversation
+-- binds to a subject through `document_assistant_conversation`'s
+-- (documentRefKind, documentRefId) pair, and `CopilotPersistenceHook`,
+-- the history drawer, the fork/archive/rename procedures and the RLS policy on
+-- that table are all written against the pair rather than against a subject.
+-- Feature Maturation IS that machinery under `USER_STORY`. A publishing topic
+-- needs a third value and nothing else — no new table, no new policy.
+--
+-- ONE STATEMENT, DELIBERATELY. `ALTER TYPE ... ADD VALUE` may run inside a
+-- transaction block on PostgreSQL 12+, but the new value cannot be USED until
+-- that transaction commits, so no default, no backfill and no partial-index
+-- predicate naming 'PUBLISHING_TOPIC' may join this file — they would fail at
+-- apply time with "unsafe use of new value of enum type". The migration linter
+-- has no rule for this; it is an engine constraint. Same shape as
+-- 20260910130000_add_newsletter_blurb_post_type.
+ALTER TYPE "DocumentRefKind" ADD VALUE IF NOT EXISTS 'PUBLISHING_TOPIC';

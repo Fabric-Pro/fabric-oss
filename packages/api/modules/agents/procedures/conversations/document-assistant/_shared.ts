@@ -61,7 +61,11 @@ export const HISTORY_DISABLED_MESSAGE =
 export const VISIBILITY_LOCKED_MESSAGE =
 	"Visibility is locked after the first message";
 
-export const DocumentRefKindSchema = z.enum(["PROJECT_DOCUMENT", "USER_STORY"]);
+export const DocumentRefKindSchema = z.enum([
+	"PROJECT_DOCUMENT",
+	"USER_STORY",
+	"PUBLISHING_TOPIC",
+]);
 
 export const DocumentAssistantVisibilitySchema = z.enum(["SHARED", "PRIVATE"]);
 

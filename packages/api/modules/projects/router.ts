@@ -357,6 +357,7 @@ import {
 	selectShortPostOptionProcedure,
 	setPublishingListPreferenceProcedure,
 	setPublishingQuestionAssigneesProcedure,
+	setPublishingTopicNotesProcedure,
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
 	updatePublishingSuiteSettingsProcedure,
@@ -364,6 +365,7 @@ import {
 	updatePublishingTopicContributorsProcedure,
 	updatePublishingTopicPostTypesProcedure,
 	updatePublishingTopicStatusProcedure,
+	updatePublishingTopicSummaryProcedure,
 } from "./procedures/publishing-suite";
 import {
 	createQaOpenQuestionProcedure,
@@ -1508,6 +1510,12 @@ export const projectsRouter = {
 		cycleChatDeliveries: listCycleChatDeliveriesProcedure,
 		createTopic: createPublishingTopicProcedure,
 		updateTopicStatus: updatePublishingTopicStatusProcedure,
+		// The summary (`pitch`) only — the title stays fixed, because
+		// `dedupeKey` is derived from it and backs the project-wide uniqueness
+		// index, so a rename is a recompute plus a collision to handle. Stamps
+		// `pitchUpdatedAt`, which is what lets the page tell a reader that a
+		// planning analysis predates the summary it was built from.
+		updateTopicSummary: updatePublishingTopicSummaryProcedure,
 		updateTopicPostTypes: updatePublishingTopicPostTypesProcedure,
 		updateTopicContributors: updatePublishingTopicContributorsProcedure,
 		// A8: who should PICK THIS UP, distinct from the contributor override
@@ -1515,6 +1523,11 @@ export const projectsRouter = {
 		updateTopicAssignees: updatePublishingTopicAssigneesProcedure,
 		setTopicSnooze: setTopicSnoozeProcedure,
 		setTopicReadState: setTopicReadStateProcedure,
+		// The topic's PRIVATE notebook. Update-gated like the rest of the topic,
+		// but unlike every other field here the AI neither reads nor writes it —
+		// `notes` appears in no prompt variable builder, no planning/draft
+		// context and no AI-facing select, and must not start to.
+		setTopicNotes: setPublishingTopicNotesProcedure,
 		// The caller's OWN Inbox sort and layout for this project. Read-gated,
 		// not update-gated: how your list is sorted is not an edit to the
 		// project, and a read-only member must not be stuck on a default.

@@ -488,3 +488,93 @@ describe("PlanningAnalysisEditor — locked while a run is in flight", () => {
 		expect(fakeEditor.setEditable).toHaveBeenLastCalledWith(true);
 	});
 });
+
+/**
+ * The surface that must NOT autosave is the surface most able to lose work.
+ *
+ * Accepting the assistant's rewrite re-seeds this editor and saves nothing —
+ * deliberately, because Fizzy #1929's worst defect was an autosave racing an
+ * in-flight agent. That decision is only safe if the editor says the work has
+ * not reached the server yet, which it did not.
+ */
+describe("PlanningAnalysisEditor — unsaved work is visible", () => {
+	it("marks the editor dirty once its content differs from what was loaded", () => {
+		getEditorMarkdownForSaveMock.mockReturnValue("Edited prose.");
+		render(<PlanningAnalysisEditor {...baseProps} />);
+
+		expect(
+			screen.getByTestId("planning-analysis-unsaved"),
+		).toBeInTheDocument();
+	});
+
+	it("says nothing while the editor still matches what was loaded", () => {
+		// The negative control: proves the marker above tracks the content and
+		// is not simply always rendered.
+		getEditorMarkdownForSaveMock.mockReturnValue(baseProps.prose);
+		render(<PlanningAnalysisEditor {...baseProps} />);
+
+		expect(
+			screen.queryByTestId("planning-analysis-unsaved"),
+		).not.toBeInTheDocument();
+	});
+
+	it("clears the marker once the server confirms that exact body", async () => {
+		getEditorMarkdownForSaveMock.mockReturnValue("Edited prose.");
+		render(<PlanningAnalysisEditor {...baseProps} />);
+
+		await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+		await act(async () => {
+			capturedMutationOptionsRef.current?.onSuccess?.({
+				saved: true,
+				version: 2,
+			});
+		});
+
+		expect(
+			screen.queryByTestId("planning-analysis-unsaved"),
+		).not.toBeInTheDocument();
+	});
+
+	it("stays dirty when the author kept typing through an in-flight save", async () => {
+		// The reason the flag is DERIVED rather than a boolean cleared on any
+		// resolved save: the editor stays editable during one, so "a save
+		// completed" and "the editor matches the server" are different facts.
+		getEditorMarkdownForSaveMock.mockReturnValue("First edit.");
+		render(<PlanningAnalysisEditor {...baseProps} />);
+
+		await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+		getEditorMarkdownForSaveMock.mockReturnValue(
+			"Second edit, mid-flight.",
+		);
+		await act(async () => {
+			capturedMutationOptionsRef.current?.onSuccess?.({
+				saved: true,
+				version: 2,
+			});
+		});
+
+		expect(
+			screen.getByTestId("planning-analysis-unsaved"),
+		).toBeInTheDocument();
+	});
+
+	it("warns before a tab close that would discard the edit", () => {
+		getEditorMarkdownForSaveMock.mockReturnValue("Edited prose.");
+		render(<PlanningAnalysisEditor {...baseProps} />);
+
+		const event = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+	});
+
+	it("does not warn when nothing has been edited", () => {
+		getEditorMarkdownForSaveMock.mockReturnValue(baseProps.prose);
+		render(<PlanningAnalysisEditor {...baseProps} />);
+
+		const event = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(false);
+	});
+});
