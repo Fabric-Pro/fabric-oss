@@ -1,7 +1,5 @@
 export type Config = {
 	appName: string;
-	// Whether the app is live and accepting users, or in pre-launch waitlist mode
-	isLive: boolean;
 	waitlist: {
 		// Title shown on the waitlist form
 		title: string;
@@ -84,11 +82,9 @@ export type Config = {
 		enableGateway: boolean;
 		gatewayApiKey?: string;
 		enabledProviders: Array<"openai" | "anthropic" | "deepseek" | "groq">;
-		enableWorkflows: boolean;
 	};
 	prompts: {
 		enabled: boolean;
-		allowUserPrompts: boolean;
 		defaultFormat:
 			| "PLAIN_TEXT"
 			| "MARKDOWN"
@@ -97,7 +93,6 @@ export type Config = {
 			| "LIQUID"
 			| "JINJA2";
 		maxContentSize: number;
-		showSystemPrompts: boolean;
 	};
 	payments: {
 		aiMetering?: {

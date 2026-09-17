@@ -53,9 +53,10 @@ export default async function OrganizationAdminLayout({
 		redirect("/app");
 	}
 
-	// Monitoring v2 admin dashboard is feature-flagged. The flag stays off in
-	// v1 until SREs flip it on. Hidden from the sidebar when off; the page
-	// itself also guards on the flag.
+	// The Monitoring v2 admin dashboard sits behind a kill switch that is ON
+	// unless NEXT_PUBLIC_FABRIC_FEATURE_ADMIN_MONITORING_DASHBOARD is set to a
+	// falsy value. Hidden from the sidebar when off; the page itself also
+	// guards on the flag.
 	const monitoringEnabled = isMonitoringFeatureEnabled(
 		"feature-admin-monitoring-dashboard",
 	);

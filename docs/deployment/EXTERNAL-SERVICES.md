@@ -135,7 +135,6 @@ The PartyKit and sandbox-worker `*.workers.dev` hostnames are produced by `wrang
 | `TEMPORAL_ADDRESS` | ConfigMap (set via `temporal.address`; optional `TEMPORAL_ADDRESS` CI variable, defaults from `values.yaml`) |
 | `TEMPORAL_NAMESPACE` | ConfigMap (set via `temporal.namespace`, from the required `TEMPORAL_NAMESPACE` CI variable) |
 | `TEMPORAL_CLOUD_API_KEY` | `fabric/<env>/temporal` |
-| `ENABLE_TEMPORAL_WORKFLOWS` | ConfigMap (set to `"true"`) |
 
 > **Warning.** The JSON key inside `fabric/<env>/temporal` MUST be exactly `TEMPORAL_CLOUD_API_KEY` — `TEMPORAL_API_KEY` is not read by the worker and crash-loops it.
 
@@ -301,7 +300,7 @@ Email is required for magic links (Better Auth's primary login flow), invites, p
 
 **Env var.** `RESEND_API_KEY` in `fabric/<env>/email`.
 
-> Resend requires a verified sending domain for non-test sends. The on-boarding flow walks you through DNS records; if you don't have a domain yet, you can send from `onboarding@resend.dev` for the first few tests.
+> Resend requires a verified sending domain for non-test sends. The on-boarding flow walks you through DNS records; if you don't have a domain yet, the shared test sender address that Resend documents works for the first few tests.
 
 ---
 

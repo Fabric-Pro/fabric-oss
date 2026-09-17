@@ -1,9 +1,12 @@
 /**
- * Client / SSR-safe feature flags for the monitoring v2 surfaces.
+ * Client / SSR-safe kill switches for web-app surfaces, read from
+ * `NEXT_PUBLIC_*` env vars so values are inlined into the bundle by Next.js.
  *
- * Mirrors the server-side reader at
- * `packages/observability/lib/feature-flags.ts`, but reads `NEXT_PUBLIC_*`
- * env vars so values are inlined into the client bundle by Next.js.
+ * The parsing matches the server-side reader at
+ * `packages/observability/lib/feature-flags.ts`, which holds the one
+ * server-only monitoring switch (`feature-burn-rate-alerts`). That switch has
+ * no web twin: its `NEXT_PUBLIC_*` variable was read by nothing, and Fizzy
+ * #2300 removed it.
  *
  * IMPORTANT: every public read in this module must use a literal
  * `process.env.NEXT_PUBLIC_*` expression. Next.js inlines these at build
@@ -17,21 +20,19 @@
  * and tests. The matching React hook lives in
  * `./use-monitoring-feature-flag.ts` (`"use client"`).
  *
- * v1 launches with ALL flags ON by default (post-App-Insights refactor —
- * these are KILL SWITCHES, not opt-in rollouts). Setting a NEXT_PUBLIC_*
- * env var to `"false"` / `"0"` / `"no"` / `"off"` disables the surface;
- * anything else (including unset) keeps it on.
+ * Every flag here is a KILL SWITCH, ON by default. Setting its
+ * `NEXT_PUBLIC_*` env var to `"false"` / `"0"` / `"no"` / `"off"` disables
+ * the surface; anything else (including unset) keeps it on.
  *
- * The four flags gate:
+ * The monitoring surfaces:
  *   - `feature-integration-health-badges`: badges + Status filter on
  *     Settings -> Integrations cards.
- *   - `feature-incident-banner`: the in-app SEV-1 / SEV-2 banner mounted
- *     in the saas shell.
+ *   - `feature-incident-banner`: the in-app SEV-1 / SEV-2 incident chip
+ *     mounted in the saas shell.
  *   - `feature-admin-monitoring-dashboard`: the `/app/admin/monitoring`
  *     route + sidebar entry.
- *   - `feature-burn-rate-alerts`: client-side knowledge of whether the
- *     App Insights custom-event alert pipeline is active (used by the
- *     admin dashboard for the rules-status panel).
+ * `feature-google-docs-context`, `feature-get-started`, `feature-job-hub` and
+ * `feature-inline-job-progress` share the same reader and semantics.
  *
  * When a flag-management UI (GrowthBook / LaunchDarkly / Vercel Edge
  * Config) is wired up later, swap the reader bodies and add a
@@ -44,21 +45,19 @@ export type MonitoringFeatureFlag =
 	| "feature-integration-health-badges"
 	| "feature-incident-banner"
 	| "feature-admin-monitoring-dashboard"
-	| "feature-burn-rate-alerts"
 	| "feature-google-docs-context"
 	| "feature-get-started"
 	| "feature-job-hub"
 	| "feature-inline-job-progress";
 
 /**
- * The full list of monitoring v2 flags. Keep in sync with the
- * server-side reader; tests on both sides verify this.
+ * Every flag this reader serves. Not the same set as the server-side
+ * reader's: the two share parsing, not membership.
  */
 export const MONITORING_FEATURE_FLAGS: readonly MonitoringFeatureFlag[] = [
 	"feature-integration-health-badges",
 	"feature-incident-banner",
 	"feature-admin-monitoring-dashboard",
-	"feature-burn-rate-alerts",
 	"feature-google-docs-context",
 	"feature-get-started",
 	"feature-job-hub",
@@ -99,10 +98,6 @@ export function isMonitoringFeatureEnabled(
 				process.env
 					.NEXT_PUBLIC_FABRIC_FEATURE_ADMIN_MONITORING_DASHBOARD,
 			);
-		case "feature-burn-rate-alerts":
-			return parseFlagValue(
-				process.env.NEXT_PUBLIC_FABRIC_FEATURE_BURN_RATE_ALERTS,
-			);
 		case "feature-google-docs-context":
 			return parseFlagValue(
 				process.env.NEXT_PUBLIC_FABRIC_FEATURE_GOOGLE_DOCS_CONTEXT,
@@ -127,42 +122,6 @@ export function isMonitoringFeatureEnabled(
 			return false;
 		}
 	}
-}
-
-/**
- * Read all monitoring feature flags at once. Useful for the admin
- * dashboard's "feature flag status" panel, or for snapshotting flag
- * state at the top of a page render so a flag flip mid-render cannot
- * cause inconsistent UI.
- */
-export function getMonitoringFeatureFlags(): Record<
-	MonitoringFeatureFlag,
-	boolean
-> {
-	return {
-		"feature-integration-health-badges": isMonitoringFeatureEnabled(
-			"feature-integration-health-badges",
-		),
-		"feature-incident-banner": isMonitoringFeatureEnabled(
-			"feature-incident-banner",
-		),
-		"feature-admin-monitoring-dashboard": isMonitoringFeatureEnabled(
-			"feature-admin-monitoring-dashboard",
-		),
-		"feature-burn-rate-alerts": isMonitoringFeatureEnabled(
-			"feature-burn-rate-alerts",
-		),
-		"feature-google-docs-context": isMonitoringFeatureEnabled(
-			"feature-google-docs-context",
-		),
-		"feature-get-started": isMonitoringFeatureEnabled(
-			"feature-get-started",
-		),
-		"feature-job-hub": isMonitoringFeatureEnabled("feature-job-hub"),
-		"feature-inline-job-progress": isMonitoringFeatureEnabled(
-			"feature-inline-job-progress",
-		),
-	};
 }
 
 /**

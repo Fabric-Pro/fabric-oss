@@ -7873,8 +7873,20 @@ export function StoryWorkspace({
 												maturationData?.feature
 													?.autoProposeAnswers ?? true
 											}
+											// Offered only where recommendations
+											// can be generated (#2300): with
+											// AI_ANSWER_RECOMMENDATIONS off the
+											// switch would read ON while nothing
+											// is ever proposed. Omitting the
+											// handler is what hides it, and it
+											// stays hidden until the editor
+											// state has loaded.
 											onToggleAutoPropose={
-												onMaturationToggleAutoPropose
+												maturationData?.feature
+													?.answerRecommendationsEnabled ===
+												true
+													? onMaturationToggleAutoPropose
+													: undefined
 											}
 											togglingAutoPropose={
 												maturationAutoProposeMutation.isPending

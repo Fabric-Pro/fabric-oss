@@ -109,7 +109,7 @@ export { sweepAttachmentFinalOrphansActivity } from "./attachment-final-orphan-s
 // Attachment retention-purge activity (daily schedule).
 export { purgeExpiredAttachmentsActivity } from "./attachment-retention-purge";
 export { purgeExpiredRunEvidenceActivity } from "./qa-evidence-retention";
-// Attachment temp-orphan sweep activity (gated by FABRIC_ATTACHMENT_TEMP_ORPHAN_SWEEP_ENABLED)
+// Attachment temp-orphan sweep activity (daily schedule, always registered)
 export { sweepAttachmentTempOrphansActivity } from "./attachment-temp-orphan-sweep";
 // Audit log retention activities (opt-in, gated by FABRIC_AUDIT_LOG_RETENTION_ENABLED)
 export { purgeExpiredAuditRowsActivity } from "./audit-log-retention";

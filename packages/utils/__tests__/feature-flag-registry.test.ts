@@ -4,6 +4,7 @@ import {
 	FEATURE_FLAG_REGISTRY,
 	type FeatureFlagDefinition,
 	isFeatureFlagKey,
+	ORG_SCOPABLE_FLAG_KEYS,
 	resolveFlag,
 } from "../lib/feature-flag-registry";
 
@@ -710,5 +711,87 @@ describe("CLI_CONNECTION_NUDGE (#2457)", () => {
 				{},
 			),
 		).toEqual({ enabled: false, source: "org-override" });
+	});
+});
+
+describe("AI_ANSWER_RECOMMENDATIONS (#2300)", () => {
+	// Default OFF is load-bearing: ON spends a model call per batch of newly
+	// extracted questions in every organization it reaches, so merging this
+	// entry must enable nothing anywhere. Organizations that had the old SQL
+	// column set keep the feature through a per-organization row written by
+	// the carry-over migration, not through this default.
+	it("is registered off by default, on its own env var, and org-scopable", () => {
+		expect(isFeatureFlagKey("AI_ANSWER_RECOMMENDATIONS")).toBe(true);
+		expect(FEATURE_FLAG_REGISTRY.AI_ANSWER_RECOMMENDATIONS.default).toBe(
+			false,
+		);
+		expect(FEATURE_FLAG_REGISTRY.AI_ANSWER_RECOMMENDATIONS.envVar).toBe(
+			"FABRIC_FEATURE_AI_ANSWER_RECOMMENDATIONS",
+		);
+		expect(
+			FEATURE_FLAG_REGISTRY.AI_ANSWER_RECOMMENDATIONS.orgScopable,
+		).toBe(true);
+	});
+
+	// Two API tests take `ORG_SCOPABLE_FLAG_KEYS[0]` as their fixture flag, so
+	// a new org-scopable entry is appended and PUBLISHING_SUITE stays first.
+	it("is appended after every existing org-scopable flag", () => {
+		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
+		expect(ORG_SCOPABLE_FLAG_KEYS[ORG_SCOPABLE_FLAG_KEYS.length - 1]).toBe(
+			"AI_ANSWER_RECOMMENDATIONS",
+		);
+	});
+
+	it("resolves off when neither an override nor the env var is set", () => {
+		expect(resolveFlag("AI_ANSWER_RECOMMENDATIONS", {}, {})).toEqual({
+			enabled: false,
+			source: "default",
+		});
+	});
+
+	// Proves the entry names its own env var: `resolveFlag` reads the env
+	// level through the definition, unlike an override, which it honours for
+	// any key.
+	it("is seeded by its env var when no override row exists", () => {
+		expect(
+			resolveFlag(
+				"AI_ANSWER_RECOMMENDATIONS",
+				{},
+				{ FABRIC_FEATURE_AI_ANSWER_RECOMMENDATIONS: "true" },
+			),
+		).toEqual({ enabled: true, source: "env" });
+	});
+
+	// The carried-over organizations: a per-organization row keeps each one
+	// enabled while the instance-wide value stays off. Only an org-scopable
+	// definition makes the resolver honour this level.
+	it("lets one organization be enabled while the deployment stays off", () => {
+		expect(
+			resolveFlag("AI_ANSWER_RECOMMENDATIONS", { org: true }, {}),
+		).toEqual({ enabled: true, source: "org-override" });
+	});
+
+	it("lets an org override of false beat a global override of true", () => {
+		expect(
+			resolveFlag(
+				"AI_ANSWER_RECOMMENDATIONS",
+				{ org: false, global: true },
+				{},
+			),
+		).toEqual({ enabled: false, source: "org-override" });
+	});
+
+	// A shared env var would hand this spend switch whatever another feature's
+	// rollout state happens to be.
+	it("does not share its env var with any other entry", () => {
+		const mine = FEATURE_FLAG_REGISTRY.AI_ANSWER_RECOMMENDATIONS.envVar;
+		const others = FEATURE_FLAG_KEYS.filter(
+			(key) => key !== "AI_ANSWER_RECOMMENDATIONS",
+		).map(
+			(key) =>
+				(FEATURE_FLAG_REGISTRY[key] as FeatureFlagDefinition).envVar,
+		);
+
+		expect(others).not.toContain(mine);
 	});
 });

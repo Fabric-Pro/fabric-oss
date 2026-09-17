@@ -63,10 +63,9 @@ export {
 } from "./lib/breakers";
 // Error classifier — maps thrown values onto bounded error_class labels.
 export { classifyError } from "./lib/error-class";
-// Monitoring v2 feature flags — gates incident UI,
-// banners, and burn-rate Alertmanager rules during phased rollout.
+// Monitoring v2 server-side kill switch — mutes the App Insights custom-event
+// alert path. The monitoring UI flags live in the web app's NEXT_PUBLIC_ reader.
 export {
-	getMonitoringFeatureFlags,
 	isMonitoringFeatureEnabled,
 	MONITORING_FEATURE_ENV_VARS,
 	MONITORING_FEATURE_FLAGS,

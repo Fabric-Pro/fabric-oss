@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/client";
 import {
 	hasProjectAccess,
+	isAiAnswerRecommendationsEnabledForProject,
 	listDecisionLogThreads,
 	type MaturationTenantFilter,
 } from "@repo/database";
@@ -20,7 +21,10 @@ import { serializeDecisionLogThread } from "./serializers";
  * chronologically, each carrying its resolved-marker state (`status`) and a
  * one-sentence `summary`. Soft-deleted rows are excluded by the query helper.
  *
- * Read-only — no PM sync (§7.7). Returns a Zod-validated DTO.
+ * Read-only — no PM sync (§7.7). Returns a Zod-validated DTO. Stored AI answer
+ * options are included only while AI_ANSWER_RECOMMENDATIONS is on for the
+ * project's organization and the request was made in that organization
+ * (#2300) — the same gate the feature editor applies.
  */
 export const listDecisionLogProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.STORY_READ))
@@ -59,10 +63,25 @@ export const listDecisionLogProcedure = tenantProtectedProcedure
 			userId: context.user.id,
 		};
 
-		const threads = await listDecisionLogThreads({
-			tenantFilter,
-			userStoryId: input.storyId,
-		});
+		const [threads, recommendationsEnabled] = await Promise.all([
+			listDecisionLogThreads({
+				tenantFilter,
+				userStoryId: input.storyId,
+			}),
+			// #2300: the same gate as the editor — true only when this request's
+			// organization owns the project checked above — so turning the flag
+			// off hides stored suggestions here exactly as in the editor.
+			isAiAnswerRecommendationsEnabledForProject({
+				projectId: input.projectId,
+				organizationId: organizationId ?? null,
+			}),
+		]);
 
-		return { threads: threads.map((t) => serializeDecisionLogThread(t)) };
+		return {
+			threads: threads.map((t) =>
+				serializeDecisionLogThread(t, {
+					includeRecommendations: recommendationsEnabled,
+				}),
+			),
+		};
 	});

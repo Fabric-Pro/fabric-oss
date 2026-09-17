@@ -65,9 +65,6 @@ Dependencies are automatically installed when you run `pnpm install` in the root
 Add to your `.env.local`:
 
 ```bash
-# Enable Temporal workflows (default: false)
-ENABLE_TEMPORAL_WORKFLOWS="true"
-
 # Local development (default)
 TEMPORAL_ADDRESS="localhost:7233"
 TEMPORAL_NAMESPACE="default"
@@ -395,10 +392,9 @@ echo $TEMPORAL_ADDRESS
 
 ### Workflow Not Starting
 
-1. Check feature flag: `ENABLE_TEMPORAL_WORKFLOWS="true"`
-2. Verify Temporal Server is accessible
-3. Check worker is running and polling correct task queue
-4. Review API logs for errors
+1. Verify Temporal Server is accessible
+2. Check worker is running and polling correct task queue
+3. Review API logs for errors
 
 ### Activity Failures
 

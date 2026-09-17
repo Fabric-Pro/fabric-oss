@@ -1371,3 +1371,85 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 		expect(vi.mocked(toast.warning)).not.toHaveBeenCalled();
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Auto-propose answers switch (Fizzy #2300)
+// ---------------------------------------------------------------------------
+
+/**
+ * The per-feature "Auto-propose answers" switch used to render whenever the
+ * Summary & Questions tab did, so it read ON in organizations where no
+ * suggestion is ever generated. It is now offered only where the
+ * AI_ANSWER_RECOMMENDATIONS gate resolves on, as reported by the editor state.
+ *
+ * The first test is the positive control: the same role and name query must
+ * FIND the switch when the gate is on, so the two "absent" assertions below
+ * cannot pass merely because the query matches nothing.
+ */
+describe("StoryWorkspace — Auto-propose answers switch follows the recommendation gate", () => {
+	beforeEach(() => {
+		mockUseHistoryEnabled.mockReturnValue(false);
+		copilotStore.isLoading = false;
+		copilotStore.agentDocument = "";
+		copilotStore.nodeName = undefined;
+		queryStore.byPath = {};
+		mutationStore.calls = [];
+		mutationStore.optionsByKey = {};
+		capturedAction.current = null;
+		capturedEditor.current = null;
+	});
+
+	function editorState(answerRecommendationsEnabled: boolean) {
+		return {
+			feature: {
+				id: "story-1",
+				title: "Test feature",
+				maturationV2OptedIn: true,
+				lastContextUpdateAt: null,
+				autoProposeAnswers: true,
+				answerRecommendationsEnabled,
+			},
+			pendingDecisionCount: 0,
+			openQuestions: [],
+			possiblyResolvedQuestions: [],
+			decisionLog: [],
+		};
+	}
+
+	async function mountOnQuestionsTab(): Promise<void> {
+		render(workspace());
+		await waitFor(() => expect(capturedEditor.current).not.toBeNull());
+		expect(tab(/tabs\.summaryQuestions/)).toHaveAttribute(
+			"aria-selected",
+			"true",
+		);
+	}
+
+	it("offers the switch when recommendations are on for the organization", async () => {
+		queryStore.byPath[MATURATION_QUERY_PATH] = editorState(true);
+
+		await mountOnQuestionsTab();
+
+		expect(
+			screen.getByRole("switch", { name: "autoProposeLabel" }),
+		).toBeInTheDocument();
+	});
+
+	it("hides the switch when recommendations are off, because nothing would be proposed", async () => {
+		queryStore.byPath[MATURATION_QUERY_PATH] = editorState(false);
+
+		await mountOnQuestionsTab();
+
+		expect(
+			screen.queryByRole("switch", { name: "autoProposeLabel" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("hides the switch while the editor state has not loaded", async () => {
+		await mountOnQuestionsTab();
+
+		expect(
+			screen.queryByRole("switch", { name: "autoProposeLabel" }),
+		).not.toBeInTheDocument();
+	});
+});

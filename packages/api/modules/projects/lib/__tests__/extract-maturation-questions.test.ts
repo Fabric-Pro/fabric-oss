@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 	setQuestionStatus: vi.fn(),
 	classifyQuestionTopics: vi.fn(),
 	proposeQuestionAnswers: vi.fn(),
-	isAiAnswerRecommendationsEnabled: vi.fn(),
+	isAiAnswerRecommendationsEnabledForProject: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -22,7 +22,8 @@ vi.mock("@repo/database", () => ({
 	createDecisionLogEntry: mocks.createDecisionLogEntry,
 	markQuestionsPossiblyResolved: mocks.markQuestionsPossiblyResolved,
 	setQuestionStatus: mocks.setQuestionStatus,
-	isAiAnswerRecommendationsEnabled: mocks.isAiAnswerRecommendationsEnabled,
+	isAiAnswerRecommendationsEnabledForProject:
+		mocks.isAiAnswerRecommendationsEnabledForProject,
 }));
 
 // Topic classification is a best-effort labelling pass over the new questions;
@@ -68,7 +69,7 @@ beforeEach(() => {
 	mocks.markQuestionsPossiblyResolved.mockResolvedValue(0);
 	mocks.setQuestionStatus.mockResolvedValue(1);
 	mocks.proposeQuestionAnswers.mockResolvedValue({ recommended: 0 });
-	mocks.isAiAnswerRecommendationsEnabled.mockResolvedValue(true);
+	mocks.isAiAnswerRecommendationsEnabledForProject.mockResolvedValue(true);
 	mocks.classifyQuestionTopics.mockImplementation(async ({ questions }) =>
 		questions.map(() => "Tooling & Tech"),
 	);
@@ -277,12 +278,34 @@ describe("extractMaturationQuestions — mint/dedupe over the parsed set", () =>
 	});
 
 	it("skips the recommendation pass when the org flag is off (#7, FR-15)", async () => {
-		mocks.isAiAnswerRecommendationsEnabled.mockResolvedValue(false);
+		mocks.isAiAnswerRecommendationsEnabledForProject.mockResolvedValue(
+			false,
+		);
 		await extractMaturationQuestions({
 			feature: feature("## Open Questions\n- Should MFA be mandatory?"),
 			tenantFilter,
 		});
 		expect(mocks.proposeQuestionAnswers).not.toHaveBeenCalled();
+	});
+
+	// #2300: the gate compares the feature's project with the request's
+	// organization. The extractor must hand over both, unmodified: the
+	// resolver refuses a request whose organization does not own the project,
+	// and then no recommendation is generated.
+	it("asks the gate about the feature's project and the request's organization", async () => {
+		await extractMaturationQuestions({
+			feature: feature("## Open Questions\n- Should MFA be mandatory?"),
+			tenantFilter: {
+				...tenantFilter,
+				organizationId: "org-named-by-caller",
+			},
+		});
+		expect(
+			mocks.isAiAnswerRecommendationsEnabledForProject,
+		).toHaveBeenCalledWith({
+			projectId: "project-1",
+			organizationId: "org-named-by-caller",
+		});
 	});
 
 	it("skips a parsed question already present (open or answered)", async () => {

@@ -14,7 +14,6 @@
 import { renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	getMonitoringFeatureFlags,
 	isMonitoringFeatureEnabled,
 	MONITORING_FEATURE_FLAGS,
 	type MonitoringFeatureFlag,
@@ -31,7 +30,6 @@ const CLIENT_ENV_VARS = [
 	"NEXT_PUBLIC_FABRIC_FEATURE_INTEGRATION_HEALTH_BADGES",
 	"NEXT_PUBLIC_FABRIC_FEATURE_INCIDENT_BANNER",
 	"NEXT_PUBLIC_FABRIC_FEATURE_ADMIN_MONITORING_DASHBOARD",
-	"NEXT_PUBLIC_FABRIC_FEATURE_BURN_RATE_ALERTS",
 	"NEXT_PUBLIC_FABRIC_FEATURE_GOOGLE_DOCS_CONTEXT",
 	"NEXT_PUBLIC_FABRIC_FEATURE_GET_STARTED",
 ] as const;
@@ -52,7 +50,6 @@ describe("MONITORING_FEATURE_FLAGS — client surface", () => {
 	it("exports exactly the locked flag set", () => {
 		expect([...MONITORING_FEATURE_FLAGS].sort()).toEqual([
 			"feature-admin-monitoring-dashboard",
-			"feature-burn-rate-alerts",
 			"feature-get-started",
 			"feature-google-docs-context",
 			"feature-incident-banner",
@@ -120,13 +117,6 @@ describe("isMonitoringFeatureEnabled — explicit env var override", () => {
 		).toBe(false);
 	});
 
-	it("disables feature-burn-rate-alerts when its env var is false", () => {
-		vi.stubEnv("NEXT_PUBLIC_FABRIC_FEATURE_BURN_RATE_ALERTS", "false");
-		expect(isMonitoringFeatureEnabled("feature-burn-rate-alerts")).toBe(
-			false,
-		);
-	});
-
 	it.each(["true", "TRUE", "True", "1", "yes", "YES", "on", "ON"])(
 		"accepts the explicitly truthy string %s",
 		(value) => {
@@ -155,47 +145,17 @@ describe("isMonitoringFeatureEnabled — explicit env var override", () => {
 		expect(
 			isMonitoringFeatureEnabled("feature-admin-monitoring-dashboard"),
 		).toBe(true);
-		expect(isMonitoringFeatureEnabled("feature-burn-rate-alerts")).toBe(
-			true,
-		);
 	});
 });
 
-describe("getMonitoringFeatureFlags — bulk reader", () => {
-	it("returns every flag as true when no env vars are set", () => {
-		const flags = getMonitoringFeatureFlags();
-		expect(flags).toEqual({
-			"feature-integration-health-badges": true,
-			"feature-incident-banner": true,
-			"feature-admin-monitoring-dashboard": true,
-			"feature-burn-rate-alerts": true,
-			"feature-google-docs-context": true,
-			"feature-get-started": true,
-			"feature-job-hub": true,
-			"feature-inline-job-progress": true,
-		});
-	});
-
-	it("reflects partial env var configuration", () => {
-		vi.stubEnv("NEXT_PUBLIC_FABRIC_FEATURE_INCIDENT_BANNER", "false");
-		vi.stubEnv(
-			"NEXT_PUBLIC_FABRIC_FEATURE_ADMIN_MONITORING_DASHBOARD",
-			"0",
+describe("removed members (#2300)", () => {
+	// The bulk reader had no production caller and was deleted with its
+	// burn-rate member; the flag list above pins the member's removal.
+	it("no longer exports a bulk reader", async () => {
+		const flags = await import(
+			"../../../../../modules/saas/shared/lib/feature-flags"
 		);
-
-		const flags = getMonitoringFeatureFlags();
-		expect(flags["feature-incident-banner"]).toBe(false);
-		expect(flags["feature-admin-monitoring-dashboard"]).toBe(false);
-		expect(flags["feature-integration-health-badges"]).toBe(true);
-		expect(flags["feature-burn-rate-alerts"]).toBe(true);
-	});
-
-	it("returns an object with the full flag set, never a partial", () => {
-		const flags = getMonitoringFeatureFlags();
-		for (const flag of MONITORING_FEATURE_FLAGS) {
-			expect(flags).toHaveProperty(flag);
-			expect(typeof flags[flag]).toBe("boolean");
-		}
+		expect("getMonitoringFeatureFlags" in flags).toBe(false);
 	});
 });
 

@@ -1,13 +1,14 @@
 /**
  * `organizations.featureMaturationV2.get` — Feature Maturation V2 spec §9.
  *
- * Surfaces the org-level `featureMaturationV2Enabled` flag (default **false**,
- * PR #1643) to the client so the feature editor can route a flagged org to the
- * three-tab V2 editor and leave a non-flagged org on the unchanged v1
- * single-doc `StoryWorkspace`. Personal-context callers do NOT hit this
- * procedure — the consuming hook short-circuits to `false` before invoking,
- * because Better Auth's `getFullOrganization` does not carry the column and
- * personal features stay v1 (§9).
+ * Surfaces the org-level `featureMaturationV2Enabled` column to the client so
+ * the feature editor can route an organization to the three-tab V2 editor.
+ * The column defaults to **true** (#1797) — V2 is rolled out to every
+ * organization — and remains the per-organization kill switch: an organization
+ * flipped to false by SQL gets the single-document editor instead.
+ * Personal-context callers do NOT hit this procedure — there is no
+ * organization row to read, so the consuming hook skips the request and enrols
+ * personal workspaces unconditionally (#1797).
  *
  * AUTHORIZATION: ORG_READ — same gate as `documentAssistantHistory.get`. The
  * column is a feature flag (not a secret), but org membership is still required
@@ -33,7 +34,7 @@ export const getOrganizationFeatureMaturationV2SettingProcedure =
 			tags: ["Organizations"],
 			summary: "Get Feature Maturation V2 feature flag",
 			description:
-				"Return whether the org has the three-tab Feature Maturation V2 editor enabled. Default is `false`.",
+				"Return whether the org has the three-tab Feature Maturation V2 editor enabled. The column defaults to `true`.",
 		})
 		.input(
 			z.object({
@@ -60,9 +61,10 @@ export const getOrganizationFeatureMaturationV2SettingProcedure =
 				where: { id: organizationId },
 				select: { featureMaturationV2Enabled: true },
 			});
-			// Default to `false` if the row is missing (defensive — membership
-			// was just verified, but keeps the contract aligned with the schema
-			// default: V2 is opt-in, off until an org turns it on).
+			// `false` if the row is missing. Defensive only: membership was just
+			// verified, so the row is expected to exist. This differs from the
+			// column default (`true` since #1797): a missing row is not an
+			// organization that was rolled out to.
 			return {
 				featureMaturationV2Enabled:
 					org?.featureMaturationV2Enabled ?? false,

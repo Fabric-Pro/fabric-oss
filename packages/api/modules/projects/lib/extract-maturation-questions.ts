@@ -35,7 +35,7 @@ import {
 	createDecisionLogEntry,
 	type FeatureMaturationState,
 	findDecisionByQuestionId,
-	isAiAnswerRecommendationsEnabled,
+	isAiAnswerRecommendationsEnabledForProject,
 	type MaturationTenantFilter,
 	markQuestionsPossiblyResolved,
 	setQuestionStatus,
@@ -294,13 +294,19 @@ export async function extractMaturationQuestions({
 
 	// Phase 3b — AI answer recommendations (#7). Best-effort: stamps each freshly
 	// minted root's metadata with suggested options (each justified) drawn from the
-	// same context the spec was built from. Gated by the org dogfood flag (FR-15) AND
-	// the per-feature toggle (default ON); never throws — a failure just leaves the
-	// new questions un-recommended.
+	// same context the spec was built from. Gated by the AI_ANSWER_RECOMMENDATIONS
+	// flag (FR-15, #2300) — true only when the request's organization owns the
+	// feature's project, because the model call below runs under that organization
+	// — AND the per-feature toggle (default ON). The proposal pass never throws — a
+	// failure just leaves the new questions un-recommended. The gate's database
+	// read, above it, can throw.
 	if (
 		feature.autoProposeAnswers &&
 		questions.length > 0 &&
-		(await isAiAnswerRecommendationsEnabled(tenantFilter.organizationId))
+		(await isAiAnswerRecommendationsEnabledForProject({
+			projectId: feature.projectId,
+			organizationId: tenantFilter.organizationId,
+		}))
 	) {
 		await proposeQuestionAnswers({
 			feature,

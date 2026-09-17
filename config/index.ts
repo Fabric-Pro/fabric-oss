@@ -2,10 +2,7 @@ import type { Config } from "./types";
 
 export const config = {
 	appName: "Fabric AI",
-	// Whether the app is live (true = show login, false = show waitlist)
-	// Set to false during pre-launch to collect leads via the waitlist form
-	isLive: process.env.NEXT_PUBLIC_IS_LIVE === "true",
-	// Waitlist configuration (only used when isLive is false)
+	// Waitlist form copy
 	waitlist: {
 		title: "Join the Waitlist",
 		description:
@@ -222,23 +219,15 @@ export const config = {
 		// Note: Actual model selection is now database-driven via AiModel, AiTaskModelDefault tables
 		// Users configure their default provider and models in Settings > AI Providers
 		enabledProviders: ["groq", "openai", "anthropic", "deepseek"],
-		// Whether to use Temporal workflows for durable AI operations
-		// When enabled, operations like title generation use Temporal for automatic retries and durability
-		// Requires Temporal Server to be running (see docker-compose.yml)
-		enableWorkflows: process.env.ENABLE_TEMPORAL_WORKFLOWS === "true",
 	},
 	// Prompts
 	prompts: {
 		// Whether the prompts feature should be enabled
 		enabled: true,
-		// Whether users should be able to create personal prompts (otherwise only org/system prompts)
-		allowUserPrompts: true,
 		// Default template format for new prompts
 		defaultFormat: "PLAIN_TEXT" as const,
 		// Maximum content size in characters (to prevent abuse)
 		maxContentSize: 50000,
-		// Whether to show system prompts in the browse interface
-		showSystemPrompts: true,
 	},
 	// Payments
 	payments: {

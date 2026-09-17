@@ -113,17 +113,16 @@ function deriveRecommendation(
  * rows carry the Prisma enum types (`status`, `authorType`, `source`), so the
  * mapped object matches the enum-typed `.output()` schema — do NOT widen these.
  *
- * `includeRecommendations` (#7, FR-15): when false, AI answer options are stripped
- * (`suggestedOptions: []`) so the org dogfood flag hides the feature at the DISPLAY
- * layer too — not just generation. Without this, options already persisted in
- * `metadata` (e.g. minted while the flag was on) would keep rendering after the flag
- * is turned off, violating the "flag disabled → no option controls" acceptance.
+ * `includeRecommendations` (#7, FR-15, #2300): when false, AI answer options are
+ * stripped (`suggestedOptions: []`) so AI_ANSWER_RECOMMENDATIONS hides the feature
+ * at the DISPLAY layer too — not just generation. Without this, options already
+ * persisted in `metadata` (e.g. minted while the flag was on) would keep rendering
+ * after the flag is turned off. Required, with no default: a default of `true` is
+ * how the Decision Log REST read once ignored the flag, so every caller states it.
  */
 export function serializeDecisionLogThread(
 	thread: DecisionLogThread,
-	{
-		includeRecommendations = true,
-	}: { includeRecommendations?: boolean } = {},
+	{ includeRecommendations }: { includeRecommendations: boolean },
 ) {
 	return {
 		root: {

@@ -65,18 +65,6 @@ export function isPmAttachmentSyncEnabled(): boolean {
 }
 
 /**
- * Living Documents auto-refresh master flag — opt-in, default OFF. Gates the
- * enrollment control, the enrollment procedures, and the hourly sweep's
- * find-due activity. The Temporal schedule is registered regardless; gating
- * lives in the handler so flipping the flag on takes effect on the next tick
- * with no redeploy. The UI mirrors it via
- * `NEXT_PUBLIC_FABRIC_FEATURE_LIVING_DOCS_REFRESH`.
- */
-export function isLivingDocsRefreshEnabled(): boolean {
-	return parseOptInFlag(process.env.FABRIC_FEATURE_LIVING_DOCS_REFRESH);
-}
-
-/**
  * Role/Function Tags (#1767) master flag — opt-in, default OFF. Introduced at
  * Stage 4 (AI context injection); Stage 5 (group mentions) reads the same flag.
  * OFF ⇒ no function-tag context is injected into any AI payload (tags remain in
