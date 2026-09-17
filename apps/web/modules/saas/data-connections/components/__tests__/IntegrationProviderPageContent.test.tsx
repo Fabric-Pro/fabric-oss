@@ -21,11 +21,13 @@ const {
 	mockUseMonitoringFeatureFlag,
 	mockUseProviderHealth,
 	mockUseQuery,
+	mockGetIntegration,
 } = vi.hoisted(() => ({
 	mockUseOrganizationContext: vi.fn(),
 	mockUseMonitoringFeatureFlag: vi.fn(),
 	mockUseProviderHealth: vi.fn(),
 	mockUseQuery: vi.fn(),
+	mockGetIntegration: vi.fn(() => null),
 }));
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
@@ -68,7 +70,7 @@ vi.mock("@tanstack/react-query", () => ({
 // The integration plugins map relies on Node module resolution that can
 // trip in jsdom. Stub at the boundary so the component renders.
 vi.mock("@saas/workflows/lib/plugins", () => ({
-	getIntegration: () => null,
+	getIntegration: (...args: unknown[]) => mockGetIntegration(...args),
 }));
 
 // Stub the brand icon -- the real implementation pulls in
@@ -140,9 +142,11 @@ function renderPage(opts: {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mockGetIntegration.mockReturnValue(null);
 });
 
 afterEach(() => {
+	mockGetIntegration.mockReset();
 	mockUseProviderHealth.mockReset();
 	mockUseQuery.mockReset();
 	mockUseMonitoringFeatureFlag.mockReset();
@@ -231,5 +235,31 @@ describe("IntegrationProviderPageContent — health badge wiring", () => {
 		// redirects to `/connections`. Pin the href so a later edit can't
 		// quietly reroute the button while "fixing" the wording.
 		expect(backLink).toHaveAttribute("href", "/app/settings/integrations");
+	});
+});
+
+const mockSlackAction = {
+	slug: "send_slack_message",
+	label: "Send Slack Message",
+	description: "Send a message to a Slack channel",
+	category: "communication",
+};
+
+describe("IntegrationProviderPageContent — action badge & description copy", () => {
+	it("renders singular '1 available action' and formatted description copy", () => {
+		mockGetIntegration.mockReturnValue({
+			type: "SLACK",
+			label: "Slack",
+			actions: [mockSlackAction],
+		});
+
+		renderPage({ providerKey: "SLACK" });
+
+		expect(screen.getByText("1 available action")).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				/These are the operations Fabric can run through Slack once runtime actions are configured\./,
+			),
+		).toBeInTheDocument();
 	});
 });

@@ -685,7 +685,10 @@ export function WorkflowIntegrationSettingsPageContent({
 						</p>
 						<div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
 							<span className="rounded-full border px-3 py-1">
-								{activePlugin.actions.length} available actions
+								{activePlugin.actions.length} available{" "}
+								{activePlugin.actions.length === 1
+									? "action"
+									: "actions"}
 							</span>
 							<span className="rounded-full border px-3 py-1">
 								{hasFormFields
@@ -972,8 +975,8 @@ export function WorkflowIntegrationSettingsPageContent({
 							<CardTitle>Available actions</CardTitle>
 							<CardDescription>
 								These are the operations Fabric can run through{" "}
-								{activePlugin.label}
-								once this integration is connected.
+								{activePlugin.label} once this integration is
+								connected.
 							</CardDescription>
 						</CardHeader>
 						<CardContent>

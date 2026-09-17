@@ -292,8 +292,10 @@ export function IntegrationProviderPageContent({
 										Runtime actions
 									</span>
 									<span className="rounded-full border px-3 py-1">
-										{actionPlugin.actions.length} available
-										actions
+										{actionPlugin.actions.length} available{" "}
+										{actionPlugin.actions.length === 1
+											? "action"
+											: "actions"}
 									</span>
 								</>
 							) : null}
@@ -410,8 +412,8 @@ export function IntegrationProviderPageContent({
 								<CardTitle>Available actions</CardTitle>
 								<CardDescription>
 									These are the operations Fabric can run
-									through {metadata.name}
-									once runtime actions are configured.
+									through {metadata.name} once runtime actions
+									are configured.
 								</CardDescription>
 							</CardHeader>
 							<CardContent>
