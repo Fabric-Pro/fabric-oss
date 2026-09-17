@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 	checkRateLimit: vi.fn(),
 	getWorkflowById: vi.fn(),
 	hasOrganizationTie: vi.fn(),
+	canRunOrganizationWorkflows: vi.fn(),
 	createWorkflowExecution: vi.fn(),
 	updateWorkflowExecution: vi.fn(),
 	isTemporalAvailable: vi.fn(),
@@ -33,6 +34,10 @@ vi.mock("@repo/api/lib/rate-limit", () => ({
 vi.mock("@repo/database", () => ({
 	getWorkflowById: mocks.getWorkflowById,
 	hasOrganizationTie: mocks.hasOrganizationTie,
+	// The live permission check runs after the organization is resolved;
+	// this suite is about which organization is consulted, so it always
+	// grants.
+	canRunOrganizationWorkflows: mocks.canRunOrganizationWorkflows,
 	createWorkflowExecution: mocks.createWorkflowExecution,
 	updateWorkflowExecution: mocks.updateWorkflowExecution,
 }));
@@ -73,6 +78,7 @@ describe("POST /api/agents/fabric-ai/execute-workflow — organization binding",
 		// was consulted.
 		mocks.getWorkflowById.mockResolvedValue(null);
 		mocks.hasOrganizationTie.mockResolvedValue(false);
+		mocks.canRunOrganizationWorkflows.mockResolvedValue(true);
 	});
 
 	it("refuses an organization the caller has no tie to, without consulting the session's", async () => {

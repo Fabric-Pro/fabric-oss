@@ -2338,6 +2338,19 @@ export const FabricDirectChat = forwardRef<
 				throw new Error(data.error || "Failed to execute workflow");
 			}
 
+			// 202 "unconfirmed": the engine may be running it. Say so and do
+			// not invite a second confirmation, which would be a second run.
+			if (data.status === "unconfirmed") {
+				toast.warning("Workflow start not confirmed", {
+					description: data.message,
+				});
+				await streamSendMessage(
+					`The workflow "${confirmation.workflowName}" was submitted, but the engine did not confirm the start (execution ${data.executionId}). Check that execution's status before running it again.`,
+					messages.map((m) => ({ role: m.role, content: m.content })),
+				);
+				return;
+			}
+
 			toast.success("Workflow started", { description: data.message });
 
 			// Send a follow-up message through the stream to show success

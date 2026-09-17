@@ -17,35 +17,40 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	rateLimitMock,
-	concurrencyMock,
+	reserveMock,
 	workflowFindUniqueMock,
-	executionCreateMock,
 	executionUpdateMock,
+	markRunningMock,
 	apiKeyFindFirstMock,
 	apiKeyUpdateMock,
 	startMock,
+	describeMock,
 } = vi.hoisted(() => ({
 	rateLimitMock: vi.fn(),
-	concurrencyMock: vi.fn(),
+	reserveMock: vi.fn(),
 	workflowFindUniqueMock: vi.fn(),
-	executionCreateMock: vi.fn(),
 	executionUpdateMock: vi.fn(),
+	markRunningMock: vi.fn(),
 	apiKeyFindFirstMock: vi.fn(),
 	apiKeyUpdateMock: vi.fn(),
 	startMock: vi.fn(),
+	describeMock: vi.fn(),
 }));
 
 vi.mock("@repo/api/lib/rate-limit", () => ({ checkRateLimit: rateLimitMock }));
 
+// The row is created inside the capacity reservation; the mock returns the
+// row the way the real helper does.
 vi.mock("@repo/api/modules/workflows/lib/execution-concurrency", () => ({
-	checkExecutionConcurrency: concurrencyMock,
+	createExecutionWithinConcurrencyCap: reserveMock,
+	concurrencyRefusalMessage: (r: { inFlight: number; limit: number }) =>
+		`This workspace already has ${r.inFlight} workflow executions running (limit ${r.limit}).`,
 }));
 
 vi.mock("@repo/database", () => ({
 	db: {
 		workflow: { findUnique: workflowFindUniqueMock },
 		workflowExecution: {
-			create: executionCreateMock,
 			update: executionUpdateMock,
 		},
 		workflowApiKey: {
@@ -53,11 +58,31 @@ vi.mock("@repo/database", () => ({
 			update: apiKeyUpdateMock,
 		},
 	},
+	markExecutionRunningIfPending: markRunningMock,
 }));
 
 vi.mock("@repo/temporal", () => ({
-	getTemporalClient: async () => ({ workflow: { start: startMock } }),
+	getTemporalClient: async () => ({
+		workflow: {
+			start: startMock,
+			getHandle: () => ({ describe: describeMock }),
+		},
+	}),
 }));
+
+/** Temporal's typed errors are matched by name, so a named Error stands in. */
+function temporalError(name: string): Error {
+	const error = new Error(name);
+	error.name = name;
+	return error;
+}
+
+function failedWrites() {
+	return executionUpdateMock.mock.calls.filter(
+		([args]) =>
+			(args as { data?: { status?: string } }).data?.status === "FAILED",
+	);
+}
 
 vi.mock("@repo/utils", () => ({
 	decryptApiKeyMaybe: (v: string | null) => v,
@@ -118,17 +143,18 @@ function signatureFor(body: string) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	rateLimitMock.mockResolvedValue({ allowed: true, remaining: 59 });
-	concurrencyMock.mockResolvedValue({
+	reserveMock.mockResolvedValue({
 		allowed: true,
-		inFlight: 0,
+		execution: {
+			id: "exec-1",
+			startedAt: new Date("2026-08-08T00:00:00Z"),
+		},
+		inFlight: 1,
 		limit: 25,
 	});
 	workflowFindUniqueMock.mockResolvedValue(publishedWorkflow());
-	executionCreateMock.mockResolvedValue({
-		id: "exec-1",
-		startedAt: new Date("2026-08-08T00:00:00Z"),
-	});
 	executionUpdateMock.mockResolvedValue({});
+	markRunningMock.mockResolvedValue(true);
 	apiKeyFindFirstMock.mockResolvedValue({
 		id: "key-1",
 		workflowId: WORKFLOW_ID,
@@ -141,6 +167,8 @@ beforeEach(() => {
 		organizationId: ORG,
 	});
 	startMock.mockResolvedValue({ workflowId: "temporal-run-1" });
+	// Default: a start that threw really did not happen.
+	describeMock.mockRejectedValue(temporalError("WorkflowNotFoundError"));
 });
 
 describe("authentication", () => {
@@ -151,6 +179,18 @@ describe("authentication", () => {
 
 		expect(res.status).toBe(200);
 		expect(startMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("still reports a started run when marking the row RUNNING fails, and never marks it FAILED", async () => {
+		markRunningMock.mockRejectedValueOnce(new Error("connection reset"));
+
+		const res = await callPost(
+			post("{}", { authorization: `Bearer ${RAW_KEY}` }),
+		);
+
+		expect(res.status).toBe(200);
+		expect(startMock).toHaveBeenCalledTimes(1);
+		expect(failedWrites()).toHaveLength(0);
 	});
 
 	it("starts a run for a valid HMAC signature", async () => {
@@ -167,7 +207,7 @@ describe("authentication", () => {
 		const res = await callPost(post("{}"));
 
 		expect(res.status).toBe(401);
-		expect(executionCreateMock).not.toHaveBeenCalled();
+		expect(reserveMock).not.toHaveBeenCalled();
 		expect(startMock).not.toHaveBeenCalled();
 	});
 
@@ -180,7 +220,7 @@ describe("authentication", () => {
 		);
 
 		expect(res.status).toBe(401);
-		expect(executionCreateMock).not.toHaveBeenCalled();
+		expect(reserveMock).not.toHaveBeenCalled();
 	});
 
 	it("refuses a revoked key", async () => {
@@ -191,7 +231,7 @@ describe("authentication", () => {
 		);
 
 		expect(res.status).toBe(401);
-		expect(executionCreateMock).not.toHaveBeenCalled();
+		expect(reserveMock).not.toHaveBeenCalled();
 	});
 
 	it("refuses an expired key", async () => {
@@ -210,7 +250,7 @@ describe("authentication", () => {
 		);
 
 		expect(res.status).toBe(401);
-		expect(executionCreateMock).not.toHaveBeenCalled();
+		expect(reserveMock).not.toHaveBeenCalled();
 	});
 
 	it("refuses a key whose tenant disagrees with the workflow", async () => {
@@ -232,7 +272,7 @@ describe("authentication", () => {
 		);
 
 		expect(res.status).toBe(401);
-		expect(executionCreateMock).not.toHaveBeenCalled();
+		expect(reserveMock).not.toHaveBeenCalled();
 	});
 
 	it("refuses a key without the trigger permission", async () => {
@@ -275,7 +315,7 @@ describe("workflow state", () => {
 		);
 
 		expect(res.status).toBe(403);
-		expect(executionCreateMock).not.toHaveBeenCalled();
+		expect(reserveMock).not.toHaveBeenCalled();
 	});
 
 	it("refuses a workflow whose trigger is not a webhook", async () => {
@@ -288,7 +328,7 @@ describe("workflow state", () => {
 		);
 
 		expect(res.status).toBe(403);
-		expect(executionCreateMock).not.toHaveBeenCalled();
+		expect(reserveMock).not.toHaveBeenCalled();
 	});
 
 	it("rejects a malformed JSON body before touching the workflow", async () => {
@@ -297,7 +337,7 @@ describe("workflow state", () => {
 		);
 
 		expect(res.status).toBe(400);
-		expect(executionCreateMock).not.toHaveBeenCalled();
+		expect(reserveMock).not.toHaveBeenCalled();
 	});
 });
 
@@ -318,8 +358,8 @@ describe("guards the manual path already had", () => {
 		expect(workflowFindUniqueMock).not.toHaveBeenCalled();
 	});
 
-	it("refuses when the tenant is at its concurrency cap, before creating a row", async () => {
-		concurrencyMock.mockResolvedValue({
+	it("refuses when the tenant is at its concurrency cap, starting nothing", async () => {
+		reserveMock.mockResolvedValue({
 			allowed: false,
 			inFlight: 25,
 			limit: 25,
@@ -330,16 +370,25 @@ describe("guards the manual path already had", () => {
 		);
 
 		expect(res.status).toBe(429);
-		expect(executionCreateMock).not.toHaveBeenCalled();
+		expect(res.headers.get("Retry-After")).toBe("60");
 		expect(startMock).not.toHaveBeenCalled();
+		expect(executionUpdateMock).not.toHaveBeenCalled();
 	});
 
-	it("counts concurrency against the workflow's tenant, not the caller", async () => {
-		await callPost(post("{}", { authorization: `Bearer ${RAW_KEY}` }));
+	it("reserves capacity against the workflow's tenant, not the caller, with the row it will create", async () => {
+		// A webhook is the path most able to flood, so the cap and the insert
+		// have to be one decision here, not a count followed by a create.
+		const body = JSON.stringify({ hello: "world" });
+		await callPost(post(body, { authorization: `Bearer ${RAW_KEY}` }));
 
-		expect(concurrencyMock).toHaveBeenCalledWith({
+		expect(reserveMock).toHaveBeenCalledWith({
 			userId: OWNER,
 			organizationId: ORG,
+			data: expect.objectContaining({
+				workflowId: WORKFLOW_ID,
+				triggerType: "WEBHOOK",
+				triggerInput: { hello: "world" },
+			}),
 		});
 	});
 
@@ -353,8 +402,9 @@ describe("guards the manual path already had", () => {
 });
 
 describe("when Temporal will not take the run", () => {
-	it("marks the execution FAILED instead of leaving it PENDING", async () => {
+	it("marks the execution FAILED instead of leaving it PENDING once Temporal confirms no run exists", async () => {
 		startMock.mockRejectedValue(new Error("temporal unreachable"));
+		describeMock.mockRejectedValue(temporalError("WorkflowNotFoundError"));
 
 		const res = await callPost(
 			post("{}", { authorization: `Bearer ${RAW_KEY}` }),
@@ -373,6 +423,47 @@ describe("when Temporal will not take the run", () => {
 			}),
 		);
 	});
+
+	it("reports an accepted-but-lost start as started — the sender's retry would run it twice", async () => {
+		startMock.mockRejectedValue(new Error("DEADLINE_EXCEEDED"));
+		describeMock.mockResolvedValue({ runId: "run-accepted" });
+
+		const res = await callPost(
+			post("{}", { authorization: `Bearer ${RAW_KEY}` }),
+		);
+
+		expect(res.status).toBe(200);
+		expect(failedWrites()).toHaveLength(0);
+		// Conditional on PENDING: a run that already finished stays finished.
+		expect(markRunningMock).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			temporalRunId: "workflow-execution-exec-1",
+		});
+	});
+
+	it("answers 202 unconfirmed with the execution id, not a 5xx the sender would retry, when the start cannot be settled", async () => {
+		startMock.mockRejectedValue(new Error("DEADLINE_EXCEEDED"));
+		describeMock.mockRejectedValue(new Error("UNAVAILABLE"));
+
+		const res = await callPost(
+			post("{}", { authorization: `Bearer ${RAW_KEY}` }),
+		);
+
+		// Webhook senders retry server errors; a retry is a second row and run.
+		expect(res.status).toBe(202);
+		// Neither FAILED (invites a duplicate retry) nor RUNNING (claims a
+		// confirmation nobody has): the row is left exactly as created, and
+		// no second row was reserved.
+		expect(executionUpdateMock).not.toHaveBeenCalled();
+		expect(markRunningMock).not.toHaveBeenCalled();
+		expect(reserveMock).toHaveBeenCalledTimes(1);
+		const body = (await res.json()) as {
+			executionId: string;
+			status: string;
+		};
+		expect(body.status).toBe("unconfirmed");
+		expect(body.executionId).toBe("exec-1");
+	});
 });
 
 describe("what the execution row records", () => {
@@ -386,7 +477,7 @@ describe("what the execution row records", () => {
 			post(body, { "x-workflow-signature": signatureFor(body) }),
 		);
 
-		expect(executionCreateMock).toHaveBeenCalledWith(
+		expect(reserveMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				data: expect.objectContaining({ version: 4 }),
 			}),

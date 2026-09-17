@@ -4266,7 +4266,12 @@ async function handleExecuteWorkflow(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { getWorkflowById } = await import("@repo/database");
+	const {
+		getWorkflowById,
+		canRunOrganizationWorkflows,
+		db,
+		markExecutionRunningIfPending,
+	} = await import("@repo/database");
 
 	const workflowId = args.workflowId as string;
 	if (!workflowId) {
@@ -4282,40 +4287,153 @@ async function handleExecuteWorkflow(
 	if (!workflow) {
 		return errorResult("Workflow not found or access denied");
 	}
+	// The tool promises an ACTIVE workflow, and `publishedAt` alone does not
+	// say that: pausing or archiving a workflow leaves the timestamp in place,
+	// so a check on it alone ran PAUSED and ARCHIVED workflows.
+	if (workflow.status !== "ACTIVE") {
+		return errorResult(
+			`Workflow is ${workflow.status}; only ACTIVE workflows can be executed`,
+		);
+	}
 	if (!workflow.publishedAt) {
 		return errorResult("Workflow must be published before execution");
 	}
 
-	try {
-		const { getTemporalClient } = await import("@repo/temporal");
-		const client = await getTemporalClient();
-		const executionId = `mcp-wf-${workflowId}-${Date.now()}`;
-
-		await client.workflow.start("workflowBuilderExecution", {
-			taskQueue: "workflow-builder",
-			workflowId: executionId,
-			args: [
-				{
-					workflowId,
-					userId: session.userId,
-					organizationId: session.organizationId || undefined,
-					inputs: (args.inputs as Record<string, unknown>) ?? {},
-					executionSource: "mcp-gateway",
-				},
-			],
-		});
-
-		return jsonResult({
-			executionId,
-			workflowId,
-			status: "STARTED",
-			message: `Workflow "${workflow.name}" execution started. Use fabric_get_workflow_execution to check status.`,
-		});
-	} catch (error) {
+	// The session's stored scopes say what the credential was granted, not
+	// what its owner may do now. The in-app start requires WORKSPACE_UPDATE,
+	// so the same live check applies here — the same gate the v1 REST
+	// trigger applies to a `workflows:run` key. There is no personal arm
+	// (ADR-018): a session that names no organization has no role to check
+	// and is refused rather than waved through.
+	if (!session.organizationId) {
 		return errorResult(
-			`Failed to start workflow: ${error instanceof Error ? error.message : "Unknown error"}`,
+			"Running a workflow requires an organization. Switch to an organization and try again.",
 		);
 	}
+	if (
+		!(await canRunOrganizationWorkflows(
+			session.userId,
+			session.organizationId,
+		))
+	) {
+		return errorResult(
+			"You no longer hold the permission required to run workflows in this organization",
+		);
+	}
+
+	// This tool used to start a workflow type that is not registered, under
+	// an id it invented (`mcp-wf-<workflow>-<timestamp>`), with no execution
+	// row at all — so the run never began and the "executionId" it returned
+	// was a string `fabric_get_workflow_execution` could not find. It now
+	// creates the same row every other trigger creates and starts the run
+	// through the shared helper, so the id it returns is the row's id and
+	// the status tool sees the run's real progress.
+	const { concurrencyRefusalMessage, createExecutionWithinConcurrencyCap } =
+		await import("@repo/api/modules/workflows/lib/execution-concurrency");
+	const triggerData = (args.inputs as Record<string, unknown>) ?? {};
+	// The row is created inside the capacity reservation, so the tenant cap
+	// holds under concurrent calls rather than only when nobody races for it.
+	const reservation = await createExecutionWithinConcurrencyCap({
+		userId: session.userId,
+		organizationId: session.organizationId,
+		data: {
+			workflowId,
+			version: workflow.version,
+			triggerType: "MANUAL",
+			triggerInput: {
+				triggerData,
+				source: "mcp-gateway",
+			} as never,
+		},
+	});
+	if (!reservation.allowed) {
+		return errorResult(concurrencyRefusalMessage(reservation));
+	}
+	const execution = reservation.execution;
+
+	const {
+		attemptWorkflowBuilderStart,
+		startFailureMessage,
+		unconfirmedStartMessage,
+	} = await import("@repo/api/modules/workflows/lib/start-builder-execution");
+	const outcome = await attemptWorkflowBuilderStart({
+		executionId: execution.id,
+		workflowId,
+		userId: session.userId,
+		organizationId: session.organizationId || undefined,
+		projectId: workflow.projectId ?? undefined,
+		triggerData,
+	});
+
+	if (outcome.status === "not-started") {
+		// The row exists but nothing will run it — Temporal confirmed that —
+		// and no sweeper reclaims a PENDING execution. Record the terminal
+		// state so the status tool reports "failed to start" rather than
+		// "queued" forever.
+		const message = startFailureMessage(outcome.error);
+		const failedAt = new Date();
+		await db.workflowExecution.update({
+			where: { id: execution.id },
+			data: {
+				status: "FAILED",
+				error: message,
+				completedAt: failedAt,
+				duration: failedAt.getTime() - execution.startedAt.getTime(),
+			},
+		});
+		return errorResult(`Failed to start workflow: ${message}`);
+	}
+
+	if (outcome.status === "unknown") {
+		// The start call failed and the follow-up describe could not settle
+		// whether Temporal accepted it. The run may be in progress under the
+		// deterministic id, so the row stays active: failing it would invite
+		// the agent to call this tool again, which creates a new row and a
+		// second run with the same side effects. The status tool shows the
+		// run's real progress.
+		console.warn(
+			"[MCP Gateway] Workflow start unconfirmed; leaving the execution row active:",
+			{ executionId: execution.id, workflowId: outcome.workflowId },
+			outcome.error,
+		);
+		// A normal result, not an error: agents retry errors, and a retry
+		// is exactly the duplicate run this avoids.
+		return jsonResult({
+			executionId: execution.id,
+			workflowId,
+			workflowName: workflow.name,
+			status: "unconfirmed",
+			temporalWorkflowId: outcome.workflowId,
+			message: `${unconfirmedStartMessage(execution.id)} Do not call this tool again for this run; poll fabric_get_workflow_execution(executionId="${execution.id}").`,
+		});
+	}
+
+	// The run exists in the engine from here on. A failure to record that must
+	// not be reported as "not started" (the caller would retry and start a
+	// second run with the same side effects); it is logged and the start is
+	// still reported. The workflow writes its own status as it progresses and
+	// its id is deterministic from the execution id.
+	// PENDING → RUNNING only: a fast run may already have written its
+	// terminal status, which must not move back to RUNNING.
+	try {
+		await markExecutionRunningIfPending({
+			executionId: execution.id,
+			temporalRunId: outcome.workflowId,
+		});
+	} catch (error) {
+		console.error(
+			"[MCP Gateway] Run started but the execution row could not be marked RUNNING:",
+			{ executionId: execution.id, workflowId: outcome.workflowId },
+			error,
+		);
+	}
+
+	return jsonResult({
+		executionId: execution.id,
+		workflowId,
+		status: "RUNNING",
+		message: `Workflow "${workflow.name}" execution started. Use fabric_get_workflow_execution to check status.`,
+	});
 }
 
 async function handleGetWorkflowExecution(

@@ -47,3 +47,63 @@ export function requestAbortSignal(timeoutMs: number): AbortSignal {
 		return timeout;
 	}
 }
+
+/** How often `withHeartbeatTicker` checks in. Well inside any sane `heartbeatTimeout`. */
+export const HEARTBEAT_TICK_MS = 10_000;
+
+/**
+ * True when called from inside a running Temporal activity.
+ *
+ * `Context.current()` throws outside one, and that is the only signal there is.
+ */
+export function inActivityContext(): boolean {
+	try {
+		Context.current();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Run `fn` while heartbeating on a fixed interval, stopping when it settles.
+ *
+ * For an activity whose work is one long, otherwise silent call — a 30 s HTTP
+ * request, an AI generation, a browser session, an approval poll — there is no
+ * natural point in the code to heartbeat from. Declaring `heartbeatTimeout` on
+ * such an activity without this kills it at that timeout however healthy it
+ * is, and the retry re-runs the side effect. The ticker keeps the promise the
+ * declaration made; `heartbeatTimeout` stays meaningful for a worker that has
+ * actually died, because a dead worker stops ticking.
+ *
+ * `fn`'s outcome is passed through untouched. The interval is cleared in
+ * `finally`, so it cannot outlive a throw, and it is `unref`'d so it never
+ * holds the process open on its own.
+ *
+ * Outside an activity (unit tests calling the activity function directly) this
+ * is a plain call: no interval is started and nothing is heartbeated.
+ */
+export async function withHeartbeatTicker<T>(
+	fn: () => Promise<T>,
+	options: { details?: unknown; intervalMs?: number } = {},
+): Promise<T> {
+	if (!inActivityContext()) {
+		return await fn();
+	}
+
+	const intervalMs = options.intervalMs ?? HEARTBEAT_TICK_MS;
+	// Check in immediately as well: a node that fails fast should still leave
+	// one heartbeat behind, and the first tick is otherwise a full interval out.
+	safeHeartbeat(options.details);
+	const ticker = setInterval(
+		() => safeHeartbeat(options.details),
+		intervalMs,
+	);
+	ticker.unref?.();
+
+	try {
+		return await fn();
+	} finally {
+		clearInterval(ticker);
+	}
+}

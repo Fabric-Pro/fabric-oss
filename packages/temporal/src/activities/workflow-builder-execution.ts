@@ -23,6 +23,7 @@ import {
 	updateWorkflowExecution,
 } from "@repo/database";
 import { READ_ONLY_MODE_MESSAGE } from "@repo/utils/read-only-mode";
+import { withHeartbeatTicker } from "./lib/activity-liveness";
 import { redactSensitiveData } from "./lib/redact-sensitive-data";
 import {
 	executeStep,
@@ -143,6 +144,14 @@ export async function createWorkflowExecutionLog(params: {
 			nodeId: params.nodeId,
 			nodeType: params.nodeType,
 			input: redactedInput as Prisma.InputJsonValue | undefined,
+			// A node the walk could never reach is written once, as SKIPPED,
+			// with no RUNNING row before it. The status has to land on the
+			// create, or the row would sit at PENDING with an error attached.
+			status: params.status as Prisma.EnumWorkflowNodeStatusFieldUpdateOperationsInput["set"],
+			output: redactedOutput as Prisma.InputJsonValue | undefined,
+			error: params.error,
+			completedAt: params.completedAt,
+			duration: params.duration,
 			userId: params.userId,
 			organizationId: params.organizationId,
 		});
@@ -174,87 +183,108 @@ export async function executeWorkflowNode(params: {
 	projectId?: string;
 }): Promise<NodeExecutionResult> {
 	const { withNodeLogging } = await import("./lib/node-logging");
+
+	// The workflow declares a heartbeat timeout on this activity, and a step
+	// is one long silent call — an HTTP request allowed 30 s, an AI
+	// generation, a browser session. Nothing in a step heartbeats, so without
+	// the ticker any node slower than the timeout was killed as unresponsive
+	// and retried, re-running whatever side effect it had already produced.
+	return withHeartbeatTicker(
+		() =>
+			withNodeLogging(
+				{
+					executionId: params.executionId,
+					nodeId: params.nodeId,
+					nodeType: params.nodeType,
+					nodeName: (params.nodeConfig.label as string) || undefined,
+				},
+				() => runNodeStep(params),
+			),
+		{
+			details: {
+				phase: "executing-node",
+				nodeId: params.nodeId,
+				nodeType: params.nodeType,
+			},
+		},
+	);
+}
+
+/**
+ * The step itself: config validation, registry lookup, the Read-only mode
+ * gates, then dispatch. Split out of `executeWorkflowNode` so the activity
+ * wrapper above is only about Temporal plumbing (logging, liveness).
+ */
+async function runNodeStep(
+	params: Parameters<typeof executeWorkflowNode>[0],
+): Promise<NodeExecutionResult> {
 	const { validateNodeConfig, isNodeTypeImplemented } = await import(
 		"./lib/node-config-validator"
 	);
 
-	// Use the logging wrapper for consistent tracking
-	return withNodeLogging(
-		{
-			executionId: params.executionId,
-			nodeId: params.nodeId,
-			nodeType: params.nodeType,
-			nodeName: (params.nodeConfig.label as string) || undefined,
-		},
-		async () => {
-			// Validate node configuration before execution
-			const validation = validateNodeConfig(
-				params.nodeType,
-				params.nodeConfig,
+	// Validate node configuration before execution
+	const validation = validateNodeConfig(params.nodeType, params.nodeConfig);
+
+	if (!validation.valid) {
+		return {
+			success: false,
+			error: validation.error || "Invalid node configuration",
+		};
+	}
+
+	// Check if node type is registered. Fail closed: reporting success
+	// for a node the worker cannot execute produced green runs that
+	// did nothing, and let the registry drift from the plugin
+	// definitions unnoticed.
+	if (!hasStep(params.nodeType)) {
+		const hint = isNodeTypeImplemented(params.nodeType)
+			? ""
+			: " (no step is registered for this node type)";
+		return {
+			success: false,
+			error: `Unknown node type: ${params.nodeType}${hint}`,
+		};
+	}
+
+	// Read-only mode: while the owning project is
+	// read-only, steps that write to a connected external source must
+	// not run. Membership in EXTERNAL_WRITE_NODE_TYPES decides — not
+	// the shared name classifier, which would misread internal types
+	// like "ai-generate-text" as writes.
+	if (
+		params.projectId &&
+		isExternalWriteNodeType(params.nodeType) &&
+		(await isProjectReadOnly(params.projectId))
+	) {
+		return { success: false, error: READ_ONLY_MODE_MESSAGE };
+	}
+
+	// The mcp-tool step dispatches an arbitrary tool on a connected
+	// external MCP server (bypassing the gated `callMcpTool` funnel),
+	// so gate it by the configured tool's own name via the shared
+	// classifier.
+	if (params.nodeType === "mcp-tool") {
+		const toolName = params.nodeConfig.toolName;
+		if (typeof toolName === "string" && toolName) {
+			const blocked = await guardToolWriteForReadOnly(
+				params.projectId ?? null,
+				toolName,
 			);
-
-			if (!validation.valid) {
-				return {
-					success: false,
-					error: validation.error || "Invalid node configuration",
-				};
+			if (blocked) {
+				return { success: false, error: blocked.error };
 			}
+		}
+	}
 
-			// Check if node type is registered. Fail closed: reporting success
-			// for a node the worker cannot execute produced green runs that
-			// did nothing, and let the registry drift from the plugin
-			// definitions unnoticed.
-			if (!hasStep(params.nodeType)) {
-				const hint = isNodeTypeImplemented(params.nodeType)
-					? ""
-					: " (no step is registered for this node type)";
-				return {
-					success: false,
-					error: `Unknown node type: ${params.nodeType}${hint}`,
-				};
-			}
-
-			// Read-only mode: while the owning project is
-			// read-only, steps that write to a connected external source must
-			// not run. Membership in EXTERNAL_WRITE_NODE_TYPES decides — not
-			// the shared name classifier, which would misread internal types
-			// like "ai-generate-text" as writes.
-			if (
-				params.projectId &&
-				isExternalWriteNodeType(params.nodeType) &&
-				(await isProjectReadOnly(params.projectId))
-			) {
-				return { success: false, error: READ_ONLY_MODE_MESSAGE };
-			}
-
-			// The mcp-tool step dispatches an arbitrary tool on a connected
-			// external MCP server (bypassing the gated `callMcpTool` funnel),
-			// so gate it by the configured tool's own name via the shared
-			// classifier.
-			if (params.nodeType === "mcp-tool") {
-				const toolName = params.nodeConfig.toolName;
-				if (typeof toolName === "string" && toolName) {
-					const blocked = await guardToolWriteForReadOnly(
-						params.projectId ?? null,
-						toolName,
-					);
-					if (blocked) {
-						return { success: false, error: blocked.error };
-					}
-				}
-			}
-
-			// Execute the step using the registry
-			return executeStep(params.nodeType, {
-				nodeConfig: params.nodeConfig,
-				inputs: params.inputs,
-				userId: params.userId,
-				organizationId: params.organizationId,
-				projectId: params.projectId,
-				jobType: "workflow-builder",
-			});
-		},
-	);
+	// Execute the step using the registry
+	return executeStep(params.nodeType, {
+		nodeConfig: params.nodeConfig,
+		inputs: params.inputs,
+		userId: params.userId,
+		organizationId: params.organizationId,
+		projectId: params.projectId,
+		jobType: "workflow-builder",
+	});
 }
 
 // Re-export types for convenience
