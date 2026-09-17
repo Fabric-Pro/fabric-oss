@@ -20,6 +20,23 @@ export type IgnoreMatch = { rule: string; layer: IgnoreLayer };
  */
 export const ALWAYS_IGNORE_GLOBS: readonly string[] = ["**/.git/**"];
 
+/**
+ * The one path whose CONTENT decides an upload's exclusion rules.
+ *
+ * Named here rather than spelled out at each site because three of them have
+ * to agree exactly: the browser preview that reads the file
+ * (`apps/web/modules/saas/projects/lib/read-folder.ts`), the procedure that
+ * freezes the parsed rules into the snapshot
+ * (`packages/api/.../instructions/begin-snapshot.ts`), and the verify
+ * activity that checks the STORED bytes still parse to those frozen rules
+ * (`packages/temporal/src/activities/project-instructions.ts`). A typo in any
+ * one of them turns that last check into a silent pass.
+ *
+ * Root-anchored and exact: a nested `docs/.fabricignore` is ordinary content,
+ * for the same reason `retro.md` above stays root-anchored.
+ */
+export const FABRIC_IGNORE_FILE = ".fabricignore";
+
 export const DEFAULT_IGNORE_GLOBS: readonly string[] = [
 	"**/node_modules/**",
 	"**/.playwright-mcp/**",

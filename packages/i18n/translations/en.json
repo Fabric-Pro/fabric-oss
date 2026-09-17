@@ -5215,7 +5215,9 @@
 					"hash_mismatch": "File changed during upload",
 					"size_mismatch": "File size changed during upload",
 					"missing": "File never arrived",
-					"scan_failed": "Could not be checked"
+					"scan_failed": "Could not be checked",
+					"ignore_mismatch": "The .fabricignore file differs from the rules applied to this upload",
+					"abandoned": "Upload was never finished"
 				}
 			},
 			"history": {

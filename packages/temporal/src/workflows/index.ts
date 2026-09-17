@@ -552,6 +552,7 @@ export {
 	projectPermanentDeleteWorkflow,
 } from "./project-deletion";
 export * from "./project-document-generation";
+export { projectInstructionReaperWorkflow } from "./project-instruction-reaper";
 export * from "./project-instruction-snapshot";
 // Publishing Suite 1C-2d-2a — hourly reconciliation sweep (the cycle-level
 // PENDING -> ABANDONED write and the enrolment pass that feeds it).

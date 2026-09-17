@@ -16,8 +16,102 @@
  * `instructionsAwaitsPublish`.
  */
 
+import {
+	RECEIVING_ABANDON_AFTER_MS,
+	VALIDATING_STALE_AFTER_MS,
+} from "@repo/instructions";
+
 /** Statuses that mean the validation workflow is still working. */
 const ACTIVE_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
+
+/** The fields the "is this still in flight" decision reads off a snapshot. */
+type PollRow = { status: string; createdAt?: string | Date | null };
+
+/** One pass of the hourly reaper schedule, as the tab's slack allowance. */
+const ONE_REAPER_CYCLE_MS = 60 * 60 * 1000;
+
+/**
+ * How old — by `createdAt` — a VALIDATING row has to be before the tab stops
+ * waiting on it.
+ *
+ * Three terms, and the first is the one that is easy to leave out. The
+ * reaper's own phase 0 measures `updatedAt`, so it dates a row from the claim
+ * that put it in VALIDATING. The list projection carries no `updatedAt`
+ * (`summarySelect` in `packages/database/prisma/queries/instructions.ts`), so
+ * this measures `createdAt` — and a row may legitimately sit in RECEIVING for
+ * `RECEIVING_ABANDON_AFTER_MS` before `finalize` is ever called, which has no
+ * age predicate of its own. Without that term the tab would give up
+ * immediately on a perfectly live validation whose upload dialog had been open
+ * for a few hours.
+ *
+ * Then `VALIDATING_STALE_AFTER_MS`, the reaper's threshold, and one further
+ * hour so the hourly sweep has had a full cycle to write the verdict before
+ * the tab stops watching for it.
+ *
+ * Erring long costs nothing here. The row the sweep heals becomes FAILED, and
+ * a terminal status stops the poll on its own without the age ever being
+ * consulted; this bound only decides how long the tab keeps watching a row the
+ * sweep could NOT heal — which was forever before it existed.
+ */
+const VALIDATING_ABANDON_AFTER_MS =
+	RECEIVING_ABANDON_AFTER_MS +
+	VALIDATING_STALE_AFTER_MS +
+	ONE_REAPER_CYCLE_MS;
+
+/**
+ * Whether a snapshot is still work in progress.
+ *
+ * Both active statuses are decided the same way: by AGE, against the
+ * threshold past which the scheduled reaper
+ * (`packages/temporal/src/activities/project-instructions-reaper.ts`) has
+ * taken over. Sharing those constants is what keeps the two from disagreeing
+ * about which rows are still alive.
+ *
+ * RECEIVING is the abandoned-upload case. `begin` writes RECEIVING and hands
+ * the browser its signed PUTs; `finalize` is what starts the workflow. Close
+ * the upload dialog part-way through and `finalize` never happens — there is
+ * no workflow, nothing will ever move the row, and the tab polled it for
+ * every viewer, forever. Past `RECEIVING_ABANDON_AFTER_MS` the reaper closes
+ * it out on its own hourly pass; the tab has nothing to wait for.
+ *
+ * VALIDATING normally means a workflow owns the row and its terminal
+ * activities write a verdict one way or the other — which is why this used to
+ * be unconditional. The case that breaks it is a row whose execution is GONE
+ * with no failure marker written: `finalize` starts the workflow before it
+ * writes VALIDATING, so a status write that lands after the run has closed
+ * leaves exactly that, and so does a worker that dies mid-run. Nothing inside
+ * the feature will ever move such a row, so the tab polled it forever and
+ * never offered "Try again". The reaper's phase 0 heals it; past
+ * `VALIDATING_ABANDON_AFTER_MS` the tab stops waiting on it regardless.
+ *
+ * The comparison is `<=` to match the database's STRICT `< cutoff` on the
+ * other side of both constants
+ * (`listAbandonedReceivingInstructionSnapshots`,
+ * `listStaleValidatingInstructionSnapshots`). At exactly the threshold the
+ * sweep does not select the row, so a tab that stopped there would leave a
+ * row still active and no longer watched until the next hourly pass.
+ *
+ * A row with no usable `createdAt` counts as active. The age is the only
+ * thing that can retire it, so no age means the conservative answer — the
+ * bounded fast/slow backoff still applies.
+ */
+function isInFlight(snapshot: PollRow, now: number): boolean {
+	if (!ACTIVE_STATUSES.has(snapshot.status)) {
+		return false;
+	}
+	const createdAt =
+		snapshot.createdAt == null
+			? Number.NaN
+			: new Date(snapshot.createdAt).getTime();
+	if (Number.isNaN(createdAt)) {
+		return true;
+	}
+	const abandonAfterMs =
+		snapshot.status === "RECEIVING"
+			? RECEIVING_ABANDON_AFTER_MS
+			: VALIDATING_ABANDON_AFTER_MS;
+	return now - createdAt <= abandonAfterMs;
+}
 
 /** While the workflow is plausibly seconds from finishing. */
 export const INSTRUCTIONS_FAST_POLL_MS = 3_000;
@@ -114,18 +208,23 @@ export function instructionsAwaitsPublish(input: {
 
 /**
  * The `refetchInterval` for the snapshot list: `false` once nothing is in
- * flight (READY, REJECTED and FAILED are all terminal) and the published
- * pointer has nothing left to catch up on, otherwise fast then slow.
+ * flight (READY, REJECTED and FAILED are all terminal, and an abandoned
+ * RECEIVING row is no longer in flight either) and the published pointer has
+ * nothing left to catch up on, otherwise fast then slow.
  *
  * REJECTED and FAILED stop it as they always did — neither ever publishes.
+ *
+ * `now` is an argument rather than a `Date.now()` inside this function: the
+ * caller already reads the clock once per decision, and a pure helper is what
+ * makes the age boundary testable at all.
  */
 export function instructionsPollInterval(
-	snapshots: ReadonlyArray<{ status: string }> | undefined,
+	snapshots: ReadonlyArray<PollRow> | undefined,
 	elapsedMs: number,
-	options?: { awaitingPublish?: boolean },
+	options: { awaitingPublish?: boolean; now: number },
 ): number | false {
-	const active = snapshots?.some((s) => ACTIVE_STATUSES.has(s.status));
-	if (!active && !options?.awaitingPublish) {
+	const active = snapshots?.some((s) => isInFlight(s, options.now));
+	if (!active && !options.awaitingPublish) {
 		return false;
 	}
 	return intervalAt(elapsedMs);

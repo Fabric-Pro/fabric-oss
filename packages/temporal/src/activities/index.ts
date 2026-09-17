@@ -1106,6 +1106,7 @@ export {
 } from "./project-deletion";
 export * from "./project-document-generation";
 export * from "./project-instructions";
+export { reapInstructionSnapshots } from "./project-instructions-reaper";
 // Project metadata activities (orchestrator project context injection)
 export {
 	getProjectMetadataActivity,

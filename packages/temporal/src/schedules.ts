@@ -302,6 +302,21 @@ const BACKGROUND_JOB_WATCHDOG_WORKFLOW_NAME = "backgroundJobWatchdogWorkflow";
 // description in the Temporal UI — that needs an explicit schedule update.
 const BACKGROUND_JOB_WATCHDOG_CRON_SCHEDULE = "*/5 * * * *";
 
+// Exported, like the conversation-bundle sweep's constants, because the
+// registration test asserts the COMPLETE create() payload — a literal it also
+// owned would prove nothing.
+export const PROJECT_INSTRUCTION_REAPER_SCHEDULE_ID =
+	"project-instruction-reaper";
+export const PROJECT_INSTRUCTION_REAPER_WORKFLOW_NAME =
+	"projectInstructionReaperWorkflow";
+// Hourly at minute 40. Hourly because an upload abandoned mid-dialog keeps the
+// Coding Instructions tab polling it for every viewer until something closes
+// it out, and six hours of RECEIVING is already the abandonment threshold —
+// a daily pass would add up to another day on top of it. Minute 40 keeps it
+// clear of the 03:00/03:15/03:45/04:15/04:45 daily retention cluster that
+// shares the `fabric-worker` queue.
+export const PROJECT_INSTRUCTION_REAPER_CRON_SCHEDULE = "40 * * * *";
+
 const ATTACHMENT_TEMP_ORPHAN_SWEEP_SCHEDULE_ID = "attachment-temp-orphan-sweep";
 const ATTACHMENT_TEMP_ORPHAN_SWEEP_WORKFLOW_NAME =
 	"attachmentTempOrphanSweepWorkflow";
@@ -380,6 +395,7 @@ export async function registerSystemSchedules(): Promise<void> {
 		await registerBackgroundJobRetentionSchedule(scheduleClient);
 		await registerMeetingArchiveRetentionSchedule(scheduleClient);
 		await registerBackgroundJobWatchdogSchedule(scheduleClient);
+		await registerProjectInstructionReaperSchedule(scheduleClient);
 		await registerAttachmentTempOrphanSweepSchedule(scheduleClient);
 		await registerAttachmentFinalOrphanSweepSchedule(scheduleClient);
 		await registerAttachmentRetentionPurgeSchedule(scheduleClient);
@@ -685,6 +701,67 @@ async function registerDocumentEmbeddingSweepSchedule(
 		if (error instanceof ScheduleAlreadyRunning) {
 			console.log(
 				`[Worker] Schedule "${DOC_EMBED_SWEEP_SCHEDULE_ID}" already exists, skipping`,
+			);
+		} else {
+			throw error;
+		}
+	}
+}
+
+/**
+ * Register the project-instruction-reaper schedule (Fizzy #2550).
+ *
+ * Closes out Coding Instructions uploads abandoned in RECEIVING — the upload
+ * dialog was closed before `finalize`, so no workflow exists and nothing else
+ * will ever move the row — and runs the retention prune that otherwise only
+ * happens at the end of a SUCCESSFUL validation workflow, which is what let a
+ * project with repeatedly failing uploads accumulate staged copies unbounded.
+ *
+ * On `TASK_QUEUE`, the general `fabric-worker` queue, NOT the
+ * `project-instructions` queue: that queue's two activity slots are reserved
+ * for user uploads, and a sweep competing for them would make an upload wait
+ * on housekeeping. Every worker shares the same workflow bundle, so the
+ * workflow type resolves wherever it is polled from.
+ *
+ * `overlap: "SKIP"` is safe because the run is bounded twice over: both
+ * candidate queries take a capped batch, and the activity's start-to-close
+ * timeout (15 minutes) is well under the hour between triggers.
+ */
+export async function registerProjectInstructionReaperSchedule(
+	scheduleClient: ScheduleClient,
+): Promise<void> {
+	try {
+		await scheduleClient.create({
+			scheduleId: PROJECT_INSTRUCTION_REAPER_SCHEDULE_ID,
+			spec: {
+				cronExpressions: [PROJECT_INSTRUCTION_REAPER_CRON_SCHEDULE],
+			},
+			action: {
+				type: "startWorkflow",
+				workflowType: PROJECT_INSTRUCTION_REAPER_WORKFLOW_NAME,
+				taskQueue: TASK_QUEUE,
+				args: [],
+			},
+			policies: {
+				overlap: "SKIP",
+				// One tick, not a backlog: every missed trigger would do the
+				// work this one is about to do, because both candidate
+				// queries are read fresh each run.
+				catchupWindow: "1 hour",
+			},
+			state: {
+				paused: false,
+				note: "Reclaims Coding Instructions uploads abandoned in RECEIVING (no finalize within six hours) and prunes snapshots past their retention windows, including the failure path a successful workflow never reaches.",
+			},
+		});
+
+		console.log(
+			`[Worker] Schedule "${PROJECT_INSTRUCTION_REAPER_SCHEDULE_ID}" registered (hourly)`,
+		);
+	} catch (error) {
+		if (error instanceof ScheduleAlreadyRunning) {
+			console.log(
+				`[Worker] Schedule "${PROJECT_INSTRUCTION_REAPER_SCHEDULE_ID}" already exists, skipping`,
 			);
 		} else {
 			throw error;

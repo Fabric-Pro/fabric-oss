@@ -1,6 +1,7 @@
 import {
 	buildIgnoreMatcher,
 	classifyPath,
+	FABRIC_IGNORE_FILE,
 	type InstructionFileKind,
 	isSecretFileName,
 	resolveIgnoreGlobs,
@@ -66,7 +67,7 @@ export async function readFolderFiles(
 ): Promise<{ entries: FolderEntry[]; fabricIgnoreText: string | null }> {
 	const files = Array.from(input);
 	const withPaths = files.map((file) => ({ file, rel: relativePath(file) }));
-	const ignoreFile = withPaths.find((x) => x.rel === ".fabricignore");
+	const ignoreFile = withPaths.find((x) => x.rel === FABRIC_IGNORE_FILE);
 	const fabricIgnoreText = ignoreFile ? await ignoreFile.file.text() : null;
 	const isIgnored = buildIgnoreMatcher(
 		resolveIgnoreGlobs({ fabricIgnoreText, projectGlobs }),
