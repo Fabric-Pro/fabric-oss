@@ -89,6 +89,9 @@ const GUIDANCE_MAX = 2000;
  * document this content type's schema can even express. It exists to keep an
  * unbounded write off a `@db.Text` column, not to impose a house style.
  */
+// `NEWSLETTER_BLURB_BODY_MAX` and `WORKING_DRAFT_BODY_MAX.NEWSLETTER_BLURB` are
+// the same number by construction — the map reads this constant — so the
+// editor's bound and the refinement schema's cannot drift.
 const BODY_MAX = NEWSLETTER_BLURB_BODY_MAX;
 
 export const generateNewsletterBlurbProcedure = tenantProtectedProcedure

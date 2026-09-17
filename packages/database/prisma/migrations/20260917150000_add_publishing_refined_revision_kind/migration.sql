@@ -1,0 +1,19 @@
+-- AlterEnum
+-- REFINED — an accepted AI refinement of a working draft (Fizzy #1851 follow-up).
+--
+-- A third value rather than a reuse of EDITED. The enum exists because
+-- `PublishingTopicDraftRevision` refused to infer a restore from `changeSummary`
+-- prose, and the same argument applies here: "a person typed this" and "a model
+-- wrote this and a person approved it" are different provenance, and a history
+-- that cannot tell them apart cannot answer the one question a reader asks of an
+-- AI feature — which of these words are mine.
+--
+-- ONE migration, and it stays alone, following 20260909130000_add_linkedin_post_type.
+-- A value added by ALTER TYPE cannot be referenced in the transaction that adds
+-- it, so anything naming 'REFINED' — a column default, a backfill, a partial
+-- index predicate — needs a migration after this one. Nothing does: the value is
+-- only ever written by application code at runtime.
+--
+-- The type is PascalCase and carries no `@@map`. Created by
+-- 20260917140000_add_publishing_topic_draft_revision.
+ALTER TYPE "PublishingDraftRevisionKind" ADD VALUE IF NOT EXISTS 'REFINED';

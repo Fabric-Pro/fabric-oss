@@ -417,6 +417,7 @@ export * from "./publishing-case-study";
 export * from "./publishing-linkedin-post";
 export * from "./publishing-newsletter-blurb";
 export * from "./publishing-planning";
+export * from "./publishing-refine";
 export * from "./publishing-short-post";
 export * from "./publishing-stakeholder-email";
 export * from "./publishing-webinar-script";

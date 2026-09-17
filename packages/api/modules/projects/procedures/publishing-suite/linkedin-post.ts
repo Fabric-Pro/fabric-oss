@@ -28,6 +28,7 @@ import {
 	startTopicDraftAttempt,
 	updateWorkingDraftBody,
 } from "@repo/database";
+import { WORKING_DRAFT_BODY_MAX } from "@repo/utils/publishing-working-draft-limits";
 import { z } from "zod";
 import {
 	Permissions,
@@ -454,7 +455,11 @@ function findOption(content: unknown, label: string): OptionLookup {
  * working ON, and clamping it to the publish limit would refuse an edit that
  * is one word over on its way to being two words under.
  */
-const LINKEDIN_BODY_MAX = 6000;
+// Read from the shared map rather than written here, so the editor's bound and
+// the refinement schema's cannot drift. A refinement that could commit a body
+// this procedure would refuse to save is a proposal the author can accept and
+// then not edit — see `publishing-working-draft-limits.ts`.
+const LINKEDIN_BODY_MAX = WORKING_DRAFT_BODY_MAX.LINKEDIN_POST;
 
 /**
  * `publishingSuite.saveLinkedinPostBody` — save a hand edit to the adopted

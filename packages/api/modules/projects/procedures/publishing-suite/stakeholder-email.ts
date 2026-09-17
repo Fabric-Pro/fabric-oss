@@ -25,6 +25,7 @@ import {
 	updateWorkingDraftBody,
 } from "@repo/database";
 import { composeStakeholderEmailWorkingDraftBody } from "@repo/utils/publishing-stakeholder-email-body";
+import { WORKING_DRAFT_BODY_MAX } from "@repo/utils/publishing-working-draft-limits";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
@@ -62,7 +63,11 @@ const GUIDANCE_MAX = 2000;
  * cap that stops meaning anything. It exists to keep an unbounded write off a
  * `@db.Text` column, not to impose a house style.
  */
-const BODY_MAX = 24000;
+// Read from the shared map rather than written here, so the editor's bound and
+// the refinement schema's cannot drift. A refinement that could commit a body
+// this procedure would refuse to save is a proposal the author can accept and
+// then not edit — see `publishing-working-draft-limits.ts`.
+const BODY_MAX = WORKING_DRAFT_BODY_MAX.STAKEHOLDER_EMAIL;
 
 export const generateStakeholderEmailProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PUBLISHING_TOPIC_UPDATE))

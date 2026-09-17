@@ -14,6 +14,7 @@ import {
 	buildNewsletterBlurbPrompt,
 } from "../../publishing-newsletter-blurb/build-newsletter-blurb-prompt";
 import { resolveConfirmationQuestions } from "../../publishing-planning/build-planning-analysis-prompt";
+import { composeRefinePrompt } from "../../publishing-refine/build-refine-prompt";
 import { composeShortPostPrompt } from "../../publishing-short-post/build-short-post-prompt";
 import {
 	buildStakeholderEmailLockedClauses,
@@ -186,6 +187,38 @@ const NO_BLOCK_WRITERS = [
 	{
 		dir: "publishing-linkedin-post",
 		compose: async () => (await composeLinkedInPostPrompt(BASE)).prompt,
+	},
+	// Working-draft refinement (Fizzy #1851 follow-up), covering ALL SEVEN
+	// content types with one prompt.
+	//
+	// A NO-BLOCK writer for every type it refines, including the four whose
+	// DRAFTING prompts carry the block. That is the conservative direction, and
+	// deliberately so: giving refine the block would make it possible to
+	// introduce a newly-approved customer name, asset or metric into a tweet or
+	// a blog post through a revision, when the drafting prompt for those three
+	// treats the exception as never satisfiable. A refinement must not be a
+	// softer path to a disclosure than a first draft was.
+	//
+	// Settled decisions still reach the prompt through the editable body's
+	// decisions block — what the team decided about framing and claims — which
+	// is the channel `settledDecision` feeds. What refine does not get is the
+	// LOCKED approvals channel that can satisfy the disclosure exception.
+	{
+		dir: "publishing-refine",
+		compose: async () =>
+			(
+				await composeRefinePrompt({
+					templateBody: "Revise the {{{post_type_label}}}.",
+					format: "HANDLEBARS" as const,
+					postType: "TWEET" as const,
+					topicTitle: TOPIC.title,
+					topicPitch: TOPIC.pitch,
+					decisions: [],
+					currentDraft: null,
+					instruction: "",
+					restrictedSubjects: [],
+				})
+			).prompt,
 	},
 ] as const;
 

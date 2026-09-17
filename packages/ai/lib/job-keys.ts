@@ -125,6 +125,22 @@ export const AI_JOB_TYPES = [
 	 * list exists to answer.
 	 */
 	"publishing-newsletter-blurb",
+	/**
+	 * Publishing-suite working-draft refinement (#1851 follow-up).
+	 *
+	 * ONE key for all seven content types, deliberately breaking this family's
+	 * one-key-per-content-type rule. Those keys are split because the question
+	 * they answer is "which format is the spend going on", and the formats differ
+	 * in output length by an order of magnitude. A refinement's cost does not track
+	 * the format that way: it is bounded by the draft being revised and the size
+	 * of the change asked for, so a refined tweet and a refined case study cost
+	 * far more like each other than either costs like its own generation.
+	 *
+	 * The question this key exists to answer is a different one — how much of
+	 * the suite's spend is people ITERATING rather than generating — and that
+	 * one is only answerable if refinement is a single line item.
+	 */
+	"publishing-refine",
 	/** Slack channel monitor note summarization. */
 	"slack-channel-monitor",
 	/** Security scanning grouping/review/scan model calls. */

@@ -329,6 +329,9 @@ import {
 	generatePlanningAnalysisProcedure,
 	generatePublishingTopicsNowProcedure,
 	generateShortPostProcedure,
+	refineDraftProcedure,
+	acceptRefinementProcedure,
+	rejectRefinementProcedure,
 	generateStakeholderEmailProcedure,
 	generateWebinarScriptProcedure,
 	getPlanningAnalysisProcedure,
@@ -1607,6 +1610,17 @@ export const projectsRouter = {
 		// its text, and reads the text from the stored draft.
 		generateShortPost: generateShortPostProcedure,
 		selectShortPostOption: selectShortPostOptionProcedure,
+		// #1851 follow-up: working-draft refinement, for EVERY content type.
+		// `refineDraft` starts one run and returns immediately — the panel polls
+		// `listTopicDrafts` and reads `workingDrafts[].refinement`. The result is
+		// ONE revised document held as a proposal ON the working draft: it writes
+		// no candidate, consumes no version number and never appears in the
+		// candidates grid. `acceptRefinement` adopts it (appending a REFINED
+		// revision, so it is recoverable like any edit); `rejectRefinement`
+		// discards it. Neither accept nor refine takes a body from the client.
+		refineDraft: refineDraftProcedure,
+		acceptRefinement: acceptRefinementProcedure,
+		rejectRefinement: rejectRefinementProcedure,
 		// #1851: LinkedIn Post. The same candidate-based pair as the short post,
 		// and a separate one rather than a post-type parameter on it: LinkedIn
 		// folds a post behind "see more" after the first line or two and caps

@@ -33,6 +33,7 @@ import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "./publishing-case-study-prompt"
 import { PUBLISHING_LINKEDIN_POST_AGENT_KEY } from "./publishing-linkedin-post-prompt";
 import { PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY } from "./publishing-newsletter-blurb-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "./publishing-planning-prompt";
+import { PUBLISHING_REFINE_AGENT_KEY } from "./publishing-refine-prompt";
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "./publishing-short-post-prompt";
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "./publishing-stakeholder-email-prompt";
 import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "./publishing-suggestion-prompt";
@@ -475,6 +476,21 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		// schema before anything is persisted.
 		key: PUBLISHING_LINKEDIN_POST_AGENT_KEY,
 		label: "Topic LinkedIn Post",
+		featureType: "PUBLISHING",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// Revising a working draft a person already has, for EVERY content
+		// type. One entry rather than seven, because a refinement does not vary
+		// by content type: it revises a Markdown body to an instruction, and
+		// every working draft body is Markdown. Editing it changes how
+		// conservative a revision is and what "tighten" means in this
+		// organization's voice. It cannot remove the output contract (ONE
+		// complete revised document) or the approval rules — those are appended
+		// code-side, and the single-document contract is enforced by the schema
+		// before anything is stored.
+		key: PUBLISHING_REFINE_AGENT_KEY,
+		label: "Topic Draft Refinement",
 		featureType: "PUBLISHING",
 		actions: nonStage("GENERAL"),
 	},

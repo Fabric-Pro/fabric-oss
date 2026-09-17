@@ -7846,8 +7846,131 @@ model PublishingTopicWorkingDraft {
   /// is the disclosure rule every other reader in this area follows anyway.
   editingUserId     String?
   editingExpiresAt  DateTime?
-  createdAt         DateTime                @default(now())
-  updatedAt         DateTime                @updatedAt
+
+  /// ---------------------------------------------------------------------
+  /// The AI refinement PROPOSAL (Fizzy #1851 follow-up).
+  ///
+  /// "Refine this draft" used to run the ordinary generation path, which meant
+  /// it inherited the generation CONTRACT by accident. For Short Post and
+  /// LinkedIn that contract is `options.length(3)` — FR16 requires exactly
+  /// three, and the locked clauses require them to be meaningfully DISTINCT —
+  /// so "remove the last line" came back as three separate rewrites, at least
+  /// two of which had to change something nobody asked for. It also wrote a
+  /// `PublishingTopicDraft` row, consuming a version number and appearing in
+  /// the candidates grid, so a punctuation fix looked exactly like a fresh
+  /// generation.
+  ///
+  /// A refinement is a PROPOSAL ABOUT THIS ROW, not a candidate. It lives here
+  /// rather than in a table of its own because there is at most one in flight
+  /// per `(topicId, postType)` — which is precisely what `@@unique` above
+  /// already guarantees. That unique key IS the in-flight lock: the start
+  /// writer compare-and-sets on `refinementStatus`, so no partial index and no
+  /// separate reclaim query are needed for what the draft table needs both for.
+  ///
+  /// Null `refinementStatus` means "no proposal", which is the state every row
+  /// that predates this feature is already in. Nothing is backfilled.
+  /// ---------------------------------------------------------------------
+
+  refinementStatus PublishingRefinementStatus?
+
+  /// Opaque id for ONE refinement run — the compare-and-set token that
+  /// `completeRefinement` and `failRefinement` write against.
+  ///
+  /// This is the one thing the `PublishingTopicDraft` attempt row was providing
+  /// for free, and it has to be rebuilt rather than dropped. CASing on
+  /// `refinementStatus = 'GENERATING'` ALONE is not enough: a run whose deadline
+  /// passed is reclaimed by the next start, which sets GENERATING again for a
+  /// DIFFERENT run — and the stranded first run, still executing, would then
+  /// satisfy that predicate and commit its result into the second run's slot.
+  /// The attempt table avoided this by keying every write on the attempt's own
+  /// primary key; this column is that key.
+  refinementRunId String?
+
+  /// What the model proposed. Markdown, in the same shape as `body` — which is
+  /// what lets ONE refine contract serve all seven content types: every working
+  /// draft body is Markdown, so "return the revised piece as one document" is
+  /// expressible for a tweet and for a case study in the same words.
+  refinedBody String? @db.Text
+
+  /// The `body` this proposal was computed against.
+  ///
+  /// NOT provenance — a staleness guard, and the reason accept is safe. The
+  /// working draft is SHARED (`editingUserId` is advisory and take-over is
+  /// always available), so "A refines from X, B edits to Y, A accepts" is a
+  /// live path, and without this column accepting would silently destroy B's
+  /// edit. Accept compares this against the current `body` and refuses when
+  /// they differ, which is a DIFFERENT refusal from the caller's
+  /// `expectedUpdatedAt` losing: one means "someone changed it while you were
+  /// deciding", this one means "the thing you asked to revise is no longer what
+  /// is saved".
+  refinedFromBody String? @db.Text
+
+  /// What the author asked for, verbatim. Carried into `changeSummary` on
+  /// accept, so the revision history records the ASK and not just the result.
+  refinementInstruction String? @db.Text
+
+  /// Why the run failed, for the panel to render. Without it a failed
+  /// refinement is indistinguishable from no refinement, which is the state the
+  /// attempt row's `error` column exists to prevent one level up.
+  refinementError String? @db.Text
+
+  /// The model's own note about the revision: what it generalized, and what it
+  /// could not do.
+  ///
+  /// FR29's "the draft was generalized, and here is why", one level down. It
+  /// matters MORE on a revision than on a first draft: the author gave an
+  /// explicit instruction, so where an unresolved approval forced the model to
+  /// write around it, the result looks like an instruction that was silently
+  /// ignored. This is where "you asked me to name the customer and that is not
+  /// approved yet" goes. Without it the feature reads as broken rather than
+  /// careful.
+  ///
+  /// Distinct from `refinementError`, which means the run FAILED. A note sits
+  /// on a perfectly good READY proposal.
+  refinementNote String? @db.Text
+
+  /// Liveness deadline for a GENERATING proposal.
+  ///
+  /// Deliberately NOT backed by a `refinementStatus <> 'GENERATING' OR
+  /// refinementExpiresAt IS NOT NULL` CHECK, which is where its sibling
+  /// `publishing_topic_draft_generating_timeout` sits. That constraint is
+  /// load-bearing there because a partial unique index enforces exclusion in
+  /// the DATABASE, so a null deadline strands the content type with no code
+  /// path able to reason its way out. Here exclusion is the start writer's
+  /// compare-and-set, so the RULE is in code and is written fail-OPEN: a
+  /// GENERATING proposal with a null or passed deadline is reclaimable. A
+  /// missing deadline therefore cannot lock anything, and the constraint would
+  /// guard an outcome that is already unreachable.
+  refinementExpiresAt DateTime?
+
+  /// When the PROPOSAL last changed — the poll token for the refinement half.
+  ///
+  /// Separate from `updatedAt` because `updatedAt` is the BODY's concurrency
+  /// token: `updateWorkingDraftBody` and `saveWorkingDraft` both put it in the
+  /// `WHERE` of their compare-and-set, and every editor holds one as
+  /// `expectedUpdatedAt`. Prisma's `@updatedAt` moves that column on ANY update
+  /// to the row, so a proposal write that did not pin it would invalidate every
+  /// open editor's token — a person who presses Refine and fixes a typo while
+  /// waiting would be told their draft changed underneath them, twice per run,
+  /// by their own refinement. The proposal writers therefore pin `updatedAt` to
+  /// its current value and move this column instead.
+  refinementUpdatedAt DateTime?
+
+  /// Who asked for the refinement.
+  ///
+  /// A PLAIN column, exactly like `editingUserId` above and for the same
+  /// reason: a foreign key would buy only SetNull on the account going away,
+  /// and a proposal is cleared by accept, reject or the next run long before
+  /// that matters. The name is resolved through the project's member list, as
+  /// every other reader in this area does it.
+  ///
+  /// Worth storing at all because the draft is SHARED: a pending proposal with
+  /// no author is a change request from nobody, and the person who opens the
+  /// topic next has to decide whether to accept it.
+  refinementRequestedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   topic        PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
   project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -7938,6 +8061,34 @@ enum PublishingDraftRevisionKind {
   /// Someone brought an earlier version back. The body is a copy of that
   /// version's, and `sourceDraftVersion` records where it came from.
   RESTORED
+  /// Someone accepted an AI refinement of the working draft. The body is what
+  /// the model proposed, and `changeSummary` carries the instruction that asked
+  /// for it.
+  ///
+  /// A THIRD value rather than reusing EDITED, for the reason this enum is a
+  /// real column at all: "a person typed this" and "a model wrote this and a
+  /// person approved it" are different provenance, and a history that cannot
+  /// tell them apart cannot answer the one question a reader asks of an AI
+  /// feature — which of these words are mine. Inferring it from `changeSummary`
+  /// prose is what the docblock above already refuses to do for RESTORED.
+  REFINED
+}
+
+/// The state of the AI refinement PROPOSAL held on a working draft.
+///
+/// The same GENERATING/READY/FAILED lifecycle as `PublishingDraftStatus`, on
+/// purpose: a refinement is still a long async run that can fail or strand, and
+/// a reviewer who knows the draft table should not have to learn a second set of
+/// words for the same three outcomes.
+///
+/// It is a SEPARATE enum rather than a reuse of `PublishingDraftStatus` because
+/// the two are free to diverge — this one has no `SUPERSEDED`-shaped future, and
+/// a shared enum would make every later value added for one table appear as a
+/// legal state of the other.
+enum PublishingRefinementStatus {
+  GENERATING
+  READY
+  FAILED
 }
 
 enum PublishingDecisionEntryKind {

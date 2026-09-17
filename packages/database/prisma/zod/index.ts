@@ -870,7 +870,7 @@ export type PublishingTopicDraftScalarFieldEnum = z.infer<typeof PublishingTopic
 
 // File: PublishingTopicWorkingDraftScalarFieldEnum.schema.ts
 
-export const PublishingTopicWorkingDraftScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'postType', 'body', 'sourceDraftId', 'sourceOptionLabel', 'updatedById', 'editingUserId', 'editingExpiresAt', 'createdAt', 'updatedAt'])
+export const PublishingTopicWorkingDraftScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'postType', 'body', 'sourceDraftId', 'sourceOptionLabel', 'updatedById', 'editingUserId', 'editingExpiresAt', 'refinementStatus', 'refinementRunId', 'refinedBody', 'refinedFromBody', 'refinementInstruction', 'refinementError', 'refinementNote', 'refinementExpiresAt', 'refinementUpdatedAt', 'refinementRequestedById', 'createdAt', 'updatedAt'])
 
 export type PublishingTopicWorkingDraftScalarFieldEnum = z.infer<typeof PublishingTopicWorkingDraftScalarFieldEnumSchema>;
 
@@ -2632,9 +2632,15 @@ export const PublishingDraftStatusSchema = z.enum(['GENERATING', 'READY', 'FAILE
 
 export type PublishingDraftStatus = z.infer<typeof PublishingDraftStatusSchema>;
 
+// File: PublishingRefinementStatus.schema.ts
+
+export const PublishingRefinementStatusSchema = z.enum(['GENERATING', 'READY', 'FAILED'])
+
+export type PublishingRefinementStatus = z.infer<typeof PublishingRefinementStatusSchema>;
+
 // File: PublishingDraftRevisionKind.schema.ts
 
-export const PublishingDraftRevisionKindSchema = z.enum(['EDITED', 'RESTORED'])
+export const PublishingDraftRevisionKindSchema = z.enum(['EDITED', 'RESTORED', 'REFINED'])
 
 export type PublishingDraftRevisionKind = z.infer<typeof PublishingDraftRevisionKindSchema>;
 
@@ -6832,6 +6838,16 @@ export const PublishingTopicWorkingDraftSchema = z.object({
   updatedById: z.string().nullish(),
   editingUserId: z.string().nullish(),
   editingExpiresAt: z.date().nullish(),
+  refinementStatus: PublishingRefinementStatusSchema.nullish(),
+  refinementRunId: z.string().nullish(),
+  refinedBody: z.string().nullish(),
+  refinedFromBody: z.string().nullish(),
+  refinementInstruction: z.string().nullish(),
+  refinementError: z.string().nullish(),
+  refinementNote: z.string().nullish(),
+  refinementExpiresAt: z.date().nullish(),
+  refinementUpdatedAt: z.date().nullish(),
+  refinementRequestedById: z.string().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });

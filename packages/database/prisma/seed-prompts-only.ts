@@ -24,6 +24,10 @@ import {
 	PUBLISHING_PLANNING_ANALYSIS_FALLBACK_BODY,
 } from "@repo/utils/publishing-planning-prompt";
 import {
+	PUBLISHING_REFINE_AGENT_KEY,
+	PUBLISHING_REFINE_FALLBACK_BODY,
+} from "@repo/utils/publishing-refine-prompt";
+import {
 	PUBLISHING_SHORT_POST_AGENT_KEY,
 	PUBLISHING_SHORT_POST_FALLBACK_BODY,
 } from "@repo/utils/publishing-short-post-prompt";
@@ -392,6 +396,17 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: PUBLISHING_LINKEDIN_POST_AGENT_KEY,
+	},
+	// publishing_topic_refine: GENERAL + null like its publishing siblings —
+	// one prompt per tenant covers every project, topic AND content type. The
+	// activity passes the topic, its settled decisions and the content type's
+	// label as HANDLEBARS variables; the one-document output contract and the
+	// approval rules are appended code-side and are NOT part of this body, so
+	// an override cannot drop them.
+	[PUBLISHING_REFINE_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PUBLISHING_REFINE_AGENT_KEY,
 	},
 	// publishing_topic_blog_post: GENERAL + null for the same reason its two
 	// publishing siblings use them — one prompt per tenant covers every project
@@ -6014,6 +6029,39 @@ Rules:
 		structuredFormat: "JSON" as const,
 		isPublic: true,
 		content: PUBLISHING_SHORT_POST_FALLBACK_BODY,
+	},
+	{
+		// publishing_topic_refine: revising a working draft a person already
+		// has, for EVERY content type (Fizzy #1851 follow-up).
+		//
+		// ONE prompt rather than seven. A drafting prompt has to know what a
+		// case study IS, because it produces one from source material; a
+		// refinement is handed the finished piece and a single instruction, and
+		// every working draft body is Markdown.
+		//
+		// It exists because refining used to run the DRAFTING prompt and so
+		// inherited its output contract — for Short Post and LinkedIn that is
+		// "exactly three distinct options", which turned "remove the last line"
+		// into three rewrites.
+		//
+		// The one-document output contract and the FR28/FR29 approval rules are
+		// appended CODE-SIDE so an org editing tone cannot drop them by
+		// accident.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: PUBLISHING_REFINE_AGENT_KEY,
+		name: "Topic Draft Refinement",
+		description:
+			"Revises a saved Publishing Suite working draft to one instruction from its author, returning a single complete revised document for any content type.",
+		category: "publishing",
+		tags: ["publishing", "publishing-suite", "refine", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: PUBLISHING_REFINE_FALLBACK_BODY,
 	},
 	{
 		// publishing_topic_linkedin_post: the LinkedIn post drafted from a
