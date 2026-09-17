@@ -91,6 +91,7 @@ const READ_ONLY_SCOPES = new Set([
 	"workspaces:read",
 	"workflows:read",
 	"frames:read",
+	"instructions:read",
 	"chats:read",
 	"system_health:read",
 	"status_updates:read",
@@ -163,6 +164,12 @@ describe("OrganizationApiKeysSettings — a read-only role's create request", ()
 		);
 
 		expect(await screen.findByLabelText("MCP Read")).toBeInTheDocument();
+		// A viewer may request the new instructions scope too — it maps to
+		// `INSTRUCTION_READ`, which the org viewer permission set already
+		// carries.
+		expect(
+			await screen.findByLabelText("Instructions Read"),
+		).toBeInTheDocument();
 		expect(screen.queryByLabelText("MCP Write")).not.toBeInTheDocument();
 		expect(
 			screen.queryByLabelText("Projects Write"),

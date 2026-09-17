@@ -115,6 +115,8 @@ const USER_OWNED_TABLES = new Set([
 	"DecisionLogEntryAssignee",
 	"Project",
 	"Diagram", // Excalidraw diagrams - per-user within org, optionally scoped to project
+	"ProjectInstructionSnapshot", // Coding Instructions snapshots
+	"ProjectInstructionFile", // Coding Instructions files
 	"ProjectDocument", // Project documents
 	"ProjectContext", // Project context files / RAG contexts
 	"DeletedMeetingArchive", // 7-day recovery window for unlinked meetings (#2355)
@@ -291,6 +293,8 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectConversation: "projectId",
 	ProjectStoryStatus: "projectId",
 	Diagram: "projectId",
+	ProjectInstructionSnapshot: "projectId",
+	ProjectInstructionFile: "projectId",
 	UserStory: "projectId",
 	TestCase: "projectId",
 	TestPlan: "projectId",

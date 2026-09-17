@@ -115,6 +115,18 @@ const READ_EXEMPT = new Map<string, string>([
 		"handleListOrganizations",
 		"lists the caller's own memberships, which is the authorization",
 	],
+	[
+		"handleListProjectInstructions",
+		"delegates to resolvePublishedInstructionSnapshot, which gates on getProjectAccessContext plus a hosting-organization comparison",
+	],
+	[
+		"handleGetProjectInstruction",
+		"delegates to resolvePublishedInstructionSnapshot, which gates on getProjectAccessContext plus a hosting-organization comparison",
+	],
+	[
+		"handleGetProjectInstructionBundle",
+		"delegates to resolvePublishedInstructionSnapshot, which gates on getProjectAccessContext plus a hosting-organization comparison",
+	],
 ]);
 
 function handlerBodies(): Array<{ name: string; body: string }> {

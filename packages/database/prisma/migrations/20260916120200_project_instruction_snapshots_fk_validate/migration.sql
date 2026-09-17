@@ -1,0 +1,13 @@
+-- Validate the published-snapshot foreign key added NOT VALID in
+-- 20260916120000 (Coding Instructions).
+--
+-- Sorts after both the NOT VALID addition and the CONCURRENT unique index, so
+-- the constraint is real by the end of this release and needs no entry in
+-- prisma/pending-constraint-validations.json — that ledger is for a NOT VALID
+-- whose VALIDATE lands in a LATER release, which is not the case here.
+--
+-- VALIDATE CONSTRAINT takes ShareUpdateExclusiveLock, not ACCESS EXCLUSIVE, so
+-- it does not block reads or writes on "project". The scan finds nothing to
+-- reject: every pre-existing row has a NULL "publishedInstructionSnapshotId",
+-- and NULL satisfies a foreign key.
+ALTER TABLE "project" VALIDATE CONSTRAINT "project_publishedInstructionSnapshotId_fkey";

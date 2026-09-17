@@ -1105,6 +1105,7 @@ export {
 	sendProjectDeletionReminderActivity,
 } from "./project-deletion";
 export * from "./project-document-generation";
+export * from "./project-instructions";
 // Project metadata activities (orchestrator project context injection)
 export {
 	getProjectMetadataActivity,

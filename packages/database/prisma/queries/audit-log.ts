@@ -177,6 +177,20 @@ export const AUDIT_ACTIONS = [
 	// row the first failure existed only as a warning log line, which is why
 	// "manual refresh is broken" went two weeks without a cause (Fizzy #2210).
 	"project.document_generation.failed",
+	// Coding Instructions (5) — project instruction snapshot lifecycle. An
+	// upload is a batch of files a member is handing to every coding agent
+	// that reads this project, so each state transition of that batch is
+	// audit-worthy: the upload starting (before validation even runs, so a
+	// rejected upload still leaves a trace), the resulting snapshot being
+	// rejected or published (the two ways an upload's validation can end),
+	// a snapshot being deleted (removes an immutable historical version),
+	// and the per-project ignore-glob settings changing (governs what the
+	// next upload silently excludes).
+	"project.instructions.upload_started",
+	"project.instructions.published",
+	"project.instructions.rejected",
+	"project.instructions.deleted",
+	"project.instructions.settings_updated",
 	// story (10)
 	"story.created",
 	"story.updated",

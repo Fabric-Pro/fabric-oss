@@ -318,6 +318,10 @@ model User {
   // Excalidraw diagrams
   diagrams Diagram[]
 
+  // Coding Instructions
+  instructionSnapshots ProjectInstructionSnapshot[]
+  instructionFiles     ProjectInstructionFile[]
+
   // Meeting transcript sync relations
   linkedMeetings     ProjectLinkedMeeting[]
   meetingTranscripts ProjectMeetingTranscript[]
@@ -763,6 +767,10 @@ model Organization {
 
   // Excalidraw diagrams
   diagrams Diagram[]
+
+  // Coding Instructions
+  instructionSnapshots ProjectInstructionSnapshot[]
+  instructionFiles     ProjectInstructionFile[]
 
   // Frame sharing policy
   canShareFramesPublicly   Boolean  @default(true)
@@ -1990,6 +1998,19 @@ model Project {
 
   // Excalidraw diagrams
   diagrams Diagram[]
+
+  // Coding Instructions
+  /// Coding Instructions: the one published snapshot. Set only from a READY
+  /// snapshot with a higher version than the current pointer (see publishSnapshot).
+  /// onDelete: Restrict — the database, not a read-then-delete check, is what
+  /// stops a published snapshot being deleted. SetNull silently cleared the
+  /// pointer instead, so a publish racing a delete left the project with no
+  /// published instructions at all.
+  publishedInstructionSnapshotId String?                     @unique
+  publishedInstructionSnapshot   ProjectInstructionSnapshot? @relation("PublishedInstructionSnapshot", fields: [publishedInstructionSnapshotId], references: [id], onDelete: Restrict)
+  /// { ignoreGlobs?: string[]; sourceOfTruth?: "UPLOAD" | "REPOSITORY" }
+  instructionSettings            Json?
+  instructionSnapshots           ProjectInstructionSnapshot[] @relation("ProjectInstructionSnapshots")
 
   // Weave (multi-agent orchestration)
   weaveConfig ProjectWeaveConfig?
@@ -16299,6 +16320,124 @@ model Diagram {
   @@index([projectId])
   @@index([checkpointId])
   @@map("diagram")
+}
+
+// =============================================================================
+// PROJECT CODING INSTRUCTIONS
+// A snapshot is one immutable upload (or, later, one repository sync) of a
+// project's coding-agent instruction tree. Files are indexed here; bytes live in
+// the skills bucket under projects/<projectId>/instructions/snapshots/<id>/.
+// Organization-backed projects only: organizationId is required, not XOR.
+// =============================================================================
+
+enum ProjectInstructionSource {
+  UPLOAD
+  REPOSITORY
+}
+
+enum ProjectInstructionSnapshotStatus {
+  RECEIVING
+  VALIDATING
+  READY
+  REJECTED
+  FAILED
+}
+
+enum ProjectInstructionFileKind {
+  SKILL
+  AGENT
+  RULE
+  INSTRUCTIONS
+  SETTINGS
+  SCRIPT
+  KNOWLEDGE
+  OTHER
+}
+
+model ProjectInstructionSnapshot {
+  id             String @id @default(cuid())
+  projectId      String
+  organizationId String
+  /// The user who started the upload or sync.
+  userId         String
+
+  /// Monotonic per project. Publication only ever moves to a higher version.
+  version Int
+  source  ProjectInstructionSource
+  status  ProjectInstructionSnapshotStatus @default(RECEIVING)
+
+  /// Set with status REJECTED: [{ path, reason, detail?, line? }]
+  rejection      Json?
+  /// The ignore globs, their layer, and the caps in force for this snapshot.
+  settingsFrozen Json
+  /// Whether to publish automatically once READY (from the upload dialog).
+  publishOnReady Boolean @default(true)
+
+  fileCount     Int     @default(0)
+  storedBytes   Int     @default(0)
+  excludedCount Int     @default(0)
+  /// sha256 over sorted "path\0sha256\n" lines; set when READY.
+  digest        String?
+
+  repositoryIntegrationId String?
+  sourceRef               String?
+  sourceCommitSha         String?
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  readyAt     DateTime?
+  publishedAt DateTime?
+
+  project      Project      @relation("ProjectInstructionSnapshots", fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publishedFor Project?     @relation("PublishedInstructionSnapshot")
+  files        ProjectInstructionFile[]
+
+  /// Target of the child's composite FK: a file can only point at a snapshot
+  /// in its own project.
+  @@unique([id, projectId])
+  @@unique([projectId, version])
+  @@index([projectId, status])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("project_instruction_snapshot")
+}
+
+model ProjectInstructionFile {
+  id             String @id @default(cuid())
+  snapshotId     String
+  /// Denormalized and held to the parent's value by the composite FK.
+  projectId      String
+  organizationId String
+  userId         String
+
+  /// POSIX path relative to the tree root, validated by @repo/instructions.
+  path        String
+  kind        ProjectInstructionFileKind
+  name        String?
+  description String?
+  /// Server-generated object key. Never client-supplied.
+  storageKey  String
+  sha256      String
+  size        Int
+  mimeType    String
+  isText      Boolean
+  /// Unix mode when the source can supply it (repository sync). Null for browser uploads.
+  mode        Int?
+
+  createdAt DateTime @default(now())
+
+  snapshot     ProjectInstructionSnapshot @relation(fields: [snapshotId, projectId], references: [id, projectId], onDelete: Cascade)
+  organization Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([snapshotId, path])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([userId])
+  @@index([snapshotId, kind])
+  @@map("project_instruction_file")
 }
 
 // =============================================================================

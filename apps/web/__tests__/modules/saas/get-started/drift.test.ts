@@ -76,7 +76,7 @@ function liveProjectTabIds(): string[] {
  * (with a reason) only when a tab genuinely shouldn't have one — the coverage
  * test forces that decision to be explicit rather than an accidental omission.
  */
-const PAGE_COVERAGE_EXEMPT = new Set<string>([]);
+const PAGE_COVERAGE_EXEMPT = new Set<string>();
 // Files that carry the in-page component anchors the detailed page tours point
 // at. New page anchors must live in one of these (extend the list if a covered
 // component moves to a new file).
@@ -90,6 +90,10 @@ const inPageSource = [
 	"apps/web/modules/saas/projects/components/security/ScanConfigCard.tsx",
 	"apps/web/modules/saas/projects/components/ProjectContextsList.tsx",
 	"apps/web/modules/saas/projects/components/ContextSummaryPanel.tsx",
+	// All three coding-instructions page-tour anchors sit on wrapper elements
+	// in the composing view rather than the tree/file-view/history components
+	// themselves, so this one file covers the whole page.
+	"apps/web/modules/saas/projects/components/instructions/InstructionsPublishedView.tsx",
 	"apps/web/modules/saas/projects/components/ProjectPipeline.tsx",
 	"apps/web/modules/saas/projects/components/ProjectReports.tsx",
 	"apps/web/modules/saas/projects/components/outcomes/ProjectOutcomesTab.tsx",
@@ -175,6 +179,7 @@ const launcherSource = [
 	"apps/web/modules/saas/projects/components/ProjectOverview.tsx",
 	"apps/web/modules/saas/projects/components/DocumentsList.tsx",
 	"apps/web/modules/saas/projects/components/ProjectContextsList.tsx",
+	"apps/web/modules/saas/projects/components/instructions/InstructionsPublishedView.tsx",
 	"apps/web/modules/saas/projects/components/ProjectPipeline.tsx",
 	"apps/web/modules/saas/projects/components/ProjectReports.tsx",
 	"apps/web/modules/saas/projects/components/security/SecurityAccessibilityPage.tsx",

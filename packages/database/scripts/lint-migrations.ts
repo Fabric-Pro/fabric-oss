@@ -377,7 +377,12 @@ const COMMAND_PATTERNS: ReadonlyArray<[CommandKind, string]> = [
 		"drop-index",
 		`DROP\\s+INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+EXISTS\\s+)?${IDENT}`,
 	],
-	["update", `UPDATE\\s+(?:ONLY\\s+)?${IDENT}`],
+	// `(?<!\\bON\\s+)`: a foreign key's `ON UPDATE CASCADE` is a referential
+	// action, not an UPDATE command. Without the lookbehind it started a new
+	// command mid-clause and cut the trailing `NOT VALID` off the ALTER TABLE
+	// it belongs to, so a correctly deferred foreign key was reported as
+	// `unvalidated-constraint`.
+	["update", `(?<!\\bON\\s+)UPDATE\\s+(?:ONLY\\s+)?${IDENT}`],
 	["delete", `DELETE\\s+FROM\\s+(?:ONLY\\s+)?${IDENT}`],
 	["insert", `INSERT\\s+INTO\\s+${IDENT}`],
 	["drop-table", `DROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?${IDENT}`],

@@ -38,6 +38,7 @@ COPY packages/database/package.json ./packages/database/
 COPY packages/databricks/package.json ./packages/databricks/
 COPY packages/fabric-ai/package.json ./packages/fabric-ai/
 COPY packages/integrations/package.json ./packages/integrations/
+COPY packages/instructions/package.json ./packages/instructions/
 COPY packages/letta/package.json ./packages/letta/
 COPY packages/logs/package.json ./packages/logs/
 COPY packages/mcp/package.json ./packages/mcp/

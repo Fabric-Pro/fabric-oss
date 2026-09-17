@@ -309,10 +309,24 @@ describe("resolveTourPosition — the viewer keeps their place", () => {
 	});
 
 	it("moves a viewer off a hidden atlas onto the next survivor", () => {
-		// Fizzy #2361: apiKey sits between atlas and wrapup, so a viewer whose
-		// atlas tab is hidden mid-run lands there rather than skipping to the
-		// end. Pins that the new step is reachable from a resumed position.
+		// Fizzy #2361: steps sit between atlas and wrapup, so a viewer whose
+		// atlas tab is hidden mid-run lands on one of them rather than
+		// skipping to the end. The immediate successor changed when the
+		// Coding Instructions tab added its own step directly after atlas;
+		// the guarantee being pinned is "the next SURVIVOR", so the expected
+		// id follows the registered order rather than naming one step
+		// forever.
 		const steps = without("atlas");
+		expect(steps[resolveTourPosition(steps, "atlas")].id).toBe(
+			"coding-instructions",
+		);
+	});
+
+	it("still reaches apiKey, not the end, when atlas and the step after it are both hidden", () => {
+		// The other half of Fizzy #2361, now that atlas has a neighbour: with
+		// every step between atlas and apiKey gone, the viewer must land on
+		// apiKey and not fall through to wrapup.
+		const steps = without("atlas", "coding-instructions");
 		expect(steps[resolveTourPosition(steps, "atlas")].id).toBe("apiKey");
 	});
 

@@ -1,4 +1,5 @@
 import {
+	BookOpenCheckIcon,
 	CompassIcon,
 	FileTextIcon,
 	FolderKanbanIcon,
@@ -102,6 +103,7 @@ export type ProjectTabId =
 	| "publishing-suite"
 	| "weave"
 	| "kanban"
+	| "coding-instructions"
 	| "agent-activity"
 	| "diagrams"
 	| "reports"
@@ -121,6 +123,7 @@ export type OnboardingArea =
 	| "roadmap"
 	| "proposals"
 	| "atlas"
+	| "coding-instructions"
 	| "apiKey"
 	| "wrapup";
 
@@ -308,6 +311,16 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 		icon: NetworkIcon,
 		requiresFeature: "atlas",
 		target: { kind: "projectTab", tab: "atlas", side: "bottom" },
+	},
+	{
+		id: "coding-instructions",
+		area: "coding-instructions",
+		icon: BookOpenCheckIcon,
+		target: {
+			kind: "projectTab",
+			tab: "coding-instructions",
+			side: "bottom",
+		},
 	},
 	// Fizzy #2361. Sits at the END, not next to `aiKey`: a provider key is
 	// required for Fabric to work at all, while a Fabric API key is an optional

@@ -20,6 +20,7 @@
 
 import {
 	ActivityIcon,
+	BookOpenCheckIcon,
 	BotIcon,
 	CalendarDaysIcon,
 	ClipboardCheckIcon,
@@ -111,6 +112,11 @@ export const tabs = [
 		id: "kanban",
 		label: "Coding Agents",
 		icon: BotIcon,
+	},
+	{
+		id: "coding-instructions",
+		label: "Coding Instructions",
+		icon: BookOpenCheckIcon,
 	},
 	{
 		id: "agent-activity",

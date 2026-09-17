@@ -59,6 +59,7 @@ const CLI_SCOPES = [
 	"prompts:write",
 	"frames:read",
 	"frames:write",
+	"instructions:read",
 	"reports:read",
 	"reports:write",
 	"skills:read",

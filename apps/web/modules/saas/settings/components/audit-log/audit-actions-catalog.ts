@@ -598,6 +598,43 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		description:
 			"Document generation could not reach the generation agent, so a fallback path ran. The row is written whether or not that fallback then succeeded — a degraded-but-successful generation still produces one, which is the point: it is otherwise invisible. `metadata.error` carries the PRIMARY failure, which the document's own error field deliberately does not, because that field renders verbatim to every project member. `metadata.phase` names which call failed and `metadata.documentType` which document was being generated.",
 	},
+	{
+		key: "project.instructions.upload_started",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.upload_started",
+		description:
+			"Uploaded a coding-instructions folder for validation — written before checks run, so a rejected upload still leaves a trace. `metadata.keptCount` and `metadata.excludedCount` carry how many files were kept and skipped by the ignore rules, and `metadata.layer` which ignore-glob layer applied.",
+	},
+	{
+		key: "project.instructions.published",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.instructions.published",
+		description:
+			"Published a coding-instructions snapshot as the version every coding agent on this project reads. Recorded only for the call that actually moved the pointer, so a retried request never doubles this row.",
+	},
+	{
+		key: "project.instructions.rejected",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.instructions.rejected",
+		description:
+			"A coding-instructions upload failed validation and was rejected. `metadata.reasonCounts` and `metadata.rules` carry the rejection reasons and the rule ids that fired — never the offending file paths or matched text, since a secret-scan hit is exactly what this row must not repeat.",
+	},
+	{
+		key: "project.instructions.deleted",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.instructions.deleted",
+		description:
+			"Deleted a coding-instructions snapshot version, removing an immutable historical upload. `metadata.fileCount` carries how many files it held; the currently published version cannot be deleted this way.",
+	},
+	{
+		key: "project.instructions.settings_updated",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.settings_updated",
+		description:
+			"Changed the project's coding-instructions ignore-glob override, which governs what the next upload silently excludes. `metadata.ignoreGlobCount` carries the new override's size — zero clears it back to the defaults.",
+	},
 	// ---- Feature / story ------------------------------------------------
 	{
 		key: "story.created",

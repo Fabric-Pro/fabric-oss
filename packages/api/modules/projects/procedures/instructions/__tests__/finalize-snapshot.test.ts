@@ -1,0 +1,356 @@
+/**
+ * Tests for `finalizeSnapshotProcedure` — starts
+ * `projectInstructionSnapshotWorkflow` (added in Task 10; started here by
+ * string name, which is valid ahead of that task per the controller ruling
+ * on this brief) and only THEN flips the snapshot to VALIDATING.
+ *
+ * R15 fix-round coverage: `workflow.start` must run BEFORE
+ * the VALIDATING transition (verified via `mock.invocationCallOrder`
+ * below), so a start failure leaves the snapshot RECEIVING/VALIDATING for a
+ * retried finalize call to repair, instead of stranding it in VALIDATING
+ * forever. A retry that hits `WorkflowExecutionAlreadyStartedError` (the
+ * earlier attempt's start actually succeeded) is treated as success, not
+ * re-thrown. A snapshot already in VALIDATING (a prior attempt whose start
+ * failed) re-attempts the start rather than short-circuiting.
+ *
+ * `getTemporalClient` is imported from `@repo/temporal` (not
+ * `@repo/temporal/client`) and `withCorrelationMemo` from
+ * `../../../../../lib/temporal-correlation`, matching
+ * `contexts/add-google-docs-context.ts`.
+ */
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const m = vi.hoisted(() => ({
+	handlers: {} as Record<string, (...a: unknown[]) => unknown>,
+	getInstructionSnapshot: vi.fn(),
+	startInstructionSnapshotValidation: vi.fn(),
+	resolveEffectiveProjectPermissions: vi.fn(),
+	getTemporalClient: vi.fn(),
+	workflowStart: vi.fn(),
+}));
+
+vi.mock("@repo/database", () => ({
+	getInstructionSnapshot: (...a: unknown[]) => m.getInstructionSnapshot(...a),
+	startInstructionSnapshotValidation: (...a: unknown[]) =>
+		m.startInstructionSnapshotValidation(...a),
+}));
+vi.mock("@repo/temporal", () => ({
+	getTemporalClient: (...a: unknown[]) => m.getTemporalClient(...a),
+}));
+vi.mock("../../../../../lib/temporal-correlation", () => ({
+	withCorrelationMemo: (options: unknown) => options,
+}));
+vi.mock("../../../../../lib/effective-project-permissions", () => ({
+	resolveEffectiveProjectPermissions: (...a: unknown[]) =>
+		m.resolveEffectiveProjectPermissions(...a),
+}));
+vi.mock("../../../../../orpc/procedures", () => {
+	const builder = {
+		use: () => builder,
+		route: () => builder,
+		input: () => builder,
+		handler: (fn: (...a: unknown[]) => unknown) => {
+			m.handlers.finalize = fn;
+			return fn;
+		},
+	};
+	return {
+		tenantProtectedProcedure: builder,
+		requireProjectPermission: () => ({}),
+		Permissions: { INSTRUCTION_CREATE: "instruction:create" },
+	};
+});
+
+import "../finalize-snapshot";
+
+const ctx = {
+	user: { id: "user_1" },
+	session: { activeOrganizationId: "org_1" },
+};
+const baseInput = { projectId: "proj_1", snapshotId: "snap_1" };
+
+beforeEach(() => {
+	for (const fn of Object.values(m)) {
+		if (typeof fn === "function") {
+			(fn as ReturnType<typeof vi.fn>).mockReset?.();
+		}
+	}
+	m.resolveEffectiveProjectPermissions.mockResolvedValue({
+		permissions: [],
+		source: "org",
+		organizationId: "org_1",
+	});
+	m.getInstructionSnapshot.mockResolvedValue({
+		id: "snap_1",
+		status: "RECEIVING",
+	});
+	m.startInstructionSnapshotValidation.mockResolvedValue({ changed: true });
+	m.workflowStart.mockResolvedValue(undefined);
+	m.getTemporalClient.mockResolvedValue({
+		workflow: { start: (...a: unknown[]) => m.workflowStart(...a) },
+	});
+});
+
+describe("projects.instructions.finalize", () => {
+	it("starts the validation workflow with a deterministic id, THEN flips RECEIVING to VALIDATING", async () => {
+		const result = await m.handlers.finalize!({
+			input: baseInput,
+			context: ctx,
+		});
+
+		expect(m.workflowStart).toHaveBeenCalledTimes(1);
+		expect(m.startInstructionSnapshotValidation).toHaveBeenCalledWith({
+			snapshotId: "snap_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+		});
+		// R15: the workflow must be started BEFORE the status write commits,
+		// so a start failure never strands the snapshot in VALIDATING with no
+		// later finalize call able to retry it.
+		expect(m.workflowStart.mock.invocationCallOrder[0]).toBeLessThan(
+			m.startInstructionSnapshotValidation.mock.invocationCallOrder[0],
+		);
+
+		const [workflowName, options] = m.workflowStart.mock.calls[0]! as [
+			string,
+			{
+				taskQueue: string;
+				workflowId: string;
+				args: Array<Record<string, unknown>>;
+			},
+		];
+		expect(workflowName).toBe("projectInstructionSnapshotWorkflow");
+		// R33: its own queue. On "project-documents" these long, I/O-bound
+		// activities competed for the 5 slots that serve a human waiting on a
+		// document generation.
+		expect(options.taskQueue).toBe("project-instructions");
+		expect(options.workflowId).toBe("project-instruction-snapshot-snap_1");
+		expect(options.args[0]).toEqual({
+			snapshotId: "snap_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+			userId: "user_1",
+		});
+		expect(result).toEqual({ status: "VALIDATING" });
+	});
+
+	it("propagates a generic workflow-start failure and never writes VALIDATING (leaves the row retryable)", async () => {
+		m.workflowStart.mockRejectedValue(new Error("temporal unreachable"));
+
+		await expect(
+			m.handlers.finalize!({ input: baseInput, context: ctx }),
+		).rejects.toThrow("temporal unreachable");
+		expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
+	});
+
+	it("treats WorkflowExecutionAlreadyStartedError as success and still flips to VALIDATING", async () => {
+		const alreadyStarted = new Error("workflow already started");
+		alreadyStarted.name = "WorkflowExecutionAlreadyStartedError";
+		m.workflowStart.mockRejectedValue(alreadyStarted);
+
+		const result = await m.handlers.finalize!({
+			input: baseInput,
+			context: ctx,
+		});
+
+		expect(m.startInstructionSnapshotValidation).toHaveBeenCalledWith({
+			snapshotId: "snap_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+		});
+		expect(result).toEqual({ status: "VALIDATING" });
+	});
+
+	it("re-attempts the start for a snapshot already in VALIDATING (a prior attempt's start failed) instead of short-circuiting", async () => {
+		m.getInstructionSnapshot.mockResolvedValue({
+			id: "snap_1",
+			status: "VALIDATING",
+		});
+
+		const result = await m.handlers.finalize!({
+			input: baseInput,
+			context: ctx,
+		});
+
+		expect(m.workflowStart).toHaveBeenCalledTimes(1);
+		expect(m.startInstructionSnapshotValidation).toHaveBeenCalledWith({
+			snapshotId: "snap_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+		});
+		expect(result).toEqual({ status: "VALIDATING" });
+	});
+
+	// R30/I2: FAILED is this feature's "Try again". The tab renders that
+	// button for a FAILED snapshot and it calls this procedure; the staging
+	// objects are deliberately left in place by
+	// `markInstructionSnapshotFailed`, so the new run's integrity/secret gate has the
+	// bytes it needs. Temporal permits reusing the workflow id once the
+	// previous run has closed, which a FAILED row implies.
+	it("re-attempts the start for a FAILED snapshot (the tab's 'Try again')", async () => {
+		m.getInstructionSnapshot.mockResolvedValue({
+			id: "snap_1",
+			status: "FAILED",
+		});
+
+		const result = await m.handlers.finalize!({
+			input: baseInput,
+			context: ctx,
+		});
+
+		expect(m.workflowStart).toHaveBeenCalledTimes(1);
+		expect(m.startInstructionSnapshotValidation).toHaveBeenCalledWith({
+			snapshotId: "snap_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+		});
+		expect(result).toEqual({ status: "VALIDATING" });
+	});
+
+	// I3 (round 2): `markInstructionSnapshotFailed` writes FAILED from inside
+	// the workflow's boundary catch, which then RETHROWS, so the execution
+	// stays open until Temporal processes that final workflow task. A "Try
+	// again" inside that window gets `AlreadyStarted` from the OLD run, not a
+	// new one — and treating it as success moved FAILED to VALIDATING with no
+	// execution behind it, stranding the snapshot in VALIDATING forever once
+	// the old run closed.
+	it("returns FAILED without writing a status when AlreadyStarted comes from the still-closing previous run", async () => {
+		m.getInstructionSnapshot.mockResolvedValue({
+			id: "snap_1",
+			status: "FAILED",
+		});
+		const alreadyStarted = new Error("workflow already started");
+		alreadyStarted.name = "WorkflowExecutionAlreadyStartedError";
+		m.workflowStart.mockRejectedValue(alreadyStarted);
+
+		const result = await m.handlers.finalize!({
+			input: baseInput,
+			context: ctx,
+		});
+
+		expect(result).toEqual({ status: "FAILED" });
+		// The whole point: no transition, so the row cannot end up VALIDATING
+		// with nothing running. The user retries once the run has closed.
+		expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
+	});
+
+	it("still transitions on AlreadyStarted when the pre-read status was VALIDATING (a lost status write, not a closing run)", async () => {
+		m.getInstructionSnapshot.mockResolvedValue({
+			id: "snap_1",
+			status: "VALIDATING",
+		});
+		const alreadyStarted = new Error("workflow already started");
+		alreadyStarted.name = "WorkflowExecutionAlreadyStartedError";
+		m.workflowStart.mockRejectedValue(alreadyStarted);
+
+		const result = await m.handlers.finalize!({
+			input: baseInput,
+			context: ctx,
+		});
+
+		expect(result).toEqual({ status: "VALIDATING" });
+		expect(m.startInstructionSnapshotValidation).toHaveBeenCalled();
+	});
+
+	// I2: the workflow is started BEFORE the status write, so a small upload
+	// can reach a terminal state in between. The write used to be
+	// unconditional and overwrote that verdict with VALIDATING — and in the
+	// READY case the publish activity then refused the snapshot as
+	// `not_ready`, so the tab polled a validation that had already finished
+	// and could never publish.
+	it("leaves a snapshot the workflow already took to READY alone, and returns READY", async () => {
+		// The pre-check saw RECEIVING; by the time the transition ran, the
+		// workflow had finished.
+		m.getInstructionSnapshot
+			.mockResolvedValueOnce({ id: "snap_1", status: "RECEIVING" })
+			.mockResolvedValueOnce({ id: "snap_1", status: "READY" });
+		m.startInstructionSnapshotValidation.mockResolvedValue({
+			changed: false,
+		});
+
+		const result = await m.handlers.finalize!({
+			input: baseInput,
+			context: ctx,
+		});
+
+		expect(result).toEqual({ status: "READY" });
+		// The conditional update is scoped to RECEIVING/FAILED, so it matched
+		// nothing; the handler re-read rather than asserting VALIDATING.
+		expect(m.getInstructionSnapshot).toHaveBeenCalledTimes(2);
+	});
+
+	it("returns REJECTED when the workflow rejected the snapshot while finalize was mid-flight", async () => {
+		m.getInstructionSnapshot
+			.mockResolvedValueOnce({ id: "snap_1", status: "RECEIVING" })
+			.mockResolvedValueOnce({ id: "snap_1", status: "REJECTED" });
+		m.startInstructionSnapshotValidation.mockResolvedValue({
+			changed: false,
+		});
+
+		const result = await m.handlers.finalize!({
+			input: baseInput,
+			context: ctx,
+		});
+
+		expect(result).toEqual({ status: "REJECTED" });
+	});
+
+	it("is idempotent: a snapshot already past RECEIVING/VALIDATING returns its current status without restarting the workflow", async () => {
+		m.getInstructionSnapshot.mockResolvedValue({
+			id: "snap_1",
+			status: "READY",
+		});
+		const result = await m.handlers.finalize!({
+			input: baseInput,
+			context: ctx,
+		});
+		expect(result).toEqual({ status: "READY" });
+		expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
+		expect(m.workflowStart).not.toHaveBeenCalled();
+	});
+
+	it("404s when the snapshot does not exist or is not scoped to this org/project", async () => {
+		m.getInstructionSnapshot.mockResolvedValue(null);
+		await expect(
+			m.handlers.finalize!({ input: baseInput, context: ctx }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
+	});
+
+	// I5: the workflow input's `organizationId` decides which tenant every
+	// activity reads and writes, so it has to be the project's host org and
+	// not whichever organization the caller happens to be looking at.
+	it("scopes the lookup and the workflow input to the project's hosting organization", async () => {
+		await m.handlers.finalize!({
+			input: { ...baseInput, organizationId: "org_active" },
+			context: {
+				user: { id: "user_1" },
+				session: { activeOrganizationId: "org_active" },
+			},
+		});
+
+		expect(m.getInstructionSnapshot).toHaveBeenCalledWith(
+			"snap_1",
+			"proj_1",
+			"org_1",
+		);
+		const [, options] = m.workflowStart.mock.calls[0]! as [
+			string,
+			{ args: Array<Record<string, unknown>> },
+		];
+		expect(options.args[0]).toMatchObject({ organizationId: "org_1" });
+	});
+
+	it("throws FORBIDDEN when the organization cannot be resolved", async () => {
+		m.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: [],
+			source: "owner",
+			organizationId: null,
+		});
+		await expect(
+			m.handlers.finalize!({ input: baseInput, context: ctx }),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(m.getInstructionSnapshot).not.toHaveBeenCalled();
+	});
+});

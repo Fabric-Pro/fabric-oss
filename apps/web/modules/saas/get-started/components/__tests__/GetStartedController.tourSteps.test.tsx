@@ -311,6 +311,7 @@ describe("GetStartedController — the viewer has a project", () => {
 			"roadmap",
 			"proposals",
 			"atlas",
+			"coding-instructions",
 			"apiKey",
 			"wrapup",
 		]);

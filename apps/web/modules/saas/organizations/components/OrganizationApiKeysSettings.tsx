@@ -137,6 +137,11 @@ export const AVAILABLE_SCOPES = [
 		description: "Create, update and share frames",
 	},
 	{
+		id: "instructions:read",
+		label: "Instructions Read",
+		description: "Read the published coding instructions of a project",
+	},
+	{
 		id: "chats:read",
 		label: "Chats Read",
 		description: "Read AI chat threads",
@@ -188,6 +193,7 @@ const READ_ONLY_SCOPES: ReadonlySet<ApiKeyScope> = new Set<ApiKeyScope>([
 	"workspaces:read",
 	"workflows:read",
 	"frames:read",
+	"instructions:read",
 	"chats:read",
 	"system_health:read",
 	"status_updates:read",

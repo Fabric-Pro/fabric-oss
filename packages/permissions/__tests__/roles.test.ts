@@ -4,6 +4,28 @@ import { Permissions } from "../lib/permissions";
 import { ORG_ROLE_PERMISSIONS, PROJECT_ROLE_PERMISSIONS } from "../lib/roles";
 
 describe("ORG_ROLE_PERMISSIONS", () => {
+	// Coding Instructions: a caller with no ProjectMember row falls back to
+	// the org role (`resolveEffectiveProjectPermissions` path B), so the org
+	// sets must carry the instruction permissions alongside the sibling
+	// diagram ones — the first manual upload failed with "Missing required
+	// permission: instruction:create" because they did not.
+	it.each([
+		["viewer", Permissions.INSTRUCTION_READ, true],
+		["viewer", Permissions.INSTRUCTION_CREATE, false],
+		["member", Permissions.INSTRUCTION_CREATE, true],
+		["member", Permissions.INSTRUCTION_UPDATE, true],
+		["member", Permissions.INSTRUCTION_DELETE, true],
+		["admin", Permissions.INSTRUCTION_DELETE, true],
+		["owner", Permissions.INSTRUCTION_CREATE, true],
+	] as const)(
+		"org %s: %s → %s (parity with the diagram permissions)",
+		(role, permission, expected) => {
+			expect(hasPermission(ORG_ROLE_PERMISSIONS[role], permission)).toBe(
+				expected,
+			);
+		},
+	);
+
 	it("owner has ORG_DELETE", () => {
 		expect(
 			hasPermission(ORG_ROLE_PERMISSIONS.owner, Permissions.ORG_DELETE),
@@ -326,6 +348,24 @@ describe("PROJECT_ROLE_PERMISSIONS", () => {
 			expect(PROJECT_ROLE_PERMISSIONS.COMMENTER).toContain(p);
 		}
 	});
+
+	it.each([
+		["VIEWER", Permissions.INSTRUCTION_READ, true],
+		["VIEWER", Permissions.INSTRUCTION_CREATE, false],
+		["COMMENTER", Permissions.INSTRUCTION_CREATE, false],
+		["EDITOR", Permissions.INSTRUCTION_CREATE, true],
+		["EDITOR", Permissions.INSTRUCTION_UPDATE, true],
+		["EDITOR", Permissions.INSTRUCTION_DELETE, false],
+		["PROJECT_ADMIN", Permissions.INSTRUCTION_DELETE, true],
+		["OWNER", Permissions.INSTRUCTION_DELETE, true],
+	] as const)(
+		"%s has %s → %s (coding instructions)",
+		(role, permission, expected) => {
+			expect(
+				hasPermission(PROJECT_ROLE_PERMISSIONS[role], permission),
+			).toBe(expected);
+		},
+	);
 });
 
 // Regression tests for the stale-role-authorization migration. Each case
