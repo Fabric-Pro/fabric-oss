@@ -29,6 +29,7 @@ import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "@repo/utils/publishing-case-stu
 import { PUBLISHING_LINKEDIN_POST_AGENT_KEY } from "@repo/utils/publishing-linkedin-post-prompt";
 import { PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY } from "@repo/utils/publishing-newsletter-blurb-prompt";
 import { PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY } from "@repo/utils/publishing-planning-prompt";
+import { PUBLISHING_REFINE_AGENT_KEY } from "@repo/utils/publishing-refine-prompt";
 import { PUBLISHING_SHORT_POST_AGENT_KEY } from "@repo/utils/publishing-short-post-prompt";
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "@repo/utils/publishing-stakeholder-email-prompt";
 import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "@repo/utils/publishing-suggestion-prompt";
@@ -71,6 +72,7 @@ const RETIRED_AGENTS = new Set([
 const KEY_CONSTANTS: Record<string, string> = {
 	PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
+	PUBLISHING_REFINE_AGENT_KEY,
 	PUBLISHING_SHORT_POST_AGENT_KEY,
 	PUBLISHING_LINKEDIN_POST_AGENT_KEY,
 	PUBLISHING_BLOG_POST_AGENT_KEY,

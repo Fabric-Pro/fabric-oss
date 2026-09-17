@@ -43,6 +43,7 @@
  * while three siblings stayed exposed.
  */
 
+import { randomUUID } from "node:crypto";
 import { db } from "../../client";
 import {
 	type DraftCommitOutcome,
@@ -140,6 +141,65 @@ export interface TopicDraftState {
 	versions: TopicDraftRecord[];
 }
 
+/**
+ * The AI refinement PROPOSAL sitting beside a working draft, if any.
+ *
+ * Null means "no proposal", which is every row that has never been refined and
+ * every row whose proposal was accepted or rejected.
+ *
+ * Deliberately a nested object rather than eight flat fields on
+ * `TopicWorkingDraftState`. The proposal is a unit — a body that only means
+ * something next to the baseline it revises and the instruction that asked for
+ * it — and flattening it would let a caller read `refinedBody` without ever
+ * having to notice `isStale`.
+ */
+export interface TopicRefinementState {
+	status: "GENERATING" | "READY" | "FAILED";
+	/**
+	 * What the model proposed. Null while GENERATING and on FAILED — there is
+	 * no half-written proposal to render.
+	 */
+	proposedBody: string | null;
+	/** What the author asked for. Null when the run carried no instruction. */
+	instruction: string | null;
+	/**
+	 * The model's note about the revision: what it generalized, what it could
+	 * not do. Null while GENERATING and on FAILED.
+	 *
+	 * Render it BESIDE the proposal, not instead of it. Where the author's
+	 * instruction ran into an unresolved approval, this is the only place the
+	 * revision says so — without it a declined instruction looks like an
+	 * ignored one.
+	 */
+	note: string | null;
+	/** Why it failed. Null unless `status` is FAILED. */
+	error: string | null;
+	/** Who asked. Resolved to a name through the project's member list. */
+	requestedById: string | null;
+	/**
+	 * The proposal revises text that is no longer the saved body.
+	 *
+	 * Computed here rather than left to each caller, because it decides whether
+	 * Accept can be offered at all: `acceptRefinement` refuses a stale proposal
+	 * with `baseline_changed`, and a panel that offered the button anyway would
+	 * be offering an action guaranteed to fail.
+	 *
+	 * Only meaningful for a READY proposal; false otherwise.
+	 */
+	isStale: boolean;
+	/**
+	 * The run's deadline has passed with nothing committed.
+	 *
+	 * The counterpart of `TopicDraftRecord.isExpired`, and derived the same way
+	 * — against the ONE clock this response uses, never the caller's — so that a
+	 * stranded run reads as stranded rather than as perpetually in progress. The
+	 * next refine reclaims it.
+	 */
+	isExpired: boolean;
+	/** When the proposal last changed. Never the body's `updatedAt`. */
+	updatedAt: Date | null;
+}
+
 export interface TopicWorkingDraftState {
 	postType: DraftPostType;
 	/**
@@ -182,6 +242,18 @@ export interface TopicWorkingDraftState {
 	 */
 	sourceContent: unknown;
 	updatedAt: Date;
+	/**
+	 * The AI refinement proposal for this content type, or null.
+	 *
+	 * NOTE for panel authors: a refinement does NOT refresh `sourceContent`.
+	 * That field is documented as the candidate this body was ADOPTED FROM, and
+	 * a refinement revises the working copy without re-seeding it from a
+	 * generation — so `safetyNote`, `inputsNeeded` and the rest still describe
+	 * the candidate the draft started as. That is the correct reading of
+	 * provenance, but it does mean a refined body can sit beside a note written
+	 * about an earlier version of it.
+	 */
+	refinement: TopicRefinementState | null;
 }
 
 /**
@@ -242,6 +314,58 @@ function toRecord(row: RawDraftRow, now: number): TopicDraftRecord {
 }
 
 /**
+ * Fold a working-draft row's refinement columns into the nested state, or null.
+ *
+ * `now` is passed in rather than read here for the reason `toRecord` takes it:
+ * one clock for the whole response, so a slow fold cannot report two rows with
+ * the same deadline differently.
+ */
+function toRefinementState(
+	row: {
+		body: string;
+		refinementStatus: string | null;
+		refinedBody: string | null;
+		refinedFromBody: string | null;
+		refinementInstruction: string | null;
+		refinementNote: string | null;
+		refinementError: string | null;
+		refinementExpiresAt: Date | null;
+		refinementUpdatedAt: Date | null;
+		refinementRequestedById: string | null;
+	},
+	now: number,
+): TopicRefinementState | null {
+	// `== null`, so a row read WITHOUT these columns selected — an older caller,
+	// a partial select, a test fixture — reads as "no proposal" rather than
+	// building a phantom one whose every field is undefined. `=== null` let that
+	// through, and the object it produced claimed a refinement existed.
+	if (row.refinementStatus == null) {
+		return null;
+	}
+	const status = row.refinementStatus as TopicRefinementState["status"];
+	return {
+		status,
+		proposedBody: status === "READY" ? row.refinedBody : null,
+		note: status === "READY" ? row.refinementNote : null,
+		instruction: row.refinementInstruction,
+		error: status === "FAILED" ? row.refinementError : null,
+		requestedById: row.refinementRequestedById,
+		// Compared against the LIVE body, which is the same comparison
+		// `acceptRefinement` makes before it writes. The two must agree, or the
+		// panel offers a button the writer refuses.
+		isStale:
+			status === "READY" && row.refinedFromBody !== null
+				? row.refinedFromBody !== row.body
+				: false,
+		isExpired:
+			status === "GENERATING" &&
+			(row.refinementExpiresAt === null ||
+				row.refinementExpiresAt.getTime() < now),
+		updatedAt: row.refinementUpdatedAt,
+	};
+}
+
+/**
  * Every content type's draft state for one topic.
  *
  * TWO rows per post type, not one, for the same reason
@@ -280,6 +404,15 @@ export async function listTopicDrafts(input: {
 				sourceDraftId: true,
 				sourceOptionLabel: true,
 				updatedAt: true,
+				refinementStatus: true,
+				refinedBody: true,
+				refinedFromBody: true,
+				refinementInstruction: true,
+				refinementNote: true,
+				refinementError: true,
+				refinementExpiresAt: true,
+				refinementUpdatedAt: true,
+				refinementRequestedById: true,
 			},
 		}),
 	]);
@@ -326,6 +459,15 @@ export async function listTopicDrafts(input: {
 			sourceDraftId: string | null;
 			sourceOptionLabel: string | null;
 			updatedAt: Date;
+			refinementStatus: string | null;
+			refinedBody: string | null;
+			refinedFromBody: string | null;
+			refinementInstruction: string | null;
+			refinementNote: string | null;
+			refinementError: string | null;
+			refinementExpiresAt: Date | null;
+			refinementUpdatedAt: Date | null;
+			refinementRequestedById: string | null;
 		}[]
 	).map((w) => ({
 		postType: w.postType as DraftPostType,
@@ -353,6 +495,7 @@ export async function listTopicDrafts(input: {
 			? (rowsById.get(w.sourceDraftId)?.content ?? null)
 			: null,
 		updatedAt: w.updatedAt,
+		refinement: toRefinementState(w, now),
 	}));
 
 	return { drafts, workingDrafts };
@@ -694,7 +837,7 @@ async function appendDraftRevision(
 		postType: DraftPostType;
 		tenant: { organizationId: string | null; userId: string | null };
 		body: string;
-		kind: "EDITED" | "RESTORED";
+		kind: "EDITED" | "RESTORED" | "REFINED";
 		sourceDraftVersion: number | null;
 		authorUserId: string | null;
 		changeSummary: string | null;
@@ -1333,4 +1476,604 @@ export async function markTopicDraftRead(input: {
 		update: { readAt: new Date() },
 	});
 	return true;
+}
+
+// =============================================================================
+// Refinement proposals (Fizzy #1851 follow-up)
+// =============================================================================
+
+/**
+ * How long a GENERATING refinement stays valid before the next start reclaims it.
+ *
+ * The same ten minutes as `TOPIC_DRAFT_TIMEOUT_MS`, and named separately rather
+ * than shared so the two can move independently: a refinement prompt carries a
+ * draft the generation prompt does not, and the budgets are free to diverge.
+ */
+export const TOPIC_REFINEMENT_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Is this proposal's run still the one that owns the slot?
+ *
+ * Fail-OPEN on a missing deadline, which is the whole reason this table needs no
+ * `refinementStatus <> 'GENERATING' OR refinementExpiresAt IS NOT NULL` CHECK.
+ * Its sibling `publishing_topic_draft` cannot make that choice: exclusion there
+ * is a partial unique index in the DATABASE, so a null deadline is a permanent
+ * lock no code path can reason its way out of. Here exclusion is the CAS below,
+ * so a null deadline simply means "nothing proves this run is alive" — and the
+ * safe reading of that is that it is not.
+ */
+function refinementIsLive(row: {
+	refinementStatus: string | null;
+	refinementExpiresAt: Date | null;
+}): boolean {
+	return (
+		row.refinementStatus === "GENERATING" &&
+		row.refinementExpiresAt != null &&
+		row.refinementExpiresAt.getTime() > Date.now()
+	);
+}
+
+export type StartRefinementResult =
+	| {
+			status: "started";
+			runId: string;
+			/**
+			 * The body this run must revise, captured under the project lock in
+			 * the SAME transaction that claimed the slot.
+			 *
+			 * Returned rather than re-read by the caller, and that is the point:
+			 * the text stored as `refinedFromBody` and the text handed to the
+			 * prompt are the same string by construction. The old refine path
+			 * read the body in one query (`readRefinementSource`) and opened the
+			 * attempt in another, so an edit landing between them produced a run
+			 * that revised one version while recording another.
+			 */
+			baseline: string;
+	  }
+	| { status: "project_ineligible" }
+	/** No topic, or no working draft with any text to refine. */
+	| { status: "not_found" }
+	/** A refinement is already running for this content type. */
+	| { status: "in_flight" };
+
+/**
+ * Claim the refinement slot for one content type and record what is being asked.
+ *
+ * The counterpart of `startTopicDraftAttempt`, and deliberately smaller than it.
+ * That function needs a partial unique index, a blocker lookup and a reclaim
+ * `updateMany` to establish "one run in flight per content type". Here
+ * `@@unique([topicId, postType])` already means there is exactly one row, so the
+ * claim is a single compare-and-set against that row's own columns — the slot IS
+ * the row.
+ *
+ * Writes NO draft attempt. That is the change this whole slice exists for: a
+ * refinement no longer consumes a version number, no longer appears in the
+ * candidates grid, and no longer has to be told apart from a real generation by
+ * a flag every reader must remember to interpret.
+ *
+ * `updatedAt` is PINNED to its current value. It is the body's concurrency
+ * token — `updateWorkingDraftBody` and `saveWorkingDraft` both compare against
+ * it — and Prisma's `@updatedAt` would otherwise move it on this write, telling
+ * every open editor their draft had changed underneath them. It had not; only
+ * the proposal beside it did, which is what `refinementUpdatedAt` is for.
+ */
+export async function startRefinement(input: {
+	topicId: string;
+	projectId: string;
+	postType: DraftPostType;
+	instruction: string | null;
+	requestedById: string;
+}): Promise<StartRefinementResult> {
+	return db.$transaction(async (tx) => {
+		const tenant = await lockProjectTenant(
+			tx as unknown as Parameters<typeof lockProjectTenant>[0],
+			input.projectId,
+		);
+		if (!tenant) {
+			return { status: "project_ineligible" as const };
+		}
+
+		// Both ids, as everywhere in this module: a real topic id from another
+		// project must resolve to the same nothing a missing one does (DV16).
+		const topic = await tx.publishingTopic.findFirst({
+			where: { id: input.topicId, projectId: input.projectId },
+			select: { id: true },
+		});
+		if (!topic) {
+			return { status: "not_found" as const };
+		}
+
+		const current = await tx.publishingTopicWorkingDraft.findFirst({
+			where: {
+				topicId: input.topicId,
+				projectId: input.projectId,
+				postType: input.postType,
+			},
+			select: {
+				id: true,
+				body: true,
+				updatedAt: true,
+				refinementStatus: true,
+				refinementExpiresAt: true,
+			},
+		});
+		// No row, or a row carrying no text, are the same answer: there is
+		// nothing to revise. Derived from the BODY rather than the row's
+		// existence, exactly as `TopicWorkingDraftState.hasBody` is.
+		if (!current || current.body.trim().length === 0) {
+			return { status: "not_found" as const };
+		}
+
+		if (refinementIsLive(current)) {
+			return { status: "in_flight" as const };
+		}
+
+		const runId = randomUUID();
+		const now = new Date();
+		// The CAS. `updatedAt` in the WHERE makes the claim atomic in Postgres
+		// rather than a comparison in JS that happens to be inside a lock every
+		// current writer takes — the same correction `updateWorkingDraftBody`
+		// already carries, and for the same reason: the convention holds only
+		// until someone adds a writer that does not take the lock.
+		const claimed = await tx.publishingTopicWorkingDraft.updateMany({
+			where: { id: current.id, updatedAt: current.updatedAt },
+			data: {
+				refinementRunId: runId,
+				refinementStatus: "GENERATING",
+				// The baseline is captured HERE, under the lock, so what is
+				// stored and what the prompt receives cannot disagree.
+				refinedFromBody: current.body,
+				refinementInstruction: input.instruction,
+				// Cleared, not left: a previous proposal's body or error showing
+				// beside a run that is still going is the state that makes a
+				// reader accept text the new run has not produced yet.
+				refinedBody: null,
+				refinementNote: null,
+				refinementError: null,
+				refinementExpiresAt: new Date(
+					now.getTime() + TOPIC_REFINEMENT_TIMEOUT_MS,
+				),
+				refinementUpdatedAt: now,
+				refinementRequestedById: input.requestedById,
+				// PINNED — see the docblock. The body did not change.
+				updatedAt: current.updatedAt,
+				// Re-stamped for the reason every writer here re-stamps: a row
+				// predating an org transfer otherwise keeps the old tenant and,
+				// under `policy`-mode RLS, becomes invisible to the project's
+				// current members.
+				organizationId: tenant.organizationId,
+				userId: tenant.userId,
+			},
+		});
+		if (claimed.count === 0) {
+			// The row moved between the read and the write. Reported as
+			// `in_flight` rather than a new status: from the caller's side both
+			// mean "someone else is acting on this draft, try again", and the
+			// panel already has that message.
+			return { status: "in_flight" as const };
+		}
+
+		return {
+			status: "started" as const,
+			runId,
+			baseline: current.body,
+		};
+	});
+}
+
+/**
+ * Commit a finished refinement.
+ *
+ * The two guards `completeTopicDraft` carries, rebuilt on this row:
+ *
+ *  1. The project tuple is re-validated under lock, because the activity checked
+ *     it before a multi-minute model call and a transfer, archive or delete
+ *     during that call must not be committed under the stale tenant.
+ *  2. The write CASes on `refinementRunId`, not merely on
+ *     `refinementStatus = 'GENERATING'`. Status alone is the hole: once a
+ *     stranded run's deadline passes, the next start reclaims the slot and sets
+ *     GENERATING again for a DIFFERENT run — and the first run, still executing,
+ *     would satisfy a status-only predicate and commit its result into the
+ *     second run's slot. The attempt table keyed every write on the attempt's
+ *     primary key; `refinementRunId` is that key.
+ *
+ * A lost CAS is not an error. It means this run was superseded, which is a
+ * normal outcome, so it returns `{ persisted: false }` rather than throwing —
+ * the same contract the draft writers use, so the workflow's existing branch
+ * carries over unchanged.
+ */
+export async function completeRefinement(input: {
+	topicId: string;
+	projectId: string;
+	postType: DraftPostType;
+	runId: string;
+	body: string;
+	/** The model's note about the revision, or null. */
+	note: string | null;
+}): Promise<DraftCommitOutcome> {
+	return db.$transaction(async (tx) => {
+		const tenant = await lockProjectTenant(
+			tx as unknown as Parameters<typeof lockProjectTenant>[0],
+			input.projectId,
+		);
+		if (!tenant) {
+			return { persisted: false, reason: "project_ineligible" };
+		}
+
+		const stored = await tx.publishingTopicWorkingDraft.findFirst({
+			where: {
+				topicId: input.topicId,
+				projectId: input.projectId,
+				postType: input.postType,
+			},
+			select: {
+				id: true,
+				updatedAt: true,
+				organizationId: true,
+				userId: true,
+			},
+		});
+		if (!stored) {
+			return { persisted: false, reason: "attempt_missing" };
+		}
+		// TENANT FENCE, as on `completeTopicDraft`: the lock proves the project
+		// is eligible, not that this run belongs to the tenant that now owns it.
+		// A refinement opened under org A and committed after a transfer to B
+		// would otherwise put text generated on A's identity and quota in front
+		// of B's members.
+		if (!sameTenant(stored, tenant)) {
+			return { persisted: false, reason: "tenant_changed" };
+		}
+
+		const written = await tx.publishingTopicWorkingDraft.updateMany({
+			where: {
+				id: stored.id,
+				refinementRunId: input.runId,
+				refinementStatus: "GENERATING",
+			},
+			data: {
+				refinementStatus: "READY",
+				refinedBody: input.body,
+				refinementNote: input.note,
+				refinementError: null,
+				// Cleared so the row stops matching the expiry predicate. A
+				// terminal proposal keeping a past deadline is what makes a
+				// finished refinement read as stranded.
+				refinementExpiresAt: null,
+				refinementUpdatedAt: new Date(),
+				// PINNED. The proposal is not the body — nothing the reader is
+				// editing has changed yet, and it will not until they accept.
+				updatedAt: stored.updatedAt,
+			},
+		});
+
+		return written.count > 0
+			? { persisted: true }
+			: { persisted: false, reason: "superseded" };
+	});
+}
+
+/**
+ * Mark a refinement run failed.
+ *
+ * Same CAS and same tenant fence as the success path, for the same reasons. The
+ * proposal columns are left in place apart from the error: `refinedFromBody` and
+ * `refinementInstruction` are what let the panel say WHICH request failed, and
+ * clearing them would reduce a failed refinement to an error with no subject.
+ */
+export async function failRefinement(input: {
+	topicId: string;
+	projectId: string;
+	postType: DraftPostType;
+	runId: string;
+	error: string;
+}): Promise<DraftCommitOutcome> {
+	return db.$transaction(async (tx) => {
+		const tenant = await lockProjectTenant(
+			tx as unknown as Parameters<typeof lockProjectTenant>[0],
+			input.projectId,
+		);
+		if (!tenant) {
+			return { persisted: false, reason: "project_ineligible" };
+		}
+
+		const stored = await tx.publishingTopicWorkingDraft.findFirst({
+			where: {
+				topicId: input.topicId,
+				projectId: input.projectId,
+				postType: input.postType,
+			},
+			select: {
+				id: true,
+				updatedAt: true,
+				organizationId: true,
+				userId: true,
+			},
+		});
+		if (!stored) {
+			return { persisted: false, reason: "attempt_missing" };
+		}
+		if (!sameTenant(stored, tenant)) {
+			return { persisted: false, reason: "tenant_changed" };
+		}
+
+		const written = await tx.publishingTopicWorkingDraft.updateMany({
+			where: {
+				id: stored.id,
+				refinementRunId: input.runId,
+				refinementStatus: "GENERATING",
+			},
+			data: {
+				refinementStatus: "FAILED",
+				refinedBody: null,
+				refinementNote: null,
+				refinementError: input.error,
+				refinementExpiresAt: null,
+				refinementUpdatedAt: new Date(),
+				updatedAt: stored.updatedAt,
+			},
+		});
+
+		return written.count > 0
+			? { persisted: true }
+			: { persisted: false, reason: "superseded" };
+	});
+}
+
+export type AcceptRefinementResult =
+	| { status: "accepted"; updatedAt: Date; version: number }
+	| { status: "project_ineligible" }
+	/** No working draft for that topic and content type. */
+	| { status: "not_found" }
+	/** Nothing to accept: no proposal, or one that is still running or failed. */
+	| { status: "no_proposal" }
+	/**
+	 * The body moved since this proposal was computed against it.
+	 *
+	 * DISTINCT from `stale`, and the distinction is the point. `stale` means the
+	 * caller's own view is behind and refreshing fixes it. This means the
+	 * proposal itself is answering a question about text that is no longer
+	 * saved — accepting would discard whatever replaced it — so the fix is to
+	 * run the refinement again, not to refresh.
+	 */
+	| { status: "baseline_changed" }
+	| { status: "stale" };
+
+/**
+ * Accept the proposal: it becomes the working draft body, and the proposal is
+ * cleared.
+ *
+ * ONE transaction, and that is a correctness requirement rather than tidiness.
+ * Writing the body through `updateWorkingDraftBody` and clearing the proposal in
+ * a second call would leave a window in which the text is already accepted and
+ * the panel still offers to accept it — and a crash inside that window leaves it
+ * open forever.
+ *
+ * It goes through the SAME revision machinery every other body writer goes
+ * through — `captureOutgoingBodyIfUnrecorded` then `appendDraftRevision` — so an
+ * accepted refinement is recoverable exactly like a hand edit. Writing `body`
+ * directly would reopen the gap the draft-revision slice just closed: a body
+ * replaced with no revision behind it is a body that cannot be restored.
+ *
+ * TWO staleness checks, because two different things can have moved and they
+ * need opposite answers:
+ *
+ *   - `expectedUpdatedAt` — the CALLER's view is behind. Someone saved while
+ *     this reader was deciding. Refresh and retry.
+ *   - `refinedFromBody` vs the live `body` — the PROPOSAL is behind. It revises
+ *     text that is no longer saved. Refreshing changes nothing; the refinement
+ *     has to be run again.
+ *
+ * The second is not hypothetical. The working draft is SHARED per topic rather
+ * than per author — `editingUserId` is advisory and take-over is always
+ * available — so "A refines from X, B edits to Y, A accepts" is an ordinary
+ * sequence, and without this check it silently destroys B's edit.
+ *
+ * Here `updatedAt` is deliberately NOT pinned. The body genuinely changed, so
+ * every open editor's token SHOULD be invalidated — that is the mechanism
+ * working, not the collision the proposal writers avoid.
+ */
+export async function acceptRefinement(input: {
+	topicId: string;
+	projectId: string;
+	postType: DraftPostType;
+	acceptedById: string;
+	/** The row's `updatedAt` as the accepting client last saw it. */
+	expectedUpdatedAt: Date;
+}): Promise<AcceptRefinementResult> {
+	return db.$transaction(async (tx) => {
+		const tenant = await lockProjectTenant(
+			tx as unknown as Parameters<typeof lockProjectTenant>[0],
+			input.projectId,
+		);
+		if (!tenant) {
+			return { status: "project_ineligible" as const };
+		}
+
+		const current = await tx.publishingTopicWorkingDraft.findFirst({
+			where: {
+				topicId: input.topicId,
+				projectId: input.projectId,
+				postType: input.postType,
+			},
+			select: {
+				id: true,
+				body: true,
+				updatedById: true,
+				sourceDraftId: true,
+				refinementStatus: true,
+				refinedBody: true,
+				refinedFromBody: true,
+				refinementInstruction: true,
+			},
+		});
+		if (!current) {
+			return { status: "not_found" as const };
+		}
+
+		const proposed = current.refinedBody;
+		if (current.refinementStatus !== "READY" || !proposed) {
+			return { status: "no_proposal" as const };
+		}
+		// The baseline check runs BEFORE the compare-and-set, so a proposal
+		// computed against superseded text is refused without touching the row.
+		if (current.refinedFromBody !== current.body) {
+			return { status: "baseline_changed" as const };
+		}
+
+		const written = await tx.publishingTopicWorkingDraft.updateMany({
+			where: { id: current.id, updatedAt: input.expectedUpdatedAt },
+			data: {
+				body: proposed,
+				updatedById: input.acceptedById,
+				// The proposal is spent. Cleared in the same statement that
+				// consumes it, so there is no state in which the body is
+				// accepted and the proposal is still offered.
+				refinementRunId: null,
+				refinementStatus: null,
+				refinedBody: null,
+				refinedFromBody: null,
+				refinementInstruction: null,
+				refinementNote: null,
+				refinementError: null,
+				refinementExpiresAt: null,
+				refinementRequestedById: null,
+				refinementUpdatedAt: new Date(),
+				organizationId: tenant.organizationId,
+				userId: tenant.userId,
+			},
+		});
+		if (written.count === 0) {
+			return { status: "stale" as const };
+		}
+
+		const saved = await tx.publishingTopicWorkingDraft.findUniqueOrThrow({
+			where: { id: current.id },
+			select: { updatedAt: true },
+		});
+
+		// `sourceDraftId` still names the candidate this draft STARTED as — a
+		// refinement revises the working copy and does not re-seed it from a
+		// generation, so the provenance it descends from is unchanged. Read from
+		// the row's own column rather than from the newest candidate, for the
+		// reason `updateWorkingDraftBody` gives: stamping the latest run would
+		// claim the author worked from something they never saw.
+		const sourceVersion = current.sourceDraftId
+			? ((
+					await tx.publishingTopicDraft.findFirst({
+						where: {
+							id: current.sourceDraftId,
+							topicId: input.topicId,
+							projectId: input.projectId,
+						},
+						select: { version: true },
+					})
+				)?.version ?? null)
+			: null;
+
+		await captureOutgoingBodyIfUnrecorded(tx, {
+			topicId: input.topicId,
+			projectId: input.projectId,
+			postType: input.postType,
+			tenant,
+			outgoingBody: current.body,
+			outgoingAuthorId: current.updatedById,
+		});
+		const version = await appendDraftRevision(tx, {
+			topicId: input.topicId,
+			projectId: input.projectId,
+			postType: input.postType,
+			tenant,
+			body: proposed,
+			kind: "REFINED",
+			sourceDraftVersion: sourceVersion,
+			authorUserId: input.acceptedById,
+			// The ASK, not a description of the result. A history that records
+			// only what changed cannot answer why, and the instruction is the
+			// only place the why exists.
+			changeSummary: current.refinementInstruction,
+		});
+
+		return {
+			status: "accepted" as const,
+			updatedAt: saved.updatedAt,
+			version,
+		};
+	});
+}
+
+export type RejectRefinementResult =
+	| { status: "rejected"; updatedAt: Date }
+	| { status: "project_ineligible" }
+	| { status: "not_found" }
+	/** There was no proposal to reject. Already the desired end state. */
+	| { status: "no_proposal" };
+
+/**
+ * Discard the proposal. The working draft body is untouched.
+ *
+ * Accepts a proposal in ANY state, deliberately — including GENERATING and
+ * FAILED. A FAILED proposal needs a way to be dismissed or the error sits on the
+ * panel forever, and cancelling a run in flight is safe for the same reason the
+ * run token exists: `completeRefinement` CASes on `refinementRunId`, so the
+ * cancelled run's eventual write matches nothing and is reported as superseded.
+ * The workflow is not signalled and does not need to be; it finishes, finds the
+ * slot gone, and says so.
+ *
+ * `updatedAt` is PINNED. Rejecting changes nothing a reader is editing, so
+ * invalidating their token would make a dismissed error look like someone else's
+ * save.
+ *
+ * No `expectedUpdatedAt`. Rejection is idempotent and destroys nothing — the
+ * body is untouched and the proposal is reproducible by running it again — so a
+ * compare-and-set would add a conflict dialog protecting nothing.
+ */
+export async function rejectRefinement(input: {
+	topicId: string;
+	projectId: string;
+	postType: DraftPostType;
+}): Promise<RejectRefinementResult> {
+	return db.$transaction(async (tx) => {
+		const tenant = await lockProjectTenant(
+			tx as unknown as Parameters<typeof lockProjectTenant>[0],
+			input.projectId,
+		);
+		if (!tenant) {
+			return { status: "project_ineligible" as const };
+		}
+
+		const current = await tx.publishingTopicWorkingDraft.findFirst({
+			where: {
+				topicId: input.topicId,
+				projectId: input.projectId,
+				postType: input.postType,
+			},
+			select: { id: true, updatedAt: true, refinementStatus: true },
+		});
+		if (!current) {
+			return { status: "not_found" as const };
+		}
+		if (current.refinementStatus === null) {
+			return { status: "no_proposal" as const };
+		}
+
+		await tx.publishingTopicWorkingDraft.updateMany({
+			where: { id: current.id },
+			data: {
+				refinementRunId: null,
+				refinementStatus: null,
+				refinedBody: null,
+				refinedFromBody: null,
+				refinementInstruction: null,
+				refinementNote: null,
+				refinementError: null,
+				refinementExpiresAt: null,
+				refinementRequestedById: null,
+				refinementUpdatedAt: new Date(),
+				updatedAt: current.updatedAt,
+			},
+		});
+
+		return { status: "rejected" as const, updatedAt: current.updatedAt };
+	});
 }

@@ -19,6 +19,7 @@ import { buildBlogPostLockedClauses } from "../../publishing-blog-post/build-blo
 import { buildCaseStudyLockedClauses } from "../../publishing-case-study/build-case-study-prompt";
 import { composeLinkedInPostPrompt } from "../../publishing-linkedin-post/build-linkedin-post-prompt";
 import { buildNewsletterBlurbLockedClauses } from "../../publishing-newsletter-blurb/build-newsletter-blurb-prompt";
+import { buildRefineLockedClauses } from "../../publishing-refine/build-refine-prompt";
 import { buildShortPostLockedClauses } from "../../publishing-short-post/build-short-post-prompt";
 import { buildStakeholderEmailLockedClauses } from "../../publishing-stakeholder-email/build-stakeholder-email-prompt";
 import { buildWebinarScriptLockedClauses } from "../../publishing-webinar-script/build-webinar-script-prompt";
@@ -85,6 +86,15 @@ const BUILDERS = [
 	{
 		name: "buildShortPostLockedClauses",
 		build: (subjects: string[]) => buildShortPostLockedClauses(subjects),
+	},
+	// Working-draft refinement (Fizzy #1851 follow-up). ONE builder covering all
+	// seven content types, so a single entry exercises every refine prompt the
+	// suite composes — the post type only selects a register label, never a
+	// different subject-rendering path.
+	{
+		name: "buildRefineLockedClauses",
+		build: (subjects: string[]) =>
+			buildRefineLockedClauses("TWEET", subjects),
 	},
 	{
 		name: "buildCaseStudyLockedClauses (restricted)",
@@ -501,6 +511,7 @@ const ACTIVITIES_DIR = join(
 /** Exercised by the injection cases above. */
 const COVERED = new Set([
 	"buildBlogPostLockedClauses",
+	"buildRefineLockedClauses",
 	"buildCaseStudyLockedClauses",
 	"buildNewsletterBlurbLockedClauses",
 	"buildShortPostLockedClauses",

@@ -45,6 +45,7 @@ import {
 	composeWebinarScriptWorkingDraftBody,
 	type WebinarScriptDocument,
 } from "@repo/utils/publishing-webinar-script-body";
+import { WORKING_DRAFT_BODY_MAX } from "@repo/utils/publishing-working-draft-limits";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
@@ -88,7 +89,11 @@ const GUIDANCE_MAX = 2000;
  * tracks and demo-flow steps run long, and the cap exists to stop an
  * unbounded write reaching a `@db.Text` column, not to impose a house style.
  */
-const BODY_MAX = 40000;
+// Read from the shared map rather than written here, so the editor's bound and
+// the refinement schema's cannot drift. A refinement that could commit a body
+// this procedure would refuse to save is a proposal the author can accept and
+// then not edit — see `publishing-working-draft-limits.ts`.
+const BODY_MAX = WORKING_DRAFT_BODY_MAX.WEBINAR_SCRIPT;
 
 export const generateWebinarScriptProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PUBLISHING_TOPIC_UPDATE))

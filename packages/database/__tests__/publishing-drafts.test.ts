@@ -248,6 +248,12 @@ describe("listTopicDrafts — working drafts", () => {
 				// Hand-written: no candidate to carry a safety note.
 				sourceContent: null,
 				updatedAt: new Date("2026-09-01T11:00:00Z"),
+				// The row carries no refinement columns at all — the shape a
+				// caller sees before anything is refined, and the shape every
+				// row had before the proposal columns existed. It must read as
+				// "no proposal", not as a proposal whose every field is
+				// undefined.
+				refinement: null,
 			},
 		]);
 	});

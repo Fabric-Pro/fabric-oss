@@ -104,6 +104,16 @@
 			"import": "./lib/publishing-suggestion-prompt.ts",
 			"default": "./lib/publishing-suggestion-prompt.ts"
 		},
+		"./publishing-refine-prompt": {
+			"types": "./lib/publishing-refine-prompt.ts",
+			"import": "./lib/publishing-refine-prompt.ts",
+			"default": "./lib/publishing-refine-prompt.ts"
+		},
+		"./publishing-working-draft-limits": {
+			"types": "./lib/publishing-working-draft-limits.ts",
+			"import": "./lib/publishing-working-draft-limits.ts",
+			"default": "./lib/publishing-working-draft-limits.ts"
+		},
 		"./publishing-refinement": {
 			"types": "./lib/publishing-refinement.ts",
 			"import": "./lib/publishing-refinement.ts",

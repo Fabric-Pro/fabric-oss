@@ -358,6 +358,15 @@ export {
 	type GeneratePublishingShortPostWorkflowOutput,
 	generatePublishingShortPostWorkflow,
 } from "./generate-publishing-short-post";
+// Publishing Suite working-draft refinement (fire-and-forget — ONE revised
+// document for one saved draft, for every content type). It writes a proposal on
+// the working draft rather than a candidate, so a refinement consumes no version
+// number and never appears in the candidates grid. Fizzy #1851 follow-up.
+export {
+	type RefinePublishingDraftWorkflowInput,
+	type RefinePublishingDraftWorkflowOutput,
+	refinePublishingDraftWorkflow,
+} from "./refine-publishing-draft";
 // Publishing Suite Stakeholder Email (fire-and-forget — one editable stakeholder
 // update for one topic, from its planning analysis and its own provenance).
 // #1854

@@ -239,6 +239,18 @@ export async function summarizeAnalysisChanges({
 
 	const { object } = await generateObject({
 		model,
+		/**
+		 * Bounded, because an unbounded generation fails as a HANG rather than
+		 * an error — and this one is advisory, so a reader stuck watching a
+		 * spinner reads the whole feature as broken rather than as slow.
+		 *
+		 * The schema asks for three to eight one-sentence bullets, each a
+		 * section heading plus a clause. Eight generous sentences is a few
+		 * hundred tokens; 2,000 leaves room for a verbose model without
+		 * leaving room for a runaway one. `analyse-test-failure.ts` bounds a
+		 * comparable summarizer at the same figure.
+		 */
+		maxOutputTokens: 2_000,
 		schema: zodSchema(AnalysisChangeSummarySchema),
 		prompt:
 			buildAnalysisChangeSummaryPrompt(
