@@ -10,21 +10,20 @@ import {
 } from "@ui/components/popover";
 import { Textarea } from "@ui/components/textarea";
 import { Loader2Icon, PencilLineIcon, SparklesIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { CopyDraftButton } from "./CopyDraftButton";
 import {
 	CandidateDraft,
 	DraftComparison,
-	readCandidateRefinement,
 	SavedDraftCaption,
 } from "./DraftComparison";
 import { DraftDownloadDropdown } from "./DraftDownloadDropdown";
 import { DraftLockBanner, useDraftEditLock } from "./DraftEditLock";
+import { DraftRefinementReview, useDraftRefinement } from "./DraftRefinement";
 import { DraftVersions } from "./DraftVersions";
 import { GeneralizationNotes, OTHER_VERSION_NOTE } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
-import { RefinedDraftReview } from "./RefinedDraftReview";
 
 /** Mirrors the API's own bounds, so a field cannot submit what it would reject. */
 const GUIDANCE_MAX = 2000;
@@ -324,21 +323,6 @@ export function StakeholderEmailPanel({
 	 * not silently discard what they wrote.
 	 */
 	const [editedBody, setEditedBody] = useState<string | null>(null);
-	/**
-	 * The candidate whose refinement review this reader has closed.
-	 *
-	 * Held by ID rather than as a boolean, so the NEXT refinement opens its own
-	 * review instead of inheriting a dismissal meant for the last one.
-	 *
-	 * Closing is not discarding. The candidate stays where it was and renders
-	 * the ordinary way afterwards, so a reader who changes their mind can still
-	 * adopt it whole — and a reload brings the review back, having destroyed
-	 * nothing in between.
-	 */
-	const [dismissedRefinementId, setDismissedRefinementId] = useState<
-		string | null
-	>(null);
-
 	const attempt = draft?.latestAttempt ?? null;
 	// `isExpired` splits GENERATING in two: a LIVE run is genuinely in flight, a
 	// STRANDED one will never report back on its own. The button must stay
@@ -348,42 +332,35 @@ export function StakeholderEmailPanel({
 	const isGenerating = attempt?.status === "GENERATING" && !isStranded;
 
 	/**
-	 * This tab pressed Refine, and the run it started has not come back.
+	 * The refinement proposal for this content type, and the three mutations
+	 * that drive it.
 	 *
-	 * The pending state used to live only in the drafts section further down the
-	 * page, wording itself around the run that writes candidates. Refine is
-	 * submitted from the working draft's own action row and CLOSES its popover on
-	 * submit, so pressing it left that row looking exactly as it had a moment
-	 * before — no spinner, no sentence, nothing to distinguish a run in flight
-	 * from a click that missed.
-	 *
-	 * Local state, legitimately: it records what THIS tab just did rather than a
-	 * fact about the topic. A reload drops it back to the neutral line in the
-	 * drafts section, which is still true — the cost of being wrong here is a
-	 * less specific sentence, never a false one.
-	 *
-	 * NOT combined with `isGenerating` at the point of use. The mutation resolves
-	 * before the invalidated query returns a GENERATING row, and a conjunction
-	 * blinks off for exactly that window — reproducing the "nothing is happening"
-	 * this indicator exists to answer.
+	 * A refinement no longer writes a draft row, so NOTHING about it can be
+	 * read off `attempt`: there is no GENERATING attempt to watch, no falling
+	 * edge to clear a local flag on, and no candidate to adopt. The pending
+	 * state, the failure states and the review all come from the proposal the
+	 * working draft carries.
 	 */
-	const [refineInFlight, setRefineInFlight] = useState(false);
-
-	/**
-	 * Cleared on the FALLING EDGE of the run, never on the mere absence of one.
-	 *
-	 * The flag is set before a row exists to observe, so clearing whenever
-	 * nothing is generating would clear it in the same breath it was set. A
-	 * stranded run still clears this: `isStranded` flips `isGenerating` false
-	 * once the deadline passes, which is the edge below.
-	 */
-	const wasGenerating = useRef(isGenerating);
-	useEffect(() => {
-		if (wasGenerating.current && !isGenerating) {
-			setRefineInFlight(false);
-		}
-		wasGenerating.current = isGenerating;
-	}, [isGenerating]);
+	const refinement = useDraftRefinement({
+		projectId,
+		topicId,
+		organizationId,
+		postType: "STAKEHOLDER_EMAIL",
+		working,
+		label: "stakeholder email",
+		// Accepting replaces the saved body, so unsaved typing in the
+		// editor is the one thing here a refresh cannot bring back.
+		// Asked in the same words the adopt path has always used.
+		confirmAccept: () =>
+			!isDirty ||
+			window.confirm(
+				"Saving the refined stakeholder email discards your unsaved edits. Continue?",
+			),
+		// The accepted text replaces what the editor was showing, so the
+		// local override goes with it — otherwise the next Save writes
+		// the old text back over the refinement just accepted.
+		onAccepted: () => setEditedBody(null),
+	});
 
 	const invalidateDrafts = () => {
 		void queryClient.invalidateQueries({
@@ -401,10 +378,6 @@ export function StakeholderEmailPanel({
 				// the row. Reporting either as an error would send the reader
 				// looking for a fault that is not theirs.
 				if (!result.started) {
-					// Nothing was started, so there is no run to report on. Left
-					// standing, the indicator would sit there until the next
-					// unrelated generation gave it a falling edge to clear on.
-					setRefineInFlight(false);
 					toast.info(
 						result.reason === "unavailable"
 							? "Generation is unavailable right now. Try again in a few minutes."
@@ -580,89 +553,21 @@ export function StakeholderEmailPanel({
 	};
 
 	/**
-	 * What the unadopted candidate says about how it was made.
+	 * The proposal under review, or null.
 	 *
-	 * Non-null only for a REFINEMENT — a revision of the saved text — which is
-	 * the one case where the two drafts on screen are the same document twice
-	 * and the difference between them is the whole of what there is to read.
+	 * Gated on a saved body: the review diffs against the working draft, and
+	 * with nothing saved there is no baseline to diff against. A viewer gets
+	 * nothing here either — every decision this surface offers is a write, and
+	 * the component refuses one anyway.
 	 */
-	const refinement = hasUnadoptedVersion
-		? readCandidateRefinement(draft?.latestReady?.content ?? null)
-		: null;
-
-	/**
-	 * Take the refined draft, exactly as the review left it.
-	 *
-	 * `merged` is the document after every per-change accept and reject, so it
-	 * is usually neither the saved text nor the candidate — which is why this
-	 * goes through `saveBody` and not `adopt`. Adopting names a candidate id for
-	 * the server to read the text from; there is no candidate holding a partial
-	 * merge, and there should not be.
-	 *
-	 * The merged text is put in the editor as well as sent. On a CONFLICT the
-	 * save's own error path then reads true — the text IS still here, in the
-	 * box, for the reader to copy before refreshing — and on success the
-	 * mutation clears the override against what the server took.
-	 */
-	const handleAcceptRefinement = (merged: string | null) => {
-		if (!working || readyId === null) {
-			return;
-		}
-		if (merged === null) {
-			// The same null-not-empty contract `getEditorMarkdownForSave`
-			// documents: a failed serialization must never be written as a
-			// body, because that writes the draft away.
-			toast.error(
-				"Couldn't save the refined stakeholder email — the review could not be read. Nothing was changed.",
-			);
-			return;
-		}
-		if (
-			isDirty &&
-			!window.confirm(
-				"Saving the refined stakeholder email discards your unsaved edits. Continue?",
-			)
-		) {
-			return;
-		}
-		setDismissedRefinementId(readyId);
-		setEditedBody(merged);
-		saveBody.mutate({
-			projectId,
-			topicId,
-			organizationId,
-			body: merged,
-			expectedUpdatedAt: new Date(working.updatedAt),
-		});
-	};
-
-	/**
-	 * The refinement under review, or null.
-	 *
-	 * Gated on a saved body as well as on the flag: the review diffs against
-	 * the working draft, and with nothing saved there is no baseline — only a
-	 * candidate, which is what the ordinary comparison already shows. A viewer
-	 * gets nothing here either; every decision this surface offers is a write.
-	 */
-	const refinementReview =
-		canEdit &&
-		refinement &&
-		doc &&
-		working?.hasBody &&
-		readyId !== null &&
-		dismissedRefinementId !== readyId ? (
-			<RefinedDraftReview
-				draftId={readyId}
-				baseline={working.body}
-				proposed={doc.body}
-				version={draft?.latestReady?.version ?? null}
-				instruction={refinement.instruction}
-				label="stakeholder email"
-				onConfirm={handleAcceptRefinement}
-				onReject={() => setDismissedRefinementId(readyId)}
-				isSaving={saveBody.isPending}
-			/>
-		) : null;
+	const refinementReview = working?.hasBody ? (
+		<DraftRefinementReview
+			refinement={refinement}
+			baseline={working.body}
+			label="stakeholder email"
+			canEdit={canEdit}
+		/>
+	) : null;
 
 	/** Live in one place: the run is one run wherever it was started. */
 	const generatingStatus = isGenerating ? (
@@ -806,9 +711,7 @@ export function StakeholderEmailPanel({
 								<Button
 									type="button"
 									variant="outline"
-									disabled={
-										isGenerating || generate.isPending
-									}
+									disabled={!refinement.canStart}
 								>
 									<PencilLineIcon
 										className="mr-2 size-4"
@@ -831,9 +734,11 @@ export function StakeholderEmailPanel({
 									<p className="text-muted-foreground text-xs leading-relaxed">
 										Starts from the stakeholder email you
 										have saved and changes only what you ask
-										for. The result arrives as a new version
-										to compare against; nothing you have
-										saved changes until you adopt it.
+										for. The result comes back as a proposed
+										revision of that text, shown as a diff
+										you accept or discard — it does not make
+										a new version, and nothing you have
+										saved changes until you accept it.
 									</p>
 								</div>
 								<Textarea
@@ -845,24 +750,13 @@ export function StakeholderEmailPanel({
 									maxLength={GUIDANCE_MAX}
 									rows={3}
 									placeholder="Make it shorter. Warmer tone. Lead with the metric."
-									disabled={
-										isGenerating || generate.isPending
-									}
+									disabled={!refinement.canStart}
 								/>
 								<Button
 									type="button"
 									size="sm"
 									onClick={() => {
-										generate.mutate({
-											projectId,
-											topicId,
-											organizationId,
-											guidance:
-												refineInstruction.trim() ||
-												null,
-											refineFromWorkingDraft: true,
-										});
-										setRefineInFlight(true);
+										refinement.start(refineInstruction);
 										setRefineOpen(false);
 									}}
 									// Required here where it is optional for a generation: a
@@ -871,11 +765,10 @@ export function StakeholderEmailPanel({
 									// usefully do.
 									disabled={
 										!refineInstruction.trim() ||
-										isGenerating ||
-										generate.isPending
+										!refinement.canStart
 									}
 								>
-									{isGenerating || generate.isPending ? (
+									{refinement.isRunning ? (
 										<Loader2Icon
 											className="mr-2 size-4 motion-safe:animate-spin"
 											aria-hidden="true"
@@ -892,7 +785,7 @@ export function StakeholderEmailPanel({
 						</Popover>
 						{/* The pending state where the press happened, rather than
 						    only in the drafts section further down. */}
-						{refineInFlight ? (
+						{refinement.isRunning ? (
 							<output className="flex items-center gap-2 text-muted-foreground text-sm">
 								<Loader2Icon
 									className="size-4 motion-safe:animate-spin"
@@ -1042,14 +935,14 @@ export function StakeholderEmailPanel({
 				</section>
 			) : null}
 
-			{/* A refinement REPLACES the comparison rather than joining it.
-			    Two columns is the right shape for two different drafts; a
-			    refinement is one draft twice, and showing the saved text
-			    beside a marked-up copy of itself is the confusion this
-			    surface exists to remove. */}
-			{refinementReview ?? (
-				<DraftComparison saved={savedDraft} candidate={candidate} />
-			)}
+			{/* ABOVE the comparison rather than in place of it. The two now
+			    answer different questions and can both be true at once: the
+			    comparison is a regenerated CANDIDATE beside the saved draft,
+			    while this is a proposed revision OF the saved draft. A
+			    refinement no longer produces a candidate, so it no longer has
+			    a column in that grid to displace. */}
+			{refinementReview}
+			<DraftComparison saved={savedDraft} candidate={candidate} />
 
 			{/*
 			 * Regeneration belongs WITH the drafts it produces, not above the

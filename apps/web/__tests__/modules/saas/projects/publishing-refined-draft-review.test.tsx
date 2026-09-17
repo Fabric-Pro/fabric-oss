@@ -3,17 +3,20 @@
  *
  * What it owes its callers is narrow and all of it is load-bearing:
  *
- *   1. The diff it shows is the SAVED draft against the refined one, compared
- *      as two complete documents. The streaming comparison truncates the
- *      baseline to the proposal's length and skips markdown normalization, so
- *      passing it here would both hide changes and invent them.
+ *   1. The diff it shows is the SAVED draft against the proposal, compared as
+ *      two complete documents. The streaming comparison truncates the baseline
+ *      to the proposal's length and skips markdown normalization, so passing it
+ *      here would both hide changes and invent them.
  *   2. Confirming hands back what the editor holds AT THE MOMENT OF THE PRESS,
  *      because every per-change accept and reject has mutated that document in
- *      place since it was seeded.
+ *      place since it was seeded. `acceptRefinement` takes that merge as an
+ *      optional body and writes it in place of the proposal it stored.
  *   3. A failed serialization arrives as `null`, never `""` — Fizzy #1987: a
  *      caller that wrote `""` as a body would destroy the draft it was trying
  *      to save.
- *   4. Rejecting hands back nothing at all.
+ *   4. The revision's own safety note travels with it, because a declined
+ *      instruction otherwise looks exactly like an ignored one.
+ *   5. Rejecting hands back nothing at all.
  *
  * `@tiptap/react` and the advanced extension set are stubbed the way the
  * sibling `planning-analysis-editor.test.tsx` stubs them — mounting the real
@@ -70,7 +73,10 @@ const { capturedEditorOptions, fakeEditor } = vi.hoisted(() => {
 	};
 	return {
 		capturedEditorOptions: {
-			current: null as { content?: string } | null,
+			current: null as {
+				content?: string;
+				editable?: boolean;
+			} | null,
 		},
 		fakeEditor: {
 			state: {
@@ -104,11 +110,10 @@ import { readCandidateRefinement } from "@saas/projects/components/publishing-su
 import { RefinedDraftReview } from "@saas/projects/components/publishing-suite/RefinedDraftReview";
 
 const baseProps = {
-	draftId: "draft-1",
 	baseline: "Builds used to start cold every morning.",
 	proposed: "Builds used to start warm every morning.",
-	version: 2,
 	instruction: "Make it shorter.",
+	note: null,
 	label: "blog post",
 	onConfirm: vi.fn(),
 	onReject: vi.fn(),
@@ -166,6 +171,46 @@ describe("RefinedDraftReview — what reaches the editor", () => {
 
 		expect(screen.getByText(/Make it shorter/)).toBeInTheDocument();
 	});
+
+	it("carries the revision's own safety note beside the proposal", () => {
+		// Where the instruction ran into an unresolved approval, this is the
+		// only place the revision says so. Without it the reader sees a diff
+		// that simply does not contain what they asked for.
+		render(
+			<RefinedDraftReview
+				{...baseProps}
+				note="Left the customer unnamed — that approval is still open."
+			/>,
+		);
+
+		expect(
+			screen.getByText(/that approval is still open/i),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the document editable, because the merge IS what gets saved", () => {
+		// `acceptRefinement` takes the reviewed body, so resolving marks one at
+		// a time changes what is written. An uneditable diff would make the
+		// review bar's per-change controls decorative.
+		render(<RefinedDraftReview {...baseProps} />);
+
+		expect(capturedEditorOptions.current?.editable).toBe(true);
+	});
+
+	it("reseeds the diff when a second proposal replaces the first", () => {
+		// `useEditor` seeds its document on mount and never re-syncs, so
+		// without a remount the reader reviews the previous proposal while
+		// looking at a heading about this one.
+		const { rerender } = render(<RefinedDraftReview {...baseProps} />);
+		rerender(
+			<RefinedDraftReview
+				{...baseProps}
+				proposed="Builds used to start hot every morning."
+			/>,
+		);
+
+		expect(capturedEditorOptions.current?.content ?? "").toContain("hot");
+	});
 });
 
 describe("RefinedDraftReview — confirming and rejecting", () => {
@@ -184,7 +229,7 @@ describe("RefinedDraftReview — confirming and rejecting", () => {
 
 	it("hands back null — never an empty string — when serialization fails", async () => {
 		// Fizzy #1987. The caller refuses to write on `null`; an `""` here
-		// would be written as the body and destroy the draft.
+		// would be sent as the body and destroy the draft.
 		getEditorMarkdownForSaveMock.mockReturnValue(null);
 		const onConfirm = vi.fn();
 		render(<RefinedDraftReview {...baseProps} onConfirm={onConfirm} />);
@@ -196,25 +241,6 @@ describe("RefinedDraftReview — confirming and rejecting", () => {
 		);
 
 		expect(onConfirm).toHaveBeenCalledWith(null);
-	});
-
-	it("discards without reading the editor at all", async () => {
-		const onConfirm = vi.fn();
-		const onReject = vi.fn();
-		render(
-			<RefinedDraftReview
-				{...baseProps}
-				onConfirm={onConfirm}
-				onReject={onReject}
-			/>,
-		);
-
-		await userEvent.click(
-			screen.getByRole("button", { name: /discard refinement/i }),
-		);
-
-		expect(onReject).toHaveBeenCalledTimes(1);
-		expect(onConfirm).not.toHaveBeenCalled();
 	});
 
 	it("routes the review bar's own bulk actions to the same two decisions", async () => {
@@ -242,7 +268,26 @@ describe("RefinedDraftReview — confirming and rejecting", () => {
 		expect(onReject).toHaveBeenCalledTimes(1);
 	});
 
-	it("closes the keyboard while the save it started is in flight", () => {
+	it("discards without reading the editor at all", async () => {
+		const onConfirm = vi.fn();
+		const onReject = vi.fn();
+		render(
+			<RefinedDraftReview
+				{...baseProps}
+				onConfirm={onConfirm}
+				onReject={onReject}
+			/>,
+		);
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /discard refinement/i }),
+		);
+
+		expect(onReject).toHaveBeenCalledTimes(1);
+		expect(onConfirm).not.toHaveBeenCalled();
+	});
+
+	it("closes the keyboard and both decisions while the save is in flight", () => {
 		render(<RefinedDraftReview {...baseProps} isSaving />);
 
 		expect(fakeEditor.setEditable).toHaveBeenCalledWith(false);
@@ -250,6 +295,22 @@ describe("RefinedDraftReview — confirming and rejecting", () => {
 			screen.getByRole("button", {
 				name: /save as the working blog post/i,
 			}),
+		).toBeDisabled();
+		expect(
+			screen.getByRole("button", { name: /discard refinement/i }),
+		).toBeDisabled();
+	});
+
+	it("closes both decisions while the discard it started is in flight", () => {
+		render(<RefinedDraftReview {...baseProps} isRejecting />);
+
+		expect(
+			screen.getByRole("button", {
+				name: /save as the working blog post/i,
+			}),
+		).toBeDisabled();
+		expect(
+			screen.getByRole("button", { name: /discard refinement/i }),
 		).toBeDisabled();
 	});
 });

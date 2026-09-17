@@ -1,10 +1,10 @@
 "use client";
 
 /**
- * The review surface for a REFINED draft — the result of "Refine with AI"
- * shown as a diff against the text it was built from.
+ * The review surface for a refinement PROPOSAL — the result of "Refine with
+ * AI" shown as a diff against the working draft it revises.
  *
- * A refinement and a regeneration arrive through the same channel and used to
+ * A refinement and a regeneration used to arrive through the same channel and
  * render the same way: a new candidate in a column beside the working draft,
  * two blocks of plain prose with nothing saying what moved. For a regeneration
  * that is honest — it is a different draft, written from the planning analysis,
@@ -25,29 +25,37 @@
  * The document editors already had this surface. `diffPartialText` emits marker
  * tokens (not HTML) so the surrounding markdown still parses; `fromMarkdown`
  * turns them into the `<ins class="diff-ins">` / `<del class="diff-del">` that
- * `advancedExtensions` binds as `diffInsert` / `diffDelete` marks; and
- * `DiffReviewBar` walks those marks with per-change accept/reject plus the two
- * bulk actions. `PlanningAnalysisEditor` wires the same three parts the same
- * way — this is that wiring over a plain saved body instead of a TipTap
- * document.
+ * `advancedExtensions` binds as `diffInsert` / `diffDelete` marks.
+ * `PlanningAnalysisEditor` wires the same parts the same way — this is that
+ * wiring over a plain saved body instead of a TipTap document.
  *
- * `isComplete: true` on the diff, as `VersionDiffViewer` passes it: the refined
- * draft arrives whole, and the streaming branch would truncate the baseline to
- * the proposal's length and skip the markdown normalization that keeps
+ * `isComplete: true` on the diff, as `VersionDiffViewer` passes it: the
+ * proposal arrives whole, and the streaming branch would truncate the baseline
+ * to the proposal's length and skip the markdown normalization that keeps
  * formatting artifacts from reading as changes.
  *
- * ## What accepting does
+ * ## What accepting writes, and why the document is editable
  *
- * It writes the WORKING DRAFT, through the panel's own save mutation, and that
- * is deliberate rather than incidental: per-change accept/reject produces a
- * document that is neither the saved text nor the candidate, and exists only in
- * this editor. `adopt` cannot express it — it names a candidate id for the
- * server to read the text from — so the merged document has to travel as a
- * body, which is what `save…Body` takes.
+ * `DiffReviewBar` walks the `diffInsert` / `diffDelete` marks with per-change
+ * accept/reject plus the two bulk actions, mutating this document in place —
+ * so what a reader confirms is usually neither the saved text nor the whole
+ * proposal. `acceptRefinement` takes that merge as an optional `body` and
+ * writes it, falling back to the proposal it stored when none is sent.
  *
- * Rejecting writes NOTHING. The candidate is still there afterwards, rendered
- * the ordinary way, so a reader who changes their mind can still adopt it
- * wholesale from the version list.
+ * That is not a hole in the rule the refine path holds. A caller may not
+ * supply the text a GENERATION runs on — `startRefinement` reads the body
+ * server-side precisely so nobody can put text of their choosing into a run
+ * attributed to the organization's key. Nothing here reaches a model: it is a
+ * person saving what they just reviewed over their own draft, which is what
+ * `save…Body` already accepts from the same caller, under the same permission
+ * and the same `expectedUpdatedAt` compare-and-set. Accepting still requires a
+ * live READY proposal, and the revision the server appends in the same
+ * transaction records the text that was actually saved rather than the one
+ * that was offered.
+ *
+ * The merged document travels as `string | null`, where `null` means the
+ * serialization FAILED and never an empty document — Fizzy #1987: a caller
+ * that wrote `""` as a body destroyed the draft it was trying to save.
  */
 
 import { DiffPreviewPanes } from "@saas/projects/components/DiffPreviewPanes";
@@ -66,54 +74,73 @@ import { useEffect } from "react";
 // so without the import the marks are in the document and invisible — a review
 // nobody can see.
 import "../DocumentEditor.css";
+import { GeneralizationNotes } from "./GeneralizationNotes";
 
 interface RefinedDraftReviewProps {
-	/**
-	 * The candidate under review. Not rendered — it is the identity the editor
-	 * is keyed on, so a second refinement landing while the first is open
-	 * reseeds the document instead of leaving the old diff on screen.
-	 */
-	draftId: string;
-	/** The saved text the refinement was built from, and is diffed against. */
+	/** The saved text the proposal was built from, and is diffed against. */
 	baseline: string;
-	/** The refined text, as the candidate holds it. */
+	/** The refined text, as the working draft row holds it. */
 	proposed: string;
-	/** The candidate's version, for the heading. `null` when unknown. */
-	version: number | null;
 	/** What the author asked for on this run, when the row recorded it. */
 	instruction: string | null;
+	/**
+	 * The revision's own safety note, when it carried one.
+	 *
+	 * Rendered BESIDE the proposal rather than instead of it. Where the
+	 * author's instruction ran into an unresolved approval, this is the only
+	 * place the revision says so — without it a declined instruction looks
+	 * exactly like an ignored one.
+	 */
+	note: string | null;
 	/** The content type in prose — "blog post", "LinkedIn post". */
 	label: string;
 	/**
-	 * The merged document, or `null` when serialization failed — the same
-	 * null-not-empty contract every save path in this repo treats as refusal.
-	 * Writing `null` as a body would destroy the draft.
+	 * Save the reviewed document as the working draft.
+	 *
+	 * `null` when serialization failed — the same null-not-empty contract every
+	 * save path in this repo treats as refusal. Writing `null` as a body would
+	 * destroy the draft.
 	 */
 	onConfirm: (merged: string | null) => void;
-	/** Leave the saved draft exactly as it is and close the review. */
+	/** Discard the proposal. The saved draft is untouched either way. */
 	onReject: () => void;
-	/** A save is in flight: the document is about to be replaced. */
+	/** An accept is in flight: the saved body is about to be replaced. */
 	isSaving: boolean;
+	/** A discard is in flight. */
+	isRejecting?: boolean;
 }
 
 export function RefinedDraftReview(props: RefinedDraftReviewProps) {
 	// Keyed HERE rather than at each of the seven call sites. `useEditor` seeds
-	// its document on mount and never re-syncs, so a review whose candidate
+	// its document on mount and never re-syncs, so a review whose proposal
 	// changed without a remount shows the previous diff over the previous text
 	// — and a key forgotten on one panel of seven is exactly the kind of bug
 	// that ships. One place to get it right.
-	return <RefinementEditor key={props.draftId} {...props} />;
+	//
+	// Keyed on the two texts rather than on an id, because the proposal has no
+	// id of its own — it is columns on the working draft, not a row — and
+	// because BOTH sides can move: a second refinement changes `proposed`, and
+	// an edit to the saved draft changes `baseline` under a proposal that is
+	// still on screen. The document is derived from exactly this pair, so the
+	// pair is its identity.
+	return (
+		<RefinementEditor
+			key={`${props.baseline}␟${props.proposed}`}
+			{...props}
+		/>
+	);
 }
 
 function RefinementEditor({
 	baseline,
 	proposed,
-	version,
 	instruction,
+	note,
 	label,
 	onConfirm,
 	onReject,
 	isSaving,
+	isRejecting = false,
 }: RefinedDraftReviewProps) {
 	const editor = useEditor({
 		extensions: advancedExtensions,
@@ -140,6 +167,8 @@ function RefinementEditor({
 		showDiffPreviewPanes,
 	} = useDiffPreview(editor, true);
 
+	const isBusy = isSaving || isRejecting;
+
 	// Reads the editor at the moment of the press, never a captured value: the
 	// document has been mutated in place by every per-change accept and reject
 	// since it was seeded, and by anything typed into it.
@@ -148,15 +177,23 @@ function RefinementEditor({
 	return (
 		<section className="space-y-2" data-testid="refined-draft-review">
 			<div className="space-y-1">
-				<h3 className="publishing-label">
-					Refined draft
-					{version !== null ? ` (version ${version})` : ""}
-				</h3>
+				<h3 className="publishing-label">Refined draft</h3>
 				<p className="text-muted-foreground text-xs leading-relaxed">
 					{instruction ? `You asked for: “${instruction}”. ` : null}
 					{`Shown against the ${label} you have saved — struck-through text goes, underlined text arrives. Accept the changes you want, then save. Nothing is saved until you do.`}
 				</p>
 			</div>
+
+			{/* The revision's own account of what it wrote around, which is a
+			    different note from the one describing the candidate this draft
+			    was adopted from. Above the diff, because it can say that the
+			    instruction the reader is about to check for was declined. */}
+			{note ? (
+				<GeneralizationNotes
+					heading="What this refinement wrote around"
+					note={note}
+				/>
+			) : null}
 
 			<div
 				className={cn(
@@ -225,7 +262,7 @@ function RefinementEditor({
 						type="button"
 						size="sm"
 						onClick={confirm}
-						disabled={isSaving}
+						disabled={isBusy}
 					>
 						{isSaving ? (
 							<Loader2Icon
@@ -245,7 +282,7 @@ function RefinementEditor({
 						variant="ghost"
 						size="sm"
 						onClick={onReject}
-						disabled={isSaving}
+						disabled={isBusy}
 					>
 						<XIcon className="mr-2 size-4" aria-hidden="true" />
 						Discard refinement

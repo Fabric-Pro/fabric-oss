@@ -1880,6 +1880,20 @@ export async function acceptRefinement(input: {
 	acceptedById: string;
 	/** The row's `updatedAt` as the accepting client last saw it. */
 	expectedUpdatedAt: Date;
+	/**
+	 * The REVIEWED text, when the reviewer resolved the proposal change by
+	 * change instead of taking it whole. Absent means "write the proposal as
+	 * stored", which is what accepting every change amounts to.
+	 *
+	 * Not a way around the rule that the client may not supply the text a
+	 * generation runs on — `readRefinementSource` reads that server-side and
+	 * still does. This is the text a person reviewed and is saving over their
+	 * own draft, which is exactly what `updateWorkingDraftBody` already accepts
+	 * from the same caller under the same permission and the same
+	 * compare-and-set. What it cannot do is reach this write without a live
+	 * READY proposal: the guard below runs first either way.
+	 */
+	body?: string | null;
 }): Promise<AcceptRefinementResult> {
 	return db.$transaction(async (tx) => {
 		const tenant = await lockProjectTenant(
@@ -1921,10 +1935,24 @@ export async function acceptRefinement(input: {
 			return { status: "baseline_changed" as const };
 		}
 
+		// What actually gets written: the reviewer's merge when they made one,
+		// the proposal as stored otherwise.
+		//
+		// A whitespace-only merge falls back rather than being written, which
+		// is unreachable through the API — the procedure refuses one — and
+		// deliberate defence in depth all the same: Fizzy #1987 is the case
+		// where an empty body reached a save path and destroyed the draft it
+		// was meant to write. The same rule `startRefinement` applies when it
+		// finds nothing to refine.
+		const accepted =
+			input.body != null && input.body.trim() !== ""
+				? input.body
+				: proposed;
+
 		const written = await tx.publishingTopicWorkingDraft.updateMany({
 			where: { id: current.id, updatedAt: input.expectedUpdatedAt },
 			data: {
-				body: proposed,
+				body: accepted,
 				updatedById: input.acceptedById,
 				// The proposal is spent. Cleared in the same statement that
 				// consumes it, so there is no state in which the body is
@@ -1984,7 +2012,10 @@ export async function acceptRefinement(input: {
 			projectId: input.projectId,
 			postType: input.postType,
 			tenant,
-			body: proposed,
+			// The text that was SAVED, which is the merge when there was one.
+			// A revision holding the proposal while the row holds the merge
+			// would make the history a record of something nobody accepted.
+			body: accepted,
 			kind: "REFINED",
 			sourceDraftVersion: sourceVersion,
 			authorUserId: input.acceptedById,
