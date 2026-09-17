@@ -15,11 +15,12 @@ import {
 	ScissorsIcon,
 	SparklesIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { CopyDraftButton } from "./CopyDraftButton";
 import { DraftDownloadDropdown } from "./DraftDownloadDropdown";
 import { DraftLockBanner, useDraftEditLock } from "./DraftEditLock";
+import { DraftRefinementReview, useDraftRefinement } from "./DraftRefinement";
 import { DraftVersions } from "./DraftVersions";
 import { FEED_FOLD_ESTIMATE, splitAtFeedFold } from "./feed-fold";
 import { GeneralizationNotes } from "./GeneralizationNotes";
@@ -189,42 +190,36 @@ export function LinkedInPostPanel({
 	const isGenerating = attempt?.status === "GENERATING" && !isStranded;
 
 	/**
-	 * This tab pressed Refine, and the run it started has not come back.
+	 * The refinement proposal for this content type, and the three mutations
+	 * that drive it.
 	 *
-	 * The pending state used to live only in the drafts section further down the
-	 * page, wording itself around the run that writes candidates. Refine is
-	 * submitted from the working draft's own action row and CLOSES its popover on
-	 * submit, so pressing it left that row looking exactly as it had a moment
-	 * before — no spinner, no sentence, nothing to distinguish a run in flight
-	 * from a click that missed.
-	 *
-	 * Local state, legitimately: it records what THIS tab just did rather than a
-	 * fact about the topic. A reload drops it back to the neutral line in the
-	 * drafts section, which is still true — the cost of being wrong here is a
-	 * less specific sentence, never a false one.
-	 *
-	 * NOT combined with `isGenerating` at the point of use. The mutation resolves
-	 * before the invalidated query returns a GENERATING row, and a conjunction
-	 * blinks off for exactly that window — reproducing the "nothing is happening"
-	 * this indicator exists to answer.
+	 * A refinement no longer writes a draft row, so NOTHING about it can be
+	 * read off `attempt`: there is no GENERATING attempt to watch, no falling
+	 * edge to clear a local flag on, and no candidate to adopt. It also stops
+	 * being a run that produces OPTIONS — the generation schema requires three
+	 * distinct ones, which is why asking to cut a line used to come back as
+	 * three rewrites. One revision of the saved text, reviewed as a diff.
 	 */
-	const [refineInFlight, setRefineInFlight] = useState(false);
-
-	/**
-	 * Cleared on the FALLING EDGE of the run, never on the mere absence of one.
-	 *
-	 * The flag is set before a row exists to observe, so clearing whenever
-	 * nothing is generating would clear it in the same breath it was set. A
-	 * stranded run still clears this: `isStranded` flips `isGenerating` false
-	 * once the deadline passes, which is the edge below.
-	 */
-	const wasGenerating = useRef(isGenerating);
-	useEffect(() => {
-		if (wasGenerating.current && !isGenerating) {
-			setRefineInFlight(false);
-		}
-		wasGenerating.current = isGenerating;
-	}, [isGenerating]);
+	const refinement = useDraftRefinement({
+		projectId,
+		topicId,
+		organizationId,
+		postType: "LINKEDIN_POST",
+		working,
+		label: "LinkedIn post",
+		// Accepting replaces the saved body, so unsaved typing in the
+		// editor is the one thing here a refresh cannot bring back.
+		// Asked in the same words the adopt path has always used.
+		confirmAccept: () =>
+			!isBodyDirty ||
+			window.confirm(
+				"Saving the refined LinkedIn post discards your unsaved edits. Continue?",
+			),
+		// The accepted text replaces what the editor was showing, so the
+		// local override goes with it — otherwise the next Save writes
+		// the old text back over the refinement just accepted.
+		onAccepted: () => setEditedBody(null),
+	});
 
 	const invalidateDrafts = () => {
 		void queryClient.invalidateQueries({
@@ -242,10 +237,6 @@ export function LinkedInPostPanel({
 				// Reporting either as an error would send the reader looking for
 				// a fault that is not theirs.
 				if (!result.started) {
-					// Nothing was started, so there is no run to report on. Left
-					// standing, the indicator would sit there until the next
-					// unrelated generation gave it a falling edge to clear on.
-					setRefineInFlight(false);
 					toast.info(
 						result.reason === "unavailable"
 							? "Generation is unavailable right now. Try again in a few minutes."
@@ -545,10 +536,7 @@ export function LinkedInPostPanel({
 												type="button"
 												variant="outline"
 												size="sm"
-												disabled={
-													isGenerating ||
-													generate.isPending
-												}
+												disabled={!refinement.canStart}
 											>
 												<PencilLineIcon
 													className="mr-2 size-4"
@@ -572,11 +560,13 @@ export function LinkedInPostPanel({
 													Starts from the LinkedIn
 													post you have saved and
 													changes only what you ask
-													for. The result arrives as a
-													new version to compare
-													against; nothing you have
-													saved changes until you
-													adopt it.
+													for. The result comes back
+													as a proposed revision of
+													that text, shown as a diff
+													you accept or discard — it
+													does not make a new version,
+													and nothing you have saved
+													changes until you accept it.
 												</p>
 											</div>
 											<Textarea
@@ -590,25 +580,15 @@ export function LinkedInPostPanel({
 												maxLength={GUIDANCE_MAX}
 												rows={3}
 												placeholder="Stronger opening line. Cut the middle. Less formal."
-												disabled={
-													isGenerating ||
-													generate.isPending
-												}
+												disabled={!refinement.canStart}
 											/>
 											<Button
 												type="button"
 												size="sm"
 												onClick={() => {
-													generate.mutate({
-														projectId,
-														topicId,
-														organizationId,
-														guidance:
-															refineInstruction.trim() ||
-															null,
-														refineFromWorkingDraft: true,
-													});
-													setRefineInFlight(true);
+													refinement.start(
+														refineInstruction,
+													);
 													setRefineOpen(false);
 												}}
 												// Required here where it is
@@ -621,12 +601,10 @@ export function LinkedInPostPanel({
 												// usefully do.
 												disabled={
 													!refineInstruction.trim() ||
-													isGenerating ||
-													generate.isPending
+													!refinement.canStart
 												}
 											>
-												{isGenerating ||
-												generate.isPending ? (
+												{refinement.isRunning ? (
 													<Loader2Icon
 														className="mr-2 size-4 motion-safe:animate-spin"
 														aria-hidden="true"
@@ -643,7 +621,7 @@ export function LinkedInPostPanel({
 									</Popover>
 									{/* The pending state where the press happened, rather than
 									    only in the drafts section further down. */}
-									{refineInFlight ? (
+									{refinement.isRunning ? (
 										<output className="flex items-center gap-2 text-muted-foreground text-sm">
 											<Loader2Icon
 												className="size-4 motion-safe:animate-spin"
@@ -692,6 +670,19 @@ export function LinkedInPostPanel({
 						) : null}
 					</div>
 				</section>
+			) : null}
+
+			{/* Directly under the draft it revises, because that is what it
+			    is about: a proposal to change the saved LinkedIn post, not a
+			    fourth option beside the three a generation produces. The
+			    candidates grid below is untouched by it. */}
+			{working?.hasBody ? (
+				<DraftRefinementReview
+					refinement={refinement}
+					baseline={working.body}
+					label="LinkedIn post"
+					canEdit={canEdit}
+				/>
 			) : null}
 
 			{/* Read-only here, deliberately. A short-form run produces

@@ -403,6 +403,64 @@ describe("acceptRefinement", () => {
 		});
 	});
 
+	it("writes the REVIEWED text when the reviewer resolved it change by change", async () => {
+		// The diff review mutates its document in place, so what comes back is
+		// usually neither the saved draft nor the whole proposal. Accepting has
+		// to write what the person actually approved.
+		h.workingFindFirst.mockResolvedValue(READY);
+		await acceptRefinement({
+			...SCOPE,
+			acceptedById: "user-1",
+			expectedUpdatedAt: SEEN,
+			body: "A partly revised draft.",
+		});
+
+		expect(writtenData().body).toBe("A partly revised draft.");
+		// The revision records what was SAVED. One holding the proposal while
+		// the row holds the merge would make the history a record of something
+		// nobody accepted.
+		expect(h.revisionCreate.mock.calls[0]?.[0]?.data).toMatchObject({
+			kind: "REFINED",
+			body: "A partly revised draft.",
+		});
+	});
+
+	it("still refuses a merge when no live proposal backs it", async () => {
+		// The guard that keeps this from becoming a general-purpose write path:
+		// a body may only ride in on the accept of a READY proposal.
+		h.workingFindFirst.mockResolvedValue({
+			...READY,
+			refinementStatus: "GENERATING",
+			refinedBody: null,
+		});
+
+		const result = await acceptRefinement({
+			...SCOPE,
+			acceptedById: "user-1",
+			expectedUpdatedAt: SEEN,
+			body: "Text with no proposal behind it.",
+		});
+
+		expect(result).toMatchObject({ status: "no_proposal" });
+		expect(h.workingUpdateMany).not.toHaveBeenCalled();
+	});
+
+	it("falls back to the proposal rather than writing a blank body", async () => {
+		// Unreachable through the API, which refuses a whitespace-only body,
+		// and deliberate defence in depth all the same: Fizzy #1987 is the case
+		// where an empty body reached a save path and destroyed the draft it
+		// was meant to write.
+		h.workingFindFirst.mockResolvedValue(READY);
+		await acceptRefinement({
+			...SCOPE,
+			acceptedById: "user-1",
+			expectedUpdatedAt: SEEN,
+			body: "   ",
+		});
+
+		expect(writtenData().body).toBe("A revised draft.");
+	});
+
 	it("refuses with baseline_changed when the body moved under the proposal", async () => {
 		// The distinction that matters: the caller's view is fine, the PROPOSAL
 		// is behind. Refreshing changes nothing — the refinement has to be run

@@ -711,12 +711,22 @@ export function TopicItemPage({
 			input: { projectId, topicId, organizationId },
 		}),
 		refetchInterval: (query) => {
-			const live = query.state.data?.drafts?.some(
+			const liveGeneration = query.state.data?.drafts?.some(
 				(d) =>
 					d.latestAttempt?.status === "GENERATING" &&
 					!d.latestAttempt.isExpired,
 			);
-			return live ? 3000 : false;
+			// A REFINEMENT is the second kind of run this query has to watch,
+			// and it leaves no draft row to watch it by: it lives on the
+			// working draft, so a predicate reading only `drafts` would never
+			// poll while one was running and the finished proposal would
+			// appear only on a manual refresh.
+			const liveRefinement = query.state.data?.workingDrafts?.some(
+				(w) =>
+					w.refinement?.status === "GENERATING" &&
+					!w.refinement.isExpired,
+			);
+			return liveGeneration || liveRefinement ? 3000 : false;
 		},
 	});
 

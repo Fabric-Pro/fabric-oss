@@ -476,6 +476,20 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					selectLinkedInPostOption: m(
 						"projects.publishingSuite.selectLinkedInPostOption",
 					),
+					// The refinement procedures, owned by ALL SEVEN panels
+					// rather than by one: a refinement does not vary by content
+					// type, so one set serves every tab. Same obligation as the
+					// entries around them — a missing one is
+					// `undefined.mutationOptions` inside the shared hook, which
+					// takes out every case in this file rather than one
+					// assertion.
+					refineDraft: m("projects.publishingSuite.refineDraft"),
+					acceptRefinement: m(
+						"projects.publishingSuite.acceptRefinement",
+					),
+					rejectRefinement: m(
+						"projects.publishingSuite.rejectRefinement",
+					),
 					// 2B-3's blog panel owns these three, and the warning above
 					// is not hypothetical: omitting them crashed every case in
 					// this file the moment the Blog Post tab stopped rendering

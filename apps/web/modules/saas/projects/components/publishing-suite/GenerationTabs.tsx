@@ -79,11 +79,67 @@ export interface TopicDraftState {
 	versions?: TopicDraftRow[];
 }
 
+/**
+ * The AI refinement PROPOSAL sitting beside a working draft, if any.
+ *
+ * The client mirror of the read path's `TopicRefinementState`. Nested rather
+ * than flattened onto the working draft, exactly as the query returns it and
+ * for the reason that docblock gives: the proposal is a unit, and flat fields
+ * would let a panel render `proposedBody` without ever having to notice
+ * `status` or `isStale`.
+ */
+export interface TopicRefinementState {
+	status: "GENERATING" | "READY" | "FAILED";
+	/** What the model proposed. Null while GENERATING and on FAILED. */
+	proposedBody: string | null;
+	/** What the author asked for. Null when the run carried no instruction. */
+	instruction: string | null;
+	/**
+	 * The revision's OWN safety note — what it generalized, what the
+	 * instruction asked for that it could not do. Null while GENERATING and on
+	 * FAILED.
+	 *
+	 * A different note from the one on `sourceContent`, which describes the
+	 * candidate the body was adopted from. Both can be on screen at once, and
+	 * they are about different documents.
+	 */
+	note: string | null;
+	/** Why it failed. Null unless `status` is FAILED. */
+	error: string | null;
+	requestedById: string | null;
+	/**
+	 * The proposal revises text that is no longer the saved body.
+	 *
+	 * Decides whether Accept may be OFFERED at all: `acceptRefinement` refuses
+	 * a stale proposal with `baseline_changed`, so a panel that showed the
+	 * button anyway would be offering an action guaranteed to fail.
+	 */
+	isStale: boolean;
+	/**
+	 * The run's deadline passed with nothing committed — stranded, not live.
+	 *
+	 * Fail-open: a proposal with no deadline recorded reads as expired rather
+	 * than as perpetually in progress, because the alternative is a spinner no
+	 * user action can clear. The next refine reclaims it.
+	 */
+	isExpired: boolean;
+	updatedAt: string | Date | null;
+}
+
 export interface TopicWorkingDraftState {
 	postType: PostType;
 	hasBody: boolean;
 	/** The saved draft text. Shared project content, not author-private. */
 	body: string;
+	/**
+	 * The refinement proposal for this content type, or null.
+	 *
+	 * Optional on the client only, for the reason `versions?` is: every panel
+	 * test fixture that predates the proposal path omits it, and a required
+	 * field would break all of them over something they have no opinion about.
+	 * Absent and null mean the same thing here — no proposal.
+	 */
+	refinement?: TopicRefinementState | null;
 	/**
 	 * Which candidate the body came from. Nullable: the composite FK is
 	 * `ON DELETE SET NULL ("sourceDraftId")`, so deleting a candidate keeps the

@@ -157,6 +157,35 @@ export const listTopicDraftsProcedure = tenantProtectedProcedure
 					 * shape is each content type's business.
 					 */
 					sourceContent: z.unknown(),
+					/**
+					 * The refinement proposal for this content type, or null.
+					 *
+					 * DECLARED HERE OR IT DOES NOT EXIST. oRPC validates the
+					 * response against this schema and zod strips what the
+					 * schema omits, so a field the query returns and the page
+					 * needs vanishes silently on the way out — no error, no
+					 * trace, the feature simply renders nothing. This file's
+					 * own header warns about that for `PostTypeSchema`; it
+					 * happened here, to `refinement`, and cost a staging cycle
+					 * with both halves green and neither joined.
+					 *
+					 * NESTED, matching the query, so a panel cannot read
+					 * `proposedBody` without meeting `status` and `isStale`
+					 * first.
+					 */
+					refinement: z
+						.object({
+							status: z.enum(["GENERATING", "READY", "FAILED"]),
+							proposedBody: z.string().nullable(),
+							instruction: z.string().nullable(),
+							note: z.string().nullable(),
+							error: z.string().nullable(),
+							requestedById: z.string().nullable(),
+							isStale: z.boolean(),
+							isExpired: z.boolean(),
+							updatedAt: z.date().nullable(),
+						})
+						.nullable(),
 					updatedAt: z.date(),
 				}),
 			),

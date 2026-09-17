@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +19,9 @@ const mutate = vi.hoisted(() => ({
 	generate: vi.fn(),
 	adopt: vi.fn(),
 	saveBody: vi.fn(),
+	refine: vi.fn(),
+	acceptRefinement: vi.fn(),
+	rejectRefinement: vi.fn(),
 	invalidate: vi.fn(),
 	toastInfo: vi.fn(),
 	toastError: vi.fn(),
@@ -34,6 +37,16 @@ const mutate = vi.hoisted(() => ({
 const captured = vi.hoisted(
 	() => ({}) as Record<string, Record<string, Function>>,
 );
+
+/**
+ * Which mutations report themselves as in flight, keyed by procedure.
+ *
+ * The refine pending line is driven by the START mutation as well as by the
+ * stored proposal — `refineDraft` writes no draft row, so between the press and
+ * the read reporting the claim there is nothing else to show. A flag per key is
+ * what lets a test stand in that gap.
+ */
+const pending = vi.hoisted(() => ({}) as Record<string, boolean>);
 
 vi.mock("sonner", () => ({
 	toast: {
@@ -56,11 +69,17 @@ vi.mock("@tanstack/react-query", () => ({
 			generateStakeholderEmail: mutate.generate,
 			adoptStakeholderEmailDraft: mutate.adopt,
 			saveStakeholderEmailBody: mutate.saveBody,
+			refineDraft: mutate.refine,
+			acceptRefinement: mutate.acceptRefinement,
+			rejectRefinement: mutate.rejectRefinement,
 		};
 		// The advisory draft lock fires two mutations this suite does not
 		// assert on. A missing entry must be a no-op rather than `undefined`,
 		// which the hook would then call.
-		return { mutate: byKey[key] ?? noopMutate, isPending: false };
+		return {
+			mutate: byKey[key] ?? noopMutate,
+			isPending: pending[key] ?? false,
+		};
 	},
 }));
 
@@ -96,6 +115,9 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					generateStakeholderEmail: m("generateStakeholderEmail"),
 					adoptStakeholderEmailDraft: m("adoptStakeholderEmailDraft"),
 					saveStakeholderEmailBody: m("saveStakeholderEmailBody"),
+					refineDraft: m("refineDraft"),
+					acceptRefinement: m("acceptRefinement"),
+					rejectRefinement: m("rejectRefinement"),
 				},
 			},
 		},
@@ -172,10 +194,10 @@ vi.mock(
 						type="button"
 						onClick={() => props.onConfirm("Merged review text.")}
 					>
-						stub confirm
+						stub accept
 					</button>
 					<button type="button" onClick={() => props.onConfirm(null)}>
-						stub confirm unreadable
+						stub accept unreadable
 					</button>
 					<button type="button" onClick={() => props.onReject()}>
 						stub reject
@@ -1171,7 +1193,7 @@ describe("StakeholderEmailPanel — refining the saved draft (Fizzy #1851, A7)",
 		expect(button).toBeEnabled();
 	});
 
-	it("sends the instruction with the refine flag, and no body", async () => {
+	it("starts a REFINEMENT, never a generation", async () => {
 		// The panel names the intent; the server reads the text it revises.
 		const user = userEvent.setup();
 		renderPanel({ working: working() });
@@ -1185,13 +1207,14 @@ describe("StakeholderEmailPanel — refining the saved draft (Fizzy #1851, A7)",
 			popover.getByRole("button", { name: /refine draft/i }),
 		);
 
-		expect(mutate.generate).toHaveBeenCalledWith({
+		expect(mutate.refine).toHaveBeenCalledWith({
 			projectId: "p1",
 			topicId: "t1",
 			organizationId: "org1",
-			guidance: "Warmer tone.",
-			refineFromWorkingDraft: true,
+			postType: "STAKEHOLDER_EMAIL",
+			instruction: "Warmer tone.",
 		});
+		expect(mutate.generate).not.toHaveBeenCalled();
 	});
 
 	it("keeps the refine instruction OUT of a regeneration", async () => {
@@ -1219,12 +1242,10 @@ describe("StakeholderEmailPanel — refining the saved draft (Fizzy #1851, A7)",
 		expect(mutate.generate).toHaveBeenCalledWith(
 			expect.objectContaining({ guidance: null }),
 		);
-		expect(mutate.generate).not.toHaveBeenCalledWith(
-			expect.objectContaining({ refineFromWorkingDraft: true }),
-		);
+		expect(mutate.refine).not.toHaveBeenCalled();
 	});
 
-	it("says the saved draft is safe until the result is adopted", async () => {
+	it("says what a refinement actually produces", async () => {
 		// The promise moved INTO the popover with the field it qualifies.
 		const user = userEvent.setup();
 		renderPanel({ working: working() });
@@ -1233,7 +1254,7 @@ describe("StakeholderEmailPanel — refining the saved draft (Fizzy #1851, A7)",
 
 		expect(
 			popover.getByText(
-				/nothing you have saved changes until you adopt/i,
+				/nothing you have saved changes until you accept it/i,
 			),
 		).toBeInTheDocument();
 	});
@@ -1323,231 +1344,6 @@ describe("StakeholderEmailPanel — whose draft the note describes (A6)", () => 
 });
 
 /**
- * Fizzy #1851 A7 gave the panel a "Refine with AI" action, and its result
- * landed as an ordinary candidate beside the working draft — two columns of
- * prose with nothing saying what moved. A refinement IS the saved draft with
- * the changes that were asked for, so the difference is the only thing worth
- * reading.
- *
- * The discriminator is the STORED row, not this tab's memory of having pressed
- * the button. A refinement takes minutes to arrive, and a reload in between
- * must not turn it back into an ordinary candidate.
- */
-describe("StakeholderEmailPanel — reviewing a refined draft", () => {
-	const REFINED = {
-		...DOCUMENT,
-		generation: {
-			refinedFromWorkingDraft: true,
-			guidance: "Make it shorter.",
-		},
-	};
-
-	it("opens the review against the draft the refinement was built from", () => {
-		renderPanel({ draft: readyDraft(REFINED, "d2"), working: working() });
-
-		expect(screen.getByTestId("refined-draft-review")).toBeInTheDocument();
-		expect(refinedReview.props).toMatchObject({
-			baseline: working().body,
-			instruction: "Make it shorter.",
-		});
-	});
-
-	it("leaves an ordinary regeneration as the plain comparison", () => {
-		// A candidate that was not asked for as a revision has no "before" to
-		// diff against — it is a different draft, not a changed one.
-		renderPanel({ draft: readyDraft(DOCUMENT, "d2"), working: working() });
-
-		expect(
-			screen.queryByTestId("refined-draft-review"),
-		).not.toBeInTheDocument();
-		expect(screen.getByText(/New candidate/i)).toBeInTheDocument();
-	});
-
-	it("writes the reviewed text to the WORKING draft, never the candidate", async () => {
-		renderPanel({ draft: readyDraft(REFINED, "d2"), working: working() });
-
-		await userEvent.click(
-			screen.getByRole("button", { name: /^stub confirm$/i }),
-		);
-
-		expect(mutate.saveBody).toHaveBeenCalledWith(
-			expect.objectContaining({
-				body: "Merged review text.",
-				expectedUpdatedAt: SAVED_AT,
-			}),
-		);
-		// Adopting names a candidate for the server to read the text from, so
-		// it cannot carry a partial merge. Reaching for it here would quietly
-		// save the whole refinement over the reader's per-change decisions.
-		expect(mutate.adopt).not.toHaveBeenCalled();
-	});
-
-	it("refuses to write a review the editor could not serialize", async () => {
-		// Fizzy #1987: `null` is a failed READ, not an empty document. Writing
-		// it as a body destroys the draft it was meant to save.
-		renderPanel({ draft: readyDraft(REFINED, "d2"), working: working() });
-
-		await userEvent.click(
-			screen.getByRole("button", { name: /stub confirm unreadable/i }),
-		);
-
-		expect(mutate.saveBody).not.toHaveBeenCalled();
-	});
-
-	it("leaves the saved draft untouched when the review is rejected", async () => {
-		renderPanel({ draft: readyDraft(REFINED, "d2"), working: working() });
-
-		await userEvent.click(
-			screen.getByRole("button", { name: /stub reject/i }),
-		);
-
-		expect(mutate.saveBody).not.toHaveBeenCalled();
-		expect(mutate.adopt).not.toHaveBeenCalled();
-		// Closed, not discarded: the candidate is still there and still
-		// adoptable the ordinary way.
-		expect(
-			screen.queryByTestId("refined-draft-review"),
-		).not.toBeInTheDocument();
-		expect(screen.getByText(/New candidate/i)).toBeInTheDocument();
-	});
-});
-
-/**
- * A refinement landing on top of typing nobody has saved yet.
- *
- * The refine round trip takes minutes, and the obvious thing to do while it
- * runs is keep editing. Confirming the review then writes over that text — the
- * one loss a refresh cannot undo — so it asks first, in the same words the
- * adopt path has always used. The review REPLACES the working editor while it
- * is open, so the sequence has to be typed first and refined second; that is
- * also the order it happens in.
- */
-describe("StakeholderEmailPanel — a refinement over unsaved typing", () => {
-	const REFINED = {
-		...DOCUMENT,
-		generation: {
-			refinedFromWorkingDraft: true,
-			guidance: "Make it shorter.",
-		},
-	};
-
-	async function typeThenRefine() {
-		const view = render(
-			<StakeholderEmailPanel
-				projectId="p1"
-				organizationId="org1"
-				topicId="t1"
-				draft={readyDraft(DOCUMENT, "d2") as never}
-				working={working() as never}
-				canEdit={true}
-			/>,
-		);
-		await userEvent.type(
-			screen.getByRole("textbox", { name: /working stakeholder email/i }),
-			" Still typing.",
-		);
-		view.rerender(
-			<StakeholderEmailPanel
-				projectId="p1"
-				organizationId="org1"
-				topicId="t1"
-				draft={readyDraft(REFINED, "d2") as never}
-				working={working() as never}
-				canEdit={true}
-			/>,
-		);
-		return view;
-	}
-
-	it("asks before discarding it, and writes nothing when told not to", async () => {
-		mutate.confirm.mockReturnValue(false);
-		await typeThenRefine();
-
-		await userEvent.click(
-			screen.getByRole("button", { name: /^stub confirm$/i }),
-		);
-
-		expect(mutate.confirm).toHaveBeenCalled();
-		expect(mutate.saveBody).not.toHaveBeenCalled();
-	});
-
-	it("writes once the reader accepts losing it", async () => {
-		// The negative control for the case above: proves the refusal there
-		// came from the answer, not from some other reason this path cannot
-		// fire.
-		mutate.confirm.mockReturnValue(true);
-		await typeThenRefine();
-
-		await userEvent.click(
-			screen.getByRole("button", { name: /^stub confirm$/i }),
-		);
-
-		expect(mutate.saveBody).toHaveBeenCalledWith(
-			expect.objectContaining({ body: "Merged review text." }),
-		);
-	});
-});
-
-/**
- * Where the pending state lives.
- *
- * Reported from staging: pressing Refine "reads as nothing happening". The
- * popover closes on submit and the only feedback was a line in the drafts
- * section further down the page, wording itself around the run that writes
- * candidates — so the row the reader had just clicked in looked untouched.
- */
-describe("StakeholderEmailPanel — the refine pending state", () => {
-	async function submitRefine() {
-		const user = userEvent.setup();
-		renderPanel({ draft: readyDraft(), working: working() as never });
-
-		await user.click(
-			screen.getByRole("button", { name: /refine with ai/i }),
-		);
-		const popover = within(await screen.findByRole("dialog"));
-		await user.type(
-			popover.getByRole("textbox", { name: /refine the saved draft/i }),
-			"Remove the last line.",
-		);
-		await user.click(
-			popover.getByRole("button", { name: /refine draft/i }),
-		);
-	}
-
-	it("says nothing until a refine is actually submitted", () => {
-		renderPanel({ draft: readyDraft(), working: working() as never });
-
-		expect(screen.queryByRole("status")).not.toBeInTheDocument();
-	});
-
-	it("reports the run beside the control that started it", async () => {
-		await submitRefine();
-
-		// By ROLE, not by position: what the complaint was about is that the
-		// row the reader clicked in reported nothing at all.
-		expect(screen.getByRole("status")).toHaveTextContent(
-			/revising your saved stakeholder email/i,
-		);
-	});
-
-	it("stops reporting when the server says nothing was started", async () => {
-		// Temporal down, or a run this tab has not seen already filling the
-		// row. There is no run to report on, and left standing the indicator
-		// would wait for an unrelated generation to end before clearing.
-		await submitRefine();
-
-		act(() => {
-			captured.generateStakeholderEmail.onSuccess({
-				started: false,
-				reason: "unavailable",
-			});
-		});
-
-		expect(screen.queryByRole("status")).not.toBeInTheDocument();
-	});
-});
-
-/**
  * Which AI does what.
  *
  * The AI Assistant rail stays docked on this tab and greets a reader with an
@@ -1579,5 +1375,317 @@ describe("StakeholderEmailPanel — the assistant boundary", () => {
 		expect(
 			screen.queryByText(/refine with ai is what edits/i),
 		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * A refinement is a PROPOSAL about the working copy, and the panel reads it off
+ * the working draft rather than off a candidate row.
+ *
+ * The discriminator is the STORED proposal, never this tab's memory of having
+ * pressed the button: a refinement takes minutes, and a reload in between must
+ * bring the review back rather than lose it.
+ */
+describe("StakeholderEmailPanel — reviewing a refinement proposal", () => {
+	const PROPOSED = "Builds are faster. Here is what changed.";
+	const SAVED = new Date("2026-09-01T12:00:00Z");
+
+	const saved = {
+		postType: "STAKEHOLDER_EMAIL" as const,
+		hasBody: true,
+		body: "Builds are faster, and here is what changed.",
+		sourceDraftId: "d1",
+		sourceOptionLabel: null,
+		sourceContent: null,
+		updatedAt: SAVED,
+	};
+
+	/** READY by default — the one state with something to review. */
+	function proposal(over: Record<string, unknown> = {}) {
+		return {
+			status: "READY" as const,
+			proposedBody: PROPOSED,
+			instruction: "Make it shorter.",
+			note: null,
+			error: null,
+			requestedById: "u1",
+			isStale: false,
+			isExpired: false,
+			updatedAt: new Date("2026-09-01T12:05:00Z"),
+			...over,
+		};
+	}
+
+	function withProposal(over: Record<string, unknown> = {}) {
+		return { ...saved, refinement: proposal(over) };
+	}
+
+	it("opens the review against the draft the proposal revises", () => {
+		renderPanel({ working: withProposal() });
+
+		expect(screen.getByTestId("refined-draft-review")).toBeInTheDocument();
+		expect(refinedReview.props).toMatchObject({
+			baseline: saved.body,
+			proposed: PROPOSED,
+			instruction: "Make it shorter.",
+		});
+	});
+
+	it("carries the revision's own safety note into the review", () => {
+		// The author gave an explicit instruction. Where an unresolved approval
+		// forced the model to write around it, this note is the only place the
+		// revision says so — without it a declined instruction is
+		// indistinguishable from an ignored one.
+		renderPanel({
+			working: withProposal({
+				note: "Left the customer unnamed — that approval is still open.",
+			}),
+		});
+
+		expect(refinedReview.props).toMatchObject({
+			note: "Left the customer unnamed — that approval is still open.",
+		});
+	});
+
+	it("shows no review when there is no proposal", () => {
+		renderPanel({ working: saved });
+
+		expect(
+			screen.queryByTestId("refined-draft-review"),
+		).not.toBeInTheDocument();
+	});
+
+	it("accepts the proposal server-side, with the BODY's concurrency token", async () => {
+		renderPanel({ working: withProposal() });
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /^stub accept$/i }),
+		);
+
+		expect(mutate.acceptRefinement).toHaveBeenCalledWith({
+			projectId: "p1",
+			topicId: "t1",
+			organizationId: "org1",
+			postType: "STAKEHOLDER_EMAIL",
+			// The working draft's `updatedAt`, never the proposal's own — the
+			// server compare-and-sets against the row it is replacing.
+			expectedUpdatedAt: SAVED,
+			// The REVIEWED text, which after per-change accepts and rejects is
+			// usually neither the saved draft nor the whole proposal. The
+			// server writes this in place of the proposal it stored.
+			body: "Merged review text.",
+		});
+		expect(mutate.saveBody).not.toHaveBeenCalled();
+		expect(mutate.adopt).not.toHaveBeenCalled();
+	});
+
+	it("refuses to send a review the editor could not serialize", async () => {
+		// Fizzy #1987: `null` is a failed READ, not an empty document. Sent as a
+		// body it would be written, and the draft it was meant to save is gone.
+		renderPanel({ working: withProposal() });
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /stub accept unreadable/i }),
+		);
+
+		expect(mutate.acceptRefinement).not.toHaveBeenCalled();
+	});
+
+	it("discards the proposal on the server, writing nothing else", async () => {
+		renderPanel({ working: withProposal() });
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /stub reject/i }),
+		);
+
+		expect(mutate.rejectRefinement).toHaveBeenCalledWith({
+			projectId: "p1",
+			topicId: "t1",
+			organizationId: "org1",
+			postType: "STAKEHOLDER_EMAIL",
+		});
+		expect(mutate.acceptRefinement).not.toHaveBeenCalled();
+		expect(mutate.saveBody).not.toHaveBeenCalled();
+		expect(mutate.adopt).not.toHaveBeenCalled();
+	});
+
+	it("gives a viewer no review at all", () => {
+		// Every decision it offers is a write.
+		renderPanel({ working: withProposal(), canEdit: false });
+
+		expect(
+			screen.queryByTestId("refined-draft-review"),
+		).not.toBeInTheDocument();
+	});
+
+	it("reports a failure in the run's own words, and offers a way out", async () => {
+		renderPanel({
+			working: withProposal({
+				status: "FAILED",
+				proposedBody: null,
+				error: "The model returned nothing usable.",
+			}),
+		});
+
+		expect(
+			screen.getByText(/the model returned nothing usable/i),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByTestId("refined-draft-review"),
+		).not.toBeInTheDocument();
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /discard refinement/i }),
+		);
+		expect(mutate.rejectRefinement).toHaveBeenCalled();
+	});
+
+	it("reports a STRANDED run rather than showing a spinner forever", async () => {
+		// `isExpired` is fail-open on purpose: a proposal whose deadline is
+		// unrecorded reads as stranded rather than as perpetually in flight,
+		// because the alternative is a state no user action can clear.
+		renderPanel({
+			working: withProposal({
+				status: "GENERATING",
+				proposedBody: null,
+				isExpired: true,
+			}),
+		});
+
+		expect(
+			screen.getByText(/didn't report back within its time limit/i),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /discard refinement/i }),
+		);
+		expect(mutate.rejectRefinement).toHaveBeenCalled();
+	});
+
+	it("leaves Refine startable after a stranded run", () => {
+		// The only code that reclaims an abandoned proposal runs inside the
+		// NEXT refine, so a disabled button here locks the panel for good.
+		renderPanel({
+			working: withProposal({
+				status: "GENERATING",
+				proposedBody: null,
+				isExpired: true,
+			}),
+		});
+
+		expect(
+			screen.getByRole("button", { name: /refine with ai/i }),
+		).toBeEnabled();
+	});
+
+	it("refuses to offer Accept for a proposal whose baseline moved", async () => {
+		// `acceptRefinement` answers `baseline_changed` here, so offering the
+		// button would be offering an action guaranteed to fail.
+		renderPanel({ working: withProposal({ isStale: true }) });
+
+		expect(
+			screen.queryByTestId("refined-draft-review"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByText(/changed after this refinement was computed/i),
+		).toBeInTheDocument();
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /discard refinement/i }),
+		);
+		expect(mutate.rejectRefinement).toHaveBeenCalled();
+	});
+
+	it("asks before an accept discards unsaved typing", async () => {
+		// Accepting REPLACES the saved body, and unsaved editor text is the one
+		// thing here no refresh brings back.
+		mutate.confirm.mockReturnValue(false);
+		const user = userEvent.setup();
+		renderPanel({ working: withProposal() });
+
+		await user.type(
+			screen.getByRole("textbox", { name: /working stakeholder email/i }),
+			" Still typing.",
+		);
+		await user.click(
+			screen.getByRole("button", { name: /^stub accept$/i }),
+		);
+
+		expect(mutate.confirm).toHaveBeenCalled();
+		expect(mutate.acceptRefinement).not.toHaveBeenCalled();
+	});
+
+	it("does not ask at all when there is nothing unsaved to lose", async () => {
+		renderPanel({ working: withProposal() });
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /^stub accept$/i }),
+		);
+
+		expect(mutate.confirm).not.toHaveBeenCalled();
+		expect(mutate.acceptRefinement).toHaveBeenCalled();
+	});
+});
+
+/**
+ * Where the pending state lives.
+ *
+ * Reported from staging: pressing Refine "reads as nothing happening". A
+ * refinement writes no draft row, so it has to be reported from the proposal
+ * itself and from the start mutation — the two together are what make the row
+ * the reader clicked in say something.
+ */
+describe("StakeholderEmailPanel — the refine pending state", () => {
+	const saved = {
+		postType: "STAKEHOLDER_EMAIL" as const,
+		hasBody: true,
+		body: "Builds are faster, and here is what changed.",
+		sourceDraftId: "d1",
+		sourceOptionLabel: null,
+		sourceContent: null,
+		updatedAt: new Date("2026-09-01T12:00:00Z"),
+	};
+
+	const running = {
+		...saved,
+		refinement: {
+			status: "GENERATING" as const,
+			proposedBody: null,
+			instruction: "Make it shorter.",
+			note: null,
+			error: null,
+			requestedById: "u1",
+			isStale: false,
+			isExpired: false,
+			updatedAt: new Date("2026-09-01T12:05:00Z"),
+		},
+	};
+
+	it("says nothing when no refinement is running", () => {
+		renderPanel({ working: saved });
+
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+
+	it("reports a run in flight beside the control that started it", () => {
+		// Read off the STORED proposal, so a reload while it runs still shows
+		// it. The old flag lived in this tab's memory and a refresh lost it.
+		renderPanel({ working: running });
+
+		expect(screen.getByRole("status")).toHaveTextContent(
+			/revising your saved stakeholder email/i,
+		);
+	});
+
+	it("reports the press itself, before the read has caught up", () => {
+		// Between the claim landing and the next read there is nothing on the
+		// topic to show — which is exactly the window the complaint was about.
+		pending.refineDraft = true;
+		renderPanel({ working: saved });
+
+		expect(screen.getByRole("status")).toHaveTextContent(
+			/revising your saved stakeholder email/i,
+		);
 	});
 });

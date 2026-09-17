@@ -36,6 +36,10 @@ import {
 	rejectRefinement,
 	startRefinement,
 } from "@repo/database";
+import {
+	WORKING_DRAFT_BODY_MAX,
+	WORKING_DRAFT_BODY_MAX_ANY,
+} from "@repo/utils/publishing-working-draft-limits";
 import { z } from "zod";
 import {
 	Permissions,
@@ -262,10 +266,53 @@ export const acceptRefinementProcedure = tenantProtectedProcedure
 			 * allowed to skip the check.
 			 */
 			expectedUpdatedAt: z.coerce.date(),
+			/**
+			 * The REVIEWED text, when the reviewer resolved the proposal change
+			 * by change rather than taking it whole.
+			 *
+			 * Omitted means "the proposal as stored", which is what accepting
+			 * every change amounts to and what the diff review sends when
+			 * nothing was rejected.
+			 *
+			 * This does NOT weaken the rule the refine path holds: a caller may
+			 * not supply the text a GENERATION runs on, because that would put
+			 * text of their choosing into a run attributed to the
+			 * organization's key — which is why `startRefinement` reads the
+			 * body server-side. Here the text is not going to a model. It is a
+			 * person saving what they just reviewed over their own draft, under
+			 * the permission and the compare-and-set that
+			 * `save…Body` already accepts exactly this field under.
+			 *
+			 * `.regex(/\S/)` rather than a `.refine()`, following
+			 * `answerBodySchema`: a refinement is invisible in the published
+			 * OpenAPI document, while a regex check becomes a `pattern` that
+			 * reaches API consumers. `.min(1)` alone accepts `"   "`.
+			 */
+			body: z
+				.string()
+				.min(1)
+				.max(WORKING_DRAFT_BODY_MAX_ANY)
+				.regex(/\S/, {
+					message: "A reviewed draft cannot be only whitespace.",
+				})
+				.optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
 		await assertPublishingSuiteFeatureEnabled(input.projectId);
+
+		// The per-type ceiling, checked here because the schema's bound has to
+		// be static and these differ by an order of magnitude — a tweet's 2,000
+		// against a blog post's 40,000. Enforced against the SAME map the
+		// refinement's own output schema reads, so a proposal the model was
+		// allowed to write is never one this endpoint refuses to save: that
+		// disagreement is precisely the 5,000-character refined tweet bug.
+		const bodyMax = WORKING_DRAFT_BODY_MAX[input.postType];
+		if (input.body !== undefined && input.body.length > bodyMax) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: `A ${input.postType} draft cannot exceed ${bodyMax} characters.`,
+			});
+		}
 
 		const project = await requireEligibleProjectForTopic({
 			projectId: input.projectId,
@@ -278,6 +325,7 @@ export const acceptRefinementProcedure = tenantProtectedProcedure
 			postType: input.postType,
 			acceptedById: context.user.id,
 			expectedUpdatedAt: input.expectedUpdatedAt,
+			body: input.body,
 		});
 
 		if (accepted.status === "project_ineligible") {
