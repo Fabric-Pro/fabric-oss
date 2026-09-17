@@ -887,7 +887,9 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		name: "fabric_list_project_instructions",
 		description:
 			"Lists the coding instructions published for a project: the skills, agents, rules, entry files (CLAUDE.md, AGENTS.md), settings, scripts and knowledge docs a coding agent should follow on this project. " +
-			"Returns each file's path, kind, name, description and size. Read one with fabric_get_project_instruction; fetch everything as a zip with fabric_get_project_instruction_bundle.",
+			"Returns each file's path, kind, name, description and size. Call this to browse or search the published files before reading one with fabric_get_project_instruction; for a whole install use fabric_get_project_instruction_bundle instead. " +
+			"Project responses (fabric_get_project, fabric_list_projects) carry codingInstructions.published and the current digest, so you can skip this when nothing is published. " +
+			"Pass sinceDigest (the digest you last saw) to have the added/removed/changed paths reported alongside the usual file list; only a digest that still matches short-circuits, answering unchanged:true with no file list at all. changes:null means that digest is unknown here, so treat the list you got as a full refresh.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -911,6 +913,13 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					description:
 						"Case-insensitive match on path, name or description",
 				},
+				sinceDigest: {
+					type: "string",
+					description:
+						"The snapshot digest you last saw. An unchanged digest is answered without the file list; a changed one adds the changed paths to it.",
+					minLength: 1,
+					maxLength: 128,
+				},
 			},
 			required: ["projectId"],
 		},
@@ -920,7 +929,9 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_project_instruction",
 		description:
-			"Reads one published coding-instruction file by its path (from fabric_list_project_instructions). Text bodies are paged, never silently cut: when 'truncated' is true, call again with 'offset' set to 'nextOffset'. " +
+			"Reads one published coding-instruction file by its path (from fabric_list_project_instructions). " +
+			"Use this to read a single skill, rule or agent; for the whole tree use fabric_get_project_instruction_bundle. " +
+			"Text bodies are paged, never silently cut: when 'truncated' is true, call again with 'offset' set to 'nextOffset'. " +
 			"Binary files return a short-lived 'url' instead of a body. Scripts and settings are returned as text for reading only; Fabric never runs them.",
 		inputSchema: {
 			type: "object",
@@ -956,11 +967,19 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		name: "fabric_get_project_instruction_bundle",
 		description:
 			"Returns the manifest of the published coding instructions (snapshot id, version, digest, every file's path, sha256 and mode) and a short-lived URL to a zip of the whole approved tree, so a local agent or the Fabric CLI can install or refresh it in one call. " +
-			"Compare 'digest' with the one you last installed to skip an unchanged snapshot.",
+			"Call this at the start of work on a project whose codingInstructions.published is true. " +
+			"Pass sinceDigest (the digest you last installed) to have the added/removed/changed paths reported alongside the usual manifest and zip URL; only a digest that still matches short-circuits, answering unchanged:true with no manifest and no zip URL. changes:null means that digest is unknown here, so install the whole tree.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: { type: "string", description: "Project ID" },
+				sinceDigest: {
+					type: "string",
+					description:
+						"The snapshot digest you last installed. An unchanged digest is answered without a zip URL; a changed one adds the changed paths to the usual response.",
+					minLength: 1,
+					maxLength: 128,
+				},
 			},
 			required: ["projectId"],
 		},
@@ -1911,6 +1930,66 @@ async function handleSwitchOrganization(
 
 // ─── Project Handlers ───────────────────────────────────────────────────────
 
+/**
+ * What a project response says about its published coding instructions.
+ *
+ * `published: false` is a real answer — "this project has nothing for you" —
+ * and it is what an agent needs to stop asking. The key being ABSENT means
+ * something different: the key was not permitted to look (see
+ * `attachCodingInstructions`).
+ */
+type CodingInstructionsField =
+	| {
+			published: true;
+			version: number;
+			fileCount: number;
+			digest: string;
+			publishedAt: Date | null;
+	  }
+	| { published: false };
+
+/**
+ * Advertises each project's published coding instructions on the project
+ * response itself, so a connected agent discovers them without being told a
+ * project has any.
+ *
+ * Gated on the SAME scope as `fabric_get_project_instruction_bundle`, through
+ * the same `TOOL_SCOPES`/`scopeSatisfied` machinery `executePlatformTool` uses
+ * — not a second copy of the rule. A key that holds only `projects:read` can
+ * reach these two tools but not the instruction tools, so it gets no
+ * `codingInstructions` key at all: metadata about a surface a key may not read
+ * is still metadata about it, and an absent key is the honest shape for
+ * "not permitted to look" (`published: false` would be a claim).
+ *
+ * One query for the whole page, and only when the scope check passes.
+ */
+async function attachCodingInstructions<T extends { id: string }>(
+	projects: T[],
+	session: GatewaySession,
+): Promise<Array<T & { codingInstructions?: CodingInstructionsField }>> {
+	const required =
+		TOOL_SCOPES.fabric_get_project_instruction_bundle ??
+		UNMAPPED_TOOL_SCOPE;
+	if (projects.length === 0 || !scopeSatisfied(session.scopes, required)) {
+		return projects;
+	}
+	const { getPublishedInstructionSummariesForProjects } = await import(
+		"@repo/database"
+	);
+	const summaries = await getPublishedInstructionSummariesForProjects(
+		projects.map((project) => project.id),
+	);
+	return projects.map((project) => {
+		const summary = summaries.get(project.id) ?? null;
+		return {
+			...project,
+			codingInstructions: summary
+				? { published: true as const, ...summary }
+				: { published: false as const },
+		};
+	});
+}
+
 async function handleListProjects(
 	args: Record<string, unknown>,
 	session: GatewaySession,
@@ -1927,15 +2006,18 @@ async function handleListProjects(
 	});
 
 	return jsonResult({
-		projects: result.projects.map((p) => ({
-			id: p.id,
-			name: p.name,
-			description: p.description,
-			status: p.status,
-			heroEmojis: p.heroEmojis,
-			createdAt: p.createdAt,
-			updatedAt: p.updatedAt,
-		})),
+		projects: await attachCodingInstructions(
+			result.projects.map((p) => ({
+				id: p.id,
+				name: p.name,
+				description: p.description,
+				status: p.status,
+				heroEmojis: p.heroEmojis,
+				createdAt: p.createdAt,
+				updatedAt: p.updatedAt,
+			})),
+			session,
+		),
 		total: result.total,
 		hasMore: result.hasMore,
 	});
@@ -1962,15 +2044,21 @@ async function handleGetProject(
 		return errorResult("Project not found or access denied");
 	}
 
-	return jsonResult({
-		id: project.id,
-		name: project.name,
-		description: project.description,
-		status: project.status,
-		heroEmojis: project.heroEmojis,
-		createdAt: project.createdAt,
-		updatedAt: project.updatedAt,
-	});
+	const [withInstructions] = await attachCodingInstructions(
+		[
+			{
+				id: project.id,
+				name: project.name,
+				description: project.description,
+				status: project.status,
+				heroEmojis: project.heroEmojis,
+				createdAt: project.createdAt,
+				updatedAt: project.updatedAt,
+			},
+		],
+		session,
+	);
+	return jsonResult(withInstructions);
 }
 
 async function handleCreateProject(
@@ -4169,6 +4257,12 @@ async function resolvePublishedInstructionSnapshot(
 	if (
 		!snapshot ||
 		snapshot.status !== "READY" ||
+		// READY is the transition that WRITES the digest, so a READY snapshot
+		// without one is an invariant guard rather than a reachable state.
+		// It is here so this resolver and the `codingInstructions` summary —
+		// which needs a digest to advertise and so already requires one —
+		// can never give two different answers about the same project.
+		snapshot.digest === null ||
 		snapshot.projectId !== projectId ||
 		// A personal project resolves `organizationId: null`, which this
 		// non-null column can never equal — the fail-closed arm, reached only
@@ -4180,10 +4274,121 @@ async function resolvePublishedInstructionSnapshot(
 	return { projectId, snapshot };
 }
 
+/** The snapshot header both instruction tools put on every response. */
+function instructionSnapshotSummary(snapshot: PublishedInstructionSnapshot) {
+	return {
+		id: snapshot.id,
+		version: snapshot.version,
+		digest: snapshot.digest,
+		fileCount: snapshot.fileCount,
+	};
+}
+
+/** The longest `sinceDigest` accepted, mirroring the tools' input schemas. */
+const INSTRUCTION_DIGEST_MAX_LENGTH = 128;
+
+type InstructionChanges = {
+	added: string[];
+	removed: string[];
+	changed: string[];
+};
+
+/**
+ * What a caller's `sinceDigest` turned out to mean for the snapshot published
+ * now.
+ *
+ * `unchanged: true` is the whole point of the argument: the caller already has
+ * this exact content, so the handler answers with the header and stops — no
+ * file rows listed, and in the bundle tool no zip built and no URL minted.
+ *
+ * `changes: null` on the changed arm means the base digest is not one this
+ * project has ever published, or is one the retention sweep has since pruned.
+ * The caller cannot be told what changed, so it should take a full copy — the
+ * rest of the response, which is the full answer, is still there.
+ */
+type InstructionDelta =
+	| { unchanged: true; changes: InstructionChanges }
+	| {
+			unchanged: false;
+			changes: InstructionChanges | null;
+			since?: { id: string; version: number; digest: string };
+	  };
+
+const NO_INSTRUCTION_CHANGES: InstructionChanges = {
+	added: [],
+	removed: [],
+	changed: [],
+};
+
+/**
+ * Reads `sinceDigest` off the arguments, or reports why it is unusable.
+ *
+ * The gateway does not enforce a tool definition's `inputSchema` (see the
+ * `kind` check in `handleListProjectInstructions`), so the bounds the schema
+ * advertises are checked here — this value reaches a query.
+ */
+function readSinceDigest(
+	args: Record<string, unknown>,
+): { digest?: string } | { error: ToolCallResult } {
+	const raw = args.sinceDigest;
+	if (raw === undefined || raw === null) {
+		return {};
+	}
+	if (
+		typeof raw !== "string" ||
+		raw.length === 0 ||
+		raw.length > INSTRUCTION_DIGEST_MAX_LENGTH
+	) {
+		return {
+			error: errorResult(
+				`sinceDigest must be a string of 1 to ${INSTRUCTION_DIGEST_MAX_LENGTH} characters.`,
+			),
+		};
+	}
+	return { digest: raw };
+}
+
+async function resolveInstructionDelta(
+	sinceDigest: string,
+	projectId: string,
+	snapshot: PublishedInstructionSnapshot,
+): Promise<InstructionDelta> {
+	if (sinceDigest === snapshot.digest) {
+		return { unchanged: true, changes: NO_INSTRUCTION_CHANGES };
+	}
+	const { getInstructionManifestDiff } = await import("@repo/database");
+	// Scoped by project AND by the hosting organization the resolver has
+	// already compared to this caller's project access, so a digest belonging
+	// to another project — or a row mis-tagged with another tenant — is simply
+	// an unknown base rather than a window into it.
+	const diff = await getInstructionManifestDiff({
+		projectId,
+		organizationId: snapshot.organizationId,
+		baseDigest: sinceDigest,
+		headSnapshotId: snapshot.id,
+	});
+	if (!diff) {
+		return { unchanged: false, changes: null };
+	}
+	return {
+		unchanged: false,
+		changes: {
+			added: diff.added,
+			removed: diff.removed,
+			changed: diff.changed,
+		},
+		since: diff.base,
+	};
+}
+
 async function handleListProjectInstructions(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
+	const since = readSinceDigest(args);
+	if ("error" in since) {
+		return since.error;
+	}
 	const resolved = await resolvePublishedInstructionSnapshot(args, session);
 	if ("error" in resolved) {
 		return resolved.error;
@@ -4194,6 +4399,20 @@ async function handleListProjectInstructions(
 			files: [],
 			message: "This project has no published coding instructions yet.",
 		});
+	}
+	let delta: InstructionDelta | undefined;
+	if (since.digest !== undefined) {
+		delta = await resolveInstructionDelta(
+			since.digest,
+			resolved.projectId,
+			resolved.snapshot,
+		);
+		if (delta.unchanged) {
+			return jsonResult({
+				snapshot: instructionSnapshotSummary(resolved.snapshot),
+				...delta,
+			});
+		}
 	}
 	const { listInstructionFiles } = await import("@repo/database");
 	// The gateway does not enforce a tool definition's `inputSchema` enum, so
@@ -4216,12 +4435,7 @@ async function handleListProjectInstructions(
 		{ kind: kind as InstructionFileKind | undefined, query },
 	);
 	return jsonResult({
-		snapshot: {
-			id: resolved.snapshot.id,
-			version: resolved.snapshot.version,
-			digest: resolved.snapshot.digest,
-			fileCount: resolved.snapshot.fileCount,
-		},
+		snapshot: instructionSnapshotSummary(resolved.snapshot),
 		files: files.map((f) => ({
 			path: f.path,
 			kind: f.kind,
@@ -4232,6 +4446,7 @@ async function handleListProjectInstructions(
 			isText: f.isText,
 			sha256: f.sha256,
 		})),
+		...(delta ?? {}),
 	});
 }
 
@@ -4323,6 +4538,10 @@ async function handleGetProjectInstructionBundle(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
+	const since = readSinceDigest(args);
+	if ("error" in since) {
+		return since.error;
+	}
 	const resolved = await resolvePublishedInstructionSnapshot(args, session);
 	if ("error" in resolved) {
 		return resolved.error;
@@ -4331,6 +4550,23 @@ async function handleGetProjectInstructionBundle(
 		return errorResult(
 			"This project has no published coding instructions yet.",
 		);
+	}
+	let delta: InstructionDelta | undefined;
+	if (since.digest !== undefined) {
+		delta = await resolveInstructionDelta(
+			since.digest,
+			resolved.projectId,
+			resolved.snapshot,
+		);
+		// Answered BEFORE the zip is built, deliberately: the caller already
+		// holds this content, so nothing is archived and no signed URL exists
+		// to leak or to pay for.
+		if (delta.unchanged) {
+			return jsonResult({
+				snapshot: instructionSnapshotSummary(resolved.snapshot),
+				...delta,
+			});
+		}
 	}
 	const { listInstructionFiles } = await import("@repo/database");
 	const { buildInstructionSnapshotZip } = await import(
@@ -4347,12 +4583,7 @@ async function handleGetProjectInstructionBundle(
 		files,
 	});
 	return jsonResult({
-		snapshot: {
-			id: resolved.snapshot.id,
-			version: resolved.snapshot.version,
-			digest: resolved.snapshot.digest,
-			fileCount: resolved.snapshot.fileCount,
-		},
+		snapshot: instructionSnapshotSummary(resolved.snapshot),
 		manifest: files.map((f) => ({
 			path: f.path,
 			sha256: f.sha256,
@@ -4362,6 +4593,7 @@ async function handleGetProjectInstructionBundle(
 		})),
 		url,
 		expiresInSeconds: 600,
+		...(delta ?? {}),
 	});
 }
 

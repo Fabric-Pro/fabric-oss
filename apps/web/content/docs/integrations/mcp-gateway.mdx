@@ -102,8 +102,34 @@ A project's **Coding Instructions** tab publishes one version of its skills, age
 and setup files, and serves them to a connected client over the tools below. Rather than
 building the configuration above by hand, open that tab and click **Connect your agent**: it
 mints a read-only key (the `mcp:read` scope, which covers every read-only platform tool,
-these three included), shows the same configuration block, and gives you a starter sentence
-to paste into your tool:
+these three included) and shows the same configuration block.
+
+A connected agent finds them on its own. Every project `fabric_get_project` and
+`fabric_list_projects` return carries a `codingInstructions` field — `{ "published": false }`
+when there is nothing to load, and the snapshot's `version`, `fileCount`, `digest` and
+`publishedAt` when there is. The connection handshake tells the agent what to do with it:
+call `fabric_get_project_instruction_bundle` to install the whole approved tree in one step,
+or `fabric_list_project_instructions` and `fabric_get_project_instruction` to read individual
+files, and follow them while working on that project. The field is omitted entirely for a key
+that does not hold the `instructions:read` scope (or a coarse `mcp:read`/`mcp:write`).
+
+Keeping an installed copy current does not always mean downloading it again. Pass the
+`digest` you last installed as `sinceDigest` to either
+`fabric_get_project_instruction_bundle` or `fabric_list_project_instructions`:
+
+- the digest still matches — you get `"unchanged": true` and nothing else: no file list, no
+  manifest, and no zip URL, so nothing is built or transferred. This is the only case that
+  short-circuits;
+- it has moved on — you get the response you would have got anyway, in full, plus `changes`
+  (the added, removed and changed paths) and `since`, the snapshot that digest names.
+  `sinceDigest` tells you *what* changed; it does not send you a smaller download;
+- Fabric has never published that digest for this project, or has since pruned it — you get
+  `"changes": null` alongside the same full response, which means treat it as a fresh
+  install.
+
+The Connect dialog also offers a starter sentence to paste into your tool. It is optional
+now that the project response advertises the instructions, and useful mainly to point an
+agent at one specific project:
 
 ```
 Use the Fabric MCP server to load the published coding instructions for the project
@@ -123,17 +149,17 @@ These give the AI direct access to your Fabric data — no extra setup needed:
 | `fabric_get_identity` | See your user context, active organization, and available orgs |
 | `fabric_list_organizations` | List all organizations you belong to |
 | `fabric_switch_organization` | Switch between personal and org context |
-| `fabric_list_projects` | List your projects with filtering and search |
-| `fabric_get_project` | Get full project details |
+| `fabric_list_projects` | List your projects with filtering and search, each with its published `codingInstructions` |
+| `fabric_get_project` | Get full project details, including its published `codingInstructions` |
 | `fabric_create_project` | Create a new project |
 | `fabric_update_project` | Update project name or description |
 | `fabric_list_documents` | List documents in a project (PRDs, specs, etc.) |
 | `fabric_get_document` | Get full document content in markdown |
 | `fabric_list_project_contexts` | List a project's Context tab sources — uploads, meeting transcripts, crawled links, notes |
 | `fabric_get_project_context` | Read one context source in full: transcript text, extracted file text, or crawled markdown |
-| `fabric_list_project_instructions` | List a project's published coding-instruction files — path, kind, name, description, size |
+| `fabric_list_project_instructions` | Browse or search a project's published coding-instruction files, or ask what changed since a `sinceDigest` |
 | `fabric_get_project_instruction` | Read one published coding-instruction file by path, paged for large files |
-| `fabric_get_project_instruction_bundle` | Fetch every published coding-instruction file as one zip |
+| `fabric_get_project_instruction_bundle` | Install the whole published tree as one zip, and report what changed since a `sinceDigest` |
 | `fabric_list_workspaces` | List your knowledge base workspaces |
 | `fabric_get_workspace` | Get workspace details and document list |
 | `fabric_query_workspace` | Semantic search (RAG) across workspace documents |
