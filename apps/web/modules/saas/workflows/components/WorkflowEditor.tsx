@@ -74,9 +74,17 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 				// refuses the run the procedure records the execution FAILED
 				// and says so here. Show the panel either way so the failed
 				// run is inspectable rather than invisible.
+				//
+				// An unconfirmed start means the engine may be running it: the
+				// panel polls that execution, and the user is told not to
+				// start it again (a second click would be a second run).
 				if (result.status === "failed") {
 					toast.error(
 						result.message ?? "Failed to start workflow execution",
+					);
+				} else if (result.status === "unconfirmed") {
+					toast.warning(
+						"The workflow engine did not confirm the start. Following the run below; check its status before running it again.",
 					);
 				} else {
 					toast.success("Workflow execution started");

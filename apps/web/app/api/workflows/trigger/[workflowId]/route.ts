@@ -14,13 +14,16 @@
 
 import crypto from "node:crypto";
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
-import { checkExecutionConcurrency } from "@repo/api/modules/workflows/lib/execution-concurrency";
 import {
-	WORKFLOW_BUILDER_TASK_QUEUE,
-	WORKFLOW_RUN_TIMEOUT,
-} from "@repo/api/modules/workflows/lib/execution-limits";
-import { db } from "@repo/database";
-import { getTemporalClient } from "@repo/temporal";
+	concurrencyRefusalMessage,
+	createExecutionWithinConcurrencyCap,
+} from "@repo/api/modules/workflows/lib/execution-concurrency";
+import {
+	attemptWorkflowBuilderStart,
+	startFailureMessage,
+	unconfirmedStartMessage,
+} from "@repo/api/modules/workflows/lib/start-builder-execution";
+import { db, markExecutionRunningIfPending } from "@repo/database";
 import { decryptApiKeyMaybe } from "@repo/utils";
 import { type NextRequest, NextResponse } from "next/server";
 
@@ -247,24 +250,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 		// tenant's backlog. The manual path refuses before creating a row; a
 		// webhook is the path most able to flood, so it has to refuse too.
 		// Rate limiting alone does not cover it: that is per caller IP, so a
-		// distributed caller walks straight past it.
-		const concurrency = await checkExecutionConcurrency({
+		// distributed caller walks straight past it. The row is created
+		// inside the reservation, so the cap holds under exactly that kind
+		// of concurrent traffic rather than only when nobody races for it.
+		const reservation = await createExecutionWithinConcurrencyCap({
 			userId: workflow.userId,
 			organizationId: workflow.organizationId,
-		});
-
-		if (!concurrency.allowed) {
-			return NextResponse.json(
-				{
-					error: "Too many workflow executions in flight",
-					message: `This workspace already has ${concurrency.inFlight} workflow executions running (limit ${concurrency.limit}).`,
-				},
-				{ status: 429, headers: { "Retry-After": "60" } },
-			);
-		}
-
-		// Create execution record
-		const execution = await db.workflowExecution.create({
 			data: {
 				workflowId,
 				// The graph that ran, not the one that was published. Every
@@ -274,67 +265,53 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 				// content was not what executed. Anyone comparing a failed run
 				// against "version 3" was reading the wrong graph.
 				version: workflow.version,
-				status: "PENDING",
 				triggerType: "WEBHOOK",
 				triggerInput: payload as object,
-				userId: workflow.userId,
-				organizationId: workflow.organizationId,
 			},
 		});
 
-		try {
-			const temporalClient = await getTemporalClient();
-			const handle = await temporalClient.workflow.start(
-				"workflowBuilderExecutionWorkflow",
+		if (!reservation.allowed) {
+			return NextResponse.json(
 				{
-					taskQueue: WORKFLOW_BUILDER_TASK_QUEUE,
-					workflowId: `workflow-${execution.id}`,
-					// Same runaway ceiling the manual path has. Without it a
-					// webhook-triggered run was the one trigger that could hold
-					// a worker slot indefinitely.
-					workflowExecutionTimeout: WORKFLOW_RUN_TIMEOUT,
-					args: [
-						{
-							workflowId,
-							executionId: execution.id,
-							nodes: workflow.nodes as object[],
-							edges: workflow.edges as object[],
-							triggerData: payload,
-							userId: workflow.userId,
-							organizationId: workflow.organizationId,
-						},
-					],
+					error: "Too many workflow executions in flight",
+					message: concurrencyRefusalMessage(reservation),
 				},
+				{ status: 429, headers: { "Retry-After": "60" } },
 			);
+		}
+		const execution = reservation.execution;
 
-			await db.workflowExecution.update({
-				where: { id: execution.id },
-				data: { temporalRunId: handle.workflowId, status: "RUNNING" },
-			});
+		// The webhook path used its own workflow id scheme (`workflow-<id>`),
+		// so a cancel from the API or the UI — both of which derive the id
+		// from the execution row — addressed a run that did not exist. The
+		// shared helper is the one id scheme, and the one protocol for what a
+		// failed start call means.
+		const outcome = await attemptWorkflowBuilderStart({
+			workflowId,
+			executionId: execution.id,
+			nodes: workflow.nodes as never,
+			edges: workflow.edges as never,
+			triggerData: payload,
+			userId: workflow.userId,
+			organizationId: workflow.organizationId ?? undefined,
+			projectId: workflow.projectId ?? undefined,
+		});
 
-			return NextResponse.json({
-				success: true,
-				executionId: execution.id,
-				temporalWorkflowId: handle.workflowId,
-				message: "Workflow triggered successfully",
-			});
-		} catch (error) {
-			// The row exists but nothing is going to run it, and no sweeper
-			// reclaims a PENDING execution. Record the terminal state so the
-			// run history says "failed to start" rather than "queued" forever.
+		if (outcome.status === "not-started") {
+			// The row exists but nothing is going to run it — Temporal
+			// confirmed that — and no sweeper reclaims a PENDING execution.
+			// Record the terminal state so the run history says "failed to
+			// start" rather than "queued" forever.
 			console.error(
 				"[Webhook Trigger] Failed to start execution:",
-				error,
+				outcome.error,
 			);
 			const failedAt = new Date();
 			await db.workflowExecution.update({
 				where: { id: execution.id },
 				data: {
 					status: "FAILED",
-					error:
-						error instanceof Error
-							? error.message
-							: "Failed to start workflow execution",
+					error: startFailureMessage(outcome.error),
 					completedAt: failedAt,
 					duration:
 						failedAt.getTime() - execution.startedAt.getTime(),
@@ -349,6 +326,59 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 				{ status: 502 },
 			);
 		}
+
+		if (outcome.status === "unknown") {
+			// The start call failed and the follow-up describe could not
+			// settle whether Temporal accepted it. The run may be in progress
+			// under the deterministic id, so the row stays active: failing it
+			// would invite the sender to retry, which creates a new row and a
+			// second run with the same side effects.
+			console.warn(
+				"[Webhook Trigger] Start unconfirmed; leaving the execution row active:",
+				{ executionId: execution.id, workflowId: outcome.workflowId },
+				outcome.error,
+			);
+			// 202 Accepted, not a 5xx: webhook senders retry server errors,
+			// and a retry creates a second row and a second run. The body
+			// says the start is unconfirmed and names the execution to poll.
+			return NextResponse.json(
+				{
+					success: true,
+					status: "unconfirmed",
+					executionId: execution.id,
+					temporalWorkflowId: outcome.workflowId,
+					message: unconfirmedStartMessage(execution.id),
+				},
+				{ status: 202 },
+			);
+		}
+
+		// The run exists in the engine from here on. A failure to record that
+		// must not be reported as "not started" (the sender would retry and
+		// start a second run with the same side effects); it is logged and the
+		// start is still reported. The workflow writes its own status as it
+		// progresses and its id is deterministic from the execution id.
+		// PENDING → RUNNING only: a fast run may already have written its
+		// terminal status, which must not move back to RUNNING.
+		try {
+			await markExecutionRunningIfPending({
+				executionId: execution.id,
+				temporalRunId: outcome.workflowId,
+			});
+		} catch (error) {
+			console.error(
+				"[Webhook Trigger] Run started but the execution row could not be marked RUNNING:",
+				{ executionId: execution.id, workflowId: outcome.workflowId },
+				error,
+			);
+		}
+
+		return NextResponse.json({
+			success: true,
+			executionId: execution.id,
+			temporalWorkflowId: outcome.workflowId,
+			message: "Workflow triggered successfully",
+		});
 	} catch (error) {
 		console.error("[Webhook Trigger] Error:", error);
 		return NextResponse.json(

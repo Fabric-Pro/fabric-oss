@@ -4,122 +4,144 @@
  * could be started unboundedly in parallel and hold every slot on the shared
  * `workflow-builder` queue.
  *
- * The two properties that matter: the count is scoped to the right tenant (an
+ * The properties that matter: the count is scoped to the right tenant (an
  * organization's backlog must not block a personal workflow, or vice versa),
- * and an organization can raise its own ceiling through the quota model that
- * already exists for agent deployments.
+ * an organization can raise its own ceiling through the quota model that
+ * already exists for agent deployments, and the row is created INSIDE the
+ * reservation — the count-then-insert pair this replaced let N concurrent
+ * starts at `limit - 1` all see one free slot. The atomicity itself is proved
+ * against real Postgres in
+ * `packages/database/__tests__/workflow-execution-reservation.integration.test.ts`;
+ * here the reservation primitive is mocked and what is pinned is that every
+ * decision reaches it with the right tenant, limit and row.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { countMock, quotaMock } = vi.hoisted(() => ({
-	countMock: vi.fn(),
+const { reserveMock, quotaMock } = vi.hoisted(() => ({
+	reserveMock: vi.fn(),
 	quotaMock: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
 	db: {
-		workflowExecution: { count: countMock },
 		organizationDeploymentQuota: { findUnique: quotaMock },
 	},
+	reserveWorkflowExecution: reserveMock,
 }));
 
 import {
-	checkExecutionConcurrency,
+	createExecutionWithinConcurrencyCap,
 	FALLBACK_MAX_CONCURRENT_EXECUTIONS,
 	resolveDefaultConcurrencyLimit,
 } from "../execution-concurrency";
 
+const ROW = {
+	workflowId: "wf-1",
+	version: 2,
+	triggerType: "MANUAL" as const,
+	triggerInput: { a: 1 },
+};
+
+const EXECUTION = { id: "exec-1", status: "PENDING" };
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	quotaMock.mockResolvedValue(null);
+	reserveMock.mockImplementation(async (args: { limit: number }) => ({
+		reserved: true,
+		execution: EXECUTION,
+		inFlight: 1,
+		limit: args.limit,
+	}));
 });
 
-describe("checkExecutionConcurrency", () => {
-	it("allows a tenant below the cap", async () => {
-		countMock.mockResolvedValue(3);
-
-		const result = await checkExecutionConcurrency({ userId: "u1" });
+describe("createExecutionWithinConcurrencyCap", () => {
+	it("returns the row the reservation created when the tenant is below the cap", async () => {
+		const result = await createExecutionWithinConcurrencyCap({
+			userId: "u1",
+			data: ROW,
+		});
 
 		expect(result).toEqual({
 			allowed: true,
-			inFlight: 3,
+			execution: EXECUTION,
+			inFlight: 1,
 			limit: FALLBACK_MAX_CONCURRENT_EXECUTIONS,
 		});
 	});
 
-	it("refuses at the cap", async () => {
-		countMock.mockResolvedValue(FALLBACK_MAX_CONCURRENT_EXECUTIONS);
-
-		const result = await checkExecutionConcurrency({ userId: "u1" });
-
-		expect(result.allowed).toBe(false);
-	});
-
-	it("counts only work that is actually in flight", async () => {
-		countMock.mockResolvedValue(0);
-
-		await checkExecutionConcurrency({ userId: "u1" });
-
-		const { status } = countMock.mock.calls[0][0].where;
-		expect(status.in.sort()).toEqual(["PENDING", "RUNNING"]);
-	});
-
-	it("scopes a personal workflow to the user, excluding org rows", async () => {
-		countMock.mockResolvedValue(0);
-
-		await checkExecutionConcurrency({ userId: "u1" });
-
-		// organizationId: null is the XOR half — without it a user's personal
-		// count would include every execution they started inside an org.
-		expect(countMock.mock.calls[0][0].where).toMatchObject({
-			userId: "u1",
-			organizationId: null,
+	it("refuses — and created nothing — when the reservation reports the cap reached", async () => {
+		reserveMock.mockResolvedValue({
+			reserved: false,
+			inFlight: FALLBACK_MAX_CONCURRENT_EXECUTIONS,
+			limit: FALLBACK_MAX_CONCURRENT_EXECUTIONS,
 		});
+
+		const result = await createExecutionWithinConcurrencyCap({
+			userId: "u1",
+			data: ROW,
+		});
+
+		expect(result).toEqual({
+			allowed: false,
+			inFlight: FALLBACK_MAX_CONCURRENT_EXECUTIONS,
+			limit: FALLBACK_MAX_CONCURRENT_EXECUTIONS,
+		});
+		expect(result).not.toHaveProperty("execution");
 	});
 
-	it("scopes an org workflow to the org, not the caller", async () => {
-		countMock.mockResolvedValue(0);
-
-		await checkExecutionConcurrency({
+	it("hands the reservation the row to create, so the cap and the insert are one decision", async () => {
+		await createExecutionWithinConcurrencyCap({
 			userId: "u1",
 			organizationId: "org1",
+			data: ROW,
 		});
 
-		const { where } = countMock.mock.calls[0][0];
-		expect(where).toMatchObject({ organizationId: "org1" });
-		// Otherwise one member's runs would not count against the org's cap.
-		expect(where.userId).toBeUndefined();
+		expect(reserveMock).toHaveBeenCalledWith({
+			userId: "u1",
+			organizationId: "org1",
+			limit: FALLBACK_MAX_CONCURRENT_EXECUTIONS,
+			data: ROW,
+		});
+	});
+
+	it("scopes a personal workflow to the user — organizationId stays unset for the XOR filter", async () => {
+		await createExecutionWithinConcurrencyCap({ userId: "u1", data: ROW });
+
+		expect(reserveMock.mock.calls[0][0]).toMatchObject({
+			userId: "u1",
+			organizationId: undefined,
+		});
 	});
 
 	it("honours an organization's raised ceiling", async () => {
-		countMock.mockResolvedValue(40);
 		quotaMock.mockResolvedValue({ maxConcurrentExecutions: 50 });
 
-		const result = await checkExecutionConcurrency({
+		const result = await createExecutionWithinConcurrencyCap({
 			userId: "u1",
 			organizationId: "org1",
+			data: ROW,
 		});
 
-		expect(result).toEqual({ allowed: true, inFlight: 40, limit: 50 });
+		expect(reserveMock.mock.calls[0][0].limit).toBe(50);
+		expect(result.limit).toBe(50);
 	});
 
 	it("falls back to the default when an org has no quota row", async () => {
-		countMock.mockResolvedValue(0);
 		quotaMock.mockResolvedValue(null);
 
-		const result = await checkExecutionConcurrency({
+		const result = await createExecutionWithinConcurrencyCap({
 			userId: "u1",
 			organizationId: "org1",
+			data: ROW,
 		});
 
 		expect(result.limit).toBe(FALLBACK_MAX_CONCURRENT_EXECUTIONS);
 	});
 
 	it("does not query org quota for a personal workflow", async () => {
-		countMock.mockResolvedValue(0);
-
-		await checkExecutionConcurrency({ userId: "u1" });
+		await createExecutionWithinConcurrencyCap({ userId: "u1", data: ROW });
 
 		expect(quotaMock).not.toHaveBeenCalled();
 	});

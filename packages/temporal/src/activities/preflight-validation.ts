@@ -18,6 +18,7 @@ import {
 	createApproval,
 	getApprovalStatus,
 } from "@repo/database/prisma/queries/approvals";
+import { withHeartbeatTicker } from "./lib/activity-liveness";
 
 // ============================================================================
 // Graph-Level Validation Types
@@ -520,6 +521,20 @@ export async function waitForApproval(
 ): Promise<{ approved: boolean; message?: string }> {
 	console.log(`[Preflight] Waiting for approval: ${approvalRequestId}`);
 
+	// This poll runs for up to five minutes against a heartbeat timeout
+	// measured in seconds. Without the ticker no approval could ever be
+	// granted in time: the activity was killed as unresponsive long before a
+	// human had read the request, then retried from scratch.
+	return withHeartbeatTicker(
+		() => pollForApproval(approvalRequestId, timeoutMs),
+		{ details: { phase: "awaiting-approval", approvalRequestId } },
+	);
+}
+
+async function pollForApproval(
+	approvalRequestId: string,
+	timeoutMs: number,
+): Promise<{ approved: boolean; message?: string }> {
 	const startTime = Date.now();
 	const pollInterval = 2000; // Poll every 2 seconds
 

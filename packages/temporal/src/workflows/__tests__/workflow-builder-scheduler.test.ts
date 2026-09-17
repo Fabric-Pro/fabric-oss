@@ -10,23 +10,34 @@
  * commands are emitted in, so it sits behind `patched()` — histories recorded
  * before it shipped must still replay through the original walk. Both paths
  * are exercised here; the replay gate in CI is what proves the real thing.
+ *
+ * A second patch, `builder-requeue-guard`, covers what happens when the graph
+ * cannot advance — a join behind a condition whose other branch never ran.
+ * The wave scheduler used to drop such a node silently; the original walk
+ * re-queued it behind a timer forever. Both now record it as SKIPPED and
+ * finish. The mock below is keyed by patch id so each can be turned off alone.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { patchedFlag, nodeMock, updateStatus, createLog, sleepMock } =
-	vi.hoisted(() => ({
-		patchedFlag: { value: true },
+const { patches, nodeMock, updateStatus, createLog, sleepMock } = vi.hoisted(
+	() => ({
+		/** Patch ids that read as NOT present — i.e. the pre-patch replay path. */
+		patches: { disabled: new Set<string>() },
 		nodeMock: vi.fn(),
 		updateStatus: vi.fn(),
 		createLog: vi.fn(),
 		sleepMock: vi.fn(async () => undefined),
-	}));
+	}),
+);
+
+const PARALLEL_WALK = "workflow-builder-parallel-walk-v1";
+const REQUEUE_GUARD = "builder-requeue-guard";
 
 vi.mock("@temporalio/workflow", () => ({
 	sleep: sleepMock,
 	log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-	patched: () => patchedFlag.value,
+	patched: (id: string) => !patches.disabled.has(id),
 	isCancellation: () => false,
 	CancellationScope: {
 		nonCancellable: async (fn: () => Promise<unknown>) => await fn(),
@@ -74,9 +85,45 @@ const diamond = {
 	edges: [edge("A", "B"), edge("A", "C"), edge("B", "D"), edge("C", "D")],
 };
 
+/**
+ * A condition whose `true` branch feeds a join that also waits on the `false`
+ * branch. Only one branch ever runs, so the join can never become ready.
+ */
+const conditionJoin = {
+	nodes: [
+		node("A", "trigger"),
+		node("C", "condition"),
+		node("T"),
+		node("F"),
+		node("J"),
+	],
+	edges: [
+		edge("A", "C"),
+		edge("C", "T", "true"),
+		edge("C", "F", "false"),
+		edge("T", "J"),
+		edge("F", "J"),
+	],
+};
+
+/** Node results for `conditionJoin`: the condition takes the `true` branch. */
+function conditionTakesTrue() {
+	nodeMock.mockImplementation(async (args: { nodeType: string }) =>
+		args.nodeType === "condition"
+			? { success: true, output: { result: true } }
+			: { success: true, output: {} },
+	);
+}
+
+function skippedLogs() {
+	return createLog.mock.calls
+		.map((c) => c[0])
+		.filter((entry) => entry.status === "SKIPPED");
+}
+
 beforeEach(() => {
 	vi.clearAllMocks();
-	patchedFlag.value = true;
+	patches.disabled = new Set();
 	nodeMock.mockResolvedValue({ success: true, output: {} });
 	updateStatus.mockResolvedValue(undefined);
 	createLog.mockResolvedValue(undefined);
@@ -136,6 +183,54 @@ describe("wave scheduler (patched)", () => {
 
 		expect(result.status).toBe("COMPLETED");
 		expect(nodeMock.mock.calls.map((c) => c[0].nodeId)).toEqual(["A"]);
+	});
+
+	describe("a join behind a condition", () => {
+		beforeEach(conditionTakesTrue);
+
+		it("completes with the join skipped rather than run or hung", async () => {
+			const result = await run(conditionJoin.nodes, conditionJoin.edges);
+
+			expect(result.status).toBe("COMPLETED");
+			const ran = nodeMock.mock.calls.map((c) => c[0].nodeId);
+			expect(ran).toEqual(["A", "C", "T"]);
+			expect(result.executedNodes).toEqual(["A", "C", "T"]);
+			expect(sleepMock).not.toHaveBeenCalled();
+		});
+
+		it("records the join as SKIPPED naming the dependency that never ran", async () => {
+			await run(conditionJoin.nodes, conditionJoin.edges);
+
+			expect(skippedLogs()).toEqual([
+				expect.objectContaining({
+					executionId: "exec-1",
+					nodeId: "J",
+					nodeType: "http-request",
+					status: "SKIPPED",
+					error: expect.stringMatching(
+						/unreachable dependency.*\bF\b/,
+					),
+					userId: "user-1",
+				}),
+			]);
+		});
+
+		it("does not mark the untaken branch itself — it was never queued", async () => {
+			await run(conditionJoin.nodes, conditionJoin.edges);
+
+			expect(skippedLogs().map((l) => l.nodeId)).not.toContain("F");
+		});
+
+		it("writes no SKIPPED rows while replaying a history recorded before the guard", async () => {
+			// The log writes are new commands; a pre-guard history must still
+			// replay through the silent break.
+			patches.disabled = new Set([REQUEUE_GUARD]);
+
+			const result = await run(conditionJoin.nodes, conditionJoin.edges);
+
+			expect(result.status).toBe("COMPLETED");
+			expect(skippedLogs()).toEqual([]);
+		});
 	});
 
 	it("follows only the matching branch of a condition", async () => {
@@ -200,7 +295,7 @@ describe("disabled nodes", () => {
 
 describe("legacy scheduler (unpatched replay path)", () => {
 	beforeEach(() => {
-		patchedFlag.value = false;
+		patches.disabled = new Set([PARALLEL_WALK]);
 	});
 
 	it("still completes the same graph", async () => {
@@ -230,5 +325,44 @@ describe("legacy scheduler (unpatched replay path)", () => {
 		);
 
 		expect(sleepMock).toHaveBeenCalled();
+	});
+
+	describe("a join behind a condition", () => {
+		beforeEach(conditionTakesTrue);
+
+		it("finishes with the join skipped instead of re-queueing it forever", async () => {
+			const result = await run(conditionJoin.nodes, conditionJoin.edges);
+
+			expect(result.status).toBe("COMPLETED");
+			expect(nodeMock.mock.calls.map((c) => c[0].nodeId)).toEqual([
+				"A",
+				"C",
+				"T",
+			]);
+			expect(skippedLogs().map((l) => l.nodeId)).toEqual(["J"]);
+		});
+
+		it("gives every queued node one full pass before deciding, then stops sleeping", async () => {
+			// One not-ready dequeue is normal (a sibling may still be about to
+			// run). Only when the whole queue has cycled without progress is
+			// the graph stuck — so exactly one timer, not an unbounded stream.
+			await run(conditionJoin.nodes, conditionJoin.edges);
+
+			expect(sleepMock).toHaveBeenCalledTimes(1);
+		});
+
+		it("skips every stuck node, not just the first one dequeued", async () => {
+			// Two joins both waiting on the branch that never ran.
+			await run(
+				[...conditionJoin.nodes, node("K")],
+				[...conditionJoin.edges, edge("T", "K"), edge("F", "K")],
+			);
+
+			expect(
+				skippedLogs()
+					.map((l) => l.nodeId)
+					.sort(),
+			).toEqual(["J", "K"]);
+		});
 	});
 });

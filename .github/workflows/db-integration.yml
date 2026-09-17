@@ -682,6 +682,39 @@ jobs:
           if (passed !== 4) { console.error(`::error::expected exactly 4 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
+      - name: Run the workflow execution reservation suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+          VITEST_INCLUDE_INTEGRATION: '1'
+        # The per-tenant in-flight cap on workflow executions is reserved
+        # under a tenant-keyed advisory lock (`reserveWorkflowExecution`):
+        # eight real connections race for the last free slot here and
+        # exactly one must win. The count-then-insert pair this replaced
+        # admitted all of them; a mocked client cannot show the difference.
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/workflow-execution-reservation.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=workflow-execution-reservation-results.json
+
+      - name: 'Guard: assert the workflow execution reservation suite executed (exact count, zero skips)'
+        # Same anti-false-pass shape as the guards above: the file self-skips
+        # without DATABASE_URL, so a green step proves nothing on its own, and
+        # the count is exact so a dropped case is noticed.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("packages/database/workflow-execution-reservation-results.json", "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(`workflow-execution-reservation-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
+          if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/workflow-execution-reservation.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
+          if (passed !== 6) { console.error(`::error::expected exactly 6 passing tests, got ${passed}`); process.exit(1); }
+          EOF
+
       - name: Run the chat-delivery kind-partitioning suite against real Postgres
         env:
           RUN_DB_INTEGRATION: '1'

@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import {
 	canExecuteOrganizationAgents,
+	canRunOrganizationWorkflows,
 	verifyOrganizationApiKey,
 } from "@repo/database";
 import type { Context, Next } from "hono";
@@ -60,6 +61,11 @@ const OWNER_PERMISSION_GATES: Record<
 	(userId: string, organizationId: string) => Promise<boolean>
 > = {
 	"agents:execute": canExecuteOrganizationAgents,
+	// The in-app start requires WORKSPACE_UPDATE, which the viewer role does
+	// not hold. A key minted by a member kept triggering workflows — runs
+	// that execute externally mutating nodes — after its owner was demoted,
+	// and a `*` key minted before the demotion did the same.
+	"workflows:run": canRunOrganizationWorkflows,
 };
 
 /**

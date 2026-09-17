@@ -8,18 +8,27 @@
  * POST /workflows/:id/executions/:execId/cancel            cancel a running execution
  */
 import {
-	createWorkflowExecution,
 	getWorkflowById,
 	getWorkflowExecutionById,
 	listWorkflowExecutions,
 	listWorkflows,
+	markExecutionRunningIfPending,
 	type Prisma,
 	updateWorkflowExecution,
 } from "@repo/database";
 import type { Hono } from "hono";
-import { withCorrelationMemo } from "../../lib/temporal-correlation";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
+import {
+	concurrencyRefusalMessage,
+	createExecutionWithinConcurrencyCap,
+} from "../workflows/lib/execution-concurrency";
+import {
+	attemptWorkflowBuilderStart,
+	cancelWorkflowBuilderExecution,
+	startFailureMessage,
+	unconfirmedStartMessage,
+} from "../workflows/lib/start-builder-execution";
 import { badRequest, notFound, ok, resolveV1Context } from "./helpers";
 
 const TERMINAL_EXECUTION_STATUSES = new Set([
@@ -153,51 +162,164 @@ export function registerWorkflowRoutes(
 				);
 			}
 
-			// Create execution record
-			// createWorkflowExecution requires version from the workflow record
-			const execution = await createWorkflowExecution({
+			// Same cap the oRPC, webhook and MCP starters apply. The row is
+			// created inside the reservation, so the cap holds under
+			// concurrent triggers rather than only when nobody races for it.
+			const reservation = await createExecutionWithinConcurrencyCap({
+				userId: ctx.userId,
+				organizationId: ctx.organizationId ?? null,
+				data: {
+					workflowId: workflow.id,
+					version: workflow.version,
+					triggerType: "MANUAL",
+					triggerInput: body.triggerInput ?? {},
+				},
+			});
+			if (!reservation.allowed) {
+				return c.json(
+					{
+						error: {
+							message: concurrencyRefusalMessage(reservation),
+							code: "EXECUTION_LIMIT_REACHED",
+						},
+					},
+					429,
+				);
+			}
+			const execution = reservation.execution;
+
+			const failRow = async (message: string) => {
+				// No sweeper reclaims a PENDING execution. Record the terminal
+				// state so the run history says "never started", not "queued".
+				const failedAt = new Date();
+				await updateWorkflowExecution(execution.id, {
+					status: "FAILED",
+					error: message,
+					completedAt: failedAt,
+					duration:
+						failedAt.getTime() - execution.startedAt.getTime(),
+				});
+			};
+
+			// This used to start a workflow type that does not exist, under an
+			// id no other path knew, with the input under a key the workflow
+			// never reads — and then swallow the error on the theory that "the
+			// worker will pick it up later". Nothing ever did: every API-started
+			// run sat at PENDING for good. The shared helper fixes the first
+			// three; the row now records the fourth instead of hiding it.
+			const { isTemporalAvailable } = await import("@repo/temporal");
+			if (!(await isTemporalAvailable())) {
+				await failRow("Workflow engine unavailable");
+				return c.json(
+					{
+						error: {
+							message:
+								"Workflow engine unavailable — the run was not started. Try again.",
+							code: "EXECUTION_NOT_STARTED",
+							executionId: execution.id,
+						},
+					},
+					502,
+				);
+			}
+
+			const outcome = await attemptWorkflowBuilderStart({
+				executionId: execution.id,
 				workflowId: workflow.id,
-				version: workflow.version,
 				userId: ctx.userId,
 				organizationId: ctx.organizationId ?? undefined,
-				triggerType: "MANUAL",
-				triggerInput: body.triggerInput ?? {},
+				projectId: workflow.projectId ?? undefined,
+				triggerData: (body.triggerInput ?? {}) as Record<
+					string,
+					unknown
+				>,
 			});
 
-			// Best-effort Temporal start (may not be available in all environments)
-			try {
-				const { getTemporalClient, isTemporalAvailable } = await import(
-					"@repo/temporal"
+			if (outcome.status === "not-started") {
+				// Temporal confirmed nothing runs under the row's id, so the
+				// row can be failed and the caller may retry.
+				await failRow(startFailureMessage(outcome.error));
+				return c.json(
+					{
+						error: {
+							message:
+								"Workflow engine unavailable — the run was not started. Try again.",
+							code: "EXECUTION_NOT_STARTED",
+							executionId: execution.id,
+						},
+					},
+					502,
 				);
-				if (await isTemporalAvailable()) {
-					const client = await getTemporalClient();
-					await client.workflow.start(
-						"workflowExecutionWorkflow",
-						withCorrelationMemo({
-							taskQueue: "workflow-builder",
-							workflowId: `workflow-exec-${execution.id}`,
-							args: [
-								{
-									executionId: execution.id,
-									workflowId: workflow.id,
-									userId: ctx.userId,
-									organizationId:
-										ctx.organizationId ?? undefined,
-									triggerInput: body.triggerInput ?? {},
-								},
-							],
-						}),
+			}
+
+			if (outcome.status === "unknown") {
+				// The start call failed and the follow-up describe could not
+				// settle whether Temporal accepted it. The run may be in
+				// progress under the deterministic id, so the row stays
+				// active — failing it invites a retry, which creates a new row
+				// and a second run with the same side effects. The workflow
+				// writes its own status as it progresses.
+				console.warn(
+					"[v1 workflows] Start unconfirmed; leaving the execution row active:",
+					{
+						executionId: execution.id,
+						workflowId: outcome.workflowId,
+					},
+					outcome.error,
+				);
+				// 202 with an explicit "unconfirmed" status, not a 5xx:
+				// clients and webhook senders retry server errors, and a
+				// retry creates a second row and a second run. The caller
+				// polls this execution instead.
+				return c.json(
+					ok({
+						executionId: execution.id,
+						workflowId: workflow.id,
+						status: "unconfirmed",
+						message: unconfirmedStartMessage(execution.id),
+					}),
+					202,
+				);
+			}
+
+			// The run exists in the engine from here on. A failure to record
+			// that must not be reported as "not started" (a retry would start a
+			// second run with the same side effects); it is logged and the
+			// start is still reported. The workflow writes its own status as it
+			// progresses and its id is deterministic from the execution id.
+			// PENDING → RUNNING only: a fast run may already have written its
+			// terminal status, which must not move back to RUNNING.
+			let status = "RUNNING";
+			try {
+				const moved = await markExecutionRunningIfPending({
+					executionId: execution.id,
+					temporalRunId: outcome.workflowId,
+				});
+				if (!moved) {
+					// The run already moved on; report where it is.
+					const current = await getWorkflowExecutionById(
+						execution.id,
+						ctx.userId,
+						ctx.organizationId ?? undefined,
 					);
+					status = current?.status ?? status;
 				}
-			} catch {
-				// Temporal unavailable — execution recorded, worker will pick it up later
+			} catch (error) {
+				console.error(
+					"[v1 workflows] Run started but the execution row could not be marked RUNNING:",
+					{
+						executionId: execution.id,
+						workflowId: outcome.workflowId,
+					},
+					error,
+				);
 			}
 
 			return c.json(
 				ok({
 					executionId: execution.id,
 					workflowId: workflow.id,
-					status: execution.status,
+					status,
 				}),
 				202,
 			);
@@ -363,15 +485,9 @@ export function registerWorkflowRoutes(
 			// dispatch in /trigger. If Temporal is unavailable the DB row
 			// update still records the user's intent.
 			try {
-				const { getTemporalClient, isTemporalAvailable } = await import(
-					"@repo/temporal"
-				);
+				const { isTemporalAvailable } = await import("@repo/temporal");
 				if (await isTemporalAvailable()) {
-					const client = await getTemporalClient();
-					const handle = client.workflow.getHandle(
-						`workflow-exec-${execution.id}`,
-					);
-					await handle.cancel();
+					await cancelWorkflowBuilderExecution(execution.id);
 				}
 			} catch {
 				// Temporal unavailable or handle gone — fall through to DB update.

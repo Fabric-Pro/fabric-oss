@@ -29,7 +29,11 @@ const {
 	getWorkflowDefinition,
 } = proxyActivities<typeof activities>({
 	startToCloseTimeout: "10 minutes",
-	heartbeatTimeout: "30 seconds",
+	// Activities on this proxy heartbeat every 10 s (`withHeartbeatTicker`),
+	// so this only fires for a worker that has actually died. It was 30 s
+	// with nothing heartbeating at all, which killed any node slower than
+	// that and retried it — duplicating whatever it had already done.
+	heartbeatTimeout: "60 seconds",
 	retry: {
 		initialInterval: "1s",
 		backoffCoefficient: 2,
@@ -53,7 +57,7 @@ const { executeWorkflowNode: executeExternalWriteNode } = proxyActivities<
 	typeof activities
 >({
 	startToCloseTimeout: "10 minutes",
-	heartbeatTimeout: "30 seconds",
+	heartbeatTimeout: "60 seconds",
 	retry: {
 		maximumAttempts: 1,
 	},
@@ -65,8 +69,11 @@ const {
 	createApprovalRequest,
 	waitForApproval,
 } = proxyActivities<typeof preflightActivities>({
-	startToCloseTimeout: "5 minutes",
-	heartbeatTimeout: "30 seconds",
+	// `waitForApproval` polls for up to five minutes and heartbeats while it
+	// does; the old 30 s heartbeat timeout meant no approval could ever be
+	// granted before the wait was killed and restarted.
+	startToCloseTimeout: "6 minutes",
+	heartbeatTimeout: "60 seconds",
 	retry: {
 		initialInterval: "1s",
 		maximumAttempts: 2,
@@ -459,6 +466,46 @@ export async function workflowBuilderExecutionWorkflow(
 			return outgoingEdges.get(nodeId) || [];
 		}
 
+		/**
+		 * Record the nodes the walk can never reach, then let the run finish.
+		 *
+		 * A join after a condition is the everyday case: only one branch runs,
+		 * so the join's other dependency never executes and the join can never
+		 * become ready. That is not a failure — the graph did what its author
+		 * drew — but it used to be invisible. The wave scheduler dropped the
+		 * node silently, and the original walk re-queued it behind a 100 ms
+		 * timer forever, until Temporal's history limit killed the run.
+		 *
+		 * Both call sites sit behind `patched("builder-requeue-guard")`: the
+		 * log writes are new commands, so a history recorded before this
+		 * shipped must replay without them.
+		 */
+		async function markUnreachable(nodeIds: string[]): Promise<void> {
+			for (const nodeId of nodeIds) {
+				const node = nodeMap.get(nodeId);
+				if (!node) {
+					continue;
+				}
+				const missing = (incomingEdges.get(nodeId) || []).filter(
+					(d) => !executed.has(d),
+				);
+				log.warn("Skipping node: dependency can never execute", {
+					nodeId,
+					missing,
+				});
+				await createWorkflowExecutionLog({
+					executionId: input.executionId,
+					nodeId,
+					nodeType: node.type,
+					status: "SKIPPED",
+					error: `Skipped: unreachable dependency (${missing.join(", ")} never executed)`,
+					completedAt: new Date(),
+					userId: input.userId,
+					organizationId: input.organizationId,
+				});
+			}
+		}
+
 		// Independent branches used to run strictly one after another: the
 		// scheduler took a single node per iteration and, when its dependencies
 		// were not ready, re-queued it behind a 100ms timer. Two branches off
@@ -492,9 +539,16 @@ export async function workflowBuilderExecutionWorkflow(
 				queue.length = 0;
 
 				// Nothing can make progress. Previously this span-waited on a
-				// timer forever; a graph that cannot advance now simply stops,
-				// and the unreachable nodes are left unexecuted.
+				// timer forever; a graph that cannot advance now stops, and the
+				// nodes it could not reach are recorded as skipped so the run
+				// history says why they never ran.
 				if (ready.length === 0) {
+					if (
+						waiting.length > 0 &&
+						patched("builder-requeue-guard")
+					) {
+						await markUnreachable(waiting);
+					}
 					break;
 				}
 
@@ -507,8 +561,15 @@ export async function workflowBuilderExecutionWorkflow(
 				}
 			}
 		} else {
-			// Original scheduler, kept verbatim for histories recorded before
-			// the patch above. Remove with `deprecatePatch` once they age out.
+			// Original scheduler, kept for histories recorded before the patch
+			// above. Remove with `deprecatePatch` once they age out.
+			//
+			// Consecutive not-ready dequeues since a node last ran. This walk is
+			// sequential — nothing is in flight between iterations — so once
+			// every queued node has been dequeued and re-queued without one
+			// running, nothing can ever change and the loop would spin on
+			// timers until the history limit.
+			let stalled = 0;
 			while (queue.length > 0) {
 				const nodeId = queue.shift();
 				if (!nodeId) {
@@ -523,10 +584,19 @@ export async function workflowBuilderExecutionWorkflow(
 
 				const deps = incomingEdges.get(nodeId) || [];
 				if (!deps.every((d) => executed.has(d))) {
+					if (
+						stalled > queue.length &&
+						patched("builder-requeue-guard")
+					) {
+						await markUnreachable([nodeId, ...queue]);
+						break;
+					}
 					queue.push(nodeId); // Re-queue if deps not ready
+					stalled++;
 					await sleep(100);
 					continue;
 				}
+				stalled = 0;
 
 				for (const nextId of await runNode(nodeId)) {
 					if (!executed.has(nextId)) {

@@ -196,6 +196,25 @@ export async function canExecuteOrganizationAgents(
 }
 
 /**
+ * Returns `true` if `userId` may start a workflow run in `organizationId`,
+ * matching `requirePermission(WORKSPACE_UPDATE)` on the in-app start.
+ *
+ * Asked of an API key's owner by the v1 `workflows:run` gate and of the MCP
+ * session's user by `fabric_execute_workflow`: both carry stored scopes, and a
+ * stored scope says what the key was granted, not what its owner may do now.
+ */
+export async function canRunOrganizationWorkflows(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.WORKSPACE_UPDATE,
+	);
+}
+
+/**
  * Which of `userIds` may create an API key in `organizationId`, matching
  * `requirePermission(ORG_API_KEYS_CREATE)` asked of each of them.
  *

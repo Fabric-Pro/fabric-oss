@@ -4,11 +4,22 @@ import {
 	resolveRequestedOrganization,
 } from "@repo/api/lib/requested-organization";
 import {
-	createWorkflowExecution,
+	concurrencyRefusalMessage,
+	createExecutionWithinConcurrencyCap,
+} from "@repo/api/modules/workflows/lib/execution-concurrency";
+import {
+	attemptWorkflowBuilderStart,
+	startFailureMessage,
+	unconfirmedStartMessage,
+} from "@repo/api/modules/workflows/lib/start-builder-execution";
+import {
+	canRunOrganizationWorkflows,
 	getWorkflowById,
+	markExecutionRunningIfPending,
 	type Prisma,
+	updateWorkflowExecution,
 } from "@repo/database";
-import { getTemporalClient, isTemporalAvailable } from "@repo/temporal";
+import { isTemporalAvailable } from "@repo/temporal";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
@@ -88,6 +99,25 @@ export async function POST(request: NextRequest) {
 		}
 		const organizationId = resolution.organizationId;
 
+		// The in-app start requires WORKSPACE_UPDATE, and this route starts
+		// the same externally mutating runs, so it asks the same question —
+		// live, as of now: a creator demoted since the workflow was built can
+		// still see it, but must not run it. There is no personal arm
+		// (ADR-018), so a session without an organization is refused too.
+		if (
+			!organizationId ||
+			!(await canRunOrganizationWorkflows(userId, organizationId))
+		) {
+			return NextResponse.json(
+				{
+					error: "Forbidden",
+					message:
+						"You do not have permission to run workflows in this organization",
+				},
+				{ status: 403 },
+			);
+		}
+
 		// Get the workflow
 		const workflow = await getWorkflowById(
 			workflowId,
@@ -120,47 +150,124 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
-		// Create execution record
-		const execution = await createWorkflowExecution({
+		// Same cap every other starter applies. The row is created inside the
+		// reservation, so the cap holds under concurrent starts rather than
+		// only when nobody races for it.
+		const reservation = await createExecutionWithinConcurrencyCap({
+			userId,
+			organizationId: organizationId ?? null,
+			data: {
+				workflowId,
+				version: workflow.version,
+				triggerType: "MANUAL",
+				triggerInput: {
+					source: "fabric-ai-chat-confirmed",
+				} as Prisma.InputJsonValue,
+			},
+		});
+		if (!reservation.allowed) {
+			return NextResponse.json(
+				{
+					error: concurrencyRefusalMessage(reservation),
+					code: "EXECUTION_LIMIT_REACHED",
+				},
+				{ status: 429 },
+			);
+		}
+		const execution = reservation.execution;
+
+		// Nothing picks up a PENDING row later, so a start that Temporal
+		// confirms did not reach the engine is a failure: recorded as one and
+		// reported as one, never a "queued" success.
+		const failStart = async (reason: string, status: number) => {
+			await updateWorkflowExecution(execution.id, {
+				status: "FAILED",
+				error: reason,
+				completedAt: new Date(),
+			});
+			return NextResponse.json(
+				{
+					error: reason,
+					code: "EXECUTION_NOT_STARTED",
+					executionId: execution.id,
+				},
+				{ status },
+			);
+		};
+
+		if (!(await isTemporalAvailable())) {
+			return failStart(
+				"The workflow engine is unavailable; the run was not started.",
+				503,
+			);
+		}
+
+		const outcome = await attemptWorkflowBuilderStart({
+			executionId: execution.id,
 			workflowId,
-			version: workflow.version,
-			triggerType: "MANUAL",
-			triggerInput: {
-				source: "fabric-ai-chat-confirmed",
-			} as Prisma.InputJsonValue,
 			userId,
 			organizationId,
+			projectId: workflow.projectId ?? undefined,
 		});
 
-		// Start Temporal workflow if available
-		const temporalAvailable = await isTemporalAvailable();
-		let temporalWorkflowId: string | null = null;
+		if (outcome.status === "not-started") {
+			console.error(
+				"[Execute Workflow API] Failed to start Temporal workflow:",
+				outcome.error,
+			);
+			return failStart(
+				`The workflow engine rejected the start: ${startFailureMessage(outcome.error)}`,
+				502,
+			);
+		}
 
-		if (temporalAvailable) {
-			try {
-				const client = await getTemporalClient();
-				const handle = await client.workflow.start(
-					"workflowBuilderExecutionWorkflow",
-					{
-						taskQueue: "workflow-builder",
-						workflowId: `workflow-execution-${execution.id}`,
-						args: [
-							{
-								executionId: execution.id,
-								workflowId,
-								userId,
-								organizationId,
-							},
-						],
-					},
-				);
-				temporalWorkflowId = handle.workflowId;
-			} catch (error) {
-				console.error(
-					"[Execute Workflow API] Failed to start Temporal workflow:",
-					error,
-				);
-			}
+		if (outcome.status === "unknown") {
+			// The start call failed and the follow-up describe could not
+			// settle whether Temporal accepted it. The run may be in progress
+			// under the deterministic id, so the row stays active: failing it
+			// would invite a retry, which creates a new row and a second run
+			// with the same side effects.
+			console.warn(
+				"[Execute Workflow API] Start unconfirmed; leaving the execution row active:",
+				{ executionId: execution.id, workflowId: outcome.workflowId },
+				outcome.error,
+			);
+			// 202 Accepted, not a 5xx: a server error reads as "retry", and
+			// a retry creates a second row and a second run. The body names
+			// the execution so the caller polls it.
+			return NextResponse.json(
+				{
+					success: true,
+					status: "unconfirmed",
+					executionId: execution.id,
+					workflowName: workflow.name,
+					temporalWorkflowId: outcome.workflowId,
+					message: unconfirmedStartMessage(execution.id),
+				},
+				{ status: 202 },
+			);
+		}
+
+		const temporalWorkflowId = outcome.workflowId;
+
+		// The run exists in the engine from here on. A failure to persist
+		// that fact must not be reported as "not started" (a retry would start
+		// a second run with the same side effects), so it is logged and the
+		// start is still reported. `temporalRunId` holds the workflow id, the
+		// same value every other starter stores and the cancel path reads.
+		// PENDING → RUNNING only: a fast run may already have written its
+		// terminal status, which must not move back to RUNNING.
+		try {
+			await markExecutionRunningIfPending({
+				executionId: execution.id,
+				temporalRunId: temporalWorkflowId,
+			});
+		} catch (error) {
+			console.error(
+				"[Execute Workflow API] Workflow started but the execution row could not be marked RUNNING:",
+				{ executionId: execution.id, temporalWorkflowId },
+				error,
+			);
 		}
 
 		return NextResponse.json({
@@ -168,9 +275,7 @@ export async function POST(request: NextRequest) {
 			executionId: execution.id,
 			workflowName: workflow.name,
 			temporalWorkflowId,
-			message: temporalWorkflowId
-				? `Workflow "${workflow.name}" has been started. Execution ID: ${execution.id}`
-				: `Workflow "${workflow.name}" execution has been queued. Execution ID: ${execution.id}`,
+			message: `Workflow "${workflow.name}" has been started. Execution ID: ${execution.id}`,
 		});
 	} catch (error) {
 		console.error("[Execute Workflow API] Error:", error);

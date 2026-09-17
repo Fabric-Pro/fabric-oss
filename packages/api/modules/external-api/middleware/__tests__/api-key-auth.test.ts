@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
 	verifyOrganizationApiKey: vi.fn(),
 	verifyUserApiKey: vi.fn(),
 	canExecuteOrganizationAgents: vi.fn(),
+	canRunOrganizationWorkflows: vi.fn(),
 }));
 
 vi.mock("@repo/database", async (importOriginal) => {
@@ -28,6 +29,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 		...actual,
 		verifyOrganizationApiKey: mocks.verifyOrganizationApiKey,
 		canExecuteOrganizationAgents: mocks.canExecuteOrganizationAgents,
+		canRunOrganizationWorkflows: mocks.canRunOrganizationWorkflows,
 	};
 });
 
@@ -67,6 +69,7 @@ beforeEach(() => {
 	mocks.verifyOrganizationApiKey.mockReset();
 	mocks.verifyUserApiKey.mockReset();
 	mocks.canExecuteOrganizationAgents.mockReset().mockResolvedValue(true);
+	mocks.canRunOrganizationWorkflows.mockReset().mockResolvedValue(true);
 });
 
 describe("agents:execute — the owner's current role", () => {
@@ -129,6 +132,72 @@ describe("agents:execute — the owner's current role", () => {
 		const body = await res.json();
 		expect(body.error).toContain("Missing required scope");
 		expect(mocks.canExecuteOrganizationAgents).not.toHaveBeenCalled();
+	});
+});
+
+describe("workflows:run — the owner's current role", () => {
+	// The in-app start requires WORKSPACE_UPDATE, which the viewer role does
+	// not hold. Without this gate a key minted by a member kept triggering
+	// workflows — runs that execute externally mutating nodes — after its
+	// owner was demoted.
+	it("refuses when the owner may no longer run workflows", async () => {
+		mocks.verifyOrganizationApiKey.mockResolvedValue(
+			orgKeyWith(["workflows:run"]),
+		);
+		mocks.canRunOrganizationWorkflows.mockResolvedValue(false);
+
+		const res = await call(appRequiring("workflows:run"), ORG_KEY);
+
+		expect(res.status).toBe(403);
+		const body = await res.json();
+		expect(body.error).toContain("no longer holds");
+	});
+
+	it("asks about the key's creator in the key's organization", async () => {
+		mocks.verifyOrganizationApiKey.mockResolvedValue(
+			orgKeyWith(["workflows:run"]),
+		);
+
+		await call(appRequiring("workflows:run"), ORG_KEY);
+
+		expect(mocks.canRunOrganizationWorkflows).toHaveBeenCalledWith(
+			"user-demoted",
+			"org-123",
+		);
+	});
+
+	it("refuses a WILDCARD key too", async () => {
+		// A legacy `*` key minted before the demotion is the widest credential
+		// there is; the gate has to run for it, not only for the exact scope.
+		mocks.verifyOrganizationApiKey.mockResolvedValue(orgKeyWith(["*"]));
+		mocks.canRunOrganizationWorkflows.mockResolvedValue(false);
+
+		const res = await call(appRequiring("workflows:run"), ORG_KEY);
+
+		expect(res.status).toBe(403);
+	});
+
+	it("serves a key whose owner kept the role", async () => {
+		mocks.verifyOrganizationApiKey.mockResolvedValue(
+			orgKeyWith(["workflows:run"]),
+		);
+
+		const res = await call(appRequiring("workflows:run"), ORG_KEY);
+
+		expect(res.status).toBe(200);
+	});
+
+	it("keeps the missing-scope refusal distinct from the lost-role one", async () => {
+		mocks.verifyOrganizationApiKey.mockResolvedValue(
+			orgKeyWith(["workflows:read"]),
+		);
+
+		const res = await call(appRequiring("workflows:run"), ORG_KEY);
+
+		expect(res.status).toBe(403);
+		const body = await res.json();
+		expect(body.error).toContain("Missing required scope");
+		expect(mocks.canRunOrganizationWorkflows).not.toHaveBeenCalled();
 	});
 });
 

@@ -12,7 +12,13 @@
  * flight than the queue should give any one of them.
  */
 
-import { db } from "@repo/database";
+import {
+	db,
+	type Prisma,
+	reserveWorkflowExecution,
+	type WorkflowExecution,
+	type WorkflowTriggerType,
+} from "@repo/database";
 
 /**
  * Fallback ceiling for a single tenant's in-flight executions.
@@ -53,51 +59,84 @@ export function resolveDefaultConcurrencyLimit(): number {
 	return parsed;
 }
 
-/** Statuses that mean "occupying a worker slot right now". */
-const IN_FLIGHT_STATUSES = ["PENDING", "RUNNING"] as const;
-
-export interface ConcurrencyCheck {
-	allowed: boolean;
-	inFlight: number;
-	limit: number;
+/**
+ * The ceiling for one tenant: an organization's own
+ * `OrganizationDeploymentQuota.maxConcurrentExecutions` (the quota model that
+ * already exists for agent deployments — reusing it avoids a second one),
+ * otherwise the instance default.
+ */
+async function resolveExecutionConcurrencyLimit(
+	organizationId?: string | null,
+): Promise<number> {
+	const quota = organizationId
+		? await db.organizationDeploymentQuota.findUnique({
+				where: { organizationId },
+				select: { maxConcurrentExecutions: true },
+			})
+		: null;
+	return quota?.maxConcurrentExecutions ?? resolveDefaultConcurrencyLimit();
 }
 
+export type ConcurrencyReservation =
+	| {
+			allowed: true;
+			execution: WorkflowExecution;
+			inFlight: number;
+			limit: number;
+	  }
+	| { allowed: false; inFlight: number; limit: number };
+
 /**
- * Count a tenant's in-flight executions and compare against the cap.
+ * Create the PENDING execution row for a run, or refuse because the tenant
+ * is at its cap — atomically, so the cap holds under concurrent starts.
  *
- * Organization-scoped when there is an organization, otherwise scoped to the
- * user — matching the XOR tenancy the rest of the module uses, so a personal
- * workflow cannot consume an organization's headroom or vice versa.
+ * This replaced a count-then-insert pair (`checkExecutionConcurrency` followed
+ * by `createWorkflowExecution`) that every starter performed as two separate
+ * statements: N concurrent requests at `limit - 1` all observed one free slot
+ * and all inserted. The reservation itself lives in `@repo/database`
+ * (`reserveWorkflowExecution`), which explains why it holds a lock; this
+ * wrapper only resolves the tenant's limit.
  *
- * An organization may raise its own ceiling through
- * `OrganizationDeploymentQuota.maxConcurrentExecutions`, which already exists
- * for agent deployments; reusing it avoids a second quota model.
+ * Every trigger surface — the in-app start, the v1 REST trigger, the webhook,
+ * the chat-confirmed start and the MCP gateway tool — goes through this, so
+ * the cap means the same thing on all of them.
  */
-export async function checkExecutionConcurrency(args: {
+export async function createExecutionWithinConcurrencyCap(args: {
 	userId: string;
 	organizationId?: string | null;
-}): Promise<ConcurrencyCheck> {
-	const tenantFilter = args.organizationId
-		? { organizationId: args.organizationId }
-		: { userId: args.userId, organizationId: null };
+	data: {
+		workflowId: string;
+		version: number;
+		triggerType: WorkflowTriggerType;
+		triggerInput?: Prisma.InputJsonValue;
+	};
+}): Promise<ConcurrencyReservation> {
+	const limit = await resolveExecutionConcurrencyLimit(args.organizationId);
+	const result = await reserveWorkflowExecution({
+		userId: args.userId,
+		organizationId: args.organizationId,
+		limit,
+		data: args.data,
+	});
+	if (!result.reserved) {
+		return {
+			allowed: false,
+			inFlight: result.inFlight,
+			limit: result.limit,
+		};
+	}
+	return {
+		allowed: true,
+		execution: result.execution,
+		inFlight: result.inFlight,
+		limit: result.limit,
+	};
+}
 
-	const [inFlight, quota] = await Promise.all([
-		db.workflowExecution.count({
-			where: {
-				...tenantFilter,
-				status: { in: [...IN_FLIGHT_STATUSES] },
-			},
-		}),
-		args.organizationId
-			? db.organizationDeploymentQuota.findUnique({
-					where: { organizationId: args.organizationId },
-					select: { maxConcurrentExecutions: true },
-				})
-			: Promise.resolve(null),
-	]);
-
-	const limit =
-		quota?.maxConcurrentExecutions ?? resolveDefaultConcurrencyLimit();
-
-	return { allowed: inFlight < limit, inFlight, limit };
+/** The refusal every surface phrases the same way. */
+export function concurrencyRefusalMessage(reservation: {
+	inFlight: number;
+	limit: number;
+}): string {
+	return `This workspace already has ${reservation.inFlight} workflow executions running (limit ${reservation.limit}). Wait for one to finish, or cancel one.`;
 }
