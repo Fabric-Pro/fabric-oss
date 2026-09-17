@@ -426,8 +426,8 @@ export async function listTopicDecisions(input: {
 		// `createdAt` then `id`: the same total order `amendTopicQuestionAnswer`
 		// uses (reversed there), because rows written in one transaction and
 		// amendments inside one millisecond share a timestamp, and Postgres may
-		// return tied rows in any order. `settledDecision` sorts replies again
-		// itself; this keeps the source and the helper in agreement.
+		// return tied rows in any order. `settledDecision` orders replies itself;
+		// this keeps the source and the helper in agreement.
 		orderBy: [{ createdAt: "asc" }, { id: "asc" }],
 		// Included rather than fetched separately: the assignee rows are
 		// scoped by the PARENT, which this query has already scoped, so a
@@ -628,22 +628,22 @@ export async function answerTopicQuestion(input: {
  *
  * Unlike maturation, there is no `supersedesId` COLUMN to record the link. That
  * would be a migration on `PublishingTopicDecisionEntry`, and it is not needed:
- * replies under one root are a single chronological chain, so "the live answer"
- * is the newest reply carrying content and everything before it is history.
- * `listTopicDecisions` already returns replies `createdAt asc`, so readers get
- * that order for free. Callers must therefore take the LAST answering reply,
- * not the first — before amendment existed those were the same reply, and code
- * written against that assumption now shows a stale answer.
+ * the answers under one root are a single chronological chain, so "the live
+ * answer" is the newest reply a member recorded as the answer — authored by a
+ * `USER`, status `RESOLVED`, by `createdAt` then `id`, whatever its content —
+ * and every older one is history. That is `currentAnswerReply`
+ * (`@repo/utils/publishing-restrictions`), the rule the topic page and the
+ * drafting prompts use. An "Ask" note is `OPEN`, so it is never the live answer.
  *
  * Three refusals, and they mean different things to a caller:
  *
  *  - `not_found` — no such question, or it is not settled. An OPEN or
  *    POSSIBLY_RESOLVED root is answered through `answerTopicQuestion`; there is
  *    nothing here to supersede.
- *  - `stale` — `supersedesId` does not name the live answer any more, so the
- *    caller is amending text a colleague has already replaced. Refused rather
- *    than applied: the whole point of an amendment is that its author read what
- *    they were changing.
+ *  - `stale` — `supersedesId` does not name the live answer: either it never
+ *    did (a note's id, or an older answer's id) or a colleague has replaced it
+ *    since. Refused rather than applied: the whole point of an amendment is
+ *    that its author read what they were changing.
  *  - `deduped` — the submitted text already IS the live answer. Makes the
  *    operation idempotent, which is what a double-click on the Save button
  *    produces, and costs a reader nothing: an amendment that changes no words
@@ -694,8 +694,15 @@ export async function amendTopicQuestionAnswer(input: {
 			return { status: "not_found" as const, root: null };
 		}
 
-		// The live answer is the NEWEST reply carrying content. `id desc` breaks
-		// a same-millisecond tie so this is a total order — without it two
+		// The live answer: the newest reply a member recorded as the answer —
+		// `authorType: USER`, `status: RESOLVED` — whatever its content. This is
+		// `currentAnswerReply`'s rule, the one the page and drafting use; a query
+		// cannot call it, so `publishing-topic-amend-answer.test.ts` holds the two
+		// to the same reply. A note is OPEN and never qualifies. A blank or
+		// `null` answer does: it is the reply an amendment must supersede, and
+		// skipping it here left the page and this guard naming different replies,
+		// so every amendment of such a thread was refused as stale. `id desc`
+		// breaks a same-millisecond tie so this is a total order — without it two
 		// replies written in one batch could swap places between the read that
 		// decides staleness and the read that renders the thread.
 		const live = await tx.publishingTopicDecisionEntry.findFirst({
@@ -704,7 +711,8 @@ export async function amendTopicQuestionAnswer(input: {
 				projectId: input.projectId,
 				topicId: input.topicId,
 				deletedAt: null,
-				content: { not: null },
+				authorType: "USER",
+				status: "RESOLVED",
 			},
 			orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 			select: { id: true, content: true },
@@ -712,7 +720,8 @@ export async function amendTopicQuestionAnswer(input: {
 
 		if (!live || live.id !== input.supersedesId) {
 			// Either the root is settled with no answering reply at all — which
-			// nothing writes today — or someone else amended first.
+			// nothing writes today — or someone else amended first, or
+			// `supersedesId` names a reply that is not the current answer.
 			const existing = await tx.publishingTopicDecisionEntry.findUnique({
 				where: { id: root.id },
 			});
@@ -838,9 +847,10 @@ export async function setTopicQuestionAssignees(input: {
 	 *
 	 * The maturation sibling has carried one since #5, and without it routing a
 	 * question notified somebody with nothing but "you have been assigned" —
-	 * the recipient arrives at a bare assignment and has to guess why. A turn
-	 * rather than a column so it renders under the question like any other
-	 * reply, with its author and its time.
+	 * the recipient arrives at a bare assignment and has to guess why. A reply
+	 * turn with status `OPEN` rather than a column: the topic page renders it
+	 * under its question with its author and its time, and `OPEN` keeps it out
+	 * of every reader of the answer (`currentAnswerReply`).
 	 */
 	note?: string | null;
 	/** Captured at write time, as answer turns do: an unattributed note is worse than none. */
@@ -995,10 +1005,27 @@ export async function restoreTopicQuestion(input: {
 		return null;
 	}
 
-	await db.publishingTopicDecisionEntry.update({
-		where: { id: entry.id },
+	// CLAIM THE STATUS JUST READ, the pattern `reconcileTopicQuestions` uses.
+	// `answerTopicQuestion` keeps a set-aside root answerable and flips it to
+	// RESOLVED, so an answer can land between the read above and this write; an
+	// unconditional write would then reopen an answered question, which drafting
+	// ignores because the root is no longer RESOLVED. Losing the claim is the
+	// same `null` as a question that was never set aside.
+	const claim = await db.publishingTopicDecisionEntry.updateMany({
+		where: {
+			id: entry.id,
+			topicId: input.topicId,
+			projectId: input.projectId,
+			parentId: null,
+			kind: "QUESTION",
+			status: "POSSIBLY_RESOLVED",
+			deletedAt: null,
+		},
 		data: { status: "OPEN" },
 	});
+	if (claim.count === 0) {
+		return null;
+	}
 
 	return { restored: true, summary: entry.subject ?? entry.content };
 }

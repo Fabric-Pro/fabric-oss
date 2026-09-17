@@ -307,11 +307,10 @@ describe("setQuestionAssignees", () => {
 	 * it.
 	 *
 	 * THE REAL GUARD IS STRUCTURAL, one layer down:
-	 * `setTopicQuestionAssignees` writes only to
-	 * `publishingTopicQuestionAssignee`, and
-	 * `publishing-question-assignee.test.ts` mocks the decision-entry model
-	 * with `findFirst` alone — so a write that touched the root's `status`
-	 * throws there rather than passing quietly.
+	 * `publishing-question-assignee.test.ts` gives the transaction the
+	 * decision-entry model's `create` alone — the note turn — so a write that
+	 * touched the root's `status` (`update`, `updateMany`) throws there rather
+	 * than passing quietly, and that file pins the note turn as OPEN.
 	 */
 	it("never answers the question it routes", async () => {
 		dbMocks.setTopicQuestionAssignees.mockResolvedValue({

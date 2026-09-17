@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	currentAnswerReply,
 	decisionLabel,
 	EXTRA_RESTRICTING_KINDS_BY_POST_TYPE,
 	isRestrictingThread,
@@ -744,5 +745,138 @@ describe("settledBlocker — the same computation, for a root raised as an erran
 
 	it("refuses a blocker nobody answered", () => {
 		expect(settledBlocker({ ...blockerThread(), replies: [] })).toBeNull();
+	});
+});
+
+describe("currentAnswerReply — one rule for which reply is the answer (Fizzy #1988)", () => {
+	type Reply = {
+		id: string;
+		createdAt: Date | string;
+		status: string;
+		authorType: string;
+		content: string | null;
+	};
+	const answer = (over: Partial<Reply> = {}): Reply => ({
+		id: "reply-1",
+		createdAt: new Date("2026-09-01T10:00:00Z"),
+		status: "RESOLVED",
+		authorType: "USER",
+		content: "Yes, name them.",
+		...over,
+	});
+	const later = new Date("2026-09-02T10:00:00Z");
+
+	it("returns the answer, not an Ask note written after it", () => {
+		// `setTopicQuestionAssignees` writes a note as a USER reply with status
+		// OPEN, on a root of any status.
+		const first = answer();
+		const note = answer({
+			id: "reply-2",
+			createdAt: later,
+			status: "OPEN",
+			content: "Can legal confirm this?",
+		});
+		expect(currentAnswerReply([first, note])).toBe(first);
+	});
+
+	it("returns a later blank answer, because it is the reply an amendment supersedes", () => {
+		const blank = answer({
+			id: "reply-2",
+			createdAt: later,
+			content: "   ",
+		});
+		expect(currentAnswerReply([answer(), blank])).toBe(blank);
+	});
+
+	it("returns a later answer with no content, and settledDecision then settles nothing", () => {
+		const empty = answer({
+			id: "reply-2",
+			createdAt: later,
+			content: null,
+		});
+		const replies = [answer(), empty];
+		expect(currentAnswerReply(replies)).toBe(empty);
+		expect(
+			settledDecision({
+				root: {
+					kind: "QUESTION",
+					status: "RESOLVED",
+					decisionKind: "CUSTOMER_NAME",
+					subject: "example-org",
+				},
+				replies: replies as SettledDecisionThread["replies"],
+			}),
+		).toBeNull();
+	});
+
+	it("breaks a same-millisecond tie by the larger id, in either input order", () => {
+		const at = new Date("2026-09-01T10:00:00Z");
+		const a = answer({
+			id: "reply-a",
+			createdAt: at,
+			content: "Answer A.",
+		});
+		const b = answer({
+			id: "reply-b",
+			createdAt: at,
+			content: "Answer B.",
+		});
+		expect(currentAnswerReply([a, b])).toBe(b);
+		expect(currentAnswerReply([b, a])).toBe(b);
+	});
+
+	it("ignores a newer AI reply, even one marked RESOLVED", () => {
+		const person = answer();
+		const agent = answer({
+			id: "reply-2",
+			createdAt: later,
+			authorType: "AGENT",
+			content: "Analysis note.",
+		});
+		expect(currentAnswerReply([person, agent])).toBe(person);
+	});
+
+	it("orders string createdAt values (the web's shape) exactly as Date values", () => {
+		// The ids run against the times, so an order that ignored time would
+		// pick the wrong one.
+		const older = answer({
+			id: "reply-z",
+			createdAt: "2026-09-01T10:00:00.000Z",
+		});
+		const newer = answer({
+			id: "reply-a",
+			createdAt: "2026-09-02T10:00:00.000Z",
+		});
+		expect(currentAnswerReply([older, newer])).toBe(newer);
+		expect(currentAnswerReply([newer, older])).toBe(newer);
+	});
+
+	it("sorts an unparsable createdAt as the oldest, whatever the input order", () => {
+		// The unparsable reply has the LARGER id, so an order that let the bad
+		// time fall through to the id tiebreak would pick it.
+		const valid = answer({
+			id: "reply-a",
+			createdAt: "2026-09-01T10:00:00.000Z",
+		});
+		const broken = answer({ id: "reply-z", createdAt: "not a date" });
+		expect(currentAnswerReply([broken, valid])).toBe(valid);
+		expect(currentAnswerReply([valid, broken])).toBe(valid);
+	});
+
+	it("returns null when no reply is a member's answer", () => {
+		expect(
+			currentAnswerReply([
+				answer({ status: "OPEN" }),
+				answer({ id: "reply-2", authorType: "AGENT" }),
+			]),
+		).toBeNull();
+		expect(currentAnswerReply([])).toBeNull();
+	});
+
+	it("does not reorder the array it is given", () => {
+		const replies = [answer({ id: "reply-2", createdAt: later }), answer()];
+		const before = [...replies];
+		currentAnswerReply(replies);
+		expect(replies).toEqual(before);
 	});
 });

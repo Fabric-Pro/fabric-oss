@@ -17,15 +17,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * that reads the arguments can catch that.
  */
 
-const { findFirst, findMany, createMany, deleteMany, transaction } = vi.hoisted(
-	() => ({
-		findFirst: vi.fn(),
-		findMany: vi.fn(),
-		createMany: vi.fn(),
-		deleteMany: vi.fn(),
-		transaction: vi.fn(),
-	}),
-);
+const {
+	findFirst,
+	findMany,
+	createMany,
+	deleteMany,
+	createEntry,
+	transaction,
+} = vi.hoisted(() => ({
+	findFirst: vi.fn(),
+	findMany: vi.fn(),
+	createMany: vi.fn(),
+	deleteMany: vi.fn(),
+	/** The note turn — the only decision-entry write this function makes. */
+	createEntry: vi.fn(),
+	transaction: vi.fn(),
+}));
 
 vi.mock("../prisma/client", () => ({
 	db: {
@@ -35,6 +42,7 @@ vi.mock("../prisma/client", () => ({
 	},
 }));
 
+import { currentAnswerReply } from "@repo/utils/publishing-restrictions";
 import { setTopicQuestionAssignees } from "../prisma/queries/projects/publishing-decisions";
 
 /** The question the assignment hangs off, in an organization. */
@@ -57,11 +65,15 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	findFirst.mockResolvedValue(ORG_QUESTION);
 	findMany.mockResolvedValue([]);
+	createEntry.mockResolvedValue({ id: "note-1" });
 	// Run the callback against a tx that records what it was asked to write.
+	// The decision-entry model offers `create` alone: a write that touched the
+	// root's status (`update`, `updateMany`) throws here instead of passing.
 	transaction.mockImplementation(
 		async (fn: (tx: unknown) => Promise<unknown>) =>
 			fn({
 				publishingTopicQuestionAssignee: { createMany, deleteMany },
+				publishingTopicDecisionEntry: { create: createEntry },
 			}),
 	);
 });
@@ -219,5 +231,47 @@ describe("setTopicQuestionAssignees", () => {
 		// Falls back to `content` when there is no subject, so a question
 		// minted without one still gives the bell row something to say.
 		expect(result?.summary).toBe("May we name the customer?");
+	});
+
+	it("writes a note as an OPEN reply by a user, which is never the answer", async () => {
+		await setTopicQuestionAssignees({
+			...INPUT,
+			assigneeUserIds: ["u1"],
+			note: "  Can legal confirm the name?  ",
+		});
+
+		expect(createEntry).toHaveBeenCalledTimes(1);
+		const written = (
+			createEntry.mock.calls[0][0] as { data: Record<string, unknown> }
+		).data;
+		expect(written).toMatchObject({
+			topicId: "topic-1",
+			projectId: "proj-1",
+			organizationId: "org-1",
+			userId: null,
+			parentId: "root-1",
+			kind: "QUESTION",
+			status: "OPEN",
+			authorType: "USER",
+			authorUserId: "asker-1",
+			content: "Can legal confirm the name?",
+		});
+
+		// OPEN is what keeps the note out of every reader of the answer: over
+		// the row just written, dated after an existing answer, the answer still
+		// wins.
+		const answer = {
+			id: "answer-1",
+			createdAt: new Date("2026-09-01T10:00:00Z"),
+			status: "RESOLVED",
+			authorType: "USER",
+			content: "Yes, name them.",
+		};
+		const note = {
+			...written,
+			id: "note-1",
+			createdAt: new Date("2026-09-02T10:00:00Z"),
+		} as unknown as typeof answer;
+		expect(currentAnswerReply([answer, note])?.id).toBe("answer-1");
 	});
 });

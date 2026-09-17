@@ -1414,6 +1414,7 @@ export function TopicItemPage({
 						organizationId={organizationId}
 						canEdit={canEdit}
 						isLoading={decisionsQuery.isLoading}
+						isFetching={decisionsQuery.isFetching}
 						analysisFailed={latestAttempt?.status === "FAILED"}
 						isGeneratingAnalysis={isGeneratingAnalysis}
 						threads={decisionsQuery.data?.threads ?? []}

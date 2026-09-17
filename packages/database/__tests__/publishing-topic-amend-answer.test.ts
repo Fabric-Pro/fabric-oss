@@ -51,6 +51,7 @@ vi.mock("../prisma/client", () => ({
 	Prisma: {},
 }));
 
+import { currentAnswerReply } from "@repo/utils/publishing-restrictions";
 import {
 	amendTopicQuestionAnswer,
 	answerTopicQuestion,
@@ -318,6 +319,292 @@ describe("answerTopicQuestion is unchanged by the amend path", () => {
 		});
 
 		expect(result.status).toBe("deduped");
+		expect(create).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * The amend guard reads the same reply the page shows and drafting uses.
+ *
+ * A query cannot call `currentAnswerReply`, so the rule lives twice: once in
+ * the helper and once as the `where` of the guard's read. This fake serves that
+ * read the way Postgres would — equality on every key it receives, the one
+ * operator the guard ever used (`{ not: null }`), `undefined` ignored like
+ * Prisma, the `orderBy` array — and THROWS on anything else, so a change to the
+ * query that the fake cannot judge fails loudly instead of passing. Each case
+ * compares the row the fake RETURNED with the helper's pick over the thread's
+ * own replies, never infers it from the outcome.
+ *
+ * Every pool also holds four decoys that are answers in every other respect —
+ * a person's, RESOLVED, with text, newer than any real reply — each outside the
+ * thread by exactly one key: another root, soft-deleted, another topic, another
+ * project. A query that drops that key returns the decoy.
+ */
+type ReplyRow = {
+	id: string;
+	parentId: string;
+	projectId: string;
+	topicId: string;
+	deletedAt: Date | null;
+	authorType: "USER" | "AGENT";
+	status: string;
+	content: string | null;
+	createdAt: Date;
+};
+
+const minute = (m: number) => new Date(Date.UTC(2026, 8, 1, 10, m));
+
+const replyRow = (
+	over: Partial<ReplyRow> & Pick<ReplyRow, "id">,
+): ReplyRow => ({
+	parentId: ROOT.id,
+	projectId: INPUT.projectId,
+	topicId: INPUT.topicId,
+	deletedAt: null,
+	authorType: "USER",
+	status: "RESOLVED",
+	content: "Yes, name them.",
+	createdAt: minute(0),
+	...over,
+});
+
+const DECOYS: ReplyRow[] = [
+	replyRow({
+		id: "decoy-root",
+		parentId: "root-2",
+		content: "Another question's answer.",
+		createdAt: minute(59),
+	}),
+	replyRow({
+		id: "decoy-deleted",
+		deletedAt: minute(58),
+		content: "A deleted answer.",
+		createdAt: minute(59),
+	}),
+	replyRow({
+		id: "decoy-topic",
+		topicId: "topic-2",
+		content: "Another topic's answer.",
+		createdAt: minute(59),
+	}),
+	replyRow({
+		id: "decoy-project",
+		projectId: "proj-2",
+		content: "Another project's answer.",
+		createdAt: minute(59),
+	}),
+];
+
+const EARLIER_ANSWER = replyRow({ id: "answer-1", createdAt: minute(1) });
+
+const NEWEST_FIRST = [{ createdAt: "desc" }, { id: "desc" }];
+
+function strictReplyRead(
+	pool: ReplyRow[],
+	args: Record<string, unknown>,
+): ReplyRow | null {
+	for (const key of Object.keys(args)) {
+		if (key !== "where" && key !== "orderBy" && key !== "select") {
+			throw new Error(`fake findFirst: unhandled argument "${key}"`);
+		}
+	}
+	if (JSON.stringify(args.orderBy) !== JSON.stringify(NEWEST_FIRST)) {
+		throw new Error(
+			`fake findFirst: unhandled orderBy ${JSON.stringify(args.orderBy)}`,
+		);
+	}
+	const where = args.where as Record<string, unknown>;
+	const matches = pool.filter((row) =>
+		Object.entries(where).every(([key, value]) => {
+			if (value === undefined) {
+				return true;
+			}
+			if (!(key in row)) {
+				throw new Error(`fake findFirst: unhandled where key "${key}"`);
+			}
+			const actual = row[key as keyof ReplyRow];
+			if (
+				value !== null &&
+				typeof value === "object" &&
+				!(value instanceof Date)
+			) {
+				const operator = value as Record<string, unknown>;
+				if (
+					Object.keys(operator).length === 1 &&
+					"not" in operator &&
+					operator.not === null
+				) {
+					return actual !== null;
+				}
+				throw new Error(
+					`fake findFirst: unhandled operator on "${key}": ${JSON.stringify(value)}`,
+				);
+			}
+			return actual === value;
+		}),
+	);
+	matches.sort(
+		(a, b) =>
+			b.createdAt.getTime() - a.createdAt.getTime() ||
+			(a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+	);
+	return matches[0] ?? null;
+}
+
+/** Serve root reads from `ROOT` and reply reads from the strict fake; returns every row the fake handed back. */
+function serveThread(pool: ReplyRow[]): (ReplyRow | null)[] {
+	const returned: (ReplyRow | null)[] = [];
+	findFirst.mockImplementation(
+		async (args: { where: { parentId?: string | null } }) => {
+			if (args.where.parentId === null) {
+				return ROOT;
+			}
+			const row = strictReplyRead(
+				pool,
+				args as unknown as Record<string, unknown>,
+			);
+			returned.push(row);
+			return row;
+		},
+	);
+	return returned;
+}
+
+const PARITY_FIXTURES: { name: string; replies: ReplyRow[] }[] = [
+	{
+		name: "an answer, then a later note",
+		replies: [
+			EARLIER_ANSWER,
+			replyRow({
+				id: "note-1",
+				status: "OPEN",
+				content: "Can legal confirm this?",
+				createdAt: minute(2),
+			}),
+		],
+	},
+	{
+		name: "an answer, then a later AI reply marked RESOLVED",
+		replies: [
+			EARLIER_ANSWER,
+			replyRow({
+				id: "agent-1",
+				authorType: "AGENT",
+				content: "Analysis note.",
+				createdAt: minute(2),
+			}),
+		],
+	},
+	{
+		name: "an answer, then a later blank answer",
+		replies: [
+			EARLIER_ANSWER,
+			replyRow({ id: "blank-1", content: "   ", createdAt: minute(2) }),
+		],
+	},
+	{
+		name: "an answer, then a later answer with no content",
+		replies: [
+			EARLIER_ANSWER,
+			replyRow({ id: "null-1", content: null, createdAt: minute(2) }),
+		],
+	},
+	{
+		name: "two answers sharing a createdAt",
+		replies: [
+			replyRow({ id: "answer-b", createdAt: minute(1) }),
+			replyRow({ id: "answer-a", content: "No.", createdAt: minute(1) }),
+		],
+	},
+	{
+		name: "a note only",
+		replies: [
+			replyRow({
+				id: "note-only",
+				status: "OPEN",
+				content: "Can legal confirm this?",
+				createdAt: minute(2),
+			}),
+		],
+	},
+];
+
+describe("amendTopicQuestionAnswer — its live answer is the page's current answer", () => {
+	it.each(PARITY_FIXTURES)(
+		"reads the reply currentAnswerReply picks: $name",
+		async ({ replies }) => {
+			const returned = serveThread([...replies, ...DECOYS]);
+
+			await amendTopicQuestionAnswer({
+				...INPUT,
+				supersedesId: "not-a-reply",
+			});
+
+			expect(returned).toHaveLength(1);
+			// Fed only the thread's own replies — what `listTopicDecisions`
+			// returns for it — never the decoys.
+			expect(returned[0]?.id ?? null).toBe(
+				currentAnswerReply(replies)?.id ?? null,
+			);
+		},
+	);
+});
+
+describe("amendTopicQuestionAnswer — a current answer saved empty can be amended", () => {
+	it.each([
+		{
+			name: "blank",
+			current: replyRow({
+				id: "blank-1",
+				content: "   ",
+				createdAt: minute(2),
+			}),
+		},
+		{
+			name: "with no content",
+			current: replyRow({
+				id: "null-1",
+				content: null,
+				createdAt: minute(2),
+			}),
+		},
+	])(
+		"amends a $name current answer named by its own id",
+		async ({ current }) => {
+			serveThread([EARLIER_ANSWER, current, ...DECOYS]);
+
+			const result = await amendTopicQuestionAnswer({
+				...INPUT,
+				supersedesId: current.id,
+			});
+
+			expect(result.status).toBe("amended");
+			expect(create).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						parentId: ROOT.id,
+						status: "RESOLVED",
+						authorType: "USER",
+						content: INPUT.answer,
+					}),
+				}),
+			);
+		},
+	);
+
+	it("refuses the older answer's id on such a thread as stale", async () => {
+		serveThread([
+			EARLIER_ANSWER,
+			replyRow({ id: "blank-1", content: "   ", createdAt: minute(2) }),
+			...DECOYS,
+		]);
+
+		const result = await amendTopicQuestionAnswer({
+			...INPUT,
+			supersedesId: EARLIER_ANSWER.id,
+		});
+
+		expect(result.status).toBe("stale");
 		expect(create).not.toHaveBeenCalled();
 	});
 });

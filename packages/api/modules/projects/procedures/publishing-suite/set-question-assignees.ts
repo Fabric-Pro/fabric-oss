@@ -31,10 +31,13 @@ const MAX_ASSIGNEES = 50;
  * deliberately no check that the caller is the author or an existing assignee —
  * the same call `PUBLISHING_TOPIC_UPDATE` above already gates.
  *
- * NEVER RESOLVES ANYTHING. Asking somebody is not answering: the root stays
- * OPEN and no reply turn is written. `answerTopicQuestion` is the only path
- * that settles a question, and routing an ask through it would close the very
- * question being asked.
+ * NEVER RESOLVES ANYTHING. Asking somebody is not answering: the root keeps
+ * its status. With a note, one reply turn is written — authored by a user,
+ * status OPEN — and that status keeps it out of every reader of the answer:
+ * the topic page, the amend guard and the drafting prompts all take the newest
+ * USER reply with status RESOLVED (`currentAnswerReply`). `answerTopicQuestion`
+ * is the only path that settles a question, and routing an ask through it
+ * would close the very question being asked.
  */
 export const setPublishingQuestionAssigneesProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PUBLISHING_TOPIC_UPDATE))
@@ -58,8 +61,9 @@ export const setPublishingQuestionAssigneesProcedure = tenantProtectedProcedure
 			 *
 			 * Without it, routing a question notified somebody with nothing but
 			 * "you have been assigned" — the recipient arrives at a bare
-			 * assignment and has to guess why. Stored as a real reply turn, so
-			 * it renders under the question with its author and its time.
+			 * assignment and has to guess why. Stored as a reply turn with status
+			 * OPEN, so the topic page shows it under the question with its author
+			 * and its time, and never as the answer.
 			 */
 			note: z.string().trim().max(2000).optional(),
 		}),

@@ -16,7 +16,7 @@
 
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The panel owns TWO mutations now — answering an open question, and amending
 // a settled one. They route to SEPARATE spies by `mutationKey` rather than
@@ -29,6 +29,7 @@ const {
 	amendMutation,
 	assignMutation,
 	restoreMutate,
+	invalidateQueries,
 	mutationState,
 } = vi.hoisted(() => ({
 	answerMutation: vi.fn(),
@@ -45,6 +46,8 @@ const {
 	 * a regression that answered on the caller's behalf pass every assertion.
 	 */
 	assignMutation: vi.fn(),
+	/** ONE spy for every `useQueryClient()` call, so a refetch is observable. */
+	invalidateQueries: vi.fn(),
 	mutationState: {
 		shouldFail: false,
 		/** What the amend mutation resolves with — its `onSuccess` reads `status`. */
@@ -95,7 +98,7 @@ vi.mock("@tanstack/react-query", () => ({
 		mutateAsync: (vars: unknown) => run(opts, vars),
 		isPending: false,
 	}),
-	useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+	useQueryClient: () => ({ invalidateQueries }),
 }));
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), warning: vi.fn() } }));
@@ -235,6 +238,10 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mutationState.shouldFail = false;
 	mutationState.result = { status: "amended" };
+});
+
+afterEach(() => {
+	window.location.hash = "";
 });
 
 describe("TopicQuestionsPanel — the four states (DV14)", () => {
@@ -1552,6 +1559,270 @@ describe("TopicQuestionsPanel — per-question assignment", () => {
 	});
 });
 
+describe("TopicQuestionsPanel — notes asked on a question", () => {
+	const ALEX = { id: "user-1", name: "Alex Example", image: null };
+	const SAM = { id: "user-2", name: "Sam Example", image: null };
+	/** A reply by a person unless overridden, built on the resolved fixture's row. */
+	const turn = (overrides: Record<string, unknown>) => ({
+		...RESOLVED_THREAD.replies[0],
+		author: ALEX,
+		...overrides,
+	});
+	const notesIn = (container: HTMLElement) =>
+		within(container).getByRole("list", { name: "Notes on this question" });
+
+	it("lists only the notes under an open question, oldest first, each with who asked and when", () => {
+		const thread = {
+			root: root(),
+			replies: [
+				turn({
+					id: "note-b",
+					parentId: "decision-1",
+					status: "OPEN",
+					content: "Second: can finance check the figure?",
+					author: SAM,
+					createdAt: new Date("2026-08-30T11:00:00Z"),
+				}),
+				turn({
+					id: "note-a",
+					parentId: "decision-1",
+					status: "OPEN",
+					content: "First: can legal confirm?",
+					createdAt: new Date("2026-08-30T10:30:00Z"),
+				}),
+				turn({
+					id: "resolved-turn",
+					parentId: "decision-1",
+					status: "RESOLVED",
+					content: "A resolved reply is not a note.",
+					createdAt: new Date("2026-08-30T10:40:00Z"),
+				}),
+				turn({
+					id: "agent-turn",
+					parentId: "decision-1",
+					status: "OPEN",
+					authorType: "AGENT",
+					authorUserId: null,
+					author: null,
+					content: "An AI turn is not a note.",
+					createdAt: new Date("2026-08-30T10:50:00Z"),
+				}),
+			],
+		};
+		render(<TopicQuestionsPanel {...BASE} threads={[thread]} />);
+
+		const card = screen.getByTestId("question-decision-1");
+		const items = within(notesIn(card)).getAllByRole("listitem");
+		expect(items).toHaveLength(2);
+		expect(items[0]).toHaveTextContent("First: can legal confirm?");
+		expect(items[0]).toHaveTextContent(/Asked by Alex Example ·/);
+		expect(items[0].querySelector("time")).toHaveAttribute(
+			"datetime",
+			"2026-08-30T10:30:00.000Z",
+		);
+		expect(items[1]).toHaveTextContent(
+			"Second: can finance check the figure?",
+		);
+		expect(items[1]).toHaveTextContent(/Asked by Sam Example ·/);
+		expect(items[1].querySelector("time")).toHaveAttribute(
+			"datetime",
+			"2026-08-30T11:00:00.000Z",
+		);
+		expect(
+			screen.queryByText("A resolved reply is not a note."),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText("An AI turn is not a note."),
+		).not.toBeInTheDocument();
+		// A note answers nothing: the answer controls are still there.
+		expect(
+			within(card).getByRole("button", { name: /use this answer/i }),
+		).toBeInTheDocument();
+	});
+
+	it("shows a long, multi-line note whole, wrapped and unclamped", () => {
+		const LONG_NOTE = `${"Please check this quote against the signed release form before we use it. ".repeat(4)}\nThen confirm the job title: ${"x".repeat(60)}`;
+		expect(LONG_NOTE.length).toBeGreaterThan(280);
+		const thread = {
+			root: root(),
+			replies: [
+				turn({
+					id: "note-long",
+					parentId: "decision-1",
+					status: "OPEN",
+					content: LONG_NOTE,
+				}),
+			],
+		};
+		render(<TopicQuestionsPanel {...BASE} threads={[thread]} />);
+
+		const body = within(
+			notesIn(screen.getByTestId("question-decision-1")),
+		).getByText(
+			(_content, element) =>
+				element?.tagName === "P" && element.textContent === LONG_NOTE,
+		);
+		expect(body).toHaveClass("whitespace-pre-wrap", "break-words");
+		expect(body.className).not.toMatch(/line-clamp-|truncate/);
+	});
+
+	it("shows a note under a set-aside question", async () => {
+		const thread = {
+			root: root({
+				id: "decision-4",
+				questionId: "q-possibly-resolved",
+				status: "POSSIBLY_RESOLVED",
+			}),
+			replies: [
+				turn({
+					id: "note-1",
+					parentId: "decision-4",
+					status: "OPEN",
+					content: "Is this still wanted?",
+				}),
+			],
+		};
+		render(<TopicQuestionsPanel {...BASE} threads={[thread]} />);
+		await userEvent.click(
+			screen.getByRole("button", { name: /^possibly resolved/i }),
+		);
+
+		expect(
+			within(
+				notesIn(screen.getByTestId("question-decision-4")),
+			).getByText("Is this still wanted?"),
+		).toBeVisible();
+	});
+
+	it("keeps a note written after the answer out of the answer, and Amend starts from the answer", async () => {
+		const NOTE = "Can legal confirm this still holds?";
+		const thread = {
+			...RESOLVED_THREAD,
+			replies: [
+				RESOLVED_THREAD.replies[0],
+				turn({
+					id: "note-1",
+					parentId: "decision-3",
+					status: "OPEN",
+					content: NOTE,
+					createdAt: new Date("2026-08-31T09:00:00Z"),
+				}),
+			],
+		};
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[thread]} />);
+		await openAnswered();
+
+		const answer = screen.getByTestId("decision-answer");
+		expect(answer).toHaveTextContent("Yes, marketing cleared it.");
+		const notes = screen.getByRole("list", {
+			name: "Notes on this question",
+		});
+		expect(within(notes).getByText(NOTE)).toBeVisible();
+		expect(answer).not.toContainElement(notes);
+		expect(screen.getAllByText(NOTE)).toHaveLength(1);
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+		expect(
+			screen.getByRole("textbox", { name: /your answer/i }),
+		).toHaveValue("Yes, marketing cleared it.");
+	});
+});
+
+describe("TopicQuestionsPanel — a current answer saved empty", () => {
+	const BLANK_THREAD = {
+		...RESOLVED_THREAD,
+		replies: [
+			RESOLVED_THREAD.replies[0],
+			{
+				...RESOLVED_THREAD.replies[0],
+				id: "reply-blank",
+				content: "   ",
+				createdAt: new Date("2026-08-31T09:00:00Z"),
+			},
+		],
+	};
+
+	it("says so, opens an empty editor, and amends that reply", async () => {
+		const user = userEvent.setup();
+		render(<TopicQuestionsPanel {...BASE} threads={[BLANK_THREAD]} />);
+		await openAnswered();
+
+		expect(screen.getByTestId("decision-answer")).toHaveTextContent(
+			"The latest answer is empty — amend it to record one.",
+		);
+		expect(
+			screen.queryByText("Yes, marketing cleared it."),
+		).not.toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: /amend/i }));
+		const box = screen.getByRole("textbox", { name: /your answer/i });
+		expect(box).toHaveValue("");
+		expect(
+			screen.getByRole("button", { name: /save answer/i }),
+		).toBeDisabled();
+		await user.type(box, "No, legal has not signed off.");
+		await user.click(screen.getByRole("button", { name: /save answer/i }));
+
+		expect(amendMutation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				supersedesId: "reply-blank",
+				answer: "No, legal has not signed off.",
+			}),
+		);
+	});
+
+	it("says only that it is empty to a reader who cannot amend", async () => {
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				canEdit={false}
+				threads={[BLANK_THREAD]}
+			/>,
+		);
+		await openAnswered();
+
+		expect(screen.getByTestId("decision-answer")).toHaveTextContent(
+			/^The latest answer is empty\.$/,
+		);
+		expect(screen.queryByText(/amend it/i)).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /amend/i }),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("TopicQuestionsPanel — a refused restore", () => {
+	it("refreshes the list, so the card moves to the group it is really in", async () => {
+		mutationState.shouldFail = true;
+		render(
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[POSSIBLY_RESOLVED_THREAD]}
+			/>,
+		);
+		await userEvent.click(
+			screen.getByRole("button", { name: /^possibly resolved/i }),
+		);
+		await userEvent.click(
+			screen.getByRole("button", { name: /restore to open questions/i }),
+		);
+
+		await vi.waitFor(() =>
+			expect(invalidateQueries).toHaveBeenCalledWith({
+				queryKey: [
+					"listTopicDecisions",
+					{
+						projectId: "proj-1",
+						topicId: "topic-1",
+						organizationId: null,
+					},
+				],
+			}),
+		);
+	});
+});
+
 /**
  * The other half of the notification contract (Fizzy #1851): the fan-out writes
  * `#q-<rootId>`, and something on this page has to be able to receive it.
@@ -1607,5 +1878,203 @@ describe("TopicQuestionsPanel — landing a notification on its question", () =>
 				.getByTestId("question-decision-1")
 				.classList.contains("mention-flash"),
 		).toBe(false);
+	});
+});
+
+/**
+ * A `#q-<rootId>` link names a question that may sit in a COLLAPSED group, whose
+ * cards are not in the page for the scroll to find. The panel opens that group
+ * for the list that ARRIVES, once.
+ */
+describe("TopicQuestionsPanel — a link opens the group its question is in", () => {
+	/** An OPEN, a RESOLVED and a POSSIBLY_RESOLVED root: decision-1, decision-3, decision-4. */
+	const ARRIVED = [OPEN_THREAD, RESOLVED_THREAD, POSSIBLY_RESOLVED_THREAD];
+	/** The same topic as a cached list saw it, before decision-3 was answered. */
+	const CACHED = [
+		OPEN_THREAD,
+		{ root: { ...RESOLVED_THREAD.root, status: "OPEN" }, replies: [] },
+		POSSIBLY_RESOLVED_THREAD,
+	];
+	const answeredToggle = () =>
+		screen.getByRole("button", { name: /^answered/i });
+	const setAsideToggle = () =>
+		screen.getByRole("button", { name: /^possibly resolved/i });
+	const anchored = (id: string) =>
+		document.querySelector(`[data-question-anchor="${id}"]`);
+
+	it("(i) opens Answered when the list arrives with the linked question answered", () => {
+		window.location.hash = "#q-decision-3";
+		const { rerender } = render(
+			<TopicQuestionsPanel {...BASE} isLoading threads={[]} />,
+		);
+		rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				isLoading={false}
+				threads={ARRIVED}
+			/>,
+		);
+
+		expect(answeredToggle()).toHaveAttribute("aria-expanded", "true");
+		expect(anchored("decision-3")).toBeInTheDocument();
+		expect(setAsideToggle()).toHaveAttribute("aria-expanded", "false");
+	});
+
+	it("(ii) opens Possibly resolved for a linked set-aside question", () => {
+		window.location.hash = "#q-decision-4";
+		const { rerender } = render(
+			<TopicQuestionsPanel {...BASE} isLoading threads={[]} />,
+		);
+		rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				isLoading={false}
+				threads={ARRIVED}
+			/>,
+		);
+
+		expect(setAsideToggle()).toHaveAttribute("aria-expanded", "true");
+		expect(anchored("decision-4")).toBeInTheDocument();
+		expect(answeredToggle()).toHaveAttribute("aria-expanded", "false");
+	});
+
+	it("(iii) leaves Answered closed once the person closes it, whatever the list does next", async () => {
+		window.location.hash = "#q-decision-3";
+		const { rerender } = render(
+			<TopicQuestionsPanel {...BASE} isLoading threads={[]} />,
+		);
+		rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				isLoading={false}
+				threads={ARRIVED}
+			/>,
+		);
+		await userEvent.click(answeredToggle());
+		expect(answeredToggle()).toHaveAttribute("aria-expanded", "false");
+
+		rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				isLoading={false}
+				threads={[...ARRIVED]}
+			/>,
+		);
+		expect(answeredToggle()).toHaveAttribute("aria-expanded", "false");
+	});
+
+	it("(iv) opens nothing for a linked open question", () => {
+		window.location.hash = "#q-decision-1";
+		const { rerender } = render(
+			<TopicQuestionsPanel {...BASE} isLoading threads={[]} />,
+		);
+		rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				isLoading={false}
+				threads={ARRIVED}
+			/>,
+		);
+
+		expect(answeredToggle()).toHaveAttribute("aria-expanded", "false");
+		expect(setAsideToggle()).toHaveAttribute("aria-expanded", "false");
+	});
+
+	it("(v) opens the group of the list that arrives, not of the cached one shown first", () => {
+		window.location.hash = "#q-decision-3";
+		const { rerender } = render(
+			<TopicQuestionsPanel
+				{...BASE}
+				isLoading={false}
+				isFetching
+				threads={CACHED}
+			/>,
+		);
+		rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				isLoading={false}
+				isFetching={false}
+				threads={ARRIVED}
+			/>,
+		);
+
+		expect(answeredToggle()).toHaveAttribute("aria-expanded", "true");
+		expect(anchored("decision-3")).toBeInTheDocument();
+	});
+
+	it("(vi) opens it when the cached list did not have the question at all", () => {
+		window.location.hash = "#q-decision-3";
+		const { rerender } = render(
+			<TopicQuestionsPanel
+				{...BASE}
+				isLoading={false}
+				isFetching
+				threads={[OPEN_THREAD, POSSIBLY_RESOLVED_THREAD]}
+			/>,
+		);
+		rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				isLoading={false}
+				isFetching={false}
+				threads={ARRIVED}
+			/>,
+		);
+
+		expect(answeredToggle()).toHaveAttribute("aria-expanded", "true");
+		expect(anchored("decision-3")).toBeInTheDocument();
+	});
+
+	it("(vii) opens nothing after arrival, even when the linked question is answered later", () => {
+		window.location.hash = "#q-decision-3";
+		const { rerender } = render(
+			<TopicQuestionsPanel
+				{...BASE}
+				isLoading={false}
+				isFetching={false}
+				threads={CACHED}
+			/>,
+		);
+		rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				isLoading={false}
+				isFetching={false}
+				threads={ARRIVED}
+			/>,
+		);
+
+		expect(answeredToggle()).toHaveAttribute("aria-expanded", "false");
+	});
+
+	it("(viii) a load that failed its retries must not end the arrival", () => {
+		window.location.hash = "#q-decision-3";
+		const { rerender } = render(
+			<TopicQuestionsPanel {...BASE} isLoading threads={[]} />,
+		);
+		// The initial request exhausted its retries: isLoading and isFetching
+		// are both false, and the list is empty because nothing arrived.
+		rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				isLoading={false}
+				isFetching={false}
+				threads={[]}
+			/>,
+		);
+		// A later refetch succeeds and brings the linked question in.
+		rerender(
+			<TopicQuestionsPanel
+				{...BASE}
+				isLoading={false}
+				isFetching={false}
+				threads={ARRIVED}
+			/>,
+		);
+
+		expect(answeredToggle()).toHaveAttribute("aria-expanded", "true");
+		expect(anchored("decision-3")).toBeInTheDocument();
+		expect(setAsideToggle()).toHaveAttribute("aria-expanded", "false");
 	});
 });
