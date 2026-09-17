@@ -48,6 +48,10 @@ import {
 } from "@repo/ai";
 import { AI_TOKEN_HEADER, issueAIToken } from "@repo/ai-token";
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
+import {
+	forbiddenOrganizationResponse,
+	resolveRequestedOrganization,
+} from "@repo/api/lib/requested-organization";
 import { auth } from "@repo/auth";
 import { getBoundPromptVersion } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -657,9 +661,13 @@ export async function POST(req: NextRequest) {
 			});
 		}
 
-		// Get AI Gateway configuration (same as AI chatbot)
+		// The organization arrives on the query string from the mount
+		// (`/api/copilotkit?organizationId=...`). It selects the tenant's
+		// model, provider key, bound prompts and the tenant headers sent to
+		// the agents, so it is bound to the caller's memberships below
+		// before anything reads it.
 		const url = new URL(req.url);
-		const organizationId =
+		const requestedOrganizationId =
 			url.searchParams.get("organizationId") || undefined;
 
 		// Rate limit: 500 requests per minute per user
@@ -678,7 +686,7 @@ export async function POST(req: NextRequest) {
 			// to disambiguate during the roadmap rate-limit investigation.
 			logger.warn("[CopilotKit] App-side rate limit tripped", {
 				userId: session.user.id,
-				organizationId,
+				organizationId: requestedOrganizationId,
 				limit: 500,
 				windowMs: 60_000,
 				remaining: rateLimitResult.remaining,
@@ -705,6 +713,22 @@ export async function POST(req: NextRequest) {
 		}
 
 		// Resolve per-tenant AI config + bound prompts (cached for TENANT_CACHE_TTL_MS)
+		// An omitted id resolves to the session's active organization, tie
+		// checked the same way; a session with none is refused (ADR-018).
+		const organizationResolution = await resolveRequestedOrganization({
+			userId: session.user.id,
+			requestedOrganizationId,
+			activeOrganizationId: session.session.activeOrganizationId,
+		});
+		if (!organizationResolution.ok) {
+			logger.warn("[CopilotKit] Requested organization refused", {
+				userId: session.user.id,
+				organizationId: requestedOrganizationId,
+			});
+			return forbiddenOrganizationResponse(organizationResolution);
+		}
+		const organizationId = organizationResolution.organizationId;
+
 		let tenantConfig: TenantConfig;
 		try {
 			tenantConfig = await getTenantConfig(

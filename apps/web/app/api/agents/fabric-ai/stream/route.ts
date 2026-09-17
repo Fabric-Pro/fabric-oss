@@ -1,6 +1,10 @@
 import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
 import { getAIModelWithMetadata, getCurrentDateContext } from "@repo/ai";
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
+import {
+	forbiddenOrganizationResponse,
+	resolveRequestedOrganization,
+} from "@repo/api/lib/requested-organization";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import {
 	type ActivityHeartbeatDetails,
@@ -549,7 +553,7 @@ export async function POST(request: NextRequest) {
 			storyId,
 			documentId,
 			taskId,
-			conversationId,
+			conversationId: requestedConversationId,
 			enabledMcpConfigIds,
 			enabledFabricToolIds,
 			systemPrompt,
@@ -567,14 +571,53 @@ export async function POST(request: NextRequest) {
 			content: entry.content,
 		}));
 
-		// Validate organizationId against session to prevent cross-tenant access
-		const sessionOrgId = session.session?.activeOrganizationId ?? undefined;
-		const organizationId =
-			rawOrganizationId === sessionOrgId ||
-			rawOrganizationId === null ||
-			rawOrganizationId === undefined
-				? (rawOrganizationId ?? undefined)
-				: sessionOrgId;
+		// Bind the client-supplied organization to the caller's memberships.
+		// Membership, not "equals the session's active organization", so a
+		// user with two organizations open in two tabs is served the one each
+		// tab asked for; a non-member gets a 403 rather than a silent swap to
+		// another tenant.
+		// An omitted id resolves to the session's active organization, tie
+		// checked the same way; a session with none is refused (ADR-018).
+		const organizationResolution = await resolveRequestedOrganization({
+			userId,
+			requestedOrganizationId: rawOrganizationId,
+			activeOrganizationId: session.session.activeOrganizationId,
+		});
+		if (!organizationResolution.ok) {
+			console.warn("[Fabric AI Stream] Requested organization refused", {
+				userId,
+				organizationId: rawOrganizationId,
+			});
+			return forbiddenOrganizationResponse(organizationResolution);
+		}
+		const organizationId = organizationResolution.organizationId;
+
+		// A conversation id is only a lookup key for the caller's own
+		// conversations. Anything derived from it (attached workspaces, the
+		// linked project) must not be reachable by guessing another user's id,
+		// so an id the caller does not own is ignored, the same way an
+		// inaccessible project is dropped below.
+		let conversationId = requestedConversationId ?? undefined;
+		if (conversationId) {
+			const { db } = await import("@repo/database");
+			const owned = await db.agentConversation.findFirst({
+				where: { id: conversationId, userId },
+				select: { id: true, organizationId: true },
+			});
+			// Exact tenant equality, null included: a conversation from one
+			// organization must not feed another organization's turn (or a
+			// personal one), even for the same user.
+			const crossTenant =
+				owned !== null &&
+				(owned.organizationId ?? null) !== (organizationId ?? null);
+			if (!owned || crossTenant) {
+				console.warn(
+					"[Fabric AI Stream] Conversation is not accessible to the caller; ignoring it",
+					{ userId, conversationId },
+				);
+				conversationId = undefined;
+			}
+		}
 
 		// Fetch workspace IDs from database if not provided but conversation exists
 		// This handles the race condition where frontend sends request before query returns
@@ -591,6 +634,60 @@ export async function POST(request: NextRequest) {
 			workspaceIds = attachedWorkspaces.map(
 				(wc: { workspace: { id: string } }) => wc.workspace.id,
 			);
+		}
+
+		// Workspace ids come from the client or from a conversation's
+		// attachments; retrieval must only read workspaces the caller can
+		// open. Inaccessible ones are dropped (and logged) rather than failing
+		// the whole turn, mirroring the project-access handling below.
+		if (workspaceIds.length > 0) {
+			const { db, hasWorkspaceAccess } = await import("@repo/database");
+			// `hasWorkspaceAccess` answers "can this user open the workspace";
+			// the turn is additionally bound to one tenant, so a workspace the
+			// user can open in organization B must not feed a turn running on
+			// organization A. Exact, null-aware equality on the workspace's
+			// own organization.
+			const workspaceTenants = new Map(
+				(
+					await db.workspace.findMany({
+						where: { id: { in: workspaceIds } },
+						select: { id: true, organizationId: true },
+					})
+				).map((workspace) => [workspace.id, workspace.organizationId]),
+			);
+			const accessible = await Promise.all(
+				workspaceIds.map(async (workspaceId) => {
+					if (!workspaceTenants.has(workspaceId)) {
+						return null;
+					}
+					if (
+						(workspaceTenants.get(workspaceId) ?? null) !==
+						(organizationId ?? null)
+					) {
+						return null;
+					}
+					return (await hasWorkspaceAccess(
+						workspaceId,
+						userId,
+						organizationId,
+					))
+						? workspaceId
+						: null;
+				}),
+			);
+			const denied = workspaceIds.filter(
+				(_, index) => accessible[index] === null,
+			);
+			if (denied.length > 0) {
+				console.warn(
+					"[Fabric AI Stream] Dropping workspaces the caller cannot access",
+					{ userId, denied },
+				);
+				workspaceIds = accessible.filter(
+					(workspaceId): workspaceId is string =>
+						workspaceId !== null,
+				);
+			}
 		}
 
 		// Resolve project ID from conversation if not provided
@@ -616,16 +713,26 @@ export async function POST(request: NextRequest) {
 		// Verify project access before forwarding to workflow
 		if (projectId) {
 			try {
-				const { hasProjectAccess } = await import("@repo/database");
-				const canAccess = await hasProjectAccess(
-					projectId,
-					userId,
-					organizationId ?? undefined,
+				const { getProjectAccessContext } = await import(
+					"@repo/database"
 				);
-				if (!canAccess) {
+				const access = await getProjectAccessContext(projectId, userId);
+				if (!access) {
 					console.warn(
 						"[Fabric AI Stream] User does not have access to project:",
 						projectId,
+					);
+					projectId = undefined;
+				} else if (
+					(access.organizationId ?? null) !== (organizationId ?? null)
+				) {
+					// The caller can open the project, but under a different
+					// tenant than this turn is bound to. Do not mix one
+					// organization's project data with another's model, prompts
+					// and memory.
+					console.warn(
+						"[Fabric AI Stream] Project belongs to a different tenant than the request; ignoring it",
+						{ userId, projectId },
 					);
 					projectId = undefined;
 				}

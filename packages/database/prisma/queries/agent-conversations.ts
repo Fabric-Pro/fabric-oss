@@ -72,21 +72,21 @@ export interface AgentTrajectory {
 /**
  * Build organization filter for strict isolation
  * - When organizationId is provided: only show conversations for that organization
- * - When organizationId is null (personal context): only show personal conversations
- * - When organizationId is undefined: legacy behavior (match by userId only)
+ * - When organizationId is null or undefined: only show personal conversations
+ *
+ * `undefined` used to mean "legacy: match by userId only", which let a caller
+ * in one context read, append to, archive or delete the same user's
+ * conversations from another tenant. `resolveOrganizationId()` returns
+ * `undefined` whenever it cannot name an organization, so the omission was
+ * silently widening the filter. It now collapses to the personal scope, the
+ * same XOR shape `continueConversationInNewChat` already enforces.
  */
 function buildOrgFilter(
 	organizationId: string | null | undefined,
 ): Prisma.AgentConversationWhereInput {
-	if (organizationId === undefined) {
-		// Legacy behavior - no org filter
-		return {};
-	}
-	if (organizationId === null) {
-		// Personal context - only personal conversations
+	if (!organizationId) {
 		return { organizationId: null };
 	}
-	// Organization context
 	return { organizationId };
 }
 
