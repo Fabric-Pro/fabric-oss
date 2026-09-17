@@ -16,6 +16,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { db, Prisma } from "../prisma/client";
 import {
+	AuthoritySessionConflictError,
 	approveAuthoritySession,
 	checkAuthority,
 	completeAuthoritySession,
@@ -25,6 +26,8 @@ import {
 	denyAuthoritySession,
 	expireAuthoritySessions,
 	findActiveAuthoritySession,
+	findAuthoritySessionForRun,
+	findOrCreateAuthoritySessionForRun,
 	getActiveAuthoritySessionForRun,
 	getAuthoritySession,
 	listAuthoritySessions,
@@ -191,7 +194,12 @@ describe("AuthoritySession lifecycle", () => {
 		});
 
 		await approveAuthoritySession(session.id, USER_A);
-		await revokeAuthoritySession(session.id);
+		const outcome = await revokeAuthoritySession(session.id, USER_A);
+		expect(outcome).toEqual({
+			transitioned: true,
+			previousStatus: "ACTIVE",
+			outcome: "withdrawn",
+		});
 
 		const revoked = await getAuthoritySession(session.id, USER_A);
 		expect(revoked?.status).toBe("REVOKED");
@@ -213,7 +221,9 @@ describe("AuthoritySession lifecycle", () => {
 		});
 
 		await approveAuthoritySession(session.id, USER_A);
-		await completeAuthoritySession(session.id);
+		await expect(completeAuthoritySession(session.id)).resolves.toEqual({
+			completed: true,
+		});
 
 		const completed = await getAuthoritySession(session.id, USER_A);
 		expect(completed?.status).toBe("COMPLETED");
@@ -601,7 +611,7 @@ describe("checkAuthority", () => {
 			],
 		});
 		await approveAuthoritySession(session.id, USER_A);
-		await revokeAuthoritySession(session.id);
+		await revokeAuthoritySession(session.id, USER_A);
 
 		const result = await checkAuthority({
 			userId: USER_A,
@@ -865,5 +875,569 @@ describe("Authority lookup functions", () => {
 		// Should NOT find in org B
 		const inOrgB = await findActiveAuthoritySession(USER_A, ORG_B);
 		expect(inOrgB).toBeNull();
+	});
+});
+
+// ─── Conditional decisions ──────────────────────────────────────────────────
+
+describe("Authority decisions are conditional transitions", () => {
+	const githubWrite = {
+		providerType: "MCP" as const,
+		providerKey: "github",
+		accessLevel: "WRITE" as const,
+	};
+
+	it("approve does not overwrite a revoke that landed first", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-1",
+			grants: [githubWrite],
+		});
+		// The user revokes/denies in the UI between the workflow reading the
+		// session and applying the step decision.
+		await denyAuthoritySession(session.id, USER_A, "changed my mind");
+
+		await expect(
+			approveAuthoritySession(session.id, USER_A, undefined, {
+				organizationId: ORG_A,
+			}),
+		).rejects.toBeInstanceOf(AuthoritySessionConflictError);
+
+		const after = await getAuthoritySession(session.id, USER_A, ORG_A);
+		expect(after?.status).toBe("REVOKED");
+		expect(after?.approvedAt).toBeNull();
+		expect(after?.grants.map((g) => g.status)).toEqual(["DENIED"]);
+	});
+
+	it("approve is idempotent on retry after it committed", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-2",
+			grants: [githubWrite],
+		});
+
+		const first = await approveAuthoritySession(session.id, USER_A, "ok", {
+			organizationId: ORG_A,
+		});
+		const retry = await approveAuthoritySession(session.id, USER_A, "ok", {
+			organizationId: ORG_A,
+		});
+
+		expect(first?.status).toBe("ACTIVE");
+		expect(retry?.status).toBe("ACTIVE");
+		expect(retry?.approvedAt?.getTime()).toBe(first?.approvedAt?.getTime());
+		expect(retry?.grants.map((g) => g.status)).toEqual(["APPROVED"]);
+	});
+
+	it("approve refuses a session in another tenant and leaves it PENDING", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-3",
+			grants: [githubWrite],
+		});
+
+		await expect(
+			approveAuthoritySession(session.id, USER_A, undefined, {
+				organizationId: ORG_B,
+			}),
+		).rejects.toBeInstanceOf(AuthoritySessionConflictError);
+		await expect(
+			approveAuthoritySession(session.id, USER_A, undefined, {
+				organizationId: null,
+			}),
+		).rejects.toBeInstanceOf(AuthoritySessionConflictError);
+		await expect(
+			approveAuthoritySession(session.id, USER_B, undefined, {
+				organizationId: ORG_A,
+			}),
+		).rejects.toBeInstanceOf(AuthoritySessionConflictError);
+
+		const after = await getAuthoritySession(session.id, USER_A, ORG_A);
+		expect(after?.status).toBe("PENDING");
+		expect(after?.grants.map((g) => g.status)).toEqual(["PENDING"]);
+	});
+
+	it("approve refuses an expired PENDING session", async () => {
+		const session = await createAuthoritySession({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-4",
+			expiresAt: new Date(Date.now() - 1000),
+		});
+
+		await expect(
+			approveAuthoritySession(session.id, USER_A, undefined, {
+				organizationId: ORG_A,
+			}),
+		).rejects.toThrow(/expired/);
+
+		const after = await getAuthoritySession(session.id, USER_A, ORG_A);
+		expect(after?.status).toBe("PENDING");
+	});
+
+	it("deny of an already-revoked session is a no-op, not a failure", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-5",
+			grants: [githubWrite],
+		});
+		const first = await denyAuthoritySession(session.id, USER_A, "no", {
+			organizationId: ORG_A,
+		});
+		const again = await denyAuthoritySession(session.id, USER_A, "no", {
+			organizationId: ORG_A,
+		});
+
+		expect(first).toEqual({
+			transitioned: true,
+			previousStatus: "PENDING",
+			outcome: "withdrawn",
+		});
+		expect(again).toEqual({
+			transitioned: false,
+			previousStatus: "REVOKED",
+			outcome: "already-final",
+		});
+	});
+
+	it("deny withdraws an ACTIVE session together with its approved grants", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-6",
+			grants: [githubWrite],
+		});
+		await approveAuthoritySession(session.id, USER_A, undefined, {
+			organizationId: ORG_A,
+		});
+
+		const result = await denyAuthoritySession(session.id, USER_A, "no", {
+			organizationId: ORG_A,
+		});
+		expect(result).toEqual({
+			transitioned: true,
+			previousStatus: "ACTIVE",
+			outcome: "withdrawn",
+		});
+
+		const after = await getAuthoritySession(session.id, USER_A, ORG_A);
+		expect(after?.status).toBe("REVOKED");
+		expect(after?.grants.map((g) => g.status)).toEqual(["REVOKED"]);
+	});
+
+	it("deny refuses a session the caller cannot see", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-7",
+			grants: [githubWrite],
+		});
+
+		await expect(
+			denyAuthoritySession(session.id, USER_B, "no", {
+				organizationId: ORG_A,
+			}),
+		).rejects.toBeInstanceOf(AuthoritySessionConflictError);
+
+		const after = await getAuthoritySession(session.id, USER_A, ORG_A);
+		expect(after?.status).toBe("PENDING");
+	});
+});
+
+describe("Withdrawals are conditional transitions", () => {
+	const githubWrite = {
+		providerType: "MCP" as const,
+		providerKey: "github",
+		accessLevel: "WRITE" as const,
+	};
+
+	it("deny of a PENDING session past its expiresAt settles it as EXPIRED and does not report a denial", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-8",
+			grants: [githubWrite],
+		});
+		await db.authoritySession.update({
+			where: { id: session.id },
+			data: { expiresAt: new Date(Date.now() - 1_000) },
+		});
+
+		const result = await denyAuthoritySession(session.id, USER_A, "no", {
+			organizationId: ORG_A,
+		});
+		expect(result).toEqual({
+			transitioned: false,
+			previousStatus: "PENDING",
+			outcome: "expired",
+		});
+
+		// Settled, not left PENDING forever, and not relabelled a denial.
+		const after = await getAuthoritySession(session.id, USER_A, ORG_A);
+		expect(after?.status).toBe("EXPIRED");
+		expect(after?.revokedAt).toBeNull();
+		expect(after?.grants.map((g) => g.status)).toEqual(["EXPIRED"]);
+
+		// A second deny of the now-swept session is still "expired".
+		const again = await denyAuthoritySession(session.id, USER_A, "no", {
+			organizationId: ORG_A,
+		});
+		expect(again).toEqual({
+			transitioned: false,
+			previousStatus: "EXPIRED",
+			outcome: "expired",
+		});
+	});
+
+	it("deny of an expired session in another tenant is refused and leaves it untouched", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-8b",
+			grants: [githubWrite],
+		});
+		await db.authoritySession.update({
+			where: { id: session.id },
+			data: { expiresAt: new Date(Date.now() - 1_000) },
+		});
+
+		await expect(
+			denyAuthoritySession(session.id, USER_A, "no", {
+				organizationId: ORG_B,
+			}),
+		).rejects.toBeInstanceOf(AuthoritySessionConflictError);
+
+		const after = await getAuthoritySession(session.id, USER_A, ORG_A);
+		expect(after?.status).toBe("PENDING");
+	});
+
+	it("revoking an expired, unswept session leaves authority checks failing closed", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-8c",
+			grants: [githubWrite],
+		});
+		await approveAuthoritySession(session.id, USER_A, undefined, {
+			organizationId: ORG_A,
+		});
+		// Past its deadline, but the sweep has not run.
+		await db.authoritySession.update({
+			where: { id: session.id },
+			data: { expiresAt: new Date(Date.now() - 1_000) },
+		});
+		await db.authorityGrant.updateMany({
+			where: { authoritySessionId: session.id },
+			data: { expiresAt: new Date(Date.now() - 1_000) },
+		});
+
+		const before = await checkAuthority({
+			userId: USER_A,
+			organizationId: ORG_A,
+			providerKey: "github",
+			accessLevel: "WRITE",
+			boundSessionId: session.id,
+		});
+		expect(before.authorized).toBe(false);
+
+		const result = await revokeAuthoritySession(session.id, USER_A, {
+			organizationId: ORG_A,
+		});
+		expect(result).toEqual({
+			transitioned: true,
+			previousStatus: "ACTIVE",
+			outcome: "withdrawn",
+		});
+
+		const after = await getAuthoritySession(session.id, USER_A, ORG_A);
+		expect(after?.status).toBe("REVOKED");
+		expect(after?.grants.map((g) => g.status)).toEqual(["REVOKED"]);
+		const afterCheck = await checkAuthority({
+			userId: USER_A,
+			organizationId: ORG_A,
+			providerKey: "github",
+			accessLevel: "WRITE",
+			boundSessionId: session.id,
+		});
+		expect(afterCheck.authorized).toBe(false);
+	});
+
+	it("completion does not overwrite a revoke that landed first", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-8d",
+			grants: [githubWrite],
+		});
+		await approveAuthoritySession(session.id, USER_A, undefined, {
+			organizationId: ORG_A,
+		});
+		await revokeAuthoritySession(session.id, USER_A, {
+			organizationId: ORG_A,
+		});
+
+		await expect(completeAuthoritySession(session.id)).resolves.toEqual({
+			completed: false,
+		});
+		const after = await getAuthoritySession(session.id, USER_A, ORG_A);
+		expect(after?.status).toBe("REVOKED");
+		expect(after?.completedAt).toBeNull();
+	});
+
+	it("the expiry sweep settles an unanswered PENDING request", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-8e",
+			grants: [githubWrite],
+		});
+		await db.authoritySession.update({
+			where: { id: session.id },
+			data: { expiresAt: new Date(Date.now() - 1_000) },
+		});
+		await db.authorityGrant.updateMany({
+			where: { authoritySessionId: session.id },
+			data: { expiresAt: new Date(Date.now() - 1_000) },
+		});
+
+		await expireAuthoritySessions();
+
+		const after = await getAuthoritySession(session.id, USER_A, ORG_A);
+		expect(after?.status).toBe("EXPIRED");
+		expect(after?.grants.map((g) => g.status)).toEqual(["EXPIRED"]);
+	});
+
+	it("revoke refuses a session in another tenant or of another user, and leaves it ACTIVE", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-9",
+			grants: [githubWrite],
+		});
+		await approveAuthoritySession(session.id, USER_A, undefined, {
+			organizationId: ORG_A,
+		});
+
+		await expect(
+			revokeAuthoritySession(session.id, USER_A, {
+				organizationId: ORG_B,
+			}),
+		).rejects.toBeInstanceOf(AuthoritySessionConflictError);
+		await expect(
+			revokeAuthoritySession(session.id, USER_B, {
+				organizationId: ORG_A,
+			}),
+		).rejects.toBeInstanceOf(AuthoritySessionConflictError);
+
+		const after = await getAuthoritySession(session.id, USER_A, ORG_A);
+		expect(after?.status).toBe("ACTIVE");
+		expect(after?.grants.map((g) => g.status)).toEqual(["APPROVED"]);
+	});
+
+	it("revoke does not overwrite a completion that landed first", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-10",
+			grants: [githubWrite],
+		});
+		await approveAuthoritySession(session.id, USER_A, undefined, {
+			organizationId: ORG_A,
+		});
+		// The run finishes between the UI reading ACTIVE and the revoke.
+		await completeAuthoritySession(session.id);
+
+		const result = await revokeAuthoritySession(session.id, USER_A, {
+			organizationId: ORG_A,
+		});
+		expect(result).toEqual({
+			transitioned: false,
+			previousStatus: "COMPLETED",
+			outcome: "already-final",
+		});
+
+		const after = await getAuthoritySession(session.id, USER_A, ORG_A);
+		expect(after?.status).toBe("COMPLETED");
+		expect(after?.revokedAt).toBeNull();
+	});
+
+	it("revoke of a PENDING session denies its pending grants", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-11",
+			grants: [githubWrite],
+		});
+
+		const result = await revokeAuthoritySession(session.id, USER_A, {
+			organizationId: ORG_A,
+		});
+		expect(result).toEqual({
+			transitioned: true,
+			previousStatus: "PENDING",
+			outcome: "withdrawn",
+		});
+
+		const after = await getAuthoritySession(session.id, USER_A, ORG_A);
+		expect(after?.status).toBe("REVOKED");
+		expect(after?.grants.map((g) => g.status)).toEqual(["DENIED"]);
+	});
+});
+
+describe("findOrCreateAuthoritySessionForRun", () => {
+	const githubWrite = {
+		providerType: "MCP" as const,
+		providerKey: "github",
+		accessLevel: "WRITE" as const,
+	};
+
+	function resolve(runId: string, covers = () => true) {
+		return findOrCreateAuthoritySessionForRun({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId,
+			grants: [githubWrite],
+			covers,
+		});
+	}
+
+	it("raises one session for a run and hands the same one to later attempts", async () => {
+		const first = await resolve("orch-run-12");
+		expect(first.created).toBe(true);
+		expect(first.session.status).toBe("PENDING");
+		expect(first.session.grants).toHaveLength(1);
+
+		const second = await resolve("orch-run-12");
+		expect(second.created).toBe(false);
+		expect(second.session.id).toBe(first.session.id);
+	});
+
+	it("raises a new session when the existing one does not cover the step", async () => {
+		const first = await resolve("orch-run-13");
+		const second = await resolve("orch-run-13", () => false);
+		expect(second.created).toBe(true);
+		expect(second.session.id).not.toBe(first.session.id);
+	});
+
+	it("resolves concurrent attempts for one run to exactly one session", async () => {
+		// The find-then-create used to be two statements; two attempts that
+		// both looked before either created each raised a request. Fire a
+		// burst and assert a single row bound to the run.
+		const attempts = await Promise.all(
+			Array.from({ length: 6 }, () => resolve("orch-run-14")),
+		);
+
+		const ids = new Set(attempts.map((a) => a.session.id));
+		expect(ids.size).toBe(1);
+		expect(attempts.filter((a) => a.created)).toHaveLength(1);
+
+		const rows = await db.authoritySession.findMany({
+			where: {
+				runType: "ORCHESTRATOR",
+				runId: "orch-run-14",
+				userId: USER_A,
+				organizationId: ORG_A,
+			},
+		});
+		expect(rows).toHaveLength(1);
+	});
+
+	it("is tenant-scoped: the same run in another tenant gets its own session", async () => {
+		const orgA = await resolve("orch-run-15");
+		const orgB = await findOrCreateAuthoritySessionForRun({
+			userId: USER_A,
+			organizationId: ORG_B,
+			runType: "ORCHESTRATOR",
+			runId: "orch-run-15",
+			grants: [githubWrite],
+			covers: () => true,
+		});
+		expect(orgB.created).toBe(true);
+		expect(orgB.session.id).not.toBe(orgA.session.id);
+	});
+});
+
+describe("findAuthoritySessionForRun", () => {
+	it("returns this run's PENDING session and never another run's ACTIVE one", async () => {
+		const grant = {
+			providerType: "MCP" as const,
+			providerKey: "github",
+			accessLevel: "WRITE" as const,
+		};
+		const { session: otherRun } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-other-run",
+			grants: [grant],
+		});
+		await approveAuthoritySession(otherRun.id, USER_A, undefined, {
+			organizationId: ORG_A,
+		});
+
+		// Nothing bound to this run yet — the other run's live session does
+		// not stand in for it.
+		expect(
+			await findAuthoritySessionForRun(
+				"ORCHESTRATOR",
+				"orch-this-run",
+				USER_A,
+				ORG_A,
+			),
+		).toBeNull();
+
+		const { session: thisRun } = await createAuthorityRequest({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "orch-this-run",
+			grants: [grant],
+		});
+		const found = await findAuthoritySessionForRun(
+			"ORCHESTRATOR",
+			"orch-this-run",
+			USER_A,
+			ORG_A,
+		);
+		expect(found?.id).toBe(thisRun.id);
+		expect(found?.status).toBe("PENDING");
+		expect(found?.grants).toHaveLength(1);
+
+		// Tenant-scoped like every other lookup.
+		expect(
+			await findAuthoritySessionForRun(
+				"ORCHESTRATOR",
+				"orch-this-run",
+				USER_A,
+				ORG_B,
+			),
+		).toBeNull();
+		expect(
+			await findAuthoritySessionForRun(
+				"ORCHESTRATOR",
+				"orch-this-run",
+				USER_A,
+			),
+		).toBeNull();
 	});
 });

@@ -7,6 +7,7 @@
 
 import { ORPCError } from "@orpc/server";
 import {
+	AuthoritySessionConflictError,
 	approveAuthoritySession,
 	denyAuthoritySession,
 	getAuthoritySession,
@@ -144,13 +145,22 @@ export const approveAuthoritySessionProcedure = protectedProcedure
 			});
 		}
 
-		const approved = await approveAuthoritySession(
-			input.sessionId,
-			context.user.id,
-			input.instructions,
-		);
-
-		return approved;
+		// The pre-check above is advisory (a good error message). The
+		// transition itself is conditional on PENDING inside the query, so a
+		// revoke or deny that lands between the two is never overwritten.
+		try {
+			return await approveAuthoritySession(
+				input.sessionId,
+				context.user.id,
+				input.instructions,
+				{ organizationId: orgId ?? null },
+			);
+		} catch (error) {
+			if (error instanceof AuthoritySessionConflictError) {
+				throw new ORPCError("CONFLICT", { message: error.message });
+			}
+			throw error;
+		}
 	});
 
 /**
@@ -198,11 +208,31 @@ export const denyAuthoritySessionProcedure = protectedProcedure
 			});
 		}
 
-		await denyAuthoritySession(
-			input.sessionId,
-			context.user.id,
-			input.reason,
-		);
+		let outcome: Awaited<ReturnType<typeof denyAuthoritySession>>;
+		try {
+			outcome = await denyAuthoritySession(
+				input.sessionId,
+				context.user.id,
+				input.reason,
+				{ organizationId: orgId ?? null },
+			);
+		} catch (error) {
+			if (error instanceof AuthoritySessionConflictError) {
+				throw new ORPCError("CONFLICT", { message: error.message });
+			}
+			throw error;
+		}
+		// Only a transition is a denial. An expired request (now settled as
+		// EXPIRED) or one a concurrent decision already closed is reported as
+		// the conflict it is, never as success.
+		if (!outcome.transitioned) {
+			throw new ORPCError("CONFLICT", {
+				message:
+					outcome.outcome === "expired"
+						? `Authority session ${input.sessionId} expired before it was denied`
+						: `Authority session ${input.sessionId} is ${outcome.previousStatus}; nothing to deny`,
+			});
+		}
 		return { success: true };
 	});
 
@@ -250,6 +280,27 @@ export const revokeAuthoritySessionProcedure = protectedProcedure
 			});
 		}
 
-		await revokeAuthoritySession(input.sessionId);
+		// The read above only shapes the error message; the transition itself
+		// is conditional on PENDING|ACTIVE for this user in this tenant, so a
+		// completion or expiry that lands between the two is never overwritten
+		// and is reported as the conflict it is.
+		let outcome: Awaited<ReturnType<typeof revokeAuthoritySession>>;
+		try {
+			outcome = await revokeAuthoritySession(
+				input.sessionId,
+				context.user.id,
+				{ organizationId: orgId ?? null },
+			);
+		} catch (error) {
+			if (error instanceof AuthoritySessionConflictError) {
+				throw new ORPCError("CONFLICT", { message: error.message });
+			}
+			throw error;
+		}
+		if (!outcome.transitioned) {
+			throw new ORPCError("CONFLICT", {
+				message: `Authority session ${input.sessionId} is ${outcome.previousStatus}; nothing to revoke`,
+			});
+		}
 		return { success: true };
 	});

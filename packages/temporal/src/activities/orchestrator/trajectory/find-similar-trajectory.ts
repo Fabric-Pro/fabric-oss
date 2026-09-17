@@ -13,7 +13,7 @@ import type { FindSimilarTrajectoryInput, Trajectory } from "../types";
  *
  * Features:
  * - Hash-based matching for efficiency
- * - User-scoped search
+ * - Tenant-scoped search (user within organization, or personal-only)
  * - Returns most recent successful trajectory
  */
 export async function findSimilarTrajectory(
@@ -28,10 +28,21 @@ export async function findSimilarTrajectory(
 		.digest("hex")
 		.substring(0, 16);
 
-	// Search for similar trajectories
+	// Search for similar trajectories.
+	//
+	// `saveTrajectory` writes `organizationId` on every row, so a lookup keyed
+	// on `userId` alone spans every tenant the user belongs to: a trajectory
+	// recorded inside organization A (its step inputs, tool arguments and
+	// outputs) would be replayed in organization B or in the user's personal
+	// context whenever the task text matched. Strict XOR: in an organization
+	// match that organization; otherwise only rows with no organization.
+	const tenantWhere = input.organizationId
+		? { organizationId: input.organizationId, userId: input.userId }
+		: { organizationId: null, userId: input.userId };
+
 	const tasks = await db.agentTask.findMany({
 		where: {
-			userId: input.userId,
+			...tenantWhere,
 			agentId: "orchestrator",
 			stage: "trajectory",
 			status: "completed",

@@ -4688,9 +4688,11 @@ async function _handleApproveAuthority(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { getAuthoritySession, approveAuthoritySession } = await import(
-		"@repo/database"
-	);
+	const {
+		getAuthoritySession,
+		approveAuthoritySession,
+		AuthoritySessionConflictError,
+	} = await import("@repo/database");
 
 	const sessionId = args.sessionId as string;
 	if (!sessionId) {
@@ -4712,11 +4714,20 @@ async function _handleApproveAuthority(
 		);
 	}
 
-	const approved = await approveAuthoritySession(
-		sessionId,
-		session.userId,
-		(args.instructions as string) ?? undefined,
-	);
+	let approved: Awaited<ReturnType<typeof approveAuthoritySession>>;
+	try {
+		approved = await approveAuthoritySession(
+			sessionId,
+			session.userId,
+			(args.instructions as string) ?? undefined,
+			{ organizationId: session.organizationId || null },
+		);
+	} catch (error) {
+		if (error instanceof AuthoritySessionConflictError) {
+			return errorResult(error.message);
+		}
+		throw error;
+	}
 
 	return jsonResult({
 		authoritySessionId: sessionId,
@@ -4738,9 +4749,11 @@ async function handleRevokeAuthority(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { getAuthoritySession, revokeAuthoritySession } = await import(
-		"@repo/database"
-	);
+	const {
+		AuthoritySessionConflictError,
+		getAuthoritySession,
+		revokeAuthoritySession,
+	} = await import("@repo/database");
 
 	const sessionId = args.sessionId as string;
 	if (!sessionId) {
@@ -4762,7 +4775,26 @@ async function handleRevokeAuthority(
 		);
 	}
 
-	await revokeAuthoritySession(sessionId);
+	// The read above only shapes the message; the transition is conditional
+	// on PENDING|ACTIVE for this user in this tenant, so a status that changed
+	// since is reported rather than overwritten.
+	try {
+		const outcome = await revokeAuthoritySession(
+			sessionId,
+			session.userId,
+			{ organizationId: session.organizationId || null },
+		);
+		if (!outcome.transitioned) {
+			return errorResult(
+				`Authority session is ${outcome.previousStatus}; nothing to revoke`,
+			);
+		}
+	} catch (error) {
+		if (error instanceof AuthoritySessionConflictError) {
+			return errorResult(error.message);
+		}
+		throw error;
+	}
 
 	return jsonResult({
 		authoritySessionId: sessionId,

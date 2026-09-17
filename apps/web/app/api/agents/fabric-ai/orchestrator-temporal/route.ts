@@ -15,7 +15,7 @@
 import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
 import { getAIModelWithMetadata } from "@repo/ai";
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
-import { db } from "@repo/database";
+import { hasOrganizationTie } from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import type {
 	AgentVariable,
@@ -24,7 +24,7 @@ import type {
 	OrchestratorWorkflowInput,
 	TaskPlan,
 } from "@repo/temporal";
-import { getTemporalClient } from "@repo/temporal";
+import { getTemporalClient, ORCHESTRATOR_TASK_QUEUE } from "@repo/temporal";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
 		const {
 			message,
 			history = [],
-			organizationId,
+			organizationId: requestedOrganizationId,
 			executionMode = "balanced", // All modes now use iterative execution with mode-specific limits
 			enabledMcpConfigIds = null,
 			enabledAgentIds = null,
@@ -130,35 +130,51 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
-		// ✅ Security: Verify organization ownership if organizationId is provided
-		if (organizationId) {
-			const member = await db.member.findFirst({
-				where: {
-					userId,
-					organizationId,
-				},
-			});
+		// ✅ Security: resolve and verify the organization this run acts in.
+		// The organization is the only tenant context (ADR-018): a run
+		// started with none would thread `undefined` into the AI, Temporal
+		// and memory calls below and keep the organization-less arm live. The
+		// caller may name one; otherwise the session's active organization is
+		// used; either way the caller must have a tie to it, and with neither
+		// the request fails closed.
+		const candidateOrganizationId =
+			(typeof requestedOrganizationId === "string" &&
+			requestedOrganizationId.length > 0
+				? requestedOrganizationId
+				: undefined) ??
+			session.session?.activeOrganizationId ??
+			undefined;
 
-			if (!member) {
-				console.warn(
-					"[Orchestrator] User not a member of organization",
-					{
-						userId,
-						organizationId,
-					},
-				);
-				return new Response(
-					JSON.stringify({
-						error: "Forbidden",
-						message: "You are not a member of this organization",
-					}),
-					{
-						status: 403,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
-			}
+		if (!candidateOrganizationId) {
+			return new Response(
+				JSON.stringify({
+					error: "Forbidden",
+					message: "No organization is active for this session",
+				}),
+				{
+					status: 403,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
 		}
+
+		if (!(await hasOrganizationTie(userId, candidateOrganizationId))) {
+			console.warn("[Orchestrator] User not a member of organization", {
+				userId,
+				organizationId: candidateOrganizationId,
+			});
+			return new Response(
+				JSON.stringify({
+					error: "Forbidden",
+					message: "You are not a member of this organization",
+				}),
+				{
+					status: 403,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
+		const organizationId: string = candidateOrganizationId;
 
 		// Get AI model and provider config using centralized entry point
 		let aiModelResult: Awaited<ReturnType<typeof getAIModelWithMetadata>>;
@@ -296,7 +312,7 @@ export async function POST(request: NextRequest) {
 		const handle = await temporalClient.workflow.start(
 			"orchestratorExecutionWorkflow",
 			{
-				taskQueue: "fabric-orchestrator",
+				taskQueue: ORCHESTRATOR_TASK_QUEUE,
 				// Absolute ceiling, matching the streaming starter. Without it a
 				// wedged run stays RUNNING with nothing to reclaim it.
 				workflowExecutionTimeout: "1 hour",
@@ -429,12 +445,17 @@ export async function GET(request: NextRequest) {
 					},
 				);
 			}
-			// Tenant check: if workflow belongs to an org, verify current membership
+			// Tenant check: if the workflow belongs to an organization, the
+			// caller must still have a tie to it — the same rule POST applied
+			// when the run started (membership or an accepted project-guest
+			// invitation, ADR-018). A membership-only check here refused a
+			// project guest their own run.
 			if (workflowOrgId) {
-				const member = await db.member.findFirst({
-					where: { userId, organizationId: workflowOrgId as string },
-				});
-				if (!member) {
+				const tied = await hasOrganizationTie(
+					userId,
+					workflowOrgId as string,
+				);
+				if (!tied) {
 					return new Response(
 						JSON.stringify({
 							error: "Forbidden",

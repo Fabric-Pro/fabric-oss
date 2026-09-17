@@ -10,25 +10,60 @@
  */
 
 import {
+	AuthoritySessionConflictError,
 	approveAuthoritySession,
-	createAuthorityRequest,
 	denyAuthoritySession,
-	findActiveAuthoritySession,
-	getAuthoritySession,
+	findOrCreateAuthoritySessionForRun,
 	listMcpConfigsForTenant,
 	resolveCanonicalProviderKey,
-	revokeAuthoritySession,
 } from "@repo/database";
+import { ApplicationFailure } from "@temporalio/common";
+import { AUTHORITY_CHECK_FAILED } from "../../workflows/orchestrator/orchestrator-config";
 import {
 	type AuthorityPolicyResult,
 	evaluateAuthorityPolicy,
 	extractRequiredProviders,
 } from "./approval/authority-policy";
 import { loadTrustConfiguration } from "./approval/trust-manager";
-import { classifyToolAccessLevel } from "./execution/authority-gate";
+import { maxToolAccessLevel } from "./execution/authority-gate";
+
+export { AUTHORITY_CHECK_FAILED };
+
+/**
+ * Failure type for an authority activity invoked without an organization.
+ * Non-retryable: the run's tenant does not appear on retry.
+ */
+export const AUTHORITY_ORGANIZATION_MISSING = "AuthorityOrganizationMissing";
+
+/**
+ * The organization an authority activity acts in, or a non-retryable failure.
+ *
+ * Runtime authority is tenant state: the session, its grants and the MCP
+ * configs that decide which providers a step reaches all live in an
+ * organization (ADR-018, organization is the only tenant context). The
+ * inputs kept `organizationId` optional and mapped its absence to the
+ * personal, organization-less arm, so a starter that lost the organization
+ * would have its authority checked, approved or denied against rows no
+ * tenant can see. Every orchestrator starter now resolves an organization
+ * before it starts a run; an activity that still receives none fails the
+ * step rather than entering that arm.
+ */
+function requireOrganization(
+	organizationId: string | undefined,
+	activity: string,
+): string {
+	if (organizationId) {
+		return organizationId;
+	}
+	throw ApplicationFailure.nonRetryable(
+		`${activity}: no organization on the run. Runtime authority is organization-scoped (ADR-018); the run must be started from an organization.`,
+		AUTHORITY_ORGANIZATION_MISSING,
+	);
+}
 
 export interface CheckStepAuthorityInput {
 	userId: string;
+	/** The run's organization. Required; see `requireOrganization`. */
 	organizationId?: string;
 	executionId?: string;
 	step: {
@@ -53,6 +88,10 @@ export interface CheckStepAuthorityInput {
 
 export interface CheckStepAuthorityOutput {
 	allowed: boolean;
+	/**
+	 * Policy outcome (`authority_missing`, `step_approval_required`) or
+	 * `AUTHORITY_CHECK_FAILED` when the check itself could not be completed.
+	 */
 	blockedBy?: string;
 	blockedDetails?: {
 		providerKey?: string;
@@ -73,14 +112,12 @@ export interface CheckStepAuthorityOutput {
 export async function checkStepAuthorityActivity(
 	input: CheckStepAuthorityInput,
 ): Promise<CheckStepAuthorityOutput> {
-	const {
-		userId,
-		organizationId,
-		executionId,
-		step,
-		toolToConfig,
-		matchedIntegrations,
-	} = input;
+	const { userId, executionId, step, toolToConfig, matchedIntegrations } =
+		input;
+	const organizationId = requireOrganization(
+		input.organizationId,
+		"Authority check",
+	);
 
 	// Extract required providers from step context
 	let requiredProviders = extractRequiredProviders(
@@ -117,26 +154,43 @@ export async function checkStepAuthorityActivity(
 					accessLevel: "READ" | "WRITE";
 				}> = [];
 
+				// Without a tool->config mapping every enabled provider is a
+				// candidate, so each gets the level of the most privileged tool
+				// in the step. `maxToolAccessLevel` returns WRITE for an empty
+				// list, which covers steps that name no tools at all.
+				const accessLevel = maxToolAccessLevel(step.toolsToUse ?? []);
+
 				for (const config of enabledConfigs) {
 					const serverKey =
 						config.mcpServer?.key?.toLowerCase() ?? config.id;
 					const providerKey = resolveCanonicalProviderKey(serverKey);
 					if (!seen.has(providerKey)) {
 						seen.add(providerKey);
-						// If step has specific tools, classify access; otherwise default to WRITE
-						const accessLevel = step.toolsToUse?.[0]
-							? classifyToolAccessLevel(step.toolsToUse[0])
-							: ("WRITE" as const);
 						fromConfigs.push({ providerKey, accessLevel });
 					}
 				}
 				requiredProviders = fromConfigs;
 			}
 		} catch (error) {
+			// Fail closed. If the tenant's MCP configs cannot be read we do not
+			// know which providers this step reaches, and "no providers found"
+			// would fall straight through to `allowed: true` below - running the
+			// step with whatever external access its tools carry and no
+			// authority check at all. Report the failure as a block instead; the
+			// workflow surfaces it as a step error rather than an approval prompt.
+			const message =
+				error instanceof Error ? error.message : String(error);
 			console.error(
 				"[AuthorityCheck] Failed to load MCP configs for provider resolution:",
 				error,
 			);
+			return {
+				allowed: false,
+				blockedBy: AUTHORITY_CHECK_FAILED,
+				blockedDetails: {
+					message: `Authority check could not determine the providers this step requires (${message}). The step was not run.`,
+				},
+			};
 		}
 	}
 
@@ -148,10 +202,7 @@ export async function checkStepAuthorityActivity(
 	// Load trust configuration for the user
 	let trustConfig = null;
 	try {
-		trustConfig = await loadTrustConfiguration(
-			userId,
-			organizationId || undefined,
-		);
+		trustConfig = await loadTrustConfiguration(userId, organizationId);
 	} catch {
 		// Trust config is optional — continue without it
 	}
@@ -166,49 +217,37 @@ export async function checkStepAuthorityActivity(
 		trustConfig,
 	});
 
-	// If authority is missing, auto-create a pending authority session
-	// so the user sees an approval request in the Fabric UI
+	// If authority is missing, resolve the pending authority session for
+	// THIS run — reusing one this run already raised, or creating one — so
+	// the user sees an approval request in the Fabric UI and the workflow
+	// always knows which session the decision activates.
 	if (!result.allowed && result.blockedBy === "authority_missing") {
-		try {
-			// Check if there's already a pending session for this execution
-			const existing = await findActiveAuthoritySession(
-				userId,
-				organizationId || undefined,
-				"ORCHESTRATOR",
-			);
-
-			if (!existing) {
-				const { session: newSession } = await createAuthorityRequest({
-					userId,
-					organizationId: organizationId || undefined,
-					runType: "ORCHESTRATOR",
-					runId: executionId,
-					ttlMinutes: 30,
-					grants: requiredProviders.map((p) => ({
-						providerType: "MCP" as const,
-						providerKey: p.providerKey,
-						providerDisplayName: p.providerKey,
-						accessLevel: p.accessLevel,
-					})),
-				});
-
-				return {
-					allowed: false,
-					blockedBy: result.blockedBy,
-					blockedDetails: {
-						...result.blockedDetails,
-						message: `Runtime authority required. An approval request has been created (session ${newSession.id}). Approve in Fabric UI to continue.`,
-					},
-					authoritySessionId: newSession.id,
-				};
-			}
-		} catch (error) {
-			// If auto-creation fails, still return the blocked result
-			console.error(
-				"[AuthorityCheck] Failed to auto-create authority session:",
-				error,
+		// Errors here propagate: the workflow only treats `authority_missing`
+		// as an approvable checkpoint when it carries a session id, and it
+		// fails the step otherwise. Returning the blocked result without an id
+		// would make an unrelated lookup failure look like a decision the
+		// user already took.
+		if (!executionId) {
+			throw new Error(
+				"Authority check: cannot resolve a run-bound authority session without an executionId",
 			);
 		}
+		const sessionId = await resolveAuthoritySessionForRun({
+			userId,
+			organizationId,
+			executionId,
+			requiredProviders,
+		});
+
+		return {
+			allowed: false,
+			blockedBy: result.blockedBy,
+			blockedDetails: {
+				...result.blockedDetails,
+				message: `Runtime authority required. An approval request has been created (session ${sessionId}). Approve in Fabric UI to continue.`,
+			},
+			authoritySessionId: sessionId,
+		};
 	}
 
 	return {
@@ -220,39 +259,85 @@ export async function checkStepAuthorityActivity(
 }
 
 /**
- * Load the session this step raised and confirm it is still owned by the
- * deciding user in the same tenant.
+ * Find or raise the authority session bound to this run.
  *
- * `approveAuthoritySession` / `denyAuthoritySession` update by id alone and
- * leave ownership, tenant and status to the caller — the same contract the
- * approval API honours before calling them. A session the workflow cannot
- * find under this identity is an anomaly, not a decision outcome, so it
- * throws; what to do about a session that is no longer PENDING differs
- * between approving and denying, and is left to each caller.
+ * A session raised by another concurrent run must not stand in for this
+ * one: the workflow activates the session it is handed, so handing it
+ * nothing (because "a session already exists") lets the step fall through
+ * to plain step approval and run with no authority at all. The lookup is
+ * keyed on the run, and an existing session is only reused when its grants
+ * cover every provider this step needs at the required level; lookup and
+ * creation are one locked step in the database so two attempts for the
+ * same run never raise two requests.
  */
-async function loadDecidableSession(input: {
-	authoritySessionId: string;
+async function resolveAuthoritySessionForRun(input: {
 	userId: string;
-	organizationId?: string;
-}): Promise<{ status: string; expiresAt: Date }> {
-	const session = await getAuthoritySession(
-		input.authoritySessionId,
-		input.userId,
-		input.organizationId,
+	organizationId: string;
+	executionId: string;
+	requiredProviders: Array<{
+		providerKey: string;
+		accessLevel: "READ" | "WRITE";
+	}>;
+}): Promise<string> {
+	// One serialized find-or-create per run: overlapping attempts (a
+	// retried activity racing its first attempt) resolve to the same
+	// session instead of each raising their own request.
+	const { session } = await findOrCreateAuthoritySessionForRun({
+		userId: input.userId,
+		organizationId: input.organizationId,
+		runType: "ORCHESTRATOR",
+		runId: input.executionId,
+		ttlMinutes: 30,
+		grants: input.requiredProviders.map((p) => ({
+			providerType: "MCP" as const,
+			providerKey: p.providerKey,
+			providerDisplayName: p.providerKey,
+			accessLevel: p.accessLevel,
+		})),
+		covers: (existing) =>
+			sessionCoversProviders(existing, input.requiredProviders),
+	});
+	return session.id;
+}
+
+/**
+ * True when every required provider has a live (PENDING or APPROVED) grant
+ * on the session at the required access level or higher.
+ */
+export function sessionCoversProviders(
+	session: {
+		grants: Array<{
+			providerKey: string;
+			accessLevel: "READ" | "WRITE";
+			status: string;
+		}>;
+	},
+	required: Array<{ providerKey: string; accessLevel: "READ" | "WRITE" }>,
+): boolean {
+	return required.every((need) =>
+		session.grants.some(
+			(grant) =>
+				(grant.status === "PENDING" || grant.status === "APPROVED") &&
+				resolveCanonicalProviderKey(grant.providerKey) ===
+					resolveCanonicalProviderKey(need.providerKey) &&
+				(need.accessLevel === "READ" || grant.accessLevel === "WRITE"),
+		),
 	);
-
-	if (!session) {
-		throw new Error(
-			`Authority session ${input.authoritySessionId} not found for this user and tenant`,
-		);
-	}
-
-	return session;
 }
 
 /**
  * Temporal activity: approve an authority session when the user approves
  * the orchestrator step that required authority.
+ *
+ * Ownership, tenant, status and expiry are all checked inside the database
+ * transition (`approveAuthoritySession` only lands on a PENDING, unexpired
+ * session of this user in this tenant), so a revoke, deny or expiry that
+ * races this decision is never overwritten. A session that is already
+ * ACTIVE is a retry of an approval that committed and succeeds again.
+ *
+ * Any other state is a conflict, not a transient fault: retrying cannot
+ * make a REVOKED session approvable, so the failure is non-retryable and
+ * the workflow fails the step instead of running it.
  */
 export async function approveAuthoritySessionActivity(input: {
 	authoritySessionId: string;
@@ -260,89 +345,83 @@ export async function approveAuthoritySessionActivity(input: {
 	organizationId?: string;
 	instructions?: string;
 }): Promise<{ success: boolean }> {
-	// This path waits on a human, so the session can be revoked or expire
-	// while it waits. Approving it anyway would resurrect it to ACTIVE with no
-	// PENDING grants left to approve — a live session nobody granted.
-	//
-	// ACTIVE is the exception, and has to be: activities are at-least-once, so
-	// a completion lost after the approval transaction committed leaves a
-	// retry looking at its own successful work. Treating that as a conflict
-	// would fail a run whose authority was granted correctly. The activity's
-	// postcondition is "this session is approved", and for an ACTIVE session
-	// it already holds.
-	const session = await loadDecidableSession(input);
-
-	// `expireAuthoritySessions` only sweeps ACTIVE sessions, so a PENDING one
-	// can sit past its expiry indefinitely — which is exactly what happens
-	// when a human answers slowly. Approving it would mint an ACTIVE session
-	// that is already expired. `findActiveAuthoritySession` filters on
-	// `expiresAt`, so such a session grants nothing at the point of use, but
-	// the approval should not claim otherwise either.
-	if (session.expiresAt.getTime() <= Date.now()) {
-		throw new Error(
-			`Authority session ${input.authoritySessionId} expired at ${session.expiresAt.toISOString()}; refusing to approve`,
-		);
-	}
-
-	if (session.status === "ACTIVE") return { success: true };
-	if (session.status !== "PENDING") {
-		throw new Error(
-			`Authority session ${input.authoritySessionId} is ${session.status}; refusing to approve`,
-		);
-	}
-
-	// Deliberately unguarded from here: the caller executes the step
-	// immediately after this returns and does not re-check authority, so
-	// swallowing a failure would run the step with the session still PENDING —
-	// authority failing open. Letting the error out gives Temporal its retries
-	// and, if the write genuinely cannot land, fails the step instead of
-	// privileging it.
-	await approveAuthoritySession(
-		input.authoritySessionId,
-		input.userId,
-		input.instructions,
+	const organizationId = requireOrganization(
+		input.organizationId,
+		"Authority approval",
 	);
+	try {
+		await approveAuthoritySession(
+			input.authoritySessionId,
+			input.userId,
+			input.instructions,
+			{ organizationId },
+		);
+	} catch (error) {
+		if (error instanceof AuthoritySessionConflictError) {
+			throw ApplicationFailure.nonRetryable(
+				error.message,
+				"AuthoritySessionConflict",
+			);
+		}
+		throw error;
+	}
 	return { success: true };
 }
 
 /**
  * Temporal activity: deny an authority session when the user rejects
  * the orchestrator step that required authority.
+ *
+ * The transition (`denyAuthoritySession`) is conditional on PENDING or
+ * ACTIVE and unexpired: a session that is already REVOKED or COMPLETED
+ * grants nothing, so denying it again is a no-op rather than a failure — the
+ * ordinary sequence of a user revoking authority in the UI and then
+ * declining the step must not take down the run. A session past its
+ * deadline is settled as EXPIRED and reported as `success: false,
+ * outcome: "expired"`, never as a successful denial. An ACTIVE session (one
+ * approved out-of-band before the step was declined) is withdrawn with its
+ * grants. A session this user cannot see in this tenant is an anomaly and
+ * fails the activity.
  */
 export async function denyAuthoritySessionActivity(input: {
 	authoritySessionId: string;
 	userId: string;
 	organizationId?: string;
 	reason?: string;
-}): Promise<{ success: boolean }> {
-	// A session that is already REVOKED, EXPIRED or COMPLETED grants nothing,
-	// so denying it again is a no-op — and failing here would take down a run
-	// for the ordinary sequence of a user revoking authority in the UI and
-	// then declining the step.
-	//
-	// ACTIVE is not in that set: a session approved out-of-band (through the
-	// approval UI) before the step was declined still grants authority, and
-	// declining the step has to withdraw it.
-	const session = await loadDecidableSession(input);
-	if (session.status !== "PENDING" && session.status !== "ACTIVE") {
-		return { success: true };
-	}
-
-	// Errors propagate from here for the same reason as the approve path, with
-	// a milder consequence: a swallowed failure leaves the session PENDING
-	// rather than REVOKED, so a request the user explicitly declined outlives
-	// the step that raised it and stays available to approve later.
-	if (session.status === "ACTIVE") {
-		// `denyAuthoritySession` only transitions PENDING grants, so on an
-		// already-approved session it would revoke the session while leaving
-		// its grants APPROVED. Revoking is the transition that covers those.
-		await revokeAuthoritySession(input.authoritySessionId);
-	} else {
-		await denyAuthoritySession(
+}): Promise<{
+	success: boolean;
+	outcome: "withdrawn" | "expired" | "already-final";
+}> {
+	const organizationId = requireOrganization(
+		input.organizationId,
+		"Authority denial",
+	);
+	let result: Awaited<ReturnType<typeof denyAuthoritySession>>;
+	try {
+		result = await denyAuthoritySession(
 			input.authoritySessionId,
 			input.userId,
 			input.reason,
+			{ organizationId },
 		);
+	} catch (error) {
+		if (error instanceof AuthoritySessionConflictError) {
+			throw ApplicationFailure.nonRetryable(
+				error.message,
+				"AuthoritySessionConflict",
+			);
+		}
+		throw error;
 	}
-	return { success: true };
+	if (result.outcome === "expired") {
+		// Not a denial: the request ran out before the decision. The step is
+		// skipped either way (the user declined it), so the run is not failed;
+		// the result says what actually happened instead of claiming success.
+		console.warn(
+			"[AuthorityCheck] Authority session expired before it was denied",
+			{ authoritySessionId: input.authoritySessionId },
+		);
+		return { success: false, outcome: "expired" };
+	}
+	return { success: true, outcome: result.outcome };
 }

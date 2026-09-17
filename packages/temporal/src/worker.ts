@@ -33,6 +33,7 @@ import { validatePmSyncLogRetentionDays } from "./lib/pm-sync-log-env";
 import { ProjectContextActivityInboundInterceptor } from "./lib/project-context-interceptor";
 import { buildWorkflowBundleOptions } from "./lib/workflow-bundle-options";
 import { PUBLISHING_RECONCILE_TASK_QUEUE } from "./schedules";
+import { ORCHESTRATOR_TASK_QUEUE } from "./task-queues";
 import {
 	getTelemetryInterceptors,
 	initTelemetry,
@@ -451,7 +452,7 @@ async function run() {
 		const fabricOrchestratorWorker = await Worker.create({
 			connection,
 			namespace: config.namespace,
-			taskQueue: "fabric-orchestrator", // Task queue for the CUGA-inspired orchestrator
+			taskQueue: ORCHESTRATOR_TASK_QUEUE, // Task queue for the CUGA-inspired orchestrator
 			workflowBundle, // Use pre-bundled workflows with publicPath fix
 			activities, // Activity implementations
 			maxConcurrentActivityTaskExecutions:

@@ -105,25 +105,37 @@ export const moveStoryProcedure = tenantProtectedProcedure
 			},
 		);
 
-		// Fire-and-forget: trigger column-based automations (Skills tagged with column name)
-		if (story.status?.name) {
-			const project = await db.project.findUnique({
-				where: { id: input.projectId },
-				select: { name: true },
-			});
-			fireColumnAutomations({
-				storyId: story.id,
-				storyTitle: story.title,
-				storyIdentifier: story.identifier,
-				projectId: input.projectId,
-				projectName: project?.name ?? "",
-				targetColumnName: story.status.name,
-				userId: user.id,
-				organizationId: organizationId ?? null,
-			}).catch(() => {});
-		}
-
 		if (previousStory?.statusId !== input.statusId) {
+			// Fire-and-forget: trigger column-based automations (Skills tagged
+			// with the column name). Only on a real lane change: a reorder
+			// within the current column is not a transition, and an automation
+			// is a real workflow run (a mutating skill, billed AI calls), not a
+			// cosmetic side effect. `moveStory` guards the lane change with the
+			// story's edit clock, so of two concurrent moves of the same story
+			// only the one that landed reaches this point; its `lastEditedAt`
+			// is the transition's stamp and keys the run's idempotent id.
+			if (story.status?.name) {
+				const project = await db.project.findUnique({
+					where: { id: input.projectId },
+					select: { name: true },
+				});
+				fireColumnAutomations({
+					storyId: story.id,
+					storyTitle: story.title,
+					storyIdentifier: story.identifier,
+					projectId: input.projectId,
+					projectName: project?.name ?? "",
+					targetColumnName: story.status.name,
+					fromStatusId: previousStory?.statusId ?? null,
+					toStatusId: input.statusId,
+					transitionAt: (
+						story.lastEditedAt ?? story.updatedAt
+					).toISOString(),
+					userId: user.id,
+					organizationId: organizationId ?? null,
+				}).catch(() => {});
+			}
+
 			dispatchLifecycleEvent({
 				resource: "story",
 				event: "status_changed",

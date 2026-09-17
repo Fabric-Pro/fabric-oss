@@ -180,3 +180,21 @@ export const OUTPUT = {
 	/** Maximum key output items extracted from a step */
 	maxKeyOutputItems: 10,
 } as const;
+
+// =============================================================================
+// Authority check outcomes shared between the activity and the workflow
+// =============================================================================
+
+/**
+ * `blockedBy` value `checkStepAuthorityActivity` returns when the check itself
+ * could not be completed (for example the tenant's MCP configs could not be
+ * read). It is distinct from the policy outcomes (`authority_missing`,
+ * `step_approval_required`) so the workflow can tell "authority is missing,
+ * ask the user" apart from "we do not know what authority is needed". The
+ * latter must never become an approval prompt — there is nothing concrete to
+ * approve — so the workflow records it as a step error instead.
+ *
+ * Lives here rather than in the activity module because workflow code may only
+ * type-import activities; this file is pure constants and safe on both sides.
+ */
+export const AUTHORITY_CHECK_FAILED = "authority_check_failed" as const;

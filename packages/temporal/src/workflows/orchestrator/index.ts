@@ -354,11 +354,29 @@ export async function orchestratorExecutionWorkflow(
 		state.journeyState.phase = phase;
 	}
 
-	async function waitForApproval(): Promise<ApprovalSignalData | null> {
+	async function waitForApproval(options?: {
+		requireExplicitDecision?: boolean;
+	}): Promise<ApprovalSignalData | null> {
+		// Runtime-authority checkpoints opt out of approve-all: granting a
+		// provider WRITE session is not a plan-step approval and must be an
+		// explicit click. `patched()` is REQUIRED here — on this path the
+		// function now blocks on `condition()` (a timer command) where
+		// pre-patch histories returned immediately, so an unguarded change
+		// would replay non-deterministically for runs that auto-approved an
+		// authority checkpoint.
+		const requireExplicitDecision =
+			options?.requireExplicitDecision === true &&
+			patched("orchestrator-authority-explicit-approval-v1");
+
 		// Skip approval entirely when auto-approve-all is active
-		if (state.autoApproveAll) {
+		if (state.autoApproveAll && !requireExplicitDecision) {
 			log.info("Auto-approving checkpoint (approve-all active)");
 			return { approved: true, feedback: "Auto-approved (approve all)" };
+		}
+		if (state.autoApproveAll && requireExplicitDecision) {
+			log.info(
+				"Authority checkpoint requires an explicit decision; approve-all does not apply",
+			);
 		}
 
 		await condition(

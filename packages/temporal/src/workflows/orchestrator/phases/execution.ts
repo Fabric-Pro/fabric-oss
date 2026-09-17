@@ -22,7 +22,7 @@ import {
 import type * as orchestratorActivities from "../../../activities/orchestrator";
 import type * as weaveActivities from "../../../activities/weave";
 import { computeExecutionWaves } from "../execution-waves";
-import { WORKFLOW } from "../orchestrator-config";
+import { AUTHORITY_CHECK_FAILED, WORKFLOW } from "../orchestrator-config";
 import {
 	executeStepWithContext,
 	processStepResult,
@@ -39,6 +39,7 @@ import type {
 	OrchestratorWorkflowInput,
 	PhaseResult,
 	TaskStep,
+	WaitForApprovalOptions,
 	WorkflowState,
 } from "../types";
 
@@ -141,7 +142,9 @@ export async function executeExecutionPhase(
 	modeConfig: ExecutionModeConfig,
 	altkConfig: ALTKConfig,
 	updateProgress: (phase: string, message: string, step?: TaskStep) => void,
-	waitForApproval: () => Promise<ApprovalSignalData | null>,
+	waitForApproval: (
+		options?: WaitForApprovalOptions,
+	) => Promise<ApprovalSignalData | null>,
 	isCancelled: () => boolean,
 ): Promise<
 	PhaseResult<{
@@ -699,6 +702,22 @@ async function executeParallelSteps(params: {
 					providerKey,
 					authoritySessionId: authorityCheck.authoritySessionId,
 				});
+			} else if (
+				!authorityCheck.allowed &&
+				authorityCheck.blockedBy === AUTHORITY_CHECK_FAILED
+			) {
+				// The activity could not work out which providers the step
+				// reaches, so there is nothing to ask the user to approve.
+				// Same outcome as the thrown-error path below: the step does
+				// not run. No `patched()` gate is needed — this `blockedBy`
+				// value did not exist before, so no recorded history contains
+				// it and replay of older runs never enters this branch.
+				step.status = "error";
+				step.error = `Authority check failed: ${authorityCheck.blockedDetails?.message ?? "unknown error"}`;
+				log.error("Parallel step authority check failed", {
+					stepId: step.id,
+					error: step.error,
+				});
 			} else {
 				authorityCheckedSteps.push(step);
 			}
@@ -861,7 +880,9 @@ async function executeSequentialStep(params: {
 	altkConfig: ALTKConfig;
 	waveQueue: TaskStep[][];
 	updateProgress: (phase: string, message: string, step?: TaskStep) => void;
-	waitForApproval: () => Promise<ApprovalSignalData | null>;
+	waitForApproval: (
+		options?: WaitForApprovalOptions,
+	) => Promise<ApprovalSignalData | null>;
 	isCancelled: () => boolean;
 }): Promise<{
 	responseChunk: string;
@@ -933,6 +954,32 @@ async function executeSequentialStep(params: {
 					authorityCheck.blockedDetails?.requiredAccessLevel ??
 					"WRITE";
 
+				if (
+					!authorityCheck.authoritySessionId &&
+					patched("orchestrator-authority-session-required-v1")
+				) {
+					// The checkpoint below activates the session it is handed.
+					// With no session there is nothing to activate: the step
+					// would be shown as ordinary step approval (which
+					// "approve all" covers) and then run with no runtime
+					// authority at all. The activity always returns a session
+					// for this run now; a missing one is a fault, and the
+					// same fail-closed outcome as `AUTHORITY_CHECK_FAILED`
+					// applies. Gated by `patched()`: pre-patch histories fell
+					// through to the approval flow here.
+					step.status = "error";
+					step.error = `Authority check failed: runtime authority for ${providerKey} is required but no authority session was resolved for this run`;
+					log.error(
+						"Authority missing with no session for this run, blocking step execution",
+						{ stepId: step.id, providerKey, accessLevel },
+					);
+					return {
+						responseChunk: "",
+						shouldAbort: false,
+						abortError: step.error,
+					};
+				}
+
 				log.info("Step blocked on authority, pausing for approval", {
 					stepId: step.id,
 					providerKey,
@@ -958,6 +1005,26 @@ async function executeSequentialStep(params: {
 
 				// Fall through to the existing handleStepApproval flow below
 				// which will show the approval UI and wait for user response
+			} else if (authorityCheck.blockedBy === AUTHORITY_CHECK_FAILED) {
+				// The activity could not work out which providers this step
+				// reaches, so there is nothing concrete to ask the user to
+				// approve — and letting it fall through would run the step
+				// with no authority check at all. Same outcome as the
+				// thrown-error path below. No `patched()` gate is needed: this
+				// `blockedBy` value did not exist before, so no recorded
+				// history contains it and replay of older runs never enters
+				// this branch.
+				step.status = "error";
+				step.error = `Authority check failed: ${authorityCheck.blockedDetails?.message ?? "unknown error"}`;
+				log.error("Authority check failed, blocking step execution", {
+					stepId: step.id,
+					error: step.error,
+				});
+				return {
+					responseChunk: "",
+					shouldAbort: false,
+					abortError: step.error,
+				};
 			}
 			// For step_approval_required, also fall through to existing approval flow
 		}
@@ -1069,7 +1136,9 @@ async function handleStepApproval(
 	stepIndex: number,
 	_totalSteps: number,
 	updateProgress: (phase: string, message: string, step?: TaskStep) => void,
-	waitForApproval: () => Promise<ApprovalSignalData | null>,
+	waitForApproval: (
+		options?: WaitForApprovalOptions,
+	) => Promise<ApprovalSignalData | null>,
 	isCancelled: () => boolean,
 ): Promise<{
 	success: boolean;
@@ -1172,7 +1241,17 @@ async function handleStepApproval(
 	};
 	state.approvalHistory.push(stepApprovalEntry);
 
-	const decision = await waitForApproval();
+	// A step blocked on runtime authority carries the session the user is
+	// being asked to grant. That grant is the one checkpoint "approve all"
+	// must not cover: the signal means "stop asking me about plan steps", not
+	// "hand every connected provider WRITE access", and a run that reaches
+	// several providers would otherwise mint a live session for each of them
+	// off a single click. Ask for an explicit decision instead.
+	const authoritySessionId = (step.outputs as Record<string, unknown>)
+		?._authoritySessionId as string | undefined;
+	const decision = await waitForApproval(
+		authoritySessionId ? { requireExplicitDecision: true } : undefined,
+	);
 
 	stepApprovalEntry.decidedAt = safeNowISO();
 	stepApprovalEntry.approved = decision?.approved || false;
@@ -1192,8 +1271,6 @@ async function handleStepApproval(
 	}
 
 	// If the step was blocked on authority, approve/deny the authority session
-	const authoritySessionId = (step.outputs as Record<string, unknown>)
-		?._authoritySessionId as string | undefined;
 	if (authoritySessionId) {
 		if (decision?.approved) {
 			await approveAuthoritySessionActivity({
@@ -1294,7 +1371,51 @@ async function handleStepApproval(
 		return { success: false, rejected: true, summary };
 	}
 
-	// Approval granted
+	// Approval granted. For a step that was blocked on runtime authority,
+	// the decision above activated the session — but activation is not
+	// authority. The session may have been revoked in the UI between the
+	// decision and this point, the activity may have raced a revoke and
+	// thrown, or the grants may not cover what the step reaches. Re-run the
+	// policy and only proceed on an explicit allow. Gated by `patched()`:
+	// pre-patch histories went straight to execution here.
+	if (authoritySessionId && patched("orchestrator-authority-recheck-v1")) {
+		const recheck = await checkStepAuthorityActivity({
+			userId: input.userId,
+			organizationId: input.organizationId,
+			executionId: state.executionId,
+			step: {
+				id: step.id,
+				description: step.description,
+				type: step.type,
+				status: step.status,
+				order: step.order,
+				riskLevel: step.riskLevel,
+				requiresApproval: step.requiresApproval,
+				approvalId: step.approvalId,
+				capability: step.capability,
+				executor: step.executor,
+				app: step.app,
+				toolsToUse: step.toolsToUse,
+			},
+		});
+		if (!recheck.allowed) {
+			state.approvalDecision = null;
+			state.pendingApproval = null;
+			state.status = "running";
+			step.status = "error";
+			step.error = `Authority check failed after approval: ${recheck.blockedDetails?.message ?? recheck.blockedBy ?? "not allowed"}`;
+			log.error(
+				"Authority not granted after step approval, blocking step",
+				{
+					stepId: step.id,
+					authoritySessionId,
+					blockedBy: recheck.blockedBy,
+				},
+			);
+			return { success: false, error: step.error };
+		}
+	}
+
 	state.approvalDecision = null;
 	state.pendingApproval = null;
 	state.status = "running";

@@ -466,10 +466,15 @@ describe("story.status_changed emission", () => {
 		const db = (await import("@repo/database")) as unknown as {
 			moveStory: ReturnType<typeof vi.fn>;
 		};
+		// `moveStory` returns the persisted row; the handler stamps the
+		// transition with its edit clock, so the fixture carries one.
 		(db.moveStory as ReturnType<typeof vi.fn>).mockResolvedValue({
 			id: "story-1",
 			title: "Test story",
+			identifier: "F-001",
 			status: { name: "Done" },
+			lastEditedAt: new Date("2026-09-16T12:00:00.000Z"),
+			updatedAt: new Date("2026-09-16T12:00:00.000Z"),
 		});
 
 		// Previous statusId differs from input.statusId
