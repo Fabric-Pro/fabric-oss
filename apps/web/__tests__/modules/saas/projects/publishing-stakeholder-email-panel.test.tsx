@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -144,6 +144,47 @@ vi.mock("@ui/components/dropdown-menu", () => {
 		DropdownMenuItem: Item,
 	};
 });
+
+/**
+ * The refinement review surface is STUBBED here on purpose.
+ *
+ * Its own behaviour — the diff it builds, the per-change accept/reject, the
+ * null-on-serialization-failure contract — is pinned in
+ * `publishing-refined-draft-review.test.tsx`. What this suite owes is the
+ * WIRING around it: that a refined candidate opens a review at all, that
+ * confirming writes the WORKING draft, and that rejecting writes nothing. A
+ * stub also keeps the TipTap stack out of a panel suite with no use for it.
+ */
+const { refinedReview } = vi.hoisted(() => ({
+	refinedReview: { props: null as Record<string, unknown> | null },
+}));
+vi.mock(
+	"@saas/projects/components/publishing-suite/RefinedDraftReview",
+	() => ({
+		RefinedDraftReview: (props: {
+			onConfirm: (merged: string | null) => void;
+			onReject: () => void;
+		}) => {
+			refinedReview.props = props as unknown as Record<string, unknown>;
+			return (
+				<div data-testid="refined-draft-review">
+					<button
+						type="button"
+						onClick={() => props.onConfirm("Merged review text.")}
+					>
+						stub confirm
+					</button>
+					<button type="button" onClick={() => props.onConfirm(null)}>
+						stub confirm unreadable
+					</button>
+					<button type="button" onClick={() => props.onReject()}>
+						stub reject
+					</button>
+				</div>
+			);
+		},
+	}),
+);
 
 import { StakeholderEmailPanel } from "@saas/projects/components/publishing-suite/StakeholderEmailPanel";
 
@@ -1277,6 +1318,266 @@ describe("StakeholderEmailPanel — whose draft the note describes (A6)", () => 
 
 		expect(
 			within(noteSection()).queryByText(QUALIFIER),
+		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Fizzy #1851 A7 gave the panel a "Refine with AI" action, and its result
+ * landed as an ordinary candidate beside the working draft — two columns of
+ * prose with nothing saying what moved. A refinement IS the saved draft with
+ * the changes that were asked for, so the difference is the only thing worth
+ * reading.
+ *
+ * The discriminator is the STORED row, not this tab's memory of having pressed
+ * the button. A refinement takes minutes to arrive, and a reload in between
+ * must not turn it back into an ordinary candidate.
+ */
+describe("StakeholderEmailPanel — reviewing a refined draft", () => {
+	const REFINED = {
+		...DOCUMENT,
+		generation: {
+			refinedFromWorkingDraft: true,
+			guidance: "Make it shorter.",
+		},
+	};
+
+	it("opens the review against the draft the refinement was built from", () => {
+		renderPanel({ draft: readyDraft(REFINED, "d2"), working: working() });
+
+		expect(screen.getByTestId("refined-draft-review")).toBeInTheDocument();
+		expect(refinedReview.props).toMatchObject({
+			baseline: working().body,
+			instruction: "Make it shorter.",
+		});
+	});
+
+	it("leaves an ordinary regeneration as the plain comparison", () => {
+		// A candidate that was not asked for as a revision has no "before" to
+		// diff against — it is a different draft, not a changed one.
+		renderPanel({ draft: readyDraft(DOCUMENT, "d2"), working: working() });
+
+		expect(
+			screen.queryByTestId("refined-draft-review"),
+		).not.toBeInTheDocument();
+		expect(screen.getByText(/New candidate/i)).toBeInTheDocument();
+	});
+
+	it("writes the reviewed text to the WORKING draft, never the candidate", async () => {
+		renderPanel({ draft: readyDraft(REFINED, "d2"), working: working() });
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /^stub confirm$/i }),
+		);
+
+		expect(mutate.saveBody).toHaveBeenCalledWith(
+			expect.objectContaining({
+				body: "Merged review text.",
+				expectedUpdatedAt: SAVED_AT,
+			}),
+		);
+		// Adopting names a candidate for the server to read the text from, so
+		// it cannot carry a partial merge. Reaching for it here would quietly
+		// save the whole refinement over the reader's per-change decisions.
+		expect(mutate.adopt).not.toHaveBeenCalled();
+	});
+
+	it("refuses to write a review the editor could not serialize", async () => {
+		// Fizzy #1987: `null` is a failed READ, not an empty document. Writing
+		// it as a body destroys the draft it was meant to save.
+		renderPanel({ draft: readyDraft(REFINED, "d2"), working: working() });
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /stub confirm unreadable/i }),
+		);
+
+		expect(mutate.saveBody).not.toHaveBeenCalled();
+	});
+
+	it("leaves the saved draft untouched when the review is rejected", async () => {
+		renderPanel({ draft: readyDraft(REFINED, "d2"), working: working() });
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /stub reject/i }),
+		);
+
+		expect(mutate.saveBody).not.toHaveBeenCalled();
+		expect(mutate.adopt).not.toHaveBeenCalled();
+		// Closed, not discarded: the candidate is still there and still
+		// adoptable the ordinary way.
+		expect(
+			screen.queryByTestId("refined-draft-review"),
+		).not.toBeInTheDocument();
+		expect(screen.getByText(/New candidate/i)).toBeInTheDocument();
+	});
+});
+
+/**
+ * A refinement landing on top of typing nobody has saved yet.
+ *
+ * The refine round trip takes minutes, and the obvious thing to do while it
+ * runs is keep editing. Confirming the review then writes over that text — the
+ * one loss a refresh cannot undo — so it asks first, in the same words the
+ * adopt path has always used. The review REPLACES the working editor while it
+ * is open, so the sequence has to be typed first and refined second; that is
+ * also the order it happens in.
+ */
+describe("StakeholderEmailPanel — a refinement over unsaved typing", () => {
+	const REFINED = {
+		...DOCUMENT,
+		generation: {
+			refinedFromWorkingDraft: true,
+			guidance: "Make it shorter.",
+		},
+	};
+
+	async function typeThenRefine() {
+		const view = render(
+			<StakeholderEmailPanel
+				projectId="p1"
+				organizationId="org1"
+				topicId="t1"
+				draft={readyDraft(DOCUMENT, "d2") as never}
+				working={working() as never}
+				canEdit={true}
+			/>,
+		);
+		await userEvent.type(
+			screen.getByRole("textbox", { name: /working stakeholder email/i }),
+			" Still typing.",
+		);
+		view.rerender(
+			<StakeholderEmailPanel
+				projectId="p1"
+				organizationId="org1"
+				topicId="t1"
+				draft={readyDraft(REFINED, "d2") as never}
+				working={working() as never}
+				canEdit={true}
+			/>,
+		);
+		return view;
+	}
+
+	it("asks before discarding it, and writes nothing when told not to", async () => {
+		mutate.confirm.mockReturnValue(false);
+		await typeThenRefine();
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /^stub confirm$/i }),
+		);
+
+		expect(mutate.confirm).toHaveBeenCalled();
+		expect(mutate.saveBody).not.toHaveBeenCalled();
+	});
+
+	it("writes once the reader accepts losing it", async () => {
+		// The negative control for the case above: proves the refusal there
+		// came from the answer, not from some other reason this path cannot
+		// fire.
+		mutate.confirm.mockReturnValue(true);
+		await typeThenRefine();
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /^stub confirm$/i }),
+		);
+
+		expect(mutate.saveBody).toHaveBeenCalledWith(
+			expect.objectContaining({ body: "Merged review text." }),
+		);
+	});
+});
+
+/**
+ * Where the pending state lives.
+ *
+ * Reported from staging: pressing Refine "reads as nothing happening". The
+ * popover closes on submit and the only feedback was a line in the drafts
+ * section further down the page, wording itself around the run that writes
+ * candidates — so the row the reader had just clicked in looked untouched.
+ */
+describe("StakeholderEmailPanel — the refine pending state", () => {
+	async function submitRefine() {
+		const user = userEvent.setup();
+		renderPanel({ draft: readyDraft(), working: working() as never });
+
+		await user.click(
+			screen.getByRole("button", { name: /refine with ai/i }),
+		);
+		const popover = within(await screen.findByRole("dialog"));
+		await user.type(
+			popover.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Remove the last line.",
+		);
+		await user.click(
+			popover.getByRole("button", { name: /refine draft/i }),
+		);
+	}
+
+	it("says nothing until a refine is actually submitted", () => {
+		renderPanel({ draft: readyDraft(), working: working() as never });
+
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+
+	it("reports the run beside the control that started it", async () => {
+		await submitRefine();
+
+		// By ROLE, not by position: what the complaint was about is that the
+		// row the reader clicked in reported nothing at all.
+		expect(screen.getByRole("status")).toHaveTextContent(
+			/revising your saved stakeholder email/i,
+		);
+	});
+
+	it("stops reporting when the server says nothing was started", async () => {
+		// Temporal down, or a run this tab has not seen already filling the
+		// row. There is no run to report on, and left standing the indicator
+		// would wait for an unrelated generation to end before clearing.
+		await submitRefine();
+
+		act(() => {
+			captured.generateStakeholderEmail.onSuccess({
+				started: false,
+				reason: "unavailable",
+			});
+		});
+
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Which AI does what.
+ *
+ * The AI Assistant rail stays docked on this tab and greets a reader with an
+ * offer to rewrite "the planning analysis" — which is what it does, and which
+ * on a draft tab reads as an offer to rewrite the draft. It has no such reach:
+ * its readable context carries the topic and the analysis and no draft, and the
+ * one thing it writes is the analysis editor. The panel says so rather than the
+ * page hiding a tool that still answers questions about the topic.
+ */
+describe("StakeholderEmailPanel — the assistant boundary", () => {
+	it("says which AI edits this draft and which one does not", () => {
+		renderPanel({ draft: readyDraft(), working: working() as never });
+
+		expect(
+			screen.getByText(
+				/refine with ai is what edits this stakeholder email .* the ai assistant works on the planning analysis, not on drafts/i,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("keeps it out of a viewer's panel", () => {
+		// It names two editing affordances, and a reader has neither.
+		renderPanel({
+			draft: readyDraft(),
+			working: working() as never,
+			canEdit: false,
+		});
+
+		expect(
+			screen.queryByText(/refine with ai is what edits/i),
 		).not.toBeInTheDocument();
 	});
 });

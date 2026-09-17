@@ -337,7 +337,9 @@ import {
 	getPublishingTopicProcedure,
 	latestPublishingCycleProcedure,
 	listAnalysisRevisionsProcedure,
+	listAnalysisTimelineProcedure,
 	listCycleChatDeliveriesProcedure,
+	listDraftTimelineProcedure,
 	listPublishingCyclesProcedure,
 	listPublishingTopicsProcedure,
 	listTopicDecisionsProcedure,
@@ -360,6 +362,7 @@ import {
 	setPublishingTopicNotesProcedure,
 	setTopicReadStateProcedure,
 	setTopicSnoozeProcedure,
+	summarizeAnalysisChangesProcedure,
 	updatePublishingSuiteSettingsProcedure,
 	updatePublishingTopicAssigneesProcedure,
 	updatePublishingTopicContributorsProcedure,
@@ -1549,6 +1552,22 @@ export const projectsRouter = {
 		// `answerTopicQuestion` below (see `analysis-revision.ts`'s module doc).
 		saveAnalysisRevision: saveAnalysisRevisionProcedure,
 		listAnalysisRevisions: listAnalysisRevisionsProcedure,
+		// The SAME history as one dense sequence, AI runs and hand saves
+		// numbered together, so a first manual save after six AI runs reads as
+		// v7 rather than "Version 1 · AI v6". A read-time projection over the
+		// rows that already exist — nothing is renumbered and nothing was
+		// backfilled, and its `seq` is display only: the write tokens stay the
+		// stored `expectedVersion` and `sourceAnalysisVersion`.
+		listAnalysisTimeline: listAnalysisTimelineProcedure,
+		// The confirm-time digest of an assistant rewrite, mirroring
+		// `stories.maturation.summarizeChanges`. Read-gated and read-only: it
+		// writes no revision and records no outcome, so it can run against the
+		// author's unsaved text without racing `saveAnalysisRevision` above.
+		// Advisory — the diff bar's Accept and Reject must never wait on it.
+		// Its `changeSummary` is a list of model-derived bullets and is stored
+		// nowhere, unlike `saveAnalysisRevision`'s same-named field, which is a
+		// short label the author types and the revision row keeps.
+		summarizeAnalysisChanges: summarizeAnalysisChangesProcedure,
 		// #1851 (2A-3): the topic's decision thread — questions, their answers,
 		// and the AI Updates a regeneration writes.
 		listTopicDecisions: listTopicDecisionsProcedure,
@@ -1575,6 +1594,12 @@ export const projectsRouter = {
 		// wants.
 		listTopicDrafts: listTopicDraftsProcedure,
 		markTopicDraftRead: markTopicDraftReadProcedure,
+		// The SAME draft history as one dense sequence per content type —
+		// generated runs, hand edits and restores numbered together, so a
+		// restore reads as the next version rather than leaving no trace. A
+		// read-time projection: `seq` is display only, and adoption and the
+		// editor both still send the working draft's `expectedUpdatedAt`.
+		listDraftTimeline: listDraftTimelineProcedure,
 		// #1853 (2B-2): Short Post / Tweet. `generateShortPost` starts one run
 		// and returns immediately — the panel polls `listTopicDrafts` for the
 		// result. `selectShortPostOption` adopts one of the three generated

@@ -96,6 +96,17 @@ interface PlanningAnalysisTabProps {
 	/** Clears the parent's copy, so one accepted rewrite is applied once. */
 	onAssistantProposalConsumed?: () => void;
 	/**
+	 * The assistant is mid-run against this topic, so the document is about to
+	 * be rewritten from under the author.
+	 *
+	 * Joins `latestAttempt.status === "GENERATING"` rather than replacing it:
+	 * a server regeneration and a chat-driven rewrite are different paths that
+	 * threaten the same document in the same way, and the editor should not
+	 * care which one is running. Optional, defaulting to false, so a caller
+	 * with no assistant on the page locks for regenerations exactly as before.
+	 */
+	assistantRunActive?: boolean;
+	/**
 	 * The newest attempt at an analysis, whatever became of it. This is what
 	 * the panel says ABOUT the document — running, failed, stranded past its
 	 * deadline — never what it renders. A panel driven off "the newest row"
@@ -185,6 +196,7 @@ export function PlanningAnalysisTab({
 	revisionCreatedAt,
 	assistantProposal = null,
 	onAssistantProposalConsumed,
+	assistantRunActive = false,
 }: PlanningAnalysisTabProps) {
 	const queryClient = useQueryClient();
 	const [historyOpen, setHistoryOpen] = useState(false);
@@ -537,8 +549,18 @@ export function PlanningAnalysisTab({
 	 * and for the moment before the new row lands `latestAttempt` is still
 	 * null — so without it this effect re-enters and starts a second run.
 	 *
-	 * Radix unmounts inactive tab content, so "mount" IS "opened" and this
-	 * cannot fire for someone who never visits the tab.
+	 * MOUNT NO LONGER MEANS "OPENED". This tab is force-mounted by
+	 * `TopicItemPage` so an editor full of unsaved words survives a trip to
+	 * another tab, which means this effect now runs on page load for everyone,
+	 * not just for someone who clicked through to the third tab.
+	 *
+	 * That is safe, and it was already the shape of things: the page-level
+	 * auto-start in `TopicItemPage` fires on the same load, under the same
+	 * conditions, and the two have always been allowed to race. The server
+	 * claims the attempt under a partial unique index and answers
+	 * `in-progress` to whichever call loses, so at most one run starts. The
+	 * cost of force-mounting is one extra call that the server refuses, not an
+	 * extra generation.
 	 */
 	const autoStarted = useRef(false);
 	useEffect(() => {
@@ -582,6 +604,68 @@ export function PlanningAnalysisTab({
 		},
 		[],
 	);
+
+	/**
+	 * The advisory "what changed" digest for the open review.
+	 *
+	 * `null` covers two different facts and keeps them apart: it is the state
+	 * before the call resolves, and it is also where a FAILED call lands,
+	 * because the procedure throws on model failure rather than returning `[]`.
+	 * A successful call that finds nothing to say returns `[]`. Both render
+	 * nothing — see the note on the effect below — but they are not the same
+	 * thing and the code does not pretend they are.
+	 */
+	const [changeSummary, setChangeSummary] = useState<string[] | null>(null);
+	const summarize = useMutation(
+		orpc.projects.publishingSuite.summarizeAnalysisChanges.mutationOptions({
+			onSuccess: (result: { changeSummary: string[] }) => {
+				setChangeSummary(result.changeSummary);
+			},
+			// Silent, and deliberately so. The digest is advisory: it explains
+			// a diff the author can already read. A toast over a failed
+			// explanation would interrupt the review it was meant to help,
+			// and the card simply stays away. Accept and Reject never consult
+			// this mutation at all.
+			onError: () => {
+				setChangeSummary(null);
+			},
+		}),
+	);
+
+	/**
+	 * Ask for the digest ONCE per review, not once per render.
+	 *
+	 * The trigger is `review` becoming non-null. Both texts are already in
+	 * hand, so nothing has to be read back out of the editor first. The ref
+	 * is what makes it once: this effect re-runs on every render that touches
+	 * its dependencies, and a model call per keystroke is the failure mode
+	 * being avoided. It re-arms when the review closes, so the next one asks
+	 * again.
+	 */
+	const summarizeFiredRef = useRef(false);
+	// `mutate` is a fresh identity on every render of this component, so it is
+	// read through a ref rather than named as a dependency — naming it would
+	// re-run this effect constantly and defeat the guard above it.
+	const summarizeMutateRef = useRef(summarize.mutate);
+	summarizeMutateRef.current = summarize.mutate;
+	useEffect(() => {
+		if (review === null) {
+			summarizeFiredRef.current = false;
+			setChangeSummary(null);
+			return;
+		}
+		if (summarizeFiredRef.current) {
+			return;
+		}
+		summarizeFiredRef.current = true;
+		summarizeMutateRef.current({
+			projectId,
+			topicId,
+			organizationId,
+			before: review.baseline,
+			after: review.proposed,
+		});
+	}, [review, projectId, topicId, organizationId]);
 
 	/**
 	 * The author accepted what the review left standing.
@@ -985,8 +1069,22 @@ export function PlanningAnalysisTab({
 							}
 							canEdit={canEdit}
 							// A review is not a run: the author is meant to
-							// type in it, accepting and rejecting hunks.
-							isLocked={isGenerating}
+							// type in it, accepting and rejecting hunks. An
+							// assistant run is, though — and it ends before
+							// the accept/reject card appears, so the review
+							// window is still unlocked.
+							isLocked={isGenerating || assistantRunActive}
+							changeSummary={
+								review !== null
+									? {
+											bullets: changeSummary,
+											isLoading: summarize.isPending,
+										}
+									: null
+							}
+							lockReason={
+								isGenerating ? "regenerating" : "assistant"
+							}
 							diffReview={
 								review !== null
 									? {

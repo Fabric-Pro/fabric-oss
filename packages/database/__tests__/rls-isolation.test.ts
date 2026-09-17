@@ -913,6 +913,7 @@ describe("PostgreSQL RLS Policies", () => {
 		let orgADraftId: string;
 		let orgAWorkingDraftId: string;
 		let orgAAnalysisRevisionId: string;
+		let orgADraftRevisionId: string;
 		let orgAChatDeliveryId: string;
 		let personalChatDeliveryId: string;
 
@@ -999,6 +1000,23 @@ describe("PostgreSQL RLS Policies", () => {
 						version: 1,
 						body: "rls isolation smoke analysis body",
 						sourceAnalysisVersion: 1,
+					},
+				})
+			).id;
+
+			// The draft-prose history table. Same reasoning as the analysis
+			// revision above: its own denormalised tenant columns (XOR), so its
+			// policy is proved in its own right rather than through the topic.
+			orgADraftRevisionId = (
+				await db.publishingTopicDraftRevision.create({
+					data: {
+						topicId: orgATopicId,
+						projectId: orgAProject,
+						organizationId: TEST_ORGS.orgA,
+						postType: "BLOG_POST",
+						version: 1,
+						body: "rls isolation smoke draft revision body",
+						kind: "EDITED",
 					},
 				})
 			).id;
@@ -1331,6 +1349,39 @@ describe("PostgreSQL RLS Policies", () => {
 
 			expect(row).not.toBeNull();
 			expect(row?.id).toBe(orgAAnalysisRevisionId);
+		});
+
+		it("publishing_topic_draft_revision: Org B context cannot read Org A's draft revision", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgB,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.publishingTopicDraftRevision.findUnique({
+						where: { id: orgADraftRevisionId },
+					}),
+			);
+
+			expect(row).toBeNull();
+		});
+
+		it("publishing_topic_draft_revision: Org A context CAN read its own draft revision (positive control)", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.publishingTopicDraftRevision.findUnique({
+						where: { id: orgADraftRevisionId },
+					}),
+			);
+
+			expect(row).not.toBeNull();
+			expect(row?.id).toBe(orgADraftRevisionId);
 		});
 
 		// The recipient column is deliberately NOT a tenant column: user B is the RECIPIENT of nothing

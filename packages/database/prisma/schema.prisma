@@ -281,6 +281,8 @@ model User {
   publishingWorkingDraftsUpdated PublishingTopicWorkingDraft[]   @relation("PublishingWorkingDraftUpdatedBy")
   publishingAnalysisRevisionsTenant PublishingTopicAnalysisRevision[] @relation("PublishingAnalysisRevisionTenant")
   publishingAnalysisRevisionsAuthored PublishingTopicAnalysisRevision[] @relation("PublishingAnalysisRevisionAuthor")
+  publishingDraftRevisionsTenant PublishingTopicDraftRevision[] @relation("PublishingDraftRevisionTenant")
+  publishingDraftRevisionsAuthored PublishingTopicDraftRevision[] @relation("PublishingDraftRevisionAuthor")
   publishingTopicDecisions     PublishingTopicDecisionEntry[]
   authoredPublishingTopicDecisions PublishingTopicDecisionEntry[] @relation("PublishingTopicDecisionAuthor")
   publishingQuestionAssignments  PublishingTopicQuestionAssignee[] @relation("PublishingQuestionAssignee")
@@ -748,6 +750,7 @@ model Organization {
   publishingTopicDrafts                   PublishingTopicDraft[]
   publishingWorkingDrafts                 PublishingTopicWorkingDraft[]
   publishingAnalysisRevisions             PublishingTopicAnalysisRevision[]
+  publishingDraftRevisions                PublishingTopicDraftRevision[]
 
   // Dynamic agent relations
   offloadedToolOutputs   OffloadedToolOutput[]
@@ -1978,6 +1981,7 @@ model Project {
   publishingTopicDrafts      PublishingTopicDraft[]
   publishingWorkingDrafts    PublishingTopicWorkingDraft[]
   publishingAnalysisRevisions PublishingTopicAnalysisRevision[]
+  publishingDraftRevisions   PublishingTopicDraftRevision[]
   publishingSuiteSettings    PublishingSuiteSettings?
 
   // Episodic memory relation (conversations scoped to project)
@@ -7525,6 +7529,7 @@ model PublishingTopic {
   drafts       PublishingTopicDraft[]
   workingDrafts PublishingTopicWorkingDraft[]
   analysisRevisions PublishingTopicAnalysisRevision[]
+  draftRevisions PublishingTopicDraftRevision[]
 
   @@unique([projectId, dedupeKey]) // project-wide dedup across ALL statuses (dedupeKey is non-null)
   @@index([projectId, status])
@@ -7857,6 +7862,82 @@ model PublishingTopicWorkingDraft {
   @@index([updatedById])
   @@index([editingUserId])
   @@map("publishing_topic_working_draft")
+}
+
+/// One saved revision of a topic's working DRAFT body, for one content type.
+///
+/// The exact sibling of `PublishingTopicAnalysisRevision` one level down:
+/// `PublishingTopicDraft` holds what generation produced, this holds what a
+/// person did to it. It exists because `PublishingTopicWorkingDraft` is a
+/// single upserted row per `(topicId, postType)` — every hand save overwrote
+/// the last, so manual edits were versioned NOWHERE and a restore discarded
+/// them silently. Nothing could project that history back; it was never
+/// written.
+///
+/// Append-only, like its sibling: the current body is still the working draft
+/// row, and this is the trail of how it got there.
+///
+/// `kind` is a REAL COLUMN, deliberately diverging from
+/// `PublishingTopicAnalysisRevision`, which infers a restore from
+/// `changeSummary` prose. Inferring a state from free text is not a contract,
+/// and the obvious structural alternative does not work either:
+/// `sourceDraftVersion` cannot discriminate, because an edit inherits whatever
+/// seeded the working draft and so carries one exactly as a restore does.
+///
+/// Two things Prisma cannot express, both written by hand in the migration and
+/// both copied from the precedent:
+///   - a composite FK `(topicId, projectId)` onto `publishing_topic (id, projectId)`.
+///     The single-column FKs prove each id names a real row and nothing about
+///     the two AGREEING, so a revision could otherwise attach to a topic in a
+///     different project;
+///   - `CHECK (("organizationId" IS NULL) <> ("userId" IS NULL))` — strict XOR.
+///     RLS does NOT substitute: its org branch permits any `userId`, it does
+///     not require null.
+model PublishingTopicDraftRevision {
+  id                 String                       @id @default(cuid())
+  topicId            String
+  projectId          String
+  organizationId     String? // denormalized from the parent topic (XOR)
+  userId             String? // denormalized from the parent topic (XOR)
+  postType           PublishingTopicPostType
+  version            Int // per (topicId, postType), allocated under the locked project row
+  body               String                       @db.Text // Markdown the user owns
+  kind               PublishingDraftRevisionKind
+  /// The GENERATED version this body traces back to, or null when it traces
+  /// back to nothing generated. Never derived server-side, for the same reason
+  /// `sourceAnalysisVersion` is not: deriving it would stamp the newest run
+  /// onto a body seeded from an older one.
+  sourceDraftVersion Int?
+  authorUserId       String? // authorship, never tenancy
+  changeSummary      String?
+  createdAt          DateTime                     @default(now())
+
+  topic        PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?           @relation("PublishingDraftRevisionTenant", fields: [userId], references: [id], onDelete: Cascade)
+  author       User?           @relation("PublishingDraftRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+
+  @@unique([topicId, postType, version])
+  @@index([topicId, postType, createdAt])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([userId])
+  @@index([authorUserId])
+  @@map("publishing_topic_draft_revision")
+}
+
+/// What produced a `PublishingTopicDraftRevision`.
+///
+/// Only two values, and no GENERATED member: a generated body is a
+/// `PublishingTopicDraft` row and never appears in this table. The unified
+/// read-time sequence is what puts the two kinds of row on one scale.
+enum PublishingDraftRevisionKind {
+  /// Someone typed on top of the working draft and pressed Save.
+  EDITED
+  /// Someone brought an earlier version back. The body is a copy of that
+  /// version's, and `sourceDraftVersion` records where it came from.
+  RESTORED
 }
 
 enum PublishingDecisionEntryKind {

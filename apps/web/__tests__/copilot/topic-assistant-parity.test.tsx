@@ -31,7 +31,7 @@
  *     rather than as the failure it is.
  */
 
-import { render as rtlRender } from "@testing-library/react";
+import { act, fireEvent, render as rtlRender } from "@testing-library/react";
 import type { ComponentType, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -47,8 +47,16 @@ const {
 	hydratedProps,
 	outcomesProps,
 	attachmentProps,
+	drawerProps,
 	activeConversation,
 	routeParams,
+	chatIsLoading,
+	historyFlag,
+	sessionUser,
+	setLiveMessages,
+	archiveForDocument,
+	toastSuccess,
+	toastError,
 	AssistantSentinel,
 	MessagesSentinel,
 } = vi.hoisted(() => ({
@@ -66,12 +74,26 @@ const {
 	outcomesProps: [] as Array<Record<string, unknown>>,
 	/** Props `<AttachmentRegistryProvider>` received. */
 	attachmentProps: [] as Array<Record<string, unknown>>,
+	/** Props `<CopilotHistoryDrawer>` received, one entry per render. */
+	drawerProps: [] as Array<Record<string, unknown>>,
 	/** What the active-conversation query resolves to. */
 	activeConversation: {
 		current: null as { conversation?: unknown } | null,
 	},
 	/** What `useParams()` returns — the topic id lives in the route. */
 	routeParams: { current: {} as Record<string, string | undefined> },
+	/** Stands in for a run being in flight; read at render by the session mock. */
+	chatIsLoading: { current: false },
+	/** The org's chat-history feature flag. */
+	historyFlag: { current: true },
+	/** The signed-in user, or null while the session is still resolving. */
+	sessionUser: { current: { id: "user-1" } as { id: string } | null },
+	/** CopilotKit's live-transcript setter, shared through the session. */
+	setLiveMessages: vi.fn(),
+	/** The archive call "New conversation" makes before resetting. */
+	archiveForDocument: vi.fn(),
+	toastSuccess: vi.fn(),
+	toastError: vi.fn(),
 	/** Stands in for the shared assistant-message renderer. */
 	AssistantSentinel: (() => null) as ComponentType,
 	/** Stands in for the history-replaying message list. */
@@ -91,10 +113,16 @@ vi.mock("@copilotkit/react-core", () => ({
 	},
 	useCopilotReadable: vi.fn(),
 	// Read by the real `<CopilotChatSessionProvider>` the component mounts.
+	// `isLoading` is the run signal the editor lock is derived from, so it is
+	// mutable here and a re-render publishes the change.
 	useCopilotChatInternal: () => ({
 		messages: [],
 		visibleMessages: [],
-		isLoading: false,
+		isLoading: chatIsLoading.current,
+		// The live-transcript setter both conversation switches call. Absent
+		// from this mock, the destructure hands back `undefined` and the first
+		// "New conversation" click throws.
+		setMessages: setLiveMessages,
 	}),
 }));
 
@@ -129,6 +157,26 @@ vi.mock("@saas/projects/hooks/useDocumentAssistantHistory", () => ({
 		data: activeConversation.current,
 	}),
 }));
+
+// A SEPARATE module from the one above, not an extra export on it — mocking it
+// as part of `useDocumentAssistantHistory` would silently drop the
+// active-conversation stub every test here depends on.
+vi.mock("@saas/projects/hooks/useDocumentAssistantHistoryEnabled", () => ({
+	useDocumentAssistantHistoryEnabled: () => historyFlag.current,
+}));
+
+vi.mock(
+	"../../modules/saas/projects/components/copilot/CopilotHistoryDrawer",
+	() => ({
+		CopilotHistoryDrawer: (props: Record<string, unknown>) => {
+			drawerProps.push(props);
+			// Renders a marker rather than null: where the drawer sits in the
+			// tree is the point — a child of the sidebar would unmount with it
+			// and take the live thread's half-typed input with it.
+			return <div data-testid="copilot-history-drawer" />;
+		},
+	}),
+);
 
 vi.mock("@saas/shared/components/copilot/AttachmentRegistry", () => ({
 	AttachmentRegistryProvider: (props: Record<string, unknown>) => {
@@ -177,7 +225,17 @@ vi.mock(
 // ---------------------------------------------------------------------------
 
 vi.mock("@saas/auth/hooks/use-session", () => ({
-	useSession: () => ({ user: { id: "user-1" } }),
+	useSession: () => ({ user: sessionUser.current }),
+}));
+
+vi.mock("@shared/lib/orpc-client", () => ({
+	orpcClient: {
+		agents: { conversations: { archiveForDocument: archiveForDocument } },
+	},
+}));
+
+vi.mock("sonner", () => ({
+	toast: { success: toastSuccess, error: toastError },
 }));
 
 vi.mock("@saas/shared/components/copilot/use-copilot-error-handler", () => ({
@@ -235,6 +293,24 @@ function render(ui: Parameters<typeof rtlRender>[0]) {
 	return result;
 }
 
+/**
+ * Renders the header CopilotKit would have put in its own slot.
+ *
+ * The mocked `<CopilotSidebar>` records its props without rendering them, so
+ * the header's handlers are unreachable from the recorded object — they live in
+ * the closure the factory captured. Mounting the real component is also the
+ * stronger test: it proves the control exists and is labelled, not merely that
+ * a callback was passed.
+ */
+function renderHeader() {
+	const Header = sidebarProps[sidebarProps.length - 1].Header as
+		| ComponentType
+		| undefined;
+	expect(Header).toBeDefined();
+	const HeaderSlot = Header as ComponentType;
+	return rtlRender(<HeaderSlot />);
+}
+
 describe("TopicAssistant — Feature Maturation parity", () => {
 	beforeEach(() => {
 		sidebarProps.length = 0;
@@ -244,8 +320,16 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 		hydratedProps.length = 0;
 		outcomesProps.length = 0;
 		attachmentProps.length = 0;
+		drawerProps.length = 0;
 		activeConversation.current = null;
 		routeParams.current = { topicId: TOPIC_ID };
+		chatIsLoading.current = false;
+		historyFlag.current = true;
+		sessionUser.current = { id: "user-1" };
+		setLiveMessages.mockReset();
+		archiveForDocument.mockReset().mockResolvedValue(undefined);
+		toastSuccess.mockReset();
+		toastError.mockReset();
 	});
 
 	// -----------------------------------------------------------------------
@@ -408,21 +492,376 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 		expect([...seeds][0]).toEqual([]);
 	});
 
-	it("scopes the outcome chips and the attachment registry to the same topic", () => {
+	it("mounts the attachment registry as the seam for a future input", () => {
 		render(assistant());
 
-		// The outcome provider is what lights up accept/reject stamps in the
-		// live bubble; a mismatched scope silently shows none.
-		expect(outcomesProps[0]).toMatchObject({
-			documentRefKind: "PUBLISHING_TOPIC",
-			documentRefId: TOPIC_ID,
-			projectId: "proj-1",
-			organizationId: "org-1",
-		});
 		// Inert today — this sidebar keeps CopilotKit's default input, so
 		// nothing ever fills the FIFO. Mounted so the seam exists for the day
 		// an attachment-capable input lands.
 		expect(attachmentProps).toHaveLength(1);
 		expect(attachmentProps[0].pendingAttachmentsRef).toBeDefined();
+	});
+
+	it("does NOT mount the diff-outcome provider, which would badge every turn Pending", () => {
+		// Regression guard, not an omission. The provider's only consumer is
+		// the accept/reject badge beside each persisted tool call, and that
+		// badge reads `acceptedAt` / `rejectedAt` — stamped solely by
+		// `recordDiffOutcome`, whose only caller is `DiffReviewBar`. This
+		// surface's chat path never reaches it: an accepted rewrite goes to
+		// the Planning & Analysis editor and is saved there.
+		//
+		// Mounted, the provider therefore renders a permanent
+		// "confirm_changes Pending" beside a turn the person already
+		// accepted — the persistence hook stores every tool call unfiltered,
+		// and the badge renders them unfiltered too. Re-add this only
+		// together with something on this surface that stamps an outcome.
+		render(assistant());
+
+		expect(outcomesProps).toHaveLength(0);
+	});
+
+	// -----------------------------------------------------------------------
+	// The way back into an earlier conversation
+	// -----------------------------------------------------------------------
+
+	describe("chat history", () => {
+		it("mounts the drawer beside the sidebar, not inside it", () => {
+			const { container } = render(assistant());
+
+			// A CHILD of `<CopilotSidebar>` would be torn down with it, taking
+			// the live thread — and any half-typed message — with it. The
+			// drawer overlays the chat area instead, so closing it puts the
+			// reader back exactly where they were.
+			expect(
+				container.querySelector(
+					'[data-testid="copilot-history-drawer"]',
+				),
+			).not.toBeNull();
+			expect(
+				container.querySelector(
+					'[data-testid="copilot-sidebar"] [data-testid="copilot-history-drawer"]',
+				),
+			).toBeNull();
+		});
+
+		it("scopes the drawer to this topic and this reader", () => {
+			activeConversation.current = {
+				conversation: { id: "conv-9", messages: [] },
+			};
+			render(assistant());
+
+			expect(drawerProps[0]).toMatchObject({
+				documentRefKind: "PUBLISHING_TOPIC",
+				documentRefId: TOPIC_ID,
+				projectId: "proj-1",
+				organizationId: "org-1",
+				// Which rows are the reader's own, and so which of them they
+				// may rename, delete or fork.
+				currentUserId: "user-1",
+				// Marks the live thread in the list, so "resume" cannot offer
+				// the conversation already on screen.
+				activeConversationId: "conv-9",
+			});
+		});
+
+		it("withholds both history affordances while the org has the flag off", () => {
+			// Not symmetry with the persistence hook, which stays mounted:
+			// every read behind the drawer sets `enabled: featureEnabled`, so a
+			// History button here would open a permanently empty drawer.
+			historyFlag.current = false;
+			render(assistant());
+
+			expect(drawerProps).toHaveLength(0);
+			// And the slot goes back to CopilotKit's own header, which carries
+			// a close button — so a docked-open panel stays closable either way.
+			expect(sidebarProps[0].Header).toBeUndefined();
+		});
+
+		it("holds the drawer back until the session resolves a user", () => {
+			// `currentUserId` is required, and guessing it wrong would offer
+			// author-only controls on somebody else's conversation.
+			sessionUser.current = null;
+			render(assistant());
+
+			expect(drawerProps).toHaveLength(0);
+			// The header still mounts: it owns the close button, and nothing
+			// in it needs an identity.
+			expect(sidebarProps[0].Header).toBeDefined();
+		});
+
+		it("mounts no drawer when the route carries no topic id", () => {
+			// Same reasoning as the persistence hook: with no topic there is
+			// nothing to scope a conversation list to.
+			routeParams.current = {};
+			render(assistant());
+
+			expect(drawerProps).toHaveLength(0);
+		});
+
+		it("keeps the header's component identity stable across re-renders", () => {
+			// The factory returns a component TYPE. A fresh one per render is a
+			// different type to React, which remounts the header on every
+			// streaming tick.
+			const { rerender } = render(assistant());
+			rerender(assistant({ analysisMarkdown: "Rewritten." }));
+
+			expect(sidebarProps.length).toBeGreaterThan(1);
+			const headers = new Set(sidebarProps.map((p) => p.Header));
+			expect(headers.size).toBe(1);
+			expect([...headers][0]).toBeDefined();
+		});
+
+		describe("starting a new conversation", () => {
+			it("archives the live thread and clears the transcript", async () => {
+				activeConversation.current = {
+					conversation: { id: "conv-9", messages: [] },
+				};
+				render(assistant());
+				const { getByLabelText } = renderHeader();
+
+				await act(async () => {
+					fireEvent.click(getByLabelText("Start a new conversation"));
+				});
+
+				expect(archiveForDocument).toHaveBeenCalledWith({
+					conversationId: "conv-9",
+					organizationId: "org-1",
+				});
+				// Clearing the LIVE half is what the reader sees; the
+				// historical half empties on its own once the active id is
+				// null.
+				expect(setLiveMessages).toHaveBeenCalledWith([]);
+				expect(toastSuccess).toHaveBeenCalled();
+			});
+
+			it("archives nothing when no thread has been persisted yet", async () => {
+				render(assistant());
+				const { getByLabelText } = renderHeader();
+
+				await act(async () => {
+					fireEvent.click(getByLabelText("Start a new conversation"));
+				});
+
+				// Pre-first-send there is no row: the next message lazy-creates
+				// one, and calling archive with a null id would be a 400.
+				expect(archiveForDocument).not.toHaveBeenCalled();
+				expect(setLiveMessages).toHaveBeenCalledWith([]);
+			});
+
+			it("does not fall back to the thread it just archived", async () => {
+				// `getActiveForDocument` has no refetch interval and its result
+				// is cached, so it goes on naming the archived thread. Falling
+				// back to it would replay the transcript the reader just left
+				// and append their next message to it.
+				activeConversation.current = {
+					conversation: { id: "conv-9", messages: [{ id: "m-1" }] },
+				};
+				const { rerender } = render(assistant());
+				const { getByLabelText } = renderHeader();
+
+				await act(async () => {
+					fireEvent.click(getByLabelText("Start a new conversation"));
+				});
+				rerender(assistant());
+
+				expect(
+					hydratedProps[hydratedProps.length - 1]
+						.activeConversationId,
+				).toBeNull();
+				expect(
+					persistenceProps[persistenceProps.length - 1]
+						.conversationId,
+				).toBeNull();
+			});
+
+			it("stays reset when it is pressed twice before anything is sent", async () => {
+				// The second press has nothing to archive, and must not undo
+				// the first one's suppression by recording "I archived null"
+				// — which would let the stale query hand the original thread
+				// straight back.
+				activeConversation.current = {
+					conversation: { id: "conv-9", messages: [{ id: "m-1" }] },
+				};
+				const { rerender } = render(assistant());
+				const { getByLabelText } = renderHeader();
+
+				await act(async () => {
+					fireEvent.click(getByLabelText("Start a new conversation"));
+				});
+				await act(async () => {
+					fireEvent.click(getByLabelText("Start a new conversation"));
+				});
+				rerender(assistant());
+
+				expect(archiveForDocument).toHaveBeenCalledTimes(1);
+				expect(
+					persistenceProps[persistenceProps.length - 1]
+						.conversationId,
+				).toBeNull();
+			});
+
+			it("keeps the header mounted across a conversation switch", async () => {
+				// The handler is closed over by the header factory, so a
+				// handler identity that changes after the first press returns a
+				// new component TYPE — React remounts the header, and the
+				// control the reader just clicked disappears and comes back.
+				activeConversation.current = {
+					conversation: { id: "conv-9", messages: [] },
+				};
+				const { rerender } = render(assistant());
+				const { getByLabelText } = renderHeader();
+
+				await act(async () => {
+					fireEvent.click(getByLabelText("Start a new conversation"));
+				});
+				rerender(assistant());
+
+				expect(new Set(sidebarProps.map((p) => p.Header)).size).toBe(1);
+			});
+
+			it("resets the thread even when the archive call fails", async () => {
+				// The worst case of resetting anyway is the old thread
+				// reappearing on the next load. The worst case of NOT resetting
+				// is a reader stuck in the conversation they asked to leave.
+				activeConversation.current = {
+					conversation: { id: "conv-9", messages: [] },
+				};
+				archiveForDocument.mockRejectedValue(new Error("nope"));
+				render(assistant());
+				const { getByLabelText } = renderHeader();
+
+				await act(async () => {
+					fireEvent.click(getByLabelText("Start a new conversation"));
+				});
+
+				expect(toastError).toHaveBeenCalled();
+				expect(setLiveMessages).toHaveBeenCalledWith([]);
+			});
+		});
+
+		describe("forking an earlier conversation", () => {
+			const FORKED = {
+				forkedConversationId: "conv-fork",
+				copiedMessageCount: 2,
+				copiedMessages: [{ id: "m-1" }, { id: "m-2" }],
+				visibility: "SHARED" as const,
+			};
+
+			function fork(
+				rerender: (ui: ReturnType<typeof assistant>) => void,
+			) {
+				const onForked = drawerProps[drawerProps.length - 1]
+					.onForked as (input: typeof FORKED) => void;
+				act(() => {
+					onForked(FORKED);
+				});
+				rerender(assistant());
+			}
+
+			it("hands the copied turns to the hydrated half, never the runtime", () => {
+				const { rerender } = render(assistant());
+				fork(rerender);
+
+				// THE CRASH THIS AVOIDS: a second `setMessages` carrying the
+				// copied turns throws "<CopilotKit> not wrapped" mid-render.
+				// The only live-store write is the clear.
+				expect(setLiveMessages).toHaveBeenCalledTimes(1);
+				expect(setLiveMessages).toHaveBeenCalledWith([]);
+
+				const hydrated = hydratedProps[hydratedProps.length - 1];
+				expect(hydrated.activeConversationId).toBe("conv-fork");
+				// Seed and active id must MATCH, or the provider treats the
+				// seed as a stale thread and the copied turns never paint.
+				expect(hydrated.ssrConversationId).toBe("conv-fork");
+				expect(hydrated.initialMessages).toEqual(FORKED.copiedMessages);
+			});
+
+			it("tells the persistence walker the copied turns are already stored", () => {
+				const { rerender } = render(assistant());
+				fork(rerender);
+
+				const persistence =
+					persistenceProps[persistenceProps.length - 1];
+				expect(persistence.conversationId).toBe("conv-fork");
+				expect(persistence.initialPersistedMessageIds).toEqual([
+					"m-1",
+					"m-2",
+				]);
+			});
+
+			it("survives the active-conversation query polling the old thread back", () => {
+				// THE REGRESSION THIS GUARDS. Everything else on this surface is
+				// derived from that query, which re-polls. A fork written into
+				// anything derived from it is silently undone on the next tick —
+				// the reader watches the thread they just opened revert, and the
+				// walker re-appends turns that are already stored.
+				const { rerender } = render(assistant());
+				fork(rerender);
+
+				activeConversation.current = {
+					conversation: {
+						id: "conv-old",
+						messages: [{ id: "m-old" }],
+					},
+				};
+				rerender(assistant());
+
+				const hydrated = hydratedProps[hydratedProps.length - 1];
+				expect(hydrated.activeConversationId).toBe("conv-fork");
+				expect(hydrated.ssrConversationId).toBe("conv-fork");
+				expect(
+					persistenceProps[persistenceProps.length - 1]
+						.initialPersistedMessageIds,
+				).toEqual(["m-1", "m-2"]);
+			});
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// Run-state reporting (the editor lock)
+	// -----------------------------------------------------------------------
+
+	describe("run-state reporting", () => {
+		it("reports a run starting and finishing", () => {
+			const onRunStateChange = vi.fn();
+			const { rerender } = render(assistant({ onRunStateChange }));
+			expect(onRunStateChange).toHaveBeenLastCalledWith(false);
+
+			chatIsLoading.current = true;
+			rerender(assistant({ onRunStateChange }));
+			expect(onRunStateChange).toHaveBeenLastCalledWith(true);
+
+			// Completion AND failure both land here: `isLoading` is
+			// CopilotKit's own state and the run terminates either way, so
+			// there is no error path that leaves it stuck true.
+			chatIsLoading.current = false;
+			rerender(assistant({ onRunStateChange }));
+			expect(onRunStateChange).toHaveBeenLastCalledWith(false);
+		});
+
+		it("reports the run as over when it unmounts mid-run", () => {
+			// THE STUCK-LOCK PATH. If this subtree disappears while the page
+			// has last heard `true` — the error boundary catching a provider
+			// failure, or a navigation away mid-run — the page would hold a
+			// lock with nothing left alive to release it, and the editor
+			// would be read-only until a reload. The boundary-catch case
+			// reduces to exactly this: the subtree unmounts, so the same
+			// cleanup runs.
+			const onRunStateChange = vi.fn();
+			chatIsLoading.current = true;
+			const { unmount } = render(assistant({ onRunStateChange }));
+			expect(onRunStateChange).toHaveBeenLastCalledWith(true);
+
+			unmount();
+
+			expect(onRunStateChange).toHaveBeenLastCalledWith(false);
+		});
+
+		it("works with no listener at all", () => {
+			// The prop is optional: a caller that locks nothing passes
+			// nothing, and the chat must not care.
+			chatIsLoading.current = true;
+			expect(() => render(assistant())).not.toThrow();
+		});
 	});
 });

@@ -874,6 +874,12 @@ export const PublishingTopicWorkingDraftScalarFieldEnumSchema = z.enum(['id', 't
 
 export type PublishingTopicWorkingDraftScalarFieldEnum = z.infer<typeof PublishingTopicWorkingDraftScalarFieldEnumSchema>;
 
+// File: PublishingTopicDraftRevisionScalarFieldEnum.schema.ts
+
+export const PublishingTopicDraftRevisionScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'postType', 'version', 'body', 'kind', 'sourceDraftVersion', 'authorUserId', 'changeSummary', 'createdAt'])
+
+export type PublishingTopicDraftRevisionScalarFieldEnum = z.infer<typeof PublishingTopicDraftRevisionScalarFieldEnumSchema>;
+
 // File: PublishingTopicDecisionEntryScalarFieldEnum.schema.ts
 
 export const PublishingTopicDecisionEntryScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'parentId', 'authorType', 'authorUserId', 'status', 'kind', 'questionId', 'decisionKind', 'subject', 'summary', 'content', 'recommendedResponse', 'answerOptions', 'whyItMatters', 'answerSource', 'analysisVersion', 'deletedAt', 'createdAt', 'updatedAt'])
@@ -2625,6 +2631,12 @@ export type PublishingPlanningAnalysisStatus = z.infer<typeof PublishingPlanning
 export const PublishingDraftStatusSchema = z.enum(['GENERATING', 'READY', 'FAILED'])
 
 export type PublishingDraftStatus = z.infer<typeof PublishingDraftStatusSchema>;
+
+// File: PublishingDraftRevisionKind.schema.ts
+
+export const PublishingDraftRevisionKindSchema = z.enum(['EDITED', 'RESTORED'])
+
+export type PublishingDraftRevisionKind = z.infer<typeof PublishingDraftRevisionKindSchema>;
 
 // File: PublishingDecisionEntryKind.schema.ts
 
@@ -6825,6 +6837,27 @@ export const PublishingTopicWorkingDraftSchema = z.object({
 });
 
 export type PublishingTopicWorkingDraftType = z.infer<typeof PublishingTopicWorkingDraftSchema>;
+
+
+// File: PublishingTopicDraftRevision.schema.ts
+
+export const PublishingTopicDraftRevisionSchema = z.object({
+  id: z.string(),
+  topicId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string().nullish(),
+  userId: z.string().nullish(),
+  postType: PublishingTopicPostTypeSchema,
+  version: z.number().int(),
+  body: z.string(),
+  kind: PublishingDraftRevisionKindSchema,
+  sourceDraftVersion: z.number().int().nullish(),
+  authorUserId: z.string().nullish(),
+  changeSummary: z.string().nullish(),
+  createdAt: z.date(),
+});
+
+export type PublishingTopicDraftRevisionType = z.infer<typeof PublishingTopicDraftRevisionSchema>;
 
 
 // File: PublishingTopicDecisionEntry.schema.ts

@@ -17,7 +17,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
-import { Loader2Icon, PlusIcon, SparklesIcon } from "lucide-react";
+import { Loader2Icon, PencilIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -108,14 +108,28 @@ const REVIEW_TABS: ReadonlyArray<{ value: ReviewTab; label: string }> = [
 type ActiveTab = ReviewTab | PostType;
 
 /**
- * The reading measure the three REVIEW tabs share.
+ * The reading measure Summary & Questions and the Decision Log share.
  *
  * `4xl` rather than Feature Maturation's `3xl`: this page's questions carry an
  * assignee picker on the same row and the decision log runs two columns, both
  * of which lose their shape at 768px. Wide enough to stay a page, narrow enough
  * that a line of prose does not run the whole of a 1440 window.
+ *
+ * NOT the Planning & Analysis tab. That tab is an EDITOR over the same kind of
+ * document as the Full Specification, and `PlanningAnalysisEditor` dropped its
+ * own `PROSE_MEASURE_CLASS` cap for exactly that parity — one of the two
+ * reading half as wide as the other is the most visible difference between
+ * them. Applying this measure there silently put the cap back one level up,
+ * which is the bug: the editor had already given it up.
+ *
+ * Width there is bounded by the page container instead, which reserves the
+ * assistant rail's 28rem when it is docked, so a full-width tab stops at the
+ * rail rather than sliding under it.
  */
 const REVIEW_MEASURE_CLASS = "mx-auto w-full max-w-4xl";
+
+/** The editor tab's own measure: the page's full content width, uncapped. */
+const EDITOR_MEASURE_CLASS = "w-full";
 
 const REVIEW_TAB_VALUES: ReadonlySet<string> = new Set(
 	REVIEW_TABS.map((t) => t.value),
@@ -199,18 +213,37 @@ export function TopicItemPage({
 	);
 	const handleApplyRewrite = useCallback((markdown: string) => {
 		setAssistantProposal(markdown);
-		// Radix unmounts an inactive `TabsContent`, so a proposal accepted from
-		// the chat while another tab is open would land on a component that is
-		// not in the tree. Switching first means the tab mounts WITH the
-		// proposal already set and picks it up on its first effect — and it is
-		// what the reader wants anyway: they just asked for a rewrite, so show
-		// them the rewrite.
+		// The switch used to be REQUIRED: Radix unmounted the inactive tab, so
+		// a proposal accepted from the chat landed on a component that was not
+		// in the tree. That tab is force-mounted now, so the proposal would be
+		// picked up wherever the reader happens to be — and the switch stays
+		// anyway, for the reason that outlived the constraint. They just asked
+		// for a rewrite; show them the rewrite rather than leaving it applied
+		// on a tab they cannot see.
 		setTab("planningAnalysis");
 	}, []);
 	const handleProposalConsumed = useCallback(
 		() => setAssistantProposal(null),
 		[],
 	);
+
+	/**
+	 * Whether the assistant is mid-run, so the Planning & Analysis editor can
+	 * lock exactly as it does for a server-side regeneration.
+	 *
+	 * HERE for the same reason `assistantProposal` is: the chat rail and the
+	 * tab that has to react to it are siblings with no other common ancestor.
+	 * Threading one more value along the journey that already exists beats a
+	 * second channel — and an event bus or a shared module would be worse
+	 * still, because importing anything from `TopicAssistant` into the tab
+	 * would pull the CopilotKit runtime back into the bundle the dynamic
+	 * import below exists to keep it out of.
+	 *
+	 * `setAssistantRunActive` is passed raw: a `useState` setter is stable, so
+	 * the assistant's effect never re-runs on our account. The assistant
+	 * guarantees a final `false` on unmount, so this cannot latch true.
+	 */
+	const [assistantRunActive, setAssistantRunActive] = useState(false);
 
 	// Reserves the width the docked assistant occupies. Read here rather than
 	// inside `TopicAssistant` because it is THIS element that has to move.
@@ -387,9 +420,12 @@ export function TopicItemPage({
 	 * to open this page". But a topic can be opened without ever being
 	 * selected — one created by hand, or one of the sixteen that predate the
 	 * feature — and the trigger that used to cover them was on the Planning &
-	 * Analysis tab's own mount. Radix unmounts an inactive tab, and the default
-	 * tab is Summary & Questions, so a reader who never clicked through to the
-	 * third tab got an empty questions panel and no explanation.
+	 * Analysis tab's own mount, which at the time only ran if the reader opened
+	 * that tab. The default tab is Summary & Questions, so a reader who never
+	 * clicked through to the third tab got an empty questions panel and no
+	 * explanation. (That tab is force-mounted now, so its own trigger fires on
+	 * page load too — this one is no longer the only cover, but it is still the
+	 * one that does not depend on the tab existing.)
 	 *
 	 * A second caller of the same procedure is safe HERE, unlike the two
 	 * Regenerate controls: the server claims the attempt under a partial unique
@@ -533,9 +569,11 @@ export function TopicItemPage({
 	 *
 	 * The notice used to be a sentence with a link into the Planning &
 	 * Analysis tab, because the full banner lived inside that tab and Radix
-	 * unmounts an inactive `TabsContent` — so the one person who had just made
+	 * unmounted an inactive `TabsContent` — so the one person who had just made
 	 * the analysis stale, by answering a question, was the one person who could
-	 * not see the banner saying so. Lifting it out of the tab is what Feature
+	 * not see the banner saying so. (That tab is force-mounted now, but the
+	 * banner belongs out here regardless: it is about the topic, and the person
+	 * it is for is on another tab when it becomes true.) Lifting it out of the tab is what Feature
 	 * Maturation does with the same notice, and it is the only way the control
 	 * can sit where the work happens.
 	 */
@@ -1395,9 +1433,49 @@ export function TopicItemPage({
 					/>
 				</TabsContent>
 
+				{/* FORCE-MOUNTED, and only this tab. Radix unmounts inactive
+				    tab content, which meant a person who typed into the
+				    analysis and then looked at Decision Log came back to an
+				    empty editor — their words were gone with the component.
+				    Staying in the DOM (hidden, not unmounted) is what makes
+				    the editor state survive; nothing is saved and nothing is
+				    asked, because nothing was lost.
+
+				    Feature Maturation gets this for free by autosaving on a
+				    debounce and flushing on unmount. That route is closed
+				    here: #1929 bought the rule that the author's Save is the
+				    only writer, after an autosave raced an in-flight agent
+				    and overwrote the server with pre-answer text.
+
+				    Only this tab, because only this tab holds unsaved work.
+				    The other two render server state and cost a mount they do
+				    not need. Safe to keep mounted: `PlanningAnalysisTab` runs
+				    no queries of its own — every value it renders arrives as a
+				    prop from this component — and neither it, the editor, nor
+				    `DocumentTocRail` measures the DOM, so being display:none
+				    costs it nothing. `EDITOR_MEASURE_CLASS` is `w-full`, with
+				    no `display` of its own to fight the rule below.
+
+				    `forceMount` ALONE IS NOT ENOUGH, and the failure is
+				    visible rather than subtle: Radix hands a force-mounted
+				    panel `data-state="inactive"` and NO `hidden` attribute,
+				    leaving the hiding to the caller — so without the prop
+				    below both panels render stacked on the page.
+
+				    The `hidden` ATTRIBUTE rather than a `data-[state=...]`
+				    class, because the attribute needs no stylesheet to mean
+				    something: it hides the panel under Tailwind's preflight
+				    in the browser AND takes it out of the accessibility tree
+				    in jsdom, where a utility class is an inert string and the
+				    panel would otherwise still answer `getByRole("tabpanel")`.
+				    `display: none` is what is wanted either way — it keeps the
+				    component mounted with its React state intact, which is the
+				    whole point, while costing it no layout. */}
 				<TabsContent
 					value="planningAnalysis"
-					className={REVIEW_MEASURE_CLASS}
+					className={EDITOR_MEASURE_CLASS}
+					forceMount
+					hidden={activeTab !== "planningAnalysis"}
 				>
 					<PlanningAnalysisTab
 						generateActionIsElsewhere={analysisIsBehind}
@@ -1425,6 +1503,7 @@ export function TopicItemPage({
 						}
 						assistantProposal={assistantProposal}
 						onAssistantProposalConsumed={handleProposalConsumed}
+						assistantRunActive={assistantRunActive}
 					/>
 				</TabsContent>
 
@@ -1489,6 +1568,7 @@ export function TopicItemPage({
 				analysisMarkdown={effective?.prose ?? null}
 				canEdit={canEdit}
 				onApplyRewrite={handleApplyRewrite}
+				onRunStateChange={setAssistantRunActive}
 			/>
 		</div>
 	);
@@ -1578,15 +1658,31 @@ function TopicSummary({
 			)}
 			{canEdit ? (
 				<div className="flex justify-end">
+					{/* The module's edit idiom — the same outline button with a
+					    leading pencil the question cards use. A bare text
+					    button here was a second pattern for the same act. The
+					    empty case takes a plus instead: there is nothing to
+					    edit yet. */}
 					<Button
 						type="button"
-						variant="ghost"
+						variant="outline"
 						size="sm"
 						onClick={() => {
 							setDraft(pitch ?? "");
 							setIsEditing(true);
 						}}
 					>
+						{pitch ? (
+							<PencilIcon
+								className="mr-1.5 size-3.5"
+								aria-hidden="true"
+							/>
+						) : (
+							<PlusIcon
+								className="mr-1.5 size-3.5"
+								aria-hidden="true"
+							/>
+						)}
 						{pitch ? "Edit summary" : "Add a summary"}
 					</Button>
 				</div>

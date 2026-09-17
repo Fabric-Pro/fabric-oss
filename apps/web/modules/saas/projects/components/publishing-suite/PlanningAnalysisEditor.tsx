@@ -48,6 +48,7 @@ import { DiffReviewBar } from "@saas/projects/components/DiffReviewBar";
 import { DiffViewModeToggle } from "@saas/projects/components/DiffViewModeToggle";
 import { DocumentTocRail } from "@saas/projects/components/DocumentTocRail";
 import { EditorToolbar } from "@saas/projects/components/EditorToolbar";
+import { ConfirmChangeSummaryCard } from "@saas/projects/components/stories/maturation/ConfirmChangeSummaryCard";
 import { useDiffPreview } from "@saas/projects/hooks/use-diff-view-mode";
 import {
 	fromMarkdown,
@@ -71,7 +72,7 @@ import {
 	EyeIcon,
 	Loader2Icon,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 // Every diff rule in this stylesheet is scoped under `.streaming-diff-active`,
 // so without the import the `diffInsert` / `diffDelete` marks are in the
@@ -187,6 +188,18 @@ export interface PlanningAnalysisEditorProps {
 	 */
 	isLocked?: boolean;
 	/**
+	 * WHY the editor is locked, which decides what the notice promises.
+	 *
+	 * `regenerating` is a server run whose output replaces this text outright.
+	 * `assistant` is a chat rewrite the reader can still reject at the confirm
+	 * card, so it must not claim their work is about to be replaced.
+	 *
+	 * Defaults to `regenerating`: every caller that predates the assistant
+	 * lock means exactly that, and a default of `assistant` would quietly
+	 * reword the regeneration notice everywhere.
+	 */
+	lockReason?: "regenerating" | "assistant";
+	/**
 	 * A proposed rewrite is painted into the document as diff marks and is
 	 * waiting for the author's decision. Absent when nothing is under review.
 	 *
@@ -210,6 +223,24 @@ export interface PlanningAnalysisEditorProps {
 		onAcceptAll: (merged: string | null) => void;
 		onRejectAll: () => void;
 	} | null;
+	/**
+	 * The advisory "what changed" digest for the review above, or `null` when
+	 * there is nothing to show.
+	 *
+	 * Rendered here rather than by the tab because the bullets are CLICKABLE
+	 * and clicking one scrolls this editor's document — the handler needs the
+	 * TipTap instance, which lives in this component and nowhere else. The tab
+	 * owns the request (it holds the before/after pair); this owns the
+	 * document it points into.
+	 *
+	 * ADVISORY, NEVER BLOCKING: the card renders nothing while it has nothing,
+	 * and Accept / Reject on the bar below are never gated on it.
+	 */
+	changeSummary?: {
+		/** `null` before it resolves or if it failed; `[]` if nothing changed. */
+		bullets: string[] | null;
+		isLoading: boolean;
+	} | null;
 	onSaved?: (version: number) => void;
 }
 
@@ -223,7 +254,9 @@ export function PlanningAnalysisEditor({
 	footer,
 	canEdit,
 	isLocked = false,
+	lockReason = "regenerating",
 	diffReview = null,
+	changeSummary = null,
 	onSaved,
 }: PlanningAnalysisEditorProps) {
 	const [viewMode, setViewMode] = useState<"rich" | "raw">("rich");
@@ -436,17 +469,94 @@ export function PlanningAnalysisEditor({
 		return () => window.removeEventListener("beforeunload", onBeforeUnload);
 	}, []);
 
+	/**
+	 * Scroll the document to the section a summary bullet names, and flash it.
+	 *
+	 * The bullet's contract is `<Section heading> — <one sentence>`, so the
+	 * prefix before the em-dash is the heading to find. Best-effort by design:
+	 * a bullet that matches nothing does nothing, because a summary is
+	 * advisory and a thrown error over a failed scroll would be worse than a
+	 * dead click.
+	 *
+	 * THIS DIVERGES FROM `StoryWorkspace.tsx`'s `scrollDiffToSection`, which
+	 * matches on `heading.textContent` alone — and that is a latent bug there,
+	 * not a simplification here. Under review the document IS the diff, so a
+	 * RENAMED section parses to
+	 * `<h2><del class="diff-del">Risks</del><ins class="diff-ins">Risk
+	 * register</ins></h2>` and its `textContent` is the concatenation
+	 * `"RisksRisk register"` — which starts with neither the old heading nor
+	 * the new one, so every bullet naming a renamed section is a silent no-op.
+	 * Measured, not assumed.
+	 *
+	 * So each heading offers three candidates: the text as rendered, the text
+	 * with deletions removed (the AFTER heading), and the text with insertions
+	 * removed (the BEFORE heading). The server's prompt may cite either
+	 * document, and an unchanged heading gives the same string all three ways.
+	 */
+	const scrollToSection = useCallback(
+		(bullet: string) => {
+			if (!editor) {
+				return;
+			}
+			const section = bullet.split(" — ")[0]?.trim().toLowerCase();
+			if (!section) {
+				return;
+			}
+			const headings = Array.from(
+				(editor.view.dom as HTMLElement).querySelectorAll<HTMLElement>(
+					"h1, h2, h3, h4, h5, h6",
+				),
+			);
+			const without = (heading: HTMLElement, selector: string) => {
+				const copy = heading.cloneNode(true) as HTMLElement;
+				for (const node of Array.from(
+					copy.querySelectorAll(selector),
+				)) {
+					node.remove();
+				}
+				return copy.textContent ?? "";
+			};
+			const target = headings.find((heading) =>
+				[
+					heading.textContent ?? "",
+					without(heading, "del, .diff-del"),
+					without(heading, "ins, .diff-ins"),
+				].some((candidate) =>
+					candidate.trim().toLowerCase().startsWith(section),
+				),
+			);
+			if (!target) {
+				return;
+			}
+			target.scrollIntoView({ behavior: "smooth", block: "center" });
+			// The keyframes are already global (`app/globals.css`), shared with
+			// Feature Maturation, and already honour `prefers-reduced-motion`.
+			target.classList.add("maturation-section-flash");
+			window.setTimeout(
+				() => target.classList.remove("maturation-section-flash"),
+				1600,
+			);
+		},
+		[editor],
+	);
+
 	return (
 		<div className="flex flex-col gap-3">
+			{/* Two locks, two promises, and the difference is not cosmetic. A
+			    regeneration WILL replace this text, so "nothing you type is
+			    lost to the version that replaces this one" is true. An
+			    assistant rewrite may be rejected at the card, so telling
+			    somebody their work is about to be replaced would be a lie
+			    half the time. */}
 			{isLocked ? (
 				<p
 					className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-muted-foreground text-xs leading-relaxed"
 					role="status"
 					data-testid="planning-analysis-locked"
 				>
-					A new analysis is being written. Editing is paused until it
-					finishes, so nothing you type is lost to the version that
-					replaces this one.
+					{lockReason === "assistant"
+						? "The assistant is rewriting this analysis. Editing is paused until it finishes — you'll be able to accept or discard what it proposes."
+						: "A new analysis is being written. Editing is paused until it finishes, so nothing you type is lost to the version that replaces this one."}
 				</p>
 			) : null}
 
@@ -525,6 +635,18 @@ export function PlanningAnalysisEditor({
 							</Button>
 						)}
 					</div>
+				) : null}
+
+				{/* Directly above the review bar, and gated the same way: the
+				    digest describes the review, so it has no meaning outside
+				    one. It caps its own height and carries its own scroll, so
+				    a long summary can never push the diff off screen. */}
+				{diffReview !== null && canEdit && changeSummary !== null ? (
+					<ConfirmChangeSummaryCard
+						bullets={changeSummary.bullets}
+						isLoading={changeSummary.isLoading}
+						onBulletClick={scrollToSection}
+					/>
 				) : null}
 
 				{/* The review bar sits between the toolbar and the document,

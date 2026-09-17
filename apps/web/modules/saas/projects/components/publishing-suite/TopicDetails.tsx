@@ -1,6 +1,7 @@
 "use client";
 
 import { FUNCTION_TAG_LABELS } from "@repo/database/src/function-tags";
+import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { Button } from "@ui/components/button";
 import {
 	Popover,
@@ -349,21 +350,24 @@ export function TopicDetails({
 							className="flex items-center gap-1"
 							aria-label={`Contributor: ${c.name}`}
 						>
-							{c.image ? (
-								// eslint-disable-next-line @next/next/no-img-element
-								<img
-									src={c.image}
+							{/* Radix Avatar, not a bare `<img>`: the fallback
+							    renders when the image FAILS to load, not only
+							    when there is no src. A present-but-dead URL —
+							    expired, blocked, 404 — used to reach the
+							    browser's broken-image glyph with nothing
+							    behind it. */}
+							<Avatar className="size-4">
+								<AvatarImage
+									src={c.image ?? undefined}
 									alt=""
-									className="size-4 rounded-full"
 								/>
-							) : (
-								<span
+								<AvatarFallback
 									aria-hidden
-									className="flex size-4 items-center justify-center rounded-full bg-muted text-[9px] font-medium text-muted-foreground"
+									className="font-medium text-[9px] text-muted-foreground"
 								>
 									{c.name.charAt(0).toUpperCase()}
-								</span>
-							)}
+								</AvatarFallback>
+							</Avatar>
 							<span className="text-xs text-muted-foreground">
 								{c.username ?? c.name}
 							</span>
@@ -391,21 +395,24 @@ export function TopicDetails({
 							className="flex items-center gap-1"
 							aria-label={`Assignee: ${a.name}`}
 						>
-							{a.image ? (
-								// eslint-disable-next-line @next/next/no-img-element
-								<img
-									src={a.image}
+							{/* Radix Avatar, not a bare `<img>`: the fallback
+							    renders when the image FAILS to load, not only
+							    when there is no src. A present-but-dead URL —
+							    expired, blocked, 404 — used to reach the
+							    browser's broken-image glyph with nothing
+							    behind it. */}
+							<Avatar className="size-4">
+								<AvatarImage
+									src={a.image ?? undefined}
 									alt=""
-									className="size-4 rounded-full"
 								/>
-							) : (
-								<span
+								<AvatarFallback
 									aria-hidden
-									className="flex size-4 items-center justify-center rounded-full bg-muted text-[9px] font-medium text-muted-foreground"
+									className="font-medium text-[9px] text-muted-foreground"
 								>
 									{a.name.charAt(0).toUpperCase()}
-								</span>
-							)}
+								</AvatarFallback>
+							</Avatar>
 							<span className="text-xs text-muted-foreground">
 								{a.username ?? a.name}
 							</span>

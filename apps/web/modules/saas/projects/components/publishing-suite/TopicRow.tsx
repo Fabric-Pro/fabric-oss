@@ -5,6 +5,7 @@ import {
 	STALE_AFTER_DAYS,
 	type TopicNeglect,
 } from "@repo/database/src/publishing-inbox";
+import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { Button } from "@ui/components/button";
 import {
 	Select,
@@ -506,18 +507,20 @@ export function TopicRow({
 					<li key={a.id}>
 						<Tooltip>
 							<TooltipTrigger asChild>
-								{a.image ? (
-									// eslint-disable-next-line @next/next/no-img-element
-									<img
-										src={a.image}
+								{/* Same reason as `TopicDetails`: a bare `<img>`
+								    falls back only when the src is MISSING, so
+								    a present-but-dead URL painted the
+								    browser's broken-image glyph. Radix's
+								    fallback covers a failed load too. */}
+								<Avatar className="size-5 border border-background">
+									<AvatarImage
+										src={a.image ?? undefined}
 										alt=""
-										className="size-5 rounded-full border border-background"
 									/>
-								) : (
-									<span className="flex size-5 items-center justify-center rounded-full border border-background bg-muted font-medium text-[9px] text-muted-foreground">
+									<AvatarFallback className="font-medium text-[9px] text-muted-foreground">
 										{a.name.charAt(0).toUpperCase()}
-									</span>
-								)}
+									</AvatarFallback>
+								</Avatar>
 							</TooltipTrigger>
 							<TooltipContent>{a.name}</TooltipContent>
 						</Tooltip>

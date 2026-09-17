@@ -5,6 +5,7 @@ export {
 	listAnalysisRevisionsProcedure,
 	saveAnalysisRevisionProcedure,
 } from "./analysis-revision";
+export { listAnalysisTimelineProcedure } from "./analysis-timeline";
 export {
 	adoptBlogPostDraftProcedure,
 	generateBlogPostProcedure,
@@ -20,6 +21,7 @@ export {
 	claimDraftLockProcedure,
 	releaseDraftLockProcedure,
 } from "./draft-lock";
+export { listDraftTimelineProcedure } from "./draft-timeline";
 export { generatePublishingTopicsNowProcedure } from "./generate-now";
 export { getPublishingSuiteSettingsProcedure } from "./get-settings";
 export { getPublishingTopicProcedure } from "./get-topic";
@@ -57,6 +59,7 @@ export {
 	generateStakeholderEmailProcedure,
 	saveStakeholderEmailBodyProcedure,
 } from "./stakeholder-email";
+export { summarizeAnalysisChangesProcedure } from "./summarize-analysis-changes";
 export {
 	amendTopicQuestionProcedure,
 	answerTopicQuestionProcedure,

@@ -1138,9 +1138,11 @@ function ReadOnlySuggestedOptions({
  * The signal behind "your analysis is behind your answers", and shared because
  * it now has two readers: the Planning & Analysis tab, which owns the
  * Regenerate action, and Summary & Questions, which is where answering happens
- * and where the notice therefore has to appear. Radix unmounts an inactive
- * `TabsContent`, so a banner that lives only on the analysis tab cannot fire
- * for the person who just caused it — which is exactly how it shipped.
+ * and where the notice therefore has to appear. It shipped living only on the
+ * analysis tab, where Radix unmounted it and it could not fire for the person
+ * who had just caused it. That tab is force-mounted now, so the unmount no
+ * longer happens — but the notice still belongs on both, because it is about
+ * answers, and answering happens here.
  *
  * The LIVE answer, not the first: amending appends a superseding reply, and
  * noticing the amendment is the whole point.

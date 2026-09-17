@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -700,5 +700,121 @@ describe("LinkedInPostPanel — the note belongs to the version on screen", () =
 		});
 
 		expect(screen.getByText("v2's own note.")).toBeInTheDocument();
+	});
+});
+
+/**
+ * Where the pending state lives.
+ *
+ * Reported from staging: pressing Refine "reads as nothing happening". The
+ * popover closes on submit and the only feedback was a line in the candidates
+ * section further down the page, wording itself around the run that writes
+ * candidates ("Writing three drafts…") — so the row the reader had just
+ * clicked in looked untouched.
+ */
+describe("LinkedInPostPanel — the refine pending state", () => {
+	const WORKING = {
+		postType: "LINKEDIN_POST" as const,
+		hasBody: true,
+		body: "CI dropped from 14 minutes to 4.",
+		sourceDraftId: "d1",
+		sourceOptionLabel: "Result first",
+		updatedAt: new Date("2026-09-01T12:00:00Z"),
+	};
+
+	async function submitRefine() {
+		const user = userEvent.setup();
+		renderPanel({ draft: readyDraft(), working: WORKING });
+
+		await user.click(
+			screen.getByRole("button", { name: /refine with ai/i }),
+		);
+		const popover = within(await screen.findByRole("dialog"));
+		await user.type(
+			popover.getByRole("textbox", { name: /refine the saved draft/i }),
+			"Remove the last line.",
+		);
+		await user.click(
+			popover.getByRole("button", { name: /refine draft/i }),
+		);
+	}
+
+	it("says nothing until a refine is actually submitted", () => {
+		renderPanel({ draft: readyDraft(), working: WORKING });
+
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+
+	it("reports the run beside the control that started it", async () => {
+		await submitRefine();
+
+		// By ROLE, not by position: what the complaint was about is that the
+		// row the reader clicked in reported nothing at all.
+		expect(screen.getByRole("status")).toHaveTextContent(
+			/revising your saved LinkedIn post/i,
+		);
+	});
+
+	it("stops reporting when the server says nothing was started", async () => {
+		// Temporal down, or a run this tab has not seen already filling the
+		// row. There is no run to report on, and left standing the indicator
+		// would wait for an unrelated generation to end before clearing.
+		await submitRefine();
+
+		act(() => {
+			captured.generateLinkedInPost.onSuccess({
+				started: false,
+				reason: "unavailable",
+			});
+		});
+
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+});
+
+const ASSISTANT_BOUNDARY_WORKING = {
+	postType: "LINKEDIN_POST" as const,
+	hasBody: true,
+	body: "CI dropped from 14 minutes to 4.",
+	sourceDraftId: "d1",
+	sourceOptionLabel: "Result first",
+	updatedAt: new Date("2026-09-01T12:00:00Z"),
+};
+
+/**
+ * Which AI does what.
+ *
+ * The AI Assistant rail stays docked on this tab and greets a reader with an
+ * offer to rewrite "the planning analysis" — which is what it does, and which
+ * on a draft tab reads as an offer to rewrite the draft. It has no such reach:
+ * its readable context carries the topic and the analysis and no draft, and the
+ * one thing it writes is the analysis editor. The panel says so rather than the
+ * page hiding a tool that still answers questions about the topic.
+ */
+describe("LinkedInPostPanel — the assistant boundary", () => {
+	it("says which AI edits this draft and which one does not", () => {
+		renderPanel({
+			draft: readyDraft(),
+			working: ASSISTANT_BOUNDARY_WORKING as never,
+		});
+
+		expect(
+			screen.getByText(
+				/refine with ai is what edits this LinkedIn post .* the ai assistant works on the planning analysis, not on drafts/i,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("keeps it out of a viewer's panel", () => {
+		// It names two editing affordances, and a reader has neither.
+		renderPanel({
+			draft: readyDraft(),
+			working: ASSISTANT_BOUNDARY_WORKING as never,
+			canEdit: false,
+		});
+
+		expect(
+			screen.queryByText(/refine with ai is what edits/i),
+		).not.toBeInTheDocument();
 	});
 });

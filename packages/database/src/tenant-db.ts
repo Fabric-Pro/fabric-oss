@@ -171,6 +171,7 @@ const USER_OWNED_TABLES = new Set([
 	"PublishingTopicDraftRead", // Per-content-type read markers - tenant XOR + projectId
 	"PublishingTopicWorkingDraft", // Publishing Suite user-owned working drafts - tenant XOR + projectId
 	"PublishingTopicAnalysisRevision", // Publishing Suite user-owned analysis prose - tenant XOR + projectId
+	"PublishingTopicDraftRevision", // Publishing Suite user-owned draft prose history - tenant XOR + projectId
 	// Note: TestResultEvent (run-result history) is a columnless child of TestCase and
 	// is intentionally NOT registered in any category here — injecting an
 	// organizationId/userId filter would make Prisma throw "Unknown argument". Tenant
@@ -327,6 +328,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	PublishingTopicDraftRead: "projectId",
 	PublishingTopicWorkingDraft: "projectId",
 	PublishingTopicAnalysisRevision: "projectId",
+	PublishingTopicDraftRevision: "projectId",
 	Epic: "projectId",
 	Feature: "projectId",
 	DiscoveryRun: "projectId",

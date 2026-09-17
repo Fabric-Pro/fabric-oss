@@ -10,11 +10,16 @@ import { CopilotSidebar, useChatContext } from "@copilotkit/react-ui";
 import "@copilotkit/react-ui/styles.css";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useActiveDocumentAssistantConversation } from "@saas/projects/hooks/useDocumentAssistantHistory";
+import { useDocumentAssistantHistoryEnabled } from "@saas/projects/hooks/useDocumentAssistantHistoryEnabled";
 import { AttachmentRegistryProvider } from "@saas/shared/components/copilot/AttachmentRegistry";
 import { CopilotAssistantMessage } from "@saas/shared/components/copilot/CopilotAssistantMessage";
-import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
+import {
+	CopilotChatSessionProvider,
+	useCopilotChatSession,
+} from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import { useClarifyingQuestions } from "@saas/shared/components/copilot/useClarifyingQuestions";
+import { orpcClient } from "@shared/lib/orpc-client";
 import { Button } from "@ui/components/button";
 import { useParams } from "next/navigation";
 import type { ErrorInfo, ReactNode } from "react";
@@ -26,15 +31,18 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { toast } from "sonner";
+import type { CopilotHistoryDrawerProps } from "../copilot/CopilotHistoryDrawer";
+import { CopilotHistoryDrawer } from "../copilot/CopilotHistoryDrawer";
 import {
 	CopilotPersistenceHook,
 	type PendingAttachment,
 } from "../copilot/CopilotPersistenceHook";
 import { createCopilotSidebarLauncher } from "../copilot/CopilotSidebarLauncher";
 import { CustomMessages } from "../copilot/CustomMessages";
-import { DocumentAssistantOutcomesProvider } from "../copilot/DocumentAssistantOutcomesProvider";
 import type { HydratedMessage } from "../copilot/HydratedMessagesContext";
 import { HydratedMessagesProvider } from "../copilot/HydratedMessagesContext";
+import { createTopicAssistantHeader } from "./TopicAssistantHeader";
 
 /**
  * The assistant rail beside a publishing topic (Fizzy #1851, finding #15).
@@ -65,11 +73,24 @@ import { HydratedMessagesProvider } from "../copilot/HydratedMessagesContext";
  * Planning & Analysis editor and the existing Save stays the only writer.
  *
  * THE CONVERSATION PERSISTS, on the same stack the document editor uses:
- * `CopilotPersistenceHook` writes each terminal turn, `HydratedMessagesProvider`
- * plus `CustomMessages` replay the stored thread above the live one, and
- * `DocumentAssistantOutcomesProvider` carries the accept/reject stamps into the
- * live bubble. `PUBLISHING_TOPIC` is a first-class `DocumentRefKind`, so none of
- * that needed a publishing-specific branch.
+ * `CopilotPersistenceHook` writes each terminal turn, and
+ * `HydratedMessagesProvider` plus `CustomMessages` replay the stored thread
+ * above the live one. `PUBLISHING_TOPIC` is a first-class `DocumentRefKind`, so
+ * none of that needed a publishing-specific branch.
+ *
+ * `DocumentAssistantOutcomesProvider` IS DELIBERATELY NOT MOUNTED, and putting
+ * it back without the rest of this paragraph will regress the chat. It feeds
+ * one thing: the accept/reject badge `CopilotAssistantMessage` renders beside
+ * each persisted tool call. That badge reads `acceptedAt` / `rejectedAt`, which
+ * only `recordDiffOutcome` ever writes, and the only caller of that is
+ * `DiffReviewBar` — which this surface's chat path never reaches, because an
+ * accepted rewrite goes to the Planning & Analysis editor and is saved there.
+ * Meanwhile the persistence hook stores EVERY tool call unfiltered, including
+ * `confirm_changes`, and the badge renders unfiltered too. Mounted, the only
+ * thing this provider can produce here is a permanent "confirm_changes Pending"
+ * next to a turn the person already accepted. Unmounted, the hook returns null
+ * and the badge is not rendered at all — which is correct until something on
+ * this surface actually stamps an outcome.
  *
  * HYDRATION IS CLIENT-SIDE HERE, and that is the one real divergence from FMv2,
  * which threads an SSR-loaded transcript down from its route. This component is
@@ -149,6 +170,7 @@ export function TopicAssistant({
 	analysisMarkdown,
 	canEdit,
 	onApplyRewrite,
+	onRunStateChange,
 }: {
 	projectId: string;
 	organizationId: string | null;
@@ -159,6 +181,16 @@ export function TopicAssistant({
 	canEdit: boolean;
 	/** Hands an accepted rewrite to the page, which seeds the editor with it. */
 	onApplyRewrite: (markdown: string) => void;
+	/**
+	 * Fires whenever a run starts or stops, so the page can lock the editor
+	 * the agent is about to rewrite. Optional: the chat works without a
+	 * listener, and a caller that does not lock anything passes nothing.
+	 *
+	 * ALWAYS FIRES `false` ON UNMOUNT — see the effect that owns it. A caller
+	 * that latches `true` and never hears otherwise leaves the editor
+	 * permanently read-only, which is worse than never locking it.
+	 */
+	onRunStateChange?: (active: boolean) => void;
 }) {
 	const onCopilotError = useCopilotErrorHandler();
 
@@ -200,6 +232,7 @@ export function TopicAssistant({
 						analysisMarkdown={analysisMarkdown}
 						canEdit={canEdit}
 						onApplyRewrite={onApplyRewrite}
+						onRunStateChange={onRunStateChange}
 					/>
 					<TopicAssistantConversation
 						projectId={projectId}
@@ -244,13 +277,26 @@ const TOPIC_REF_KIND = "PUBLISHING_TOPIC" as const;
  * key a conversation on, so persistence stays off and the chat still works —
  * which is the pre-existing behaviour, not a regression.
  *
- * NO FEATURE-FLAG GATE HERE, deliberately, and this diverges from
- * `StoryWorkspace`, which gates its `<CopilotPersistenceHook>` mount on
+ * NO FEATURE-FLAG GATE ON THE PERSISTENCE HOOK, deliberately, and this diverges
+ * from `StoryWorkspace`, which gates its `<CopilotPersistenceHook>` mount on
  * `documentAssistantHistoryEnabled`. The gate is unnecessary: every read hook in
  * `useDocumentAssistantHistory` sets `enabled: featureEnabled && ...` and the
  * append mutation throws when the flag is off, so the stack already fails closed
  * from the inside. Repeating it here would couple the publishing suite to a
  * kill switch it does not own, for no behavioural difference.
+ *
+ * THE HEADER AND THE DRAWER ARE GATED, and that is not a contradiction of the
+ * paragraph above — it is the same reasoning reaching the opposite answer for a
+ * VISIBLE affordance. Failing closed from the inside is invisible for the
+ * persistence hook, which renders null either way. It is not invisible for a
+ * History button: with the flag off, `useDocumentAssistantHistoryList` never
+ * fires, so the button would open a drawer that is permanently and
+ * inexplicably empty. A control that cannot do its job should not be on screen,
+ * so the header and the drawer follow `StoryWorkspace` and check the flag. The
+ * LAUNCHER stays ungated, unlike `StoryWorkspace`'s: it is this surface's
+ * "AI Assistant" reopen pill and has nothing to do with history — and with the
+ * flag off the default CopilotKit header takes the slot back, which carries its
+ * own close control, so the panel is closable in both states.
  */
 function TopicAssistantConversation({
 	projectId,
@@ -261,6 +307,22 @@ function TopicAssistantConversation({
 }) {
 	const params = useParams<{ topicId?: string }>();
 	const topicId = params?.topicId ?? null;
+	const { user } = useSession();
+	const historyEnabled = useDocumentAssistantHistoryEnabled();
+
+	// CopilotKit's live transcript setter, read through the surface's shared
+	// session rather than a `useCopilotChat()` of its own — that hook connects,
+	// and a second connect here is the per-call-site `agent/connect` storm
+	// Fizzy #2389 removed. Both conversation switches below clear the live half;
+	// the historical half follows `activeConversationId`.
+	const { setMessages: setLiveMessages } = useCopilotChatSession();
+	// Mirrored into a ref, the way this file already handles `setAgentState` and
+	// `onRunStateChange`. The session publishes a fresh object every render, so
+	// naming the setter in a dependency array below would churn the identity of
+	// the two handlers the header factory closes over — and a new handler there
+	// means a new component TYPE, which React remounts.
+	const setLiveMessagesRef = useRef(setLiveMessages);
+	setLiveMessagesRef.current = setLiveMessages;
 
 	const Launcher = useMemo(
 		() => createCopilotSidebarLauncher({ label: "AI Assistant" }),
@@ -294,12 +356,45 @@ function TopicAssistantConversation({
 	const [resolvedConversationId, setResolvedConversationId] = useState<
 		string | null
 	>(null);
-	const conversationId = resolvedConversationId ?? serverConversationId;
+
+	/**
+	 * The thread "New conversation" archived, remembered ONLY so the server's
+	 * answer cannot hand it back.
+	 *
+	 * `getActiveForDocument` has no refetch interval and its result is cached,
+	 * so archiving does not by itself change what `serverConversationId` says —
+	 * it goes on naming the archived thread until something invalidates that
+	 * query or the window regains focus. Without this, a reader who pressed
+	 * "New conversation" would watch the old transcript reappear in the
+	 * historical half as soon as the fallback took over, and their next message
+	 * would be appended to the conversation they had just left.
+	 *
+	 * `StoryWorkspace` needs no equivalent: its active id is pure state with no
+	 * server fallback underneath it, and this surface's fallback is what creates
+	 * the need.
+	 */
+	const [archivedConversationId, setArchivedConversationId] = useState<
+		string | null
+	>(null);
+	const conversationId =
+		resolvedConversationId ??
+		(serverConversationId === archivedConversationId
+			? null
+			: serverConversationId);
+	// Read by `handleNewConversation`, which must not list `conversationId` in
+	// its dependencies: the handler travels into the header factory's closure,
+	// so a fresh identity per conversation switch remounts the header — the
+	// control the reader just pressed vanishes and returns. Through the ref it
+	// also sees the thread as it stands NOW, so pressing the button twice in a
+	// row archives once rather than archiving the same thread again from a
+	// closure captured before the first press.
+	const conversationIdRef = useRef(conversationId);
+	conversationIdRef.current = conversationId;
 
 	// Ids already in the database, so the persistence walker does not re-append
 	// the hydrated turns it sees on its first tick. The server is idempotent on
 	// message id, so this saves round trips rather than preventing corruption.
-	const persistedMessageIds = useMemo<ReadonlyArray<string>>(() => {
+	const serverPersistedMessageIds = useMemo<ReadonlyArray<string>>(() => {
 		const messages = activeConversation?.conversation?.messages;
 		if (!Array.isArray(messages)) {
 			return [];
@@ -313,6 +408,125 @@ function TopicAssistantConversation({
 		}
 		return ids;
 	}, [activeConversation]);
+
+	/**
+	 * The thread a fork just produced, or null when nothing has been forked.
+	 *
+	 * STATE, NOT A DERIVED VALUE, and that distinction is the whole reason this
+	 * is one object rather than three setters. Everything else on this surface
+	 * is derived from the active-conversation query, which re-polls; writing a
+	 * fork's messages into anything derived from it means the next poll silently
+	 * puts the source thread back. So the fork is held here and WINS over the
+	 * query wherever the two disagree — the same precedence
+	 * `resolvedConversationId ?? serverConversationId` already establishes for
+	 * the id, which is why the fork sets that one too rather than adding a
+	 * fourth notion of "the current thread".
+	 *
+	 * It survives until the component unmounts. Once the query catches up, its
+	 * own answer IS the fork, so the two stop disagreeing and the precedence
+	 * stops mattering.
+	 */
+	const [forkedThread, setForkedThread] = useState<{
+		conversationId: string;
+		messages: ReadonlyArray<HydratedMessage>;
+		persistedMessageIds: ReadonlyArray<string>;
+	} | null>(null);
+
+	const persistedMessageIds =
+		forkedThread?.persistedMessageIds ?? serverPersistedMessageIds;
+
+	const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+	const handleOpenHistory = useCallback(() => setIsHistoryOpen(true), []);
+
+	/**
+	 * Archive the live thread and start an empty one.
+	 *
+	 * Local state resets even when the archive call fails. The worst case then
+	 * is the old thread reappearing on the next load, which is better than a
+	 * reader stuck looking at a transcript they asked to leave.
+	 *
+	 * `clearUploadedRagContexts` is deliberately absent, unlike `StoryWorkspace`'s
+	 * copy of this handler: the attachment registry on this surface is inert —
+	 * the sidebar keeps CopilotKit's default input, so nothing ever fills the
+	 * FIFO and there is no upload for a new conversation to inherit.
+	 */
+	const handleNewConversation = useCallback(async () => {
+		const archivingId = conversationIdRef.current;
+		try {
+			if (archivingId !== null) {
+				await orpcClient.agents.conversations.archiveForDocument({
+					conversationId: archivingId,
+					organizationId,
+				});
+			}
+			toast.success("Started a new conversation");
+		} catch (error) {
+			toast.error(
+				error instanceof Error
+					? error.message
+					: "Could not archive the previous conversation.",
+			);
+		} finally {
+			// Runs on both paths: a failed archive must not leave the reader in
+			// the thread they asked to leave. The cost of resetting anyway is
+			// the old thread reappearing on the next load, which is the milder
+			// of the two failures.
+			setForkedThread(null);
+			setResolvedConversationId(null);
+			// ONLY when there was something to archive. A second press before
+			// anything is sent has nothing, and recording "null was archived"
+			// would re-open the suppression the first press installed — the
+			// stale query would hand the original thread straight back.
+			if (archivingId !== null) {
+				setArchivedConversationId(archivingId);
+			}
+			setLiveMessagesRef.current([]);
+		}
+	}, [organizationId]);
+
+	/**
+	 * Adopt a conversation the drawer just forked.
+	 *
+	 * THE COPIED MESSAGES ARE NOT PUSHED INTO COPILOTKIT'S RUNTIME. Doing that
+	 * — a second `setMessages` carrying the copied turns — crashes mid-render
+	 * with a "<CopilotKit> not wrapped" error, which is why `StoryWorkspace` and
+	 * `DocumentEditor` both clear the live half and hand the turns to the
+	 * HYDRATED half instead. The agent still sees them: LangGraph reads the
+	 * persisted conversation server-side, not the client's message store.
+	 *
+	 * The seed is a first-paint fallback only. `HydratedMessagesProvider` uses
+	 * it while its own `byId` query for the forked id is pending, and drops it
+	 * the moment the server answers — so this buys the swap a flash-free frame,
+	 * nothing more.
+	 */
+	const handleForked = useCallback<
+		NonNullable<CopilotHistoryDrawerProps["onForked"]>
+	>(({ forkedConversationId, copiedMessages }) => {
+		setLiveMessagesRef.current([]);
+		setForkedThread({
+			conversationId: forkedConversationId,
+			messages:
+				copiedMessages as unknown as ReadonlyArray<HydratedMessage>,
+			persistedMessageIds: copiedMessages
+				.map((message) => message.id)
+				.filter((id): id is string => typeof id === "string"),
+		});
+		setResolvedConversationId(forkedConversationId);
+	}, []);
+
+	// Memoised: an unmemoised factory returns a new component TYPE each render,
+	// which React remounts. `undefined` when the flag is off, which hands the
+	// slot back to CopilotKit's default header — close button included.
+	const Header = useMemo(() => {
+		if (!historyEnabled) {
+			return undefined;
+		}
+		return createTopicAssistantHeader({
+			title: "AI Assistant",
+			onNewConversation: handleNewConversation,
+			onOpenHistory: handleOpenHistory,
+		});
+	}, [historyEnabled, handleNewConversation, handleOpenHistory]);
 
 	// INERT ON THIS SURFACE, and mounted anyway. The registry is a derivation of
 	// (this FIFO, the message stream), and the FIFO is filled by
@@ -328,87 +542,116 @@ function TopicAssistantConversation({
 		<AttachmentRegistryProvider
 			pendingAttachmentsRef={pendingAttachmentsRef}
 		>
-			<DocumentAssistantOutcomesProvider
+			<HydratedMessagesProvider
+				// The frozen module constant until a fork replaces it, so
+				// the provider's `useMemo` over this prop does not
+				// recompute on every streaming tick.
+				initialMessages={forkedThread?.messages ?? NO_SSR_MESSAGES}
+				// No SSR transcript to be stale against, so the provider's
+				// "is the seed still the active thread" check is simply
+				// false and it renders what its own query returns. A fork
+				// is the one case that HAS a seed, and it is its own
+				// thread — so the two ids match and the copied turns show
+				// for the frame before the server answers.
+				ssrConversationId={forkedThread?.conversationId ?? null}
+				activeConversationId={conversationId}
 				documentRefKind={TOPIC_REF_KIND}
 				documentRefId={topicId ?? ""}
 				projectId={projectId}
 				organizationId={organizationId}
 			>
-				<HydratedMessagesProvider
-					initialMessages={NO_SSR_MESSAGES}
-					// No SSR transcript to be stale against, so the provider's
-					// "is the seed still the active thread" check is simply
-					// false and it renders what its own query returns.
-					ssrConversationId={null}
-					activeConversationId={conversationId}
-					documentRefKind={TOPIC_REF_KIND}
-					documentRefId={topicId ?? ""}
-					projectId={projectId}
-					organizationId={organizationId}
+				<CopilotSidebar
+					// The agent already streams `reasoningByTurn` and
+					// `toolCallsByTurn` into co-agent state; without this
+					// prop CopilotKit's default bubble renders and the
+					// trace is thrown away, so the chat sat silent for the
+					// seconds a tool call takes. The shared renderer is a
+					// module-scope constant bound to
+					// `project_document_generator` — the agent mounted
+					// above — so its identity is already stable and
+					// wrapping it in `useMemo` would be the bug, not the
+					// fix.
+					AssistantMessage={CopilotAssistantMessage}
+					// Replays the persisted thread above the live one.
+					// Reads the hydration context directly, and falls back
+					// to live-only when none is mounted, so it is the half
+					// of persistence the user actually sees.
+					Messages={CustomMessages}
+					// DOCKED OPEN, as the Feature Assistant is. The
+					// assistant was reachable from every tab already —
+					// mounted at page level, outside `<Tabs>` — but behind
+					// a launcher, so the two surfaces read as different
+					// features while running the same component.
+					defaultOpen={true}
+					clickOutsideToClose={false}
+					Button={Launcher}
+					// Title, new conversation, history, close.
+					// `undefined` while the chat-history flag is off,
+					// which leaves CopilotKit's own header in the slot —
+					// see the component docblock for why this affordance
+					// is gated when the persistence hook is not.
+					Header={Header}
+					labels={{
+						title: "AI Assistant",
+						initial:
+							"Ask about this topic, or tell me how to change the planning analysis — say what you want different and I'll rewrite it for your review.",
+					}}
 				>
-					<CopilotSidebar
-						// The agent already streams `reasoningByTurn` and
-						// `toolCallsByTurn` into co-agent state; without this
-						// prop CopilotKit's default bubble renders and the
-						// trace is thrown away, so the chat sat silent for the
-						// seconds a tool call takes. The shared renderer is a
-						// module-scope constant bound to
-						// `project_document_generator` — the agent mounted
-						// above — so its identity is already stable and
-						// wrapping it in `useMemo` would be the bug, not the
-						// fix.
-						AssistantMessage={CopilotAssistantMessage}
-						// Replays the persisted thread above the live one.
-						// Reads the hydration context directly, and falls back
-						// to live-only when none is mounted, so it is the half
-						// of persistence the user actually sees.
-						Messages={CustomMessages}
-						// DOCKED OPEN, as the Feature Assistant is. The
-						// assistant was reachable from every tab already —
-						// mounted at page level, outside `<Tabs>` — but behind
-						// a launcher, so the two surfaces read as different
-						// features while running the same component.
-						defaultOpen={true}
-						clickOutsideToClose={false}
-						Button={Launcher}
-						labels={{
-							title: "AI Assistant",
-							initial:
-								"Ask about this topic, or tell me how to change the planning analysis — say what you want different and I'll rewrite it for your review.",
-						}}
-					>
-						<CloseAssistantOnNarrowViewport />
-						{/* Writes each terminal turn through
+					<CloseAssistantOnNarrowViewport />
+					{/* Writes each terminal turn through
 						    `appendTurnForDocument`. Renders null; it is a
 						    child of the sidebar so its
 						    `useCopilotChatSession()` read resolves against the
 						    same session the sidebar renders from. Skipped
 						    without a topic id, since there would be no
 						    document to key the conversation to. */}
-						{topicId !== null ? (
-							<CopilotPersistenceHook
-								documentRefKind={TOPIC_REF_KIND}
-								documentRefId={topicId}
-								projectId={projectId}
-								organizationId={organizationId}
-								conversationId={conversationId}
-								onConversationIdResolved={
-									setResolvedConversationId
-								}
-								onSpilled={setResolvedConversationId}
-								// No visibility chip on this surface, so every
-								// topic thread is SHARED — matching the rest of
-								// the publishing suite, where a topic is a team
-								// artefact rather than one person's draft.
-								requestedVisibility="SHARED"
-								agentId="project_document_generator"
-								pendingAttachmentsRef={pendingAttachmentsRef}
-								initialPersistedMessageIds={persistedMessageIds}
-							/>
-						) : null}
-					</CopilotSidebar>
-				</HydratedMessagesProvider>
-			</DocumentAssistantOutcomesProvider>
+					{topicId !== null ? (
+						<CopilotPersistenceHook
+							documentRefKind={TOPIC_REF_KIND}
+							documentRefId={topicId}
+							projectId={projectId}
+							organizationId={organizationId}
+							conversationId={conversationId}
+							onConversationIdResolved={setResolvedConversationId}
+							onSpilled={setResolvedConversationId}
+							// No visibility chip on this surface, so every
+							// topic thread is SHARED — matching the rest of
+							// the publishing suite, where a topic is a team
+							// artefact rather than one person's draft.
+							requestedVisibility="SHARED"
+							agentId="project_document_generator"
+							pendingAttachmentsRef={pendingAttachmentsRef}
+							initialPersistedMessageIds={persistedMessageIds}
+						/>
+					) : null}
+				</CopilotSidebar>
+				{/* This topic's earlier conversations, and the way back into
+					    one. A SIBLING of the sidebar rather than a child: the
+					    drawer overlays the chat area while the live thread
+					    stays mounted, so closing it returns the reader to a
+					    half-typed message rather than to a remounted input.
+					    Inside the hydration provider because a fork swaps the
+					    thread that provider is replaying.
+
+					    Needs all four of: a topic to scope to, the flag that
+					    makes its queries fire, and a resolved user — the
+					    drawer marks a row as the reader's own from
+					    `currentUserId`, and rename, delete and fork are
+					    author-only decisions that cannot be made without it. */}
+				{historyEnabled && user && topicId !== null ? (
+					<CopilotHistoryDrawer
+						open={isHistoryOpen}
+						onOpenChange={setIsHistoryOpen}
+						documentRefKind={TOPIC_REF_KIND}
+						documentRefId={topicId}
+						projectId={projectId}
+						organizationId={organizationId}
+						currentUserId={user.id}
+						activeConversationId={conversationId}
+						onForked={handleForked}
+					/>
+				) : null}
+			</HydratedMessagesProvider>
 		</AttachmentRegistryProvider>
 	);
 }
@@ -460,6 +703,7 @@ function TopicAssistantAgent({
 	analysisMarkdown,
 	canEdit,
 	onApplyRewrite,
+	onRunStateChange,
 }: {
 	projectId: string;
 	organizationId: string | null;
@@ -467,6 +711,7 @@ function TopicAssistantAgent({
 	analysisMarkdown: string | null;
 	canEdit: boolean;
 	onApplyRewrite: (markdown: string) => void;
+	onRunStateChange?: (active: boolean) => void;
 }) {
 	const { user } = useSession();
 	const userId = user?.id;
@@ -564,6 +809,49 @@ function TopicAssistantAgent({
 		}
 		return true;
 	}, [analysisMarkdown]);
+
+	/**
+	 * Tell the page when a run is in flight, so it can lock the document the
+	 * agent is rewriting.
+	 *
+	 * WHY THIS AND NOT FMv2's `isAgentRunActive`: that one is
+	 * `agent.isRunning || isAiLoading` read imperatively at call time, and it
+	 * exists to stop a chat send and a button firing two concurrent runs
+	 * (GH #2526). It is a re-entrancy guard, not a render-time signal, and a
+	 * lock needs the latter. `isLoading` is that signal, and it comes from the
+	 * surface's shared session rather than a `useCopilotChat()` of its own, so
+	 * this adds no `agent/connect` (Fizzy #2389).
+	 *
+	 * THE LOCK DOES NOT COVER THE REVIEW WINDOW, deliberately. `confirm_changes`
+	 * routes to `__end__` so CopilotKit can render the card and wait
+	 * (`agents/langchain/project-document-generator/agent.ts`), which means the
+	 * run is over before the accept/reject card appears and `isLoading` is
+	 * already false. That is what the review needs: accepting seeds the editor
+	 * with diff marks the author then resolves and saves, and a lock held
+	 * through that window would make the document they are reviewing
+	 * un-editable and un-saveable.
+	 */
+	const { isLoading: isRunInFlight } = useCopilotChatSession();
+	// Read through a ref so an inline arrow from the caller cannot re-run the
+	// effect below on every render — the same indirection the co-agent setter
+	// above uses, and for the same reason.
+	const onRunStateChangeRef = useRef(onRunStateChange);
+	onRunStateChangeRef.current = onRunStateChange;
+	useEffect(() => {
+		onRunStateChangeRef.current?.(isRunInFlight);
+	}, [isRunInFlight]);
+	// Mount-only, so this cleanup runs on UNMOUNT and nowhere else. It is the
+	// one thing standing between a caller and a permanently locked editor: if
+	// the error boundary catches, or the page navigates mid-run, this subtree
+	// disappears while the last thing the page heard was `true`. Reporting
+	// `false` on the way out means a stuck lock cannot outlive the component
+	// that caused it.
+	useEffect(
+		() => () => {
+			onRunStateChangeRef.current?.(false);
+		},
+		[],
+	);
 
 	// Lets the agent ask instead of guess — the second half of "AI chat to the
 	// right, same as in FMv2", where a rewrite that misreads the brief costs a
