@@ -19,6 +19,19 @@
 // of one explanation, only one of them got fixed. Importing a pure leaf module
 // — no I/O, no Prisma, no oRPC — keeps that from happening again.
 import { classifyConversationPointer } from "@repo/api/modules/projects/lib/context-skip-reason";
+// Type-only: erased at compile time, so this does not pull `@repo/database`
+// (and Prisma) into module scope the way a value import would. The runtime
+// binding is always the dynamic `await import("@repo/database")` used inside
+// each handler.
+import type { getPublishedInstructionSnapshot as GetPublishedInstructionSnapshotFn } from "@repo/database";
+// A value import, deliberately: `@repo/instructions` is a pure leaf package
+// (string and RegExp work only — no I/O, no Prisma), so it costs nothing at
+// module scope, and the alternative is a second hand-written copy of the kind
+// enum in this file.
+import {
+	INSTRUCTION_FILE_KINDS,
+	type InstructionFileKind,
+} from "@repo/instructions";
 import type {
 	GatewaySession,
 	GatewayToolDefinition,
@@ -869,6 +882,92 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		_gateway_source: "platform",
 	},
 
+	// ── Coding Instructions ──
+	{
+		name: "fabric_list_project_instructions",
+		description:
+			"Lists the coding instructions published for a project: the skills, agents, rules, entry files (CLAUDE.md, AGENTS.md), settings, scripts and knowledge docs a coding agent should follow on this project. " +
+			"Returns each file's path, kind, name, description and size. Read one with fabric_get_project_instruction; fetch everything as a zip with fabric_get_project_instruction_bundle.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				projectId: { type: "string", description: "Project ID" },
+				kind: {
+					type: "string",
+					enum: [
+						"SKILL",
+						"AGENT",
+						"RULE",
+						"INSTRUCTIONS",
+						"SETTINGS",
+						"SCRIPT",
+						"KNOWLEDGE",
+						"OTHER",
+					],
+					description: "Only files of this kind",
+				},
+				query: {
+					type: "string",
+					description:
+						"Case-insensitive match on path, name or description",
+				},
+			},
+			required: ["projectId"],
+		},
+		annotations: { readOnlyHint: true },
+		_gateway_source: "platform",
+	},
+	{
+		name: "fabric_get_project_instruction",
+		description:
+			"Reads one published coding-instruction file by its path (from fabric_list_project_instructions). Text bodies are paged, never silently cut: when 'truncated' is true, call again with 'offset' set to 'nextOffset'. " +
+			"Binary files return a short-lived 'url' instead of a body. Scripts and settings are returned as text for reading only; Fabric never runs them.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				projectId: { type: "string", description: "Project ID" },
+				path: {
+					type: "string",
+					description: "File path exactly as listed",
+				},
+				offset: {
+					type: "integer",
+					description:
+						"Unicode-character offset to start from (default 0)",
+					default: 0,
+					minimum: 0,
+					maximum: 2_147_483_646,
+				},
+				maxLength: {
+					type: "integer",
+					description:
+						"Max characters to return (default 50000, max 200000)",
+					default: 50000,
+					minimum: 1,
+					maximum: 200_000,
+				},
+			},
+			required: ["projectId", "path"],
+		},
+		annotations: { readOnlyHint: true },
+		_gateway_source: "platform",
+	},
+	{
+		name: "fabric_get_project_instruction_bundle",
+		description:
+			"Returns the manifest of the published coding instructions (snapshot id, version, digest, every file's path, sha256 and mode) and a short-lived URL to a zip of the whole approved tree, so a local agent or the Fabric CLI can install or refresh it in one call. " +
+			"Compare 'digest' with the one you last installed to skip an unchanged snapshot.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				projectId: { type: "string", description: "Project ID" },
+			},
+			required: ["projectId"],
+		},
+		annotations: { readOnlyHint: true },
+		_gateway_source: "platform",
+	},
+
 	// ── Workspaces (RAG Knowledge Bases) ──
 	{
 		name: "fabric_list_workspaces",
@@ -1439,6 +1538,18 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 	fabric_get_document: { scope: "projects:read", kind: "read" },
 	fabric_list_project_contexts: { scope: "projects:read", kind: "read" },
 	fabric_get_project_context: { scope: "projects:read", kind: "read" },
+	fabric_list_project_instructions: {
+		scope: "instructions:read",
+		kind: "read",
+	},
+	fabric_get_project_instruction: {
+		scope: "instructions:read",
+		kind: "read",
+	},
+	fabric_get_project_instruction_bundle: {
+		scope: "instructions:read",
+		kind: "read",
+	},
 	fabric_create_project: { scope: "projects:write", kind: "write" },
 	fabric_update_project: { scope: "projects:write", kind: "write" },
 	fabric_create_document: { scope: "projects:write", kind: "write" },
@@ -1573,6 +1684,12 @@ export async function executePlatformTool(
 				return await handleListProjectContexts(args, session);
 			case "fabric_get_project_context":
 				return await handleGetProjectContext(args, session);
+			case "fabric_list_project_instructions":
+				return await handleListProjectInstructions(args, session);
+			case "fabric_get_project_instruction":
+				return await handleGetProjectInstruction(args, session);
+			case "fabric_get_project_instruction_bundle":
+				return await handleGetProjectInstructionBundle(args, session);
 			case "fabric_list_workspaces":
 				return await handleListWorkspaces(args, session);
 			case "fabric_get_workspace":
@@ -3979,6 +4096,272 @@ async function handleGetProjectContext(
 		truncated,
 		...(truncated ? { nextOffset: offset + returnedLength } : {}),
 		...(originalFile ? { originalFile } : {}),
+	});
+}
+
+// ─── Coding Instructions Handlers ───────────────────────────────────────────
+
+const INSTRUCTION_BODY_DEFAULT_MAX_LENGTH = 50_000;
+const INSTRUCTION_BODY_MAX_OFFSET = 2_147_483_646;
+
+/**
+ * Resolve the project's published (READY) instruction snapshot for a tool
+ * call, or report why there isn't one to read.
+ *
+ * `getPublishedInstructionSnapshot` is UNSCOPED (it is a project-level
+ * pointer, not a tenant-filtered query), so the org match below is
+ * load-bearing rather than defense in depth: without it, the pointer of any
+ * project id the caller can name would be readable.
+ *
+ * The comparison is against the PROJECT'S HOSTING organization —
+ * `getProjectAccessContext`'s answer, which is the same single query
+ * `hasProjectAccess` wraps — and NOT against `session.organizationId`. Spec
+ * §6.5 requires exactly that, "so invited guests keep access and cross-org
+ * IDs fail as 404", and the two are not the same value: a project-scoped
+ * guest holds no membership in the host organization, so their MCP session
+ * is scoped to their own. Comparing against the session org denied them what
+ * the browser grants them on the same project, because the oRPC side
+ * resolves the middleware's `effectiveWriteOrgId` — the hosting org — for
+ * the same person (`packages/api/orpc/procedures.ts`
+ * `resolveOrganizationId`, reached through
+ * `requireProjectPermission`/`grantProjectAccess`).
+ *
+ * Cross-org ids still fail: `getProjectAccessContext` returns null when the
+ * caller has no tie to the project at all, and a snapshot whose
+ * `organizationId` is not the project's host org can never match. A mismatch
+ * is reported identically to "nothing published" — never a separate error —
+ * so a caller cannot use this to learn that a snapshot exists.
+ */
+type PublishedInstructionSnapshot = NonNullable<
+	Awaited<ReturnType<typeof GetPublishedInstructionSnapshotFn>>
+>;
+
+// An explicit discriminated union, rather than relying on inference: with an
+// inferred return type, TypeScript adds an implicit `error?: undefined` to
+// the branches below that don't set `error` (and the converse on the branch
+// that does), which defeats `"error" in resolved` narrowing at every call
+// site and types `resolved.error` as `ToolCallResult | undefined`.
+type ResolvedInstructionSnapshot =
+	| { error: ToolCallResult }
+	| { projectId: string; snapshot: null }
+	| { projectId: string; snapshot: PublishedInstructionSnapshot };
+
+async function resolvePublishedInstructionSnapshot(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ResolvedInstructionSnapshot> {
+	const projectId = args.projectId as string;
+	if (!projectId) {
+		return { error: errorResult("projectId is required") };
+	}
+	const { getProjectAccessContext, getPublishedInstructionSnapshot } =
+		await import("@repo/database");
+	// Live access check first, unconditional (wildcard keys included). This
+	// is the same gate every other gateway handler applies before touching
+	// tenant data — `hasProjectAccess` is a thin boolean wrapper over this
+	// very call, so using the context form costs no extra query and also
+	// yields the project's hosting organization.
+	const access = await getProjectAccessContext(projectId, session.userId);
+	if (!access) {
+		return { error: errorResult("Project not found or access denied") };
+	}
+	const snapshot = await getPublishedInstructionSnapshot(projectId);
+	if (
+		!snapshot ||
+		snapshot.status !== "READY" ||
+		snapshot.projectId !== projectId ||
+		// A personal project resolves `organizationId: null`, which this
+		// non-null column can never equal — the fail-closed arm, reached only
+		// by a project this organization-only surface should not serve.
+		snapshot.organizationId !== access.organizationId
+	) {
+		return { projectId, snapshot: null };
+	}
+	return { projectId, snapshot };
+}
+
+async function handleListProjectInstructions(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const resolved = await resolvePublishedInstructionSnapshot(args, session);
+	if ("error" in resolved) {
+		return resolved.error;
+	}
+	if (!resolved.snapshot) {
+		return jsonResult({
+			snapshot: null,
+			files: [],
+			message: "This project has no published coding instructions yet.",
+		});
+	}
+	const { listInstructionFiles } = await import("@repo/database");
+	// The gateway does not enforce a tool definition's `inputSchema` enum, so
+	// an out-of-enum `kind` used to travel straight into Prisma and come back
+	// as a driver-level enum error rather than a tool-level message. The oRPC
+	// twin validates against this same list (`list-files.ts`).
+	const kind = args.kind as string | undefined;
+	if (
+		kind !== undefined &&
+		!INSTRUCTION_FILE_KINDS.includes(kind as InstructionFileKind)
+	) {
+		return errorResult(
+			`Unknown kind. Valid kinds: ${INSTRUCTION_FILE_KINDS.join(", ")}`,
+		);
+	}
+	const query = args.query as string | undefined;
+	const files = await listInstructionFiles(
+		resolved.snapshot.id,
+		resolved.snapshot.organizationId,
+		{ kind: kind as InstructionFileKind | undefined, query },
+	);
+	return jsonResult({
+		snapshot: {
+			id: resolved.snapshot.id,
+			version: resolved.snapshot.version,
+			digest: resolved.snapshot.digest,
+			fileCount: resolved.snapshot.fileCount,
+		},
+		files: files.map((f) => ({
+			path: f.path,
+			kind: f.kind,
+			name: f.name,
+			description: f.description,
+			size: f.size,
+			mimeType: f.mimeType,
+			isText: f.isText,
+			sha256: f.sha256,
+		})),
+	});
+}
+
+async function handleGetProjectInstruction(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const resolved = await resolvePublishedInstructionSnapshot(args, session);
+	if ("error" in resolved) {
+		return resolved.error;
+	}
+	if (!resolved.snapshot) {
+		return errorResult(
+			"This project has no published coding instructions yet.",
+		);
+	}
+	const path = args.path as string;
+	if (!path) {
+		return errorResult("path is required");
+	}
+	const offset = (args.offset as number | undefined) ?? 0;
+	const maxLength =
+		(args.maxLength as number | undefined) ??
+		INSTRUCTION_BODY_DEFAULT_MAX_LENGTH;
+	if (
+		!Number.isInteger(offset) ||
+		offset < 0 ||
+		offset > INSTRUCTION_BODY_MAX_OFFSET
+	) {
+		return errorResult(
+			`offset must be an integer between 0 and ${INSTRUCTION_BODY_MAX_OFFSET}`,
+		);
+	}
+	if (!Number.isInteger(maxLength) || maxLength < 1 || maxLength > 200_000) {
+		return errorResult("maxLength must be an integer between 1 and 200000");
+	}
+
+	const { getInstructionFileByPath } = await import("@repo/database");
+	const { getStorageProvider } = await import("@repo/storage");
+	const { config } = await import("@repo/config");
+	const file = await getInstructionFileByPath(
+		resolved.snapshot.id,
+		resolved.snapshot.organizationId,
+		path,
+	);
+	if (!file || file.projectId !== resolved.projectId) {
+		return errorResult("File not found");
+	}
+	const storage = getStorageProvider();
+	const bucket = config.storage.bucketNames.skills;
+	const base = {
+		path: file.path,
+		kind: file.kind,
+		name: file.name,
+		description: file.description,
+		size: file.size,
+		mimeType: file.mimeType,
+		isText: file.isText,
+		mode: file.mode,
+		snapshotVersion: resolved.snapshot.version,
+	};
+	if (!file.isText) {
+		const url = await storage.getSignedUrl(file.storageKey, {
+			bucket,
+			expiresIn: 300,
+		});
+		return jsonResult({
+			...base,
+			body: null,
+			truncated: false,
+			nextOffset: null,
+			url,
+		});
+	}
+	const { data } = await storage.downloadFile(file.storageKey, { bucket });
+	const chars = Array.from(data.toString("utf8"));
+	const end = offset + maxLength;
+	return jsonResult({
+		...base,
+		body: chars.slice(offset, end).join(""),
+		offset,
+		truncated: end < chars.length,
+		nextOffset: end < chars.length ? end : null,
+		url: null,
+	});
+}
+
+async function handleGetProjectInstructionBundle(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const resolved = await resolvePublishedInstructionSnapshot(args, session);
+	if ("error" in resolved) {
+		return resolved.error;
+	}
+	if (!resolved.snapshot) {
+		return errorResult(
+			"This project has no published coding instructions yet.",
+		);
+	}
+	const { listInstructionFiles } = await import("@repo/database");
+	const { buildInstructionSnapshotZip } = await import(
+		"@repo/api/modules/projects/procedures/instructions/build-zip"
+	);
+	const files = await listInstructionFiles(
+		resolved.snapshot.id,
+		resolved.snapshot.organizationId,
+	);
+	const { url } = await buildInstructionSnapshotZip({
+		projectId: resolved.projectId,
+		organizationId: resolved.snapshot.organizationId,
+		snapshot: resolved.snapshot,
+		files,
+	});
+	return jsonResult({
+		snapshot: {
+			id: resolved.snapshot.id,
+			version: resolved.snapshot.version,
+			digest: resolved.snapshot.digest,
+			fileCount: resolved.snapshot.fileCount,
+		},
+		manifest: files.map((f) => ({
+			path: f.path,
+			sha256: f.sha256,
+			size: f.size,
+			mode: f.mode,
+			kind: f.kind,
+		})),
+		url,
+		expiresInSeconds: 600,
 	});
 }
 

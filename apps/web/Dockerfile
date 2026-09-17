@@ -87,6 +87,7 @@ COPY packages/integrations-linear/package.json ./packages/integrations-linear/
 COPY packages/integrations-notion/package.json ./packages/integrations-notion/
 COPY packages/integrations-runtime/package.json ./packages/integrations-runtime/
 COPY packages/integrations-slack/package.json ./packages/integrations-slack/
+COPY packages/instructions/package.json ./packages/instructions/
 COPY packages/mcp-registry/package.json ./packages/mcp-registry/
 COPY packages/mcp-stdio-wrapper/package.json ./packages/mcp-stdio-wrapper/
 COPY packages/permissions/package.json ./packages/permissions/

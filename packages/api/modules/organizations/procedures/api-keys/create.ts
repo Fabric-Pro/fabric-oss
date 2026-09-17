@@ -61,6 +61,7 @@ export const ORG_API_KEY_SCOPES = [
 	"workflows:run", // Trigger workflow executions
 	"frames:read", // Read frames and slideshows
 	"frames:write", // Create, update and share frames
+	"instructions:read", // Read the published coding instructions of a project
 	"chats:read", // Read AI chat threads
 	"audit_log:read", // Read the org's audit log via GET /api/v1/audit-log
 	"audit_log:export", // Export the org's audit log via GET /api/v1/audit-log/export
@@ -119,6 +120,7 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  * | `workflows:run`        | `WORKSPACE_UPDATE`          | no      |
  * | `frames:read`          | `DIAGRAM_READ`              | yes     |
  * | `frames:write`         | `DIAGRAM_CREATE`/`_UPDATE`  | no      |
+ * | `instructions:read`    | `INSTRUCTION_READ`          | yes     |
  * | `chats:read`           | none — own threads only     | yes     |
  * | `audit_log:read`       | `ORG_AUDIT_LOG_READ`        | no      |
  * | `audit_log:export`     | `ORG_AUDIT_LOG_EXPORT`      | no      |
@@ -161,6 +163,7 @@ const READ_ONLY_ORG_API_KEY_SCOPES: ReadonlySet<OrgApiKeyScope> = new Set([
 	"workspaces:read",
 	"workflows:read",
 	"frames:read",
+	"instructions:read",
 	"chats:read",
 	"system_health:read",
 	"status_updates:read",

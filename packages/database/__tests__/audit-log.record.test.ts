@@ -415,4 +415,19 @@ describe("audit taxonomy — closed action set", () => {
 	it("includes project.document_generation.failed in AUDIT_ACTIONS", () => {
 		expect(AUDIT_ACTIONS).toContain("project.document_generation.failed");
 	});
+
+	// Coding Instructions upload lifecycle (Task 7). An unregistered action
+	// still writes its row, but only after logging `audit.unknown_action` and
+	// dropping out of the admin viewer's action filter — the same failure
+	// mode `project.pull_request.comment_posted` and
+	// `project.document_generation.failed` document above.
+	it("includes the coding-instructions snapshot lifecycle in the closed taxonomy", () => {
+		expect(AUDIT_ACTIONS).toContain("project.instructions.upload_started");
+		expect(AUDIT_ACTIONS).toContain("project.instructions.published");
+		expect(AUDIT_ACTIONS).toContain("project.instructions.rejected");
+		expect(AUDIT_ACTIONS).toContain("project.instructions.deleted");
+		expect(AUDIT_ACTIONS).toContain(
+			"project.instructions.settings_updated",
+		);
+	});
 });

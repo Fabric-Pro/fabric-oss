@@ -7,6 +7,7 @@ import {
 	parseAllowMarkers,
 	type RuleId,
 	readBaseline,
+	splitCommands,
 	splitStatements,
 	stripSqlNoise,
 	tablesCreatedIn,
@@ -350,6 +351,26 @@ describe("commands do not bleed into each other", () => {
 });
 
 describe("unvalidated-constraint", () => {
+	// `ON UPDATE CASCADE` is a referential action. The command splitter used to
+	// read its `UPDATE` as the start of an UPDATE command, which cut the
+	// trailing `NOT VALID` off the ALTER TABLE and flagged a correctly deferred
+	// foreign key.
+	it("accepts a NOT VALID foreign key whose actions end with ON UPDATE CASCADE", () => {
+		expect(
+			rulesFor(
+				'ALTER TABLE "public"."user" ADD CONSTRAINT "fk1" FOREIGN KEY ("orgId") REFERENCES "org"("id") ON DELETE RESTRICT ON UPDATE CASCADE NOT VALID;',
+			),
+		).not.toContain("unvalidated-constraint");
+	});
+
+	it("keeps ON UPDATE inside the ALTER TABLE command it belongs to", () => {
+		const commands = splitCommands(
+			'ALTER TABLE "user" ADD CONSTRAINT "fk1" FOREIGN KEY ("orgId") REFERENCES "org"("id") ON UPDATE CASCADE NOT VALID',
+		);
+		expect(commands.map((c) => c.kind)).toEqual(["alter-table"]);
+		expect(commands[0]?.text).toMatch(/NOT VALID$/);
+	});
+
 	it("flags a foreign key added to a pre-existing table", () => {
 		expect(
 			rulesFor(

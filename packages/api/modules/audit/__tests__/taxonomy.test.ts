@@ -174,8 +174,10 @@ describe("audit.taxonomy handler", () => {
 		// outcome legible — without it an organization that came back is
 		// indistinguishable from one that was never deleted — and the purge row
 		// is the system-actor event marking the point after which nothing can
-		// be brought back, Fizzy #2462) = 121.
-		expect(result.actions).toHaveLength(121);
+		// be brought back, Fizzy #2462) = 121, + 5 coding-instruction actions
+		// (project.instructions.upload_started / published / rejected / deleted
+		// / settings_updated) = 126.
+		expect(result.actions).toHaveLength(126);
 		expect(result.actions).toContain("auth.login.success");
 		expect(result.actions).toContain("project.document_generation.failed");
 		expect(result.actions).toContain("audit.retention.purged");

@@ -60,6 +60,7 @@
 		"@repo/connectors": "workspace:*",
 		"@repo/database": "workspace:*",
 		"@repo/i18n": "workspace:*",
+		"@repo/instructions": "workspace:*",
 		"@repo/integrations": "workspace:*",
 		"@repo/logs": "workspace:*",
 		"@repo/mail": "workspace:*",

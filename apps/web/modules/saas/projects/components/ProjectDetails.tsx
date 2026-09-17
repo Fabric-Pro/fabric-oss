@@ -226,6 +226,14 @@ const SecurityAccessibilityPage = dynamic(
 	{ loading: () => <TabContentSkeleton />, ssr: false },
 );
 
+const CodingInstructionsTab = dynamic(
+	() =>
+		import("./instructions/CodingInstructionsTab").then(
+			(m) => m.CodingInstructionsTab,
+		),
+	{ loading: () => <TabContentSkeleton />, ssr: false },
+);
+
 /**
  * How the "More" menu groups the tabs that do not fit on the row. The row
  * itself keeps the viewer's saved order; only the overflow is grouped, by what
@@ -249,6 +257,7 @@ const TAB_GROUPS: ReadonlyArray<{ label: string; ids: readonly TabId[] }> = [
 		ids: [
 			"pipeline",
 			"kanban",
+			"coding-instructions",
 			"agent-activity",
 			"weave",
 			"test-cases",
@@ -1472,6 +1481,9 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 						)}
 						{activeTab === "context" && (
 							<ProjectContextsList projectId={projectId} />
+						)}
+						{activeTab === "coding-instructions" && (
+							<CodingInstructionsTab projectId={projectId} />
 						)}
 						{activeTab === "diagrams" && (
 							<DiagramsList projectId={projectId} />

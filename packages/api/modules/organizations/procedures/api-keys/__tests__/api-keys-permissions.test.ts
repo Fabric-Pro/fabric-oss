@@ -212,6 +212,7 @@ describe("a read-only role creating a key", () => {
 			"workspaces:read",
 			"workflows:read",
 			"frames:read",
+			"instructions:read",
 			"chats:read",
 			"system_health:read",
 			"status_updates:read",

@@ -896,6 +896,10 @@
 					"body": "Atlas maps your repository into an interactive graph of modules, dependencies, and how they connect — so you can understand any codebase fast.",
 					"title": "Explore your codebase with Atlas"
 				},
+				"coding-instructions": {
+					"body": "Upload the folder your coding agents follow. Fabric checks it for secrets, keeps one published version, and hands it to agents over MCP.",
+					"title": "Coding instructions"
+				},
 				"documents": {
 					"body": "In the Documents tab, Fabric drafts PRDs, specs, and technical docs from your context, then lets you edit them collaboratively and keep them in sync.",
 					"title": "Generate documents with AI"
@@ -1541,6 +1545,13 @@
 					"context_source": {
 						"scan_stopped": "Channel or chat scanning stopped or resumed",
 						"reconnected": "Channel or chat monitor reconnected"
+					},
+					"instructions": {
+						"upload_started": "Coding-instructions upload started",
+						"published": "Coding-instructions version published",
+						"rejected": "Coding-instructions upload rejected",
+						"deleted": "Coding-instructions version deleted",
+						"settings_updated": "Coding-instructions settings updated"
 					}
 				},
 				"story": {
@@ -5092,6 +5103,170 @@
 				"soloSuccess": "Generated {count} references",
 				"systemSuccess": "Re-mapped relationships",
 				"error": "Re-map failed. Please try again."
+			}
+		},
+		"codingInstructions": {
+			"emptyState": {
+				"title": "Coding instructions",
+				"description": "The skills, agents, rules and setup files your coding agents use on this project. Keep one copy here so every developer and agent works from the same version.",
+				"heading": "No coding instructions yet",
+				"body": "Upload the folder that holds your <claudeDir>.claude</claudeDir> directory, <claudeMd>CLAUDE.md</claudeMd>, knowledge docs and scripts, or sync it from the repository connected to this project.",
+				"uploadButton": "Upload folder",
+				"syncButton": "Sync from repository",
+				"syncButtonTitle": "Repository sync arrives in a later release",
+				"connectedRepository": "This project is connected to <repo></repo>.",
+				"secretsTitle": "Secrets are checked first",
+				"secretsDescription": "Every upload is scanned before anything is stored. If a file contains a token or password, the whole upload is rejected and nothing is kept.",
+				"historyTitle": "History folders stay out",
+				"historyDescription": "Folders like <tasksDir>tasks/</tasksDir> and log files are skipped by default. Add a <fabricignore>.fabricignore</fabricignore> to the folder to decide yourself.",
+				"developersTitle": "Developers stay current",
+				"developersDescription": "Agents read files through Fabric MCP; a CLI sync command follows in a later release."
+			},
+			"uploadDialog": {
+				"pickTitle": "Upload a folder",
+				"pickDescription": "Pick the folder that holds your coding-agent instructions.",
+				"reviewTitle": "Review what will be uploaded",
+				"reviewDescription": "From the folder <folder></folder>. Greyed rows are left out and the reason is shown.",
+				"chooseFolder": "Choose folder",
+				"folderPickerUnsupported": "Your browser can't select a folder for upload. Try Chrome, Edge, or another Chromium-based browser.",
+				"pathColumn": "Path",
+				"filesColumn": "Files",
+				"sizeColumn": "Size",
+				"excludedFabricignore": "excluded by .fabricignore",
+				"excludedAlways": "always excluded",
+				"excludedProject": "excluded by project setting",
+				"excludedDefault": "default rule",
+				"willBeRejected": "will be rejected",
+				"rejectedFilesTitle": "{count} files will be rejected",
+				"rejectedFilesBody": "Fabric never stores credential files. Remove these from the folder and pick it again — otherwise the whole upload is rejected and nothing is kept.",
+				"rejectedFilesMore": "…and {count} more.",
+				"summary": "{keptCount} files, {keptSize} will be uploaded. {excludedCount} files will be left out.",
+				"publishOnReady": "Publish as soon as the upload passes checks",
+				"progress": "Uploading {done} of {total} files",
+				"cancel": "Cancel",
+				"uploadButton": "Upload {count} files",
+				"genericError": "Upload failed",
+				"settingsLoading": "Loading project settings…",
+				"serverExcludedNotice": "{count} files were left out because they match the project's current settings and were not uploaded.",
+				"done": "Done"
+			},
+			"tree": {
+				"searchLabel": "Search files",
+				"searchPlaceholder": "Search by path, name or description",
+				"kindFilterLabel": "Filter by kind",
+				"allKinds": "All kinds"
+			},
+			"fileView": {
+				"copyMcpCall": "Copy MCP call",
+				"copied": "MCP call copied",
+				"copyFailed": "Could not copy — select the text and copy it manually",
+				"couldNotLoad": "Could not load this file.",
+				"binaryFile": "This is a binary file.",
+				"downloadIt": "Download it",
+				"truncated": "Showing the first {offset} characters. Download the snapshot for the full file.",
+				"invocationDisabled": "Disabled, runs only when a person calls it",
+				"invocationAllowed": "Allowed",
+				"argumentHint": "Argument hint",
+				"allowedTools": "Allowed tools",
+				"model": "Model",
+				"appliesTo": "Applies to",
+				"modelInvocation": "Model invocation",
+				"kindLabels": {
+					"SKILL": "Skill",
+					"AGENT": "Agent",
+					"RULE": "Rule",
+					"INSTRUCTIONS": "Instructions",
+					"SETTINGS": "Settings",
+					"SCRIPT": "Script",
+					"KNOWLEDGE": "Knowledge",
+					"OTHER": "File"
+				}
+			},
+			"rejectedBanner": {
+				"titleSecretsSingular": "Upload rejected: {count} file contains secrets",
+				"titleSecretsPlural": "Upload rejected: {count} files contain secrets",
+				"titleChecksSingular": "Upload rejected: {count} file failed checks",
+				"titleChecksPlural": "Upload rejected: {count} files failed checks",
+				"body": "Nothing from this upload was kept. Fix these files in the source folder, then upload again. Fabric does not store credentials, so there is no way to allow them through.",
+				"columnFile": "File",
+				"columnFound": "What was found",
+				"columnWhere": "Where",
+				"lineLabel": "line {line}",
+				"credentialFile": "Credential file (rejected by name)",
+				"truncatedSummary": "…and {detail}, not shown here.",
+				"uploadAgain": "Upload again",
+				"secretLabels": {
+					"private-key-block": "Private key block",
+					"aws-access-key": "AWS access key id",
+					"github-token": "GitHub token",
+					"slack-token": "Slack token",
+					"anthropic-key": "Anthropic API key",
+					"openai-key": "OpenAI API key",
+					"google-api-key": "Google API key",
+					"jwt": "JSON Web Token",
+					"bearer-header": "Bearer token in a header",
+					"azure-devops-pat": "Azure DevOps personal access token",
+					"connection-string-password": "Password in a connection string",
+					"generic-assignment": "Credential assigned inline",
+					"short-credential-assignment": "Password or key assigned inline"
+				},
+				"reasonLabels": {
+					"secret": "Contains a secret",
+					"hash_mismatch": "File changed during upload",
+					"size_mismatch": "File size changed during upload",
+					"missing": "File never arrived",
+					"scan_failed": "Could not be checked"
+				}
+			},
+			"history": {
+				"title": "Upload history",
+				"description": "Every upload kept for this project, newest first.",
+				"versionLabel": "Version {version}",
+				"publishedPill": "Published",
+				"readyPill": "Ready",
+				"rejectedPill": "Rejected",
+				"checkingPill": "Checking",
+				"failedPill": "Failed",
+				"publishAction": "Publish this version",
+				"downloadAction": "Download",
+				"seeWhyAction": "See why",
+				"deleteAction": "Delete",
+				"publishConfirm": "Publish version {version} as the project's coding instructions?",
+				"deleteConfirm": "Delete version {version}? This cannot be undone.",
+				"anonymousUser": "a member",
+				"filesStored": "{count} files stored"
+			},
+			"settingsDialog": {
+				"title": "Coding-instructions settings",
+				"description": "Folders and files to leave out of every upload, one glob per line. An uploaded .fabricignore always takes priority over this list.",
+				"textareaLabel": "Ignore globs",
+				"resetToDefaults": "Reset to defaults",
+				"save": "Save",
+				"cancel": "Cancel",
+				"saved": "Settings saved"
+			},
+			"publishedView": {
+				"heading": "Coding instructions",
+				"publishedBadge": "Version {version} is published",
+				"publishedSummary": "Uploaded by {name} {time} from {source}. {fileCount} files stored, {excludedCount} left out {reason}. Coding agents read this version through Fabric MCP.",
+				"checkingSummary": "Checking your upload. This takes a moment.",
+				"emptySummary": "Nothing is published yet.",
+				"failedTitle": "We could not finish checking this upload",
+				"failedBody": "Checking version {version} stopped before it finished, so nothing was published. Your uploaded files are still here — try the checks again, or upload the folder once more.",
+				"tryAgainButton": "Try again",
+				"uploadAgainButton": "Upload again",
+				"sourceUpload": "a folder",
+				"sourceRepository": "the repository",
+				"reasonFabricignore": "by the rules in .fabricignore",
+				"reasonProject": "by the project's excluded paths",
+				"reasonDefault": "by the default rules",
+				"anonymousUser": "a member",
+				"historyButton": "History",
+				"downloadButton": "Download",
+				"settingsButton": "Settings",
+				"replaceButton": "Replace",
+				"uploadButton": "Upload folder",
+				"selectFilePrompt": "Select a file to read it."
 			}
 		},
 		"proposals": {

@@ -1,0 +1,12 @@
+-- Validate the ON DELETE RESTRICT published-snapshot foreign key added NOT
+-- VALID in 20260916120300 (Coding Instructions).
+--
+-- Separate migration so the DROP + ADD NOT VALID transaction stays short and
+-- this scan runs under ShareUpdateExclusiveLock rather than the ACCESS
+-- EXCLUSIVE lock that DROP CONSTRAINT holds until its transaction commits.
+-- Same release as the NOT VALID addition, so no entry in
+-- prisma/pending-constraint-validations.json.
+--
+-- The scan finds nothing to reject: the column only ever holds NULL or the id
+-- of an existing snapshot, which the replaced constraint already enforced.
+ALTER TABLE "project" VALIDATE CONSTRAINT "project_publishedInstructionSnapshotId_fkey";

@@ -100,6 +100,12 @@ export const Permissions = {
 	DIAGRAM_UPDATE: "diagram:update",
 	DIAGRAM_DELETE: "diagram:delete",
 
+	// Coding Instructions (project instruction snapshots)
+	INSTRUCTION_READ: "instruction:read",
+	INSTRUCTION_CREATE: "instruction:create",
+	INSTRUCTION_UPDATE: "instruction:update",
+	INSTRUCTION_DELETE: "instruction:delete",
+
 	// Agents
 	AGENT_READ: "agent:read",
 	AGENT_CREATE: "agent:create",

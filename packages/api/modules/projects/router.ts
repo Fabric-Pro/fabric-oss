@@ -175,6 +175,20 @@ import { listGitLabProjectsProcedure } from "./procedures/gitlab/list-projects";
 // Governance (engagement profile, stage approvers)
 import { listStageApproversProcedure } from "./procedures/governance/list-stage-approvers";
 import { setStageApproversProcedure } from "./procedures/governance/set-stage-approvers";
+// Coding Instructions (project instruction snapshots)
+import { beginSnapshotProcedure } from "./procedures/instructions/begin-snapshot";
+import { createDownloadUrlProcedure } from "./procedures/instructions/create-download-url";
+import { createUploadUrlsProcedure } from "./procedures/instructions/create-upload-urls";
+import { deleteSnapshotProcedure } from "./procedures/instructions/delete-snapshot";
+import { finalizeSnapshotProcedure } from "./procedures/instructions/finalize-snapshot";
+import { getFileProcedure } from "./procedures/instructions/get-file";
+import { getPublishedSnapshotProcedure } from "./procedures/instructions/get-published";
+import { getSettingsProcedure as getInstructionSettingsProcedure } from "./procedures/instructions/get-settings";
+import { getSnapshotProcedure } from "./procedures/instructions/get-snapshot";
+import { listFilesProcedure } from "./procedures/instructions/list-files";
+import { listSnapshotsProcedure } from "./procedures/instructions/list-snapshots";
+import { publishSnapshotProcedure } from "./procedures/instructions/publish-snapshot";
+import { updateSettingsProcedure as updateInstructionSettingsProcedure } from "./procedures/instructions/update-settings";
 import {
 	getKanbanUserPreferenceProcedure,
 	updateKanbanUserPreferenceProcedure,
@@ -1819,6 +1833,23 @@ export const projectsRouter = {
 		createFromChat: createFromChatProcedure,
 		update: updateDiagramProcedure,
 		delete: deleteDiagramProcedure,
+	},
+
+	// Coding Instructions (project instruction snapshots)
+	instructions: {
+		begin: beginSnapshotProcedure,
+		createUploadUrls: createUploadUrlsProcedure,
+		finalize: finalizeSnapshotProcedure,
+		list: listSnapshotsProcedure,
+		get: getSnapshotProcedure,
+		getPublished: getPublishedSnapshotProcedure,
+		listFiles: listFilesProcedure,
+		getFile: getFileProcedure,
+		publish: publishSnapshotProcedure,
+		delete: deleteSnapshotProcedure,
+		createDownloadUrl: createDownloadUrlProcedure,
+		getSettings: getInstructionSettingsProcedure,
+		updateSettings: updateInstructionSettingsProcedure,
 	},
 
 	// AI usage reporting (per-project cost attribution)

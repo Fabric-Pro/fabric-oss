@@ -62,6 +62,7 @@
 		"@repo/database": "workspace:*",
 		"@repo/evidence": "workspace:*",
 		"@repo/fabric-ai": "workspace:*",
+		"@repo/instructions": "workspace:*",
 		"@repo/integrations": "workspace:*",
 		"@repo/letta": "workspace:*",
 		"@repo/logs": "workspace:*",

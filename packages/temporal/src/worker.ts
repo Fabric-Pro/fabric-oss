@@ -102,6 +102,16 @@ const ACTIVITY_SLOTS = {
 	documentProcessing: 5,
 	projectDocument: 5,
 	documentRefresh: 3,
+	// Coding-instructions snapshot validation. Deliberately tiny, and for a
+	// different reason than most: these activities are the most I/O-bound
+	// tenant of any queue here. One upload downloads and hashes every byte
+	// of a snapshot (up to 50 MB) TWICE — once to gate it, once to promote
+	// it — then lists and deletes up to 5000 staging keys, minutes of
+	// wall clock holding one slot, with almost none of it CPU. Two is one
+	// upload plus headroom for a second starting while the first drains;
+	// more would buy throughput nobody is waiting on while enlarging the
+	// connection budget below.
+	projectInstructions: 2,
 	workflowBuilder: 10,
 	fabric: 5,
 	fabricOrchestrator: 10,
@@ -135,7 +145,7 @@ const TOTAL_ACTIVITY_SLOTS = Object.values(ACTIVITY_SLOTS).reduce(
  * Size the database pool against the work this process actually admits.
  *
  * `pg` defaults to 10 connections. That default was silently governing a
- * process that admits 80 concurrent activities — the sum of `ACTIVITY_SLOTS`
+ * process that admits 82 concurrent activities — the sum of `ACTIVITY_SLOTS`
  * above, so re-add it whenever a key is added or changed rather than trusting
  * this figure — so the pool saturated under ordinary scheduled bursts and,
  * because `connectionTimeoutMillis` also bounds queued callers, surfaced as
@@ -414,6 +424,31 @@ async function run() {
 			...telemetryOptions,
 		});
 
+		// Coding-instructions snapshot validation gets its OWN queue, for the
+		// same reason Living Documents did.
+		//
+		// It started on "project-documents", whose 5 slots serve a human
+		// clicking "Update using context" and waiting. A snapshot validation
+		// is watched too — someone is looking at the tab — but it is the
+		// wrong SHAPE to share with a foreground queue: the gate hashes and
+		// scans every byte of up to 50 MB, promotion re-hashes and re-writes
+		// the same bytes, and cleanup lists and deletes up to 5000 keys, so
+		// one upload holds one slot for minutes and three concurrent uploads
+		// held 60% of the document queue. Separating them means neither
+		// feature can starve the other, whichever is busy.
+		const projectInstructionsWorker = await Worker.create({
+			connection,
+			namespace: config.namespace,
+			taskQueue: "project-instructions",
+			workflowBundle,
+			activities,
+			maxConcurrentActivityTaskExecutions:
+				ACTIVITY_SLOTS.projectInstructions,
+			maxConcurrentWorkflowTaskExecutions: 5,
+			reuseV8Context: true,
+			...telemetryOptions,
+		});
+
 		const workflowBuilderWorker = await Worker.create({
 			connection,
 			namespace: config.namespace,
@@ -579,7 +614,7 @@ async function run() {
 		console.log("[Worker] Workers created successfully");
 		console.log(`[Worker] Namespace: ${config.namespace}`);
 		console.log(
-			"[Worker] Task Queues: ai-chat, document-processing, project-documents, document-refresh, workflow-builder, fabric-worker, fabric-orchestrator, agents, code-indexing, atlas, trigger-system, publishing-reconcile, monitoring (back-compat alias for fabric-worker)",
+			"[Worker] Task Queues: ai-chat, document-processing, project-documents, document-refresh, project-instructions, workflow-builder, fabric-worker, fabric-orchestrator, agents, code-indexing, atlas, trigger-system, publishing-reconcile, monitoring (back-compat alias for fabric-worker)",
 		);
 
 		// Registered before run() so a signal arriving mid-startup still drains
@@ -589,6 +624,7 @@ async function run() {
 			documentProcessingWorker,
 			projectDocumentWorker,
 			documentRefreshWorker,
+			projectInstructionsWorker,
 			workflowBuilderWorker,
 			fabricWorker,
 			fabricOrchestratorWorker,

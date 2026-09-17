@@ -74,7 +74,7 @@ Version compatibility: Fabric's SDK is pinned at `~1.16.3`. Run a server version
 
 ## 5. Task queues (the contract)
 
-Fabric's worker creates **12 workers in a single process**, each polling a **hard-coded** task-queue name (`packages/temporal/src/worker.ts`). These names are the contract: clients start workflows on these exact strings, so a self-hoster cannot rename them, and the worker process must poll all 12 or the corresponding features silently stop running.
+Fabric's worker creates **14 workers in a single process**, each polling a **hard-coded** task-queue name (`packages/temporal/src/worker.ts`). These names are the contract: clients start workflows on these exact strings, so a self-hoster cannot rename them, and the worker process must poll all 14 or the corresponding features silently stop running.
 
 | # | Task queue | Purpose | Concurrency (activity / workflow) | Source |
 |---|---|---|---|---|
@@ -82,18 +82,20 @@ Fabric's worker creates **12 workers in a single process**, each polling a **har
 | 2 | `document-processing` | Document processing (RAG) | 5 / 5 | `worker.ts:232` |
 | 3 | `project-documents` | AI project-document generation | 5 / 5 | `worker.ts:246` |
 | 4 | `document-refresh` | Living-doc auto-refresh | 3 / 5 | `worker.ts:269` |
-| 5 | `workflow-builder` | Workflow-builder executions | 10 / 10 | `worker.ts:283` |
-| 6 | `fabric-worker` | General-purpose / misc workflows | 5 / 5 | `worker.ts:297` |
-| 7 | `fabric-orchestrator` | CUGA-inspired agent orchestrator (long-running) | 10 / 5 | `worker.ts:318` |
-| 8 | `agents` | Kanban task-agent workflows | 10 / 5 | `worker.ts:332` |
-| 9 | `code-indexing` | AST-aware code indexing (tree-sitter + embeddings) | 3 / 3 | `worker.ts:346` |
-| 10 | `atlas` | Repo "Atlas" analysis — **must match `ATLAS_TASK_QUEUE` in `@repo/atlas`** | 2 / 2 | `worker.ts:365` |
-| 11 | `trigger-system` | Webhooks, schedules, Slack mentions | 10 / 10 | `worker.ts:377` |
-| 12 | `monitoring` | **Back-compat alias of `fabric-worker`** — net-new monitoring workflows run on `fabric-worker`; this queue exists only as a deprecation bridge | 5 / 5 | `worker.ts:388-404` |
+| 5 | `project-instructions` | Coding-instructions snapshot validation (verify → scan → finalize → publish) | 2 / 5 | `worker.ts` |
+| 6 | `workflow-builder` | Workflow-builder executions | 10 / 10 | `worker.ts:283` |
+| 7 | `fabric-worker` | General-purpose / misc workflows | 5 / 5 | `worker.ts:297` |
+| 8 | `fabric-orchestrator` | CUGA-inspired agent orchestrator (long-running) | 10 / 5 | `worker.ts:318` |
+| 9 | `agents` | Kanban task-agent workflows | 10 / 5 | `worker.ts:332` |
+| 10 | `code-indexing` | AST-aware code indexing (tree-sitter + embeddings) | 3 / 3 | `worker.ts:346` |
+| 11 | `atlas` | Repo "Atlas" analysis — **must match `ATLAS_TASK_QUEUE` in `@repo/atlas`** | 2 / 2 | `worker.ts:365` |
+| 12 | `trigger-system` | Webhooks, schedules, Slack mentions | 10 / 10 | `worker.ts:377` |
+| 13 | `publishing-reconcile` | Publishing reconciliation sweep — name imported from `PUBLISHING_RECONCILE_TASK_QUEUE`, never copied | 2 / 2 | `worker.ts` |
+| 14 | `monitoring` | **Back-compat alias of `fabric-worker`** — net-new monitoring workflows run on `fabric-worker`; this queue exists only as a deprecation bridge | 5 / 5 | `worker.ts:388-404` |
 
-All 12 are launched together via `Promise.all([...run()])` (`worker.ts:426-438`) — **78 concurrent activity slots and 70 workflow slots** in one process (sum of the table above). If you split the worker across processes/pods for scale, ensure **every** queue is still polled by at least one worker.
+All 14 are launched together via `Promise.all([...run()])` — **82 concurrent activity slots and 77 workflow slots** in one process (sum of the table above; the activity total is also what sizes the database pool, `applyDatabasePoolBudget` in `worker.ts`). If you split the worker across processes/pods for scale, ensure **every** queue is still polled by at least one worker.
 
-> **Not a 13th queue — a known orphan.** `apps/web/app/api/frames/[id]/export/pdf/route.ts:44` enqueues to a **`frame-exports`** queue that **no worker serves**, so PDF frame-export would hang. This is a latent bug / parked feature in Fabric, **not** a queue you need to provision — flagged so you don't chase a "missing" worker.
+> **Not a 15th queue — a known orphan.** `apps/web/app/api/frames/[id]/export/pdf/route.ts:44` enqueues to a **`frame-exports`** queue that **no worker serves**, so PDF frame-export would hang. This is a latent bug / parked feature in Fabric, **not** a queue you need to provision — flagged so you don't chase a "missing" worker.
 
 ---
 

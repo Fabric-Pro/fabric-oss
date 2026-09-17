@@ -235,6 +235,8 @@ async function applyRLS() {
 				childKeyColumn: "id",
 			},
 			{ name: "diagram", policy: "user_owned" }, // Excalidraw diagrams
+			{ name: "project_instruction_snapshot", policy: "user_owned" }, // Coding Instructions snapshots
+			{ name: "project_instruction_file", policy: "user_owned" }, // Coding Instructions files
 			{ name: "project_document", policy: "user_owned" }, // Project documents
 			{ name: "project_document_asset", policy: "user_owned" }, // Binary/HTML artifacts attached to generated docs
 			{ name: "project_context", policy: "user_owned" }, // Project context files

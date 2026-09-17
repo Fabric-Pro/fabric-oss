@@ -240,7 +240,7 @@ export type SDLCPipelineScalarFieldEnum = z.infer<typeof SDLCPipelineScalarField
 
 // File: ProjectScalarFieldEnum.schema.ts
 
-export const ProjectScalarFieldEnumSchema = z.enum(['id', 'name', 'description', 'heroEmojis', 'heroImageUrl', 'goals', 'techStack', 'features', 'projectTypes', 'status', 'projectPhase', 'expectedDevelopmentStartDate', 'tags', 'color', 'icon', 'userId', 'organizationId', 'projectManagementMcpServerId', 'projectManagementMcpConfigId', 'projectManagementContainerId', 'projectManagementContainerName', 'projectManagementAdditionalContext', 'logSourceProvider', 'logSourceConfig', 'adoStatePollActive', 'autoPushPmSync', 'syncAttachments', 'attachmentRetentionDays', 'attachmentRetentionDaysUpdatedAt', 'readOnlyMode', 'lastAdoStatePollAt', 'pmTerminalStatuses', 'pmAutoCloseEnabled', 'pmFieldMappingEnabled', 'prdSourceTitle', 'prdSourceUrl', 'prdSourceContextId', 'prdSourceSyncedAt', 'meetingTranscriptSyncEnabled', 'meetingTranscriptSyncIntervalMin', 'meetingTranscriptSyncLastRun', 'meetingTranscriptSyncWorkflowId', 'meetingTranscriptSyncUserId', 'meetingTranscriptAutoAnalyzeEnabled', 'actionItemRoutingEnabled', 'teamsChannelMonitorEnabled', 'teamsChannelMonitorIntervalMin', 'teamsChannelMonitorQuietWindowMin', 'teamsChannelMonitorLastRun', 'teamsChannelMonitorWorkflowId', 'teamsChannelMonitorUserId', 'teamsChatMonitorEnabled', 'teamsChatMonitorIntervalMin', 'teamsChatMonitorQuietWindowMin', 'teamsChatMonitorLastRun', 'teamsChatMonitorWorkflowId', 'teamsChatMonitorUserId', 'slackChannelMonitorEnabled', 'slackChannelMonitorWorkflowId', 'slackChannelMonitorLastRun', 'slackChannelMonitorDebounceMs', 'slackChannelMonitorMaxHoldMs', 'slackChannelMonitorUserId', 'slackHuddleIngestEnabled', 'slackHuddleIngestEnabledAt', 'slackHuddleIngestIntervalMin', 'slackHuddleIngestLastRun', 'slackHuddleIngestWorkflowId', 'repositoryUrl', 'repositoryOwner', 'repositoryName', 'defaultBranch', 'implementationDefaultChannel', 'implementationDefaultProvider', 'implementationDefaultWorkingDirectory', 'primaryWebsiteUrl', 'additionalWebsiteUrls', 'codeAnalysisStatus', 'codeAnalysisWorkflowId', 'draftKey', 'wizardState', 'nextStoryNumber', 'lastDuplicateScanAt', 'hiddenMaturationStatuses', 'clarifyingQuestionFrequency', 'qaStrategyLevel', 'generateManualTestCases', 'applyTddApproach', 'projectTabConfig', 'autoCreateBugsFromFailures', 'createdAt', 'updatedAt', 'engagementProfile', 'engagementProfileUpdatedAt', 'quotedPhases', 'enforceSpecifyGate', 'enforceSpikeGate', 'enforceDiscoveryGate', 'documentTiersAdvisory', 'visionPurpose', 'visionCoreActions', 'visionCycle', 'outcomesShareToken', 'deletedAt', 'deletedBy', 'scheduledPermanentDeleteAt', 'deletionReminderSentAt'])
+export const ProjectScalarFieldEnumSchema = z.enum(['id', 'name', 'description', 'heroEmojis', 'heroImageUrl', 'goals', 'techStack', 'features', 'projectTypes', 'status', 'projectPhase', 'expectedDevelopmentStartDate', 'tags', 'color', 'icon', 'userId', 'organizationId', 'projectManagementMcpServerId', 'projectManagementMcpConfigId', 'projectManagementContainerId', 'projectManagementContainerName', 'projectManagementAdditionalContext', 'logSourceProvider', 'logSourceConfig', 'adoStatePollActive', 'autoPushPmSync', 'syncAttachments', 'attachmentRetentionDays', 'attachmentRetentionDaysUpdatedAt', 'readOnlyMode', 'lastAdoStatePollAt', 'pmTerminalStatuses', 'pmAutoCloseEnabled', 'pmFieldMappingEnabled', 'prdSourceTitle', 'prdSourceUrl', 'prdSourceContextId', 'prdSourceSyncedAt', 'meetingTranscriptSyncEnabled', 'meetingTranscriptSyncIntervalMin', 'meetingTranscriptSyncLastRun', 'meetingTranscriptSyncWorkflowId', 'meetingTranscriptSyncUserId', 'meetingTranscriptAutoAnalyzeEnabled', 'actionItemRoutingEnabled', 'teamsChannelMonitorEnabled', 'teamsChannelMonitorIntervalMin', 'teamsChannelMonitorQuietWindowMin', 'teamsChannelMonitorLastRun', 'teamsChannelMonitorWorkflowId', 'teamsChannelMonitorUserId', 'teamsChatMonitorEnabled', 'teamsChatMonitorIntervalMin', 'teamsChatMonitorQuietWindowMin', 'teamsChatMonitorLastRun', 'teamsChatMonitorWorkflowId', 'teamsChatMonitorUserId', 'slackChannelMonitorEnabled', 'slackChannelMonitorWorkflowId', 'slackChannelMonitorLastRun', 'slackChannelMonitorDebounceMs', 'slackChannelMonitorMaxHoldMs', 'slackChannelMonitorUserId', 'slackHuddleIngestEnabled', 'slackHuddleIngestEnabledAt', 'slackHuddleIngestIntervalMin', 'slackHuddleIngestLastRun', 'slackHuddleIngestWorkflowId', 'repositoryUrl', 'repositoryOwner', 'repositoryName', 'defaultBranch', 'implementationDefaultChannel', 'implementationDefaultProvider', 'implementationDefaultWorkingDirectory', 'primaryWebsiteUrl', 'additionalWebsiteUrls', 'codeAnalysisStatus', 'codeAnalysisWorkflowId', 'draftKey', 'wizardState', 'nextStoryNumber', 'lastDuplicateScanAt', 'hiddenMaturationStatuses', 'clarifyingQuestionFrequency', 'qaStrategyLevel', 'generateManualTestCases', 'applyTddApproach', 'projectTabConfig', 'autoCreateBugsFromFailures', 'createdAt', 'updatedAt', 'engagementProfile', 'engagementProfileUpdatedAt', 'quotedPhases', 'enforceSpecifyGate', 'enforceSpikeGate', 'enforceDiscoveryGate', 'documentTiersAdvisory', 'visionPurpose', 'visionCoreActions', 'visionCycle', 'outcomesShareToken', 'publishedInstructionSnapshotId', 'instructionSettings', 'deletedAt', 'deletedBy', 'scheduledPermanentDeleteAt', 'deletionReminderSentAt'])
 
 export type ProjectScalarFieldEnum = z.infer<typeof ProjectScalarFieldEnumSchema>;
 
@@ -1864,6 +1864,18 @@ export const DiagramScalarFieldEnumSchema = z.enum(['id', 'title', 'elements', '
 
 export type DiagramScalarFieldEnum = z.infer<typeof DiagramScalarFieldEnumSchema>;
 
+// File: ProjectInstructionSnapshotScalarFieldEnum.schema.ts
+
+export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'rejection', 'settingsFrozen', 'publishOnReady', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
+
+export type ProjectInstructionSnapshotScalarFieldEnum = z.infer<typeof ProjectInstructionSnapshotScalarFieldEnumSchema>;
+
+// File: ProjectInstructionFileScalarFieldEnum.schema.ts
+
+export const ProjectInstructionFileScalarFieldEnumSchema = z.enum(['id', 'snapshotId', 'projectId', 'organizationId', 'userId', 'path', 'kind', 'name', 'description', 'storageKey', 'sha256', 'size', 'mimeType', 'isText', 'mode', 'createdAt'])
+
+export type ProjectInstructionFileScalarFieldEnum = z.infer<typeof ProjectInstructionFileScalarFieldEnumSchema>;
+
 // File: ProjectRepositoryIntegrationScalarFieldEnum.schema.ts
 
 export const ProjectRepositoryIntegrationScalarFieldEnumSchema = z.enum(['id', 'projectId', 'provider', 'authMethod', 'repositoryUrl', 'repositoryOwner', 'repositoryName', 'defaultBranch', 'roleTag', 'qaBranch', 'pinnedBranches', 'encryptedAccessToken', 'encryptedRefreshToken', 'tokenExpiresAt', 'tokenScopes', 'encryptedPat', 'azureOrganization', 'status', 'lastHealthCheck', 'lastError', 'probeFailCount', 'refreshTokenRejectedAt', 'configuredByUserId', 'createdAt', 'updatedAt'])
@@ -3280,6 +3292,24 @@ export const CodingRunKindSchema = z.enum(['IMPLEMENT', 'SPIKE'])
 
 export type CodingRunKind = z.infer<typeof CodingRunKindSchema>;
 
+// File: ProjectInstructionSource.schema.ts
+
+export const ProjectInstructionSourceSchema = z.enum(['UPLOAD', 'REPOSITORY'])
+
+export type ProjectInstructionSource = z.infer<typeof ProjectInstructionSourceSchema>;
+
+// File: ProjectInstructionSnapshotStatus.schema.ts
+
+export const ProjectInstructionSnapshotStatusSchema = z.enum(['RECEIVING', 'VALIDATING', 'READY', 'REJECTED', 'FAILED'])
+
+export type ProjectInstructionSnapshotStatus = z.infer<typeof ProjectInstructionSnapshotStatusSchema>;
+
+// File: ProjectInstructionFileKind.schema.ts
+
+export const ProjectInstructionFileKindSchema = z.enum(['SKILL', 'AGENT', 'RULE', 'INSTRUCTIONS', 'SETTINGS', 'SCRIPT', 'KNOWLEDGE', 'OTHER'])
+
+export type ProjectInstructionFileKind = z.infer<typeof ProjectInstructionFileKindSchema>;
+
 // File: RepositoryProvider.schema.ts
 
 export const RepositoryProviderSchema = z.enum(['GITHUB', 'GITLAB', 'AZURE_DEVOPS'])
@@ -4266,6 +4296,8 @@ export const ProjectSchema = z.object({
   visionCoreActions: z.array(z.string()),
   visionCycle: z.string().nullish(),
   outcomesShareToken: z.string().nullish(),
+  publishedInstructionSnapshotId: z.string().nullish(),
+  instructionSettings: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   deletedAt: z.date().nullish(),
   deletedBy: z.string().nullish(),
   scheduledPermanentDeleteAt: z.date().nullish(),
@@ -10507,6 +10539,59 @@ export const DiagramSchema = z.object({
 });
 
 export type DiagramType = z.infer<typeof DiagramSchema>;
+
+
+// File: ProjectInstructionSnapshot.schema.ts
+
+export const ProjectInstructionSnapshotSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  version: z.number().int(),
+  source: ProjectInstructionSourceSchema,
+  status: ProjectInstructionSnapshotStatusSchema.default("RECEIVING"),
+  rejection: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  settingsFrozen: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  publishOnReady: z.boolean().default(true),
+  fileCount: z.number().int(),
+  storedBytes: z.number().int(),
+  excludedCount: z.number().int(),
+  digest: z.string().nullish(),
+  repositoryIntegrationId: z.string().nullish(),
+  sourceRef: z.string().nullish(),
+  sourceCommitSha: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+  readyAt: z.date().nullish(),
+  publishedAt: z.date().nullish(),
+});
+
+export type ProjectInstructionSnapshotType = z.infer<typeof ProjectInstructionSnapshotSchema>;
+
+
+// File: ProjectInstructionFile.schema.ts
+
+export const ProjectInstructionFileSchema = z.object({
+  id: z.string(),
+  snapshotId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  path: z.string(),
+  kind: ProjectInstructionFileKindSchema,
+  name: z.string().nullish(),
+  description: z.string().nullish(),
+  storageKey: z.string(),
+  sha256: z.string(),
+  size: z.number().int(),
+  mimeType: z.string(),
+  isText: z.boolean(),
+  mode: z.number().int().nullish(),
+  createdAt: z.date(),
+});
+
+export type ProjectInstructionFileType = z.infer<typeof ProjectInstructionFileSchema>;
 
 
 // File: ProjectRepositoryIntegration.schema.ts

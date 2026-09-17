@@ -258,6 +258,24 @@ if (typeof Blob.prototype.text !== "function") {
 	};
 }
 
+// Same JSDOM gap, `.arrayBuffer()` this time: `readFolderFiles`
+// (projects/lib/read-folder.ts) hashes every picked file with
+// `crypto.subtle.digest`, which needs the raw bytes behind the File — without
+// this polyfill every test that picks a folder fails with "file.arrayBuffer
+// is not a function".
+if (typeof Blob.prototype.arrayBuffer !== "function") {
+	Blob.prototype.arrayBuffer = function arrayBuffer(
+		this: Blob,
+	): Promise<ArrayBuffer> {
+		return new Promise((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onload = () => resolve(reader.result as ArrayBuffer);
+			reader.onerror = () => reject(reader.error);
+			reader.readAsArrayBuffer(this);
+		});
+	};
+}
+
 // Radix UI primitives (Select, Popover, etc.) use Pointer Capture APIs
 // that JSDOM does not implement. Without these no-op stubs, any
 // `userEvent.click` on a Radix Select trigger throws

@@ -212,3 +212,42 @@ describe("a tool call on a restored session uses the key's real scopes", () => {
 		expect(body).toContain("does not have the");
 	});
 });
+
+// The coding-instructions tools moved off the coarse `projects:read` scope
+// onto their own `instructions:read` (see `TOOL_SCOPES` in
+// `platform-tools.ts`), so a key can be narrowed to reading instructions
+// without also being able to read every other project surface.
+describe("the coding-instructions tools require instructions:read, not projects:read", () => {
+	it("does not refuse a key holding the exact scope", async () => {
+		keyWithScopes(["instructions:read"]);
+
+		const body = await initializeThenCall(
+			"fabric_list_project_instructions",
+		);
+
+		expect(body).not.toContain("does not have the");
+	});
+
+	it("does not refuse a key holding the coarse mcp:read scope either", async () => {
+		keyWithScopes(["mcp:read"]);
+
+		const body = await initializeThenCall(
+			"fabric_list_project_instructions",
+		);
+
+		expect(body).not.toContain("does not have the");
+	});
+
+	// The regression this scope split guards against: the old scope must no
+	// longer be sufficient on its own.
+	it("refuses a key holding only the old projects:read scope", async () => {
+		keyWithScopes(["projects:read"]);
+
+		const body = await initializeThenCall(
+			"fabric_list_project_instructions",
+		);
+
+		expect(body).toContain("does not have the");
+		expect(body).toContain("instructions:read");
+	});
+});
