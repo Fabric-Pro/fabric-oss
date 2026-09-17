@@ -283,7 +283,7 @@ files follow the conventional layout in their parent directory.
 | `packages/observability/lib/integration-registry.ts` | Registry helpers (lookup, filter, type guards). |
 | `packages/observability/lib/breakers.ts` | Cockatiel breaker policies, one per provider. Emits `CircuitBreakerStateChange` to `customEvents`. |
 | `packages/observability/lib/app-insights.ts` | `trackEvent` / `trackMetric` wrappers. Single emission path. |
-| `packages/observability/lib/feature-flags.ts` | Four kill-switch flags, default ON. |
+| `packages/observability/lib/feature-flags.ts` | The server-side `feature-burn-rate-alerts` kill switch, default ON. |
 | `packages/temporal/src/workflows/monitoring/status-page-poller.ts` | 2-min cron, polls every registered statuspage. |
 | `packages/temporal/src/workflows/monitoring/synthetic-probe.ts` | 5-min cron, one workflow per probed provider. |
 | `packages/temporal/src/workflows/monitoring/incident-lifecycle.ts` | One workflow per open incident; signal-driven (ack / resolve). |
@@ -366,19 +366,24 @@ FIRING forever after the registry-row transition.
 
 ## Feature flags
 
-Four kill-switch flags live in `packages/observability/lib/feature-flags.ts`.
-All default to ON. Setting `FABRIC_FEATURE_*=false` is the explicit
-disable path; anything else (including unset) is enabled.
+The monitoring stack has four kill switches, all ON by default. Setting one
+to `false` / `0` / `no` / `off` is the explicit disable path; anything else
+(including unset) keeps it enabled. Flags are per-env, never per-org.
 
-| Flag | Env var | Disables |
-|---|---|---|
-| `feature-burn-rate-alerts` | `FABRIC_FEATURE_BURN_RATE_ALERTS` | `trackEvent` / `trackMetric` emission. With this off, breaker and synthetic-probe KQL alerts go silent without a Bicep redeploy. |
-| `feature-incident-banner` | `FABRIC_FEATURE_INCIDENT_BANNER` | App-shell SEV-1/2 incident chip. The env-var name retains the historical `BANNER` suffix for backwards-compatibility with deployed configurations; the surface itself is the current `IncidentChip`. Server-side writes still happen when the flag is off — only the chip UI hides. |
-| `feature-integration-health-badges` | `FABRIC_FEATURE_INTEGRATION_HEALTH_BADGES` | Status badges on Settings → Integrations. |
-| `feature-admin-monitoring-dashboard` | `FABRIC_FEATURE_ADMIN_MONITORING_DASHBOARD` | `/app/admin/monitoring` route. |
+| Flag | Env var | Read by | Disables |
+|---|---|---|---|
+| `feature-burn-rate-alerts` | `FABRIC_FEATURE_BURN_RATE_ALERTS` | Server: `packages/observability/lib/feature-flags.ts`, once at App Insights initialization | `trackEvent` / `trackMetric` emission. With this off, breaker and synthetic-probe KQL alerts go silent without a Bicep redeploy. |
+| `feature-incident-banner` | `NEXT_PUBLIC_FABRIC_FEATURE_INCIDENT_BANNER` | Web app: `apps/web/modules/saas/shared/lib/feature-flags.ts` | App-shell SEV-1/2 incident chip. The env-var name retains the historical `BANNER` suffix for backwards-compatibility with deployed configurations; the surface itself is the current `IncidentChip`. Server-side writes still happen when the flag is off — only the chip UI hides. |
+| `feature-integration-health-badges` | `NEXT_PUBLIC_FABRIC_FEATURE_INTEGRATION_HEALTH_BADGES` | Web app | Status badges on Settings → Integrations. |
+| `feature-admin-monitoring-dashboard` | `NEXT_PUBLIC_FABRIC_FEATURE_ADMIN_MONITORING_DASHBOARD` | Web app | `/app/admin/monitoring` route. |
 
-Client-side reads use the matching `NEXT_PUBLIC_*` variants so values
-are inlined at build time. Flags are per-env, never per-org.
+The three web-app flags have no server-side variable. Their former server
+twins (`FABRIC_FEATURE_INCIDENT_BANNER`,
+`FABRIC_FEATURE_INTEGRATION_HEALTH_BADGES`,
+`FABRIC_FEATURE_ADMIN_MONITORING_DASHBOARD`) were read by nothing and were
+removed, as was the unread `NEXT_PUBLIC_FABRIC_FEATURE_BURN_RATE_ALERTS`.
+`NEXT_PUBLIC_*` values are inlined at build time, so changing one needs a
+rebuild.
 
 ## Cost estimate
 

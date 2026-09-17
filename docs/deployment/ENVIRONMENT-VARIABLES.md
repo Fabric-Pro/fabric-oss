@@ -52,7 +52,6 @@ The table below lists the **functional consumer** for each variable: where the v
 | `TEMPORAL_ADDRESS` | ConfigMap | yes | |
 | `TEMPORAL_NAMESPACE` | ConfigMap | yes | |
 | `TEMPORAL_CLOUD_API_KEY` | Secret | yes | |
-| `ENABLE_TEMPORAL_WORKFLOWS` | ConfigMap | yes | `"true"` |
 | `MCP_STDIO_WRAPPER_URL` | ConfigMap | yes | Cluster DNS |
 | `DOCUMENT_GENERATOR_URL` | ConfigMap | yes | Rendered from `agents[]` |
 | `PROJECT_DOCUMENT_GENERATOR_URL` | ConfigMap | yes | |
@@ -99,12 +98,10 @@ The table below lists the **functional consumer** for each variable: where the v
 | `OTEL_ENABLED` | ConfigMap | no | |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | pod env | no | Derived from `NODE_IP` |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | ConfigMap | no | `"grpc"` |
-| `FABRIC_FEATURE_*` (4 flags) | ConfigMap | no | Kill switches, default ON |
-| `NEXT_PUBLIC_FABRIC_FEATURE_*` (4 mirrors) | ConfigMap | no | |
+| `FABRIC_FEATURE_BURN_RATE_ALERTS` | Runtime env (not rendered by the chart) | no | Kill switch, default ON. Server-only: mutes the App Insights custom-event alert path; read once at process start |
+| `NEXT_PUBLIC_FABRIC_FEATURE_*` (3 monitoring UI flags) | Build env (not rendered by the chart) | no | Kill switches, default ON, inlined at build time: integration health badges, incident banner, admin monitoring dashboard |
 | `FABRIC_FEATURE_TEST_CASES` | ConfigMap | no | Test Cases feature (default OFF; unset = off). Set `"true"` to expose the QA tab + API. Feature-enable flag (distinct from the always-on kill switches above); mirrors `FABRIC_FEATURE_ATLAS`. |
 | `NEXT_PUBLIC_FABRIC_FEATURE_TEST_CASES` | ConfigMap | no | Client mirror of `FABRIC_FEATURE_TEST_CASES` — gates the QA tab button (default OFF). |
-| `FABRIC_FEATURE_TEST_PIPELINE_RESULTS` | ConfigMap | no | Automated-test pipeline-result ingestion (card 1834; default OFF; unset = off). Set `"true"` to expose the pipeline-result surface. **Implies** `FABRIC_FEATURE_TEST_CASES` — fails closed if that base flag is off. |
-| `NEXT_PUBLIC_FABRIC_FEATURE_TEST_PIPELINE_RESULTS` | ConfigMap | no | Client mirror of `FABRIC_FEATURE_TEST_PIPELINE_RESULTS` — gates the pipeline-result UI (default OFF). |
 | `FABRIC_FEATURE_CONTEXT_SUMMARIZATION` | ConfigMap | no | Context Summarization (default OFF; unset = off). Set `"true"` to enable the daily auto-summarization cron, the admin manual-trigger API, and summary injection into the AI context read path. Off = retrieval is byte-for-byte unchanged (rollback-safe). |
 | `NEXT_PUBLIC_FABRIC_FEATURE_CONTEXT_SUMMARIZATION` | ConfigMap | no | Client mirror of `FABRIC_FEATURE_CONTEXT_SUMMARIZATION` — gates the Context-tab "Summarize context" admin control (default OFF). |
 | `CONTEXT_SUMMARIZATION_TOKEN_THRESHOLD` | ConfigMap | no | Auto-summarization trigger: raw-context token estimate above which a project is (re)summarized. Default `50000`. |
@@ -437,7 +434,6 @@ Rendered into `<release>-config` by `templates/secrets/config-map.yaml`. Pure no
 | `NEXT_PUBLIC_SITE_URL` | `global.siteUrl` (override) → `global.domain` + `ingress.tls` | `global.siteUrl` wins when set (e.g. raw ALB hostname); else empty when domain unset (uses ALB hostname post-deploy) |
 | `TEMPORAL_NAMESPACE` | `temporal.namespace` | |
 | `TEMPORAL_ADDRESS` | `temporal.address` | |
-| `ENABLE_TEMPORAL_WORKFLOWS` | hardcoded | `"true"` |
 <!-- REDIS_URL moved out of ConfigMap — see §3.6 (Secret, Terraform-managed). -->
 | `PGSSLMODE` | hardcoded | `no-verify` — forces TLS to RDS for node-postgres which defaults to no SSL; prod follow-up: verify-full + RDS CA bundle |
 | `S3_ENDPOINT` | `global.region` | `https://s3.<region>.amazonaws.com` |

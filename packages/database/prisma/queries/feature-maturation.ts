@@ -19,6 +19,7 @@
  * is `organizationId: null` (required), never `undefined`.
  */
 
+import { logger } from "@repo/logs";
 import { db, Prisma } from "../client";
 import type {
 	DecisionLogEntry,
@@ -26,6 +27,7 @@ import type {
 	MaturationApprovalPreference,
 	StoryKind,
 } from "../generated/client";
+import { isFeatureEnabled } from "./feature-flags";
 
 /**
  * Tenant scope for a maturation read/write. `undefined` is intentionally not
@@ -1083,23 +1085,70 @@ export async function optInFeatureToMaturationV2({
 	return result.count;
 }
 
+export interface AiAnswerRecommendationsScope {
+	/** The project whose feature is being matured. The caller has checked access to it. */
+	projectId: string;
+	/** The organization the request resolved as its tenant. */
+	organizationId: string | null | undefined;
+}
+
 /**
- * Whether AI answer recommendations are enabled for an org (#7, FR-15). Dogfood-
- * gated: defaults false until the org is enrolled (SQL flip, like
- * `featureMaturationV2Enabled`). Personal context (null org) is never enrolled, so
- * returns false. Gates the recommendation pass on top of the per-feature toggle.
+ * Whether AI answer recommendations are on for a request about a project
+ * (#7, FR-15).
+ *
+ * Resolves the `AI_ANSWER_RECOMMENDATIONS` registry flag (Fizzy #2300) for the
+ * organization that OWNS the project, and is true only when the request was
+ * made in that same organization. Recommendations are generated with the
+ * request organization's model credentials and usage limits, so the owner's
+ * setting is honoured only for the owner's own requests. Callers must already
+ * have authorized access to the project; this performs no access check.
+ *
+ * A request made in another organization is refused with a warning,
+ * whatever the owner's setting: when the owner is Enabled in the admin
+ * console, a silent refusal would look like a flag that does nothing. A
+ * request with no organization is refused without one.
+ *
+ * It no longer reads the SQL-only `aiAnswerRecommendationsEnabled` column:
+ * organizations enabled there were carried over as per-organization override
+ * rows by migration, unless a row for this key already existed, and nothing
+ * reads the column now. A project with no organization (or an empty stored
+ * id) and a missing project resolve false. Gates the recommendation pass (on
+ * top of the per-feature `autoProposeAnswers` toggle) and every display of
+ * stored suggestions. Called from API code only, never from workflow code.
  */
-export async function isAiAnswerRecommendationsEnabled(
-	organizationId: string | null,
-): Promise<boolean> {
+export async function isAiAnswerRecommendationsEnabledForProject({
+	projectId,
+	organizationId,
+}: AiAnswerRecommendationsScope): Promise<boolean> {
+	// No request organization: refused quietly. The feature editor sends none
+	// while its organization context is still loading and refetches once it
+	// settles, so warning here would log every such page load.
 	if (!organizationId) {
 		return false;
 	}
-	const org = await db.organization.findUnique({
-		where: { id: organizationId },
-		select: { aiAnswerRecommendationsEnabled: true },
+	const project = await db.project.findUnique({
+		where: { id: projectId },
+		select: { organizationId: true },
 	});
-	return org?.aiAnswerRecommendationsEnabled ?? false;
+	if (!project?.organizationId) {
+		return false;
+	}
+	if (project.organizationId !== organizationId) {
+		logger.warn(
+			{
+				event: "ai_answer_recommendations.organization_mismatch",
+				projectId,
+				projectOrganizationId: project.organizationId,
+				requestOrganizationId: organizationId,
+			},
+			"AI answer recommendations refused: the request's organization does not own the project",
+		);
+		return false;
+	}
+	return isFeatureEnabled(
+		"AI_ANSWER_RECOMMENDATIONS",
+		project.organizationId,
+	);
 }
 
 export interface SetAutoProposeAnswersInput {

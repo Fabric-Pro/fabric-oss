@@ -8,16 +8,16 @@ import { useQuery } from "@tanstack/react-query";
  * Returns whether the three-tab Feature Maturation V2 editor is enabled for
  * the caller's current tenant context (Feature Maturation V2 spec §9).
  *
- * Behaviour (note: this hook defaults to `false`, the inverse of the
- * doc-assistant-history hook — V2 is strictly opt-in):
- * - **Personal context** (no active org): always returns `false`. Personal
- *   features stay on the v1 single-doc flow; the flag is org-scoped only and
- *   there is no org row to read.
- * - **Org context, loading**: returns `false` so non-flagged orgs (the vast
- *   majority — the column defaults to `false`) never flash the V2 tabs before
- *   the flag settles. Failure mode is "v1 shows then v2 appears" for a flagged
- *   org, never "tabs flash then disappear" for a non-flagged one.
- * - **Org context, settled**: returns the persisted boolean.
+ * Behaviour (V2 is the default for every tenant since #1797):
+ * - **Personal context** (no active org): always returns `true`, without a
+ *   request. There is no org row to read, so personal workspaces are enrolled
+ *   unconditionally and have no kill switch short of changing this hook.
+ * - **Org context, loading**: returns `true` (placeholder data), so the
+ *   common enabled case never flashes the single-document editor first. The
+ *   failure mode is "V2 shows, then the single-document editor appears" for
+ *   the rare organization flipped off by SQL.
+ * - **Org context, settled**: returns the persisted boolean, or `true` when
+ *   the response carries none.
  *
  * Reads via a dedicated oRPC procedure rather than `useActiveOrganization()`
  * for the same reason as `useDocumentAssistantHistoryEnabled`: Better Auth's

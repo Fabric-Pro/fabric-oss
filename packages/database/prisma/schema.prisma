@@ -534,10 +534,19 @@ model Organization {
   // disable V2 for it without a deploy. The v1/v2 manual switch a flagged user
   // sees is session-scoped and separate.
   featureMaturationV2Enabled      Boolean                       @default(true)
-  // AI answer recommendations for Maturation V2 open questions (demo feedback #7 /
-  // Fizzy 1711, FR-15). Default false: dogfood-gated, flipped to true to enroll the
-  // internal Fabric org first (SQL flip, like featureMaturationV2Enabled). Gates the
-  // recommendation pass on top of the per-feature autoProposeAnswers toggle.
+  // SUPERSEDED (Fizzy #2300) — no code reads this column. AI answer
+  // recommendations are gated by the AI_ANSWER_RECOMMENDATIONS runtime flag, set
+  // from the admin console and resolved for a project's organization.
+  // Organizations enabled here were carried over as per-organization override
+  // rows by migration
+  // 20260917120000_carry_ai_answer_recommendations_into_flag_override, unless a
+  // row for that key already existed, so setting this column by SQL now changes
+  // nothing. Every build whose schema still declares this field — including
+  // this one — still selects the column through Prisma's default selects (for
+  // example an organization read with no `select`), so removal takes two
+  // releases: first drop the field here and let that build fully replace every
+  // older one, including as a rollback target, then drop the column itself in
+  // a later migration.
   aiAnswerRecommendationsEnabled  Boolean                       @default(false)
   // SOC 2 CC6.1 — opt-in organization-wide MFA enforcement. When true, members
   // without two-factor enabled are redirected to enroll before they can access

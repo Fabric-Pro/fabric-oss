@@ -7,7 +7,7 @@ import {
 	getFeatureMaturationState,
 	getLatestRunChangeSummary,
 	hasProjectAccess,
-	isAiAnswerRecommendationsEnabled,
+	isAiAnswerRecommendationsEnabledForProject,
 	isFeatureEnabled,
 	listDecisionLogThreads,
 	listQuestionAssignees,
@@ -69,9 +69,18 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 				// the staleness colour + tooltip on the refresh control (#2/#3).
 				// `null` = never refreshed via context.
 				lastContextUpdateAt: z.date().nullable(),
-				// Per-feature auto-propose-answers toggle (#7). Default true; drives the
-				// "Auto-propose answers" control in the Summary & Questions tab.
+				// Per-feature auto-propose-answers toggle (#7). Default true; it is the
+				// value of the "Auto-propose answers" control in the Summary & Questions
+				// tab.
 				autoProposeAnswers: z.boolean(),
+				// Whether AI_ANSWER_RECOMMENDATIONS is on for this request (#2300):
+				// the flag is on for the project's organization and the request was
+				// made in it — the same value that decides `includeRecommendations`
+				// below. The client offers the "Auto-propose
+				// answers" control only when this is true: with the flag off nothing is
+				// ever proposed, so a switch reading ON would promise something that
+				// cannot happen.
+				answerRecommendationsEnabled: z.boolean(),
 			}),
 			summaryDigest: z.string().nullable(),
 			workingNotesContent: z.string().nullable(),
@@ -195,9 +204,14 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 			}),
 			getApprovalPreference({ tenantFilter }),
 			getLatestRunChangeSummary(input.storyId),
-			// #7/FR-15: gate the DISPLAY of AI answer options on the org dogfood
-			// flag, so flipping it off hides already-persisted recommendations too.
-			isAiAnswerRecommendationsEnabled(organizationId ?? null),
+			// #7/FR-15, #2300: gate the DISPLAY of AI answer options on
+			// AI_ANSWER_RECOMMENDATIONS, so turning it off hides
+			// already-persisted recommendations too. True only when the
+			// request's organization owns the project checked above.
+			isAiAnswerRecommendationsEnabledForProject({
+				projectId: input.projectId,
+				organizationId: organizationId ?? null,
+			}),
 			// QA tab depth + QA generation settings —
 			// one narrow column read.
 			db.project.findUnique({
@@ -334,6 +348,7 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 				maturationV2OptedIn: feature.maturationV2OptedIn,
 				lastContextUpdateAt: feature.lastContextUpdateAt,
 				autoProposeAnswers: feature.autoProposeAnswers,
+				answerRecommendationsEnabled: recommendationsEnabled,
 			},
 			summaryDigest: feature.summaryDigest,
 			workingNotesContent: feature.workingNotesContent,

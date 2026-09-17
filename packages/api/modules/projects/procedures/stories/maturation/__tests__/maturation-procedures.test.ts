@@ -16,8 +16,18 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
  *  - question dedupe (AC-2.4): the same question does not mint a 2nd decision.
  */
 
-const { handlers, mocks } = vi.hoisted(() => {
+const { handlers, mocks, resolveOrganizationIdMock } = vi.hoisted(() => {
 	const handlers: Array<(...args: unknown[]) => unknown> = [];
+	// Kept outside `mocks` on purpose: the top-level `beforeEach` below
+	// `mockReset()`s every entry of `mocks`, which would wipe this spy's
+	// default implementation. Living outside that loop, its identity default
+	// (mirroring the real resolver's pass-through shape) survives every test;
+	// the two tests that need a different resolution use `mockReturnValueOnce`,
+	// which reverts to this default after one call.
+	const resolveOrganizationIdMock = vi.fn(
+		(organizationId: string | null | undefined) =>
+			organizationId ?? undefined,
+	);
 	const mocks = {
 		hasProjectAccess: vi.fn(),
 		getFeatureMaturationState: vi.fn(),
@@ -38,7 +48,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		getDecisionLogEntryById: vi.fn(),
 		recordAiOutcome: vi.fn(),
 		acceptPendingPatches: vi.fn(),
-		isAiAnswerRecommendationsEnabled: vi.fn(),
+		isAiAnswerRecommendationsEnabledForProject: vi.fn(),
 		// QA tab
 		projectFindUnique: vi.fn(),
 		testCaseLinkCount: vi.fn().mockResolvedValue(0),
@@ -58,7 +68,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		userFindMany: vi.fn().mockResolvedValue([]),
 		isFeatureEnabled: vi.fn().mockResolvedValue(true),
 	};
-	return { handlers, mocks };
+	return { handlers, mocks, resolveOrganizationIdMock };
 });
 
 // Real `effectiveApprovalMode` + HARD_DEFAULT_APPROVAL_MODE are exercised so the
@@ -103,7 +113,8 @@ vi.mock("@repo/database", () => ({
 	listDecisionLogThreads: mocks.listDecisionLogThreads,
 	getLatestRunChangeSummary: mocks.getLatestRunChangeSummary,
 	getApprovalPreference: mocks.getApprovalPreference,
-	isAiAnswerRecommendationsEnabled: mocks.isAiAnswerRecommendationsEnabled,
+	isAiAnswerRecommendationsEnabledForProject:
+		mocks.isAiAnswerRecommendationsEnabledForProject,
 	upsertApprovalPreference: mocks.upsertApprovalPreference,
 	setFeatureApprovalOverride: mocks.setFeatureApprovalOverride,
 	createDecisionLogEntry: mocks.createDecisionLogEntry,
@@ -243,8 +254,7 @@ vi.mock("../../../../../../orpc/procedures", () => {
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requireProjectPermission: () => (c: unknown) => c,
 		requireInputOrgPermission: () => (c: unknown) => c,
-		resolveOrganizationId: (organizationId: string | null | undefined) =>
-			organizationId ?? undefined,
+		resolveOrganizationId: resolveOrganizationIdMock,
 	};
 });
 
@@ -313,7 +323,7 @@ beforeEach(() => {
 	mocks.userFindMany.mockResolvedValue([]);
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.getApprovalPreference.mockResolvedValue(null);
-	mocks.isAiAnswerRecommendationsEnabled.mockResolvedValue(true);
+	mocks.isAiAnswerRecommendationsEnabledForProject.mockResolvedValue(true);
 	mocks.setFeatureApprovalOverride.mockResolvedValue(1);
 	mocks.setDecisionMetadata.mockResolvedValue(1);
 	mocks.optInFeatureToMaturationV2.mockResolvedValue(1);
@@ -512,18 +522,87 @@ describe("getEditorState", () => {
 		mocks.listDecisionLogThreads.mockResolvedValue([withRec]);
 
 		// Flag ON → options surface.
-		mocks.isAiAnswerRecommendationsEnabled.mockResolvedValue(true);
+		mocks.isAiAnswerRecommendationsEnabledForProject.mockResolvedValue(
+			true,
+		);
 		const on = (await getEditorState({ input: base, context: ctx })) as {
 			openQuestions: Array<{ root: { suggestedOptions: unknown[] } }>;
 		};
 		expect(on.openQuestions[0].root.suggestedOptions).toHaveLength(1);
 
 		// Flag OFF → the same persisted options are stripped at the display layer.
-		mocks.isAiAnswerRecommendationsEnabled.mockResolvedValue(false);
+		mocks.isAiAnswerRecommendationsEnabledForProject.mockResolvedValue(
+			false,
+		);
 		const off = (await getEditorState({ input: base, context: ctx })) as {
 			openQuestions: Array<{ root: { suggestedOptions: unknown[] } }>;
 		};
 		expect(off.openQuestions[0].root.suggestedOptions).toEqual([]);
+	});
+
+	// #2300: the handler must hand the gate the checked project and the
+	// organization it resolved, so the resolver can refuse a request whose
+	// organization does not own the project.
+	it("asks the gate about the checked project and the request's organization", async () => {
+		await getEditorState({
+			input: { ...base, organizationId: "org-named-by-caller" },
+			context: ctx,
+		});
+		expect(
+			mocks.isAiAnswerRecommendationsEnabledForProject,
+		).toHaveBeenCalledTimes(1);
+		expect(
+			mocks.isAiAnswerRecommendationsEnabledForProject,
+		).toHaveBeenCalledWith({
+			projectId: "project-1",
+			organizationId: "org-named-by-caller",
+		});
+	});
+
+	// #2300: the gate receives the organization the request resolved to, not
+	// the raw input — a project member invited from another organization can
+	// resolve to the host organization even with a null `organizationId` in
+	// input.
+	it("asks the gate about the organization the request resolved to, not the raw input", async () => {
+		resolveOrganizationIdMock.mockReturnValueOnce(
+			"org-resolved-by-middleware",
+		);
+		await getEditorState({
+			input: { ...base, organizationId: null },
+			context: ctx,
+		});
+		expect(
+			mocks.isAiAnswerRecommendationsEnabledForProject,
+		).toHaveBeenCalledWith({
+			projectId: "project-1",
+			organizationId: "org-resolved-by-middleware",
+		});
+	});
+
+	// #2300: the client offers the "Auto-propose answers" switch only when this
+	// is true, so it must be the resolution that already decides whether stored
+	// suggestions are shown — never a second read that could disagree with it.
+	it("reports whether answer recommendations are on, from the same gate that strips suggestions", async () => {
+		mocks.isAiAnswerRecommendationsEnabledForProject.mockResolvedValue(
+			true,
+		);
+		const on = (await getEditorState({ input: base, context: ctx })) as {
+			feature: { answerRecommendationsEnabled: boolean };
+		};
+		expect(on.feature.answerRecommendationsEnabled).toBe(true);
+
+		mocks.isAiAnswerRecommendationsEnabledForProject.mockResolvedValue(
+			false,
+		);
+		const off = (await getEditorState({ input: base, context: ctx })) as {
+			feature: { answerRecommendationsEnabled: boolean };
+		};
+		expect(off.feature.answerRecommendationsEnabled).toBe(false);
+
+		// One resolution per request.
+		expect(
+			mocks.isAiAnswerRecommendationsEnabledForProject,
+		).toHaveBeenCalledTimes(2);
 	});
 });
 
@@ -1515,6 +1594,84 @@ describe("listDecisionLog", () => {
 		await expect(
 			listDecisionLog({ input: base, context: ctx }),
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
+	});
+
+	// #2300: the REST read must not show more than the editor. Before this, the
+	// serializer's default kept stored AI options on this endpoint even with
+	// recommendations turned off.
+	it("strips stored AI answer options when recommendations are off for the project", async () => {
+		mocks.listDecisionLogThreads.mockResolvedValue([
+			{
+				root: {
+					id: "open-1",
+					status: "OPEN",
+					summary: null,
+					content: "Is MFA mandatory?",
+					impactedSection: null,
+					topic: null,
+					questionId: "open-1",
+					authorType: "AGENT",
+					source: "AI_CONFIRMED",
+					decidedBy: null,
+					createdAt: new Date("2026-06-01"),
+					metadata: {
+						answerRecommendation: {
+							options: [
+								{ text: "Yes", justification: "Baseline." },
+							],
+							confidence: "high",
+						},
+					},
+				},
+				replies: [],
+			},
+		]);
+
+		mocks.isAiAnswerRecommendationsEnabledForProject.mockResolvedValue(
+			true,
+		);
+		const on = (await listDecisionLog({ input: base, context: ctx })) as {
+			threads: Array<{ root: { suggestedOptions: unknown[] } }>;
+		};
+		expect(on.threads[0].root.suggestedOptions).toHaveLength(1);
+
+		mocks.isAiAnswerRecommendationsEnabledForProject.mockResolvedValue(
+			false,
+		);
+		const off = (await listDecisionLog({ input: base, context: ctx })) as {
+			threads: Array<{ root: { suggestedOptions: unknown[] } }>;
+		};
+		expect(off.threads[0].root.suggestedOptions).toEqual([]);
+
+		// The organization the request resolved (null here) goes to the gate
+		// with the project, so a mismatched or personal-context request strips
+		// options even where the owning organization has the flag on.
+		expect(
+			mocks.isAiAnswerRecommendationsEnabledForProject,
+		).toHaveBeenCalledWith({
+			projectId: "project-1",
+			organizationId: null,
+		});
+	});
+
+	// #2300: the gate receives the organization the request resolved to, not
+	// the raw input — a project member invited from another organization can
+	// resolve to the host organization even with a null `organizationId` in
+	// input.
+	it("asks the gate about the organization the request resolved to, not the raw input", async () => {
+		resolveOrganizationIdMock.mockReturnValueOnce(
+			"org-resolved-by-middleware",
+		);
+		await listDecisionLog({
+			input: { ...base, organizationId: null },
+			context: ctx,
+		});
+		expect(
+			mocks.isAiAnswerRecommendationsEnabledForProject,
+		).toHaveBeenCalledWith({
+			projectId: "project-1",
+			organizationId: "org-resolved-by-middleware",
+		});
 	});
 
 	it("returns the threaded log from the query layer", async () => {

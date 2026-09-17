@@ -40,8 +40,7 @@ export {
 export { attachmentFinalOrphanSweepWorkflow } from "./attachment-final-orphan-sweep";
 // Attachment retention-purge workflow (scheduled daily).
 export { attachmentRetentionPurgeWorkflow } from "./attachment-retention-purge";
-// Attachment temp-orphan sweep workflow (opt-in, scheduled daily when
-// FABRIC_ATTACHMENT_TEMP_ORPHAN_SWEEP_ENABLED=true)
+// Attachment temp-orphan sweep workflow (scheduled daily, always registered)
 export { attachmentTempOrphanSweepWorkflow } from "./attachment-temp-orphan-sweep";
 // Audit log retention workflow (opt-in, scheduled every 24h when
 // FABRIC_AUDIT_LOG_RETENTION_ENABLED=true)
