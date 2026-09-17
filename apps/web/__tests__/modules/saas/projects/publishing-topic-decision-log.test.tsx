@@ -28,7 +28,41 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * The amend request, observed at the network boundary. The real `QueryClient`
+ * and the real `useMutation` still run; only the oRPC procedure is replaced,
+ * so what a Save sends is asserted from the payload itself.
+ */
+const { amendMutationFn } = vi.hoisted(() => ({ amendMutationFn: vi.fn() }));
+
+vi.mock("@shared/lib/orpc-query-utils", () => ({
+	orpc: {
+		projects: {
+			publishingSuite: {
+				amendTopicQuestion: {
+					mutationOptions: (opts: Record<string, unknown>) => ({
+						mutationKey: ["amendTopicQuestion"],
+						mutationFn: amendMutationFn,
+						...opts,
+					}),
+				},
+				listTopicDecisions: {
+					queryKey: ({ input }: { input?: unknown }) => [
+						"listTopicDecisions",
+						input,
+					],
+				},
+			},
+		},
+	},
+}));
+
+beforeEach(() => {
+	amendMutationFn.mockReset();
+	amendMutationFn.mockResolvedValue({ status: "amended", root: null });
+});
 
 /**
  * The log amends in place now, so it holds a mutation and needs a client.
@@ -566,5 +600,212 @@ describe("TopicDecisionLog — attribution", () => {
 
 		expect(screen.getByText("AI")).toBeInTheDocument();
 		expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+	});
+});
+
+describe("TopicDecisionLog — notes and the current answer", () => {
+	const ALEX = { id: "u-alex", name: "Alex Example", image: null };
+	const SAM = { id: "u-sam", name: "Sam Example", image: null };
+	const NOTE_TEXT = "Can legal confirm the name first?";
+	const noteOn = (parentId: string, createdAt: string) =>
+		reply({
+			id: `note-${parentId}`,
+			parentId,
+			status: "OPEN",
+			authorUserId: "u-sam",
+			author: SAM,
+			content: NOTE_TEXT,
+			answerSource: null,
+			createdAt: new Date(createdAt),
+		});
+	const answerOn = (
+		parentId: string,
+		createdAt: string,
+		over: Record<string, unknown> = {},
+	) =>
+		reply({
+			id: `answer-${parentId}`,
+			parentId,
+			authorUserId: "u-alex",
+			author: ALEX,
+			content: ANSWER_TEXT,
+			createdAt: new Date(createdAt),
+			...over,
+		});
+	const notesIn = (card: HTMLElement) =>
+		within(card).getByRole("list", { name: "Notes on this question" });
+
+	it("shows an open question's note under the question, with no answer and no history", async () => {
+		const thread: TopicDecisionThread = {
+			root: root({
+				id: "decision-asked",
+				questionId: "q-asked",
+				summary: "May we quote the pilot results?",
+			}),
+			replies: [noteOn("decision-asked", "2026-08-20T10:30:00Z")],
+		};
+		renderLog(<TopicDecisionLog {...TENANT} canEdit threads={[thread]} />);
+		await userEvent.click(screen.getByRole("button", { name: "All" }));
+
+		const card = screen.getByTestId("decision-root");
+		expect(
+			within(card).getByText("May we quote the pilot results?"),
+		).toBeVisible();
+		expect(within(notesIn(card)).getByText(NOTE_TEXT)).toBeVisible();
+		expect(
+			within(card).queryByTestId("decision-answer"),
+		).not.toBeInTheDocument();
+		expect(
+			within(card).queryByRole("list", { name: /previous answers/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps a note written before the answer in the question column, out of the answer and its history", () => {
+		const thread: TopicDecisionThread = {
+			root: root({
+				id: "decision-noted",
+				questionId: "q-noted",
+				status: "RESOLVED",
+			}),
+			replies: [
+				noteOn("decision-noted", "2026-08-20T10:30:00Z"),
+				answerOn("decision-noted", "2026-08-20T11:00:00Z"),
+			],
+		};
+		renderLog(<TopicDecisionLog {...TENANT} threads={[thread]} />);
+
+		const card = screen.getByTestId("decision-root");
+		const answer = within(card).getByTestId("decision-answer");
+		expect(within(answer).getByText(ANSWER_TEXT)).toBeVisible();
+		expect(within(answer).getByText("Alex Example")).toBeVisible();
+		expect(
+			within(card).queryByRole("list", { name: /previous answers/i }),
+		).not.toBeInTheDocument();
+		const notes = notesIn(card);
+		expect(within(notes).getByText(NOTE_TEXT)).toBeVisible();
+		// The QUESTION column: beside the question text, never a cell of the
+		// two-column grid, never inside the answer.
+		expect(notes.parentElement).toContainElement(
+			within(card).getByText("May we name the customer?"),
+		);
+		expect(notes.parentElement).not.toBe(card);
+		expect(answer).not.toContainElement(notes);
+	});
+
+	it("keeps the answer as the answer when a note follows it, and amends from the answer", async () => {
+		const thread: TopicDecisionThread = {
+			root: root({
+				id: "decision-followed",
+				questionId: "q-followed",
+				status: "RESOLVED",
+			}),
+			replies: [
+				answerOn("decision-followed", "2026-08-20T10:30:00Z"),
+				noteOn("decision-followed", "2026-08-20T11:00:00Z"),
+			],
+		};
+		renderLog(<TopicDecisionLog {...TENANT} canEdit threads={[thread]} />);
+
+		const card = screen.getByTestId("decision-root");
+		expect(within(card).getByTestId("decision-answer")).toHaveTextContent(
+			ANSWER_TEXT,
+		);
+		expect(within(notesIn(card)).getByText(NOTE_TEXT)).toBeVisible();
+		expect(
+			within(card).queryByRole("list", { name: /previous answers/i }),
+		).not.toBeInTheDocument();
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /^amend the answer to/i }),
+		);
+		expect(screen.getByLabelText("Your answer")).toHaveValue(ANSWER_TEXT);
+	});
+
+	const BLANK_THREAD: TopicDecisionThread = {
+		root: root({
+			id: "decision-blank",
+			questionId: "q-blank",
+			status: "RESOLVED",
+		}),
+		replies: [
+			answerOn("decision-blank", "2026-08-20T10:30:00Z"),
+			answerOn("decision-blank", "2026-08-20T11:00:00Z", {
+				id: "reply-blank",
+				content: "   ",
+			}),
+		],
+	};
+
+	it("says a current answer saved empty is empty, and amends that reply", async () => {
+		renderLog(
+			<TopicDecisionLog {...TENANT} canEdit threads={[BLANK_THREAD]} />,
+		);
+
+		expect(screen.getByTestId("decision-answer")).toHaveTextContent(
+			"The latest answer is empty — amend it to record one.",
+		);
+		await userEvent.click(
+			screen.getByRole("button", { name: /^amend the answer to/i }),
+		);
+		const box = screen.getByLabelText("Your answer");
+		expect(box).toHaveValue("");
+		await userEvent.type(box, "No, legal has not signed off.");
+		await userEvent.click(
+			screen.getByRole("button", { name: "Save answer" }),
+		);
+
+		await vi.waitFor(() =>
+			expect(amendMutationFn).toHaveBeenCalledTimes(1),
+		);
+		expect(amendMutationFn.mock.calls[0][0]).toMatchObject({
+			questionId: "q-blank",
+			supersedesId: "reply-blank",
+			answer: "No, legal has not signed off.",
+		});
+	});
+
+	it("says only that it is empty to a reader who cannot amend", () => {
+		renderLog(<TopicDecisionLog {...TENANT} threads={[BLANK_THREAD]} />);
+
+		expect(screen.getByTestId("decision-answer")).toHaveTextContent(
+			"The latest answer is empty.",
+		);
+		expect(screen.queryByText(/amend it/i)).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /^amend the answer to/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("offers no Amend on a blocker's answer, which the server can never save", () => {
+		const blocker: TopicDecisionThread = {
+			root: root({
+				id: "decision-blocker",
+				kind: "BLOCKER",
+				questionId: "q-blocker",
+				status: "RESOLVED",
+				decisionKind: "MISSING_QUOTE",
+				subject: "the approved quote",
+				summary: "We have no approved customer quote.",
+			}),
+			replies: [answerOn("decision-blocker", "2026-08-20T10:30:00Z")],
+		};
+		renderLog(
+			<TopicDecisionLog
+				{...TENANT}
+				canEdit
+				threads={[blocker, RESOLVED_THREAD]}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", {
+				name: 'Amend the answer to "the named customer"',
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", {
+				name: 'Amend the answer to "the approved quote"',
+			}),
+		).not.toBeInTheDocument();
 	});
 });

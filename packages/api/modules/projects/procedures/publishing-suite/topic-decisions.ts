@@ -259,7 +259,12 @@ export const amendTopicQuestionProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 			questionId: z.string().min(1).max(500),
 			/** The answer turn being replaced. */
-			supersedesId: z.string().min(1),
+			supersedesId: z
+				.string()
+				.min(1)
+				.describe(
+					"The id of the question's current answer: the newest reply a user recorded with status RESOLVED, ordered by creation time and then id, whatever its content. Any other id is refused as stale.",
+				),
 			answer: answerBodySchema,
 			answerSource: z.enum(["AI_SUGGESTED", "AI_EDITED", "MANUAL"]),
 		}),

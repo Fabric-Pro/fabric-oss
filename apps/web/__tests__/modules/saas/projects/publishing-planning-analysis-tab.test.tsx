@@ -1653,7 +1653,11 @@ describe("countAnswersRecordedAfter — answers the analysis predates", () => {
 		analysisVersion: number;
 		answeredAt?: Date;
 		status?: string;
-		replies?: { createdAt: Date; content: string | null }[];
+		replies?: {
+			createdAt: Date;
+			content: string | null;
+			status?: string;
+		}[];
 	}) => {
 		const id = `d-${analysisVersion}-${Math.random()}`;
 		const entry = (over: Record<string, unknown>) => ({
@@ -1786,6 +1790,62 @@ describe("countAnswersRecordedAfter — answers the analysis predates", () => {
 				},
 			]),
 		).toBe(0);
+	});
+
+	it("does not count an Ask note written after the analysis", () => {
+		expect(
+			count([
+				answered({
+					analysisVersion: 2,
+					status: "OPEN",
+					replies: [
+						{
+							createdAt: AFTER,
+							content: "Can legal confirm?",
+							status: "OPEN",
+						},
+					],
+				}),
+			]),
+		).toBe(0);
+		// The control: an answer at the same moment is counted.
+		expect(
+			count([
+				answered({
+					analysisVersion: 2,
+					replies: [{ createdAt: AFTER, content: "Yes" }],
+				}),
+			]),
+		).toBe(1);
+	});
+
+	it("does not count a current answer saved empty, even after a real one", () => {
+		// BOTH replies postdate the analysis, so a rule that skipped the blank
+		// reply and fell back to the older answer would count it.
+		const LATER_STILL = new Date("2026-09-04T09:00:00Z");
+		expect(
+			count([
+				answered({
+					analysisVersion: 2,
+					replies: [
+						{ createdAt: AFTER, content: "Yes" },
+						{ createdAt: LATER_STILL, content: "   " },
+					],
+				}),
+			]),
+		).toBe(0);
+		// The control: the same thread whose newest answer has text is counted.
+		expect(
+			count([
+				answered({
+					analysisVersion: 2,
+					replies: [
+						{ createdAt: AFTER, content: "Yes" },
+						{ createdAt: LATER_STILL, content: "No, not yet." },
+					],
+				}),
+			]),
+		).toBe(1);
 	});
 });
 

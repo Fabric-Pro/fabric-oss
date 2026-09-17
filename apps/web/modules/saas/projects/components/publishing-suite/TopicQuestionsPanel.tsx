@@ -1,12 +1,13 @@
 "use client";
 
+import { currentAnswerReply } from "@repo/utils/publishing-restrictions";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
-import { ChevronDownIcon, PencilIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ChevronDownIcon, PencilIcon, SparklesIcon } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	type AssignableMember,
@@ -85,6 +86,13 @@ type Props = {
 	organizationId: string | null;
 	canEdit: boolean;
 	isLoading?: boolean;
+	/**
+	 * The decision list is being fetched. True while a cached list is on screen
+	 * and a fresher one is on its way: a `#q-<id>` link's arrival is done only
+	 * once a list with no fetch in flight has been seen, so a cached list can
+	 * still open a group before then.
+	 */
+	isFetching?: boolean;
 	/** The latest analysis attempt is FAILED — an empty list means "we could
 	 * not ask", not "there was nothing to ask". */
 	analysisFailed?: boolean;
@@ -280,9 +288,10 @@ function worthGrouping(
  * This tab is the WORKLIST. What is still open renders in full; a settled
  * question collapses behind a count, because the open list is what anyone
  * comes here to work and a topic accumulates answers without ever shedding
- * them. The full record of a decision — its reply history and its
+ * them. The full record of a decision — its earlier answers and its
  * attribution — is the Decision Log's job either way; what stays here is the
- * fast route from "I just answered that" to amending it.
+ * fast route from "I just answered that" to amending it. The notes asked on a
+ * question render with the question wherever the question renders.
  *
  * `POSSIBLY_RESOLVED` roots — soft-closed by reconciliation rather than
  * settled by anyone — render in their own group, collapsed behind a toggle
@@ -303,6 +312,7 @@ export function TopicQuestionsPanel({
 	organizationId,
 	canEdit,
 	isLoading = false,
+	isFetching = false,
 	analysisFailed = false,
 	isGeneratingAnalysis = false,
 	threads,
@@ -322,6 +332,64 @@ export function TopicQuestionsPanel({
 	// `publishingQuestionAssigned` writes, rather than inventing a second
 	// anchor convention for the same act.
 	useScrollToQuestion(!isLoading);
+
+	/**
+	 * Open the collapsed group that holds the linked question — once, on
+	 * arrival.
+	 *
+	 * Answered and Possibly resolved start collapsed, so a card in either is not
+	 * in the page and the scroll above finds nothing. This opens the group the
+	 * linked question is in, and never closes one, for the list that arrives: a
+	 * cached list shown while a refetch is in flight can open a group, the fresh
+	 * list opens the real one. The arrival is DONE for that fragment only once a
+	 * list that actually CONTAINED the linked question has been seen while
+	 * nothing was in flight — not merely once nothing is in flight. A request
+	 * that exhausted its retries reaches this effect as an empty list with
+	 * `isFetching` already false; finding no linked thread in it leaves the
+	 * arrival open, so the next list a successful refetch delivers still gets a
+	 * chance to open the group. Nothing after a real arrival opens anything —
+	 * answering the linked question, a later refetch or a window-focus refetch
+	 * leaves the groups as the person set them. The tab remounts this panel, so
+	 * coming back to it with the fragment still in the URL is a new arrival.
+	 *
+	 * Declared before the loading return so the hook order never changes. Keyed
+	 * on `threads` as well as the two flags, because TanStack Query reports
+	 * `isLoading` false whenever a cached list exists. The fragment check is
+	 * `useScrollToQuestion`'s, so the two agree on what names a question.
+	 */
+	const arrival = useRef({ hash: "", done: false });
+	useEffect(() => {
+		if (isLoading || typeof window === "undefined") {
+			return;
+		}
+		const hash = window.location.hash;
+		const id = hash.slice(3);
+		if (!hash.startsWith("#q-") || !/^[0-9a-z_-]+$/i.test(id)) {
+			return;
+		}
+		if (arrival.current.hash !== hash) {
+			arrival.current = { hash, done: false };
+		}
+		if (arrival.current.done) {
+			return;
+		}
+		// This panel's own question filter, so a root it does not render never
+		// opens a group.
+		const linked = threads.find(
+			(t) =>
+				t.root.id === id &&
+				t.root.kind === "QUESTION" &&
+				t.root.decisionKind !== "CONTENT_TYPE",
+		);
+		if (linked?.root.status === "RESOLVED") {
+			setShowAnswered(true);
+		} else if (linked?.root.status === "POSSIBLY_RESOLVED") {
+			setShowPossiblyResolved(true);
+		}
+		if (linked && !isFetching) {
+			arrival.current.done = true;
+		}
+	}, [isLoading, isFetching, threads]);
 
 	const assignableMembers = useMemo<AssignableMember[]>(() => {
 		const rows = members.map((m) => ({
@@ -368,8 +436,8 @@ export function TopicQuestionsPanel({
 	 *
 	 * SET SEMANTICS: the picker submits the COMPLETE list every time, so
 	 * assigning, re-assigning and clearing are one call. It NEVER answers
-	 * anything — the root stays OPEN, which is what separates asking somebody
-	 * from settling the question yourself.
+	 * anything — the root keeps its status, which is what separates asking
+	 * somebody from settling the question yourself.
 	 *
 	 * `variables` is read in `isPending` below so only the card being saved
 	 * disables its picker; a bare `assign.isPending` would freeze every
@@ -398,6 +466,16 @@ export function TopicQuestionsPanel({
 				toast.error(
 					"Could not restore that question. Please try again.",
 				);
+				// A refused restore usually means the question is no longer set
+				// aside: somebody answered it first, and the server's claim on
+				// POSSIBLY_RESOLVED lost. Refetching moves the card to the group
+				// it is really in instead of offering Restore on it again.
+				queryClient.invalidateQueries({
+					queryKey:
+						orpc.projects.publishingSuite.listTopicDecisions.queryKey(
+							{ input: { projectId, topicId, organizationId } },
+						),
+				});
 			},
 		}),
 	);
@@ -939,6 +1017,7 @@ function QuestionCard({
 					{root.whyItMatters}
 				</p>
 			) : null}
+			<QuestionNotes thread={thread} />
 			{canEdit && onRestore ? (
 				<Button
 					type="button"
@@ -981,7 +1060,7 @@ function QuestionCard({
 						/>
 						<div className="flex flex-wrap items-center justify-end gap-2">
 							{/* ASK, not answer. `onAssign` routes the question
-							    and leaves it OPEN; `submitDraft` settles it.
+							    and leaves its status alone; `submitDraft` settles it.
 							    Offering both when a name is present is what
 							    stops "@ana can you check this?" being recorded
 							    as the decision. */}
@@ -1133,7 +1212,7 @@ function ReadOnlySuggestedOptions({
 }
 
 /**
- * How many live answers were recorded AFTER the analysis was written.
+ * How many answers were recorded AFTER the analysis was written.
  *
  * The signal behind "your analysis is behind your answers", and shared because
  * it now has two readers: the Planning & Analysis tab, which owns the
@@ -1144,8 +1223,10 @@ function ReadOnlySuggestedOptions({
  * longer happens — but the notice still belongs on both, because it is about
  * answers, and answering happens here.
  *
- * The LIVE answer, not the first: amending appends a superseding reply, and
- * noticing the amendment is the whole point.
+ * The CURRENT answer (`liveAnswerReply`), not the first: amending appends a
+ * superseding reply, and noticing the amendment is the whole point. And only a
+ * USABLE one: an "Ask" note is not an answer, and a current answer saved empty
+ * records nothing a regeneration could fold in.
  *
  * BLOCKERS count too, not just questions. A blocker answer is the case that
  * most needs the prompt: the quote or the approval it records reaches the
@@ -1166,7 +1247,7 @@ export function countAnswersRecordedAfter(
 			return false;
 		}
 		const answer = liveAnswerReply(thread);
-		if (!answer) {
+		if (!answer || !hasUsableAnswer(answer)) {
 			return false;
 		}
 		const answeredAt = new Date(answer.createdAt).getTime();
@@ -1175,41 +1256,186 @@ export function countAnswersRecordedAfter(
 }
 
 /**
- * The LIVE answer on a thread: the NEWEST reply carrying content.
+ * The CURRENT answer on a thread, or `undefined`: the newest reply a member
+ * recorded as the answer — authored by a `USER`, status `RESOLVED` — by
+ * `createdAt`, then `id`.
  *
- * `.find()` — the first one — was correct while a question could only ever be
- * answered once. Amending appends a superseding reply rather than editing the
- * original, so the first reply is now the OLDEST answer and reading it would
- * show text the author has already replaced. `listTopicDecisions` returns
- * replies `createdAt asc`, so the last match is the current one.
+ * `currentAnswerReply` (`@repo/utils/publishing-restrictions`) is the rule and
+ * this is its web-shaped wrapper. The drafting prompts (`settledDecision`) and
+ * the amend guard (`amendTopicQuestionAnswer`) use the same rule, so the answer
+ * on screen, the answer the drafts are written from, and the reply an
+ * amendment must name are one reply.
  *
- * Exported because the Decision Log answers the same question about the same
- * threads, and two copies of this rule would diverge the first time either
- * moved — the log showing one answer while the tab beside it shows another is
- * exactly the confusion amending is supposed to remove.
+ * An "Ask" note is a `USER` reply with status `OPEN`, so it is never the
+ * answer; it renders under its question through `QuestionNotes`. A current
+ * answer saved blank IS returned — it is the reply an amendment supersedes —
+ * and a surface that needs its text checks `hasUsableAnswer`.
+ *
+ * Exported because the Decision Log and the blockers list answer the same
+ * question about the same threads.
  */
 export function liveAnswerReply(
 	thread: TopicDecisionThread,
 ): TopicDecisionThread["replies"][number] | undefined {
-	for (let i = thread.replies.length - 1; i >= 0; i--) {
-		const reply = thread.replies[i];
-		if (reply.content !== null && reply.content.trim().length > 0) {
-			return reply;
-		}
-	}
-	return undefined;
+	return currentAnswerReply(thread.replies) ?? undefined;
 }
 
-/** Every answer this thread has superseded, oldest first. */
+/**
+ * Whether a current answer carries text: not `null`, and not blank once
+ * trimmed.
+ *
+ * Only a historical row fails this — the answer and amend procedures refuse a
+ * whitespace-only answer — and on such a thread the answered card and the
+ * Decision Log say the latest answer is empty instead of showing an older one.
+ */
+export function hasUsableAnswer(
+	reply: TopicDecisionThread["replies"][number] | undefined,
+): boolean {
+	return (
+		reply !== undefined &&
+		reply.content !== null &&
+		reply.content.trim().length > 0
+	);
+}
+
+/**
+ * What an answer surface says in place of a current answer saved empty. The
+ * invitation only where an Amend control renders beside it.
+ */
+export function emptyAnswerText(canAmend: boolean): string {
+	return canAmend
+		? "The latest answer is empty — amend it to record one."
+		: "The latest answer is empty.";
+}
+
+/**
+ * Every earlier answer on this thread, oldest first (`listTopicDecisions`
+ * returns replies `createdAt asc`): the answers a member recorded — `USER`,
+ * `RESOLVED` — other than the current one, that carry text. A note is never a
+ * previous answer, and a blank historical answer has nothing to show.
+ */
 export function supersededAnswerReplies(
 	thread: TopicDecisionThread,
 ): TopicDecisionThread["replies"] {
-	const live = liveAnswerReply(thread);
+	const current = liveAnswerReply(thread);
 	return thread.replies.filter(
 		(r) =>
-			r.id !== live?.id &&
-			r.content !== null &&
-			r.content.trim().length > 0,
+			r.id !== current?.id &&
+			r.authorType === "USER" &&
+			r.status === "RESOLVED" &&
+			hasUsableAnswer(r),
+	);
+}
+
+/**
+ * The notes asked on a question, oldest first: replies authored by a `USER`
+ * with status `OPEN` and text — what `setTopicQuestionAssignees` writes for an
+ * "Ask", and nothing else writes. The one rule for a note.
+ */
+function questionNotes(
+	thread: TopicDecisionThread,
+): TopicDecisionThread["replies"] {
+	return thread.replies
+		.filter(
+			(r) =>
+				r.authorType === "USER" &&
+				r.status === "OPEN" &&
+				r.content !== null &&
+				r.content.trim().length > 0,
+		)
+		.sort((a, b) => {
+			const at = new Date(a.createdAt).getTime();
+			const bt = new Date(b.createdAt).getTime();
+			if (at !== bt) {
+				return at < bt ? -1 : 1;
+			}
+			return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+		});
+}
+
+/**
+ * The notes asked on a question, each with who asked and when.
+ *
+ * ALWAYS with the question — never in an answer's place, never struck through
+ * as a previous answer: a note asks somebody something, and that stays true
+ * after the question is answered. The open, set-aside and answered cards here
+ * and every decision card in the Decision Log render notes through this one
+ * component.
+ *
+ * In full, as plain text: the assignment notification cuts a note at 280
+ * characters and links to this question, so this is where the rest of it is
+ * read. `break-words` keeps a long unbroken token inside the card.
+ */
+export function QuestionNotes({ thread }: { thread: TopicDecisionThread }) {
+	const notes = questionNotes(thread);
+	if (notes.length === 0) {
+		return null;
+	}
+	return (
+		<ul aria-label="Notes on this question" className="space-y-2">
+			{notes.map((note) => {
+				const askedAt = new Date(note.createdAt);
+				return (
+					<li
+						key={note.id}
+						className="space-y-0.5 border-border border-l-2 pl-3"
+					>
+						<p className="text-muted-foreground text-xs">
+							Asked by{" "}
+							<AuthorLabel
+								authorType={note.authorType}
+								author={note.author}
+							/>{" "}
+							·{" "}
+							<time dateTime={askedAt.toISOString()}>
+								{askedAt.toLocaleString()}
+							</time>
+						</p>
+						<p className="whitespace-pre-wrap break-words text-muted-foreground text-sm leading-relaxed">
+							{note.content}
+						</p>
+					</li>
+				);
+			})}
+		</ul>
+	);
+}
+
+/**
+ * Who made a decision, or asked about one.
+ *
+ * "Team member" was a placeholder that reached production: the id was on the
+ * wire and the name never was, so every human decision in the log read as
+ * anonymous. The name is the point of a log — "who decided this" is most of
+ * what you come here to find out.
+ *
+ * The fallback stays for the two cases where there genuinely is no name: an
+ * author whose account has been removed (`authorUserId` is `ON DELETE SET
+ * NULL`, so the decision survives and the name does not), and a row minted
+ * before the relation was selected.
+ *
+ * Lives here rather than in the Decision Log because both tabs render it and
+ * the log already imports from this file; the reverse import would be a cycle.
+ */
+export function AuthorLabel({
+	authorType,
+	author,
+}: {
+	authorType: "USER" | "AGENT";
+	author?: { name: string } | null;
+}) {
+	if (authorType === "AGENT") {
+		return (
+			<span className="inline-flex items-center gap-1 font-medium text-foreground">
+				<SparklesIcon className="size-3" aria-hidden="true" />
+				AI
+			</span>
+		);
+	}
+	return (
+		<span className="font-medium text-foreground">
+			{author?.name ?? "Team member"}
+		</span>
 	);
 }
 
@@ -1234,8 +1460,11 @@ function AnsweredCard({
 	const [isEditing, setIsEditing] = useState(false);
 	const [draft, setDraft] = useState("");
 
+	// Trimmed, so a current answer saved blank opens an EMPTY editor: Save stays
+	// disabled until there is something to record, and the amendment names the
+	// blank reply it supersedes.
 	const openEditor = () => {
-		setDraft(answerReply?.content ?? "");
+		setDraft(answerReply?.content?.trim() ?? "");
 		setIsEditing(true);
 	};
 
@@ -1262,10 +1491,16 @@ function AnsweredCard({
 	};
 
 	return (
-		<li className="space-y-2 rounded-lg border border-border bg-card p-3">
+		<li
+			// The scroll target for a `#q-<rootId>` link, the open card's
+			// convention: the RAW root id, no prefix of its own.
+			data-question-anchor={root.id}
+			className="space-y-2 rounded-lg border border-border bg-card p-3"
+		>
 			<p className="text-foreground text-sm leading-relaxed">
 				{root.summary}
 			</p>
+			<QuestionNotes thread={thread} />
 			{isEditing && answerReply ? (
 				<div className="space-y-2">
 					<Textarea
@@ -1298,8 +1533,13 @@ function AnsweredCard({
 			) : (
 				<>
 					{answerReply ? (
-						<p className="text-muted-foreground text-sm leading-relaxed">
-							{answerReply.content}
+						<p
+							data-testid="decision-answer"
+							className="text-muted-foreground text-sm leading-relaxed"
+						>
+							{hasUsableAnswer(answerReply)
+								? answerReply.content
+								: emptyAnswerText(canEdit)}
 						</p>
 					) : null}
 					{/* Gated on an answer EXISTING as well as on `canEdit`:

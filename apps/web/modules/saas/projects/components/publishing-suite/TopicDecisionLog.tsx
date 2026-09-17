@@ -18,7 +18,11 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import {
+	AuthorLabel,
+	emptyAnswerText,
+	hasUsableAnswer,
 	liveAnswerReply,
+	QuestionNotes,
 	supersededAnswerReplies,
 	type TopicDecisionThread,
 	useAmendAnswer,
@@ -66,10 +70,9 @@ type Props = {
  *    table has a column for it, so no sentinel is needed.
  *
  * `POSSIBLY_RESOLVED` roots — soft-closed by reconciliation rather than
- * settled by anyone (see `reconcileTopicQuestions`) — are hidden from the
- * Summary & Questions tab, but the log is the full history, so they render
- * here with their own status marker instead of folding into Open or
- * Resolved.
+ * settled by anyone (see `reconcileTopicQuestions`) — render on Summary &
+ * Questions in their own collapsed group, and here with their own status
+ * marker instead of folding into Open or Resolved.
  */
 export function TopicDecisionLog({
 	threads,
@@ -252,11 +255,12 @@ function filterEmptyMessage(filter: Filter): string {
  * Still genuinely absent, unlike the maturation sibling: `sourceProvenance`.
  * There is no chip here saying which meeting or document a decision came from.
  *
- * An AMENDED question has more than one answering reply. The log is the
- * changelog, so it shows the live answer in the same place it always did and
- * the replaced ones beneath as history — the append-only record is the whole
- * reason amending supersedes rather than edits, and dropping the earlier turns
- * here would throw away what the log is for.
+ * An AMENDED question has more than one answer. The log is the changelog, so
+ * it shows the current answer (`liveAnswerReply`) in the same place it always
+ * did and the earlier ones beneath as history — the append-only record is the
+ * whole reason amending supersedes rather than edits. The notes asked on the
+ * question sit in the question's own column: they are not answers, current or
+ * previous.
  */
 function DecisionCard({
 	thread,
@@ -274,20 +278,24 @@ function DecisionCard({
 }) {
 	const root = thread.root;
 	const answer = liveAnswerReply(thread);
+	const usableAnswer = hasUsableAnswer(answer);
 	const superseded = supersededAnswerReplies(thread);
 	const createdAt = new Date(root.createdAt);
 	const [isEditing, setIsEditing] = useState(false);
 	const [draft, setDraft] = useState("");
 
 	/**
-	 * Amend a RESOLVED decision only, matching `DecisionLogPanel`.
+	 * Amend a RESOLVED QUESTION only.
 	 *
-	 * An answered-but-still-OPEN thread is one the product has not finished
-	 * with — a regeneration can still supersede it — so offering to amend it
-	 * invites an edit that the next run may discard. The default filter is
-	 * Resolved, which hid the asymmetry; on All and Open it was reachable.
+	 * RESOLVED, matching `DecisionLogPanel`: a question nobody has settled —
+	 * open or set aside — is answered on Summary & Questions, and
+	 * `amendTopicQuestionAnswer` refuses it as `not_found`. QUESTION, because
+	 * that function looks roots up by `kind: "QUESTION"`: a blocker's answer
+	 * renders here too, and a pencil on it failed with "Could not save your
+	 * answer" on every try.
 	 */
-	const canAmend = canEdit && root.status === "RESOLVED";
+	const canAmend =
+		canEdit && root.kind === "QUESTION" && root.status === "RESOLVED";
 
 	/**
 	 * Close on SUCCESS, never on submit — the rule `AnsweredCard` documents.
@@ -345,6 +353,9 @@ function DecisionCard({
 						{createdAt.toLocaleString()}
 					</time>
 				</div>
+				{/* In the QUESTION column, not beside it: a direct child of the
+				    grid <li> would be placed in the answer column. */}
+				<QuestionNotes thread={thread} />
 			</div>
 			{answer ? (
 				<div className="min-w-0 space-y-2 sm:border-border sm:border-l sm:pl-4">
@@ -382,9 +393,14 @@ function DecisionCard({
 						</>
 					) : (
 						<div className="flex items-start justify-between gap-2">
-							<div className="min-w-0">
+							<div
+								className="min-w-0"
+								data-testid="decision-answer"
+							>
 								<p className="text-foreground text-sm leading-relaxed">
-									{answer.content}
+									{usableAnswer
+										? answer.content
+										: emptyAnswerText(canAmend)}
 								</p>
 								{/* The DECISION's author, which is the one a
 								    reader is looking for. The root above is the
@@ -417,7 +433,10 @@ function DecisionCard({
 											className="shrink-0"
 											aria-label={`Amend the answer to "${root.subject ?? root.content ?? "this decision"}"`}
 											onClick={() => {
-												setDraft(answer.content ?? "");
+												setDraft(
+													answer.content?.trim() ??
+														"",
+												);
 												setIsEditing(true);
 											}}
 										>
@@ -497,41 +516,6 @@ function AiUpdateCard({ thread }: { thread: TopicDecisionThread }) {
 				{root.content}
 			</p>
 		</li>
-	);
-}
-
-/**
- * Who made a decision.
- *
- * "Team member" was a placeholder that reached production: the id was on the
- * wire and the name never was, so every human decision in the log read as
- * anonymous. The name is the point of a log — "who decided this" is most of
- * what you come here to find out.
- *
- * The fallback stays for the two cases where there genuinely is no name: an
- * author whose account has been removed (`authorUserId` is `ON DELETE SET
- * NULL`, so the decision survives and the name does not), and a row minted
- * before the relation was selected.
- */
-function AuthorLabel({
-	authorType,
-	author,
-}: {
-	authorType: "USER" | "AGENT";
-	author?: { name: string } | null;
-}) {
-	if (authorType === "AGENT") {
-		return (
-			<span className="inline-flex items-center gap-1 font-medium text-foreground">
-				<SparklesIcon className="size-3" aria-hidden="true" />
-				AI
-			</span>
-		);
-	}
-	return (
-		<span className="font-medium text-foreground">
-			{author?.name ?? "Team member"}
-		</span>
 	);
 }
 

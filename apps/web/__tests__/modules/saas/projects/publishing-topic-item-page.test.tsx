@@ -20,7 +20,7 @@
 
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	state,
@@ -63,6 +63,9 @@ const {
 		// source of truth for the Summary & Questions tab's questions moved
 		// here from the analysis blob above — see the FR39 block below.
 		decisionThreads: [] as Record<string, unknown>[],
+		// Whether the decision list is being refetched: a `#q-<id>` link opens
+		// the group of the list that arrives, not of a cached one.
+		decisionsFetching: false,
 		// 2B-1: the generation tab strip's own read. Fixture state, a
 		// default response AND an error response, because the component
 		// mounts this query unconditionally — a missing entry is not a
@@ -208,6 +211,7 @@ vi.mock("@tanstack/react-query", () => ({
 				data: { threads: state.decisionThreads },
 				isPending: false,
 				isLoading: false,
+				isFetching: state.decisionsFetching,
 				isError: false,
 				refetch: vi.fn(),
 			};
@@ -735,6 +739,7 @@ beforeEach(() => {
 	state.sourceAnalysisVersion = null;
 	state.aiCreatedAt = null;
 	state.decisionThreads = [];
+	state.decisionsFetching = false;
 	state.members = [];
 	state.membersPending = false;
 	state.membersError = false;
@@ -752,6 +757,10 @@ beforeEach(() => {
 	updateSummaryMutate.mockReset();
 	setNotesMutate.mockReset();
 	toastError.mockReset();
+});
+
+afterEach(() => {
+	window.location.hash = "";
 });
 
 describe("TopicItemPage — header", () => {
@@ -2240,6 +2249,36 @@ describe("TopicItemPage — the analysis is behind the answers", () => {
 		);
 	});
 
+	it("does not treat an Ask note on an open question as an answer", () => {
+		state.aiCreatedAt = new Date("2026-09-01T10:00:00Z");
+		const asked = answeredAt("2026-09-02T10:00:00Z");
+		state.decisionThreads = [
+			{
+				root: { ...asked.root, status: "OPEN" },
+				replies: asked.replies.map((r) => ({
+					...r,
+					status: "OPEN",
+					content: "@Sam Example can you confirm this?",
+				})),
+			},
+		];
+		const { unmount } = renderPage();
+
+		expect(
+			screen.queryByTestId("analysis-behind-decisions"),
+		).not.toBeInTheDocument();
+
+		// The control: the same question answered at the same time is counted.
+		unmount();
+		state.decisionThreads = [answeredAt("2026-09-02T10:00:00Z")];
+		renderPage();
+		expect(
+			screen.getByTestId("analysis-behind-decisions"),
+		).toHaveTextContent(
+			"1 answer was recorded after the analysis was written",
+		);
+	});
+
 	it("stays silent when every answer predates the analysis", () => {
 		state.aiCreatedAt = new Date("2026-09-03T10:00:00Z");
 		state.decisionThreads = [answeredAt("2026-09-02T10:00:00Z")];
@@ -2988,5 +3027,54 @@ describe("TopicItemPage — a summary edit makes the analysis stale too", () => 
 		expect(
 			screen.queryByTestId("analysis-behind-decisions"),
 		).not.toBeInTheDocument();
+	});
+});
+
+describe("TopicItemPage — a question link", () => {
+	const linkedQuestion = (status: "OPEN" | "RESOLVED") => ({
+		root: {
+			id: "decision-linked",
+			parentId: null,
+			kind: "QUESTION",
+			status,
+			authorType: "AGENT",
+			authorUserId: null,
+			questionId: "q-linked",
+			decisionKind: "CUSTOMER_NAME",
+			subject: "the customer name",
+			summary: "May we name the customer?",
+			content: null,
+			recommendedResponse: null,
+			answerSource: null,
+			analysisVersion: 1,
+			createdAt: new Date("2026-08-30T10:00:00Z"),
+			assignees: [],
+		},
+		replies: [],
+	});
+
+	it("opens the group of the list that arrives after a refetch, not of the cached one", () => {
+		window.location.hash = "#q-decision-linked";
+		state.decisionsFetching = true;
+		state.decisionThreads = [linkedQuestion("OPEN")];
+		const { rerender } = renderPage();
+
+		state.decisionsFetching = false;
+		state.decisionThreads = [linkedQuestion("RESOLVED")];
+		rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+
+		const answered = screen.getByRole("region", {
+			name: "Answered questions",
+		});
+		expect(
+			within(answered).getByRole("button", { name: /^answered/i }),
+		).toHaveAttribute("aria-expanded", "true");
 	});
 });

@@ -244,6 +244,79 @@ export interface SettledDecision {
 }
 
 /**
+ * A reply as `currentAnswerReply` reads it.
+ *
+ * Structural, so the web's thread shape (`createdAt` a string or a `Date`) and
+ * a stored row (`createdAt` a `Date`) both fit without this leaf package
+ * importing either.
+ */
+export interface AnswerReplyCandidate {
+	id: string;
+	createdAt: Date | string;
+	status: string;
+	authorType: string;
+	content: string | null;
+}
+
+/**
+ * The reply that is a decision thread's CURRENT answer, or `null`.
+ *
+ * The newest reply authored by a `USER` with status `RESOLVED` — newest by
+ * `createdAt`, then by `id` compared as UTF-16 code units, the total order
+ * `amendTopicQuestionAnswer` uses because two amendments can share a
+ * millisecond. Three readers share this one rule: `settledDecision` and
+ * `settledBlocker` (every drafting prompt and the planning analysis), the topic
+ * page's answer surfaces (`liveAnswerReply`), and — as the same predicate in a
+ * `where`, because a query cannot call a function — the amend guard in
+ * `amendTopicQuestionAnswer`.
+ *
+ * - An "Ask" note is NOT an answer. `setTopicQuestionAssignees` writes it as a
+ *   `USER` reply with status `OPEN`, on a root of any status, so a newer note
+ *   must never displace the answer it follows.
+ * - A blank or `null` reply IS returned. It is the reply an amendment has to
+ *   supersede; a caller that needs text checks the content itself.
+ * - The root is not read. Whether the thread is settled at all is the caller's
+ *   question.
+ *
+ * A `createdAt` that does not parse sorts as the oldest. No stored row carries
+ * one; the order is defined so that no input leaves it to the engine. The
+ * input array is not mutated.
+ */
+export function currentAnswerReply<R extends AnswerReplyCandidate>(
+	replies: readonly R[],
+): R | null {
+	let current: R | null = null;
+	for (const reply of replies) {
+		if (reply.authorType !== "USER" || reply.status !== "RESOLVED") {
+			continue;
+		}
+		if (current === null || isNewerReply(reply, current)) {
+			current = reply;
+		}
+	}
+	return current;
+}
+
+/** Whether `a` comes before `b` newest-first: a later `createdAt`, then a larger `id`. */
+function isNewerReply(
+	a: AnswerReplyCandidate,
+	b: AnswerReplyCandidate,
+): boolean {
+	const at = replyTime(a.createdAt);
+	const bt = replyTime(b.createdAt);
+	if (at !== bt) {
+		return at > bt;
+	}
+	return a.id > b.id;
+}
+
+/** Milliseconds since the epoch; a value that does not parse is the oldest possible. */
+function replyTime(value: Date | string): number {
+	const time = new Date(value).getTime();
+	return Number.isNaN(time) ? Number.NEGATIVE_INFINITY : time;
+}
+
+/**
  * The decision a PERSON settled on this thread, or `null`.
  *
  * Who authors each half: the SUBJECT is model-authored (the planning analysis
@@ -257,21 +330,23 @@ export interface SettledDecision {
  *   it for questions nobody answered ("still awaiting a person", in the
  *   writer's own words); `REJECTED`, `FORMATTING_ONLY` and `OPEN` are not
  *   settled by a person either.
- * - some reply is authored by a `USER`, has status `RESOLVED`, and carries
- *   non-blank content. The reply STATUS matters: `answerTopicQuestion` and
- *   `amendTopicQuestionAnswer` write `RESOLVED`, while `setTopicQuestionAssignees`
- *   appends an assignment note as a `USER` reply with status `OPEN` — and can
- *   do so on a root that is already `RESOLVED`, so "the newest USER reply" can
- *   be a note rather than the answer.
+ * - its current answer — `currentAnswerReply`: the newest reply authored by a
+ *   `USER` with status `RESOLVED` — carries non-blank content. The reply STATUS
+ *   matters: `answerTopicQuestion` and `amendTopicQuestionAnswer` write
+ *   `RESOLVED`, while `setTopicQuestionAssignees` appends an assignment note as
+ *   a `USER` reply with status `OPEN` — and can do so on a root that is already
+ *   `RESOLVED`, so "the newest USER reply" can be a note rather than the answer.
  *
  * "Newest" is `createdAt` descending, then `id` descending — the same total
  * order `amendTopicQuestionAnswer` uses, because two amendments can share a
- * millisecond. The helper sorts; it does not trust arrival order. A blank
- * newest reply returns `null` rather than falling back to an older one: a
- * newer blank answer means the older one was superseded, and presenting a
+ * millisecond; `currentAnswerReply` orders, it does not trust arrival order. A
+ * blank current answer returns `null` rather than falling back to an older one:
+ * a newer blank answer means the older one was superseded, and presenting a
  * superseded answer as settled is the failure this helper must not cause. The
  * write procedures now refuse a whitespace-only answer at the input boundary,
- * so a blank reply reaching here can only be a historical row.
+ * so a blank reply reaching here can only be a historical row. The result is
+ * the same as before that rule moved into `currentAnswerReply` for every thread
+ * whose `createdAt` values are valid dates, which every stored row's are.
  *
  * `settledBlocker` below is the same computation for a `BLOCKER` root; the two
  * are separate exports so that widening one does not widen the other.
@@ -311,8 +386,8 @@ export function settledBlocker(
 }
 
 /**
- * The shared body of the two above: a root of `kind`, `RESOLVED`, plus the
- * newest reply a member actually wrote.
+ * The shared body of the two above: a root of `kind`, `RESOLVED`, plus the text
+ * of its current answer (`currentAnswerReply`).
  *
  * Kept private so there is still exactly one implementation of "settled" —
  * the property `settled-decision-usage.test.ts` polices — while the two
@@ -326,31 +401,18 @@ function settledRootOfKind(
 	if (root.kind !== kind || root.status !== "RESOLVED") {
 		return null;
 	}
-	const newestFirst = [...thread.replies].sort((a, b) => {
-		const byTime = b.createdAt.getTime() - a.createdAt.getTime();
-		if (byTime !== 0) {
-			return byTime;
-		}
-		return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
-	});
-	for (const reply of newestFirst) {
-		if (reply.authorType !== "USER" || reply.status !== "RESOLVED") {
-			continue;
-		}
-		// The newest USER/RESOLVED reply decides the outcome outright: a blank
-		// one returns null here rather than letting the loop continue to an
-		// older reply (see docblock above).
-		const answer = reply.content?.trim();
-		if (!answer) {
-			return null;
-		}
-		return {
-			subject: root.subject,
-			decisionKind: root.decisionKind ?? "OTHER",
-			answer,
-		};
+	// The current answer decides the outcome outright: a blank or `null` one
+	// returns null here rather than reviving an older reply (see the docblock
+	// on `settledDecision`).
+	const answer = currentAnswerReply(thread.replies)?.content?.trim();
+	if (!answer) {
+		return null;
 	}
-	return null;
+	return {
+		subject: root.subject,
+		decisionKind: root.decisionKind ?? "OTHER",
+		answer,
+	};
 }
 
 /**
