@@ -64,6 +64,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	},
 }));
 
+import type { ConnectCliPurpose } from "../ConnectCliDialog";
 import { ConnectCliDialog } from "../ConnectCliDialog";
 
 const ORGANIZATION_ID = "org-hosting-the-project";
@@ -111,9 +112,11 @@ function Wrapper({ children }: { children: ReactNode }) {
 function Host({
 	startOpen = false,
 	eligible = true,
+	purpose,
 }: {
 	startOpen?: boolean;
 	eligible?: boolean;
+	purpose?: ConnectCliPurpose;
 }) {
 	const [open, setOpen] = useState(startOpen);
 
@@ -130,12 +133,16 @@ function Host({
 				organizationId={ORGANIZATION_ID}
 				organizationSlug={ORGANIZATION_SLUG}
 				projectName={PROJECT_NAME}
+				purpose={purpose}
 			/>
 		</>
 	);
 }
 
-function renderHost(props?: { startOpen?: boolean }) {
+function renderHost(props?: {
+	startOpen?: boolean;
+	purpose?: ConnectCliPurpose;
+}) {
 	return render(<Host {...props} />, { wrapper: Wrapper });
 }
 
@@ -435,6 +442,45 @@ describe("ConnectCliDialog — the starter instruction", () => {
 			screen.getByRole("button", { name: /copy instruction/i }),
 		);
 		expect(clipboardWrite).toHaveBeenCalledWith(text);
+	});
+
+	/**
+	 * `purpose` changes only which sentence is built — everything else about
+	 * the dialog (mint, scopes, configuration) is identical. Pinned here so a
+	 * future edit to one sentence cannot silently change the other's wording.
+	 */
+	it("renders the original project-context sentence, byte-for-byte, when no purpose is given", async () => {
+		const user = setupUser();
+		renderHost({ startOpen: true });
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+
+		const instruction = await screen.findByTestId(
+			"connect-cli-starter-instruction",
+		);
+		expect(instruction).toHaveTextContent(
+			`Use the Fabric MCP server to load the context for the project "${PROJECT_NAME}" and help me work on it.`,
+		);
+	});
+
+	it('renders the coding-instructions sentence for purpose="coding-instructions"', async () => {
+		const user = setupUser();
+		renderHost({ startOpen: true, purpose: "coding-instructions" });
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+
+		const instruction = await screen.findByTestId(
+			"connect-cli-starter-instruction",
+		);
+		expect(instruction).toHaveTextContent(
+			`Use the Fabric MCP server to load the published coding instructions for the project "${PROJECT_NAME}" and follow them while you help me work on it.`,
+		);
+		// Still one sentence, same shape as the default.
+		const text = instruction.textContent ?? "";
+		expect(text.match(/\./g) ?? []).toHaveLength(1);
+		expect(text).not.toContain("\n");
 	});
 
 	/**

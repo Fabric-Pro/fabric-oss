@@ -2,6 +2,8 @@
 
 import type { InstructionRejection } from "@repo/database";
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
+import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { ConnectCliDialog } from "@saas/projects/components/cli-connection/ConnectCliDialog";
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -10,6 +12,7 @@ import {
 	CheckIcon,
 	DownloadIcon,
 	HistoryIcon,
+	PlugIcon,
 	SettingsIcon,
 	UploadIcon,
 } from "lucide-react";
@@ -70,12 +73,15 @@ function reasonLabel(
  */
 export function InstructionsPublishedView({
 	projectId,
+	projectName,
 	published,
 	snapshots,
 	onReplaceClick,
 	onChanged,
 }: {
 	projectId: string;
+	/** Named in the "Connect your agent" starter instruction. */
+	projectName: string;
 	published: InstructionsSnapshot | null;
 	snapshots: InstructionsSnapshot[];
 	onReplaceClick: () => void;
@@ -85,6 +91,16 @@ export function InstructionsPublishedView({
 	const [selected, setSelected] = useState<string | null>(null);
 	const [historyOpen, setHistoryOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [connectOpen, setConnectOpen] = useState(false);
+	// Mirrors ProjectReadinessPanel: minting must fail closed. With no
+	// organization id there is nothing to mint the key against. An invited
+	// guest views this project under the HOST organization's thin record
+	// (`isGuest: true`) — they have no membership row there, so the create
+	// procedure's host-membership check (packages/api/modules/organizations/procedures/api-keys/create.ts)
+	// would refuse them; hide the action instead of surfacing a FORBIDDEN.
+	const { organizationId, organizationSlug, isGuest } =
+		useOrganizationContext();
+	const canConnectAgent = Boolean(organizationId) && !isGuest;
 
 	const newest = snapshots[0] ?? null;
 	const newerThanPublished =
@@ -223,6 +239,20 @@ export function InstructionsPublishedView({
 						<SettingsIcon className="size-4" aria-hidden="true" />
 						{t("settingsButton")}
 					</Button>
+					{/* Fails closed: with no organization id there is nothing
+					    to mint the key against, and an invited guest has no
+					    membership row in the host organization to mint one
+					    with either (mirrors ProjectReadinessPanel). */}
+					{canConnectAgent ? (
+						<Button
+							variant="outline"
+							data-onboarding-target="coding-instructions-connect"
+							onClick={() => setConnectOpen(true)}
+						>
+							<PlugIcon className="size-4" aria-hidden="true" />
+							{t("connectButton")}
+						</Button>
+					) : null}
 					<Button onClick={onReplaceClick}>
 						<UploadIcon className="size-4" aria-hidden="true" />
 						{published ? t("replaceButton") : t("uploadButton")}
@@ -305,6 +335,16 @@ export function InstructionsPublishedView({
 				open={settingsOpen}
 				onOpenChange={setSettingsOpen}
 			/>
+			{canConnectAgent && organizationId ? (
+				<ConnectCliDialog
+					open={connectOpen}
+					onOpenChange={setConnectOpen}
+					organizationId={organizationId}
+					organizationSlug={organizationSlug ?? undefined}
+					projectName={projectName}
+					purpose="coding-instructions"
+				/>
+			) : null}
 		</div>
 	);
 }

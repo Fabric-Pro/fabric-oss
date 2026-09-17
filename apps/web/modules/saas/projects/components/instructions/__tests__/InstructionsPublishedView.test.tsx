@@ -15,7 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 function resolve(path: string): unknown {
 	return path.split(".").reduce<unknown>((node, key) => {
@@ -60,6 +60,43 @@ vi.mock("next-intl", () => ({
 // PUBLISHING_SUITE value itself is irrelevant to this page's tour.
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 	useFeatureFlag: () => false,
+}));
+
+/**
+ * Controllable per test, mirroring `ProjectReadinessPanel`'s own tests: the
+ * "Connect your agent" button fails closed on `organizationId`, so both the
+ * present and absent case need to be driven from here rather than a fixed
+ * mock.
+ */
+const orgContextState = vi.hoisted(() => ({
+	organizationId: "org-hosting-the-project" as string | null,
+	organizationSlug: "example-org" as string | null,
+	isGuest: false,
+}));
+
+vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useOrganizationContext: () => ({
+		organizationId: orgContextState.organizationId,
+		organizationSlug: orgContextState.organizationSlug,
+		isGuest: orgContextState.isGuest,
+	}),
+}));
+
+/**
+ * `ConnectCliDialog` mints a real key and renders a live credential — none of
+ * that belongs to this suite, which only has to prove the button opens it
+ * with the right purpose and project name (the dialog's own contract is
+ * pinned by `ConnectCliDialog.test.tsx`).
+ */
+const connectCliDialogProps: Array<Record<string, unknown>> = [];
+vi.mock("@saas/projects/components/cli-connection/ConnectCliDialog", () => ({
+	ConnectCliDialog: (props: Record<string, unknown>) => {
+		connectCliDialogProps.push(props);
+		if (!props.open) {
+			return null;
+		}
+		return <div data-testid="connect-cli-dialog-stub" />;
+	},
 }));
 
 const finalizeCalls: Array<Record<string, unknown>> = [];
@@ -144,6 +181,13 @@ function TestQueryProvider({ children }: { children: ReactNode }) {
 	);
 }
 
+beforeEach(() => {
+	orgContextState.organizationId = "org-hosting-the-project";
+	orgContextState.organizationSlug = "example-org";
+	orgContextState.isGuest = false;
+	connectCliDialogProps.length = 0;
+});
+
 describe("InstructionsPublishedView", () => {
 	it("states the published version in one sentence and shows the rejected banner for a newer rejected upload", async () => {
 		const rejection: InstructionRejection[] = [
@@ -157,6 +201,7 @@ describe("InstructionsPublishedView", () => {
 		render(
 			<InstructionsPublishedView
 				projectId="p"
+				projectName="Checkout Rewrite"
 				published={
 					{
 						id: "s7",
@@ -211,6 +256,7 @@ describe("InstructionsPublishedView", () => {
 		render(
 			<InstructionsPublishedView
 				projectId="p"
+				projectName="Checkout Rewrite"
 				published={null}
 				snapshots={
 					[
@@ -253,6 +299,7 @@ describe("InstructionsPublishedView", () => {
 		render(
 			<InstructionsPublishedView
 				projectId="p"
+				projectName="Checkout Rewrite"
 				published={
 					{
 						id: "s7",
@@ -298,6 +345,7 @@ describe("InstructionsPublishedView", () => {
 		render(
 			<InstructionsPublishedView
 				projectId="p"
+				projectName="Checkout Rewrite"
 				published={null}
 				snapshots={
 					[
@@ -319,5 +367,95 @@ describe("InstructionsPublishedView", () => {
 		);
 		expect(screen.queryByRole("alert")).toBeNull();
 		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+	});
+});
+
+/**
+ * The "Connect your agent" button fails closed on `organizationId` the same
+ * way `ProjectReadinessPanel`'s own issuing view does (there is nothing to
+ * mint a key against without one), and opens `ConnectCliDialog` with
+ * `purpose="coding-instructions"` so its starter sentence names the
+ * published instructions rather than general project context.
+ */
+describe("InstructionsPublishedView — connect your agent", () => {
+	function renderPublished() {
+		return render(
+			<InstructionsPublishedView
+				projectId="p"
+				projectName="Checkout Rewrite"
+				published={
+					{
+						id: "s7",
+						version: 7,
+						status: "READY",
+						fileCount: 4,
+						excludedCount: 0,
+						createdAt: new Date(),
+						source: "UPLOAD",
+						user: { id: "u", name: "A. Member" },
+					} as never
+				}
+				snapshots={[] as never}
+				onReplaceClick={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+	}
+
+	it("renders the button when an organization id is present and opens the dialog with the coding-instructions purpose and project name", async () => {
+		const user = userEvent.setup();
+		renderPublished();
+
+		const button = screen.getByRole("button", {
+			name: "Connect your agent",
+		});
+		expect(button).toHaveAttribute(
+			"data-onboarding-target",
+			"coding-instructions-connect",
+		);
+		expect(
+			screen.queryByTestId("connect-cli-dialog-stub"),
+		).not.toBeInTheDocument();
+
+		await user.click(button);
+
+		expect(
+			screen.getByTestId("connect-cli-dialog-stub"),
+		).toBeInTheDocument();
+		const lastProps =
+			connectCliDialogProps[connectCliDialogProps.length - 1];
+		expect(lastProps).toMatchObject({
+			open: true,
+			organizationId: "org-hosting-the-project",
+			organizationSlug: "example-org",
+			projectName: "Checkout Rewrite",
+			purpose: "coding-instructions",
+		});
+	});
+
+	it("does not render the button when there is no organization id", () => {
+		orgContextState.organizationId = null;
+		renderPublished();
+
+		expect(
+			screen.queryByRole("button", { name: "Connect your agent" }),
+		).not.toBeInTheDocument();
+	});
+
+	// An invited cross-organization project guest views this project under
+	// the HOST organization's thin record, so `organizationId` is truthy but
+	// there is no membership row for the guest in that organization — the
+	// create procedure's host-membership check would refuse them.
+	it("does not render the button or mount the dialog for an invited guest", () => {
+		orgContextState.isGuest = true;
+		renderPublished();
+
+		expect(
+			screen.queryByRole("button", { name: "Connect your agent" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByTestId("connect-cli-dialog-stub"),
+		).not.toBeInTheDocument();
 	});
 });

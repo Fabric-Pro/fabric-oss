@@ -1483,7 +1483,10 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 							<ProjectContextsList projectId={projectId} />
 						)}
 						{activeTab === "coding-instructions" && (
-							<CodingInstructionsTab projectId={projectId} />
+							<CodingInstructionsTab
+								projectId={projectId}
+								projectName={project.name}
+							/>
 						)}
 						{activeTab === "diagrams" && (
 							<DiagramsList projectId={projectId} />
