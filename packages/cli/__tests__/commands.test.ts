@@ -862,6 +862,65 @@ describe("fabric instructions init", () => {
 		expect(result.stdout).toContain("does not edit .gitignore");
 	});
 
+	it("does not write a hook when the first published sync fails", async () => {
+		const dest = await makeTree();
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: snapshotFor([manifestEntry("AGENTS.md", "hello\n")]),
+			manifest: [manifestEntry("AGENTS.md", "hello\n")],
+		});
+		mocks.createDownloadUrl.mockRejectedValue(new Error("unavailable"));
+
+		const result = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"claude-code",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).not.toBe(0);
+		await expect(
+			stat(path.join(dest, ".claude", "settings.local.json")),
+		).rejects.toThrow();
+	});
+
+	it("refuses a repository switch during the first sync before writing a hook", async () => {
+		const dest = await makeTree();
+		mocks.getPublished
+			.mockResolvedValueOnce({
+				published: true,
+				sourceOfTruth: "UPLOAD",
+				snapshot: snapshotFor([]),
+				manifest: [],
+			})
+			.mockResolvedValueOnce({
+				published: true,
+				sourceOfTruth: "REPOSITORY",
+				snapshot: snapshotFor([]),
+				manifest: [],
+			});
+
+		const result = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"claude-code",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain("come from its repository");
+		await expect(
+			stat(path.join(dest, ".claude", "settings.local.json")),
+		).rejects.toThrow();
+	});
+
 	it("writes a sync hook with --apply", async () => {
 		const dest = await makeTree();
 		mocks.getPublished.mockResolvedValue({

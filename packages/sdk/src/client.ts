@@ -24,7 +24,7 @@ import {
 	FabricNotFoundError,
 } from "./types.js";
 
-const DEFAULT_BASE_URL = "https://app.fabricai.com";
+const DEFAULT_BASE_URL = "https://fabric.pro";
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_RETRY: Required<FabricRetryOptions> = {
 	maxRetries: 2,

@@ -251,7 +251,7 @@ export interface FabricTelemetryEvent {
 export interface FabricClientOptions {
 	/** API key (fab_* or org_*). Falls back to FABRIC_API_KEY env var. */
 	apiKey?: string;
-	/** Base URL of the Fabric instance. Defaults to https://app.fabricai.com (override via FABRIC_BASE_URL) */
+	/** Base URL of the Fabric instance. Defaults to https://fabric.pro (override via FABRIC_BASE_URL). */
 	baseUrl?: string;
 	/** Default org slug applied to every request unless overridden per-call. Falls back to FABRIC_ORG. Mutually exclusive with `personal`. */
 	org?: string;

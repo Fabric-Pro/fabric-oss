@@ -1,6 +1,14 @@
+import path from "node:path";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+	resolve: {
+		alias: {
+			// Match tsconfig's workspace mapping so a clean checkout does not need
+			// a prebuilt SDK dist directory before the CLI unit tests can load.
+			"@fabricorg/sdk": path.resolve(__dirname, "../sdk/src/index.ts"),
+		},
+	},
 	test: {
 		globals: true,
 		environment: "node",
