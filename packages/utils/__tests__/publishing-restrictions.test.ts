@@ -195,7 +195,7 @@ describe("restrictsPostType — Stakeholder Email (Phase 2C slice 2)", () => {
 		// pins it as a decision rather than an omission. An email to a sponsor
 		// is not where a codebase detail leaks — the format pushes toward
 		// business value already, and the disclosure rule in the locked clauses
-		// covers the residue. Listing it would add a third entry to "open
+		// covers the residue. Listing it would add a third entry to "unresolved
 		// questions that constrain this type" on nearly every technical topic,
 		// for a risk this format does not run, and over-warning is how a reader
 		// learns to skip the two warnings that do apply.

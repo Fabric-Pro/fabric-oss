@@ -102,7 +102,7 @@ const BUILDERS = [
 			buildCaseStudyLockedClauses({ restrictedSubjects: subjects }),
 	},
 	{
-		name: "buildCaseStudyLockedClauses (open questions)",
+		name: "buildCaseStudyLockedClauses (unresolved questions)",
 		build: (subjects: string[]) =>
 			buildCaseStudyLockedClauses({ openQuestionSubjects: subjects }),
 	},
@@ -120,7 +120,7 @@ const BUILDERS = [
 			}),
 	},
 	{
-		name: "buildStakeholderEmailLockedClauses (open questions)",
+		name: "buildStakeholderEmailLockedClauses (unresolved questions)",
 		build: (subjects: string[]) =>
 			buildStakeholderEmailLockedClauses({
 				openQuestionSubjects: subjects,
@@ -134,7 +134,7 @@ const BUILDERS = [
 			buildWebinarScriptLockedClauses({ restrictedSubjects: subjects }),
 	},
 	{
-		name: "buildWebinarScriptLockedClauses (open questions)",
+		name: "buildWebinarScriptLockedClauses (unresolved questions)",
 		build: (subjects: string[]) =>
 			buildWebinarScriptLockedClauses({ openQuestionSubjects: subjects }),
 	},
@@ -148,7 +148,7 @@ const BUILDERS = [
 			buildNewsletterBlurbLockedClauses({ restrictedSubjects: subjects }),
 	},
 	{
-		name: "buildNewsletterBlurbLockedClauses (open questions)",
+		name: "buildNewsletterBlurbLockedClauses (unresolved questions)",
 		build: (subjects: string[]) =>
 			buildNewsletterBlurbLockedClauses({
 				openQuestionSubjects: subjects,
@@ -156,7 +156,7 @@ const BUILDERS = [
 	},
 ] as const;
 
-/** Strip a " (restricted)" / " (open questions)" suffix back to the function name. */
+/** Strip a " (restricted)" / " (unresolved questions)" suffix back to the function name. */
 function baseBuilderName(displayName: string): string {
 	return displayName.replace(/ \(.*\)$/, "");
 }
@@ -193,9 +193,9 @@ describe("a thread subject cannot add a line to the locked clauses", () => {
 	}
 
 	// MEASURED, not guessed. The approvals paragraph is byte-identical in all six
-	// writers. The open-questions paragraph shares its first two sentences across
-	// all four fenced writers and then diverges per content type at "Where one of
-	// them decides ...", so the constant stops at the last common sentence
+	// writers. The unresolved-questions paragraph shares its first two sentences
+	// across all four fenced writers and then diverges per content type at "Where
+	// one of them decides ...", so the constant stops at the last common sentence
 	// boundary - the MAXIMAL common prefix, not a short fragment.
 	const APPROVALS_CONTRACT =
 		"The following are NOT approved for use. Write around each one: generalize it, use a neutral placeholder, or leave it out. Do not assert any of them, and do not imply approval was given. Say in your safety note which ones shaped the draft.";
@@ -245,17 +245,17 @@ describe("a thread subject cannot add a line to the locked clauses", () => {
 			// FOLDED and KIND-FALLBACK rather than "copied verbatim" (which was
 			// false — Fix round 1, Finding A).
 			expect(flat).toContain(
-				name.includes("open questions")
+				name.includes("unresolved questions")
 					? OPEN_QUESTIONS_LABEL_CONTRACT
 					: APPROVALS_LABEL_CONTRACT,
 			);
 
 			// The block's OWN contract, which the typing sentence does not imply.
-			// Entries are named "...LockedClauses (restricted)" / "(open questions)";
+			// Entries are named "...LockedClauses (restricted)" / "(unresolved questions)";
 			// the two writers with no suffix have only an approvals block, so the
 			// default arm is correct for them.
 			expect(flat).toContain(
-				name.includes("open questions")
+				name.includes("unresolved questions")
 					? OPEN_QUESTIONS_CONTRACT
 					: APPROVALS_CONTRACT,
 			);
@@ -365,7 +365,7 @@ describe("a thread subject cannot add a line to the locked clauses", () => {
 	// added to `BUILDERS` without a matching `neutralizeSourceDataMarkers` call
 	// fails those cases the moment it is added, rather than depending on
 	// someone remembering to also add it to a third, separate array that
-	// nothing else reads — which is exactly how the open-questions block of
+	// nothing else reads — which is exactly how the unresolved-questions block of
 	// Case Study and Stakeholder Email went untested below despite both
 	// builders being fully "covered" and "discovered" elsewhere in this file. A
 	// builder that genuinely does not fence is exempted HERE, by name, with the
@@ -385,7 +385,7 @@ describe("a thread subject cannot add a line to the locked clauses", () => {
 	// so both clause blocks of a fenced builder are enumerated separately —
 	// covering one and not the other would leave that block carrying a live
 	// marker with nothing red, which is exactly what happened to the
-	// open-questions block of Case Study and Stakeholder Email before this
+	// unresolved-questions block of Case Study and Stakeholder Email before this
 	// case existed: the marker property previously lived in a hand-written,
 	// two-entry array that tested only `restrictedSubjects` for each.
 	//

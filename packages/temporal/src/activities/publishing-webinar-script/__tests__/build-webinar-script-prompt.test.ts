@@ -6,13 +6,13 @@ import {
 import { PUBLISHING_WEBINAR_SCRIPT_FALLBACK_BODY } from "@repo/utils/publishing-webinar-script-prompt";
 import { describe, expect, it } from "vitest";
 import {
-	buildWebinarScriptLockedClauses,
-	buildWebinarScriptPrompt,
-} from "../build-webinar-script-prompt";
-import {
 	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
 	SETTLED_DECISIONS_HEADING,
 } from "../../publishing-shared/settled-approvals";
+import {
+	buildWebinarScriptLockedClauses,
+	buildWebinarScriptPrompt,
+} from "../build-webinar-script-prompt";
 
 /**
  * The pure half of Webinar / Demo Script generation (Fizzy #1988, Phase 2D
@@ -55,7 +55,7 @@ describe("buildWebinarScriptLockedClauses", () => {
 		expect(clauses).toMatch(/^## Rules that override anything above/);
 		expect(clauses).not.toContain("Unresolved approvals for this topic");
 		expect(clauses).not.toContain(
-			"Open questions that constrain this content type",
+			"Unresolved questions that constrain this content type",
 		);
 	});
 
@@ -66,19 +66,20 @@ describe("buildWebinarScriptLockedClauses", () => {
 		expect(clauses).toContain("Unresolved approvals for this topic");
 		expect(clauses).toContain('- "Customer name: example-org"');
 		expect(clauses).not.toContain(
-			"Open questions that constrain this content type",
+			"Unresolved questions that constrain this content type",
 		);
 	});
 
-	it("renders the open-questions block only when one is given", () => {
+	it("renders the unresolved-questions block only when one is given", () => {
 		const clauses = buildWebinarScriptLockedClauses({
 			openQuestionSubjects: ["Audience scope"],
 		});
 		expect(clauses).toContain(
-			"Open questions that constrain this content type",
+			"Unresolved questions that constrain this content type",
 		);
 		expect(clauses).toContain('- "Audience scope"');
 		expect(clauses).not.toContain("Unresolved approvals for this topic");
+		expect(clauses).not.toContain("Open questions that constrain");
 	});
 
 	it("renders BOTH blocks together, restricted first", () => {
@@ -87,7 +88,7 @@ describe("buildWebinarScriptLockedClauses", () => {
 			openQuestionSubjects: ["Audience scope"],
 		});
 		expect(clauses.indexOf("Unresolved approvals")).toBeLessThan(
-			clauses.indexOf("Open questions that constrain"),
+			clauses.indexOf("Unresolved questions that constrain"),
 		);
 	});
 
@@ -122,7 +123,7 @@ describe("buildWebinarScriptLockedClauses", () => {
 		// with no worksheet renders none of it. This locked clause is the
 		// unconditional floor an org override cannot remove — it must be
 		// present in the bare, no-argument call, not only when a restriction
-		// or an open question happens to be in play.
+		// or an unresolved question happens to be in play.
 		const clauses = buildWebinarScriptLockedClauses();
 		expect(clauses).toMatch(/generalize any risk or sensitivity/i);
 	});
@@ -254,7 +255,7 @@ describe("buildWebinarScriptLockedClauses — the settled-decisions block", () =
 			"## Unresolved approvals for this topic",
 		);
 		const open = clauses.indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		const settled = clauses.indexOf(SETTLED_DECISIONS_HEADING);
 

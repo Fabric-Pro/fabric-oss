@@ -289,18 +289,19 @@ describe("buildStakeholderEmailLockedClauses", () => {
 		expect(clauses).toContain("Customer name: example-org");
 	});
 
-	it("names the open questions under their own block", () => {
+	it("names the unresolved questions under their own block", () => {
 		const clauses = buildStakeholderEmailLockedClauses({
 			openQuestionSubjects: ["Who this update is addressed to"],
 		});
 		expect(clauses).toMatch(
-			/Open questions that constrain this content type/,
+			/Unresolved questions that constrain this content type/,
 		);
 		expect(clauses).toMatch(/These are unsettled/);
 		expect(clauses).toContain("Who this update is addressed to");
+		expect(clauses).not.toContain("Open questions that constrain");
 	});
 
-	it("puts an AUDIENCE_SCOPE subject under open questions and NEVER under 'NOT approved for use'", () => {
+	it("puts an AUDIENCE_SCOPE subject under unresolved questions and NEVER under 'NOT approved for use'", () => {
 		// THE point of the split, and it bites harder here than on the case
 		// study. "Audience scope" under the subject-shaped block reads as "write
 		// around it, generalize it, or leave it out" — which instructs the model
@@ -313,7 +314,7 @@ describe("buildStakeholderEmailLockedClauses", () => {
 		});
 
 		const openHeading = clauses.indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		const restrictedHeading = clauses.indexOf(
 			"## Unresolved approvals for this topic",
@@ -348,7 +349,7 @@ describe("buildStakeholderEmailLockedClauses", () => {
 	it("omits each block entirely when its list is empty", () => {
 		const clauses = buildStakeholderEmailLockedClauses();
 		expect(clauses).not.toMatch(/Unresolved approvals/);
-		expect(clauses).not.toMatch(/Open questions that constrain/);
+		expect(clauses).not.toMatch(/Unresolved questions that constrain/);
 	});
 
 	it("ignores blank subjects rather than emitting an empty bullet", () => {
@@ -357,7 +358,7 @@ describe("buildStakeholderEmailLockedClauses", () => {
 			openQuestionSubjects: [""],
 		});
 		expect(clauses).not.toMatch(/Unresolved approvals/);
-		expect(clauses).not.toMatch(/Open questions that constrain/);
+		expect(clauses).not.toMatch(/Unresolved questions that constrain/);
 	});
 });
 
@@ -959,7 +960,7 @@ describe("buildStakeholderEmailLockedClauses — the settled-decisions block", (
 			"## Unresolved approvals for this topic",
 		);
 		const open = clauses.indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		const settled = clauses.indexOf(SETTLED_DECISIONS_HEADING);
 

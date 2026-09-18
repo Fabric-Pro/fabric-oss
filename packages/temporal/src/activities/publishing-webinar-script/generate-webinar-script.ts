@@ -424,9 +424,9 @@ export async function generateWebinarScriptActivity(
 	// model call clear a draft that was written as though it were still
 	// unresolved (or flag one that was not).
 	//
-	// Restricted subjects only, not open questions: an unsettled question about
-	// framing or technical depth is not a claim about whether an asset exists
-	// and may be used.
+	// Restricted subjects only, not unresolved questions: an unsettled question
+	// about framing or technical depth is not a claim about whether an asset
+	// exists and may be used.
 	const document = { ...parsed.data };
 	const clamped: PublishingClampRecord = {};
 	const assetClamp = clampConfirmedAssets({

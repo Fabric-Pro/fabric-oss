@@ -394,7 +394,7 @@ describe("resolveGenerationTabStates — needsAttention", () => {
 		// without an independent marker the tab would stop warning the moment a
 		// draft existed — and 2A mints NO question for `deferred`
 		// (`resolveConfirmationQuestions` derives only from `needsConfirmation`
-		// and `requiresApproval`), so a marker keyed on open questions alone
+		// and `requiresApproval`), so a marker keyed on unresolved questions alone
 		// would show nothing here at all.
 		const states = statesFor({
 			analysis: analysisWith({
@@ -647,7 +647,7 @@ describe("resolveRestrictions", () => {
 	//
 	// `GenerationPanel` builds its own per-panel LIST from `restrictsPostType`;
 	// this is the other half, and neither substitutes for the other. Shipping
-	// only the list left the panel warning about an open CLAIM_STRENGTH question
+	// only the list left the panel warning about an unresolved CLAIM_STRENGTH question
 	// while the tab strip beside it read a plain "Available" — under-warning at
 	// the one level whose stated purpose is to be seen on a tab the reader has
 	// NOT opened.

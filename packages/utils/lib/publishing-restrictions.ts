@@ -64,8 +64,8 @@ export function isUnresolvedDecisionStatus(status: string): boolean {
  * A per-thread predicate, and it must stay one. An earlier version of the panel
  * filtered on the AGGREGATED "is anything restricted" flag — a property of the
  * whole thread set — so the moment any safety-critical question existed, every
- * open thread passed the filter, including the authorship questions the list
- * exists to keep out. Every fixture in the suite happened to use a single
+ * unresolved thread passed the filter, including the authorship questions the
+ * list exists to keep out. Every fixture in the suite happened to use a single
  * decision kind, which is the one arrangement where the buggy predicate and the
  * correct one agree.
  *
@@ -127,13 +127,13 @@ export function isRestrictingThread(thread: RestrictionThreadRoot): boolean {
  * the point rather than an oversight. An email to a sponsor is not where a
  * codebase detail leaks: the format's own rules already push it toward business
  * value over implementation, and the disclosure rule in the locked clauses
- * covers the residue. Listing it anyway would put a third entry under "open
+ * covers the residue. Listing it anyway would put a third entry under "unresolved
  * questions that constrain this type" on nearly every technical topic, for a
  * risk this format does not run — and a warning that fires where it does not
  * apply is how a reader learns to skip the two that do.
  *
  * ADDITIVE, deliberately — not a widening of `SAFETY_CRITICAL_KINDS`. Moving
- * `CLAIM_STRENGTH` into the shared set would make one open claim question
+ * `CLAIM_STRENGTH` into the shared set would make one unresolved claim question
  * caution the Tweet and Blog Post tabs too, and a warning that fires on formats
  * it does not apply to is the kind a reader learns to dismiss. A kind belongs in
  * the shared set only when an unresolved answer would be a false assertion in
@@ -171,8 +171,8 @@ export const EXTRA_RESTRICTING_KINDS_BY_POST_TYPE: Readonly<
 	// company with the Webinar Script above. A blurb has no implementation-depth
 	// dial to turn: it is one headline and a paragraph or two, and the
 	// disclosure rule in its locked clauses covers the residue. Listing it
-	// anyway would put a third entry under "open questions that constrain this
-	// type" on nearly every technical topic, for a risk this format does not
+	// anyway would put a third entry under "unresolved questions that constrain
+	// this type" on nearly every technical topic, for a risk this format does not
 	// run — and a warning that fires where it does not apply is how a reader
 	// learns to skip the two that do.
 	NEWSLETTER_BLURB: new Set(["AUDIENCE_SCOPE", "CLAIM_STRENGTH"]),
@@ -560,7 +560,7 @@ export function humanizeDecisionKind(kind: string): string {
 	// names nothing. That payload is ANSWERED decisions rendered under a
 	// "Confirmed decisions" heading that calls them settled, so the fallback
 	// must read as true of a settled decision — "unclassified", never
-	// "unresolved". The open-thread paths — the locked clauses through
+	// "unresolved". The unresolved-thread paths — the locked clauses through
 	// `restrictionLabel`, and the generation tab — only ever see threads that
 	// `isRestrictingThread` or `restrictsPostType` admitted, and `"OTHER"` is
 	// in neither allowlist, so they do not reach this branch today; the

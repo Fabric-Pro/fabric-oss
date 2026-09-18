@@ -104,8 +104,9 @@ export type NewsletterBlurbDecision = ShortPostDecision;
  * reads as "drop the result", when the correct behaviour is to describe it more
  * conservatively without asserting the unsettled part.
  *
- * `CODEBASE_DETAIL` has no sentence in the open-questions block here, because it
- * is not in this type's set: a blurb has no implementation-depth dial to turn.
+ * `CODEBASE_DETAIL` has no sentence in the unresolved-questions block here,
+ * because it is not in this type's set: a blurb has no implementation-depth
+ * dial to turn.
  * The disclosure clause below covers the residue, unconditionally.
  *
  * THE INVENTION AND DISCLOSURE RULES ARE RESTATED HERE, not merely referenced.
@@ -214,7 +215,7 @@ ${restricted.map(renderSubjectBullet).join("\n")}`
 		openQuestions.length > 0
 			? `
 
-## Open questions that constrain this content type
+## Unresolved questions that constrain this content type
 
 These are unsettled. Do not resolve them by assumption, do not assert either
 side, and record what you assumed under inputs needed. Where one of them decides
