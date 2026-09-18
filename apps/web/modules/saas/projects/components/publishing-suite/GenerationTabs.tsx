@@ -424,7 +424,7 @@ export function GenerationTabTriggers({
 											isGenerating={model.generatingPostTypes.has(
 												t.value,
 											)}
-											openCount={
+											unresolvedCount={
 												model.restrictions.globalCount +
 												(model.restrictions.countByPostType.get(
 													t.value,
@@ -561,13 +561,13 @@ const STATE_LABELS: Record<GenerationTabState, string | null> = {
 function StateBadge({
 	info,
 	isGenerating,
-	openCount,
+	unresolvedCount,
 	hasChanged,
 }: {
 	info: GenerationTabInfo;
 	isGenerating: boolean;
-	/** Open questions standing between this type and a clean draft. */
-	openCount: number;
+	/** Unresolved questions standing between this type and a clean draft. */
+	unresolvedCount: number;
 	hasChanged: boolean;
 }) {
 	// RUNNING outranks everything. Whatever the tab said a moment ago is about
@@ -597,7 +597,7 @@ function StateBadge({
 	// reader has not opened.
 	const cautious = info.state === "NEEDS_CONFIRMATION" || info.needsAttention;
 
-	if (openCount > 0 || cautious) {
+	if (unresolvedCount > 0 || cautious) {
 		return (
 			<Badge tone="warn">
 				<AlertTriangleIcon className="size-3" aria-hidden="true" />
@@ -607,16 +607,16 @@ function StateBadge({
 						className="size-1.5 rounded-full bg-current"
 					/>
 				) : null}
-				{openCount > 0 ? openCount : null}
+				{unresolvedCount > 0 ? unresolvedCount : null}
 				{/* ONE visible mark, BOTH facts announced. A generated tab with
 				    an unresolved caution has two things worth knowing, and the
 				    accessible name is where the second one goes now that the
 				    strip shows a single chip instead of three word pills. */}
 				<span className="sr-only">
 					{info.state === "GENERATED" ? "Generated, " : ""}
-					{openCount > 0
-						? `Needs confirmation — ${openCount} open ${
-								openCount === 1 ? "question" : "questions"
+					{unresolvedCount > 0
+						? `Needs confirmation — ${unresolvedCount} unresolved ${
+								unresolvedCount === 1 ? "question" : "questions"
 							} before this can be drafted cleanly`
 						: "Needs confirmation"}
 					{hasChanged ? ", changed since your last visit" : ""}
@@ -724,8 +724,8 @@ function GenerationPanel({
 	// (`AUDIENCE_SCOPE`, `CLAIM_STRENGTH` — not `CODEBASE_DETAIL`, which an
 	// email to a sponsor does not run), so a hoisted post-type-agnostic list
 	// would leave those tabs wearing an amber "Needs confirmation" badge for an
-	// open claim-strength question while this list named nothing — a warning
-	// with no stated cause, and the same page-promises-one-thing /
+	// unresolved claim-strength question while this list named nothing — a
+	// warning with no stated cause, and the same page-promises-one-thing /
 	// generator-does-another divergence `publishing-restrictions.ts` exists to
 	// prevent. It also has to be per-panel rather than per-phase: the two 2C
 	// types have DIFFERENT extra sets, so one list shared between them would be
@@ -734,11 +734,12 @@ function GenerationPanel({
 	// reduces to `isRestrictingThread` for them.
 	//
 	// Two further reasons for the SHAPE of these lists, both found rather than
-	// foreseen. First, an open question about authorship does not change what a
-	// draft may assert, so listing it here would bury the ones that do — and
-	// this filters per THREAD rather than on an aggregated flag, because an
+	// foreseen. First, an unresolved question about authorship does not change
+	// what a draft may assert, so listing it here would bury the ones that do —
+	// and this filters per THREAD rather than on an aggregated flag, because an
 	// earlier version filtered on `restrictions.global`, a property of the whole
-	// thread set, so one safety-critical question let every open thread through.
+	// thread set, so one safety-critical question let every unresolved thread
+	// through.
 	//
 	// Second, `TopicQuestionsPanel` on the Summary & Questions tab renders the
 	// full question text and the control that ANSWERS it; both panels are
@@ -752,11 +753,11 @@ function GenerationPanel({
 	// each one … or leave it out", and the ones that pass only the per-type
 	// extra become "these are unsettled — do not resolve them by assumption, do
 	// not assert either side". The builder's own comment calls applying the
-	// first framing to the second category "actively harmful": an open
+	// first framing to the second category "actively harmful": an unresolved
 	// AUDIENCE_SCOPE question under "leave it out" instructs the model to strip
-	// the audience framing, and an open CLAIM_STRENGTH one to drop the result,
-	// when the correct behaviour is to state it qualitatively and say the
-	// strength is unsettled.
+	// the audience framing, and an unresolved CLAIM_STRENGTH one to drop the
+	// result, when the correct behaviour is to state it qualitatively and say
+	// the strength is unsettled.
 	//
 	// A single list headed "these will be generalized rather than asserted"
 	// therefore told the reader exactly the reading the prompt rejects, for
@@ -863,7 +864,7 @@ function GenerationPanel({
 			) : null}
 
 			{openQuestionSubjects.length > 0 ? (
-				<Section label="Open questions that constrain this type">
+				<Section label="Unresolved questions that constrain this type">
 					{/* Deliberately NOT the wording above. These decide how the
 					    piece is framed, and a draft that "leaves out" its
 					    audience or the strength of its result is vaguer, not

@@ -321,7 +321,7 @@ describe("GenerationTabs — state is in the accessible name (FR5)", () => {
 		});
 
 		const tab = within(tablist()).getByRole("tab", {
-			name: /blog post.*2 open questions/i,
+			name: /blog post.*2 unresolved questions/i,
 		});
 		expect(within(tab).getByText("2")).toBeInTheDocument();
 	});
@@ -397,7 +397,7 @@ describe("GenerationTabs — state is in the accessible name (FR5)", () => {
 
 	it("still announces the caution on a GENERATED tab the analysis deferred", () => {
 		// THE case. `GENERATED` outranks `NEEDS_CONFIRMATION`, and 2A mints no
-		// question for `deferred` — so a marker keyed on open questions alone
+		// question for `deferred` — so a marker keyed on unresolved questions alone
 		// would leave this tab silent about a real caution.
 		renderTabs({
 			analysis: analysisWith({
@@ -530,7 +530,7 @@ describe("GenerationTabs — panel content", () => {
 	it("lists ONLY the restricting questions when the topic has a mix", async () => {
 		// The case every earlier fixture missed by holding a single kind. An
 		// earlier version filtered on the AGGREGATED `global` flag, so one
-		// safety-critical question let EVERY open thread through — including
+		// safety-critical question let EVERY unresolved thread through — including
 		// the authorship question this list exists to keep out. A homogeneous
 		// fixture cannot tell the two implementations apart.
 		renderTabs({
@@ -633,7 +633,9 @@ describe("GenerationTabs — panel content", () => {
 			screen.queryByText(/unresolved approvals/i),
 		).not.toBeInTheDocument();
 		expect(
-			screen.queryByText(/open questions that constrain this type/i),
+			screen.queryByText(
+				/unresolved questions that constrain this type/i,
+			),
 		).not.toBeInTheDocument();
 		expect(
 			screen.queryByText("how strongly the result may be stated"),
@@ -644,7 +646,7 @@ describe("GenerationTabs — panel content", () => {
 		);
 
 		expect(
-			screen.getByText(/open questions that constrain this type/i),
+			screen.getByText(/unresolved questions that constrain this type/i),
 		).toBeInTheDocument();
 		expect(
 			screen.getAllByRole("listitem").map((li) => li.textContent),
@@ -678,8 +680,8 @@ describe("GenerationTabs — panel content", () => {
 		// `buildCaseStudyLockedClauses` emits TWO blocks and its own comment
 		// calls merging them "actively harmful". The approvals block says "NOT
 		// approved for use … write around each one … or leave it out"; the
-		// open-questions block says "these are unsettled — do not resolve them
-		// by assumption, do not assert either side". For an open CLAIM_STRENGTH
+		// unresolved-questions block says "these are unsettled — do not resolve them
+		// by assumption, do not assert either side". For an unresolved CLAIM_STRENGTH
 		// or AUDIENCE_SCOPE question nothing is awaiting approval and the
 		// generator does not generalize it away, so one merged list headed "a
 		// draft will generalize rather than assert them" stated on the page
@@ -712,7 +714,7 @@ describe("GenerationTabs — panel content", () => {
 			.getByText(/unresolved approvals/i)
 			.closest("section") as HTMLElement;
 		const questions = screen
-			.getByText(/open questions that constrain this type/i)
+			.getByText(/unresolved questions that constrain this type/i)
 			.closest("section") as HTMLElement;
 
 		expect(
@@ -754,7 +756,7 @@ describe("GenerationTabs — panel content", () => {
 		// `CODEBASE_DETAIL` restricts a Case Study — it describes the
 		// implementation — and deliberately does NOT restrict a Stakeholder
 		// Email, which is not where a codebase detail leaks and where a third
-		// entry under "open questions" on every technical topic would train the
+		// entry under "unresolved questions" on every technical topic would train the
 		// reader past the two that do apply.
 		//
 		// Without this, a build that computed the list ONCE per phase rather

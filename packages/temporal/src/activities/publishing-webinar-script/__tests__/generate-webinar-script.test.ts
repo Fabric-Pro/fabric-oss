@@ -509,7 +509,7 @@ describe("generateWebinarScriptActivity — the restriction split", () => {
 		);
 		expect(restricted).toContain("example-org");
 		expect(prompt).not.toMatch(
-			/Open questions that constrain this content type/,
+			/Unresolved questions that constrain this content type/,
 		);
 	});
 
@@ -527,7 +527,7 @@ describe("generateWebinarScriptActivity — the restriction split", () => {
 
 		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
 		const openHeading = prompt.indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		expect(openHeading).toBeGreaterThan(-1);
 		expect(prompt.slice(openHeading)).toContain("the latency result");
@@ -545,7 +545,7 @@ describe("generateWebinarScriptActivity — the restriction split", () => {
 		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).not.toMatch(/Unresolved approvals for this topic/);
 		const openHeading = prompt.indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		expect(prompt.slice(openHeading)).toContain("who this session is for");
 		expect(prompt.slice(openHeading)).toContain(
@@ -568,7 +568,7 @@ describe("generateWebinarScriptActivity — the restriction split", () => {
 			"## Unresolved approvals for this topic",
 		);
 		const openHeading = prompt.indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		expect(restrictedHeading).toBeGreaterThan(-1);
 		expect(openHeading).toBeGreaterThan(restrictedHeading);
