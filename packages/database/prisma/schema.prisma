@@ -12687,6 +12687,7 @@ enum AiModelCapability {
   IMAGE
   AUDIO
   EMBEDDING
+  EVALUATION
   TOOL_CALLING
   VISION
   CODE
@@ -12703,6 +12704,7 @@ enum AiTaskType {
   IMAGE
   AUDIO
   EVAL
+  DECISION
 }
 
 enum SpeedTier {

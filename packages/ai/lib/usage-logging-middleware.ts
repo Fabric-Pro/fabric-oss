@@ -37,7 +37,11 @@ import type {
 	AiUsageBillingCategory,
 } from "@repo/database/prisma/generated/client";
 import { logger } from "@repo/logs";
-import type { EmbeddingModel, LanguageModel } from "ai";
+import type {
+	EmbeddingModel,
+	Experimental_EvaluationModel,
+	LanguageModel,
+} from "ai";
 import { wrapEmbeddingModel, wrapLanguageModel } from "ai";
 
 /** Everything the interceptor needs to attribute a call, captured at model resolution. */
@@ -557,4 +561,62 @@ export function wrapEmbeddingModelWithUsageLogging(
 		model: model as Parameters<typeof wrapEmbeddingModel>[0]["model"],
 		middleware: createEmbeddingUsageLoggingMiddleware(context),
 	}) as EmbeddingModel;
+}
+
+/**
+ * Evaluation-model counterpart of the language-model interceptor. Evaluation
+ * models expose `doEvaluate` directly rather than supporting the SDK's generic
+ * model middleware, so preserve the provider contract while observing that one
+ * network boundary. The shared `emit` writer creates the usage row and lets its
+ * registered database recorder advance applicable tenant limit counters.
+ */
+type EvaluationModelInstance = Exclude<Experimental_EvaluationModel, string>;
+
+export function wrapEvaluationModelWithUsageLogging(
+	model: EvaluationModelInstance,
+	context: UsageLoggingContext,
+): EvaluationModelInstance {
+	const doEvaluate = model.doEvaluate.bind(model);
+
+	return {
+		// GatewayEvaluationModel exposes `provider` through a prototype getter.
+		// Read each SDK contract field explicitly: spreading the instance would
+		// silently discard that getter and make the wrapped model invalid.
+		specificationVersion: model.specificationVersion,
+		provider: model.provider,
+		modelId: model.modelId,
+		supportedQuestionTypes: model.supportedQuestionTypes,
+		doEvaluate: async (options) => {
+			const start = Date.now();
+			try {
+				const result = await doEvaluate(options);
+				try {
+					emit(
+						context,
+						normalizeUsage(result.usage),
+						Date.now() - start,
+						true,
+						undefined,
+						gatewayGenerationIdOf(result.providerMetadata),
+					);
+				} catch {
+					// Usage accounting remains best-effort and never changes an answer.
+				}
+				return result;
+			} catch (error) {
+				try {
+					emit(
+						context,
+						normalizeUsage(undefined),
+						Date.now() - start,
+						false,
+						error instanceof Error ? error.message : String(error),
+					);
+				} catch {
+					// Usage accounting remains best-effort and never changes an error.
+				}
+				throw error;
+			}
+		},
+	};
 }

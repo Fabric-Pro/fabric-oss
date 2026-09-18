@@ -1,9 +1,9 @@
 import { ORPCError } from "@orpc/server";
 import type { AIProvider, AiTaskType } from "@repo/database";
 import {
-	deleteOrgModelPreference,
 	deleteOrgModelPreferencesByTaskType,
 	getAiProviderApiKey,
+	getAiProviderApiKeyByProvider,
 	getModelByCanonicalName,
 	isGatewayProvider,
 	setOrgModelPreference,
@@ -27,6 +27,7 @@ const AiTaskTypeEnum = z.enum([
 	"IMAGE",
 	"AUDIO",
 	"EVAL",
+	"DECISION",
 ]);
 
 export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
@@ -98,11 +99,31 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Use the override provider if specified (for specialized tasks like IMAGE/AUDIO),
+		// Use the override provider if specified (for specialized tasks like IMAGE, AUDIO, or DECISION),
 		// otherwise fall back to the org's default provider
 		const provider =
 			(input.overrideProvider as AIProvider) ||
 			(providerConfig.provider as AIProvider);
+		const taskType = input.taskType as AiTaskType;
+
+		if (taskType === "DECISION") {
+			const decisionProviderConfig = await getAiProviderApiKeyByProvider({
+				userId: context.user.id,
+				organizationId,
+				provider: "VERCEL_GATEWAY",
+			});
+
+			if (
+				provider !== "VERCEL_GATEWAY" ||
+				decisionProviderConfig?.source !== "organization" ||
+				!decisionProviderConfig.apiKey
+			) {
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message:
+						"Decision models require an organization Vercel AI Gateway configuration",
+				});
+			}
+		}
 
 		// Verify the model exists
 		const model = await getModelByCanonicalName(input.modelCanonicalName);
@@ -110,6 +131,27 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 		if (!model) {
 			throw new ORPCError("NOT_FOUND", {
 				message: `Model ${input.modelCanonicalName} not found in catalog`,
+			});
+		}
+
+		if (taskType === "DECISION") {
+			if (
+				!model.suitableForTasks.includes("DECISION") ||
+				provider !== "VERCEL_GATEWAY" ||
+				!model.capabilities.includes("EVALUATION") ||
+				!model.providerMappings.some(
+					(mapping) => mapping.provider === "VERCEL_GATEWAY",
+				)
+			) {
+				throw new ORPCError("BAD_REQUEST", {
+					message:
+						"Decision tasks require an evaluation model through Vercel AI Gateway.",
+				});
+			}
+		} else if (model.capabilities.includes("EVALUATION")) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Evaluation models can only be configured for DECISION tasks.",
 			});
 		}
 
@@ -128,15 +170,12 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 
 		// Delete any existing preferences for this task type (regardless of provider)
 		// This prevents duplicates when org switches between providers for the same task
-		await deleteOrgModelPreferencesByTaskType(
-			organizationId,
-			input.taskType as AiTaskType,
-		);
+		await deleteOrgModelPreferencesByTaskType(organizationId, taskType);
 
 		const preference = await setOrgModelPreference({
 			organizationId,
 			provider,
-			taskType: input.taskType as AiTaskType,
+			taskType,
 			modelId: model.id,
 			customParameters: input.customParameters,
 		});
@@ -195,23 +234,10 @@ export const deleteOrgModelPreferenceProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Get org's default provider
-		const providerConfig = await getAiProviderApiKey({
-			userId: context.user.id,
-			organizationId,
-		});
-
-		if (!providerConfig.provider) {
-			return { success: false };
-		}
-
-		const provider = providerConfig.provider as AIProvider;
-
 		try {
-			await deleteOrgModelPreference(
+			await deleteOrgModelPreferencesByTaskType(
 				organizationId,
 				input.taskType as AiTaskType,
-				provider,
 			);
 			return { success: true };
 		} catch {

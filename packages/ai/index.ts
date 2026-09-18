@@ -8,6 +8,7 @@
 // Re-export model factory functions (these are the core model creation utilities)
 export {
 	getEmbeddingModel,
+	getEvaluationModel,
 	getImageModel,
 	getModel,
 	isVercelGatewayKey,
@@ -116,6 +117,7 @@ export {
 export type {
 	AggregateAIModelOptions,
 	AggregateAIModelResult,
+	AIDecisionModelResult,
 	AIEmbeddingModelResult,
 	AIModelMetadata,
 	AIModelResult,
@@ -132,6 +134,8 @@ export type {
 export {
 	AIProviderNotConfiguredError,
 	buildProviderModelString,
+	getAIDecisionModel,
+	getAIDecisionModelWithMetadata,
 	getAIEmbeddingModel,
 	getAIEmbeddingModelWithMetadata,
 	getAIModel,

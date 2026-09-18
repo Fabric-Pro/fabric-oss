@@ -89,6 +89,19 @@ function mapTaskTypeToDb(taskType: string): DbAiTaskType {
 }
 
 /**
+ * DECISION is an evaluation-model modality, not a language-model task. Keep
+ * this at every language-resolution entry point so a future caller cannot hand
+ * Jev to `getModel()` and receive a malformed language model.
+ */
+function assertLanguageModelTask(taskType: string): void {
+	if (taskType.toUpperCase() === "DECISION") {
+		throw new Error(
+			"DECISION tasks require a typed evaluation model. Use getAIDecisionModel instead of getAIModel.",
+		);
+	}
+}
+
+/**
  * Gateway providers that can route to other underlying providers.
  * Using centralized definition from @repo/database.
  */
@@ -200,6 +213,7 @@ export async function selectModelDynamic(
 		requiresToolCalling = false,
 		preferredProvider,
 	} = options;
+	assertLanguageModelTask(taskType);
 
 	// Determine effective task type
 	const effectiveTaskType = requiresToolCalling
@@ -602,6 +616,7 @@ export async function resolveModelWithProvider(
 	},
 ): Promise<ResolvedModelConfig> {
 	const dbTaskType = mapTaskTypeToDb(taskType as string);
+	assertLanguageModelTask(dbTaskType);
 	const isEmbeddingTask = dbTaskType === "EMBEDDING";
 
 	// Step 1: Get the appropriate provider configuration
@@ -952,7 +967,11 @@ import { updateProviderLastUsed } from "@repo/database";
 import { getTenantAiGatewayBillingState } from "@repo/payments";
 import type { LanguageModel } from "ai";
 // Import from model-factory to avoid circular dependency with index.ts
-import { getEmbeddingModel, getModel } from "../model-factory";
+import {
+	getEmbeddingModel,
+	getEvaluationModel,
+	getModel,
+} from "../model-factory";
 import { isReasoningModelName } from "./databricks-compat";
 import {
 	hasProviderCredentials,
@@ -964,6 +983,7 @@ import {
 	type AggregateUsageRecord,
 	recordAggregateUsage,
 	wrapEmbeddingModelWithUsageLogging,
+	wrapEvaluationModelWithUsageLogging,
 	wrapModelWithUsageLogging,
 } from "./usage-logging-middleware";
 
@@ -1119,6 +1139,147 @@ export interface AIEmbeddingModelResult {
 	trackUsage: () => void;
 }
 
+/** Result from resolving the typed decision-evaluation model. */
+export interface AIDecisionModelResult {
+	/** Ready-to-use AI SDK evaluation model, never a text LanguageModel. */
+	model: ReturnType<typeof getEvaluationModel>;
+	/** Metadata about the configured tenant provider and selected model. */
+	metadata: AIModelMetadata;
+	/** Update the provider's last-used timestamp after a successful evaluation. */
+	trackUsage: () => void;
+}
+
+/**
+ * Resolve the organization-configured typed decision model.
+ *
+ * Jev is an AI SDK evaluation model, rather than a language model, so this
+ * cannot use `getAIModelWithMetadata`. It refuses every fallback source to
+ * keep a missing organization gateway from using a personal or platform key.
+ */
+export async function getAIDecisionModelWithMetadata(
+	context: AIOperationContext,
+): Promise<AIDecisionModelResult> {
+	if (!context.organizationId) {
+		throw new AIProviderNotConfiguredError(
+			"Decision evaluation requires an organization context and a configured Vercel AI Gateway provider.",
+		);
+	}
+
+	const providerConfig = await getAiProviderApiKeyByProvider({
+		userId: context.userId,
+		organizationId: context.organizationId,
+		provider: "VERCEL_GATEWAY",
+	});
+
+	if (
+		providerConfig.provider !== "VERCEL_GATEWAY" ||
+		providerConfig.source !== "organization" ||
+		!providerConfig.apiKey
+	) {
+		throw new AIProviderNotConfiguredError(
+			"Decision evaluation requires this organization's configured Vercel AI Gateway provider.",
+		);
+	}
+
+	const selection = await getModelForTask(
+		context.userId,
+		"VERCEL_GATEWAY" as DbAIProvider,
+		"DECISION" as DbAiTaskType,
+		context.organizationId,
+	);
+	const model = selection?.model;
+	const providerMapping = model?.providerMappings?.find(
+		(mapping) =>
+			mapping.provider === "VERCEL_GATEWAY" && mapping.isAvailable,
+	);
+
+	if (
+		!model ||
+		!providerMapping?.providerModelId ||
+		!model.capabilities.includes("EVALUATION") ||
+		!model.suitableForTasks.includes("DECISION")
+	) {
+		throw new AIProviderNotConfiguredError(
+			"No typed decision model is available for this organization's Vercel AI Gateway provider.",
+		);
+	}
+
+	await assertWithinAiUsageLimits({
+		userId: context.userId,
+		organizationId: context.organizationId,
+		projectId: context.projectId ?? null,
+		providerConfigId: providerConfig.configId,
+		modelCanonicalName: model.canonicalName,
+		taskType: "DECISION" as DbAiTaskType,
+	});
+
+	const apiKey = await resolveProviderApiKey(providerConfig);
+	const billingState = getTenantAiGatewayBillingState({
+		provider: "VERCEL_GATEWAY" as DbAIProvider,
+		configSource: providerConfig.source,
+	});
+	const evaluationModel = getEvaluationModel(
+		providerMapping.providerModelId,
+		{
+			apiKey,
+			provider: "VERCEL_GATEWAY",
+			headers: billingState.headers ?? undefined,
+		},
+	);
+	const metadata: AIModelMetadata = {
+		modelString: providerMapping.providerModelId,
+		provider: "VERCEL_GATEWAY" as DbAIProvider,
+		configId: providerConfig.configId,
+		configSource: providerConfig.source,
+		selectionSource: selection.source,
+		canonicalName: model.canonicalName,
+		maxOutputTokens: model.maxOutputTokens ?? undefined,
+		contextWindow: model.contextWindow,
+		billingMode: billingState.mode,
+		billingCustomerId: null,
+	};
+	const trackedEvaluationModel = wrapEvaluationModelWithUsageLogging(
+		evaluationModel,
+		{
+			userId: context.userId,
+			organizationId: context.organizationId,
+			projectId: context.projectId,
+			provider: metadata.provider,
+			providerModelId: metadata.modelString,
+			modelCanonicalName: metadata.canonicalName ?? undefined,
+			providerConfigId: metadata.configId ?? undefined,
+			taskType: "DECISION" as DbAiTaskType,
+			billingCategory: getAiBillingCategory(metadata),
+			billingCustomerId: metadata.billingCustomerId,
+			featureKey: context.featureKey,
+			promptVersionId: context.promptVersionId,
+			jobType: context.jobType,
+		},
+	);
+
+	return {
+		model: trackedEvaluationModel,
+		metadata,
+		trackUsage: () => {
+			if (providerConfig.configId) {
+				updateProviderLastUsed({
+					configId: providerConfig.configId,
+					source: "organization",
+				}).catch(() => {
+					// Tracking is best effort and must not affect a completed evaluation.
+				});
+			}
+		},
+	};
+}
+
+/** Resolve only the evaluation model when call metadata is not needed. */
+export async function getAIDecisionModel(
+	context: AIOperationContext,
+): Promise<ReturnType<typeof getEvaluationModel>> {
+	return (await getAIDecisionModelWithMetadata(context)).model;
+}
+
 /**
  * GET A READY-TO-USE AI MODEL - The Single Entry Point
  * This is the RECOMMENDED way to get an AI model. It handles:
@@ -1199,6 +1360,7 @@ export async function getAIModelWithMetadata(
 		modelOverride,
 		usageLogging = "per-call",
 	} = options;
+	assertLanguageModelTask(taskType);
 
 	// No credit/payment pre-check: whether this tenant may use AI is decided
 	// solely by whether a provider resolves below, and the refusal is

@@ -325,7 +325,8 @@ jobs:
           // on the public runs for PRs 408, 412, 413 and 416). Reconciled with
           // the suite as it stands; no cases were added by the change that
           // carries this note.
-          const EXPECTED = 57;
+          // Include the two draft-revision tenant isolation controls.
+          const EXPECTED = 59;
           const j = JSON.parse(fs.readFileSync("packages/database/rls-isolation-results.json","utf8"));
           const files = j.testResults?.length ?? 0;
           const total = j.numTotalTests ?? 0;

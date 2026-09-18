@@ -93,6 +93,13 @@ export const setUserModelPreferenceProcedure = tenantProtectedProcedure
 			});
 		}
 
+		if (model.capabilities.includes("EVALUATION")) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Evaluation models can only be configured for DECISION tasks.",
+			});
+		}
+
 		// Verify the model has a mapping for this provider
 		// Gateway providers can route to any model, so skip mapping check for them
 		if (!isGatewayProvider(provider)) {
