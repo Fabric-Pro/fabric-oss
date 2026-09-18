@@ -11,7 +11,7 @@
 	"dependencies": {
 		"@repo/logs": "workspace:*",
 		"@repo/utils": "workspace:*",
-		"ai": "^7.0.101",
+		"ai": "^7.0.105",
 		"exa-js": "^2.0.0",
 		"zod": "4.2.1"
 	},

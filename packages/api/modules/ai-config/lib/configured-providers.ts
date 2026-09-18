@@ -18,7 +18,12 @@ import {
 	GATEWAY_PROVIDERS,
 } from "@repo/database";
 
-const SPECIALIZED_TASK_TYPES = ["IMAGE", "AUDIO", "EMBEDDING"] as const;
+const SPECIALIZED_TASK_TYPES = [
+	"IMAGE",
+	"AUDIO",
+	"EMBEDDING",
+	"DECISION",
+] as const;
 type SpecializedTaskType = (typeof SPECIALIZED_TASK_TYPES)[number];
 
 /**
@@ -39,6 +44,8 @@ function getCapableProvidersForTask(
 			return ALL_AUDIO_CAPABLE_PROVIDERS;
 		case "EMBEDDING":
 			return ALL_EMBEDDING_CAPABLE_PROVIDERS;
+		case "DECISION":
+			return ["VERCEL_GATEWAY"];
 		default:
 			return null; // Not a specialized task, use default provider only
 	}

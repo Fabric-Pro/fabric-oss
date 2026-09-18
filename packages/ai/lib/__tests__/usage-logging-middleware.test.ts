@@ -3,11 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { logAiUsageAsync } = vi.hoisted(() => ({ logAiUsageAsync: vi.fn() }));
 vi.mock("@repo/database", () => ({ logAiUsageAsync }));
 
+import { getEvaluationModel } from "../../model-factory";
 import {
 	createEmbeddingUsageLoggingMiddleware,
 	createUsageLoggingMiddleware,
 	recordAggregateUsage,
 	selectAggregateUsageForLogging,
+	wrapEvaluationModelWithUsageLogging,
 } from "../usage-logging-middleware";
 
 const CTX = {
@@ -162,6 +164,112 @@ describe("usage-logging middleware — wrapEmbed (embeddings)", () => {
 			outputTokens: 0,
 			totalTokens: 123,
 		});
+	});
+});
+
+describe("usage-logging middleware — evaluation models", () => {
+	beforeEach(() => logAiUsageAsync.mockReset());
+
+	it("preserves metadata exposed by the real gateway evaluation-model factory", () => {
+		const model = getEvaluationModel("typesafe-ai/jev", {
+			apiKey: "vck_example_tenant_key",
+			provider: "VERCEL_GATEWAY",
+		});
+		const wrapped = wrapEvaluationModelWithUsageLogging(model, CTX);
+
+		expect(wrapped.specificationVersion).toBe(model.specificationVersion);
+		expect(wrapped.provider).toBe(model.provider);
+		expect(wrapped.modelId).toBe(model.modelId);
+		expect(wrapped.supportedQuestionTypes).toEqual(
+			model.supportedQuestionTypes,
+		);
+	});
+
+	it("records successful typed evaluations with decision usage attribution", async () => {
+		const doEvaluate = vi.fn().mockResolvedValue({
+			answers: {},
+			warnings: [],
+			usage: { inputTokens: 120, outputTokens: 30 },
+			providerMetadata: { gateway: { generationId: "gen_decision_01" } },
+		});
+		const model = wrapEvaluationModelWithUsageLogging(
+			{
+				specificationVersion: "v4",
+				provider: "vercel-gateway",
+				modelId: "typesafe-ai/jev",
+				supportedQuestionTypes: ["choice", "score", "boolean"],
+				doEvaluate,
+			} as any,
+			{
+				...CTX,
+				provider: "VERCEL_GATEWAY" as any,
+				providerModelId: "typesafe-ai/jev",
+				modelCanonicalName: "typesafe-ai-jev",
+				taskType: "DECISION" as any,
+			},
+		);
+
+		await model.doEvaluate({
+			state: "evaluate this choice",
+			questions: {
+				choice: {
+					type: "choice",
+					instructions: "Choose one",
+					criteria: { yes: "yes", no: "no" },
+				},
+			},
+		});
+
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			userId: "u1",
+			organizationId: "o1",
+			projectId: "p1",
+			provider: "VERCEL_GATEWAY",
+			providerModelId: "typesafe-ai/jev",
+			modelCanonicalName: "typesafe-ai-jev",
+			taskType: "DECISION",
+			inputTokens: 120,
+			outputTokens: 30,
+			totalTokens: 150,
+			gatewayGenerationId: "gen_decision_01",
+			success: true,
+		});
+	});
+
+	it("records a failed evaluation without marking it successful", async () => {
+		const doEvaluate = vi.fn().mockRejectedValue(new Error("gateway down"));
+		const model = wrapEvaluationModelWithUsageLogging(
+			{
+				specificationVersion: "v4",
+				provider: "vercel-gateway",
+				modelId: "typesafe-ai/jev",
+				supportedQuestionTypes: ["choice"],
+				doEvaluate,
+			} as any,
+			{ ...CTX, taskType: "DECISION" as any },
+		);
+
+		await expect(
+			model.doEvaluate({
+				state: "evaluate this choice",
+				questions: {
+					choice: {
+						type: "choice",
+						instructions: "Choose one",
+						criteria: { yes: "yes", no: "no" },
+					},
+				},
+			}),
+		).rejects.toThrow("gateway down");
+
+		expect(logAiUsageAsync).toHaveBeenCalledWith(
+			expect.objectContaining({
+				taskType: "DECISION",
+				success: false,
+				errorMessage: "gateway down",
+			}),
+		);
 	});
 });
 

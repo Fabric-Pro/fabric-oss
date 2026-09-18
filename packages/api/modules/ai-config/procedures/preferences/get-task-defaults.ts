@@ -4,6 +4,7 @@ import {
 	type AiTaskType,
 	db,
 	getAiProviderApiKey,
+	getAiProviderApiKeyByProvider,
 } from "@repo/database";
 import { z } from "zod";
 import {
@@ -54,6 +55,10 @@ const TASK_CAPABILITY_MAP: Record<
 	},
 	EVAL: {
 		requiredCapabilities: ["REASONING"],
+		preferQualityTier: "STANDARD",
+	},
+	DECISION: {
+		requiredCapabilities: ["EVALUATION"],
 		preferQualityTier: "STANDARD",
 	},
 };
@@ -163,6 +168,32 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 			// This happens when the default provider is inference-only (no EMBEDDING/IMAGE/AUDIO support)
 			let allDefaults = [...defaults];
 
+			// Typed decisions are available only through Vercel AI Gateway. Keep
+			// that default visible when the organization has configured the gateway
+			// alongside a different primary text provider.
+			if (organizationId && defaultProvider !== "VERCEL_GATEWAY") {
+				const decisionGateway = await getAiProviderApiKeyByProvider({
+					userId: context.user.id,
+					organizationId,
+					provider: "VERCEL_GATEWAY",
+				});
+				if (
+					decisionGateway.provider === "VERCEL_GATEWAY" &&
+					decisionGateway.source === "organization" &&
+					decisionGateway.apiKey
+				) {
+					const decisionDefaults =
+						await db.aiTaskModelDefault.findMany({
+							where: {
+								provider: "VERCEL_GATEWAY",
+								taskType: "DECISION" as AiTaskType,
+							},
+							include: { model: true },
+						});
+					allDefaults = [...allDefaults, ...decisionDefaults];
+				}
+			}
+
 			if (
 				defaultProvider &&
 				INFERENCE_ONLY_PROVIDERS.includes(defaultProvider)
@@ -217,7 +248,7 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 								},
 							});
 
-						allDefaults = [...defaults, ...openAIDefaults];
+						allDefaults = [...allDefaults, ...openAIDefaults];
 						console.log(
 							"[AI Config] Added",
 							openAIDefaults.length,
@@ -240,6 +271,7 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 				"IMAGE",
 				"AUDIO",
 				"EVAL",
+				"DECISION",
 			];
 
 			const existingTaskTypes = new Set(
