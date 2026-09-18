@@ -13,6 +13,7 @@ import {
 	DownloadIcon,
 	FilePlusIcon,
 	HistoryIcon,
+	Loader2Icon,
 	PlugIcon,
 	SettingsIcon,
 	UploadIcon,
@@ -133,12 +134,6 @@ export function InstructionsPublishedView({
 	// READY base with promoted objects to inherit, and the tab only ever shows
 	// the published one's tree.
 	const editable = canEdit && !repositoryBacked && Boolean(published);
-	// The folder a new file lands in by default — the selected file's own
-	// folder, which is where someone reading `.claude/skills/review/SKILL.md`
-	// and pressing "Add file" means to put it.
-	const selectedFolder = selected?.includes("/")
-		? selected.slice(0, selected.lastIndexOf("/"))
-		: null;
 
 	const newest = snapshots[0] ?? null;
 	const newerThanPublished =
@@ -198,6 +193,33 @@ export function InstructionsPublishedView({
 		enabled: Boolean(published),
 	});
 	const treeFiles = (files.data ?? []) as TreeFile[];
+	// The selection is a PATH, and a path outlives the version it was chosen
+	// in: a Delete file publishes a new version without that path, the poll
+	// swaps the version in, and the pane went on asking the new version for
+	// a file it does not have ("Could not load this file"). So a path counts
+	// as selected only while the version on screen lists it; otherwise the
+	// pane shows the pick-a-file prompt. Derived rather than reset in an
+	// effect: nothing has to run after render, and a path that comes back
+	// in a later version is simply selected again.
+	//
+	// Gated on the list having LOADED, not merely on `files.data`: between a
+	// version change and its list arriving `data` is undefined, and reading
+	// that as "no files" flashed the pick-a-file prompt at someone whose file
+	// was about to turn out to still be there.
+	const fileListLoaded = files.isSuccess;
+	const selectedFile =
+		fileListLoaded &&
+		selected !== null &&
+		treeFiles.some((file) => file.path === selected)
+			? selected
+			: null;
+	// The folder a new file lands in by default — the selected file's own
+	// folder, which is where someone reading `.claude/skills/review/SKILL.md`
+	// and pressing "Add file" means to put it. From the EFFECTIVE selection:
+	// a folder the displayed version no longer has is not a default.
+	const selectedFolder = selectedFile?.includes("/")
+		? selectedFile.slice(0, selectedFile.lastIndexOf("/"))
+		: null;
 
 	const retry = useMutation(
 		orpc.projects.instructions.finalize.mutationOptions({
@@ -260,11 +282,27 @@ export function InstructionsPublishedView({
 					    swapped the new version in. `aria-live` because it
 					    appears on a poll, with no interaction to announce it.
 					    With nothing published yet it replaces the empty-state
-					    line rather than sitting under it. */}
+					    line rather than sitting under it. Styled as a pill
+					    in the primary colour with a spinner, like the
+					    published badge above: as a plain muted sentence it
+					    sat under the summary and read as part of it. The
+					    element is always rendered so the live region exists
+					    before the text arrives; the pill classes apply only
+					    while there is something to say. */}
 					<p
 						aria-live="polite"
-						className="text-muted-foreground text-sm"
+						className={
+							checking
+								? "inline-flex w-fit items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 font-medium text-primary text-sm"
+								: "text-sm"
+						}
 					>
+						{checking ? (
+							<Loader2Icon
+								className="size-3.5 animate-spin"
+								aria-hidden="true"
+							/>
+						) : null}
 						{checking ? t("checkingSummary") : ""}
 					</p>
 				</div>
@@ -404,7 +442,7 @@ export function InstructionsPublishedView({
 					<div data-onboarding-target="coding-instructions-tree">
 						<InstructionsTree
 							files={treeFiles}
-							selectedPath={selected}
+							selectedPath={selectedFile}
 							onSelect={setSelected}
 						/>
 					</div>
@@ -412,17 +450,30 @@ export function InstructionsPublishedView({
 						data-onboarding-target="coding-instructions-file-view"
 						className="min-h-0 min-w-0"
 					>
-						{selected ? (
+						{selectedFile ? (
 							<InstructionFileView
 								projectId={projectId}
 								snapshotId={published.id}
-								path={selected}
+								path={selectedFile}
 								canEdit={editable}
 								onChanged={onChanged}
 							/>
-						) : (
+						) : fileListLoaded ? (
 							<div className="flex h-full items-center justify-center rounded-lg border border-border text-muted-foreground">
 								{t("selectFilePrompt")}
+							</div>
+						) : (
+							// The list for this version is still on its way;
+							// neither a file nor the prompt is the honest
+							// answer yet.
+							<div
+								aria-busy="true"
+								className="flex h-full items-center justify-center rounded-lg border border-border text-muted-foreground"
+							>
+								<Loader2Icon
+									className="size-4 animate-spin"
+									aria-hidden="true"
+								/>
 							</div>
 						)}
 					</div>
