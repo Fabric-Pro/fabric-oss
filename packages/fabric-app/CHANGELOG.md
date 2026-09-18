@@ -1,5 +1,24 @@
 # fabric-app
 
+## 1.16.3
+
+### Patch Changes
+
+- f782b90: Administrators can now turn AI-recommended answers to open questions on for one organization or for the whole instance from the admin console, and the "Auto-propose answers" switch in a feature's Summary & Questions tab now appears only where those recommendations are enabled.
+- c96135b: The Coding Instructions tab shows "Checking your upload" as a highlighted status with a spinner instead of a plain sentence under the summary, and no longer keeps a deleted file selected after the version that removed it is published.
+- ed95a0b: The Fabric CLI can now keep a working copy current with a project's published coding instructions: `fabric instructions init --project <id> --tool claude-code` adds a session-start check and takes the first copy, `fabric instructions check` reports what changed, and `fabric instructions sync` applies it. A sync also repairs a working copy that drifted from the published version — an edited, deleted or chmod-ed instruction file is put back on the next run, without waiting for anyone to publish again — and `fabric instructions check --verify` reports that drift without changing anything.
+- d92404c: The Coding Instructions tab now has a "Connect your agent" button that mints a read-only API key and hands you a ready-to-paste MCP configuration for your coding tool, so developers can start pointing coding agents at a project's published instructions without leaving the tab.
+- fba9d15: The Coding Instructions "Connect your agent" dialog now leads with the CLI route for Claude Code (sign in, then `fabric instructions init`) as its own copyable step, presents the MCP configuration as the alternative, and offers the command before the first version is published as well.
+- a7b5a0f: Project members can now fix, remove or add a single coding-instructions file from the Coding Instructions tab instead of re-uploading the whole folder, and each change publishes as a new version that has passed the same secret and integrity checks an upload does.
+- 82f2963: Coding Instructions uploads that never finish are now closed out automatically after six hours, failed uploads no longer accumulate staged files, and an uploaded .fabricignore must match the rules it was previewed with.
+- b7a82f3: Coding agents connected over the MCP gateway now learn from project responses when a project has published coding instructions, skip re-downloading when the digest they last installed is still current, and see which paths changed when it is not.
+- ce6df6e: Publishing an earlier coding-instructions version from History now works: the button reads "Roll back to this version" and moves the project back to it, instead of refusing with "A newer version is already published".
+- af74305: Projects gain a Coding Instructions tab where a folder of coding-agent skills, rules, and setup files is uploaded, checked for secrets, stored as a published version, browsed, downloaded, and served to coding agents over MCP.
+- f24a493: Publishing Suite treats a rough summary as raw material rather than a gap, makes it editable, and stops losing unsaved analysis edits
+- c4c8400: A note sent to a colleague from a publishing question now appears under that question, whether it is open, set aside or answered, instead of being shown or counted as its answer; opening a question from a notification expands the group it is in; and an answer that was saved empty can now be amended.
+- 91eebef: Refining a Publishing Suite draft returns one revision of your working copy instead of three fresh candidates
+- f84cc20: Refining a Publishing Suite draft now shows the proposal as a reviewable diff instead of doing nothing visible
+
 ## 1.16.2
 
 ### Patch Changes
