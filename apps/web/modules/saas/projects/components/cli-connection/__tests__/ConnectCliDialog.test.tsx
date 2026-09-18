@@ -511,6 +511,13 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		const command = await screen.findByTestId(
 			"connect-cli-local-sync-command",
 		);
+		const applyUpdatesCheckbox = screen.getByRole("checkbox", {
+			name: "Automatically apply published updates at session start",
+		});
+		expect(applyUpdatesCheckbox).not.toBeChecked();
+		expect(applyUpdatesCheckbox).toHaveAccessibleDescription(
+			/only report published changes.*select this option to update local instruction files automatically/i,
+		);
 		// Install first, then sign in with this key and this deployment: the CLI
 		// stores both in its own config, and the hook it installs never names either.
 		expect(command).toHaveTextContent("npm install -g @fabricorg/cli");
@@ -520,6 +527,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		expect(command).toHaveTextContent(
 			`fabric instructions init --project ${PROJECT_ID} --tool claude-code`,
 		);
+		expect(command).not.toHaveTextContent("--apply");
 		// The checkout route LEADS: its heading comes before the MCP
 		// route's, which is worded as the alternative.
 		const headings = screen
@@ -546,6 +554,93 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		// The once-only warning sits under the first block that shows the
 		// key, and only once.
 		expect(screen.getAllByText(/shown once/i)).toHaveLength(1);
+	});
+
+	it("adds --apply to copied commands when automatic session-start updates are selected, then resets on close", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSyncAvailable: true,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+
+		const checkbox = await screen.findByRole("checkbox", {
+			name: "Automatically apply published updates at session start",
+		});
+		await user.click(checkbox);
+		expect(checkbox).toBeChecked();
+		expect(
+			screen.getByTestId("connect-cli-local-sync-command"),
+		).toHaveTextContent(
+			`fabric instructions init --project ${PROJECT_ID} --tool claude-code --apply`,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Copy commands" }));
+		expect(clipboardWrite).toHaveBeenCalledWith(
+			[
+				"npm install -g @fabricorg/cli",
+				`fabric auth login --key ${RAW_KEY} --base-url ${window.location.origin}`,
+				`fabric instructions init --project ${PROJECT_ID} --tool claude-code --apply`,
+			].join("\n"),
+		);
+
+		await user.click(screen.getByRole("button", { name: "Done" }));
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+		await user.click(
+			screen.getByRole("button", { name: "Connect a coding tool" }),
+		);
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+
+		expect(
+			await screen.findByRole("checkbox", {
+				name: "Automatically apply published updates at session start",
+			}),
+		).not.toBeChecked();
+		expect(
+			screen.getByTestId("connect-cli-local-sync-command"),
+		).not.toHaveTextContent("--apply");
+	});
+
+	it("clears the command copy confirmation when the update mode changes and copies the current mode", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSyncAvailable: true,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+
+		await user.click(screen.getByRole("button", { name: "Copy commands" }));
+		expect(
+			await screen.findByRole("button", { name: "Copied" }),
+		).toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("checkbox", {
+				name: "Automatically apply published updates at session start",
+			}),
+		);
+		expect(
+			screen.getByRole("button", { name: "Copy commands" }),
+		).toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "Copy commands" }));
+		expect(clipboardWrite).toHaveBeenLastCalledWith(
+			[
+				"npm install -g @fabricorg/cli",
+				`fabric auth login --key ${RAW_KEY} --base-url ${window.location.origin}`,
+				`fabric instructions init --project ${PROJECT_ID} --tool claude-code --apply`,
+			].join("\n"),
+		);
 	});
 
 	it("treats copying the commands as copying the key, so the dialog can close", async () => {
@@ -675,6 +770,11 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		expect(
 			screen.queryByTestId("connect-cli-local-sync-command"),
 		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("checkbox", {
+				name: "Automatically apply published updates at session start",
+			}),
+		).not.toBeInTheDocument();
 	});
 
 	it("says nothing about local sync on the project purpose", async () => {
@@ -687,6 +787,11 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		await screen.findByTestId("connect-cli-starter-instruction");
 		expect(
 			screen.queryByTestId("connect-cli-local-sync-command"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("checkbox", {
+				name: "Automatically apply published updates at session start",
+			}),
 		).not.toBeInTheDocument();
 	});
 
