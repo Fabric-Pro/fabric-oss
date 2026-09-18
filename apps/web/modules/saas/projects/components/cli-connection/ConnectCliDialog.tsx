@@ -34,7 +34,7 @@ import { useEffect, useRef, useState } from "react";
 const DIALOG_TITLE = "Connect Fabric to your coding tool";
 
 const DIALOG_DESCRIPTION =
-	"Create a key, paste one configuration block into your coding tool, and it can read this project's context while you work.";
+	"Create a key, connect your coding tool with it, and it can read this project's context while you work.";
 
 /** Section 1 — what the key grants, said before anything is minted (R27). */
 const DISCLOSURE_LABEL = "Before you create the key";
@@ -43,7 +43,7 @@ const DISCLOSURE_POINTS = [
 	"The key authenticates as you. A tool holding it reads everything you can read in this organization — every project in it, not only this one.",
 	"It is read-only: a tool holding it can read your work in Fabric, and cannot change it.",
 	"It stays valid until you revoke it, or until it expires 90 days from now, whichever comes first.",
-	"The configuration shown next contains a live credential. Treat it like a password — do not paste it into a shared document, a ticket or a chat.",
+	"Both connection blocks shown next contain a live credential. Treat it like a password — do not paste it into a shared document, a ticket or a chat.",
 ] as const;
 
 const CREATE_KEY_LABEL = "Create the key";
@@ -64,7 +64,7 @@ const CONFIGURATION_INTRO =
 const SHOWN_ONCE_TITLE = "Shown once";
 
 const SHOWN_ONCE_BODY =
-	"This is the only time the key is shown. Copy the configuration now — it cannot be retrieved afterwards, and replacing it means creating another key.";
+	"This is the only time the key is shown. Copy it now — it cannot be retrieved afterwards, and replacing it means creating another key.";
 
 const REVOKE_LOCATION =
 	"You can review this key, see when it was last used, or revoke it on the organization's API keys settings page.";
@@ -83,6 +83,10 @@ const CONFIGURATION_COPIED_ANNOUNCEMENT =
 const INSTRUCTION_COPIED_ANNOUNCEMENT =
 	"Starter instruction copied to the clipboard.";
 
+const COPY_COMMANDS_LABEL = "Copy commands";
+
+const COMMANDS_COPIED_ANNOUNCEMENT = "Commands copied to the clipboard.";
+
 const COPY_FAILED_ANNOUNCEMENT =
 	"Copying failed. Select the text and copy it manually.";
 
@@ -96,11 +100,11 @@ const COPY_FAILED_ANNOUNCEMENT =
  * press registered.
  */
 const UNCOPIED_DISMISSAL_NOTE =
-	"Until you copy it, Escape and clicking outside will not close this dialog, and the link to the settings page is held back — either would leave with the only copy of the key. “Done” closes and discards the key whenever you choose.";
+	"Until you copy the key, Escape and clicking outside will not close this dialog, and the link to the settings page is held back — either would leave with the only copy of it. “Done” closes and discards the key whenever you choose.";
 
 /** Read out when a dismissal is disarmed, so the blocked key press is not silent. */
 const DISMISSAL_BLOCKED_ANNOUNCEMENT =
-	"The configuration has not been copied yet, so the dialog stayed open. Copy it, or choose Done to close and discard the key.";
+	"The key has not been copied yet, so the dialog stayed open. Copy it, or choose Done to close and discard the key.";
 
 /** Section 3 — the starter instruction. */
 const INSTRUCTION_LABEL = "Then say this to your tool";
@@ -118,19 +122,45 @@ const INSTRUCTION_INTRO =
 	"Copy this sentence and send it in the tool you just configured. It only works there: the configuration above is what gives the tool access to this project.";
 
 /**
- * Said only when this project's coding instructions are authored in Fabric.
+ * The local-checkout route. Shown only when this project's coding
+ * instructions are authored in Fabric, and shown FIRST when it is.
  *
  * A repository-backed project's instructions arrive with `git pull`, so a
  * sync hook would be a second writer with no merge between them — the CLI
  * refuses that project outright, and offering it here would send the reader
  * to a command that says no.
  *
- * One sentence and one command, for the same reason as the starter
- * instruction above: this is the last thing on a dialog that has already
- * asked the reader to copy two things.
+ * Two routes, not three steps. The files can reach the tool on disk (the
+ * CLI copies them into the checkout and Claude Code reads them natively) or
+ * live over MCP (the configuration plus the sentence). Both need the key
+ * this dialog just created; neither needs the other. The dialog said the
+ * MCP route first and tacked the command on as a muted sentence, and read
+ * as three things to do in order. Now the checkout route leads, because it
+ * is the one to pick for Claude Code, and the MCP route follows as the
+ * alternative.
+ *
+ * The sign-in line carries the key on purpose: the CLI stores it in its own
+ * per-user config and the hook it installs never names it, so this is the
+ * one place the key has to be typed — and copying this block is copying the
+ * key, which is why it satisfies the dismissal guard exactly as the
+ * configuration does.
  */
-function buildLocalSyncNote(projectId: string): string {
-	return `To keep a local checkout current with these instructions, run \`fabric instructions init --project ${projectId} --tool claude-code\` in it. That adds a session-start check and takes the first copy.`;
+const ROUTES_INTRO =
+	"Two ways to give your tool these instructions. Use either; the first is the one to pick for Claude Code.";
+
+const LOCAL_SYNC_LABEL = "Recommended: keep the files in your checkout";
+
+const LOCAL_SYNC_INTRO =
+	"Run these once in the checkout. The first signs the CLI in with this key; the CLI keeps it in its own config, never in the repository, though like any command the line may remain in your shell history. The second copies whatever is published into the checkout and installs a session-start check for Claude Code that reports later changes (apply them with the sync command the check prints). If nothing is published yet, the check reports the first version when it arrives. Claude Code reads the files directly, so the sentence further down is not needed.";
+
+/** The MCP route's heading when it follows the checkout route. */
+const MCP_ROUTE_LABEL = "Or read them live over MCP";
+
+function buildLocalSyncCommands(projectId: string, rawKey: string): string {
+	return [
+		`fabric auth login --key ${rawKey}`,
+		`fabric instructions init --project ${projectId} --tool claude-code`,
+	].join("\n");
 }
 
 /**
@@ -180,6 +210,27 @@ const CANCEL_LABEL = "Cancel";
  * `kind` is `"read"`, which is what the reader is promised above.
  */
 const ISSUED_KEY_SCOPES = ["mcp:read"] as const;
+
+/**
+ * The coding-instructions purpose also offers the CLI route, whose REST
+ * routes require the exact `instructions:read` scope (`requireScope` in the
+ * v1 middleware matches by name; the gateway's umbrella reading of
+ * `mcp:read` does not apply there). A key minted for that purpose carries
+ * both, so the command the dialog recommends works with the key it just
+ * created. Still read-only, still within what the reader was promised.
+ */
+const ISSUED_KEY_SCOPES_FOR_INSTRUCTIONS = [
+	"mcp:read",
+	"instructions:read",
+] as const;
+
+type IssuedKeyScope = (typeof ISSUED_KEY_SCOPES_FOR_INSTRUCTIONS)[number];
+
+function issuedKeyScopes(purpose: ConnectCliPurpose): IssuedKeyScope[] {
+	return purpose === "coding-instructions"
+		? [...ISSUED_KEY_SCOPES_FOR_INSTRUCTIONS]
+		: [...ISSUED_KEY_SCOPES];
+}
 
 /**
  * The name the key is stored under.
@@ -243,7 +294,7 @@ function buildMcpConfiguration(origin: string, rawKey: string): string {
 	);
 }
 
-type CopyTarget = "configuration" | "instruction";
+type CopyTarget = "configuration" | "instruction" | "command";
 
 interface ConnectCliDialogProps {
 	/** Controlled by the caller. This view never gates its own visibility. */
@@ -336,10 +387,10 @@ export function ConnectCliDialog({
 	 * This one latches on the first successful configuration copy and is only
 	 * cleared when the view closes.
 	 */
-	const [configurationCopied, setConfigurationCopied] = useState(false);
+	const [keyCopied, setKeyCopied] = useState(false);
 	const [announcement, setAnnouncement] = useState("");
 	const [origin, setOrigin] = useState("");
-	const copyConfigurationRef = useRef<HTMLButtonElement>(null);
+	const initialFocusRef = useRef<HTMLButtonElement>(null);
 	/**
 	 * The control that opened this view, so focus can be handed back to it.
 	 *
@@ -362,7 +413,7 @@ export function ConnectCliDialog({
 			await orpcClient.organizations.apiKeys.create({
 				organizationId,
 				name: ISSUED_KEY_NAME,
-				scopes: [...ISSUED_KEY_SCOPES],
+				scopes: issuedKeyScopes(purpose),
 				expiresInDays: ISSUED_KEY_EXPIRY_DAYS,
 			}),
 		onSuccess: (data) => {
@@ -384,7 +435,7 @@ export function ConnectCliDialog({
 	// dialog closes, and the secret is unrecoverable if it does not.
 	useEffect(() => {
 		if (rawKey) {
-			copyConfigurationRef.current?.focus();
+			initialFocusRef.current?.focus();
 		}
 	}, [rawKey]);
 
@@ -394,7 +445,7 @@ export function ConnectCliDialog({
 			// which is the honest reflection of the warning it just showed.
 			setRawKey(null);
 			setCopied(null);
-			setConfigurationCopied(false);
+			setKeyCopied(false);
 			setAnnouncement("");
 			createKeyMutation.reset();
 		}
@@ -405,13 +456,16 @@ export function ConnectCliDialog({
 		try {
 			await navigator.clipboard.writeText(value);
 			setCopied(target);
-			if (target === "configuration") {
-				setConfigurationCopied(true);
+			// Both blocks carry the key; taking either is taking the key.
+			if (target === "configuration" || target === "command") {
+				setKeyCopied(true);
 			}
 			setAnnouncement(
 				target === "configuration"
 					? CONFIGURATION_COPIED_ANNOUNCEMENT
-					: INSTRUCTION_COPIED_ANNOUNCEMENT,
+					: target === "instruction"
+						? INSTRUCTION_COPIED_ANNOUNCEMENT
+						: COMMANDS_COPIED_ANNOUNCEMENT,
 			);
 		} catch {
 			setCopied(null);
@@ -421,23 +475,26 @@ export function ConnectCliDialog({
 
 	const configuration = rawKey ? buildMcpConfiguration(origin, rawKey) : null;
 	const starterInstruction = buildStarterInstruction(projectName, purpose);
-	const localSyncNote =
-		purpose === "coding-instructions" && localSyncAvailable && projectId
-			? buildLocalSyncNote(projectId)
+	const localSyncCommands =
+		purpose === "coding-instructions" &&
+		localSyncAvailable &&
+		projectId &&
+		rawKey
+			? buildLocalSyncCommands(projectId, rawKey)
 			: null;
+	const cliFirst = localSyncCommands !== null;
 	const issueError = createKeyMutation.error;
 
 	/**
 	 * A live credential is on screen that exists nowhere else.
 	 *
-	 * Gated on `configurationCopied` and not on `rawKey` alone: the loss this
+	 * Gated on `keyCopied` and not on `rawKey` alone: the loss this
 	 * guards against is losing the ONLY copy, and once the reader has taken one
 	 * there is nothing left to lose. Trapping them past that point would be a
 	 * modal that refuses to close for no remaining reason — worse for keyboard
 	 * users than the accident it was meant to prevent.
 	 */
-	const uncopiedSecretOnScreen =
-		configuration !== null && !configurationCopied;
+	const uncopiedSecretOnScreen = configuration !== null && !keyCopied;
 
 	/**
 	 * Disarm one incidental dismissal and say so.
@@ -453,6 +510,67 @@ export function ConnectCliDialog({
 		event.preventDefault();
 		setAnnouncement(DISMISSAL_BLOCKED_ANNOUNCEMENT);
 	};
+
+	/**
+	 * The once-only warning and the disarmed-dismissal note, rendered under
+	 * whichever block shows the key FIRST: the commands when the checkout
+	 * route leads, the configuration otherwise. One copy of each, because
+	 * they are about the key, not about a block.
+	 */
+	const keyNotice = (
+		<>
+			{uncopiedSecretOnScreen ? (
+				<p
+					className="text-muted-foreground text-sm"
+					data-testid="connect-cli-dismissal-note"
+					id="connect-cli-dismissal-note"
+				>
+					{UNCOPIED_DISMISSAL_NOTE}
+				</p>
+			) : null}
+			{/* Painted in the `--highlight` token pair rather
+			 * than the primitive's `warning` variant, which
+			 * reaches for a raw Tailwind yellow. */}
+			<Alert className="border-highlight/40 bg-highlight/5 text-highlight-ink">
+				<AlertTriangleIcon
+					aria-hidden="true"
+					className="text-highlight"
+				/>
+				<AlertTitle>{SHOWN_ONCE_TITLE}</AlertTitle>
+				<AlertDescription>
+					<p>{SHOWN_ONCE_BODY}</p>
+					{/* The link is withheld until the
+					 * configuration has been copied. It is a
+					 * client-side navigation out of the page
+					 * this dialog is mounted on, so following
+					 * it unmounts the only holder of the
+					 * plaintext key — the one exit the
+					 * dismissal guards cannot intercept,
+					 * because it is not a dismissal. Withheld
+					 * rather than confirmed-on-click: the page
+					 * it points at is still named in the prose
+					 * either way, which is all this paragraph
+					 * ever had to do, and the reader is spared
+					 * a second modal on top of this one. */}
+					<p className="mt-1">
+						{organizationSlug && keyCopied ? (
+							<>
+								{REVOKE_LOCATION}{" "}
+								<Link
+									className="underline underline-offset-4"
+									href={apiKeysSettingsPath(organizationSlug)}
+								>
+									{REVOKE_LINK_LABEL}
+								</Link>
+							</>
+						) : (
+							REVOKE_LOCATION
+						)}
+					</p>
+				</AlertDescription>
+			</Alert>
+		</>
+	);
 
 	return (
 		<Dialog open={open} onOpenChange={handleOpenChange}>
@@ -502,7 +620,7 @@ export function ConnectCliDialog({
 				</p>
 
 				{configuration === null ? (
-					<div className="space-y-4">
+					<div className="min-w-0 space-y-4">
 						{/* Section 1. Disclosure, above the create control, so
 						 * nothing is minted before it has been read. */}
 						<section
@@ -548,8 +666,71 @@ export function ConnectCliDialog({
 						) : null}
 					</div>
 				) : (
-					<div className="space-y-4">
-						{/* Section 2. The finished configuration. */}
+					<div className="min-w-0 space-y-4">
+						{cliFirst ? (
+							<p className="text-muted-foreground text-sm">
+								{ROUTES_INTRO}
+							</p>
+						) : null}
+
+						{/* The checkout route, first when it applies. */}
+						{localSyncCommands ? (
+							<section
+								aria-labelledby="connect-cli-local-sync-label"
+								className="space-y-3"
+							>
+								<h3
+									id="connect-cli-local-sync-label"
+									className="app-editorial-label"
+								>
+									{LOCAL_SYNC_LABEL}
+								</h3>
+								<p className="text-muted-foreground text-sm">
+									{LOCAL_SYNC_INTRO}
+								</p>
+								{/* Wraps rather than scrolls: a line longer
+								 * than the dialog is wide would otherwise hide
+								 * its end behind a scrollbar — the project id,
+								 * exactly where it stops being obvious.
+								 * `min-w-0` on the wrapper above is what keeps
+								 * a block like this from widening the dialog's
+								 * grid column and clipping every paragraph. */}
+								<pre
+									className="whitespace-pre-wrap break-all rounded-lg border border-border bg-muted p-4 font-mono text-xs"
+									data-testid="connect-cli-local-sync-command"
+								>
+									{localSyncCommands}
+								</pre>
+								<Button
+									ref={initialFocusRef}
+									aria-describedby={
+										uncopiedSecretOnScreen
+											? "connect-cli-dismissal-note"
+											: undefined
+									}
+									autoLoading={false}
+									className="w-full"
+									onClick={() =>
+										copy("command", localSyncCommands)
+									}
+								>
+									{copied === "command" ? (
+										<>
+											<CheckIcon aria-hidden="true" />
+											{COPIED_LABEL}
+										</>
+									) : (
+										<>
+											<CopyIcon aria-hidden="true" />
+											{COPY_COMMANDS_LABEL}
+										</>
+									)}
+								</Button>
+								{keyNotice}
+							</section>
+						) : null}
+
+						{/* The MCP route: the configuration, then the sentence. */}
 						<section
 							aria-labelledby="connect-cli-configuration-label"
 							className="space-y-3"
@@ -558,7 +739,9 @@ export function ConnectCliDialog({
 								id="connect-cli-configuration-label"
 								className="app-editorial-label"
 							>
-								{CONFIGURATION_LABEL}
+								{cliFirst
+									? MCP_ROUTE_LABEL
+									: CONFIGURATION_LABEL}
 							</h3>
 							<p className="text-muted-foreground text-sm">
 								{CONFIGURATION_INTRO}
@@ -569,13 +752,14 @@ export function ConnectCliDialog({
 								</code>
 							</pre>
 							<Button
-								ref={copyConfigurationRef}
-								// Initial focus lands here, so the note below is
-								// read out as this control's description — the
-								// disarmed dismissals are announced before a
-								// reader can discover them by pressing Escape.
+								ref={cliFirst ? undefined : initialFocusRef}
+								// Initial focus lands on the first copy control,
+								// so the note below is read out as that
+								// control's description — the disarmed
+								// dismissals are announced before a reader can
+								// discover them by pressing Escape.
 								aria-describedby={
-									uncopiedSecretOnScreen
+									uncopiedSecretOnScreen && !cliFirst
 										? "connect-cli-dismissal-note"
 										: undefined
 								}
@@ -597,62 +781,9 @@ export function ConnectCliDialog({
 									</>
 								)}
 							</Button>
-							{uncopiedSecretOnScreen ? (
-								<p
-									className="text-muted-foreground text-sm"
-									data-testid="connect-cli-dismissal-note"
-									id="connect-cli-dismissal-note"
-								>
-									{UNCOPIED_DISMISSAL_NOTE}
-								</p>
-							) : null}
-							{/* Painted in the `--highlight` token pair rather
-							 * than the primitive's `warning` variant, which
-							 * reaches for a raw Tailwind yellow. */}
-							<Alert className="border-highlight/40 bg-highlight/5 text-highlight-ink">
-								<AlertTriangleIcon
-									aria-hidden="true"
-									className="text-highlight"
-								/>
-								<AlertTitle>{SHOWN_ONCE_TITLE}</AlertTitle>
-								<AlertDescription>
-									<p>{SHOWN_ONCE_BODY}</p>
-									{/* The link is withheld until the
-									 * configuration has been copied. It is a
-									 * client-side navigation out of the page
-									 * this dialog is mounted on, so following
-									 * it unmounts the only holder of the
-									 * plaintext key — the one exit the
-									 * dismissal guards cannot intercept,
-									 * because it is not a dismissal. Withheld
-									 * rather than confirmed-on-click: the page
-									 * it points at is still named in the prose
-									 * either way, which is all this paragraph
-									 * ever had to do, and the reader is spared
-									 * a second modal on top of this one. */}
-									<p className="mt-1">
-										{organizationSlug &&
-										configurationCopied ? (
-											<>
-												{REVOKE_LOCATION}{" "}
-												<Link
-													className="underline underline-offset-4"
-													href={apiKeysSettingsPath(
-														organizationSlug,
-													)}
-												>
-													{REVOKE_LINK_LABEL}
-												</Link>
-											</>
-										) : (
-											REVOKE_LOCATION
-										)}
-									</p>
-								</AlertDescription>
-							</Alert>
+							{cliFirst ? null : keyNotice}
 						</section>
 
-						{/* Section 3. The starter instruction. */}
 						<section
 							aria-labelledby="connect-cli-instruction-label"
 							className="space-y-3"
@@ -692,14 +823,6 @@ export function ConnectCliDialog({
 									</>
 								)}
 							</Button>
-							{localSyncNote ? (
-								<p
-									className="text-muted-foreground text-sm"
-									data-testid="connect-cli-local-sync-note"
-								>
-									{localSyncNote}
-								</p>
-							) : null}
 						</section>
 					</div>
 				)}

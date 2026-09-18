@@ -118,6 +118,7 @@ describe("InstructionsEmptyState — connect your agent", () => {
 				projectId="p"
 				projectName="Checkout Rewrite"
 				onUploadClick={() => undefined}
+				localSyncAvailable={true}
 			/>,
 		);
 
@@ -141,7 +142,29 @@ describe("InstructionsEmptyState — connect your agent", () => {
 			organizationSlug: "example-org",
 			projectName: "Checkout Rewrite",
 			purpose: "coding-instructions",
+			// The dialog offers `fabric instructions init` from the empty
+			// state too: it needs the project to name and the gate the tab
+			// computed from the source-of-truth setting.
+			projectId: "p",
+			localSyncAvailable: true,
 		});
+	});
+
+	it("passes the local-sync gate through unchanged, and it is off by default", async () => {
+		const user = userEvent.setup();
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+			/>,
+		);
+		await user.click(
+			screen.getByRole("button", { name: "Connect your agent" }),
+		);
+		expect(
+			connectCliDialogProps[connectCliDialogProps.length - 1],
+		).toMatchObject({ localSyncAvailable: false });
 	});
 
 	it("does not render the button when there is no organization id", () => {

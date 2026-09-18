@@ -192,6 +192,15 @@ export function CodingInstructionsTab({
 					projectId={projectId}
 					projectName={projectName}
 					onUploadClick={() => setUploadOpen(true)}
+					// Same gate as the published view: fails closed until the
+					// setting has LOADED. `isSuccess`, not `!isLoading` — a
+					// failed settings request also stops loading, and the
+					// command would then be offered for a project the CLI
+					// refuses.
+					localSyncAvailable={
+						settings.isSuccess &&
+						settings.data.sourceOfTruth !== "REPOSITORY"
+					}
 				/>
 			</>
 		);
@@ -221,8 +230,8 @@ export function CodingInstructionsTab({
 				// setting has loaded, so the actions cannot appear and then
 				// vanish — and the server refuses either way.
 				repositoryBacked={
-					settings.isLoading ||
-					settings.data?.sourceOfTruth === "REPOSITORY"
+					!settings.isSuccess ||
+					settings.data.sourceOfTruth === "REPOSITORY"
 				}
 			/>
 		</>
