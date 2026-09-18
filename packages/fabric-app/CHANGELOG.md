@@ -1,5 +1,15 @@
 # fabric-app
 
+## 1.16.4
+
+### Patch Changes
+
+- fdb3c55: Every AI feature in the application now runs on Vercel AI SDK 7.
+- 6c575f1: The CLI now saves an explicitly selected Fabric deployment with the active profile, and coding-instructions setup syncs a published snapshot before installing its session hook. The SDK now defaults requests to `https://fabric.pro` while preserving explicit and `FABRIC_BASE_URL` overrides.
+- ac88b17: The CLI now reports its installed version, distinguishes authentication failures from deployment errors during sign-in, and includes installation in coding-instructions setup.
+- 93e3cb5: Case study, newsletter blurb, stakeholder email and webinar script drafts now show the model the question a project member answered, and any questions merged into it, beside each settled approval, and tell it that an answer approves what those questions asked and what the answer itself names, not more; an answer started before a newer planning analysis refreshed the question is no longer recorded, and the page asks for it again.
+- 6c15e72: Publishing no longer calls a question the planning analysis stopped raising "open" or "answered": topic readiness now counts closed decisions, and the generation tab and drafting prompts call such questions unresolved.
+
 ## 1.16.3
 
 ### Patch Changes

@@ -1,5 +1,15 @@
 # @repo/api
 
+## 0.0.8
+
+### Patch Changes
+
+- @fabricorg/integrations-github@0.1.3
+  - @fabricorg/integrations-gmail@0.1.3
+  - @fabricorg/integrations-linear@0.1.3
+  - @fabricorg/integrations-notion@0.1.3
+  - @fabricorg/integrations-slack@0.1.3
+
 ## 0.0.7
 
 ### Patch Changes
