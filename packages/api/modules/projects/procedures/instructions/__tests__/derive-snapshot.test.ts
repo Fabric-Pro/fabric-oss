@@ -289,12 +289,23 @@ describe("projects.instructions.derive", () => {
 				data: { reason: "BASE_NOT_PUBLISHED" },
 			});
 			expect(m.createDerivedInstructionSnapshot).not.toHaveBeenCalled();
+			// Direction-neutral: the base may have been replaced by a
+			// ROLLBACK to an older version, and History offers exactly that,
+			// so "someone published a newer version" would be a falsehood
+			// rather than a rounding error.
+			expect((error as ORPCError<string, unknown>).message).not.toMatch(
+				/newer version/i,
+			);
+			expect((error as ORPCError<string, unknown>).message).toMatch(
+				/published version changed/i,
+			);
 		});
 
 		/**
-		 * "Save as a new version" makes no claim on the published pointer, and
-		 * the publish transition refuses an older version anyway — so a stale
-		 * base is allowed to become history without becoming the pointer.
+		 * "Save as a new version" makes no claim on the published pointer, so
+		 * a stale base is allowed to become history without becoming the
+		 * pointer. It does NOT rest on the publish transition refusing an
+		 * older version — History's rollback publishes one deliberately.
 		 */
 		it("allows a non-publishing save from a stale base", async () => {
 			m.getPublishedInstructionSnapshot.mockResolvedValue({

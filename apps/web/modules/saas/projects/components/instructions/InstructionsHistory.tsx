@@ -37,6 +37,18 @@ const DELETABLE_STATUSES = new Set(["READY", "REJECTED", "FAILED"]);
 // of an unbounded array — recognizable by `reason`, never a real file.
 const TRUNCATED_REASON = "truncated";
 
+/**
+ * Whether publishing this version would take the project BACK to an earlier
+ * one, which is the only thing that distinguishes the button's two labels.
+ *
+ * Strictly lower, and only against a version that is actually published:
+ * nothing published means no direction to go back in, and the equal case is
+ * the published row itself, which offers no publish button at all.
+ */
+function isRollback(version: number, publishedVersion: number | null) {
+	return publishedVersion !== null && version < publishedVersion;
+}
+
 export type HistorySnapshot = {
 	id: string;
 	version: number;
@@ -63,9 +75,23 @@ export type HistorySnapshot = {
 /**
  * Every upload kept for the project, newest first. Publish/Download act on
  * the same `publish`/`createDownloadUrl` procedures the header buttons use;
- * a CONFLICT from either (a newer version already published, or — for
- * delete — this snapshot being the published one) surfaces via the
- * server's own message rather than a generic failure string.
+ * a CONFLICT from either (for delete, this snapshot being the published one)
+ * surfaces via the server's own message rather than a generic failure string.
+ *
+ * Publishing an OLDER version is a rollback, not a conflict: the server used
+ * to refuse it with "a newer version is already published" — a race guard
+ * written against automatic publish-on-ready, catching the one act it was
+ * never meant to catch. The button says so, because "Publish this version" on
+ * a row below the published one hides what it does; the rows above it stay in
+ * History and can be published again.
+ *
+ * `publishedVersion` comes from the parent's published row rather than being
+ * looked up in `snapshots` by `publishedId`. A lookup has a failure mode with
+ * no honest answer: when the pointer query has errored there is no published
+ * id to match, and "not found in the list" then reads as "nothing is
+ * published" — every row would be labelled a forward publish, including the
+ * ones that are rollbacks. `publishedUnknown` says that state out loud and
+ * withholds the buttons instead of guessing the direction.
  */
 export function InstructionsHistory({
 	projectId,
@@ -73,6 +99,8 @@ export function InstructionsHistory({
 	onOpenChange,
 	snapshots,
 	publishedId,
+	publishedVersion,
+	publishedUnknown = false,
 	onChanged,
 }: {
 	projectId: string;
@@ -80,6 +108,10 @@ export function InstructionsHistory({
 	onOpenChange: (o: boolean) => void;
 	snapshots: HistorySnapshot[];
 	publishedId: string | null;
+	/** The published row's version, or null when nothing is published. */
+	publishedVersion: number | null;
+	/** True when the published pointer could not be read at all. */
+	publishedUnknown?: boolean;
 	onChanged: () => void;
 }) {
 	const t = useTranslations("projects.codingInstructions.history");
@@ -138,6 +170,16 @@ export function InstructionsHistory({
 					<DialogTitle>{t("title")}</DialogTitle>
 					<DialogDescription>{t("description")}</DialogDescription>
 				</DialogHeader>
+				{publishedUnknown ? (
+					// Said plainly rather than worked around: without the
+					// pointer, no row can be labelled a publish or a rollback
+					// honestly, so the dialog stays readable (versions,
+					// statuses, downloads, "See why") and only the two actions
+					// that depend on the direction are withheld.
+					<p className="text-destructive text-xs" role="alert">
+						{t("publishedUnknown")}
+					</p>
+				) : null}
 				<div className="flex max-h-[420px] flex-col gap-2 overflow-auto">
 					{snapshots.map((s) => {
 						const isPublished = s.id === publishedId;
@@ -183,7 +225,8 @@ export function InstructionsHistory({
 									</div>
 									<div className="flex shrink-0 gap-2">
 										{s.status === "READY" &&
-										!isPublished ? (
+										!isPublished &&
+										!publishedUnknown ? (
 											<Button
 												size="sm"
 												variant="outline"
@@ -192,7 +235,12 @@ export function InstructionsHistory({
 													if (
 														window.confirm(
 															t(
-																"publishConfirm",
+																isRollback(
+																	s.version,
+																	publishedVersion,
+																)
+																	? "rollbackConfirm"
+																	: "publishConfirm",
 																{
 																	version:
 																		s.version,
@@ -207,7 +255,14 @@ export function InstructionsHistory({
 													}
 												}}
 											>
-												{t("publishAction")}
+												{t(
+													isRollback(
+														s.version,
+														publishedVersion,
+													)
+														? "rollbackAction"
+														: "publishAction",
+												)}
 											</Button>
 										) : null}
 										{s.status === "READY" ? (

@@ -206,6 +206,43 @@ describe("getInstructionManifestDiff tenant scoping", () => {
 		});
 	});
 
+	/**
+	 * The direction the diff must NOT assume, now that History can roll the
+	 * pointer back: the caller holds a NEWER version's digest than the one
+	 * published.
+	 *
+	 * An agent installed v9, someone rolled the project back to v7, and the
+	 * agent asks what changed since the copy it has. Nothing here compares
+	 * version numbers — the base is found by digest and the head is the
+	 * published snapshot — so the answer is the real delta from v9 to v7, the
+	 * work the agent has to undo. The only thing that short-circuits to
+	 * `unchanged` is an EQUAL digest, which would mean the two versions hold
+	 * identical content and there is genuinely nothing to do. A base that has
+	 * been pruned is the `null` case above: cannot say, take a full copy.
+	 */
+	it("diffs backwards when the caller's digest is a newer version than the published one", async () => {
+		// v9's manifest, which the caller installed, against the published
+		// v7's — the file v9 added is a removal, the file it edited a change.
+		prisma.snapshotFindFirst.mockResolvedValue({
+			id: "snap_v9",
+			version: 9,
+			files: [
+				{ path: "AGENTS.md", sha256: "v9" },
+				{ path: ".claude/skills/new/SKILL.md", sha256: "v9-only" },
+			],
+		});
+		prisma.fileFindMany.mockResolvedValue([
+			{ path: "AGENTS.md", sha256: "v7" },
+		]);
+
+		expect(await diffAsHost()).toEqual({
+			base: { id: "snap_v9", version: 9, digest: "digest_base" },
+			added: [],
+			removed: [".claude/skills/new/SKILL.md"],
+			changed: ["AGENTS.md"],
+		});
+	});
+
 	// The case the organization filter exists for: the row names this project
 	// and carries this digest, but belongs to another tenant.
 	it("reports an unknown base for a snapshot on this project owned by another organization", async () => {
