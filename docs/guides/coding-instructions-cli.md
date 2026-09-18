@@ -15,6 +15,25 @@ everyone else does without anybody pasting anything.
 The intended trigger is a Claude Code `SessionStart` hook: every session asks
 whether the published version moved, and either says so or applies it.
 
+## Install and authenticate
+
+Install or update the CLI before running the coding-instructions commands:
+
+```bash
+npm install -g @fabricorg/cli
+```
+
+Then authenticate against the deployment that hosts the project. The Connect
+dialog supplies the key and exact deployment URL:
+
+```bash
+fabric auth login --key <api-key> --base-url https://example.com
+```
+
+An explicit `--base-url` is stored with the active CLI profile, so later
+commands and generated hooks use the same deployment. `FABRIC_BASE_URL` remains
+an execution-time override when it is set.
+
 ## The commands
 
 ### `fabric instructions check --project <id> [--dest <dir>] [--verify] [--hook]`
