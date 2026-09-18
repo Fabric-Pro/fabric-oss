@@ -98,13 +98,13 @@ vi.mock("../prisma/client", () => ({
 }));
 
 import {
-	completePlanningAnalysis,
-	failPlanningAnalysis,
-} from "../prisma/queries/projects/publishing-planning";
-import {
 	answerTopicQuestion,
 	reconcileTopicQuestions,
 } from "../prisma/queries/projects/publishing-decisions";
+import {
+	completePlanningAnalysis,
+	failPlanningAnalysis,
+} from "../prisma/queries/projects/publishing-planning";
 
 const ORG_PROJECT = {
 	organizationId: "org-1",
@@ -121,6 +121,7 @@ const QUESTION_A = {
 	recommendedResponse: "Ask their marketing contact first.",
 	answerOptions: null,
 	whyItMatters: "A case study without the name is a different piece.",
+	foldedQuestions: [] as string[],
 };
 /**
  * Real pickable options (Fizzy #1851): the
@@ -137,6 +138,11 @@ const OPTIONS = [
 	{ text: "Not approved — leave the customer logo out.", justification: "" },
 ];
 const QUESTION_WITH_OPTIONS = { ...QUESTION_A, answerOptions: OPTIONS };
+/** A question the analysis folded another one into (Fizzy #1988). */
+const QUESTION_FOLDED = {
+	...QUESTION_A,
+	foldedQuestions: ["May the case study show the example-org logo?"],
+};
 const BASE = {
 	topicId: "topic-1",
 	projectId: "proj-1",
@@ -229,6 +235,8 @@ describe("reconcileTopicQuestions", () => {
 					recommendedResponse: QUESTION_A.recommendedResponse,
 					whyItMatters: QUESTION_A.whyItMatters,
 					analysisVersion: 1,
+					foldedQuestions: [],
+					foldedQuestionsVersion: 1,
 				}),
 			}),
 		);
@@ -307,6 +315,10 @@ describe("reconcileTopicQuestions", () => {
 					recommendedResponse: QUESTION_A.recommendedResponse,
 					whyItMatters: QUESTION_A.whyItMatters,
 					analysisVersion: BASE.analysisVersion,
+					// Replaced with the wording, stamped with the version that wrote
+					// it (Fizzy #1988).
+					foldedQuestions: [],
+					foldedQuestionsVersion: BASE.analysisVersion,
 				}),
 			}),
 		);
@@ -325,6 +337,43 @@ describe("reconcileTopicQuestions", () => {
 		expect(claimRoot).toHaveBeenCalledWith(
 			expect.objectContaining({
 				data: expect.objectContaining({ answerOptions: OPTIONS }),
+			}),
+		);
+	});
+
+	it("writes the folded questions and the version that wrote them on create", async () => {
+		findManyRoots.mockResolvedValue([]);
+
+		await reconcileTopicQuestions(tx, {
+			...BASE,
+			questions: [QUESTION_FOLDED],
+		});
+
+		const created = createEntry.mock.calls
+			.map((c) => c[0].data)
+			.find((d) => d.kind === "QUESTION");
+		expect(created).toMatchObject({
+			foldedQuestions: QUESTION_FOLDED.foldedQuestions,
+			foldedQuestionsVersion: BASE.analysisVersion,
+		});
+	});
+
+	it("replaces the folded questions and their version on refresh", async () => {
+		findManyRoots.mockResolvedValue([
+			{ id: "root-1", questionId: QUESTION_A.questionId, status: "OPEN" },
+		]);
+
+		await reconcileTopicQuestions(tx, {
+			...BASE,
+			questions: [QUESTION_FOLDED],
+		});
+
+		expect(claimRoot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					foldedQuestions: QUESTION_FOLDED.foldedQuestions,
+					foldedQuestionsVersion: BASE.analysisVersion,
+				}),
 			}),
 		);
 	});
@@ -446,6 +495,8 @@ describe("reconcileTopicQuestions", () => {
 					recommendedResponse: QUESTION_A.recommendedResponse,
 					whyItMatters: QUESTION_A.whyItMatters,
 					analysisVersion: BASE.analysisVersion,
+					foldedQuestions: [],
+					foldedQuestionsVersion: BASE.analysisVersion,
 				}),
 			}),
 		);
@@ -730,6 +781,7 @@ describe("answerTopicQuestion", () => {
 			status: "OPEN",
 			organizationId: "org-1",
 			userId: null,
+			analysisVersion: 3,
 		});
 
 		const result = await answerTopicQuestion({ ...ANSWER_INPUT });
@@ -776,6 +828,7 @@ describe("answerTopicQuestion", () => {
 			status: "RESOLVED",
 			organizationId: "org-1",
 			userId: null,
+			analysisVersion: 3,
 		});
 
 		const result = await answerTopicQuestion({ ...ANSWER_INPUT });
@@ -799,6 +852,7 @@ describe("answerTopicQuestion", () => {
 			status: "OPEN",
 			organizationId: "org-1",
 			userId: null,
+			analysisVersion: 3,
 		});
 		claimRoot.mockResolvedValue({ count: 0 });
 
@@ -828,6 +882,7 @@ describe("answerTopicQuestion", () => {
 			status: "POSSIBLY_RESOLVED",
 			organizationId: null,
 			userId: "user-9",
+			analysisVersion: 3,
 		});
 
 		const result = await answerTopicQuestion({ ...ANSWER_INPUT });
@@ -861,6 +916,7 @@ describe("answerTopicQuestion", () => {
 			status: "REJECTED",
 			organizationId: "org-1",
 			userId: null,
+			analysisVersion: 3,
 		});
 
 		const result = await answerTopicQuestion({ ...ANSWER_INPUT });
@@ -876,6 +932,7 @@ describe("answerTopicQuestion", () => {
 			status: "OPEN",
 			organizationId: "org-1",
 			userId: null,
+			analysisVersion: 3,
 		});
 
 		await answerTopicQuestion({ ...ANSWER_INPUT });
@@ -890,6 +947,134 @@ describe("answerTopicQuestion", () => {
 					kind: "QUESTION",
 					deletedAt: null,
 				}),
+			}),
+		);
+	});
+});
+
+describe("answerTopicQuestion — the version the member answered (Fizzy #1988)", () => {
+	// A regeneration refreshes an OPEN or POSSIBLY_RESOLVED root in place —
+	// new wording, new `analysisVersion` — while the page keeps a member's
+	// draft. An answer sent with the version the member saw must not be stored
+	// against wording they never saw.
+	const OPEN_ROOT = {
+		id: "root-1",
+		status: "OPEN",
+		organizationId: "org-1",
+		userId: null,
+		analysisVersion: 3,
+	};
+	const CLAIM_WHERE = {
+		id: "root-1",
+		projectId: "proj-1",
+		topicId: "topic-1",
+		status: { in: ["OPEN", "POSSIBLY_RESOLVED"] },
+	};
+
+	it("records an answer written against the version still on the root, and claims on that version", async () => {
+		findRoot.mockResolvedValue(OPEN_ROOT);
+
+		const result = await answerTopicQuestion({
+			...ANSWER_INPUT,
+			expectedAnalysisVersion: 3,
+		});
+
+		expect(result.status).toBe("resolved");
+		expect(claimRoot).toHaveBeenCalledWith({
+			where: { ...CLAIM_WHERE, analysisVersion: 3 },
+			data: expect.objectContaining({ status: "RESOLVED" }),
+		});
+		expect(createEntry).toHaveBeenCalledTimes(1);
+	});
+
+	it("refuses an answer written against an older version, and writes nothing", async () => {
+		findRoot.mockResolvedValue(OPEN_ROOT);
+
+		const result = await answerTopicQuestion({
+			...ANSWER_INPUT,
+			expectedAnalysisVersion: 2,
+		});
+
+		expect(result.status).toBe("question_changed");
+		expect(claimRoot).not.toHaveBeenCalled();
+		expect(createEntry).not.toHaveBeenCalled();
+	});
+
+	it("refuses when a regeneration rewrote the root between the read and the claim", async () => {
+		findRoot.mockResolvedValue(OPEN_ROOT);
+		claimRoot.mockResolvedValue({ count: 0 });
+		findEntry.mockResolvedValue({
+			id: "root-1",
+			status: "OPEN",
+			analysisVersion: 4,
+		});
+
+		const result = await answerTopicQuestion({
+			...ANSWER_INPUT,
+			expectedAnalysisVersion: 3,
+		});
+
+		expect(result.status).toBe("question_changed");
+		expect(claimRoot).toHaveBeenCalledTimes(1);
+		expect(createEntry).not.toHaveBeenCalled();
+	});
+
+	it("still dedupes when a concurrent answer won the claim", async () => {
+		findRoot.mockResolvedValue(OPEN_ROOT);
+		claimRoot.mockResolvedValue({ count: 0 });
+		findEntry.mockResolvedValue({
+			id: "root-1",
+			status: "RESOLVED",
+			analysisVersion: 3,
+		});
+
+		const result = await answerTopicQuestion({
+			...ANSWER_INPUT,
+			expectedAnalysisVersion: 3,
+		});
+
+		expect(result.status).toBe("deduped");
+		expect(createEntry).not.toHaveBeenCalled();
+	});
+
+	it("does not check a caller that sends no version, whatever the root's version", async () => {
+		findRoot.mockResolvedValue(OPEN_ROOT);
+
+		const result = await answerTopicQuestion({ ...ANSWER_INPUT });
+
+		expect(result.status).toBe("resolved");
+		expect(createEntry).toHaveBeenCalledTimes(1);
+	});
+
+	it("matches a root with no version when the caller saw none", async () => {
+		findRoot.mockResolvedValue({ ...OPEN_ROOT, analysisVersion: null });
+
+		const result = await answerTopicQuestion({
+			...ANSWER_INPUT,
+			expectedAnalysisVersion: null,
+		});
+
+		expect(result.status).toBe("resolved");
+		expect(claimRoot).toHaveBeenCalledWith({
+			where: { ...CLAIM_WHERE, analysisVersion: null },
+			data: expect.objectContaining({ status: "RESOLVED" }),
+		});
+	});
+
+	it("reads the root's version with the root", async () => {
+		// The mock returns a version whatever is selected; on a real database an
+		// unselected column is undefined, and every versioned answer would be
+		// refused.
+		findRoot.mockResolvedValue(OPEN_ROOT);
+
+		await answerTopicQuestion({
+			...ANSWER_INPUT,
+			expectedAnalysisVersion: 3,
+		});
+
+		expect(findRoot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				select: expect.objectContaining({ analysisVersion: true }),
 			}),
 		);
 	});

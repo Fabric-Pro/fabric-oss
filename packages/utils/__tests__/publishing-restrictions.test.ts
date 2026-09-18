@@ -608,6 +608,8 @@ describe("settledDecision — a decision is settled only when a person answered 
 			subject: "example-org",
 			decisionKind: "CUSTOMER_NAME",
 			answer: "Yes, after legal review.",
+			question: "May we name example-org in public material?",
+			foldedQuestions: [],
 		};
 		expect(settledDecision(settled({}, [older, newer]))).toEqual(expected);
 		expect(settledDecision(settled({}, [newer, older]))).toEqual(expected);
@@ -689,6 +691,8 @@ describe("settledDecision — a decision is settled only when a person answered 
 			subject: null,
 			decisionKind: "OTHER",
 			answer: "Yes, name them.",
+			question: "May we name example-org in public material?",
+			foldedQuestions: [],
 		});
 	});
 });
@@ -728,6 +732,8 @@ describe("settledBlocker — the same computation, for a root raised as an erran
 			subject: "sign-off to name example-org",
 			decisionKind: "MISSING_APPROVAL",
 			answer: "Not needed — the piece will not name anyone.",
+			question: "Get sign-off from example-org to name them publicly.",
+			foldedQuestions: [],
 		});
 	});
 
@@ -878,5 +884,114 @@ describe("currentAnswerReply — one rule for which reply is the answer (Fizzy #
 		const before = [...replies];
 		currentAnswerReply(replies);
 		expect(replies).toEqual(before);
+	});
+});
+
+describe("settledDecision — the question the answer was given to (Fizzy #1988)", () => {
+	const answered = (): SettledDecisionThread["replies"][number] => ({
+		id: "reply-1",
+		createdAt: new Date("2026-09-01T10:00:00Z"),
+		status: "RESOLVED",
+		authorType: "USER",
+		content: "Yes.",
+	});
+	const FOLDED = "May the piece show the example-org logo?";
+	/** A settled root whose label is broader than its question, with one question folded in. */
+	const scoped = (
+		rootOver: Partial<SettledDecisionThread["root"]> = {},
+	): SettledDecisionThread => ({
+		root: {
+			kind: "QUESTION",
+			status: "RESOLVED",
+			decisionKind: "CUSTOMER_NAME",
+			subject: "Customer name and logo",
+			summary: "May the piece name example-org?",
+			analysisVersion: 2,
+			foldedQuestions: [FOLDED],
+			foldedQuestionsVersion: 2,
+			...rootOver,
+		},
+		replies: [answered()],
+	});
+
+	it("carries the root's summary as the question, exactly as stored", () => {
+		expect(settledDecision(scoped())?.question).toBe(
+			"May the piece name example-org?",
+		);
+		expect(settledDecision(scoped({ summary: "   " }))?.question).toBe(
+			"   ",
+		);
+		expect(settledDecision(scoped({ summary: null }))?.question).toBeNull();
+	});
+
+	it("reads no question from a root that carries no summary", () => {
+		const { summary: _summary, ...root } = scoped().root;
+		const decision = settledDecision({ root, replies: [answered()] });
+		// Precondition: the thread is settled, so a null here is the field and
+		// not the whole result.
+		expect(decision?.answer).toBe("Yes.");
+		expect(decision?.question).toBeNull();
+	});
+
+	it("carries the folded questions while their stamp matches the root's version, for a blocker too", () => {
+		expect(settledDecision(scoped())?.foldedQuestions).toEqual([FOLDED]);
+		expect(
+			settledBlocker(
+				scoped({ kind: "BLOCKER", decisionKind: "MISSING_APPROVAL" }),
+			)?.foldedQuestions,
+		).toEqual([FOLDED]);
+	});
+
+	it("reads none while the stamp is null", () => {
+		expect(
+			settledDecision(scoped({ foldedQuestionsVersion: null }))
+				?.foldedQuestions,
+		).toEqual([]);
+	});
+
+	it("reads none when the stamp differs — the list an older build left behind", () => {
+		// A build that predates the column refreshed the wording and moved the
+		// root to version 3 without touching the list stamped at 2.
+		const decision = settledDecision(scoped({ analysisVersion: 3 }));
+		expect(decision?.answer).toBe("Yes.");
+		expect(decision?.foldedQuestions).toEqual([]);
+	});
+
+	it("reads none when no list was recorded", () => {
+		const { foldedQuestions: _folded, ...root } = scoped().root;
+		expect(
+			settledDecision({ root, replies: [answered()] })?.foldedQuestions,
+		).toEqual([]);
+		expect(
+			settledDecision(scoped({ foldedQuestions: null }))?.foldedQuestions,
+		).toEqual([]);
+	});
+
+	it("reads none when neither the stamp nor the version was recorded", () => {
+		expect(
+			settledDecision(
+				scoped({ analysisVersion: null, foldedQuestionsVersion: null }),
+			)?.foldedQuestions,
+		).toEqual([]);
+	});
+
+	it("never reads folded questions out of whyItMatters prose", () => {
+		// The paragraphs `foldDuplicateDecisions` appends are display copy: a
+		// folded question can contain a blank line, and whyItMatters is
+		// model-authored prose that can open a paragraph with the same words.
+		const root = {
+			...scoped({ foldedQuestions: [] }).root,
+			whyItMatters: `Naming them changes the piece.\n\nAnswering this also settles: ${FOLDED}`,
+		};
+		expect(
+			settledDecision({ root, replies: [answered()] })?.foldedQuestions,
+		).toEqual([]);
+	});
+
+	it("returns a copy, so a later change to the root's list does not reach it", () => {
+		const list = [FOLDED];
+		const decision = settledDecision(scoped({ foldedQuestions: list }));
+		list.push("May the piece quote their engineer?");
+		expect(decision?.foldedQuestions).toEqual([FOLDED]);
 	});
 });

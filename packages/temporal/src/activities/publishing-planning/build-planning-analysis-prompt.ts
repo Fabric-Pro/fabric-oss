@@ -714,6 +714,13 @@ export interface FoldableDecision {
 	subject: string | null;
 	question: string;
 	whyItMatters: string | null;
+	/**
+	 * The questions folded into this one, in fold order. Set by
+	 * `foldDuplicateDecisions` on a keeper that absorbed at least one item, and
+	 * never by the model: both item schemas are `z.object`s, which strip a key
+	 * they do not declare.
+	 */
+	foldedQuestions?: string[];
 }
 
 /**
@@ -737,7 +744,9 @@ export interface FoldableDecision {
  * errand nobody could recover. Folding puts its sentence on the surviving
  * item's `whyItMatters`, which the questions panel renders, so a wrong match
  * costs a wordier question instead. That asymmetry is the whole reason a
- * similarity rule is acceptable here at all.
+ * similarity rule is acceptable here at all. The folded question itself is
+ * also appended to the survivor's `foldedQuestions`: that LIST, not the prose,
+ * is what a settled answer's scope is later read from.
  *
  * The SURVIVOR is the earliest item, which is the strongest by construction:
  * `resolveConfirmationQuestions` emits bucket-derived questions first (they
@@ -764,7 +773,11 @@ export function foldDuplicateDecisions<
 >(input: {
 	questions: readonly Q[];
 	blockers: readonly B[];
-}): { questions: Q[]; blockers: B[]; folded: number } {
+}): {
+	questions: (Q & { foldedQuestions?: string[] })[];
+	blockers: (B & { foldedQuestions?: string[] })[];
+	folded: number;
+} {
 	const kept: { tokens: Set<string>; into: FoldableDecision }[] = [];
 	let folded = 0;
 
@@ -772,8 +785,9 @@ export function foldDuplicateDecisions<
 	 * `true` when this item has been folded into an earlier one and must not be
 	 * kept; `false` when it is the first of its subject and becomes a keeper.
 	 *
-	 * Mutates `kept` and the keeper's `whyItMatters`, so the ORDER it is applied
-	 * in is part of the contract — see the two statements below.
+	 * Mutates `kept` and the keeper's `whyItMatters` and `foldedQuestions`, so
+	 * the ORDER it is applied in is part of the contract — see the two
+	 * statements below.
 	 */
 	const absorb = (item: FoldableDecision): boolean => {
 		const tokens = item.subject
@@ -792,6 +806,14 @@ export function foldDuplicateDecisions<
 		match.into.whyItMatters = match.into.whyItMatters
 			? `${match.into.whyItMatters}\n\n${addition}`
 			: addition;
+		// And as a LIST, in fold order, whole. The sentence above is display
+		// copy: a question can contain a blank line, and `whyItMatters` is
+		// model-authored prose that can open a paragraph with the same words, so
+		// it cannot be parsed back.
+		match.into.foldedQuestions = [
+			...(match.into.foldedQuestions ?? []),
+			item.question,
+		];
 		folded += 1;
 		return true;
 	};
@@ -805,12 +827,12 @@ export function foldDuplicateDecisions<
 
 	// TWO STATEMENTS, not two properties of one object literal. `absorb` has
 	// side effects — it appends to `kept` and rewrites a keeper's
-	// `whyItMatters` — so questions must be walked to completion before any
-	// blocker is, or a blocker could become the keeper for a subject its
-	// question also names. Written as an object literal that ordering would
-	// hold only because property values evaluate top to bottom, which is a
-	// language fact rather than a stated intention: reordering the two keys
-	// would silently invert which item survives.
+	// `whyItMatters` and `foldedQuestions` — so questions must be walked to
+	// completion before any blocker is, or a blocker could become the keeper
+	// for a subject its question also names. Written as an object literal that
+	// ordering would hold only because property values evaluate top to bottom,
+	// which is a language fact rather than a stated intention: reordering the
+	// two keys would silently invert which item survives.
 	const keptQuestions = questions.filter((question) => !absorb(question));
 	// Blockers are folded against the surviving questions AND against each
 	// other, in that order, because the questions were kept first.
@@ -1083,7 +1105,10 @@ const SETTLED_ANSWER_CHAR_CAP = 400;
  * same reason: this is the one region a quoted source block must never reach.
  */
 function buildSettledDecisionsClause(
-	settled: readonly SettledDecision[],
+	settled: readonly Pick<
+		SettledDecision,
+		"subject" | "decisionKind" | "answer"
+	>[],
 ): string {
 	const lines = settled
 		.map((decision) => {
@@ -1154,8 +1179,12 @@ export function buildPlanningAnalysisLockedClauses(
 		 * Decisions a member has already settled on this topic. Omitted by a
 		 * caller that has none — and by an old caller that predates the block,
 		 * which then renders exactly as it did.
+		 * Only the label and the answer are read, so a caller need pass nothing more.
 		 */
-		settledDecisions?: readonly SettledDecision[];
+		settledDecisions?: readonly Pick<
+			SettledDecision,
+			"subject" | "decisionKind" | "answer"
+		>[];
 	} = {},
 ): string {
 	/**
@@ -1354,7 +1383,10 @@ export async function composePlanningAnalysisPrompt({
 	 * is what the topic's `provenance` resolved to, and a decision is the
 	 * topic's own history rather than one of its sources.
 	 */
-	settledDecisions?: readonly SettledDecision[];
+	settledDecisions?: readonly Pick<
+		SettledDecision,
+		"subject" | "decisionKind" | "answer"
+	>[];
 }): Promise<ComposedPlanningAnalysisPrompt> {
 	const variables = buildPlanningAnalysisVariables({ topic, context });
 

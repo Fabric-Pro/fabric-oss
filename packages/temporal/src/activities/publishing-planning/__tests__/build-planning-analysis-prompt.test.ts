@@ -353,6 +353,33 @@ describe("PublishingPlanningAnalysisSchema", () => {
 		});
 		expect(parsed.success).toBe(true);
 	});
+
+	it("strips a folded-question list the model tries to supply on a raw item", () => {
+		// Only `foldDuplicateDecisions` may write that list. A model-supplied one
+		// would widen what a settled answer approves.
+		const parsed = PublishingPlanningAnalysisSchema.safeParse({
+			recommendedQuestions: [
+				{
+					question: "May we name example-org?",
+					foldedQuestions: ["May we also publish their revenue?"],
+				},
+			],
+			blockers: [
+				{
+					need: "Get sign-off from example-org.",
+					foldedQuestions: ["May we also publish their revenue?"],
+				},
+			],
+		});
+
+		expect(parsed.success).toBe(true);
+		expect(parsed.data?.recommendedQuestions?.[0]).toEqual({
+			question: "May we name example-org?",
+		});
+		expect(parsed.data?.blockers?.[0]).toEqual({
+			need: "Get sign-off from example-org.",
+		});
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -1030,6 +1057,10 @@ describe("foldDuplicateDecisions — one decision, one item, within one run", ()
 		expect(result.questions[0]?.whyItMatters).toContain(
 			"sign-off from example-org",
 		);
+		// And as a list, which is what an answer's scope is read from.
+		expect(result.questions[0]?.foldedQuestions).toEqual([
+			"Someone needs to obtain explicit sign-off from example-org to be named publicly.",
+		]);
 	});
 
 	it("folds a second question of a DIFFERENT kind about the same subject", () => {
@@ -1058,6 +1089,9 @@ describe("foldDuplicateDecisions — one decision, one item, within one run", ()
 		expect(result.questions[0]?.whyItMatters).toContain(
 			"first trial customer",
 		);
+		expect(result.questions[0]?.foldedQuestions).toEqual([
+			"Should the post name example-org as the first trial customer?",
+		]);
 	});
 
 	it("keeps the bucket-derived question as the survivor", () => {
@@ -1110,6 +1144,48 @@ describe("foldDuplicateDecisions — one decision, one item, within one run", ()
 
 		expect(result.blockers).toHaveLength(2);
 		expect(result.folded).toBe(0);
+	});
+
+	it("lists every folded question on the keeper in fold order, a multi-paragraph one whole", () => {
+		// A model-written question can contain a blank line, which is exactly
+		// why the whyItMatters paragraphs cannot be parsed back into a list.
+		const multiParagraph =
+			"Should the post name example-org as the first trial customer?\n\nThe launch post already hints at it.";
+		const result = foldDuplicateDecisions({
+			questions: [
+				item(
+					"Customer name (example-org)",
+					"Is the Customer name (example-org) approved for use in this content?",
+				),
+				item(
+					"naming example-org as first trial customer",
+					multiParagraph,
+				),
+			],
+			blockers: [
+				item(
+					"customer approval to name example-org publicly",
+					"Someone needs to obtain explicit sign-off from example-org to be named publicly.",
+				),
+				item(
+					"a confirmed public launch date",
+					"Get a firm date from the team.",
+				),
+			],
+		});
+
+		expect(result.folded).toBe(2);
+		expect(result.questions).toHaveLength(1);
+		expect(result.questions[0]?.foldedQuestions).toEqual([
+			multiParagraph,
+			"Someone needs to obtain explicit sign-off from example-org to be named publicly.",
+		]);
+		// A keeper nothing was folded into carries no list at all.
+		expect(result.blockers).toHaveLength(1);
+		expect(result.blockers[0]?.subject).toBe(
+			"a confirmed public launch date",
+		);
+		expect(result.blockers[0]?.foldedQuestions).toBeUndefined();
 	});
 
 	it("never merges two subjects naming different people", () => {

@@ -51,7 +51,7 @@ const {
 	mutationState: {
 		shouldFail: false,
 		/** What the amend mutation resolves with — its `onSuccess` reads `status`. */
-		result: { status: "amended" } as { status: string },
+		result: { status: "amended" } as { status: string; root?: unknown },
 	},
 }));
 
@@ -88,8 +88,17 @@ vi.mock("@tanstack/react-query", () => ({
 		onSuccess?: (...a: unknown[]) => unknown;
 		onError?: (...a: unknown[]) => unknown;
 	}) => ({
-		mutate: (vars: unknown) => {
-			void run(opts, vars).catch(() => {});
+		// Per-call options run after the mutation settles, as TanStack Query
+		// runs them: the answer path learns there that a newer analysis
+		// changed the question, and only the card that sent it can react.
+		mutate: (
+			vars: unknown,
+			callOpts?: { onSuccess?: (...a: unknown[]) => unknown },
+		) => {
+			void run(opts, vars).then(
+				(result) => callOpts?.onSuccess?.(result, vars, undefined),
+				() => {},
+			);
 		},
 		// The amend path awaits its own outcome: a REFUSED amendment must leave
 		// the editor open, because the draft in it is the only copy of what the
@@ -2076,5 +2085,361 @@ describe("TopicQuestionsPanel — a link opens the group its question is in", ()
 		expect(answeredToggle()).toHaveAttribute("aria-expanded", "true");
 		expect(anchored("decision-3")).toBeInTheDocument();
 		expect(setAsideToggle()).toHaveAttribute("aria-expanded", "false");
+	});
+});
+
+/**
+ * An answer carries the analysis version of the question as the member saw it
+ * (Fizzy #1988). The page refetches decisions under an open editor, and the
+ * card keeps its draft across that refetch on purpose, so the version is the
+ * one captured when composing STARTED — or, for a one-click answer, the one on
+ * screen at the click — never the one on screen at submit. When the server
+ * refuses an answer because a newer analysis rewrote the question, the retry
+ * is written against the new wording.
+ */
+describe("TopicQuestionsPanel — an answer carries the version it was written against (Fizzy #1988)", () => {
+	const OPTIONS = [
+		{
+			text: "Out of scope for this release",
+			justification: "The evidence names no customer commitment.",
+		},
+		{
+			text: "In scope, if it fits the estimate",
+			justification: "Groundwork already exists in the linked PR.",
+		},
+	];
+	const CHANGED_COPY =
+		"A newer analysis changed this question. Read it again, then save your answer.";
+	const ANA = [
+		{
+			userId: "u-ana",
+			user: {
+				id: "u-ana",
+				name: "Ana",
+				email: "ana@example.com",
+				image: null,
+			},
+		},
+	];
+
+	/** The same OPEN root at `analysisVersion`, worded as that version words it. */
+	const at = (
+		analysisVersion: number,
+		overrides: Record<string, unknown> = {},
+	) => ({
+		root: root({
+			recommendedResponse: null,
+			analysisVersion,
+			summary: `May we name the customer? (analysis v${analysisVersion})`,
+			...overrides,
+		}),
+		replies: [],
+	});
+	const panel = (thread: ReturnType<typeof at>) => (
+		<TopicQuestionsPanel {...BASE} threads={[thread]} />
+	);
+	const field = () => screen.getByRole("textbox", { name: /your answer/i });
+	const lastSent = () =>
+		answerMutation.mock.calls.at(-1)?.[0] as
+			| Record<string, unknown>
+			| undefined;
+	/** Submit; the server refuses it as written against wording since replaced. */
+	const submitRefused = async (user: ReturnType<typeof userEvent.setup>) => {
+		mutationState.result = { status: "question_changed", root: null };
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+		await vi.waitFor(() =>
+			expect(toast.error).toHaveBeenCalledWith(CHANGED_COPY),
+		);
+	};
+
+	it("sends the version on screen when composing started, not the one a refetch put there since", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(panel(at(1, { answerOptions: OPTIONS })));
+
+		await user.click(
+			screen.getByRole("button", { name: /type your own/i }),
+		);
+		await user.type(field(), "Only the logo.");
+		rerender(panel(at(2, { answerOptions: OPTIONS })));
+		expect(
+			screen.getByText("May we name the customer? (analysis v2)"),
+		).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(answerMutation).toHaveBeenCalledTimes(1);
+		expect(lastSent()).toMatchObject({
+			answer: "Only the logo.",
+			answerSource: "MANUAL",
+			expectedAnalysisVersion: 1,
+		});
+	});
+
+	it("sends the version on screen at the click for a one-click answer", async () => {
+		const user = userEvent.setup();
+		render(
+			panel(
+				at(2, {
+					recommendedResponse: "Ask their marketing contact first.",
+				}),
+			),
+		);
+
+		await user.click(
+			screen.getByRole("button", { name: /use this answer/i }),
+		);
+
+		expect(lastSent()).toMatchObject({
+			answer: "Ask their marketing contact first.",
+			answerSource: "AI_SUGGESTED",
+			expectedAnalysisVersion: 2,
+		});
+	});
+
+	it("sends the version on screen at the click when an option is accepted on a set-aside question", async () => {
+		const user = userEvent.setup();
+		render(
+			panel(
+				at(1, {
+					id: "decision-4",
+					questionId: "q-possibly-resolved",
+					status: "POSSIBLY_RESOLVED",
+					answerOptions: OPTIONS,
+				}),
+			),
+		);
+
+		await user.click(
+			screen.getByRole("button", { name: /^possibly resolved/i }),
+		);
+		await user.click(screen.getByText("Out of scope for this release"));
+
+		expect(lastSent()).toMatchObject({
+			questionId: "q-possibly-resolved",
+			answer: "Out of scope for this release",
+			expectedAnalysisVersion: 1,
+		});
+	});
+
+	it("says the question changed, keeps the draft, and sends the new version on the retry", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(panel(at(1)));
+
+		await user.type(field(), "Only the logo.");
+		await submitRefused(user);
+		expect(lastSent()).toMatchObject({ expectedAnalysisVersion: 1 });
+		expect(invalidateQueries).toHaveBeenCalledWith({
+			queryKey: [
+				"listTopicDecisions",
+				{
+					projectId: "proj-1",
+					topicId: "topic-1",
+					organizationId: null,
+				},
+			],
+		});
+
+		rerender(panel(at(2)));
+		expect(
+			screen.getByText("May we name the customer? (analysis v2)"),
+		).toBeInTheDocument();
+		expect(field()).toHaveValue("Only the logo.");
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(answerMutation).toHaveBeenCalledTimes(2);
+		expect(lastSent()).toMatchObject({
+			answer: "Only the logo.",
+			expectedAnalysisVersion: 2,
+		});
+	});
+
+	it("does not capture the refused version from a keystroke made before the new wording arrives", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(panel(at(1)));
+
+		await user.type(field(), "Only the logo");
+		await submitRefused(user);
+		// Still version 1 on screen: the refetch the refusal started has not
+		// landed yet.
+		await user.type(field(), ".");
+		rerender(panel(at(2)));
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(lastSent()).toMatchObject({
+			answer: "Only the logo.",
+			expectedAnalysisVersion: 2,
+		});
+	});
+
+	it("captures the new version from the first keystroke after it arrives, and keeps it through a later refetch", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(panel(at(1)));
+
+		await user.type(field(), "Only the logo.");
+		await submitRefused(user);
+		rerender(panel(at(2)));
+		await user.type(field(), " Confirmed.");
+		rerender(panel(at(3)));
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(lastSent()).toMatchObject({
+			answer: "Only the logo. Confirmed.",
+			expectedAnalysisVersion: 2,
+		});
+	});
+
+	it("keys a refusal on the version the refused answer sent, not the one on screen when it came back", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(panel(at(1)));
+
+		await user.type(field(), "Only the logo.");
+		// A refetch lands BEFORE the submit: version 2 is on screen, 1 is the
+		// version the draft was started against.
+		rerender(panel(at(2)));
+		await submitRefused(user);
+		expect(lastSent()).toMatchObject({ expectedAnalysisVersion: 1 });
+
+		await user.type(field(), " Confirmed.");
+		rerender(panel(at(3)));
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(lastSent()).toMatchObject({
+			answer: "Only the logo. Confirmed.",
+			expectedAnalysisVersion: 2,
+		});
+	});
+
+	it("forgets the capture when Ask sends the draft to a colleague instead", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(
+			<TopicQuestionsPanel {...BASE} members={ANA} threads={[at(1)]} />,
+		);
+
+		await userEvent.type(field(), "@Ana can you confirm this?");
+		await user.click(screen.getByRole("button", { name: /^ask$/i }));
+		expect(assignMutation).toHaveBeenCalledTimes(1);
+		rerender(
+			<TopicQuestionsPanel {...BASE} members={ANA} threads={[at(2)]} />,
+		);
+		await user.type(field(), "Internal only.");
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(lastSent()).toMatchObject({
+			answer: "Internal only.",
+			expectedAnalysisVersion: 2,
+		});
+	});
+
+	it("captures the version at 'Edit' on the recommendation, not the one on screen at submit", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(
+			panel(
+				at(1, {
+					recommendedResponse: "Ask their marketing contact first.",
+				}),
+			),
+		);
+
+		await user.click(screen.getByRole("button", { name: /edit/i }));
+		rerender(
+			panel(
+				at(2, {
+					recommendedResponse: "Ask their marketing contact first.",
+				}),
+			),
+		);
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(lastSent()).toMatchObject({
+			answer: "Ask their marketing contact first.",
+			answerSource: "AI_SUGGESTED",
+			expectedAnalysisVersion: 1,
+		});
+	});
+
+	it("captures the version at 'Edit' on an option, not the one on screen at submit", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(panel(at(1, { answerOptions: OPTIONS })));
+
+		await user.click(
+			screen.getByRole("button", {
+				name: /edit "out of scope for this release"/i,
+			}),
+		);
+		rerender(panel(at(2, { answerOptions: OPTIONS })));
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(lastSent()).toMatchObject({
+			answer: "Out of scope for this release",
+			answerSource: "AI_SUGGESTED",
+			expectedAnalysisVersion: 1,
+		});
+	});
+
+	it("captures the version at 'Type your own', not the one on screen at submit", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(panel(at(1, { answerOptions: OPTIONS })));
+
+		await user.click(
+			screen.getByRole("button", { name: /type your own/i }),
+		);
+		// Rerender BEFORE typing: a blank editor cannot be submitted
+		// untouched (Submit stays disabled), so only the opener's own
+		// capture — not a keystroke — can be what sends version 1 here.
+		rerender(panel(at(2, { answerOptions: OPTIONS })));
+		await user.type(field(), "Only the logo.");
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(lastSent()).toMatchObject({
+			answer: "Only the logo.",
+			answerSource: "MANUAL",
+			expectedAnalysisVersion: 1,
+		});
+	});
+
+	it("keeps a captured null analysis version instead of the one rendered at submit", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(panel(at(1, { analysisVersion: null })));
+
+		await user.type(field(), "Only the logo.");
+		rerender(panel(at(3)));
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(lastSent()).toMatchObject({
+			answer: "Only the logo.",
+			expectedAnalysisVersion: null,
+		});
+	});
+
+	it("handles a question_changed refusal on a possibly-resolved question the same as an open one", async () => {
+		const user = userEvent.setup();
+		const setAside = (analysisVersion: number) =>
+			panel(
+				at(analysisVersion, {
+					id: "decision-4",
+					questionId: "q-possibly-resolved",
+					status: "POSSIBLY_RESOLVED",
+				}),
+			);
+		const { rerender } = render(setAside(1));
+
+		await user.click(
+			screen.getByRole("button", { name: /^possibly resolved/i }),
+		);
+		await user.type(field(), "Only the logo.");
+		await submitRefused(user);
+		expect(lastSent()).toMatchObject({
+			questionId: "q-possibly-resolved",
+			expectedAnalysisVersion: 1,
+		});
+		expect(field()).toHaveValue("Only the logo.");
+
+		rerender(setAside(2));
+		await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+		expect(answerMutation).toHaveBeenCalledTimes(2);
+		expect(lastSent()).toMatchObject({
+			answer: "Only the logo.",
+			expectedAnalysisVersion: 2,
+		});
 	});
 });

@@ -8161,6 +8161,14 @@ model PublishingTopicDecisionEntry {
   /// on the Summary & Questions tab sees why to bother, not just what to
   /// answer.
   whyItMatters   String?                     @db.Text
+  /// Questions an analysis folded into this root because they named the same subject, in fold order. Written by
+  /// reconciliation beside `whyItMatters`, whose "Answering this also settles:" paragraphs are their display copy and
+  /// are never parsed. Empty for a root nothing was folded into, and for every root folded before this column existed.
+  foldedQuestions        String[] @default([])
+  /// The `analysisVersion` of the write that set `foldedQuestions`. The list is trusted only while this equals the
+  /// root's `analysisVersion`: a build that predates these columns refreshes a root's wording and version without
+  /// touching either, and its stale list must not survive under the new wording.
+  foldedQuestionsVersion Int?
   answerSource   AnswerSource?
   analysisVersion Int?
   deletedAt      DateTime?

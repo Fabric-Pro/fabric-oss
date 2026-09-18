@@ -636,6 +636,7 @@ describe("generatePlanningAnalysisActivity — what it persists", () => {
 					recommendedResponse: q.recommendedResponse,
 					answerOptions: q.answerOptions,
 					whyItMatters: q.whyItMatters,
+					foldedQuestions: [],
 				}),
 			),
 		);
@@ -645,6 +646,122 @@ describe("generatePlanningAnalysisActivity — what it persists", () => {
 		// here is `undefined` and this fails loudly rather than `toEqual`
 		// quietly comparing two empty arrays.
 		expect(questions).toHaveLength(1);
+	});
+
+	it("hands every folded list to reconciliation, and an empty one where nothing was folded (Fizzy #1988)", async () => {
+		// One run with all four shapes: a question and a blocker something was
+		// folded into, and a question and a blocker nothing was folded into.
+		generateObject.mockResolvedValue({
+			object: {
+				...MODEL_OUTPUT,
+				recommendedQuestions: [
+					{
+						decisionKind: "ASSET_APPROVAL",
+						subject: "Customer name/logo (example-org)",
+						question:
+							"Is the Customer name/logo (example-org) approved for use?",
+						whyItMatters: "No approval is recorded.",
+					},
+					{
+						decisionKind: "CLAIM_STRENGTH",
+						subject: "the retry reduction figure",
+						question:
+							"May the piece claim the retry reduction as measured?",
+					},
+				],
+				blockers: [
+					{
+						kind: "MISSING_APPROVAL",
+						subject:
+							"customer approval to name example-org publicly",
+						need: "Someone needs explicit sign-off from example-org to name them publicly.",
+					},
+					{
+						kind: "MISSING_DATA",
+						subject: "a confirmed public launch date",
+						need: "Get a firm date from the team driving implementation.",
+					},
+					{
+						kind: "MISSING_DATA",
+						subject:
+							"the confirmed launch date for the public release",
+						need: "Confirm the public release date with the team.",
+					},
+					{
+						kind: "MISSING_QUOTE",
+						subject: "the problem behind the feature",
+						need: "Nobody recorded the motivation.",
+					},
+				],
+			},
+			usage: { totalTokens: 100 },
+		});
+
+		await run();
+
+		const committed = completePlanningAnalysis.mock.calls[0]?.[0];
+		const id = expect.stringMatching(/^[0-9a-f]{32}$/);
+		expect(committed.questions).toEqual([
+			{
+				questionId: id,
+				decisionKind: "ASSET_APPROVAL",
+				subject: "Customer name/logo (example-org)",
+				question:
+					"Is the Customer name/logo (example-org) approved for use?",
+				recommendedResponse: null,
+				answerOptions: null,
+				whyItMatters:
+					"No approval is recorded.\n\nAnswering this also settles: Someone needs explicit sign-off from example-org to name them publicly.",
+				foldedQuestions: [
+					"Someone needs explicit sign-off from example-org to name them publicly.",
+				],
+			},
+			{
+				questionId: id,
+				decisionKind: "CLAIM_STRENGTH",
+				subject: "the retry reduction figure",
+				question:
+					"May the piece claim the retry reduction as measured?",
+				recommendedResponse: null,
+				answerOptions: null,
+				whyItMatters: null,
+				foldedQuestions: [],
+			},
+		]);
+		expect(committed.blockers).toEqual([
+			{
+				questionId: id,
+				decisionKind: "MISSING_DATA",
+				subject: "a confirmed public launch date",
+				question:
+					"Get a firm date from the team driving implementation.",
+				recommendedResponse: null,
+				answerOptions: null,
+				whyItMatters:
+					"Answering this also settles: Confirm the public release date with the team.",
+				foldedQuestions: [
+					"Confirm the public release date with the team.",
+				],
+			},
+			{
+				questionId: id,
+				decisionKind: "MISSING_QUOTE",
+				subject: "the problem behind the feature",
+				question: "Nobody recorded the motivation.",
+				recommendedResponse: null,
+				answerOptions: null,
+				whyItMatters: null,
+				foldedQuestions: [],
+			},
+		]);
+		// The analysis document keeps its shape: the list rides only on the
+		// rows. Precondition first — this stored item IS the folded one.
+		expect(committed.content.questions[0].whyItMatters).toContain(
+			"Answering this also settles:",
+		);
+		expect(committed.content.questions[0]).not.toHaveProperty(
+			"foldedQuestions",
+		);
 	});
 
 	it("reports SUPERSEDED rather than throwing when the CAS is lost", async () => {

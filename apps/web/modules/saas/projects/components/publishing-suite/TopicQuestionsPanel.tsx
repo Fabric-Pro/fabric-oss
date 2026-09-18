@@ -410,7 +410,15 @@ export function TopicQuestionsPanel({
 
 	const answer = useMutation(
 		orpc.projects.publishingSuite.answerTopicQuestion.mutationOptions({
-			onSuccess: () => {
+			onSuccess: (result) => {
+				if (result.status === "question_changed") {
+					// Nothing was recorded: a newer analysis rewrote this question
+					// after the member started writing. The refetch below puts the
+					// new wording on screen, and the card keeps the draft.
+					toast.error(
+						"A newer analysis changed this question. Read it again, then save your answer.",
+					);
+				}
 				// One invalidation, both this panel and the Decision Log — which
 				// reads the same query — update from a single refetch.
 				queryClient.invalidateQueries({
@@ -513,24 +521,49 @@ export function TopicQuestionsPanel({
 		organizationId,
 	});
 
+	/**
+	 * Save an answer with the analysis version the member saw (Fizzy #1988).
+	 *
+	 * `onQuestionChanged` is the card's own: it runs, with the version this
+	 * request SENT, when the server refuses the answer because a newer analysis
+	 * rewrote the question. Per call rather than on the mutation because only
+	 * the card knows what it captured. TanStack Query runs a per-call callback
+	 * only for the latest `mutate` of this mutation and only while the panel is
+	 * mounted; a refusal it misses leaves that card's capture in place, and the
+	 * next submit is refused again — the same toast, nothing written.
+	 */
 	const submitAnswer = (
 		thread: TopicDecisionThread,
 		text: string,
 		answerSource: AnswerSource,
+		expectedAnalysisVersion: number | null,
+		onQuestionChanged: (refusedVersion: number | null) => void,
 	) => {
 		const questionId = thread.root.questionId;
 		const trimmed = text.trim();
 		if (!questionId || trimmed.length === 0) {
 			return;
 		}
-		answer.mutate({
-			projectId,
-			topicId,
-			organizationId,
-			questionId,
-			answer: trimmed,
-			answerSource,
-		});
+		answer.mutate(
+			{
+				projectId,
+				topicId,
+				organizationId,
+				questionId,
+				answer: trimmed,
+				answerSource,
+				expectedAnalysisVersion,
+			},
+			{
+				onSuccess: (result, variables) => {
+					if (result.status === "question_changed") {
+						onQuestionChanged(
+							variables.expectedAnalysisVersion ?? null,
+						);
+					}
+				},
+			},
+		);
 	};
 
 	if (isLoading) {
@@ -622,8 +655,19 @@ export function TopicQuestionsPanel({
 										thread={thread}
 										canEdit={canEdit}
 										isSubmitting={answer.isPending}
-										onAnswer={(text, source) =>
-											submitAnswer(thread, text, source)
+										onAnswer={(
+											text,
+											source,
+											version,
+											onQuestionChanged,
+										) =>
+											submitAnswer(
+												thread,
+												text,
+												source,
+												version,
+												onQuestionChanged,
+											)
 										}
 										members={assignableMembers}
 										onMemberQueryChange={setMemberQuery}
@@ -738,8 +782,19 @@ export function TopicQuestionsPanel({
 										thread={thread}
 										canEdit={canEdit}
 										isSubmitting={answer.isPending}
-										onAnswer={(text, source) =>
-											submitAnswer(thread, text, source)
+										onAnswer={(
+											text,
+											source,
+											version,
+											onQuestionChanged,
+										) =>
+											submitAnswer(
+												thread,
+												text,
+												source,
+												version,
+												onQuestionChanged,
+											)
 										}
 										members={assignableMembers}
 										onMemberQueryChange={setMemberQuery}
@@ -798,7 +853,18 @@ function QuestionCard({
 	thread: TopicDecisionThread;
 	canEdit: boolean;
 	isSubmitting: boolean;
-	onAnswer: (text: string, source: AnswerSource) => void;
+	/**
+	 * Save an answer. `expectedAnalysisVersion` is the analysis version of the
+	 * question as the member saw it; `onQuestionChanged` runs, with the version
+	 * the refused request sent, when a newer analysis has rewritten the question
+	 * since.
+	 */
+	onAnswer: (
+		text: string,
+		source: AnswerSource,
+		expectedAnalysisVersion: number | null,
+		onQuestionChanged: (refusedVersion: number | null) => void,
+	) => void;
 	members: AssignableMember[];
 	onMemberQueryChange: (query: string) => void;
 	/**
@@ -884,6 +950,57 @@ function QuestionCard({
 	 */
 	const [editingSeed, setEditingSeed] = useState<string | null>(null);
 	const [draft, setDraft] = useState("");
+	/**
+	 * The analysis version of the question as the member saw it when they
+	 * started composing. Set by `captureVersion` — each editor opener, and the
+	 * first keystroke while nothing is captured and no refusal is pending.
+	 * Cleared by `cancelEdit` and by a refusal of this card's answer, which
+	 * keeps the editor and the draft.
+	 *
+	 * `submitDraft` sends it when set, else the version on screen at the click.
+	 * The page refetches decisions under an open editor (an analysis leaving
+	 * GENERATING, a window refocus after the query's stale time), this card
+	 * keeps its key and its draft across that refetch on purpose, and a version
+	 * read fresh at submit would be the NEW one — the server would then accept
+	 * an answer written against wording the member never saw. A one-click
+	 * answer sends the version on screen at the click instead.
+	 */
+	const seenVersion = useRef<number | null | undefined>(undefined);
+	/**
+	 * The version a refused answer SENT, while the refetch that refusal started
+	 * has not landed — `null` when no refusal is pending (a wrapper, because a
+	 * root's version can itself be `null`).
+	 *
+	 * A keystroke while that version is still on screen must not capture it, or
+	 * the retry resends the version the server just refused; the first
+	 * keystroke after the new version renders captures that one instead. Keyed
+	 * on the version SENT, not the one on screen when the refusal came back: a
+	 * refetch can land between the submit and the refusal, and the version on
+	 * screen is then already the new one — the one the next keystroke must
+	 * capture.
+	 */
+	const refused = useRef<{ version: number | null } | null>(null);
+
+	/** Composing starts: remember the version on screen now. */
+	const captureVersion = () => {
+		seenVersion.current = root.analysisVersion;
+		refused.current = null;
+	};
+
+	/**
+	 * Send an answer with the version it was written against. When the server
+	 * refuses it because the question changed, forget the capture and remember
+	 * what was refused, so the retry is written against the wording now coming.
+	 */
+	const sendAnswer = (
+		text: string,
+		source: AnswerSource,
+		version: number | null,
+	) =>
+		onAnswer(text, source, version, (refusedVersion) => {
+			seenVersion.current = undefined;
+			refused.current = { version: refusedVersion };
+		});
 	// The editor is SHOWN when the person opened it — including by typing,
 	// which the textarea's `onChange` below also treats as opening it, so a
 	// person mid-draft is never collapsed out from under themselves by
@@ -908,6 +1025,7 @@ function QuestionCard({
 	 * (`AI_SUGGESTED`); changed, it is `AI_EDITED`.
 	 */
 	const openEditorFromRecommendation = () => {
+		captureVersion();
 		const seed = root.recommendedResponse ?? "";
 		setDraft(seed);
 		setEditingSeed(seed);
@@ -927,6 +1045,7 @@ function QuestionCard({
 	 * `decision_log_entry`. `SummaryQuestionsPanel`'s equivalent passes no seed.
 	 */
 	const openEditorBlank = () => {
+		captureVersion();
 		setDraft("");
 		setEditingSeed(null);
 		setEditorOpened(true);
@@ -943,6 +1062,7 @@ function QuestionCard({
 	 * their own, and the metric measures exactly that difference.
 	 */
 	const openEditorWith = (text: string) => {
+		captureVersion();
 		setDraft(text);
 		setEditingSeed(text);
 		setEditorOpened(true);
@@ -952,6 +1072,8 @@ function QuestionCard({
 		setEditorOpened(false);
 		setEditingSeed(null);
 		setDraft("");
+		seenVersion.current = undefined;
+		refused.current = null;
 	};
 
 	const submitDraft = () => {
@@ -975,13 +1097,16 @@ function QuestionCard({
 		// recommendation acceptance, so two surfaces must not name the same act
 		// differently.
 		const typed = draft.trim();
-		onAnswer(
+		sendAnswer(
 			draft,
 			editingSeed === null
 				? "MANUAL"
 				: typed === editingSeed.trim()
 					? "AI_SUGGESTED"
 					: "AI_EDITED",
+			seenVersion.current !== undefined
+				? seenVersion.current
+				: root.analysisVersion,
 		);
 	};
 
@@ -1051,6 +1176,21 @@ function QuestionCard({
 								// options arrived and the person then cleared
 								// their typed text back to empty.
 								setEditorOpened(true);
+								// Typing is also how composing STARTS on a question
+								// with nothing to accept, so the first keystroke
+								// captures the version on screen — unless it is the
+								// version a refused answer just sent, whose
+								// replacement has not landed yet.
+								const refusalPending =
+									refused.current !== null &&
+									refused.current.version ===
+										root.analysisVersion;
+								if (
+									seenVersion.current === undefined &&
+									!refusalPending
+								) {
+									captureVersion();
+								}
 							}}
 							members={members}
 							onQueryChange={onMemberQueryChange}
@@ -1132,7 +1272,11 @@ function QuestionCard({
 						labels={SUGGESTED_ANSWER_LABELS}
 						disabled={isSubmitting}
 						onAccept={(option) =>
-							onAnswer(option.text, "AI_SUGGESTED")
+							sendAnswer(
+								option.text,
+								"AI_SUGGESTED",
+								root.analysisVersion,
+							)
 						}
 						onEdit={(option) => openEditorWith(option.text)}
 						onTypeYourOwn={openEditorBlank}
@@ -1147,9 +1291,10 @@ function QuestionCard({
 								type="button"
 								size="sm"
 								onClick={() =>
-									onAnswer(
+									sendAnswer(
 										root.recommendedResponse ?? "",
 										"AI_SUGGESTED",
+										root.analysisVersion,
 									)
 								}
 								disabled={isSubmitting}

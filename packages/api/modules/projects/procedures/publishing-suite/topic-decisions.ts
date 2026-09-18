@@ -187,11 +187,30 @@ export const answerTopicQuestionProcedure = tenantProtectedProcedure
 			 * the write would look correct from every side.
 			 */
 			kind: z.enum(["QUESTION", "BLOCKER"]).optional(),
+			/**
+			 * The analysis version of the question as the caller displayed it when
+			 * the member began the answer: when composing started, or at the click
+			 * for a one-click answer. Optional so an older client is unchanged, and
+			 * `null` is a real value — a question with no version.
+			 * `.describe()` rather than a refinement, so API consumers see it in
+			 * the OpenAPI document.
+			 */
+			expectedAnalysisVersion: z
+				.number()
+				.int()
+				.nullable()
+				.optional()
+				.describe(
+					"The analysisVersion of the question as the caller displayed it. When given, an answer to a question that a newer analysis has refreshed since, even with unchanged wording, is not recorded, and the result status is question_changed. Omit it to skip the check.",
+				),
 		}),
 	)
 	.output(
 		z.object({
-			status: z.enum(["resolved", "deduped"]),
+			// `question_changed` is a real outcome rather than an error, like
+			// amend's `stale`: nothing was recorded, nothing is broken, and the
+			// client's job is to reload the question and ask again.
+			status: z.enum(["resolved", "deduped", "question_changed"]),
 			root: TopicDecisionEntrySchema.nullable(),
 		}),
 	)
@@ -211,6 +230,7 @@ export const answerTopicQuestionProcedure = tenantProtectedProcedure
 			topicId: input.topicId,
 			questionId: input.questionId,
 			kind: input.kind,
+			expectedAnalysisVersion: input.expectedAnalysisVersion,
 			answer: input.answer,
 			answerSource: input.answerSource,
 			// The AUTHOR is the session, never the request body. A client-supplied

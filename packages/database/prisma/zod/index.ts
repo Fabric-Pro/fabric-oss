@@ -882,7 +882,7 @@ export type PublishingTopicDraftRevisionScalarFieldEnum = z.infer<typeof Publish
 
 // File: PublishingTopicDecisionEntryScalarFieldEnum.schema.ts
 
-export const PublishingTopicDecisionEntryScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'parentId', 'authorType', 'authorUserId', 'status', 'kind', 'questionId', 'decisionKind', 'subject', 'summary', 'content', 'recommendedResponse', 'answerOptions', 'whyItMatters', 'answerSource', 'analysisVersion', 'deletedAt', 'createdAt', 'updatedAt'])
+export const PublishingTopicDecisionEntryScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'parentId', 'authorType', 'authorUserId', 'status', 'kind', 'questionId', 'decisionKind', 'subject', 'summary', 'content', 'recommendedResponse', 'answerOptions', 'whyItMatters', 'foldedQuestions', 'foldedQuestionsVersion', 'answerSource', 'analysisVersion', 'deletedAt', 'createdAt', 'updatedAt'])
 
 export type PublishingTopicDecisionEntryScalarFieldEnum = z.infer<typeof PublishingTopicDecisionEntryScalarFieldEnumSchema>;
 
@@ -6897,6 +6897,8 @@ export const PublishingTopicDecisionEntrySchema = z.object({
   recommendedResponse: z.string().nullish(),
   answerOptions: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   whyItMatters: z.string().nullish(),
+  foldedQuestions: z.array(z.string()),
+  foldedQuestionsVersion: z.number().int().nullish(),
   answerSource: AnswerSourceSchema.nullish(),
   analysisVersion: z.number().int().nullish(),
   deletedAt: z.date().nullish(),
