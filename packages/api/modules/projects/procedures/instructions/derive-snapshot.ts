@@ -238,8 +238,14 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 		// would otherwise publish a version 9 built from 7 — silently
 		// reverting everything 8 changed. Only enforced when this save
 		// intends to publish: "Save as a new version" is explicitly not a
-		// claim on the pointer, and the publish transition refuses an older
-		// version anyway.
+		// claim on the pointer.
+		//
+		// The check is exact-id, and stays right for a ROLLBACK too: after a
+		// rollback from v9 to v7 an editor still based on v9 is refused,
+		// because v9 is no longer what the project publishes. The message is
+		// therefore direction-neutral — the replacement is not necessarily
+		// newer, and History's rollback makes "someone published a newer
+		// version" a plain falsehood.
 		if (input.publishOnReady) {
 			const published = await getPublishedInstructionSnapshot(
 				input.projectId,
@@ -247,7 +253,7 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 			if (published?.id !== base.id) {
 				throw new ORPCError("CONFLICT", {
 					message:
-						"Someone published a newer version while you were editing. Reload the tab and make the change again.",
+						"The published version changed while you were editing. Reload the tab and make the change again.",
 					data: { reason: "BASE_NOT_PUBLISHED" },
 				});
 			}

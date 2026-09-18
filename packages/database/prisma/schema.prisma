@@ -2004,8 +2004,10 @@ model Project {
   diagrams Diagram[]
 
   // Coding Instructions
-  /// Coding Instructions: the one published snapshot. Set only from a READY
-  /// snapshot with a higher version than the current pointer (see publishSnapshot).
+  /// Coding Instructions: the one published snapshot. Always a READY snapshot.
+  /// The automatic path only moves it to a higher version; a manual History
+  /// publish may move it BACK to an earlier version (see publishInstructionSnapshot),
+  /// so nothing may assume the published version is the newest.
   /// onDelete: Restrict — the database, not a read-then-delete check, is what
   /// stops a published snapshot being deleted. SetNull silently cleared the
   /// pointer instead, so a publish racing a delete left the project with no
@@ -16612,7 +16614,12 @@ model ProjectInstructionSnapshot {
   /// The user who started the upload or sync.
   userId         String
 
-  /// Monotonic per project. Publication only ever moves to a higher version.
+  /// Monotonic per project: allocation only ever goes up. PUBLICATION does
+  /// not — History's "Roll back to this version" moves the project's pointer
+  /// to an earlier version deliberately. Only the AUTOMATIC publish-on-ready
+  /// path holds the pointer to a higher version, as a race guard
+  /// (`publishInstructionSnapshot`), so nothing may assume the published
+  /// version is the newest one.
   version Int
   source  ProjectInstructionSource
   status  ProjectInstructionSnapshotStatus @default(RECEIVING)

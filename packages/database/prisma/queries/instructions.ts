@@ -1295,16 +1295,45 @@ export async function failStaleValidatingInstructionSnapshot(input: {
 // Publish
 // ---------------------------------------------------------------------------
 
+type PublishInstructionSnapshotResult =
+	| {
+			published: true;
+			changed: boolean;
+			/** Manual publishes only — see `allowRollback` below. */
+			version?: number;
+			previousVersion?: number | null;
+	  }
+	| {
+			published: false;
+			changed: false;
+			reason:
+				| "not_found"
+				| "not_ready"
+				| "older_than_current"
+				| "base_moved";
+	  };
+
 /**
  * Atomic and safe under concurrent retries. Refuses a snapshot that is not
  * READY. Moves the pointer with a single conditional `updateMany` — never a
- * read-then-write — so two concurrent publishes (e.g. a retried Temporal
- * activity racing a newer publish) cannot regress the pointer: the write
- * only matches when the project has no published snapshot yet or its
- * current published version is strictly lower than this one. A retried
- * publish of the snapshot that is *already* the published pointer is
- * idempotent and returns `{ published: true, changed: false }` without
- * writing anything.
+ * read-then-write. On the automatic (default) path two concurrent publishes
+ * (e.g. a retried Temporal activity racing a newer publish) cannot regress
+ * the pointer: the write only matches when the project has no published
+ * snapshot yet or its current published version is strictly lower than this
+ * one. With `allowRollback` (History's manual publish) the pointer MAY move
+ * to an older version on purpose; the automatic path then refuses to re-apply
+ * a snapshot that has already published once, so a retry cannot undo the
+ * rollback. A retried publish of the snapshot that is *already* the
+ * published pointer is idempotent and returns
+ * `{ published: true, changed: false }` without writing anything.
+ *
+ * Every path opens by taking the PROJECT ROW's write lock (`SELECT … FOR
+ * UPDATE OF p`) and reads the current pointer from that locked state. The
+ * conditional write locks the same row regardless; acquiring it first is what
+ * makes the reads around the write — the already-published marker, the
+ * previous version reported to the audit log, the idempotency answer — refer
+ * to the same moment as the write itself, rather than to a `READ COMMITTED`
+ * snapshot taken before anyone else's commit.
  *
  * `changed` reports whether THIS call moved the pointer, and it is derived
  * from the conditional write's own row count rather than from a read before
@@ -1347,14 +1376,106 @@ export async function failStaleValidatingInstructionSnapshot(input: {
  * Non-derived snapshots keep the version rule under this flag: a full upload
  * IS the whole tree, so replacing a newer pointer loses nothing that was not
  * being replaced anyway.
+ *
+ * An AUTOMATIC publication is applied AT MOST ONCE per snapshot, whichever
+ * predicate it would use. `publishedAt` is the marker: nothing clears it, so a
+ * non-null value says this snapshot has held the pointer already, and the
+ * automatic path then returns `{ published: true, changed: false }` and writes
+ * nothing. Otherwise an ordinary lost-ack retry undid a deliberate rollback —
+ * v9 publishes automatically, someone rolls back to v7, the retry sees 7 < 9
+ * (or, when derived, sees its exact base published again) and republishes v9,
+ * with a second automatic audit row for one publication. A retry that lands
+ * after some OTHER version was published automatically now takes the same
+ * idempotent arm instead of the `older_than_current` refusal it used to get:
+ * both mean "this activity has nothing left to do", and the activity audits on
+ * `changed` either way.
+ *
+ * `allowRollback` is the opposite instruction, and the one the History
+ * button sends: the write matches any project whose pointer is not already
+ * this snapshot, so an OLDER version can take the pointer back. The version
+ * rule it replaces is a RACE GUARD, not a policy — it exists so that a slow
+ * automatic publish-on-ready cannot silently regress the pointer behind
+ * someone's back — and it was refusing the one act it was never meant to
+ * refuse: a person opening History, seeing what is published, and choosing an
+ * earlier version deliberately. The automatic path is untouched: it passes
+ * `requireBaseUnmoved` or nothing, and `older_than_current` remains its
+ * refusal.
+ *
+ * Two concurrent MANUAL publishes of different versions are last-write-wins
+ * — neither predicate excludes the other — which is the right answer for an
+ * explicit human act: both people chose a version knowing what was published,
+ * and History still holds every version either of them could want back. What
+ * the guard protects against is an automatic write nobody asked for, and that
+ * write never carries this flag. They are serialized by the row lock, so each
+ * reports the pointer it actually replaced rather than the one it first saw;
+ * two such publishes are two real transitions, not one counted twice. The
+ * marker above is also ignored here, because republishing a version that was
+ * published before is precisely what History is for.
+ *
+ * `allowRollback` and `requireBaseUnmoved` are mutually exclusive by
+ * construction — the Temporal activity passes one, the oRPC procedure the
+ * other — and passing both throws rather than silently letting one win.
+ *
+ * Under `allowRollback` only, the published result also carries `version` and
+ * `previousVersion` (null when nothing was published before), taken from the
+ * locked pointer read, so the procedure's audit row names the transition that
+ * actually happened. Those values are for REPORTING alone and never enter a
+ * predicate.
  */
 export async function publishInstructionSnapshot(input: {
 	snapshotId: string;
 	projectId: string;
 	organizationId: string;
 	requireBaseUnmoved?: boolean;
-}) {
+	allowRollback?: boolean;
+}): Promise<PublishInstructionSnapshotResult> {
+	if (input.requireBaseUnmoved === true && input.allowRollback === true) {
+		// A programming error, not a runtime condition: one asks the write to
+		// refuse anything but a fast-forward and the other asks it to accept
+		// anything at all. Failing here beats picking a winner, which would
+		// make an automatic publish silently able to roll the pointer back.
+		throw new Error(
+			"publishInstructionSnapshot: requireBaseUnmoved and allowRollback are mutually exclusive",
+		);
+	}
 	return db.$transaction(async (tx) => {
+		// FIRST, and on every path: take the project row's write lock, and
+		// read the pointer from the locked state. Everything below — the
+		// already-published marker, the previous version the audit row
+		// reports, the idempotency answer — is a statement about the pointer,
+		// and under `READ COMMITTED` a read taken BEFORE the lock describes a
+		// moment that may already be gone. The conditional `updateMany` locks
+		// this same row anyway; acquiring it here only moves the acquisition
+		// earlier, so the whole transition is serialized rather than just its
+		// write.
+		//
+		// `FOR UPDATE OF p`, not a bare `FOR UPDATE`: Postgres refuses to lock
+		// the nullable side of an outer join, and the join is what turns the
+		// pointer id into the version number in one round trip.
+		const locked = await tx.$queryRaw<
+			Array<{ pointerId: string | null; pointerVersion: number | null }>
+		>`
+			SELECT p."publishedInstructionSnapshotId" AS "pointerId",
+				s."version" AS "pointerVersion"
+			FROM "project" p
+			LEFT JOIN "project_instruction_snapshot" s
+				ON s."id" = p."publishedInstructionSnapshotId"
+			WHERE p."id" = ${input.projectId}
+				AND p."organizationId" = ${input.organizationId}
+			FOR UPDATE OF p
+		`;
+		const pointer = locked[0];
+		if (pointer === undefined) {
+			// No project row for this id in this organization. Reported as
+			// `not_found` like a missing snapshot: from the caller's side the
+			// thing it named is not there, and saying more would describe a
+			// row it is not entitled to see.
+			return {
+				published: false as const,
+				changed: false as const,
+				reason: "not_found" as const,
+			};
+		}
 		const snapshot = await tx.projectInstructionSnapshot.findFirst({
 			where: {
 				id: input.snapshotId,
@@ -1367,6 +1488,7 @@ export async function publishInstructionSnapshot(input: {
 				version: true,
 				baseSnapshotId: true,
 				baseVersion: true,
+				publishedAt: true,
 			},
 		});
 		if (!snapshot) {
@@ -1383,9 +1505,31 @@ export async function publishInstructionSnapshot(input: {
 				reason: "not_ready" as const,
 			};
 		}
+		// An AUTOMATIC publication is applied AT MOST ONCE per snapshot, and
+		// `publishedAt` is the durable record that it already was. Nothing in
+		// the lifecycle ever clears that column — the only write to it is the
+		// stamp below — so a non-null value means this snapshot has held the
+		// pointer at some point, and whatever holds it now took it afterwards.
+		//
+		// Without this, an ordinary at-least-once retry silently undid a
+		// rollback: the automatic publication of v9 commits, its completion
+		// ack is lost, someone rolls the project back to v7, and the retry
+		// finds 7 < 9 and republishes v9 — or, for a derived v9, finds its
+		// exact base published again and fast-forwards onto it. The rollback
+		// looked like it worked and then evaporated, with a second automatic
+		// audit row to show for it.
+		//
+		// Answered as the idempotent case rather than as a refusal, because
+		// that is what it is: this activity's publication happened. The manual
+		// path ignores the marker entirely — republishing a version that was
+		// published before is the whole point of History.
+		if (input.allowRollback !== true && snapshot.publishedAt !== null) {
+			return { published: true as const, changed: false as const };
+		}
 		// One predicate or the other, never both, and always inside the
-		// single conditional write — a pre-read of the pointer would be the
-		// very race this exists to close.
+		// single conditional write. The pointer read above informs the
+		// REPORTING; it never becomes the decision, which stays in the
+		// UPDATE's own WHERE clause where the row count can prove it.
 		//
 		// `baseVersion` decides this, not `baseSnapshotId`: see the doc
 		// comment. A derived row whose base has since been deleted or pruned
@@ -1400,6 +1544,49 @@ export async function publishInstructionSnapshot(input: {
 				: null;
 		const fastForward = derived && base !== null;
 		const baseGone = derived && base === null;
+		const rollback = input.allowRollback === true;
+		// The version this publication replaces, for the audit row the manual
+		// procedure writes. Taken from the LOCKED pointer read above, so it
+		// names the transition that is actually about to happen: an unlocked
+		// pre-read let two concurrent manual publishes both report the version
+		// they saw first, which mislabelled the loser's move (from v7, targets
+		// v9 and v8 both reported `previousVersion: 7`, so the v8 row claimed
+		// `7 → 8, rollback: false` when its real move was `9 → 8`). The value
+		// exists to be authoritative in the audit log, so an approximation is
+		// worse than useless there.
+		const previousVersion = rollback
+			? (pointer.pointerVersion ?? null)
+			: null;
+		const moved = rollback
+			? { version: snapshot.version, previousVersion }
+			: {};
+		// The version arm is the automatic path's race guard. The rollback arm
+		// replaces it with the only condition a deliberate publish actually
+		// needs — that this snapshot is not already the pointer — so the write
+		// stays a single conditional UPDATE and an idempotent repeat still
+		// matches nothing and still reports `changed: false`. The null arm is
+		// load-bearing in both: `{ not: id }` does not match a NULL column.
+		const openPredicate = rollback
+			? {
+					OR: [
+						{ publishedInstructionSnapshotId: null },
+						{
+							publishedInstructionSnapshotId: {
+								not: snapshot.id,
+							},
+						},
+					],
+				}
+			: {
+					OR: [
+						{ publishedInstructionSnapshotId: null },
+						{
+							publishedInstructionSnapshot: {
+								version: { lt: snapshot.version },
+							},
+						},
+					],
+				};
 		const { count } = baseGone
 			? { count: 0 }
 			: await tx.project.updateMany({
@@ -1408,21 +1595,7 @@ export async function publishInstructionSnapshot(input: {
 						organizationId: input.organizationId,
 						...(fastForward
 							? { publishedInstructionSnapshotId: base }
-							: {
-									OR: [
-										{
-											publishedInstructionSnapshotId:
-												null,
-										},
-										{
-											publishedInstructionSnapshot: {
-												version: {
-													lt: snapshot.version,
-												},
-											},
-										},
-									],
-								}),
+							: openPredicate),
 					},
 					data: { publishedInstructionSnapshotId: snapshot.id },
 				});
@@ -1431,7 +1604,11 @@ export async function publishInstructionSnapshot(input: {
 				where: { id: snapshot.id },
 				data: { publishedAt: new Date() },
 			});
-			return { published: true as const, changed: true as const };
+			return {
+				published: true as const,
+				changed: true as const,
+				...moved,
+			};
 		}
 		// The conditional write matched nothing — or was never made, for a
 		// derived row whose base is gone. Either this snapshot is already the
@@ -1442,15 +1619,17 @@ export async function publishInstructionSnapshot(input: {
 		// fast-forward's own condition is necessarily false, and the
 		// base-is-gone arm has to answer the same way a completed publish
 		// does rather than reporting a conflict against itself.
-		const project = await tx.project.findUnique({
-			where: {
-				id: input.projectId,
-				organizationId: input.organizationId,
-			},
-			select: { publishedInstructionSnapshotId: true },
-		});
-		if (project?.publishedInstructionSnapshotId === snapshot.id) {
-			return { published: true as const, changed: false as const };
+		//
+		// Answered from the LOCKED pointer rather than a second read: the row
+		// has been write-locked since the top of this transaction, so the
+		// value read there is still the value now, and a re-read could only
+		// reintroduce a window that no longer exists.
+		if (pointer.pointerId === snapshot.id) {
+			return {
+				published: true as const,
+				changed: false as const,
+				...moved,
+			};
 		}
 		return {
 			published: false as const,
@@ -1460,6 +1639,15 @@ export async function publishInstructionSnapshot(input: {
 			// published — whether someone else's version took the pointer or
 			// the base is gone entirely — which is a different thing to tell
 			// someone than a stale full upload losing a pointer race.
+			//
+			// Under `allowRollback` this is unreachable, and reported as the
+			// version rule's refusal because that is the fail-closed answer
+			// rather than because it can happen: the project row is locked and
+			// matched (or the lock read returned `not_found` above), the only
+			// pointer the predicate excludes is this snapshot itself, and that
+			// case returned `changed: false` just above. The manual procedure
+			// still maps it, to a message that does not claim a newer version
+			// won.
 			reason: derived
 				? ("base_moved" as const)
 				: ("older_than_current" as const),

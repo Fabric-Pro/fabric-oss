@@ -59,6 +59,13 @@ export type InstructionsSnapshot = {
 	baseVersion?: number | null;
 	/** Whether this version meant to publish itself when its checks passed. */
 	publishOnReady?: boolean;
+	/**
+	 * When this version last held the published pointer, and null for one
+	 * that never has. Nothing clears it, so it is the difference between an
+	 * edit that never published and one that published and was then replaced
+	 * — which is what the superseded line below turns on.
+	 */
+	publishedAt?: string | Date | null;
 };
 
 function sourceLabel(source: string, t: (key: string) => string): string {
@@ -93,6 +100,7 @@ export function InstructionsPublishedView({
 	onChanged,
 	canEdit = false,
 	repositoryBacked = false,
+	publishedUnknown = false,
 }: {
 	projectId: string;
 	/** Named in the "Connect your agent" starter instruction. */
@@ -101,6 +109,13 @@ export function InstructionsPublishedView({
 	snapshots: InstructionsSnapshot[];
 	onReplaceClick: () => void;
 	onChanged: () => void;
+	/**
+	 * The pointer query FAILED, as opposed to there being nothing published.
+	 * Both arrive here as `published: null`, and only History needs to tell
+	 * them apart — it cannot say whether a version is a publish or a rollback
+	 * without knowing what is published now.
+	 */
+	publishedUnknown?: boolean;
 	/**
 	 * Whether this viewer may change the published files. A UI gate only:
 	 * `derive` re-checks `INSTRUCTION_CREATE` server-side on every save.
@@ -170,14 +185,31 @@ export function InstructionsPublishedView({
 	// version order the stranded one is not the newest and says nothing here
 	// — History still shows it as an unpublished version, which is the
 	// durable answer; this line is the cheap one for the ordinary case.
-	const superseded =
+	//
+	// `publishedAt == null` is what keeps a ROLLBACK out of this line. After
+	// a rollback from v9 to v7, v9 is still the newest READY row, is still
+	// newer than the pointer, and its base is no longer published — every
+	// condition above holds — but it was not stranded: it published, and a
+	// person deliberately replaced it. Telling them it "was not published"
+	// would be false, and would invite them to re-publish something they had
+	// just chosen to leave behind.
+	const supersededCandidate =
 		newest &&
 		newest.status === "READY" &&
 		newerThanPublished &&
 		newest.publishOnReady !== false &&
 		typeof newest.baseVersion === "number" &&
 		newest.baseSnapshotId !== published?.id
-			? { version: newest.version, baseVersion: newest.baseVersion }
+			? newest
+			: null;
+	const superseded =
+		supersededCandidate &&
+		(supersededCandidate.publishedAt ?? null) === null &&
+		typeof supersededCandidate.baseVersion === "number"
+			? {
+					version: supersededCandidate.version,
+					baseVersion: supersededCandidate.baseVersion,
+				}
 			: null;
 	const rejectionRows = rejected?.rejection;
 	const settingsLayer = published?.settingsFrozen?.layer;
@@ -495,6 +527,14 @@ export function InstructionsPublishedView({
 				onOpenChange={setHistoryOpen}
 				snapshots={snapshots}
 				publishedId={published?.id ?? null}
+				// Both straight off the published row this view already holds.
+				// History must not re-derive the version by matching the id
+				// against the list: when the pointer query has failed there is
+				// no id to match and the miss is indistinguishable from
+				// "nothing published", which silently mislabels every rollback
+				// as a forward publish.
+				publishedVersion={published?.version ?? null}
+				publishedUnknown={publishedUnknown}
 				onChanged={onChanged}
 			/>
 			<InstructionsSettingsDialog

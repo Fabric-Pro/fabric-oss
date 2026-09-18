@@ -224,6 +224,11 @@ export function CodingInstructionsTab({
 				onReplaceClick={() => setUploadOpen(true)}
 				onChanged={invalidate}
 				canEdit={canEdit}
+				// A FAILED pointer query, not an empty one. Both leave
+				// `published` null, and History has to distinguish them: with
+				// no pointer it cannot tell a publish from a rollback, so it
+				// says so rather than labelling every version a publish.
+				publishedUnknown={published.isError}
 				// Spec §6.12: a repository-backed project's instructions are
 				// changed in git and refreshed by sync, so the tab does not
 				// offer to edit them. Treated as repository-backed until the

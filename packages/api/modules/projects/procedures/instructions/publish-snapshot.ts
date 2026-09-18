@@ -21,10 +21,13 @@ import { requireHostingOrganizationId } from "./hosting-organization";
  * distinguishes NOT_FOUND / BAD_REQUEST / CONFLICT for a refusal, and only
  * `changed` decides whether an audit row is written.
  *
- * Deliberately WITHOUT `requireBaseUnmoved`. That fast-forward rule exists to
- * stop an automatic publish-on-ready from silently reverting someone else's
- * edit; here a person has opened History and chosen this version knowing what
- * is published, so the ordinary "newer version wins" rule is the right one.
+ * Deliberately WITHOUT `requireBaseUnmoved` and WITH `allowRollback`. Both
+ * rules the flags replace are race guards against an automatic
+ * publish-on-ready silently moving the pointer behind someone's back. Neither
+ * describes what happens here: a person opened History, saw which version is
+ * published, and chose another one. That includes choosing an EARLIER one —
+ * "A newer version is already published" was the version rule refusing a
+ * rollback it was never written to refuse.
  */
 export const publishSnapshotProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.INSTRUCTION_UPDATE))
@@ -50,6 +53,7 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 			snapshotId: input.snapshotId,
 			projectId: input.projectId,
 			organizationId,
+			allowRollback: true,
 		});
 		if (!result.published) {
 			if (result.reason === "not_found") {
@@ -63,8 +67,20 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 						"Only a snapshot that passed checks can be published",
 				});
 			}
+			// Kept as a fail-closed default, not as a case this handler can
+			// produce. `base_moved` is only ever derived under
+			// `requireBaseUnmoved`, which this call does not pass;
+			// `allowRollback` replaces the version rule that produced
+			// `older_than_current`, its write is serialized on the project
+			// row it already matched, and the one pointer its predicate
+			// excludes — this snapshot — comes back as the idempotent
+			// `published: true` above. The old text ("A newer version is
+			// already published") was the version rule's message and cannot be
+			// true of anything reaching here, so it is not left as the only
+			// thing a person could be told.
 			throw new ORPCError("CONFLICT", {
-				message: "A newer version is already published",
+				message:
+					"The published version could not be changed. Reload the history and try again",
 			});
 		}
 		// Only for the call that actually MOVED the pointer. The query reports
@@ -74,6 +90,17 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 		// publications for one pointer transition. The Temporal activity gates
 		// on `changed` for the same reason.
 		if (result.changed) {
+			// VERSION NUMBERS ONLY. A rollback is unreadable from the action
+			// alone — the row would say a version was published and leave
+			// "which one, replacing what?" to be reconstructed from the order
+			// of rows — so both ends of the move are recorded, and `rollback`
+			// names the direction rather than making a reader compare them.
+			// The action itself stays `project.instructions.published`: this
+			// is the same pointer move, and a second action would change the
+			// closed audit-action set. Nothing here carries a file path or any
+			// file content, which is user data the audit log must not repeat.
+			const version = result.version ?? null;
+			const previousVersion = result.previousVersion ?? null;
 			recordAuditFromRequest(context, {
 				action: "project.instructions.published",
 				category: "project",
@@ -84,7 +111,14 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 					id: input.snapshotId,
 					name: null,
 				},
-				metadata: {},
+				metadata: {
+					version,
+					previousVersion,
+					rollback:
+						typeof version === "number" &&
+						typeof previousVersion === "number" &&
+						version < previousVersion,
+				},
 			});
 		}
 		return { published: true as const };

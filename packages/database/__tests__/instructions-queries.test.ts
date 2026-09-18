@@ -105,9 +105,27 @@ beforeEach(() => {
 				projectInstructionSnapshot: mocks.snapshot,
 				projectInstructionFile: mocks.file,
 				project: mocks.project,
+				// `publishInstructionSnapshot` takes the project row's write
+				// lock through raw SQL before it reads anything.
+				$queryRaw: (...a: unknown[]) => mocks.$queryRaw(...a),
 			}),
 	);
 });
+
+/**
+ * The row `publishInstructionSnapshot`'s locking read returns: the project's
+ * current pointer and that pointer's version, in one `SELECT … FOR UPDATE OF p`.
+ *
+ * Every publish test states it, because the whole transition is decided behind
+ * that lock — an unmocked lock read is a test that proves nothing about the
+ * ordering the query depends on.
+ */
+function lockedPointer(
+	pointerId: string | null,
+	pointerVersion: number | null = null,
+) {
+	mocks.$queryRaw.mockResolvedValue([{ pointerId, pointerVersion }]);
+}
 
 describe("createInstructionSnapshot", () => {
 	it("allocates the next version per project and writes files with the same tenant columns", async () => {
@@ -247,10 +265,12 @@ describe("createInstructionSnapshot", () => {
 
 describe("publishInstructionSnapshot", () => {
 	it("refuses a snapshot that is not READY", async () => {
+		lockedPointer(null);
 		mocks.snapshot.findFirst.mockResolvedValue({
 			id: "s",
 			status: "VALIDATING",
 			version: 8,
+			publishedAt: null,
 		});
 		expect(
 			await publishInstructionSnapshot({
@@ -262,16 +282,71 @@ describe("publishInstructionSnapshot", () => {
 		expect(mocks.project.updateMany).not.toHaveBeenCalled();
 	});
 
+	/**
+	 * The transition is serialized on the PROJECT ROW, and the order is the
+	 * point: lock, then read the snapshot, then write. The conditional write
+	 * takes that lock anyway; taking it first is what makes the
+	 * already-published marker and the reported previous version describe the
+	 * same moment as the write instead of a `READ COMMITTED` snapshot from
+	 * before someone else's commit.
+	 */
+	it("locks the project row before it reads anything, and reports not_found when there is no such project", async () => {
+		mocks.$queryRaw.mockResolvedValue([]);
+
+		expect(
+			await publishInstructionSnapshot({
+				snapshotId: "s",
+				projectId: "p",
+				organizationId: "o",
+			}),
+		).toEqual({ published: false, changed: false, reason: "not_found" });
+		// Nothing was read or written on the back of a project row that does
+		// not match this organization.
+		expect(mocks.snapshot.findFirst).not.toHaveBeenCalled();
+		expect(mocks.project.updateMany).not.toHaveBeenCalled();
+
+		const sql = String(mocks.$queryRaw.mock.calls[0]?.[0]);
+		expect(sql).toContain("FOR UPDATE OF p");
+		expect(sql).toContain('FROM "project" p');
+		expect(sql).toContain('p."organizationId"');
+	});
+
+	it("takes the lock first and the snapshot row second", async () => {
+		const order: string[] = [];
+		mocks.$queryRaw.mockImplementation(async () => {
+			order.push("lock");
+			return [{ pointerId: null, pointerVersion: null }];
+		});
+		mocks.snapshot.findFirst.mockImplementation(async () => {
+			order.push("snapshot");
+			return { id: "s", status: "READY", version: 8, publishedAt: null };
+		});
+		mocks.project.updateMany.mockImplementation(async () => {
+			order.push("write");
+			return { count: 1 };
+		});
+
+		await publishInstructionSnapshot({
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "o",
+		});
+
+		expect(order).toEqual(["lock", "snapshot", "write"]);
+	});
+
 	// `changed` is what the publish ACTIVITY audits on: it distinguishes the
 	// one call that actually moved the pointer from the idempotent retry
 	// below, which also reports `published: true`. Auditing on `published`
 	// would write a row per Temporal retry for a publication that happened
 	// once.
 	it("moves the pointer and stamps publishedAt via a single conditional write", async () => {
+		lockedPointer("older-snap", 7);
 		mocks.snapshot.findFirst.mockResolvedValue({
 			id: "s",
 			status: "READY",
 			version: 8,
+			publishedAt: null,
 		});
 		mocks.project.updateMany.mockResolvedValue({ count: 1 });
 		expect(
@@ -299,17 +374,19 @@ describe("publishInstructionSnapshot", () => {
 	});
 
 	it("is idempotent: republishing the snapshot that is already the pointer returns published:true with no write", async () => {
+		// Already the pointer, and `publishedAt` still null in this scenario
+		// so the answer comes from the predicate rather than from the
+		// already-published marker (which the suite below covers).
+		lockedPointer("s", 8);
 		mocks.snapshot.findFirst.mockResolvedValue({
 			id: "s",
 			status: "READY",
 			version: 8,
+			publishedAt: null,
 		});
 		// The conditional write matches nothing because publishedInstructionSnapshotId
 		// is already "s" (not null, and not a lower version than itself).
 		mocks.project.updateMany.mockResolvedValue({ count: 0 });
-		mocks.project.findUnique.mockResolvedValue({
-			publishedInstructionSnapshotId: "s",
-		});
 		expect(
 			await publishInstructionSnapshot({
 				snapshotId: "s",
@@ -318,18 +395,20 @@ describe("publishInstructionSnapshot", () => {
 			}),
 		).toEqual({ published: true, changed: false });
 		expect(mocks.snapshot.update).not.toHaveBeenCalled();
+		// Answered from the locked read, not from a second unlocked one that
+		// could describe a later moment than the write.
+		expect(mocks.project.findUnique).not.toHaveBeenCalled();
 	});
 
 	it("refuses when the conditional write matches nothing and the pointer belongs to a different, newer snapshot", async () => {
+		lockedPointer("newer-snap", 9);
 		mocks.snapshot.findFirst.mockResolvedValue({
 			id: "s",
 			status: "READY",
 			version: 5,
+			publishedAt: null,
 		});
 		mocks.project.updateMany.mockResolvedValue({ count: 0 });
-		mocks.project.findUnique.mockResolvedValue({
-			publishedInstructionSnapshotId: "newer-snap",
-		});
 		expect(
 			await publishInstructionSnapshot({
 				snapshotId: "s",
@@ -342,6 +421,318 @@ describe("publishInstructionSnapshot", () => {
 			reason: "older_than_current",
 		});
 		expect(mocks.snapshot.update).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * `allowRollback` — History's "Roll back to this version".
+ *
+ * The version rule above is a RACE GUARD: it stops a slow automatic
+ * publish-on-ready from moving the pointer backwards behind someone's back.
+ * It was also refusing the one act it was never written to refuse — a person
+ * opening History, seeing what is published, and deliberately choosing an
+ * earlier version — with "A newer version is already published", which reads
+ * as a bug because it is one. This flag replaces the version predicate with
+ * the only condition a deliberate publish needs: that this snapshot is not
+ * already the pointer.
+ */
+describe("publishInstructionSnapshot with allowRollback", () => {
+	const input = {
+		projectId: "p",
+		organizationId: "o",
+		allowRollback: true,
+	};
+
+	it("moves the pointer back to an older READY version and reports both ends of the move", async () => {
+		// v9 holds the pointer, and the audit row's `previousVersion` comes
+		// from this locked read — not from a second, unlocked one.
+		lockedPointer("v9", 9);
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v7",
+			status: "READY",
+			version: 7,
+			baseSnapshotId: null,
+			baseVersion: null,
+			// Published before and rolled away from: the marker that stops an
+			// automatic retry is deliberately ignored here.
+			publishedAt: new Date("2026-09-01T00:00:00.000Z"),
+		});
+		mocks.project.updateMany.mockResolvedValue({ count: 1 });
+
+		expect(
+			await publishInstructionSnapshot({ ...input, snapshotId: "v7" }),
+		).toEqual({
+			published: true,
+			changed: true,
+			version: 7,
+			previousVersion: 9,
+		});
+		// The predicate is "anything but this snapshot", still one conditional
+		// write. The null arm is load-bearing: `{ not: id }` does not match a
+		// NULL column, so a project publishing for the first time needs it.
+		expect(mocks.project.updateMany).toHaveBeenCalledWith({
+			where: {
+				id: "p",
+				organizationId: "o",
+				OR: [
+					{ publishedInstructionSnapshotId: null },
+					{ publishedInstructionSnapshotId: { not: "v7" } },
+				],
+			},
+			data: { publishedInstructionSnapshotId: "v7" },
+		});
+		expect(mocks.snapshot.update).toHaveBeenCalledWith({
+			where: { id: "v7" },
+			data: { publishedAt: expect.any(Date) },
+		});
+		// `previousVersion` came from the locked read and nowhere else. An
+		// unlocked pre-read let two concurrent manual publishes both report
+		// the version they saw first, which mislabelled the loser's audit row
+		// — the one place this value is supposed to be authoritative.
+		expect(mocks.project.findUnique).not.toHaveBeenCalled();
+		expect(mocks.$queryRaw).toHaveBeenCalledTimes(1);
+	});
+
+	// `changed: false` is what keeps the procedure from writing a second audit
+	// row for one pointer transition — a lost response plus a retry.
+	it("is idempotent: publishing the version that is already the pointer writes nothing", async () => {
+		lockedPointer("v7", 7);
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v7",
+			status: "READY",
+			version: 7,
+			baseSnapshotId: null,
+			baseVersion: null,
+			publishedAt: new Date("2026-09-01T00:00:00.000Z"),
+		});
+		// Its own arm excludes it, so the write matches nothing.
+		mocks.project.updateMany.mockResolvedValue({ count: 0 });
+
+		expect(
+			await publishInstructionSnapshot({ ...input, snapshotId: "v7" }),
+		).toEqual({
+			published: true,
+			changed: false,
+			version: 7,
+			previousVersion: 7,
+		});
+		expect(mocks.snapshot.update).not.toHaveBeenCalled();
+	});
+
+	it("still refuses a snapshot that is not READY, and writes nothing", async () => {
+		lockedPointer("v9", 9);
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v7",
+			status: "REJECTED",
+			version: 7,
+			publishedAt: null,
+		});
+
+		expect(
+			await publishInstructionSnapshot({ ...input, snapshotId: "v7" }),
+		).toEqual({ published: false, changed: false, reason: "not_ready" });
+		expect(mocks.project.updateMany).not.toHaveBeenCalled();
+		expect(mocks.snapshot.update).not.toHaveBeenCalled();
+	});
+
+	it("publishes the first version of a project that has published nothing yet", async () => {
+		lockedPointer(null, null);
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v1",
+			status: "READY",
+			version: 1,
+			baseSnapshotId: null,
+			baseVersion: null,
+			publishedAt: null,
+		});
+		mocks.project.updateMany.mockResolvedValue({ count: 1 });
+
+		expect(
+			await publishInstructionSnapshot({ ...input, snapshotId: "v1" }),
+		).toEqual({
+			published: true,
+			changed: true,
+			version: 1,
+			previousVersion: null,
+		});
+	});
+
+	// The two flags are opposite instructions — refuse anything but a
+	// fast-forward, accept anything at all — so silently letting one win would
+	// mean an AUTOMATIC publish able to roll the pointer back.
+	it("refuses to be combined with requireBaseUnmoved", async () => {
+		await expect(
+			publishInstructionSnapshot({
+				...input,
+				snapshotId: "v7",
+				requireBaseUnmoved: true,
+			}),
+		).rejects.toThrow(/mutually exclusive/);
+		expect(mocks.snapshot.findFirst).not.toHaveBeenCalled();
+		// Refused before the transaction opens, so not even the lock is taken.
+		expect(mocks.$queryRaw).not.toHaveBeenCalled();
+	});
+
+	// The automatic path is untouched: without the flag the version rule is
+	// still the predicate and an older version is still refused.
+	it("leaves the automatic path on the version rule when the flag is absent", async () => {
+		lockedPointer("v9", 9);
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v7",
+			status: "READY",
+			version: 7,
+			baseSnapshotId: null,
+			baseVersion: null,
+			publishedAt: null,
+		});
+		mocks.project.updateMany.mockResolvedValue({ count: 0 });
+
+		expect(
+			await publishInstructionSnapshot({
+				snapshotId: "v7",
+				projectId: "p",
+				organizationId: "o",
+			}),
+		).toEqual({
+			published: false,
+			changed: false,
+			reason: "older_than_current",
+		});
+		expect(mocks.project.updateMany).toHaveBeenCalledWith({
+			where: {
+				id: "p",
+				organizationId: "o",
+				OR: [
+					{ publishedInstructionSnapshotId: null },
+					{ publishedInstructionSnapshot: { version: { lt: 7 } } },
+				],
+			},
+			data: { publishedInstructionSnapshotId: "v7" },
+		});
+	});
+});
+
+/**
+ * BLOCKING (rollback review, round 1). A rollback has to survive an ordinary
+ * at-least-once retry.
+ *
+ * The automatic publication of v9 commits; its Temporal completion
+ * acknowledgement is lost; a person rolls the project back to v7; the activity
+ * retries. Under the version rule alone the retry sees 7 < 9 and republishes
+ * v9 — and a derived v9 does the same when the rollback happened to land on
+ * its exact base. The rollback looked like it worked and then evaporated,
+ * leaving a second automatic audit row for one publication.
+ *
+ * `publishedAt` is the durable marker that closes it: nothing clears it, so a
+ * non-null value means this snapshot has held the pointer already and the
+ * automatic path has nothing left to do. It is read behind the project row's
+ * lock, so the answer cannot be stale. The manual path ignores it.
+ */
+describe("publishInstructionSnapshot: an automatic publish applies at most once", () => {
+	it("writes nothing when a rolled-back full upload's automatic publish is retried", async () => {
+		// v7 is published again after the rollback; v9 has already published.
+		lockedPointer("v7", 7);
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v9",
+			status: "READY",
+			version: 9,
+			baseSnapshotId: null,
+			baseVersion: null,
+			publishedAt: new Date("2026-09-17T10:00:00.000Z"),
+		});
+
+		expect(
+			await publishInstructionSnapshot({
+				snapshotId: "v9",
+				projectId: "p",
+				organizationId: "o",
+			}),
+		).toEqual({ published: true, changed: false });
+		// The version rule would have matched here — 7 < 9 — which is exactly
+		// the republication this refuses.
+		expect(mocks.project.updateMany).not.toHaveBeenCalled();
+		expect(mocks.snapshot.update).not.toHaveBeenCalled();
+	});
+
+	it("writes nothing when a rolled-back derived version's fast-forward is retried onto its own base", async () => {
+		// The rollback landed on v8, which is v9's base, so the fast-forward
+		// predicate would match again.
+		lockedPointer("v8", 8);
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v9",
+			status: "READY",
+			version: 9,
+			baseSnapshotId: "v8",
+			baseVersion: 8,
+			publishedAt: new Date("2026-09-17T10:00:00.000Z"),
+		});
+
+		expect(
+			await publishInstructionSnapshot({
+				snapshotId: "v9",
+				projectId: "p",
+				organizationId: "o",
+				requireBaseUnmoved: true,
+			}),
+		).toEqual({ published: true, changed: false });
+		expect(mocks.project.updateMany).not.toHaveBeenCalled();
+		expect(mocks.snapshot.update).not.toHaveBeenCalled();
+	});
+
+	// The marker says "has published", not "may not publish": a snapshot that
+	// never held the pointer publishes automatically exactly as before.
+	it("still publishes a snapshot that has never held the pointer", async () => {
+		lockedPointer("v8", 8);
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v9",
+			status: "READY",
+			version: 9,
+			baseSnapshotId: null,
+			baseVersion: null,
+			publishedAt: null,
+		});
+		mocks.project.updateMany.mockResolvedValue({ count: 1 });
+
+		expect(
+			await publishInstructionSnapshot({
+				snapshotId: "v9",
+				projectId: "p",
+				organizationId: "o",
+			}),
+		).toEqual({ published: true, changed: true });
+		expect(mocks.snapshot.update).toHaveBeenCalledWith({
+			where: { id: "v9" },
+			data: { publishedAt: expect.any(Date) },
+		});
+	});
+
+	// The manual act is the override, and it has to stay one: the version a
+	// person picks in History is usually one that was published before.
+	it("lets the manual path republish a version that has published before", async () => {
+		lockedPointer("v9", 9);
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "v7",
+			status: "READY",
+			version: 7,
+			baseSnapshotId: null,
+			baseVersion: null,
+			publishedAt: new Date("2026-09-10T10:00:00.000Z"),
+		});
+		mocks.project.updateMany.mockResolvedValue({ count: 1 });
+
+		expect(
+			await publishInstructionSnapshot({
+				snapshotId: "v7",
+				projectId: "p",
+				organizationId: "o",
+				allowRollback: true,
+			}),
+		).toEqual({
+			published: true,
+			changed: true,
+			version: 7,
+			previousVersion: 9,
+		});
 	});
 });
 
@@ -373,12 +764,14 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 		// A derives v8 from the published v7; B derives v9 from the same v7.
 		// Both are READY, both are publishOnReady, and they finish in version
 		// order.
+		lockedPointer("v7", 7);
 		mocks.snapshot.findFirst.mockResolvedValue({
 			id: "v8",
 			status: "READY",
 			version: 8,
 			baseSnapshotId: "v7",
 			baseVersion: 7,
+			publishedAt: null,
 		});
 		mocks.project.updateMany.mockResolvedValue({ count: 1 });
 
@@ -398,19 +791,19 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 		});
 
 		mocks.snapshot.update.mockClear();
+		// The pointer is v8 now, and B's lock read sees it.
+		lockedPointer("v8", 8);
 		mocks.snapshot.findFirst.mockResolvedValue({
 			id: "v9",
 			status: "READY",
 			version: 9,
 			baseSnapshotId: "v7",
 			baseVersion: 7,
+			publishedAt: null,
 		});
-		// The pointer is v8 now, so B's write matches nothing — where the
-		// version rule would have matched, 8 < 9.
+		// B's write matches nothing — where the version rule would have
+		// matched, 8 < 9.
 		mocks.project.updateMany.mockResolvedValue({ count: 0 });
-		mocks.project.findUnique.mockResolvedValue({
-			publishedInstructionSnapshotId: "v8",
-		});
 
 		expect(
 			await publishInstructionSnapshot({ ...input, snapshotId: "v9" }),
@@ -425,21 +818,24 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 		expect(mocks.snapshot.update).not.toHaveBeenCalled();
 	});
 
-	it("stays idempotent for the Temporal retry of an edit that already published", async () => {
+	// The pointer-equality arm, reached with the already-published marker NOT
+	// yet set on the row. A real Temporal retry of a completed publish carries
+	// the marker and is answered earlier (see the at-most-once suite above);
+	// this pins the fail-safe underneath it, which every predicate relies on:
+	// once this snapshot holds the pointer, the fast-forward's own condition
+	// is necessarily false and the call must not read as a conflict against
+	// itself.
+	it("answers a call for the snapshot that already holds the pointer as published, without writing", async () => {
+		lockedPointer("v8", 8);
 		mocks.snapshot.findFirst.mockResolvedValue({
 			id: "v8",
 			status: "READY",
 			version: 8,
 			baseSnapshotId: "v7",
 			baseVersion: 7,
+			publishedAt: null,
 		});
-		// The fast-forward's own condition is necessarily false once this
-		// snapshot holds the pointer, so the retry falls through to the
-		// already-published read exactly as it did under the version rule.
 		mocks.project.updateMany.mockResolvedValue({ count: 0 });
-		mocks.project.findUnique.mockResolvedValue({
-			publishedInstructionSnapshotId: "v8",
-		});
 
 		expect(
 			await publishInstructionSnapshot({ ...input, snapshotId: "v8" }),
@@ -448,12 +844,14 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 	});
 
 	it("keeps the version rule for a full upload, which replaces the whole tree", async () => {
+		lockedPointer("older-snap", 7);
 		mocks.snapshot.findFirst.mockResolvedValue({
 			id: "s",
 			status: "READY",
 			version: 8,
 			baseSnapshotId: null,
 			baseVersion: null,
+			publishedAt: null,
 		});
 		mocks.project.updateMany.mockResolvedValue({ count: 1 });
 
@@ -485,6 +883,7 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 	 * pointer in the meantime, with nothing in the tab to explain it.
 	 */
 	it("refuses a derived version whose base has been deleted, without writing anything", async () => {
+		lockedPointer("v8", 8);
 		mocks.snapshot.findFirst.mockResolvedValue({
 			id: "v9",
 			status: "READY",
@@ -495,9 +894,7 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 			// still says this version is an EDIT of v7 and not a tree of its
 			// own.
 			baseVersion: 7,
-		});
-		mocks.project.findUnique.mockResolvedValue({
-			publishedInstructionSnapshotId: "v8",
+			publishedAt: null,
 		});
 
 		expect(
@@ -516,18 +913,19 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 	});
 
 	it("still reports the retry of a published edit whose base has since gone as published", async () => {
+		// This snapshot IS the pointer: it published, and then its base aged
+		// out of retention. A Temporal retry landing here must be idempotent
+		// rather than reporting a conflict against itself — and it carries the
+		// already-published marker, which answers it before the base-is-gone
+		// arm is even reached.
+		lockedPointer("v9", 9);
 		mocks.snapshot.findFirst.mockResolvedValue({
 			id: "v9",
 			status: "READY",
 			version: 9,
 			baseSnapshotId: null,
 			baseVersion: 7,
-		});
-		// This snapshot IS the pointer: it published, and then its base aged
-		// out of retention. A Temporal retry landing here must be idempotent
-		// rather than reporting a conflict against itself.
-		mocks.project.findUnique.mockResolvedValue({
-			publishedInstructionSnapshotId: "v9",
+			publishedAt: new Date("2026-09-17T10:00:00.000Z"),
 		});
 
 		expect(
@@ -537,19 +935,24 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 		expect(mocks.snapshot.update).not.toHaveBeenCalled();
 	});
 
-	it("leaves the manual History publish on the version rule", async () => {
+	// The manual History publish no longer takes this path at all — it passes
+	// `allowRollback` (suite above) — but a call with NEITHER flag still falls
+	// back to the version rule, which is what a derived snapshot published by
+	// anything other than the publish-on-ready activity would get.
+	it("leaves a call with neither flag on the version rule", async () => {
+		lockedPointer("v7", 7);
 		mocks.snapshot.findFirst.mockResolvedValue({
 			id: "v9",
 			status: "READY",
 			version: 9,
 			baseSnapshotId: "v7",
 			baseVersion: 7,
+			publishedAt: null,
 		});
 		mocks.project.updateMany.mockResolvedValue({ count: 1 });
 
-		// No `requireBaseUnmoved`: someone opened History and chose this
-		// version knowing what is published, which is the deliberate act the
-		// fast-forward is meant to leave available.
+		// No `requireBaseUnmoved`, so the fast-forward is not asked for and
+		// the row's derived-ness changes nothing about the predicate.
 		expect(
 			await publishInstructionSnapshot({
 				snapshotId: "v9",

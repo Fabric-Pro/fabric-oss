@@ -1246,6 +1246,16 @@ export async function publishInstructionSnapshotActivity(
 	// A refused fast-forward leaves the snapshot READY and unpublished, which
 	// History shows and "Publish this version" can still override as a
 	// deliberate act.
+	//
+	// AT MOST ONCE, whatever the retry count: the query refuses to reapply an
+	// automatic publication once the snapshot's `publishedAt` is set, because
+	// this activity is delivered at least once and a lost completion ack could
+	// otherwise republish a version a person had deliberately rolled back
+	// from. That also means a retry arriving after some other version took the
+	// pointer now reports `published: true` with `changed: false`, where it
+	// used to report the `older_than_current` refusal: the same "nothing left
+	// to do", and the `changed` gate below keeps it out of the audit log
+	// either way.
 	const r = await publishInstructionSnapshot({
 		snapshotId: ref.snapshotId,
 		projectId: ref.projectId,

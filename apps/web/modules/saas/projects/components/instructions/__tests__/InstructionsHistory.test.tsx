@@ -150,6 +150,7 @@ describe("InstructionsHistory", () => {
 					},
 				]}
 				publishedId={null}
+				publishedVersion={null}
 				onChanged={onChanged}
 			/>,
 			{ wrapper: TestQueryProvider },
@@ -195,6 +196,7 @@ describe("InstructionsHistory", () => {
 					},
 				]}
 				publishedId={null}
+				publishedVersion={null}
 				onChanged={onChanged}
 			/>,
 			{ wrapper: TestQueryProvider },
@@ -267,6 +269,7 @@ describe("InstructionsHistory", () => {
 					},
 				]}
 				publishedId={null}
+				publishedVersion={null}
 				onChanged={() => undefined}
 			/>,
 			{ wrapper: TestQueryProvider },
@@ -311,6 +314,7 @@ describe("InstructionsHistory", () => {
 					},
 				]}
 				publishedId={null}
+				publishedVersion={null}
 				onChanged={() => undefined}
 			/>,
 			{ wrapper: TestQueryProvider },
@@ -364,6 +368,7 @@ describe("InstructionsHistory", () => {
 					},
 				]}
 				publishedId={null}
+				publishedVersion={null}
 				onChanged={() => undefined}
 			/>,
 			{ wrapper: TestQueryProvider },
@@ -373,5 +378,137 @@ describe("InstructionsHistory", () => {
 		expect(screen.getByText(/editedFrom:7/)).toBeTruthy();
 		// The plain upload beside it claims no provenance at all.
 		expect(screen.queryByText(/editedFrom:8/)).toBeNull();
+	});
+
+	/**
+	 * Publishing a version BELOW the published one is a rollback, and the
+	 * button has to say so: "Publish this version" on a row underneath the
+	 * published one hides that later versions stop being what agents read.
+	 * The server takes both the same way — it is one pointer move — so the
+	 * direction is the only thing that changes here.
+	 */
+	describe("rollback labelling", () => {
+		function renderWithPublished(
+			publishedId: string | null,
+			publishedVersion: number | null,
+			publishedUnknown = false,
+		) {
+			render(
+				<InstructionsHistory
+					projectId="p"
+					open
+					onOpenChange={() => undefined}
+					snapshots={[
+						{
+							id: "v9",
+							version: 9,
+							status: "READY",
+							source: "UPLOAD",
+							fileCount: 4,
+							createdAt: new Date(),
+						},
+						{
+							id: "v8",
+							version: 8,
+							status: "READY",
+							source: "UPLOAD",
+							fileCount: 4,
+							createdAt: new Date(),
+						},
+						{
+							id: "v7",
+							version: 7,
+							status: "READY",
+							source: "UPLOAD",
+							fileCount: 4,
+							createdAt: new Date(),
+						},
+					]}
+					publishedId={publishedId}
+					publishedVersion={publishedVersion}
+					publishedUnknown={publishedUnknown}
+					onChanged={() => undefined}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+		}
+
+		it("offers a roll back below the published version and an ordinary publish above it", async () => {
+			// v8 is published: v7 is behind it, v9 ahead of it.
+			renderWithPublished("v8", 8);
+
+			expect(
+				screen.getAllByRole("button", { name: "rollbackAction" }),
+			).toHaveLength(1);
+			expect(
+				screen.getAllByRole("button", { name: "publishAction" }),
+			).toHaveLength(1);
+
+			await userEvent.click(
+				screen.getByRole("button", { name: "rollbackAction" }),
+			);
+			// `t()` echoes `key:values`, so this is the confirm copy with its
+			// version interpolated — the rollback wording, not the publish one.
+			expect(window.confirm).toHaveBeenCalledWith("rollbackConfirm:7");
+
+			await userEvent.click(
+				screen.getByRole("button", { name: "publishAction" }),
+			);
+			expect(window.confirm).toHaveBeenLastCalledWith("publishConfirm:9");
+		});
+
+		// Nothing published yet: no version is "earlier" than anything, so
+		// every row keeps the forward wording it had before.
+		it("keeps the forward wording for every version when the project has published nothing", () => {
+			renderWithPublished(null, null);
+
+			expect(
+				screen.getAllByRole("button", { name: "publishAction" }),
+			).toHaveLength(3);
+			expect(
+				screen.queryByRole("button", { name: "rollbackAction" }),
+			).toBeNull();
+		});
+
+		/**
+		 * "Nothing is published" and "we could not read what is published"
+		 * arrive here identically — both as a null pointer — and they are not
+		 * the same thing. Labelling every row "Publish this version" on a
+		 * failed pointer query would hide the rollbacks among them, so the
+		 * dialog says what happened and withholds the action instead.
+		 */
+		it("says the published version could not be loaded and offers no publish at all", () => {
+			renderWithPublished(null, null, true);
+
+			expect(screen.getByRole("alert").textContent).toBe(
+				"publishedUnknown",
+			);
+			expect(
+				screen.queryByRole("button", { name: "publishAction" }),
+			).toBeNull();
+			expect(
+				screen.queryByRole("button", { name: "rollbackAction" }),
+			).toBeNull();
+			// Everything that does not depend on the pointer still works.
+			expect(
+				screen.getAllByRole("button", { name: "downloadAction" }),
+			).toHaveLength(3);
+			expect(screen.getByText("versionLabel:9")).toBeTruthy();
+		});
+
+		// The direction comes from the parent's published row, not from
+		// matching `publishedId` inside this list. A row missing from the list
+		// must not silently read as "nothing published".
+		it("labels a rollback even when the published row is not in the list it was given", async () => {
+			renderWithPublished("v8-not-listed", 8);
+
+			expect(
+				screen.getAllByRole("button", { name: "rollbackAction" }),
+			).toHaveLength(1);
+			await userEvent.click(
+				screen.getByRole("button", { name: "rollbackAction" }),
+			);
+			expect(window.confirm).toHaveBeenCalledWith("rollbackConfirm:7");
+		});
 	});
 });

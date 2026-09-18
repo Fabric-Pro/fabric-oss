@@ -763,6 +763,33 @@ describe("InstructionsPublishedView — an edit the published version outran", (
 		).toBeInTheDocument();
 	});
 
+	/**
+	 * A ROLLBACK is not a stranded edit. After a rollback from v9 to v8, v9 is
+	 * still the newest READY row, still newer than the pointer, and its base
+	 * is no longer published — every other condition for this line holds. But
+	 * v9 DID publish and a person deliberately replaced it, so saying it "was
+	 * not published" is false, and it would invite them to re-publish the very
+	 * thing they had just chosen to leave behind. `publishedAt` is what tells
+	 * the two apart; nothing ever clears it.
+	 */
+	it("says nothing for a version that published and was then rolled back from", () => {
+		renderWithNewest({
+			id: "s9",
+			version: 9,
+			status: "READY",
+			source: "UPLOAD",
+			fileCount: 4,
+			excludedCount: 0,
+			createdAt: new Date(),
+			publishOnReady: true,
+			baseSnapshotId: "s7",
+			baseVersion: 7,
+			publishedAt: new Date("2026-09-17T10:00:00.000Z"),
+		});
+
+		expect(screen.queryByText(/was not published/)).not.toBeInTheDocument();
+	});
+
 	it("says nothing while an edit of the CURRENT published version is still converging", () => {
 		// The ordinary case, one poll before the pointer moves: v9 was
 		// derived from v8, which is still published.

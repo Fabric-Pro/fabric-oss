@@ -50,6 +50,8 @@ describe("projects.instructions.publish", () => {
 		m.publishInstructionSnapshot.mockResolvedValue({
 			published: true,
 			changed: true,
+			version: 9,
+			previousVersion: 8,
 		});
 		await expect(
 			m.handlers.publish!({
@@ -61,6 +63,72 @@ describe("projects.instructions.publish", () => {
 			ctx,
 			expect.objectContaining({
 				action: "project.instructions.published",
+				metadata: { version: 9, previousVersion: 8, rollback: false },
+			}),
+		);
+	});
+
+	/**
+	 * The whole point of the flag. History's button exists so someone can
+	 * choose an earlier version deliberately; the version rule refused it with
+	 * "A newer version is already published", which is a race guard written
+	 * for the AUTOMATIC publish-on-ready answering a request nobody automated.
+	 */
+	it("asks the query for a rollback and records one on the audit row", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: true,
+			version: 7,
+			previousVersion: 9,
+		});
+		await expect(
+			m.handlers.publish!({
+				input: { projectId: "p", snapshotId: "s" },
+				context: ctx,
+			}),
+		).resolves.toEqual({ published: true });
+		expect(m.publishInstructionSnapshot).toHaveBeenCalledWith({
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "org_1",
+			allowRollback: true,
+		});
+		// Both ends of the move and the direction, so the row reads as a
+		// rollback rather than as a publication whose order has to be
+		// reconstructed from the rows around it. Version numbers only — a path
+		// or a file's content would be user data.
+		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+			ctx,
+			expect.objectContaining({
+				action: "project.instructions.published",
+				metadata: { version: 7, previousVersion: 9, rollback: true },
+			}),
+		);
+	});
+
+	it("never passes requireBaseUnmoved, which the query refuses to combine with allowRollback", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: true,
+			version: 2,
+			previousVersion: null,
+		});
+		await m.handlers.publish!({
+			input: { projectId: "p", snapshotId: "s" },
+			context: ctx,
+		});
+		expect(
+			m.publishInstructionSnapshot.mock.calls[0]?.[0],
+		).not.toHaveProperty("requireBaseUnmoved");
+		// Nothing published before, so there is no direction to roll back in.
+		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+			ctx,
+			expect.objectContaining({
+				metadata: {
+					version: 2,
+					previousVersion: null,
+					rollback: false,
+				},
 			}),
 		);
 	});
@@ -83,7 +151,13 @@ describe("projects.instructions.publish", () => {
 		).resolves.toEqual({ published: true });
 		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
 	});
-	it("maps an older snapshot to CONFLICT and does not audit", async () => {
+	// The arm is kept fail-closed, but its old message cannot be true here any
+	// more: under `allowRollback` the only pointer the write excludes is this
+	// snapshot itself, which resolves as the idempotent case above. A refusal
+	// that still reaches here means the project row stopped matching the
+	// organization, and telling someone a newer version won would be a
+	// fabrication.
+	it("maps a refusal the rollback predicate cannot explain to CONFLICT, without claiming a newer version", async () => {
 		m.publishInstructionSnapshot.mockResolvedValue({
 			published: false,
 			reason: "older_than_current",
@@ -94,6 +168,11 @@ describe("projects.instructions.publish", () => {
 				context: ctx,
 			}),
 		).rejects.toMatchObject({ code: "CONFLICT" });
+		const error = await m.handlers.publish!({
+			input: { projectId: "p", snapshotId: "s" },
+			context: ctx,
+		}).catch((e: Error) => e);
+		expect((error as Error).message).not.toMatch(/newer version/i);
 		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
 	});
 	it("maps a missing snapshot to NOT_FOUND and does not audit", async () => {

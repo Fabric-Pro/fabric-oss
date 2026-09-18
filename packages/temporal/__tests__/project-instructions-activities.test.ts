@@ -1404,6 +1404,34 @@ describe("R29: audit rows from the workflow activities", () => {
 		expect(m.recordAudit).not.toHaveBeenCalled();
 	});
 
+	/**
+	 * The shape a retry now gets when the pointer has moved on without it:
+	 * the query refuses to reapply an automatic publication once the
+	 * snapshot's `publishedAt` is set, so a retry that used to come back with
+	 * the `older_than_current` refusal comes back idempotent instead.
+	 *
+	 * This exists because the rollback made the old answer dangerous: a lost
+	 * completion ack could otherwise republish a version someone had
+	 * deliberately rolled back from. What matters here is that the activity
+	 * treats the new shape as the non-event it is — success to the workflow,
+	 * no failure, and emphatically no second audit row for a publication that
+	 * happened once.
+	 */
+	it("treats an at-most-once refusal after a rollback as nothing to do, not a failure", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: false,
+		});
+
+		const r = await publishInstructionSnapshotActivity(snap);
+
+		expect(r).toEqual({ published: true });
+		// No `reason` either: there is nothing to explain in the workflow's
+		// result, where `older_than_current` used to be recorded.
+		expect(r.reason).toBeUndefined();
+		expect(m.recordAudit).not.toHaveBeenCalled();
+	});
+
 	it("records project.instructions.rejected with reason counts and rule ids, and no paths or matched text", async () => {
 		m.listInstructionFiles.mockResolvedValue([]);
 
