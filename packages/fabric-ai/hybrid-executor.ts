@@ -365,7 +365,7 @@ export async function executePatternHybrid(
 		const generationStart = Date.now();
 		const result = await generateText({
 			model,
-			system: systemPrompt,
+			instructions: systemPrompt,
 			prompt: input,
 			temperature,
 		});
@@ -487,7 +487,7 @@ export async function* executePatternHybridStream(
 		const generationStart = Date.now();
 		const result = streamText({
 			model,
-			system: systemPrompt,
+			instructions: systemPrompt,
 			prompt: input,
 			temperature,
 		});

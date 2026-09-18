@@ -102,11 +102,13 @@ describe("runScan — provider-agnostic prompt caching", () => {
 		const call = mocks.generateObject.mock.calls[0]?.[0];
 
 		// System prompt (the cacheable prefix) carries the FIXED guidance...
-		expect(call.system.role).toBe("system");
-		expect(call.system.content).toContain("A03 Injection");
-		expect(call.system.content).toContain("SILENCE IS NEVER A DEFECT");
+		expect(call.instructions.role).toBe("system");
+		expect(call.instructions.content).toContain("A03 Injection");
+		expect(call.instructions.content).toContain(
+			"SILENCE IS NEVER A DEFECT",
+		);
 		// ...but NOT the per-chunk content (that would defeat caching).
-		expect(call.system.content).not.toContain(CHUNK_TEXT);
+		expect(call.instructions.content).not.toContain(CHUNK_TEXT);
 
 		// The user prompt carries ONLY the <document> block + a short instruction.
 		expect(call.prompt).toContain(CHUNK_TEXT);
@@ -130,7 +132,7 @@ describe("runScan — provider-agnostic prompt caching", () => {
 		// The additive Anthropic cache breakpoint. Non-Anthropic providers ignore
 		// the `anthropic` namespace, so this is safe to always attach (here the
 		// resolved model is OPENAI_DIRECT and the call is unchanged for it).
-		expect(call.system.providerOptions).toEqual({
+		expect(call.instructions.providerOptions).toEqual({
 			anthropic: { cacheControl: { type: "ephemeral" } },
 		});
 	});
@@ -149,7 +151,7 @@ describe("runScan — provider-agnostic prompt caching", () => {
 		expect(call.maxRetries).toBe(0);
 		expect(call.abortSignal).toBeInstanceOf(AbortSignal);
 		// Must NOT pass the old combined `prompt`-only shape (no system message).
-		expect(typeof call.system).toBe("object");
+		expect(typeof call.instructions).toBe("object");
 	});
 
 	it("uses WCAG guidance for the accessibility scanner but the SAME cache marker", async () => {
@@ -163,9 +165,9 @@ describe("runScan — provider-agnostic prompt caching", () => {
 		});
 
 		const call = mocks.generateObject.mock.calls[0]?.[0];
-		expect(call.system.content).toContain("WCAG 2.1 Level AA");
-		expect(call.system.content).not.toContain("A03 Injection");
-		expect(call.system.providerOptions).toEqual({
+		expect(call.instructions.content).toContain("WCAG 2.1 Level AA");
+		expect(call.instructions.content).not.toContain("A03 Injection");
+		expect(call.instructions.providerOptions).toEqual({
 			anthropic: { cacheControl: { type: "ephemeral" } },
 		});
 		expect(call.prompt).toContain(CHUNK_TEXT);

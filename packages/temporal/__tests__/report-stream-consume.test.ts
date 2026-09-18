@@ -9,7 +9,7 @@ import {
 describe("buildReportStreamRequest", () => {
 	const base = {
 		model: {} as any,
-		system: "sys",
+		instructions: "sys",
 		messages: [{ role: "user", content: "hi" }] as any,
 	};
 
@@ -97,7 +97,9 @@ function fakeStream(opts: {
 		textStream: (async function* () {})(),
 		text: textPromise,
 		toolCalls: toolCallsPromise,
-		fullStream: (async function* () {
+		// AI SDK 7 renamed StreamTextResult.fullStream to `stream`; consumeStream
+		// reads `.stream`, so the fixture must expose that name.
+		stream: (async function* () {
 			for (const p of parts) {
 				yield p;
 			}
@@ -280,6 +282,135 @@ describe("consumeStream", () => {
 		);
 		expect(isNoOutputGeneratedError(r.streamError)).toBe(false);
 		expect(r.streamError).toBe(genuine);
+	});
+
+	// AI SDK 7 — the v7 TextStreamPart union carries part types this loop does
+	// not handle (tool-input-*, reasoning-*, reasoning-file, source, file,
+	// tool-approval-*, tool-output-denied, start/start-step, abort, raw). The
+	// switch has an explicit `default:` that ignores them; this pins that a
+	// stream full of them still yields exactly the text and tool calls the
+	// handled branches collected.
+	it("ignores v7 stream parts it does not handle [SDK7]", async () => {
+		const r = await consumeStream(
+			fakeStream({
+				parts: [
+					{ type: "start" },
+					{
+						type: "start-step",
+						request: {},
+						warnings: [],
+					},
+					{ type: "reasoning-start", id: "r1" },
+					{ type: "reasoning-delta", id: "r1", text: "thinking" },
+					{ type: "reasoning-end", id: "r1" },
+					// New in v7: files emitted as part of the reasoning trace.
+					{
+						type: "reasoning-file",
+						file: { mediaType: "image/png" },
+					},
+					{ type: "text-start", id: "t1" },
+					{ type: "text-delta", id: "t1", text: "answer" },
+					{ type: "text-end", id: "t1" },
+					{
+						type: "tool-input-start",
+						id: "c1",
+						toolName: "get_cards",
+					},
+					{ type: "tool-input-delta", id: "c1", delta: '{"a":' },
+					// New in v7: explicit end-of-tool-input boundary.
+					{ type: "tool-input-end", id: "c1" },
+					{
+						type: "tool-call",
+						toolCallId: "c1",
+						toolName: "get_cards",
+						input: { a: 1 },
+					},
+					// New in v7: approval request/response parts.
+					{
+						type: "tool-approval-request",
+						approvalId: "ap1",
+						toolCall: {
+							toolCallId: "c1",
+							toolName: "get_cards",
+							input: { a: 1 },
+						},
+					},
+					{
+						type: "tool-approval-response",
+						approvalId: "ap1",
+						approved: true,
+						toolCall: {
+							toolCallId: "c1",
+							toolName: "get_cards",
+							input: { a: 1 },
+						},
+					},
+					{ type: "source", sourceType: "url", id: "s1", url: "x" },
+					{ type: "raw", rawValue: { anything: true } },
+					{
+						type: "finish-step",
+						finishReason: "tool-calls",
+						usage: { inputTokens: 3, outputTokens: 4 },
+					},
+					{
+						type: "finish",
+						finishReason: "tool-calls",
+						totalUsage: { inputTokens: 3, outputTokens: 4 },
+					},
+				],
+				finishReason: "tool-calls",
+				usage: { inputTokens: 3, outputTokens: 4 },
+			}),
+			noHb,
+		);
+		expect(r.text).toBe("answer");
+		expect(r.toolCalls).toEqual([
+			{ toolCallId: "c1", toolName: "get_cards", input: { a: 1 } },
+		]);
+		expect(r.finishReason).toBe("tool-calls");
+		expect(r.sawFinishStep).toBe(true);
+		expect(r.streamError).toBeUndefined();
+		expect(r.invalidToolCalls).toBe(0);
+	});
+
+	// AI SDK 7 keeps v6's DynamicToolCall defect channel: an unparsable input or
+	// a call to a tool that does not exist arrives as `invalid: true` rather
+	// than throwing. Executing one would invoke a tool the model never
+	// legitimately requested.
+	it("drops a provider-flagged invalid tool call [SDK7]", async () => {
+		const r = await consumeStream(
+			fakeStream({
+				parts: [
+					{
+						type: "tool-call",
+						toolCallId: "bad",
+						toolName: "no_such_tool",
+						input: {},
+						dynamic: true,
+						invalid: true,
+						error: new Error("no such tool"),
+					},
+					{
+						type: "tool-call",
+						toolCallId: "good",
+						toolName: "get_cards",
+						input: { board_id: "1" },
+					},
+					{ type: "finish-step", finishReason: "tool-calls" },
+				],
+				finishReason: "tool-calls",
+				usage: { inputTokens: 1, outputTokens: 1 },
+			}),
+			noHb,
+		);
+		expect(r.toolCalls).toEqual([
+			{
+				toolCallId: "good",
+				toolName: "get_cards",
+				input: { board_id: "1" },
+			},
+		]);
+		expect(r.invalidToolCalls).toBe(1);
 	});
 
 	// opus #5 — usage fulfilled but undefined → usageResolved false, usage defaults to {0,0}

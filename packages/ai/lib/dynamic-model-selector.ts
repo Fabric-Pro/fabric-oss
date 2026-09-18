@@ -961,6 +961,8 @@ import {
 } from "./databricks-oauth";
 import { getAiBillingCategory } from "./usage-logging";
 import {
+	type AggregateUsageRecord,
+	recordAggregateUsage,
 	wrapEmbeddingModelWithUsageLogging,
 	wrapModelWithUsageLogging,
 } from "./usage-logging-middleware";
@@ -1024,7 +1026,19 @@ export interface GetAIModelOptions {
 	 * The provider and API key are still resolved from user's configuration.
 	 */
 	modelOverride?: string;
+	/** Ordinary callers always retain automatic per-provider-call logging. */
+	usageLogging?: "per-call";
 }
+
+/** Aggregate logging is available only with the metadata result's writer. */
+export type AggregateAIModelOptions = Omit<
+	GetAIModelOptions,
+	"usageLogging"
+> & { usageLogging: "aggregate" };
+
+type GetAIModelWithMetadataOptions =
+	| GetAIModelOptions
+	| AggregateAIModelOptions;
 
 /**
  * Metadata about the resolved AI model configuration.
@@ -1086,6 +1100,11 @@ export interface AIModelResult {
 	 * This is fire-and-forget - errors are silently ignored.
 	 */
 	trackUsage: () => void;
+}
+
+/** Metadata result for the narrow callers that own aggregate stream logging. */
+export interface AggregateAIModelResult extends AIModelResult {
+	recordAggregateUsage: (record: AggregateUsageRecord) => void;
 }
 
 /**
@@ -1161,12 +1180,25 @@ export async function getAIModel(
  * trackUsage;
  * ```
  */
-export async function getAIModelWithMetadata(
+export function getAIModelWithMetadata(
+	options: AggregateAIModelOptions,
+	context: AIOperationContext,
+): Promise<AggregateAIModelResult>;
+export function getAIModelWithMetadata(
 	options: GetAIModelOptions,
 	context: AIOperationContext,
-): Promise<AIModelResult> {
-	const { taskType, complexity, requiresToolCalling, modelOverride } =
-		options;
+): Promise<AIModelResult>;
+export async function getAIModelWithMetadata(
+	options: GetAIModelWithMetadataOptions,
+	context: AIOperationContext,
+): Promise<AIModelResult | AggregateAIModelResult> {
+	const {
+		taskType,
+		complexity,
+		requiresToolCalling,
+		modelOverride,
+		usageLogging = "per-call",
+	} = options;
 
 	// No credit/payment pre-check: whether this tenant may use AI is decided
 	// solely by whether a provider resolves below, and the refusal is
@@ -1282,11 +1314,12 @@ export async function getAIModelWithMetadata(
 		}
 	};
 
-	// Global usage interceptor: wrap the resolved model so EVERY call it makes
-	// (generate or stream, any caller) records an AiUsageLog row by construction.
-	// This is the single source of truth for language-model usage — manual
-	// logModelUsageAsync calls are now no-ops (see usage-logging.ts).
-	const trackedModel = wrapModelWithUsageLogging(model, {
+	// Global usage interceptor: ordinary resolutions wrap the model so every
+	// provider call records an AiUsageLog row by construction. Aggregate mode is
+	// intentionally narrow: its metadata-only caller owns one SDK multi-step
+	// turn and reuses the same writer once. Manual logModelUsageAsync calls stay
+	// no-ops (see usage-logging.ts).
+	const usageLoggingContext = {
 		userId: context.userId,
 		organizationId: context.organizationId,
 		projectId: context.projectId,
@@ -1300,7 +1333,21 @@ export async function getAIModelWithMetadata(
 		featureKey: context.featureKey,
 		promptVersionId: context.promptVersionId,
 		jobType: context.jobType,
-	});
+	};
+	const trackedModel =
+		usageLogging === "aggregate"
+			? model
+			: wrapModelWithUsageLogging(model, usageLoggingContext);
+
+	if (usageLogging === "aggregate") {
+		return {
+			model: trackedModel,
+			metadata,
+			trackUsage,
+			recordAggregateUsage: (record) =>
+				recordAggregateUsage(usageLoggingContext, record),
+		};
+	}
 
 	return { model: trackedModel, metadata, trackUsage };
 }

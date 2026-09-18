@@ -1183,7 +1183,7 @@ Please complete the task based on the available data.`;
 	const result = await generateText({
 		model,
 		prompt,
-		system: systemPrompt,
+		instructions: systemPrompt,
 	});
 
 	return result.text;

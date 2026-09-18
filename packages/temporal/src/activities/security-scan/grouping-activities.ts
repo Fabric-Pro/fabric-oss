@@ -572,7 +572,7 @@ async function draftNarrative(
 		const start = Date.now();
 		const result = await generateText({
 			model,
-			system: systemPrompt,
+			instructions: systemPrompt,
 			prompt: buildFindingsContext(theme),
 			temperature: 0.3,
 		});

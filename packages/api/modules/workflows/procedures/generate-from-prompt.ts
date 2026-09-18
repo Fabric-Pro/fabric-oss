@@ -363,7 +363,7 @@ Respond with a JSON object only, no markdown or code fences:
 			});
 			const response = await generateText({
 				model,
-				system: systemPrompt,
+				instructions: systemPrompt,
 				prompt: userPrompt,
 				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 			});

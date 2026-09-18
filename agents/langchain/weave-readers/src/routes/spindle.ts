@@ -1,4 +1,4 @@
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { resolveReaderModel } from "../lib/llm.js";
@@ -58,10 +58,10 @@ async function buildSpindleResponse(
 		() =>
 			generateText({
 				model,
-				system: SPINDLE_SYSTEM_PROMPT,
+				instructions: SPINDLE_SYSTEM_PROMPT,
 				messages: [{ role: "user", content: contextParts.join("\n") }],
 				tools,
-				stopWhen: stepCountIs(MAX_TOOL_STEPS),
+				stopWhen: isStepCount(MAX_TOOL_STEPS),
 			}),
 		{ label: "spindle-generateText", circuitKey: "spindle" },
 	);

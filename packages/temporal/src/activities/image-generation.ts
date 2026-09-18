@@ -296,8 +296,8 @@ async function generateWithGateway(params: {
 	if (isNanoBanana) {
 		const contentParts: Array<
 			| { type: "text"; text: string }
-			| { type: "image"; image: URL }
-			| { type: "image"; image: Uint8Array; mediaType: string }
+			| { type: "file"; data: URL; mediaType: string }
+			| { type: "file"; data: Uint8Array; mediaType: string }
 		> = [];
 
 		// Download input image from S3 storage (for editing workflows)
@@ -322,8 +322,8 @@ async function generateWithGateway(params: {
 					{ bucket: GENERATED_IMAGES_BUCKET },
 				);
 				contentParts.push({
-					type: "image",
-					image: new Uint8Array(imageBuffer),
+					type: "file",
+					data: new Uint8Array(imageBuffer),
 					mediaType: contentType || "image/png",
 				});
 			} catch (downloadError) {

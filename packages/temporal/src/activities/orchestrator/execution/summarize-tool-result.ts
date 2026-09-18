@@ -153,7 +153,7 @@ export async function summarizeLargeToolResult(
 					() =>
 						generateText({
 							model,
-							system: SYSTEM_PROMPT,
+							instructions: SYSTEM_PROMPT,
 							prompt: `Tool: ${toolName}\nUser's query: ${userQuery}\n\nCondense this chunk of tool output (part of a larger result). Preserve all key information relevant to the query.\n\n${chunk}`,
 							maxOutputTokens: Math.floor(
 								maxOutputLength / chunks.length / 4,
@@ -182,7 +182,7 @@ export async function summarizeLargeToolResult(
 				() =>
 					generateText({
 						model,
-						system: SYSTEM_PROMPT,
+						instructions: SYSTEM_PROMPT,
 						prompt: `Tool: ${toolName}\nUser's query: ${userQuery}\n\nCondense these partial summaries into a single coherent summary:\n\n${combined}`,
 						maxOutputTokens: Math.floor(maxOutputLength / 4),
 						temperature: 0.2,
@@ -201,7 +201,7 @@ export async function summarizeLargeToolResult(
 			() =>
 				generateText({
 					model,
-					system: SYSTEM_PROMPT,
+					instructions: SYSTEM_PROMPT,
 					prompt: `Tool: ${toolName}\nUser's query: ${userQuery}\n\nCondense this tool output while preserving all information relevant to the query:\n\n${source}`,
 					maxOutputTokens: Math.floor(maxOutputLength / 4),
 					temperature: 0.2,

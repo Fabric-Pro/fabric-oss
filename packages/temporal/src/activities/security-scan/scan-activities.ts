@@ -494,7 +494,7 @@ async function runScan(
 					// prefix so it isn't re-billed on every one of a scan's 30-60
 					// chunks; only the <document> block in `prompt` varies. The
 					// marker is provider-agnostic (see @repo/ai/prompt-cache).
-					system: cacheableSystem(request.system),
+					instructions: cacheableSystem(request.system),
 					prompt: request.prompt,
 					temperature: 0,
 					maxRetries: 0,

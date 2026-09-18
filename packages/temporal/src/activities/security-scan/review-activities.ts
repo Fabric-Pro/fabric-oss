@@ -387,7 +387,7 @@ async function runAdversarialReview(
 				// The fixed adversarial rubric is a cacheable system prefix so it
 				// isn't re-billed on every per-finding call; only the finding block
 				// in `prompt` varies. Marker is provider-agnostic.
-				system: cacheableSystem(request.system),
+				instructions: cacheableSystem(request.system),
 				prompt: request.prompt,
 				temperature: 0,
 			});

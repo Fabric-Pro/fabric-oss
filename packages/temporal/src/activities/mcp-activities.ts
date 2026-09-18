@@ -296,9 +296,12 @@ async function executeMcpToolInternal<T>(
 	// title/description/body). Keys only.
 	logger.info("[MCP] Executing tool", { toolName, argKeys: keysOf(args) });
 
+	// AI SDK 7 made ToolExecutionOptions.context required. MCP tools declare no
+	// contextSchema, so the SDK's own invocation passes undefined here.
 	const result = await tool.execute(args, {
 		toolCallId: `${toolName}-${Date.now()}`,
 		messages: [],
+		context: undefined,
 	});
 
 	// Parse MCP SDK result format: { content: [{ type: "text", text: "..." }], isError: false }

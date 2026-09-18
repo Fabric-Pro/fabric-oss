@@ -42,7 +42,7 @@ export async function synthesizeContext(
 
 	const response = await generateText({
 		model,
-		system: systemPrompt,
+		instructions: systemPrompt,
 		prompt: `Original Task: ${input.originalTask}
 
 ## Research Findings

@@ -1,5 +1,5 @@
-import { stepCountIs, streamText, tool, wrapLanguageModel } from "ai";
-import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
+import { isStepCount, streamText, tool, wrapLanguageModel } from "ai";
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createEmptyToolInputRepairMiddleware } from "../lib/empty-tool-input-middleware";
@@ -14,10 +14,19 @@ import { createEmptyToolInputRepairMiddleware } from "../lib/empty-tool-input-mi
  * These tests drive the real `streamText` loop through a mock provider that
  * reproduces that chunk sequence, so they pin the behaviour that matters —
  * whether the tool actually runs — rather than the shape of the stream.
+ *
+ * They still matter under `@ai-sdk/openai` 4, which very likely fixed the
+ * underlying drop — its tracker now flushes zero-argument calls
+ * unconditionally. The first test here is the premise guard: it drives the
+ * dropping chunk sequence with the middleware OFF, so it pins the repair's
+ * behaviour against a provider that can still produce that sequence rather
+ * than against one specific provider version. Retiring the middleware is a
+ * separate decision, taken once the 4.x providers have been observed in
+ * production, not a side effect of the SDK bump.
  */
 
 /**
- * A LanguageModelV3 `finish` part. `ai` gates tool execution on
+ * A LanguageModelV4 `finish` part. `ai` gates tool execution on
  * `finishReason.unified` (`isToolExecutionAllowedFinishReason`), so the
  * fixture has to carry the spec's object shape — a bare string is silently
  * treated as "not tool-calls" and no tool ever runs, with or without the
@@ -41,7 +50,7 @@ const PARTS_WITHOUT_CALL = [
 ];
 
 function mockModel(chunks: unknown[]) {
-	return new MockLanguageModelV3({
+	return new MockLanguageModelV4({
 		doStream: async () => ({
 			stream: simulateReadableStream({ chunks: chunks as never }),
 		}),
@@ -60,7 +69,7 @@ async function runWith(chunks: unknown[], repair: boolean) {
 
 	const result = streamText({
 		model,
-		stopWhen: stepCountIs(1),
+		stopWhen: isStepCount(1),
 		messages: [{ role: "user", content: "go" }],
 		tools: {
 			ping: tool({
@@ -73,7 +82,7 @@ async function runWith(chunks: unknown[], repair: boolean) {
 		},
 	});
 
-	for await (const _ of result.fullStream) {
+	for await (const _ of result.stream) {
 		// drain
 	}
 	return inputs;

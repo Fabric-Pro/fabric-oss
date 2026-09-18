@@ -6,6 +6,8 @@ vi.mock("@repo/database", () => ({ logAiUsageAsync }));
 import {
 	createEmbeddingUsageLoggingMiddleware,
 	createUsageLoggingMiddleware,
+	recordAggregateUsage,
+	selectAggregateUsageForLogging,
 } from "../usage-logging-middleware";
 
 const CTX = {
@@ -27,14 +29,24 @@ describe("usage-logging middleware — wrapGenerate", () => {
 	beforeEach(() => logAiUsageAsync.mockReset());
 
 	it("logs one row with the full token breakdown, including cache reads/writes", async () => {
+		// AI SDK 7's top-level `LanguageModelUsage`: flat totals with the cache
+		// and reasoning splits under `inputTokenDetails`/`outputTokenDetails`.
+		// The 6.x names this fixture used before — a flat `cachedInputTokens`
+		// and `providerMetadata.anthropic.cacheCreationInputTokens` — no longer
+		// exist; `@ai-sdk/anthropic` 4 folds the cache-write count into usage
+		// itself, so provider metadata is no longer a token source at all.
 		const doGenerate = vi.fn().mockResolvedValue({
 			usage: {
 				inputTokens: 100,
+				inputTokenDetails: {
+					noCacheTokens: 0,
+					cacheReadTokens: 80,
+					cacheWriteTokens: 20,
+				},
 				outputTokens: 40,
+				outputTokenDetails: { textTokens: 40, reasoningTokens: 0 },
 				totalTokens: 140,
-				cachedInputTokens: 80,
 			},
-			providerMetadata: { anthropic: { cacheCreationInputTokens: 20 } },
 		});
 		const result = await mw().wrapGenerate({ doGenerate });
 		expect(result).toBeDefined();
@@ -176,6 +188,95 @@ describe("usage-logging middleware — gateway generationId capture", () => {
 		expect(
 			logAiUsageAsync.mock.calls[0][0].gatewayGenerationId,
 		).toBeUndefined();
+	});
+});
+
+describe("usage-logging middleware — aggregate stream usage", () => {
+	beforeEach(() => logAiUsageAsync.mockReset());
+
+	it("writes one multi-step aggregate row with cache and reasoning fields but no step generation ID", () => {
+		recordAggregateUsage(CTX, {
+			usage: {
+				inputTokens: 300,
+				outputTokens: 80,
+				totalTokens: 380,
+				inputTokenDetails: {
+					cacheReadTokens: 120,
+					cacheWriteTokens: 60,
+				},
+				outputTokenDetails: { reasoningTokens: 25 },
+			},
+			latencyMs: 42,
+			success: true,
+			steps: [
+				{
+					providerMetadata: {
+						gateway: { generationId: "gen_step_1" },
+					},
+				},
+				{
+					providerMetadata: {
+						gateway: { generationId: "gen_step_2" },
+					},
+				},
+			],
+		});
+
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			inputTokens: 300,
+			outputTokens: 80,
+			totalTokens: 380,
+			cachedInputTokens: 120,
+			cacheCreationInputTokens: 60,
+			reasoningTokens: 25,
+			gatewayGenerationId: undefined,
+		});
+	});
+
+	it("keeps a reliably single-step gateway generation ID", () => {
+		recordAggregateUsage(CTX, {
+			usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+			latencyMs: 42,
+			success: true,
+			steps: [
+				{
+					providerMetadata: {
+						gateway: { generationId: "gen_single" },
+					},
+				},
+			],
+		});
+
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			gatewayGenerationId: "gen_single",
+		});
+	});
+
+	it("uses the Direct Chat estimate when a successful SDK aggregate has no tokens", () => {
+		const usage = selectAggregateUsageForLogging(
+			{ inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+			{
+				inputTokens: 250,
+				outputTokens: 75,
+				totalTokens: 325,
+			},
+		);
+
+		recordAggregateUsage(CTX, {
+			usage,
+			latencyMs: 42,
+			success: true,
+		});
+
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			inputTokens: 250,
+			outputTokens: 75,
+			totalTokens: 325,
+			success: true,
+		});
 	});
 });
 

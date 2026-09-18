@@ -4,7 +4,7 @@
  * Locks the guard that classifies a provider stream defect as a transient
  * error instead of a fabricated success: when `finishReason` resolves to
  * `"tool-calls"` (the model stopped in order to call a tool) but zero
- * `tool-call` parts actually surfaced through `fullStream` (observed on the
+ * `tool-call` parts actually surfaced through the result stream (observed on the
  * Databricks provider dropping a `tool_use` block — staging execution
  * orch-9294c339, 2026-07-27), the activity must NOT fall through to the
  * "no tool calls -> final response" branch and return the collected preamble
@@ -56,7 +56,7 @@ const aiStubs = vi.hoisted(() => {
 			__isJsonSchema: true,
 			schema,
 		})),
-		stepCountIsMock: vi.fn((n: number) => ({ __stopWhen: "stepCount", n })),
+		isStepCountMock: vi.fn((n: number) => ({ __stopWhen: "stepCount", n })),
 	};
 });
 
@@ -64,7 +64,7 @@ vi.mock("@repo/ai", () => ({
 	streamText: aiStubs.streamTextMock,
 	tool: aiStubs.toolMock,
 	jsonSchema: aiStubs.jsonSchemaMock,
-	stepCountIs: aiStubs.stepCountIsMock,
+	isStepCount: aiStubs.isStepCountMock,
 }));
 
 vi.mock("@repo/ai/limits", () => ({
@@ -100,7 +100,7 @@ import {
 
 /**
  * A `streamText` return value shaped enough to satisfy the activity's
- * consumer logic: a `fullStream` async iterable yielding the given parts,
+ * consumer logic: a `stream` async iterable yielding the given parts,
  * plus `usage`/`finishReason` promises. By default both fulfill (usage
  * 10/5 input/output tokens, finishReason "stop"); pass `usageError` /
  * `finishReasonError` to make either reject instead (raw rejected promises —
@@ -114,7 +114,8 @@ function makeStreamResult(opts: {
 	finishReasonError?: unknown;
 }) {
 	return {
-		fullStream: (async function* () {
+		// AI SDK 7 renamed StreamTextResult.fullStream to `stream`.
+		stream: (async function* () {
 			for (const part of opts.parts ?? []) {
 				yield part;
 			}
@@ -248,6 +249,77 @@ describe("runAgentIteration — dropped tool-call guard", () => {
 		expect(result.type).toBe("response");
 		if (result.type === "response") {
 			expect(result.content).toBe("All done.");
+		}
+	});
+
+	// AI SDK 7 widened the TextStreamPart union (reasoning-file, tool-input-end,
+	// tool-approval-request/-response, tool-output-denied, start/start-step,
+	// abort, raw, …). The consumer handles text-delta / tool-call / tool-error /
+	// error and has an explicit trailing `else` that ignores the rest; this pins
+	// that a v7-shaped stream carrying those parts still produces exactly the
+	// same tool-call outcome.
+	it("ignores v7 stream parts the loop does not handle [SDK7]", async () => {
+		aiStubs.streamTextMock.mockImplementationOnce(() =>
+			makeStreamResult({
+				parts: [
+					{ type: "start" },
+					{ type: "start-step", request: {}, warnings: [] },
+					{ type: "text-start", id: "t1" },
+					{ type: "text-delta", id: "t1", text: "Working." },
+					{ type: "text-end", id: "t1" },
+					{ type: "reasoning-start", id: "r1" },
+					{ type: "reasoning-delta", id: "r1", text: "hmm" },
+					{ type: "reasoning-end", id: "r1" },
+					{
+						type: "reasoning-file",
+						file: { mediaType: "image/png" },
+					},
+					{
+						type: "tool-input-start",
+						id: "tc-1",
+						toolName: "create_view",
+					},
+					{ type: "tool-input-delta", id: "tc-1", delta: "{" },
+					{ type: "tool-input-end", id: "tc-1" },
+					{
+						type: "tool-call",
+						toolCallId: "tc-1",
+						toolName: "create_view",
+						input: { a: 1 },
+					},
+					{
+						type: "tool-approval-request",
+						approvalId: "ap-1",
+						toolCall: {
+							toolCallId: "tc-1",
+							toolName: "create_view",
+							input: { a: 1 },
+						},
+					},
+					{ type: "raw", rawValue: { provider: "chunk" } },
+					{
+						type: "finish-step",
+						finishReason: "tool-calls",
+						usage: { inputTokens: 10, outputTokens: 5 },
+					},
+					{
+						type: "finish",
+						finishReason: "tool-calls",
+						totalUsage: { inputTokens: 10, outputTokens: 5 },
+					},
+				],
+				finishReason: "tool-calls",
+			}),
+		);
+
+		const result = await runAgentIteration(buildInput());
+
+		expect(aiStubs.streamTextMock).toHaveBeenCalledTimes(1);
+		expect(result.type).toBe("tool_calls");
+		if (result.type === "tool_calls") {
+			expect(result.toolCalls).toHaveLength(1);
+			expect(result.toolCalls[0].name).toBe("create_view");
+			expect(result.toolCalls[0].args).toEqual({ a: 1 });
 		}
 	});
 

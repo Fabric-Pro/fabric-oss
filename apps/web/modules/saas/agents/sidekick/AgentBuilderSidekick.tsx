@@ -241,7 +241,7 @@ export function AgentBuilderSidekick({
 					typeof part.type === "string" &&
 					part.type.startsWith("tool-")
 				) {
-					// AI SDK v6: tool parts use `output` property for results
+					// AI SDK v7: tool parts use `output` property for results
 					const p = part as Record<string, unknown>;
 					if (typeof p.output === "string") {
 						fullText += p.output;

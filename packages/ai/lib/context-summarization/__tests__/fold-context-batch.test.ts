@@ -201,7 +201,8 @@ describe("foldContextBatch — usage + system prompt", () => {
 			systemPrompt: "CUSTOM DB PROMPT",
 		});
 
-		const systemMsg = generateObjectMock.mock.calls[0][0].system.content;
+		const systemMsg =
+			generateObjectMock.mock.calls[0][0].instructions.content;
 		// The admin prompt replaces the content guidance; the built-in guidance
 		// is not used (only the formatting contract is always appended below).
 		expect(systemMsg).toContain("CUSTOM DB PROMPT");
@@ -215,7 +216,8 @@ describe("foldContextBatch — usage + system prompt", () => {
 
 		await foldContextBatch({ ...baseInput });
 
-		const systemMsg = generateObjectMock.mock.calls[0][0].system.content;
+		const systemMsg =
+			generateObjectMock.mock.calls[0][0].instructions.content;
 		expect(systemMsg).toContain(SYSTEM_GUIDANCE);
 	});
 
@@ -226,7 +228,8 @@ describe("foldContextBatch — usage + system prompt", () => {
 
 		// Built-in guidance path.
 		await foldContextBatch({ ...baseInput });
-		const builtinMsg = generateObjectMock.mock.calls[0][0].system.content;
+		const builtinMsg =
+			generateObjectMock.mock.calls[0][0].instructions.content;
 		expect(builtinMsg).toContain(FORMATTING_GUIDANCE);
 
 		// Admin DB-prompt path still gets the formatting contract.
@@ -234,7 +237,7 @@ describe("foldContextBatch — usage + system prompt", () => {
 			...baseInput,
 			systemPrompt: "CUSTOM DB PROMPT",
 		});
-		const dbMsg = generateObjectMock.mock.calls[1][0].system.content;
+		const dbMsg = generateObjectMock.mock.calls[1][0].instructions.content;
 		expect(dbMsg).toContain("CUSTOM DB PROMPT");
 		expect(dbMsg).toContain(FORMATTING_GUIDANCE);
 	});
@@ -250,7 +253,7 @@ describe("foldContextBatch — usage + system prompt", () => {
 		await foldContextBatch({ ...baseInput });
 
 		const callArgs = generateObjectMock.mock.calls[0][0];
-		expect(callArgs.system).toEqual(
+		expect(callArgs.instructions).toEqual(
 			expect.objectContaining({
 				role: "system",
 				content: expect.stringContaining(SYSTEM_GUIDANCE),

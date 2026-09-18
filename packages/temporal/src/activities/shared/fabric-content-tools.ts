@@ -379,7 +379,7 @@ export async function createFabricFrame(input: {
 
 		const result = await generateText({
 			model,
-			system: systemContent,
+			instructions: systemContent,
 			messages: [{ role: "user", content: prompt }],
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 		});

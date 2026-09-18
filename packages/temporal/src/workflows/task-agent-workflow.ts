@@ -366,7 +366,7 @@ export async function taskAgentWorkflow(
 
 			// Add assistant message with tool calls to history
 			if (turnResult.toolCalls && turnResult.toolCalls.length > 0) {
-				// Add assistant message with tool_use parts (AI SDK v6 format)
+				// Add assistant message with tool_use parts (AI SDK v7 format)
 				messages.push({
 					role: "assistant",
 					content: [
@@ -377,7 +377,7 @@ export async function taskAgentWorkflow(
 							type: "tool-call",
 							toolCallId: tc.id,
 							toolName: tc.name,
-							// AI SDK v6 expects 'input' instead of 'args'
+							// AI SDK v7 expects 'input' instead of 'args'
 							input: tc.args,
 						})),
 					],

@@ -312,7 +312,7 @@ export async function invokeAgent({
 		const { getAIModelWithMetadata, getCurrentDateContext } = await import(
 			"@repo/ai"
 		);
-		const { generateText, stepCountIs } = await import("ai");
+		const { generateText, isStepCount } = await import("ai");
 
 		const enabledBuiltInKeys = extractEnabledBuiltInToolKeys(
 			instance.toolConnections,
@@ -453,14 +453,14 @@ export async function invokeAgent({
 		// outrun the activity heartbeat timeout.
 		const result = await generateText({
 			model,
-			system: systemPrompt,
+			instructions: systemPrompt,
 			messages,
-			onStepFinish: () => {
+			onStepEnd: () => {
 				heartbeat({ phase: "step_finished", executionId });
 			},
 			prepareStep: makeInFlightToolCompactor(),
 			...(toolNames.length > 0
-				? { tools, stopWhen: stepCountIs(8) }
+				? { tools, stopWhen: isStepCount(8) }
 				: {}),
 		} as Parameters<typeof generateText>[0]);
 

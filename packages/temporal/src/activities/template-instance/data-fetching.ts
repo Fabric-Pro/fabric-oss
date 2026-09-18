@@ -492,7 +492,7 @@ export async function executeAiAnalysis(
 			// long HTML generation (prevents idle timeout / socket close)
 			const stream = streamText({
 				model,
-				system: systemWithSkills,
+				instructions: systemWithSkills,
 				prompt: contextPrompt,
 				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 			});

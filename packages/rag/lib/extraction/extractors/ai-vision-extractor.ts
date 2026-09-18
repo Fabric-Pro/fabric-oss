@@ -94,8 +94,8 @@ export class AiVisionExtractor implements IDocumentExtractor {
 					role: "user",
 					content: [
 						{
-							type: "image",
-							image: new Uint8Array(visionPayload.buffer),
+							type: "file",
+							data: new Uint8Array(visionPayload.buffer),
 							mediaType: visionPayload.mimeType,
 						},
 						{

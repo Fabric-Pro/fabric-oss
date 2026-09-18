@@ -332,7 +332,7 @@ ${formatContextItems(contextItems)}`;
 		const { object, usage } = await generateObject({
 			model,
 			schema: zodSchema(ContextUpdateSchema),
-			system,
+			instructions: system,
 			prompt: userPrompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 		});

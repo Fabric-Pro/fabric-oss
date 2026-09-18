@@ -102,7 +102,7 @@ Please present the results in a clear, well-formatted manner.`;
 
 		const response = await generateText({
 			model,
-			system: systemPrompt,
+			instructions: systemPrompt,
 			prompt: userPrompt,
 		});
 

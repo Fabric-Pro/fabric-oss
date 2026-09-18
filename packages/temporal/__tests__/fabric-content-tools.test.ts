@@ -216,12 +216,12 @@ describe("fabric-content-tools", () => {
 
 			expect(stubs.generateTextMock).toHaveBeenCalledTimes(1);
 			const callArgs = stubs.generateTextMock.mock.calls[0][0] as {
-				system?: unknown;
+				instructions?: unknown;
 				messages: Array<{ role: string }>;
 			};
 
-			expect(typeof callArgs.system).toBe("string");
-			expect(callArgs.system).toContain("wireframe generator");
+			expect(typeof callArgs.instructions).toBe("string");
+			expect(callArgs.instructions).toContain("wireframe generator");
 			expect(callArgs.messages.some((m) => m.role === "system")).toBe(
 				false,
 			);

@@ -3,7 +3,8 @@
  * `streamText` log "AI SDK Warning: System messages in the prompt or
  * messages fields can be a security risk…" whenever a call's `messages`
  * array contains a `role: "system"` entry, and AI SDK 7 rejects such calls
- * outright unless `allowSystemInMessages` is explicitly set.
+ * outright unless `allowSystemInMessages` is explicitly set. (The workspace
+ * is now on AI SDK 7, so this is a hard rejection, not a warning.)
  *
  * Direct chat's rolling-history path is the one INTENTIONAL exception:
  * `buildDirectChatPromptCacheRequest` (see `../prompt-cache.ts` and its
@@ -43,7 +44,9 @@ function streamTextCallBlock(): string {
 describe("Direct chat streamText — allowSystemInMessages wiring", () => {
 	it("passes the rolling-history system row through the system-aware call site", () => {
 		const block = streamTextCallBlock();
-		expect(block).toContain("system: promptCacheRequest.system,");
+		// AI SDK 7 renamed the top-level `system` option to `instructions`;
+		// `buildDirectChatPromptCacheRequest` still names its field `system`.
+		expect(block).toContain("instructions: promptCacheRequest.system,");
 		expect(block).toContain("messages: promptCacheRequest.messages,");
 	});
 

@@ -1,13 +1,18 @@
-import { tool } from "ai";
+import { type ToolSet, tool } from "ai";
 
 import { z } from "zod";
 import type { SandboxClient } from "../lib/sandbox-client.js";
 
 /**
- * Create AI SDK v6 tools for read-only sandbox access.
+ * Create AI SDK tools for read-only sandbox access.
  * These tools allow LLMs to iteratively explore the codebase.
+ *
+ * Explicit `ToolSet` return type: under AI SDK 7 the inferred type of a
+ * `tool()` reaches into @ai-sdk/provider-utils (Context, SandboxSession) and
+ * @ai-sdk/provider, which tsc cannot name from this package without quoting a
+ * .pnpm path (TS2742). Annotating keeps the declaration portable.
  */
-export function createReadOnlySandboxTools(sandbox: SandboxClient) {
+export function createReadOnlySandboxTools(sandbox: SandboxClient): ToolSet {
 	return {
 		readFile: tool({
 			description:

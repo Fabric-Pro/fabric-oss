@@ -47,7 +47,7 @@ vi.mock("@repo/agent-core/backend", () => ({
 vi.mock("@repo/ai", () => ({
 	generateText: vi.fn(),
 	tool: vi.fn((schema) => schema),
-	stepCountIs: vi.fn(() => () => true),
+	isStepCount: vi.fn(() => () => true),
 	selectModelDynamic: vi.fn().mockResolvedValue({
 		providerModelId: "openai/gpt-oss-120b",
 		selectionSource: "system-default",

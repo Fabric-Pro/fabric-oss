@@ -1,4 +1,4 @@
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 import { Hono } from "hono";
 import { resolveReaderModel } from "../lib/llm.js";
 import {
@@ -71,7 +71,7 @@ async function buildWarpResponse(
 			() =>
 				generateText({
 					model: model,
-					system: WARP_SYSTEM_PROMPT,
+					instructions: WARP_SYSTEM_PROMPT,
 					messages: [
 						{
 							role: "user",
@@ -168,10 +168,10 @@ async function buildWarpResponse(
 		() =>
 			generateText({
 				model: model,
-				system: WARP_SYSTEM_PROMPT,
+				instructions: WARP_SYSTEM_PROMPT,
 				messages: [{ role: "user", content: contextHint }],
 				tools,
-				stopWhen: stepCountIs(MAX_TOOL_STEPS),
+				stopWhen: isStepCount(MAX_TOOL_STEPS),
 			}),
 		{ label: "warp-generateText", circuitKey: "warp" },
 	);

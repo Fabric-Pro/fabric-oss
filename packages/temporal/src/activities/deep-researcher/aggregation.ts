@@ -328,7 +328,7 @@ Be thorough but concise. Use clear structure and formatting.`;
 		const synthesisResult = await withHeartbeat(
 			generateText({
 				model,
-				system: synthesisSystem,
+				instructions: synthesisSystem,
 				prompt: synthesisPrompt,
 				...(synthesisMaxOutputTokens !== undefined
 					? { maxOutputTokens: synthesisMaxOutputTokens }

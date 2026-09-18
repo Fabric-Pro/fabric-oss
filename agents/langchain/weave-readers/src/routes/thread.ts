@@ -1,4 +1,4 @@
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 import { Hono } from "hono";
 import { resolveReaderModel } from "../lib/llm.js";
 import { withRetry } from "../lib/retry.js";
@@ -57,12 +57,12 @@ async function buildThreadResponse(
 			() =>
 				generateText({
 					model,
-					system: THREAD_SYSTEM_PROMPT,
+					instructions: THREAD_SYSTEM_PROMPT,
 					messages: [
 						{ role: "user", content: contextParts.join("\n") },
 					],
 					tools,
-					stopWhen: stepCountIs(MAX_TOOL_STEPS),
+					stopWhen: isStepCount(MAX_TOOL_STEPS),
 				}),
 			{ label: "thread-generateText", circuitKey: "thread" },
 		);
@@ -80,7 +80,7 @@ async function buildThreadResponse(
 		() =>
 			generateText({
 				model,
-				system: THREAD_SYSTEM_PROMPT,
+				instructions: THREAD_SYSTEM_PROMPT,
 				messages: [{ role: "user", content: contextParts.join("\n") }],
 			}),
 		{ label: "thread-generateText", circuitKey: "thread" },

@@ -1,11 +1,11 @@
 /**
  * Research Agent
  *
- * An AI SDK V6 powered agent that gathers context before task execution.
+ * An AI SDK V7 powered agent that gathers context before task execution.
  * Uses tool-calling to search the web, query workspaces, and consult agents.
  */
 
-import { generateText, stepCountIs } from "@repo/ai";
+import { generateText, isStepCount } from "@repo/ai";
 import type {
 	ExecuteResearchAgentInput,
 	ResearchFinding,
@@ -62,7 +62,7 @@ export async function executeResearchAgent(
 		try {
 			const result = await generateText({
 				model,
-				system: getResearchAgentSystemPrompt(input),
+				instructions: getResearchAgentSystemPrompt(input),
 				prompt: `Research Query: ${query}
 
 This research is for the task: "${input.originalTask}"
@@ -71,9 +71,9 @@ Use the available tools to gather comprehensive information. Search the web, scr
 
 After gathering information, provide a summary of your findings.`,
 				tools: researchTools as any,
-				stopWhen: stepCountIs(maxSteps),
+				stopWhen: isStepCount(maxSteps),
 				// Allow multi-tool research workflows (e.g., search → scrape → analyze)
-				// stepCountIs(maxSteps) provides the safety limit
+				// isStepCount(maxSteps) provides the safety limit
 			});
 
 			// Extract findings from tool calls
@@ -128,16 +128,20 @@ After gathering information, provide a summary of your findings.`,
 function extractFindings(steps: unknown[]): ResearchFinding[] {
 	const findings: ResearchFinding[] = [];
 
+	// Shapes per AI SDK 7 StepResult: toolCalls are TypedToolCall (`input`) and
+	// toolResults are TypedToolResult (`output`). `args`/`result` were the v4
+	// names — reading them here silently yielded `undefined`, so every finding
+	// was dropped by the isErrorResult(undefined) guard below.
 	for (const step of steps as Array<{
-		toolCalls?: Array<{ toolName: string; args: unknown }>;
-		toolResults?: Array<{ toolCallId: string; result: unknown }>;
+		toolCalls?: Array<{ toolName: string; input: unknown }>;
+		toolResults?: Array<{ toolCallId: string; output: unknown }>;
 	}>) {
 		if (!step.toolResults) {
 			continue;
 		}
 
 		for (const toolResult of step.toolResults) {
-			const result = toolResult.result;
+			const result = toolResult.output;
 
 			// Skip error results
 			if (isErrorResult(result)) {

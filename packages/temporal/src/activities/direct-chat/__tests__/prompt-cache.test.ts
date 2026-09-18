@@ -64,8 +64,8 @@ describe("buildDirectChatPromptCacheRequest", () => {
 				content: [
 					{ type: "text", text: "describe this image" },
 					{
-						type: "image",
-						image: new Uint8Array([1, 2, 3]),
+						type: "file",
+						data: new Uint8Array([1, 2, 3]),
 						mediaType: "image/png",
 					},
 				],

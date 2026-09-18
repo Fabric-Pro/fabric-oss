@@ -1597,7 +1597,7 @@ ${formattingRules}`;
 			// and prevent idle timeout errors on long-running generations
 			const fallbackStream = streamText({
 				model: fallbackModel,
-				system: systemPrompt,
+				instructions: systemPrompt,
 				prompt: fullPrompt,
 				...(fallbackMaxOutputTokens !== undefined
 					? { maxOutputTokens: fallbackMaxOutputTokens }
@@ -1664,7 +1664,7 @@ ${formattingRules}`;
 			// and prevent idle timeout errors on long-running generations
 			const directFallbackStream = streamText({
 				model: fallbackModel,
-				system: systemPrompt,
+				instructions: systemPrompt,
 				prompt: fullPrompt,
 				...(directFallbackMaxOutputTokens !== undefined
 					? { maxOutputTokens: directFallbackMaxOutputTokens }
@@ -3338,7 +3338,7 @@ ${truncated}`;
 		// and prevent idle timeout errors on long-running generations
 		const cleanupStream = streamText({
 			model,
-			system: cleanupSystem,
+			instructions: cleanupSystem,
 			prompt: cleanupPrompt,
 			...(cleanupMaxOutputTokens !== undefined
 				? { maxOutputTokens: cleanupMaxOutputTokens }

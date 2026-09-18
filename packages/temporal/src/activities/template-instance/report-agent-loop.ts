@@ -128,14 +128,14 @@ export const REPORT_MAX_OUTPUT_TOKENS = 16384;
  * cap + tool-choice logic is unit-testable without driving the whole loop. */
 export function buildReportStreamRequest(args: {
 	model: unknown;
-	system: string;
+	instructions: string;
 	messages: unknown[];
 	tools: Record<string, unknown>;
 }) {
 	const hasTools = Object.keys(args.tools).length > 0;
 	return {
 		model: args.model as any,
-		system: args.system,
+		instructions: args.instructions,
 		// The agent re-sends a GROWING, append-only history every iteration (tool
 		// results run to ~12k chars each). A single rolling cache breakpoint on
 		// the last message caches everything before it -- tools + system + all
@@ -153,7 +153,7 @@ export type AgentUsage = { inputTokens: number; outputTokens: number };
 
 export type ModelStreamLike = {
 	textStream: AsyncIterable<string>;
-	fullStream: AsyncIterable<{ type: string; [k: string]: unknown }>;
+	stream: AsyncIterable<{ type: string; [k: string]: unknown }>;
 	text: Promise<string>;
 	toolCalls: Promise<unknown[]>;
 	finishReason: Promise<string | undefined>;
@@ -176,6 +176,8 @@ export type ConsumeResult = {
 	usageResolved: boolean;
 	finishReason: string | null;
 	sawFinishStep: boolean;
+	/** tool-call parts the provider flagged `invalid` and this loop dropped. */
+	invalidToolCalls: number;
 	streamError?: unknown;
 	resolveError?: unknown;
 };
@@ -198,6 +200,7 @@ export async function consumeStream(
 	const toolCalls: ConsumeResult["toolCalls"] = [];
 	let sawFinishStep = false;
 	let finishReason: string | null = null;
+	let invalidToolCalls = 0;
 	// Fix 2: collect ALL error parts + iterator-throw; resolve genuine-preferred at end.
 	const streamErrors: unknown[] = [];
 
@@ -232,18 +235,39 @@ export async function consumeStream(
 	}, idleMs);
 
 	try {
-		for await (const part of stream.fullStream) {
+		for await (const part of stream.stream) {
 			switch (part.type) {
 				case "text-delta":
 					text += (part as { text?: string }).text ?? "";
 					break;
-				case "tool-call":
+				case "tool-call": {
+					// AI SDK 7 keeps the v6 DynamicToolCall defect channel:
+					// an unparsable input or a call to a tool that does not
+					// exist arrives as a part with `dynamic: true` and
+					// `invalid: true` (+ `error`) instead of throwing.
+					// StaticToolCall pins `invalid?: false | undefined`, so
+					// the check is safe on both arms of TypedToolCall.
+					// Executing one would call a tool the model never
+					// legitimately requested, so drop it — the orchestrator
+					// does the same (run-agent-iteration.ts).
+					const call = part as {
+						toolCallId?: string;
+						toolName?: string;
+						input?: unknown;
+						invalid?: boolean;
+						error?: unknown;
+					};
+					if (call.invalid === true) {
+						invalidToolCalls++;
+						break;
+					}
 					toolCalls.push({
-						toolCallId: (part as any).toolCallId,
-						toolName: (part as any).toolName,
-						input: (part as any).input ?? {},
+						toolCallId: call.toolCallId as string,
+						toolName: call.toolName as string,
+						input: call.input ?? {},
 					});
 					break;
+				}
 				case "finish-step":
 					sawFinishStep = true;
 					if ((part as any).finishReason) {
@@ -258,6 +282,14 @@ export async function consumeStream(
 					break;
 				case "error":
 					streamErrors.push((part as any).error);
+					break;
+				default:
+					// Every other v7 TextStreamPart is irrelevant to this loop
+					// (start, start-step, text-start/-end, reasoning-*,
+					// reasoning-file, custom, source, file, tool-input-*,
+					// tool-result, tool-error, tool-output-denied,
+					// tool-approval-*, abort, raw) — ignore it explicitly so a
+					// future part type cannot change this loop's behaviour.
 					break;
 			}
 		}
@@ -315,6 +347,12 @@ export async function consumeStream(
 		streamErrors.find((e) => !isNoOutputGeneratedError(e)) ??
 		streamErrors[0];
 
+	if (invalidToolCalls > 0) {
+		console.warn(
+			`[AgentLoop] Dropped ${invalidToolCalls} invalid tool call(s) reported by the provider`,
+		);
+	}
+
 	return {
 		text,
 		toolCalls,
@@ -322,6 +360,7 @@ export async function consumeStream(
 		usageResolved,
 		finishReason,
 		sawFinishStep,
+		invalidToolCalls,
 		streamError,
 		resolveError,
 	};
@@ -1700,7 +1739,7 @@ export async function executeAgentDataGatheringLoop(
 				streamText(
 					buildReportStreamRequest({
 						model,
-						system: systemPrompt,
+						instructions: systemPrompt,
 						messages: conversationHistory,
 						tools: aiSdkTools,
 					}),

@@ -215,7 +215,7 @@ export async function POST(req: NextRequest) {
 		const result = await streamText({
 			model,
 			prompt,
-			system,
+			instructions: system,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 		});
 

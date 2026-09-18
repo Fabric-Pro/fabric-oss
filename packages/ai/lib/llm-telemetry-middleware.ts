@@ -86,7 +86,7 @@ export function createLLMTelemetryMiddleware(
 	context: LLMTelemetryContext,
 ): LanguageModelMiddleware {
 	return {
-		specificationVersion: "v3",
+		specificationVersion: "v4",
 		wrapGenerate: async ({ doGenerate }) => {
 			const invocation = llmInstrumentation.startInvocation(context);
 			try {

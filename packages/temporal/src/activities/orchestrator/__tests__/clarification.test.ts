@@ -135,10 +135,13 @@ describe("analyzeIntentClarityActivity", () => {
 
 		function promptFor(call: unknown) {
 			const args = call as {
-				system: string;
+				instructions: string;
 				messages: Array<{ content: string }>;
 			};
-			return { system: args.system, user: args.messages[0].content };
+			return {
+				instructions: args.instructions,
+				user: args.messages[0].content,
+			};
 		}
 
 		it("sends the conversation to the model, ahead of the request", async () => {
@@ -182,7 +185,9 @@ describe("analyzeIntentClarityActivity", () => {
 				userId: "u",
 			});
 
-			const { system } = promptFor(generateText.mock.calls[0][0]);
+			const { instructions: system } = promptFor(
+				generateText.mock.calls[0][0],
+			);
 			expect(system).toContain("NEVER ask something the conversation");
 			expect(system).toContain("Clarification —");
 		});
@@ -195,7 +200,9 @@ describe("analyzeIntentClarityActivity", () => {
 				userId: "u",
 			});
 
-			const { system } = promptFor(generateText.mock.calls[0][0]);
+			const { instructions: system } = promptFor(
+				generateText.mock.calls[0][0],
+			);
 			// Guards AC-3: the fix must not turn into blanket suppression.
 			expect(system).toContain("do NOT stay silent on a real gap");
 		});

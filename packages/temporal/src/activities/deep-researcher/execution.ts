@@ -5,7 +5,7 @@
  * Each sub-agent runs in its own context window for focused investigation.
  */
 
-import { generateText, stepCountIs } from "@repo/ai";
+import { generateText, isStepCount } from "@repo/ai";
 import { db } from "@repo/database";
 import { getCachedMcpClientForConfig } from "@repo/mcp";
 import { heartbeat } from "@temporalio/activity";
@@ -340,7 +340,7 @@ Provide your complete findings now.`;
 		const result = await withHeartbeat(
 			generateText({
 				model,
-				system: hasSearch
+				instructions: hasSearch
 					? RESEARCH_SYSTEM_PROMPT_WITH_SEARCH
 					: RESEARCH_SYSTEM_PROMPT_BASE,
 				prompt,
@@ -349,7 +349,7 @@ Provide your complete findings now.`;
 							tools: searchTools as Parameters<
 								typeof generateText
 							>[0]["tools"],
-							stopWhen: stepCountIs(8),
+							stopWhen: isStepCount(8),
 						}
 					: {}),
 			}),
@@ -451,7 +451,7 @@ Structure your response clearly with sections as appropriate.`;
 		const result = await withHeartbeat(
 			generateText({
 				model,
-				system: hasSearch
+				instructions: hasSearch
 					? RESEARCH_SYSTEM_PROMPT_WITH_SEARCH
 					: RESEARCH_SYSTEM_PROMPT_BASE,
 				prompt,
@@ -460,7 +460,7 @@ Structure your response clearly with sections as appropriate.`;
 							tools: searchTools as Parameters<
 								typeof generateText
 							>[0]["tools"],
-							stopWhen: stepCountIs(6),
+							stopWhen: isStepCount(6),
 						}
 					: {}),
 			}),
@@ -587,7 +587,8 @@ async function generateSummary(
 ): Promise<string> {
 	const summaryResult = await generateText({
 		model,
-		system: "You are a skilled summarizer. Create a concise 2-3 sentence summary.",
+		instructions:
+			"You are a skilled summarizer. Create a concise 2-3 sentence summary.",
 		prompt: `Summarize the key findings from this research in 2-3 sentences:
 
 Question: ${query}

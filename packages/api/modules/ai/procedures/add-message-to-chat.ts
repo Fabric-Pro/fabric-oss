@@ -7,6 +7,7 @@ import {
 	getRAGProviderConfig,
 	logModelUsageAsync,
 	streamText,
+	toUIMessageStream,
 } from "@repo/ai";
 import {
 	getAiChatByIdForOwner,
@@ -32,7 +33,7 @@ import { verifyOrganizationMembership } from "../../organizations/lib/membership
 
 // Define UIMessage schema for input validation
 // UIMessage from Vercel AI SDK has a parts array structure
-// In AI SDK v6, parts can be various types: text, tool-call, tool-result, file, etc.
+// In AI SDK v7, parts can be various types: text, tool-call, tool-result, file, etc.
 const UIMessageSchema = z.object({
 	id: z.string(),
 	role: z.enum(["user", "assistant", "system"]),
@@ -403,11 +404,11 @@ export const addMessageToChat = tenantProtectedProcedure
 		try {
 			response = streamText({
 				model: aiModel,
-				...(systemText ? { system: systemText } : {}),
+				...(systemText ? { instructions: systemText } : {}),
 				messages: await convertToModelMessages(messagesForModel as any),
 				// Apply aggressive streaming configuration to prevent paragraph buffering
 				...getAggressiveStreamingConfig(resolvedModel).aiConfig,
-				async onFinish({ text, usage }) {
+				async onEnd({ text, usage }) {
 					const updatedMessages = [
 						...messages,
 						{
@@ -488,5 +489,11 @@ export const addMessageToChat = tenantProtectedProcedure
 			});
 		}
 
-		return streamToEventIterator(response.toUIMessageStream());
+		// AI SDK 7 deprecates `result.toUIMessageStream()` in favour of the
+		// stateless helper, which takes an options object `{ stream }` and
+		// returns a ReadableStream — exactly what `streamToEventIterator`
+		// (@orpc/shared `streamToAsyncIteratorClass`) accepts.
+		return streamToEventIterator(
+			toUIMessageStream({ stream: response.stream }),
+		);
 	});

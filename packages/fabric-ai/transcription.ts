@@ -1,7 +1,7 @@
 /**
  * Audio/Video Transcription for Fabric AI
  *
- * Uses AI SDK's experimental_transcribe to support:
+ * Uses the AI SDK's `transcribe` (SDK 7's promotion of `experimental_transcribe`) to support:
  * - Direct provider access (OpenAI, Groq, etc.)
  * - AI Gateway routing (looks up enabled sub-providers since gateway doesn't support transcription directly)
  *
@@ -28,7 +28,7 @@ import { logger } from "@repo/logs";
 import { withProviderBreaker } from "@repo/observability";
 import {
 	type TranscriptionModel as SdkTranscriptionModel,
-	experimental_transcribe as transcribe,
+	transcribe,
 } from "ai";
 import { createFabricClient } from "./client";
 import { executeFabricPattern, getFabricAIMode } from "./executor";
@@ -246,7 +246,7 @@ function getTranscriptionProvider(
 /**
  * Transcribe audio using hybrid mode
  *
- * Uses the AI SDK's experimental_transcribe function.
+ * Uses the AI SDK's `transcribe` function.
  *
  * NOTE: Vercel AI Gateway doesn't support transcription routing directly.
  * When user has AI Gateway configured, we look at their enabledProviders

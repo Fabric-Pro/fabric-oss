@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
 		const result = await streamText({
 			model,
 			prompt,
-			system: systemPrompt,
+			instructions: systemPrompt,
 		});
 
 		// Collect the full text response

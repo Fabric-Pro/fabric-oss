@@ -36,18 +36,25 @@ describe("Anthropic adapter mid-conversation system support", () => {
 
 		const result = await generateText({
 			model: anthropic("claude-opus-4-8"),
-			system: cacheableSystem("stable system"),
+			instructions: cacheableSystem("stable system"),
 			messages: [
 				{ role: "user", content: "earlier question" },
 				{ role: "assistant", content: "earlier answer" },
 				{ role: "user", content: "current question" },
 				{ role: "system", content: "request-specific context" },
 			],
+			// SDK 7 rejects a system-role entry inside `messages` unless the
+			// call opts in; the whole point of this test is the terminal
+			// system message, so it opts in.
+			allowSystemInMessages: true,
 		});
 
 		expect(result.text).toBe("done");
 		expect(fetchMock).toHaveBeenCalledOnce();
 		expect(requestBody).toMatchObject({
+			// `system` here is Anthropic's own wire field, not an SDK call
+			// option — the SDK 7 `system` → `instructions` rename stops at the
+			// call site and does not reach the HTTP body.
 			system: [
 				{
 					type: "text",

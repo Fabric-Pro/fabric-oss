@@ -58,8 +58,10 @@
 									"embed",
 									"embedMany",
 									"experimental_transcribe",
-									"experimental_generateImage",
+									"transcribe",
+									"generateImage",
 									"createGateway",
+									"createProviderRegistry",
 									"experimental_createProviderRegistry",
 									"wrapLanguageModel"
 								],

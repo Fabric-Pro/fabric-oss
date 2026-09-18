@@ -102,7 +102,7 @@ const ctx = { userId: "user-1", organizationId: "org-1" };
 
 interface StreamTextOptions {
 	messages: { role: string; content: string }[];
-	onFinish: (event: {
+	onEnd: (event: {
 		text: string;
 		usage: Record<string, number>;
 	}) => Promise<void>;
@@ -282,12 +282,12 @@ describe("chat — user turn persisted before streaming", () => {
 });
 
 describe("chat — assistant persistence across completion paths", () => {
-	it("onFinish appends the assistant message only (the user turn is never re-appended)", async () => {
+	it("onEnd appends the assistant message only (the user turn is never re-appended)", async () => {
 		const service = new AtlasService(ctx);
 		const { textStream, persistOutcome } = await service.chat(chatInput);
 
 		await consumeAll(textStream);
-		await streamTextOptions.onFinish({
+		await streamTextOptions.onEnd({
 			text: "Hello world",
 			usage: { totalTokens: 10 },
 		});
@@ -356,16 +356,16 @@ describe("chat — assistant persistence across completion paths", () => {
 		});
 	});
 
-	it("a mid-stream error salvages the partial via onError, then onFinish (SDK fires it after onError) only meters usage", async () => {
+	it("a mid-stream error salvages the partial via onError, then onEnd (SDK fires it after onError) only meters usage", async () => {
 		const service = new AtlasService(ctx);
 		const { textStream, persistOutcome } = await service.chat(chatInput);
 
 		const iterator = textStream[Symbol.asyncIterator]();
 		await iterator.next();
 		await streamTextOptions.onError({ error: new Error("provider 500") });
-		// AI SDK v6 still fires onFinish after onError (tokens were consumed);
+		// AI SDK v7 still fires onEnd after onError (tokens were consumed);
 		// the one-shot guard keeps the interrupted persist authoritative.
-		await streamTextOptions.onFinish({
+		await streamTextOptions.onEnd({
 			text: "Hello",
 			usage: { totalTokens: 5 },
 		});
@@ -417,12 +417,12 @@ describe("chat — assistant persistence across completion paths", () => {
 		});
 	});
 
-	it("a double-fire of onFinish + onAbort appends the assistant message exactly once", async () => {
+	it("a double-fire of onEnd + onAbort appends the assistant message exactly once", async () => {
 		const service = new AtlasService(ctx);
 		const { textStream } = await service.chat(chatInput);
 
 		await consumeAll(textStream);
-		await streamTextOptions.onFinish({
+		await streamTextOptions.onEnd({
 			text: "Hello world",
 			usage: { totalTokens: 10 },
 		});
@@ -440,7 +440,7 @@ describe("chat — usage recording (whenever the SDK reports finish)", () => {
 		const { textStream } = await service.chat(chatInput);
 
 		await consumeAll(textStream);
-		await streamTextOptions.onFinish({
+		await streamTextOptions.onEnd({
 			text: "Hello world",
 			usage: { totalTokens: 10 },
 		});
@@ -472,7 +472,7 @@ describe("chat — post-stream persistence failure surfaces via persistOutcome",
 		const { textStream, persistOutcome } = await service.chat(chatInput);
 
 		await consumeAll(textStream);
-		await streamTextOptions.onFinish({
+		await streamTextOptions.onEnd({
 			text: "Hello world",
 			usage: { totalTokens: 10 },
 		});

@@ -138,7 +138,7 @@ export const refineRequestProcedure = protectedProcedure
 
 			const { text, usage } = await generateText({
 				model,
-				system: SYSTEM_PROMPT,
+				instructions: SYSTEM_PROMPT,
 				prompt: conversationParts.join("\n\n"),
 			});
 

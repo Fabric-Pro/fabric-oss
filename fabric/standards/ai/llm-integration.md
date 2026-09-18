@@ -28,10 +28,10 @@ This document defines standards for integrating Large Language Models (LLMs) int
 // packages/ai/client.ts
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { experimental_createProviderRegistry } from "ai";
+import { createProviderRegistry } from "ai";
 
 // Create provider registry with all supported providers
-export const registry = experimental_createProviderRegistry({
+export const registry = createProviderRegistry({
   openai: createOpenAI({
     apiKey: process.env.OPENAI_API_KEY,
   }),
@@ -72,15 +72,16 @@ export const generateTextProcedure = protectedProcedure
 
     const result = streamText({
       model,
-      system: input.systemPrompt,
+      instructions: input.systemPrompt,
       prompt: input.prompt,
-      // Track usage
-      onFinish: async (completion) => {
+      // Track usage. `onEnd` fires once per turn and its `usage` is the
+      // total across every step, so a multi-step turn meters its whole spend.
+      onEnd: async ({ usage }) => {
         await trackUsage({
           userId: context.user.id,
           model: input.model,
-          promptTokens: completion.usage.promptTokens,
-          completionTokens: completion.usage.completionTokens,
+          promptTokens: usage.inputTokens ?? 0,
+          completionTokens: usage.outputTokens ?? 0,
         });
       },
     });
@@ -294,7 +295,7 @@ export async function generateWithRAG(
   // Generate with context
   const result = await generateText({
     model: getModel(options.model),
-    system: `Use the following context to answer questions. 
+    instructions: `Use the following context to answer questions.
 If the context doesn't contain relevant information, say so.
 
 Context:
@@ -348,7 +349,7 @@ const openai = new OpenAI({
 const response = await generateText({
   model: getModel("gpt-4"),
   prompt: userInput,  // ❌ Could be huge
-  // No maxTokens limit
+  // No maxOutputTokens limit
 });
 ```
 **Why**: Cost explosion, API errors, performance issues.
@@ -360,7 +361,7 @@ const response = await generateText({
 const response = await generateText({
   model: getModel("gpt-4"),
   prompt: truncateToTokenLimit(userInput, 4000),
-  maxTokens: 2000,
+  maxOutputTokens: 2000,
 });
 ```
 
@@ -594,6 +595,16 @@ const response = await fetch(mcpUrl, {
 - Automatic error handling and retry logic
 - Proper connection lifecycle management
 - Schema validation
+
+**Redirects are refused.** On the config-object transport above, the built-in
+HTTP/SSE transport sets `redirect: "error"`, and that default is kept
+deliberately: a tenant-configured server URL is validated before the
+connection is opened, so following a redirect would let a URL that passed that
+check end up talking to a host that never did. A server that redirects must be
+configured with the URL it redirects to. Surface the refusal as its own error —
+the underlying rejection is a bare `TypeError: fetch failed` with
+`unexpected redirect` only on the cause chain, which otherwise reads to the
+person who configured the integration as an unreachable server.
 
 ### MCP Client Patterns
 

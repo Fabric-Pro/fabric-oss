@@ -1,7 +1,7 @@
 /**
  * In-flight tool-result compaction for AI SDK multi-step loops.
  *
- * When a `generateText`/`streamText` call has `stopWhen: stepCountIs(N)` and
+ * When a `generateText`/`streamText` call has `stopWhen: isStepCount(N)` and
  * tools that return large outputs (e.g. `project_rag_query` returning 50+
  * reranked contexts), every prior tool result is re-sent to the model on
  * each subsequent step. Two RAG calls × ~60K chars each plus the assistant
@@ -15,6 +15,15 @@
  *
  * The most recent N tool results are kept verbatim so the model still sees
  * the full body of work it's currently reasoning over.
+ *
+ * AI SDK 7 note: `prepareStep` still receives `{ messages }` and still accepts
+ * a `{ messages }` override, but the override now CARRIES FORWARD — the next
+ * step is built from the returned array plus that step's response messages,
+ * where v6 applied it to the current step only. That suits this helper: a
+ * compaction sticks instead of being recomputed from the full history on every
+ * subsequent step, and the budget check below then measures the already
+ * compacted array. Nothing is lost, because the SDK still appends each step's
+ * response messages on top.
  */
 
 import type { ModelMessage, ToolModelMessage, ToolResultPart } from "ai";

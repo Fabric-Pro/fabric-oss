@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { type ToolSet, tool } from "ai";
 
 import { z } from "zod";
 
@@ -114,7 +114,11 @@ function stripHtmlForSpec(html: string): string {
  * - 10s timeout
  * - 100KB max content size
  */
-export function createWebFetchTools() {
+// Explicit `ToolSet` return type: under AI SDK 7 the inferred type of a
+// `tool()` reaches into @ai-sdk/provider-utils (Context, SandboxSession) and
+// @ai-sdk/provider, which tsc cannot name from this package without quoting a
+// .pnpm path (TS2742). Annotating keeps the declaration portable.
+export function createWebFetchTools(): ToolSet {
 	return {
 		fetchRfc: tool({
 			description:

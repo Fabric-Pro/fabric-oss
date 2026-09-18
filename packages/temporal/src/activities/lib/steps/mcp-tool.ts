@@ -106,9 +106,12 @@ export async function executeMcpToolStep(
 				continue;
 			}
 
+			// AI SDK 7 made ToolExecutionOptions.context required. MCP tools declare
+			// no contextSchema, so the SDK's own invocation passes undefined here.
 			const result = await tool.execute(parsedArgs, {
 				toolCallId: `${toolName}-${Date.now()}`,
 				messages: [],
+				context: undefined,
 			});
 
 			// Format result for easy access

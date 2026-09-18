@@ -1174,7 +1174,7 @@ Provide a structured summary of this meeting.`;
 		});
 		const response = await generateText({
 			model,
-			system: summarySystem,
+			instructions: summarySystem,
 			prompt: summaryPrompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 		});

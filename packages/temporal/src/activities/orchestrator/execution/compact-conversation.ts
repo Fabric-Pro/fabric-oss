@@ -117,7 +117,7 @@ export async function compactConversationHistoryActivity(
 
 	const result = await generateText({
 		model,
-		system: SYSTEM_PROMPT,
+		instructions: SYSTEM_PROMPT,
 		prompt: `User's original task:\n${currentTask}\n\n=== EARLIER CONVERSATION TO COMPACT ===\n${transcript}\n=== END ===\n\nProduce the PROGRESS SO FAR summary now.`,
 		maxOutputTokens: maxSummaryTokens,
 		temperature: 0.2,

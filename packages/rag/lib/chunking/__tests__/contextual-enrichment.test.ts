@@ -237,10 +237,10 @@ describe("enrichChunksWithTenantContext", () => {
 
 		expect(generateTextMock).toHaveBeenCalledTimes(2);
 		const [first, second] = generateTextMock.mock.calls.map(
-			(call) => call[0] as { system: unknown; prompt: string },
+			(call) => call[0] as { instructions: unknown; prompt: string },
 		);
 
-		expect(first.system).toEqual({
+		expect(first.instructions).toEqual({
 			role: "system",
 			content: expect.stringContaining(
 				"<full_document>\nHandbook body text.\n</full_document>",
@@ -249,7 +249,7 @@ describe("enrichChunksWithTenantContext", () => {
 				anthropic: { cacheControl: { type: "ephemeral" } },
 			},
 		});
-		expect(first.system).toEqual(second.system);
+		expect(first.instructions).toEqual(second.instructions);
 
 		expect(first.prompt).toContain(
 			`<chunk>\n${chunks[0].content}\n</chunk>`,

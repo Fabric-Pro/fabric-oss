@@ -15,7 +15,7 @@
 
 import assert from "node:assert/strict";
 import { generateText } from "ai";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV4 } from "ai/test";
 import { describe, it } from "vitest";
 import type { SandboxClient } from "../lib/sandbox-client.js";
 import { createReadOnlySandboxTools } from "./sandbox.js";
@@ -42,7 +42,12 @@ async function renderToolSchemas(
 		inputSchema?: unknown;
 	}> = [];
 
-	const model = new MockLanguageModelV3({
+	// AI SDK 7 ships both MockLanguageModelV3 and MockLanguageModelV4. The
+	// installed providers implement the v4 language-model spec (and @repo/ai's
+	// middleware declares `specificationVersion: "v4"`), so the mock must be V4
+	// or this test pins the schema the v3 compatibility path renders rather
+	// than the one production sends.
+	const model = new MockLanguageModelV4({
 		doGenerate: async (options) => {
 			rendered = (options.tools ?? []) as typeof rendered;
 			return {

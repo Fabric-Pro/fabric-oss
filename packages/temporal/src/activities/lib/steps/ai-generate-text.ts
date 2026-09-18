@@ -107,7 +107,7 @@ export async function executeAiGenerateTextStep(
 		const result = await generateText({
 			model,
 			prompt: interpolatedPrompt,
-			system: enrichment.systemPrompt || undefined,
+			instructions: enrichment.systemPrompt || undefined,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 		});
 		// User-configured workflow step: don't throw on a truncated result (the

@@ -23,7 +23,7 @@
 		"@repo/logs": "workspace:*",
 		"@repo/openapi-tools": "workspace:*",
 		"@repo/utils": "workspace:*",
-		"ai": "^6.0.283",
+		"ai": "^7.0.101",
 		"code-chunk": "^0.1.13",
 		"exceljs": "^4.4.0",
 		"html-to-text": "^9.0.5",
@@ -32,7 +32,7 @@
 		"mammoth": "^1.8.0",
 		"pdf-parse": "^1.1.1",
 		"sharp": "^0.35.4",
-		"zod": "^4.0.0-beta.2"
+		"zod": "4.1.12"
 	},
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",

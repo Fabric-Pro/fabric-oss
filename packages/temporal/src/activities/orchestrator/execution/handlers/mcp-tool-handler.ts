@@ -14,8 +14,8 @@
 import {
 	generateObject,
 	generateText,
+	isStepCount,
 	NoSuchToolError,
-	stepCountIs,
 	streamText,
 } from "@repo/ai";
 import {
@@ -832,18 +832,16 @@ export class McpToolHandler implements StepHandler {
 
 		const result = streamText({
 			model,
-			stopWhen: stepCountIs(executionContext.maxSteps),
-			system: `${executionContext.systemPrompt}${learningContext}`,
+			stopWhen: isStepCount(executionContext.maxSteps),
+			instructions: `${executionContext.systemPrompt}${learningContext}`,
 			prompt: executionContext.stepPrompt,
 			tools: wrappedTools as any,
 			prepareStep: makeInFlightToolCompactor(),
-			// Repair malformed tool calls (e.g., invalid JSON) using the model
-			experimental_repairToolCall: async ({
-				toolCall,
-				tools,
-				inputSchema,
-				error,
-			}) => {
+			// Repair malformed tool calls (e.g., invalid JSON) using the model.
+			// AI SDK 7 stabilised this option: `experimental_repairToolCall` is
+			// now a deprecated alias for `repairToolCall` (same
+			// ToolCallRepairFunction signature).
+			repairToolCall: async ({ toolCall, tools, inputSchema, error }) => {
 				// Don't attempt to fix invalid tool names
 				if (NoSuchToolError.isInstance(error)) {
 					console.warn(
@@ -906,18 +904,22 @@ export class McpToolHandler implements StepHandler {
 					return null; // Let the original error propagate
 				}
 			},
-			onStepFinish: (stepResult: unknown) => {
+			onStepEnd: (stepResult: unknown) => {
 				stepNumber++;
 				const elapsed = Date.now() - llmStartTime;
+				// Shape per AI SDK 7 StepResult: toolCalls are TypedToolCall
+				// (input, NOT args) and toolResults are TypedToolResult (output,
+				// NOT result). `args`/`result` were the v4 names and have read
+				// as undefined ever since; the cast hid that from tsc.
 				const step = stepResult as {
 					toolCalls?: Array<{
 						toolName: string;
 						toolCallId: string;
-						args?: unknown;
+						input?: unknown;
 					}>;
 					toolResults?: Array<{
 						toolCallId: string;
-						output?: unknown; // AI SDK v5 uses 'output', not 'result'
+						output?: unknown;
 					}>;
 					text?: string;
 				};
@@ -964,8 +966,8 @@ export class McpToolHandler implements StepHandler {
 							name: tc.toolName,
 							serverName: configInfo?.serverName,
 							status: toolStatus,
-							args: tc.args as Record<string, unknown>,
-							result: matchingResult?.output, // AI SDK v5 uses 'output' not 'result'
+							args: tc.input as Record<string, unknown>,
+							result: matchingResult?.output,
 							mcpAppResourceUri: configInfo?.resourceUri,
 							mcpAppConfigId: configInfo?.resourceUri
 								? configInfo.configId
@@ -980,8 +982,8 @@ export class McpToolHandler implements StepHandler {
 							id: tc.toolCallId,
 							name: tc.toolName,
 							serverName: configInfo?.serverName,
-							args: tc.args,
-							result: matchingResult?.output, // AI SDK v5 uses 'output' not 'result'
+							args: tc.input,
+							result: matchingResult?.output,
 							status: partykitStatus,
 							durationMs: elapsed,
 							mcpAppResourceUri: configInfo?.resourceUri,
@@ -996,7 +998,7 @@ export class McpToolHandler implements StepHandler {
 								id: tc.toolCallId,
 								name: tc.toolName,
 								serverName: configInfo?.serverName,
-								result: matchingResult?.output, // AI SDK v5 uses 'output' not 'result'
+								result: matchingResult?.output,
 								status: "complete",
 								durationMs: elapsed,
 								mcpAppResourceUri: configInfo?.resourceUri,
@@ -1022,7 +1024,7 @@ export class McpToolHandler implements StepHandler {
 		});
 
 		const partialToolInputs = new Map<string, string>();
-		for await (const part of result.fullStream) {
+		for await (const part of result.stream) {
 			if (part.type === "tool-input-start") {
 				const configInfo = toolToConfig[part.toolName];
 				partialToolInputs.set(part.id, "");
@@ -1140,6 +1142,15 @@ export class McpToolHandler implements StepHandler {
 						}).catch(() => {});
 					}
 				}
+			} else {
+				// Every other v7 TextStreamPart (start, start-step, text-*,
+				// reasoning-*, reasoning-file, custom, source, file,
+				// tool-input-end, tool-result, tool-error, tool-output-denied,
+				// tool-approval-*, finish-step, finish, abort, error, raw) is
+				// not consumed here: this loop only mirrors tool input into the
+				// heartbeat/PartyKit channels, and the authoritative results are
+				// read from result.steps below. Ignore it explicitly so a new
+				// part type cannot change this loop's behaviour.
 			}
 		}
 
@@ -1193,9 +1204,7 @@ export class McpToolHandler implements StepHandler {
 							toolResultIds:
 								step.toolResults?.map((r) => ({
 									id: r.toolCallId,
-									hasResult:
-										!!(r as any).result ||
-										!!(r as any).output,
+									hasResult: !!r.output,
 								})) ?? [],
 						},
 					);
@@ -1209,10 +1218,14 @@ export class McpToolHandler implements StepHandler {
 						const toolCallId =
 							call.toolCallId ||
 							`tc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-						const callArgs = (call as any).args ?? {};
-						const resultValue =
-							(matchingResult as any)?.result ??
-							(matchingResult as any)?.output;
+						// AI SDK 7 TypedToolCall carries `input` (not the v4
+						// `args`) and TypedToolResult carries `output` (not the
+						// v4 `result`).
+						const callArgs =
+							(call.input as
+								| Record<string, unknown>
+								| undefined) ?? {};
+						const resultValue = matchingResult?.output;
 
 						// Detect missing result (tool was called but result not captured)
 						const isMissingResult = !matchingResult;
@@ -1552,7 +1565,7 @@ export class McpToolHandler implements StepHandler {
 
 		const response = await generateText({
 			model,
-			system: executionContext.systemPrompt,
+			instructions: executionContext.systemPrompt,
 			prompt: `${input.step.description}${fallbackNote}\n\nProvide a detailed response.`,
 		});
 

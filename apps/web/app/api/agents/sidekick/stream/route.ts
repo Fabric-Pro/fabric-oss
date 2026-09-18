@@ -9,9 +9,11 @@
 
 import {
 	convertToModelMessages,
+	createUIMessageStreamResponse,
 	getAIModelWithMetadata,
-	stepCountIs,
+	isStepCount,
 	streamText,
+	toUIMessageStream,
 	type UIMessage,
 } from "@repo/ai";
 import { createSidekickTools } from "@repo/ai/sidekick";
@@ -293,14 +295,24 @@ export async function POST(request: NextRequest) {
 		});
 		const result = streamText({
 			model: aiModel,
-			system: promptCacheRequest.system,
+			instructions: promptCacheRequest.system,
 			messages: promptCacheRequest.messages,
 			tools,
-			stopWhen: stepCountIs(5),
+			stopWhen: isStepCount(5),
 		});
 
-		// Return UI message stream response
-		return result.toUIMessageStreamResponse();
+		// Return UI message stream response.
+		//
+		// AI SDK 7 deprecates the `streamText` result helpers in favour of the
+		// stateless `toUIMessageStream` / `createUIMessageStreamResponse` pair;
+		// `result.toUIMessageStreamResponse()` is exactly this composition
+		// (ai/src/generate-text/stream-text.ts). Both helpers take an options
+		// object — the migration guide's positional
+		// `createUIMessageStreamResponse(uiStream)` does not match the shipped
+		// declaration, which destructures `{ stream }`.
+		return createUIMessageStreamResponse({
+			stream: toUIMessageStream({ stream: result.stream }),
+		});
 	} catch (error) {
 		// AI usage-limit chokepoint hit a HARD limit.
 		// The chokepoint runs inside

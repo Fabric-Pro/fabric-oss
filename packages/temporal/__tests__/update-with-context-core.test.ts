@@ -95,7 +95,8 @@ describe("runContextUpdate — FR-25 locked-attachment rule", () => {
 		});
 
 		expect(mocks.generateObject).toHaveBeenCalledTimes(1);
-		const system = mocks.generateObject.mock.calls[0][0].system as string;
+		const system = mocks.generateObject.mock.calls[0][0]
+			.instructions as string;
 		expect(system).toContain("DEDICATED ATTACHMENTS");
 		// The original spec-editor instructions must survive intact.
 		expect(system).toContain("specification editor");
@@ -257,7 +258,8 @@ describe("runContextUpdate — function-tag role clause (Fizzy #1767 Stage 4)", 
 			requesterUserId: "u1",
 			surface: "update-with-context",
 		});
-		const system = mocks.generateObject.mock.calls[0][0].system as string;
+		const system = mocks.generateObject.mock.calls[0][0]
+			.instructions as string;
 		expect(system).toContain(ROLE_CLAUSE_SENTINEL);
 	});
 
@@ -268,14 +270,14 @@ describe("runContextUpdate — function-tag role clause (Fizzy #1767 Stage 4)", 
 		);
 		await runContextUpdate({ ...baseArgs, projectId: "p1" });
 		const withClause = mocks.generateObject.mock.calls[0][0]
-			.system as string;
+			.instructions as string;
 
 		// ...then the flag-OFF shape, from an otherwise-identical invocation.
 		mocks.generateObject.mockClear();
 		mocks.getProjectFunctionTagClause.mockResolvedValue("");
 		await runContextUpdate({ ...baseArgs, projectId: "p1" });
 		const withoutClause = mocks.generateObject.mock.calls[0][0]
-			.system as string;
+			.instructions as string;
 
 		expect(withoutClause).not.toContain(ROLE_CLAUSE_SENTINEL);
 		expect(withClause).toBe(`${withoutClause}\n\n${ROLE_CLAUSE_SENTINEL}`);
@@ -289,7 +291,8 @@ describe("runContextUpdate — function-tag role clause (Fizzy #1767 Stage 4)", 
 		await runContextUpdate({ ...baseArgs, projectId: undefined });
 
 		expect(mocks.getProjectFunctionTagClause).not.toHaveBeenCalled();
-		const system = mocks.generateObject.mock.calls[0][0].system as string;
+		const system = mocks.generateObject.mock.calls[0][0]
+			.instructions as string;
 		expect(system).not.toContain(ROLE_CLAUSE_SENTINEL);
 	});
 });
@@ -566,7 +569,8 @@ describe("runContextUpdate — document path system string (R10 gate)", () => {
 	it("a caller that supplies no addendum gets exactly the base prompt plus the locked-attachment clause", async () => {
 		await runContextUpdate(documentArgs);
 
-		const system = mocks.generateObject.mock.calls[0][0].system as string;
+		const system = mocks.generateObject.mock.calls[0][0]
+			.instructions as string;
 		expect(system).toBe(
 			`${UPDATE_WITH_CONTEXT_SYSTEM_PROMPT}\n\n${getLockedAttachmentRulesClause()}`,
 		);
@@ -575,13 +579,15 @@ describe("runContextUpdate — document path system string (R10 gate)", () => {
 	it("the system string ends at the locked-attachment clause — no trailing separator, no empty addendum slot", async () => {
 		await runContextUpdate(documentArgs);
 
-		const system = mocks.generateObject.mock.calls[0][0].system as string;
+		const system = mocks.generateObject.mock.calls[0][0]
+			.instructions as string;
 		expect(system.endsWith(getLockedAttachmentRulesClause())).toBe(true);
 	});
 
 	it("an empty or whitespace-only addendum assembles byte-identically to no addendum at all", async () => {
 		await runContextUpdate(documentArgs);
-		const baseline = mocks.generateObject.mock.calls[0][0].system as string;
+		const baseline = mocks.generateObject.mock.calls[0][0]
+			.instructions as string;
 
 		for (const blank of ["", "   ", "\n\n", "\t \n"]) {
 			mocks.generateObject.mockClear();
@@ -589,7 +595,9 @@ describe("runContextUpdate — document path system string (R10 gate)", () => {
 				...documentArgs,
 				instructionAddendum: blank,
 			});
-			expect(mocks.generateObject.mock.calls[0][0].system).toBe(baseline);
+			expect(mocks.generateObject.mock.calls[0][0].instructions).toBe(
+				baseline,
+			);
 		}
 	});
 
@@ -657,7 +665,7 @@ describe("runContextUpdate — kind-scoped instruction addendum (Fizzy #2048)", 
 	it("appends the addendum in a fixed position: the no-addendum string, then one separator, then the addendum", async () => {
 		await runContextUpdate(baseArgs);
 		const withoutAddendum = mocks.generateObject.mock.calls[0][0]
-			.system as string;
+			.instructions as string;
 
 		mocks.generateObject.mockClear();
 		await runContextUpdate({
@@ -665,7 +673,7 @@ describe("runContextUpdate — kind-scoped instruction addendum (Fizzy #2048)", 
 			instructionAddendum: ADDENDUM_SENTINEL,
 		});
 		const withAddendum = mocks.generateObject.mock.calls[0][0]
-			.system as string;
+			.instructions as string;
 
 		expect(withAddendum).toBe(`${withoutAddendum}\n\n${ADDENDUM_SENTINEL}`);
 	});
@@ -680,7 +688,8 @@ describe("runContextUpdate — kind-scoped instruction addendum (Fizzy #2048)", 
 			instructionAddendum: ADDENDUM_SENTINEL,
 		});
 
-		const system = mocks.generateObject.mock.calls[0][0].system as string;
+		const system = mocks.generateObject.mock.calls[0][0]
+			.instructions as string;
 		expect(system).toContain(`\n\n${ROLE_CLAUSE_SENTINEL}`);
 		expect(system.endsWith(`\n\n${ADDENDUM_SENTINEL}`)).toBe(true);
 		expect(system.indexOf(ROLE_CLAUSE_SENTINEL)).toBeLessThan(
@@ -697,7 +706,8 @@ describe("runContextUpdate — kind-scoped instruction addendum (Fizzy #2048)", 
 			instructionAddendum: catalogText,
 		});
 
-		const system = mocks.generateObject.mock.calls[0][0].system as string;
+		const system = mocks.generateObject.mock.calls[0][0]
+			.instructions as string;
 		expect(system).toContain(catalogText);
 	});
 });
