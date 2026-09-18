@@ -60,6 +60,7 @@ export {
 	createUIMessageStreamResponse,
 	embed,
 	embedMany,
+	experimental_evaluate,
 	// Image generation
 	generateImage,
 	generateObject,

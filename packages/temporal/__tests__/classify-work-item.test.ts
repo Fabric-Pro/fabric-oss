@@ -15,31 +15,45 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mocks, AIProviderNotConfiguredError } = vi.hoisted(() => {
-	class AIProviderNotConfiguredError extends Error {
-		constructor() {
-			super("AI provider not configured");
-			this.name = "AIProviderNotConfiguredError";
+const { mocks, AIProviderNotConfiguredError, AiUsageLimitExceededError } =
+	vi.hoisted(() => {
+		class AIProviderNotConfiguredError extends Error {
+			constructor() {
+				super("AI provider not configured");
+				this.name = "AIProviderNotConfiguredError";
+			}
 		}
-	}
-	return {
-		AIProviderNotConfiguredError,
-		mocks: {
-			getBoundPromptForAgent: vi.fn(),
-			generateObject: vi.fn(),
-			getAIModelWithMetadata: vi.fn(),
-			logModelUsageAsync: vi.fn(),
-			renderTemplate: vi.fn(),
-		},
-	};
-});
+		class AiUsageLimitExceededError extends Error {
+			constructor() {
+				super("AI usage limit exceeded");
+				this.name = "AiUsageLimitExceededError";
+			}
+		}
+		return {
+			AIProviderNotConfiguredError,
+			AiUsageLimitExceededError,
+			mocks: {
+				experimental_evaluate: vi.fn(),
+				getBoundPromptForAgent: vi.fn(),
+				getAIDecisionModelWithMetadata: vi.fn(),
+				generateObject: vi.fn(),
+				getAIModelWithMetadata: vi.fn(),
+				logModelUsageAsync: vi.fn(),
+				renderTemplate: vi.fn(),
+			},
+		};
+	});
 
 vi.mock("@repo/ai", () => ({
 	AIProviderNotConfiguredError,
+	experimental_evaluate: mocks.experimental_evaluate,
+	getAIDecisionModelWithMetadata: mocks.getAIDecisionModelWithMetadata,
 	generateObject: mocks.generateObject,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
+
+vi.mock("@repo/payments", () => ({ AiUsageLimitExceededError }));
 
 vi.mock("@repo/database", () => ({
 	setAiUsageRecorder: vi.fn(),
@@ -77,8 +91,11 @@ const SAFE_FALLBACK = {
 	rationale: "classifier_error",
 };
 
+let decisionTrackUsage = vi.fn();
+
 beforeEach(() => {
 	vi.clearAllMocks();
+	decisionTrackUsage = vi.fn();
 	mocks.renderTemplate.mockResolvedValue({
 		rendered: "rendered-prompt",
 		error: null,
@@ -88,9 +105,218 @@ beforeEach(() => {
 		metadata: { provider: "test" },
 		trackUsage: vi.fn(),
 	});
+	mocks.getAIDecisionModelWithMetadata.mockResolvedValue({
+		model: { modelId: "typesafe-ai/jev" },
+		metadata: { provider: "VERCEL_GATEWAY" },
+		trackUsage: decisionTrackUsage,
+	});
 });
 
 describe("classifyWorkItem", () => {
+	it("uses a confident configured decision model BUG choice without resolving SIMPLE", async () => {
+		mocks.getBoundPromptForAgent.mockResolvedValue({
+			key: "bug_classifier",
+			format: "HANDLEBARS",
+			version: { content: "custom organization classifier policy" },
+		});
+		mocks.experimental_evaluate.mockResolvedValue({
+			answers: {
+				workItemKind: {
+					type: "choice",
+					choice: "BUG",
+					probabilities: { BUG: 0.96, FEATURE: 0.04 },
+				},
+			},
+		});
+
+		const result = await classifyWorkItem(STANDARD_INPUT);
+
+		expect(result).toEqual({
+			kind: "BUG",
+			confidence: "High",
+			fallback_used: false,
+			primary_signals: [],
+			rationale: "decision_evaluation",
+		});
+		expect(mocks.getAIDecisionModelWithMetadata).toHaveBeenCalledWith({
+			userId: "user-1",
+			organizationId: "org-1",
+			projectId: "proj-1",
+		});
+		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
+		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(decisionTrackUsage).toHaveBeenCalledOnce();
+		expect(mocks.logModelUsageAsync).not.toHaveBeenCalled();
+	});
+
+	it("uses the rendered bound classifier policy for a confident decision FEATURE choice", async () => {
+		mocks.getBoundPromptForAgent.mockResolvedValue({
+			key: "bug_classifier",
+			format: "HANDLEBARS",
+			version: { content: "custom organization classifier policy" },
+		});
+		mocks.renderTemplate.mockResolvedValue({
+			rendered:
+				"policy: existing behavior is a BUG; requests are FEATURE",
+			error: null,
+		});
+		mocks.experimental_evaluate.mockResolvedValue({
+			answers: {
+				workItemKind: {
+					type: "choice",
+					choice: "FEATURE",
+					probabilities: { BUG: 0.03, FEATURE: 0.97 },
+				},
+			},
+		});
+
+		const result = await classifyWorkItem({
+			...STANDARD_INPUT,
+			reporterText: "Add a CSV export.",
+		});
+
+		expect(result.kind).toBe("FEATURE");
+		expect(mocks.experimental_evaluate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				state: expect.objectContaining({
+					classifierPolicy:
+						"policy: existing behavior is a BUG; requests are FEATURE",
+					reporterText: "Add a CSV export.",
+				}),
+				questions: expect.objectContaining({
+					workItemKind: expect.objectContaining({
+						type: "choice",
+						criteria: expect.objectContaining({
+							BUG: expect.any(String),
+							FEATURE: expect.any(String),
+						}),
+					}),
+				}),
+				maxRetries: 1,
+			}),
+		);
+		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
+	});
+
+	it("uses the existing language classifier when no organization decision model is configured", async () => {
+		mocks.getBoundPromptForAgent.mockResolvedValue({
+			key: "bug_classifier",
+			format: "MARKDOWN",
+			version: { content: "classifier prompt body" },
+		});
+		mocks.getAIDecisionModelWithMetadata.mockRejectedValue(
+			new AIProviderNotConfiguredError(),
+		);
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				kind: "BUG",
+				confidence: "High",
+				fallback_used: false,
+				primary_signals: ["returns 500"],
+				rationale: "existing classifier result",
+			},
+			usage: { totalTokens: 42 },
+		});
+
+		const result = await classifyWorkItem(STANDARD_INPUT);
+
+		expect(result.kind).toBe("BUG");
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			{ taskType: "SIMPLE" },
+			{
+				userId: "user-1",
+				organizationId: "org-1",
+				projectId: "proj-1",
+			},
+		);
+		expect(mocks.generateObject).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		[
+			"low confidence",
+			{
+				type: "choice",
+				choice: "BUG",
+				probabilities: { BUG: 0.7, FEATURE: 0.3 },
+			},
+		],
+		["malformed response", { type: "choice", choice: "BUG" }],
+	])(
+		"uses the existing language classifier after a %s decision response",
+		async (_caseName, answer) => {
+			mocks.getBoundPromptForAgent.mockResolvedValue({
+				key: "bug_classifier",
+				format: "MARKDOWN",
+				version: { content: "classifier prompt body" },
+			});
+			mocks.experimental_evaluate.mockResolvedValue({
+				answers: { workItemKind: answer },
+			});
+			mocks.generateObject.mockResolvedValue({
+				object: {
+					kind: "FEATURE",
+					confidence: "Medium",
+					fallback_used: false,
+					primary_signals: ["requested new capability"],
+					rationale: "existing classifier result",
+				},
+				usage: { totalTokens: 42 },
+			});
+
+			const result = await classifyWorkItem(STANDARD_INPUT);
+
+			expect(result.kind).toBe("FEATURE");
+			expect(mocks.getAIModelWithMetadata).toHaveBeenCalledOnce();
+			expect(mocks.generateObject).toHaveBeenCalledOnce();
+			expect(decisionTrackUsage).toHaveBeenCalledOnce();
+		},
+	);
+
+	it("uses the existing language classifier when decision evaluation throws", async () => {
+		mocks.getBoundPromptForAgent.mockResolvedValue({
+			key: "bug_classifier",
+			format: "MARKDOWN",
+			version: { content: "classifier prompt body" },
+		});
+		mocks.experimental_evaluate.mockRejectedValue(
+			new Error("gateway timeout"),
+		);
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				kind: "FEATURE",
+				confidence: "Medium",
+				fallback_used: false,
+				primary_signals: [],
+				rationale: "existing classifier result",
+			},
+			usage: { totalTokens: 42 },
+		});
+
+		await expect(classifyWorkItem(STANDARD_INPUT)).resolves.toMatchObject({
+			kind: "FEATURE",
+			fallback_used: false,
+		});
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledOnce();
+	});
+
+	it("does not bypass a decision usage-limit rejection through SIMPLE", async () => {
+		mocks.getBoundPromptForAgent.mockResolvedValue({
+			key: "bug_classifier",
+			format: "MARKDOWN",
+			version: { content: "classifier prompt body" },
+		});
+		mocks.getAIDecisionModelWithMetadata.mockRejectedValue(
+			new AiUsageLimitExceededError(),
+		);
+
+		await expect(classifyWorkItem(STANDARD_INPUT)).rejects.toBeInstanceOf(
+			AiUsageLimitExceededError,
+		);
+		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
+		expect(mocks.generateObject).not.toHaveBeenCalled();
+	});
+
 	it("returns the LLM output verbatim on happy path (BUG)", async () => {
 		mocks.getBoundPromptForAgent.mockResolvedValue({
 			key: "bug_classifier",
@@ -115,7 +341,7 @@ describe("classifyWorkItem", () => {
 		expect(result.fallback_used).toBe(false);
 		expect(result.primary_signals).toContain("returns 500");
 		expect(mocks.generateObject).toHaveBeenCalledOnce();
-		expect(mocks.logModelUsageAsync).toHaveBeenCalledOnce();
+		expect(mocks.logModelUsageAsync).not.toHaveBeenCalled();
 	});
 
 	it("returns SAFE_FALLBACK when bug_classifier prompt is not bound", async () => {
