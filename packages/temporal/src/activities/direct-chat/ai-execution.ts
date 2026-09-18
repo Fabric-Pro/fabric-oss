@@ -13,14 +13,15 @@
  */
 
 import { closeMcpClientSafe, getMcpClient } from "@repo/agent-core/backend";
+import type { AggregateUsageRecord } from "@repo/ai";
 import {
 	convertToModelMessages,
 	type DynamicTaskComplexity,
 	enhancePromptWithFabric,
 	getAIModelWithMetadata,
 	getCurrentDateContext,
-	logModelUsageAsync,
-	stepCountIs,
+	isStepCount,
+	selectAggregateUsageForLogging,
 	streamText,
 	tool,
 } from "@repo/ai";
@@ -65,6 +66,7 @@ import {
 } from "../shared/databricks-knowledge";
 import { guardToolWriteForReadOnly } from "../shared/read-only-gate";
 import { createAdvisorTools } from "./advisor-tools";
+import { createDirectChatAggregateUsageTracker } from "./aggregate-usage";
 import {
 	buildProviderOptions,
 	isAnthropicProvider,
@@ -646,6 +648,11 @@ export async function executeDirectChatActivity(
 	const startTime = Date.now();
 	let streamErrorMessage: string | undefined;
 	let streamFinishReason: string | undefined;
+	let aggregateUsageRecorded = false;
+	let recordAggregateUsage:
+		| ((record: AggregateUsageRecord) => void)
+		| undefined;
+	const aggregateUsage = createDirectChatAggregateUsageTracker();
 	const {
 		executionId,
 		message,
@@ -1043,15 +1050,22 @@ export async function executeDirectChatActivity(
 	// `executeDirectChatActivity` is what `directChatWorkflow` runs, so THIS is
 	// the model the user's chat answer is generated with — traced from
 	// /api/agents/fabric-ai/stream rather than assumed (Fizzy #2230).
-	const { model, metadata, trackUsage } = await getAIModelWithMetadata(
+	const {
+		model,
+		metadata,
+		trackUsage,
+		recordAggregateUsage: recordResolvedAggregateUsage,
+	} = await getAIModelWithMetadata(
 		{
 			taskType: taskType as any,
 			complexity,
 			requiresToolCalling: toolsEnabled,
 			modelOverride: input.modelOverride,
+			usageLogging: "aggregate",
 		},
-		{ userId, organizationId, featureKey: "chat-agent" },
+		{ userId, organizationId, projectId, featureKey: "chat-agent" },
 	);
+	recordAggregateUsage = recordResolvedAggregateUsage;
 
 	logger.info("Dynamic model selected for direct chat", {
 		modelName: metadata.modelString,
@@ -1208,7 +1222,7 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 	// Build messages. UIMessage `parts` only carry text here; image
 	// attachments are spliced into the converted CoreMessages BELOW.
 	//
-	// We intentionally do NOT use Vercel AI SDK 5's `FileUIPart` shape
+	// We intentionally do NOT use the UI-message `FileUIPart` shape
 	// (`{ type: "file", mediaType, url }`) for this — the SDK's
 	// `convertToLanguageModelPrompt` calls `downloadAssets()` on every
 	// FileUIPart URL, and `validateDownloadUrl()` rejects the `data:`
@@ -1217,10 +1231,12 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 	// the LLM's HTTP fetcher (private bucket, short TTL).
 	//
 	// Instead we follow the same pattern as the agent-executor activity:
-	// build the user CoreMessage with `{ role: "user", content: [...] }`
-	// where each entry is either `{ type: "text", text }` or
-	// `{ type: "image", image: <data url> }`. The provider adapters
-	// (OpenAI / Anthropic / Bedrock / Azure) accept the data URL inline
+	// build the user ModelMessage with `{ role: "user", content: [...] }`
+	// where each entry is either `{ type: "text", text }` or the model-side
+	// `FilePart` `{ type: "file", data: <bytes|data url>, mediaType }` (AI
+	// SDK 7 replaced the deprecated `image` part with this one). A FilePart
+	// carries its bytes inline, so it never goes through downloadAssets();
+	// the provider adapters (OpenAI / Anthropic / Bedrock / Azure) accept it
 	// without an extra HTTP round trip, which is what we want.
 	const uiMessages: Array<{
 		id: string;
@@ -1397,9 +1413,12 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 									[k: string]: unknown;
 								}>)
 							: [];
+				// AI SDK 7 deprecates the `image` message part in favour of the
+				// canonical flat `file` part (FilePart: { type, data, mediaType }),
+				// where mediaType is required. Keep the attachment's real MIME type.
 				const imageParts = imageAttachments.map((att) => ({
-					type: "image" as const,
-					image: att.bytes,
+					type: "file" as const,
+					data: att.bytes,
 					mediaType: att.mediaType,
 				}));
 				(
@@ -1499,8 +1518,8 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 
 		const result = streamText({
 			model: model as Parameters<typeof streamText>[0]["model"],
-			system: promptCacheRequest.system,
-			stopWhen: stepCountIs(maxSteps),
+			instructions: promptCacheRequest.system,
+			stopWhen: isStepCount(maxSteps),
 			messages: promptCacheRequest.messages,
 			// Anthropic's mid-conversation-system rolling-history path (only
 			// active when both prompt caching and the mid-conversation-system
@@ -1515,7 +1534,7 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 			...(providerOptions ? { providerOptions } : {}),
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 			// Allow multi-tool workflows - AI will chain tools as needed
-			// stepCountIs(maxSteps) provides the safety limit
+			// isStepCount(maxSteps) provides the safety limit
 		});
 
 		let partCount = 0;
@@ -1531,6 +1550,7 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 					totalTokens?: number;
 					reasoningTokens?: number;
 					cachedInputTokens?: number;
+					cacheCreationInputTokens?: number;
 			  }
 			| undefined;
 
@@ -1569,7 +1589,7 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 
 		const partialToolInputs = new Map<string, string>();
 
-		for await (const part of result.fullStream) {
+		for await (const part of result.stream) {
 			partCount++;
 
 			// Cast once for the type check; part is a discriminated union in SDK 6.
@@ -1831,12 +1851,22 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 					partCount,
 					streamErrorMessage,
 				});
+			} else if (part.type === "start-step") {
+				aggregateUsage.startStep();
+			} else if (part.type === "finish-step") {
+				aggregateUsage.addCompletedStep(part);
 			} else if (part.type === "finish") {
-				const finishPart = part as any;
-				streamFinishReason = finishPart.finishReason;
+				streamFinishReason = part.finishReason;
 				logger.info("Stream finish event", {
-					finishReason: finishPart.finishReason,
+					finishReason: part.finishReason,
 				});
+			} else {
+				// Every other v7 TextStreamPart (start, start-step,
+				// finish-step, text-start/-end, reasoning-file, custom,
+				// source, file, tool-input-end, tool-output-denied,
+				// tool-approval-request/-response, abort, raw) carries nothing
+				// this SSE bridge forwards. Ignore it explicitly so a new part
+				// type cannot change this loop's behaviour.
 			}
 		}
 
@@ -1844,17 +1874,27 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 		lastHeartbeatTime = 0;
 		sendHeartbeat("completing", "Finalizing response...", 95);
 
-		// Get token usage
+		// Get token usage.
+		//
+		// AI SDK 7: `result.usage` is the TOTAL across every step of the turn
+		// (v6's final-step-only number moved to `result.finalStep.usage`). The
+		// SSE usage event and the AiUsageLog row it feeds are cost accounting,
+		// so the per-turn total is the number we want — a multi-step tool turn
+		// previously under-reported everything but the last step.
+		//
+		// v7 also removed the flat `cachedInputTokens`/`reasoningTokens` fields
+		// from LanguageModelUsage; they live under inputTokenDetails /
+		// outputTokenDetails now.
 		const usage = await result.usage;
 		if (usage?.totalTokens) {
 			tokenUsage = {
 				inputTokens: usage.inputTokens,
 				outputTokens: usage.outputTokens,
 				totalTokens: usage.totalTokens,
-				reasoningTokens: (usage as any).outputTokenDetails
-					?.reasoningTokens,
-				cachedInputTokens: (usage as any).inputTokenDetails
-					?.cacheReadTokens,
+				reasoningTokens: usage.outputTokenDetails?.reasoningTokens,
+				cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens,
+				cacheCreationInputTokens:
+					usage.inputTokenDetails?.cacheWriteTokens,
 			};
 			logger.info("Token usage from model", { tokenUsage });
 		} else {
@@ -1885,18 +1925,6 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 			tokenUsage,
 		});
 
-		const durationMs = Date.now() - startTime;
-		if (tokenUsage) {
-			logModelUsageAsync({
-				context: { userId, organizationId },
-				metadata,
-				taskType: taskType as any,
-				usage: tokenUsage,
-				latencyMs: durationMs,
-				projectId,
-			});
-		}
-
 		// A stream that ended without producing a turn must not report
 		// success: the workflow branches on this to persist a failure
 		// outcome and to fire the tools-disabled retry, and the client
@@ -1909,6 +1937,21 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 			pendingConfirmation,
 			finishReason: streamFinishReason,
 		});
+		const durationMs = Date.now() - startTime;
+		recordAggregateUsage({
+			// A success with no provider usage would otherwise be dropped by the
+			// shared writer. Direct Chat already calculated this fallback for its
+			// response payload, so use it for the same whole-turn ledger row.
+			// Failed turns keep provider/partial usage only; never estimate spend.
+			usage: streamOutcome.error
+				? usage
+				: selectAggregateUsageForLogging(usage, tokenUsage),
+			latencyMs: durationMs,
+			success: !streamOutcome.error,
+			errorMessage: streamOutcome.error,
+			steps: await result.steps,
+		});
+		aggregateUsageRecorded = true;
 
 		if (streamOutcome.error) {
 			logger.error("Stream produced no answer", {
@@ -1996,6 +2039,17 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 			rawMessage.includes("No output generated") && streamErrorMessage
 				? streamErrorMessage
 				: rawMessage;
+		if (recordAggregateUsage && !aggregateUsageRecorded) {
+			const partialAggregate = aggregateUsage.partialAggregate();
+			recordAggregateUsage({
+				usage: partialAggregate.usage,
+				latencyMs: Date.now() - startTime,
+				success: false,
+				errorMessage: surfacedError,
+				steps: partialAggregate.steps,
+			});
+			aggregateUsageRecorded = true;
+		}
 		logger.error("Failed to execute direct chat", {
 			error,
 			surfacedError,

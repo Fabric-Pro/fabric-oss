@@ -411,13 +411,13 @@ export const proposeDuplicateMergeProcedure = tenantProtectedProcedure
 			const [descriptionResult, acceptanceResult] = await Promise.all([
 				generateText({
 					model,
-					system: descriptionSystemPrompt,
+					instructions: descriptionSystemPrompt,
 					prompt,
 					maxOutputTokens: MERGE_MAX_OUTPUT_TOKENS,
 				}),
 				generateText({
 					model,
-					system: acceptanceSystemPrompt,
+					instructions: acceptanceSystemPrompt,
 					prompt,
 					maxOutputTokens: MERGE_MAX_OUTPUT_TOKENS,
 				}),

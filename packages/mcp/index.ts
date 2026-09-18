@@ -42,7 +42,7 @@ export {
 	// OAuth authorization required error (for handling in UI)
 	OAuthAuthorizationRequiredError,
 } from "./lib/client";
-// OAuth Client Provider for AI SDK v6 (automatic token management)
+// OAuth Client Provider for AI SDK v7 (automatic token management)
 export {
 	type CreateOAuthProviderOptions,
 	cleanupOAuthFlowState,

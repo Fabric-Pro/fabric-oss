@@ -255,7 +255,7 @@ export async function proposeQuestionAnswers({
 		const { object } = await generateObject({
 			model,
 			schema: zodSchema(RecommendationSchema),
-			system,
+			instructions: system,
 			prompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 		});

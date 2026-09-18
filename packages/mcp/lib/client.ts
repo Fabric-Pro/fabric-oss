@@ -157,6 +157,26 @@ export function unwrapMcpInputSchema(
 }
 
 /**
+ * Whether the guarded MCP fetch refused a redirect.
+ *
+ * `fetch(url, { redirect: "error" })` rejects with a bare
+ * `TypeError: fetch failed` and puts the real reason — `unexpected redirect` —
+ * on `cause`, so the top-level message alone cannot tell a redirecting server
+ * from an unreachable one. The chain is walked because the transport may wrap
+ * the fetch failure again before it reaches us.
+ */
+function isRedirectRefusal(error: unknown): boolean {
+	let current: unknown = error;
+	for (let depth = 0; current instanceof Error && depth < 5; depth++) {
+		if (current.message.toLowerCase().includes("unexpected redirect")) {
+			return true;
+		}
+		current = current.cause;
+	}
+	return false;
+}
+
+/**
  * Creates an MCP client with the appropriate transport.
  * Uses official MCP SDK transports for better compatibility.
  *
@@ -260,6 +280,19 @@ export async function createMcpClient(
 			// Parse and enhance other errors
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
+
+			// A refused redirect surfaces as an opaque `TypeError: fetch
+			// failed`; the reason is only on the cause chain. Left unmapped it
+			// reads as an unreachable server, which sends whoever configured
+			// the integration looking for an outage instead of a URL to fix.
+			if (isRedirectRefusal(error)) {
+				throw new McpClientError({
+					message:
+						"MCP server redirected the request. Redirects are not followed; configure the server with the URL it redirects to.",
+					code: "CONNECTION_ERROR",
+					cause: error instanceof Error ? error : undefined,
+				});
+			}
 
 			if (
 				errorMessage.includes("401") ||
@@ -530,7 +563,7 @@ export async function createMcpClientForConfig(
 		);
 	}
 
-	// Use AI SDK v6 authProvider for OAuth2 authentication
+	// Use AI SDK v7 authProvider for OAuth2 authentication
 	// This enables automatic token management and mid-session refresh
 	if (authType === "OAUTH2") {
 		// Build default redirectUri if not provided

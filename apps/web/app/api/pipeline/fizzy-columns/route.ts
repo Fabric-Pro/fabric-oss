@@ -70,9 +70,15 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
+		// AI SDK 7 made ToolExecutionOptions.context required. MCP tools declare no
+		// contextSchema, so the SDK's own invocation passes undefined here.
 		const result = await columnsTool.execute(
 			{ account_slug: accountSlug, board_id: boardId },
-			{ toolCallId: `fizzy_columns-${Date.now()}`, messages: [] },
+			{
+				toolCallId: `fizzy_columns-${Date.now()}`,
+				messages: [],
+				context: undefined,
+			},
 		);
 
 		console.log(

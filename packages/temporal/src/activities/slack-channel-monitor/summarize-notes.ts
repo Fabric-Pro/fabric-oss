@@ -75,7 +75,7 @@ Provide a structured summary of these notes.`;
 		});
 		const response = await generateText({
 			model,
-			system: summarySystem,
+			instructions: summarySystem,
 			prompt: summaryPrompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 		});

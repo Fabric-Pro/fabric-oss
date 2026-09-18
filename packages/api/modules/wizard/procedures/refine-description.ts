@@ -224,7 +224,7 @@ Refined description:`;
 			const generationStart = Date.now();
 			const result = await generateText({
 				model,
-				system: systemPrompt,
+				instructions: systemPrompt,
 				prompt: userPrompt,
 			});
 			logModelUsageAsync({

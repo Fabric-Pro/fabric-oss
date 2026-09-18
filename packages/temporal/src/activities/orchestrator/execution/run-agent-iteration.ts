@@ -9,7 +9,7 @@
  * the next action based on actual results from previous iterations.
  */
 
-import { jsonSchema, stepCountIs, streamText, tool } from "@repo/ai";
+import { isStepCount, jsonSchema, streamText, tool } from "@repo/ai";
 import { getModelCapabilities } from "@repo/ai/capabilities";
 import { classifyLimitError, type LimitSignal } from "@repo/ai/limits";
 import {
@@ -499,9 +499,31 @@ function convertToAiSdkMessages(messages: IterativeMessage[]): AiSdkMessage[] {
 			};
 		}
 
-		// Regular user or assistant text messages
+		// Regular user or assistant text messages.
+		//
+		// AI SDK 7 REJECTS a `role: "system"` row inside `messages` unless the
+		// call opts in with `allowSystemInMessages: true` — and the streamText
+		// call below deliberately does not. `IterativeMessage.role` is typed
+		// "user" | "assistant" | "tool", but nothing enforces that at runtime:
+		// the orchestrator stream route takes `history` from the request body
+		// unvalidated, and the workflow re-roles it with a bare
+		// `as "user" | "assistant"` cast
+		// (workflows/orchestrator/phases/iterative-execution.ts). Today every
+		// browser caller filters system rows out before posting, so this is a
+		// latent gap rather than a live one — but this function is the single
+		// point where that history becomes an SDK messages array, so normalise
+		// it here rather than trusting the cast.
+		//
+		// A persisted system row is an operation result this assistant
+		// produced and its content self-labels, so attribute it to the
+		// assistant rather than dropping the turn — the same decision the
+		// direct-chat route already makes
+		// (apps/web/app/api/agents/fabric-ai/stream/route.ts).
 		return {
-			role: msg.role as "user" | "assistant",
+			role:
+				msg.role === "user"
+					? ("user" as const)
+					: ("assistant" as const),
 			content: msg.content,
 		};
 	});
@@ -859,16 +881,16 @@ export async function runAgentIteration(
 
 			const stream = streamText({
 				model,
-				system: effectiveSystemPrompt,
+				instructions: effectiveSystemPrompt,
 				messages: messages as any,
 				tools: aiSdkToolCount > 0 ? (aiSdkTools as any) : undefined,
 				toolChoice,
-				stopWhen: stepCountIs(maxStepsPerIteration),
+				stopWhen: isStepCount(maxStepsPerIteration),
 				maxOutputTokens: 16384,
 			});
 
 			// Process the full stream for text deltas, tool calls, and errors
-			for await (const part of stream.fullStream) {
+			for await (const part of stream.stream) {
 				if (part.type === "text-delta") {
 					responseText += part.text || "";
 
@@ -883,10 +905,13 @@ export async function runAgentIteration(
 					// Send heartbeat periodically during text streaming
 					sendPeriodicHeartbeat();
 				} else if (part.type === "tool-call") {
-					// AI SDK 6.0.116 marks an unparsable tool call or a call
-					// to a tool that doesn't exist with `invalid: true` +
-					// `error` on the part instead of throwing (DynamicToolCall).
-					// Count it and skip execution — it is NOT a real request.
+					// AI SDK 7 keeps the v6 behaviour: an unparsable tool call
+					// or a call to a tool that doesn't exist arrives as a
+					// DynamicToolCall with `invalid: true` + `error` instead of
+					// throwing. StaticToolCall pins `invalid?: false |
+					// undefined`, so the check is safe on both arms of
+					// TypedToolCall. Count it and skip execution — it is NOT a
+					// real request.
 					const toolCallDefect = part as {
 						invalid?: boolean;
 						error?: unknown;
@@ -933,6 +958,15 @@ export async function runAgentIteration(
 							: String(part.error);
 					console.error(`[AgentIteration] Stream error: ${errorMsg}`);
 					streamError = errorMsg;
+				} else {
+					// Every other v7 TextStreamPart (start, start-step,
+					// text-start/-end, reasoning-*, reasoning-file, custom,
+					// source, file, tool-input-*, tool-result,
+					// tool-output-denied, tool-approval-*, finish-step,
+					// finish, abort, raw) is irrelevant here: usage and
+					// finishReason are read from the result promises below.
+					// Ignore it explicitly so a new part type cannot change
+					// this loop's behaviour.
 				}
 			}
 

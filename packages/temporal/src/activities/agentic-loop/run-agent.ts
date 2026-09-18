@@ -23,7 +23,7 @@
 import { type AgentCapability, globalAgentRegistry } from "@repo/agent-core";
 import { getAIModelWithMetadata } from "@repo/ai";
 import { db } from "@repo/database";
-import { generateText, type ModelMessage, stepCountIs, tool } from "ai";
+import { generateText, isStepCount, type ModelMessage, tool } from "ai";
 import { z } from "zod";
 import { loadMcpToolsForAgent } from "../agent-execution-core";
 import { makeInFlightToolCompactor } from "./in-flight-tool-compaction";
@@ -341,7 +341,7 @@ async function executeDelegateMode(
 	try {
 		const result = await generateText({
 			model,
-			system: `${agentConfig.instructions || ""}\n\n${systemPrompt}`,
+			instructions: `${agentConfig.instructions || ""}\n\n${systemPrompt}`,
 			messages: [
 				{
 					role: "user",
@@ -349,7 +349,7 @@ async function executeDelegateMode(
 				},
 			],
 			tools,
-			stopWhen: stepCountIs(10),
+			stopWhen: isStepCount(10),
 			prepareStep: makeInFlightToolCompactor(),
 			abortSignal: controller.signal,
 		});
@@ -436,10 +436,10 @@ async function executeInlineMode(
 	try {
 		const result = await generateText({
 			model,
-			system: agentConfig.instructions || "",
+			instructions: agentConfig.instructions || "",
 			messages,
 			tools,
-			stopWhen: stepCountIs(5), // Fewer steps for inline mode
+			stopWhen: isStepCount(5), // Fewer steps for inline mode
 			prepareStep: makeInFlightToolCompactor(),
 			abortSignal: controller.signal,
 		});

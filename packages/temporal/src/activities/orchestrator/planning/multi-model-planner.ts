@@ -304,7 +304,7 @@ ${input.routingDecision.matchedAgents?.length ? `Available Agents: ${input.routi
 
 	const response = await generateText({
 		model,
-		system: systemPrompt,
+		instructions: systemPrompt,
 		prompt,
 		temperature: 0.3, // Lower temperature for more consistent planning
 	});
@@ -395,7 +395,7 @@ Analyze this plan thoroughly and provide your review.`;
 
 	const response = await generateText({
 		model,
-		system: systemPrompt,
+		instructions: systemPrompt,
 		prompt,
 		temperature: 0.2, // Very low temperature for consistent review
 	});
@@ -475,7 +475,7 @@ Refine the plan to address these issues.`;
 
 		const response = await generateText({
 			model,
-			system: systemPrompt,
+			instructions: systemPrompt,
 			prompt,
 			temperature: 0.3,
 		});

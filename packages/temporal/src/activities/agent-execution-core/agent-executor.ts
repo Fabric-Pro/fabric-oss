@@ -5,7 +5,7 @@
  * Reuses infrastructure from orchestrator for MCP tool loading and execution.
  */
 
-import { resolveOpenAiApiKey, stepCountIs, streamText, tool } from "@repo/ai";
+import { isStepCount, resolveOpenAiApiKey, streamText, tool } from "@repo/ai";
 import {
 	db,
 	ensureSensitiveOperationAuthority,
@@ -382,33 +382,37 @@ export async function executeAgentTurn(
 		if (hasTools) {
 			const stream = streamText({
 				model: aiModel,
-				stopWhen: stepCountIs(maxIterations),
-				system: fullSystemPrompt,
+				stopWhen: isStepCount(maxIterations),
+				instructions: fullSystemPrompt,
 				messages: messages as any,
 				tools: tools as any,
 				abortSignal: Context.current().cancellationSignal,
+				// AI SDK 7 calls onChunk for EVERY TextStreamPart; v6 passed only
+				// a subset (text/reasoning deltas, sources, tool parts, raw). Guard
+				// first and log only the chunk we act on — logging unconditionally
+				// here now emits a line per start/start-step/text-start/text-end/
+				// finish-step/finish part as well.
 				onChunk: ({
 					chunk,
 				}: {
 					chunk: { type: string; text?: string };
 				}) => {
+					if (chunk.type !== "text-delta" || !chunk.text) {
+						return;
+					}
 					logger.info("[AgentExecutor] onChunk", {
 						chunkType: chunk.type,
-						hasText: !!chunk.text,
+						hasText: true,
 						executionId,
 					});
-					if (
-						executionId &&
-						chunk.type === "text-delta" &&
-						chunk.text
-					) {
+					if (executionId) {
 						publishExecutionEvent(executionId, {
 							event: "execution.text_delta",
 							data: { text: chunk.text },
 						});
 					}
 				},
-				onStepFinish: (stepResult: unknown) => {
+				onStepEnd: (stepResult: unknown) => {
 					stepNumber++;
 					const step = stepResult as {
 						toolCalls?: Array<{
@@ -485,7 +489,7 @@ export async function executeAgentTurn(
 			// No tools - simple text generation with streaming
 			const stream = streamText({
 				model: aiModel,
-				system: fullSystemPrompt,
+				instructions: fullSystemPrompt,
 				messages: messages as any,
 				abortSignal: Context.current().cancellationSignal,
 				onChunk: ({
@@ -1161,8 +1165,9 @@ async function buildConversationMessages(
 				const dataUrl = `data:${ref.mimeType};base64,${base64}`;
 
 				contentParts.push({
-					type: "image",
-					image: dataUrl,
+					type: "file",
+					data: dataUrl,
+					mediaType: ref.mimeType,
 				});
 			} catch (err) {
 				logger.warn(
@@ -1247,7 +1252,11 @@ async function getModelWithOverride(
 }
 
 /**
- * Extract token usage from generateText result
+ * Extract token usage from a generateText/streamText result.
+ *
+ * AI SDK 7: `result.usage` totals every step of the call (v6 reported the final
+ * step only, which under-counted multi-step tool turns). Totals are what this
+ * activity's cost accounting wants, so no `finalStep` read is needed.
  */
 function extractTokenUsage(result: {
 	usage?: { inputTokens?: number; outputTokens?: number };
@@ -1567,8 +1576,8 @@ export async function previewAgentTurn(
 		if (hasTools) {
 			const stream = streamText({
 				model: aiModel,
-				stopWhen: stepCountIs(maxIterations),
-				system: fullSystemPrompt,
+				stopWhen: isStepCount(maxIterations),
+				instructions: fullSystemPrompt,
 				messages: messages as any,
 				tools: tools as any,
 				abortSignal: abortController.signal,
@@ -1578,7 +1587,7 @@ export async function previewAgentTurn(
 		} else {
 			const stream = streamText({
 				model: aiModel,
-				system: fullSystemPrompt,
+				instructions: fullSystemPrompt,
 				messages: messages as any,
 				abortSignal: abortController.signal,
 			});

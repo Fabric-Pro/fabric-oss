@@ -1,5 +1,5 @@
 /**
- * OAuth Client Provider Implementation for AI SDK v6
+ * OAuth Client Provider Implementation for AI SDK v7
  *
  * Implements the OAuthClientProvider interface from @ai-sdk/mcp for automatic
  * token management and mid-session refresh. This replaces manual header-based
@@ -105,7 +105,7 @@ const oauthFlowStateStore = new Map<string, OAuthFlowState>();
 const inFlightRefreshes = new Map<string, Promise<OAuthTokens | undefined>>();
 
 /**
- * Creates an OAuthClientProvider for the AI SDK v6 MCP client.
+ * Creates an OAuthClientProvider for the AI SDK v7 MCP client.
  *
  * This provider integrates with our database-backed OAuth storage to:
  * - Retrieve stored access/refresh tokens

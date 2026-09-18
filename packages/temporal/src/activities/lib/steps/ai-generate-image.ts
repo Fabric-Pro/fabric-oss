@@ -86,7 +86,7 @@ export async function executeAiGenerateImageStep(
 				const enhanceResult = await generateText({
 					model,
 					prompt: `Enhance this image prompt: "${interpolatedPrompt}"`,
-					system: enrichment.systemPrompt,
+					instructions: enrichment.systemPrompt,
 				});
 
 				enhancedPrompt = enhanceResult.text.trim();

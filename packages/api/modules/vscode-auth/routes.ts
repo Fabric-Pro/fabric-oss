@@ -444,7 +444,7 @@ export function createVscodeAuthRoutes() {
 
 		const { model: aiModel, metadata, trackUsage } = aiModelResult;
 
-		// Normalize messages to ModelMessage format (AI SDK v6)
+		// Normalize messages to ModelMessage format (AI SDK v7)
 		const modelMessages = messages.map((m) => ({
 			role: m.role as "system" | "user" | "assistant",
 			content:
@@ -500,7 +500,7 @@ export function createVscodeAuthRoutes() {
 				model: aiModel,
 				messages: modelMessages,
 				maxRetries: 0,
-				onFinish() {
+				onEnd() {
 					trackUsage();
 				},
 			});

@@ -92,9 +92,15 @@ async function executeFizzyTool<T>(
 			argKeys: args && typeof args === "object" ? Object.keys(args) : [],
 		});
 
+		// AI SDK 7 made ToolExecutionOptions.context required. MCP tools declare no
+		// contextSchema, so the SDK's own invocation passes
+		// `context: toolsContext?.[toolName]`, i.e. undefined (see
+		// ai/src/generate-text/execute-tool-call.ts and validate-tool-context.ts,
+		// which returns the value unchanged when contextSchema == null).
 		const result = await tool.execute(args, {
 			toolCallId: `${toolName}-${Date.now()}`,
 			messages: [],
+			context: undefined,
 		});
 
 		// Parse the result - MCP returns content array

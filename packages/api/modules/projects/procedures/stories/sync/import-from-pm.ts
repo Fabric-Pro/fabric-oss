@@ -118,7 +118,16 @@ async function fetchPMItemData({
 	for (const [name, tool] of Object.entries(toolsRaw)) {
 		tools[name] = {
 			name,
-			description: tool.description,
+			// AI SDK 7 widened Tool.description to
+			// `string | ((options) => string)` so a tool can compute its
+			// description from its context. An MCP tool always carries the
+			// literal string the server advertised, and the capability
+			// analysis below is keyword matching over that text, so keep the
+			// string arm and treat a resolver as "no advertised description".
+			description:
+				typeof tool.description === "string"
+					? tool.description
+					: undefined,
 			inputSchema: tool.inputSchema as {
 				type?: string;
 				properties?: Record<string, unknown>;

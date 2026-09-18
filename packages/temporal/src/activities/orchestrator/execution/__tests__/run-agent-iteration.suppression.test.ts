@@ -35,7 +35,7 @@ const aiStubs = vi.hoisted(() => {
 			__isJsonSchema: true,
 			schema,
 		})),
-		stepCountIsMock: vi.fn((n: number) => ({ __stopWhen: "stepCount", n })),
+		isStepCountMock: vi.fn((n: number) => ({ __stopWhen: "stepCount", n })),
 	};
 });
 
@@ -43,7 +43,7 @@ vi.mock("@repo/ai", () => ({
 	streamText: aiStubs.streamTextMock,
 	tool: aiStubs.toolMock,
 	jsonSchema: aiStubs.jsonSchemaMock,
-	stepCountIs: aiStubs.stepCountIsMock,
+	isStepCount: aiStubs.isStepCountMock,
 }));
 
 vi.mock("@repo/ai/limits", () => ({
@@ -79,14 +79,15 @@ import {
 
 /**
  * A `streamText` return value shaped enough to satisfy the activity's
- * consumer logic: an empty `fullStream` async iterable plus resolved
+ * consumer logic: an empty `stream` async iterable plus resolved
  * `usage`/`finishReason` promises. The activity ends with a
  * "no tool calls" final-response branch, which is fine — we only need the
  * call to complete so the args we passed are captured.
  */
 function makeStreamResult() {
 	return {
-		fullStream: (async function* () {
+		// AI SDK 7 renamed StreamTextResult.fullStream to `stream`.
+		stream: (async function* () {
 			// Empty stream — no text deltas, no tool calls, no errors.
 		})(),
 		usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }),
@@ -207,5 +208,56 @@ describe("runAgentIteration — suppressedToolNames", () => {
 		expect(callArg.toolChoice).toBe("auto");
 		// And the suppressed name must still be absent from the map.
 		expect(callArg.tools?.fabric_create_frame).toBeUndefined();
+	});
+});
+
+describe("runAgentIteration — no system row reaches the SDK [SDK7]", () => {
+	// AI SDK 7 REJECTS a `role: "system"` row inside `messages` unless the call
+	// passes `allowSystemInMessages: true`, which this one deliberately does
+	// not. `IterativeMessage.role` excludes "system" at the type level, but
+	// nothing enforces it at runtime: the orchestrator stream route reads
+	// `history` straight off the request body and the workflow re-roles it with
+	// a bare `as "user" | "assistant"` cast. `postOperationResultActivity` and
+	// `agents.conversations.recordOperationResult` DO persist `role: "system"`
+	// operation-result rows into AgentConversation.messages, and every browser
+	// caller currently filters them out before posting — so this pins the
+	// server-side normalisation that keeps a regression in any of those client
+	// filters from turning every orchestrator turn into a hard SDK rejection.
+	it("re-attributes a leaked system row to the assistant", async () => {
+		await runAgentIteration(
+			buildInput({
+				conversationHistory: [
+					{
+						role: "user",
+						content: "Do the thing.",
+						timestamp: "2026-05-04T00:00:00.000Z",
+					},
+					// A persisted operation-result row, replayed by a client that
+					// did not strip it. Cast because the type forbids what the
+					// runtime can still deliver.
+					{
+						role: "system",
+						content: "Operation completed: exported the report.",
+						timestamp: "2026-05-04T00:00:01.000Z",
+					} as unknown as RunAgentIterationInput["conversationHistory"][number],
+				],
+			}),
+		);
+
+		expect(aiStubs.streamTextMock).toHaveBeenCalledTimes(1);
+		const callArg = aiStubs.streamTextMock.mock.calls[0][0] as {
+			messages?: Array<{ role: string; content: unknown }>;
+			allowSystemInMessages?: boolean;
+		};
+
+		expect(callArg.messages).toBeDefined();
+		expect(callArg.messages?.some((m) => m.role === "system")).toBe(false);
+		// Content is kept, not dropped — it self-labels as an operation result.
+		expect(callArg.messages).toContainEqual({
+			role: "assistant",
+			content: "Operation completed: exported the report.",
+		});
+		// And the call does not silently opt in to the v6 behaviour.
+		expect(callArg.allowSystemInMessages).toBeUndefined();
 	});
 });

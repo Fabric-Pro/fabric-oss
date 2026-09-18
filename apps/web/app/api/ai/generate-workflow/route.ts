@@ -437,7 +437,7 @@ Respond with a JSON object only, no markdown or code fences.`;
 		console.log("[AI Workflow Generation] Using model:", modelString);
 		const result = await generateText({
 			model,
-			system: systemPrompt,
+			instructions: systemPrompt,
 			prompt: userPrompt,
 		});
 

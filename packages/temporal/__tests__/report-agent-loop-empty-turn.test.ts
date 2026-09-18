@@ -47,7 +47,7 @@ const noOut = () =>
 	);
 
 function fakeStream(opts: {
-	parts?: Array<Record<string, unknown>>; // fullStream parts in order
+	parts?: Array<Record<string, unknown>>; // `stream` parts in order
 	finishReason?: string; // resolved finishReason value
 	usage?: { inputTokens: number; outputTokens: number };
 	rejectFinishReason?: Error; // finishReason promise rejects
@@ -77,7 +77,9 @@ function fakeStream(opts: {
 		textStream: (async function* () {})(), // legacy field; unused by consumeStream
 		text: textPromise,
 		toolCalls: toolCallsPromise,
-		fullStream: (async function* () {
+		// AI SDK 7 renamed StreamTextResult.fullStream to `stream`; consumeStream
+		// reads `.stream`, so the fixture must expose that name.
+		stream: (async function* () {
 			for (const p of parts) {
 				yield p;
 			}

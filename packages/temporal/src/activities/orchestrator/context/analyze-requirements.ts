@@ -40,7 +40,7 @@ export async function analyzeContextRequirements(
 
 	const response = await generateText({
 		model,
-		system: systemPrompt,
+		instructions: systemPrompt,
 		prompt: `Task: ${input.message}
 
 Available Capabilities:

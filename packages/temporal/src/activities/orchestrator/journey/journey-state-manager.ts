@@ -311,7 +311,7 @@ export async function analyzeJourneyInput(
 			const model = await getAiModel(userId, organizationId);
 			const response = await generateText({
 				model,
-				system: `You analyze user messages to determine if they continue an existing task or start a new one.
+				instructions: `You analyze user messages to determine if they continue an existing task or start a new one.
 
 Current journey:
 - Original goal: ${existingState.originalGoal}

@@ -1740,7 +1740,7 @@ export class AtlasService {
 	 *     words. A failed pre-stream write aborts the send with
 	 *     `PERSISTENCE_FAILED` (no stream, no AI spend).
 	 *  2. The ASSISTANT turn is persisted exactly once via a one-shot guard
-	 *     shared by `onFinish` (complete reply), `onAbort`/`onError`, and the
+	 *     shared by `onEnd` (complete reply), `onAbort`/`onError`, and the
 	 *     returned stream's early-exit cleanup — a client disconnect surfaces
 	 *     as consumer cancellation, which the SDK does NOT route through
 	 *     `onAbort`, so the wrapper salvages the accumulated partial text
@@ -1958,13 +1958,13 @@ export class AtlasService {
 
 		const result = streamText({
 			model,
-			system,
+			instructions: system,
 			messages: conversationForModel.map((m) => ({
 				role: m.role as "user" | "assistant",
 				content: m.content,
 			})),
-			onFinish: async ({ text, usage }) => {
-				// Record usage whenever the SDK reports it — onFinish also fires
+			onEnd: async ({ text, usage }) => {
+				// Record usage whenever the SDK reports it — onEnd also fires
 				// after onError with the tokens that were actually consumed, so
 				// errored turns meter their real spend (the one-shot guard keeps
 				// the earlier interrupted persist authoritative). Only abort /
@@ -3763,12 +3763,12 @@ export class AtlasService {
 
 		const result = streamText({
 			model,
-			system,
+			instructions: system,
 			messages: conversationForModel.map((m) => ({
 				role: m.role as "user" | "assistant",
 				content: m.content,
 			})),
-			onFinish: async ({ text, usage }) => {
+			onEnd: async ({ text, usage }) => {
 				recordAtlasUsage({
 					ctx: this.ctx,
 					metadata,

@@ -5,7 +5,7 @@
  * tool-calling loops for iterative exploration.
  */
 
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 import { Hono } from "hono";
 import { resolveReaderModel } from "../lib/llm.js";
 import { withRetry } from "../lib/retry.js";
@@ -240,10 +240,10 @@ a2aRoute.post("/send", async (c) => {
 			() =>
 				generateText({
 					model,
-					system: systemPrompt,
+					instructions: systemPrompt,
 					messages: [{ role: "user", content: userContent }],
 					...(tools
-						? { tools, stopWhen: stepCountIs(maxSteps) }
+						? { tools, stopWhen: isStepCount(maxSteps) }
 						: {}),
 				}),
 			{ label: `${agent}-a2a-generateText`, circuitKey: agent },

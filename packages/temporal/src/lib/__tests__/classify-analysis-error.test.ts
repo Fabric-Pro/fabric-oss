@@ -338,7 +338,7 @@ describe("classifyBacklogAnalysisError", () => {
 	});
 
 	it("sees through AI SDK RetryError to classify the wrapped 503", () => {
-		// AI SDK v6 retries 5xx/transient provider errors and, on exhaustion,
+		// AI SDK v7 retries 5xx/transient provider errors and, on exhaustion,
 		// throws RetryError wrapping the real APICallError in .lastError/.errors.
 		// The classifier must descend into that wrapper (Bug #1681 root cause).
 		const apiErr = {

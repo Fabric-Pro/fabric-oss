@@ -207,7 +207,16 @@ async function pruneSlidingWindow(
 		organizationId,
 	);
 
-	// Create new context with summary as first message
+	// Create new context with summary as first message.
+	//
+	// AI SDK 7 rejects a `role: "system"` row inside a call's `messages` array,
+	// but this row never reaches one. `pruneConversationContext` has exactly one
+	// caller — workflows/dynamic-agent/index.ts:265 — which writes the result
+	// back into `state.conversationHistory`, and that array is only ever read by
+	// `estimateContextSize` and fed back into this activity. `generateSummary`
+	// below flattens messages into a `prompt` string, not a messages array. Keep
+	// it that way: if this history is ever handed to an SDK call, hoist the
+	// summary into `instructions` first.
 	const prunedMessages: Message[] = [
 		{
 			role: "system",
@@ -295,6 +304,9 @@ async function pruneTokenBudget(
 		organizationId,
 	);
 
+	// See pruneSlidingWindow for why this `role: "system"` row is safe under AI
+	// SDK 7: it stays inside the dynamic-agent workflow's own state and is never
+	// handed to a streamText/generateText `messages` array.
 	const prunedMessages: Message[] = [
 		{
 			role: "system",
@@ -409,7 +421,8 @@ async function generateSummary(
 
 		const result = await generateText({
 			model,
-			system: "You are a helpful assistant that creates concise conversation summaries.",
+			instructions:
+				"You are a helpful assistant that creates concise conversation summaries.",
 			prompt: `${SUMMARY_PROMPT}\n\n${conversationText}`,
 			maxOutputTokens: 1000,
 			temperature: 0.3,

@@ -2,14 +2,13 @@ import { describe, expect, it } from "vitest";
 import { extractReasoningText } from "../reasoning-stream";
 
 describe("extractReasoningText", () => {
-	// ─── TextStreamPart shape (what streamText().fullStream actually emits) ─────
-	// Verified at apps/web/node_modules/ai/dist/index.d.ts:2592, 2614:
+	// ─── TextStreamPart shape (what streamText().stream actually emits) ────────
+	// AI SDK 7 renamed `fullStream` to `stream`; the part shape is unchanged:
 	//   type: "reasoning-delta", id: string, text: string, providerMetadata?
 	// The content field is `text` on TextStreamPart — NOT `delta`.
-	it("returns the text of a reasoning-delta part (TextStreamPart shape from fullStream)", () => {
-		// AI SDK 6 streamText().fullStream emits TextStreamPart, where reasoning-delta carries `text`
-		// (verified at apps/web/node_modules/ai/dist/index.d.ts:2614). The plan's round-5 review
-		// missed this — it verified the UIMessageChunk union (line 2090) which uses `delta` instead.
+	it("returns the text of a reasoning-delta part (TextStreamPart shape from the result stream)", () => {
+		// TextStreamReasoningDeltaPart carries `text`. The plan's round-5 review
+		// missed this — it verified the UIMessageChunk union, which uses `delta`.
 		expect(
 			extractReasoningText({
 				type: "reasoning-delta",
@@ -20,10 +19,9 @@ describe("extractReasoningText", () => {
 	});
 
 	// ─── UIMessageChunk / SingleRequestTextStreamPart shape (defensive fallback) ─
-	// Other SDK 6 unions (UIMessageChunk at line 2090, SingleRequestTextStreamPart at line 4573)
-	// use `delta` instead of `text`. Helper supports both for forward-compat.
+	// Other SDK unions (UIMessageChunk, SingleRequestTextStreamPart) use `delta`
+	// instead of `text`. Helper supports both for forward-compat.
 	it("returns the delta of a reasoning-delta part (UIMessageChunk shape — defensive)", () => {
-		// Other SDK 6 unions (UIMessageChunk, SingleRequestTextStreamPart) use `delta`.
 		// Helper supports both for forward-compat / defensive coverage.
 		expect(
 			extractReasoningText({
@@ -36,7 +34,7 @@ describe("extractReasoningText", () => {
 
 	it("prefers `text` when both fields are present", () => {
 		// If a hybrid SDK version emits both, `text` wins because it's the documented
-		// TextStreamPart shape — the actual fullStream surface.
+		// TextStreamPart shape — the actual result-stream surface.
 		expect(
 			extractReasoningText({
 				type: "reasoning-delta",

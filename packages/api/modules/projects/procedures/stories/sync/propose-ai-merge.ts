@@ -301,7 +301,7 @@ export const proposeAiMergeProcedure = tenantProtectedProcedure
 			const { object, usage, finishReason } = await generateObject({
 				model,
 				schema: MergeResultSchema,
-				system,
+				instructions: system,
 				prompt: buildMergePrompt({
 					fabricTitle: input.fabricTitle,
 					fabricDescription: input.fabricDescription,

@@ -331,7 +331,7 @@ ${getCurrentDateContext()}`;
 		const generationStart = Date.now();
 		const result = await generateText({
 			model: aiModel,
-			system: systemPrompt,
+			instructions: systemPrompt,
 			messages,
 		});
 		logModelUsageAsync({

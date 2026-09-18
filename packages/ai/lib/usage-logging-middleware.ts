@@ -5,9 +5,12 @@
  * so EVERY current and future in-process model call — one-shot `generateObject`/
  * `generateText` AND streaming `streamText`, whether issued by an API procedure, a
  * Temporal activity, the agent orchestrator, MCP sampling, or code not yet written —
- * records an `AiUsageLog` row by construction. Callers no longer have to remember to
- * call `logModelUsageAsync`; that function is now a no-op superseded by this
- * middleware (see usage-logging.ts).
+ * records an `AiUsageLog` row by construction. The sole exception is a caller
+ * that explicitly resolves aggregate mode and owns one SDK multi-step turn;
+ * it reuses this module's normalizer/writer for exactly one whole-turn row.
+ * Callers otherwise no longer have to remember to call `logModelUsageAsync`;
+ * that function is now a no-op superseded by this middleware (see
+ * usage-logging.ts).
  *
  * It is the SINGLE source of truth for language-model usage. It captures the full
  * provider token breakdown — including prompt-cache reads/writes and reasoning
@@ -63,6 +66,20 @@ export interface UsageLoggingContext {
 	jobType?: string;
 }
 
+/** One whole-turn usage record emitted by a caller that owns a multi-step loop. */
+export interface AggregateUsageRecord {
+	usage: unknown;
+	latencyMs: number;
+	success: boolean;
+	errorMessage?: string;
+	/**
+	 * Full SDK step list. A generation id is safe to attach only if this has
+	 * exactly one entry; an aggregate of several provider calls has no single
+	 * gateway generation to reconcile later.
+	 */
+	steps?: readonly { providerMetadata?: unknown }[];
+}
+
 type NormalizedUsage = {
 	inputTokens: number;
 	outputTokens: number;
@@ -108,25 +125,46 @@ export function readTokenCount(value: unknown): number {
 }
 
 /**
- * Normalize the AI SDK's `usage` + `providerMetadata` into our token buckets. The
- * SDK surfaces cache reads on `usage.cachedInputTokens`; Anthropic's cache-WRITE
- * count is only on provider metadata, so read it from both shapes defensively.
+ * Read one field out of the flat `inputTokenDetails`/`outputTokenDetails`
+ * objects the top-level `LanguageModelUsage` carries (`ai` 7 `dist/index.d.ts`
+ * `LanguageModelUsage`), as opposed to the nested breakdown the provider
+ * interface uses.
  */
-function normalizeUsage(
-	usage: unknown,
-	providerMetadata: unknown,
-): NormalizedUsage {
+function detail(value: unknown, key: string): number {
+	return num((value as Record<string, unknown> | undefined)?.[key]);
+}
+
+/**
+ * Normalize the AI SDK's `usage` into our token buckets.
+ *
+ * Two shapes are live under AI SDK 7 and this reads both. The PROVIDER
+ * interface — which is what a `wrapLanguageModel` middleware such as this one
+ * actually sees — reports `LanguageModelV4Usage`: nested breakdowns
+ * `inputTokens: { total, noCache, cacheRead, cacheWrite }` and
+ * `outputTokens: { total, text, reasoning }`, with no `totalTokens` of its own
+ * (`@ai-sdk/provider` 4 `dist/index.d.ts` `LanguageModelV4Usage`). The
+ * TOP-LEVEL `LanguageModelUsage` that `generateText`/`streamText` expose is
+ * flat instead — plain `inputTokens`/`outputTokens`/`totalTokens` numbers plus
+ * `inputTokenDetails: { noCacheTokens, cacheReadTokens, cacheWriteTokens }` and
+ * `outputTokenDetails: { textTokens, reasoningTokens }`.
+ *
+ * Gone with SDK 6 and deliberately no longer read: the flat
+ * `usage.cachedInputTokens` and `usage.reasoningTokens` names, and
+ * `providerMetadata.anthropic.cacheCreationInputTokens` — `@ai-sdk/anthropic` 4
+ * now maps `cache_creation_input_tokens` into `inputTokens.cacheWrite` and
+ * emits no camelCase copy on provider metadata (`dist/index.js:2035-2041`).
+ * Keeping a dead fallback here is not free: it is indistinguishable from a
+ * supported shape to whoever reads this next.
+ */
+function normalizeUsage(usage: unknown): NormalizedUsage {
 	const u = (usage ?? {}) as Record<string, unknown>;
-	// `inputTokens`/`outputTokens` are NOT always numbers. The v6 provider
-	// interface reports them as breakdown objects —
-	// `{ total, noCache, cacheRead, cacheWrite }` and `{ total, text, reasoning }`
-	// (see @ai-sdk/openai, /anthropic and /groq v3, which all build this shape
-	// alongside a `raw` passthrough of the provider's original payload). Reading
-	// those with a plain number cast yields NaN → 0, and an all-zero count is
-	// what this middleware treats as "no billing signal" and drops — so every
-	// generation through those providers went unrecorded while the call itself
-	// succeeded. `count` accepts both shapes; the OpenAI-compatible aliases
-	// after it cover an endpoint that hands its usage back unmapped.
+	// `inputTokens`/`outputTokens` are NOT always numbers. On the provider
+	// interface they are breakdown objects, and reading those with a plain
+	// number cast yields NaN → 0 — an all-zero count is what this middleware
+	// treats as "no billing signal" and drops, so every generation through
+	// those providers would go unrecorded while the call itself succeeded.
+	// `readTokenCount` accepts both shapes; the OpenAI-compatible aliases after
+	// it cover an endpoint that hands its usage back unmapped.
 	const inputTokens =
 		readTokenCount(u.inputTokens) ||
 		num(u.promptTokens) ||
@@ -138,27 +176,14 @@ function normalizeUsage(
 	const totalTokens =
 		num(u.totalTokens) || num(u.total_tokens) || inputTokens + outputTokens;
 	const cachedInputTokens =
-		num(u.cachedInputTokens) ||
 		part(u.inputTokens, "cacheRead") ||
-		num(
-			(u.inputTokenDetails as Record<string, unknown> | undefined)
-				?.cacheReadTokens,
-		);
+		detail(u.inputTokenDetails, "cacheReadTokens");
 	const reasoningTokens =
-		num(u.reasoningTokens) ||
 		part(u.outputTokens, "reasoning") ||
-		num(
-			(u.outputTokenDetails as Record<string, unknown> | undefined)
-				?.reasoningTokens,
-		);
-	// Anthropic reports cache-creation tokens only on provider metadata.
-	const anthropic = (
-		(providerMetadata ?? {}) as Record<string, Record<string, unknown>>
-	).anthropic;
+		detail(u.outputTokenDetails, "reasoningTokens");
 	const cacheCreationInputTokens =
-		num(u.cacheCreationInputTokens) ||
 		part(u.inputTokens, "cacheWrite") ||
-		num(anthropic?.cacheCreationInputTokens);
+		detail(u.inputTokenDetails, "cacheWriteTokens");
 
 	return {
 		inputTokens,
@@ -172,6 +197,22 @@ function normalizeUsage(
 }
 
 /**
+ * Prefer provider-reported aggregate usage, but let a successful caller use
+ * its existing estimate when the SDK exposes no billing signal at all.
+ */
+export function selectAggregateUsageForLogging(
+	reportedUsage: unknown,
+	estimatedUsage: unknown,
+): unknown {
+	const normalized = normalizeUsage(reportedUsage);
+	return normalized.inputTokens === 0 &&
+		normalized.outputTokens === 0 &&
+		normalized.totalTokens === 0
+		? estimatedUsage
+		: reportedUsage;
+}
+
+/**
  * The Vercel AI Gateway stamps each response with a generation id on
  * providerMetadata.gateway.generationId; its real billed cost is fetched later
  * via GET /v1/generation. Absent for non-gateway providers.
@@ -182,6 +223,14 @@ function gatewayGenerationIdOf(providerMetadata: unknown): string | undefined {
 	).gateway;
 	const id = gateway?.generationId;
 	return typeof id === "string" ? id : undefined;
+}
+
+function singleStepGatewayGenerationId(
+	steps: AggregateUsageRecord["steps"],
+): string | undefined {
+	return steps?.length === 1
+		? gatewayGenerationIdOf(steps[0]?.providerMetadata)
+		: undefined;
 }
 
 /**
@@ -281,6 +330,25 @@ function emit(
 	}
 }
 
+/**
+ * Record one caller-owned aggregate usage row through the same normalizer and
+ * writer as the automatic middleware. This is deliberately for the rare
+ * multi-step callers that opt out of per-provider-call logging at resolution.
+ */
+export function recordAggregateUsage(
+	context: UsageLoggingContext,
+	record: AggregateUsageRecord,
+): void {
+	emit(
+		context,
+		normalizeUsage(record.usage),
+		record.latencyMs,
+		record.success,
+		record.errorMessage,
+		singleStepGatewayGenerationId(record.steps),
+	);
+}
+
 type WrapMiddleware = Parameters<typeof wrapLanguageModel>[0]["middleware"];
 
 /**
@@ -303,7 +371,7 @@ export function createUsageLoggingMiddleware(
 				try {
 					emit(
 						context,
-						normalizeUsage(result.usage, result.providerMetadata),
+						normalizeUsage(result.usage),
 						Date.now() - start,
 						true,
 						undefined,
@@ -320,7 +388,7 @@ export function createUsageLoggingMiddleware(
 				try {
 					emit(
 						context,
-						normalizeUsage(undefined, undefined),
+						normalizeUsage(undefined),
 						Date.now() - start,
 						false,
 						error instanceof Error ? error.message : String(error),
@@ -347,7 +415,7 @@ export function createUsageLoggingMiddleware(
 				try {
 					emit(
 						context,
-						normalizeUsage(undefined, undefined),
+						normalizeUsage(undefined),
 						Date.now() - start,
 						false,
 						error instanceof Error ? error.message : String(error),
@@ -372,10 +440,7 @@ export function createUsageLoggingMiddleware(
 						try {
 							emit(
 								context,
-								normalizeUsage(
-									chunk.usage,
-									chunk.providerMetadata,
-								),
+								normalizeUsage(chunk.usage),
 								Date.now() - start,
 								true,
 								undefined,
@@ -394,10 +459,7 @@ export function createUsageLoggingMiddleware(
 								.error;
 							emit(
 								context,
-								normalizeUsage(
-									chunk.usage,
-									chunk.providerMetadata,
-								),
+								normalizeUsage(chunk.usage),
 								Date.now() - start,
 								false,
 								err instanceof Error

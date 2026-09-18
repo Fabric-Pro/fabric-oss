@@ -312,7 +312,7 @@ export async function enrichChunksWithTenantContext(
 				// is provider-agnostic: Anthropic-direct and the gateway read it
 				// from providerOptions, and the Databricks compat shim marks the
 				// system run itself.
-				system: cacheableSystem(systemPrompt),
+				instructions: cacheableSystem(systemPrompt),
 				prompt: userPrompt,
 			});
 

@@ -541,7 +541,7 @@ ${integrationDescriptions || "No matched integrations available"}
 
 	const response = await generateText({
 		model,
-		system: systemPrompt,
+		instructions: systemPrompt,
 		prompt: `Task: ${userMessage}\nRouting: ${input.routingDecision.primaryAgent} (${input.routingDecision.reasoning})`,
 	});
 

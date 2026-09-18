@@ -79,7 +79,7 @@ function fakeStream(turn: Turn) {
 	const isEmpty =
 		!hasText && !hasToolCalls && !turn.rejectWith && !turn.emptyStop;
 
-	// Build fullStream parts based on turn content
+	// Build `stream` parts based on turn content
 	async function* makeFullStream() {
 		if (turn.rejectWith) {
 			// genuine error: yield nothing, resolve/reject handled via promises
@@ -136,7 +136,7 @@ function fakeStream(turn: Turn) {
 	// Attach a no-op catch to the text promise as a belt-and-suspenders guard
 	// against unhandled-rejection timing on the rejectWith path. consumeStream
 	// DOES observe stream.text via Promise.allSettled (to surface genuine
-	// text-channel rejections) but reads content from fullStream, not this promise.
+	// text-channel rejections) but reads content from `stream`, not this promise.
 	const textPromise = (
 		turn.rejectWith
 			? Promise.reject(turn.rejectWith)
@@ -148,7 +148,8 @@ function fakeStream(turn: Turn) {
 		textStream: (async function* () {})(),
 		text: textPromise,
 		toolCalls: Promise.resolve(turn.toolCalls ?? []),
-		fullStream: makeFullStream(),
+		// AI SDK 7 renamed StreamTextResult.fullStream to `stream`.
+		stream: makeFullStream(),
 		finishReason: finishReasonPromise,
 		usage: usagePromise,
 	};

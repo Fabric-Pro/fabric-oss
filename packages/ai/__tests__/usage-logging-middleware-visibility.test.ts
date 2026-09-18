@@ -147,9 +147,13 @@ describe("usage interceptor makes its own blind spots visible", () => {
 		);
 	});
 
-	it("still reads the flat shape, where the same fields are numbers", async () => {
+	it("still reads the flat shape, where the totals are numbers", async () => {
 		// The breakdown handling must not cost us the shape that already
-		// worked — not every path through this middleware is a v6 provider.
+		// worked — not every path through this middleware hands over the
+		// provider-interface breakdown. This is AI SDK 7's top-level
+		// `LanguageModelUsage`: flat totals, with the cache and reasoning
+		// splits under `inputTokenDetails`/`outputTokenDetails` rather than
+		// the 6.x flat `cachedInputTokens`/`reasoningTokens` this used to send.
 		mockLogAiUsageAsync.mockResolvedValue(undefined);
 
 		await generateThrough({
@@ -157,8 +161,8 @@ describe("usage interceptor makes its own blind spots visible", () => {
 				inputTokens: 70,
 				outputTokens: 30,
 				totalTokens: 100,
-				cachedInputTokens: 5,
-				reasoningTokens: 7,
+				inputTokenDetails: { cacheReadTokens: 5 },
+				outputTokenDetails: { reasoningTokens: 7 },
 			},
 			text: "ok",
 		});

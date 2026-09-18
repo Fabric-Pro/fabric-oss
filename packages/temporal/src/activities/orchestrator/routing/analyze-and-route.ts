@@ -867,7 +867,7 @@ Use primaryAgent: "mcp_direct" to execute MCP tools directly without agent deleg
 
 	const response = await generateText({
 		model,
-		system: systemPrompt,
+		instructions: systemPrompt,
 		prompt: `Task: ${userPrompt}`,
 	});
 

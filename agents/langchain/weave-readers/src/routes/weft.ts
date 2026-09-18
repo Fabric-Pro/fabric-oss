@@ -1,4 +1,4 @@
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 import { Hono } from "hono";
 import { resolveReaderModel } from "../lib/llm.js";
 import { withRetry } from "../lib/retry.js";
@@ -109,7 +109,7 @@ Focus on:
 			() =>
 				generateText({
 					model: model,
-					system: WEFT_SYSTEM_PROMPT,
+					instructions: WEFT_SYSTEM_PROMPT,
 					messages: [
 						{
 							role: "user",
@@ -117,7 +117,7 @@ Focus on:
 						},
 					],
 					tools,
-					stopWhen: stepCountIs(MAX_TOOL_STEPS),
+					stopWhen: isStepCount(MAX_TOOL_STEPS),
 				}),
 			{ label: "weft-generateText", circuitKey: "weft" },
 		);
@@ -144,7 +144,7 @@ Focus on:
 		() =>
 			generateText({
 				model: model,
-				system: WEFT_SYSTEM_PROMPT,
+				instructions: WEFT_SYSTEM_PROMPT,
 				messages: [
 					{
 						role: "user",

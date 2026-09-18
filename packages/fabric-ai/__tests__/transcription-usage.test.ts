@@ -21,14 +21,14 @@ vi.mock("@repo/observability", () => ({
 	) => fn(),
 }));
 vi.mock("ai", () => ({
-	experimental_transcribe: vi.fn(),
+	transcribe: vi.fn(),
 }));
 vi.mock("../executor", () => ({
 	getFabricAIMode: () => "hybrid",
 	executeFabricPattern: vi.fn(),
 }));
 
-import { experimental_transcribe } from "ai";
+import { transcribe } from "ai";
 import { transcribeAudio } from "../transcription";
 
 const AUDIO = Buffer.from("fake-audio-bytes");
@@ -37,7 +37,7 @@ describe("transcribeAudio — usage marker (Fizzy #1894)", () => {
 	beforeEach(() => logAiUsageAsync.mockReset());
 
 	it("writes a success marker for a hybrid-mode transcription", async () => {
-		vi.mocked(experimental_transcribe).mockResolvedValue({
+		vi.mocked(transcribe).mockResolvedValue({
 			text: "hello world",
 			language: "en",
 			durationInSeconds: 3,
@@ -67,7 +67,7 @@ describe("transcribeAudio — usage marker (Fizzy #1894)", () => {
 	});
 
 	it("writes a failure marker when the provider call throws", async () => {
-		vi.mocked(experimental_transcribe).mockRejectedValue(
+		vi.mocked(transcribe).mockRejectedValue(
 			new Error("provider auth failed"),
 		);
 

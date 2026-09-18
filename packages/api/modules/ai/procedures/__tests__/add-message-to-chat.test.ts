@@ -33,6 +33,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		getRAGProviderConfig: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		streamText: vi.fn(),
+		toUIMessageStream: vi.fn(),
 		formatContextForLLM: vi.fn(),
 		retrieveContext: vi.fn(),
 		getTemporalClient: vi.fn(),
@@ -60,6 +61,7 @@ vi.mock("@repo/ai", () => ({
 	getRAGProviderConfig: mocks.getRAGProviderConfig,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 	streamText: mocks.streamText,
+	toUIMessageStream: mocks.toUIMessageStream,
 }));
 
 vi.mock("@repo/database", () => ({
@@ -147,9 +149,13 @@ beforeEach(() => {
 	mocks.convertToModelMessages.mockImplementation(
 		async (msgs: unknown) => msgs,
 	);
-	mocks.streamText.mockReturnValue({
-		toUIMessageStream: () => ({}),
-	});
+	// AI SDK 7: the handler reads `result.stream` and pipes it through the
+	// stateless `toUIMessageStream({ stream })` helper rather than calling the
+	// deprecated `result.toUIMessageStream()` method.
+	mocks.streamText.mockReturnValue({ stream: {} });
+	mocks.toUIMessageStream.mockImplementation(
+		({ stream }: { stream: unknown }) => stream,
+	);
 });
 
 describe("addMessageToChat — non-RAG path is unchanged", () => {
@@ -163,10 +169,10 @@ describe("addMessageToChat — non-RAG path is unchanged", () => {
 
 		expect(mocks.streamText).toHaveBeenCalledTimes(1);
 		const callArgs = mocks.streamText.mock.calls[0][0] as {
-			system?: unknown;
+			instructions?: unknown;
 			messages: unknown[];
 		};
-		expect(callArgs.system).toBeUndefined();
+		expect(callArgs.instructions).toBeUndefined();
 		expect(callArgs.messages).toEqual(messages);
 	});
 });
@@ -193,10 +199,10 @@ describe("addMessageToChat — inline RAG retrieval (ready documents)", () => {
 
 		expect(mocks.streamText).toHaveBeenCalledTimes(1);
 		const callArgs = mocks.streamText.mock.calls[0][0] as {
-			system?: string;
+			instructions?: string;
 			messages: Array<{ role: string }>;
 		};
-		expect(callArgs.system).toBe("RAG_CONTEXT_TEXT");
+		expect(callArgs.instructions).toBe("RAG_CONTEXT_TEXT");
 		expect(callArgs.messages.some((m) => m.role === "system")).toBe(false);
 		// `messages` is mutated in place by the handler's `unshift` (an
 		// existing behaviour, unrelated to this fix) — assert against the
@@ -220,10 +226,12 @@ describe("addMessageToChat — inline RAG retrieval (ready documents)", () => {
 		});
 
 		const callArgs = mocks.streamText.mock.calls[0][0] as {
-			system?: string;
+			instructions?: string;
 			messages: Array<{ role: string }>;
 		};
-		expect(callArgs.system).toBe("RAG_CONTEXT_TEXT\n\nPRE_EXISTING_SYSTEM");
+		expect(callArgs.instructions).toBe(
+			"RAG_CONTEXT_TEXT\n\nPRE_EXISTING_SYSTEM",
+		);
 		expect(callArgs.messages.some((m) => m.role === "system")).toBe(false);
 	});
 });
@@ -257,10 +265,10 @@ describe("addMessageToChat — pending-documents workflow RAG path", () => {
 
 		expect(mocks.streamText).toHaveBeenCalledTimes(1);
 		const callArgs = mocks.streamText.mock.calls[0][0] as {
-			system?: string;
+			instructions?: string;
 			messages: Array<{ role: string }>;
 		};
-		expect(callArgs.system).toBe("WORKFLOW_RAG_CONTEXT");
+		expect(callArgs.instructions).toBe("WORKFLOW_RAG_CONTEXT");
 		expect(callArgs.messages.some((m) => m.role === "system")).toBe(false);
 		// `messages` is mutated in place by the handler's `unshift` (an
 		// existing behaviour, unrelated to this fix) — assert against the

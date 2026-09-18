@@ -1,13 +1,18 @@
-import { tool } from "ai";
+import { type ToolSet, tool } from "ai";
 
 import { z } from "zod";
 
 /**
- * Create AI SDK v6 tools for external research.
+ * Create AI SDK tools for external research.
  * Uses DuckDuckGo instant answers (no API key) as default,
  * or Tavily/Serper/Exa when API keys are configured.
+ *
+ * Explicit `ToolSet` return type: under AI SDK 7 the inferred type of a
+ * `tool()` reaches into @ai-sdk/provider-utils (Context, SandboxSession) and
+ * @ai-sdk/provider, which tsc cannot name from this package without quoting a
+ * .pnpm path (TS2742). Annotating keeps the declaration portable.
  */
-export function createWebSearchTools() {
+export function createWebSearchTools(): ToolSet {
 	return {
 		webSearch: tool({
 			description:

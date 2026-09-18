@@ -146,10 +146,10 @@ describe("proposeQuestionAnswers", () => {
 		// FR-25 (#1747): the shared locked-attachment rule is appended to the
 		// resolved instruction, so `system` carries BOTH the org instruction and
 		// the rule (no longer an exact-equality match).
-		expect(mocks.generateObject.mock.calls[0][0].system).toContain(
+		expect(mocks.generateObject.mock.calls[0][0].instructions).toContain(
 			"ORG EDITED INSTRUCTION",
 		);
-		expect(mocks.generateObject.mock.calls[0][0].system).toContain(
+		expect(mocks.generateObject.mock.calls[0][0].instructions).toContain(
 			"DEDICATED ATTACHMENTS",
 		);
 	});
@@ -163,7 +163,7 @@ describe("proposeQuestionAnswers", () => {
 			questions: [{ rootId: "dec-1", question: "Is MFA mandatory?" }],
 			tenantFilter,
 		});
-		expect(mocks.generateObject.mock.calls[0][0].system).toContain(
+		expect(mocks.generateObject.mock.calls[0][0].instructions).toContain(
 			"DEDICATED ATTACHMENTS",
 		);
 	});
@@ -253,7 +253,7 @@ describe("proposeQuestionAnswers — function-tag role clause (Fizzy #1767 Stage
 			requesterUserId: "user-1",
 			surface: "propose-question-answers",
 		});
-		const system = mocks.generateObject.mock.calls[0][0].system;
+		const system = mocks.generateObject.mock.calls[0][0].instructions;
 		expect(system).toContain(ROLE_CLAUSE_SENTINEL);
 	});
 
@@ -267,7 +267,7 @@ describe("proposeQuestionAnswers — function-tag role clause (Fizzy #1767 Stage
 			questions: [{ rootId: "dec-1", question: "Is MFA mandatory?" }],
 			tenantFilter,
 		});
-		const withClause = mocks.generateObject.mock.calls[0][0].system;
+		const withClause = mocks.generateObject.mock.calls[0][0].instructions;
 
 		// ...then the flag-OFF shape, from an otherwise-identical invocation.
 		mocks.generateObject.mockClear();
@@ -277,7 +277,8 @@ describe("proposeQuestionAnswers — function-tag role clause (Fizzy #1767 Stage
 			questions: [{ rootId: "dec-1", question: "Is MFA mandatory?" }],
 			tenantFilter,
 		});
-		const withoutClause = mocks.generateObject.mock.calls[0][0].system;
+		const withoutClause =
+			mocks.generateObject.mock.calls[0][0].instructions;
 
 		expect(withoutClause).not.toContain(ROLE_CLAUSE_SENTINEL);
 		expect(withClause).toBe(`${withoutClause}\n\n${ROLE_CLAUSE_SENTINEL}`);

@@ -33,10 +33,20 @@ type ProviderStreamPart = Awaited<
  * arguments began arriving and stopped mid-JSON is genuinely truncated —
  * inventing `{}` there would run the tool with arguments the model never
  * chose, so those are still dropped, as they are today.
+ *
+ * `@ai-sdk/openai` 4 very likely makes this redundant: its streaming tool-call
+ * tracker flushes a zero-argument call unconditionally
+ * (`StreamingToolCallTracker.flush` in `@ai-sdk/provider-utils` 5). It is kept
+ * anyway. The repair is a no-op against a provider that emits the call
+ * properly — it only ever synthesises one that never arrived — so carrying it
+ * costs nothing, while removing it on the strength of reading a dist file
+ * would re-risk the exact failure mode of Fizzy #2040, which passed every
+ * local test before it broke production. Retiring it is a separate change,
+ * made once the 4.x providers have been watched in production.
  */
 export function createEmptyToolInputRepairMiddleware(): LanguageModelMiddleware {
 	return {
-		specificationVersion: "v3",
+		specificationVersion: "v4",
 		wrapStream: async ({ doStream }) => {
 			const { stream, ...rest } = await doStream();
 

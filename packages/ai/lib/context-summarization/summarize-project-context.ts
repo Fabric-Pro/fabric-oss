@@ -424,7 +424,7 @@ export async function foldContextBatch(
 	const result = await generateObject({
 		model,
 		schema: SummarySchema,
-		system: cacheableSystem(
+		instructions: cacheableSystem(
 			`${input.systemPrompt?.trim() || SYSTEM_GUIDANCE}\n${FORMATTING_GUIDANCE}`,
 		),
 		messages: [{ role: "user" as const, content: promptParts.join("\n") }],

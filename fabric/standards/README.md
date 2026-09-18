@@ -121,7 +121,7 @@ Use standards as a checklist:
 | **API** | oRPC, Hono, Zod |
 | **Database** | PostgreSQL, Prisma 6.18, Qdrant |
 | **Auth** | Better Auth 1.6 |
-| **AI** | Vercel AI SDK 6, OpenAI, Anthropic |
+| **AI** | Vercel AI SDK 7, OpenAI, Anthropic |
 | **Workflows** | Temporal |
 | **Testing** | Vitest, Playwright, React Testing Library |
 | **Build** | pnpm, Turbo, Biome |

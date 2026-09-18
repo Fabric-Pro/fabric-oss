@@ -195,7 +195,7 @@ Respond with JSON:
 
 	const response = await generateText({
 		model,
-		system: systemPrompt,
+		instructions: systemPrompt,
 		prompt: `User message: "${userMessage}"`,
 		temperature: 0.1,
 	});

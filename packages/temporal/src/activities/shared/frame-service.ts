@@ -392,7 +392,7 @@ async function streamCompleteText(input: {
 	let lastHeartbeatAt = 0;
 	const result = streamText({
 		model,
-		system: input.systemPrompt,
+		instructions: input.systemPrompt,
 		messages: [{ role: "user", content: input.userPrompt }],
 		abortSignal,
 		...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),

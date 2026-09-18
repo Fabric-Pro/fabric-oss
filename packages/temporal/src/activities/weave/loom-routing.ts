@@ -125,7 +125,7 @@ export async function loomRoutingActivity(
 
 		const result = await generateText({
 			model,
-			system: LOOM_ROUTING_PROMPT,
+			instructions: LOOM_ROUTING_PROMPT,
 			messages: [
 				{
 					role: "user",

@@ -93,11 +93,11 @@ describe("createFirstClassFrame — system prompt placement", () => {
 
 		expect(stubs.streamTextMock).toHaveBeenCalledTimes(1);
 		const callArgs = stubs.streamTextMock.mock.calls[0][0] as {
-			system?: unknown;
+			instructions?: unknown;
 			messages: Array<{ role: string }>;
 		};
 
-		expect(typeof callArgs.system).toBe("string");
+		expect(typeof callArgs.instructions).toBe("string");
 		expect(callArgs.messages.some((m) => m.role === "system")).toBe(false);
 		expect(callArgs.messages).toEqual([
 			{ role: "user", content: expect.any(String) },

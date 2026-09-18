@@ -134,9 +134,12 @@ export function spliceImagePartsIntoLastUserMessage(
 						[k: string]: unknown;
 					}>)
 				: [];
+	// AI SDK 7 deprecates the `image` message part in favour of the canonical
+	// flat `file` part (FilePart: { type, data, mediaType }), where mediaType is
+	// required. Keep the attachment's real MIME type.
 	const imageParts = attachments.map((att) => ({
-		type: "image" as const,
-		image: att.bytes,
+		type: "file" as const,
+		data: att.bytes,
 		mediaType: att.mediaType,
 	}));
 	target.content = [...existingText, ...imageParts];

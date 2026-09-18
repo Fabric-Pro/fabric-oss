@@ -1,10 +1,10 @@
 {
 	"dependencies": {
-		"@ai-sdk/anthropic": "^3.0.118",
-		"@ai-sdk/cerebras": "^2.0.81",
-		"@ai-sdk/deepseek": "^2.0.64",
-		"@ai-sdk/groq": "^3.0.66",
-		"@ai-sdk/openai": "^3.0.112",
+		"@ai-sdk/anthropic": "^4.0.53",
+		"@ai-sdk/cerebras": "^3.0.48",
+		"@ai-sdk/deepseek": "^3.0.44",
+		"@ai-sdk/groq": "^4.0.41",
+		"@ai-sdk/openai": "^4.0.66",
 		"@repo/agent-prompts": "workspace:*",
 		"@repo/config": "workspace:*",
 		"@repo/database": "workspace:*",
@@ -15,7 +15,7 @@
 		"@repo/permissions": "workspace:*",
 		"@repo/storage": "workspace:*",
 		"@repo/utils": "workspace:*",
-		"ai": "^6.0.283",
+		"ai": "^7.0.101",
 		"undici": "^8.5.0",
 		"zod": "^4.3.6"
 	},

@@ -15,12 +15,12 @@
 		"type-check": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@ai-sdk/mcp": "^1.0.80",
+		"@ai-sdk/mcp": "^2.0.49",
 		"@modelcontextprotocol/sdk": "^1.30.0",
 		"@repo/ai": "workspace:*",
 		"@repo/database": "workspace:*",
 		"@repo/utils": "workspace:*",
-		"ai": "^6.0.283",
+		"ai": "^7.0.101",
 		"zod": "^4.3.6"
 	},
 	"devDependencies": {

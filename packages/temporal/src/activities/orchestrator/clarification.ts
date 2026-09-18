@@ -69,7 +69,7 @@ export async function analyzeIntentClarityActivity(
 
 		const result = await generateText({
 			model,
-			system: INTENT_CLARITY_PROMPT,
+			instructions: INTENT_CLARITY_PROMPT,
 			messages: [
 				{
 					role: "user",

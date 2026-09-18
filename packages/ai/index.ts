@@ -52,12 +52,21 @@ export {
 	// Gateway provider
 	createGateway,
 	createTextStreamResponse,
+	// SDK 7's stateless replacements for the deprecated `streamText` result
+	// helpers (`result.toUIMessageStream()` / `.toUIMessageStreamResponse()`).
+	// Both take an options object — `createUIMessageStreamResponse({ stream })`
+	// — not the positional argument the published migration guide shows.
+	createUIMessageStreamResponse,
 	embed,
 	embedMany,
 	// Image generation
 	generateImage,
 	generateObject,
 	generateText,
+	// SDK 7's step-limit predicate for `stopWhen`. The SDK 6 spelling
+	// (`stepCountIs`) survives upstream only as a deprecated alias and is
+	// deliberately not re-exported here, so no call site can drift back onto it.
+	isStepCount,
 	jsonSchema,
 	// Error types
 	// Re-exported (not imported straight from `ai`) for the same single-copy-of-
@@ -67,10 +76,10 @@ export {
 	NoObjectGeneratedError,
 	NoSuchToolError,
 	pipeTextStreamToResponse,
-	stepCountIs,
 	streamObject,
 	streamText,
 	tool,
+	toUIMessageStream,
 	// Re-exported so callers never import `zodSchema` from `ai` directly. The
 	// `ai` package peer-depends on zod, so pnpm installs one copy of `ai` per
 	// zod version — a caller importing `zodSchema` from its own `ai` gets a
@@ -105,6 +114,8 @@ export {
 	toDatabricksWorkspaceHost,
 } from "./lib/databricks-url";
 export type {
+	AggregateAIModelOptions,
+	AggregateAIModelResult,
 	AIEmbeddingModelResult,
 	AIModelMetadata,
 	AIModelResult,
@@ -270,9 +281,14 @@ export {
 	logEmbeddingUsageAsync,
 	logModelUsageAsync,
 } from "./lib/usage-logging";
-export type { UsageLoggingContext } from "./lib/usage-logging-middleware";
+export type {
+	AggregateUsageRecord,
+	UsageLoggingContext,
+} from "./lib/usage-logging-middleware";
 export {
 	readTokenCount,
+	recordAggregateUsage,
+	selectAggregateUsageForLogging,
 	wrapEmbeddingModelWithUsageLogging,
 	wrapModelWithUsageLogging,
 } from "./lib/usage-logging-middleware";
