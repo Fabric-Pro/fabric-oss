@@ -137,7 +137,15 @@ export const generateDocumentProcedure = tenantProtectedProcedure
 				currentDocument,
 			});
 		} catch (error) {
-			// Everything in this try is infrastructure (Temporal client,
+			// One exception to the generalization below: a structured refusal
+			// the dispatcher raised deliberately — an unmet capability
+			// dependency — is the answer, not an internal failure, and carries
+			// the gate the client renders. Flattening it to a 500 would throw
+			// that away and tell the user to retry something that cannot work.
+			if (error instanceof ORPCError) {
+				throw error;
+			}
+			// Everything else in this try is infrastructure (Temporal client,
 			// token issuance, workflow start), so the raw error can carry
 			// internal details — connection strings, addresses, provider
 			// messages — that must not reach the editor's error toast. Log

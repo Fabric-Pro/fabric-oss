@@ -414,6 +414,12 @@ export const createDocumentProcedure = tenantProtectedProcedure
 
 		if (dispatchResult.status === "rejected") {
 			const error = dispatchResult.reason;
+			// A deliberate structured refusal from the dispatcher — an unmet
+			// capability dependency — is an answer the client can act on, so it
+			// survives instead of being flattened into the generic 500 below.
+			if (error instanceof ORPCError) {
+				throw error;
+			}
 			logger.error(
 				`[CreateDocument] Failed to start document generation for document ${document.id}: ${
 					error instanceof Error ? error.message : String(error)

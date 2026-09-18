@@ -1488,3 +1488,45 @@ export async function upsertScanCheckpoint(data: {
 		},
 	});
 }
+
+// =============================================================================
+// Stale-run watchdog
+// =============================================================================
+
+/**
+ * Fail scans left RUNNING past `staleMinutes`.
+ *
+ * A scan that dies mid-run — worker restart, terminated workflow, host lost —
+ * takes the only writer that could ever close it with it. Without this sweep
+ * the row sits RUNNING forever and every reader that keys off status keeps
+ * presenting a dead run as work in flight.
+ *
+ * Staleness is measured from `startedAt`, not from a heartbeat: this model has
+ * no heartbeat column, so the start of the run is the only sign of life it ever
+ * records. That makes the window necessarily generous — a long scan reporting
+ * nothing looks exactly like a dead one, and calling a working scan dead is the
+ * worse error.
+ *
+ * A row with a null `startedAt` is never swept. Prisma's `lt` compiles to a SQL
+ * comparison that NULL never satisfies, which is precisely the wanted
+ * behaviour: an unknown age is not evidence of death.
+ *
+ * `durationMs` is deliberately left untouched — an `updateMany` cannot read
+ * each row's own `startedAt` to measure against, and a fabricated duration is
+ * worse than a missing one.
+ */
+export async function failStaleProjectScans(args: {
+	staleMinutes: number;
+}): Promise<number> {
+	const now = new Date();
+	const threshold = new Date(now.getTime() - args.staleMinutes * 60 * 1000);
+	const result = await db.projectScan.updateMany({
+		where: { status: "RUNNING", startedAt: { lt: threshold } },
+		data: {
+			status: "FAILED",
+			error: "Timed out — the scan exceeded its maximum run window",
+			completedAt: now,
+		},
+	});
+	return result.count;
+}

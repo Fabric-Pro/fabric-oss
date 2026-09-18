@@ -12,6 +12,8 @@ import {
 	documentTypeLabel,
 } from "@repo/utils/document-type-catalog";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { CapabilityGateBanner } from "@saas/projects/components/capability-gates/CapabilityGateBanner";
+import { useCapabilityGate } from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { PromptSelector } from "@saas/prompts/components/PromptSelector";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -46,6 +48,27 @@ import { toast } from "sonner";
 type DocumentType = (typeof DOCUMENT_TYPE_OPTIONS)[number]["value"];
 
 const DEFAULT_DOCUMENT_TYPE: DocumentType = "GENERAL";
+
+/**
+ * The document types whose generation has a capability gate (Fizzy #1930).
+ *
+ * Partial on purpose: the gating matrix covers the seven types that need a
+ * source to be worth generating, and a type absent here resolves to no gate at
+ * all — which is the correct answer for a General Document or a Test Plan.
+ *
+ * The keys are the server's, not a pattern: `TECHNICAL_SPEC` gates under
+ * `documents.generate-tech-spec`, not `…-technical-spec`, so deriving these by
+ * lower-casing the enum would silently miss one.
+ */
+const CAPABILITY_BY_DOCUMENT_TYPE: Partial<Record<DocumentType, string>> = {
+	PRD: "documents.generate-prd",
+	BUSINESS_CASE: "documents.generate-business-case",
+	PROPOSAL: "documents.generate-proposal",
+	ARCHITECTURE: "documents.generate-architecture",
+	TECHNICAL_SPEC: "documents.generate-tech-spec",
+	API_SPEC: "documents.generate-api-spec",
+	QA_STRATEGY: "documents.generate-qa-strategy",
+};
 
 /**
  * Whether this tenant can generate at all.
@@ -424,6 +447,22 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 			? (generateWithAiOverride ?? true)
 			: false;
 
+	/**
+	 * The gate for the selected type's generation (Fizzy #1930).
+	 *
+	 * Resolved for every type — a type with no rule simply has no gate — so the
+	 * hook call stays unconditional as the rules of hooks require, and switching
+	 * the picker re-reads from the matrix already in memory rather than
+	 * refetching.
+	 */
+	const generationGate = useCapabilityGate(
+		CAPABILITY_BY_DOCUMENT_TYPE[type] ?? "",
+	);
+	// Only AI generation is gated. Creating the document by hand, or keeping an
+	// uploaded source as-is, needs none of the sources the gate is about — so
+	// blocking those would take away the very thing someone does to satisfy it.
+	const generationBlocked = generateWithAI && generationGate.blocked;
+
 	const titleErrorId = useId();
 	const sourceErrorId = useId();
 	const usageModeLabelId = useId();
@@ -542,7 +581,8 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 	const canSubmit =
 		!isSubmitting &&
 		title.trim().length > 0 &&
-		aiAvailability !== "pending";
+		aiAvailability !== "pending" &&
+		!generationBlocked;
 
 	const handleCreate = async () => {
 		const trimmedTitle = title.trim();
@@ -1170,6 +1210,26 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 						)}
 					</div>
 				</div>
+
+				{/*
+				 * What this type needs before it can be generated, and where to
+				 * get it (Fizzy #1930). Shown only while AI generation is the
+				 * chosen path — a manual document is never gated — and directly
+				 * above the button it explains, so the reason for a disabled
+				 * Create is next to the Create.
+				 */}
+				{generateWithAI && (
+					<CapabilityGateBanner
+						capabilityKey={CAPABILITY_BY_DOCUMENT_TYPE[type] ?? ""}
+						hrefFor={(target) =>
+							target === "context"
+								? `${basePath}/projects/${projectId}/contexts`
+								: target === "documents"
+									? `${basePath}/projects/${projectId}/documents`
+									: null
+						}
+					/>
+				)}
 
 				<DialogFooter>
 					<Button

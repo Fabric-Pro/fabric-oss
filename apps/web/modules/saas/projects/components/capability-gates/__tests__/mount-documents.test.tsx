@@ -1,0 +1,192 @@
+/**
+ * The create-document dialog's gate wiring (Fizzy #1930).
+ *
+ * The claim worth pinning is the one that is easy to get wrong: the gate is
+ * about *generating* a document from sources, so it must block generation and
+ * nothing else. A manual document needs none of those sources, and taking the
+ * Create button away from someone writing one by hand would block the very work
+ * that satisfies the gate in the first place.
+ */
+
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CapabilityGateSelection } from "../useCapabilityGates";
+
+const { getAiConfigStatus, availablePrompts } = vi.hoisted(() => ({
+	getAiConfigStatus: vi.fn(),
+	availablePrompts: vi.fn(),
+}));
+
+const gateRef = { current: null as CapabilityGateSelection | null };
+
+vi.mock("next/navigation", () => ({
+	useRouter: () => ({
+		push: vi.fn(),
+		replace: vi.fn(),
+		prefetch: vi.fn(),
+		back: vi.fn(),
+	}),
+	usePathname: () => "/",
+	useSearchParams: () => new URLSearchParams(),
+}));
+
+vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useOrganizationContext: () => ({ organizationId: null, basePath: "/app" }),
+}));
+
+vi.mock("@shared/lib/orpc-client", () => ({
+	orpcClient: {
+		aiConfig: {
+			resolution: { getStatus: (i: unknown) => getAiConfigStatus(i) },
+		},
+		prompts: { bind: { set: vi.fn() } },
+		projects: {
+			contexts: { createUploadUrl: vi.fn(), processFile: vi.fn() },
+		},
+	},
+}));
+
+vi.mock("@shared/lib/orpc-query-utils", () => ({
+	orpc: {
+		projects: {
+			documents: {
+				create: { mutationOptions: () => ({ mutationFn: vi.fn() }) },
+				list: { queryKey: () => ["projects.documents.list"] },
+			},
+		},
+		prompts: {
+			agents: {
+				available: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: ["prompts.agents.available", input],
+						queryFn: () => availablePrompts(input),
+					}),
+				},
+			},
+		},
+	},
+}));
+
+vi.mock("sonner", () => ({
+	toast: {
+		loading: vi.fn(),
+		success: vi.fn(),
+		error: vi.fn(),
+		warning: vi.fn(),
+	},
+}));
+
+vi.mock("../useCapabilityGates", () => ({
+	useCapabilityGate: () =>
+		gateRef.current ?? {
+			gate: null,
+			view: null,
+			blocked: false,
+		},
+	useCapabilityGates: () => ({ suppress: vi.fn() }),
+	SNOOZE_DURATIONS: ["1d", "7d", "30d", "forever"] as const,
+}));
+
+import { CreateDocumentDialog } from "../../CreateDocumentDialog";
+
+/** A soft block — the selected type has no source to generate from. */
+const BLOCKED: CapabilityGateSelection = {
+	gate: null,
+	view: {
+		capabilityKey: "documents.generate-tech-spec",
+		state: "SOFT_BLOCK",
+		reasonKey: "documents.no-technical-source",
+		tone: "warning",
+		title: "reason.documents.no-technical-source.title",
+		body: "reason.documents.no-technical-source.body",
+		params: {
+			dependency: "a PRD, architecture document or indexed codebase",
+		},
+		ctaLabel: "remedy.addContext",
+		ctaKind: "navigate",
+		ctaTarget: "context",
+		blocksAction: true,
+		dismissible: false,
+		retry: { supported: false, permitted: false, available: false },
+	},
+	blocked: true,
+};
+
+function renderDialog() {
+	const client = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+	return render(
+		<QueryClientProvider client={client}>
+			<CreateDocumentDialog
+				projectId="project-1"
+				open
+				onOpenChange={vi.fn()}
+			/>
+		</QueryClientProvider>,
+	);
+}
+
+const submitButton = () => screen.getByRole("button", { name: "submit" });
+
+beforeEach(() => {
+	gateRef.current = null;
+	getAiConfigStatus.mockReset();
+	availablePrompts.mockReset();
+	availablePrompts.mockResolvedValue({ prompts: [] });
+});
+
+describe("create-document dialog — capability gate wiring", () => {
+	it("blocks generation when the selected type has no source", async () => {
+		getAiConfigStatus.mockResolvedValue({ isConfigured: true });
+		gateRef.current = BLOCKED;
+		renderDialog();
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "submitWithAi" }),
+			).toBeDisabled(),
+		);
+		expect(
+			screen.getByText("reason.documents.no-technical-source.body"),
+		).toBeInTheDocument();
+	});
+
+	it("still lets a document be created by hand while generation is blocked", async () => {
+		// AI unavailable, so this is the manual path. The gate is about sources
+		// a generation would read; writing the document yourself reads none of
+		// them, and blocking it would block the work that clears the gate.
+		getAiConfigStatus.mockResolvedValue({ isConfigured: false });
+		gateRef.current = BLOCKED;
+		renderDialog();
+
+		await waitFor(() => expect(submitButton()).not.toBeDisabled());
+	});
+
+	it("shows no gate banner on the manual path", async () => {
+		getAiConfigStatus.mockResolvedValue({ isConfigured: false });
+		gateRef.current = BLOCKED;
+		renderDialog();
+
+		await waitFor(() => expect(submitButton()).not.toBeDisabled());
+		// The banner explains why generation is unavailable, which is not a
+		// statement that belongs on a dialog that is not generating anything.
+		expect(
+			screen.queryByText("reason.documents.no-technical-source.body"),
+		).not.toBeInTheDocument();
+	});
+
+	it("leaves the dialog untouched when nothing is gated", async () => {
+		getAiConfigStatus.mockResolvedValue({ isConfigured: true });
+		renderDialog();
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "submitWithAi" }),
+			).not.toBeDisabled(),
+		);
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+});

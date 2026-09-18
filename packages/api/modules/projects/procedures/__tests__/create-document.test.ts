@@ -18,6 +18,7 @@
  * middleware stopped refusing read-only members.
  */
 
+import { ORPCError } from "@orpc/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mocks, usedMiddleware, captured, displaced } = vi.hoisted(() => ({
@@ -939,6 +940,29 @@ describe("createDocumentProcedure — failure surfacing (R32)", () => {
 		expect(String(mocks.loggerError.mock.calls[0]?.[0])).toContain(
 			"internal-host",
 		);
+	});
+
+	it("passes a capability refusal through instead of generalizing it", async () => {
+		// The dispatcher asserts the capability gate (Fizzy #1930). That
+		// refusal is a deliberate answer naming an unmet prerequisite, not a
+		// fault — flattening it to the generic 500 above would make it
+		// unreadable to the client and indistinguishable from a crash in the
+		// logs. The generic path for everything else is pinned directly above.
+		mocks.dispatchDocumentGeneration.mockRejectedValue(
+			new ORPCError("PRECONDITION_FAILED", {
+				message:
+					"Generate Technical Specification is not ready yet. It needs a PRD, architecture document or indexed codebase.",
+			}),
+		);
+
+		await expect(
+			handler({ input: input({ generateWithAi: true }), context: ctx }),
+		).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			message: expect.stringContaining("It needs a PRD"),
+		});
+
+		expect(mocks.loggerError).not.toHaveBeenCalled();
 	});
 
 	it("does not fail the creation when the embedding dispatch fails", async () => {

@@ -32,6 +32,7 @@ import { organizationsRouter } from "../modules/organizations/router";
 import { outcomesRouter } from "../modules/outcomes/router";
 import { paymentsRouter } from "../modules/payments/router";
 import { pipelineRouter } from "../modules/pipeline/router";
+import { capabilitiesRouter } from "../modules/capabilities/router";
 import { projectsRouter } from "../modules/projects/router";
 import { promptsRouter } from "../modules/prompts/router";
 import { ragProvidersRouter } from "../modules/rag-providers/router";
@@ -90,6 +91,7 @@ export const router = publicProcedure
 		payments: paymentsRouter,
 		pipeline: pipelineRouter,
 		projects: projectsRouter,
+		capabilities: capabilitiesRouter,
 		prompts: promptsRouter,
 		ragProviders: ragProvidersRouter,
 		runtime: runtimeRouter,

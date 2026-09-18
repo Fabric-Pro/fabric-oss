@@ -3,6 +3,7 @@
 import { useAnalytics } from "@analytics";
 import { pmDetectedTypeDisplayName } from "@repo/utils";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { CapabilityGateBanner } from "@saas/projects/components/capability-gates/CapabilityGateBanner";
 import { ConfluenceIcon } from "@saas/workflows/lib/plugins/confluence/icon";
 import { MicrosoftTeamsIcon } from "@saas/workflows/lib/plugins/microsoft-teams/icon";
 import { TruncatedText } from "@shared/components/TruncatedText";
@@ -1366,6 +1367,24 @@ export function ProjectContextsList({ projectId }: Props) {
 					</div>
 				}
 			/>
+
+			{/*
+			 * Whether the linked sources on this page can actually be used
+			 * (Fizzy #1930).
+			 *
+			 * Informational, and no action here is disabled — deliberately. The
+			 * capability is about *consuming* a linked source, and the states it
+			 * reports are that ingestion is still running or has stalled.
+			 * Neither is a reason to stop someone adding another source; adding
+			 * more is often the very thing they came to do, and taking the
+			 * button away while a queue drains would be the feature getting in
+			 * its own way.
+			 *
+			 * Placed after the loading and error returns above, so a list that
+			 * is still loading or has failed outright keeps its own state rather
+			 * than showing two explanations at once.
+			 */}
+			<CapabilityGateBanner capabilityKey="context.use-linked-source" />
 
 			<ContextSummaryPanel projectId={projectId} />
 			{/* Scope intake progress */}

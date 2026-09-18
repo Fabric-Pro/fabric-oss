@@ -1,3 +1,4 @@
+import { CapabilityGatesProvider } from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { ProjectReadinessPanelSlot } from "@saas/projects/components/readiness/ProjectReadinessPanel";
 import { ProjectReadinessProvider } from "@saas/projects/components/readiness/ProjectReadinessProvider";
 import type { ReactNode } from "react";
@@ -20,8 +21,16 @@ export default async function OrganizationProjectLayout({
 
 	return (
 		<ProjectReadinessProvider projectId={id}>
-			<ProjectReadinessPanelSlot />
-			{children}
+			{/*
+			 * Capability gating resolves once here, for the whole project
+			 * (Fizzy #1930). Every gated surface is a tab inside this route, so
+			 * one provider covers all of them and the matrix is fetched once
+			 * per project page rather than once per surface.
+			 */}
+			<CapabilityGatesProvider projectId={id}>
+				<ProjectReadinessPanelSlot />
+				{children}
+			</CapabilityGatesProvider>
 		</ProjectReadinessProvider>
 	);
 }

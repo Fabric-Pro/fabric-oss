@@ -735,10 +735,14 @@ describe("AI_ANSWER_RECOMMENDATIONS (#2300)", () => {
 
 	// Two API tests take `ORG_SCOPABLE_FLAG_KEYS[0]` as their fixture flag, so
 	// a new org-scopable entry is appended and PUBLISHING_SUITE stays first.
-	it("is appended after every existing org-scopable flag", () => {
+	// Stated as relative order rather than as the tail, so that appending the
+	// next org-scopable entry does not make this block fail for its neighbour.
+	it("is appended after every org-scopable flag that preceded it", () => {
 		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
-		expect(ORG_SCOPABLE_FLAG_KEYS[ORG_SCOPABLE_FLAG_KEYS.length - 1]).toBe(
-			"AI_ANSWER_RECOMMENDATIONS",
+		expect(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("AI_ANSWER_RECOMMENDATIONS"),
+		).toBeGreaterThan(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("CLI_CONNECTION_NUDGE"),
 		);
 	});
 
@@ -793,5 +797,29 @@ describe("AI_ANSWER_RECOMMENDATIONS (#2300)", () => {
 		);
 
 		expect(others).not.toContain(mine);
+	});
+});
+
+describe("CAPABILITY_GATING (#1930)", () => {
+	// Default OFF is the whole safety property of merging this entry: ON makes
+	// every gated surface start resolving gates and every gated mutation start
+	// asserting, so a deployment that has never heard of this flag must see the
+	// surfaces behave exactly as they did before.
+	it("is registered off by default, on its own env var, and org-scopable", () => {
+		expect(isFeatureFlagKey("CAPABILITY_GATING")).toBe(true);
+		expect(FEATURE_FLAG_REGISTRY.CAPABILITY_GATING.default).toBe(false);
+		expect(FEATURE_FLAG_REGISTRY.CAPABILITY_GATING.envVar).toBe(
+			"FABRIC_FEATURE_CAPABILITY_GATING",
+		);
+		expect(FEATURE_FLAG_REGISTRY.CAPABILITY_GATING.orgScopable).toBe(true);
+	});
+
+	// The newest org-scopable entry is the tail, and PUBLISHING_SUITE stays the
+	// head that two API tests use as their fixture flag.
+	it("is appended after every existing org-scopable flag", () => {
+		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
+		expect(ORG_SCOPABLE_FLAG_KEYS[ORG_SCOPABLE_FLAG_KEYS.length - 1]).toBe(
+			"CAPABILITY_GATING",
+		);
 	});
 });

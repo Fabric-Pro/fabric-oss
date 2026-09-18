@@ -8,6 +8,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { assertCapabilityAvailable } from "../../capabilities/assert";
 import { assertAtlasEnabled, mapAtlasError } from "../lib";
 
 /** Graph-grounded AI chat (streamed). */
@@ -30,6 +31,14 @@ export const atlasChatProcedure = tenantProtectedProcedure
 		const organizationId =
 			resolveOrganizationId(input.organizationId, context.session) ??
 			null;
+		// Above the try on purpose: `mapAtlasError` in the catch below would rewrite
+		// this refusal into an Atlas code and lose the gate it carries.
+		await assertCapabilityAvailable({
+			capabilityKey: "atlas.codebase-qa",
+			projectId: input.projectId,
+			userId: context.user.id,
+			organizationId,
+		});
 		const service = new AtlasService({
 			userId: context.user.id,
 			organizationId,

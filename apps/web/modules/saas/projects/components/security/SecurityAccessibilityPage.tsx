@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffectiveOrganizationId } from "@saas/organizations/hooks/use-organization-context";
+import { CapabilityGateBanner } from "@saas/projects/components/capability-gates/CapabilityGateBanner";
+import { CapabilityRestoreControl } from "@saas/projects/components/capability-gates/CapabilityRestoreControl";
+import { useCapabilityGate } from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { PageHeader } from "@saas/shared/components/PageHeader";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -231,8 +234,19 @@ export function SecurityAccessibilityPage({
 		});
 	};
 
+	// Capability gating (Fizzy #1930). This asks a different question from
+	// `noScannerEnabled` — that one is about this page's own configuration, this
+	// one about whether the prerequisites a scan reads are usable at all — so
+	// the two compose rather than replace one another. Only `blocked` is taken
+	// here; the reason and any retry render once, in the banner below, which
+	// keeps the header actions on a single line.
+	const scanGate = useCapabilityGate("security.run-scan");
+
 	const runDisabled =
-		noScannerEnabled || scanInFlight || triggerMutation.isPending;
+		noScannerEnabled ||
+		scanInFlight ||
+		triggerMutation.isPending ||
+		scanGate.blocked;
 
 	const handleRunScan = (mode: "INCREMENTAL" | "FULL") => {
 		triggerMutation.mutate({ projectId, organizationId, mode });
@@ -426,6 +440,38 @@ export function SecurityAccessibilityPage({
 				actions={headerActions}
 				getStartedPageId="security"
 			/>
+
+			{/*
+			 * Why the scan is unavailable, once, beneath the header (Fizzy
+			 * #1930). Renders nothing when the capability is available, when the
+			 * flag is off, or while the gate is still resolving.
+			 *
+			 * `onRetry` is offered only for a reason this page can actually
+			 * clear. A stalled scan is re-run from here; a stalled or failed
+			 * repository index is not — re-running the scan would fail the same
+			 * way — so for those the banner explains and stops, rather than
+			 * offering a button that cannot help.
+			 */}
+			<CapabilityGateBanner
+				capabilityKey="security.run-scan"
+				onRetry={
+					scanGate.view?.reasonKey.startsWith("scan.")
+						? () => handleRunScan("INCREMENTAL")
+						: undefined
+				}
+				isRetrying={triggerMutation.isPending}
+			/>
+
+			{/*
+			 * The way back, scoped to this page (Fizzy #1930, FR32 / AC-8).
+			 *
+			 * A stale-index warning here is dismissible, and "Hide for this
+			 * project" has no expiry — so without this the explanation is gone
+			 * for good. Scoped to this capability rather than the project, so
+			 * restoring here never undoes a dismissal made on another tab.
+			 * Renders nothing at all until there is something to restore.
+			 */}
+			<CapabilityRestoreControl capabilityKeys={["security.run-scan"]} />
 
 			<LastScanSummary
 				scan={latestScan}

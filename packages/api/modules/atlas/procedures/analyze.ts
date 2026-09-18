@@ -7,6 +7,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { assertCapabilityAvailable } from "../../capabilities/assert";
 import { assertAtlasEnabled, mapAtlasError } from "../lib";
 
 /** Kick off (or re-run) background analysis on Temporal. */
@@ -28,6 +29,14 @@ export const analyzeProcedure = tenantProtectedProcedure
 		const organizationId =
 			resolveOrganizationId(input.organizationId, context.session) ??
 			null;
+		// The public API, MCP tools and agents all reach this handler without ever
+		// rendering the button, so the refusal has to sit at the door.
+		await assertCapabilityAvailable({
+			capabilityKey: "atlas.explore",
+			projectId: input.projectId,
+			userId: context.user.id,
+			organizationId,
+		});
 		const service = new AtlasService({
 			userId: context.user.id,
 			organizationId,
