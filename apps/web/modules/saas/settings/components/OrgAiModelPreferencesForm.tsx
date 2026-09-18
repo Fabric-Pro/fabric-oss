@@ -25,6 +25,7 @@ import {
 	CloudIcon,
 	CodeIcon,
 	ImageIcon,
+	ListChecksIcon,
 	LoaderIcon,
 	LockIcon,
 	MessageSquareIcon,
@@ -108,6 +109,14 @@ const TASK_TYPES = [
 		icon: CheckCircleIcon,
 		color: "text-emerald-500",
 	},
+	{
+		id: "DECISION",
+		label: "Decisions",
+		description:
+			"Typed choice, score, and boolean decisions for future decision workflows",
+		icon: ListChecksIcon,
+		color: "text-violet-500",
+	},
 ] as const;
 
 type TaskTypeId = (typeof TASK_TYPES)[number]["id"];
@@ -167,6 +176,9 @@ const TASK_CAPABILITY_REQUIREMENTS: Record<
 		requiredCapabilities: ["REASONING"],
 		preferredQualityTier: ["STANDARD", "PREMIUM"],
 	},
+	DECISION: {
+		requiredCapabilities: ["EVALUATION"],
+	},
 };
 
 // Provider display names
@@ -218,12 +230,31 @@ export function OrgAiModelPreferencesForm({
 		enabled: !!isOrgContext,
 	});
 
-	const models = availableModelsData?.models ?? [];
+	const generalModels = availableModelsData?.models ?? [];
 	const _modelsByProvider = availableModelsData?.modelsByProvider ?? {};
 	const modelsByGatewayAndProvider =
 		availableModelsData?.modelsByGatewayAndProvider ?? {};
 	const configuredProviders = availableModelsData?.configuredProviders ?? [];
 	const defaultProvider = availableModelsData?.defaultProvider ?? null;
+
+	// Decision evaluation models are an isolated SDK modality. Fetch them with
+	// their task type so the API never returns them to language-model selectors.
+	const { data: decisionModelsData, isLoading: isLoadingDecisionModels } =
+		useQuery({
+			queryKey: ["aiAvailableModels", organizationId, "DECISION"],
+			queryFn: async () => {
+				return await orpcClient.aiConfig.models.listAvailable({
+					organizationId: organizationId ?? undefined,
+					taskType: "DECISION",
+				});
+			},
+			enabled: !!isOrgContext,
+		});
+
+	const decisionModels = decisionModelsData?.models ?? [];
+	const models = [...generalModels, ...decisionModels];
+	const decisionModelsByGatewayAndProvider =
+		decisionModelsData?.modelsByGatewayAndProvider ?? {};
 	const hasNoProviders = configuredProviders.length === 0;
 
 	// Query system defaults (filtered by org's default provider)
@@ -294,7 +325,11 @@ export function OrgAiModelPreferencesForm({
 		},
 	});
 
-	const isLoading = isLoadingModels || isLoadingDefaults || isLoadingPrefs;
+	const isLoading =
+		isLoadingModels ||
+		isLoadingDecisionModels ||
+		isLoadingDefaults ||
+		isLoadingPrefs;
 
 	// Get the current model for a task type
 	const getCurrentModel = (taskType: string): ModelOption | null => {
@@ -398,9 +433,12 @@ export function OrgAiModelPreferencesForm({
 			}>;
 		}> = [];
 
-		for (const [gateway, gatewayData] of Object.entries(
-			modelsByGatewayAndProvider,
-		)) {
+		const modelsForTask =
+			taskType === "DECISION"
+				? decisionModelsByGatewayAndProvider
+				: modelsByGatewayAndProvider;
+
+		for (const [gateway, gatewayData] of Object.entries(modelsForTask)) {
 			const providers: Array<{
 				provider: string;
 				providerDisplayName: string;

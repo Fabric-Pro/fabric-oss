@@ -3018,13 +3018,13 @@ export type QualityTier = z.infer<typeof QualityTierSchema>;
 
 // File: AiModelCapability.schema.ts
 
-export const AiModelCapabilitySchema = z.enum(['TEXT', 'IMAGE', 'AUDIO', 'EMBEDDING', 'TOOL_CALLING', 'VISION', 'CODE', 'REASONING'])
+export const AiModelCapabilitySchema = z.enum(['TEXT', 'IMAGE', 'AUDIO', 'EMBEDDING', 'EVALUATION', 'TOOL_CALLING', 'VISION', 'CODE', 'REASONING'])
 
 export type AiModelCapability = z.infer<typeof AiModelCapabilitySchema>;
 
 // File: AiTaskType.schema.ts
 
-export const AiTaskTypeSchema = z.enum(['SIMPLE', 'COMPLEX', 'REASONING', 'CHAT', 'TOOL_CALLING', 'EMBEDDING', 'IMAGE', 'AUDIO', 'EVAL'])
+export const AiTaskTypeSchema = z.enum(['SIMPLE', 'COMPLEX', 'REASONING', 'CHAT', 'TOOL_CALLING', 'EMBEDDING', 'IMAGE', 'AUDIO', 'EVAL', 'DECISION'])
 
 export type AiTaskType = z.infer<typeof AiTaskTypeSchema>;
 

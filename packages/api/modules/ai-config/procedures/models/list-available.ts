@@ -33,6 +33,19 @@ import {
 	PROVIDERS_WITH_SUBPROVIDERS,
 } from "../../lib/configured-providers";
 
+const AiTaskTypeEnum = z.enum([
+	"SIMPLE",
+	"COMPLEX",
+	"REASONING",
+	"CHAT",
+	"TOOL_CALLING",
+	"EMBEDDING",
+	"IMAGE",
+	"AUDIO",
+	"EVAL",
+	"DECISION",
+]);
+
 // Gateway providers can have sub-providers configured (e.g., Vercel Gateway -> Groq, OpenAI)
 // Cloud platforms like Azure/AWS/GCP are treated as direct providers in the database
 export const listAvailableModelsProcedure = tenantProtectedProcedure
@@ -48,7 +61,7 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 	.input(
 		z.object({
 			organizationId: z.string().nullable().optional(),
-			taskType: z.string().optional(),
+			taskType: AiTaskTypeEnum.optional(),
 		}),
 	)
 	.output(
@@ -209,6 +222,13 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 					// Filter by task type if provided
 					...(input.taskType && {
 						suitableForTasks: { has: input.taskType as AiTaskType },
+					}),
+					// Evaluation models must only be listed on their typed decision
+					// surface. The settings UI obtains them in a separate DECISION query.
+					...(!input.taskType && {
+						NOT: {
+							suitableForTasks: { has: "DECISION" as AiTaskType },
+						},
 					}),
 				},
 				include: {

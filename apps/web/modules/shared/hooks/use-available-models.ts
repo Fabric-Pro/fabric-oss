@@ -5,6 +5,10 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
+type AvailableModelsTaskType = NonNullable<
+	Parameters<typeof orpcClient.aiConfig.models.listAvailable>[0]["taskType"]
+>;
+
 /**
  * Provider display names for UI
  */
@@ -78,7 +82,7 @@ export interface AvailableModel {
  */
 export function useAvailableModels(options?: {
 	organizationId?: string | null;
-	taskType?: string;
+	taskType?: AvailableModelsTaskType;
 }) {
 	// Auto-inject organization ID from context if not explicitly provided
 	const contextOrgId = useOrganizationId();

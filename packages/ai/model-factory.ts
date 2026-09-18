@@ -948,6 +948,37 @@ export function getModel(
 }
 
 /**
+ * Create a typed evaluation model for the AI SDK evaluation API.
+ *
+ * Evaluation models are a separate SDK surface from language models. They must
+ * stay on Vercel AI Gateway and use `gateway.evaluationModel` directly.
+ */
+export function getEvaluationModel(
+	modelName: string,
+	context: {
+		apiKey: string;
+		provider: "VERCEL_GATEWAY";
+		headers?: Record<string, string>;
+	},
+) {
+	if (!modelName) {
+		throw new Error(
+			"Evaluation model name is required. Configure a decision model in Settings → AI Models.",
+		);
+	}
+
+	if (context.provider !== "VERCEL_GATEWAY") {
+		throw new Error(
+			"Evaluation models require Vercel AI Gateway. Configure a Vercel AI Gateway provider for this organization.",
+		);
+	}
+
+	return getGatewayProvider(context.apiKey, context.headers).evaluationModel(
+		modelName,
+	);
+}
+
+/**
  * Get an Embedding model instance based on the model name and provider configuration.
  *
  * This function properly handles both gateway providers (Vercel Gateway, OpenRouter)

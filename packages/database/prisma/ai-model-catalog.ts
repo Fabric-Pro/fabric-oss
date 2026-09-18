@@ -60,6 +60,29 @@ export interface TaskDefaultSeed {
 
 export const MODELS: ModelSeedData[] = [
 	// ============================================================================
+	// Evaluation Models - Typed choice, score, and boolean decisions
+	// ============================================================================
+	{
+		canonicalName: "typesafe-ai-jev",
+		displayName: "TypeSafe AI Jev",
+		description:
+			"Typed choice, score, and boolean evaluation through Vercel AI Gateway",
+		family: "jev",
+		vendor: "TypeSafe AI",
+		capabilities: ["EVALUATION"],
+		contextWindow: 0,
+		speedTier: "BALANCED",
+		qualityTier: "STANDARD",
+		suitableForTasks: ["DECISION"],
+		providerMappings: [
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "typesafe-ai/jev",
+			},
+		],
+	},
+
+	// ============================================================================
 	// OpenAI Models
 	// ============================================================================
 	{
@@ -2274,6 +2297,13 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 		PERPLEXITY: "sonar-pro",
 		TOGETHER_AI: "llama-3-3-70b",
 		FIREWORKS: "llama-3-3-70b",
+	}),
+
+	// ============================================================================
+	// DECISION Tasks - Typed choice, score, and boolean evaluation
+	// ============================================================================
+	...createTaskDefaults("DECISION", "MEDIUM", {
+		VERCEL_GATEWAY: "typesafe-ai-jev",
 	}),
 ];
 

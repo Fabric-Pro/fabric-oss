@@ -25,7 +25,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { MODELS } from "../prisma/ai-model-catalog";
+import { MODELS, TASK_DEFAULTS } from "../prisma/ai-model-catalog";
 import type { AIProvider } from "../prisma/generated/client";
 
 // ============================================================================
@@ -195,6 +195,9 @@ const DEEPSEEK_OFFICIAL_MODELS = new Set([
  * - meta/llama-3.3-70b (NOT groq/llama-3.3-70b-versatile)
  */
 const VERCEL_GATEWAY_OFFICIAL_MODELS = new Set([
+	// Evaluation models (Vercel AI Gateway evaluation modality)
+	"typesafe-ai/jev",
+
 	// OpenAI models (from Vercel dashboard)
 	"openai/gpt-5.5",
 	"openai/gpt-5.4",
@@ -703,6 +706,32 @@ function levenshteinDistance(a: string, b: string): number {
 // ============================================================================
 
 describe("AI Model Name Validation", () => {
+	it("catalogs Jev only for typed decision evaluation through Vercel AI Gateway", () => {
+		const jev = MODELS.find(
+			(model) => model.canonicalName === "typesafe-ai-jev",
+		);
+
+		expect(jev, "Jev must be present in the model catalog").toBeDefined();
+		expect(jev?.capabilities).toEqual(["EVALUATION"]);
+		expect(jev?.suitableForTasks).toEqual(["DECISION"]);
+		expect(jev?.providerMappings).toEqual([
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "typesafe-ai/jev",
+			},
+		]);
+		expect(
+			TASK_DEFAULTS.filter(
+				(defaultModel) => defaultModel.taskType === "DECISION",
+			),
+		).toEqual([
+			expect.objectContaining({
+				canonicalName: "typesafe-ai-jev",
+				provider: "VERCEL_GATEWAY",
+			}),
+		]);
+	});
+
 	describe("OpenAI Direct", () => {
 		it("should have valid model IDs for OpenAI Direct", () => {
 			const mappings = getSeedProviderMappings().filter(
