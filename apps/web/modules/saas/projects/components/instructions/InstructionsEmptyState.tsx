@@ -17,15 +17,24 @@ import { useTranslations } from "next-intl";
 import { useState } from "react";
 
 export function InstructionsEmptyState({
+	projectId,
 	projectName,
 	onUploadClick,
 	repositoryName,
+	localSyncAvailable = false,
 }: {
 	projectId: string;
 	/** Named in the "Connect your agent" starter instruction. */
 	projectName: string;
 	onUploadClick: () => void;
 	repositoryName?: string | null;
+	/**
+	 * Whether the Connect dialog offers `fabric instructions init`. True when
+	 * Fabric authors this project's instructions. Before anything is
+	 * published the command installs the session-start check and copies
+	 * nothing; the check then reports the first version when it arrives.
+	 */
+	localSyncAvailable?: boolean;
 }) {
 	const t = useTranslations("projects.codingInstructions.emptyState");
 	const [connectOpen, setConnectOpen] = useState(false);
@@ -138,6 +147,8 @@ export function InstructionsEmptyState({
 					organizationSlug={organizationSlug ?? undefined}
 					projectName={projectName}
 					purpose="coding-instructions"
+					projectId={projectId}
+					localSyncAvailable={localSyncAvailable}
 				/>
 			) : null}
 		</div>

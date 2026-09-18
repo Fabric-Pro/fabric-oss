@@ -508,12 +508,146 @@ describe("ConnectCliDialog — the starter instruction", () => {
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
 
-		const note = await screen.findByTestId("connect-cli-local-sync-note");
-		expect(note).toHaveTextContent(
+		const command = await screen.findByTestId(
+			"connect-cli-local-sync-command",
+		);
+		// Sign-in with this key, then the one-time setup: the CLI stores
+		// the key in its own config, and the hook it installs never names
+		// it, so this block is the one place the key has to be typed.
+		expect(command).toHaveTextContent(`fabric auth login --key ${RAW_KEY}`);
+		expect(command).toHaveTextContent(
 			`fabric instructions init --project ${PROJECT_ID} --tool claude-code`,
 		);
-		// The line names a project and never a credential.
-		expect(note.textContent ?? "").not.toContain("fab_");
+		// The checkout route LEADS: its heading comes before the MCP
+		// route's, which is worded as the alternative.
+		const headings = screen
+			.getAllByRole("heading", { level: 3 })
+			.map((h) => h.textContent);
+		expect(
+			headings.indexOf("Recommended: keep the files in your checkout"),
+		).toBe(0);
+		expect(headings).toContain("Or read them live over MCP");
+		expect(
+			screen.getByRole("button", { name: "Copy commands" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/two ways to give your tool these instructions/i),
+		).toBeInTheDocument();
+		// The once-only warning sits under the first block that shows the
+		// key, and only once.
+		expect(screen.getAllByText(/shown once/i)).toHaveLength(1);
+	});
+
+	it("treats copying the commands as copying the key, so the dialog can close", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSyncAvailable: true,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await screen.findByTestId("connect-cli-local-sync-command");
+
+		// Uncopied: Escape is disarmed.
+		await user.keyboard("{Escape}");
+		expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "Copy commands" }));
+		await waitFor(() => expect(clipboardWrite).toHaveBeenCalledTimes(1));
+		expect(clipboardWrite.mock.calls[0]?.[0]).toContain(
+			`fabric auth login --key ${RAW_KEY}`,
+		);
+
+		await user.keyboard("{Escape}");
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+	});
+
+	it("mints a key the CLI route can use: the exact instructions scope alongside the gateway's", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSyncAvailable: true,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() => expect(createKeyMock).toHaveBeenCalledTimes(1));
+		const input = createKeyMock.mock.calls[0][0] as { scopes: string[] };
+		// The v1 routes behind `fabric instructions` match the scope by
+		// name, so the gateway's umbrella scope alone would be refused.
+		expect(input.scopes).toEqual(["mcp:read", "instructions:read"]);
+	});
+
+	it("describes the disarmed dismissals from the commands' copy control only, once", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSyncAvailable: true,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await screen.findByTestId("connect-cli-local-sync-command");
+		expect(
+			screen.getAllByTestId("connect-cli-dismissal-note"),
+		).toHaveLength(1);
+		expect(
+			screen.getByRole("button", { name: "Copy commands" }),
+		).toHaveAttribute("aria-describedby", "connect-cli-dismissal-note");
+		expect(
+			screen.getByRole("button", { name: /copy configuration/i }),
+		).not.toHaveAttribute("aria-describedby");
+	});
+
+	it("releases the guard on a configuration copy too, and keeps it armed when the commands copy fails", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSyncAvailable: true,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await screen.findByTestId("connect-cli-local-sync-command");
+
+		clipboardWrite.mockRejectedValueOnce(new Error("denied"));
+		await user.click(screen.getByRole("button", { name: "Copy commands" }));
+		await waitFor(() => expect(clipboardWrite).toHaveBeenCalledTimes(1));
+		await user.keyboard("{Escape}");
+		expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("button", { name: /copy configuration/i }),
+		);
+		await waitFor(() => expect(clipboardWrite).toHaveBeenCalledTimes(2));
+		await user.keyboard("{Escape}");
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+	});
+
+	it("puts initial focus on the commands' copy control when the checkout route leads", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSyncAvailable: true,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "Copy commands" }),
+			).toHaveFocus(),
+		);
 	});
 
 	it("says nothing about local sync for a repository-backed project", async () => {
@@ -529,7 +663,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 
 		await screen.findByTestId("connect-cli-starter-instruction");
 		expect(
-			screen.queryByTestId("connect-cli-local-sync-note"),
+			screen.queryByTestId("connect-cli-local-sync-command"),
 		).not.toBeInTheDocument();
 	});
 
@@ -542,7 +676,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 
 		await screen.findByTestId("connect-cli-starter-instruction");
 		expect(
-			screen.queryByTestId("connect-cli-local-sync-note"),
+			screen.queryByTestId("connect-cli-local-sync-command"),
 		).not.toBeInTheDocument();
 	});
 
