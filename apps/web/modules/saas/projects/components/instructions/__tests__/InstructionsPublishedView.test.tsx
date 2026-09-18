@@ -101,10 +101,19 @@ vi.mock("@saas/projects/components/cli-connection/ConnectCliDialog", () => ({
 
 const finalizeCalls: Array<Record<string, unknown>> = [];
 
-function queryOptionsStub(queryFn: () => Promise<unknown>) {
+/**
+ * The file list per snapshot id, so a test can publish a new version whose
+ * list differs from the one a file was selected in. Empty for every
+ * snapshot a test does not set up, which is what the older tests expect.
+ */
+const filesBySnapshot = vi.hoisted(
+	() => new Map<string, Array<Record<string, unknown>>>(),
+);
+
+function queryOptionsStub(queryFn: (input: unknown) => Promise<unknown>) {
 	return (o: { input: unknown }) => ({
 		queryKey: ["stub-query", o.input],
-		queryFn,
+		queryFn: () => queryFn(o.input),
 	});
 }
 
@@ -125,7 +134,10 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 		projects: {
 			instructions: {
 				listFiles: {
-					queryOptions: queryOptionsStub(async () => []),
+					queryOptions: queryOptionsStub(async (input) => {
+						const { snapshotId } = input as { snapshotId: string };
+						return filesBySnapshot.get(snapshotId) ?? [];
+					}),
 				},
 				getSettings: {
 					queryOptions: queryOptionsStub(async () => ({
@@ -170,6 +182,14 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	},
 }));
 
+// The file pane has its own query (`getFile`) and its own tests; here it
+// only needs to say WHICH path it was asked to show.
+vi.mock("../InstructionFileView", () => ({
+	InstructionFileView: ({ path }: { path: string }) => (
+		<div data-testid="file-view">{path}</div>
+	),
+}));
+
 import { InstructionsPublishedView } from "../InstructionsPublishedView";
 
 function TestQueryProvider({ children }: { children: ReactNode }) {
@@ -186,6 +206,126 @@ beforeEach(() => {
 	orgContextState.organizationSlug = "example-org";
 	orgContextState.isGuest = false;
 	connectCliDialogProps.length = 0;
+	filesBySnapshot.clear();
+});
+
+function treeFile(id: string, path: string): Record<string, unknown> {
+	return {
+		id,
+		path,
+		kind: "KNOWLEDGE",
+		name: null,
+		description: null,
+		size: 12,
+		mimeType: "text/markdown",
+		isText: true,
+		mode: null,
+	};
+}
+
+/**
+ * The selection is a path, and a path can outlive the version it was chosen
+ * in: Delete file publishes a version without it, and the pane must not go
+ * on asking the new version for a file it does not have.
+ */
+describe("InstructionsPublishedView — selection across versions", () => {
+	function publishedSnapshot(id: string, version: number) {
+		return {
+			id,
+			version,
+			status: "READY",
+			fileCount: 2,
+			excludedCount: 0,
+			createdAt: new Date(),
+			source: "UPLOAD",
+			user: { id: "u", name: "A. Member" },
+		} as never;
+	}
+
+	function renderVersion(id: string, version: number) {
+		return (
+			<InstructionsPublishedView
+				projectId="p"
+				projectName="Checkout Rewrite"
+				published={publishedSnapshot(id, version)}
+				snapshots={[] as never}
+				onReplaceClick={() => undefined}
+				onChanged={() => undefined}
+			/>
+		);
+	}
+
+	it("drops the selection when the published version no longer has that file", async () => {
+		filesBySnapshot.set("s8", [
+			treeFile("f1", "AGENTS.md"),
+			treeFile("f2", "notes.md"),
+		]);
+		filesBySnapshot.set("s9", [treeFile("f1", "AGENTS.md")]);
+		const user = userEvent.setup();
+		const view = render(renderVersion("s8", 8), {
+			wrapper: TestQueryProvider,
+		});
+
+		await user.click(
+			await screen.findByRole("button", { name: "notes.md" }),
+		);
+		expect(screen.getByTestId("file-view")).toHaveTextContent("notes.md");
+
+		// Delete file published version 9 and the poll swapped it in. Wait
+		// for the NEW list to have rendered before judging the pane: while
+		// it loads, the pane is empty for a different reason, and asserting
+		// then would pass for an implementation that restores the stale
+		// path once the list arrives.
+		view.rerender(renderVersion("s9", 9));
+		expect(
+			await screen.findByRole("button", { name: "AGENTS.md" }),
+		).toBeInTheDocument();
+
+		expect(screen.queryByTestId("file-view")).not.toBeInTheDocument();
+		expect(
+			screen.getByText(
+				en.projects.codingInstructions.publishedView.selectFilePrompt,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the selection when the file survives into the new version, without flashing the prompt while its list loads", async () => {
+		filesBySnapshot.set("s8", [
+			treeFile("f1", "AGENTS.md"),
+			treeFile("f2", "notes.md"),
+		]);
+		filesBySnapshot.set("s9", [
+			treeFile("f1", "AGENTS.md"),
+			treeFile("f2", "notes.md"),
+		]);
+		const user = userEvent.setup();
+		const view = render(renderVersion("s8", 8), {
+			wrapper: TestQueryProvider,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: "notes.md" }),
+		);
+		expect(screen.getByTestId("file-view")).toHaveTextContent("notes.md");
+
+		view.rerender(renderVersion("s9", 9));
+		// Immediately after the swap the new list is pending: no prompt.
+		expect(
+			screen.queryByText(
+				en.projects.codingInstructions.publishedView.selectFilePrompt,
+			),
+		).not.toBeInTheDocument();
+
+		await waitFor(() => {
+			expect(screen.getByTestId("file-view")).toHaveTextContent(
+				"notes.md",
+			);
+		});
+		expect(
+			screen.queryByText(
+				en.projects.codingInstructions.publishedView.selectFilePrompt,
+			),
+		).not.toBeInTheDocument();
+	});
 });
 
 describe("InstructionsPublishedView", () => {
