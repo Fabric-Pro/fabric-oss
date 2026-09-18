@@ -70,6 +70,8 @@ export type HistorySnapshot = {
 	 * from exactly the rows whose provenance is hardest to guess.
 	 */
 	baseVersion?: number | null;
+	/** Pending and rejected proposals must go through proposal review, not History. */
+	proposalStatus?: "PENDING" | "APPROVED" | "REJECTED" | null;
 };
 
 /**
@@ -101,6 +103,7 @@ export function InstructionsHistory({
 	publishedId,
 	publishedVersion,
 	publishedUnknown = false,
+	canMutate = true,
 	onChanged,
 }: {
 	projectId: string;
@@ -112,6 +115,8 @@ export function InstructionsHistory({
 	publishedVersion: number | null;
 	/** True when the published pointer could not be read at all. */
 	publishedUnknown?: boolean;
+	/** Direct History mutations are unavailable for readers and repository-backed projects. */
+	canMutate?: boolean;
 	onChanged: () => void;
 }) {
 	const t = useTranslations("projects.codingInstructions.history");
@@ -183,6 +188,9 @@ export function InstructionsHistory({
 				<div className="flex max-h-[420px] flex-col gap-2 overflow-auto">
 					{snapshots.map((s) => {
 						const isPublished = s.id === publishedId;
+						const awaitingProposalDecision =
+							s.proposalStatus === "PENDING" ||
+							s.proposalStatus === "REJECTED";
 						const badge = statusBadge(s, isPublished);
 						const rejectionRows =
 							s.rejection?.filter(
@@ -226,6 +234,8 @@ export function InstructionsHistory({
 									<div className="flex shrink-0 gap-2">
 										{s.status === "READY" &&
 										!isPublished &&
+										!awaitingProposalDecision &&
+										canMutate &&
 										!publishedUnknown ? (
 											<Button
 												size="sm"
@@ -265,7 +275,8 @@ export function InstructionsHistory({
 												)}
 											</Button>
 										) : null}
-										{s.status === "READY" ? (
+										{s.status === "READY" &&
+										!awaitingProposalDecision ? (
 											<Button
 												size="sm"
 												variant="outline"
@@ -296,6 +307,8 @@ export function InstructionsHistory({
 											</Button>
 										) : null}
 										{!isPublished &&
+										!awaitingProposalDecision &&
+										canMutate &&
 										DELETABLE_STATUSES.has(s.status) ? (
 											<Button
 												size="sm"

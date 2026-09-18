@@ -15,7 +15,7 @@
 import en from "@repo/i18n/translations/en.json";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 function resolve(path: string): unknown {
@@ -88,7 +88,10 @@ function TestQueryProvider({ children }: { children: ReactNode }) {
 	);
 }
 
-function renderDialog(folder: string | null = null) {
+function renderDialog(
+	folder: string | null = null,
+	props: Partial<ComponentProps<typeof AddInstructionFileDialog>> = {},
+) {
 	return render(
 		<AddInstructionFileDialog
 			projectId="p"
@@ -97,6 +100,7 @@ function renderDialog(folder: string | null = null) {
 			onOpenChange={() => undefined}
 			folder={folder}
 			onAdded={() => undefined}
+			{...props}
 		/>,
 		{ wrapper: TestQueryProvider },
 	);
@@ -135,6 +139,30 @@ describe("proposedPath", () => {
 });
 
 describe("AddInstructionFileDialog", () => {
+	it("submits a reader's file as a proposal without offering direct publication", async () => {
+		const user = userEvent.setup();
+		renderDialog(null, { proposalOnly: true, canPropose: true });
+
+		await user.upload(screen.getByLabelText("File"), pick("CLAUDE.md"));
+		expect(
+			screen.queryByLabelText(
+				"Publish as soon as the new version passes checks",
+			),
+		).toBeNull();
+		await user.click(
+			screen.getByRole("button", { name: "Submit proposal" }),
+		);
+
+		await waitFor(() =>
+			expect(m.editInstructionSnapshot).toHaveBeenCalledWith(
+				expect.objectContaining({
+					proposal: true,
+					publishOnReady: false,
+				}),
+			),
+		);
+	});
+
 	it("proposes the picked file's name inside the selected folder and sends it as a put", async () => {
 		const user = userEvent.setup();
 		renderDialog(".claude/skills/review");

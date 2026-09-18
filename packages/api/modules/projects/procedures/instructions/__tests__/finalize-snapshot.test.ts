@@ -28,6 +28,7 @@ const m = vi.hoisted(() => ({
 	resolveEffectiveProjectPermissions: vi.fn(),
 	getTemporalClient: vi.fn(),
 	workflowStart: vi.fn(),
+	assertInstructionSnapshotMutationAccess: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -45,6 +46,10 @@ vi.mock("../../../../../lib/effective-project-permissions", () => ({
 	resolveEffectiveProjectPermissions: (...a: unknown[]) =>
 		m.resolveEffectiveProjectPermissions(...a),
 }));
+vi.mock("../proposal-authorization", () => ({
+	assertInstructionSnapshotMutationAccess: (...a: unknown[]) =>
+		m.assertInstructionSnapshotMutationAccess(...a),
+}));
 vi.mock("../../../../../orpc/procedures", () => {
 	const builder = {
 		use: () => builder,
@@ -58,7 +63,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: builder,
 		requireProjectPermission: () => ({}),
-		Permissions: { INSTRUCTION_CREATE: "instruction:create" },
+		Permissions: { INSTRUCTION_READ: "instruction:read" },
 	};
 });
 
@@ -84,6 +89,8 @@ beforeEach(() => {
 	m.getInstructionSnapshot.mockResolvedValue({
 		id: "snap_1",
 		status: "RECEIVING",
+		userId: "user_1",
+		proposalStatus: null,
 	});
 	m.startInstructionSnapshotValidation.mockResolvedValue({ changed: true });
 	m.workflowStart.mockResolvedValue(undefined);

@@ -13,6 +13,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import { assertInstructionSnapshotMutationAccess } from "./proposal-authorization";
 
 /**
  * Temporal rejects a second start for a workflow id whose execution is
@@ -85,8 +86,11 @@ function isWorkflowAlreadyStartedError(error: unknown): boolean {
  * there (`markInstructionSnapshotFailed` deliberately leaves them), so the
  * new run's integrity/secret gate has the bytes it needs.
  */
+// The baseline middleware proves project visibility. The snapshot-aware guard
+// below then requires CREATE for direct versions, or READ plus proposer
+// ownership for a pending proposal.
 export const finalizeSnapshotProcedure = tenantProtectedProcedure
-	.use(requireProjectPermission(Permissions.INSTRUCTION_CREATE))
+	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "POST",
 		path: "/projects/:projectId/instructions/snapshots/:snapshotId/finalize",
@@ -113,6 +117,11 @@ export const finalizeSnapshotProcedure = tenantProtectedProcedure
 		if (!snapshot) {
 			throw new ORPCError("NOT_FOUND", { message: "Upload not found" });
 		}
+		await assertInstructionSnapshotMutationAccess({
+			projectId: input.projectId,
+			userId: context.user.id,
+			snapshot,
+		});
 		// A live run already owns this row, and nothing here can prove it is
 		// dead. Report it and start nothing: see the note above on why a new
 		// execution from an unchanged VALIDATING row is the unsafe case, and

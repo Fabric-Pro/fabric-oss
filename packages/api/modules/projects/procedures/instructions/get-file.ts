@@ -12,6 +12,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import { isInstructionSnapshotContentReadable } from "./proposal-authorization";
 
 const BUCKET = config.storage.bucketNames.skills;
 const FILE_BODY_DEFAULT_MAX = 50_000;
@@ -62,7 +63,7 @@ export const getFileProcedure = tenantProtectedProcedure
 			organizationId,
 		);
 		// Only READY snapshots ever serve bytes: staging is never readable.
-		if (!snapshot || snapshot.status !== "READY") {
+		if (!snapshot || !isInstructionSnapshotContentReadable(snapshot)) {
 			throw new ORPCError("NOT_FOUND", { message: "File not found" });
 		}
 		const file = await getInstructionFileByPath(

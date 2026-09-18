@@ -188,6 +188,14 @@ import { getSettingsProcedure as getInstructionSettingsProcedure } from "./proce
 import { getSnapshotProcedure } from "./procedures/instructions/get-snapshot";
 import { listFilesProcedure } from "./procedures/instructions/list-files";
 import { listSnapshotsProcedure } from "./procedures/instructions/list-snapshots";
+import {
+	approveInstructionProposalProcedure,
+	cancelInstructionProposalProcedure,
+	getInstructionProposalFileProcedure,
+	getInstructionProposalProcedure,
+	listInstructionProposalsProcedure,
+	rejectInstructionProposalProcedure,
+} from "./procedures/instructions/proposals";
 import { publishSnapshotProcedure } from "./procedures/instructions/publish-snapshot";
 import { updateSettingsProcedure as updateInstructionSettingsProcedure } from "./procedures/instructions/update-settings";
 import {
@@ -1907,6 +1915,14 @@ export const projectsRouter = {
 		createDownloadUrl: createDownloadUrlProcedure,
 		getSettings: getInstructionSettingsProcedure,
 		updateSettings: updateInstructionSettingsProcedure,
+		proposals: {
+			list: listInstructionProposalsProcedure,
+			get: getInstructionProposalProcedure,
+			file: getInstructionProposalFileProcedure,
+			approve: approveInstructionProposalProcedure,
+			reject: rejectInstructionProposalProcedure,
+			cancel: cancelInstructionProposalProcedure,
+		},
 	},
 
 	// AI usage reporting (per-project cost attribution)

@@ -11,14 +11,20 @@
 import { db, Prisma } from "../client";
 import type {
 	ProjectInstructionFileKind,
+	ProjectInstructionProposalStatus,
 	ProjectInstructionSnapshotStatus,
 	ProjectInstructionSource,
 } from "../generated/client";
 import { type RecordAuditInput, recordAuditTx } from "./audit-log";
 
 export type InstructionSnapshotStatus = ProjectInstructionSnapshotStatus;
+export type InstructionProposalStatus = ProjectInstructionProposalStatus;
 export type InstructionSource = ProjectInstructionSource;
 export type InstructionFileKind = ProjectInstructionFileKind;
+
+/** Admission bounds for reader-submitted proposals that have not been decided. */
+export const MAX_ACTIVE_INSTRUCTION_PROPOSALS_PER_PROPOSER = 5;
+export const MAX_ACTIVE_INSTRUCTION_PROPOSALS_PER_PROJECT = 25;
 
 /** Shape of `ProjectInstructionSnapshot.rejection`. Set only when status is REJECTED. */
 export type InstructionRejection = {
@@ -28,6 +34,68 @@ export type InstructionRejection = {
 	line?: number;
 };
 
+export const ABANDONED_STAGING_PENDING = "staging pending";
+export const ABANDONED_STAGING_CLEARED = "staging cleared";
+export const PROPOSAL_STAGING_CLEANUP_PATH = "(proposal staging)";
+
+const abandonedStagingPendingRejection = {
+	path: "(upload)",
+	reason: "abandoned",
+	detail: ABANDONED_STAGING_PENDING,
+} satisfies InstructionRejection;
+
+const proposalStagingPendingRejection = {
+	path: PROPOSAL_STAGING_CLEANUP_PATH,
+	reason: "abandoned",
+	detail: ABANDONED_STAGING_PENDING,
+} satisfies InstructionRejection;
+
+function cleanupMarkerFilter(marker: InstructionRejection) {
+	return {
+		rejection: {
+			array_contains: [marker] as unknown as Prisma.InputJsonValue,
+		},
+	};
+}
+
+function pendingCleanupFilter() {
+	return {
+		OR: [
+			cleanupMarkerFilter(abandonedStagingPendingRejection),
+			cleanupMarkerFilter(proposalStagingPendingRejection),
+		],
+	};
+}
+
+function activeProposalFilter() {
+	return {
+		OR: [
+			{ proposalStatus: "PENDING" as const },
+			{
+				proposalStatus: { not: null },
+				...pendingCleanupFilter(),
+			},
+		],
+	};
+}
+
+function rejectionsWithProposalCleanupMarker(value: unknown) {
+	const existing = Array.isArray(value)
+		? (value as InstructionRejection[])
+		: [];
+	if (
+		existing.some(
+			(item) =>
+				item.path === proposalStagingPendingRejection.path &&
+				item.reason === proposalStagingPendingRejection.reason &&
+				item.detail === proposalStagingPendingRejection.detail,
+		)
+	) {
+		return existing;
+	}
+	return [...existing, proposalStagingPendingRejection];
+}
+
 const summarySelect = {
 	id: true,
 	projectId: true,
@@ -36,6 +104,9 @@ const summarySelect = {
 	version: true,
 	source: true,
 	status: true,
+	proposalStatus: true,
+	reviewerUserId: true,
+	reviewedAt: true,
 	rejection: true,
 	settingsFrozen: true,
 	publishOnReady: true,
@@ -59,6 +130,7 @@ const summarySelect = {
 	readyAt: true,
 	publishedAt: true,
 	user: { select: { id: true, name: true } },
+	reviewer: { select: { id: true, name: true } },
 } satisfies Prisma.ProjectInstructionSnapshotSelect;
 
 // ---------------------------------------------------------------------------
@@ -223,7 +295,9 @@ export type DerivedInstructionRefusal =
 	| "path_collision"
 	| "empty_result"
 	| "too_many_files"
-	| "too_large";
+	| "too_large"
+	| "proposal_proposer_limit"
+	| "proposal_project_limit";
 
 export type CreateDerivedInstructionSnapshotResult =
 	| {
@@ -248,6 +322,7 @@ type CreateDerivedInstructionSnapshotInput = {
 	userId: string;
 	baseSnapshotId: string;
 	publishOnReady: boolean;
+	proposal: boolean;
 	changes: DerivedInstructionChange[];
 	/**
 	 * `SNAPSHOT_LIMITS.maxFiles` / `maxTotalBytes`, passed in rather than
@@ -315,6 +390,49 @@ function allocateAndCreateDerivedSnapshot(
 ): Promise<CreateDerivedInstructionSnapshotResult> {
 	return db.$transaction(
 		async (tx): Promise<CreateDerivedInstructionSnapshotResult> => {
+			if (input.proposal) {
+				// Serialize admission on the project row. Counting without this lock
+				// lets concurrent reader requests all observe spare capacity and then
+				// exceed both bounds together.
+				const locked = await tx.$queryRaw<Array<{ id: string }>>`
+					SELECT p."id"
+					FROM "project" p
+					WHERE p."id" = ${input.projectId}
+						AND p."organizationId" = ${input.organizationId}
+					FOR UPDATE OF p
+				`;
+				if (locked.length === 0) {
+					return { ok: false, reason: "base_not_found" };
+				}
+				const proposerCount = await tx.projectInstructionSnapshot.count(
+					{
+						where: {
+							projectId: input.projectId,
+							organizationId: input.organizationId,
+							userId: input.userId,
+							...activeProposalFilter(),
+						},
+					},
+				);
+				if (
+					proposerCount >=
+					MAX_ACTIVE_INSTRUCTION_PROPOSALS_PER_PROPOSER
+				) {
+					return { ok: false, reason: "proposal_proposer_limit" };
+				}
+				const projectCount = await tx.projectInstructionSnapshot.count({
+					where: {
+						projectId: input.projectId,
+						organizationId: input.organizationId,
+						...activeProposalFilter(),
+					},
+				});
+				if (
+					projectCount >= MAX_ACTIVE_INSTRUCTION_PROPOSALS_PER_PROJECT
+				) {
+					return { ok: false, reason: "proposal_project_limit" };
+				}
+			}
 			// Tenant-scoped on BOTH columns, like every other read here: the
 			// caller has already resolved the project's hosting organization,
 			// and a base row naming this project while carrying another
@@ -486,7 +604,13 @@ function allocateAndCreateDerivedSnapshot(
 					baseVersion: base.version,
 					settingsFrozen:
 						base.settingsFrozen as Prisma.InputJsonValue,
-					publishOnReady: input.publishOnReady,
+					// Proposal publication is review-only. Persist both halves of
+					// that invariant so a caller cannot create a PENDING proposal
+					// whose validation workflow automatically publishes it.
+					publishOnReady: input.proposal
+						? false
+						: input.publishOnReady,
+					proposalStatus: input.proposal ? "PENDING" : null,
 					excludedCount: base.excludedCount,
 					fileCount,
 				},
@@ -586,12 +710,110 @@ export function getInstructionSnapshot(
 export function listInstructionSnapshots(
 	projectId: string,
 	organizationId: string,
+	visibility: { viewerUserId: string; canReviewProposals: boolean },
 ) {
 	return db.projectInstructionSnapshot.findMany({
-		where: { projectId, organizationId },
+		where: {
+			projectId,
+			organizationId,
+			...(visibility.canReviewProposals
+				? {}
+				: {
+						OR: [
+							{ proposalStatus: null },
+							{ proposalStatus: "APPROVED" as const },
+							{
+								userId: visibility.viewerUserId,
+								proposalStatus: {
+									in: ["PENDING", "REJECTED"] as const,
+								},
+							},
+						],
+					}),
+		},
 		orderBy: { version: "desc" },
 		select: summarySelect,
 	});
+}
+
+/**
+ * Lists proposal metadata only. File rows and storage keys are deliberately
+ * absent: proposal bytes stay behind the reviewer-only get procedure, which
+ * will not load them until validation has reached READY.
+ */
+export async function listInstructionProposals(
+	projectId: string,
+	organizationId: string,
+	options: { limit: number; cursor?: string; proposerUserId?: string },
+) {
+	const [project, proposals] = await Promise.all([
+		db.project.findFirst({
+			where: { id: projectId, organizationId },
+			select: { publishedInstructionSnapshotId: true },
+		}),
+		db.projectInstructionSnapshot.findMany({
+			where: {
+				projectId,
+				organizationId,
+				proposalStatus: { not: null },
+				...(options.proposerUserId
+					? { userId: options.proposerUserId }
+					: {}),
+			},
+			orderBy: { version: "desc" },
+			cursor: options.cursor ? { id: options.cursor } : undefined,
+			skip: options.cursor ? 1 : undefined,
+			take: options.limit + 1,
+			select: summarySelect,
+		}),
+	]);
+	if (!project) {
+		return { items: [], nextCursor: null };
+	}
+	const hasMore = proposals.length > options.limit;
+	const page = hasMore ? proposals.slice(0, options.limit) : proposals;
+	const items = page.map((proposal) => ({
+		...proposal,
+		isStale:
+			proposal.proposalStatus === "PENDING" &&
+			proposal.baseSnapshotId !== project.publishedInstructionSnapshotId,
+	}));
+	return {
+		items,
+		nextCursor: hasMore ? (page.at(-1)?.id ?? null) : null,
+	};
+}
+
+/** Tenant-scoped proposal lookup. Returns metadata only, never file bytes. */
+export async function getInstructionProposal(
+	id: string,
+	projectId: string,
+	organizationId: string,
+) {
+	const [project, proposal] = await Promise.all([
+		db.project.findFirst({
+			where: { id: projectId, organizationId },
+			select: { publishedInstructionSnapshotId: true },
+		}),
+		db.projectInstructionSnapshot.findFirst({
+			where: {
+				id,
+				projectId,
+				organizationId,
+				proposalStatus: { not: null },
+			},
+			select: summarySelect,
+		}),
+	]);
+	if (!project || !proposal) {
+		return null;
+	}
+	return {
+		...proposal,
+		isStale:
+			proposal.proposalStatus === "PENDING" &&
+			proposal.baseSnapshotId !== project.publishedInstructionSnapshotId,
+	};
 }
 
 /** UNSCOPED by design: the project's published snapshot is a project-level pointer. */
@@ -1046,6 +1268,18 @@ export async function markInstructionSnapshotReady(input: {
 	digest: string;
 	readyAt: Date;
 }): Promise<{ changed: boolean }> {
+	const snapshot = await db.projectInstructionSnapshot.findFirst({
+		where: {
+			id: input.snapshotId,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			status: { notIn: VERDICT_STATUSES },
+		},
+		select: { proposalStatus: true },
+	});
+	if (!snapshot) {
+		return { changed: false };
+	}
 	const { count } = await db.projectInstructionSnapshot.updateMany({
 		where: {
 			id: input.snapshotId,
@@ -1059,10 +1293,41 @@ export async function markInstructionSnapshotReady(input: {
 			storedBytes: input.storedBytes,
 			digest: input.digest,
 			readyAt: input.readyAt,
-			rejection: Prisma.JsonNull,
+			rejection:
+				snapshot.proposalStatus === null
+					? Prisma.JsonNull
+					: ([proposalStagingPendingRejection] as unknown as Prisma.InputJsonValue),
 		},
 	});
 	return { changed: count > 0 };
+}
+
+/**
+ * Final, row-locked authorization immediately before proposal upload URLs are
+ * returned to a caller. A concurrent cancellation/rejection either wins the
+ * row lock first and makes this fail, or runs afterwards and must preserve the
+ * cleanup marker that reserves capacity through the URL's absolute expiry.
+ */
+export async function authorizeInstructionProposalUploadUrls(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+	createdAfter: Date;
+}): Promise<{ authorized: boolean }> {
+	return db.$transaction(async (tx) => {
+		const rows = await tx.$queryRaw<Array<{ id: string }>>`
+			SELECT s."id"
+			FROM "project_instruction_snapshot" s
+			WHERE s."id" = ${input.snapshotId}
+				AND s."projectId" = ${input.projectId}
+				AND s."organizationId" = ${input.organizationId}
+				AND s."status" = 'RECEIVING'
+				AND s."proposalStatus" = 'PENDING'::"ProjectInstructionProposalStatus"
+				AND s."createdAt" > ${input.createdAfter}
+			FOR UPDATE OF s
+		`;
+		return { authorized: rows.length === 1 };
+	});
 }
 
 /**
@@ -1093,6 +1358,22 @@ export async function markInstructionSnapshotRejected(input: {
 	audit: RecordAuditInput;
 }): Promise<{ changed: boolean }> {
 	return db.$transaction(async (tx) => {
+		const snapshot = await tx.projectInstructionSnapshot.findFirst({
+			where: {
+				id: input.snapshotId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				status: { notIn: VERDICT_STATUSES },
+			},
+			select: { proposalStatus: true },
+		});
+		if (!snapshot) {
+			return { changed: false };
+		}
+		const rejections =
+			snapshot.proposalStatus === null
+				? input.rejections
+				: rejectionsWithProposalCleanupMarker(input.rejections);
 		const { count } = await tx.projectInstructionSnapshot.updateMany({
 			where: {
 				id: input.snapshotId,
@@ -1102,12 +1383,25 @@ export async function markInstructionSnapshotRejected(input: {
 			},
 			data: {
 				status: "REJECTED",
-				rejection: input.rejections as unknown as Prisma.InputJsonValue,
+				rejection: rejections as unknown as Prisma.InputJsonValue,
 			},
 		});
 		if (count === 0) {
 			return { changed: false };
 		}
+		// A proposal rejected by the integrity/secret gate never becomes
+		// reviewable. Close its proposal state in the same transaction as the
+		// validation verdict and audit row so it releases its base and cannot
+		// sit in the review queue forever.
+		await tx.projectInstructionSnapshot.updateMany({
+			where: {
+				id: input.snapshotId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				proposalStatus: "PENDING",
+			},
+			data: { proposalStatus: "REJECTED" },
+		});
 		await recordAuditTx(tx, input.audit);
 		return { changed: true };
 	});
@@ -1295,6 +1589,356 @@ export async function failStaleValidatingInstructionSnapshot(input: {
 // Publish
 // ---------------------------------------------------------------------------
 
+export type InstructionProposalDecisionResult =
+	| { ok: true; changed: boolean; version: number }
+	| {
+			ok: false;
+			reason:
+				| "not_found"
+				| "not_ready"
+				| "in_progress"
+				| "stale"
+				| "already_decided";
+	  };
+
+/**
+ * Approves and publishes one validated proposal in the same transaction.
+ *
+ * The project row is locked before either decision or pointer mutation. The
+ * exact base id is then required in the pointer predicate, so version
+ * allocation order is irrelevant: an older-numbered proposal can publish if
+ * and only if its exact base is still current, while two proposals from the
+ * same base cannot both publish. The decision CAS happens before the pointer
+ * write, and any unexpected pointer miss throws so the transaction rolls the
+ * APPROVED marker back rather than committing an approved-but-unpublished
+ * proposal.
+ */
+export async function approveInstructionProposal(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+	reviewerUserId: string;
+	audit: RecordAuditInput;
+}): Promise<InstructionProposalDecisionResult> {
+	return db.$transaction(async (tx) => {
+		const locked = await tx.$queryRaw<Array<{ pointerId: string | null }>>`
+			SELECT p."publishedInstructionSnapshotId" AS "pointerId"
+			FROM "project" p
+			WHERE p."id" = ${input.projectId}
+				AND p."organizationId" = ${input.organizationId}
+			FOR UPDATE OF p
+		`;
+		const pointer = locked[0];
+		if (!pointer) {
+			return { ok: false as const, reason: "not_found" as const };
+		}
+		const proposal = await tx.projectInstructionSnapshot.findFirst({
+			where: {
+				id: input.snapshotId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				proposalStatus: { not: null },
+			},
+			select: {
+				id: true,
+				version: true,
+				status: true,
+				proposalStatus: true,
+				rejection: true,
+				baseSnapshotId: true,
+			},
+		});
+		if (!proposal) {
+			return { ok: false as const, reason: "not_found" as const };
+		}
+		if (proposal.proposalStatus === "APPROVED") {
+			return {
+				ok: true as const,
+				changed: false,
+				version: proposal.version,
+			};
+		}
+		if (proposal.proposalStatus !== "PENDING") {
+			return { ok: false as const, reason: "already_decided" as const };
+		}
+		if (proposal.status !== "READY") {
+			return { ok: false as const, reason: "not_ready" as const };
+		}
+		if (
+			proposal.baseSnapshotId === null ||
+			pointer.pointerId !== proposal.baseSnapshotId
+		) {
+			return { ok: false as const, reason: "stale" as const };
+		}
+
+		const reviewedAt = new Date();
+		const decided = await tx.projectInstructionSnapshot.updateMany({
+			where: {
+				id: proposal.id,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				status: "READY",
+				proposalStatus: "PENDING",
+			},
+			data: {
+				proposalStatus: "APPROVED",
+				reviewerUserId: input.reviewerUserId,
+				reviewedAt,
+				publishedAt: reviewedAt,
+			},
+		});
+		if (decided.count === 0) {
+			const current = await tx.projectInstructionSnapshot.findFirst({
+				where: {
+					id: proposal.id,
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+				},
+				select: { proposalStatus: true, status: true },
+			});
+			if (current?.proposalStatus === "APPROVED") {
+				return {
+					ok: true as const,
+					changed: false,
+					version: proposal.version,
+				};
+			}
+			if (
+				current?.proposalStatus === "PENDING" &&
+				!REJECTABLE_PROPOSAL_STATUSES.includes(current.status)
+			) {
+				return { ok: false as const, reason: "in_progress" as const };
+			}
+			return { ok: false as const, reason: "already_decided" as const };
+		}
+
+		const moved = await tx.project.updateMany({
+			where: {
+				id: input.projectId,
+				organizationId: input.organizationId,
+				publishedInstructionSnapshotId: proposal.baseSnapshotId,
+			},
+			data: { publishedInstructionSnapshotId: proposal.id },
+		});
+		if (moved.count !== 1) {
+			// The locked pointer made this unreachable unless a database
+			// invariant changed. Throwing is load-bearing: returning would commit
+			// the APPROVED marker without its publication.
+			throw new Error("Instruction proposal publication lost its base");
+		}
+		await recordAuditTx(tx, input.audit);
+		return {
+			ok: true as const,
+			changed: true,
+			version: proposal.version,
+		};
+	});
+}
+
+const REJECTABLE_PROPOSAL_STATUSES: InstructionSnapshotStatus[] = [
+	"RECEIVING",
+	"FAILED",
+	"READY",
+];
+
+/**
+ * Rejects a stable proposal without touching the published pointer.
+ * VALIDATING is intentionally excluded: its activity may still be reading
+ * inherited objects, so deciding it would release the base/capacity pin too
+ * early. RECEIVING and FAILED become terminal snapshot rows so finalize and
+ * retry cannot revive them; validated READY bytes remain READY for history.
+ */
+export async function rejectInstructionProposal(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+	reviewerUserId: string;
+	audit: RecordAuditInput;
+}): Promise<InstructionProposalDecisionResult> {
+	return db.$transaction(async (tx) => {
+		const proposal = await tx.projectInstructionSnapshot.findFirst({
+			where: {
+				id: input.snapshotId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				proposalStatus: { not: null },
+			},
+			select: {
+				id: true,
+				version: true,
+				status: true,
+				proposalStatus: true,
+				rejection: true,
+			},
+		});
+		if (!proposal) {
+			return { ok: false as const, reason: "not_found" as const };
+		}
+		if (proposal.proposalStatus === "REJECTED") {
+			return {
+				ok: true as const,
+				changed: false,
+				version: proposal.version,
+			};
+		}
+		if (proposal.proposalStatus !== "PENDING") {
+			return { ok: false as const, reason: "already_decided" as const };
+		}
+		if (!REJECTABLE_PROPOSAL_STATUSES.includes(proposal.status)) {
+			return { ok: false as const, reason: "in_progress" as const };
+		}
+		const decided = await tx.projectInstructionSnapshot.updateMany({
+			where: {
+				id: proposal.id,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				status: proposal.status,
+				proposalStatus: "PENDING",
+			},
+			data: {
+				status: proposal.status === "READY" ? "READY" : "REJECTED",
+				proposalStatus: "REJECTED",
+				...(proposal.status === "READY"
+					? {}
+					: {
+							rejection: rejectionsWithProposalCleanupMarker(
+								proposal.rejection,
+							) as unknown as Prisma.InputJsonValue,
+						}),
+				reviewerUserId: input.reviewerUserId,
+				reviewedAt: new Date(),
+			},
+		});
+		if (decided.count === 0) {
+			const current = await tx.projectInstructionSnapshot.findFirst({
+				where: {
+					id: proposal.id,
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+				},
+				select: { proposalStatus: true, status: true },
+			});
+			if (current?.proposalStatus === "REJECTED") {
+				return {
+					ok: true as const,
+					changed: false,
+					version: proposal.version,
+				};
+			}
+			if (
+				current?.proposalStatus === "PENDING" &&
+				!REJECTABLE_PROPOSAL_STATUSES.includes(current.status)
+			) {
+				return { ok: false as const, reason: "in_progress" as const };
+			}
+			return { ok: false as const, reason: "already_decided" as const };
+		}
+		await recordAuditTx(tx, input.audit);
+		return {
+			ok: true as const,
+			changed: true,
+			version: proposal.version,
+		};
+	});
+}
+
+/** Owner-only withdrawal with the same stable-state interlock as rejection. */
+export async function cancelInstructionProposal(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+	proposerUserId: string;
+	audit: RecordAuditInput;
+}): Promise<InstructionProposalDecisionResult> {
+	return db.$transaction(async (tx) => {
+		const proposal = await tx.projectInstructionSnapshot.findFirst({
+			where: {
+				id: input.snapshotId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				userId: input.proposerUserId,
+				proposalStatus: { not: null },
+			},
+			select: {
+				id: true,
+				version: true,
+				status: true,
+				proposalStatus: true,
+				rejection: true,
+			},
+		});
+		if (!proposal) {
+			return { ok: false as const, reason: "not_found" as const };
+		}
+		if (proposal.proposalStatus === "REJECTED") {
+			return {
+				ok: true as const,
+				changed: false,
+				version: proposal.version,
+			};
+		}
+		if (proposal.proposalStatus !== "PENDING") {
+			return { ok: false as const, reason: "already_decided" as const };
+		}
+		if (!REJECTABLE_PROPOSAL_STATUSES.includes(proposal.status)) {
+			return { ok: false as const, reason: "in_progress" as const };
+		}
+		const decided = await tx.projectInstructionSnapshot.updateMany({
+			where: {
+				id: proposal.id,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				userId: input.proposerUserId,
+				status: proposal.status,
+				proposalStatus: "PENDING",
+			},
+			data: {
+				status: proposal.status === "READY" ? "READY" : "REJECTED",
+				proposalStatus: "REJECTED",
+				...(proposal.status === "READY"
+					? {}
+					: {
+							rejection: rejectionsWithProposalCleanupMarker(
+								proposal.rejection,
+							) as unknown as Prisma.InputJsonValue,
+						}),
+				reviewedAt: new Date(),
+			},
+		});
+		if (decided.count === 0) {
+			const current = await tx.projectInstructionSnapshot.findFirst({
+				where: {
+					id: proposal.id,
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+					userId: input.proposerUserId,
+				},
+				select: { proposalStatus: true, status: true },
+			});
+			if (current?.proposalStatus === "REJECTED") {
+				return {
+					ok: true as const,
+					changed: false,
+					version: proposal.version,
+				};
+			}
+			if (
+				current?.proposalStatus === "PENDING" &&
+				!REJECTABLE_PROPOSAL_STATUSES.includes(current.status)
+			) {
+				return { ok: false as const, reason: "in_progress" as const };
+			}
+			return { ok: false as const, reason: "already_decided" as const };
+		}
+		await recordAuditTx(tx, input.audit);
+		return {
+			ok: true as const,
+			changed: true,
+			version: proposal.version,
+		};
+	});
+}
+
 type PublishInstructionSnapshotResult =
 	| {
 			published: true;
@@ -1309,6 +1953,7 @@ type PublishInstructionSnapshotResult =
 			reason:
 				| "not_found"
 				| "not_ready"
+				| "proposal_not_approved"
 				| "older_than_current"
 				| "base_moved";
 	  };
@@ -1485,6 +2130,7 @@ export async function publishInstructionSnapshot(input: {
 			select: {
 				id: true,
 				status: true,
+				proposalStatus: true,
 				version: true,
 				baseSnapshotId: true,
 				baseVersion: true,
@@ -1503,6 +2149,21 @@ export async function publishInstructionSnapshot(input: {
 				published: false as const,
 				changed: false as const,
 				reason: "not_ready" as const,
+			};
+		}
+		// A proposal has exactly one publication entrance: the approval
+		// transaction above. Pending proposals must never auto-publish, and a
+		// reviewer rejection must never be bypassed from History. An approved
+		// proposal remains a legitimate historical snapshot and may be chosen
+		// again by the manual rollback path.
+		if (
+			snapshot.proposalStatus === "PENDING" ||
+			snapshot.proposalStatus === "REJECTED"
+		) {
+			return {
+				published: false as const,
+				changed: false as const,
+				reason: "proposal_not_approved" as const,
 			};
 		}
 		// An AUTOMATIC publication is applied AT MOST ONCE per snapshot, and
@@ -1800,6 +2461,29 @@ export async function listPrunableInstructionSnapshots(
 				derivedSnapshots: {
 					none: { status: { in: DERIVING_STATUSES } },
 				},
+				AND: [
+					{
+						OR: [
+							{ proposalStatus: null },
+							{
+								proposalStatus: {
+									in: ["APPROVED", "REJECTED"],
+								},
+							},
+						],
+					},
+					{
+						derivedSnapshots: {
+							none: { proposalStatus: "PENDING" },
+						},
+					},
+					{ NOT: pendingCleanupFilter() },
+					{
+						derivedSnapshots: {
+							none: pendingCleanupFilter(),
+						},
+					},
+				],
 			},
 			orderBy: { version: "desc" },
 			skip: keep.ready,
@@ -1811,6 +2495,29 @@ export async function listPrunableInstructionSnapshots(
 				projectId,
 				organizationId,
 				status: { in: ["REJECTED", "FAILED"] },
+				AND: [
+					{
+						OR: [
+							{ proposalStatus: null },
+							{
+								proposalStatus: {
+									in: ["APPROVED", "REJECTED"],
+								},
+							},
+						],
+					},
+					{
+						derivedSnapshots: {
+							none: { proposalStatus: "PENDING" },
+						},
+					},
+					{ NOT: pendingCleanupFilter() },
+					{
+						derivedSnapshots: {
+							none: pendingCleanupFilter(),
+						},
+					},
+				],
 				// Fail-closed on this window too. A REJECTED/FAILED snapshot
 				// is never a legitimate base — `createDerivedInstructionSnapshot`
 				// refuses anything but READY — so this matches everything
@@ -1917,10 +2624,22 @@ export async function listProjectsWithPrunableInstructionSnapshots(
 			LEFT JOIN "project" p
 				ON p."publishedInstructionSnapshotId" = s."id"
 			WHERE s."status" = 'READY' AND p."id" IS NULL
+				AND s."proposalStatus" IS DISTINCT FROM 'PENDING'::"ProjectInstructionProposalStatus"
+				AND NOT COALESCE(s."rejection" @> '[{"path":"(proposal staging)","reason":"abandoned","detail":"staging pending"}]'::jsonb, FALSE)
 				AND NOT EXISTS (
 					SELECT 1 FROM "project_instruction_snapshot" d
 					WHERE d."baseSnapshotId" = s."id"
 						AND d."status" IN ('RECEIVING', 'VALIDATING', 'FAILED')
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM "project_instruction_snapshot" d
+					WHERE d."baseSnapshotId" = s."id"
+						AND d."proposalStatus" = 'PENDING'::"ProjectInstructionProposalStatus"
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM "project_instruction_snapshot" d
+					WHERE d."baseSnapshotId" = s."id"
+						AND d."rejection" @> '[{"path":"(proposal staging)","reason":"abandoned","detail":"staging pending"}]'::jsonb
 				)
 			GROUP BY s."projectId", s."organizationId"
 			HAVING count(*) > ${keep.ready}
@@ -1930,10 +2649,22 @@ export async function listProjectsWithPrunableInstructionSnapshots(
 			LEFT JOIN "project" p
 				ON p."publishedInstructionSnapshotId" = s."id"
 			WHERE s."status" IN ('REJECTED', 'FAILED') AND p."id" IS NULL
+				AND s."proposalStatus" IS DISTINCT FROM 'PENDING'::"ProjectInstructionProposalStatus"
+				AND NOT COALESCE(s."rejection" @> '[{"path":"(proposal staging)","reason":"abandoned","detail":"staging pending"}]'::jsonb, FALSE)
 				AND NOT EXISTS (
 					SELECT 1 FROM "project_instruction_snapshot" d
 					WHERE d."baseSnapshotId" = s."id"
 						AND d."status" IN ('RECEIVING', 'VALIDATING', 'FAILED')
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM "project_instruction_snapshot" d
+					WHERE d."baseSnapshotId" = s."id"
+						AND d."proposalStatus" = 'PENDING'::"ProjectInstructionProposalStatus"
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM "project_instruction_snapshot" d
+					WHERE d."baseSnapshotId" = s."id"
+						AND d."rejection" @> '[{"path":"(proposal staging)","reason":"abandoned","detail":"staging pending"}]'::jsonb
 				)
 			GROUP BY s."projectId", s."organizationId"
 			HAVING count(*) > ${keep.rejected}
@@ -2118,6 +2849,15 @@ export async function rejectAbandonedInstructionSnapshot(input: {
 		if (count === 0) {
 			return { changed: false };
 		}
+		await tx.projectInstructionSnapshot.updateMany({
+			where: {
+				id: input.snapshotId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				proposalStatus: "PENDING",
+			},
+			data: { proposalStatus: "REJECTED" },
+		});
 		// Read AFTER the write and inside the same transaction, purely to
 		// name the actor and the version in the audit row. The verdict is
 		// still the one conditional statement above; nothing here decides it.
@@ -2182,12 +2922,11 @@ export async function rejectAbandonedInstructionSnapshot(input: {
  * reason, `abandoned` included, renders its translated `reasonLabels` entry
  * and ignores `detail` entirely.
  */
-export const ABANDONED_STAGING_PENDING = "staging pending";
-export const ABANDONED_STAGING_CLEARED = "staging cleared";
-
 /**
- * Closed abandonments whose staging prefix has not been swept clean yet,
- * oldest first.
+ * Terminal proposal/abandonment rows whose staging prefix has not been swept
+ * clean yet, oldest first. READY proposals are included because their old
+ * signed PUTs remain usable until the immutable signing lease expires even
+ * after approval, rejection, or cancellation.
  *
  * `rejectAbandonedInstructionSnapshot` commits the verdict and its audit row
  * first and the objects are deleted second, which is the ordering the feature
@@ -2213,9 +2952,9 @@ export const ABANDONED_STAGING_CLEARED = "staging cleared";
  * that `take` still returns a full page of real work and a full page still
  * means a real backlog.
  *
- * Deleting under such a row's prefix races nothing: REJECTED is terminal —
- * `startInstructionSnapshotValidation` moves RECEIVING/FAILED only — so no
- * workflow can adopt those bytes afterwards.
+ * Deleting under such a row's prefix races nothing: rows are selected only
+ * after the absolute signing lease, and READY/REJECTED cannot move back to a
+ * state that consumes staging bytes.
  *
  * SYSTEM-WIDE with no tenant in scope, like the other sweep queries, and it
  * returns each row's own `projectId`/`organizationId` so the prefix the
@@ -2224,26 +2963,13 @@ export const ABANDONED_STAGING_CLEARED = "staging cleared";
 export async function listPendingAbandonedInstructionSnapshots(
 	limit: number,
 	excludeIds: string[],
+	createdBefore: Date,
 ): Promise<Array<{ id: string; projectId: string; organizationId: string }>> {
 	return db.projectInstructionSnapshot.findMany({
 		where: {
-			status: "REJECTED",
-			// The JSON path into the stored rejection array: element 0's
-			// `reason`. An ordinary refused upload's first rejection is a
-			// `secret`, `hash_mismatch` or `ignore_mismatch`, so it is not
-			// selected here and its staged copies are the retention prune's
-			// work, not this phase's.
-			rejection: { path: ["0", "reason"], equals: "abandoned" },
-			// The completion mark, in `AND` because one object literal cannot
-			// carry two filters on the same `rejection` field.
-			AND: [
-				{
-					rejection: {
-						path: ["0", "detail"],
-						equals: ABANDONED_STAGING_PENDING,
-					},
-				},
-			],
+			status: { in: ["READY", "REJECTED"] },
+			createdAt: { lt: createdBefore },
+			...pendingCleanupFilter(),
 			id: { notIn: excludeIds },
 		},
 		// The rotation, and the ONLY thing `updatedAt` decides here: the row
@@ -2289,34 +3015,44 @@ export async function markAbandonedInstructionSnapshotSwept(input: {
 	projectId: string;
 	organizationId: string;
 }): Promise<{ changed: boolean }> {
-	const rejections: InstructionRejection[] = [
-		{
-			path: "(upload)",
-			reason: "abandoned",
-			detail: ABANDONED_STAGING_CLEARED,
-		},
-	];
-	const { count } = await db.projectInstructionSnapshot.updateMany({
-		where: {
-			id: input.snapshotId,
-			projectId: input.projectId,
-			organizationId: input.organizationId,
-			status: "REJECTED",
-			rejection: { path: ["0", "reason"], equals: "abandoned" },
-			// The from-state, in `AND` because one object literal cannot
-			// carry two filters on the same `rejection` field.
-			AND: [
-				{
-					rejection: {
-						path: ["0", "detail"],
-						equals: ABANDONED_STAGING_PENDING,
-					},
+	return db.$transaction(async (tx) => {
+		const snapshot = await tx.projectInstructionSnapshot.findFirst({
+			where: {
+				id: input.snapshotId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				status: { in: ["READY", "REJECTED"] },
+				...pendingCleanupFilter(),
+			},
+			select: { rejection: true },
+		});
+		if (!snapshot || !Array.isArray(snapshot.rejection)) {
+			return { changed: false };
+		}
+		const rejections = (
+			snapshot.rejection as unknown as InstructionRejection[]
+		).map((rejection) =>
+			rejection.reason === "abandoned" &&
+			rejection.detail === ABANDONED_STAGING_PENDING
+				? { ...rejection, detail: ABANDONED_STAGING_CLEARED }
+				: rejection,
+		);
+		const { count } = await tx.projectInstructionSnapshot.updateMany({
+			where: {
+				id: input.snapshotId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				status: { in: ["READY", "REJECTED"] },
+				rejection: {
+					equals: snapshot.rejection as Prisma.InputJsonValue,
 				},
-			],
-		},
-		data: { rejection: rejections as unknown as Prisma.InputJsonValue },
+			},
+			data: {
+				rejection: rejections as unknown as Prisma.InputJsonValue,
+			},
+		});
+		return { changed: count > 0 };
 	});
-	return { changed: count > 0 };
 }
 
 /**
@@ -2355,18 +3091,8 @@ export async function rotateAbandonedInstructionSnapshot(input: {
 			id: input.snapshotId,
 			projectId: input.projectId,
 			organizationId: input.organizationId,
-			status: "REJECTED",
-			rejection: { path: ["0", "reason"], equals: "abandoned" },
-			// In `AND` because one object literal cannot carry two filters on
-			// the same `rejection` field.
-			AND: [
-				{
-					rejection: {
-						path: ["0", "detail"],
-						equals: ABANDONED_STAGING_PENDING,
-					},
-				},
-			],
+			status: { in: ["READY", "REJECTED"] },
+			...pendingCleanupFilter(),
 		},
 		data: { updatedAt: new Date() },
 	});
@@ -2415,7 +3141,11 @@ export async function countInFlightDerivedSnapshots(
 			baseSnapshotId,
 			projectId,
 			organizationId,
-			status: { in: DERIVING_STATUSES },
+			OR: [
+				{ status: { in: DERIVING_STATUSES } },
+				{ proposalStatus: "PENDING" },
+				pendingCleanupFilter(),
+			],
 		},
 	});
 }
@@ -2499,6 +3229,29 @@ export async function deleteInstructionSnapshot(
 					derivedSnapshots: {
 						none: { status: { in: DERIVING_STATUSES } },
 					},
+					AND: [
+						{
+							OR: [
+								{ proposalStatus: null },
+								{
+									proposalStatus: {
+										in: ["APPROVED", "REJECTED"],
+									},
+								},
+							],
+						},
+						{
+							derivedSnapshots: {
+								none: { proposalStatus: "PENDING" },
+							},
+						},
+						{ NOT: pendingCleanupFilter() },
+						{
+							derivedSnapshots: {
+								none: pendingCleanupFilter(),
+							},
+						},
+					],
 				},
 			});
 			if (count === 0) {
@@ -2523,7 +3276,11 @@ export async function deleteInstructionSnapshot(
 								baseSnapshotId: id,
 								projectId,
 								organizationId,
-								status: { in: DERIVING_STATUSES },
+								OR: [
+									{ status: { in: DERIVING_STATUSES } },
+									{ proposalStatus: "PENDING" },
+									pendingCleanupFilter(),
+								],
 							},
 						})
 					: 0;

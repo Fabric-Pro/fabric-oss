@@ -249,6 +249,37 @@ describe("InstructionFileView", () => {
 	 * hands over nothing at all.
 	 */
 	describe("editing", () => {
+		it("lets a reader submit an edited file as a proposal without requesting direct publication", async () => {
+			const user = userEvent.setup();
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canPropose
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+
+			await user.click(
+				await screen.findByRole("button", { name: "Edit" }),
+			);
+			await user.clear(screen.getByRole("textbox"));
+			await user.type(screen.getByRole("textbox"), "# Proposed");
+			await user.click(
+				screen.getByRole("button", { name: "Submit proposal" }),
+			);
+
+			await waitFor(() =>
+				expect(editMocks.editInstructionSnapshot).toHaveBeenCalledWith(
+					expect.objectContaining({
+						proposal: true,
+						publishOnReady: false,
+					}),
+				),
+			);
+		});
+
 		it("offers no Edit or Delete without edit rights", async () => {
 			render(
 				<InstructionFileView
@@ -389,6 +420,42 @@ describe("InstructionFileView", () => {
 						],
 					}),
 				),
+			);
+			confirm.mockRestore();
+		});
+
+		it("submits a reader deletion as a proposal", async () => {
+			const user = userEvent.setup();
+			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canPropose
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Delete file" }),
+			);
+
+			await waitFor(() =>
+				expect(editMocks.editInstructionSnapshot).toHaveBeenCalledWith(
+					expect.objectContaining({
+						proposal: true,
+						publishOnReady: false,
+						edits: [
+							{
+								op: "delete",
+								path: ".claude/skills/example-qa-test/SKILL.md",
+							},
+						],
+					}),
+				),
+			);
+			expect(confirm).toHaveBeenCalledWith(
+				"Submit a deletion proposal for .claude/skills/example-qa-test/SKILL.md?",
 			);
 			confirm.mockRestore();
 		});

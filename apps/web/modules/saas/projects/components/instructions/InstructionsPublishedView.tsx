@@ -10,6 +10,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import {
 	CheckIcon,
+	ClipboardCheckIcon,
 	DownloadIcon,
 	FilePlusIcon,
 	HistoryIcon,
@@ -23,6 +24,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { AddInstructionFileDialog } from "./AddInstructionFileDialog";
 import { InstructionFileView } from "./InstructionFileView";
+import { InstructionProposals } from "./InstructionProposals";
 import { InstructionsHistory } from "./InstructionsHistory";
 import { InstructionsRejectedBanner } from "./InstructionsRejectedBanner";
 import { InstructionsSettingsDialog } from "./InstructionsSettingsDialog";
@@ -66,6 +68,8 @@ export type InstructionsSnapshot = {
 	 * — which is what the superseded line below turns on.
 	 */
 	publishedAt?: string | Date | null;
+	/** Proposal lifecycle is rendered in the proposal review dialog. */
+	proposalStatus?: "PENDING" | "APPROVED" | "REJECTED" | null;
 };
 
 function sourceLabel(source: string, t: (key: string) => string): string {
@@ -99,6 +103,7 @@ export function InstructionsPublishedView({
 	onReplaceClick,
 	onChanged,
 	canEdit = false,
+	canReview = false,
 	repositoryBacked = false,
 	publishedUnknown = false,
 }: {
@@ -121,6 +126,8 @@ export function InstructionsPublishedView({
 	 * `derive` re-checks `INSTRUCTION_CREATE` server-side on every save.
 	 */
 	canEdit?: boolean;
+	/** Whether this viewer may approve or reject file proposals. */
+	canReview?: boolean;
 	/**
 	 * The project's instructions come from its repository (spec §6.12), so
 	 * they are changed in git and refreshed by sync. The server refuses an
@@ -133,6 +140,7 @@ export function InstructionsPublishedView({
 	const [selected, setSelected] = useState<string | null>(null);
 	const [addFileOpen, setAddFileOpen] = useState(false);
 	const [historyOpen, setHistoryOpen] = useState(false);
+	const [proposalsOpen, setProposalsOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [connectOpen, setConnectOpen] = useState(false);
 	// Mirrors ProjectReadinessPanel: minting must fail closed. With no
@@ -148,9 +156,17 @@ export function InstructionsPublishedView({
 	// Editing is offered only on a published version: a derivation needs a
 	// READY base with promoted objects to inherit, and the tab only ever shows
 	// the published one's tree.
-	const editable = canEdit && !repositoryBacked && Boolean(published);
+	const canMutateDirect = canEdit && !repositoryBacked;
+	const editable = canMutateDirect && Boolean(published);
+	const canReviewProposals = Boolean(canReview) && !repositoryBacked;
+	const canPropose = !repositoryBacked && Boolean(published);
+	const canBrowseProposals = canReviewProposals || canPropose;
 
-	const newest = snapshots[0] ?? null;
+	// Proposal lifecycle uses its own review UI. Feeding a proposal into the
+	// direct-upload banners would call it "your upload" and could offer the
+	// direct retry path, both of which misstate the approval workflow.
+	const newest =
+		snapshots.find((snapshot) => snapshot.proposalStatus == null) ?? null;
 	const newerThanPublished =
 		!!newest && (!published || newest.version > published.version);
 	const rejected =
@@ -339,6 +355,22 @@ export function InstructionsPublishedView({
 					</p>
 				</div>
 				<div className="flex shrink-0 gap-2">
+					{canBrowseProposals ? (
+						<Button
+							variant="outline"
+							onClick={() => setProposalsOpen(true)}
+						>
+							<ClipboardCheckIcon
+								className="size-4"
+								aria-hidden="true"
+							/>
+							{t(
+								canReviewProposals
+									? "reviewProposalsButton"
+									: "proposalsButton",
+							)}
+						</Button>
+					) : null}
 					<Button
 						variant="outline"
 						data-onboarding-target="coding-instructions-history"
@@ -386,7 +418,7 @@ export function InstructionsPublishedView({
 							{t("connectButton")}
 						</Button>
 					) : null}
-					{editable ? (
+					{editable || canPropose ? (
 						<Button
 							variant="outline"
 							onClick={() => setAddFileOpen(true)}
@@ -395,13 +427,17 @@ export function InstructionsPublishedView({
 								className="size-4"
 								aria-hidden="true"
 							/>
-							{t("addFileButton")}
+							{editable
+								? t("addFileButton")
+								: t("proposeFileButton")}
 						</Button>
 					) : null}
-					<Button onClick={onReplaceClick}>
-						<UploadIcon className="size-4" aria-hidden="true" />
-						{published ? t("replaceButton") : t("uploadButton")}
-					</Button>
+					{editable ? (
+						<Button onClick={onReplaceClick}>
+							<UploadIcon className="size-4" aria-hidden="true" />
+							{published ? t("replaceButton") : t("uploadButton")}
+						</Button>
+					) : null}
 				</div>
 			</div>
 			{rejectionRows ? (
@@ -421,23 +457,25 @@ export function InstructionsPublishedView({
 					<p className="text-muted-foreground text-sm">
 						{t("failedBody", { version: failed.version })}
 					</p>
-					<div className="flex gap-2">
-						<Button
-							variant="outline"
-							disabled={retry.isPending}
-							onClick={() =>
-								retry.mutate({
-									projectId,
-									snapshotId: failed.id,
-								})
-							}
-						>
-							{t("tryAgainButton")}
-						</Button>
-						<Button variant="ghost" onClick={onReplaceClick}>
-							{t("uploadAgainButton")}
-						</Button>
-					</div>
+					{canMutateDirect ? (
+						<div className="flex gap-2">
+							<Button
+								variant="outline"
+								disabled={retry.isPending}
+								onClick={() =>
+									retry.mutate({
+										projectId,
+										snapshotId: failed.id,
+									})
+								}
+							>
+								{t("tryAgainButton")}
+							</Button>
+							<Button variant="ghost" onClick={onReplaceClick}>
+								{t("uploadAgainButton")}
+							</Button>
+						</div>
+					) : null}
 				</div>
 			) : null}
 			{superseded && published ? (
@@ -488,6 +526,7 @@ export function InstructionsPublishedView({
 								snapshotId={published.id}
 								path={selectedFile}
 								canEdit={editable}
+								canPropose={canPropose}
 								onChanged={onChanged}
 							/>
 						) : fileListLoaded ? (
@@ -511,13 +550,15 @@ export function InstructionsPublishedView({
 					</div>
 				</div>
 			) : null}
-			{editable && published ? (
+			{(editable || canPropose) && published ? (
 				<AddInstructionFileDialog
 					projectId={projectId}
 					baseSnapshotId={published.id}
 					open={addFileOpen}
 					onOpenChange={setAddFileOpen}
 					folder={selectedFolder}
+					proposalOnly={!editable}
+					canPropose={editable}
 					onAdded={onChanged}
 				/>
 			) : null}
@@ -535,8 +576,18 @@ export function InstructionsPublishedView({
 				// as a forward publish.
 				publishedVersion={published?.version ?? null}
 				publishedUnknown={publishedUnknown}
+				canMutate={canMutateDirect}
 				onChanged={onChanged}
 			/>
+			{canBrowseProposals ? (
+				<InstructionProposals
+					projectId={projectId}
+					open={proposalsOpen}
+					onOpenChange={setProposalsOpen}
+					onChanged={onChanged}
+					canReview={canReviewProposals}
+				/>
+			) : null}
 			<InstructionsSettingsDialog
 				projectId={projectId}
 				open={settingsOpen}

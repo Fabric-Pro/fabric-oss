@@ -25,6 +25,7 @@ import {
 } from "../../../../orpc/procedures";
 import { fileTypingFor } from "./file-typing";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import { assertInstructionDeriveAccess } from "./proposal-authorization";
 
 /**
  * The most paths one derivation may touch.
@@ -125,11 +126,24 @@ function refusal(
 			return new ORPCError("BAD_REQUEST", {
 				message: `Too large (${detail} bytes > ${SNAPSHOT_LIMITS.maxTotalBytes})`,
 			});
+		case "proposal_proposer_limit":
+			return new ORPCError("CONFLICT", {
+				message:
+					"You already have five active coding-instructions proposals for this project. Cancel one or wait for a decision before submitting another.",
+				data: { reason: "PROPOSAL_PROPOSER_LIMIT" },
+			});
+		case "proposal_project_limit":
+			return new ORPCError("CONFLICT", {
+				message:
+					"This project already has 25 active coding-instructions proposals. Try again after one is decided or canceled.",
+				data: { reason: "PROPOSAL_PROJECT_LIMIT" },
+			});
 	}
 }
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_CREATE).
+ * AUTHORIZATION: tenantProtectedProcedure plus a dynamic project permission:
+ * INSTRUCTION_READ for a proposal, INSTRUCTION_CREATE for a direct version.
  *
  * Registers a snapshot DERIVED from a READY one: a small set of per-path
  * changes (`put` / `delete`) against a base whose every other file is
@@ -166,7 +180,9 @@ function refusal(
  * re-freezes them.
  */
 export const deriveSnapshotProcedure = tenantProtectedProcedure
-	.use(requireProjectPermission(Permissions.INSTRUCTION_CREATE))
+	// Every proposal author needs READ. Direct derives retain CREATE through
+	// the dynamic check in the handler below.
+	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "POST",
 		path: "/projects/:projectId/instructions/snapshots/:baseSnapshotId/derive",
@@ -181,6 +197,7 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 			baseSnapshotId: z.string(),
 			publishOnReady: z.boolean().default(true),
+			proposal: z.boolean().default(false),
 			changes: z
 				.array(
 					z.discriminatedUnion("op", [
@@ -201,6 +218,11 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
+		await assertInstructionDeriveAccess({
+			projectId: input.projectId,
+			userId: context.user.id,
+			proposal: input.proposal,
+		});
 		const organizationId = await requireHostingOrganizationId(
 			input.projectId,
 			context.user.id,
@@ -246,7 +268,7 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 		// therefore direction-neutral — the replacement is not necessarily
 		// newer, and History's rollback makes "someone published a newer
 		// version" a plain falsehood.
-		if (input.publishOnReady) {
+		if (input.publishOnReady || input.proposal) {
 			const published = await getPublishedInstructionSnapshot(
 				input.projectId,
 			);
@@ -342,7 +364,8 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 			organizationId,
 			userId: context.user.id,
 			baseSnapshotId: base.id,
-			publishOnReady: input.publishOnReady,
+			publishOnReady: input.proposal ? false : input.publishOnReady,
+			proposal: input.proposal,
 			changes,
 			limits: {
 				maxFiles: SNAPSHOT_LIMITS.maxFiles,
@@ -369,7 +392,7 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 				name: `v${created.version}`,
 			},
 			metadata: {
-				mode: "derived",
+				mode: input.proposal ? "proposal" : "derived",
 				baseSnapshotId: base.id,
 				baseVersion: base.version,
 				putCount,
@@ -385,6 +408,7 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 			baseVersion: base.version,
 			fileCount: created.fileCount,
 			inheritedCount: created.inheritedCount,
+			proposalStatus: input.proposal ? ("PENDING" as const) : null,
 			// Exactly the rows the client has to PUT. It must not ask
 			// `listFiles` instead: that returns the inherited rows too, and
 			// `createUploadUrls` refuses every one of them.

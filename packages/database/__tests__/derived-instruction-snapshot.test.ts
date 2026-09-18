@@ -37,6 +37,8 @@ const mocks = vi.hoisted(() => ({
 		createMany: vi.fn(),
 		findMany: vi.fn(),
 	},
+	project: {},
+	$queryRaw: vi.fn(),
 	$transaction: vi.fn(),
 }));
 
@@ -92,6 +94,7 @@ function input(
 		userId: "user_1",
 		baseSnapshotId: BASE,
 		publishOnReady: true,
+		proposal: false,
 		changes,
 		limits: { maxFiles: 5000, maxTotalBytes: 52_428_800 },
 		baseKeyPrefix: BASE_PREFIX,
@@ -125,8 +128,13 @@ beforeEach(() => {
 			cb({
 				projectInstructionSnapshot: mocks.snapshot,
 				projectInstructionFile: mocks.file,
+				project: mocks.project,
+				$queryRaw: mocks.$queryRaw,
 			}),
 	);
+	mocks.$queryRaw.mockReset();
+	mocks.$queryRaw.mockResolvedValue([{ id: PROJECT }]);
+	mocks.snapshot.count.mockResolvedValue(0);
 	// The base, then the version-allocation read. `findFirst` is called twice
 	// per attempt, in that order.
 	mocks.snapshot.findFirst
@@ -241,6 +249,63 @@ describe("createDerivedInstructionSnapshot", () => {
 				}),
 			}),
 		);
+	});
+
+	it("persists proposals as pending with automatic publication disabled", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+		await createDerivedInstructionSnapshot(
+			input([put("README.md")], { proposal: true, publishOnReady: true }),
+		);
+
+		expect(mocks.snapshot.create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					proposalStatus: "PENDING",
+					publishOnReady: false,
+				}),
+			}),
+		);
+	});
+
+	it("locks admission and refuses a sixth active proposal from one proposer", async () => {
+		mocks.snapshot.count.mockResolvedValueOnce(5);
+
+		const result = await createDerivedInstructionSnapshot(
+			input([put("README.md")], { proposal: true }),
+		);
+
+		expect(result).toEqual({
+			ok: false,
+			reason: "proposal_proposer_limit",
+		});
+		expect(mocks.$queryRaw).toHaveBeenCalledOnce();
+		expect(mocks.snapshot.create).not.toHaveBeenCalled();
+	});
+
+	it("counts all pending proposals in the project under the same lock", async () => {
+		mocks.snapshot.count.mockResolvedValueOnce(2).mockResolvedValueOnce(25);
+
+		const result = await createDerivedInstructionSnapshot(
+			input([put("README.md")], { proposal: true }),
+		);
+
+		expect(result).toEqual({
+			ok: false,
+			reason: "proposal_project_limit",
+		});
+		expect(mocks.snapshot.count).toHaveBeenNthCalledWith(2, {
+			where: expect.objectContaining({
+				projectId: PROJECT,
+				organizationId: ORG,
+				OR: expect.arrayContaining([
+					{ proposalStatus: "PENDING" },
+					expect.objectContaining({
+						proposalStatus: { not: null },
+					}),
+				]),
+			}),
+		});
 	});
 
 	it("drops a deleted path from the new file set", async () => {
@@ -488,7 +553,11 @@ describe("countInFlightDerivedSnapshots", () => {
 				baseSnapshotId: BASE,
 				projectId: PROJECT,
 				organizationId: ORG,
-				status: { in: ["RECEIVING", "VALIDATING", "FAILED"] },
+				OR: [
+					{ status: { in: ["RECEIVING", "VALIDATING", "FAILED"] } },
+					{ proposalStatus: "PENDING" },
+					expect.objectContaining({ OR: expect.any(Array) }),
+				],
 			},
 		});
 	});

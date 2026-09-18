@@ -67,6 +67,12 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 						"Only a snapshot that passed checks can be published",
 				});
 			}
+			if (result.reason === "proposal_not_approved") {
+				throw new ORPCError("FORBIDDEN", {
+					message:
+						"A file proposal can only be published through proposal approval",
+				});
+			}
 			// Kept as a fail-closed default, not as a case this handler can
 			// produce. `base_moved` is only ever derived under
 			// `requireBaseUnmoved`, which this call does not pass;

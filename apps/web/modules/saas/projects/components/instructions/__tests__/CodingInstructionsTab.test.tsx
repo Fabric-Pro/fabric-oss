@@ -72,6 +72,14 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						sourceOfTruth: null,
 					})),
 				},
+				proposals: {
+					list: {
+						queryOptions: queryOptionsStub(
+							"proposals-list",
+							async () => [],
+						),
+					},
+				},
 			},
 		},
 	},

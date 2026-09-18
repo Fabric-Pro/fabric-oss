@@ -321,7 +321,8 @@ model User {
   diagrams Diagram[]
 
   // Coding Instructions
-  instructionSnapshots ProjectInstructionSnapshot[]
+  instructionSnapshots         ProjectInstructionSnapshot[] @relation("InstructionSnapshotCreator")
+  reviewedInstructionSnapshots ProjectInstructionSnapshot[] @relation("InstructionSnapshotReviewer")
   instructionFiles     ProjectInstructionFile[]
 
   // Meeting transcript sync relations
@@ -16606,6 +16607,12 @@ enum ProjectInstructionSnapshotStatus {
   FAILED
 }
 
+enum ProjectInstructionProposalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum ProjectInstructionFileKind {
   SKILL
   AGENT
@@ -16633,6 +16640,13 @@ model ProjectInstructionSnapshot {
   version Int
   source  ProjectInstructionSource
   status  ProjectInstructionSnapshotStatus @default(RECEIVING)
+
+  /// Null for the existing direct-edit/upload flow. A non-null value makes
+  /// this snapshot a file proposal whose publication is controlled only by
+  /// the proposal review transaction.
+  proposalStatus ProjectInstructionProposalStatus?
+  reviewerUserId String?
+  reviewedAt     DateTime?
 
   /// Set with status REJECTED: [{ path, reason, detail?, line? }]
   rejection      Json?
@@ -16671,7 +16685,8 @@ model ProjectInstructionSnapshot {
 
   project      Project      @relation("ProjectInstructionSnapshots", fields: [projectId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User         @relation("InstructionSnapshotCreator", fields: [userId], references: [id], onDelete: Cascade)
+  reviewer     User?        @relation("InstructionSnapshotReviewer", fields: [reviewerUserId], references: [id], onDelete: SetNull)
   publishedFor Project?     @relation("PublishedInstructionSnapshot")
   files        ProjectInstructionFile[]
 
@@ -16683,8 +16698,10 @@ model ProjectInstructionSnapshot {
   @@unique([id, projectId])
   @@unique([projectId, version])
   @@index([projectId, status])
+  @@index([projectId, proposalStatus])
   @@index([organizationId])
   @@index([userId])
+  @@index([reviewerUserId])
   /// Answers "is anything still deriving from this snapshot?" — the question
   /// the delete procedure and the retention prune ask before they remove a
   /// snapshot whose objects an in-flight derived snapshot still reads.
