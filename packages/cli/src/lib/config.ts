@@ -95,21 +95,41 @@ export function getOutputFormat(): "table" | "json" | "yaml" | "csv" {
 	return getConfig().defaultFormat;
 }
 
-export function saveApiKey(apiKey: string, profile = "default"): void {
-	const store = getStore();
-	const profiles = store.get("profiles") as CliConfig["profiles"];
-	store.set("profiles", {
-		...profiles,
-		[profile]: { ...(profiles[profile] ?? {}), apiKey },
-	});
-	store.set("activeProfile", profile);
+export interface SaveApiKeyOptions {
+	/** Persisted only when a login explicitly selected a deployment URL. */
+	baseUrl?: string;
 }
 
-export function clearApiKey(profile = "default"): void {
+/**
+ * Save credentials into the active profile in one profile update.
+ *
+ * `FABRIC_BASE_URL` remains an execution-time override: callers only pass a
+ * base URL here when the person explicitly chose it with `--base-url`.
+ */
+export function saveApiKey(
+	apiKey: string,
+	{ baseUrl }: SaveApiKeyOptions = {},
+): void {
 	const store = getStore();
+	const profile = store.get("activeProfile") as string;
 	const profiles = store.get("profiles") as CliConfig["profiles"];
-	const { apiKey: _, ...rest } = profiles[profile] ?? {};
-	store.set("profiles", { ...profiles, [profile]: rest });
+	const current = profiles[profile] ?? {};
+	store.set("profiles", {
+		...profiles,
+		[profile]: {
+			...current,
+			apiKey,
+			...(baseUrl === undefined ? {} : { baseUrl }),
+		},
+	});
+}
+
+export function clearApiKey(profile?: string): void {
+	const store = getStore();
+	const active = profile ?? (store.get("activeProfile") as string);
+	const profiles = store.get("profiles") as CliConfig["profiles"];
+	const { apiKey: _, ...rest } = profiles[active] ?? {};
+	store.set("profiles", { ...profiles, [active]: rest });
 }
 
 export function saveDefaultContext(ctx: ContextConfig, profile?: string): void {

@@ -151,14 +151,18 @@ const ROUTES_INTRO =
 const LOCAL_SYNC_LABEL = "Recommended: keep the files in your checkout";
 
 const LOCAL_SYNC_INTRO =
-	"Run these once in the checkout. The first signs the CLI in with this key; the CLI keeps it in its own config, never in the repository, though like any command the line may remain in your shell history. The second copies whatever is published into the checkout and installs a session-start check for Claude Code that reports later changes (apply them with the sync command the check prints). If nothing is published yet, the check reports the first version when it arrives. Claude Code reads the files directly, so the sentence further down is not needed.";
+	"Run these once in the checkout. The first signs the CLI in with this key and this deployment URL; the CLI keeps both in its own profile, never in the repository, though like any command the line may remain in your shell history. FABRIC_BASE_URL overrides the profile URL when it is set. The second copies whatever is published into the checkout and installs a session-start check for Claude Code that reports later changes (apply them with the sync command the check prints). If nothing is published yet, the check reports the first version when it arrives. Claude Code reads the files directly, so the sentence further down is not needed.";
 
 /** The MCP route's heading when it follows the checkout route. */
 const MCP_ROUTE_LABEL = "Or read them live over MCP";
 
-function buildLocalSyncCommands(projectId: string, rawKey: string): string {
+function buildLocalSyncCommands(
+	projectId: string,
+	rawKey: string,
+	baseUrl: string,
+): string {
 	return [
-		`fabric auth login --key ${rawKey}`,
+		`fabric auth login --key ${rawKey} --base-url ${baseUrl}`,
 		`fabric instructions init --project ${projectId} --tool claude-code`,
 	].join("\n");
 }
@@ -480,7 +484,7 @@ export function ConnectCliDialog({
 		localSyncAvailable &&
 		projectId &&
 		rawKey
-			? buildLocalSyncCommands(projectId, rawKey)
+			? buildLocalSyncCommands(projectId, rawKey, window.location.origin)
 			: null;
 	const cliFirst = localSyncCommands !== null;
 	const issueError = createKeyMutation.error;

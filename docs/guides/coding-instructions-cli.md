@@ -74,8 +74,11 @@ an explicit flag replaces a default.
 
 ### `fabric instructions init --project <id> --tool claude-code [--dest <dir>] [--apply]`
 
-Writes a `SessionStart` hook into `<dest>/.claude/settings.local.json` — never
-`settings.json` — and then takes the first copy. The hook runs
+For a published snapshot, takes the first copy before writing a `SessionStart`
+hook into `<dest>/.claude/settings.local.json` — never `settings.json`. A
+failed first sync leaves no new or updated hook behind. If nothing is
+published yet, it installs the hook so it can report the first version when it
+arrives. The hook runs
 `fabric instructions check` by default, so rules are not swapped under a
 developer mid-task; `--apply` makes it run `sync` instead. Running `init`
 again replaces its own entry rather than adding a second one.

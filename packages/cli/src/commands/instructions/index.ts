@@ -4,7 +4,7 @@
  *   fabric instructions check --project <id>   Is the local copy current?
  *   fabric instructions sync  --project <id>   Make it current.
  *   fabric instructions init  --project <id> --tool claude-code
- *                                             Write the session hook, then sync.
+ *                                             Take the first copy, then write the session hook.
  *
  * The first file-writing commands in this CLI. Everything that touches the
  * filesystem lives in `lib/instructions/` as small testable modules; this
@@ -674,7 +674,7 @@ function emptyOutcome(
 }
 
 async function syncOnce(
-	opts: CommonOptions & { dryRun?: boolean },
+	opts: CommonOptions & { dryRun?: boolean; rejectRepository?: boolean },
 ): Promise<SyncOutcome> {
 	// Canonical from here on: every write resolves against this, so a
 	// symlinked `--dest` (or `/tmp` on macOS) is decided once rather than at
@@ -685,9 +685,11 @@ async function syncOnce(
 	const lock = await readLockForProject(root, opts.project);
 	const client = instructionsClient(opts, SYNC_TIMEOUT_MS);
 	let published = await fetchPublished(client, opts, lock?.digest);
+	assertInitSyncMayAct(opts, published);
 
-	// The repository-source refusal lives in `fetchPublished`, so the drift
-	// refetch below inherits it rather than trusting the first answer.
+	// Hook mode rejects repository-backed instructions in `fetchPublished`;
+	// init's first sync performs the same check above so its drift refetch does
+	// not trust only the first response.
 
 	if (!published.published || !published.snapshot) {
 		// A real failure for a person who asked for a copy; the `--hook`
@@ -720,6 +722,7 @@ async function syncOnce(
 		// manifest. Ask again without a base digest: the plan needs the whole
 		// published list to put the tree back.
 		published = await fetchPublished(client, opts);
+		assertInitSyncMayAct(opts, published);
 		if (!published.published || !published.snapshot) {
 			throw new CliFailure(
 				"This project has no published coding instructions yet.",
@@ -808,6 +811,23 @@ async function syncOnce(
 	await writeLock(root, lockToWrite);
 
 	return outcome;
+}
+
+/**
+ * `init` uses a manual sync for its first copy, but it must still reject a
+ * project that switches to repository-backed instructions during that sync.
+ * Keeping this distinct from hook mode preserves manual `sync` behavior.
+ */
+function assertInitSyncMayAct(
+	opts: { rejectRepository?: boolean },
+	published: PublishedInstructions,
+): void {
+	if (opts.rejectRepository && published.sourceOfTruth === "REPOSITORY") {
+		throw new CliFailure(
+			"This project's coding instructions come from its repository, so they arrive with `git pull`. A session hook would fight it; nothing was written.",
+			7,
+		);
+	}
 }
 
 function fillPlanPaths(outcome: SyncOutcome, plan: SyncPlan): void {
@@ -912,6 +932,14 @@ async function runInit(
 		);
 	}
 
+	const outcome = published.published
+		? // A second manifest call, deliberately: the one above answered "may
+			// a hook be installed for this project at all", and this one is the
+			// sync's own. Do it before the hook write: a failed first copy must
+			// not leave a new or updated hook behind.
+			await syncOnce({ ...opts, hook: false, rejectRepository: true })
+		: null;
+
 	const command = buildHookCommand(
 		opts.project,
 		Boolean(opts.apply),
@@ -922,14 +950,6 @@ async function runInit(
 		projectId: opts.project,
 		command,
 	});
-
-	const outcome = published.published
-		? // A second manifest call, deliberately: the one above answered "may
-			// a hook be installed for this project at all", and this one is the
-			// sync's own — it carries the lock's digest and is the call the
-			// hook will make from now on.
-			await syncOnce({ ...opts, hook: false })
-		: null;
 
 	if (format === "json") {
 		printOutput(

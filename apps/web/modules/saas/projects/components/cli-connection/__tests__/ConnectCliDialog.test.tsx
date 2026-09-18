@@ -511,10 +511,11 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		const command = await screen.findByTestId(
 			"connect-cli-local-sync-command",
 		);
-		// Sign-in with this key, then the one-time setup: the CLI stores
-		// the key in its own config, and the hook it installs never names
-		// it, so this block is the one place the key has to be typed.
-		expect(command).toHaveTextContent(`fabric auth login --key ${RAW_KEY}`);
+		// Sign-in with this key and this deployment: the CLI stores both in
+		// its own config, and the hook it installs never names either.
+		expect(command).toHaveTextContent(
+			`fabric auth login --key ${RAW_KEY} --base-url ${window.location.origin}`,
+		);
 		expect(command).toHaveTextContent(
 			`fabric instructions init --project ${PROJECT_ID} --tool claude-code`,
 		);
@@ -533,6 +534,13 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		expect(
 			screen.getByText(/two ways to give your tool these instructions/i),
 		).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Copy commands" }));
+		expect(clipboardWrite).toHaveBeenCalledWith(
+			[
+				`fabric auth login --key ${RAW_KEY} --base-url ${window.location.origin}`,
+				`fabric instructions init --project ${PROJECT_ID} --tool claude-code`,
+			].join("\n"),
+		);
 		// The once-only warning sits under the first block that shows the
 		// key, and only once.
 		expect(screen.getAllByText(/shown once/i)).toHaveLength(1);
