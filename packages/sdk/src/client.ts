@@ -129,9 +129,11 @@ export class FabricHttpClient {
 
 	/** Build a sibling client with patched context defaults (immutable; original untouched). */
 	withDefaults(patch: ContextDefaults): FabricHttpClient {
+		// A key PRESENT in the patch always wins, including when its value is
+		// `undefined` — that is how `withoutContext()` clears an ambient
+		// default. A key absent from the patch is kept.
 		const merged: ContextDefaults = { ...this.defaults, ...patch };
-		// Enforce XOR: setting org clears personal (and vice-versa) when the patch
-		// explicitly sets one of the two. `undefined` in the patch means "keep".
+		// Enforce XOR: setting org to a VALUE clears personal, and vice versa.
 		if (patch.org !== undefined) {
 			merged.personal = undefined;
 		}
@@ -311,17 +313,31 @@ export class FabricHttpClient {
 		}
 
 		if (!res.ok) {
+			// Two error shapes reach here, and the difference is meaningful.
+			// The v1 API-key middleware answers a MISSING SCOPE with a bare
+			// string (`{error: "Missing required scope: …"}`) and an
+			// object-level permission failure with the nested form
+			// (`{error: {message}}`). Parsing only the nested one turned every
+			// scope refusal into an unactionable "HTTP 403".
 			const body = json as {
-				error?: { message?: string; code?: string };
+				error?: string | { message?: string; code?: string };
 			};
-			const message = body?.error?.message ?? `HTTP ${res.status}`;
-			const code = body?.error?.code;
+			const raw = body?.error;
+			const message =
+				(typeof raw === "string" ? raw : raw?.message) ??
+				`HTTP ${res.status}`;
+			const code =
+				typeof raw === "string"
+					? res.status === 403
+						? "MISSING_SCOPE"
+						: undefined
+					: raw?.code;
 
 			if (res.status === 401) {
 				throw new FabricAuthError(message);
 			}
 			if (res.status === 403) {
-				throw new FabricForbiddenError(message);
+				throw new FabricForbiddenError(message, code);
 			}
 			if (res.status === 404) {
 				throw new FabricNotFoundError(message);

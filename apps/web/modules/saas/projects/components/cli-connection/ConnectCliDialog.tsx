@@ -118,6 +118,22 @@ const INSTRUCTION_INTRO =
 	"Copy this sentence and send it in the tool you just configured. It only works there: the configuration above is what gives the tool access to this project.";
 
 /**
+ * Said only when this project's coding instructions are authored in Fabric.
+ *
+ * A repository-backed project's instructions arrive with `git pull`, so a
+ * sync hook would be a second writer with no merge between them — the CLI
+ * refuses that project outright, and offering it here would send the reader
+ * to a command that says no.
+ *
+ * One sentence and one command, for the same reason as the starter
+ * instruction above: this is the last thing on a dialog that has already
+ * asked the reader to copy two things.
+ */
+function buildLocalSyncNote(projectId: string): string {
+	return `To keep a local checkout current with these instructions, run \`fabric instructions init --project ${projectId} --tool claude-code\` in it. That adds a session-start check and takes the first copy.`;
+}
+
+/**
  * Which entry point opened this dialog, so the one pasted sentence names the
  * thing that surface actually promised — full project context from the
  * project-level prompt/checklist, or specifically the published coding
@@ -258,6 +274,19 @@ interface ConnectCliDialogProps {
 	 */
 	purpose?: ConnectCliPurpose;
 	/**
+	 * The project, named in the `fabric instructions init` line below. Only
+	 * read on the coding-instructions purpose.
+	 */
+	projectId?: string;
+	/**
+	 * Whether this project's instructions can be kept current in a local
+	 * checkout — true when Fabric is their source of truth, false when they
+	 * come from the project's repository. Defaults to false so a caller that
+	 * has not resolved the setting says nothing rather than saying something
+	 * that will be refused.
+	 */
+	localSyncAvailable?: boolean;
+	/**
 	 * Fired once, after a key is successfully issued.
 	 *
 	 * The "key issued" funnel event belongs to whichever surface opened this
@@ -292,6 +321,8 @@ export function ConnectCliDialog({
 	organizationSlug,
 	projectName,
 	purpose = "project",
+	projectId,
+	localSyncAvailable = false,
 	onKeyIssued,
 }: ConnectCliDialogProps) {
 	const [rawKey, setRawKey] = useState<string | null>(null);
@@ -390,6 +421,10 @@ export function ConnectCliDialog({
 
 	const configuration = rawKey ? buildMcpConfiguration(origin, rawKey) : null;
 	const starterInstruction = buildStarterInstruction(projectName, purpose);
+	const localSyncNote =
+		purpose === "coding-instructions" && localSyncAvailable && projectId
+			? buildLocalSyncNote(projectId)
+			: null;
 	const issueError = createKeyMutation.error;
 
 	/**
@@ -657,6 +692,14 @@ export function ConnectCliDialog({
 									</>
 								)}
 							</Button>
+							{localSyncNote ? (
+								<p
+									className="text-muted-foreground text-sm"
+									data-testid="connect-cli-local-sync-note"
+								>
+									{localSyncNote}
+								</p>
+							) : null}
 						</section>
 					</div>
 				)}

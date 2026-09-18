@@ -8,6 +8,6 @@
 			"@fabricorg/sdk": ["../sdk/src/index.ts"]
 		}
 	},
-	"include": ["src", "../sdk/src"],
+	"include": ["src", "__tests__", "vitest.config.ts", "../sdk/src"],
 	"exclude": ["node_modules", "dist"]
 }

@@ -22,18 +22,78 @@ export interface ResolvedContext {
 	slug: string;
 }
 
-/** What to do about a personal selection, wherever it came from. */
-function refusePersonal(source: string): never {
-	return printError(
-		`${source} selects personal context, which no longer exists — every command runs inside an organization.\n` +
-			"Name one with --org <slug>, or set a default with:\n  fabric ctx use org <slug>",
-		2,
-	) as never;
+/**
+ * The same resolution as `resolveContext`, as a VALUE instead of an exit.
+ *
+ * `resolveContext` calls `printError`, which calls `process.exit` — correct
+ * for a command a person is watching, and fatal to the session-start hook
+ * contract in `commands/instructions`, which must never exit non-zero for
+ * any reason. `process.exit` cannot be caught by the `try/catch` that owns
+ * that contract, so a stored personal default (or a stale
+ * `FABRIC_PERSONAL=1`) took the whole process down with code 2 before the
+ * boundary ever saw it.
+ *
+ * `resolveContext` below is a thin exiting wrapper over it, so the two cannot
+ * drift.
+ */
+type ContextResolution =
+	| { ok: true; context: ResolvedContext | undefined }
+	| { ok: false; message: string; exitCode: number };
+
+const PERSONAL_RETIRED_HINT =
+	"selects personal context, which no longer exists — every command runs inside an organization.\n" +
+	"Name one with --org <slug>, or set a default with:\n  fabric ctx use org <slug>";
+
+function tryResolveContext(
+	personal: boolean | undefined,
+	org: string | undefined,
+	required = true,
+): ContextResolution {
+	if (personal) {
+		return {
+			ok: false,
+			message: `--personal ${PERSONAL_RETIRED_HINT}`,
+			exitCode: 2,
+		};
+	}
+	if (org) {
+		return { ok: true, context: { type: "org", slug: org } };
+	}
+
+	const stored: ContextConfig | undefined = getDefaultContext();
+	if (stored?.type === "personal") {
+		const source =
+			process.env.FABRIC_PERSONAL === "1"
+				? "FABRIC_PERSONAL=1"
+				: "Your stored default context";
+		return {
+			ok: false,
+			message: `${source} ${PERSONAL_RETIRED_HINT}`,
+			exitCode: 2,
+		};
+	}
+	if (stored?.type === "org") {
+		return { ok: true, context: { type: "org", slug: stored.slug } };
+	}
+
+	if (required) {
+		return {
+			ok: false,
+			message:
+				"Context is required. Use --org <slug>, or set a default with:\n  fabric ctx use org <slug>",
+			exitCode: 2,
+		};
+	}
+
+	return { ok: true, context: undefined };
 }
 
 /**
  * Resolves tenant context from CLI flags, env vars, or stored default.
  * Exits with code 2 when context is ambiguous or names a retired one.
+ *
+ * A thin wrapper over `tryResolveContext`, which holds the actual rules —
+ * see there for why the non-exiting form exists.
  *
  * @param personal - value of the retired --personal flag
  * @param org - value of --org flag
@@ -44,40 +104,9 @@ export function resolveContext(
 	org: string | undefined,
 	required = true,
 ): ResolvedContext | undefined {
-	// Checked before the both-flags case on purpose: whichever way they were
-	// combined, the useful thing to say is that one of them is retired.
-	if (personal) {
-		refusePersonal("--personal");
+	const resolution = tryResolveContext(personal, org, required);
+	if (!resolution.ok) {
+		printError(resolution.message, resolution.exitCode);
 	}
-	if (org) {
-		return { type: "org", slug: org };
-	}
-
-	// Fall back to stored default, or the environment variable behind it.
-	const stored: ContextConfig | undefined = getDefaultContext();
-	if (stored) {
-		if (stored.type === "personal") {
-			// Refused rather than ignored even when context is optional: a
-			// default the user set and can still see is not the same as no
-			// default, and treating it as one hides why their command behaves
-			// differently from yesterday.
-			refusePersonal(
-				process.env.FABRIC_PERSONAL === "1"
-					? "FABRIC_PERSONAL=1"
-					: "Your stored default context",
-			);
-		}
-		if (stored.type === "org") {
-			return { type: "org", slug: stored.slug };
-		}
-	}
-
-	if (required) {
-		printError(
-			"Context is required. Use --org <slug>, or set a default with:\n  fabric ctx use org <slug>",
-			2,
-		);
-	}
-
-	return undefined;
+	return resolution.context;
 }

@@ -459,6 +459,12 @@ export function InstructionsPublishedView({
 					organizationSlug={organizationSlug ?? undefined}
 					projectName={projectName}
 					purpose="coding-instructions"
+					projectId={projectId}
+					// The `fabric instructions` line is offered only when
+					// Fabric authors these files. A repository-backed project
+					// refreshes them with `git pull`, and the CLI refuses to
+					// install a hook that would fight it.
+					localSyncAvailable={!repositoryBacked}
 				/>
 			) : null}
 		</div>

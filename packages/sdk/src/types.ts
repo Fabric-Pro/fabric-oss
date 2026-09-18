@@ -427,12 +427,19 @@ export class FabricNotFoundError extends FabricError {
 }
 
 export class FabricForbiddenError extends FabricError {
-	constructor(scope?: string) {
-		super(
-			scope ? `Missing required scope: ${scope}` : "Forbidden",
-			403,
-			"FORBIDDEN",
-		);
+	/**
+	 * Takes the server's MESSAGE, not a scope name.
+	 *
+	 * The parameter used to be a scope and the message was built as
+	 * `Missing required scope: ${scope}`, while the only construction site —
+	 * `FabricHttpClient` — passed the server's already-complete message. Every
+	 * 403 therefore arrived double-prefixed, so an object-level permission
+	 * refusal read as a missing scope. The two are genuinely different
+	 * answers (the v1 middleware distinguishes them on the wire) and `code`
+	 * is what tells them apart now.
+	 */
+	constructor(message = "Forbidden", code = "FORBIDDEN") {
+		super(message, 403, code);
 		this.name = "FabricForbiddenError";
 	}
 }

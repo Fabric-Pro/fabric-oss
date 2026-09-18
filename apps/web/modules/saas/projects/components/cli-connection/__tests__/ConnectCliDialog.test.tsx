@@ -70,6 +70,7 @@ import { ConnectCliDialog } from "../ConnectCliDialog";
 const ORGANIZATION_ID = "org-hosting-the-project";
 const ORGANIZATION_SLUG = "example-org";
 const PROJECT_NAME = "Checkout Rewrite";
+const PROJECT_ID = "project-checkout-rewrite";
 const RAW_KEY = "org_1a2b3c4d_ZXhhbXBsZS1zZWNyZXQtdmFsdWU";
 
 function issuedKeyFixture() {
@@ -113,10 +114,12 @@ function Host({
 	startOpen = false,
 	eligible = true,
 	purpose,
+	localSyncAvailable,
 }: {
 	startOpen?: boolean;
 	eligible?: boolean;
 	purpose?: ConnectCliPurpose;
+	localSyncAvailable?: boolean;
 }) {
 	const [open, setOpen] = useState(startOpen);
 
@@ -134,6 +137,8 @@ function Host({
 				organizationSlug={ORGANIZATION_SLUG}
 				projectName={PROJECT_NAME}
 				purpose={purpose}
+				projectId={PROJECT_ID}
+				localSyncAvailable={localSyncAvailable}
 			/>
 		</>
 	);
@@ -142,6 +147,7 @@ function Host({
 function renderHost(props?: {
 	startOpen?: boolean;
 	purpose?: ConnectCliPurpose;
+	localSyncAvailable?: boolean;
 }) {
 	return render(<Host {...props} />, { wrapper: Wrapper });
 }
@@ -481,6 +487,63 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		const text = instruction.textContent ?? "";
 		expect(text.match(/\./g) ?? []).toHaveLength(1);
 		expect(text).not.toContain("\n");
+	});
+
+	/**
+	 * The one line that points at `fabric instructions init` (Fizzy #2539).
+	 *
+	 * Shown only where it can actually work: this purpose, and a project whose
+	 * instructions Fabric authors. For a repository-backed project the CLI
+	 * refuses the command outright, so offering it would send the reader to a
+	 * refusal.
+	 */
+	it("offers the local-sync command when Fabric authors the instructions", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSyncAvailable: true,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+
+		const note = await screen.findByTestId("connect-cli-local-sync-note");
+		expect(note).toHaveTextContent(
+			`fabric instructions init --project ${PROJECT_ID} --tool claude-code`,
+		);
+		// The line names a project and never a credential.
+		expect(note.textContent ?? "").not.toContain("fab_");
+	});
+
+	it("says nothing about local sync for a repository-backed project", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSyncAvailable: false,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+
+		await screen.findByTestId("connect-cli-starter-instruction");
+		expect(
+			screen.queryByTestId("connect-cli-local-sync-note"),
+		).not.toBeInTheDocument();
+	});
+
+	it("says nothing about local sync on the project purpose", async () => {
+		const user = setupUser();
+		renderHost({ startOpen: true, localSyncAvailable: true });
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+
+		await screen.findByTestId("connect-cli-starter-instruction");
+		expect(
+			screen.queryByTestId("connect-cli-local-sync-note"),
+		).not.toBeInTheDocument();
 	});
 
 	/**

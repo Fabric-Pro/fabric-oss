@@ -26,6 +26,7 @@ import { AuthResource } from "./resources/auth.js";
 import { ChannelsResource } from "./resources/channels.js";
 import { ChatsResource } from "./resources/chats.js";
 import { FramesResource } from "./resources/frames.js";
+import { InstructionsResource } from "./resources/instructions.js";
 import {
 	createIntegrationsResource,
 	type IntegrationsResource,
@@ -61,6 +62,7 @@ export class FabricClient {
 	readonly skills: SkillsResource;
 	readonly mcp: McpResource;
 	readonly frames: FramesResource;
+	readonly instructions: InstructionsResource;
 	readonly workspaces: WorkspacesResource;
 	readonly chats: ChatsResource;
 	readonly reports: ReportsResource;
@@ -93,6 +95,7 @@ export class FabricClient {
 		this.skills = new SkillsResource(this.http);
 		this.mcp = new McpResource(this.http);
 		this.frames = new FramesResource(this.http);
+		this.instructions = new InstructionsResource(this.http);
 		this.workspaces = new WorkspacesResource(this.http);
 		this.chats = new ChatsResource(this.http);
 		this.reports = new ReportsResource(this.http);
@@ -115,6 +118,23 @@ export class FabricClient {
 	/** Returns a new client with a default project ID applied where resources accept one. */
 	withProject(projectId: string): FabricClient {
 		return new FabricClient(this.http.withDefaults({ project: projectId }));
+	}
+
+	/**
+	 * Returns a new client that sends NO tenant context of its own.
+	 *
+	 * The constructor picks up `FABRIC_ORG` and `FABRIC_PERSONAL` from the
+	 * environment, and every request then carries that context unless the call
+	 * names one. For a PROJECT-AUTHORITATIVE surface that is wrong: the
+	 * project decides which organization it is in, and an ambient default that
+	 * happens to name another one turns a valid request into a refusal. The
+	 * clearest case is an invited guest, whose own default organization is
+	 * never the one hosting the project they were invited to.
+	 */
+	withoutContext(): FabricClient {
+		return new FabricClient(
+			this.http.withDefaults({ org: undefined, personal: undefined }),
+		);
 	}
 }
 
@@ -142,6 +162,17 @@ export type {
 	UpdateChatOptions,
 } from "./resources/chats.js";
 export type { ListFramesOptions } from "./resources/frames.js";
+export type {
+	CreateInstructionDownloadOptions,
+	GetPublishedInstructionsOptions,
+	InstructionChanges,
+	InstructionDownload,
+	InstructionFileKind,
+	InstructionManifestEntry,
+	InstructionSourceOfTruth,
+	PublishedInstructionSnapshot,
+	PublishedInstructions,
+} from "./resources/instructions.js";
 export type {
 	FabricIntegrations,
 	GenericIntegrationClient,
