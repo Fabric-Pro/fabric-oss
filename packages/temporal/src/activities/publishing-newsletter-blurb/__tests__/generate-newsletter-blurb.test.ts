@@ -22,10 +22,10 @@ import { SETTLED_DECISIONS_HEADING } from "../../publishing-shared/settled-appro
  *  1. THE RESTRICTION SPLIT runs on this type's OWN set, which is the
  *     Stakeholder Email's PAIR — `AUDIENCE_SCOPE` and `CLAIM_STRENGTH` — and
  *     NOT the Webinar Script's three. `CODEBASE_DETAIL` is deliberately absent,
- *     so an open thread of that kind must reach NEITHER block. That single case
- *     is what distinguishes `restrictsPostType(thread, "NEWSLETTER_BLURB")`
- *     from the post-type string the file was copied from, and nothing else in
- *     this suite can.
+ *     so an unresolved thread of that kind must reach NEITHER block. That
+ *     single case is what distinguishes `restrictsPostType(thread,
+ *     "NEWSLETTER_BLURB")` from the post-type string the file was copied from,
+ *     and nothing else in this suite can.
  *  2. THE PARSED DOCUMENT IS WHAT IS PERSISTED, not the model's raw object.
  *     This schema is a `.transform()` — it reconciles `ctaState` against the
  *     call to action actually written and normalizes a blank `suggestedCta` /
@@ -570,11 +570,11 @@ describe("generateNewsletterBlurbActivity — the restriction split", () => {
 		);
 		expect(restricted).toContain("example-org");
 		expect(prompt).not.toMatch(
-			/Open questions that constrain this content type/,
+			/Unresolved questions that constrain this content type/,
 		);
 	});
 
-	it("routes AUDIENCE_SCOPE and CLAIM_STRENGTH into the open-questions block", async () => {
+	it("routes AUDIENCE_SCOPE and CLAIM_STRENGTH into the unresolved-questions block", async () => {
 		// `isRestrictingThread` returns FALSE for both — neither constrains
 		// every content type. Only `restrictsPostType(thread,
 		// "NEWSLETTER_BLURB")` sees them, so this case is what proves the
@@ -588,7 +588,7 @@ describe("generateNewsletterBlurbActivity — the restriction split", () => {
 
 		const prompt = sentPrompt();
 		const openHeading = prompt.indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		expect(openHeading).toBeGreaterThan(-1);
 		expect(prompt.slice(openHeading)).toContain(
@@ -621,7 +621,7 @@ describe("generateNewsletterBlurbActivity — the restriction split", () => {
 
 		const prompt = sentPrompt();
 		expect(prompt).not.toMatch(
-			/Open questions that constrain this content type/,
+			/Unresolved questions that constrain this content type/,
 		);
 		expect(prompt).not.toMatch(/Unresolved approvals for this topic/);
 		expect(prompt).not.toContain("how much of the resolver to show");
@@ -630,7 +630,7 @@ describe("generateNewsletterBlurbActivity — the restriction split", () => {
 	});
 
 	it("keeps CODEBASE_DETAIL out even while this type's own kinds are in", async () => {
-		// The paired direction: the open-questions block EXISTS on this run, so
+		// The paired direction: the unresolved-questions block EXISTS on this run, so
 		// the assertion above cannot be passing merely because nothing was
 		// routed anywhere.
 		listTopicDecisions.mockResolvedValue([
@@ -641,7 +641,7 @@ describe("generateNewsletterBlurbActivity — the restriction split", () => {
 		await run();
 
 		const openHeading = sentPrompt().indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		expect(openHeading).toBeGreaterThan(-1);
 		expect(persistedContent().generation.openQuestionSubjects).toEqual([
@@ -665,7 +665,7 @@ describe("generateNewsletterBlurbActivity — the restriction split", () => {
 			"## Unresolved approvals for this topic",
 		);
 		const openHeading = prompt.indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		expect(restrictedHeading).toBeGreaterThan(-1);
 		expect(openHeading).toBeGreaterThan(restrictedHeading);

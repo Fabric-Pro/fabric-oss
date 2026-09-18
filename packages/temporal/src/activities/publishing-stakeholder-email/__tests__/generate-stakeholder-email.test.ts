@@ -506,7 +506,7 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 		);
 		expect(restricted).toContain("example-org");
 		expect(prompt).not.toMatch(
-			/Open questions that constrain this content type/,
+			/Unresolved questions that constrain this content type/,
 		);
 	});
 
@@ -524,7 +524,7 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 
 		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
 		const openHeading = prompt.indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		expect(openHeading).toBeGreaterThan(-1);
 		expect(prompt.slice(openHeading)).toContain(
@@ -542,7 +542,7 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 
 		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
 		const openHeading = prompt.indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		expect(openHeading).toBeGreaterThan(-1);
 		expect(prompt.slice(openHeading)).toContain("the build-time number");
@@ -552,7 +552,7 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 		// THE case that tells the two 2C extra sets apart. An activity that
 		// passed "CASE_STUDY" to `restrictsPostType` — the likeliest mistake
 		// when this file is copied from its sibling — would list this question
-		// under open questions and pass every other case in this describe.
+		// under unresolved questions and pass every other case in this describe.
 		listTopicDecisions.mockResolvedValue([
 			openQuestion("CODEBASE_DETAIL", "how much of the resolver to show"),
 		]);
@@ -561,7 +561,7 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 
 		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).not.toMatch(
-			/Open questions that constrain this content type/,
+			/Unresolved questions that constrain this content type/,
 		);
 		expect(prompt).not.toMatch(/Unresolved approvals for this topic/);
 		expect(prompt).not.toContain("how much of the resolver to show");
@@ -584,7 +584,7 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 			"## Unresolved approvals for this topic",
 		);
 		const openHeading = prompt.indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		expect(restrictedHeading).toBeGreaterThan(-1);
 		expect(openHeading).toBeGreaterThan(restrictedHeading);
@@ -629,7 +629,7 @@ describe("generateStakeholderEmailActivity — the restriction split", () => {
 
 		const prompt = generateObject.mock.calls[0]?.[0]?.prompt as string;
 		expect(prompt).not.toMatch(
-			/Open questions that constrain this content type/,
+			/Unresolved questions that constrain this content type/,
 		);
 		expect(prompt).toContain("The steering group.");
 		expect(persistedContent().generation.openQuestionSubjects).toEqual([]);

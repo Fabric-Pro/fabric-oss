@@ -468,9 +468,9 @@ export async function generateCaseStudyActivity(
 	// confirmation", which is the safe direction, while a miss leaves an
 	// unapproved asset labelled ready to publish.
 	//
-	// Restricted subjects only, not open questions: an open per-type question -
-	// how the piece is framed, or how much of the implementation it may
-	// describe - is not a claim about whether an asset exists and may be used.
+	// Restricted subjects only, not unresolved questions: an unresolved per-type
+	// question - how the piece is framed, or how much of the implementation it
+	// may describe - is not a claim about whether an asset exists and may be used.
 	const assetClamp = clampConfirmedAssets({
 		confirmed: document.confirmedAssets,
 		needsConfirmation: document.assetsNeedingConfirmation,

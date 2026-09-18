@@ -259,7 +259,7 @@ export interface Restrictions {
  * one.
  *
  * `decisionLabel` rides along for the tab's two restriction lists — unresolved
- * approvals, and open questions that constrain a type — so the tab names each
+ * approvals, and unresolved questions that constrain a type — so the tab names each
  * thread with the same function the drafting prompts use rather than a formula
  * of its own.
  */
@@ -272,10 +272,11 @@ export { decisionLabel, isRestrictingThread, restrictsPostType };
  * Feeds `needsAttention` — the BADGE. The per-panel LIST is built separately,
  * in `GenerationPanel`, from `restrictsPostType`. Both are needed and neither
  * substitutes for the other, which was learned the expensive way in 2C: fixing
- * only the list left the panel warning about an open `CLAIM_STRENGTH` question
- * while the tab strip beside it read a plain "Available". That is under-warning
- * at the one level whose stated purpose is to be seen on a tab the reader has
- * NOT opened, so it is the worse direction of the two to get wrong.
+ * only the list left the panel warning about an unresolved `CLAIM_STRENGTH`
+ * question while the tab strip beside it read a plain "Available". That is
+ * under-warning at the one level whose stated purpose is to be seen on a tab
+ * the reader has NOT opened, so it is the worse direction of the two to get
+ * wrong.
  */
 function countRestricted(
 	counts: Map<string, number>,
@@ -432,7 +433,7 @@ export function resolveGenerationTabStates(input: {
 					: "AVAILABLE";
 
 		// A SUPERSET of what produced the primary state, not a different
-		// question. Keying this on open questions alone would leave a hole
+		// question. Keying this on unresolved questions alone would leave a hole
 		// exactly where it was aimed: 2A's `resolveConfirmationQuestions` mints
 		// questions from `needsConfirmation` and `requiresApproval` only —
 		// `deferred` is deliberately excluded there as "a decision already taken

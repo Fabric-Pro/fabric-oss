@@ -18,7 +18,14 @@
  * `publishing-topic-questions.test.tsx`.
  */
 
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -1988,7 +1995,7 @@ describe("TopicItemPage — readiness", () => {
 		replies: [],
 	});
 
-	it("counts answered decisions against the total", () => {
+	it("counts closed decisions against the total", () => {
 		state.decisionThreads = [
 			question("a", "RESOLVED"),
 			question("b", "OPEN"),
@@ -1997,7 +2004,7 @@ describe("TopicItemPage — readiness", () => {
 		renderPage();
 
 		expect(screen.getByTestId("topic-readiness")).toHaveTextContent(
-			"1 of 3 decisions answered",
+			"1 of 3 decisions closed",
 		);
 	});
 
@@ -2018,11 +2025,40 @@ describe("TopicItemPage — readiness", () => {
 		renderPage();
 
 		expect(screen.getByTestId("topic-readiness")).toHaveTextContent(
-			"All 1 decisions answered",
+			"All 1 decisions closed",
 		);
 	});
 
-	it("counts a soft-closed question as settled (Fizzy #1851)", () => {
+	it("leaves a legacy CONTENT_TYPE row nobody can answer out of the all-clear sentence too (Fizzy #1988 1B)", async () => {
+		const legacy = question("legacy", "OPEN");
+		state.decisionThreads = [
+			{
+				...legacy,
+				root: { ...legacy.root, decisionKind: "CONTENT_TYPE" },
+			},
+			question("a", "RESOLVED"),
+		];
+		// The case exists to pin a row the count EXCLUDES while it is still
+		// OPEN, not one the count would exclude anyway because it was already
+		// closed. Without this, changing either field below leaves every
+		// assertion after it passing while the case silently stops covering
+		// that scenario.
+		expect(state.decisionThreads[0].root.status).toBe("OPEN");
+		expect(state.decisionThreads[0].root.decisionKind).toBe("CONTENT_TYPE");
+		renderPage();
+
+		expect(screen.getByTestId("topic-readiness")).toHaveTextContent(
+			"All 1 decisions closed",
+		);
+
+		const text = await readinessTooltipText();
+		expect(text).toBe(
+			"No question counted here is still open. Closed counts the questions under Answered and Possibly resolved.",
+		);
+		expect(text).not.toMatch(CLAIMS_ABOUT_ANSWERS_OR_DRAFTS);
+	});
+
+	it("counts a soft-closed question as closed (Fizzy #1851)", () => {
 		// REVERSED, deliberately. This used to expect "1 of 2": a
 		// POSSIBLY_RESOLVED root is one nobody answered, so counting it read as
 		// calling a topic ready beside a generation tab that says it is not.
@@ -2044,8 +2080,73 @@ describe("TopicItemPage — readiness", () => {
 		renderPage();
 
 		expect(screen.getByTestId("topic-readiness")).toHaveTextContent(
-			"All 2 decisions answered",
+			"All 2 decisions closed",
 		);
+	});
+
+	/**
+	 * The tooltip's words, read the way a person gets them.
+	 *
+	 * Opened by focus: Radix opens a tooltip on focus with no delay, while a
+	 * hover waits the provider's 500 ms, which this widget cannot shorten.
+	 * Radix renders the content twice — once visibly, once in a visually hidden
+	 * `role="tooltip"` element — so the copy is read from that one element.
+	 */
+	const readinessTooltipText = async () => {
+		fireEvent.focus(screen.getByTestId("topic-readiness"));
+		return (await screen.findByRole("tooltip")).textContent;
+	};
+	const CLAIMS_ABOUT_ANSWERS_OR_DRAFTS =
+		/has an answer|has been answered|settled|assert/i;
+
+	it("names the two groups it counts as closed when nothing is open", async () => {
+		state.decisionThreads = [
+			question("a", "RESOLVED"),
+			question("b", "POSSIBLY_RESOLVED"),
+		];
+		renderPage();
+
+		const text = await readinessTooltipText();
+		expect(text).toBe(
+			"No question counted here is still open. Closed counts the questions under Answered and Possibly resolved.",
+		);
+		expect(text).not.toMatch(CLAIMS_ABOUT_ANSWERS_OR_DRAFTS);
+		// The group names are the panel's own headings, on the same page.
+		for (const group of [
+			"Answered questions",
+			"Possibly resolved questions",
+		]) {
+			const heading = document.querySelector(
+				`section[aria-label="${group}"] h3`,
+			);
+			expect(heading?.textContent).toBeTruthy();
+			expect(text).toContain(heading?.textContent ?? "");
+		}
+	});
+
+	it("says how many are still open, and nothing about answers or drafts", async () => {
+		state.decisionThreads = [
+			question("a", "OPEN"),
+			question("b", "RESOLVED"),
+		];
+		renderPage();
+
+		const text = await readinessTooltipText();
+		expect(text).toBe("1 still open. 50% closed.");
+		expect(text).not.toMatch(CLAIMS_ABOUT_ANSWERS_OR_DRAFTS);
+	});
+
+	it("says every question is closed while a blocker still holds the topic back", async () => {
+		// `blockerThread` (file scope) is an OPEN MISSING_QUOTE blocker: no
+		// question is open, so the all-clear is withheld only by the blocker.
+		state.decisionThreads = [question("a", "RESOLVED"), blockerThread()];
+		renderPage();
+
+		const text = await readinessTooltipText();
+		expect(text).toBe(
+			"Every question is closed (100%). 1 blocking item still needed before this topic is ready.",
+		);
+		expect(text).not.toMatch(CLAIMS_ABOUT_ANSWERS_OR_DRAFTS);
 	});
 
 	it("ignores AI update rows, which nobody can answer", () => {
@@ -2057,7 +2158,7 @@ describe("TopicItemPage — readiness", () => {
 		renderPage();
 
 		expect(screen.getByTestId("topic-readiness")).toHaveTextContent(
-			"All 1 decisions answered",
+			"All 1 decisions closed",
 		);
 	});
 
@@ -2883,16 +2984,16 @@ describe("TopicItemPage — tab counts", () => {
 		];
 		renderPage();
 
-		// Anchored: the tab badge's label is the whole string. A loose
-		// /open question/ also matches the generation tab panels, which are
-		// labelled by a trigger whose own caution text contains the phrase —
-		// the very thing this test is asserting is still there.
+		// Anchored: the Summary & Questions badge's label is the whole string,
+		// so nothing else on the page can satisfy or break this absence check —
+		// the generation tab's caution below counts the same question as
+		// unresolved, and that is the half this test asserts is still there.
 		expect(
 			screen.queryByLabelText(/^\d+ open questions?$/),
 		).not.toBeInTheDocument();
 		expect(
 			screen.getAllByText(
-				/1 open question before this can be drafted cleanly/i,
+				/1 unresolved question before this can be drafted cleanly/i,
 			).length,
 		).toBeGreaterThan(0);
 	});

@@ -15,9 +15,10 @@ import type { TopicDecisionThread } from "./TopicQuestionsPanel";
  * NOT `StageProgress`, and the difference is the reason a second component
  * exists: a feature moves through a fixed pipeline of named stages, so its bar
  * is positional — segment three of five means Sanity Check. A publishing topic
- * has no pipeline. What it has is a set of decisions the analysis raised, each
- * of which is answered or is not, and the honest "how close am I" signal is the
- * proportion answered rather than a position on a track it does not run on.
+ * has no pipeline. What it has is a set of questions the analysis raised, each
+ * of which is still open or is closed, and the honest "how close am I" signal
+ * is the proportion closed rather than a position on a track it does not run
+ * on.
  *
  * The segments are borrowed from `StageProgress` on purpose, so the two read as
  * the same family of indicator even though they measure different things.
@@ -48,7 +49,8 @@ export function TopicReadiness({
 		return null;
 	}
 
-	// SETTLED, not necessarily ANSWERED — `RESOLVED` or `POSSIBLY_RESOLVED`.
+	// CLOSED, not necessarily ANSWERED — `RESOLVED` or `POSSIBLY_RESOLVED`: the
+	// questions the panel lists under "Answered" and "Possibly resolved".
 	//
 	// This is a REVERSAL. `POSSIBLY_RESOLVED` used to be excluded, on the
 	// reasoning that nobody had answered it and the generation tab treats it as
@@ -72,6 +74,18 @@ export function TopicReadiness({
 	// than it looks: only a SAFETY-CRITICAL soft-closed question still badges a
 	// generation tab, and answering it — which stays possible from the Decision
 	// Log — clears both at once.
+	//
+	// So the copy says "closed", never "answered" or "settled" — a rule about
+	// what the COUNT is called, not about every word in the copy. The count
+	// includes questions nobody answered — soft-closed ones, and a historical
+	// `RESOLVED` root whose answer was saved blank — and elsewhere in the code
+	// and on the generation tab "settled" means a member answered it
+	// (`settledDecision`), which a soft-closed question is not. The tooltip
+	// below still names a group "Answered": that is the heading
+	// `TopicQuestionsPanel` already puts in front of the reader, and quoting
+	// a heading is a different claim than calling the count answered. It
+	// names the two groups instead of describing drafts: whether a question
+	// restricts a draft depends on its kind, which this widget does not know.
 	const resolved = questions.filter(
 		(t) =>
 			t.root.status === "RESOLVED" ||
@@ -83,11 +97,11 @@ export function TopicReadiness({
 
 	// Blockers are NOT decisions and stay out of the ratio — a blocker is a
 	// thing the topic is missing, not a question anybody can answer, and
-	// folding them into the denominator would make "answered" mean two things.
+	// folding them into the denominator would make "closed" mean two things.
 	//
 	// But they cannot be ignored either. This sits directly below
 	// `TopicBlockers`, and counting only questions let it read "All 6 decisions
-	// answered" with two blockers open immediately above it — the page
+	// closed" with two blockers open immediately above it — the page
 	// contradicting itself in adjacent lines. So the ratio stays about
 	// decisions and the ALL-CLEAR is withheld while a blocker is open.
 	const openBlockers = threads.filter(
@@ -124,8 +138,8 @@ export function TopicReadiness({
 					    (WCAG 2.1 AA). */}
 					<span className="truncate text-muted-foreground text-xs">
 						{allClear
-							? `All ${total} decisions answered`
-							: `${resolved} of ${total} decisions answered`}
+							? `All ${total} decisions closed`
+							: `${resolved} of ${total} decisions closed`}
 						{openBlockers > 0
 							? ` · ${openBlockers} blocking ${
 									openBlockers === 1 ? "item" : "items"
@@ -135,12 +149,20 @@ export function TopicReadiness({
 				</span>
 			</TooltipTrigger>
 			<TooltipContent>
+				{/* This sentence is true only of the population `questions`
+				    counts. A legacy `CONTENT_TYPE` root can still be `OPEN` in
+				    the table — excluded above for the reason given there, not
+				    because it is resolved — and `TopicQuestionsPanel`, the
+				    Summary & Questions badge, the generation tab, and the
+				    assistant's context all drop the same rows. So the
+				    sentence speaks for the count it labels, not for every row
+				    in the table. */}
 				{allClear
-					? "Every question the analysis raised has an answer. A draft can assert what they settled."
+					? "No question counted here is still open. Closed counts the questions under Answered and Possibly resolved."
 					: [
 							open > 0
-								? `${open} unanswered. A draft will write around each one — generalizing it, using a neutral placeholder, or leaving it out — rather than assert it. ${pct}% answered.`
-								: `Every question has an answer (${pct}%).`,
+								? `${open} still open. ${pct}% closed.`
+								: `Every question is closed (${pct}%).`,
 							openBlockers > 0
 								? `${openBlockers} blocking ${
 										openBlockers === 1 ? "item" : "items"

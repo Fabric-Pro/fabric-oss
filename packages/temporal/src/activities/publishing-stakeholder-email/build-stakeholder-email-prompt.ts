@@ -264,7 +264,7 @@ ${restricted.map(renderSubjectBullet).join("\n")}`
 		openQuestions.length > 0
 			? `
 
-## Open questions that constrain this content type
+## Unresolved questions that constrain this content type
 
 These are unsettled. Do not resolve them by assumption, do not assert either
 side, and record what you assumed under inputs needed. Where one of them decides

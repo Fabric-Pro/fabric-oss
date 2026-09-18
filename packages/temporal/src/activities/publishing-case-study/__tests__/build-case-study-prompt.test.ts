@@ -6,14 +6,14 @@ import {
 import type { SettledDecision } from "@repo/utils/publishing-restrictions";
 import { describe, expect, it } from "vitest";
 import {
+	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
+	SETTLED_DECISIONS_HEADING,
+} from "../../publishing-shared/settled-approvals";
+import {
 	buildCaseStudyLockedClauses,
 	composeCaseStudyPrompt,
 	PublishingCaseStudySchema,
 } from "../build-case-study-prompt";
-import {
-	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
-	SETTLED_DECISIONS_HEADING,
-} from "../../publishing-shared/settled-approvals";
 
 /**
  * The pure half of Case Study generation (Fizzy #1854, Phase 2C).
@@ -283,18 +283,19 @@ describe("buildCaseStudyLockedClauses", () => {
 		expect(clauses).toContain("Customer name: example-org");
 	});
 
-	it("names the open questions under their own block", () => {
+	it("names the unresolved questions under their own block", () => {
 		const clauses = buildCaseStudyLockedClauses({
 			openQuestionSubjects: ["Claim strength for the latency result"],
 		});
 		expect(clauses).toMatch(
-			/Open questions that constrain this content type/,
+			/Unresolved questions that constrain this content type/,
 		);
 		expect(clauses).toMatch(/These are unsettled/);
 		expect(clauses).toContain("Claim strength for the latency result");
+		expect(clauses).not.toContain("Open questions that constrain");
 	});
 
-	it("puts an AUDIENCE_SCOPE subject under open questions and NEVER under 'NOT approved for use'", () => {
+	it("puts an AUDIENCE_SCOPE subject under unresolved questions and NEVER under 'NOT approved for use'", () => {
 		// THE point of the split. "Audience scope" under the subject-shaped
 		// block reads as "write around it, generalize it, or leave it out" —
 		// which instructs the model to strip the audience framing. On the most
@@ -307,7 +308,7 @@ describe("buildCaseStudyLockedClauses", () => {
 		});
 
 		const openHeading = clauses.indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		const restrictedHeading = clauses.indexOf(
 			"## Unresolved approvals for this topic",
@@ -328,8 +329,8 @@ describe("buildCaseStudyLockedClauses", () => {
 		expect(openBlock).not.toMatch(/leave it out/);
 	});
 
-	it("tells the model not to settle an open question by assumption", () => {
-		// The correct behaviour for an open per-type question — framing or
+	it("tells the model not to settle an unresolved question by assumption", () => {
+		// The correct behaviour for an unresolved per-type question — framing or
 		// disclosure — is to state the result qualitatively and record the
 		// assumption, NOT to drop it.
 		const clauses = buildCaseStudyLockedClauses({
@@ -343,7 +344,7 @@ describe("buildCaseStudyLockedClauses", () => {
 	it("omits each block entirely when its list is empty", () => {
 		const clauses = buildCaseStudyLockedClauses();
 		expect(clauses).not.toMatch(/Unresolved approvals/);
-		expect(clauses).not.toMatch(/Open questions that constrain/);
+		expect(clauses).not.toMatch(/Unresolved questions that constrain/);
 	});
 
 	it("ignores blank subjects rather than emitting an empty bullet", () => {
@@ -352,7 +353,7 @@ describe("buildCaseStudyLockedClauses", () => {
 			openQuestionSubjects: [""],
 		});
 		expect(clauses).not.toMatch(/Unresolved approvals/);
-		expect(clauses).not.toMatch(/Open questions that constrain/);
+		expect(clauses).not.toMatch(/Unresolved questions that constrain/);
 	});
 });
 
@@ -374,7 +375,7 @@ describe("buildCaseStudyLockedClauses — the settled-decisions block", () => {
 			"## Unresolved approvals for this topic",
 		);
 		const open = clauses.indexOf(
-			"## Open questions that constrain this content type",
+			"## Unresolved questions that constrain this content type",
 		);
 		const settled = clauses.indexOf(SETTLED_DECISIONS_HEADING);
 

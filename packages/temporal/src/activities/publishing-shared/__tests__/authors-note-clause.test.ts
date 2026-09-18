@@ -11,11 +11,11 @@
  *    anything above", which makes lower-wins the document's own convention, and
  *    "do not invent facts" must stay lower than anything that softens a demand
  *    for missing text.
- *  - Above the restricted / open-question blocks, which are appended last and
- *    end in quoted, model-authored subjects. `locked-clause-subject-injection`
- *    reasons that a forged marker inside one of those is harmless precisely
- *    because nothing privileged follows them; a rule placed after them would
- *    make that reasoning false.
+ *  - Above the restricted / unresolved-question blocks, which are appended last
+ *    and end in quoted, model-authored subjects.
+ *    `locked-clause-subject-injection` reasons that a forged marker inside one
+ *    of those is harmless precisely because nothing privileged follows them; a
+ *    rule placed after them would make that reasoning false.
  *
  * LinkedIn is asserted through `buildShortPostLockedClauses` rather than a
  * builder of its own — `composeLinkedInPostPrompt` reuses the short post's, and
@@ -144,7 +144,7 @@ describe.each(WRITERS)("$name locked clauses", ({ clauses }) => {
 		const rule = clauses.indexOf(THIN_SUMMARY_IS_RAW_MATERIAL);
 		for (const heading of [
 			"Unresolved approvals",
-			"Open questions that constrain",
+			"Unresolved questions that constrain",
 		]) {
 			const at = clauses.indexOf(heading);
 			if (at >= 0) {

@@ -444,8 +444,8 @@ export async function generateNewsletterBlurbActivity(
 	// model call clear a draft that was written as though it were still
 	// unresolved (or flag one that was not).
 	//
-	// Restricted subjects only, not open questions: a framing question is not a
-	// claim about whether an asset exists and may be used.
+	// Restricted subjects only, not unresolved questions: a framing question is
+	// not a claim about whether an asset exists and may be used.
 	const document = { ...parsed.data };
 	const clamped: PublishingClampRecord = {};
 	const assetClamp = clampConfirmedAssets({
