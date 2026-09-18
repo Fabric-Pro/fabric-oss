@@ -25,6 +25,7 @@ import { buildCompletionCommand } from "../commands/completion/index.js";
 import { buildCtxCommand } from "../commands/ctx/index.js";
 import { buildFeaturesCommand } from "../commands/features/index.js";
 import { buildFramesCommand } from "../commands/frames/index.js";
+import { buildInstructionsCommand } from "../commands/instructions/index.js";
 import { buildMcpCommand } from "../commands/mcp/index.js";
 import { buildOrgsCommand } from "../commands/orgs/index.js";
 import { buildProjectsCommand } from "../commands/projects/index.js";
@@ -98,6 +99,11 @@ program.addCommand(buildAgentsCommand());
 // fabric skills
 // ---------------------------------------------------------------------------
 program.addCommand(buildSkillsCommand());
+
+// ---------------------------------------------------------------------------
+// fabric instructions
+// ---------------------------------------------------------------------------
+program.addCommand(buildInstructionsCommand());
 
 // ---------------------------------------------------------------------------
 // fabric mcp

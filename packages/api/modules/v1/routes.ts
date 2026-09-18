@@ -30,6 +30,7 @@ import { registerChatRoutes } from "./chats";
 import { registerDocumentRoutes } from "./documents";
 import { registerFeatureRoutes } from "./features";
 import { registerFrameRoutes } from "./frames";
+import { registerInstructionRoutes } from "./instructions";
 import { registerIntegrationRoutes } from "./integrations";
 import { registerKnowledgeRoutes } from "./knowledge";
 import { registerMcpRoutes } from "./mcp";
@@ -102,7 +103,16 @@ export function createPublicV1Routes() {
 		"*",
 		cors({
 			origin: "*",
-			allowHeaders: ["Content-Type", "Authorization", "X-Correlation-ID"],
+			// `Idempotency-Key` is added by @fabricorg/sdk to every mutating
+			// request. Without it here a browser preflight rejects every SDK
+			// POST before the route runs — it was missing for the whole v1
+			// surface, not only the instructions routes.
+			allowHeaders: [
+				"Content-Type",
+				"Authorization",
+				"X-Correlation-ID",
+				"Idempotency-Key",
+			],
 			allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
 			exposeHeaders: [
 				"X-Correlation-ID",
@@ -400,6 +410,7 @@ export function createPublicV1Routes() {
 	registerIntegrationRoutes(app);
 	registerChannelRoutes(app);
 	registerKnowledgeRoutes(app);
+	registerInstructionRoutes(app);
 
 	return app;
 }
