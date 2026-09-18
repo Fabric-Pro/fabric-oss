@@ -190,7 +190,7 @@ describe("organization AI model preferences decisions", () => {
 		expect(screen.getByText("Evaluations")).toBeInTheDocument();
 		expect(
 			screen.getByText(
-				"Typed choice, score, and boolean decisions for future decision workflows",
+				"Bug or feature classification, with the regular AI model as fallback",
 			),
 		).toBeInTheDocument();
 
@@ -214,5 +214,46 @@ describe("organization AI model preferences decisions", () => {
 		expect(
 			await within(decisionCard).findByText("Unsaved"),
 		).toBeInTheDocument();
+	});
+});
+
+describe("decisions without Vercel", () => {
+	it("disables the decision selector and explains the regular classifier fallback", async () => {
+		const withoutVercel = {
+			...generalModelsResponse,
+			configuredProviders:
+				generalModelsResponse.configuredProviders.filter(
+					(provider) => provider.provider !== "VERCEL_GATEWAY",
+				),
+		};
+		mockListAvailable.mockImplementation(
+			({ taskType }: { taskType?: string }) =>
+				Promise.resolve(
+					taskType === "DECISION"
+						? {
+								...withoutVercel,
+								models: [],
+								modelsByGatewayAndProvider: {},
+							}
+						: withoutVercel,
+				),
+		);
+		mockGetTaskDefaults.mockResolvedValue([]);
+		mockGetOrg.mockResolvedValue([]);
+		renderForm();
+		const heading = await screen.findByText("Decisions");
+		const card = heading.closest("div.p-4");
+		if (!card) {
+			throw new Error("Decisions card missing");
+		}
+		expect(within(card).getByRole("combobox")).toBeDisabled();
+		expect(
+			within(card).queryByText("TypeSafe AI Jev"),
+		).not.toBeInTheDocument();
+		expect(
+			within(card).getByText(/Jev requires Vercel AI Gateway/),
+		).toHaveTextContent(
+			"Jev requires Vercel AI Gateway. Work items use your regular AI model when no decision model is available.",
+		);
 	});
 });

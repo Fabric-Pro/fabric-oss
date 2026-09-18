@@ -57,6 +57,9 @@ import {
 	setAiUsageRecorder,
 } from "@repo/database";
 import { logger } from "@repo/logs";
+import { AiUsageLimitExceededError } from "./ai-usage-limit-error";
+
+export { AiUsageLimitExceededError } from "./ai-usage-limit-error";
 
 // ---------------------------------------------------------------------------
 // AI usage-threshold notifier registry
@@ -644,46 +647,6 @@ export async function loadApplicableLimits(
 // ===========================================================================
 // — chokepoint surface
 // ===========================================================================
-
-// AiUsageLimitExceededError
-
-/**
- * Structured error thrown by {@link assertWithinAiUsageLimits} when a HARD
- * `AiUsageLimit` would be exceeded by the in-flight call. The fields are
- * read-only and form the contract that the oRPC error mapper + every
- * client surface (Nexus chat, document AI, daily brief, embeddings …)
- * relies on to render a single destructive toast with a "Manage limits"
- * deep link.
- * Carries the structured payload that the rich client UI needs.
- */
-export class AiUsageLimitExceededError extends Error {
-	readonly code = "AI_USAGE_LIMIT_EXCEEDED" as const;
-	readonly limitId: string;
-	readonly dimension: AiUsageLimitDimension;
-	readonly window: AiUsageLimitWindow;
-	readonly used: bigint;
-	readonly max: bigint;
-	readonly manageLimitsUrl: string;
-
-	constructor(params: {
-		message: string;
-		limitId: string;
-		dimension: AiUsageLimitDimension;
-		window: AiUsageLimitWindow;
-		used: bigint;
-		max: bigint;
-		manageLimitsUrl: string;
-	}) {
-		super(params.message);
-		this.name = "AiUsageLimitExceededError";
-		this.limitId = params.limitId;
-		this.dimension = params.dimension;
-		this.window = params.window;
-		this.used = params.used;
-		this.max = params.max;
-		this.manageLimitsUrl = params.manageLimitsUrl;
-	}
-}
 
 // Threshold-crossing math (pure)
 
