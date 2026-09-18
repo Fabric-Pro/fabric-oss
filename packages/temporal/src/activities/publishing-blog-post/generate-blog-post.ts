@@ -216,8 +216,9 @@ export async function generateBlogPostActivity(
 			continue;
 		}
 		// Only a decision a project member settled — a RESOLVED question and
-		// its newest RESOLVED USER reply. Never the root's summary (the model's
-		// own question) and never an assignment note; see `settledDecision`.
+		// its current answer, the member's newest RESOLVED reply. The root's
+		// summary rides along as the QUESTION the member was shown, never as
+		// the answer, and an assignment note is neither; see `settledDecision`.
 		const settled = settledDecision(thread);
 		if (settled) {
 			decisions.push(settled);

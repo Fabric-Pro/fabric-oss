@@ -30,9 +30,16 @@ vi.mock("../../../lib/publishing-topic-project", () => ({
 }));
 vi.mock("../../../../../orpc/procedures", () => {
 	const chain: Record<string, unknown> = {};
-	for (const m of ["use", "route", "output"]) {
+	for (const m of ["use", "route"]) {
 		chain[m] = () => chain;
 	}
+	// `.output()` records its schema the same way `.input()` does below: a
+	// result the handler returns must also be one the REAL output schema
+	// accepts, or the endpoint fails at runtime while this file stays green.
+	chain.output = (schema: unknown) => {
+		chain.__outputSchema = schema;
+		return chain;
+	};
 	// Unlike the other passthrough links, `.input()` records its argument (the
 	// REAL `z.object({...})` built in topic-decisions.ts) onto the chain, the
 	// same way `requireProjectPermission` records `__permission` below. This
@@ -46,6 +53,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 		handler: fn,
 		__permission: chain.__permission,
 		__inputSchema: chain.__inputSchema,
+		__outputSchema: chain.__outputSchema,
 	});
 	return {
 		tenantProtectedProcedure: chain,
@@ -82,6 +90,7 @@ type HandlerBearing = {
 	handler: Function;
 	__permission: string;
 	__inputSchema: ZodLikeSchema;
+	__outputSchema: ZodLikeSchema;
 };
 // What `ZodToJsonSchemaConverter.convert()` actually accepts — the captured
 // schemas above are typed as `ZodLikeSchema` for the whitespace-refusal
@@ -106,6 +115,9 @@ const answerPermissionSpy = (
 const answerInputSchema = (
 	answerTopicQuestionProcedure as unknown as HandlerBearing
 ).__inputSchema;
+const answerOutputSchema = (
+	answerTopicQuestionProcedure as unknown as HandlerBearing
+).__outputSchema;
 const amendHandler = (amendTopicQuestionProcedure as unknown as HandlerBearing)
 	.handler;
 const amendInputSchema = (
@@ -524,4 +536,103 @@ describe("answerBodySchema is published as a pattern in the OpenAPI document (Fi
 			});
 		},
 	);
+});
+
+/**
+ * The version of the question the caller answered (Fizzy #1988). A newer
+ * analysis can rewrite an open question while a member is writing; an answer
+ * sent with the version they saw is refused as `question_changed` — a result,
+ * not an error, so the page can tell it from a failure. A caller that sends no
+ * version is not checked.
+ */
+describe("answerTopicQuestion: the version the caller answered (Fizzy #1988)", () => {
+	const EXPECTED_VERSION_DESCRIPTION =
+		"The analysisVersion of the question as the caller displayed it. When given, an answer to a question that a newer analysis has refreshed since, even with unchanged wording, is not recorded, and the result status is question_changed. Omit it to skip the check.";
+
+	it.each([
+		["a version", 3],
+		["null, for a question with no version", null],
+	] as const)(
+		"passes %s through to the database helper",
+		async (_label, version) => {
+			await callAnswer({
+				...API_ANSWER_INPUT,
+				expectedAnalysisVersion: version,
+			});
+
+			expect(answerTopicQuestion).toHaveBeenCalledWith(
+				expect.objectContaining({ expectedAnalysisVersion: version }),
+			);
+		},
+	);
+
+	it("passes undefined when the caller sends no version, so the answer is not checked", async () => {
+		// An own `expectedAnalysisVersion: undefined` key is correct here: the
+		// database helper checks only a version that is `!== undefined`, and
+		// its own suite proves an omitted version adds nothing to the claim.
+		await callAnswer(API_ANSWER_INPUT);
+
+		expect(vi.mocked(answerTopicQuestion)).toHaveBeenCalledTimes(1);
+		expect(
+			vi.mocked(answerTopicQuestion).mock.calls[0]?.[0]
+				?.expectedAnalysisVersion,
+		).toBeUndefined();
+	});
+
+	it("returns question_changed as a result the output schema accepts, not an error", async () => {
+		vi.mocked(answerTopicQuestion).mockResolvedValue({
+			status: "question_changed",
+			root: null,
+		});
+
+		const result = await callAnswer({
+			...API_ANSWER_INPUT,
+			expectedAnalysisVersion: 1,
+		});
+
+		expect(result).toEqual({ status: "question_changed", root: null });
+		expect(answerOutputSchema.safeParse(result).success).toBe(true);
+	});
+
+	it("accepts a whole number, null or nothing, and refuses a fraction", () => {
+		expect(
+			answerInputSchema.safeParse({
+				...API_ANSWER_INPUT,
+				expectedAnalysisVersion: 2,
+			}).success,
+		).toBe(true);
+		expect(
+			answerInputSchema.safeParse({
+				...API_ANSWER_INPUT,
+				expectedAnalysisVersion: null,
+			}).success,
+		).toBe(true);
+		expect(answerInputSchema.safeParse(API_ANSWER_INPUT).success).toBe(
+			true,
+		);
+		expect(
+			answerInputSchema.safeParse({
+				...API_ANSWER_INPUT,
+				expectedAnalysisVersion: 1.5,
+			}).success,
+		).toBe(false);
+	});
+
+	it("describes the field in the OpenAPI document, as optional", () => {
+		const [, json] = new ZodToJsonSchemaConverter().convert(
+			answerInputSchema as unknown as ConvertibleSchema,
+			{ strategy: "input" },
+		);
+
+		expect(json).toMatchObject({
+			properties: {
+				expectedAnalysisVersion: {
+					description: EXPECTED_VERSION_DESCRIPTION,
+				},
+			},
+		});
+		expect((json as { required?: string[] }).required ?? []).not.toContain(
+			"expectedAnalysisVersion",
+		);
+	});
 });

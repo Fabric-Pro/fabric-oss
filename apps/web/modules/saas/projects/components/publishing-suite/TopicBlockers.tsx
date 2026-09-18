@@ -4,7 +4,7 @@ import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	liveAnswerReply,
@@ -55,18 +55,84 @@ export function TopicBlockers({
 	const queryClient = useQueryClient();
 	const [openId, setOpenId] = useState<string | null>(null);
 	const [draft, setDraft] = useState("");
+	/**
+	 * The analysis version of a blocker as the member saw it when they opened
+	 * its editor, keyed to that blocker's `questionId` (Fizzy #1988); none for
+	 * a blocker without a `questionId`. Set only by "Answer". Cleared by
+	 * Cancel, by `closeEditor`, and by a refusal of the open editor's OWN
+	 * answer — there the editor and its draft stay but nothing stays captured,
+	 * so a retry sends the version on screen at its click.
+	 *
+	 * "Save answer" reads it: the version composed at open, when the capture
+	 * was taken on the blocker being saved; otherwise the version on screen at
+	 * the click. The page refetches under an open editor and this list keeps
+	 * the draft across that refetch, so a version read fresh at every render
+	 * would be the NEW one — the server would accept an answer written against
+	 * wording the member never saw. "Not needed" is one click and sends
+	 * the version on screen at that click, never this capture.
+	 *
+	 * ONE mutation serves every blocker and every blocker's actions render at
+	 * once, so a result for ANOTHER blocker — refused or recorded — never
+	 * clears it: `onSuccess` acts only when `openQuestionId` names the answered
+	 * blocker.
+	 */
+	const seenVersion = useRef<
+		{ questionId: string; version: number | null } | undefined
+	>(undefined);
+	/**
+	 * The `questionId` of the blocker whose editor is open — `null` when none is.
+	 * A ref beside `openId`, so the mutation's `onSuccess` can tell whether a
+	 * result belongs to the open editor whichever render created the callback.
+	 */
+	const openQuestionId = useRef<string | null>(null);
+
+	/** Close the open editor, drop its draft, and forget its capture. */
+	const closeEditor = () => {
+		setOpenId(null);
+		setDraft("");
+		openQuestionId.current = null;
+		seenVersion.current = undefined;
+	};
 
 	const settle = useMutation(
 		orpc.projects.publishingSuite.answerTopicQuestion.mutationOptions({
-			onSuccess: () => {
+			onSuccess: (result, variables) => {
 				queryClient.invalidateQueries({
 					queryKey:
 						orpc.projects.publishingSuite.listTopicDecisions.queryKey(
 							{ input: { projectId, topicId, organizationId } },
 						),
 				});
-				setOpenId(null);
-				setDraft("");
+				// ONE mutation serves every blocker, so a result touches the open
+				// editor only when the request was for that editor's blocker. "Not
+				// needed" on another blocker used to close this editor and drop its
+				// draft on any success.
+				const forOpenEditor =
+					openQuestionId.current === variables.questionId;
+				if (result.status === "question_changed") {
+					// Nothing was recorded: a newer analysis rewrote the item after
+					// the member read it.
+					toast.error(
+						"A newer analysis changed this item. Read it again, then save your answer.",
+					);
+					if (forOpenEditor) {
+						// The editor and the draft stay. The capture is cleared, NOT
+						// set to the version now on screen: at this moment the list
+						// still renders the OLD root — the invalidation has only
+						// started the refetch — so capturing it would resend the
+						// refused version on every retry. With nothing captured, the
+						// retry sends the version on screen when the member clicks
+						// again, which is the refetched one once the new wording
+						// shows. A refusal for ANOTHER blocker leaves this capture
+						// alone, so this editor's save is still checked against the
+						// version it was composed at.
+						seenVersion.current = undefined;
+					}
+					return;
+				}
+				if (forOpenEditor) {
+					closeEditor();
+				}
 			},
 			onError: () => {
 				toast.error("Could not record that. Please try again.");
@@ -85,7 +151,11 @@ export function TopicBlockers({
 		return null;
 	}
 
-	const settleBlocker = (thread: TopicDecisionThread, answer: string) => {
+	const settleBlocker = (
+		thread: TopicDecisionThread,
+		answer: string,
+		expectedAnalysisVersion: number | null,
+	) => {
 		const questionId = thread.root.questionId;
 		const text = answer.trim();
 		if (!questionId || text.length === 0) {
@@ -102,6 +172,9 @@ export function TopicBlockers({
 			// AI's RECOMMENDATION, and a blocker carries none — there is nothing
 			// to recommend about a thing that does not exist yet.
 			answerSource: "MANUAL",
+			// The version of the blocker as the member saw it; the server
+			// refuses the answer when a newer analysis has rewritten it since.
+			expectedAnalysisVersion,
 		});
 	};
 
@@ -155,7 +228,13 @@ export function TopicBlockers({
 												variant="ghost"
 												size="sm"
 												disabled={settle.isPending}
-												onClick={() => setOpenId(null)}
+												onClick={() => {
+													setOpenId(null);
+													openQuestionId.current =
+														null;
+													seenVersion.current =
+														undefined;
+												}}
 											>
 												Cancel
 											</Button>
@@ -166,9 +245,22 @@ export function TopicBlockers({
 													settle.isPending ||
 													draft.trim().length === 0
 												}
-												onClick={() =>
-													settleBlocker(thread, draft)
-												}
+												onClick={() => {
+													// The version captured for THIS blocker when its
+													// editor opened; else the version on screen now.
+													const captured =
+														seenVersion.current;
+													settleBlocker(
+														thread,
+														draft,
+														captured !==
+															undefined &&
+															captured.questionId ===
+																root.questionId
+															? captured.version
+															: root.analysisVersion,
+													);
+												}}
 											>
 												Save answer
 											</Button>
@@ -186,6 +278,17 @@ export function TopicBlockers({
 													liveAnswerReply(thread)
 														?.content ?? "",
 												);
+												openQuestionId.current =
+													root.questionId;
+												seenVersion.current =
+													root.questionId
+														? {
+																questionId:
+																	root.questionId,
+																version:
+																	root.analysisVersion,
+															}
+														: undefined;
 											}}
 										>
 											Answer
@@ -199,6 +302,7 @@ export function TopicBlockers({
 												settleBlocker(
 													thread,
 													NOT_NEEDED_ANSWER,
+													root.analysisVersion,
 												)
 											}
 										>

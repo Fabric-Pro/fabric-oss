@@ -676,6 +676,8 @@ describe("buildNewsletterBlurbLockedClauses — the settled-decisions block", ()
 		subject: "example-org",
 		decisionKind: "CUSTOMER_NAME",
 		answer: "Yes, the customer agreed to be named in public material.",
+		question: "May we name example-org in public material?",
+		foldedQuestions: [],
 	};
 
 	it("renders a settled decision after the two restriction blocks", () => {
@@ -696,7 +698,7 @@ describe("buildNewsletterBlurbLockedClauses — the settled-decisions block", ()
 		expect(open).toBeGreaterThan(restricted);
 		expect(settled).toBeGreaterThan(open);
 		expect(clauses.slice(settled)).toContain(
-			'- "example-org" - "Yes, the customer agreed to be named in public material."',
+			'- "example-org" - asked: "May we name example-org in public material?" - answered: "Yes, the customer agreed to be named in public material."',
 		);
 	});
 
@@ -775,7 +777,7 @@ describe("buildNewsletterBlurbLockedClauses — the settled-decisions block", ()
 			composed.prompt.indexOf("## Rules that override anything above"),
 		);
 		expect(locked).toContain(
-			'- "example-org" - "Yes, the customer agreed to be named in public material."',
+			'- "example-org" - asked: "May we name example-org in public material?" - answered: "Yes, the customer agreed to be named in public material."',
 		);
 	});
 });

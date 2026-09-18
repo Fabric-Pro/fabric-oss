@@ -229,10 +229,22 @@ export interface SettledDecisionReply {
  *
  * Structural, like `RestrictionThreadRoot`: `@repo/utils` is the leaf package
  * `@repo/database` and `@repo/temporal` sit on and must not import either.
- * `summary` is declared only so the docblock below can say why it is NOT read.
+ *
+ * The root's extra fields are what the result carries beside the answer:
+ * `summary` is the QUESTION the member was shown — never the answer, see
+ * `settledDecision` — and `foldedQuestions` is read only while
+ * `foldedQuestionsVersion` equals `analysisVersion` (see `settledRootOfKind`).
+ * All four are optional: `listTopicDecisions` returns every one of them, but a
+ * thread fixture has no opinion about them, and absence reads as "none
+ * recorded".
  */
 export interface SettledDecisionThread extends RestrictionThreadRoot {
-	root: RestrictionThreadRoot["root"] & { summary?: string | null };
+	root: RestrictionThreadRoot["root"] & {
+		summary?: string | null;
+		analysisVersion?: number | null;
+		foldedQuestions?: readonly string[] | null;
+		foldedQuestionsVersion?: number | null;
+	};
 	replies: readonly SettledDecisionReply[];
 }
 
@@ -241,6 +253,10 @@ export interface SettledDecision {
 	subject: string | null;
 	decisionKind: string;
 	answer: string;
+	/** The root's `summary` as stored: the question a QUESTION root's member was shown; a BLOCKER root's errand. Null when not recorded. */
+	question: string | null;
+	/** Questions folded into this one, in fold order, from the root's `foldedQuestions`; empty when none were recorded. */
+	foldedQuestions: string[];
 }
 
 /**
@@ -351,11 +367,13 @@ function replyTime(value: Date | string): number {
  * `settledBlocker` below is the same computation for a `BLOCKER` root; the two
  * are separate exports so that widening one does not widen the other.
  *
- * There is NO fallback to `root.summary`. For a question root that field holds
- * the model's own question text (`reconcileTopicQuestions` writes
+ * `root.summary` is NEVER the answer. For a question root that field holds the
+ * model's own question text (`reconcileTopicQuestions` writes
  * `summary: question.question`), so falling back to it presented the model's
- * question as the member's answer. A `RESOLVED` root with no qualifying reply
- * yields nothing.
+ * question as the member's answer; a `RESOLVED` root with no qualifying reply
+ * yields nothing. It IS carried beside the answer, as `question` — the words
+ * the member was shown when they answered, which is what the answer approves —
+ * with `foldedQuestions`, the questions the analysis folded into this one.
  */
 export function settledDecision(
 	thread: SettledDecisionThread,
@@ -387,7 +405,8 @@ export function settledBlocker(
 
 /**
  * The shared body of the two above: a root of `kind`, `RESOLVED`, plus the text
- * of its current answer (`currentAnswerReply`).
+ * of its current answer (`currentAnswerReply`), the question that answer was
+ * given to (the root's `summary`, as stored) and the questions folded into it.
  *
  * Kept private so there is still exactly one implementation of "settled" —
  * the property `settled-decision-usage.test.ts` polices — while the two
@@ -412,7 +431,32 @@ function settledRootOfKind(
 		subject: root.subject,
 		decisionKind: root.decisionKind ?? "OTHER",
 		answer,
+		question: root.summary ?? null,
+		foldedQuestions: foldedQuestionsOf(root),
 	};
+}
+
+/**
+ * The root's folded questions, as a copy, while they belong to its wording.
+ *
+ * Trusted only while `foldedQuestionsVersion` is recorded and equals the root's
+ * `analysisVersion`. A build that predates the column refreshes a root's
+ * wording and version without touching the list, so a list whose stamp no
+ * longer matches belongs to wording that is gone, and reading it would widen
+ * what the answer approves. Copied, never aliased, and never parsed out of
+ * `whyItMatters`, whose "Answering this also settles:" paragraphs are display
+ * copy and cannot be read back losslessly.
+ */
+function foldedQuestionsOf(root: SettledDecisionThread["root"]): string[] {
+	const stamp = root.foldedQuestionsVersion;
+	if (
+		stamp === null ||
+		stamp === undefined ||
+		stamp !== root.analysisVersion
+	) {
+		return [];
+	}
+	return [...(root.foldedQuestions ?? [])];
 }
 
 /**

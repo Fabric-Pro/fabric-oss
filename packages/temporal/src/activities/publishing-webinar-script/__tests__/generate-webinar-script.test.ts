@@ -210,6 +210,7 @@ function answeredQuestion(
 	subject: string,
 	answer: string,
 	createdAt = "2026-09-01T09:00:00Z",
+	root: Record<string, unknown> = {},
 ) {
 	return {
 		root: {
@@ -219,7 +220,13 @@ function answeredQuestion(
 			status: "RESOLVED",
 			decisionKind,
 			subject,
-			summary: null,
+			// The question the member was shown, as reconciliation stores it,
+			// with the folded list stamped by the version that wrote it.
+			summary: `What may the piece say about ${subject}?`,
+			analysisVersion: 1,
+			foldedQuestions: [] as string[],
+			foldedQuestionsVersion: 1,
+			...root,
 		},
 		replies: [
 			{
@@ -1217,7 +1224,7 @@ describe("generateWebinarScriptActivity — the settled-decisions block", () => 
 		await run();
 
 		expect(settledSection()).toContain(
-			'- "example-org" - "Yes, the customer agreed to be named."',
+			'- "example-org" - asked: "What may the piece say about example-org?" - answered: "Yes, the customer agreed to be named."',
 		);
 		expect(settledSection()).not.toContain(
 			"Platform engineers at example-org.",
@@ -1238,7 +1245,7 @@ describe("generateWebinarScriptActivity — the settled-decisions block", () => 
 		await run();
 
 		expect(settledSection()).toContain(
-			'- "how much of the resolver to show" - "Show the cache dashboard; do not open the source."',
+			'- "how much of the resolver to show" - asked: "What may the piece say about how much of the resolver to show?" - answered: "Show the cache dashboard; do not open the source."',
 		);
 	});
 
@@ -1266,5 +1273,103 @@ describe("generateWebinarScriptActivity — the settled-decisions block", () => 
 				omitted: 1,
 			},
 		);
+	});
+
+	it("shows the question the member answered and the questions folded into it (Fizzy #1988)", async () => {
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"CUSTOMER_NAME",
+				"Customer name and logo",
+				"Yes.",
+				undefined,
+				{
+					summary: "May this piece name example-org?",
+					analysisVersion: 2,
+					foldedQuestions: [
+						"May it say example-org was the first trial customer?",
+					],
+					foldedQuestionsVersion: 2,
+				},
+			),
+		]);
+
+		await run();
+
+		expect(settledSection()).toContain(
+			'- "Customer name and logo" - asked: "May this piece name example-org?" also: "May it say example-org was the first trial customer?" - answered: "Yes."',
+		);
+	});
+
+	const QUESTION_NOT_SHOWN_WARNING =
+		"[publishing-webinar-script] settled-decisions entries shown cut or without their question";
+
+	it("logs a listed decision shown without its question — ids and counts, never its text (Fizzy #1988)", async () => {
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"CUSTOMER_NAME",
+				"example-org",
+				"Yes, the customer agreed to be named.",
+				undefined,
+				{ summary: null },
+			),
+		]);
+
+		await run();
+
+		// Precondition: the entry is listed, and its question slot says why.
+		expect(settledSection()).toContain(
+			'- "example-org" - asked: [question not recorded] - answered: "Yes, the customer agreed to be named."',
+		);
+		expect(logger.warn).toHaveBeenCalledWith(QUESTION_NOT_SHOWN_WARNING, {
+			draftId: "draft-1",
+			topicId: "topic-1",
+			projectId: "proj-1",
+			contentType: "WEBINAR_SCRIPT",
+			cutEntries: 0,
+			questionNotShown: 1,
+		});
+	});
+
+	it("logs a listed decision whose answer alone was cut", async () => {
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"CUSTOMER_NAME",
+				"example-org",
+				`Yes${", in public material".repeat(20)}`,
+			),
+		]);
+
+		await run();
+
+		expect(settledSection()).toContain('…" [cut to fit]');
+		expect(logger.warn).toHaveBeenCalledWith(QUESTION_NOT_SHOWN_WARNING, {
+			draftId: "draft-1",
+			topicId: "topic-1",
+			projectId: "proj-1",
+			contentType: "WEBINAR_SCRIPT",
+			cutEntries: 1,
+			questionNotShown: 0,
+		});
+	});
+
+	it("does not log it when every listed decision shows its question and its whole answer", async () => {
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"CUSTOMER_NAME",
+				"example-org",
+				"Yes, the customer agreed to be named.",
+			),
+		]);
+
+		await run();
+
+		expect(settledSection()).toContain(
+			'- "example-org" - asked: "What may the piece say about example-org?" - answered: "Yes, the customer agreed to be named."',
+		);
+		expect(
+			logger.warn.mock.calls.filter(
+				([message]) => message === QUESTION_NOT_SHOWN_WARNING,
+			),
+		).toEqual([]);
 	});
 });

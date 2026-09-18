@@ -186,10 +186,11 @@ export async function generatePlanningAnalysisActivity(
 	 * holding the open items those are one thing asked twice, and suppressing
 	 * only the question-shaped repeat would leave the errand returning forever.
 	 *
-	 * Both resolve through the shared settle helper, which takes a member's
-	 * newest RESOLVED reply and never the root's own summary — that field holds
-	 * the model's question, and presenting it as the answer is the failure the
-	 * helper exists to prevent.
+	 * Both resolve through the shared settle helper, whose ANSWER is a member's
+	 * current RESOLVED reply and never the root's own summary — that field holds
+	 * the model's question, which the helper carries separately as the question
+	 * the member was shown; presenting it as the answer is the failure the helper
+	 * exists to prevent. This analysis reads only the label and the answer.
 	 */
 	const settledDecisions: SettledDecision[] = [];
 	for (const thread of threads) {
@@ -376,7 +377,12 @@ export async function generatePlanningAnalysisActivity(
 	} = parsed.data;
 	const content = {
 		...sections,
-		questions,
+		// The folded-question list rides on the reconciliation ROWS only. The
+		// analysis document keeps the shape every reader resolves and budgets,
+		// and its `whyItMatters` already carries the same questions as prose.
+		questions: questions.map(
+			({ foldedQuestions: _foldedQuestions, ...question }) => question,
+		),
 		generation: {
 			promptSource,
 			promptId: boundPrompt?.id ?? null,
@@ -405,8 +411,22 @@ export async function generatePlanningAnalysisActivity(
 			recommendedResponse: q.recommendedResponse,
 			answerOptions: q.answerOptions,
 			whyItMatters: q.whyItMatters,
+			// Empty for a question nothing was folded into. Required by the row
+			// type, so this seam cannot compile while dropping it.
+			foldedQuestions: q.foldedQuestions ?? [],
 		})),
-		blockers,
+		// Mapped field by field like the questions, not passed whole: a blocker
+		// nothing was folded into carries no list, and the row needs an empty one.
+		blockers: blockers.map((b) => ({
+			questionId: b.questionId,
+			decisionKind: b.decisionKind,
+			subject: b.subject,
+			question: b.question,
+			recommendedResponse: b.recommendedResponse,
+			answerOptions: b.answerOptions,
+			whyItMatters: b.whyItMatters,
+			foldedQuestions: b.foldedQuestions ?? [],
+		})),
 	});
 
 	if (!commit.persisted) {

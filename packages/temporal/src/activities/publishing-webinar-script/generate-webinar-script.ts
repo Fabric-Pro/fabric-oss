@@ -286,8 +286,9 @@ export async function generateWebinarScriptActivity(
 			continue;
 		}
 		// Only a decision a project member settled — a RESOLVED question and
-		// its newest RESOLVED USER reply. Never the root's summary (the model's
-		// own question) and never an assignment note; see `settledDecision`.
+		// its current answer, the member's newest RESOLVED reply. The root's
+		// summary rides along as the QUESTION the member was shown, never as
+		// the answer, and an assignment note is neither; see `settledDecision`.
 		const settled = settledDecision(thread);
 		if (settled) {
 			decisions.push(settled);
@@ -300,8 +301,8 @@ export async function generateWebinarScriptActivity(
 	// thread the restriction branch above consumed is never RESOLVED, so
 	// reading every thread again here cannot admit a restricting one.
 	const settledApprovals = selectSettledApprovals(threads, "WEBINAR_SCRIPT");
-	const settledApprovalsOmitted =
-		boundSettledApprovals(settledApprovals).omitted;
+	const settledApprovalsBound = boundSettledApprovals(settledApprovals);
+	const settledApprovalsOmitted = settledApprovalsBound.omitted;
 	if (settledApprovalsOmitted > 0) {
 		// The overflow line lives only inside the prompt string, so this is the
 		// one signal an operator gets that a topic's prompt no longer lists
@@ -315,6 +316,27 @@ export async function generateWebinarScriptActivity(
 				contentType: "WEBINAR_SCRIPT",
 				listed: settledApprovals.length - settledApprovalsOmitted,
 				omitted: settledApprovalsOmitted,
+			},
+		);
+	}
+	if (
+		settledApprovalsBound.cutEntries > 0 ||
+		settledApprovalsBound.questionNotShown > 0
+	) {
+		// A listed entry whose label or answer was cut grants nothing, and one
+		// whose question is not recorded or not shown whole leaves a bare answer
+		// approving nothing (Fizzy #1988). Like the overflow line, both states
+		// exist only inside the prompt, so this is the operator's signal. Ids and
+		// counts only — never a label, a question or an answer.
+		logger.warn(
+			"[publishing-webinar-script] settled-decisions entries shown cut or without their question",
+			{
+				draftId,
+				topicId,
+				projectId,
+				contentType: "WEBINAR_SCRIPT",
+				cutEntries: settledApprovalsBound.cutEntries,
+				questionNotShown: settledApprovalsBound.questionNotShown,
 			},
 		);
 	}

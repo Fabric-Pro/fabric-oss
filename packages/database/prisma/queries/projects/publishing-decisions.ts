@@ -49,6 +49,19 @@ export interface ReconcilableQuestion {
 	 */
 	answerOptions: { text: string; justification: string }[] | null;
 	whyItMatters: string | null;
+	/**
+	 * Questions the analysis folded into this one because they named the same
+	 * subject, in fold order; empty when nothing was folded (Fizzy #1988).
+	 *
+	 * REQUIRED, not optional, for the reason `answerOptions` above is — and the
+	 * failure here is worse than an erased value. Both write branches below
+	 * stamp `foldedQuestionsVersion` with this run's version, so an omitted list
+	 * would leave the PREVIOUS list in place under a stamp that now calls it
+	 * current, and a settled answer would read as approving questions this
+	 * wording no longer folds in. Required, the only production caller
+	 * (`generate-planning-analysis.ts`) cannot compile while dropping it.
+	 */
+	foldedQuestions: string[];
 }
 
 export interface ReconcileOutcome {
@@ -182,6 +195,12 @@ export async function reconcileTopicQuestions(
 							| Prisma.InputJsonValue
 							| undefined) ?? Prisma.DbNull,
 					whyItMatters: question.whyItMatters,
+					// Replaced with the wording, and stamped with the version that
+					// wrote it: a reader trusts the list only while the stamp equals
+					// the root's `analysisVersion`, so a build that refreshes the
+					// wording without knowing these columns leaves a list nobody reads.
+					foldedQuestions: question.foldedQuestions,
+					foldedQuestionsVersion: input.analysisVersion,
 					// `decisionKind`/`subject` are persisted for identity and
 					// provenance, not for display: they are the inputs
 					// `deriveQuestionId` hashes to keep this row stable across a
@@ -228,6 +247,9 @@ export async function reconcileTopicQuestions(
 						| Prisma.InputJsonValue
 						| undefined) ?? Prisma.DbNull,
 				whyItMatters: question.whyItMatters,
+				// See the refresh branch above: the list and the version that wrote it.
+				foldedQuestions: question.foldedQuestions,
+				foldedQuestionsVersion: input.analysisVersion,
 				analysisVersion: input.analysisVersion,
 			},
 		});
@@ -349,6 +371,17 @@ export interface TopicDecisionEntry {
 	whyItMatters: string | null;
 	answerSource: string | null;
 	analysisVersion: number | null;
+	/**
+	 * Questions an analysis folded into this root, and the `analysisVersion` of
+	 * the write that set them (`reconcileTopicQuestions`). Every read returns
+	 * both columns — `listTopicDecisions` includes every scalar — but they are
+	 * OPTIONAL on this read type: a thread fixture has no opinion about them, and
+	 * their only readers (`settledDecision` and `settledBlocker`, through one
+	 * shared helper) already treat absence as "none recorded". The WRITE type,
+	 * `ReconcilableQuestion`, keeps the list required.
+	 */
+	foldedQuestions?: string[];
+	foldedQuestionsVersion?: number | null;
 	createdAt: Date;
 	/**
 	 * Who this question is waiting on. Always present, empty when nobody has
@@ -480,6 +513,19 @@ export async function listTopicDecisions(input: {
  * answers to the SAME still-open question — both would pass it. The
  * `updateMany` claim below is what actually serializes them: only the first
  * caller's conditional update can match, so only one reply is ever created.
+ *
+ * THE VERSION CHECK (Fizzy #1988). A regeneration refreshes an `OPEN` or
+ * `POSSIBLY_RESOLVED` root in place — new wording, new options, a new
+ * `analysisVersion` — and the page keeps a member's draft across that refetch
+ * on purpose. An answer addressed by `questionId` alone would then be stored
+ * against wording the member never saw, and the settled-decisions block would
+ * show the model a question nobody answered. So a caller that sends
+ * `expectedAnalysisVersion` — the version of the question as the member saw it
+ * — gets `question_changed`, and nothing is written, when the root no longer
+ * carries that version: checked at the read, and again in the claim, which a
+ * refresh landing between the two would otherwise slip past. `null` is a real
+ * value (a root with no version). A caller that sends nothing — an older client
+ * during a deploy, or an API caller that opts out — is not checked.
  */
 export async function answerTopicQuestion(input: {
 	topicId: string;
@@ -498,8 +544,13 @@ export async function answerTopicQuestion(input: {
 	 * question would be a cross-kind write with the same shape as a correct one.
 	 */
 	kind?: "QUESTION" | "BLOCKER";
+	/**
+	 * The `analysisVersion` of the question as the member saw it. `undefined`
+	 * skips the check; `null` expects a root with no version.
+	 */
+	expectedAnalysisVersion?: number | null;
 }): Promise<{
-	status: "resolved" | "deduped" | "not_found";
+	status: "resolved" | "deduped" | "not_found" | "question_changed";
 	root: TopicDecisionEntry | null;
 }> {
 	return db.$transaction(async (tx) => {
@@ -522,6 +573,7 @@ export async function answerTopicQuestion(input: {
 				status: true,
 				organizationId: true,
 				userId: true,
+				analysisVersion: true,
 			},
 		});
 
@@ -541,6 +593,21 @@ export async function answerTopicQuestion(input: {
 			};
 		}
 
+		if (
+			input.expectedAnalysisVersion !== undefined &&
+			input.expectedAnalysisVersion !== root.analysisVersion
+		) {
+			// A newer analysis rewrote this question after the member read it.
+			// Nothing is written; the caller reloads the question and asks again.
+			const current = await tx.publishingTopicDecisionEntry.findUnique({
+				where: { id: root.id },
+			});
+			return {
+				status: "question_changed" as const,
+				root: current as unknown as TopicDecisionEntry,
+			};
+		}
+
 		// CLAIM BEFORE WRITE. Two concurrent answers to the same question both
 		// read an OPEN/POSSIBLY_RESOLVED root above — without a conditional claim
 		// here, both would `create` a reply and both `update` the root, leaving
@@ -548,6 +615,11 @@ export async function answerTopicQuestion(input: {
 		// COMMITTED. The `status: { in: [...] }` guard means only the FIRST
 		// caller's `updateMany` can match this row: by the time a second caller's
 		// `updateMany` runs, the row is already RESOLVED and it matches zero.
+		// When the caller sent a version, the claim is ALSO conditional on it: a
+		// regeneration that refreshed the root after the read above moved its
+		// `analysisVersion`, and this claim then matches zero too. The key is
+		// added only when a version was sent — `null` must stay a real filter
+		// for a root with no version, and an omitted version is not checked.
 		// Same local shape this repo already uses for send-idempotency, scoped by
 		// {projectId, topicId} (DV16) as well as id.
 		const claim = await tx.publishingTopicDecisionEntry.updateMany({
@@ -556,17 +628,34 @@ export async function answerTopicQuestion(input: {
 				projectId: input.projectId,
 				topicId: input.topicId,
 				status: { in: ["OPEN", "POSSIBLY_RESOLVED"] },
+				...(input.expectedAnalysisVersion !== undefined
+					? { analysisVersion: input.expectedAnalysisVersion }
+					: {}),
 			},
 			data: { status: "RESOLVED", answerSource: input.answerSource },
 		});
 
 		if (claim.count === 0) {
-			// Lost the race: a concurrent answer claimed this root first. Same
-			// idempotent shape as the already-settled branch above — no reply is
-			// recorded for the loser, and no second decision is minted.
+			// Nothing was written, for one of two reasons. A concurrent answer
+			// claimed this root first — the same idempotent shape as the
+			// already-settled branch above, `deduped`, and no second decision is
+			// minted. Or, when the caller sent a version, a regeneration rewrote
+			// the root between the read and the claim: it is then still awaiting
+			// a person, and the answer was written against wording that no longer
+			// stands.
 			const existing = await tx.publishingTopicDecisionEntry.findUnique({
 				where: { id: root.id },
 			});
+			if (
+				input.expectedAnalysisVersion !== undefined &&
+				(existing?.status === "OPEN" ||
+					existing?.status === "POSSIBLY_RESOLVED")
+			) {
+				return {
+					status: "question_changed" as const,
+					root: existing as unknown as TopicDecisionEntry,
+				};
+			}
 			return {
 				status: "deduped" as const,
 				root: existing as unknown as TopicDecisionEntry,
