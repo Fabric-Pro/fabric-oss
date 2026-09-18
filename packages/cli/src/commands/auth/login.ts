@@ -75,7 +75,14 @@ export function buildLoginCommand(): Command {
 				);
 			}
 
-			saveApiKey(apiKey);
+			// An environment override selects the verification target for this
+			// invocation only. Persist a deployment only when the person supplied
+			// `--base-url`, so FABRIC_BASE_URL remains an explicit override.
+			saveApiKey(apiKey, {
+				...(opts.baseUrl === undefined
+					? {}
+					: { baseUrl: opts.baseUrl }),
+			});
 			printSuccess(`Authenticated as ${name} (${email})`);
 		});
 }
