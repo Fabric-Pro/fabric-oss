@@ -4,6 +4,7 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation } from "@tanstack/react-query";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
+import { Checkbox } from "@ui/components/checkbox";
 import {
 	Dialog,
 	DialogContent,
@@ -12,6 +13,7 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@ui/components/dialog";
+import { Label } from "@ui/components/label";
 import {
 	AlertTriangleIcon,
 	CheckIcon,
@@ -151,7 +153,18 @@ const ROUTES_INTRO =
 const LOCAL_SYNC_LABEL = "Recommended: keep the files in your checkout";
 
 const LOCAL_SYNC_INTRO =
-	"Run these once in the checkout. The first installs or updates the CLI. The second signs it in with this key and this deployment URL; the CLI keeps both in its own profile, never in the repository, though like any command the line may remain in your shell history. FABRIC_BASE_URL overrides the profile URL when it is set. The third copies whatever is published into the checkout and installs a session-start check for Claude Code that reports later changes (apply them with the sync command the check prints). If nothing is published yet, the check reports the first version when it arrives. Claude Code reads the files directly, so the sentence further down is not needed.";
+	"Run these once in the checkout. The first installs or updates the CLI. The second signs it in with this key and this deployment URL; the CLI keeps both in its own profile, never in the repository, though like any command the line may remain in your shell history. FABRIC_BASE_URL overrides the profile URL when it is set. The third copies whatever is published into the checkout and configures the session-start behavior below. If nothing is published yet, the hook checks for the first version at future session starts. Claude Code reads the files directly, so the sentence further down is not needed.";
+
+const APPLY_UPDATES_CHECKBOX_ID = "connect-cli-apply-published-updates";
+
+const APPLY_UPDATES_DESCRIPTION_ID =
+	"connect-cli-apply-published-updates-description";
+
+const APPLY_UPDATES_LABEL =
+	"Automatically apply published updates at session start";
+
+const APPLY_UPDATES_DESCRIPTION =
+	"By default, session-start checks only report published changes and print a command to apply them. Select this option to update local instruction files automatically.";
 
 /** The MCP route's heading when it follows the checkout route. */
 const MCP_ROUTE_LABEL = "Or read them live over MCP";
@@ -160,11 +173,14 @@ function buildLocalSyncCommands(
 	projectId: string,
 	rawKey: string,
 	baseUrl: string,
+	automaticallyApplyUpdates: boolean,
 ): string {
 	return [
 		"npm install -g @fabricorg/cli",
 		`fabric auth login --key ${rawKey} --base-url ${baseUrl}`,
-		`fabric instructions init --project ${projectId} --tool claude-code`,
+		`fabric instructions init --project ${projectId} --tool claude-code${
+			automaticallyApplyUpdates ? " --apply" : ""
+		}`,
 	].join("\n");
 }
 
@@ -393,6 +409,8 @@ export function ConnectCliDialog({
 	 * cleared when the view closes.
 	 */
 	const [keyCopied, setKeyCopied] = useState(false);
+	const [automaticallyApplyUpdates, setAutomaticallyApplyUpdates] =
+		useState(false);
 	const [announcement, setAnnouncement] = useState("");
 	const [origin, setOrigin] = useState("");
 	const initialFocusRef = useRef<HTMLButtonElement>(null);
@@ -451,6 +469,7 @@ export function ConnectCliDialog({
 			setRawKey(null);
 			setCopied(null);
 			setKeyCopied(false);
+			setAutomaticallyApplyUpdates(false);
 			setAnnouncement("");
 			createKeyMutation.reset();
 		}
@@ -485,7 +504,12 @@ export function ConnectCliDialog({
 		localSyncAvailable &&
 		projectId &&
 		rawKey
-			? buildLocalSyncCommands(projectId, rawKey, window.location.origin)
+			? buildLocalSyncCommands(
+					projectId,
+					rawKey,
+					window.location.origin,
+					automaticallyApplyUpdates,
+				)
 			: null;
 	const cliFirst = localSyncCommands !== null;
 	const issueError = createKeyMutation.error;
@@ -693,6 +717,36 @@ export function ConnectCliDialog({
 								<p className="text-muted-foreground text-sm">
 									{LOCAL_SYNC_INTRO}
 								</p>
+								<div className="flex items-start gap-3 rounded-lg border border-border bg-muted/40 p-3">
+									<Checkbox
+										aria-describedby={
+											APPLY_UPDATES_DESCRIPTION_ID
+										}
+										checked={automaticallyApplyUpdates}
+										id={APPLY_UPDATES_CHECKBOX_ID}
+										onCheckedChange={(checked) => {
+											setAutomaticallyApplyUpdates(
+												checked === true,
+											);
+											setCopied(null);
+											setAnnouncement("");
+										}}
+									/>
+									<div className="flex flex-col gap-1">
+										<Label
+											className="cursor-pointer"
+											htmlFor={APPLY_UPDATES_CHECKBOX_ID}
+										>
+											{APPLY_UPDATES_LABEL}
+										</Label>
+										<p
+											className="text-muted-foreground text-sm"
+											id={APPLY_UPDATES_DESCRIPTION_ID}
+										>
+											{APPLY_UPDATES_DESCRIPTION}
+										</p>
+									</div>
+								</div>
 								{/* Wraps rather than scrolls: a line longer
 								 * than the dialog is wide would otherwise hide
 								 * its end behind a scrollbar — the project id,
