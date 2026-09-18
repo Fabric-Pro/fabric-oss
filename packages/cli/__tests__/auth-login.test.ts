@@ -1,3 +1,4 @@
+import { FabricAuthError, FabricError } from "@fabricorg/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildLoginCommand } from "../src/commands/auth/login.js";
 
@@ -19,7 +20,8 @@ const { mocks } = vi.hoisted(() => ({
 	},
 }));
 
-vi.mock("@fabricorg/sdk", () => ({
+vi.mock("@fabricorg/sdk", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@fabricorg/sdk")>()),
 	FabricClient: class {
 		auth = { whoami: mocks.whoami };
 		constructor(options: unknown) {
@@ -91,8 +93,8 @@ describe("fabric auth login", () => {
 		expect(mocks.saveApiKey).toHaveBeenCalledWith("fab_test_key", {});
 	});
 
-	it("does not write a key when verification fails", async () => {
-		mocks.whoami.mockRejectedValue(new Error("invalid key"));
+	it("keeps invalid or expired key guidance for HTTP 401", async () => {
+		mocks.whoami.mockRejectedValue(new FabricAuthError("invalid key"));
 
 		await expect(runLogin(["--key", "fab_test_key"])).rejects.toMatchObject(
 			{
@@ -100,6 +102,54 @@ describe("fabric auth login", () => {
 			},
 		);
 
+		expect(mocks.printError).toHaveBeenCalledWith(
+			"Authentication failed. Check that the key is valid and not expired.",
+			3,
+		);
+		expect(mocks.saveApiKey).not.toHaveBeenCalled();
+	});
+
+	it("reports a non-auth HTTP status and the sanitized deployment URL", async () => {
+		mocks.whoami.mockRejectedValue(
+			new FabricError("reflected fab_secret\u001B[2J response", 404),
+		);
+
+		await expect(
+			runLogin([
+				"--key",
+				"fab_test_key",
+				"--base-url",
+				"https://user:secret@deployment.example/internal",
+			]),
+		).rejects.toMatchObject({ code: 3 });
+
+		expect(mocks.printError).toHaveBeenCalledWith(
+			"Authentication request to https://deployment.example failed with HTTP 404.",
+			3,
+		);
+		expect(mocks.saveApiKey).not.toHaveBeenCalled();
+	});
+
+	it("identifies the deployment when the connection cannot be established", async () => {
+		mocks.getBaseUrl.mockReturnValue("http://localhost:3001");
+		mocks.whoami.mockRejectedValue(
+			new FabricError(
+				"request to http://user:secret@localhost:3001 failed",
+				0,
+				"NETWORK_ERROR",
+			),
+		);
+
+		await expect(runLogin(["--key", "fab_test_key"])).rejects.toMatchObject(
+			{
+				code: 3,
+			},
+		);
+
+		expect(mocks.printError).toHaveBeenCalledWith(
+			"Could not connect to http://localhost:3001. Check that the deployment URL is correct and reachable.",
+			3,
+		);
 		expect(mocks.saveApiKey).not.toHaveBeenCalled();
 	});
 });

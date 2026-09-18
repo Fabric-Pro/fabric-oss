@@ -511,8 +511,9 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		const command = await screen.findByTestId(
 			"connect-cli-local-sync-command",
 		);
-		// Sign-in with this key and this deployment: the CLI stores both in
-		// its own config, and the hook it installs never names either.
+		// Install first, then sign in with this key and this deployment: the CLI
+		// stores both in its own config, and the hook it installs never names either.
+		expect(command).toHaveTextContent("npm install -g @fabricorg/cli");
 		expect(command).toHaveTextContent(
 			`fabric auth login --key ${RAW_KEY} --base-url ${window.location.origin}`,
 		);
@@ -537,6 +538,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		await user.click(screen.getByRole("button", { name: "Copy commands" }));
 		expect(clipboardWrite).toHaveBeenCalledWith(
 			[
+				"npm install -g @fabricorg/cli",
 				`fabric auth login --key ${RAW_KEY} --base-url ${window.location.origin}`,
 				`fabric instructions init --project ${PROJECT_ID} --tool claude-code`,
 			].join("\n"),

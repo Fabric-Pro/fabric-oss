@@ -151,7 +151,7 @@ const ROUTES_INTRO =
 const LOCAL_SYNC_LABEL = "Recommended: keep the files in your checkout";
 
 const LOCAL_SYNC_INTRO =
-	"Run these once in the checkout. The first signs the CLI in with this key and this deployment URL; the CLI keeps both in its own profile, never in the repository, though like any command the line may remain in your shell history. FABRIC_BASE_URL overrides the profile URL when it is set. The second copies whatever is published into the checkout and installs a session-start check for Claude Code that reports later changes (apply them with the sync command the check prints). If nothing is published yet, the check reports the first version when it arrives. Claude Code reads the files directly, so the sentence further down is not needed.";
+	"Run these once in the checkout. The first installs or updates the CLI. The second signs it in with this key and this deployment URL; the CLI keeps both in its own profile, never in the repository, though like any command the line may remain in your shell history. FABRIC_BASE_URL overrides the profile URL when it is set. The third copies whatever is published into the checkout and installs a session-start check for Claude Code that reports later changes (apply them with the sync command the check prints). If nothing is published yet, the check reports the first version when it arrives. Claude Code reads the files directly, so the sentence further down is not needed.";
 
 /** The MCP route's heading when it follows the checkout route. */
 const MCP_ROUTE_LABEL = "Or read them live over MCP";
@@ -162,6 +162,7 @@ function buildLocalSyncCommands(
 	baseUrl: string,
 ): string {
 	return [
+		"npm install -g @fabricorg/cli",
 		`fabric auth login --key ${rawKey} --base-url ${baseUrl}`,
 		`fabric instructions init --project ${projectId} --tool claude-code`,
 	].join("\n");

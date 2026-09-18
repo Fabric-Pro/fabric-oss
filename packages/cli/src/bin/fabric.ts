@@ -15,6 +15,7 @@
  */
 
 import { Command } from "commander";
+import packageJson from "../../package.json";
 import { buildAgentsCommand } from "../commands/agents/index.js";
 import { buildKeysCommand } from "../commands/auth/keys.js";
 import { buildLoginCommand } from "../commands/auth/login.js";
@@ -41,7 +42,7 @@ const program = new Command();
 program
 	.name("fabric")
 	.description("Fabric AI platform CLI")
-	.version("0.1.0")
+	.version(packageJson.version)
 	.option(
 		"--format <format>",
 		"Output format: table|json|yaml|csv",

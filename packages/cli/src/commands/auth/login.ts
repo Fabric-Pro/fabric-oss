@@ -8,10 +8,20 @@
  */
 
 import * as readline from "node:readline";
-import { FabricClient } from "@fabricorg/sdk";
+import { FabricAuthError, FabricClient, FabricError } from "@fabricorg/sdk";
 import { Command } from "commander";
 import { getBaseUrl, saveApiKey } from "../../lib/config.js";
 import { printError, printSuccess } from "../../lib/output.js";
+
+const DEFAULT_BASE_URL = "https://fabric.pro";
+
+function displayBaseUrl(baseUrl: string): string {
+	try {
+		return new URL(baseUrl).origin;
+	} catch {
+		return "the configured Fabric deployment";
+	}
+}
 
 async function promptApiKey(): Promise<string> {
 	const rl = readline.createInterface({
@@ -60,6 +70,9 @@ export function buildLoginCommand(): Command {
 
 			// Verify the key works before saving
 			const baseUrl = opts.baseUrl ?? getBaseUrl();
+			const effectiveBaseUrl = displayBaseUrl(
+				baseUrl ?? DEFAULT_BASE_URL,
+			);
 			const client = new FabricClient({ apiKey, baseUrl });
 
 			let name: string;
@@ -68,9 +81,26 @@ export function buildLoginCommand(): Command {
 				const me = await client.auth.whoami();
 				name = me.user.name ?? me.user.email;
 				email = me.user.email;
-			} catch {
+			} catch (error) {
+				if (
+					error instanceof FabricAuthError ||
+					(error instanceof FabricError && error.status === 401)
+				) {
+					printError(
+						"Authentication failed. Check that the key is valid and not expired.",
+						3,
+					);
+				}
+
+				if (error instanceof FabricError && error.status > 0) {
+					printError(
+						`Authentication request to ${effectiveBaseUrl} failed with HTTP ${error.status}.`,
+						3,
+					);
+				}
+
 				printError(
-					"Authentication failed. Check that the key is valid and not expired.",
+					`Could not connect to ${effectiveBaseUrl}. Check that the deployment URL is correct and reachable.`,
 					3,
 				);
 			}
