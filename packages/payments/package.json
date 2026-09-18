@@ -18,7 +18,8 @@
 			"default": "./index.ts"
 		},
 		"./types": "./types.ts",
-		"./lib/helper": "./src/lib/helper.ts"
+		"./lib/helper": "./src/lib/helper.ts",
+		"./lib/ai-usage-limit-error": "./src/lib/ai-usage-limit-error.ts"
 	},
 	"name": "@repo/payments",
 	"private": true,

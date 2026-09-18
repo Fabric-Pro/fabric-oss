@@ -113,7 +113,7 @@ const TASK_TYPES = [
 		id: "DECISION",
 		label: "Decisions",
 		description:
-			"Typed choice, score, and boolean decisions for future decision workflows",
+			"Bug or feature classification, with the regular AI model as fallback",
 		icon: ListChecksIcon,
 		color: "text-violet-500",
 	},
@@ -1059,10 +1059,13 @@ export function OrgAiModelPreferencesForm({
 													"Image generation requires OpenAI, Replicate, or a Gateway provider."}
 												{taskType.id === "AUDIO" &&
 													"Audio transcription requires OpenAI, Groq, or a Gateway provider."}
+												{taskType.id === "DECISION" &&
+													"Jev requires Vercel AI Gateway. Work items use your regular AI model when no decision model is available."}
 												{![
 													"EMBEDDING",
 													"IMAGE",
 													"AUDIO",
+													"DECISION",
 												].includes(taskType.id) &&
 													"Your configured providers don't have models for this task type."}{" "}
 												<Link

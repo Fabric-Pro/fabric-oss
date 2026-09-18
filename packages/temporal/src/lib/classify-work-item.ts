@@ -13,8 +13,9 @@
  *     under the dedicated `work_item_classifier` agent key.
  *   - Renders the prompt's USER TEMPLATE with the reporter's text + optional
  *     creation_source / additional_context (per the spec artifact).
- *   - Calls generateObject with a Zod schema matching F-171's exact output
- *     shape: { kind, confidence, fallback_used, primary_signals, rationale }.
+ *   - Uses the optional typed decision model only for a high-confidence BUG /
+ *     FEATURE choice, then otherwise calls generateObject with a Zod schema
+ *     matching F-171's exact output shape.
  *   - On ANY failure path (LLM unconfigured, no prompt bound, schema mismatch,
  *     network error), returns the safe fallback: kind=FEATURE, confidence=Low,
  *     fallback_used=true, rationale="classifier_error". Silent corruption of
@@ -24,9 +25,10 @@
 
 import {
 	AIProviderNotConfiguredError,
+	experimental_evaluate,
 	generateObject,
+	getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata,
-	logModelUsageAsync,
 } from "@repo/ai";
 import {
 	getBoundPromptForAgent,
@@ -35,6 +37,7 @@ import {
 	type StorySource,
 } from "@repo/database";
 import { logger } from "@repo/logs";
+import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import { renderTemplate, type TemplateFormat } from "@repo/utils";
 import { z } from "zod";
 
@@ -70,36 +73,89 @@ const SAFE_FALLBACK: ClassifierOutput = {
 	rationale: "classifier_error",
 };
 
+const DECISION_TIMEOUT_MS = 10_000;
+const DECISION_MAX_RETRIES = 1;
+// This is a routing policy, not a claim that provider probabilities are
+// calibrated. Until labeled Fabric work-item data calibrates it, only a very
+// confident typed choice can skip the existing language classifier.
+const DECISION_CONFIDENCE_THRESHOLD = 0.9;
+
+function isConfidentDecision(
+	result: Awaited<ReturnType<typeof experimental_evaluate>>,
+): ClassifierOutput | null {
+	const answer = (result as { answers?: Record<string, unknown> }).answers
+		?.workItemKind;
+	if (!answer || typeof answer !== "object") {
+		return null;
+	}
+
+	const { type, choice, probabilities } = answer as {
+		type?: unknown;
+		choice?: unknown;
+		probabilities?: unknown;
+	};
+	if (
+		type !== "choice" ||
+		(choice !== "BUG" && choice !== "FEATURE") ||
+		!probabilities ||
+		typeof probabilities !== "object"
+	) {
+		return null;
+	}
+
+	const probability = (probabilities as Record<string, unknown>)[choice];
+	if (
+		typeof probability !== "number" ||
+		!Number.isFinite(probability) ||
+		probability < DECISION_CONFIDENCE_THRESHOLD ||
+		probability > 1
+	) {
+		return null;
+	}
+
+	return {
+		kind: choice,
+		confidence: "High",
+		fallback_used: false,
+		// Typed evaluations return a choice and probability, not generated
+		// evidence. Keep these fields deliberately empty rather than inventing
+		// signals or a model rationale.
+		primary_signals: [],
+		rationale: "decision_evaluation",
+	};
+}
+
+function rethrowUsageLimit(error: unknown): void {
+	if (error instanceof AiUsageLimitExceededError) {
+		throw error;
+	}
+}
+
 export async function classifyWorkItem(
 	input: ClassifyWorkItemInput,
 ): Promise<ClassifierOutput> {
 	const orgId = input.organizationId ?? undefined;
 
-	// Resolve the bound prompt and the AI model in parallel — they share no
-	// data dependency, and each is a DB-bound round-trip. Saves ~10–15ms on the
-	// hot path of every story creation.
-	// `bug_classifier` is bound under a dedicated agent key
-	// ("work_item_classifier") in the seed so it doesn't collide with the
-	// existing `project_document_generator_default` binding at
-	// (project_document_generator, GENERAL, null).
-	const [boundPrompt, modelResolution] = await Promise.all([
-		getBoundPromptForAgent({
+	let boundPrompt: Awaited<ReturnType<typeof getBoundPromptForAgent>>;
+	try {
+		// `bug_classifier` is bound under a dedicated agent key
+		// ("work_item_classifier") in the seed so it doesn't collide with the
+		// existing `project_document_generator_default` binding at
+		// (project_document_generator, GENERAL, null).
+		boundPrompt = await getBoundPromptForAgent({
 			agentName: "work_item_classifier",
 			documentType: "GENERAL",
 			storyKind: null,
 			userId: input.userId,
 			organizationId: orgId,
-		}),
-		getAIModelWithMetadata(
-			{ taskType: "SIMPLE" },
-			{ userId: input.userId, organizationId: orgId },
-		).catch((error: unknown) => {
-			if (error instanceof AIProviderNotConfiguredError) {
-				return null;
-			}
-			throw error;
-		}),
-	]);
+		});
+	} catch (error) {
+		logger.error("[classify-work-item] prompt resolution failed", {
+			error: error instanceof Error ? error.message : String(error),
+			projectId: input.projectId,
+		});
+		return SAFE_FALLBACK;
+	}
 
 	if (
 		!boundPrompt?.version?.content ||
@@ -119,26 +175,27 @@ export async function classifyWorkItem(
 		return SAFE_FALLBACK;
 	}
 
-	if (!modelResolution) {
-		logger.warn(
-			"[classify-work-item] AI provider not configured; falling back to FEATURE",
-			{ projectId: input.projectId },
-		);
-		return SAFE_FALLBACK;
-	}
-
 	// The classifier prompt is a HANDLEBARS/markdown body containing both the
 	// SYSTEM and USER sections. Render with the reporter inputs so the LLM
 	// sees the user's text in the right slot.
-	const rendered = await renderTemplate({
-		format: boundPrompt.format as TemplateFormat,
-		template: boundPrompt.version.content,
-		variables: {
-			reporter_text: input.reporterText,
-			creation_source: input.creationSource ?? "Manual",
-			additional_context: input.additionalContext ?? "",
-		},
-	});
+	let rendered: Awaited<ReturnType<typeof renderTemplate>>;
+	try {
+		rendered = await renderTemplate({
+			format: boundPrompt.format as TemplateFormat,
+			template: boundPrompt.version.content,
+			variables: {
+				reporter_text: input.reporterText,
+				creation_source: input.creationSource ?? "Manual",
+				additional_context: input.additionalContext ?? "",
+			},
+		});
+	} catch (error) {
+		logger.error("[classify-work-item] prompt render failed", {
+			error: error instanceof Error ? error.message : String(error),
+			projectId: input.projectId,
+		});
+		return SAFE_FALLBACK;
+	}
 	if (rendered.error) {
 		logger.warn(
 			"[classify-work-item] prompt render failed; using raw body",
@@ -148,25 +205,106 @@ export async function classifyWorkItem(
 		);
 	}
 
+	// Decision evaluation is optional. Organizations without an organization-owned
+	// Vercel Gateway decision model continue through the language classifier.
 	try {
-		const { model, metadata, trackUsage } = modelResolution;
+		const decisionModel = await getAIDecisionModelWithMetadata({
+			userId: input.userId,
+			organizationId: orgId,
+			projectId: input.projectId,
+		});
+		const decision = await experimental_evaluate({
+			model: decisionModel.model,
+			state: {
+				classifierPolicy: rendered.rendered,
+				reporterText: input.reporterText,
+				creationSource: input.creationSource ?? "Manual",
+				additionalContext: input.additionalContext ?? "",
+			},
+			questions: {
+				workItemKind: {
+					type: "choice",
+					instructions:
+						"Apply classifierPolicy to the supplied work item. Choose BUG only for an existing behavior that is incorrect; choose FEATURE for a requested or new capability.",
+					criteria: {
+						BUG: "An existing behavior is broken, regressed, or produces an incorrect result.",
+						FEATURE:
+							"A requested capability, enhancement, or ambiguous work item.",
+					},
+				},
+			},
+			maxRetries: DECISION_MAX_RETRIES,
+			abortSignal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
+		});
+		// A completed evaluation used the organization provider even if the
+		// answer is too uncertain for the fast path, so update last-used before
+		// inspecting the result.
+		decisionModel.trackUsage();
+		const confidentDecision = isConfidentDecision(decision);
+		if (confidentDecision) {
+			logger.info("[classify-work-item] decision evaluation returned", {
+				promptKey: "bug_classifier",
+				kind: confidentDecision.kind,
+				confidence: confidentDecision.confidence,
+				projectId: input.projectId,
+			});
+			return confidentDecision;
+		}
+		logger.warn(
+			"[classify-work-item] decision evaluation was uncertain or malformed; using language classifier",
+			{ projectId: input.projectId },
+		);
+	} catch (error) {
+		rethrowUsageLimit(error);
+		logger.warn(
+			"[classify-work-item] decision evaluation unavailable; using language classifier",
+			{
+				error: error instanceof Error ? error.message : String(error),
+				projectId: input.projectId,
+			},
+		);
+	}
 
-		const startedAt = Date.now();
-		const { object, usage } = await generateObject({
+	let modelResolution: Awaited<ReturnType<typeof getAIModelWithMetadata>>;
+	try {
+		modelResolution = await getAIModelWithMetadata(
+			{ taskType: "SIMPLE" },
+			{
+				userId: input.userId,
+				organizationId: orgId,
+				projectId: input.projectId,
+			},
+		);
+	} catch (error) {
+		rethrowUsageLimit(error);
+		if (error instanceof AIProviderNotConfiguredError) {
+			logger.warn(
+				"[classify-work-item] AI provider not configured; falling back to FEATURE",
+				{ projectId: input.projectId },
+			);
+		} else {
+			logger.error(
+				"[classify-work-item] language model resolution failed",
+				{
+					error:
+						error instanceof Error ? error.message : String(error),
+					projectId: input.projectId,
+				},
+			);
+		}
+		return SAFE_FALLBACK;
+	}
+
+	try {
+		const { model, trackUsage } = modelResolution;
+
+		const { object } = await generateObject({
 			model,
 			schema: ClassifierOutputSchema,
 			prompt: rendered.rendered,
 		});
 
 		trackUsage();
-		logModelUsageAsync({
-			context: { userId: input.userId, organizationId: orgId },
-			metadata,
-			taskType: "SIMPLE",
-			usage,
-			latencyMs: Date.now() - startedAt,
-			projectId: input.projectId,
-		});
 
 		logger.info("[classify-work-item] classifier returned", {
 			promptKey: "bug_classifier",
@@ -206,6 +344,7 @@ export async function classifyWorkItem(
 
 		return object;
 	} catch (error) {
+		rethrowUsageLimit(error);
 		if (error instanceof AIProviderNotConfiguredError) {
 			logger.warn(
 				"[classify-work-item] AI provider not configured; falling back to FEATURE",
