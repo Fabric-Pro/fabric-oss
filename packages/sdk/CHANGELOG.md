@@ -1,5 +1,11 @@
 # @fabricorg/sdk
 
+## 0.3.1
+
+### Patch Changes
+
+- 6c575f1: The CLI now saves an explicitly selected Fabric deployment with the active profile, and coding-instructions setup syncs a published snapshot before installing its session hook. The SDK now defaults requests to `https://fabric.pro` while preserving explicit and `FABRIC_BASE_URL` overrides.
+
 ## 0.3.0
 
 ### Minor Changes

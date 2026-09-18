@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/sdk-mcp",
-	"version": "0.1.2",
+	"version": "0.1.3",
 	"description": "MCP server adapter for @fabricorg/sdk — expose a Fabric workspace as MCP tools",
 	"keywords": [
 		"fabric",
