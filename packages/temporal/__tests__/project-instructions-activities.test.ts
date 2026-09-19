@@ -8,6 +8,7 @@ const m = vi.hoisted(() => ({
 	claimInstructionSnapshotValidation: vi.fn(),
 	updateInstructionFileMetadata: vi.fn(),
 	getInstructionSnapshotById: vi.fn(),
+	canReadProjectInstructions: vi.fn(),
 	publishInstructionSnapshot: vi.fn(),
 	listPrunableInstructionSnapshots: vi.fn(),
 	deleteInstructionSnapshot: vi.fn(),
@@ -234,6 +235,7 @@ beforeEach(() => {
 	// VALIDATING. The cases below override it with `{ changed: false }` to
 	// stand in for a row something else already moved.
 	m.claimInstructionSnapshotValidation.mockResolvedValue({ changed: true });
+	m.canReadProjectInstructions.mockResolvedValue(true);
 	// Default: the snapshot exists and belongs to `snap`'s project/org, so
 	// every activity's R16 tenant check passes and the existing behavioral
 	// tests below exercise their intended logic rather than the gate.
@@ -2078,6 +2080,21 @@ describe("tenant verification (R16)", () => {
 			},
 		);
 		expect(m.listInstructionFiles).not.toHaveBeenCalled();
+	});
+
+	it("fails non-retryably before validation when the submitter lost read access", async () => {
+		m.canReadProjectInstructions.mockResolvedValue(false);
+
+		await expect(verifyAndScanInstructionFiles(snap)).rejects.toMatchObject(
+			{
+				nonRetryable: true,
+				type: "INSTRUCTION_SNAPSHOT_PERMISSION_REVOKED",
+			},
+		);
+		expect(m.canReadProjectInstructions).toHaveBeenCalledWith("p", "u");
+		expect(m.claimInstructionSnapshotValidation).not.toHaveBeenCalled();
+		expect(m.listInstructionFiles).not.toHaveBeenCalled();
+		expect(m.downloadFile).not.toHaveBeenCalled();
 	});
 });
 

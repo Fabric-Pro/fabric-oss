@@ -31,6 +31,16 @@
 export const RECEIVING_ABANDON_AFTER_MS = 6 * 60 * 60 * 1000;
 
 /**
+ * Absolute lifetime of a proposal's writable staging capability.
+ *
+ * Every presigned proposal PUT expires no later than this boundary measured
+ * from the snapshot's immutable `createdAt`. A canceled or rejected proposal
+ * therefore has a finite point after which its staging prefix can be swept
+ * without a still-live URL recreating an object behind the sweep.
+ */
+export const PROPOSAL_UPLOAD_SIGNING_WINDOW_MS = 60 * 60 * 1000;
+
+/**
  * How long a snapshot may sit in VALIDATING before the reaper considers the
  * row worth INSPECTING.
  *

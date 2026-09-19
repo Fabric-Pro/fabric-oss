@@ -81,6 +81,8 @@ export function AddInstructionFileDialog({
 	open,
 	onOpenChange,
 	folder,
+	proposalOnly = false,
+	canPropose = false,
 	onAdded,
 }: {
 	projectId: string;
@@ -90,6 +92,10 @@ export function AddInstructionFileDialog({
 	onOpenChange: (o: boolean) => void;
 	/** The folder currently selected in the tree, if any. */
 	folder: string | null;
+	/** Reader mode: this file can only be submitted for review. */
+	proposalOnly?: boolean;
+	/** Editors may also choose review instead of a direct version. */
+	canPropose?: boolean;
 	onAdded: () => void;
 }) {
 	const t = useTranslations("projects.codingInstructions.addFileDialog");
@@ -108,15 +114,22 @@ export function AddInstructionFileDialog({
 	}
 
 	const add = useMutation({
-		mutationFn: (picked: File) =>
+		mutationFn: ({
+			picked,
+			proposal,
+		}: {
+			picked: File;
+			proposal: boolean;
+		}) =>
 			editInstructionSnapshot({
 				projectId,
 				baseSnapshotId,
-				publishOnReady,
+				publishOnReady: proposal ? false : publishOnReady,
+				proposal,
 				edits: [{ op: "put", path: path.trim(), body: picked }],
 			}),
-		onSuccess: () => {
-			toast.success(t("added"));
+		onSuccess: (_result, input) => {
+			toast.success(input.proposal ? t("proposalSubmitted") : t("added"));
 			reset();
 			onOpenChange(false);
 			onAdded();
@@ -197,19 +210,21 @@ export function AddInstructionFileDialog({
 					{refusal ? (
 						<p className="text-destructive text-sm">{refusal}</p>
 					) : null}
-					<label
-						htmlFor="add-instruction-publish"
-						className="flex items-center gap-2 text-muted-foreground text-sm"
-					>
-						<Checkbox
-							id="add-instruction-publish"
-							checked={publishOnReady}
-							onCheckedChange={(v) =>
-								setPublishOnReady(v === true)
-							}
-						/>
-						{t("publishOnReady")}
-					</label>
+					{!proposalOnly ? (
+						<label
+							htmlFor="add-instruction-publish"
+							className="flex items-center gap-2 text-muted-foreground text-sm"
+						>
+							<Checkbox
+								id="add-instruction-publish"
+								checked={publishOnReady}
+								onCheckedChange={(v) =>
+									setPublishOnReady(v === true)
+								}
+							/>
+							{t("publishOnReady")}
+						</label>
+					) : null}
 				</div>
 				<DialogFooter>
 					<Button
@@ -219,16 +234,37 @@ export function AddInstructionFileDialog({
 					>
 						{t("cancel")}
 					</Button>
-					<Button
-						disabled={!canSubmit}
-						onClick={() => {
-							if (file) {
-								add.mutate(file);
-							}
-						}}
-					>
-						{t("addButton")}
-					</Button>
+					{!proposalOnly ? (
+						<Button
+							disabled={!canSubmit}
+							onClick={() => {
+								if (file) {
+									add.mutate({
+										picked: file,
+										proposal: false,
+									});
+								}
+							}}
+						>
+							{t("addButton")}
+						</Button>
+					) : null}
+					{proposalOnly || canPropose ? (
+						<Button
+							variant={proposalOnly ? "default" : "outline"}
+							disabled={!canSubmit}
+							onClick={() => {
+								if (file) {
+									add.mutate({
+										picked: file,
+										proposal: true,
+									});
+								}
+							}}
+						>
+							{t("submitProposalButton")}
+						</Button>
+					) : null}
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>

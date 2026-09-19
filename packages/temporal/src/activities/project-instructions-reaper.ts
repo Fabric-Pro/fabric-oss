@@ -70,9 +70,8 @@
  * or by a failure in this run that was counted and passed over — is still
  * selected by phase 1b on the next run, and on every run after it. That mark
  * never expires: a prefix that will not delete for days is an operations
- * signal, visible as a standing `errorCount`, and the row leaves the
- * population only when the retention prune deletes it and takes the whole
- * prefix with it.
+ * signal, visible as a standing `errorCount`; retention keeps the row pinned
+ * until a successful sweep clears the marker.
  *
  * `updatedAt` is therefore NOT eligibility, only order. Phase 1b takes the
  * oldest pending rows first and re-dates a row that FAILED to the back, so a
@@ -92,6 +91,7 @@ import {
 } from "@repo/database";
 import {
 	instructionSnapshotWorkflowId,
+	PROPOSAL_UPLOAD_SIGNING_WINDOW_MS,
 	RECEIVING_ABANDON_AFTER_MS,
 	stagingPrefix,
 	VALIDATING_STALE_AFTER_MS,
@@ -439,6 +439,9 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 	const storage = getStorageProvider();
 	const startedAtMs = Date.now();
 	const cutoff = new Date(startedAtMs - RECEIVING_ABANDON_AFTER_MS);
+	const proposalCleanupCutoff = new Date(
+		startedAtMs - PROPOSAL_UPLOAD_SIGNING_WINDOW_MS,
+	);
 	const validatingCutoff = new Date(startedAtMs - VALIDATING_STALE_AFTER_MS);
 	// Spent across all phases, not per phase.
 	const objectBudget: StorageBudget = {
@@ -739,6 +742,7 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 		: await listPendingAbandonedInstructionSnapshots(
 				MAX_RESWEPT_ABANDONED_PER_RUN,
 				closedThisRun,
+				proposalCleanupCutoff,
 			);
 	let resweptAbandoned = 0;
 	for (const row of pending) {

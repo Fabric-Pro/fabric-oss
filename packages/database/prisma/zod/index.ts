@@ -1872,7 +1872,7 @@ export type DiagramScalarFieldEnum = z.infer<typeof DiagramScalarFieldEnumSchema
 
 // File: ProjectInstructionSnapshotScalarFieldEnum.schema.ts
 
-export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'rejection', 'settingsFrozen', 'publishOnReady', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'baseSnapshotId', 'baseVersion', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
+export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'baseSnapshotId', 'baseVersion', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
 
 export type ProjectInstructionSnapshotScalarFieldEnum = z.infer<typeof ProjectInstructionSnapshotScalarFieldEnumSchema>;
 
@@ -3321,6 +3321,12 @@ export type ProjectInstructionSource = z.infer<typeof ProjectInstructionSourceSc
 export const ProjectInstructionSnapshotStatusSchema = z.enum(['RECEIVING', 'VALIDATING', 'READY', 'REJECTED', 'FAILED'])
 
 export type ProjectInstructionSnapshotStatus = z.infer<typeof ProjectInstructionSnapshotStatusSchema>;
+
+// File: ProjectInstructionProposalStatus.schema.ts
+
+export const ProjectInstructionProposalStatusSchema = z.enum(['PENDING', 'APPROVED', 'REJECTED'])
+
+export type ProjectInstructionProposalStatus = z.infer<typeof ProjectInstructionProposalStatusSchema>;
 
 // File: ProjectInstructionFileKind.schema.ts
 
@@ -10604,6 +10610,9 @@ export const ProjectInstructionSnapshotSchema = z.object({
   version: z.number().int(),
   source: ProjectInstructionSourceSchema,
   status: ProjectInstructionSnapshotStatusSchema.default("RECEIVING"),
+  proposalStatus: ProjectInstructionProposalStatusSchema.nullish(),
+  reviewerUserId: z.string().nullish(),
+  reviewedAt: z.date().nullish(),
   rejection: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   settingsFrozen: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
   publishOnReady: z.boolean().default(true),

@@ -34,7 +34,12 @@ const mocks = vi.hoisted(() => ({
 		findFirst: vi.fn(),
 		deleteMany: vi.fn(),
 	},
-	project: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+	project: {
+		findFirst: vi.fn(),
+		findUnique: vi.fn(),
+		update: vi.fn(),
+		updateMany: vi.fn(),
+	},
 	$transaction: vi.fn(),
 	// The reaper's candidate query is raw SQL: one UNIONed relation, so the
 	// page is a window of ONE order rather than two separately-skipped ones.
@@ -68,6 +73,9 @@ vi.mock("../prisma/queries/audit-log", () => ({
 }));
 
 import {
+	approveInstructionProposal,
+	authorizeInstructionProposalUploadUrls,
+	cancelInstructionProposal,
 	claimInstructionFileStagingKey,
 	claimInstructionSnapshotValidation,
 	createInstructionSnapshot,
@@ -77,6 +85,7 @@ import {
 	getInstructionFileByPath,
 	listAbandonedReceivingInstructionSnapshots,
 	listInstructionFiles,
+	listInstructionSnapshots,
 	listPendingAbandonedInstructionSnapshots,
 	listProjectsWithPrunableInstructionSnapshots,
 	listPrunableInstructionSnapshots,
@@ -86,6 +95,7 @@ import {
 	markInstructionSnapshotRejected,
 	publishInstructionSnapshot,
 	rejectAbandonedInstructionSnapshot,
+	rejectInstructionProposal,
 	rotateAbandonedInstructionSnapshot,
 	startInstructionSnapshotValidation,
 	updateInstructionFileMetadata,
@@ -112,6 +122,49 @@ beforeEach(() => {
 	);
 });
 
+describe("listInstructionSnapshots proposal visibility", () => {
+	it("limits non-reviewers to direct, approved, and their own undecided history", async () => {
+		mocks.snapshot.findMany.mockResolvedValue([]);
+
+		await listInstructionSnapshots("p", "org_1", {
+			viewerUserId: "reader",
+			canReviewProposals: false,
+		});
+
+		expect(mocks.snapshot.findMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					projectId: "p",
+					organizationId: "org_1",
+					OR: [
+						{ proposalStatus: null },
+						{ proposalStatus: "APPROVED" },
+						{
+							userId: "reader",
+							proposalStatus: { in: ["PENDING", "REJECTED"] },
+						},
+					],
+				},
+			}),
+		);
+	});
+
+	it("keeps the tenant-only query for reviewers", async () => {
+		mocks.snapshot.findMany.mockResolvedValue([]);
+
+		await listInstructionSnapshots("p", "org_1", {
+			viewerUserId: "editor",
+			canReviewProposals: true,
+		});
+
+		expect(mocks.snapshot.findMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { projectId: "p", organizationId: "org_1" },
+			}),
+		);
+	});
+});
+
 /**
  * The row `publishInstructionSnapshot`'s locking read returns: the project's
  * current pointer and that pointer's version, in one `SELECT … FOR UPDATE OF p`.
@@ -126,6 +179,263 @@ function lockedPointer(
 ) {
 	mocks.$queryRaw.mockResolvedValue([{ pointerId, pointerVersion }]);
 }
+
+const proposalAudit = {
+	action: "project.instructions.published",
+	actor: { type: "user", userId: "reviewer" },
+	organizationId: "o",
+	projectId: "p",
+} as const;
+
+describe("instruction proposal decisions", () => {
+	it("atomically approves and publishes only from the exact locked base", async () => {
+		lockedPointer("base");
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "proposal",
+			version: 9,
+			status: "READY",
+			proposalStatus: "PENDING",
+			baseSnapshotId: "base",
+		});
+		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+		mocks.project.updateMany.mockResolvedValue({ count: 1 });
+
+		expect(
+			await approveInstructionProposal({
+				snapshotId: "proposal",
+				projectId: "p",
+				organizationId: "o",
+				reviewerUserId: "reviewer",
+				audit: proposalAudit,
+			}),
+		).toEqual({ ok: true, changed: true, version: 9 });
+		expect(mocks.snapshot.updateMany).toHaveBeenCalledWith({
+			where: {
+				id: "proposal",
+				projectId: "p",
+				organizationId: "o",
+				status: "READY",
+				proposalStatus: "PENDING",
+			},
+			data: {
+				proposalStatus: "APPROVED",
+				reviewerUserId: "reviewer",
+				reviewedAt: expect.any(Date),
+				publishedAt: expect.any(Date),
+			},
+		});
+		expect(mocks.project.updateMany).toHaveBeenCalledWith({
+			where: {
+				id: "p",
+				organizationId: "o",
+				publishedInstructionSnapshotId: "base",
+			},
+			data: { publishedInstructionSnapshotId: "proposal" },
+		});
+		expect(
+			mocks.snapshot.updateMany.mock.calls[0]![0].data,
+		).not.toHaveProperty("rejection");
+		expect(auditMocks.recordAuditTx).toHaveBeenCalledWith(
+			expect.anything(),
+			proposalAudit,
+		);
+	});
+
+	it("leaves a stale proposal pending and writes no audit or pointer", async () => {
+		lockedPointer("new-base");
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "proposal",
+			version: 8,
+			status: "READY",
+			proposalStatus: "PENDING",
+			baseSnapshotId: "old-base",
+		});
+
+		expect(
+			await approveInstructionProposal({
+				snapshotId: "proposal",
+				projectId: "p",
+				organizationId: "o",
+				reviewerUserId: "reviewer",
+				audit: proposalAudit,
+			}),
+		).toEqual({ ok: false, reason: "stale" });
+		expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+		expect(mocks.project.updateMany).not.toHaveBeenCalled();
+		expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+	});
+
+	it("rejects without changing the published pointer and is retry-idempotent", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "proposal",
+			version: 8,
+			status: "READY",
+			proposalStatus: "PENDING",
+		});
+		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+
+		expect(
+			await rejectInstructionProposal({
+				snapshotId: "proposal",
+				projectId: "p",
+				organizationId: "o",
+				reviewerUserId: "reviewer",
+				audit: {
+					...proposalAudit,
+					action: "project.instructions.rejected",
+				},
+			}),
+		).toEqual({ ok: true, changed: true, version: 8 });
+		expect(mocks.project.updateMany).not.toHaveBeenCalled();
+		expect(auditMocks.recordAuditTx).toHaveBeenCalledTimes(1);
+		expect(
+			mocks.snapshot.updateMany.mock.calls[0]![0].data,
+		).not.toHaveProperty("rejection");
+
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "proposal",
+			version: 8,
+			status: "READY",
+			proposalStatus: "REJECTED",
+		});
+		expect(
+			await rejectInstructionProposal({
+				snapshotId: "proposal",
+				projectId: "p",
+				organizationId: "o",
+				reviewerUserId: "reviewer",
+				audit: {
+					...proposalAudit,
+					action: "project.instructions.rejected",
+				},
+			}),
+		).toEqual({ ok: true, changed: false, version: 8 });
+		expect(auditMocks.recordAuditTx).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects a failed proposal terminally so validation retry cannot revive it", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "proposal",
+			version: 8,
+			status: "FAILED",
+			proposalStatus: "PENDING",
+		});
+		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+
+		await expect(
+			rejectInstructionProposal({
+				snapshotId: "proposal",
+				projectId: "p",
+				organizationId: "o",
+				reviewerUserId: "reviewer",
+				audit: {
+					...proposalAudit,
+					action: "project.instructions.rejected",
+				},
+			}),
+		).resolves.toEqual({ ok: true, changed: true, version: 8 });
+		expect(mocks.snapshot.updateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({ status: "FAILED" }),
+				data: expect.objectContaining({
+					status: "REJECTED",
+					proposalStatus: "REJECTED",
+				}),
+			}),
+		);
+	});
+
+	it("lets only the proposer cancel a stable proposal and refuses validating work", async () => {
+		mocks.snapshot.findFirst.mockResolvedValueOnce({
+			id: "proposal",
+			version: 8,
+			status: "VALIDATING",
+			proposalStatus: "PENDING",
+		});
+		await expect(
+			cancelInstructionProposal({
+				snapshotId: "proposal",
+				projectId: "p",
+				organizationId: "o",
+				proposerUserId: "author",
+				audit: {
+					...proposalAudit,
+					action: "project.instructions.rejected",
+				},
+			}),
+		).resolves.toEqual({ ok: false, reason: "in_progress" });
+		expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+
+		mocks.snapshot.findFirst.mockResolvedValueOnce({
+			id: "proposal",
+			version: 8,
+			status: "RECEIVING",
+			proposalStatus: "PENDING",
+		});
+		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+		await expect(
+			cancelInstructionProposal({
+				snapshotId: "proposal",
+				projectId: "p",
+				organizationId: "o",
+				proposerUserId: "author",
+				audit: {
+					...proposalAudit,
+					action: "project.instructions.rejected",
+				},
+			}),
+		).resolves.toEqual({ ok: true, changed: true, version: 8 });
+		expect(mocks.snapshot.updateMany).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					userId: "author",
+					status: "RECEIVING",
+				}),
+				data: expect.objectContaining({
+					status: "REJECTED",
+					rejection: expect.arrayContaining([
+						expect.objectContaining({
+							path: "(proposal staging)",
+							detail: "staging pending",
+						}),
+					]),
+				}),
+			}),
+		);
+	});
+
+	it("preserves the READY transition's cleanup reservation when canceled", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "proposal",
+			version: 8,
+			status: "READY",
+			proposalStatus: "PENDING",
+			rejection: [
+				{
+					path: "(proposal staging)",
+					reason: "abandoned",
+					detail: "staging pending",
+				},
+			],
+		});
+		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+
+		await cancelInstructionProposal({
+			snapshotId: "proposal",
+			projectId: "p",
+			organizationId: "o",
+			proposerUserId: "author",
+			audit: {
+				...proposalAudit,
+				action: "project.instructions.rejected",
+			},
+		});
+
+		expect(
+			mocks.snapshot.updateMany.mock.calls[0]![0].data,
+		).not.toHaveProperty("rejection");
+	});
+});
 
 describe("createInstructionSnapshot", () => {
 	it("allocates the next version per project and writes files with the same tenant columns", async () => {
@@ -264,6 +574,34 @@ describe("createInstructionSnapshot", () => {
 });
 
 describe("publishInstructionSnapshot", () => {
+	it("refuses pending and rejected proposals outside the approval transaction", async () => {
+		for (const proposalStatus of ["PENDING", "REJECTED"] as const) {
+			lockedPointer("base", 7);
+			mocks.snapshot.findFirst.mockResolvedValueOnce({
+				id: "proposal",
+				status: "READY",
+				proposalStatus,
+				version: 8,
+				baseSnapshotId: "base",
+				baseVersion: 7,
+				publishedAt: null,
+			});
+			expect(
+				await publishInstructionSnapshot({
+					snapshotId: "proposal",
+					projectId: "p",
+					organizationId: "o",
+					allowRollback: true,
+				}),
+			).toEqual({
+				published: false,
+				changed: false,
+				reason: "proposal_not_approved",
+			});
+		}
+		expect(mocks.project.updateMany).not.toHaveBeenCalled();
+	});
+
 	it("refuses a snapshot that is not READY", async () => {
 		lockedPointer(null);
 		mocks.snapshot.findFirst.mockResolvedValue({
@@ -993,7 +1331,7 @@ describe("deleteInstructionSnapshot", () => {
 			where: { snapshotId: "s", projectId: "p", organizationId: "org_1" },
 		});
 		expect(mocks.snapshot.deleteMany).toHaveBeenCalledWith({
-			where: {
+			where: expect.objectContaining({
 				id: "s",
 				projectId: "p",
 				organizationId: "org_1",
@@ -1010,8 +1348,10 @@ describe("deleteInstructionSnapshot", () => {
 						status: { in: ["RECEIVING", "VALIDATING", "FAILED"] },
 					},
 				},
-			},
+			}),
 		});
+		const deleteWhere = mocks.snapshot.deleteMany.mock.calls[0]![0].where;
+		expect(JSON.stringify(deleteWhere.AND)).toContain("(proposal staging)");
 	});
 
 	it("refuses a snapshot whose workflow is still running, and undoes the file delete", async () => {
@@ -1057,7 +1397,11 @@ describe("deleteInstructionSnapshot", () => {
 				baseSnapshotId: "s",
 				projectId: "p",
 				organizationId: "org_1",
-				status: { in: ["RECEIVING", "VALIDATING", "FAILED"] },
+				OR: [
+					{ status: { in: ["RECEIVING", "VALIDATING", "FAILED"] } },
+					{ proposalStatus: "PENDING" },
+					expect.objectContaining({ OR: expect.any(Array) }),
+				],
 			},
 		});
 	});
@@ -1244,6 +1588,7 @@ describe("markInstructionSnapshotReady", () => {
 	};
 
 	it("writes READY only from a row that has not already reached a verdict", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({ proposalStatus: null });
 		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
 
 		expect(await markInstructionSnapshotReady(input)).toEqual({
@@ -1272,15 +1617,60 @@ describe("markInstructionSnapshotReady", () => {
 	});
 
 	it("reports changed: false — and writes nothing more — when the row is already READY", async () => {
-		mocks.snapshot.updateMany.mockResolvedValue({ count: 0 });
+		mocks.snapshot.findFirst.mockResolvedValue(null);
 
 		expect(await markInstructionSnapshotReady(input)).toEqual({
 			changed: false,
 		});
 		// No second pass, no read-then-write repair: the conditional write is
 		// the whole transition, and `readyAt` keeps the first attempt's value.
-		expect(mocks.snapshot.updateMany).toHaveBeenCalledTimes(1);
+		expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
 		expect(mocks.snapshot.update).not.toHaveBeenCalled();
+	});
+
+	it("reserves proposal staging cleanup when validation succeeds", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({
+			proposalStatus: "PENDING",
+		});
+		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+
+		await markInstructionSnapshotReady(input);
+
+		expect(mocks.snapshot.updateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					status: "READY",
+					rejection: [
+						{
+							path: "(proposal staging)",
+							reason: "abandoned",
+							detail: "staging pending",
+						},
+					],
+				}),
+			}),
+		);
+	});
+});
+
+describe("authorizeInstructionProposalUploadUrls", () => {
+	it("holds a row lock and authorizes only a still-receiving proposal inside its lease", async () => {
+		mocks.$queryRaw.mockResolvedValue([{ id: "proposal" }]);
+		const createdAfter = new Date("2026-09-18T00:00:00Z");
+
+		await expect(
+			authorizeInstructionProposalUploadUrls({
+				snapshotId: "proposal",
+				projectId: "p",
+				organizationId: "org_1",
+				createdAfter,
+			}),
+		).resolves.toEqual({ authorized: true });
+		expect(mocks.$queryRaw).toHaveBeenCalledOnce();
+		const sql = String(mocks.$queryRaw.mock.calls[0]?.[0]);
+		expect(sql).toContain("FOR UPDATE OF s");
+		expect(sql).toContain("s.\"status\" = 'RECEIVING'");
+		expect(sql).toContain('s."createdAt" >');
 	});
 });
 
@@ -1302,6 +1692,7 @@ describe("markInstructionSnapshotRejected", () => {
 	};
 
 	it("writes the verdict and its audit row in one transaction", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({ proposalStatus: null });
 		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
 
 		expect(await markInstructionSnapshotRejected(input)).toEqual({
@@ -1317,6 +1708,15 @@ describe("markInstructionSnapshotRejected", () => {
 			},
 			data: { status: "REJECTED", rejection: rejections },
 		});
+		expect(mocks.snapshot.updateMany).toHaveBeenCalledWith({
+			where: {
+				id: "s",
+				projectId: "p",
+				organizationId: "org_1",
+				proposalStatus: "PENDING",
+			},
+			data: { proposalStatus: "REJECTED" },
+		});
 		// Through the transaction client, not a fresh connection: the row and
 		// the verdict commit together or neither does.
 		expect(auditMocks.recordAuditTx).toHaveBeenCalledWith(
@@ -1328,7 +1728,7 @@ describe("markInstructionSnapshotRejected", () => {
 	});
 
 	it("emits no audit row when the snapshot had already been rejected", async () => {
-		mocks.snapshot.updateMany.mockResolvedValue({ count: 0 });
+		mocks.snapshot.findFirst.mockResolvedValue(null);
 
 		expect(await markInstructionSnapshotRejected(input)).toEqual({
 			changed: false,
@@ -1337,6 +1737,28 @@ describe("markInstructionSnapshotRejected", () => {
 		// there, so a second `project.instructions.rejected` row would be a
 		// duplicate record of one refused upload.
 		expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+	});
+
+	it("keeps a validation-rejected proposal counted until its staging cleanup completes", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({
+			proposalStatus: "PENDING",
+		});
+		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+
+		await markInstructionSnapshotRejected(input);
+
+		expect(mocks.snapshot.updateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					rejection: expect.arrayContaining([
+						expect.objectContaining({
+							path: "(proposal staging)",
+							detail: "staging pending",
+						}),
+					]),
+				}),
+			}),
+		);
 	});
 });
 
@@ -1688,6 +2110,10 @@ describe("listPrunableInstructionSnapshots", () => {
 			expect(where.derivedSnapshots).toEqual({
 				none: { status: { in: ["RECEIVING", "VALIDATING", "FAILED"] } },
 			});
+			expect(JSON.stringify(where.AND)).toContain(
+				'"proposalStatus":"PENDING"',
+			);
+			expect(JSON.stringify(where.AND)).toContain("(proposal staging)");
 		}
 	});
 });
@@ -1769,29 +2195,29 @@ describe("listPendingAbandonedInstructionSnapshots", () => {
 	it("selects REJECTED abandonments still carrying the pending mark, excluding the caller's ids", async () => {
 		mocks.snapshot.findMany.mockResolvedValue([]);
 
-		await listPendingAbandonedInstructionSnapshots(200, [
-			"snap_1",
-			"snap_2",
-		]);
+		const cutoff = new Date("2026-09-18T01:00:00Z");
+		await listPendingAbandonedInstructionSnapshots(
+			200,
+			["snap_1", "snap_2"],
+			cutoff,
+		);
 
 		expect(mocks.snapshot.findMany).toHaveBeenCalledWith({
 			where: {
-				status: "REJECTED",
-				// A refused upload's first rejection is a `secret`,
-				// `hash_mismatch` or `ignore_mismatch`; only the sweep writes
-				// `abandoned`, so only its own rows are re-swept.
-				rejection: { path: ["0", "reason"], equals: "abandoned" },
-				// The completion mark, and the ONLY thing that decides
-				// eligibility. It goes in `AND` because one object literal
-				// cannot carry two filters on the same `rejection` field.
-				AND: [
-					{
-						rejection: {
-							path: ["0", "detail"],
-							equals: "staging pending",
-						},
-					},
-				],
+				status: { in: ["READY", "REJECTED"] },
+				createdAt: { lt: cutoff },
+				OR: expect.arrayContaining([
+					expect.objectContaining({
+						rejection: expect.objectContaining({
+							array_contains: expect.arrayContaining([
+								expect.objectContaining({
+									path: "(proposal staging)",
+									detail: "staging pending",
+								}),
+							]),
+						}),
+					}),
+				]),
 				// Phase 1's rows are dropped IN the query, so a full page is
 				// a real backlog rather than rows the caller will skip.
 				id: { notIn: ["snap_1", "snap_2"] },
@@ -1810,7 +2236,11 @@ describe("listPendingAbandonedInstructionSnapshots", () => {
 	it("passes an empty exclusion list through unchanged", async () => {
 		mocks.snapshot.findMany.mockResolvedValue([]);
 
-		await listPendingAbandonedInstructionSnapshots(200, []);
+		await listPendingAbandonedInstructionSnapshots(
+			200,
+			[],
+			new Date("2026-09-18T01:00:00Z"),
+		);
 
 		const [args] = mocks.snapshot.findMany.mock.calls[0]!;
 		expect((args as { where: { id: unknown } }).where.id).toEqual({
@@ -1831,40 +2261,37 @@ describe("markAbandonedInstructionSnapshotSwept", () => {
 	};
 
 	it("rewrites the mark with ONE conditional, tenant-bound statement and nothing else", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({
+			rejection: [
+				{ path: "a.md", reason: "secret" },
+				{
+					path: "(proposal staging)",
+					reason: "abandoned",
+					detail: "staging pending",
+				},
+			],
+		});
 		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
 
 		expect(await markAbandonedInstructionSnapshotSwept(input)).toEqual({
 			changed: true,
 		});
+		expect(mocks.snapshot.findFirst).toHaveBeenCalledOnce();
 		expect(mocks.snapshot.updateMany).toHaveBeenCalledTimes(1);
 		const [args] = mocks.snapshot.updateMany.mock.calls[0]!;
-		expect(args).toEqual({
+		expect(args).toMatchObject({
 			where: {
 				id: "s",
 				projectId: "p",
 				organizationId: "org_1",
-				// In the predicate, not in a read above it. The `abandoned`
-				// reason is in there too, so this can only ever rewrite the
-				// single-element array the reaper itself wrote — never a
-				// refused upload's list of per-file rejections.
-				status: "REJECTED",
-				rejection: { path: ["0", "reason"], equals: "abandoned" },
-				// The FROM-state. Without it two at-least-once activity
-				// attempts both "succeed" and the loser rewrites a mark the
-				// winner already cleared.
-				AND: [
-					{
-						rejection: {
-							path: ["0", "detail"],
-							equals: "staging pending",
-						},
-					},
-				],
+				status: { in: ["READY", "REJECTED"] },
+				rejection: { equals: expect.any(Array) },
 			},
 			data: {
 				rejection: [
+					{ path: "a.md", reason: "secret" },
 					{
-						path: "(upload)",
+						path: "(proposal staging)",
 						reason: "abandoned",
 						detail: "staging cleared",
 					},
@@ -1876,7 +2303,7 @@ describe("markAbandonedInstructionSnapshotSwept", () => {
 	});
 
 	it("reports a row the predicate did not match", async () => {
-		mocks.snapshot.updateMany.mockResolvedValue({ count: 0 });
+		mocks.snapshot.findFirst.mockResolvedValue(null);
 
 		expect(await markAbandonedInstructionSnapshotSwept(input)).toEqual({
 			changed: false,
@@ -1904,7 +2331,7 @@ describe("rotateAbandonedInstructionSnapshot", () => {
 		});
 		expect(mocks.snapshot.updateMany).toHaveBeenCalledTimes(1);
 		const [args] = mocks.snapshot.updateMany.mock.calls[0]!;
-		expect(args).toEqual({
+		expect(args).toMatchObject({
 			where: {
 				id: "s",
 				projectId: "p",
@@ -1913,16 +2340,8 @@ describe("rotateAbandonedInstructionSnapshot", () => {
 				// re-date a row a concurrent attempt had already swept and
 				// CLEARED, and — worse — an ordinary refused upload that this
 				// sweep does not own at all.
-				status: "REJECTED",
-				rejection: { path: ["0", "reason"], equals: "abandoned" },
-				AND: [
-					{
-						rejection: {
-							path: ["0", "detail"],
-							equals: "staging pending",
-						},
-					},
-				],
+				status: { in: ["READY", "REJECTED"] },
+				OR: expect.any(Array),
 			},
 			// The explicit value Prisma writes in place of its own
 			// `@updatedAt`. No `rejection`: the row is still pending, which
@@ -2097,6 +2516,11 @@ describe("listProjectsWithPrunableInstructionSnapshots", () => {
 		expect(
 			sql.match(
 				/NOT EXISTS \( SELECT 1 FROM "project_instruction_snapshot" d WHERE d\."baseSnapshotId" = s\."id" AND d\."status" IN \('RECEIVING', 'VALIDATING', 'FAILED'\) \)/g,
+			),
+		).toHaveLength(2);
+		expect(
+			sql.match(
+				/NOT EXISTS \( SELECT 1 FROM "project_instruction_snapshot" d WHERE d\."baseSnapshotId" = s\."id" AND d\."proposalStatus" = 'PENDING'::"ProjectInstructionProposalStatus" \)/g,
 			),
 		).toHaveLength(2);
 		// `UNION`, not `UNION ALL`: a project over both windows is ONE unit of

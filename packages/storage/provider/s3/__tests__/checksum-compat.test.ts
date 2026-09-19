@@ -50,6 +50,31 @@ describe("presigned URLs carry no checksum parameters", () => {
 		).not.toMatch(FORBIDDEN_PARAM);
 	});
 
+	it("binds a declared upload length into the signed headers", async () => {
+		const url = await getSignedUploadUrl("instructions/proposal.md", {
+			bucket: "test-bucket",
+			contentType: "text/markdown",
+			contentLength: 1234,
+		});
+		const signedHeaders =
+			new URL(url).searchParams.get("X-Amz-SignedHeaders") ?? "";
+
+		expect(signedHeaders.split(";")).toContain("content-length");
+	});
+
+	it("honors an explicit signing date for an absolute upload expiry", async () => {
+		const url = await getSignedUploadUrl("instructions/proposal.md", {
+			bucket: "test-bucket",
+			contentType: "text/markdown",
+			expiresIn: 3600,
+			signingDate: new Date("2026-09-18T00:00:00Z"),
+		});
+		const params = new URL(url).searchParams;
+
+		expect(params.get("X-Amz-Date")).toBe("20260918T000000Z");
+		expect(params.get("X-Amz-Expires")).toBe("3600");
+	});
+
 	it("presigned GET URL has no checksum params", async () => {
 		const url = await getSignedUrl("documents/doc-1.pdf", {
 			bucket: "test-bucket",

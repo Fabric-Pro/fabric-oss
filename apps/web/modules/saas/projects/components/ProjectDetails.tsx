@@ -1486,10 +1486,9 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 							<CodingInstructionsTab
 								projectId={projectId}
 								projectName={project.name}
-								canEdit={
-									project.userRole === "owner" ||
-									project.userRole === "project_admin" ||
-									project.userRole === "editor"
+								canEdit={project.canEditInstructions ?? false}
+								canReview={
+									project.canReviewInstructions ?? false
 								}
 							/>
 						)}

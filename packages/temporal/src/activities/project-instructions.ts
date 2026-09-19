@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+	canReadProjectInstructions,
 	claimInstructionSnapshotValidation,
 	failInstructionSnapshot,
 	getInstructionSnapshotById,
@@ -101,6 +102,13 @@ async function loadVerifiedSnapshot(ref: SnapshotRef) {
 		throw ApplicationFailure.nonRetryable(
 			`Instruction snapshot ${ref.snapshotId} does not belong to project ${ref.projectId} in organization ${ref.organizationId}`,
 			"INSTRUCTION_SNAPSHOT_TENANT_MISMATCH",
+		);
+	}
+	const mayRead = await canReadProjectInstructions(ref.projectId, ref.userId);
+	if (!mayRead) {
+		throw ApplicationFailure.nonRetryable(
+			`Instruction snapshot ${ref.snapshotId} is no longer authorized for its submitting user`,
+			"INSTRUCTION_SNAPSHOT_PERMISSION_REVOKED",
 		);
 	}
 	return snapshot;

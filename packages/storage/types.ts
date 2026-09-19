@@ -22,6 +22,7 @@ export type GetSignedUploadUrlHandler = (
 		contentType?: string;
 		contentLength?: number;
 		expiresIn?: number;
+		signingDate?: Date;
 	},
 ) => Promise<string>;
 

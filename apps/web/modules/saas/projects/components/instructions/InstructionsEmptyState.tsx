@@ -20,6 +20,7 @@ export function InstructionsEmptyState({
 	projectId,
 	projectName,
 	onUploadClick,
+	canUpload = true,
 	repositoryName,
 	localSyncAvailable = false,
 }: {
@@ -27,6 +28,8 @@ export function InstructionsEmptyState({
 	/** Named in the "Connect your agent" starter instruction. */
 	projectName: string;
 	onUploadClick: () => void;
+	/** Folder uploads create a direct snapshot and are unavailable to readers or repository-backed projects. */
+	canUpload?: boolean;
 	repositoryName?: string | null;
 	/**
 	 * Whether the Connect dialog offers `fabric instructions init`. True when
@@ -72,10 +75,12 @@ export function InstructionsEmptyState({
 					</p>
 				</div>
 				<div className="flex gap-2.5">
-					<Button onClick={onUploadClick}>
-						<UploadIcon className="size-4" aria-hidden="true" />
-						{t("uploadButton")}
-					</Button>
+					{canUpload ? (
+						<Button onClick={onUploadClick}>
+							<UploadIcon className="size-4" aria-hidden="true" />
+							{t("uploadButton")}
+						</Button>
+					) : null}
 					<Button
 						variant="outline"
 						disabled

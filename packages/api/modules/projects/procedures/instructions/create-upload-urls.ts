@@ -1,11 +1,16 @@
 import { ORPCError } from "@orpc/client";
 import { config } from "@repo/config";
 import {
+	authorizeInstructionProposalUploadUrls,
 	claimInstructionFileStagingKey,
 	getInstructionSnapshot,
 	listInstructionFiles,
 } from "@repo/database";
-import { isStagingKey, stagingKey } from "@repo/instructions";
+import {
+	isStagingKey,
+	PROPOSAL_UPLOAD_SIGNING_WINDOW_MS,
+	stagingKey,
+} from "@repo/instructions";
 import { getStorageProvider } from "@repo/storage";
 import { z } from "zod";
 import {
@@ -14,6 +19,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import { assertInstructionSnapshotMutationAccess } from "./proposal-authorization";
 
 // Same source `SKILLS_BUCKET_NAME` feeds (config/index.ts:167), imported the
 // way `packages/ai/skills/loader.ts` does.
@@ -68,8 +74,11 @@ function notReceiving() {
  * promoted to its immutable snapshot key can never be pointed back at
  * writable storage, whatever this request read when it started.
  */
+// The baseline middleware proves project visibility. The snapshot-aware guard
+// below then requires CREATE for direct versions, or READ plus proposer
+// ownership for a pending proposal.
 export const createUploadUrlsProcedure = tenantProtectedProcedure
-	.use(requireProjectPermission(Permissions.INSTRUCTION_CREATE))
+	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "POST",
 		path: "/projects/:projectId/instructions/snapshots/:snapshotId/upload-urls",
@@ -95,6 +104,25 @@ export const createUploadUrlsProcedure = tenantProtectedProcedure
 			organizationId,
 		);
 		if (!snapshot || snapshot.status !== "RECEIVING") {
+			throw notReceiving();
+		}
+		await assertInstructionSnapshotMutationAccess({
+			projectId: input.projectId,
+			userId: context.user.id,
+			snapshot,
+		});
+		const proposalSigningDate =
+			snapshot.proposalStatus === null
+				? null
+				: new Date(
+						Math.floor(snapshot.createdAt.getTime() / 1000) * 1000,
+					);
+		const proposalExpiresAt =
+			proposalSigningDate === null
+				? null
+				: proposalSigningDate.getTime() +
+					PROPOSAL_UPLOAD_SIGNING_WINDOW_MS;
+		if (proposalExpiresAt !== null && proposalExpiresAt <= Date.now()) {
 			throw notReceiving();
 		}
 
@@ -158,7 +186,16 @@ export const createUploadUrlsProcedure = tenantProtectedProcedure
 			const url = await getSignedUploadUrl(key, {
 				bucket: SKILLS_BUCKET,
 				contentType: f.mimeType,
-				expiresIn: UPLOAD_URL_EXPIRY_SECONDS,
+				...(snapshot.proposalStatus === null
+					? {}
+					: { contentLength: f.size }),
+				expiresIn:
+					proposalExpiresAt === null
+						? UPLOAD_URL_EXPIRY_SECONDS
+						: PROPOSAL_UPLOAD_SIGNING_WINDOW_MS / 1000,
+				...(proposalSigningDate === null
+					? {}
+					: { signingDate: proposalSigningDate }),
 			});
 			uploads.push({
 				fileId: f.id,
@@ -166,6 +203,19 @@ export const createUploadUrlsProcedure = tenantProtectedProcedure
 				url,
 				contentType: f.mimeType,
 			});
+		}
+		if (snapshot.proposalStatus !== null) {
+			const authorization = await authorizeInstructionProposalUploadUrls({
+				snapshotId: input.snapshotId,
+				projectId: input.projectId,
+				organizationId,
+				createdAfter: new Date(
+					Date.now() - PROPOSAL_UPLOAD_SIGNING_WINDOW_MS + 999,
+				),
+			});
+			if (!authorization.authorized) {
+				throw notReceiving();
+			}
 		}
 		return { uploads };
 	});
