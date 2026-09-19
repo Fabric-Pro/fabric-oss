@@ -207,6 +207,86 @@ describe("set organization decision model preference", () => {
 		);
 	});
 
+	it("stores an explicit off switch when the organization owns the gateway", async () => {
+		mockGetProviderByProvider.mockResolvedValue({
+			provider: "VERCEL_GATEWAY",
+			source: "organization",
+			apiKey: "decrypted-placeholder",
+		});
+		mockSetPreference.mockResolvedValue({
+			id: "preference-off",
+			provider: "VERCEL_GATEWAY",
+			taskType: "DECISION",
+			model: null,
+		});
+
+		const result = await setPreference._handler({
+			input: {
+				organizationId: "org-1",
+				taskType: "DECISION",
+				modelCanonicalName: null,
+				overrideProvider: "VERCEL_GATEWAY",
+			},
+			context,
+		});
+
+		expect(mockSetPreference).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: "org-1",
+				provider: "VERCEL_GATEWAY",
+				taskType: "DECISION",
+				// The row is written with NO model — that is the off switch.
+				// Deleting the row instead would restore the seeded default.
+				modelId: null,
+			}),
+		);
+		// No catalog lookup is needed or wanted for an off switch.
+		expect(mockGetModel).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ model: null });
+	});
+
+	it("refuses an off switch from an organization without its own gateway", async () => {
+		mockGetProviderByProvider.mockResolvedValue({
+			provider: "VERCEL_GATEWAY",
+			source: "user",
+			apiKey: "decrypted-placeholder",
+		});
+
+		await expect(
+			setPreference._handler({
+				input: {
+					organizationId: "org-1",
+					taskType: "DECISION",
+					modelCanonicalName: null,
+					overrideProvider: "VERCEL_GATEWAY",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			message:
+				"Decision models require an organization Vercel AI Gateway configuration",
+		});
+		expect(mockSetPreference).not.toHaveBeenCalled();
+	});
+
+	it("refuses an off switch for a text task, which has no off state", async () => {
+		await expect(
+			setPreference._handler({
+				input: {
+					organizationId: "org-1",
+					taskType: "SIMPLE",
+					modelCanonicalName: null,
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			message:
+				"Only decision tasks can be switched off. Remove the preference to use the default model for this task.",
+		});
+		expect(mockSetPreference).not.toHaveBeenCalled();
+		expect(mockDeleteByTask).not.toHaveBeenCalled();
+	});
+
 	it("rejects Jev for a text task before provider routing", async () => {
 		await expect(
 			setPreference._handler({

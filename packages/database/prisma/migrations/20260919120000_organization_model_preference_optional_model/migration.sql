@@ -1,0 +1,11 @@
+-- AlterTable
+-- Allow an organization to switch a task's model off rather than only choosing
+-- one. A row with a NULL "modelId" means "explicitly disabled" and stops model
+-- resolution instead of falling through to the seeded system default; deleting
+-- the row is still what restores the default.
+--
+-- Expand-safe: dropping NOT NULL takes only a catalog lock, writes no rows, and
+-- leaves every existing row valid. Only the new application version writes a
+-- NULL row, so an older instance still running during the rollout can only
+-- meet one if an administrator switches decisions off in that window.
+ALTER TABLE "organization_model_preference" ALTER COLUMN "modelId" DROP NOT NULL;

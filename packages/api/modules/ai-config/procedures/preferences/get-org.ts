@@ -29,16 +29,22 @@ export const getOrgModelPreferencesProcedure = tenantProtectedProcedure
 				provider: z.string(),
 				taskType: z.string(),
 				customParameters: z.record(z.string(), z.unknown()).nullable(),
-				model: z.object({
-					id: z.string(),
-					canonicalName: z.string(),
-					displayName: z.string(),
-					family: z.string(),
-					vendor: z.string(),
-					contextWindow: z.number(),
-					speedTier: z.string(),
-					qualityTier: z.string(),
-				}),
+				// A null model is the organization's explicit "switched
+				// off" choice for this task, not a missing relation. The
+				// settings form renders it as Disabled; omitting the row
+				// would read as "no preference" and show the default.
+				model: z
+					.object({
+						id: z.string(),
+						canonicalName: z.string(),
+						displayName: z.string(),
+						family: z.string(),
+						vendor: z.string(),
+						contextWindow: z.number(),
+						speedTier: z.string(),
+						qualityTier: z.string(),
+					})
+					.nullable(),
 			}),
 		),
 	)
@@ -75,15 +81,17 @@ export const getOrgModelPreferencesProcedure = tenantProtectedProcedure
 				string,
 				unknown
 			> | null,
-			model: {
-				id: pref.model.id,
-				canonicalName: pref.model.canonicalName,
-				displayName: pref.model.displayName,
-				family: pref.model.family,
-				vendor: pref.model.vendor,
-				contextWindow: pref.model.contextWindow,
-				speedTier: pref.model.speedTier,
-				qualityTier: pref.model.qualityTier,
-			},
+			model: pref.model
+				? {
+						id: pref.model.id,
+						canonicalName: pref.model.canonicalName,
+						displayName: pref.model.displayName,
+						family: pref.model.family,
+						vendor: pref.model.vendor,
+						contextWindow: pref.model.contextWindow,
+						speedTier: pref.model.speedTier,
+						qualityTier: pref.model.qualityTier,
+					}
+				: null,
 		}));
 	});

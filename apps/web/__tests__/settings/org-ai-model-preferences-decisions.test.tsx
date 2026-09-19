@@ -1,15 +1,21 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
-const { mockListAvailable, mockGetTaskDefaults, mockGetOrg } = vi.hoisted(
-	() => ({
+const { mockListAvailable, mockGetTaskDefaults, mockGetOrg, mockSetOrg } =
+	vi.hoisted(() => ({
 		mockListAvailable: vi.fn(),
 		mockGetTaskDefaults: vi.fn(),
 		mockGetOrg: vi.fn(),
-	}),
-);
+		mockSetOrg: vi.fn(),
+	}));
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
@@ -18,7 +24,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 			preferences: {
 				getTaskDefaults: mockGetTaskDefaults,
 				getOrg: mockGetOrg,
-				setOrg: vi.fn(),
+				setOrg: mockSetOrg,
 				deleteOrg: vi.fn(),
 			},
 		},
@@ -217,6 +223,127 @@ describe("organization AI model preferences decisions", () => {
 	});
 });
 
+describe("switching decisions off", () => {
+	function withDecisionModels() {
+		mockListAvailable.mockImplementation(
+			({ taskType }: { taskType?: string }) =>
+				Promise.resolve(
+					taskType === "DECISION"
+						? decisionModelsResponse
+						: generalModelsResponse,
+				),
+		);
+		mockGetTaskDefaults.mockResolvedValue([]);
+	}
+
+	async function findDecisionCard() {
+		const heading = await screen.findByText("Decisions");
+		const card = heading.closest("div.p-4");
+		if (!card) {
+			throw new Error("Decisions card was not rendered");
+		}
+		return card as HTMLElement;
+	}
+
+	it("offers Disabled alongside the decision models", async () => {
+		withDecisionModels();
+		mockGetOrg.mockResolvedValue([]);
+
+		renderForm();
+		const decisionCard = await findDecisionCard();
+
+		fireEvent.click(within(decisionCard).getByRole("combobox"));
+
+		expect(await screen.findByText("TypeSafe AI Jev")).toBeInTheDocument();
+		expect(screen.getByText("Off")).toBeInTheDocument();
+		expect(screen.getByText("Disabled")).toBeInTheDocument();
+		expect(
+			screen.getByText("Use the regular AI model instead"),
+		).toBeInTheDocument();
+	});
+
+	it("does not offer Disabled for a task that has no off state", async () => {
+		withDecisionModels();
+		mockGetOrg.mockResolvedValue([]);
+
+		renderForm();
+		const heading = await screen.findByText("Evaluations");
+		const card = heading.closest("div.p-4");
+		if (!card) {
+			throw new Error("Evaluations card was not rendered");
+		}
+
+		fireEvent.click(within(card as HTMLElement).getByRole("combobox"));
+
+		expect(await screen.findByText("Text Model")).toBeInTheDocument();
+		expect(screen.queryByText("Disabled")).not.toBeInTheDocument();
+	});
+
+	it("saves the off switch as a null model rather than a sentinel string", async () => {
+		withDecisionModels();
+		mockGetOrg.mockResolvedValue([]);
+		mockSetOrg.mockResolvedValue({
+			id: "preference-off",
+			provider: "VERCEL_GATEWAY",
+			taskType: "DECISION",
+			model: null,
+		});
+
+		renderForm();
+		const decisionCard = await findDecisionCard();
+
+		fireEvent.click(within(decisionCard).getByRole("combobox"));
+		fireEvent.click(await screen.findByText("Disabled"));
+
+		expect(
+			await within(decisionCard).findByText("Unsaved"),
+		).toBeInTheDocument();
+
+		fireEvent.click(screen.getByText("Save Changes"));
+
+		await waitFor(() => {
+			expect(mockSetOrg).toHaveBeenCalledWith({
+				organizationId: "org-1",
+				taskType: "DECISION",
+				// The UI sentinel must never leave the browser as a model id.
+				modelCanonicalName: null,
+				overrideProvider: "VERCEL_GATEWAY",
+			});
+		});
+	});
+
+	it("renders a saved off switch as Disabled, with Reset back to the default", async () => {
+		withDecisionModels();
+		mockGetOrg.mockResolvedValue([
+			{
+				id: "preference-off",
+				provider: "VERCEL_GATEWAY",
+				taskType: "DECISION",
+				customParameters: null,
+				// A stored preference with no model. Reading it as "no
+				// preference" would wrongly show the seeded Jev default.
+				model: null,
+			},
+		]);
+
+		renderForm();
+		const decisionCard = await findDecisionCard();
+
+		expect(
+			await within(decisionCard).findByText("Disabled"),
+		).toBeInTheDocument();
+		expect(
+			within(decisionCard).queryByText("TypeSafe AI Jev"),
+		).not.toBeInTheDocument();
+		expect(within(decisionCard).getByText("Reset")).toBeInTheDocument();
+		expect(
+			within(decisionCard).getByText(/Decisions are switched off/),
+		).toHaveTextContent(
+			"Decisions are switched off. Work items and action-item routing use your regular AI model.",
+		);
+	});
+});
+
 describe("decisions without Vercel", () => {
 	it("disables the decision selector and explains the regular classifier fallback", async () => {
 		const withoutVercel = {
@@ -250,6 +377,8 @@ describe("decisions without Vercel", () => {
 		expect(
 			within(card).queryByText("TypeSafe AI Jev"),
 		).not.toBeInTheDocument();
+		// Nothing to switch off when there was never anything to switch on.
+		expect(within(card).queryByText("Disabled")).not.toBeInTheDocument();
 		expect(
 			within(card).getByText(/Jev requires Vercel AI Gateway/),
 		).toHaveTextContent(
