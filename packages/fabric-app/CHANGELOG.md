@@ -1,5 +1,15 @@
 # fabric-app
 
+## 1.16.5
+
+### Patch Changes
+
+- c465cc1: Action-item create-vs-enrich routing now uses an organization's configured decision model to settle confident verdicts before falling back to the language judge.
+- a16b8ba: Allow project members to propose coding instruction file changes for editors to review and approve before publication.
+- acd2ea4: Use the configured decision model to classify work items as bugs or features, with regular AI classification as fallback when Vercel AI Gateway is unavailable or the decision is uncertain.
+- 06c3c8b: Add a dedicated Decisions model setting with support for Jev through Vercel AI Gateway.
+- 2973217: Add an option to automatically sync published coding instructions at session start when connecting Claude Code.
+
 ## 1.16.4
 
 ### Patch Changes
