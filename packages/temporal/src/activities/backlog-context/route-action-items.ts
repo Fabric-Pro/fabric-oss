@@ -22,9 +22,21 @@
  *     could therefore disagree about what a ticket is, and a shared cache would
  *     have thrashed between two different texts for the same story. Changing
  *     how matching behaves is now a single edit that reaches all of them.
- *  2. ONE LLM judge call per action item over that shortlist, returning
+ *  2. ONE judgement per action item over that shortlist, returning
  *     enrich-target-or-create plus a confidence. Enrich only at or above the
  *     confidence threshold; precision lives here.
+ *
+ *     When the organization has a typed decision model configured, that
+ *     judgement is first attempted as a single `experimental_evaluate` call
+ *     that asks for the create/enrich choice and its target ticket together,
+ *     over the same rendered judge prompt the language judge would have seen.
+ *     A confident create is taken on the routing answer alone; an enrich is
+ *     taken only when the routing answer AND the target answer are confident.
+ *     Everything else — no decision model configured, an uncertain or
+ *     malformed answer, a target that was not on the shortlist, or any
+ *     non-usage-limit decision error — falls through to the COMPLEX language
+ *     judge, which stays the behaviour of record. A usage-limit error is
+ *     contained as that item's error stamp, exactly as it is for the judge.
  *
  * Degradation contract: this pass NEVER throws. Routing is an enhancement over
  * a proposal that is already valid without it, and an ingest run must not fail
@@ -36,7 +48,9 @@
  */
 
 import {
+	experimental_evaluate,
 	generateObject,
+	getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata,
 	resolveModelWithProvider,
 } from "@repo/ai";
@@ -60,6 +74,7 @@ import {
 	upsertStoryDuplicateEmbeddings,
 } from "@repo/database";
 import { logger } from "@repo/logs";
+import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import { generateEmbeddings } from "@repo/rag";
 import { renderTemplate, type TemplateFormat } from "@repo/utils";
 import { heartbeat } from "@temporalio/activity";
@@ -84,6 +99,221 @@ const RoutingVerdictSchema = z.object({
 	confidence: z.number().min(0).max(1),
 	reasoning: z.string().max(2000).optional(),
 });
+
+/**
+ * Typed decision fast path, mirroring `lib/classify-work-item.ts` — the same
+ * timeout, retry budget and acceptance floor, and the same rule that anything
+ * not clearly parseable is treated as uncertain rather than trusted.
+ *
+ * The floor is a routing policy, not a claim that provider probabilities are
+ * calibrated. Until labeled Fabric routing data calibrates it, only a very
+ * confident typed verdict may skip the language judge.
+ */
+const DECISION_TIMEOUT_MS = 10_000;
+const DECISION_MAX_RETRIES = 1;
+const DECISION_CONFIDENCE_THRESHOLD = 0.9;
+
+/**
+ * Per-candidate budget for the `target` question's criteria descriptions. The
+ * shortlist is already capped by `selectCandidates`, so this bounds only how
+ * much of each ticket's detection text travels with it — enough to tell two
+ * neighbouring tickets apart without re-sending a whole backlog body that the
+ * judge prompt in `state` already carries.
+ */
+const DECISION_CRITERION_CHARS = 500;
+
+/**
+ * Read one `choice` answer defensively. An answer that is missing, not a
+ * choice, carries no distribution, or whose winning probability is not a finite
+ * number in [0,1] is uncertain — never a verdict.
+ */
+function readChoiceAnswer(
+	result: Awaited<ReturnType<typeof experimental_evaluate>>,
+	questionKey: string,
+): { choice: string; probability: number } | null {
+	const answer = (result as { answers?: Record<string, unknown> }).answers?.[
+		questionKey
+	];
+	if (!answer || typeof answer !== "object") {
+		return null;
+	}
+
+	const { type, choice, probabilities } = answer as {
+		type?: unknown;
+		choice?: unknown;
+		probabilities?: unknown;
+	};
+	if (
+		type !== "choice" ||
+		typeof choice !== "string" ||
+		choice.length === 0 ||
+		!probabilities ||
+		typeof probabilities !== "object"
+	) {
+		return null;
+	}
+
+	const probability = (probabilities as Record<string, unknown>)[choice];
+	if (
+		typeof probability !== "number" ||
+		!Number.isFinite(probability) ||
+		probability < 0 ||
+		probability > 1
+	) {
+		return null;
+	}
+
+	return { choice, probability };
+}
+
+type DecisionFastPath =
+	| { decision: "create"; confidence: number }
+	| { decision: "enrich"; confidence: number; targetIdentifier: string };
+
+/**
+ * Whether a decision evaluation is confident enough to stand in for the
+ * language judge, and what it decided. Null means "fall through".
+ *
+ * Enrich has to clear BOTH floors: the fixed decision floor above, and the
+ * operator-tunable `routingConfidenceThreshold()` that already binds the
+ * language judge — a decision model must not be able to enrich at a confidence
+ * an operator has declared too low. Create needs only the decision floor,
+ * because create is the safe direction and is what a fall-through would most
+ * often produce anyway.
+ */
+function acceptDecisionEvaluation(
+	result: Awaited<ReturnType<typeof experimental_evaluate>>,
+	shortlistIdentifiers: ReadonlySet<string>,
+	enrichThreshold: number,
+): DecisionFastPath | null {
+	const routing = readChoiceAnswer(result, "routing");
+	if (!routing || routing.probability < DECISION_CONFIDENCE_THRESHOLD) {
+		return null;
+	}
+
+	if (routing.choice === "create") {
+		return { decision: "create", confidence: routing.probability };
+	}
+	if (routing.choice !== "enrich" || routing.probability < enrichThreshold) {
+		return null;
+	}
+
+	const target = readChoiceAnswer(result, "target");
+	if (
+		!target ||
+		target.probability < DECISION_CONFIDENCE_THRESHOLD ||
+		// The criteria keys ARE the shortlist identifiers, so anything else is
+		// a hallucinated target and must never address some other row.
+		!shortlistIdentifiers.has(target.choice)
+	) {
+		return null;
+	}
+
+	return {
+		decision: "enrich",
+		confidence: routing.probability,
+		targetIdentifier: target.choice,
+	};
+}
+
+/**
+ * One decision evaluation for one action item. Returns the verdict when it is
+ * confident enough to stand in for the language judge, and null whenever the
+ * caller should fall through to it.
+ *
+ * Only `AiUsageLimitExceededError` escapes: a usage limit is the one decision
+ * failure that must NOT be retried through the language judge, because doing so
+ * would bill the very spend the limit refused. The per-item `catch` in
+ * `judgeOne` turns it into that item's error stamp, so the pass still never
+ * throws.
+ */
+async function evaluateRouting(params: {
+	decisionModel: Awaited<ReturnType<typeof getAIDecisionModelWithMetadata>>;
+	prompt: string;
+	actionItem: string;
+	analyzerReasoning?: string | null;
+	candidates: RoutingJudgeCandidate[];
+	threshold: number;
+	projectId: string;
+	title?: string;
+}): Promise<DecisionFastPath | null> {
+	const { decisionModel, candidates, projectId, title } = params;
+
+	// Keyed by the EXACT shortlist identifier, so an accepted target maps back
+	// onto the shortlist without any fuzzy matching. Each description is capped
+	// because the full bodies already travel with the rendered judge prompt in
+	// `state`; this only has to tell neighbouring tickets apart.
+	const targetCriteria: Record<string, string> = {};
+	for (const candidate of candidates) {
+		targetCriteria[candidate.identifier] =
+			`${candidate.title}\n${candidate.content}`.slice(
+				0,
+				DECISION_CRITERION_CHARS,
+			);
+	}
+
+	let result: Awaited<ReturnType<typeof experimental_evaluate>>;
+	try {
+		result = await experimental_evaluate({
+			model: decisionModel.model,
+			state: {
+				judgePolicy: params.prompt,
+				actionItem: params.actionItem,
+				analyzerReasoning: params.analyzerReasoning ?? "",
+			},
+			questions: {
+				routing: {
+					type: "choice",
+					instructions:
+						"Apply judgePolicy to actionItem. Choose enrich only when the action item is additional detail on one of the candidate tickets; choose create when it is work none of them already covers.",
+					criteria: {
+						create: "The action item is new work that none of the candidate tickets already tracks.",
+						enrich: "The action item is additional detail on one of the candidate tickets, which should absorb it rather than a new ticket being opened.",
+					},
+				},
+				target: {
+					type: "choice",
+					instructions:
+						"Choose the candidate ticket the action item belongs to, by its identifier. Answer as if enrich were the correct routing, even when create is the better one.",
+					criteria: targetCriteria,
+				},
+			},
+			maxRetries: DECISION_MAX_RETRIES,
+			abortSignal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
+		});
+	} catch (error) {
+		if (error instanceof AiUsageLimitExceededError) {
+			throw error;
+		}
+		logger.warn(
+			"[ActionItemRouting] decision evaluation unavailable; using language judge",
+			{
+				projectId,
+				actionItem: title?.slice(0, 200),
+				error: error instanceof Error ? error.message : String(error),
+			},
+		);
+		return null;
+	}
+
+	// A completed evaluation used the organization provider even when the
+	// answer is too uncertain for the fast path, so update last-used before
+	// inspecting it.
+	decisionModel.trackUsage();
+
+	const verdict = acceptDecisionEvaluation(
+		result,
+		new Set(candidates.map((candidate) => candidate.identifier)),
+		params.threshold,
+	);
+	if (!verdict) {
+		logger.warn(
+			"[ActionItemRouting] decision evaluation was uncertain or malformed; using language judge",
+			{ projectId, actionItem: title?.slice(0, 200) },
+		);
+	}
+	return verdict;
+}
 
 /**
  * Whether this project has opted into Create-vs-Enrich routing.
@@ -125,11 +355,81 @@ function capturedContent(change: ChangeProposal["changes"][number]) {
 	};
 }
 
+/** One entry of the ranked shortlist retained on every routed row. */
+type RoutingAlternative = {
+	storyId: string;
+	identifier: string;
+	title: string;
+	similarity: number;
+};
+
 /**
- * Hard cap on action items judged per run. Each judgement is a COMPLEX LLM call
- * inside an activity whose workflows set a two-minute heartbeat timeout, so the
- * cap plus the batched heartbeat is what stops a long transcript stalling the
- * worker. Applied BEFORE embedding, so an item over the cap costs nothing.
+ * The enrichment row, built once for both judgements.
+ *
+ * The decision fast path and the language judge must produce a byte-identical
+ * row — the only difference between them is where `confidence` and `reasoning`
+ * came from — so the shape lives here rather than in two copies that could
+ * drift apart.
+ */
+function buildEnrichedRow(params: {
+	change: ChangeProposal["changes"][number];
+	target: RoutingAlternative;
+	story:
+		| Awaited<ReturnType<typeof listActiveStoriesForDetection>>[number]
+		| undefined;
+	confidence: number;
+	reasoning: string | null;
+	alternatives: RoutingAlternative[];
+}): ChangeProposal["changes"][number] {
+	const { change, target, story, confidence, reasoning, alternatives } =
+		params;
+	return {
+		...change,
+		action: "update" as const,
+		existingId: target.storyId,
+		existingIdentifier: target.identifier,
+		// The reviewer is editing an EXISTING ticket now, so its title
+		// stands. `from === to` means the diff view renders no title
+		// change — FR10's "no existing content removed". The action
+		// item's own wording is kept on `routing.proposedTitle` so the
+		// reviewer can still see what was captured.
+		title: { from: target.title, to: target.title },
+		// `from` is filled with the true current body by
+		// `structurePreserveUpdates`, which runs next and produces the
+		// merged `to`. Seeding it here keeps the diff honest even if
+		// that pass safe-holds.
+		description: change.description
+			? {
+					from: story?.description ?? "",
+					to: change.description.to,
+				}
+			: undefined,
+		acceptanceCriteria: change.acceptanceCriteria
+			? {
+					from: story?.acceptanceCriteria ?? "",
+					to: change.acceptanceCriteria.to,
+				}
+			: undefined,
+		routing: {
+			decision: "enrich" as const,
+			confidence,
+			matchedStoryId: target.storyId,
+			matchedIdentifier: target.identifier,
+			matchedTitle: target.title,
+			reasoning,
+			alternatives,
+			...capturedContent(change),
+		},
+	};
+}
+
+/**
+ * Hard cap on action items judged per run. Each judgement costs at most one
+ * typed decision evaluation plus a COMPLEX LLM call — the language judge is
+ * skipped only when the decision model answered confidently — inside an
+ * activity whose workflows set a two-minute heartbeat timeout, so the cap plus
+ * the batched heartbeat is what stops a long transcript stalling the worker.
+ * Applied BEFORE embedding, so an item over the cap costs nothing.
  */
 const MAX_JUDGED = 40;
 
@@ -519,6 +819,32 @@ export async function routeActionItemsToExistingTickets(
 		return allFailed(changes, routableIndexes, projectId, error);
 	}
 
+	// Optional typed decision model, resolved ONCE per run. It is a fast path,
+	// not a dependency: an organization without an organization-owned Vercel
+	// Gateway decision model — or any other resolution failure — judges every
+	// item with the language model exactly as it does today. This must never
+	// become an `allFailed`, which would stamp an error state on a proposal
+	// that routing can still evaluate perfectly well.
+	let decisionModel: Awaited<
+		ReturnType<typeof getAIDecisionModelWithMetadata>
+	> | null = null;
+	try {
+		decisionModel = await getAIDecisionModelWithMetadata({
+			userId,
+			organizationId,
+			projectId,
+		});
+	} catch (error) {
+		decisionModel = null;
+		logger.info(
+			"[ActionItemRouting] no decision model — judging every item with the language model",
+			{
+				projectId,
+				error: error instanceof Error ? error.message : String(error),
+			},
+		);
+	}
+
 	const threshold = routingConfidenceThreshold();
 	const routed = [...changes];
 	let enriched = 0;
@@ -526,7 +852,8 @@ export async function routeActionItemsToExistingTickets(
 	let failed = 0;
 
 	// Bound the work, exactly as the sibling `structurePreserveUpdates` pass
-	// does. Each judgement is a COMPLEX LLM call inside an activity whose
+	// does. Each judgement costs at most a typed decision evaluation plus a
+	// COMPLEX LLM call, inside an activity whose
 	// workflows all set `heartbeatTimeout: "2 minutes"`, and the analyzer's own
 	// heartbeat interval has already been cleared by the time this runs — so a
 	// busy transcript's worth of sequential calls would let the heartbeat lapse
@@ -610,17 +937,91 @@ export async function routeActionItemsToExistingTickets(
 		}
 
 		try {
+			// Built once: the rendered judge prompt and the decision
+			// evaluation's target criteria must describe the same shortlist.
+			const judgeCandidates = alternatives.map((alt) => ({
+				identifier: alt.identifier,
+				title: alt.title,
+				content: textByStoryId.get(alt.storyId) ?? alt.title,
+			}));
 			const prompt = await resolveJudgePrompt({
 				userId,
 				organizationId,
 				actionItem: itemTexts[offset],
 				reasoning: change.reasoning,
-				candidates: alternatives.map((alt) => ({
-					identifier: alt.identifier,
-					title: alt.title,
-					content: textByStoryId.get(alt.storyId) ?? alt.title,
-				})),
+				candidates: judgeCandidates,
 			});
+
+			// Typed decision fast path. Runs on the SAME rendered prompt the
+			// language judge would have received, so an operator's bound judge
+			// wording still governs the verdict, and asks both questions in one
+			// evaluation over one shared state so the target is chosen against
+			// the same reading of the item as the create/enrich call.
+			if (decisionModel) {
+				const fastPath = await evaluateRouting({
+					decisionModel,
+					prompt,
+					actionItem: itemTexts[offset],
+					analyzerReasoning: change.reasoning,
+					candidates: judgeCandidates,
+					threshold,
+					projectId,
+					title: change.title?.to,
+				});
+				if (fastPath?.decision === "create") {
+					routed[changeIndex] = {
+						...change,
+						routing: {
+							decision: "create" as const,
+							confidence: fastPath.confidence,
+							// A typed evaluation returns a choice and a
+							// distribution, not written evidence. Leave this
+							// null rather than inventing a rationale; the
+							// review UI already renders nothing for it.
+							reasoning: null,
+							alternatives,
+							...capturedContent(change),
+						},
+					};
+					created += 1;
+					logDecision(projectId, change.title?.to, {
+						decision: "create",
+						confidence: fastPath.confidence,
+						candidates: alternatives.length,
+						source: "decision_evaluation",
+					});
+					return;
+				}
+				if (fastPath?.decision === "enrich") {
+					const target = alternatives.find(
+						(alt) => alt.identifier === fastPath.targetIdentifier,
+					);
+					// `acceptDecisionEvaluation` already resolved the choice
+					// against this shortlist, so this cannot miss — but a row
+					// rewritten against `undefined` would be a corrupted
+					// ticket, so never assert it.
+					if (target) {
+						routed[changeIndex] = buildEnrichedRow({
+							change,
+							target,
+							story: storyById.get(target.storyId),
+							confidence: fastPath.confidence,
+							reasoning: null,
+							alternatives,
+						});
+						enriched += 1;
+						logDecision(projectId, change.title?.to, {
+							decision: "enrich",
+							confidence: fastPath.confidence,
+							candidates: alternatives.length,
+							matchedIdentifier: target.identifier,
+							source: "decision_evaluation",
+						});
+						return;
+					}
+				}
+			}
+
 			// A ceiling, not a target: the verdict is a handful of fields and a
 			// capped sentence, so this never binds in practice. It exists because
 			// an unbounded generation fails as a HANG rather than an error, and a
@@ -633,6 +1034,13 @@ export async function routeActionItemsToExistingTickets(
 						promptChars: prompt.length,
 					})
 				: undefined;
+			// The batch heartbeat fired before the decision evaluation above, which
+			// can take its full timeout before falling through. Signal liveness
+			// again so the language judge starts with the whole heartbeat window
+			// rather than whatever the evaluation left of it.
+			heartbeat(
+				`routeActionItems: language judge ${offset}/${judged.length}`,
+			);
 			const { object: verdict } = await generateObject({
 				model,
 				schema: RoutingVerdictSchema,
@@ -653,51 +1061,21 @@ export async function routeActionItemsToExistingTickets(
 					: undefined;
 
 			if (target && verdict.confidence >= threshold) {
-				const story = storyById.get(target.storyId);
-				routed[changeIndex] = {
-					...change,
-					action: "update" as const,
-					existingId: target.storyId,
-					existingIdentifier: target.identifier,
-					// The reviewer is editing an EXISTING ticket now, so its title
-					// stands. `from === to` means the diff view renders no title
-					// change — FR10's "no existing content removed". The action
-					// item's own wording is kept on `routing.proposedTitle` so the
-					// reviewer can still see what was captured.
-					title: { from: target.title, to: target.title },
-					// `from` is filled with the true current body by
-					// `structurePreserveUpdates`, which runs next and produces the
-					// merged `to`. Seeding it here keeps the diff honest even if
-					// that pass safe-holds.
-					description: change.description
-						? {
-								from: story?.description ?? "",
-								to: change.description.to,
-							}
-						: undefined,
-					acceptanceCriteria: change.acceptanceCriteria
-						? {
-								from: story?.acceptanceCriteria ?? "",
-								to: change.acceptanceCriteria.to,
-							}
-						: undefined,
-					routing: {
-						decision: "enrich" as const,
-						confidence: verdict.confidence,
-						matchedStoryId: target.storyId,
-						matchedIdentifier: target.identifier,
-						matchedTitle: target.title,
-						reasoning: verdict.reasoning ?? null,
-						alternatives,
-						...capturedContent(change),
-					},
-				};
+				routed[changeIndex] = buildEnrichedRow({
+					change,
+					target,
+					story: storyById.get(target.storyId),
+					confidence: verdict.confidence,
+					reasoning: verdict.reasoning ?? null,
+					alternatives,
+				});
 				enriched += 1;
 				logDecision(projectId, change.title?.to, {
 					decision: "enrich",
 					confidence: verdict.confidence,
 					candidates: alternatives.length,
 					matchedIdentifier: target.identifier,
+					source: "language_model",
 				});
 				return;
 			}
@@ -717,6 +1095,7 @@ export async function routeActionItemsToExistingTickets(
 				decision: "create",
 				confidence: verdict.confidence,
 				candidates: alternatives.length,
+				source: "language_model",
 				// A model that named a ticket we could not match is worth seeing in
 				// the logs — it is the signature of a drifting judge prompt.
 				unmatchedTarget:
@@ -821,6 +1200,12 @@ function allFailed(
  * Per-item decision log. The card's observability NFR requires every routing
  * decision — classification, matched ticket, confidence — to be recorded for
  * audit and debugging.
+ *
+ * `source` distinguishes the two judgements that can produce a verdict, so a
+ * shift in routing behaviour after an organization configures a decision model
+ * is visible in the logs rather than inferred. It is absent for the decisions
+ * that no model made at all: an empty backlog, and a shortlist that cleared
+ * nothing.
  */
 function logDecision(
 	projectId: string,
@@ -831,6 +1216,7 @@ function logDecision(
 		candidates: number;
 		matchedIdentifier?: string;
 		unmatchedTarget?: string;
+		source?: "decision_evaluation" | "language_model";
 	},
 ): void {
 	logger.info("[ActionItemRouting] decision", {
