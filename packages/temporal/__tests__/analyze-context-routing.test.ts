@@ -30,6 +30,8 @@ const { mocks } = vi.hoisted(() => ({
 		routeActionItems: vi.fn(),
 		reanalyzeBodyByKind: vi.fn(),
 		findManyUserStory: vi.fn(),
+		evaluate: vi.fn(),
+		getAIDecisionModelWithMetadata: vi.fn(),
 	},
 }));
 
@@ -37,6 +39,12 @@ vi.mock("@repo/ai", () => ({
 	generateObject: mocks.generateObject,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
+	// The routing pass's optional decision fast path. These wiring tests run
+	// with NO organization decision model configured, so the analyzer's
+	// behaviour here is the unchanged, language-model one — asserted rather
+	// than left to the routing module being mocked out below.
+	experimental_evaluate: mocks.evaluate,
+	getAIDecisionModelWithMetadata: mocks.getAIDecisionModelWithMetadata,
 }));
 
 vi.mock("@temporalio/activity", () => ({ heartbeat: mocks.heartbeat }));
@@ -101,6 +109,14 @@ const BASE_INPUT = {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.getBoundPromptForAgent.mockResolvedValue(null);
+	// No organization decision model: the routing pass's typed fast path is
+	// unavailable, which is the configuration every one of these wiring
+	// assertions is written against.
+	mocks.getAIDecisionModelWithMetadata.mockRejectedValue(
+		new Error(
+			"Decision evaluation requires this organization's configured Vercel AI Gateway provider.",
+		),
+	);
 	mocks.getAIModelWithMetadata.mockResolvedValue({
 		model: { id: "test-model" },
 		metadata: { modelString: "anthropic:claude-test" },

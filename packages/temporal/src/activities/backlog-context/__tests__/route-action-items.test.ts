@@ -16,7 +16,11 @@
  *     error all leave the item a create — the safe direction,
  *   - a wholesale outage never throws and never silently looks like a clean
  *     "everything is new",
- *   - closed tickets are not candidates.
+ *   - closed tickets are not candidates,
+ *   - the optional typed decision model short-circuits the language judge ONLY
+ *     on a verdict confident in both its questions, and every other outcome —
+ *     unconfigured, uncertain, a target off the shortlist, an error — lands
+ *     back on the language judge with today's behaviour.
  *
  * Run with:
  *   pnpm --filter @repo/temporal test src/activities/backlog-context/__tests__/route-action-items.test.ts
@@ -37,20 +41,38 @@ const {
 	mockListCacheRows,
 	mockUpsertCache,
 	mockGetBoundPrompt,
-} = vi.hoisted(() => ({
-	mockGenerateEmbeddings: vi.fn(),
-	mockGenerateObject: vi.fn(),
-	mockTrackUsage: vi.fn(),
-	mockGetAIModelWithMetadata: vi.fn(),
-	mockListActiveStories: vi.fn(),
-	mockFindUniqueProject: vi.fn(),
-	mockHeartbeat: vi.fn(),
-	mockResolveModelWithProvider: vi.fn(),
-	mockListCacheMeta: vi.fn(),
-	mockListCacheRows: vi.fn(),
-	mockUpsertCache: vi.fn(),
-	mockGetBoundPrompt: vi.fn(),
-}));
+	mockEvaluate,
+	mockGetDecisionModel,
+	mockDecisionTrackUsage,
+	AiUsageLimitExceededError,
+} = vi.hoisted(() => {
+	// Stand-in for the real error class: the pass only ever tests membership,
+	// and mocking it keeps the payments package out of this unit test.
+	class AiUsageLimitExceededError extends Error {
+		constructor() {
+			super("AI usage limit exceeded");
+			this.name = "AiUsageLimitExceededError";
+		}
+	}
+	return {
+		AiUsageLimitExceededError,
+		mockGenerateEmbeddings: vi.fn(),
+		mockGenerateObject: vi.fn(),
+		mockTrackUsage: vi.fn(),
+		mockGetAIModelWithMetadata: vi.fn(),
+		mockListActiveStories: vi.fn(),
+		mockFindUniqueProject: vi.fn(),
+		mockHeartbeat: vi.fn(),
+		mockResolveModelWithProvider: vi.fn(),
+		mockListCacheMeta: vi.fn(),
+		mockListCacheRows: vi.fn(),
+		mockUpsertCache: vi.fn(),
+		mockGetBoundPrompt: vi.fn(),
+		mockEvaluate: vi.fn(),
+		mockGetDecisionModel: vi.fn(),
+		mockDecisionTrackUsage: vi.fn(),
+	};
+});
 
 vi.mock("@repo/rag", () => ({ generateEmbeddings: mockGenerateEmbeddings }));
 
@@ -60,6 +82,12 @@ vi.mock("@repo/ai", () => ({
 	generateObject: mockGenerateObject,
 	getAIModelWithMetadata: mockGetAIModelWithMetadata,
 	resolveModelWithProvider: mockResolveModelWithProvider,
+	experimental_evaluate: mockEvaluate,
+	getAIDecisionModelWithMetadata: mockGetDecisionModel,
+}));
+
+vi.mock("@repo/payments/lib/ai-usage-limit-error", () => ({
+	AiUsageLimitExceededError,
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -152,6 +180,20 @@ function arrange(
 	mockGenerateObject.mockResolvedValue({ object: verdict });
 }
 
+/**
+ * Give the organization a configured decision model whose single evaluation
+ * returns `answers`. Layered on top of `arrange` so the language judge stays
+ * wired and a fall-through is observable.
+ */
+function arrangeDecision(answers: Record<string, unknown>) {
+	mockGetDecisionModel.mockResolvedValue({
+		model: { modelId: "typesafe-ai/jev" },
+		metadata: { provider: "VERCEL_GATEWAY" },
+		trackUsage: mockDecisionTrackUsage,
+	});
+	mockEvaluate.mockResolvedValue({ answers });
+}
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	// Routing is opt-in; the pass reads the flag itself. Default the suite to
@@ -168,6 +210,14 @@ beforeEach(() => {
 	mockUpsertCache.mockResolvedValue(undefined);
 	// Default: no operator has bound a judge prompt, so the shipped wording runs.
 	mockGetBoundPrompt.mockResolvedValue(null);
+	// Default: the organization has no typed decision model, so every test
+	// below judges through the language model unless it opts in via
+	// `arrangeDecision`.
+	mockGetDecisionModel.mockRejectedValue(
+		new Error(
+			"Decision evaluation requires this organization's configured Vercel AI Gateway provider.",
+		),
+	);
 	delete process.env.ACTION_ITEM_ROUTING_COSINE_FLOOR;
 	delete process.env.ACTION_ITEM_ROUTING_CONFIDENCE_THRESHOLD;
 });
@@ -835,5 +885,323 @@ describe("the judge prompt comes from the prompt library", () => {
 		});
 
 		expect(promptSentToJudge()).toContain("## Candidate tickets");
+	});
+});
+
+describe("typed decision model fast path", () => {
+	it("enriches from a confident decision verdict without calling the language judge", async () => {
+		arrange({ decision: "create", confidence: 1 });
+		arrangeDecision({
+			routing: {
+				type: "choice",
+				choice: "enrich",
+				probabilities: { create: 0.04, enrich: 0.96 },
+			},
+			target: {
+				type: "choice",
+				choice: "F-12",
+				probabilities: { "F-12": 0.98 },
+			},
+		});
+
+		const result = await routeActionItemsToExistingTickets({
+			...BASE_PARAMS,
+			changes: [createChange()],
+		});
+
+		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(result.enriched).toBe(1);
+		const change = result.changes[0];
+		expect(change.action).toBe("update");
+		expect(change.existingId).toBe("story-1");
+		expect(change.existingIdentifier).toBe("F-12");
+		expect(change.title.from).toBe("Export throttling");
+		expect(change.description?.from).toBe("Exports need a queue.");
+		expect(change.routing?.decision).toBe("enrich");
+		// The confidence IS the routing question's probability, not a number
+		// the judge wrote.
+		expect(change.routing?.confidence).toBe(0.96);
+		expect(change.routing?.matchedIdentifier).toBe("F-12");
+		expect(change.routing?.matchedTitle).toBe("Export throttling");
+		// A typed evaluation produces no prose; the review UI renders nothing
+		// for a null reasoning.
+		expect(change.routing?.reasoning).toBeNull();
+		// The item's original wording still has to survive, or a reviewer's
+		// override re-submits the merged body against another ticket.
+		expect(change.routing?.proposedTitle).toBe(
+			"Rate limit the export endpoint",
+		);
+		// A completed evaluation spent the organization's provider.
+		expect(mockDecisionTrackUsage).toHaveBeenCalledOnce();
+	});
+
+	it("keeps the item a create from a confident decision verdict without calling the language judge", async () => {
+		arrange({
+			decision: "enrich",
+			targetIdentifier: "F-12",
+			confidence: 0.99,
+		});
+		arrangeDecision({
+			routing: {
+				type: "choice",
+				choice: "create",
+				probabilities: { create: 0.94, enrich: 0.06 },
+			},
+			target: {
+				type: "choice",
+				choice: "F-12",
+				probabilities: { "F-12": 0.99 },
+			},
+		});
+
+		const result = await routeActionItemsToExistingTickets({
+			...BASE_PARAMS,
+			changes: [createChange()],
+		});
+
+		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(result.created).toBe(1);
+		expect(result.enriched).toBe(0);
+		expect(result.changes[0].action).toBe("create");
+		expect(result.changes[0].existingId).toBeUndefined();
+		expect(result.changes[0].routing?.decision).toBe("create");
+		expect(result.changes[0].routing?.confidence).toBe(0.94);
+		expect(result.changes[0].routing?.reasoning).toBeNull();
+		// The shortlist is still retained for the override picker.
+		expect(result.changes[0].routing?.alternatives).toHaveLength(1);
+	});
+
+	it("evaluates against the operator's bound judge prompt and the shortlist identifiers", async () => {
+		arrange({ decision: "create", confidence: 1 });
+		mockGetBoundPrompt.mockResolvedValue({
+			format: "HANDLEBARS",
+			version: {
+				content:
+					"HOUSE RULES: {{{action_item}}} || {{{candidates}}} || {{{first_identifier}}}",
+			},
+		});
+		arrangeDecision({
+			routing: {
+				type: "choice",
+				choice: "create",
+				probabilities: { create: 0.95, enrich: 0.05 },
+			},
+		});
+
+		await routeActionItemsToExistingTickets({
+			...BASE_PARAMS,
+			changes: [createChange()],
+		});
+
+		const call = mockEvaluate.mock.calls[0][0];
+		// The org's prompt customisation binds the typed path too — otherwise
+		// tuning the judge would silently stop working the moment a decision
+		// model is configured.
+		expect(call.state.judgePolicy).toContain("HOUSE RULES:");
+		expect(call.state.actionItem).toContain(
+			"Rate limit the export endpoint",
+		);
+		expect(call.state.analyzerReasoning).toBe(
+			"Raised twice in the meeting",
+		);
+		expect(Object.keys(call.questions.target.criteria)).toEqual(["F-12"]);
+		expect(
+			call.questions.target.criteria["F-12"].length,
+		).toBeLessThanOrEqual(500);
+		expect(call.maxRetries).toBe(1);
+	});
+
+	it("falls through to the language judge when the routing probability is short of the decision floor", async () => {
+		arrange({
+			decision: "enrich",
+			targetIdentifier: "F-12",
+			confidence: 0.91,
+		});
+		arrangeDecision({
+			routing: {
+				type: "choice",
+				choice: "enrich",
+				probabilities: { create: 0.11, enrich: 0.89 },
+			},
+			target: {
+				type: "choice",
+				choice: "F-12",
+				probabilities: { "F-12": 0.99 },
+			},
+		});
+
+		const result = await routeActionItemsToExistingTickets({
+			...BASE_PARAMS,
+			changes: [createChange()],
+		});
+
+		// 0.89 is below the 0.9 decision floor, so the language judge decides —
+		// and its own reasoning comes back on the row.
+		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(result.enriched).toBe(1);
+		expect(result.changes[0].routing?.confidence).toBe(0.91);
+		// A completed-but-uncertain evaluation still spent the provider.
+		expect(mockDecisionTrackUsage).toHaveBeenCalledOnce();
+	});
+
+	it("falls through when the decision model names a target that was not on the shortlist", async () => {
+		arrange({ decision: "create", confidence: 1 });
+		arrangeDecision({
+			routing: {
+				type: "choice",
+				choice: "enrich",
+				probabilities: { create: 0.02, enrich: 0.98 },
+			},
+			target: {
+				type: "choice",
+				choice: "F-999",
+				probabilities: { "F-999": 0.99 },
+			},
+		});
+
+		const result = await routeActionItemsToExistingTickets({
+			...BASE_PARAMS,
+			changes: [createChange()],
+		});
+
+		// A target off the shortlist must never address some other row.
+		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(result.changes[0].action).toBe("create");
+		expect(result.changes[0].existingId).toBeUndefined();
+	});
+
+	it("falls through when the decision model's target answer is itself uncertain", async () => {
+		arrange({ decision: "create", confidence: 1 });
+		arrangeDecision({
+			routing: {
+				type: "choice",
+				choice: "enrich",
+				probabilities: { create: 0.02, enrich: 0.98 },
+			},
+			target: {
+				type: "choice",
+				choice: "F-12",
+				probabilities: { "F-12": 0.55 },
+			},
+		});
+
+		const result = await routeActionItemsToExistingTickets({
+			...BASE_PARAMS,
+			changes: [createChange()],
+		});
+
+		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(result.changes[0].action).toBe("create");
+	});
+
+	it("falls through when a malformed answer carries no distribution", async () => {
+		arrange({ decision: "create", confidence: 1 });
+		arrangeDecision({
+			routing: { type: "choice", choice: "create" },
+		});
+
+		const result = await routeActionItemsToExistingTickets({
+			...BASE_PARAMS,
+			changes: [createChange()],
+		});
+
+		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(result.created).toBe(1);
+	});
+
+	it("still honours the configured confidence threshold on the typed path", async () => {
+		process.env.ACTION_ITEM_ROUTING_CONFIDENCE_THRESHOLD = "0.95";
+		arrange({ decision: "create", confidence: 1 });
+		arrangeDecision({
+			routing: {
+				type: "choice",
+				choice: "enrich",
+				probabilities: { create: 0.07, enrich: 0.93 },
+			},
+			target: {
+				type: "choice",
+				choice: "F-12",
+				probabilities: { "F-12": 0.99 },
+			},
+		});
+
+		const result = await routeActionItemsToExistingTickets({
+			...BASE_PARAMS,
+			changes: [createChange()],
+		});
+
+		// 0.93 clears the 0.9 decision floor but not the operator's 0.95, and
+		// the operator's knob has to bind both judgements or configuring a
+		// decision model would quietly loosen it.
+		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(result.changes[0].action).toBe("create");
+		expect(result.enriched).toBe(0);
+	});
+
+	it("never evaluates when the organization has no decision model configured", async () => {
+		arrange({
+			decision: "enrich",
+			targetIdentifier: "F-12",
+			confidence: 0.92,
+		});
+
+		const result = await routeActionItemsToExistingTickets({
+			...BASE_PARAMS,
+			changes: [createChange()],
+		});
+
+		// Unchanged from before the fast path existed: one language judgement,
+		// one enrichment, and no error stamp for the missing decision model.
+		expect(mockEvaluate).not.toHaveBeenCalled();
+		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(result.enriched).toBe(1);
+		expect(result.failed).toBe(0);
+		expect(result.changes[0].routing?.error).toBeUndefined();
+	});
+
+	it("falls through when the decision evaluation throws a generic error", async () => {
+		arrange({
+			decision: "enrich",
+			targetIdentifier: "F-12",
+			confidence: 0.92,
+		});
+		mockGetDecisionModel.mockResolvedValue({
+			model: { modelId: "typesafe-ai/jev" },
+			trackUsage: mockDecisionTrackUsage,
+		});
+		mockEvaluate.mockRejectedValue(new Error("gateway timeout"));
+
+		const result = await routeActionItemsToExistingTickets({
+			...BASE_PARAMS,
+			changes: [createChange()],
+		});
+
+		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(result.enriched).toBe(1);
+		expect(result.failed).toBe(0);
+	});
+
+	it("stamps the item and never retries the language judge after a usage-limit rejection", async () => {
+		arrange({ decision: "create", confidence: 1 });
+		mockGetDecisionModel.mockResolvedValue({
+			model: { modelId: "typesafe-ai/jev" },
+			trackUsage: mockDecisionTrackUsage,
+		});
+		mockEvaluate.mockRejectedValue(new AiUsageLimitExceededError());
+
+		// Falling through would bill exactly the spend the limit refused, so
+		// the item fails — and the pass still resolves, because it is
+		// documented never to throw.
+		const result = await routeActionItemsToExistingTickets({
+			...BASE_PARAMS,
+			changes: [createChange()],
+		});
+
+		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(result.failed).toBe(1);
+		expect(result.changes[0].action).toBe("create");
+		expect(result.changes[0].routing?.error).toContain(
+			"AI usage limit exceeded",
+		);
 	});
 });
