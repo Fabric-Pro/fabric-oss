@@ -9,7 +9,10 @@
  * re-pointing it would invalidate already-indexed vectors. These tests verify
  * the EMBEDDING preference is excluded from the deleteMany exactly when a
  * distinct documents provider governs embeddings, in both org and personal
- * contexts. IMAGE and every other task type are always cleared.
+ * contexts. In organization context DECISION is always preserved: it is
+ * pinned to the organization's Vercel AI Gateway rather than the default
+ * provider, and its row can mean "switched off", which a clear would undo.
+ * IMAGE and every other task type are always cleared.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -153,7 +156,7 @@ describe("setDefaultProviderProcedure — embeddings preservation", () => {
 			expect(mockOrgDeleteMany).toHaveBeenCalledTimes(1);
 			expect(mockOrgDeleteMany.mock.calls[0][0].where).toEqual({
 				organizationId: "org-1",
-				taskType: { not: "EMBEDDING" },
+				taskType: { notIn: ["DECISION", "EMBEDDING"] },
 			});
 			expect(res.preferencesCleared).toBe(4);
 		});
@@ -176,6 +179,7 @@ describe("setDefaultProviderProcedure — embeddings preservation", () => {
 
 			expect(mockOrgDeleteMany.mock.calls[0][0].where).toEqual({
 				organizationId: "org-1",
+				taskType: { notIn: ["DECISION"] },
 			});
 		});
 
@@ -197,6 +201,7 @@ describe("setDefaultProviderProcedure — embeddings preservation", () => {
 
 			expect(mockOrgDeleteMany.mock.calls[0][0].where).toEqual({
 				organizationId: "org-1",
+				taskType: { notIn: ["DECISION"] },
 			});
 		});
 
@@ -216,6 +221,27 @@ describe("setDefaultProviderProcedure — embeddings preservation", () => {
 			expect(mockOrgDeleteMany).not.toHaveBeenCalled();
 			expect(mockGetEmbeddingProviderConfig).not.toHaveBeenCalled();
 			expect(res.preferencesCleared).toBe(0);
+		});
+
+		it("never clears a DECISION preference, so a switched-off decision model stays off", async () => {
+			mockDb.cloudProviderConfig.findFirst.mockResolvedValue({
+				provider: "OPENAI_DIRECT",
+			});
+			mockGetEmbeddingProviderConfig.mockResolvedValue({
+				provider: null,
+			});
+
+			await setDefault._handler({
+				input: {
+					provider: "ANTHROPIC_DIRECT",
+					organizationId: "org-1",
+				},
+				context: orgContext,
+			});
+
+			expect(mockOrgDeleteMany).toHaveBeenCalledTimes(1);
+			const where = mockOrgDeleteMany.mock.calls[0][0].where;
+			expect(where.taskType.notIn).toContain("DECISION");
 		});
 	});
 

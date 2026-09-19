@@ -13044,8 +13044,13 @@ model OrganizationModelPreference {
   // What this preference applies to
   taskType AiTaskType // Required - which task type this override is for
 
-  // The overridden model (must be available for the provider)
-  modelId String
+  // The overridden model (must be available for the provider).
+  // NULL is a deliberate third state, not "unset": the organization switched
+  // this task's model OFF. Resolution stops at a NULL row and returns no
+  // model instead of falling through to the seeded system default. Deleting
+  // the row is what restores the default. Only DECISION accepts it today
+  // (see the API guard in packages/api .../preferences/set-org.ts).
+  modelId String?
 
   // Optional custom parameters
   customParameters Json? // Temperature, top_p, etc.
@@ -13055,7 +13060,7 @@ model OrganizationModelPreference {
 
   // Relations
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  model        AiModel      @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  model        AiModel?     @relation(fields: [modelId], references: [id], onDelete: Cascade)
 
   // Unique per org + task type + provider (one override per task per provider)
   @@unique([organizationId, taskType, provider])

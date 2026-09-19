@@ -180,6 +180,24 @@ describe("getAIDecisionModelWithMetadata", () => {
 		expect(getEvaluationModelMock).not.toHaveBeenCalled();
 	});
 
+	it("refuses when the organization has no decision model to resolve", async () => {
+		// `getModelForTask` returns null both when nothing is configured and
+		// when the organization explicitly switched decisions off. Either way
+		// the resolver must throw the configured-provider error, because that
+		// is what both production callers (work-item classification and
+		// action-item routing) catch to fall back to the language model.
+		getModelForTaskMock.mockResolvedValue(null);
+
+		await expect(
+			getAIDecisionModelWithMetadata({
+				userId: "user-1",
+				organizationId: "org-1",
+			}),
+		).rejects.toBeInstanceOf(AIProviderNotConfiguredError);
+		expect(getEvaluationModelMock).not.toHaveBeenCalled();
+		expect(assertWithinAiUsageLimitsMock).not.toHaveBeenCalled();
+	});
+
 	it("rejects DECISION before the language-model factory can receive Jev", async () => {
 		await expect(
 			getAIModel(

@@ -38,13 +38,17 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 		tags: ["AI Config"],
 		summary: "Set organization model preference",
 		description:
-			"Set a model override for a specific task type with the org's default provider",
+			"Set a model override for a specific task type with the org's default provider, or switch a DECISION task off with a null model",
 	})
 	.input(
 		z.object({
 			organizationId: z.string(),
 			taskType: AiTaskTypeEnum,
-			modelCanonicalName: z.string(),
+			// null = switch this task's model off. Only DECISION accepts it;
+			// every other task type falls back to the system default, so
+			// "off" there would have no coherent meaning. Removing a
+			// preference entirely is `deleteOrg`, which restores the default.
+			modelCanonicalName: z.string().nullable(),
 			customParameters: z.record(z.string(), z.unknown()).optional(),
 			// Allow specifying a different provider for specialized tasks (IMAGE, AUDIO)
 			overrideProvider: z.string().optional(),
@@ -55,10 +59,12 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 			id: z.string(),
 			provider: z.string(),
 			taskType: z.string(),
-			model: z.object({
-				canonicalName: z.string(),
-				displayName: z.string(),
-			}),
+			model: z
+				.object({
+					canonicalName: z.string(),
+					displayName: z.string(),
+				})
+				.nullable(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -105,6 +111,17 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 			(input.overrideProvider as AIProvider) ||
 			(providerConfig.provider as AIProvider);
 		const taskType = input.taskType as AiTaskType;
+		const requestedModelCanonicalName = input.modelCanonicalName;
+		const isDisableRequest = requestedModelCanonicalName === null;
+
+		// Checked before the gateway precondition so the caller is told the
+		// real problem: asking to switch off a task that has no off switch.
+		if (isDisableRequest && taskType !== "DECISION") {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Only decision tasks can be switched off. Remove the preference to use the default model for this task.",
+			});
+		}
 
 		if (taskType === "DECISION") {
 			const decisionProviderConfig = await getAiProviderApiKeyByProvider({
@@ -125,12 +142,38 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 			}
 		}
 
+		// Switching decisions off. The organization-owned Vercel gateway
+		// precondition above already ran, so this is an admin of an org that
+		// could have chosen a decision model deciding not to use one. Stored
+		// as a row with no model rather than as an absent row, because an
+		// absent row means "use the seeded default".
+		if (isDisableRequest) {
+			await deleteOrgModelPreferencesByTaskType(organizationId, taskType);
+
+			const preference = await setOrgModelPreference({
+				organizationId,
+				provider,
+				taskType,
+				modelId: null,
+				customParameters: input.customParameters,
+			});
+
+			return {
+				id: preference.id,
+				provider: preference.provider,
+				taskType: preference.taskType,
+				model: null,
+			};
+		}
+
 		// Verify the model exists
-		const model = await getModelByCanonicalName(input.modelCanonicalName);
+		const model = await getModelByCanonicalName(
+			requestedModelCanonicalName,
+		);
 
 		if (!model) {
 			throw new ORPCError("NOT_FOUND", {
-				message: `Model ${input.modelCanonicalName} not found in catalog`,
+				message: `Model ${requestedModelCanonicalName} not found in catalog`,
 			});
 		}
 
@@ -163,7 +206,7 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 			);
 			if (!hasMapping) {
 				throw new ORPCError("BAD_REQUEST", {
-					message: `Model "${input.modelCanonicalName}" is not available for provider "${provider}".`,
+					message: `Model "${requestedModelCanonicalName}" is not available for provider "${provider}".`,
 				});
 			}
 		}
@@ -184,9 +227,14 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 			id: preference.id,
 			provider: preference.provider,
 			taskType: preference.taskType,
+			// `preference.model` is nullable now that a row can carry no
+			// model, but this branch just wrote `model.id`, so fall back to
+			// the catalog row rather than reporting a null the caller would
+			// read as "switched off".
 			model: {
-				canonicalName: preference.model.canonicalName,
-				displayName: preference.model.displayName,
+				canonicalName:
+					preference.model?.canonicalName ?? model.canonicalName,
+				displayName: preference.model?.displayName ?? model.displayName,
 			},
 		};
 	});

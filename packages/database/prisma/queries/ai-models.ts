@@ -539,13 +539,18 @@ export async function getOrgModelPreference(
 }
 
 /**
- * Set or update organization's model override for a task type and provider
+ * Set or update organization's model override for a task type and provider.
+ *
+ * A `modelId` of `null` is the explicit "switched off" state, not "leave the
+ * column alone": the update writes NULL so an organization that previously
+ * pinned a model can turn the task off without deleting the row (deleting it
+ * is what restores the system default). `getModelForTask` stops on such a row.
  */
 export async function setOrgModelPreference(data: {
 	organizationId: string;
 	provider: AIProvider;
 	taskType: AiTaskType;
-	modelId: string;
+	modelId: string | null;
 	customParameters?: any;
 }) {
 	return await db.organizationModelPreference.upsert({
@@ -764,6 +769,21 @@ export async function getModelForTask(
 			provider,
 		);
 		if (orgOverride) {
+			// Explicit opt-out. A row with no model is the organization
+			// saying "switch this task off", which is a different answer
+			// from having no row at all: it must NOT fall through to the
+			// seeded system default, or the off switch would silently
+			// re-enable the default model. Callers that can degrade (the
+			// decision-model resolver, for one) already treat a null
+			// selection as "use the regular language model".
+			if (!orgOverride.modelId || !orgOverride.model) {
+				console.info(
+					"[getModelForTask] organization disabled the model for this task",
+					{ organizationId, taskType, provider },
+				);
+				return null;
+			}
+
 			// Handle deprecation
 			const { model, wasDeprecated, originalModelName } =
 				await resolveDeprecatedModel(orgOverride.model, provider);

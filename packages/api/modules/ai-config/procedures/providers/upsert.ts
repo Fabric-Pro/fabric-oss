@@ -644,8 +644,15 @@ export const setDefaultProviderProcedure = tenantProtectedProcedure
 				// indexed vectors. So when a distinct documents provider governs
 				// embeddings, preserve the EMBEDDING preference. When none is
 				// configured (or it IS the new default), embeddings fall back to /
-				// recompute from the default provider as before. IMAGE and every
-				// other task type are always cleared.
+				// recompute from the default provider as before.
+				//
+				// Exception: DECISION is always pinned to the organization's
+				// Vercel AI Gateway, never to the default provider, so a new
+				// default cannot make its choice unavailable. It is also the
+				// one task whose preference row can mean "switched off"
+				// (modelId NULL); clearing that row would silently re-enable
+				// the seeded decision model. IMAGE and every other task type
+				// are always cleared.
 				const embeddingProvider = await getEmbeddingProviderConfig({
 					userId: user.id,
 					organizationId,
@@ -653,18 +660,15 @@ export const setDefaultProviderProcedure = tenantProtectedProcedure
 				const preserveEmbedding =
 					!!embeddingProvider.provider &&
 					embeddingProvider.provider !== provider;
+				const preservedTaskTypes: AiTaskType[] = preserveEmbedding
+					? ["DECISION", "EMBEDDING"]
+					: ["DECISION"];
 
 				const deleteResult =
 					await db.organizationModelPreference.deleteMany({
 						where: {
 							organizationId,
-							...(preserveEmbedding
-								? {
-										taskType: {
-											not: "EMBEDDING" as AiTaskType,
-										},
-									}
-								: {}),
+							taskType: { notIn: preservedTaskTypes },
 						},
 					});
 				preferencesCleared = deleteResult.count;

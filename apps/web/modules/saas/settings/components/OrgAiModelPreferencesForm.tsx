@@ -31,6 +31,7 @@ import {
 	MessageSquareIcon,
 	MicIcon,
 	NetworkIcon,
+	PowerOffIcon,
 	SaveIcon,
 	SettingsIcon,
 	ShieldIcon,
@@ -201,8 +202,15 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 	DATABRICKS: "Databricks",
 };
 
+// Sentinel for the DECISION "Disabled" choice. It is a UI value only: the
+// Select needs a non-empty string, and `null` is what actually reaches the
+// server as `modelCanonicalName`. It deliberately contains no ":" so the
+// "GATEWAY:canonicalName" parser cannot mistake it for a model.
+const DECISION_DISABLED_VALUE = "__disabled__";
+
 interface PendingChange {
-	modelCanonicalName: string;
+	// null = the organization chose to switch this task's model off.
+	modelCanonicalName: string | null;
 	provider?: string | null;
 }
 
@@ -287,7 +295,7 @@ export function OrgAiModelPreferencesForm({
 	const setPreferenceMutation = useMutation({
 		mutationFn: async (data: {
 			taskType: string;
-			modelCanonicalName: string;
+			modelCanonicalName: string | null;
 			overrideProvider?: string;
 		}) => {
 			if (!organizationId) {
@@ -331,8 +339,26 @@ export function OrgAiModelPreferencesForm({
 		isLoadingDefaults ||
 		isLoadingPrefs;
 
+	// Is this task's model switched off — either pending or already saved?
+	// A saved preference row with no model is the organization's explicit
+	// "off" choice, which is why it must not read as "no preference" and
+	// show the system default.
+	const isTaskDisabled = (taskType: string): boolean => {
+		const pending = pendingChanges[taskType];
+		if (pending) {
+			return pending.modelCanonicalName === null;
+		}
+
+		const orgPref = orgPreferences.find((p) => p.taskType === taskType);
+		return !!orgPref && orgPref.model === null;
+	};
+
 	// Get the current model for a task type
 	const getCurrentModel = (taskType: string): ModelOption | null => {
+		if (isTaskDisabled(taskType)) {
+			return null;
+		}
+
 		const pending = pendingChanges[taskType];
 		if (pending) {
 			const model = models.find(
@@ -540,6 +566,20 @@ export function OrgAiModelPreferencesForm({
 	// Handle model change - value format: "provider:model"
 	const handleModelChange = (taskType: string, value: string) => {
 		if (readOnly) {
+			return;
+		}
+
+		// "Disabled" is offered for DECISION only and carries no model. It
+		// is pinned to the Vercel gateway because that is the only provider
+		// the server accepts a decision preference for.
+		if (value === DECISION_DISABLED_VALUE) {
+			setPendingChanges((prev) => ({
+				...prev,
+				[taskType]: {
+					modelCanonicalName: null,
+					provider: "VERCEL_GATEWAY",
+				},
+			}));
 			return;
 		}
 
@@ -785,6 +825,14 @@ export function OrgAiModelPreferencesForm({
 							const hasCustomPref = hasOrgPreference(taskType.id);
 							const hasPendingChange =
 								!!pendingChanges[taskType.id];
+							const isDisabledChoice = isTaskDisabled(
+								taskType.id,
+							);
+							// Only decisions can be switched off: every other
+							// task falls back to the system default, so "off"
+							// there has no meaning.
+							const offersDisabledChoice =
+								taskType.id === "DECISION";
 							const Icon = taskType.icon;
 							const hasModels = hierarchicalModels.some((g) =>
 								g.providers.some((p) => p.models.length > 0),
@@ -824,11 +872,13 @@ export function OrgAiModelPreferencesForm({
 							const effectiveGateway =
 								getGatewayForCurrentModel();
 
-							const currentValue = pendingSelection
-								? `${pendingSelection.provider || defaultProvider}:${pendingSelection.modelCanonicalName}`
-								: currentModel
-									? `${effectiveGateway}:${currentModel.canonicalName}`
-									: "";
+							const currentValue = isDisabledChoice
+								? DECISION_DISABLED_VALUE
+								: pendingSelection?.modelCanonicalName
+									? `${pendingSelection.provider || defaultProvider}:${pendingSelection.modelCanonicalName}`
+									: currentModel
+										? `${effectiveGateway}:${currentModel.canonicalName}`
+										: "";
 
 							return (
 								<Card key={taskType.id} className="p-4">
@@ -902,7 +952,11 @@ export function OrgAiModelPreferencesForm({
 																	: "Select a model"
 														}
 													>
-														{currentModel ? (
+														{isDisabledChoice ? (
+															<span className="truncate">
+																Disabled
+															</span>
+														) : currentModel ? (
 															<div className="flex items-center gap-2">
 																<span className="truncate">
 																	{
@@ -941,93 +995,123 @@ export function OrgAiModelPreferencesForm({
 															for this task type
 														</div>
 													) : (
-														hierarchicalModels.map(
-															(gateway) => (
-																<div
-																	key={
-																		gateway.gateway
-																	}
-																>
-																	{/* Gateway Header */}
-																	<div className="flex items-center gap-2 px-2 py-2 bg-muted/50 sticky top-0">
-																		<CloudIcon className="size-4 text-muted-foreground" />
-																		<span className="font-semibold text-sm">
-																			{
-																				gateway.gatewayDisplayName
-																			}
-																		</span>
-																		{gateway.isDefault && (
-																			<Badge
-																				variant="secondary"
-																				className="text-xs"
-																			>
-																				Default
-																			</Badge>
-																		)}
-																	</div>
-																	{/* Providers under this gateway */}
-																	{gateway.providers.map(
-																		(
-																			provider,
-																		) => (
-																			<SelectGroup
-																				key={`${gateway.gateway}-${provider.provider}`}
-																			>
-																				<SelectLabel className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground py-1 pl-6">
-																					<NetworkIcon className="size-3" />
-																					{
-																						provider.providerDisplayName
-																					}
-																					<span className="text-muted-foreground/60">
-																						(
+														<>
+															{offersDisabledChoice && (
+																<SelectGroup>
+																	<SelectLabel className="flex items-center gap-2 py-1 pl-6 text-xs uppercase tracking-wide text-muted-foreground">
+																		<PowerOffIcon className="size-3" />
+																		Off
+																	</SelectLabel>
+																	<SelectItem
+																		value={
+																			DECISION_DISABLED_VALUE
+																		}
+																		className="py-2 pl-8"
+																	>
+																		<div className="flex flex-col gap-0.5">
+																			<span className="font-medium">
+																				Disabled
+																			</span>
+																			<span className="text-xs text-muted-foreground">
+																				Use
+																				the
+																				regular
+																				AI
+																				model
+																				instead
+																			</span>
+																		</div>
+																	</SelectItem>
+																</SelectGroup>
+															)}
+															{hierarchicalModels.map(
+																(gateway) => (
+																	<div
+																		key={
+																			gateway.gateway
+																		}
+																	>
+																		{/* Gateway Header */}
+																		<div className="flex items-center gap-2 px-2 py-2 bg-muted/50 sticky top-0">
+																			<CloudIcon className="size-4 text-muted-foreground" />
+																			<span className="font-semibold text-sm">
+																				{
+																					gateway.gatewayDisplayName
+																				}
+																			</span>
+																			{gateway.isDefault && (
+																				<Badge
+																					variant="secondary"
+																					className="text-xs"
+																				>
+																					Default
+																				</Badge>
+																			)}
+																		</div>
+																		{/* Providers under this gateway */}
+																		{gateway.providers.map(
+																			(
+																				provider,
+																			) => (
+																				<SelectGroup
+																					key={`${gateway.gateway}-${provider.provider}`}
+																				>
+																					<SelectLabel className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground py-1 pl-6">
+																						<NetworkIcon className="size-3" />
 																						{
-																							provider
-																								.models
-																								.length
+																							provider.providerDisplayName
 																						}
-																						)
-																					</span>
-																				</SelectLabel>
-																				{provider.models.map(
-																					(
-																						model,
-																					) => (
-																						<SelectItem
-																							key={`${gateway.gateway}-${provider.provider}-${model.canonicalName}`}
-																							value={`${gateway.gateway}:${model.canonicalName}`}
-																							className="py-2 pl-8"
-																						>
-																							<div className="flex flex-col gap-0.5">
-																								<div className="flex items-center gap-2">
-																									<span className="font-medium">
+																						<span className="text-muted-foreground/60">
+																							(
+																							{
+																								provider
+																									.models
+																									.length
+																							}
+																							)
+																						</span>
+																					</SelectLabel>
+																					{provider.models.map(
+																						(
+																							model,
+																						) => (
+																							<SelectItem
+																								key={`${gateway.gateway}-${provider.provider}-${model.canonicalName}`}
+																								value={`${gateway.gateway}:${model.canonicalName}`}
+																								className="py-2 pl-8"
+																							>
+																								<div className="flex flex-col gap-0.5">
+																									<div className="flex items-center gap-2">
+																										<span className="font-medium">
+																											{
+																												model.displayName
+																											}
+																										</span>
+																										{model.speedTier ===
+																											"FAST" && (
+																											<ZapIcon className="size-3 text-success" />
+																										)}
+																										{model.qualityTier ===
+																											"PREMIUM" && (
+																											<SparklesIcon className="size-3 text-secondary" />
+																										)}
+																									</div>
+																									<span className="text-xs text-muted-foreground font-mono">
 																										{
-																											model.displayName
+																											model.providerModelId
 																										}
 																									</span>
-																									{model.speedTier ===
-																										"FAST" && (
-																										<ZapIcon className="size-3 text-success" />
-																									)}
-																									{model.qualityTier ===
-																										"PREMIUM" && (
-																										<SparklesIcon className="size-3 text-secondary" />
-																									)}
 																								</div>
-																								<span className="text-xs text-muted-foreground font-mono">
-																									{
-																										model.providerModelId
-																									}
-																								</span>
-																							</div>
-																						</SelectItem>
-																					),
-																				)}
-																			</SelectGroup>
-																		),
-																	)}
-																</div>
-															),
-														)
+																							</SelectItem>
+																						),
+																					)}
+																				</SelectGroup>
+																			),
+																		)}
+																	</div>
+																),
+															)}
+														</>
 													)}
 												</SelectContent>
 											</Select>
@@ -1048,6 +1132,17 @@ export function OrgAiModelPreferencesForm({
 											)}
 										</div>
 									</div>
+
+									{/* Switched-Off Helper Text */}
+									{isDisabledChoice && (
+										<div className="mt-3 rounded-md border border-muted-foreground/20 bg-muted/40 px-3 py-2">
+											<p className="text-xs text-muted-foreground">
+												Decisions are switched off. Work
+												items and action-item routing
+												use your regular AI model.
+											</p>
+										</div>
+									)}
 
 									{/* No Models Available Helper Text */}
 									{!hasModels && !hasNoProviders && (
