@@ -189,6 +189,9 @@ vi.mock("../InstructionFileView", () => ({
 		<div data-testid="file-view">{path}</div>
 	),
 }));
+vi.mock("../InstructionProposals", () => ({
+	InstructionProposals: () => null,
+}));
 
 import { InstructionsPublishedView } from "../InstructionsPublishedView";
 
@@ -413,6 +416,7 @@ describe("InstructionsPublishedView", () => {
 				}
 				onReplaceClick={() => undefined}
 				onChanged={onChanged}
+				canEdit
 			/>,
 			{ wrapper: TestQueryProvider },
 		);
@@ -640,17 +644,37 @@ describe("InstructionsPublishedView — editing entry points", () => {
 		).toBeInTheDocument();
 	});
 
-	it("offers nothing to a viewer without edit rights", () => {
+	it("offers proposal review from its capability even when direct editing is unavailable", () => {
+		renderPublished({ canEdit: false, canReview: true });
+		expect(
+			screen.getByRole("button", { name: "Review proposals" }),
+		).toBeInTheDocument();
+	});
+
+	it("lets a viewer propose a file without offering direct editing", () => {
 		renderPublished();
 		expect(
-			screen.queryByRole("button", { name: "Add file" }),
-		).not.toBeInTheDocument();
+			screen.getByRole("button", { name: "Propose file" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Your proposals" }),
+		).toBeInTheDocument();
 	});
 
 	it("offers nothing for a repository-backed project, even to an editor", () => {
-		renderPublished({ canEdit: true, repositoryBacked: true });
+		renderPublished({
+			canEdit: true,
+			canReview: true,
+			repositoryBacked: true,
+		});
 		expect(
 			screen.queryByRole("button", { name: "Add file" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Replace" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Review proposals" }),
 		).not.toBeInTheDocument();
 	});
 });

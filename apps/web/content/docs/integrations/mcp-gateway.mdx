@@ -104,6 +104,21 @@ building the configuration above by hand, open that tab and click **Connect your
 mints a read-only key (the `mcp:read` scope, which covers every read-only platform tool,
 these three included) and shows the same configuration block.
 
+Project readers can propose adding, editing, or deleting a file from the Coding
+Instructions tab. Proposals pass the same validation and secret scanning as uploads
+before an instruction editor can review their changes and approve publication.
+Rejecting a proposal leaves the published files unchanged. If the published version
+changes before approval, submit the proposal again against the current version.
+You can cancel your own proposals once validation is no longer running. Each project
+allows up to 25 active proposals, with a limit of five per proposer. Large file bodies
+may be omitted from the review preview; editors can open a paged view of the full text.
+Canceled uploads can continue to count toward the limit until their upload links expire
+and cleanup finishes.
+Projects whose instructions come from a repository must make changes in that repository.
+
+Only published versions are available through MCP and local sync. A pending proposal
+doesn't change the files your connected agents receive.
+
 A connected agent finds them on its own. Every project `fabric_get_project` and
 `fabric_list_projects` return carries a `codingInstructions` field — `{ "published": false }`
 when there is nothing to load, and the snapshot's `version`, `fileCount`, `digest` and

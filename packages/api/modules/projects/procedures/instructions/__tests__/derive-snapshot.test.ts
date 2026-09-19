@@ -26,6 +26,7 @@ const m = vi.hoisted(() => ({
 	recordAuditFromRequest: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
 	permissionMiddleware: vi.fn(),
+	assertInstructionDeriveAccess: vi.fn(),
 	requestedPermission: undefined as string | undefined,
 }));
 
@@ -44,6 +45,10 @@ vi.mock("../../../../../lib/audit", () => ({
 vi.mock("../../../../../lib/effective-project-permissions", () => ({
 	resolveEffectiveProjectPermissions: (...a: unknown[]) =>
 		m.resolveEffectiveProjectPermissions(...a),
+}));
+vi.mock("../proposal-authorization", () => ({
+	assertInstructionDeriveAccess: (...a: unknown[]) =>
+		m.assertInstructionDeriveAccess(...a),
 }));
 vi.mock("../../../../../orpc/procedures", () => {
 	const middlewares: Array<(args: unknown) => unknown> = [];
@@ -71,7 +76,10 @@ vi.mock("../../../../../orpc/procedures", () => {
 			m.requestedPermission = permission;
 			return (args: unknown) => m.permissionMiddleware(args);
 		},
-		Permissions: { INSTRUCTION_CREATE: "instruction:create" },
+		Permissions: {
+			INSTRUCTION_READ: "instruction:read",
+			INSTRUCTION_CREATE: "instruction:create",
+		},
 	};
 });
 
@@ -88,6 +96,7 @@ function deriveInput(
 		projectId: "p",
 		baseSnapshotId: "base",
 		publishOnReady,
+		proposal: false,
 		changes,
 	};
 }
@@ -105,6 +114,7 @@ beforeEach(() => {
 		m.recordAuditFromRequest,
 		m.resolveEffectiveProjectPermissions,
 		m.permissionMiddleware,
+		m.assertInstructionDeriveAccess,
 	]) {
 		f.mockReset();
 	}
@@ -139,14 +149,14 @@ beforeEach(() => {
 });
 
 describe("projects.instructions.derive", () => {
-	it("declares INSTRUCTION_CREATE as its guarding permission", () => {
-		expect(m.requestedPermission).toBe("instruction:create");
+	it("declares INSTRUCTION_READ as its baseline guarding permission", () => {
+		expect(m.requestedPermission).toBe("instruction:read");
 	});
 
 	it("throws FORBIDDEN and writes nothing when the permission middleware denies", async () => {
 		m.permissionMiddleware.mockRejectedValueOnce(
 			new ORPCError("FORBIDDEN", {
-				message: "Missing required permission: instruction:create",
+				message: "Missing required permission: instruction:read",
 			}),
 		);
 
@@ -196,6 +206,7 @@ describe("projects.instructions.derive", () => {
 		// The project's HOSTING organization, resolved server-side.
 		expect(call.organizationId).toBe("org_1");
 		expect(call.userId).toBe("u");
+		expect(call).toMatchObject({ proposal: false, publishOnReady: true });
 	});
 
 	it("returns only the staged rows, so the client never PUTs an inherited one", async () => {
@@ -210,8 +221,29 @@ describe("projects.instructions.derive", () => {
 			baseVersion: 7,
 			fileCount: 12,
 			inheritedCount: 11,
+			proposalStatus: null,
 			staged: [{ fileId: "f_new", path: "CLAUDE.md" }],
 		});
+	});
+
+	it("lets a reader submit a proposal and forces manual publication", async () => {
+		const result = await m.handlers.derive!({
+			input: { ...deriveInput(editOneFile), proposal: true },
+			context: ctx,
+		});
+
+		expect(m.assertInstructionDeriveAccess).toHaveBeenCalledWith({
+			projectId: "p",
+			userId: "u",
+			proposal: true,
+		});
+		expect(m.createDerivedInstructionSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proposal: true,
+				publishOnReady: false,
+			}),
+		);
+		expect(result).toMatchObject({ proposalStatus: "PENDING" });
 	});
 
 	it("audits the upload_started action with the provenance and counts, never a path", async () => {
@@ -490,6 +522,22 @@ describe("projects.instructions.derive", () => {
 					context: ctx,
 				}),
 			).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		});
+
+		it("returns a clear conflict when the proposer's active cap is full", async () => {
+			m.createDerivedInstructionSnapshot.mockResolvedValue({
+				ok: false,
+				reason: "proposal_proposer_limit",
+			});
+			await expect(
+				m.handlers.derive!({
+					input: { ...deriveInput(editOneFile), proposal: true },
+					context: ctx,
+				}),
+			).rejects.toMatchObject({
+				code: "CONFLICT",
+				data: { reason: "PROPOSAL_PROPOSER_LIMIT" },
+			});
 		});
 	});
 

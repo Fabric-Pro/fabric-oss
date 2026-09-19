@@ -175,7 +175,13 @@ const getS3ClientInternal = () => {
 
 export const getSignedUploadUrl: GetSignedUploadUrlHandler = async (
 	path,
-	{ bucket, contentType = "image/jpeg", expiresIn = 60 },
+	{
+		bucket,
+		contentType = "image/jpeg",
+		contentLength,
+		expiresIn = 60,
+		signingDate,
+	},
 ) => {
 	const client = getS3Client();
 	try {
@@ -185,9 +191,14 @@ export const getSignedUploadUrl: GetSignedUploadUrlHandler = async (
 				Bucket: bucket,
 				Key: path,
 				ContentType: contentType,
+				ContentLength: contentLength,
 			}),
 			{
 				expiresIn,
+				signingDate,
+				...(contentLength === undefined
+					? {}
+					: { signableHeaders: new Set(["content-length"]) }),
 			},
 		);
 	} catch (e) {

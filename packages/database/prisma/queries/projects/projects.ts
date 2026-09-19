@@ -1462,6 +1462,23 @@ export async function canEditProject(
 }
 
 /**
+ * Background counterpart of
+ * `requireProjectPermission(INSTRUCTION_READ)`. Instruction proposal
+ * validation uses this before touching storage so removing the proposer from
+ * the project also revokes an already-enqueued reader-authored submission.
+ */
+export async function canReadProjectInstructions(
+	projectId: string,
+	userId: string,
+): Promise<boolean> {
+	return projectPermissionHolds(
+		projectId,
+		userId,
+		Permissions.INSTRUCTION_READ,
+	);
+}
+
+/**
  * Returns `true` if `userId` may create stories on `projectId`, matching the
  * authorization paths of `requireProjectPermission(STORY_CREATE)`.
  *

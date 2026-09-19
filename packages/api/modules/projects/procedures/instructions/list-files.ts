@@ -11,6 +11,10 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import {
+	assertInstructionSnapshotMutationAccess,
+	isInstructionSnapshotContentReadable,
+} from "./proposal-authorization";
 
 const RECEIVING_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
 
@@ -28,8 +32,10 @@ const RECEIVING_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
  * With it `false` (the default), only a READY snapshot's full file rows are
  * ever served — a RECEIVING/VALIDATING/REJECTED/FAILED snapshot 404s the
  * same as a missing one. With it `true`, RECEIVING/VALIDATING snapshots are
- * additionally servable, but reduced to `{ id, path }` only, since their
- * files may still be mid-upload and their metadata is not yet final.
+ * additionally servable only after the ownership-aware mutation check: the
+ * proposal author needs live READ access, while a direct upload still needs
+ * CREATE. Those responses are reduced to `{ id, path }`, since their files
+ * may still be mid-upload and their metadata is not yet final.
  */
 export const listFilesProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
@@ -64,10 +70,20 @@ export const listFilesProcedure = tenantProtectedProcedure
 		if (!snapshot) {
 			throw new ORPCError("NOT_FOUND", { message: "Snapshot not found" });
 		}
-		const isReady = snapshot.status === "READY";
+		const isReady = isInstructionSnapshotContentReadable(snapshot);
 		const isReceiving = RECEIVING_STATUSES.has(snapshot.status);
 		if (!isReady && !(input.includeReceiving && isReceiving)) {
 			throw new ORPCError("NOT_FOUND", { message: "Snapshot not found" });
+		}
+		if (!isReady) {
+			// In-flight paths are upload coordination data. The pending proposal
+			// owner may see their own rows with live READ access; direct snapshots
+			// remain limited to callers with CREATE permission.
+			await assertInstructionSnapshotMutationAccess({
+				projectId: input.projectId,
+				userId: context.user.id,
+				snapshot,
+			});
 		}
 
 		const files = await listInstructionFiles(snapshot.id, organizationId, {

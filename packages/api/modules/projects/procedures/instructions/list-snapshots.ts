@@ -6,6 +6,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import { canReviewInstructionProposals } from "./proposal-authorization";
 
 /**
  * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ).
@@ -33,5 +34,12 @@ export const listSnapshotsProcedure = tenantProtectedProcedure
 			input.projectId,
 			context.user.id,
 		);
-		return listInstructionSnapshots(input.projectId, organizationId);
+		const canReviewProposals = await canReviewInstructionProposals({
+			projectId: input.projectId,
+			userId: context.user.id,
+		});
+		return listInstructionSnapshots(input.projectId, organizationId, {
+			viewerUserId: context.user.id,
+			canReviewProposals,
+		});
 	});

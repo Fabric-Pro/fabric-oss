@@ -8,6 +8,7 @@ import {
 } from "../../../../orpc/procedures";
 import { buildInstructionSnapshotZip } from "./build-zip";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import { isInstructionSnapshotContentReadable } from "./proposal-authorization";
 
 /**
  * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ).
@@ -45,7 +46,7 @@ export const createDownloadUrlProcedure = tenantProtectedProcedure
 			input.projectId,
 			organizationId,
 		);
-		if (!snapshot || snapshot.status !== "READY") {
+		if (!snapshot || !isInstructionSnapshotContentReadable(snapshot)) {
 			throw new ORPCError("NOT_FOUND", { message: "Snapshot not found" });
 		}
 		const files = await listInstructionFiles(snapshot.id, organizationId);

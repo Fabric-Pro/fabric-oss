@@ -65,6 +65,7 @@ describe("projects.instructions.getFile", () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "s",
 			status: "READY",
+			proposalStatus: null,
 		});
 		m.getInstructionFileByPath.mockResolvedValue({
 			path: "CLAUDE.md",
@@ -102,6 +103,7 @@ describe("projects.instructions.getFile", () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "s",
 			status: "VALIDATING",
+			proposalStatus: null,
 		});
 		await expect(
 			m.handlers.getFile!({
@@ -120,6 +122,7 @@ describe("projects.instructions.getFile", () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "s",
 			status: "READY",
+			proposalStatus: null,
 		});
 		m.getInstructionFileByPath.mockResolvedValue({
 			path: "a.png",
@@ -149,4 +152,31 @@ describe("projects.instructions.getFile", () => {
 		});
 		expect(m.downloadFile).not.toHaveBeenCalled();
 	});
+
+	it.each(["PENDING", "REJECTED"] as const)(
+		"does not expose %s proposal bytes",
+		async (proposalStatus) => {
+			m.getInstructionSnapshot.mockResolvedValue({
+				id: "s",
+				status: "READY",
+				proposalStatus,
+			});
+
+			await expect(
+				m.handlers.getFile!({
+					input: {
+						projectId: "p",
+						snapshotId: "s",
+						path: "CLAUDE.md",
+						offset: 0,
+						maxLength: 5,
+					},
+					context: ctx,
+				}),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
+			expect(m.getInstructionFileByPath).not.toHaveBeenCalled();
+			expect(m.downloadFile).not.toHaveBeenCalled();
+			expect(m.getSignedUrl).not.toHaveBeenCalled();
+		},
+	);
 });

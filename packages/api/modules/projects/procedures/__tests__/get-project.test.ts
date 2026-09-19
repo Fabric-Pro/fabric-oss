@@ -175,6 +175,70 @@ describe("getProjectProcedure — canPublish capability", () => {
 	});
 });
 
+describe("getProjectProcedure — coding-instructions capabilities", () => {
+	it("grants edit and review to an invited project editor even when legacy userRole is null", async () => {
+		mocks.getProjectRole.mockResolvedValue(null);
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role: "EDITOR",
+			acceptedAt: new Date(),
+			expiresAt: null,
+		});
+
+		const result = await handler({
+			input: { id: PROJECT_ID, organizationId: ORG_ID },
+			context: ctx,
+		});
+
+		expect(result.project).toMatchObject({
+			userRole: null,
+			canEditInstructions: true,
+			canReviewInstructions: true,
+		});
+	});
+
+	it("keeps an invited viewer read-only", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role: "VIEWER",
+			acceptedAt: new Date(),
+			expiresAt: null,
+		});
+
+		const result = await handler({
+			input: { id: PROJECT_ID, organizationId: ORG_ID },
+			context: ctx,
+		});
+
+		expect(result.project).toMatchObject({
+			canEditInstructions: false,
+			canReviewInstructions: false,
+		});
+	});
+
+	it("fails both capabilities closed when no effective project access resolves", async () => {
+		mocks.projectFindUnique.mockResolvedValue(null);
+
+		const result = await handler({
+			input: { id: PROJECT_ID, organizationId: ORG_ID },
+			context: ctx,
+		});
+
+		expect(result.project).toMatchObject({
+			canEditInstructions: false,
+			canReviewInstructions: false,
+		});
+	});
+});
+
 describe("getProjectProcedure — canManageMembers capability", () => {
 	it("owner (personal project): hasProjectAccess true, effective permissions include PROJECT_MEMBERS_MANAGE -> true", async () => {
 		mocks.projectFindUnique.mockResolvedValue({

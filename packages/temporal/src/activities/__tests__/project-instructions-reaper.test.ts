@@ -670,7 +670,11 @@ describe("reapInstructionSnapshots: re-sweeping closed abandonments", () => {
 
 		// A budget and an exclusion list; no `since`, because eligibility is
 		// the mark on the row and `updatedAt` only orders the queue.
-		expect(mocks.listPendingAbandoned).toHaveBeenCalledWith(200, []);
+		expect(mocks.listPendingAbandoned).toHaveBeenCalledWith(
+			200,
+			[],
+			expect.any(Date),
+		);
 		// The mark is cleared only AFTER the prefix came back clean: it is
 		// what takes this row out of the population for good, so a row that
 		// was not actually finished must keep it.
@@ -816,9 +820,11 @@ describe("reapInstructionSnapshots: re-sweeping closed abandonments", () => {
 
 		// Only the row phase 1 actually moved is excluded; the one its
 		// conditional write did not match was never its work.
-		expect(mocks.listPendingAbandoned).toHaveBeenCalledWith(200, [
-			"snap_fresh",
-		]);
+		expect(mocks.listPendingAbandoned).toHaveBeenCalledWith(
+			200,
+			["snap_fresh"],
+			expect.any(Date),
+		);
 		expect(
 			mocks.listObjects.mock.calls.map(
 				(call) => (call[0] as { prefix: string }).prefix,

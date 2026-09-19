@@ -116,6 +116,34 @@ function TestQueryProvider({ children }: { children: ReactNode }) {
 }
 
 describe("InstructionsHistory", () => {
+	it("does not offer manual publish for a pending proposal", () => {
+		render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={[
+					{
+						id: "proposal",
+						version: 8,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 1,
+						createdAt: new Date(),
+						proposalStatus: "PENDING",
+					},
+				]}
+				publishedId="published"
+				publishedVersion={7}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+
+		expect(
+			screen.queryByRole("button", { name: "publishAction" }),
+		).toBeNull();
+	});
 	beforeEach(() => {
 		vi.clearAllMocks();
 		vi.spyOn(window, "confirm").mockReturnValue(true);

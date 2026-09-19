@@ -113,6 +113,7 @@ export function InstructionFileView({
 	snapshotId,
 	path,
 	canEdit = false,
+	canPropose = false,
 	onChanged,
 }: {
 	projectId: string;
@@ -124,6 +125,8 @@ export function InstructionFileView({
 	 * source of truth server-side.
 	 */
 	canEdit?: boolean;
+	/** Whether this reader may submit a version for an editor to review. */
+	canPropose?: boolean;
 	/** Refresh the tab's snapshot list and published pointer after a save. */
 	onChanged?: () => void;
 }) {
@@ -179,16 +182,18 @@ export function InstructionFileView({
 		mutationFn: (input: {
 			edits: InstructionEdit[];
 			publishOnReady: boolean;
+			proposal?: boolean;
 		}) =>
 			editInstructionSnapshot({
 				projectId,
 				baseSnapshotId: snapshotId,
 				publishOnReady: input.publishOnReady,
+				proposal: input.proposal,
 				edits: input.edits,
 			}),
-		onSuccess: () => {
+		onSuccess: (_result, input) => {
 			setDraft(null);
-			toast.success(t("saved"));
+			toast.success(input.proposal ? t("proposalSubmitted") : t("saved"));
 			onChanged?.();
 		},
 		onError: (error: Error) => toast.error(error.message),
@@ -217,7 +222,7 @@ export function InstructionFileView({
 			: null;
 	const editorText = editingText ?? staleText;
 
-	function saveDraft(publishOnReady: boolean) {
+	function saveDraft(publishOnReady: boolean, proposal = false) {
 		if (editingText === null) {
 			return;
 		}
@@ -230,7 +235,8 @@ export function InstructionFileView({
 			return;
 		}
 		save.mutate({
-			publishOnReady,
+			publishOnReady: proposal ? false : publishOnReady,
+			proposal,
 			edits: [
 				{
 					op: "put",
@@ -273,7 +279,7 @@ export function InstructionFileView({
 					>
 						{t("copyMcpCall")}
 					</Button>
-					{canEdit && editorText === null ? (
+					{(canEdit || canPropose) && editorText === null ? (
 						<>
 							{refusal ? (
 								/* `aria-disabled`, not `disabled`: a disabled
@@ -316,17 +322,24 @@ export function InstructionFileView({
 								className="text-destructive"
 								disabled={save.isPending}
 								onClick={() => {
+									const proposal = !canEdit;
 									if (
 										!window.confirm(
-											t("deleteConfirm", {
-												path: f.path,
-											}),
+											t(
+												proposal
+													? "deleteProposalConfirm"
+													: "deleteConfirm",
+												{
+													path: f.path,
+												},
+											),
 										)
 									) {
 										return;
 									}
 									save.mutate({
-										publishOnReady: true,
+										publishOnReady: !proposal,
+										proposal,
 										edits: [{ op: "delete", path: f.path }],
 									});
 								}}
@@ -379,21 +392,35 @@ export function InstructionFileView({
 						</div>
 					) : (
 						<div className="flex items-center gap-2">
-							<Button
-								size="sm"
-								disabled={save.isPending}
-								onClick={() => saveDraft(true)}
-							>
-								{t("saveAndPublishButton")}
-							</Button>
-							<Button
-								size="sm"
-								variant="outline"
-								disabled={save.isPending}
-								onClick={() => saveDraft(false)}
-							>
-								{t("saveAsVersionButton")}
-							</Button>
+							{canEdit ? (
+								<>
+									<Button
+										size="sm"
+										disabled={save.isPending}
+										onClick={() => saveDraft(true)}
+									>
+										{t("saveAndPublishButton")}
+									</Button>
+									<Button
+										size="sm"
+										variant="outline"
+										disabled={save.isPending}
+										onClick={() => saveDraft(false)}
+									>
+										{t("saveAsVersionButton")}
+									</Button>
+								</>
+							) : null}
+							{canPropose ? (
+								<Button
+									size="sm"
+									variant={canEdit ? "outline" : "default"}
+									disabled={save.isPending}
+									onClick={() => saveDraft(false, true)}
+								>
+									{t("submitProposalButton")}
+								</Button>
+							) : null}
 							<Button
 								size="sm"
 								variant="ghost"

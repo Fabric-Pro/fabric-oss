@@ -45,6 +45,8 @@ export async function editInstructionSnapshot(input: {
 	projectId: string;
 	baseSnapshotId: string;
 	publishOnReady: boolean;
+	/** Submit the derived snapshot for editor review instead of direct publication. */
+	proposal?: boolean;
 	edits: InstructionEdit[];
 }): Promise<EditInstructionSnapshotResult> {
 	const puts = new Map<string, Blob>();
@@ -70,7 +72,11 @@ export async function editInstructionSnapshot(input: {
 	const derived = await orpcClient.projects.instructions.derive({
 		projectId: input.projectId,
 		baseSnapshotId: input.baseSnapshotId,
-		publishOnReady: input.publishOnReady,
+		// Proposals always wait for an editor's approval. The API repeats this
+		// invariant, but keeping it true at the transport boundary prevents a
+		// future proposal caller from accidentally requesting auto-publish.
+		publishOnReady: input.proposal ? false : input.publishOnReady,
+		proposal: input.proposal ?? false,
 		changes,
 	});
 

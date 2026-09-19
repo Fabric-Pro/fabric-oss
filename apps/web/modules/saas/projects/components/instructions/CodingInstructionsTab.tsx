@@ -34,6 +34,7 @@ export function CodingInstructionsTab({
 	projectId,
 	projectName,
 	canEdit = false,
+	canReview = false,
 }: {
 	projectId: string;
 	/** Threaded down to the "Connect your agent" dialog's starter instruction. */
@@ -45,6 +46,8 @@ export function CodingInstructionsTab({
 	 * every save.
 	 */
 	canEdit?: boolean;
+	/** Whether this viewer may approve or reject reader proposals. */
+	canReview?: boolean;
 }) {
 	const queryClient = useQueryClient();
 	const [uploadOpen, setUploadOpen] = useState(false);
@@ -154,6 +157,15 @@ export function CodingInstructionsTab({
 				input: { projectId },
 			}).queryKey,
 		});
+		// A proposal's scan status changes on the same snapshot workflow as a
+		// direct upload. Refresh the editor inbox with that poll so a ready diff
+		// appears without a reload, while readers never mount the privileged
+		// query in the first place.
+		queryClient.invalidateQueries({
+			queryKey: orpc.projects.instructions.proposals.list.queryOptions({
+				input: { projectId },
+			}).queryKey,
+		});
 	}, [newestId, newestStatus, projectId, queryClient]);
 
 	const invalidate = () => {
@@ -164,6 +176,11 @@ export function CodingInstructionsTab({
 		});
 		queryClient.invalidateQueries({
 			queryKey: orpc.projects.instructions.getPublished.queryOptions({
+				input: { projectId },
+			}).queryKey,
+		});
+		queryClient.invalidateQueries({
+			queryKey: orpc.projects.instructions.proposals.list.queryOptions({
 				input: { projectId },
 			}).queryKey,
 		});
@@ -192,6 +209,11 @@ export function CodingInstructionsTab({
 					projectId={projectId}
 					projectName={projectName}
 					onUploadClick={() => setUploadOpen(true)}
+					canUpload={
+						canEdit &&
+						settings.isSuccess &&
+						settings.data.sourceOfTruth !== "REPOSITORY"
+					}
 					// Same gate as the published view: fails closed until the
 					// setting has LOADED. `isSuccess`, not `!isLoading` — a
 					// failed settings request also stops loading, and the
@@ -224,6 +246,7 @@ export function CodingInstructionsTab({
 				onReplaceClick={() => setUploadOpen(true)}
 				onChanged={invalidate}
 				canEdit={canEdit}
+				canReview={canReview}
 				// A FAILED pointer query, not an empty one. Both leave
 				// `published` null, and History has to distinguish them: with
 				// no pointer it cannot tell a publish from a rollback, so it

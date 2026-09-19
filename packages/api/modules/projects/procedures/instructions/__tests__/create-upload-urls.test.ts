@@ -22,8 +22,10 @@ const m = vi.hoisted(() => ({
 	getInstructionSnapshot: vi.fn(),
 	listInstructionFiles: vi.fn(),
 	claimInstructionFileStagingKey: vi.fn(),
+	authorizeInstructionProposalUploadUrls: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
 	getStorageProvider: vi.fn(),
+	assertInstructionSnapshotMutationAccess: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -31,6 +33,8 @@ vi.mock("@repo/database", () => ({
 	listInstructionFiles: (...a: unknown[]) => m.listInstructionFiles(...a),
 	claimInstructionFileStagingKey: (...a: unknown[]) =>
 		m.claimInstructionFileStagingKey(...a),
+	authorizeInstructionProposalUploadUrls: (...a: unknown[]) =>
+		m.authorizeInstructionProposalUploadUrls(...a),
 }));
 vi.mock("@repo/storage", () => ({
 	getStorageProvider: (...a: unknown[]) => m.getStorageProvider(...a),
@@ -38,6 +42,10 @@ vi.mock("@repo/storage", () => ({
 vi.mock("../../../../../lib/effective-project-permissions", () => ({
 	resolveEffectiveProjectPermissions: (...a: unknown[]) =>
 		m.resolveEffectiveProjectPermissions(...a),
+}));
+vi.mock("../proposal-authorization", () => ({
+	assertInstructionSnapshotMutationAccess: (...a: unknown[]) =>
+		m.assertInstructionSnapshotMutationAccess(...a),
 }));
 vi.mock("../../../../../orpc/procedures", () => {
 	const builder = {
@@ -52,7 +60,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: builder,
 		requireProjectPermission: () => ({}),
-		Permissions: { INSTRUCTION_CREATE: "instruction:create" },
+		Permissions: { INSTRUCTION_READ: "instruction:read" },
 	};
 });
 
@@ -83,6 +91,9 @@ beforeEach(() => {
 	m.getInstructionSnapshot.mockResolvedValue({
 		id: "snap_1",
 		status: "RECEIVING",
+		userId: "user_1",
+		proposalStatus: null,
+		createdAt: new Date("2026-09-18T00:00:00Z"),
 	});
 	m.listInstructionFiles.mockResolvedValue([
 		{
@@ -93,6 +104,7 @@ beforeEach(() => {
 			name: null,
 			description: null,
 			mimeType: "text/markdown",
+			size: 123,
 		},
 		{
 			id: "f2",
@@ -102,9 +114,13 @@ beforeEach(() => {
 			name: null,
 			description: null,
 			mimeType: "text/markdown",
+			size: 456,
 		},
 	]);
 	m.claimInstructionFileStagingKey.mockResolvedValue({ moved: true });
+	m.authorizeInstructionProposalUploadUrls.mockResolvedValue({
+		authorized: true,
+	});
 	m.getStorageProvider.mockReturnValue({
 		supportsPresignedUrls: true,
 		getSignedUploadUrl: vi.fn(
@@ -311,6 +327,101 @@ describe("projects.instructions.createUploadUrls", () => {
 			"projects/proj_1/instructions/staging/snap_1/f1",
 			expect.objectContaining({ expiresIn: 900 }),
 		);
+	});
+
+	it("binds proposal upload length to an immutable absolute signing boundary", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-18T00:59:50Z"));
+		m.getInstructionSnapshot.mockResolvedValue({
+			id: "snap_1",
+			status: "RECEIVING",
+			userId: "user_1",
+			proposalStatus: "PENDING",
+			createdAt: new Date("2026-09-18T00:00:00Z"),
+		});
+		const sign = vi.fn(async (key: string) => `https://signed/${key}`);
+		m.getStorageProvider.mockReturnValue({
+			supportsPresignedUrls: true,
+			getSignedUploadUrl: sign,
+		});
+
+		await m.handlers.createUploadUrls!({
+			input: { ...baseInput, fileIds: ["f1"] },
+			context: ctx,
+		});
+
+		expect(sign).toHaveBeenCalledWith(
+			"projects/proj_1/instructions/staging/snap_1/f1",
+			expect.objectContaining({
+				contentLength: 123,
+				expiresIn: 3600,
+				signingDate: new Date("2026-09-18T00:00:00Z"),
+			}),
+		);
+		expect(m.authorizeInstructionProposalUploadUrls).toHaveBeenCalledWith({
+			snapshotId: "snap_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+			createdAfter: new Date("2026-09-17T23:59:50.999Z"),
+		});
+		vi.useRealTimers();
+	});
+
+	it("withholds URLs when signing crosses the lease or a concurrent cancellation wins", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-18T00:59:59Z"));
+		m.getInstructionSnapshot.mockResolvedValue({
+			id: "snap_1",
+			status: "RECEIVING",
+			userId: "user_1",
+			proposalStatus: "PENDING",
+			createdAt: new Date("2026-09-18T00:00:00Z"),
+		});
+		m.getStorageProvider.mockReturnValue({
+			supportsPresignedUrls: true,
+			getSignedUploadUrl: vi.fn(async () => {
+				vi.setSystemTime(new Date("2026-09-18T01:00:01Z"));
+				return "https://signed/expired";
+			}),
+		});
+		m.authorizeInstructionProposalUploadUrls.mockResolvedValue({
+			authorized: false,
+		});
+
+		await expect(
+			m.handlers.createUploadUrls!({
+				input: { ...baseInput, fileIds: ["f1"] },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(m.authorizeInstructionProposalUploadUrls).toHaveBeenCalledAfter(
+			m.getStorageProvider.mock.results[0]?.value
+				.getSignedUploadUrl as ReturnType<typeof vi.fn>,
+		);
+		vi.useRealTimers();
+	});
+
+	it("refuses to mint proposal upload URLs after the signing boundary", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-18T01:00:00Z"));
+		m.getInstructionSnapshot.mockResolvedValue({
+			id: "snap_1",
+			status: "RECEIVING",
+			userId: "user_1",
+			proposalStatus: "PENDING",
+			createdAt: new Date("2026-09-18T00:00:00Z"),
+		});
+		const sign = vi.fn();
+		m.getStorageProvider.mockReturnValue({
+			supportsPresignedUrls: true,
+			getSignedUploadUrl: sign,
+		});
+
+		await expect(
+			m.handlers.createUploadUrls!({ input: baseInput, context: ctx }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(sign).not.toHaveBeenCalled();
+		vi.useRealTimers();
 	});
 
 	// R14: `getSignedUploadUrl` on the storage provider is nullable
