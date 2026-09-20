@@ -9,20 +9,41 @@
  *     the untrusted-data delimiter, neutralising delimiter look-alikes.
  *   - Output failing the schema is rejected (nothing persisted, error kept).
  *   - Deterministic DEFER never reaches the model.
+ *   - The typed decision model decides confident stories without the language
+ *     classifier, and everything else falls through to it unchanged.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mocks } = vi.hoisted(() => ({
-	mocks: {
-		projectFindFirst: vi.fn(),
-		userStoryFindMany: vi.fn(),
-		userStoryUpdateMany: vi.fn(),
-		generateObject: vi.fn(),
-		getAIModelWithMetadata: vi.fn(),
-		logModelUsageAsync: vi.fn(),
-		retrieveProjectRagContext: vi.fn(),
-	},
-}));
+const { mocks, AIProviderNotConfiguredError, AiUsageLimitExceededError } =
+	vi.hoisted(() => {
+		class AIProviderNotConfiguredError extends Error {
+			constructor() {
+				super("AI provider not configured");
+				this.name = "AIProviderNotConfiguredError";
+			}
+		}
+		class AiUsageLimitExceededError extends Error {
+			constructor() {
+				super("AI usage limit exceeded");
+				this.name = "AiUsageLimitExceededError";
+			}
+		}
+		return {
+			AIProviderNotConfiguredError,
+			AiUsageLimitExceededError,
+			mocks: {
+				projectFindFirst: vi.fn(),
+				userStoryFindMany: vi.fn(),
+				userStoryUpdateMany: vi.fn(),
+				generateObject: vi.fn(),
+				getAIModelWithMetadata: vi.fn(),
+				getAIDecisionModelWithMetadata: vi.fn(),
+				experimental_evaluate: vi.fn(),
+				logModelUsageAsync: vi.fn(),
+				retrieveProjectRagContext: vi.fn(),
+			},
+		};
+	});
 
 vi.mock("@temporalio/activity", () => ({
 	heartbeat: vi.fn(),
@@ -38,9 +59,16 @@ vi.mock("@repo/logs", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	AIProviderNotConfiguredError,
+	experimental_evaluate: mocks.experimental_evaluate,
 	generateObject: mocks.generateObject,
+	getAIDecisionModelWithMetadata: mocks.getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
+}));
+
+vi.mock("@repo/payments/lib/ai-usage-limit-error", () => ({
+	AiUsageLimitExceededError,
 }));
 
 vi.mock("@repo/database", () => ({
@@ -157,9 +185,36 @@ function modelReturns(
 	});
 }
 
+let decisionTrackUsage = vi.fn();
+
+/** Queue one decision evaluation whose answers are keyed `story_<index>`. */
+function decisionAnswers(answers: Record<string, unknown>) {
+	mocks.experimental_evaluate.mockResolvedValue({
+		answers,
+		usage: { inputTokens: 10, outputTokens: 10 },
+	});
+}
+
+function choice(track: string, probability: number) {
+	// The runner-up only has to exist and keep the distribution summing to 1;
+	// it must never collide with the winning key.
+	const runnerUp = track === "SPECIFY" ? "SPIKE" : "SPECIFY";
+	return {
+		type: "choice",
+		choice: track,
+		probabilities: { [track]: probability, [runnerUp]: 1 - probability },
+	};
+}
+
 describe("classifyDeliveryTracks", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		decisionTrackUsage = vi.fn();
+		// Default: no organization decision model configured, so every
+		// existing expectation describes the language-classifier path.
+		mocks.getAIDecisionModelWithMetadata.mockRejectedValue(
+			new AIProviderNotConfiguredError(),
+		);
 		// Drain any `mockResolvedValueOnce` values left over from a test that
 		// returned early; `clearAllMocks` keeps the once-queue.
 		mocks.userStoryFindMany.mockReset();
@@ -654,5 +709,343 @@ describe("classifyDeliveryTracks", () => {
 		expect(mocks.retrieveProjectRagContext).toHaveBeenCalledTimes(1);
 		expect(out.classified).toBe(1);
 		expect(out.errors).toHaveLength(0);
+	});
+
+	describe("typed decision fast path", () => {
+		function enableDecisionModel() {
+			mocks.getAIDecisionModelWithMetadata.mockResolvedValue({
+				model: { modelId: "typesafe-ai/jev" },
+				metadata: { provider: "VERCEL_GATEWAY" },
+				trackUsage: decisionTrackUsage,
+			});
+		}
+
+		const ORG_INPUT = {
+			projectId: "proj-1",
+			userId: "u1",
+			organizationId: "org-1",
+		};
+
+		it("persists a fully confident batch without calling the language model", async () => {
+			enableDecisionModel();
+			queueStories([
+				dbStory({ id: "s-1", identifier: "F-001" }),
+				dbStory({
+					id: "s-2",
+					identifier: "F-002",
+					title: "Export the estimate as a PDF",
+				}),
+			]);
+			decisionAnswers({
+				story_0: choice("SPECIFY", 0.97),
+				story_1: choice("SPIKE", 0.93),
+			});
+
+			const out = await classifyDeliveryTracks({
+				...ORG_INPUT,
+				storyIds: ["s-1", "s-2"],
+			});
+
+			expect(mocks.getAIDecisionModelWithMetadata).toHaveBeenCalledWith({
+				userId: "u1",
+				organizationId: "org-1",
+				projectId: "proj-1",
+			});
+			expect(mocks.experimental_evaluate).toHaveBeenCalledTimes(1);
+			expect(mocks.generateObject).not.toHaveBeenCalled();
+			// A completed evaluation used the organization provider.
+			expect(decisionTrackUsage).toHaveBeenCalledTimes(1);
+			expect(out.classified).toBe(2);
+			expect(out.errors).toHaveLength(0);
+			expect(out.results).toEqual([
+				{
+					storyId: "s-1",
+					track: "SPECIFY",
+					rationale: "",
+					source: "decision",
+					confidence: 0.97,
+				},
+				{
+					storyId: "s-2",
+					track: "SPIKE",
+					rationale: "",
+					source: "decision",
+					confidence: 0.93,
+				},
+			]);
+			const writes = mocks.userStoryUpdateMany.mock.calls.map(
+				(c) => [c[0].where.id, c[0].data] as const,
+			);
+			expect(writes).toHaveLength(2);
+			for (const [, data] of writes) {
+				// A typed evaluation produces no evidence, so the rationale is
+				// empty rather than invented; the selector renders the track's
+				// own description for a blank one.
+				expect(data).toMatchObject({
+					trackRationale: "",
+					trackSetBy: "AI",
+				});
+			}
+		});
+
+		it("sends only the uncertain story to the language model", async () => {
+			enableDecisionModel();
+			queueStories([
+				dbStory({ id: "s-1", identifier: "F-001" }),
+				dbStory({
+					id: "s-2",
+					identifier: "F-002",
+					title: "Rework the pricing rules",
+				}),
+				dbStory({
+					id: "s-3",
+					identifier: "F-003",
+					title: "Add a print view",
+				}),
+			]);
+			decisionAnswers({
+				story_0: choice("SPECIFY", 0.97),
+				story_1: choice("SPIKE", 0.6),
+				story_2: choice("DEFER", 0.99),
+			});
+			modelReturns([
+				{
+					storyId: "s-2",
+					track: "DISCOVERY",
+					rationale: "Needs a pricing decision.",
+					confidence: 0.8,
+				},
+			]);
+
+			const out = await classifyDeliveryTracks({
+				...ORG_INPUT,
+				storyIds: ["s-1", "s-2", "s-3"],
+			});
+
+			expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+			const prompt: string = mocks.generateObject.mock.calls[0][0].prompt;
+			// The allowlist — and the whole prompt — carries the leftover only.
+			expect(prompt).toContain("Story ids in this batch: s-2");
+			expect(prompt).not.toContain("s-1");
+			expect(prompt).not.toContain("s-3");
+			expect(out.classified).toBe(3);
+			expect(out.errors).toHaveLength(0);
+			expect(out.results).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						storyId: "s-1",
+						track: "SPECIFY",
+						source: "decision",
+					}),
+					expect.objectContaining({
+						storyId: "s-3",
+						track: "DEFER",
+						source: "decision",
+					}),
+					expect.objectContaining({
+						storyId: "s-2",
+						track: "DISCOVERY",
+						rationale: "Needs a pricing decision.",
+						source: "model",
+					}),
+				]),
+			);
+		});
+
+		it("a decided story whose row was human-set mid-run is skipped once and not re-sent to the language model", async () => {
+			enableDecisionModel();
+			queueStories([
+				dbStory({ id: "s-1", identifier: "F-001" }),
+				dbStory({
+					id: "s-2",
+					identifier: "F-002",
+					title: "Rework the pricing rules",
+				}),
+			]);
+			decisionAnswers({
+				story_0: choice("SPECIFY", 0.97),
+				story_1: choice("SPIKE", 0.6),
+			});
+			// A human override landed on s-1 between load and persist, so its
+			// `updateMany` matches nothing; the leftover s-2 persists normally.
+			mocks.userStoryUpdateMany.mockImplementation(
+				async (args: { where: { id: string } }) => ({
+					count: args.where.id === "s-1" ? 0 : 1,
+				}),
+			);
+			modelReturns([
+				{
+					storyId: "s-2",
+					track: "DISCOVERY",
+					rationale: "Needs a pricing decision.",
+					confidence: 0.8,
+				},
+			]);
+
+			const out = await classifyDeliveryTracks({
+				...ORG_INPUT,
+				storyIds: ["s-1", "s-2"],
+			});
+
+			expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+			const prompt: string = mocks.generateObject.mock.calls[0][0].prompt;
+			expect(prompt).toContain("Story ids in this batch: s-2");
+			expect(prompt).not.toContain("s-1");
+			expect(out.classified).toBe(1);
+			expect(out.skipped).toBe(1);
+			expect(out.errors).toHaveLength(0);
+			expect(out.results).toHaveLength(1);
+			expect(out.results[0]).toEqual(
+				expect.objectContaining({
+					storyId: "s-2",
+					track: "DISCOVERY",
+					source: "model",
+				}),
+			);
+		});
+
+		it("falls through for answers that are malformed or outside the track enum", async () => {
+			enableDecisionModel();
+			queueStories([
+				dbStory({ id: "s-1", identifier: "F-001" }),
+				dbStory({
+					id: "s-2",
+					identifier: "F-002",
+					title: "Add a print view",
+				}),
+				dbStory({
+					id: "s-3",
+					identifier: "F-003",
+					title: "Rename the summary column",
+				}),
+			]);
+			decisionAnswers({
+				// No distribution at all.
+				story_0: { type: "choice", choice: "SPECIFY" },
+				// Not a choice answer.
+				story_1: { type: "score", score: 1, probabilities: { "0": 1 } },
+				// Confident, but not an assignable track.
+				story_2: choice("UNCLASSIFIED", 0.99),
+			});
+			modelReturns([
+				{
+					storyId: "s-1",
+					track: "SPECIFY",
+					rationale: "a",
+					confidence: 0.9,
+				},
+				{
+					storyId: "s-2",
+					track: "SPECIFY",
+					rationale: "b",
+					confidence: 0.9,
+				},
+				{
+					storyId: "s-3",
+					track: "SPECIFY",
+					rationale: "c",
+					confidence: 0.9,
+				},
+			]);
+
+			const out = await classifyDeliveryTracks({
+				...ORG_INPUT,
+				storyIds: ["s-1", "s-2", "s-3"],
+			});
+
+			expect(decisionTrackUsage).toHaveBeenCalledTimes(1);
+			expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+			const prompt: string = mocks.generateObject.mock.calls[0][0].prompt;
+			expect(prompt).toContain("Story ids in this batch: s-1, s-2, s-3");
+			expect(out.classified).toBe(3);
+			expect(out.results.every((r) => r.source === "model")).toBe(true);
+		});
+
+		it("an unresolvable decision model leaves the language path untouched", async () => {
+			mocks.getAIDecisionModelWithMetadata.mockRejectedValue(
+				new Error("gateway down"),
+			);
+			queueStories([dbStory({ id: "s-1" })]);
+			modelReturns([
+				{
+					storyId: "s-1",
+					track: "SPECIFY",
+					rationale: "x",
+					confidence: 0.9,
+				},
+			]);
+
+			const out = await classifyDeliveryTracks({
+				...ORG_INPUT,
+				storyIds: ["s-1"],
+			});
+
+			expect(mocks.experimental_evaluate).not.toHaveBeenCalled();
+			expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+			expect(mocks.generateObject.mock.calls[0][0].prompt).toContain(
+				"Story ids in this batch: s-1",
+			);
+			expect(out.classified).toBe(1);
+			expect(out.errors).toHaveLength(0);
+			expect(out.results).toEqual([
+				expect.objectContaining({ source: "model" }),
+			]);
+		});
+
+		it("propagates a usage-limit error raised while resolving the decision model", async () => {
+			mocks.getAIDecisionModelWithMetadata.mockRejectedValue(
+				new AiUsageLimitExceededError(),
+			);
+			queueStories([dbStory({ id: "s-1" })]);
+
+			await expect(
+				classifyDeliveryTracks({ ...ORG_INPUT, storyIds: ["s-1"] }),
+			).rejects.toThrow(AiUsageLimitExceededError);
+			expect(mocks.generateObject).not.toHaveBeenCalled();
+		});
+
+		it("propagates a usage-limit error raised by the decision evaluation", async () => {
+			enableDecisionModel();
+			mocks.experimental_evaluate.mockRejectedValue(
+				new AiUsageLimitExceededError(),
+			);
+			queueStories([dbStory({ id: "s-1" })]);
+
+			await expect(
+				classifyDeliveryTracks({ ...ORG_INPUT, storyIds: ["s-1"] }),
+			).rejects.toThrow(AiUsageLimitExceededError);
+			expect(mocks.generateObject).not.toHaveBeenCalled();
+		});
+
+		it("a failed decision evaluation sends the batch on without recording an error", async () => {
+			enableDecisionModel();
+			mocks.experimental_evaluate.mockRejectedValue(
+				new Error("jev unavailable"),
+			);
+			queueStories([dbStory({ id: "s-1" })]);
+			modelReturns([
+				{
+					storyId: "s-1",
+					track: "SPECIFY",
+					rationale: "x",
+					confidence: 0.9,
+				},
+			]);
+
+			const out = await classifyDeliveryTracks({
+				...ORG_INPUT,
+				storyIds: ["s-1"],
+			});
+
+			expect(decisionTrackUsage).not.toHaveBeenCalled();
+			expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+			expect(out.classified).toBe(1);
+			// The decision model is a fast path, not a dependency: its failure
+			// is not the run's error.
+			expect(out.errors).toHaveLength(0);
+			expect(out.results).toEqual([
+				expect.objectContaining({ source: "model" }),
+			]);
+		});
 	});
 });
