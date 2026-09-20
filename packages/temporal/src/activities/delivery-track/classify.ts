@@ -12,13 +12,25 @@
  *    data block and the output is re-validated against the Zod schema before
  *    anything is persisted (plan §3 rule 9).
  *
+ * When the organization has a typed decision model configured, pass 2 first
+ * asks it for the whole batch in ONE `experimental_evaluate` call — one
+ * `choice` question per story, over the same rendered classification prompt
+ * the language classifier would have received, so an operator's project
+ * context and track guidance still govern the verdict. A story whose answer
+ * clears the confidence floor is persisted from that answer alone. Everything
+ * else — no decision model configured, an uncertain or malformed answer, or
+ * any non-usage-limit decision error — falls through to the COMPLEX language
+ * classifier, which stays the behaviour of record.
+ *
  * Human overrides (`trackSetBy = HUMAN`) are never touched — not when loading,
  * and not when persisting, so an override that lands mid-run survives.
  *
  * Plan: docs/features/inverted-loop-delivery-tracks.md, Slice 2.
  */
 import {
+	experimental_evaluate,
 	generateObject,
+	getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
 } from "@repo/ai";
@@ -31,6 +43,7 @@ import {
 	tenantWhere,
 } from "@repo/database";
 import { logger } from "@repo/logs";
+import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import { heartbeat } from "@temporalio/activity";
 import { z } from "zod";
 import { retrieveProjectRagContext } from "../backlog-context/fetch-context";
@@ -42,6 +55,21 @@ import { retrieveProjectRagContext } from "../backlog-context/fetch-context";
 export const CLASSIFICATION_BATCH_SIZE = 25;
 export const LOW_CONFIDENCE_THRESHOLD = 0.6;
 export const LOW_CONFIDENCE_PREFIX = "Low confidence: ";
+
+/**
+ * Typed decision fast path, mirroring `lib/classify-work-item.ts` and
+ * `backlog-context/route-action-items.ts` — the same retry budget and
+ * acceptance floor, and the same rule that anything not clearly parseable is
+ * treated as uncertain rather than trusted. The timeout is larger than theirs
+ * because one call carries up to `CLASSIFICATION_BATCH_SIZE` questions.
+ *
+ * The floor is a routing policy, not a claim that provider probabilities are
+ * calibrated. Until labeled Fabric backlog data calibrates it, only a very
+ * confident typed choice may skip the language classifier.
+ */
+const DECISION_TIMEOUT_MS = 30_000;
+const DECISION_MAX_RETRIES = 1;
+const DECISION_CONFIDENCE_THRESHOLD = 0.9;
 
 /** Delimiters around untrusted story / repository text in the prompt. */
 export const UNTRUSTED_DATA_START = "<<<UNTRUSTED_STORY_DATA>>>";
@@ -336,7 +364,11 @@ export interface TrackClassificationResult {
 	storyId: string;
 	track: DeliveryTrack;
 	rationale: string;
-	source: "rule" | "model" | "low_confidence";
+	/**
+	 * How the track was decided. `decision` is the typed decision model's
+	 * fast path; `model` and `low_confidence` are the language classifier.
+	 */
+	source: "rule" | "model" | "low_confidence" | "decision";
 	confidence?: number;
 }
 
@@ -370,6 +402,190 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
 const NOT_HUMAN_SET = {
 	OR: [{ trackSetBy: null }, { trackSetBy: "AI" as const }],
 };
+
+// =============================================================================
+// Typed decision fast path
+// =============================================================================
+
+/**
+ * One short description per assignable track, worded from the same guidance
+ * the language classifier gets in `TRACK_TABLE`. The two must agree: an
+ * operator reading the track table has to be able to predict either path.
+ */
+const TRACK_CRITERION_TEXT: Record<AssignableTrack, string> = {
+	SPIKE: "Feasibility or desirability is unverified; novel AI/UX; the answer would change scope or estimate.",
+	DISCOVERY:
+		"Touches auth, authz, tenancy, an external system or regulated data; depends on an unconfirmed API or contract.",
+	SPECIFY:
+		"Deterministic rules, calculations, or CRUD with known inputs; the customer has already specified it.",
+	DEFER: "Explicitly out of scope, outside the engagement's quoted horizon, or blocked by an undecided dependency. A phase label alone NEVER implies DEFER.",
+};
+
+/** The choice options offered to the decision model, keyed by track. */
+const TRACK_DECISION_CRITERIA: Record<string, string> = Object.fromEntries(
+	ASSIGNABLE_TRACK_ENUM.options.map((track) => [
+		track,
+		TRACK_CRITERION_TEXT[track],
+	]),
+);
+
+interface TrackDecision {
+	track: AssignableTrack;
+	probability: number;
+}
+
+/**
+ * Read one `choice` answer defensively. An answer that is missing, not a
+ * choice, names something outside the assignable tracks, carries no
+ * distribution, or whose winning probability is not a finite number at or
+ * above the floor (and no greater than 1) is uncertain — never a verdict.
+ */
+function readTrackChoice(
+	result: Awaited<ReturnType<typeof experimental_evaluate>>,
+	questionKey: string,
+): TrackDecision | null {
+	const answer = (result as { answers?: Record<string, unknown> }).answers?.[
+		questionKey
+	];
+	if (!answer || typeof answer !== "object") {
+		return null;
+	}
+
+	const { type, choice, probabilities } = answer as {
+		type?: unknown;
+		choice?: unknown;
+		probabilities?: unknown;
+	};
+	if (
+		type !== "choice" ||
+		!probabilities ||
+		typeof probabilities !== "object"
+	) {
+		return null;
+	}
+
+	const track = ASSIGNABLE_TRACK_ENUM.safeParse(choice);
+	if (!track.success) {
+		return null;
+	}
+
+	const probability = (probabilities as Record<string, unknown>)[track.data];
+	if (
+		typeof probability !== "number" ||
+		!Number.isFinite(probability) ||
+		probability < DECISION_CONFIDENCE_THRESHOLD ||
+		probability > 1
+	) {
+		return null;
+	}
+
+	return { track: track.data, probability };
+}
+
+/**
+ * One decision evaluation for one batch: a `choice` question per story, over
+ * the rendered classification prompt the language classifier would have
+ * received. Returns only the stories whose answer is confident enough to stand
+ * in for that classifier; every other story is left for it.
+ *
+ * Question keys are synthetic (`story_<index>`) and mapped back to story ids
+ * here, so nothing depends on a cuid being an acceptable object key at the
+ * provider.
+ *
+ * Only `AiUsageLimitExceededError` escapes: a usage limit is the one decision
+ * failure that must NOT be retried through the language classifier, because
+ * doing so would bill the very spend the limit refused.
+ */
+async function decideBatchTracks(params: {
+	decisionModel: Awaited<ReturnType<typeof getAIDecisionModelWithMetadata>>;
+	classifierPolicy: string;
+	stories: readonly ClassifierStoryInput[];
+	projectId: string;
+	batchIndex: number;
+}): Promise<Map<string, TrackDecision>> {
+	const { decisionModel, stories, projectId, batchIndex } = params;
+	const decided = new Map<string, TrackDecision>();
+
+	const storyIdByKey = new Map<string, string>();
+	const questions: Record<
+		string,
+		{
+			type: "choice";
+			instructions: string;
+			criteria: Record<string, string>;
+		}
+	> = {};
+	const stateStories = stories.map((story, index) => {
+		const key = `story_${index}`;
+		storyIdByKey.set(key, story.id);
+		questions[key] = {
+			type: "choice",
+			instructions: `Apply classifierPolicy to the story keyed "${key}" in stories, and judge only that story. Choose the one delivery track that fits it. Prefer SPECIFY when the behaviour is fully determined; use DEFER only for explicit exclusions or undecided dependencies.`,
+			criteria: TRACK_DECISION_CRITERIA,
+		};
+		return {
+			key,
+			identifier: story.identifier,
+			priority: story.priority,
+			labels: [...story.labels],
+			ruleHint: story.candidate ?? "",
+			title: story.title,
+			description: story.description ?? "",
+		};
+	});
+
+	let result: Awaited<ReturnType<typeof experimental_evaluate>>;
+	try {
+		result = await experimental_evaluate({
+			model: decisionModel.model,
+			state: {
+				classifierPolicy: params.classifierPolicy,
+				stories: stateStories,
+			},
+			questions,
+			maxRetries: DECISION_MAX_RETRIES,
+			abortSignal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
+		});
+	} catch (error) {
+		if (error instanceof AiUsageLimitExceededError) {
+			throw error;
+		}
+		logger.warn(
+			"[DeliveryTrack] Decision evaluation unavailable; using the language model",
+			{
+				projectId,
+				batchIndex,
+				error: error instanceof Error ? error.message : String(error),
+			},
+		);
+		return decided;
+	}
+
+	// A completed evaluation used the organization provider even when no answer
+	// is confident enough for the fast path, so update last-used before
+	// inspecting the answers.
+	decisionModel.trackUsage();
+
+	for (const [key, storyId] of storyIdByKey) {
+		const verdict = readTrackChoice(result, key);
+		if (verdict) {
+			decided.set(storyId, verdict);
+		}
+	}
+
+	if (decided.size < storyIdByKey.size) {
+		logger.warn(
+			"[DeliveryTrack] Decision evaluation was uncertain or malformed for part of the batch; using the language model",
+			{
+				projectId,
+				batchIndex,
+				uncertain: storyIdByKey.size - decided.size,
+			},
+		);
+	}
+
+	return decided;
+}
 
 export async function classifyDeliveryTracks(
 	input: ClassifyDeliveryTracksInput,
@@ -546,6 +762,48 @@ export async function classifyDeliveryTracks(
 		toClassify: remaining.length,
 	});
 
+	// Optional typed decision model, resolved ONCE per run. It is a fast path,
+	// not a dependency: an organization without an organization-owned Vercel
+	// Gateway decision model — or any other resolution failure — classifies
+	// every story with the language model exactly as it does today. Only a
+	// usage limit escapes, because retrying through the language model would
+	// bill the very spend the limit refused.
+	let decisionModel: Awaited<
+		ReturnType<typeof getAIDecisionModelWithMetadata>
+	> | null = null;
+	try {
+		decisionModel = await getAIDecisionModelWithMetadata({
+			userId,
+			organizationId,
+			projectId,
+		});
+	} catch (error) {
+		if (error instanceof AiUsageLimitExceededError) {
+			throw error;
+		}
+		decisionModel = null;
+		logger.info(
+			"[DeliveryTrack] No decision model — classifying every story with the language model",
+			{
+				projectId,
+				error: error instanceof Error ? error.message : String(error),
+			},
+		);
+	}
+
+	const toClassifierStories = (
+		subset: readonly (typeof remaining)[number][],
+	): ClassifierStoryInput[] =>
+		subset.map((s) => ({
+			id: s.id,
+			identifier: s.identifier,
+			title: s.title,
+			description: s.description,
+			priority: s.priority,
+			labels: s.labels,
+			candidate: candidateHints.get(s.id) ?? null,
+		}));
+
 	const batches = chunk(remaining, CLASSIFICATION_BATCH_SIZE);
 	for (const [batchIndex, batch] of batches.entries()) {
 		safeHeartbeat(
@@ -579,127 +837,191 @@ export async function classifyDeliveryTracks(
 			}
 		}
 
-		const prompt = buildClassificationPrompt({
+		const batchStories = toClassifierStories(batch);
+		const batchPrompt = buildClassificationPrompt({
 			project,
-			stories: batch.map((s) => ({
-				id: s.id,
-				identifier: s.identifier,
-				title: s.title,
-				description: s.description,
-				priority: s.priority,
-				labels: s.labels,
-				candidate: candidateHints.get(s.id) ?? null,
-			})),
+			stories: batchStories,
 			ragContext,
 		});
 
+		// One interval for the whole batch: it has to keep the activity alive
+		// through the decision evaluation (30 s abort timeout) and then the
+		// language call, which has no abort timeout of its own.
 		const heartbeatInterval = setInterval(() => {
 			safeHeartbeat("classifyDeliveryTracks: waiting for LLM response");
 		}, 30_000);
 
-		const started = Date.now();
-		let result: Awaited<
-			ReturnType<
-				typeof generateObject<typeof TrackClassificationOutputSchema>
-			>
-		>;
 		try {
-			result = await generateObject({
-				model,
-				schema: TrackClassificationOutputSchema,
-				prompt,
-			});
-		} catch (error) {
-			const message =
-				error instanceof Error ? error.message : String(error);
-			errors.push(
-				`Batch ${batchIndex + 1}: model call failed: ${message}`,
-			);
-			logger.error("[DeliveryTrack] Model call failed", {
-				projectId,
-				batchIndex,
-				error: message,
-			});
-			continue;
-		} finally {
-			clearInterval(heartbeatInterval);
-		}
+			// ---- Typed decision fast path -------------------------------
+			let leftover = batch;
+			if (decisionModel) {
+				const decided = await decideBatchTracks({
+					decisionModel,
+					classifierPolicy: batchPrompt,
+					stories: batchStories,
+					projectId,
+					batchIndex,
+				});
+				const handled = new Set<string>();
+				for (const story of batch) {
+					const verdict = decided.get(story.id);
+					if (!verdict) {
+						continue;
+					}
+					handled.add(story.id);
+					// A typed evaluation returns a choice and a distribution,
+					// not written evidence. Persist an EMPTY rationale rather
+					// than inventing one; the selector already renders the
+					// track's own description when the rationale is blank.
+					const ok = await persist(story.id, verdict.track, "");
+					if (!ok) {
+						skipped += 1;
+						continue;
+					}
+					classified += 1;
+					results.push({
+						storyId: story.id,
+						track: verdict.track,
+						rationale: "",
+						source: "decision",
+						confidence: verdict.probability,
+					});
+				}
+				leftover = batch.filter((s) => !handled.has(s.id));
+				logger.info("[DeliveryTrack] Decision fast path", {
+					projectId,
+					batchIndex,
+					decidedByDecisionModel: handled.size,
+					toLanguageModel: leftover.length,
+				});
+			}
 
-		trackUsage();
-		logModelUsageAsync({
-			context: { userId, organizationId },
-			metadata,
-			taskType: "COMPLEX",
-			usage: result.usage,
-			latencyMs: Date.now() - started,
-			projectId,
-		});
-
-		// Post-validate: schema + allowlisted enum + only ids from this batch.
-		const parsed = TrackClassificationOutputSchema.safeParse(result.object);
-		if (!parsed.success) {
-			errors.push(
-				`Batch ${batchIndex + 1}: model output rejected by schema: ${parsed.error.issues
-					.map((i) => `${i.path.join(".")}: ${i.message}`)
-					.slice(0, 5)
-					.join("; ")}`,
-			);
-			logger.warn("[DeliveryTrack] Output failed schema validation", {
-				projectId,
-				batchIndex,
-			});
-			continue;
-		}
-
-		const batchIds = new Set(batch.map((s) => s.id));
-		const seen = new Set<string>();
-		for (const item of parsed.data.classifications) {
-			if (!batchIds.has(item.storyId) || seen.has(item.storyId)) {
+			if (leftover.length === 0) {
 				continue;
 			}
-			seen.add(item.storyId);
 
-			let track: DeliveryTrack = item.track;
-			let rationale = item.rationale;
-			let source: TrackClassificationResult["source"] = "model";
+			// ---- Language classifier (the behaviour of record) ----------
+			// Rebuilt for the leftovers alone: the prompt's story-id allowlist
+			// and the "omitted" accounting below both key on the exact set the
+			// language model was given.
+			const prompt =
+				leftover.length === batch.length
+					? batchPrompt
+					: buildClassificationPrompt({
+							project,
+							stories: toClassifierStories(leftover),
+							ragContext,
+						});
 
-			if (item.confidence < LOW_CONFIDENCE_THRESHOLD) {
-				source = "low_confidence";
-				track =
-					profileConfig.defaultTrack === "CLASSIFIER"
-						? "UNCLASSIFIED"
-						: profileConfig.defaultTrack;
-				rationale = `${LOW_CONFIDENCE_PREFIX}${item.rationale}`.slice(
-					0,
-					300,
+			const started = Date.now();
+			let result: Awaited<
+				ReturnType<
+					typeof generateObject<
+						typeof TrackClassificationOutputSchema
+					>
+				>
+			>;
+			try {
+				result = await generateObject({
+					model,
+					schema: TrackClassificationOutputSchema,
+					prompt,
+				});
+			} catch (error) {
+				const message =
+					error instanceof Error ? error.message : String(error);
+				errors.push(
+					`Batch ${batchIndex + 1}: model call failed: ${message}`,
+				);
+				logger.error("[DeliveryTrack] Model call failed", {
+					projectId,
+					batchIndex,
+					error: message,
+				});
+				continue;
+			}
+
+			trackUsage();
+			logModelUsageAsync({
+				context: { userId, organizationId },
+				metadata,
+				taskType: "COMPLEX",
+				usage: result.usage,
+				latencyMs: Date.now() - started,
+				projectId,
+			});
+
+			// Post-validate: schema + allowlisted enum + only ids sent here.
+			const parsed = TrackClassificationOutputSchema.safeParse(
+				result.object,
+			);
+			if (!parsed.success) {
+				errors.push(
+					`Batch ${batchIndex + 1}: model output rejected by schema: ${parsed.error.issues
+						.map((i) => `${i.path.join(".")}: ${i.message}`)
+						.slice(0, 5)
+						.join("; ")}`,
+				);
+				logger.warn("[DeliveryTrack] Output failed schema validation", {
+					projectId,
+					batchIndex,
+				});
+				continue;
+			}
+
+			const batchIds = new Set(leftover.map((s) => s.id));
+			const seen = new Set<string>();
+			for (const item of parsed.data.classifications) {
+				if (!batchIds.has(item.storyId) || seen.has(item.storyId)) {
+					continue;
+				}
+				seen.add(item.storyId);
+
+				let track: DeliveryTrack = item.track;
+				let rationale = item.rationale;
+				let source: TrackClassificationResult["source"] = "model";
+
+				if (item.confidence < LOW_CONFIDENCE_THRESHOLD) {
+					source = "low_confidence";
+					track =
+						profileConfig.defaultTrack === "CLASSIFIER"
+							? "UNCLASSIFIED"
+							: profileConfig.defaultTrack;
+					rationale =
+						`${LOW_CONFIDENCE_PREFIX}${item.rationale}`.slice(
+							0,
+							300,
+						);
+				}
+
+				const ok = await persist(item.storyId, track, rationale);
+				if (!ok) {
+					skipped += 1;
+					continue;
+				}
+				results.push({
+					storyId: item.storyId,
+					track,
+					rationale,
+					source,
+					confidence: item.confidence,
+				});
+				if (track !== "UNCLASSIFIED") {
+					classified += 1;
+				} else {
+					skipped += 1;
+				}
+			}
+
+			const missing = leftover.filter((s) => !seen.has(s.id));
+			if (missing.length > 0) {
+				skipped += missing.length;
+				errors.push(
+					`Batch ${batchIndex + 1}: model omitted ${missing.length} story id(s)`,
 				);
 			}
-
-			const ok = await persist(item.storyId, track, rationale);
-			if (!ok) {
-				skipped += 1;
-				continue;
-			}
-			results.push({
-				storyId: item.storyId,
-				track,
-				rationale,
-				source,
-				confidence: item.confidence,
-			});
-			if (track !== "UNCLASSIFIED") {
-				classified += 1;
-			} else {
-				skipped += 1;
-			}
-		}
-
-		const missing = batch.filter((s) => !seen.has(s.id));
-		if (missing.length > 0) {
-			skipped += missing.length;
-			errors.push(
-				`Batch ${batchIndex + 1}: model omitted ${missing.length} story id(s)`,
-			);
+		} finally {
+			clearInterval(heartbeatInterval);
 		}
 	}
 
