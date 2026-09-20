@@ -150,6 +150,52 @@ describe("buildMatchPrompt", () => {
 		{ identifier: "F-2", title: "Agenda generation", description: null },
 	];
 
+	it("renders exactly the prompt it rendered before the rule text was extracted", () => {
+		// A full-string pin, not a `toContain`: the rule paragraphs now live in
+		// the exported MATCH_RULE_TEXT constant so the decision model can be
+		// held to the same rule, and this is what proves that move (and any
+		// later edit to the constant) did not change one byte of what the
+		// language verifier is asked. The expected value was generated from the
+		// helper as it stood BEFORE the extraction, so it is not a snapshot of
+		// the current implementation.
+		const prompt = buildMatchPrompt(
+			{ text: "Ship the digest download", tentativeOwnerName: "Avery" },
+			"Weekly sync",
+			[
+				{
+					identifier: "F-1",
+					title: "Digest download",
+					description: "Let members download the transcript",
+				},
+				{
+					identifier: "F-2",
+					title: "Agenda generation",
+					description: null,
+				},
+			],
+		);
+
+		expect(
+			prompt,
+		).toBe(`You are deciding whether a commitment made in a meeting refers to specific existing work items.
+
+Meeting: Weekly sync
+Tentative owner: Avery
+Action item: Ship the digest download
+
+Candidate work items:
+1. F-1 — Digest download
+   Let members download the transcript
+
+2. F-2 — Agenda generation
+
+For EACH candidate, decide whether the action item is about that specific work item — that is, whether doing the action item would advance, change, or resolve it.
+
+Answer "relates": false when the action item merely touches the same area, the same feature family, or the same component. Shared subject matter is not a relationship. Only answer true when a reader would agree the action item is a follow-up ON that specific work item.
+
+Give a confidence between 0 and 1 reflecting how certain you are, and one short sentence of reasoning. Return one verdict per candidate, using the candidate's identifier exactly as given.`);
+	});
+
 	it("includes the item text, the meeting subject, and every candidate", () => {
 		const prompt = buildMatchPrompt(
 			{ text: "Ship the digest download", tentativeOwnerName: "Alice" },

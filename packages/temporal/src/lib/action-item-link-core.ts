@@ -34,7 +34,27 @@ export const MAX_CANDIDATES_PER_ITEM = 5;
 /** Verifier confidence a match must clear to be stored as a link. */
 export const DEFAULT_MIN_CONFIDENCE = 0.7;
 
-const MAX_CANDIDATE_DESCRIPTION_CHARS = 600;
+/**
+ * Cap on a candidate's description wherever it is rendered for a model — the
+ * language verifier prompt below, and the typed decision model's state in
+ * `activities/meeting-digest/link-action-items.ts`. Exported so the two cannot
+ * drift: a decision made on a differently-truncated description would not be
+ * the decision the language verifier would have made.
+ */
+export const MAX_CANDIDATE_DESCRIPTION_CHARS = 600;
+
+/**
+ * The relationship rule, shared verbatim by both verdict paths.
+ *
+ * Interpolated into `buildMatchPrompt` below and handed to the typed decision
+ * model as its policy, so an action item is judged against ONE definition of
+ * "relates" no matter which path settles it. Edit it here and both move
+ * together; that is the whole reason it is a constant rather than prose inside
+ * the template.
+ */
+export const MATCH_RULE_TEXT = `For EACH candidate, decide whether the action item is about that specific work item — that is, whether doing the action item would advance, change, or resolve it.
+
+Answer "relates": false when the action item merely touches the same area, the same feature family, or the same component. Shared subject matter is not a relationship. Only answer true when a reader would agree the action item is a follow-up ON that specific work item.`;
 
 export type CandidateStory = {
 	id: string;
@@ -137,9 +157,7 @@ ${meetingLine}${ownerLine}Action item: ${item.text}
 Candidate work items:
 ${candidateBlock}
 
-For EACH candidate, decide whether the action item is about that specific work item — that is, whether doing the action item would advance, change, or resolve it.
-
-Answer "relates": false when the action item merely touches the same area, the same feature family, or the same component. Shared subject matter is not a relationship. Only answer true when a reader would agree the action item is a follow-up ON that specific work item.
+${MATCH_RULE_TEXT}
 
 Give a confidence between 0 and 1 reflecting how certain you are, and one short sentence of reasoning. Return one verdict per candidate, using the candidate's identifier exactly as given.`;
 }
