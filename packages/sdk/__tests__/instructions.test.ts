@@ -307,21 +307,22 @@ describe("personal context", () => {
 });
 
 /**
- * `submitChange` is the one route in this resource that is NOT safe to repeat.
+ * `submitChange` is retried like every other mutating call in this SDK.
  *
- * The client's default policy retries a mutating method on a network error or
- * a timeout, on the strength of the `Idempotency-Key` header it sends. This
- * route does not honour that header: each POST creates a new snapshot row,
- * and a proposal counts against a cap of five per proposer. A request that
- * reaches the server and whose RESPONSE is lost would therefore be replayed
- * into two, then three, identical pending proposals — and the caller would
- * see only the last failure.
+ * It did not used to be. The route creates a snapshot row per POST and a
+ * proposal counts against a cap of five per proposer, so a request whose
+ * RESPONSE was lost used to be replayed into a second identical pending
+ * proposal — and this resource turned retries off to stop that. The route
+ * now deduplicates by the CONTENT of the change set (base plus the set of
+ * op, path and sha256), so the replay returns the proposal the first attempt
+ * opened, and the override was doing nothing but turning one dropped packet
+ * into a failed push.
  *
  * These build a client with the DEFAULT retry policy on purpose. The helper
  * above passes `maxRetries: 0`, which would make every one of them pass
  * whatever the resource does.
  */
-describe("submitChange is never retried", () => {
+describe("submitChange uses the shipped retry policy", () => {
 	function failingClient(error: unknown): {
 		client: FabricClient;
 		attempts: () => number;
@@ -347,7 +348,7 @@ describe("submitChange is never retried", () => {
 		{ op: "put" as const, path: "AGENTS.md", content: "# Updated\n" },
 	];
 
-	it("sends exactly one request when the network fails", async () => {
+	it("retries a network failure instead of surfacing the first one", async () => {
 		const { client, attempts } = failingClient(
 			new TypeError("fetch failed"),
 		);
@@ -356,7 +357,7 @@ describe("submitChange is never retried", () => {
 			client.instructions.submitChange("project-1", "snap-7", change),
 		).rejects.toThrow();
 
-		expect(attempts()).toBe(1);
+		expect(attempts()).toBeGreaterThan(1);
 	});
 
 	// The control: the same client, the same failure, an idempotent read. If

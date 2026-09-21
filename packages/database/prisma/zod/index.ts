@@ -1872,7 +1872,7 @@ export type DiagramScalarFieldEnum = z.infer<typeof DiagramScalarFieldEnumSchema
 
 // File: ProjectInstructionSnapshotScalarFieldEnum.schema.ts
 
-export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'baseSnapshotId', 'baseVersion', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
+export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'changeSetDigest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'baseSnapshotId', 'baseVersion', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
 
 export type ProjectInstructionSnapshotScalarFieldEnum = z.infer<typeof ProjectInstructionSnapshotScalarFieldEnumSchema>;
 
@@ -10621,6 +10621,7 @@ export const ProjectInstructionSnapshotSchema = z.object({
   storedBytes: z.number().int(),
   excludedCount: z.number().int(),
   digest: z.string().nullish(),
+  changeSetDigest: z.string().nullish(),
   repositoryIntegrationId: z.string().nullish(),
   sourceRef: z.string().nullish(),
   sourceCommitSha: z.string().nullish(),

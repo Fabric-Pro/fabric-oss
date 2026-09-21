@@ -864,6 +864,32 @@ describe("POST instructions/changes", () => {
 		});
 	});
 
+	/**
+	 * A client that retries a timed-out POST must get its own proposal back
+	 * (Fizzy #2605), not a second one.
+	 *
+	 * The dedup itself is the shared function's — it hashes the change set
+	 * and answers an already-admitted one with the row it wrote — so what
+	 * this pins at the route is the half the route owns: the two requests
+	 * reach it as the SAME call (no nonce, no per-request idempotency token
+	 * is minted here), and the replayed answer is relayed as an ordinary 200
+	 * rather than turned into a refusal.
+	 */
+	it("relays a replayed change set as a 200 naming the same snapshot", async () => {
+		const body = { baseSnapshotId: BASE, changes: [putChange()] };
+		const app = buildApp();
+
+		const first = await app.request(postJson(CHANGES_PATH, body));
+		const second = await app.request(postJson(CHANGES_PATH, body));
+
+		expect(first.status).toBe(200);
+		expect(second.status).toBe(200);
+		await expect(second.json()).resolves.toEqual({ data: submitted() });
+		const [firstCall, secondCall] =
+			mocks.submitInstructionChange.mock.calls;
+		expect(secondCall?.[0]).toEqual(firstCall?.[0]);
+	});
+
 	it("carries the caller's base snapshot through", async () => {
 		await buildApp().request(
 			postJson(CHANGES_PATH, {

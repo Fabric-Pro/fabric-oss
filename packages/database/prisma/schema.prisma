@@ -16684,6 +16684,13 @@ model ProjectInstructionSnapshot {
   excludedCount Int     @default(0)
   /// sha256 over sorted "path\0sha256\n" lines; set when READY.
   digest        String?
+  /// The IDENTITY of the change set this snapshot was derived from: sha256
+  /// over the sorted "op\0path\0sha256\n" lines of its `put`/`delete` list.
+  /// Written for every derived snapshot; READ only for proposals, where it
+  /// plus `baseSnapshotId` and `userId` is what makes a retried push return
+  /// the proposal it already opened instead of a second one against the same
+  /// five-per-proposer cap. Null for a full upload, which has no change set.
+  changeSetDigest String?
 
   repositoryIntegrationId String?
   sourceRef               String?

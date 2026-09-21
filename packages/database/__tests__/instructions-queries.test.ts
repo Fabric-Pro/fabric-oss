@@ -2496,6 +2496,26 @@ describe("rejectAbandonedInstructionSnapshot", () => {
 		);
 	});
 
+	/**
+	 * A row that moved on between the caller's read and this write — a
+	 * `finalize` landing, or another request closing it out first — matches
+	 * nothing, and the caller is told so rather than being handed a verdict
+	 * it never actually made.
+	 */
+	it("reports no change when the row moved on before the write", async () => {
+		mocks.snapshot.updateMany.mockResolvedValue({ count: 0 });
+
+		expect(
+			await rejectAbandonedInstructionSnapshot({
+				snapshotId: "s",
+				projectId: "p",
+				organizationId: "org_1",
+				cutoff: new Date(),
+			}),
+		).toEqual({ changed: false });
+		expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+	});
+
 	it("writes no audit row when the conditional write matched nothing", async () => {
 		mocks.snapshot.updateMany.mockResolvedValue({ count: 0 });
 

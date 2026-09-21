@@ -404,13 +404,6 @@ function destinationOf(opts: { dest?: string }): string {
 function instructionsClient(
 	opts: { hook?: boolean },
 	timeoutMs: number,
-	/**
-	 * A retry policy for a command that needs one other than the default.
-	 * `push` turns retries off: the SDK retries a POST on the premise that its
-	 * `Idempotency-Key` header protects it, and nothing on the change route
-	 * honours that header, so a retry would open a second proposal.
-	 */
-	overrides: { retry?: { maxRetries: number } } = {},
 ): FabricClient {
 	if (!getApiKey()) {
 		throw new CliFailure(
@@ -426,10 +419,14 @@ function instructionsClient(
 	return getClient(
 		opts.hook
 			? {
+					// Hook mode has ONE absolute deadline covering every
+					// call it makes, so it cannot spend it on retries: a
+					// session that will not start is worse than instructions
+					// one version stale.
 					timeoutMs: Math.min(timeoutMs, HOOK_DEADLINE_MS),
 					retry: { maxRetries: 0 },
 				}
-			: { timeoutMs, ...overrides },
+			: { timeoutMs },
 	).withoutContext();
 }
 
@@ -1017,17 +1014,14 @@ async function runPush(
 		);
 	}
 
-	// Retries OFF for this whole command. The SDK retries a POST on a network
-	// error or a timeout on the premise that its `Idempotency-Key` header
-	// protects the request, and the change route does not honour that header,
-	// so a retried push would open a second proposal for the same edit. One
-	// attempt, and a failure the developer can repeat deliberately.
+	// The SDK's ordinary retry policy. Retries used to be off here: the change
+	// route wrote a snapshot row per POST, so a push whose response was lost
+	// opened a second proposal for one edit. The route now recognises a change
+	// set it has already admitted and answers with the proposal it opened, so
+	// a retry repairs a dropped response instead of duplicating it.
 	const client = instructionsClient(
 		{ ...opts, hook: false },
 		PUSH_TIMEOUT_MS,
-		{
-			retry: { maxRetries: 0 },
-		},
 	);
 
 	// BEFORE any file is read. Two questions, both answered by this one call:
@@ -1146,6 +1140,56 @@ function asPushFailure(error: unknown): CliFailure {
 	}
 }
 
+/**
+ * The one sentence a completed push ends on.
+ *
+ * A push that repeats an earlier one is answered with the proposal that one
+ * opened, so this has to read every state that proposal can be in — not just
+ * the fresh-proposal case. The rule each branch obeys: NEVER advise an action
+ * the server's content dedup will swallow. A proposal still PENDING is exactly
+ * what the next push would match, so those branches describe the state or name
+ * the one thing that changes it, and "push again" appears only once the
+ * proposal has stopped being PENDING.
+ */
+function pushVerdict(outcome: PushOutcome): string {
+	// The row is still receiving bytes: an earlier attempt at this same change
+	// is mid-flight. No push closes it out at any age — the browser tab opens
+	// proposals through the same query and keeps its upload capabilities for
+	// an hour, so a row that looks stalled from here may be one somebody is
+	// still filling. What does move it: its proposer can cancel it in the tab
+	// (a RECEIVING proposal is cancellable), and the reaper closes an
+	// abandoned one after six hours.
+	if (
+		outcome.proposalStatus === "PENDING" &&
+		outcome.status === "RECEIVING"
+	) {
+		return `An earlier attempt is still sending this change; if version ${outcome.version} stays unfinished, cancel it in the project's Coding Instructions tab, or leave it and it is closed out automatically after six hours.`;
+	}
+	// Its checks failed, and it stays PENDING — so the next push dedups
+	// straight back onto it. The tab's "Try again" is the only thing that
+	// moves it, which is why no push is offered here. Both of these branches
+	// require PENDING: a row that vanished after the finalizer reports
+	// `proposalStatus: null` beside the finalizer's last status, and telling
+	// the user to retry or cancel a version that no longer exists would be
+	// wrong — that case falls through to "push again", which is right.
+	if (outcome.proposalStatus === "PENDING" && outcome.status === "FAILED") {
+		return `This proposal did not pass its checks; retry version ${outcome.version} from the project's Coding Instructions tab.`;
+	}
+	if (outcome.proposalStatus === "PENDING") {
+		// Unreachable in practice — the gate closes a rejected proposal's
+		// review state in the same transaction — but a PENDING row is one the
+		// dedup matches, so the advice has to be the thing that clears it.
+		if (outcome.status === "REJECTED") {
+			return `Version ${outcome.version} was rejected by its checks — cancel it in the project's Coding Instructions tab before proposing this change again.`;
+		}
+		return `Proposed as version ${outcome.version}. It is pending review — nothing is published until somebody who can edit this project's coding instructions approves it in the Coding Instructions tab.`;
+	}
+	if (outcome.proposalStatus === "APPROVED") {
+		return `Version ${outcome.version} has already been approved and published — run \`fabric instructions sync\` to bring this checkout up to it.`;
+	}
+	return `Version ${outcome.version} is no longer open for review (${outcome.proposalStatus ?? outcome.status}): an earlier attempt at this same change was closed out, so push again.`;
+}
+
 function reportPush(outcome: PushOutcome): void {
 	const prefix = outcome.dryRun ? "Would send" : "Sent";
 	line(
@@ -1161,9 +1205,7 @@ function reportPush(outcome: PushOutcome): void {
 		return;
 	}
 
-	line(
-		`Proposed as version ${outcome.version}. It is pending review — nothing is published until somebody who can edit this project's coding instructions approves it in the Coding Instructions tab.`,
-	);
+	line(pushVerdict(outcome));
 	line(
 		"Your lock was not changed: it still names the published version, which is what `fabric instructions sync` compares against.",
 	);

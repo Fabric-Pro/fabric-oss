@@ -1110,6 +1110,154 @@ describe("fabric_propose_project_instruction_change", () => {
 		);
 	});
 
+	/**
+	 * A retried tool call can be answered with the proposal the first call
+	 * opened — and that proposal may no longer be pending, because the
+	 * attempt it is repeating was closed out or its validation rejected it.
+	 * The agent puts this text in front of a person, so telling them a
+	 * rejected proposal is "waiting for their review" sends them to look for
+	 * something that is not there.
+	 */
+	it("does not claim a closed-out proposal is waiting for review", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.submitInstructionChange.mockResolvedValue(
+			accepted({ proposalStatus: "REJECTED", status: "REJECTED" }),
+		);
+
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [change],
+				baseSnapshotId: "snap_1",
+			},
+			writeSession,
+		);
+
+		const text = JSON.stringify(r);
+		expect(text).not.toContain("PENDING REVIEW");
+		expect(text).not.toContain("waiting for their review");
+		expect(text).toContain("send it again");
+	});
+
+	/**
+	 * The rule every one of these answers obeys: never tell the agent to send
+	 * the change again when the server's content dedup would match the same
+	 * row. A PENDING proposal is exactly what the next call would match, so
+	 * those answers describe the state instead of asking for a retry.
+	 */
+	it("says another attempt is still sending rather than asking for a retry", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.submitInstructionChange.mockResolvedValue(
+			accepted({ proposalStatus: "PENDING", status: "RECEIVING" }),
+		);
+
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [change],
+				baseSnapshotId: "snap_1",
+			},
+			writeSession,
+		);
+
+		const text = JSON.stringify(r);
+		expect(text).toContain("still sending");
+		expect(text).not.toContain("PENDING REVIEW");
+		// Sending again is never the answer here, at any age: the row is
+		// still PENDING so the next call dedups back onto it, and nothing
+		// closes a RECEIVING row out on this call's behalf — the browser tab
+		// opens proposals through the same query and holds its upload
+		// capabilities for an hour. Only the two exits that do exist are
+		// named.
+		expect(text).not.toContain("send it again");
+		expect(text).not.toContain("sent once more");
+		expect(text).toContain("cancel it there");
+		expect(text).toContain("six hours");
+	});
+
+	it("names the failed checks instead of announcing a review", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.submitInstructionChange.mockResolvedValue(
+			accepted({ proposalStatus: "PENDING", status: "FAILED" }),
+		);
+
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [change],
+				baseSnapshotId: "snap_1",
+			},
+			writeSession,
+		);
+
+		const text = JSON.stringify(r);
+		expect(text).toContain("did not pass its checks");
+		expect(text).not.toContain("PENDING REVIEW");
+		// NOT "send it again": a FAILED proposal stays PENDING, so the next
+		// call dedups straight back onto it.
+		expect(text).not.toContain("send the change again");
+		expect(text).not.toContain("send it again");
+	});
+
+	// A row that vanished between the finalizer and the re-read reports
+	// `proposalStatus: null` beside the finalizer's last status. Nothing is
+	// left to retry or cancel, so the closed-out branch must answer.
+	it("asks for the change to be sent again when the failed row is already gone", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.submitInstructionChange.mockResolvedValue(
+			accepted({ proposalStatus: null, status: "FAILED" }),
+		);
+
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [change],
+				baseSnapshotId: "snap_1",
+			},
+			writeSession,
+		);
+
+		const text = JSON.stringify(r);
+		expect(text).not.toContain("did not pass its checks");
+		expect(text).not.toContain("still sending");
+		expect(text).toContain("no longer open for review");
+	});
+
+	it("reports an approved proposal as already applied", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.submitInstructionChange.mockResolvedValue(
+			accepted({ proposalStatus: "APPROVED", status: "READY" }),
+		);
+
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [change],
+				baseSnapshotId: "snap_1",
+			},
+			writeSession,
+		);
+
+		const text = JSON.stringify(r);
+		expect(text).toContain("already been approved");
+		expect(text).not.toContain("PENDING REVIEW");
+	});
+
 	// Built the way `announceStoryCreated` builds one: no HTTP request exists
 	// at this layer, so the gateway session supplies the actor and the
 	// correlation handle.
