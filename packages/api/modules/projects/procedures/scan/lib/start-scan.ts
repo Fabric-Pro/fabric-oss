@@ -14,6 +14,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { withCorrelationMemo } from "../../../../../lib/temporal-correlation";
+import { assertCapabilityAvailable } from "../../../../capabilities/assert";
 
 export interface StartProjectScanArgs {
 	projectId: string;
@@ -82,6 +83,17 @@ export async function startProjectScan(
 	) {
 		return null;
 	}
+
+	// After the nothing-to-scan guard so that contract still answers null, and
+	// here rather than in the trigger procedure because the maturation gate
+	// starts scans too — as do MCP tools and the public API, which see no button.
+	await assertCapabilityAvailable({
+		capabilityKey: "security.run-scan",
+		projectId: args.projectId,
+		userId: args.userId,
+		organizationId: args.organizationId ?? null,
+	});
+
 	// Feature-scoped (maturation) scans always re-read their one feature in full.
 	const mode = args.targetType === "FEATURE" ? "FULL" : (args.mode ?? "FULL");
 

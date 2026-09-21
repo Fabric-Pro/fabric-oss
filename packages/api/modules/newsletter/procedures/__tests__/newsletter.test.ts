@@ -74,6 +74,10 @@ const {
 }));
 
 vi.mock("@repo/database", () => ({
+	// Capability gating (Fizzy #1930) is asserted at this door. These tests
+	// predate it and assert the ungated behaviour, which is exactly what the
+	// flag being off means: the guard returns null and changes nothing.
+	isFeatureEnabled: async () => false,
 	db: {
 		project: { findUnique: mockProjectFindUnique },
 		$transaction: mockTransaction,

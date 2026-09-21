@@ -27,6 +27,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { assertCapabilityAvailable } from "../../capabilities/assert";
 
 const RATE_LIMIT_MS = 5 * 60 * 1000;
 // First-send fallback when lookbackDays is unset. Manual "Send now" is a flat
@@ -67,6 +68,15 @@ export const sendNowProcedure = tenantProtectedProcedure
 			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
 		}
 		assertInputOrgMatchesProject(input.organizationId, project);
+
+		// The tenant comes from the loaded row, never from the input. A send can be
+		// started over the public API or by an agent, neither of which sees the page.
+		await assertCapabilityAvailable({
+			capabilityKey: "release-notes.generate",
+			projectId: project.id,
+			userId: context.user.id,
+			organizationId: project.organizationId ?? null,
+		});
 
 		const recent = await findRecentNonFailedSend(
 			input.projectId,

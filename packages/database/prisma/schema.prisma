@@ -5310,6 +5310,25 @@ model ProjectUserPreference {
   // client sanitizes against the live tab list. Shape: @repo/database
   // src/project-tabs.ts.
   projectTabPrefs                   Json?
+  /// Warnings this user has dismissed or snoozed on this project (Fizzy #1930).
+  ///
+  /// A map of `"<capabilityKey>:<reasonKey>"` to `{ fingerprint, expiresAt? }`.
+  /// The fingerprint is taken over the DURABLE dependency facts behind the
+  /// warning, which is what makes "reappears when the dependency materially
+  /// changes" enforceable: a routine reload or a transient status flip leaves it
+  /// matching, a real change does not. An absent `expiresAt` means "do not show
+  /// again for this project". "Dismiss for this session" never arrives here — the
+  /// client holds it in session storage and it dies with the tab.
+  ///
+  /// Suppression hides a WARNING and nothing else. It never satisfies a
+  /// dependency, never unlocks a blocked capability, and never affects another
+  /// user. Both the write procedure and the read path refuse a non-warning state.
+  ///
+  /// Deliberately unrelated to the two readiness columns below it, despite
+  /// sharing this row: capability gating never reads checklist state, and a test
+  /// enforces that the modules stay disconnected. JSON so the shape can evolve
+  /// without a migration, like the four columns above.
+  capabilityWarningSuppressions     Json?
   /// Readiness attention state, per user per project (Fizzy #2165).
   ///
   /// Every attention rule asks "has anything changed since YOU last looked", and

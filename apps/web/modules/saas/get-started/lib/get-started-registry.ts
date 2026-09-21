@@ -830,13 +830,13 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "security-run-scan",
 				anchor: "security-run-scan",
 				title: "Run a scan",
-				body: "A split button: the primary click runs an incremental scan (only what changed since last time); the dropdown does a full re-analysis or purges findings. It stays disabled until you enable at least one engine below.",
+				body: "A split button: the primary click runs an incremental scan (only what changed since last time); the dropdown does a full re-analysis or purges findings. It stays disabled until you enable at least one engine below, and the scan also needs a repository that is connected, reachable and indexed.",
 			},
 			{
 				id: "security-scan-config",
 				anchor: "security-scan-config",
 				title: "Four engines — including your specs",
-				body: "Two AI reviewers read your features and docs against the OWASP Top 10 and WCAG 2.1 AA — flagging insecure design before code exists — while Semgrep scans connected-repo code and gitleaks scans git history for leaked secrets. Switch on 'Block' to auto-gate the work items a finding touches.",
+				body: "Two AI reviewers read your features and docs against the OWASP Top 10 and WCAG 2.1 AA — catching insecure design in the spec itself — while Semgrep scans connected-repo code and gitleaks scans git history for leaked secrets. Switch on 'Block' to auto-gate the work items a finding touches.",
 			},
 			{
 				id: "security-results",

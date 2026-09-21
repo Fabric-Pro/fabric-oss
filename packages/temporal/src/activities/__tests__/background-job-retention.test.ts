@@ -3,11 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	purgeExpiredBackgroundJobs: vi.fn(),
 	failStaleBackgroundJobs: vi.fn(),
+	failStaleProjectScans: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
 	purgeExpiredBackgroundJobs: mocks.purgeExpiredBackgroundJobs,
 	failStaleBackgroundJobs: mocks.failStaleBackgroundJobs,
+	failStaleProjectScans: mocks.failStaleProjectScans,
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -28,6 +30,7 @@ beforeEach(() => {
 		batches: 0,
 	});
 	mocks.failStaleBackgroundJobs.mockResolvedValue(0);
+	mocks.failStaleProjectScans.mockResolvedValue(0);
 });
 
 afterEach(() => {
@@ -120,5 +123,46 @@ describe("failStaleBackgroundJobsActivity", () => {
 
 		// A 0-minute threshold would fail every job the instant it started.
 		expect(result.staleMinutes).toBeGreaterThan(30);
+	});
+});
+
+describe("failStaleBackgroundJobsActivity — project scans", () => {
+	it("sweeps scans in the same pass, so they need no schedule of their own", async () => {
+		await failStaleBackgroundJobsActivity();
+
+		expect(mocks.failStaleProjectScans).toHaveBeenCalledTimes(1);
+	});
+
+	it("gives scans the window the readiness gate uses, not the job window", async () => {
+		const result = await failStaleBackgroundJobsActivity();
+
+		// PROJECT_SCAN_STALL_MINUTES in
+		// packages/api/modules/capabilities/thresholds.ts. A scan records nothing
+		// after startedAt, so this window has to outlast a legitimately long run.
+		expect(result.scanStaleMinutes).toBe(90);
+		expect(mocks.failStaleProjectScans).toHaveBeenCalledWith({
+			staleMinutes: 90,
+		});
+	});
+
+	it("does not let the job-side override move the scan window", async () => {
+		process.env.FABRIC_JOB_STALE_MINUTES = "5";
+
+		const result = await failStaleBackgroundJobsActivity();
+
+		// The two clocks are independent: an operator shortening the job window
+		// must not start killing scans that are merely slow.
+		expect(result.staleMinutes).toBe(5);
+		expect(result.scanStaleMinutes).toBe(90);
+	});
+
+	it("reports the two counts separately", async () => {
+		mocks.failStaleBackgroundJobs.mockResolvedValue(2);
+		mocks.failStaleProjectScans.mockResolvedValue(3);
+
+		const result = await failStaleBackgroundJobsActivity();
+
+		expect(result.failedCount).toBe(2);
+		expect(result.failedScanCount).toBe(3);
 	});
 });

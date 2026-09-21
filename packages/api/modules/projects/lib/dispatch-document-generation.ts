@@ -58,6 +58,23 @@ import {
 	WorkflowNotFoundError,
 } from "@temporalio/client";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
+import { assertCapabilityAvailable } from "../../capabilities/assert";
+
+/**
+ * The document types whose generator can actually be refused, and the
+ * capability key each one resolves to.
+ *
+ * Only four of the seven registered `documents.generate-*` rules can return a
+ * blocking state; the rest warn at most and could never throw. A type that is
+ * not here therefore has nothing to assert — a lookup miss is the normal answer
+ * for GENERAL, PRD, PROPOSAL and the rest, not a missing registration.
+ */
+const GATED_DOCUMENT_CAPABILITY_KEYS: Readonly<Record<string, string>> = {
+	ARCHITECTURE: "documents.generate-architecture",
+	TECHNICAL_SPEC: "documents.generate-tech-spec",
+	API_SPEC: "documents.generate-api-spec",
+	QA_STRATEGY: "documents.generate-qa-strategy",
+};
 
 /**
  * The largest per-run instruction string either dispatch path will accept.
@@ -208,6 +225,18 @@ function buildGenerationWorkflowId(
 export async function dispatchDocumentGeneration(
 	input: DispatchDocumentGenerationInput,
 ): Promise<DispatchDocumentGenerationResult> {
+	// Both dispatch paths funnel through here, and so does every caller that
+	// never rendered a button — the public API, MCP tools, agents.
+	const capabilityKey = GATED_DOCUMENT_CAPABILITY_KEYS[input.documentType];
+	if (capabilityKey) {
+		await assertCapabilityAvailable({
+			capabilityKey,
+			projectId: input.projectId,
+			userId: input.userId,
+			organizationId: input.organizationId ?? null,
+		});
+	}
+
 	// Get Temporal client
 	const client = await getTemporalClient();
 

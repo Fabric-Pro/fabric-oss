@@ -5378,6 +5378,144 @@
 				"FAILED": "Failed",
 				"SUPERSEDED": "Superseded"
 			}
+		},
+		"capabilityGates": {
+			"reason": {
+				"codebase": {
+					"not-connected": {
+						"title": "No repository connected",
+						"body": "Connect a repository and Fabric can read your code to answer this."
+					},
+					"credentials-expired": {
+						"title": "Repository access expired",
+						"body": "The saved credentials no longer work. Reconnect the repository to restore access."
+					},
+					"repository-unreachable": {
+						"title": "Repository cannot be read",
+						"body": "The credentials are fine, but they do not reach this repository. Install the app on it, or add it again with a token that covers it."
+					},
+					"indexing-stalled": {
+						"title": "Indexing stopped responding",
+						"body": "The last indexing run stopped reporting progress. Run it again to continue."
+					},
+					"indexing": {
+						"title": "Indexing your repository",
+						"body": "Fabric is reading the code now. This becomes available as soon as it finishes."
+					},
+					"index-stale": {
+						"title": "Working from an earlier index",
+						"body": "The most recent indexing run failed, so answers come from the last good copy of your code and may miss recent changes."
+					},
+					"indexing-failed": {
+						"title": "Indexing did not finish",
+						"body": "Fabric could not read the repository, so there is nothing to answer from yet. Run indexing again."
+					},
+					"never-indexed": {
+						"title": "Repository not indexed yet",
+						"body": "Fabric has not read this repository yet. Indexing runs on its own and this becomes available afterwards."
+					}
+				},
+				"context": {
+					"thin": {
+						"title": "Little to work from",
+						"body": "This project has almost no context yet, so the result will be thin. Add documents, notes or transcripts for a better one."
+					},
+					"ingestion-stalled": {
+						"title": "A source stopped processing",
+						"body": "One of your sources stopped partway through. Try adding it again."
+					},
+					"ingesting": {
+						"title": "Processing your sources",
+						"body": "Fabric is still reading what you added. This becomes available once it finishes."
+					}
+				},
+				"documents": {
+					"no-architecture-source": {
+						"title": "Nothing to base the architecture on",
+						"body": "Add a PRD, proposal or business case, or connect a repository, and Fabric can draft this."
+					},
+					"no-technical-source": {
+						"title": "No technical source yet",
+						"body": "Add a PRD or architecture document, or connect a repository, and Fabric can draft this."
+					},
+					"no-api-source": {
+						"title": "Nothing describing the API",
+						"body": "Add API documentation or a technical specification, or connect a repository, and Fabric can draft this."
+					},
+					"no-requirements-source": {
+						"title": "No requirements to test against",
+						"body": "Add a PRD or equivalent requirements, and Fabric can draft a QA strategy from them."
+					}
+				},
+				"scan": {
+					"stalled": {
+						"title": "The last scan stopped responding",
+						"body": "It stopped reporting progress and was closed. Start a new scan to try again."
+					},
+					"running": {
+						"title": "A scan is already running",
+						"body": "Wait for it to finish before starting another."
+					}
+				},
+				"settings": {
+					"credentials-expired": {
+						"title": "Access expired",
+						"body": "This connection can no longer reach your repository. Reconnect it to restore access."
+					},
+					"repository-unreachable": {
+						"title": "Repository out of reach",
+						"body": "The credentials work, but not for this repository. Install the app on it, or add it again with wider access."
+					},
+					"connection-degraded": {
+						"title": "Connected, with problems",
+						"body": "The connection is in place but the last run did not succeed. Open it for details."
+					}
+				}
+			},
+			"fallback": {
+				"hardBlock": {
+					"title": "Not ready yet",
+					"body": "This can't run until {dependency} is in place."
+				},
+				"softBlock": {
+					"title": "Not ready yet",
+					"body": "Add {dependency} to enable this."
+				},
+				"processing": {
+					"title": "Still working",
+					"body": "Waiting on {dependency}. This usually finishes on its own."
+				},
+				"warning": {
+					"title": "May be incomplete",
+					"body": "It will run, but {dependency} would make the output better."
+				}
+			},
+			"remedy": {
+				"connectRepository": "Connect a repository",
+				"reconnectCredential": "Reconnect",
+				"installRepositoryApp": "Fix repository access",
+				"addContext": "Add context",
+				"generatePrerequisiteDocument": "Create the document it needs",
+				"configureIntegration": "Configure the connection",
+				"retryJob": "Try again"
+			},
+			"retry": {
+				"action": "Try again",
+				"notPermitted": "Ask a project admin to run this again.",
+				"notAvailable": "Already running — this becomes available when it finishes."
+			},
+			"dismiss": {
+				"action": "Dismiss",
+				"oneDay": "For a day",
+				"sevenDays": "For a week",
+				"thirtyDays": "For a month",
+				"forever": "Do not show again for this project"
+			},
+			"restore": {
+				"action": "Show dismissed warnings",
+				"count": "{count, plural, one {# dismissed warning} other {# dismissed warnings}}",
+				"done": "Dismissed warnings restored"
+			}
 		}
 	},
 	"zod": {
