@@ -48,6 +48,29 @@ const DISCLOSURE_POINTS = [
 	"Both connection blocks shown next contain a live credential. Treat it like a password — do not paste it into a shared document, a ticket or a chat.",
 ] as const;
 
+/**
+ * The same four points, with the second one corrected for the one purpose whose
+ * key can write something.
+ *
+ * A coding-instructions key carries `instructions:write`, so "it is read-only"
+ * would be false for it. What that scope actually reaches is the proposal
+ * path — a suggestion somebody with edit rights approves or rejects in the tab
+ * — and nothing else, so the replacement says exactly that rather than
+ * downgrading the promise to a vague one.
+ */
+const INSTRUCTIONS_DISCLOSURE_POINTS = [
+	DISCLOSURE_POINTS[0],
+	"It reads your work in Fabric and cannot change it, with one exception: a tool holding it can SUGGEST a change to this project's coding instructions. Suggestions are held for review and nothing is published until somebody who can edit them approves it.",
+	DISCLOSURE_POINTS[2],
+	DISCLOSURE_POINTS[3],
+] as const;
+
+function disclosurePointsFor(purpose: ConnectCliPurpose): readonly string[] {
+	return purpose === "coding-instructions"
+		? INSTRUCTIONS_DISCLOSURE_POINTS
+		: DISCLOSURE_POINTS;
+}
+
 const CREATE_KEY_LABEL = "Create the key";
 
 const CREATE_KEY_PENDING_LABEL = "Creating the key…";
@@ -237,12 +260,29 @@ const ISSUED_KEY_SCOPES = ["mcp:read"] as const;
  * routes require the exact `instructions:read` scope (`requireScope` in the
  * v1 middleware matches by name; the gateway's umbrella reading of
  * `mcp:read` does not apply there). A key minted for that purpose carries
- * both, so the command the dialog recommends works with the key it just
- * created. Still read-only, still within what the reader was promised.
+ * it, so the command the dialog recommends works with the key it just
+ * created.
+ *
+ * `instructions:write` is the one non-read scope this dialog ever mints, and
+ * it is here because the CLI it configures now has `fabric instructions push`
+ * and the MCP gateway has `fabric_propose_project_instruction_change`. Both
+ * open a PROPOSAL: a suggestion held for review, published by nobody but a
+ * person with edit rights in the tab.
+ *
+ * Publishing is not reachable from this scope at all — neither surface has a
+ * publish mode to ask for — which is what makes the disclosure below true for
+ * EVERY person who mints a key here. A mode gated on the minter's own
+ * permissions would have made "nothing is published until somebody approves"
+ * a half-truth for anyone holding `INSTRUCTION_CREATE`, and the sentence a
+ * person reads before creating a credential has to hold whoever they are.
+ * The key therefore stays within what a reader can already do in the browser,
+ * which is also why `READ_ONLY_ORG_API_KEY_SCOPES` accepts it and a viewer's
+ * mint is not clamped. `DISCLOSURE_POINTS` says so before the key is created.
  */
 const ISSUED_KEY_SCOPES_FOR_INSTRUCTIONS = [
 	"mcp:read",
 	"instructions:read",
+	"instructions:write",
 ] as const;
 
 type IssuedKeyScope = (typeof ISSUED_KEY_SCOPES_FOR_INSTRUCTIONS)[number];
@@ -663,7 +703,7 @@ export function ConnectCliDialog({
 								{DISCLOSURE_LABEL}
 							</h3>
 							<ul className="space-y-2 text-muted-foreground text-sm">
-								{DISCLOSURE_POINTS.map((point) => (
+								{disclosurePointsFor(purpose).map((point) => (
 									<li
 										key={point}
 										className="flex items-start gap-2"

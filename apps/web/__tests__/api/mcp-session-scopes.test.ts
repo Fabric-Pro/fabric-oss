@@ -251,3 +251,67 @@ describe("the coding-instructions tools require instructions:read, not projects:
 		expect(body).toContain("instructions:read");
 	});
 });
+
+// The write half of the coding-instructions surface (Fizzy #2539).
+// `fabric_propose_project_instruction_change` opens a proposal, so it sits on
+// `instructions:write` — and the read scope every Connect-dialog key already
+// carries must not reach it, or every key in the field would have silently
+// gained a capability its holder never agreed to.
+describe("proposing an instruction change requires instructions:write", () => {
+	it("does not refuse a key holding the exact scope", async () => {
+		keyWithScopes(["instructions:write"]);
+
+		const body = await initializeThenCall(
+			"fabric_propose_project_instruction_change",
+		);
+
+		expect(body).not.toContain("does not have the");
+	});
+
+	it("does not refuse a key holding the coarse mcp:write scope either", async () => {
+		keyWithScopes(["mcp:write"]);
+
+		const body = await initializeThenCall(
+			"fabric_propose_project_instruction_change",
+		);
+
+		expect(body).not.toContain("does not have the");
+	});
+
+	it("refuses a key holding only instructions:read", async () => {
+		keyWithScopes(["instructions:read"]);
+
+		const body = await initializeThenCall(
+			"fabric_propose_project_instruction_change",
+		);
+
+		expect(body).toContain("does not have the");
+		expect(body).toContain("instructions:write");
+	});
+
+	// `mcp:read` satisfies every READ tool through the gateway's umbrella. It
+	// must stop here.
+	it("refuses a key holding only the coarse mcp:read scope", async () => {
+		keyWithScopes(["mcp:read"]);
+
+		const body = await initializeThenCall(
+			"fabric_propose_project_instruction_change",
+		);
+
+		expect(body).toContain("does not have the");
+	});
+
+	// The other direction: the write scope is not a licence to read, because
+	// the read tools name their own scope and `scopeSatisfied` only widens
+	// through the `mcp:*` pair.
+	it("does not let instructions:write alone reach the read tools", async () => {
+		keyWithScopes(["instructions:write"]);
+
+		const body = await initializeThenCall(
+			"fabric_list_project_instructions",
+		);
+
+		expect(body).toContain("does not have the");
+		expect(body).toContain("instructions:read");
+	});
+});

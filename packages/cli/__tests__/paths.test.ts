@@ -67,8 +67,15 @@ describe("checkRelativePath", () => {
 		["AGENTS.md.", "trailing_dot_or_space"],
 		["AGENTS.md ", "trailing_dot_or_space"],
 		["docs./a.md", "trailing_dot_or_space"],
-		["a.md:stream", "alternate_data_stream"],
-		["docs:hidden/a.md", "alternate_data_stream"],
+		["a.md:stream", "forbidden_character"],
+		["docs:hidden/a.md", "forbidden_character"],
+		// The rest of the set Windows refuses in a filename.
+		["a<b.md", "forbidden_character"],
+		["a>b.md", "forbidden_character"],
+		['a"b.md', "forbidden_character"],
+		["a|b.md", "forbidden_character"],
+		["a?b.md", "forbidden_character"],
+		["a*b.md", "forbidden_character"],
 	])("rejects the Win32 alias %s", (input, reason) => {
 		const result = checkRelativePath(input);
 		expect(result.ok).toBe(false);

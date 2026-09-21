@@ -975,7 +975,9 @@ function handleInitialize(
 				"When `published` is true, call fabric_get_project_instruction_bundle to install the whole set, " +
 				"or fabric_list_project_instructions + fabric_get_project_instruction to read individual files, " +
 				"and follow those instructions while working on that project. " +
-				"Pass the `digest` you last installed as `sinceDigest`: an unchanged digest is answered without a download, a changed one adds the changed paths to the response.\n\n" +
+				"Pass the `digest` you last installed as `sinceDigest`: an unchanged digest is answered without a download, a changed one adds the changed paths to the response.\n" +
+				"If the work shows the instructions are wrong or incomplete, call `fabric_propose_project_instruction_change` with the files' new content. " +
+				"That opens a proposal for a person to approve in Fabric — nothing changes for anyone else until they do, so report it as a suggestion awaiting review rather than as a change you made.\n\n" +
 				"## Runtime authority (required for connected server tools)\n" +
 				"Connected server tools require runtime authority before use. Platform tools (fabric_*) are always available.\n" +
 				"1. Call `fabric_request_authority` with the providers and access levels you need\n" +

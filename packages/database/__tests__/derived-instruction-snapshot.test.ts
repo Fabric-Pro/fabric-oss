@@ -133,7 +133,12 @@ beforeEach(() => {
 			}),
 	);
 	mocks.$queryRaw.mockReset();
-	mocks.$queryRaw.mockResolvedValue([{ id: PROJECT }]);
+	// The locked project row. The default says the base IS what the project
+	// publishes, which is the only state in which a publishing derivation or a
+	// proposal is allowed to be created.
+	mocks.$queryRaw.mockResolvedValue([
+		{ publishedInstructionSnapshotId: BASE },
+	]);
 	mocks.snapshot.count.mockResolvedValue(0);
 	// The base, then the version-allocation read. `findFirst` is called twice
 	// per attempt, in that order.
@@ -305,6 +310,151 @@ describe("createDerivedInstructionSnapshot", () => {
 					}),
 				]),
 			}),
+		});
+	});
+
+	it("locks the project row for a publishing derivation, not just a proposal", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+		// The default input is `publishOnReady: true, proposal: false` — the
+		// browser tab's ordinary save. It claims the published pointer just as
+		// a proposal does, so it takes the same lock.
+		const result = await createDerivedInstructionSnapshot(
+			input([put("README.md")]),
+		);
+
+		expect(result.ok).toBe(true);
+		expect(mocks.$queryRaw).toHaveBeenCalledOnce();
+		const sql = (mocks.$queryRaw.mock.calls[0]![0] as string[]).join("?");
+		expect(sql).toContain('"publishedInstructionSnapshotId"');
+		expect(sql).toContain("FOR UPDATE OF p");
+	});
+
+	it("refuses a publishing derivation whose base stopped being published mid-transaction", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+		// A publish landed between the caller's pre-read and this
+		// transaction: the pointer now names a different snapshot. The base
+		// row itself is untouched — still present, still READY — so nothing
+		// else in this query would notice.
+		mocks.$queryRaw.mockResolvedValue([
+			{ publishedInstructionSnapshotId: "snap_other" },
+		]);
+
+		const result = await createDerivedInstructionSnapshot(
+			input([put("README.md")]),
+		);
+
+		expect(result).toEqual({ ok: false, reason: "base_not_published" });
+		expect(mocks.snapshot.create).not.toHaveBeenCalled();
+	});
+
+	it("refuses a proposal whose base stopped being published mid-transaction", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+		mocks.$queryRaw.mockResolvedValue([
+			{ publishedInstructionSnapshotId: null },
+		]);
+
+		const result = await createDerivedInstructionSnapshot(
+			input([put("README.md")], { proposal: true }),
+		);
+
+		expect(result).toEqual({ ok: false, reason: "base_not_published" });
+		expect(mocks.snapshot.create).not.toHaveBeenCalled();
+	});
+
+	it("neither locks nor compares the pointer for a non-publishing derivation", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+		// "Save as a new version" is explicitly NOT a claim on the published
+		// pointer (spec §6.12), so it may build on any READY snapshot —
+		// including one that is not the published one.
+		mocks.$queryRaw.mockResolvedValue([
+			{ publishedInstructionSnapshotId: "snap_other" },
+		]);
+
+		const result = await createDerivedInstructionSnapshot(
+			input([put("README.md")], { publishOnReady: false }),
+		);
+
+		expect(result.ok).toBe(true);
+		expect(mocks.$queryRaw).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * The collision check spans the RESULT — the base's inherited rows plus
+	 * the new puts — and it is the only place the two ever meet. The change
+	 * set's own check sees one path and passes.
+	 */
+	describe("collisions between inherited rows and new puts", () => {
+		const NFC = "caf\u00e9.md";
+		const NFD = "cafe\u0301.md";
+
+		it("refuses a put whose name differs from an inherited one only by Unicode normalisation", async () => {
+			withBaseFiles([baseFile("bf1", NFC)]);
+
+			const result = await createDerivedInstructionSnapshot(
+				input([put(NFD)]),
+			);
+
+			expect(result).toMatchObject({
+				ok: false,
+				reason: "path_collision",
+			});
+			expect(mocks.snapshot.create).not.toHaveBeenCalled();
+		});
+
+		it("still refuses the ordinary case variant", async () => {
+			withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+			const result = await createDerivedInstructionSnapshot(
+				input([put("Claude.md")]),
+			);
+
+			expect(result).toMatchObject({
+				ok: false,
+				reason: "path_collision",
+			});
+		});
+
+		// A base admitted before these rules existed may already hold such a
+		// pair. Refusing the derivation would mean no version of that project
+		// could ever be edited again — including the edit that removes one of
+		// them — so an inherited pair is carried forward as it stands.
+		it("carries a colliding pair of inherited rows forward rather than refusing", async () => {
+			withBaseFiles([baseFile("bf1", NFC), baseFile("bf2", NFD)]);
+
+			const result = await createDerivedInstructionSnapshot(
+				input([put("README.md")]),
+			);
+
+			expect(result).toMatchObject({ ok: true });
+			const rows = (
+				mocks.file.createMany.mock.calls[0]![0] as {
+					data: Array<Record<string, unknown>>;
+				}
+			).data;
+			expect(rows.map((r) => r.path).sort()).toEqual(
+				[NFC, NFD, "README.md"].sort(),
+			);
+		});
+
+		// Which leaves the repair available: DELETE one of the pair. A put of
+		// one spelling while the other is still inherited is still two rows
+		// and one file, so it stays refused — the fix is to remove a row, not
+		// to overwrite one.
+		it("lets a grandfathered pair be repaired by deleting one of them", async () => {
+			withBaseFiles([baseFile("bf1", NFC), baseFile("bf2", NFD)]);
+
+			const result = await createDerivedInstructionSnapshot(
+				input([{ op: "delete", path: NFD }, put(NFC)]),
+			);
+
+			expect(result).toMatchObject({ ok: true });
+			const rows = (
+				mocks.file.createMany.mock.calls[0]![0] as {
+					data: Array<Record<string, unknown>>;
+				}
+			).data;
+			expect(rows.map((r) => r.path)).toEqual([NFC]);
 		});
 	});
 

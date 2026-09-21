@@ -305,3 +305,166 @@ describe("personal context", () => {
 		);
 	});
 });
+
+/**
+ * `submitChange` is the one route in this resource that is NOT safe to repeat.
+ *
+ * The client's default policy retries a mutating method on a network error or
+ * a timeout, on the strength of the `Idempotency-Key` header it sends. This
+ * route does not honour that header: each POST creates a new snapshot row,
+ * and a proposal counts against a cap of five per proposer. A request that
+ * reaches the server and whose RESPONSE is lost would therefore be replayed
+ * into two, then three, identical pending proposals — and the caller would
+ * see only the last failure.
+ *
+ * These build a client with the DEFAULT retry policy on purpose. The helper
+ * above passes `maxRetries: 0`, which would make every one of them pass
+ * whatever the resource does.
+ */
+describe("submitChange is never retried", () => {
+	function failingClient(error: unknown): {
+		client: FabricClient;
+		attempts: () => number;
+	} {
+		let attempts = 0;
+		const stub: typeof fetch = async () => {
+			attempts++;
+			throw error;
+		};
+		return {
+			client: createFabric({
+				apiKey: "fab_test_key",
+				baseUrl: "https://test.fabric",
+				fetch: stub,
+				// No `retry`: the shipped default is what a caller gets.
+				retry: { initialDelayMs: 1 },
+			}),
+			attempts: () => attempts,
+		};
+	}
+
+	const change = [
+		{ op: "put" as const, path: "AGENTS.md", content: "# Updated\n" },
+	];
+
+	it("sends exactly one request when the network fails", async () => {
+		const { client, attempts } = failingClient(
+			new TypeError("fetch failed"),
+		);
+
+		await expect(
+			client.instructions.submitChange("project-1", "snap-7", change),
+		).rejects.toThrow();
+
+		expect(attempts()).toBe(1);
+	});
+
+	// The control: the same client, the same failure, an idempotent read. If
+	// this stops retrying, the test above has stopped proving anything.
+	it("still retries an idempotent read on the same client", async () => {
+		const { client, attempts } = failingClient(
+			new TypeError("fetch failed"),
+		);
+
+		await expect(
+			client.instructions.getPublished("project-1"),
+		).rejects.toThrow();
+
+		expect(attempts()).toBeGreaterThan(1);
+	});
+});
+
+/**
+ * A 404 that names its own `code` has written its own sentence too.
+ *
+ * `NOTHING_PUBLISHED` is the case: the route answers "this project has no
+ * published coding instructions to change yet…", and the CLI branches on the
+ * code to tell that apart from a project that does not exist. Treating the
+ * message as a resource NAME produced "…to change yet. not found" under the
+ * generic `NOT_FOUND`, which made that branch unreachable.
+ */
+describe("a 404 that carries a code", () => {
+	const MESSAGE =
+		"This project has no published coding instructions to change yet. Upload a first version from the Coding Instructions tab.";
+
+	it("keeps both the message and the code", async () => {
+		const { client } = buildClient({
+			status: 404,
+			rawBody: { error: { message: MESSAGE, code: "NOTHING_PUBLISHED" } },
+		});
+
+		await expect(
+			client.instructions.submitChange("project-1", "snap-7", [
+				{ op: "delete", path: "old.md" },
+			]),
+		).rejects.toMatchObject({
+			message: MESSAGE,
+			code: "NOTHING_PUBLISHED",
+			status: 404,
+		});
+	});
+
+	// A codeless 404 keeps the old shape exactly, so nothing that relies on
+	// the "<resource> not found" sentence changes.
+	it("still appends 'not found' when the body names no code", async () => {
+		const { client } = buildClient({
+			status: 404,
+			rawBody: { error: { message: "Project" } },
+		});
+
+		await expect(
+			client.instructions.getPublished("project-1"),
+		).rejects.toMatchObject({
+			message: "Project not found",
+			code: "NOT_FOUND",
+		});
+	});
+});
+
+/**
+ * `baseSnapshotId` is positional and required, and the signature is the point.
+ *
+ * It used to be an optional field on the options bag, and the server fell
+ * back to whatever was published at the moment the request arrived. Every
+ * caller that left it out therefore had the stale-base check silently turned
+ * off: an edit written against v7 and sent after v8 was published was rebased
+ * onto v8 without a word, reverting v8's changes to the files it touched.
+ * Making it the second argument means no caller can leave it out by accident
+ * and none can leave it out at all.
+ */
+describe("submitChange states its base", () => {
+	it("sends the base in the body and nothing about a mode", async () => {
+		const { client, captured } = buildClient({
+			responseBody: { snapshotId: "snap-8" },
+		});
+
+		await client.instructions.submitChange("project-1", "snap-7", [
+			{ op: "delete", path: "old.md" },
+		]);
+
+		expect(captured[0]?.method).toBe("POST");
+		expect(captured[0]?.body).toEqual({
+			baseSnapshotId: "snap-7",
+			changes: [{ op: "delete", path: "old.md" }],
+		});
+	});
+
+	it("still carries an explicit org as a query parameter", async () => {
+		const { client, captured } = buildClient({
+			responseBody: { snapshotId: "snap-8" },
+		});
+
+		await client.instructions.submitChange(
+			"project-1",
+			"snap-7",
+			[{ op: "delete", path: "old.md" }],
+			{ org: "example-org" },
+		);
+
+		expect(captured[0]?.url).toContain("org=example-org");
+		expect(captured[0]?.body).toEqual({
+			baseSnapshotId: "snap-7",
+			changes: [{ op: "delete", path: "old.md" }],
+		});
+	});
+});

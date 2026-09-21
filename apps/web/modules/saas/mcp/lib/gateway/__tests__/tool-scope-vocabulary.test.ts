@@ -73,3 +73,44 @@ describe("the scope vocabularies agree", () => {
 		expect(rejected).toEqual([]);
 	});
 });
+
+/**
+ * The read/write split inside the coding-instructions surface (Fizzy #2539).
+ *
+ * `instructions:read` was minted by the Connect dialog for every developer who
+ * set a checkout up, and those keys are still in the field. When the proposal
+ * tool landed it had to sit behind a scope none of them carries, or every one
+ * of them would silently have gained the ability to change what a project's
+ * agents read.
+ */
+describe("the coding-instructions scopes stay split", () => {
+	it("offers both, and the procedure accepts both", () => {
+		for (const scope of ["instructions:read", "instructions:write"]) {
+			expect(accepted.has(scope)).toBe(true);
+			expect(offered.has(scope)).toBe(true);
+		}
+	});
+
+	it("puts every instruction READ tool on instructions:read", () => {
+		const readTools = Object.entries(TOOL_SCOPES).filter(
+			([, value]) => value.kind === "read",
+		);
+		const misfiled = readTools
+			.filter(([, value]) => value.scope === "instructions:write")
+			.map(([name]) => name);
+
+		expect(misfiled).toEqual([]);
+	});
+
+	it("puts nothing that writes on instructions:read", () => {
+		const misfiled = Object.entries(TOOL_SCOPES)
+			.filter(
+				([, value]) =>
+					value.scope === "instructions:read" &&
+					value.kind === "write",
+			)
+			.map(([name]) => name);
+
+		expect(misfiled).toEqual([]);
+	});
+});

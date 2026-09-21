@@ -3,6 +3,7 @@
  *
  *   fabric instructions check --project <id>   Is the local copy current?
  *   fabric instructions sync  --project <id>   Make it current.
+ *   fabric instructions push  --project <id>   Suggest the local edits back.
  *   fabric instructions init  --project <id> --tool claude-code
  *                                             Take the first copy, then write the session hook.
  *
@@ -47,6 +48,10 @@ import {
 	verifyLedger,
 } from "../../lib/instructions/plan.js";
 import {
+	computePushPlan,
+	MAX_PUSH_CHANGES,
+} from "../../lib/instructions/push.js";
+import {
 	resolveDestinationRoot,
 	resolveExistingRoot,
 } from "../../lib/instructions/safe-write.js";
@@ -71,6 +76,23 @@ const SYNC_TIMEOUT_MS = 15_000;
 
 /** The archive, when a person is waiting rather than a session start. */
 const BUNDLE_TIMEOUT_MS = 60_000;
+
+/**
+ * A push carries file bytes up and starts a validation run, so it waits longer
+ * than the manifest calls do — and it gets ONE attempt, so the timeout is the
+ * whole budget rather than a third of it.
+ */
+const PUSH_TIMEOUT_MS = 60_000;
+
+/**
+ * Commander's accumulator for a repeatable `--add`.
+ *
+ * Declared with an initial `[]`, so `previous` is always an array and this
+ * never has to guess.
+ */
+function collectAdded(value: string, previous: string[]): string[] {
+	return [...previous, value];
+}
 
 /**
  * A failure that already knows which documented exit code it is
@@ -152,6 +174,37 @@ export function buildInstructionsCommand(): Command {
 			opts: CommonOptions & { dryRun?: boolean },
 		) {
 			await run(opts, "sync", () => runSync(opts, formatFor(this)));
+		});
+
+	instructions
+		.command("push")
+		.description(
+			"Suggest this checkout's edits to the project's coding instructions",
+		)
+		.requiredOption("--project <id>", "Project ID")
+		.option("--dest <dir>", "Destination directory (default: cwd)")
+		.option("--org <slug>", "Organization context")
+		.option(
+			"--add <path>",
+			"Also send a file the last sync did not write (repeatable)",
+			collectAdded,
+			[] as string[],
+		)
+		.option("--dry-run", "Print the change set and send nothing")
+		.option("--format <format>", "Output format: text|json")
+		.action(async function (
+			this: Command,
+			opts: CommonOptions & {
+				add?: string[];
+				dryRun?: boolean;
+			},
+		) {
+			// Never hook mode: a session start does not push. Stated rather
+			// than inherited, because `run`'s never-fail branch exists for
+			// commands a hook runs and this is not one.
+			await run({ ...opts, hook: false }, "push", () =>
+				runPush(opts, formatFor(this)),
+			);
 		});
 
 	instructions
@@ -351,6 +404,13 @@ function destinationOf(opts: { dest?: string }): string {
 function instructionsClient(
 	opts: { hook?: boolean },
 	timeoutMs: number,
+	/**
+	 * A retry policy for a command that needs one other than the default.
+	 * `push` turns retries off: the SDK retries a POST on the premise that its
+	 * `Idempotency-Key` header protects it, and nothing on the change route
+	 * honours that header, so a retry would open a second proposal.
+	 */
+	overrides: { retry?: { maxRetries: number } } = {},
 ): FabricClient {
 	if (!getApiKey()) {
 		throw new CliFailure(
@@ -369,7 +429,7 @@ function instructionsClient(
 					timeoutMs: Math.min(timeoutMs, HOOK_DEADLINE_MS),
 					retry: { maxRetries: 0 },
 				}
-			: { timeoutMs },
+			: { timeoutMs, ...overrides },
 	).withoutContext();
 }
 
@@ -889,6 +949,224 @@ function reportSync(
 	) {
 		line(`Everything in ${outcome.destination} already matched.`);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// push
+// ---------------------------------------------------------------------------
+
+interface PushOutcome {
+	projectId: string;
+	destination: string;
+	dryRun: boolean;
+	/** The snapshot the change set was stated against — the lock's. */
+	baseSnapshotId: string;
+	baseVersion: number;
+	put: string[];
+	deleted: string[];
+	unchanged: number;
+	/** Null on a dry run; otherwise what the server made of it. */
+	snapshotId: string | null;
+	version: number | null;
+	proposalStatus: string | null;
+	status: string | null;
+}
+
+/**
+ * Suggest the checkout's edits back to the project.
+ *
+ * It always opens a PROPOSAL. There is no `--publish`: the key this command
+ * uses carries `instructions:write`, which is offered to read-only roles and
+ * described as review-gated, and a publish flag would make that description
+ * false for anyone whose account happens to hold the publishing permission.
+ * Publishing from a terminal needs a scope of its own.
+ *
+ * The diff is computed against `.fabric/instructions.lock` — the snapshot the
+ * last sync applied — and that snapshot id is sent as the base. A push whose
+ * base is no longer the published version is REFUSED rather than rebased: the
+ * spec's `PULL_FIRST` rule (§6.12), and the reason there is no server-side
+ * merge in any version.
+ *
+ * The published manifest is fetched FIRST, and it decides two things before a
+ * file is opened: whether the lock still names the published version, and
+ * whether the lock's ledger is that version. The lock is a plain JSON file in
+ * the checkout, so anything that can write to the working tree can add a path
+ * to it — and a command that read its ledger on trust would read and upload
+ * whatever was added. See `computePushPlan`.
+ *
+ * The lock is NOT rewritten, on any outcome. A proposal changes nothing about
+ * what is published, so a lock claiming otherwise would make the next `sync`
+ * believe this checkout already held a version nobody has approved.
+ */
+async function runPush(
+	opts: CommonOptions & {
+		add?: string[];
+		dryRun?: boolean;
+	},
+	format: OutputFormat,
+): Promise<void> {
+	// Canonical but NOT created: push reads the tree, and a command that makes
+	// a directory in order to discover it is empty is doing the wrong thing.
+	const destination = destinationOf(opts);
+	const root = await resolveExistingRoot(destination);
+	const lock = await readLockForProject(root, opts.project);
+	if (lock === null) {
+		throw new CliFailure(
+			`No coding-instructions lock in ${destination}. Run \`fabric instructions sync --project ${opts.project}\` first: a push is a diff against the version that was last applied here, and without that ledger there is nothing to diff against.`,
+			7,
+		);
+	}
+
+	// Retries OFF for this whole command. The SDK retries a POST on a network
+	// error or a timeout on the premise that its `Idempotency-Key` header
+	// protects the request, and the change route does not honour that header,
+	// so a retried push would open a second proposal for the same edit. One
+	// attempt, and a failure the developer can repeat deliberately.
+	const client = instructionsClient(
+		{ ...opts, hook: false },
+		PUSH_TIMEOUT_MS,
+		{
+			retry: { maxRetries: 0 },
+		},
+	);
+
+	// BEFORE any file is read. Two questions, both answered by this one call:
+	// is the lock still the published version, and is its ledger actually
+	// that version's manifest.
+	const published = await fetchPublished(client, opts);
+	if (!published.published || !published.snapshot) {
+		throw new CliFailure(
+			"this project has no published coding instructions to change yet; the first version is uploaded from the Coding Instructions tab",
+			4,
+		);
+	}
+	if (published.snapshot.id !== lock.snapshotId) {
+		// Exactly what the server would answer, decided locally so nothing is
+		// read or sent first.
+		throw new CliFailure(
+			"published instructions moved past your last sync; run `fabric instructions sync` then push again",
+			7,
+		);
+	}
+
+	const plan = await computePushPlan({
+		root,
+		lock,
+		manifest: published.manifest ?? [],
+		added: opts.add,
+	});
+
+	if (plan.changes.length === 0) {
+		throw new CliFailure(
+			`Nothing to push: every file the last sync wrote still matches version ${lock.snapshotVersion}. Add a new file with --add <path> if you meant to suggest one.`,
+			7,
+		);
+	}
+	if (plan.changes.length > MAX_PUSH_CHANGES) {
+		throw new CliFailure(
+			`Too many changes to push (${plan.changes.length} > ${MAX_PUSH_CHANGES}). A change set this large is a replacement rather than an edit — upload the folder from the project's Coding Instructions tab, which is also the only path that re-reads the project's exclusion rules.`,
+			7,
+		);
+	}
+
+	const outcome: PushOutcome = {
+		projectId: opts.project,
+		destination: root,
+		dryRun: Boolean(opts.dryRun),
+		baseSnapshotId: lock.snapshotId,
+		baseVersion: lock.snapshotVersion,
+		put: plan.entries
+			.filter((entry) => entry.action === "put")
+			.map((entry) => entry.path),
+		deleted: plan.entries
+			.filter((entry) => entry.action === "delete")
+			.map((entry) => entry.path),
+		unchanged: plan.unchanged.length,
+		snapshotId: null,
+		version: null,
+		proposalStatus: null,
+		status: null,
+	};
+
+	if (!opts.dryRun) {
+		try {
+			const submitted = await client.instructions.submitChange(
+				opts.project,
+				lock.snapshotId,
+				plan.changes,
+				{ org: orgSlugFor(opts) },
+			);
+			outcome.snapshotId = submitted.snapshotId;
+			outcome.version = submitted.version;
+			outcome.proposalStatus = submitted.proposalStatus;
+			outcome.status = submitted.status;
+		} catch (error) {
+			throw asPushFailure(error);
+		}
+	}
+
+	if (format === "json") {
+		printOutput(outcome, { format: "json" });
+		return;
+	}
+	reportPush(outcome);
+}
+
+/**
+ * The refusals a push has to say something useful about, by the reason code
+ * the route sends (`packages/api/modules/v1/instructions.ts`).
+ *
+ * Everything else falls through to `asCliFailure`'s status mapping, which is
+ * already right for auth, permission and rate limits.
+ */
+function asPushFailure(error: unknown): CliFailure {
+	const code = (error as { code?: string }).code;
+	const message = error instanceof Error ? error.message : String(error);
+	switch (code) {
+		case "PULL_FIRST":
+			return new CliFailure(
+				"published instructions moved past your last sync; run `fabric instructions sync` then push again",
+				7,
+			);
+		case "REPOSITORY_SOURCE_OF_TRUTH":
+			return new CliFailure(
+				"this project's coding instructions come from its repository, so they are changed there and mirrored into Fabric — commit and push to the repository instead; nothing was sent",
+				7,
+			);
+		case "NOTHING_PUBLISHED":
+			return new CliFailure(
+				"this project has no published coding instructions to change yet; the first version is uploaded from the Coding Instructions tab",
+				4,
+			);
+		case "PROPOSAL_PROPOSER_LIMIT":
+		case "PROPOSAL_PROJECT_LIMIT":
+			return new CliFailure(`${message} Nothing was sent.`, 7);
+		default:
+			return asCliFailure(error);
+	}
+}
+
+function reportPush(outcome: PushOutcome): void {
+	const prefix = outcome.dryRun ? "Would send" : "Sent";
+	line(
+		`${prefix} ${outcome.put.length} changed file(s) and ${outcome.deleted.length} deletion(s) against version ${outcome.baseVersion} (${outcome.unchanged} unchanged).`,
+	);
+	listPaths("changed", outcome.put);
+	listPaths("deleted", outcome.deleted);
+
+	if (outcome.dryRun) {
+		line(
+			"Nothing was sent. Without --dry-run this would open a proposal for review.",
+		);
+		return;
+	}
+
+	line(
+		`Proposed as version ${outcome.version}. It is pending review — nothing is published until somebody who can edit this project's coding instructions approves it in the Coding Instructions tab.`,
+	);
+	line(
+		"Your lock was not changed: it still names the published version, which is what `fabric instructions sync` compares against.",
+	);
 }
 
 // ---------------------------------------------------------------------------

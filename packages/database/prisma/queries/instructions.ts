@@ -287,9 +287,35 @@ export type DerivedInstructionChange =
  * `@repo/instructions` and none of them needs the base's rows. See
  * `derive-snapshot.ts`.
  */
+/**
+ * The key two paths share when a filesystem would treat them as ONE file:
+ * NFC-normalised and lowercased.
+ *
+ * A COPY of `collisionKey` in `packages/instructions/src/paths.ts`, which is
+ * the canonical one. This package does not depend on that one — the same
+ * reason `SNAPSHOT_LIMITS` is passed into the input below rather than
+ * imported — and the comparison has to happen HERE, inside the transaction
+ * that can see the base's rows. Four lines duplicated beats a dependency
+ * edge, but they must not drift: `derived-instruction-snapshot.test.ts`
+ * asserts the NFC/NFD pair is caught here, and
+ * `packages/instructions/__tests__/portable-names-agree-with-cli.test.ts`
+ * pins the canonical definition.
+ */
+function instructionCollisionKey(path: string): string {
+	return path.normalize("NFC").toLowerCase();
+}
+
 export type DerivedInstructionRefusal =
 	| "base_not_found"
 	| "base_not_ready"
+	/**
+	 * The base is no longer the project's published snapshot, decided under
+	 * the project row lock inside the create transaction. Both callers also
+	 * pre-read the pointer and refuse early with the same user-facing message;
+	 * this is the arm that catches a publish landing in the window between
+	 * that read and this write.
+	 */
+	| "base_not_published"
 	| "base_key_unexpected"
 	| "delete_path_missing"
 	| "path_collision"
@@ -390,12 +416,38 @@ function allocateAndCreateDerivedSnapshot(
 ): Promise<CreateDerivedInstructionSnapshotResult> {
 	return db.$transaction(
 		async (tx): Promise<CreateDerivedInstructionSnapshotResult> => {
-			if (input.proposal) {
-				// Serialize admission on the project row. Counting without this lock
-				// lets concurrent reader requests all observe spare capacity and then
-				// exceed both bounds together.
-				const locked = await tx.$queryRaw<Array<{ id: string }>>`
-					SELECT p."id"
+			// A snapshot that intends to reach the published pointer — a
+			// proposal, or a derivation that auto-publishes — is a
+			// FAST-FORWARD claim on it (spec §6.12), so the base has to still
+			// BE the published version at the moment the row is written.
+			//
+			// Both callers pre-read the pointer and compare
+			// (`derive-snapshot.ts`, `submit-change.ts`), and that read is a
+			// fast fail, not the guarantee: between it and this transaction
+			// another publish can move the pointer, and nothing below would
+			// notice — the base is still a row, and it is still READY. Two
+			// editors saving against version 7 would then both produce a
+			// version derived from 7, and whichever published second would
+			// silently revert the other.
+			//
+			// So the pointer is compared HERE, under the project row lock,
+			// which the proposal path already takes for its admission counts.
+			// Taking it for the publish path too costs one extra lock on a
+			// path that writes a snapshot anyway, and it is the only way the
+			// comparison can mean anything: the publish activity's own
+			// conditional write is the second half of the same rule, and this
+			// is the half that stops the second snapshot being created at all.
+			const claimsPublishedPointer =
+				input.proposal || input.publishOnReady;
+			if (claimsPublishedPointer) {
+				// Serialize on the project row. For a proposal this also
+				// serializes admission: counting without the lock lets
+				// concurrent reader requests all observe spare capacity and
+				// then exceed both bounds together.
+				const locked = await tx.$queryRaw<
+					Array<{ publishedInstructionSnapshotId: string | null }>
+				>`
+					SELECT p."publishedInstructionSnapshotId"
 					FROM "project" p
 					WHERE p."id" = ${input.projectId}
 						AND p."organizationId" = ${input.organizationId}
@@ -404,6 +456,14 @@ function allocateAndCreateDerivedSnapshot(
 				if (locked.length === 0) {
 					return { ok: false, reason: "base_not_found" };
 				}
+				if (
+					locked[0]?.publishedInstructionSnapshotId !==
+					input.baseSnapshotId
+				) {
+					return { ok: false, reason: "base_not_published" };
+				}
+			}
+			if (input.proposal) {
 				const proposerCount = await tx.projectInstructionSnapshot.count(
 					{
 						where: {
@@ -534,26 +594,47 @@ function allocateAndCreateDerivedSnapshot(
 			if (inherited.length + putList.length === 0) {
 				return { ok: false, reason: "empty_result" };
 			}
-			// Case-insensitive across the RESULT, not across the change set:
-			// adding `Claude.md` to a base that already stores `CLAUDE.md`
-			// produces two rows that are one file on a case-insensitive
-			// filesystem, and whichever lands second wins on the developer's
-			// machine.
+			// Across the RESULT, not across the change set: adding `Claude.md`
+			// to a base that already stores `CLAUDE.md` produces two rows that
+			// are one file on a case-insensitive filesystem, and whichever
+			// lands second wins on the developer's machine.
+			//
+			// Two things make this more than a lowercase comparison.
+			//
+			// The KEY folds Unicode normalisation as well as case. `café.md`
+			// stored as NFC and the same name written as NFD are one file on
+			// macOS; the change set's own check sees one path and passes, and
+			// only here — where the base's rows meet the new ones — is the
+			// pair visible at all.
+			//
+			// The INHERITED rows are exempt from colliding with EACH OTHER. A
+			// base admitted before these rules existed may already hold such a
+			// pair, and refusing the derivation would mean no version of that
+			// project could ever be edited again — including the edit that
+			// removes one of them. So an inherited pair is carried forward as
+			// it stands, and only a NEW put is refused: against an inherited
+			// row, or against another put.
 			const seen = new Map<string, string>();
-			for (const path of [
-				...inherited.map((f) => f.path),
-				...putList.map((c) => c.path),
-			]) {
-				const lower = path.toLowerCase();
-				const previous = seen.get(lower);
+			for (const file of inherited) {
+				const key = instructionCollisionKey(file.path);
+				// `set`, not a collision check: the first spelling wins as the
+				// one a put is compared against, and a second inherited row
+				// carrying the same key is carried forward untouched.
+				if (!seen.has(key)) {
+					seen.set(key, file.path);
+				}
+			}
+			for (const change of putList) {
+				const key = instructionCollisionKey(change.path);
+				const previous = seen.get(key);
 				if (previous !== undefined) {
 					return {
 						ok: false,
 						reason: "path_collision",
-						detail: `${previous} / ${path}`,
+						detail: `${previous} / ${change.path}`,
 					};
 				}
-				seen.set(lower, path);
+				seen.set(key, change.path);
 			}
 
 			const fileCount = inherited.length + putList.length;
@@ -2817,7 +2898,26 @@ export async function rejectAbandonedInstructionSnapshot(input: {
 	snapshotId: string;
 	projectId: string;
 	organizationId: string;
-	cutoff: Date;
+	/**
+	 * Reject only a row created before this moment. The REAPER passes it
+	 * because its candidate list is a read that has already gone stale: a row
+	 * that became RECEIVING after that read must not be closed out by a sweep
+	 * that never looked at it.
+	 *
+	 * A caller compensating for a row it created itself, in the same request,
+	 * OMITS it. Age is not the question there — the row is seconds old by
+	 * construction — and any cutoff it could pass would be a lie in one
+	 * direction or the other. `status: "RECEIVING"` is the whole guard that
+	 * path needs, and it is the same guard: a `finalize` that has already
+	 * moved the row on still wins.
+	 */
+	cutoff?: Date;
+	/**
+	 * `metadata.source` on the audit row — what TRIGGERED the close-out, not
+	 * whose upload it was. Defaults to the reaper, which is what wrote every
+	 * one of these rows before inline submission existed.
+	 */
+	source?: string;
 }): Promise<{ changed: boolean }> {
 	const rejections: InstructionRejection[] = [
 		{
@@ -2841,7 +2941,7 @@ export async function rejectAbandonedInstructionSnapshot(input: {
 				projectId: input.projectId,
 				organizationId: input.organizationId,
 				status: "RECEIVING",
-				createdAt: { lt: input.cutoff },
+				...(input.cutoff ? { createdAt: { lt: input.cutoff } } : {}),
 			},
 			data: {
 				status: "REJECTED",
@@ -2891,7 +2991,7 @@ export async function rejectAbandonedInstructionSnapshot(input: {
 				rejectionCount: rejections.length,
 				reasonCounts: { abandoned: 1 },
 				rules: [],
-				source: "abandoned_receiving_reaper",
+				source: input.source ?? "abandoned_receiving_reaper",
 			},
 		});
 		return { changed: true };
@@ -3210,6 +3310,32 @@ export async function deleteInstructionSnapshot(
 }> {
 	try {
 		return await db.$transaction(async (tx) => {
+			// LOCK ORDER: project, then snapshot — the same order
+			// `allocateAndCreateDerivedSnapshot` takes, and the reason this
+			// statement is here rather than a line of the prune activity.
+			//
+			// Without it the two paths lock in opposite orders. A derivation
+			// that claims the published pointer locks the project row and
+			// then inserts a child row, which takes a key-share lock on the
+			// base snapshot. This transaction did the reverse: it deleted the
+			// snapshot row first, and `Project.publishedInstructionSnapshot`
+			// being `onDelete: Restrict` then made PostgreSQL check — and
+			// lock — the project row to decide whether the delete is allowed.
+			// If a snapshot selected for pruning becomes the published one in
+			// between, the two transactions can wait on each other, and the
+			// derive's retry loop only understands version collisions, so the
+			// deadlock surfaces as a failed save rather than a retry.
+			//
+			// Taking the lock here costs one statement on a path that is
+			// already writing, and it makes the ordering the same everywhere:
+			// project first, always.
+			await tx.$queryRaw`
+				SELECT p."id"
+				FROM "project" p
+				WHERE p."id" = ${projectId}
+					AND p."organizationId" = ${organizationId}
+				FOR UPDATE OF p
+			`;
 			await tx.projectInstructionFile.deleteMany({
 				where: { snapshotId: id, projectId, organizationId },
 			});

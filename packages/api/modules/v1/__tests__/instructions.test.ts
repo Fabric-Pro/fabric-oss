@@ -20,15 +20,21 @@ const { mocks } = vi.hoisted(() => ({
 		listInstructionFiles: vi.fn(),
 		resolveEffectiveProjectPermissions: vi.fn(),
 		buildInstructionSnapshotZip: vi.fn(),
+		submitInstructionChange: vi.fn(),
 		/** `db.organization.findFirst`, for the explicit `?org=` binding. */
 		findOrganization: vi.fn(),
+		/** `db.user.findUnique`, for the audit actor snapshot on a write. */
+		findUser: vi.fn(),
 		/** The scopes the caller's key carries, read by the `requireScope` stub. */
 		scopes: ["instructions:read"] as string[],
 	},
 }));
 
 vi.mock("@repo/database", () => ({
-	db: { organization: { findFirst: mocks.findOrganization } },
+	db: {
+		organization: { findFirst: mocks.findOrganization },
+		user: { findUnique: mocks.findUser },
+	},
 	resolveUserOrganization: vi.fn(async () => ({
 		kind: "resolved" as const,
 		organizationId: "org-1",
@@ -46,6 +52,15 @@ vi.mock("../../../lib/effective-project-permissions", () => ({
 
 vi.mock("../../projects/procedures/instructions/build-zip", () => ({
 	buildInstructionSnapshotZip: mocks.buildInstructionSnapshotZip,
+}));
+
+// The shared entry point is mocked, not exercised: what this suite owns is the
+// ROUTE — its scope gate, its tenant resolution, the shape it accepts and the
+// statuses it maps refusals onto. The authorization inside
+// `submitInstructionChange` is its own concern and is reached the same way from
+// three surfaces.
+vi.mock("../../projects/procedures/instructions/submit-change", () => ({
+	submitInstructionChange: mocks.submitInstructionChange,
 }));
 
 /**
@@ -171,6 +186,47 @@ function post(path: string) {
 	return new Request(`http://localhost${path}`, { method: "POST" });
 }
 
+const CHANGES_PATH = `/projects/${PROJECT}/instructions/changes`;
+/** The published snapshot every change set here is stated against. */
+const BASE = "snap-2";
+
+function postJson(path: string, body: unknown) {
+	return new Request(`http://localhost${path}`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+function submitted(overrides: Record<string, unknown> = {}) {
+	return {
+		snapshotId: "snap-3",
+		version: 8,
+		baseSnapshotId: "snap-2",
+		baseVersion: 7,
+		fileCount: 2,
+		inheritedCount: 1,
+		putCount: 1,
+		deleteCount: 0,
+		proposalStatus: "PENDING",
+		status: "VALIDATING",
+		...overrides,
+	};
+}
+
+/** An `ORPCError`-shaped rejection, as the shared function throws. */
+function orpcRefusal(code: string, message: string, reason?: string) {
+	return Object.assign(new Error(message), {
+		code,
+		message,
+		...(reason ? { data: { reason } } : {}),
+	});
+}
+
+function putChange(overrides: Record<string, unknown> = {}) {
+	return { op: "put", path: "AGENTS.md", content: "new\n", ...overrides };
+}
+
 beforeEach(() => {
 	for (const value of Object.values(mocks)) {
 		if (typeof value === "function" && "mockReset" in value) {
@@ -191,6 +247,11 @@ beforeEach(() => {
 	mocks.getPublishedInstructionSnapshot.mockResolvedValue(readySnapshot());
 	mocks.listInstructionFiles.mockResolvedValue(manifestRows());
 	mocks.findOrganization.mockResolvedValue({ id: ORG });
+	mocks.findUser.mockResolvedValue({
+		email: "dev@example.com",
+		name: "Example Developer",
+	});
+	mocks.submitInstructionChange.mockResolvedValue(submitted());
 });
 
 // ---------------------------------------------------------------------------
@@ -744,5 +805,426 @@ describe("POST /projects/:projectId/instructions/published/download", () => {
 
 		expect(response.status).toBe(403);
 		expect(mocks.buildInstructionSnapshotZip).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// POST /projects/:projectId/instructions/changes
+// ---------------------------------------------------------------------------
+/**
+ * The write half of this surface (Fizzy #2539).
+ *
+ * Two gates, separately refusable, is the property under test: the key's
+ * declared scope is `instructions:write` and NOT `instructions:read`, and the
+ * object-level resolution that decides the tenant is the same one the read
+ * routes use — a project supplies its own organization, which is what keeps an
+ * invited guest able to suggest a change to a project they can open in the app.
+ */
+describe("POST instructions/changes", () => {
+	// The write route is gated on `instructions:write`; the suite-wide default
+	// is the read scope the other two routes need.
+	beforeEach(() => {
+		mocks.scopes = ["instructions:write"];
+	});
+
+	it("opens a proposal and echoes what the server made of it", async () => {
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			data: submitted(),
+		});
+		expect(mocks.submitInstructionChange).toHaveBeenCalledExactlyOnceWith({
+			userId: "user-1",
+			projectId: PROJECT,
+			// No `mode`: this route only ever opens a proposal, so there is
+			// nothing for a caller to ask for.
+			baseSnapshotId: BASE,
+			changes: [
+				{
+					op: "put",
+					path: "AGENTS.md",
+					content: "new\n",
+					encoding: "utf8",
+				},
+			],
+			audit: {
+				user: {
+					id: "user-1",
+					email: "dev@example.com",
+					name: "Example Developer",
+				},
+			},
+			via: "v1:organization-key",
+		});
+	});
+
+	it("carries the caller's base snapshot through", async () => {
+		await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: "snap-2",
+				changes: [{ op: "delete", path: "old.md" }],
+			}),
+		);
+
+		expect(mocks.submitInstructionChange).toHaveBeenCalledWith(
+			expect.objectContaining({
+				baseSnapshotId: "snap-2",
+				changes: [{ op: "delete", path: "old.md" }],
+			}),
+		);
+	});
+
+	/**
+	 * `baseSnapshotId` is the stale-base protection in its entirety, and it
+	 * used to be optional — the server fell back to whatever was published
+	 * now, so a caller that left it out silently turned the check off and got
+	 * its edit rebased onto a version it had never read.
+	 */
+	it("refuses a body with no baseSnapshotId, saying where to get one", async () => {
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, { changes: [putChange()] }),
+		);
+
+		expect(response.status).toBe(400);
+		const body = (await response.json()) as {
+			error: { message: string };
+		};
+		expect(body.error.message).toContain("baseSnapshotId is required");
+		expect(body.error.message).toContain("instructions/published");
+		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it.each([[""], [null], [42], [{}]])(
+		"refuses a baseSnapshotId of %j",
+		async (baseSnapshotId) => {
+			const response = await buildApp().request(
+				postJson(CHANGES_PATH, {
+					baseSnapshotId,
+					changes: [putChange()],
+				}),
+			);
+
+			expect(response.status).toBe(400);
+			expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+		},
+	);
+
+	/**
+	 * There is no publish mode on this route, and the absence is the security
+	 * property: the key that reaches it carries `instructions:write`, which
+	 * the Connect dialog offers to read-only roles and describes as
+	 * review-gated. A mode would make that description false for any key
+	 * whose creator happens to hold the publishing permission.
+	 */
+	it("ignores a mode the caller sends and still only proposes", async () => {
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				mode: "publish",
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(200);
+		const call = mocks.submitInstructionChange.mock.calls[0]?.[0] as Record<
+			string,
+			unknown
+		>;
+		expect(call).not.toHaveProperty("mode");
+	});
+
+	// `instructions:read` is the read routes' scope and must not reach this
+	// one; that split is the entire reason the new scope exists.
+	it("refuses a key holding only instructions:read", async () => {
+		mocks.scopes = ["instructions:read"];
+
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		await expect(response.json()).resolves.toEqual({
+			error: "Missing required scope: instructions:write",
+		});
+		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it("accepts a key holding instructions:write", async () => {
+		mocks.scopes = ["instructions:write"];
+
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(200);
+	});
+
+	// The object-level gate, independent of the scope: a key carrying the
+	// scope whose creator no longer reads this project's instructions is a 403
+	// with the nested error shape, distinguishable from the scope refusal
+	// above.
+	it("refuses a caller without INSTRUCTION_READ on the project", async () => {
+		mocks.scopes = ["instructions:write"];
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: ["project:read"],
+			source: "org",
+			organizationId: ORG,
+		});
+
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		await expect(response.json()).resolves.toEqual({
+			error: {
+				message:
+					"No coding-instructions read permission for this project",
+			},
+		});
+		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it("404s an organization key naming another tenant's project", async () => {
+		mocks.scopes = ["instructions:write"];
+		apiContext = organizationKey("org-2");
+		apiContext.scopes = ["instructions:write"];
+
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(404);
+		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it("refuses ?personal=1, as the read routes do", async () => {
+		mocks.scopes = ["instructions:write"];
+		apiContext = personalKey();
+		apiContext.scopes = ["instructions:write"];
+
+		const response = await buildApp().request(
+			postJson(`${CHANGES_PATH}?personal=1`, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+	});
+});
+
+describe("POST instructions/changes body validation", () => {
+	// The write route is gated on `instructions:write`; the suite-wide default
+	// is the read scope the other two routes need.
+	beforeEach(() => {
+		mocks.scopes = ["instructions:write"];
+	});
+
+	it("refuses a body that is not JSON", async () => {
+		const response = await buildApp().request(
+			new Request(`http://localhost${CHANGES_PATH}`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: "{",
+			}),
+		);
+
+		expect(response.status).toBe(400);
+		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it("refuses changes that are not an array", async () => {
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: "AGENTS.md",
+			}),
+		);
+
+		expect(response.status).toBe(400);
+		await expect(response.json()).resolves.toEqual({
+			error: { message: "changes must be an array." },
+		});
+	});
+
+	it("refuses a put with no content", async () => {
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [{ op: "put", path: "AGENTS.md" }],
+			}),
+		);
+
+		expect(response.status).toBe(400);
+	});
+
+	it("refuses an unknown encoding", async () => {
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				changes: [putChange({ encoding: "rot13" })],
+			}),
+		);
+
+		expect(response.status).toBe(400);
+	});
+
+	// The shape is checked before the project is resolved: an obviously
+	// malformed body must not spend a permission resolution first.
+	it("refuses a malformed body before resolving the project", async () => {
+		await buildApp().request(postJson(CHANGES_PATH, { changes: 7 }));
+
+		expect(mocks.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+	});
+});
+
+describe("POST instructions/changes refusals", () => {
+	// The write route is gated on `instructions:write`; the suite-wide default
+	// is the read scope the other two routes need.
+	beforeEach(() => {
+		mocks.scopes = ["instructions:write"];
+	});
+
+	it("maps a stale base to 409 PULL_FIRST", async () => {
+		mocks.submitInstructionChange.mockRejectedValue(
+			orpcRefusal(
+				"CONFLICT",
+				"The published version changed since your copy was taken.",
+				"BASE_NOT_PUBLISHED",
+			),
+		);
+
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: "snap-1",
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(409);
+		await expect(response.json()).resolves.toEqual({
+			error: {
+				message:
+					"The published version changed since your copy was taken.",
+				code: "PULL_FIRST",
+			},
+		});
+	});
+
+	it("maps a proposal cap to 409 with its own code", async () => {
+		mocks.submitInstructionChange.mockRejectedValue(
+			orpcRefusal(
+				"CONFLICT",
+				"You already have five active coding-instructions proposals for this project.",
+				"PROPOSAL_PROPOSER_LIMIT",
+			),
+		);
+
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(409);
+		await expect(response.json()).resolves.toMatchObject({
+			error: { code: "PROPOSAL_PROPOSER_LIMIT" },
+		});
+	});
+
+	it("maps a repository-backed project to 412", async () => {
+		mocks.submitInstructionChange.mockRejectedValue(
+			orpcRefusal(
+				"PRECONDITION_FAILED",
+				"This project's coding instructions come from its repository.",
+				"REPOSITORY_SOURCE_OF_TRUTH",
+			),
+		);
+
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(412);
+		await expect(response.json()).resolves.toMatchObject({
+			error: { code: "REPOSITORY_SOURCE_OF_TRUTH" },
+		});
+	});
+
+	it("maps the live permission refusal to 403", async () => {
+		mocks.submitInstructionChange.mockRejectedValue(
+			orpcRefusal(
+				"FORBIDDEN",
+				"Missing required permission: instruction:create",
+			),
+		);
+
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+	});
+
+	it("maps a project with nothing published to 404", async () => {
+		mocks.submitInstructionChange.mockRejectedValue(
+			orpcRefusal(
+				"NOT_FOUND",
+				"This project has no published coding instructions to change yet.",
+				"NOTHING_PUBLISHED",
+			),
+		);
+
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(404);
+	});
+
+	// An unrecognised failure is a 500, not a silently swallowed 400: the
+	// mapper returns null and the error propagates.
+	it("lets an unexpected failure propagate", async () => {
+		mocks.submitInstructionChange.mockRejectedValue(
+			new Error("storage unavailable"),
+		);
+
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(500);
 	});
 });

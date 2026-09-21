@@ -1320,6 +1320,39 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
  * race against the read-then-delete check the callers relied on.
  */
 describe("deleteInstructionSnapshot", () => {
+	/**
+	 * LOCK ORDER, which is the reason this statement exists at all.
+	 *
+	 * A derivation that claims the published pointer locks the project row
+	 * and then inserts a child that takes a key-share lock on the base
+	 * snapshot. This transaction used to go the other way: delete the
+	 * snapshot row first, at which point the `onDelete: Restrict` foreign key
+	 * on `Project.publishedInstructionSnapshot` makes PostgreSQL lock the
+	 * project row to decide whether the delete is allowed. Two transactions
+	 * taking the same two rows in opposite orders deadlock, and the
+	 * derivation's retry loop only understands version collisions, so it
+	 * surfaces as a failed save rather than a retry.
+	 */
+	it("locks the project row BEFORE deleting anything", async () => {
+		mocks.file.deleteMany.mockResolvedValue({ count: 0 });
+		mocks.snapshot.deleteMany.mockResolvedValue({ count: 1 });
+		mocks.$queryRaw.mockResolvedValue([{ id: "p" }]);
+
+		await deleteInstructionSnapshot("s", "p", "org_1");
+
+		expect(mocks.$queryRaw).toHaveBeenCalledTimes(1);
+		const sql = (mocks.$queryRaw.mock.calls[0]![0] as string[]).join("?");
+		expect(sql).toContain("FOR UPDATE OF p");
+		// Both deletes come after it, so every path in this feature takes
+		// project first, then snapshot.
+		expect(mocks.$queryRaw.mock.invocationCallOrder[0]!).toBeLessThan(
+			mocks.file.deleteMany.mock.invocationCallOrder[0]!,
+		);
+		expect(mocks.$queryRaw.mock.invocationCallOrder[0]!).toBeLessThan(
+			mocks.snapshot.deleteMany.mock.invocationCallOrder[0]!,
+		);
+	});
+
 	it("deletes the file rows and the snapshot row in one tenant-scoped transaction", async () => {
 		mocks.file.deleteMany.mockResolvedValue({ count: 3 });
 		mocks.snapshot.deleteMany.mockResolvedValue({ count: 1 });
@@ -1437,6 +1470,7 @@ describe("deleteInstructionSnapshot", () => {
 						projectInstructionSnapshot: mocks.snapshot,
 						projectInstructionFile: mocks.file,
 						project: mocks.project,
+						$queryRaw: (...a: unknown[]) => mocks.$queryRaw(...a),
 					});
 				} catch (error) {
 					threw = true;
@@ -2423,6 +2457,40 @@ describe("rejectAbandonedInstructionSnapshot", () => {
 				},
 				metadata: expect.objectContaining({
 					source: "abandoned_receiving_reaper",
+				}),
+			}),
+		);
+	});
+
+	// A caller compensating for a row it created itself, in the same request,
+	// has no stale candidate list to guard against: the row is seconds old by
+	// construction, so an age predicate could only ever be wrong. The
+	// RECEIVING compare-and-set is the guard that matters, and it is the same
+	// one — a `finalize` that moved the row on still wins.
+	it("drops the age predicate when no cutoff is given, keeping the RECEIVING guard", async () => {
+		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+		mocks.snapshot.findFirst.mockResolvedValue({
+			userId: "user_1",
+			version: 4,
+		});
+
+		await rejectAbandonedInstructionSnapshot({
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "org_1",
+			source: "inline_submit_compensation",
+		});
+
+		const where = mocks.snapshot.updateMany.mock.calls[0]?.[0]
+			.where as Record<string, unknown>;
+		expect(where).not.toHaveProperty("createdAt");
+		expect(where.status).toBe("RECEIVING");
+		// What TRIGGERED the close-out, not whose upload it was.
+		expect(auditMocks.recordAuditTx).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					source: "inline_submit_compensation",
 				}),
 			}),
 		);

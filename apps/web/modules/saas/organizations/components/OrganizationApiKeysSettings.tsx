@@ -142,6 +142,12 @@ export const AVAILABLE_SCOPES = [
 		description: "Read the published coding instructions of a project",
 	},
 	{
+		id: "instructions:write",
+		label: "Instructions Write",
+		description:
+			"Propose a change to a project's coding instructions for an editor to review",
+	},
+	{
 		id: "chats:read",
 		label: "Chats Read",
 		description: "Read AI chat threads",
@@ -194,6 +200,10 @@ const READ_ONLY_SCOPES: ReadonlySet<ApiKeyScope> = new Set<ApiKeyScope>([
 	"workflows:read",
 	"frames:read",
 	"instructions:read",
+	// A write scope a viewer may hold: it reaches only the proposal path, which
+	// the Coding Instructions tab already gives a viewer on `INSTRUCTION_READ`.
+	// The procedure's own table explains it at length.
+	"instructions:write",
 	"chats:read",
 	"system_health:read",
 	"status_updates:read",

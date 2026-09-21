@@ -93,6 +93,48 @@ export interface CreateInstructionDownloadOptions {
 	personal?: boolean;
 }
 
+/**
+ * One path's change, with the file's bytes carried inline.
+ *
+ * `content` is the file itself, not a URL: a change set is a handful of small
+ * text files, and a round trip per file to a signed upload URL buys nothing at
+ * that size. `encoding` defaults to `utf8`; send `base64` for anything that is
+ * not text.
+ *
+ * `size` and `sha256` are deliberately absent. The server holds the bytes on
+ * this path, so it computes both itself — a client-supplied hash could only
+ * ever make the stored row disagree with the stored object.
+ */
+export type InstructionChange =
+	| {
+			op: "put";
+			/** Relative POSIX path inside the tree. Never absolute, never traversing. */
+			path: string;
+			content: string;
+			encoding?: "utf8" | "base64";
+	  }
+	| { op: "delete"; path: string };
+
+export interface SubmitInstructionChangeOptions {
+	org?: string;
+	personal?: boolean;
+}
+
+export interface SubmittedInstructionChange {
+	snapshotId: string;
+	version: number;
+	baseSnapshotId: string;
+	baseVersion: number;
+	fileCount: number;
+	inheritedCount: number;
+	putCount: number;
+	deleteCount: number;
+	/** Always `PENDING`: this route only ever opens a proposal. */
+	proposalStatus: "PENDING" | "APPROVED" | "REJECTED" | null;
+	/** The snapshot's status once its validation run was started. */
+	status: string;
+}
+
 export class InstructionsResource {
 	constructor(private readonly http: FabricHttpClient) {}
 
@@ -126,6 +168,52 @@ export class InstructionsResource {
 		return this.http.post<InstructionDownload>(
 			`/projects/${encodeURIComponent(projectId)}/instructions/published/download${buildQuery(options)}`,
 			{},
+		);
+	}
+
+	/**
+	 * Suggest a change to the project's coding instructions.
+	 *
+	 * It opens a PROPOSAL and only a proposal: nothing is published until
+	 * somebody who can edit the project's instructions approves it in the
+	 * Coding Instructions tab. There is no publish mode — `instructions:write`
+	 * is offered to read-only roles and described as review-gated, and a
+	 * publish mode would make that description untrue for any key whose
+	 * creator happens to hold the publishing permission.
+	 *
+	 * `baseSnapshotId` is REQUIRED and positional: it is the id of the
+	 * published snapshot the change set is stated against — `snapshotId` from
+	 * `getPublished`, or the one recorded in `.fabric/instructions.lock`. A
+	 * base that is no longer the published version comes back as a 409 whose
+	 * `FabricError.code` is `PULL_FIRST`, meaning sync and make the change
+	 * again. It has no default on purpose: falling back to whatever is
+	 * published now would silently rebase an edit onto a version the caller
+	 * never read. The other codes this call can answer with are
+	 * `REPOSITORY_SOURCE_OF_TRUTH`, `NOTHING_PUBLISHED`,
+	 * `PROPOSAL_PROPOSER_LIMIT` and `PROPOSAL_PROJECT_LIMIT`.
+	 *
+	 * Requires a key with `instructions:write`. The key's creator must still
+	 * hold the project permission the tab requires to propose — the scope is a
+	 * ceiling, never a grant.
+	 *
+	 * **Never retried.** Every other mutating call in this SDK is retried on a
+	 * network error or a timeout, on the premise that its `Idempotency-Key`
+	 * header lets the server deduplicate. This route does not honour that
+	 * header, so a retry is a SECOND proposal for the same edit — and the
+	 * per-proposer admission cap is five. The override is set here rather than
+	 * left to the caller so that protection is not something each client has to
+	 * remember.
+	 */
+	submitChange(
+		projectId: string,
+		baseSnapshotId: string,
+		changes: InstructionChange[],
+		options: SubmitInstructionChangeOptions = {},
+	): Promise<SubmittedInstructionChange> {
+		return this.http.post<SubmittedInstructionChange>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/changes${buildQuery(options)}`,
+			{ baseSnapshotId, changes },
+			{ retry: { maxRetries: 0 } },
 		);
 	}
 }

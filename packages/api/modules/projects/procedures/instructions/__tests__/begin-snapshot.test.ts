@@ -207,6 +207,122 @@ describe("projects.instructions.begin", () => {
 		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
 	});
 
+	// A published version is installed by `fabric instructions sync`, whose own
+	// path guard refuses these names — the WHOLE manifest, for everyone who
+	// pulls it. Accepting them here would store a version nobody can install.
+	it.each([
+		["CON.md", "a Windows device name"],
+		["docs/nul.txt", "a device name in a subdirectory"],
+		["AGENTS.md.", "a trailing dot Windows strips"],
+		["AGENTS.md ", "a trailing space Windows strips"],
+		["AGENTS.md:stream", "an NTFS alternate data stream"],
+		["AGENTS*.md", "a character Windows refuses in a filename"],
+		["docs/a|b.md", "a redirection operator in a name"],
+	])("refuses %j — %s — before touching the database", async (path) => {
+		await expect(
+			m.handlers.begin!({
+				input: {
+					projectId: "proj_1",
+					publishOnReady: true,
+					files: [{ path, size: 1, sha256: "a".repeat(64) }],
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	// ORDER: ignore rules first, portability second. A repository routinely
+	// contains names a Windows checkout cannot write — inside `generated/`,
+	// a vendored tree, build output — and every one of them is already
+	// excluded. Asking the portability question first would refuse the whole
+	// upload over a file the version was never going to contain, which makes
+	// the ignore rules useless.
+	it("does not refuse an upload for an unportable name that the ignore rules exclude", async () => {
+		const result = await m.handlers.begin!({
+			input: {
+				projectId: "proj_1",
+				publishOnReady: true,
+				fabricIgnoreText: "generated/\n",
+				files: [
+					{ path: "CLAUDE.md", size: 1, sha256: "a".repeat(64) },
+					{
+						path: "generated/CON.md",
+						size: 1,
+						sha256: "b".repeat(64),
+					},
+				],
+			},
+			context: ctx,
+		});
+
+		expect(result).toMatchObject({ keptCount: 1, excludedCount: 1 });
+		const call = m.createInstructionSnapshot.mock.calls[0]![0] as {
+			files: Array<{ path: string }>;
+		};
+		expect(call.files.map((f) => f.path)).toEqual(["CLAUDE.md"]);
+	});
+
+	// Same ordering rule as the portable-name check, and for the same reason:
+	// the collision check judges the RESULTING TREE. A repository can easily
+	// hold `docs/README.md` and `docs/readme.md` in a directory the ignore
+	// rules exclude — build output, a vendored dependency — and refusing the
+	// whole upload over a pair the version will not contain makes the ignore
+	// rules useless.
+	it("does not refuse an upload for a colliding pair the ignore rules exclude", async () => {
+		const result = await m.handlers.begin!({
+			input: {
+				projectId: "proj_1",
+				publishOnReady: true,
+				fabricIgnoreText: "generated/\n",
+				files: [
+					{ path: "CLAUDE.md", size: 1, sha256: "a".repeat(64) },
+					{
+						path: "generated/caf\u00e9.md",
+						size: 1,
+						sha256: "b".repeat(64),
+					},
+					{
+						path: "generated/cafe\u0301.md",
+						size: 1,
+						sha256: "c".repeat(64),
+					},
+				],
+			},
+			context: ctx,
+		});
+
+		expect(result).toMatchObject({ keptCount: 1, excludedCount: 2 });
+	});
+
+	// Lowercasing alone does not catch this pair: same name, two Unicode
+	// normalisations, one file on macOS. Uploading both would store two rows
+	// and install one, with whichever landed second silently winning.
+	it("refuses two spellings of one name that differ only by Unicode normalisation", async () => {
+		await expect(
+			m.handlers.begin!({
+				input: {
+					projectId: "proj_1",
+					publishOnReady: true,
+					files: [
+						{
+							path: "caf\u00e9.md",
+							size: 1,
+							sha256: "a".repeat(64),
+						},
+						{
+							path: "cafe\u0301.md",
+							size: 1,
+							sha256: "b".repeat(64),
+						},
+					],
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
 	it("uses .fabricignore from the upload when present", async () => {
 		await m.handlers.begin!({
 			input: {

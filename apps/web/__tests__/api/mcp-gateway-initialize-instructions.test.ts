@@ -119,6 +119,21 @@ describe("initialize instructions", () => {
 		expect(instructions).toContain("sinceDigest");
 	});
 
+	// The write half (Fizzy #2539). An agent that finds the instructions wrong
+	// has a way to say so, and the handshake is where it learns the tool
+	// exists — but it must also learn, before it ever calls it, that what comes
+	// out is a suggestion rather than a change, or it will report the edit as
+	// done.
+	it("names the proposal tool and says a person approves it", async () => {
+		const instructions = await initialize();
+
+		expect(instructions).toContain(
+			"fabric_propose_project_instruction_change",
+		);
+		expect(instructions).toContain("proposal");
+		expect(instructions).toMatch(/approve|awaiting review|review/i);
+	});
+
 	// The section is inserted between two existing ones; a client reads this
 	// top to bottom, so "how to get started" still precedes it and the
 	// authority rules still follow it.

@@ -165,6 +165,7 @@ export type { ListFramesOptions } from "./resources/frames.js";
 export type {
 	CreateInstructionDownloadOptions,
 	GetPublishedInstructionsOptions,
+	InstructionChange,
 	InstructionChanges,
 	InstructionDownload,
 	InstructionFileKind,
@@ -172,6 +173,8 @@ export type {
 	InstructionSourceOfTruth,
 	PublishedInstructionSnapshot,
 	PublishedInstructions,
+	SubmitInstructionChangeOptions,
+	SubmittedInstructionChange,
 } from "./resources/instructions.js";
 export type {
 	FabricIntegrations,

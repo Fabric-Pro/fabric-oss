@@ -16,6 +16,17 @@
  * The filesystem half — symlinks, canonical containment, atomic writes —
  * lives in `safe-write.ts`, because it needs a resolved destination root and
  * these functions deliberately do not.
+ *
+ * The SERVER enforces the same name rules and the same collision key on the
+ * way in (`packages/instructions/src/paths.ts`), so a version that stores is
+ * a version that installs. It is a separate implementation because this
+ * package is published to npm and that one is private, and the duplication is
+ * pinned by `packages/instructions/__tests__/portable-names-agree-with-cli.test.ts`,
+ * which imports both and asserts they agree on a fixture list of names.
+ * Whole-path SYNTAX is where the two legitimately differ: the server
+ * normalises separators and `./` prefixes for a browser folder upload, and
+ * this module refuses them, because here the string is about to become a
+ * write.
  */
 
 type PathRejectReason =
@@ -27,7 +38,7 @@ type PathRejectReason =
 	| "trailing_separator"
 	| "trailing_dot_or_space"
 	| "reserved_device_name"
-	| "alternate_data_stream"
+	| "forbidden_character"
 	| "reserved_path"
 	| "not_a_regular_file"
 	| "escapes_destination"
@@ -53,6 +64,14 @@ const DRIVE_LETTER = /^[A-Za-z]:/;
  * use one to make a write look like it happened.
  */
 const RESERVED_DEVICE_NAME = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i;
+
+/**
+ * The characters Windows will not put in a filename: `< > : " | ? *`.
+ *
+ * `/` and `\` are absent because they are separators and are refused
+ * structurally above.
+ */
+const FORBIDDEN_NAME_CHARACTER = /[<>:"|?*]/;
 
 /**
  * Paths this feature refuses to write or delete, whatever a manifest or a
@@ -145,12 +164,15 @@ export function checkRelativePath(input: string): PathCheck {
 				detail: input,
 			};
 		}
-		// `a.md:stream` addresses an NTFS alternate data stream on `a.md`,
-		// which is a write to a file the manifest never named.
-		if (segment.includes(":")) {
+		// One of the characters Windows refuses in a filename. A colon also
+		// addresses an NTFS alternate data stream on the name before it,
+		// which is a write to a file the manifest never named; `*` and `?`
+		// are glob metacharacters and `<`, `>` and `|` are redirection
+		// operators, so such a name is a hazard in any script over the tree.
+		if (FORBIDDEN_NAME_CHARACTER.test(segment)) {
 			return {
 				ok: false,
-				reason: "alternate_data_stream",
+				reason: "forbidden_character",
 				detail: input,
 			};
 		}
@@ -233,8 +255,8 @@ export function describeRejection(rejection: PathRejection): string {
 			return `path segment ending in a dot or space refused: ${rejection.detail}`;
 		case "reserved_device_name":
 			return `reserved device name refused: ${rejection.detail}`;
-		case "alternate_data_stream":
-			return `colon in path refused: ${rejection.detail}`;
+		case "forbidden_character":
+			return `path contains a character Windows will not put in a filename (< > : " | ? *): ${rejection.detail}`;
 		case "reserved_path":
 			return `this tool never writes or deletes ${RESERVED_ROOTS.join(", ")} or ${RESERVED_EXACT_PATHS.join(", ")}: ${rejection.detail}`;
 		case "not_a_regular_file":

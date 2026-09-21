@@ -420,8 +420,31 @@ export class FabricAuthError extends FabricError {
 }
 
 export class FabricNotFoundError extends FabricError {
-	constructor(resource = "Resource") {
-		super(`${resource} not found`, 404, "NOT_FOUND");
+	/**
+	 * `resource` is a NOUN that gets " not found" appended — the shape every
+	 * caller but one wants.
+	 *
+	 * The exception is a 404 whose body carries its own `code`. A route that
+	 * bothers to name the reason has written the sentence too, and the pair is
+	 * what a client branches on: the coding-instructions change route answers
+	 * `NOTHING_PUBLISHED` with "This project has no published coding
+	 * instructions to change yet…", and formatting that as a resource name
+	 * produced "…to change yet. not found" under the generic `NOT_FOUND` code,
+	 * which made the CLI's branch for it unreachable. Pass `options` in that
+	 * case and both survive.
+	 *
+	 * A 404 with no code keeps the old behaviour exactly, so nothing that
+	 * already relies on the suffix changes.
+	 */
+	constructor(
+		resource = "Resource",
+		options: { message?: string; code?: string } = {},
+	) {
+		super(
+			options.message ?? `${resource} not found`,
+			404,
+			options.code ?? "NOT_FOUND",
+		);
 		this.name = "FabricNotFoundError";
 	}
 }

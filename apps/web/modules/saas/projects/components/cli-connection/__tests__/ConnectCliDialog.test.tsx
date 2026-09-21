@@ -685,7 +685,77 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		const input = createKeyMock.mock.calls[0][0] as { scopes: string[] };
 		// The v1 routes behind `fabric instructions` match the scope by
 		// name, so the gateway's umbrella scope alone would be refused.
-		expect(input.scopes).toEqual(["mcp:read", "instructions:read"]);
+		// `instructions:write` joined them when `fabric instructions push` and
+		// the gateway's proposal tool landed (Fizzy #2539): it reaches the
+		// PROPOSAL path only, which is what a reader can already do in the
+		// Coding Instructions tab, and publishing is refused per call against
+		// a permission this key's holder may not have.
+		expect(input.scopes).toEqual([
+			"mcp:read",
+			"instructions:read",
+			"instructions:write",
+		]);
+
+		// And every one of them has to be grantable to a read-only role, or a
+		// viewer who presses the one button this dialog offers is refused with
+		// FORBIDDEN having chosen nothing. Restated from
+		// `READ_ONLY_ORG_API_KEY_SCOPES` rather than imported, because the
+		// point is that the two agree.
+		const viewerGrantable = new Set([
+			"mcp:read",
+			"projects:read",
+			"agents:read",
+			"agents:stream",
+			"orgs:read",
+			"features:read",
+			"workspaces:read",
+			"workflows:read",
+			"frames:read",
+			"instructions:read",
+			"instructions:write",
+			"chats:read",
+			"system_health:read",
+			"status_updates:read",
+		]);
+		for (const scope of input.scopes) {
+			expect(viewerGrantable.has(scope)).toBe(true);
+		}
+	});
+
+	// The disclosure is read BEFORE the key exists and it is the only thing
+	// that says what the key may do. A key that can propose a change must not
+	// be introduced as read-only.
+	it("tells a coding-instructions reader that the key can suggest a change, and that a person approves it", async () => {
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSyncAvailable: true,
+		});
+
+		expect(
+			await screen.findByText(/can SUGGEST a change/i),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/nothing is published until somebody/i),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(
+				/It is read-only: a tool holding it can read your work/i,
+			),
+		).not.toBeInTheDocument();
+	});
+
+	// Nothing changes for the ordinary project purpose: its key is still
+	// `mcp:read` alone, and its disclosure still says read-only.
+	it("keeps the read-only promise for the project purpose", async () => {
+		renderHost({ startOpen: true });
+
+		expect(
+			await screen.findByText(
+				/It is read-only: a tool holding it can read your work/i,
+			),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/can SUGGEST a change/i)).toBeNull();
 	});
 
 	it("describes the disarmed dismissals from the commands' copy control only, once", async () => {
