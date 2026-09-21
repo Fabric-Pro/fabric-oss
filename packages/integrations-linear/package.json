@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/integrations-linear",
-	"version": "0.1.4",
+	"version": "0.1.5",
 	"description": "Linear integration plugin for Fabric — type augmentation + runtime",
 	"keywords": [
 		"fabric",
