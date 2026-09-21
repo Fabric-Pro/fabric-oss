@@ -51,6 +51,17 @@ export interface RequestOptions {
 	 * can deduplicate.
 	 */
 	idempotencyKey?: string;
+	/**
+	 * Overrides the client's retry policy for THIS request.
+	 *
+	 * The client retries a mutating method on a network error or a timeout on
+	 * the premise that the `Idempotency-Key` above protects it. Not every route
+	 * honours that header, and for one that does not, a retry is a second
+	 * write. A resource method that knows its route is non-idempotent sets
+	 * `{ maxRetries: 0 }` here, so every caller is protected rather than only
+	 * the ones that remembered to build a client with retries off.
+	 */
+	retry?: { maxRetries: number };
 }
 
 /** Read an env var safely across Node / edge / browser. */
@@ -191,7 +202,11 @@ export class FabricHttpClient {
 		const isMutating = MUTATING_METHODS.has(method);
 		const idempotencyKey =
 			options.idempotencyKey ?? (isMutating ? randomId() : undefined);
-		const maxAttempts = this.retry.maxRetries + 1;
+		// A per-request override always WINS, including over a client
+		// configured with more retries: the resource method that sets it knows
+		// its route is not idempotent, and no client configuration can make it
+		// safe to send twice.
+		const maxAttempts = (options.retry ?? this.retry).maxRetries + 1;
 
 		let lastError: unknown;
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -340,7 +355,14 @@ export class FabricHttpClient {
 				throw new FabricForbiddenError(message, code);
 			}
 			if (res.status === 404) {
-				throw new FabricNotFoundError(message);
+				// A body that names its own `code` has written its own
+				// sentence too; appending " not found" to it and replacing the
+				// code with the generic `NOT_FOUND` threw away the one thing a
+				// client branches on.
+				throw new FabricNotFoundError(
+					message,
+					code ? { message, code } : {},
+				);
 			}
 			throw new FabricError(message, res.status, code);
 		}
@@ -389,11 +411,15 @@ export class FabricHttpClient {
 	post<T>(
 		path: string,
 		body: unknown,
-		options: { idempotencyKey?: string } = {},
+		options: {
+			idempotencyKey?: string;
+			retry?: { maxRetries: number };
+		} = {},
 	) {
 		return this.request<T>("POST", path, {
 			body,
 			idempotencyKey: options.idempotencyKey,
+			retry: options.retry,
 		});
 	}
 

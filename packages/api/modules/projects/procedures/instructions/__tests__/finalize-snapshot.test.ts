@@ -359,6 +359,38 @@ describe("projects.instructions.finalize", () => {
 		expect(options.args[0]).toMatchObject({ organizationId: "org_1" });
 	});
 
+	/**
+	 * The shared finalizer wraps a failure to REACH Temporal in a marker, so
+	 * that `submit-change.ts` — which has just created a snapshot row — can
+	 * tell "no execution exists, safe to close the row out" from "a start was
+	 * called and may have succeeded". This procedure has no such decision to
+	 * make, so it unwraps the marker and its caller sees exactly the error it
+	 * saw before the finalizer was extracted. The marker itself is covered by
+	 * `instruction-workflow-start.test.ts`.
+	 */
+	it("surfaces the original failure when Temporal cannot be reached", async () => {
+		const cause = new Error("getaddrinfo ENOTFOUND temporal");
+		m.getTemporalClient.mockRejectedValue(cause);
+
+		await expect(
+			m.handlers.finalize!({ input: baseInput, context: ctx }),
+		).rejects.toBe(cause);
+		expect(m.workflowStart).not.toHaveBeenCalled();
+		expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
+	});
+	// A start that was CALLED and rejected is ambiguous — it may have
+	// succeeded with only its acknowledgement lost — so it must NOT be
+	// dressed up as "never started".
+	it("lets a rejected workflow.start propagate unchanged", async () => {
+		const failure = new Error("workflow start rejected by the server");
+		m.workflowStart.mockRejectedValue(failure);
+
+		await expect(
+			m.handlers.finalize!({ input: baseInput, context: ctx }),
+		).rejects.toBe(failure);
+		expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
+	});
+
 	it("throws FORBIDDEN when the organization cannot be resolved", async () => {
 		m.resolveEffectiveProjectPermissions.mockResolvedValue({
 			permissions: [],

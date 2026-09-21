@@ -92,6 +92,10 @@ const READ_ONLY_SCOPES = new Set([
 	"workflows:read",
 	"frames:read",
 	"instructions:read",
+	// The one WRITE scope a viewer may hold (Fizzy #2539): it reaches the
+	// proposal path, which is what a viewer can already do in the Coding
+	// Instructions tab on `INSTRUCTION_READ`.
+	"instructions:write",
 	"chats:read",
 	"system_health:read",
 	"status_updates:read",
@@ -169,6 +173,14 @@ describe("OrganizationApiKeysSettings — a read-only role's create request", ()
 		// carries.
 		expect(
 			await screen.findByLabelText("Instructions Read"),
+		).toBeInTheDocument();
+		// And the one WRITE scope on the read-only list (Fizzy #2539). It
+		// reaches the proposal path only — a suggestion an editor approves —
+		// which is what a viewer can already do in the Coding Instructions
+		// tab. Withholding it here would make the key narrower than the
+		// browser for the same person.
+		expect(
+			await screen.findByLabelText("Instructions Write"),
 		).toBeInTheDocument();
 		expect(screen.queryByLabelText("MCP Write")).not.toBeInTheDocument();
 		expect(

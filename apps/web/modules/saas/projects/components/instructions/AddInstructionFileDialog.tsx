@@ -4,6 +4,7 @@ import {
 	FABRIC_IGNORE_FILE,
 	isSecretFileName,
 	SNAPSHOT_LIMITS,
+	validatePortableName,
 	validateRelativePath,
 } from "@repo/instructions";
 import { editInstructionSnapshot } from "@saas/projects/lib/edit-snapshot";
@@ -54,6 +55,14 @@ function pathRefusal(
 	}
 	if (v.path === FABRIC_IGNORE_FILE) {
 		return t("pathFabricignore");
+	}
+	// This dialog only ever ADDS or REPLACES a file, so the portability rules
+	// apply to every path it accepts. A delete goes through a different
+	// control and is deliberately exempt, because a grandfathered name has to
+	// stay removable.
+	const portable = validatePortableName(v.path);
+	if (!portable.ok) {
+		return t("pathInvalid", { reason: portable.reason });
 	}
 	const secretRule = isSecretFileName(v.path);
 	if (secretRule) {

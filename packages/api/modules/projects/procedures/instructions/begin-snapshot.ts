@@ -6,9 +6,12 @@ import {
 import {
 	buildIgnoreMatcher,
 	classifyPath,
+	collisionKey,
+	describePortableNameRefusal,
 	resolveIgnoreGlobs,
 	SNAPSHOT_LIMITS,
 	stagingKey,
+	validatePortableName,
 	validateRelativePath,
 } from "@repo/instructions";
 import { z } from "zod";
@@ -112,13 +115,6 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 					message: `Path rejected (${v.reason}): ${file.path}`,
 				});
 			}
-			const lower = v.path.toLowerCase();
-			if (seen.has(lower)) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: `Duplicate path (case-insensitive): ${v.path}`,
-				});
-			}
-			seen.add(lower);
 			const match = isIgnored(v.path);
 			if (match) {
 				excluded.push({
@@ -127,6 +123,30 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 					layer: match.layer,
 				});
 				continue;
+			}
+			// Everything below judges the RESULTING TREE, so all of it comes
+			// after ignore matching. A repository routinely contains names a
+			// Windows checkout cannot write and spellings that collide with
+			// each other — inside `generated/`, a vendored tree, build output
+			// — and every one of them is already excluded here. Judging them
+			// first would refuse the whole upload over files the version was
+			// never going to contain, which makes the ignore rules useless.
+			//
+			// `collisionKey`, not `toLowerCase`: two spellings that differ
+			// only in Unicode normalisation are ONE file on macOS, so a
+			// version carrying both would upload two rows and install one.
+			const key = collisionKey(v.path);
+			if (seen.has(key)) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: `Duplicate path (same file on a case-insensitive filesystem): ${v.path}`,
+				});
+			}
+			seen.add(key);
+			const portable = validatePortableName(v.path);
+			if (!portable.ok) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: describePortableNameRefusal(v.path, portable),
+				});
 			}
 			if (file.size > SNAPSHOT_LIMITS.maxFileBytes) {
 				throw new ORPCError("BAD_REQUEST", {

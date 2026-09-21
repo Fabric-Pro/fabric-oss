@@ -1,6 +1,6 @@
 # Developer Guide: Coding Instructions on the Command Line
 
-How `fabric instructions check | sync | init` keeps a checkout current with a project's published coding instructions, and what each command is allowed to touch.
+How `fabric instructions check | sync | push | init` keeps a checkout current with a project's published coding instructions, how a local edit gets suggested back, and what each command is allowed to touch.
 
 - **Audience**: engineers working on `@fabricorg/cli`, `@fabricorg/sdk` or the v1 REST surface; developers setting a project up on their own machine
 - **Owner**: Projects / Platform team
@@ -14,6 +14,14 @@ everyone else does without anybody pasting anything.
 
 The intended trigger is a Claude Code `SessionStart` hook: every session asks
 whether the published version moved, and either says so or applies it.
+
+Working on the project is also when the instructions are most obviously wrong,
+so the traffic goes both ways: `fabric instructions push` sends the checkout's
+edits back as a **proposal** an editor approves in the tab. An agent with no
+CLI does the same thing through the MCP tool
+`fabric_propose_project_instruction_change`, which is proposal-only — an agent
+cannot publish. Both land in the same place and run the same checks as a folder
+upload from the browser.
 
 ## Install and authenticate
 
@@ -91,6 +99,69 @@ Commander resolves it: `fabric --format table instructions check` beats
 `FABRIC_FORMAT=json`, because the environment is the root option's default and
 an explicit flag replaces a default.
 
+### `fabric instructions push --project <id> [--dest <dir>] [--add <path>] [--dry-run]`
+
+Suggests this checkout's edits back to the project. It always opens a
+**proposal**: nothing changes for anybody reading the instructions until
+somebody who can edit them approves it in the Coding Instructions tab. There is
+no publish flag — see "publishing is not one of them" below.
+
+The diff is computed against `<dest>/.fabric/instructions.lock`, so `sync` has
+to have run here first — without that ledger there is nothing to diff against,
+and the command says so rather than guessing. Three outcomes per locked path,
+and nothing else is ever sent:
+
+| Outcome | What happened |
+|---|---|
+| sent as a change | the local bytes differ from the hash the lock recorded |
+| sent as a deletion | the lock names the file and nothing is there any more |
+| skipped | the local bytes still equal the lock |
+
+**A file the lock does not name is sent only when you name it**, with `--add
+<path>` (repeatable). That is the one case the ledger cannot discover, and the
+alternative — walking the checkout — would mean inventing a rule about which of
+your repository's files are instruction files. The exclusion rules that decide
+that live on the server, with the project's frozen settings, and the CLI has no
+copy of them.
+
+At most 50 changes in one push. A change set larger than that is a replacement
+rather than an edit, and the tab's folder upload is the operation for it — it is
+also the only path that re-reads the project's exclusion rules.
+
+**Publishing is not one of them.** `push` has no `--publish`, and the scope it
+uses cannot reach a publish on any surface. The key this command carries is
+`instructions:write`, which the Connect dialog offers to read-only roles and
+describes as review-gated; a publish mode decided by the key creator's own
+permissions would make that description untrue for anybody holding
+`INSTRUCTION_CREATE`, and a scope has to mean the same thing whoever mints it.
+Publishing from a terminal needs a scope of its own and does not have one yet;
+until then it is done in the tab.
+
+`--dry-run` prints the change set and sends nothing.
+
+**Nothing is read until the lock is verified against the server.** `push` fetches
+the published manifest first and refuses before opening a single file if the
+lock names a version that is no longer published, or if its ledger is not that
+version's file list. The lock is a plain JSON file in your checkout: anything
+that can write to the working tree can add a path to it, and a command that
+trusted the ledger would read that file and upload it. The manifest decides
+which paths may be touched; `--add` is the only way to send anything else.
+
+**The lock is never written by a push**, on any outcome. It names the published
+version, which is what `sync` compares against, and a proposal does not change
+what is published. After a proposal is approved, `fabric instructions sync` is
+what brings the checkout — and the lock — forward.
+
+Two refusals are worth recognising:
+
+- *"published instructions moved past your last sync"* — somebody published
+  while you were working. The server refuses rather than rebasing your change
+  onto a version you never saw (the spec's `PULL_FIRST` rule; there is no
+  server-side merge in any version). Run `sync`, re-apply the edit, push again.
+- *the project's instructions come from its repository* — source of truth is
+  `REPOSITORY`, so the files are changed in git and mirrored into Fabric. Commit
+  and push to the repository instead. Nothing was sent.
+
 ### `fabric instructions init --project <id> --tool claude-code [--dest <dir>] [--apply]`
 
 For a published snapshot, takes the first copy before writing a `SessionStart`
@@ -129,6 +200,7 @@ keep them:
   inside the destination.
 - **Nothing is written outside `<dest>`.** Absolute paths, `..` segments,
   backslashes, control characters, Windows device names (`NUL`, `COM1`, …),
+  names containing `< > : " | ? *`,
   segments ending in a dot or space, and colons are refused; two paths that a
   case-insensitive or Unicode-normalising filesystem would treat as one file
   are refused as a pair. The destination is canonicalised with `realpath`, the
@@ -170,7 +242,40 @@ keep them:
   mostly structure.
 - **A lock belongs to one project.** Running `sync --project B` in a tree
   synced from project A is refused rather than allowed to use A's ledger to
-  decide what to delete.
+  decide what to delete — and `push --project B` there is refused for the same
+  reason, before a byte leaves the machine.
+- **A push sends only what you can name.** Every path it reads goes through the
+  same guarded walk the writes use, so a symlink standing where an instruction
+  file belongs refuses the push rather than being followed, hashed and
+  uploaded. Reserved paths (`.git/**`, `.fabric/**`,
+  `.claude/settings.local.json`) are refused from the lock and from `--add`
+  alike.
+- **A push is sent once.** The SDK's `submitChange` refuses retries for every
+  caller, not just this command: the client retries a POST on the premise that
+  its idempotency header protects it, and the change route does not honour that
+  header, so a retry of a request whose response was lost would open a second
+  proposal for the same edit — against a cap of five. `fabric instructions
+  push` also sets the same override itself. A failed push is repeated
+  deliberately.
+- **A failed push is closed out rather than left hanging.** A proposal that
+  gets as far as a row and then fails before its validation is started — a
+  storage outage mid-upload, an unreachable workflow service — is marked
+  rejected by the same request, instead of sitting open for the six hours the
+  server's abandonment sweep waits. It still occupies one of your five active
+  proposals until the next cleanup sweep clears its staged files, which is
+  what keeps those files findable; what changes is hours, not the count. Once
+  validation has been started the row is left alone, because by then it may
+  belong to a run already reading it.
+- **A name that will not install is refused on the way in.** Windows device
+  names (`CON.md`, `nul.txt`), names with a trailing dot or space, and NTFS
+  names containing any character Windows will not put in a filename
+  (`< > : " | ? *`, the colon also naming an NTFS alternate data stream) are
+  refused by the server as well as by this CLI, and two spellings of one name
+  that differ only by Unicode normalisation are treated as the collision they
+  are. A version that stores
+  is a version that installs. Files your ignore rules already exclude are
+  never judged on their names, and a file that predates these rules can
+  always still be **deleted** — that is how such a name gets fixed.
 - **A `sync` never reports success over a tree it has not checked.** An
   unchanged published digest is verified against the ledger before it is
   accepted, so an edited or deleted instruction file is repaired on the next
@@ -271,17 +376,53 @@ not edit `.gitignore`.
 | CLI commands | `packages/cli/src/commands/instructions/index.ts` |
 | Filesystem modules | `packages/cli/src/lib/instructions/` |
 | The one guarded writer | `packages/cli/src/lib/instructions/safe-write.ts` |
+| Push plan (local diff against the lock) | `packages/cli/src/lib/instructions/push.ts` |
 | SDK resource | `packages/sdk/src/resources/instructions.ts` |
 | REST routes | `packages/api/modules/v1/instructions.ts` |
+| The shared server entry point behind a change | `packages/api/modules/projects/procedures/instructions/submit-change.ts` |
+| MCP proposal tool | `apps/web/modules/saas/mcp/lib/gateway/platform-tools.ts` |
 
-The REST routes need an API key carrying `instructions:read`, and
-independently re-check that the key's creator still holds `INSTRUCTION_READ`
-on the project — the same permission the Coding Instructions tab requires, so
-the command line is neither broader nor narrower than the browser. The
-`GET .../instructions/published` route mirrors the MCP
+Two scopes, split along read and write:
+
+| Scope | Reaches | Live permission re-checked per call |
+|---|---|---|
+| `instructions:read` | `GET .../instructions/published`, `POST .../published/download` — `check`, `sync`, `init` | `INSTRUCTION_READ` |
+| `instructions:write` | `POST .../instructions/changes` — `push`, and the MCP tool `fabric_propose_project_instruction_change` | `INSTRUCTION_READ` |
+
+The scope is a ceiling and never a grant: every route independently re-checks
+that the key's creator still holds the permission the Coding Instructions tab
+requires for the same action, so the command line is neither broader nor
+narrower than the browser.
+
+`instructions:write` reads as a write scope a read-only role should not have,
+and it is deliberately one a viewer may carry. What it reaches is the proposal
+path — a suggestion somebody with edit rights approves or rejects — which is
+exactly what a viewer can already do in the tab on `INSTRUCTION_READ`.
+Withholding it would make the key narrower than the browser for the same
+person. Publishing is not reachable from this scope at all, and not because a
+per-call check refuses it: neither surface behind the scope has a publish mode
+to ask for.
+
+The Connect dialog mints `mcp:read`, `instructions:read` and
+`instructions:write` for the coding-instructions flow, and says before the key
+is created that a tool holding it can suggest a change held for review.
+
+The `GET .../instructions/published` route mirrors the MCP
 `fabric_get_project_instruction_bundle` tool's delta semantics: an equal
 `sinceDigest` is answered before any file row is read, and an unknown base
 answers `changes: null`, meaning "take a full copy".
+
+`POST .../instructions/changes` carries the changed files' bytes inline rather
+than through signed uploads — a change set is a handful of small text files, so
+a round trip per file buys nothing — and refuses a set over 50 changes or ~2 MB
+of content. It computes each file's size and sha256 itself; a client-supplied
+hash would only ever be a way to make the stored row disagree with the stored
+object. Everything after that is the tab's own path: the same derived-snapshot
+query, the same staging keys, the same validation workflow — whose publish
+step this path never enables — so the secret gate reads every file including
+the inherited ones. A refusal carries a
+`code` the CLI branches on — `PULL_FIRST`, `REPOSITORY_SOURCE_OF_TRUTH`,
+`NOTHING_PUBLISHED`, `PROPOSAL_PROPOSER_LIMIT`, `PROPOSAL_PROJECT_LIMIT`.
 
 The project supplies the tenant, which is what keeps an invited project guest
 working: they hold a `ProjectMember` row and no membership in the host

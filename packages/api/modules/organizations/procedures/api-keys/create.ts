@@ -62,6 +62,7 @@ export const ORG_API_KEY_SCOPES = [
 	"frames:read", // Read frames and slideshows
 	"frames:write", // Create, update and share frames
 	"instructions:read", // Read the published coding instructions of a project
+	"instructions:write", // Propose a change to a project's coding instructions
 	"chats:read", // Read AI chat threads
 	"audit_log:read", // Read the org's audit log via GET /api/v1/audit-log
 	"audit_log:export", // Export the org's audit log via GET /api/v1/audit-log/export
@@ -121,14 +122,35 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  * | `frames:read`          | `DIAGRAM_READ`              | yes     |
  * | `frames:write`         | `DIAGRAM_CREATE`/`_UPDATE`  | no      |
  * | `instructions:read`    | `INSTRUCTION_READ`          | yes     |
+ * | `instructions:write`   | `INSTRUCTION_READ`          | yes     |
  * | `chats:read`           | none — own threads only     | yes     |
  * | `audit_log:read`       | `ORG_AUDIT_LOG_READ`        | no      |
  * | `audit_log:export`     | `ORG_AUDIT_LOG_EXPORT`      | no      |
  * | `system_health:read`   | none — any authenticated    | yes     |
  * | `status_updates:read`  | none — any authenticated     | yes    |
  *
- * Four rows are worth their own sentence, because reading the scope name is
+ * Five rows are worth their own sentence, because reading the scope name is
  * not enough to get them right:
+ *
+ *   - `instructions:write` is the one WRITE scope on the read-only list, and it
+ *     is there because of what the surface behind it actually does: it opens a
+ *     PROPOSAL, which an editor then approves or rejects. Proposing is what a
+ *     viewer does in the Coding Instructions tab, on `INSTRUCTION_READ` — the
+ *     same permission `instructions:read` maps to, and one
+ *     `VIEWER_ORG_PERMISSIONS` holds. Leaving it off this list would make the
+ *     key narrower than the browser for the same person, which is the failure
+ *     this whole table exists to prevent.
+ *
+ *     Publishing is not reachable from this scope AT ALL, and that is a
+ *     property of the surfaces rather than of a per-call check: neither
+ *     `POST /projects/:id/instructions/changes` nor the MCP proposal tool has
+ *     a publish mode to ask for. It matters because the key is described to
+ *     the person minting it as review-gated — "nothing is published until
+ *     someone approves" — and a mode gated on the creator's permissions would
+ *     have made that description false for anyone who happened to hold
+ *     `INSTRUCTION_CREATE`. A scope has to mean the same thing whoever mints
+ *     it. Publishing from outside the browser needs its own scope, and does
+ *     not have one yet.
  *
  *   - `ai:models:read` sounds like a read and is not one. The only surface that
  *     honours it is `resolveModelForAgent`, which accepts it as an alternative
@@ -164,6 +186,10 @@ const READ_ONLY_ORG_API_KEY_SCOPES: ReadonlySet<OrgApiKeyScope> = new Set([
 	"workflows:read",
 	"frames:read",
 	"instructions:read",
+	// A write scope on the read-only list, deliberately. See the table above:
+	// what it reaches is the proposal path, which the viewer role already has
+	// in the browser on `INSTRUCTION_READ`.
+	"instructions:write",
 	"chats:read",
 	"system_health:read",
 	"status_updates:read",

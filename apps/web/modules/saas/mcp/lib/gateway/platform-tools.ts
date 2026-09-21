@@ -889,7 +889,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 			"Lists the coding instructions published for a project: the skills, agents, rules, entry files (CLAUDE.md, AGENTS.md), settings, scripts and knowledge docs a coding agent should follow on this project. " +
 			"Returns each file's path, kind, name, description and size. Call this to browse or search the published files before reading one with fabric_get_project_instruction; for a whole install use fabric_get_project_instruction_bundle instead. " +
 			"Project responses (fabric_get_project, fabric_list_projects) carry codingInstructions.published and the current digest, so you can skip this when nothing is published. " +
-			"Pass sinceDigest (the digest you last saw) to have the added/removed/changed paths reported alongside the usual file list; only a digest that still matches short-circuits, answering unchanged:true with no file list at all. changes:null means that digest is unknown here, so treat the list you got as a full refresh.",
+			"Pass sinceDigest (the digest you last saw) to have the added/removed/changed paths reported alongside the usual file list; only a digest that still matches short-circuits, answering unchanged:true with no file list at all. changes:null means that digest is unknown here, so treat the list you got as a full refresh. " +
+			"Keep the returned snapshot.id: fabric_propose_project_instruction_change requires it as baseSnapshotId.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -968,7 +969,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		description:
 			"Returns the manifest of the published coding instructions (snapshot id, version, digest, every file's path, sha256 and mode) and a short-lived URL to a zip of the whole approved tree, so a local agent or the Fabric CLI can install or refresh it in one call. " +
 			"Call this at the start of work on a project whose codingInstructions.published is true. " +
-			"Pass sinceDigest (the digest you last installed) to have the added/removed/changed paths reported alongside the usual manifest and zip URL; only a digest that still matches short-circuits, answering unchanged:true with no manifest and no zip URL. changes:null means that digest is unknown here, so install the whole tree.",
+			"Pass sinceDigest (the digest you last installed) to have the added/removed/changed paths reported alongside the usual manifest and zip URL; only a digest that still matches short-circuits, answering unchanged:true with no manifest and no zip URL. changes:null means that digest is unknown here, so install the whole tree. " +
+			"Keep the returned snapshot.id: fabric_propose_project_instruction_change requires it as baseSnapshotId.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -984,6 +986,67 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 			required: ["projectId"],
 		},
 		annotations: { readOnlyHint: true },
+		_gateway_source: "platform",
+	},
+	{
+		name: "fabric_propose_project_instruction_change",
+		description:
+			"Suggests an edit to a project's published coding instructions. Use this when working on a project turns up something its instructions get wrong, leave out, or no longer describe — a rule that has changed, a skill that needs a correction, a missing entry file. " +
+			"This does NOT change anything a project reads: it opens a proposal that somebody with permission to edit the instructions approves or rejects in Fabric's Coding Instructions tab. Say so when you report back, and do not describe the change as applied. " +
+			"Send the file's whole new content, not a patch: each change is 'put' (create or replace the file at that path) or 'delete'. Paths are the ones fabric_list_project_instructions reports. At most 50 changes in one call; for a wholesale replacement the folder is uploaded from the tab instead. " +
+			"baseSnapshotId is REQUIRED: pass the snapshot.id value that fabric_get_project_instruction_bundle or fabric_list_project_instructions returned — the version you actually read. A change written against a version that has since moved is refused rather than silently rebased; read the instructions again and redo the edit if it is.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				projectId: { type: "string", description: "Project ID" },
+				changes: {
+					type: "array",
+					minItems: 1,
+					maxItems: 50,
+					description:
+						"The files to create, replace or remove in this project's coding instructions.",
+					items: {
+						type: "object",
+						properties: {
+							op: {
+								type: "string",
+								enum: ["put", "delete"],
+								description:
+									"'put' writes the file at this path; 'delete' removes it.",
+							},
+							path: {
+								type: "string",
+								description:
+									"Path exactly as fabric_list_project_instructions reports it, relative to the tree root.",
+							},
+							content: {
+								type: "string",
+								description:
+									"The file's whole new content. Required for 'put', ignored for 'delete'.",
+							},
+							encoding: {
+								type: "string",
+								enum: ["utf8", "base64"],
+								description:
+									"How 'content' is encoded. Defaults to utf8; use base64 for a file that is not text.",
+							},
+						},
+						required: ["op", "path"],
+					},
+				},
+				baseSnapshotId: {
+					type: "string",
+					description:
+						"Required. The snapshot.id returned by fabric_list_project_instructions or fabric_get_project_instruction_bundle for the version you read. Not optional: without it a change cannot be told apart from one written against a version that has since been replaced.",
+					minLength: 1,
+					maxLength: 128,
+				},
+			},
+			required: ["projectId", "changes", "baseSnapshotId"],
+		},
+		// No `readOnlyHint`: this writes a row and starts a validation run.
+		// There is deliberately no `mode` argument either — this surface
+		// proposes, full stop. Publishing stays with a person in the tab.
 		_gateway_source: "platform",
 	},
 
@@ -1569,6 +1632,15 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 		scope: "instructions:read",
 		kind: "read",
 	},
+	// A write, so `mcp:write` satisfies it and `mcp:read` does not. The finer
+	// scope is `instructions:write`, which a viewer's key may carry: what it
+	// reaches is the proposal path, which is what a reader can already do in
+	// the Coding Instructions tab. The handler's own live permission check is
+	// what holds that line per call.
+	fabric_propose_project_instruction_change: {
+		scope: "instructions:write",
+		kind: "write",
+	},
 	fabric_create_project: { scope: "projects:write", kind: "write" },
 	fabric_update_project: { scope: "projects:write", kind: "write" },
 	fabric_create_document: { scope: "projects:write", kind: "write" },
@@ -1709,6 +1781,11 @@ export async function executePlatformTool(
 				return await handleGetProjectInstruction(args, session);
 			case "fabric_get_project_instruction_bundle":
 				return await handleGetProjectInstructionBundle(args, session);
+			case "fabric_propose_project_instruction_change":
+				return await handleProposeProjectInstructionChange(
+					args,
+					session,
+				);
 			case "fabric_list_workspaces":
 				return await handleListWorkspaces(args, session);
 			case "fabric_get_workspace":
@@ -4234,6 +4311,70 @@ type ResolvedInstructionSnapshot =
 	| { projectId: string; snapshot: null }
 	| { projectId: string; snapshot: PublishedInstructionSnapshot };
 
+/** The one answer every coding-instructions refusal gives for a project this caller may not reach. */
+const INSTRUCTION_PROJECT_DENIED = "Project not found or access denied";
+
+/**
+ * The caller's access to a project, or the refusal, for every
+ * coding-instructions tool.
+ *
+ * Two questions, and the second one is the reason this exists rather than a
+ * bare `getProjectAccessContext` call at each site:
+ *
+ *  - CAN this user reach the project at all? `getProjectAccessContext` answers
+ *    it, and it is deliberately project-authoritative: an invited guest holds a
+ *    `ProjectMember` row and no membership in the host organization, so a
+ *    membership-based check would refuse them for a project they can open in
+ *    the app.
+ *  - Is the CREDENTIAL allowed to act there? An `org_` key names its tenant in
+ *    the key record and must never reach another organization's project,
+ *    guest grant or not. The project-authoritative answer above says nothing
+ *    about that, so for an organization-key session the project's hosting
+ *    organization has to equal the session's — which is exactly what the REST
+ *    twin checks (`packages/api/modules/v1/instructions.ts`, "An ORGANIZATION
+ *    key stays bound to its own organization"). Without it, a key issued for
+ *    organization A whose creator is a guest on a project hosted by B reached
+ *    B — a read on the three read tools, and a WRITE once the proposal tool
+ *    landed.
+ *
+ * A personal key and a browser session keep the project-authoritative rule
+ * with no organization comparison, which is the browser's own rule for the
+ * same person.
+ *
+ * The refusal is identical either way, and generic: a caller must not learn
+ * from it that a project id exists in someone else's tenant.
+ *
+ * `organizationId` comes back possibly `null` — a personal project — and is
+ * passed on rather than refused here, because each caller already has its own
+ * fail-closed arm for it: the snapshot's non-null `organizationId` column can
+ * never equal `null`, and `requireHostingOrganizationId` inside
+ * `submitInstructionChange` throws FORBIDDEN. An organization key is refused
+ * for such a project by the comparison above, which is the stricter answer and
+ * the right one.
+ */
+async function resolveInstructionProjectAccess(
+	projectId: string,
+	session: GatewaySession,
+): Promise<{ organizationId: string | null } | { error: ToolCallResult }> {
+	const { getProjectAccessContext } = await import("@repo/database");
+	// Live access check first, unconditional (wildcard keys included). This
+	// is the same gate every other gateway handler applies before touching
+	// tenant data — `hasProjectAccess` is a thin boolean wrapper over this
+	// very call, so using the context form costs no extra query and also
+	// yields the project's hosting organization.
+	const access = await getProjectAccessContext(projectId, session.userId);
+	if (!access) {
+		return { error: errorResult(INSTRUCTION_PROJECT_DENIED) };
+	}
+	if (
+		session.credential === "organization-key" &&
+		access.organizationId !== session.organizationId
+	) {
+		return { error: errorResult(INSTRUCTION_PROJECT_DENIED) };
+	}
+	return { organizationId: access.organizationId };
+}
+
 async function resolvePublishedInstructionSnapshot(
 	args: Record<string, unknown>,
 	session: GatewaySession,
@@ -4242,17 +4383,11 @@ async function resolvePublishedInstructionSnapshot(
 	if (!projectId) {
 		return { error: errorResult("projectId is required") };
 	}
-	const { getProjectAccessContext, getPublishedInstructionSnapshot } =
-		await import("@repo/database");
-	// Live access check first, unconditional (wildcard keys included). This
-	// is the same gate every other gateway handler applies before touching
-	// tenant data — `hasProjectAccess` is a thin boolean wrapper over this
-	// very call, so using the context form costs no extra query and also
-	// yields the project's hosting organization.
-	const access = await getProjectAccessContext(projectId, session.userId);
-	if (!access) {
-		return { error: errorResult("Project not found or access denied") };
+	const access = await resolveInstructionProjectAccess(projectId, session);
+	if ("error" in access) {
+		return { error: access.error };
 	}
+	const { getPublishedInstructionSnapshot } = await import("@repo/database");
 	const snapshot = await getPublishedInstructionSnapshot(projectId);
 	if (
 		!snapshot ||
@@ -4595,6 +4730,250 @@ async function handleGetProjectInstructionBundle(
 		expiresInSeconds: 600,
 		...(delta ?? {}),
 	});
+}
+
+/**
+ * One change as the tool's caller states it, after the shape check below and
+ * before the server's own path/size rules.
+ */
+type ProposedInstructionChange =
+	| {
+			op: "put";
+			path: string;
+			content: string;
+			encoding?: "utf8" | "base64";
+	  }
+	| { op: "delete"; path: string };
+
+/** The server's cap on one change set, mirrored so the refusal is a tool message. */
+const MAX_PROPOSED_INSTRUCTION_CHANGES = 50;
+
+/**
+ * Read the `changes` argument, or say why it is not one.
+ *
+ * The gateway does not enforce a tool definition's `inputSchema` (see the
+ * `kind` check in `handleListProjectInstructions`), so everything the schema
+ * advertises is checked here — this value reaches a database write.
+ */
+function readProposedChanges(
+	args: Record<string, unknown>,
+): { changes: ProposedInstructionChange[] } | { error: ToolCallResult } {
+	const raw = args.changes;
+	if (!Array.isArray(raw) || raw.length === 0) {
+		return {
+			error: errorResult(
+				"changes must be a non-empty array of { op, path, content }.",
+			),
+		};
+	}
+	if (raw.length > MAX_PROPOSED_INSTRUCTION_CHANGES) {
+		return {
+			error: errorResult(
+				`Too many changes (${raw.length} > ${MAX_PROPOSED_INSTRUCTION_CHANGES}). A change set this large is a replacement rather than an edit; upload the folder from the project's Coding Instructions tab.`,
+			),
+		};
+	}
+	const changes: ProposedInstructionChange[] = [];
+	for (const entry of raw) {
+		if (typeof entry !== "object" || entry === null) {
+			return { error: errorResult("Each change must be an object.") };
+		}
+		const change = entry as Record<string, unknown>;
+		if (typeof change.path !== "string" || change.path.length === 0) {
+			return {
+				error: errorResult("Each change needs a non-empty path."),
+			};
+		}
+		if (change.op === "delete") {
+			changes.push({ op: "delete", path: change.path });
+			continue;
+		}
+		if (change.op !== "put") {
+			return {
+				error: errorResult('Each change needs op "put" or "delete".'),
+			};
+		}
+		if (typeof change.content !== "string") {
+			return {
+				error: errorResult(
+					`A put needs the file's whole new content as a string: ${change.path}`,
+				),
+			};
+		}
+		const encoding = change.encoding ?? "utf8";
+		if (encoding !== "utf8" && encoding !== "base64") {
+			return {
+				error: errorResult(
+					`encoding must be "utf8" or "base64": ${change.path}`,
+				),
+			};
+		}
+		changes.push({
+			op: "put",
+			path: change.path,
+			content: change.content,
+			encoding,
+		});
+	}
+	return { changes };
+}
+
+/**
+ * `fabric_propose_project_instruction_change` — suggest an edit to a project's
+ * coding instructions, for a person to approve.
+ *
+ * The tool always proposes and never publishes. That is not a permission
+ * shortcut, it is the product rule: an agent editing the instructions the next
+ * agent reads, with nobody in between, is the loop this feature exists to keep
+ * a person inside. Publishing is the Coding Instructions tab, and nothing the
+ * `instructions:write` scope reaches has a publish mode at all — which is what
+ * lets that scope be offered to read-only roles and described as
+ * review-gated without the description depending on who minted the key.
+ *
+ * Authorization is the shared function's, unchanged: `INSTRUCTION_READ` on the
+ * project, resolved live for this caller, in the project's own hosting
+ * organization. The `getProjectAccessContext` call below runs first only so a
+ * caller with no access gets this file's usual "not found or access denied"
+ * rather than a permission message that confirms the project exists.
+ */
+async function handleProposeProjectInstructionChange(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const projectId = args.projectId as string;
+	if (!projectId) {
+		return errorResult("projectId is required");
+	}
+	// REQUIRED. When it was optional the server fell back to whatever is
+	// published NOW, which meant an agent that read v7, thought for a minute
+	// and sent its edit while a teammate published v8 had that edit rebased
+	// onto v8 in silence — reverting v8's changes to the files it touched. An
+	// agent cannot notice that; the only defence is making it say which
+	// version it read.
+	const baseSnapshotId = args.baseSnapshotId;
+	if (
+		typeof baseSnapshotId !== "string" ||
+		baseSnapshotId.length === 0 ||
+		baseSnapshotId.length > 128
+	) {
+		return errorResult(
+			"baseSnapshotId is required: the snapshot.id of the published version you read. Call fabric_get_project_instruction_bundle or fabric_list_project_instructions first and pass the snapshot.id it returns.",
+		);
+	}
+	const parsed = readProposedChanges(args);
+	if ("error" in parsed) {
+		return parsed.error;
+	}
+
+	// Live access check first, unconditional (wildcard keys included), and the
+	// organization-key binding with it — the same shared gate the read tools
+	// run. An `org_` key must not WRITE into another organization's project
+	// because its creator happens to be a guest there.
+	const access = await resolveInstructionProjectAccess(projectId, session);
+	if ("error" in access) {
+		return access.error;
+	}
+
+	const { submitInstructionChange } = await import(
+		"@repo/api/modules/projects/procedures/instructions/submit-change"
+	);
+	try {
+		const result = await submitInstructionChange({
+			userId: session.userId,
+			projectId,
+			baseSnapshotId,
+			changes: parsed.changes,
+			// The same synthetic context `announceStoryCreated` builds: there
+			// is no HTTP request in scope at this layer, so ip / user-agent /
+			// request-id resolve to null rather than being invented, and the
+			// session id is the gateway's own correlation handle.
+			audit: {
+				user: {
+					id: session.userId,
+					email: session.email,
+					name: session.userName,
+				},
+				session: {
+					id: session.sessionId,
+					activeOrganizationId: session.organizationId,
+				},
+			},
+			via: "mcp-gateway",
+		});
+		return jsonResult({
+			proposal: {
+				snapshotId: result.snapshotId,
+				version: result.version,
+				baseVersion: result.baseVersion,
+				status: result.proposalStatus,
+				changedFiles: result.putCount,
+				deletedFiles: result.deleteCount,
+				fileCount: result.fileCount,
+			},
+			message:
+				`Proposed version ${result.version} of this project's coding instructions, based on version ${result.baseVersion}. ` +
+				"It is PENDING REVIEW: nothing has changed for anyone reading the instructions, and nothing will until somebody who can edit them approves it in Fabric's Coding Instructions tab. " +
+				"Tell the user you suggested the change and that it is waiting for their review.",
+		});
+	} catch (error) {
+		// Only the shared function's OWN refusals are quoted back. Those are
+		// `ORPCError`s with a known code and a message written for a person —
+		// "this project's instructions come from its repository", "you already
+		// have five active proposals", and so on — and an agent can act on
+		// them.
+		//
+		// Everything else is repeated verbatim at its peril: a Prisma error
+		// names columns and constraints, an S3 error names the bucket and the
+		// object key, a Temporal error names the task queue and the cluster.
+		// None of that is the caller's to see, and this handler hands its
+		// string straight to a model that will put it in a transcript. So an
+		// unrecognised failure gets one generic sentence and the detail goes
+		// to the server log, the way the neighbouring handlers log theirs.
+		const refusal = instructionRefusalMessage(error);
+		if (refusal !== null) {
+			return errorResult(refusal);
+		}
+		console.error(
+			"[MCP Gateway] fabric_propose_project_instruction_change failed:",
+			error,
+		);
+		return errorResult(
+			"The proposal could not be created because of an internal error. Nothing was changed. Try again, or use the project's Coding Instructions tab.",
+		);
+	}
+}
+
+/**
+ * The message for a refusal `submitInstructionChange` raised deliberately, or
+ * `null` when the failure is something else entirely.
+ *
+ * Matched on the `ORPCError` shape rather than on `instanceof`: this module is
+ * loaded in the Next.js app and `@orpc/client` is reached through a dynamic
+ * import of `@repo/api`, so an identity check across that boundary is a
+ * fragile thing to make a disclosure decision on. The codes listed are exactly
+ * the ones the shared function and `change-set.ts` raise.
+ */
+function instructionRefusalMessage(error: unknown): string | null {
+	const APPLICATION_CODES = new Set([
+		"BAD_REQUEST",
+		"CONFLICT",
+		"FORBIDDEN",
+		"NOT_FOUND",
+		"PRECONDITION_FAILED",
+	]);
+	if (typeof error !== "object" || error === null) {
+		return null;
+	}
+	const candidate = error as { code?: unknown; message?: unknown };
+	if (
+		typeof candidate.code !== "string" ||
+		!APPLICATION_CODES.has(candidate.code) ||
+		typeof candidate.message !== "string" ||
+		candidate.message.length === 0
+	) {
+		return null;
+	}
+	return candidate.message;
 }
 
 /**

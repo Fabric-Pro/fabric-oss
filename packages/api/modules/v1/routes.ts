@@ -12,6 +12,7 @@
  *   POST /auth/keys          → Create an API key
  *   DELETE /auth/keys/:id    → Revoke an API key
  *   GET  /orgs               → List orgs the caller belongs to
+ *   POST /projects/:id/instructions/changes → Propose or publish a coding-instructions change
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -61,6 +62,7 @@ const CLI_SCOPES = [
 	"frames:read",
 	"frames:write",
 	"instructions:read",
+	"instructions:write",
 	"reports:read",
 	"reports:write",
 	"skills:read",

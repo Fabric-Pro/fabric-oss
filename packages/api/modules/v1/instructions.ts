@@ -3,9 +3,10 @@
  *
  *   GET  /projects/:projectId/instructions/published            manifest + delta
  *   POST /projects/:projectId/instructions/published/download   signed zip URL
+ *   POST /projects/:projectId/instructions/changes              propose a change, for review
  *
  * These exist so `@fabricorg/cli` can keep a working tree current
- * (`fabric instructions check | sync | init`). The oRPC twins under
+ * (`fabric instructions check | sync | init | push`). The oRPC twins under
  * `modules/projects/procedures/instructions/` are `tenantProtectedProcedure`
  * — Better Auth session cookie only — so no API key can reach them, and the
  * MCP gateway's `fabric_get_project_instruction_bundle` needs an MCP client
@@ -31,6 +32,10 @@ import type {
 	ExternalApiVariables,
 } from "../external-api/types";
 import { buildInstructionSnapshotZip } from "../projects/procedures/instructions/build-zip";
+// Type-only: the implementation is imported lazily in the handler below, so
+// registering these routes does not pull the Temporal client and the storage
+// provider into the module graph of every request that never writes.
+import type { InlineInstructionChange } from "../projects/procedures/instructions/submit-change";
 import { badRequest, forbidden, notFound, ok } from "./helpers";
 
 /** The longest `sinceDigest` accepted, mirroring the MCP tools' input schemas. */
@@ -239,6 +244,140 @@ function isOrpcNotFound(error: unknown): boolean {
 	);
 }
 
+/**
+ * The HTTP status and the machine-readable reason code for one of
+ * `submitInstructionChange`'s refusals.
+ *
+ * The shared function signals with `ORPCError`, because its other two callers
+ * are an oRPC-shaped surface and the MCP gateway. Translating here keeps this
+ * file's existing error style — `{ error: { message, code } }` plus a status —
+ * and gives the CLI something to branch on without parsing prose:
+ * `PULL_FIRST` means sync and try again, `REPOSITORY_SOURCE_OF_TRUTH` means the
+ * project's instructions live in git, and the two proposal-cap codes mean wait
+ * for a decision.
+ *
+ * The field is `code` and not `reason` because that is the one the SDK already
+ * reads off an error body and hands back as `FabricError.code`
+ * (`packages/sdk/src/client.ts`). A second name would be a field every client
+ * has to be taught about separately.
+ *
+ * `BASE_NOT_PUBLISHED` is re-labelled `PULL_FIRST` on the way out: that is the
+ * spec's name for it (§6.12) and the one a command-line client reads, while
+ * the tab's copy speaks about reloading a page there is none of here.
+ */
+function submitChangeFailure(error: unknown): {
+	status: 400 | 403 | 404 | 409 | 412;
+	message: string;
+	code?: string;
+} | null {
+	if (typeof error !== "object" || error === null || !("code" in error)) {
+		return null;
+	}
+	const orpc = error as {
+		code?: unknown;
+		message?: unknown;
+		data?: { reason?: unknown };
+	};
+	const message =
+		typeof orpc.message === "string" ? orpc.message : "Request refused";
+	const rawReason =
+		typeof orpc.data?.reason === "string" ? orpc.data.reason : undefined;
+	const code = rawReason === "BASE_NOT_PUBLISHED" ? "PULL_FIRST" : rawReason;
+	switch (orpc.code) {
+		case "BAD_REQUEST":
+			return { status: 400, message, code };
+		case "FORBIDDEN":
+			return { status: 403, message, code };
+		case "NOT_FOUND":
+			return { status: 404, message, code };
+		case "CONFLICT":
+			return { status: 409, message, code };
+		case "PRECONDITION_FAILED":
+			return { status: 412, message, code };
+		default:
+			return null;
+	}
+}
+
+/** The longest `baseSnapshotId` this route will carry into a query. */
+const SNAPSHOT_ID_MAX_LENGTH = 128;
+
+/**
+ * The request body, shaped, or the refusal for one that is not.
+ *
+ * Validated here rather than left to the shared function because this is the
+ * boundary where untyped JSON arrives: `submitInstructionChange` takes a typed
+ * change list and enforces the SEMANTIC bounds (path rules, per-file and total
+ * size, the 50-change cap), and neither should be duplicated. What this adds is
+ * only the shape.
+ */
+function readChangeBody(body: unknown):
+	| {
+			baseSnapshotId: string;
+			changes: InlineInstructionChange[];
+	  }
+	| { error: string } {
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		return { error: "Body must be a JSON object." };
+	}
+	const raw = body as Record<string, unknown>;
+
+	// REQUIRED, and the message says where to get it. Defaulting it to the
+	// currently published snapshot — which is what this used to do when it
+	// was absent — turns the stale-base check off for anyone who leaves it
+	// out, and leaves them no way to find out they are overwriting a version
+	// they never read.
+	if (
+		typeof raw.baseSnapshotId !== "string" ||
+		raw.baseSnapshotId.length === 0 ||
+		raw.baseSnapshotId.length > SNAPSHOT_ID_MAX_LENGTH
+	) {
+		return {
+			error: `baseSnapshotId is required: the id of the published snapshot this change is based on, as GET /projects/{projectId}/instructions/published returns it. It must be a string of 1 to ${SNAPSHOT_ID_MAX_LENGTH} characters.`,
+		};
+	}
+	const baseSnapshotId = raw.baseSnapshotId;
+
+	if (!Array.isArray(raw.changes)) {
+		return { error: "changes must be an array." };
+	}
+	const changes: InlineInstructionChange[] = [];
+	for (const entry of raw.changes) {
+		if (typeof entry !== "object" || entry === null) {
+			return { error: "Each change must be an object." };
+		}
+		const change = entry as Record<string, unknown>;
+		if (typeof change.path !== "string" || change.path.length === 0) {
+			return { error: "Each change needs a non-empty path." };
+		}
+		if (change.op === "delete") {
+			changes.push({ op: "delete", path: change.path });
+			continue;
+		}
+		if (change.op !== "put") {
+			return { error: 'Each change needs op "put" or "delete".' };
+		}
+		if (typeof change.content !== "string") {
+			return {
+				error: `A put needs a string content: ${change.path}`,
+			};
+		}
+		const encoding = change.encoding ?? "utf8";
+		if (encoding !== "utf8" && encoding !== "base64") {
+			return {
+				error: `encoding must be "utf8" or "base64": ${change.path}`,
+			};
+		}
+		changes.push({
+			op: "put",
+			path: change.path,
+			content: change.content,
+			encoding,
+		});
+	}
+	return { baseSnapshotId, changes };
+}
+
 /** The settings query stores nothing until someone sets it; absent means UPLOAD, as the tab reads it. */
 async function resolveSourceOfTruth(
 	projectId: string,
@@ -439,6 +578,116 @@ export function registerInstructionRoutes(
 					expiresInSeconds: DOWNLOAD_URL_EXPIRES_IN_SECONDS,
 				}),
 			);
+		},
+	);
+
+	/**
+	 * POST /projects/:projectId/instructions/changes
+	 *
+	 * The write half of this surface, and the reason `instructions:write`
+	 * exists: `fabric instructions push` sends the diff between a checkout and
+	 * the snapshot its lock names, with the changed files' bytes inline, and
+	 * gets back a proposal an editor reviews in the tab.
+	 *
+	 * TWO gates, as every key-backed surface here owes (AGENTS.md): the key's
+	 * declared scope, checked by `requireScope("instructions:write")`, and the
+	 * creator's live permission on the project, checked inside
+	 * `submitInstructionChange` against `INSTRUCTION_READ` — exactly what the
+	 * tab requires of the same person to propose.
+	 *
+	 * It only ever opens a PROPOSAL. There is no `mode`, so no key reaching
+	 * this route can publish, whatever its creator's permissions are. That is
+	 * what lets `instructions:write` be offered to read-only roles and
+	 * described as review-gated without the description being a half-truth.
+	 *
+	 * `baseSnapshotId` is required, because it is the whole of the stale-base
+	 * protection: see `readChangeBody`.
+	 *
+	 * The tenant comes from `resolveInstructionProject`, the same resolution
+	 * the two read routes use and for the same reason: the PROJECT decides
+	 * which organization this acts in, which keeps an invited guest — who is a
+	 * member of no organization here — able to suggest a change to a project
+	 * they can open in the app. No `organizationId` is read from the request on
+	 * any path.
+	 */
+	app.post(
+		"/projects/:projectId/instructions/changes",
+		requireScope("instructions:write"),
+		async (c) => {
+			const apiCtx = c.get("externalApiContext");
+			const projectId = c.req.param("projectId")!;
+
+			let rawBody: unknown;
+			try {
+				rawBody = await c.req.json();
+			} catch {
+				return c.json(badRequest("Invalid JSON body"), 400);
+			}
+			const body = readChangeBody(rawBody);
+			if ("error" in body) {
+				return c.json(badRequest(body.error), 400);
+			}
+
+			const resolved = await resolveInstructionProject(
+				projectId,
+				apiCtx,
+				{
+					org: c.req.query("org"),
+					personal: c.req.query("personal") === "1",
+				},
+			);
+			if ("error" in resolved) {
+				return c.json({ error: resolved.error }, resolved.status);
+			}
+
+			// The audit row snapshots the actor's email and name, and this
+			// surface has no session to read them from. One indexed point
+			// lookup, on a write path that is already doing far more than one
+			// query, beats an audit row whose actor is an id and nothing else.
+			const actor = await db.user.findUnique({
+				where: { id: resolved.userId },
+				select: { email: true, name: true },
+			});
+
+			const { submitInstructionChange } = await import(
+				"../projects/procedures/instructions/submit-change"
+			);
+			try {
+				const result = await submitInstructionChange({
+					userId: resolved.userId,
+					projectId,
+					baseSnapshotId: body.baseSnapshotId,
+					changes: body.changes,
+					// No HTTP request headers are threaded through this
+					// surface, so ip / user-agent / request-id resolve to null
+					// rather than being invented. The actor is the key's
+					// resolved user, which is who the permission checks ran
+					// for.
+					audit: {
+						user: {
+							id: resolved.userId,
+							email: actor?.email ?? "",
+							name: actor?.name ?? null,
+						},
+					},
+					via: `v1:${apiCtx.keyType}-key`,
+				});
+				return c.json(ok(result));
+			} catch (error) {
+				const failure = submitChangeFailure(error);
+				if (!failure) {
+					throw error;
+				}
+				return c.json(
+					{
+						error: {
+							message: failure.message,
+							...(failure.code ? { code: failure.code } : {}),
+						},
+					},
+					failure.status,
+				);
+			}
 		},
 	);
 }

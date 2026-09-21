@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
 	getProjectAccessContext: vi.fn(),
+	submitInstructionChange: vi.fn(),
 	getPublishedInstructionSnapshot: vi.fn(),
 	getPublishedInstructionSummariesForProjects: vi.fn(),
 	getInstructionManifestDiff: vi.fn(),
@@ -49,12 +50,38 @@ vi.mock("@repo/api/modules/projects/procedures/instructions/build-zip", () => ({
 		m.buildInstructionSnapshotZip(...a),
 }));
 
-import { executePlatformTool } from "../../../../modules/saas/mcp/lib/gateway/platform-tools";
+// The shared entry point, mocked: its own authorization, path rules and
+// storage writes are covered in `submit-change.test.ts`. What this file owns
+// is the TOOL — its argument checking, the live access gate it runs first, and
+// the words it hands back to an agent.
+vi.mock(
+	"@repo/api/modules/projects/procedures/instructions/submit-change",
+	() => ({
+		submitInstructionChange: (...a: unknown[]) =>
+			m.submitInstructionChange(...a),
+	}),
+);
+
+import {
+	executePlatformTool,
+	PLATFORM_TOOL_DEFINITIONS,
+	TOOL_SCOPES,
+} from "../../../../modules/saas/mcp/lib/gateway/platform-tools";
 
 const session = {
 	userId: "user_1",
 	organizationId: "org_1",
 	scopes: ["instructions:read"],
+} as never;
+
+/** The same session with the write scope the proposal tool requires. */
+const writeSession = {
+	userId: "user_1",
+	userName: "Example Developer",
+	email: "dev@example.com",
+	sessionId: "gateway_session_1",
+	organizationId: "org_1",
+	scopes: ["instructions:read", "instructions:write"],
 } as never;
 
 beforeEach(() => {
@@ -1015,5 +1042,662 @@ describe("a READY snapshot without a digest", () => {
 
 		expect(r.isError).toBe(true);
 		expect(m.getInstructionManifestDiff).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// fabric_propose_project_instruction_change
+// ---------------------------------------------------------------------------
+/**
+ * The write tool (Fizzy #2539).
+ *
+ * It proposes and never publishes: there is no `mode` argument, and the
+ * response has to say in words that nothing has changed yet, because that
+ * sentence is what an agent repeats to the person it is working with.
+ */
+describe("fabric_propose_project_instruction_change", () => {
+	function accepted(overrides: Record<string, unknown> = {}) {
+		return {
+			snapshotId: "snap_new",
+			version: 8,
+			baseSnapshotId: "snap_1",
+			baseVersion: 7,
+			fileCount: 12,
+			inheritedCount: 11,
+			putCount: 1,
+			deleteCount: 0,
+			proposalStatus: "PENDING",
+			mode: "proposal",
+			status: "VALIDATING",
+			...overrides,
+		};
+	}
+
+	const change = {
+		op: "put",
+		path: "AGENTS.md",
+		content: "# Updated\n",
+	};
+
+	it("proposes the change and says it is pending review", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.submitInstructionChange.mockResolvedValue(accepted());
+
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [change],
+				baseSnapshotId: "snap_1",
+			},
+			writeSession,
+		);
+
+		expect(r.isError).toBeFalsy();
+		const text = JSON.stringify(r);
+		expect(text).toContain("PENDING");
+		expect(text).toContain("approves it");
+		expect(m.submitInstructionChange).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: "user_1",
+				projectId: "proj_1",
+				baseSnapshotId: "snap_1",
+				changes: [{ ...change, encoding: "utf8" }],
+				via: "mcp-gateway",
+			}),
+		);
+	});
+
+	// Built the way `announceStoryCreated` builds one: no HTTP request exists
+	// at this layer, so the gateway session supplies the actor and the
+	// correlation handle.
+	it("passes an audit context built from the gateway session", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.submitInstructionChange.mockResolvedValue(accepted());
+
+		await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [change],
+				baseSnapshotId: "snap_1",
+			},
+			writeSession,
+		);
+
+		expect(m.submitInstructionChange).toHaveBeenCalledWith(
+			expect.objectContaining({
+				audit: {
+					user: {
+						id: "user_1",
+						email: "dev@example.com",
+						name: "Example Developer",
+					},
+					session: {
+						id: "gateway_session_1",
+						activeOrganizationId: "org_1",
+					},
+				},
+			}),
+		);
+	});
+
+	// The live access check, first and unconditional, exactly as the read
+	// handlers do it — and with the same wording, so nothing here confirms
+	// that a project id exists in another tenant.
+	it("refuses a caller with no project access, before proposing anything", async () => {
+		m.getProjectAccessContext.mockResolvedValue(null);
+
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_other",
+				changes: [change],
+				baseSnapshotId: "snap_1",
+			},
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain("not found or access denied");
+		expect(m.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it("requires a projectId", async () => {
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{ changes: [change] },
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(m.getProjectAccessContext).not.toHaveBeenCalled();
+	});
+
+	// The gateway does not enforce a tool definition's `inputSchema`, so every
+	// bound it advertises is re-checked in the handler — these values reach a
+	// database write.
+	it("refuses an empty change set", async () => {
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{ projectId: "proj_1", changes: [] },
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(m.getProjectAccessContext).not.toHaveBeenCalled();
+	});
+
+	it("refuses more than 50 changes and points at the tab", async () => {
+		const changes = Array.from({ length: 51 }, (_, i) => ({
+			op: "put",
+			path: `rules/${i}.md`,
+			content: "x",
+		}));
+
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{ projectId: "proj_1", changes, baseSnapshotId: "snap_1" },
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain("Coding Instructions tab");
+		expect(m.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it("refuses a put with no content", async () => {
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [{ op: "put", path: "AGENTS.md" }],
+			},
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(m.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it("refuses an unknown op", async () => {
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [{ op: "append", path: "AGENTS.md", content: "x" }],
+			},
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+	});
+
+	/**
+	 * `baseSnapshotId` is required, and the requirement is the stale-base
+	 * protection in its entirety.
+	 *
+	 * It used to be optional, and the server then fell back to whatever was
+	 * published now. An agent that read v7, spent a minute composing an edit
+	 * and sent it while a person published v8 had that edit rebased onto v8
+	 * in silence — reverting v8's changes to the files it touched, with
+	 * nothing in the response saying so. An agent cannot notice that; the
+	 * only defence is making it state which version it read.
+	 */
+	it("refuses a proposal that names no base, and says where to get one", async () => {
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{ projectId: "proj_1", changes: [change] },
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		const text = JSON.stringify(r);
+		expect(text).toContain("baseSnapshotId is required");
+		expect(text).toContain("fabric_get_project_instruction_bundle");
+		expect(m.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it("declares baseSnapshotId required in its schema", () => {
+		const tool = PLATFORM_TOOL_DEFINITIONS.find(
+			(t) => t.name === "fabric_propose_project_instruction_change",
+		);
+		expect(
+			(tool?.inputSchema as { required?: string[] }).required,
+		).toContain("baseSnapshotId");
+	});
+
+	// The id an agent needs has to be in something it already calls. Both read
+	// tools put it on `snapshot.id`, on the changed path and the unchanged
+	// one alike, so there is never a call that leaves the agent without it.
+	it.each([
+		"fabric_list_project_instructions",
+		"fabric_get_project_instruction_bundle",
+	])("%s reports the snapshot id an agent must pass back", async (tool) => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.getPublishedInstructionSnapshot.mockResolvedValue({
+			id: "snap_1",
+			version: 7,
+			status: "READY",
+			digest: "d",
+			fileCount: 1,
+			projectId: "proj_1",
+			organizationId: "org_1",
+		});
+		m.listInstructionFiles.mockResolvedValue([]);
+		m.buildInstructionSnapshotZip.mockResolvedValue({
+			key: "k",
+			bucket: "b",
+		});
+		m.getSignedUrl.mockResolvedValue("https://example.com/zip");
+
+		const r = await executePlatformTool(
+			tool,
+			{ projectId: "proj_1" },
+			session,
+		);
+
+		const payload = JSON.parse((r.content[0] as { text: string }).text) as {
+			snapshot?: { id?: string };
+		};
+		expect(payload.snapshot?.id).toBe("snap_1");
+	});
+
+	it("refuses an overlong baseSnapshotId before touching the project", async () => {
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [change],
+				baseSnapshotId: "x".repeat(129),
+			},
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(m.getProjectAccessContext).not.toHaveBeenCalled();
+	});
+
+	it("accepts a delete with no content", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.submitInstructionChange.mockResolvedValue(
+			accepted({ putCount: 0, deleteCount: 1 }),
+		);
+
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [{ op: "delete", path: "old.md" }],
+				baseSnapshotId: "snap_1",
+			},
+			writeSession,
+		);
+
+		expect(r.isError).toBeFalsy();
+		expect(m.submitInstructionChange).toHaveBeenCalledWith(
+			expect.objectContaining({
+				changes: [{ op: "delete", path: "old.md" }],
+			}),
+		);
+	});
+
+	// A refusal from the shared function is written for a person already; it
+	// must reach the agent as a tool error rather than a success with a
+	// confusing body.
+	//
+	// The fixture carries a `code`, which is what `submitInstructionChange`
+	// actually throws (an `ORPCError`), and what the handler now requires
+	// before quoting a message back — see "the proposal tool's error surface"
+	// below for the other half of that rule.
+	it("reports a refusal from the shared entry point as a tool error", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.submitInstructionChange.mockRejectedValue(
+			Object.assign(
+				new Error(
+					"This project's coding instructions come from its repository.",
+				),
+				{ code: "PRECONDITION_FAILED" },
+			),
+		);
+
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [change],
+				baseSnapshotId: "snap_1",
+			},
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain("repository");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Scope isolation
+// ---------------------------------------------------------------------------
+/**
+ * The read scope must not reach the write tool. `instructions:read` is what
+ * the Connect dialog has been minting and what a session-start hook needs;
+ * if it also proposed changes, every key already in the field would have
+ * gained a capability its holder never agreed to.
+ */
+describe("the proposal tool's scope", () => {
+	it("is instructions:write, as a write", () => {
+		expect(TOOL_SCOPES.fabric_propose_project_instruction_change).toEqual({
+			scope: "instructions:write",
+			kind: "write",
+		});
+	});
+
+	it("is not satisfied by instructions:read", async () => {
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{ projectId: "proj_1", changes: [] },
+			session,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain("instructions:write");
+		expect(m.getProjectAccessContext).not.toHaveBeenCalled();
+	});
+
+	// `mcp:read` is the umbrella the gateway applies to every READ tool, and
+	// the Connect dialog mints it. It must stop at the boundary this tool sits
+	// on the far side of.
+	it("is not satisfied by the coarse mcp:read umbrella", async () => {
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{ projectId: "proj_1", changes: [] },
+			{ ...(session as object), scopes: ["mcp:read"] } as never,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain("instructions:write");
+	});
+
+	it("is satisfied by the coarse mcp:write umbrella", async () => {
+		m.getProjectAccessContext.mockResolvedValue(null);
+
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [{ op: "delete", path: "a.md" }],
+				baseSnapshotId: "snap_1",
+			},
+			{ ...(session as object), scopes: ["mcp:write"] } as never,
+		);
+
+		// Past the scope gate and refused by the ACCESS gate instead, which is
+		// what proves the scope was satisfied.
+		expect(JSON.stringify(r)).toContain("not found or access denied");
+	});
+
+	// The read tools must not have moved: they are what a session-start hook
+	// and the Connect dialog's key depend on.
+	it("leaves the read tools on instructions:read", () => {
+		expect(TOOL_SCOPES.fabric_list_project_instructions).toEqual({
+			scope: "instructions:read",
+			kind: "read",
+		});
+		expect(TOOL_SCOPES.fabric_get_project_instruction_bundle).toEqual({
+			scope: "instructions:read",
+			kind: "read",
+		});
+	});
+});
+
+// A write tool must not advertise itself as one a client may call freely.
+describe("the proposal tool's definition", () => {
+	it("carries no readOnlyHint", () => {
+		const tool = PLATFORM_TOOL_DEFINITIONS.find(
+			(t) => t.name === "fabric_propose_project_instruction_change",
+		);
+		expect(tool).toBeDefined();
+		expect(tool?.annotations?.readOnlyHint).toBeUndefined();
+	});
+
+	/**
+	 * There is no `mode`, and the absence is a security property rather than
+	 * a missing feature.
+	 *
+	 * The tool is reachable with `instructions:write`, which the Connect
+	 * dialog offers to read-only roles and describes as review-gated. A
+	 * publish mode gated on the caller's permissions would make that
+	 * description false for anyone who happened to hold the publishing
+	 * permission, so the scope would no longer describe what the key can do.
+	 * Publishing stays with a person in the tab.
+	 */
+	it("offers an agent no way to publish", () => {
+		const tool = PLATFORM_TOOL_DEFINITIONS.find(
+			(t) => t.name === "fabric_propose_project_instruction_change",
+		);
+		const properties = (
+			tool?.inputSchema as { properties?: Record<string, unknown> }
+		).properties;
+		expect(properties).not.toHaveProperty("mode");
+		expect(properties).toHaveProperty("changes");
+	});
+});
+
+/**
+ * An organization API key is bound to the organization it was issued in. Its
+ * creator may well be a legitimate guest of a project in ANOTHER organization
+ * — `getProjectAccessContext` says yes, correctly — but the KEY is not, and
+ * an `org_` key minted in one tenant must not read or write a project hosted
+ * in another. The scope check and the live access check both pass here; this
+ * is the third question, and it is the one the credential answers.
+ *
+ * These run the REAL handler against a mocked database, so what is asserted
+ * is the refusal the shared gate produces and the fact that nothing past it
+ * was reached.
+ */
+describe("organization-key tenant binding", () => {
+	/** An `org_`-key session for org_1. */
+	const orgKeySession = {
+		userId: "user_1",
+		userName: "Example Developer",
+		email: "dev@example.com",
+		sessionId: "gateway_session_1",
+		organizationId: "org_1",
+		credential: "organization-key",
+		scopes: ["instructions:read", "instructions:write"],
+	} as never;
+
+	beforeEach(() => {
+		// The caller genuinely has access to the project — as a guest of the
+		// OTHER organization. Nothing below is a permission failure.
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_2",
+		});
+	});
+
+	it("refuses a read tool a project outside the key's organization", async () => {
+		const r = await executePlatformTool(
+			"fabric_list_project_instructions",
+			{ projectId: "proj_elsewhere" },
+			orgKeySession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("refuses the bundle tool a project outside the key's organization", async () => {
+		const r = await executePlatformTool(
+			"fabric_get_project_instruction_bundle",
+			{ projectId: "proj_elsewhere" },
+			orgKeySession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.buildInstructionSnapshotZip).not.toHaveBeenCalled();
+	});
+
+	it("refuses the proposal tool before the shared entry point is reached", async () => {
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_elsewhere",
+				changes: [{ op: "put", path: "AGENTS.md", content: "x\n" }],
+				baseSnapshotId: "snap_1",
+			},
+			orgKeySession,
+		);
+
+		expect(r.isError).toBe(true);
+		// The refusal is the gateway's own. `submitInstructionChange` would
+		// resolve the project's hosting organization and never see the key at
+		// all, so it cannot be the thing that answers this question.
+		expect(m.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it("says the same thing for a project outside the key as for one that does not exist", async () => {
+		const outside = await executePlatformTool(
+			"fabric_list_project_instructions",
+			{ projectId: "proj_elsewhere" },
+			orgKeySession,
+		);
+		m.getProjectAccessContext.mockResolvedValue(null);
+		const missing = await executePlatformTool(
+			"fabric_list_project_instructions",
+			{ projectId: "proj_nonexistent" },
+			orgKeySession,
+		);
+
+		// Two different reasons must not be two different messages: the
+		// difference tells an `org_` key holder which project ids exist
+		// elsewhere.
+		expect(outside.content).toEqual(missing.content);
+	});
+
+	// A personal-key or browser-session caller is the PERSON, not a tenant
+	// credential, so a project they are a guest of stays reachable.
+	it("leaves a personal-key caller's cross-organization access alone", async () => {
+		m.getPublishedInstructionSnapshot.mockResolvedValue(null);
+
+		await executePlatformTool(
+			"fabric_list_project_instructions",
+			{ projectId: "proj_elsewhere" },
+			{
+				...(orgKeySession as object),
+				credential: "personal-key",
+			} as never,
+		);
+
+		expect(m.getPublishedInstructionSnapshot).toHaveBeenCalled();
+	});
+});
+
+/**
+ * An unexpected failure inside the shared entry point must not be quoted back
+ * to the agent. A refusal it wrote for a person is safe and useful; a database
+ * or storage error message is neither, and an agent will happily repeat it
+ * into a commit message or a chat transcript.
+ */
+describe("the proposal tool's error surface", () => {
+	beforeEach(() => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+	});
+
+	const call = () =>
+		executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [{ op: "put", path: "AGENTS.md", content: "x\n" }],
+				baseSnapshotId: "snap_1",
+			},
+			writeSession,
+		);
+
+	it("does not quote a generic error back to the agent", async () => {
+		const logged = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+		m.submitInstructionChange.mockRejectedValue(
+			new Error("connect ECONNREFUSED 10.0.0.4:5432"),
+		);
+
+		const r = await call();
+
+		expect(r.isError).toBe(true);
+		const text = JSON.stringify(r.content);
+		expect(text).not.toContain("ECONNREFUSED");
+		expect(text).not.toContain("10.0.0.4");
+		expect(text).toContain("internal error");
+		// The operator still gets it.
+		expect(logged).toHaveBeenCalled();
+		logged.mockRestore();
+	});
+});
+
+/**
+ * The scope an agent reaches this tool with cannot publish, and cannot be
+ * made to.
+ */
+describe("what instructions:write can reach", () => {
+	it("maps only the proposal tool, never a publishing one", () => {
+		const writeScoped = Object.entries(TOOL_SCOPES)
+			.filter(([, v]) => v.scope === "instructions:write")
+			.map(([name]) => name);
+
+		expect(writeScoped).toEqual([
+			"fabric_propose_project_instruction_change",
+		]);
+	});
+
+	// Belt and braces at the dispatch layer: a caller that invents a `mode`
+	// gets a proposal, because nothing downstream reads one.
+	it("ignores a mode an agent invents", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.submitInstructionChange.mockResolvedValue({
+			snapshotId: "snap_new",
+			version: 8,
+			baseSnapshotId: "snap_1",
+			baseVersion: 7,
+			fileCount: 1,
+			inheritedCount: 0,
+			putCount: 1,
+			deleteCount: 0,
+			proposalStatus: "PENDING",
+			status: "VALIDATING",
+		});
+
+		await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [{ op: "put", path: "AGENTS.md", content: "x\n" }],
+				baseSnapshotId: "snap_1",
+				mode: "publish",
+			},
+			writeSession,
+		);
+
+		const call = m.submitInstructionChange.mock.calls[0]?.[0] as Record<
+			string,
+			unknown
+		>;
+		expect(call).not.toHaveProperty("mode");
 	});
 });

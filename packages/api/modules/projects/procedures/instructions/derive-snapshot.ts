@@ -1,21 +1,11 @@
 import { ORPCError } from "@orpc/client";
 import {
 	createDerivedInstructionSnapshot,
-	type DerivedInstructionRefusal,
 	getInstructionSnapshot,
 	getProjectInstructionSettings,
 	getPublishedInstructionSnapshot,
 } from "@repo/database";
-import {
-	buildIgnoreMatcher,
-	classifyPath,
-	FABRIC_IGNORE_FILE,
-	isSecretFileName,
-	SNAPSHOT_LIMITS,
-	snapshotPrefix,
-	stagingKey,
-	validateRelativePath,
-} from "@repo/instructions";
+import { SNAPSHOT_LIMITS, snapshotPrefix } from "@repo/instructions";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
@@ -23,123 +13,13 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { fileTypingFor } from "./file-typing";
+import {
+	derivedSnapshotRefusal,
+	MAX_CHANGES,
+	validateInstructionChanges,
+} from "./change-set";
 import { requireHostingOrganizationId } from "./hosting-organization";
 import { assertInstructionDeriveAccess } from "./proposal-authorization";
-
-/**
- * The most paths one derivation may touch.
- *
- * The tab sends one change per action, and the CLI push this primitive is
- * shared with sends a diff. A cap belongs here anyway: every `put` becomes a
- * signed PUT and every change becomes a row, and an unbounded change set is a
- * way to build a snapshot that is nothing like the base it claims to derive
- * from — at which point re-uploading the folder is the honest operation, and
- * the one that re-resolves the project's live ignore settings.
- */
-const MAX_CHANGES = 50;
-
-/**
- * The frozen `ignoreGlobs`/`layer` pair a snapshot carries, or null when the
- * `Json` column does not hold that shape.
- *
- * Mirrors `readFrozenIgnoreSettings` in the validation activity, and for the
- * same reason: nothing in the database constrains the column, and an older row
- * can hold anything. A shape this cannot read means the ignore check is
- * skipped here — the gate re-applies the real authority on the stored
- * `.fabricignore` regardless — rather than refusing an edit over a column
- * surprise.
- */
-function readFrozenIgnoreGlobs(
-	settingsFrozen: unknown,
-): { globs: string[]; layer: "fabricignore" | "project" | "default" } | null {
-	if (
-		settingsFrozen === null ||
-		typeof settingsFrozen !== "object" ||
-		Array.isArray(settingsFrozen)
-	) {
-		return null;
-	}
-	const { layer, ignoreGlobs } = settingsFrozen as Record<string, unknown>;
-	if (
-		layer !== "fabricignore" &&
-		layer !== "project" &&
-		layer !== "default"
-	) {
-		return null;
-	}
-	if (
-		!Array.isArray(ignoreGlobs) ||
-		ignoreGlobs.some((glob) => typeof glob !== "string")
-	) {
-		return null;
-	}
-	return { globs: ignoreGlobs as string[], layer };
-}
-
-/**
- * The oRPC code and message for each refusal the database query can return.
- *
- * `base_not_found` is a 404 rather than a 403: a caller probing snapshot ids
- * across tenants learns only that there is nothing there.
- */
-function refusal(
-	reason: DerivedInstructionRefusal,
-	detail: string | undefined,
-): ORPCError<string, unknown> {
-	switch (reason) {
-		case "base_not_found":
-			return new ORPCError("NOT_FOUND", {
-				message: "That version is not available to edit",
-			});
-		case "base_not_ready":
-			return new ORPCError("CONFLICT", {
-				message:
-					"That version has not finished its checks, so it cannot be edited yet",
-			});
-		case "base_key_unexpected":
-			// Never reachable from a well-formed READY snapshot: promotion
-			// rewrites every row into the snapshot's own prefix. Surfaced
-			// rather than swallowed, because it means a file row points at
-			// storage no activity in this feature ever wrote it to.
-			return new ORPCError("CONFLICT", {
-				message:
-					"That version's stored files are not in a state this edit can build on",
-			});
-		case "delete_path_missing":
-			return new ORPCError("CONFLICT", {
-				message: `That file is not in this version any more: ${detail}`,
-			});
-		case "path_collision":
-			return new ORPCError("BAD_REQUEST", {
-				message: `Two files would have the same name: ${detail}`,
-			});
-		case "empty_result":
-			return new ORPCError("BAD_REQUEST", {
-				message: "That would leave no files at all",
-			});
-		case "too_many_files":
-			return new ORPCError("BAD_REQUEST", {
-				message: `Too many files (${detail} > ${SNAPSHOT_LIMITS.maxFiles})`,
-			});
-		case "too_large":
-			return new ORPCError("BAD_REQUEST", {
-				message: `Too large (${detail} bytes > ${SNAPSHOT_LIMITS.maxTotalBytes})`,
-			});
-		case "proposal_proposer_limit":
-			return new ORPCError("CONFLICT", {
-				message:
-					"You already have five active coding-instructions proposals for this project. Cancel one or wait for a decision before submitting another.",
-				data: { reason: "PROPOSAL_PROPOSER_LIMIT" },
-			});
-		case "proposal_project_limit":
-			return new ORPCError("CONFLICT", {
-				message:
-					"This project already has 25 active coding-instructions proposals. Try again after one is decided or canceled.",
-				data: { reason: "PROPOSAL_PROJECT_LIMIT" },
-			});
-	}
-}
 
 /**
  * AUTHORIZATION: tenantProtectedProcedure plus a dynamic project permission:
@@ -163,10 +43,13 @@ function refusal(
  *
  * The refusals split in two, deliberately:
  *
- *  - Payload-shaped ones are HERE, because they need `@repo/instructions` and
- *    none of them needs the base's rows: an invalid relative path, a path the
- *    base's FROZEN ignore rules exclude, a secret-shaped filename, a file over
- *    the per-file cap, a change touching `.fabricignore`, a path named twice.
+ *  - Payload-shaped ones are in `change-set.ts`, because they need
+ *    `@repo/instructions` and none of them needs the base's rows: an invalid
+ *    relative path, a path the base's FROZEN ignore rules exclude, a
+ *    secret-shaped filename, a file over the per-file cap, a change touching
+ *    `.fabricignore`, a path named twice. They are shared verbatim with
+ *    `submit-change.ts`, the inline-content entry point the REST route, the
+ *    CLI and the MCP proposal tool go through.
  *  - Base-shaped ones are in `createDerivedInstructionSnapshot`, inside the
  *    transaction that writes the snapshot, because a read taken out here would
  *    answer about a moment that has already passed.
@@ -286,78 +169,11 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 		// base verbatim, and the gate checks the stored `.fabricignore` still
 		// parses to exactly them. Re-resolving here would let a new file in
 		// that the snapshot's own frozen rules exclude.
-		const frozen = readFrozenIgnoreGlobs(base.settingsFrozen);
-		const isIgnored = frozen ? buildIgnoreMatcher(frozen) : null;
-
-		const seen = new Set<string>();
-		const changes: Parameters<
-			typeof createDerivedInstructionSnapshot
-		>[0]["changes"] = [];
-		let putCount = 0;
-		let deleteCount = 0;
-		for (const change of input.changes) {
-			const v = validateRelativePath(change.path);
-			if (!v.ok) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: `Path rejected (${v.reason}): ${change.path}`,
-				});
-			}
-			const lower = v.path.toLowerCase();
-			if (seen.has(lower)) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: `The same file is changed twice: ${v.path}`,
-				});
-			}
-			seen.add(lower);
-			if (v.path === FABRIC_IGNORE_FILE) {
-				throw new ORPCError("BAD_REQUEST", {
-					message:
-						"The .fabricignore file decides what this version excludes, so it can only be changed by uploading the folder again.",
-				});
-			}
-			if (change.op === "delete") {
-				deleteCount++;
-				changes.push({ op: "delete", path: v.path });
-				continue;
-			}
-			const secretRule = isSecretFileName(v.path);
-			if (secretRule) {
-				// The gate would reject this after the upload and throw the
-				// whole version away. Refusing on the name alone costs the
-				// user nothing and stores nothing.
-				throw new ORPCError("BAD_REQUEST", {
-					message: `Fabric never stores credential files: ${v.path}`,
-				});
-			}
-			const excluded = isIgnored?.(v.path);
-			if (excluded) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: `This version's rules leave that path out (${excluded.rule}): ${v.path}`,
-				});
-			}
-			if (change.size > SNAPSHOT_LIMITS.maxFileBytes) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: `File too large (${change.size} bytes): ${v.path}`,
-				});
-			}
-			changes.push({
-				op: "put",
-				path: v.path,
-				size: change.size,
-				sha256: change.sha256,
-				...fileTypingFor(v.path),
-				kind: classifyPath(v.path),
-				// Provisional, like `begin`: the real key needs the snapshot
-				// and file ids, which do not exist yet. `createUploadUrls`
-				// rewrites it under a compare-and-set before it signs.
-				storageKey: stagingKey(
-					input.projectId,
-					"pending",
-					String(putCount),
-				),
-			});
-			putCount++;
-		}
+		const { changes, putCount, deleteCount } = validateInstructionChanges({
+			projectId: input.projectId,
+			changes: input.changes,
+			settingsFrozen: base.settingsFrozen,
+		});
 
 		const created = await createDerivedInstructionSnapshot({
 			projectId: input.projectId,
@@ -374,7 +190,7 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 			baseKeyPrefix: snapshotPrefix(input.projectId, base.id),
 		});
 		if (!created.ok) {
-			throw refusal(created.reason, created.detail);
+			throw derivedSnapshotRefusal(created.reason, created.detail);
 		}
 
 		// The same action an upload records — this IS an upload, of a smaller
