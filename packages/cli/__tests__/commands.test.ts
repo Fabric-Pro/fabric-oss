@@ -767,7 +767,7 @@ describe("fabric instructions sync", () => {
 // init
 // ---------------------------------------------------------------------------
 describe("fabric instructions init", () => {
-	it("refuses any tool other than claude-code", async () => {
+	it("refuses an unsupported tool", async () => {
 		const dest = await makeTree();
 
 		const result = await runCli([
@@ -781,8 +781,40 @@ describe("fabric instructions init", () => {
 		]);
 
 		expect(result.code).toBe(2);
-		expect(result.stderr).toContain("Only --tool claude-code");
+		expect(result.stderr).toContain("--tool claude-code or --tool codex");
 		expect(mocks.getPublished).not.toHaveBeenCalled();
+	});
+
+	it("writes a Codex project hook without putting the credential in the checkout", async () => {
+		const dest = await makeTree();
+		mocks.getPublished.mockResolvedValue({
+			published: false,
+			sourceOfTruth: "UPLOAD",
+		});
+
+		const result = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"codex",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		const hooks = JSON.parse(
+			await readFile(path.join(dest, ".codex", "hooks.json"), "utf8"),
+		);
+		expect(hooks.hooks.SessionStart[0].hooks[0]).toEqual({
+			type: "command",
+			command: "fabric instructions check --project project-1 --hook",
+			timeout: 15,
+		});
+		expect(JSON.stringify(hooks)).not.toContain("fab_test");
+		expect(result.stdout).toContain(
+			"Start Codex in this checkout, then use `/hooks` to review and trust the project hook.",
+		);
 	});
 
 	it("refuses a repository-backed project and writes nothing", async () => {

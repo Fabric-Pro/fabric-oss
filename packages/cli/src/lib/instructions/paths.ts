@@ -88,14 +88,16 @@ const RESERVED_ROOTS = [".git", ".fabric"] as const;
 /**
  * Single files this feature refuses to own, as opposed to whole roots.
  *
- * `.claude/settings.local.json` is the file `init` itself writes. Instruction
- * files legitimately live elsewhere under `.claude/` — skills, commands — so
- * reserving the whole root would refuse the feature's own content; reserving
- * this one path stops a published manifest from overwriting the session hook
- * that was just installed, and stops the resulting lock from later
- * authorising its deletion.
+ * `.claude/settings.local.json` and `.codex/hooks.json` are the files `init`
+ * itself writes. Instruction files legitimately live elsewhere under either
+ * root — skills and commands — so reserving a whole root would refuse the
+ * feature's own content. Reserving only these paths stops a published manifest
+ * from overwriting a session hook or later authorising its deletion.
  */
-const RESERVED_EXACT_PATHS = [".claude/settings.local.json"] as const;
+const RESERVED_EXACT_PATHS = [
+	".claude/settings.local.json",
+	".codex/hooks.json",
+] as const;
 
 /**
  * NUL and friends, found by character code rather than by a regular
