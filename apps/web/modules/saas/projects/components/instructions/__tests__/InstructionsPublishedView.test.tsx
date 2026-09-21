@@ -110,6 +110,17 @@ const filesBySnapshot = vi.hoisted(
 	() => new Map<string, Array<Record<string, unknown>>>(),
 );
 
+/**
+ * The `compare` answer for the published row's base pair, and whether it
+ * fails. Both matter: the base of an old version may have been deleted, which
+ * makes the call 404, and the line must simply not appear rather than break.
+ */
+const compareState = vi.hoisted(() => ({
+	result: null as Record<string, unknown> | null,
+	error: null as Error | null,
+	inputs: [] as Array<Record<string, unknown>>,
+}));
+
 function queryOptionsStub(queryFn: (input: unknown) => Promise<unknown>) {
 	return (o: { input: unknown }) => ({
 		queryKey: ["stub-query", o.input],
@@ -137,6 +148,17 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					queryOptions: queryOptionsStub(async (input) => {
 						const { snapshotId } = input as { snapshotId: string };
 						return filesBySnapshot.get(snapshotId) ?? [];
+					}),
+				},
+				compare: {
+					queryOptions: queryOptionsStub(async (input) => {
+						compareState.inputs.push(
+							input as Record<string, unknown>,
+						);
+						if (compareState.error) {
+							throw compareState.error;
+						}
+						return compareState.result;
 					}),
 				},
 				getSettings: {
@@ -210,6 +232,9 @@ beforeEach(() => {
 	orgContextState.isGuest = false;
 	connectCliDialogProps.length = 0;
 	filesBySnapshot.clear();
+	compareState.result = null;
+	compareState.error = null;
+	compareState.inputs = [];
 });
 
 function treeFile(id: string, path: string): Record<string, unknown> {
@@ -831,5 +856,131 @@ describe("InstructionsPublishedView — an edit the published version outran", (
 		});
 
 		expect(screen.queryByText(/was not published/)).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * "Changed in this version" answers the question the published summary
+ * cannot: an edit publishes a whole new version, and the sentence above it
+ * says how many files that version HOLDS, never which ones it touched.
+ *
+ * It exists only for a version with a base, and only when that base is still
+ * readable. `baseSnapshotId` is `SetNull`, so an old version's base is
+ * routinely gone and `compare` answers NOT_FOUND — a normal state that must
+ * leave the header whole rather than showing a half-written line.
+ */
+describe("InstructionsPublishedView — changed in this version", () => {
+	function renderPublished(published: Record<string, unknown>) {
+		render(
+			<InstructionsPublishedView
+				projectId="p"
+				projectName="Checkout Rewrite"
+				published={published as never}
+				snapshots={[] as never}
+				onReplaceClick={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+	}
+
+	function editedVersion(overrides: Record<string, unknown> = {}) {
+		return {
+			id: "s9",
+			version: 9,
+			status: "READY",
+			fileCount: 12,
+			excludedCount: 0,
+			createdAt: new Date(),
+			source: "UPLOAD",
+			user: { id: "u", name: "A. Member" },
+			baseSnapshotId: "s8",
+			baseVersion: 8,
+			...overrides,
+		};
+	}
+
+	it("names what the published version changed from the version it was edited from", async () => {
+		compareState.result = {
+			from: { id: "s8", version: 8 },
+			to: { id: "s9", version: 9 },
+			added: [{ path: "new.md" }],
+			removed: [],
+			changed: [{ path: "AGENTS.md" }, { path: "notes.md" }],
+			unchangedCount: 9,
+		};
+		renderPublished(editedVersion());
+
+		expect(
+			await screen.findByText(
+				"Changed from version 8: 1 added, 0 removed, 2 changed.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "See what changed" }),
+		).toBeInTheDocument();
+		expect(compareState.inputs).toEqual([
+			{ projectId: "p", fromSnapshotId: "s8", toSnapshotId: "s9" },
+		]);
+	});
+
+	it("opens the comparison for that exact pair", async () => {
+		compareState.result = {
+			from: { id: "s8", version: 8 },
+			to: { id: "s9", version: 9 },
+			added: [],
+			removed: [],
+			changed: [{ path: "AGENTS.md" }],
+			unchangedCount: 9,
+		};
+		renderPublished(editedVersion());
+
+		await userEvent.click(
+			await screen.findByRole("button", { name: "See what changed" }),
+		);
+		expect(
+			await screen.findByRole("heading", { name: "Compare versions" }),
+		).toBeInTheDocument();
+	});
+
+	it("says so plainly when the edit changed no files at all", async () => {
+		compareState.result = {
+			from: { id: "s8", version: 8 },
+			to: { id: "s9", version: 9 },
+			added: [],
+			removed: [],
+			changed: [],
+			unchangedCount: 12,
+		};
+		renderPublished(editedVersion());
+
+		expect(
+			await screen.findByText("No file changes from version 8."),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "See what changed" }),
+		).toBeNull();
+	});
+
+	it("says nothing at all for an uploaded version with no base", async () => {
+		renderPublished(
+			editedVersion({ baseSnapshotId: null, baseVersion: null }),
+		);
+
+		expect(await screen.findByText(/Uploaded by A\. Member/)).toBeTruthy();
+		expect(screen.queryByText(/Changed from version/)).toBeNull();
+		expect(screen.queryByText(/No file changes from version/)).toBeNull();
+		// Nothing to compare, so nothing was asked of the server.
+		expect(compareState.inputs).toEqual([]);
+	});
+
+	it("renders no line when the base version can no longer be read", async () => {
+		compareState.error = new Error("Snapshot not found");
+		renderPublished(editedVersion());
+
+		expect(await screen.findByText(/Uploaded by A\. Member/)).toBeTruthy();
+		await waitFor(() => expect(compareState.inputs).toHaveLength(1));
+		expect(screen.queryByText(/Changed from version/)).toBeNull();
+		expect(screen.queryByText(/No file changes from version/)).toBeNull();
 	});
 });

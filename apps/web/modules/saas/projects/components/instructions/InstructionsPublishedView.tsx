@@ -25,6 +25,7 @@ import { toast } from "sonner";
 import { AddInstructionFileDialog } from "./AddInstructionFileDialog";
 import { InstructionFileView } from "./InstructionFileView";
 import { InstructionProposals } from "./InstructionProposals";
+import { InstructionsCompareDialog } from "./InstructionsCompareDialog";
 import { InstructionsHistory } from "./InstructionsHistory";
 import { InstructionsRejectedBanner } from "./InstructionsRejectedBanner";
 import { InstructionsSettingsDialog } from "./InstructionsSettingsDialog";
@@ -143,6 +144,7 @@ export function InstructionsPublishedView({
 	const [proposalsOpen, setProposalsOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [connectOpen, setConnectOpen] = useState(false);
+	const [compareOpen, setCompareOpen] = useState(false);
 	// Mirrors ProjectReadinessPanel: minting must fail closed. With no
 	// organization id there is nothing to mint the key against. An invited
 	// guest views this project under the HOST organization's thin record
@@ -269,6 +271,36 @@ export function InstructionsPublishedView({
 		? selectedFile.slice(0, selectedFile.lastIndexOf("/"))
 		: null;
 
+	// What this published version changed relative to the version it was
+	// EDITED FROM. Only an edit has a base at all; an uploaded folder answers
+	// no such question, so the line simply does not appear for one.
+	//
+	// `retry: false` and a silent failure on purpose: `baseSnapshotId` is
+	// `SetNull`, and a base that was deleted or pruned out of the kept window
+	// makes `compare` 404 — a normal, expected state for an old version, not
+	// something to retry or to show an error about. The summary above it is
+	// the page's real content and stays whole either way.
+	const baseSnapshotId = published?.baseSnapshotId ?? null;
+	const changedFromBase = useQuery({
+		...orpc.projects.instructions.compare.queryOptions({
+			input: {
+				projectId,
+				fromSnapshotId: baseSnapshotId ?? "",
+				toSnapshotId: published?.id ?? "",
+			},
+		}),
+		enabled: Boolean(baseSnapshotId) && Boolean(published),
+		retry: false,
+	});
+	const baseComparison = changedFromBase.data as
+		| {
+				from: { version: number };
+				added: unknown[];
+				removed: unknown[];
+				changed: unknown[];
+		  }
+		| undefined;
+
 	const retry = useMutation(
 		orpc.projects.instructions.finalize.mutationOptions({
 			onSuccess: () => onChanged(),
@@ -322,6 +354,39 @@ export function InstructionsPublishedView({
 							{t("emptySummary")}
 						</p>
 					)}
+					{baseComparison ? (
+						<div className="flex flex-wrap items-center gap-2">
+							<p className="text-muted-foreground text-sm">
+								{baseComparison.added.length === 0 &&
+								baseComparison.removed.length === 0 &&
+								baseComparison.changed.length === 0
+									? t("noChangesFromBase", {
+											baseVersion:
+												baseComparison.from.version,
+										})
+									: t("changedInThisVersion", {
+											baseVersion:
+												baseComparison.from.version,
+											added: baseComparison.added.length,
+											removed:
+												baseComparison.removed.length,
+											changed:
+												baseComparison.changed.length,
+										})}
+							</p>
+							{baseComparison.added.length > 0 ||
+							baseComparison.removed.length > 0 ||
+							baseComparison.changed.length > 0 ? (
+								<Button
+									variant="link"
+									className="h-auto px-0"
+									onClick={() => setCompareOpen(true)}
+								>
+									{t("compareButton")}
+								</Button>
+							) : null}
+						</div>
+					) : null}
 					{/* Rendered outside the published/empty choice above, not
 					    as a third branch of it: a REPLACE upload is checked
 					    while the previous version is still published, so as a
@@ -560,6 +625,16 @@ export function InstructionsPublishedView({
 					proposalOnly={!editable}
 					canPropose={editable}
 					onAdded={onChanged}
+				/>
+			) : null}
+			{published && baseSnapshotId ? (
+				<InstructionsCompareDialog
+					projectId={projectId}
+					fromSnapshotId={baseSnapshotId}
+					toSnapshotId={published.id}
+					publishedSide="to"
+					open={compareOpen}
+					onOpenChange={setCompareOpen}
 				/>
 			) : null}
 			<InstructionsHistory
