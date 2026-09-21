@@ -1,5 +1,13 @@
 # fabric-app
 
+## 1.16.7
+
+### Patch Changes
+
+- 628963f: Fabric coding instructions can now configure a local Codex session hook alongside Claude Code for users to review and trust.
+- fa9a23c: Update the oRPC server, client and OpenAPI packages to 1.15.2, fixing a denial-of-service in RPC request decoding and two prototype-pollution issues in schema coercion.
+- c918a75: Feature and bug statuses can now follow their linked PM ticket's mapped status, including GitLab label maps, behind a per-project switch.
+
 ## 1.16.6
 
 ### Patch Changes

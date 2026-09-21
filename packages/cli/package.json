@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/cli",
-	"version": "0.3.3",
+	"version": "0.3.4",
 	"description": "CLI for the Fabric AI platform",
 	"keywords": [
 		"fabric",
