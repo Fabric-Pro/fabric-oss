@@ -5324,7 +5324,8 @@
 				"deleteConfirm": "Delete version {version}? This cannot be undone.",
 				"anonymousUser": "a member",
 				"filesStored": "{count} files stored",
-				"editedFrom": "edited from version {version}"
+				"editedFrom": "edited from version {version}",
+				"compareAction": "Compare with published"
 			},
 			"settingsDialog": {
 				"title": "Coding-instructions settings",
@@ -5363,7 +5364,10 @@
 				"uploadButton": "Upload folder",
 				"selectFilePrompt": "Select a file to read it.",
 				"supersededBody": "Version {version} passed its checks but was not published: it was edited from version {baseVersion}, and version {publishedVersion} has been published since. Publishing it now would undo that change. Open History to publish it anyway, or make your change again on version {publishedVersion}.",
-				"supersededHistoryButton": "Open History"
+				"supersededHistoryButton": "Open History",
+				"changedInThisVersion": "Changed from version {baseVersion}: {added} added, {removed} removed, {changed} changed.",
+				"noChangesFromBase": "No file changes from version {baseVersion}.",
+				"compareButton": "See what changed"
 			},
 			"addFileDialog": {
 				"title": "Add a file",
@@ -5426,7 +5430,32 @@
 				"previousPage": "Previous",
 				"nextPage": "Next",
 				"approvedBody": "This proposal was approved and published.",
-				"rejectedBody": "This proposal was rejected."
+				"rejectedBody": "This proposal was rejected.",
+				"lineCounts": "+{added} −{removed}",
+				"noTextualChanges": "The text of this file did not change.",
+				"emptyFile": "This file is empty."
+			},
+			"compare": {
+				"title": "Compare versions",
+				"subtitle": "Version {from} → version {to}",
+				"subtitleFromPublished": "Version {from} (published) → version {to}",
+				"subtitleToPublished": "Version {from} → version {to} (published)",
+				"subtitlePending": "Working out what changed.",
+				"loadError": "Could not compare these two versions. Close this and try again.",
+				"summary": "{added} added, {removed} removed, {changed} changed, {unchanged} unchanged",
+				"addedGroup": "Added",
+				"removedGroup": "Removed",
+				"changedGroup": "Changed",
+				"noDifferences": "These two versions hold exactly the same files.",
+				"lineCounts": "+{added} −{removed}",
+				"binaryChanged": "This binary file changed. Download either version to inspect it.",
+				"noTextualChanges": "The text of this file did not change.",
+				"diffHidden": "This {kind} changed. Its diff is not shown until you ask for it.",
+				"showDiffButton": "Show diff",
+				"diffTruncated": "This file is long, so the diff covers its first part only. Download the version to read the rest.",
+				"diffError": "Could not load this file's text.",
+				"closeButton": "Close",
+				"noChangesInLoadedPrefix": "No differences appear in the loaded portion of this file. Download both versions to inspect the rest."
 			}
 		},
 		"proposals": {

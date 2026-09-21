@@ -16,6 +16,7 @@ import {
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
+import { InstructionsCompareDialog } from "./InstructionsCompareDialog";
 
 const RECEIVING_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
 
@@ -129,6 +130,11 @@ export function InstructionsHistory({
 	const secretLabels = tReason.raw("secretLabels") as Record<string, string>;
 	const reasonLabels = tReason.raw("reasonLabels") as Record<string, string>;
 	const [expandedId, setExpandedId] = useState<string | null>(null);
+	// The version whose comparison against the published one is open, if any.
+	// Held here rather than inside each row so only ONE compare dialog is ever
+	// mounted, and so closing it cannot leave a stale query mounted behind the
+	// row it was opened from.
+	const [compareId, setCompareId] = useState<string | null>(null);
 
 	const publish = useMutation(
 		orpc.projects.instructions.publish.mutationOptions({
@@ -169,215 +175,272 @@ export function InstructionsHistory({
 	}
 
 	return (
-		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-w-2xl">
-				<DialogHeader>
-					<DialogTitle>{t("title")}</DialogTitle>
-					<DialogDescription>{t("description")}</DialogDescription>
-				</DialogHeader>
-				{publishedUnknown ? (
-					// Said plainly rather than worked around: without the
-					// pointer, no row can be labelled a publish or a rollback
-					// honestly, so the dialog stays readable (versions,
-					// statuses, downloads, "See why") and only the two actions
-					// that depend on the direction are withheld.
-					<p className="text-destructive text-xs" role="alert">
-						{t("publishedUnknown")}
-					</p>
-				) : null}
-				<div className="flex max-h-[420px] flex-col gap-2 overflow-auto">
-					{snapshots.map((s) => {
-						const isPublished = s.id === publishedId;
-						const awaitingProposalDecision =
-							s.proposalStatus === "PENDING" ||
-							s.proposalStatus === "REJECTED";
-						const badge = statusBadge(s, isPublished);
-						const rejectionRows =
-							s.rejection?.filter(
-								(r) => r.reason !== TRUNCATED_REASON,
-							) ?? [];
-						const truncatedRow = s.rejection?.find(
-							(r) => r.reason === TRUNCATED_REASON,
-						);
-						return (
-							<div
-								key={s.id}
-								className="flex flex-col gap-2 rounded-lg border border-border p-3"
-							>
-								<div className="flex items-center justify-between gap-3">
-									<div className="flex flex-col gap-0.5">
-										<div className="flex items-center gap-2">
-											<span className="font-medium text-sm">
-												{t("versionLabel", {
-													version: s.version,
-												})}
-											</span>
-											<Badge variant={badge.variant}>
-												{badge.label}
-											</Badge>
-										</div>
-										<p className="text-muted-foreground text-xs">
-											{s.user?.name ?? t("anonymousUser")}
-											{" · "}
-											{formatRelativeTime(s.createdAt)}
-											{" · "}
-											{t("filesStored", {
-												count: s.fileCount,
-											})}
-											{typeof s.baseVersion === "number"
-												? ` · ${t("editedFrom", {
-														version: s.baseVersion,
-													})}`
-												: ""}
-										</p>
-									</div>
-									<div className="flex shrink-0 gap-2">
-										{s.status === "READY" &&
-										!isPublished &&
-										!awaitingProposalDecision &&
-										canMutate &&
-										!publishedUnknown ? (
-											<Button
-												size="sm"
-												variant="outline"
-												disabled={publish.isPending}
-												onClick={() => {
-													if (
-														window.confirm(
-															t(
-																isRollback(
-																	s.version,
-																	publishedVersion,
-																)
-																	? "rollbackConfirm"
-																	: "publishConfirm",
-																{
-																	version:
-																		s.version,
-																},
-															),
-														)
-													) {
-														publish.mutate({
-															projectId,
-															snapshotId: s.id,
-														});
-													}
-												}}
-											>
-												{t(
-													isRollback(
-														s.version,
-														publishedVersion,
-													)
-														? "rollbackAction"
-														: "publishAction",
-												)}
-											</Button>
-										) : null}
-										{s.status === "READY" &&
-										!awaitingProposalDecision ? (
-											<Button
-												size="sm"
-												variant="outline"
-												disabled={download.isPending}
-												onClick={() =>
-													download.mutate({
-														projectId,
-														snapshotId: s.id,
-													})
-												}
-											>
-												{t("downloadAction")}
-											</Button>
-										) : null}
-										{s.status === "REJECTED" ? (
-											<Button
-												size="sm"
-												variant="ghost"
-												onClick={() =>
-													setExpandedId(
-														expandedId === s.id
-															? null
-															: s.id,
-													)
-												}
-											>
-												{t("seeWhyAction")}
-											</Button>
-										) : null}
-										{!isPublished &&
-										!awaitingProposalDecision &&
-										canMutate &&
-										DELETABLE_STATUSES.has(s.status) ? (
-											<Button
-												size="sm"
-												variant="ghost"
-												className="text-destructive"
-												disabled={remove.isPending}
-												onClick={() => {
-													if (
-														window.confirm(
-															t("deleteConfirm", {
-																version:
-																	s.version,
-															}),
-														)
-													) {
-														remove.mutate({
-															projectId,
-															snapshotId: s.id,
-														});
-													}
-												}}
-											>
-												{t("deleteAction")}
-											</Button>
-										) : null}
-									</div>
-								</div>
-								{expandedId === s.id && s.rejection ? (
-									<div className="flex flex-col gap-1 rounded-md border border-border bg-muted/30 p-2 text-xs">
-										{rejectionRows.map((r, i) => (
-											<div
-												key={`${r.path}-${i}`}
-												className="flex items-center justify-between gap-2"
-											>
-												<code>{r.path}</code>
-												<span className="text-muted-foreground">
-													{r.reason === "secret"
-														? r.detail?.startsWith(
-																"filename:",
-															)
-															? tReason(
-																	"credentialFile",
-																)
-															: (secretLabels[
-																	r.detail ??
-																		""
-																] ?? r.detail)
-														: (reasonLabels[
-																r.reason
-															] ?? r.reason)}
+		<>
+			<Dialog open={open} onOpenChange={onOpenChange}>
+				<DialogContent className="max-w-2xl">
+					<DialogHeader>
+						<DialogTitle>{t("title")}</DialogTitle>
+						<DialogDescription>
+							{t("description")}
+						</DialogDescription>
+					</DialogHeader>
+					{publishedUnknown ? (
+						// Said plainly rather than worked around: without the
+						// pointer, no row can be labelled a publish or a rollback
+						// honestly, so the dialog stays readable (versions,
+						// statuses, downloads, "See why") and only the two actions
+						// that depend on the direction are withheld.
+						<p className="text-destructive text-xs" role="alert">
+							{t("publishedUnknown")}
+						</p>
+					) : null}
+					<div className="flex max-h-[420px] flex-col gap-2 overflow-auto">
+						{snapshots.map((s) => {
+							const isPublished = s.id === publishedId;
+							const awaitingProposalDecision =
+								s.proposalStatus === "PENDING" ||
+								s.proposalStatus === "REJECTED";
+							const badge = statusBadge(s, isPublished);
+							const rejectionRows =
+								s.rejection?.filter(
+									(r) => r.reason !== TRUNCATED_REASON,
+								) ?? [];
+							const truncatedRow = s.rejection?.find(
+								(r) => r.reason === TRUNCATED_REASON,
+							);
+							return (
+								<div
+									key={s.id}
+									className="flex flex-col gap-2 rounded-lg border border-border p-3"
+								>
+									<div className="flex items-center justify-between gap-3">
+										<div className="flex flex-col gap-0.5">
+											<div className="flex items-center gap-2">
+												<span className="font-medium text-sm">
+													{t("versionLabel", {
+														version: s.version,
+													})}
 												</span>
+												<Badge variant={badge.variant}>
+													{badge.label}
+												</Badge>
 											</div>
-										))}
-										{truncatedRow ? (
-											<p className="text-muted-foreground">
-												{tReason("truncatedSummary", {
-													detail:
-														truncatedRow.detail ??
-														"",
+											<p className="text-muted-foreground text-xs">
+												{s.user?.name ??
+													t("anonymousUser")}
+												{" · "}
+												{formatRelativeTime(
+													s.createdAt,
+												)}
+												{" · "}
+												{t("filesStored", {
+													count: s.fileCount,
 												})}
+												{typeof s.baseVersion ===
+												"number"
+													? ` · ${t("editedFrom", {
+															version:
+																s.baseVersion,
+														})}`
+													: ""}
 											</p>
-										) : null}
+										</div>
+										<div className="flex shrink-0 gap-2">
+											{s.status === "READY" &&
+											!isPublished &&
+											!awaitingProposalDecision &&
+											canMutate &&
+											!publishedUnknown ? (
+												<Button
+													size="sm"
+													variant="outline"
+													disabled={publish.isPending}
+													onClick={() => {
+														if (
+															window.confirm(
+																t(
+																	isRollback(
+																		s.version,
+																		publishedVersion,
+																	)
+																		? "rollbackConfirm"
+																		: "publishConfirm",
+																	{
+																		version:
+																			s.version,
+																	},
+																),
+															)
+														) {
+															publish.mutate({
+																projectId,
+																snapshotId:
+																	s.id,
+															});
+														}
+													}}
+												>
+													{t(
+														isRollback(
+															s.version,
+															publishedVersion,
+														)
+															? "rollbackAction"
+															: "publishAction",
+													)}
+												</Button>
+											) : null}
+											{s.status === "READY" &&
+											!awaitingProposalDecision ? (
+												<Button
+													size="sm"
+													variant="outline"
+													disabled={
+														download.isPending
+													}
+													onClick={() =>
+														download.mutate({
+															projectId,
+															snapshotId: s.id,
+														})
+													}
+												>
+													{t("downloadAction")}
+												</Button>
+											) : null}
+											{/* Same gates as Download — a
+										    version whose bytes cannot be
+										    read cannot be diffed either —
+										    plus something to compare
+										    against: the published row has
+										    no comparison to offer against
+										    itself. */}
+											{s.status === "READY" &&
+											!awaitingProposalDecision &&
+											publishedId !== null &&
+											!isPublished ? (
+												<Button
+													size="sm"
+													variant="outline"
+													onClick={() =>
+														setCompareId(s.id)
+													}
+												>
+													{t("compareAction")}
+												</Button>
+											) : null}
+											{s.status === "REJECTED" ? (
+												<Button
+													size="sm"
+													variant="ghost"
+													onClick={() =>
+														setExpandedId(
+															expandedId === s.id
+																? null
+																: s.id,
+														)
+													}
+												>
+													{t("seeWhyAction")}
+												</Button>
+											) : null}
+											{!isPublished &&
+											!awaitingProposalDecision &&
+											canMutate &&
+											DELETABLE_STATUSES.has(s.status) ? (
+												<Button
+													size="sm"
+													variant="ghost"
+													className="text-destructive"
+													disabled={remove.isPending}
+													onClick={() => {
+														if (
+															window.confirm(
+																t(
+																	"deleteConfirm",
+																	{
+																		version:
+																			s.version,
+																	},
+																),
+															)
+														) {
+															remove.mutate({
+																projectId,
+																snapshotId:
+																	s.id,
+															});
+														}
+													}}
+												>
+													{t("deleteAction")}
+												</Button>
+											) : null}
+										</div>
 									</div>
-								) : null}
-							</div>
-						);
-					})}
-				</div>
-			</DialogContent>
-		</Dialog>
+									{expandedId === s.id && s.rejection ? (
+										<div className="flex flex-col gap-1 rounded-md border border-border bg-muted/30 p-2 text-xs">
+											{rejectionRows.map((r, i) => (
+												<div
+													key={`${r.path}-${i}`}
+													className="flex items-center justify-between gap-2"
+												>
+													<code>{r.path}</code>
+													<span className="text-muted-foreground">
+														{r.reason === "secret"
+															? r.detail?.startsWith(
+																	"filename:",
+																)
+																? tReason(
+																		"credentialFile",
+																	)
+																: (secretLabels[
+																		r.detail ??
+																			""
+																	] ??
+																	r.detail)
+															: (reasonLabels[
+																	r.reason
+																] ?? r.reason)}
+													</span>
+												</div>
+											))}
+											{truncatedRow ? (
+												<p className="text-muted-foreground">
+													{tReason(
+														"truncatedSummary",
+														{
+															detail:
+																truncatedRow.detail ??
+																"",
+														},
+													)}
+												</p>
+											) : null}
+										</div>
+									) : null}
+								</div>
+							);
+						})}
+					</div>
+				</DialogContent>
+			</Dialog>
+			{compareId !== null && publishedId !== null ? (
+				<InstructionsCompareDialog
+					projectId={projectId}
+					// Published → selected, i.e. what changes if this version
+					// is published, not what it was derived from.
+					fromSnapshotId={publishedId}
+					toSnapshotId={compareId}
+					publishedSide="from"
+					open
+					onOpenChange={(next) => {
+						if (!next) {
+							setCompareId(null);
+						}
+					}}
+				/>
+			) : null}
+		</>
 	);
 }

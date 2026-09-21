@@ -177,6 +177,7 @@ import { listStageApproversProcedure } from "./procedures/governance/list-stage-
 import { setStageApproversProcedure } from "./procedures/governance/set-stage-approvers";
 // Coding Instructions (project instruction snapshots)
 import { beginSnapshotProcedure } from "./procedures/instructions/begin-snapshot";
+import { compareSnapshotsProcedure } from "./procedures/instructions/compare-snapshots";
 import { createDownloadUrlProcedure } from "./procedures/instructions/create-download-url";
 import { createUploadUrlsProcedure } from "./procedures/instructions/create-upload-urls";
 import { deleteSnapshotProcedure } from "./procedures/instructions/delete-snapshot";
@@ -1910,6 +1911,9 @@ export const projectsRouter = {
 		getPublished: getPublishedSnapshotProcedure,
 		listFiles: listFilesProcedure,
 		getFile: getFileProcedure,
+		// Path-level diff of two versions. Bodies stay behind `getFile`, which
+		// the tab calls per expanded row.
+		compare: compareSnapshotsProcedure,
 		publish: publishSnapshotProcedure,
 		delete: deleteSnapshotProcedure,
 		createDownloadUrl: createDownloadUrlProcedure,

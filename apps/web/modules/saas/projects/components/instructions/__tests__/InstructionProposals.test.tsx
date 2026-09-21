@@ -197,8 +197,11 @@ describe("InstructionProposals", () => {
 		await user.click(
 			await screen.findByRole("button", { name: "Proposal version 8" }),
 		);
-		expect(await screen.findByText("# Before")).toBeInTheDocument();
-		expect(screen.getByText("# After")).toBeInTheDocument();
+		// A unified diff, not two panes: the removed line carries a "-"
+		// gutter and the added line a "+".
+		expect(await screen.findByText("- # Before")).toBeInTheDocument();
+		expect(screen.getByText("+ # After")).toBeInTheDocument();
+		expect(screen.getByText("+1 −1")).toBeInTheDocument();
 		await user.click(
 			screen.getByRole("button", { name: "Approve and publish" }),
 		);
@@ -382,9 +385,11 @@ describe("InstructionProposals", () => {
 		await user.click(
 			await screen.findByRole("button", { name: "Proposal version 8" }),
 		);
-		expect(await screen.findByText("# Before")).toBeInTheDocument();
+		expect(await screen.findByText("- # Before")).toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: "Next" }));
-		await waitFor(() => expect(screen.queryByText("# Before")).toBeNull());
+		await waitFor(() =>
+			expect(screen.queryByText("- # Before")).toBeNull(),
+		);
 	});
 
 	it("clears an open file page when selecting a different proposal", async () => {
@@ -465,6 +470,306 @@ describe("InstructionProposals", () => {
 
 		await waitFor(() => expect(onChanged).toHaveBeenCalled());
 		expect(state.approve).toHaveBeenCalledOnce();
+	});
+
+	/**
+	 * A reviewer decides on the CHANGE, not on two full files side by side.
+	 * The review pane used to print both bodies whole, so a one-line edit in
+	 * a 400-line rule file made the reviewer find the difference by eye.
+	 */
+	it("renders an added file as all + lines and never a before pane", async () => {
+		const user = userEvent.setup();
+		state.detail = {
+			...row(),
+			changes: [
+				{
+					path: "notes.md",
+					op: "add",
+					before: null,
+					after: "alpha\nbeta\n",
+					binary: false,
+					beforeOmitted: null,
+					afterOmitted: null,
+					beforeSize: null,
+					afterSize: 11,
+				},
+			],
+		};
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+		const diff = await screen.findByText(/\+ alpha/);
+		expect(diff).toHaveTextContent("+ beta");
+		expect(diff.textContent).not.toContain("- ");
+		expect(screen.getByText("+2 \u22120")).toBeInTheDocument();
+		// No "Before"/"After" pane headings survive for a diffable change.
+		expect(screen.queryByText("Before")).toBeNull();
+		expect(screen.queryByText("After")).toBeNull();
+	});
+
+	it("renders a deleted file as all \u2212 lines", async () => {
+		const user = userEvent.setup();
+		state.detail = {
+			...row(),
+			changes: [
+				{
+					path: "notes.md",
+					op: "delete",
+					before: "alpha\nbeta\n",
+					after: null,
+					binary: false,
+					beforeOmitted: null,
+					afterOmitted: null,
+					beforeSize: 11,
+					afterSize: null,
+				},
+			],
+		};
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+		const diff = await screen.findByText(/- alpha/);
+		expect(diff).toHaveTextContent("- beta");
+		expect(diff.textContent).not.toContain("+ ");
+		expect(screen.getByText("+0 \u22122")).toBeInTheDocument();
+	});
+
+	/**
+	 * An absent side and an EMPTY side are not the same thing. Treating both
+	 * as "" made an added or deleted empty file report that its text "did not
+	 * change" — the opposite of what the proposal does to it.
+	 */
+	it.each([
+		["add", null, ""],
+		["delete", "", null],
+	] as const)(
+		"says an empty file is empty rather than unchanged for an %s",
+		async (op, before, after) => {
+			const user = userEvent.setup();
+			state.detail = {
+				...row(),
+				changes: [
+					{
+						path: "placeholder.md",
+						op,
+						before,
+						after,
+						binary: false,
+						beforeOmitted: null,
+						afterOmitted: null,
+						beforeSize: before === null ? null : 0,
+						afterSize: after === null ? null : 0,
+					},
+				],
+			};
+			render(
+				<InstructionProposals
+					projectId="p"
+					open
+					onOpenChange={() => undefined}
+					onChanged={() => undefined}
+				/>,
+				{ wrapper: Wrapper },
+			);
+
+			await user.click(
+				await screen.findByRole("button", {
+					name: "Proposal version 8",
+				}),
+			);
+			expect(
+				await screen.findByText("This file is empty."),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByText("The text of this file did not change."),
+			).toBeNull();
+		},
+	);
+
+	it("still reports two present, equal sides as unchanged text", async () => {
+		const user = userEvent.setup();
+		state.detail = {
+			...row(),
+			changes: [
+				{
+					path: "mode-only.md",
+					op: "edit",
+					before: "# Same\n",
+					after: "# Same\n",
+					binary: false,
+					beforeOmitted: null,
+					afterOmitted: null,
+					beforeSize: 7,
+					afterSize: 7,
+				},
+			],
+		};
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+		expect(
+			await screen.findByText("The text of this file did not change."),
+		).toBeInTheDocument();
+		expect(screen.queryByText("This file is empty.")).toBeNull();
+	});
+
+	/**
+	 * `diffLines` leaves the terminating newline on the part that owns the
+	 * line, so a file whose last line has none yields parts that do not close
+	 * themselves. Concatenated, the removed and added line ran together as
+	 * one row showing text present in neither version.
+	 */
+	it("keeps a changed final line without a trailing newline on its own row", async () => {
+		const user = userEvent.setup();
+		state.detail = {
+			...row(),
+			changes: [
+				{
+					path: "no-newline.md",
+					op: "edit",
+					before: "old",
+					after: "new",
+					binary: false,
+					beforeOmitted: null,
+					afterOmitted: null,
+					beforeSize: 3,
+					afterSize: 3,
+				},
+			],
+		};
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+		// The whole <pre>, not the one span: the defect was the two spans
+		// running together, which only the concatenation shows.
+		const pre = (await screen.findByText(/- old/)).closest("pre");
+		expect(pre?.textContent).toBe("- old\n+ new");
+		expect(pre?.textContent).not.toContain("- old+ new");
+	});
+
+	it("keeps the binary message instead of diffing bytes", async () => {
+		const user = userEvent.setup();
+		state.detail = {
+			...row(),
+			changes: [
+				{
+					path: "logo.png",
+					op: "edit",
+					before: null,
+					after: null,
+					binary: true,
+					beforeOmitted: "BINARY",
+					afterOmitted: "BINARY",
+					beforeSize: 90,
+					afterSize: 120,
+				},
+			],
+		};
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+		expect(
+			await screen.findByText(
+				"This binary file changed. Download the applicable version to inspect it.",
+			),
+		).toBeInTheDocument();
+		// A binary change has no line count to claim.
+		expect(screen.queryByText(/^\+\d+ \u2212\d+$/)).toBeNull();
+	});
+
+	/**
+	 * A large proposal opens as a list of what it touches rather than a wall
+	 * of diffs the approve/reject buttons sit below.
+	 */
+	it("starts a large proposal collapsed and expands one section on demand", async () => {
+		const user = userEvent.setup();
+		state.detail = {
+			...row(),
+			changes: Array.from({ length: 6 }, (_, index) => ({
+				path: `file-${index}.md`,
+				op: "edit" as const,
+				before: `old ${index}\n`,
+				after: `new ${index}\n`,
+				binary: false,
+				beforeOmitted: null,
+				afterOmitted: null,
+				beforeSize: 6,
+				afterSize: 6,
+			})),
+		};
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+		expect(
+			await screen.findByRole("button", { name: /file-0\.md/ }),
+		).toHaveAttribute("aria-expanded", "false");
+		expect(screen.queryByText("- old 0")).toBeNull();
+		// The header still says how big each change is without opening it.
+		expect(screen.getAllByText("+1 \u22121")).toHaveLength(6);
+
+		await user.click(screen.getByRole("button", { name: /file-0\.md/ }));
+		expect(await screen.findByText("- old 0")).toBeInTheDocument();
+		expect(screen.queryByText("- old 1")).toBeNull();
 	});
 
 	it("lets a reader cancel their own stable proposal without loading its diff", async () => {

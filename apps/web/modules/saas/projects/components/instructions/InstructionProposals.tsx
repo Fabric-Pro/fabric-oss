@@ -13,9 +13,13 @@ import {
 	DialogTitle,
 } from "@ui/components/dialog";
 import { Skeleton } from "@ui/components/skeleton";
+import { cn } from "@ui/lib";
+import { diffLines } from "diff";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { countDiffLines, toDiffRows } from "./lib/instruction-diff";
 
 type ProposalStatus = "PENDING" | "APPROVED" | "REJECTED";
 type ValidationStatus =
@@ -66,6 +70,73 @@ type ProposalFilePage = {
 
 const VALIDATING = new Set<ValidationStatus>(["RECEIVING", "VALIDATING"]);
 const PAGE_SIZE = 25;
+
+/**
+ * How many changed files a proposal may have before its sections start
+ * collapsed. Small proposals are the common case and are what someone opens
+ * the dialog to read; a large one becomes a table of contents instead of a
+ * wall nobody scrolls to the decision buttons through.
+ */
+const AUTO_EXPAND_CHANGE_LIMIT = 5;
+
+/**
+ * One changed file's before/after as a unified diff.
+ *
+ * A missing side is empty text FOR THE DIFF — an `add` has no before and
+ * reads as all `+`, a `delete` has no after and reads as all `−` — but the
+ * two are not the same thing when deciding what to say instead of a diff. A
+ * side that is `null` is absent; a side that is `""` is a real, empty file.
+ * Collapsing them made an added or deleted EMPTY file claim its text "did not
+ * change", which is the opposite of what happened to it. So the null check
+ * comes first, and only two PRESENT equal sides are an unchanged body.
+ *
+ * Both bodies are already in hand — `buildProposalChanges` sends them inline
+ * — so nothing is fetched here.
+ */
+function ProposalChangeDiff({
+	before,
+	after,
+}: {
+	before: string | null;
+	after: string | null;
+}) {
+	const t = useTranslations("projects.codingInstructions.proposalReview");
+	const rows = useMemo(
+		() => toDiffRows(diffLines(before ?? "", after ?? "")),
+		[before, after],
+	);
+	// One side absent: the file was added or deleted outright.
+	const oneSided = before === null || after === null;
+	if (oneSided && (before ?? "") === "" && (after ?? "") === "") {
+		return (
+			<p className="text-muted-foreground text-sm">{t("emptyFile")}</p>
+		);
+	}
+	if (!oneSided && before === after) {
+		return (
+			<p className="text-muted-foreground text-sm">
+				{t("noTextualChanges")}
+			</p>
+		);
+	}
+	return (
+		<pre className="max-h-64 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-xs">
+			{rows.map((row, index) => (
+				<span
+					key={`${index}-${row.text.length}`}
+					className={cn(
+						row.added &&
+							"bg-emerald-500/15 text-emerald-800 dark:text-emerald-300",
+						row.removed &&
+							"bg-red-500/15 text-red-800 dark:text-red-300",
+					)}
+				>
+					{row.text}
+				</span>
+			))}
+		</pre>
+	);
+}
 
 function validationLabel(
 	status: ValidationStatus,
@@ -127,6 +198,13 @@ export function InstructionProposals({
 		side: "before" | "after";
 		offset: number;
 	} | null>(null);
+	// Only the sections somebody has clicked. The default is derived from the
+	// proposal's size below, so this holds overrides rather than the whole
+	// open/closed picture — which keeps a background refetch of the detail
+	// from reopening a section that was just closed.
+	const [changeToggles, setChangeToggles] = useState<Record<string, boolean>>(
+		{},
+	);
 	const proposals = useQuery({
 		...orpc.projects.instructions.proposals.list.queryOptions({
 			input: { projectId, limit: PAGE_SIZE, cursor },
@@ -174,6 +252,7 @@ export function InstructionProposals({
 	const clearSelection = () => {
 		setSelectedId(null);
 		setFilePageInput(null);
+		setChangeToggles({});
 	};
 	const refreshState = () => {
 		onChanged();
@@ -279,6 +358,7 @@ export function InstructionProposals({
 									disabled={!canReview}
 									onClick={() => {
 										setFilePageInput(null);
+										setChangeToggles({});
 										setSelectedId(proposal.id);
 									}}
 								>
@@ -435,113 +515,175 @@ export function InstructionProposals({
 										{t("diffIncomplete")}
 									</p>
 								) : null}
-								{selected.changes.map((change) => (
-									<section
-										key={change.path}
-										className="flex flex-col gap-2 rounded-md border border-border p-3"
-									>
-										<div className="flex items-center gap-2">
-											<Badge variant="secondary">
-												{t(change.op)}
-											</Badge>
-											<code className="min-w-0 truncate text-xs">
-												{change.path}
-											</code>
-										</div>
-										{change.binary ? (
-											<p className="text-muted-foreground text-sm">
-												{t("binary")}
-											</p>
-										) : (
-											<div className="grid gap-2 md:grid-cols-2">
-												{change.before !== null ? (
-													<div>
-														<p className="mb-1 text-muted-foreground text-xs">
-															{t("before")}
-														</p>
-														<pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-2 font-mono text-xs">
-															{change.before}
-														</pre>
-													</div>
+								{selected.changes.map((change) => {
+									const expanded =
+										changeToggles[change.path] ??
+										(selected.changes?.length ?? 0) <=
+											AUTO_EXPAND_CHANGE_LIMIT;
+									// A unified diff needs BOTH sides. With one of them
+									// omitted there is nothing to compare against, so the
+									// section keeps today's notice and its paged link.
+									const diffable =
+										!change.binary &&
+										change.beforeOmitted === null &&
+										change.afterOmitted === null;
+									const counts = diffable
+										? countDiffLines(
+												diffLines(
+													change.before ?? "",
+													change.after ?? "",
+												),
+											)
+										: null;
+									return (
+										<section
+											key={change.path}
+											className="flex flex-col gap-2 rounded-md border border-border p-3"
+										>
+											<button
+												type="button"
+												aria-expanded={expanded}
+												className="flex w-full min-w-0 items-center gap-2 text-left"
+												onClick={() =>
+													setChangeToggles(
+														(current) => ({
+															...current,
+															[change.path]:
+																!expanded,
+														}),
+													)
+												}
+											>
+												{expanded ? (
+													<ChevronDownIcon
+														className="size-3.5 shrink-0"
+														aria-hidden="true"
+													/>
+												) : (
+													<ChevronRightIcon
+														className="size-3.5 shrink-0"
+														aria-hidden="true"
+													/>
+												)}
+												<Badge variant="secondary">
+													{t(change.op)}
+												</Badge>
+												<code className="min-w-0 truncate text-xs">
+													{change.path}
+												</code>
+												{counts ? (
+													<span className="ml-auto shrink-0 text-muted-foreground text-xs">
+														{t(
+															"lineCounts",
+															counts,
+														)}
+													</span>
 												) : null}
-												{change.after !== null ? (
-													<div>
-														<p className="mb-1 text-muted-foreground text-xs">
-															{t("after")}
-														</p>
-														<pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-2 font-mono text-xs">
-															{change.after}
-														</pre>
-													</div>
-												) : null}
-												{change.beforeOmitted &&
-												change.beforeOmitted !==
-													"BINARY" ? (
-													<div>
-														<p className="mb-1 text-muted-foreground text-xs">
-															{t("before")}
-														</p>
-														<p className="text-muted-foreground text-sm">
-															{t(
-																change.beforeOmitted ===
-																	"FILE_TOO_LARGE"
-																	? "fileTooLarge"
-																	: "responseLimit",
-															)}
-														</p>
-														<Button
-															variant="link"
-															className="h-auto justify-start px-0"
-															onClick={() =>
-																setFilePageInput(
-																	{
-																		path: change.path,
-																		side: "before",
-																		offset: 0,
-																	},
-																)
-															}
-														>
-															{t("viewFullSide")}
-														</Button>
-													</div>
-												) : null}
-												{change.afterOmitted &&
-												change.afterOmitted !==
-													"BINARY" ? (
-													<div>
-														<p className="mb-1 text-muted-foreground text-xs">
-															{t("after")}
-														</p>
-														<p className="text-muted-foreground text-sm">
-															{t(
-																change.afterOmitted ===
-																	"FILE_TOO_LARGE"
-																	? "fileTooLarge"
-																	: "responseLimit",
-															)}
-														</p>
-														<Button
-															variant="link"
-															className="h-auto justify-start px-0"
-															onClick={() =>
-																setFilePageInput(
-																	{
-																		path: change.path,
-																		side: "after",
-																		offset: 0,
-																	},
-																)
-															}
-														>
-															{t("viewFullSide")}
-														</Button>
-													</div>
-												) : null}
-											</div>
-										)}
-									</section>
-								))}
+											</button>
+											{!expanded ? null : change.binary ? (
+												<p className="text-muted-foreground text-sm">
+													{t("binary")}
+												</p>
+											) : diffable ? (
+												<ProposalChangeDiff
+													before={change.before}
+													after={change.after}
+												/>
+											) : (
+												<div className="grid gap-2 md:grid-cols-2">
+													{change.before !== null ? (
+														<div>
+															<p className="mb-1 text-muted-foreground text-xs">
+																{t("before")}
+															</p>
+															<pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-2 font-mono text-xs">
+																{change.before}
+															</pre>
+														</div>
+													) : null}
+													{change.after !== null ? (
+														<div>
+															<p className="mb-1 text-muted-foreground text-xs">
+																{t("after")}
+															</p>
+															<pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-2 font-mono text-xs">
+																{change.after}
+															</pre>
+														</div>
+													) : null}
+													{change.beforeOmitted &&
+													change.beforeOmitted !==
+														"BINARY" ? (
+														<div>
+															<p className="mb-1 text-muted-foreground text-xs">
+																{t("before")}
+															</p>
+															<p className="text-muted-foreground text-sm">
+																{t(
+																	change.beforeOmitted ===
+																		"FILE_TOO_LARGE"
+																		? "fileTooLarge"
+																		: "responseLimit",
+																)}
+															</p>
+															<Button
+																variant="link"
+																className="h-auto justify-start px-0"
+																onClick={() =>
+																	setFilePageInput(
+																		{
+																			path: change.path,
+																			side: "before",
+																			offset: 0,
+																		},
+																	)
+																}
+															>
+																{t(
+																	"viewFullSide",
+																)}
+															</Button>
+														</div>
+													) : null}
+													{change.afterOmitted &&
+													change.afterOmitted !==
+														"BINARY" ? (
+														<div>
+															<p className="mb-1 text-muted-foreground text-xs">
+																{t("after")}
+															</p>
+															<p className="text-muted-foreground text-sm">
+																{t(
+																	change.afterOmitted ===
+																		"FILE_TOO_LARGE"
+																		? "fileTooLarge"
+																		: "responseLimit",
+																)}
+															</p>
+															<Button
+																variant="link"
+																className="h-auto justify-start px-0"
+																onClick={() =>
+																	setFilePageInput(
+																		{
+																			path: change.path,
+																			side: "after",
+																			offset: 0,
+																		},
+																	)
+																}
+															>
+																{t(
+																	"viewFullSide",
+																)}
+															</Button>
+														</div>
+													) : null}
+												</div>
+											)}
+										</section>
+									);
+								})}
 								{filePageInput ? (
 									<div className="rounded-md border border-border p-3">
 										<p className="mb-2 text-muted-foreground text-xs">

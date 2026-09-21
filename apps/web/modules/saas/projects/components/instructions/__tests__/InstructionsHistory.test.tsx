@@ -55,6 +55,9 @@ vi.mock("next-intl", () => ({
 	NextIntlClientProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
+/** Every `compare` input the dialog asked for, in order. */
+const compareInputs = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+
 function mutationOptionsStub(
 	mutationFn: (input: { snapshotId: string }) => Promise<unknown>,
 ) {
@@ -98,6 +101,24 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						url: "https://example.com/download",
 						fileCount: 0,
 					})),
+				},
+				compare: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: ["compare", input],
+						queryFn: async () => {
+							compareInputs.push(
+								input as Record<string, unknown>,
+							);
+							return {
+								from: { id: "published", version: 9 },
+								to: { id: "ready", version: 8 },
+								added: [],
+								removed: [],
+								changed: [],
+								unchangedCount: 4,
+							};
+						},
+					}),
 				},
 			},
 		},
@@ -146,6 +167,7 @@ describe("InstructionsHistory", () => {
 	});
 	beforeEach(() => {
 		vi.clearAllMocks();
+		compareInputs.length = 0;
 		vi.spyOn(window, "confirm").mockReturnValue(true);
 	});
 	afterEach(() => {
@@ -306,6 +328,155 @@ describe("InstructionsHistory", () => {
 		expect(
 			screen.getAllByRole("button", { name: "deleteAction" }),
 		).toHaveLength(3);
+	});
+
+	/**
+	 * "Compare with published" carries the same gates as Download — a version
+	 * whose bytes the server will not serve cannot be diffed either — plus
+	 * one of its own: the published row has nothing to compare itself
+	 * against, and with no published pointer there is no other side at all.
+	 */
+	it("offers a comparison only for a readable version that is not the published one", () => {
+		render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={[
+					{
+						id: "published",
+						version: 9,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 4,
+						createdAt: new Date(),
+					},
+					{
+						id: "ready",
+						version: 8,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 4,
+						createdAt: new Date(),
+					},
+					{
+						id: "rejected",
+						version: 7,
+						status: "REJECTED",
+						source: "UPLOAD",
+						fileCount: 4,
+						createdAt: new Date(),
+					},
+					{
+						id: "proposal",
+						version: 6,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 4,
+						createdAt: new Date(),
+						proposalStatus: "PENDING",
+					},
+				]}
+				publishedId="published"
+				publishedVersion={9}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+
+		// Exactly the READY, non-published, non-proposal row.
+		expect(
+			screen.getAllByRole("button", { name: "compareAction" }),
+		).toHaveLength(1);
+		// Download is offered on both READY non-proposal rows, so the extra
+		// gate here is the published row itself.
+		expect(
+			screen.getAllByRole("button", { name: "downloadAction" }),
+		).toHaveLength(2);
+	});
+
+	/**
+	 * The direction is the whole point: History compares PUBLISHED -> the
+	 * selected version, i.e. "what changes if this version is published",
+	 * not what that version was derived from. Counting buttons would not
+	 * catch the two ids being handed over the wrong way round.
+	 */
+	it("opens the comparison from the published version to the selected one", async () => {
+		render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={[
+					{
+						id: "published",
+						version: 9,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 4,
+						createdAt: new Date(),
+					},
+					{
+						id: "ready",
+						version: 8,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 4,
+						createdAt: new Date(),
+					},
+				]}
+				publishedId="published"
+				publishedVersion={9}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+
+		await userEvent.click(
+			screen.getByRole("button", { name: "compareAction" }),
+		);
+
+		await waitFor(() => expect(compareInputs).toHaveLength(1));
+		expect(compareInputs[0]).toEqual({
+			projectId: "p",
+			fromSnapshotId: "published",
+			toSnapshotId: "ready",
+		});
+		// `t()` echoes `key:values` here, so this is the compare dialog's own
+		// summary line with its four counts interpolated — proof the dialog
+		// rendered, not just that the query ran.
+		expect(await screen.findByText("summary:0,0,0,4")).toBeTruthy();
+		expect(
+			screen.getByRole("button", { name: "closeButton" }),
+		).toBeTruthy();
+	});
+
+	it("offers no comparison at all when the project has published nothing", () => {
+		render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={[
+					{
+						id: "ready",
+						version: 8,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 4,
+						createdAt: new Date(),
+					},
+				]}
+				publishedId={null}
+				publishedVersion={null}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+
+		expect(
+			screen.queryByRole("button", { name: "compareAction" }),
+		).toBeNull();
 	});
 
 	// M3/M4: "See why" rendered the raw `reason` ("secret") and the

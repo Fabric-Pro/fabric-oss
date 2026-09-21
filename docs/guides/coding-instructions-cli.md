@@ -103,7 +103,8 @@ an explicit flag replaces a default.
 
 Suggests this checkout's edits back to the project. It always opens a
 **proposal**: nothing changes for anybody reading the instructions until
-somebody who can edit them approves it in the Coding Instructions tab. There is
+somebody who can edit them approves it in the Coding Instructions tab, where
+each changed file is reviewed as a unified diff of its two sides. There is
 no publish flag — see "publishing is not one of them" below.
 
 The diff is computed against `<dest>/.fabric/instructions.lock`, so `sync` has
