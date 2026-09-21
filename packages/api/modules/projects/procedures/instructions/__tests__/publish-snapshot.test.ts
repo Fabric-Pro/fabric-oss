@@ -5,10 +5,22 @@ const m = vi.hoisted(() => ({
 	publishInstructionSnapshot: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
 	recordAuditFromRequest: vi.fn(),
+	runInBackground: vi.fn(),
+	warmInstructionSnapshotExport: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
 	publishInstructionSnapshot: (...a: unknown[]) =>
 		m.publishInstructionSnapshot(...a),
+}));
+// The archive pre-build is scheduled, not awaited. Mocking the wrapper is how
+// "a continuation was scheduled" is asserted at all — `run-in-background.ts`
+// exists as a local module for exactly that (its own docblock says so).
+vi.mock("../../../../../modules/weave/lib/run-in-background", () => ({
+	runInBackground: (...a: unknown[]) => m.runInBackground(...a),
+}));
+vi.mock("@repo/instructions/export", () => ({
+	warmInstructionSnapshotExport: (...a: unknown[]) =>
+		m.warmInstructionSnapshotExport(...a),
 }));
 vi.mock("../../../../../lib/audit", () => ({
 	recordAuditFromRequest: (...a: unknown[]) => m.recordAuditFromRequest(...a),
@@ -38,6 +50,9 @@ const ctx = { user: { id: "u" }, session: { activeOrganizationId: "org_1" } };
 beforeEach(() => {
 	m.publishInstructionSnapshot.mockReset();
 	m.recordAuditFromRequest.mockReset();
+	m.runInBackground.mockReset();
+	m.warmInstructionSnapshotExport.mockReset();
+	m.warmInstructionSnapshotExport.mockResolvedValue(undefined);
 	m.resolveEffectiveProjectPermissions.mockResolvedValue({
 		permissions: [],
 		source: "org",
@@ -202,5 +217,75 @@ describe("projects.instructions.publish", () => {
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
 		expect(m.publishInstructionSnapshot).not.toHaveBeenCalled();
 		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * The download archive is keyed on the snapshot's digest and reused once
+ * written, so before this the entire build fell on whoever downloaded a new
+ * version first — inside a request the CLI gives a short budget, which on a
+ * large tree meant `fabric instructions sync` timed out and its retries
+ * started further concurrent builds of the same archive.
+ */
+describe("pre-building the export archive on publish", () => {
+	it("schedules the warm for the snapshot that just became the pointer", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: true,
+			version: 9,
+			previousVersion: 8,
+		});
+
+		await m.handlers.publish!({
+			input: { projectId: "p", snapshotId: "s" },
+			context: ctx,
+		});
+
+		expect(m.warmInstructionSnapshotExport).toHaveBeenCalledWith({
+			projectId: "p",
+			// The PROJECT's hosting organization, resolved server-side — never
+			// a caller-supplied value or the session's active organization.
+			organizationId: "org_1",
+			snapshotId: "s",
+		});
+		// Scheduled through the wrapper, not `void`-ed: on Vercel a bare
+		// floating promise is not guaranteed to finish once the response
+		// returns.
+		expect(m.runInBackground).toHaveBeenCalledTimes(1);
+	});
+
+	// The idempotent case is warmed too, and it is cheap: the builder's reuse
+	// check finds the object and does a single metadata read.
+	it("schedules the warm for the idempotent republish as well", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: false,
+		});
+
+		await m.handlers.publish!({
+			input: { projectId: "p", snapshotId: "s" },
+			context: ctx,
+		});
+
+		expect(m.runInBackground).toHaveBeenCalledTimes(1);
+	});
+
+	it("schedules nothing when the publish was refused", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: false,
+			reason: "not_ready",
+		});
+
+		await expect(
+			m.handlers.publish!({
+				input: { projectId: "p", snapshotId: "s" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+		// Nothing took the pointer, so there is no new version to pre-build —
+		// and a refusal must not spend the object store's time.
+		expect(m.warmInstructionSnapshotExport).not.toHaveBeenCalled();
+		expect(m.runInBackground).not.toHaveBeenCalled();
 	});
 });

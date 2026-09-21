@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/client";
 import { publishInstructionSnapshot } from "@repo/database";
+import { warmInstructionSnapshotExport } from "@repo/instructions/export";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
@@ -7,6 +8,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { runInBackground } from "../../../weave/lib/run-in-background";
 import { requireHostingOrganizationId } from "./hosting-organization";
 
 /**
@@ -127,5 +129,25 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 				},
 			});
 		}
+		// Pre-build the download archive for the version that is now the
+		// pointer. The archive is keyed on the snapshot's digest and reused
+		// once written, so the whole cost fell on whoever downloaded the new
+		// version first — inside a request the CLI gives a short budget, which
+		// on a large tree is what made `fabric instructions sync` time out and
+		// retry into a second concurrent build.
+		//
+		// Scheduled, never awaited: the publish is done and the response
+		// should return as fast as it always did. `runInBackground` is what
+		// keeps the continuation alive past the response on Vercel and
+		// swallows a rejection that no longer has a request to surface in.
+		// Warmed on the idempotent `published: true` too — the builder's own
+		// reuse check makes that case a single metadata read.
+		runInBackground(
+			warmInstructionSnapshotExport({
+				projectId: input.projectId,
+				organizationId,
+				snapshotId: input.snapshotId,
+			}),
+		);
 		return { published: true as const };
 	});
