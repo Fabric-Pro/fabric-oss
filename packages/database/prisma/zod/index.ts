@@ -480,13 +480,13 @@ export type DeletedMeetingArchiveScalarFieldEnum = z.infer<typeof DeletedMeeting
 
 // File: ProjectMeetingTranscriptScalarFieldEnum.schema.ts
 
-export const ProjectMeetingTranscriptScalarFieldEnumSchema = z.enum(['id', 'projectId', 'linkedMeetingId', 'meetingId', 'transcriptId', 'meetingSubject', 'meetingDate', 'contextId', 'summary', 'keywords', 'speakerNames', 'contentLength', 'wasSummarized', 'extractedDecisions', 'dismissedDecisionIndexes', 'extractedActionItems', 'extractedQuestions', 'insightsExtractedAt', 'insightsVersion', 'analysisStatus', 'analysisStartedAt', 'analysisError', 'analysisFailedAt', 'analyzedAt', 'analyzedProposalId', 'actionItemsLinkedAt', 'actionItemsLinkVersion', 'syncedAt', 'userId', 'organizationId'])
+export const ProjectMeetingTranscriptScalarFieldEnumSchema = z.enum(['id', 'projectId', 'linkedMeetingId', 'meetingId', 'transcriptId', 'meetingSubject', 'meetingDate', 'contextId', 'summary', 'keywords', 'speakerNames', 'contentLength', 'wasSummarized', 'extractedDecisions', 'dismissedDecisionIndexes', 'extractedActionItems', 'extractedQuestions', 'insightsExtractedAt', 'insightsVersion', 'analysisStatus', 'analysisStartedAt', 'analysisError', 'analysisFailedAt', 'analyzedAt', 'analyzedProposalId', 'actionItemsLinkedAt', 'actionItemsLinkVersion', 'todosMatchedAt', 'todoMatchVersion', 'syncedAt', 'userId', 'organizationId'])
 
 export type ProjectMeetingTranscriptScalarFieldEnum = z.infer<typeof ProjectMeetingTranscriptScalarFieldEnumSchema>;
 
 // File: ProjectMeetingActionItemScalarFieldEnum.schema.ts
 
-export const ProjectMeetingActionItemScalarFieldEnumSchema = z.enum(['id', 'transcriptId', 'orderIndex', 'text', 'tentativeOwnerName', 'dueHint', 'completedAt', 'completedById', 'sourceQuote', 'anchorLine', 'createdAt', 'userId', 'organizationId'])
+export const ProjectMeetingActionItemScalarFieldEnumSchema = z.enum(['id', 'transcriptId', 'orderIndex', 'text', 'tentativeOwnerName', 'dueHint', 'completedAt', 'completedById', 'sourceQuote', 'anchorLine', 'itemKey', 'createdAt', 'userId', 'organizationId'])
 
 export type ProjectMeetingActionItemScalarFieldEnum = z.infer<typeof ProjectMeetingActionItemScalarFieldEnumSchema>;
 
@@ -495,6 +495,18 @@ export type ProjectMeetingActionItemScalarFieldEnum = z.infer<typeof ProjectMeet
 export const MeetingActionItemLinkScalarFieldEnumSchema = z.enum(['id', 'transcriptId', 'projectId', 'itemKey', 'itemTextSnapshot', 'storyId', 'origin', 'status', 'similarity', 'confidence', 'reasoning', 'createdById', 'createdAt', 'dismissedAt', 'dismissedById', 'userId', 'organizationId'])
 
 export type MeetingActionItemLinkScalarFieldEnum = z.infer<typeof MeetingActionItemLinkScalarFieldEnumSchema>;
+
+// File: NonMemberContactScalarFieldEnum.schema.ts
+
+export const NonMemberContactScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'name', 'email', 'company', 'redactedAt', 'createdById', 'createdAt', 'updatedAt'])
+
+export type NonMemberContactScalarFieldEnum = z.infer<typeof NonMemberContactScalarFieldEnumSchema>;
+
+// File: TodoItemScalarFieldEnum.schema.ts
+
+export const TodoItemScalarFieldEnumSchema = z.enum(['id', 'source', 'transcriptId', 'itemKey', 'occurrenceIndex', 'itemTextSnapshot', 'title', 'projectId', 'assigneeUserId', 'assigneeContactId', 'suggestedUserId', 'suggestedContactId', 'suggestionCandidates', 'assignedManually', 'snoozedUntil', 'completedAt', 'completedById', 'lastKnownCompletedAt', 'sourceDate', 'createdById', 'createdAt', 'updatedAt', 'userId', 'organizationId'])
+
+export type TodoItemScalarFieldEnum = z.infer<typeof TodoItemScalarFieldEnumSchema>;
 
 // File: ProjectMeetingAgendaScalarFieldEnum.schema.ts
 
@@ -2355,6 +2367,12 @@ export type MeetingActionItemLinkOrigin = z.infer<typeof MeetingActionItemLinkOr
 export const MeetingActionItemLinkStatusSchema = z.enum(['ACTIVE', 'DISMISSED'])
 
 export type MeetingActionItemLinkStatus = z.infer<typeof MeetingActionItemLinkStatusSchema>;
+
+// File: TodoItemSource.schema.ts
+
+export const TodoItemSourceSchema = z.enum(['MEETING_DIGEST', 'MANUAL'])
+
+export type TodoItemSource = z.infer<typeof TodoItemSourceSchema>;
 
 // File: MeetingAgendaStatus.schema.ts
 
@@ -5345,6 +5363,8 @@ export const ProjectMeetingTranscriptSchema = z.object({
   analyzedProposalId: z.string().nullish(),
   actionItemsLinkedAt: z.date().nullish(),
   actionItemsLinkVersion: z.number().int().nullish(),
+  todosMatchedAt: z.date().nullish(),
+  todoMatchVersion: z.number().int().nullish(),
   syncedAt: z.date(),
   userId: z.string().nullish(),
   organizationId: z.string().nullish(),
@@ -5366,6 +5386,7 @@ export const ProjectMeetingActionItemSchema = z.object({
   completedById: z.string().nullish(),
   sourceQuote: z.string().nullish(),
   anchorLine: z.number().int().nullish(),
+  itemKey: z.string().nullish(),
   createdAt: z.date(),
   userId: z.string().nullish(),
   organizationId: z.string().nullish(),
@@ -5397,6 +5418,55 @@ export const MeetingActionItemLinkSchema = z.object({
 });
 
 export type MeetingActionItemLinkType = z.infer<typeof MeetingActionItemLinkSchema>;
+
+
+// File: NonMemberContact.schema.ts
+
+export const NonMemberContactSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  name: z.string(),
+  email: z.string().nullish(),
+  company: z.string().nullish(),
+  redactedAt: z.date().nullish(),
+  createdById: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type NonMemberContactType = z.infer<typeof NonMemberContactSchema>;
+
+
+// File: TodoItem.schema.ts
+
+export const TodoItemSchema = z.object({
+  id: z.string(),
+  source: TodoItemSourceSchema,
+  transcriptId: z.string().nullish(),
+  itemKey: z.string().nullish(),
+  occurrenceIndex: z.number().int().nullish(),
+  itemTextSnapshot: z.string().nullish(),
+  title: z.string().nullish(),
+  projectId: z.string().nullish(),
+  assigneeUserId: z.string().nullish(),
+  assigneeContactId: z.string().nullish(),
+  suggestedUserId: z.string().nullish(),
+  suggestedContactId: z.string().nullish(),
+  suggestionCandidates: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  assignedManually: z.boolean(),
+  snoozedUntil: z.date().nullish(),
+  completedAt: z.date().nullish(),
+  completedById: z.string().nullish(),
+  lastKnownCompletedAt: z.date().nullish(),
+  sourceDate: z.date(),
+  createdById: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+  userId: z.string().nullish(),
+  organizationId: z.string().nullish(),
+});
+
+export type TodoItemType = z.infer<typeof TodoItemSchema>;
 
 
 // File: ProjectMeetingAgenda.schema.ts

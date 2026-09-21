@@ -53,7 +53,7 @@ export const AUDIT_ACTIONS = [
 	"auth.password.changed",
 	"auth.impersonation.started",
 	"auth.impersonation.ended",
-	// org (15)
+	// org (24)
 	"org.created",
 	"org.updated",
 	"org.deleted",
@@ -78,6 +78,57 @@ export const AUDIT_ACTIONS = [
 	"org.integration.connected",
 	"org.integration.disconnected",
 	"org.integration.config_updated",
+	// The non-member contact register (#2340): people with no Fabric account
+	// whom the organization tracks deliverables against. Security-relevant
+	// because the register holds names and contact details of client staff
+	// across every project, so "who added, changed or erased an outsider's
+	// record" is a question the ledger has to answer.
+	//
+	// NONE of these three rows carries the contact's name, email or company —
+	// only the id, and for an edit the NAMES of the fields that changed. The
+	// audit log is append-only, so any identifying value written here would
+	// outlive the erasure `org.contact.redacted` exists to record, and the
+	// redaction would be a redaction of everything except its own receipt.
+	"org.contact.created",
+	"org.contact.updated",
+	// Deletion of a contact is a redaction, never a removal: the row is
+	// anonymised in place and its to-dos detach. `detachedTodoCount` on the row
+	// is what makes the erasure auditable without re-recording the person —
+	// it says how many tracked obligations moved to Unassigned rather than
+	// disappearing with them.
+	"org.contact.redacted",
+	// The consolidated To Do list's writes (#2340). Organization-scoped rather
+	// than project-scoped because the page itself is: a to-do may carry no
+	// project at all, so there is no project namespace every one of these rows
+	// could honestly sit in.
+	//
+	// Security-relevant because the list is the surface on which one person's
+	// commitments become another's. Completing, snoozing or reassigning someone
+	// else's item is authorized by ownership or project reach, and the ledger is
+	// what answers "who moved this off my plate" afterwards.
+	//
+	// NONE of these rows carries an assignee's name or email — a to-do's
+	// assignee can be a non-member contact, and `org.contact.redacted` erases
+	// such a person on request. The audit log is append-only, so a name written
+	// here would outlive that erasure. Ids only, and the to-do's own title is
+	// left out for the same reason: a meeting-sourced item's text routinely
+	// names the person who owes the work.
+	"org.todo.created",
+	// One key for both directions, with `completed` in the metadata — the same
+	// shape `project.meeting_digest.action_item_toggled` uses, and for the same
+	// reason: ticking and un-ticking are one act a person repeats, not two
+	// events worth separate filters.
+	"org.todo.completion_changed",
+	"org.todo.snoozed",
+	// Its own key, not a `snoozed` row with a null date. Ending a snooze early
+	// returns an item to everyone's open view, which is the opposite of what a
+	// snooze row means, and a filter for "who hid this" must not also match it.
+	"org.todo.unsnoozed",
+	"org.todo.assigned",
+	// A batch of completions, recorded once with its per-row outcome counts. A
+	// row per item would bury the fact that they were one action, and the counts
+	// are what make a partial batch legible.
+	"org.todo.bulk_resolved",
 	// account (3) — personal-context API key lifecycle for the
 	// public audit-log REST API. Mirrors `org.api_key.*` but writes
 	// rows scoped to `userId` (personal) instead of the org.

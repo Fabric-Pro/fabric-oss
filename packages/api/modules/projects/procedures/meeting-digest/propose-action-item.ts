@@ -1,5 +1,7 @@
 import { ORPCError } from "@orpc/server";
 import {
+	TODO_BINDING_VERSION,
+	computeTodoItemKey,
 	createPendingBacklogProposal,
 	db,
 	hasProjectAccess,
@@ -50,6 +52,32 @@ export function buildActionItemProposal(itemText: string): {
  * `actionItemId` (this dedupe) and `transcriptRecordId` (the #1823 provenance
  * fallback in `lib/meeting-provenance.ts`, since a per-item proposal never
  * owns the transcript's `analyzedProposalId` back-link).
+ *
+ * #2340: it also records `actionItemKey` — `computeTodoItemKey` over the item's
+ * text — BESIDE the row id, never instead of it. The row id is not stable:
+ * `extractMeetingInsightsActivity` deletes and recreates every action item of a
+ * transcript on each run, so a proposal filed before a re-extraction and
+ * approved after it pointed at a row that no longer existed, and
+ * `linkStoryToSourceActionItem` wrote no link and reported nothing. The key
+ * survives any re-extraction that leaves the wording alone. Both are kept
+ * because proposals filed before this change carry only the id and must keep
+ * resolving exactly as they always did.
+ *
+ * `actionItemKeyVersion` is stamped alongside so the resolver can tell a key it
+ * can use from one written under a different `TODO_BINDING_VERSION`, whose
+ * digest addresses nothing in the current scheme. The key is COMPUTED here
+ * rather than copied from the stored `ProjectMeetingActionItem.itemKey` column,
+ * so the recorded key and the recorded version can never disagree — the column
+ * may have been written under an earlier version, and a key labelled with the
+ * wrong version is worse than no key at all.
+ *
+ * The dedupe below deliberately still matches on `actionItemId` alone. Matching
+ * on the key would make two identically worded items in two different meetings
+ * of one project collide, and the proposal for the second would be silently
+ * swallowed as "already proposed" — a missing proposal nobody can see. Keyed on
+ * the id, the worst case after a re-extraction is a second visible proposal for
+ * the same commitment, which a person can read and dismiss. A duplicate that is
+ * visible beats a suppression that is not.
  */
 export async function proposeActionItemTicket(params: {
 	projectId: string;
@@ -117,6 +145,8 @@ export async function proposeActionItemTicket(params: {
 		sourceMetadata: JSON.parse(
 			JSON.stringify({
 				actionItemId: item.id,
+				actionItemKey: computeTodoItemKey(item.text),
+				actionItemKeyVersion: TODO_BINDING_VERSION,
 				transcriptRecordId: item.transcript.id,
 				meetingId: item.transcript.meetingId,
 				transcriptId: item.transcript.transcriptId,

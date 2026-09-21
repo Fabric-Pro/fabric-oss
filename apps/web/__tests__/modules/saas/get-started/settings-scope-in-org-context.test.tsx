@@ -86,7 +86,7 @@ describe("get-started drawer — account settings in organization context", () =
 				onClose={vi.fn()}
 				onStartTour={vi.fn()}
 				onShowComponent={vi.fn()}
-				gates={{ publishingSuite: false }}
+				gates={{ publishingSuite: false, todoList: false }}
 			/>,
 		);
 
@@ -103,7 +103,7 @@ describe("get-started drawer — account settings in organization context", () =
 				onClose={vi.fn()}
 				onStartTour={vi.fn()}
 				onShowComponent={vi.fn()}
-				gates={{ publishingSuite: false }}
+				gates={{ publishingSuite: false, todoList: false }}
 			/>,
 		);
 
@@ -120,7 +120,7 @@ describe("get-started drawer — account settings in organization context", () =
 				onClose={onClose}
 				onStartTour={vi.fn()}
 				onShowComponent={vi.fn()}
-				gates={{ publishingSuite: false }}
+				gates={{ publishingSuite: false, todoList: false }}
 			/>,
 		);
 
@@ -155,7 +155,7 @@ describe("get-started drawer — account settings in organization context", () =
 				onClose={vi.fn()}
 				onStartTour={vi.fn()}
 				onShowComponent={vi.fn()}
-				gates={{ publishingSuite: false }}
+				gates={{ publishingSuite: false, todoList: false }}
 			/>,
 		);
 		await expandProjectGroup();
@@ -167,7 +167,7 @@ describe("get-started drawer — account settings in organization context", () =
 				onClose={vi.fn()}
 				onStartTour={vi.fn()}
 				onShowComponent={vi.fn()}
-				gates={{ publishingSuite: true }}
+				gates={{ publishingSuite: true, todoList: false }}
 			/>,
 		);
 		await expandProjectGroup();

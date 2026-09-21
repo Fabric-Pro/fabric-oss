@@ -72,6 +72,7 @@ import {
 	buildActionItemProposal,
 	proposeActionItemTicket,
 } from "@repo/api/modules/projects/procedures/meeting-digest/propose-action-item";
+import { TODO_BINDING_VERSION, computeTodoItemKey } from "@repo/database";
 
 describe("buildActionItemProposal", () => {
 	it("wraps the item text in the analyzer's one-change schema", () => {
@@ -132,6 +133,28 @@ describe("proposeActionItemTicket", () => {
 		expect(createPendingBacklogProposal).not.toHaveBeenCalled();
 	});
 
+	it("keeps the open-proposal dedupe keyed on the row id, not on the stable key (#2340)", async () => {
+		findFirstActionItem.mockResolvedValue(item);
+		findFirstProposal.mockResolvedValue({ id: "prop1" });
+
+		await proposeActionItemTicket({
+			projectId: "p1",
+			actionItemId: "a1",
+			userId: "u1",
+			organizationId: null,
+		});
+
+		// Deliberate: two identically worded items in two meetings of one
+		// project share a key. Deduping on it would silently swallow the second
+		// proposal, which nobody can see. Deduping on the id can at worst show a
+		// duplicate after a re-extraction, which anyone can read and dismiss.
+		const where = findFirstProposal.mock.calls[0]?.[0]?.where;
+		expect(where.sourceMetadata).toEqual({
+			path: ["actionItemId"],
+			equals: "a1",
+		});
+	});
+
 	it("creates a one-change proposal and returns proposed", async () => {
 		findFirstActionItem.mockResolvedValue(item);
 		findFirstProposal.mockResolvedValue(null);
@@ -175,6 +198,10 @@ describe("proposeActionItemTicket", () => {
 			changeCount: 1,
 			sourceMetadata: {
 				actionItemId: "a1",
+				// #2340: the stable key is written BESIDE the row id, which
+				// extraction invalidates on every run.
+				actionItemKey: computeTodoItemKey("Fix the chart"),
+				actionItemKeyVersion: TODO_BINDING_VERSION,
 				transcriptRecordId: "t1",
 				meetingId: "m1",
 				transcriptId: "tr1",

@@ -1,3 +1,4 @@
+import { computeActionItemKey, computeTodoItemKey } from "@repo/database";
 import { describe, expect, it } from "vitest";
 import {
 	buildActionItemRows,
@@ -36,5 +37,40 @@ describe("buildActionItemRows anchor fields (#1896 Task 3)", () => {
 			anchorLine: 12,
 		});
 		expect(rows[1]).toMatchObject({ sourceQuote: null, anchorLine: null });
+	});
+});
+
+describe("buildActionItemRows stores the to-do binding key (#2340)", () => {
+	it("writes itemKey for every row, from the to-do key not the link key", () => {
+		const rows = buildActionItemRows({
+			extracted: [
+				{ text: "Send the coverage report" },
+				{ text: "  SEND   the COVERAGE report  " },
+			],
+			existing: [],
+		});
+
+		expect(rows).toHaveLength(2);
+		for (const row of rows) {
+			expect(row.itemKey).toBe(computeTodoItemKey(row.text));
+			expect(row.itemKey).not.toBe(computeActionItemKey(row.text));
+		}
+		// Normalization is shared, so the two texts land on one key — which is
+		// exactly why the to-do layer disambiguates by occurrence rather than by
+		// key alone.
+		expect(rows[0].itemKey).toBe(rows[1].itemKey);
+	});
+
+	it("keys off the item's own text, so a rewording moves the key", () => {
+		const [before] = buildActionItemRows({
+			extracted: [{ text: "Draft the migration plan" }],
+			existing: [],
+		});
+		const [after] = buildActionItemRows({
+			extracted: [{ text: "Draft the migration plan by Friday" }],
+			existing: [],
+		});
+
+		expect(before.itemKey).not.toBe(after.itemKey);
 	});
 });

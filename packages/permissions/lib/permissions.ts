@@ -162,6 +162,11 @@ export const Permissions = {
 	WORKSPACE_UPDATE: "workspace:update",
 	WORKSPACE_DELETE: "workspace:delete",
 
+	// To-dos (consolidated To Do list; contacts reuse the org member permissions)
+	TODO_READ: "todo:read",
+	TODO_CREATE: "todo:create",
+	TODO_UPDATE: "todo:update",
+
 	// Dashboard
 	DASHBOARD_READ: "dashboard:read",
 

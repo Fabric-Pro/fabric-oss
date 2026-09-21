@@ -177,7 +177,39 @@ describe("audit.taxonomy handler", () => {
 		// be brought back, Fizzy #2462) = 121, + 5 coding-instruction actions
 		// (project.instructions.upload_started / published / rejected / deleted
 		// / settings_updated) = 126.
-		expect(result.actions).toHaveLength(126);
+		// + 3 org.contact.created / updated / redacted (the non-member contact
+		// register — people with no Fabric account whom the organization tracks
+		// deliverables against, #2340. The register holds client staff's names
+		// and contact details across every project, and its delete is a
+		// redaction, so the ledger needs both "who touched an outsider's record"
+		// and "how many tracked obligations that erasure moved to Unassigned".
+		// None of the three rows carries the contact's own identifying values —
+		// the log is append-only, so a name written into it would outlive the
+		// erasure the third row exists to record) = 129.
+		// + 6 org.todo.* (the consolidated To Do list's writes, #2340:
+		// created / completion_changed / snoozed / unsnoozed / assigned /
+		// bulk_resolved. The page is where one person's commitments become
+		// another's — completing, snoozing or reassigning someone else's item is
+		// authorized by ownership or project reach, and these rows are what
+		// answer "who moved this off my plate". Completion is ONE key carrying
+		// `completed` in its metadata, mirroring
+		// `project.meeting_digest.action_item_toggled`, while unsnoozing gets its
+		// own key because it is the opposite of hiding an item and must not match
+		// a filter for who hid one. None of the six carries an assignee's name or
+		// email, nor the to-do's own text: an assignee may be a non-member
+		// contact whom `org.contact.redacted` erases on request, and a
+		// meeting-sourced item's text routinely names the person who owes the
+		// work) = 135.
+		expect(result.actions).toHaveLength(135);
+		// The To Do list's writes. Completion is one toggle key; unsnoozing is
+		// its own, because "returned this to everyone's open view" is not a
+		// weaker form of "hid it".
+		expect(result.actions).toContain("org.todo.created");
+		expect(result.actions).toContain("org.todo.completion_changed");
+		expect(result.actions).toContain("org.todo.snoozed");
+		expect(result.actions).toContain("org.todo.unsnoozed");
+		expect(result.actions).toContain("org.todo.assigned");
+		expect(result.actions).toContain("org.todo.bulk_resolved");
 		expect(result.actions).toContain("auth.login.success");
 		expect(result.actions).toContain("project.document_generation.failed");
 		expect(result.actions).toContain("audit.retention.purged");

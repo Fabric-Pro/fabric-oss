@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/server";
-import { db, hasProjectAccess } from "@repo/database";
+import { hasProjectAccess, setActionItemCompletion } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
@@ -10,34 +10,52 @@ import {
 } from "../../../../orpc/procedures";
 
 /**
- * Pure-ish DB op: tenant-scoped completion toggle on a meeting action item.
- * Scoping goes through the `transcript` relation (linked meeting rows have
- * no direct `projectId` column) so a client-supplied `actionItemId` from a
- * different project can never match.
+ * Tenant-scoped completion toggle on a meeting action item.
+ *
+ * The write itself lives in `@repo/database` (`setActionItemCompletion`), and
+ * that is not tidiness: `ProjectMeetingActionItem.completedAt` is no longer read
+ * by this surface alone. The consolidated To Do list (#2340) binds a `TodoItem`
+ * to this row by `(transcriptId, itemKey, occurrenceIndex)` and keeps
+ * `lastKnownCompletedAt` as a snapshot of this very column, so that a row whose
+ * wording a re-extraction changed can still say it had been completed. A digest
+ * write that ignored the snapshot would make the To Do page claim an item was
+ * never done (completed here, never snapshotted) or claim a completion the
+ * person had taken back (reopened here, snapshot left behind). The query module
+ * writes both in one transaction, over the same partition the To Do read
+ * numbers occurrences with.
+ *
+ * `organizationId` is therefore part of the call: it is the tenant whose
+ * partition the occurrence is counted in, and the same value the To Do read
+ * uses. Passing it is not optional book-keeping — an absent one is why the
+ * snapshot half is skipped rather than guessed.
+ *
+ * `projectId` remains the scope guard, applied through the `transcript`
+ * relation because linked-meeting rows have no direct `projectId` column, so a
+ * client-supplied `actionItemId` from a different project can never match.
  */
 export async function applyActionItemCompletion(params: {
 	projectId: string;
 	actionItemId: string;
 	userId: string;
 	completed: boolean;
+	organizationId: string | null | undefined;
+	/** One clock for the request; defaulted only so callers may omit it. */
+	now?: Date;
 }): Promise<{ success: true; completedAt: Date | null }> {
-	const completedAt = params.completed ? new Date() : null;
-	const res = await db.projectMeetingActionItem.updateMany({
-		where: {
-			id: params.actionItemId,
-			transcript: { projectId: params.projectId },
-		},
-		data: {
-			completedAt,
-			completedById: params.completed ? params.userId : null,
-		},
+	const result = await setActionItemCompletion({
+		actionItemId: params.actionItemId,
+		projectId: params.projectId,
+		organizationId: params.organizationId,
+		userId: params.userId,
+		completed: params.completed,
+		now: params.now,
 	});
-	if (res.count === 0) {
+	if (!result.matched) {
 		throw new ORPCError("NOT_FOUND", {
 			message: "Action item not found",
 		});
 	}
-	return { success: true, completedAt };
+	return { success: true, completedAt: result.completedAt };
 }
 
 /**
@@ -83,6 +101,10 @@ export const setActionItemCompletedProcedure = tenantProtectedProcedure
 			actionItemId: input.actionItemId,
 			userId: context.user.id,
 			completed: input.completed,
+			// The resolved tenant, never the client's claim: the To Do snapshot
+			// this write maintains is addressed by an occurrence counted inside
+			// this organization's partition.
+			organizationId,
 		});
 
 		recordAuditFromRequest(context, {

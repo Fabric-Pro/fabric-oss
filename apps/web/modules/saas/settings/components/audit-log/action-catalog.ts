@@ -273,6 +273,73 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"org",
 	),
 
+	// to-dos and the non-member contact register (#2340)
+	"org.todo.created": D(
+		"org.todo.created",
+		"To-do created",
+		BookmarkPlus,
+		"info",
+		"org",
+	),
+	"org.todo.completion_changed": D(
+		"org.todo.completion_changed",
+		"To-do completion changed",
+		CheckCircle,
+		"info",
+		"org",
+	),
+	"org.todo.snoozed": D(
+		"org.todo.snoozed",
+		"To-do snoozed",
+		Clock,
+		"info",
+		"org",
+	),
+	"org.todo.unsnoozed": D(
+		"org.todo.unsnoozed",
+		"To-do unsnoozed",
+		Clock,
+		"info",
+		"org",
+	),
+	"org.todo.assigned": D(
+		"org.todo.assigned",
+		"To-do assigned",
+		UserCog,
+		"info",
+		"org",
+	),
+	"org.todo.bulk_resolved": D(
+		"org.todo.bulk_resolved",
+		"To-dos resolved in bulk",
+		CheckCircle,
+		"info",
+		"org",
+	),
+	"org.contact.created": D(
+		"org.contact.created",
+		"Contact added",
+		UserPlus,
+		"info",
+		"org",
+	),
+	"org.contact.updated": D(
+		"org.contact.updated",
+		"Contact updated",
+		Pencil,
+		"info",
+		"org",
+	),
+	// Warning, not info: this is an erasure. It anonymises a real person's
+	// record and detaches every to-do that named them, and it cannot be undone.
+	"org.contact.redacted": D(
+		"org.contact.redacted",
+		"Contact erased",
+		Eraser,
+		"warning",
+		"org",
+	),
+
 	// project (8)
 	"project.created": D(
 		"project.created",

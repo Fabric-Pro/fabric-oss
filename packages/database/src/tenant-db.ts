@@ -99,6 +99,7 @@ const SCOPE_ORG_VALUE: Record<string, string> = {
  * AND organizationId (which org it belongs to). Org admins need to see all usage.
  */
 const USER_OWNED_TABLES = new Set([
+	"TodoItem", // #2340 consolidated To Do list
 	"Agent",
 	"AgentTask",
 	"RegisteredAgentSuggestion", // Agent curation suggestions for USER/ORG agents
@@ -237,6 +238,7 @@ const USER_OWNED_TABLES = new Set([
  * Tables that are organization-only (no personal equivalent).
  */
 const ORG_ONLY_TABLES = new Set([
+	"NonMemberContact", // #2340 a contact has no owning user
 	"CloudProviderConfig",
 	"OrganizationRagProvider",
 	"OrganizationSearchProvider",
@@ -266,6 +268,7 @@ const ORG_ONLY_TABLES = new Set([
  * are handled as a follow-up.
  */
 const PROJECT_SCOPED_TABLES: Record<string, string> = {
+	TodoItem: "projectId",
 	Project: "__id__",
 	ProjectDocument: "projectId",
 	ProjectContext: "projectId",

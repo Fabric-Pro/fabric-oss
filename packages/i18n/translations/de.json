@@ -147,7 +147,8 @@
 			"aiChatbot": "Advisor",
 			"documentGenerator": "Dokument-Generator",
 			"organizationSettings": "Organisationseinstellungen",
-			"start": "Start"
+			"start": "Start",
+			"todos": "To-do"
 		},
 		"userMenu": {
 			"accountSettings": "Kontoeinstellungen",
@@ -849,7 +850,55 @@
 			},
 			"members": {
 				"activeMembers": "Aktive Mitglieder",
-				"description": "Sieh dir alle aktiven Mitglieder und die ausstehenden Einladungen deiner Organisation an.",
+				"contacts": {
+					"tab": "Kontakte",
+					"noAccountBadge": "Kein Konto",
+					"noDetails": "Keine E-Mail und kein Unternehmen hinterlegt",
+					"rowActions": "Kontaktaktionen",
+					"edit": "Kontakt bearbeiten",
+					"delete": "Kontakt löschen",
+					"form": {
+						"name": "Name",
+						"email": "E-Mail (optional)",
+						"company": "Unternehmen (optional)",
+						"hint": "Kontakte haben kein Fabric-Konto und keinen Zugriff auf diese Organisation. Gib eine E-Mail oder ein Unternehmen an, damit zwei Personen mit demselben Namen unterscheidbar bleiben.",
+						"submit": "Kontakt hinzufügen",
+						"save": "Speichern",
+						"cancel": "Abbrechen"
+					},
+					"empty": {
+						"title": "Noch keine Kontakte",
+						"description": "Füge hier die Personen außerhalb dieser Organisation hinzu, deren Aufgaben du verfolgst. Sie erhalten kein Konto und keinen Zugriff.",
+						"loading": "Kontakte werden geladen …"
+					},
+					"duplicate": {
+						"title": "Ein Kontakt mit diesem Namen existiert bereits",
+						"description": "{name} steht bereits in diesem Verzeichnis. Lege nur dann einen zweiten Eintrag an, wenn es sich um eine andere Person handelt.",
+						"cancel": "Abbrechen",
+						"confirm": "Trotzdem hinzufügen"
+					},
+					"deleteConfirm": {
+						"title": "Diesen Kontakt löschen?",
+						"description": "{name} wird aus dem Verzeichnis entfernt. Die zugehörigen To-dos bleiben in der Liste und sind danach nicht mehr zugewiesen.",
+						"cancel": "Abbrechen",
+						"confirm": "Kontakt löschen"
+					},
+					"notifications": {
+						"created": {
+							"description": "{name} wurde zu den Kontakten hinzugefügt.",
+							"error": "Der Kontakt konnte nicht hinzugefügt werden. Bitte versuche es erneut."
+						},
+						"updated": {
+							"description": "Der Kontakt wurde aktualisiert.",
+							"error": "Der Kontakt konnte nicht aktualisiert werden. Bitte versuche es erneut."
+						},
+						"deleted": {
+							"description": "Kontakt gelöscht. {count, plural, =0 {Es waren keine To-dos zugewiesen.} one {# To-do bleibt in der Liste und ist jetzt nicht mehr zugewiesen.} other {# To-dos bleiben in der Liste und sind jetzt nicht mehr zugewiesen.}}",
+							"error": "Der Kontakt konnte nicht gelöscht werden. Bitte versuche es erneut."
+						}
+					}
+				},
+				"description": "Sieh dir alle aktiven Mitglieder, die ausstehenden Einladungen und die Kontakte ohne Konto in deiner Organisation an.",
 				"invitations": {
 					"empty": "Es wurden noch keine Mitglieder eingeladen.",
 					"expiresAt": "Läuft am {date} ab",
@@ -1230,7 +1279,20 @@
 						"config_updated": "Integrationskonfiguration aktualisiert"
 					},
 					"restored": "Organisation wiederhergestellt",
-					"purged": "Organisation endgültig gelöscht"
+					"purged": "Organisation endgültig gelöscht",
+					"todo": {
+						"created": "To-do erstellt",
+						"completion_changed": "To-do-Status geändert",
+						"snoozed": "To-do zurückgestellt",
+						"unsnoozed": "Zurückstellung aufgehoben",
+						"assigned": "To-do zugewiesen",
+						"bulk_resolved": "To-dos gesammelt erledigt"
+					},
+					"contact": {
+						"created": "Kontakt hinzugefügt",
+						"updated": "Kontakt aktualisiert",
+						"redacted": "Kontakt gelöscht"
+					}
 				},
 				"account": {
 					"api_key": {
@@ -4322,6 +4384,193 @@
 			"metricTarget": "Optionales Ziel für die Kennzahl. Ergebnisseite und Daily Brief vergleichen den letzten Wert damit.",
 			"metricSourceHelp": "Über die Quelle",
 			"metricSource": "Manuell: Beobachtungen hier erfassen. Webhook: dein System sendet Werte an einen signierten Endpunkt; das Geheimnis wird genau einmal beim Anlegen oder Rotieren gezeigt, gespeichert wird nur sein Hash."
+		}
+	},
+	"todos": {
+		"list": {
+			"scope": {
+				"label": "Ansicht",
+				"open": "Offen",
+				"completed": "Erledigt",
+				"snoozed": "Zurückgestellt"
+			},
+			"filters": {
+				"active": "Aktive Filter",
+				"project": {
+					"label": "Projekt",
+					"placeholder": "Alle Projekte",
+					"search": "Projekte suchen…",
+					"empty": "Kein Projekt passt dazu.",
+					"ariaLabel": "Nach Projekt filtern",
+					"remove": "Projektfilter {name} entfernen"
+				},
+				"assignee": {
+					"label": "Zuständig",
+					"placeholder": "Alle",
+					"search": "Personen suchen…",
+					"empty": "Niemand passt dazu.",
+					"ariaLabel": "Nach zuständiger Person filtern",
+					"remove": "Filter für {name} entfernen"
+				}
+			},
+			"source": {
+				"meeting": "Aus einem Meeting",
+				"manual": "Selbst erstellt"
+			},
+			"openInDigest": "Im Meeting öffnen",
+			"completedOn": "Erledigt {date}",
+			"snoozedUntil": "Zurückgestellt bis {date}",
+			"orphaned": {
+				"description": "Der Wortlaut des Meetings hat sich nach der Erfassung geändert. Hier steht, was damals erfasst wurde — und wer darin genannt wird, ist ein Vorschlag, keine Entscheidung."
+			},
+			"assignee": {
+				"unassigned": "Nicht zugewiesen",
+				"suggested": "Vorschlag"
+			},
+			"meetingGroup": {
+				"fallback": "Meeting am {date}"
+			},
+			"proposals": {
+				"pending": "{count, plural, one {# Vorschlag zu prüfen} other {# Vorschläge zu prüfen}}",
+				"pendingLabel": "{count, plural, one {# Vorschlag zu prüfen} other {# Vorschläge zu prüfen}} aus diesem Meeting — Vorschlags-Postfach öffnen",
+				"links": {
+					"toggle": "Work Items",
+					"loading": "Work Items werden geladen…",
+					"loadFailed": "Die Work Items zu diesem To-do konnten nicht geladen werden. Versuche es gleich noch einmal.",
+					"empty": "Aus diesem To-do ist in diesem Workspace noch nichts entstanden.",
+					"unlinked": "Nicht verknüpft",
+					"orphaned": "Der Wortlaut des Meetings hat sich nach der Erfassung geändert, deshalb lassen sich diese Verknüpfungen hier nicht mehr ändern.",
+					"accept": "Verknüpfen",
+					"acceptLabel": "{item} mit diesem To-do verknüpfen",
+					"reject": "Entfernen",
+					"rejectLabel": "Verknüpfung zu {item} entfernen",
+					"confirm": {
+						"title": "Verknüpfung entfernen?",
+						"description": "{identifier} bleibt im Workspace — nur die Verknüpfung zu diesem To-do verschwindet. Auch die Meeting-Zusammenfassung zeigt sie dann nicht mehr, und sie wird nicht erneut vorgeschlagen.",
+						"cancel": "Behalten",
+						"confirm": "Verknüpfung entfernen"
+					},
+					"errors": {
+						"accept": "Das Work Item konnte nicht verknüpft werden. Es hat sich nichts geändert — versuche es noch einmal.",
+						"reject": "Die Verknüpfung konnte nicht entfernt werden. Es hat sich nichts geändert — versuche es noch einmal."
+					}
+				}
+			},
+			"manualGroup": {
+				"title": "Selbst erstellt"
+			},
+			"unassigned": {
+				"title": "Nicht zugewiesen",
+				"titleInProject": "Nicht zugewiesen in {project}"
+			},
+			"ageHidden": {
+				"line": "{count, plural, one {# älteres To-do ist ausgeblendet} other {# ältere To-dos sind ausgeblendet}}",
+				"lineCleared": "Nichts ist mehr wegen Alter ausgeblendet",
+				"description": "Nichts wurde gelöscht. {count, plural, one {Ein To-do} other {# To-dos}} älter als {days} Tage bleiben aus der Hauptliste heraus, damit sie zeigt, was gerade ansteht.",
+				"loading": "Ausgeblendete To-dos werden geladen…",
+				"loadFailed": "Die ausgeblendeten To-dos konnten nicht geladen werden. Versuche es gleich noch einmal.",
+				"loadMore": "Mehr anzeigen",
+				"loadingMore": "Wird geladen…",
+				"empty": {
+					"title": "Hinter der Grenze liegt nichts",
+					"description": "Jedes To-do in diesem Workspace ist neu genug für die Hauptliste."
+				},
+				"selectAll": "Alle hier geladenen ausgeblendeten To-dos auswählen",
+				"select": "„{title}“ auswählen",
+				"selected": "{count, plural, =0 {Nichts ausgewählt} one {# To-do ausgewählt} other {# To-dos ausgewählt}}",
+				"resolve": "{count, plural, one {# To-do erledigen} other {# To-dos erledigen}}",
+				"resolving": "Wird erledigt…",
+				"summary": {
+					"message": "{completed, plural, =0 {Nichts erledigt} one {# erledigt} other {# erledigt}}, {failed, plural, =0 {nichts offen geblieben} one {# konnte nicht erledigt werden} other {# konnten nicht erledigt werden}}.",
+					"dismiss": "Diese Zusammenfassung ausblenden"
+				},
+				"outcome": {
+					"notFound": "Dieses To-do gibt es in diesem Workspace nicht mehr — ein Meeting wurde nach dem Laden der Liste neu verarbeitet. Lade neu, damit es verschwindet.",
+					"forbidden": "Du kannst dieses To-do sehen, aber nicht ändern. Die zuständige Person oder eine Administratorin des Projekts kann es schließen.",
+					"vanished": "Dieses To-do wurde während des Vorgangs gelöscht, deshalb wurde dafür nichts geschrieben."
+				},
+				"error": "Dieser Vorgang wurde nicht abgeschlossen. Einige To-dos sind möglicherweise bereits erledigt — die Liste wurde aktualisiert."
+			},
+			"noMatches": {
+				"title": "Nichts in dieser Ansicht",
+				"description": "Kein To-do passt zu den aktiven Filtern. Entferne einen Filter, um mehr zu sehen."
+			},
+			"previouslyCompleted": "Erledigt {date}, bevor sich der Wortlaut des Meetings geändert hat.",
+			"actions": {
+				"menu": "Weitere Aktionen für „{title}“",
+				"complete": "Als erledigt markieren",
+				"reopen": "Wieder öffnen",
+				"completeRow": "„{title}“ als erledigt markieren",
+				"reopenRow": "„{title}“ wieder öffnen",
+				"assign": "Jemandem zuweisen…",
+				"unsnooze": "Jetzt zurückholen",
+				"snooze": {
+					"label": "Zurückstellen bis",
+					"day": "Morgen",
+					"week": "Nächste Woche",
+					"month": "Nächsten Monat",
+					"custom": "Datum wählen…"
+				},
+				"snoozeDialog": {
+					"title": "Dieses To-do zurückstellen",
+					"description": "Es bleibt bis zum gewählten Datum aus allen Ansichten heraus und kommt dann von selbst zurück. Heute steht nicht zur Wahl: Eine bereits abgelaufene Zurückstellung ändert nichts.",
+					"cancel": "Abbrechen",
+					"confirm": "Zurückstellen"
+				},
+				"errors": {
+					"complete": "Dieses To-do konnte nicht aktualisiert werden. Es hat sich nichts geändert — versuche es noch einmal.",
+					"snooze": "Dieses To-do konnte nicht zurückgestellt werden. Es hat sich nichts geändert — versuche es noch einmal.",
+					"unsnooze": "Dieses To-do konnte nicht zurückgeholt werden. Versuche es noch einmal.",
+					"assign": "Die Zuständigkeit für dieses To-do konnte nicht geändert werden. Versuche es noch einmal."
+				}
+			},
+			"suggestion": {
+				"confirm": "{name} zuweisen",
+				"noMatch": "Im Meeting wurde jemand genannt, den dieser Workspace noch nicht kennt.",
+				"noMatchNamed": "Im Meeting wurde {name} genannt — diese Person gibt es in diesem Workspace noch nicht.",
+				"createContact": "Als Kontakt anlegen und zuweisen"
+			},
+			"assignDialog": {
+				"title": "Wer ist dafür zuständig?",
+				"description": "Alle in diesem Workspace oder ein Kontakt ohne Konto.",
+				"search": "Personen suchen…",
+				"empty": "Niemand passt dazu.",
+				"members": "Mitglieder",
+				"contacts": "Kontakte",
+				"create": "Kontakt anlegen und zuweisen",
+				"createNamed": "„{name}“ als Kontakt anlegen und zuweisen",
+				"unassign": "Nicht zugewiesen lassen"
+			},
+			"newContact": {
+				"title": "Kontakt anlegen",
+				"description": "Jemand ohne Fabric-Konto. Die Person kommt zu den Kontakten dieses Workspace und übernimmt im selben Schritt dieses To-do.",
+				"name": "Name",
+				"email": "E-Mail",
+				"company": "Unternehmen",
+				"hint": "E-Mail und Unternehmen sind optional und dienen dazu, zwei Personen mit demselben Namen auseinanderzuhalten.",
+				"cancel": "Abbrechen",
+				"submit": "Anlegen und zuweisen",
+				"created": "{name} ist jetzt für dieses To-do zuständig.",
+				"error": "Der Kontakt konnte nicht angelegt werden. Deine Eingaben sind noch da — versuche es noch einmal.",
+				"forbidden": "Nur wer Mitglieder einladen darf, kann einen Kontakt in diesem Workspace anlegen.",
+				"duplicate": {
+					"description": "Ein Kontakt namens {name} ist in diesem Workspace bereits vorhanden.",
+					"useThis": "Diesen verwenden",
+					"cancel": "Zurück",
+					"confirm": "Trotzdem anlegen"
+				}
+			},
+			"loadMore": "Mehr anzeigen",
+			"loadingMore": "Wird geladen…"
+		},
+		"title": "To-do",
+		"subtitle": "Alles, was in diesem Workspace bei dir offen ist — Aufgaben aus deinen Meetings und selbst erstellte To-dos, in einer Liste.",
+		"loading": "To-dos werden geladen…",
+		"unavailable": "Die To-do-Liste ist für diesen Workspace noch nicht aktiviert.",
+		"loadFailed": "Deine To-dos konnten nicht geladen werden. Versuche es gleich noch einmal.",
+		"empty": {
+			"title": "Nichts zu tun",
+			"description": "Aufgaben aus deinen Meetings und selbst erstellte To-dos erscheinen hier."
 		}
 	}
 }

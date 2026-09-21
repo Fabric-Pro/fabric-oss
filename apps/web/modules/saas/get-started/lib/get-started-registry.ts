@@ -21,6 +21,7 @@ import {
 	LayersIcon,
 	LayoutDashboardIcon,
 	LinkIcon,
+	ListTodoIcon,
 	LockIcon,
 	MapIcon,
 	MegaphoneIcon,
@@ -105,6 +106,8 @@ type GsHrefContext = {
 export type GsRuntimeGates = {
 	/** `PUBLISHING_SUITE`, resolved for the viewer's organization. */
 	publishingSuite: boolean;
+	/** `TODO_LIST`, resolved for the viewer's organization (Fizzy #2340). */
+	todoList: boolean;
 };
 
 /**
@@ -203,6 +206,19 @@ const WORKSPACE_GROUP: GsGroup = {
 			icon: FolderKanbanIcon,
 			anchor: "nav-projects",
 			href: ({ basePath }) => `${basePath}/projects`,
+		},
+		{
+			id: "todos",
+			label: "To Do",
+			description:
+				"Everything you owe across this workspace in one list — action items your meetings produced and to-dos you wrote yourself, with snooze and an Unassigned bucket per project.",
+			icon: ListTodoIcon,
+			// A per-organization rollout (#2340), so the value cannot be read
+			// at build time: `runtimeGate`, never `enabled`. Off, the sidebar
+			// entry it points at is not rendered either.
+			runtimeGate: "todoList",
+			anchor: "nav-todos",
+			href: ({ basePath }) => `${basePath}/todos`,
 		},
 		{
 			id: "agents",
@@ -566,7 +582,7 @@ const SETTINGS_GROUP: GsGroup = {
 			id: "settings-members",
 			label: "Members",
 			description:
-				"Invite teammates, manage roles, and handle pending invitations for your organization.",
+				"Invite teammates, manage roles, handle pending invitations, and keep the register of contacts who have no account.",
 			icon: Users2Icon,
 			cluster: "Account & profile",
 			scope: "org",

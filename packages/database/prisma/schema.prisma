@@ -377,6 +377,7 @@ model User {
 
   @@map("user")
   deletedMeetingArchives DeletedMeetingArchive[]
+  assignedTodos          TodoItem[]            @relation("TodoAssignee")
 }
 
 model Session {
@@ -828,6 +829,7 @@ model Organization {
   @@index([scheduledPermanentDeleteAt])
   @@map("organization")
   deletedMeetingArchives DeletedMeetingArchive[]
+  nonMemberContacts      NonMemberContact[]
 }
 
 // Organization RAG Settings - Default settings that apply to all workspaces in the organization
@@ -2028,6 +2030,7 @@ model Project {
   meetingTranscripts     ProjectMeetingTranscript[]
   meetingAgendas         ProjectMeetingAgenda[]
   meetingActionItemLinks MeetingActionItemLink[]
+  todoItems              TodoItem[]
 
   // Teams channel monitor relations
   linkedTeamsChannels     ProjectLinkedTeamsChannel[]
@@ -4198,6 +4201,16 @@ model ProjectMeetingTranscript {
   // per link version, so re-opening it never re-spends embedding + LLM tokens.
   actionItemsLinkedAt      DateTime?
   actionItemsLinkVersion   Int?
+
+  // #2340. The to-do owner matcher's own stamp. Deliberately NOT shared with
+  // actionItemsLinkedAt/actionItemsLinkVersion above: those belong to #1902's
+  // linker, which short-circuits on its own version, so one feature stamping
+  // the other's field would make each believe the other's work was already
+  // done. Cleared by the same extraction transaction that clears the linker's
+  // pair, because a rewritten item set has to be matched again. Versioned on
+  // TODO_BINDING_VERSION so moving that constant invalidates every stamp.
+  todosMatchedAt   DateTime?
+  todoMatchVersion Int?
   syncedAt                 DateTime                        @default(now())
   userId                   String?
   organizationId           String?
@@ -4208,6 +4221,7 @@ model ProjectMeetingTranscript {
   organization    Organization?              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sourcedStories  UserStory[]                @relation("StorySourceMeeting")
   actionItems     ProjectMeetingActionItem[]
+  todoItems       TodoItem[]
   actionItemLinks MeetingActionItemLink[]
 
   @@unique([projectId, meetingId, transcriptId])
@@ -4233,6 +4247,15 @@ model ProjectMeetingActionItem {
   completedById      String?
   sourceQuote        String? // #1896: verbatim transcript excerpt evidencing this item
   anchorLine         Int? // #1896: resolved line number into the transcript body
+  // #2340: the to-do binding key — `computeTodoItemKey`, NOT
+  // `computeActionItemKey`. The two are deliberately separate digests over the
+  // same normalization, so a version bump made for the action-item-linking
+  // feature cannot orphan every to-do assignment and snooze in the product.
+  // Stored rather than recomputed so an organization-wide to-do query can join
+  // and filter completion in SQL instead of hashing every action item of every
+  // in-scope meeting in memory. Written by the existing row builder; what
+  // extraction decides is unchanged.
+  itemKey            String?
   createdAt          DateTime  @default(now())
 
   // Tenant isolation (scalar columns, mirroring ProjectMeetingTranscript)
@@ -4244,6 +4267,7 @@ model ProjectMeetingActionItem {
 
   @@unique([transcriptId, orderIndex])
   @@index([transcriptId])
+  @@index([transcriptId, itemKey])
   @@index([userId])
   @@index([organizationId])
   @@map("project_meeting_action_item")
@@ -4316,6 +4340,129 @@ model MeetingActionItemLink {
   @@index([transcriptId, status])
   @@index([projectId])
   @@map("meeting_action_item_link")
+}
+
+/// Where a to-do came from. The discriminator exists so a later source
+/// (a decision assigned to someone, work needing an unblock) is a new arm here
+/// plus an adapter, rather than an edit spread across every read and mutation.
+enum TodoItemSource {
+  MEETING_DIGEST
+  MANUAL
+
+  @@map("todo_item_source")
+}
+
+/// A person relevant to an organization's work who has no Fabric account —
+/// typically a client-side stakeholder who owes deliverables (#2340). A subject
+/// of the system, not a user of it: a contact never signs in, holds no
+/// membership, and grants nobody access.
+///
+/// Deletion redacts rather than removes. `redactedAt` anonymises the row in
+/// place and its to-dos detach, so an erasure request from someone outside the
+/// system is always satisfiable without silently dropping obligations the
+/// organization is still tracking.
+///
+/// Org-only tenancy on purpose: the row has no owning user, so `user_owned`
+/// (which compares "userId") cannot be applied to it.
+model NonMemberContact {
+  id             String    @id @default(cuid())
+  organizationId String
+  name           String
+  email          String?
+  company        String?
+  redactedAt     DateTime?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  todos        TodoItem[]
+
+  @@index([organizationId])
+  @@map("non_member_contact")
+}
+
+/// One actionable commitment on the consolidated To Do list (#2340).
+///
+/// Two shapes share this table. A meeting-sourced row binds to a
+/// ProjectMeetingActionItem by `itemKey` plus `occurrenceIndex` rather than by
+/// row id, because extraction deletes and recreates those rows on every run —
+/// see meeting-action-item-keys.ts for the rationale. The occurrence
+/// disambiguates two commitments in one meeting whose text normalizes
+/// identically; a link tolerates sharing one key because a link is idempotent,
+/// an assignment and a snooze are not. A manual row carries its own `title` and
+/// leaves every meeting column null.
+///
+/// Completion of a meeting-sourced row lives on the action item and never here;
+/// `completedAt` is for manual rows alone, so no row carries completion twice.
+/// `lastKnownCompletedAt` is a display cache, written when a meeting-sourced row
+/// is completed and read only to say an orphaned item had been completed before
+/// its text changed. It is never read as completion truth.
+model TodoItem {
+  id     String         @id @default(cuid())
+  source TodoItemSource
+
+  // Meeting-sourced binding. Null on a manual row.
+  transcriptId     String?
+  itemKey          String?
+  occurrenceIndex  Int?
+  itemTextSnapshot String? @db.Text
+
+  // Manual row. Null on a meeting-sourced row.
+  title String? @db.Text
+
+  projectId String?
+
+  // Exactly one of these is set, or neither when unassigned.
+  assigneeUserId    String?
+  assigneeContactId String?
+
+  // An unconfirmed match. Surfaced for confirmation, never applied as a fact —
+  // the owner name is a free-text guess from a transcript with no participant
+  // email behind it. Retained when a rewording orphans the binding, so the
+  // person who assigned it is offered back rather than silently lost.
+  suggestedUserId      String?
+  suggestedContactId   String?
+  suggestionCandidates Json?
+
+  // True once a person chose the assignee, which is what survives re-extraction.
+  assignedManually Boolean @default(false)
+
+  snoozedUntil DateTime?
+
+  // Manual rows only — a meeting-sourced row leaves these null.
+  completedAt   DateTime?
+  completedById String?
+
+  lastKnownCompletedAt DateTime?
+
+  // The meeting's date for a meeting-sourced row, creation for a manual one.
+  // Age hiding and recency ordering both key off this one field.
+  sourceDate DateTime
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Tenant isolation (scalar columns, mirroring ProjectMeetingActionItem).
+  userId         String?
+  organizationId String?
+
+  transcript      ProjectMeetingTranscript? @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
+  project         Project?                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assigneeUser    User?                     @relation("TodoAssignee", fields: [assigneeUserId], references: [id], onDelete: SetNull)
+  assigneeContact NonMemberContact?         @relation(fields: [assigneeContactId], references: [id], onDelete: SetNull)
+
+  // Null columns never collide in Postgres, so manual rows are unconstrained
+  // here while every meeting-sourced row is unique on its occurrence.
+  @@unique([transcriptId, itemKey, occurrenceIndex])
+  @@index([organizationId, assigneeUserId])
+  @@index([organizationId, assigneeContactId])
+  @@index([organizationId, sourceDate])
+  @@index([projectId])
+  @@index([transcriptId])
+  @@index([userId])
+  @@map("todo_item")
 }
 
 enum MeetingAgendaStatus {

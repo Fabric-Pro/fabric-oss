@@ -905,6 +905,11 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 						sourceMetadata: proposal.sourceMetadata,
 						storyId: story.id,
 						createdById: user.id,
+						// #2340: the proposal's identity, so an item the
+						// resolver cannot find is reported against the meeting
+						// and the proposal it came from rather than vanishing.
+						proposalId: input.proposalId,
+						proposalSource: proposal.source,
 					});
 				} catch (linkErr) {
 					logger.warn(

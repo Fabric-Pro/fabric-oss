@@ -314,6 +314,69 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		description:
 			"Integration configuration changed (channel mappings, scopes, webhook URLs, etc.). Captured even when the connection itself is unchanged.",
 	},
+	{
+		key: "org.todo.created",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.todo.created",
+		description:
+			"Somebody wrote a to-do by hand, rather than it arriving from a meeting. Records whether it was filed against a project or left at organization level; the title is deliberately not stored, because this ledger cannot be redacted later and a to-do's text is the person's own words.",
+	},
+	{
+		key: "org.todo.completion_changed",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.todo.completion_changed",
+		description:
+			"A to-do was ticked off or reopened. One action for both directions, because the interesting question when reading back is who changed their mind and when, not which of the two clicks it was — the row carries the new state. For a meeting-sourced to-do the completion lives on the meeting's action item, so the same change is visible in the digest.",
+	},
+	{
+		key: "org.todo.snoozed",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.todo.snoozed",
+		description:
+			"A to-do was put out of sight until a date the person chose. It leaves the working list without being finished or deleted, so a row that quietly disappeared from someone's page is explained here rather than looking lost.",
+	},
+	{
+		key: "org.todo.unsnoozed",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.todo.unsnoozed",
+		description:
+			"A snoozed to-do was brought back before its date. Separate from the snooze itself so that pulling work forward is legible on its own — it is usually somebody reacting to something that changed.",
+	},
+	{
+		key: "org.todo.assigned",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.todo.assigned",
+		description:
+			"A to-do was handed to a member, to a non-member contact, or to nobody. Ids only, never names: the contact register can be erased, and a name written here would outlive the erasure. Confirming the matcher's guess is an assignment too, which is what separates a machine's suggestion from a person's decision.",
+	},
+	{
+		key: "org.todo.bulk_resolved",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.todo.bulk_resolved",
+		description:
+			"A batch of to-dos was cleared in one action, normally from the age-hidden list. The summary counts what happened; each row also writes its own completion entry, so a partial batch — the designed outcome, since the rows commit one at a time — can be read row by row rather than inferred from the totals.",
+	},
+	{
+		key: "org.contact.created",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.contact.created",
+		description:
+			"A person with no account was added to the organization's contact register, so work can be assigned to them. They gain no access of any kind — the register is a list of names the product can point at, not an invitation.",
+	},
+	{
+		key: "org.contact.updated",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.contact.updated",
+		description:
+			"A contact's details were corrected. Which fields changed is recorded, never their values, for the same reason the erasure exists: this ledger is append-only and an old name kept here would survive the removal of the new one.",
+	},
+	{
+		key: "org.contact.redacted",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.contact.redacted",
+		description:
+			"A contact was ERASED — the name, email and company of a person who never had an account are anonymised in place, every to-do assigned to them is detached, and their name is stripped from the stored suggestion lists that had denormalised it. This is the receipt for an erasure request, and it is the one contact action that cannot be undone. The counts say how much moved; the person's details appear nowhere in this row, which is the point.",
+	},
 	// ---- Personal account -----------------------------------------------
 	{
 		key: "account.api_key.created",

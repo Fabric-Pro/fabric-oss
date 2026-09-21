@@ -7,6 +7,7 @@ import {
 	KeyRoundIcon,
 	LayoutDashboardIcon,
 	LightbulbIcon,
+	ListTodoIcon,
 	MapIcon,
 	NetworkIcon,
 	RocketIcon,
@@ -118,6 +119,7 @@ export type OnboardingArea =
 	| "aiKey"
 	| "assistant"
 	| "projects"
+	| "todos"
 	| "overview"
 	| "documents"
 	| "roadmap"
@@ -131,6 +133,7 @@ export type OnboardingArea =
 export const ONBOARDING_ANCHORS = {
 	navNexus: "nav-nexus",
 	navProjects: "nav-projects",
+	navTodos: "nav-todos",
 	launcher: "onboarding-launcher",
 	/** The mobile hamburger — small-screen fallback anchor for sidebar steps. */
 	mobileNavTrigger: "mobile-nav-trigger",
@@ -183,6 +186,18 @@ type OnboardingStepTarget =
 			side?: Side;
 	  };
 
+/**
+ * Per-organization rollout flags a step's destination depends on.
+ *
+ * A build-time flag can be read in this module; one scoped to named
+ * organizations cannot, so the caller that CAN resolve it supplies the value —
+ * the same split the Get Started registry documents for `GsRuntimeGates`.
+ */
+export type TourStepGates = {
+	/** `TODO_LIST`, resolved for the viewer's organization (Fizzy #2340). */
+	todoList: boolean;
+};
+
 export type OnboardingStep = {
 	/** Stable id — persisted in per-user progress. Never reuse or renumber. */
 	id: string;
@@ -195,6 +210,13 @@ export type OnboardingStep = {
 	 * #1837), so a hidden tab's step drops out automatically.
 	 */
 	requiresFeature?: "atlas";
+	/**
+	 * Drop the step unless this per-organization rollout flag is on for the
+	 * viewer. A gated capability is ABSENT when it is off — its nav entry does
+	 * not render and its reads refuse — so walking someone to it would
+	 * spotlight nothing and send them to a page that cannot load.
+	 */
+	runtimeGate?: keyof TourStepGates;
 	/** Literal copy for ad-hoc steps (drawer "Show me"); tour steps use i18n. */
 	title?: string;
 	body?: string;
@@ -258,6 +280,22 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 			anchorId: ONBOARDING_ANCHORS.navProjects,
 			inMobileNav: true,
 			navigate: (base) => `${base}/projects`,
+			side: "bottom",
+		},
+	},
+	// Fizzy #2340. Gated: the To Do page ships to named organizations first,
+	// and for everyone else the sidebar entry this step points at is not
+	// rendered at all.
+	{
+		id: "todos",
+		area: "todos",
+		icon: ListTodoIcon,
+		runtimeGate: "todoList",
+		target: {
+			kind: "anchor",
+			anchorId: ONBOARDING_ANCHORS.navTodos,
+			inMobileNav: true,
+			navigate: (base) => `${base}/todos`,
 			side: "bottom",
 		},
 	},
@@ -370,6 +408,14 @@ type TourStepContext = {
 	hasProject: boolean | undefined;
 	/** Tab-visibility predicate for this viewer (card #1837). */
 	isTabVisible: (tab: string) => boolean;
+	/**
+	 * Per-organization rollout flags, for steps that declare a `runtimeGate`.
+	 *
+	 * Fail-closed and optional: an unsupplied gate means the caller could not
+	 * resolve it, and showing a step for a capability that may be absent is
+	 * worse than withholding one the viewer can reach from the sidebar anyway.
+	 */
+	gates?: Partial<TourStepGates>;
 };
 
 /**
@@ -403,8 +449,12 @@ type TourStepContext = {
 export function resolveTourSteps({
 	hasProject,
 	isTabVisible,
+	gates = {},
 }: TourStepContext): readonly OnboardingStep[] {
 	const visible = ONBOARDING_STEPS.filter((step) => {
+		if (step.runtimeGate && gates[step.runtimeGate] !== true) {
+			return false;
+		}
 		const tab = projectTabOf(step);
 		return tab === null || isTabVisible(tab);
 	});

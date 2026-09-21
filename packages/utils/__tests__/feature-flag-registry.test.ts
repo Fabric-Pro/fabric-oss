@@ -814,12 +814,42 @@ describe("CAPABILITY_GATING (#1930)", () => {
 		expect(FEATURE_FLAG_REGISTRY.CAPABILITY_GATING.orgScopable).toBe(true);
 	});
 
+	// Stated as relative order rather than as the tail, for the reason the
+	// #2300 block above records: #2340's TODO_LIST has since been appended
+	// after this entry, so a block pinning the tail by name would fail for
+	// its neighbour rather than for itself.
+	it("is appended after every org-scopable flag that preceded it", () => {
+		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
+		expect(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("CAPABILITY_GATING"),
+		).toBeGreaterThan(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("AI_ANSWER_RECOMMENDATIONS"),
+		);
+	});
+});
+
+describe("TODO_LIST (#2340)", () => {
+	// Default OFF is what makes this a rollout gate rather than a kill switch:
+	// off means the page, its reads and writes, and the owner matcher are all
+	// absent, so a deployment that has never heard of this entry behaves
+	// exactly as it did before the entry existed.
+	it("is registered off by default, on its own env var, and org-scopable", () => {
+		expect(isFeatureFlagKey("TODO_LIST")).toBe(true);
+		expect(FEATURE_FLAG_REGISTRY.TODO_LIST.default).toBe(false);
+		expect(FEATURE_FLAG_REGISTRY.TODO_LIST.envVar).toBe(
+			"FABRIC_FEATURE_TODO_LIST",
+		);
+		expect(FEATURE_FLAG_REGISTRY.TODO_LIST.orgScopable).toBe(true);
+	});
+
 	// The newest org-scopable entry is the tail, and PUBLISHING_SUITE stays the
-	// head that two API tests use as their fixture flag.
+	// head that two API tests use as their fixture flag. When the next entry
+	// lands it takes over this assertion, and this block restates itself as
+	// relative order the way the two above it did.
 	it("is appended after every existing org-scopable flag", () => {
 		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
 		expect(ORG_SCOPABLE_FLAG_KEYS[ORG_SCOPABLE_FLAG_KEYS.length - 1]).toBe(
-			"CAPABILITY_GATING",
+			"TODO_LIST",
 		);
 	});
 });

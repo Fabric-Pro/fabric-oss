@@ -36,6 +36,7 @@ import {
 	resolveTourSteps,
 	type SpotlightEventDetail,
 	type TourPageEventDetail,
+	type TourStepGates,
 } from "../lib/tour-steps";
 import {
 	GET_STARTED_ENABLED,
@@ -161,9 +162,17 @@ export function GetStartedController() {
 	// hands the decision to whoever renders it. Derived from `tabGates` — the
 	// same flag read, not a second one — and threaded down; the drawer takes
 	// the same object.
+	// The To Do page is a per-organization rollout too (#2340), but it is not a
+	// project tab, so its value comes straight from the flag provider rather
+	// than from `tabGates`. Read unconditionally at the top level, like every
+	// other flag here.
+	const todoListEnabled = useFeatureFlag("TODO_LIST");
 	const gsGates: GsRuntimeGates = useMemo(
-		() => ({ publishingSuite: tabGates.publishingSuiteEnabled }),
-		[tabGates],
+		() => ({
+			publishingSuite: tabGates.publishingSuiteEnabled,
+			todoList: todoListEnabled,
+		}),
+		[tabGates, todoListEnabled],
 	);
 	// A tour step / drawer entry pointing at a project tab this viewer can't
 	// see would navigate nowhere or spotlight a missing anchor — drop it.
@@ -321,8 +330,14 @@ export function GetStartedController() {
 			resolveTourSteps({
 				hasProject: mode === "tour" ? frozenHasProject : hasProject,
 				isTabVisible,
+				// `satisfies` rather than a bare literal: the parameter is a
+				// Partial, so a gate added to `TourStepGates` later would
+				// silently default to off here without it.
+				gates: {
+					todoList: todoListEnabled,
+				} satisfies TourStepGates,
 			}),
-		[mode, frozenHasProject, hasProject, isTabVisible],
+		[mode, frozenHasProject, hasProject, isTabVisible, todoListEnabled],
 	);
 	const [adHocStep, setAdHocStep] = useState<OnboardingStep | null>(null);
 	const [pageTourSteps, setPageTourSteps] = useState<OnboardingStep[]>([]);

@@ -290,7 +290,10 @@ const isProjectScoped = (step: (typeof ONBOARDING_STEPS)[number]) =>
 	step.target.kind === "projectTab" ||
 	step.target.kind === "projectComponent";
 
-const FULL_TOTAL = ONBOARDING_STEPS.length;
+// A runtime-gated step (Fizzy #2340's To Do entry) is absent unless its
+// per-organization flag is on, and the flag mock below reports every flag off —
+// production's default. So "full" here is the registry minus those.
+const FULL_TOTAL = ONBOARDING_STEPS.filter((s) => !s.runtimeGate).length;
 /** The collapse keeps the first project-scoped step and drops the rest. */
 const COLLAPSED_TOTAL =
 	FULL_TOTAL - (ONBOARDING_STEPS.filter(isProjectScoped).length - 1);

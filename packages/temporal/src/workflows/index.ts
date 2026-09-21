@@ -358,15 +358,6 @@ export {
 	type GeneratePublishingShortPostWorkflowOutput,
 	generatePublishingShortPostWorkflow,
 } from "./generate-publishing-short-post";
-// Publishing Suite working-draft refinement (fire-and-forget — ONE revised
-// document for one saved draft, for every content type). It writes a proposal on
-// the working draft rather than a candidate, so a refinement consumes no version
-// number and never appears in the candidates grid. Fizzy #1851 follow-up.
-export {
-	type RefinePublishingDraftWorkflowInput,
-	type RefinePublishingDraftWorkflowOutput,
-	refinePublishingDraftWorkflow,
-} from "./refine-publishing-draft";
 // Publishing Suite Stakeholder Email (fire-and-forget — one editable stakeholder
 // update for one topic, from its planning analysis and its own provenance).
 // #1854
@@ -405,6 +396,13 @@ export {
 	type LinkMeetingActionItemsWorkflowOutput,
 	linkMeetingActionItemsWorkflow,
 } from "./link-meeting-action-items";
+// Consolidated To Do list — assignment matcher (fire-and-forget: creates and
+// updates one meeting's to-do rows once its insights are ready). #2340
+export {
+	type MatchMeetingActionItemOwnersWorkflowInput,
+	type MatchMeetingActionItemOwnersWorkflowOutput,
+	matchMeetingActionItemOwnersWorkflow,
+} from "./match-meeting-action-item-owners";
 export * from "./mcp-health-check";
 // MCP Server Ingestion workflow (Phase 1: Semantic Server Selection)
 export {
@@ -598,6 +596,15 @@ export {
 	type ReconcileWorkflowSchedulesWorkflowOutput,
 	reconcileWorkflowBuilderSchedulesWorkflow,
 } from "./reconcile-workflow-builder-schedules";
+// Publishing Suite working-draft refinement (fire-and-forget — ONE revised
+// document for one saved draft, for every content type). It writes a proposal on
+// the working draft rather than a candidate, so a refinement consumes no version
+// number and never appears in the candidates grid. Fizzy #1851 follow-up.
+export {
+	type RefinePublishingDraftWorkflowInput,
+	type RefinePublishingDraftWorkflowOutput,
+	refinePublishingDraftWorkflow,
+} from "./refine-publishing-draft";
 // Work-item body regeneration after a BUG <-> FEATURE conversion (Fizzy #2048)
 export { regenerateBodyForKindWorkflow } from "./regenerate-body-for-kind-workflow";
 // Repository Integration Health Check workflow (scheduled token validation)

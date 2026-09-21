@@ -298,6 +298,11 @@ async function applyRLS() {
 			{ name: "project_linked_meeting", policy: "user_owned" }, // Linked meetings for transcript sync
 			{ name: "project_meeting_transcript", policy: "user_owned" }, // Synced meeting transcripts
 			{ name: "project_meeting_action_item", policy: "user_owned" }, // Action items extracted from meeting transcripts
+			{ name: "todo_item", policy: "user_owned" }, // #2340 consolidated To Do list rows
+			// #2340. `org_only`, not `user_owned`: a contact has no owning user, and
+			// the user_owned body compares "userId", which this table does not have.
+			// Its organizationId is NOT NULL, so there is no personal arm to allow.
+			{ name: "non_member_contact", policy: "org_only" }, // #2340 people without a Fabric account
 			{ name: "meeting_action_item_link", policy: "user_owned" }, // Links from meeting action items to work items (#1902)
 			{ name: "project_meeting_agenda", policy: "user_owned" }, // Generated pre-meeting agendas (#1901)
 			{ name: "deleted_meeting_archive", policy: "user_owned" }, // 7-day recovery window for unlinked meetings (#2355)
