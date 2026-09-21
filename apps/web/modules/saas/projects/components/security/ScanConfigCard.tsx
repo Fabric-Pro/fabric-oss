@@ -1,6 +1,5 @@
 "use client";
 
-import { useCapabilityGates } from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -224,8 +223,6 @@ export function ScanConfigCard({ projectId, organizationId }: Props) {
 		setHasChanges(false);
 	}, [serverConfig]);
 
-	const { refetch: refetchCapabilityGates } = useCapabilityGates();
-
 	const updateMutation = useMutation(
 		orpc.projects.scan.config.update.mutationOptions({
 			onSuccess: () => {
@@ -235,16 +232,6 @@ export function ScanConfigCard({ projectId, organizationId }: Props) {
 						input: { projectId, organizationId },
 					}),
 				});
-				// Which scanners are on decides whether the scan needs a codebase
-				// at all, so saving here can change the capability gate in either
-				// direction (Fizzy #1930). The gate query lives in a provider
-				// mounted on the project layout, which this save does not remount,
-				// and it is not part of this mutation's own cache — so without
-				// this the banner and the disabled Scan button keep answering from
-				// the pre-save state for the rest of the session. Turning a
-				// repository scanner on left Scan pressable with no explanation
-				// until a reload; turning it back off left the block in place.
-				refetchCapabilityGates();
 				setHasChanges(false);
 			},
 			onError: (error) => {
