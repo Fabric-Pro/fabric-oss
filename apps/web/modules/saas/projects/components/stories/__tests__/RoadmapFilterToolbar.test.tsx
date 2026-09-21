@@ -47,6 +47,19 @@ vi.mock("@shared/lib/orpc-client", () => ({
 						pendingProposalsCount(...args),
 				},
 			},
+			// Since oRPC 1.15 the tanstack-query utils proxy descends only where
+			// the underlying client actually has a node — it consults the client
+			// instead of fabricating the path. The real client proxy has every
+			// path, so a client mock that omits one is the unfaithful side: omit
+			// `stories` here and `orpc.projects.stories` is `undefined`, which
+			// makes the wrapper below throw "Cannot create proxy with a
+			// non-object as target". Keep this in step with the paths this
+			// subtree reads.
+			stories: {
+				tags: {
+					list: vi.fn().mockResolvedValue({ tags: [] }),
+				},
+			},
 		},
 	},
 }));

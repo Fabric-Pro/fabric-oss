@@ -141,7 +141,7 @@ export function ProjectPromptDefaultsSettings({
 			 *  action, and so is about to be stood down by this write. */
 			clearsOwnPersonal: boolean;
 		}) =>
-			await orpcClient.prompts.bind.set({
+			await orpcClient.prompts.bindings.set({
 				targetType: "AGENT",
 				...target(action),
 				// A project default is an ORG binding narrowed to one project.
@@ -172,7 +172,7 @@ export function ProjectPromptDefaultsSettings({
 
 	const clearForProject = useMutation({
 		mutationFn: async (action: (typeof ALL_ACTIONS)[number]) =>
-			await orpcClient.prompts.bind.clear({
+			await orpcClient.prompts.bindings.clear({
 				targetType: "AGENT",
 				...target(action),
 				scope: "ORG",

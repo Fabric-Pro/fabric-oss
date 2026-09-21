@@ -37,7 +37,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 }));
 
 vi.mock("@shared/lib/orpc-client", () => ({
-	orpcClient: { prompts: { bind: { set: vi.fn() } } },
+	orpcClient: { prompts: { bindings: { set: vi.fn() } } },
 }));
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));

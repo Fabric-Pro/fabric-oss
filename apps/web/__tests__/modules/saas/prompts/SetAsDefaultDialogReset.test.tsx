@@ -24,7 +24,7 @@ const { bindSet, listForPrompt } = vi.hoisted(() => ({
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		prompts: {
-			bind: {
+			bindings: {
 				set: (i: unknown) => bindSet(i),
 				setMany: vi.fn(),
 				listForPrompt: (i: unknown) => listForPrompt(i),

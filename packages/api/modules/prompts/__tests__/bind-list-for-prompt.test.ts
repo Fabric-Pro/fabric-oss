@@ -59,7 +59,7 @@ const call = (organizationId: string | null) =>
 		context: { user: { id: "user-1", role: null }, session: {} },
 	});
 
-describe("prompts.bind.listForPrompt", () => {
+describe("prompts.bindings.listForPrompt", () => {
 	beforeEach(() => {
 		listActionsForPrompt.mockReset();
 		listActionsForPrompt.mockResolvedValue([]);

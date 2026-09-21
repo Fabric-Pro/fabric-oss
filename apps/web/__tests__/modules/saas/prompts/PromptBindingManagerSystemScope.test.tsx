@@ -25,7 +25,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		prompts: {
 			get: { byId: (input: unknown) => getById(input) },
-			bind: { set: (input: unknown) => bindSet(input) },
+			bindings: { set: (input: unknown) => bindSet(input) },
 		},
 	},
 }));

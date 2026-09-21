@@ -20,10 +20,10 @@ const confirmMock = vi.fn();
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		prompts: {
-			bind: {
+			bindings: {
 				listMine: {
 					queryOptions: () => ({
-						queryKey: ["prompts", "bind", "listMine"],
+						queryKey: ["prompts", "bindings", "listMine"],
 						queryFn: () => listMineMock(),
 					}),
 				},
@@ -35,7 +35,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		prompts: {
-			bind: {
+			bindings: {
 				clear: (...args: unknown[]) => clearMock(...args),
 			},
 		},

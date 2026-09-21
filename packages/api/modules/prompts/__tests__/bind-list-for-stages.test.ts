@@ -48,7 +48,7 @@ import { bindProcedures } from "../procedures/bind";
 
 const STAGES = ["PLACEHOLDER", "ACTIVE_ANALYSIS", "SANITY_CHECK", "DRAFT"];
 
-describe("prompts.bind.listForStages procedure", () => {
+describe("prompts.bindings.listForStages procedure", () => {
 	beforeEach(() => {
 		listPromptsForStages.mockReset();
 		verifyOrganizationMembership.mockReset();

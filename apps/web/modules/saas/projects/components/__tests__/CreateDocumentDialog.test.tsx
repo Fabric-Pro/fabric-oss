@@ -104,7 +104,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 		// Binding a prompt as the type's default is a deliberate admin
 		// action. Spied so the tests can assert this flow never triggers it.
 		prompts: {
-			bind: {
+			bindings: {
 				set: (input: unknown) => bindPrompt(input),
 			},
 		},

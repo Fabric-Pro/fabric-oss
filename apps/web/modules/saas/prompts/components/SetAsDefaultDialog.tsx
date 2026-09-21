@@ -130,7 +130,7 @@ export function SetAsDefaultDialog({
 	const { data: boundActions } = useQuery({
 		queryKey: ["prompt-bound-actions", promptId, organizationId],
 		queryFn: async () =>
-			await orpcClient.prompts.bind.listForPrompt({
+			await orpcClient.prompts.bindings.listForPrompt({
 				promptId: promptId as string,
 				organizationId: organizationId ?? null,
 			}),
@@ -256,7 +256,7 @@ export function SetAsDefaultDialog({
 			// endpoint; the batch is a transaction, so several actions either
 			// all bind or none do.
 			if (extras.length === 0) {
-				return await orpcClient.prompts.bind.set({
+				return await orpcClient.prompts.bindings.set({
 					targetType: "AGENT",
 					...primary,
 					storyKind: nonStageAgent ? undefined : storyKind,
@@ -267,7 +267,7 @@ export function SetAsDefaultDialog({
 				});
 			}
 
-			return await orpcClient.prompts.bind.setMany({
+			return await orpcClient.prompts.bindings.setMany({
 				targets: [primary, ...extras].map((t) => ({
 					targetType: "AGENT" as const,
 					...t,

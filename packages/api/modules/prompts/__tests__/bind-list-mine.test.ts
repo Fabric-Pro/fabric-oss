@@ -1,5 +1,5 @@
 /**
- * prompts.bind.listMine — "My Overrides" (Fizzy #2068 F8).
+ * prompts.bindings.listMine — "My Overrides" (Fizzy #2068 F8).
  *
  * The procedure is a thin read over listMyPromptOverrides, so what is worth
  * pinning is exactly the two things a thin read can still get wrong:
@@ -56,7 +56,7 @@ beforeEach(() => {
 	listMyPromptOverrides.mockResolvedValue([]);
 });
 
-describe("prompts.bind.listMine", () => {
+describe("prompts.bindings.listMine", () => {
 	it("scopes the query to the session user, ignoring any request id", async () => {
 		// A request carrying someone else's userId must not redirect the read.
 		await call({ id: "session-user" }, { userId: "attacker-user" });
