@@ -76,7 +76,11 @@
  * without a condition here having to be right.
  */
 
-import { generateObject, getAIModelWithMetadata } from "@repo/ai";
+import {
+	generateObject,
+	getAIModelWithMetadata,
+	NoObjectGeneratedError,
+} from "@repo/ai";
 import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import {
@@ -428,6 +432,21 @@ export async function generateStakeholderEmailActivity(
 			// validates the object against the zod schema.
 			providerOptions: { openai: { strictJsonSchema: false } },
 		});
+	} catch (error) {
+		// `generateObject` validates against the zod schema ITSELF and throws
+		// before returning, so the `safeParse` below — and the authored
+		// message its failure class carries — was unreachable on the one path
+		// that actually fails in practice. A reader got the neutral "the
+		// reason is recorded in the run log" copy instead of being told the
+		// run is worth repeating. Re-raised as the same class the check below
+		// raises, so both paths reach the same sentence.
+		if (NoObjectGeneratedError.isInstance(error)) {
+			throw ApplicationFailure.nonRetryable(
+				`Stakeholder email failed schema validation: ${error.message}`,
+				"PUBLISHING_STAKEHOLDER_EMAIL_SCHEMA_VALIDATION_FAILED",
+			);
+		}
+		throw error;
 	} finally {
 		clearInterval(beat);
 	}

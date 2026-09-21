@@ -72,6 +72,93 @@ describe("PublishingWebinarScriptSchema", () => {
 		});
 		expect(parsed.success).toBe(false);
 	});
+
+	it("parses a scaffold carrying only a title and a session purpose", () => {
+		// THE REGRESSION. Six narrative fields were required, each argued for by
+		// a comment saying the prompt tells the model to write a "[… TBD]"
+		// placeholder rather than leave one blank. Nothing enforced that:
+		// `generateObject` runs with `strictJsonSchema: false`, so a provider is
+		// free to omit a field, and on a topic whose context does not suit a
+		// webinar it does. `generateObject` then threw `NoObjectGeneratedError`
+		// before any validation in this module could run — deterministically,
+		// every attempt, with the reader shown only the neutral "the reason is
+		// recorded in the run log".
+		//
+		// The prompt asks for a scaffold in exactly that case, so a scaffold has
+		// to be expressible. This is the shape a model returns for a topic
+		// nobody planned a webinar for.
+		const parsed = PublishingWebinarScriptSchema.safeParse({
+			title: "A topic nobody planned a session for",
+			sessionPurpose:
+				"Nothing in context suggests a live, presenter-led session.",
+		});
+		expect(parsed.success).toBe(true);
+		if (!parsed.success) {
+			return;
+		}
+		expect(parsed.data.recommendedAudience).toBeNull();
+		expect(parsed.data.suggestedLength).toBeNull();
+		expect(parsed.data.openingTalkTrack).toBeNull();
+		expect(parsed.data.keyMessage).toBeNull();
+		expect(parsed.data.closingTalkTrack).toBeNull();
+		expect(parsed.data.suggestedCta).toBeNull();
+		// The gap still announces itself rather than passing as a finished draft.
+		expect(parsed.data.isScaffold).toBe(true);
+		expect(parsed.data.inputsNeeded.length).toBeGreaterThan(0);
+	});
+
+	it("still refuses a document with no session purpose", () => {
+		// The floor did not move to zero. `title` and `sessionPurpose` stay
+		// required: a document with neither is not a draft of anything.
+		expect(
+			PublishingWebinarScriptSchema.safeParse({
+				title: "A topic nobody planned a session for",
+			}).success,
+		).toBe(false);
+	});
+});
+
+describe("the composed working draft of a scaffold", () => {
+	const scaffold = PublishingWebinarScriptSchema.parse({
+		title: "A topic nobody planned a session for",
+		sessionPurpose: "Nothing in context suggests a live session.",
+	});
+
+	it("omits every section whose field is absent, leaving no bare heading", () => {
+		// The other half of the fix. Allowing `null` is only safe if the
+		// composer stops interpolating it — the previous body called `.trim()`
+		// on each of these unconditionally, so a nullable field without this
+		// change would have turned a schema failure into a runtime one.
+		const body = composeWebinarScriptWorkingDraftBody(scaffold);
+		expect(body).toContain("# A topic nobody planned a session for");
+		expect(body).toContain("Nothing in context suggests a live session.");
+		for (const heading of [
+			"## Opening talk track",
+			"## Key message",
+			"## Closing talk track",
+			"## Suggested CTA",
+			"**Recommended audience:**",
+			"**Suggested length:**",
+		]) {
+			expect(body).not.toContain(heading);
+		}
+		expect(body).not.toContain("undefined");
+		expect(body).not.toContain("null");
+	});
+
+	it("keeps the half of the framing block it does know", () => {
+		// Audience and length were one interpolated string, so a gap in either
+		// printed the other's label with nothing after it. They stand alone now.
+		const body = composeWebinarScriptWorkingDraftBody(
+			PublishingWebinarScriptSchema.parse({
+				title: "Half a framing block",
+				sessionPurpose: "One of the two is known.",
+				recommendedAudience: "Product users",
+			}),
+		);
+		expect(body).toContain("**Recommended audience:** Product users");
+		expect(body).not.toContain("**Suggested length:**");
+	});
 });
 
 describe("composeWebinarScriptExport", () => {

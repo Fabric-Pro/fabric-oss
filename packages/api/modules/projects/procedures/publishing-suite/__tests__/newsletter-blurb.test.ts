@@ -259,6 +259,7 @@ beforeEach(() => {
 				postType: "NEWSLETTER_BLURB",
 				latestAttempt: READY_DRAFT,
 				latestReady: READY_DRAFT,
+				versions: [READY_DRAFT],
 			},
 		],
 		workingDrafts: [],
@@ -723,6 +724,15 @@ describe("adoptNewsletterBlurbDraft", () => {
 							ctaState: "UNKNOWN",
 						},
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: {
+								...READY_DRAFT_CONTENT,
+								ctaState: "UNKNOWN",
+							},
+						},
+					],
 				},
 			],
 			workingDrafts: [],
@@ -822,6 +832,7 @@ describe("adoptNewsletterBlurbDraft", () => {
 						postType: "WEBINAR_SCRIPT",
 					},
 					latestReady: { ...READY_DRAFT, postType: "WEBINAR_SCRIPT" },
+					versions: [{ ...READY_DRAFT, postType: "WEBINAR_SCRIPT" }],
 				},
 			],
 			workingDrafts: [],
@@ -934,6 +945,14 @@ describe("adoptNewsletterBlurbDraft", () => {
 						...READY_DRAFT,
 						content: { options: [{ label: "Direct", text: "x" }] },
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: {
+								options: [{ label: "Direct", text: "x" }],
+							},
+						},
+					],
 				},
 			],
 			workingDrafts: [],
@@ -966,6 +985,15 @@ describe("adoptNewsletterBlurbDraft", () => {
 						...READY_DRAFT,
 						content: { ...READY_DRAFT_CONTENT, headline: "   " },
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: {
+								...READY_DRAFT_CONTENT,
+								headline: "   ",
+							},
+						},
+					],
 				},
 			],
 			workingDrafts: [],
@@ -1012,6 +1040,12 @@ describe("adoptNewsletterBlurbDraft", () => {
 						...READY_DRAFT,
 						content: overflowingContent,
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: overflowingContent,
+						},
+					],
 				},
 			],
 			workingDrafts: [],
