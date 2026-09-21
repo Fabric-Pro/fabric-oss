@@ -170,7 +170,8 @@
 			"documentGenerator": "Document Generator",
 			"organizationSettings": "Organization settings",
 			"prompts": "Prompts",
-			"start": "Start"
+			"start": "Start",
+			"todos": "To Do"
 		},
 		"userMenu": {
 			"accountSettings": "Account settings",
@@ -920,6 +921,10 @@
 					"body": "The Roadmap turns your work into features and tasks you can prioritise, track, and sync to your PM tool — a live picture of what's shipping.",
 					"title": "Plan on the Roadmap"
 				},
+				"todos": {
+					"body": "To Do gathers what you owe across this workspace — action items your meetings produced and to-dos you wrote yourself — into one list you can snooze, reassign, and tick off.",
+					"title": "Everything you owe, in one list"
+				},
 				"wrapup": {
 					"body": "That's the tour. Reopen it anytime from Get started in the sidebar menu. Now go build something.",
 					"title": "You're all set"
@@ -1066,7 +1071,55 @@
 			},
 			"members": {
 				"activeMembers": "Active members",
-				"description": "See all active members and the pending invites of your organization.",
+				"contacts": {
+					"tab": "Contacts",
+					"noAccountBadge": "No account",
+					"noDetails": "No email or company on file",
+					"rowActions": "Contact actions",
+					"edit": "Edit contact",
+					"delete": "Delete contact",
+					"form": {
+						"name": "Name",
+						"email": "Email (optional)",
+						"company": "Company (optional)",
+						"hint": "Contacts have no Fabric account and no access to this organization. Add an email or a company so two people with the same name stay distinguishable.",
+						"submit": "Add contact",
+						"save": "Save",
+						"cancel": "Cancel"
+					},
+					"empty": {
+						"title": "No contacts yet",
+						"description": "Add the people outside this organization whose work you track. They get no account and no access.",
+						"loading": "Loading contacts…"
+					},
+					"duplicate": {
+						"title": "A contact with this name already exists",
+						"description": "{name} is already in this register. Add a second record only if this is a different person.",
+						"cancel": "Cancel",
+						"confirm": "Add anyway"
+					},
+					"deleteConfirm": {
+						"title": "Delete this contact?",
+						"description": "{name} will be removed from the register. Their to-dos stay on the list and become unassigned.",
+						"cancel": "Cancel",
+						"confirm": "Delete contact"
+					},
+					"notifications": {
+						"created": {
+							"description": "{name} was added to the contacts.",
+							"error": "We could not add the contact. Please try again."
+						},
+						"updated": {
+							"description": "The contact was updated.",
+							"error": "We could not update the contact. Please try again."
+						},
+						"deleted": {
+							"description": "Contact deleted. {count, plural, =0 {No to-dos were assigned to them.} one {# to-do stays on the list and is now unassigned.} other {# to-dos stay on the list and are now unassigned.}}",
+							"error": "We could not delete the contact. Please try again."
+						}
+					}
+				},
+				"description": "See all active members, the pending invites, and the contacts who have no account in your organization.",
 				"invitations": {
 					"empty": "You have not invited any members yet.",
 					"expiresAt": "Expires at {date}",
@@ -1469,7 +1522,20 @@
 						"config_updated": "Integration config updated"
 					},
 					"restored": "Organization restored",
-					"purged": "Organization permanently deleted"
+					"purged": "Organization permanently deleted",
+					"todo": {
+						"created": "To-do created",
+						"completion_changed": "To-do completion changed",
+						"snoozed": "To-do snoozed",
+						"unsnoozed": "To-do unsnoozed",
+						"assigned": "To-do assigned",
+						"bulk_resolved": "To-dos resolved in bulk"
+					},
+					"contact": {
+						"created": "Contact added",
+						"updated": "Contact updated",
+						"redacted": "Contact erased"
+					}
 				},
 				"account": {
 					"api_key": {
@@ -6711,6 +6777,193 @@
 			"SHOULD": "Should",
 			"COULD": "Could",
 			"NOT_APPLICABLE": "Not needed in this phase"
+		}
+	},
+	"todos": {
+		"list": {
+			"scope": {
+				"label": "View",
+				"open": "Open",
+				"completed": "Completed",
+				"snoozed": "Snoozed"
+			},
+			"filters": {
+				"active": "Active filters",
+				"project": {
+					"label": "Project",
+					"placeholder": "All projects",
+					"search": "Search projects…",
+					"empty": "No project matches that.",
+					"ariaLabel": "Filter by project",
+					"remove": "Remove the project filter {name}"
+				},
+				"assignee": {
+					"label": "Assignee",
+					"placeholder": "Anyone",
+					"search": "Search people…",
+					"empty": "Nobody matches that.",
+					"ariaLabel": "Filter by assignee",
+					"remove": "Remove the assignee filter {name}"
+				}
+			},
+			"source": {
+				"meeting": "From a meeting",
+				"manual": "Added by hand"
+			},
+			"openInDigest": "Open in the meeting",
+			"completedOn": "Completed {date}",
+			"snoozedUntil": "Snoozed until {date}",
+			"orphaned": {
+				"description": "The meeting's wording changed after this was captured. This is what it said at the time, and whoever it names is a suggestion, not a decision."
+			},
+			"assignee": {
+				"unassigned": "Unassigned",
+				"suggested": "Suggested"
+			},
+			"meetingGroup": {
+				"fallback": "Meeting on {date}"
+			},
+			"proposals": {
+				"pending": "{count, plural, one {# proposal to review} other {# proposals to review}}",
+				"pendingLabel": "{count, plural, one {# proposal to review} other {# proposals to review}} from this meeting — open the Proposal Inbox",
+				"links": {
+					"toggle": "Work items",
+					"loading": "Loading the work items…",
+					"loadFailed": "We could not load this to-do's work items. Try again in a moment.",
+					"empty": "Nothing in this workspace has come out of this to-do yet.",
+					"unlinked": "Not linked",
+					"orphaned": "The meeting's wording changed after this was captured, so these links can no longer be changed from here.",
+					"accept": "Link",
+					"acceptLabel": "Link {item} to this to-do",
+					"reject": "Remove",
+					"rejectLabel": "Remove the link to {item}",
+					"confirm": {
+						"title": "Remove this link?",
+						"description": "{identifier} stays in the workspace — only its link to this to-do goes. The meeting digest stops showing it too, and it will not be suggested again.",
+						"cancel": "Keep it",
+						"confirm": "Remove the link"
+					},
+					"errors": {
+						"accept": "We could not link that work item. Nothing changed — try again.",
+						"reject": "We could not remove that link. Nothing changed — try again."
+					}
+				}
+			},
+			"manualGroup": {
+				"title": "Added by hand"
+			},
+			"unassigned": {
+				"title": "Unassigned",
+				"titleInProject": "Unassigned in {project}"
+			},
+			"ageHidden": {
+				"line": "{count, plural, one {# older to-do is hidden} other {# older to-dos are hidden}}",
+				"lineCleared": "Nothing is hidden by age any more",
+				"description": "Nothing was deleted. {count, plural, one {One to-do} other {# to-dos}} older than {days} days stay out of the main list so it keeps showing what is live.",
+				"loading": "Loading the hidden to-dos…",
+				"loadFailed": "We could not load the hidden to-dos. Try again in a moment.",
+				"loadMore": "Show more",
+				"loadingMore": "Loading…",
+				"empty": {
+					"title": "Nothing is behind the cutoff",
+					"description": "Every to-do in this workspace is recent enough to be in the main list."
+				},
+				"selectAll": "Select every hidden to-do loaded here",
+				"select": "Select “{title}”",
+				"selected": "{count, plural, =0 {Nothing selected} one {# to-do selected} other {# to-dos selected}}",
+				"resolve": "{count, plural, one {Resolve # to-do} other {Resolve # to-dos}}",
+				"resolving": "Resolving…",
+				"summary": {
+					"message": "{completed, plural, =0 {Nothing resolved} one {# resolved} other {# resolved}}, {failed, plural, =0 {nothing left behind} one {# could not be resolved} other {# could not be resolved}}.",
+					"dismiss": "Dismiss this summary"
+				},
+				"outcome": {
+					"notFound": "This to-do is no longer in this workspace — a meeting was re-processed after the list loaded. Reload to drop it.",
+					"forbidden": "You can see this to-do but not change it. Whoever owns it, or an administrator of its project, can close it.",
+					"vanished": "This to-do was deleted while the batch was running, so nothing was written for it."
+				},
+				"error": "That batch did not finish. Some to-dos may already be done — the list has been refreshed."
+			},
+			"noMatches": {
+				"title": "Nothing in this view",
+				"description": "No to-do matches the filters you have on. Clear one to see more."
+			},
+			"previouslyCompleted": "Completed {date}, before the meeting's wording changed.",
+			"actions": {
+				"menu": "More actions for “{title}”",
+				"complete": "Mark as done",
+				"reopen": "Reopen",
+				"completeRow": "Mark “{title}” as done",
+				"reopenRow": "Reopen “{title}”",
+				"assign": "Assign to someone…",
+				"unsnooze": "Bring it back now",
+				"snooze": {
+					"label": "Snooze until",
+					"day": "Tomorrow",
+					"week": "Next week",
+					"month": "Next month",
+					"custom": "Pick a date…"
+				},
+				"snoozeDialog": {
+					"title": "Snooze this to-do",
+					"description": "It stays out of every view until the date you pick, then comes back on its own. Today is not on offer: a snooze that has already elapsed changes nothing.",
+					"cancel": "Cancel",
+					"confirm": "Snooze"
+				},
+				"errors": {
+					"complete": "We could not update that to-do. Nothing changed — try again.",
+					"snooze": "We could not snooze that to-do. Nothing changed — try again.",
+					"unsnooze": "We could not bring that to-do back. Try again.",
+					"assign": "We could not change who owes that to-do. Try again."
+				}
+			},
+			"suggestion": {
+				"confirm": "Assign to {name}",
+				"noMatch": "The meeting named someone this workspace does not know yet.",
+				"noMatchNamed": "The meeting named {name}, who is not in this workspace yet.",
+				"createContact": "Add them as a contact and assign"
+			},
+			"assignDialog": {
+				"title": "Who owes this?",
+				"description": "Anyone in this workspace, or a contact who has no account.",
+				"search": "Search people…",
+				"empty": "Nobody matches that.",
+				"members": "Members",
+				"contacts": "Contacts",
+				"create": "Add a contact and assign",
+				"createNamed": "Add “{name}” as a contact and assign",
+				"unassign": "Leave it unassigned"
+			},
+			"newContact": {
+				"title": "Add a contact",
+				"description": "Someone with no Fabric account. They join this workspace's contacts and take this to-do in the same step.",
+				"name": "Name",
+				"email": "Email",
+				"company": "Company",
+				"hint": "Email and company are optional, and exist so two people with the same name stay apart.",
+				"cancel": "Cancel",
+				"submit": "Add and assign",
+				"created": "{name} now owes this to-do.",
+				"error": "We could not add that contact. What you typed is still here — try again.",
+				"forbidden": "Only people who can invite members can add a contact to this workspace.",
+				"duplicate": {
+					"description": "A contact named {name} is already in this workspace.",
+					"useThis": "Use this one",
+					"cancel": "Back",
+					"confirm": "Add anyway"
+				}
+			},
+			"loadMore": "Show more",
+			"loadingMore": "Loading…"
+		},
+		"title": "To Do",
+		"subtitle": "Everything you owe across this workspace — action items from your meetings and to-dos you wrote yourself, in one list.",
+		"loading": "Loading your to-dos…",
+		"unavailable": "The To Do list is not turned on for this workspace yet.",
+		"loadFailed": "We could not load your to-dos. Try again in a moment.",
+		"empty": {
+			"title": "Nothing to do",
+			"description": "Action items from your meetings, and to-dos you add yourself, will show up here."
 		}
 	}
 }

@@ -43,6 +43,7 @@ import { searchProvidersRouter } from "../modules/search-providers/router";
 import { skillsRouter } from "../modules/skills/router";
 import { subscriptionsRouter } from "../modules/subscriptions/router";
 import { systemHealthRouter } from "../modules/system-health/router";
+import { todosRouter } from "../modules/todos/router";
 import { userActivityRouter } from "../modules/user-activity/router";
 import { usersRouter } from "../modules/users/router";
 import { waitlistRouter } from "../modules/waitlist/router";
@@ -75,6 +76,7 @@ export const router = publicProcedure
 		dashboard: dashboardRouter,
 		frames: framesRouter,
 		functionTags: functionTagsRouter,
+		todos: todosRouter,
 		github: githubRouter,
 		incidents: incidentsRouter,
 		integrationHealth: integrationHealthRouter,

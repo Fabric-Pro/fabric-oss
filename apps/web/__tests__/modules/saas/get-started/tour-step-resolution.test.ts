@@ -101,12 +101,42 @@ describe("the two key steps (Fizzy #2361)", () => {
 
 describe("resolveTourSteps — viewer has a project", () => {
 	it("returns the full registry, untouched, in order", () => {
+		// Every runtime gate on, so "full" really means the whole registry —
+		// a gated step is dropped by design and would otherwise make this read
+		// as a collapse that never happened.
 		const steps = resolveTourSteps({
 			hasProject: true,
 			isTabVisible: allVisible,
+			gates: { todoList: true },
 		});
 
 		expect(ids(steps)).toEqual(ids(ONBOARDING_STEPS));
+	});
+
+	it("withholds a runtime-gated step unless its gate is explicitly on", () => {
+		// Fizzy #2340. The To Do page is absent for an organization that is
+		// not enrolled — no sidebar entry to spotlight and a read that
+		// refuses — so the step must not be walked to on an unset gate either.
+		const gated = ONBOARDING_STEPS.filter((s) => s.runtimeGate).map(
+			(s) => s.id,
+		);
+		expect(gated.length).toBeGreaterThan(0);
+
+		const off = ids(
+			resolveTourSteps({ hasProject: true, isTabVisible: allVisible }),
+		);
+		const on = ids(
+			resolveTourSteps({
+				hasProject: true,
+				isTabVisible: allVisible,
+				gates: { todoList: true },
+			}),
+		);
+
+		for (const id of gated) {
+			expect(off).not.toContain(id);
+			expect(on).toContain(id);
+		}
 	});
 
 	it("still drops a project step whose tab is hidden from the viewer", () => {
@@ -228,6 +258,10 @@ describe("resolveTourSteps — project existence not yet known", () => {
 		// have projects — a worse bug than the repeated slide.
 		const steps = resolveTourSteps({
 			hasProject: undefined,
+			// Gates on, so the comparison is against the whole registry: this
+			// test is about the project probe, and a runtime-gated step being
+			// withheld would otherwise read as the collapse it is denying.
+			gates: { todoList: true },
 			isTabVisible: allVisible,
 		});
 

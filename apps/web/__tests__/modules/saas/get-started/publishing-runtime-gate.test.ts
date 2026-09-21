@@ -13,8 +13,10 @@ import {
  * serves organizations that have it and organizations that do not.
  */
 
-const OFF: GsRuntimeGates = { publishingSuite: false };
-const ON: GsRuntimeGates = { publishingSuite: true };
+// Only the Publishing gate varies here; `todoList` is held off in both so the
+// object stays a complete `GsRuntimeGates` without adding a second variable.
+const OFF: GsRuntimeGates = { publishingSuite: false, todoList: false };
+const ON: GsRuntimeGates = { publishingSuite: true, todoList: false };
 
 describe("Get Started — Publishing Suite runtime gate", () => {
 	it("the drawer item declares the runtime gate, not a build-time value", () => {

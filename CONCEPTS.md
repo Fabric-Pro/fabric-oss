@@ -419,9 +419,37 @@ Recorded whenever the person opens a project's main view, independently of wheth
 
 Distinct from the recent-project list the orchestrator keeps for session continuity: that one records what an agent run was pointed at, this one records what a person navigated to. Treating them as interchangeable produces a list the user never built.
 
+## Meeting commitments
+
+### Action item
+A commitment extracted from one meeting's transcript — something a person said they would do.
+
+Action items are not durable rows. Every extraction over a transcript deletes the ones it had produced and writes a new set, so an action item's identity never survives a re-extraction and nothing may hold a reference to one. Completion is recorded here and nowhere else, so a surface that shows the same commitment twice must read it from here rather than keeping a copy.
+
+### To-do
+A durable row representing one piece of work a person owes, gathered onto a single workspace-wide list. A to-do either stands alone, created by hand, or stands for exactly one action item.
+
+Unlike an action item, a to-do survives re-extraction, which is what lets an assignment, a snooze, or an age dismissal outlive the meeting text that produced it. It keeps no completion of its own for meeting-sourced work: it holds only a remembered value used while its action item is unreachable, so the meeting digest and the list can never disagree about whether something is done.
+
+### Item key
+The identity a to-do uses to find its action item: a digest of the item's own wording, normalized. Deliberately not the action item's row identity, because that identity is destroyed on every extraction.
+
+Two consequences shape everything built on it. Rewording an item produces a different key, so the to-do that held the old wording stops addressing anything live rather than following the edit — and both sides of the pairing must carry the key, because the pairing is resolved by comparing stored keys and not by re-deriving one of them. A commitment worded identically twice in one meeting is told apart by its position among its namesakes.
+
+### Orphaned to-do
+A to-do whose key no longer addresses any live action item, because the wording it was built from changed or the commitment left the meeting.
+
+It is retained, never deleted and never stripped of its key: the key is its address, and a wording that reverts re-pairs the same row and restores its history. Any assignment it carried is demoted to a suggestion so the page can offer the person back with one click, and an assignment a human made by hand is left exactly as it stands.
+
+### Match stamp
+The mark on a transcript saying its to-dos have been built, carried together with the vocabulary version they were built under.
+
+It is load-bearing in a way that is easy to miss: the only thing that looks for meetings still needing to-dos is a query for transcripts this mark is unset or superseded on. Setting it therefore removes the meeting from the only process that would ever look again, so it must be withheld by any run that cannot honestly claim to have processed the commitments currently on the transcript. Moving the vocabulary version invalidates every stamp taken under the old one.
+
 ## Flagged ambiguities
 
 - "Queued" had been used for both a generation deliberately holding until the project's context work completes, and a job step that simply has not been reached yet — these are distinct. The first advances on its own and offers nothing to retry; the second is only a step's position in a list. Copy that blurs them invites a retry that supersedes a healthy attempt.
+- "Action item" and "To-do" had been used for the same thing — these are distinct, and only one of them owns completion. Treating them as interchangeable is what produces two places to mark work done, and then two answers about whether it is.
 - "Feature flag" had been used for both the Rollout gate and the Kill switch — these are distinct, and a capability can need one of each. Merging them turns an always-armed brake into a switch that launches the feature.
 
 *Source usage* and an attachment's *designation* are different axes and must not be

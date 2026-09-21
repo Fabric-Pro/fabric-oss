@@ -23,6 +23,7 @@ import {
 // that mock the @repo/ai root module (uniform rule across the budget sites).
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import {
+	computeTodoItemKey,
 	db,
 	type MeetingActionItem,
 	type MeetingDecision,
@@ -32,6 +33,11 @@ import {
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
 import { z } from "zod";
+import { getTemporalClient } from "../../client";
+import {
+	MEETING_TODO_MATCHER_TASK_QUEUE,
+	meetingTodoMatcherWorkflowId,
+} from "../../lib/meeting-todo-matcher";
 import { attachAnchor } from "./anchor-resolver";
 
 // v2: the same extraction call also produces a clean meeting summary that is
@@ -156,6 +162,7 @@ export function buildActionItemRows(params: {
 	completedById: string | null;
 	sourceQuote: string | null;
 	anchorLine: number | null;
+	itemKey: string;
 }> {
 	const completionByText = new Map(
 		params.existing
@@ -176,6 +183,12 @@ export function buildActionItemRows(params: {
 			completedById: carried?.completedById ?? null,
 			sourceQuote: item.sourceQuote ?? null,
 			anchorLine: item.anchorLine ?? null,
+			// #2340. Stored rather than recomputed so an organization-wide to-do
+			// query can join and filter completion in SQL instead of hashing every
+			// action item of every in-scope meeting in memory. This is the one
+			// column this feature adds to extraction's output; what extraction
+			// decides and writes is otherwise unchanged.
+			itemKey: computeTodoItemKey(item.text),
 		};
 	});
 }
@@ -425,6 +438,13 @@ export async function extractMeetingInsightsActivity(
 						// keeps its links, which is the point of keying on text.
 						actionItemsLinkedAt: null,
 						actionItemsLinkVersion: null,
+						// #2340: same reasoning, different feature. This run rewrote the
+						// items the to-do layer binds on, so any owner match taken before
+						// it is stale by definition. Its own stamp, never the linker's —
+						// sharing one would make each feature believe the other's work
+						// was already done.
+						todosMatchedAt: null,
+						todoMatchVersion: null,
 						...(extractedSummary && summaryFromTranscriptBody
 							? { summary: extractedSummary }
 							: {}),
@@ -444,6 +464,76 @@ export async function extractMeetingInsightsActivity(
 			]);
 
 			extractedCount += 1;
+
+			// #2340: this run just rewrote the action items the To Do list binds
+			// to, so start the owner matcher for THIS transcript and do not await
+			// it.
+			//
+			// Started from the activity rather than from a workflow body on
+			// purpose. Appending an activity call to a workflow changes its
+			// command sequence and breaks replay of in-flight executions
+			// (TMPRL1100) unless gated behind `patched()` — and there are two
+			// workflows to append to, since this activity runs from both
+			// `extractMeetingInsightsOnDemandWorkflow` and
+			// `dailyBriefGenerationWorkflow`. Starting it here covers both paths
+			// with one call site and leaves both command sequences untouched.
+			// `meeting-transcript-sync.ts` starts its siblings the same way.
+			//
+			// NON-FATAL, like every other start in that file, and what makes it
+			// safe to be non-fatal is a SECOND call site. The insights are
+			// committed by the time we get here, and the transaction above has
+			// just cleared `todosMatchedAt`/`todoMatchVersion` — so a meeting
+			// whose start throws here (Temporal unreachable) or is rejected by
+			// the FAIL conflict policy below (a previous run still RUNNING) is
+			// left in the unmatched state that `todos.catchUp` in
+			// `@repo/api` (`modules/todos/procedures/catch-up.ts`) selects on,
+			// and the next open of the To Do page starts it. Without that
+			// procedure this swallow would lose the meeting's to-dos silently
+			// and permanently; do not delete one without the other.
+			//
+			// The rollout gate is read inside the matcher, not here — one place
+			// decides, and it is the place that writes.
+			try {
+				const client = await getTemporalClient();
+				await client.workflow.start(
+					"matchMeetingActionItemOwnersWorkflow",
+					{
+						taskQueue: MEETING_TODO_MATCHER_TASK_QUEUE,
+						// Deterministic per transcript, and built by the shared
+						// helper because `todos.catchUp` starts the same run
+						// under the same id — two spellings would de-duplicate
+						// nothing and silently double a meeting's to-dos.
+						// ALLOW_DUPLICATE so a later re-extraction can start a
+						// fresh run after the previous one closed; FAIL rejects
+						// a start against a RUNNING one, which here means "the
+						// work is already happening" and, in the rarer case
+						// where that run predates this re-extraction, is caught
+						// up by the procedure above.
+						workflowId: meetingTodoMatcherWorkflowId(t.id),
+						workflowIdReusePolicy: "ALLOW_DUPLICATE",
+						workflowIdConflictPolicy: "FAIL",
+						args: [
+							{
+								projectId,
+								organizationId,
+								transcriptCuid: t.id,
+							},
+						],
+					},
+				);
+			} catch (matcherError) {
+				logger.warn(
+					"[DailyBrief/extractMeetingInsights] Failed to start to-do owner matcher",
+					{
+						transcriptCuid: t.id,
+						error:
+							matcherError instanceof Error
+								? matcherError.message
+								: String(matcherError),
+					},
+				);
+			}
+
 			insights.push({
 				transcriptCuid: t.id,
 				decisions,

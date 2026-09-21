@@ -56,6 +56,7 @@ import {
 	HeartPulseIcon,
 	HomeIcon,
 	LayoutTemplateIcon,
+	ListTodoIcon,
 	LockIcon,
 	LogOutIcon,
 	MenuIcon,
@@ -166,6 +167,12 @@ export function NavBar({
 	// the nav destination moves with the route redirect rather than stranding
 	// users on a surface the flag is meant to have turned off.
 	const unifiedAgentInterface = useFeatureFlag("UNIFIED_AGENT_INTERFACE");
+	// Rollout gate for the consolidated To Do page (#2340). Read here because
+	// the entry has to be ABSENT when it is off — `todos.list` refuses the
+	// read with NOT_FOUND for an organization that is not enrolled, so a
+	// present-but-broken entry would be the shape of an outage rather than of
+	// a feature that is simply not on yet.
+	const todoList = useFeatureFlag("TODO_LIST");
 	const settingsPath = useContextPath("settings/general");
 	const accountSettingsPath = useAccountPath("settings/account/profile");
 	const isGuest = useIsGuestInOrg();
@@ -397,6 +404,22 @@ export function NavBar({
 					onboardingId: "nav-projects",
 					children: projectShortcutItems,
 				},
+				...(todoList
+					? [
+							{
+								label: t("app.menu.todos"),
+								href: `${effectiveBasePath}/todos`,
+								icon: ListTodoIcon,
+								// Literal, not ONBOARDING_ANCHORS.navTodos:
+								// the CI drift guard verifies anchors are
+								// placed on live components by scanning this
+								// file's SOURCE for the quoted id. A constant
+								// reference reads as a missing anchor.
+								onboardingId: "nav-todos",
+								isActive: pathname.includes("/todos"),
+							},
+						]
+					: []),
 				{
 					label: "AI Agents",
 					href: `${effectiveBasePath}/agents`,

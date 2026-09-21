@@ -48,6 +48,12 @@ const VIEWER_ORG_PERMISSIONS: readonly Permission[] = [
 	P.PROJECT_READ,
 	P.PROJECT_SETTINGS_READ,
 	P.PROJECT_MEMBERS_READ,
+	// Every member owns and manages their own to-dos, so these sit at viewer
+	// level. Reaching another person's row is an object-level decision the
+	// procedures make, not a role one.
+	P.TODO_READ,
+	P.TODO_CREATE,
+	P.TODO_UPDATE,
 	P.STORY_READ,
 	P.DOCUMENT_READ,
 	P.COMMENT_READ,

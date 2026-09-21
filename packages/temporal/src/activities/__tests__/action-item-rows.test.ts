@@ -1,3 +1,4 @@
+import { computeTodoItemKey } from "@repo/database";
 import { describe, expect, it } from "vitest";
 import { buildActionItemRows } from "../daily-brief/extract-meeting-insights";
 
@@ -10,10 +11,15 @@ describe("buildActionItemRows", () => {
 			],
 			existing: [],
 		});
+		// `itemKey` is asserted through the shared helper rather than as a
+		// literal digest: what matters is that the row builder keys rows with
+		// the SAME function the to-do binder reads them back with. A pinned hash
+		// would still pass if the two drifted onto different algorithms.
 		expect(rows).toEqual([
 			{
 				orderIndex: 0,
 				text: "Fix the chart",
+				itemKey: computeTodoItemKey("Fix the chart"),
 				tentativeOwnerName: "Bob",
 				dueHint: null,
 				completedAt: null,
@@ -24,6 +30,7 @@ describe("buildActionItemRows", () => {
 			{
 				orderIndex: 1,
 				text: "Review SOC2 evidence",
+				itemKey: computeTodoItemKey("Review SOC2 evidence"),
 				tentativeOwnerName: null,
 				dueHint: "by Friday",
 				completedAt: null,

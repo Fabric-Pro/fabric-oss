@@ -35,9 +35,13 @@ export function PageTourButton({
 	// covered page can be gated per organization, so the coverage check below
 	// needs a runtime answer the registry cannot supply for itself.
 	const publishingSuiteEnabled = useFeatureFlag("PUBLISHING_SUITE");
+	const todoListEnabled = useFeatureFlag("TODO_LIST");
 	if (
 		!GET_STARTED_ENABLED ||
-		!pageForTab(pageId, { publishingSuite: publishingSuiteEnabled })
+		!pageForTab(pageId, {
+			publishingSuite: publishingSuiteEnabled,
+			todoList: todoListEnabled,
+		})
 	) {
 		return null;
 	}
