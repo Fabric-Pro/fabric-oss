@@ -140,18 +140,32 @@ beforeEach(() => {
 		{ publishedInstructionSnapshotId: BASE },
 	]);
 	mocks.snapshot.count.mockResolvedValue(0);
-	// The base, then the version-allocation read. `findFirst` is called twice
-	// per attempt, in that order.
-	mocks.snapshot.findFirst
-		.mockResolvedValueOnce({
-			id: BASE,
-			status: "READY",
-			source: "UPLOAD",
-			version: 7,
-			settingsFrozen: { layer: "default", ignoreGlobs: ["**/tasks/**"] },
-			excludedCount: 4,
-		})
-		.mockResolvedValueOnce({ version: 7 });
+	// Three different `findFirst` reads share one mock, and a proposal issues
+	// one the other derivations do not (the duplicate lookup), so the default
+	// answers by WHAT was asked rather than by call position: a lookup naming
+	// `changeSetDigest` finds nothing, a lookup naming `id` is the base, and
+	// anything else is the version-allocation read. Tests that care about the
+	// sequence still reset and queue their own.
+	mocks.snapshot.findFirst.mockImplementation(async (args: unknown) => {
+		const where = (args as { where?: Record<string, unknown> }).where ?? {};
+		if ("changeSetDigest" in where) {
+			return null;
+		}
+		if ("id" in where) {
+			return {
+				id: BASE,
+				status: "READY",
+				source: "UPLOAD",
+				version: 7,
+				settingsFrozen: {
+					layer: "default",
+					ignoreGlobs: ["**/tasks/**"],
+				},
+				excludedCount: 4,
+			};
+		}
+		return { version: 7 };
+	});
 	mocks.snapshot.create.mockResolvedValue({ id: "snap_new", version: 8 });
 	mocks.file.findMany.mockResolvedValue([]);
 });
@@ -310,6 +324,262 @@ describe("createDerivedInstructionSnapshot", () => {
 					}),
 				]),
 			}),
+		});
+	});
+
+	/**
+	 * A retried proposal is the SAME proposal (Fizzy #2605).
+	 *
+	 * Every surface that opens one — the v1 change route, the MCP tool, the
+	 * CLI push — can have its response lost after the row was written, and
+	 * without a dedup rule the retry opened a second PENDING proposal holding
+	 * a second admission slot. Five of those and the proposer is locked out
+	 * of the feature with nothing in the tab that looks wrong.
+	 *
+	 * The identity is the CONTENT: the base it is stated against plus the
+	 * set of (op, path, sha256) it applies, hashed here so both entry points
+	 * share one formula rather than agreeing by coincidence.
+	 */
+	describe("duplicate proposals", () => {
+		/** The staged rows the duplicate lookup reads back. */
+		function duplicateStaged() {
+			mocks.file.findMany.mockReset();
+			mocks.file.findMany.mockResolvedValue([
+				{ id: "existing_file", path: "README.md" },
+			]);
+		}
+
+		/** Make the duplicate lookup find `row`. */
+		function existingProposal(overrides: Record<string, unknown> = {}) {
+			mocks.snapshot.findFirst.mockImplementation(
+				async (args: unknown) => {
+					const where =
+						(args as { where?: Record<string, unknown> }).where ??
+						{};
+					if ("changeSetDigest" in where) {
+						return {
+							id: "snap_existing",
+							version: 8,
+							status: "RECEIVING",
+							proposalStatus: "PENDING",
+							fileCount: 3,
+							...overrides,
+						};
+					}
+					return { version: 7 };
+				},
+			);
+		}
+
+		it("looks the duplicate up under the lock, before the admission counts, scoped to both tenant columns", async () => {
+			duplicateStaged();
+			existingProposal();
+
+			await createDerivedInstructionSnapshot(
+				input([put("README.md")], { proposal: true }),
+			);
+
+			const lookup = mocks.snapshot.findFirst.mock.calls[0]![0] as {
+				where: Record<string, unknown>;
+			};
+			expect(lookup.where).toMatchObject({
+				projectId: PROJECT,
+				organizationId: ORG,
+				userId: "user_1",
+				baseSnapshotId: BASE,
+				changeSetDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+			});
+			// After the project row lock, before either count.
+			expect(
+				mocks.snapshot.findFirst.mock.invocationCallOrder[0]!,
+			).toBeGreaterThan(mocks.$queryRaw.mock.invocationCallOrder[0]!);
+			expect(mocks.snapshot.count).not.toHaveBeenCalled();
+		});
+
+		it("returns the existing proposal and writes nothing", async () => {
+			duplicateStaged();
+			existingProposal();
+
+			const result = await createDerivedInstructionSnapshot(
+				input([put("README.md")], { proposal: true }),
+			);
+
+			expect(result).toEqual({
+				ok: false,
+				reason: "duplicate_proposal",
+				existing: {
+					id: "snap_existing",
+					version: 8,
+					status: "RECEIVING",
+					proposalStatus: "PENDING",
+					fileCount: 3,
+					// `fileCount` minus the rows still awaiting bytes.
+					inheritedCount: 2,
+					staged: [{ id: "existing_file", path: "README.md" }],
+				},
+			});
+			expect(mocks.snapshot.create).not.toHaveBeenCalled();
+			expect(mocks.file.createMany).not.toHaveBeenCalled();
+		});
+
+		/**
+		 * The whole point of putting the lookup BEFORE the counts: a proposer
+		 * at the cap who retries a push must get their own proposal back, not
+		 * a refusal telling them to cancel one — the one they would cancel is
+		 * the one they are retrying.
+		 */
+		it("answers a duplicate at the proposer cap with the existing row", async () => {
+			duplicateStaged();
+			existingProposal();
+			mocks.snapshot.count.mockResolvedValue(5);
+
+			const result = await createDerivedInstructionSnapshot(
+				input([put("README.md")], { proposal: true }),
+			);
+
+			expect(result).toMatchObject({
+				ok: false,
+				reason: "duplicate_proposal",
+			});
+			expect(result).not.toMatchObject({
+				reason: "proposal_proposer_limit",
+			});
+		});
+
+		/**
+		 * NARROWER than the admission filter the counts use, and that is the
+		 * point.
+		 *
+		 * `activeProposalFilter`'s second arm matches a TERMINAL proposal
+		 * whose staging prefix has not been swept yet — which is exactly what
+		 * the inline entry point writes when its own upload fails, so that
+		 * the proposer can push again. Matching it here would answer that
+		 * retry with the closed-out row and leave the proposer unable to
+		 * propose that edit at all until the hourly sweep ran.
+		 */
+		it("matches only a proposal still awaiting a decision, never a closed-out one", async () => {
+			duplicateStaged();
+			existingProposal();
+
+			await createDerivedInstructionSnapshot(
+				input([put("README.md")], { proposal: true }),
+			);
+
+			const lookup = mocks.snapshot.findFirst.mock.calls[0]![0] as {
+				where: Record<string, unknown>;
+			};
+			expect(lookup.where.proposalStatus).toBe("PENDING");
+			expect(lookup.where).not.toHaveProperty("OR");
+		});
+
+		it("never looks up for a derivation that is not a proposal", async () => {
+			withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+			await createDerivedInstructionSnapshot(input([put("README.md")]));
+
+			for (const call of mocks.snapshot.findFirst.mock.calls) {
+				expect(
+					(call[0] as { where: Record<string, unknown> }).where,
+				).not.toHaveProperty("changeSetDigest");
+			}
+		});
+
+		it("stores the digest on the row it creates", async () => {
+			withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+			await createDerivedInstructionSnapshot(
+				input([put("README.md")], { proposal: true }),
+			);
+
+			const lookup = mocks.snapshot.findFirst.mock.calls[0]![0] as {
+				where: { changeSetDigest: string };
+			};
+			expect(mocks.snapshot.create).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						changeSetDigest: lookup.where.changeSetDigest,
+					}),
+				}),
+			);
+		});
+
+		/** The digest of the change set the run was given. */
+		async function digestOf(
+			changes: Parameters<
+				typeof createDerivedInstructionSnapshot
+			>[0]["changes"],
+			files = [baseFile("bf1", "CLAUDE.md")],
+		) {
+			mocks.snapshot.create.mockClear();
+			withBaseFiles(files);
+			await createDerivedInstructionSnapshot(
+				input(changes, { proposal: true }),
+			);
+			return (
+				mocks.snapshot.create.mock.calls[0]![0] as {
+					data: { changeSetDigest: string };
+				}
+			).data.changeSetDigest;
+		}
+
+		it("hashes the change SET, so the order the caller sent it in is irrelevant", async () => {
+			const forwards = await digestOf([
+				put("README.md"),
+				put("docs/one.md"),
+			]);
+			const backwards = await digestOf([
+				put("docs/one.md"),
+				put("README.md"),
+			]);
+
+			expect(forwards).toMatch(/^[0-9a-f]{64}$/);
+			expect(forwards).toBe(backwards);
+		});
+
+		/**
+		 * The CONTENT is in the digest, not just the shape of the edit. Two
+		 * pushes that touch the same path with different bytes are different
+		 * proposals, and answering the second with the first would silently
+		 * drop the newer edit.
+		 */
+		it("changes when only a put's hash changes", async () => {
+			const base = [baseFile("bf1", "CLAUDE.md")];
+			const first = await digestOf([put("README.md")], base);
+			const second = await digestOf(
+				[{ ...put("README.md"), sha256: "e".repeat(64) }],
+				base,
+			);
+
+			expect(first).toMatch(/^[0-9a-f]{64}$/);
+			expect(first).not.toBe(second);
+		});
+
+		/** Same bytes, different file: still a different proposal. */
+		it("changes when only a put's path changes", async () => {
+			const base = [baseFile("bf1", "CLAUDE.md")];
+			const here = await digestOf([put("README.md")], base);
+			const there = await digestOf([put("docs/README.md")], base);
+
+			expect(here).not.toBe(there);
+		});
+
+		/**
+		 * Removing a file and rewriting it are opposite edits, and a digest
+		 * that could not tell them apart would return one when the proposer
+		 * asked for the other.
+		 */
+		it("distinguishes a put from a delete on the same path", async () => {
+			const base = [
+				baseFile("bf1", "CLAUDE.md"),
+				baseFile("bf2", "x.md"),
+			];
+			const written = await digestOf([put("x.md")], base);
+			const removed = await digestOf(
+				[{ op: "delete", path: "x.md" }],
+				base,
+			);
+
+			expect(written).not.toBe(removed);
 		});
 	});
 

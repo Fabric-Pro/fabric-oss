@@ -1,0 +1,15 @@
+-- AlterTable
+-- The identity of the change set a derived snapshot applies: sha256 over the
+-- sorted "op\0path\0sha256\n" lines of its put/delete list. A retried proposal
+-- is matched on it (with "baseSnapshotId" and "userId") so a push whose
+-- response was lost returns the proposal it already opened rather than a
+-- second one against the five-per-proposer admission cap.
+--
+-- Expand-safe: a nullable column add takes only a catalog lock, rewrites no
+-- rows, and leaves every existing row valid. Existing snapshots stay NULL and
+-- are simply never matched, so an older instance still running during the
+-- rollout writes NULL and behaves exactly as it does today.
+--
+-- No index: the lookup is already narrowed by "projectId" + "proposalStatus"
+-- (@@index) and a project holds at most 25 active proposals.
+ALTER TABLE "project_instruction_snapshot" ADD COLUMN "changeSetDigest" TEXT;

@@ -196,13 +196,13 @@ export class InstructionsResource {
 	 * hold the project permission the tab requires to propose — the scope is a
 	 * ceiling, never a grant.
 	 *
-	 * **Never retried.** Every other mutating call in this SDK is retried on a
-	 * network error or a timeout, on the premise that its `Idempotency-Key`
-	 * header lets the server deduplicate. This route does not honour that
-	 * header, so a retry is a SECOND proposal for the same edit — and the
-	 * per-proposer admission cap is five. The override is set here rather than
-	 * left to the caller so that protection is not something each client has to
-	 * remember.
+	 * **Safe to retry**, and retried by the client's default policy like every
+	 * other mutating call here. The route deduplicates by the CONTENT of the
+	 * change set — the base it is stated against plus the set of paths,
+	 * operations and hashes — so a request whose response was lost comes back
+	 * with the proposal the first attempt opened rather than a second one
+	 * against the five-per-proposer cap. The `snapshotId` a retry returns is
+	 * therefore the same `snapshotId`.
 	 */
 	submitChange(
 		projectId: string,
@@ -213,7 +213,6 @@ export class InstructionsResource {
 		return this.http.post<SubmittedInstructionChange>(
 			`/projects/${encodeURIComponent(projectId)}/instructions/changes${buildQuery(options)}`,
 			{ baseSnapshotId, changes },
-			{ retry: { maxRetries: 0 } },
 		);
 	}
 }

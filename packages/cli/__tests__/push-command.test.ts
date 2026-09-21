@@ -380,10 +380,12 @@ describe("the request", () => {
 		});
 	});
 
-	// The SDK retries a POST on a network error on the premise that its
-	// `Idempotency-Key` header protects it, and nothing on the change route
-	// honours that header. A retried push would open a second proposal.
-	it("builds its client with retries off", async () => {
+	// Retries used to be off here: the change route created a snapshot row
+	// per POST, so a retried push opened a second proposal for one edit. The
+	// route now deduplicates by the content of the change set and returns the
+	// proposal the first attempt opened, so a push that lost its response is
+	// repaired by the retry instead of failing.
+	it("leaves the SDK's retry policy alone", async () => {
 		mocks.submitChange.mockResolvedValue(accepted());
 		const dest = await syncedTree(
 			{ "AGENTS.md": "one\n" },
@@ -392,9 +394,12 @@ describe("the request", () => {
 
 		await runCli(["push", "--project", "proj-1", "--dest", dest]);
 
-		expect(mocks.clientOverrides).toHaveBeenCalledWith(
-			expect.objectContaining({ retry: { maxRetries: 0 } }),
-		);
+		expect(mocks.clientOverrides).toHaveBeenCalled();
+		for (const [overrides] of mocks.clientOverrides.mock.calls) {
+			expect(overrides).not.toMatchObject({
+				retry: { maxRetries: 0 },
+			});
+		}
 	});
 
 	it("sends nothing on --dry-run and still prints the plan", async () => {
@@ -416,6 +421,164 @@ describe("the request", () => {
 		expect(mocks.submitChange).not.toHaveBeenCalled();
 		expect(result.stdout).toContain("Would send");
 		expect(result.stdout).toContain("AGENTS.md");
+	});
+
+	it("says the proposal is pending review when it is", async () => {
+		mocks.submitChange.mockResolvedValue(accepted());
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.stdout).toContain("pending review");
+	});
+
+	/**
+	 * A retried push can be answered with a proposal that is no longer
+	 * pending — the attempt it is repeating was closed out, or its validation
+	 * rejected it. Printing "pending review" over that verdict tells the
+	 * developer to wait for a review that will never come.
+	 */
+	it("reports a closed-out proposal instead of claiming it is pending", async () => {
+		mocks.submitChange.mockResolvedValue(
+			accepted({ proposalStatus: "REJECTED", status: "REJECTED" }),
+		);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.stdout).not.toContain("pending review");
+		expect(result.stdout).toContain("push again");
+	});
+
+	/**
+	 * The remaining answers a replay can come back with, and the rule every
+	 * one of them obeys: never advise an action the server's content dedup
+	 * will swallow. "Send it again" is only honest when the proposal has
+	 * stopped being PENDING, because a PENDING row is exactly what the next
+	 * push would match.
+	 */
+	it("says an earlier attempt is still sending when the row is still receiving", async () => {
+		mocks.submitChange.mockResolvedValue(
+			accepted({ proposalStatus: "PENDING", status: "RECEIVING" }),
+		);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.stdout).toContain("still sending");
+		expect(result.stdout).not.toContain("pending review");
+		// No push may be offered here at any age. The row is still PENDING,
+		// so the next push dedups straight back onto it, and nothing in the
+		// server closes a RECEIVING row out on a push's behalf — the tab
+		// opens proposals through the same query and holds its upload
+		// capabilities for an hour, so one that looks stalled from the
+		// command line may be one somebody is still filling. Only the two
+		// exits that do exist are named.
+		expect(result.stdout).not.toContain("push again");
+		expect(result.stdout).toContain(
+			"cancel it in the project's Coding Instructions tab",
+		);
+		expect(result.stdout).toContain("six hours");
+	});
+
+	it("offers the retry, not a fresh push, when the checks failed", async () => {
+		mocks.submitChange.mockResolvedValue(
+			accepted({ proposalStatus: "PENDING", status: "FAILED" }),
+		);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.stdout).toContain("did not pass its checks");
+		expect(result.stdout).not.toContain("pending review");
+		// NOT "push again": a FAILED proposal keeps `proposalStatus:
+		// "PENDING"`, so the next push dedups straight back onto it. The tab's
+		// Try again is the only thing that moves it.
+		expect(result.stdout).not.toContain("push again");
+	});
+
+	// A row that vanished between the finalizer and the re-read reports
+	// `proposalStatus: null` beside the finalizer's last status. There is no
+	// version left to retry or cancel, so this must fall through to "push
+	// again" rather than pointing at the tab.
+	it("asks for a fresh push when the failed row is already gone", async () => {
+		mocks.submitChange.mockResolvedValue(
+			accepted({ proposalStatus: null, status: "FAILED" }),
+		);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.stdout).toContain("push again");
+		expect(result.stdout).not.toContain("did not pass its checks");
+		expect(result.stdout).not.toContain("still sending");
+	});
+
+	it("points an already-approved proposal at sync rather than at another push", async () => {
+		mocks.submitChange.mockResolvedValue(
+			accepted({ proposalStatus: "APPROVED", status: "READY" }),
+		);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.stdout).toContain("already been approved");
+		expect(result.stdout).toContain("fabric instructions sync");
+		expect(result.stdout).not.toContain("pending review");
 	});
 });
 

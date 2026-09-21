@@ -8,6 +8,7 @@
  * given.
  */
 
+import { createHash } from "node:crypto";
 import { db, Prisma } from "../client";
 import type {
 	ProjectInstructionFileKind,
@@ -325,6 +326,25 @@ export type DerivedInstructionRefusal =
 	| "proposal_proposer_limit"
 	| "proposal_project_limit";
 
+/**
+ * The active proposal an identical change set already opened.
+ *
+ * Deliberately NOT a `DerivedInstructionRefusal`: the two callers answer it
+ * differently — the inline entry point finishes or reports the row, the tab
+ * refuses and names it — so it carries the row rather than a message, and
+ * `derivedSnapshotRefusal` (which maps a refusal to one fixed error) is the
+ * wrong shape for it.
+ */
+export type DuplicateInstructionProposal = {
+	id: string;
+	version: number;
+	status: InstructionSnapshotStatus;
+	proposalStatus: InstructionProposalStatus | null;
+	fileCount: number;
+	inheritedCount: number;
+	staged: Array<{ id: string; path: string }>;
+};
+
 export type CreateDerivedInstructionSnapshotResult =
 	| {
 			ok: true;
@@ -340,7 +360,50 @@ export type CreateDerivedInstructionSnapshotResult =
 			 */
 			staged: Array<{ id: string; path: string }>;
 	  }
+	/**
+	 * This exact change set is ALREADY an active proposal of this proposer's
+	 * against this base, so nothing was written (Fizzy #2605).
+	 *
+	 * Separated from the refusals above on purpose, and the separation is
+	 * load-bearing: it has no `detail`, so every existing
+	 * `derivedSnapshotRefusal(created.reason, created.detail)` caller stops
+	 * compiling until it decides what a replay means for its surface. A
+	 * duplicate silently handled as a fresh create would hand one request the
+	 * staged file ids of another request's snapshot.
+	 */
+	| {
+			ok: false;
+			reason: "duplicate_proposal";
+			existing: DuplicateInstructionProposal;
+	  }
 	| { ok: false; reason: DerivedInstructionRefusal; detail?: string };
+
+/**
+ * The IDENTITY of a change set: sha256 over its sorted
+ * `${op}\0${path}\0${sha256 ?? ""}\n` lines.
+ *
+ * Computed HERE rather than by the callers so the tab's presigned flow and
+ * the inline entry point share one formula by construction instead of by two
+ * copies agreeing. The paths are the STORED spellings — both callers have
+ * already run `validateInstructionChanges`, which normalises them — so two
+ * clients spelling the same path differently still produce one digest.
+ *
+ * Sorted, because a change set is a set: the order a client happened to send
+ * its files in is not part of what it is asking for. `op` is in the line so a
+ * delete and a rewrite of one path can never collide, and a delete's empty
+ * hash field keeps the line shape uniform.
+ */
+function changeSetDigest(changes: readonly DerivedInstructionChange[]): string {
+	const lines = changes
+		.map(
+			(change) =>
+				`${change.op}\0${change.path}\0${
+					change.op === "put" ? change.sha256 : ""
+				}\n`,
+		)
+		.sort();
+	return createHash("sha256").update(lines.join("")).digest("hex");
+}
 
 type CreateDerivedInstructionSnapshotInput = {
 	projectId: string;
@@ -463,7 +526,94 @@ function allocateAndCreateDerivedSnapshot(
 					return { ok: false, reason: "base_not_published" };
 				}
 			}
+			const digest = changeSetDigest(input.changes);
 			if (input.proposal) {
+				// A retried proposal is the SAME proposal (Fizzy #2605).
+				//
+				// Every surface that opens one — the v1 change route, the MCP
+				// tool, the CLI push — can lose its response after this
+				// transaction committed, and the client has no way to tell
+				// that from a request that never arrived. Without this, the
+				// retry wrote a second PENDING row holding a second admission
+				// slot, and five of those locked the proposer out of the
+				// feature with nothing in the tab that looks wrong.
+				//
+				// BEFORE the two counts, deliberately. A proposer whose
+				// earlier attempt filled their last slot would otherwise be
+				// told to cancel a proposal to make room — and the one they
+				// would cancel is the one they are retrying.
+				//
+				// PENDING only, which is NARROWER than the
+				// `activeProposalFilter` the counts below use, and
+				// deliberately so.
+				//
+				// That filter's second arm matches a TERMINAL proposal whose
+				// staging prefix has not been swept yet — including the one
+				// `submit-change.ts` writes when its own upload fails, which
+				// closes the row out as REJECTED on purpose so the proposer
+				// can push again. Matching it here would hand that retry the
+				// closed-out row instead of a new proposal, and the proposer
+				// could not open one for that edit until the hourly sweep
+				// cleared the mark.
+				//
+				// So a slot held by a terminal row is still a slot — the
+				// counts below refuse the retry with the cap message, which
+				// is the true answer — and only a proposal genuinely awaiting
+				// a decision is answered with itself.
+				//
+				// `status` is returned rather than assumed because PENDING
+				// says nothing about how far the upload got: the caller
+				// decides what to do from the snapshot's own status.
+				const existing = await tx.projectInstructionSnapshot.findFirst({
+					where: {
+						projectId: input.projectId,
+						organizationId: input.organizationId,
+						// The PROPOSER's own. Two people sending the same
+						// edit are two proposals; the reviewer decides.
+						userId: input.userId,
+						baseSnapshotId: input.baseSnapshotId,
+						changeSetDigest: digest,
+						proposalStatus: "PENDING",
+					},
+					// Newest first: if an older release left more than one
+					// identical row behind, the one to finish or report is
+					// the last one written.
+					orderBy: { version: "desc" },
+					select: {
+						id: true,
+						version: true,
+						status: true,
+						proposalStatus: true,
+						fileCount: true,
+					},
+				});
+				if (existing) {
+					// The same `inheritedFromFileId: null` discriminator the
+					// create path returns, so a caller resuming an unfinished
+					// upload gets exactly the rows that still need bytes.
+					const staged = await tx.projectInstructionFile.findMany({
+						where: {
+							snapshotId: existing.id,
+							projectId: input.projectId,
+							organizationId: input.organizationId,
+							inheritedFromFileId: null,
+						},
+						select: { id: true, path: true },
+					});
+					return {
+						ok: false,
+						reason: "duplicate_proposal",
+						existing: {
+							id: existing.id,
+							version: existing.version,
+							status: existing.status,
+							proposalStatus: existing.proposalStatus,
+							fileCount: existing.fileCount,
+							inheritedCount: existing.fileCount - staged.length,
+							staged,
+						},
+					};
+				}
 				const proposerCount = await tx.projectInstructionSnapshot.count(
 					{
 						where: {
@@ -683,6 +833,12 @@ function allocateAndCreateDerivedSnapshot(
 					// for the history line. Written once here and never
 					// updated.
 					baseVersion: base.version,
+					// Written for every derived snapshot, read only for
+					// proposals. Storing it on a non-proposal derivation too
+					// costs nothing and keeps one rule — "a derived snapshot
+					// records which change set made it" — rather than a
+					// column whose presence depends on a flag.
+					changeSetDigest: digest,
 					settingsFrozen:
 						base.settingsFrozen as Prisma.InputJsonValue,
 					// Proposal publication is review-only. Persist both halves of

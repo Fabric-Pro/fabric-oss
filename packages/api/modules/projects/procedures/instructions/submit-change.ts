@@ -18,6 +18,33 @@
  * same verify → scan → publish gate reads every file — inherited ones
  * included. What is skipped is the TRANSFER, not a gate.
  *
+ * ## Repeating a call is safe
+ *
+ * None of the surfaces that reach here can tell a request that never arrived
+ * from one whose response was lost, and all three retry. So the query
+ * identifies a proposal by its CONTENT — the base plus the set of (op, path,
+ * sha256) — and answers a change set it has already admitted with the row it
+ * wrote (Fizzy #2605). Content rather than an `Idempotency-Key` table because
+ * the MCP tool never sees an HTTP header: the key would exist for the REST
+ * caller and not for the agent, and the agent is the caller most likely to
+ * repeat itself.
+ *
+ * A duplicate is REPORTED, never taken over. One writer per row: this request
+ * did not create that snapshot, and the list of things that can be writing to
+ * it — the creating request, still running server-side long after its client
+ * hung up; the scheduled reaper; the tab's "Try again"; the validation
+ * workflow's own promotion and cleanup — is too long for a second writer to
+ * join safely without an ownership protocol none of them share. So no upload,
+ * no finalize, no audit row and no compensation on any duplicate.
+ *
+ * That holds for a RECEIVING duplicate too, however old it looks. There is no
+ * age at which this request may close one out, because the browser tab
+ * creates proposals through the same query and its staging capabilities stay
+ * valid for an hour (`PROPOSAL_UPLOAD_SIGNING_WINDOW_MS`) — a person still
+ * uploading in the tab would have their live row rejected by a CLI push of
+ * the same content. The only window every surface honours is the reaper's
+ * own, and the reaper is what applies it.
+ *
  * ## Authorization
  *
  * Two separate questions, both answered server-side and neither taken from the
@@ -49,6 +76,7 @@ import { config } from "@repo/config";
 import {
 	claimInstructionFileStagingKey,
 	createDerivedInstructionSnapshot,
+	type DuplicateInstructionProposal,
 	getInstructionSnapshot,
 	getProjectInstructionSettings,
 	getPublishedInstructionSnapshot,
@@ -338,6 +366,29 @@ export async function submitInstructionChange(
 
 	const storage = getStorageProvider();
 
+	/**
+	 * The duplicate's own state, in the ordinary success shape. From the
+	 * caller's side this IS its earlier attempt's answer, delivered late.
+	 *
+	 * `putCount` / `deleteCount` come from THIS request's validated change
+	 * set, which is identical to the one that opened the proposal — that is
+	 * what the digest the query matched on means.
+	 */
+	const duplicateResult = (
+		existing: DuplicateInstructionProposal,
+	): SubmitInstructionChangeResult => ({
+		snapshotId: existing.id,
+		version: existing.version,
+		baseSnapshotId: base.id,
+		baseVersion: base.version,
+		fileCount: existing.fileCount,
+		inheritedCount: existing.inheritedCount,
+		putCount,
+		deleteCount,
+		proposalStatus: existing.proposalStatus,
+		status: existing.status,
+	});
+
 	const created = await createDerivedInstructionSnapshot({
 		projectId: input.projectId,
 		organizationId,
@@ -352,7 +403,14 @@ export async function submitInstructionChange(
 		},
 		baseKeyPrefix: snapshotPrefix(input.projectId, base.id),
 	});
+
 	if (!created.ok) {
+		// Reported, never taken over: no upload, no finalize, no audit row. The
+		// proposer is told what their proposal is actually doing, and the
+		// surfaces turn that into advice that the dedup will not swallow.
+		if (created.reason === "duplicate_proposal") {
+			return duplicateResult(created.existing);
+		}
 		throw derivedSnapshotRefusal(created.reason, created.detail);
 	}
 
@@ -373,7 +431,8 @@ export async function submitInstructionChange(
 	// same conditional write the reaper uses: REJECTED, carrying the
 	// "staging pending" mark so the reaper's second phase still sweeps
 	// whatever bytes did land. The compare-and-set on `status: "RECEIVING"`
-	// is what makes it safe to do from here.
+	// is what makes it safe to do from here, and the row is always one THIS
+	// request created: a duplicate returned above never reaches this section.
 	// Flipped immediately before the finalizer is called. Everything up to
 	// that line is this request's own work — an audit row, a staging claim, an
 	// object write — and none of it can have handed the snapshot to a
@@ -388,6 +447,10 @@ export async function submitInstructionChange(
 		// uploads anything: what is being recorded is that this caller started
 		// an upload, and a later failure to store the bytes does not un-start
 		// it.
+		//
+		// One row per proposal OPENED, which is what this request has just
+		// done: a duplicate returned above records nothing, because the
+		// request that wrote that row already recorded it.
 		recordAuditFromRequest(input.audit, {
 			action: "project.instructions.upload_started",
 			category: "project",
@@ -422,7 +485,8 @@ export async function submitInstructionChange(
 		for (const row of rows) {
 			const bytes = contentByPath.get(row.path);
 			if (!bytes) {
-				// Unreachable: every staged row came from a `put` in this request.
+				// Unreachable: every staged row came from a `put` in this
+				// request.
 				throw new ORPCError("INTERNAL_SERVER_ERROR", {
 					message: `No content was staged for ${row.path}`,
 				});
@@ -490,6 +554,10 @@ export async function submitInstructionChange(
 		// Compensate unless the workflow start was actually reached: either
 		// this failed before the finalizer was entered at all, or the
 		// finalizer says it never got as far as calling `workflow.start`.
+		//
+		// Always a row THIS request created — a duplicate returned above
+		// never reaches here — so the RECEIVING compare-and-set inside it is
+		// the only fence it needs.
 		if (!finalizerWasEntered || isInstructionWorkflowNotStarted(error)) {
 			await releaseUnstartedSnapshot({
 				snapshotId: created.id,
@@ -502,6 +570,21 @@ export async function submitInstructionChange(
 		throw unwrapInstructionWorkflowError(error);
 	}
 
+	// What the ROW says, not what this request assumed when it wrote it.
+	//
+	// `finalizeInstructionSnapshot` already re-reads the status for its own
+	// answer, because a small change set can reach a terminal verdict before
+	// the finalizer's conditional write lands. `proposalStatus` moves with
+	// that verdict — the gate's rejection closes the proposal's review state
+	// in the same transaction — so pairing the finalizer's real status with a
+	// hard-coded PENDING produced a result saying "rejected, but awaiting
+	// review", which the surfaces turned into "cancel it in the tab" for a
+	// row nobody can cancel and that a new push would sail straight past.
+	const current = await getInstructionSnapshot(
+		created.id,
+		input.projectId,
+		organizationId,
+	);
 	return {
 		snapshotId: created.id,
 		version: created.version,
@@ -511,11 +594,12 @@ export async function submitInstructionChange(
 		inheritedCount: created.inheritedCount,
 		putCount,
 		deleteCount,
-		proposalStatus: "PENDING" as const,
-		status: finalized.status,
+		// A row that vanished between the finalizer and here — a retention
+		// prune, a project delete — has no review state left to report.
+		proposalStatus: current?.proposalStatus ?? null,
+		status: current?.status ?? finalized.status,
 	};
 }
-
 /**
  * Close out a snapshot row that no workflow ever took ownership of, through
  * the same conditional write the reaper uses: REJECTED, carrying the

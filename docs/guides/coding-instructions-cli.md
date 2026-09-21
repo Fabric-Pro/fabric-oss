@@ -250,13 +250,12 @@ keep them:
   uploaded. Reserved paths (`.git/**`, `.fabric/**`,
   `.claude/settings.local.json`) are refused from the lock and from `--add`
   alike.
-- **A push is sent once.** The SDK's `submitChange` refuses retries for every
-  caller, not just this command: the client retries a POST on the premise that
-  its idempotency header protects it, and the change route does not honour that
-  header, so a retry of a request whose response was lost would open a second
-  proposal for the same edit — against a cap of five. `fabric instructions
-  push` also sets the same override itself. A failed push is repeated
-  deliberately.
+- **The same push twice is the same proposal.** The change route identifies a
+  proposal by its content — the version it is stated against plus the set of
+  paths, operations and hashes it applies — so a request whose response was
+  lost comes back with the proposal the first attempt opened rather than a
+  second one against the cap of five. Retries are therefore on, here and in the
+  SDK, and repeating a push that failed is safe.
 - **A failed push is closed out rather than left hanging.** A proposal that
   gets as far as a row and then fails before its validation is started — a
   storage outage mid-upload, an unreachable workflow service — is marked

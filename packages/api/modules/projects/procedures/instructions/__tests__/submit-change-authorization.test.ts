@@ -105,7 +105,23 @@ beforeEach(() => {
 		settingsFrozen: { layer: "default", ignoreGlobs: [] },
 	};
 	m.getPublishedInstructionSnapshot.mockResolvedValue(base);
-	m.getInstructionSnapshot.mockResolvedValue(base);
+	// Two different rows are read through this one function: the base the
+	// proposal is stated against, and — after the finalizer — the proposal
+	// row itself, whose real status and review state are what the procedure
+	// reports. Dispatch on the id so the second read does not hand back the
+	// base's published state.
+	m.getInstructionSnapshot.mockImplementation(async (id: string) =>
+		id === base.id
+			? base
+			: {
+					id,
+					projectId: PROJECT,
+					organizationId: ORG,
+					version: 8,
+					status: "VALIDATING",
+					proposalStatus: "PENDING",
+				},
+	);
 	m.createDerivedInstructionSnapshot.mockResolvedValue({
 		ok: true,
 		id: "snap_new",

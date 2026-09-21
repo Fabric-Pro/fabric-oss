@@ -539,6 +539,47 @@ describe("projects.instructions.derive", () => {
 				data: { reason: "PROPOSAL_PROPOSER_LIMIT" },
 			});
 		});
+
+		/**
+		 * The tab REFUSES an identical pending proposal rather than
+		 * resuming it (Fizzy #2605). Its flow is three round trips and the
+		 * browser owns the middle one, so handing this request the other
+		 * snapshot's staged file ids would have a second tab uploading into
+		 * a snapshot it did not create. The proposal the proposer already
+		 * has is in their own list, where it can be reviewed or cancelled.
+		 */
+		it("refuses an identical pending proposal and names the one that exists", async () => {
+			m.createDerivedInstructionSnapshot.mockResolvedValue({
+				ok: false,
+				reason: "duplicate_proposal",
+				existing: {
+					id: "snap_existing",
+					version: 8,
+					status: "VALIDATING",
+					proposalStatus: "PENDING",
+					fileCount: 12,
+					inheritedCount: 11,
+					staged: [{ id: "f_old", path: "CLAUDE.md" }],
+				},
+			});
+
+			await expect(
+				m.handlers.derive!({
+					input: { ...deriveInput(editOneFile), proposal: true },
+					context: ctx,
+				}),
+			).rejects.toMatchObject({
+				code: "CONFLICT",
+				message: expect.stringContaining("version 8"),
+				data: {
+					reason: "PROPOSAL_DUPLICATE",
+					snapshotId: "snap_existing",
+					version: 8,
+				},
+			});
+			// Nothing was started, so nothing may be recorded as started.
+			expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		});
 	});
 
 	it("404s a base snapshot outside this project's tenant", async () => {

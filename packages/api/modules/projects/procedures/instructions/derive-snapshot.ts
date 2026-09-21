@@ -190,6 +190,31 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 			baseKeyPrefix: snapshotPrefix(input.projectId, base.id),
 		});
 		if (!created.ok) {
+			// The tab REFUSES an identical pending proposal rather than
+			// resuming it (Fizzy #2605).
+			//
+			// The inline entry point can resume one, because it is holding
+			// the bytes and finishes the upload in the same call. This flow
+			// is three round trips and the BROWSER owns the middle one, so
+			// handing this request the other snapshot's staged file ids would
+			// point one tab's `createUploadUrls` at a snapshot another tab
+			// created and may still be uploading into. There is nothing to
+			// recover here anyway: the proposal is in the proposer's own
+			// list, where it can be reviewed or cancelled.
+			//
+			// Not routed through `derivedSnapshotRefusal`: this is the only
+			// caller that refuses it, the message names the existing version,
+			// and the payload carries the row so the tab can link to it.
+			if (created.reason === "duplicate_proposal") {
+				throw new ORPCError("CONFLICT", {
+					message: `You already have an identical pending proposal (version ${created.existing.version}). Review or cancel it before proposing it again.`,
+					data: {
+						reason: "PROPOSAL_DUPLICATE",
+						snapshotId: created.existing.id,
+						version: created.existing.version,
+					},
+				});
+			}
 			throw derivedSnapshotRefusal(created.reason, created.detail);
 		}
 

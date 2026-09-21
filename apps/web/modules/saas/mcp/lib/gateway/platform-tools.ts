@@ -4836,6 +4836,78 @@ function readProposedChanges(
  * caller with no access gets this file's usual "not found or access denied"
  * rather than a permission message that confirms the project exists.
  */
+/**
+ * What the agent is told about the proposal it just submitted.
+ *
+ * A repeated call is answered with the proposal the first one opened, so this
+ * has to read every state that proposal can be in. The rule each branch obeys:
+ * NEVER tell the agent to send the change again when the server's content
+ * dedup would match the same row — a proposal still PENDING is exactly what
+ * the next call would match, so those branches describe the state or name the
+ * one thing that clears it. The text goes in front of a person, so a verdict
+ * reported as "waiting for their review" sends them looking for something that
+ * is not there.
+ *
+ * The same table as `pushVerdict` in the CLI, written twice because this
+ * module and the CLI share no code.
+ */
+function proposalOutcomeMessage(result: {
+	version: number;
+	baseVersion: number;
+	proposalStatus: string | null;
+	status: string;
+}): string {
+	// Still RECEIVING: an earlier attempt at this same change is mid-flight.
+	// No call closes it out at any age — the browser tab opens proposals
+	// through the same query and keeps its upload capabilities for an hour,
+	// so a row that looks stalled from here may be one somebody is still
+	// filling. What does move it: its proposer cancelling it in the tab, and
+	// the reaper closing an abandoned one after six hours.
+	if (result.proposalStatus === "PENDING" && result.status === "RECEIVING") {
+		return (
+			`An earlier attempt is still sending this change, so version ${result.version} is not finished yet. ` +
+			"Tell the user it will appear in Fabric's Coding Instructions tab shortly, and that if it stays unfinished they can cancel it there or leave it to be closed out automatically after six hours."
+		);
+	}
+	// Its checks failed, and it stays PENDING — so the next call dedups
+	// straight back onto it. The tab's "Try again" is the only thing that
+	// moves it. Both branches require PENDING: a row that vanished after the
+	// finalizer reports `proposalStatus: null` beside the finalizer's last
+	// status, and that case belongs to the closed-out branch below.
+	if (result.proposalStatus === "PENDING" && result.status === "FAILED") {
+		return (
+			`Version ${result.version} did not pass its checks. ` +
+			"Tell the user to retry it from Fabric's Coding Instructions tab."
+		);
+	}
+	if (result.proposalStatus === "PENDING") {
+		// Unreachable in practice — the gate closes a rejected proposal's
+		// review state in the same transaction — but a PENDING row is one the
+		// dedup matches, so the advice has to be the thing that clears it.
+		if (result.status === "REJECTED") {
+			return (
+				`Version ${result.version} was rejected by its checks. ` +
+				"Tell the user to cancel it in Fabric's Coding Instructions tab before this change is proposed again."
+			);
+		}
+		return (
+			`Proposed version ${result.version} of this project's coding instructions, based on version ${result.baseVersion}. ` +
+			"It is PENDING REVIEW: nothing has changed for anyone reading the instructions, and nothing will until somebody who can edit them approves it in Fabric's Coding Instructions tab. " +
+			"Tell the user you suggested the change and that it is waiting for their review."
+		);
+	}
+	if (result.proposalStatus === "APPROVED") {
+		return (
+			`Version ${result.version} has already been approved and published. ` +
+			"Tell the user this change is already in the project's coding instructions."
+		);
+	}
+	return (
+		`Version ${result.version} of this project's coding instructions is no longer open for review (${result.proposalStatus ?? result.status}): an earlier attempt at this same change was closed out. ` +
+		"Tell the user the suggestion did not stick, and send it again."
+	);
+}
+
 async function handleProposeProjectInstructionChange(
 	args: Record<string, unknown>,
 	session: GatewaySession,
@@ -4906,14 +4978,12 @@ async function handleProposeProjectInstructionChange(
 				version: result.version,
 				baseVersion: result.baseVersion,
 				status: result.proposalStatus,
+				snapshotStatus: result.status,
 				changedFiles: result.putCount,
 				deletedFiles: result.deleteCount,
 				fileCount: result.fileCount,
 			},
-			message:
-				`Proposed version ${result.version} of this project's coding instructions, based on version ${result.baseVersion}. ` +
-				"It is PENDING REVIEW: nothing has changed for anyone reading the instructions, and nothing will until somebody who can edit them approves it in Fabric's Coding Instructions tab. " +
-				"Tell the user you suggested the change and that it is waiting for their review.",
+			message: proposalOutcomeMessage(result),
 		});
 	} catch (error) {
 		// Only the shared function's OWN refusals are quoted back. Those are

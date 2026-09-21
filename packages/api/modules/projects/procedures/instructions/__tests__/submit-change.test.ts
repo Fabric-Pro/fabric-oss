@@ -153,7 +153,19 @@ beforeEach(() => {
 		sourceOfTruth: "UPLOAD",
 	});
 	m.getPublishedInstructionSnapshot.mockResolvedValue(published());
-	m.getInstructionSnapshot.mockResolvedValue(published());
+	// Two different reads share this mock: the tenant-scoped load of the BASE
+	// before anything is written, and the re-read of the new row after the
+	// finalizer. Answering by id keeps them apart.
+	m.getInstructionSnapshot.mockImplementation(async (id: string) =>
+		id === BASE_ID
+			? published()
+			: {
+					id,
+					version: 8,
+					status: "VALIDATING",
+					proposalStatus: "PENDING",
+				},
+	);
 	m.createDerivedInstructionSnapshot.mockResolvedValue(created());
 	m.listInstructionFiles.mockResolvedValue([stagedRow()]);
 	m.claimInstructionFileStagingKey.mockResolvedValue({ moved: true });
@@ -543,6 +555,183 @@ describe("the rest of the pipeline", () => {
 
 		expect(m.uploadFile).not.toHaveBeenCalled();
 		expect(m.finalizeInstructionSnapshot).toHaveBeenCalled();
+	});
+});
+
+/**
+ * A retried push is the same push (Fizzy #2605).
+ *
+ * Nothing about this call is safe to repeat blindly — it opens a PENDING
+ * proposal against a five-per-proposer cap — so the query answers a change set
+ * it has already admitted with the row it already wrote, and this is what the
+ * entry point does with that answer.
+ *
+ * ONE WRITER PER ROW. This request did not create that snapshot and does not
+ * take it over: no upload, no finalize, no audit row, no compensation. An
+ * earlier version resumed a RECEIVING duplicate and had to be withdrawn —
+ * the creating request outlives its client, the reaper, the tab's "Try again"
+ * and the workflow's own cleanup all write to that row too, and a second
+ * writer cannot join them safely without an ownership protocol none of them
+ * share.
+ *
+ * A RECEIVING duplicate is no exception, however old it looks. The browser
+ * tab opens proposals through the same query and its staging capabilities
+ * stay valid for an hour, so no age this request could pick would be safe to
+ * reject on — a person still uploading in the tab would lose their live row
+ * to a CLI push of the same content. The reaper's window is the only one
+ * every surface honours, and the reaper is what applies it.
+ */
+describe("a replayed change set", () => {
+	function duplicate(overrides: Record<string, unknown> = {}) {
+		return {
+			ok: false,
+			reason: "duplicate_proposal",
+			existing: {
+				id: "snap_existing",
+				version: 8,
+				status: "VALIDATING",
+				proposalStatus: "PENDING",
+				fileCount: 3,
+				inheritedCount: 2,
+				staged: [{ id: "file_1", path: "AGENTS.md" }],
+				...overrides,
+			},
+		};
+	}
+
+	it("returns the existing proposal untouched", async () => {
+		m.createDerivedInstructionSnapshot.mockResolvedValue(duplicate());
+
+		const result = await submit();
+
+		expect(result).toMatchObject({
+			snapshotId: "snap_existing",
+			version: 8,
+			baseSnapshotId: BASE_ID,
+			baseVersion: 7,
+			fileCount: 3,
+			inheritedCount: 2,
+			putCount: 1,
+			deleteCount: 0,
+			proposalStatus: "PENDING",
+			status: "VALIDATING",
+		});
+		expect(m.uploadFile).not.toHaveBeenCalled();
+		expect(m.finalizeInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.rejectAbandonedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * The audit row says "this caller started an upload". A replay started
+	 * nothing — the original request's row already says it — so a second one
+	 * would turn one agent's flaky network into a log that claims two
+	 * proposals were opened.
+	 */
+	it("records no second audit row for a replay", async () => {
+		m.createDerivedInstructionSnapshot.mockResolvedValue(duplicate());
+
+		await submit();
+
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * A RECEIVING duplicate is reported like any other, at any age. Nothing
+	 * here may close one out: the browser tab creates proposals through the
+	 * same query and holds writable staging capabilities for an hour, so a
+	 * row that looks stalled from here may be one a person is still uploading
+	 * to. Only the reaper's six-hour window is a judgement every surface
+	 * shares.
+	 */
+	it("leaves a RECEIVING duplicate alone rather than closing it out", async () => {
+		m.createDerivedInstructionSnapshot.mockResolvedValue(
+			duplicate({ status: "RECEIVING" }),
+		);
+
+		const result = await submit();
+
+		expect(result).toMatchObject({
+			snapshotId: "snap_existing",
+			status: "RECEIVING",
+			proposalStatus: "PENDING",
+		});
+		expect(m.rejectAbandonedInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.uploadFile).not.toHaveBeenCalled();
+		expect(m.finalizeInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.createDerivedInstructionSnapshot).toHaveBeenCalledOnce();
+	});
+
+	/**
+	 * FAILED keeps `proposalStatus: "PENDING"`, so it goes on matching the
+	 * dedup — but its staged objects belong to a validation run that already
+	 * touched them, and the tab's "Try again" is the path that restarts it.
+	 * Reported, and the surfaces point at that button rather than at another
+	 * push the dedup would swallow.
+	 */
+	it("reports a FAILED duplicate rather than retrying it", async () => {
+		m.createDerivedInstructionSnapshot.mockResolvedValue(
+			duplicate({ status: "FAILED" }),
+		);
+
+		const result = await submit();
+
+		expect(result).toMatchObject({
+			snapshotId: "snap_existing",
+			status: "FAILED",
+			proposalStatus: "PENDING",
+		});
+		expect(m.uploadFile).not.toHaveBeenCalled();
+		expect(m.finalizeInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.rejectAbandonedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * What comes back is the ROW, not what the request assumed about it.
+ *
+ * A small change set can reach a terminal verdict before the finalizer's own
+ * status write lands — which is why `finalizeInstructionSnapshot` re-reads the
+ * status for its answer. `proposalStatus` moves with that verdict, so pairing
+ * the finalizer's real status with a hard-coded PENDING produced a result that
+ * said "rejected, but awaiting review" and sent the surfaces to offer a cancel
+ * nobody can perform.
+ */
+describe("the state a fresh proposal reports", () => {
+	it("re-reads the row after the finalizer rather than asserting PENDING", async () => {
+		m.finalizeInstructionSnapshot.mockResolvedValue({ status: "REJECTED" });
+		m.getInstructionSnapshot.mockImplementation(async (id: string) =>
+			id === BASE_ID
+				? published()
+				: {
+						id,
+						version: 8,
+						status: "REJECTED",
+						proposalStatus: "REJECTED",
+					},
+		);
+
+		const result = await submit();
+
+		expect(m.getInstructionSnapshot).toHaveBeenCalledWith(
+			"snap_new",
+			PROJECT,
+			ORG,
+		);
+		expect(result.status).toBe("REJECTED");
+		// The pair the CLI and the tool read as "closed out, push again" — a
+		// new push is the right action and the dedup will not swallow it.
+		expect(result.proposalStatus).toBe("REJECTED");
+	});
+
+	it("reports a row that vanished as having no review state left", async () => {
+		m.getInstructionSnapshot.mockImplementation(async (id: string) =>
+			id === BASE_ID ? published() : null,
+		);
+
+		const result = await submit();
+
+		expect(result.status).toBe("VALIDATING");
+		expect(result.proposalStatus).toBeNull();
 	});
 });
 
