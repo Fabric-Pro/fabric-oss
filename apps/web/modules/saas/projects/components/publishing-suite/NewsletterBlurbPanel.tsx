@@ -29,6 +29,7 @@ import {
 import { DraftDownloadDropdown } from "./DraftDownloadDropdown";
 import { DraftLockBanner, useDraftEditLock } from "./DraftEditLock";
 import { DraftRefinementReview, useDraftRefinement } from "./DraftRefinement";
+import { DraftVersions } from "./DraftVersions";
 import { GeneralizationNotes, OTHER_VERSION_NOTE } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
 
@@ -723,8 +724,18 @@ export function NewsletterBlurbPanel({
 	const noteDescribesAnotherVersion =
 		notesDescribeAnotherVersion && adoptedDoc === null;
 
-	const handleAdopt = () => {
-		if (!readyId) {
+	/**
+	 * Adopt a version — the newest ready one by default, or any earlier version
+	 * the history list offers.
+	 *
+	 * The parameter is what makes restoring an older version possible at all.
+	 * This panel adopted `readyId` and nothing else, against a server side that
+	 * accepted only the newest row, so the five earlier content types had a
+	 * version history and these two silently did not.
+	 */
+	const handleAdopt = (draftId?: string) => {
+		const target = draftId ?? readyId;
+		if (!target) {
 			return;
 		}
 		// FR35 is satisfied structurally — generation can only CREATE a working
@@ -741,7 +752,7 @@ export function NewsletterBlurbPanel({
 			projectId,
 			topicId,
 			organizationId,
-			draftId: readyId,
+			draftId: target,
 			// Optimistic concurrency: when THIS tab last saw the working draft.
 			// Keyed on `working` EXISTING, not on `hasBody` — a row with a blank
 			// body still exists and still has an `updatedAt` the server compares
@@ -830,7 +841,7 @@ export function NewsletterBlurbPanel({
 							type="button"
 							variant="outline"
 							size="sm"
-							onClick={handleAdopt}
+							onClick={() => handleAdopt()}
 							disabled={adopt.isPending}
 						>
 							{working?.hasBody
@@ -1332,6 +1343,32 @@ export function NewsletterBlurbPanel({
 							</div>
 						</div>
 					)}
+					<DraftVersions
+						versions={draft?.versions ?? []}
+						adoptedId={working?.sourceDraftId ?? null}
+						isAdopting={adopt.isPending}
+						onAdopt={canEdit ? (id) => handleAdopt(id) : undefined}
+						renderBody={(id) => {
+							const version = readNewsletterBlurbDocument(
+								draft?.versions?.find((v) => v.id === id)
+									?.content ?? null,
+							);
+							return version ? (
+								<div className="space-y-2">
+									<p className="font-medium text-foreground text-sm">
+										{version.headline}
+									</p>
+									<p className="whitespace-pre-wrap text-muted-foreground text-sm leading-relaxed">
+										{version.blurb}
+									</p>
+								</div>
+							) : (
+								<p className="text-muted-foreground text-sm">
+									That version's content could not be read.
+								</p>
+							);
+						}}
+					/>
 				</section>
 			) : null}
 

@@ -74,20 +74,51 @@ export const BaseWebinarScriptSchema = z.object({
 	// reads the stored document.
 	title: z.string().trim().min(1).max(200),
 	sessionPurpose: z.string().trim().min(1).max(2000),
-	recommendedAudience: z.string().trim().min(1).max(500),
-	// Required, not optional: the prompt's own Shape-of-the-script section
-	// instructs the model to write "[length TBD]" and record the gap under
-	// inputs needed rather than leave this blank, so an empty field here would
-	// mean the instruction was not followed, not that the answer is unknown.
-	suggestedLength: z.string().trim().min(1).max(120),
-	// Nullable, unlike every field above: the prompt says to omit presenter
-	// notes rather than pad them when nothing is worth noting, so `null` is
-	// the documented "nothing to say" answer, not a gap the model failed to
-	// fill.
+	// ── Every narrative field below is NULLABLE, and the reason is a bug ──────
+	//
+	// These six were required, each carrying a comment arguing that the prompt
+	// tells the model to write a "[… TBD]" placeholder rather than leave one
+	// blank. The instruction is real; the enforcement never was. `generateObject`
+	// runs with `strictJsonSchema: false` — Azure/OpenAI reject a strict schema
+	// containing optional fields (bug #1681) — so nothing obliges a provider to
+	// emit a field at all, and on a topic whose context does not suit a webinar
+	// the model simply leaves several out.
+	//
+	// The result was a hard failure rather than a thin draft: `generateObject`
+	// threw `NoObjectGeneratedError` before any validation in this module could
+	// run, on every attempt, deterministically. Observed against a topic whose
+	// own planning analysis said a live presenter-led session was not indicated.
+	//
+	// That contradicted the prompt, which tells the model to "produce a scaffold
+	// rather than a finished script" in exactly that case, and the feature's own
+	// requirement that generation yield one editable draft OR SCAFFOLD. A
+	// scaffold the schema cannot express is not a scaffold.
+	//
+	// So `null` now carries what an omission already meant in the prompt: not
+	// known yet, and listed under inputs needed. `title` and `sessionPurpose`
+	// stay required — a document with neither is not a draft of anything, and
+	// every reader downstream already treats a blank title as "no document".
+	recommendedAudience: z
+		.string()
+		.trim()
+		.min(1)
+		.max(500)
+		.nullable()
+		.default(null),
+	suggestedLength: z.string().trim().min(1).max(120).nullable().default(null),
+	// Nullable for its own documented reason rather than the one above: the
+	// prompt says to omit presenter notes rather than pad them when nothing is
+	// worth noting, so `null` here has always meant "nothing to say".
 	presenterNotes: z.string().trim().max(1500).nullable().default(null),
-	openingTalkTrack: z.string().trim().min(1).max(3000),
+	openingTalkTrack: z
+		.string()
+		.trim()
+		.min(1)
+		.max(3000)
+		.nullable()
+		.default(null),
 	agenda: z.array(z.string().trim().min(1).max(200)).max(10).default([]),
-	keyMessage: z.string().trim().min(1).max(600),
+	keyMessage: z.string().trim().min(1).max(600).nullable().default(null),
 	// Default `[]`, not required: an empty demo flow is a legitimate outcome
 	// (the scaffold case) the prompt asks for explicitly rather than an
 	// invented walkthrough, and `isScaffold` below is what turns "empty" into
@@ -128,8 +159,14 @@ export const BaseWebinarScriptSchema = z.object({
 				.default([]),
 		})
 		.default({ confirmed: [], needsConfirmation: [] }),
-	closingTalkTrack: z.string().trim().min(1).max(2000),
-	suggestedCta: z.string().trim().min(1).max(400),
+	closingTalkTrack: z
+		.string()
+		.trim()
+		.min(1)
+		.max(2000)
+		.nullable()
+		.default(null),
+	suggestedCta: z.string().trim().min(1).max(400).nullable().default(null),
 	releaseStatus: z
 		.enum([
 			"SHIPPED",
@@ -260,16 +297,31 @@ function webinarScriptDraftSections(doc: WebinarScriptDocument): string[] {
 
 	sections.push(doc.sessionPurpose.trim());
 
-	sections.push(
-		`**Recommended audience:** ${doc.recommendedAudience.trim()}\n**Suggested length:** ${doc.suggestedLength.trim()}`,
-	);
+	// Each half of this block stands alone. A scaffold can know its audience and
+	// not its length, or the other way round, and pairing them in one string
+	// would have made either gap print the other's label with nothing after it.
+	const framing: string[] = [];
+	const recommendedAudience = doc.recommendedAudience?.trim();
+	if (recommendedAudience) {
+		framing.push(`**Recommended audience:** ${recommendedAudience}`);
+	}
+	const suggestedLength = doc.suggestedLength?.trim();
+	if (suggestedLength) {
+		framing.push(`**Suggested length:** ${suggestedLength}`);
+	}
+	if (framing.length > 0) {
+		sections.push(framing.join("\n"));
+	}
 
 	const presenterNotes = doc.presenterNotes?.trim();
 	if (presenterNotes) {
 		sections.push(`**Presenter notes:** ${presenterNotes}`);
 	}
 
-	sections.push(`## Opening talk track\n\n${doc.openingTalkTrack.trim()}`);
+	const openingTalkTrack = doc.openingTalkTrack?.trim();
+	if (openingTalkTrack) {
+		sections.push(`## Opening talk track\n\n${openingTalkTrack}`);
+	}
 
 	if (doc.agenda.length > 0) {
 		sections.push(
@@ -277,7 +329,10 @@ function webinarScriptDraftSections(doc: WebinarScriptDocument): string[] {
 		);
 	}
 
-	sections.push(`## Key message\n\n${doc.keyMessage.trim()}`);
+	const keyMessage = doc.keyMessage?.trim();
+	if (keyMessage) {
+		sections.push(`## Key message\n\n${keyMessage}`);
+	}
 
 	if (doc.demoFlow.length > 0) {
 		const steps = doc.demoFlow.map((step, index) => {
@@ -316,8 +371,15 @@ function webinarScriptDraftSections(doc: WebinarScriptDocument): string[] {
 		);
 	}
 
-	sections.push(`## Closing talk track\n\n${doc.closingTalkTrack.trim()}`);
-	sections.push(`## Suggested CTA\n\n${doc.suggestedCta.trim()}`);
+	const closingTalkTrack = doc.closingTalkTrack?.trim();
+	if (closingTalkTrack) {
+		sections.push(`## Closing talk track\n\n${closingTalkTrack}`);
+	}
+
+	const suggestedCta = doc.suggestedCta?.trim();
+	if (suggestedCta) {
+		sections.push(`## Suggested CTA\n\n${suggestedCta}`);
+	}
 
 	return sections;
 }

@@ -201,6 +201,7 @@ beforeEach(() => {
 				postType: "WEBINAR_SCRIPT",
 				latestAttempt: READY_DRAFT,
 				latestReady: READY_DRAFT,
+				versions: [READY_DRAFT],
 			},
 		],
 		workingDrafts: [],
@@ -476,6 +477,51 @@ describe("adoptWebinarScriptDraft", () => {
 		);
 	});
 
+	it("adopts an EARLIER version, not only the newest ready one", async () => {
+		// THE REGRESSION. This endpoint matched `latestReady.id` and nothing
+		// else, so every version but the last answered "Draft not found" — the
+		// same narrowing the five earlier content types were already fixed to
+		// remove, reintroduced here. Its visible half was a panel that rendered
+		// no version history at all; rendering one without this would have
+		// shipped a list whose top row restored and whose every row below it
+		// failed, which passes a smoke test and breaks in use.
+		const olderVersion = {
+			...READY_DRAFT,
+			id: "draft-0",
+			version: 1,
+			content: {
+				...READY_DRAFT_CONTENT,
+				title: "An earlier cut of the same session",
+			},
+		};
+		dbMocks.listTopicDrafts.mockResolvedValue({
+			drafts: [
+				{
+					postType: "WEBINAR_SCRIPT",
+					latestAttempt: READY_DRAFT,
+					latestReady: READY_DRAFT,
+					versions: [READY_DRAFT, olderVersion],
+				},
+			],
+			workingDrafts: [],
+		});
+
+		await adopt.handler({
+			input: { ...INPUT, draftId: "draft-0", expectedUpdatedAt: null },
+			context: CONTEXT,
+		});
+
+		// Adopted the body of the version ASKED for, not of the newest one.
+		expect(dbMocks.saveWorkingDraft).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sourceDraftId: "draft-0",
+				body: expect.stringContaining(
+					"An earlier cut of the same session",
+				),
+			}),
+		);
+	});
+
 	it("answers the same for a stale draft id as for a missing one", async () => {
 		// A caller who guessed an id must learn nothing about whether it
 		// exists, and a stale tab needs to refresh either way.
@@ -501,6 +547,7 @@ describe("adoptWebinarScriptDraft", () => {
 					postType: "CASE_STUDY",
 					latestAttempt: { ...READY_DRAFT, postType: "CASE_STUDY" },
 					latestReady: { ...READY_DRAFT, postType: "CASE_STUDY" },
+					versions: [{ ...READY_DRAFT, postType: "CASE_STUDY" }],
 				},
 			],
 			workingDrafts: [],
@@ -611,6 +658,14 @@ describe("adoptWebinarScriptDraft", () => {
 						...READY_DRAFT,
 						content: { options: [{ label: "Direct", text: "x" }] },
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: {
+								options: [{ label: "Direct", text: "x" }],
+							},
+						},
+					],
 				},
 			],
 			workingDrafts: [],
@@ -642,6 +697,12 @@ describe("adoptWebinarScriptDraft", () => {
 						...READY_DRAFT,
 						content: { ...READY_DRAFT_CONTENT, title: "   " },
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: { ...READY_DRAFT_CONTENT, title: "   " },
+						},
+					],
 				},
 			],
 			workingDrafts: [],
@@ -688,6 +749,12 @@ describe("adoptWebinarScriptDraft", () => {
 						...READY_DRAFT,
 						content: overflowingContent,
 					},
+					versions: [
+						{
+							...READY_DRAFT,
+							content: overflowingContent,
+						},
+					],
 				},
 			],
 			workingDrafts: [],

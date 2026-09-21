@@ -44,6 +44,14 @@ const getAIModelWithMetadata = vi.fn();
 vi.mock("@repo/ai", () => ({
 	generateObject: (...a: unknown[]) => generateObject(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
+	// Faithful enough to discriminate, which is all the activity asks of it:
+	// the AI SDK names this error class "AI_NoObjectGeneratedError", and the
+	// activity only ever calls `isInstance`. A mock that answered `true` for
+	// everything would turn every provider outage into a schema complaint.
+	NoObjectGeneratedError: {
+		isInstance: (e: unknown) =>
+			e instanceof Error && e.name === "AI_NoObjectGeneratedError",
+	},
 }));
 
 const computeMaxOutputTokenBudget = vi.fn();
@@ -943,6 +951,39 @@ describe("generateWebinarScriptActivity — the write surface", () => {
 		});
 		expect(completeTopicDraft).not.toHaveBeenCalled();
 		expect(seedWorkingDraftIfAbsent).not.toHaveBeenCalled();
+	});
+
+	it("reports a schema failure RAISED BY THE SDK as the same authored class", async () => {
+		// The case above mocks `generateObject` RETURNING an invalid object, so
+		// it exercises this module's own `safeParse`. Production never took that
+		// path: `generateObject` validates against the zod schema itself and
+		// throws `NoObjectGeneratedError` before returning, so the authored
+		// message — "the model returned a draft that did not match the expected
+		// shape; generating again usually clears it" — was unreachable, and a
+		// reader was shown the neutral "the reason is recorded in the run log"
+		// instead. Both paths now end in the same class.
+		const sdkError = new Error(
+			"No object generated: response did not match schema.",
+		);
+		sdkError.name = "AI_NoObjectGeneratedError";
+		generateObject.mockRejectedValue(sdkError);
+
+		await expect(run()).rejects.toMatchObject({
+			type: "PUBLISHING_WEBINAR_SCRIPT_SCHEMA_VALIDATION_FAILED",
+			nonRetryable: true,
+		});
+		expect(completeTopicDraft).not.toHaveBeenCalled();
+		expect(seedWorkingDraftIfAbsent).not.toHaveBeenCalled();
+	});
+
+	it("still lets an unrelated provider failure through untouched", async () => {
+		// The discrimination that makes the branch above safe. A provider outage
+		// is not a schema complaint, and telling a reader to "generate again" is
+		// only honest for the one that is.
+		generateObject.mockRejectedValue(new Error("provider unavailable"));
+
+		await expect(run()).rejects.toThrow("provider unavailable");
+		expect(completeTopicDraft).not.toHaveBeenCalled();
 	});
 
 	it("rejects a whitespace-only title instead of seeding a headless draft", async () => {

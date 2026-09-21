@@ -74,6 +74,14 @@ const generateObject = vi.fn();
 vi.mock("@repo/ai", () => ({
 	generateObject: (...a: unknown[]) => generateObject(...a),
 	getAIModelWithMetadata: (...a: unknown[]) => getAIModelWithMetadata(...a),
+	// Faithful enough to discriminate, which is all the activity asks of it:
+	// the AI SDK names this error class "AI_NoObjectGeneratedError", and the
+	// activity only ever calls `isInstance`. A mock that answered `true` for
+	// everything would turn every provider outage into a schema complaint.
+	NoObjectGeneratedError: {
+		isInstance: (e: unknown) =>
+			e instanceof Error && e.name === "AI_NoObjectGeneratedError",
+	},
 }));
 
 const getProjectFunctionTagClause = vi.fn();

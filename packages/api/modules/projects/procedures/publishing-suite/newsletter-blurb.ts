@@ -342,10 +342,18 @@ export const adoptNewsletterBlurbDraftProcedure = tenantProtectedProcedure
 		const newsletterBlurb = drafts.find(
 			(d) => d.postType === "NEWSLETTER_BLURB",
 		);
+		// ANY ready version, not only the newest.
+		//
+		// Restoring an older draft IS adopting it, and this is the only endpoint
+		// that adopts — so narrowing to `latestReady` here is what made every
+		// version but the last unreachable rather than merely unlisted. The five
+		// earlier content types were fixed for exactly this and read `versions`;
+		// these two were written against the pre-fix shape, so the panel could
+		// not offer a history even once it rendered one. `versions` is the same
+		// scoped read, so this still cannot see a draft the page could not.
 		const candidate =
-			newsletterBlurb?.latestReady?.id === input.draftId
-				? newsletterBlurb.latestReady
-				: null;
+			newsletterBlurb?.versions.find((v) => v.id === input.draftId) ??
+			null;
 		if (!candidate) {
 			// Deliberately the same answer for "no such draft" and "that draft is
 			// not the current one": a caller who guessed an id learns nothing
