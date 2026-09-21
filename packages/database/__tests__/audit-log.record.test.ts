@@ -249,6 +249,16 @@ describe("mapToLegacyEventType", () => {
 		expect(mapToLegacyEventType("audit.exported")).toBe("DATA_EXPORT");
 	});
 
+	it("registers the PM status sync's move and maps it like a manual status change (Fizzy #2304)", () => {
+		expect(AUDIT_ACTIONS).toContain("story.pm_status_synced");
+		expect(mapToLegacyEventType("story.status_changed")).toBe(
+			"DATA_UPDATE",
+		);
+		expect(mapToLegacyEventType("story.pm_status_synced")).toBe(
+			"DATA_UPDATE",
+		);
+	});
+
 	it("falls back to DATA_CREATE for unknown actions", () => {
 		expect(mapToLegacyEventType("something.unknown.happened")).toBe(
 			"DATA_CREATE",

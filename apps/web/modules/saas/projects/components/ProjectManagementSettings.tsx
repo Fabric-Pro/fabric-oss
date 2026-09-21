@@ -47,8 +47,12 @@ import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { pickDefaultGitLabContainer } from "../lib/pick-default-gitlab-container";
+import {
+	buildGitLabRestContainerOptions,
+	pickDefaultGitLabContainer,
+} from "../lib/pick-default-gitlab-container";
 import { getPmProviderLabel } from "../lib/pm-provider-label";
+import { derivePmStatusSyncRunView } from "../lib/pm-status-sync-last-run";
 import { derivePmSyncStatus, type PmSyncStatus } from "../lib/pm-sync-status";
 import {
 	analyzePMToolCapabilities,
@@ -58,6 +62,7 @@ import {
 } from "../lib/pm-tool-analyzer";
 import { buildProjectSyncLogRoute } from "../lib/stories/routes";
 import { GitLabLabelStatusMapEditor } from "./pm-integration/GitLabLabelStatusMapEditor";
+import { PmStatusSyncLastRunLine } from "./pm-integration/PmStatusSyncLastRunLine";
 import { PmToolConnectedBanner } from "./pm-integration/PmToolConnectedBanner";
 import { TerminalStatusEditor } from "./pm-integration/TerminalStatusEditor";
 import { PMToolSelect } from "./pm-tool-select";
@@ -74,6 +79,14 @@ type Project = {
 	autoPushPmSync?: boolean | null;
 	userRole?: string | null;
 	pmAutoCloseEnabled?: boolean;
+	// PM → Fabric status sync opt-in (Fizzy #2304)
+	pmStatusSyncEnabled?: boolean | null;
+	// When the current status-sync session started, and the hourly poll's
+	// last-run summary for it (spec D1.5 / D2.6). Both arrive with
+	// get-project's scalar columns; the summary is parsed through the shared
+	// schema, never trusted as-is.
+	pmStatusSyncSessionAt?: Date | string | null;
+	pmStatusSyncLastRun?: Prisma.JsonValue | null;
 	pmTerminalStatuses?: string[];
 	// Hourly state-poll bookkeeping (already returned by get-project via
 	// getProjectById's `include`; surfaced here for the "Last synced" line).
@@ -147,6 +160,13 @@ function PmSyncStatusLine({ status }: { status: PmSyncStatus }) {
 	);
 }
 
+// GitLab label-map — what this card's link takes the reader to. The matching
+// and application rules live once, in the editor itself
+// (`GitLabLabelStatusMapEditor`'s own help copy), not repeated here (spec
+// D1.8, Fizzy #2304).
+const GITLAB_LABEL_MAP_HELP =
+	"Map GitLab issue labels to the Kanban status they represent.";
+
 export function ProjectManagementSettings({ project }: Props) {
 	const queryClient = useQueryClient();
 	const t = useTranslations("tooltips.projectSettings");
@@ -166,8 +186,10 @@ export function ProjectManagementSettings({ project }: Props) {
 	const [selectedContainerId, setSelectedContainerId] = useState<
 		string | null
 	>(project.projectManagementContainerId || null);
+	// `label` is only set for the GitLab REST "Current project" option (spec
+	// D1.1b); `name` is what a save persists as the container name.
 	const [containers, setContainers] = useState<
-		Array<{ id: string; name: string }>
+		Array<{ id: string; name: string; label?: string }>
 	>([]);
 	const [isLoadingContainers, setIsLoadingContainers] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -213,12 +235,17 @@ export function ProjectManagementSettings({ project }: Props) {
 	const [syncAttachmentsOverride, setSyncAttachmentsOverride] = useState<
 		boolean | null
 	>(null);
+	const [statusSyncOverride, setStatusSyncOverride] = useState<
+		boolean | null
+	>(null);
 
 	const autoPushChecked = autoPushOverride ?? project.autoPushPmSync ?? false;
 	const autoCloseChecked =
 		autoCloseOverride ?? project.pmAutoCloseEnabled ?? false;
 	const syncAttachmentsChecked =
 		syncAttachmentsOverride ?? project.syncAttachments ?? false;
+	const statusSyncChecked =
+		statusSyncOverride ?? project.pmStatusSyncEnabled ?? false;
 
 	// Clear each override once the refetched prop agrees with it, so the prop
 	// resumes being the single source of truth (and a later external change is
@@ -249,6 +276,15 @@ export function ProjectManagementSettings({ project }: Props) {
 			setSyncAttachmentsOverride(null);
 		}
 	}, [project.syncAttachments, syncAttachmentsOverride]);
+
+	useEffect(() => {
+		if (
+			statusSyncOverride !== null &&
+			(project.pmStatusSyncEnabled ?? false) === statusSyncOverride
+		) {
+			setStatusSyncOverride(null);
+		}
+	}, [project.pmStatusSyncEnabled, statusSyncOverride]);
 
 	// Query key that feeds the `project` prop. The prop is sourced upstream from
 	// `orpc.projects.get` (ProjectDetails.tsx:612, input `{ id, organizationId }`
@@ -606,19 +642,35 @@ export function ProjectManagementSettings({ project }: Props) {
 
 	// Mutation to toggle autoPushPmSync independently of the full settings form
 	const updateProjectMutation = useMutation({
-		mutationFn: async (data: { autoPushPmSync: boolean }) => {
+		// Backs both the auto-push and status-sync toggles — each field is
+		// passed through only when the caller sets it, so one toggle's write
+		// never clobbers the other's persisted value.
+		mutationFn: async (data: {
+			autoPushPmSync?: boolean;
+			pmStatusSyncEnabled?: boolean;
+		}) => {
 			return await orpcClient.projects.update({
 				id: project.id,
 				organizationId: project.organizationId,
-				autoPushPmSync: data.autoPushPmSync,
+				...(data.autoPushPmSync !== undefined
+					? { autoPushPmSync: data.autoPushPmSync }
+					: {}),
+				...(data.pmStatusSyncEnabled !== undefined
+					? { pmStatusSyncEnabled: data.pmStatusSyncEnabled }
+					: {}),
 			});
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: projectGetQueryKey });
 		},
 		onError: (error) => {
-			// Roll the optimistic switch back to the server value.
+			// Roll both optimistic switches back to the server value, and refetch
+			// it: the server can refuse the status-sync switch (D1.4 GitLab over
+			// MCP, D1.6 permission) or force it off, and the switch must then
+			// show what the server holds (spec D1.8).
 			setAutoPushOverride(null);
+			setStatusSyncOverride(null);
+			queryClient.invalidateQueries({ queryKey: projectGetQueryKey });
 			toast.error(`Failed to save: ${error.message || "Unknown error"}`);
 		},
 	});
@@ -820,6 +872,36 @@ export function ProjectManagementSettings({ project }: Props) {
 	const pmProviderName =
 		pmDetectedTypeDisplayName(pmCapabilities?.detectedType) ??
 		"the PM tool";
+
+	// "Keep status in sync with the PM tool" (Fizzy #2304, spec AC1 / D1.8).
+	//
+	// Shown once a PM tool AND a board are saved — the poll has nothing to read
+	// before that — and never for GitLab over MCP, which the server refuses
+	// (D1.4). GitLab over MCP uses the server's own REST rule (D2.4: REST means
+	// no saved config id). The switch waits for the capabilities query to
+	// settle, so neither it nor its per-tool copy flashes for the wrong tool; if
+	// that query fails, the switch shows and the server stays the backstop.
+	const pmSourceSettled =
+		pmCapabilities !== undefined || pmCapabilitiesUnavailable;
+	const isGitLabOverMcp =
+		Boolean(project.projectManagementMcpConfigId) && isGitLabConnected;
+	const showStatusSyncSwitch =
+		isPMConfigured &&
+		Boolean(project.projectManagementContainerId) &&
+		pmSourceSettled &&
+		!isGitLabOverMcp;
+	// REST GitLab maps through the label map; every other tool matches the PM
+	// status name against Fabric's (spec §2 "Mapping").
+	const statusSyncUsesLabelMap =
+		!project.projectManagementMcpConfigId && isGitLabConnected;
+	const statusSyncMatchingRule = statusSyncUsesLabelMap
+		? "The mapped status comes from this project's GitLab label map: one mapped label, or several labels mapped to the same status, sets it; labels mapped to different statuses change nothing."
+		: `The mapped status is the ${pmProviderName} status whose name matches a Fabric status, ignoring case; a status with no matching name changes nothing.`;
+	const statusSyncRunView = derivePmStatusSyncRunView({
+		lastRun: project.pmStatusSyncLastRun ?? null,
+		sessionAt: project.pmStatusSyncSessionAt,
+		now: Date.now(),
+	});
 
 	// ADO-specific UI: project → board/team → area-path cascade. The three
 	// queries below (teams, work item types, team field values) and the
@@ -1065,11 +1147,9 @@ export function ProjectManagementSettings({ project }: Props) {
 					return;
 				}
 
-				const mapped = res.groups
-					.flatMap((g) => g.repos)
-					.map((r) => ({ id: r.fullName, name: r.fullName }));
+				const repos = res.groups.flatMap((g) => g.repos);
 
-				if (mapped.length === 0) {
+				if (repos.length === 0) {
 					// `configured: true` with empty groups can still carry an
 					// actionable error (e.g. a rejected/expired token that needs
 					// reconnecting) — surface it instead of the generic message.
@@ -1080,28 +1160,36 @@ export function ProjectManagementSettings({ project }: Props) {
 					return;
 				}
 
+				// Decide whether to apply the default selection.
+				//
+				// On initial mount (preserveSelection=true) the saved container
+				// belongs to this GitLab connection, so it is kept (spec D1.1b,
+				// Fizzy #2304): a path matches its repo, a numeric GitLab project
+				// id (what the OAuth auto-wire stores) matches the repo with that
+				// `numericId` and stays numeric so a same-repo save is not read as
+				// a container change, and a numeric id the 100-repo listing does
+				// not include stays selectable as "Current project" instead of
+				// being silently replaced by the codebase repo.
+				//
+				// On user-driven re-selection (preserveSelection=false) the saved
+				// container may belong to the previous tool, so always apply the
+				// default.
+				const savedContainer =
+					project.projectManagementContainerId ?? null;
+				const { options: mapped, savedOptionId } =
+					buildGitLabRestContainerOptions({
+						repos,
+						savedContainerId: savedContainer,
+						savedContainerName:
+							project.projectManagementContainerName ?? null,
+						keepSavedContainer: preserveSelection,
+					});
+
 				setContainers(mapped);
 				setDetectedPMType("gitlab");
 
-				// Decide whether to apply the default selection.
-				//
-				// On initial mount (preserveSelection=true), keep the user's
-				// saved container only if it actually maps to a fetched repo.
-				// If it doesn't — the common case being a numeric GitLab
-				// project id from the auto-wire's numeric-preferred resolver
-				// — fall through to the helper so we can recover via the
-				// codebase repo path.
-				//
-				// On user-driven re-selection (preserveSelection=false),
-				// always apply the default.
-				const savedContainer =
-					project.projectManagementContainerId ?? null;
-				const savedStillValid =
-					savedContainer !== null &&
-					mapped.some((c) => c.id === savedContainer);
-
-				if (preserveSelection && savedStillValid) {
-					setSelectedContainerId(savedContainer);
+				if (preserveSelection && savedOptionId !== null) {
+					setSelectedContainerId(savedOptionId);
 				} else {
 					const optionsForHelper = mapped.map((m) => ({
 						fullName: m.id,
@@ -1138,6 +1226,7 @@ export function ProjectManagementSettings({ project }: Props) {
 			project.organizationId,
 			project.id,
 			project.projectManagementContainerId,
+			project.projectManagementContainerName,
 			gitlabCodebaseFullName,
 		],
 	);
@@ -1752,7 +1841,8 @@ export function ProjectManagementSettings({ project }: Props) {
 														key={container.id}
 														value={container.id}
 													>
-														{container.name}
+														{container.label ??
+															container.name}
 													</SelectItem>
 												))}
 											</SelectContent>
@@ -1968,10 +2058,7 @@ export function ProjectManagementSettings({ project }: Props) {
 							{isGitLab && selectedContainerId && (
 								<div className="space-y-2 rounded-lg border p-3">
 									<p className="text-muted-foreground text-sm">
-										Map GitLab issue labels to Kanban
-										statuses. When Fabric syncs issues from
-										GitLab, the first matching label
-										determines the story's status.
+										{GITLAB_LABEL_MAP_HELP}
 									</p>
 									<GitLabLabelStatusMapEditor
 										value={labelStatusMap}
@@ -2040,6 +2127,87 @@ export function ProjectManagementSettings({ project }: Props) {
 								setAutoPushOverride(checked);
 								updateProjectMutation.mutate({
 									autoPushPmSync: checked,
+								});
+							}}
+						/>
+					</div>
+				)}
+
+				{/* Status-sync switch (Fizzy #2304, spec AC1 / AC13 / D1.8).
+				    Visible read-only to anyone without PROJECT_SETTINGS_EDIT —
+				    the server requires that grant for this field (D1.6) — using
+				    the same capability flag as the attachment-sync switch. */}
+				{showStatusSyncSwitch && (
+					<div className="flex items-start justify-between gap-4 py-2 border-t">
+						<div className="flex-1 space-y-1.5">
+							<Label htmlFor="pm-status-sync">
+								Keep status in sync with the PM tool
+							</Label>
+							<div
+								id="pm-status-sync-description"
+								className="space-y-1 text-muted-foreground text-sm"
+							>
+								<p>
+									{`When a linked feature's or bug's ticket changes its mapped status in ${pmProviderName}, the next hourly check moves the item to match. A move made only in Fabric stays until the ticket's mapped status changes again; if both change between two checks, the ticket wins. Tickets that reach a terminal status keep their own handling.`}
+								</p>
+								<p>{statusSyncMatchingRule}</p>
+								{statusSyncUsesLabelMap && (
+									<ul className="list-disc space-y-0.5 pl-4">
+										<li>
+											While this is on, pushing a feature
+											to GitLab replaces its status labels
+											with the labels mapped to its Fabric
+											status.
+										</li>
+										<li>
+											Turning it on starts the hourly
+											GitLab check for this project. That
+											check also runs terminal-status
+											handling, drift detection and
+											missing-ticket checks.
+										</li>
+										<li>
+											Turning it off does not stop that
+											hourly check.
+										</li>
+									</ul>
+								)}
+								<p>
+									Changing the connected tool, connection or
+									board turns this off.
+								</p>
+							</div>
+							{!canEditProjectManagementSettings && (
+								<p className="text-muted-foreground text-xs">
+									Only project admins or owners can change
+									this.
+								</p>
+							)}
+							{project.pmStatusSyncEnabled === true && (
+								<PmStatusSyncLastRunLine
+									view={statusSyncRunView}
+								/>
+							)}
+						</div>
+						<Switch
+							id="pm-status-sync"
+							checked={statusSyncChecked}
+							disabled={!canEditProjectManagementSettings}
+							aria-describedby="pm-status-sync-description"
+							onCheckedChange={(checked) => {
+								// Re-entrancy guard: ignore clicks while a write is
+								// in flight so concurrent PATCHes can't resolve out
+								// of order (backend is last-write-wins, which would
+								// otherwise diverge the persisted value from the
+								// override the user sees).
+								if (updateProjectMutation.isPending) {
+									return;
+								}
+								// Flip the switch instantly; the prop catches up
+								// after the refetch and clears the override.
+								setStatusSyncOverride(checked);
+								updateProjectMutation.mutate({
+									pmStatusSyncEnabled: checked,
 								});
 							}}
 						/>

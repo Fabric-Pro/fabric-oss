@@ -16,7 +16,7 @@
  * Run with: pnpm --filter @repo/temporal test __tests__/pm-state-poll-workflow.test.ts
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock all external dependencies
 vi.mock("@repo/database", () => ({
@@ -50,6 +50,8 @@ vi.mock("@repo/database", () => ({
 	recordAudit: vi.fn(),
 	// #1741: reconcile's terminal branch clears pending CONTENT_DRIFT.
 	clearPendingContentDrift: vi.fn().mockResolvedValue(0),
+	// Fizzy #2304 D2.6 — the status-sync last-run writer.
+	mergePmStatusSyncLastRun: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Pull-drift log write — verified elsewhere; here it just needs to not throw.
@@ -86,7 +88,7 @@ vi.mock("../src/activities/pm-source", () => ({
 	},
 }));
 
-import { db } from "@repo/database";
+import { db, mergePmStatusSyncLastRun } from "@repo/database";
 import {
 	getAdoActiveProjects,
 	reconcileAdoStates,
@@ -567,5 +569,74 @@ describe("adoStatePollProjectWorkflow — fetch→reconcile→watermark wiring (
 			"proj_1",
 			true,
 		);
+	});
+});
+
+describe("getAdoActiveProjects — status-sync summary for a skipped project (Fizzy #2304 D2.6)", () => {
+	const NOW = new Date("2026-09-21T12:00:00.000Z");
+	const SESSION = new Date("2026-09-20T09:00:00.000Z");
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(NOW);
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("records a source-not-found failure for a status-sync project it skips, and nothing for one with the switch off", async () => {
+		const { PMSourceNotFound } = await import(
+			"../src/activities/pm-source"
+		);
+		const skipped = (id: string, pmStatusSyncEnabled: boolean) => ({
+			id,
+			projectManagementMcpServerId: "key:gitlab-official",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: "acme/portal",
+			projectManagementContainerName: null,
+			lastAdoStatePollAt: null,
+			userId: "user-1",
+			organizationId: "org-1",
+			pmStatusSyncEnabled,
+			pmStatusSyncSessionAt: SESSION,
+		});
+		vi.mocked(db.project.findMany).mockResolvedValue([
+			skipped("proj-synced", true),
+			skipped("proj-not-synced", false),
+		] as never);
+		mockResolvePmSource.mockRejectedValue(
+			new PMSourceNotFound("token-failed"),
+		);
+
+		const result = await getAdoActiveProjects();
+
+		expect(result).toEqual([]);
+		expect(db.project.findMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				select: expect.objectContaining({
+					pmStatusSyncEnabled: true,
+					pmStatusSyncSessionAt: true,
+				}),
+			}),
+		);
+		// One write — for the synced project only (the positive and negative
+		// cases share this run, so the count is the control).
+		expect(vi.mocked(mergePmStatusSyncLastRun).mock.calls).toEqual([
+			[
+				{
+					projectId: "proj-synced",
+					sessionAt: SESSION,
+					patch: {
+						failure: {
+							at: NOW.toISOString(),
+							kind: "source-not-found",
+							error: "token-failed",
+						},
+					},
+				},
+			],
+		]);
 	});
 });

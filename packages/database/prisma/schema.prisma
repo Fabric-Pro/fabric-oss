@@ -1778,6 +1778,15 @@ model Project {
   // PM terminal-status auto-close (card #1360 Phase A)
   pmTerminalStatuses                    String[]                           @default([])
   pmAutoCloseEnabled                    Boolean                            @default(false)
+  // Per-project opt-in for pulling the PM tool's mapped status back into
+  // UserStory.statusId on the hourly poll (Fizzy #2304). Default false so the
+  // feature ships dark — no project changes behavior until an owner opts in.
+  pmStatusSyncEnabled                   Boolean                            @default(false)
+  /// When the status-sync switch last went from off to on: the start of the
+  /// current sync session. Last-run writes are conditioned on it (Fizzy #2304).
+  pmStatusSyncSessionAt                 DateTime?
+  /// Last status-sync run summary, shape `pmStatusSyncLastRunSchema` (Fizzy #2304).
+  pmStatusSyncLastRun                   Json?
   // PM custom-field read mapping — project-level feature flag
   pmFieldMappingEnabled                 Boolean                            @default(false)
   prdSourceTitle                        String? // Cached title of the source document
@@ -6428,6 +6437,16 @@ model UserStory {
   lastPmSyncStatus             PmSyncStatus?
   lastPmSyncError              String?                 @db.VarChar(500)
   lastPmSyncAttemptAt          DateTime?
+  // PM → Fabric status-sync merge base (Fizzy #2304): the last observed
+  // mapped status of the linked ticket (a status id or a `__none__` /
+  // `__ambiguous__` / `__terminal__` sentinel), the ticket clock it was
+  // observed at, the link key it was observed through, and the Fabric status
+  // it was observed against. The base counts only while
+  // `pmStatusSyncBaseLink` still equals the story's current link.
+  pmStatusSyncBaseId           String?
+  pmStatusSyncBaseAt           DateTime?
+  pmStatusSyncBaseLink         String?
+  pmStatusSyncBaseFabricId     String?
   // Set when this story was discarded by a duplicate-merge: the id of the
   // survivor it was merged into. Drives the roadmap "Declined duplicate" chip
   // + "Merged into {identifier}" tooltip. Null for every other story. No FK

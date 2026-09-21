@@ -44,6 +44,11 @@ export interface PmWorkItemState {
 	 *  per-item Pull path leaves it unset. Reconcile compares it to a fresh
 	 *  re-derivation to detect mid-cycle story-state drift; it is NOT applied. */
 	classification?: PmItemClassification;
+	/** The fetched item's own URL (Fizzy #2304 D2.3) — set only while the
+	 *  project's status sync is on: the REST GitLab issue URL, null for every
+	 *  MCP tool. The workflow forwards it opaquely; the status-sync leaf's
+	 *  linked-issue check (AC8) reads it. Absent = fetched with the switch off. */
+	itemUrl?: string | null;
 }
 
 /** The Fabric entity a polled ADO item resolves to (from `findFabricItemByExternalId`). */

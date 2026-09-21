@@ -242,7 +242,7 @@ export const AUDIT_ACTIONS = [
 	"project.instructions.rejected",
 	"project.instructions.deleted",
 	"project.instructions.settings_updated",
-	// story (10)
+	// story (11)
 	"story.created",
 	"story.updated",
 	"story.deleted",
@@ -252,6 +252,10 @@ export const AUDIT_ACTIONS = [
 	"story.auto_unhidden",
 	"story.pm_ticket_unlinked",
 	"story.pm_flag_missing_auto_dismissed",
+	// One row per status move the hourly PM status sync applied (Fizzy #2304).
+	// Its own key because the actor is `system`: under a generic key a synced
+	// move would read as an AI edit in the story history.
+	"story.pm_status_synced",
 	// One row per AI re-prioritization RUN (resource = the project), including
 	// runs that moved nothing — "someone ran AI triage" is itself auditable.
 	// Per-item band moves live in StoryPriorityChange, not here.
@@ -819,6 +823,7 @@ export function mapToLegacyEventType(action: string): AuditEventType {
 		case "story.updated":
 		case "story.status_changed":
 		case "story.pm_pushed":
+		case "story.pm_status_synced":
 		case "story.reprioritized":
 		case "org.integration.config_updated":
 			return "DATA_UPDATE";

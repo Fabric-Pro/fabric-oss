@@ -200,7 +200,11 @@ describe("audit.taxonomy handler", () => {
 		// contact whom `org.contact.redacted` erases on request, and a
 		// meeting-sourced item's text routinely names the person who owes the
 		// work) = 135.
-		expect(result.actions).toHaveLength(135);
+		// + 1 story.pm_status_synced (one row per status move the hourly PM
+		// status sync applies; the actor is the system, so under a generic key
+		// the move would read as an AI edit in the story history, Fizzy #2304)
+		// = 136.
+		expect(result.actions).toHaveLength(136);
 		// The To Do list's writes. Completion is one toggle key; unsnoozing is
 		// its own, because "returned this to everyone's open view" is not a
 		// weaker form of "hid it".
@@ -242,6 +246,8 @@ describe("audit.taxonomy handler", () => {
 		// Roadmap Priority AI re-prioritization run (one row per run, incl.
 		// no-ops).
 		expect(result.actions).toContain("story.reprioritized");
+		// A status move the hourly PM status sync applied (Fizzy #2304).
+		expect(result.actions).toContain("story.pm_status_synced");
 		// D17 incident actions are in the closed taxonomy.
 		expect(result.actions).toContain("incident.fired");
 		expect(result.actions).toContain("incident.re_fired");

@@ -26,7 +26,12 @@ import {
 import {
 	applyLabelStatusMapOnPull,
 	computeLabelDeltaOnPush,
+	type LabelStatusMap,
+	PM_STATUS_SYNC_SENTINEL,
 	readLabelStatusMap,
+	resolveMappedStatus,
+	shouldPushStatusLabels,
+	toResolvedTicketStatus,
 } from "@repo/integrations/pm";
 import {
 	buildGitLabIngestOptions,
@@ -40,7 +45,7 @@ import { READ_ONLY_MODE_MESSAGE } from "@repo/utils";
 import { resolveAttachmentLimits } from "@repo/utils/attachment-limits";
 import { isPmAttachmentSyncEnabled } from "@repo/utils/feature-flag";
 import { ApplicationFailure } from "@temporalio/activity";
-import { PMSourceNotFound, resolvePmSource } from "../pm-source";
+import { type PMSource, PMSourceNotFound, resolvePmSource } from "../pm-source";
 import { callPmToolWithFallback } from "../pm-tool-fallback";
 import { createGitLabAttachmentAdapter } from "./gitlab-attachment-adapter";
 import {
@@ -61,6 +66,9 @@ import {
 	reconcileStoryAttachments,
 	summarizeAttachmentFailures,
 } from "./reconcile-story-attachments";
+// Fizzy #2304: the status-sync leaf. Like the terminal-status leaf below, it
+// never imports `./story-sync`, so this static import adds no cycle.
+import { statusSyncLinkKey } from "./reconcile-story-mapped-status";
 // #1360: STORY terminal-status reconcile leaf module. It imports ONLY
 // `@repo/database` + `recordAudit` (never `./story-sync`), so importing it
 // statically here introduces no cycle.
@@ -91,6 +99,8 @@ type WriteResult = {
 	externalId: string;
 	externalUrl: string | null;
 	title: string;
+	/** GitLab's `updated_at` for this write — the §4.5 stamp clock (Fizzy #2304). */
+	updatedAt?: string | null;
 };
 
 /** Shape returned by the GitLab REST fetch adapter. */
@@ -106,6 +116,9 @@ type FetchResult = {
 	 * because the MCP-server path may not surface a `state` field.
 	 */
 	state?: string;
+	/** ISO `updated_at` (`GitLabPMFullItem.updatedAt`) — the §4.5 stamp's
+	 *  fallback clock when a write response carries none (Fizzy #2304). */
+	updatedAt?: string;
 };
 
 const LINK_REMOVED_MESSAGE =
@@ -152,6 +165,295 @@ function summarize(list: Array<{ detail: string }>): string {
 	return list.length > NAMED
 		? `${named} And ${list.length - NAMED} more.`
 		: named;
+}
+
+/**
+ * The story fields the §4.5 status-label gate reads (Fizzy #2304). The push's
+ * `getStoryById` snapshot carries all of them; L, P, T, F and the base link
+ * all come from that one read, so the stamp's compare-and-set is against
+ * exactly what the gate decided on.
+ */
+type StatusSyncPushSnapshot = {
+	statusId: string;
+	externalId: string | null;
+	externalUrl: string | null;
+	pmStatusSyncBaseId: string | null;
+	pmStatusSyncBaseAt: Date | null;
+	pmStatusSyncBaseLink: string | null;
+	pmStatusSyncBaseFabricId: string | null;
+};
+
+/** The mapped-label change an update carries, and what to stamp after it. */
+type StatusLabelPlan = {
+	addLabels: string[];
+	removeLabels: string[];
+	/** Set only when the gate passed: the base to stamp once the write lands. */
+	stamp: { baseId: string; linkKey: string } | null;
+};
+
+function noStatusLabelChange(): StatusLabelPlan {
+	return { addLabels: [], removeLabels: [], stamp: null };
+}
+
+/**
+ * Fizzy #2304 §4.5 steps 1-3, run only while the project's status-sync switch
+ * is on.
+ *
+ * Mapped labels change only when there is an observation on this link (P),
+ * Fabric moved since it was made (L ≠ F, the Fabric status P was observed
+ * against) AND the ticket did not (R_live = P) — `shouldPushStatusLabels`.
+ * Otherwise the update carries no mapped-label change at all, so a push can
+ * never undo a ticket-side move — not even a move to a label the map does not
+ * know; the next poll applies it instead (AC12). With no observation yet, the
+ * next poll's first observation decides (AC5).
+ *
+ * When the gate passes, the change replaces what the gate observed: every
+ * label mapped to L is added (unfiltered — GitLab ignores a label already
+ * present, and `story.labels` is not a reliable picture of the ticket), and
+ * every other mapped label ON THE LIVE TICKET whose status still exists in
+ * this project is removed. Only observed labels: GitLab has no conditional
+ * issue update, so a mapped label a PM user adds between this read and the
+ * write would otherwise be stripped by the PUT — a silent revert. What
+ * happens to that concurrently-added label instead depends on GitLab's own
+ * label semantics, not on anything this push decides:
+ * - Unscoped label: left alone, it survives the PUT, and the ticket now
+ *   carries two mapped labels — ambiguous, which the next poll surfaces as a
+ *   CONFLICT.
+ * - Scoped label (`scope::value`, e.g. `workflow::in-review`, GitLab
+ *   Premium/Ultimate): GitLab itself replaces it the moment this push adds
+ *   L's label in the same scope, before the next poll ever runs. That is the
+ *   same accepted read→write residual as a concurrent label removal —
+ *   GitLab's issue update has no conditional write, scoped or not.
+ * A label mapped to a deleted status is left alone too: it can no longer
+ * resolve to anything, so removing it would only destroy a user's label.
+ *
+ * Without the live ticket (the read failed) or a link key (a legacy story
+ * with no stored URL) there is nothing to compare against: no mapped-label
+ * change, no stamp. Content still pushes.
+ */
+async function planStatusLabelPush(args: {
+	storyId: string;
+	projectId: string;
+	story: StatusSyncPushSnapshot;
+	livePm: FetchResult | null;
+	/** The project's STORED map (the poll's), never the caller's snapshot. */
+	labelStatusMap: LabelStatusMap;
+}): Promise<StatusLabelPlan> {
+	const { storyId, projectId, story, livePm, labelStatusMap } = args;
+	const linkKey = statusSyncLinkKey(story, true);
+	if (!livePm || !linkKey) {
+		logger.info(
+			"[GitLab REST Sync] status labels unchanged — no live ticket or link key",
+			{ storyId, liveTicket: livePm !== null, linkKey: linkKey !== null },
+		);
+		return noStatusLabelChange();
+	}
+	const projectStatuses = await db.projectStoryStatus.findMany({
+		where: { projectId },
+		select: { id: true, name: true },
+	});
+	const liveResolved = toResolvedTicketStatus(
+		resolveMappedStatus({
+			labels: livePm.labels,
+			statusString: null,
+			labelStatusMap,
+			statusColumnMap: {},
+			projectStatuses,
+		}),
+	);
+	const replace = shouldPushStatusLabels({
+		fabricStatusId: story.statusId,
+		base: {
+			baseId: story.pmStatusSyncBaseId,
+			baseAt: story.pmStatusSyncBaseAt,
+			baseLink: story.pmStatusSyncBaseLink,
+			baseFabricId: story.pmStatusSyncBaseFabricId,
+		},
+		linkKey,
+		liveResolved,
+	});
+	if (!replace) {
+		logger.info("[GitLab REST Sync] status labels left for the poll", {
+			storyId,
+			fabricStatusId: story.statusId,
+			liveResolved: liveResolved.kind,
+		});
+		return noStatusLabelChange();
+	}
+	const validStatusIds = new Set(projectStatuses.map((s) => s.id));
+	// Exact string equality, as the resolver's `labelStatusMap[label]` lookup
+	// that just produced R_live matches a ticket label to a map key.
+	const observed = new Set(livePm.labels);
+	const addLabels: string[] = [];
+	const removeLabels: string[] = [];
+	for (const [label, statusId] of Object.entries(labelStatusMap)) {
+		if (statusId === story.statusId) {
+			addLabels.push(label);
+		} else if (validStatusIds.has(statusId) && observed.has(label)) {
+			removeLabels.push(label);
+		}
+	}
+	return {
+		addLabels,
+		removeLabels,
+		stamp: {
+			baseId:
+				addLabels.length > 0
+					? story.statusId
+					: PM_STATUS_SYNC_SENTINEL.NONE,
+			linkKey,
+		},
+	};
+}
+
+/**
+ * Fizzy #2304 §4.5 step 5 — the labels a switch-on create sends, and the base
+ * it stamps once the issue exists.
+ *
+ * The new issue must show exactly Fabric's status, or the base stamped after
+ * the create would record a status the ticket does not have: every label
+ * mapped to L is sent, and every OTHER mapped label `story.labels` still holds
+ * (from an earlier import) is dropped when its status exists in this project —
+ * a stale one would make the new ticket ambiguous, or resolve to the wrong
+ * status. Non-status labels, and labels mapped to a status this project no
+ * longer has (they cannot resolve to anything), pass through as today.
+ */
+async function planStatusLabelCreate(args: {
+	projectId: string;
+	story: { statusId: string; labels: string[] | null };
+	/** The project's STORED map (the poll's), never the caller's snapshot. */
+	labelStatusMap: LabelStatusMap;
+}): Promise<{ labels: string[]; baseId: string }> {
+	const { projectId, story, labelStatusMap } = args;
+	const projectStatuses = await db.projectStoryStatus.findMany({
+		where: { projectId },
+		select: { id: true },
+	});
+	const validStatusIds = new Set(projectStatuses.map((s) => s.id));
+	const ownLabels = Object.entries(labelStatusMap)
+		.filter(([, statusId]) => statusId === story.statusId)
+		.map(([label]) => label);
+	const kept = (story.labels ?? []).filter((label) => {
+		const mapped: string | undefined = labelStatusMap[label];
+		return (
+			mapped === undefined ||
+			mapped === story.statusId ||
+			!validStatusIds.has(mapped)
+		);
+	});
+	return {
+		labels: [
+			...kept,
+			...ownLabels.filter((label) => !kept.includes(label)),
+		],
+		baseId:
+			ownLabels.length > 0
+				? story.statusId
+				: PM_STATUS_SYNC_SENTINEL.NONE,
+	};
+}
+
+/**
+ * §4.5 step 4 fallback clock: one `getGitLabIssueForPM` read (via the REST
+ * dispatcher's `fetchItem`) when the write response carried no `updated_at`.
+ */
+async function rereadIssueUpdatedAt(args: {
+	source: Extract<PMSource, { kind: "rest-gitlab" }>;
+	userId: string;
+	organizationId: string | null;
+	externalId: string;
+	storyId: string;
+}): Promise<string | null> {
+	try {
+		const issue = (await callPmToolWithFallback({
+			source: args.source,
+			userId: args.userId,
+			organizationId: args.organizationId,
+			call: { tool: "fetchItem", externalId: args.externalId },
+		})) as FetchResult;
+		return issue.updatedAt ?? null;
+	} catch (error) {
+		logger.warn("[GitLab REST Sync] updated_at re-read failed", {
+			storyId: args.storyId,
+			externalId: args.externalId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	}
+}
+
+/**
+ * Fizzy #2304 §4.5 steps 4-5: record that the ticket now carries Fabric's
+ * status, as of GitLab's own `updated_at` for this write (an update, or the
+ * create that established the link). The next poll then reads its own echo as
+ * `unchanged` (AC11) — or, after a Fabric move made in between, `fabric-ahead`
+ * — and a verdict fetched before this push is `stale` rather than a revert.
+ * F is written as L: the observation was made against Fabric's current status.
+ *
+ * Compare-and-set on the snapshot's (base id, base time, base link, base
+ * Fabric status): if a poll re-based the story between this push's read and
+ * now, that newer observation stands. Non-fatal — the write already landed,
+ * and a missing stamp only means the next poll re-observes from the older
+ * base. Deliberately does not touch `lastEditedAt`: this is sync bookkeeping,
+ * not an edit.
+ */
+async function stampStatusSyncBase(args: {
+	storyId: string;
+	projectId: string;
+	snapshot: Pick<
+		StatusSyncPushSnapshot,
+		| "pmStatusSyncBaseId"
+		| "pmStatusSyncBaseAt"
+		| "pmStatusSyncBaseLink"
+		| "pmStatusSyncBaseFabricId"
+	>;
+	baseId: string;
+	/** F — Fabric's status (L) the stamped observation was made against. */
+	baseFabricId: string;
+	linkKey: string;
+	updatedAt: string;
+}): Promise<void> {
+	const baseAt = new Date(args.updatedAt);
+	if (Number.isNaN(baseAt.getTime())) {
+		logger.warn(
+			"[GitLab REST Sync] unparseable updated_at; status-sync base not stamped",
+			{ storyId: args.storyId, updatedAt: args.updatedAt },
+		);
+		return;
+	}
+	try {
+		const { count } = await db.userStory.updateMany({
+			where: {
+				id: args.storyId,
+				projectId: args.projectId,
+				pmStatusSyncBaseId: args.snapshot.pmStatusSyncBaseId,
+				pmStatusSyncBaseAt: args.snapshot.pmStatusSyncBaseAt,
+				pmStatusSyncBaseLink: args.snapshot.pmStatusSyncBaseLink,
+				pmStatusSyncBaseFabricId:
+					args.snapshot.pmStatusSyncBaseFabricId,
+			},
+			data: {
+				pmStatusSyncBaseId: args.baseId,
+				pmStatusSyncBaseAt: baseAt,
+				pmStatusSyncBaseLink: args.linkKey,
+				pmStatusSyncBaseFabricId: args.baseFabricId,
+			},
+		});
+		if (count === 0) {
+			logger.info(
+				"[GitLab REST Sync] status-sync base changed since this push read it; newer base kept",
+				{ storyId: args.storyId },
+			);
+		}
+	} catch (error) {
+		logger.warn(
+			"[GitLab REST Sync] status-sync base stamp failed (non-fatal)",
+			{
+				storyId: args.storyId,
+				error: error instanceof Error ? error.message : String(error),
+			},
+		);
+	}
 }
 
 export async function syncGitLabStoryViaRest(
@@ -448,6 +750,34 @@ export async function syncGitLabStoryViaRest(
 			labelStatusMap,
 		);
 
+		// Fizzy #2304 §4.5: the project's status-sync switch, read for this push
+		// only. Off → nothing below changes an update or create payload, and no
+		// base is stamped.
+		//
+		// On → the status-label gate resolves the live ticket, and picks the
+		// labels it adds and removes, with the project's STORED label map —
+		// parsed exactly as the poll parses it (`readLabelStatusMap` over
+		// `projectManagementAdditionalContext`) — never the caller's
+		// `additionalContext`. That is a snapshot (the AI-update workflow's
+		// input, for one), and a label-map edit racing a queued push would
+		// otherwise let a ticket that moved read as unmoved (R_live = P under
+		// the stale map), so the push would strip its new label: a revert.
+		// The switch-off path keeps using the caller's map (`delta`), as today.
+		const statusSyncProject = await db.project.findUnique({
+			where: { id: projectId },
+			select: {
+				pmStatusSyncEnabled: true,
+				projectManagementAdditionalContext: true,
+			},
+		});
+		const statusSyncLabelMap: LabelStatusMap | null =
+			statusSyncProject?.pmStatusSyncEnabled === true
+				? readLabelStatusMap(
+						statusSyncProject.projectManagementAdditionalContext,
+					)
+				: null;
+		const statusSyncOn = statusSyncLabelMap !== null;
+
 		if (externalId) {
 			// Push-time conflict guard (T2 parity with the MCP path's
 			// `syncWorkItemToPM` at hierarchy-sync.ts:863). Before overwriting
@@ -465,6 +795,9 @@ export async function syncGitLabStoryViaRest(
 			//    push on a flaky read; surface the conflict via the next
 			//    successful attempt instead. Mirrors the MCP path's `if
 			//    (snapshot)` guard at hierarchy-sync.ts:878.
+			// Hoisted out of the guard so the status-label gate reuses its read.
+			let livePm: FetchResult | null = null;
+			let liveReadAttempted = false;
 			if (!forceHashOverride) {
 				const baseline = await getPmSyncBaseline(
 					"story",
@@ -472,7 +805,7 @@ export async function syncGitLabStoryViaRest(
 					projectId,
 				);
 				if (baseline) {
-					let livePm: FetchResult | null = null;
+					liveReadAttempted = true;
 					try {
 						livePm = (await callPmToolWithFallback({
 							source,
@@ -548,7 +881,44 @@ export async function syncGitLabStoryViaRest(
 				}
 			}
 
-			await callPmToolWithFallback({
+			// Switch on: the gate needs the live ticket even when the guard
+			// skipped its read (forceHashOverride, or no baseline yet). One read
+			// per push — a guard read that already failed is not retried.
+			if (statusSyncOn && !liveReadAttempted) {
+				try {
+					livePm = (await callPmToolWithFallback({
+						source,
+						userId,
+						organizationId: orgIdOrNull,
+						call: { tool: "fetchItem", externalId },
+					})) as FetchResult;
+				} catch (error) {
+					logger.warn(
+						"[GitLab REST Sync] Live read for status labels failed; pushing content only",
+						{
+							storyId,
+							externalId,
+							error:
+								error instanceof Error
+									? error.message
+									: String(error),
+						},
+					);
+				}
+			}
+			// §4.5 steps 2-3. `null` = switch off: today's delta goes out
+			// untouched, so the payload stays byte-identical.
+			const statusLabels = statusSyncLabelMap
+				? await planStatusLabelPush({
+						storyId,
+						projectId,
+						story,
+						livePm,
+						labelStatusMap: statusSyncLabelMap,
+					})
+				: null;
+
+			const written = (await callPmToolWithFallback({
 				source,
 				userId,
 				organizationId: orgIdOrNull,
@@ -559,11 +929,12 @@ export async function syncGitLabStoryViaRest(
 					payload: {
 						title: story.title,
 						description: descriptionWithAttachments,
-						addLabels: delta.addLabels,
-						removeLabels: delta.removeLabels,
+						addLabels: statusLabels?.addLabels ?? delta.addLabels,
+						removeLabels:
+							statusLabels?.removeLabels ?? delta.removeLabels,
 					},
 				},
-			});
+			})) as WriteResult;
 			// Stamp the post-push baseline so the next push has something to
 			// compare against. Deliberately hashes `description` (BEFORE the
 			// attachment block is appended), not the literal payload we sent:
@@ -579,10 +950,52 @@ export async function syncGitLabStoryViaRest(
 				title: story.title,
 				description,
 			});
+			// §4.5 step 4 — only after the write landed, and only when the gate
+			// replaced the labels.
+			if (statusLabels?.stamp) {
+				const updatedAt =
+					written.updatedAt ??
+					(await rereadIssueUpdatedAt({
+						source,
+						userId,
+						organizationId: orgIdOrNull,
+						externalId,
+						storyId,
+					}));
+				if (updatedAt) {
+					await stampStatusSyncBase({
+						storyId,
+						projectId,
+						snapshot: story,
+						baseId: statusLabels.stamp.baseId,
+						baseFabricId: story.statusId,
+						linkKey: statusLabels.stamp.linkKey,
+						updatedAt,
+					});
+				} else {
+					logger.warn(
+						"[GitLab REST Sync] GitLab returned no updated_at; status-sync base not stamped",
+						{ storyId, externalId },
+					);
+				}
+			}
 		} else {
 			// Create path: still full-set the labels — the issue doesn't exist
-			// yet, so there's nothing to delta against.
-			const labels = [...(story.labels ?? []), ...delta.addLabels];
+			// yet, so there's nothing to delta against. Switch on (Fizzy #2304
+			// §4.5 step 5): exactly L's mapped status, so the base stamped below
+			// is what the new ticket really shows. `null` = switch off: today's
+			// labels, byte-identical.
+			const createPlan = statusSyncLabelMap
+				? await planStatusLabelCreate({
+						projectId,
+						story,
+						labelStatusMap: statusSyncLabelMap,
+					})
+				: null;
+			const labels = createPlan?.labels ?? [
+				...(story.labels ?? []),
+				...delta.addLabels,
+			];
 			const created = (await callPmToolWithFallback({
 				source,
 				userId,
@@ -613,6 +1026,54 @@ export async function syncGitLabStoryViaRest(
 				title: story.title,
 				description,
 			});
+			// §4.5 step 5 — the new link's first observation is the ticket this
+			// push just created. Stamped against the snapshot's (normally null)
+			// base. K is computed from the story as the write above left it
+			// (the created issue's URL is now its `externalUrl`), through the
+			// same helper the poll uses, so the poll's base-link check matches.
+			// Without the stamp the first poll would treat the new ticket as a
+			// first observation and revert a Fabric move made in between.
+			if (createPlan) {
+				const createdLinkKey = statusSyncLinkKey(
+					{
+						externalId: created.externalId,
+						externalUrl: created.externalUrl ?? null,
+					},
+					true,
+				);
+				if (!createdLinkKey) {
+					logger.warn(
+						"[GitLab REST Sync] created issue has no web_url; status-sync base not stamped",
+						{ storyId, externalId: created.externalId },
+					);
+				} else {
+					const updatedAt =
+						created.updatedAt ??
+						(await rereadIssueUpdatedAt({
+							source,
+							userId,
+							organizationId: orgIdOrNull,
+							externalId: created.externalId,
+							storyId,
+						}));
+					if (updatedAt) {
+						await stampStatusSyncBase({
+							storyId,
+							projectId,
+							snapshot: story,
+							baseId: createPlan.baseId,
+							baseFabricId: story.statusId,
+							linkKey: createdLinkKey,
+							updatedAt,
+						});
+					} else {
+						logger.warn(
+							"[GitLab REST Sync] GitLab returned no updated_at; status-sync base not stamped",
+							{ storyId, externalId: created.externalId },
+						);
+					}
+				}
+			}
 		}
 
 		// Attachment failure reporting (Fizzy #1745, AC-4). Emitted HERE, at

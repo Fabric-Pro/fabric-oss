@@ -72,7 +72,11 @@ export async function enableGitLabPMForProject(args: {
 	// 2. Clobber guard — never overwrite a deliberately-set non-GitLab PM tool.
 	const project = await db.project.findUnique({
 		where: { id: args.projectId },
-		select: { projectManagementMcpServerId: true },
+		select: {
+			projectManagementMcpServerId: true,
+			projectManagementMcpConfigId: true,
+			projectManagementContainerId: true,
+		},
 	});
 	if (!project) {
 		return { pmWired: false, reason: "project-not-found" };
@@ -143,7 +147,14 @@ export async function enableGitLabPMForProject(args: {
 		);
 	}
 
-	// 5. Auto-wire the PM pointer.
+	// 5. Auto-wire the PM pointer. PM → Fabric status sync is scoped to one
+	//    PM source (Fizzy #2304, spec D1.4): stories linked through the old
+	//    server, config or container are not the new source's tickets, so
+	//    re-pointing any of them switches it off until an admin opts in again.
+	const pmSourceChanged =
+		project.projectManagementMcpServerId !== serverIdToPersist ||
+		project.projectManagementMcpConfigId !== null ||
+		project.projectManagementContainerId !== containerId;
 	await db.project.update({
 		where: { id: args.projectId },
 		data: {
@@ -151,6 +162,7 @@ export async function enableGitLabPMForProject(args: {
 			projectManagementMcpConfigId: null,
 			projectManagementContainerId: containerId,
 			projectManagementContainerName: containerName,
+			...(pmSourceChanged ? { pmStatusSyncEnabled: false } : {}),
 		},
 	});
 

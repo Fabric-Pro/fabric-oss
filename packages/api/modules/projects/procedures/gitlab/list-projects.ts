@@ -31,6 +31,12 @@ import {
 // ============================================================================
 
 interface GitLabProjectRaw {
+	/**
+	 * GitLab's numeric project id. The REST listing always carries it; the
+	 * official MCP `list_projects` payload is not a typed contract, so it may be
+	 * absent or arrive as a numeric string.
+	 */
+	id?: number | string | null;
 	name: string;
 	path_with_namespace: string;
 	description: string | null;
@@ -60,10 +66,27 @@ interface ProjectsByOwnerEntry {
 	projects: GitLabProjectRaw[];
 }
 
+/**
+ * GitLab's numeric project id, or null when the listing carried none. The PM
+ * settings picker matches a container saved in that form — what the GitLab
+ * OAuth auto-wire stores — to its repo by this value (spec D1.1b, Fizzy #2304).
+ */
+function toNumericProjectId(id: GitLabProjectRaw["id"]): number | null {
+	if (typeof id === "number") {
+		return Number.isSafeInteger(id) && id > 0 ? id : null;
+	}
+	if (typeof id === "string" && /^[1-9]\d*$/.test(id)) {
+		const parsed = Number(id);
+		return Number.isSafeInteger(parsed) ? parsed : null;
+	}
+	return null;
+}
+
 function transformProject(project: GitLabProjectRaw) {
 	return {
 		name: project.path_with_namespace,
 		fullName: project.path_with_namespace,
+		numericId: toNumericProjectId(project.id),
 		description: project.description,
 		isPrivate: project.visibility === "private",
 		defaultBranch: project.default_branch,

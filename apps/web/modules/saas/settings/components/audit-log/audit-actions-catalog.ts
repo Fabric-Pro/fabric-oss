@@ -1034,6 +1034,13 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"Fabric cleared its own 'PM card missing' warning after the ticket reappeared, without anyone acting on it.",
 	},
 	{
+		key: "story.pm_status_synced",
+		categoryId: "story",
+		labelKey: "settings.auditLog.actions.story.pm_status_synced",
+		description:
+			"Fabric moved a feature or bug to the status its linked PM ticket maps to, because the project keeps status in sync with its PM tool. No person made this move.",
+	},
+	{
 		key: "atlas.analysis.requested",
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.atlas.analysis.requested",

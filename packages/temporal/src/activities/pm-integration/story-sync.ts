@@ -83,9 +83,10 @@ import {
 	assertPayloadWithinLimit,
 	PAYLOAD_HARD_LIMIT_BYTES,
 } from "../../lib/payload-size-guard";
+import { withHeartbeatTicker } from "../lib/activity-liveness";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
 import { runWithTimeout } from "../orchestrator/execution/mcp-call-timeout";
-import { resolvePmSource } from "../pm-source";
+import { type PMSource, resolvePmSource } from "../pm-source";
 import {
 	callPmToolWithFallback,
 	GITLAB_REST_CAPABILITIES,
@@ -99,6 +100,7 @@ import {
 	resolveJiraDefaultIssueType,
 } from "./fetch-pm-hierarchy";
 import { resolveFizzyAccountSlug } from "./fizzy-account-slug";
+import { NOT_ATTEMPTED_MARKER } from "./pm-fetch-complete";
 import { truncateTitleForProvider } from "./pm-title-limits";
 import {
 	belongsToDifferentKnownTool,
@@ -6718,6 +6720,302 @@ export function isStructurallyAbsentPmResponse(data: unknown): boolean {
 	);
 }
 
+/** The `getGitLabIssueForPM` fields the REST fetch reads. */
+interface RestFetchedIssue {
+	title?: string;
+	description?: string | null;
+	externalUrl?: string | null;
+	labels?: string[];
+}
+
+/** How one REST issue read ended — recorded exactly once per id. */
+type RestReadOutcome =
+	| { kind: "fetched"; issue: RestFetchedIssue }
+	| { kind: "not-found" }
+	| { kind: "failed"; error: string };
+
+/**
+ * GitLab's rate-limit answer (HTTP 429) as the REST client surfaces it: a
+ * `GitLabApiError` whose `status` is 429 (`gitlabFetch` reads the status
+ * before the body, so the plain-text "Retry later" answer arrives this way
+ * too). Matched on the status field, never on message text, so no other
+ * failure can stop a read pool. Structural rather than `instanceof`, so a
+ * second copy of `@repo/integrations` in the bundle still matches.
+ */
+function isGitLabRateLimitError(err: unknown): boolean {
+	return (
+		err instanceof Error &&
+		err.name === "GitLabApiError" &&
+		(err as { status?: unknown }).status === 429
+	);
+}
+
+/**
+ * The REST-GitLab half of {@link fetchPMItemsByIds} (Fizzy #2304, D2.2).
+ *
+ * A dedicated read pool, deliberately NOT `runBoundedWorkerPool`: that pool
+ * frees a worker when its task returns, so a task that stops waiting for a
+ * hung read at `callTimeoutMs` would free the slot while the HTTP request is
+ * still open (`gitlabFetch` takes no abort signal), and a hung GitLab could
+ * collect any number of open requests. Here:
+ *  - `inFlight` counts every started read whose promise has not settled —
+ *    abandoned ones included. A new read starts only while
+ *    `inFlight < concurrency` and the deadline has not passed (concurrency 1 =
+ *    the historic serial loop);
+ *  - a read still pending at `callTimeoutMs` is ABANDONED: its id is recorded
+ *    at once as a TRANSIENT failure (`failedIds` only, never `notFoundIds`,
+ *    which feeds the FLAG_MISSING streak), and the read keeps its slot until
+ *    its request settles. Its late result is ignored;
+ *  - no read starts once `deadlineAt` passes. A timer fires at the deadline,
+ *    so ids never started are recorded as transient "not attempted" failures
+ *    even while every slot is held by a hung read; `isFetchComplete` then
+ *    reports the cycle incomplete and the changed-date watermark holds. The
+ *    timer firing IS the deadline: Node timers run on the monotonic clock and
+ *    `Date.now()` is wall-clock, so the timer can fire while `Date.now()`
+ *    still reads `deadlineAt - 1` (or earlier, after an NTP step back). A
+ *    wall-clock check alone would then record nothing and never re-arm,
+ *    leaving a fully hung pool waiting on the HTTP client's own timeout;
+ *  - once any read fails with GitLab's rate-limit answer (HTTP 429), no
+ *    further read starts: every id not yet started is recorded at once as a
+ *    transient "not attempted" failure (deferred to the next cycle, never
+ *    `notFoundIds`). Reads already in flight settle normally. Continuing
+ *    would only spend the token owner's per-user request budget — shared
+ *    with their other GitLab traffic — on answers that are all 429;
+ *  - the pool resolves as soon as every id is recorded (fetched, not found,
+ *    failed, abandoned or not attempted). It never awaits an abandoned read;
+ *  - a heartbeat every 10 s while the pool runs. The poll's fetch activity
+ *    declares a 60 s heartbeat timeout, and a silent serial loop over a few
+ *    hundred issues was killed on every poll. The ticker stops when the pool
+ *    resolves; outside an activity (API routes, unit tests) it is a no-op.
+ *
+ * The result lists are assembled in input order, whatever order reads finish.
+ */
+async function fetchGitLabRestItemsByIds(args: {
+	source: Extract<PMSource, { kind: "rest-gitlab" }>;
+	externalIds: string[];
+	userId: string;
+	organizationId: string | null;
+	concurrency: number;
+	callTimeoutMs: number | undefined;
+	deadlineAt: number | undefined;
+}): Promise<ListWorkItemsResult> {
+	const {
+		source,
+		externalIds,
+		userId,
+		organizationId,
+		concurrency,
+		callTimeoutMs,
+		deadlineAt,
+	} = args;
+	const total = externalIds.length;
+	const outcomes: Array<RestReadOutcome | undefined> = new Array(total).fill(
+		undefined,
+	);
+
+	if (total > 0) {
+		await withHeartbeatTicker(
+			() =>
+				new Promise<void>((resolve) => {
+					const slots = Math.max(1, concurrency);
+					let next = 0;
+					let inFlight = 0;
+					let recorded = 0;
+					let finished = false;
+					// Set by the deadline timer: authoritative even when the
+					// wall clock lags the monotonic timer clock.
+					let deadlineHit = false;
+					// Set by the first read GitLab answers with a 429.
+					let rateLimited = false;
+					let deadlineTimer:
+						| ReturnType<typeof setTimeout>
+						| undefined;
+
+					const pastDeadline = () =>
+						deadlineHit ||
+						(deadlineAt !== undefined && Date.now() >= deadlineAt);
+					const finish = () => {
+						if (finished) {
+							return;
+						}
+						finished = true;
+						if (deadlineTimer !== undefined) {
+							clearTimeout(deadlineTimer);
+						}
+						resolve();
+					};
+					// First write wins: an abandoned read's late result lands here
+					// and is ignored.
+					const record = (idx: number, outcome: RestReadOutcome) => {
+						if (outcomes[idx] !== undefined) {
+							return;
+						}
+						outcomes[idx] = outcome;
+						recorded++;
+						if (recorded === total) {
+							finish();
+						}
+					};
+					const start = (idx: number) => {
+						inFlight++;
+						const id = externalIds[idx];
+						const abandonTimer =
+							callTimeoutMs === undefined
+								? undefined
+								: setTimeout(
+										() =>
+											// Transient: the issue may well exist — only
+											// the read stalled. The slot stays taken
+											// until the request settles.
+											record(idx, {
+												kind: "failed",
+												error: `GitLab fetch timed out after ${callTimeoutMs}ms (abandoned)`,
+											}),
+										callTimeoutMs,
+									);
+						// `fetchItem` resolves to getGitLabIssueForPM, which returns
+						// the issue's content fields but NOT the IID — so we attach
+						// `id` ourselves below. Without it, the workflow's
+						// selective-pull filter (`filterSet.has(item.id)`) drops every
+						// fetched item. The async wrapper turns a synchronous throw
+						// into a rejection.
+						const read = (async () =>
+							(await callPmToolWithFallback({
+								source,
+								call: { tool: "fetchItem", externalId: id },
+								userId,
+								organizationId,
+							})) as RestFetchedIssue | null)();
+						read.then(
+							(issue) =>
+								// A null GitLab fetch is the REST adapter's "issue
+								// absent" signal — positive not-found evidence
+								// (#1360 review Fix A).
+								record(
+									idx,
+									issue
+										? { kind: "fetched", issue }
+										: { kind: "not-found" },
+								),
+							(err: unknown) => {
+								if (
+									isGitLabRateLimitError(err) &&
+									!rateLimited
+								) {
+									rateLimited = true;
+									logger.warn(
+										"[Fetch PM Items By IDs] GitLab rate limit (429): no further reads start this fetch",
+										{
+											total,
+											started: next,
+											notStarted: total - next,
+										},
+									);
+								}
+								// A thrown error is transient/auth/network — NOT
+								// proof of absence. The 429 read itself was
+								// attempted, so it is a genuine failure.
+								record(idx, {
+									kind: "failed",
+									error:
+										err instanceof Error
+											? err.message
+											: String(err),
+								});
+							},
+						).finally(() => {
+							if (abandonTimer !== undefined) {
+								clearTimeout(abandonTimer);
+							}
+							// Only NOW is the slot free: the request has settled.
+							inFlight--;
+							pump();
+						});
+					};
+					function pump(): void {
+						if (finished) {
+							return;
+						}
+						while (
+							inFlight < slots &&
+							next < total &&
+							!rateLimited &&
+							!pastDeadline()
+						) {
+							start(next++);
+						}
+						// Rate-limited or past the deadline, the ids never
+						// started are TRANSIENT failures — never not-found (must
+						// not feed FLAG_MISSING / the outage guard).
+						if (next < total && (rateLimited || pastDeadline())) {
+							const error = rateLimited
+								? `GitLab rate limit reached ${NOT_ATTEMPTED_MARKER}`
+								: `poll budget exceeded ${NOT_ATTEMPTED_MARKER}`;
+							for (; next < total; next++) {
+								record(next, { kind: "failed", error });
+							}
+						}
+					}
+
+					if (deadlineAt !== undefined) {
+						// Wakes the pool at the deadline even when every slot is
+						// held by a read that never settles. It marks the deadline
+						// as passed itself rather than trusting `Date.now()`,
+						// which can still read `deadlineAt - 1` when it fires.
+						deadlineTimer = setTimeout(
+							() => {
+								deadlineHit = true;
+								pump();
+							},
+							Math.max(0, deadlineAt - Date.now()),
+						);
+					}
+					pump();
+				}),
+			{ details: { phase: "rest-gitlab-fetch", total } },
+		);
+	}
+
+	const items: PMWorkItemSummary[] = [];
+	const failedIds: string[] = [];
+	const notFoundIds: string[] = [];
+	const failedIdErrors: Record<string, string> = {};
+	externalIds.forEach((id, idx) => {
+		const outcome = outcomes[idx];
+		if (outcome === undefined) {
+			// Unreachable: the pool resolves only once every id is recorded.
+			throw new Error(`REST fetch finished without an outcome for ${id}`);
+		}
+		if (outcome.kind === "fetched") {
+			items.push({
+				id,
+				displayId: id,
+				title: outcome.issue.title,
+				description: outcome.issue.description ?? null,
+				url: outcome.issue.externalUrl ?? null,
+				workItemType: "Issue",
+				raw: outcome.issue as unknown as Record<string, unknown>,
+			});
+			return;
+		}
+		failedIds.push(id);
+		if (outcome.kind === "not-found") {
+			notFoundIds.push(id);
+			failedIdErrors[id] = "not found";
+		} else {
+			failedIdErrors[id] = outcome.error;
+		}
+	});
+	return {
+		items,
+		total: items.length,
+		hasNextPage: false,
+		failedIds,
+		notFoundIds,
+		failedIdErrors,
+	};
+}
+
 export async function fetchPMItemsByIds(input: {
 	mcpConfigId: string | null;
 	mcpServerId?: string;
@@ -6727,20 +7025,22 @@ export async function fetchPMItemsByIds(input: {
 	userId: string;
 	organizationId?: string;
 	/**
-	 * Maximum number of in-flight `taskGet` MCP calls. Defaults to 1 so
+	 * Maximum number of in-flight per-item reads — `taskGet` MCP calls, or
+	 * GitLab REST issue reads when `mcpConfigId` is null. Defaults to 1 so
 	 * existing callers (e.g. `story-sync-workflow.ts`) keep their original
-	 * serial behavior. Procedure-level callers that want a fast path can
-	 * pass a higher value (e.g. 5) to bound a worker-pool.
+	 * serial behavior. The hourly poll passes 8; procedure-level callers that
+	 * want a fast path can pass a higher value (e.g. 5) to bound a worker-pool.
 	 */
 	concurrency?: number;
-	/** Opt-in per-`executeMcpTool` timeout (ms). Forwarded as `timeoutMs` to the
-	 *  per-card gets AND to capability discovery. */
+	/** Opt-in per-read timeout (ms). MCP: forwarded as `timeoutMs` to the
+	 *  per-card gets AND to capability discovery. REST: the read is abandoned
+	 *  at this bound and recorded as a transient `failedIds` entry. */
 	callTimeoutMs?: number;
 	/**
-	 * Opt-in soft budget (ms) for the WHOLE MCP fetch. Converted to one absolute
-	 * `deadlineAt = entry + budgetMs` (DEC-7) so pre-pool work (discovery + slug
-	 * probe) counts too; the pool stops pulling past it and un-attempted ids
-	 * become transient `failedIds`.
+	 * Opt-in soft budget (ms) for the WHOLE fetch, MCP or REST. Converted to one
+	 * absolute `deadlineAt = entry + budgetMs` (DEC-7) so pre-pool work (MCP
+	 * discovery + slug probe, REST source resolution) counts too; the pool
+	 * stops pulling past it and un-attempted ids become transient `failedIds`.
 	 */
 	budgetMs?: number;
 }): Promise<ListWorkItemsResult> {
@@ -6758,13 +7058,24 @@ export async function fetchPMItemsByIds(input: {
 
 	// REST-GitLab branch: dispatch each externalId fetch through the REST
 	// adapter. PM-side response shaping is normalized by getGitLabIssueForPM
-	// to match PmItem; we collect them into ListWorkItemsResult.
+	// to match PmItem; `fetchGitLabRestItemsByIds` honours the same
+	// `concurrency` / `callTimeoutMs` / `budgetMs` options as the MCP half below
+	// and heartbeats while reads are in flight (Fizzy #2304, D2.2). Its SLOT
+	// semantics deliberately differ, so do not "unify" it onto
+	// `runBoundedWorkerPool`: that pool frees a slot when a read times out,
+	// while this one holds the slot until the HTTP request settles, because
+	// `gitlabFetch` cannot be aborted and a hung GitLab would otherwise collect
+	// unbounded open requests.
 	if (maybeMcpConfigId == null) {
 		if (!input.mcpServerId) {
 			throw ApplicationFailure.nonRetryable(
 				"fetchPMItemsByIds: mcpConfigId is null but no mcpServerId provided to resolve REST source",
 			);
 		}
+		// One absolute deadline for the whole REST fetch, source resolution
+		// included — the same DEC-7 clock the MCP path below uses.
+		const restDeadlineAt =
+			budgetMs !== undefined ? Date.now() + budgetMs : undefined;
 		const source = await resolvePmSource({
 			mcpServerId: input.mcpServerId,
 			mcpConfigId: null,
@@ -6777,59 +7088,15 @@ export async function fetchPMItemsByIds(input: {
 				"fetchPMItemsByIds: resolved source is not rest-gitlab and mcpConfigId is null",
 			);
 		}
-		const items: PMWorkItemSummary[] = [];
-		const failedIds: string[] = [];
-		const notFoundIds: string[] = [];
-		const failedIdErrors: Record<string, string> = {};
-		for (const id of externalIds) {
-			try {
-				// `fetchItem` resolves to getGitLabIssueForPM, which returns the
-				// issue's content fields but NOT the IID — so we attach `id`
-				// ourselves. Without it, the workflow's selective-pull filter
-				// (`filterSet.has(item.id)`) drops every fetched item.
-				const fetched = (await callPmToolWithFallback({
-					source,
-					call: { tool: "fetchItem", externalId: id },
-					userId,
-					organizationId: organizationId ?? null,
-				})) as {
-					title?: string;
-					description?: string | null;
-					externalUrl?: string | null;
-					labels?: string[];
-				} | null;
-				if (fetched) {
-					items.push({
-						id,
-						displayId: id,
-						title: fetched.title,
-						description: fetched.description ?? null,
-						url: fetched.externalUrl ?? null,
-						workItemType: "Issue",
-						raw: fetched as unknown as Record<string, unknown>,
-					});
-				} else {
-					// A null GitLab fetch is the REST adapter's "issue absent"
-					// signal — positive not-found evidence (#1360 review Fix A).
-					failedIds.push(id);
-					notFoundIds.push(id);
-					failedIdErrors[id] = "not found";
-				}
-			} catch (err) {
-				// A thrown error is transient/auth/network — NOT proof of absence.
-				failedIds.push(id);
-				failedIdErrors[id] =
-					err instanceof Error ? err.message : String(err);
-			}
-		}
-		return {
-			items,
-			total: items.length,
-			hasNextPage: false,
-			failedIds,
-			notFoundIds,
-			failedIdErrors,
-		};
+		return await fetchGitLabRestItemsByIds({
+			source,
+			externalIds,
+			userId,
+			organizationId: organizationId ?? null,
+			concurrency,
+			callTimeoutMs,
+			deadlineAt: restDeadlineAt,
+		});
 	}
 
 	const mcpConfigId = maybeMcpConfigId;
@@ -6857,7 +7124,7 @@ export async function fetchPMItemsByIds(input: {
 		);
 		const failedIdErrors: Record<string, string> = {};
 		for (const id of externalIds) {
-			failedIdErrors[id] = "discovery timed out (not attempted)";
+			failedIdErrors[id] = `discovery timed out ${NOT_ATTEMPTED_MARKER}`;
 		}
 		return {
 			items: [],
@@ -7114,7 +7381,7 @@ export async function fetchPMItemsByIds(input: {
 	for (const idx of skipped) {
 		const id = externalIds[idx];
 		failedIds.push(id);
-		failedIdErrors[id] = "poll budget exceeded (not attempted)";
+		failedIdErrors[id] = `poll budget exceeded ${NOT_ATTEMPTED_MARKER}`;
 	}
 
 	const items: PMWorkItemSummary[] = itemSlots.filter(

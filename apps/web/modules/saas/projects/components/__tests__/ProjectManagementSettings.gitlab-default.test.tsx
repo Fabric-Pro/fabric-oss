@@ -297,14 +297,13 @@ describe("ProjectManagementSettings — GitLab container default", () => {
 		});
 	});
 
-	it("defaults the codebase repo on initial load when the saved container id is numeric (legacy auto-wire format)", async () => {
-		// Staging scenario: project was auto-wired with a numeric GitLab project id.
-		// On initial mount the stub fires onResolvedSelection (simulating the real
-		// PMToolSelect resolving the persisted "gitlab-official" server id), which
-		// triggers fetchGitLabRestContainers(preserveSelection=true).  Because the
-		// saved numeric id ("12345") is not in the fetched repo list, the
-		// preserveSelection guard falls through to pickDefaultGitLabContainer which
-		// recovers via the codebase repo path.
+	it("keeps a saved numeric container the listing does not include as an explicit current-project option (D1.1b)", async () => {
+		// Fizzy #2304, spec D1.1b. This case used to assert the opposite — that
+		// the codebase repo was preselected in place of the saved numeric id. That
+		// silent substitution is what re-pointed an auto-wired project on its next
+		// save and, server-side, read as a container change that switched the
+		// hourly poll off. The listing here carries no numericId, so the saved id
+		// matches no repo and must stay selectable as itself.
 		const projectWithNumericSavedId = {
 			...baseProject,
 			projectManagementMcpServerId: "gitlab-official",
@@ -316,10 +315,12 @@ describe("ProjectManagementSettings — GitLab container default", () => {
 
 		await waitFor(() => {
 			expect(screen.getByRole("combobox")).toHaveTextContent(
-				"myorg/repo-a",
+				"Current project (GitLab project 12345)",
 			);
 		});
-
+		expect(screen.getByRole("combobox")).not.toHaveTextContent(
+			"myorg/repo-a",
+		);
 		expect(screen.queryByTestId("gitlab-pm-container-notice")).toBeNull();
 	});
 

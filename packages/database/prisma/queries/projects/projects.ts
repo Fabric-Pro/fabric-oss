@@ -632,96 +632,94 @@ export async function listProjects(options: {
 	};
 }
 
+/** The project fields `updateProject` and `buildUpdateProjectOperation` write. */
+export type UpdateProjectData = {
+	name?: string;
+	description?: string;
+	/** null clears the phase, returning the project to unjudged (#2165). */
+	projectPhase?: "DISCOVERY_PLANNING" | "DEVELOPMENT_EXECUTION" | null;
+	expectedDevelopmentStartDate?: Date | null;
+	goals?: string;
+	techStack?: string[];
+	features?: string[];
+	projectTypes?: string[];
+	status?: ProjectStatus;
+	tags?: string[];
+	color?: string;
+	icon?: string;
+	// SECURITY: projectManagementMcpServerId is the preferred field (each user uses their own config)
+	projectManagementMcpServerId?: string | null;
+	projectManagementMcpConfigId?: string | null; // @deprecated - kept for migration
+	projectManagementContainerId?: string | null;
+	projectManagementContainerName?: string | null;
+	projectManagementAdditionalContext?: any;
+	prdSourceTitle?: string | null;
+	prdSourceUrl?: string | null;
+	// GitHub Repository defaults for code tasks
+	repositoryUrl?: string | null;
+	repositoryOwner?: string | null;
+	repositoryName?: string | null;
+	defaultBranch?: string | null;
+	implementationDefaultChannel?: "BACKGROUND_AGENTS" | "LOCAL_AGENTS" | null;
+	implementationDefaultProvider?: "BACKGROUND_AGENTS" | "KANBAN_LOCAL" | null;
+	implementationDefaultWorkingDirectory?: string | null;
+	// Website URLs (project-level context for AI)
+	primaryWebsiteUrl?: string | null;
+	additionalWebsiteUrls?: string[];
+	// ADO state polling
+	adoStatePollActive?: boolean;
+	// Auto-push PM sync: push status changes to PM tool on Kanban move
+	autoPushPmSync?: boolean;
+	// Project-level Read-only mode: blocks outbound writes
+	// to connected external sources while enabled
+	readOnlyMode?: boolean;
+	// Per-project attachment-sync opt-in (Fizzy #1746)
+	syncAttachments?: boolean;
+	// PM terminal-status auto-close (card #1360 Phase A)
+	pmAutoCloseEnabled?: boolean;
+	// PM custom field read-mapping feature flag
+	pmFieldMappingEnabled?: boolean;
+	// AI Assistant clarifying-question frequency (MINIMAL/BALANCED/THOROUGH)
+	clarifyingQuestionFrequency?: ClarifyingQuestionFrequency;
+	// QA test-case generation settings
+	generateManualTestCases?: boolean;
+	applyTddApproach?: boolean;
+	// Feature Maturation V2 — Project-level hidden stages configuration
+	hiddenMaturationStatuses?: string[];
+	// Wizard ephemera; nulled on DRAFT → ACTIVE activation
+	wizardState?: Prisma.NullableJsonNullValueInput | Prisma.InputJsonValue;
+	// Engagement profile + governance flags (PROJECT_GOVERNANCE_MANAGE is
+	// enforced by the caller — see update-project.ts)
+	engagementProfile?: EngagementProfile;
+	engagementProfileUpdatedAt?: Date;
+	quotedPhases?: string[];
+	enforceSpecifyGate?: boolean;
+	enforceSpikeGate?: boolean;
+	enforceDiscoveryGate?: boolean;
+	documentTiersAdvisory?: boolean;
+	// Vision fields (advisory; no gate depends on them)
+	visionPurpose?: string | null;
+	visionCoreActions?: string[];
+	visionCycle?: string | null;
+	// PM → Fabric status sync (Fizzy #2304): the per-project switch, the
+	// start of the current sync session, and the last-run summary.
+	pmStatusSyncEnabled?: boolean;
+	pmStatusSyncSessionAt?: Date;
+	pmStatusSyncLastRun?:
+		| Prisma.NullableJsonNullValueInput
+		| Prisma.InputJsonValue;
+};
+
 /**
- * Update project
- * Enforces strict isolation between personal and organizational projects
- *
- * Access control:
- * - Original creator (project.userId) can always update
- * - Project members with OWNER or EDITOR role can update
- *
- * IMPORTANT: Callers should verify edit access via `requireProjectPermission`
- * middleware with the appropriate permission key before calling.
- * This function enforces tenant isolation but trusts that access has been verified.
+ * The write `updateProject` performs, returned UN-awaited so a caller can put
+ * it in a batch `db.$transaction([...])` next to other writes (Fizzy #2304:
+ * turning status sync on saves the switch and resets every story's sync base
+ * in one transaction). `updateProject` goes through here too, so the two can
+ * never disagree about the tenant filter or the JSON-null translation.
  */
-export async function updateProject(
+export function buildUpdateProjectOperation(
 	projectId: string,
-	_userId: string,
-	data: {
-		name?: string;
-		description?: string;
-		/** null clears the phase, returning the project to unjudged (#2165). */
-		projectPhase?: "DISCOVERY_PLANNING" | "DEVELOPMENT_EXECUTION" | null;
-		expectedDevelopmentStartDate?: Date | null;
-		goals?: string;
-		techStack?: string[];
-		features?: string[];
-		projectTypes?: string[];
-		status?: ProjectStatus;
-		tags?: string[];
-		color?: string;
-		icon?: string;
-		// SECURITY: projectManagementMcpServerId is the preferred field (each user uses their own config)
-		projectManagementMcpServerId?: string | null;
-		projectManagementMcpConfigId?: string | null; // @deprecated - kept for migration
-		projectManagementContainerId?: string | null;
-		projectManagementContainerName?: string | null;
-		projectManagementAdditionalContext?: any;
-		prdSourceTitle?: string | null;
-		prdSourceUrl?: string | null;
-		// GitHub Repository defaults for code tasks
-		repositoryUrl?: string | null;
-		repositoryOwner?: string | null;
-		repositoryName?: string | null;
-		defaultBranch?: string | null;
-		implementationDefaultChannel?:
-			| "BACKGROUND_AGENTS"
-			| "LOCAL_AGENTS"
-			| null;
-		implementationDefaultProvider?:
-			| "BACKGROUND_AGENTS"
-			| "KANBAN_LOCAL"
-			| null;
-		implementationDefaultWorkingDirectory?: string | null;
-		// Website URLs (project-level context for AI)
-		primaryWebsiteUrl?: string | null;
-		additionalWebsiteUrls?: string[];
-		// ADO state polling
-		adoStatePollActive?: boolean;
-		// Auto-push PM sync: push status changes to PM tool on Kanban move
-		autoPushPmSync?: boolean;
-		// Project-level Read-only mode: blocks outbound writes
-		// to connected external sources while enabled
-		readOnlyMode?: boolean;
-		// Per-project attachment-sync opt-in (Fizzy #1746)
-		syncAttachments?: boolean;
-		// PM terminal-status auto-close (card #1360 Phase A)
-		pmAutoCloseEnabled?: boolean;
-		// PM custom field read-mapping feature flag
-		pmFieldMappingEnabled?: boolean;
-		// AI Assistant clarifying-question frequency (MINIMAL/BALANCED/THOROUGH)
-		clarifyingQuestionFrequency?: ClarifyingQuestionFrequency;
-		// QA test-case generation settings
-		generateManualTestCases?: boolean;
-		applyTddApproach?: boolean;
-		// Feature Maturation V2 — Project-level hidden stages configuration
-		hiddenMaturationStatuses?: string[];
-		// Wizard ephemera; nulled on DRAFT → ACTIVE activation
-		wizardState?: Prisma.NullableJsonNullValueInput | Prisma.InputJsonValue;
-		// Engagement profile + governance flags (PROJECT_GOVERNANCE_MANAGE is
-		// enforced by the caller — see update-project.ts)
-		engagementProfile?: EngagementProfile;
-		engagementProfileUpdatedAt?: Date;
-		quotedPhases?: string[];
-		enforceSpecifyGate?: boolean;
-		enforceSpikeGate?: boolean;
-		enforceDiscoveryGate?: boolean;
-		documentTiersAdvisory?: boolean;
-		// Vision fields (advisory; no gate depends on them)
-		visionPurpose?: string | null;
-		visionCoreActions?: string[];
-		visionCycle?: string | null;
-	},
+	data: UpdateProjectData,
 	organizationId?: string,
 ) {
 	// Authorization is enforced upstream (e.g. `requireProjectPermission` in
@@ -747,13 +745,34 @@ export async function updateProject(
 				: projectManagementAdditionalContext;
 	}
 
-	return await db.project.update({
+	return db.project.update({
 		where: {
 			id: projectId,
 			...orgFilter,
 		},
 		data: updateData,
 	});
+}
+
+/**
+ * Update project
+ * Enforces strict isolation between personal and organizational projects
+ *
+ * Access control:
+ * - Original creator (project.userId) can always update
+ * - Project members with OWNER or EDITOR role can update
+ *
+ * IMPORTANT: Callers should verify edit access via `requireProjectPermission`
+ * middleware with the appropriate permission key before calling.
+ * This function enforces tenant isolation but trusts that access has been verified.
+ */
+export async function updateProject(
+	projectId: string,
+	_userId: string,
+	data: UpdateProjectData,
+	organizationId?: string,
+) {
+	return await buildUpdateProjectOperation(projectId, data, organizationId);
 }
 
 /**

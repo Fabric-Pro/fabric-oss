@@ -59,6 +59,7 @@ const listReposMock = vi.fn();
 const availablePmToolsMock = vi.fn();
 const repoIntegrationsListMock = vi.fn();
 const updateMock = vi.fn();
+const pmCapabilitiesMock = vi.fn();
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
@@ -75,6 +76,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 				list: (...a: unknown[]) => repoIntegrationsListMock(...a),
 			},
 			stories: {
+				pmCapabilities: (...a: unknown[]) => pmCapabilitiesMock(...a),
 				testPMSync: vi.fn(async () => ({
 					success: false,
 					message: "",
@@ -166,6 +168,18 @@ beforeEach(() => {
 	]);
 	listReposMock.mockResolvedValue({ configured: false, groups: [] });
 	repoIntegrationsListMock.mockResolvedValue({ integrations: [] });
+	// The status-sync switch waits for the capabilities answer (spec AC1:
+	// hidden for GitLab over MCP), so the harness must return one.
+	pmCapabilitiesMock.mockResolvedValue({
+		configured: true,
+		capabilities: null,
+		containerName: "Fizzy Board",
+		detectedType: "fizzy",
+		mcpConfigId: "fizzy-config-id",
+		containerId: "fizzy-board",
+		additionalContext: null,
+		error: null,
+	});
 });
 
 let lastClient: QueryClient | null = null;
@@ -348,6 +362,135 @@ describe("ProjectManagementSettings — optimistic PM toggles", () => {
 		pending.resolve({ project: { ...baseProject, autoPushPmSync: true } });
 		await waitFor(() => {
 			expect(toggle).toHaveAttribute("aria-checked", "true");
+		});
+	});
+
+	it("flips the status-sync switch immediately, before projects.update resolves", async () => {
+		const user = userEvent.setup();
+		const pending = deferred<unknown>();
+		updateMock.mockReturnValue(pending.promise);
+
+		const { client } = renderWithClient({
+			...baseProject,
+			pmStatusSyncEnabled: false,
+		});
+		lastClient = client;
+
+		const toggle = await screen.findByRole("switch", {
+			name: /keep status in sync with the pm tool/i,
+		});
+		expect(toggle).toHaveAttribute("aria-checked", "false");
+
+		await user.click(toggle);
+
+		// Optimistic: aria-checked is already true while the mutation is in flight.
+		expect(updateMock).toHaveBeenCalledWith(
+			expect.objectContaining({ pmStatusSyncEnabled: true }),
+		);
+		expect(toggle).toHaveAttribute("aria-checked", "true");
+
+		pending.resolve({
+			project: { ...baseProject, pmStatusSyncEnabled: true },
+		});
+		await waitFor(() => {
+			expect(toggle).toHaveAttribute("aria-checked", "true");
+		});
+	});
+
+	it("rolls back the status-sync switch when projects.update rejects", async () => {
+		const user = userEvent.setup();
+		const pending = deferred<unknown>();
+		updateMock.mockReturnValue(pending.promise);
+
+		const { client } = renderWithClient({
+			...baseProject,
+			pmStatusSyncEnabled: false,
+		});
+		lastClient = client;
+
+		const toggle = await screen.findByRole("switch", {
+			name: /keep status in sync with the pm tool/i,
+		});
+
+		await user.click(toggle);
+		expect(toggle).toHaveAttribute("aria-checked", "true");
+
+		pending.reject(new Error("boom"));
+
+		await waitFor(() => {
+			expect(toggle).toHaveAttribute("aria-checked", "false");
+		});
+	});
+
+	it("ignores a second click while the status-sync write is in flight (Finding 2 re-entrancy guard)", async () => {
+		const user = userEvent.setup();
+		const pending = deferred<unknown>();
+		updateMock.mockReturnValue(pending.promise);
+
+		const { client } = renderWithClient({
+			...baseProject,
+			pmStatusSyncEnabled: false,
+		});
+		lastClient = client;
+
+		const toggle = await screen.findByRole("switch", {
+			name: /keep status in sync with the pm tool/i,
+		});
+
+		// First click fires one mutation and flips optimistically.
+		await user.click(toggle);
+		expect(toggle).toHaveAttribute("aria-checked", "true");
+		expect(updateMock).toHaveBeenCalledTimes(1);
+
+		// Second click while pending is ignored — no second PATCH, UI unchanged.
+		await user.click(toggle);
+		expect(updateMock).toHaveBeenCalledTimes(1);
+		expect(toggle).toHaveAttribute("aria-checked", "true");
+
+		// Settle so React Query doesn't warn about an unresolved mutation.
+		pending.resolve({
+			project: { ...baseProject, pmStatusSyncEnabled: true },
+		});
+		await waitFor(() => {
+			expect(toggle).toHaveAttribute("aria-checked", "true");
+		});
+	});
+
+	it("refetches the project when the status-sync write fails (spec D1.8)", async () => {
+		const user = userEvent.setup();
+		updateMock.mockRejectedValue(new Error("Forbidden"));
+
+		const { client } = renderWithClient({
+			...baseProject,
+			pmStatusSyncEnabled: false,
+		});
+		lastClient = client;
+		const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+
+		const toggle = await screen.findByRole("switch", {
+			name: /keep status in sync with the pm tool/i,
+		});
+		await user.click(toggle);
+
+		// Positive control: the write was attempted with exactly this field, so
+		// it cannot clobber the auto-push value either.
+		expect(updateMock).toHaveBeenCalledWith({
+			id: "proj_1",
+			organizationId: null,
+			pmStatusSyncEnabled: true,
+		});
+		// The server can refuse the switch (D1.4, D1.6) or force it off, so a
+		// failed save refetches the source of the `project` prop.
+		await waitFor(() => {
+			expect(invalidateSpy).toHaveBeenCalledWith({
+				queryKey: [
+					"projects.get",
+					{ id: "proj_1", organizationId: null },
+				],
+			});
+		});
+		await waitFor(() => {
+			expect(toggle).toHaveAttribute("aria-checked", "false");
 		});
 	});
 });

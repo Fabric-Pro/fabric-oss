@@ -24,6 +24,9 @@ export interface NormalizedPmState {
 	changedDate: Date | null;
 	title: string | null;
 	description: string | null;
+	/** The item's own URL — REST GitLab only (`PMWorkItemSummary.url`, set from
+	 *  the adapter's `externalUrl`); null for every MCP tool (Fizzy #2304 D2.3). */
+	itemUrl: string | null;
 }
 
 export function normalizePolledState(
@@ -49,6 +52,7 @@ export function normalizePolledState(
 			changedDate: extractChangedDate(raw, undefined),
 			title: itemSummary.title ?? null,
 			description: itemSummary.description ?? null,
+			itemUrl: itemSummary.url ?? null,
 		};
 	}
 
@@ -73,6 +77,7 @@ export function normalizePolledState(
 			changedDate: extractChangedDate(raw, fields),
 			title: itemSummary.title ?? null,
 			description: itemSummary.description ?? null,
+			itemUrl: null,
 		};
 	}
 
@@ -83,5 +88,6 @@ export function normalizePolledState(
 		changedDate: extractChangedDate(raw, fields),
 		title: itemSummary.title ?? null,
 		description: itemSummary.description ?? null,
+		itemUrl: null,
 	};
 }

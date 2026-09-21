@@ -1630,7 +1630,8 @@
 					"auto_hidden": "Feature auto-hidden",
 					"auto_unhidden": "Feature auto-unhidden",
 					"pm_ticket_unlinked": "PM ticket unlinked",
-					"pm_flag_missing_auto_dismissed": "Missing-PM-card flag auto-dismissed"
+					"pm_flag_missing_auto_dismissed": "Missing-PM-card flag auto-dismissed",
+					"pm_status_synced": "Status synced from PM tool"
 				},
 				"audit": {
 					"viewed": "Audit log viewed",
