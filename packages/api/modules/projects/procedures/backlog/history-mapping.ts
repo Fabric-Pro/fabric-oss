@@ -10,15 +10,60 @@ import { z } from "zod";
 
 /**
  * The backlog-item audit actions surfaced in the history view. Scoped to ticket
- * lifecycle changes — PM-sync / auto-hide book-keeping actions are intentionally
- * excluded from the v1 history.
+ * lifecycle changes. A status move the PM status sync applied
+ * (`story.pm_status_synced`, Fizzy #2304) is one of them even though no person
+ * made it; the other PM-sync / auto-hide book-keeping actions stay excluded from
+ * the v1 history.
  */
 export const STORY_AUDIT_ACTIONS = [
 	"story.created",
 	"story.updated",
 	"story.status_changed",
+	"story.pm_status_synced",
 	"story.deleted",
 ] as const;
+
+/** The PM status sync's own audit action (spec §4.4). */
+const PM_STATUS_SYNC_AUDIT_ACTION = "story.pm_status_synced";
+
+type HistoryActionFilter =
+	| "all"
+	| "created"
+	| "updated"
+	| "status_changed"
+	| "deleted";
+type HistoryActorFilter = "all" | "ai" | "human";
+
+/** Friendly action-filter keys → the underlying `AuditLog.action` values. */
+const ACTIONS_BY_FILTER: Record<
+	Exclude<HistoryActionFilter, "all">,
+	readonly string[]
+> = {
+	created: ["story.created"],
+	updated: ["story.updated"],
+	status_changed: ["story.status_changed", PM_STATUS_SYNC_AUDIT_ACTION],
+	deleted: ["story.deleted"],
+};
+
+/**
+ * The `AuditLog.action` values one history query covers. "Status changed"
+ * includes the PM status sync's moves. The AI bucket selects `agent`/`system`
+ * actors, and a synced move's actor is `system` — but the move is neither
+ * AI-made nor person-made (`mapAuditRow` gives it `isAI: false` and the tool as
+ * its actor), so the AI bucket leaves it out.
+ */
+export function resolveHistoryActions(filter: {
+	action?: HistoryActionFilter;
+	actor?: HistoryActorFilter;
+}): string[] {
+	const actions =
+		filter.action && filter.action !== "all"
+			? [...ACTIONS_BY_FILTER[filter.action]]
+			: [...STORY_AUDIT_ACTIONS];
+	return filter.actor === "ai"
+		? actions.filter((action) => action !== PM_STATUS_SYNC_AUDIT_ACTION)
+		: actions;
+}
 
 // ---------------------------------------------------------------------------
 // Audit tab
@@ -91,11 +136,17 @@ export function extractProposalId(metadata: unknown): string | null {
 	return null;
 }
 
+/** The PM tool a status-sync audit row names, or a generic fallback. */
+function pmToolName(meta: Record<string, unknown>): string {
+	const tool = typeof meta.pmTool === "string" ? meta.pmTool.trim() : "";
+	return tool.length > 0 ? tool : "PM tool";
+}
+
 /**
  * Human-readable source of a change, derived from the audit metadata. Returns
  * null for ordinary manual user actions (the actor's name already conveys
- * that). Covers the AI Update sidebar and the Slack/Teams channel proposals —
- * the only paths that stamp a `source` today.
+ * that). Covers the AI Update sidebar, the Slack/Teams channel proposals and
+ * the hourly PM status sync — the only paths that stamp a `source` today.
  */
 export function deriveChangeSource(metadata: unknown): string | null {
 	if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
@@ -117,6 +168,10 @@ export function deriveChangeSource(metadata: unknown): string | null {
 		}
 		return "Monitored channel";
 	}
+	// Fizzy #2304: a status move the hourly PM status sync applied.
+	if (src === "PM_STATUS_SYNC") {
+		return `${pmToolName(meta)} sync`;
+	}
 	return null;
 }
 
@@ -130,16 +185,21 @@ export function mapAuditRow(
 		deleted?: boolean;
 	},
 ): BacklogAuditHistoryItem {
-	// Agent/system-authored backlog changes get the "AI" tag; within the
-	// story.* action set only the agent instrumentation writes these.
-	const isAI = row.actorType === "agent" || row.actorType === "system";
-	const user = resolved?.user ?? null;
 	const meta =
 		row.metadata &&
 		typeof row.metadata === "object" &&
 		!Array.isArray(row.metadata)
 			? (row.metadata as Record<string, unknown>)
 			: {};
+	// A move the PM status sync applied is written by the `system` actor, but it
+	// is not an AI change: the PM tool made it (Fizzy #2304). Every other
+	// agent/system-authored backlog change gets the "AI" tag; within the story.*
+	// action set only the agent instrumentation writes those.
+	const isPmStatusSync = row.action === PM_STATUS_SYNC_AUDIT_ACTION;
+	const isAI =
+		!isPmStatusSync &&
+		(row.actorType === "agent" || row.actorType === "system");
+	const user = resolved?.user ?? null;
 	const changedFields = Array.isArray(meta.changedFields)
 		? (meta.changedFields.filter((f) => typeof f === "string") as string[])
 		: null;
@@ -156,9 +216,12 @@ export function mapAuditRow(
 		isAI,
 		// Prefer the live user resolved from `userId` so an AI-attributed row
 		// shows the *human* who triggered it (with `isAI` adding the "AI" tag),
-		// falling back to the write-time snapshot, then to "Fabric AI".
+		// falling back to the write-time snapshot, then to the PM tool for a
+		// synced move, then to "Fabric AI".
 		actorName:
-			user?.name ?? row.actorNameSnapshot ?? (isAI ? "Fabric AI" : null),
+			user?.name ??
+			row.actorNameSnapshot ??
+			(isPmStatusSync ? pmToolName(meta) : isAI ? "Fabric AI" : null),
 		actorEmail: user?.email ?? row.actorEmailSnapshot ?? null,
 		actorImage: user?.image ?? null,
 		resourceId: row.resourceId ?? null,

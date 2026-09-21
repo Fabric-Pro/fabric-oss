@@ -481,7 +481,7 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"project",
 	),
 
-	// story (6)
+	// story (7)
 	"story.created": D(
 		"story.created",
 		"Feature created",
@@ -521,6 +521,13 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"story.pm_pushed",
 		"Pushed to PM tool",
 		Upload,
+		"info",
+		"story",
+	),
+	"story.pm_status_synced": D(
+		"story.pm_status_synced",
+		"Status synced from PM tool",
+		Stamp,
 		"info",
 		"story",
 	),

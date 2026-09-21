@@ -1,12 +1,15 @@
 import { ORPCError } from "@orpc/client";
 import {
+	buildUpdateProjectOperation,
 	cleanupCodeSearchOnRepoUnlink,
 	db,
 	engagementProfileSchema,
 	fieldMappingConfigSchema,
+	isPmServerIdKeySentinel,
 	moveWizardTempContextsToProject,
 	Prisma,
 	type ProjectDocumentType,
+	readPmServerIdKeySentinel,
 	seedTerminalStatusesIfEmpty,
 	syncLegacyProjectRepoOnDisconnect,
 	updateProject,
@@ -17,6 +20,7 @@ import {
 	ProjectStatusSchema,
 	QaStrategyLevelSchema,
 } from "@repo/database/prisma/zod";
+import { readLabelStatusMap } from "@repo/integrations/pm";
 import { hasPermission } from "@repo/permissions";
 import { getTemporalClient } from "@repo/temporal";
 import {
@@ -46,6 +50,39 @@ import {
 	GOVERNANCE_FIELDS,
 	userHasProjectPermissionStrict,
 } from "../lib/governance";
+
+/**
+ * PM server keys that mean "GitLab" — the same set `enableGitLabPMForProject`
+ * treats as GitLab. Status sync refuses GitLab over MCP (Fizzy #2304, spec
+ * D1.4): the MCP poll normalizer drops labels, so a label map could never
+ * resolve and every story would read as unmapped.
+ */
+const GITLAB_PM_SERVER_KEYS = new Set(["gitlab", "gitlab-official"]);
+
+/** The catalog key behind a stored PM server id, or its `key:` sentinel. */
+async function readPmServerKey(serverId: string): Promise<string | null> {
+	if (isPmServerIdKeySentinel(serverId)) {
+		return readPmServerIdKeySentinel(serverId);
+	}
+	const server = await db.mCPServer.findUnique({
+		where: { id: serverId },
+		select: { key: true },
+	});
+	return server?.key ?? null;
+}
+
+/**
+ * Order-independent form of a PM context's `labelStatusMap`, read the same
+ * way the sync reads it — so a round-tripped identical map compares equal.
+ */
+function normalizedLabelStatusMap(additionalContext: unknown): string {
+	const map = readLabelStatusMap(additionalContext);
+	return JSON.stringify(
+		Object.keys(map)
+			.sort()
+			.map((label) => [label, map[label]]),
+	);
+}
 
 export const updateProjectProcedure = tenantProtectedProcedure
 	.use(
@@ -100,6 +137,8 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			projectManagementAdditionalContext: z.any().nullable().optional(),
 			// Auto-push PM sync toggle
 			autoPushPmSync: z.boolean().optional(),
+			// Per-project PM → Fabric status-sync opt-in (Fizzy #2304)
+			pmStatusSyncEnabled: z.boolean().optional(),
 			// Project-level Read-only mode — blocks outbound
 			// writes to connected sources. Admin/owner only (checked in handler).
 			readOnlyMode: z.boolean().optional(),
@@ -199,15 +238,117 @@ export const updateProjectProcedure = tenantProtectedProcedure
 		// Authorization for PROJECT_UPDATE is enforced by `requireProjectPermission`
 		// above. Governance fields need the stricter PROJECT_GOVERNANCE_MANAGE.
 
+		// Fetch current repo URL to detect link/unlink transitions, the current
+		// terminal-status list to decide whether to force a re-snapshot, the
+		// stored retention window so a no-op save can be told from a real change,
+		// and the stored PM connection and status-sync state (Fizzy #2304): the
+		// disconnect rule, the switch's force-off, poll enrolment and the
+		// label-map permission all compare the request with what is stored. Read
+		// before the permission check because the label-map rule needs the
+		// stored map.
+		const existingProject = await db.project.findUnique({
+			where: { id: input.id },
+			select: {
+				name: true,
+				repositoryUrl: true,
+				pmTerminalStatuses: true,
+				attachmentRetentionDays: true,
+				engagementProfile: true,
+				enforceSpecifyGate: true,
+				enforceSpikeGate: true,
+				enforceDiscoveryGate: true,
+				documentTiersAdvisory: true,
+				quotedPhases: true,
+				status: true,
+				projectManagementMcpServerId: true,
+				projectManagementMcpConfigId: true,
+				projectManagementContainerId: true,
+				projectManagementAdditionalContext: true,
+				adoStatePollActive: true,
+				pmStatusSyncEnabled: true,
+			},
+		});
+		const previousRepoUrl = existingProject?.repositoryUrl ?? null;
+		const storedServerId =
+			existingProject?.projectManagementMcpServerId ?? null;
+		const storedConfigId =
+			existingProject?.projectManagementMcpConfigId ?? null;
+		const storedContainerId =
+			existingProject?.projectManagementContainerId ?? null;
+		const storedStatusSyncOn =
+			existingProject?.pmStatusSyncEnabled === true;
+
+		// D1.1 — a REST re-save is not a disconnect. A GitLab REST connection
+		// has no MCP config, so every save of the settings card sends
+		// `projectManagementMcpConfigId: null`. When the stored row is REST too
+		// and the save names the same server and container, nothing was
+		// disconnected. `{ projectManagementMcpConfigId: null }` on its own (no
+		// server or container in the request) still disconnects, as do a
+		// container change, a first REST connect and an MCP → REST switch.
+		const isRestResave =
+			input.projectManagementMcpConfigId === null &&
+			existingProject?.projectManagementMcpConfigId === null &&
+			typeof input.projectManagementMcpServerId === "string" &&
+			typeof input.projectManagementContainerId === "string" &&
+			input.projectManagementMcpServerId === storedServerId &&
+			input.projectManagementContainerId === storedContainerId;
+		const isDisconnect =
+			(input.projectManagementMcpConfigId === null && !isRestResave) ||
+			input.projectManagementContainerId === null ||
+			input.projectManagementMcpServerId === null;
+		// Deactivate ADO state polling when PM is disconnected or project is archived
+		const shouldDeactivatePoll =
+			isDisconnect || input.status === "ARCHIVED";
+
+		// D1.4 — status sync is scoped to one PM source. A request that names a
+		// different server, config or container than the stored one switches
+		// it off: stories linked through the old source are not the new
+		// source's tickets. A config change counts, because it can change the
+		// transport or the instance.
+		const pmSourceChanged =
+			(input.projectManagementMcpServerId !== undefined &&
+				input.projectManagementMcpServerId !== storedServerId) ||
+			(input.projectManagementMcpConfigId !== undefined &&
+				input.projectManagementMcpConfigId !== storedConfigId) ||
+			(input.projectManagementContainerId !== undefined &&
+				input.projectManagementContainerId !== storedContainerId);
+		// The cheap half of D1.4's force-off, known before the permission check.
+		// The GitLab-over-MCP half needs a server-key read and is added below.
+		const statusSyncForcedOffBySource =
+			shouldDeactivatePoll || pmSourceChanged;
+		let forceStatusSyncOff = statusSyncForcedOffBySource;
+
+		// D1.6 — while status sync is EFFECTIVELY on, the label → status map
+		// decides where the hourly sync moves every linked story, so changing
+		// it is a settings-level act. Compared normalized: a round-tripped
+		// identical map (every connection save re-sends it) is not a change.
+		// "Effectively on" = stored on and not switched off by this same
+		// request's disconnect, archive or PM-source change: such a save turns
+		// status sync off, so the map it carries (typically a cleared one)
+		// moves nothing and needs no more than PROJECT_UPDATE. Turning the
+		// switch on in the same request always counts.
+		const labelStatusMapChanged =
+			input.projectManagementAdditionalContext !== undefined &&
+			normalizedLabelStatusMap(
+				input.projectManagementAdditionalContext,
+			) !==
+				normalizedLabelStatusMap(
+					existingProject?.projectManagementAdditionalContext ?? null,
+				);
+		const labelStatusMapNeedsAdmin =
+			labelStatusMapChanged &&
+			((storedStatusSyncOn && !statusSyncForcedOffBySource) ||
+				input.pmStatusSyncEnabled === true);
+
 		// A few fields are stricter than the general PROJECT_UPDATE gate: only
 		// project admins/owners (org admin/owner or project
 		// OWNER/PROJECT_ADMIN — the PROJECT_SETTINGS_EDIT grant) may change
 		// them. Field-level because the rest of this procedure stays editable
 		// by regular members/editors. Resolved AT MOST ONCE — and only when at
-		// least one such field is actually present in the input — so a PATCH
-		// carrying more than one of these doesn't resolve permissions twice on
-		// top of the resolution `requireProjectPermission` already did in
-		// middleware.
+		// least one such field is actually present in the input, or the label
+		// map changes while status sync is on — so a PATCH carrying more than
+		// one of these doesn't resolve permissions twice on top of the
+		// resolution `requireProjectPermission` already did in middleware.
 		const ADMIN_ONLY_FIELD_MESSAGE: Partial<
 			Record<keyof typeof input, string>
 		> = {
@@ -221,11 +362,23 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			// 7-day grace period, with no restore surface (Fizzy #1749).
 			attachmentRetentionDays:
 				"Only project admins or owners can change the attachment retention period.",
+			// Turning this on lets the hourly sync move every linked story to
+			// its PM ticket's mapped status (Fizzy #2304).
+			pmStatusSyncEnabled:
+				"Only project admins or owners can change status sync with the PM tool.",
 		};
 		const presentAdminOnlyFields = (
 			Object.keys(ADMIN_ONLY_FIELD_MESSAGE) as Array<keyof typeof input>
 		).filter((key) => input[key] !== undefined);
-		if (presentAdminOnlyFields.length > 0) {
+		const adminOnlyMessages = presentAdminOnlyFields.map(
+			(key) => ADMIN_ONLY_FIELD_MESSAGE[key],
+		);
+		if (labelStatusMapNeedsAdmin) {
+			adminOnlyMessages.push(
+				"Only project admins or owners can change the label → status map while status sync is on.",
+			);
+		}
+		if (adminOnlyMessages.length > 0) {
 			const access = await resolveEffectiveProjectPermissions(
 				input.id,
 				user.id,
@@ -239,8 +392,7 @@ export const updateProjectProcedure = tenantProtectedProcedure
 					));
 			if (!canToggle) {
 				throw new ORPCError("FORBIDDEN", {
-					message:
-						ADMIN_ONLY_FIELD_MESSAGE[presentAdminOnlyFields[0]],
+					message: adminOnlyMessages[0],
 				});
 			}
 		}
@@ -261,20 +413,20 @@ export const updateProjectProcedure = tenantProtectedProcedure
 		// project now holds after the reset migration, so a client PATCHing a
 		// whole object round-tripped from `projects.get` keeps working, and
 		// turning off something inert is never the request worth blocking. The
-		// disconnect/archive path below forces `false` from outside the input
-		// and is deliberately unaffected.
+		// disconnect/archive path forces `false` from outside the input and is
+		// deliberately unaffected.
 		//
 		// Ordered AFTER the permission check so an unauthorized caller still
 		// gets FORBIDDEN — the feature's availability is not a reason to skip
 		// telling them they had no right to the field either way.
-		// Narrowed to the case where the opt-in would actually be persisted. A
-		// disconnect or archive in the same request already forces `false`
-		// (`shouldDeactivatePoll` below), so rejecting there would fail the
-		// disconnect over a value that was never going to be written.
+		// Narrowed to the case where the opt-in would actually be persisted
+		// (D1.2). A disconnect or archive in the same request already forces
+		// `false` (`shouldDeactivatePoll` above), so rejecting there would fail
+		// the disconnect over a value that was never going to be written. A
+		// REST re-save is not a disconnect, so its opt-in IS persisted and is
+		// gated like any other.
 		const wouldPersistOptIn =
-			input.syncAttachments === true &&
-			input.projectManagementMcpConfigId !== null &&
-			input.status !== "ARCHIVED";
+			input.syncAttachments === true && !shouldDeactivatePoll;
 		if (wouldPersistOptIn && !isPmAttachmentSyncEnabled()) {
 			throw new ORPCError("BAD_REQUEST", {
 				message:
@@ -312,25 +464,71 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			}
 		}
 
-		// Fetch current repo URL to detect link/unlink transitions, the current
-		// terminal-status list to decide whether to force a re-snapshot, and the
-		// stored retention window so a no-op save can be told from a real change.
-		const existingProject = await db.project.findUnique({
-			where: { id: input.id },
-			select: {
-				name: true,
-				repositoryUrl: true,
-				pmTerminalStatuses: true,
-				attachmentRetentionDays: true,
-				engagementProfile: true,
-				enforceSpecifyGate: true,
-				enforceSpikeGate: true,
-				enforceDiscoveryGate: true,
-				documentTiersAdvisory: true,
-				quotedPhases: true,
-			},
-		});
-		const previousRepoUrl = existingProject?.repositoryUrl ?? null;
+		// D1.4 — GitLab over MCP is refused. Checked when the request turns
+		// status sync on, or re-saves the PM source while it stays on.
+		// Enabling there is a BAD_REQUEST; a re-save only switches it off.
+		const effectiveServerId =
+			input.projectManagementMcpServerId !== undefined
+				? input.projectManagementMcpServerId
+				: storedServerId;
+		const effectiveConfigId =
+			input.projectManagementMcpConfigId !== undefined
+				? input.projectManagementMcpConfigId
+				: storedConfigId;
+		const effectiveContainerId =
+			input.projectManagementContainerId !== undefined
+				? input.projectManagementContainerId
+				: storedContainerId;
+		const touchesPmSource =
+			input.projectManagementMcpServerId !== undefined ||
+			input.projectManagementMcpConfigId !== undefined ||
+			input.projectManagementContainerId !== undefined;
+		const statusSyncStaysOn =
+			!forceStatusSyncOff &&
+			(input.pmStatusSyncEnabled ?? storedStatusSyncOn);
+		if (
+			(input.pmStatusSyncEnabled === true ||
+				(statusSyncStaysOn && touchesPmSource)) &&
+			effectiveConfigId !== null &&
+			typeof effectiveServerId === "string" &&
+			effectiveServerId.length > 0 &&
+			GITLAB_PM_SERVER_KEYS.has(
+				(await readPmServerKey(effectiveServerId)) ?? "",
+			)
+		) {
+			if (input.pmStatusSyncEnabled === true) {
+				throw new ORPCError("BAD_REQUEST", {
+					message:
+						"Status sync is not available for GitLab connected over MCP. Connect GitLab through its REST integration to use it.",
+				});
+			}
+			forceStatusSyncOff = true;
+		}
+		const statusSyncOnAfter =
+			!forceStatusSyncOff &&
+			(input.pmStatusSyncEnabled ?? storedStatusSyncOn);
+		// D1.5 — off → on starts a fresh session (written below).
+		const startsStatusSyncSession =
+			statusSyncOnAfter && !storedStatusSyncOn;
+
+		// D1.3 — enrol in the hourly state poll, which is what runs status
+		// sync, when the switch is turned on or a PM connection is saved while
+		// it stays on. Only a bulk sync enrolled a project before, so a REST
+		// project could sit unpolled forever. Turning the switch off never
+		// de-enrols: the poll also runs terminal handling and drift checks.
+		const isPmConnectionSave =
+			typeof input.projectManagementContainerId === "string" &&
+			input.projectManagementContainerId.length > 0;
+		const shouldEnrolInStatePoll =
+			statusSyncOnAfter &&
+			(input.pmStatusSyncEnabled === true || isPmConnectionSave) &&
+			!shouldDeactivatePoll &&
+			typeof effectiveServerId === "string" &&
+			effectiveServerId.length > 0 &&
+			typeof effectiveContainerId === "string" &&
+			effectiveContainerId.length > 0 &&
+			(input.status ?? existingProject?.status) !== "ARCHIVED" &&
+			existingProject?.adoStatePollActive === false;
 
 		const governanceTouched = GOVERNANCE_FIELDS.some(
 			(field) => input[field] !== undefined,
@@ -438,11 +636,6 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			}
 		}
 
-		// Deactivate ADO state polling when PM is disconnected or project is archived
-		const shouldDeactivatePoll =
-			input.projectManagementMcpConfigId === null ||
-			input.status === "ARCHIVED";
-
 		// Update project
 		const updateData: Parameters<typeof updateProject>[2] = {
 			name: input.name,
@@ -487,9 +680,29 @@ export const updateProjectProcedure = tenantProtectedProcedure
 				: {}),
 			// Deactivate ADO state polling on disconnect or archive
 			...(shouldDeactivatePoll ? { adoStatePollActive: false } : {}),
+			// Enrol in the state poll (D1.3, computed above). Never true
+			// together with the deactivation just above.
+			...(shouldEnrolInStatePoll ? { adoStatePollActive: true } : {}),
 			// Auto-push PM sync toggle (pass through when provided)
 			...(input.autoPushPmSync !== undefined
 				? { autoPushPmSync: input.autoPushPmSync }
+				: {}),
+			// PM → Fabric status sync (Fizzy #2304). A disconnect, an archive,
+			// a change of PM source or GitLab over MCP always forces it off
+			// (D1.4); otherwise the input passes through when provided.
+			...(forceStatusSyncOff
+				? { pmStatusSyncEnabled: false }
+				: input.pmStatusSyncEnabled !== undefined
+					? { pmStatusSyncEnabled: input.pmStatusSyncEnabled }
+					: {}),
+			// D1.5 — a fresh session: its start time conditions every
+			// last-run write, and the previous session's summary is cleared
+			// (SQL NULL, so the jsonb merge starts from an empty object).
+			...(startsStatusSyncSession
+				? {
+						pmStatusSyncSessionAt: new Date(),
+						pmStatusSyncLastRun: Prisma.DbNull,
+					}
 				: {}),
 			// Read-only mode (Fizzy #2007, pass through when provided —
 			// admin/owner enforcement happened above)
@@ -611,7 +824,45 @@ export const updateProjectProcedure = tenantProtectedProcedure
 		};
 
 		let project: Awaited<ReturnType<typeof updateProject>>;
-		if (Object.keys(governanceChanged).length > 0) {
+		const governanceActivity =
+			Object.keys(governanceChanged).length > 0
+				? {
+						projectId: input.id,
+						organizationId: organizationId ?? null,
+						userId: user.id,
+						userName: activityUserName(user),
+						projectName: input.name ?? existingProject?.name ?? "",
+						changed: governanceChanged,
+					}
+				: null;
+		if (startsStatusSyncSession) {
+			// D1.5 — status sync went from off to on. One transaction saves
+			// the switch and the new session (in `updateData`) and clears
+			// every story's sync base, so the session's first poll treats each
+			// linked item as a first observation. The org-filtered project
+			// update runs FIRST: for a project outside the caller's tenant it
+			// fails (record not found) and the story reset rolls back with it.
+			const [updated] = await db.$transaction([
+				buildUpdateProjectOperation(
+					input.id,
+					updateData,
+					organizationId,
+				),
+				db.userStory.updateMany({
+					where: { projectId: input.id },
+					data: {
+						pmStatusSyncBaseId: null,
+						pmStatusSyncBaseAt: null,
+						pmStatusSyncBaseLink: null,
+						pmStatusSyncBaseFabricId: null,
+					},
+				}),
+				...(governanceActivity
+					? [buildGovernanceActivityCreate(governanceActivity)]
+					: []),
+			]);
+			project = updated;
+		} else if (governanceActivity) {
 			// Governance change: the update and its audit row commit together.
 			// Tenant isolation mirrors `updateProject` (XOR org filter).
 			const orgFilter = organizationId
@@ -622,14 +873,7 @@ export const updateProjectProcedure = tenantProtectedProcedure
 					where: { id: input.id, ...orgFilter },
 					data: updateData,
 				}),
-				buildGovernanceActivityCreate({
-					projectId: input.id,
-					organizationId: organizationId ?? null,
-					userId: user.id,
-					userName: activityUserName(user),
-					projectName: input.name ?? existingProject?.name ?? "",
-					changed: governanceChanged,
-				}),
+				buildGovernanceActivityCreate(governanceActivity),
 			]);
 		} else {
 			project = await updateProject(

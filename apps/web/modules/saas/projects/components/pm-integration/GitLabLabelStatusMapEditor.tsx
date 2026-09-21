@@ -32,6 +32,11 @@ interface Row {
 	statusId: string;
 }
 
+// Spec D1.8 (Fizzy #2304): ambiguity is a refusal, not "first match wins", and
+// the map is not import-only — the hourly status sync applies it too.
+const LABEL_MAP_RULES =
+	"Labels are matched case-sensitively. One mapped label, or several labels mapped to the same status, sets the status. Labels mapped to different statuses change nothing. The map applies on import, on Pull, and on the hourly sync while “Keep status in sync with the PM tool” is on, so editing it moves stories that are already linked.";
+
 /**
  * Editor for the `labelStatusMap` block inside
  * `projectManagementAdditionalContext` when the PM tool is GitLab.
@@ -115,9 +120,7 @@ export function GitLabLabelStatusMapEditor({
 			<div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
 				Label → Status
 			</div>
-			<p className="text-muted-foreground text-xs">
-				Labels are matched case-sensitively. First match wins on import.
-			</p>
+			<p className="text-muted-foreground text-xs">{LABEL_MAP_RULES}</p>
 
 			<div className="space-y-2" data-testid="gitlab-label-status-rows">
 				{rows.length === 0 ? (

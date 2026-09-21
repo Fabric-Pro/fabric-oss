@@ -13,13 +13,25 @@ import {
 	findFabricItemsByExternalId,
 	getLinkedExternalIds,
 	incrementMissingStreak,
+	mergePmStatusSyncLastRun,
 	pendingFlagMissingExists,
 	recordAudit,
 	resetMissingStreaks,
 	upsertPendingChange,
 } from "@repo/database";
+import {
+	type LabelStatusMap,
+	readLabelStatusMap,
+	STATUS_SYNC_OUTCOMES,
+	type StatusSyncOutcome,
+} from "@repo/integrations/pm";
 import { logger } from "@repo/logs";
+// Fizzy #2304 — a failed fetch's message is shown to users, so it is scrubbed.
+import { scrubSecrets } from "@repo/utils/scrub-secrets";
 import { Context } from "@temporalio/activity";
+// Fizzy #2304 D2.3 — the switch-on fetch result is measured against the
+// per-payload limit (`PM_POLL_RESULT_BUDGET_BYTES`).
+import { measureSerializedBytes } from "../../lib/payload-size-guard";
 import {
 	JOB_STEPS,
 	jobComplete,
@@ -38,14 +50,23 @@ import {
 	normalizePolledState,
 } from "./extract-pm-item-state";
 import { stripAttachmentBlock } from "./gitlab-attachment-block";
-import { isFetchComplete } from "./pm-fetch-complete";
+import { isFetchComplete, isNotAttemptedError } from "./pm-fetch-complete";
 import { PM_MISSING_SENTINEL } from "./pm-missing-constants";
+import { resolveTrusted } from "./pm-server-provenance";
+import type { TrustedKey } from "./pm-server-provenance-match";
 import { computePmHash } from "./pm-sync-hash";
 import { hashTerminalStatuses, resolveTerminalSet } from "./pm-terminal-config";
+import {
+	reconcileStoryMappedStatus,
+	recordTerminalObservation,
+	STATUS_SYNC_STORY_SELECT,
+	statusSyncLinkKey,
+} from "./reconcile-story-mapped-status";
 import {
 	classifyPmItem,
 	type FabricItemRef,
 	type PmWorkItemState,
+	type ReconcileStoryTerminalResult,
 	reconcileStoryTerminalStatus,
 } from "./reconcile-story-terminal-status";
 import { recordPmSyncLog } from "./record-pm-sync-log";
@@ -453,6 +474,11 @@ export async function getAdoActiveProjects(): Promise<PmActiveProject[]> {
 			lastAdoStatePollAt: true,
 			userId: true,
 			organizationId: true,
+			// Fizzy #2304 D2.6 — read for projects this activity SKIPS, so the
+			// skip shows as a failed run in the status-sync summary. Not
+			// returned on PmActiveProject (the workflow reads that shape).
+			pmStatusSyncEnabled: true,
+			pmStatusSyncSessionAt: true,
 		},
 	});
 
@@ -494,6 +520,19 @@ export async function getAdoActiveProjects(): Promise<PmActiveProject[]> {
 						reason: err.reason,
 					},
 				);
+				if (p.pmStatusSyncEnabled && p.pmStatusSyncSessionAt) {
+					await mergePmStatusSyncLastRun({
+						projectId: p.id,
+						sessionAt: p.pmStatusSyncSessionAt,
+						patch: {
+							failure: {
+								at: new Date().toISOString(),
+								kind: "source-not-found",
+								error: err.reason,
+							},
+						},
+					});
+				}
 				continue;
 			}
 			logger.error("[PM Poll] Unexpected error resolving PM source", {
@@ -545,6 +584,8 @@ interface PollClassifyContext {
 	tenant: { organizationId: string | null; userId: string | null };
 	pmToolLabel: string;
 	pmToolSlug: string;
+	/** Fizzy #2304 — the fetch-time read of the project's status-sync switch. */
+	statusSyncEnabled: boolean;
 }
 
 /** One SLIM verdict plus whether this item raised/advanced a `CONTENT_DRIFT` row. */
@@ -575,6 +616,12 @@ async function buildPollVerdict(
 		isClosed: n.isClosed,
 		labels: n.labels,
 	};
+	// Fizzy #2304 D2.3 — the fetched issue's own URL, for the status-sync leaf's
+	// linked-issue check. Only while the switch is on, so a switch-off verdict
+	// stays byte-identical to today's.
+	if (ctx.statusSyncEnabled) {
+		verdict.itemUrl = n.itemUrl;
+	}
 
 	let driftCreated = false;
 	const linked = ctx.linkedByExternalId.get(externalId);
@@ -627,15 +674,11 @@ async function fetchViaAdoBatch(
 	input: FetchAdoWorkItemStatesInput,
 	linkedItems: Array<{ externalId: string }>,
 	ctx: PollClassifyContext,
+	/** The resolved changed-date anchor (Fizzy #2304 D2.1) — null = read everything. */
+	watermark: Date | null,
 ): Promise<FetchAdoWorkItemStatesResult> {
-	const {
-		mcpConfigId,
-		containerId,
-		containerName,
-		lastAdoStatePollAt,
-		userId,
-		organizationId,
-	} = input;
+	const { mcpConfigId, containerId, containerName, userId, organizationId } =
+		input;
 	const failedIds: string[] = [];
 	const seenExternalIds: string[] = [];
 	const notFoundIds: string[] = [];
@@ -711,11 +754,7 @@ async function fetchViaAdoBatch(
 			safeHeartbeat();
 		}
 		const n = normalizePolledState(pmItem, { kind: "mcp" });
-		if (
-			lastAdoStatePollAt &&
-			n.changedDate &&
-			n.changedDate <= lastAdoStatePollAt
-		) {
+		if (watermark && n.changedDate && n.changedDate <= watermark) {
 			continue;
 		}
 		const { verdict, driftCreated } = await buildPollVerdict(
@@ -761,9 +800,346 @@ async function fetchViaAdoBatch(
 	return out;
 }
 
+/**
+ * Fizzy #2304 D2.2 — where a status-sync fetch starts in the linked list. A
+ * fresh random offset every cycle, so a fetch budget that runs out leaves a
+ * DIFFERENT tail unread each time instead of starving the same one. An object
+ * property (not a bare function) so tests can pin it with `vi.spyOn`.
+ */
+export const statusSyncFetchOrder = {
+	startOffset(linkedCount: number): number {
+		return linkedCount > 0 ? Math.floor(Math.random() * linkedCount) : 0;
+	},
+};
+
+/** `items` rotated to start at `offset` (taken modulo the length). Pure. */
+function rotateFrom<T>(items: readonly T[], offset: number): T[] {
+	if (items.length === 0) {
+		return [];
+	}
+	const start = ((offset % items.length) + items.length) % items.length;
+	return [...items.slice(start), ...items.slice(0, start)];
+}
+
+/**
+ * Temporal refuses a SINGLE payload above 2 MiB (`BlobSizeLimitError`; the
+ * same ceiling `packages/api/modules/workflows/lib/execution-input-bounds.ts`
+ * sizes against). That is the limit that binds a fetch result.
+ */
+const TEMPORAL_PAYLOAD_LIMIT_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Fizzy #2304 D2.3 — serialized-size budget for one switch-on fetch result.
+ *
+ * Two Temporal limits apply, and the smaller one binds:
+ * - 2 MiB per PAYLOAD (`TEMPORAL_PAYLOAD_LIMIT_BYTES`). The fetch result is
+ *   one payload (the activity's return value), and the reconcile input the
+ *   workflow builds from the same `items` is another. Reconcile's input is a
+ *   subset of this result, so capping the result caps both.
+ * - 4 MiB per gRPC MESSAGE (`TEMPORAL_MAX_MESSAGE_BYTES`), which the shared
+ *   guard's `PAYLOAD_HARD_LIMIT_BYTES` enforces. A result sized to that frame
+ *   could still be up to twice the payload limit and be refused, so it is not
+ *   the budget here.
+ *
+ * The budget keeps 128 KiB below the payload limit for the envelope
+ * arithmetic in `capFetchResultToPayloadBudget` and the payload's own metadata.
+ */
+export const PM_POLL_RESULT_BUDGET_BYTES =
+	TEMPORAL_PAYLOAD_LIMIT_BYTES - 128 * 1024;
+
+/**
+ * Fizzy #2304 D2.3 — keep a switch-on fetch result inside the payload budget.
+ *
+ * With status sync on, every linked item is read every cycle (D2.1) and each
+ * REST verdict carries its full label list and `itemUrl`, so a large project
+ * can outgrow the frame. Verdicts are kept in fetch order while they fit; the
+ * first verdict that does not fit, and every verdict after it, is reported
+ * exactly like a budget-skipped read: removed from `items` and
+ * `seenExternalIds`, added to `failedIds`, and `complete` recomputed (false),
+ * so the watermark does not advance (DEC-6). The rotation (D2.2) moves that
+ * tail every cycle.
+ *
+ * The envelope is measured once as an upper bound — every verdict id already
+ * counted in BOTH `seenExternalIds` and `failedIds` — so the capped result can
+ * only be smaller than `used`, never larger.
+ */
+function capFetchResultToPayloadBudget(
+	out: FetchAdoWorkItemStatesResult,
+	budgetBytes: number,
+): { out: FetchAdoWorkItemStatesResult; overflowIds: string[] } {
+	if (measureSerializedBytes(out) <= budgetBytes) {
+		return { out, overflowIds: [] };
+	}
+	let used = measureSerializedBytes({
+		...out,
+		items: [],
+		failedIds: [
+			...out.failedIds,
+			...out.items.map((item) => item.externalId),
+		],
+	});
+	const kept: PmWorkItemState[] = [];
+	const overflowIds: string[] = [];
+	for (const item of out.items) {
+		// +1 for the comma that separates array elements.
+		const size = measureSerializedBytes(item) + 1;
+		if (overflowIds.length === 0 && used + size <= budgetBytes) {
+			kept.push(item);
+			used += size;
+		} else {
+			overflowIds.push(item.externalId);
+		}
+	}
+	const overflow = new Set(overflowIds);
+	const seenExternalIds = out.seenExternalIds.filter(
+		(id) => !overflow.has(id),
+	);
+	return {
+		out: {
+			...out,
+			items: kept,
+			seenExternalIds,
+			failedIds: [...out.failedIds, ...overflowIds],
+			complete: isFetchComplete({
+				seenExternalIds,
+				notFoundIds: out.notFoundIds,
+				totalLinked: out.totalLinked,
+			}),
+		},
+		overflowIds,
+	};
+}
+
+/**
+ * Fizzy #2304 D2.3 — the second half of the cap: the identifier lists.
+ *
+ * `capFetchResultToPayloadBudget` evicts verdicts but keeps every id, and the
+ * id lists alone can outgrow the budget: every id the read pool never started
+ * before its deadline is in `failedIds`, so a project with a few hundred
+ * thousand linked tickets overflows with no verdict at all. This runs after
+ * the verdict pass and trims until the result fits:
+ * - `failedIds` first, from the tail. It is kept for logging only — nothing
+ *   downstream reads it — so a trimmed id is simply not observed this cycle,
+ *   exactly like a budget-skipped read;
+ * - `notFoundIds` only when it does not fit even with `failedIds` empty, and
+ *   then WHOLE. It feeds the FLAG_MISSING producer, whose outage guard reads
+ *   the not-found share of `totalLinked`: a partial list would lower that
+ *   share and could let a mass-404 cycle increment streaks it must hold. An
+ *   empty list holds every streak for a cycle — a delay, never a write;
+ * - never `seenExternalIds`. When this trims anything, the verdict pass has
+ *   already evicted every verdict (its envelope alone was over the budget),
+ *   so no kept verdict loses its seen id.
+ *
+ * `complete` is forced false: an id that is no longer reported was not
+ * observed, so the watermark must hold (DEC-6). The caller writes the run
+ * summary from the untrimmed lists, so the counts users see stay true.
+ */
+function trimIdListsToPayloadBudget(
+	out: FetchAdoWorkItemStatesResult,
+	budgetBytes: number,
+): {
+	out: FetchAdoWorkItemStatesResult;
+	droppedFailed: number;
+	droppedNotFound: number;
+} {
+	if (measureSerializedBytes(out) <= budgetBytes) {
+		return { out, droppedFailed: 0, droppedNotFound: 0 };
+	}
+	const notFoundIds =
+		measureSerializedBytes({
+			...out,
+			failedIds: [],
+			complete: false,
+		}) > budgetBytes
+			? []
+			: out.notFoundIds;
+	// Removing an element removes its own bytes plus at most one comma, so
+	// subtracting only its own bytes keeps `used` an upper bound on the size.
+	let used = measureSerializedBytes({ ...out, notFoundIds, complete: false });
+	let failedKept = out.failedIds.length;
+	while (failedKept > 0 && used > budgetBytes) {
+		failedKept--;
+		used -= measureSerializedBytes(out.failedIds[failedKept]);
+	}
+	if (used > budgetBytes) {
+		// Unreachable from the poll: with both lists emptied only the seen ids
+		// of non-verdict observations (ADO wrong-board ids) and scalars remain.
+		logger.error(
+			"[PM Poll] Status-sync fetch result still over the payload budget after trimming its id lists",
+			{ usedBytes: used, budgetBytes },
+		);
+	}
+	return {
+		out: {
+			...out,
+			failedIds: out.failedIds.slice(0, failedKept),
+			notFoundIds,
+			complete: false,
+		},
+		droppedFailed: out.failedIds.length - failedKept,
+		droppedNotFound: out.notFoundIds.length - notFoundIds.length,
+	};
+}
+
+/**
+ * Fizzy #2304 D2.6 — the run summary's fetch counts, from the UNTRIMMED
+ * result (after the verdict pass, before `trimIdListsToPayloadBudget`).
+ * `failed` counts only reads that were attempted and failed: an id the pool
+ * never started, or a fetched verdict the payload cap deferred, is in
+ * `failedIds` but lands in "not fetched" (linked − fetched − failed −
+ * notFound), which is what it is.
+ */
+function fetchSummaryCounts(
+	out: FetchAdoWorkItemStatesResult,
+	deferredIds: ReadonlySet<string>,
+) {
+	const notFound = new Set(out.notFoundIds);
+	return {
+		linked: out.totalLinked,
+		fetched: out.seenExternalIds.length,
+		// Disjoint buckets: `failedIds` also carries every definite not-found
+		// id, which is counted separately, and every deferred id.
+		failed: new Set(
+			out.failedIds.filter(
+				(id) => !notFound.has(id) && !deferredIds.has(id),
+			),
+		).size,
+		notFound: notFound.size,
+		complete: out.complete,
+	};
+}
+
+/**
+ * Fetch's own project read: tenant + terminal config (#1741), plus the
+ * status-sync switch and session (Fizzy #2304 D2.1 / D2.6).
+ */
+function readFetchProject(projectId: string) {
+	return db.project.findUnique({
+		where: { id: projectId },
+		select: {
+			organizationId: true,
+			userId: true,
+			pmTerminalStatuses: true,
+			pmStatusSyncEnabled: true,
+			pmStatusSyncSessionAt: true,
+		},
+	});
+}
+
+type FetchProjectRow = Awaited<ReturnType<typeof readFetchProject>>;
+
 export async function fetchAdoWorkItemStates(
 	input: FetchAdoWorkItemStatesInput,
 ): Promise<FetchAdoWorkItemStatesResult> {
+	const project = await readFetchProject(input.projectId);
+	// Fizzy #2304 D2.6 — the session is read ONCE, here. Every last-run write
+	// below is conditioned on it still being current, so a switch toggled while
+	// this fetch runs cannot let it write into the new session's summary.
+	const sessionAt =
+		project?.pmStatusSyncEnabled === true
+			? project.pmStatusSyncSessionAt
+			: null;
+
+	let fetched: LinkedItemStatesFetch;
+	try {
+		fetched = await fetchLinkedItemStates(input, project);
+	} catch (err) {
+		// A failed fetch must read as a failed run, never as a quiet one. The
+		// message is a provider's error text, which the settings card shows
+		// to users, so credentials it may echo are scrubbed before it is stored
+		// (the writer's length cap runs after, so it cannot cut a secret in half).
+		if (sessionAt !== null) {
+			await mergePmStatusSyncLastRun({
+				projectId: input.projectId,
+				sessionAt,
+				patch: {
+					failure: {
+						at: new Date().toISOString(),
+						kind: "fetch-failed",
+						error: scrubSecrets(
+							err instanceof Error ? err.message : String(err),
+						),
+					},
+				},
+			});
+		}
+		throw err;
+	}
+
+	let out = fetched.out;
+	// Ids in `failedIds` that were deferred rather than failed: never started
+	// by the read pool, or (below) fetched but left out by the payload cap.
+	const deferredIds = new Set(fetched.notAttemptedIds);
+	let result = out;
+	// D2.3 — switch on only, so a switch-off result stays byte-identical.
+	if (project?.pmStatusSyncEnabled === true) {
+		const capped = capFetchResultToPayloadBudget(
+			out,
+			PM_POLL_RESULT_BUDGET_BYTES,
+		);
+		if (capped.overflowIds.length > 0) {
+			logger.warn(
+				"[PM Poll] Status-sync fetch result over the payload budget; the tail is left for the next cycle",
+				{
+					projectId: input.projectId,
+					kept: capped.out.items.length,
+					overflow: capped.overflowIds.length,
+					budgetBytes: PM_POLL_RESULT_BUDGET_BYTES,
+				},
+			);
+		}
+		for (const id of capped.overflowIds) {
+			deferredIds.add(id);
+		}
+		out = capped.out;
+		const trimmed = trimIdListsToPayloadBudget(
+			out,
+			PM_POLL_RESULT_BUDGET_BYTES,
+		);
+		if (trimmed.droppedFailed + trimmed.droppedNotFound > 0) {
+			logger.warn(
+				"[PM Poll] Status-sync fetch result's id lists over the payload budget; trimmed ids are left for the next cycle",
+				{
+					projectId: input.projectId,
+					droppedFailed: trimmed.droppedFailed,
+					droppedNotFound: trimmed.droppedNotFound,
+					budgetBytes: PM_POLL_RESULT_BUDGET_BYTES,
+				},
+			);
+		}
+		result = trimmed.out;
+	}
+
+	if (sessionAt !== null) {
+		await mergePmStatusSyncLastRun({
+			projectId: input.projectId,
+			sessionAt,
+			patch: {
+				fetch: {
+					at: new Date().toISOString(),
+					// The untrimmed lists: the true totals, not what fit.
+					...fetchSummaryCounts(out, deferredIds),
+				},
+			},
+		});
+	}
+	return result;
+}
+
+/**
+ * One fetch, plus what only the run summary needs. `notAttemptedIds` never
+ * crosses the activity boundary: the workflow reads `out` alone.
+ */
+interface LinkedItemStatesFetch {
+	out: FetchAdoWorkItemStatesResult;
+	/** Ids in `out.failedIds` the read pool never started (Fizzy #2304). */
+	notAttemptedIds: string[];
+}
+
+async function fetchLinkedItemStates(
+	input: FetchAdoWorkItemStatesInput,
+	project: FetchProjectRow,
+): Promise<LinkedItemStatesFetch> {
 	const {
 		projectId,
 		mcpConfigId,
@@ -776,30 +1152,37 @@ export async function fetchAdoWorkItemStates(
 		projectManagementAdditionalContext,
 	} = input;
 	const kind = input.sourceKind ?? "mcp";
+	const statusSyncEnabled = project?.pmStatusSyncEnabled === true;
+	// Fizzy #2304 D2.1 — ONE resolved anchor for both fetch paths. With status
+	// sync on, every linked item is read every cycle: an item skipped as
+	// "unchanged since the watermark" would never have its mapped status
+	// compared at all.
+	const watermark = statusSyncEnabled ? null : lastAdoStatePollAt;
 
-	const linkedItems = await getLinkedExternalIds(projectId);
+	// Fizzy #2304 D2.2 — with status sync on, start at a fresh random offset
+	// each cycle, so a fetch budget that runs out leaves a different tail
+	// unread each time. Switch off: the stored order, unchanged.
+	const linked = await getLinkedExternalIds(projectId);
+	const linkedItems = statusSyncEnabled
+		? rotateFrom(linked, statusSyncFetchOrder.startOffset(linked.length))
+		: linked;
 
-	const project = await db.project.findUnique({
-		where: { id: projectId },
-		select: {
-			organizationId: true,
-			userId: true,
-			pmTerminalStatuses: true,
-		},
-	});
 	const terminalStatuses = resolveTerminalSet(project?.pmTerminalStatuses);
 	const terminalStatusesHash = hashTerminalStatuses(terminalStatuses);
 
 	if (linkedItems.length === 0) {
 		logger.info("[PM Poll] No linked items for project", { projectId });
 		return {
-			items: [],
-			seenExternalIds: [],
-			notFoundIds: [],
-			failedIds: [],
-			totalLinked: 0,
-			complete: true,
-			terminalStatusesHash,
+			out: {
+				items: [],
+				seenExternalIds: [],
+				notFoundIds: [],
+				failedIds: [],
+				totalLinked: 0,
+				complete: true,
+				terminalStatusesHash,
+			},
+			notAttemptedIds: [],
 		};
 	}
 
@@ -816,11 +1199,16 @@ export async function fetchAdoWorkItemStates(
 		},
 		pmToolLabel: pmToolLabel(input.pmTool ?? null),
 		pmToolSlug: pmToolSlug(input.pmTool ?? null),
+		statusSyncEnabled,
 	};
 
 	if (input.pmTool === "azure-devops" && mcpConfigId) {
 		try {
-			return await fetchViaAdoBatch(input, linkedItems, ctx);
+			// Every batch chunk is attempted: nothing is deferred.
+			return {
+				out: await fetchViaAdoBatch(input, linkedItems, ctx, watermark),
+				notAttemptedIds: [],
+			};
 		} catch (err) {
 			if (
 				err instanceof Error &&
@@ -890,11 +1278,12 @@ export async function fetchAdoWorkItemStates(
 			pmTool: input.pmTool ?? undefined,
 		});
 
-		// Incremental skip: only when we have BOTH a prior poll anchor and a
+		// Incremental skip: only when we have BOTH a resolved anchor and a
 		// changed-date. Tools without a changed-date (null) are always
 		// evaluated — idempotent, since reconcile dedups via upsertPendingChange.
-		if (lastAdoStatePollAt && n.changedDate) {
-			if (n.changedDate <= lastAdoStatePollAt) {
+		// Status sync resolves the anchor to null (D2.1): nothing is skipped.
+		if (watermark && n.changedDate) {
+			if (n.changedDate <= watermark) {
 				continue;
 			}
 		}
@@ -939,10 +1328,210 @@ export async function fetchAdoWorkItemStates(
 		contentDriftRows, // drift-row count (moved from reconcile, #1741)
 		nullChangedDateCount, // DEC-2 diagnostic: inert-filter probe
 		serializedBytes: JSON.stringify(out).length, // DEC-1 diagnostic: payload guard
-		isBackfill: !lastAdoStatePollAt,
+		isBackfill: !watermark,
+		statusSyncEnabled,
 	});
 
-	return out;
+	return {
+		out,
+		notAttemptedIds: out.failedIds.filter((id) =>
+			isNotAttemptedError(result.failedIdErrors?.[id]),
+		),
+	};
+}
+
+// =============================================================================
+// Mapped-status sync wiring (Fizzy #2304, spec §4.3–§4.4)
+// =============================================================================
+
+/** The reconcile project fields status sync reads (spec D2.4). */
+interface StatusSyncProjectFields {
+	pmStatusSyncEnabled: boolean;
+	pmStatusSyncSessionAt: Date | null;
+	projectManagementAdditionalContext: unknown;
+	projectManagementMcpServerId: string | null;
+	projectManagementMcpConfigId: string | null;
+}
+
+/** Everything one reconcile run needs for status sync, resolved once per run. */
+interface StatusSyncRun {
+	/** D2.6 guard — the session this run belongs to; null = never stamped, so no summary. */
+	sessionAt: Date | null;
+	config: {
+		labelStatusMap: LabelStatusMap;
+		statusColumnMap: Record<string, string>;
+		projectStatuses: Array<{ id: string; name: string }>;
+	};
+	source: {
+		isRest: boolean;
+		activeServerId: string;
+		pmToolKey: string | null;
+		pmToolLabel: string;
+	};
+	/** AC8 fallback for never-stamped MCP stories — resolved lazily, at most once per run. */
+	activeOrg: () => Promise<TrustedKey | null>;
+}
+
+/** `statusColumnMap` (Fabric status id → PM column id) from the saved PM context; string values only. */
+function readStatusColumnMap(
+	additionalContext: unknown,
+): Record<string, string> {
+	if (
+		!additionalContext ||
+		typeof additionalContext !== "object" ||
+		Array.isArray(additionalContext)
+	) {
+		return {};
+	}
+	const raw = (additionalContext as Record<string, unknown>).statusColumnMap;
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+		return {};
+	}
+	const map: Record<string, string> = {};
+	for (const [statusId, columnId] of Object.entries(raw)) {
+		if (typeof columnId === "string" && columnId.length > 0) {
+			map[statusId] = columnId;
+		}
+	}
+	return map;
+}
+
+/**
+ * Null when the switch is off (or the project has no PM server) — then the
+ * reconcile loop reads and writes nothing for status sync (AC14).
+ */
+async function loadStatusSyncRun(
+	projectId: string,
+	project: StatusSyncProjectFields | null,
+	pmTool: string | null,
+): Promise<StatusSyncRun | null> {
+	const activeServerId = project?.projectManagementMcpServerId ?? null;
+	if (project?.pmStatusSyncEnabled !== true || activeServerId === null) {
+		return null;
+	}
+	// D2.4 — REST-ness is a null config id on THIS row.
+	const configId = project.projectManagementMcpConfigId;
+	let activeOrg: Promise<TrustedKey | null> | undefined;
+	return {
+		sessionAt: project.pmStatusSyncSessionAt,
+		config: {
+			labelStatusMap: readLabelStatusMap(
+				project.projectManagementAdditionalContext,
+			),
+			statusColumnMap: readStatusColumnMap(
+				project.projectManagementAdditionalContext,
+			),
+			projectStatuses: await db.projectStoryStatus.findMany({
+				where: { projectId },
+				select: { id: true, name: true },
+			}),
+		},
+		source: {
+			isRest: configId === null,
+			activeServerId,
+			pmToolKey: pmTool,
+			pmToolLabel: pmToolLabel(pmTool),
+		},
+		activeOrg: () => {
+			activeOrg ??= resolveTrusted(db, {
+				id: projectId,
+				projectManagementMcpServerId: activeServerId,
+				projectManagementMcpConfigId: configId,
+			}).then((res) => (res.ok ? res.trusted : null));
+			return activeOrg;
+		},
+	};
+}
+
+function emptyOutcomeCounts(): Record<StatusSyncOutcome, number> {
+	return Object.fromEntries(
+		STATUS_SYNC_OUTCOMES.map((outcome) => [outcome, 0]),
+	) as Record<StatusSyncOutcome, number>;
+}
+
+/** A verdict's ISO `stateChangedDate` (it crossed Temporal JSON) as a Date. */
+function parseVerdictDate(iso: string | null): Date | null {
+	if (!iso) {
+		return null;
+	}
+	const date = new Date(iso);
+	return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/**
+ * Spec §4.4 rows 1–2 for one verdict, AFTER terminal handling. Returns the
+ * outcome to tally, or null when the verdict produces none (terminal, an
+ * UNHIDE proposal, a story that no longer exists, or a REST verdict fetched
+ * with the switch off, which the leaf reports as not observed).
+ */
+async function syncMappedStatus(args: {
+	projectId: string;
+	tenant: { organizationId: string | null; userId: string | null };
+	item: PmWorkItemState;
+	storyId: string;
+	terminal: ReconcileStoryTerminalResult;
+	run: StatusSyncRun;
+}): Promise<StatusSyncOutcome | null> {
+	const { projectId, tenant, item, storyId, terminal, run } = args;
+	const syncsStatus =
+		terminal.action === "non-terminal-passthrough" ||
+		terminal.action === "auto-unhid";
+	// Row 2 — an UNHIDE proposal (or anything else terminal handling kept for review).
+	if (!terminal.terminalApplied && !syncsStatus) {
+		return null;
+	}
+	// D2.5 — read after terminal handling, so it sees what that wrote.
+	const story = await db.userStory.findUnique({
+		where: { id: storyId, projectId },
+		select: STATUS_SYNC_STORY_SELECT,
+	});
+	if (!story) {
+		return null;
+	}
+	const stateChangedDate = parseVerdictDate(item.stateChangedDate);
+
+	if (terminal.terminalApplied) {
+		// Row 1 — record the terminal observation so the reopen counts (AC6).
+		const linkKey = statusSyncLinkKey(story, run.source.isRest);
+		if (linkKey !== null) {
+			await recordTerminalObservation({
+				projectId,
+				story,
+				linkKey,
+				stateChangedDate,
+			});
+		}
+		return null;
+	}
+
+	const needsOrg = !run.source.isRest && story.externalMcpServerId === null;
+	const { outcome } = await reconcileStoryMappedStatus({
+		projectId,
+		tenant: {
+			organizationId: tenant.organizationId,
+			ownerUserId: tenant.userId,
+		},
+		item: {
+			externalId: item.externalId,
+			state: item.state,
+			labels: item.labels ?? [],
+			stateChangedDate,
+			// Passed through UNCHANGED (D2.3): an absent key means this verdict
+			// was fetched with the switch off, which the leaf reports as not
+			// observed (outcome null); null means the issue had no URL. So the
+			// key is copied only when present — `?? null` would turn an absent
+			// key into an "unverified" CONFLICT row.
+			...("itemUrl" in item ? { itemUrl: item.itemUrl } : {}),
+		},
+		story,
+		config: run.config,
+		source: {
+			...run.source,
+			activeOrg: needsOrg ? await run.activeOrg() : null,
+		},
+	});
+	// null = not observed: the caller tallies nothing.
+	return outcome;
 }
 
 /**
@@ -958,6 +1547,9 @@ export async function fetchAdoWorkItemStates(
  * gate, then hand it to `reconcileStoryTerminalStatus` — a terminal transition
  * (Closed/Done/Removed, per hashed config) auto-hides the story (or raises an
  * `UNHIDE` proposal on reopen) and clears any pending `CONTENT_DRIFT` row.
+ * With the project's status sync on (Fizzy #2304), each item then goes through
+ * `syncMappedStatus` — after terminal handling, never instead of it — and the
+ * run's outcome counts are recorded in the last-run summary.
  *
  * Two gates hold the workflow watermark instead of applying stale work:
  * - Settings-change gate: if `pmTerminalStatuses` changed between fetch and
@@ -980,6 +1572,12 @@ export async function reconcileAdoStates(
 			userId: true,
 			pmTerminalStatuses: true,
 			pmAutoCloseEnabled: true,
+			// Fizzy #2304 D2.4 — mapped-status sync.
+			pmStatusSyncEnabled: true,
+			pmStatusSyncSessionAt: true,
+			projectManagementAdditionalContext: true,
+			projectManagementMcpServerId: true,
+			projectManagementMcpConfigId: true,
 		},
 	});
 	const tenant = {
@@ -1007,6 +1605,15 @@ export async function reconcileAdoStates(
 
 	const terminalLc = new Set(terminalStatuses.map((s) => s.toLowerCase()));
 	const autoCloseEnabled = project?.pmAutoCloseEnabled ?? false;
+
+	// Fizzy #2304 — resolved ONCE per run, never per item. Null = switch off:
+	// nothing below reads or writes anything for status sync.
+	const statusSync = await loadStatusSyncRun(
+		projectId,
+		project,
+		input.pmTool ?? null,
+	);
+	const outcomeCounts = statusSync ? emptyOutcomeCounts() : null;
 
 	// Story-state divergence gate (Codex round-1 + round-2): flips true when an
 	// item's fresh classification would need drift that fetch did not run.
@@ -1091,6 +1698,57 @@ export async function reconcileAdoStates(
 		if (r.action === "auto-hidden") {
 			storiesAutoHidden++;
 		}
+
+		// Fizzy #2304 — spec §4.4, AFTER terminal handling: terminal keeps
+		// absolute precedence, and the story read sees what it wrote.
+		if (statusSync && outcomeCounts) {
+			// Isolated per story: a status-sync failure on one story must never
+			// stop terminal handling for the stories after it, nor the outcome
+			// summary below. The failed story is logged and not counted; the
+			// next poll decides it again from fresh state.
+			try {
+				const outcome = await syncMappedStatus({
+					projectId,
+					tenant,
+					item,
+					storyId: storyFabricItem.entityId,
+					terminal: r,
+					run: statusSync,
+				});
+				if (outcome !== null) {
+					outcomeCounts[outcome]++;
+				}
+			} catch (error) {
+				logger.error(
+					"[PM Poll] Status sync failed for a story; continuing with the next",
+					{
+						projectId,
+						storyId: storyFabricItem.entityId,
+						// The message only — never the stack — and scrubbed.
+						error: scrubSecrets(
+							error instanceof Error
+								? error.message
+								: String(error),
+						),
+					},
+				);
+			}
+		}
+	}
+
+	// Fizzy #2304 D2.6 — the outcome half of the last-run summary, against the
+	// session read at the START of this run (never re-read here).
+	if (statusSync?.sessionAt && outcomeCounts) {
+		await mergePmStatusSyncLastRun({
+			projectId,
+			sessionAt: statusSync.sessionAt,
+			patch: {
+				outcome: {
+					at: new Date().toISOString(),
+					counts: outcomeCounts,
+				},
+			},
+		});
 	}
 
 	logger.info("[PM Poll] Reconciliation complete", {
@@ -1098,6 +1756,9 @@ export async function reconcileAdoStates(
 		itemsProcessed: items.length,
 		pendingChangesCreated,
 		storiesAutoHidden,
+		// Logged only — NOT on ReconcileAdoStatesResult: a result field the
+		// workflow read would break Temporal replay.
+		statusSyncOutcomes: outcomeCounts,
 		settingsStable: !storyStateDiverged,
 	});
 

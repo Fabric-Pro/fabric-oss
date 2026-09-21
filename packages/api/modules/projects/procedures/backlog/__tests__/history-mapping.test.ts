@@ -9,6 +9,7 @@ import {
 	type AuditRowLike,
 	deriveChangeSource,
 	mapAuditRow,
+	resolveHistoryActions,
 	STORY_AUDIT_ACTIONS,
 	toErrorList,
 	toLightweightChanges,
@@ -213,11 +214,12 @@ describe("toErrorList", () => {
 });
 
 describe("STORY_AUDIT_ACTIONS", () => {
-	it("covers the four backlog item lifecycle actions", () => {
+	it("covers the four backlog item lifecycle actions plus the PM status sync's move", () => {
 		expect(STORY_AUDIT_ACTIONS).toEqual([
 			"story.created",
 			"story.updated",
 			"story.status_changed",
+			"story.pm_status_synced",
 			"story.deleted",
 		]);
 	});
@@ -330,5 +332,137 @@ describe("toSessionMessages", () => {
 		expect(toSessionMessages([{ content: "x" }])).toEqual([
 			{ role: "assistant", content: "x" },
 		]);
+	});
+});
+
+/**
+ * Exactly what the PM status sync's leaf hands `recordAudit` for a `moved`
+ * write (spec §4.4; plan interface contract, "audit metadata shape").
+ */
+const LEAF_PM_STATUS_SYNC_AUDIT = {
+	action: "story.pm_status_synced",
+	category: "story",
+	actor: { type: "system" },
+	organizationId: "org_1",
+	projectId: "project_1",
+	resource: { type: "story", id: "story_1", name: "Checkout flow" },
+	metadata: {
+		fromStatus: "status_backlog",
+		toStatus: "status_review",
+		statusName: "In Review",
+		source: "PM_STATUS_SYNC",
+		pmTool: "GitLab",
+	},
+};
+
+/** Mirrors `buildAuditRow` in packages/database/prisma/queries/audit-log.ts. */
+function rowFromRecordAudit(
+	input: typeof LEAF_PM_STATUS_SYNC_AUDIT,
+): AuditRowLike {
+	return {
+		id: "a_sync_1",
+		action: input.action,
+		actorType: input.actor.type,
+		userId: null,
+		actorNameSnapshot: null,
+		actorEmailSnapshot: null,
+		resourceId: input.resource.id,
+		resourceName: input.resource.name,
+		metadata: input.metadata,
+		createdAt: new Date("2026-09-21T09:00:00.000Z"),
+	};
+}
+
+describe("mapAuditRow — a move the PM status sync applied (Fizzy #2304)", () => {
+	it("renders the leaf's audit as a synced move by the tool, not an AI edit", () => {
+		// Positive control: the same system actor on an ordinary story action IS
+		// tagged AI.
+		expect(mapAuditRow(auditRow({ actorType: "system" })).isAI).toBe(true);
+
+		expect(
+			mapAuditRow(rowFromRecordAudit(LEAF_PM_STATUS_SYNC_AUDIT), {
+				identifier: "F-12",
+			}),
+		).toEqual({
+			id: "a_sync_1",
+			action: "story.pm_status_synced",
+			actorType: "system",
+			isAI: false,
+			actorName: "GitLab",
+			actorEmail: null,
+			actorImage: null,
+			resourceId: "story_1",
+			resourceName: "Checkout flow",
+			identifier: "F-12",
+			source: "GitLab sync",
+			changedFields: null,
+			statusName: "In Review",
+			sessionId: null,
+			deleted: false,
+			groupKey: null,
+			createdAt: new Date("2026-09-21T09:00:00.000Z"),
+		});
+	});
+
+	it("falls back to a generic tool name when the metadata carries none", () => {
+		const row = mapAuditRow(
+			rowFromRecordAudit({
+				...LEAF_PM_STATUS_SYNC_AUDIT,
+				metadata: { ...LEAF_PM_STATUS_SYNC_AUDIT.metadata, pmTool: "" },
+			}),
+		);
+		expect(row.source).toBe("PM tool sync");
+		expect(row.actorName).toBe("PM tool");
+		expect(row.isAI).toBe(false);
+	});
+});
+
+describe("deriveChangeSource — PM status sync", () => {
+	it("names the tool the move was synced from", () => {
+		expect(
+			deriveChangeSource({ source: "PM_STATUS_SYNC", pmTool: "Jira" }),
+		).toBe("Jira sync");
+	});
+});
+
+describe("resolveHistoryActions — history filters", () => {
+	it("puts the PM status sync's move under 'Status changed'", () => {
+		expect(resolveHistoryActions({ action: "status_changed" })).toEqual([
+			"story.status_changed",
+			"story.pm_status_synced",
+		]);
+	});
+
+	it("keeps every other filter to its own action", () => {
+		expect(resolveHistoryActions({ action: "created" })).toEqual([
+			"story.created",
+		]);
+		expect(resolveHistoryActions({ action: "updated" })).toEqual([
+			"story.updated",
+		]);
+		expect(resolveHistoryActions({ action: "deleted" })).toEqual([
+			"story.deleted",
+		]);
+	});
+
+	it("defaults to the whole history action set", () => {
+		expect(resolveHistoryActions({})).toEqual([...STORY_AUDIT_ACTIONS]);
+		expect(resolveHistoryActions({ action: "all" })).toEqual([
+			...STORY_AUDIT_ACTIONS,
+		]);
+	});
+
+	it("leaves a synced move out of the AI bucket, which selects system actors", () => {
+		// Positive control: without the AI filter the synced move is in.
+		expect(
+			resolveHistoryActions({ action: "status_changed", actor: "all" }),
+		).toContain("story.pm_status_synced");
+
+		expect(
+			resolveHistoryActions({ action: "status_changed", actor: "ai" }),
+		).toEqual(["story.status_changed"]);
+		expect(resolveHistoryActions({ actor: "ai" })).not.toContain(
+			"story.pm_status_synced",
+		);
 	});
 });

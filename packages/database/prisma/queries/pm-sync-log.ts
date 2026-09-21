@@ -199,3 +199,39 @@ export async function listPmSyncLog(
 
 	return { rows, total };
 }
+
+/**
+ * Does a PM status-sync CONFLICT row for this observation already exist?
+ * (Fizzy #2304, spec §4.4 "CONFLICT rows".)
+ *
+ * The status-sync leaf writes one CONFLICT pull row per distinct observation —
+ * (story, observed link) for an unverified link, (story, conflicting label
+ * set, ticket changed-date) for ambiguous labels — and encodes every one of
+ * those dimensions in `errorPayload.dedupeKey`. So "a row with this key
+ * exists" is exactly "this observation was already reported", whatever other
+ * CONFLICT rows (content drift, push conflicts) landed for the story since.
+ *
+ * Filtered by project, entity, direction and status, and by the key through
+ * Prisma's JSON path filter (`errorPayload -> 'dedupeKey'`), the same filter
+ * `audit-log.ts` and `backlog-update-sessions.ts` use on their JSON columns.
+ * The `(entityId, createdAt DESC)` index serves the scalar half.
+ */
+export async function hasPmSyncConflictWithDedupeKey(args: {
+	projectId: string;
+	/** The story id. */
+	entityId: string;
+	dedupeKey: string;
+}): Promise<boolean> {
+	const row = await db.pmSyncLog.findFirst({
+		where: {
+			projectId: args.projectId,
+			entityId: args.entityId,
+			direction: "pull",
+			status: "CONFLICT",
+			errorPayload: { path: ["dedupeKey"], equals: args.dedupeKey },
+		},
+		orderBy: { createdAt: "desc" },
+		select: { id: true },
+	});
+	return row !== null;
+}

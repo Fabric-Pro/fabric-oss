@@ -523,6 +523,93 @@ jobs:
           console.log(`decision-owner delivery suite: ${passed} passed, 0 skipped`);
           EOF
 
+      - name: 'PM status sync queries (database package, real Postgres)'
+        # Fizzy #2304. Two properties of the PM status sync live in the rows,
+        # not in the code that builds the queries: whether the CONFLICT dedupe
+        # really answers "a conflict row with this key exists" for one story
+        # (so an identical hourly cycle adds nothing, even with an unrelated
+        # CONFLICT row in between, and a changed ticket date adds exactly one
+        # row), and whether the last-run summary merge refuses a write from an
+        # older session or from a project whose switch is off.
+        # The unit suites pin the WHERE clauses; this suite pins what Postgres
+        # does with them.
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/pm-status-sync.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=pm-status-sync-results.json
+
+      - name: 'Guard: assert the PM status sync query suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 8: the dedupe answer for any row with the key (an older key stays
+          // seen), the rows it must ignore (SUCCESS, push, another story,
+          // another project), the check-then-write cycle (identical -> no row,
+          // changed ticket date -> one), an unrelated CONFLICT row between two
+          // identical cycles (still no row), and four last-run merge cases
+          // (merge + session recorded, older session dropped, switch off
+          // dropped, missing project non-fatal).
+          const EXPECTED = 8;
+          const report = JSON.parse(fs.readFileSync("packages/database/pm-status-sync-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`pm-status-sync: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 1) { console.error("::error::Expected exactly 1 test file (pm-status-sync.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — DATABASE_URL is not a reachable Postgres — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests, got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
+      - name: 'PM status sync session atomicity (api package, real Postgres)'
+        # Fizzy #2304, spec D1.5. Turning the switch on saves it, enrols the
+        # project, clears every story's sync base and the last-run summary, and
+        # stamps a fresh session — in ONE transaction. The mocked suite can only
+        # assert that the operations were handed to $transaction; this suite
+        # drives the real update-project handler, arms a test-only trigger that
+        # fails the story reset, and proves the switch, the enrolment and the
+        # session all rolled back with it, after a positive control on a second
+        # project.
+        run: |
+          pnpm --filter @repo/api exec vitest run \
+            modules/projects/__tests__/pm-status-sync-session.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=pm-status-sync-session-results.json
+
+      - name: 'Guard: assert the PM status sync session suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 2: the full positive case (switch, enrolment, bases, last run,
+          // session), and the injected story-reset failure rolling every part
+          // back after a positive control on another project.
+          const EXPECTED = 2;
+          const report = JSON.parse(fs.readFileSync("packages/api/pm-status-sync-session-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`pm-status-sync-session: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 1) { console.error("::error::Expected exactly 1 test file (pm-status-sync-session.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — DATABASE_URL is not a reachable Postgres — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests, got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
       - name: 'Guard: assert the XOR suite actually executed (zero skips)'
         # Post-hoc anti-false-pass check. `daily-brief-exclusions.test.ts`
         # self-skips via `describe.skipIf(!hasReachableDatabaseUrl())` — if
@@ -1517,6 +1604,50 @@ jobs:
           if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
           if (total !== EXPECTED || passed !== EXPECTED) {
             console.error(`::error::expected exactly ${EXPECTED} passing tests. Eleven in publishing-reconcile-activity.test.ts: the module imports no mail path and reads no mail key — asserted on the source, because an import that is merely unreached still couples the module — the activity reaches the activities barrel the worker hands to every Worker.create call, the ABANDONED signal is exactly ONE warn line per RUN carrying the count rather than one line per cycle, a run that abandons nothing still reports at info so a quiet hour stays distinguishable from a schedule that stopped firing, a null-clock PENDING cycle is ENROLLED on this tick and swept on a LATER one — the floor is never earlier than the moment the sweep first saw the row, so a worker clock that trails this one cannot make a live cycle look stale — a non-zero null-clock residual raises the level on its own even when nothing was abandoned, the staleness bound is the suggestion workflow's imported execution timeout rather than a copied literal and a cycle either side of it is treated accordingly, and markCycleFailed — the cycle writer that lives in this package, which the database suite cannot import — is driven for real against a PENDING cycle and leaves its staleness clock exactly where it was; plus 1C-2d-2b-1's three LEDGER cases — the ledger pass expiring, reclaiming and DISCHARGING THE ATTEMPT BOUND with no transactional-email key present in the process, which is what makes the 2b-1/2b-2 split honest because the half that ships the transitions must make progress on exactly the deployment that produced the backlog; the per-transition counts asserted EXHAUSTIVELY on the key set rather than spot-checked, so a fifth transition added later cannot be a number the workflow reports and nothing has ever seen, together with sweptAt pinned to fall INSIDE the call rather than merely being a string; and the states_reclaimed line, exactly one per run, carrying a moved count equal to the sum of the transitions and asserted to be INFO and never warn, because an expired obligation is the sweep working and an alert rule keyed on level would otherwise fire hourly on a healthy deployment. Two in redrive-publishing-notification.test.ts, spawned as a real child process because the script reads an environment a mock cannot supply: the duplicate guard refuses an old DEFERRED obligation still inside its expiry, which the shipped status list could not see and would have re-sent past the provider's idempotency horizon, and it does NOT demand --force-stale for a FAILED row at the attempt bound, which is not re-sendable at all. Plus 1C-2d-2b-2's thirteen in publishing-drain-activity.test.ts: the mail-configuration gate returning with zero counts rather than throwing — a throw would be an hourly red workflow on every deployment without a key, an alert firing on a supported configuration — and leaving every deferred row exactly where it was, since the gate is a RETURN and not a filter; the claim/send/confirm path carrying the same attempt-independent idempotency key the in-band path uses, so an obligation attempted in band and then deferred collapses into that attempt at the provider; a provider rejection returning the row to DEFERRED rather than FAILED, because a FAILED row carrying an expiry is invisible to the drain AND to pass 1; the four per-row gates each terminalizing as SKIPPED with their own reason and consuming no attempt; the gates read FRESH per row, pinned by flipping the project kill switch BETWEEN two rows of one page — the case an implementation that memoizes per run fails and every other gate case passes; the page budget spent with what is left PROBED rather than inferred, at the boundary where an exactly-full backlog and a real one look identical from the inside; and the source assertion that this activity reads the mail configuration while pass 1's still does not. Got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run the PM status-sync leaf suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        # Fizzy #2304, spec §4.4 and §6 rule 3. Every status write the leaf
+        # makes is a compare-and-set on the row the poll read; this suite proves
+        # Postgres refuses a row that moved underneath it (stale status, base,
+        # ticket clock, link key, base Fabric status -> raced, no audit, no
+        # sync-log row) and that an identical ambiguous cycle adds no CONFLICT
+        # row while a changed ticket date adds one. Without this step the file
+        # self-skips under unit-tests.yml (which never sets RUN_DB_INTEGRATION)
+        # and exits 0.
+        run: |
+          pnpm --filter @repo/temporal exec vitest run \
+            __tests__/reconcile-story-mapped-status.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=reconcile-story-mapped-status-integration-results.json
+
+      - name: 'Guard: assert the PM status-sync leaf suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 7: the moved write (column append, base, edit clock, one audit row,
+          // one SUCCESS row, then unchanged on the next read), five stale-CAS
+          // cases (status, base, clock, link, base Fabric status) each after a
+          // positive control, and the ambiguous CONFLICT dedupe across three
+          // cycles.
+          const EXPECTED = 7;
+          const report = JSON.parse(fs.readFileSync("packages/temporal/reconcile-story-mapped-status-integration-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`reconcile-story-mapped-status-integration: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 1) { console.error("::error::Expected exactly 1 test file (reconcile-story-mapped-status.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — RUN_DB_INTEGRATION not honored — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests, got total=${total} passed=${passed}`);
             process.exit(1);
           }
           EOF

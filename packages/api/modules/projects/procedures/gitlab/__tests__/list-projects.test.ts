@@ -502,3 +502,97 @@ describe("listGitLabProjectsProcedure — official-MCP searchGroup", () => {
 		expect(result.error).toMatch(/No projects found for "my-org"/);
 	});
 });
+
+describe("listGitLabProjectsProcedure — numericId (spec D1.1b, Fizzy #2304)", () => {
+	const restUser = { login: "alice", name: "Alice", avatar_url: "" };
+
+	function raw(overrides: Record<string, unknown>) {
+		return {
+			name: "alice/app",
+			path_with_namespace: "alice/app",
+			description: null,
+			visibility: "private",
+			web_url: "https://gitlab.example.com/alice/app",
+			default_branch: "main",
+			last_activity_at: "2026-01-01T00:00:00Z",
+			star_count: 0,
+			namespace: { full_path: "alice" },
+			...overrides,
+		};
+	}
+
+	function firstRepo(result: { groups: unknown[] }) {
+		return (
+			result.groups[0] as {
+				repos: Array<{ fullName: string; numericId: number | null }>;
+			}
+		).repos[0];
+	}
+
+	it("returns GitLab's numeric project id on the REST path", async () => {
+		mockResolveGitLabSource.mockResolvedValue({
+			kind: "rest-adapter",
+			token: "wi-token",
+		});
+		mockGetAuthenticatedUser.mockResolvedValue(restUser);
+		mockListUserProjects.mockResolvedValue([raw({ id: 4711 })]);
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: baseInput,
+			context: baseContext,
+		});
+
+		expect(firstRepo(result)).toMatchObject({
+			fullName: "alice/app",
+			numericId: 4711,
+		});
+	});
+
+	it("reads a numeric-string id from the official MCP listing", async () => {
+		const mockCallTool = vi.fn().mockResolvedValue([raw({ id: "4711" })]);
+		mockResolveGitLabSource.mockResolvedValue({
+			kind: "official-mcp",
+			callTool: mockCallTool,
+		});
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: baseInput,
+			context: baseContext,
+		});
+
+		expect(firstRepo(result)).toMatchObject({
+			fullName: "alice/app",
+			numericId: 4711,
+		});
+	});
+
+	it("returns null when the listing carries no usable id", async () => {
+		mockResolveGitLabSource.mockResolvedValue({
+			kind: "rest-adapter",
+			token: "wi-token",
+		});
+		mockGetAuthenticatedUser.mockResolvedValue(restUser);
+		const handler = await loadHandler();
+
+		// Positive control: the same listing WITH an id yields it.
+		mockListUserProjects.mockResolvedValueOnce([raw({ id: 4711 })]);
+		expect(
+			firstRepo(await handler({ input: baseInput, context: baseContext }))
+				.numericId,
+		).toBe(4711);
+
+		mockListUserProjects.mockResolvedValueOnce([raw({})]);
+		expect(
+			firstRepo(await handler({ input: baseInput, context: baseContext }))
+				.numericId,
+		).toBeNull();
+
+		mockListUserProjects.mockResolvedValueOnce([raw({ id: "alice/app" })]);
+		expect(
+			firstRepo(await handler({ input: baseInput, context: baseContext }))
+				.numericId,
+		).toBeNull();
+	});
+});

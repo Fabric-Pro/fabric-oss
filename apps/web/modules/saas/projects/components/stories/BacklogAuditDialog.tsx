@@ -104,16 +104,26 @@ function actionIcon(action: string): ComponentType<{ className?: string }> {
 		case "story.deleted":
 			return Trash2Icon;
 		case "story.status_changed":
+		case "story.pm_status_synced":
 			return RefreshCwIcon;
 		default:
 			return PencilIcon;
 	}
 }
 
+/** "GitLab sync" → "GitLab": the tool half of the history's source label. */
+function syncedFromTool(source: string | null): string {
+	const suffix = " sync";
+	return source?.endsWith(suffix) && source.length > suffix.length
+		? source.slice(0, -suffix.length)
+		: "the PM tool";
+}
+
 function describeAction(
 	action: string,
 	resourceName: string | null,
 	statusName: string | null,
+	source: string | null,
 ): string {
 	const name = resourceName ? `«${resourceName}»` : "an item";
 	switch (action) {
@@ -125,6 +135,12 @@ function describeAction(
 			return statusName
 				? `Moved ${name} to "${statusName}"`
 				: `Changed status of ${name}`;
+		// Fizzy #2304: a move the hourly PM status sync applied. No person made
+		// it, so the row says where it came from.
+		case "story.pm_status_synced":
+			return statusName
+				? `Moved ${name} to "${statusName}" — synced from ${syncedFromTool(source)}`
+				: `Changed status of ${name} — synced from ${syncedFromTool(source)}`;
 		case "story.updated":
 			return `Updated ${name}`;
 		default:
@@ -222,6 +238,7 @@ function AuditRowCard({
 		item.action,
 		item.resourceName,
 		item.statusName,
+		item.source,
 	);
 	return (
 		<div className="rounded-lg border border-foreground/10 bg-card p-3">

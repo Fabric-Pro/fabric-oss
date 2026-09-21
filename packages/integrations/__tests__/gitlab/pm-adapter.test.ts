@@ -234,3 +234,78 @@ describe("getGitLabIssueForPM — surfaces state and updatedAt", () => {
 		expect(result.updatedAt).toBeUndefined();
 	});
 });
+
+describe("write result carries GitLab's updated_at (Fizzy #2304 §4.5)", () => {
+	it("updateGitLabIssueFromStory returns updated_at as updatedAt", async () => {
+		callMcpWithRestFallback.mockResolvedValue({
+			iid: 7,
+			title: "Updated",
+			web_url: "https://gitlab.com/g/p/-/issues/7",
+			updated_at: "2026-09-21T09:15:42.120Z",
+		});
+
+		const result = await updateGitLabIssueFromStory({
+			source: REST_SOURCE,
+			gitlabProjectId: "100",
+			externalId: "7",
+			payload: { title: "Updated" },
+			userId: "u1",
+			organizationId: null,
+		});
+
+		expect(result).toEqual({
+			externalId: "7",
+			externalUrl: "https://gitlab.com/g/p/-/issues/7",
+			title: "Updated",
+			updatedAt: "2026-09-21T09:15:42.120Z",
+		});
+	});
+
+	it("updatedAt is null when the write response has no updated_at", async () => {
+		callMcpWithRestFallback.mockResolvedValue({
+			iid: 7,
+			title: "Updated",
+			web_url: "https://gitlab.com/g/p/-/issues/7",
+		});
+
+		const result = await updateGitLabIssueFromStory({
+			source: REST_SOURCE,
+			gitlabProjectId: "100",
+			externalId: "7",
+			payload: { title: "Updated" },
+			userId: "u1",
+			organizationId: null,
+		});
+
+		expect(result).toEqual({
+			externalId: "7",
+			externalUrl: "https://gitlab.com/g/p/-/issues/7",
+			title: "Updated",
+			updatedAt: null,
+		});
+	});
+
+	it("createGitLabIssueFromStory threads updated_at the same way", async () => {
+		callMcpWithRestFallback.mockResolvedValue({
+			iid: 42,
+			title: "New",
+			web_url: "https://gitlab.com/g/p/-/issues/42",
+			updated_at: "2026-09-21T09:00:00.000Z",
+		});
+
+		const result = await createGitLabIssueFromStory({
+			source: REST_SOURCE,
+			gitlabProjectId: "100",
+			payload: { title: "New" },
+			userId: "u1",
+			organizationId: null,
+		});
+
+		expect(result).toEqual({
+			externalId: "42",
+			externalUrl: "https://gitlab.com/g/p/-/issues/42",
+			title: "New",
+			updatedAt: "2026-09-21T09:00:00.000Z",
+		});
+	});
+});

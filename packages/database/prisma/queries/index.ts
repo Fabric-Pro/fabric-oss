@@ -82,6 +82,7 @@ export * from "./organizations/rag-settings";
 export * from "./pending-pm-state-changes";
 export * from "./pm-attachment-notifications";
 export * from "./pm-conflict-notifications";
+export * from "./pm-status-sync-last-run";
 export * from "./pm-sync-log";
 export * from "./pm-ticket-missing-streak";
 export * from "./project-ai-usage";

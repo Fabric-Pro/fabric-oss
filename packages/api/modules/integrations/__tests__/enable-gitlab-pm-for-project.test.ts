@@ -181,6 +181,99 @@ describe("enableGitLabPMForProject", () => {
 		expect(data.projectManagementContainerId).toBe("acme/widgets");
 	});
 
+	it("reads the stored server, config and container", async () => {
+		projectFindUnique.mockResolvedValue({
+			projectManagementMcpServerId: null,
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: null,
+		});
+		const { enableGitLabPMForProject } = await import(
+			"../lib/enable-gitlab-pm-for-project"
+		);
+
+		await enableGitLabPMForProject(baseArgs);
+
+		expect(projectFindUnique).toHaveBeenCalledWith({
+			where: { id: "proj_1" },
+			select: {
+				projectManagementMcpServerId: true,
+				projectManagementMcpConfigId: true,
+				projectManagementContainerId: true,
+			},
+		});
+	});
+
+	it("switches PM status sync off when it re-points the container (Fizzy #2304)", async () => {
+		// Stored by the REST picker as a path; the OAuth auto-wire resolves
+		// the numeric id, so this is a different container string.
+		projectFindUnique.mockResolvedValue({
+			projectManagementMcpServerId: "srv_official",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: "acme/old-widgets",
+		});
+		serverFindUnique.mockResolvedValue({ key: "gitlab-official" });
+		const { enableGitLabPMForProject } = await import(
+			"../lib/enable-gitlab-pm-for-project"
+		);
+
+		await enableGitLabPMForProject(baseArgs);
+
+		expect(projectUpdate).toHaveBeenCalledTimes(1);
+		expect(projectUpdate.mock.calls[0][0]).toEqual({
+			where: { id: "proj_1" },
+			data: {
+				projectManagementMcpServerId: "srv_official",
+				projectManagementMcpConfigId: null,
+				projectManagementContainerId: "123",
+				projectManagementContainerName: "acme/widgets",
+				pmStatusSyncEnabled: false,
+			},
+		});
+	});
+
+	it("switches PM status sync off when it drops a pinned GitLab MCP config", async () => {
+		projectFindUnique.mockResolvedValue({
+			projectManagementMcpServerId: "srv_official",
+			projectManagementMcpConfigId: "cfg_gitlab_mcp",
+			projectManagementContainerId: "123",
+		});
+		serverFindUnique.mockResolvedValue({ key: "gitlab-official" });
+		const { enableGitLabPMForProject } = await import(
+			"../lib/enable-gitlab-pm-for-project"
+		);
+
+		await enableGitLabPMForProject(baseArgs);
+
+		expect(projectUpdate.mock.calls[0][0].data).toEqual({
+			projectManagementMcpServerId: "srv_official",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: "123",
+			projectManagementContainerName: "acme/widgets",
+			pmStatusSyncEnabled: false,
+		});
+	});
+
+	it("leaves PM status sync alone when it re-wires the same REST source", async () => {
+		projectFindUnique.mockResolvedValue({
+			projectManagementMcpServerId: "srv_official",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: "123",
+		});
+		serverFindUnique.mockResolvedValue({ key: "gitlab-official" });
+		const { enableGitLabPMForProject } = await import(
+			"../lib/enable-gitlab-pm-for-project"
+		);
+
+		await enableGitLabPMForProject(baseArgs);
+
+		expect(projectUpdate.mock.calls[0][0].data).toEqual({
+			projectManagementMcpServerId: "srv_official",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: "123",
+			projectManagementContainerName: "acme/widgets",
+		});
+	});
+
 	it("falls back to the path container when project lookup throws (expired token)", async () => {
 		projectFindUnique.mockResolvedValue({
 			projectManagementMcpServerId: null,

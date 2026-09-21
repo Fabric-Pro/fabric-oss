@@ -65,17 +65,25 @@ export async function gitlabFetch(
 		headers: gitlabHeaders(token),
 	});
 
-	const data = await response.json();
-
+	// The status is checked BEFORE the body is parsed: GitLab sends some errors
+	// as plain text — its rate-limit (429) answer is "Retry later" — and a JSON
+	// parse of that threw a SyntaxError that hid the status from every caller.
 	if (!response.ok) {
+		type GitLabErrorBody = { message?: string; error?: string } | null;
+		let data: GitLabErrorBody = null;
+		try {
+			data = (await response.json()) as GitLabErrorBody;
+		} catch {
+			// Not JSON: fall through to the status-only message.
+		}
 		const message =
-			(data as { message?: string; error?: string }).message ||
-			(data as { error?: string }).error ||
+			data?.message ||
+			data?.error ||
 			`GitLab API error: ${response.status}`;
 		throw new GitLabApiError(response.status, message);
 	}
 
-	return data;
+	return response.json();
 }
 
 export async function gitlabPost(

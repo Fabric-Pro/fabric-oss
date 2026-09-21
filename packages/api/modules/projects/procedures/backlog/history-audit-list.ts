@@ -2,8 +2,9 @@
  * `projects.backlog.history.audit.list` — the read-only Audit history.
  *
  * A project-scoped, project-READ-gated view of the ticket-tied audit trail:
- * backlog item changes (create / update / status-change / delete) for one
- * project, newest first, cursor-paginated. Supports free-text search and
+ * backlog item changes (create / update / status-change, including moves the
+ * PM status sync applied / delete) for one project, newest first,
+ * cursor-paginated. Supports free-text search and
  * filters by actor bucket (AI/people), specific person, action, and date
  * range. Reuses the existing `AuditLog` store and `listAuditLog` query.
  *
@@ -27,16 +28,8 @@ import {
 	auditHistoryItemSchema,
 	extractProposalId,
 	mapAuditRow,
-	STORY_AUDIT_ACTIONS,
+	resolveHistoryActions,
 } from "./history-mapping";
-
-/** Friendly action-filter keys → the underlying `AuditLog.action` values. */
-const ACTION_BY_KEY: Record<string, string> = {
-	created: "story.created",
-	updated: "story.updated",
-	status_changed: "story.status_changed",
-	deleted: "story.deleted",
-};
 
 export const listBacklogAuditHistoryProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_READ))
@@ -94,13 +87,12 @@ export const listBacklogAuditHistoryProcedure = tenantProtectedProcedure
 			? { organizationId: project.organizationId, userId: null }
 			: { organizationId: null, userId: context.user.id };
 
-		// Action filter → the story.* action set (default: all four).
-		const actions =
-			input.action &&
-			input.action !== "all" &&
-			ACTION_BY_KEY[input.action]
-				? [ACTION_BY_KEY[input.action]]
-				: [...STORY_AUDIT_ACTIONS];
+		// Action filter → the story.* action set. "Status changed" includes the
+		// PM status sync's moves; the AI bucket leaves them out (Fizzy #2304).
+		const actions = resolveHistoryActions({
+			action: input.action,
+			actor: input.actor,
+		});
 
 		// Actor filter → actorType buckets. AI = agent/system; people = user.
 		const actorTypes =

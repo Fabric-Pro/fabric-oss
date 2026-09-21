@@ -47,13 +47,14 @@ const EXPECTED_KEYS = [
 	"project.member.function_tags_changed",
 	"project.member.function_tags_confirmed",
 	"project.member.removed",
-	// story (6)
+	// story (7)
 	"story.created",
 	"story.updated",
 	"story.reprioritized",
 	"story.deleted",
 	"story.status_changed",
 	"story.pm_pushed",
+	"story.pm_status_synced",
 	// audit (3)
 	// document assistant conversations (6)
 	"document_assistant.conversation.created",
@@ -84,16 +85,18 @@ const EXPECTED_KEYS = [
 ];
 
 describe("ACTION_CATALOG", () => {
-	it("covers every closed-taxonomy key (45 success + 8 error + 6 incident = 59)", () => {
-		// 8 auth + 12 org + 10 project + 6 story + 6 document_assistant +
-		// 3 audit = 45 success keys, plus 8 open-namespace error keys (D16)
+	it("covers every closed-taxonomy key (46 success + 8 error + 6 incident = 60)", () => {
+		// 8 auth + 12 org + 10 project + 7 story + 6 document_assistant +
+		// 3 audit = 46 success keys, plus 8 open-namespace error keys (D16)
 		// and 6 incident bridge keys (D17). The task spec's "27 success"
 		// figure predates the org / audit / incident additions that landed
 		// in Phase 2. Task 7 (Role/Function Tags Stage 1) adds
 		// `project.member.function_tags_changed`; Fizzy #2264 adds
 		// `project.member.function_tags_confirmed`; the roadmap Priority
-		// feature adds `story.reprioritized` (one row per AI run).
-		expect(EXPECTED_KEYS.length).toBe(59);
+		// feature adds `story.reprioritized` (one row per AI run); Fizzy #2304
+		// adds `story.pm_status_synced` (one row per status move the PM
+		// status sync applies).
+		expect(EXPECTED_KEYS.length).toBe(60);
 		for (const key of EXPECTED_KEYS) {
 			expect(ACTION_CATALOG[key]).toBeDefined();
 		}

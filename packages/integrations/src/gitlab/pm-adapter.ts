@@ -393,12 +393,19 @@ export interface GitLabPMWriteResult {
 	externalId: string;
 	externalUrl: string | null;
 	title: string;
+	/**
+	 * GitLab's `updated_at` for this write (ISO), or null when the response
+	 * carries none. The status-sync push stamps its ticket clock from it
+	 * (Fizzy #2304 §4.5).
+	 */
+	updatedAt: string | null;
 }
 
 interface GitLabIssueWriteResponse {
 	iid: number;
 	title: string;
 	web_url?: string;
+	updated_at?: string;
 }
 
 function buildCreateArgs(
@@ -455,6 +462,10 @@ function toWriteResult(raw: GitLabIssueWriteResponse): GitLabPMWriteResult {
 		externalId: String(raw.iid),
 		externalUrl: raw.web_url ?? null,
 		title: raw.title,
+		updatedAt:
+			typeof raw.updated_at === "string" && raw.updated_at.length > 0
+				? raw.updated_at
+				: null,
 	};
 }
 

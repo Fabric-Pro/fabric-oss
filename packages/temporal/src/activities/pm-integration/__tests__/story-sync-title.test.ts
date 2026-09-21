@@ -86,6 +86,10 @@ vi.mock("@repo/database", () => ({
 		/<p>\s*<a\s+[^>]*href=["']([^"']+)["'][^>]*>\s*View in Fabric\s*<\/a>\s*<\/p>/i,
 	db: {
 		projectStoryStatus: { findMany: findManyStatuses },
+		// The REST push (update and create) reads the project's status-sync
+		// switch (Fizzy #2304 §4.5). No row → switch off → the payloads
+		// asserted here are unchanged.
+		project: { findUnique: vi.fn().mockResolvedValue(null) },
 	},
 }));
 

@@ -180,3 +180,35 @@ describe("normalizePolledState — Fizzy (#1360)", () => {
 		expect(n.statusString).toBe("Done");
 	});
 });
+
+describe("normalizePolledState — itemUrl (Fizzy #2304 D2.3)", () => {
+	const URL_7 = "https://gitlab.example.com/acme/portal/-/issues/7";
+
+	it("rest-gitlab: surfaces the summary's url as itemUrl", () => {
+		const n = normalizePolledState(
+			item(
+				{ state: "opened", labels: ["workflow::in-review"] },
+				{ url: URL_7 },
+			),
+			{ kind: "rest-gitlab" },
+		);
+		expect(n.itemUrl).toBe(URL_7);
+	});
+
+	it("MCP tools: itemUrl is null even when the summary carries a url", () => {
+		const url =
+			"https://dev.azure.com/example-org/Portal/_workitems/edit/7";
+		expect(
+			normalizePolledState(
+				item({ fields: { "System.State": "Active" } }, { url }),
+				{ kind: "mcp" },
+			).itemUrl,
+		).toBeNull();
+		expect(
+			normalizePolledState(
+				item({ closed: false, column: { name: "To do" } }, { url }),
+				{ kind: "mcp", pmTool: "fizzy" },
+			).itemUrl,
+		).toBeNull();
+	});
+});
