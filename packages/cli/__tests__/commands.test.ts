@@ -47,6 +47,13 @@ const { mocks } = vi.hoisted(() => ({
 		getDefaultContext: vi.fn<() => unknown>(),
 		/** Proves the ambient SDK context is dropped (round 3, finding 3). */
 		withoutContext: vi.fn(),
+		/**
+		 * Every `getClient` options object, in call order. The manifest read
+		 * and the download-link request deliberately get DIFFERENT clients —
+		 * different budget, different retry policy — and that is only visible
+		 * here.
+		 */
+		getClient: vi.fn(),
 	},
 }));
 
@@ -72,7 +79,12 @@ vi.mock("../src/lib/client.js", () => {
 			return client;
 		},
 	};
-	return { getClient: () => client };
+	return {
+		getClient: (overrides: unknown) => {
+			mocks.getClient(overrides);
+			return client;
+		},
+	};
 });
 
 class ExitSignal extends Error {
@@ -199,6 +211,7 @@ beforeEach(() => {
 	mocks.getConfigPath.mockReturnValue(OUTSIDE_CONFIG_PATH);
 	mocks.getDefaultContext.mockReset();
 	mocks.getDefaultContext.mockReturnValue(undefined);
+	mocks.getClient.mockReset();
 	delete process.env.FABRIC_FORMAT;
 });
 
@@ -593,6 +606,14 @@ describe("fabric instructions sync", () => {
 			"AGENTS.md",
 		]);
 		expect(result.stdout).toContain("2 added");
+		// TWO clients, deliberately. The manifest read keeps the sync budget;
+		// the download-link request gets the bundle budget and NO retries,
+		// because a timed-out retry of that POST does not wait for the build
+		// already running on the server, it starts another one.
+		expect(mocks.getClient.mock.calls.map(([options]) => options)).toEqual([
+			{ timeoutMs: 15_000 },
+			{ timeoutMs: 60_000, retry: { maxRetries: 0 } },
+		]);
 	});
 
 	it("writes nothing and downloads nothing on --dry-run", async () => {
@@ -860,6 +881,18 @@ describe("fabric instructions init", () => {
 		);
 		expect(result.stdout).toContain("1 added");
 		expect(result.stdout).toContain("does not edit .gitignore");
+		// Init makes more than one manifest client (its own eligibility read,
+		// then the sync's), so this asserts the two shapes rather than the
+		// sequence: manifest budget with the SDK's default retries, and the
+		// download link on the bundle budget with retries off.
+		const clientOptions = mocks.getClient.mock.calls.map(
+			([options]) => options,
+		);
+		expect(clientOptions).toContainEqual({ timeoutMs: 15_000 });
+		expect(clientOptions).toContainEqual({
+			timeoutMs: 60_000,
+			retry: { maxRetries: 0 },
+		});
 	});
 
 	it("does not write a hook when the first published sync fails", async () => {
@@ -1373,6 +1406,13 @@ describe("an unchanged digest over a drifted tree", () => {
 		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
 			"published\n",
 		);
+		// Hook mode's ONE absolute deadline still bounds the download-link
+		// request — it does not get the 60-second bundle budget — and retries
+		// stay off, as they are for every hook-mode call.
+		expect(mocks.getClient.mock.calls.map(([options]) => options)).toEqual([
+			{ timeoutMs: 10_000, retry: { maxRetries: 0 } },
+			{ timeoutMs: 10_000, retry: { maxRetries: 0 } },
+		]);
 	});
 
 	it("check without --verify reads nothing local and says so", async () => {

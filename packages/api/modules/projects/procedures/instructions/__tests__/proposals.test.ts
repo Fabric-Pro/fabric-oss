@@ -19,6 +19,8 @@ const m = vi.hoisted(() => ({
 	downloadFile: vi.fn(),
 	requireHostingOrganizationId: vi.fn(),
 	canReviewInstructionProposals: vi.fn(),
+	runInBackground: vi.fn(),
+	warmInstructionSnapshotExport: vi.fn(),
 	requiredPermissions: [] as string[],
 }));
 
@@ -53,6 +55,17 @@ vi.mock("../hosting-organization", () => ({
 vi.mock("../proposal-authorization", () => ({
 	canReviewInstructionProposals: (...args: unknown[]) =>
 		m.canReviewInstructionProposals(...args),
+}));
+// Approval publishes, so it pre-builds the download archive the same way the
+// manual publish procedure does. The work is SCHEDULED rather than awaited,
+// and `run-in-background.ts` is a local wrapper precisely so a test can
+// assert that by mocking it.
+vi.mock("../../../../../modules/weave/lib/run-in-background", () => ({
+	runInBackground: (...args: unknown[]) => m.runInBackground(...args),
+}));
+vi.mock("@repo/instructions/export", () => ({
+	warmInstructionSnapshotExport: (...args: unknown[]) =>
+		m.warmInstructionSnapshotExport(...args),
 }));
 vi.mock("../../../../../orpc/procedures", () => {
 	let currentPath = "";
@@ -129,6 +142,7 @@ beforeEach(() => {
 	}
 	m.requireHostingOrganizationId.mockResolvedValue("org_1");
 	m.canReviewInstructionProposals.mockResolvedValue(true);
+	m.warmInstructionSnapshotExport.mockResolvedValue(undefined);
 });
 
 describe("projects.instructions.proposals", () => {
@@ -479,5 +493,48 @@ describe("projects.instructions.proposals", () => {
 		expect(m.cancelInstructionProposal).toHaveBeenCalledWith(
 			expect.objectContaining({ proposerUserId: "reviewer_1" }),
 		);
+	});
+
+	it("pre-builds the export archive for the version an approval publishes", async () => {
+		m.getInstructionProposal.mockResolvedValue(proposal);
+		m.approveInstructionProposal.mockResolvedValue({
+			ok: true,
+			changed: true,
+			version: 9,
+		});
+
+		await run(APPROVE, {
+			projectId: "project_1",
+			snapshotId: "proposal_1",
+		});
+
+		// The proposal id IS the snapshot id, and the organization is the
+		// project's hosting organization resolved server-side.
+		expect(m.warmInstructionSnapshotExport).toHaveBeenCalledWith({
+			projectId: "project_1",
+			organizationId: "org_1",
+			snapshotId: "proposal_1",
+		});
+		// Scheduled, not awaited: the reviewer's response is unchanged.
+		expect(m.runInBackground).toHaveBeenCalledTimes(1);
+	});
+
+	it("pre-builds nothing when the approval was refused", async () => {
+		m.getInstructionProposal.mockResolvedValue(proposal);
+		m.approveInstructionProposal.mockResolvedValue({
+			ok: false,
+			reason: "stale",
+		});
+
+		await expect(
+			run(APPROVE, {
+				projectId: "project_1",
+				snapshotId: "proposal_1",
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+
+		// Nothing took the pointer, so there is no new version to build for.
+		expect(m.warmInstructionSnapshotExport).not.toHaveBeenCalled();
+		expect(m.runInBackground).not.toHaveBeenCalled();
 	});
 });

@@ -11,6 +11,7 @@ import {
 	rejectInstructionProposal,
 } from "@repo/database";
 import { SNAPSHOT_LIMITS } from "@repo/instructions";
+import { warmInstructionSnapshotExport } from "@repo/instructions/export";
 import { getStorageProvider } from "@repo/storage";
 import { z } from "zod";
 import {
@@ -18,6 +19,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { runInBackground } from "../../../weave/lib/run-in-background";
 import { requireHostingOrganizationId } from "./hosting-organization";
 import { canReviewInstructionProposals } from "./proposal-authorization";
 
@@ -469,6 +471,20 @@ export const approveInstructionProposalProcedure = tenantProtectedProcedure
 		if (!result.ok) {
 			return decisionError(result.reason);
 		}
+		// Approving a proposal publishes it, so the same pre-build the manual
+		// publish procedure schedules applies here: the proposal id IS the
+		// snapshot id, and the archive that the next `fabric instructions
+		// sync` asks for is built now rather than inside that request.
+		// Scheduled through `runInBackground` and never awaited, so the
+		// reviewer's response is unchanged; the helper never throws, and a
+		// warm that fails only costs the first downloader the old wait.
+		runInBackground(
+			warmInstructionSnapshotExport({
+				projectId: input.projectId,
+				organizationId,
+				snapshotId: input.snapshotId,
+			}),
+		);
 		return {
 			approved: true as const,
 			published: true as const,

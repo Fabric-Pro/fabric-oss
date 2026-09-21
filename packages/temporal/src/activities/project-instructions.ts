@@ -27,6 +27,7 @@ import {
 	stagingKey,
 	stagingPrefix,
 } from "@repo/instructions";
+import { warmInstructionSnapshotExport } from "@repo/instructions/export";
 import { logger } from "@repo/logs";
 import {
 	getStorageProvider,
@@ -1301,9 +1302,57 @@ export async function publishInstructionSnapshotActivity(
 			},
 		});
 	}
-	return r.published
-		? { published: true }
-		: { published: false, reason: r.reason };
+	if (r.published) {
+		// Pre-build the download archive for the version that just became
+		// the pointer, so the first `fabric instructions sync` of it does not
+		// have to. AWAITED, unlike the oRPC call sites: an activity may run
+		// for seconds and there is no serverless response lifetime to extend,
+		// so the worker can simply do the work.
+		//
+		// Safe to await because `warmInstructionSnapshotExport` NEVER throws:
+		// the pointer has already moved, and a failure here must not fail the
+		// activity and retry a publish that already happened. The try/catch
+		// below does not depend on the helper keeping that promise.
+		//
+		// The workflow is untouched — no new activity, no change to control
+		// flow — so no replay validation is needed for this.
+		//
+		// The workflow's `proxyActivities` sets a 60s `heartbeatTimeout` for
+		// this activity, and this await can run longer than that on a large
+		// tree or slow storage — the same reason the per-file loops elsewhere
+		// in this file heartbeat. Without one here, Temporal would time this
+		// activity out and retry it after the publish it is warming already
+		// committed. The interval is started just before the await and
+		// cleared in `finally` so it never outlives this call.
+		const heartbeatInterval = setInterval(() => {
+			heartbeat({ phase: "export-warm", snapshotId: ref.snapshotId });
+		}, 15_000);
+		try {
+			await warmInstructionSnapshotExport({
+				projectId: ref.projectId,
+				organizationId: ref.organizationId,
+				snapshotId: ref.snapshotId,
+			});
+		} catch (error) {
+			logger.warn(
+				{
+					event: "project.instructions.export_warm_failed",
+					snapshotId: ref.snapshotId,
+					projectId: ref.projectId,
+					organizationId: ref.organizationId,
+					failure:
+						error instanceof Error
+							? error.constructor.name
+							: "unknown",
+				},
+				"[CodingInstructions] Could not pre-build the export archive",
+			);
+		} finally {
+			clearInterval(heartbeatInterval);
+		}
+		return { published: true };
+	}
+	return { published: false, reason: r.reason };
 }
 
 /**
