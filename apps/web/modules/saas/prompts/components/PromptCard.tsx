@@ -214,7 +214,7 @@ export function PromptCard({
 			if (!clearableBinding) {
 				throw new Error("No override to clear");
 			}
-			return await orpcClient.prompts.bind.clear({
+			return await orpcClient.prompts.bindings.clear({
 				targetType: "AGENT",
 				targetKey: clearableBinding.targetKey,
 				documentType: clearableBinding.documentType,

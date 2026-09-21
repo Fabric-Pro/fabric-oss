@@ -53,7 +53,7 @@ const {
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		prompts: {
-			bind: {
+			bindings: {
 				set: (i: unknown) => bindSet(i),
 				setMany: (i: unknown) => bindSetMany(i),
 				listForPrompt: (i: unknown) => listForPrompt(i),

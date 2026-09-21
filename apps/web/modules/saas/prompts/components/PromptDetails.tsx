@@ -113,7 +113,7 @@ export function PromptDetails({
 	const { data: boundActionsData } = useQuery({
 		queryKey: ["prompt-bound-actions", promptId, organizationId],
 		queryFn: async () =>
-			await orpcClient.prompts.bind.listForPrompt({
+			await orpcClient.prompts.bindings.listForPrompt({
 				promptId,
 				organizationId: organizationId ?? null,
 			}),

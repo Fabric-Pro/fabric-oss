@@ -21,7 +21,7 @@ const { bindClear, confirmMock } = vi.hoisted(() => ({
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		prompts: {
-			bind: {
+			bindings: {
 				clear: (input: unknown) => bindClear(input),
 				set: vi.fn(),
 			},

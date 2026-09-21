@@ -220,7 +220,7 @@ export function PromptBindingManager({
 			// simpler endpoint; the batch is a transaction, so several actions
 			// either all bind or none do.
 			if (extras.length === 0) {
-				return await orpcClient.prompts.bind.set({
+				return await orpcClient.prompts.bindings.set({
 					...primary,
 					scope: selectedScope,
 					organizationId: organizationIdForScope,
@@ -229,7 +229,7 @@ export function PromptBindingManager({
 				});
 			}
 
-			return await orpcClient.prompts.bind.setMany({
+			return await orpcClient.prompts.bindings.setMany({
 				targets: [primary, ...extras],
 				scope: selectedScope,
 				organizationId: organizationIdForScope,

@@ -30,7 +30,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		prompts: {
 			catalog: { list: catalogList },
-			bind: { set: bindSet, clear: bindClear },
+			bindings: { set: bindSet, clear: bindClear },
 		},
 	},
 }));
