@@ -4,7 +4,7 @@
  *   fabric instructions check --project <id>   Is the local copy current?
  *   fabric instructions sync  --project <id>   Make it current.
  *   fabric instructions push  --project <id>   Suggest the local edits back.
- *   fabric instructions init  --project <id> --tool claude-code
+ *   fabric instructions init  --project <id> --tool claude-code|codex
  *                                             Take the first copy, then write the session hook.
  *
  * The first file-writing commands in this CLI. Everything that touches the
@@ -28,6 +28,8 @@ import {
 	assertKeyStaysOutside,
 	buildHookCommand,
 	CLAUDE_SETTINGS_RELATIVE_PATH,
+	CODEX_HOOKS_RELATIVE_PATH,
+	type InstructionsHookTool,
 	mergeSessionStartHook,
 } from "../../lib/instructions/hook.js";
 import {
@@ -226,7 +228,7 @@ export function buildInstructionsCommand(): Command {
 		.requiredOption("--project <id>", "Project ID")
 		.requiredOption(
 			"--tool <tool>",
-			"Coding tool to configure: claude-code",
+			"Coding tool to configure: claude-code|codex",
 		)
 		.option("--dest <dir>", "Destination directory (default: cwd)")
 		.option("--org <slug>", "Organization context")
@@ -1258,12 +1260,13 @@ async function runInit(
 	opts: CommonOptions & { tool: string; apply?: boolean },
 	format: OutputFormat,
 ): Promise<void> {
-	if (opts.tool !== "claude-code") {
+	if (!isInstructionsHookTool(opts.tool)) {
 		throw new CliFailure(
-			`Unsupported tool "${opts.tool}". Only --tool claude-code is supported today; other tools follow.`,
+			`Unsupported tool "${opts.tool}". Use --tool claude-code or --tool codex.`,
 			2,
 		);
 	}
+	const tool = opts.tool;
 
 	const root = await resolveDestinationRoot(destinationOf(opts));
 
@@ -1308,6 +1311,7 @@ async function runInit(
 		root,
 		projectId: opts.project,
 		command,
+		tool,
 	});
 
 	if (format === "json") {
@@ -1337,6 +1341,11 @@ async function runInit(
 			? "  It applies changes at session start."
 			: "  It only reports changes; add --apply to init to have it apply them.",
 	);
+	if (tool === "codex") {
+		line(
+			"  Start Codex in this checkout, then use `/hooks` to review and trust the project hook.",
+		);
+	}
 
 	if (outcome === null) {
 		line(
@@ -1349,6 +1358,16 @@ async function runInit(
 
 	line("");
 	line(
-		`${CLAUDE_SETTINGS_RELATIVE_PATH} and ${LOCK_DIRECTORY}/ are local to this machine. If this repository does not ignore them already, add them to your own ignore rules — this command does not edit .gitignore.`,
+		`${hookPathFor(tool)} and ${LOCK_DIRECTORY}/ are local to this machine. If this repository does not ignore them already, add them to your own ignore rules — this command does not edit .gitignore.`,
 	);
+}
+
+function isInstructionsHookTool(tool: string): tool is InstructionsHookTool {
+	return tool === "claude-code" || tool === "codex";
+}
+
+function hookPathFor(tool: InstructionsHookTool): string {
+	return tool === "codex"
+		? CODEX_HOOKS_RELATIVE_PATH
+		: CLAUDE_SETTINGS_RELATIVE_PATH;
 }

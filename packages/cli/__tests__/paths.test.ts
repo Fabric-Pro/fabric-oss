@@ -104,6 +104,8 @@ describe("isReservedPath", () => {
 		// Review round 2, finding 5: the file `init` writes for itself.
 		[".claude/settings.local.json"],
 		[".claude/Settings.Local.json"],
+		[".codex/hooks.json"],
+		[".codex/Hooks.json"],
 	])("refuses to own %s", (input) => {
 		expect(isReservedPath(input)).toBe(true);
 	});
@@ -117,6 +119,8 @@ describe("isReservedPath", () => {
 		[".claude/skills/review/SKILL.md"],
 		[".claude/settings.json"],
 		[".claude/commands/x.md"],
+		[".codex/skills/review/SKILL.md"],
+		[".codex/config.toml"],
 	])("leaves %s alone", (input) => {
 		expect(isReservedPath(input)).toBe(false);
 	});

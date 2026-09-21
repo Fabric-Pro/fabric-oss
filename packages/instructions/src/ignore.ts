@@ -14,11 +14,16 @@ export type IgnoreMatch = { rule: string; layer: IgnoreLayer };
  * top level, which mattered most for `.git`: a nested `.git/config` can carry
  * a credentialed remote URL.
  *
- * `retro.md` and `.claude/settings.local.json` deliberately stay
+ * `retro.md`, `.claude/settings.local.json`, and `.codex/hooks.json` stay
  * root-anchored: they name one specific file at the top of a repository, not
- * a category of path, and a `docs/retro.md` is ordinary content.
+ * a category of path, and a `docs/retro.md` is ordinary content. The two hook
+ * paths are unconditional exclusions because `init` owns them locally.
  */
-export const ALWAYS_IGNORE_GLOBS: readonly string[] = ["**/.git/**"];
+export const ALWAYS_IGNORE_GLOBS: readonly string[] = [
+	"**/.git/**",
+	".claude/settings.local.json",
+	".codex/hooks.json",
+];
 
 /**
  * The one path whose CONTENT decides an upload's exclusion rules.
@@ -44,7 +49,6 @@ export const DEFAULT_IGNORE_GLOBS: readonly string[] = [
 	"**/metrics/**",
 	"retro.md",
 	"**/*.jsonl",
-	".claude/settings.local.json",
 	"**/.DS_Store",
 ];
 

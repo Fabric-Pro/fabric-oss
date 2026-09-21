@@ -104,6 +104,7 @@ describe("assertSafeTarget", () => {
 			".claude",
 			".claude/settings.local.json",
 		],
+		["a symlinked Codex directory", ".codex", ".codex/hooks.json"],
 		["a symlinked lock directory", ".fabric", ".fabric/instructions.lock"],
 	])("refuses to write through %s", async (_label, linkName, target) => {
 		const root = await makeTree();

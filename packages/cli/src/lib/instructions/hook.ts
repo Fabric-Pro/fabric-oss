@@ -1,9 +1,9 @@
 /**
- * The Claude Code SessionStart hook that keeps a checkout current.
+ * The coding-tool SessionStart hook that keeps a checkout current.
  *
- * Written into `.claude/settings.local.json` and NEVER `settings.json`. The
- * local file is per-developer and normally untracked; the shared one is
- * committed, and a hook committed into a repository runs on everybody's
+ * Claude Code writes `.claude/settings.local.json` and never `settings.json`;
+ * Codex writes `.codex/hooks.json`. Both are per-developer, normally
+ * untracked files. A hook committed into a repository runs on everybody's
  * machine with whatever credentials they happen to have.
  *
  * The command never carries the key. It names a project and nothing else —
@@ -17,20 +17,31 @@
  * clear and compact alike: a session resumed after a pull is exactly when the
  * published version is most likely to have moved.
  */
-import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { resolvesInside, writeFileSafely } from "./safe-write.js";
+import {
+	readFileSafely,
+	resolvesInside,
+	writeFileSafely,
+} from "./safe-write.js";
+
+export type InstructionsHookTool = "claude-code" | "codex";
 
 export const CLAUDE_SETTINGS_RELATIVE_PATH = path.join(
 	".claude",
 	"settings.local.json",
 );
 
+export const CODEX_HOOKS_RELATIVE_PATH = path.join(".codex", "hooks.json");
+
 /** The same path in the POSIX spelling the guarded writer expects. */
 const CLAUDE_SETTINGS_POSIX_PATH = ".claude/settings.local.json";
+const CODEX_HOOKS_POSIX_PATH = ".codex/hooks.json";
 
 /** Seconds. Long enough for a cold start plus one manifest call, short enough to be invisible. */
 const HOOK_TIMEOUT_SECONDS = 15;
+
+/** Local hook configuration is small; a bound prevents an untrusted file from consuming memory. */
+const MAX_HOOK_CONFIG_BYTES = 1024 * 1024;
 
 /** The subcommands a hook this tool wrote may name. */
 const HOOK_SUBCOMMANDS = new Set(["check", "sync"]);
@@ -111,20 +122,29 @@ export async function mergeSessionStartHook(input: {
 	root: string;
 	projectId: string;
 	command: string;
+	tool?: InstructionsHookTool;
 }): Promise<MergeHookResult> {
-	const settingsPath = path.join(input.root, CLAUDE_SETTINGS_RELATIVE_PATH);
+	const hookTarget = hookTargetFor(input.tool ?? "claude-code");
+	const settingsPath = path.join(input.root, hookTarget.relativePath);
 
-	let existingRaw: string | null = null;
+	let existingRaw: string | null;
 	try {
-		existingRaw = await readFile(settingsPath, "utf8");
+		const existing = await readFileSafely(
+			input.root,
+			hookTarget.posixPath,
+			{ maxBytes: MAX_HOOK_CONFIG_BYTES },
+		);
+		existingRaw =
+			existing === null ? null : new TextDecoder().decode(existing.bytes);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-			throw error;
-		}
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(
+			`${settingsPath} could not be read safely: ${message}. It was left untouched.`,
+		);
 	}
 
 	let settings: Record<string, unknown> = {};
-	if (existingRaw !== null && existingRaw.trim().length > 0) {
+	if (existingRaw !== null) {
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(existingRaw);
@@ -224,7 +244,7 @@ export async function mergeSessionStartHook(input: {
 
 	await writeFileSafely({
 		root: input.root,
-		relativePath: CLAUDE_SETTINGS_POSIX_PATH,
+		relativePath: hookTarget.posixPath,
 		bytes: new TextEncoder().encode(
 			`${JSON.stringify(next, null, 2).replace(/\r\n/g, "\n")}\n`,
 		),
@@ -236,6 +256,21 @@ export async function mergeSessionStartHook(input: {
 		createdFile: existingRaw === null,
 		replacedCount,
 	};
+}
+
+function hookTargetFor(tool: InstructionsHookTool): {
+	relativePath: string;
+	posixPath: string;
+} {
+	return tool === "codex"
+		? {
+				relativePath: CODEX_HOOKS_RELATIVE_PATH,
+				posixPath: CODEX_HOOKS_POSIX_PATH,
+			}
+		: {
+				relativePath: CLAUDE_SETTINGS_RELATIVE_PATH,
+				posixPath: CLAUDE_SETTINGS_POSIX_PATH,
+			};
 }
 
 /**

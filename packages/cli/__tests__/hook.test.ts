@@ -68,6 +68,35 @@ function merge(root: string, projectId: string, apply = false) {
 	});
 }
 
+type HookTool = "claude-code" | "codex";
+
+function hookFileFor(root: string, tool: HookTool): string {
+	return path.join(
+		root,
+		tool === "codex" ? ".codex/hooks.json" : ".claude/settings.local.json",
+	);
+}
+
+async function writeHookFile(
+	root: string,
+	tool: HookTool,
+	body: string,
+): Promise<string> {
+	const file = hookFileFor(root, tool);
+	await mkdir(path.dirname(file), { recursive: true });
+	await writeFile(file, body, "utf8");
+	return file;
+}
+
+function mergeForTool(root: string, tool: HookTool) {
+	return mergeSessionStartHook({
+		root,
+		projectId: "project-1",
+		command: buildHookCommand("project-1", false),
+		tool,
+	});
+}
+
 describe("buildHookCommand", () => {
 	it("names the project and never the key", () => {
 		expect(buildHookCommand("project-1", false)).toBe(
@@ -150,7 +179,118 @@ describe("malformed nested shapes", () => {
 	});
 });
 
+describe("existing hook config reads", () => {
+	it.each(["claude-code", "codex"] as const)(
+		"refuses a symlinked existing %s config without reading or rewriting its target",
+		async (tool) => {
+			const root = await makeTree();
+			const outside = path.join(await makeTree(), "hooks.json");
+			const body = '{"hooks":{"SessionStart":[]}}';
+			await writeFile(outside, body, "utf8");
+			const file = hookFileFor(root, tool);
+			await mkdir(path.dirname(file), { recursive: true });
+			await symlink(outside, file, "file");
+
+			await expect(mergeForTool(root, tool)).rejects.toThrow(
+				/left untouched/,
+			);
+			expect(await readFile(outside, "utf8")).toBe(body);
+		},
+	);
+
+	it.each(["claude-code", "codex"] as const)(
+		"refuses an oversized existing %s config before rewriting it",
+		async (tool) => {
+			const root = await makeTree();
+			const body = JSON.stringify({ padding: "x".repeat(1_048_577) });
+			const file = await writeHookFile(root, tool, body);
+
+			await expect(mergeForTool(root, tool)).rejects.toThrow(
+				/too large.*left untouched/,
+			);
+			expect(await readFile(file, "utf8")).toBe(body);
+		},
+	);
+
+	it.each([
+		["claude-code", ""],
+		["claude-code", " \n\t"],
+		["codex", ""],
+		["codex", " \n\t"],
+	] as const)(
+		"refuses an existing %s config containing only whitespace",
+		async (tool, body) => {
+			const root = await makeTree();
+			const file = await writeHookFile(root, tool, body);
+
+			await expect(mergeForTool(root, tool)).rejects.toThrow(
+				/not valid JSON/,
+			);
+			expect(await readFile(file, "utf8")).toBe(body);
+		},
+	);
+});
+
 describe("mergeSessionStartHook", () => {
+	it("merges a Codex hook without disturbing unrelated events or matcher groups", async () => {
+		const root = await makeTree();
+		const file = path.join(root, ".codex", "hooks.json");
+		await mkdir(path.dirname(file), { recursive: true });
+		await writeFile(
+			file,
+			JSON.stringify({
+				description: "Personal hooks",
+				hooks: {
+					SessionStart: [
+						{
+							matcher: "startup|resume",
+							hooks: [
+								{ type: "command", command: "echo keep" },
+								{
+									type: "command",
+									command:
+										"fabric instructions sync --project project-1 --hook",
+								},
+							],
+						},
+					],
+					PreToolUse: [{ matcher: "Bash", hooks: [] }],
+				},
+			}),
+			"utf8",
+		);
+
+		const result = await mergeSessionStartHook({
+			root,
+			projectId: "project-1",
+			command: buildHookCommand("project-1", false),
+			tool: "codex",
+		});
+
+		expect(result.settingsPath).toBe(file);
+		const hooks = JSON.parse(await readFile(file, "utf8"));
+		expect(hooks.description).toBe("Personal hooks");
+		expect(hooks.hooks.PreToolUse).toEqual([
+			{ matcher: "Bash", hooks: [] },
+		]);
+		expect(hooks.hooks.SessionStart).toEqual([
+			{
+				matcher: "startup|resume",
+				hooks: [{ type: "command", command: "echo keep" }],
+			},
+			{
+				hooks: [
+					{
+						type: "command",
+						command:
+							"fabric instructions check --project project-1 --hook",
+						timeout: 15,
+					},
+				],
+			},
+		]);
+	});
+
 	it("creates the file when there is none", async () => {
 		const root = await makeTree();
 

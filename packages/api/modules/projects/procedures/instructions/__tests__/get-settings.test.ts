@@ -78,7 +78,6 @@ describe("projects.instructions.getSettings", () => {
 				"**/metrics/**",
 				"retro.md",
 				"**/*.jsonl",
-				".claude/settings.local.json",
 				"**/.DS_Store",
 			],
 			sourceOfTruth: "UPLOAD",

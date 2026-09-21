@@ -30,7 +30,7 @@
  * server hashes these files and so does the next sync.
  */
 import { createHash, randomBytes } from "node:crypto";
-import type { Stats } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import {
 	lstat,
@@ -201,24 +201,95 @@ export async function assertWritableTarget(
 export async function readFileSafely(
 	root: string,
 	relativePath: string,
+	options: { maxBytes?: number } = {},
 ): Promise<{ bytes: Uint8Array; mode: number } | null> {
 	const check = await assertWritableTarget(root, relativePath);
 	if (!check.ok) {
 		throw new Error(`Refusing to sync: ${describeRejection(check)}.`);
 	}
-	const stats = await lstatOrNull(check.path);
-	if (stats === null) {
-		return null;
-	}
+
+	let handle: FileHandle;
 	try {
-		return { bytes: await readFile(check.path), mode: stats.mode };
+		// `O_NOFOLLOW` makes a final-component swap fail rather than following
+		// it. `O_NONBLOCK` prevents a raced FIFO from holding the command before
+		// the descriptor can be proven to be an ordinary file.
+		handle = await open(
+			check.path,
+			constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+		);
 	} catch (error) {
-		// Removed between the `lstat` and the `open`: absent is the honest
-		// answer, and the caller plans to write it.
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 			return null;
 		}
 		throw error;
+	}
+
+	try {
+		const opened = await handle.stat();
+		if (!opened.isFile()) {
+			throw new Error(
+				`Refusing to sync: ${relativePath} is not a regular file.`,
+			);
+		}
+		// Re-walk after opening, then bind the descriptor to the path that was
+		// just checked. A swapped ancestor may make the path point elsewhere,
+		// but no bytes are read until both checks agree on the same inode.
+		const afterOpen = await assertWritableTarget(root, relativePath);
+		if (!afterOpen.ok) {
+			throw new Error(
+				`Refusing to sync: ${describeRejection(afterOpen)}.`,
+			);
+		}
+		const current = await lstatOrNull(afterOpen.path);
+		if (
+			current === null ||
+			!current.isFile() ||
+			current.dev !== opened.dev ||
+			current.ino !== opened.ino
+		) {
+			throw new Error(
+				`Refusing to sync: ${relativePath} changed while it was being opened.`,
+			);
+		}
+
+		if (options.maxBytes === undefined) {
+			return { bytes: await handle.readFile(), mode: opened.mode };
+		}
+		if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 0) {
+			throw new Error(
+				"A safe file-read limit must be a non-negative integer.",
+			);
+		}
+		if (opened.size > options.maxBytes) {
+			throw new Error(
+				`${relativePath} is too large to read safely (maximum ${options.maxBytes} bytes).`,
+			);
+		}
+
+		// The extra byte catches a file that grew after `fstat` without ever
+		// allocating or reading an unbounded body.
+		const buffer = Buffer.allocUnsafe(options.maxBytes + 1);
+		let total = 0;
+		while (total <= options.maxBytes) {
+			const { bytesRead } = await handle.read(
+				buffer,
+				total,
+				options.maxBytes + 1 - total,
+				total,
+			);
+			if (bytesRead === 0) {
+				break;
+			}
+			total += bytesRead;
+		}
+		if (total > options.maxBytes) {
+			throw new Error(
+				`${relativePath} is too large to read safely (maximum ${options.maxBytes} bytes).`,
+			);
+		}
+		return { bytes: buffer.subarray(0, total), mode: opened.mode };
+	} finally {
+		await handle.close();
 	}
 }
 

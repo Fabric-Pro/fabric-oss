@@ -184,6 +184,8 @@ describe("assertValidManifest", () => {
 		// installed, and the resulting lock could later authorise deleting it.
 		[".claude/settings.local.json"],
 		[".claude/Settings.Local.JSON"],
+		[".codex/hooks.json"],
+		[".codex/Hooks.JSON"],
 	])("refuses the reserved path %s even from the server", (reserved) => {
 		const entries = [entry(reserved, "x")];
 		expect(() =>
@@ -198,8 +200,11 @@ describe("assertValidManifest", () => {
 		).toThrow(/never writes or deletes/);
 	});
 
-	it("still accepts instruction files elsewhere under .claude/", () => {
-		const entries = [entry(".claude/skills/review/SKILL.md", "x")];
+	it("still accepts instruction files elsewhere under the tool roots", () => {
+		const entries = [
+			entry(".claude/skills/review/SKILL.md", "x"),
+			entry(".codex/skills/review/SKILL.md", "x"),
+		];
 		expect(
 			assertValidManifest({
 				manifest: entries,

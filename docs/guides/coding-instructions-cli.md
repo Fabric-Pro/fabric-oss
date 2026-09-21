@@ -8,12 +8,13 @@ How `fabric instructions check | sync | push | init` keeps a checkout current wi
 ## What this is for
 
 A project publishes a tree of coding instructions in Fabric — `AGENTS.md`,
-`.claude/` skills, rules, settings. These commands put that tree into a working
+`.claude/` or `.codex/` skills, rules, and settings. These commands put that tree into a working
 copy and keep it current, so a coding agent reads the same instructions
 everyone else does without anybody pasting anything.
 
-The intended trigger is a Claude Code `SessionStart` hook: every session asks
-whether the published version moved, and either says so or applies it.
+The intended trigger is a Claude Code or Codex `SessionStart` hook: every
+session asks whether the published version moved, and either says so or applies
+it.
 
 Working on the project is also when the instructions are most obviously wrong,
 so the traffic goes both ways: `fabric instructions push` sends the checkout's
@@ -163,16 +164,20 @@ Two refusals are worth recognising:
   `REPOSITORY`, so the files are changed in git and mirrored into Fabric. Commit
   and push to the repository instead. Nothing was sent.
 
-### `fabric instructions init --project <id> --tool claude-code [--dest <dir>] [--apply]`
+### `fabric instructions init --project <id> --tool <claude-code|codex> [--dest <dir>] [--apply]`
 
 For a published snapshot, takes the first copy before writing a `SessionStart`
-hook into `<dest>/.claude/settings.local.json` — never `settings.json`. A
-failed first sync leaves no new or updated hook behind. If nothing is
-published yet, it installs the hook so it can report the first version when it
-arrives. The hook runs
+hook. Claude Code writes `<dest>/.claude/settings.local.json` — never
+`settings.json`; Codex writes `<dest>/.codex/hooks.json`. A failed first sync
+leaves no new or updated hook behind. If nothing is published yet, it installs
+the hook so it can report the first version when it arrives. The hook runs
 `fabric instructions check` by default, so rules are not swapped under a
 developer mid-task; `--apply` makes it run `sync` instead. Running `init`
 again replaces its own entry rather than adding a second one.
+
+After starting Codex in the checkout, use `/hooks` to review and trust its
+project hook. `init` does not change that trust decision, and the hook's stdout
+becomes developer context in Codex.
 
 It refuses a project whose source of truth is `REPOSITORY`: those instructions
 arrive with `git pull`, and a sync hook would fight it. If the project is
@@ -215,10 +220,14 @@ keep them:
   lock, and still match the hash the lock recorded, before it can be removed —
   and that hash is checked again immediately before the unlink, not only when
   the plan was made. A file edited while the bundle was downloading is
-  reported as *kept, modified locally* instead of removed. `.git/**`,
-  `.fabric/**` and `.claude/settings.local.json` — the hook file `init` writes
-  — are refused outright, from the manifest and from the lock alike; the rest
-  of `.claude/` is ordinary instruction content.
+  reported as *kept, modified locally* instead of removed. `.git/**` and
+  `.fabric/**` are refused outright, from the manifest and from the lock
+  alike. The root-level hook files `init` owns —
+  `.claude/settings.local.json` and `.codex/hooks.json` — are additionally
+  always excluded from uploads, even when project ignore settings or
+  `.fabricignore` otherwise exclude nothing. The CLI also refuses them from a
+  manifest or lock; the rest of `.claude/` and `.codex/`, including nested
+  same-name paths, is ordinary instruction content.
 - **Only ordinary files are touched, and every read is guarded as well as
   every write.** Manifest paths, delete paths and the lock's own ledger paths
   all go through the same per-segment walk: nothing resolving outside the
@@ -249,8 +258,8 @@ keep them:
   same guarded walk the writes use, so a symlink standing where an instruction
   file belongs refuses the push rather than being followed, hashed and
   uploaded. Reserved paths (`.git/**`, `.fabric/**`,
-  `.claude/settings.local.json`) are refused from the lock and from `--add`
-  alike.
+  `.claude/settings.local.json`, `.codex/hooks.json`) are refused from the
+  lock and from `--add` alike.
 - **The same push twice is the same proposal.** The change route identifies a
   proposal by its content — the version it is stated against plus the set of
   paths, operations and hashes it applies — so a request whose response was
@@ -355,8 +364,8 @@ bound is worth stating plainly:
   modify;
 - it cannot cause a write anywhere new, because the bytes and paths that get
   written come from the server manifest;
-- it cannot name `.git/**`, `.fabric/**` or `.claude/settings.local.json` at
-  all;
+- it cannot name `.git/**`, `.fabric/**`, `.claude/settings.local.json` or
+  `.codex/hooks.json` at all;
 - it cannot cause the deletion of a file whose content has changed since the
   plan was made, because the hash is rechecked immediately before the unlink;
 - it cannot be partially honoured: a lock that fails schema validation stops
@@ -365,9 +374,9 @@ bound is worth stating plainly:
 Treat `.fabric/instructions.lock` with the same care as any other file in the
 tree.
 
-`.fabric/` and `.claude/settings.local.json` are local to one machine. Add
-them to your own ignore rules if the repository does not already; `init` does
-not edit `.gitignore`.
+`.fabric/`, `.claude/settings.local.json`, and `.codex/hooks.json` are local
+to one machine. Add the paths you use to your own ignore rules if the
+repository does not already; `init` does not edit `.gitignore`.
 
 ## What it talks to
 

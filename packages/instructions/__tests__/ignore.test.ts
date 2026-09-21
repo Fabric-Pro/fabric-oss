@@ -21,7 +21,8 @@ describe("compileIgnore", () => {
 		["metrics/phase-gate-log.jsonl", "default"],
 		["retro.md", "default"],
 		["deep/nested/file.jsonl", "default"],
-		[".claude/settings.local.json", "default"],
+		[".claude/settings.local.json", "always"],
+		[".codex/hooks.json", "always"],
 		["areas/.DS_Store", "default"],
 	] as const)("%s is ignored by the %s layer", (path, layer) => {
 		const m = isIgnored(path);
@@ -54,7 +55,11 @@ describe("compileIgnore", () => {
 
 	// The counterpart: a rule naming one specific file at the top of a
 	// repository stays root-anchored, so ordinary content is not swept up.
-	it.each(["docs/retro.md", "packages/x/.claude/settings.local.json"])(
+	it.each([
+		"docs/retro.md",
+		"packages/x/.claude/settings.local.json",
+		"packages/x/.codex/hooks.json",
+	])(
 		"%s is kept, because a root-anchored built-in stays root-anchored",
 		(path) => {
 			expect(isIgnored(path)).toBeNull();
@@ -140,6 +145,27 @@ describe("resolveIgnoreGlobs", () => {
 		// empty project list turns off.
 		expect(m("node_modules/pkg/index.js")).toBeNull();
 	});
+
+	it.each([
+		{ fabricIgnoreText: null, projectGlobs: [] as string[] },
+		{ fabricIgnoreText: "docs/\n", projectGlobs: ["dist/**"] },
+	])(
+		"keeps init-owned hook files excluded for %# despite configurable exclusions",
+		(input) => {
+			const m = buildIgnoreMatcher(resolveIgnoreGlobs(input));
+			for (const hookPath of [
+				".claude/settings.local.json",
+				".codex/hooks.json",
+			]) {
+				expect(m(hookPath)).toEqual({
+					rule: hookPath,
+					layer: "always",
+				});
+			}
+			expect(m("packages/x/.claude/settings.local.json")).toBeNull();
+			expect(m("packages/x/.codex/hooks.json")).toBeNull();
+		},
+	);
 
 	it("treats an empty .fabricignore as absent", () => {
 		expect(

@@ -556,6 +556,48 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		expect(screen.getAllByText(/shown once/i)).toHaveLength(1);
 	});
 
+	it("lets the reader choose Codex, explains hook trust, and resets to Claude Code after closing", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSyncAvailable: true,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+
+		const claude = await screen.findByRole("radio", {
+			name: "Claude Code",
+		});
+		const codex = screen.getByRole("radio", { name: "Codex" });
+		expect(claude).toBeChecked();
+		await user.click(codex);
+		expect(codex).toBeChecked();
+		expect(
+			screen.getByTestId("connect-cli-local-sync-command"),
+		).toHaveTextContent(
+			`fabric instructions init --project ${PROJECT_ID} --tool codex`,
+		);
+		expect(
+			screen.getByText(
+				/after you start Codex for the first time, use \/hooks to review and trust the project hook/i,
+			),
+		).toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "Copy commands" }));
+		await user.click(screen.getByRole("button", { name: "Done" }));
+		await user.click(
+			screen.getByRole("button", { name: "Connect a coding tool" }),
+		);
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		expect(
+			await screen.findByRole("radio", { name: "Claude Code" }),
+		).toBeChecked();
+	});
+
 	it("adds --apply to copied commands when automatic session-start updates are selected, then resets on close", async () => {
 		const user = setupUser();
 		renderHost({

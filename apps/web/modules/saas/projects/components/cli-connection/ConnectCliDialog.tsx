@@ -14,6 +14,7 @@ import {
 	DialogTitle,
 } from "@ui/components/dialog";
 import { Label } from "@ui/components/label";
+import { RadioGroup, RadioGroupItem } from "@ui/components/radio-group";
 import {
 	AlertTriangleIcon,
 	CheckIcon,
@@ -171,12 +172,19 @@ const INSTRUCTION_INTRO =
  * configuration does.
  */
 const ROUTES_INTRO =
-	"Two ways to give your tool these instructions. Use either; the first is the one to pick for Claude Code.";
+	"Two ways to give your tool these instructions. Use either; choose the coding tool you use in the checkout below.";
 
 const LOCAL_SYNC_LABEL = "Recommended: keep the files in your checkout";
 
 const LOCAL_SYNC_INTRO =
-	"Run these once in the checkout. The first installs or updates the CLI. The second signs it in with this key and this deployment URL; the CLI keeps both in its own profile, never in the repository, though like any command the line may remain in your shell history. FABRIC_BASE_URL overrides the profile URL when it is set. The third copies whatever is published into the checkout and configures the session-start behavior below. If nothing is published yet, the hook checks for the first version at future session starts. Claude Code reads the files directly, so the sentence further down is not needed.";
+	"Run these once in the checkout. The first installs or updates the CLI. The second signs it in with this key and this deployment URL; the CLI keeps both in its own profile, never in the repository, though like any command the line may remain in your shell history. FABRIC_BASE_URL overrides the profile URL when it is set. The third copies whatever is published into the checkout and configures the session-start behavior below. If nothing is published yet, the hook checks for the first version at future session starts. Both tools read the files directly, so the sentence further down is not needed.";
+
+type LocalSetupTool = "claude-code" | "codex";
+
+const LOCAL_SETUP_TOOL_LABEL = "Choose your coding tool";
+
+const CODEX_HOOK_TRUST_NOTE =
+	"After you start Codex for the first time, use /hooks to review and trust the project hook.";
 
 const APPLY_UPDATES_CHECKBOX_ID = "connect-cli-apply-published-updates";
 
@@ -197,11 +205,12 @@ function buildLocalSyncCommands(
 	rawKey: string,
 	baseUrl: string,
 	automaticallyApplyUpdates: boolean,
+	tool: LocalSetupTool,
 ): string {
 	return [
 		"npm install -g @fabricorg/cli",
 		`fabric auth login --key ${rawKey} --base-url ${baseUrl}`,
-		`fabric instructions init --project ${projectId} --tool claude-code${
+		`fabric instructions init --project ${projectId} --tool ${tool}${
 			automaticallyApplyUpdates ? " --apply" : ""
 		}`,
 	].join("\n");
@@ -451,6 +460,8 @@ export function ConnectCliDialog({
 	const [keyCopied, setKeyCopied] = useState(false);
 	const [automaticallyApplyUpdates, setAutomaticallyApplyUpdates] =
 		useState(false);
+	const [localSetupTool, setLocalSetupTool] =
+		useState<LocalSetupTool>("claude-code");
 	const [announcement, setAnnouncement] = useState("");
 	const [origin, setOrigin] = useState("");
 	const initialFocusRef = useRef<HTMLButtonElement>(null);
@@ -510,6 +521,7 @@ export function ConnectCliDialog({
 			setCopied(null);
 			setKeyCopied(false);
 			setAutomaticallyApplyUpdates(false);
+			setLocalSetupTool("claude-code");
 			setAnnouncement("");
 			createKeyMutation.reset();
 		}
@@ -549,6 +561,7 @@ export function ConnectCliDialog({
 					rawKey,
 					window.location.origin,
 					automaticallyApplyUpdates,
+					localSetupTool,
 				)
 			: null;
 	const cliFirst = localSyncCommands !== null;
@@ -757,6 +770,53 @@ export function ConnectCliDialog({
 								<p className="text-muted-foreground text-sm">
 									{LOCAL_SYNC_INTRO}
 								</p>
+								<div className="space-y-2">
+									<p
+										className="text-sm font-medium"
+										id="connect-cli-tool-label"
+									>
+										{LOCAL_SETUP_TOOL_LABEL}
+									</p>
+									<RadioGroup
+										aria-labelledby="connect-cli-tool-label"
+										className="flex gap-4"
+										onValueChange={(value) => {
+											if (
+												value === "claude-code" ||
+												value === "codex"
+											) {
+												setLocalSetupTool(value);
+												setCopied(null);
+												setAnnouncement("");
+											}
+										}}
+										value={localSetupTool}
+									>
+										<div className="flex items-center gap-2">
+											<RadioGroupItem
+												id="connect-cli-tool-claude-code"
+												value="claude-code"
+											/>
+											<Label htmlFor="connect-cli-tool-claude-code">
+												Claude Code
+											</Label>
+										</div>
+										<div className="flex items-center gap-2">
+											<RadioGroupItem
+												id="connect-cli-tool-codex"
+												value="codex"
+											/>
+											<Label htmlFor="connect-cli-tool-codex">
+												Codex
+											</Label>
+										</div>
+									</RadioGroup>
+								</div>
+								{localSetupTool === "codex" ? (
+									<p className="text-muted-foreground text-sm">
+										{CODEX_HOOK_TRUST_NOTE}
+									</p>
+								) : null}
 								<div className="flex items-start gap-3 rounded-lg border border-border bg-muted/40 p-3">
 									<Checkbox
 										aria-describedby={
