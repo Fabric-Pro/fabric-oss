@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 import { CAPABILITY_RULES, CAPABILITY_RULES_BY_KEY } from "../registry";
 import { resolveGate } from "../resolve";
+import { MIN_GROUNDING_DESCRIPTION_LENGTH } from "../thresholds";
 import type { CapabilityState } from "../types";
 import { evidenceWith, IDLE_JOB, runningJob } from "./evidence-fixture";
 
@@ -182,6 +183,78 @@ describe("documents", () => {
 				}),
 			),
 		).toBe("WARNING");
+	});
+
+	/**
+	 * The bound that decides this must sit clear of the one project creation
+	 * enforces, or the warning can never be seen.
+	 *
+	 * `SimplifiedProjectForm` refuses a brief of `MIN_DESCRIPTION_LENGTH` (50)
+	 * characters or fewer, so 51 is the shortest description any project in the
+	 * product can have. While this bound was also 50, every creatable project
+	 * cleared it on its description alone and `context.thin` was unreachable —
+	 * AC-14's warning existed in the registry and could not be reached in the UI.
+	 *
+	 * This is the regression test for that. If someone lowers the grounding
+	 * bound back towards the creation floor, this fails rather than the warning
+	 * quietly disappearing again.
+	 */
+	it("still warns at the shortest brief the product can create", () => {
+		expect(
+			stateOf(
+				"documents.generate-prd",
+				evidenceWith({
+					descriptionLength: 51,
+					context: { product: 0, technical: 0, total: 0 },
+					documents: { usableTypes: new Set() },
+				}),
+			),
+		).toBe("WARNING");
+	});
+
+	it("warns just below the grounding bound and not at it", () => {
+		const thin = (length: number) =>
+			stateOf(
+				"documents.generate-prd",
+				evidenceWith({
+					descriptionLength: length,
+					context: { product: 0, technical: 0, total: 0 },
+					documents: { usableTypes: new Set() },
+				}),
+			);
+		expect(thin(MIN_GROUNDING_DESCRIPTION_LENGTH - 1)).toBe("WARNING");
+		expect(thin(MIN_GROUNDING_DESCRIPTION_LENGTH)).toBe("AVAILABLE");
+	});
+
+	/**
+	 * A brief is only ever the tiebreaker. Real sources settle it on their own,
+	 * however terse the description — warning a project that has documents
+	 * would be noise, not honesty.
+	 */
+	it("does not warn on a terse brief when documents ground it", () => {
+		expect(
+			stateOf(
+				"documents.generate-prd",
+				evidenceWith({
+					descriptionLength: 1,
+					context: { product: 0, technical: 0, total: 0 },
+					documents: { usableTypes: new Set(["PRD"]) },
+				}),
+			),
+		).toBe("AVAILABLE");
+	});
+
+	it("does not warn on a terse brief when project context grounds it", () => {
+		expect(
+			stateOf(
+				"documents.generate-prd",
+				evidenceWith({
+					descriptionLength: 1,
+					context: { product: 3, technical: 0, total: 3 },
+					documents: { usableTypes: new Set() },
+				}),
+			),
+		).toBe("AVAILABLE");
 	});
 
 	it("documents.generate-architecture soft-blocks with no product source", () => {

@@ -13,6 +13,7 @@ import {
 } from "@repo/utils/document-type-catalog";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { CapabilityGateBanner } from "@saas/projects/components/capability-gates/CapabilityGateBanner";
+import { CapabilityRestoreControl } from "@saas/projects/components/capability-gates/CapabilityRestoreControl";
 import { useCapabilityGate } from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { PromptSelector } from "@saas/prompts/components/PromptSelector";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -1219,16 +1220,35 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 				 * Create is next to the Create.
 				 */}
 				{generateWithAI && (
-					<CapabilityGateBanner
-						capabilityKey={CAPABILITY_BY_DOCUMENT_TYPE[type] ?? ""}
-						hrefFor={(target) =>
-							target === "context"
-								? `${basePath}/projects/${projectId}/contexts`
-								: target === "documents"
-									? `${basePath}/projects/${projectId}/documents`
-									: null
-						}
-					/>
+					<>
+						<CapabilityGateBanner
+							capabilityKey={
+								CAPABILITY_BY_DOCUMENT_TYPE[type] ?? ""
+							}
+							hrefFor={(target) =>
+								target === "context"
+									? `${basePath}/projects/${projectId}/contexts`
+									: target === "documents"
+										? `${basePath}/projects/${projectId}/documents`
+										: null
+							}
+						/>
+						{/*
+						 * The banner can dismiss a warning — including "do not show
+						 * again for this project" — so the way back has to live on the
+						 * same surface, or a permanent dismissal becomes unreachable
+						 * (AC-8). Scoped to the document type on screen, mirroring the
+						 * banner above it and the Security tab's precedent: restoring
+						 * here never undoes a dismissal made against another generator.
+						 * Renders nothing until there is something to restore, so it
+						 * costs the ungated case nothing.
+						 */}
+						<CapabilityRestoreControl
+							capabilityKeys={[
+								CAPABILITY_BY_DOCUMENT_TYPE[type] ?? "",
+							]}
+						/>
+					</>
 				)}
 
 				<DialogFooter>

@@ -62,3 +62,27 @@ export const STALL_MINUTES_BY_SOURCE = {
 } as const;
 
 export type StallSource = keyof typeof STALL_MINUTES_BY_SOURCE;
+
+/**
+ * How long a project brief must be before it counts, on its own, as enough
+ * grounding to silence the thin-context warning.
+ *
+ * ## Why this is not the readiness constant, and must never become it
+ *
+ * `readiness/thresholds.ts` exports `MIN_DESCRIPTION_LENGTH = 50`, and project
+ * creation refuses anything at or below it (`briefTooShort` in
+ * `SimplifiedProjectForm`, mirrored in `ProjectCreationWizard`), so the shortest
+ * brief that can exist is 51 characters.
+ *
+ * This value was originally 50 as well. The two agreed, and that agreement was
+ * the bug: every project the product can create cleared the bar by construction,
+ * so `context.thin` could never resolve and the warning AC-14 asks for
+ * ("PRD / Business Case / Proposal generally run with a warning on thin
+ * context") was unreachable in the UI. Found in QA on staging, 2026-09-21.
+ *
+ * So the number has one job: sit far enough above the creation floor to tell a
+ * one-line brief from a real one. A paragraph, not a sentence. Sharing the
+ * readiness constant would re-create the collision permanently — and cannot be
+ * done anyway, since this module never imports `readiness/`.
+ */
+export const MIN_GROUNDING_DESCRIPTION_LENGTH = 250;

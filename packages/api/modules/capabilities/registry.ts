@@ -29,6 +29,7 @@
  */
 
 import { isStalled, strictest } from "./resolve";
+import { MIN_GROUNDING_DESCRIPTION_LENGTH } from "./thresholds";
 import type { CapabilityEvidence, CapabilityRule, RuleVerdict } from "./types";
 
 const AVAILABLE: RuleVerdict = {
@@ -146,10 +147,16 @@ function codebaseVerdict(
 
 /** Warn when a generation has only the thinnest possible grounding. */
 function thinContextWarning(evidence: CapabilityEvidence): RuleVerdict {
+	// Any real source grounds the generation regardless of how the brief reads:
+	// a project with documents or context is not thin, however terse its
+	// description. The brief only carries the decision when it is the ONLY
+	// thing there, and then it has to be substantial — see
+	// MIN_GROUNDING_DESCRIPTION_LENGTH for why this bound cannot sit at the
+	// creation floor.
 	const grounded =
 		evidence.context.product > 0 ||
 		evidence.documents.usableTypes.size > 0 ||
-		evidence.descriptionLength >= 50;
+		evidence.descriptionLength >= MIN_GROUNDING_DESCRIPTION_LENGTH;
 	if (grounded) {
 		return AVAILABLE;
 	}
@@ -401,6 +408,25 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 	},
 
 	// ----------------------------------------------------------------- Settings
+	//
+	// This rule has no banner, and that is deliberate: its UI half is already
+	// served, more precisely, by `ProjectRepositoryIntegrationSettings` via
+	// `repo-status-meta`. That row renders the status label, the remedial hint
+	// and the unclamped `lastError` as persistent visible text — satisfying
+	// AC-15's "hover-only is not acceptable" — and it keeps TOKEN_EXPIRED
+	// ("reconnect") apart from REPO_UNAVAILABLE ("grant access", never
+	// reconnect), a distinction `repo-status-meta.test.ts` pins and a generic
+	// banner would blur. AC-15 asks for the EXISTING Settings/Integrations
+	// pattern, so reusing it is the requirement, not a shortcut.
+	//
+	// The rule stays because the web UI is not the only consumer: `get.ts`
+	// serves the whole matrix (or one surface), and coding agents, the public
+	// API and Fabric's own tools read it. They need `state`, `reasonKey`,
+	// `blockingDependency` and `remedy` — a complete answer that needs no
+	// rendered copy. Deleting this entry would quietly narrow AC-12/AC-15
+	// coverage to browsers, and no web test would notice, because nothing in
+	// the web renders it. A QA pass in 2026-09 reached exactly that wrong
+	// conclusion; this note exists so the next reader does not.
 	{
 		key: "settings.repository-connection",
 		label: "Repository connection status",

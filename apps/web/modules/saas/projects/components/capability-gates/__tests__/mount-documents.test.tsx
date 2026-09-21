@@ -77,6 +77,32 @@ vi.mock("sonner", () => ({
 	},
 }));
 
+/**
+ * Gates the restore control reads. Keyed the way the provider keys them, so a
+ * suppressed entry here is what a dismissed warning looks like to the dialog.
+ */
+const gatesRef: { current: Map<string, unknown> } = { current: new Map() };
+const restoreSpy = vi.fn();
+
+/**
+ * Stubbed so this file can assert WHERE the control is mounted without driving
+ * the Radix type selector, which jsdom cannot click. Its own behaviour — what
+ * it lists and what restoring does — is covered in
+ * `capability-restore-control.test.tsx`.
+ */
+vi.mock("../CapabilityRestoreControl", () => ({
+	CapabilityRestoreControl: ({
+		capabilityKeys,
+	}: {
+		capabilityKeys?: readonly string[];
+	}) => (
+		<div
+			data-testid="restore-control"
+			data-scope={(capabilityKeys ?? []).join(",")}
+		/>
+	),
+}));
+
 vi.mock("../useCapabilityGates", () => ({
 	useCapabilityGate: () =>
 		gateRef.current ?? {
@@ -84,7 +110,11 @@ vi.mock("../useCapabilityGates", () => ({
 			view: null,
 			blocked: false,
 		},
-	useCapabilityGates: () => ({ suppress: vi.fn() }),
+	useCapabilityGates: () => ({
+		suppress: vi.fn(),
+		restore: restoreSpy,
+		gates: gatesRef.current,
+	}),
 	SNOOZE_DURATIONS: ["1d", "7d", "30d", "forever"] as const,
 }));
 
@@ -132,6 +162,8 @@ const submitButton = () => screen.getByRole("button", { name: "submit" });
 
 beforeEach(() => {
 	gateRef.current = null;
+	gatesRef.current = new Map();
+	restoreSpy.mockReset();
 	getAiConfigStatus.mockReset();
 	availablePrompts.mockReset();
 	availablePrompts.mockResolvedValue({ prompts: [] });
@@ -175,6 +207,27 @@ describe("create-document dialog — capability gate wiring", () => {
 		expect(
 			screen.queryByText("reason.documents.no-technical-source.body"),
 		).not.toBeInTheDocument();
+	});
+
+	/**
+	 * The banner on this surface can dismiss a warning permanently ("do not show
+	 * again for this project"), so the route back has to live beside it — AC-8.
+	 * It became reachable the moment the thin-context bound stopped colliding
+	 * with the project-creation floor, so the mount is pinned here.
+	 */
+	it("mounts the restore control beside the gate banner on the AI path", async () => {
+		getAiConfigStatus.mockResolvedValue({ isConfigured: true });
+		renderDialog();
+		expect(
+			await screen.findByTestId("restore-control"),
+		).toBeInTheDocument();
+	});
+
+	it("shows no restore control on the manual path", async () => {
+		getAiConfigStatus.mockResolvedValue({ isConfigured: false });
+		renderDialog();
+		await screen.findByRole("button", { name: "submit" });
+		expect(screen.queryByTestId("restore-control")).not.toBeInTheDocument();
 	});
 
 	it("leaves the dialog untouched when nothing is gated", async () => {
