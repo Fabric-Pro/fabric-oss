@@ -1225,11 +1225,21 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 							capabilityKey={
 								CAPABILITY_BY_DOCUMENT_TYPE[type] ?? ""
 							}
+							/*
+							 * `?tab=<id>`, not `/contexts` or `/documents`.
+							 * Those subpaths exist only as `[contextId]` and
+							 * `[documentId]` routes — there is no index page
+							 * under either, so the bare path 404s. Context and
+							 * Documents are tabs on the project page, and the
+							 * deep-link param is how every other cross-page CTA
+							 * reaches one. Both remedy links were dead on
+							 * arrival; caught on staging (Fizzy #1930).
+							 */
 							hrefFor={(target) =>
 								target === "context"
-									? `${basePath}/projects/${projectId}/contexts`
+									? `${basePath}/projects/${projectId}?tab=context`
 									: target === "documents"
-										? `${basePath}/projects/${projectId}/documents`
+										? `${basePath}/projects/${projectId}?tab=documents`
 										: null
 							}
 						/>

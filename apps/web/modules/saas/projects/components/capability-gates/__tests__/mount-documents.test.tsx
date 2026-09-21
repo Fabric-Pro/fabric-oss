@@ -230,6 +230,26 @@ describe("create-document dialog — capability gate wiring", () => {
 		expect(screen.queryByTestId("restore-control")).not.toBeInTheDocument();
 	});
 
+	/**
+	 * The remedy link has to reach a page that exists. `/projects/<id>/contexts`
+	 * and `/projects/<id>/documents` look plausible but resolve only as
+	 * `[contextId]` / `[documentId]` routes — neither has an index page, so both
+	 * 404. Context and Documents are tabs, reached with `?tab=<id>` like every
+	 * other cross-page CTA. Both links shipped dead; this keeps them honest.
+	 */
+	it("points its remedy at a tab deep link, not a bare subpath", async () => {
+		getAiConfigStatus.mockResolvedValue({ isConfigured: true });
+		gateRef.current = BLOCKED;
+		renderDialog();
+
+		const cta = await screen.findByRole("link", {
+			name: /remedy\.addContext/,
+		});
+		const href = cta.getAttribute("href") ?? "";
+		expect(href).toContain("?tab=context");
+		expect(href).not.toMatch(/\/contexts$/);
+	});
+
 	it("leaves the dialog untouched when nothing is gated", async () => {
 		getAiConfigStatus.mockResolvedValue({ isConfigured: true });
 		renderDialog();
