@@ -1,5 +1,11 @@
 # @fabricorg/sdk
 
+## 0.3.3
+
+### Patch Changes
+
+- 03c57c1: Publishing a project's coding instructions now pre-builds the download archive, and the builder fetches the snapshot's files concurrently instead of one at a time, so the first `fabric instructions sync` or `init` of a newly published version no longer times out on a large instruction tree.
+
 ## 0.3.2
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @repo/web
 
+## 0.0.11
+
+### Patch Changes
+
+- @repo/api@0.0.10
+
 ## 0.0.10
 
 ### Patch Changes
