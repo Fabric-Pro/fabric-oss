@@ -4,7 +4,8 @@
 	"private": true,
 	"type": "module",
 	"exports": {
-		".": "./src/index.ts"
+		".": "./src/index.ts",
+		"./export": "./src/export/index.ts"
 	},
 	"scripts": {
 		"type-check": "tsc --noEmit",
@@ -12,6 +13,16 @@
 	},
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",
+		"@types/archiver": "^7.0.0",
+		"@types/node": "^24.10.0",
 		"vitest": "^4.1.11"
+	},
+	"dependencies": {
+		"@orpc/client": "^1.14.0",
+		"@repo/config": "workspace:*",
+		"@repo/database": "workspace:*",
+		"@repo/logs": "workspace:*",
+		"@repo/storage": "workspace:*",
+		"archiver": "^7.0.1"
 	}
 }

@@ -74,7 +74,18 @@ const CHECK_TIMEOUT_MS = 5_000;
 /** A manual sync may wait longer for the manifest, but not indefinitely. */
 const SYNC_TIMEOUT_MS = 15_000;
 
-/** The archive, when a person is waiting rather than a session start. */
+/**
+ * The archive, when a person is waiting rather than a session start — and the
+ * request that ASKS for the archive, not just the transfer that follows it.
+ *
+ * `createDownloadUrl` is normally sub-second, because publishing a version
+ * pre-builds its archive. When the pre-build did not happen (it failed, or
+ * the object was swept) the server builds the zip inside that request, which
+ * on a large tree takes far longer than any manifest read — and under the
+ * manifest's 15-second budget the call timed out, retried, and each retry
+ * started ANOTHER full build on the server rather than waiting for the first.
+ * So the download-link call gets this budget and no retries.
+ */
 const BUNDLE_TIMEOUT_MS = 60_000;
 
 /**
@@ -404,6 +415,7 @@ function destinationOf(opts: { dest?: string }): string {
 function instructionsClient(
 	opts: { hook?: boolean },
 	timeoutMs: number,
+	{ neverRetry = false }: { neverRetry?: boolean } = {},
 ): FabricClient {
 	if (!getApiKey()) {
 		throw new CliFailure(
@@ -426,8 +438,36 @@ function instructionsClient(
 					timeoutMs: Math.min(timeoutMs, HOOK_DEADLINE_MS),
 					retry: { maxRetries: 0 },
 				}
-			: { timeoutMs },
+			: neverRetry
+				? { timeoutMs, retry: { maxRetries: 0 } }
+				: { timeoutMs },
 	).withoutContext();
+}
+
+/**
+ * A separate client for `createDownloadUrl`, because that one call is not a
+ * manifest read.
+ *
+ * It gets the BUNDLE budget. Publishing a version pre-builds its archive, so
+ * this is normally sub-second — but when the archive is not there the server
+ * builds it inside this request, which on a large tree runs well past the
+ * manifest timeout. Sharing the manifest client meant a sync of a brand-new
+ * version failed with "Request timed out after 15000ms".
+ *
+ * `neverRetry: true` is belt-and-suspenders here, not load-bearing: the SDK's
+ * `createDownloadUrl` itself now sends `{ maxRetries: 0 }` on every call
+ * (`packages/sdk/src/resources/instructions.ts`), because a retry of this
+ * route does not wait for the build already running on the server — it starts
+ * a second, and then a third, of the same archive. Kept here so this client
+ * stays never-retry even if `createDownloadUrl` is ever swapped for a call
+ * that does not make that guarantee itself.
+ */
+function downloadUrlClient(opts: { hook?: boolean }): FabricClient {
+	return instructionsClient(
+		opts,
+		opts.hook ? HOOK_DEADLINE_MS : BUNDLE_TIMEOUT_MS,
+		{ neverRetry: true },
+	);
 }
 
 /**
@@ -813,10 +853,9 @@ async function syncOnce(
 		const org = orgSlugFor(opts);
 		let download: { url: string };
 		try {
-			download = await client.instructions.createDownloadUrl(
-				opts.project,
-				{ org },
-			);
+			download = await downloadUrlClient(
+				opts,
+			).instructions.createDownloadUrl(opts.project, { org });
 		} catch (error) {
 			throw asCliFailure(error);
 		}

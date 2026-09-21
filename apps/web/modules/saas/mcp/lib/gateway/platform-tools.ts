@@ -24,10 +24,12 @@ import { classifyConversationPointer } from "@repo/api/modules/projects/lib/cont
 // binding is always the dynamic `await import("@repo/database")` used inside
 // each handler.
 import type { getPublishedInstructionSnapshot as GetPublishedInstructionSnapshotFn } from "@repo/database";
-// A value import, deliberately: `@repo/instructions` is a pure leaf package
-// (string and RegExp work only — no I/O, no Prisma), so it costs nothing at
-// module scope, and the alternative is a second hand-written copy of the kind
-// enum in this file.
+// A value import, deliberately: the ROOT entry of `@repo/instructions` is a
+// pure leaf (string and RegExp work only — no I/O, no Prisma), so it costs
+// nothing at module scope, and the alternative is a second hand-written copy
+// of the kind enum in this file. The package's server-only code — the export
+// builder, which does reach storage and Prisma — is behind the separate
+// `@repo/instructions/export` subpath and is not pulled in by this.
 import {
 	INSTRUCTION_FILE_KINDS,
 	type InstructionFileKind,

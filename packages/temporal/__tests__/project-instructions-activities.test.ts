@@ -45,6 +45,17 @@ const logMocks = vi.hoisted(() => ({
 }));
 vi.mock("@repo/logs", () => ({ logger: logMocks }));
 
+// Publishing pre-builds the snapshot's download archive so the first
+// `fabric instructions sync` of a new version does not pay for the build
+// inside its own request. The real helper reaches storage and the database,
+// so the activity's contract with it is asserted here instead: called with
+// this snapshot's ids after a publish, and unable to affect the activity's
+// result whatever it does.
+const warmMocks = vi.hoisted(() => ({
+	warmInstructionSnapshotExport: vi.fn(),
+}));
+vi.mock("@repo/instructions/export", () => warmMocks);
+
 // Separate hoisted holder for the `@temporalio/activity` mock so the
 // heartbeat spy (Important 3) can be asserted on from test bodies, without
 // mixing it into `m` (which mirrors `@repo/database`/`@repo/storage` only).
@@ -219,6 +230,9 @@ beforeEach(() => {
 		fn.mockReset();
 	}
 	activityMocks.heartbeat.mockReset();
+	warmMocks.warmInstructionSnapshotExport.mockReset();
+	warmMocks.warmInstructionSnapshotExport.mockResolvedValue(undefined);
+	logMocks.warn.mockReset();
 	m.listObjects.mockResolvedValue({ objects: [] });
 	m.deleteObjects.mockResolvedValue({ deleted: 0, errors: [] });
 	// Fail-closed default; `stage()` replaces it with per-key sizes.
@@ -1355,6 +1369,120 @@ describe("publishInstructionSnapshotActivity", () => {
 		expect(r).toEqual({ published: false, reason: "manual" });
 		expect(m.publishInstructionSnapshot).not.toHaveBeenCalled();
 		expect(m.recordAudit).not.toHaveBeenCalled();
+		expect(warmMocks.warmInstructionSnapshotExport).not.toHaveBeenCalled();
+	});
+
+	it("pre-builds the export archive for the version it just published", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: true,
+		});
+
+		await publishInstructionSnapshotActivity(snap);
+
+		// AWAITED here, unlike the oRPC call sites: an activity may run for
+		// seconds and there is no serverless response lifetime to extend.
+		expect(warmMocks.warmInstructionSnapshotExport).toHaveBeenCalledWith({
+			projectId: "p",
+			organizationId: "o",
+			snapshotId: "s",
+		});
+	});
+
+	it("pre-builds nothing when the fast-forward was refused", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: false,
+			changed: false,
+			reason: "base_moved",
+		});
+
+		await publishInstructionSnapshotActivity(snap);
+
+		expect(warmMocks.warmInstructionSnapshotExport).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * The pointer has ALREADY moved when the warm runs. The real helper never
+	 * throws, but the activity must not depend on that: a rejection here would
+	 * fail the activity and have Temporal retry a publish that already
+	 * happened.
+	 */
+	/**
+	 * The workflow's `proxyActivities` sets a 60s `heartbeatTimeout`
+	 * (`packages/temporal/src/workflows/project-instruction-snapshot.ts`),
+	 * and the warm can run longer than that on a large tree or slow storage.
+	 * Without a heartbeat, Temporal would time this activity out and retry
+	 * it after the publish it is warming already committed.
+	 */
+	it("heartbeats while the export warm runs long, and stops once it settles", async () => {
+		vi.useFakeTimers();
+		try {
+			m.publishInstructionSnapshot.mockResolvedValue({
+				published: true,
+				changed: true,
+			});
+			let resolveWarm: () => void = () => {};
+			warmMocks.warmInstructionSnapshotExport.mockImplementation(
+				() =>
+					new Promise<void>((resolve) => {
+						resolveWarm = resolve;
+					}),
+			);
+
+			const activityPromise = publishInstructionSnapshotActivity(snap);
+
+			// Two heartbeat intervals (15s each) elapse with the warm still
+			// running.
+			await vi.advanceTimersByTimeAsync(40_000);
+			expect(
+				activityMocks.heartbeat.mock.calls.length,
+			).toBeGreaterThanOrEqual(2);
+			for (const call of activityMocks.heartbeat.mock.calls) {
+				expect(call[0]).toEqual({
+					phase: "export-warm",
+					snapshotId: "s",
+				});
+			}
+
+			const callsBeforeSettle = activityMocks.heartbeat.mock.calls.length;
+			resolveWarm();
+			await activityPromise;
+
+			// The interval is cleared once the warm settles: advancing time
+			// further produces no further heartbeats.
+			await vi.advanceTimersByTimeAsync(40_000);
+			expect(activityMocks.heartbeat.mock.calls.length).toBe(
+				callsBeforeSettle,
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("still reports the publish when the pre-build rejects", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: true,
+		});
+		warmMocks.warmInstructionSnapshotExport.mockRejectedValue(
+			new TypeError("storage unreachable"),
+		);
+
+		const r = await publishInstructionSnapshotActivity(snap);
+
+		expect(r).toEqual({ published: true });
+		// Recorded as ids and an error CLASS only — an object-store message
+		// can quote a key or the bytes that failed.
+		expect(logMocks.warn).toHaveBeenCalledWith(
+			{
+				event: "project.instructions.export_warm_failed",
+				snapshotId: "s",
+				projectId: "p",
+				organizationId: "o",
+				failure: "TypeError",
+			},
+			expect.any(String),
+		);
 	});
 });
 

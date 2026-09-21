@@ -157,9 +157,15 @@ export class InstructionsResource {
 	/**
 	 * A signed URL to a zip of the published tree.
 	 *
-	 * POST because it materialises an export object, but idempotent: the
-	 * archive is keyed on the snapshot's digest and an existing object is
-	 * reused rather than rebuilt.
+	 * POST because it materialises an export object. It is idempotent in
+	 * RESULT — the archive is keyed on the snapshot's digest, so a rebuild
+	 * reuses whatever object is already at that key — but not in EFFECT: this
+	 * route does not honour `Idempotency-Key`, and a retry does not wait for a
+	 * build already in flight on the server, it starts another. On a large
+	 * tree with no archive built yet, the client's default retry policy would
+	 * turn one timed-out request into two or three concurrent builds of the
+	 * same archive. So this call is sent once: `{ maxRetries: 0 }` overrides
+	 * the client's retry policy for this request alone.
 	 */
 	createDownloadUrl(
 		projectId: string,
@@ -168,6 +174,7 @@ export class InstructionsResource {
 		return this.http.post<InstructionDownload>(
 			`/projects/${encodeURIComponent(projectId)}/instructions/published/download${buildQuery(options)}`,
 			{},
+			{ retry: { maxRetries: 0 } },
 		);
 	}
 

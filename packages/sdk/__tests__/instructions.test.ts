@@ -177,6 +177,64 @@ describe("InstructionsResource.createDownloadUrl", () => {
 	});
 });
 
+/**
+ * The route does not honour `Idempotency-Key`, and a retry of a request that
+ * is still building the archive on the server does not wait for that build —
+ * it starts another. So `createDownloadUrl` overrides the client's retry
+ * policy to zero on every call, regardless of what the client itself was
+ * configured with.
+ */
+describe("createDownloadUrl never retries", () => {
+	function abortingClient(): {
+		client: FabricClient;
+		attempts: () => number;
+	} {
+		let attempts = 0;
+		const stub: typeof fetch = async () => {
+			attempts++;
+			const err = new Error("The operation was aborted");
+			err.name = "AbortError";
+			throw err;
+		};
+		return {
+			client: createFabric({
+				apiKey: "fab_test_key",
+				baseUrl: "https://test.fabric",
+				fetch: stub,
+				// No `retry` override: the shipped default (two retries) is
+				// what any OTHER mutating call on this client gets.
+				retry: { initialDelayMs: 1 },
+			}),
+			attempts: () => attempts,
+		};
+	}
+
+	it("is called exactly once on a timeout, even though the client would otherwise retry it", async () => {
+		const { client, attempts } = abortingClient();
+
+		await expect(
+			client.instructions.createDownloadUrl("project-1"),
+		).rejects.toThrow();
+
+		expect(attempts()).toBe(1);
+	});
+
+	// The control: the same failure, the same client, a mutating call this
+	// SDK does retry. If this stops retrying, the test above has stopped
+	// proving anything.
+	it("still retries submitChange on the same client", async () => {
+		const { client, attempts } = abortingClient();
+
+		await expect(
+			client.instructions.submitChange("project-1", "snap-7", [
+				{ op: "delete", path: "old.md" },
+			]),
+		).rejects.toThrow();
+
+		expect(attempts()).toBeGreaterThan(1);
+	});
+});
+
 describe("error shapes", () => {
 	/**
 	 * The v1 API-key middleware answers a MISSING SCOPE with a bare string
