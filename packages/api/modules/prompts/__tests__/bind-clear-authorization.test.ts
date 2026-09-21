@@ -74,7 +74,7 @@ const callClear = (args: {
 		},
 	});
 
-describe("prompts.bind.clear authorization by scope", () => {
+describe("prompts.bindings.clear authorization by scope", () => {
 	beforeEach(() => {
 		clearPromptBinding.mockReset();
 		clearPromptBinding.mockResolvedValue({ cleared: true });

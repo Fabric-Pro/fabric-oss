@@ -33,7 +33,7 @@ const { bindSet, bindClear, nominate, orgCtx, isOrgAdmin } = vi.hoisted(() => ({
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		prompts: {
-			bind: {
+			bindings: {
 				set: (i: unknown) => bindSet(i),
 				clear: (i: unknown) => bindClear(i),
 			},

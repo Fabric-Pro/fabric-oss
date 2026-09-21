@@ -95,7 +95,7 @@ const callSetMany = (args: {
 		},
 	});
 
-describe("prompts.bind.setMany", () => {
+describe("prompts.bindings.setMany", () => {
 	beforeEach(() => {
 		bindPromptVersionToTargets.mockReset();
 		bindPromptVersionToTargets.mockResolvedValue({ bound: 2 });

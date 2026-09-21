@@ -34,12 +34,12 @@ export function MyOverridesList({ basePath }: { basePath: string }) {
 	const queryClient = useQueryClient();
 
 	const query = useQuery(
-		orpc.prompts.bind.listMine.queryOptions({ input: {} }),
+		orpc.prompts.bindings.listMine.queryOptions({ input: {} }),
 	);
 
 	const clear = useMutation({
 		mutationFn: async (row: Row) =>
-			orpcClient.prompts.bind.clear({
+			orpcClient.prompts.bindings.clear({
 				targetType: "AGENT",
 				targetKey: row.targetKey,
 				documentType: row.documentType,
@@ -49,8 +49,9 @@ export function MyOverridesList({ basePath }: { basePath: string }) {
 		onSuccess: () => {
 			toast.success("Override cleared — the tier beneath now applies");
 			queryClient.invalidateQueries({
-				queryKey: orpc.prompts.bind.listMine.queryOptions({ input: {} })
-					.queryKey,
+				queryKey: orpc.prompts.bindings.listMine.queryOptions({
+					input: {},
+				}).queryKey,
 			});
 		},
 		onError: (error) => {

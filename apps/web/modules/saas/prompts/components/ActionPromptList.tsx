@@ -93,7 +93,7 @@ export function ActionPromptList({
 
 	const useForMe = useMutation({
 		mutationFn: async (variant: ActionPromptVariant) =>
-			await orpcClient.prompts.bind.set({
+			await orpcClient.prompts.bindings.set({
 				targetType: "AGENT",
 				...target,
 				scope: "USER",
@@ -124,7 +124,7 @@ export function ActionPromptList({
 				});
 			}
 
-			return await orpcClient.prompts.bind.set({
+			return await orpcClient.prompts.bindings.set({
 				targetType: "AGENT",
 				...target,
 				scope: "ORG",
@@ -160,7 +160,7 @@ export function ActionPromptList({
 	 */
 	const clearOverride = useMutation({
 		mutationFn: async (variant: ActionPromptVariant) =>
-			await orpcClient.prompts.bind.clear({
+			await orpcClient.prompts.bindings.clear({
 				targetType: "AGENT",
 				targetKey,
 				documentType,

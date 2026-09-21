@@ -205,7 +205,7 @@ export function PromptSelector({
 				throw new Error("Document type is required for binding");
 			}
 
-			return await orpcClient.prompts.bind.set({
+			return await orpcClient.prompts.bindings.set({
 				targetType: "AGENT",
 				targetKey: agentName,
 				documentType, // Required: Each binding must specify a document type

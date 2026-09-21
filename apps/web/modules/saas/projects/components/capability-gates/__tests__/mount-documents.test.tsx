@@ -40,7 +40,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 		aiConfig: {
 			resolution: { getStatus: (i: unknown) => getAiConfigStatus(i) },
 		},
-		prompts: { bind: { set: vi.fn() } },
+		prompts: { bindings: { set: vi.fn() } },
 		projects: {
 			contexts: { createUploadUrl: vi.fn(), processFile: vi.fn() },
 		},

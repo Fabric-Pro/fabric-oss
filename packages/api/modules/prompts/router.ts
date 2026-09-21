@@ -23,7 +23,14 @@ export const promptsRouter = {
 	browse: browseProcedures,
 	fork: forkProcedures,
 	version: versionProcedures,
-	bind: bindProcedures,
+	// Not `bind`. oRPC 1.15 added RECURSIVE_CLIENT_UNWRAP_KEYS to the recursive
+	// proxy client, so `client.prompts.bind` now returns `Function.prototype.bind`
+	// instead of descending into the router — every call under it would throw at
+	// runtime. `valueOf`, `toString` and `toJSON` are reserved the same way.
+	// TypeScript cannot catch this: to tsc the key is still a valid router key.
+	// The REST paths in `procedures/bind.ts` are declared explicitly and are
+	// unaffected, so the public HTTP surface still reads `/prompts/bind`.
+	bindings: bindProcedures,
 	catalog: catalogProcedures,
 	nominations: nominateProcedures,
 	test: testProcedures,

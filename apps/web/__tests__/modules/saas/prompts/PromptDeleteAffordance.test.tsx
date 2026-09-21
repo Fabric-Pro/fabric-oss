@@ -37,7 +37,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 		prompts: {
 			delete: vi.fn(),
 			deletionImpact: vi.fn(),
-			bind: { clear: vi.fn(), set: vi.fn() },
+			bindings: { clear: vi.fn(), set: vi.fn() },
 			get: { byId: vi.fn().mockResolvedValue(null) },
 			fork: { fork: vi.fn() },
 		},

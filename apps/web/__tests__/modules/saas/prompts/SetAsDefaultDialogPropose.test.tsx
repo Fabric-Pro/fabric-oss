@@ -44,7 +44,7 @@ const { bindSet, nominate, sessionRole, orgAdmin } = vi.hoisted(() => ({
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		prompts: {
-			bind: { set: (input: unknown) => bindSet(input) },
+			bindings: { set: (input: unknown) => bindSet(input) },
 			nominations: { create: (input: unknown) => nominate(input) },
 		},
 	},

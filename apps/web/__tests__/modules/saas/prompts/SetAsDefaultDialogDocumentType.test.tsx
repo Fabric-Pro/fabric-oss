@@ -37,7 +37,7 @@ const { bindSet } = vi.hoisted(() => ({ bindSet: vi.fn() }));
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
-		prompts: { bind: { set: (input: unknown) => bindSet(input) } },
+		prompts: { bindings: { set: (input: unknown) => bindSet(input) } },
 	},
 }));
 

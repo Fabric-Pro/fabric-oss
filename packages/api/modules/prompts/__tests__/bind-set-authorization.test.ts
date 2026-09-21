@@ -95,7 +95,7 @@ const callSet = (args: {
 		},
 	});
 
-describe("prompts.bind.set authorization by scope", () => {
+describe("prompts.bindings.set authorization by scope", () => {
 	beforeEach(() => {
 		bindPromptVersion.mockReset();
 		bindPromptVersion.mockResolvedValue({ id: "binding-1" });
