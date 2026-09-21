@@ -1,5 +1,11 @@
 # @fabricorg/cli
 
+## 0.3.4
+
+### Patch Changes
+
+- 628963f: Fabric coding instructions can now configure a local Codex session hook alongside Claude Code for users to review and trust.
+
 ## 0.3.3
 
 ### Patch Changes
