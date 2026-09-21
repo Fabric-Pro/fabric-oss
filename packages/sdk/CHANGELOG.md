@@ -1,5 +1,12 @@
 # @fabricorg/sdk
 
+## 0.3.2
+
+### Patch Changes
+
+- 46cf1d6: A developer's local coding agent can now suggest an edit to a project's coding instructions without opening the browser, through the new `fabric instructions push` command or the MCP tool `fabric_propose_project_instruction_change`.
+- c7210f3: A coding-instruction proposal that is sent twice — a client retrying after a timeout, or the same push repeated — now returns the pending proposal that already exists instead of opening a duplicate that holds a second review slot, and the browser tab refuses an identical pending proposal with a message naming the version to review or cancel. Because a repeated push is now safe, the CLI and the SDK retry a transient network failure on `instructions push` again rather than failing on the first one.
+
 ## 0.3.1
 
 ### Patch Changes

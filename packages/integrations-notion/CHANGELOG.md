@@ -1,5 +1,13 @@
 # @fabricorg/integrations-notion
 
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [46cf1d6]
+- Updated dependencies [c7210f3]
+  - @fabricorg/sdk@0.3.2
+
 ## 0.1.3
 
 ### Patch Changes

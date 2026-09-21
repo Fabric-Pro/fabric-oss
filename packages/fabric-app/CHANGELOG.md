@@ -1,5 +1,27 @@
 # fabric-app
 
+## 1.16.5
+
+### Patch Changes
+
+- c465cc1: Action-item create-vs-enrich routing now uses an organization's configured decision model to settle confident verdicts before falling back to the language judge.
+- a410743: Capability gates now refresh after any change that can affect them, and the "Add context" link on a gate reaches a page that exists.
+- 78eda29: Setup-dependent actions now say what is missing and what would unlock them, instead of failing when pressed or quietly returning a worse answer.
+- db4d27b: A setup-dependent action refreshes its explanation as soon as the setting behind it is saved, and its thin-context warning can now appear at all.
+- 8437a6c: Fabric now has a To Do page that gathers the action items from every meeting, alongside to-dos you create yourself, into one list you can filter by project and by the person who owes the work. Items are assigned automatically when a meeting names their owner unambiguously, and land in an Unassigned group with a suggestion to confirm when the name is a guess. You can snooze a to-do and bring it back early, hide older ones and clear them in bulk, and assign work to people who have no Fabric account through a new register of contacts in workspace settings. Completing an item from the To Do page or from the meeting digest is the same act, so the two never disagree. Where a meeting produced feature proposals still awaiting review, the list says so once for that meeting and links into the inbox, and an item can show the work items an accepted proposal created — with a way to reject a link that turned out wrong, which the meeting digest then reflects too. Meetings analysed before the page was switched on are picked up as you open it, newest first and a batch at a time, so an existing history fills in over the first few visits rather than all at once.
+- 6cfc2e4: Organization AI settings can now switch the decision model off, so work-item classification and action-item routing use the organization's regular AI model instead of the typed decision model.
+- 435e75c: Backlog delivery-track classification now uses an organization's configured decision model for confident track verdicts before falling back to the language classifier.
+- a16b8ba: Allow project members to propose coding instruction file changes for editors to review and approve before publication.
+- 336ba1d: Coding Instructions can now show exactly what changed between two versions, as a line-by-line diff of each changed file.
+- 46cf1d6: A developer's local coding agent can now suggest an edit to a project's coding instructions without opening the browser, through the new `fabric instructions push` command or the MCP tool `fabric_propose_project_instruction_change`.
+- 0cf50b6: Meeting-digest action-item linking now uses an organization's configured decision model for confident link verdicts before falling back to the language verifier.
+- f58ba33: Webinar / Demo Script drafts now generate for topics with little webinar context, and both newer content types show their version history
+- 462d759: Maturation question topic labelling now uses an organization's configured decision model for confident topic verdicts before falling back to the language model.
+- acd2ea4: Use the configured decision model to classify work items as bugs or features, with regular AI classification as fallback when Vercel AI Gateway is unavailable or the decision is uncertain.
+- 06c3c8b: Add a dedicated Decisions model setting with support for Jev through Vercel AI Gateway.
+- 2973217: Add an option to automatically sync published coding instructions at session start when connecting Claude Code.
+- c7210f3: A coding-instruction proposal that is sent twice — a client retrying after a timeout, or the same push repeated — now returns the pending proposal that already exists instead of opening a duplicate that holds a second review slot, and the browser tab refuses an identical pending proposal with a message naming the version to review or cancel. Because a repeated push is now safe, the CLI and the SDK retry a transient network failure on `instructions push` again rather than failing on the first one.
+
 ## 1.16.4
 
 ### Patch Changes
