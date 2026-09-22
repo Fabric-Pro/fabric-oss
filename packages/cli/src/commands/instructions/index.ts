@@ -192,7 +192,7 @@ export function buildInstructionsCommand(): Command {
 	instructions
 		.command("push")
 		.description(
-			"Suggest this checkout's edits to the project's coding instructions",
+			"Propose this checkout's edits to the project's coding instructions, or publish them with --publish",
 		)
 		.requiredOption("--project <id>", "Project ID")
 		.option("--dest <dir>", "Destination directory (default: cwd)")
@@ -203,12 +203,17 @@ export function buildInstructionsCommand(): Command {
 			collectAdded,
 			[] as string[],
 		)
+		.option(
+			"--publish",
+			"Publish the change as a new version instead of proposing it (needs a key with instructions:publish)",
+		)
 		.option("--dry-run", "Print the change set and send nothing")
 		.option("--format <format>", "Output format: text|json")
 		.action(async function (
 			this: Command,
 			opts: CommonOptions & {
 				add?: string[];
+				publish?: boolean;
 				dryRun?: boolean;
 			},
 		) {
@@ -997,6 +1002,8 @@ interface PushOutcome {
 	projectId: string;
 	destination: string;
 	dryRun: boolean;
+	/** `--publish`: what this push ASKED for, known before anything is sent. */
+	publish: boolean;
 	/** The snapshot the change set was stated against — the lock's. */
 	baseSnapshotId: string;
 	baseVersion: number;
@@ -1008,16 +1015,36 @@ interface PushOutcome {
 	version: number | null;
 	proposalStatus: string | null;
 	status: string | null;
+	/**
+	 * Whether this version has been observed published at least once. Null on
+	 * a dry run. `status === "READY"` does NOT imply this — see the SDK's
+	 * `SubmittedInstructionChange.published` doc — so `pushVerdict` reads this
+	 * field rather than inferring publication from `status`. `false` means
+	 * "not yet confirmed", never "refused": a publish this call started can
+	 * still land after the command has already returned.
+	 */
+	published: boolean | null;
 }
 
 /**
- * Suggest the checkout's edits back to the project.
+ * Suggest the checkout's edits back to the project, or publish them.
  *
- * It always opens a PROPOSAL. There is no `--publish`: the key this command
- * uses carries `instructions:write`, which is offered to read-only roles and
- * described as review-gated, and a publish flag would make that description
- * false for anyone whose account happens to hold the publishing permission.
- * Publishing from a terminal needs a scope of its own.
+ * Without `--publish` it opens a PROPOSAL, which is what the key the Connect
+ * dialog mints can do: that key carries `instructions:write`, a scope offered
+ * to read-only roles and described as review-gated.
+ *
+ * `--publish` is a DIFFERENT authority, not a mode of the same one. It calls a
+ * different route, gated on `instructions:publish` — a scope the Connect
+ * dialog never mints, that a read-only role cannot be granted, and that has to
+ * be put on a key deliberately in the organization's API-key settings. The
+ * server then re-checks, on that call, that the key's creator still holds the
+ * permission the Coding Instructions tab requires to publish. Both halves are
+ * needed: neither the flag nor the scope alone publishes anything.
+ *
+ * Everything else is identical in both modes — the same local diff, the same
+ * lock rules, the same `PULL_FIRST` refusal for a stale base — because a
+ * publish is a fast-forward on the published pointer just as a proposal is a
+ * claim on it.
  *
  * The diff is computed against `.fabric/instructions.lock` — the snapshot the
  * last sync applied — and that snapshot id is sent as the base. A push whose
@@ -1032,13 +1059,20 @@ interface PushOutcome {
  * to it — and a command that read its ledger on trust would read and upload
  * whatever was added. See `computePushPlan`.
  *
- * The lock is NOT rewritten, on any outcome. A proposal changes nothing about
- * what is published, so a lock claiming otherwise would make the next `sync`
- * believe this checkout already held a version nobody has approved.
+ * The lock is NOT rewritten, on any outcome, `--publish` included. A proposal
+ * changes nothing about what is published, so a lock claiming otherwise would
+ * make the next `sync` believe this checkout already held a version nobody has
+ * approved. A publish changes it only once the server's validation run passes,
+ * which is after this command has returned — and what it publishes is the
+ * SERVER's manifest, inherited files and all, not the local tree. Writing a
+ * lock for a version that may never exist, from a file list this side cannot
+ * compute, would be a guess; `fabric instructions sync` is how the checkout
+ * catches up, and it is what the command says to run.
  */
 async function runPush(
 	opts: CommonOptions & {
 		add?: string[];
+		publish?: boolean;
 		dryRun?: boolean;
 	},
 	format: OutputFormat,
@@ -1108,6 +1142,7 @@ async function runPush(
 		projectId: opts.project,
 		destination: root,
 		dryRun: Boolean(opts.dryRun),
+		publish: Boolean(opts.publish),
 		baseSnapshotId: lock.snapshotId,
 		baseVersion: lock.snapshotVersion,
 		put: plan.entries
@@ -1121,20 +1156,33 @@ async function runPush(
 		version: null,
 		proposalStatus: null,
 		status: null,
+		published: null,
 	};
 
 	if (!opts.dryRun) {
 		try {
-			const submitted = await client.instructions.submitChange(
-				opts.project,
-				lock.snapshotId,
-				plan.changes,
-				{ org: orgSlugFor(opts) },
-			);
+			// Two methods, not one method with a flag: they are two routes
+			// behind two scopes, and choosing between them here is what makes
+			// a key that cannot publish fail with a scope refusal rather than
+			// quietly proposing instead.
+			const submitted = opts.publish
+				? await client.instructions.publishChange(
+						opts.project,
+						lock.snapshotId,
+						plan.changes,
+						{ org: orgSlugFor(opts) },
+					)
+				: await client.instructions.submitChange(
+						opts.project,
+						lock.snapshotId,
+						plan.changes,
+						{ org: orgSlugFor(opts) },
+					);
 			outcome.snapshotId = submitted.snapshotId;
 			outcome.version = submitted.version;
 			outcome.proposalStatus = submitted.proposalStatus;
 			outcome.status = submitted.status;
+			outcome.published = submitted.published;
 		} catch (error) {
 			throw asPushFailure(error);
 		}
@@ -1193,6 +1241,37 @@ function asPushFailure(error: unknown): CliFailure {
  * proposal has stopped being PENDING.
  */
 function pushVerdict(outcome: PushOutcome): string {
+	// A publish has no review state to read, so none of the proposal
+	// branches below apply to it; what it has instead is a validation run
+	// that has only just started. Saying "published version 9" here would be
+	// a claim this command cannot make — the verify and secret-scan gate runs
+	// after the response, and a change set that fails it publishes nothing.
+	//
+	// Branched on `outcome.published`, never on `outcome.status === "READY"`
+	// alone: the auto-publish runs as its own step, normally AFTER this
+	// command has already gotten its response — `READY` says the checks
+	// passed, `published` is the server's own observation of whether the
+	// publish had already happened by the time it answered. This command
+	// classifies nothing further: it cannot know, at response time, whether
+	// an unpublished READY version is still catching up or has genuinely lost
+	// out to a concurrent edit — that is what the tab's history is for, and
+	// this never guesses at it with words like "superseded" or "moved".
+	if (outcome.publish) {
+		if (outcome.published) {
+			return `Published version ${outcome.version}. Run \`fabric instructions sync\` to bring this checkout onto it.`;
+		}
+		if (outcome.status === "FAILED" || outcome.status === "REJECTED") {
+			return `Version ${outcome.version} did not pass its checks (${outcome.status}), so nothing was published; open the project's Coding Instructions tab to see why.`;
+		}
+		const sent = `Sent as version ${outcome.version}. It publishes on its own once its checks pass (${outcome.status}) — then run \`fabric instructions sync\` to bring this checkout onto it.`;
+		// READY gets one more sentence: the checks are done, so what remains
+		// unknown is only whether the publish step has landed, and the tab is
+		// where that is answered — not a guess printed here.
+		return outcome.status === "READY"
+			? `${sent} It has passed its checks; its publication state is shown in the project's Coding Instructions tab.`
+			: sent;
+	}
+
 	// The row is still receiving bytes: an earlier attempt at this same change
 	// is mid-flight. No push closes it out at any age — the browser tab opens
 	// proposals through the same query and keeps its upload capabilities for
@@ -1241,14 +1320,18 @@ function reportPush(outcome: PushOutcome): void {
 
 	if (outcome.dryRun) {
 		line(
-			"Nothing was sent. Without --dry-run this would open a proposal for review.",
+			outcome.publish
+				? "Nothing was sent. Without --dry-run this would create a new version that publishes on its own once its checks pass, with no review."
+				: "Nothing was sent. Without --dry-run this would open a proposal for review.",
 		);
 		return;
 	}
 
 	line(pushVerdict(outcome));
 	line(
-		"Your lock was not changed: it still names the published version, which is what `fabric instructions sync` compares against.",
+		outcome.publish
+			? `Your lock was not changed: it still names version ${outcome.baseVersion}, which is what \`fabric instructions sync\` compares against.`
+			: "Your lock was not changed: it still names the published version, which is what `fabric instructions sync` compares against.",
 	);
 }
 

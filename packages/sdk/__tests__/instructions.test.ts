@@ -219,8 +219,28 @@ describe("createDownloadUrl never retries", () => {
 		expect(attempts()).toBe(1);
 	});
 
+	/**
+	 * `publishChange` joins it, for a different reason with the same
+	 * consequence. The proposal route deduplicates by the content of the
+	 * change set, so a replay comes back with the proposal the first attempt
+	 * opened; the publish route has no such dedup — a replay would create a
+	 * second version of the same content — so the call is sent once and a
+	 * lost response is reported rather than repeated.
+	 */
+	it("sends publishChange exactly once on a timeout", async () => {
+		const { client, attempts } = abortingClient();
+
+		await expect(
+			client.instructions.publishChange("project-1", "snap-7", [
+				{ op: "delete", path: "old.md" },
+			]),
+		).rejects.toThrow();
+
+		expect(attempts()).toBe(1);
+	});
+
 	// The control: the same failure, the same client, a mutating call this
-	// SDK does retry. If this stops retrying, the test above has stopped
+	// SDK does retry. If this stops retrying, the tests above have stopped
 	// proving anything.
 	it("still retries submitChange on the same client", async () => {
 		const { client, attempts } = abortingClient();
@@ -525,5 +545,98 @@ describe("submitChange states its base", () => {
 			baseSnapshotId: "snap-7",
 			changes: [{ op: "delete", path: "old.md" }],
 		});
+	});
+});
+
+/**
+ * `publishChange` is a different ROUTE, not a flag on the one above.
+ *
+ * The two authorities are two API-key scopes — `instructions:write` proposes,
+ * `instructions:publish` publishes — and a scope is checked per route. A body
+ * field would have made a key's scope list stop describing what the key can
+ * do, which is the objection that kept publishing out of this SDK until the
+ * second scope existed. So the only difference a caller sees is which method
+ * they call, and the URL is what carries it.
+ */
+describe("publishChange is its own route", () => {
+	it("POSTs the same body to instructions/versions", async () => {
+		const { client, captured } = buildClient({
+			responseBody: { snapshotId: "snap-8" },
+		});
+
+		await client.instructions.publishChange("project-1", "snap-7", [
+			{ op: "delete", path: "old.md" },
+		]);
+
+		expect(captured[0]?.method).toBe("POST");
+		expect(captured[0]?.url).toBe(
+			"https://test.fabric/api/v1/projects/project-1/instructions/versions",
+		);
+		// No mode in the body: the route IS the mode.
+		expect(captured[0]?.body).toEqual({
+			baseSnapshotId: "snap-7",
+			changes: [{ op: "delete", path: "old.md" }],
+		});
+	});
+
+	it("carries an explicit org and escapes the project id", async () => {
+		const { client, captured } = buildClient({
+			responseBody: { snapshotId: "snap-8" },
+		});
+
+		await client.instructions.publishChange(
+			"project one",
+			"snap-7",
+			[{ op: "delete", path: "old.md" }],
+			{ org: "example-org" },
+		);
+
+		expect(captured[0]?.url).toBe(
+			"https://test.fabric/api/v1/projects/project%20one/instructions/versions?org=example-org",
+		);
+	});
+
+	/**
+	 * `published` is what tells a caller `status: "READY"` did not, by
+	 * itself, mean this version landed (Fizzy #2606 review): the auto-publish
+	 * is a fast-forward, and a snapshot whose base stopped being published
+	 * while it validated can pass every check and still lose the pointer.
+	 * This pins that the client hands the server's own value back rather than
+	 * deriving it from `status`.
+	 */
+	it("resolves the server's publication verdict, not a derived one", async () => {
+		const { client } = buildClient({
+			responseBody: {
+				snapshotId: "snap-9",
+				version: 9,
+				status: "READY",
+				published: false,
+			},
+		});
+
+		const result = await client.instructions.publishChange(
+			"project-1",
+			"snap-7",
+			[{ op: "delete", path: "old.md" }],
+		);
+
+		expect(result.published).toBe(false);
+	});
+
+	// The scope refusal a key without `instructions:publish` gets, in the flat
+	// shape the v1 middleware answers with. It must reach the caller as the
+	// server's own words: "ask an admin for the right scope" is not advice the
+	// SDK can improvise.
+	it("surfaces a missing publish scope verbatim", async () => {
+		const { client } = buildClient({
+			status: 403,
+			rawBody: { error: "Missing required scope: instructions:publish" },
+		});
+
+		await expect(
+			client.instructions.publishChange("project-1", "snap-7", [
+				{ op: "delete", path: "old.md" },
+			]),
+		).rejects.toThrow("Missing required scope: instructions:publish");
 	});
 });

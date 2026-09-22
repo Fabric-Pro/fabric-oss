@@ -63,6 +63,14 @@ export const ORG_API_KEY_SCOPES = [
 	"frames:write", // Create, update and share frames
 	"instructions:read", // Read the published coding instructions of a project
 	"instructions:write", // Propose a change to a project's coding instructions
+	// Publish a new version of a project's coding instructions directly, with
+	// no review. A SEPARATE authority from `instructions:write` rather than a
+	// mode inside it: that scope is what the Connect dialog mints, on the
+	// promise that nothing is published until somebody approves, and one scope
+	// cannot carry both meanings. Editor-and-up in effect — it is absent from
+	// `READ_ONLY_ORG_API_KEY_SCOPES` below, and every call re-checks
+	// `INSTRUCTION_CREATE` on the project.
+	"instructions:publish", // Publish a project's coding instructions directly
 	"chats:read", // Read AI chat threads
 	"audit_log:read", // Read the org's audit log via GET /api/v1/audit-log
 	"audit_log:export", // Export the org's audit log via GET /api/v1/audit-log/export
@@ -123,13 +131,14 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  * | `frames:write`         | `DIAGRAM_CREATE`/`_UPDATE`  | no      |
  * | `instructions:read`    | `INSTRUCTION_READ`          | yes     |
  * | `instructions:write`   | `INSTRUCTION_READ`          | yes     |
+ * | `instructions:publish` | `INSTRUCTION_CREATE`        | no      |
  * | `chats:read`           | none — own threads only     | yes     |
  * | `audit_log:read`       | `ORG_AUDIT_LOG_READ`        | no      |
  * | `audit_log:export`     | `ORG_AUDIT_LOG_EXPORT`      | no      |
  * | `system_health:read`   | none — any authenticated    | yes     |
  * | `status_updates:read`  | none — any authenticated     | yes    |
  *
- * Five rows are worth their own sentence, because reading the scope name is
+ * Six rows are worth their own sentence, because reading the scope name is
  * not enough to get them right:
  *
  *   - `instructions:write` is the one WRITE scope on the read-only list, and it
@@ -149,8 +158,18 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  *     someone approves" — and a mode gated on the creator's permissions would
  *     have made that description false for anyone who happened to hold
  *     `INSTRUCTION_CREATE`. A scope has to mean the same thing whoever mints
- *     it. Publishing from outside the browser needs its own scope, and does
- *     not have one yet.
+ *     it. Publishing from outside the browser has its own scope, below.
+ *
+ *   - `instructions:publish` is that scope, and it is the counterexample this
+ *     table is built to refuse: it names something a viewer does NOT hold, so
+ *     it is absent from the read-only list and a viewer's mint is refused.
+ *     What it reaches — `POST /projects/:id/instructions/versions` — creates
+ *     a new version that publishes once its checks pass, with no review,
+ *     exactly as the Coding Instructions tab's own direct publish does; the live check on every call
+ *     is `INSTRUCTION_CREATE`, which is member-and-up in the organization set
+ *     and editor-and-up in the project one. No MCP tool asks for it and the
+ *     Connect dialog never mints it: a key carrying it is created here, on
+ *     purpose, by somebody who read what it does.
  *
  *   - `ai:models:read` sounds like a read and is not one. The only surface that
  *     honours it is `resolveModelForAgent`, which accepts it as an alternative
@@ -188,7 +207,9 @@ const READ_ONLY_ORG_API_KEY_SCOPES: ReadonlySet<OrgApiKeyScope> = new Set([
 	"instructions:read",
 	// A write scope on the read-only list, deliberately. See the table above:
 	// what it reaches is the proposal path, which the viewer role already has
-	// in the browser on `INSTRUCTION_READ`.
+	// in the browser on `INSTRUCTION_READ`. Its sibling `instructions:publish`
+	// is deliberately NOT here: that one publishes without review, on
+	// `INSTRUCTION_CREATE`, which the viewer set does not hold.
 	"instructions:write",
 	"chats:read",
 	"system_health:read",

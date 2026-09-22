@@ -187,6 +187,7 @@ function post(path: string) {
 }
 
 const CHANGES_PATH = `/projects/${PROJECT}/instructions/changes`;
+const VERSIONS_PATH = `/projects/${PROJECT}/instructions/versions`;
 /** The published snapshot every change set here is stated against. */
 const BASE = "snap-2";
 
@@ -200,6 +201,7 @@ function postJson(path: string, body: unknown) {
 
 function submitted(overrides: Record<string, unknown> = {}) {
 	return {
+		mode: "proposal",
 		snapshotId: "snap-3",
 		version: 8,
 		baseSnapshotId: "snap-2",
@@ -210,6 +212,9 @@ function submitted(overrides: Record<string, unknown> = {}) {
 		deleteCount: 0,
 		proposalStatus: "PENDING",
 		status: "VALIDATING",
+		// A proposal never asks the workflow to publish, so this defaults
+		// false; the publish-mode tests override it.
+		published: false,
 		...overrides,
 	};
 }
@@ -842,8 +847,10 @@ describe("POST instructions/changes", () => {
 		expect(mocks.submitInstructionChange).toHaveBeenCalledExactlyOnceWith({
 			userId: "user-1",
 			projectId: PROJECT,
-			// No `mode`: this route only ever opens a proposal, so there is
-			// nothing for a caller to ask for.
+			// The route's own constant. A caller has no say in it — see the
+			// mode test below — and it is what keeps this route the reviewed
+			// one whatever the key's creator may do in the tab.
+			mode: "proposal",
 			baseSnapshotId: BASE,
 			changes: [
 				{
@@ -942,11 +949,13 @@ describe("POST instructions/changes", () => {
 	);
 
 	/**
-	 * There is no publish mode on this route, and the absence is the security
-	 * property: the key that reaches it carries `instructions:write`, which
-	 * the Connect dialog offers to read-only roles and describes as
-	 * review-gated. A mode would make that description false for any key
-	 * whose creator happens to hold the publishing permission.
+	 * The body cannot choose the mode, and that is the security property: the
+	 * key that reaches this route carries `instructions:write`, which the
+	 * Connect dialog offers to read-only roles and describes as review-gated.
+	 * A body-selected mode would make that description false for any key whose
+	 * creator happens to hold the publishing permission — so publishing is a
+	 * different route behind a different scope, and a `mode` sent here is
+	 * ordinary unknown JSON that `readChangeBody` drops.
 	 */
 	it("ignores a mode the caller sends and still only proposes", async () => {
 		const response = await buildApp().request(
@@ -962,7 +971,27 @@ describe("POST instructions/changes", () => {
 			string,
 			unknown
 		>;
-		expect(call).not.toHaveProperty("mode");
+		expect(call.mode).toBe("proposal");
+	});
+
+	// The publish scope does not open the proposal route either. The split is
+	// symmetric on purpose: a key's scope list alone says which of the two
+	// writes it can perform.
+	it("refuses a key holding only instructions:publish", async () => {
+		mocks.scopes = ["instructions:publish"];
+
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		await expect(response.json()).resolves.toEqual({
+			error: "Missing required scope: instructions:write",
+		});
+		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
 	});
 
 	// `instructions:read` is the read routes' scope and must not reach this
@@ -1252,5 +1281,291 @@ describe("POST instructions/changes refusals", () => {
 		);
 
 		expect(response.status).toBe(500);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// POST /projects/:projectId/instructions/versions
+// ---------------------------------------------------------------------------
+/**
+ * The unreviewed write, and the scope split that is the whole point of it.
+ *
+ * `instructions:write` is minted by the Connect dialog for read-only roles on
+ * the promise that nothing is published until somebody approves. This route
+ * publishes with nobody in between, so it sits behind a scope of its own that
+ * the dialog never mints and a viewer cannot be granted. The two refusals to
+ * keep apart are the scope one (flat `{ error: string }`, from the middleware)
+ * and the live-permission one (`{ error: { message } }`, from the object gate)
+ * — the credential and the person are different questions.
+ */
+describe("POST instructions/versions", () => {
+	beforeEach(() => {
+		mocks.scopes = ["instructions:publish"];
+		mocks.submitInstructionChange.mockResolvedValue(
+			submitted({ mode: "publish", proposalStatus: null }),
+		);
+	});
+
+	it("publishes and echoes what the server made of it", async () => {
+		const response = await buildApp().request(
+			postJson(VERSIONS_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			data: submitted({ mode: "publish", proposalStatus: null }),
+		});
+		expect(mocks.submitInstructionChange).toHaveBeenCalledExactlyOnceWith({
+			userId: "user-1",
+			projectId: PROJECT,
+			mode: "publish",
+			baseSnapshotId: BASE,
+			changes: [
+				{
+					op: "put",
+					path: "AGENTS.md",
+					content: "new\n",
+					encoding: "utf8",
+				},
+			],
+			audit: {
+				user: {
+					id: "user-1",
+					email: "dev@example.com",
+					name: "Example Developer",
+				},
+			},
+			via: "v1:organization-key",
+		});
+	});
+
+	/**
+	 * `published` is computed inside `submitInstructionChange`, mocked here —
+	 * what this route owns is passing it through unchanged rather than
+	 * re-deriving "published" from `status` the way the CLI used to (Fizzy
+	 * #2606 review: `READY` does not by itself mean the version landed,
+	 * because the auto-publish is a fast-forward and a later edit can win the
+	 * pointer first).
+	 */
+	it("passes the publication verdict through untouched, READY-but-not-published case included", async () => {
+		mocks.submitInstructionChange.mockResolvedValue(
+			submitted({
+				mode: "publish",
+				proposalStatus: null,
+				status: "READY",
+				published: false,
+			}),
+		);
+
+		const response = await buildApp().request(
+			postJson(VERSIONS_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			data: submitted({
+				mode: "publish",
+				proposalStatus: null,
+				status: "READY",
+				published: false,
+			}),
+		});
+	});
+
+	// The refusal this whole card exists for. An `instructions:write` key is
+	// the one the Connect dialog hands out; if it could publish, every key
+	// that dialog has ever issued would silently have gained the ability.
+	it("refuses a key holding only instructions:write", async () => {
+		mocks.scopes = ["instructions:write"];
+
+		const response = await buildApp().request(
+			postJson(VERSIONS_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		await expect(response.json()).resolves.toEqual({
+			error: "Missing required scope: instructions:publish",
+		});
+		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it("refuses a key holding only instructions:read", async () => {
+		mocks.scopes = ["instructions:read"];
+
+		const response = await buildApp().request(
+			postJson(VERSIONS_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	// A body cannot talk this route down into a proposal any more than it can
+	// talk the other one up into a publish: the mode is the route's constant.
+	it("ignores a mode the caller sends and still publishes", async () => {
+		const response = await buildApp().request(
+			postJson(VERSIONS_PATH, {
+				mode: "proposal",
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(200);
+		const call = mocks.submitInstructionChange.mock.calls[0]?.[0] as Record<
+			string,
+			unknown
+		>;
+		expect(call.mode).toBe("publish");
+	});
+
+	// The second gate, independent of the scope: the live permission check
+	// lives inside `submitInstructionChange` and answers FORBIDDEN, which the
+	// route maps to a 403 with the nested shape.
+	it("relays the live permission refusal as a distinguishable 403", async () => {
+		mocks.submitInstructionChange.mockRejectedValue(
+			orpcRefusal(
+				"FORBIDDEN",
+				"Missing required permission: instruction:create",
+			),
+		);
+
+		const response = await buildApp().request(
+			postJson(VERSIONS_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		await expect(response.json()).resolves.toEqual({
+			error: {
+				message: "Missing required permission: instruction:create",
+			},
+		});
+	});
+
+	// Everything the proposal route resolves about the tenant, this one
+	// resolves the same way — it is literally the same handler body.
+	it("404s an organization key naming another tenant's project", async () => {
+		apiContext = organizationKey("org-2");
+		apiContext.scopes = ["instructions:publish"];
+
+		const response = await buildApp().request(
+			postJson(VERSIONS_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(404);
+		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it("refuses ?personal=1, as every route here does", async () => {
+		apiContext = personalKey();
+		apiContext.scopes = ["instructions:publish"];
+
+		const response = await buildApp().request(
+			postJson(`${VERSIONS_PATH}?personal=1`, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * The refusal this test exists for (a medium-severity review finding).
+	 *
+	 * `?personal=1` is refused outright by `resolveInstructionProject`, but a
+	 * legacy personal `fab_*` key never has to send it: `hasScope` accepts a
+	 * wildcard `*` scope on ANY key type, so a personal key holding `*`
+	 * passes `requireScope("instructions:publish")` without ever having been
+	 * granted that scope by name, and nothing before this route's own guard
+	 * enforced an organization key. Left unguarded, such a key would resolve
+	 * like an ordinary personal caller — bound only by its owner's own
+	 * project access, with no organization boundary to cross — and publish
+	 * directly on a project it can merely read in the browser.
+	 */
+	it("refuses a personal key's wildcard scope, before resolving the project", async () => {
+		apiContext = personalKey();
+		apiContext.scopes = ["*"];
+		mocks.scopes = ["*"];
+
+		const response = await buildApp().request(
+			postJson(VERSIONS_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		const body = await response.json();
+		// Distinguishable from the middleware's flat scope refusal...
+		expect(body).not.toEqual({
+			error: "Missing required scope: instructions:publish",
+		});
+		// ...and its message cannot be mistaken for the live-permission
+		// refusal `submitInstructionChange` throws: it says the KEY is the
+		// wrong type, not that its creator lacks a project permission.
+		expect(body).toMatchObject({
+			error: {
+				message: expect.stringContaining("organization API key"),
+			},
+		});
+		expect((body as { error: { message: string } }).error.message).not.toBe(
+			"Missing required permission: instruction:create",
+		);
+		expect(mocks.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	// A publish is a fast-forward claim on the published pointer, so a stale
+	// base is refused there exactly as it is for a proposal.
+	it("maps a stale base to 409 PULL_FIRST", async () => {
+		mocks.submitInstructionChange.mockRejectedValue(
+			orpcRefusal(
+				"CONFLICT",
+				"The published version changed since your copy was taken.",
+				"BASE_NOT_PUBLISHED",
+			),
+		);
+
+		const response = await buildApp().request(
+			postJson(VERSIONS_PATH, {
+				baseSnapshotId: "snap-1",
+				changes: [putChange()],
+			}),
+		);
+
+		expect(response.status).toBe(409);
+		await expect(response.json()).resolves.toMatchObject({
+			error: { code: "PULL_FIRST" },
+		});
+	});
+
+	it("refuses a body with no baseSnapshotId before resolving anything", async () => {
+		const response = await buildApp().request(
+			postJson(VERSIONS_PATH, { changes: [putChange()] }),
+		);
+
+		expect(response.status).toBe(400);
+		expect(mocks.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
 	});
 });

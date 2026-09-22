@@ -4,6 +4,7 @@
  *   GET  /projects/:projectId/instructions/published            manifest + delta
  *   POST /projects/:projectId/instructions/published/download   signed zip URL
  *   POST /projects/:projectId/instructions/changes              propose a change, for review
+ *   POST /projects/:projectId/instructions/versions             publish a change directly
  *
  * These exist so `@fabricorg/cli` can keep a working tree current
  * (`fabric instructions check | sync | init | push`). The oRPC twins under
@@ -24,7 +25,7 @@ import {
 	listInstructionFiles,
 } from "@repo/database";
 import { hasPermission, Permissions } from "@repo/permissions";
-import type { Hono } from "hono";
+import type { Context, Hono, Next } from "hono";
 import { resolveEffectiveProjectPermissions } from "../../lib/effective-project-permissions";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type {
@@ -35,7 +36,10 @@ import { buildInstructionSnapshotZip } from "../projects/procedures/instructions
 // Type-only: the implementation is imported lazily in the handler below, so
 // registering these routes does not pull the Temporal client and the storage
 // provider into the module graph of every request that never writes.
-import type { InlineInstructionChange } from "../projects/procedures/instructions/submit-change";
+import type {
+	InlineInstructionChange,
+	InstructionChangeMode,
+} from "../projects/procedures/instructions/submit-change";
 import { badRequest, forbidden, notFound, ok } from "./helpers";
 
 /** The longest `sinceDigest` accepted, mirroring the MCP tools' input schemas. */
@@ -582,38 +586,40 @@ export function registerInstructionRoutes(
 	);
 
 	/**
-	 * POST /projects/:projectId/instructions/changes
+	 * The body of both write routes, which differ ONLY in the mode they ask
+	 * for and the scope that let the request in.
 	 *
-	 * The write half of this surface, and the reason `instructions:write`
-	 * exists: `fabric instructions push` sends the diff between a checkout and
-	 * the snapshot its lock names, with the changed files' bytes inline, and
-	 * gets back a proposal an editor reviews in the tab.
+	 * Shared rather than copied because every line below is a boundary rule —
+	 * the shape check, the tenant resolution, the audit actor, the refusal
+	 * mapping — and two copies of a boundary drift into two boundaries. What
+	 * must NOT be shared is the authority: `mode` is a parameter of this
+	 * function and a constant at each registration, never read from the
+	 * request, so no body can turn a proposal into a publish.
 	 *
 	 * TWO gates, as every key-backed surface here owes (AGENTS.md): the key's
-	 * declared scope, checked by `requireScope("instructions:write")`, and the
+	 * declared scope, checked by `requireScope` at the route, and the
 	 * creator's live permission on the project, checked inside
-	 * `submitInstructionChange` against `INSTRUCTION_READ` — exactly what the
-	 * tab requires of the same person to propose.
+	 * `submitInstructionChange` — `INSTRUCTION_READ` to propose,
+	 * `INSTRUCTION_CREATE` to publish, exactly what the tab requires of the
+	 * same person for the same action. The two refusals stay distinguishable:
+	 * a missing scope is `{ error: "Missing required scope: …" }` from the
+	 * middleware, a missing permission is `{ error: { message } }` from here.
 	 *
-	 * It only ever opens a PROPOSAL. There is no `mode`, so no key reaching
-	 * this route can publish, whatever its creator's permissions are. That is
-	 * what lets `instructions:write` be offered to read-only roles and
-	 * described as review-gated without the description being a half-truth.
-	 *
-	 * `baseSnapshotId` is required, because it is the whole of the stale-base
-	 * protection: see `readChangeBody`.
+	 * `baseSnapshotId` is required in both modes, because it is the whole of
+	 * the stale-base protection: see `readChangeBody`. A base that is no
+	 * longer the published version is `PULL_FIRST` before anything is written,
+	 * for a publish as much as for a proposal — a publish is a fast-forward
+	 * claim on the published pointer, not a merge.
 	 *
 	 * The tenant comes from `resolveInstructionProject`, the same resolution
 	 * the two read routes use and for the same reason: the PROJECT decides
 	 * which organization this acts in, which keeps an invited guest — who is a
-	 * member of no organization here — able to suggest a change to a project
-	 * they can open in the app. No `organizationId` is read from the request on
-	 * any path.
+	 * member of no organization here — able to reach a project they can open
+	 * in the app. No `organizationId` is read from the request on any path.
 	 */
-	app.post(
-		"/projects/:projectId/instructions/changes",
-		requireScope("instructions:write"),
-		async (c) => {
+	const handleChangeSubmission =
+		(mode: InstructionChangeMode) =>
+		async (c: Context<{ Variables: ExternalApiVariables }>) => {
 			const apiCtx = c.get("externalApiContext");
 			const projectId = c.req.param("projectId")!;
 
@@ -658,6 +664,9 @@ export function registerInstructionRoutes(
 					projectId,
 					baseSnapshotId: body.baseSnapshotId,
 					changes: body.changes,
+					// The route's own constant, closed over above. Nothing
+					// from the request reaches this field.
+					mode,
 					// No HTTP request headers are threaded through this
 					// surface, so ip / user-agent / request-id resolve to null
 					// rather than being invented. The actor is the key's
@@ -688,6 +697,108 @@ export function registerInstructionRoutes(
 					failure.status,
 				);
 			}
-		},
+		};
+
+	/**
+	 * POST /projects/:projectId/instructions/changes
+	 *
+	 * The reviewed write, and the reason `instructions:write` exists: `fabric
+	 * instructions push` sends the diff between a checkout and the snapshot
+	 * its lock names, with the changed files' bytes inline, and gets back a
+	 * proposal an editor reviews in the tab.
+	 *
+	 * Proposal-only, and the body has no say in it. A key holding
+	 * `instructions:write` cannot publish here whatever its creator's
+	 * permissions are, which is what lets that scope be offered to read-only
+	 * roles and described as review-gated without the description being a
+	 * half-truth. Publishing is the sibling route below, behind a scope this
+	 * key does not carry.
+	 */
+	app.post(
+		"/projects/:projectId/instructions/changes",
+		requireScope("instructions:write"),
+		handleChangeSubmission("proposal"),
+	);
+
+	/**
+	 * The publish route's own third gate, run after
+	 * `requireScope("instructions:publish")` and before the body is even
+	 * parsed.
+	 *
+	 * The scope check alone is not enough here, and it is the one write route
+	 * where that is true. `hasScope` (`external-api/middleware/api-key-auth.ts`)
+	 * accepts a wildcard `*` scope on ANY key type, so a legacy personal
+	 * `fab_*` key that predates this feature — and was never granted
+	 * `instructions:publish` by name — satisfies `requireScope` purely by
+	 * holding `*`. Past that gate it would resolve like every other personal
+	 * key: bound only by its owner's own project access, with no organization
+	 * boundary to cross, because `resolveInstructionProject` only enforces the
+	 * hosting-organization match when `keyType === "organization"`. The design
+	 * for this route is that publishing needs a key an ORGANIZATION
+	 * deliberately minted with this scope (`ORG_API_KEY_SCOPES`, off the
+	 * viewer ceiling); a personal key can never be that key, whatever it
+	 * carries.
+	 *
+	 * Run before `resolveInstructionProject` or `readChangeBody` so a personal
+	 * key never reaches tenant resolution or `submitInstructionChange` for
+	 * this route at all — the same before-any-lookup posture
+	 * `?personal=1` gets on every route here.
+	 *
+	 * The refusal is `forbidden()`'s `{ error: { message } }` shape, the same
+	 * nested envelope `submitInstructionChange`'s live-permission refusal
+	 * produces — there being no third JSON shape among this file's helpers to
+	 * reach for — but the MESSAGE cannot be mistaken for that one: this says
+	 * outright that the key's TYPE is wrong, never that its creator lacks a
+	 * permission on the project. It also reads differently from the
+	 * middleware's flat `{ error: "Missing required scope: …" }` a scope
+	 * refusal gives, which a wildcard key never triggers in the first place —
+	 * that is exactly the gap this closes.
+	 */
+	async function requireOrganizationKeyForPublish(
+		c: Context<{ Variables: ExternalApiVariables }>,
+		next: Next,
+	) {
+		const apiCtx = c.get("externalApiContext");
+		if (apiCtx.keyType !== "organization") {
+			return c.json(
+				forbidden(
+					"Publishing coding instructions directly requires an organization API key granted the instructions:publish scope. This key is a personal key, which cannot publish here even when it carries a wildcard * scope.",
+				),
+				403,
+			);
+		}
+		return next();
+	}
+
+	/**
+	 * POST /projects/:projectId/instructions/versions
+	 *
+	 * The unreviewed write: the same change set, published as a new version
+	 * with nobody in between. `fabric instructions push --publish`.
+	 *
+	 * A SIBLING route rather than a mode on the one above, because the two
+	 * authorities are two scopes and a scope is checked per route. A key
+	 * holding only `instructions:write` is refused here; a key holding only
+	 * `instructions:publish` is refused there. Neither can be talked into the
+	 * other by its body, and a key's scope list alone says which of the two it
+	 * can do — which is the property the settings picker's disclosure and the
+	 * Connect dialog's promise both rest on.
+	 *
+	 * "versions" because that is what it creates and what the product calls
+	 * it: the tab's history is a list of versions, the response names one, and
+	 * `POST` to the collection is how one is made. `/changes` stays what it
+	 * has always been — a suggestion about a version, not a version.
+	 *
+	 * Nothing here is a shortcut past a check. `submitInstructionChange` makes
+	 * the same derived snapshot the tab's direct save makes and starts the
+	 * same verify → scan → publish workflow; the version becomes the published
+	 * one only when that workflow passes, so the response usually reports a
+	 * snapshot still VALIDATING rather than a finished publish.
+	 */
+	app.post(
+		"/projects/:projectId/instructions/versions",
+		requireScope("instructions:publish"),
+		requireOrganizationKeyForPublish,
+		handleChangeSubmission("publish"),
 	);
 }

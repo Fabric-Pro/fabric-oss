@@ -18,11 +18,12 @@ it.
 
 Working on the project is also when the instructions are most obviously wrong,
 so the traffic goes both ways: `fabric instructions push` sends the checkout's
-edits back as a **proposal** an editor approves in the tab. An agent with no
-CLI does the same thing through the MCP tool
-`fabric_propose_project_instruction_change`, which is proposal-only — an agent
-cannot publish. Both land in the same place and run the same checks as a folder
-upload from the browser.
+edits back as a **proposal** an editor approves in the tab, or — with
+`--publish`, and a key granted that separate authority — as a new version
+directly. An agent with no CLI can only propose: the MCP tool
+`fabric_propose_project_instruction_change` has no publish mode and no scope
+that would reach one. All of it lands in the same place and runs the same
+checks as a folder upload from the browser.
 
 ## Install and authenticate
 
@@ -100,13 +101,14 @@ Commander resolves it: `fabric --format table instructions check` beats
 `FABRIC_FORMAT=json`, because the environment is the root option's default and
 an explicit flag replaces a default.
 
-### `fabric instructions push --project <id> [--dest <dir>] [--add <path>] [--dry-run]`
+### `fabric instructions push --project <id> [--dest <dir>] [--add <path>] [--publish] [--dry-run]`
 
-Suggests this checkout's edits back to the project. It always opens a
+Suggests this checkout's edits back to the project. By default it opens a
 **proposal**: nothing changes for anybody reading the instructions until
 somebody who can edit them approves it in the Coding Instructions tab, where
-each changed file is reviewed as a unified diff of its two sides. There is
-no publish flag — see "publishing is not one of them" below.
+each changed file is reviewed as a unified diff of its two sides. `--publish`
+sends the same change set as a new version with nobody in between — see
+"publishing takes its own key" below for the key it needs.
 
 The diff is computed against `<dest>/.fabric/instructions.lock`, so `sync` has
 to have run here first — without that ledger there is nothing to diff against,
@@ -130,16 +132,38 @@ At most 50 changes in one push. A change set larger than that is a replacement
 rather than an edit, and the tab's folder upload is the operation for it — it is
 also the only path that re-reads the project's exclusion rules.
 
-**Publishing is not one of them.** `push` has no `--publish`, and the scope it
-uses cannot reach a publish on any surface. The key this command carries is
-`instructions:write`, which the Connect dialog offers to read-only roles and
-describes as review-gated; a publish mode decided by the key creator's own
-permissions would make that description untrue for anybody holding
-`INSTRUCTION_CREATE`, and a scope has to mean the same thing whoever mints it.
-Publishing from a terminal needs a scope of its own and does not have one yet;
-until then it is done in the tab.
+**Publishing takes its own key.** `--publish` is a different authority, not a
+mode of the same one. The key the Connect dialog mints carries
+`instructions:write`, which it offers to read-only roles and describes as
+review-gated; publishing from that key would make the description untrue for
+anybody holding `INSTRUCTION_CREATE`, and a scope has to mean the same thing
+whoever mints it. So `--publish` calls a different route behind a different
+scope, `instructions:publish`, which the Connect dialog never mints. To get
+one, create an organization API key in **Settings → API keys** and tick
+**Instructions Publish**; a read-only role cannot be granted it. The server
+then checks, on every call, that the key's creator still holds
+`INSTRUCTION_CREATE` on that project — the scope alone publishes nothing, and
+a demotion takes effect at once. A key without the scope gets
+`Missing required scope: instructions:publish` and exit code 5.
 
-`--dry-run` prints the change set and sends nothing.
+**A publish is not instant, and `READY` does not by itself mean it landed.**
+What comes back is a version whose checks have just started: the same verify
+→ secret-scan → publish run a folder upload goes through decides, and the
+auto-publish that follows is a separate step that normally completes AFTER
+this command has already returned. So the command reports "Published version
+N" only once it has actually observed that — never inferred from the checks
+alone — and otherwise says the version has been sent and publishes on its own
+once its checks pass, pointing at the project's Coding Instructions tab to see
+its state. That covers the ordinary case (the publish lands a moment later)
+and the one worth naming explicitly: a concurrent edit's own publish can win
+the race first, in which case this version stays `READY` and unpublished —
+intact, not lost — and the tab's History is where to see that and publish it
+deliberately if it is still wanted. The lock is not rewritten on either path —
+run `fabric instructions sync` afterwards to bring the checkout onto the
+version that landed.
+
+`--dry-run` prints the change set and sends nothing; with `--publish` it says
+so, because the two do different things.
 
 **Nothing is read until the lock is verified against the server.** `push` fetches
 the published manifest first and refuses before opening a single file if the
@@ -149,10 +173,12 @@ that can write to the working tree can add a path to it, and a command that
 trusted the ledger would read that file and upload it. The manifest decides
 which paths may be touched; `--add` is the only way to send anything else.
 
-**The lock is never written by a push**, on any outcome. It names the published
-version, which is what `sync` compares against, and a proposal does not change
-what is published. After a proposal is approved, `fabric instructions sync` is
-what brings the checkout — and the lock — forward.
+**The lock is never written by a push**, on any outcome, `--publish` included.
+It names the published version, which is what `sync` compares against, and a
+proposal does not change what is published. A publish does, but only once its
+checks pass — after this command has returned — and what lands is the server's
+manifest, inherited files and all, which this side cannot compute. Either way
+`fabric instructions sync` is what brings the checkout, and the lock, forward.
 
 Two refusals are worth recognising:
 
@@ -391,12 +417,13 @@ repository does not already; `init` does not edit `.gitignore`.
 | The shared server entry point behind a change | `packages/api/modules/projects/procedures/instructions/submit-change.ts` |
 | MCP proposal tool | `apps/web/modules/saas/mcp/lib/gateway/platform-tools.ts` |
 
-Two scopes, split along read and write:
+Three scopes, one per authority:
 
 | Scope | Reaches | Live permission re-checked per call |
 |---|---|---|
 | `instructions:read` | `GET .../instructions/published`, `POST .../published/download` — `check`, `sync`, `init` | `INSTRUCTION_READ` |
 | `instructions:write` | `POST .../instructions/changes` — `push`, and the MCP tool `fabric_propose_project_instruction_change` | `INSTRUCTION_READ` |
+| `instructions:publish` | `POST .../instructions/versions` — `push --publish` | `INSTRUCTION_CREATE` |
 
 The scope is a ceiling and never a grant: every route independently re-checks
 that the key's creator still holds the permission the Coding Instructions tab
@@ -408,13 +435,36 @@ and it is deliberately one a viewer may carry. What it reaches is the proposal
 path — a suggestion somebody with edit rights approves or rejects — which is
 exactly what a viewer can already do in the tab on `INSTRUCTION_READ`.
 Withholding it would make the key narrower than the browser for the same
-person. Publishing is not reachable from this scope at all, and not because a
-per-call check refuses it: neither surface behind the scope has a publish mode
-to ask for.
+person. It cannot publish: `POST .../instructions/changes` has no mode to ask
+for, and the publishing route refuses it by scope.
+
+`instructions:publish` is the opposite case, and is described that way where
+it is granted: **it creates a new version of a project's coding instructions
+that publishes without review once its checks pass, for callers who could
+publish in the tab, and it is never issued by the Connect dialog.** A key carrying it is created by hand
+in the organization's API-key settings by a member or above — a read-only role
+is refused it, because `INSTRUCTION_CREATE` is not a viewer permission — and
+every call re-checks that the key's creator still holds `INSTRUCTION_CREATE`
+on that project at that moment. Holding only this scope means a key can
+publish but cannot open a proposal, and holding only `instructions:write`
+means the reverse; a key may of course carry both. No MCP tool asks for it:
+`fabric_propose_project_instruction_change` is proposal-only and an agent
+cannot publish.
+
+**The publish route requires an organization key by TYPE, not only by scope
+name.** A personal (`fab_*`) key is refused here even when it happens to
+carry `instructions:publish`-equivalent access through a wildcard `*` scope —
+a legacy key from before this scope existed satisfies the scope check on `*`
+alone, so the route re-checks the key's type before it looks at anything
+else and refuses a personal key outright, with a 403 that says so. An
+organization (`org_*`) key is the only credential that can reach this route,
+whatever scopes it carries.
 
 The Connect dialog mints `mcp:read`, `instructions:read` and
 `instructions:write` for the coding-instructions flow, and says before the key
-is created that a tool holding it can suggest a change held for review.
+is created that a tool holding it can suggest a change held for review. It
+never mints `instructions:publish`, which is what keeps that sentence true for
+every key it has ever issued.
 
 The `GET .../instructions/published` route mirrors the MCP
 `fabric_get_project_instruction_bundle` tool's delta semantics: an equal
@@ -428,10 +478,20 @@ of content. It computes each file's size and sha256 itself; a client-supplied
 hash would only ever be a way to make the stored row disagree with the stored
 object. Everything after that is the tab's own path: the same derived-snapshot
 query, the same staging keys, the same validation workflow — whose publish
-step this path never enables — so the secret gate reads every file including
+step this route never enables — so the secret gate reads every file including
 the inherited ones. A refusal carries a
 `code` the CLI branches on — `PULL_FIRST`, `REPOSITORY_SOURCE_OF_TRUTH`,
 `NOTHING_PUBLISHED`, `PROPOSAL_PROPOSER_LIMIT`, `PROPOSAL_PROJECT_LIMIT`.
+
+`POST .../instructions/versions` is the same body, the same validation and the
+same refusal codes, with the publish step enabled and no review state — the
+two proposal caps do not apply, because a version is not a proposal. It is a
+sibling route rather than a mode on the one above so that a key's scope list
+alone says which of the two it can do. Its one behavioural difference worth
+knowing: a proposal is deduplicated by the content of its change set, so a
+retried request comes back with the proposal the first attempt opened, while a
+version is not — the SDK therefore sends `publishChange` once and never
+retries it, and a response lost in transit is reported rather than repeated.
 
 The project supplies the tenant, which is what keeps an invited project guest
 working: they hold a `ProjectMember` row and no membership in the host

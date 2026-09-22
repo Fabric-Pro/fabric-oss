@@ -182,6 +182,12 @@ describe("OrganizationApiKeysSettings — a read-only role's create request", ()
 		expect(
 			await screen.findByLabelText("Instructions Write"),
 		).toBeInTheDocument();
+		// Its sibling is withheld, for the opposite reason: publishing without
+		// review needs `INSTRUCTION_CREATE`, which a viewer does not hold, so
+		// the server would refuse the whole request.
+		expect(
+			screen.queryByLabelText("Instructions Publish"),
+		).not.toBeInTheDocument();
 		expect(screen.queryByLabelText("MCP Write")).not.toBeInTheDocument();
 		expect(
 			screen.queryByLabelText("Projects Write"),

@@ -29,6 +29,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const m = vi.hoisted(() => ({
 	createDerivedInstructionSnapshot: vi.fn(),
 	getInstructionSnapshot: vi.fn(),
+	getInstructionSnapshotWithPublishedPointer: vi.fn(),
 	getProjectInstructionSettings: vi.fn(),
 	getPublishedInstructionSnapshot: vi.fn(),
 	listInstructionFiles: vi.fn(),
@@ -45,6 +46,8 @@ vi.mock("@repo/database", () => ({
 	createDerivedInstructionSnapshot: (...a: unknown[]) =>
 		m.createDerivedInstructionSnapshot(...a),
 	getInstructionSnapshot: (...a: unknown[]) => m.getInstructionSnapshot(...a),
+	getInstructionSnapshotWithPublishedPointer: (...a: unknown[]) =>
+		m.getInstructionSnapshotWithPublishedPointer(...a),
 	getProjectInstructionSettings: (...a: unknown[]) =>
 		m.getProjectInstructionSettings(...a),
 	getPublishedInstructionSnapshot: (...a: unknown[]) =>
@@ -136,6 +139,8 @@ function submit(overrides: Record<string, unknown> = {}) {
 		// IT override it.
 		baseSnapshotId: BASE_ID,
 		changes: [put("new\n")],
+		// Required, and stated on every call. The mode tests override it.
+		mode: "proposal",
 		audit,
 		via: "test",
 		...overrides,
@@ -152,20 +157,28 @@ beforeEach(() => {
 	m.getProjectInstructionSettings.mockResolvedValue({
 		sourceOfTruth: "UPLOAD",
 	});
+	// The tenant-scoped load of the BASE before anything is written. The
+	// re-read of the new row after the finalizer is a SEPARATE function,
+	// `getInstructionSnapshotWithPublishedPointer` below — the two used to
+	// share this mock, keyed by id, until the final read was combined with
+	// the pointer read into one Prisma call.
 	m.getPublishedInstructionSnapshot.mockResolvedValue(published());
-	// Two different reads share this mock: the tenant-scoped load of the BASE
-	// before anything is written, and the re-read of the new row after the
-	// finalizer. Answering by id keeps them apart.
-	m.getInstructionSnapshot.mockImplementation(async (id: string) =>
-		id === BASE_ID
-			? published()
-			: {
-					id,
-					version: 8,
-					status: "VALIDATING",
-					proposalStatus: "PENDING",
-				},
-	);
+	m.getInstructionSnapshot.mockResolvedValue(published());
+	// The final read: the new row plus the project's published pointer, from
+	// one call. The pointer defaults to the unchanged base — "nothing has
+	// published yet" — because that is the ordinary state for a row that just
+	// started validating.
+	m.getInstructionSnapshotWithPublishedPointer.mockResolvedValue({
+		snapshot: {
+			id: "snap_new",
+			version: 8,
+			status: "VALIDATING",
+			proposalStatus: "PENDING",
+			baseVersion: 7,
+			publishedAt: null,
+		},
+		publishedPointer: published(),
+	});
 	m.createDerivedInstructionSnapshot.mockResolvedValue(created());
 	m.listInstructionFiles.mockResolvedValue([stagedRow()]);
 	m.claimInstructionFileStagingKey.mockResolvedValue({ moved: true });
@@ -190,17 +203,17 @@ describe("authorization", () => {
 	});
 
 	/**
-	 * There is no publish mode on this entry point, and the absence is a
-	 * security property rather than a missing feature.
+	 * Proposal mode reaches the review-gated path and nothing else, whatever
+	 * the caller's permissions are.
 	 *
-	 * The only key minted for the surfaces that reach here carries
+	 * The key minted for the surfaces that ask for this mode carries
 	 * `instructions:write`, which the Connect dialog offers to read-only roles
-	 * and describes as review-gated. A publish mode would mean that same key
-	 * published directly whenever its creator happened to hold
-	 * `INSTRUCTION_CREATE` — and the scope would no longer describe what the
-	 * key can do. Publishing from outside the browser needs its own scope.
+	 * and describes as review-gated. What that key can do must not depend on
+	 * who created it, which is why the mode — not the permission set — is what
+	 * decides here, and why publishing is a second scope rather than a branch
+	 * inside this one.
 	 */
-	it("only ever opens a proposal, whatever the caller's permissions are", async () => {
+	it("only ever opens a proposal in proposal mode", async () => {
 		await submit();
 
 		expect(m.assertInstructionDeriveAccess).toHaveBeenCalledWith({
@@ -213,15 +226,55 @@ describe("authorization", () => {
 		);
 	});
 
-	// Belt and braces: an extra property on the input object cannot turn into
-	// a publish, because nothing reads one.
-	it("ignores a mode the caller invents", async () => {
-		await submit({ mode: "publish" });
+	/**
+	 * Publish mode asks for the publishing permission and turns on the
+	 * workflow's publish step — the same two flags the tab's direct save
+	 * sends (`derive-snapshot.ts` with `proposal: false`).
+	 */
+	it("asks for the publishing permission in publish mode, before reading anything", async () => {
+		m.assertInstructionDeriveAccess.mockRejectedValue(
+			new ORPCError("FORBIDDEN", { message: "no" }),
+		);
 
+		await expect(submit({ mode: "publish" })).rejects.toThrow("no");
+		expect(m.assertInstructionDeriveAccess).toHaveBeenCalledWith({
+			projectId: PROJECT,
+			userId: USER,
+			proposal: false,
+		});
+		expect(m.getProjectInstructionSettings).not.toHaveBeenCalled();
+		expect(m.createDerivedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("derives a self-publishing snapshot in publish mode", async () => {
+		const result = await submit({ mode: "publish" });
+
+		expect(result.mode).toBe("publish");
 		expect(m.createDerivedInstructionSnapshot).toHaveBeenCalledWith(
-			expect.objectContaining({ proposal: true, publishOnReady: false }),
+			expect.objectContaining({ proposal: false, publishOnReady: true }),
 		);
 	});
+
+	// Fail-closed: the comparison is against the publish literal, so an
+	// absent or unrecognised mode lands on the REVIEWED path. A truthiness
+	// test or a `!== "proposal"` would land it on the other one.
+	it.each([[undefined], ["PUBLISH"], ["publish "], [1]])(
+		"treats a mode of %j as a proposal",
+		async (mode) => {
+			const result = await submit({ mode });
+
+			expect(result.mode).toBe("proposal");
+			expect(m.assertInstructionDeriveAccess).toHaveBeenCalledWith(
+				expect.objectContaining({ proposal: true }),
+			);
+			expect(m.createDerivedInstructionSnapshot).toHaveBeenCalledWith(
+				expect.objectContaining({
+					proposal: true,
+					publishOnReady: false,
+				}),
+			);
+		},
+	);
 
 	it("acts in the project's hosting organization, resolved server-side", async () => {
 		await submit();
@@ -522,6 +575,35 @@ describe("the rest of the pipeline", () => {
 		);
 	});
 
+	/**
+	 * A direct publish records what the TAB's direct save records.
+	 *
+	 * `derive-snapshot.ts` writes `mode: "derived"` for a snapshot that is not
+	 * a proposal, so an audit reader filtering for direct versions has to find
+	 * the ones made from here too; `via` is what separates the surfaces. The
+	 * publish itself is a second row, `project.instructions.published`, written
+	 * by the workflow activity that moves the pointer — the same activity the
+	 * tab's publish goes through.
+	 */
+	it("records a publish the way the tab's direct save does", async () => {
+		await submit({ mode: "publish", via: "v1:organization-key" });
+
+		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+			audit,
+			expect.objectContaining({
+				action: "project.instructions.upload_started",
+				organizationId: ORG,
+				projectId: PROJECT,
+				metadata: expect.objectContaining({
+					mode: "derived",
+					via: "v1:organization-key",
+					baseSnapshotId: BASE_ID,
+					baseVersion: 7,
+				}),
+			}),
+		);
+	});
+
 	// Paths are user content and have no business in the audit log.
 	it("keeps file paths out of the audit metadata", async () => {
 		await submit();
@@ -699,24 +781,22 @@ describe("a replayed change set", () => {
 describe("the state a fresh proposal reports", () => {
 	it("re-reads the row after the finalizer rather than asserting PENDING", async () => {
 		m.finalizeInstructionSnapshot.mockResolvedValue({ status: "REJECTED" });
-		m.getInstructionSnapshot.mockImplementation(async (id: string) =>
-			id === BASE_ID
-				? published()
-				: {
-						id,
-						version: 8,
-						status: "REJECTED",
-						proposalStatus: "REJECTED",
-					},
-		);
+		m.getInstructionSnapshotWithPublishedPointer.mockResolvedValue({
+			snapshot: {
+				id: "snap_new",
+				version: 8,
+				status: "REJECTED",
+				proposalStatus: "REJECTED",
+				baseVersion: 7,
+			},
+			publishedPointer: published(),
+		});
 
 		const result = await submit();
 
-		expect(m.getInstructionSnapshot).toHaveBeenCalledWith(
-			"snap_new",
-			PROJECT,
-			ORG,
-		);
+		expect(
+			m.getInstructionSnapshotWithPublishedPointer,
+		).toHaveBeenCalledWith("snap_new", PROJECT, ORG);
 		expect(result.status).toBe("REJECTED");
 		// The pair the CLI and the tool read as "closed out, push again" — a
 		// new push is the right action and the dedup will not swallow it.
@@ -724,14 +804,131 @@ describe("the state a fresh proposal reports", () => {
 	});
 
 	it("reports a row that vanished as having no review state left", async () => {
-		m.getInstructionSnapshot.mockImplementation(async (id: string) =>
-			id === BASE_ID ? published() : null,
-		);
+		m.getInstructionSnapshotWithPublishedPointer.mockResolvedValue({
+			snapshot: null,
+			publishedPointer: published(),
+		});
 
 		const result = await submit();
 
 		expect(result.status).toBe("VALIDATING");
 		expect(result.proposalStatus).toBeNull();
+	});
+});
+
+/**
+ * `published` — the field a review finding added because `status: "READY"`
+ * does not by itself prove a version landed.
+ *
+ * `mode: "publish"` auto-publishes as a fast-forward
+ * (`publishInstructionSnapshotActivity`, `requireBaseUnmoved`), and that
+ * activity runs strictly AFTER the one that writes `status: READY` — a
+ * separate, later Temporal activity, not the same commit. The response can
+ * therefore return before the publish has landed, before it has landed AND
+ * been rolled back again, or after it landed and something else has since
+ * moved the pointer on. A delta review rejected classifying any of that as
+ * "pending" or "superseded" at response time — the true outcome usually has
+ * not happened yet, so no wording chosen now can be correct later.
+ *
+ * `published` instead reports an observed fact, gated on `!proposal`:
+ * `current.publishedAt != null` (the durable column
+ * `publishInstructionSnapshot` sets once, on the write that moves the
+ * pointer to this snapshot, and never clears) OR `publishedPointer?.id ===
+ * current.id` (the fresher of the two reads
+ * `getInstructionSnapshotWithPublishedPointer` makes, for a publish that
+ * commits in the gap between them). `false` means "not yet confirmed",
+ * never "refused".
+ */
+describe("the publication verdict", () => {
+	it("reports published: true from the durable publishedAt column", async () => {
+		m.getInstructionSnapshotWithPublishedPointer.mockResolvedValue({
+			snapshot: {
+				id: "snap_new",
+				version: 8,
+				status: "READY",
+				proposalStatus: null,
+				baseVersion: 7,
+				publishedAt: new Date("2024-01-01T00:00:00Z"),
+			},
+			// The pointer has since moved past this snapshot — a later edit's
+			// own fast-forward, or a deliberate History rollback. This snapshot
+			// WAS published; a live pointer check alone would wrongly call that
+			// "not published", which is exactly the bug this signal fixes.
+			publishedPointer: { ...published(), id: "snap_other", version: 9 },
+		});
+
+		const result = await submit({ mode: "publish" });
+
+		expect(result.published).toBe(true);
+	});
+
+	// The gap case: the pointer moved to this snapshot in the window between
+	// this function's two reads, before `publishedAt` on the first read could
+	// reflect it. `publishedPointer` is the fresher signal and catches it.
+	it("reports published: true from a pointer match when publishedAt has not caught up", async () => {
+		m.getInstructionSnapshotWithPublishedPointer.mockResolvedValue({
+			snapshot: {
+				id: "snap_new",
+				version: 8,
+				status: "READY",
+				proposalStatus: null,
+				baseVersion: 7,
+				publishedAt: null,
+			},
+			publishedPointer: { ...published(), id: "snap_new", version: 8 },
+		});
+
+		const result = await submit({ mode: "publish" });
+
+		expect(result.published).toBe(true);
+	});
+
+	// READY, but neither signal shows a publish: the ordinary shape of "the
+	// fast-forward activity has not committed yet", not a refusal.
+	it("reports published: false when neither the durable column nor the pointer shows a publish", async () => {
+		m.getInstructionSnapshotWithPublishedPointer.mockResolvedValue({
+			snapshot: {
+				id: "snap_new",
+				version: 8,
+				status: "READY",
+				proposalStatus: null,
+				baseVersion: 7,
+				publishedAt: null,
+			},
+			// Still the original base — nothing has published yet.
+			publishedPointer: published(),
+		});
+
+		const result = await submit({ mode: "publish" });
+
+		expect(result.published).toBe(false);
+	});
+
+	// The proposal path never asks the workflow to publish, so a proposal
+	// that validates quickly and reaches READY while still PENDING must not
+	// be reported as published. Both signals are set here — as if a reviewer
+	// had approved and published it independently in the window between this
+	// request's reads — so the test is not vacuous: either signal alone would
+	// say `published: true`, and only the `!proposal` gate in the computation
+	// keeps the answer `false` for a call that never asked the workflow to
+	// publish anything.
+	it("never reports a proposal as published, even when both signals show one", async () => {
+		m.getInstructionSnapshotWithPublishedPointer.mockResolvedValue({
+			snapshot: {
+				id: "snap_new",
+				version: 8,
+				status: "READY",
+				proposalStatus: "PENDING",
+				baseVersion: 7,
+				publishedAt: new Date("2024-01-01T00:00:00Z"),
+			},
+			publishedPointer: { ...published(), id: "snap_new", version: 8 },
+		});
+
+		const result = await submit();
+
+		expect(result.mode).toBe("proposal");
+		expect(result.published).toBe(false);
 	});
 });
 
