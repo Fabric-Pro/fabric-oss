@@ -27,7 +27,7 @@ export default defineConfig({
 	// at runtime (e.g. whatwg-url, pulled via node-fetch → openai → @langchain/core,
 	// does `require("punycode")`). Without this shim the container crash-loops on boot
 	// with `Dynamic require of "punycode" is not supported`. Same fix used in
-	// packages/cli and packages/mcp-server tsup configs.
+	// weave-readers' tsup config.
 	banner: {
 		js: "import { createRequire as __fabricCreateRequire } from 'module'; const require = __fabricCreateRequire(import.meta.url);",
 	},

@@ -30,6 +30,16 @@ export default defineConfig({
 		// that crash when esbuild emits __commonJS shims into ESM. Load from node_modules.
 		"stripe",
 	],
+	// Node ESM bundles have no `require()`, so any inlined CommonJS dependency that
+	// calls require() at runtime — yaml (via @repo/utils) does `require("process")`
+	// in its composer — crashes at load with `Dynamic require of "..." is not
+	// supported`. The externals above were added one at a time as each such
+	// dependency surfaced; this banner gives the bundle a real `require` so the
+	// whole class is covered. Same fix as weave-planners. The load-time smoke test
+	// in src/dist-smoke.test.ts guards this.
+	banner: {
+		js: "import { createRequire as __fabricCreateRequire } from 'module'; const require = __fabricCreateRequire(import.meta.url);",
+	},
 	clean: true,
 	sourcemap: true,
 });
