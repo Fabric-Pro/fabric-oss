@@ -21,10 +21,14 @@ vi.mock("@repo/database", () => ({
 
 vi.mock("@repo/integrations/gitlab", () => ({
 	getGitLabAccessToken: vi.fn(),
+	getFreshGitLabAccessToken: vi.fn(),
 }));
 
 import { db, resolvePMConfigForUser } from "@repo/database";
-import { getGitLabAccessToken } from "@repo/integrations/gitlab";
+import {
+	getFreshGitLabAccessToken,
+	getGitLabAccessToken,
+} from "@repo/integrations/gitlab";
 import {
 	PMSourceNotFound,
 	resolvePmServerKey,
@@ -333,6 +337,87 @@ describe("resolvePmSource", () => {
 		expect(
 			vi.mocked(db.workflowIntegration.findFirst),
 		).toHaveBeenCalledTimes(1);
+	});
+
+	describe("requireFreshToken (the hourly poll)", () => {
+		const restArgs = {
+			mcpServerId: "key:gitlab-official",
+			mcpConfigId: null,
+			userId: "u1",
+			organizationId: "org-x",
+			containerId: "100",
+			requireFreshToken: true,
+		};
+		beforeEach(() => {
+			vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
+				id: "wi1",
+				userId: "u1",
+			} as never);
+		});
+
+		it("throws token-failed WITH the fixed reason when the token is dead and the refresh failed", async () => {
+			vi.mocked(getFreshGitLabAccessToken).mockResolvedValue({
+				ok: false,
+				reason: "GitLab rejected the token refresh (HTTP 401 invalid_client)",
+			});
+			const err = await resolvePmSource(restArgs).catch(
+				(e: unknown) => e,
+			);
+			expect(err).toBeInstanceOf(PMSourceNotFound);
+			expect(err).toMatchObject({
+				reason: "token-failed",
+				detail: "GitLab rejected the token refresh (HTTP 401 invalid_client)",
+			});
+			expect(getGitLabAccessToken).not.toHaveBeenCalled();
+		});
+
+		it("returns the source with a fresh token", async () => {
+			vi.mocked(getFreshGitLabAccessToken).mockResolvedValue({
+				ok: true,
+				token: "FRESH",
+			});
+			expect(await resolvePmSource(restArgs)).toMatchObject({
+				kind: "rest-gitlab",
+				token: "FRESH",
+			});
+		});
+
+		it("throws token-failed without detail when the integration row vanished", async () => {
+			vi.mocked(getFreshGitLabAccessToken).mockResolvedValue(null);
+			await expect(resolvePmSource(restArgs)).rejects.toMatchObject({
+				reason: "token-failed",
+				detail: undefined,
+			});
+			// Proves the STRICT branch actually ran (not, say, some other path
+			// that happens to reject with the same shape).
+			expect(getFreshGitLabAccessToken).toHaveBeenCalled();
+			expect(getGitLabAccessToken).not.toHaveBeenCalled();
+		});
+
+		it("throws token-failed without detail when getFreshGitLabAccessToken itself rejects", async () => {
+			vi.mocked(getFreshGitLabAccessToken).mockRejectedValue(
+				new Error("db down"),
+			);
+			await expect(resolvePmSource(restArgs)).rejects.toMatchObject({
+				reason: "token-failed",
+				detail: undefined,
+			});
+			expect(getFreshGitLabAccessToken).toHaveBeenCalled();
+			expect(getGitLabAccessToken).not.toHaveBeenCalled();
+		});
+
+		it("positive control: without requireFreshToken the lenient getter is used, as today", async () => {
+			vi.mocked(getGitLabAccessToken).mockResolvedValue(
+				"LENIENT" as never,
+			);
+			expect(
+				await resolvePmSource({
+					...restArgs,
+					requireFreshToken: undefined,
+				}),
+			).toMatchObject({ token: "LENIENT" });
+			expect(getFreshGitLabAccessToken).not.toHaveBeenCalled();
+		});
 	});
 });
 

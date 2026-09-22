@@ -748,4 +748,24 @@ describe("fetchPMItemsByIds — REST GitLab branch (Fizzy #2304, D2.2)", () => {
 		expect(partial.notFoundIds).toEqual([]);
 		expect(partial.complete).toBe(false);
 	});
+
+	it("forwards requireFreshToken to the REST source resolution, and only when asked", async () => {
+		rest.callPmToolWithFallback.mockImplementation(
+			async ({ call }: RestCall) => issueFor(call.externalId),
+		);
+
+		await fetchPMItemsByIds({
+			...BASE_INPUT,
+			externalIds: ["1"],
+			requireFreshToken: true,
+		});
+		expect(rest.resolvePmSource).toHaveBeenLastCalledWith(
+			expect.objectContaining({ requireFreshToken: true }),
+		);
+
+		await fetchPMItemsByIds({ ...BASE_INPUT, externalIds: ["1"] });
+		expect(
+			rest.resolvePmSource.mock.calls.at(-1)?.[0]?.requireFreshToken,
+		).toBeUndefined();
+	});
 });

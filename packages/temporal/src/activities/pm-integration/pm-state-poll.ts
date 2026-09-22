@@ -53,9 +53,16 @@ import { stripAttachmentBlock } from "./gitlab-attachment-block";
 import { isFetchComplete, isNotAttemptedError } from "./pm-fetch-complete";
 import { PM_MISSING_SENTINEL } from "./pm-missing-constants";
 import { resolveTrusted } from "./pm-server-provenance";
-import type { TrustedKey } from "./pm-server-provenance-match";
+import {
+	mapKeyToPatternType,
+	type TrustedKey,
+} from "./pm-server-provenance-match";
 import { computePmHash } from "./pm-sync-hash";
 import { hashTerminalStatuses, resolveTerminalSet } from "./pm-terminal-config";
+import {
+	createStampToolTypeResolver,
+	linkBelongsToActiveTool,
+} from "./poll-link-scope";
 import {
 	reconcileStoryMappedStatus,
 	recordTerminalObservation,
@@ -508,6 +515,10 @@ export async function getAdoActiveProjects(): Promise<PmActiveProject[]> {
 				userId: p.userId,
 				organizationId: p.organizationId,
 				containerId: p.projectManagementContainerId,
+				// Fizzy #2304 follow-up — a dead token that cannot be refreshed
+				// skips the project with its reason, rather than failing every
+				// ticket read one by one.
+				requireFreshToken: true,
 			});
 			sourceKind = source.kind;
 			pmTool = await resolvePmServerKey(p.projectManagementMcpServerId);
@@ -518,6 +529,7 @@ export async function getAdoActiveProjects(): Promise<PmActiveProject[]> {
 					{
 						projectId: p.id,
 						reason: err.reason,
+						detail: err.detail,
 					},
 				);
 				if (p.pmStatusSyncEnabled && p.pmStatusSyncSessionAt) {
@@ -528,7 +540,9 @@ export async function getAdoActiveProjects(): Promise<PmActiveProject[]> {
 							failure: {
 								at: new Date().toISOString(),
 								kind: "source-not-found",
-								error: err.reason,
+								error: err.detail
+									? `${err.reason}: ${err.detail}`
+									: err.reason,
 							},
 						},
 					});
@@ -1048,6 +1062,11 @@ export async function fetchAdoWorkItemStates(
 		// message is a provider's error text, which the settings card shows
 		// to users, so credentials it may echo are scrubbed before it is stored
 		// (the writer's length cap runs after, so it cannot cut a secret in half).
+		// A `PMSourceNotFound` (e.g. the strict token resolution inside
+		// `fetchPMItemsByIds` failing) already carries a fixed-vocabulary
+		// reason/detail — record that directly, in the SAME `reason: detail`
+		// shape the enumeration path (`getAdoActiveProjects`) uses, rather than
+		// its generic `Error.message` (which would read as raw provider text).
 		if (sessionAt !== null) {
 			await mergePmStatusSyncLastRun({
 				projectId: input.projectId,
@@ -1056,9 +1075,16 @@ export async function fetchAdoWorkItemStates(
 					failure: {
 						at: new Date().toISOString(),
 						kind: "fetch-failed",
-						error: scrubSecrets(
-							err instanceof Error ? err.message : String(err),
-						),
+						error:
+							err instanceof PMSourceNotFound
+								? err.detail
+									? `${err.reason}: ${err.detail}`
+									: err.reason
+								: scrubSecrets(
+										err instanceof Error
+											? err.message
+											: String(err),
+									),
 					},
 				},
 			});
@@ -1159,10 +1185,37 @@ async function fetchLinkedItemStates(
 	// compared at all.
 	const watermark = statusSyncEnabled ? null : lastAdoStatePollAt;
 
+	// Fizzy #2304 follow-up — read only stories linked to the ACTIVE PM tool.
+	// A story linked to a previously used tool keeps its externalId, and asking
+	// the new tool for that id either fails every cycle (the fetch never
+	// completes, the watermark never advances) or reads an unrelated ticket.
+	// Scoped from this input's snapshot (`pmTool`, else its `mcpServerId` for
+	// inputs recorded before `pmTool` existed) — never from a fresh project read.
+	const activeToolType = mapKeyToPatternType(
+		input.pmTool ??
+			(input.mcpServerId
+				? await resolvePmServerKey(input.mcpServerId)
+				: null),
+	);
+	const resolveStamp = createStampToolTypeResolver();
+	const allLinked = await getLinkedExternalIds(projectId);
+	const linked: typeof allLinked = [];
+	for (const link of allLinked) {
+		if (await linkBelongsToActiveTool(link, activeToolType, resolveStamp)) {
+			linked.push(link);
+		}
+	}
+	if (linked.length < allLinked.length) {
+		logger.info("[PM Poll] Skipped stories linked to a different PM tool", {
+			projectId,
+			skipped: allLinked.length - linked.length,
+			activeToolType,
+		});
+	}
+
 	// Fizzy #2304 D2.2 — with status sync on, start at a fresh random offset
 	// each cycle, so a fetch budget that runs out leaves a different tail
 	// unread each time. Switch off: the stored order, unchanged.
-	const linked = await getLinkedExternalIds(projectId);
 	const linkedItems = statusSyncEnabled
 		? rotateFrom(linked, statusSyncFetchOrder.startOffset(linked.length))
 		: linked;
@@ -1261,6 +1314,7 @@ async function fetchLinkedItemStates(
 		concurrency: 8,
 		callTimeoutMs: PM_POLL_CALL_TIMEOUT_MS,
 		budgetMs: PM_POLL_BUDGET_MS,
+		requireFreshToken: true,
 	});
 
 	const allItems: PmWorkItemState[] = [];

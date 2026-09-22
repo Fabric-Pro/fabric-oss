@@ -205,6 +205,10 @@ import {
 	hashTerminalStatuses,
 	resolveTerminalSet,
 } from "../src/activities/pm-integration/pm-terminal-config";
+// The real class — `pm-source.ts` is NOT mocked in this file, so production's
+// `err instanceof PMSourceNotFound` check inside `fetchAdoWorkItemStates`
+// needs the SAME class identity here.
+import { PMSourceNotFound } from "../src/activities/pm-source";
 // The serializer the D2.3 cap measures with (Fizzy #2304).
 import { measureSerializedBytes } from "../src/lib/payload-size-guard";
 // Select-honouring, where-evaluating fake tables for the status-sync decision
@@ -2834,6 +2838,34 @@ describe("fetchAdoWorkItemStates — status sync (Fizzy #2304)", () => {
 							at: NOW.toISOString(),
 							kind: "fetch-failed",
 							error: "GitLab returned 401 for PRIVATE-TOKEN: [REDACTED] via https://ci-bot:[REDACTED]@gitlab.example/api/v4",
+						},
+					},
+				},
+			],
+		]);
+	});
+
+	it("D2.6 records a PMSourceNotFound's fixed-vocabulary reason+detail, not its generic Error.message — same shape the enumeration path uses", async () => {
+		mockFetchPMItemsByIds.mockRejectedValue(
+			new PMSourceNotFound(
+				"token-failed",
+				"GitLab rejected the token refresh (HTTP 401 invalid_client)",
+			),
+		);
+
+		await expect(fetchAdoWorkItemStates(mcpInput)).rejects.toBeInstanceOf(
+			PMSourceNotFound,
+		);
+		expect(mockMergePmStatusSyncLastRun.mock.calls).toEqual([
+			[
+				{
+					projectId: "proj-1",
+					sessionAt: SESSION,
+					patch: {
+						failure: {
+							at: NOW.toISOString(),
+							kind: "fetch-failed",
+							error: "token-failed: GitLab rejected the token refresh (HTTP 401 invalid_client)",
 						},
 					},
 				},

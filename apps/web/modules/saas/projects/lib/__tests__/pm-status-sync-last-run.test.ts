@@ -308,6 +308,159 @@ describe("derivePmStatusSyncRunView", () => {
 			}),
 		).toEqual({ kind: "unreadable" });
 	});
+
+	describe("a current fetch that could not read some tickets (read-errors)", () => {
+		const run = (fetch: Record<string, unknown>) => ({
+			sessionAt: ago(180 * MINUTE),
+			fetch: { at: ago(6 * MINUTE), notFound: 0, ...fetch },
+			outcome: {
+				at: ago(5 * MINUTE),
+				counts: { ...zeroCounts, unchanged: 9 },
+			},
+		});
+		const view = (r: Record<string, unknown>) =>
+			derivePmStatusSyncRunView({
+				lastRun: r,
+				sessionAt: ago(180 * MINUTE),
+				now: NOW,
+			});
+
+		it("is never healthy when some tickets failed to read", () => {
+			const r = run({
+				linked: 11,
+				fetched: 9,
+				failed: 2,
+				complete: false,
+			});
+			expect(view(r)).toEqual({
+				kind: "read-errors",
+				at: new Date(NOW - 5 * MINUTE),
+				run: r,
+				failed: 2,
+				linked: 11,
+				nothingRead: false,
+			});
+		});
+
+		it("flags a run that read nothing at all", () => {
+			const r = run({
+				linked: 11,
+				fetched: 0,
+				failed: 11,
+				complete: false,
+			});
+			expect(view(r)).toMatchObject({
+				kind: "read-errors",
+				nothingRead: true,
+				failed: 11,
+				linked: 11,
+			});
+		});
+
+		it("flags a run that read nothing even when nothing individually failed (every id deferred)", () => {
+			// MCP capability discovery timed out, or REST source resolution spent
+			// the whole budget: every id is "not attempted", not "failed" — so
+			// `failed` stays 0, and a failed-only trigger would miss this run
+			// entirely and print it healthy.
+			const r = run({
+				linked: 11,
+				fetched: 0,
+				failed: 0,
+				notFound: 0,
+				complete: false,
+			});
+			expect(view(r)).toEqual({
+				kind: "read-errors",
+				at: new Date(NOW - 5 * MINUTE),
+				run: r,
+				failed: 0,
+				linked: 11,
+				nothingRead: true,
+			});
+		});
+
+		it("positive control: a board whose tickets are ALL not-found stays healthy (FLAG_MISSING's job, not a read error)", () => {
+			expect(
+				view(
+					run({
+						linked: 3,
+						fetched: 0,
+						failed: 0,
+						notFound: 3,
+						complete: true,
+					}),
+				),
+			).toMatchObject({ kind: "healthy" });
+		});
+
+		it("positive controls: not-found and never-attempted tickets keep the run healthy", () => {
+			// Deleted tickets are FLAG_MISSING's job, not a read error.
+			expect(
+				view(
+					run({
+						linked: 12,
+						fetched: 10,
+						failed: 0,
+						notFound: 2,
+						complete: true,
+					}),
+				).kind,
+			).toBe("healthy");
+			// Budget-deferred ids are counted as "not fetched", not failed.
+			expect(
+				view(
+					run({ linked: 12, fetched: 8, failed: 0, complete: false }),
+				).kind,
+			).toBe("healthy");
+		});
+
+		it("keeps the stronger states ahead of read-errors", () => {
+			// A newer project-level failure wins.
+			expect(
+				view({
+					...run({
+						linked: 11,
+						fetched: 9,
+						failed: 2,
+						complete: false,
+					}),
+					failure: {
+						at: ago(MINUTE),
+						kind: "fetch-failed",
+						error: "boom",
+					},
+				}).kind,
+			).toBe("failed");
+			// Past two poll intervals the run is stale.
+			expect(
+				view({
+					sessionAt: ago(600 * MINUTE),
+					fetch: {
+						at: ago(STALE_AFTER_MS + MINUTE),
+						linked: 11,
+						fetched: 9,
+						failed: 2,
+						notFound: 0,
+						complete: false,
+					},
+				}).kind,
+			).toBe("stale");
+			// A fetch whose outcome never arrived is outcome-overdue.
+			expect(
+				view({
+					sessionAt: ago(180 * MINUTE),
+					fetch: {
+						at: ago(16 * MINUTE),
+						linked: 11,
+						fetched: 9,
+						failed: 2,
+						notFound: 0,
+						complete: false,
+					},
+				}).kind,
+			).toBe("outcome-overdue");
+		});
+	});
 });
 
 describe("formatPmStatusSyncFetch", () => {

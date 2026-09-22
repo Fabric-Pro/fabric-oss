@@ -20,6 +20,8 @@ describe("getLinkedExternalIds", () => {
 				pmAutoHidden: true,
 				lastSyncedPmHash: "h",
 				lastPmSyncStatus: null,
+				externalMcpServerId: "srv-gl",
+				externalUrl: "https://gitlab.com/acme/portal/-/issues/123",
 			},
 		]);
 		const rows = await getLinkedExternalIds("proj_1");
@@ -32,6 +34,8 @@ describe("getLinkedExternalIds", () => {
 				pmAutoHidden: true,
 				lastSyncedPmHash: true,
 				lastPmSyncStatus: true,
+				externalMcpServerId: true,
+				externalUrl: true,
 			},
 		});
 		expect(rows[0]).toEqual({
@@ -42,6 +46,8 @@ describe("getLinkedExternalIds", () => {
 			pmAutoHidden: true,
 			lastSyncedPmHash: "h",
 			lastPmSyncStatus: null,
+			externalMcpServerId: "srv-gl",
+			externalUrl: "https://gitlab.com/acme/portal/-/issues/123",
 		});
 	});
 });

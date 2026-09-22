@@ -357,8 +357,8 @@ describe("Last status sync line (AC13)", () => {
 				fetch: {
 					at: minutesAgo(6),
 					linked: 12,
-					fetched: 11,
-					failed: 1,
+					fetched: 12,
+					failed: 0,
 					notFound: 0,
 					complete: true,
 				},
@@ -378,7 +378,7 @@ describe("Last status sync line (AC13)", () => {
 		).toBeInTheDocument();
 		expect(
 			screen.getByText(
-				"12 linked · 11 fetched · 1 failed · 0 not found · 0 not fetched",
+				"12 linked · 12 fetched · 0 failed · 0 not found · 0 not fetched",
 			),
 		).toBeInTheDocument();
 		expect(
@@ -527,5 +527,97 @@ describe("Last status sync line (AC13)", () => {
 			"false",
 		);
 		expect(screen.queryByText(/Last status sync/)).toBeNull();
+	});
+
+	it("renders a run with unread tickets as a warning, never healthy", async () => {
+		renderSettings({
+			...fizzyProject,
+			pmStatusSyncEnabled: true,
+			pmStatusSyncSessionAt: minutesAgo(180),
+			pmStatusSyncLastRun: {
+				sessionAt: minutesAgo(180),
+				fetch: {
+					at: minutesAgo(6),
+					linked: 11,
+					fetched: 9,
+					failed: 2,
+					notFound: 0,
+					complete: false,
+				},
+				outcome: {
+					at: minutesAgo(5),
+					counts: allOutcomes({ unchanged: 9 }),
+				},
+			},
+		});
+
+		expect(
+			await screen.findByText(
+				/^Last status sync \d+ minutes ago: 2 of 11 tickets could not be read\.$/,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				"11 linked · 9 fetched · 2 failed · 0 not found · 0 not fetched (incomplete — the rest is checked on the next run)",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(/^Last status sync \d+ minutes ago$/),
+		).toBeNull();
+	});
+
+	it("renders a run that read nothing as a failure line", async () => {
+		renderSettings({
+			...fizzyProject,
+			pmStatusSyncEnabled: true,
+			pmStatusSyncSessionAt: minutesAgo(180),
+			pmStatusSyncLastRun: {
+				sessionAt: minutesAgo(180),
+				fetch: {
+					at: minutesAgo(6),
+					linked: 11,
+					fetched: 0,
+					failed: 11,
+					notFound: 0,
+					complete: false,
+				},
+				outcome: { at: minutesAgo(5), counts: allOutcomes({}) },
+			},
+		});
+
+		const line = await screen.findByText(
+			/^Last status sync \d+ minutes ago: no ticket could be read\.$/,
+		);
+		expect(line.closest("div")?.className).toContain("text-destructive");
+	});
+
+	it("renders a run where every ticket was deferred (never attempted, not failed) as the same failure line", async () => {
+		renderSettings({
+			...fizzyProject,
+			pmStatusSyncEnabled: true,
+			pmStatusSyncSessionAt: minutesAgo(180),
+			pmStatusSyncLastRun: {
+				sessionAt: minutesAgo(180),
+				fetch: {
+					at: minutesAgo(6),
+					linked: 11,
+					fetched: 0,
+					failed: 0,
+					notFound: 0,
+					complete: false,
+				},
+				outcome: { at: minutesAgo(5), counts: allOutcomes({}) },
+			},
+		});
+
+		const line = await screen.findByText(
+			/^Last status sync \d+ minutes ago: no ticket could be read\.$/,
+		);
+		expect(line.closest("div")?.className).toContain("text-destructive");
+		expect(
+			screen.getByText(
+				"11 linked · 0 fetched · 0 failed · 0 not found · 11 not fetched (incomplete — the rest is checked on the next run)",
+			),
+		).toBeInTheDocument();
 	});
 });
