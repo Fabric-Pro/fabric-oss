@@ -2330,6 +2330,12 @@
 				"removed": "{count, plural, one {# Duplikat wird entfernt. Es verschwindet, sobald die Bereinigung abgeschlossen ist.} other {# Duplikate werden entfernt. Sie verschwinden, sobald die Bereinigung abgeschlossen ist.}}",
 				"removeFailed": "{count, plural, one {Das Duplikat konnte nicht entfernt werden. Bitte versuchen Sie es erneut.} other {# Duplikate konnten nicht entfernt werden. Bitte versuchen Sie es erneut.}}",
 				"removedPartial": "Entfernen für {removed} von {total} Duplikaten gestartet. {failed} konnten nicht gestartet werden; bitte versuchen Sie es erneut."
+			},
+			"livingMemory": {
+				"title": "Living Memory",
+				"description": "Aus einem Arbeitsverzeichnis synchronisierte Dateien, nach Ordner gruppiert.",
+				"rootFolder": "Projektstammverzeichnis",
+				"fileCount": "{count, plural, one {# Datei} other {# Dateien}}"
 			}
 		},
 		"stories": {

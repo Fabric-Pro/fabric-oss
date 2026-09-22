@@ -53,6 +53,7 @@ import {
 	FileSpreadsheetIcon,
 	FileTextIcon,
 	FolderIcon,
+	FolderSyncIcon,
 	ImageIcon,
 	InfoIcon,
 	LinkIcon,
@@ -71,7 +72,7 @@ import {
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
 	renderMarkdownToDocx,
@@ -188,6 +189,74 @@ function getContextDisplayTitle(ctx: RowContext): string {
 		ctx.sourceTitle ||
 		ctx.originalFilename ||
 		ctx.type
+	);
+}
+
+/**
+ * Living Memory (Fizzy #2620): the synced knowledge files of a project,
+ * grouped by the folder part of their `sourcePath`. Flat, not a tree — one
+ * group per distinct folder, so `docs` and `docs/guides` are siblings.
+ * Folders are ordered by path with the project root ("") first, files by
+ * name. The comparison is a fixed-locale natural sort (`v2` before `v10`),
+ * so the order does not depend on where the page renders.
+ */
+type LivingMemoryFile<T> = { context: T; path: string; name: string };
+type LivingMemoryFolder<T> = { path: string; files: LivingMemoryFile<T>[] };
+
+const PATH_COLLATOR = new Intl.Collator("en", { numeric: true });
+
+function comparePathText(a: string, b: string): number {
+	if (a === b) {
+		return 0;
+	}
+	return PATH_COLLATOR.compare(a, b) || (a < b ? -1 : 1);
+}
+
+function groupSyncedContextsByFolder<T extends { sourcePath?: string | null }>(
+	contexts: readonly T[],
+): LivingMemoryFolder<T>[] {
+	const byFolder = new Map<string, LivingMemoryFile<T>[]>();
+	for (const context of contexts) {
+		const path = context.sourcePath;
+		if (!path) {
+			continue;
+		}
+		const slash = path.lastIndexOf("/");
+		const folder = slash === -1 ? "" : path.slice(0, slash);
+		const file = { context, path, name: path.slice(slash + 1) };
+		const files = byFolder.get(folder);
+		if (files) {
+			files.push(file);
+		} else {
+			byFolder.set(folder, [file]);
+		}
+	}
+	return Array.from(byFolder, ([path, files]) => ({
+		path,
+		files: files.sort((a, b) => comparePathText(a.name, b.name)),
+	})).sort((a, b) => {
+		if (a.path === "" || b.path === "") {
+			return a.path === "" ? -1 : 1;
+		}
+		return comparePathText(a.path, b.path);
+	});
+}
+
+/**
+ * Test hook for a Living Memory folder section: the path lowercased with
+ * every run of other characters turned into "-", and "root" for the project
+ * root. Lossy by design (a readable id, not a key); the section also carries
+ * the exact path in `data-folder-path`, and React keys use the path itself.
+ */
+function livingMemoryFolderSlug(path: string): string {
+	if (path === "") {
+		return "root";
+	}
+	return (
+		path
+			.toLowerCase()
+			.replace(/[^\p{L}\p{N}]+/gu, "-")
+			.replace(/^-+|-+$/g, "") || "folder"
 	);
 }
 
@@ -812,6 +881,10 @@ export function ProjectContextsList({ projectId }: Props) {
 	const tDownload = useTranslations("projects.contexts.download");
 	const tScope = useTranslations("projects.contexts.scopeIntake");
 	const tDuplicates = useTranslations("projects.contexts.duplicates");
+	const tLivingMemory = useTranslations("projects.contexts.livingMemory");
+	// Prefix for the Living Memory heading and folder-panel ids; folder slugs
+	// are lossy, so they never form an id.
+	const livingMemoryId = useId();
 	const [confirmRemoveDuplicatesOpen, setConfirmRemoveDuplicatesOpen] =
 		useState(false);
 	const { trackEvent } = useAnalytics();
@@ -1128,6 +1201,7 @@ export function ProjectContextsList({ projectId }: Props) {
 	});
 
 	const contexts = data?.contexts ?? [];
+	type ListedContext = (typeof contexts)[number];
 
 	// Duplicate detection (Fizzy #2619). The server marks each copy with the
 	// id of the row it duplicates; only copies whose original is in this same
@@ -1220,93 +1294,103 @@ export function ProjectContextsList({ projectId }: Props) {
 		},
 	});
 
-	// Separate meeting transcripts, Notion docs, and Teams chats from other contexts
-	const { otherContexts, transcriptGroups, notionGroup, teamsGroup } =
-		useMemo(() => {
-			const other: typeof contexts = [];
-			const notionContexts: typeof contexts = [];
-			const teamsContexts: typeof contexts = [];
-			const transcriptsByMeeting = new Map<
-				string,
-				{ key: string; subject: string; transcripts: typeof contexts }
-			>();
+	// Separate meeting transcripts, Notion docs, Teams chats and synced
+	// knowledge files (Living Memory) from other contexts
+	const {
+		otherContexts,
+		transcriptGroups,
+		notionGroup,
+		teamsGroup,
+		livingMemoryFolders,
+	} = useMemo(() => {
+		const other: typeof contexts = [];
+		const synced: typeof contexts = [];
+		const notionContexts: typeof contexts = [];
+		const teamsContexts: typeof contexts = [];
+		const transcriptsByMeeting = new Map<
+			string,
+			{ key: string; subject: string; transcripts: typeof contexts }
+		>();
 
-			for (const ctx of contexts) {
-				const meta = (ctx.metadata ?? {}) as Record<string, unknown>;
+		for (const ctx of contexts) {
+			const meta = (ctx.metadata ?? {}) as Record<string, unknown>;
 
-				if (ctx.type === "MEETING_TRANSCRIPT") {
-					const meetingMeta = meta as {
-						meetingSubject?: string;
-						meetingId?: string;
-					};
-					const groupKey =
-						meetingMeta.meetingId ||
-						meetingMeta.meetingSubject ||
-						"Unknown Meeting";
-					const subject =
-						meetingMeta.meetingSubject || "Meeting Transcript";
-					const existing = transcriptsByMeeting.get(groupKey);
-					if (existing) {
-						existing.transcripts.push(ctx);
-					} else {
-						transcriptsByMeeting.set(groupKey, {
-							key: groupKey,
-							subject,
-							transcripts: [ctx],
-						});
-					}
-				} else if (meta.provider === "notion") {
-					notionContexts.push(ctx);
-				} else if (meta.provider === "MICROSOFT_TEAMS") {
-					teamsContexts.push(ctx);
+			if (ctx.type === "MEETING_TRANSCRIPT") {
+				const meetingMeta = meta as {
+					meetingSubject?: string;
+					meetingId?: string;
+				};
+				const groupKey =
+					meetingMeta.meetingId ||
+					meetingMeta.meetingSubject ||
+					"Unknown Meeting";
+				const subject =
+					meetingMeta.meetingSubject || "Meeting Transcript";
+				const existing = transcriptsByMeeting.get(groupKey);
+				if (existing) {
+					existing.transcripts.push(ctx);
 				} else {
-					other.push(ctx);
+					transcriptsByMeeting.set(groupKey, {
+						key: groupKey,
+						subject,
+						transcripts: [ctx],
+					});
 				}
+			} else if (meta.provider === "notion") {
+				notionContexts.push(ctx);
+			} else if (meta.provider === "MICROSOFT_TEAMS") {
+				teamsContexts.push(ctx);
+			} else if (ctx.sourcePath) {
+				// A file pushed from a working tree (Fizzy #2616) is shown
+				// in its folder under Living Memory (Fizzy #2620).
+				synced.push(ctx);
+			} else {
+				other.push(ctx);
 			}
+		}
 
-			// Sort transcripts within each group by meetingDate descending
-			for (const group of transcriptsByMeeting.values()) {
-				group.transcripts.sort((a, b) => {
-					const dateA = (a.metadata as { meetingDate?: string })
-						?.meetingDate;
-					const dateB = (b.metadata as { meetingDate?: string })
-						?.meetingDate;
-					if (!dateA && !dateB) {
-						return 0;
-					}
-					if (!dateA) {
-						return 1;
-					}
-					if (!dateB) {
-						return -1;
-					}
-					return (
-						new Date(dateB).getTime() - new Date(dateA).getTime()
-					);
-				});
-			}
+		// Sort transcripts within each group by meetingDate descending
+		for (const group of transcriptsByMeeting.values()) {
+			group.transcripts.sort((a, b) => {
+				const dateA = (a.metadata as { meetingDate?: string })
+					?.meetingDate;
+				const dateB = (b.metadata as { meetingDate?: string })
+					?.meetingDate;
+				if (!dateA && !dateB) {
+					return 0;
+				}
+				if (!dateA) {
+					return 1;
+				}
+				if (!dateB) {
+					return -1;
+				}
+				return new Date(dateB).getTime() - new Date(dateA).getTime();
+			});
+		}
 
-			// Sort Notion docs by creation date descending
-			notionContexts.sort(
-				(a, b) =>
-					new Date(b.createdAt).getTime() -
-					new Date(a.createdAt).getTime(),
-			);
+		// Sort Notion docs by creation date descending
+		notionContexts.sort(
+			(a, b) =>
+				new Date(b.createdAt).getTime() -
+				new Date(a.createdAt).getTime(),
+		);
 
-			// Sort Teams chats by creation date descending
-			teamsContexts.sort(
-				(a, b) =>
-					new Date(b.createdAt).getTime() -
-					new Date(a.createdAt).getTime(),
-			);
+		// Sort Teams chats by creation date descending
+		teamsContexts.sort(
+			(a, b) =>
+				new Date(b.createdAt).getTime() -
+				new Date(a.createdAt).getTime(),
+		);
 
-			return {
-				otherContexts: other,
-				transcriptGroups: Array.from(transcriptsByMeeting.values()),
-				notionGroup: notionContexts.length > 0 ? notionContexts : null,
-				teamsGroup: teamsContexts.length > 0 ? teamsContexts : null,
-			};
-		}, [contexts]);
+		return {
+			otherContexts: other,
+			transcriptGroups: Array.from(transcriptsByMeeting.values()),
+			notionGroup: notionContexts.length > 0 ? notionContexts : null,
+			teamsGroup: teamsContexts.length > 0 ? teamsContexts : null,
+			livingMemoryFolders: groupSyncedContextsByFolder(synced),
+		};
+	}, [contexts]);
 
 	// Per-viewer Teams access (Fizzy #2450): a linked Teams chat/channel is
 	// read under the VIEWING user's own Microsoft token, so a Graph 403 for
@@ -1355,6 +1439,396 @@ export function ProjectContextsList({ projectId }: Props) {
 			}
 			return next;
 		});
+	};
+
+	// Living Memory folders start expanded; this holds the ones the viewer
+	// collapsed, keyed by folder path ("" is the project root).
+	const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(
+		() => new Set(),
+	);
+	const toggleFolder = (folderPath: string) => {
+		setCollapsedFolders((prev) => {
+			const next = new Set(prev);
+			if (next.has(folderPath)) {
+				next.delete(folderPath);
+			} else {
+				next.add(folderPath);
+			}
+			return next;
+		});
+	};
+
+	// One card in the flat "other contexts" grid, and the same card inside a
+	// Living Memory folder (Fizzy #2620). `synced` is set only for a synced
+	// knowledge file: its label is then the file name, and the full path
+	// shows underneath. Without it the card renders exactly as the flat
+	// list always has.
+	const renderContextCard = (
+		context: ListedContext,
+		index: number,
+		synced?: { name: string; path: string },
+	) => {
+		// Editorial LINK card branch.
+		if (context.type === "LINK") {
+			return (
+				<UrlContextCard
+					key={context.id}
+					context={context as unknown as UrlContextRowFields}
+					projectId={projectId}
+					onDelete={(id) => deleteMutation.mutate(id)}
+					deletePending={deleteMutation.isPending}
+					deleteCopy={
+						t.raw("deleteContext") as {
+							label: string;
+							warning: string;
+						}
+					}
+					onDownload={() =>
+						handleDownloadRow(
+							context as unknown as RowContext,
+							"md",
+						)
+					}
+					duplicateBadge={renderDuplicateBadge(context)}
+				/>
+			);
+		}
+
+		const baseConfig =
+			contextTypeConfig[context.type as keyof typeof contextTypeConfig] ||
+			contextTypeConfig.FILE;
+		const extractionStatus = resolveExtractionStatus(
+			context as {
+				extractionStatus?: string;
+				extractionError?: string | null;
+				content?: string | null;
+			},
+		);
+		const ExtractionIcon = extractionStatus.icon;
+
+		// Get metadata from context
+		const metadata =
+			(context.metadata as {
+				title?: string;
+				description?: string;
+				sourceUrl?: string;
+				chatTopic?: string;
+				chatType?: string;
+				teamName?: string;
+				channelName?: string;
+				memberCount?: number;
+				provider?: string;
+				documentTag?: string;
+				sourceTitle?: string;
+				source?: string;
+			}) || {};
+		const isIntegration = context.type === "INTEGRATION";
+
+		// Not every INTEGRATION context means the same thing.
+		// Google Docs run the full extraction pipeline and
+		// carry a real `extractionStatus` (including FAILED);
+		// backlog and channel integrations are live links
+		// whose ingest is owned elsewhere, so their status
+		// column stays PENDING forever and reporting it
+		// would mislead in the other direction.
+		//
+		// This replaces a hardcoded violet "Live" chip shown
+		// for every integration: it hid a failed Google Doc
+		// behind a word implying all was well, and collided
+		// with the URL sources' genuine "Live" refresh mode.
+		const hasExtractionLifecycle =
+			!isIntegration || metadata.source === "google-docs";
+
+		// Use provider-specific config for integrations, fall back to base
+		const providerOverride =
+			isIntegration && metadata.provider
+				? integrationProviderConfig[metadata.provider]
+				: undefined;
+		const Icon = providerOverride?.icon ?? baseConfig.icon;
+		const cardGradient = providerOverride?.gradient ?? baseConfig.gradient;
+		const cardLightBg = providerOverride?.lightBg ?? baseConfig.lightBg;
+		const badgeLabel =
+			providerOverride?.badgeLabel ??
+			(isIntegration
+				? metadata.provider || "Integration"
+				: baseConfig.label);
+
+		const title =
+			synced?.name ||
+			metadata.chatTopic ||
+			metadata.title ||
+			metadata.sourceTitle ||
+			context.sourceTitle ||
+			(isIntegration
+				? (providerOverride?.defaultTitle ?? "Integration")
+				: context.type);
+
+		// Derive a description for integration contexts from available metadata
+		let description = metadata.description;
+		if (!description && isIntegration) {
+			if (metadata.provider === "SLACK" && metadata.channelName) {
+				description = `#${metadata.channelName}`;
+			} else if (metadata.provider === "MICROSOFT_TEAMS") {
+				if (
+					metadata.chatType === "channel" &&
+					metadata.teamName &&
+					metadata.channelName
+				) {
+					description = `${metadata.teamName} · #${metadata.channelName}`;
+				} else if (
+					metadata.chatType === "channel" &&
+					metadata.teamName
+				) {
+					description = `${metadata.teamName} channel`;
+				} else if (metadata.memberCount != null) {
+					description = `Group chat · ${metadata.memberCount} members`;
+				} else {
+					description = "Microsoft Teams conversation";
+				}
+			}
+		}
+		const sourceUrl =
+			metadata.sourceUrl || (context as { sourceUrl?: string }).sourceUrl;
+
+		return (
+			<div
+				key={context.id}
+				className={cn(
+					"group relative overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm transition-all",
+					"hover:border-primary/30 hover:shadow-lg",
+					`animate-stagger-${Math.min(index + 1, 5)}`,
+				)}
+			>
+				{/* Gradient background on hover */}
+				<div
+					className={cn(
+						"absolute inset-0 bg-gradient-to-br opacity-0 transition-opacity group-hover:opacity-100",
+						cardLightBg,
+					)}
+				/>
+
+				<div className="relative z-10 p-4">
+					<div className="flex items-start justify-between gap-3">
+						<div className="flex items-start gap-3 flex-1 min-w-0">
+							{/* Icon with gradient */}
+							<div
+								className={cn(
+									"shrink-0 rounded-xl bg-gradient-to-br p-2.5 transition-transform group-hover:scale-110",
+									cardGradient,
+								)}
+							>
+								<Icon className="size-5 text-white" />
+							</div>
+
+							{/* Content */}
+							<div className="min-w-0 flex-1">
+								<div className="flex items-center gap-2">
+									<h3 className="truncate font-semibold text-sm">
+										{title}
+									</h3>
+									<Badge
+										variant="outline"
+										className="shrink-0 border-foreground/20 text-xs"
+									>
+										{badgeLabel}
+									</Badge>
+								</div>
+								{synced && (
+									<p
+										className="mt-0.5 truncate font-mono text-foreground/50 text-xs"
+										title={synced.path}
+										data-testid={`context-source-path-${context.id}`}
+									>
+										{synced.path}
+									</p>
+								)}
+
+								<ContextSourceMetaLine
+									sourceType={context.sourceType}
+									aiInstructions={context.aiInstructions}
+								/>
+								{description && (
+									<p className="mt-1 line-clamp-2 text-foreground/50 text-sm">
+										{description}
+									</p>
+								)}
+
+								{/* Meta info */}
+								<div className="mt-2 flex flex-wrap items-center gap-3 text-foreground/40 text-xs">
+									{/* Live connections report "Connected"; anything
+									    with a real extraction pipeline reports its
+									    actual status. */}
+									{!hasExtractionLifecycle ? (
+										<span className="flex items-center gap-1 text-success">
+											<CheckCircleIcon className="size-3" />
+											Connected
+										</span>
+									) : (
+										<span
+											className={cn(
+												"flex items-center gap-1",
+												extractionStatus.color,
+											)}
+										>
+											<ExtractionIcon
+												className={cn(
+													"size-3",
+													(
+														context as {
+															extractionStatus?: string;
+														}
+													).extractionStatus ===
+														"EXTRACTING" &&
+														"animate-spin",
+												)}
+											/>
+											{extractionStatus.label}
+										</span>
+									)}
+
+									{/* Importing as document badge (tagged but document not yet created) */}
+									{metadata.documentTag && (
+										<span className="flex animate-pulse items-center gap-1 text-highlight">
+											<SparklesIcon className="size-3" />
+											Importing as {metadata.documentTag}
+											...
+										</span>
+									)}
+
+									{/* Embedded status. Was hidden for every integration,
+									    which suppressed it for Google Docs — the one
+									    integration that really does get embedded. */}
+									{context.embeddedAt && (
+										<span className="flex items-center gap-1 text-success">
+											<CheckCircleIcon className="size-3" />
+											Embedded
+										</span>
+									)}
+
+									{/* Created time */}
+									{context.createdAt && (
+										<span>
+											{formatDistanceToNow(
+												typeof context.createdAt ===
+													"string"
+													? new Date(
+															context.createdAt,
+														)
+													: context.createdAt,
+											)}{" "}
+											ago
+										</span>
+									)}
+
+									{renderDuplicateBadge(context)}
+								</div>
+
+								{/* Source URL */}
+								{sourceUrl && (
+									<a
+										href={sourceUrl}
+										target="_blank"
+										rel="noopener noreferrer"
+										className="mt-2 flex items-center gap-1 text-primary text-xs hover:underline"
+										onClick={(e) => e.stopPropagation()}
+									>
+										<ExternalLinkIcon className="size-3" />
+										<span className="truncate max-w-[200px]">
+											{sourceUrl}
+										</span>
+									</a>
+								)}
+							</div>
+						</div>
+
+						{/* Actions - visible on hover */}
+						<div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+							<DropdownMenu>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<DropdownMenuTrigger asChild>
+											<Button
+												variant="ghost"
+												size="icon"
+												aria-label="More options"
+												className="size-8 bg-card/50 backdrop-blur-sm"
+												onClick={(e) =>
+													e.stopPropagation()
+												}
+											>
+												<MoreVerticalIcon className="size-4" />
+											</Button>
+										</DropdownMenuTrigger>
+									</TooltipTrigger>
+									<TooltipContent>
+										{t("contextActions")}
+									</TooltipContent>
+								</Tooltip>
+								<DropdownMenuContent align="end">
+									{renderDownloadMenuItem(
+										context as unknown as RowContext,
+									)}
+									{canExtractScope(
+										context as {
+											type: string;
+											extractionStatus?: string | null;
+										},
+									) && (
+										<>
+											<DropdownMenuItem
+												aria-label={tScope(
+													"actionAria",
+													{
+														title,
+													},
+												)}
+												onClick={(e) => {
+													e.stopPropagation();
+													startScopeIntake.mutate(
+														context.id,
+													);
+												}}
+												disabled={
+													startScopeIntake.isPending
+												}
+											>
+												<ListTreeIcon className="mr-2 size-4" />
+												{tScope("action")}
+											</DropdownMenuItem>
+											<DropdownMenuSeparator />
+										</>
+									)}
+									<DestructiveTooltip
+										copy={
+											t.raw("deleteContext") as {
+												label: string;
+												warning: string;
+											}
+										}
+									>
+										<DropdownMenuItem
+											className="text-destructive focus:text-destructive"
+											onClick={(e) => {
+												e.stopPropagation();
+												deleteMutation.mutate(
+													context.id,
+												);
+											}}
+											disabled={deleteMutation.isPending}
+										>
+											<TrashIcon className="mr-2 size-4" />
+											{deleteMutation.isPending
+												? "Deleting..."
+												: "Delete"}
+										</DropdownMenuItem>
+									</DestructiveTooltip>
+								</DropdownMenuContent>
+							</DropdownMenu>
+						</div>
+					</div>
+				</div>
+			</div>
+		);
 	};
 
 	if (isLoading) {
@@ -2515,420 +2989,132 @@ export function ProjectContextsList({ projectId }: Props) {
 						)}
 					</div>
 
+					{/* Living Memory (Fizzy #2620): files a connected agent
+					    pushed from a working tree, one collapsible section per
+					    folder. Rows without a sourcePath stay in the grid below. */}
+					{livingMemoryFolders.length > 0 && (
+						<section
+							aria-labelledby={`${livingMemoryId}-title`}
+							className="space-y-3"
+							data-testid="context-living-memory"
+						>
+							<div>
+								<h3
+									id={`${livingMemoryId}-title`}
+									className="flex items-center gap-2 font-semibold text-sm"
+								>
+									<FolderSyncIcon
+										className="size-4 shrink-0 text-primary"
+										aria-hidden="true"
+									/>
+									{tLivingMemory("title")}
+								</h3>
+								<p className="mt-1 text-foreground/50 text-xs">
+									{tLivingMemory("description")}
+								</p>
+							</div>
+							{livingMemoryFolders.map((folder, folderIndex) => {
+								const slug = livingMemoryFolderSlug(
+									folder.path,
+								);
+								const isCollapsed = collapsedFolders.has(
+									folder.path,
+								);
+								const label =
+									folder.path === ""
+										? tLivingMemory("rootFolder")
+										: folder.path;
+								const panelId = `${livingMemoryId}-folder-${folderIndex}`;
+								return (
+									<div
+										key={folder.path}
+										className="overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm"
+										data-testid={`context-folder-${slug}`}
+										data-folder-path={folder.path}
+									>
+										<h4>
+											<button
+												type="button"
+												onClick={() =>
+													toggleFolder(folder.path)
+												}
+												aria-expanded={!isCollapsed}
+												aria-controls={
+													isCollapsed
+														? undefined
+														: panelId
+												}
+												className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
+											>
+												<FolderIcon
+													className="size-4 shrink-0 text-muted-foreground"
+													aria-hidden="true"
+												/>
+												<span
+													className={cn(
+														"min-w-0 flex-1 truncate font-medium text-sm",
+														folder.path !== "" &&
+															"font-mono",
+													)}
+													title={label}
+												>
+													{label}
+												</span>
+												<Badge
+													variant="outline"
+													className="shrink-0 border-foreground/20 text-xs"
+												>
+													{tLivingMemory(
+														"fileCount",
+														{
+															count: folder.files
+																.length,
+														},
+													)}
+												</Badge>
+												<ChevronDownIcon
+													className={cn(
+														"size-4 shrink-0 text-muted-foreground transition-transform",
+														!isCollapsed &&
+															"rotate-180",
+													)}
+													aria-hidden="true"
+												/>
+											</button>
+										</h4>
+										{!isCollapsed && (
+											<div
+												id={panelId}
+												className="grid grid-cols-[minmax(0,1fr)] gap-4 border-t p-4 sm:grid-cols-2"
+											>
+												{folder.files.map(
+													(file, index) =>
+														renderContextCard(
+															file.context,
+															index,
+															{
+																name: file.name,
+																path: file.path,
+															},
+														),
+												)}
+											</div>
+										)}
+									</div>
+								);
+							})}
+						</section>
+					)}
+
 					{/* Other context items */}
 					{/* `grid-cols-[minmax(0,1fr)]` caps the single-column mobile
 					    layout so a card with a long unbroken title (e.g. a raw
 					    URL) can't grow the column past the container; `sm:grid-cols-2`
 					    already uses `minmax(0,1fr)` columns above the breakpoint. */}
 					<div className="grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2">
-						{otherContexts.map((context, index) => {
-							// Editorial LINK card branch.
-							if (context.type === "LINK") {
-								return (
-									<UrlContextCard
-										key={context.id}
-										context={
-											context as unknown as UrlContextRowFields
-										}
-										projectId={projectId}
-										onDelete={(id) =>
-											deleteMutation.mutate(id)
-										}
-										deletePending={deleteMutation.isPending}
-										deleteCopy={
-											t.raw("deleteContext") as {
-												label: string;
-												warning: string;
-											}
-										}
-										onDownload={() =>
-											handleDownloadRow(
-												context as unknown as RowContext,
-												"md",
-											)
-										}
-										duplicateBadge={renderDuplicateBadge(
-											context,
-										)}
-									/>
-								);
-							}
-
-							const baseConfig =
-								contextTypeConfig[
-									context.type as keyof typeof contextTypeConfig
-								] || contextTypeConfig.FILE;
-							const extractionStatus = resolveExtractionStatus(
-								context as {
-									extractionStatus?: string;
-									extractionError?: string | null;
-									content?: string | null;
-								},
-							);
-							const ExtractionIcon = extractionStatus.icon;
-
-							// Get metadata from context
-							const metadata =
-								(context.metadata as {
-									title?: string;
-									description?: string;
-									sourceUrl?: string;
-									chatTopic?: string;
-									chatType?: string;
-									teamName?: string;
-									channelName?: string;
-									memberCount?: number;
-									provider?: string;
-									documentTag?: string;
-									sourceTitle?: string;
-									source?: string;
-								}) || {};
-							const isIntegration =
-								context.type === "INTEGRATION";
-
-							// Not every INTEGRATION context means the same thing.
-							// Google Docs run the full extraction pipeline and
-							// carry a real `extractionStatus` (including FAILED);
-							// backlog and channel integrations are live links
-							// whose ingest is owned elsewhere, so their status
-							// column stays PENDING forever and reporting it
-							// would mislead in the other direction.
-							//
-							// This replaces a hardcoded violet "Live" chip shown
-							// for every integration: it hid a failed Google Doc
-							// behind a word implying all was well, and collided
-							// with the URL sources' genuine "Live" refresh mode.
-							const hasExtractionLifecycle =
-								!isIntegration ||
-								metadata.source === "google-docs";
-
-							// Use provider-specific config for integrations, fall back to base
-							const providerOverride =
-								isIntegration && metadata.provider
-									? integrationProviderConfig[
-											metadata.provider
-										]
-									: undefined;
-							const Icon =
-								providerOverride?.icon ?? baseConfig.icon;
-							const cardGradient =
-								providerOverride?.gradient ??
-								baseConfig.gradient;
-							const cardLightBg =
-								providerOverride?.lightBg ?? baseConfig.lightBg;
-							const badgeLabel =
-								providerOverride?.badgeLabel ??
-								(isIntegration
-									? metadata.provider || "Integration"
-									: baseConfig.label);
-
-							const title =
-								metadata.chatTopic ||
-								metadata.title ||
-								metadata.sourceTitle ||
-								context.sourceTitle ||
-								(isIntegration
-									? (providerOverride?.defaultTitle ??
-										"Integration")
-									: context.type);
-
-							// Derive a description for integration contexts from available metadata
-							let description = metadata.description;
-							if (!description && isIntegration) {
-								if (
-									metadata.provider === "SLACK" &&
-									metadata.channelName
-								) {
-									description = `#${metadata.channelName}`;
-								} else if (
-									metadata.provider === "MICROSOFT_TEAMS"
-								) {
-									if (
-										metadata.chatType === "channel" &&
-										metadata.teamName &&
-										metadata.channelName
-									) {
-										description = `${metadata.teamName} · #${metadata.channelName}`;
-									} else if (
-										metadata.chatType === "channel" &&
-										metadata.teamName
-									) {
-										description = `${metadata.teamName} channel`;
-									} else if (metadata.memberCount != null) {
-										description = `Group chat · ${metadata.memberCount} members`;
-									} else {
-										description =
-											"Microsoft Teams conversation";
-									}
-								}
-							}
-							const sourceUrl =
-								metadata.sourceUrl ||
-								(context as { sourceUrl?: string }).sourceUrl;
-
-							return (
-								<div
-									key={context.id}
-									className={cn(
-										"group relative overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm transition-all",
-										"hover:border-primary/30 hover:shadow-lg",
-										`animate-stagger-${Math.min(index + 1, 5)}`,
-									)}
-								>
-									{/* Gradient background on hover */}
-									<div
-										className={cn(
-											"absolute inset-0 bg-gradient-to-br opacity-0 transition-opacity group-hover:opacity-100",
-											cardLightBg,
-										)}
-									/>
-
-									<div className="relative z-10 p-4">
-										<div className="flex items-start justify-between gap-3">
-											<div className="flex items-start gap-3 flex-1 min-w-0">
-												{/* Icon with gradient */}
-												<div
-													className={cn(
-														"shrink-0 rounded-xl bg-gradient-to-br p-2.5 transition-transform group-hover:scale-110",
-														cardGradient,
-													)}
-												>
-													<Icon className="size-5 text-white" />
-												</div>
-
-												{/* Content */}
-												<div className="min-w-0 flex-1">
-													<div className="flex items-center gap-2">
-														<h3 className="truncate font-semibold text-sm">
-															{title}
-														</h3>
-														<Badge
-															variant="outline"
-															className="shrink-0 border-foreground/20 text-xs"
-														>
-															{badgeLabel}
-														</Badge>
-													</div>
-
-													<ContextSourceMetaLine
-														sourceType={
-															context.sourceType
-														}
-														aiInstructions={
-															context.aiInstructions
-														}
-													/>
-													{description && (
-														<p className="mt-1 line-clamp-2 text-foreground/50 text-sm">
-															{description}
-														</p>
-													)}
-
-													{/* Meta info */}
-													<div className="mt-2 flex flex-wrap items-center gap-3 text-foreground/40 text-xs">
-														{/* Live connections report "Connected"; anything
-														    with a real extraction pipeline reports its
-														    actual status. */}
-														{!hasExtractionLifecycle ? (
-															<span className="flex items-center gap-1 text-success">
-																<CheckCircleIcon className="size-3" />
-																Connected
-															</span>
-														) : (
-															<span
-																className={cn(
-																	"flex items-center gap-1",
-																	extractionStatus.color,
-																)}
-															>
-																<ExtractionIcon
-																	className={cn(
-																		"size-3",
-																		(
-																			context as {
-																				extractionStatus?: string;
-																			}
-																		)
-																			.extractionStatus ===
-																			"EXTRACTING" &&
-																			"animate-spin",
-																	)}
-																/>
-																{
-																	extractionStatus.label
-																}
-															</span>
-														)}
-
-														{/* Importing as document badge (tagged but document not yet created) */}
-														{metadata.documentTag && (
-															<span className="flex animate-pulse items-center gap-1 text-highlight">
-																<SparklesIcon className="size-3" />
-																Importing as{" "}
-																{
-																	metadata.documentTag
-																}
-																...
-															</span>
-														)}
-
-														{/* Embedded status. Was hidden for every integration,
-														    which suppressed it for Google Docs — the one
-														    integration that really does get embedded. */}
-														{context.embeddedAt && (
-															<span className="flex items-center gap-1 text-success">
-																<CheckCircleIcon className="size-3" />
-																Embedded
-															</span>
-														)}
-
-														{/* Created time */}
-														{context.createdAt && (
-															<span>
-																{formatDistanceToNow(
-																	typeof context.createdAt ===
-																		"string"
-																		? new Date(
-																				context.createdAt,
-																			)
-																		: context.createdAt,
-																)}{" "}
-																ago
-															</span>
-														)}
-
-														{renderDuplicateBadge(
-															context,
-														)}
-													</div>
-
-													{/* Source URL */}
-													{sourceUrl && (
-														<a
-															href={sourceUrl}
-															target="_blank"
-															rel="noopener noreferrer"
-															className="mt-2 flex items-center gap-1 text-primary text-xs hover:underline"
-															onClick={(e) =>
-																e.stopPropagation()
-															}
-														>
-															<ExternalLinkIcon className="size-3" />
-															<span className="truncate max-w-[200px]">
-																{sourceUrl}
-															</span>
-														</a>
-													)}
-												</div>
-											</div>
-
-											{/* Actions - visible on hover */}
-											<div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-												<DropdownMenu>
-													<Tooltip>
-														<TooltipTrigger asChild>
-															<DropdownMenuTrigger
-																asChild
-															>
-																<Button
-																	variant="ghost"
-																	size="icon"
-																	aria-label="More options"
-																	className="size-8 bg-card/50 backdrop-blur-sm"
-																	onClick={(
-																		e,
-																	) =>
-																		e.stopPropagation()
-																	}
-																>
-																	<MoreVerticalIcon className="size-4" />
-																</Button>
-															</DropdownMenuTrigger>
-														</TooltipTrigger>
-														<TooltipContent>
-															{t(
-																"contextActions",
-															)}
-														</TooltipContent>
-													</Tooltip>
-													<DropdownMenuContent align="end">
-														{renderDownloadMenuItem(
-															context as unknown as RowContext,
-														)}
-														{canExtractScope(
-															context as {
-																type: string;
-																extractionStatus?:
-																	| string
-																	| null;
-															},
-														) && (
-															<>
-																<DropdownMenuItem
-																	aria-label={tScope(
-																		"actionAria",
-																		{
-																			title,
-																		},
-																	)}
-																	onClick={(
-																		e,
-																	) => {
-																		e.stopPropagation();
-																		startScopeIntake.mutate(
-																			context.id,
-																		);
-																	}}
-																	disabled={
-																		startScopeIntake.isPending
-																	}
-																>
-																	<ListTreeIcon className="mr-2 size-4" />
-																	{tScope(
-																		"action",
-																	)}
-																</DropdownMenuItem>
-																<DropdownMenuSeparator />
-															</>
-														)}
-														<DestructiveTooltip
-															copy={
-																t.raw(
-																	"deleteContext",
-																) as {
-																	label: string;
-																	warning: string;
-																}
-															}
-														>
-															<DropdownMenuItem
-																className="text-destructive focus:text-destructive"
-																onClick={(
-																	e,
-																) => {
-																	e.stopPropagation();
-																	deleteMutation.mutate(
-																		context.id,
-																	);
-																}}
-																disabled={
-																	deleteMutation.isPending
-																}
-															>
-																<TrashIcon className="mr-2 size-4" />
-																{deleteMutation.isPending
-																	? "Deleting..."
-																	: "Delete"}
-															</DropdownMenuItem>
-														</DestructiveTooltip>
-													</DropdownMenuContent>
-												</DropdownMenu>
-											</div>
-										</div>
-									</div>
-								</div>
-							);
-						})}
+						{otherContexts.map((context, index) =>
+							renderContextCard(context, index),
+						)}
 					</div>
 				</div>
 			)}

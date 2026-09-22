@@ -2525,6 +2525,12 @@
 				"removed": "{count, plural, one {Removing # duplicate. It disappears once cleanup finishes.} other {Removing # duplicates. They disappear once cleanup finishes.}}",
 				"removeFailed": "{count, plural, one {The duplicate could not be removed. Please try again.} other {# duplicates could not be removed. Please try again.}}",
 				"removedPartial": "Removal started for {removed} of {total} duplicates. {failed} could not be started; please try again."
+			},
+			"livingMemory": {
+				"title": "Living Memory",
+				"description": "Files synced from a working tree, grouped by folder.",
+				"rootFolder": "Project root",
+				"fileCount": "{count, plural, one {# file} other {# files}}"
 			}
 		},
 		"contextSummary": {

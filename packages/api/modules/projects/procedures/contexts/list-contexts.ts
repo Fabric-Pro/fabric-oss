@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/client";
 import {
 	annotateDuplicateContexts,
+	ContextSourcePathError,
 	hasProjectAccess,
 	listContexts,
 } from "@repo/database";
@@ -27,6 +28,12 @@ export const listContextsProcedure = tenantProtectedProcedure
 			projectId: z.string(),
 			organizationId: z.string().nullable().optional(),
 			type: ProjectContextTypeSchema.optional(),
+			// Only synced knowledge files under this folder of the working
+			// tree (Fizzy #2620), e.g. "docs/guides"; "" selects every synced
+			// file. Normalized and validated by `listContexts`, which also
+			// enforces the length limit — after the project-access check, so
+			// every refusal reaches the caller the same way.
+			sourcePathPrefix: z.string().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -55,17 +62,28 @@ export const listContextsProcedure = tenantProtectedProcedure
 		// renders a single scroll area with no pagination, and the default batching
 		// limit (50) would silently drop older GitHub/Notion/codebase rows when a
 		// project accumulates many recent meeting transcripts.
-		const result = await listContexts({
-			projectId: input.projectId,
-			type: input.type,
-			excludeLinkedDocuments: true,
-			limit: "none",
-		});
+		let result: Awaited<ReturnType<typeof listContexts>>;
+		try {
+			result = await listContexts({
+				projectId: input.projectId,
+				type: input.type,
+				excludeLinkedDocuments: true,
+				limit: "none",
+				sourcePathPrefix: input.sourcePathPrefix,
+			});
+		} catch (error) {
+			if (error instanceof ContextSourcePathError) {
+				throw new ORPCError("BAD_REQUEST", { message: error.message });
+			}
+			throw error;
+		}
 
 		// Duplicate detection (Fizzy #2619) is derived from `contentHash` over
 		// exactly the rows returned here, so a canonical row is always one the
 		// caller can see — a linked-document row this list hides can never be
 		// the original a visible row is marked as a copy of.
+		// With a `sourcePathPrefix` filter an original outside the filter is
+		// not visible, so a copy inside it is not flagged.
 		const duplicateOf = annotateDuplicateContexts(result.contexts);
 
 		// Return flattened response (not double-nested)

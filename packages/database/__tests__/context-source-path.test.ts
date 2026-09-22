@@ -19,6 +19,7 @@ import {
 	ContextSourcePathError,
 	MAX_CONTEXT_SOURCE_PATH_LENGTH,
 	normalizeContextSourcePath,
+	normalizeContextSourcePathPrefix,
 } from "../prisma/queries/projects/context-source-path";
 
 function reasonFor(input: string): string | undefined {
@@ -122,6 +123,99 @@ describe("normalizeContextSourcePath — refused paths", () => {
 	it("says what was wrong in a message a caller can act on", () => {
 		expect(() => normalizeContextSourcePath("../a.md")).toThrow(
 			/relative path inside the project/i,
+		);
+	});
+});
+
+// The folder a contexts-list filter selects (Fizzy #2620). It is compared as
+// a string prefix of the stored keys above, so it has to come out in the
+// same spelling, end in exactly one "/" (so `docs` never selects
+// `docs-archive/…`), and refuse anything no stored key could start with.
+function prefixReasonFor(input: string): string | undefined {
+	try {
+		normalizeContextSourcePathPrefix(input);
+		return undefined;
+	} catch (error) {
+		expect(error).toBeInstanceOf(ContextSourcePathError);
+		return (error as ContextSourcePathError).reason;
+	}
+}
+
+describe("normalizeContextSourcePathPrefix — accepted folders", () => {
+	it("turns a nested folder into a prefix ending in one slash", () => {
+		expect(normalizeContextSourcePathPrefix("docs/guides")).toBe(
+			"docs/guides/",
+		);
+		expect(normalizeContextSourcePathPrefix("docs")).toBe("docs/");
+	});
+
+	it("is idempotent with or without the trailing slash", () => {
+		expect(normalizeContextSourcePathPrefix("docs/guides/")).toBe(
+			"docs/guides/",
+		);
+		expect(
+			normalizeContextSourcePathPrefix(
+				normalizeContextSourcePathPrefix("docs/guides"),
+			),
+		).toBe("docs/guides/");
+	});
+
+	it.each(["", ".", "./", "././"])(
+		"reads %j as the tree root, which selects every synced file",
+		(input) => {
+			expect(normalizeContextSourcePathPrefix(input)).toBe("");
+		},
+	);
+
+	it("strips a leading ./ and NFC-normalizes like a file path", () => {
+		expect(normalizeContextSourcePathPrefix("./docs")).toBe("docs/");
+		expect(normalizeContextSourcePathPrefix("./notes/cafe\u0301")).toBe(
+			"notes/caf\u00e9/",
+		);
+	});
+
+	it("keeps LIKE metacharacters as plain characters (escaping is the query's job)", () => {
+		expect(normalizeContextSourcePathPrefix("my_docs/100%")).toBe(
+			"my_docs/100%/",
+		);
+	});
+});
+
+describe("normalizeContextSourcePathPrefix — refused folders", () => {
+	it.each([
+		["..", "dot-segment"],
+		["../docs", "dot-segment"],
+		["docs/../secrets", "dot-segment"],
+		["docs/.", "dot-segment"],
+		["docs\\guides", "backslash"],
+		["\\\\server\\share", "backslash"],
+		["/", "absolute"],
+		["/docs", "absolute"],
+		["C:/repo/docs", "absolute"],
+		["docs//guides", "empty-segment"],
+		["docs//", "empty-segment"],
+		[".//docs", "empty-segment"],
+		["docs/a\u0000b", "control-character"],
+		["docs/\u200Bguides", "control-character"],
+	])("refuses %j as %s", (input, reason) => {
+		expect(prefixReasonFor(input)).toBe(reason);
+	});
+
+	it("refuses a prefix that leaves no room for a file name", () => {
+		// The shortest stored path under a folder is the folder, "/", and one
+		// character of file name, so the longest usable prefix (folder plus
+		// "/") is MAX - 1 characters; a folder of MAX - 1 characters would
+		// need a MAX + 1 character path to match.
+		const folder = "a".repeat(MAX_CONTEXT_SOURCE_PATH_LENGTH - 1);
+		expect(prefixReasonFor(folder)).toBe("too-long");
+		expect(normalizeContextSourcePathPrefix(folder.slice(1))).toHaveLength(
+			MAX_CONTEXT_SOURCE_PATH_LENGTH - 1,
+		);
+	});
+
+	it("names the prefix, not the file path, in its message", () => {
+		expect(() => normalizeContextSourcePathPrefix("../docs")).toThrow(
+			/^sourcePathPrefix may not contain/,
 		);
 	});
 });
