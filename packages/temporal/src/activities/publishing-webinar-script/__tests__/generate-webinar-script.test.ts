@@ -3,6 +3,7 @@ import {
 	effectivePlanningAnalysis,
 	renderAnalysisProse,
 } from "@repo/utils/publishing-analysis-prose";
+import { ASSET_CONFIRMATION_ANSWERS } from "@repo/utils/publishing-asset-clamp";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { databaseValueImports } from "../../publishing-shared/__tests__/_ast-guards";
 import { SETTLED_DECISIONS_HEADING } from "../../publishing-shared/settled-approvals";
@@ -76,6 +77,7 @@ const getBoundPromptForAgent = vi.fn();
 const listTopicDecisions = vi.fn();
 const getEffectivePlanningAnalysis = vi.fn();
 const completeTopicDraft = vi.fn();
+const raiseDraftQuestionsForTopic = vi.fn();
 const seedWorkingDraftIfAbsent = vi.fn();
 vi.mock("@repo/database", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@repo/database")>();
@@ -114,6 +116,8 @@ vi.mock("@repo/database", async (importOriginal) => {
 			getEffectivePlanningAnalysis(...a),
 		listTopicDecisions: (...a: unknown[]) => listTopicDecisions(...a),
 		completeTopicDraft: (...a: unknown[]) => completeTopicDraft(...a),
+		raiseDraftQuestionsForTopic: (...a: unknown[]) =>
+			raiseDraftQuestionsForTopic(...a),
 		seedWorkingDraftIfAbsent: (...a: unknown[]) =>
 			seedWorkingDraftIfAbsent(...a),
 	};
@@ -320,6 +324,11 @@ beforeEach(() => {
 		usage: { totalTokens: 100 },
 	});
 	completeTopicDraft.mockResolvedValue({ persisted: true });
+	raiseDraftQuestionsForTopic.mockResolvedValue({
+		minted: 0,
+		reactivated: 0,
+		untouched: 0,
+	});
 	seedWorkingDraftIfAbsent.mockResolvedValue({ status: "seeded" });
 });
 
@@ -1412,5 +1421,209 @@ describe("generateWebinarScriptActivity — the settled-decisions block", () => 
 				([message]) => message === QUESTION_NOT_SHOWN_WARNING,
 			),
 		).toEqual([]);
+	});
+});
+
+describe("generateWebinarScriptActivity — the asset confirmation loop", () => {
+	const withAssets = (confirmed: string[], needsConfirmation: string[]) => {
+		generateObject.mockResolvedValue({
+			object: {
+				...MODEL_OUTPUT,
+				suggestedAssets: { confirmed, needsConfirmation },
+			},
+			usage: {},
+		});
+	};
+
+	it("promotes an asset a member cleared for any audience", async () => {
+		// The half that was missing. The list is written by the MODEL, so
+		// before this an answered confirmation changed nothing a reader could
+		// see: the same item came back on the same list with the same
+		// instruction to go and confirm it.
+		withAssets([], ["the latency chart", "the demo recording"]);
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"ASSET_APPROVAL",
+				"the latency chart",
+				ASSET_CONFIRMATION_ANSWERS.ANY_AUDIENCE,
+			),
+		]);
+
+		await run();
+
+		expect(persistedContent().suggestedAssets.confirmed).toEqual([
+			"the latency chart",
+		]);
+		expect(persistedContent().suggestedAssets.needsConfirmation).toEqual([
+			"the demo recording",
+		]);
+		// A promotion is not a clamp, and must not be recorded as one: the log
+		// gate reads an empty array as "a claim was clamped".
+		expect(persistedContent().generation.clamped).toEqual({});
+	});
+
+	it("does NOT promote an internal-only confirmation into this format", async () => {
+		// The enforcement gap: a binary clamp stopped restricting the moment a
+		// thread was settled, whatever the answer said, so "internal use only"
+		// mechanically unlocked the asset for a webinar script.
+		withAssets([], ["the latency chart"]);
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"ASSET_APPROVAL",
+				"the latency chart",
+				ASSET_CONFIRMATION_ANSWERS.INTERNAL_ONLY,
+			),
+		]);
+
+		await run();
+
+		expect(persistedContent().suggestedAssets.confirmed).toEqual([]);
+		expect(persistedContent().suggestedAssets.needsConfirmation).toEqual([
+			"the latency chart",
+		]);
+	});
+
+	it("does NOT promote on a typed answer", async () => {
+		withAssets([], ["the latency chart"]);
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"ASSET_APPROVAL",
+				"the latency chart",
+				"yes go ahead",
+			),
+		]);
+
+		await run();
+
+		expect(persistedContent().suggestedAssets.needsConfirmation).toEqual([
+			"the latency chart",
+		]);
+	});
+
+	it("raises a confirmation for each asset still unconfirmed", async () => {
+		withAssets([], ["the latency chart", "the demo recording"]);
+		listTopicDecisions.mockResolvedValue([]);
+
+		await run();
+
+		const call = raiseDraftQuestionsForTopic.mock.calls[0]?.[0];
+		expect(call.postType).toBe("WEBINAR_SCRIPT");
+		expect(
+			call.questions.map((q: { subject: string }) => q.subject),
+		).toEqual(["the latency chart", "the demo recording"]);
+		expect(call.questions[0].decisionKind).toBe("ASSET_APPROVAL");
+		// The three fixed answers, because the scope is read back by matching
+		// them — a free-typed answer grants nothing mechanical.
+		expect(
+			call.questions[0].answerOptions.map(
+				(o: { text: string }) => o.text,
+			),
+		).toEqual([
+			ASSET_CONFIRMATION_ANSWERS.ANY_AUDIENCE,
+			ASSET_CONFIRMATION_ANSWERS.INTERNAL_ONLY,
+			ASSET_CONFIRMATION_ANSWERS.NOT_APPROVED,
+		]);
+	});
+
+	it("raises over the list the READER sees — post-promotion and post-clamp", async () => {
+		// Raising from the model's raw output would ask about an asset this
+		// draft presents as confirmed, and skip one the clamp just demoted.
+		withAssets(["the architecture diagram"], ["the latency chart"]);
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"ASSET_APPROVAL",
+				"the latency chart",
+				ASSET_CONFIRMATION_ANSWERS.ANY_AUDIENCE,
+			),
+			openQuestion("INTERNAL_UI", "architecture diagram"),
+		]);
+
+		await run();
+
+		const call = raiseDraftQuestionsForTopic.mock.calls[0]?.[0];
+		expect(
+			call.questions.map((q: { subject: string }) => q.subject),
+		).toEqual(["the architecture diagram"]);
+	});
+
+	it("raises nothing when every asset is confirmed", async () => {
+		withAssets(["the architecture diagram"], []);
+		listTopicDecisions.mockResolvedValue([]);
+
+		await run();
+
+		expect(raiseDraftQuestionsForTopic).not.toHaveBeenCalled();
+	});
+
+	it("does not fail a committed draft when raising throws", async () => {
+		// The draft is the deliverable and it is already on the page.
+		withAssets([], ["the latency chart"]);
+		listTopicDecisions.mockResolvedValue([]);
+		raiseDraftQuestionsForTopic.mockRejectedValue(new Error("db is down"));
+
+		const result = await run();
+
+		expect(result.status).not.toBe("FAILED");
+		expect(completeTopicDraft).toHaveBeenCalled();
+	});
+});
+
+describe("generateWebinarScriptActivity — a refusal restricts", () => {
+	it("demotes a claimed-confirmed asset a member REFUSED", async () => {
+		// The binary gap from the other side. A settled thread leaves the
+		// clamp's unresolved-only input whatever it said, so before this a
+		// denial was the one answer that changed nothing at all.
+		generateObject.mockResolvedValue({
+			object: {
+				...MODEL_OUTPUT,
+				suggestedAssets: {
+					confirmed: ["the latency chart"],
+					needsConfirmation: [],
+				},
+			},
+			usage: {},
+		});
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"ASSET_APPROVAL",
+				"the latency chart",
+				ASSET_CONFIRMATION_ANSWERS.NOT_APPROVED,
+			),
+		]);
+
+		await run();
+
+		expect(persistedContent().suggestedAssets.confirmed).toEqual([]);
+		expect(persistedContent().suggestedAssets.needsConfirmation).toEqual([
+			"the latency chart",
+		]);
+		expect(persistedContent().generation.clamped.assets).toEqual([
+			"the latency chart",
+		]);
+	});
+
+	it("keys a question on the asset, not on the model's explanation", async () => {
+		// `needsConfirmation` entries are prose — 300 characters where a
+		// confirmed label gets 200 — and the explanation is rewritten on every
+		// generation. Hashing the whole sentence would mint a fresh question
+		// each run instead of finding the one somebody already answered.
+		generateObject.mockResolvedValue({
+			object: {
+				...MODEL_OUTPUT,
+				suggestedAssets: {
+					confirmed: [],
+					needsConfirmation: [
+						"the latency chart — needs sign-off from whoever owns the benchmark",
+					],
+				},
+			},
+			usage: {},
+		});
+		listTopicDecisions.mockResolvedValue([]);
+
+		await run();
+
+		const call = raiseDraftQuestionsForTopic.mock.calls[0]?.[0];
+		expect(call.questions[0].subject).toBe("the latency chart");
 	});
 });

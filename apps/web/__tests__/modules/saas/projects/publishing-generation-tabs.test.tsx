@@ -381,7 +381,11 @@ describe("GenerationTabs — state is in the accessible name (FR5)", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it("announces Needs confirmation for a deferred type", () => {
+	it("names the analysis as the reason for a deferred type, not a question", () => {
+		// The caution is still announced — what changed is that it says WHICH
+		// of the three causes it is (Fizzy #1988). A type the analysis set
+		// aside raises no question, so the old shared "Needs confirmation"
+		// sent its reader to a questions tab with nothing in it to answer.
 		renderTabs({
 			analysis: analysisWith({
 				deferred: [{ type: "Blog Post", rationale: "not yet" }],
@@ -390,9 +394,14 @@ describe("GenerationTabs — state is in the accessible name (FR5)", () => {
 
 		expect(
 			within(tablist()).getByRole("tab", {
-				name: /blog post.*needs confirmation/i,
+				name: /blog post.*set aside by the planning analysis/i,
 			}),
 		).toBeInTheDocument();
+		expect(
+			within(tablist()).queryByRole("tab", {
+				name: /blog post.*needs confirmation/i,
+			}),
+		).not.toBeInTheDocument();
 	});
 
 	it("still announces the caution on a GENERATED tab the analysis deferred", () => {
@@ -414,9 +423,34 @@ describe("GenerationTabs — state is in the accessible name (FR5)", () => {
 		});
 
 		const tab = within(tablist()).getByRole("tab", {
-			name: /blog post.*generated.*needs confirmation/i,
+			name: /blog post.*generated.*set aside by the planning analysis/i,
 		});
 		expect(tab).toBeInTheDocument();
+	});
+
+	it("says Needs confirmation when there IS something to answer", () => {
+		// The other side of the split: an unresolved approval that constrains
+		// every content type is answerable, and keeps the original wording.
+		renderTabs({
+			analysis: analysisWith({}),
+			decisionThreads: [
+				{
+					root: {
+						kind: "QUESTION",
+						status: "OPEN",
+						decisionKind: "ASSET_APPROVAL",
+						subject: "the latency chart",
+					},
+					replies: [],
+				},
+			],
+		});
+
+		expect(
+			within(tablist()).getByRole("tab", {
+				name: /blog post.*needs confirmation/i,
+			}),
+		).toBeInTheDocument();
 	});
 
 	// #39. Every panel in this row opens on "No planning analysis yet — run one

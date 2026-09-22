@@ -3,7 +3,10 @@ import {
 	effectivePlanningAnalysis,
 	renderAnalysisProse,
 } from "@repo/utils/publishing-analysis-prose";
-import { ASSET_RESTRICTING_KINDS } from "@repo/utils/publishing-asset-clamp";
+import {
+	ASSET_CONFIRMATION_ANSWERS,
+	ASSET_RESTRICTING_KINDS,
+} from "@repo/utils/publishing-asset-clamp";
 import {
 	BaseNewsletterBlurbSchema,
 	PublishingNewsletterBlurbSchema,
@@ -88,6 +91,7 @@ const getBoundPromptForAgent = vi.fn();
 const listTopicDecisions = vi.fn();
 const getEffectivePlanningAnalysis = vi.fn();
 const completeTopicDraft = vi.fn();
+const raiseDraftQuestionsForTopic = vi.fn();
 const seedWorkingDraftIfAbsent = vi.fn();
 const logDraftRefusal = vi.fn();
 vi.mock("@repo/database", async (importOriginal) => {
@@ -129,6 +133,8 @@ vi.mock("@repo/database", async (importOriginal) => {
 			getEffectivePlanningAnalysis(...a),
 		listTopicDecisions: (...a: unknown[]) => listTopicDecisions(...a),
 		completeTopicDraft: (...a: unknown[]) => completeTopicDraft(...a),
+		raiseDraftQuestionsForTopic: (...a: unknown[]) =>
+			raiseDraftQuestionsForTopic(...a),
 		seedWorkingDraftIfAbsent: (...a: unknown[]) =>
 			seedWorkingDraftIfAbsent(...a),
 	};
@@ -315,6 +321,11 @@ beforeEach(() => {
 		usage: { totalTokens: 100 },
 	});
 	completeTopicDraft.mockResolvedValue({ persisted: true });
+	raiseDraftQuestionsForTopic.mockResolvedValue({
+		minted: 0,
+		reactivated: 0,
+		untouched: 0,
+	});
 	seedWorkingDraftIfAbsent.mockResolvedValue({ status: "seeded" });
 });
 
@@ -1857,5 +1868,78 @@ describe("generateNewsletterBlurbActivity — the settled-decisions block", () =
 				([message]) => message === QUESTION_NOT_SHOWN_WARNING,
 			),
 		).toEqual([]);
+	});
+});
+
+describe("generateNewsletterBlurbActivity — the asset confirmation loop", () => {
+	it("promotes an asset a member cleared for any audience", async () => {
+		generateObject.mockResolvedValue({
+			object: {
+				...MODEL_OUTPUT,
+				suggestedAssets: {
+					confirmed: [],
+					needsConfirmation: [
+						"the latency chart",
+						"the customer logo",
+					],
+				},
+			},
+			usage: {},
+		});
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"ASSET_APPROVAL",
+				"the latency chart",
+				ASSET_CONFIRMATION_ANSWERS.ANY_AUDIENCE,
+			),
+		]);
+
+		await run();
+
+		expect(persistedContent().suggestedAssets.confirmed).toEqual([
+			"the latency chart",
+		]);
+		expect(persistedContent().suggestedAssets.needsConfirmation).toEqual([
+			"the customer logo",
+		]);
+	});
+
+	it("does NOT promote an internal-only confirmation into a newsletter", async () => {
+		generateObject.mockResolvedValue({
+			object: {
+				...MODEL_OUTPUT,
+				suggestedAssets: {
+					confirmed: [],
+					needsConfirmation: ["the latency chart"],
+				},
+			},
+			usage: {},
+		});
+		listTopicDecisions.mockResolvedValue([
+			answeredQuestion(
+				"ASSET_APPROVAL",
+				"the latency chart",
+				ASSET_CONFIRMATION_ANSWERS.INTERNAL_ONLY,
+			),
+		]);
+
+		await run();
+
+		expect(persistedContent().suggestedAssets.confirmed).toEqual([]);
+		expect(persistedContent().suggestedAssets.needsConfirmation).toEqual([
+			"the latency chart",
+		]);
+	});
+
+	it("raises a confirmation for what is still unconfirmed", async () => {
+		listTopicDecisions.mockResolvedValue([]);
+
+		await run();
+
+		const call = raiseDraftQuestionsForTopic.mock.calls[0]?.[0];
+		expect(call.postType).toBe("NEWSLETTER_BLURB");
+		expect(
+			call.questions.map((q: { subject: string }) => q.subject),
+		).toEqual(["customer logo"]);
 	});
 });

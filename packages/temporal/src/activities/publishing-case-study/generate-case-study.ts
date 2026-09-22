@@ -60,7 +60,10 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import type { TemplateFormat } from "@repo/utils";
-import { clampConfirmedAssets } from "@repo/utils/publishing-asset-clamp";
+import {
+	clampConfirmedAssets,
+	promoteConfirmedAssets,
+} from "@repo/utils/publishing-asset-clamp";
 import { composeCaseStudyWorkingDraftBody } from "@repo/utils/publishing-case-study-body";
 import {
 	CASE_STUDY_CLAMP_REASON,
@@ -79,6 +82,11 @@ import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
 } from "../publishing-shared";
+import {
+	raiseAssetConfirmations,
+	refusedAssetSubjects,
+	settledAssetConfirmations,
+} from "../publishing-shared/asset-confirmations";
 import {
 	boundSettledApprovals,
 	selectSettledApprovals,
@@ -512,10 +520,37 @@ export async function generateCaseStudyActivity(
 	// Restricted subjects only, not unresolved questions: an unresolved per-type
 	// question - how the piece is framed, or how much of the implementation it
 	// may describe - is not a claim about whether an asset exists and may be used.
-	const assetClamp = clampConfirmedAssets({
+	//
+	// PROMOTE FIRST, then clamp. The clamp only ever demotes — an asset sits in
+	// `assetsNeedingConfirmation` because the MODEL put it there — so until
+	// this half existed, a member answering "yes, confirmed" changed nothing:
+	// the next generation asked the same model the same thing and got the same
+	// list back. Promotion is matched on exact normalized equality rather than
+	// the containment above, because here over-matching would present an asset
+	// as cleared that nobody cleared.
+	const promotion = promoteConfirmedAssets({
 		confirmed: document.confirmedAssets,
 		needsConfirmation: document.assetsNeedingConfirmation,
-		restricted,
+		settled: settledAssetConfirmations(threads),
+		postType: "CASE_STUDY",
+	});
+	if (promotion.promoted.length > 0) {
+		logger.info(
+			"[publishing-case-study] promoted assets a member confirmed",
+			{ draftId, topicId, projectId, promoted: promotion.promoted },
+		);
+		document.confirmedAssets = promotion.confirmed;
+		document.assetsNeedingConfirmation = promotion.needsConfirmation;
+	}
+	const assetClamp = clampConfirmedAssets({
+		confirmed: promotion.confirmed,
+		needsConfirmation: promotion.needsConfirmation,
+		// A REFUSAL restricts too. `restricted` carries unresolved threads only,
+		// so a thread settled "no, do not use that" left the clamp's input
+		// exactly as an approval did and a model claim about it survived — the
+		// one answer that changed nothing. A refused asset is appended here so
+		// the demotion it asks for actually happens.
+		restricted: [...restricted, ...refusedAssetSubjects(threads)],
 	});
 	if (assetClamp.moved.length > 0) {
 		document.confirmedAssets = assetClamp.confirmed;
@@ -614,6 +649,18 @@ export async function generateCaseStudyActivity(
 			refusalReason: commit.reason,
 		};
 	}
+
+	// The other half of the asset loop — see `raiseAssetConfirmations`. After
+	// the commit, non-fatal, and over the list the reader will actually see.
+	await raiseAssetConfirmations({
+		topicId,
+		projectId,
+		organizationId,
+		userId: actorUserId,
+		postType: "CASE_STUDY",
+		contentTypeLabel: "Case Study",
+		assets: document.assetsNeedingConfirmation,
+	});
 
 	// DV5/FR21: the first generation leaves the reader with something editable.
 	// Deliberately AFTER the draft commits and in its own transaction, not

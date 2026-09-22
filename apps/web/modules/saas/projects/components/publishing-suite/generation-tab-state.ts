@@ -46,8 +46,21 @@ export interface GenerationTabInfo {
 	 * Rendered as a secondary marker beside the primary badge, and appended to
 	 * the trigger's accessible name. Independent of `state` on purpose — see the
 	 * module doc.
+	 *
+	 * The OR of `attention` below, kept as its own field because every reader
+	 * wants the single question "is anything wrong here".
 	 */
 	needsAttention: boolean;
+	/**
+	 * WHY the tab needs attention, kept apart (Fizzy #1988).
+	 *
+	 * Three independent causes used to reach the reader as one amber icon, and
+	 * only two of them are answerable: a type the analysis set aside raises no
+	 * question, so a tab cautioned for that reason alone sent its reader to a
+	 * questions tab with nothing in it to answer. Separated here rather than in
+	 * the component because the same three feed the panel's own wording.
+	 */
+	attention: GenerationTabAttention;
 	/** The analysis's own words about this type, for the panel (FR6/FR7). */
 	rationale: string | null;
 	/** Which bucket the rationale came from, so the panel can say which. */
@@ -55,6 +68,26 @@ export interface GenerationTabInfo {
 }
 
 type AnalysisBucket = "recommended" | "needsConfirmation" | "deferred";
+
+/**
+ * The three independent reasons a generation tab carries a caution.
+ *
+ * `analysisBucket` is the only one with NOTHING to answer: the planning
+ * analysis put this content type in its `needsConfirmation` or `deferred`
+ * bucket, which is a judgement about the format rather than an open question.
+ * The other two are threads a member can settle — one that constrains every
+ * content type, and one that constrains this one.
+ *
+ * NOT exported: a consumer that needs the shape reads it off the field it
+ * annotates (`GenerationTabInfo["attention"]`), which is the only place it is
+ * ever reached from — and an export nobody imports is what `pnpm knip` is a
+ * required gate for.
+ */
+interface GenerationTabAttention {
+	analysisBucket: boolean;
+	globalQuestion: boolean;
+	typeQuestion: boolean;
+}
 
 /**
  * Fixed display order, matching `POST_TYPE_LABELS`.
@@ -223,7 +256,15 @@ interface RestrictionThread {
 export interface Restrictions {
 	/** An unresolved approval that constrains EVERY content type. */
 	global: boolean;
-	/** Post types named by an unresolved CONTENT_TYPE question. */
+	/**
+	 * Post types with an unresolved question that constrains THIS type only,
+	 * from `EXTRA_RESTRICTING_KINDS_BY_POST_TYPE`.
+	 *
+	 * NOT `CONTENT_TYPE`, which this docblock used to say. Those questions were
+	 * replaced by the content-types checklist and are deliberately excluded —
+	 * see the comment on that exclusion below. Only four types have extras, so
+	 * this set can never name TWEET, LINKEDIN_POST or BLOG_POST.
+	 */
 	byPostType: ReadonlySet<string>;
 	/**
 	 * HOW MANY, not just whether — the tab strip shows a number now rather
@@ -439,15 +480,21 @@ export function resolveGenerationTabStates(input: {
 		// `deferred` is deliberately excluded there as "a decision already taken
 		// the other way" — so a GENERATED + deferred type would warn about
 		// nothing at all.
+		const attention: GenerationTabAttention = {
+			analysisBucket: cautious,
+			globalQuestion: input.restrictions.global,
+			typeQuestion: input.restrictions.byPostType.has(postType),
+		};
 		const needsAttention =
-			cautious ||
-			input.restrictions.global ||
-			input.restrictions.byPostType.has(postType);
+			attention.analysisBucket ||
+			attention.globalQuestion ||
+			attention.typeQuestion;
 
 		return {
 			postType,
 			state,
 			needsAttention,
+			attention,
 			rationale: entry?.rationale ?? null,
 			bucket: entry?.bucket ?? null,
 		};

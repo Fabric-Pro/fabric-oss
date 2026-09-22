@@ -8357,6 +8357,15 @@ model PublishingTopicDecisionEntry {
   foldedQuestionsVersion Int?
   answerSource   AnswerSource?
   analysisVersion Int?
+  /// Which draft run raised this root, or NULL when the planning analysis did.
+  ///
+  /// The analysis used to be the only producer, which is why reconciliation can
+  /// soft-close every OPEN root of its kind the newest analysis no longer
+  /// raises. A draft run raising an asset confirmation is a SECOND producer of
+  /// the same kind, and its rows are not the analysis's to retract — so the
+  /// reconciler scopes its sweep to `raisedByPostType: null` and a draft-raised
+  /// row is minted-if-absent and reactivated, never swept.
+  raisedByPostType PublishingTopicPostType?
   deletedAt      DateTime?
   createdAt      DateTime                    @default(now())
   updatedAt      DateTime                    @updatedAt

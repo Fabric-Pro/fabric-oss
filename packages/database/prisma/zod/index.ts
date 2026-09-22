@@ -894,7 +894,7 @@ export type PublishingTopicDraftRevisionScalarFieldEnum = z.infer<typeof Publish
 
 // File: PublishingTopicDecisionEntryScalarFieldEnum.schema.ts
 
-export const PublishingTopicDecisionEntryScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'parentId', 'authorType', 'authorUserId', 'status', 'kind', 'questionId', 'decisionKind', 'subject', 'summary', 'content', 'recommendedResponse', 'answerOptions', 'whyItMatters', 'foldedQuestions', 'foldedQuestionsVersion', 'answerSource', 'analysisVersion', 'deletedAt', 'createdAt', 'updatedAt'])
+export const PublishingTopicDecisionEntryScalarFieldEnumSchema = z.enum(['id', 'topicId', 'projectId', 'organizationId', 'userId', 'parentId', 'authorType', 'authorUserId', 'status', 'kind', 'questionId', 'decisionKind', 'subject', 'summary', 'content', 'recommendedResponse', 'answerOptions', 'whyItMatters', 'foldedQuestions', 'foldedQuestionsVersion', 'answerSource', 'analysisVersion', 'raisedByPostType', 'deletedAt', 'createdAt', 'updatedAt'])
 
 export type PublishingTopicDecisionEntryScalarFieldEnum = z.infer<typeof PublishingTopicDecisionEntryScalarFieldEnumSchema>;
 
@@ -6985,6 +6985,7 @@ export const PublishingTopicDecisionEntrySchema = z.object({
   foldedQuestionsVersion: z.number().int().nullish(),
   answerSource: AnswerSourceSchema.nullish(),
   analysisVersion: z.number().int().nullish(),
+  raisedByPostType: PublishingTopicPostTypeSchema.nullish(),
   deletedAt: z.date().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
