@@ -2,7 +2,7 @@ import { ORPCError } from "@orpc/server";
 import {
 	createAgentTemplateInstance,
 	getAgentTemplate,
-	hasWorkspaceAccess,
+	getWorkspaceAccessContext,
 	initializeMemoryFromTemplate,
 	writeMemoryFile,
 } from "@repo/database";
@@ -146,15 +146,21 @@ export const createInstanceProcedure = tenantProtectedProcedure
 		}
 		// SYSTEM templates can be used by anyone
 
-		// Validate workspace access if workspaceIds provided
+		// Validate workspace access if workspaceIds provided. Access alone only
+		// answers "can this user open it" - a member of two organizations can
+		// open both organizations' workspaces - so also require the workspace to
+		// be hosted by this instance's tenant. Execution trusts the stored ids
+		// and queries each workspace's vectors with no further tenancy check.
 		if (input.workspaceIds && input.workspaceIds.length > 0) {
 			for (const workspaceId of input.workspaceIds) {
-				const hasAccess = await hasWorkspaceAccess(
+				const access = await getWorkspaceAccessContext(
 					workspaceId,
 					context.user.id,
-					organizationId ?? undefined,
 				);
-				if (!hasAccess) {
+				if (
+					access === null ||
+					access.organizationId !== (organizationId ?? null)
+				) {
 					throw new Error(
 						`You don't have access to workspace ${workspaceId}`,
 					);

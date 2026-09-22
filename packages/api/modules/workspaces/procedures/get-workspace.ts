@@ -31,17 +31,9 @@ export const getWorkspaceProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { user, session } = context;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			session,
-		);
+		const { user } = context;
 
-		const workspace = await getWorkspaceById(
-			input.workspaceId,
-			user.id,
-			organizationId,
-		);
+		const workspace = await getWorkspaceById(input.workspaceId, user.id);
 
 		if (!workspace) {
 			throw new ORPCError("NOT_FOUND", {

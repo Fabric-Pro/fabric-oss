@@ -86,9 +86,26 @@ describe("direct-chat stream organization binding", () => {
 	it("filters workspace ids through hasWorkspaceAccess before retrieval", () => {
 		const resolveAt = source.indexOf("resolveRequestedOrganization({");
 		const accessMatch = source.match(
-			/hasWorkspaceAccess\(\s*workspaceId,\s*userId,\s*organizationId,?\s*\)/,
+			/hasWorkspaceAccess\(\s*workspaceId,\s*userId,?\s*\)/,
 		);
 		expect(accessMatch).not.toBeNull();
 		expect(accessMatch?.index ?? -1).toBeGreaterThan(resolveAt);
+	});
+
+	// `hasWorkspaceAccess` takes no organization (it used to accept one and
+	// ignore it), so the tenant binding is this comparison of the workspace's
+	// own organization with the resolved one — exact and null-aware, and made
+	// before the access check admits the workspace.
+	it("binds each workspace to the resolved organization before admitting it", () => {
+		const resolveAt = source.indexOf("resolveRequestedOrganization({");
+		const tenantMatch = source.match(
+			/\(workspaceTenants\.get\(workspaceId\)\s*\?\?\s*null\)\s*!==\s*\(organizationId\s*\?\?\s*null\)/,
+		);
+		const accessAt =
+			source.match(/hasWorkspaceAccess\(\s*workspaceId,\s*userId,?\s*\)/)
+				?.index ?? -1;
+		expect(tenantMatch).not.toBeNull();
+		expect(tenantMatch?.index ?? -1).toBeGreaterThan(resolveAt);
+		expect(tenantMatch?.index ?? -1).toBeLessThan(accessAt);
 	});
 });

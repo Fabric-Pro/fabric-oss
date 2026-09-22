@@ -136,12 +136,14 @@ export async function getOrCreatePersonalWorkspace(
 /**
  * Get workspace by ID with authorization check
  * Returns null if workspace doesn't exist or user has no access
+ *
+ * The check is {@link hasWorkspaceAccess}, which binds the caller to nothing
+ * but their own access: it takes no organization, so a caller whose request
+ * is also bound to one tenant (an organization API key, a turn running in one
+ * organization) must compare the workspace's own `organizationId` itself — or
+ * use {@link getWorkspaceAccessContext}, which returns it.
  */
-export async function getWorkspaceById(
-	workspaceId: string,
-	userId: string,
-	organizationId?: string,
-) {
+export async function getWorkspaceById(workspaceId: string, userId: string) {
 	const workspace = await db.workspace.findFirst({
 		where: { id: workspaceId },
 		include: {
@@ -167,11 +169,7 @@ export async function getWorkspaceById(
 	}
 
 	// Check access
-	const hasAccess = await hasWorkspaceAccess(
-		workspaceId,
-		userId,
-		organizationId,
-	);
+	const hasAccess = await hasWorkspaceAccess(workspaceId, userId);
 	if (!hasAccess) {
 		return null;
 	}
@@ -419,17 +417,32 @@ export type WorkspaceRole =
 	| null;
 
 /**
- * Check if a user has any access to a workspace
+ * Resolve workspace access and return the workspace's tenant context in one
+ * shot.
+ *
+ * Access is granted if:
+ * 1. For personal workspaces: User is the workspace owner
+ * 2. For org workspaces: User is org member AND (workspace owner OR
+ *    administrator OR contributor OR stakeholder OR the named agent is
+ *    attached to the workspace)
  *
  * SECURITY: For organization workspaces, we verify org membership first.
  * This ensures users removed from an org lose access to all org workspaces.
+ * A workspace has no guests, so unlike a project there is no path in without
+ * that membership.
+ *
+ * Returns `null` when the workspace does not exist or the caller cannot reach
+ * it; otherwise the workspace's hosting organization (`null` for a personal
+ * workspace). The answer is about the USER only. A caller whose request is
+ * also bound to one tenant — an organization API key, a v1 request resolved to
+ * one organization — compares this `organizationId` against that tenant
+ * itself; `hasWorkspaceAccess` discards it.
  */
-export async function hasWorkspaceAccess(
+export async function getWorkspaceAccessContext(
 	workspaceId: string,
 	userId: string,
-	_organizationId?: string,
 	agentId?: string,
-): Promise<boolean> {
+): Promise<{ organizationId: string | null } | null> {
 	const workspace = await db.workspace.findFirst({
 		where: { id: workspaceId },
 		select: {
@@ -440,18 +453,25 @@ export async function hasWorkspaceAccess(
 	});
 
 	if (!workspace) {
-		return false;
+		return null;
 	}
 
-	// Personal workspaces (no organizationId) - only owner can access
+	// Personal workspaces (no organizationId) - only owner can access. Return
+	// the stored value rather than a hardcoded `null`, for the same reason
+	// `getProjectAccessContext` does: a tenant comparison needs the exact
+	// stored value, not a normalized one.
 	if (!workspace.organizationId) {
-		return workspace.userId === userId;
+		return workspace.userId === userId
+			? { organizationId: workspace.organizationId }
+			: null;
 	}
+
+	const organizationId = workspace.organizationId;
 
 	// Organization workspace - MUST verify org membership first
 	const orgMembership = await db.member.findFirst({
 		where: {
-			organizationId: workspace.organizationId,
+			organizationId,
 			userId,
 		},
 		select: { id: true },
@@ -459,13 +479,13 @@ export async function hasWorkspaceAccess(
 
 	if (!orgMembership) {
 		// User is not a member of the organization - no access
-		return false;
+		return null;
 	}
 
 	// User is org member - now check workspace-level access
 	// Owner has access
 	if (workspace.userId === userId) {
-		return true;
+		return { organizationId };
 	}
 
 	// Check membership in any group
@@ -485,7 +505,7 @@ export async function hasWorkspaceAccess(
 	]);
 
 	if (isAdmin || isContributor || isStakeholder) {
-		return true;
+		return { organizationId };
 	}
 
 	// Check agent access if agentId provided
@@ -494,10 +514,33 @@ export async function hasWorkspaceAccess(
 			where: { workspaceId, agentId },
 			select: { id: true },
 		});
-		return !!isAgent;
+		return isAgent ? { organizationId } : null;
 	}
 
-	return false;
+	return null;
+}
+
+/**
+ * Check if a user has any access to a workspace.
+ *
+ * Thin wrapper over {@link getWorkspaceAccessContext} — kept so every caller
+ * that only needs the boolean is unaffected. The two cannot drift because
+ * this is the only body either has.
+ *
+ * It binds NOTHING to a tenant: it takes no organization and answers only
+ * "can this user open the workspace". It used to accept an `organizationId`
+ * it never read, so callers passing one believed it scoped the check. A
+ * caller bound to one organization must compare the workspace's hosting
+ * organization itself — {@link getWorkspaceAccessContext} returns it.
+ */
+export async function hasWorkspaceAccess(
+	workspaceId: string,
+	userId: string,
+	agentId?: string,
+): Promise<boolean> {
+	return (
+		(await getWorkspaceAccessContext(workspaceId, userId, agentId)) !== null
+	);
 }
 
 /**

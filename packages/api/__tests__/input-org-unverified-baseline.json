@@ -302,6 +302,5 @@
 	"packages/api/modules/workspaces/procedures/create-workspace.ts",
 	"packages/api/modules/workspaces/procedures/documents.ts",
 	"packages/api/modules/workspaces/procedures/get-workspace.ts",
-	"packages/api/modules/workspaces/procedures/list-workspaces.ts",
-	"packages/api/modules/workspaces/procedures/rag-settings.ts"
+	"packages/api/modules/workspaces/procedures/list-workspaces.ts"
 ]
