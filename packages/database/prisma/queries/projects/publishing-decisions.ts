@@ -74,10 +74,13 @@ export interface ReconcileOutcome {
 /** The transaction handle shape the reconciler needs. */
 type DecisionTx = {
 	publishingTopicDecisionEntry: {
-		findMany: (
-			args: unknown,
-		) => Promise<
-			{ id: string; questionId: string | null; status: string }[]
+		findMany: (args: unknown) => Promise<
+			{
+				id: string;
+				questionId: string | null;
+				status: string;
+				raisedByPostType: string | null;
+			}[]
 		>;
 		create: (args: unknown) => Promise<unknown>;
 		updateMany: (args: unknown) => Promise<{ count: number }>;
@@ -118,7 +121,12 @@ export async function reconcileTopicQuestions(
 			kind: entryKind,
 			deletedAt: null,
 		},
-		select: { id: true, questionId: true, status: true },
+		select: {
+			id: true,
+			questionId: true,
+			status: true,
+			raisedByPostType: true,
+		},
 	});
 
 	const byQuestionId = new Map(
@@ -209,6 +217,14 @@ export async function reconcileTopicQuestions(
 					decisionKind: question.decisionKind,
 					subject: question.subject,
 					analysisVersion: input.analysisVersion,
+					// ADOPTION. A draft may have raised this subject first; from
+					// the moment the analysis raises it too, the analysis owns
+					// it and its sweep applies — otherwise a row raised once by
+					// a draft would be exempt from reconciliation forever, long
+					// after the analysis took over asking it. Harmless in the
+					// other direction: if a draft still lists the asset after
+					// the analysis drops it, the next draft run reactivates it.
+					raisedByPostType: null,
 				},
 			});
 			if (count === 1) {
@@ -267,10 +283,25 @@ export async function reconcileTopicQuestions(
 	// inside a transaction that is holding a row lock with one. The `count`
 	// updateMany reports — not `staleIds.length` — is what `softClosed` takes,
 	// since it is the number of rows this write actually touched.
+	//
+	// SCOPED TO THE ANALYSIS'S OWN ROWS. `kind` was the whole scope while the
+	// analysis was the only producer of a kind. A draft run now raises asset
+	// confirmations as `QUESTION` roots too (`raiseDraftQuestions` below), and
+	// those are not the analysis's to retract: an analysis that never mentioned
+	// an asset would otherwise soft-close the confirmation a draft is waiting
+	// on, and the next draft run would reactivate it — a row flapping between
+	// two producers on every generation. A draft-raised row is swept by nobody;
+	// it is answered, or it stays.
 	const staleIds = roots
 		.filter(
 			(root) =>
 				root.status === "OPEN" &&
+				// NULLISH, not `=== null`. The column's documented meaning is
+				// "NULL means the analysis raised it", which is what every row
+				// written before it existed carries — and a caller whose row
+				// shape simply omits the field means the same thing. Only a
+				// row that NAMES a draft is exempt from this sweep.
+				(root.raisedByPostType ?? null) === null &&
 				root.questionId &&
 				!incoming.has(root.questionId),
 		)
@@ -340,6 +371,220 @@ export async function reconcileTopicQuestions(
 	}
 
 	return outcome;
+}
+
+/** One question a draft run raises, as `raiseDraftQuestions` reads it. */
+export interface DraftRaisedQuestion {
+	/**
+	 * `deriveQuestionId({topicId, decisionKind, subject, question})` — the SAME
+	 * derivation the analysis uses, deliberately. An asset is the same asset
+	 * whichever draft names it and whoever raised it first, so the id collides
+	 * on purpose: the second raiser finds the first one's row instead of
+	 * minting a duplicate of a question somebody may already have answered.
+	 */
+	questionId: string;
+	decisionKind: string;
+	subject: string | null;
+	question: string;
+	answerOptions: { text: string; justification: string }[] | null;
+	whyItMatters: string | null;
+}
+
+export interface RaiseDraftQuestionsOutcome {
+	minted: number;
+	reactivated: number;
+	/** Already live and left exactly as it was — by any producer. */
+	untouched: number;
+}
+
+/**
+ * Raise the questions a DRAFT run found, without reconciling anything
+ * (Fizzy #1988).
+ *
+ * A generated draft ends with the assets it references but cannot vouch for —
+ * a link that is not published yet, a screenshot nobody has cleared — and tells
+ * its reader to confirm each one before the content goes out. Until now there
+ * was nowhere to record that they had: the list was written by the generation
+ * run, nothing carried it back, and the same items reappeared on every
+ * regeneration. This is that way back, and it deliberately reuses the shape
+ * questions already have rather than inventing a second one, so the row lands
+ * in Summary & Questions where a reader already looks for something to answer.
+ *
+ * MINT-IF-ABSENT AND REACTIVATE. NO SWEEP — and that is the whole difference
+ * from `reconcileTopicQuestions` above, which is why this is a separate
+ * function rather than another flag on it. Reconciliation soft-closes whatever
+ * its caller no longer raises, which is correct for ONE producer per kind: the
+ * analysis retracting its own question. Seven content types raise asset
+ * confirmations into the same kind, each from its own list, so a sweep here
+ * would mean a Case Study run soft-closing every asset the Webinar draft is
+ * waiting on, and the next Webinar run reactivating them — a row flapping on
+ * every generation, and a reader watching questions appear and vanish for no
+ * reason they can see. A draft-raised row is answered, or it stays.
+ *
+ * A row somebody SETTLED is never touched, exactly as in reconciliation: the
+ * answer is the point of the loop.
+ */
+export async function raiseDraftQuestions(
+	tx: DecisionTx,
+	input: {
+		topicId: string;
+		projectId: string;
+		organizationId: string | null;
+		userId: string | null;
+		/** The content type whose generation raised these. */
+		postType: string;
+		kind?: "QUESTION" | "BLOCKER";
+		questions: DraftRaisedQuestion[];
+	},
+): Promise<RaiseDraftQuestionsOutcome> {
+	const outcome: RaiseDraftQuestionsOutcome = {
+		minted: 0,
+		reactivated: 0,
+		untouched: 0,
+	};
+	if (input.questions.length === 0) {
+		return outcome;
+	}
+
+	const entryKind = input.kind ?? "QUESTION";
+	// Live roots of this kind, whoever raised them — NOT filtered by
+	// `raisedByPostType`. Identity is the question, not its raiser: if the
+	// analysis already asks whether this asset is approved, that IS the row,
+	// and minting a second one would both violate the partial unique index on
+	// `(topicId, questionId)` and split one decision across two threads.
+	const roots = await tx.publishingTopicDecisionEntry.findMany({
+		where: {
+			topicId: input.topicId,
+			projectId: input.projectId,
+			parentId: null,
+			kind: entryKind,
+			deletedAt: null,
+		},
+		select: {
+			id: true,
+			questionId: true,
+			status: true,
+			raisedByPostType: true,
+		},
+	});
+	const byQuestionId = new Map(
+		roots
+			.filter((r) => r.questionId)
+			.map((r) => [r.questionId as string, r]),
+	);
+
+	for (const question of input.questions) {
+		const existing = byQuestionId.get(question.questionId);
+
+		if (existing) {
+			// Reactivate only what reconciliation soft-closed. `OPEN` is already
+			// asking; `RESOLVED`, `REJECTED` and `FORMATTING_ONLY` were settled
+			// by a person and are not reopened by a draft mentioning the asset
+			// again — the draft reads the answer instead.
+			if (existing.status === "POSSIBLY_RESOLVED") {
+				const { count } =
+					await tx.publishingTopicDecisionEntry.updateMany({
+						where: {
+							id: existing.id,
+							projectId: input.projectId,
+							topicId: input.topicId,
+							// CLAIM BEFORE WRITE, as the reconciler does: a
+							// concurrent answer can settle this root between the
+							// read above and this write, and their answer wins.
+							status: "POSSIBLY_RESOLVED",
+						},
+						data: { status: "OPEN" },
+					});
+				if (count === 1) {
+					outcome.reactivated += 1;
+					continue;
+				}
+			}
+			outcome.untouched += 1;
+			continue;
+		}
+
+		try {
+			await tx.publishingTopicDecisionEntry.create({
+				data: {
+					topicId: input.topicId,
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+					userId: input.userId,
+					parentId: null,
+					kind: entryKind,
+					status: "OPEN",
+					// The generation run wrote it, so the AGENT authored it —
+					// the person who clicked Generate did not write the question.
+					authorType: "AGENT",
+					authorUserId: null,
+					questionId: question.questionId,
+					decisionKind: question.decisionKind,
+					subject: question.subject,
+					summary: question.question,
+					recommendedResponse: null,
+					answerOptions:
+						(question.answerOptions as
+							| Prisma.InputJsonValue
+							| undefined) ?? Prisma.DbNull,
+					whyItMatters: question.whyItMatters,
+					// What makes this row exempt from the analysis's sweep, and
+					// the record of which draft first needed it confirmed.
+					raisedByPostType: input.postType,
+					// No `analysisVersion`: no analysis raised this. The column
+					// is nullable and every reader treats it as provenance.
+				},
+			});
+			outcome.minted += 1;
+		} catch (error) {
+			// Two generation runs for the same topic can reach this line at
+			// once — seven content types share one asset vocabulary, and
+			// nothing serializes their activities. The unique index is the
+			// authority; losing the race means the row this call wanted now
+			// exists, which is the outcome it wanted.
+			// Duck-typed on `code`, as `pending-pm-state-changes.ts` and
+			// `pm-conflict-notifications.ts` do, rather than
+			// `instanceof Prisma.PrismaClientKnownRequestError`: this module's
+			// unit tests mock `../../client` with `Prisma: {}`, and an
+			// `instanceof` against an undefined right-hand side throws a
+			// TypeError from inside the very catch block meant to absorb this.
+			if ((error as { code?: string } | null)?.code === "P2002") {
+				outcome.untouched += 1;
+				continue;
+			}
+			throw error;
+		}
+	}
+
+	return outcome;
+}
+
+/**
+ * `raiseDraftQuestions` against the live client, for callers outside this
+ * package.
+ *
+ * NOT wrapped in a transaction, unlike the reconciler's caller. Every write
+ * above is independently idempotent — mint-if-absent, reactivate-if-soft-closed
+ * and a unique-violation that means somebody else minted it — so a transaction
+ * would buy nothing but a row lock held across N round trips while seven
+ * content types generate in parallel.
+ *
+ * The cast mirrors `completePlanningAnalysis`'s: `DecisionTx` is a structural
+ * subset written so this file's logic can be unit-tested against a fake, and
+ * Prisma's generated client is more specific than any structural type can be.
+ */
+export async function raiseDraftQuestionsForTopic(input: {
+	topicId: string;
+	projectId: string;
+	organizationId: string | null;
+	userId: string | null;
+	postType: string;
+	questions: DraftRaisedQuestion[];
+}): Promise<RaiseDraftQuestionsOutcome> {
+	return raiseDraftQuestions(
+		db as unknown as Parameters<typeof raiseDraftQuestions>[0],
+		input,
+	);
 }
 
 /**

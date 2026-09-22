@@ -22,17 +22,25 @@ export const PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY =
 /**
  * The default Webinar / Demo Script prompt, as an org may edit it.
  *
- * No PO prompt-document attachment exists for this content type to copy from:
- * the card reports `has_attachments: false`, and its own dependency list names
- * "Webinar / Demo Script Prompt v1.0" as TBD. This body is instead authored
- * from the card's own "Webinar / Demo Script Prompt Requirements" section
- * (Fizzy #1988) plus the shipped family precedent — `publishing-case-study-
- * prompt.ts` and `publishing-stakeholder-email-prompt.ts` — for structure,
- * section ordering and voice.
+ * A PO prompt document for this content type DOES exist — "Webinar / Demo
+ * Script Prompt v1.0". It is attached to a COMMENT on the card rather than to
+ * the card body, and `has_attachments: false` describes the body only, so an
+ * early read of that flag concluded there was none. This body was therefore
+ * authored from the card's own "Webinar / Demo Script Prompt Requirements"
+ * section (Fizzy #1988) plus the shipped family precedent — `publishing-case-
+ * study-prompt.ts` and `publishing-stakeholder-email-prompt.ts` — for
+ * structure, section ordering and voice.
+ *
+ * Compared against that document afterwards, field by field: the structured
+ * output below matches its Output Format section for section, and every one of
+ * its hard rules is carried either in this body's Writing rules or in the
+ * non-editable locked clauses. So the body stands as authored — what was wrong
+ * was the claim that no document existed, corrected here so that nobody
+ * re-derives from a false premise.
  *
  * The family's standing change still applies here, attributed to that shipped
- * precedent rather than to a document this package never read. Its safety
- * rules are restated below, not omitted:
+ * precedent rather than to the PO document. Its safety rules are restated
+ * below, not omitted:
  *
  *  - CHANGED: the family's "Output MUST be Markdown only" rule and Markdown
  *    output skeleton. This prompt is executed with structured output, so the

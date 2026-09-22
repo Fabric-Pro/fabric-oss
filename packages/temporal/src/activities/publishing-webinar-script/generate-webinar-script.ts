@@ -78,6 +78,7 @@ import type { TemplateFormat } from "@repo/utils";
 import {
 	clampConfirmedAssets,
 	type PublishingClampRecord,
+	promoteConfirmedAssets,
 } from "@repo/utils/publishing-asset-clamp";
 import {
 	isRestrictingThread,
@@ -96,6 +97,11 @@ import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
 } from "../publishing-shared";
+import {
+	raiseAssetConfirmations,
+	refusedAssetSubjects,
+	settledAssetConfirmations,
+} from "../publishing-shared/asset-confirmations";
 import {
 	boundSettledApprovals,
 	selectSettledApprovals,
@@ -470,16 +476,50 @@ export async function generateWebinarScriptActivity(
 	// exists and may be used.
 	const document = { ...parsed.data };
 	const clamped: PublishingClampRecord = {};
-	const assetClamp = clampConfirmedAssets({
+	// PROMOTE FIRST, then clamp. An asset a member has confirmed comes OUT of
+	// "needs confirmation" — without this half, answering the question changed
+	// nothing the reader could see, because the list is written by the model
+	// and the model was asked the same thing again. The clamp runs second so an
+	// unresolved thread naming the same asset still wins: a newer restriction
+	// beats an older confirmation, which is the safe direction.
+	const promotion = promoteConfirmedAssets({
 		confirmed: document.suggestedAssets.confirmed,
 		needsConfirmation: document.suggestedAssets.needsConfirmation,
-		restricted,
+		settled: settledAssetConfirmations(threads),
+		postType: "WEBINAR_SCRIPT",
 	});
-	if (assetClamp.moved.length > 0) {
+	const assetClamp = clampConfirmedAssets({
+		confirmed: promotion.confirmed,
+		needsConfirmation: promotion.needsConfirmation,
+		// A REFUSAL restricts too. `restricted` carries unresolved threads only,
+		// so a thread settled "no, do not use that" left the clamp's input
+		// exactly as an approval did and a model claim about it survived — the
+		// one answer that changed nothing. A refused asset is appended here so
+		// the demotion it asks for actually happens.
+		restricted: [...restricted, ...refusedAssetSubjects(threads)],
+	});
+	if (promotion.promoted.length > 0) {
+		logger.info(
+			"[publishing-webinar-script] promoted assets a member confirmed",
+			{
+				draftId,
+				topicId,
+				projectId,
+				promoted: promotion.promoted,
+			},
+		);
+	}
+	if (promotion.promoted.length > 0 || assetClamp.moved.length > 0) {
 		document.suggestedAssets = {
 			confirmed: assetClamp.confirmed,
 			needsConfirmation: assetClamp.needsConfirmation,
 		};
+	}
+	// The clamp record stays the CLAMP's, and only the clamp's. A promotion
+	// also rewrites `suggestedAssets` above, and recording it here would write
+	// `assets: []` on a draft nothing was clamped on — which every reader,
+	// including the log line below, treats as "a claim was clamped".
+	if (assetClamp.moved.length > 0) {
 		// PRE-dedupe, matching what the case study's call site has always
 		// recorded. UNLIKE the case study, `assetKinds` is also persisted here
 		// — label -> the ASSET_RESTRICTING_KINDS member that caused the move —
@@ -571,6 +611,25 @@ export async function generateWebinarScriptActivity(
 			refusalReason: commit.reason,
 		};
 	}
+
+	// The other half of the asset loop: whatever is STILL unconfirmed becomes
+	// something a member can answer, in the place questions already live.
+	//
+	// AFTER the commit, and non-fatal by construction (see
+	// `raiseAssetConfirmations`). The draft is the deliverable and it is on the
+	// page by this line; failing a finished generation over a question the next
+	// run would raise again is the wrong trade. The list used is the one the
+	// reader will actually see — post-promotion and post-clamp — so a question
+	// is never raised for an asset this draft presents as confirmed.
+	await raiseAssetConfirmations({
+		topicId,
+		projectId,
+		organizationId,
+		userId: actorUserId,
+		postType: "WEBINAR_SCRIPT",
+		contentTypeLabel: "Webinar / Demo Script",
+		assets: document.suggestedAssets.needsConfirmation,
+	});
 
 	// DV5/FR21: the first generation leaves the reader with something editable.
 	// Deliberately AFTER the draft commits and in its own transaction, not

@@ -71,12 +71,15 @@ export interface TopicDraftState {
 	 * Every READY generation, newest first — so "version 2" has a version 1
 	 * behind it.
 	 *
-	 * Optional on the client only. The read path always sends it now, but a
-	 * panel test that predates it would otherwise fail on a field it has no
-	 * opinion about, and `DraftVersions` renders nothing below two entries
-	 * anyway.
+	 * REQUIRED, matching the read path's own `TopicDraftState`
+	 * (`publishing-drafts.ts`), which has always sent it. Optional is what let
+	 * the two newest panels ship with no version list at all and still
+	 * type-check clean: a panel that never mentioned `versions` was
+	 * indistinguishable from one that had none to show, so the gap surfaced
+	 * only when somebody tried to restore an earlier draft. Required, the next
+	 * content type fails at its panel instead of in use.
 	 */
-	versions?: TopicDraftRow[];
+	versions: TopicDraftRow[];
 }
 
 /**
@@ -597,6 +600,24 @@ function StateBadge({
 	// reader has not opened.
 	const cautious = info.state === "NEEDS_CONFIRMATION" || info.needsAttention;
 
+	// WHICH caution, in the accessible name. The amber mark merged three
+	// independent causes, and only two of them are answerable: a type the
+	// planning analysis set aside raises no question, so a bare "Needs
+	// confirmation" sent its reader to a questions tab with nothing in it. The
+	// visible mark is deliberately unchanged — one chip, not three — but a
+	// reader who asks what it means now gets the reason rather than a label.
+	const answerable =
+		unresolvedCount > 0 ||
+		info.attention.globalQuestion ||
+		info.attention.typeQuestion;
+	const cautionReason = answerable
+		? unresolvedCount > 0
+			? `Needs confirmation — ${unresolvedCount} unresolved ${
+					unresolvedCount === 1 ? "question" : "questions"
+				} before this can be drafted cleanly`
+			: "Needs confirmation — an unresolved approval constrains this draft"
+		: "Set aside by the planning analysis — nothing to answer here";
+
 	if (unresolvedCount > 0 || cautious) {
 		return (
 			<Badge tone="warn">
@@ -614,11 +635,7 @@ function StateBadge({
 				    strip shows a single chip instead of three word pills. */}
 				<span className="sr-only">
 					{info.state === "GENERATED" ? "Generated, " : ""}
-					{unresolvedCount > 0
-						? `Needs confirmation — ${unresolvedCount} unresolved ${
-								unresolvedCount === 1 ? "question" : "questions"
-							} before this can be drafted cleanly`
-						: "Needs confirmation"}
+					{cautionReason}
 					{hasChanged ? ", changed since your last visit" : ""}
 				</span>
 			</Badge>

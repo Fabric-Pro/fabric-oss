@@ -80,6 +80,7 @@ import type { TemplateFormat } from "@repo/utils";
 import {
 	clampConfirmedAssets,
 	type PublishingClampRecord,
+	promoteConfirmedAssets,
 } from "@repo/utils/publishing-asset-clamp";
 import {
 	composeNewsletterBlurbWorkingDraftBody,
@@ -98,6 +99,11 @@ import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
 } from "../publishing-shared";
+import {
+	raiseAssetConfirmations,
+	refusedAssetSubjects,
+	settledAssetConfirmations,
+} from "../publishing-shared/asset-confirmations";
 import {
 	boundSettledApprovals,
 	selectSettledApprovals,
@@ -489,11 +495,38 @@ export async function generateNewsletterBlurbActivity(
 	// not a claim about whether an asset exists and may be used.
 	const document = { ...parsed.data };
 	const clamped: PublishingClampRecord = {};
-	const assetClamp = clampConfirmedAssets({
+	// PROMOTE FIRST, then clamp — the same order, and for the same reason, as
+	// the Webinar Script's call site: an asset a member has confirmed comes out
+	// of "needs confirmation", and an unresolved thread naming it still puts it
+	// back. Without the promotion half, answering the question left the list
+	// exactly as it was, because the model writes that list and the model was
+	// asked the same thing again.
+	const promotion = promoteConfirmedAssets({
 		confirmed: document.suggestedAssets.confirmed,
 		needsConfirmation: document.suggestedAssets.needsConfirmation,
-		restricted,
+		settled: settledAssetConfirmations(threads),
+		postType: "NEWSLETTER_BLURB",
 	});
+	const assetClamp = clampConfirmedAssets({
+		confirmed: promotion.confirmed,
+		needsConfirmation: promotion.needsConfirmation,
+		// A REFUSAL restricts too. `restricted` carries unresolved threads only,
+		// so a thread settled "no, do not use that" left the clamp's input
+		// exactly as an approval did and a model claim about it survived — the
+		// one answer that changed nothing. A refused asset is appended here so
+		// the demotion it asks for actually happens.
+		restricted: [...restricted, ...refusedAssetSubjects(threads)],
+	});
+	if (promotion.promoted.length > 0) {
+		logger.info(
+			"[publishing-newsletter-blurb] promoted assets a member confirmed",
+			{ draftId, topicId, projectId, promoted: promotion.promoted },
+		);
+		document.suggestedAssets = {
+			confirmed: assetClamp.confirmed,
+			needsConfirmation: assetClamp.needsConfirmation,
+		};
+	}
 	if (assetClamp.moved.length > 0) {
 		document.suggestedAssets = {
 			confirmed: assetClamp.confirmed,
@@ -590,6 +623,19 @@ export async function generateNewsletterBlurbActivity(
 			refusalReason: commit.reason,
 		};
 	}
+
+	// The other half of the asset loop — see the Webinar Script's call site.
+	// After the commit, non-fatal, and over the list the reader will actually
+	// see, so nothing is raised for an asset this draft presents as confirmed.
+	await raiseAssetConfirmations({
+		topicId,
+		projectId,
+		organizationId,
+		userId: actorUserId,
+		postType: "NEWSLETTER_BLURB",
+		contentTypeLabel: "Newsletter Blurb",
+		assets: document.suggestedAssets.needsConfirmation,
+	});
 
 	// DV5/FR21: the first generation leaves the reader with something editable.
 	// Deliberately AFTER the draft commits and in its own transaction, not
