@@ -318,8 +318,10 @@ export interface TranscriptNearOccurrenceInput {
  * not stop the recording fallback re-ingesting it — and since Graph now returns nothing for channel
  * meetings *retroactively*, that means re-fetching the entire lookback window rather than the gap.
  *
- * Matching on time instead of id closes that, because an occurrence is the thing we actually want
- * once. The window has to be generous: the stored `meetingDate` comes from the transcript's or
+ * The same id can also stop matching within one source: Graph has reissued transcripts under new
+ * ids for a whole series at once, so an id-keyed check re-stored every occurrence of a meeting
+ * linked months earlier and auto-analyzed each again. Matching on time instead of id closes both,
+ * because an occurrence is the thing we actually want once. The window has to be generous: the stored `meetingDate` comes from the transcript's or
  * recording's own timestamp, which trails the calendar occurrence this is compared against, and
  * these values are currently written ~3h behind real UTC. Six hours absorbs both while staying well
  * inside the 24h that separates two occurrences of a daily meeting, so it cannot match a neighbour.

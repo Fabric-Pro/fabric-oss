@@ -446,7 +446,7 @@ export async function checkTranscriptAlreadySynced(
  * This is the core activity that:
  * 1. Resolves the online meeting ID from the join URL
  * 2. Lists available transcripts for the meeting
- * 3. Checks each transcript for deduplication
+ * 3. Checks each transcript for deduplication, by id and by occurrence
  * 4. Fetches transcript content
  * 5. Formats and optionally summarizes the content
  * 6. Creates a ProjectContext record with type MEETING_TRANSCRIPT
@@ -674,7 +674,68 @@ export async function fetchAndStoreMeetingTranscript(
 		let lastTranscriptRecordId: string | undefined;
 		let lastWasSummarized = false;
 
-		// Step 3: Process each transcript
+		// Step 3: decide which listed transcripts are already ours.
+		//
+		// The id-keyed check is the cheap, exact one. It is not sufficient on
+		// its own: Graph occasionally reissues a transcript under a new id —
+		// same meeting, same occurrence, same content — and the unique index
+		// then waves it through as new. Every occurrence in the series gets
+		// stored a second time and auto-analyzed again, which is how the
+		// proposal inbox filled with suggestions from months-old meetings. So
+		// an id-new transcript still has to land on an occurrence this link
+		// does not already cover, the same test the recording fallback above
+		// applies. Both decisions are made here, before anything is stored,
+		// so two transcripts Graph lists together for one occurrence (a
+		// transcription stopped and restarted mid-meeting) are still both
+		// taken: only a row that existed before this attempt counts as
+		// coverage. An attempt that fails between storing the first and the
+		// second leaves the second looking covered on retry; that is the same
+		// trade-off as a second transcript arriving in a later run, and it is
+		// accepted because the alternative — trusting a stored id that is
+		// still in Graph's listing as proof the listing has not been reissued
+		// — would let a reissue through again if Graph keeps listing both.
+		//
+		// The occurrence is the transcript's own createdDateTime. Without one
+		// there is nothing to compare: the series-level meetingDate is shared
+		// by every occurrence, so matching on it would declare a brand-new
+		// occurrence covered by any earlier one. Such a transcript falls back
+		// to id-only dedupe. A recording-sourced transcript is not re-checked
+		// either: the fallback only ran because its occurrence was not
+		// covered, and a second look from the recording's own timestamp
+		// could land on a different stored occurrence.
+		const skipped = new Map<
+			string,
+			"already-synced" | "occurrence-covered"
+		>();
+		for (const transcript of pendingTranscripts) {
+			if (
+				await isTranscriptAlreadySynced(
+					projectId,
+					meetingKey,
+					transcript.transcriptId,
+				)
+			) {
+				skipped.set(transcript.transcriptId, "already-synced");
+				continue;
+			}
+			if (transcript.recording || !transcript.createdDateTime) {
+				continue;
+			}
+			const occurrence = new Date(transcript.createdDateTime);
+			if (
+				Number.isFinite(occurrence.getTime()) &&
+				(await hasTranscriptNearOccurrence({
+					projectId,
+					linkedMeetingId,
+					occurrence,
+					toleranceMs: OCCURRENCE_COVERAGE_TOLERANCE_MS,
+				}))
+			) {
+				skipped.set(transcript.transcriptId, "occurrence-covered");
+			}
+		}
+
+		// Process each transcript
 		for (const transcript of pendingTranscripts) {
 			const transcriptId = transcript.transcriptId;
 
@@ -684,18 +745,26 @@ export async function fetchAndStoreMeetingTranscript(
 			// occurrence, while the passed-in meetingDate is the same for all.
 			const occurrenceDate = transcript.createdDateTime || meetingDate;
 
-			// Check if already synced (deduplication)
-			const alreadySynced = await isTranscriptAlreadySynced(
-				projectId,
-				meetingKey,
-				transcriptId,
-			);
-			if (alreadySynced) {
+			const skipReason = skipped.get(transcriptId);
+			if (skipReason === "already-synced") {
 				logger.info(
 					"[MeetingTranscriptSync] Transcript already synced, skipping",
 					{
 						meetingKey,
 						transcriptId,
+					},
+				);
+				continue;
+			}
+			if (skipReason === "occurrence-covered") {
+				// Warn, not info: this is the reissue signature, and the log is
+				// the only place it can be seen — nothing is stored for it.
+				logger.warn(
+					"[MeetingTranscriptSync] Occurrence already has a transcript under another id, skipping",
+					{
+						meetingKey,
+						transcriptId,
+						occurrenceDate,
 					},
 				);
 				continue;

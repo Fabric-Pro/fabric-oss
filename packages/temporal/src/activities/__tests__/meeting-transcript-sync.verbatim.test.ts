@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	executeMicrosoftTeamsToolMock: vi.fn(),
 	isTranscriptAlreadySyncedMock: vi.fn(),
+	hasTranscriptNearOccurrenceMock: vi.fn(),
 	createMeetingTranscriptRecordMock: vi.fn(),
 	updateLastRunMock: vi.fn(),
 	projectContextCreateMock: vi.fn(),
@@ -46,6 +47,8 @@ vi.mock("@repo/database", () => ({
 		mocks.createMeetingTranscriptRecordMock(...a),
 	isTranscriptAlreadySynced: (...a: unknown[]) =>
 		mocks.isTranscriptAlreadySyncedMock(...a),
+	hasTranscriptNearOccurrence: (...a: unknown[]) =>
+		mocks.hasTranscriptNearOccurrenceMock(...a),
 	updateMeetingTranscriptSyncLastRun: (...a: unknown[]) =>
 		mocks.updateLastRunMock(...a),
 	getLinkedMeetingJoinUrls: vi.fn(),
@@ -139,6 +142,7 @@ describe("fetchAndStoreMeetingTranscript — verbatim retention (#2316)", () => 
 			m.mockReset();
 		}
 		mocks.isTranscriptAlreadySyncedMock.mockResolvedValue(false);
+		mocks.hasTranscriptNearOccurrenceMock.mockResolvedValue(false);
 		mocks.projectContextCreateMock.mockResolvedValue({ id: "ctx-1" });
 		mocks.createMeetingTranscriptRecordMock.mockResolvedValue({
 			id: "tr-rec-1",
