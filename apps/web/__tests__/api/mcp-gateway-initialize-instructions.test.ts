@@ -134,18 +134,48 @@ describe("initialize instructions", () => {
 		expect(instructions).toMatch(/approve|awaiting review|review/i);
 	});
 
-	// The section is inserted between two existing ones; a client reads this
-	// top to bottom, so "how to get started" still precedes it and the
-	// authority rules still follow it.
+	// Bootstrapping a thin project (Fizzy #2459). The handshake is the only
+	// place an agent learns that it can seed a project's Context from the
+	// working tree, and it must learn the routing rule with it: knowledge
+	// files go through the upsert tool, coding-instruction files go through a
+	// human-reviewed proposal and never through the upsert.
+	it("tells the client how to bootstrap a project's context", async () => {
+		const instructions = await initialize();
+
+		expect(instructions).toContain("## Bootstrap a project");
+		const section = instructions.slice(
+			instructions.indexOf("## Bootstrap a project"),
+			instructions.indexOf("## Runtime authority"),
+		);
+		expect(section).toContain("fabric_list_project_contexts");
+		expect(section).toContain("fabric_update_project");
+		expect(section).toContain("fabric_upsert_project_context");
+		// Keyed by path, guarded by hash: what makes a re-push an update and
+		// keeps it from overwriting someone else's edit.
+		expect(section).toContain("sourcePath");
+		expect(section).toContain("expectedContentHash");
+		expect(section).toContain("conflict");
+		// The routing rule: instruction files go to the proposal tool.
+		expect(section).toContain("CLAUDE.md");
+		expect(section).toContain("AGENTS.md");
+		expect(section).toContain("fabric_propose_project_instruction_change");
+		expect(section).toMatch(/secrets/);
+	});
+
+	// Sections are inserted between existing ones; a client reads this top to
+	// bottom, so "how to get started" still precedes them and the authority
+	// rules still follow them.
 	it("keeps the existing sections, in order, around it", async () => {
 		const instructions = await initialize();
 
-		expect(instructions.indexOf("## Getting started")).toBeLessThan(
-			instructions.indexOf("## Coding instructions"),
-		);
-		expect(instructions.indexOf("## Coding instructions")).toBeLessThan(
-			instructions.indexOf("## Runtime authority"),
-		);
+		const gettingStarted = instructions.indexOf("## Getting started");
+		const coding = instructions.indexOf("## Coding instructions");
+		const bootstrap = instructions.indexOf("## Bootstrap a project");
+		const authority = instructions.indexOf("## Runtime authority");
+		expect(gettingStarted).toBeGreaterThanOrEqual(0);
+		expect(gettingStarted).toBeLessThan(coding);
+		expect(coding).toBeLessThan(bootstrap);
+		expect(bootstrap).toBeLessThan(authority);
 		expect(instructions).toContain("## Tool naming");
 	});
 });

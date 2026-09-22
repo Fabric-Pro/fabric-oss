@@ -978,6 +978,13 @@ function handleInitialize(
 				"Pass the `digest` you last installed as `sinceDigest`: an unchanged digest is answered without a download, a changed one adds the changed paths to the response.\n" +
 				"If the work shows the instructions are wrong or incomplete, call `fabric_propose_project_instruction_change` with the files' new content. " +
 				"That opens a proposal for a person to approve in Fabric — nothing changes for anyone else until they do, so report it as a suggestion awaiting review rather than as a change you made.\n\n" +
+				"## Bootstrap a project\n" +
+				"When the developer is working on a project that has little context (few or no results from `fabric_list_project_contexts`), offer to bootstrap it from their working tree.\n" +
+				"1. Set the project's description with `fabric_update_project`\n" +
+				"2. Push the README, architecture notes, design rules and team conventions with `fabric_upsert_project_context`, one call per file, using the file's repo-relative path as `sourcePath` so a later push of the same file updates it rather than adding a duplicate\n" +
+				"3. Before replacing a file that is already there, read its `contentHash` with fabric_get_project_context or fabric_list_project_contexts and pass it as `expectedContentHash`; a `conflict` means someone else changed it, so read it again and merge rather than overwrite\n" +
+				"Keep coding-instruction files (CLAUDE.md, AGENTS.md, .claude/, skills, agents, hooks, rules, scripts) out of it and propose those with `fabric_propose_project_instruction_change` instead. " +
+				"Never push secrets, `.env` files or generated output, and tell the developer what you pushed.\n\n" +
 				"## Runtime authority (required for connected server tools)\n" +
 				"Connected server tools require runtime authority before use. Platform tools (fabric_*) are always available.\n" +
 				"1. Call `fabric_request_authority` with the providers and access levels you need\n" +
