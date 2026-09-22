@@ -255,6 +255,183 @@ function logUsageWriteFailure(
 	});
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value)
+		? value
+		: undefined;
+}
+
+/**
+ * Parse a gateway/provider error body. Accepts either an already-parsed
+ * object (`data` on an `APICallError`/gateway-wrapped cause) or a JSON string
+ * (`responseBody`), matching the two shapes `@ai-sdk/provider`'s
+ * `APICallError` exposes. Returns `undefined` when neither is present or the
+ * string does not parse as an object.
+ */
+function parseErrorBody(
+	source: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+	if (!source) {
+		return undefined;
+	}
+	if (isRecord(source.data)) {
+		return source.data;
+	}
+	if (typeof source.responseBody === "string") {
+		try {
+			const parsed: unknown = JSON.parse(source.responseBody);
+			return isRecord(parsed) ? parsed : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	return undefined;
+}
+
+/** A model-call failure's structured attribution, extracted without importing
+ * `@ai-sdk/gateway`/`@ai-sdk/provider` error classes — every field is read by
+ * duck-typed property shape so this keeps working across a gateway/provider
+ * error, a bare `APICallError` from a non-gateway provider, or a plain
+ * `Error` with none of this. */
+export interface DescribedModelCallError {
+	message: string;
+	/** Finite HTTP status code of the failed attempt, when the error carried one. */
+	statusCode?: number;
+	/**
+	 * Small structured extract — never the raw response body, headers,
+	 * request values, or URL. `routing` (and any other nested field pulled
+	 * from the parsed error body) can still carry upstream FREE TEXT,
+	 * including one that echoes a submitted credential back (a provider's
+	 * "Incorrect API key provided: sk-…" message, Fizzy #2623 review) — this
+	 * function does not scrub string leaves itself; every string leaf is
+	 * scrubbed for credential-shaped substrings at persistence time
+	 * (`prepareErrorDetailsForPersist` in `@repo/database`). `undefined` when
+	 * the error carried nothing beyond a message.
+	 */
+	details?: Record<string, unknown>;
+}
+
+/**
+ * Describe a model-call failure for the usage ledger (Fizzy #2623): a status
+ * code so a gateway-side failure (VERCEL_GATEWAY, e.g. `typesafe-ai/jev`) can
+ * be told apart from a provider-side one, and a small structured extract of
+ * the gateway's routing metadata when the error's body carries it.
+ *
+ * `asGatewayError` (`@ai-sdk/gateway`) sets `cause` to the original
+ * `@ai-sdk/provider` `APICallError`, which is where the gateway's response
+ * body actually lives — `createGatewayErrorFromResponse` does not copy it
+ * onto the gateway error itself. This reads the error's own properties first
+ * and falls back to `cause`, so it covers both that wrapped shape and a bare
+ * `APICallError` thrown directly by a non-gateway provider.
+ *
+ * Never throws: this feeds the usage ledger's failure path, and a usage row
+ * that fails to write because ITS OWN error-description step threw would be
+ * worse than one with no status code or details at all. Any unexpected shape
+ * (e.g. a getter that throws on access) falls back to just the message.
+ */
+export function describeModelCallError(
+	error: unknown,
+): DescribedModelCallError {
+	const message = error instanceof Error ? error.message : String(error);
+	if (!isRecord(error)) {
+		return { message };
+	}
+	try {
+		return describeRecordModelCallError(error, message);
+	} catch {
+		return { message };
+	}
+}
+
+function describeRecordModelCallError(
+	error: Record<string, unknown>,
+	message: string,
+): DescribedModelCallError {
+	const cause = isRecord(error.cause) ? error.cause : undefined;
+
+	// The gateway wraps a status-less network failure (no HTTP response ever
+	// received) in a `GatewayError` that still defaults `statusCode` to 500 —
+	// `createGatewayErrorFromResponse`'s own default, not a real HTTP status —
+	// and `GatewayTimeoutError` defaults to 408 the same way. When `cause`
+	// looks like the original `@ai-sdk/provider` `APICallError` (it carries
+	// `url` or `requestBodyValues`, fields only a real HTTP attempt sets),
+	// trust ONLY its statusCode — including "it doesn't have one" — instead of
+	// the wrapper's invented default.
+	const causeIsApiCallError =
+		isRecord(cause) && ("url" in cause || "requestBodyValues" in cause);
+	const statusCode = causeIsApiCallError
+		? finiteNumber(cause?.statusCode)
+		: (finiteNumber(error.statusCode) ?? finiteNumber(cause?.statusCode));
+
+	const body = parseErrorBody(error) ?? parseErrorBody(cause);
+	const rawBodyError = body?.error;
+	const bodyError = isRecord(rawBodyError) ? rawBodyError : undefined;
+	const providerMetadata = body?.providerMetadata;
+	const gatewayMeta = isRecord(providerMetadata)
+		? providerMetadata.gateway
+		: undefined;
+	const routing = isRecord(gatewayMeta) ? gatewayMeta.routing : undefined;
+
+	const details: Record<string, unknown> = {};
+
+	// `error.name` is excluded unless it is an OWN property: every plain
+	// `Error` inherits `name: "Error"` from `Error.prototype`, and that
+	// inherited default is not a meaningful attribution. The gateway error
+	// classes (e.g. `GatewayInternalServerError`) set `name` as an instance
+	// property in their constructor, which shadows the prototype default and
+	// passes this check.
+	if (typeof error.name === "string" && Object.hasOwn(error, "name")) {
+		details.name = error.name;
+	}
+
+	const rawBodyType =
+		typeof bodyError?.type === "string" ? bodyError?.type : undefined;
+	const type = typeof error.type === "string" ? error.type : rawBodyType;
+	if (type) {
+		details.type = type;
+	}
+	// `createGatewayErrorFromResponse` maps any body `error.type` it doesn't
+	// recognize to a generic `GatewayInternalServerError` (fixed
+	// `type: "internal_server_error"`), which loses the upstream body's own
+	// type (e.g. `service_unavailable_error`). Keep both when they disagree.
+	if (rawBodyType && rawBodyType !== type) {
+		details.bodyType = rawBodyType;
+	}
+
+	const code = bodyError?.code;
+	if (typeof code === "string" || typeof code === "number") {
+		details.code = code;
+	}
+
+	const isRetryable =
+		typeof error.isRetryable === "boolean"
+			? error.isRetryable
+			: typeof cause?.isRetryable === "boolean"
+				? cause?.isRetryable
+				: undefined;
+	if (isRetryable !== undefined) {
+		details.isRetryable = isRetryable;
+	}
+
+	if (typeof error.generationId === "string") {
+		details.generationId = error.generationId;
+	}
+
+	if (isRecord(routing)) {
+		details.routing = routing;
+	}
+
+	return {
+		message,
+		statusCode,
+		details: Object.keys(details).length > 0 ? details : undefined,
+	};
+}
+
 function emit(
 	context: UsageLoggingContext,
 	usage: NormalizedUsage,
@@ -262,6 +439,8 @@ function emit(
 	success: boolean,
 	errorMessage?: string,
 	gatewayGenerationId?: string,
+	errorStatusCode?: number,
+	errorDetails?: Record<string, unknown>,
 ): void {
 	// A row with zero tokens across the board usually carries no billing signal
 	// (a provider that didn't resolve usage, or a throw before any tokens); a
@@ -317,6 +496,8 @@ function emit(
 			success,
 			errorMessage,
 			gatewayGenerationId,
+			errorStatusCode,
+			errorDetails,
 		}) as unknown;
 		if (
 			pending &&
@@ -390,12 +571,16 @@ export function createUsageLoggingMiddleware(
 				// gives us no usage on throw — record a zero-token failure marker so
 				// the error is at least visible in the activity view.
 				try {
+					const described = describeModelCallError(error);
 					emit(
 						context,
 						normalizeUsage(undefined),
 						Date.now() - start,
 						false,
-						error instanceof Error ? error.message : String(error),
+						described.message,
+						undefined,
+						described.statusCode,
+						described.details,
 					);
 				} catch {
 					/* ignore */
@@ -417,12 +602,16 @@ export function createUsageLoggingMiddleware(
 				// unreachable, auth rejected before the first chunk) must still
 				// leave its failure in the ledger (Fizzy #1894 FR7).
 				try {
+					const described = describeModelCallError(error);
 					emit(
 						context,
 						normalizeUsage(undefined),
 						Date.now() - start,
 						false,
-						error instanceof Error ? error.message : String(error),
+						described.message,
+						undefined,
+						described.statusCode,
+						described.details,
 					);
 				} catch {
 					/* ignore */
@@ -461,6 +650,7 @@ export function createUsageLoggingMiddleware(
 						try {
 							const err = (chunk as Record<string, unknown>)
 								.error;
+							const described = describeModelCallError(err);
 							emit(
 								context,
 								normalizeUsage(chunk.usage),
@@ -471,6 +661,9 @@ export function createUsageLoggingMiddleware(
 									: typeof err === "string"
 										? err
 										: "stream error",
+								undefined,
+								described.statusCode,
+								described.details,
 							);
 						} catch {
 							/* ignore */
@@ -605,12 +798,16 @@ export function wrapEvaluationModelWithUsageLogging(
 				return result;
 			} catch (error) {
 				try {
+					const described = describeModelCallError(error);
 					emit(
 						context,
 						normalizeUsage(undefined),
 						Date.now() - start,
 						false,
-						error instanceof Error ? error.message : String(error),
+						described.message,
+						undefined,
+						described.statusCode,
+						described.details,
 					);
 				} catch {
 					// Usage accounting remains best-effort and never changes an error.

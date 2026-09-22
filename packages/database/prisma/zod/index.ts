@@ -1500,7 +1500,7 @@ export type ApprovalTemplateScalarFieldEnum = z.infer<typeof ApprovalTemplateSca
 
 // File: AiUsageLogScalarFieldEnum.schema.ts
 
-export const AiUsageLogScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'projectId', 'providerConfigId', 'provider', 'modelCanonicalName', 'providerModelId', 'taskType', 'agentId', 'conversationId', 'featureKey', 'promptVersionId', 'jobType', 'inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheCreationInputTokens', 'reasoningTokens', 'costCents', 'costMicroUsd', 'gatewayGenerationId', 'costIsActual', 'latencyMs', 'billingCategory', 'billingCustomerId', 'success', 'errorMessage', 'createdAt'])
+export const AiUsageLogScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'projectId', 'providerConfigId', 'provider', 'modelCanonicalName', 'providerModelId', 'taskType', 'agentId', 'conversationId', 'featureKey', 'promptVersionId', 'jobType', 'inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheCreationInputTokens', 'reasoningTokens', 'costCents', 'costMicroUsd', 'gatewayGenerationId', 'costIsActual', 'latencyMs', 'billingCategory', 'billingCustomerId', 'success', 'errorMessage', 'errorStatusCode', 'errorDetails', 'createdAt'])
 
 export type AiUsageLogScalarFieldEnum = z.infer<typeof AiUsageLogScalarFieldEnumSchema>;
 
@@ -9191,6 +9191,8 @@ export const AiUsageLogSchema = z.object({
   billingCustomerId: z.string().nullish(),
   success: z.boolean().default(true),
   errorMessage: z.string().nullish(),
+  errorStatusCode: z.number().int().nullish(),
+  errorDetails: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   createdAt: z.date(),
 });
 
