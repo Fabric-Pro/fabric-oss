@@ -2706,7 +2706,13 @@ async function handleGetFeatureDecisions(
 		return errorResult("projectId is required");
 	}
 
-	if (!(await hasGatewayProjectAccess(projectId, session))) {
+	// The resolving form of the read gate: decision rows are written under
+	// the project's hosting organization, so the filter below must use that
+	// and not the caller's session organization, which differs for an
+	// invited guest. Null, or an empty stored value, only for an org-less
+	// project, which then reads the caller's own rows.
+	const access = await resolveGatewayProjectReadAccess(projectId, session);
+	if (!access) {
 		return errorResult("Project not found or access denied");
 	}
 
@@ -2716,7 +2722,10 @@ async function handleGetFeatureDecisions(
 	}
 
 	const threads = await listDecisionLogThreads({
-		tenantFilter: tenantFilter(session),
+		tenantFilter: {
+			organizationId: access.organizationId || null,
+			userId: session.userId,
+		},
 		userStoryId: featureId,
 		excludeSuperseded: true,
 	});
@@ -4344,10 +4353,20 @@ async function handleGetProjectContext(
 
 	// Tenant isolation: the unscoped lookup above resolves any row, so access
 	// is decided here, on the parent project — the same gate every other
-	// gateway read applies.
-	if (!(await hasGatewayProjectAccess(ctx.projectId, session))) {
+	// gateway read applies. The resolving form is used because the body
+	// readers below need the project's hosting organization, not the
+	// caller's: an invited guest's session sits in their own organization
+	// while every child row of the project carries the host's. Null, or an
+	// empty stored value, only for an org-less project, which then reads the
+	// caller's own rows.
+	const access = await resolveGatewayProjectReadAccess(
+		ctx.projectId,
+		session,
+	);
+	if (!access) {
 		return errorResult("Context not found or access denied");
 	}
+	const hostOrganizationId = access.organizationId || null;
 
 	const offset = (args.offset as number | undefined) ?? 0;
 	const maxLength =
@@ -4396,17 +4415,14 @@ async function handleGetProjectContext(
 	if (ctx.type === "LINK" && ctx.urlScope === "PATH_PREFIX") {
 		crawledPage = await getCrawledUrlSourceMarkdownPage(
 			ctx.id,
-			{
-				userId: session.userId,
-				organizationId: session.organizationId,
-			},
+			{ userId: session.userId, organizationId: hostOrganizationId },
 			{ offset, maxLength },
 		);
 		body = "";
 	} else if (ctx.type === "INTEGRATION") {
 		const captured = await getCapturedConversationMarkdown(ctx.id, {
 			userId: session.userId,
-			organizationId: session.organizationId,
+			organizationId: hostOrganizationId,
 		});
 		// An integration with nothing captured falls back to whatever the row
 		// itself holds — which for a monitored channel is "", and then

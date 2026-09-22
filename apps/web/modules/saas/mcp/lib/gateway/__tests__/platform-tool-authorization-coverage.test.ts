@@ -51,6 +51,7 @@ const PERMISSION_GATES = [
 /** Resolves what the caller may *see*. Enough for a read, never for a write. */
 const VISIBILITY_GATES = [
 	"hasGatewayProjectAccess",
+	"resolveGatewayProjectReadAccess",
 	"tenantFilter(",
 	"session.organizationId",
 ] as const;
