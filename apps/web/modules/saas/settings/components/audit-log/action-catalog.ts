@@ -449,6 +449,13 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"info",
 		"project",
 	),
+	"project.context_source.metadata_updated": D(
+		"project.context_source.metadata_updated",
+		"Context source details updated",
+		Settings2,
+		"info",
+		"project",
+	),
 
 	"project.meeting_digest.action_item_toggled": D(
 		"project.meeting_digest.action_item_toggled",

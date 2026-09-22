@@ -124,6 +124,8 @@ type RowContext = {
 	metadata?: unknown;
 	sourceType?: string | null;
 	aiInstructions?: string | null;
+	metadataUpdatedAt?: Date | string | null;
+	metadataUpdatedByUserId?: string | null;
 };
 
 function getContextClass(ctx: RowContext): "A" | "B" | "C" {
@@ -493,6 +495,8 @@ export type UrlContextRowFields = {
 	metadata: unknown;
 	sourceType?: string | null;
 	aiInstructions?: string | null;
+	metadataUpdatedAt?: Date | string | null;
+	metadataUpdatedByUserId?: string | null;
 };
 
 /**
@@ -713,6 +717,8 @@ export function UrlContextCard({
 					projectId={projectId}
 					sourceType={context.sourceType}
 					aiInstructions={context.aiInstructions}
+					metadataUpdatedAt={context.metadataUpdatedAt}
+					metadataUpdatedByUserId={context.metadataUpdatedByUserId}
 					sourceName={title}
 					onDelete={() => onDelete(context.id)}
 					deletePending={deletePending}
@@ -740,6 +746,8 @@ export function ProjectContextsList({ projectId }: Props) {
 		sourceName: string;
 		initialSourceType: string | null;
 		initialAiInstructions: string | null;
+		initialMetadataUpdatedAt: Date | string | null;
+		initialMetadataUpdatedByUserId: string | null;
 	} | null>(null);
 
 	// Base path for internal viewer / settings deep-links. Org context prefixes
@@ -897,6 +905,9 @@ export function ProjectContextsList({ projectId }: Props) {
 						sourceName: getContextDisplayTitle(ctx),
 						initialSourceType: ctx.sourceType ?? null,
 						initialAiInstructions: ctx.aiInstructions ?? null,
+						initialMetadataUpdatedAt: ctx.metadataUpdatedAt ?? null,
+						initialMetadataUpdatedByUserId:
+							ctx.metadataUpdatedByUserId ?? null,
 					})
 				}
 			/>
@@ -2746,6 +2757,12 @@ export function ProjectContextsList({ projectId }: Props) {
 				initialSourceType={detailsTarget?.initialSourceType ?? null}
 				initialAiInstructions={
 					detailsTarget?.initialAiInstructions ?? null
+				}
+				initialMetadataUpdatedAt={
+					detailsTarget?.initialMetadataUpdatedAt ?? null
+				}
+				initialMetadataUpdatedByUserId={
+					detailsTarget?.initialMetadataUpdatedByUserId ?? null
 				}
 			/>
 		</div>

@@ -204,7 +204,13 @@ describe("audit.taxonomy handler", () => {
 		// status sync applies; the actor is the system, so under a generic key
 		// the move would read as an AI edit in the story history, Fizzy #2304)
 		// = 136.
-		expect(result.actions).toHaveLength(136);
+		// + 1 project.context_source.metadata_updated (a source's type label or
+		// AI instructions changed — the text injected into every prompt that
+		// retrieves it. Written from the Context tab and from the
+		// `fabric_update_project_context` MCP tool with both values before and
+		// after, so an edit made with an API key is as attributable as one made
+		// in the app) = 137.
+		expect(result.actions).toHaveLength(137);
 		// The To Do list's writes. Completion is one toggle key; unsnoozing is
 		// its own, because "returned this to everyone's open view" is not a
 		// weaker form of "hid it".
@@ -230,6 +236,10 @@ describe("audit.taxonomy handler", () => {
 		// rebind of whose account a monitor collects under.
 		expect(result.actions).toContain("project.context_source.scan_stopped");
 		expect(result.actions).toContain("project.context_source.reconnected");
+		// Metadata edits (type label + AI instructions) from either surface.
+		expect(result.actions).toContain(
+			"project.context_source.metadata_updated",
+		);
 		// Organization deletion corridor: taking a deactivated organization
 		// back, and the scheduled purge that ends the window.
 		expect(result.actions).toContain("org.restored");

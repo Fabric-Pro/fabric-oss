@@ -654,6 +654,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"A channel or chat monitor was rebound to a different account. `metadata.previouslyBoundTo` carries the account it left, `metadata.reachableCount` and `metadata.unreachableCount` what the preflight found, and for Slack `metadata.huddleIngestRebound` whether huddle ingest moved with it. Each monitor runs as one workflow carrying one user's delegated token, so this row records a change of whose access the whole project collects under — which previously existed only inside a Temporal workflow argument and left no trace anywhere.",
 	},
 	{
+		key: "project.context_source.metadata_updated",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_source.metadata_updated",
+		description:
+			"A context source's type label or AI instructions changed — the text injected alongside that source into every AI prompt that retrieves it. `metadata.before` and `metadata.after` carry both fields, `metadata.changed` names which moved, and `metadata.via` says whether the edit came from the Context tab (`web`) or an MCP client (`mcp-gateway`). The resource name is the source's title; its content is never recorded. A save that changed nothing, or that was refused because someone else had edited the source in the meantime, writes no row.",
+	},
+	{
 		key: "project.document_generation.failed",
 		categoryId: "project",
 		labelKey:

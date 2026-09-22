@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
 	updateTask: vi.fn(),
 	createProject: vi.fn(),
 	storyTaskFindFirst: vi.fn(),
+	updateContextMetadata: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -39,10 +40,14 @@ vi.mock("@repo/database", () => ({
 	Permissions: {
 		PROJECT_UPDATE: "project:update",
 		STORY_UPDATE: "story:update",
+		CONTEXT_UPDATE: "context:update",
 	},
 	canCreateProjectInOrganization: mocks.canCreateProjectInOrganization,
 	updateTask: mocks.updateTask,
 	createProject: mocks.createProject,
+	updateContextMetadata: mocks.updateContextMetadata,
+	normalizeContextMetadataValue: (value: string | null | undefined) =>
+		value?.trim() ? value.trim() : null,
 }));
 
 import { executePlatformTool } from "../platform-tools";
@@ -68,6 +73,7 @@ function text(result: { content: Array<{ text: string }> }) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.resolveProjectAccess.mockResolvedValue({
+		organizationId: "org-1",
 		source: "project-member",
 		isVisible: true,
 		permissions: ["project:update", "story:update"],
@@ -88,6 +94,24 @@ beforeEach(() => {
 	mocks.createProject.mockResolvedValue({
 		id: "proj-new",
 		name: "Example Project",
+	});
+	// "unchanged" keeps the allowed path free of the audit and realtime
+	// imports; the write-side effects are covered in project-context-tools.
+	mocks.updateContextMetadata.mockResolvedValue({
+		status: "unchanged",
+		context: {
+			id: "ctx-1",
+			projectId: "proj-1",
+			type: "TEXT",
+			sourceTitle: "Notes",
+			originalFilename: null,
+			metadata: null,
+			sourceType: "Client Chat",
+			aiInstructions: null,
+			metadataUpdatedAt: null,
+			metadataUpdatedByUserId: null,
+			updatedAt: new Date("2026-09-01T00:00:00Z"),
+		},
 	});
 });
 
@@ -184,6 +208,67 @@ it("does not let an org role write a project hidden from discovery", async () =>
 	expect(text(result)).toContain("Project not found or access denied");
 	expect(mocks.hasPermission).not.toHaveBeenCalled();
 	expect(mocks.updateTask).not.toHaveBeenCalled();
+});
+
+describe("fabric_update_project_context honours CONTEXT_UPDATE", () => {
+	const args = {
+		contextId: "ctx-1",
+		projectId: "proj-1",
+		sourceType: "Client Chat",
+		expected: { sourceType: "Client Chat", aiInstructions: null },
+	};
+
+	it("refuses a Viewer who can see the project, before reading the context", async () => {
+		mocks.hasPermission.mockReturnValue(false);
+
+		const result = await executePlatformTool(
+			"fabric_update_project_context",
+			args,
+			session,
+		);
+
+		expect(mocks.resolveProjectAccess).toHaveBeenCalledWith(
+			"proj-1",
+			"user-1",
+		);
+		expect(mocks.hasPermission).toHaveBeenCalledWith(
+			expect.anything(),
+			"context:update",
+		);
+		expect(text(result)).toContain("No permission to edit context sources");
+		expect(mocks.updateContextMetadata).not.toHaveBeenCalled();
+	});
+
+	it("refuses a project hidden from the caller as not found", async () => {
+		mocks.resolveProjectAccess.mockResolvedValue(null);
+
+		const result = await executePlatformTool(
+			"fabric_update_project_context",
+			args,
+			session,
+		);
+
+		expect(text(result)).toContain("Project not found or access denied");
+		expect(mocks.updateContextMetadata).not.toHaveBeenCalled();
+	});
+
+	it("allows an Editor", async () => {
+		mocks.hasPermission.mockReturnValue(true);
+
+		await executePlatformTool(
+			"fabric_update_project_context",
+			args,
+			session,
+		);
+
+		expect(mocks.updateContextMetadata).toHaveBeenCalledWith(
+			"ctx-1",
+			"proj-1",
+			{ userId: "user-1", organizationId: "org-1" },
+			{ sourceType: "Client Chat", aiInstructions: undefined },
+			{ expected: { sourceType: "Client Chat", aiInstructions: null } },
+		);
+	});
 });
 
 describe("fabric_create_project honours PROJECT_CREATE", () => {

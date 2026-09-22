@@ -9,13 +9,20 @@
  * Opened from each context card's menu via {@link EditSourceDetailsMenuItem};
  * the fields also render inline in the add flows.
  *
- * Saved through `projects.contexts.updateMetadata`.
+ * Saved through `projects.contexts.updateMetadata`, which also backs the
+ * `fabric_update_project_context` MCP tool. The save carries the values the
+ * dialog opened with as `expected`, so an edit made elsewhere in the meantime
+ * (another person, or an agent over MCP) is refused with CONFLICT instead of
+ * silently overwritten; the dialog then shows the other version and lets the
+ * user decide. When the source has been edited before, the dialog says who
+ * last did it and when.
  */
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Alert, AlertDescription } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
 import {
 	Dialog,
@@ -30,8 +37,8 @@ import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
 import { Textarea } from "@ui/components/textarea";
 import { Settings2Icon } from "lucide-react";
-import { useTranslations } from "next-intl";
-import { useEffect, useState } from "react";
+import { useFormatter, useTranslations } from "next-intl";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 /** Application-global preset labels (org-level lists are out of scope for
@@ -59,6 +66,84 @@ interface ContextSourceDetailsDialogProps {
 	sourceName?: string;
 	initialSourceType: string | null;
 	initialAiInstructions: string | null;
+	/** When `sourceType` / `aiInstructions` were last edited, and by whom —
+	 * the row's `metadataUpdatedAt` / `metadataUpdatedByUserId`. Absent for a
+	 * source nobody has edited since those were recorded. */
+	initialMetadataUpdatedAt?: Date | string | null;
+	initialMetadataUpdatedByUserId?: string | null;
+}
+
+interface ContextMetadataValues {
+	sourceType: string | null;
+	aiInstructions: string | null;
+}
+
+/** The one representation the server stores: trimmed, blank as null. */
+function normalizeMetadataValue(value: string | null | undefined) {
+	const trimmed = value?.trim();
+	return trimmed ? trimmed : null;
+}
+
+function sameMetadata(a: ContextMetadataValues, b: ContextMetadataValues) {
+	return (
+		normalizeMetadataValue(a.sourceType) ===
+			normalizeMetadataValue(b.sourceType) &&
+		normalizeMetadataValue(a.aiInstructions) ===
+			normalizeMetadataValue(b.aiInstructions)
+	);
+}
+
+/** What `projects.contexts.updateMetadata` returns for a save. */
+interface SavedContextMetadata extends ContextMetadataValues {
+	contextId: string;
+	metadataUpdatedAt?: Date | string | null;
+	metadataUpdatedByUserId?: string | null;
+}
+
+/**
+ * The contexts list with one row's metadata replaced by what a save returned.
+ * Written into the cache straight away so that reopening the dialog before
+ * the refetch lands starts from the saved values — otherwise the next save
+ * would carry the pre-save values as `expected` and be refused as if someone
+ * else had changed the source. Anything that is not the list shape passes
+ * through untouched.
+ */
+function withSavedMetadata<T>(old: T, saved: SavedContextMetadata): T {
+	const list = old as { contexts?: unknown } | undefined;
+	if (!list || !Array.isArray(list.contexts)) {
+		return old;
+	}
+	return {
+		...list,
+		contexts: (list.contexts as Array<{ id?: string }>).map((ctx) =>
+			ctx.id === saved.contextId
+				? {
+						...ctx,
+						sourceType: saved.sourceType,
+						aiInstructions: saved.aiInstructions,
+						metadataUpdatedAt: saved.metadataUpdatedAt ?? null,
+						metadataUpdatedByUserId:
+							saved.metadataUpdatedByUserId ?? null,
+					}
+				: ctx,
+		),
+	} as T;
+}
+
+/** The server's CONFLICT for a stale save, with the values now stored. */
+function readConflict(error: unknown): ContextMetadataValues | null {
+	const candidate = error as {
+		code?: string;
+		data?: { current?: Partial<ContextMetadataValues> };
+	} | null;
+	if (candidate?.code !== "CONFLICT") {
+		return null;
+	}
+	const current = candidate.data?.current;
+	return {
+		sourceType: current?.sourceType ?? null,
+		aiInstructions: current?.aiInstructions ?? null,
+	};
 }
 
 export function ContextSourceDetailsDialog({
@@ -69,6 +154,8 @@ export function ContextSourceDetailsDialog({
 	sourceName,
 	initialSourceType,
 	initialAiInstructions,
+	initialMetadataUpdatedAt,
+	initialMetadataUpdatedByUserId,
 }: ContextSourceDetailsDialogProps) {
 	const t = useTranslations("tooltips.contextSources.sourceDetails");
 	const { organizationId } = useOrganizationContext();
@@ -78,15 +165,58 @@ export function ContextSourceDetailsDialog({
 	const [aiInstructions, setAiInstructions] = useState(
 		initialAiInstructions ?? "",
 	);
+	// What the save claims to be replacing — the compare-and-swap the server
+	// checks. The values the dialog opened with, until newer ones reach the
+	// user: a CONFLICT's current values, or a list refetch that changed them.
+	// Mirrored in a ref so the effect below can compare against it without
+	// re-running every time it moves.
+	const [expected, setExpected] = useState<ContextMetadataValues>({
+		sourceType: initialSourceType,
+		aiInstructions: initialAiInstructions,
+	});
+	const expectedRef = useRef(expected);
+	const updateExpected = useCallback((next: ContextMetadataValues) => {
+		expectedRef.current = next;
+		setExpected(next);
+	}, []);
+	const [conflict, setConflict] = useState<ContextMetadataValues | null>(
+		null,
+	);
 
-	// Re-seed when the dialog opens so edits made elsewhere (or a stale
-	// cached row) never show through.
+	// Fill the fields ONLY when the dialog opens. A caller may feed live list
+	// values (the link card does), and the list refetches while the dialog is
+	// open — every 2s during a crawl, and on window focus. Re-filling on every
+	// prop change would overwrite what the user is typing. Instead, a change
+	// that arrives while open and differs from `expected` is someone else's
+	// save: show it as the conflict notice, leave the fields alone, and make
+	// it the baseline so Save is an informed overwrite.
+	const wasOpenRef = useRef(false);
 	useEffect(() => {
-		if (open) {
+		const justOpened = open && !wasOpenRef.current;
+		wasOpenRef.current = open;
+		if (!open) {
+			return;
+		}
+		const incoming: ContextMetadataValues = {
+			sourceType: initialSourceType,
+			aiInstructions: initialAiInstructions,
+		};
+		if (justOpened) {
 			setSourceType(initialSourceType ?? "");
 			setAiInstructions(initialAiInstructions ?? "");
+			updateExpected(incoming);
+			setConflict(null);
+			return;
 		}
-	}, [open, initialSourceType, initialAiInstructions]);
+		if (!sameMetadata(incoming, expectedRef.current)) {
+			updateExpected(incoming);
+			setConflict(incoming);
+		}
+	}, [open, initialSourceType, initialAiInstructions, updateExpected]);
+
+	const listQueryKey = orpc.projects.contexts.list.queryKey({
+		input: { projectId, organizationId },
+	});
 
 	const saveMutation = useMutation({
 		mutationFn: () =>
@@ -98,17 +228,41 @@ export function ContextSourceDetailsDialog({
 				aiInstructions: aiInstructions.trim()
 					? aiInstructions.trim()
 					: null,
+				expected,
 			}),
-		onSuccess: () => {
+		onSuccess: (saved: SavedContextMetadata) => {
 			toast.success(t("savedToast"));
-			queryClient.invalidateQueries({
-				queryKey: orpc.projects.contexts.list.queryKey({
-					input: { projectId, organizationId },
-				}),
+			// The saved values are the baseline now, so the list update below
+			// can never read as someone else's change, even if it reaches
+			// this dialog before it has closed.
+			updateExpected({
+				sourceType: saved.sourceType,
+				aiInstructions: saved.aiInstructions,
 			});
 			onOpenChange(false);
+			queryClient.setQueryData(listQueryKey, (old) =>
+				withSavedMetadata(old, saved),
+			);
+			queryClient.invalidateQueries({ queryKey: listQueryKey });
 		},
 		onError: (error: unknown) => {
+			const current = readConflict(error);
+			if (current) {
+				// Someone else saved first. Keep the user's text in the
+				// fields, show the other version, and make it the new
+				// baseline: saving again is now an informed overwrite, and
+				// Cancel keeps theirs. The list is refetched so the card
+				// behind the dialog shows the stored values; that refetch
+				// equals the new baseline, so the fill-on-open effect leaves
+				// the fields and this notice alone. (Realtime does not cover
+				// this: a `context_change` event refetches `projects.get`,
+				// not the contexts list.)
+				setConflict(current);
+				updateExpected(current);
+				queryClient.invalidateQueries({ queryKey: listQueryKey });
+				return;
+			}
+			setConflict(null);
 			toast.error(
 				error instanceof Error ? error.message : t("errorFallback"),
 			);
@@ -129,6 +283,24 @@ export function ContextSourceDetailsDialog({
 				</DialogHeader>
 
 				<div className="grid gap-4 py-2">
+					{conflict ? (
+						<Alert
+							variant="warning"
+							data-testid="context-source-details-conflict"
+						>
+							<AlertDescription>
+								{t("conflict", {
+									sourceType:
+										conflict.sourceType ??
+										t("conflictEmpty"),
+									aiInstructions:
+										conflict.aiInstructions ??
+										t("conflictEmpty"),
+								})}
+							</AlertDescription>
+						</Alert>
+					) : null}
+
 					<div className="grid gap-2">
 						<Label htmlFor={`${contextId}-source-type`}>
 							{t("typeLabel")}
@@ -181,6 +353,15 @@ export function ContextSourceDetailsDialog({
 							{t("instructionsHelp")}
 						</p>
 					</div>
+
+					{initialMetadataUpdatedAt ? (
+						<ContextSourceLastEdited
+							projectId={projectId}
+							organizationId={organizationId}
+							at={initialMetadataUpdatedAt}
+							byUserId={initialMetadataUpdatedByUserId ?? null}
+						/>
+					) : null}
 				</div>
 
 				<DialogFooter>
@@ -201,6 +382,67 @@ export function ContextSourceDetailsDialog({
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>
+	);
+}
+
+/**
+ * "Last edited by <name> on <date>" for a source's metadata.
+ *
+ * The name comes from `projects.members.list` — the same lazy, session-cached
+ * lookup the feature details popover uses (`StoryDetailsButton`) — rather than
+ * a join on the context list, which would cost every Context tab load a user
+ * query for a line only this dialog shows. It mounts only when the dialog is
+ * open AND the source carries a stamp, so the members request fires at most
+ * once per project per session and never on the list's hot path.
+ *
+ * The member list covers the project owner and its project members. An editor
+ * whose access comes from an organization role alone is not in it; for them,
+ * and while the lookup is loading or if it fails, the line shows the date
+ * only rather than guessing a name.
+ */
+function ContextSourceLastEdited({
+	projectId,
+	organizationId,
+	at,
+	byUserId,
+}: {
+	projectId: string;
+	organizationId: string | null;
+	at: Date | string;
+	byUserId: string | null;
+}) {
+	const t = useTranslations("tooltips.contextSources.sourceDetails");
+	const format = useFormatter();
+
+	const { data: membersData } = useQuery({
+		...orpc.projects.members.list.queryOptions({
+			input: { projectId, organizationId },
+		}),
+		enabled: Boolean(byUserId),
+		staleTime: Number.POSITIVE_INFINITY,
+	});
+
+	const editorName = useMemo(() => {
+		if (!byUserId) {
+			return null;
+		}
+		const member = membersData?.members?.find(
+			(m: { userId?: string }) => m.userId === byUserId,
+		) as { user?: { name?: string | null } } | undefined;
+		return member?.user?.name || null;
+	}, [membersData, byUserId]);
+
+	const date = format.dateTime(new Date(at), { dateStyle: "medium" });
+
+	return (
+		<p
+			className="text-muted-foreground text-xs"
+			data-testid="context-source-last-edited"
+		>
+			{editorName
+				? t("lastEditedBy", { name: editorName, date })
+				: t("lastEdited", { date })}
+		</p>
 	);
 }
 

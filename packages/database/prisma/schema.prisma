@@ -2277,6 +2277,16 @@ model ProjectContext {
   sourceType     String?
   aiInstructions String?
 
+  // Who last edited `sourceType` / `aiInstructions`, and when. Stamped by
+  // every metadata write (the Context tab's source-details dialog and the
+  // `fabric_update_project_context` MCP tool) and shown in that dialog.
+  // `updatedAt` cannot serve: re-crawls and embedding bump it too. Nullable,
+  // no backfill — a row nobody has edited since this landed has no answer.
+  // A plain id, not a relation: it is display provenance, and the audit log
+  // is the durable record of the edit itself.
+  metadataUpdatedAt       DateTime?
+  metadataUpdatedByUserId String?
+
   // Tenant isolation (copied from parent Project)
   userId         String?
   organizationId String?

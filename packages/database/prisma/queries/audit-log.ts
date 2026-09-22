@@ -218,6 +218,13 @@ export const AUDIT_ACTIONS = [
 	// it depended on with no trace at all.
 	"project.context_source.scan_stopped",
 	"project.context_source.reconnected",
+	// A source's type label or AI instructions changed — the text injected into
+	// every AI prompt that retrieves the source. Written by the Context tab's
+	// source-details dialog and by the `fabric_update_project_context` MCP tool
+	// (`metadata.via` says which), with both fields before and after, because
+	// "who changed what the AI is told about this source" had no answer once an
+	// API key could make the edit as well as a person.
+	"project.context_source.metadata_updated",
 	// Document generation fell back because the generation agent could not be
 	// reached. Written whether or not the fallback then succeeded: a generation
 	// that quietly ran on the degraded path is exactly what nobody could see.

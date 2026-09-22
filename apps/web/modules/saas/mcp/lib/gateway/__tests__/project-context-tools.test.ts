@@ -1,5 +1,6 @@
 /**
- * `fabric_list_project_contexts` / `fabric_get_project_context` tests.
+ * `fabric_list_project_contexts` / `fabric_get_project_context` /
+ * `fabric_update_project_context` tests.
  *
  * These two tools are the MCP equivalent of the Context tab's "Download All"
  * export, so the cases below pin the promises that export cannot make on its
@@ -8,6 +9,11 @@
  * source is reassembled from its child pages, long transcripts page rather
  * than truncate silently, and a context outside the caller's tenant is
  * indistinguishable from one that does not exist.
+ *
+ * The update tool is the Context tab's source-details edit and nothing more:
+ * it requires the values the caller read (`expected`), refuses a stale one
+ * with the current values and no write, and records exactly one audit row and
+ * one realtime event for an actual change.
  *
  * `@repo/database`, `@repo/storage`, `@repo/config` and `@repo/utils` are
  * mocked — the handlers reach them through dynamic `await import(...)`, so the
@@ -26,6 +32,11 @@ const mocks = vi.hoisted(() => ({
 	getCrawledUrlSourceMarkdownPage: vi.fn(),
 	getCapturedConversationMarkdown: vi.fn(),
 	getSignedUrl: vi.fn(),
+	resolveProjectAccess: vi.fn(),
+	hasPermission: vi.fn(),
+	updateContextMetadata: vi.fn(),
+	recordAuditFromRequest: vi.fn(),
+	emitContextChange: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -35,6 +46,22 @@ vi.mock("@repo/database", () => ({
 	getCrawledUrlSourceMarkdown: mocks.getCrawledUrlSourceMarkdown,
 	getCrawledUrlSourceMarkdownPage: mocks.getCrawledUrlSourceMarkdownPage,
 	getCapturedConversationMarkdown: mocks.getCapturedConversationMarkdown,
+	resolveProjectAccess: mocks.resolveProjectAccess,
+	hasPermission: mocks.hasPermission,
+	Permissions: { CONTEXT_UPDATE: "context:update" },
+	updateContextMetadata: mocks.updateContextMetadata,
+	// The real rule is two lines and is tested in @repo/database; copied so
+	// the stale response's normalisation is observable here.
+	normalizeContextMetadataValue: (value: string | null | undefined) =>
+		value?.trim() ? value.trim() : null,
+}));
+
+vi.mock("@repo/api/lib/audit", () => ({
+	recordAuditFromRequest: mocks.recordAuditFromRequest,
+}));
+
+vi.mock("@repo/api/lib/realtime", () => ({
+	emitContextChange: mocks.emitContextChange,
 }));
 
 vi.mock("@repo/storage", () => ({
@@ -107,6 +134,24 @@ function transcriptRow(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+/** A context row as `updateContextMetadata` reads it back. */
+function metadataRow(overrides: Record<string, unknown> = {}) {
+	return {
+		id: "ctx-1",
+		projectId: "proj-1",
+		type: "MEETING_TRANSCRIPT",
+		sourceTitle: "Weekly sync",
+		originalFilename: null,
+		metadata: null,
+		sourceType: "Architect Chat",
+		aiInstructions: "Prefer this over older notes.",
+		metadataUpdatedAt: new Date("2026-09-22T10:00:00Z"),
+		metadataUpdatedByUserId: "user-1",
+		updatedAt: new Date("2026-09-22T10:00:00Z"),
+		...overrides,
+	};
+}
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.hasProjectAccess.mockResolvedValue(true);
@@ -125,6 +170,27 @@ beforeEach(() => {
 	});
 	mocks.getCapturedConversationMarkdown.mockResolvedValue("");
 	mocks.getSignedUrl.mockResolvedValue("https://storage.example/signed");
+	mocks.resolveProjectAccess.mockResolvedValue({
+		organizationId: "org-1",
+		source: "project-member",
+		isVisible: true,
+		permissions: ["context:update"],
+	});
+	mocks.hasPermission.mockImplementation(
+		(permissions: string[], required: string) =>
+			permissions.includes(required),
+	);
+	mocks.updateContextMetadata.mockResolvedValue({
+		status: "updated",
+		context: metadataRow(),
+		before: { sourceType: "Client Chat", aiInstructions: null },
+		after: {
+			sourceType: "Architect Chat",
+			aiInstructions: "Prefer this over older notes.",
+		},
+		changed: ["sourceType", "aiInstructions"],
+	});
+	mocks.emitContextChange.mockResolvedValue(undefined);
 });
 
 describe("declarations", () => {
@@ -756,5 +822,447 @@ describe("fabric_get_project_context", () => {
 
 		expect(body.contentAvailable).toBe(false);
 		expect(body.unavailableReason).toMatch(/still in progress/i);
+	});
+});
+
+describe("the editable fields are readable, so a caller can fill 'expected'", () => {
+	it("returns sourceType, aiInstructions and the edit stamp from the list", async () => {
+		mocks.listProjectContextSummaries.mockResolvedValue({
+			contexts: [
+				{
+					id: "ctx-1",
+					type: "MEETING_TRANSCRIPT",
+					sourceTitle: "Weekly sync",
+					originalFilename: null,
+					mimeType: null,
+					fileSize: null,
+					sourceUrl: null,
+					extractionStatus: "COMPLETED",
+					urlScope: null,
+					metadata: null,
+					sourceType: "Client Chat",
+					aiInstructions: null,
+					metadataUpdatedAt: null,
+					metadataUpdatedByUserId: null,
+					createdAt: new Date("2026-08-01T09:00:00Z"),
+					updatedAt: new Date("2026-08-01T09:00:00Z"),
+					hasStoredFile: false,
+					hasContent: true,
+				},
+			],
+			total: 1,
+			hasMore: false,
+			excludedCodeContexts: 0,
+		});
+
+		const body = payload(
+			await executePlatformTool(
+				"fabric_list_project_contexts",
+				{ projectId: "proj-1" },
+				session,
+			),
+		);
+
+		expect(body.contexts[0]).toMatchObject({
+			sourceType: "Client Chat",
+			aiInstructions: null,
+			metadataUpdatedAt: null,
+			metadataUpdatedByUserId: null,
+		});
+	});
+
+	it("returns them from the single read too", async () => {
+		mocks.getContextById.mockResolvedValue(
+			transcriptRow({
+				sourceType: "Client Chat",
+				aiInstructions: "Use as the source of truth.",
+				metadataUpdatedAt: new Date("2026-09-20T08:00:00Z"),
+				metadataUpdatedByUserId: "user-2",
+			}),
+		);
+
+		const body = payload(
+			await executePlatformTool(
+				"fabric_get_project_context",
+				{ contextId: "ctx-1" },
+				session,
+			),
+		);
+
+		expect(body).toMatchObject({
+			sourceType: "Client Chat",
+			aiInstructions: "Use as the source of truth.",
+			metadataUpdatedAt: "2026-09-20T08:00:00.000Z",
+			metadataUpdatedByUserId: "user-2",
+		});
+	});
+});
+
+describe("fabric_update_project_context", () => {
+	const expected = { sourceType: "Client Chat", aiInstructions: null };
+
+	function update(args: Record<string, unknown>) {
+		return executePlatformTool(
+			"fabric_update_project_context",
+			args,
+			session,
+		);
+	}
+
+	it("is declared as an idempotent write that requires expected, and never as additive-only", () => {
+		const definition = PLATFORM_TOOL_DEFINITIONS.find(
+			(tool) => tool.name === "fabric_update_project_context",
+		);
+		// `destructiveHint: false` would promise additive-only updates; this
+		// tool overwrites and clears text, so it must not claim that.
+		expect(definition?.annotations).toEqual({ idempotentHint: true });
+		expect(definition?.inputSchema.required).toEqual([
+			"contextId",
+			"projectId",
+			"expected",
+		]);
+		// Only the two fields the Context tab edits — never title, type or body.
+		expect(
+			Object.keys(
+				(definition?.inputSchema.properties ?? {}) as Record<
+					string,
+					unknown
+				>,
+			).sort(),
+		).toEqual(
+			[
+				"aiInstructions",
+				"contextId",
+				"expected",
+				"projectId",
+				"sourceType",
+			].sort(),
+		);
+	});
+
+	it("updates both fields under the project's organization and returns the stored values", async () => {
+		const result = await update({
+			contextId: "ctx-1",
+			projectId: "proj-1",
+			sourceType: "Architect Chat",
+			aiInstructions: "Prefer this over older notes.",
+			expected,
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(mocks.updateContextMetadata).toHaveBeenCalledWith(
+			"ctx-1",
+			"proj-1",
+			{ userId: "user-1", organizationId: "org-1" },
+			{
+				sourceType: "Architect Chat",
+				aiInstructions: "Prefer this over older notes.",
+			},
+			{ expected },
+		);
+		expect(payload(result)).toMatchObject({
+			success: true,
+			updated: true,
+			id: "ctx-1",
+			projectId: "proj-1",
+			sourceType: "Architect Chat",
+			aiInstructions: "Prefer this over older notes.",
+			metadataUpdatedByUserId: "user-1",
+		});
+	});
+
+	it("records exactly one audit row and one realtime event for a change", async () => {
+		await update({
+			contextId: "ctx-1",
+			projectId: "proj-1",
+			sourceType: "Architect Chat",
+			expected,
+		});
+
+		expect(mocks.recordAuditFromRequest).toHaveBeenCalledTimes(1);
+		const [auditContext, event] =
+			mocks.recordAuditFromRequest.mock.calls[0];
+		expect(auditContext).toEqual({
+			user: {
+				id: "user-1",
+				email: "agent@example.com",
+				name: "Example Agent",
+			},
+			session: { id: "sess-1", activeOrganizationId: "org-1" },
+		});
+		expect(event).toMatchObject({
+			action: "project.context_source.metadata_updated",
+			organizationId: "org-1",
+			projectId: "proj-1",
+			resource: {
+				type: "project_context",
+				id: "ctx-1",
+				name: "Weekly sync",
+			},
+			metadata: {
+				changed: ["sourceType", "aiInstructions"],
+				before: { sourceType: "Client Chat", aiInstructions: null },
+				after: {
+					sourceType: "Architect Chat",
+					aiInstructions: "Prefer this over older notes.",
+				},
+				via: "mcp-gateway",
+			},
+		});
+		expect(mocks.emitContextChange).toHaveBeenCalledTimes(1);
+		expect(mocks.emitContextChange).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "proj-1",
+				contextId: "ctx-1",
+				action: "updated",
+				userId: "user-1",
+			}),
+		);
+	});
+
+	it("passes a single field through and leaves the other untouched", async () => {
+		await update({
+			contextId: "ctx-1",
+			projectId: "proj-1",
+			aiInstructions: "  Prefer this over older notes.  ",
+			expected,
+		});
+
+		expect(mocks.updateContextMetadata.mock.calls[0][3]).toEqual({
+			sourceType: undefined,
+			aiInstructions: "Prefer this over older notes.",
+		});
+	});
+
+	it("clears a field when it is passed as null", async () => {
+		await update({
+			contextId: "ctx-1",
+			projectId: "proj-1",
+			sourceType: null,
+			expected,
+		});
+
+		expect(mocks.updateContextMetadata.mock.calls[0][3]).toEqual({
+			sourceType: null,
+			aiInstructions: undefined,
+		});
+	});
+
+	it.each([
+		[{}, /expected is required/i],
+		[{ expected: { sourceType: "Client Chat" } }, /expected is required/i],
+		[{ expected: "Client Chat" }, /expected is required/i],
+		[
+			{
+				expected: {
+					sourceType: "x".repeat(2001),
+					aiInstructions: null,
+				},
+			},
+			/at most 2000 characters/i,
+		],
+	])(
+		"refuses a call without a complete expected: %o",
+		async (extra, message) => {
+			const result = await update({
+				contextId: "ctx-1",
+				projectId: "proj-1",
+				sourceType: "Architect Chat",
+				...extra,
+			});
+
+			expect(result.isError).toBe(true);
+			expect(payload(result).error).toMatch(message);
+			expect(mocks.resolveProjectAccess).not.toHaveBeenCalled();
+			expect(mocks.updateContextMetadata).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses a call that names neither field", async () => {
+		const result = await update({
+			contextId: "ctx-1",
+			projectId: "proj-1",
+			expected,
+		});
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toMatch(/nothing to update/i);
+		expect(mocks.updateContextMetadata).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		[{ sourceType: "   " }, /sourceType must be 1-80/],
+		[{ sourceType: "x".repeat(81) }, /sourceType must be 1-80/],
+		[{ sourceType: 42 }, /sourceType must be a string/],
+		[{ aiInstructions: "x".repeat(501) }, /at most 500/],
+	])("rejects an out-of-bounds value: %o", async (field, message) => {
+		const result = await update({
+			contextId: "ctx-1",
+			projectId: "proj-1",
+			expected,
+			...field,
+		});
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toMatch(message);
+		expect(mocks.updateContextMetadata).not.toHaveBeenCalled();
+	});
+
+	it("returns the current values and writes nothing when expected is stale", async () => {
+		mocks.updateContextMetadata.mockResolvedValue({
+			status: "stale",
+			current: metadataRow({
+				sourceType: "  SDK Docs ",
+				aiInstructions: "",
+				metadataUpdatedByUserId: "user-2",
+			}),
+		});
+
+		const result = await update({
+			contextId: "ctx-1",
+			projectId: "proj-1",
+			sourceType: "Architect Chat",
+			expected,
+		});
+
+		expect(result.isError).toBe(true);
+		const body = payload(result);
+		expect(body.error).toMatch(/re-read the context and retry/i);
+		// Normalised, like the procedure's CONFLICT: exactly what to pass back
+		// as 'expected' on the retry.
+		expect(body.current).toEqual({
+			sourceType: "SDK Docs",
+			aiInstructions: null,
+			metadataUpdatedByUserId: "user-2",
+		});
+		expect(mocks.recordAuditFromRequest).not.toHaveBeenCalled();
+		expect(mocks.emitContextChange).not.toHaveBeenCalled();
+	});
+
+	it("reports a context from another project as not found", async () => {
+		mocks.updateContextMetadata.mockResolvedValue({ status: "not-found" });
+
+		const result = await update({
+			contextId: "ctx-in-other-project",
+			projectId: "proj-1",
+			sourceType: "Architect Chat",
+			expected,
+		});
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toMatch(/context not found/i);
+		expect(mocks.recordAuditFromRequest).not.toHaveBeenCalled();
+		expect(mocks.emitContextChange).not.toHaveBeenCalled();
+	});
+
+	it("records nothing when the values were already stored", async () => {
+		mocks.updateContextMetadata.mockResolvedValue({
+			status: "unchanged",
+			context: metadataRow({
+				sourceType: "Client Chat",
+				aiInstructions: null,
+			}),
+		});
+
+		const result = await update({
+			contextId: "ctx-1",
+			projectId: "proj-1",
+			sourceType: "Client Chat",
+			expected,
+		});
+
+		expect(payload(result)).toMatchObject({
+			success: true,
+			updated: false,
+		});
+		expect(mocks.recordAuditFromRequest).not.toHaveBeenCalled();
+		expect(mocks.emitContextChange).not.toHaveBeenCalled();
+	});
+});
+
+describe("fabric_update_project_context writes under the project's hosting organization", () => {
+	const expected = { sourceType: "Client Chat", aiInstructions: null };
+	const args = {
+		contextId: "ctx-1",
+		projectId: "proj-host",
+		sourceType: "Architect Chat",
+		expected,
+	};
+
+	it("lets an invited guest from another organization edit, as the app does", async () => {
+		// The guest's session sits in their own organization; the project,
+		// and so every context row in it, lives in the host organization.
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: "org-host",
+			source: "project-member",
+			isVisible: true,
+			permissions: ["context:update"],
+		});
+
+		const result = await executePlatformTool(
+			"fabric_update_project_context",
+			args,
+			{ ...session, organizationId: "org-guest" },
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(mocks.updateContextMetadata).toHaveBeenCalledWith(
+			"ctx-1",
+			"proj-host",
+			{ userId: "user-1", organizationId: "org-host" },
+			expect.anything(),
+			{ expected },
+		);
+		expect(mocks.recordAuditFromRequest.mock.calls[0][1]).toMatchObject({
+			organizationId: "org-host",
+			projectId: "proj-host",
+		});
+	});
+
+	it("refuses an organization key used on another organization's project, without a write", async () => {
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: "org-b",
+			source: "project-member",
+			isVisible: true,
+			permissions: ["context:update"],
+		});
+
+		const result = await executePlatformTool(
+			"fabric_update_project_context",
+			args,
+			{
+				...session,
+				organizationId: "org-a",
+				credential: "organization-key",
+			},
+		);
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toMatch(/not found or access denied/i);
+		expect(mocks.updateContextMetadata).not.toHaveBeenCalled();
+		expect(mocks.recordAuditFromRequest).not.toHaveBeenCalled();
+	});
+
+	it("lets an organization key edit a project in its own organization", async () => {
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: "org-a",
+			source: "org",
+			isVisible: true,
+			permissions: ["context:update"],
+		});
+
+		await executePlatformTool("fabric_update_project_context", args, {
+			...session,
+			organizationId: "org-a",
+			credential: "organization-key",
+		});
+
+		expect(mocks.updateContextMetadata).toHaveBeenCalledWith(
+			"ctx-1",
+			"proj-host",
+			{ userId: "user-1", organizationId: "org-a" },
+			expect.anything(),
+			{ expected },
+		);
 	});
 });

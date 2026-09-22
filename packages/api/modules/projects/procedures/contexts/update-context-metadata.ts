@@ -9,10 +9,19 @@
  * Distinct from `updateUrlSource`, which owns the LINK-specific crawl
  * settings (scope / maxPages / refreshMode). Metadata lives here so the
  * edit surface is uniform across source types.
+ *
+ * The write itself is `updateContextMetadata` in `@repo/database`, shared
+ * with the `fabric_update_project_context` MCP tool, and the audit row is
+ * built by `buildContextMetadataAuditEvent`, shared the same way.
  */
 import { ORPCError } from "@orpc/client";
-import { db, getContextById, hasProjectAccess } from "@repo/database";
+import {
+	hasProjectAccess,
+	normalizeContextMetadataValue,
+	updateContextMetadata,
+} from "@repo/database";
 import { z } from "zod";
+import { recordAuditFromRequest } from "../../../../lib/audit";
 import { emitContextChange } from "../../../../lib/realtime";
 import {
 	Permissions,
@@ -21,11 +30,15 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { buildContextMetadataAuditEvent } from "../../lib/context-metadata-audit";
 
 /** Upper bound for a custom source type label. The six presets are far
  * shorter; this only stops an unbounded string reaching prompt headers. */
 const MAX_SOURCE_TYPE_LENGTH = 80;
 const MAX_INSTRUCTIONS_LENGTH = 500;
+/** Ceiling on each `expected` value: generous, so a stored value that
+ * predates today's bounds is still expressible, but never unbounded. */
+const MAX_EXPECTED_LENGTH = 2000;
 
 export const updateContextMetadataProcedure = tenantProtectedProcedure
 	// SOC 2 input-org ratchet: the caller-supplied organizationId must name
@@ -39,7 +52,7 @@ export const updateContextMetadataProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Contexts"],
 		summary: "Update context source type label and AI instructions",
 		description:
-			"Set or clear the user-declared type label and AI instructions on any context source. Takes effect on the next AI invocation — no re-embed needed.",
+			"Set or clear the user-declared type label and AI instructions on any context source. Takes effect on the next AI invocation — no re-embed needed. Pass `expected` (the values you read) to refuse with CONFLICT instead of overwriting a concurrent edit.",
 	})
 	.input(
 		z.object({
@@ -60,6 +73,21 @@ export const updateContextMetadataProcedure = tenantProtectedProcedure
 				.trim()
 				.max(MAX_INSTRUCTIONS_LENGTH)
 				.nullable()
+				.optional(),
+			// Compare-and-swap: the values the caller loaded. When the row no
+			// longer holds them, the save is refused with CONFLICT and nothing
+			// is written, so two people editing the same source never silently
+			// overwrite each other. OPTIONAL on this path only, as the
+			// compatibility mode for older clients: absent, the comparison is
+			// skipped. The MCP tool always requires it.
+			expected: z
+				.object({
+					sourceType: z.string().max(MAX_EXPECTED_LENGTH).nullable(),
+					aiInstructions: z
+						.string()
+						.max(MAX_EXPECTED_LENGTH)
+						.nullable(),
+				})
 				.optional(),
 		}),
 	)
@@ -83,78 +111,97 @@ export const updateContextMetadataProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Tenant + IDOR guard: fetch the row inside the XOR filter so a
-		// personal-context user can't address an org row by id.
-		const existing = await getContextById(
+		// Tenant + IDOR guard live inside the shared write: the row is found
+		// under the XOR filter and `projectId`, so a personal-context user
+		// can't address an org row by id.
+		const result = await updateContextMetadata(
 			input.contextId,
 			input.projectId,
+			{ userId: user.id, organizationId: organizationId ?? null },
 			{
-				userId: user.id,
-				organizationId: organizationId ?? null,
+				sourceType: input.sourceType,
+				aiInstructions: input.aiInstructions,
 			},
+			{ expected: input.expected },
 		);
-		if (!existing) {
+
+		if (result.status === "not-found") {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Context not found",
 			});
 		}
 
-		const data: {
-			sourceType?: string | null;
-			aiInstructions?: string | null;
-		} = {};
-		if (input.sourceType !== undefined) {
-			data.sourceType = input.sourceType;
-		}
-		if (input.aiInstructions !== undefined) {
-			data.aiInstructions = input.aiInstructions;
+		if (result.status === "stale") {
+			// The dialog keys off this code to say "someone else changed this
+			// while you were editing" and offer their values; `data.current`
+			// carries them so it need not refetch first.
+			throw new ORPCError("CONFLICT", {
+				message:
+					"This source's details were changed by someone else while you were editing.",
+				data: {
+					current: {
+						sourceType: normalizeContextMetadataValue(
+							result.current.sourceType,
+						),
+						aiInstructions: normalizeContextMetadataValue(
+							result.current.aiInstructions,
+						),
+						metadataUpdatedByUserId:
+							result.current.metadataUpdatedByUserId,
+					},
+				},
+			});
 		}
 
-		const updated =
-			Object.keys(data).length > 0
-				? await db.projectContext.update({
-						where: { id: existing.id },
-						data,
-						select: {
-							id: true,
-							sourceType: true,
-							aiInstructions: true,
-						},
-					})
-				: null;
+		const ctx = result.context;
 
-		// A no-op save (no fields supplied) must not churn other clients'
-		// realtime feeds.
-		if (updated) {
+		// A no-op save (no fields supplied, or the same values) wrote nothing
+		// and must not churn other clients' realtime feeds or the ledger.
+		if (result.status === "updated") {
+			recordAuditFromRequest(
+				context,
+				buildContextMetadataAuditEvent({
+					organizationId,
+					projectId: input.projectId,
+					context: ctx,
+					before: result.before,
+					after: result.after,
+					changed: result.changed,
+					via: "web",
+				}),
+			);
+
 			await emitContextChange({
 				projectId: input.projectId,
-				contextId: updated.id,
+				contextId: ctx.id,
 				action: "updated",
 				userId: user.id,
 				userName: user.name || "Anonymous",
-				contextType: existing.type,
+				contextType: ctx.type,
 				contextName:
-					existing.originalFilename ||
-					existing.sourceTitle ||
-					`${existing.type} context`,
+					ctx.originalFilename ||
+					ctx.sourceTitle ||
+					`${ctx.type} context`,
 			});
 
 			// Operator trail for metadata changes (#1888 NFR). Field NAMES
 			// only — the values are user content and stay out of ops logs.
+			// The flags say what actually changed, not what the client sent:
+			// the dialog always sends both fields.
 			console.info("analytics_event", {
 				event: "project_context_metadata_updated",
-				contextId: updated.id,
+				contextId: ctx.id,
 				projectId: input.projectId,
-				sourceTypeChanged: input.sourceType !== undefined,
-				instructionsChanged: input.aiInstructions !== undefined,
+				sourceTypeChanged: result.changed.includes("sourceType"),
+				instructionsChanged: result.changed.includes("aiInstructions"),
 			});
 		}
 
 		return {
-			contextId: updated?.id ?? existing.id,
-			sourceType: updated ? updated.sourceType : existing.sourceType,
-			aiInstructions: updated
-				? updated.aiInstructions
-				: existing.aiInstructions,
+			contextId: ctx.id,
+			sourceType: ctx.sourceType,
+			aiInstructions: ctx.aiInstructions,
+			metadataUpdatedAt: ctx.metadataUpdatedAt,
+			metadataUpdatedByUserId: ctx.metadataUpdatedByUserId,
 		};
 	});
