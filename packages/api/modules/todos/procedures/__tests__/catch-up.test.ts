@@ -14,12 +14,14 @@
  *    something instead of restating the source.
  *
  *  - **Authorization.** The project boundary is asserted by structural
- *    identity against the REAL `accessibleProjectWhere` — the predicate every
- *    other to-do read composes — so a hand-rolled, weaker predicate (an
+ *    identity against the REAL `organizationProjectWhere` — the wide,
+ *    tenant-scoping predicate — so a hand-rolled, weaker predicate (an
  *    organization check, say) fails here even though it would still return
- *    rows. The fake `findMany` additionally honours a per-test set of
- *    reachable projects, so the unreachable-project case is observable as a
- *    missing start and not only as a query shape.
+ *    rows. Wide is deliberate for this procedure and the reasoning sits on
+ *    `expectSharedProjectPredicate` below, which also asserts the STRICT
+ *    predicate is not the one in use. The fake `findMany` additionally honours
+ *    a per-test set of reachable projects, so the unreachable-project case is
+ *    observable as a missing start and not only as a query shape.
  *
  *  - **The start.** `@repo/temporal`'s ROOT is mocked (the client), but
  *    `@repo/temporal/meeting-todo-matcher` is deliberately NOT: the workflow
@@ -35,6 +37,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { clockFromProjectPredicate } from "./support/project-predicate-clock";
 
 import { MISSING_ORGANIZATION_CONTEXT_ERROR_CODE } from "../../../../lib/missing-organization-context";
 
@@ -128,7 +131,9 @@ vi.mock("../../../../orpc/procedures", () => {
 const { TODO_CATCH_UP_MAX_STARTS, todoCatchUpInputSchema } = await import(
 	"../catch-up"
 );
-const { accessibleProjectWhere } = await import("../../lib/visibility");
+const { organizationProjectWhere, openableProjectWhere } = await import(
+	"../../lib/visibility"
+);
 const { TODO_BINDING_VERSION } = await import("@repo/database");
 const { meetingTodoMatcherWorkflowId } = await import(
 	"@repo/temporal/meeting-todo-matcher"
@@ -209,7 +214,24 @@ function sortAsRequested(rows: TranscriptFixture[]): TranscriptFixture[] {
 }
 
 /**
- * Asserts the handler bounded the query with the SHARED project predicate.
+ * Asserts the handler bounded the query with the WIDE project predicate — and
+ * that widening it is the deliberate answer here, not a missed narrowing.
+ *
+ * WHY THIS PROCEDURE KEEPS THE WIDE RULE WHILE ITS SIBLINGS TOOK THE STRICT
+ * ONE (#2615). `pending-proposals.ts`, `create.ts` and `linked-work-items.ts`
+ * all moved to `openableProjectWhere`, because each of them hands the caller a
+ * project a reader is then sent to, and `getProjectById` refuses an
+ * organization member who is not on the project. `todos.catchUp` returns four
+ * integers and no project data at all, so there is nothing for the strict rule
+ * to keep from the caller — while narrowing it would leave a pre-rollout
+ * meeting unprocessed until one of the few people who can OPEN its project
+ * happened to visit the page, even though the matcher's to-dos are for people
+ * drawn from the whole organization. Wide is the choice; the assertion below
+ * is what makes swapping it a test failure rather than a quiet policy change.
+ *
+ * The strict predicate is asserted NOT to be the one in use, so a future edit
+ * that "tidies" this into line with its siblings has to come here and read the
+ * paragraph above first.
  *
  * The clock is the handler's own `new Date()`, so it is read back out of the
  * predicate it built (the membership-expiry arm carries it) and the expected
@@ -218,9 +240,9 @@ function sortAsRequested(rows: TranscriptFixture[]): TranscriptFixture[] {
  * the same rows in these fixtures still fails.
  */
 function expectSharedProjectPredicate(projectWhere: any): void {
-	const now = projectWhere?.OR?.[0]?.members?.some?.OR?.[1]?.expiresAt?.gt;
-	expect(now).toBeInstanceOf(Date);
-	expect(projectWhere).toEqual(accessibleProjectWhere(VIEWER, ORG, now));
+	const now = clockFromProjectPredicate(projectWhere);
+	expect(projectWhere).toEqual(organizationProjectWhere(VIEWER, ORG, now));
+	expect(projectWhere).not.toEqual(openableProjectWhere(VIEWER, ORG, now));
 }
 
 function run(input: Record<string, unknown> = {}) {

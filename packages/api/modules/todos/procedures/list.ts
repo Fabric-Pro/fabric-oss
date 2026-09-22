@@ -135,6 +135,27 @@ interface TodoListItem {
 	title: string;
 	projectId: string | null;
 	projectName: string | null;
+	/**
+	 * WHETHER THIS ROW'S PROJECT WILL OPEN FOR THIS VIEWER — a RESOLVER
+	 * OUTCOME, not a stored column, and that is the whole reason it is on the
+	 * DTO rather than left to the page.
+	 *
+	 * `projectId` says which project a row BELONGS TO; only
+	 * `openableProjectWhere` says whether that project will LOAD for this
+	 * reader, and the To Do list is the one page in Fabric where those two
+	 * routinely differ (#2615). A row can honestly be the viewer's own while
+	 * its project is not theirs to open — the digest owner matcher assigns
+	 * across the whole organization — so a client that inferred "there is a
+	 * project id, therefore there is a link" offered links to "Project not
+	 * found". It is told the answer instead of reconstructing it:
+	 * `docs/solutions/architecture-patterns/ask-the-resolver-do-not-infer-from-stored-rows.md`.
+	 *
+	 * FALSE ON A PROJECT-LESS ROW, because there is no project to open.
+	 * Deliberately false rather than null: it lets every project-scoped link on
+	 * the page be withheld on ONE condition, with no second branch for "this
+	 * row has no project at all".
+	 */
+	canOpenProject: boolean;
 	assigneeUserId: string | null;
 	assigneeUser: { id: string; name: string; image: string | null } | null;
 	assigneeContactId: string | null;
@@ -315,6 +336,12 @@ export const listTodosProcedure = tenantProtectedProcedure
 				: [],
 		]);
 
+		// A Set, resolved ONCE for the page rather than a linear scan per row:
+		// a page is up to 50 rows and every one of them asks this same
+		// question, so `.includes` inside the mapper makes the cost of the
+		// answer quadratic in the size of the viewer's project list.
+		const openableProjectIds = new Set(visibility.openableProjectIds);
+
 		const projectNameById = new Map(projects.map((p) => [p.id, p.name]));
 		const userById = new Map(users.map((u) => [u.id, u]));
 		const contactById = new Map(contacts.map((c) => [c.id, c]));
@@ -342,6 +369,12 @@ export const listTodosProcedure = tenantProtectedProcedure
 				projectName: row.projectId
 					? (projectNameById.get(row.projectId) ?? null)
 					: null,
+				// The resolver's answer, asked of the strict set and of
+				// nothing else. A project-less row is false — see the field's
+				// docblock — because there is no project for a link to reach.
+				canOpenProject:
+					row.projectId !== null &&
+					openableProjectIds.has(row.projectId),
 				assigneeUserId: row.assigneeUserId,
 				assigneeUser: row.assigneeUserId
 					? (userById.get(row.assigneeUserId) ?? null)

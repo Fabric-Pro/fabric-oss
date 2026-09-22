@@ -87,9 +87,15 @@ export function TodoRow({
 	const formatDate = (value: string) => formatTodoDate(formatter, value);
 
 	const snoozed = isSnoozed(item, Date.now());
+	// `canOpenProject` is the whole of Fizzy #2615. A row can name a project
+	// this viewer cannot open — the owner matcher assigns from the whole
+	// organization — and the deep link would land on "Project not found". No
+	// link is the honest answer; the row keeps its wording, its meeting name
+	// and its date, which is everything the reader needs to act on it.
 	const digestHref =
 		item.source === "MEETING_DIGEST" &&
 		item.projectId &&
+		item.canOpenProject &&
 		item.meetingTranscriptRef
 			? buildDigestDeepLink({
 					basePath,

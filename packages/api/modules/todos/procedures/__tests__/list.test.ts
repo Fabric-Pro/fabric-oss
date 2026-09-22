@@ -30,6 +30,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { clockFromProjectPredicate } from "./support/project-predicate-clock";
 
 import { MISSING_ORGANIZATION_CONTEXT_ERROR_CODE } from "../../../../lib/missing-organization-context";
 
@@ -259,6 +260,53 @@ function queryArgs() {
 	return mocks.listVisibleTodos.mock.calls[0]?.[0] as any;
 }
 
+/**
+ * THREE `project.findMany` CALLS, ONE MOCK, told apart by the shape of their
+ * `select` — which is what the real `db` is, and what keeps these cases honest
+ * if the two visibility queries ever change places inside their `Promise.all`.
+ *
+ *  1. `resolveTodoVisibility`'s WIDE query (`organizationProjectWhere`) selects
+ *     `members`, because it needs each project's admins.
+ *  2. Its STRICT query (`openableProjectWhere`) selects the id and nothing
+ *     else. This is the set `canOpenProject` is decided from, and the whole
+ *     point of these cases is that it can be SMALLER than the wide one.
+ *  3. The handler's own name hydration selects `name`, for the returned rows
+ *     only.
+ */
+function projectFindManyMock(options: {
+	/** What the wide predicate returns. */
+	organization?: {
+		id: string;
+		userId?: string;
+		members?: { userId: string }[];
+	}[];
+	/** What the strict predicate returns. Defaults to the whole wide set. */
+	openable?: string[];
+	/** Names for the hydration; anything unnamed answers with its own id. */
+	names?: Record<string, string>;
+}) {
+	const organization = options.organization ?? [{ id: "project-1" }];
+	const openable = options.openable ?? organization.map((p) => p.id);
+	const names = options.names ?? { "project-1": "Meridian rollout" };
+
+	return async (args: any) => {
+		if (args?.select?.members) {
+			return organization.map((project) => ({
+				id: project.id,
+				userId: project.userId ?? "user-creator",
+				members: project.members ?? [],
+			}));
+		}
+		if (args?.select?.name) {
+			return ((args.where?.id?.in ?? []) as string[]).map((id) => ({
+				id,
+				name: names[id] ?? id,
+			}));
+		}
+		return openable.map((id) => ({ id }));
+	};
+}
+
 beforeEach(() => {
 	mocks.listVisibleTodos.mockReset();
 	mocks.isFeatureEnabled.mockReset();
@@ -269,14 +317,8 @@ beforeEach(() => {
 
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.listVisibleTodos.mockResolvedValue(queryResult());
-	// `resolveTodoVisibility` asks for the accessible projects (the call that
-	// selects `members`); the handler's name hydration asks for the returned
-	// rows' projects. One mock, told apart by the shape of the select.
-	mocks.dbMock.project.findMany.mockImplementation(async (args: any) =>
-		args?.select?.members
-			? [{ id: "project-1", userId: "user-creator", members: [] }]
-			: [{ id: "project-1", name: "Meridian rollout" }],
-	);
+	// One project, reachable AND openable, unless a case says otherwise.
+	mocks.dbMock.project.findMany.mockImplementation(projectFindManyMock({}));
 	mocks.dbMock.projectUserFunctionTag.findMany.mockResolvedValue([]);
 	mocks.dbMock.user.findMany.mockResolvedValue([]);
 	mocks.dbMock.nonMemberContact.findMany.mockResolvedValue([]);
@@ -358,9 +400,9 @@ describe("listTodosProcedure", () => {
 
 		// A request that sampled the clock twice could hide a row as snoozed and
 		// count it as age-hidden in the same response.
-		const membershipClock =
-			mocks.dbMock.project.findMany.mock.calls[0]?.[0]?.where?.OR?.[0]
-				?.members?.some?.OR?.[1]?.expiresAt?.gt;
+		const membershipClock = clockFromProjectPredicate(
+			mocks.dbMock.project.findMany.mock.calls[0]?.[0]?.where,
+		);
 		expect(queryArgs().now).toEqual(membershipClock);
 	});
 
@@ -453,10 +495,13 @@ describe("listTodosProcedure", () => {
 	});
 
 	it("returns the Unassigned bucket's default state so the client needs no second call", async () => {
-		mocks.dbMock.project.findMany.mockImplementation(async (args: any) =>
-			args?.select?.members
-				? [{ id: "project-1", userId: VIEWER, members: [] }]
-				: [],
+		// Openable as well as reachable: the bucket is other people's work, so
+		// a project the viewer cannot open contributes no default state.
+		mocks.dbMock.project.findMany.mockImplementation(
+			projectFindManyMock({
+				organization: [{ id: "project-1", userId: VIEWER }],
+				openable: ["project-1"],
+			}),
 		);
 
 		const result = await mocks.captured.list({
@@ -496,6 +541,10 @@ describe("listTodosProcedure", () => {
 			title: "Send the revised scope",
 			projectId: "project-1",
 			projectName: "Meridian rollout",
+			// The resolver's verdict on the project, projected per row. This
+			// assertion is an exact shape on purpose: the DTO is an explicit
+			// projection, so a field added to it has to be added here too.
+			canOpenProject: true,
 			assigneeUserId: null,
 			assigneeUser: null,
 			assigneeContactId: "contact-9",
@@ -520,6 +569,149 @@ describe("listTodosProcedure", () => {
 			createdAt: "2026-09-10T09:00:00.000Z",
 			updatedAt: "2026-09-11T09:00:00.000Z",
 		});
+	});
+
+	it("says a row is linkable when its project is in the STRICT set", async () => {
+		mocks.dbMock.project.findMany.mockImplementation(
+			projectFindManyMock({
+				organization: [{ id: "project-1" }],
+				openable: ["project-1"],
+			}),
+		);
+		mocks.listVisibleTodos.mockResolvedValue(
+			queryResult({ rows: [dbRow({ projectId: "project-1" })] }),
+		);
+
+		const result = await mocks.captured.list({
+			context: baseCtx,
+			input: { organizationId: INPUT_ORG, limit: 20 },
+		});
+
+		expect(result.items[0].canOpenProject).toBe(true);
+	});
+
+	it("says a row is NOT linkable when its project is only org-reachable — the reported case", async () => {
+		// #2615 itself. The row is genuinely the viewer's (the digest owner
+		// matcher assigns across the whole organization, so arm 1 keeps it),
+		// and `getProjectById` will still refuse the project — so `projectId`
+		// alone cannot tell the page whether a link would work. Asking the
+		// strict set is what stops the page offering "Project not found".
+		mocks.dbMock.project.findMany.mockImplementation(
+			projectFindManyMock({
+				organization: [{ id: "project-1" }, { id: "project-2" }],
+				openable: ["project-1"],
+			}),
+		);
+		mocks.listVisibleTodos.mockResolvedValue(
+			queryResult({
+				rows: [
+					dbRow({ id: "todo-openable", projectId: "project-1" }),
+					dbRow({
+						id: "todo-unreachable",
+						projectId: "project-2",
+						assigneeUserId: VIEWER,
+					}),
+				],
+			}),
+		);
+
+		const result = await mocks.captured.list({
+			context: baseCtx,
+			input: { organizationId: INPUT_ORG, limit: 20 },
+		});
+
+		expect(
+			result.items.map(
+				(item: { id: string; canOpenProject: boolean }) => [
+					item.id,
+					item.canOpenProject,
+				],
+			),
+		).toEqual([
+			["todo-openable", true],
+			// Still returned, still named, still dated — only the navigation
+			// that could not have worked is withheld.
+			["todo-unreachable", false],
+		]);
+		expect(result.items[1].projectId).toBe("project-2");
+	});
+
+	it("says a project-less manual row is not linkable, because there is no project to open", async () => {
+		// False rather than null: the page withholds every project-scoped link
+		// on one condition, with no second branch for "no project at all".
+		mocks.listVisibleTodos.mockResolvedValue(
+			queryResult({
+				rows: [
+					dbRow({
+						source: "MANUAL",
+						projectId: null,
+						transcriptId: null,
+						itemKey: null,
+						occurrenceIndex: null,
+						itemTextSnapshot: null,
+						liveText: null,
+						title: "Chase the invoice",
+						meetingTranscriptRef: null,
+						meetingTitle: null,
+						meetingDate: null,
+					}),
+				],
+			}),
+		);
+
+		const result = await mocks.captured.list({
+			context: baseCtx,
+			input: { organizationId: INPUT_ORG, limit: 20 },
+		});
+
+		expect(result.items[0].projectId).toBeNull();
+		expect(result.items[0].canOpenProject).toBe(false);
+	});
+
+	it("projects the same verdict in every scope", async () => {
+		// A scope never decides who may SEE a row, so it must never decide
+		// whether this flag is projected either: a view that dropped it would
+		// give the page a row with `canOpenProject: undefined`, which reads as
+		// "no link" in one view and would be a silent regression in the
+		// others.
+		mocks.dbMock.project.findMany.mockImplementation(
+			projectFindManyMock({
+				organization: [{ id: "project-1" }, { id: "project-2" }],
+				openable: ["project-1"],
+			}),
+		);
+		mocks.listVisibleTodos.mockResolvedValue(
+			queryResult({
+				rows: [
+					dbRow({ id: "todo-openable", projectId: "project-1" }),
+					dbRow({ id: "todo-unreachable", projectId: "project-2" }),
+				],
+			}),
+		);
+
+		for (const view of [
+			"default",
+			"completed",
+			"snoozed",
+			"ageHidden",
+		] as const) {
+			const result = await mocks.captured.list({
+				context: baseCtx,
+				input: { organizationId: INPUT_ORG, limit: 20, view },
+			});
+
+			expect(
+				result.items.map(
+					(item: { id: string; canOpenProject: boolean }) => [
+						item.id,
+						item.canOpenProject,
+					],
+				),
+			).toEqual([
+				["todo-openable", true],
+				["todo-unreachable", false],
+			]);
+		}
 	});
 
 	it("shows a row pointing at a redacted contact as unassigned", async () => {

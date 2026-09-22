@@ -403,6 +403,15 @@ The affordance that marks the Get started launcher for users whose onboarding to
 
 Yields to every other onboarding surface, so it never stacks on top of the welcome drawer or a tour — for a brand-new account it is therefore a second-session affordance by design.
 
+## Project access
+
+### Project reach
+Whether a person can open a given project: true for the person who created it and for anyone holding an accepted, unexpired membership of it, within the organization that owns the project.
+
+Membership of the organization is **not** reach. It is the single most common way to get this wrong, because organization membership is what most other questions turn on, and because a surface that grants on it looks correct until someone follows a link. The projects list and the project page both enforce the narrow rule, so a surface that grants on organization membership will show a person a project that then refuses to load for them.
+
+Distinct from *tenant scope*, which asks which projects belong to a workspace the person is in at all. The two differ for exactly the projects of your own organization that you were never added to, and that gap is where every disclosure and every dead link in this area has come from. A surface deciding what to **show** may legitimately ask either question; a surface deciding what to **link to** must ask about reach.
+
 ## Navigation
 
 ### Project shortcut
