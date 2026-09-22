@@ -2,6 +2,8 @@
 
 import { buildReleaseWidgetSnippet } from "@marketing/shared/lib/embed-snippet";
 import { getBaseUrl } from "@repo/utils";
+import { CapabilityGateBanner } from "@saas/projects/components/capability-gates/CapabilityGateBanner";
+import { useCapabilityGate } from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { Pagination } from "@saas/shared/components/Pagination";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -290,6 +292,7 @@ export function ProjectNewsletterSettings({
 	canEdit = true,
 }: Props) {
 	const queryClient = useQueryClient();
+	const releaseNotesGate = useCapabilityGate("release-notes.generate");
 	const orgId = organizationId ?? null;
 	const tEmbed = useTranslations("newsletter.embed");
 
@@ -1629,11 +1632,26 @@ export function ProjectNewsletterSettings({
 					Manually trigger a send now, or review recent sends below.
 				</p>
 
+				{/*
+				 * Why Send now cannot run, before it is pressed (Fizzy #1930).
+				 * The gate sits on the send door either way; without this the
+				 * only sign was an error toast after the click. Approving a
+				 * send already awaiting review is not gated — its content is
+				 * generated and frozen — so the banner explains Send now only.
+				 */}
+				<CapabilityGateBanner
+					capabilityKey="release-notes.generate"
+					className="mt-4"
+				/>
+
 				<div className="mt-4">
 					<AlertDialog>
 						<AlertDialogTrigger asChild>
 							<Button
-								disabled={sendNow.isPending}
+								disabled={
+									sendNow.isPending ||
+									releaseNotesGate.blocked
+								}
 								autoLoading={false}
 								loading={sendNow.isPending}
 							>

@@ -34,14 +34,22 @@ const STALE_MINUTES = 90;
 
 type ScanRow = {
 	id: string;
+	projectId: string;
 	status: string;
 	startedAt: Date | null;
+	createdAt: Date;
 };
 
 type ScanWhere = {
-	status: string;
-	startedAt: { lt: Date };
+	projectId?: string;
+	status: { in: string[] };
+	OR: [
+		{ startedAt: { lt: Date } },
+		{ startedAt: null; createdAt: { lt: Date } },
+	];
 };
+
+const LONG_AGO = new Date("2026-09-18T06:00:00.000Z");
 
 /**
  * The fixture table, spanning every case the sweep has to get right at once.
@@ -51,22 +59,51 @@ const ROWS: ScanRow[] = [
 	// Started four hours ago and never closed — the row this sweep exists for.
 	{
 		id: "dead",
+		projectId: "project_a",
 		status: "RUNNING",
 		startedAt: new Date("2026-09-18T08:00:00.000Z"),
+		createdAt: LONG_AGO,
 	},
 	// Half an hour in. A scan this young is simply still working.
 	{
 		id: "live",
+		projectId: "project_a",
 		status: "RUNNING",
 		startedAt: new Date("2026-09-18T11:30:00.000Z"),
+		createdAt: new Date("2026-09-18T11:29:00.000Z"),
 	},
-	// Marked RUNNING but never stamped with a start. Age unknown.
-	{ id: "unknown-age", status: "RUNNING", startedAt: null },
+	// Queued five hours ago and never started — a failed `workflow.start`
+	// leaves exactly this behind, and nothing else would ever close it.
+	{
+		id: "never-started",
+		projectId: "project_a",
+		status: "PENDING",
+		startedAt: null,
+		createdAt: new Date("2026-09-18T07:00:00.000Z"),
+	},
+	// Queued a minute ago. Not started yet, and not late either.
+	{
+		id: "just-queued",
+		projectId: "project_a",
+		status: "PENDING",
+		startedAt: null,
+		createdAt: new Date("2026-09-18T11:59:00.000Z"),
+	},
 	// Long finished. Already terminal; the sweep must not rewrite its verdict.
 	{
 		id: "finished",
+		projectId: "project_a",
 		status: "COMPLETED",
-		startedAt: new Date("2026-09-18T06:00:00.000Z"),
+		startedAt: LONG_AGO,
+		createdAt: LONG_AGO,
+	},
+	// Dead, but on another project — reachable only by the global sweep.
+	{
+		id: "dead-elsewhere",
+		projectId: "project_b",
+		status: "RUNNING",
+		startedAt: new Date("2026-09-18T08:00:00.000Z"),
+		createdAt: LONG_AGO,
 	},
 ];
 
@@ -74,25 +111,30 @@ const ROWS: ScanRow[] = [
  * Apply the built `where` to one fixture row the way the database would.
  *
  * The null branch is the load-bearing part: `startedAt < threshold` evaluates to
- * NULL — never true — for a row with no `startedAt`, so such a row lies outside
- * the update's reach no matter how old it really is.
+ * NULL — never true — for a row with no `startedAt`, so such a row is reached
+ * only through the arm that measures it from `createdAt`.
  */
 function selectedBy(row: ScanRow, where: ScanWhere): boolean {
-	// This matcher understands exactly two clauses. If the predicate ever grows a
-	// third — an `OR` reaching for null startedAt, say — the silent outcome would
-	// be a matcher that ignores it and keeps reporting the safe answer, so refuse
-	// outright instead.
-	const clauses = Object.keys(where).sort();
-	if (clauses.join(",") !== "startedAt,status") {
+	// This matcher understands exactly these clauses. If the predicate ever
+	// grows another, the silent outcome would be a matcher that ignores it and
+	// keeps reporting the safe answer, so refuse outright instead.
+	const clauses = Object.keys(where)
+		.filter((key) => key !== "projectId")
+		.sort();
+	if (clauses.join(",") !== "OR,status") {
 		throw new Error(`unhandled where clauses: ${clauses.join(", ")}`);
 	}
-	if (row.status !== where.status) {
+	if (where.projectId !== undefined && row.projectId !== where.projectId) {
 		return false;
 	}
-	if (row.startedAt === null) {
+	if (!where.status.in.includes(row.status)) {
 		return false;
 	}
-	return row.startedAt.getTime() < where.startedAt.lt.getTime();
+	const [started, neverStarted] = where.OR;
+	if (row.startedAt !== null) {
+		return row.startedAt.getTime() < started.startedAt.lt.getTime();
+	}
+	return row.createdAt.getTime() < neverStarted.createdAt.lt.getTime();
 }
 
 let swept: string[] = [];
@@ -117,13 +159,13 @@ afterEach(() => {
 });
 
 describe("failStaleProjectScans — which rows it reaches", () => {
-	it("closes a RUNNING scan that started before the window and nothing else", async () => {
+	it("closes every in-flight scan past the window and nothing else", async () => {
 		const count = await failStaleProjectScans({
 			staleMinutes: STALE_MINUTES,
 		});
 
-		expect(swept).toEqual(["dead"]);
-		expect(count).toBe(1);
+		expect(swept).toEqual(["dead", "never-started", "dead-elsewhere"]);
+		expect(count).toBe(3);
 	});
 
 	it("leaves a RUNNING scan still inside the window alone", async () => {
@@ -134,14 +176,14 @@ describe("failStaleProjectScans — which rows it reaches", () => {
 		expect(swept).not.toContain("live");
 	});
 
-	it("never sweeps a scan with no startedAt", async () => {
+	it("measures a scan that never started from when it was queued", async () => {
 		await failStaleProjectScans({ staleMinutes: STALE_MINUTES });
 
-		// An unknown age is not evidence of death — this row is unreachable at
-		// any window, not merely outside this one.
-		expect(swept).not.toContain("unknown-age");
-		await failStaleProjectScans({ staleMinutes: 1 });
-		expect(swept).not.toContain("unknown-age");
+		// Unreachable before: with no start time it had no clock at all, sat
+		// "in flight" for good, and refused every later scan behind it. The
+		// gate reads the same fallback, so the two agree on which rows are dead.
+		expect(swept).toContain("never-started");
+		expect(swept).not.toContain("just-queued");
 	});
 
 	it("never rewrites a scan that already reached a terminal status", async () => {
@@ -150,14 +192,29 @@ describe("failStaleProjectScans — which rows it reaches", () => {
 		expect(swept).not.toContain("finished");
 	});
 
-	it("measures the window from startedAt, on the frozen clock", async () => {
+	it("reaches only the named project when given one", async () => {
+		// The trigger closes a stalled row before starting the scan that
+		// replaces it. It must not close another project's rows on the way.
+		await failStaleProjectScans({
+			staleMinutes: STALE_MINUTES,
+			projectId: "project_a",
+		});
+
+		expect(swept).toEqual(["dead", "never-started"]);
+	});
+
+	it("measures the window on the frozen clock", async () => {
 		await failStaleProjectScans({ staleMinutes: STALE_MINUTES });
 
+		const threshold = new Date("2026-09-18T10:30:00.000Z");
 		expect(scanUpdateMany).toHaveBeenCalledWith(
 			expect.objectContaining({
 				where: {
-					status: "RUNNING",
-					startedAt: { lt: new Date("2026-09-18T10:30:00.000Z") },
+					status: { in: ["PENDING", "RUNNING"] },
+					OR: [
+						{ startedAt: { lt: threshold } },
+						{ startedAt: null, createdAt: { lt: threshold } },
+					],
 				},
 			}),
 		);

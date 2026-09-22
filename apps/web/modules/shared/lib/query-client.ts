@@ -42,6 +42,23 @@ export function createQueryClient() {
 					queryKey: [CAPABILITY_GATES_QUERY_PREFIX],
 				});
 			},
+			/**
+			 * And after a refusal at a door. A 412 is the one moment the screen
+			 * is provably stale — the page offered an action the server just
+			 * said cannot run — so the gates are re-read to show why.
+			 */
+			onError: (error) => {
+				if (
+					typeof error === "object" &&
+					error !== null &&
+					"code" in error &&
+					error.code === "PRECONDITION_FAILED"
+				) {
+					queryClient.invalidateQueries({
+						queryKey: [CAPABILITY_GATES_QUERY_PREFIX],
+					});
+				}
+			},
 		}),
 		defaultOptions: {
 			queries: {

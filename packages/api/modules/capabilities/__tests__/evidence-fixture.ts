@@ -24,13 +24,18 @@ export function runningJob(lastProgressAt: Date): JobSnapshot {
 export function healthyEvidence(): CapabilityEvidence {
 	return {
 		projectId: "project_example",
-		viewer: { canEditProjectSettings: true },
+		viewer: { canEditProjectSettings: true, canUpdateProject: true },
 		codebase: {
 			connected: true,
+			indexingEnabled: true,
+			indexingAvailable: true,
 			usable: true,
 			healthy: true,
 			integrationStatus: "ACTIVE",
 			indexing: { ...IDLE_JOB },
+			lastIndexCompletedAt: new Date("2026-09-01T00:00:00.000Z"),
+			retryTargetId: "integration_example",
+			graphReady: false,
 		},
 		context: {
 			total: 4,
@@ -38,16 +43,18 @@ export function healthyEvidence(): CapabilityEvidence {
 			product: 2,
 			processing: { ...IDLE_JOB },
 			hasFailedSource: false,
+			technicalInFlight: 0,
+			productInFlight: 0,
 		},
 		documents: {
 			usableTypes: new Set(["PRD", "ARCHITECTURE", "TECHNICAL_SPEC"]),
+			inFlightTypes: new Set(),
 			generating: { ...IDLE_JOB },
 		},
 		descriptionLength: 240,
 		// The default configuration: the two AI reviewers are on, neither
 		// repository scanner is, so the scan needs no codebase.
 		scan: { ...IDLE_JOB, requiresCodebase: false },
-		releaseNotes: { codebaseUsable: true },
 	};
 }
 

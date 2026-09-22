@@ -5530,7 +5530,15 @@
 					},
 					"never-indexed": {
 						"title": "Repository not indexed yet",
-						"body": "Fabric has not read this repository yet. Indexing runs on its own and this becomes available afterwards."
+						"body": "Fabric has not read this repository yet, and nothing will start that on its own. Start indexing and this becomes available once it finishes."
+					},
+					"code-search-off": {
+						"title": "Code search is off",
+						"body": "This project has a repository, but code search is switched off, so Fabric never reads it. Turn code search on in the project's repository settings, then start indexing."
+					},
+					"indexing-unavailable": {
+						"title": "Code indexing is not available",
+						"body": "This deployment does not index repository code, so Fabric cannot read this repository. Nothing in the project settings changes that."
 					}
 				},
 				"context": {
@@ -5540,7 +5548,7 @@
 					},
 					"ingestion-stalled": {
 						"title": "A source stopped processing",
-						"body": "One of your sources stopped partway through. Try adding it again."
+						"body": "One of your sources stopped partway through. Remove it and add it again."
 					},
 					"ingesting": {
 						"title": "Processing your sources",
@@ -5563,6 +5571,10 @@
 					"no-requirements-source": {
 						"title": "No requirements to test against",
 						"body": "Add a PRD or equivalent requirements, and Fabric can draft a QA strategy from them."
+					},
+					"source-processing": {
+						"title": "Waiting on a source",
+						"body": "This is waiting on {dependency}, which is still being prepared. Generation waits for it and starts on its own."
 					}
 				},
 				"scan": {
@@ -5615,7 +5627,9 @@
 				"addContext": "Add context",
 				"generatePrerequisiteDocument": "Create the document it needs",
 				"configureIntegration": "Configure the connection",
-				"retryJob": "Try again"
+				"retryJob": "Try again",
+				"enableCodeSearch": "Turn on code search",
+				"startIndexing": "Start indexing"
 			},
 			"retry": {
 				"action": "Try again",
@@ -5624,6 +5638,7 @@
 			},
 			"dismiss": {
 				"action": "Dismiss",
+				"session": "For this session",
 				"oneDay": "For a day",
 				"sevenDays": "For a week",
 				"thirtyDays": "For a month",

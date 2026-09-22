@@ -51,6 +51,7 @@ import {
 } from "../../../orpc/procedures";
 import { createDocumentWithContent } from "../lib/create-document-with-content";
 import {
+	assertDocumentGenerationAvailable,
 	type DispatchDocumentGenerationResult,
 	dispatchDocumentGeneration,
 	MAX_RUN_INSTRUCTIONS_CHARS,
@@ -276,6 +277,27 @@ export const createDocumentProcedure = tenantProtectedProcedure
 			? prepareSuppliedText(suppliedText)
 			: null;
 
+		// The capability gate, BEFORE anything is written. The write below
+		// stands down every active document of this type, and one of them may
+		// be the very source that grounds this generation — an existing
+		// architecture document is enough for a new one. Asked afterwards, the
+		// gate no longer sees that source and refuses a run it would have
+		// allowed a moment earlier, leaving the real document demoted and an
+		// empty draft in its place. Asked here, a refusal writes nothing at all.
+		//
+		// Source text pasted with the request is itself the source a "no
+		// source" soft block asks for, so it waives that block — and only that
+		// one.
+		if (wantsGeneration) {
+			await assertDocumentGenerationAvailable({
+				documentType: input.type,
+				projectId: input.projectId,
+				userId: user.id,
+				organizationId,
+				suppliesSource: hasSuppliedText,
+			});
+		}
+
 		// KTD10: only active documents reach retrieval, so a second active
 		// document of one type would put conflicting sources in front of every
 		// future generation.
@@ -401,6 +423,9 @@ export const createDocumentProcedure = tenantProtectedProcedure
 					// Held server-side, keyed off the document we just created —
 					// never a caller-supplied parameter.
 					excludeContextId: sourceContext?.id,
+					// Asserted above, against the project as it was before the
+					// write; re-asserting now would read it after the demotion.
+					capabilityAlreadyAsserted: true,
 				})
 			: Promise.resolve(null);
 

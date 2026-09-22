@@ -5,7 +5,7 @@
  * of the whole matrix is a fixed number of round trips rather than one per rule,
  * and every rule is testable against a plain object with no database in sight.
  *
- * Eleven reads, not one per capability: the aggregates are grouped counts, so a
+ * Twelve reads, not one per capability: the aggregates are grouped counts, so a
  * single `groupBy` answers four fields at once wherever the shapes allow it.
  *
  * ## What this file deliberately does not read
@@ -29,11 +29,17 @@
  * into a warning rather than a block.
  */
 
+import { ORPCError } from "@orpc/server";
 import {
 	canEditProject,
+	canEditProjectSettings,
 	db,
 	type RepositoryIntegrationStatus,
 } from "@repo/database";
+import {
+	isCodeIndexingDeploymentEnabled,
+	isCodeIndexingEnabled,
+} from "../projects/lib/code-indexing-enabled";
 import type { CapabilityEvidence, JobSnapshot } from "./types";
 
 /**
@@ -129,12 +135,44 @@ const TECHNICAL_CONTEXT_TYPES = new Set<string>(["API_SPEC"]);
 /**
  * Context kinds that describe product intent on their own — what someone wants
  * built and why, rather than how it is built.
+ *
+ * An uploaded file or document counts here too. Someone who uploads their PRD
+ * or brief as a PDF has given the project grounding, and leaving it in neither
+ * split made every generator still ask them to "add a PRD". It counts as
+ * product grounding only, never as a technical source: an upload tagged with a
+ * document type becomes a typed project document after processing and is
+ * weighed as that, so an UNTAGGED one says nothing about being technical.
  */
 const PRODUCT_CONTEXT_TYPES = new Set<string>([
 	"TEXT",
 	"MEETING_TRANSCRIPT",
 	"SLACK_HUDDLE_NOTES",
+	"FILE",
+	"DOCUMENT",
 ]);
+
+/** Which side of the grounding split one context row falls on, if either. */
+function classifyContext(
+	type: string,
+	category: string | null,
+): "technical" | "product" | null {
+	// A link says what it is; every other kind is classified by its kind
+	// alone. Kinds that could honestly be either — an image, a spreadsheet, a
+	// synced integration — are counted in neither split, so
+	// `technical + product` is a lower bound on `total` rather than a
+	// partition of it.
+	if (type === "LINK") {
+		const linkCategory = category ?? "";
+		if (TECHNICAL_LINK_CATEGORIES.has(linkCategory)) {
+			return "technical";
+		}
+		return PRODUCT_LINK_CATEGORIES.has(linkCategory) ? "product" : null;
+	}
+	if (TECHNICAL_CONTEXT_TYPES.has(type)) {
+		return "technical";
+	}
+	return PRODUCT_CONTEXT_TYPES.has(type) ? "product" : null;
+}
 
 /**
  * Link categories that settle the question for a `LINK` row.
@@ -197,17 +235,17 @@ interface StatusVocabulary {
 	completed: readonly string[];
 }
 
+const latestDate = (dates: readonly (Date | null)[]): Date | null =>
+	dates.reduce<Date | null>(
+		(latest, date) =>
+			date && (latest === null || date > latest) ? date : latest,
+		null,
+	);
+
 const latestOf = (
 	groups: StatusGroup[],
 	pick: (group: StatusGroup) => Date | null,
-): Date | null =>
-	groups.reduce<Date | null>((latest, group) => {
-		const candidate = pick(group);
-		if (!candidate) {
-			return latest;
-		}
-		return latest && latest >= candidate ? latest : candidate;
-	}, null);
+): Date | null => latestDate(groups.map(pick));
 
 /**
  * Collapse a status-grouped aggregate into the flat shape the rules read.
@@ -293,9 +331,9 @@ interface GatherCapabilityEvidenceInput {
 	 * must not reach a third-party API, and it must not write an audit row.
 	 *
 	 * So the caller asks for the Atlas verdict only when the answer is about
-	 * to be used — the Atlas surface itself, or a resolution of the whole
-	 * matrix — and every other path derives {@link CodebaseEvidence.healthy}
-	 * from rows alone. What that costs is stated on the derivation below.
+	 * to be used — the Atlas surface itself and the Atlas doors — and every
+	 * other path derives {@link CodebaseEvidence.healthy} from rows alone.
+	 * What that costs is stated on the derivation below.
 	 */
 	includeAtlasStatus?: boolean;
 }
@@ -347,11 +385,23 @@ async function resolveAtlasStatus(
  * turns an empty project into a page of blocks — plausible-looking output for a
  * question that was never answered. A throw makes the defect visible at the
  * call site instead.
+ *
+ * A structured NOT_FOUND rather than a plain error, so a door that lets it
+ * through refuses with a 404 the caller can read instead of a 500 — and NOT
+ * FOUND rather than FORBIDDEN, because telling a caller in another tenant that
+ * the project exists is itself a leak.
  */
-export class CapabilityEvidenceUnavailableError extends Error {
+export class CapabilityEvidenceUnavailableError extends ORPCError<
+	"NOT_FOUND",
+	undefined
+> {
+	/** Kept for logs; never part of the message a caller sees. */
+	readonly projectId: string;
+
 	constructor(projectId: string) {
-		super(`No project resolved for capability evidence: ${projectId}`);
+		super("NOT_FOUND", { message: "Project not found." });
 		this.name = "CapabilityEvidenceUnavailableError";
+		this.projectId = projectId;
 	}
 }
 
@@ -388,6 +438,10 @@ export async function gatherCapabilityEvidence({
 			scanConfig: {
 				select: { semgrepEnabled: true, gitHistoryEnabled: true },
 			},
+			// The project half of "will anything ever index this repository".
+			// Nested for the same reason as the scan config: a one-row join the
+			// gather pays nothing extra for. An absent row is the default, off.
+			ragSettings: { select: { codeSearchEnabled: true } },
 		},
 	});
 
@@ -405,9 +459,10 @@ export async function gatherCapabilityEvidence({
 		jobGroups,
 		contextGroups,
 		usableDocumentGroups,
-		documentsInFlight,
+		documentsInFlightByType,
 		scanGroups,
-		canEditProjectSettings,
+		viewerCanEditProjectSettings,
+		viewerCanUpdateProject,
 		atlasStatus,
 	] = await Promise.all([
 		// Every index row for the project, which is at most a handful — the
@@ -417,7 +472,12 @@ export async function gatherCapabilityEvidence({
 		// flight (transient).
 		db.projectCodeIndex.findMany({
 			where: { projectId },
-			select: { status: true, lastFullIndexAt: true },
+			select: {
+				status: true,
+				lastFullIndexAt: true,
+				updatedAt: true,
+				repositoryIntegrationId: true,
+			},
 		}),
 		// NOT filtered to ACTIVE, unlike the readiness-style "is a codebase
 		// attached" count. A lapsed credential is a repository that is still
@@ -427,7 +487,7 @@ export async function gatherCapabilityEvidence({
 		// with no action for them.
 		db.projectRepositoryIntegration.findMany({
 			where: { projectId },
-			select: { status: true, updatedAt: true },
+			select: { id: true, status: true, updatedAt: true },
 			orderBy: { updatedAt: "desc" },
 		}),
 		// Three job-backed snapshots in one read. Grouping by (kind, status)
@@ -453,6 +513,9 @@ export async function gatherCapabilityEvidence({
 				type: { in: [...HUMAN_SUPPLIED_CONTEXT_TYPES] },
 			},
 			_count: { _all: true },
+			// The fallback clock for a source in flight with no job row —
+			// see `context.processing` below.
+			_max: { updatedAt: true },
 		}),
 		// Active documents that have come out of a run AND hold something — see
 		// DOCUMENT_STATUSES_THAT_COUNT for why those are one condition and not
@@ -472,27 +535,34 @@ export async function gatherCapabilityEvidence({
 		// carry the clock and the last outcome, but a generation started before
 		// those rows existed has no job to report it — and a document sitting
 		// in QUEUED or GENERATING is work in flight from the user's side
-		// whether or not anything recorded a heartbeat for it.
-		db.projectDocument.count({
+		// whether or not anything recorded a heartbeat for it. By type, because
+		// a generator whose source is one of these is waiting, not missing one.
+		db.projectDocument.findMany({
 			where: {
 				projectId,
 				isActive: true,
 				status: { in: [...IN_FLIGHT_DOCUMENT_STATUSES] },
 			},
+			select: { type: true },
+			distinct: ["type"],
 		}),
 		// Project-scoped scans only — see the `scan` field below for what that
 		// leaves out. No heartbeat column exists on this model, so `startedAt`
-		// is the progress clock and creation time orders the outcomes.
+		// is the progress clock (creation time for a run that never started)
+		// and creation time orders the outcomes.
 		db.projectScan.groupBy({
 			by: ["status"],
 			where: { projectId, targetType: "PROJECT" },
 			_count: { _all: true },
 			_max: { createdAt: true, completedAt: true, startedAt: true },
 		}),
-		// Resolved once for the viewer rather than per rule. This is the
-		// HIGHER of the two permissions in play: resolving a gate needs only
-		// project access, while clearing one by re-running a job needs this,
-		// so an ordinary member routinely sees a block they cannot clear.
+		// Resolved once for the viewer rather than per rule. These are the
+		// HIGHER permissions in play: resolving a gate needs only project
+		// access, while clearing one by re-running a job needs whichever of
+		// these that job's own door checks — settings-edit to re-index a
+		// repository, project-update to start a scan — so an ordinary member
+		// routinely sees a block they cannot clear.
+		canEditProjectSettings(projectId, userId),
 		canEditProject(projectId, userId),
 		// Asked for only when the caller says it will use the answer, because
 		// this one reaches the network and can write — see `includeAtlasStatus`.
@@ -522,8 +592,18 @@ export async function gatherCapabilityEvidence({
 	const codeIndexFailed = codeIndexes.some(
 		(index) => index.status === "FAILED",
 	);
-	const codeIndexInFlight = codeIndexes.some((index) =>
+	const inFlightIndexes = codeIndexes.filter((index) =>
 		CODE_INDEX_IN_FLIGHT_STATUSES.has(index.status),
+	);
+	const codeIndexInFlight = inFlightIndexes.length > 0;
+
+	const lastIndexCompletedAt = codeIndexes.reduce<Date | null>(
+		(latest, index) =>
+			index.lastFullIndexAt &&
+			(latest === null || index.lastFullIndexAt > latest)
+				? index.lastFullIndexAt
+				: latest,
+		null,
 	);
 
 	// Prefer an ACTIVE integration when several are attached, else the most
@@ -561,11 +641,29 @@ export async function gatherCapabilityEvidence({
 		);
 
 	const indexingJob = jobSnapshot("CODE_INDEXING");
+
+	// An index row still marked in flight with no job row RUNNING is the
+	// signature of a worker that died mid-run. The watchdog closes the JOB
+	// row, but only the workflow's own failure activity closes the INDEX row,
+	// and a dead worker never runs it — so the row stays INDEXING forever.
+	//
+	// Two things follow. If the job that was driving it has since FAILED,
+	// that is the answer: the run is over and it failed, whatever the index
+	// row still says. Otherwise the index row's own last write is the clock,
+	// so the run can at least be measured and called stalled — a run with no
+	// readable clock is never declared dead, which here would mean Processing
+	// for good.
+	const orphanedInFlight = codeIndexInFlight && !indexingJob.running;
+	const orphanFailed = orphanedInFlight && indexingJob.lastRunFailed;
 	const indexing: JobSnapshot = {
 		// The index row's own state counts alongside the job's: an index that
 		// is INDEXING with no job row is still an index in flight.
-		running: indexingJob.running || codeIndexInFlight,
-		lastProgressAt: indexingJob.lastProgressAt,
+		running: indexingJob.running || (codeIndexInFlight && !orphanFailed),
+		lastProgressAt:
+			indexingJob.lastProgressAt ??
+			(orphanedInFlight && !orphanFailed
+				? latestDate(inFlightIndexes.map((index) => index.updatedAt))
+				: null),
 		lastRunFailed: indexingJob.lastRunFailed || codeIndexFailed,
 	};
 
@@ -605,6 +703,23 @@ export async function gatherCapabilityEvidence({
 		!indexing.lastRunFailed &&
 		atlasStatus !== "FAILED";
 
+	// What a codebase retry re-indexes: the repository whose index is the
+	// problem — failed, or stuck in flight — and failing that the one the
+	// gate reports on. Never all of them: a retry is a full rebuild, and
+	// multiplying it across repositories nobody asked about is expensive. A
+	// row with no integration belongs to the legacy path, which the re-index
+	// door cannot target, so it names nothing.
+	const troubledIndex = codeIndexes.find(
+		(index) =>
+			index.repositoryIntegrationId !== null &&
+			(index.status === "FAILED" ||
+				CODE_INDEX_IN_FLIGHT_STATUSES.has(index.status)),
+	);
+	const retryTargetId =
+		troubledIndex?.repositoryIntegrationId ??
+		reportedIntegration?.id ??
+		null;
+
 	// ── Context ──────────────────────────────────────────────────────────────
 
 	let contextTotal = 0;
@@ -612,6 +727,9 @@ export async function gatherCapabilityEvidence({
 	let contextProduct = 0;
 	let hasFailedSource = false;
 	let contextExtracting = 0;
+	let contextExtractingSince: Date | null = null;
+	let contextTechnicalInFlight = 0;
+	let contextProductInFlight = 0;
 
 	for (const group of contextGroups) {
 		const count = group._count._all;
@@ -625,6 +743,19 @@ export async function gatherCapabilityEvidence({
 			)
 		) {
 			contextExtracting += count;
+			contextExtractingSince = latestDate([
+				contextExtractingSince,
+				group._max.updatedAt,
+			]);
+			const side = classifyContext(
+				group.type,
+				group.knowledgeBaseSourceCategory,
+			);
+			if (side === "technical") {
+				contextTechnicalInFlight += count;
+			} else if (side === "product") {
+				contextProductInFlight += count;
+			}
 			continue;
 		}
 		if (group.extractionStatus !== CONTEXT_INDEXED) {
@@ -636,23 +767,13 @@ export async function gatherCapabilityEvidence({
 
 		contextTotal += count;
 
-		// A link says what it is; every other kind is classified by its kind
-		// alone. Kinds that could honestly be either — an uploaded file, an
-		// image, a spreadsheet, a synced integration — are counted in the
-		// total and in neither split, so `technical + product` is a lower
-		// bound on `total` rather than a partition of it.
-		if (group.type === "LINK") {
-			const category = group.knowledgeBaseSourceCategory ?? "";
-			if (TECHNICAL_LINK_CATEGORIES.has(category)) {
-				contextTechnical += count;
-			} else if (PRODUCT_LINK_CATEGORIES.has(category)) {
-				contextProduct += count;
-			}
-			continue;
-		}
-		if (TECHNICAL_CONTEXT_TYPES.has(group.type)) {
+		const side = classifyContext(
+			group.type,
+			group.knowledgeBaseSourceCategory,
+		);
+		if (side === "technical") {
 			contextTechnical += count;
-		} else if (PRODUCT_CONTEXT_TYPES.has(group.type)) {
+		} else if (side === "product") {
 			contextProduct += count;
 		}
 	}
@@ -663,10 +784,17 @@ export async function gatherCapabilityEvidence({
 	return {
 		projectId,
 
-		viewer: { canEditProjectSettings },
+		viewer: {
+			canEditProjectSettings: viewerCanEditProjectSettings,
+			canUpdateProject: viewerCanUpdateProject,
+		},
 
 		codebase: {
 			connected: codebaseConnected,
+			indexingEnabled: isCodeIndexingEnabled(
+				project.ragSettings?.codeSearchEnabled,
+			),
+			indexingAvailable: isCodeIndexingDeploymentEnabled(),
 			usable: codebaseUsable,
 			healthy: codebaseHealthy,
 			// Null means "no repository at all", which is a different state
@@ -678,6 +806,11 @@ export async function gatherCapabilityEvidence({
 					| RepositoryIntegrationStatus
 					| undefined) ?? null,
 			indexing,
+			lastIndexCompletedAt,
+			retryTargetId,
+			// Only ever true when the caller asked Atlas; see
+			// `includeAtlasStatus` for why that is not every caller.
+			graphReady: atlasStatus === "READY",
 		},
 
 		context: {
@@ -686,9 +819,14 @@ export async function gatherCapabilityEvidence({
 			product: contextProduct,
 			processing: {
 				// A source sitting in PENDING or EXTRACTING is work in flight
-				// whether or not a job row was recorded for it.
+				// whether or not a job row was recorded for it — and with no
+				// job row running, the source's own last write is the only
+				// clock there is. Without it that source could never be called
+				// stalled, and would read as Processing for good.
 				running: contextJob.running || contextExtracting > 0,
-				lastProgressAt: contextJob.lastProgressAt,
+				lastProgressAt:
+					contextJob.lastProgressAt ??
+					(contextExtracting > 0 ? contextExtractingSince : null),
 				lastRunFailed: contextJob.lastRunFailed,
 			},
 			// Distinct from `processing.lastRunFailed`: that one asks whether
@@ -696,14 +834,20 @@ export async function gatherCapabilityEvidence({
 			// is currently sitting in a failed state and therefore unusable.
 			// A project can have both, or either alone.
 			hasFailedSource,
+			technicalInFlight: contextTechnicalInFlight,
+			productInFlight: contextProductInFlight,
 		},
 
 		documents: {
 			usableTypes: new Set(
 				usableDocumentGroups.map((group) => String(group.type)),
 			),
+			inFlightTypes: new Set(
+				documentsInFlightByType.map((row) => String(row.type)),
+			),
 			generating: {
-				running: documentJob.running || documentsInFlight > 0,
+				running:
+					documentJob.running || documentsInFlightByType.length > 0,
 				lastProgressAt: documentJob.lastProgressAt,
 				lastRunFailed: documentJob.lastRunFailed,
 			},
@@ -734,10 +878,15 @@ export async function gatherCapabilityEvidence({
 							orderedAt:
 								group._max.completedAt ?? group._max.createdAt,
 							// No heartbeat column on this model, so staleness
-							// is measured from when the run started. A scan
-							// that has not started yet has no clock at all,
-							// and an unknown age is never treated as death.
-							progressAt: group._max.startedAt,
+							// is measured from when the run started — or, for
+							// one that never started, from when it was
+							// created. A PENDING row whose workflow never
+							// began has no start time at all, and treating
+							// that as "no clock" left it Processing forever
+							// and every later scan refused behind it. The
+							// sweep closes such rows on the same clock.
+							progressAt:
+								group._max.startedAt ?? group._max.createdAt,
 						})),
 						{
 							running: ["PENDING", "RUNNING"],
@@ -746,12 +895,6 @@ export async function gatherCapabilityEvidence({
 						},
 					)),
 		},
-
-		// v1 release notes are codebase-driven, so this mirrors the codebase's
-		// durable half rather than asking its own question. A connected project
-		// management system may enrich what gets written but never substitutes
-		// for the code, so nothing is read for it here.
-		releaseNotes: { codebaseUsable },
 
 		// `sufficiency` is omitted, not defaulted. No generating capability
 		// produces the signal yet, and an empty object would look like an

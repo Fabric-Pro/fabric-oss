@@ -12,12 +12,13 @@
  * identical each time. One query above them all, selected from by key, is the
  * only shape that stays honest as the number of gated surfaces grows.
  *
- * The read deliberately asks for the **whole** matrix rather than passing the
- * procedure's `surface` filter. Narrowing per surface reads like an
- * optimisation and is the opposite of one here: a page showing two surfaces
- * would issue two requests for overlapping data, which is precisely the
- * per-component fetching the provider exists to prevent. The matrix is small
- * and resolves in a fixed number of aggregate queries server-side.
+ * The read asks, in ONE request, for exactly the surfaces a project page
+ * mounts — see {@link MOUNTED_SURFACES}. Not one request per surface, which is
+ * the per-component fetching the provider exists to prevent; and not the whole
+ * matrix either. The whole matrix included the Atlas gates, and resolving those
+ * reaches the git provider over HTTP, may refresh a credential and can write an
+ * audit row — on every project page load and after every mutation, for two
+ * gates no page renders.
  *
  * ## Using a gated component without the provider is a bug, not a fallback
  *
@@ -37,29 +38,60 @@ import {
 	useCallback,
 	useContext,
 	useMemo,
+	useState,
 } from "react";
 import {
 	buildCapabilityGateView,
 	type CapabilityGateView,
+	type GateDestination,
 } from "../../lib/capability-gate-view";
+import { useCodebaseRetry } from "./codebase-retry";
+import { type GateLink, gateLinkFor } from "./gate-destinations";
+import {
+	readSessionDismissals,
+	sessionDismissalKey,
+	writeSessionDismissals,
+} from "./session-dismissals";
 
 /**
  * How long a dismissal lasts.
  *
- * `session` is absent on purpose. The shared constant in the API package still
- * lists it, but the write path throws on it and the procedure's input schema
- * refuses it — a control built from that constant would ship a button that
- * always 400s. A session-length dismissal is client state that dies with the
- * tab; it never becomes a stored row.
+ * `session` is handled here and never sent: it lives in `sessionStorage` and
+ * dies with the tab (see `session-dismissals.ts`). The other four are stored
+ * server-side. First in the list because it is the lightest commitment.
  */
-export type SnoozeDuration = "1d" | "7d" | "30d" | "forever";
+export type SnoozeDuration = "session" | "1d" | "7d" | "30d" | "forever";
 
 export const SNOOZE_DURATIONS: readonly SnoozeDuration[] = [
+	"session",
 	"1d",
 	"7d",
 	"30d",
 	"forever",
 ];
+
+/**
+ * The surfaces a project page mounts a gate on: the document dialog, the
+ * Context tab, the Security tab, and the newsletter settings. Atlas is absent
+ * on purpose — it keeps its own status UI, and its gates are the expensive
+ * ones to resolve.
+ */
+const MOUNTED_SURFACES = [
+	"documents",
+	"context",
+	"security",
+	"release-notes",
+] as const;
+
+/**
+ * How often to re-read while something is Processing.
+ *
+ * A gate only changes when project state does, and a finishing job changes it
+ * without any mutation on this page — so without polling, "Indexing your
+ * repository" stayed up until the window was refocused. Only while a gate is
+ * actually Processing: an idle page polls nothing.
+ */
+const PROCESSING_REFETCH_MS = 5_000;
 
 interface CapabilityGatesValue {
 	projectId: string;
@@ -76,6 +108,13 @@ interface CapabilityGatesValue {
 	gates: ReadonlyMap<string, CapabilityGate>;
 	/** How many warnings this viewer has silenced, for a restore affordance. */
 	suppressedCount: number;
+	/** Whether this viewer dismissed this gate's warning for the session. */
+	isSessionDismissed: (gate: CapabilityGate) => boolean;
+	/** Where a remedy button goes — one answer for every banner. */
+	linkFor: (target: GateDestination) => GateLink | null;
+	/** Re-index the repository a codebase gate names, or `undefined`. */
+	codebaseRetryFor: (gate: CapabilityGate) => (() => void) | undefined;
+	codebaseRetrying: boolean;
 	suppress: (args: {
 		capabilityKey: string;
 		reasonKey: string;
@@ -108,7 +147,13 @@ export function CapabilityGatesProvider({
 	projectId: string;
 	children: ReactNode;
 }) {
-	const { organizationId } = useOrganizationContext();
+	const { organizationId, basePath } = useOrganizationContext();
+	const codebaseRetry = useCodebaseRetry(projectId);
+	const linkFor = useCallback(
+		(target: GateDestination) =>
+			gateLinkFor(target, { projectId, basePath }),
+		[projectId, basePath],
+	);
 
 	/**
 	 * The organization belongs in the key but NOT in the input.
@@ -125,9 +170,47 @@ export function CapabilityGatesProvider({
 
 	const { data, isLoading, refetch } = useQuery({
 		queryKey,
-		queryFn: () => orpcClient.capabilities.gates({ projectId }),
+		queryFn: () =>
+			orpcClient.capabilities.gates({
+				projectId,
+				surfaces: [...MOUNTED_SURFACES],
+			}),
 		staleTime: 30_000,
+		refetchInterval: (query) =>
+			query.state.data?.gates.some((gate) => gate.state === "PROCESSING")
+				? PROCESSING_REFETCH_MS
+				: false,
 	});
+
+	// Session dismissals: read synchronously on the first render, so a
+	// dismissed warning never paints for a frame before disappearing, and
+	// re-read if the project changes under the provider. The read is
+	// storage-safe on the server and in a private window alike.
+	const [sessionDismissed, setSessionDismissed] = useState<
+		ReadonlySet<string>
+	>(() => readSessionDismissals(projectId));
+	const [dismissalsProjectId, setDismissalsProjectId] = useState(projectId);
+	if (dismissalsProjectId !== projectId) {
+		setDismissalsProjectId(projectId);
+		setSessionDismissed(readSessionDismissals(projectId));
+	}
+	const updateSessionDismissed = useCallback(
+		(update: (current: Set<string>) => void) => {
+			setSessionDismissed((previous) => {
+				const next = new Set(previous);
+				update(next);
+				writeSessionDismissals(projectId, next);
+				return next;
+			});
+		},
+		[projectId],
+	);
+	const isSessionDismissed = useCallback(
+		(gate: CapabilityGate) =>
+			gate.state === "WARNING" &&
+			sessionDismissed.has(sessionDismissalKey(gate)),
+		[sessionDismissed],
+	);
 
 	const gates = useMemo(() => {
 		const map = new Map<string, CapabilityGate>();
@@ -141,7 +224,7 @@ export function CapabilityGatesProvider({
 		mutationFn: (args: {
 			capabilityKey: string;
 			reasonKey: string;
-			duration: SnoozeDuration;
+			duration: Exclude<SnoozeDuration, "session">;
 		}) =>
 			orpcClient.capabilities.suppressWarning({
 				projectId,
@@ -164,13 +247,12 @@ export function CapabilityGatesProvider({
 	});
 
 	const restoreMutation = useMutation({
-		// Both fields or neither: the procedure targets one warning only when it
-		// is given a capability AND a reason, and falls back to clearing the
-		// whole project otherwise.
-		mutationFn: (target?: RestoreTarget) =>
+		// One call for any number of warnings: the procedure takes the list
+		// and rewrites the column once. With no list it clears the project.
+		mutationFn: (targets?: readonly RestoreTarget[]) =>
 			orpcClient.capabilities.restoreWarnings({
 				projectId,
-				...(target ?? {}),
+				...(targets ? { targets: [...targets] } : {}),
 			}),
 		onSettled: () => {
 			void refetch();
@@ -182,27 +264,55 @@ export function CapabilityGatesProvider({
 			capabilityKey: string;
 			reasonKey: string;
 			duration: SnoozeDuration;
-		}) => suppressMutation.mutate(args),
-		[suppressMutation],
+		}) => {
+			if (args.duration === "session") {
+				const gate = gates.get(args.capabilityKey);
+				if (gate && gate.reasonKey === args.reasonKey) {
+					updateSessionDismissed((keys) => {
+						keys.add(sessionDismissalKey(gate));
+					});
+				}
+				return;
+			}
+			suppressMutation.mutate({
+				capabilityKey: args.capabilityKey,
+				reasonKey: args.reasonKey,
+				duration: args.duration,
+			});
+		},
+		[gates, suppressMutation, updateSessionDismissed],
 	);
 
 	const restore = useCallback(
 		(targets?: readonly RestoreTarget[]) => {
+			// Session dismissals come back too, from the same control — the
+			// viewer cannot tell the two kinds apart and should not have to.
+			updateSessionDismissed((keys) => {
+				for (const key of [...keys]) {
+					const inScope =
+						!targets ||
+						targets.some((target) =>
+							key.startsWith(
+								`${target.capabilityKey}:${target.reasonKey}:`,
+							),
+						);
+					if (inScope) {
+						keys.delete(key);
+					}
+				}
+			});
 			// No targets means the viewer asked for everything back, and the
-			// procedure clears the project in one call.
-			if (!targets) {
-				restoreMutation.mutate(undefined);
-				return;
-			}
-			// A scoped restore is one call per warning. There is no bulk form on
-			// the procedure, and the alternative — clearing the project because
-			// the scoped set happens to be everything on this surface — would
-			// silently undo dismissals made elsewhere.
-			for (const target of targets) {
-				restoreMutation.mutate(target);
+			// procedure clears the project. A scoped restore names its
+			// warnings, all in one call — one call each raced on the column
+			// they all rewrite and lost all but the last.
+			const stored = targets?.filter(
+				(target) => gates.get(target.capabilityKey)?.suppressed,
+			);
+			if (!stored || stored.length > 0) {
+				restoreMutation.mutate(stored);
 			}
 		},
-		[restoreMutation],
+		[gates, restoreMutation, updateSessionDismissed],
 	);
 
 	const value = useMemo<CapabilityGatesValue>(
@@ -211,15 +321,32 @@ export function CapabilityGatesProvider({
 			enabled: data?.enabled ?? false,
 			isLoading,
 			gates,
-			suppressedCount: [...gates.values()].filter((g) => g.suppressed)
-				.length,
+			suppressedCount: [...gates.values()].filter(
+				(g) => g.suppressed || isSessionDismissed(g),
+			).length,
+			isSessionDismissed,
+			linkFor,
+			codebaseRetryFor: codebaseRetry.retryFor,
+			codebaseRetrying: codebaseRetry.isRetrying,
 			suppress,
 			restore,
 			refetch: () => {
 				void refetch();
 			},
 		}),
-		[projectId, data, isLoading, gates, suppress, restore, refetch],
+		[
+			projectId,
+			data,
+			isLoading,
+			gates,
+			isSessionDismissed,
+			linkFor,
+			codebaseRetry.retryFor,
+			codebaseRetry.isRetrying,
+			suppress,
+			restore,
+			refetch,
+		],
 	);
 
 	return createElement(CapabilityGatesContext.Provider, { value }, children);
@@ -268,6 +395,10 @@ const EMPTY_VALUE: CapabilityGatesValue = {
 	isLoading: false,
 	gates: new Map(),
 	suppressedCount: 0,
+	isSessionDismissed: () => false,
+	linkFor: () => null,
+	codebaseRetryFor: () => undefined,
+	codebaseRetrying: false,
 	suppress: () => {},
 	restore: () => {},
 	refetch: () => {},
@@ -299,14 +430,15 @@ export interface CapabilityGateSelection {
 export function useCapabilityGate(
 	capabilityKey: string,
 ): CapabilityGateSelection {
-	const { gates } = useCapabilityGates();
+	const { gates, isSessionDismissed } = useCapabilityGates();
 	const gate = gates.get(capabilityKey) ?? null;
+	const dismissedForSession = gate !== null && isSessionDismissed(gate);
 
 	return useMemo(() => {
 		if (gate === null) {
 			return { gate: null, view: null, blocked: false };
 		}
-		const view = buildCapabilityGateView(gate);
+		const view = buildCapabilityGateView(gate, dismissedForSession);
 		return { gate, view, blocked: view?.blocksAction ?? false };
-	}, [gate]);
+	}, [gate, dismissedForSession]);
 }

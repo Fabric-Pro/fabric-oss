@@ -340,6 +340,10 @@ export function SlackChannelSelectorDialog({
 					input: { projectId, organizationId },
 				}),
 			});
+			// The adds above call the client directly, not through
+			// `useMutation`, so the central gate refresh never sees them
+			// (Fizzy #1930).
+			queryClient.invalidateQueries({ queryKey: ["capability-gates"] });
 
 			closingAfterSaveRef.current = true;
 			pendingSelectionsRef.current = null;

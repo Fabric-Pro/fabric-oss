@@ -10,12 +10,14 @@
  */
 
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CapabilityGateSelection } from "../useCapabilityGates";
 
 const useQueryMock = vi.fn();
 const useMutationMock = vi.fn();
 const gateRef = { current: null as CapabilityGateSelection | null };
+const { navigateMock } = vi.hoisted(() => ({ navigateMock: vi.fn() }));
 
 vi.mock("@tanstack/react-query", () => ({
 	useQuery: (...args: unknown[]) => useQueryMock(...args),
@@ -58,25 +60,41 @@ vi.mock("next-intl", () => ({
 
 // The gate itself, swapped per test. The banner reads the same hook, so one
 // stub drives both halves of the wiring.
-vi.mock("../useCapabilityGates", () => ({
-	useCapabilityGate: () =>
-		gateRef.current ?? {
-			gate: null,
-			view: null,
-			blocked: false,
-		},
-	// `gates` and `restore` are read by the restore control this page also
-	// mounts; `suppress` by the banner's dismiss menu. An empty map means
-	// nothing has been dismissed, so the restore control renders nothing.
-	useCapabilityGates: () => ({
-		gates: new Map(),
-		suppress: vi.fn(),
-		restore: vi.fn(),
-	}),
-	// The dismiss menu maps over this, so a mock that omitted it would fail on
-	// the one state that renders the menu — a dismissible warning.
-	SNOOZE_DURATIONS: ["1d", "7d", "30d", "forever"] as const,
+vi.mock("../../settings-tab-navigation", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../settings-tab-navigation")>()),
+	navigateToProjectSettingsTab: navigateMock,
 }));
+
+vi.mock("../useCapabilityGates", async () => {
+	// The real destination mapping: the banner owns its remedy links now
+	// (Fizzy #1930), so this page renders them without supplying any.
+	const { gateLinkFor } = await import("../gate-destinations");
+	return {
+		useCapabilityGate: () =>
+			gateRef.current ?? {
+				gate: null,
+				view: null,
+				blocked: false,
+			},
+		// `gates` and `restore` are read by the restore control this page also
+		// mounts; `suppress` by the banner's dismiss menu. An empty map means
+		// nothing has been dismissed, so the restore control renders nothing.
+		useCapabilityGates: () => ({
+			projectId: "proj-1",
+			gates: new Map(),
+			suppress: vi.fn(),
+			restore: vi.fn(),
+			isSessionDismissed: () => false,
+			linkFor: (target: Parameters<typeof gateLinkFor>[0]) =>
+				gateLinkFor(target, { projectId: "proj-1", basePath: "/app" }),
+			codebaseRetryFor: () => undefined,
+			codebaseRetrying: false,
+		}),
+		// The dismiss menu maps over this, so a mock that omitted it would fail
+		// on the one state that renders the menu — a dismissible warning.
+		SNOOZE_DURATIONS: ["session", "1d", "7d", "30d", "forever"] as const,
+	};
+});
 
 vi.mock("../../security/ScanConfigCard", () => ({
 	ScanConfigCard: () => <div data-testid="config-card" />,
@@ -180,7 +198,12 @@ describe("security page — capability gate wiring", () => {
 				ctaTarget: null,
 				blocksAction: false,
 				dismissible: true,
-				retry: { supported: true, permitted: true, available: true },
+				retry: {
+					supported: true,
+					permitted: true,
+					available: true,
+					targetId: null,
+				},
 			},
 			blocked: false,
 		};
@@ -192,34 +215,44 @@ describe("security page — capability gate wiring", () => {
 		).toBeInTheDocument();
 	});
 
-	it("offers no retry for a repository problem this page cannot clear", () => {
-		// Re-running the scan would fail the same way, so the banner explains
-		// and stops rather than offering a button that cannot help.
+	it("renders 'Connect a repository' and sends the viewer to the repository settings", async () => {
+		// Rewritten in the Fizzy #1930 review round. The test here pinned the
+		// ABSENCE of any codebase affordance on this page, and the page passed
+		// no destination either — so "No repository connected" rendered with
+		// nothing to press. The banner owns its remedy links now.
 		gateRef.current = {
 			gate: null,
 			view: {
 				capabilityKey: "security.run-scan",
 				state: "HARD_BLOCK",
-				reasonKey: "codebase.indexing-failed",
+				reasonKey: "codebase.not-connected",
 				tone: "destructive",
-				title: "reason.codebase.indexing-failed.title",
-				body: "reason.codebase.indexing-failed.body",
-				params: { dependency: "a completed index of the repository" },
-				ctaLabel: "remedy.retryJob",
-				ctaKind: "retry",
-				ctaTarget: null,
+				title: "reason.codebase.not-connected.title",
+				body: "reason.codebase.not-connected.body",
+				params: { dependency: "a connected repository" },
+				ctaLabel: "remedy.connectRepository",
+				ctaKind: "navigate",
+				ctaTarget: "repository",
 				blocksAction: true,
 				dismissible: false,
-				retry: { supported: true, permitted: true, available: true },
+				retry: {
+					supported: false,
+					permitted: false,
+					available: false,
+					targetId: null,
+				},
 			},
 			blocked: true,
 		};
 		render(<SecurityAccessibilityPage projectId="proj-1" />);
 
 		expect(scanButton()).toBeDisabled();
-		expect(
-			screen.queryByRole("button", { name: /remedy\.retryJob/ }),
-		).not.toBeInTheDocument();
+		await userEvent.click(
+			screen.getByRole("button", { name: "remedy.connectRepository" }),
+		);
+		expect(navigateMock).toHaveBeenCalledWith("proj-1", "development", {
+			anchorId: "project-repository-settings",
+		});
 	});
 
 	it("adds no element to the page when nothing is gated", () => {

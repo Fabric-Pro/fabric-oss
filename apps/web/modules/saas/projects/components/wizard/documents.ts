@@ -178,3 +178,32 @@ export function mergeSelectedWithRecommendations(
 	// User can generate documents later from the project page
 	return [];
 }
+
+/**
+ * Match the documents a batch generation started back to the selections that
+ * asked for them.
+ *
+ * The server returns created documents in request order, but minus any type
+ * the capability gate refused (Fizzy #1930) — so zipping against the full
+ * selection would hand every document after a skipped one the wrong type's
+ * title and description. The skipped types are dropped from the selection
+ * first, which restores the one-to-one order.
+ */
+export function alignBatchDocuments(
+	documents: readonly DocumentSelection[],
+	started: readonly { id: string }[],
+	skipped: readonly { type: string }[],
+): Record<string, DocumentSelection> {
+	const skippedTypes = new Set(skipped.map((entry) => entry.type));
+	const requested = documents.filter(
+		(doc) => doc.selected && !skippedTypes.has(doc.type),
+	);
+	const byId: Record<string, DocumentSelection> = {};
+	started.forEach((doc, index) => {
+		const meta = requested[index];
+		if (meta) {
+			byId[doc.id] = meta;
+		}
+	});
+	return byId;
+}

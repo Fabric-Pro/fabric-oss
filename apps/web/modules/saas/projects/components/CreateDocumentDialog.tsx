@@ -459,10 +459,21 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 	const generationGate = useCapabilityGate(
 		CAPABILITY_BY_DOCUMENT_TYPE[type] ?? "",
 	);
+	// Text pasted into this dialog's own source box, used as context, IS the
+	// source a "no source" soft block asks for — the server waives that block
+	// for such a request, so the dialog must not disable Create over it. Only a
+	// soft block: a hard block or a job still running is not answered by
+	// anything pasted here. An attached file does not count, because it is
+	// uploaded after the document exists and never reaches the generation.
+	const sourceWaivesGate =
+		hasSourceContent &&
+		!sourceFile &&
+		generationGate.view?.state === "SOFT_BLOCK";
 	// Only AI generation is gated. Creating the document by hand, or keeping an
 	// uploaded source as-is, needs none of the sources the gate is about — so
 	// blocking those would take away the very thing someone does to satisfy it.
-	const generationBlocked = generateWithAI && generationGate.blocked;
+	const generationBlocked =
+		generateWithAI && generationGate.blocked && !sourceWaivesGate;
 
 	const titleErrorId = useId();
 	const sourceErrorId = useId();
@@ -1221,28 +1232,17 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 				 */}
 				{generateWithAI && (
 					<>
-						<CapabilityGateBanner
-							capabilityKey={
-								CAPABILITY_BY_DOCUMENT_TYPE[type] ?? ""
-							}
-							/*
-							 * `?tab=<id>`, not `/contexts` or `/documents`.
-							 * Those subpaths exist only as `[contextId]` and
-							 * `[documentId]` routes — there is no index page
-							 * under either, so the bare path 404s. Context and
-							 * Documents are tabs on the project page, and the
-							 * deep-link param is how every other cross-page CTA
-							 * reaches one. Both remedy links were dead on
-							 * arrival; caught on staging (Fizzy #1930).
-							 */
-							hrefFor={(target) =>
-								target === "context"
-									? `${basePath}/projects/${projectId}?tab=context`
-									: target === "documents"
-										? `${basePath}/projects/${projectId}?tab=documents`
-										: null
-							}
-						/>
+						{/*
+						 * Not while pasted text answers the block — the banner
+						 * would ask for a source the person is looking at.
+						 */}
+						{!sourceWaivesGate && (
+							<CapabilityGateBanner
+								capabilityKey={
+									CAPABILITY_BY_DOCUMENT_TYPE[type] ?? ""
+								}
+							/>
+						)}
 						{/*
 						 * The banner can dismiss a warning — including "do not show
 						 * again for this project" — so the way back has to live on the

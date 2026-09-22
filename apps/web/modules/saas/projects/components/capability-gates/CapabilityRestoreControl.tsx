@@ -43,13 +43,16 @@ export function CapabilityRestoreControl({
 	className?: string;
 }) {
 	const t = useTranslations("projects.capabilityGates");
-	const { gates, restore } = useCapabilityGates();
+	const { gates, restore, isSessionDismissed } = useCapabilityGates();
 	const countId = useId();
 
 	const scope = capabilityKeys ? new Set(capabilityKeys) : null;
 	const targets: RestoreTarget[] = [];
 	for (const gate of gates.values()) {
-		if (!gate.suppressed || gate.reasonKey === null) {
+		// Dismissed for a duration (stored) or for this session (not stored) —
+		// one control brings both back.
+		const dismissed = gate.suppressed || isSessionDismissed(gate);
+		if (!dismissed || gate.reasonKey === null) {
 			continue;
 		}
 		if (scope && !scope.has(gate.capabilityKey)) {

@@ -1481,6 +1481,23 @@ export async function canEditProject(
 }
 
 /**
+ * Returns `true` if `userId` may change `projectId`'s settings, matching the
+ * authorization paths of `requireProjectPermission(PROJECT_SETTINGS_EDIT)` —
+ * the permission re-indexing a repository is checked against. A higher bar
+ * than {@link canEditProject}: an ordinary editor holds that one and not this.
+ */
+export async function canEditProjectSettings(
+	projectId: string,
+	userId: string,
+): Promise<boolean> {
+	return projectPermissionHolds(
+		projectId,
+		userId,
+		Permissions.PROJECT_SETTINGS_EDIT,
+	);
+}
+
+/**
  * Background counterpart of
  * `requireProjectPermission(INSTRUCTION_READ)`. Instruction proposal
  * validation uses this before touching storage so removing the proposer from

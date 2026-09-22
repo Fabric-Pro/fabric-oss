@@ -40,7 +40,6 @@ import { useTranslations } from "next-intl";
 import { useId } from "react";
 import type {
 	CapabilityGateView,
-	GateDestination,
 	GateTone,
 } from "../../lib/capability-gate-view";
 import {
@@ -100,9 +99,9 @@ const TONE_GLYPH: Record<GateTone, LucideIcon> = {
  * `aria-describedby`, never a tooltip: a disabled button leaves the tab order,
  * so a tooltip on it is unreachable by keyboard and silent to a screen reader.
  *
- * A surface that passes no `onRetry` is saying it offers no retry path at all —
- * a different statement from "you may not retry" — and renders nothing rather
- * than a button with nothing behind it.
+ * With no retry path at all — the surface passes none and the banner's own
+ * codebase re-index does not apply — nothing renders, rather than a button with
+ * nothing behind it. That is a different statement from "you may not retry".
  */
 function CapabilityGateRetryButton({
 	view,
@@ -165,6 +164,7 @@ function CapabilityGateRetryButton({
 }
 
 const DURATION_LABEL: Record<SnoozeDuration, string> = {
+	session: "dismiss.session",
 	"1d": "dismiss.oneDay",
 	"7d": "dismiss.sevenDays",
 	"30d": "dismiss.thirtyDays",
@@ -173,21 +173,24 @@ const DURATION_LABEL: Record<SnoozeDuration, string> = {
 
 export function CapabilityGateBanner({
 	capabilityKey,
-	hrefFor,
 	onRetry,
 	isRetrying,
 	className,
 }: {
 	capabilityKey: string;
-	/** Resolves an abstract destination to this project's route. */
-	hrefFor?: (target: GateDestination) => string | null;
+	/**
+	 * A retry this surface performs itself — the Security page re-running a
+	 * stalled scan. Codebase retries need none: the banner re-indexes the
+	 * repository the gate names on its own.
+	 */
 	onRetry?: () => void;
 	isRetrying?: boolean;
 	className?: string;
 }) {
 	const t = useTranslations("projects.capabilityGates");
-	const { view } = useCapabilityGate(capabilityKey);
-	const { suppress } = useCapabilityGates();
+	const { gate, view } = useCapabilityGate(capabilityKey);
+	const { suppress, linkFor, codebaseRetryFor, codebaseRetrying } =
+		useCapabilityGates();
 
 	// Available, hidden, suppressed, still loading, or the flag is off. All of
 	// them mean the page looks exactly as it does today.
@@ -196,10 +199,13 @@ export function CapabilityGateBanner({
 	}
 
 	const Glyph = TONE_GLYPH[view.tone];
-	const href =
-		view.ctaKind === "navigate" && view.ctaTarget && hrefFor
-			? hrefFor(view.ctaTarget)
+	const link =
+		view.ctaKind === "navigate" && view.ctaTarget
+			? linkFor(view.ctaTarget)
 			: null;
+	const codebaseRetry = gate ? codebaseRetryFor(gate) : undefined;
+	const retry = onRetry ?? codebaseRetry;
+	const retrying = onRetry ? isRetrying : codebaseRetrying;
 
 	return (
 		<div
@@ -250,21 +256,38 @@ export function CapabilityGateBanner({
 				{view.ctaKind === "retry" && (
 					<CapabilityGateRetryButton
 						view={view}
-						onRetry={onRetry}
-						isRetrying={isRetrying}
+						onRetry={retry}
+						isRetrying={retrying}
 					/>
 				)}
-				{href && view.ctaLabel && (
-					<Button
-						asChild
-						size="sm"
-						variant={
-							view.tone === "destructive" ? "error" : "primary"
-						}
-					>
-						<Link href={href}>{t(view.ctaLabel)}</Link>
-					</Button>
-				)}
+				{link &&
+					view.ctaLabel &&
+					("href" in link ? (
+						<Button
+							asChild
+							size="sm"
+							variant={
+								view.tone === "destructive"
+									? "error"
+									: "primary"
+							}
+						>
+							<Link href={link.href}>{t(view.ctaLabel)}</Link>
+						</Button>
+					) : (
+						<Button
+							type="button"
+							size="sm"
+							variant={
+								view.tone === "destructive"
+									? "error"
+									: "primary"
+							}
+							onClick={link.onSelect}
+						>
+							{t(view.ctaLabel)}
+						</Button>
+					))}
 			</div>
 
 			{view.dismissible && (

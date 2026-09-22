@@ -25,8 +25,9 @@
  */
 
 import { ORPCError } from "@orpc/server";
-import { isFeatureEnabled } from "@repo/database";
+import { logger } from "@repo/logs";
 import { gatherCapabilityEvidence } from "./evidence";
+import { isCapabilityGatingEnabled } from "./flag";
 import { CAPABILITY_RULES_BY_KEY } from "./registry";
 import { resolveGate } from "./resolve";
 import type { CapabilityGate } from "./types";
@@ -34,11 +35,38 @@ import type { CapabilityGate } from "./types";
 /** The states that stop work. `WARNING` explicitly does not. */
 const BLOCKING_STATES = new Set(["HARD_BLOCK", "SOFT_BLOCK", "PROCESSING"]);
 
+/**
+ * Processing reasons a door lets through, because something downstream already
+ * waits for them.
+ *
+ * A document generator whose source is itself still generating is queued by
+ * the generation workflow's own dependency wait. Refusing it here would
+ * pre-empt that queue with a message telling the person to try later, which is
+ * exactly the wait the queue exists to take off their hands.
+ */
+const WAITED_FOR_DOWNSTREAM = new Set(["documents.source-processing"]);
+
+function refuses(gate: CapabilityGate, permitSoftBlock: boolean): boolean {
+	if (!BLOCKING_STATES.has(gate.state)) {
+		return false;
+	}
+	if (gate.reasonKey !== null && WAITED_FOR_DOWNSTREAM.has(gate.reasonKey)) {
+		return false;
+	}
+	return !(permitSoftBlock && gate.state === "SOFT_BLOCK");
+}
+
 export interface AssertCapabilityInput {
 	capabilityKey: string;
 	projectId: string;
 	userId: string;
 	organizationId: string | null;
+	/**
+	 * The request carries the missing source itself, so a soft block — "add a
+	 * source" — does not apply to it. Only a soft block: a hard block or a job
+	 * still running is not answered by anything the caller could paste.
+	 */
+	permitSoftBlock?: boolean;
 }
 
 /**
@@ -60,8 +88,9 @@ export async function assertCapabilityAvailable(
 	// cannot forget it. Off means genuinely off: no evidence gathered, no
 	// refusal thrown, every procedure behaving exactly as it did before this
 	// feature existed — which is what makes the flag a rollback lever rather
-	// than a half-measure.
-	if (!(await isFeatureEnabled("CAPABILITY_GATING"))) {
+	// than a half-measure. Resolved for the project's own organization, so a
+	// per-organization rollout reaches the doors as well as the page.
+	if (!(await isCapabilityGatingEnabled(input.projectId))) {
 		return null;
 	}
 
@@ -86,7 +115,16 @@ export async function assertCapabilityAvailable(
 	});
 	const gate = resolveGate(rule, evidence, new Date());
 
-	if (BLOCKING_STATES.has(gate.state)) {
+	if (refuses(gate, input.permitSoftBlock ?? false)) {
+		// Logged at every refusal, because a refusal is the one moment the
+		// page and the server can be seen to disagree, and "why could I not
+		// run this?" is unanswerable afterwards without it.
+		logger.info("[CapabilityGate] Refused at the door", {
+			capabilityKey: gate.capabilityKey,
+			reasonKey: gate.reasonKey,
+			state: gate.state,
+			projectId: input.projectId,
+		});
 		throw new ORPCError("PRECONDITION_FAILED", {
 			message: refusalMessage(gate, rule.label),
 			data: { gate },
@@ -94,6 +132,70 @@ export async function assertCapabilityAvailable(
 	}
 
 	return gate;
+}
+
+/**
+ * Resolve several capabilities at once and return the ones that would be
+ * refused — without throwing.
+ *
+ * For a door that starts several pieces of work in one request and must not
+ * fail all of them because one cannot run: the batch document generator skips
+ * the refused types and reports them. Evidence is gathered once for the lot.
+ *
+ * `alsoInFlightTypes` are document types the SAME request is about to generate.
+ * The batch runs them in dependency order, so a PRD in the batch grounds the
+ * architecture document after it; counting them as in flight makes that a
+ * wait the workflow already performs rather than a refusal.
+ */
+export async function findRefusedCapabilities(input: {
+	capabilityKeys: readonly string[];
+	projectId: string;
+	userId: string;
+	organizationId: string | null;
+	alsoInFlightTypes: readonly string[];
+}): Promise<Array<{ gate: CapabilityGate; message: string }>> {
+	if (
+		input.capabilityKeys.length === 0 ||
+		!(await isCapabilityGatingEnabled(input.projectId))
+	) {
+		return [];
+	}
+	const gathered = await gatherCapabilityEvidence({
+		projectId: input.projectId,
+		userId: input.userId,
+		organizationId: input.organizationId,
+	});
+	const evidence = {
+		...gathered,
+		documents: {
+			...gathered.documents,
+			inFlightTypes: new Set([
+				...gathered.documents.inFlightTypes,
+				...input.alsoInFlightTypes,
+			]),
+		},
+	};
+	const now = new Date();
+	const refused: Array<{ gate: CapabilityGate; message: string }> = [];
+	for (const capabilityKey of input.capabilityKeys) {
+		const rule = CAPABILITY_RULES_BY_KEY.get(capabilityKey);
+		if (!rule) {
+			throw new Error(
+				`No capability rule registered for "${capabilityKey}".`,
+			);
+		}
+		const gate = resolveGate(rule, evidence, now);
+		if (refuses(gate, false)) {
+			logger.info("[CapabilityGate] Refused at the door", {
+				capabilityKey: gate.capabilityKey,
+				reasonKey: gate.reasonKey,
+				state: gate.state,
+				projectId: input.projectId,
+			});
+			refused.push({ gate, message: refusalMessage(gate, rule.label) });
+		}
+	}
+	return refused;
 }
 
 /**

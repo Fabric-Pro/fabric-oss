@@ -492,3 +492,26 @@ describe("First-Time Codebase Indexing Warning Suppression", () => {
 		).not.toBeInTheDocument();
 	});
 });
+
+describe("CodeSearchToggle — capability gates follow the setting (Fizzy #1930)", () => {
+	it("refreshes the gates once code search is switched", async () => {
+		// Code search decides whether a gate says "turn code search on" or
+		// "start indexing"; the gates must re-read when it moves.
+		ragGetFixture = {
+			settings: { codeSearchEnabled: false, codeSearchProvider: null },
+			featureCodeIndexingEnabled: true,
+		};
+		updateMutationFn.mockResolvedValue({});
+		const user = userEvent.setup();
+		const { queryClient } = renderToggle();
+		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+		await user.click(await findToggle());
+
+		await waitFor(() =>
+			expect(invalidate).toHaveBeenCalledWith({
+				queryKey: ["capability-gates"],
+			}),
+		);
+	});
+});

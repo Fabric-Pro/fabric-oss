@@ -23,6 +23,7 @@ const NO_RETRY: RetryAffordance = {
 	supported: false,
 	permitted: false,
 	available: false,
+	targetId: null,
 };
 
 /**
@@ -99,6 +100,13 @@ export interface StoredSuppression {
 	fingerprint: string;
 	/** ISO timestamp, or absent for "do not show again for this project". */
 	expiresAt?: string;
+	/**
+	 * When it was made and which option was chosen — the two facts anyone
+	 * asking "why didn't I see this warning?" needs first. Optional because
+	 * rows written before they were recorded carry neither.
+	 */
+	createdAt?: string;
+	duration?: string;
 }
 
 /**
@@ -140,22 +148,23 @@ export function applySuppression(
 /**
  * The fingerprint a suppression is matched against.
  *
- * Durable facts only. Deliberately NOT the gate's state or the current run's
- * status: those flip on every re-index and every retry, and a fingerprint that
- * tracked them would resurrect a warning the viewer silenced thirty seconds
- * ago — which reads as the dismissal being broken.
+ * Per rule: only the facts THAT rule reads, so a change nothing about this
+ * warning depends on — a context source added while a stale-index warning is
+ * dismissed on another page — leaves it matching. Deliberately NOT the gate's
+ * state or the current run's status: those flip on every re-index and every
+ * retry, and a fingerprint that tracked them would resurrect a warning the
+ * viewer silenced thirty seconds ago — which reads as the dismissal being
+ * broken.
+ *
+ * One function for the write path and the read path. If the two ever computed
+ * it differently, a dismissal would be stored under a value no read can match
+ * and would silently never apply.
  */
-export function dependencyFingerprint(evidence: CapabilityEvidence): string {
-	return [
-		evidence.codebase.connected ? "repo" : "no-repo",
-		evidence.codebase.usable ? "indexed" : "not-indexed",
-		evidence.codebase.integrationStatus ?? "no-integration",
-		`ctx:${evidence.context.total}`,
-		`tech:${evidence.context.technical}`,
-		`prod:${evidence.context.product}`,
-		`docs:${[...evidence.documents.usableTypes].sort().join("+") || "none"}`,
-		`desc:${evidence.descriptionLength > 0 ? "set" : "empty"}`,
-	].join("|");
+export function ruleFingerprint(
+	rule: CapabilityRule,
+	evidence: CapabilityEvidence,
+): string {
+	return rule.fingerprint(evidence).join("|");
 }
 
 /** Resolve one rule to the gate a surface renders. */
@@ -166,15 +175,27 @@ export function resolveGate(
 	suppressions: readonly StoredSuppression[] = [],
 ): CapabilityGate {
 	const verdict = rule.evaluate(evidence, now);
-	const retry: RetryAffordance = { ...NO_RETRY, ...verdict.retry };
-	// A rule knows whether a retry exists and whether one is already in flight.
-	// It does not know who is looking, and it must not: re-running an index
-	// needs a higher permission than viewing the gate does, so an ordinary
-	// member routinely meets a block they cannot clear themselves. Resolving it
-	// centrally keeps every rule from having to remember the distinction — and
-	// keeps the answer consistent when a capability is reached through a tool
-	// or the API rather than the page.
-	retry.permitted = retry.supported && evidence.viewer.canEditProjectSettings;
+	const { requires, ...offered } = verdict.retry ?? {
+		requires: "projectSettingsEdit" as const,
+	};
+	const retry: RetryAffordance = { ...NO_RETRY, ...offered };
+	// A rule knows whether a retry exists, whether one is already in flight and
+	// which door the re-run goes through. It does not know who is looking, and
+	// it must not: re-running a job needs a higher permission than viewing the
+	// gate does, so an ordinary member routinely meets a block they cannot
+	// clear themselves. Resolving it centrally keeps every rule from having to
+	// remember the distinction — and keeps the answer consistent when a
+	// capability is reached through a tool or the API rather than the page.
+	//
+	// Against the permission the re-run's own door checks, not one permission
+	// for all: a mismatch would hand some viewers an enabled button that is
+	// refused when pressed, and others a disabled one they could have used.
+	retry.permitted =
+		retry.supported &&
+		(requires === "projectUpdate"
+			? evidence.viewer.canUpdateProject
+			: evidence.viewer.canEditProjectSettings);
+	const fingerprint = ruleFingerprint(rule, evidence);
 	const gate: CapabilityGate = {
 		capabilityKey: rule.key,
 		state: verdict.state,
@@ -183,11 +204,7 @@ export function resolveGate(
 		remedy: verdict.remedy,
 		retry,
 		suppressed: false,
+		fingerprint,
 	};
-	return applySuppression(
-		gate,
-		suppressions,
-		dependencyFingerprint(evidence),
-		now,
-	);
+	return applySuppression(gate, suppressions, fingerprint, now);
 }

@@ -41,6 +41,7 @@ import { toast } from "sonner";
 import { PromptSelector } from "../../../prompts/components/PromptSelector";
 import { DocumentsList } from "../DocumentsList";
 import {
+	alignBatchDocuments,
 	type DocumentSelection,
 	makePreloadedDocs,
 	mergeSelectedWithRecommendations,
@@ -301,18 +302,22 @@ export function DocumentGenerationStep({
 		orpc.projects.documents.batchGenerate.mutationOptions({
 			onSuccess: (data) => {
 				toast.success("Document generation started");
+				// Types the capability gate refused are skipped, not failed
+				// (Fizzy #1930): say which, and why, rather than letting them
+				// silently not appear.
+				for (const skipped of data.skipped) {
+					toast.warning(`${skipped.type} was not generated`, {
+						description: skipped.message,
+					});
+				}
 				setIsGenerating(true);
-				// Build an ID -> metadata map by zipping the returned IDs with the
-				// selected docs (server returns in the same order as requested)
-				const selected = documents.filter((d) => d.selected);
-				const idMap: Record<string, DocumentSelection> = {};
-				data.documents.forEach((doc, idx) => {
-					const meta = selected[idx];
-					if (meta) {
-						idMap[doc.id] = meta;
-					}
-				});
-				setDocMetaById(idMap);
+				setDocMetaById(
+					alignBatchDocuments(
+						documents,
+						data.documents,
+						data.skipped,
+					),
+				);
 				// Start polling for progress - extract IDs from response
 				const documentIds = data.documents.map((doc) => doc.id);
 				startProgressPolling(documentIds);

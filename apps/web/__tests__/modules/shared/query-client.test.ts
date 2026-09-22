@@ -65,3 +65,41 @@ describe("createQueryClient — capability gate freshness", () => {
 		expect(client.getQueryState(other)?.isInvalidated).toBe(false);
 	});
 });
+
+describe("createQueryClient — a refusal at a door refreshes the gates", () => {
+	async function failMutation(client: QueryClient, code: string) {
+		await client
+			.getMutationCache()
+			.build(client, {
+				mutationFn: async () => {
+					throw Object.assign(new Error("refused"), { code });
+				},
+			})
+			.execute(undefined)
+			.catch(() => {});
+	}
+
+	it("invalidates the gate matrix after a PRECONDITION_FAILED", async () => {
+		// The one moment the page is provably stale: it offered an action the
+		// server just refused (Fizzy #1930).
+		const client = createQueryClient();
+		const gates = mountGateQuery(client);
+		await client.getQueryCache().find({ queryKey: gates.queryKey })
+			?.promise;
+
+		await failMutation(client, "PRECONDITION_FAILED");
+
+		expect(client.getQueryState(gates.queryKey)?.isInvalidated).toBe(true);
+	});
+
+	it("does not refresh on any other failure", async () => {
+		const client = createQueryClient();
+		const gates = mountGateQuery(client);
+		await client.getQueryCache().find({ queryKey: gates.queryKey })
+			?.promise;
+
+		await failMutation(client, "INTERNAL_SERVER_ERROR");
+
+		expect(client.getQueryState(gates.queryKey)?.isInvalidated).toBe(false);
+	});
+});

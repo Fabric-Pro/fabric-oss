@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/server";
 import {
 	deleteOpenProjectScanFindings,
+	failStaleProjectScans,
 	getProjectScanConfig,
 	hasActiveScan,
 	hasProjectAccess,
@@ -12,6 +13,8 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { assertCapabilityAvailable } from "../../../capabilities/assert";
+import { STALL_MINUTES_BY_SOURCE } from "../../../capabilities/thresholds";
 import { startProjectScan } from "./lib/start-scan";
 
 export const triggerScanProcedure = tenantProtectedProcedure
@@ -87,6 +90,34 @@ export const triggerScanProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// A project scan the gate calls stalled is closed before anything else
+		// looks at it — the dedupe below, and the gate itself. Without this the
+		// "Try again" on a stalled scan refused itself: the gate it is meant to
+		// clear re-read the same stalled row and said no, and the dedupe skipped
+		// the branch as already scanning, until the periodic sweep caught up.
+		//
+		// Closed on the server's own clock, with the same window the gate uses,
+		// so a row is only ever closed because it IS past that window — never
+		// because a client said it looked stuck. Every trigger does this, not
+		// only a retry: a stalled row blocks a new scan whichever button asked.
+		if (projectScope) {
+			await failStaleProjectScans({
+				staleMinutes: STALL_MINUTES_BY_SOURCE.projectScan,
+				projectId,
+			});
+
+			// Once for the whole request, before any branch starts. Each branch's
+			// PENDING row is a scan in flight to the gate, so asserting per branch
+			// — as `startProjectScan` does for its other callers — refused the
+			// second branch because of the first.
+			await assertCapabilityAvailable({
+				capabilityKey: "security.run-scan",
+				projectId,
+				userId: user.id,
+				organizationId: organizationId ?? null,
+			});
+		}
+
 		// Purge re-scan (G10) — PROJECT-scope only. Delete the current OPEN
 		// findings first (tenant-scoped), record the page-history entry, then force
 		// a FULL scan threaded with `purge: true` so persist re-grades severity
@@ -155,6 +186,7 @@ export const triggerScanProcedure = tenantProtectedProcedure
 				purge,
 				branch: target,
 				forceFull,
+				capabilityAlreadyAsserted: true,
 			});
 			if (!result) {
 				throw new ORPCError("BAD_REQUEST", {

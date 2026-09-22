@@ -20,6 +20,24 @@
  * **Anything the card puts out of scope**: the readiness checklist, request
  * help, permissions, broad empty-state redesign, and the agent chat surfaces.
  *
+ * **Rows with no rule yet, pending a product decision** — not overlooked, and
+ * not decided either:
+ *
+ * - Work Capture (chat-channel capture: FR76-81).
+ * - Automation and living-document refresh (FR72-75).
+ * - The Settings PM Sync toggle and terminal-status rows.
+ *
+ * Each needs a call on what the gate should say before a rule is worth writing,
+ * and those calls are open with the product owner.
+ *
+ * **Paths that run ungated on purpose.** The scheduled newsletter send, the
+ * scheduled document refresh and the PRD-to-tasks pipeline's child generations
+ * all start inside Temporal, with no person at a door to show a gate to. The
+ * doors guard the actions a person or an API caller takes.
+ *
+ * **Reports.** AC-13 is unmet by design — see the note where a Reports rule
+ * would sit.
+ *
  * ## Why so many rules end in a warning rather than a block
  *
  * The product direction is explicit that breadth stays discoverable: tabs stay
@@ -28,6 +46,9 @@
  * output would be worthless or the action would simply fail.
  */
 
+// The dependency graph the generation queue waits by. A pure module — one
+// type-only import — so this file stays free of the database client.
+import { DOCUMENT_TIERS } from "@repo/database/src/document-dependency-graph";
 import { isStalled, strictest } from "./resolve";
 import { MIN_GROUNDING_DESCRIPTION_LENGTH } from "./thresholds";
 import type { CapabilityEvidence, CapabilityRule, RuleVerdict } from "./types";
@@ -40,26 +61,30 @@ const AVAILABLE: RuleVerdict = {
 };
 
 /**
- * The codebase verdict every code-dependent capability shares.
+ * Can the connected repository be reached at all?
  *
- * Seven surfaces depend on the connected repository — Atlas exploration,
- * codebase question answering, the security scan, release notes and three
- * document generators — and the requirements say a source that cannot be
- * indexed must not be treated as usable by ANY of them. One function, so they
- * cannot disagree: a divergence here is exactly the bug the requirement is
- * written to prevent.
+ * The first of the two codebase layers, and the only one every code-dependent
+ * capability shares. Seven surfaces depend on the repository — Atlas
+ * exploration, codebase question answering, the security scan, release notes
+ * and three document generators — and the requirements say a source that
+ * cannot be used must not be treated as usable by ANY of them. One function, so
+ * they cannot disagree about the credential: a divergence here is exactly the
+ * bug the requirement is written to prevent.
  *
- * The ordering below is the severity ladder made concrete, and the two
- * credential cases sit at the top because they outrank a good snapshot. A
- * repository whose token has expired may still have a perfectly good index on
- * disk, and serving answers from it would be telling the user their connection
- * works when it does not.
+ * The index is deliberately NOT part of this. Only some of those capabilities
+ * read the index at all — the scanners clone the repository live, Atlas builds
+ * its own graph, and release notes read the provider directly — so asking them
+ * to wait for an index they never consult blocks them on a job that, on a
+ * project with code search off, never runs.
+ *
+ * The two credential cases outrank a good snapshot. A repository whose token
+ * has expired may still have a perfectly good index on disk, and serving
+ * answers from it would be telling the user their connection works when it
+ * does not.
+ *
+ * `null` means the connection is fine and the caller decides what else to ask.
  */
-function codebaseVerdict(
-	evidence: CapabilityEvidence,
-	now: Date,
-	capability: string,
-): RuleVerdict {
+function connectionVerdict(evidence: CapabilityEvidence): RuleVerdict | null {
 	const { codebase } = evidence;
 
 	if (!codebase.connected) {
@@ -93,13 +118,45 @@ function codebaseVerdict(
 		};
 	}
 
+	return null;
+}
+
+/**
+ * Is the repository's index usable — asked only once the connection is.
+ *
+ * The one rule that governs this function: **Processing is only ever returned
+ * while a run is actually in flight.** A repository that nothing is indexing is
+ * not "on its way", and a gate that says it is blocks forever with no remedy.
+ * So an index that never ran is a hard block naming why — code search is off,
+ * or it is on and a first run has to be started — and never a spinner.
+ *
+ * A retry here is a full re-index of one repository. It is available even for
+ * a stalled run: the re-index supersedes the live workflow rather than racing
+ * it, so a duplicate is impossible and refusing the button protects nothing.
+ * It is supported only where it can succeed — there is a repository to target
+ * and indexing is switched on — because a button whose door always refuses is
+ * worse than none.
+ */
+function indexVerdict(
+	evidence: CapabilityEvidence,
+	now: Date,
+	capability: string,
+): RuleVerdict {
+	const { codebase } = evidence;
+	const retry = {
+		supported: codebase.retryTargetId !== null && codebase.indexingEnabled,
+		available: true,
+		targetId: codebase.retryTargetId,
+		requires: "projectSettingsEdit" as const,
+	};
+
 	if (isStalled(codebase.indexing, "backgroundJob", now)) {
 		return {
 			state: "HARD_BLOCK",
 			reasonKey: "codebase.indexing-stalled",
 			blockingDependency: `indexing for ${capability}`,
 			remedy: "RETRY_JOB",
-			retry: { supported: true, available: false },
+			retry,
 		};
 	}
 
@@ -114,35 +171,113 @@ function codebaseVerdict(
 
 	// The split predicate, and the reason it exists. A failed refresh over a
 	// surviving snapshot is a warning: the capability genuinely works, on
-	// slightly old data. Hard-blocking here would take Atlas away from projects
-	// whose graph is being served successfully at that moment.
+	// slightly old data. Hard-blocking here would take answers away from
+	// projects whose index is being served successfully at that moment.
 	if (codebase.usable && !codebase.healthy) {
 		return {
 			state: "WARNING",
 			reasonKey: "codebase.index-stale",
 			blockingDependency: "the most recent indexing run",
 			remedy: "RETRY_JOB",
-			retry: { supported: true, available: true },
+			retry,
 		};
 	}
 
-	if (!codebase.usable) {
+	if (codebase.usable) {
+		return AVAILABLE;
+	}
+
+	// Checked before everything below, and apart from the project setting.
+	// With code indexing off for the whole deployment, nothing anyone does on
+	// this project will index it — the code-search toggle may already be on,
+	// and pointing at it would send someone to a switch that changes nothing.
+	// No project-level remedy exists, so none is offered.
+	if (!codebase.indexingAvailable) {
 		return {
-			state: codebase.indexing.lastRunFailed
-				? "HARD_BLOCK"
-				: "PROCESSING",
-			reasonKey: codebase.indexing.lastRunFailed
-				? "codebase.indexing-failed"
-				: "codebase.never-indexed",
-			blockingDependency: "a completed index of the repository",
-			remedy: codebase.indexing.lastRunFailed ? "RETRY_JOB" : "WAIT",
-			retry: codebase.indexing.lastRunFailed
-				? { supported: true, available: true }
-				: undefined,
+			state: "HARD_BLOCK",
+			reasonKey: "codebase.indexing-unavailable",
+			blockingDependency: "code indexing on this deployment",
+			remedy: null,
 		};
 	}
 
-	return AVAILABLE;
+	// Checked before a failed run, not after it. With code search off a retry
+	// is refused at its own door, so pointing at "run it again" would send
+	// someone to a button that cannot work; the setting is the real remedy.
+	if (!codebase.indexingEnabled) {
+		return {
+			state: "HARD_BLOCK",
+			reasonKey: "codebase.code-search-off",
+			blockingDependency: "code search for this project",
+			remedy: "ENABLE_CODE_SEARCH",
+		};
+	}
+
+	if (codebase.indexing.lastRunFailed) {
+		return {
+			state: "HARD_BLOCK",
+			reasonKey: "codebase.indexing-failed",
+			blockingDependency: "a completed index of the repository",
+			remedy: "RETRY_JOB",
+			retry,
+		};
+	}
+
+	// Enabled, connected, and nothing has ever run — typically a repository
+	// connected before code search was switched on, since turning it on does
+	// not index what is already attached. Nothing is going to start this on
+	// its own, so it is a block with the first run as its remedy.
+	return {
+		state: "HARD_BLOCK",
+		reasonKey: "codebase.never-indexed",
+		blockingDependency: "a completed index of the repository",
+		remedy: "RETRY_JOB",
+		retry,
+	};
+}
+
+/** Both layers, for a capability that reads the index. */
+function codebaseVerdict(
+	evidence: CapabilityEvidence,
+	now: Date,
+	capability: string,
+): RuleVerdict {
+	return (
+		connectionVerdict(evidence) ?? indexVerdict(evidence, now, capability)
+	);
+}
+
+/**
+ * The facts a codebase verdict reads, for a suppression fingerprint.
+ *
+ * `lastIndexCompletedAt` is the completion marker: a stale-index warning that
+ * was dismissed must come back after a later run succeeds and a still later
+ * one fails, and without it the two moments would fingerprint identically.
+ */
+function codebaseFacts(evidence: CapabilityEvidence): string[] {
+	const { codebase } = evidence;
+	return [
+		codebase.connected ? "repo" : "no-repo",
+		codebase.integrationStatus ?? "no-integration",
+		codebase.usable ? "indexed" : "not-indexed",
+		codebase.indexingAvailable ? "indexing-available" : "no-indexing",
+		codebase.indexingEnabled ? "search-on" : "search-off",
+		`completed:${codebase.lastIndexCompletedAt?.toISOString() ?? "never"}`,
+	];
+}
+
+/** The grounding facts a document rule reads. */
+function groundingFacts(evidence: CapabilityEvidence): string[] {
+	return [
+		`tech:${evidence.context.technical}`,
+		`prod:${evidence.context.product}`,
+		`docs:${[...evidence.documents.usableTypes].sort().join("+") || "none"}`,
+		`desc:${
+			evidence.descriptionLength >= MIN_GROUNDING_DESCRIPTION_LENGTH
+				? "grounding"
+				: "thin"
+		}`,
+	];
 }
 
 /** Warn when a generation has only the thinnest possible grounding. */
@@ -169,35 +304,147 @@ function thinContextWarning(evidence: CapabilityEvidence): RuleVerdict {
 }
 
 /**
+ * The document and context sources one grounding question is asked of — the
+ * ones that are ready, or with the in-flight ones added.
+ */
+interface Sources {
+	types: ReadonlySet<string>;
+	technical: number;
+	product: number;
+}
+
+function readySources(evidence: CapabilityEvidence): Sources {
+	return {
+		types: evidence.documents.usableTypes,
+		technical: evidence.context.technical,
+		product: evidence.context.product,
+	};
+}
+
+/**
+ * Ready plus in flight — but only what the generation workflow will actually
+ * wait for.
+ *
+ * "Waiting on a source" is a promise, and the dependency queue keeps it for
+ * exactly two things: a source still being ingested (every generator waits on
+ * those), and a document of one of its OWN prerequisite types in the shared
+ * dependency graph. An architecture document generating does not hold an API
+ * specification back — they are the same tier and run side by side — so
+ * counting it would say the queue waits when it does not, and the run would
+ * start without the source it was told it had. The generator's own type is
+ * never its own prerequisite, so a regeneration never waits on itself.
+ */
+function eventualSources(
+	evidence: CapabilityEvidence,
+	ownType: string,
+): Sources {
+	const waitedOn = new Set(DOCUMENT_TIERS[ownType]?.prerequisites ?? []);
+	return {
+		types: new Set([
+			...evidence.documents.usableTypes,
+			...[...evidence.documents.inFlightTypes].filter((type) =>
+				waitedOn.has(type),
+			),
+		]),
+		technical:
+			evidence.context.technical + evidence.context.technicalInFlight,
+		product: evidence.context.product + evidence.context.productInFlight,
+	};
+}
+
+/**
  * Soft-block a generator that has no source of the kind it needs.
  *
  * Soft rather than hard throughout: the page stays usable and the other
  * generators on it keep working — only this one action is out of reach, which
  * is what the action-level-first direction asks for.
+ *
+ * Before saying "add a source", two better answers are tried.
+ *
+ * **A source is on its way.** A document still generating or a source still
+ * being ingested would ground this generator once it lands. That is
+ * Processing — the dependency queue waits on it — and telling someone to add
+ * what they just added would be false.
+ *
+ * **The repository is the only way.** For a generator the repository can
+ * ground on its own (`canUseCodebase`), "add a source" is the wrong thing to
+ * say when the source is there and not ready: the codebase verdict's reason
+ * and remedy are returned instead, still as a soft block — code search is off,
+ * indexing has not run, it is running, it failed, the credential lapsed — and
+ * the person is pointed at the remedy that actually applies. The index counts only when usable AND reachable through a
+ * working connection; an index behind an expired credential is not one,
+ * whatever is on disk. When a document or context source grounds the
+ * generation, the index's state does not matter at all.
  */
 function requiresSource(
-	present: boolean,
-	reasonKey: string,
-	dependency: string,
+	evidence: CapabilityEvidence,
+	now: Date,
+	source: {
+		ownType: string;
+		grounds: (sources: Sources) => boolean;
+		canUseCodebase: boolean;
+		reasonKey: string;
+		dependency: string;
+	},
 ): RuleVerdict {
-	return present
-		? AVAILABLE
-		: {
-				state: "SOFT_BLOCK",
-				reasonKey,
-				blockingDependency: dependency,
-				remedy: "ADD_CONTEXT",
-			};
+	if (source.grounds(readySources(evidence))) {
+		return AVAILABLE;
+	}
+	// The repository before anything in flight: a usable index already
+	// grounds this generator, and saying "waiting on a source" over one would
+	// describe a wait that is not happening. A stale index still grounds it,
+	// with its warning.
+	const codebase =
+		source.canUseCodebase && evidence.codebase.connected
+			? codebaseVerdict(evidence, now, "this document")
+			: null;
+	if (codebase?.state === "AVAILABLE" || codebase?.state === "WARNING") {
+		return codebase;
+	}
+	if (source.grounds(eventualSources(evidence, source.ownType))) {
+		return {
+			state: "PROCESSING",
+			reasonKey: "documents.source-processing",
+			blockingDependency: source.dependency,
+			remedy: "WAIT",
+		};
+	}
+	// The repository is the only way, and it is not ready. Its own reason and
+	// remedy travel — "Turn on code search", "Start indexing", "Reconnect" —
+	// but as a SOFT block, like every other "no source" answer a generator
+	// gives. A document generator can be grounded by what the person supplies
+	// with the request, so this must be the kind of block pasted source text
+	// lifts; a hard block would send someone who pasted their API docs to a
+	// code-search toggle instead. Atlas, the scanners and release notes read
+	// the repository itself and keep their hard blocks.
+	if (codebase) {
+		return { ...codebase, state: "SOFT_BLOCK" };
+	}
+	return {
+		state: "SOFT_BLOCK",
+		reasonKey: source.reasonKey,
+		blockingDependency: source.dependency,
+		remedy: "ADD_CONTEXT",
+	};
 }
 
-/** Does the project hold any source that can ground a technical answer? */
-function hasTechnicalSource(evidence: CapabilityEvidence): boolean {
+/**
+ * Does the project hold a technical source other than the repository?
+ *
+ * The repository is weighed separately by {@link requiresSource}, which knows
+ * how to tell "no source" from "a source that is not ready yet".
+ */
+function hasTechnicalDocumentOrContext(sources: Sources): boolean {
 	return (
-		evidence.context.technical > 0 ||
-		evidence.codebase.usable ||
-		evidence.documents.usableTypes.has("ARCHITECTURE") ||
-		evidence.documents.usableTypes.has("TECHNICAL_SPEC")
+		sources.technical > 0 ||
+		sources.types.has("ARCHITECTURE") ||
+		sources.types.has("TECHNICAL_SPEC")
 	);
+}
+
+/** The facts a document rule that may fall back to the repository reads. */
+function sourceFacts(evidence: CapabilityEvidence): string[] {
+	return [...groundingFacts(evidence), ...codebaseFacts(evidence)];
 }
 
 export const CAPABILITY_RULES: readonly CapabilityRule[] = [
@@ -207,66 +454,82 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 		label: "Generate PRD",
 		surface: "documents",
 		evaluate: (e) => thinContextWarning(e),
+		fingerprint: groundingFacts,
 	},
 	{
 		key: "documents.generate-business-case",
 		label: "Generate Business Case",
 		surface: "documents",
 		evaluate: (e) => thinContextWarning(e),
+		fingerprint: groundingFacts,
 	},
 	{
 		key: "documents.generate-proposal",
 		label: "Generate Proposal",
 		surface: "documents",
 		evaluate: (e) => thinContextWarning(e),
+		fingerprint: groundingFacts,
 	},
 	{
 		key: "documents.generate-architecture",
 		label: "Generate Architecture Document",
 		surface: "documents",
-		evaluate: (e) =>
-			requiresSource(
-				hasTechnicalSource(e) ||
-					e.documents.usableTypes.has("PRD") ||
-					e.documents.usableTypes.has("PROPOSAL") ||
-					e.documents.usableTypes.has("BUSINESS_CASE"),
-				"documents.no-architecture-source",
-				"a product or architecture source",
-			),
+		evaluate: (e, now) =>
+			requiresSource(e, now, {
+				ownType: "ARCHITECTURE",
+				grounds: (s) =>
+					hasTechnicalDocumentOrContext(s) ||
+					s.types.has("PRD") ||
+					s.types.has("PROPOSAL") ||
+					s.types.has("BUSINESS_CASE"),
+				canUseCodebase: true,
+				reasonKey: "documents.no-architecture-source",
+				dependency: "a product or architecture source",
+			}),
+		fingerprint: sourceFacts,
 	},
 	{
 		key: "documents.generate-tech-spec",
 		label: "Generate Technical Specification",
 		surface: "documents",
-		evaluate: (e) =>
-			requiresSource(
-				hasTechnicalSource(e) || e.documents.usableTypes.has("PRD"),
-				"documents.no-technical-source",
-				"a PRD, architecture document or indexed codebase",
-			),
+		evaluate: (e, now) =>
+			requiresSource(e, now, {
+				ownType: "TECHNICAL_SPEC",
+				grounds: (s) =>
+					hasTechnicalDocumentOrContext(s) || s.types.has("PRD"),
+				canUseCodebase: true,
+				reasonKey: "documents.no-technical-source",
+				dependency: "a PRD, architecture document or indexed codebase",
+			}),
+		fingerprint: sourceFacts,
 	},
 	{
 		key: "documents.generate-api-spec",
 		label: "Generate API Specification",
 		surface: "documents",
-		evaluate: (e) =>
-			requiresSource(
-				hasTechnicalSource(e) ||
-					e.documents.usableTypes.has("TECHNICAL_SPEC"),
-				"documents.no-api-source",
-				"an API-relevant source",
-			),
+		evaluate: (e, now) =>
+			requiresSource(e, now, {
+				ownType: "API_SPEC",
+				grounds: hasTechnicalDocumentOrContext,
+				canUseCodebase: true,
+				reasonKey: "documents.no-api-source",
+				dependency: "an API-relevant source",
+			}),
+		fingerprint: sourceFacts,
 	},
 	{
 		key: "documents.generate-qa-strategy",
 		label: "Generate QA Strategy",
 		surface: "documents",
-		evaluate: (e) =>
-			requiresSource(
-				e.documents.usableTypes.has("PRD") || e.context.product > 0,
-				"documents.no-requirements-source",
-				"a PRD or equivalent requirements context",
-			),
+		evaluate: (e, now) =>
+			requiresSource(e, now, {
+				ownType: "QA_STRATEGY",
+				grounds: (s) => s.types.has("PRD") || s.product > 0,
+				canUseCodebase: false,
+				reasonKey: "documents.no-requirements-source",
+				dependency: "a PRD or equivalent requirements context",
+			}),
+		fingerprint: groundingFacts,
 	},
 
 	// ------------------------------------------------------------------ Context
@@ -275,13 +538,16 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 		label: "Use a linked knowledge-base source",
 		surface: "context",
 		evaluate: (e, now) => {
+			// No retry. Ingestion is per source and the Context tab has no
+			// re-run for one — the way out is removing the stuck source and
+			// adding it again, which is what the copy says. Offering a retry
+			// no surface could perform would render nothing and promise it.
 			if (isStalled(e.context.processing, "backgroundJob", now)) {
 				return {
 					state: "HARD_BLOCK",
 					reasonKey: "context.ingestion-stalled",
 					blockingDependency: "source ingestion",
-					remedy: "RETRY_JOB",
-					retry: { supported: true, available: true },
+					remedy: null,
 				};
 			}
 			if (e.context.processing.running) {
@@ -294,6 +560,9 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 			}
 			return AVAILABLE;
 		},
+		// Only blocks and processing come out of this rule, and neither can be
+		// suppressed; the count is here so the fingerprint is not empty.
+		fingerprint: (e) => [`ctx:${e.context.total}`],
 	},
 
 	// -------------------------------------------------------------------- Atlas
@@ -301,13 +570,38 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 		key: "atlas.explore",
 		label: "Explore the codebase graph",
 		surface: "atlas",
-		evaluate: (e, now) => codebaseVerdict(e, now, "Atlas"),
+		// The connection only. Analysis is what BUILDS the Atlas graph, and it
+		// clones the repository itself — it never reads the code index. Asking
+		// it to wait for that index made Analyze wait on a different pipeline,
+		// one that on a project with code search off never runs at all, and it
+		// made Reanalyze (the retry for a failed analysis) refuse itself.
+		evaluate: (e) => connectionVerdict(e) ?? AVAILABLE,
+		fingerprint: codebaseFacts,
 	},
 	{
 		key: "atlas.codebase-qa",
 		label: "Ask a question about the codebase",
 		surface: "atlas",
-		evaluate: (e, now) => codebaseVerdict(e, now, "codebase questions"),
+		// Questions need something built to answer from: the Atlas graph, or
+		// failing that the code index. Either will do, so a project whose
+		// graph is serving is not held back by an index it never needed. The
+		// graph's status is read only when the caller asked for Atlas's
+		// verdict — the Atlas surface and its doors — and elsewhere this falls
+		// through to the index.
+		evaluate: (e, now) => {
+			const connection = connectionVerdict(e);
+			if (connection) {
+				return connection;
+			}
+			if (e.codebase.graphReady) {
+				return AVAILABLE;
+			}
+			return indexVerdict(e, now, "codebase questions");
+		},
+		fingerprint: (e) => [
+			...codebaseFacts(e),
+			e.codebase.graphReady ? "graph" : "no-graph",
+		],
 	},
 
 	// ----------------------------------------------------------------- Security
@@ -328,11 +622,18 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 			// action on a repository would therefore take spec review away
 			// from exactly the projects that have nothing but specs, which is
 			// the audience this suite exists to help.
+			//
+			// And even then only the CONNECTION, never the index: both
+			// repository scanners clone the repository at scan time and read
+			// the working tree, not the code index. Waiting for an index they
+			// never consult would block them on a job that, with code search
+			// off, never runs.
 			const prerequisites: RuleVerdict[] = [];
 			if (e.scan.requiresCodebase) {
-				prerequisites.push(
-					codebaseVerdict(e, now, "the security scan"),
-				);
+				const connection = connectionVerdict(e);
+				if (connection) {
+					prerequisites.push(connection);
+				}
 			}
 			// Scans are the one source with no heartbeat, so their staleness is
 			// measured from when the run started and the window is necessarily
@@ -344,7 +645,15 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 					reasonKey: "scan.stalled",
 					blockingDependency: "the previous scan run",
 					remedy: "RETRY_JOB",
-					retry: { supported: true, available: true },
+					// The retry starts a new scan, and the trigger closes the
+					// stalled row first — measured against the same window as
+					// this rule, so a row is only ever closed on the server's
+					// own clock, never because a client said it was stuck.
+					retry: {
+						supported: true,
+						available: true,
+						requires: "projectUpdate",
+					},
 				});
 			} else if (e.scan.running) {
 				prerequisites.push({
@@ -363,6 +672,10 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 			// exists precisely so severity, not evaluation order, decides.
 			return strictest(prerequisites);
 		},
+		fingerprint: (e) => [
+			e.scan.requiresCodebase ? "repo-engines" : "no-repo-engines",
+			...codebaseFacts(e),
+		],
 	},
 
 	// ------------------------------------------------------------------ Reports
@@ -396,15 +709,15 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 		key: "release-notes.generate",
 		label: "Generate release notes",
 		surface: "release-notes",
-		evaluate: (e, now) => {
-			// v1 is codebase-driven by explicit decision. A project-management
-			// system may enrich the output later but never substitutes for the
-			// repository, so the gate asks only about the codebase.
-			if (!e.releaseNotes.codebaseUsable) {
-				return codebaseVerdict(e, now, "release notes");
-			}
-			return AVAILABLE;
-		},
+		// v1 is codebase-driven by explicit decision. A project-management
+		// system may enrich the output later but never substitutes for the
+		// repository, so the gate asks only about the codebase — and only its
+		// CONNECTION. The newsletter reads releases and pull requests from the
+		// provider live and never touches the code index, so an index is not
+		// its prerequisite; a credential that no longer works is, whatever
+		// state the index is in.
+		evaluate: (e) => connectionVerdict(e) ?? AVAILABLE,
+		fingerprint: codebaseFacts,
 	},
 
 	// ----------------------------------------------------------------- Settings
@@ -458,11 +771,19 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 					reasonKey: "settings.connection-degraded",
 					blockingDependency: "the most recent indexing run",
 					remedy: "RETRY_JOB",
-					retry: { supported: true, available: true },
+					retry: {
+						supported:
+							e.codebase.retryTargetId !== null &&
+							e.codebase.indexingEnabled,
+						available: true,
+						targetId: e.codebase.retryTargetId,
+						requires: "projectSettingsEdit",
+					},
 				};
 			}
 			return AVAILABLE;
 		},
+		fingerprint: codebaseFacts,
 	},
 ];
 

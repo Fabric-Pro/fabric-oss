@@ -1494,7 +1494,7 @@ export async function upsertScanCheckpoint(data: {
 // =============================================================================
 
 /**
- * Fail scans left RUNNING past `staleMinutes`.
+ * Fail scans left PENDING or RUNNING past `staleMinutes`.
  *
  * A scan that dies mid-run — worker restart, terminated workflow, host lost —
  * takes the only writer that could ever close it with it. Without this sweep
@@ -1507,9 +1507,15 @@ export async function upsertScanCheckpoint(data: {
  * nothing looks exactly like a dead one, and calling a working scan dead is the
  * worse error.
  *
- * A row with a null `startedAt` is never swept. Prisma's `lt` compiles to a SQL
- * comparison that NULL never satisfies, which is precisely the wanted
- * behaviour: an unknown age is not evidence of death.
+ * A run that never started is measured from when its row was created. That is
+ * a PENDING row whose workflow never began — a failed `workflow.start` leaves
+ * exactly this behind — and with no clock at all it sat in flight forever,
+ * refusing every later scan as "already running". Capability gating reads the
+ * same fallback (`startedAt ?? createdAt`), so the page and the sweep agree on
+ * which rows are dead.
+ *
+ * `projectId` narrows the sweep to one project, for the trigger that closes a
+ * stalled row before starting the scan that replaces it.
  *
  * `durationMs` is deliberately left untouched — an `updateMany` cannot read
  * each row's own `startedAt` to measure against, and a fabricated duration is
@@ -1517,11 +1523,19 @@ export async function upsertScanCheckpoint(data: {
  */
 export async function failStaleProjectScans(args: {
 	staleMinutes: number;
+	projectId?: string;
 }): Promise<number> {
 	const now = new Date();
 	const threshold = new Date(now.getTime() - args.staleMinutes * 60 * 1000);
 	const result = await db.projectScan.updateMany({
-		where: { status: "RUNNING", startedAt: { lt: threshold } },
+		where: {
+			...(args.projectId ? { projectId: args.projectId } : {}),
+			status: { in: ["PENDING", "RUNNING"] },
+			OR: [
+				{ startedAt: { lt: threshold } },
+				{ startedAt: null, createdAt: { lt: threshold } },
+			],
+		},
 		data: {
 			status: "FAILED",
 			error: "Timed out — the scan exceeded its maximum run window",

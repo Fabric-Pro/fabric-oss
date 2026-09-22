@@ -176,6 +176,7 @@ function renderSettings() {
 			/>
 		</QueryClientProvider>,
 	);
+	return queryClient;
 }
 
 async function openAddPanel(user: ReturnType<typeof userEvent.setup>) {
@@ -228,6 +229,23 @@ describe("ProjectRepositoryIntegrationSettings — GitHub picker PAT reuse", () 
 
 		expect(githubStartFn).not.toHaveBeenCalled();
 		expect(window.open).not.toHaveBeenCalled();
+	});
+
+	it("refreshes the capability gates after a PAT connect (Fizzy #1930)", async () => {
+		// This connect is a direct client call, not a `useMutation`, so the
+		// central gate refresh never sees it — and the gates kept saying "No
+		// repository connected" after one was.
+		const user = userEvent.setup({ pointerEventsCheck: 0 });
+		const queryClient = renderSettings();
+		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+		await openAddPanel(user);
+		await selectRepoAndAdd(user);
+
+		await waitFor(() =>
+			expect(invalidate).toHaveBeenCalledWith({
+				queryKey: ["capability-gates"],
+			}),
+		);
 	});
 
 	it("uses OAuth flow directly when user has GitHub OAuth connected", async () => {

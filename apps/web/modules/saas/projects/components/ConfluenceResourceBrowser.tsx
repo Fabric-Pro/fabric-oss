@@ -9,6 +9,7 @@
  */
 
 import { orpcClient } from "@shared/lib/orpc-client";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { fetchConfluencePageContent } from "../lib/confluence-content-fetcher";
@@ -42,6 +43,7 @@ export function ConfluenceResourceBrowser({
 	onResourcesAdded,
 }: Props) {
 	const [confirmLoading, setConfirmLoading] = useState(false);
+	const queryClient = useQueryClient();
 
 	const handleConfirm = useCallback(
 		(pages: ConfluencePageResult[]) => {
@@ -88,6 +90,11 @@ export function ConfluenceResourceBrowser({
 					}
 
 					toast.success(`Added ${addedCount} page(s) to project`);
+					// Direct client calls, not `useMutation`, so the central
+					// gate refresh never sees them (Fizzy #1930).
+					queryClient.invalidateQueries({
+						queryKey: ["capability-gates"],
+					});
 					onResourcesAdded?.();
 					onOpenChange(false);
 				} catch (err) {
@@ -108,6 +115,7 @@ export function ConfluenceResourceBrowser({
 			organizationId,
 			onResourcesAdded,
 			onOpenChange,
+			queryClient,
 		],
 	);
 

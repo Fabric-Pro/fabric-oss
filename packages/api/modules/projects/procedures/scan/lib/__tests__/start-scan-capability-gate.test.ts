@@ -36,6 +36,14 @@ vi.mock("@repo/database", () => ({
 	getProjectScanConfig: mocks.getProjectScanConfig,
 	getProjectReposForCodeSearch: mocks.getProjectReposForCodeSearch,
 	hasActiveScan: mocks.hasActiveScan,
+	// The flag is resolved for the project's own organization (Fizzy #1930).
+	db: {
+		project: {
+			findUnique: async () => ({
+				organizationId: "organization_example",
+			}),
+		},
+	},
 }));
 
 vi.mock("../../../../../capabilities/evidence", () => ({
@@ -210,27 +218,26 @@ describe("maybeTriggerMaturationScan — a refused auto-trigger", () => {
 		mocks.hasActiveScan.mockResolvedValue(false);
 	});
 
-	it("swallows the refusal rather than failing the stage transition", async () => {
-		// Documented, not accidental. This auto-trigger is best-effort and its
-		// pre-existing catch guards the stage transition that called it — a
-		// feature must not fail to move because a scan could not start. The
-		// refusal still reaches the user on the manual path, which is where
-		// they asked for a scan.
+	it("is not gated by the project rule at all — a feature scan reads no repository", () => {
+		// Rewritten in the Fizzy #1930 review round. This used to pin the
+		// maturation scan being refused (and the refusal swallowed) while a
+		// PROJECT scan ran. A feature-scoped scan reviews one story's planning
+		// text with the AI engines and never runs the repository scanners, so
+		// neither a missing repository nor the project's own scan is its
+		// prerequisite — and the silent skip hid that from everyone.
 		mocks.gatherCapabilityEvidence.mockResolvedValue(runningScanEvidence());
 
-		await expect(
-			maybeTriggerMaturationScan({
-				projectId: "project_example",
-				storyId: "story_example",
-				previousStage: "DRAFT",
-				newStage: "READY",
-				userId: "user_example",
-				organizationId: null,
-			}),
-		).resolves.toBeUndefined();
-
-		expect(mocks.createProjectScan).not.toHaveBeenCalled();
-		expect(mocks.workflowStart).not.toHaveBeenCalled();
+		return maybeTriggerMaturationScan({
+			projectId: "project_example",
+			storyId: "story_example",
+			previousStage: "DRAFT",
+			newStage: "READY",
+			userId: "user_example",
+			organizationId: null,
+		}).then(() => {
+			expect(mocks.gatherCapabilityEvidence).not.toHaveBeenCalled();
+			expect(mocks.createProjectScan).toHaveBeenCalledTimes(1);
+		});
 	});
 
 	it("still starts the scan when nothing is blocking", async () => {
