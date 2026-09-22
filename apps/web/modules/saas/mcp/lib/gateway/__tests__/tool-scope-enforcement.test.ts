@@ -21,8 +21,13 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
 	db: {},
-	hasProjectAccess: vi.fn().mockResolvedValue(true),
+	// The project read gate, behind every project-scoped read and the
+	// work-item create preamble.
+	getProjectAccessContext: vi
+		.fn()
+		.mockResolvedValue({ organizationId: "org-1" }),
 	resolveProjectAccess: vi.fn().mockResolvedValue({
+		organizationId: "org-1",
 		source: "project-member",
 		isVisible: true,
 		permissions: ["project:update", "story:update"],

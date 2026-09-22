@@ -50,7 +50,7 @@ const PERMISSION_GATES = [
 
 /** Resolves what the caller may *see*. Enough for a read, never for a write. */
 const VISIBILITY_GATES = [
-	"hasProjectAccess",
+	"hasGatewayProjectAccess",
 	"tenantFilter(",
 	"session.organizationId",
 ] as const;
@@ -117,24 +117,36 @@ const READ_EXEMPT = new Map<string, string>([
 	],
 	[
 		"handleListProjectInstructions",
-		"delegates to resolvePublishedInstructionSnapshot, which gates on getProjectAccessContext plus a hosting-organization comparison",
+		"delegates to resolvePublishedInstructionSnapshot, which gates on resolveGatewayProjectReadAccess (project access plus the organization-key binding)",
 	],
 	[
 		"handleGetProjectInstruction",
-		"delegates to resolvePublishedInstructionSnapshot, which gates on getProjectAccessContext plus a hosting-organization comparison",
+		"delegates to resolvePublishedInstructionSnapshot, which gates on resolveGatewayProjectReadAccess (project access plus the organization-key binding)",
 	],
 	[
 		"handleGetProjectInstructionBundle",
-		"delegates to resolvePublishedInstructionSnapshot, which gates on getProjectAccessContext plus a hosting-organization comparison",
+		"delegates to resolvePublishedInstructionSnapshot, which gates on resolveGatewayProjectReadAccess (project access plus the organization-key binding)",
 	],
 ]);
 
+/**
+ * Every handler's own text, and nothing after it.
+ *
+ * A body ends at the next top-level function declaration of ANY name, not
+ * just the next handler: shared helpers sit between handlers in this file,
+ * and a helper that mentions a gate would otherwise vouch for whichever
+ * handler happens to precede it — green with that handler's own gate deleted.
+ */
 function handlerBodies(): Array<{ name: string; body: string }> {
 	const source = readFileSync(SOURCE, "utf8");
-	const parts = source.split(/\nasync function (handle\w+)\(/);
+	const parts = source.split(
+		/\n(?:export\s+)?(?:async\s+)?function\s+(\w+)(?=\s*[<(])/,
+	);
 	const out: Array<{ name: string; body: string }> = [];
 	for (let i = 1; i < parts.length; i += 2) {
-		out.push({ name: parts[i], body: parts[i + 1] });
+		if (parts[i].startsWith("handle")) {
+			out.push({ name: parts[i], body: parts[i + 1] });
+		}
 	}
 	return out;
 }
