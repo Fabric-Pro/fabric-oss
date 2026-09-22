@@ -5,7 +5,7 @@
  *   POST /workspaces/:id/query   semantic (RAG) search over workspace docs
  */
 import { embed, getAIEmbeddingModel } from "@repo/ai";
-import { db, hasWorkspaceAccess, listWorkspaces } from "@repo/database";
+import { db, getWorkspaceAccessContext, listWorkspaces } from "@repo/database";
 import { generateSparseVector, searchWorkspaceChunks } from "@repo/rag";
 import type { Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
@@ -160,12 +160,25 @@ export function registerWorkspaceRoutes(
 				);
 			}
 
-			const access = await hasWorkspaceAccess(
+			// Two questions, both answered before anything is embedded or
+			// searched. Can this user open the workspace at all — and is it in
+			// the organization this request resolved to? Workspace access answers
+			// only the first (it takes no organization), so the second is the
+			// explicit comparison below: the same exclusive, null-aware binding
+			// `GET /workspaces/:id` applies with its `organizationId` filter, and
+			// the v1 rule that an ORGANIZATION key stays bound to its own
+			// organization. A workspace outside it is NOT FOUND, never
+			// forbidden: a caller must not learn from this that a workspace id
+			// exists in someone else's tenant. A personal workspace resolves
+			// `organizationId: null`, which no resolved organization can equal.
+			const access = await getWorkspaceAccessContext(
 				workspaceId,
 				ctx.userId,
-				ctx.organizationId ?? undefined,
 			);
-			if (!access) {
+			if (
+				!access ||
+				access.organizationId !== (ctx.organizationId ?? null)
+			) {
 				return c.json(notFound("Workspace"), 404);
 			}
 

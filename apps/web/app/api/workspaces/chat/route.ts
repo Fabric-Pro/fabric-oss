@@ -31,12 +31,10 @@ export async function POST(request: NextRequest) {
 		}
 
 		const userId = session.user.id;
-		const {
-			workspaceId,
-			organizationId,
-			message,
-			history = [],
-		} = await request.json();
+		// The body may still carry an `organizationId`; it is not read. The
+		// tenant is the workspace's own (`effectiveOrgId` below), never the
+		// request's.
+		const { workspaceId, message, history = [] } = await request.json();
 
 		if (!workspaceId || !message) {
 			return NextResponse.json(
@@ -46,11 +44,7 @@ export async function POST(request: NextRequest) {
 		}
 
 		// Verify workspace access
-		const hasAccess = await hasWorkspaceAccess(
-			workspaceId,
-			userId,
-			organizationId,
-		);
+		const hasAccess = await hasWorkspaceAccess(workspaceId, userId);
 		if (!hasAccess) {
 			return NextResponse.json(
 				{ error: "You don't have access to this workspace" },

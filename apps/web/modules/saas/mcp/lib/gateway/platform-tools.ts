@@ -2442,6 +2442,8 @@ async function handleListFeatures(
  * Whether this session's CREDENTIAL may act on a project hosted by
  * `hostOrganizationId`: the second question every project-scoped tool asks,
  * after the project-authoritative "can this user reach the project at all?".
+ * The workspace tools ask it too, of the workspace's hosting organization —
+ * see {@link resolveGatewayWorkspaceReadAccess}.
  *
  * That first answer (`getProjectAccessContext`, `resolveProjectAccess`) is
  * deliberately project-authoritative. An invited guest holds a `ProjectMember`
@@ -2504,6 +2506,39 @@ async function hasGatewayProjectAccess(
 	session: GatewaySession,
 ): Promise<boolean> {
 	return (await resolveGatewayProjectReadAccess(projectId, session)) !== null;
+}
+
+/**
+ * The read gate for every workspace tool: the caller's workspace access plus
+ * the credential binding, or `null` when either refuses.
+ *
+ * A workspace is not a project. It has no guests — access to an organization
+ * workspace requires membership in that organization first
+ * (`getWorkspaceAccessContext`) — so there is no invited-guest path to keep
+ * open here. The credential rule is the same one, though: an `org_` key names
+ * its tenant in the key record and never reaches another organization's
+ * workspace, even one its creator is a member of. Workspace access answers
+ * only "can this user open the workspace"; `hasWorkspaceAccess` takes no
+ * organization at all, so without {@link credentialMayReachHost} a key issued
+ * for organization A whose creator also holds a role on a workspace in B read
+ * B's workspace.
+ *
+ * `getWorkspaceAccessContext` is the single query `hasWorkspaceAccess` wraps,
+ * so this costs nothing extra and also yields the workspace's hosting
+ * organization. Callers turn `null` into their not-found refusal, never a
+ * forbidden one: a caller must not learn from it that a workspace id exists in
+ * someone else's tenant.
+ */
+async function resolveGatewayWorkspaceReadAccess(
+	workspaceId: string,
+	session: GatewaySession,
+): Promise<{ organizationId: string | null } | null> {
+	const { getWorkspaceAccessContext } = await import("@repo/database");
+	const access = await getWorkspaceAccessContext(workspaceId, session.userId);
+	if (!access || !credentialMayReachHost(session, access.organizationId)) {
+		return null;
+	}
+	return access;
 }
 
 /**
@@ -5774,11 +5809,13 @@ async function handleGetWorkspace(
 		return errorResult("workspaceId is required");
 	}
 
-	const workspace = await getWorkspaceById(
-		workspaceId,
-		session.userId,
-		session.organizationId || undefined,
-	);
+	// The shared workspace read gate, before the row is read: workspace access
+	// plus the organization-key binding.
+	if (!(await resolveGatewayWorkspaceReadAccess(workspaceId, session))) {
+		return errorResult("Workspace not found or access denied");
+	}
+
+	const workspace = await getWorkspaceById(workspaceId, session.userId);
 	if (!workspace) {
 		return errorResult("Workspace not found or access denied");
 	}
@@ -5798,20 +5835,17 @@ async function handleQueryWorkspace(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { hasWorkspaceAccess } = await import("@repo/database");
-
 	const workspaceId = args.workspaceId as string;
 	const query = args.query as string;
 	if (!workspaceId || !query) {
 		return errorResult("workspaceId and query are required");
 	}
 
-	const hasAccess = await hasWorkspaceAccess(
-		workspaceId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!hasAccess) {
+	// The shared workspace read gate, before anything is embedded or searched.
+	// The search below is scoped to the session organization's collection, so
+	// an org key naming another organization's workspace would find nothing —
+	// but the refusal must not depend on that.
+	if (!(await resolveGatewayWorkspaceReadAccess(workspaceId, session))) {
 		return errorResult("Workspace not found or access denied");
 	}
 

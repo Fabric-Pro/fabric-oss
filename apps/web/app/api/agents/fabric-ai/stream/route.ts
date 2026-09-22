@@ -666,11 +666,7 @@ export async function POST(request: NextRequest) {
 					) {
 						return null;
 					}
-					return (await hasWorkspaceAccess(
-						workspaceId,
-						userId,
-						organizationId,
-					))
+					return (await hasWorkspaceAccess(workspaceId, userId))
 						? workspaceId
 						: null;
 				}),

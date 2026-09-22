@@ -52,6 +52,7 @@ const PERMISSION_GATES = [
 const VISIBILITY_GATES = [
 	"hasGatewayProjectAccess",
 	"resolveGatewayProjectReadAccess",
+	"resolveGatewayWorkspaceReadAccess",
 	"tenantFilter(",
 	"session.organizationId",
 ] as const;
