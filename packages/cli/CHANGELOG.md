@@ -1,5 +1,14 @@
 # @fabricorg/cli
 
+## 0.3.5
+
+### Patch Changes
+
+- 9857fb1: A developer can now publish a coding-instructions change straight from the command line with `fabric instructions push --publish`, using an API key granted a new organization scope, `instructions:publish`, that is separate from the one the Connect dialog issues.
+- Updated dependencies [9857fb1]
+  - @fabricorg/sdk@0.3.4
+  - @fabricorg/sdk-mcp@0.1.6
+
 ## 0.3.4
 
 ### Patch Changes
