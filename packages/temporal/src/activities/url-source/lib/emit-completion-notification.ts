@@ -56,13 +56,14 @@ function displayUrl(url: string): string {
 	return `${host}${path}`;
 }
 
+// Inlined mirror of estimate-copy.ts contextTabHref()
 function contextTabHref(
 	projectId: string,
 	organizationSlug: string | null,
 ): string {
 	return organizationSlug
-		? `/app/${organizationSlug}/projects/${projectId}/context`
-		: `/app/projects/${projectId}/context`;
+		? `/app/${organizationSlug}/projects/${projectId}?tab=context`
+		: `/app/projects/${projectId}?tab=context`;
 }
 
 export interface EmitCompletionNotificationInput {

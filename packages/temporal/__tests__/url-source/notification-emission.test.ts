@@ -130,8 +130,8 @@ async function emitStartedNotification(args: {
 					? "About 30 seconds — we'll notify you when it's ready."
 					: `Estimated ${Math.max(1, Math.round((args.maxPages * 5 + 30) / 60))} min — we'll notify you when it's ready.`,
 			link: args.organizationId
-				? `/app/acme/projects/${args.projectId}/context`
-				: `/app/projects/${args.projectId}/context`,
+				? `/app/acme/projects/${args.projectId}?tab=context`
+				: `/app/projects/${args.projectId}?tab=context`,
 			projectId: args.projectId,
 			payload: {
 				contextId: args.contextId,
