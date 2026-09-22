@@ -7,8 +7,8 @@
  * that make those answers trustworthy: decision content is passed through
  * verbatim rather than summarised, an all-AI decision log is distinguishable
  * from one a person actually settled, the version list stays cheap by omitting
- * bodies that run to tens of KB, and a personal-context session sends a
- * `organizationId: null` tenant filter rather than an org one.
+ * bodies that run to tens of KB, and the decision-log tenant filter follows
+ * the project's hosting organization rather than the session's.
  *
  * `@repo/database` is mocked — the handlers reach it through dynamic
  * `await import(...)`, so the mock intercepts inside the handler body. The
@@ -56,8 +56,6 @@ const session: GatewaySession = {
 	createdAt: new Date("2026-01-01T00:00:00Z"),
 	expiresAt: new Date("2026-01-02T00:00:00Z"),
 };
-
-const personalSession: GatewaySession = { ...session, organizationId: null };
 
 /** Parse the JSON payload a platform tool packs into its text content block. */
 function payload(result: { content: Array<{ text: string }> }) {
@@ -271,19 +269,51 @@ describe("fabric_get_feature_decisions", () => {
 		});
 	});
 
-	it("sends a null-organization tenant filter in personal context", async () => {
+	it("filters decisions by the project's hosting organization, not the guest's session", async () => {
+		// An invited guest's session sits in their own organization; the
+		// decision rows carry the host's. Keying on the session matched
+		// nothing and reported a feature with no decisions.
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org-host",
+		});
+
 		await executePlatformTool(
 			"fabric_get_feature_decisions",
 			{ featureId: "story-1", projectId: "proj-1" },
-			personalSession,
+			{ ...session, organizationId: "org-guest" },
 		);
 
 		expect(mocks.listDecisionLogThreads).toHaveBeenCalledWith({
-			tenantFilter: { organizationId: null, userId: "user-1" },
+			tenantFilter: { organizationId: "org-host", userId: "user-1" },
 			userStoryId: "story-1",
 			excludeSuperseded: true,
 		});
 	});
+
+	it.each([
+		["null", null],
+		["an empty stored value", ""],
+	])(
+		"sends the caller's-own-rows tenant filter for an org-less project (host is %s)",
+		async (_label, hostOrganizationId) => {
+			// The session is in an organization; the project is not. The null
+			// arm must come from the project, never from the session.
+			mocks.getProjectAccessContext.mockResolvedValue({
+				organizationId: hostOrganizationId,
+			});
+			await executePlatformTool(
+				"fabric_get_feature_decisions",
+				{ featureId: "story-1", projectId: "proj-1" },
+				session,
+			);
+
+			expect(mocks.listDecisionLogThreads).toHaveBeenCalledWith({
+				tenantFilter: { organizationId: null, userId: "user-1" },
+				userStoryId: "story-1",
+				excludeSuperseded: true,
+			});
+		},
+	);
 
 	// This tool answers a model, so a retracted answer must not travel with the
 	// one that replaced it. Pinned on its own rather than left to the tenant-filter

@@ -848,6 +848,99 @@ describe("fabric_get_project_context", () => {
 	});
 });
 
+describe("fabric_get_project_context reads child rows under the project's hosting organization", () => {
+	// An invited guest's session sits in their own organization, but every
+	// child row of the project — crawled pages, conversation bundles — carries
+	// the host's. Keying the reader on the session organization matched
+	// nothing and returned an empty body that looked like an empty source.
+	// The organization-key block further down covers the same guest reading
+	// a transcript, whose text sits on the parent row — which is why this
+	// gap went unnoticed there.
+	const guest: GatewaySession = { ...session, organizationId: "org-guest" };
+	const emptyPage = { content: "", contentLength: 0, hasReadableText: false };
+
+	beforeEach(() => {
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org-host",
+		});
+	});
+
+	it("reads a crawled URL source's pages with the host organization", async () => {
+		mocks.getContextById.mockResolvedValue(
+			transcriptRow({
+				id: "ctx-link",
+				type: "LINK",
+				urlScope: "PATH_PREFIX",
+				content: "",
+				sourceTitle: "Docs site",
+			}),
+		);
+		// Return text only under the host organization, so the visible
+		// symptom — an empty body — fails this test too, not just the call
+		// shape.
+		const page = "## Install\nhttps://example.com/install\n\nRun it.\n";
+		mocks.getCrawledUrlSourceMarkdownPage.mockImplementation(
+			async (_id: string, tenant: { organizationId: string | null }) =>
+				tenant.organizationId === "org-host"
+					? {
+							content: page,
+							contentLength: page.length,
+							hasReadableText: true,
+						}
+					: emptyPage,
+		);
+
+		const body = payload(
+			await executePlatformTool(
+				"fabric_get_project_context",
+				{ contextId: "ctx-link" },
+				guest,
+			),
+		);
+
+		expect(mocks.getCrawledUrlSourceMarkdownPage).toHaveBeenCalledWith(
+			"ctx-link",
+			{ userId: "user-1", organizationId: "org-host" },
+			{ offset: 0, maxLength: 50_000 },
+		);
+		expect(body.contentAvailable).toBe(true);
+		expect(body.content).toContain("Run it.");
+	});
+
+	it("reads a monitored channel's captured conversation with the host organization", async () => {
+		mocks.getContextById.mockResolvedValue(
+			transcriptRow({
+				id: "ctx-channel",
+				type: "INTEGRATION",
+				content: "",
+				sourceTitle: "Delivery channel",
+				metadata: { provider: "SLACK", channelId: "C123" },
+			}),
+		);
+		mocks.getCapturedConversationMarkdown.mockImplementation(
+			async (_id: string, tenant: { organizationId: string | null }) =>
+				tenant.organizationId === "org-host"
+					? "## Conversation in #delivery\n**Ada**: the migration lands Tuesday."
+					: "",
+		);
+
+		const body = payload(
+			await executePlatformTool(
+				"fabric_get_project_context",
+				{ contextId: "ctx-channel" },
+				guest,
+			),
+		);
+
+		expect(mocks.getCapturedConversationMarkdown).toHaveBeenCalledWith(
+			"ctx-channel",
+			{ userId: "user-1", organizationId: "org-host" },
+		);
+		expect(body.contentAvailable).toBe(true);
+		expect(body.content).toContain("the migration lands Tuesday.");
+	});
+});
+
 describe("the editable fields are readable, so a caller can fill 'expected'", () => {
 	it("returns sourceType, aiInstructions and the edit stamp from the list", async () => {
 		mocks.listProjectContextSummaries.mockResolvedValue({
