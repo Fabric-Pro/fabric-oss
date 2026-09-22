@@ -25,7 +25,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	hasProjectAccess: vi.fn(),
+	getProjectAccessContext: vi.fn(),
 	listProjectContextSummaries: vi.fn(),
 	getContextById: vi.fn(),
 	getCrawledUrlSourceMarkdown: vi.fn(),
@@ -40,7 +40,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
-	hasProjectAccess: mocks.hasProjectAccess,
+	getProjectAccessContext: mocks.getProjectAccessContext,
 	listProjectContextSummaries: mocks.listProjectContextSummaries,
 	getContextById: mocks.getContextById,
 	getCrawledUrlSourceMarkdown: mocks.getCrawledUrlSourceMarkdown,
@@ -154,7 +154,9 @@ function metadataRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mocks.hasProjectAccess.mockResolvedValue(true);
+	mocks.getProjectAccessContext.mockResolvedValue({
+		organizationId: "org-1",
+	});
 	mocks.listProjectContextSummaries.mockResolvedValue({
 		contexts: [],
 		total: 0,
@@ -220,7 +222,7 @@ describe("fabric_list_project_contexts", () => {
 	});
 
 	it("refuses a project the caller cannot reach", async () => {
-		mocks.hasProjectAccess.mockResolvedValue(false);
+		mocks.getProjectAccessContext.mockResolvedValue(null);
 
 		const result = await executePlatformTool(
 			"fabric_list_project_contexts",
@@ -319,7 +321,7 @@ describe("fabric_get_project_context", () => {
 	});
 
 	it("hides a context whose project the caller cannot reach", async () => {
-		mocks.hasProjectAccess.mockResolvedValue(false);
+		mocks.getProjectAccessContext.mockResolvedValue(null);
 
 		const result = await executePlatformTool(
 			"fabric_get_project_context",
@@ -340,10 +342,9 @@ describe("fabric_get_project_context", () => {
 			),
 		);
 
-		expect(mocks.hasProjectAccess).toHaveBeenCalledWith(
+		expect(mocks.getProjectAccessContext).toHaveBeenCalledWith(
 			"proj-1",
 			"user-1",
-			"org-1",
 		);
 		expect(body).toMatchObject({
 			id: "ctx-1",
@@ -1264,5 +1265,142 @@ describe("fabric_update_project_context writes under the project's hosting organ
 			expect.anything(),
 			{ expected },
 		);
+	});
+});
+
+/**
+ * An `org_` key reads only its own organization's projects (Fizzy #2621).
+ *
+ * Project access is project-authoritative, so an invited guest from another
+ * organization can read a project hosted by org-b — and a key minted in org-a
+ * by that guest used to read it too. The key names its tenant; the same person
+ * through a personal key keeps what the app gives them.
+ */
+describe("an organization key stays inside its own organization on context reads", () => {
+	const orgKeyInA: GatewaySession = {
+		...session,
+		organizationId: "org-a",
+		credential: "organization-key",
+	};
+	const personalKeyInA: GatewaySession = {
+		...session,
+		organizationId: "org-a",
+		credential: "personal-key",
+	};
+
+	beforeEach(() => {
+		// The key's creator is an invited guest on a project hosted by org-b.
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org-b",
+		});
+	});
+
+	it("refuses fabric_list_project_contexts as not found, without listing", async () => {
+		const result = await executePlatformTool(
+			"fabric_list_project_contexts",
+			{ projectId: "proj-1" },
+			orgKeyInA,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toMatch(/not found or access denied/i);
+		expect(mocks.listProjectContextSummaries).not.toHaveBeenCalled();
+	});
+
+	it("refuses fabric_get_project_context as not found, without reading the body", async () => {
+		// A crawled URL source, so an admitted call would reach the body reader.
+		mocks.getContextById.mockResolvedValue(
+			transcriptRow({
+				id: "ctx-link",
+				type: "LINK",
+				urlScope: "PATH_PREFIX",
+				content: "",
+			}),
+		);
+
+		const result = await executePlatformTool(
+			"fabric_get_project_context",
+			{ contextId: "ctx-link" },
+			orgKeyInA,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toMatch(/not found or access denied/i);
+		expect(mocks.getProjectAccessContext).toHaveBeenCalledWith(
+			"proj-1",
+			"user-1",
+		);
+		expect(mocks.getCrawledUrlSourceMarkdownPage).not.toHaveBeenCalled();
+		expect(mocks.getCapturedConversationMarkdown).not.toHaveBeenCalled();
+		expect(mocks.getSignedUrl).not.toHaveBeenCalled();
+	});
+
+	it("does not return the stored content of another organization's context", async () => {
+		const result = await executePlatformTool(
+			"fabric_get_project_context",
+			{ contextId: "ctx-1" },
+			orgKeyInA,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).not.toContain("shipping Tuesday");
+	});
+
+	it("lets the same guest list contexts through a personal key", async () => {
+		const result = await executePlatformTool(
+			"fabric_list_project_contexts",
+			{ projectId: "proj-1" },
+			personalKeyInA,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(mocks.listProjectContextSummaries).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "proj-1" }),
+		);
+	});
+
+	it("lets the same guest read a context through a personal key", async () => {
+		const body = payload(
+			await executePlatformTool(
+				"fabric_get_project_context",
+				{ contextId: "ctx-1" },
+				personalKeyInA,
+			),
+		);
+
+		expect(body).toMatchObject({
+			id: "ctx-1",
+			content: "Alex: shipping Tuesday.",
+		});
+	});
+
+	it("lets an org key read a project in its own organization", async () => {
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org-a",
+		});
+
+		const result = await executePlatformTool(
+			"fabric_list_project_contexts",
+			{ projectId: "proj-1" },
+			orgKeyInA,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(mocks.listProjectContextSummaries).toHaveBeenCalled();
+	});
+
+	it("refuses an org key on a personal project", async () => {
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: null,
+		});
+
+		const result = await executePlatformTool(
+			"fabric_list_project_contexts",
+			{ projectId: "proj-1" },
+			orgKeyInA,
+		);
+
+		expect(payload(result).error).toMatch(/not found or access denied/i);
+		expect(mocks.listProjectContextSummaries).not.toHaveBeenCalled();
 	});
 });

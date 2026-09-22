@@ -21,7 +21,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	hasProjectAccess: vi.fn(),
+	getProjectAccessContext: vi.fn(),
 	getStoryById: vi.fn(),
 	getStorySummaryById: vi.fn(),
 	listDecisionLogThreads: vi.fn(),
@@ -30,7 +30,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
-	hasProjectAccess: mocks.hasProjectAccess,
+	getProjectAccessContext: mocks.getProjectAccessContext,
 	getStoryById: mocks.getStoryById,
 	getStorySummaryById: mocks.getStorySummaryById,
 	listDecisionLogThreads: mocks.listDecisionLogThreads,
@@ -174,7 +174,9 @@ function versionRow(version: number, overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mocks.hasProjectAccess.mockResolvedValue(true);
+	mocks.getProjectAccessContext.mockResolvedValue({
+		organizationId: "org-1",
+	});
 	mocks.getStoryById.mockResolvedValue(storyRow());
 	mocks.getStorySummaryById.mockResolvedValue({
 		id: "story-1",
@@ -315,7 +317,7 @@ describe("fabric_get_feature_decisions", () => {
 	});
 
 	it("never queries the log when project access is denied", async () => {
-		mocks.hasProjectAccess.mockResolvedValue(false);
+		mocks.getProjectAccessContext.mockResolvedValue(null);
 
 		const result = await executePlatformTool(
 			"fabric_get_feature_decisions",
@@ -469,5 +471,52 @@ describe("fabric_get_feature pmSync", () => {
 		);
 
 		expect(body.pmSync.statusDrifted).toBe(false);
+	});
+});
+
+/**
+ * An `org_` key reads only its own organization's projects (Fizzy #2621): the
+ * key's creator is an invited guest on a project hosted by org-b, which the
+ * project-authoritative access answer admits, but the key was issued for
+ * org-a. The same guest through a personal key still reads it.
+ */
+describe("an organization key stays inside its own organization on feature reads", () => {
+	const args = { featureId: "story-1", projectId: "proj-1" };
+	const orgKeyInA: GatewaySession = {
+		...session,
+		organizationId: "org-a",
+		credential: "organization-key",
+	};
+
+	beforeEach(() => {
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org-b",
+		});
+	});
+
+	it.each([
+		"fabric_get_feature",
+		"fabric_get_feature_decisions",
+		"fabric_get_feature_versions",
+	])("refuses %s as not found, before reading the feature", async (tool) => {
+		const result = await executePlatformTool(tool, args, orgKeyInA);
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toMatch(/not found or access denied/i);
+		expect(mocks.getStoryById).not.toHaveBeenCalled();
+		expect(mocks.getStorySummaryById).not.toHaveBeenCalled();
+		expect(mocks.listDecisionLogThreads).not.toHaveBeenCalled();
+		expect(mocks.getFeatureVersions).not.toHaveBeenCalled();
+	});
+
+	it("lets the same guest read through a personal key", async () => {
+		const result = await executePlatformTool(
+			"fabric_get_feature_decisions",
+			args,
+			{ ...orgKeyInA, credential: "personal-key" },
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(mocks.listDecisionLogThreads).toHaveBeenCalled();
 	});
 });

@@ -21,13 +21,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	hasProjectAccess: vi.fn(),
+	getProjectAccessContext: vi.fn(),
 	canCreateProjectStory: vi.fn(),
 	findFirst: vi.fn(),
 	isOrganizationMember: vi.fn(),
 	updateMany: vi.fn(),
 	storyFindUnique: vi.fn(),
-	projectFindUnique: vi.fn(),
 	findOpenBacklogTitleCollision: vi.fn(),
 	listStories: vi.fn(),
 	createStoryFromProposal: vi.fn(),
@@ -42,10 +41,9 @@ vi.mock("@repo/database", () => ({
 			findUnique: mocks.storyFindUnique,
 			updateMany: mocks.updateMany,
 		},
-		project: { findUnique: mocks.projectFindUnique },
 	},
 	isOrganizationMember: mocks.isOrganizationMember,
-	hasProjectAccess: mocks.hasProjectAccess,
+	getProjectAccessContext: mocks.getProjectAccessContext,
 	canCreateProjectStory: mocks.canCreateProjectStory,
 	findOpenBacklogTitleCollision: mocks.findOpenBacklogTitleCollision,
 	listStories: mocks.listStories,
@@ -96,7 +94,11 @@ function payload(result: { content: Array<{ text: string }> }) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mocks.hasProjectAccess.mockResolvedValue(true);
+	// Reachable, and the project's owning tenant matches the session's
+	// active org by default.
+	mocks.getProjectAccessContext.mockResolvedValue({
+		organizationId: "org-1",
+	});
 	mocks.canCreateProjectStory.mockResolvedValue(true);
 	mocks.findFirst.mockResolvedValue(null);
 	// The caller IS a member of the project's organization — their ACTIVE
@@ -109,11 +111,6 @@ beforeEach(() => {
 	mocks.storyFindUnique.mockResolvedValue({
 		id: "story-title-dupe",
 		draftingStage: "DRAFT",
-	});
-	// Project's owning tenant matches the session's active org by default.
-	mocks.projectFindUnique.mockResolvedValue({
-		id: "proj-1",
-		organizationId: "org-1",
 	});
 	mocks.findOpenBacklogTitleCollision.mockResolvedValue(null);
 	mocks.createStoryFromProposal.mockResolvedValue({
@@ -334,8 +331,7 @@ describe("fabric_create_feature — creation", () => {
 	});
 
 	it("passes a null organizationId through in personal mode (tenant XOR)", async () => {
-		mocks.projectFindUnique.mockResolvedValue({
-			id: "proj-1",
+		mocks.getProjectAccessContext.mockResolvedValue({
 			organizationId: null,
 		});
 
@@ -345,10 +341,9 @@ describe("fabric_create_feature — creation", () => {
 			{ ...session, organizationId: null },
 		);
 
-		expect(mocks.hasProjectAccess).toHaveBeenCalledWith(
+		expect(mocks.getProjectAccessContext).toHaveBeenCalledWith(
 			"proj-1",
 			"user-1",
-			undefined,
 		);
 		expect(mocks.createStoryFromProposal).toHaveBeenCalledWith(
 			expect.objectContaining({ organizationId: null }),
@@ -447,17 +442,16 @@ describe("fabric_create_feature — creation side effects", () => {
 });
 
 /**
- * `hasProjectAccess` proves membership but IGNORES its organizationId argument
- * (packages/database/prisma/queries/projects/projects.ts:918), so a session
- * active in one tenant can still name a project owned by another. The shared
+ * Project access is project-authoritative — it proves the caller's tie to the
+ * project, not the session's active context — so a session active in one
+ * tenant can still name a project owned by another. The shared
  * write preamble compares the project's own owner org against the session's and
  * refuses a mismatch — otherwise the feature would be drafted with one tenant's
  * context and written into another's project.
  */
 describe("fabric_create_feature — tenant context", () => {
 	it("refuses an org-B project from an org-A session, naming the org to switch to", async () => {
-		mocks.projectFindUnique.mockResolvedValue({
-			id: "proj-1",
+		mocks.getProjectAccessContext.mockResolvedValue({
 			organizationId: "org-2",
 		});
 
@@ -481,8 +475,7 @@ describe("fabric_create_feature — tenant context", () => {
 	 * old instruction sent a model into a retry loop.
 	 */
 	it("refuses an org-less project from an organization session", async () => {
-		mocks.projectFindUnique.mockResolvedValue({
-			id: "proj-1",
+		mocks.getProjectAccessContext.mockResolvedValue({
 			organizationId: null,
 		});
 
@@ -510,8 +503,11 @@ describe("fabric_create_feature — tenant context", () => {
 		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
 	});
 
-	it("treats a project that vanished between the two reads as not found", async () => {
-		mocks.projectFindUnique.mockResolvedValue(null);
+	// One read answers both reach and the hosting tenant, so a missing project
+	// and one the caller cannot reach are the same answer, with no tenant
+	// lookup behind it.
+	it("answers a project that does not exist exactly as one the caller cannot reach", async () => {
+		mocks.getProjectAccessContext.mockResolvedValue(null);
 
 		const result = await executePlatformTool(
 			"fabric_create_feature",
@@ -523,6 +519,67 @@ describe("fabric_create_feature — tenant context", () => {
 		expect(payload(result).error).toBe(
 			"Project not found or access denied",
 		);
+		expect(mocks.isOrganizationMember).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * An organization key is bound to the organization it was issued for, so
+	 * another organization's project is simply not there for it — the generic
+	 * answer every gateway tool gives. The mismatch messages above would name
+	 * the hosting organization and point at fabric_switch_organization, which
+	 * refuses organization keys anyway, or tell a guest creator that reading
+	 * works, which it does not through this key.
+	 */
+	it.each([
+		["a member of", true],
+		["only a guest in", false],
+	])(
+		"refuses an org key on another organization's project as not found when its creator is %s that organization",
+		async (_relation, creatorIsHostMember) => {
+			mocks.getProjectAccessContext.mockResolvedValue({
+				organizationId: "org-b",
+			});
+			mocks.isOrganizationMember.mockResolvedValue(creatorIsHostMember);
+
+			const result = await executePlatformTool(
+				"fabric_create_feature",
+				{ projectId: "proj-1", title: "Export the roadmap as CSV" },
+				{
+					...session,
+					organizationId: "org-a",
+					credential: "organization-key",
+				},
+			);
+
+			expect(result.isError).toBe(true);
+			const { error } = payload(result);
+			expect(error).toMatch(/not found or access denied/i);
+			expect(error).not.toContain("org-b");
+			expect(error).not.toContain("fabric_switch_organization");
+			expect(mocks.isOrganizationMember).not.toHaveBeenCalled();
+			expect(mocks.canCreateProjectStory).not.toHaveBeenCalled();
+			expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+		},
+	);
+
+	it("lets an org key file a feature into its own organization's project", async () => {
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org-a",
+		});
+
+		const result = await executePlatformTool(
+			"fabric_create_feature",
+			{ projectId: "proj-1", title: "Export the roadmap as CSV" },
+			{
+				...session,
+				organizationId: "org-a",
+				credential: "organization-key",
+			},
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(mocks.canCreateProjectStory).toHaveBeenCalled();
+		expect(mocks.createStoryFromProposal).toHaveBeenCalled();
 	});
 });
 
@@ -641,7 +698,7 @@ describe("fabric_create_feature — validation and permissions", () => {
 	});
 
 	it("denies a caller without project access", async () => {
-		mocks.hasProjectAccess.mockResolvedValue(false);
+		mocks.getProjectAccessContext.mockResolvedValue(null);
 		const result = await executePlatformTool(
 			"fabric_create_feature",
 			{ projectId: "proj-1", title: "Export the roadmap as CSV" },

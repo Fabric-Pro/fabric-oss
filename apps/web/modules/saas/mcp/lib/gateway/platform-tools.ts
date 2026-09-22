@@ -2258,15 +2258,25 @@ async function handleUpdateProject(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { updateProject, canEditProject } = await import("@repo/database");
+	const { updateProject } = await import("@repo/database");
 
 	const projectId = args.projectId as string;
 	if (!projectId) {
 		return errorResult("projectId is required");
 	}
 
-	const canEdit = await canEditProject(projectId, session.userId);
-	if (!canEdit) {
+	// The shared write resolver, so this write gets the same PROJECT_UPDATE
+	// check, discovery boundary and organization-key binding as every other
+	// project write here.
+	const access = await resolveGatewayProjectWriteAccess(
+		projectId,
+		session,
+		"PROJECT_UPDATE",
+	);
+	if (access === "not-found") {
+		return errorResult("Project not found or access denied");
+	}
+	if (access === "forbidden") {
 		return errorResult("No edit permission for this project");
 	}
 
@@ -2290,9 +2300,7 @@ async function handleListFeatures(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { listStorySummaries, hasProjectAccess } = await import(
-		"@repo/database"
-	);
+	const { listStorySummaries } = await import("@repo/database");
 
 	if (typeof args.projectId !== "string" || !args.projectId.trim()) {
 		return errorResult(
@@ -2301,12 +2309,7 @@ async function handleListFeatures(
 	}
 	const projectId = args.projectId.trim();
 
-	const hasAccess = await hasProjectAccess(
-		projectId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!hasAccess) {
+	if (!(await hasGatewayProjectAccess(projectId, session))) {
 		return errorResult("Project not found or access denied");
 	}
 
@@ -2314,9 +2317,8 @@ async function handleListFeatures(
 	// through unvalidated, and an unrecognised enum value would surface as a
 	// raw Prisma validation error rather than something an agent can act on.
 	// (This handler needs no tenant-context check of its own beyond
-	// hasProjectAccess — it is a read whose every row is already scoped by
-	// `projectId`, so a cross-org session cannot widen what it returns. The
-	// pre-existing gap in hasProjectAccess is noted on handleCreateBug.)
+	// hasGatewayProjectAccess — it is a read whose every row is already scoped
+	// by `projectId`, so a cross-org session cannot widen what it returns.)
 	if (
 		args.kind !== undefined &&
 		!STORY_KINDS.includes(args.kind as StoryKindValue)
@@ -2384,28 +2386,96 @@ async function handleListFeatures(
 }
 
 /**
+ * Whether this session's CREDENTIAL may act on a project hosted by
+ * `hostOrganizationId`: the second question every project-scoped tool asks,
+ * after the project-authoritative "can this user reach the project at all?".
+ *
+ * That first answer (`getProjectAccessContext`, `resolveProjectAccess`) is
+ * deliberately project-authoritative. An invited guest holds a `ProjectMember`
+ * row and no membership in the host organization, and the app admits them
+ * (ADR-018; the oRPC side resolves the hosting organization through
+ * `resolveOrganizationId` in `packages/api/orpc/procedures.ts`), so a
+ * membership-based check would refuse them a project they can open in the
+ * browser. The same answer says nothing about the credential, though. An
+ * `org_` key names its tenant in the key record and must never reach another
+ * organization's project, guest grant or not: the REST twin's rule
+ * (`packages/api/modules/v1/instructions.ts`, "An ORGANIZATION key stays bound
+ * to its own organization"). Without it, a key issued for organization A whose
+ * creator is a guest on a project hosted by B read and wrote B's data.
+ *
+ * A personal key and a browser session get no organization comparison, which
+ * is the browser's own rule for the same person. A personal project (`null`
+ * host) never matches an organization key, and an organization key that
+ * somehow carries no organization matches nothing. Callers turn `false` into
+ * their not-found refusal, never a forbidden one: a caller must not learn from
+ * it that a project id exists in someone else's tenant.
+ */
+function credentialMayReachHost(
+	session: GatewaySession,
+	hostOrganizationId: string | null,
+): boolean {
+	if (session.credential !== "organization-key") {
+		return true;
+	}
+	return (
+		session.organizationId !== null &&
+		hostOrganizationId === session.organizationId
+	);
+}
+
+/**
+ * The read gate for every project-scoped read tool: the caller's project
+ * access plus the credential binding, or `null` when either refuses.
+ *
+ * Project access is `getProjectAccessContext`, the single query
+ * `hasProjectAccess` wraps, so this costs nothing extra and also yields the
+ * project's hosting organization — which {@link credentialMayReachHost} needs,
+ * and which `hasProjectAccess` discards (it ignores its organization argument
+ * entirely).
+ */
+async function resolveGatewayProjectReadAccess(
+	projectId: string,
+	session: GatewaySession,
+): Promise<{ organizationId: string | null } | null> {
+	const { getProjectAccessContext } = await import("@repo/database");
+	const access = await getProjectAccessContext(projectId, session.userId);
+	if (!access || !credentialMayReachHost(session, access.organizationId)) {
+		return null;
+	}
+	return access;
+}
+
+/** {@link resolveGatewayProjectReadAccess} for a handler that needs only the yes/no. */
+async function hasGatewayProjectAccess(
+	projectId: string,
+	session: GatewaySession,
+): Promise<boolean> {
+	return (await resolveGatewayProjectReadAccess(projectId, session)) !== null;
+}
+
+/**
  * Resolve visibility and write permission from the same authoritative project
- * access result. A caller outside the narrower project-discovery boundary
- * remains indistinguishable from a missing project; a visible caller missing
- * the requested permission gets the existing explicit refusal. The owner
- * shortcut matches the oRPC gate.
+ * access result. A caller outside the narrower project-discovery boundary, or
+ * holding a credential that may not reach the project's organization, remains
+ * indistinguishable from a missing project; a caller who may see the project
+ * but lacks the requested permission gets the existing explicit refusal. The
+ * owner shortcut matches the oRPC gate.
+ *
+ * One write resolver, not two: this is
+ * {@link resolveGatewayProjectWriteAccessWithHost} without the tenant.
  */
 async function resolveGatewayProjectWriteAccess(
 	projectId: string,
-	userId: string,
+	session: GatewaySession,
 	permission: GatewayWritePermission,
 ): Promise<"allowed" | "not-found" | "forbidden"> {
-	const { hasPermission, Permissions, resolveProjectAccess } = await import(
-		"@repo/database"
-	);
-	const access = await resolveProjectAccess(projectId, userId);
-	if (!access || !access.isVisible) {
-		return "not-found";
-	}
-	return access.source === "owner" ||
-		hasPermission(access.permissions, Permissions[permission])
-		? "allowed"
-		: "forbidden";
+	return (
+		await resolveGatewayProjectWriteAccessWithHost(
+			projectId,
+			session,
+			permission,
+		)
+	).status;
 }
 
 type GatewayWritePermission =
@@ -2428,13 +2498,9 @@ type GatewayWritePermission =
  * session's organization refused them here what the browser grants them.
  *
  * The organization-key binding is then explicit rather than an accident of
- * that filter: an `org_` key names its tenant in the key record and never
- * reaches another organization's project, guest grant or not — the same rule
- * {@link resolveInstructionProjectAccess} applies. A personal key and a browser
- * session keep the project-authoritative rule, which is the browser's own.
- *
- * Every refusal that could reveal another tenant's project reads as not-found;
- * only a caller who may see the project learns that they lack the permission.
+ * that filter — {@link credentialMayReachHost}, the rule every project-scoped
+ * tool applies. It runs before the permission check, so an `org_` key learns
+ * nothing about another organization's project from a forbidden refusal.
  */
 async function resolveGatewayProjectWriteAccessWithHost(
 	projectId: string,
@@ -2452,10 +2518,7 @@ async function resolveGatewayProjectWriteAccessWithHost(
 	if (!access || !access.isVisible) {
 		return { status: "not-found" };
 	}
-	if (
-		session.credential === "organization-key" &&
-		access.organizationId !== session.organizationId
-	) {
+	if (!credentialMayReachHost(session, access.organizationId)) {
 		return { status: "not-found" };
 	}
 	if (
@@ -2471,7 +2534,7 @@ async function handleGetFeature(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { getStoryById, hasProjectAccess } = await import("@repo/database");
+	const { getStoryById } = await import("@repo/database");
 
 	const featureId = args.featureId as string;
 	const projectId = args.projectId as string;
@@ -2482,12 +2545,7 @@ async function handleGetFeature(
 		return errorResult("projectId is required");
 	}
 
-	const hasAccess = await hasProjectAccess(
-		projectId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!hasAccess) {
+	if (!(await hasGatewayProjectAccess(projectId, session))) {
 		return errorResult("Project not found or access denied");
 	}
 
@@ -2581,8 +2639,9 @@ async function handleGetFeatureDecisions(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { getStorySummaryById, hasProjectAccess, listDecisionLogThreads } =
-		await import("@repo/database");
+	const { getStorySummaryById, listDecisionLogThreads } = await import(
+		"@repo/database"
+	);
 
 	const featureId = args.featureId as string;
 	const projectId = args.projectId as string;
@@ -2593,12 +2652,7 @@ async function handleGetFeatureDecisions(
 		return errorResult("projectId is required");
 	}
 
-	const hasAccess = await hasProjectAccess(
-		projectId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!hasAccess) {
+	if (!(await hasGatewayProjectAccess(projectId, session))) {
 		return errorResult("Project not found or access denied");
 	}
 
@@ -2664,12 +2718,8 @@ async function handleGetFeatureVersions(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const {
-		getFeatureVersion,
-		getFeatureVersions,
-		getStorySummaryById,
-		hasProjectAccess,
-	} = await import("@repo/database");
+	const { getFeatureVersion, getFeatureVersions, getStorySummaryById } =
+		await import("@repo/database");
 
 	const featureId = args.featureId as string;
 	const projectId = args.projectId as string;
@@ -2680,12 +2730,7 @@ async function handleGetFeatureVersions(
 		return errorResult("projectId is required");
 	}
 
-	const hasAccess = await hasProjectAccess(
-		projectId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!hasAccess) {
+	if (!(await hasGatewayProjectAccess(projectId, session))) {
 		return errorResult("Project not found or access denied");
 	}
 
@@ -2746,21 +2791,14 @@ async function handleGetProjectStatuses(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { listStoryStatuses, hasProjectAccess } = await import(
-		"@repo/database"
-	);
+	const { listStoryStatuses } = await import("@repo/database");
 
 	const projectId = args.projectId as string;
 	if (!projectId) {
 		return errorResult("projectId is required");
 	}
 
-	const hasAccess = await hasProjectAccess(
-		projectId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!hasAccess) {
+	if (!(await hasGatewayProjectAccess(projectId, session))) {
 		return errorResult("Project not found or access denied");
 	}
 
@@ -2789,7 +2827,7 @@ async function handleUpdateFeatureStatus(
 
 	const access = await resolveGatewayProjectWriteAccess(
 		projectId,
-		session.userId,
+		session,
 		"PROJECT_UPDATE",
 	);
 	if (access === "not-found") {
@@ -2828,7 +2866,7 @@ async function handleCompleteTask(
 
 	const access = await resolveGatewayProjectWriteAccess(
 		projectId,
-		session.userId,
+		session,
 		"STORY_UPDATE",
 	);
 	if (access === "not-found") {
@@ -2878,7 +2916,7 @@ async function handleUpdateTask(
 
 	const access = await resolveGatewayProjectWriteAccess(
 		projectId,
-		session.userId,
+		session,
 		"STORY_UPDATE",
 	);
 	if (access === "not-found") {
@@ -2947,7 +2985,7 @@ async function handleCreateFeatureTask(
 
 	const access = await resolveGatewayProjectWriteAccess(
 		projectId,
-		session.userId,
+		session,
 		"PROJECT_UPDATE",
 	);
 	if (access === "not-found") {
@@ -3066,47 +3104,48 @@ type ProjectWriteResolution =
 
 /**
  * Shared authorization preamble for every gateway tool that writes a work item
- * into a project. Membership → tenant XOR → STORY_CREATE, in that order.
+ * into a project. Reach → tenant XOR → STORY_CREATE, in that order.
  *
- * TENANT SCOPING — why the middle step exists at all: `hasProjectAccess` proves
- * MEMBERSHIP but not context. It ignores its `organizationId` argument entirely
- * (`packages/database/prisma/queries/projects/projects.ts:918`), so a caller
- * whose gateway session is active in org A can name an org-B project (or an
- * org-less one) and pass. Every write path therefore also compares the
- * project's own owner org against the session's and refuses a mismatch —
- * otherwise the item would be drafted with one tenant's context and written
- * into another's project. Both sides are normalised to `null` so the
- * comparison is exact, never loose.
+ * REACH is {@link resolveGatewayProjectReadAccess}: project-authoritative
+ * access plus the organization-key binding, in one query that also yields the
+ * project's hosting organization. An `org_` key naming another organization's
+ * project stops here with the generic not-found, before the tenant-XOR
+ * messages below — which name the hosting organization and point at
+ * `fabric_switch_organization`, a tool that refuses organization keys anyway.
+ * Past this step an organization key's session organization IS the project's,
+ * so those messages only ever reach a personal key or a browser session.
+ *
+ * TENANT SCOPING — why the middle step exists at all: project access is
+ * project-authoritative and says nothing about the session's ACTIVE context,
+ * so a personal-key or browser caller whose session sits in org A can name an
+ * org-B project they belong to (or an org-less one) and pass. Every write path
+ * therefore also compares the project's hosting org against the session's and
+ * refuses a mismatch — otherwise the item would be drafted with one tenant's
+ * context and written into another's project. Both sides are normalised to
+ * `null` so the comparison is exact, never loose.
  *
  * An org-less project (`organizationId` is `null`) is still reachable in the
  * data — this change migrated none — but no longer reachable by a caller,
  * since no session can sit in the context that owns it. Its refusal therefore
  * offers no way out, and must not suggest one.
  *
- * The ordering is load-bearing: a non-member must not learn which tenant owns a
- * project id they guessed, and the permission check runs last so a refusal
- * costs one query rather than three.
+ * The ordering is load-bearing: a caller who cannot reach the project must not
+ * learn which tenant owns a project id they guessed, and the permission check
+ * runs last so an earlier refusal never pays for it.
  *
  * The STORY_CREATE check is `canCreateProjectStory`, not `canEditProject` —
- * `hasProjectAccess` alone also admits Viewers/Commenters. Mirrors the
+ * project access alone also admits Viewers/Commenters. Mirrors the
  * in-platform `fabric_create_story` tool and the `createStoryProcedure` gate.
  */
 async function resolveProjectForStoryWrite(
 	projectId: string,
 	session: GatewaySession,
 ): Promise<ProjectWriteResolution> {
-	const { db, hasProjectAccess, canCreateProjectStory } = await import(
-		"@repo/database"
-	);
+	const { canCreateProjectStory } = await import("@repo/database");
 
-	// Membership. Necessary but NOT sufficient — see the tenant-scoping note
-	// above.
-	const hasAccess = await hasProjectAccess(
-		projectId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!hasAccess) {
+	// Reach. Necessary but NOT sufficient — see the tenant-scoping note above.
+	const access = await resolveGatewayProjectReadAccess(projectId, session);
+	if (!access) {
 		return {
 			ok: false,
 			error: errorResult("Project not found or access denied"),
@@ -3114,17 +3153,7 @@ async function resolveProjectForStoryWrite(
 	}
 
 	// Tenant XOR: the project's owning tenant must be the session's active one.
-	const project = await db.project.findUnique({
-		where: { id: projectId },
-		select: { id: true, organizationId: true },
-	});
-	if (!project) {
-		return {
-			ok: false,
-			error: errorResult("Project not found or access denied"),
-		};
-	}
-	const projectOrganizationId = project.organizationId ?? null;
+	const projectOrganizationId = access.organizationId ?? null;
 	const sessionOrganizationId = session.organizationId ?? null;
 	if (projectOrganizationId !== sessionOrganizationId) {
 		// Only offer the switch to someone who can actually take it.
@@ -3132,12 +3161,12 @@ async function resolveProjectForStoryWrite(
 		// `fabric_switch_organization` holds the caller to `isOrganizationMember`,
 		// so a project-scoped guest — an accepted ProjectMember inside an
 		// organization they do not belong to — is refused there. They can READ
-		// this project, because `hasProjectAccess` ignores the organization
-		// argument it is handed and answers on the ProjectMember row alone. So
-		// the guest reads the project, tries to write, and is sent to a door
-		// that will not open for them. Telling someone "no" is worse than
-		// nothing only when the "no" is wrong; sending them somewhere they
-		// cannot go is worse than either.
+		// this project (through a personal key or the browser — an organization
+		// key never gets this far), because project access answers on the
+		// ProjectMember row alone. So the guest reads the project, tries to
+		// write, and is sent to a door that will not open for them. Telling
+		// someone "no" is worse than nothing only when the "no" is wrong; sending
+		// them somewhere they cannot go is worse than either.
 		const canSwitch = projectOrganizationId
 			? await (async () => {
 					const { isOrganizationMember } = await import(
@@ -3172,7 +3201,10 @@ async function resolveProjectForStoryWrite(
 		};
 	}
 
-	return { ok: true, project };
+	return {
+		ok: true,
+		project: { id: projectId, organizationId: access.organizationId },
+	};
 }
 
 /**
@@ -3402,7 +3434,7 @@ async function handleCreateBug(
 	}
 	const priority = (args.priority as StoryPriorityValue) ?? "P2_MEDIUM";
 
-	// Membership → tenant XOR → STORY_CREATE.
+	// Reach → tenant XOR → STORY_CREATE.
 	const resolved = await resolveProjectForStoryWrite(projectId, session);
 	if (!resolved.ok) {
 		return resolved.error;
@@ -3742,7 +3774,7 @@ async function handleCreateFeature(
 	}
 	const size = args.size as StorySizeValue | undefined;
 
-	// Membership → tenant XOR → STORY_CREATE.
+	// Reach → tenant XOR → STORY_CREATE.
 	const resolved = await resolveProjectForStoryWrite(projectId, session);
 	if (!resolved.ok) {
 		return resolved.error;
@@ -3811,19 +3843,14 @@ async function handleListDocuments(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { listDocuments, hasProjectAccess } = await import("@repo/database");
+	const { listDocuments } = await import("@repo/database");
 
 	const projectId = args.projectId as string;
 	if (!projectId) {
 		return errorResult("projectId is required");
 	}
 
-	const hasAccess = await hasProjectAccess(
-		projectId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!hasAccess) {
+	if (!(await hasGatewayProjectAccess(projectId, session))) {
 		return errorResult("Project not found or access denied");
 	}
 
@@ -3862,9 +3889,7 @@ async function handleGetDocument(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { getDocumentById, hasProjectAccess } = await import(
-		"@repo/database"
-	);
+	const { getDocumentById } = await import("@repo/database");
 
 	const documentId = args.documentId as string;
 	if (!documentId) {
@@ -3877,12 +3902,7 @@ async function handleGetDocument(
 	}
 
 	// Verify access to the parent project
-	const hasAccess = await hasProjectAccess(
-		doc.projectId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!hasAccess) {
+	if (!(await hasGatewayProjectAccess(doc.projectId, session))) {
 		return errorResult("Document not found or access denied");
 	}
 
@@ -3923,7 +3943,7 @@ async function handleCreateDocument(
 
 	const access = await resolveGatewayProjectWriteAccess(
 		projectId,
-		session.userId,
+		session,
 		"PROJECT_UPDATE",
 	);
 	if (access === "not-found") {
@@ -3992,7 +4012,7 @@ async function handleUpdateDocument(
 
 	const access = await resolveGatewayProjectWriteAccess(
 		doc.projectId,
-		session.userId,
+		session,
 		"PROJECT_UPDATE",
 	);
 	if (access === "not-found") {
@@ -4186,21 +4206,14 @@ async function handleListProjectContexts(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { hasProjectAccess, listProjectContextSummaries } = await import(
-		"@repo/database"
-	);
+	const { listProjectContextSummaries } = await import("@repo/database");
 
 	const projectId = args.projectId as string;
 	if (!projectId) {
 		return errorResult("projectId is required");
 	}
 
-	const hasAccess = await hasProjectAccess(
-		projectId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!hasAccess) {
+	if (!(await hasGatewayProjectAccess(projectId, session))) {
 		return errorResult("Project not found or access denied");
 	}
 
@@ -4256,7 +4269,6 @@ async function handleGetProjectContext(
 		getCapturedConversationMarkdown,
 		getContextById,
 		getCrawledUrlSourceMarkdownPage,
-		hasProjectAccess,
 	} = await import("@repo/database");
 
 	const contextId = args.contextId as string;
@@ -4271,13 +4283,8 @@ async function handleGetProjectContext(
 
 	// Tenant isolation: the unscoped lookup above resolves any row, so access
 	// is decided here, on the parent project — the same gate every other
-	// gateway handler applies.
-	const hasAccess = await hasProjectAccess(
-		ctx.projectId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!hasAccess) {
+	// gateway read applies.
+	if (!(await hasGatewayProjectAccess(ctx.projectId, session))) {
 		return errorResult("Context not found or access denied");
 	}
 
@@ -4716,28 +4723,14 @@ const INSTRUCTION_PROJECT_DENIED = "Project not found or access denied";
  * The caller's access to a project, or the refusal, for every
  * coding-instructions tool.
  *
- * Two questions, and the second one is the reason this exists rather than a
- * bare `getProjectAccessContext` call at each site:
- *
- *  - CAN this user reach the project at all? `getProjectAccessContext` answers
- *    it, and it is deliberately project-authoritative: an invited guest holds a
- *    `ProjectMember` row and no membership in the host organization, so a
- *    membership-based check would refuse them for a project they can open in
- *    the app.
- *  - Is the CREDENTIAL allowed to act there? An `org_` key names its tenant in
- *    the key record and must never reach another organization's project,
- *    guest grant or not. The project-authoritative answer above says nothing
- *    about that, so for an organization-key session the project's hosting
- *    organization has to equal the session's — which is exactly what the REST
- *    twin checks (`packages/api/modules/v1/instructions.ts`, "An ORGANIZATION
- *    key stays bound to its own organization"). Without it, a key issued for
- *    organization A whose creator is a guest on a project hosted by B reached
- *    B — a read on the three read tools, and a WRITE once the proposal tool
- *    landed.
- *
- * A personal key and a browser session keep the project-authoritative rule
- * with no organization comparison, which is the browser's own rule for the
- * same person.
+ * It is {@link resolveGatewayProjectReadAccess} — the same read gate every
+ * project-scoped read tool applies: project-authoritative access, so an
+ * invited guest keeps what the app gives them, plus
+ * {@link credentialMayReachHost}, so an `org_` key never reaches another
+ * organization's project. That binding matters doubly here: without it, a key
+ * issued for organization A whose creator is a guest on a project hosted by B
+ * reached B — a read on the three read tools, and a WRITE once the proposal
+ * tool landed.
  *
  * The refusal is identical either way, and generic: a caller must not learn
  * from it that a project id exists in someone else's tenant.
@@ -4747,27 +4740,16 @@ const INSTRUCTION_PROJECT_DENIED = "Project not found or access denied";
  * fail-closed arm for it: the snapshot's non-null `organizationId` column can
  * never equal `null`, and `requireHostingOrganizationId` inside
  * `submitInstructionChange` throws FORBIDDEN. An organization key is refused
- * for such a project by the comparison above, which is the stricter answer and
- * the right one.
+ * for such a project by the credential binding, which is the stricter answer
+ * and the right one.
  */
 async function resolveInstructionProjectAccess(
 	projectId: string,
 	session: GatewaySession,
 ): Promise<{ organizationId: string | null } | { error: ToolCallResult }> {
-	const { getProjectAccessContext } = await import("@repo/database");
-	// Live access check first, unconditional (wildcard keys included). This
-	// is the same gate every other gateway handler applies before touching
-	// tenant data — `hasProjectAccess` is a thin boolean wrapper over this
-	// very call, so using the context form costs no extra query and also
-	// yields the project's hosting organization.
-	const access = await getProjectAccessContext(projectId, session.userId);
+	// Live access check first, unconditional (wildcard keys included).
+	const access = await resolveGatewayProjectReadAccess(projectId, session);
 	if (!access) {
-		return { error: errorResult(INSTRUCTION_PROJECT_DENIED) };
-	}
-	if (
-		session.credential === "organization-key" &&
-		access.organizationId !== session.organizationId
-	) {
 		return { error: errorResult(INSTRUCTION_PROJECT_DENIED) };
 	}
 	return { organizationId: access.organizationId };
@@ -5217,31 +5199,6 @@ function readProposedChanges(
 }
 
 /**
- * `fabric_propose_project_instruction_change` — suggest an edit to a project's
- * coding instructions, for a person to approve.
- *
- * The tool always proposes and never publishes. That is not a permission
- * shortcut, it is the product rule: an agent editing the instructions the next
- * agent reads, with nobody in between, is the loop this feature exists to keep
- * a person inside. Nothing the `instructions:write` scope reaches has a
- * publish mode to ask for — which is what lets that scope be offered to
- * read-only roles and described as review-gated without the description
- * depending on who minted the key.
- *
- * Publishing from outside the browser exists, and deliberately not here: it is
- * a REST route behind `instructions:publish`, a scope no tool in `TOOL_SCOPES`
- * names and the Connect dialog never mints, reached by a person running
- * `fabric instructions push --publish`. The handler below passes
- * `mode: "proposal"` as a constant for that reason — an agent that invents a
- * mode in its arguments is not consulted.
- *
- * Authorization is the shared function's, unchanged: `INSTRUCTION_READ` on the
- * project, resolved live for this caller, in the project's own hosting
- * organization. The `getProjectAccessContext` call below runs first only so a
- * caller with no access gets this file's usual "not found or access denied"
- * rather than a permission message that confirms the project exists.
- */
-/**
  * What the agent is told about the proposal it just submitted.
  *
  * A repeated call is answered with the proposal the first one opened, so this
@@ -5313,6 +5270,33 @@ function proposalOutcomeMessage(result: {
 	);
 }
 
+/**
+ * `fabric_propose_project_instruction_change` — suggest an edit to a project's
+ * coding instructions, for a person to approve.
+ *
+ * The tool always proposes and never publishes. That is not a permission
+ * shortcut, it is the product rule: an agent editing the instructions the next
+ * agent reads, with nobody in between, is the loop this feature exists to keep
+ * a person inside. Nothing the `instructions:write` scope reaches has a
+ * publish mode to ask for — which is what lets that scope be offered to
+ * read-only roles and described as review-gated without the description
+ * depending on who minted the key.
+ *
+ * Publishing from outside the browser exists, and deliberately not here: it is
+ * a REST route behind `instructions:publish`, a scope no tool in `TOOL_SCOPES`
+ * names and the Connect dialog never mints, reached by a person running
+ * `fabric instructions push --publish`. This handler passes
+ * `mode: "proposal"` as a constant for that reason — an agent that invents a
+ * mode in its arguments is not consulted.
+ *
+ * Authorization is the shared function's, unchanged: `INSTRUCTION_READ` on the
+ * project, resolved live for this caller, in the project's own hosting
+ * organization. {@link resolveInstructionProjectAccess} — the shared read gate,
+ * {@link resolveGatewayProjectReadAccess} — runs first only so a caller with no
+ * access, or an organization key naming another organization's project, gets
+ * this file's usual "not found or access denied" rather than a permission
+ * message that confirms the project exists.
+ */
 async function handleProposeProjectInstructionChange(
 	args: Record<string, unknown>,
 	session: GatewaySession,

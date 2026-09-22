@@ -27,6 +27,10 @@ const mocks = vi.hoisted(() => ({
 	canCreateProjectInOrganization: vi.fn(),
 	updateTask: vi.fn(),
 	createProject: vi.fn(),
+	updateProject: vi.fn(),
+	createDocument: vi.fn(),
+	updateDocument: vi.fn(),
+	getDocumentById: vi.fn(),
 	storyTaskFindFirst: vi.fn(),
 	updateContextMetadata: vi.fn(),
 }));
@@ -45,6 +49,11 @@ vi.mock("@repo/database", () => ({
 	canCreateProjectInOrganization: mocks.canCreateProjectInOrganization,
 	updateTask: mocks.updateTask,
 	createProject: mocks.createProject,
+	updateProject: mocks.updateProject,
+	createDocument: mocks.createDocument,
+	updateDocument: mocks.updateDocument,
+	getDocumentById: mocks.getDocumentById,
+	IntegrationContractStatusManagedError: class extends Error {},
 	updateContextMetadata: mocks.updateContextMetadata,
 	normalizeContextMetadataValue: (value: string | null | undefined) =>
 		value?.trim() ? value.trim() : null,
@@ -94,6 +103,30 @@ beforeEach(() => {
 	mocks.createProject.mockResolvedValue({
 		id: "proj-new",
 		name: "Example Project",
+	});
+	mocks.updateProject.mockResolvedValue({
+		id: "proj-1",
+		name: "Renamed Project",
+	});
+	mocks.getDocumentById.mockResolvedValue({
+		id: "doc-1",
+		projectId: "proj-1",
+		type: "GENERAL",
+		status: "DRAFT",
+	});
+	mocks.createDocument.mockResolvedValue({
+		id: "doc-new",
+		projectId: "proj-1",
+		type: "GENERAL",
+		title: "Notes",
+		status: "DRAFT",
+		version: 1,
+	});
+	mocks.updateDocument.mockResolvedValue({
+		id: "doc-1",
+		title: "Notes",
+		status: "DRAFT",
+		version: 2,
 	});
 	// "unchanged" keeps the allowed path free of the audit and realtime
 	// imports; the write-side effects are covered in project-context-tools.
@@ -315,5 +348,279 @@ describe("fabric_create_project honours PROJECT_CREATE", () => {
 
 		expect(text(result)).toContain("No organization in this session");
 		expect(mocks.createProject).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * An `org_` key is bound to the organization it was issued for (Fizzy #2621).
+ *
+ * Project access is project-authoritative — an invited guest keeps a
+ * `ProjectMember` row in a project hosted by another organization, and the
+ * app lets them in. That answer says nothing about the credential, so a key
+ * minted in organization A by a guest on a project hosted by B used to write
+ * B's data. The same guest through a personal key keeps what the browser gives
+ * them; the organization key is refused as if the project did not exist.
+ */
+describe("an organization key stays inside its own organization on writes", () => {
+	const orgKeyInA: GatewaySession = {
+		...session,
+		organizationId: "org-a",
+		credential: "organization-key",
+	};
+	const personalKeyInA: GatewaySession = {
+		...session,
+		organizationId: "org-a",
+		credential: "personal-key",
+	};
+
+	/** The key's creator is an invited guest, with write rights, on a project hosted by org-b. */
+	function guestOnProjectInOrgB(
+		permissions = ["project:update", "story:update"],
+	) {
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: "org-b",
+			source: "project-member",
+			isVisible: true,
+			permissions,
+		});
+	}
+
+	function memberOfProjectInOrgA() {
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: "org-a",
+			source: "project-member",
+			isVisible: true,
+			permissions: ["project:update", "story:update"],
+		});
+	}
+
+	const updateTaskArgs = {
+		taskId: "task-1",
+		projectId: "proj-1",
+		title: "Renamed",
+	};
+
+	describe("fabric_update_task", () => {
+		it("refuses an org key on another organization's project as not found, without a write", async () => {
+			guestOnProjectInOrgB();
+
+			const result = await executePlatformTool(
+				"fabric_update_task",
+				updateTaskArgs,
+				orgKeyInA,
+			);
+
+			expect(result.isError).toBe(true);
+			expect(text(result)).toMatch(/not found or access denied/i);
+			expect(mocks.storyTaskFindFirst).not.toHaveBeenCalled();
+			expect(mocks.updateTask).not.toHaveBeenCalled();
+		});
+
+		// The binding runs before the permission check, so a guest without the
+		// permission cannot learn from a "No permission" message that the
+		// project exists in someone else's tenant.
+		it("answers not found, never forbidden, even when the permission is missing too", async () => {
+			guestOnProjectInOrgB([]);
+
+			const result = await executePlatformTool(
+				"fabric_update_task",
+				updateTaskArgs,
+				orgKeyInA,
+			);
+
+			expect(text(result)).toMatch(/not found or access denied/i);
+			expect(text(result)).not.toContain("No permission");
+			expect(mocks.updateTask).not.toHaveBeenCalled();
+		});
+
+		it("lets the same guest write through a personal key, as the app does", async () => {
+			guestOnProjectInOrgB();
+
+			const result = await executePlatformTool(
+				"fabric_update_task",
+				updateTaskArgs,
+				personalKeyInA,
+			);
+
+			expect(result.isError).toBeUndefined();
+			expect(mocks.updateTask).toHaveBeenCalled();
+		});
+
+		it("lets an org key write a project in its own organization", async () => {
+			memberOfProjectInOrgA();
+
+			const result = await executePlatformTool(
+				"fabric_update_task",
+				updateTaskArgs,
+				orgKeyInA,
+			);
+
+			expect(result.isError).toBeUndefined();
+			expect(mocks.updateTask).toHaveBeenCalled();
+		});
+
+		it("refuses an org key on a personal project", async () => {
+			mocks.resolveProjectAccess.mockResolvedValue({
+				organizationId: null,
+				source: "owner",
+				isVisible: true,
+				permissions: ["project:update", "story:update"],
+			});
+
+			const result = await executePlatformTool(
+				"fabric_update_task",
+				updateTaskArgs,
+				orgKeyInA,
+			);
+
+			expect(text(result)).toMatch(/not found or access denied/i);
+			expect(mocks.updateTask).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("fabric_update_project", () => {
+		const args = { projectId: "proj-1", name: "Renamed Project" };
+
+		it("refuses an org key on another organization's project as not found, without a write", async () => {
+			guestOnProjectInOrgB();
+
+			const result = await executePlatformTool(
+				"fabric_update_project",
+				args,
+				orgKeyInA,
+			);
+
+			expect(result.isError).toBe(true);
+			expect(text(result)).toMatch(/not found or access denied/i);
+			expect(mocks.updateProject).not.toHaveBeenCalled();
+		});
+
+		it("lets the same guest update through a personal key", async () => {
+			guestOnProjectInOrgB();
+
+			const result = await executePlatformTool(
+				"fabric_update_project",
+				args,
+				personalKeyInA,
+			);
+
+			expect(result.isError).toBeUndefined();
+			expect(mocks.updateProject).toHaveBeenCalledWith(
+				"proj-1",
+				"user-1",
+				{ name: "Renamed Project" },
+			);
+		});
+
+		it("lets an org key update a project in its own organization", async () => {
+			memberOfProjectInOrgA();
+
+			const result = await executePlatformTool(
+				"fabric_update_project",
+				args,
+				orgKeyInA,
+			);
+
+			expect(result.isError).toBeUndefined();
+			expect(mocks.updateProject).toHaveBeenCalled();
+		});
+
+		// Deliberate, and narrower than the app's own project update: the org
+		// role grants PROJECT_UPDATE, but the caller neither created the
+		// project nor is a member of it, so fabric_get_project and
+		// fabric_list_projects do not show it to them either. This tool now
+		// answers the same way as every other gateway project write.
+		it("refuses an org role on a project hidden from discovery as not found, without a write", async () => {
+			mocks.resolveProjectAccess.mockResolvedValue({
+				source: "org",
+				isVisible: false,
+				organizationId: "org-1",
+				permissions: ["project:update"],
+			});
+
+			const result = await executePlatformTool(
+				"fabric_update_project",
+				args,
+				session,
+			);
+
+			expect(text(result)).toContain(
+				"Project not found or access denied",
+			);
+			expect(mocks.updateProject).not.toHaveBeenCalled();
+		});
+
+		it("keeps the explicit refusal for a caller who may see the project but not edit it", async () => {
+			mocks.resolveProjectAccess.mockResolvedValue({
+				organizationId: "org-1",
+				source: "project-member",
+				isVisible: true,
+				permissions: [],
+			});
+
+			const result = await executePlatformTool(
+				"fabric_update_project",
+				args,
+				session,
+			);
+
+			expect(text(result)).toContain(
+				"No edit permission for this project",
+			);
+			expect(mocks.updateProject).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("document writes", () => {
+		it("refuses fabric_create_document for an org key on another organization's project", async () => {
+			guestOnProjectInOrgB();
+
+			const result = await executePlatformTool(
+				"fabric_create_document",
+				{
+					projectId: "proj-1",
+					type: "GENERAL",
+					title: "Notes",
+					content: "Body",
+				},
+				orgKeyInA,
+			);
+
+			expect(result.isError).toBe(true);
+			expect(text(result)).toMatch(/not found or access denied/i);
+			expect(mocks.createDocument).not.toHaveBeenCalled();
+		});
+
+		it("refuses fabric_update_document for an org key on another organization's project", async () => {
+			guestOnProjectInOrgB();
+
+			const result = await executePlatformTool(
+				"fabric_update_document",
+				{ documentId: "doc-1", content: "Edited" },
+				orgKeyInA,
+			);
+
+			expect(result.isError).toBe(true);
+			expect(text(result)).toMatch(/not found or access denied/i);
+			expect(mocks.updateDocument).not.toHaveBeenCalled();
+		});
+
+		it("lets an org key create a document in its own organization's project", async () => {
+			memberOfProjectInOrgA();
+
+			const result = await executePlatformTool(
+				"fabric_create_document",
+				{
+					projectId: "proj-1",
+					type: "GENERAL",
+					title: "Notes",
+					content: "Body",
+				},
+				orgKeyInA,
+			);
+
+			expect(result.isError).toBeUndefined();
+			expect(mocks.createDocument).toHaveBeenCalled();
+		});
 	});
 });

@@ -35,8 +35,7 @@ const mocks = vi.hoisted(() => ({
 	isOrganizationMember: vi.fn(),
 	memberFindMany: vi.fn(),
 	userUpdate: vi.fn(),
-	projectFindUnique: vi.fn(),
-	hasProjectAccess: vi.fn(),
+	getProjectAccessContext: vi.fn(),
 	canCreateProjectStory: vi.fn(),
 }));
 
@@ -44,7 +43,6 @@ vi.mock("@repo/database", () => ({
 	db: {
 		member: { findMany: mocks.memberFindMany },
 		user: { update: mocks.userUpdate },
-		project: { findUnique: mocks.projectFindUnique },
 		userStory: {
 			findFirst: vi.fn(),
 			findUnique: vi.fn(),
@@ -52,7 +50,7 @@ vi.mock("@repo/database", () => ({
 		},
 	},
 	isOrganizationMember: mocks.isOrganizationMember,
-	hasProjectAccess: mocks.hasProjectAccess,
+	getProjectAccessContext: mocks.getProjectAccessContext,
 	canCreateProjectStory: mocks.canCreateProjectStory,
 	findOpenBacklogTitleCollision: vi.fn().mockResolvedValue(null),
 	listStories: vi.fn(),
@@ -424,9 +422,7 @@ describe("work-item refusals", () => {
 	 * instruction was a retry loop, not a hint.
 	 */
 	it("tells a caller an org-less project is unreachable, without offering a way back", async () => {
-		mocks.hasProjectAccess.mockResolvedValue(true);
-		mocks.projectFindUnique.mockResolvedValue({
-			id: "proj-1",
+		mocks.getProjectAccessContext.mockResolvedValue({
 			organizationId: null,
 		});
 
@@ -447,9 +443,7 @@ describe("work-item refusals", () => {
 	});
 
 	it("still names the organization to switch to for a project in another one", async () => {
-		mocks.hasProjectAccess.mockResolvedValue(true);
-		mocks.projectFindUnique.mockResolvedValue({
-			id: "proj-1",
+		mocks.getProjectAccessContext.mockResolvedValue({
 			organizationId: "org-2",
 		});
 
