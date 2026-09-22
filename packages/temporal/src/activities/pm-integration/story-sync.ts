@@ -7043,6 +7043,13 @@ export async function fetchPMItemsByIds(input: {
 	 * stops pulling past it and un-attempted ids become transient `failedIds`.
 	 */
 	budgetMs?: number;
+	/**
+	 * REST GitLab only: resolve the source with `resolvePmSource`'s
+	 * `requireFreshToken`, so a token past its real expiry that cannot be
+	 * refreshed fails the fetch with its reason instead of failing every read
+	 * one by one. The hourly poll sets it; other callers keep the lenient path.
+	 */
+	requireFreshToken?: boolean;
 }): Promise<ListWorkItemsResult> {
 	const {
 		mcpConfigId: maybeMcpConfigId,
@@ -7082,6 +7089,7 @@ export async function fetchPMItemsByIds(input: {
 			userId,
 			organizationId: organizationId ?? null,
 			containerId,
+			requireFreshToken: input.requireFreshToken,
 		});
 		if (source.kind !== "rest-gitlab") {
 			throw ApplicationFailure.nonRetryable(

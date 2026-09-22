@@ -17,6 +17,7 @@
 import { db } from "@repo/database";
 import { withRefreshLock } from "@repo/database/prisma/queries/lib/refresh-lock";
 import { decryptApiKey, encryptApiKey } from "@repo/utils";
+import { scrubSecrets } from "@repo/utils/scrub-secrets";
 import { GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS } from "./oauth-refresh";
 import { GitLabApiError } from "./rest-client";
 
@@ -212,6 +213,23 @@ function isTokenExpired(credentials: ParsedCredentials): boolean {
 	const expiresAt = obtainedAt + credentials.expires_in * 1000;
 	const bufferMs = 5 * 60 * 1000; // Refresh 5 minutes before expiry
 	return Date.now() >= expiresAt - bufferMs;
+}
+
+/**
+ * True only when the token's real lifetime has run out (no refresh buffer)
+ * and the lifetime is KNOWN. Unknown expiry is not "past expiry": legacy rows
+ * without `expires_in`/`token_obtained_at` are force-refreshed by
+ * `isTokenExpired`, and their token may well still work.
+ */
+function isTokenPastExpiry(credentials: ParsedCredentials): boolean {
+	if (!credentials.expires_in || !credentials.token_obtained_at) {
+		return false;
+	}
+	const obtainedAt = new Date(credentials.token_obtained_at).getTime();
+	if (Number.isNaN(obtainedAt)) {
+		return false;
+	}
+	return Date.now() >= obtainedAt + credentials.expires_in * 1000;
 }
 
 async function getGitLabClientCredentials(
@@ -633,6 +651,7 @@ async function refreshTokenIfNeeded(
 	},
 	userId?: string,
 	organizationId?: string,
+	options: { strict?: boolean } = {},
 ): Promise<string> {
 	const credentialsJson = decryptApiKey(integration.credentials);
 	let parsed: ParsedCredentials;
@@ -661,7 +680,26 @@ async function refreshTokenIfNeeded(
 			organizationId,
 		);
 	} catch (error) {
-		console.error("[GitLab] Pre-emptive token refresh failed:", error);
+		// Logged in BOTH modes — the strict rethrow below still surfaces this
+		// same error to its own caller, but only as the fixed-vocabulary
+		// `reason` string; the raw error (stack, provider detail) would
+		// otherwise never reach a log at all on that path. `refreshErrorForLog`
+		// withholds the provider's own response body (folded into a
+		// `performTokenRefresh` message) while keeping every other error's
+		// message, since those come from our own code/libraries and are what
+		// makes a "could not be obtained" failure diagnosable.
+		console.error(
+			"[GitLab] Pre-emptive token refresh failed:",
+			refreshErrorForLog(error),
+		);
+		// Lenient callers get the current token back and let the 401 retry
+		// handle it — that token may still be valid inside the pre-expiry
+		// buffer. `strict` callers (the hourly poll) get the failure instead
+		// of a token that is PAST its real expiry and GitLab will reject on
+		// every call.
+		if (options.strict && isTokenPastExpiry(parsed)) {
+			throw error;
+		}
 		// Return current token and let the 401 retry handle it
 		return currentToken;
 	}
@@ -1210,16 +1248,12 @@ async function getAuthenticatedUserInfo(
 // Direct API Functions (for project wizard repo picker etc.)
 // ============================================================================
 
-/**
- * Get the GitLab access token for a user's workflow integration.
- * Automatically refreshes the token if expired.
- * Returns null if not configured.
- */
-export async function getGitLabAccessToken(
+/** Shared active-GitLab-WorkflowIntegration lookup for both access-token getters below. */
+async function findActiveGitLabIntegration(
 	userId: string,
 	organizationId?: string,
-): Promise<string | null> {
-	const integration = organizationId
+) {
+	return organizationId
 		? await db.workflowIntegration.findFirst({
 				where: {
 					userId,
@@ -1236,6 +1270,21 @@ export async function getGitLabAccessToken(
 					isActive: true,
 				},
 			});
+}
+
+/**
+ * Get the GitLab access token for a user's workflow integration.
+ * Automatically refreshes the token if expired.
+ * Returns null if not configured.
+ */
+export async function getGitLabAccessToken(
+	userId: string,
+	organizationId?: string,
+): Promise<string | null> {
+	const integration = await findActiveGitLabIntegration(
+		userId,
+		organizationId,
+	);
 
 	if (!integration?.credentials) {
 		return null;
@@ -1254,6 +1303,146 @@ export async function getGitLabAccessToken(
 			error: error instanceof Error ? error.message : String(error),
 		});
 		return null;
+	}
+}
+
+/**
+ * Why a GitLab token refresh failed, as a FIXED phrase safe to persist and
+ * show to users. Never echoes provider text: `performTokenRefresh` folds up to
+ * 200 characters of GitLab's response body into its message, and that body is
+ * untrusted. Only an OAuth `error` code matching `^[a-z_]{1,40}$` is kept.
+ */
+export function describeGitLabRefreshFailure(error: unknown): string {
+	const name = error instanceof Error ? error.name : "";
+	const message = error instanceof Error ? error.message : "";
+	if (name === "TimeoutError" || name === "AbortError") {
+		return "the token refresh timed out";
+	}
+	if (name === "RefreshLockBudgetExhaustedError") {
+		return "the token refresh could not start in time";
+	}
+	if (
+		message.startsWith(
+			"Cannot refresh GitLab token: no client credentials configured",
+		)
+	) {
+		return "no GitLab OAuth app credentials are configured";
+	}
+	const failed = /^GitLab token refresh failed: (\d{3})\b/.exec(message);
+	if (failed) {
+		if (
+			message.includes("(response body unreadable, possibly a timeout)")
+		) {
+			return "the token refresh timed out";
+		}
+		const status = Number(failed[1]);
+		// A 5xx or 429 is GitLab's OWN infrastructure struggling (overload, rate
+		// limit, an upstream hiccup) — not a judgment on the credential. "Rejected"
+		// belongs only to a status GitLab issued to say the grant itself is bad;
+		// folding an OAuth `error` code into a 5xx/429 phrase would also be
+		// misleading (that code is meaningless outside a genuine rejection).
+		if (status >= 500 || status === 429) {
+			return `GitLab could not refresh the token (HTTP ${status})`;
+		}
+		const code = /"error"\s*:\s*"([a-z_]{1,40})"/.exec(message)?.[1];
+		return `GitLab rejected the token refresh (HTTP ${status}${code ? ` ${code}` : ""})`;
+	}
+	const oauthError = /^GitLab token refresh error: ([a-z_]{1,40})$/.exec(
+		message,
+	);
+	if (oauthError) {
+		return `GitLab rejected the token refresh (${oauthError[1]})`;
+	}
+	if (message.startsWith("GitLab token refresh error:")) {
+		return "GitLab returned no usable token";
+	}
+	if (error instanceof TypeError && /fetch failed/i.test(message)) {
+		return "GitLab could not be reached";
+	}
+	// Also covers a stored credential that could not be decrypted or parsed.
+	return "the GitLab token could not be obtained";
+}
+
+/**
+ * A refresh error as it may be written to a server log. The provider's
+ * response body, which `performTokenRefresh` folds into its message, is never
+ * logged — only the fixed-vocabulary reason for those. Other messages come
+ * from our own code or libraries (the refresh lock, the database, credential
+ * decryption) and are what makes a "could not be obtained" failure
+ * diagnosable, so they are kept, scrubbed.
+ */
+function refreshErrorForLog(error: unknown): {
+	name: string;
+	reason: string;
+	message?: string;
+} {
+	const name = error instanceof Error ? error.name : typeof error;
+	const reason = describeGitLabRefreshFailure(error);
+	const message = error instanceof Error ? error.message : String(error);
+	if (
+		message.startsWith("GitLab token refresh failed:") ||
+		message.startsWith("GitLab token refresh error:")
+	) {
+		return { name, reason };
+	}
+	return { name, reason, message: scrubSecrets(message) };
+}
+
+export type FreshGitLabToken =
+	| { ok: true; token: string }
+	| { ok: false; reason: string };
+
+/**
+ * Like `getGitLabAccessToken`, but a token that is PAST its real expiry and
+ * could not be refreshed is reported as a failure (with a safe reason)
+ * instead of being handed back to fail every call with a 401. Everything else
+ * matches the lenient getter: a raw token string, a token without a refresh
+ * token, an unexpired token, a failed refresh inside the pre-expiry buffer,
+ * or unknown expiry all return the current token. `null` ONLY when there is
+ * no active integration row or it stores no credentials; every other failure
+ * that occurs while REFRESHING a resolved credential (including one that
+ * could not be decrypted or parsed) is `{ ok: false }`. A failure to read the
+ * integration row itself (a database error from `findActiveGitLabIntegration`)
+ * is NOT caught here and rejects the promise instead.
+ */
+export async function getFreshGitLabAccessToken(
+	userId: string,
+	organizationId?: string,
+): Promise<FreshGitLabToken | null> {
+	const integration = await findActiveGitLabIntegration(
+		userId,
+		organizationId,
+	);
+	if (!integration?.credentials) {
+		return null;
+	}
+	try {
+		return {
+			ok: true,
+			token: await refreshTokenIfNeeded(
+				integration,
+				userId,
+				organizationId,
+				{
+					strict: true,
+				},
+			),
+		};
+	} catch (error) {
+		// `reason` is fixed-vocabulary (safe to persist and show to users);
+		// `refreshErrorForLog` adds server-log-only fields (never duplicating
+		// `reason`, via the spread) that let a NON-provider failure (the refresh
+		// lock, the database, credential decryption) be diagnosed, while
+		// withholding GitLab's own response body — `scrubSecrets` alone does not
+		// redact every unquoted form a reflected secret can take.
+		const errorForLog = refreshErrorForLog(error);
+		console.error("[GitLab] getFreshGitLabAccessToken failed", {
+			userId,
+			organizationId,
+			integrationId: integration.id,
+			...errorForLog,
+		});
+		return { ok: false, reason: errorForLog.reason };
 	}
 }
 

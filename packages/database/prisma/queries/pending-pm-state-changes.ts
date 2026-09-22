@@ -183,7 +183,9 @@ export async function upsertPendingChange(params: {
  * per-item round trip (`backend/queries.md`: no N+1), and the fetch classifier
  * reads `draftingStage`/`pmAutoHidden` for the reopen predicate from the same
  * batch. Stories are the only work-item rows since the Epic/Feature folder
- * tables were dropped.
+ * tables were dropped. Each row also carries its link provenance
+ * (`externalMcpServerId`, `externalUrl`) so the poll can skip stories linked
+ * to a previously used PM tool.
  */
 export async function getLinkedExternalIds(projectId: string): Promise<
 	Array<{
@@ -197,6 +199,10 @@ export async function getLinkedExternalIds(projectId: string): Promise<
 		pmAutoHidden: boolean;
 		lastSyncedPmHash: string | null;
 		lastPmSyncStatus: PmSyncStatus | null;
+		/** Link provenance — the poll reads only stories linked to the ACTIVE PM
+		 *  tool and decides that from these (Fizzy #2304 follow-up). */
+		externalMcpServerId: string | null;
+		externalUrl: string | null;
 	}>
 > {
 	const stories = await db.userStory.findMany({
@@ -208,6 +214,8 @@ export async function getLinkedExternalIds(projectId: string): Promise<
 			pmAutoHidden: true,
 			lastSyncedPmHash: true,
 			lastPmSyncStatus: true,
+			externalMcpServerId: true,
+			externalUrl: true,
 		},
 	});
 
@@ -219,6 +227,8 @@ export async function getLinkedExternalIds(projectId: string): Promise<
 		pmAutoHidden: s.pmAutoHidden,
 		lastSyncedPmHash: s.lastSyncedPmHash,
 		lastPmSyncStatus: s.lastPmSyncStatus,
+		externalMcpServerId: s.externalMcpServerId,
+		externalUrl: s.externalUrl,
 	}));
 }
 

@@ -81,7 +81,10 @@ vi.mock("../src/activities/pm-source", () => ({
 	resolvePmSource: (...args: unknown[]) => mockResolvePmSource(...args),
 	resolvePmServerKey: vi.fn().mockResolvedValue("azure-devops"),
 	PMSourceNotFound: class PMSourceNotFound extends Error {
-		constructor(public reason: string) {
+		constructor(
+			public reason: string,
+			public detail?: string,
+		) {
 			super(reason);
 			this.name = "PMSourceNotFound";
 		}
@@ -638,5 +641,54 @@ describe("getAdoActiveProjects — status-sync summary for a skipped project (Fi
 				},
 			],
 		]);
+	});
+
+	it("records the reason's detail when the token refresh failed with a fixed-vocabulary reason, and resolves with requireFreshToken", async () => {
+		const { PMSourceNotFound } = await import(
+			"../src/activities/pm-source"
+		);
+		const skipped = (id: string, pmStatusSyncEnabled: boolean) => ({
+			id,
+			projectManagementMcpServerId: "key:gitlab-official",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: "acme/portal",
+			projectManagementContainerName: null,
+			lastAdoStatePollAt: null,
+			userId: "user-1",
+			organizationId: "org-1",
+			pmStatusSyncEnabled,
+			pmStatusSyncSessionAt: SESSION,
+		});
+		vi.mocked(db.project.findMany).mockResolvedValue([
+			skipped("proj-synced", true),
+		] as never);
+		mockResolvePmSource.mockRejectedValue(
+			new PMSourceNotFound(
+				"token-failed",
+				"GitLab rejected the token refresh (HTTP 401 invalid_client)",
+			),
+		);
+
+		const result = await getAdoActiveProjects();
+
+		expect(result).toEqual([]);
+		expect(vi.mocked(mergePmStatusSyncLastRun).mock.calls).toEqual([
+			[
+				{
+					projectId: "proj-synced",
+					sessionAt: SESSION,
+					patch: {
+						failure: {
+							at: NOW.toISOString(),
+							kind: "source-not-found",
+							error: "token-failed: GitLab rejected the token refresh (HTTP 401 invalid_client)",
+						},
+					},
+				},
+			],
+		]);
+		expect(mockResolvePmSource).toHaveBeenCalledWith(
+			expect.objectContaining({ requireFreshToken: true }),
+		);
 	});
 });

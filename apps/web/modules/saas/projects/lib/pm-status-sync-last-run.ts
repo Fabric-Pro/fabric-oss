@@ -5,14 +5,17 @@
  * `Project.pmStatusSyncLastRun` is written in pieces by the hourly poll while
  * the status-sync switch is on (spec D2.6): the fetch summary, a failure or a
  * skipped project, and the reconcile outcome counts. This turns that JSON into
- * one of five states. It parses through the SAME schema the writers build
+ * one of seven states. It parses through the SAME schema the writers build
  * through, imported from its dependency-free module: the `@repo/database`
  * barrel would drag the Prisma client into the client bundle.
  *
  * A failure never reads as healthy, and neither does silence: nothing recorded
  * for longer than two poll intervals after the switch went on is `stale`, the
  * same threshold `pm-sync-status.ts` uses for the poll itself. Nor does a
- * fetch whose reconcile never finished: the fetch writes its summary every
+ * fetch that could not read some of its tickets, OR that read none of them at
+ * all even though nothing individually failed — every id deferred, never
+ * attempted (`read-errors`; the trigger is not `failed > 0` alone). Nor does
+ * a fetch whose reconcile never finished: the fetch writes its summary every
  * hour, but the outcome is written only at the END of reconcile, so a
  * reconcile that times out or throws every cycle would otherwise look healthy
  * forever (`outcome-overdue`). `now` is injected so the thresholds are
@@ -39,6 +42,22 @@ export type PmStatusSyncRunView =
 	| { kind: "stale"; at: Date; run: PmStatusSyncLastRun | null }
 	/** A fetch landed at `at`, but no outcome for it within the grace period. */
 	| { kind: "outcome-overdue"; at: Date; run: PmStatusSyncLastRun }
+	/**
+	 * A current fetch in which some tickets could not be read: their statuses
+	 * were not checked this cycle, so the run is never healthy (AC13).
+	 * `nothingRead` when not a single ticket was read — either every read
+	 * failed, or every id was deferred (never attempted, `failed` still 0) —
+	 * PROVIDED the run had something readable (`linked > notFound`); a board
+	 * whose tickets are all not-found or has none linked stays healthy.
+	 */
+	| {
+			kind: "read-errors";
+			at: Date;
+			run: PmStatusSyncLastRun;
+			failed: number;
+			linked: number;
+			nothingRead: boolean;
+	  }
 	| { kind: "healthy"; at: Date; run: PmStatusSyncLastRun };
 
 /**
@@ -147,6 +166,33 @@ export function derivePmStatusSyncRunView(args: {
 			at: new Date(fetchAt),
 			run: effectiveRun,
 		};
+	}
+	// `failed` excludes not-found and never-attempted ids (the worker's
+	// `fetchSummaryCounts` keeps the buckets disjoint), so neither deleted
+	// tickets nor budget rotation trip this on their own. But a fetch where
+	// EVERY id was deferred (never attempted — MCP capability discovery timed
+	// out, or REST source resolution spent the whole budget) also records
+	// `failed = 0`, and a failed-only trigger would print that run healthy
+	// even though nothing was read. `nothingRead` catches that: nothing was
+	// read although there was something readable (`linked > notFound` — a
+	// board whose tickets are ALL not-found stays healthy, since deleted
+	// tickets are FLAG_MISSING's job, not a read error; `linked === 0` stays
+	// healthy the same way).
+	const fetchSummary = effectiveRun.fetch;
+	if (fetchSummary) {
+		const nothingRead =
+			fetchSummary.fetched === 0 &&
+			fetchSummary.linked > fetchSummary.notFound;
+		if (fetchSummary.failed > 0 || nothingRead) {
+			return {
+				kind: "read-errors",
+				at,
+				run: effectiveRun,
+				failed: fetchSummary.failed,
+				linked: fetchSummary.linked,
+				nothingRead,
+			};
+		}
 	}
 	return { kind: "healthy", at, run: effectiveRun };
 }

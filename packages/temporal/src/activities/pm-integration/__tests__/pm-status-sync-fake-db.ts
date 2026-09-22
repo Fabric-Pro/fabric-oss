@@ -497,6 +497,8 @@ export function fakeDatabaseModule(): Record<string, unknown> {
 					pmAutoHidden: r.pmAutoHidden,
 					lastSyncedPmHash: r.lastSyncedPmHash,
 					lastPmSyncStatus: r.lastPmSyncStatus,
+					externalMcpServerId: r.externalMcpServerId ?? null,
+					externalUrl: r.externalUrl ?? null,
 				})),
 		findFabricItemByExternalId: async (
 			projectId: string,

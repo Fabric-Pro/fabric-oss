@@ -4,7 +4,10 @@ import {
 	readPmServerIdKeySentinel,
 	resolvePMConfigForUser,
 } from "@repo/database";
-import { getGitLabAccessToken } from "@repo/integrations/gitlab";
+import {
+	getFreshGitLabAccessToken,
+	getGitLabAccessToken,
+} from "@repo/integrations/gitlab";
 
 /**
  * Discriminated PM source rehydrated inside a Temporal activity.
@@ -38,8 +41,17 @@ const GITLAB_DEFAULT_BASE_URL = "https://gitlab.com/api/v4";
 export class PMSourceNotFound extends Error {
 	constructor(
 		public reason: "no-config" | "no-integration" | "token-failed",
+		/**
+		 * A fixed-vocabulary explanation (never provider text) — today only why
+		 * a GitLab token refresh failed (`describeGitLabRefreshFailure`).
+		 */
+		public detail?: string,
 	) {
-		super(`PM source not resolvable: ${reason}`);
+		super(
+			detail
+				? `PM source not resolvable: ${reason} (${detail})`
+				: `PM source not resolvable: ${reason}`,
+		);
 		this.name = "PMSourceNotFound";
 	}
 }
@@ -70,6 +82,12 @@ export async function resolvePmSource(args: {
 	userId: string;
 	organizationId: string | null;
 	containerId: string | null;
+	/**
+	 * The hourly poll sets it: a token past its real expiry whose refresh
+	 * failed skips the project with the reason, instead of letting every
+	 * ticket read fail on its own.
+	 */
+	requireFreshToken?: boolean;
 }): Promise<PMSource> {
 	const { mcpServerId, mcpConfigId, userId, organizationId, containerId } =
 		args;
@@ -137,17 +155,37 @@ export async function resolvePmSource(args: {
 
 	// Resolve the token for the integration's OWNER — the caller themselves when
 	// they have their own connection, or the org-mate who configured GitLab.
-	// `getGitLabAccessToken` returns `string | null` and never throws on
-	// auth/refresh failures (it swallows them and returns null). Guard both
-	// paths so callers always see PMSourceNotFound on failure.
+	// `getGitLabAccessToken` never throws on a refresh failure: it hands back
+	// the current token (still valid inside the pre-expiry buffer, dead after
+	// it) and lets the caller's 401 handling cope. `requireFreshToken` callers
+	// get a dead-and-unrefreshable token reported as token-failed instead.
 	let token: string | null;
-	try {
-		token = await getGitLabAccessToken(
-			integration.userId,
-			organizationId ?? undefined,
-		);
-	} catch {
-		throw new PMSourceNotFound("token-failed");
+	if (args.requireFreshToken) {
+		let fresh: Awaited<ReturnType<typeof getFreshGitLabAccessToken>>;
+		try {
+			fresh = await getFreshGitLabAccessToken(
+				integration.userId,
+				organizationId ?? undefined,
+			);
+		} catch {
+			throw new PMSourceNotFound("token-failed");
+		}
+		if (!fresh) {
+			throw new PMSourceNotFound("token-failed");
+		}
+		if (!fresh.ok) {
+			throw new PMSourceNotFound("token-failed", fresh.reason);
+		}
+		token = fresh.token;
+	} else {
+		try {
+			token = await getGitLabAccessToken(
+				integration.userId,
+				organizationId ?? undefined,
+			);
+		} catch {
+			throw new PMSourceNotFound("token-failed");
+		}
 	}
 	if (!token) {
 		throw new PMSourceNotFound("token-failed");

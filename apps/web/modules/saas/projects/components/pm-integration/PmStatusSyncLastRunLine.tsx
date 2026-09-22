@@ -20,7 +20,8 @@ const STATUS_SYNC_FAILURE_COPY: Record<
 /**
  * "Last status sync" (spec AC13): the hourly status sync's last run for the
  * current session. A failure never reads as healthy and silence never reads as
- * fine, nor does a fetch whose outcome never arrived (`outcome-overdue`) — see
+ * fine, nor does a fetch whose outcome never arrived (`outcome-overdue`), nor
+ * one that could not read some tickets (`read-errors`) — see
  * `derivePmStatusSyncRunView`. A stale outcome (recorded before the
  * current fetch) is already stripped out of `view.run` by that derivation, so
  * this component only ever renders counts from the current cycle.
@@ -75,6 +76,34 @@ export function PmStatusSyncLastRunLine({
 				</p>
 				{view.run.fetch ? (
 					<p>{formatPmStatusSyncFetch(view.run.fetch)}</p>
+				) : null}
+			</div>
+		);
+	}
+
+	if (view.kind === "read-errors") {
+		// Some tickets could not be read, so their statuses were not checked
+		// this cycle — never shown as healthy (AC13). Nothing read at all is a
+		// failure; a partial read is a warning.
+		return (
+			<div
+				className={
+					view.nothingRead
+						? "space-y-0.5 text-destructive text-xs"
+						: "space-y-0.5 text-highlight text-xs"
+				}
+			>
+				<p className="flex items-center gap-1.5">
+					<TriangleAlertIcon className="size-3.5" aria-hidden />
+					{view.nothingRead
+						? `Last status sync ${relative}: no ticket could be read.`
+						: `Last status sync ${relative}: ${view.failed} of ${view.linked} tickets could not be read.`}
+				</p>
+				{view.run.fetch ? (
+					<p>{formatPmStatusSyncFetch(view.run.fetch)}</p>
+				) : null}
+				{view.run.outcome ? (
+					<p>{formatPmStatusSyncOutcomes(view.run.outcome.counts)}</p>
 				) : null}
 			</div>
 		);
