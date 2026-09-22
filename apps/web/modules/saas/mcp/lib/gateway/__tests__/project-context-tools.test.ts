@@ -1799,6 +1799,40 @@ describe("fabric_upsert_project_context", () => {
 		expect(body.error).toMatch(/expectedContentHash/);
 	});
 
+	it("tells the agent a file named by hash was deleted, and that a retry without the hash recreates it or answers duplicate", async () => {
+		mocks.upsertSyncedContext.mockResolvedValue({
+			status: "conflict",
+			contextId: null,
+			sourcePath: "docs/architecture.md",
+			contentHash: "c".repeat(64),
+			current: null,
+		});
+
+		const result = await upsert({ expectedContentHash: "d".repeat(64) });
+
+		expect(result.isError).toBe(true);
+		const body = payload(result);
+		expect(body).toMatchObject({ status: "conflict", current: null });
+		expect(body.error).toMatch(/deleted on the server/i);
+		expect(body.error).toMatch(/nothing was written/i);
+		expect(body.error).toMatch(/without 'expectedContentHash'/);
+		// A retry without the hash is an ordinary create, so it can find the
+		// same content under another path.
+		expect(body.error).toMatch(/'duplicate'.*elsewhere in the project/);
+		// Not the stale-version advice: there is nothing to read and merge.
+		expect(body.error).not.toMatch(/fabric_get_project_context/);
+	});
+
+	it("tells an agent what a conflict with no current version means", () => {
+		const definition = PLATFORM_TOOL_DEFINITIONS.find(
+			(tool) => tool.name === "fabric_upsert_project_context",
+		);
+
+		expect(definition?.description).toMatch(
+			/'current' null.*without expectedContentHash.*'duplicate'.*elsewhere in the project/i,
+		);
+	});
+
 	it.each([
 		["unchanged", /already stored/i],
 		["duplicate", /duplicateOfContextId/],

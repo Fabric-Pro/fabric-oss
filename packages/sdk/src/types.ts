@@ -406,6 +406,14 @@ export class FabricError extends Error {
 		message: string,
 		public readonly status: number,
 		public readonly code?: string,
+		/**
+		 * The error body's `data`, when the route sent one — the structured
+		 * half of a refusal. A route that explains WHY it refused (a synced
+		 * context file's 409 names the stored version it lost to) puts that
+		 * here, and dropping it left the caller with a sentence and nothing
+		 * to act on. `undefined` when the body carried none.
+		 */
+		public readonly data?: unknown,
 	) {
 		super(message);
 		this.name = "FabricError";

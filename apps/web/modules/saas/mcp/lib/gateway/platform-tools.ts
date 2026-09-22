@@ -949,7 +949,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		description:
 			"Pushes a text file into a project's Context tab as a knowledge source, keyed by the file's path in your working tree ('sourcePath') inside that project, so pushing the same path again updates that one source instead of adding another. " +
 			"The result's 'status' says what happened: 'created' for a path the project has not seen; 'unchanged' when the same content is already stored under this path (nothing is written, so repeating a call is harmless); 'updated' when changed content replaced the previous version, which is then re-indexed for search; 'duplicate' when identical content is already in the project as another source (another pushed file, or one added in the Context tab), in which case nothing is created and 'duplicateOfContextId' is the existing source. " +
-			"To replace a file that already exists under this path, first read it with fabric_get_project_context (find it with fabric_list_project_contexts), or take the hash from a 'conflict' result, and pass its 'contentHash' as 'expectedContentHash'. Omitting expectedContentHash means: create the file if the path is new, otherwise only accept identical content — it never means overwrite. If the stored version is not the one you name (someone else changed it since), the tool returns 'conflict' with the current 'contentHash' and who changed it, and writes nothing: read it again, merge, and retry with that hash. " +
+			"To replace a file that already exists under this path, first read it with fabric_get_project_context (find it with fabric_list_project_contexts), or take the hash from a 'conflict' result, and pass its 'contentHash' as 'expectedContentHash'. Omitting expectedContentHash means: create the file if the path is new, otherwise only accept identical content — it never means overwrite. If the stored version is not the one you name (someone else changed it since), the tool returns 'conflict' with the current 'contentHash' and who changed it, and writes nothing: read it again, merge, and retry with that hash. A 'conflict' with 'current' null means the file you named was deleted on the server since you read it; nothing was written; call again without expectedContentHash to recreate it, which answers 'duplicate' instead if that content already exists elsewhere in the project. " +
 			"Keep coding-instruction files out of this tool — CLAUDE.md, AGENTS.md, anything under .claude/, and skills, agents and hooks belong to fabric_propose_project_instruction_change.",
 		inputSchema: {
 			type: "object",
@@ -4827,7 +4827,10 @@ const SYNCED_CONTEXT_OUTCOME_MESSAGES = {
  *     included.
  *  4. A conflict is an error result carrying the stored hash and who last
  *     changed it (never the stored content): nothing was written, and the
- *     agent must re-read before it may replace the file.
+ *     agent must re-read before it may replace the file. With `current: null`
+ *     the file it named was deleted since; it is told to call again without
+ *     `expectedContentHash` to recreate it, which answers `duplicate` instead
+ *     if that content already exists elsewhere in the project.
  */
 async function handleUpsertProjectContext(
 	args: Record<string, unknown>,
@@ -4931,7 +4934,10 @@ async function handleUpsertProjectContext(
 					type: "text",
 					text: JSON.stringify({
 						...result,
-						error: "This path holds a different version than the one you named in 'expectedContentHash' (or you named none), so nothing was written. Read it with fabric_get_project_context, merge your change into it, and push again with current.contentHash as 'expectedContentHash'.",
+						error:
+							result.current === null
+								? "The file you named in 'expectedContentHash' was deleted on the server since you read it, so nothing was written. Call again without 'expectedContentHash' to recreate it, which answers 'duplicate' instead if that content already exists elsewhere in the project."
+								: "This path holds a different version than the one you named in 'expectedContentHash' (or you named none), so nothing was written. Read it with fabric_get_project_context, merge your change into it, and push again with current.contentHash as 'expectedContentHash'.",
 					}),
 				},
 			],

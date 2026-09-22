@@ -179,7 +179,9 @@ link or note added in the Context tab — answers `duplicate`. To replace a
 file that is already there, the agent passes the `contentHash` it read from
 `fabric_get_project_context` or `fabric_list_project_contexts` as `expectedContentHash`; if
 someone else has changed the file since, the push answers `conflict` with the current hash and
-who changed it, and nothing is overwritten.
+who changed it, and nothing is overwritten. If the file was deleted since, the push answers
+`conflict` with `current` set to `null`; call again without `expectedContentHash` to recreate it,
+which answers `duplicate` instead if that content already exists elsewhere in the project.
 
 Coding-instruction files — `CLAUDE.md`, `AGENTS.md`, anything under `.claude/`, and skills,
 agents, hooks, rules and scripts — do not go through this flow. The agent proposes those with
@@ -189,8 +191,11 @@ generated output.
 
 Pushing context needs a key with the `projects:write` or `mcp:write` scope — the read-only key
 that **Connect your agent** mints cannot do it — and, as with every key, your own permission to
-add context sources to that project. To start the flow, paste a sentence like
-this into your agent:
+add context sources to that project. If those docs already sit together in one folder, the
+Fabric CLI can push the whole folder instead: `fabric context push <dir> --project <id>` sends
+each text file by its path with the same `unchanged`, `duplicate` and `conflict` answers, and
+remembers what it sent so that later runs send only what changed. It needs the same
+`projects:write` scope. To start the agent flow, paste a sentence like this into your agent:
 
 ```
 Use the Fabric MCP server to bootstrap the context for the project "Your Project" from this

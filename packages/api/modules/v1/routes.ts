@@ -14,6 +14,7 @@
  *   GET  /orgs               → List orgs the caller belongs to
  *   POST /projects/:id/instructions/changes  → Propose a coding-instructions change, for review
  *   POST /projects/:id/instructions/versions → Publish a coding-instructions change directly
+ *   PUT  /projects/:id/contexts/synced-files → Push one knowledge file into the project's Context by path
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -29,6 +30,7 @@ import type { ExternalApiVariables } from "../external-api/types";
 import { registerAgentRoutes } from "./agents";
 import { registerChannelRoutes } from "./channels";
 import { registerChatRoutes } from "./chats";
+import { registerContextRoutes } from "./contexts";
 import { registerDocumentRoutes } from "./documents";
 import { registerFeatureRoutes } from "./features";
 import { registerFrameRoutes } from "./frames";
@@ -116,7 +118,10 @@ export function createPublicV1Routes() {
 				"X-Correlation-ID",
 				"Idempotency-Key",
 			],
-			allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+			// Every method a v1 route answers. `PUT` is the synced-context
+			// upsert (`./contexts.ts`); without it a browser SDK client's
+			// preflight for that route fails before the request is sent.
+			allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 			exposeHeaders: [
 				"X-Correlation-ID",
 				"X-RateLimit-Limit",
@@ -414,6 +419,7 @@ export function createPublicV1Routes() {
 	registerChannelRoutes(app);
 	registerKnowledgeRoutes(app);
 	registerInstructionRoutes(app);
+	registerContextRoutes(app);
 
 	return app;
 }

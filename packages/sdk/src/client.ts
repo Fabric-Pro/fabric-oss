@@ -335,7 +335,9 @@ export class FabricHttpClient {
 			// (`{error: {message}}`). Parsing only the nested one turned every
 			// scope refusal into an unactionable "HTTP 403".
 			const body = json as {
-				error?: string | { message?: string; code?: string };
+				error?:
+					| string
+					| { message?: string; code?: string; data?: unknown };
 			};
 			const raw = body?.error;
 			const message =
@@ -364,7 +366,15 @@ export class FabricHttpClient {
 					code ? { message, code } : {},
 				);
 			}
-			throw new FabricError(message, res.status, code);
+			// `data` rides along on the generic error, which is the one a 409
+			// arrives as: a conflict's payload is the stored version it lost
+			// to, and a caller cannot resolve the conflict without it.
+			throw new FabricError(
+				message,
+				res.status,
+				code,
+				typeof raw === "string" ? undefined : raw?.data,
+			);
 		}
 
 		return (json as { data: T }).data;
@@ -431,6 +441,21 @@ export class FabricHttpClient {
 		return this.request<T>("PATCH", path, {
 			body,
 			idempotencyKey: options.idempotencyKey,
+		});
+	}
+
+	put<T>(
+		path: string,
+		body: unknown,
+		options: {
+			idempotencyKey?: string;
+			retry?: { maxRetries: number };
+		} = {},
+	) {
+		return this.request<T>("PUT", path, {
+			body,
+			idempotencyKey: options.idempotencyKey,
+			retry: options.retry,
 		});
 	}
 
