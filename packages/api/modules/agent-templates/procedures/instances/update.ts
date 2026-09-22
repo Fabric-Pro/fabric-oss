@@ -3,7 +3,7 @@ import type { AgentInstanceStatus } from "@repo/database";
 import {
 	archiveInstanceVersion,
 	getAgentTemplateInstance,
-	hasWorkspaceAccess,
+	getWorkspaceAccessContext,
 	restoreInstanceVersion,
 	updateAgentTemplateInstance,
 } from "@repo/database";
@@ -136,15 +136,21 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 			);
 		}
 
-		// Validate workspace access if workspaceIds provided
+		// Validate workspace access if workspaceIds provided. Access alone only
+		// answers "can this user open it" - a member of two organizations can
+		// open both organizations' workspaces - so also require the workspace to
+		// be hosted by this instance's tenant. Execution trusts the stored ids
+		// and queries each workspace's vectors with no further tenancy check.
 		if (input.workspaceIds && input.workspaceIds.length > 0) {
 			for (const workspaceId of input.workspaceIds) {
-				const hasAccess = await hasWorkspaceAccess(
+				const access = await getWorkspaceAccessContext(
 					workspaceId,
 					context.user.id,
-					existing.organizationId ?? undefined,
 				);
-				if (!hasAccess) {
+				if (
+					access === null ||
+					access.organizationId !== (existing.organizationId ?? null)
+				) {
 					throw new Error(
 						`You don't have access to workspace ${workspaceId}`,
 					);

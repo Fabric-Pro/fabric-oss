@@ -14,7 +14,6 @@ import { z } from "zod";
 import {
 	Permissions,
 	requirePermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
@@ -38,18 +37,10 @@ export const getWorkspaceRagSettingsProcedure = tenantProtectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const { workspaceId } = input;
-		const { user, session } = context;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			session,
-		);
+		const { user } = context;
 
 		// Verify user has access to the workspace
-		const workspace = await getWorkspaceById(
-			workspaceId,
-			user.id,
-			organizationId,
-		);
+		const workspace = await getWorkspaceById(workspaceId, user.id);
 		if (!workspace) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Workspace not found or you don't have access",
@@ -108,16 +99,13 @@ export const updateWorkspaceRagSettingsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { workspaceId, organizationId: inputOrgId, ...data } = input;
-		const { user, session } = context;
-		const organizationId = resolveOrganizationId(inputOrgId, session);
+		// `organizationId` is taken out only so it never reaches the settings
+		// write below; access is the workspace's own, not the request's.
+		const { workspaceId, organizationId: _organizationId, ...data } = input;
+		const { user } = context;
 
 		// Verify user has access to the workspace
-		const workspace = await getWorkspaceById(
-			workspaceId,
-			user.id,
-			organizationId,
-		);
+		const workspace = await getWorkspaceById(workspaceId, user.id);
 		if (!workspace) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Workspace not found or you don't have access",

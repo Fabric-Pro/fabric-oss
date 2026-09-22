@@ -3,14 +3,15 @@
  *
  * Exercises POST /workspaces/:id/query end-to-end via Hono's request()
  * with @repo/database, @repo/ai, @repo/rag, and the api-key auth
- * middleware mocked. Confirms tenant ACL via hasWorkspaceAccess,
- * embedding pipeline call shape, and limit clamping.
+ * middleware mocked. Confirms tenant ACL via getWorkspaceAccessContext
+ * plus the resolved-organization binding, embedding pipeline call shape,
+ * and limit clamping.
  */
 
 import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockHasWorkspaceAccess = vi.fn();
+const mockGetWorkspaceAccessContext = vi.fn();
 const mockListWorkspaces = vi.fn();
 const mockGetAIEmbeddingModel = vi.fn();
 const mockEmbed = vi.fn();
@@ -22,7 +23,8 @@ vi.mock("@repo/database", () => ({
 		kind: "resolved" as const,
 		organizationId: "org-test",
 	})),
-	hasWorkspaceAccess: (...args: unknown[]) => mockHasWorkspaceAccess(...args),
+	getWorkspaceAccessContext: (...args: unknown[]) =>
+		mockGetWorkspaceAccessContext(...args),
 	listWorkspaces: (...args: unknown[]) => mockListWorkspaces(...args),
 	db: {
 		organization: { findFirst: vi.fn() },
@@ -50,9 +52,20 @@ vi.mock("../../external-api/middleware/api-key-auth", () => ({
 	},
 }));
 
+import { db } from "@repo/database";
 import { registerWorkspaceRoutes } from "../workspaces";
 
-function makeApp() {
+type TestApiContext = {
+	keyType: "personal" | "organization";
+	organizationId: string | undefined;
+};
+
+function makeApp(
+	apiContext: TestApiContext = {
+		keyType: "personal",
+		organizationId: "org-test",
+	},
+) {
 	const app = new Hono<{
 		Variables: {
 			externalApiContext: {
@@ -67,11 +80,11 @@ function makeApp() {
 	}>();
 	app.use("*", async (c, next) => {
 		c.set("externalApiContext", {
-			keyType: "personal",
+			keyType: apiContext.keyType,
 			keyId: "key-1",
 			keyPrefix: "fab_test",
 			userId: "user-1",
-			organizationId: "org-test",
+			organizationId: apiContext.organizationId,
 			scopes: ["workspaces:read"],
 		});
 		await next();
@@ -103,7 +116,9 @@ beforeEach(() => {
 
 describe("v1 workspaces.query", () => {
 	it("400s when query is missing", async () => {
-		mockHasWorkspaceAccess.mockResolvedValue(true);
+		mockGetWorkspaceAccessContext.mockResolvedValue({
+			organizationId: "org-test",
+		});
 		const res = await makeApp().request("/workspaces/ws-1/query", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -114,7 +129,9 @@ describe("v1 workspaces.query", () => {
 	});
 
 	it("400s on invalid JSON body", async () => {
-		mockHasWorkspaceAccess.mockResolvedValue(true);
+		mockGetWorkspaceAccessContext.mockResolvedValue({
+			organizationId: "org-test",
+		});
 		const res = await makeApp().request("/workspaces/ws-1/query", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -124,7 +141,7 @@ describe("v1 workspaces.query", () => {
 	});
 
 	it("404s when caller has no access to the workspace", async () => {
-		mockHasWorkspaceAccess.mockResolvedValue(false);
+		mockGetWorkspaceAccessContext.mockResolvedValue(null);
 		const res = await makeApp().request("/workspaces/ws-other/query", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -136,7 +153,9 @@ describe("v1 workspaces.query", () => {
 	});
 
 	it("happy path: embeds + searches and returns hit envelope", async () => {
-		mockHasWorkspaceAccess.mockResolvedValue(true);
+		mockGetWorkspaceAccessContext.mockResolvedValue({
+			organizationId: "org-test",
+		});
 		const res = await makeApp().request("/workspaces/ws-1/query", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -180,7 +199,9 @@ describe("v1 workspaces.query", () => {
 	});
 
 	it("clamps caller-supplied limit to [1, 50]", async () => {
-		mockHasWorkspaceAccess.mockResolvedValue(true);
+		mockGetWorkspaceAccessContext.mockResolvedValue({
+			organizationId: "org-test",
+		});
 
 		await makeApp().request("/workspaces/ws-1/query", {
 			method: "POST",
@@ -202,7 +223,9 @@ describe("v1 workspaces.query", () => {
 	});
 
 	it("forwards documentIds filter to searchWorkspaceChunks", async () => {
-		mockHasWorkspaceAccess.mockResolvedValue(true);
+		mockGetWorkspaceAccessContext.mockResolvedValue({
+			organizationId: "org-test",
+		});
 		await makeApp().request("/workspaces/ws-1/query", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -217,7 +240,9 @@ describe("v1 workspaces.query", () => {
 	});
 
 	it("returns 400 with RAG_PROVIDER_MISSING-equivalent on embed failure", async () => {
-		mockHasWorkspaceAccess.mockResolvedValue(true);
+		mockGetWorkspaceAccessContext.mockResolvedValue({
+			organizationId: "org-test",
+		});
 		mockGetAIEmbeddingModel.mockRejectedValueOnce(
 			new Error("no embedding provider"),
 		);
@@ -229,5 +254,126 @@ describe("v1 workspaces.query", () => {
 		expect(res.status).toBe(502);
 		const body = (await res.json()) as { error: { code?: string } };
 		expect(body.error.code).toBe("EMBEDDING_FAILED");
+	});
+});
+
+/**
+ * The workspace must be in the organization this request resolved to
+ * (Fizzy #2629). Workspace access answers only "can this user open it" and
+ * takes no organization, so an ORGANIZATION key whose creator also holds a
+ * role on another organization's workspace passed it. The binding matches
+ * `GET /workspaces/:id`, whose lookup filters on the resolved organization.
+ */
+describe("v1 workspaces.query binds the workspace to the resolved organization", () => {
+	const orgKeyInA: TestApiContext = {
+		keyType: "organization",
+		organizationId: "org-a",
+	};
+
+	function query(
+		app: ReturnType<typeof makeApp>,
+		path = "/workspaces/ws-1/query",
+	) {
+		return app.request(path, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ query: "OAuth flow" }),
+		});
+	}
+
+	it("404s an org key on another organization's workspace, before embedding or searching", async () => {
+		// The key's creator is a member of org-b with a role on its workspace.
+		mockGetWorkspaceAccessContext.mockResolvedValue({
+			organizationId: "org-b",
+		});
+
+		const res = await query(makeApp(orgKeyInA));
+
+		expect(res.status).toBe(404);
+		expect(mockGetWorkspaceAccessContext).toHaveBeenCalledWith(
+			"ws-1",
+			"user-1",
+		);
+		expect(mockGetAIEmbeddingModel).not.toHaveBeenCalled();
+		expect(mockEmbed).not.toHaveBeenCalled();
+		expect(mockSearchWorkspaceChunks).not.toHaveBeenCalled();
+	});
+
+	it("answers that refusal exactly as it answers no access at all", async () => {
+		mockGetWorkspaceAccessContext.mockResolvedValue({
+			organizationId: "org-b",
+		});
+		const crossTenant = await query(makeApp(orgKeyInA));
+
+		mockGetWorkspaceAccessContext.mockResolvedValue(null);
+		const noAccess = await query(makeApp(orgKeyInA));
+
+		expect(crossTenant.status).toBe(noAccess.status);
+		expect(await crossTenant.json()).toEqual(await noAccess.json());
+	});
+
+	it("lets an org key query a workspace in its own organization", async () => {
+		mockGetWorkspaceAccessContext.mockResolvedValue({
+			organizationId: "org-a",
+		});
+
+		const res = await query(makeApp(orgKeyInA));
+
+		expect(res.status).toBe(200);
+		expect(mockSearchWorkspaceChunks).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workspaceId: "ws-1",
+				organizationId: "org-a",
+			}),
+		);
+	});
+
+	it("404s an org key on a personal workspace", async () => {
+		mockGetWorkspaceAccessContext.mockResolvedValue({
+			organizationId: null,
+		});
+
+		const res = await query(makeApp(orgKeyInA));
+
+		expect(res.status).toBe(404);
+		expect(mockSearchWorkspaceChunks).not.toHaveBeenCalled();
+	});
+
+	it("404s a personal key whose resolved organization is not the workspace's", async () => {
+		// No ?org=, so the key resolves to its owner's organization (org-test).
+		mockGetWorkspaceAccessContext.mockResolvedValue({
+			organizationId: "org-b",
+		});
+
+		const res = await query(makeApp());
+
+		expect(res.status).toBe(404);
+		expect(mockEmbed).not.toHaveBeenCalled();
+		expect(mockSearchWorkspaceChunks).not.toHaveBeenCalled();
+	});
+
+	it("lets a personal key reach that workspace by naming its organization", async () => {
+		vi.mocked(db.organization.findFirst).mockResolvedValueOnce({
+			id: "org-b",
+		} as never);
+		vi.mocked(db.member.findFirst).mockResolvedValueOnce({
+			id: "member-1",
+		} as never);
+		mockGetWorkspaceAccessContext.mockResolvedValue({
+			organizationId: "org-b",
+		});
+
+		const res = await query(
+			makeApp(),
+			"/workspaces/ws-1/query?org=example-org-b",
+		);
+
+		expect(res.status).toBe(200);
+		expect(mockSearchWorkspaceChunks).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workspaceId: "ws-1",
+				organizationId: "org-b",
+			}),
+		);
 	});
 });
