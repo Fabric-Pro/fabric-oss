@@ -9,6 +9,16 @@ import { MicrosoftTeamsIcon } from "@saas/workflows/lib/plugins/microsoft-teams/
 import { TruncatedText } from "@shared/components/TruncatedText";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@ui/components/alert-dialog";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { DestructiveTooltip } from "@ui/components/destructive-tooltip";
@@ -35,6 +45,7 @@ import type { LucideIcon } from "lucide-react";
 import {
 	CheckCircleIcon,
 	ChevronDownIcon,
+	CopyIcon,
 	DownloadIcon,
 	ExternalLinkIcon,
 	EyeIcon,
@@ -177,6 +188,38 @@ function getContextDisplayTitle(ctx: RowContext): string {
 		ctx.sourceTitle ||
 		ctx.originalFilename ||
 		ctx.type
+	);
+}
+
+/**
+ * "Duplicate of <title>" marker for a row whose content matches another row's
+ * (Fizzy #2619). Inline icon + colored text, the same rhythm as the status
+ * labels beside it. The trigger is a real button so the tooltip explaining
+ * which item is kept is reachable from the keyboard, not only on hover.
+ */
+function DuplicateOfBadge({
+	contextId,
+	label,
+	tooltip,
+}: {
+	contextId: string;
+	label: string;
+	tooltip: string;
+}) {
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<button
+					type="button"
+					className="flex min-w-0 max-w-[240px] items-center gap-1 rounded-sm text-highlight focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+					data-testid={`context-duplicate-badge-${contextId}`}
+				>
+					<CopyIcon className="size-3 shrink-0" aria-hidden="true" />
+					<span className="truncate">{label}</span>
+				</button>
+			</TooltipTrigger>
+			<TooltipContent surface="popover">{tooltip}</TooltipContent>
+		</Tooltip>
 	);
 }
 
@@ -617,6 +660,7 @@ export function UrlContextCard({
 	deletePending,
 	deleteCopy,
 	onDownload,
+	duplicateBadge,
 }: {
 	context: UrlContextRowFields;
 	projectId: string;
@@ -624,6 +668,8 @@ export function UrlContextCard({
 	deletePending: boolean;
 	deleteCopy: { label: string; warning: string };
 	onDownload?: (id: string) => void;
+	/** "Duplicate of …" marker (Fizzy #2619); the Context tab passes it. */
+	duplicateBadge?: React.ReactNode;
 }) {
 	const metadata =
 		(context.metadata as { sourceTitle?: string } | null) ?? {};
@@ -685,6 +731,12 @@ export function UrlContextCard({
 						lastSyncedAt={lastSynced}
 						createdAt={createdAt}
 					/>
+
+					{duplicateBadge && (
+						<div className="mt-1 flex text-xs">
+							{duplicateBadge}
+						</div>
+					)}
 
 					{sourceUrl && (
 						<a
@@ -759,6 +811,9 @@ export function ProjectContextsList({ projectId }: Props) {
 	const t = useTranslations("tooltips.contextSources");
 	const tDownload = useTranslations("projects.contexts.download");
 	const tScope = useTranslations("projects.contexts.scopeIntake");
+	const tDuplicates = useTranslations("projects.contexts.duplicates");
+	const [confirmRemoveDuplicatesOpen, setConfirmRemoveDuplicatesOpen] =
+		useState(false);
 	const { trackEvent } = useAnalytics();
 	const router = useRouter();
 	const pathname = usePathname();
@@ -1073,6 +1128,97 @@ export function ProjectContextsList({ projectId }: Props) {
 	});
 
 	const contexts = data?.contexts ?? [];
+
+	// Duplicate detection (Fizzy #2619). The server marks each copy with the
+	// id of the row it duplicates; only copies whose original is in this same
+	// list count, so the badge can always name the original and "Remove
+	// duplicates" can never reach a row that is some copy's original.
+	const contextsById = useMemo(
+		() => new Map(contexts.map((ctx) => [ctx.id, ctx])),
+		[contexts],
+	);
+	const duplicateContextIds = useMemo(
+		() =>
+			contexts
+				.filter(
+					(ctx) =>
+						ctx.duplicateOfContextId != null &&
+						contextsById.has(ctx.duplicateOfContextId),
+				)
+				.map((ctx) => ctx.id),
+		[contexts, contextsById],
+	);
+
+	const renderDuplicateBadge = (ctx: {
+		id: string;
+		duplicateOfContextId?: string | null;
+	}) => {
+		const original = ctx.duplicateOfContextId
+			? contextsById.get(ctx.duplicateOfContextId)
+			: undefined;
+		if (!original) {
+			return null;
+		}
+		const title = getContextDisplayTitle(original as unknown as RowContext);
+		return (
+			<DuplicateOfBadge
+				contextId={ctx.id}
+				label={tDuplicates("badge", { title })}
+				tooltip={tDuplicates("badgeTooltip", { title })}
+			/>
+		);
+	};
+
+	// One delete per copy through the same procedure the row menus call, so
+	// every copy goes through the same permission check and Qdrant cleanup.
+	// Each call names the item the copy was matched against; the server
+	// re-checks that match and refuses (CONFLICT) if the list it came from is
+	// stale. Sequential on purpose: each delete starts a workflow, and a burst
+	// of them buys nothing the user can see.
+	const removeDuplicates = useMutation({
+		mutationFn: async (contextIds: string[]) => {
+			let removed = 0;
+			let failed = 0;
+			for (const contextId of contextIds) {
+				try {
+					await orpc.projects.contexts.delete.call({
+						id: contextId,
+						projectId,
+						organizationId,
+						expectedDuplicateOfContextId:
+							contextsById.get(contextId)?.duplicateOfContextId ??
+							undefined,
+					});
+					removed += 1;
+				} catch {
+					failed += 1;
+				}
+			}
+			return { removed, failed };
+		},
+		onSuccess: ({ removed, failed }) => {
+			if (failed === 0) {
+				toast.success(tDuplicates("removed", { count: removed }));
+			} else if (removed === 0) {
+				toast.error(tDuplicates("removeFailed", { count: failed }));
+			} else {
+				toast.error(
+					tDuplicates("removedPartial", {
+						removed,
+						failed,
+						total: removed + failed,
+					}),
+				);
+			}
+		},
+		onSettled: () => {
+			queryClient.invalidateQueries({
+				queryKey: orpc.projects.contexts.list.queryOptions({
+					input: { projectId, organizationId },
+				}).queryKey,
+			});
+		},
+	});
 
 	// Separate meeting transcripts, Notion docs, and Teams chats from other contexts
 	const { otherContexts, transcriptGroups, notionGroup, teamsGroup } =
@@ -1451,6 +1597,42 @@ export function ProjectContextsList({ projectId }: Props) {
 				</output>
 			)}
 
+			{/* Duplicate content (Fizzy #2619). Duplicates are accepted on
+			    upload; this is where they are surfaced and cleared. No
+			    client-side gate, matching the per-row Delete: the delete
+			    procedure enforces CONTEXT_DELETE for every copy. */}
+			{duplicateContextIds.length > 0 && (
+				<output
+					className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-foreground/10 bg-muted px-4 py-3 text-sm"
+					data-testid="context-duplicates-banner"
+				>
+					<div className="flex items-center gap-2">
+						<CopyIcon
+							className="size-4 shrink-0 text-highlight"
+							aria-hidden="true"
+						/>
+						<span className="text-foreground/80">
+							{tDuplicates("bannerMessage", {
+								count: duplicateContextIds.length,
+							})}
+						</span>
+					</div>
+					<Button
+						size="sm"
+						variant="ghost"
+						className="gap-2 text-destructive hover:text-destructive"
+						onClick={() => setConfirmRemoveDuplicatesOpen(true)}
+						disabled={removeDuplicates.isPending}
+						data-testid="context-duplicates-remove"
+					>
+						<TrashIcon className="size-4" aria-hidden="true" />
+						{removeDuplicates.isPending
+							? tDuplicates("removing")
+							: tDuplicates("removeAction")}
+					</Button>
+				</output>
+			)}
+
 			{/* Contexts list */}
 			{contexts.length === 0 ? (
 				<div className="flex flex-col items-center justify-center rounded-[28px] border border-border/60 bg-card/40 py-16 backdrop-blur-sm">
@@ -1774,6 +1956,9 @@ export function ProjectContextsList({ projectId }: Props) {
 																										Summarized
 																									</span>
 																								)}
+																								{renderDuplicateBadge(
+																									context,
+																								)}
 																							</div>
 																						</div>
 																						<div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover/item:opacity-100">
@@ -2061,6 +2246,9 @@ export function ProjectContextsList({ projectId }: Props) {
 																	</TooltipContent>
 																</Tooltip>
 															)}
+															{renderDuplicateBadge(
+																context,
+															)}
 														</div>
 													</div>
 													<div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover/item:opacity-100">
@@ -2246,6 +2434,9 @@ export function ProjectContextsList({ projectId }: Props) {
 																	Notion
 																</a>
 															)}
+															{renderDuplicateBadge(
+																context,
+															)}
 														</div>
 													</div>
 													<div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover/item:opacity-100">
@@ -2356,6 +2547,9 @@ export function ProjectContextsList({ projectId }: Props) {
 												"md",
 											)
 										}
+										duplicateBadge={renderDuplicateBadge(
+											context,
+										)}
 									/>
 								);
 							}
@@ -2602,6 +2796,10 @@ export function ProjectContextsList({ projectId }: Props) {
 																ago
 															</span>
 														)}
+
+														{renderDuplicateBadge(
+															context,
+														)}
 													</div>
 
 													{/* Source URL */}
@@ -2734,6 +2932,45 @@ export function ProjectContextsList({ projectId }: Props) {
 					</div>
 				</div>
 			)}
+
+			{/* Remove-duplicates confirmation (Fizzy #2619). */}
+			<AlertDialog
+				open={confirmRemoveDuplicatesOpen}
+				onOpenChange={setConfirmRemoveDuplicatesOpen}
+			>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>
+							{tDuplicates("confirmTitle", {
+								count: duplicateContextIds.length,
+							})}
+						</AlertDialogTitle>
+						<AlertDialogDescription>
+							{tDuplicates("confirmDescription", {
+								count: duplicateContextIds.length,
+							})}
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>
+							{tDuplicates("cancel")}
+						</AlertDialogCancel>
+						<AlertDialogAction
+							variant="destructive"
+							onClick={() =>
+								removeDuplicates.mutate(duplicateContextIds)
+							}
+							disabled={
+								removeDuplicates.isPending ||
+								duplicateContextIds.length === 0
+							}
+							data-testid="context-duplicates-confirm"
+						>
+							{tDuplicates("confirmAction")}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 
 			{/* Context uploader dialog */}
 			<ContextUploaderDialog

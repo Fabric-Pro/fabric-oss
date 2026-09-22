@@ -2511,6 +2511,20 @@
 				},
 				"openInbox": "Review proposal",
 				"notReady": "The document must finish extracting before scope can be read"
+			},
+			"duplicates": {
+				"badge": "Duplicate of {title}",
+				"badgeTooltip": "Same content as “{title}”. Remove duplicates keeps “{title}” and deletes this copy.",
+				"bannerMessage": "{count, plural, one {# context item has the same content as another item.} other {# context items have the same content as other items.}}",
+				"removeAction": "Remove duplicates",
+				"removing": "Removing duplicates…",
+				"confirmTitle": "{count, plural, one {Remove # duplicate?} other {Remove # duplicates?}}",
+				"confirmDescription": "{count, plural, one {The extra copy is deleted and removed from search. The item it duplicates is kept. This can't be undone.} other {The # extra copies are deleted and removed from search. The item each one duplicates is kept. This can't be undone.}}",
+				"confirmAction": "Remove duplicates",
+				"cancel": "Cancel",
+				"removed": "{count, plural, one {Removing # duplicate. It disappears once cleanup finishes.} other {Removing # duplicates. They disappear once cleanup finishes.}}",
+				"removeFailed": "{count, plural, one {The duplicate could not be removed. Please try again.} other {# duplicates could not be removed. Please try again.}}",
+				"removedPartial": "Removal started for {removed} of {total} duplicates. {failed} could not be started; please try again."
 			}
 		},
 		"contextSummary": {

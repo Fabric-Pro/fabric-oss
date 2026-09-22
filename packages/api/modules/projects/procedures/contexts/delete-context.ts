@@ -23,13 +23,20 @@ export const deleteContextProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Contexts"],
 		summary: "Delete context",
 		description:
-			"Delete a context from database and Qdrant via Temporal workflow",
+			"Delete a context from database and Qdrant via Temporal workflow. With `expectedDuplicateOfContextId`, the delete only proceeds while the context still holds the same content as that item in the same project, and answers CONFLICT otherwise.",
 	})
 	.input(
 		z.object({
 			projectId: z.string(),
 			id: z.string(),
 			organizationId: z.string().nullable().optional(),
+			/**
+			 * "Remove duplicates" (Fizzy #2619) names the item this one was
+			 * matched against when the list was read. The delete re-checks that
+			 * match here, so a stale client snapshot can never delete an item
+			 * that has since stopped being a copy.
+			 */
+			expectedDuplicateOfContextId: z.string().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -59,6 +66,27 @@ export const deleteContextProcedure = tenantProtectedProcedure
 			throw new ORPCError("NOT_FOUND", {
 				message: "Context not found",
 			});
+		}
+
+		// Duplicate removal (Fizzy #2619): the caller decided this row was a
+		// copy from a list it read earlier. Content can change and the
+		// original can be deleted in between, so the match is re-established
+		// from the stored rows before anything is torn down.
+		if (input.expectedDuplicateOfContextId !== undefined) {
+			const original = projectContext.contentHash
+				? await getContextById(input.expectedDuplicateOfContextId)
+				: null;
+			if (
+				!original ||
+				original.id === projectContext.id ||
+				original.projectId !== input.projectId ||
+				original.contentHash !== projectContext.contentHash
+			) {
+				throw new ORPCError("CONFLICT", {
+					message:
+						"This item is no longer a duplicate of the item it was matched with",
+				});
+			}
 		}
 
 		// Lock-while-crawling guard for LINK contexts. Deleting mid-crawl
@@ -148,9 +176,9 @@ export const deleteContextProcedure = tenantProtectedProcedure
 			console.error(
 				`[DeleteContext] Failed to start context deletion workflow for ${input.id}: ${error}`,
 			);
-			// Don't throw - we'll still emit events and return success
-			// The workflow provides durability, but if it fails to start,
-			// we should still notify the UI
+			throw new ORPCError("INTERNAL_SERVER_ERROR", {
+				message: "Failed to start context deletion",
+			});
 		}
 
 		// Emit real-time events for collaboration (immediate feedback)

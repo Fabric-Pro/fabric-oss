@@ -12,6 +12,7 @@ export * from "./backlog-proposal-drafts";
 export * from "./backlog-update-sessions";
 export * from "./comments";
 export * from "./context-content-hash";
+export * from "./context-duplicates";
 export * from "./context-source-path";
 export * from "./contexts";
 export * from "./conversation-bundles";

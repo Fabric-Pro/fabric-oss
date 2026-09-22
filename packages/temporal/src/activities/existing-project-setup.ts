@@ -15,6 +15,7 @@ import {
 	resolveModelWithCredentials,
 	tenantWhere,
 } from "@repo/database";
+import { contextContentHashOrNull } from "@repo/database/prisma/queries/projects/context-content-hash";
 import { logger } from "@repo/logs";
 import { embedProjectContext } from "@repo/rag/lib/project-contexts/auto-embed";
 import { documentTypeLabel } from "@repo/utils/document-type-catalog";
@@ -140,6 +141,7 @@ export async function ingestBacklogForRAG(
 			projectId,
 			type: "TEXT",
 			content,
+			contentHash: contextContentHashOrNull(content),
 			sourceTitle: "Backlog Items (PM Backlog Ingest)",
 			metadata: {
 				provider: "BACKLOG_INGEST",
@@ -433,8 +435,15 @@ export interface AppendAnalysisContentChunkInput {
 
 /**
  * Append a chunk of analysis content to an existing ProjectContext record.
- * Uses raw SQL concat to avoid loading full content into memory.
+ * Uses raw SQL concat so no activity input has to carry the whole content.
  * When isFinal=true, marks extractionStatus as COMPLETED.
+ *
+ * `contentHash` (Fizzy #2619): a partial body has no hash, so each non-final
+ * append clears it. The final append reads the assembled content back once,
+ * inside the same transaction as the write, and stamps its hash — the UPDATE
+ * holds the row lock until commit, so the hash always describes exactly the
+ * content that committed with it. (The embed step that follows reads the full
+ * content back anyway.)
  */
 export async function appendAnalysisContentChunk(
 	input: AppendAnalysisContentChunkInput,
@@ -442,18 +451,41 @@ export async function appendAnalysisContentChunk(
 	const { contextId, chunk, isFinal } = input;
 
 	if (isFinal) {
-		await db.$executeRaw`
-			UPDATE "project_context"
-			SET "content" = COALESCE("content", '') || ${chunk},
-			    "extractionStatus" = 'COMPLETED',
-			    "extractedAt" = NOW(),
-			    "updatedAt" = NOW()
-			WHERE "id" = ${contextId}
-		`;
+		// The body can run to megabytes; Prisma's 5s interactive-transaction
+		// default is sized for small rows, and a timeout here would roll back
+		// the append too.
+		await db.$transaction(
+			async (tx) => {
+				await tx.$executeRaw`
+				UPDATE "project_context"
+				SET "content" = COALESCE("content", '') || ${chunk},
+				    "extractionStatus" = 'COMPLETED',
+				    "extractedAt" = NOW(),
+				    "updatedAt" = NOW()
+				WHERE "id" = ${contextId}
+			`;
+				const assembled = await tx.projectContext.findUnique({
+					where: { id: contextId },
+					select: { content: true },
+				});
+				if (assembled) {
+					await tx.projectContext.update({
+						where: { id: contextId },
+						data: {
+							contentHash: contextContentHashOrNull(
+								assembled.content,
+							),
+						},
+					});
+				}
+			},
+			{ timeout: 30_000 },
+		);
 	} else {
 		await db.$executeRaw`
 			UPDATE "project_context"
 			SET "content" = COALESCE("content", '') || ${chunk},
+			    "contentHash" = NULL,
 			    "updatedAt" = NOW()
 			WHERE "id" = ${contextId}
 		`;

@@ -948,7 +948,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		name: "fabric_upsert_project_context",
 		description:
 			"Pushes a text file into a project's Context tab as a knowledge source, keyed by the file's path in your working tree ('sourcePath') inside that project, so pushing the same path again updates that one source instead of adding another. " +
-			"The result's 'status' says what happened: 'created' for a path the project has not seen; 'unchanged' when the same content is already stored under this path (nothing is written, so repeating a call is harmless); 'updated' when changed content replaced the previous version, which is then re-indexed for search; 'duplicate' when identical content is already in the project under another path, in which case nothing is created and 'duplicateOfContextId' is the existing source. " +
+			"The result's 'status' says what happened: 'created' for a path the project has not seen; 'unchanged' when the same content is already stored under this path (nothing is written, so repeating a call is harmless); 'updated' when changed content replaced the previous version, which is then re-indexed for search; 'duplicate' when identical content is already in the project as another source (another pushed file, or one added in the Context tab), in which case nothing is created and 'duplicateOfContextId' is the existing source. " +
 			"To replace a file that already exists under this path, first read it with fabric_get_project_context (find it with fabric_list_project_contexts), or take the hash from a 'conflict' result, and pass its 'contentHash' as 'expectedContentHash'. Omitting expectedContentHash means: create the file if the path is new, otherwise only accept identical content — it never means overwrite. If the stored version is not the one you name (someone else changed it since), the tool returns 'conflict' with the current 'contentHash' and who changed it, and writes nothing: read it again, merge, and retry with that hash. " +
 			"Keep coding-instruction files out of this tool — CLAUDE.md, AGENTS.md, anything under .claude/, and skills, agents and hooks belong to fabric_propose_project_instruction_change.",
 		inputSchema: {
@@ -4317,7 +4317,8 @@ async function handleListProjectContexts(
 			metadataUpdatedByUserId: ctx.metadataUpdatedByUserId,
 			// A synced file's key and version (fabric_upsert_project_context):
 			// pass 'contentHash' back as its 'expectedContentHash' to replace it.
-			// Null on sources that were not pushed by path.
+			// `sourcePath` is null on sources that were not pushed by path;
+			// `contentHash` is set on every source holding content (Fizzy #2619).
 			sourcePath: ctx.sourcePath,
 			contentHash: ctx.contentHash,
 			contentUpdatedAt: ctx.contentUpdatedAt,
@@ -4473,7 +4474,8 @@ async function handleGetProjectContext(
 		metadataUpdatedByUserId: ctx.metadataUpdatedByUserId,
 		// A synced file's key and version (fabric_upsert_project_context):
 		// pass 'contentHash' back as its 'expectedContentHash' to replace it.
-		// Null on sources that were not pushed by path.
+		// `sourcePath` is null on sources that were not pushed by path;
+		// `contentHash` is set on every source holding content (Fizzy #2619).
 		sourcePath: ctx.sourcePath,
 		contentHash: ctx.contentHash,
 		contentUpdatedAt: ctx.contentUpdatedAt,

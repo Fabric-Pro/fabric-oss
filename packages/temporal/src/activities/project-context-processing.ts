@@ -767,6 +767,7 @@ export async function retryProjectContext(
 				extractionStatus: "PENDING",
 				extractionError: null,
 				content: "",
+				contentHash: null,
 				extractedAt: null,
 				qdrantId: null,
 				embeddedAt: null,

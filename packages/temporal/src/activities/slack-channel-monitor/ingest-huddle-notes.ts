@@ -22,6 +22,7 @@ import {
 	getLinkedSlackHuddleChannels,
 	upsertSlackHuddleNoteRecord,
 } from "@repo/database";
+import { contextContentHashOrNull } from "@repo/database/prisma/queries/projects/context-content-hash";
 import {
 	AuthFailedError,
 	computeHuddleContentHash,
@@ -543,6 +544,7 @@ async function processCanvas(
 				projectId,
 				type: "SLACK_HUDDLE_NOTES",
 				content: finalContent,
+				contentHash: contextContentHashOrNull(finalContent),
 				sourceTitle,
 				userId,
 				organizationId,
@@ -601,6 +603,7 @@ async function processCanvas(
 			where: { id: contextId },
 			data: {
 				content: finalContent,
+				contentHash: contextContentHashOrNull(finalContent),
 				sourceTitle,
 				metadata: huddleMetadata,
 				extractionStatus: "COMPLETED",

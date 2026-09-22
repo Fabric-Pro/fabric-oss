@@ -72,7 +72,12 @@ vi.mock("../../../../../orpc/procedures", () => {
 });
 
 type Handler = (args: {
-	input: { id: string; projectId: string; organizationId?: string | null };
+	input: {
+		id: string;
+		projectId: string;
+		organizationId?: string | null;
+		expectedDuplicateOfContextId?: string;
+	};
 	context: {
 		user: { id: string; name?: string; email?: string };
 		session: { activeOrganizationId?: string };
@@ -276,5 +281,192 @@ describe("deleteContext — URL Source schedule cleanup", () => {
 			"contextDeletionWorkflow",
 			expect.anything(),
 		);
+	});
+});
+
+describe("deleteContext — workflow start failure", () => {
+	it("rejects instead of reporting success when the deletion workflow cannot start", async () => {
+		mockGetContextById.mockResolvedValue({
+			id: "ctx-file",
+			projectId: "proj-1",
+			type: "FILE",
+			urlScheduleId: null,
+		});
+		mockTemporalStart.mockRejectedValueOnce(new Error("temporal offline"));
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: { id: "ctx-file", projectId: "proj-1" },
+				context: personalCtx,
+			}),
+		).rejects.toMatchObject({
+			code: "INTERNAL_SERVER_ERROR",
+			message: "Failed to start context deletion",
+		});
+		// Nothing tells collaborators a delete happened that never started.
+		expect(mockEmitContextChange).not.toHaveBeenCalled();
+		expect(mockEmitActivity).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * "Remove duplicates" (Fizzy #2619) sends the id of the item each copy was
+ * matched against. The server re-checks the match against the stored rows,
+ * so a stale list can never delete an item that is no longer a copy.
+ */
+describe("deleteContext — expectedDuplicateOfContextId guard", () => {
+	const copy = {
+		id: "ctx-copy",
+		projectId: "proj-1",
+		type: "FILE",
+		urlScheduleId: null,
+		contentHash: "hash-a",
+	};
+	const original = {
+		id: "ctx-original",
+		projectId: "proj-1",
+		type: "FILE",
+		urlScheduleId: null,
+		contentHash: "hash-a",
+	};
+
+	function storedRows(rows: Array<Record<string, unknown>>) {
+		mockGetContextById.mockImplementation(
+			async (id: string) => rows.find((row) => row.id === id) ?? null,
+		);
+	}
+
+	const conflict = {
+		code: "CONFLICT",
+		message:
+			"This item is no longer a duplicate of the item it was matched with",
+	};
+
+	it("deletes the copy when the original still holds the same content", async () => {
+		storedRows([copy, original]);
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: {
+				id: "ctx-copy",
+				projectId: "proj-1",
+				expectedDuplicateOfContextId: "ctx-original",
+			},
+			context: personalCtx,
+		});
+
+		expect(result).toEqual({ success: true });
+		expect(mockGetContextById).toHaveBeenCalledWith("ctx-original");
+		expect(mockTemporalStart).toHaveBeenCalledWith(
+			"contextDeletionWorkflow",
+			expect.objectContaining({
+				args: [expect.objectContaining({ contextId: "ctx-copy" })],
+			}),
+		);
+	});
+
+	it("answers CONFLICT and starts nothing when the original is gone", async () => {
+		storedRows([copy]);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					id: "ctx-copy",
+					projectId: "proj-1",
+					expectedDuplicateOfContextId: "ctx-original",
+				},
+				context: personalCtx,
+			}),
+		).rejects.toMatchObject(conflict);
+		expect(mockDeleteUrlSourceSchedule).not.toHaveBeenCalled();
+		expect(mockTemporalStart).not.toHaveBeenCalled();
+		expect(mockEmitContextChange).not.toHaveBeenCalled();
+	});
+
+	it("answers CONFLICT when the two rows no longer hold the same content", async () => {
+		storedRows([copy, { ...original, contentHash: "hash-b" }]);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					id: "ctx-copy",
+					projectId: "proj-1",
+					expectedDuplicateOfContextId: "ctx-original",
+				},
+				context: personalCtx,
+			}),
+		).rejects.toMatchObject(conflict);
+		expect(mockTemporalStart).not.toHaveBeenCalled();
+	});
+
+	it("answers CONFLICT when the copy has no hash, even if the original has none either", async () => {
+		storedRows([
+			{ ...copy, contentHash: null },
+			{ ...original, contentHash: null },
+		]);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					id: "ctx-copy",
+					projectId: "proj-1",
+					expectedDuplicateOfContextId: "ctx-original",
+				},
+				context: personalCtx,
+			}),
+		).rejects.toMatchObject(conflict);
+		expect(mockTemporalStart).not.toHaveBeenCalled();
+	});
+
+	it("answers CONFLICT when the original is in another project", async () => {
+		storedRows([copy, { ...original, projectId: "proj-2" }]);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					id: "ctx-copy",
+					projectId: "proj-1",
+					expectedDuplicateOfContextId: "ctx-original",
+				},
+				context: personalCtx,
+			}),
+		).rejects.toMatchObject(conflict);
+		expect(mockTemporalStart).not.toHaveBeenCalled();
+	});
+
+	it("answers CONFLICT when a row names itself as its original", async () => {
+		storedRows([copy]);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					id: "ctx-copy",
+					projectId: "proj-1",
+					expectedDuplicateOfContextId: "ctx-copy",
+				},
+				context: personalCtx,
+			}),
+		).rejects.toMatchObject(conflict);
+		expect(mockTemporalStart).not.toHaveBeenCalled();
+	});
+
+	it("applies no duplicate check when the field is omitted", async () => {
+		storedRows([{ ...copy, contentHash: null }]);
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: { id: "ctx-copy", projectId: "proj-1" },
+			context: personalCtx,
+		});
+
+		expect(result).toEqual({ success: true });
+		expect(mockGetContextById).toHaveBeenCalledTimes(1);
+		expect(mockTemporalStart).toHaveBeenCalled();
 	});
 });

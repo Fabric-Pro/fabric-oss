@@ -5,6 +5,7 @@ import {
 	getMeetingArchive,
 	type MeetingArchivePayload,
 } from "@repo/database";
+import { contextContentHashOrNull } from "@repo/database/prisma/queries/projects/context-content-hash";
 import { logger } from "@repo/logs";
 // Type-only: erased at compile time, so the runtime `await import("@repo/temporal")`
 // below stays a dynamic import.
@@ -161,6 +162,7 @@ export const restoreMeetingProcedure = tenantProtectedProcedure
 							projectId: input.projectId,
 							type: "MEETING_TRANSCRIPT",
 							content: t.content,
+							contentHash: contextContentHashOrNull(t.content),
 							originalFilename: t.contextFilename,
 							extractionStatus: "COMPLETED",
 							...tenant,

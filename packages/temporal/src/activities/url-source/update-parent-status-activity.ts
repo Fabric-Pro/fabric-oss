@@ -16,6 +16,7 @@
  */
 import type { ExtractionStatus } from "@repo/database";
 import { db } from "@repo/database/prisma/client";
+import { contextContentHashOrNull } from "@repo/database/prisma/queries/projects/context-content-hash";
 import { activityLogger } from "../lib/activity-logger";
 import { emitCompletionNotification } from "./lib/emit-completion-notification";
 
@@ -72,7 +73,11 @@ export async function updateParentStatusActivity(
 			extractionError: extractionError ?? null,
 			...(urlLastSyncedAt !== undefined ? { urlLastSyncedAt } : {}),
 			...(urlNextRefreshAt !== undefined ? { urlNextRefreshAt } : {}),
-			...(content !== undefined ? { content } : {}),
+			// The hash travels with the content (Fizzy #2619): a stale one
+			// would keep matching this row against the page it used to hold.
+			...(content !== undefined
+				? { content, contentHash: contextContentHashOrNull(content) }
+				: {}),
 			// Clear the in-flight workflowId on every finalize. Set by
 			// resync-url-source / process-context-link when starting the
 			// crawl; read by cancel-url-source-crawl to look up the handle.

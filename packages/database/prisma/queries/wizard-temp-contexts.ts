@@ -9,6 +9,7 @@ import {
 	type Prisma,
 	type ProjectContextType,
 } from "../client";
+import { contextContentHashOrNull } from "./projects/context-content-hash";
 
 /**
  * Create a new wizard temp context
@@ -258,6 +259,7 @@ export async function moveWizardTempContextsToProject(
 					projectId,
 					type: temp.type,
 					content: temp.content,
+					contentHash: contextContentHashOrNull(temp.content),
 					// Note: qdrantId will be updated by the binding activity
 					// We don't copy it here because the Qdrant point payload will change
 					qdrantId: null,
