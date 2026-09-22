@@ -1610,7 +1610,8 @@
 					},
 					"context_source": {
 						"scan_stopped": "Channel or chat scanning stopped or resumed",
-						"reconnected": "Channel or chat monitor reconnected"
+						"reconnected": "Channel or chat monitor reconnected",
+						"metadata_updated": "Context source details updated"
 					},
 					"instructions": {
 						"upload_started": "Coding-instructions upload started",
@@ -6016,7 +6017,11 @@
 				"saving": "Saving…",
 				"cancel": "Cancel",
 				"errorFallback": "Couldn't save the source details.",
-				"savedToast": "Source details updated"
+				"savedToast": "Source details updated",
+				"lastEdited": "Last edited on {date}",
+				"lastEditedBy": "Last edited by {name} on {date}",
+				"conflict": "Someone else changed these details while you were editing. Their version has Type: {sourceType} and AI instructions: {aiInstructions}. Save to replace it with yours, or cancel to keep theirs.",
+				"conflictEmpty": "(none)"
 			}
 		},
 		"projectSetup": {

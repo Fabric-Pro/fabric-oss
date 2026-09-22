@@ -13,6 +13,10 @@
  * All tools enforce multi-tenant isolation via the gateway session.
  */
 
+// The audit row for a context metadata edit, shared with the oRPC procedure
+// that makes the same edit so the two surfaces write identical rows. Also a
+// pure leaf: its only `@repo/database` import is type-only.
+import { buildContextMetadataAuditEvent } from "@repo/api/modules/projects/lib/context-metadata-audit";
 // The export's conversation-pointer classifier, reused rather than
 // reimplemented (Fizzy #2228). Both surfaces answer "why is this row's body
 // empty" about the same metadata, and the last time this repo kept two copies
@@ -883,6 +887,63 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		annotations: { readOnlyHint: true },
 		_gateway_source: "platform",
 	},
+	{
+		name: "fabric_update_project_context",
+		description:
+			"Edits a project context source's type label ('sourceType', e.g. 'Client Chat') and AI instructions ('aiInstructions', how the AI should use the source) — the same two fields, and the same edit, as the 'Source details' dialog on the project's Context tab. " +
+			"A context's title, type and body cannot be edited, here or in the app. " +
+			"Read the source first with fabric_get_project_context (find its id with fabric_list_project_contexts) and pass the two values you saw as 'expected'. If someone changed them since, nothing is written and the error returns the current values: re-read them and retry. " +
+			"Omit a field to leave it unchanged; pass null to clear it. Changes take effect on the next AI invocation that uses this source — nothing is re-embedded.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				contextId: {
+					type: "string",
+					description: "Context ID from fabric_list_project_contexts",
+				},
+				projectId: {
+					type: "string",
+					description:
+						"The project the context belongs to — the 'projectId' fabric_get_project_context returns",
+				},
+				sourceType: {
+					type: ["string", "null"],
+					minLength: 1,
+					maxLength: 80,
+					description:
+						"New type label, 1-80 characters, e.g. 'Client Chat', 'Architect Chat', 'QA Thread', 'Knowledge Base', 'SDK Docs', 'Meeting Transcript', or your own. Pass null to clear it; omit to leave it unchanged.",
+				},
+				aiInstructions: {
+					type: ["string", "null"],
+					maxLength: 500,
+					description:
+						"New AI instructions, up to 500 characters, e.g. 'Use as the source of truth for client requirements.' Pass null to clear them; omit to leave them unchanged.",
+				},
+				expected: {
+					type: "object",
+					description:
+						"The 'sourceType' and 'aiInstructions' values you last read for this context (null when a field was empty). The edit is refused, and nothing written, if the context no longer holds them.",
+					properties: {
+						sourceType: {
+							type: ["string", "null"],
+							maxLength: 2000,
+						},
+						aiInstructions: {
+							type: ["string", "null"],
+							maxLength: 2000,
+						},
+					},
+					required: ["sourceType", "aiInstructions"],
+				},
+			},
+			required: ["contextId", "projectId", "expected"],
+		},
+		// Not `destructiveHint: false`: that promises additive-only, and this
+		// overwrites and clears text. Idempotent because a retry whose values
+		// are already stored succeeds without writing (see updateContextMetadata).
+		annotations: { idempotentHint: true },
+		_gateway_source: "platform",
+	},
 
 	// ── Coding Instructions ──
 	{
@@ -1622,6 +1683,9 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 	fabric_get_document: { scope: "projects:read", kind: "read" },
 	fabric_list_project_contexts: { scope: "projects:read", kind: "read" },
 	fabric_get_project_context: { scope: "projects:read", kind: "read" },
+	// Contexts ride on the projects scopes, like the two reads above. The
+	// handler's live CONTEXT_UPDATE check is what holds the per-call line.
+	fabric_update_project_context: { scope: "projects:write", kind: "write" },
 	fabric_list_project_instructions: {
 		scope: "instructions:read",
 		kind: "read",
@@ -1777,6 +1841,8 @@ export async function executePlatformTool(
 				return await handleListProjectContexts(args, session);
 			case "fabric_get_project_context":
 				return await handleGetProjectContext(args, session);
+			case "fabric_update_project_context":
+				return await handleUpdateProjectContext(args, session);
 			case "fabric_list_project_instructions":
 				return await handleListProjectInstructions(args, session);
 			case "fabric_get_project_instruction":
@@ -2327,7 +2393,7 @@ async function handleListFeatures(
 async function resolveGatewayProjectWriteAccess(
 	projectId: string,
 	userId: string,
-	permission: "PROJECT_UPDATE" | "STORY_UPDATE",
+	permission: GatewayWritePermission,
 ): Promise<"allowed" | "not-found" | "forbidden"> {
 	const { hasPermission, Permissions, resolveProjectAccess } = await import(
 		"@repo/database"
@@ -2340,6 +2406,65 @@ async function resolveGatewayProjectWriteAccess(
 		hasPermission(access.permissions, Permissions[permission])
 		? "allowed"
 		: "forbidden";
+}
+
+type GatewayWritePermission =
+	| "PROJECT_UPDATE"
+	| "STORY_UPDATE"
+	| "CONTEXT_UPDATE";
+
+/**
+ * {@link resolveGatewayProjectWriteAccess}, plus the tenant to write under —
+ * for a handler whose write is tenant-filtered rather than keyed on the
+ * project alone.
+ *
+ * The tenant is the project's HOSTING organization, read fresh from the same
+ * `resolveProjectAccess` answer that decided the permission — not
+ * `session.organizationId`. The two differ for an invited project guest: their
+ * session sits in their own organization while the project lives in another,
+ * and the app lets them edit it because the oRPC side resolves the middleware's
+ * `effectiveWriteOrgId`, the hosting organization
+ * (`packages/api/orpc/procedures.ts` `resolveOrganizationId`). Filtering by the
+ * session's organization refused them here what the browser grants them.
+ *
+ * The organization-key binding is then explicit rather than an accident of
+ * that filter: an `org_` key names its tenant in the key record and never
+ * reaches another organization's project, guest grant or not — the same rule
+ * {@link resolveInstructionProjectAccess} applies. A personal key and a browser
+ * session keep the project-authoritative rule, which is the browser's own.
+ *
+ * Every refusal that could reveal another tenant's project reads as not-found;
+ * only a caller who may see the project learns that they lack the permission.
+ */
+async function resolveGatewayProjectWriteAccessWithHost(
+	projectId: string,
+	session: GatewaySession,
+	permission: GatewayWritePermission,
+): Promise<
+	| { status: "allowed"; organizationId: string | null }
+	| { status: "not-found" }
+	| { status: "forbidden" }
+> {
+	const { hasPermission, Permissions, resolveProjectAccess } = await import(
+		"@repo/database"
+	);
+	const access = await resolveProjectAccess(projectId, session.userId);
+	if (!access || !access.isVisible) {
+		return { status: "not-found" };
+	}
+	if (
+		session.credential === "organization-key" &&
+		access.organizationId !== session.organizationId
+	) {
+		return { status: "not-found" };
+	}
+	if (
+		access.source !== "owner" &&
+		!hasPermission(access.permissions, Permissions[permission])
+	) {
+		return { status: "forbidden" };
+	}
+	return { status: "allowed", organizationId: access.organizationId };
 }
 
 async function handleGetFeature(
@@ -4108,6 +4233,12 @@ async function handleListProjectContexts(
 						unavailableReason: resolveContextUnavailableReason(ctx),
 					}),
 			hasOriginalFile: ctx.hasStoredFile,
+			// The two fields fabric_update_project_context edits, and who last
+			// edited them: pass these two back as its 'expected'.
+			sourceType: ctx.sourceType,
+			aiInstructions: ctx.aiInstructions,
+			metadataUpdatedAt: ctx.metadataUpdatedAt,
+			metadataUpdatedByUserId: ctx.metadataUpdatedByUserId,
 			createdAt: ctx.createdAt,
 			updatedAt: ctx.updatedAt,
 		})),
@@ -4250,6 +4381,12 @@ async function handleGetProjectContext(
 		fileSizeBytes: ctx.fileSize,
 		sourceUrl: ctx.sourceUrl,
 		extractionStatus: ctx.extractionStatus,
+		// The two fields fabric_update_project_context edits, and who last
+		// edited them: pass these two back as its 'expected'.
+		sourceType: ctx.sourceType,
+		aiInstructions: ctx.aiInstructions,
+		metadataUpdatedAt: ctx.metadataUpdatedAt,
+		metadataUpdatedByUserId: ctx.metadataUpdatedByUserId,
 		createdAt: ctx.createdAt,
 		updatedAt: ctx.updatedAt,
 		contentAvailable: hasReadableText,
@@ -4263,6 +4400,265 @@ async function handleGetProjectContext(
 		truncated,
 		...(truncated ? { nextOffset: offset + returnedLength } : {}),
 		...(originalFile ? { originalFile } : {}),
+	});
+}
+
+/** Bounds on the two editable context fields — the same as `projects.contexts.updateMetadata`. */
+const CONTEXT_SOURCE_TYPE_MAX_LENGTH = 80;
+const CONTEXT_AI_INSTRUCTIONS_MAX_LENGTH = 500;
+/**
+ * Ceiling on each `expected` value. Generous — a stored value that predates
+ * today's bounds still has to be expressible — but finite, so the comparison
+ * never receives an unbounded string.
+ */
+const CONTEXT_EXPECTED_MAX_LENGTH = 2000;
+
+type ContextMetadataArg =
+	| { ok: true; value: string | null | undefined }
+	| { ok: false; error: string };
+
+/**
+ * Validate one editable field the way the oRPC procedure's zod schema does:
+ * absent leaves it alone, `null` clears it, a string is trimmed and bounded.
+ * A blank label is refused rather than read as "clear" — the procedure
+ * refuses it too, and an agent that meant to clear should say so with null.
+ */
+function readContextMetadataArg(
+	args: Record<string, unknown>,
+	field: "sourceType" | "aiInstructions",
+): ContextMetadataArg {
+	const raw = args[field];
+	if (raw === undefined || raw === null) {
+		return { ok: true, value: raw };
+	}
+	if (typeof raw !== "string") {
+		return {
+			ok: false,
+			error: `${field} must be a string; pass null to clear it`,
+		};
+	}
+	const value = raw.trim();
+	if (field === "sourceType") {
+		if (
+			value.length === 0 ||
+			value.length > CONTEXT_SOURCE_TYPE_MAX_LENGTH
+		) {
+			return {
+				ok: false,
+				error: `sourceType must be 1-${CONTEXT_SOURCE_TYPE_MAX_LENGTH} characters; pass null to clear it`,
+			};
+		}
+		return { ok: true, value };
+	}
+	if (value.length > CONTEXT_AI_INSTRUCTIONS_MAX_LENGTH) {
+		return {
+			ok: false,
+			error: `aiInstructions must be at most ${CONTEXT_AI_INSTRUCTIONS_MAX_LENGTH} characters`,
+		};
+	}
+	return { ok: true, value };
+}
+
+/**
+ * `fabric_update_project_context` — the Context tab's source-details edit,
+ * and nothing more: a context's type label and AI instructions. Title, type
+ * and body stay out of reach because no surface in the app edits them, and an
+ * API key never grants more than the UI.
+ *
+ * Order matters:
+ *  1. Validate, including the required `expected` compare-and-swap values.
+ *  2. Resolve the caller's LIVE CONTEXT_UPDATE on the project — the same
+ *     permission the procedure's middleware requires — and the project's
+ *     hosting organization, before any read of the context, so an id in a
+ *     project the caller cannot edit is never probed. An organization key is
+ *     held to its own organization here, explicitly.
+ *  3. Write through `updateContextMetadata`, the procedure's own write, under
+ *     the HOSTING organization — the tenant the app writes under for the same
+ *     person, invited guests included. A row outside that project or tenant
+ *     reads as not-found; a row whose values moved since the caller read them
+ *     is refused with the current values and nothing written.
+ *  4. On an actual change only: the audit row (same builder as the
+ *     procedure) and the realtime event that refreshes an open Context tab.
+ */
+async function handleUpdateProjectContext(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const contextId = args.contextId as string;
+	const projectId = args.projectId as string;
+	if (!contextId) {
+		return errorResult("contextId is required");
+	}
+	if (!projectId) {
+		return errorResult("projectId is required");
+	}
+
+	const sourceType = readContextMetadataArg(args, "sourceType");
+	if (!sourceType.ok) {
+		return errorResult(sourceType.error);
+	}
+	const aiInstructions = readContextMetadataArg(args, "aiInstructions");
+	if (!aiInstructions.ok) {
+		return errorResult(aiInstructions.error);
+	}
+	if (sourceType.value === undefined && aiInstructions.value === undefined) {
+		return errorResult(
+			"Nothing to update: pass sourceType, aiInstructions, or both",
+		);
+	}
+
+	const expectedArg = args.expected;
+	const isNullableString = (value: unknown) =>
+		value === null ||
+		(typeof value === "string" &&
+			value.length <= CONTEXT_EXPECTED_MAX_LENGTH);
+	if (
+		!expectedArg ||
+		typeof expectedArg !== "object" ||
+		Array.isArray(expectedArg) ||
+		!isNullableString(
+			(expectedArg as Record<string, unknown>).sourceType,
+		) ||
+		!isNullableString(
+			(expectedArg as Record<string, unknown>).aiInstructions,
+		)
+	) {
+		return errorResult(
+			`expected is required: pass the sourceType and aiInstructions you last read from fabric_get_project_context (each at most ${CONTEXT_EXPECTED_MAX_LENGTH} characters), using null for an empty field`,
+		);
+	}
+	const expected = expectedArg as {
+		sourceType: string | null;
+		aiInstructions: string | null;
+	};
+
+	const access = await resolveGatewayProjectWriteAccessWithHost(
+		projectId,
+		session,
+		"CONTEXT_UPDATE",
+	);
+	if (access.status === "not-found") {
+		return errorResult("Project not found or access denied");
+	}
+	if (access.status === "forbidden") {
+		return errorResult(
+			"No permission to edit context sources in this project",
+		);
+	}
+	const hostOrganizationId = access.organizationId;
+
+	const { normalizeContextMetadataValue, updateContextMetadata } =
+		await import("@repo/database");
+	const result = await updateContextMetadata(
+		contextId,
+		projectId,
+		{ userId: session.userId, organizationId: hostOrganizationId },
+		{ sourceType: sourceType.value, aiInstructions: aiInstructions.value },
+		{
+			expected: {
+				sourceType: expected.sourceType,
+				aiInstructions: expected.aiInstructions,
+			},
+		},
+	);
+
+	if (result.status === "not-found") {
+		return errorResult("Context not found in this project");
+	}
+	if (result.status === "stale") {
+		return {
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						error: "This context's sourceType or aiInstructions changed since you read them, so nothing was written. Re-read the context and retry with the current values as 'expected'.",
+						// Normalised, like the procedure's CONFLICT: exactly what
+						// to pass back as 'expected' on the retry.
+						current: {
+							sourceType: normalizeContextMetadataValue(
+								result.current.sourceType,
+							),
+							aiInstructions: normalizeContextMetadataValue(
+								result.current.aiInstructions,
+							),
+							metadataUpdatedByUserId:
+								result.current.metadataUpdatedByUserId,
+						},
+					}),
+				},
+			],
+			isError: true,
+		};
+	}
+
+	const ctx = result.context;
+	if (result.status === "updated") {
+		// Audit row, the same one the procedure writes — see
+		// `announceStoryCreated` for why a synthetic request context is safe
+		// here. `recordAuditFromRequest` never throws and runs the shared
+		// sensitive-key redactor before insert.
+		try {
+			const { recordAuditFromRequest } = await import(
+				"@repo/api/lib/audit"
+			);
+			recordAuditFromRequest(
+				{
+					user: {
+						id: session.userId,
+						email: session.email,
+						name: session.userName,
+					},
+					session: {
+						id: session.sessionId,
+						activeOrganizationId: session.organizationId,
+					},
+				},
+				buildContextMetadataAuditEvent({
+					organizationId: hostOrganizationId,
+					projectId,
+					context: ctx,
+					before: result.before,
+					after: result.after,
+					changed: result.changed,
+					via: "mcp-gateway",
+				}),
+			);
+		} catch (error) {
+			console.warn(
+				"[MCP Gateway] project_context metadata audit failed:",
+				error,
+			);
+		}
+
+		// Refreshes an open Context tab, exactly as the procedure's save does.
+		// `emitContextChange` swallows its own delivery failures.
+		const { emitContextChange } = await import("@repo/api/lib/realtime");
+		await emitContextChange({
+			projectId,
+			contextId: ctx.id,
+			action: "updated",
+			userId: session.userId,
+			userName: session.userName || "Anonymous",
+			contextType: ctx.type,
+			contextName:
+				ctx.originalFilename ||
+				ctx.sourceTitle ||
+				`${ctx.type} context`,
+		});
+	}
+
+	return jsonResult({
+		success: true,
+		// False when the values already matched: nothing was written, stamped
+		// or audited, so a repeated call is harmless.
+		updated: result.status === "updated",
+		id: ctx.id,
+		projectId: ctx.projectId,
+		sourceType: ctx.sourceType,
+		aiInstructions: ctx.aiInstructions,
+		metadataUpdatedAt: ctx.metadataUpdatedAt,
+		metadataUpdatedByUserId: ctx.metadataUpdatedByUserId,
+		updatedAt: ctx.updatedAt,
 	});
 }
 

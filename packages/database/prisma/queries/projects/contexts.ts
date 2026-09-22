@@ -676,6 +676,12 @@ export interface ProjectContextInventoryItem {
 	extractionError: string | null;
 	urlScope: UrlSourceScope | null;
 	metadata: Prisma.JsonValue;
+	/** User-declared type label and AI guidance (Fizzy #1888). */
+	sourceType: string | null;
+	aiInstructions: string | null;
+	/** Who last edited those two fields, and when — null until someone does. */
+	metadataUpdatedAt: Date | null;
+	metadataUpdatedByUserId: string | null;
 	createdAt: Date;
 	updatedAt: Date;
 	/** True when the row points at an original object in storage. */
@@ -751,6 +757,10 @@ export async function listProjectContextSummaries(options: {
 				extractionError: true,
 				urlScope: true,
 				metadata: true,
+				sourceType: true,
+				aiInstructions: true,
+				metadataUpdatedAt: true,
+				metadataUpdatedByUserId: true,
 				createdAt: true,
 				updatedAt: true,
 				s3Path: true,
@@ -960,6 +970,214 @@ export async function updateContext(
 		where: { id: contextId },
 		data,
 	});
+}
+
+/**
+ * The two user-editable metadata fields of a context source (Fizzy #1888):
+ * the type label and the free-text AI instructions. Nothing else on a context
+ * row is editable after creation, by any surface.
+ */
+export interface ContextMetadataValues {
+	sourceType: string | null;
+	aiInstructions: string | null;
+}
+
+export type ContextMetadataField = keyof ContextMetadataValues;
+
+const CONTEXT_METADATA_FIELDS: readonly ContextMetadataField[] = [
+	"sourceType",
+	"aiInstructions",
+];
+
+/**
+ * The single stored representation of a metadata value: trimmed, and blank
+ * stored as NULL. Applied to what is written AND to both sides of the
+ * compare-and-swap, so `""`, `"  "` and `null` are one value everywhere —
+ * a caller that read `null` never conflicts with a row that happens to hold
+ * a legacy `""`.
+ */
+export function normalizeContextMetadataValue(
+	value: string | null | undefined,
+): string | null {
+	if (value === null || value === undefined) {
+		return null;
+	}
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * What a metadata write reads back: the two fields, who last set them and
+ * when, and the title fields a caller needs to name the row (in an audit
+ * row or a realtime event) without ever reading `content`.
+ */
+const CONTEXT_METADATA_SELECT = {
+	id: true,
+	projectId: true,
+	type: true,
+	sourceTitle: true,
+	originalFilename: true,
+	metadata: true,
+	sourceType: true,
+	aiInstructions: true,
+	metadataUpdatedAt: true,
+	metadataUpdatedByUserId: true,
+	updatedAt: true,
+} satisfies Prisma.ProjectContextSelect;
+
+export type ContextMetadataRow = Prisma.ProjectContextGetPayload<{
+	select: typeof CONTEXT_METADATA_SELECT;
+}>;
+
+export type UpdateContextMetadataResult =
+	/** No such context in this project and tenant. Nothing was written. */
+	| { status: "not-found" }
+	/**
+	 * The row no longer holds the values the caller said it read — someone
+	 * else saved in between. Nothing was written; `current` is what is there
+	 * now, so the caller can re-read and decide.
+	 */
+	| { status: "stale"; current: ContextMetadataRow }
+	/**
+	 * The patch would store exactly what is already stored (after
+	 * normalisation), or supplied no field at all. Nothing was written and
+	 * nothing is stamped: "last edited" means an edit happened. Returned even
+	 * when `expected` is out of date, because the requested end state already
+	 * holds — so a retried call succeeds instead of reporting a conflict.
+	 */
+	| { status: "unchanged"; context: ContextMetadataRow }
+	| {
+			status: "updated";
+			context: ContextMetadataRow;
+			/** The normalised values the write replaced. */
+			before: ContextMetadataValues;
+			/** The normalised values now stored. */
+			after: ContextMetadataValues;
+			/** Fields whose stored value actually changed. Never empty. */
+			changed: ContextMetadataField[];
+	  };
+
+/**
+ * Edit a context source's type label and AI instructions — the ONE write
+ * behind both the Context tab's source-details dialog
+ * (`projects.contexts.updateMetadata`) and the `fabric_update_project_context`
+ * MCP tool, so the two cannot drift on what `null` means or what gets stamped.
+ *
+ * Semantics:
+ *  - `undefined` leaves a field untouched; `null` (or blank) clears it.
+ *  - `expected`, when given, is a compare-and-swap: the values the caller
+ *    read. If the row no longer holds them (compared after normalisation) the
+ *    result is `stale` and nothing is written — unless the row already holds
+ *    the requested end state, which is `unchanged` (an idempotent retry).
+ *    Omitting it skips the comparison — the oRPC path's compatibility mode
+ *    for older clients; the MCP tool always passes it.
+ *  - Every successful write stamps `metadataUpdatedAt` and
+ *    `metadataUpdatedByUserId` (the caller's `tenant.userId`).
+ *  - No re-embed and no re-summarise: both fields are read live at retrieval
+ *    time, so an edit takes effect on the next AI invocation.
+ *
+ * TENANT ISOLATION: the row is found under the same exclusive tenant filter
+ * as `getContextById`'s scoped form, plus `projectId` as the IDOR guard, and
+ * the write repeats that filter. Authorization (the caller's CONTEXT_UPDATE on
+ * the project) is the CALLER's job and must happen before this is reached.
+ *
+ * Concurrency: the write is a conditional `updateMany` keyed on the exact
+ * values read inside this transaction, and a zero count means a concurrent
+ * save landed first — reported as `stale`, never overwritten. So `before` is
+ * exactly what the write replaced even on the compatibility path, which is
+ * what makes the audit row's before/after trustworthy.
+ */
+export async function updateContextMetadata(
+	contextId: string,
+	projectId: string,
+	tenant: { userId: string; organizationId?: string | null },
+	patch: { sourceType?: string | null; aiInstructions?: string | null },
+	options: { expected?: ContextMetadataValues } = {},
+): Promise<UpdateContextMetadataResult> {
+	const tenantFilter = tenant.organizationId
+		? { organizationId: tenant.organizationId }
+		: { organizationId: null, userId: tenant.userId };
+	const scope = { id: contextId, projectId, ...tenantFilter };
+
+	return await db.$transaction(
+		async (tx): Promise<UpdateContextMetadataResult> => {
+			const existing = await tx.projectContext.findFirst({
+				where: scope,
+				select: CONTEXT_METADATA_SELECT,
+			});
+			if (!existing) {
+				return { status: "not-found" };
+			}
+
+			const before: ContextMetadataValues = {
+				sourceType: normalizeContextMetadataValue(existing.sourceType),
+				aiInstructions: normalizeContextMetadataValue(
+					existing.aiInstructions,
+				),
+			};
+
+			const data: Partial<ContextMetadataValues> = {};
+			for (const field of CONTEXT_METADATA_FIELDS) {
+				if (patch[field] !== undefined) {
+					data[field] = normalizeContextMetadataValue(patch[field]);
+				}
+			}
+			const after: ContextMetadataValues = { ...before, ...data };
+			const changed = CONTEXT_METADATA_FIELDS.filter(
+				(field) => after[field] !== before[field],
+			);
+			// Checked BEFORE the compare-and-swap: when the row already holds
+			// the requested end state there is nothing to protect. This is what
+			// makes a retry idempotent — a caller whose first attempt landed but
+			// whose response was lost re-sends its old `expected`, and must be
+			// told "done", not "someone else changed this".
+			if (changed.length === 0) {
+				return { status: "unchanged", context: existing };
+			}
+
+			const { expected } = options;
+			if (
+				expected &&
+				CONTEXT_METADATA_FIELDS.some(
+					(field) =>
+						normalizeContextMetadataValue(expected[field]) !==
+						before[field],
+				)
+			) {
+				return { status: "stale", current: existing };
+			}
+
+			const { count } = await tx.projectContext.updateMany({
+				// Keyed on the RAW values read above, not the normalised ones:
+				// equality has to hold against what is physically stored.
+				where: {
+					...scope,
+					sourceType: existing.sourceType,
+					aiInstructions: existing.aiInstructions,
+				},
+				data: {
+					...data,
+					metadataUpdatedAt: new Date(),
+					metadataUpdatedByUserId: tenant.userId,
+				},
+			});
+			if (count === 0) {
+				const current = await tx.projectContext.findFirst({
+					where: scope,
+					select: CONTEXT_METADATA_SELECT,
+				});
+				return current
+					? { status: "stale", current }
+					: { status: "not-found" };
+			}
+
+			const context = await tx.projectContext.findFirstOrThrow({
+				where: scope,
+				select: CONTEXT_METADATA_SELECT,
+			});
+			return { status: "updated", context, before, after, changed };
+		},
+	);
 }
 
 /**

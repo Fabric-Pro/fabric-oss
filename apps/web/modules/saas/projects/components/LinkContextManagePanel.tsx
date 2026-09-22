@@ -96,6 +96,9 @@ type Props = {
 	/** Context Source Type Labeling (#1888) — feeds the Edit-details item. */
 	sourceType?: string | null;
 	aiInstructions?: string | null;
+	/** Who last edited those two fields, and when — shown in the dialog. */
+	metadataUpdatedAt?: Date | string | null;
+	metadataUpdatedByUserId?: string | null;
 	/** Card title, shown in the edit dialog header. */
 	sourceName?: string;
 };
@@ -110,6 +113,8 @@ export function LinkContextManagePanel({
 	isCrawling = false,
 	sourceType,
 	aiInstructions,
+	metadataUpdatedAt,
+	metadataUpdatedByUserId,
 	sourceName,
 }: Props) {
 	const { organizationId, organizationSlug } = useOrganizationContext();
@@ -304,6 +309,8 @@ export function LinkContextManagePanel({
 				sourceName={sourceName}
 				initialSourceType={sourceType ?? null}
 				initialAiInstructions={aiInstructions ?? null}
+				initialMetadataUpdatedAt={metadataUpdatedAt ?? null}
+				initialMetadataUpdatedByUserId={metadataUpdatedByUserId ?? null}
 			/>
 		</div>
 	);
