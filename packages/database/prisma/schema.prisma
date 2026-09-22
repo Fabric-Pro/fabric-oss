@@ -2287,6 +2287,27 @@ model ProjectContext {
   metadataUpdatedAt       DateTime?
   metadataUpdatedByUserId String?
 
+  // A synced knowledge file (Fizzy #2616): a text file an MCP client or the
+  // CLI pushes into Context by its path in the caller's working tree, so the
+  // same file pushed again updates this row instead of adding another.
+  // `sourcePath` is the normalized relative POSIX path (at most 512 chars,
+  // see `normalizeContextSourcePath`) and, with `projectId`, the row's key.
+  // `contentHash` is the sha256 hex of the UTF-8 content: an unchanged push
+  // is a no-op, and a replace must name the hash it is replacing, so two
+  // people pushing different versions of one path get a conflict instead of
+  // a silent overwrite. NULL on every row that did not come through that
+  // path; Postgres treats NULLs as distinct, so the unique key leaves them
+  // alone.
+  sourcePath String?
+  contentHash String?
+
+  // Who last changed the CONTENT of a synced file, and when — so a conflict
+  // can name them. Stamped on create and on every content replace through
+  // the synced-file path, never by the metadata edit above (which has its
+  // own pair). A plain id, not a relation, for the same reason as that pair.
+  contentUpdatedAt       DateTime?
+  contentUpdatedByUserId String?
+
   // Tenant isolation (copied from parent Project)
   userId         String?
   organizationId String?
@@ -2337,6 +2358,12 @@ model ProjectContext {
   /// populated, so an in-transaction build would take a write lock for the
   /// length of it).
   @@unique([id, projectId, ownerKey], map: "project_context_id_projectId_ownerKey_key")
+  /// One synced file per path per project (Fizzy #2616). Built CONCURRENTLY
+  /// in its own migration, 20260922200100.
+  @@unique([projectId, sourcePath])
+  /// The synced-file path's "is this content already here under another
+  /// path?" check. Built CONCURRENTLY in migration 20260922200200.
+  @@index([projectId, contentHash])
   @@index([projectId])
   @@index([type])
   @@index([userId])

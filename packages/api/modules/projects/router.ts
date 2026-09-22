@@ -98,6 +98,7 @@ import { contextSummaryStatusProcedure } from "./procedures/contexts/summary-sta
 import { updateContextMetadataProcedure } from "./procedures/contexts/update-context-metadata";
 import { updateContextSummaryProcedure } from "./procedures/contexts/update-summary";
 import { updateUrlSourceProcedure } from "./procedures/contexts/update-url-source";
+import { upsertSyncedFileProcedure } from "./procedures/contexts/upsert-synced-file";
 // Conversation attachment procedures
 import {
 	attachProjectProcedure,
@@ -873,6 +874,9 @@ export const projectsRouter = {
 		// Context Source Type Labeling (Fizzy #1888) — type label + AI
 		// instructions on any source, independent of the LINK crawl settings
 		updateMetadata: updateContextMetadataProcedure,
+		// Synced knowledge files (Fizzy #2616) — a text file pushed by its
+		// relative path, idempotent, with an explicit-overwrite hash check
+		upsertSyncedFile: upsertSyncedFileProcedure,
 		// URL Context Sources (spec 2026-05-13-url-context-sources)
 		updateUrlSource: updateUrlSourceProcedure,
 		resyncUrlSource: resyncUrlSourceProcedure,

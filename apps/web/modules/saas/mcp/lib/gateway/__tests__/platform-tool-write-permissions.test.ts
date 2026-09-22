@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
 	getDocumentById: vi.fn(),
 	storyTaskFindFirst: vi.fn(),
 	updateContextMetadata: vi.fn(),
+	upsertSyncedContext: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -44,6 +45,7 @@ vi.mock("@repo/database", () => ({
 	Permissions: {
 		PROJECT_UPDATE: "project:update",
 		STORY_UPDATE: "story:update",
+		CONTEXT_CREATE: "context:create",
 		CONTEXT_UPDATE: "context:update",
 	},
 	canCreateProjectInOrganization: mocks.canCreateProjectInOrganization,
@@ -57,6 +59,10 @@ vi.mock("@repo/database", () => ({
 	updateContextMetadata: mocks.updateContextMetadata,
 	normalizeContextMetadataValue: (value: string | null | undefined) =>
 		value?.trim() ? value.trim() : null,
+}));
+
+vi.mock("@repo/api/modules/projects/lib/upsert-synced-context", () => ({
+	upsertSyncedContext: mocks.upsertSyncedContext,
 }));
 
 import { executePlatformTool } from "../platform-tools";
@@ -301,6 +307,92 @@ describe("fabric_update_project_context honours CONTEXT_UPDATE", () => {
 			{ sourceType: "Client Chat", aiInstructions: undefined },
 			{ expected: { sourceType: "Client Chat", aiInstructions: null } },
 		);
+	});
+});
+
+describe("fabric_upsert_project_context honours CONTEXT_CREATE", () => {
+	const args = {
+		projectId: "proj-1",
+		sourcePath: "docs/architecture.md",
+		content: "# Architecture\n",
+	};
+
+	beforeEach(() => {
+		mocks.upsertSyncedContext.mockResolvedValue({
+			status: "unchanged",
+			contextId: "ctx-1",
+			sourcePath: "docs/architecture.md",
+			contentHash: "c".repeat(64),
+		});
+	});
+
+	it("refuses a Viewer who can see the project, before anything is written", async () => {
+		mocks.hasPermission.mockReturnValue(false);
+
+		const result = await executePlatformTool(
+			"fabric_upsert_project_context",
+			args,
+			session,
+		);
+
+		expect(mocks.resolveProjectAccess).toHaveBeenCalledWith(
+			"proj-1",
+			"user-1",
+		);
+		expect(mocks.hasPermission).toHaveBeenCalledWith(
+			expect.anything(),
+			"context:create",
+		);
+		expect(text(result)).toContain(
+			"No permission to add context sources to this project",
+		);
+		expect(mocks.upsertSyncedContext).not.toHaveBeenCalled();
+	});
+
+	it("refuses a project hidden from the caller as not found", async () => {
+		mocks.resolveProjectAccess.mockResolvedValue(null);
+
+		const result = await executePlatformTool(
+			"fabric_upsert_project_context",
+			args,
+			session,
+		);
+
+		expect(text(result)).toContain("Project not found or access denied");
+		expect(mocks.upsertSyncedContext).not.toHaveBeenCalled();
+	});
+
+	it("allows an Editor", async () => {
+		mocks.hasPermission.mockReturnValue(true);
+
+		await executePlatformTool(
+			"fabric_upsert_project_context",
+			args,
+			session,
+		);
+
+		expect(mocks.upsertSyncedContext).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "proj-1",
+				userId: "user-1",
+				organizationId: "org-1",
+				via: "mcp-gateway",
+			}),
+		);
+	});
+
+	it("is refused on scope for a key that only holds projects:read", async () => {
+		const result = await executePlatformTool(
+			"fabric_upsert_project_context",
+			args,
+			{ ...session, scopes: ["projects:read"] },
+		);
+
+		expect(JSON.parse(text(result)).error).toContain(
+			'does not have the "projects:write" scope',
+		);
+		expect(mocks.resolveProjectAccess).not.toHaveBeenCalled();
+		expect(mocks.upsertSyncedContext).not.toHaveBeenCalled();
 	});
 });
 

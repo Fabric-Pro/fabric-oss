@@ -178,6 +178,12 @@ describe("ALWAYS_SKIP_PATHS (#1899)", () => {
 			"projects.meetingDigest.getPersonalTranscript",
 		);
 	});
+
+	it("contains the synced-file upsert, whose input carries the file's content", () => {
+		expect(ALWAYS_SKIP_PATHS).toContain(
+			"projects.contexts.upsertSyncedFile",
+		);
+	});
 });
 
 describe("__isCaptureDisabledForTest", () => {

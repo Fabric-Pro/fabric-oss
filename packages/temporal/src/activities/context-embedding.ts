@@ -14,7 +14,11 @@ import {
 	recordContextIndexingFailure,
 	updateContextExtractionStatus,
 } from "@repo/database";
-import { embedProjectContext } from "@repo/rag";
+import {
+	deleteProjectContext,
+	type EmbedResult,
+	embedProjectContext,
+} from "@repo/rag";
 import { heartbeat } from "@temporalio/activity";
 import { activityLogger } from "./lib/activity-logger";
 
@@ -32,6 +36,137 @@ export interface EmbedSingleContextInput {
 		sourceTitle?: string;
 		[key: string]: unknown;
 	};
+	/**
+	 * The row's content REPLACED an earlier version that was already embedded
+	 * (a synced knowledge file's update, Fizzy #2616): delete every point for
+	 * this context before embedding. Chunk points are keyed
+	 * `<contextId>-chunk-N`, so without the delete a version with fewer chunks
+	 * would leave the old version's tail in the index, still answering
+	 * searches. Absent on every other caller, which embeds as before.
+	 *
+	 * A re-embed always reads the body from the row (with its `contentHash`),
+	 * ignoring `content`: it has to know which version it embedded. See
+	 * {@link reembedStoredVersion}.
+	 */
+	reembed?: boolean;
+}
+
+/**
+ * How many delete-then-embed passes a re-embed makes while the row keeps
+ * being replaced under it, before failing for Temporal to retry.
+ */
+const MAX_REEMBED_PASSES = 3;
+
+interface StoredVersion {
+	content: string;
+	contentHash: string | null;
+}
+
+async function readStoredVersion(
+	contextId: string,
+): Promise<StoredVersion | null> {
+	return db.projectContext.findUnique({
+		where: { id: contextId },
+		select: { content: true, contentHash: true },
+	});
+}
+
+/**
+ * Re-embed a context whose content was replaced, ending on the version the
+ * row holds (Fizzy #2616).
+ *
+ * Every replace starts its own workflow and each activity reads the row when
+ * it runs, so two replaces inside the embedding window can interleave — A
+ * reads V2, B reads V3, B embeds V3, A embeds V2 — and leave the index on V2
+ * while the row holds V3. This is decided here rather than by workflow ids,
+ * so it holds whatever the worker deploy order and however many workflows
+ * are in flight:
+ *
+ *  1. read the row's content AND its `contentHash`;
+ *  2. delete every point for the context, strictly — a failed delete throws
+ *     (Temporal retries) instead of leaving the old tail in place;
+ *  3. embed that content, without letting the embed mark the row;
+ *  4. re-read the `contentHash`. Unchanged: mark `embeddedAt` for that hash
+ *     only (a conditional write, so a replace landing between the re-read
+ *     and the mark is not marked as embedded) and stop. Changed: go round
+ *     again with the new version, at most {@link MAX_REEMBED_PASSES} passes,
+ *     then throw so Temporal retries once the row has settled.
+ *
+ * Returns `null` when there is nothing to index: the row is gone or empty.
+ */
+async function reembedStoredVersion(params: {
+	contextId: string;
+	projectId: string;
+	userId: string;
+	organizationId?: string;
+	type: string;
+	apiKey: Parameters<typeof embedProjectContext>[0]["apiKey"];
+	metadata?: EmbedSingleContextInput["metadata"];
+	initial: StoredVersion | null;
+}): Promise<EmbedResult | null> {
+	const { contextId, organizationId, initial, ...embedOptions } = params;
+	// Strict: a failed delete rejects instead of leaving old chunks behind.
+	const deleteAllPoints = () =>
+		deleteProjectContext(contextId, organizationId, undefined, {
+			strict: true,
+		});
+	let version = initial;
+
+	for (let pass = 1; pass <= MAX_REEMBED_PASSES; pass++) {
+		if (!version || version.content.trim().length === 0) {
+			// Nothing to index. After an earlier pass this means the row was
+			// emptied under us; that pass's points go too.
+			if (pass > 1) {
+				await deleteAllPoints();
+			}
+			return null;
+		}
+
+		await deleteAllPoints();
+
+		const result = await embedProjectContext({
+			...embedOptions,
+			contextId,
+			organizationId,
+			content: version.content,
+			skipDbUpdate: true,
+		});
+		if (!result.success) {
+			return result;
+		}
+
+		const current = await db.projectContext.findUnique({
+			where: { id: contextId },
+			select: { contentHash: true },
+		});
+		if (!current) {
+			// Deleted while we embedded: the points just written belong to
+			// nothing, so remove them rather than leave them searchable.
+			await deleteAllPoints();
+			return null;
+		}
+		if (current.contentHash === version.contentHash) {
+			if (result.qdrantId) {
+				await db.projectContext.updateMany({
+					where: { id: contextId, contentHash: version.contentHash },
+					data: { qdrantId: result.qdrantId, embeddedAt: new Date() },
+				});
+			}
+			return result;
+		}
+
+		activityLogger.info(
+			"Context content changed while it was being re-embedded",
+			{ contextId, pass },
+		);
+		if (pass < MAX_REEMBED_PASSES) {
+			version = await readStoredVersion(contextId);
+		}
+	}
+
+	throw new Error(
+		`Context ${contextId} kept changing while it was being re-embedded (${MAX_REEMBED_PASSES} passes); retrying once it settles`,
+	);
 }
 
 export interface EmbedSingleContextOutput {
@@ -57,6 +192,7 @@ export async function embedSingleContextActivity(
 		content,
 		type,
 		metadata,
+		reembed,
 	} = input;
 
 	activityLogger.info("Embedding project context", {
@@ -69,16 +205,19 @@ export async function embedSingleContextActivity(
 		// A caller may omit the body and let us read it back instead, so that an
 		// arbitrarily long context — a whole meeting transcript, since Fizzy
 		// #2316 stores those unabridged — never has to fit inside a Temporal
-		// payload. The row is the source of truth either way.
-		const body =
-			content ??
-			(
-				await db.projectContext.findUnique({
-					where: { id: contextId },
-					select: { content: true },
-				})
-			)?.content ??
-			"";
+		// payload. The row is the source of truth either way. A re-embed
+		// always reads it, with the version's hash (see reembedStoredVersion).
+		const stored = reembed ? await readStoredVersion(contextId) : null;
+		const body = reembed
+			? (stored?.content ?? "")
+			: (content ??
+				(
+					await db.projectContext.findUnique({
+						where: { id: contextId },
+						select: { content: true },
+					})
+				)?.content ??
+				"");
 
 		// Skip if no content
 		if (body.trim().length === 0) {
@@ -88,6 +227,21 @@ export async function embedSingleContextActivity(
 					contextId,
 				},
 			);
+			if (reembed) {
+				// A re-embed of a row that is gone or empty: an earlier
+				// attempt may have written points for it before the row
+				// disappeared (a retry after the missing-row cleanup itself
+				// failed lands here), so remove them rather than leave them
+				// searchable. Strict, so a failed delete is retried.
+				await deleteProjectContext(
+					contextId,
+					organizationId,
+					undefined,
+					{
+						strict: true,
+					},
+				);
+			}
 			// Pre-existing branch retained for Notion-resync flow: the row was
 			// created with empty content and the user is expected to resync
 			// from Integrations later. Leaving extractionStatus at PENDING.
@@ -104,17 +258,41 @@ export async function embedSingleContextActivity(
 		// long-running embedding/enrichment calls (each can block for seconds).
 		const heartbeatInterval = setInterval(() => heartbeat(), 10_000);
 		try {
-			// Embed the context
-			const result = await embedProjectContext({
-				contextId,
-				projectId,
-				userId,
-				organizationId,
-				content: body,
-				type,
-				apiKey: providerConfig,
-				metadata,
-			});
+			// Embed the context. A replace deletes the previous version's
+			// points first (strict delete-by-filter, then the same embed) and
+			// ends on the version the row holds.
+			let result: EmbedResult;
+			if (reembed) {
+				const reembedded = await reembedStoredVersion({
+					contextId,
+					projectId,
+					userId,
+					organizationId,
+					type,
+					apiKey: providerConfig,
+					metadata,
+					initial: stored,
+				});
+				if (!reembedded) {
+					activityLogger.info(
+						"Context was deleted or emptied during re-embed; nothing to index",
+						{ contextId },
+					);
+					return { success: true };
+				}
+				result = reembedded;
+			} else {
+				result = await embedProjectContext({
+					contextId,
+					projectId,
+					userId,
+					organizationId,
+					content: body,
+					type,
+					apiKey: providerConfig,
+					metadata,
+				});
+			}
 
 			// embedProjectContext swallows its own errors and *resolves* with
 			// { success: false } instead of throwing (see

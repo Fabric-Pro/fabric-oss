@@ -210,7 +210,11 @@ describe("audit.taxonomy handler", () => {
 		// `fabric_update_project_context` MCP tool with both values before and
 		// after, so an edit made with an API key is as attributable as one made
 		// in the app) = 137.
-		expect(result.actions).toHaveLength(137);
+		// + 1 project.context_source.content_upserted (a synced knowledge file
+		// created or replaced by its path from the API or the
+		// `fabric_upsert_project_context` MCP tool, with the path and the new
+		// and replaced hashes but never the content, Fizzy #2616) = 138.
+		expect(result.actions).toHaveLength(138);
 		// The To Do list's writes. Completion is one toggle key; unsnoozing is
 		// its own, because "returned this to everyone's open view" is not a
 		// weaker form of "hid it".
@@ -239,6 +243,10 @@ describe("audit.taxonomy handler", () => {
 		// Metadata edits (type label + AI instructions) from either surface.
 		expect(result.actions).toContain(
 			"project.context_source.metadata_updated",
+		);
+		// Synced knowledge files, created or replaced by path, from either surface.
+		expect(result.actions).toContain(
+			"project.context_source.content_upserted",
 		);
 		// Organization deletion corridor: taking a deactivated organization
 		// back, and the scheduled purge that ends the window.

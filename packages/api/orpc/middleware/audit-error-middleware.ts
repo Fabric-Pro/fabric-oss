@@ -90,6 +90,17 @@ const ALWAYS_SKIP_PATHS = [
 	// Graph failure), so the row would publish the address of a still-private
 	// meeting into the project's ORG tenant in exchange for nothing.
 	"projects.meetingDigest.importPersonalMeeting",
+	// Fizzy #2616 — a synced knowledge file's upsert. Same reason as
+	// saveAgenda (#1901): `content` is the file's full text, user prose up to
+	// 2 MiB, and it is not on the redaction denylist, so a thrown call would
+	// persist the file (past 8 KiB, a raw truncated string) to an
+	// org-admin-readable AuditLog row. Here a throw is also ROUTINE: CONFLICT
+	// is the normal answer when someone else changed the file first, so every
+	// lost race would copy the losing version into the ledger. Successful
+	// writes are audited by the procedure itself
+	// (`project.context_source.content_upserted`), with the path, hash and
+	// size but never the content.
+	"projects.contexts.upsertSyncedFile",
 ] as const;
 
 /**

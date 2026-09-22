@@ -172,6 +172,7 @@ These give the AI direct access to your Fabric data — no extra setup needed:
 | `fabric_get_document` | Get full document content in markdown |
 | `fabric_list_project_contexts` | List a project's Context tab sources — uploads, meeting transcripts, crawled links, notes |
 | `fabric_get_project_context` | Read one context source in full: transcript text, extracted file text, or crawled markdown |
+| `fabric_upsert_project_context` | Push a text file into a project's Context by its relative path: unchanged content is skipped, changed content replaces the stored version and is re-indexed, and replacing a file requires the `contentHash` you last read so nobody's edit is silently overwritten |
 | `fabric_list_project_instructions` | Browse or search a project's published coding-instruction files, or ask what changed since a `sinceDigest` |
 | `fabric_get_project_instruction` | Read one published coding-instruction file by path, paged for large files |
 | `fabric_get_project_instruction_bundle` | Install the whole published tree as one zip, and report what changed since a `sinceDigest` |

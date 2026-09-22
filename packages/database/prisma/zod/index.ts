@@ -258,7 +258,7 @@ export type ProjectDocumentAssetScalarFieldEnum = z.infer<typeof ProjectDocument
 
 // File: ProjectContextScalarFieldEnum.schema.ts
 
-export const ProjectContextScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'content', 'qdrantId', 'embeddedAt', 'metadata', 's3Path', 's3Bucket', 'originalFilename', 'mimeType', 'fileSize', 'extractionStatus', 'extractionError', 'extractedAt', 'sourceUrl', 'sourceTitle', 'knowledgeBaseSourceCategory', 'knowledgeBaseSourceCategoryOther', 'urlScope', 'urlMaxPages', 'urlRefreshMode', 'urlNextRefreshAt', 'urlLastSyncedAt', 'urlScheduleId', 'urlActiveWorkflowId', 'sourceType', 'aiInstructions', 'metadataUpdatedAt', 'metadataUpdatedByUserId', 'userId', 'organizationId', 'ownerKey', 'createdAt', 'updatedAt'])
+export const ProjectContextScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'content', 'qdrantId', 'embeddedAt', 'metadata', 's3Path', 's3Bucket', 'originalFilename', 'mimeType', 'fileSize', 'extractionStatus', 'extractionError', 'extractedAt', 'sourceUrl', 'sourceTitle', 'knowledgeBaseSourceCategory', 'knowledgeBaseSourceCategoryOther', 'urlScope', 'urlMaxPages', 'urlRefreshMode', 'urlNextRefreshAt', 'urlLastSyncedAt', 'urlScheduleId', 'urlActiveWorkflowId', 'sourceType', 'aiInstructions', 'metadataUpdatedAt', 'metadataUpdatedByUserId', 'sourcePath', 'contentHash', 'contentUpdatedAt', 'contentUpdatedByUserId', 'userId', 'organizationId', 'ownerKey', 'createdAt', 'updatedAt'])
 
 export type ProjectContextScalarFieldEnum = z.infer<typeof ProjectContextScalarFieldEnumSchema>;
 
@@ -4441,6 +4441,10 @@ export const ProjectContextSchema = z.object({
   aiInstructions: z.string().nullish(),
   metadataUpdatedAt: z.date().nullish(),
   metadataUpdatedByUserId: z.string().nullish(),
+  sourcePath: z.string().nullish(),
+  contentHash: z.string().nullish(),
+  contentUpdatedAt: z.date().nullish(),
+  contentUpdatedByUserId: z.string().nullish(),
   userId: z.string().nullish(),
   organizationId: z.string().nullish(),
   ownerKey: z.string().nullish(),
