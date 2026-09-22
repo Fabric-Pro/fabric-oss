@@ -4827,10 +4827,17 @@ function readProposedChanges(
  * The tool always proposes and never publishes. That is not a permission
  * shortcut, it is the product rule: an agent editing the instructions the next
  * agent reads, with nobody in between, is the loop this feature exists to keep
- * a person inside. Publishing is the Coding Instructions tab, and nothing the
- * `instructions:write` scope reaches has a publish mode at all — which is what
- * lets that scope be offered to read-only roles and described as
- * review-gated without the description depending on who minted the key.
+ * a person inside. Nothing the `instructions:write` scope reaches has a
+ * publish mode to ask for — which is what lets that scope be offered to
+ * read-only roles and described as review-gated without the description
+ * depending on who minted the key.
+ *
+ * Publishing from outside the browser exists, and deliberately not here: it is
+ * a REST route behind `instructions:publish`, a scope no tool in `TOOL_SCOPES`
+ * names and the Connect dialog never mints, reached by a person running
+ * `fabric instructions push --publish`. The handler below passes
+ * `mode: "proposal"` as a constant for that reason — an agent that invents a
+ * mode in its arguments is not consulted.
  *
  * Authorization is the shared function's, unchanged: `INSTRUCTION_READ` on the
  * project, resolved live for this caller, in the project's own hosting
@@ -4957,6 +4964,11 @@ async function handleProposeProjectInstructionChange(
 			projectId,
 			baseSnapshotId,
 			changes: parsed.changes,
+			// A CONSTANT, never `args.mode`. This tool sits behind
+			// `instructions:write`, the review-gated scope, and publishing has
+			// a scope of its own that no MCP tool asks for: an agent must not
+			// be able to reach it by naming a mode in its arguments.
+			mode: "proposal",
 			// The same synthetic context `announceStoryCreated` builds: there
 			// is no HTTP request in scope at this layer, so ip / user-agent /
 			// request-id resolve to null rather than being invented, and the

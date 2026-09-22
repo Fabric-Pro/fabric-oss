@@ -1620,15 +1620,16 @@ describe("the proposal tool's definition", () => {
 	});
 
 	/**
-	 * There is no `mode`, and the absence is a security property rather than
-	 * a missing feature.
+	 * The tool's schema offers no `mode`, and the absence is a security
+	 * property rather than a missing feature.
 	 *
 	 * The tool is reachable with `instructions:write`, which the Connect
 	 * dialog offers to read-only roles and describes as review-gated. A
 	 * publish mode gated on the caller's permissions would make that
 	 * description false for anyone who happened to hold the publishing
 	 * permission, so the scope would no longer describe what the key can do.
-	 * Publishing stays with a person in the tab.
+	 * Publishing from outside the browser lives behind its own scope,
+	 * `instructions:publish`, which no tool here asks for.
 	 */
 	it("offers an agent no way to publish", () => {
 		const tool = PLATFORM_TOOL_DEFINITIONS.find(
@@ -1812,8 +1813,11 @@ describe("what instructions:write can reach", () => {
 		]);
 	});
 
-	// Belt and braces at the dispatch layer: a caller that invents a `mode`
-	// gets a proposal, because nothing downstream reads one.
+	// Belt and braces at the dispatch layer: the handler passes the proposal
+	// mode as a CONSTANT, so a caller that invents one is not consulted. The
+	// shared entry point does have a publish mode now — it is reachable only
+	// from a REST route behind `instructions:publish`, a scope no tool map
+	// mentions and the Connect dialog never mints.
 	it("ignores a mode an agent invents", async () => {
 		m.getProjectAccessContext.mockResolvedValue({
 			organizationId: "org_1",
@@ -1846,6 +1850,6 @@ describe("what instructions:write can reach", () => {
 			string,
 			unknown
 		>;
-		expect(call).not.toHaveProperty("mode");
+		expect(call.mode).toBe("proposal");
 	});
 });

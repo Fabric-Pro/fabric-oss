@@ -1063,6 +1063,65 @@ export async function getPublishedInstructionSnapshot(projectId: string) {
 }
 
 /**
+ * `getInstructionSnapshot` and `getPublishedInstructionSnapshot`, answered
+ * from ONE Prisma CALL instead of two independent ones.
+ *
+ * That is a round-trip saving, not a consistency guarantee. Prisma compiles a
+ * `findFirst` with nested relation `select`s into separate SQL statements —
+ * this repository runs without the `relationJoins` preview feature, so there
+ * is no single query and no single MVCC snapshot backing both facts. The two
+ * nested reads below can still observe two different moments of the
+ * database, exactly as two top-level calls could. What this function buys is
+ * fewer network round trips and one tenant check instead of two; it is NOT a
+ * point-in-time read of "the snapshot's status and the project's pointer as
+ * of one instant", and no caller may rely on it being one.
+ *
+ * Scoped the same way `getInstructionProposal` is: the project is looked up
+ * by `id` AND `organizationId` together, not `id` alone the way
+ * `getPublishedInstructionSnapshot` above does it — that function's caller has
+ * no tenant of its own to check yet, this one's already has. The pointer
+ * relation is additionally checked against BOTH `projectId` and
+ * `organizationId` before it is returned: `publishedInstructionSnapshotId` is
+ * a foreign key to a snapshot id alone, with no query-level constraint tying
+ * that snapshot back to the project or organization it is read through, so a
+ * malformed or cross-tenant row would otherwise be handed back as if it
+ * belonged here. `summarySelect` already carries both fields for exactly this
+ * check.
+ */
+export async function getInstructionSnapshotWithPublishedPointer(
+	snapshotId: string,
+	projectId: string,
+	organizationId: string,
+): Promise<{
+	snapshot: Awaited<ReturnType<typeof getInstructionSnapshot>>;
+	publishedPointer: Awaited<
+		ReturnType<typeof getPublishedInstructionSnapshot>
+	>;
+}> {
+	const project = await db.project.findFirst({
+		where: { id: projectId, organizationId },
+		select: {
+			publishedInstructionSnapshot: { select: summarySelect },
+			instructionSnapshots: {
+				where: { id: snapshotId, organizationId },
+				select: summarySelect,
+				take: 1,
+			},
+		},
+	});
+	const publishedPointer = project?.publishedInstructionSnapshot ?? null;
+	return {
+		snapshot: project?.instructionSnapshots[0] ?? null,
+		publishedPointer:
+			publishedPointer &&
+			publishedPointer.projectId === projectId &&
+			publishedPointer.organizationId === organizationId
+				? publishedPointer
+				: null,
+	};
+}
+
+/**
  * The published snapshot of MANY projects at once, as the summary the MCP
  * project tools advertise on each project they return.
  *

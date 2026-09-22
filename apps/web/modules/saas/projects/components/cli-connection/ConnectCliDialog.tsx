@@ -278,15 +278,24 @@ const ISSUED_KEY_SCOPES = ["mcp:read"] as const;
  * open a PROPOSAL: a suggestion held for review, published by nobody but a
  * person with edit rights in the tab.
  *
- * Publishing is not reachable from this scope at all — neither surface has a
- * publish mode to ask for — which is what makes the disclosure below true for
- * EVERY person who mints a key here. A mode gated on the minter's own
- * permissions would have made "nothing is published until somebody approves"
- * a half-truth for anyone holding `INSTRUCTION_CREATE`, and the sentence a
- * person reads before creating a credential has to hold whoever they are.
- * The key therefore stays within what a reader can already do in the browser,
- * which is also why `READ_ONLY_ORG_API_KEY_SCOPES` accepts it and a viewer's
- * mint is not clamped. `DISCLOSURE_POINTS` says so before the key is created.
+ * Publishing is not reachable from this scope at all, which is what makes the
+ * disclosure below true for EVERY person who mints a key here. A mode gated on
+ * the minter's own permissions would have made "nothing is published until
+ * somebody approves" a half-truth for anyone holding `INSTRUCTION_CREATE`, and
+ * the sentence a person reads before creating a credential has to hold whoever
+ * they are. The key therefore stays within what a reader can already do in the
+ * browser, which is also why `READ_ONLY_ORG_API_KEY_SCOPES` accepts it and a
+ * viewer's mint is not clamped. `DISCLOSURE_POINTS` says so before the key is
+ * created.
+ *
+ * Publishing directly is a SEPARATE authority, `instructions:publish`, which
+ * this dialog never mints and must not start minting. It is the scope behind
+ * `fabric instructions push --publish` and `POST
+ * /projects/:id/instructions/versions`, it is absent from
+ * `READ_ONLY_ORG_API_KEY_SCOPES`, and a key carrying it is created
+ * deliberately in the organization's API-key settings, where its own
+ * disclosure says it publishes with no review. Adding it here would make the
+ * promise above false for every key this one button has ever issued.
  */
 const ISSUED_KEY_SCOPES_FOR_INSTRUCTIONS = [
 	"mcp:read",

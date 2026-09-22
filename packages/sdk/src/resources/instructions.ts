@@ -121,6 +121,12 @@ export interface SubmitInstructionChangeOptions {
 }
 
 export interface SubmittedInstructionChange {
+	/**
+	 * Which route answered: `proposal` from `submitChange`, `publish` from
+	 * `publishChange`. Echoed by the server, so it says what actually
+	 * happened rather than what was asked for.
+	 */
+	mode: "proposal" | "publish";
 	snapshotId: string;
 	version: number;
 	baseSnapshotId: string;
@@ -129,10 +135,31 @@ export interface SubmittedInstructionChange {
 	inheritedCount: number;
 	putCount: number;
 	deleteCount: number;
-	/** Always `PENDING`: this route only ever opens a proposal. */
+	/**
+	 * The review state. `PENDING` for a proposal — a later state means an
+	 * earlier attempt at the same change set was already decided. Always
+	 * `null` for a publish: there is nobody to review it.
+	 */
 	proposalStatus: "PENDING" | "APPROVED" | "REJECTED" | null;
-	/** The snapshot's status once its validation run was started. */
+	/**
+	 * The snapshot's status once its validation run was started, normally
+	 * `VALIDATING`. A publish is NOT finished at this point, and `READY` here
+	 * does NOT by itself mean it landed — see `published`.
+	 */
 	status: string;
+	/**
+	 * True when this snapshot has been published at least once by the time of
+	 * this response. A publish normally lands AFTER the response returns —
+	 * the server-side workflow that validates and publishes a snapshot keeps
+	 * running past `publishChange`'s own return — so `false` means "not yet
+	 * confirmed", never "refused": the same publish can still land a moment
+	 * later without this field ever telling you so. `status: "READY"` does
+	 * NOT imply `published: true` for exactly that reason. Poll `getPublished`
+	 * or check the project's Coding Instructions tab to see the outcome once
+	 * it has actually happened. Always `false` for `submitChange`'s proposal
+	 * — nothing about that call ever asks the workflow to publish one.
+	 */
+	published: boolean;
 }
 
 export class InstructionsResource {
@@ -183,10 +210,12 @@ export class InstructionsResource {
 	 *
 	 * It opens a PROPOSAL and only a proposal: nothing is published until
 	 * somebody who can edit the project's instructions approves it in the
-	 * Coding Instructions tab. There is no publish mode — `instructions:write`
-	 * is offered to read-only roles and described as review-gated, and a
-	 * publish mode would make that description untrue for any key whose
-	 * creator happens to hold the publishing permission.
+	 * Coding Instructions tab. The body has no mode to set —
+	 * `instructions:write` is offered to read-only roles and described as
+	 * review-gated, and a publish mode here would make that description untrue
+	 * for any key whose creator happens to hold the publishing permission.
+	 * Publishing is `publishChange` below, a different route behind a
+	 * different scope.
 	 *
 	 * `baseSnapshotId` is REQUIRED and positional: it is the id of the
 	 * published snapshot the change set is stated against — `snapshotId` from
@@ -220,6 +249,52 @@ export class InstructionsResource {
 		return this.http.post<SubmittedInstructionChange>(
 			`/projects/${encodeURIComponent(projectId)}/instructions/changes${buildQuery(options)}`,
 			{ baseSnapshotId, changes },
+		);
+	}
+
+	/**
+	 * Publish the same change set as a new version, with no review.
+	 *
+	 * A separate method for a separate route and a separate scope. It takes
+	 * the same three arguments as `submitChange` and differs in authorization
+	 * in two ways that matter to a caller: the key must carry `instructions:publish`
+	 * rather than `instructions:write`, and its creator must still hold the
+	 * project permission the Coding Instructions tab requires to publish —
+	 * checked live on every call, so a demotion takes effect at once.
+	 * `instructions:write` cannot reach this route and this scope cannot open
+	 * a proposal; a key may of course carry both.
+	 *
+	 * Publishing is not instantaneous. What comes back is a snapshot whose
+	 * validation run has just started, normally `status: "VALIDATING"`: the
+	 * same verify → secret-scan → publish workflow a folder upload runs
+	 * decides, and the version replaces the published one only when it
+	 * passes. Poll `getPublished` if you need to see that it landed.
+	 *
+	 * `baseSnapshotId` is REQUIRED for the same reason as on `submitChange`,
+	 * and matters more here: a publish is a fast-forward claim on the
+	 * published pointer, so a base that is no longer published is a 409 whose
+	 * `FabricError.code` is `PULL_FIRST` and nothing is written. The other
+	 * codes are the same set `submitChange` documents, minus the two proposal
+	 * caps, which do not apply to a version.
+	 *
+	 * **Sent once**: `{ maxRetries: 0 }` overrides the client's retry policy
+	 * for this request alone. `submitChange` can be retried safely because the
+	 * server recognises a change set it has already admitted as a proposal and
+	 * answers with that proposal; a publish has no such dedup — the second
+	 * request would create a second version of the same content — so a
+	 * response lost in transit is reported rather than repeated. Check
+	 * `getPublished` before sending it again.
+	 */
+	publishChange(
+		projectId: string,
+		baseSnapshotId: string,
+		changes: InstructionChange[],
+		options: SubmitInstructionChangeOptions = {},
+	): Promise<SubmittedInstructionChange> {
+		return this.http.post<SubmittedInstructionChange>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/versions${buildQuery(options)}`,
+			{ baseSnapshotId, changes },
+			{ retry: { maxRetries: 0 } },
 		);
 	}
 }

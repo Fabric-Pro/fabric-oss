@@ -255,6 +255,13 @@ describe("a read-only role creating a key", () => {
 		"features:write",
 		"workflows:run",
 		"frames:write",
+		// The publish half of the coding-instructions split. Its sibling
+		// `instructions:write` IS on the read-only list — it opens a proposal,
+		// which a viewer can already do in the tab — and this one is not:
+		// it publishes with no review, on `INSTRUCTION_CREATE`, which the
+		// viewer permission set does not hold. The two must not drift back
+		// together.
+		"instructions:publish",
 		"audit_log:read",
 		"audit_log:export",
 		"*",
@@ -310,6 +317,31 @@ describe("the clamp leaves member-and-up alone", () => {
 			await handlers.create({
 				context,
 				input: { organizationId: "org-1", name: "Claude Code", scopes },
+			} as never);
+
+			expect(mockCreateKey).toHaveBeenCalledWith(
+				expect.objectContaining({ scopes }),
+			);
+		},
+	);
+
+	// The positive half of the coding-instructions split: the scope exists and
+	// a role that holds `INSTRUCTION_CREATE` can put it on a key. A clamp that
+	// refused everybody would pass the viewer test above and ship a scope
+	// nobody can mint.
+	it.each(["member", "admin", "owner"])(
+		"lets a %s mint instructions:publish",
+		async (role) => {
+			mockRequireOrgMembership.mockResolvedValue({ role });
+
+			const scopes = ["instructions:read", "instructions:publish"];
+			await handlers.create({
+				context,
+				input: {
+					organizationId: "org-1",
+					name: "Instruction publisher",
+					scopes,
+				},
 			} as never);
 
 			expect(mockCreateKey).toHaveBeenCalledWith(

@@ -29,6 +29,7 @@ const OUTSIDE_CONFIG_PATH = path.join(tmpdir(), "fabricai", "config.json");
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		submitChange: vi.fn(),
+		publishChange: vi.fn(),
 		getPublished: vi.fn(),
 		getApiKey: vi.fn<() => string | undefined>(),
 		getConfigPath: vi.fn<() => string>(),
@@ -51,6 +52,7 @@ vi.mock("../src/lib/client.js", () => {
 			getPublished: mocks.getPublished,
 			createDownloadUrl: vi.fn(),
 			submitChange: mocks.submitChange,
+			publishChange: mocks.publishChange,
 		},
 		withoutContext: () => client,
 	};
@@ -209,12 +211,16 @@ function accepted(overrides: Record<string, unknown> = {}) {
 		proposalStatus: "PENDING",
 		mode: "proposal",
 		status: "VALIDATING",
+		// A proposal never asks the workflow to publish, so this is false for
+		// every default call; the publish tests override it explicitly.
+		published: false,
 		...overrides,
 	};
 }
 
 beforeEach(() => {
 	mocks.submitChange.mockReset();
+	mocks.publishChange.mockReset();
 	mocks.getPublished.mockReset();
 	mocks.clientOverrides.mockReset();
 	mocks.getApiKey.mockReset().mockReturnValue("fab_test");
@@ -333,13 +339,81 @@ describe("the request", () => {
 	});
 
 	/**
-	 * There is no publish mode on this command, and its absence is the
-	 * security property: the key push uses carries `instructions:write`, which
-	 * the Connect dialog offers to read-only roles and describes as
-	 * review-gated. A `--publish` flag would make that description false for
-	 * anyone whose account happens to hold the publishing permission.
+	 * `--publish` is a different CALL, not a flag on the same one.
+	 *
+	 * The two authorities are two API-key scopes and a scope is checked per
+	 * route, so choosing the method here is what makes a key that cannot
+	 * publish fail with a scope refusal rather than quietly proposing. If this
+	 * ever routed a publish through `submitChange`, the command would silently
+	 * do the safe-sounding wrong thing.
 	 */
-	it("has no --publish flag, and refuses one rather than ignoring it", async () => {
+	it("sends --publish through the publish call, not the proposal one", async () => {
+		mocks.publishChange.mockResolvedValue(
+			accepted({ mode: "publish", proposalStatus: null }),
+		);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n", "gone.md": "two\n" },
+			{ "AGENTS.md": "edited\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--publish",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+		expect(mocks.publishChange).toHaveBeenCalledTimes(1);
+		const [projectId, baseSnapshotId, changes, options] =
+			mocks.publishChange.mock.calls[0] ?? [];
+		expect(projectId).toBe("proj-1");
+		// The same base, the same diff: only the authority differs.
+		expect(baseSnapshotId).toBe("snap-7");
+		expect(changes).toEqual([
+			{
+				op: "put",
+				path: "AGENTS.md",
+				content: "edited\n",
+				encoding: "utf8",
+			},
+			{ op: "delete", path: "gone.md" },
+		]);
+		expect(options).toEqual({ org: undefined });
+	});
+
+	// And the default stays the reviewed path: no flag, no publish call.
+	it("never touches the publish call without the flag", async () => {
+		mocks.submitChange.mockResolvedValue(accepted());
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		await runCli(["push", "--project", "proj-1", "--dest", dest]);
+
+		expect(mocks.publishChange).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * What a publish reports, and what it must not claim.
+	 *
+	 * The version is not published when the response arrives: the same verify
+	 * → secret-scan → publish run a folder upload goes through decides, and
+	 * the response normally names a snapshot still VALIDATING. "Published
+	 * version 8" there would be a claim this command cannot make.
+	 */
+	it("says a publish is still validating rather than claiming it landed", async () => {
+		mocks.publishChange.mockResolvedValue(
+			accepted({
+				mode: "publish",
+				proposalStatus: null,
+				status: "VALIDATING",
+			}),
+		);
 		const dest = await syncedTree(
 			{ "AGENTS.md": "one\n" },
 			{ "AGENTS.md": "x\n" },
@@ -354,7 +428,132 @@ describe("the request", () => {
 			"--publish",
 		]);
 
-		expect(result.code).not.toBe(0);
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("Sent as version 8");
+		expect(result.stdout).toContain("once its checks pass");
+		expect(result.stdout).not.toContain("pending review");
+	});
+
+	it("says so plainly when the version is already published", async () => {
+		mocks.publishChange.mockResolvedValue(
+			accepted({
+				mode: "publish",
+				proposalStatus: null,
+				status: "READY",
+				// `READY` alone is not the claim: this is what the server
+				// says once it has re-read the project's pointer and found
+				// this snapshot IS it.
+				published: true,
+			}),
+		);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--publish",
+		]);
+
+		expect(result.stdout).toContain("Published version 8");
+	});
+
+	/**
+	 * READY does not prove the version was published (review finding).
+	 *
+	 * A publish's auto-publish is a fast-forward
+	 * (`publishInstructionSnapshotActivity`, `requireBaseUnmoved`), and it runs
+	 * as its own step, normally AFTER this command has already gotten its
+	 * response — so `READY` alone does not mean this snapshot won the
+	 * project's published pointer. The command cannot tell, at response time,
+	 * whether an unpublished READY version is still catching up or has
+	 * genuinely lost out to a concurrent edit, so it never guesses with words
+	 * like "superseded" or "moved" — it names what it actually knows (the
+	 * checks passed) and points at the tab for the rest.
+	 */
+	it("does not claim a READY publish landed when the server has not observed one", async () => {
+		mocks.publishChange.mockResolvedValue(
+			accepted({
+				mode: "publish",
+				proposalStatus: null,
+				status: "READY",
+				published: false,
+			}),
+		);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--publish",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).not.toContain("Published version");
+		expect(result.stdout).not.toContain("superseded");
+		expect(result.stdout).not.toContain("moved");
+		expect(result.stdout).not.toContain("was not published");
+		expect(result.stdout).toContain("passed its checks");
+		expect(result.stdout).toContain("Coding Instructions tab");
+	});
+
+	it("reports a publish that failed its checks as publishing nothing", async () => {
+		mocks.publishChange.mockResolvedValue(
+			accepted({
+				mode: "publish",
+				proposalStatus: null,
+				status: "FAILED",
+			}),
+		);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--publish",
+		]);
+
+		expect(result.stdout).toContain("nothing was published");
+	});
+
+	// A dry run has to describe the operation it is standing in for, or
+	// `--publish --dry-run` reads as a rehearsal for a proposal.
+	it("says what --publish --dry-run would have done, and sends nothing", async () => {
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--publish",
+			"--dry-run",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("with no review");
+		expect(mocks.publishChange).not.toHaveBeenCalled();
 		expect(mocks.submitChange).not.toHaveBeenCalled();
 	});
 
@@ -672,6 +871,34 @@ describe("refusals become sentences", () => {
 
 		expect(result.code).toBe(7);
 		expect(result.stderr).toContain("five active coding-instructions");
+	});
+
+	/**
+	 * A key without `instructions:publish` is the refusal a developer will
+	 * actually hit the first time they try `--publish`, and it has to name the
+	 * scope so they know what to ask for. Same 403, same documented exit code
+	 * 5, and it must not be flattened into the generic 1.
+	 */
+	it("keeps the documented exit code when the key cannot publish", async () => {
+		mocks.publishChange.mockRejectedValue(
+			refusal("Missing required scope: instructions:publish", 403),
+		);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--publish",
+		]);
+
+		expect(result.code).toBe(5);
+		expect(result.stderr).toContain("instructions:publish");
 	});
 
 	// A missing scope and a missing permission both arrive as a 403; the

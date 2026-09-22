@@ -12,7 +12,8 @@
  *   POST /auth/keys          → Create an API key
  *   DELETE /auth/keys/:id    → Revoke an API key
  *   GET  /orgs               → List orgs the caller belongs to
- *   POST /projects/:id/instructions/changes → Propose or publish a coding-instructions change
+ *   POST /projects/:id/instructions/changes  → Propose a coding-instructions change, for review
+ *   POST /projects/:id/instructions/versions → Publish a coding-instructions change directly
  */
 
 import { createHash, randomBytes } from "node:crypto";

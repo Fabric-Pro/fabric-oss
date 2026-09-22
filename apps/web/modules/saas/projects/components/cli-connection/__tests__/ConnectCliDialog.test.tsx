@@ -738,6 +738,14 @@ describe("ConnectCliDialog — the starter instruction", () => {
 			"instructions:write",
 		]);
 
+		// The scope this dialog must NEVER mint. `instructions:publish`
+		// publishes a version with nobody in between, which would make the
+		// disclosure below — "nothing is published until somebody approves" —
+		// false for every key this one button has ever issued. It is granted
+		// deliberately in the organization's API-key settings instead, and a
+		// read-only role cannot hold it at all.
+		expect(input.scopes).not.toContain("instructions:publish");
+
 		// And every one of them has to be grantable to a read-only role, or a
 		// viewer who presses the one button this dialog offers is refused with
 		// FORBIDDEN having chosen nothing. Restated from

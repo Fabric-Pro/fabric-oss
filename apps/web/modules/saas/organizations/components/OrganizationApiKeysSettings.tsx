@@ -148,6 +148,12 @@ export const AVAILABLE_SCOPES = [
 			"Propose a change to a project's coding instructions for an editor to review",
 	},
 	{
+		id: "instructions:publish",
+		label: "Instructions Publish",
+		description:
+			"Create a new version of a project's coding instructions that publishes on its own once its checks pass, without review. Only for holders who could publish in the Coding Instructions tab — every call re-checks that. Never issued by the Connect dialog.",
+	},
+	{
 		id: "chats:read",
 		label: "Chats Read",
 		description: "Read AI chat threads",
@@ -202,7 +208,9 @@ const READ_ONLY_SCOPES: ReadonlySet<ApiKeyScope> = new Set<ApiKeyScope>([
 	"instructions:read",
 	// A write scope a viewer may hold: it reaches only the proposal path, which
 	// the Coding Instructions tab already gives a viewer on `INSTRUCTION_READ`.
-	// The procedure's own table explains it at length.
+	// The procedure's own table explains it at length. Its sibling
+	// `instructions:publish` is absent for the opposite reason — it publishes
+	// without review, on `INSTRUCTION_CREATE`, which a viewer does not hold.
 	"instructions:write",
 	"chats:read",
 	"system_health:read",
