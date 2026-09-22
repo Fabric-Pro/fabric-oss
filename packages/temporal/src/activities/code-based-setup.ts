@@ -19,6 +19,7 @@ import {
 	getMcpServerByKey,
 	type ProjectDocumentType,
 } from "@repo/database";
+import { contextContentHashOrNull } from "@repo/database/prisma/queries/projects/context-content-hash";
 import { repoForgeFromUrl } from "../lib/repo-forge";
 
 // ============================================================================
@@ -710,6 +711,7 @@ export async function saveCodeAnalysisContext(
 			projectId,
 			type: "TEXT",
 			content: analysisContent,
+			contentHash: contextContentHashOrNull(analysisContent),
 			sourceTitle: `Code Analysis: ${repositoryOwner}/${repositoryName}`,
 			sourceUrl,
 			metadata: {

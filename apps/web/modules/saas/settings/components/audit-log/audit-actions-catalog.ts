@@ -667,7 +667,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey:
 			"settings.auditLog.actions.project.context_source.content_upserted",
 		description:
-			"A synced knowledge file was pushed into a project's Context by its path, from the API (`web`) or an MCP client (`mcp-gateway`), as `metadata.via` says. `metadata.outcome` is `created` for a new path or `updated` when it replaced the stored version, which it only does when the caller named that version's hash; `metadata.sourcePath`, `metadata.contentHash`, `metadata.bytes` and, on an update, `metadata.previousContentHash` identify what was written and what it replaced. The resource name is the file's title; its content is never recorded. A push of unchanged content, of content already present under another path, or one refused because someone else changed the file first writes no row.",
+			"A synced knowledge file was pushed into a project's Context by its path, from the API (`web`) or an MCP client (`mcp-gateway`), as `metadata.via` says. `metadata.outcome` is `created` for a new path or `updated` when it replaced the stored version, which it only does when the caller named that version's hash; `metadata.sourcePath`, `metadata.contentHash`, `metadata.bytes` and, on an update, `metadata.previousContentHash` identify what was written and what it replaced. The resource name is the file's title; its content is never recorded. A push of unchanged content, of content already present as another source, or one refused because someone else changed the file first writes no row.",
 	},
 	{
 		key: "project.document_generation.failed",

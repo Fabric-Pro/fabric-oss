@@ -1,5 +1,9 @@
 import { ORPCError } from "@orpc/client";
-import { hasProjectAccess, listContexts } from "@repo/database";
+import {
+	annotateDuplicateContexts,
+	hasProjectAccess,
+	listContexts,
+} from "@repo/database";
 import { ProjectContextTypeSchema } from "@repo/database/prisma/zod";
 import { z } from "zod";
 import {
@@ -58,6 +62,18 @@ export const listContextsProcedure = tenantProtectedProcedure
 			limit: "none",
 		});
 
+		// Duplicate detection (Fizzy #2619) is derived from `contentHash` over
+		// exactly the rows returned here, so a canonical row is always one the
+		// caller can see — a linked-document row this list hides can never be
+		// the original a visible row is marked as a copy of.
+		const duplicateOf = annotateDuplicateContexts(result.contexts);
+
 		// Return flattened response (not double-nested)
-		return result;
+		return {
+			...result,
+			contexts: result.contexts.map((context) => ({
+				...context,
+				duplicateOfContextId: duplicateOf.get(context.id) ?? null,
+			})),
+		};
 	});

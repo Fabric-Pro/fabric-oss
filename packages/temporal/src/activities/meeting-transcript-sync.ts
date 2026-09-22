@@ -21,6 +21,7 @@ import {
 	isTranscriptAlreadySynced,
 	recordMeetingSyncFailure,
 } from "@repo/database";
+import { contextContentHashOrNull } from "@repo/database/prisma/queries/projects/context-content-hash";
 import {
 	executeMicrosoftTeamsTool,
 	extractChannelThreadId,
@@ -904,6 +905,7 @@ export async function fetchAndStoreMeetingTranscript(
 					projectId,
 					type: "MEETING_TRANSCRIPT",
 					content: finalContent,
+					contentHash: contextContentHashOrNull(finalContent),
 					sourceTitle: `Meeting Transcript: ${meetingSubject} (${formattedDate})`,
 					userId,
 					organizationId,

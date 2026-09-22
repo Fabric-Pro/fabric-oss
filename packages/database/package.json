@@ -104,6 +104,8 @@
 		"backfill:last-edited-at:staging": "dotenv -c -e ../../.env.staging -- tsx ./scripts/backfill-last-edited-at.ts",
 		"backfill:proposal-summaries": "dotenv -c -e ../../.env.local -- tsx ./scripts/backfill-pending-proposal-summaries.ts",
 		"backfill:proposal-summaries:staging": "dotenv -c -e ../../.env.staging -- tsx ./scripts/backfill-pending-proposal-summaries.ts",
+		"backfill:context-content-hash": "dotenv -c -e ../../.env.local -- tsx ./scripts/backfill-context-content-hash.ts",
+		"backfill:context-content-hash:staging": "dotenv -c -e ../../.env.staging -- tsx ./scripts/backfill-context-content-hash.ts",
 		"repair:embedded-integration-contexts": "dotenv -c -e ../../.env.local -- tsx ./scripts/complete-embedded-integration-contexts.ts",
 		"repair:embedded-integration-contexts:staging": "dotenv -c -e ../../.env.staging -- tsx ./scripts/complete-embedded-integration-contexts.ts",
 		"clear:trajectories": "dotenv -c -e ../../.env.local -- tsx ./scripts/clear-orchestrator-trajectories.ts",

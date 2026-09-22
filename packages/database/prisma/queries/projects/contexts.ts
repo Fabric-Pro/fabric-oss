@@ -17,11 +17,18 @@ import {
 	getProjectCodeIndexes,
 } from "../project-code-index";
 import { listProjectRepoIntegrations } from "../project-repository-integrations";
-import { hashContextContent } from "./context-content-hash";
+import {
+	contextContentHashOrNull,
+	hashContextContent,
+} from "./context-content-hash";
 import { getProjectRagSettings } from "./rag-settings";
 
 /**
  * Create a new context
+ *
+ * Stamps `contentHash` from `content` (null when empty), so a pasted or
+ * integration row is visible to duplicate detection the moment it exists
+ * (Fizzy #2619).
  *
  * TENANT ISOLATION: userId and organizationId are required for proper tenant filtering.
  */
@@ -55,6 +62,7 @@ export async function createContext(data: {
 			projectId: data.projectId,
 			type: data.type,
 			content: data.content,
+			contentHash: contextContentHashOrNull(data.content),
 			qdrantId: data.qdrantId,
 			metadata: data.metadata || {},
 			s3Path: data.s3Path,
@@ -163,6 +171,12 @@ export async function createLinkContext(data: {
 
 /**
  * Update context extraction status
+ *
+ * When `data.content` is given, `contentHash` is written with it (the hash of
+ * the new content, or null when it is empty). This is where every
+ * extraction pipeline — file, link, Google Doc — lands its text, so it is
+ * where uploaded content becomes visible to duplicate detection
+ * (Fizzy #2619). Omitting `content` leaves both columns untouched.
  */
 export async function updateContextExtractionStatus(
 	contextId: string,
@@ -184,7 +198,12 @@ export async function updateContextExtractionStatus(
 		data: {
 			extractionStatus: status,
 			...(status === "COMPLETED" ? { extractedAt: new Date() } : {}),
-			...(data?.content !== undefined ? { content: data.content } : {}),
+			...(data?.content !== undefined
+				? {
+						content: data.content,
+						contentHash: contextContentHashOrNull(data.content),
+					}
+				: {}),
 			...(data?.extractionError !== undefined
 				? { extractionError: data.extractionError }
 				: {}),
@@ -971,6 +990,9 @@ export async function getCrawledUrlSourceMarkdownPage(
 
 /**
  * Update context
+ *
+ * A `content` write carries its `contentHash` (Fizzy #2619); leaving the old
+ * hash in place would keep the row matched against content it no longer holds.
  */
 export async function updateContext(
 	contextId: string,
@@ -982,7 +1004,12 @@ export async function updateContext(
 ) {
 	return await db.projectContext.update({
 		where: { id: contextId },
-		data,
+		data: {
+			...data,
+			...(data.content !== undefined
+				? { contentHash: contextContentHashOrNull(data.content) }
+				: {}),
+		},
 	});
 }
 
@@ -1349,9 +1376,10 @@ async function runUpsertContextBySourcePath(
 		async (tx): Promise<UpsertContextBySourcePathResult> => {
 			const createOrReportDuplicate =
 				async (): Promise<UpsertContextBySourcePathResult> => {
-					// Dedup sees only rows that carry a hash. Manually uploaded
-					// sources have none until Fizzy #2619 backfills them, so
-					// identical content uploaded by hand is not detected here yet.
+					// Dedup sees only rows that carry a hash. Every content write
+					// stamps one (Fizzy #2619), including manual uploads once
+					// their extraction lands; rows written before that carry
+					// none until `backfill:context-content-hash` has run.
 					const duplicate = await tx.projectContext.findFirst({
 						where: {
 							projectId,

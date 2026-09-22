@@ -174,7 +174,8 @@ repository:
 ```
 
 Pushing the same path again with the same content answers `unchanged` and writes nothing,
-and identical content already stored under another path answers `duplicate`. To replace a
+and content identical to a source already in the project — another pushed file, or a file,
+link or note added in the Context tab — answers `duplicate`. To replace a
 file that is already there, the agent passes the `contentHash` it read from
 `fabric_get_project_context` or `fabric_list_project_contexts` as `expectedContentHash`; if
 someone else has changed the file since, the push answers `conflict` with the current hash and

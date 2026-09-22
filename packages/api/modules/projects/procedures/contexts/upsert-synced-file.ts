@@ -57,7 +57,7 @@ export const upsertSyncedFileProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Contexts"],
 		summary: "Create or update a synced context file by path",
 		description:
-			"Push a text file into the project's Context keyed by its relative path. A new path creates a source and indexes it; the same content again changes nothing; changed content replaces the stored version and re-indexes it, but only when `expectedContentHash` names the version being replaced — otherwise the call answers CONFLICT with the stored hash and who last changed it, and writes nothing. Content identical to another synced source in the project is reported as `duplicate` and not stored twice.",
+			"Push a text file into the project's Context keyed by its relative path. A new path creates a source and indexes it; the same content again changes nothing; changed content replaces the stored version and re-indexes it, but only when `expectedContentHash` names the version being replaced — otherwise the call answers CONFLICT with the stored hash and who last changed it, and writes nothing. Content identical to another source in the project — synced or added in the Context tab — is reported as `duplicate` and not stored twice.",
 	})
 	.input(
 		z.object({

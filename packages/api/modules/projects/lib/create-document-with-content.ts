@@ -30,6 +30,7 @@
  */
 
 import { db, type Prisma, type ProjectDocument } from "@repo/database";
+import { contextContentHashOrNull } from "@repo/database/prisma/queries/projects/context-content-hash";
 import {
 	countDocumentWords,
 	sanitizeContent,
@@ -131,14 +132,24 @@ export async function createDocumentWithContent(
 ): Promise<CreateDocumentWithContentResult> {
 	const sanitizedContent = sanitizeContent(input.content);
 
+	const sourceContext = input.sourceContext
+		? {
+				...input.sourceContext,
+				content: sanitizeContent(input.sourceContext.content),
+			}
+		: null;
+
 	return await db.$transaction(async (tx) => {
-		const context = input.sourceContext
+		const context = sourceContext
 			? await tx.projectContext.create({
 					data: {
 						projectId: input.projectId,
-						type: input.sourceContext.type,
-						content: sanitizeContent(input.sourceContext.content),
-						metadata: input.sourceContext.metadata ?? {},
+						type: sourceContext.type,
+						content: sourceContext.content,
+						contentHash: contextContentHashOrNull(
+							sourceContext.content,
+						),
+						metadata: sourceContext.metadata ?? {},
 						userId: input.userId,
 						organizationId: input.organizationId,
 					},

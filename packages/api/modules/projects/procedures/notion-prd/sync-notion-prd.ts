@@ -11,6 +11,7 @@ import {
 	recordContextIndexingFailure,
 	updateContextExtractionStatus,
 } from "@repo/database";
+import { contextContentHashOrNull } from "@repo/database/prisma/queries/projects/context-content-hash";
 import { deleteProjectContext, embedProjectContext } from "@repo/rag";
 import { z } from "zod";
 import {
@@ -267,6 +268,7 @@ export const syncPrdSourceProcedure = tenantProtectedProcedure
 				where: { id: existingContext.id },
 				data: {
 					content,
+					contentHash: contextContentHashOrNull(content),
 					qdrantId: null,
 					sourceTitle,
 					sourceUrl,
@@ -770,6 +772,7 @@ export const bindNotionPageProcedure = tenantProtectedProcedure
 				where: { id: existingContext.id },
 				data: {
 					content,
+					contentHash: contextContentHashOrNull(content),
 					qdrantId: null,
 					sourceTitle,
 					sourceUrl,
