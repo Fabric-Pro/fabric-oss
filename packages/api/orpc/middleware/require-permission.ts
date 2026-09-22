@@ -143,17 +143,41 @@ export function requirePermission(permission: Permission) {
  * Require a permission on a specific project. The procedure input must include
  * a `projectId: string` field.
  *
- * Resolution order:
- *  A. Personal-project owner — project has no org and `project.userId` matches
- *     the caller.
- *  B. An **active** `ProjectMember` row (accepted, non-expired) is
+ * Resolution order. The paths are NAMED, not lettered, and deliberately so:
+ * this list and the implementation in `../../lib/effective-project-permissions.ts`
+ * used to letter the same three paths differently — the org fallback was "C"
+ * here and "B" there, while "C" there meant the ProjectMember path, the
+ * opposite rule. Two people discussing "path C" were discussing two different
+ * rules depending on which file they had last read, and it cost real time
+ * diagnosing Fizzy #2615. Cite a path by what it does.
+ *
+ *  1. PERSONAL-PROJECT OWNER — the project has no organization and
+ *     `project.userId` matches the caller.
+ *  2. ACTIVE PROJECT MEMBER — an accepted, non-expired `ProjectMember` row is
  *     authoritative for this project. Its role alone determines access —
- *     even org admins are restricted by an active Viewer row. Pending or
- *     expired rows fall through to path C.
- *  C. Fallback: the caller is an OrgMember of the project's host org AND
- *     that org role grants the permission. Covers org members with no
- *     explicit ProjectMember row.
- *  D. Otherwise, FORBIDDEN.
+ *     even org admins are restricted by an active Viewer row. A pending or
+ *     expired row falls through to the org fallback.
+ *  3. ORG-ROLE FALLBACK — the caller is an OrgMember of the project's host org
+ *     AND that org role grants the permission. Covers org members with no
+ *     explicit `ProjectMember` row.
+ *
+ *     IT IS ALSO THE BOOTSTRAP, which is easy to miss and expensive to forget:
+ *     `createProject` writes NO `ProjectMember` row, and the only two places
+ *     that ever create one are invitation acceptance. A freshly created
+ *     organization project therefore has zero member rows, path 1 cannot fire
+ *     for it, and path 2 has nothing to match — so this path is the only way
+ *     ANY caller, including the project's own creator, passes this gate on a
+ *     new organization project. Remove it and every organization project is
+ *     inert from birth: nobody can reach `PROJECT_MEMBERS_MANAGE` to create
+ *     the first member row.
+ *  4. Otherwise, FORBIDDEN.
+ *
+ * THIS GATE IS WIDER THAN `buildProjectAccessWhere`, ON PURPOSE. That predicate
+ * (`@repo/database`, behind `getProjectById` and `hasProjectAccess`) has no
+ * org-role path. The two answer different questions — this one "may you act",
+ * that one "may you discover" — and
+ * `packages/api/__tests__/project-scoped-lookup-ownership-ratchet.test.ts`
+ * exists to stop anyone collapsing them.
  */
 /**
  * The project-permission decision, extracted from the middleware around it.

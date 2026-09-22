@@ -38,6 +38,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { clockFromProjectPredicate } from "./support/project-predicate-clock";
 
 import { MISSING_ORGANIZATION_CONTEXT_ERROR_CODE } from "../../../../lib/missing-organization-context";
 
@@ -160,6 +161,32 @@ setSlot("create");
 const { createTodoInputSchema } = await import("../create");
 setSlot("bulkResolve");
 const { bulkResolveTodosInputSchema } = await import("../bulk-resolve");
+
+// The REAL predicates, so `create`'s project check is asserted by structural
+// identity rather than by a restatement that could agree with a weaker rule.
+const { openableProjectWhere, organizationProjectWhere } = await import(
+	"../../lib/visibility"
+);
+
+/**
+ * `project.findMany` calls that ONE scope resolution costs.
+ *
+ * `resolveTodoVisibility` asks two questions and they are two queries: the
+ * WIDE tenant-scoping set, and the STRICT openable set (#2615). The strict set
+ * is deliberately not reconstructed from the wide query's rows — that select
+ * filters `members` down to the admin roles, so an Editor's membership is
+ * simply absent from it, and rebuilding project access out of what happens to
+ * be there would be a fourth spelling of the rule.
+ *
+ * NAMED, AND NOT WRITTEN AS A BARE `2`, so the batch assertions below keep
+ * saying "the scope is resolved ONCE per request" rather than "two queries
+ * happen". If the resolution ever costs a different number of queries, this
+ * constant moves and the batch tests keep meaning what they meant. What they
+ * must never accept is a count that scales with the number of rows — that is
+ * the regression they exist to catch, and with five rows a per-row resolution
+ * would be five times this.
+ */
+const QUERIES_PER_SCOPE_RESOLUTION = 2;
 
 // ---------------------------------------------------------------------------
 // Schema level — the real guard behind `.input(...)`
@@ -817,9 +844,12 @@ describe("a write may only touch a row the read would have shown", () => {
 			{ todoId: "todo-theirs", outcome: "forbidden" },
 			{ todoId: "todo-open", outcome: "completed" },
 		]);
-		// One scope for the batch, no per-row lookup — the property the batch
-		// path exists to keep.
-		expect(mocks.dbMock.project.findMany).toHaveBeenCalledTimes(1);
+		// ONE SCOPE for the batch, no per-row lookup — the property the batch
+		// path exists to keep. Two rows were decided from it; had the scope
+		// been resolved per row it would have cost twice this.
+		expect(mocks.dbMock.project.findMany).toHaveBeenCalledTimes(
+			QUERIES_PER_SCOPE_RESOLUTION,
+		);
 		expect(mocks.dbMock.project.findFirst).not.toHaveBeenCalled();
 	});
 });
@@ -1227,7 +1257,37 @@ describe("todos.create", () => {
 		});
 	});
 
-	it("verifies a named project with the read's own predicate", async () => {
+	it("creates on a project the caller can open", async () => {
+		// The ordinary case, and the control for the two below: an openable
+		// project is matched, so the row is written against it.
+		mocks.dbMock.project.findFirst.mockResolvedValue({ id: PROJECT });
+
+		const result = await mocks.captured.create({
+			context: baseCtx,
+			input: {
+				organizationId: ORG,
+				title: "Chase the signed SOW",
+				projectId: PROJECT,
+			},
+		});
+
+		expect(mocks.createManualTodo).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: PROJECT, userId: VIEWER }),
+		);
+		expect(result).toMatchObject({ projectId: PROJECT });
+	});
+
+	it("verifies a named project with the OPENABLE predicate, not the wide one", async () => {
+		// #2615. The wide predicate admits every project of the tenant, so
+		// under it a member could file a to-do against a project whose own
+		// heading then says "Project not found" — the row is born with a dead
+		// link. The strict predicate is the rule `getProjectById` runs, so a
+		// to-do can only name a project its reader can open.
+		//
+		// Structural identity against the REAL predicate, for the reason
+		// `catch-up.test.ts` gives: `toMatchObject` on organizationId and
+		// deletedAt passes for BOTH predicates, so it would not have caught
+		// this defect and must not be what guards the fix.
 		await mocks.captured.create({
 			context: baseCtx,
 			input: {
@@ -1238,14 +1298,32 @@ describe("todos.create", () => {
 		});
 
 		const where = mocks.dbMock.project.findFirst.mock.calls[0]?.[0]?.where;
-		expect(where).toMatchObject({
+		// The handler's own clock, read back out of the membership-expiry arm
+		// the predicate carries — found by shape, because this predicate puts
+		// that arm second and the wide one puts it first.
+		const now = clockFromProjectPredicate(where);
+		expect(where).toEqual({
+			...openableProjectWhere(VIEWER, ORG, now),
 			id: PROJECT,
-			organizationId: ORG,
-			deletedAt: null,
 		});
+		// And explicitly NOT the tenant-scoping set, whose org-membership arm
+		// is the whole of the defect.
+		expect(where).not.toEqual({
+			...organizationProjectWhere(VIEWER, ORG, now),
+			id: PROJECT,
+		});
+		// No arm grants reach by organization membership alone. The quoted key
+		// is the RELATION (`organization: { members: ... }`), which is the wide
+		// predicate's second arm; the scalar `organizationId` pin stays and is
+		// asserted by the structural equality above.
+		expect(JSON.stringify(where)).not.toContain('"organization":');
 	});
 
-	it("refuses a project the caller cannot reach", async () => {
+	it("refuses a project the caller cannot open", async () => {
+		// What the strict predicate matching nothing looks like from here —
+		// and after #2615 that now includes "a project of your own
+		// organization that you were never added to", not only another
+		// tenant's project or a deleted one.
 		mocks.dbMock.project.findFirst.mockResolvedValue(null);
 
 		await expect(
@@ -1298,11 +1376,13 @@ describe("todos.create", () => {
 
 describe("todos.bulkResolve", () => {
 	it("resolves the reachable projects once, not once per row", async () => {
-		// The batch exists to replace fifty round trips with one. A per-row
-		// lookup would differ only in the project id while re-evaluating the
-		// same predicate over the same caller, organization and clock, so this
-		// pins the shape rather than the speed: the moment it regresses to
-		// `findFirst` per row, the count below stops being 1.
+		// The batch exists to replace fifty round trips with a fixed few. A
+		// per-row lookup would differ only in the project id while
+		// re-evaluating the same predicate over the same caller, organization
+		// and clock, so this pins the shape rather than the speed: ONE scope
+		// resolution serves all five rows, and the count below does not move
+		// with them. See `QUERIES_PER_SCOPE_RESOLUTION` for what one
+		// resolution costs and why.
 		const rows = Array.from({ length: 5 }, (_, i) =>
 			meetingTodo({ id: `todo-${i}`, projectId: PROJECT, userId: null }),
 		);
@@ -1319,7 +1399,9 @@ describe("todos.bulkResolve", () => {
 			input: { organizationId: ORG, todoIds: rows.map((r) => r.id) },
 		});
 
-		expect(mocks.dbMock.project.findMany).toHaveBeenCalledTimes(1);
+		expect(mocks.dbMock.project.findMany).toHaveBeenCalledTimes(
+			QUERIES_PER_SCOPE_RESOLUTION,
+		);
 		expect(mocks.dbMock.project.findFirst).not.toHaveBeenCalled();
 	});
 

@@ -424,8 +424,16 @@ export function TodoListBody({
 			) : (
 				<div className="space-y-6">
 					{groups.map((group) => {
+						// Gated on `canOpenProject` for the same reason the row's
+						// own link is (Fizzy #2615): the heading names a meeting
+						// in a project, and linking into one this viewer cannot
+						// open lands on "Project not found". The heading falls
+						// back to plain text below, so the meeting is still
+						// named — only the navigation that could not work goes.
 						const meetingHref =
-							group.projectId && group.meetingTranscriptRef
+							group.projectId &&
+							group.canOpenProject &&
+							group.meetingTranscriptRef
 								? buildDigestDeepLink({
 										basePath,
 										projectId: group.projectId,

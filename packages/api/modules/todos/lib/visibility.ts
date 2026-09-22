@@ -14,17 +14,59 @@
  * says that, and a second to-do read that built its own would be a
  * cross-project leak the first read's tests would still pass.
  *
- * THE PROJECT-ACCESS PATHS mirror `modules/notifications/lib/access-filter.ts`,
- * with one deliberate difference. That filter's first path is the
- * personal-project owner (`{ userId, organizationId: null }`); this one has no
- * such path, because an organization is the only tenant context here
- * (ADR-018) and the To Do page is org-only. Dropping it is not a
- * simplification — a bare `{ userId }` creator arm under an org-pinned query
- * would keep a project reachable for someone who CREATED it and has since been
- * removed from the organization, which is precisely the membership change the
- * notifications filter exists to honour. Access is therefore an accepted,
- * unexpired project membership or membership of the host organization, and
- * nothing else.
+ * TWO PROJECT SETS, AND THE DIFFERENCE BETWEEN THEM IS THE WHOLE OF #2615.
+ *
+ *  - `organizationProjectWhere` — every project of this tenant the viewer is
+ *    entitled to have rows FROM: an accepted, unexpired project membership, or
+ *    membership of the host organization. It is a tenant-scoping question.
+ *  - `openableProjectWhere` — the projects the viewer can actually OPEN. Its
+ *    access arms are `buildProjectAccessWhere`'s in
+ *    `packages/database/prisma/queries/projects/projects.ts`, which is what
+ *    `getProjectById` runs and therefore what decides whether a project page
+ *    renders or says "Project not found".
+ *
+ * They are two exported names rather than one predicate with a flag because a
+ * call site picks its policy by WHICH SYMBOL IT IMPORTS. When this file
+ * exported only the wide one, five call sites imported it and two of them were
+ * feeding hrefs — so the list offered links into projects their own destination
+ * refuses to load. `docs/solutions/architecture-patterns/removing-a-fallback-promotes-every-path-that-relied-on-it.md`
+ * is the record of how that goes wrong: the danger is never the call site you
+ * inspected.
+ *
+ * THE CREATOR ARM BELONGS ON THE STRICT ONE, and this file used to argue the
+ * opposite — that a bare `{ userId }` under an org-pinned query keeps a project
+ * reachable for someone who created it and has since left the organization.
+ * Two facts retire that argument. `createProject` writes NO `ProjectMember` row
+ * for the creator, so without the arm a project's own creator loses their own
+ * project's rows; and `todos.list` has already proved tenant membership through
+ * `requireInputOrgPermission(TODO_READ, { requireOrganization: true })` before
+ * either predicate runs, so someone who left the organization never reaches
+ * them. `buildProjectAccessWhere` carries the arm for exactly this reason, and
+ * matching it is what makes the two the same rule rather than two rules that
+ * happen to agree today.
+ *
+ * The wide set keeps no creator arm, because it is not an access rule: an
+ * organization member already reaches every project of the organization
+ * through its second path, and a creator who left the organization is not a
+ * member of it.
+ *
+ * THE WIDE PATHS mirror `modules/notifications/lib/access-filter.ts`, with one
+ * deliberate difference. That filter's first path is the personal-project owner
+ * (`{ userId, organizationId: null }`); this one has no such path, because an
+ * organization is the only tenant context here (ADR-018) and the To Do page is
+ * org-only.
+ *
+ * WHICH ARM READS WHICH SET. The outer project gate, arm 1 (assigned to the
+ * viewer) and arm 5 (a MANUAL row the viewer wrote) read the WIDE set; arms 2,
+ * 3 and 4 — the ones that show OTHER PEOPLE's work — read the strict one. The
+ * split is not symmetry: the meeting-digest owner matcher draws its candidate
+ * pool from every member of the organization
+ * (`match-action-item-owners.ts`, `loadOwnerCandidates`), and `todos.assign`
+ * validates only organization membership, so a person can genuinely owe work on
+ * a project they cannot open. Narrowing arms 1 and 5 would delete that person's
+ * own commitment from the one page that exists to stop commitments going
+ * unowned. What such a row must NOT do is offer a link into a project that
+ * would refuse it, and `canOpenProject` on the row is what settles that.
  *
  * THE SAME PREDICATE IN EVERY VIEW. `todos.list` answers for four scopes —
  * the working list, the completed archive, what is still snoozed, and what the
@@ -87,6 +129,14 @@ export interface VisibilityProjectRow {
 	createdById: string;
 	/** Accepted, unexpired members holding OWNER or PROJECT_ADMIN. */
 	adminUserIds: string[];
+	/**
+	 * Whether the viewer can OPEN this project — `openableProjectWhere` matched.
+	 *
+	 * Carried on the row rather than passed as a second id list so the
+	 * derivation cannot pair a project with the wrong verdict, and so the rule
+	 * stays testable from plain rows with no database.
+	 */
+	isOpenable: boolean;
 }
 
 /** One confirmed `ProjectUserFunctionTag` row. Unconfirmed rows never reach here. */
@@ -120,8 +170,19 @@ interface ProductOwnerProject {
 export interface TodoVisibility {
 	viewerUserId: string;
 	organizationId: string;
-	/** Every project of this organization the viewer can currently reach. */
-	accessibleProjectIds: string[];
+	/**
+	 * Every project of this organization the viewer may have rows FROM.
+	 *
+	 * The tenant-scoping set, not the access rule — see the header. Deliberately
+	 * not named "accessible": a set called that, which is not what decides
+	 * access, is how a fourth spelling of project access gets written.
+	 */
+	organizationProjectIds: string[];
+	/**
+	 * The subset the viewer can actually OPEN — what `getProjectById` would
+	 * return, and therefore the only projects it is honest to link to.
+	 */
+	openableProjectIds: string[];
 	productOwnerProjects: ProductOwnerProject[];
 	/**
 	 * Projects with NO confirmed Product Owner, where the viewer is an admin or
@@ -145,14 +206,30 @@ const STAKEHOLDER = "STAKEHOLDER";
 /** Project roles that count as administering the project. */
 const PROJECT_ADMIN_ROLES = ["OWNER", "PROJECT_ADMIN"] as const;
 
+/** An accepted, unexpired `ProjectMember` row for this viewer. */
+const acceptedMembership = (
+	viewerUserId: string,
+	now: Date,
+): Prisma.ProjectWhereInput => ({
+	members: {
+		some: {
+			userId: viewerUserId,
+			acceptedAt: { not: null },
+			OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+		},
+	},
+});
+
 /**
- * The project-access predicate, as a Prisma filter.
+ * The WIDE set: which of this tenant's projects may put rows on the viewer's
+ * page at all.
  *
- * Exported so that anything else needing "which projects can this person reach
- * in this organization" asks the same question, and so the soft-delete
- * exclusion cannot be forgotten by a caller that only remembered membership.
+ * Exported so that anything asking the tenant-scoping question asks it the same
+ * way, and so the soft-delete exclusion cannot be forgotten by a caller that
+ * only remembered membership. It is NOT the access rule — see
+ * `openableProjectWhere`, and the header for which arm reads which.
  */
-export function accessibleProjectWhere(
+export function organizationProjectWhere(
 	viewerUserId: string,
 	organizationId: string,
 	now: Date,
@@ -163,22 +240,87 @@ export function accessibleProjectWhere(
 		// project's to-dos off the page.
 		deletedAt: null,
 		OR: [
-			// An accepted, unexpired project membership. This is the guest
-			// path: a guest reaches exactly the projects they were invited to
-			// and no others.
-			{
-				members: {
-					some: {
-						userId: viewerUserId,
-						acceptedAt: { not: null },
-						OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-					},
-				},
-			},
+			// This is the guest path: a guest reaches exactly the projects they
+			// were invited to and no others.
+			acceptedMembership(viewerUserId, now),
 			// Membership of the host organization.
 			{ organization: { members: { some: { userId: viewerUserId } } } },
 		],
 	};
+}
+
+/**
+ * The STRICT set: which projects the viewer can actually open.
+ *
+ * ITS ACCESS ARMS ARE `buildProjectAccessWhere`'s, ARM FOR ARM
+ * (`packages/database/prisma/queries/projects/projects.ts`), which is what
+ * `getProjectById` runs. That is the contract: if the arms drift, the To Do
+ * page goes back to offering links whose destination refuses to load, which is
+ * #2615. `__tests__/visibility.test.ts` pins them against a literal.
+ *
+ * It adds ONE clause that predicate does not have: `deletedAt: null`. That is
+ * not drift. `getProjectById` deliberately still resolves a soft-deleted
+ * project so its owner can be shown the restore screen; this page has no such
+ * screen and its wide set already excludes those projects, so admitting one
+ * here could only ever produce a link to a page the reader cannot act on.
+ *
+ * Note what is NOT here: membership of the host organization. Three docblocks
+ * in the projects queries say it — "Organization membership alone does NOT
+ * grant access to projects" — and the project page enforces it. `packages/api`
+ * standards say the same in one line: use `hasProjectAccess` for reads. This
+ * predicate is that helper's rule, in the set form a single organization-level
+ * query needs.
+ */
+export function openableProjectWhere(
+	viewerUserId: string,
+	organizationId: string,
+	now: Date,
+): Prisma.ProjectWhereInput {
+	return {
+		organizationId,
+		deletedAt: null,
+		OR: [
+			// The creator. See the header for why this arm is required here and
+			// why it cannot be reached by someone who has left the tenant.
+			{ userId: viewerUserId },
+			acceptedMembership(viewerUserId, now),
+		],
+	};
+}
+
+/**
+ * `openableProjectWhere` asked about ONE named project.
+ *
+ * The set predicate answers "which projects", and two callers needed "this
+ * one": the manual-create path, deciding what a to-do may be filed against, and
+ * the linked-work-items read, deciding whether it has anything to hand back.
+ * Both had written the same `findFirst` by hand.
+ *
+ * It is named after the policy rather than taking one as an argument, for the
+ * same reason the two set predicates are two names: a call site should say
+ * which rule it chose, and `isProjectOpenable` says it at the call site without
+ * the reader having to unpack a spread. There is deliberately no wide sibling —
+ * nothing needs to ask the tenant-scoping question about a single project, and
+ * offering one would make picking the wrong rule a one-word mistake.
+ */
+export async function isProjectOpenable(params: {
+	viewerUserId: string;
+	organizationId: string;
+	projectId: string;
+	now: Date;
+}): Promise<boolean> {
+	const project = await db.project.findFirst({
+		where: {
+			...openableProjectWhere(
+				params.viewerUserId,
+				params.organizationId,
+				params.now,
+			),
+			id: params.projectId,
+		},
+		select: { id: true },
+	});
+	return project !== null;
 }
 
 /**
@@ -209,6 +351,18 @@ export function deriveTodoVisibility(input: {
 	const unassignedExpandedProjectIds: string[] = [];
 
 	for (const project of projects) {
+		// THE THREE LISTS BELOW ARE ALL ABOUT OTHER PEOPLE'S ROWS, so a project
+		// the viewer cannot open contributes to none of them.
+		//
+		// Narrowing arms 3 and 4 where they are USED is not enough on its own:
+		// they are keyed on `productOwnerProjects` and
+		// `contactFallbackProjectIds`, so a project admitted here would keep
+		// its reach through those lists whatever the arm intersected against.
+		// This is the door; the arm is only the handle.
+		if (!project.isOpenable) {
+			continue;
+		}
+
 		const projectTags = tagsByProject.get(project.id) ?? [];
 		const viewerTags =
 			projectTags.find((row) => row.userId === viewerUserId)?.tags ?? [];
@@ -251,7 +405,10 @@ export function deriveTodoVisibility(input: {
 	return {
 		viewerUserId,
 		organizationId,
-		accessibleProjectIds: projects.map((project) => project.id),
+		organizationProjectIds: projects.map((project) => project.id),
+		openableProjectIds: projects
+			.filter((project) => project.isOpenable)
+			.map((project) => project.id),
 		productOwnerProjects,
 		contactFallbackProjectIds,
 		unassignedExpandedProjectIds,
@@ -259,8 +416,31 @@ export function deriveTodoVisibility(input: {
 }
 
 /**
- * Loads the facts and derives the scope. Two queries, both bounded by the
- * viewer's accessible projects; a viewer with no projects costs one.
+ * Loads the facts and derives the scope. Three queries, each bounded by the
+ * viewer's own projects; a viewer with no projects costs two.
+ *
+ * THE OPENABLE SET IS ITS OWN QUERY — A CHOICE, NOT A NECESSITY, and the
+ * earlier version of this comment claimed otherwise. It said the set could not
+ * be derived from the wide query's rows because that query's `members`
+ * relation is filtered to OWNER and PROJECT_ADMIN, hiding an Editor's
+ * membership, and Prisma cannot select one relation twice under two filters.
+ * Both halves are true and the conclusion does not follow: widening that one
+ * relation's filter to `OR: [{ role: in ADMIN }, { userId: viewer }]` would
+ * return the admin rows AND the viewer's own, and with `project.userId` already
+ * selected for the creator arm, `isOpenable` would fall out with no second
+ * query. It is avoidable.
+ *
+ * It is not taken, deliberately. The rule would then live here, in TypeScript,
+ * assembled from two relation filters — a fourth spelling of project access, in
+ * the module whose entire defect was having a third. What makes the current
+ * shape safe is that `openableProjectWhere` is one predicate, pinned arm-for-arm
+ * against the one `getProjectById` runs, and asked rather than re-derived; a
+ * mis-nested AND/OR in a hand-rolled derivation would be a security bug wearing
+ * the costume of a performance win. One bounded, concurrent, id-only query is
+ * the price of that guarantee, and it is worth paying.
+ *
+ * If this ever does need to go, it needs to go with a test that fails when the
+ * derivation and the predicate disagree — not on the strength of this comment.
  */
 export async function resolveTodoVisibility(params: {
 	viewerUserId: string;
@@ -269,35 +449,55 @@ export async function resolveTodoVisibility(params: {
 }): Promise<TodoVisibility> {
 	const { viewerUserId, organizationId, now } = params;
 
-	const projectRows = await db.project.findMany({
-		where: accessibleProjectWhere(viewerUserId, organizationId, now),
-		select: {
-			id: true,
-			userId: true,
-			members: {
-				where: {
-					role: { in: [...PROJECT_ADMIN_ROLES] },
-					acceptedAt: { not: null },
-					OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+	const [projectRows, openableRows] = await Promise.all([
+		db.project.findMany({
+			where: organizationProjectWhere(viewerUserId, organizationId, now),
+			select: {
+				id: true,
+				userId: true,
+				members: {
+					where: {
+						role: { in: [...PROJECT_ADMIN_ROLES] },
+						acceptedAt: { not: null },
+						OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+					},
+					select: { userId: true },
 				},
-				select: { userId: true },
 			},
-		},
-	});
+		}),
+		db.project.findMany({
+			where: openableProjectWhere(viewerUserId, organizationId, now),
+			select: { id: true },
+		}),
+	]);
+
+	const openableIds = new Set(openableRows.map((project) => project.id));
 
 	const projects: VisibilityProjectRow[] = projectRows.map((project) => ({
 		id: project.id,
 		createdById: project.userId,
 		adminUserIds: project.members.map((member) => member.userId),
+		isOpenable: openableIds.has(project.id),
 	}));
 
 	// `confirmedAt: { not: null }` is the whole confirmation lifecycle as far as
 	// this file is concerned — see the header. A row that exists but is
 	// unconfirmed grants nothing.
-	const confirmedTags = projects.length
+	//
+	// KEYED ON THE OPENABLE IDS, NOT THE WIDE ONES. Every list a tag can feed —
+	// `productOwnerProjects`, `contactFallbackProjectIds`,
+	// `unassignedExpandedProjectIds` — is built inside a loop that skips a
+	// non-openable project before it ever consults `tagsByProject`, so tags
+	// fetched for the rest are read by nothing. Narrowing here is not a second
+	// rule; it is this query asking for exactly the rows the next function
+	// looks at. In an organization where most projects are reachable only
+	// through organization membership, the wide key fetched almost all of them
+	// for nothing.
+	const openableProjectIds = [...openableIds];
+	const confirmedTags = openableProjectIds.length
 		? await db.projectUserFunctionTag.findMany({
 				where: {
-					projectId: { in: projects.map((project) => project.id) },
+					projectId: { in: openableProjectIds },
 					confirmedAt: { not: null },
 				},
 				select: { projectId: true, userId: true, tags: true },
@@ -360,6 +560,14 @@ export async function resolveTodoVisibility(params: {
  * of empty arrays yields no rows, so a viewer with no projects matches nothing
  * rather than everything.
  *
+ * TWO RULES FOR THE COMMENTS INSIDE THE STATEMENT BELOW, both of which look
+ * like style and are neither. They must be BLOCK comments, because a line
+ * comment swallows the rest of the line it lands on once the fragment is
+ * composed into a larger one. And they must contain NO BACKTICKS: the statement
+ * is a template literal, so the first backtick in a comment ends it and the
+ * file stops parsing — which takes every test in this module with it, nowhere
+ * near where the mistake was made. Name symbols in plain prose there.
+ *
  * THIS PREDICATE AND `isTodoVisibleTo` ARE ONE RULE IN TWO RENDERINGS — this
  * one for rows still in the table, that one for a row already loaded. Every
  * to-do WRITE evaluates the in-memory form, because a row the caller cannot see
@@ -374,7 +582,12 @@ export async function resolveTodoVisibility(params: {
 export function todoVisibilityCondition(
 	visibility: TodoVisibility,
 ): Prisma.Sql {
-	const accessible = visibility.accessibleProjectIds;
+	// The tenant gate, and what arms 1 and 5 stand on.
+	const inTenant = visibility.organizationProjectIds;
+	// What arms 2, 3 and 4 stand on. Arms 3 and 4 also reach it through
+	// `productOwnerProjects` / `contactFallbackProjectIds`, which
+	// `deriveTodoVisibility` has already restricted to openable projects.
+	const openable = visibility.openableProjectIds;
 	const contactVisibleProjectIds = [
 		...visibility.productOwnerProjects.map((project) => project.projectId),
 		...visibility.contactFallbackProjectIds,
@@ -390,7 +603,7 @@ export function todoVisibilityCondition(
 	}
 
 	return Prisma.sql`(
-		(t."projectId" IS NULL OR t."projectId" = ANY(${accessible}::text[]))
+		(t."projectId" IS NULL OR t."projectId" = ANY(${inTenant}::text[]))
 		AND (
 			t."assigneeUserId" = ${visibility.viewerUserId}
 			OR (
@@ -403,10 +616,18 @@ export function todoVisibilityCondition(
 				   to-dos of every other member. A project-less row is always
 				   MANUAL (a meeting row takes its project from the transcript,
 				   whose projectId is NOT NULL), so arm 5 covers the whole of
-				   what this branch used to cover. */
+				   what this branch used to cover.
+
+				   OPENABLE, not merely in-tenant (#2615). A bucket is other
+				   people's work, and the project page will not open for a
+				   viewer who is neither the creator nor an accepted member --
+				   so admitting the bucket here published the unassigned
+				   commitments of every project in the organization to every
+				   member of it, and every heading above them linked somewhere
+				   they could not go. */
 				t."assigneeUserId" IS NULL
 				AND t."assigneeContactId" IS NULL
-				AND t."projectId" = ANY(${accessible}::text[])
+				AND t."projectId" = ANY(${openable}::text[])
 			)
 			OR (
 				/* Contact rows of a PROJECT the viewer answers for. A
@@ -417,7 +638,14 @@ export function todoVisibilityCondition(
 				   commitments to the whole organization. Block comment, not a
 				   line comment: this fragment is composed into a larger
 				   statement, where a line comment swallows the rest of the
-				   line it lands on. */
+				   line it lands on.
+
+				   This arm and the stakeholder arm below are already restricted
+				   to OPENABLE projects, because deriveTodoVisibility builds
+				   productOwnerProjects and contactFallbackProjectIds from
+				   openable rows only. They carry no openable array of their
+				   own; adding one here would read as the narrowing and hide
+				   that the real gate is upstream. */
 				t."assigneeContactId" IS NOT NULL
 				AND t."projectId" = ANY(${contactVisibleProjectIds}::text[])
 			)
@@ -487,7 +715,7 @@ export function isTodoVisibleTo(
 	// what pinned the organization.
 	if (
 		row.projectId !== null &&
-		!visibility.accessibleProjectIds.includes(row.projectId)
+		!visibility.organizationProjectIds.includes(row.projectId)
 	) {
 		return false;
 	}
@@ -500,10 +728,13 @@ export function isTodoVisibleTo(
 		return true;
 	}
 
-	// 2. A PROJECT's Unassigned bucket. A project-less row is not in it: it is
-	// always MANUAL, and arm 5 gives it to the one person it belongs to.
+	// 2. An OPENABLE project's Unassigned bucket. A project-less row is not in
+	// it: it is always MANUAL, and arm 5 gives it to the one person it belongs
+	// to. The openable check is the arm's own — the gate above is the wider
+	// tenant set, which arms 1 and 5 need.
 	if (
 		row.projectId !== null &&
+		visibility.openableProjectIds.includes(row.projectId) &&
 		row.assigneeUserId === null &&
 		row.assigneeContactId === null
 	) {
@@ -511,6 +742,7 @@ export function isTodoVisibleTo(
 	}
 
 	// 3. Contact-assigned, where the contact rows are this viewer's to see.
+	// Restricted to openable projects upstream, where the two lists are built.
 	if (row.assigneeContactId !== null && row.projectId !== null) {
 		const contactVisible =
 			visibility.productOwnerProjects.some(

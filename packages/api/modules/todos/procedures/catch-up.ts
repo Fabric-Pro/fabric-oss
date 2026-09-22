@@ -42,11 +42,35 @@
  * proves membership of the organization NAMED IN THE INPUT and nothing more;
  * `requireOrganization: true` is mandatory, because without it an explicit
  * `organizationId: null` resolves to nothing and skips the role check
- * entirely. The second half is `accessibleProjectWhere` from
- * `../lib/visibility.ts` — the same predicate every to-do read composes.
- * Membership of the organization is NOT enough to start work for a project:
- * a guest invited to one project must not be able to spend the queue on the
- * other forty, nor learn from a count that they exist.
+ * entirely. The second half is `organizationProjectWhere` from
+ * `../lib/visibility.ts` — the tenant-scoping predicate. Membership of the
+ * organization is NOT enough to start work for a project: a guest invited to
+ * one project must not be able to spend the queue on the other forty, nor
+ * learn from a count that they exist.
+ *
+ * AND IT STAYS THE WIDE PREDICATE — A CHOICE, NOT AN OMISSION (#2615). Every
+ * other surface that took the wide rule moved to `openableProjectWhere`,
+ * because each of them was handing back a project a reader could then be sent
+ * to. This one is different in the only way that matters: it RETURNS NO
+ * PROJECT DATA. The response carries three counts — candidates, started,
+ * failed — and one boolean, `hasMore`. Not a name, not a meeting, not an id,
+ * not a link: nothing a caller could learn a project from, and therefore no
+ * disclosure for the strict rule to close. `projectId` IS read inside the
+ * handler, to build the workflow start arguments, and never reaches the
+ * response. Counts of the caller's OWN tenant, bounded by the wide predicate,
+ * are what they already know by being a member.
+ *
+ * What narrowing would cost is real. This is the repair path for meetings that
+ * predate the rollout, and the matcher it starts writes to-dos for the people
+ * the meeting named — who are drawn from the whole organization
+ * (`match-action-item-owners.ts`, `loadOwnerCandidates`) and need not be
+ * members of the project. Under the strict rule a meeting would only ever be
+ * caught up if someone who is the project's creator or an accepted member
+ * happened to open the To Do page; an organization whose projects are
+ * administered by one person and worked by many would leave most of its
+ * meetings unprocessed indefinitely, and the symptom — an empty list — is
+ * indistinguishable from a broken one. Nothing here is offered to the caller,
+ * so nothing here needs the link rule.
  *
  * READ PERMISSION FOR SOMETHING THAT STARTS WORKFLOWS, deliberately, for the
  * reason `linkActionItemsProcedure` records about `PROJECT_READ`: the page is
@@ -78,7 +102,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { requireTodoListEnabled } from "../lib/mutation-access";
-import { accessibleProjectWhere } from "../lib/visibility";
+import { organizationProjectWhere } from "../lib/visibility";
 import { requireOrganizationContext } from "./contacts/shared";
 
 /**
@@ -158,7 +182,14 @@ export const catchUpTodosProcedure = tenantProtectedProcedure
 				// The access boundary. Not `{ organizationId }` alone: an
 				// organization member does not necessarily reach every project
 				// of it, and an invited project guest reaches exactly one.
-				project: accessibleProjectWhere(
+				//
+				// DELIBERATELY THE WIDE PREDICATE — see the header. This
+				// procedure returns counts and no project data, so it is not a
+				// disclosure; the strict rule would instead leave a meeting
+				// uncaught-up until one of the few people who can OPEN its
+				// project happened to visit, while the people the meeting
+				// actually named waited on an empty page.
+				project: organizationProjectWhere(
 					context.user.id,
 					organizationId,
 					now,

@@ -30,6 +30,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { clockFromProjectPredicate } from "./support/project-predicate-clock";
 
 import { MISSING_ORGANIZATION_CONTEXT_ERROR_CODE } from "../../../../lib/missing-organization-context";
 
@@ -148,6 +149,14 @@ const { computeActionItemKey, TODO_BINDING_VERSION } = await import(
 	"@repo/database"
 );
 
+// The REAL predicates. The project-reach assertions below are structural
+// identity against these rather than a restatement, because a restatement of
+// "organizationId and deletedAt" is true of BOTH of them and would have passed
+// throughout #2615.
+const { openableProjectWhere, organizationProjectWhere } = await import(
+	"../../lib/visibility"
+);
+
 const ORG = "org-1";
 const VIEWER = "user-1";
 const PROJECT = "proj-1";
@@ -206,6 +215,91 @@ const transcriptRow = {
 	organizationId: ORG,
 };
 
+/**
+ * A second project of the SAME organization that the viewer was never added to.
+ *
+ * THE WHOLE DIFFERENCE BETWEEN THE TWO PREDICATES LIVES IN THIS FIXTURE
+ * (#2615). `organizationProjectWhere` admits it through its org-membership arm;
+ * `openableProjectWhere` has no such arm and refuses it — and so does
+ * `getProjectById`, which every route built from a returned `projectId` must
+ * go through. A test whose only project is reachable BOTH ways cannot tell the
+ * two rules apart, which is how a read that linked to "Project not found"
+ * stayed green.
+ */
+const WIDE_ONLY_PROJECT = "proj-org-only";
+const WIDE_ONLY_TRANSCRIPT_ROW = "transcript-row-org-only";
+const WIDE_ONLY_TRANSCRIPT_REF = "graph-transcript-org-only";
+
+/** A project as the fake predicate evaluator holds it. */
+interface ProjectFixture {
+	id: string;
+	organizationId: string;
+	deletedAt: Date | null;
+	/** `Project.userId` — the creator. */
+	createdById: string;
+	/** Users with an accepted, unexpired `ProjectMember` row. */
+	memberUserIds: string[];
+	/** Members of the HOST ORGANIZATION — what the wide arm reads. */
+	orgMemberUserIds: string[];
+}
+
+const projectTable: ProjectFixture[] = [
+	{
+		id: PROJECT,
+		organizationId: ORG,
+		deletedAt: null,
+		createdById: "user-creator",
+		// The viewer is an accepted member here, so BOTH predicates admit it.
+		memberUserIds: [VIEWER],
+		orgMemberUserIds: [VIEWER],
+	},
+	{
+		id: WIDE_ONLY_PROJECT,
+		organizationId: ORG,
+		deletedAt: null,
+		createdById: "user-creator",
+		// Never added to it — only the organization arm can reach it.
+		memberUserIds: [],
+		orgMemberUserIds: [VIEWER],
+	},
+];
+
+/**
+ * Evaluates whichever project predicate a handler built against one fixture.
+ *
+ * ARM-SHAPE DRIVEN ON PURPOSE. It reads the arms the predicate actually
+ * carries instead of assuming a policy, so the SAME evaluator answers for the
+ * wide rule and the strict one and the difference between them shows up as a
+ * project appearing or not appearing. A stub returning a canned list agrees
+ * with whatever predicate it is handed, which is exactly why the defect
+ * survived this file's first pass.
+ */
+function projectMatches(where: any, project: ProjectFixture): boolean {
+	if (where?.organizationId !== project.organizationId) {
+		return false;
+	}
+	if (where?.deletedAt === null && project.deletedAt !== null) {
+		return false;
+	}
+	return (where?.OR ?? []).some((arm: any) => {
+		// The creator arm — strict only.
+		if (arm.userId) {
+			return project.createdById === arm.userId;
+		}
+		// An accepted, unexpired project membership — both predicates.
+		if (arm.members) {
+			return project.memberUserIds.includes(arm.members.some.userId);
+		}
+		// Membership of the HOST ORGANIZATION — wide only, and the defect.
+		if (arm.organization) {
+			return project.orgMemberUserIds.includes(
+				arm.organization.members.some.userId,
+			);
+		}
+		return false;
+	});
+}
+
 const storyRow = {
 	id: "story-1",
 	identifier: "US-042",
@@ -235,6 +329,10 @@ beforeEach(() => {
 	// shifts the next test's queue by one and that test silently exercises the
 	// wrong branch.
 	mocks.dbMock.pendingBacklogProposal.findMany.mockReset();
+	// Same reason: the visibility scope queues two `findMany` answers in the
+	// tests that need the wide and strict sets to differ, and a leftover queue
+	// would hand the next test somebody else's project scope.
+	mocks.dbMock.project.findMany.mockReset();
 	setFlags();
 	mocks.loadTodoForMutation.mockResolvedValue(meetingTodo);
 	mocks.resolveBoundActionItem.mockResolvedValue({
@@ -248,6 +346,16 @@ beforeEach(() => {
 		{ id: PROJECT, userId: "user-creator", members: [] },
 	]);
 	mocks.dbMock.projectUserFunctionTag.findMany.mockResolvedValue([]);
+	// `todos.linkedWorkItems` asks the STRICT predicate about the MEETING's
+	// project by id. Answered from the fixtures rather than canned, so a
+	// project the viewer can only reach as an organization member is refused
+	// here exactly as the database would refuse it.
+	mocks.dbMock.project.findFirst.mockImplementation(async (args: any) => {
+		const project = projectTable.find((row) => row.id === args.where.id);
+		return project && projectMatches(args.where, project)
+			? { id: project.id }
+			: null;
+	});
 	mocks.dbMock.projectMeetingTranscript.findFirst.mockResolvedValue(
 		transcriptRow,
 	);
@@ -394,6 +502,85 @@ describe("todos.pendingProposals", () => {
 				pendingCount: 2,
 			},
 		]);
+	});
+
+	it("keeps a strictly-reachable meeting and omits one the caller can only reach as an organization member", async () => {
+		// #2615. `projectId` is returned for ONE purpose — the page links into
+		// that project's Feature Proposals inbox — and the inbox resolves its
+		// project with the strict rule. Both meetings below have proposals
+		// waiting; only the one whose project actually opens may be reported,
+		// or the badge tells the reader that work is waiting for them
+		// somewhere they cannot go.
+		//
+		// The fake honours the predicate the handler passed rather than
+		// returning a canned list, so swapping the import back to the wide
+		// predicate fails this test on the RESULT and not only on a shape
+		// assertion.
+		mocks.dbMock.projectMeetingTranscript.findMany.mockImplementation(
+			async (args: any) =>
+				[
+					{ ...transcriptRow, analyzedProposalId: null },
+					{
+						id: WIDE_ONLY_TRANSCRIPT_ROW,
+						transcriptId: WIDE_ONLY_TRANSCRIPT_REF,
+						projectId: WIDE_ONLY_PROJECT,
+						analyzedProposalId: null,
+					},
+				].filter((transcript) => {
+					const project = projectTable.find(
+						(row) => row.id === transcript.projectId,
+					);
+					return (
+						project !== undefined &&
+						projectMatches(args.where.project, project)
+					);
+				}),
+		);
+		mocks.dbMock.pendingBacklogProposal.findMany.mockResolvedValue([
+			{
+				id: "proposal-1",
+				sourceMetadata: { transcriptRecordId: TRANSCRIPT_ROW },
+			},
+			{
+				id: "proposal-2",
+				sourceMetadata: {
+					transcriptRecordId: WIDE_ONLY_TRANSCRIPT_ROW,
+				},
+			},
+		]);
+
+		const result = await mocks.captured.pendingProposals({
+			context: baseCtx,
+			input: {
+				organizationId: ORG,
+				transcriptRefs: [TRANSCRIPT_REF, WIDE_ONLY_TRANSCRIPT_REF],
+			},
+		});
+
+		expect(result.meetings).toEqual([
+			{
+				transcriptRef: TRANSCRIPT_REF,
+				projectId: PROJECT,
+				pendingCount: 1,
+			},
+		]);
+
+		// And the fixture really can tell the two rules apart: the SAME viewer
+		// and the SAME project are admitted by the wide predicate, which is
+		// what this read used to ask. Without this pair the test above would
+		// pass on a fixture that simply had no reachable second project.
+		const projectWhere =
+			mocks.dbMock.projectMeetingTranscript.findMany.mock.calls[0][0]
+				.where.project;
+		const now = clockFromProjectPredicate(projectWhere);
+		expect(projectWhere).toEqual(openableProjectWhere(VIEWER, ORG, now));
+		const wideOnly = projectTable.find(
+			(row) => row.id === WIDE_ONLY_PROJECT,
+		) as ProjectFixture;
+		expect(
+			projectMatches(organizationProjectWhere(VIEWER, ORG, now), wideOnly),
+		).toBe(true);
+		expect(projectMatches(projectWhere, wideOnly)).toBe(false);
 	});
 
 	it("only counts rows still awaiting review, in projects the caller can reach", async () => {
@@ -717,6 +904,114 @@ describe("todos.linkedWorkItems", () => {
 			storyId: "story-1",
 			linkId: null,
 		});
+	});
+
+	it("answers in full for a project the caller is an accepted member of", async () => {
+		// The control for the case below: the strict check is asked, it
+		// matches, and nothing about the answer changed.
+		proposalQueries([{ id: "proposal-1", status: "APPLIED" }]);
+		mocks.dbMock.userStory.findMany.mockResolvedValue([storyRow]);
+
+		const result = await mocks.captured.linkedWorkItems({
+			context: baseCtx,
+			input: { organizationId: ORG, todoId: meetingTodo.id },
+		});
+
+		expect(result).toMatchObject({
+			projectId: PROJECT,
+			transcriptRef: TRANSCRIPT_REF,
+		});
+		expect(
+			result.items.map((item: { storyId: string }) => item.storyId),
+		).toEqual(["story-1"]);
+		// Once per request, and about the MEETING's project.
+		expect(mocks.dbMock.project.findFirst).toHaveBeenCalledTimes(1);
+		expect(
+			mocks.dbMock.project.findFirst.mock.calls[0][0].where.id,
+		).toBe(PROJECT);
+	});
+
+	it("reports no project for a meeting the caller can only reach as an organization member", async () => {
+		// #2615, AND THE REASON THE PERMISSION CHECK ALONE IS NOT ENOUGH.
+		// `assertProjectPermission` resolves through
+		// `resolveEffectiveProjectPermissions`, whose last path falls back to
+		// the caller's ORGANIZATION role — so it passes here. The story route
+		// this response feeds goes through `getProjectById`, which runs the
+		// strict rule and refuses. Answered on the permission check alone,
+		// this hands back a link to "Project not found" plus the identifiers
+		// and titles of work items in a project the reader was never added to.
+		//
+		// It DEGRADES rather than throwing: the row is legitimately the
+		// caller's — it is assigned to them, and the read deliberately keeps a
+		// person's own commitments visible from a project they cannot open —
+		// so a refusal would put an error under an ordinary row.
+		mocks.loadTodoForMutation.mockResolvedValue({
+			...meetingTodo,
+			projectId: WIDE_ONLY_PROJECT,
+			transcriptId: WIDE_ONLY_TRANSCRIPT_ROW,
+		});
+		mocks.dbMock.projectMeetingTranscript.findFirst.mockResolvedValue({
+			...transcriptRow,
+			id: WIDE_ONLY_TRANSCRIPT_ROW,
+			transcriptId: WIDE_ONLY_TRANSCRIPT_REF,
+			projectId: WIDE_ONLY_PROJECT,
+		});
+		// The visibility scope behind `requireTodoMutationAccess`: the WIDE
+		// set carries both projects — which is what lets the row through, on
+		// the arm that answers for work assigned to the viewer — and the
+		// STRICT set carries only the one they belong to.
+		mocks.dbMock.project.findMany
+			.mockResolvedValueOnce([
+				{ id: PROJECT, userId: "user-creator", members: [] },
+				{
+					id: WIDE_ONLY_PROJECT,
+					userId: "user-creator",
+					members: [],
+				},
+			])
+			.mockResolvedValueOnce([{ id: PROJECT }]);
+
+		const result = await mocks.captured.linkedWorkItems({
+			context: baseCtx,
+			input: { organizationId: ORG, todoId: meetingTodo.id },
+		});
+
+		// The same shape a to-do with no meeting gets, deliberately: one empty
+		// answer for the client to render, not two.
+		expect(result).toEqual({
+			todoId: meetingTodo.id,
+			transcriptRef: null,
+			projectId: null,
+			linkingEnabled: true,
+			resolvedVia: null,
+			isOrphaned: false,
+			items: [],
+		});
+
+		// BOTH checks ran and they answered differently — which is the whole
+		// argument for keeping both. Neither is redundant.
+		expect(mocks.assertProjectPermission).toHaveBeenCalledWith(
+			WIDE_ONLY_PROJECT,
+			VIEWER,
+			"PROJECT_READ",
+			baseCtx,
+		);
+		const where = mocks.dbMock.project.findFirst.mock.calls[0][0].where;
+		const now = clockFromProjectPredicate(where);
+		expect(where).toEqual({
+			...openableProjectWhere(VIEWER, ORG, now),
+			id: WIDE_ONLY_PROJECT,
+		});
+		expect(where).not.toEqual({
+			...organizationProjectWhere(VIEWER, ORG, now),
+			id: WIDE_ONLY_PROJECT,
+		});
+		// And nothing about the project's work was queried, so no title,
+		// identifier or status of it reached the caller.
+		expect(
+			mocks.dbMock.pendingBacklogProposal.findMany,
+		).not.toHaveBeenCalled();
+		expect(mocks.dbMock.userStory.findMany).not.toHaveBeenCalled();
 	});
 
 	it("checks the MEETING's project, not the caller's input", async () => {

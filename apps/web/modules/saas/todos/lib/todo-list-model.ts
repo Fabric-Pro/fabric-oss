@@ -47,6 +47,22 @@ export interface TodoListItem {
 	title: string;
 	projectId: string | null;
 	projectName: string | null;
+	/**
+	 * WHETHER THIS VIEWER CAN OPEN `projectId` — asked of the server, never
+	 * inferred here (Fizzy #2615).
+	 *
+	 * `projectId` says which project a row belongs to. It does NOT say the
+	 * project will load: a person can be handed work on a project they were
+	 * never added to, because the meeting-digest owner matcher picks its owners
+	 * from the whole organization. This page is the one place those two facts
+	 * come apart, and every project-scoped link on a row depends on the second
+	 * one. Reconstructing it from the fields next to it is exactly the mistake
+	 * `docs/solutions/architecture-patterns/ask-the-resolver-do-not-infer-from-stored-rows.md`
+	 * records.
+	 *
+	 * False on a row with no project at all, so one condition covers both.
+	 */
+	canOpenProject: boolean;
 	assigneeUserId: string | null;
 	assigneeUser: { id: string; name: string; image: string | null } | null;
 	assigneeContactId: string | null;
@@ -92,15 +108,13 @@ export interface TodoListItem {
 	 */
 	tentativeOwnerName?: string | null;
 	/**
-	 * THE MEETING LINK — OPTIONAL ON PURPOSE.
+	 * THE MEETING LINK.
 	 *
-	 * `todos.list` does not project these yet: its DTO carries `source` but not
-	 * the graph transcript ref, the item key or the meeting's name, so a
-	 * meeting-sourced row cannot be addressed from here today. They are
-	 * declared optional so this page renders the link and the exact meeting
-	 * grouping the moment the read returns them, and degrades to grouping by
-	 * the shared meeting date until it does (every row of one meeting carries
-	 * the same `sourceDate`).
+	 * `todos.list` projects all three. They stay OPTIONAL so this page degrades
+	 * to grouping by the shared meeting date rather than breaking if a read
+	 * ever stops returning them (every row of one meeting carries the same
+	 * `sourceDate`) — not because the read is still catching up, which it was
+	 * when this comment was first written and has not been since.
 	 *
 	 * `meetingTranscriptRef` is the GRAPH transcript id that
 	 * `buildDigestDeepLink` and `meetingDigest.getMeeting` accept — never the
@@ -548,6 +562,14 @@ export interface TodoGroup {
 	meetingTranscriptRef: string | null;
 	projectId: string | null;
 	projectName: string | null;
+	/**
+	 * Whether the heading may link into `projectId`.
+	 *
+	 * Taken from the group's first row, which is sound because a group is one
+	 * meeting in one project: every row under this heading carries the same
+	 * project and therefore the same verdict.
+	 */
+	canOpenProject: boolean;
 	/** Every row of one meeting shares this date; a manual group shows none. */
 	sourceDate: string;
 	items: TodoListItem[];
@@ -587,6 +609,7 @@ export function groupTodos(items: TodoListItem[]): TodoGroup[] {
 			meetingTranscriptRef: item.meetingTranscriptRef ?? null,
 			projectId: item.projectId,
 			projectName: item.projectName,
+			canOpenProject: item.canOpenProject,
 			sourceDate: item.sourceDate,
 			items: [item],
 		};

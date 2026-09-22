@@ -71,7 +71,14 @@ export async function resolveEffectiveProjectPermissions(
 		return null;
 	}
 
-	// Path A: personal-project owner.
+	// PATH 1 — PERSONAL-PROJECT OWNER. Named, not lettered: this file and
+	// `../orpc/middleware/require-permission.ts` used to letter the same three
+	// paths differently, and "path C" meant opposite rules in the two. See that
+	// file's docblock.
+	//
+	// Note the second conjunct: an ORGANIZATION project's creator does NOT
+	// arrive here, and `createProject` writes them no member row either, so
+	// they reach path 3 and nothing else.
 	if (project.userId === userId && project.organizationId === null) {
 		return {
 			permissions: resolveProjectPermissions("OWNER"),
@@ -80,8 +87,9 @@ export async function resolveEffectiveProjectPermissions(
 		};
 	}
 
-	// Path C: active ProjectMember row is authoritative (checked BEFORE org).
-	// Fetched above; the precedence is unchanged — only the fetch moved.
+	// PATH 2 — ACTIVE PROJECT MEMBER, authoritative, checked BEFORE the org
+	// fallback. Fetched above; the precedence is unchanged, only the fetch
+	// moved.
 	const memberActive =
 		member !== null &&
 		member.acceptedAt !== null &&
@@ -94,7 +102,15 @@ export async function resolveEffectiveProjectPermissions(
 		};
 	}
 
-	// Path B: org-role fallback.
+	// PATH 3 — ORG-ROLE FALLBACK, and also the BOOTSTRAP. A freshly created
+	// organization project has zero `ProjectMember` rows (the only two places
+	// one is ever created are invitation acceptance), and path 1 cannot fire
+	// for an organization project — so this is the only path by which ANY
+	// caller, the project's creator included, holds any permission on a new
+	// organization project at all. It is what lets someone reach
+	// `PROJECT_MEMBERS_MANAGE` and create the first member row. Deleting it as
+	// "just a fallback" would make every organization project inert from
+	// birth.
 	if (project.organizationId) {
 		const orgMember = await db.member.findFirst({
 			where: { organizationId: project.organizationId, userId },

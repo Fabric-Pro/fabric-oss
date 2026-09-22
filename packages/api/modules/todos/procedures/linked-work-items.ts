@@ -14,7 +14,8 @@
  * proposal filed before #2340 carries no key at all and must keep resolving
  * exactly as it always did.
  *
- * TWO LAYERS OF AUTHORIZATION, not one.
+ * THREE LAYERS OF AUTHORIZATION, not one — and each answers a question the one
+ * before it does not.
  *
  *  1. `requireInputOrgPermission(TODO_READ, { requireOrganization: true })`
  *     proves the caller belongs to the organization NAMED IN THE INPUT.
@@ -30,6 +31,34 @@
  *     project that owns the MEETING — taken from the transcript, not from the
  *     caller's input — is then checked with `PROJECT_READ`, the same permission
  *     `meeting-digest/manage-action-item-links.ts` requires of the digest side.
+ *  3. AND `PROJECT_READ` IS STILL NOT THE QUESTION THE ANSWER ANSWERS (#2615).
+ *     `assertProjectPermission` resolves through
+ *     `resolveEffectiveProjectPermissions`, whose last path falls back to the
+ *     caller's ORGANIZATION role when they hold no active `ProjectMember` row.
+ *     So it passes for every member of the tenant — while `getProjectById`,
+ *     which every route this response feeds must go through, runs
+ *     `buildProjectAccessWhere` and refuses exactly those people. Answered on
+ *     the permission check alone, this hands back a `projectId` the page turns
+ *     into a story link whose destination then says "Project not found", plus
+ *     the identifiers, titles and statuses of work items in a project the
+ *     reader was deliberately never added to. So a third check asks the
+ *     openable question directly, with `openableProjectWhere`.
+ *
+ *     KEEP BOTH. They are not redundant and neither subsumes the other: the
+ *     permission check answers "is this caller allowed to do PROJECT_READ
+ *     here", refusing with NOT_FOUND/FORBIDDEN and seeding the guest tenant
+ *     carve-out that the queries below depend on; the reach check answers "will
+ *     this project open for them", and DEGRADES rather than throwing. Deleting
+ *     either one silently restores half of this defect.
+ *
+ * WHY THE REACH FAILURE DEGRADES AND DOES NOT THROW. Arms 1 and 5 of the read
+ * deliberately keep showing a person their OWN commitments from a project they
+ * cannot open (#2615, R5) — the digest's owner matcher assigns work across the
+ * whole organization — so the To Do page legitimately renders such a row and
+ * asks this of it like any other. A refusal would put an error under an
+ * ordinary row. Instead the answer carries `projectId: null` and no items,
+ * which is the same shape a MANUAL to-do gets and which
+ * `TodoWorkItemLinks.tsx` already renders as a plain `<span>` with no controls.
  *
  * WHY THE WRITE'S ACCESS RULE GATES THIS READ. `requireTodoMutationAccess` is
  * named for the mutations, and using it here is deliberate rather than
@@ -67,6 +96,7 @@ import {
 	type TodoProposalResolvedVia,
 	type TodoWorkItem,
 } from "../lib/proposal-links";
+import { isProjectOpenable } from "../lib/visibility";
 import { requireOrganizationContext } from "./contacts/shared";
 
 export const todoLinkedWorkItemsInputSchema = z.object({
@@ -79,10 +109,18 @@ interface TodoLinkedWorkItemsResult {
 	todoId: string;
 	/**
 	 * The Graph transcript id of the meeting, for a deep link into the digest.
-	 * Null on a manual to-do, and on nothing else.
+	 *
+	 * Null on a manual to-do, and null with `projectId` when the caller cannot
+	 * OPEN the meeting's project — the two travel together, because a
+	 * transcript ref is only ever addressable through its project and half a
+	 * deep link is not a lesser answer, it is a broken one.
 	 */
 	transcriptRef: string | null;
-	/** The project that owns the meeting. Null on a manual to-do. */
+	/**
+	 * The project that owns the meeting. Null on a manual to-do, and null when
+	 * the caller cannot open it (see the header): the page builds a story route
+	 * from this field, so a value here is a promise that the route resolves.
+	 */
 	projectId: string | null;
 	/**
 	 * False when `MEETING_ACTION_ITEM_LINKING` is off. `items` is then empty,
@@ -141,6 +179,23 @@ export const todoLinkedWorkItemsProcedure = tenantProtectedProcedure
 			now,
 		});
 
+		/**
+		 * The honest empty answer: this row has no project to report.
+		 *
+		 * ONE LITERAL FOR BOTH REASONS — no meeting at all, and a meeting whose
+		 * project the caller cannot open — so the two cannot drift into two
+		 * differently-shaped nulls the page has to tell apart.
+		 */
+		const nothingToReport = {
+			todoId: todo.id,
+			transcriptRef: null,
+			projectId: null,
+			linkingEnabled,
+			resolvedVia: null,
+			isOrphaned: false,
+			items: [],
+		};
+
 		const binding = await resolveTodoMeetingBinding({
 			todo,
 			organizationId,
@@ -150,15 +205,7 @@ export const todoLinkedWorkItemsProcedure = tenantProtectedProcedure
 			// is an answer, not a failure: the page asks this of every row it
 			// renders and a refusal here would be an error the client has to
 			// swallow on the ordinary path.
-			return {
-				todoId: todo.id,
-				transcriptRef: null,
-				projectId: null,
-				linkingEnabled,
-				resolvedVia: null,
-				isOrphaned: false,
-				items: [],
-			};
+			return nothingToReport;
 		}
 
 		// The second authorization layer, and the one the organization check
@@ -172,6 +219,34 @@ export const todoLinkedWorkItemsProcedure = tenantProtectedProcedure
 			Permissions.PROJECT_READ,
 			context,
 		);
+
+		// THE THIRD LAYER, AND IT IS NOT THE SECOND ONE RESTATED (#2615).
+		// `assertProjectPermission` falls back to the caller's ORGANIZATION
+		// role when they hold no active `ProjectMember` row, so it passes for
+		// every member of the tenant — including the ones `getProjectById`
+		// refuses. `openableProjectWhere` is that refusal, asked here, so this
+		// response never carries a project id the page cannot route to, nor the
+		// work items of a project the reader was never added to. Header
+		// paragraph 3 records why BOTH checks stay.
+		//
+		// It runs AFTER the permission check on purpose: that check seeds the
+		// guest tenant carve-out (`grantProjectAccess`) the queries below rely
+		// on, and it owns the hard refusals — this one only decides whether
+		// there is anything to say.
+		const openable = await isProjectOpenable({
+			viewerUserId: context.user.id,
+			organizationId,
+			projectId: binding.projectId,
+			now,
+		});
+		if (!openable) {
+			// Degrade, do not refuse. The row itself is legitimately the
+			// caller's — arms 1 and 5 of the read keep a person's own
+			// commitments visible from a project they cannot open — so this is
+			// an ordinary row with nothing to link, and the client already
+			// renders exactly that.
+			return nothingToReport;
+		}
 
 		const shared = {
 			todoId: todo.id,

@@ -35,6 +35,17 @@
  * `../lib/visibility.ts` rather than restating: a caller may only be told about
  * meetings held in projects they can already reach, and the one predicate the
  * read composes is what decides that.
+ *
+ * AND THE PREDICATE IT IMPORTS IS THE STRICT ONE (#2615), BECAUSE THIS
+ * RESPONSE IS AN HREF. `projectId` is returned for one purpose — the page links
+ * straight into that project's Feature Proposals inbox — and an inbox route
+ * resolves its project through `getProjectById`, which runs
+ * `buildProjectAccessWhere`. `openableProjectWhere` is that rule; the wide
+ * `organizationProjectWhere` is a tenant-scoping question that admits every
+ * project of the organization. Answered against the wide one, as this was, the
+ * badge appears on a meeting whose inbox then says "Project not found" — the
+ * reader is told work is waiting for them somewhere they cannot go. A link may
+ * only be offered against the rule its own destination enforces.
  */
 
 import { db, type Prisma } from "@repo/database";
@@ -46,7 +57,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { requireTodoListEnabled } from "../lib/mutation-access";
-import { accessibleProjectWhere } from "../lib/visibility";
+import { openableProjectWhere } from "../lib/visibility";
 import { requireOrganizationContext } from "./contacts/shared";
 
 /**
@@ -117,13 +128,18 @@ export const pendingProposalMeetingsProcedure = tenantProtectedProcedure
 		const refs = [...new Set(input.transcriptRefs)];
 
 		// The project predicate is the access boundary. A transcript whose
-		// project the caller cannot reach is unmatchable here rather than merely
+		// project the caller cannot OPEN is unmatchable here rather than merely
 		// uncounted, so no ref they guessed can confirm a meeting exists.
+		//
+		// STRICT, not the wide tenant set: every meeting that survives this
+		// query is handed back with its `projectId`, and the page turns that
+		// into a link into the project's Feature Proposals inbox. See the
+		// header.
 		const transcripts = await db.projectMeetingTranscript.findMany({
 			where: {
 				transcriptId: { in: refs },
 				organizationId,
-				project: accessibleProjectWhere(
+				project: openableProjectWhere(
 					context.user.id,
 					organizationId,
 					now,
