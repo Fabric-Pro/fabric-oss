@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	executeMicrosoftTeamsToolMock: vi.fn(),
 	isTranscriptAlreadySyncedMock: vi.fn(),
+	hasTranscriptNearOccurrenceMock: vi.fn(),
 	createMeetingTranscriptRecordMock: vi.fn(),
 	updateLastRunMock: vi.fn(),
 	projectContextCreateMock: vi.fn(),
@@ -42,6 +43,8 @@ vi.mock("@repo/database", () => ({
 		mocks.createMeetingTranscriptRecordMock(...a),
 	isTranscriptAlreadySynced: (...a: unknown[]) =>
 		mocks.isTranscriptAlreadySyncedMock(...a),
+	hasTranscriptNearOccurrence: (...a: unknown[]) =>
+		mocks.hasTranscriptNearOccurrenceMock(...a),
 	updateMeetingTranscriptSyncLastRun: (...a: unknown[]) =>
 		mocks.updateLastRunMock(...a),
 	getLinkedMeetingJoinUrls: vi.fn(),
@@ -138,6 +141,7 @@ describe("fetchAndStoreMeetingTranscript — auto-analyze ingest hook", () => {
 		}
 		wireHappyTeamsPath();
 		mocks.isTranscriptAlreadySyncedMock.mockResolvedValue(false);
+		mocks.hasTranscriptNearOccurrenceMock.mockResolvedValue(false);
 		mocks.projectContextCreateMock.mockResolvedValue({ id: "ctx-1" });
 		mocks.createMeetingTranscriptRecordMock.mockResolvedValue({
 			id: "tr-rec-1",
@@ -301,5 +305,195 @@ describe("fetchAndStoreMeetingTranscript — auto-analyze ingest hook", () => {
 		expect(mocks.createMeetingTranscriptRecordMock).toHaveBeenCalledTimes(
 			1,
 		);
+	});
+});
+
+/**
+ * Graph occasionally reissues a transcript under a new id: same meeting, same
+ * occurrence, same content, different `transcriptId`. The id-keyed unique
+ * index then lets it through as a brand-new transcript, which stores the
+ * occurrence a second time and auto-analyzes it again months after the fact.
+ */
+describe("fetchAndStoreMeetingTranscript — reissued transcript ids", () => {
+	beforeEach(() => {
+		for (const m of Object.values(mocks)) {
+			m.mockReset();
+		}
+		wireHappyTeamsPath();
+		mocks.isTranscriptAlreadySyncedMock.mockResolvedValue(false);
+		mocks.hasTranscriptNearOccurrenceMock.mockResolvedValue(false);
+		mocks.projectContextCreateMock.mockResolvedValue({ id: "ctx-1" });
+		mocks.createMeetingTranscriptRecordMock.mockResolvedValue({
+			id: "tr-rec-1",
+		});
+		mocks.projectFindUniqueMock.mockResolvedValue({
+			meetingTranscriptSyncEnabled: true,
+			meetingTranscriptAutoAnalyzeEnabled: true,
+		});
+		mocks.workflowStartMock.mockResolvedValue({ workflowId: "wf-1" });
+		mocks.getTemporalClientMock.mockResolvedValue({
+			workflow: {
+				start: (...a: unknown[]) => mocks.workflowStartMock(...a),
+			},
+		});
+	});
+
+	afterEach(() => {
+		vi.clearAllMocks();
+	});
+
+	it("skips a transcript whose occurrence this link already covers, even under a new id", async () => {
+		mocks.hasTranscriptNearOccurrenceMock.mockResolvedValue(true);
+
+		const result = await fetchAndStoreMeetingTranscript(BASE_INPUT);
+
+		expect(result.transcriptsFetched).toBe(0);
+		const tools = mocks.executeMicrosoftTeamsToolMock.mock.calls.map(
+			(call) => call[0],
+		);
+		expect(tools).not.toContain("get_meeting_transcript_content");
+		expect(mocks.projectContextCreateMock).not.toHaveBeenCalled();
+		expect(mocks.createMeetingTranscriptRecordMock).not.toHaveBeenCalled();
+		expect(mocks.workflowStartMock).not.toHaveBeenCalled();
+	});
+
+	it("asks about coverage using the link and the transcript's own occurrence", async () => {
+		mocks.hasTranscriptNearOccurrenceMock.mockResolvedValue(true);
+
+		await fetchAndStoreMeetingTranscript(BASE_INPUT);
+
+		// The transcript's createdDateTime, not the series-level meetingDate:
+		// for a recurring meeting every transcript shares the latter.
+		expect(mocks.hasTranscriptNearOccurrenceMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "proj-1",
+				linkedMeetingId: "lm-1",
+				occurrence: new Date("2026-06-16T10:30:00.000Z"),
+			}),
+		);
+	});
+
+	it("still stores two transcripts Graph lists together for one occurrence", async () => {
+		mocks.executeMicrosoftTeamsToolMock.mockImplementation(
+			async (tool: string) => {
+				if (tool === "get_meeting_by_join_url") {
+					return { meeting: { id: "meeting-1" } };
+				}
+				if (tool === "list_meeting_transcripts") {
+					return {
+						transcripts: [
+							{
+								id: "transcript-1",
+								createdDateTime: "2026-06-16T10:30:00.000Z",
+							},
+							{
+								id: "transcript-2",
+								createdDateTime: "2026-06-16T10:45:00.000Z",
+							},
+						],
+						count: 2,
+					};
+				}
+				if (tool === "get_meeting_transcript_content") {
+					return { entries: [{ speaker: "Alice", text: "Hello." }] };
+				}
+				return {};
+			},
+		);
+		// Coverage is decided before anything is stored, so the first
+		// transcript's row must not make the second look like a reissue.
+		mocks.createMeetingTranscriptRecordMock.mockImplementation(async () => {
+			mocks.hasTranscriptNearOccurrenceMock.mockResolvedValue(true);
+			return { id: "tr-rec-1" };
+		});
+
+		const result = await fetchAndStoreMeetingTranscript(BASE_INPUT);
+
+		expect(result.transcriptsFetched).toBe(2);
+		expect(mocks.createMeetingTranscriptRecordMock).toHaveBeenCalledTimes(
+			2,
+		);
+	});
+
+	it("falls back to id-only dedupe when Graph gives the transcript no createdDateTime", async () => {
+		mocks.executeMicrosoftTeamsToolMock.mockImplementation(
+			async (tool: string) => {
+				if (tool === "get_meeting_by_join_url") {
+					return { meeting: { id: "meeting-1" } };
+				}
+				if (tool === "list_meeting_transcripts") {
+					return { transcripts: [{ id: "transcript-1" }], count: 1 };
+				}
+				if (tool === "get_meeting_transcript_content") {
+					return { entries: [{ speaker: "Alice", text: "Hello." }] };
+				}
+				return {};
+			},
+		);
+		// Would say "covered" if asked — the series-level meetingDate is
+		// shared by every occurrence, so asking would suppress a new one.
+		mocks.hasTranscriptNearOccurrenceMock.mockResolvedValue(true);
+
+		const result = await fetchAndStoreMeetingTranscript(BASE_INPUT);
+
+		expect(result.transcriptsFetched).toBe(1);
+		expect(mocks.hasTranscriptNearOccurrenceMock).not.toHaveBeenCalled();
+	});
+
+	it("does not re-check a transcript recovered from a channel recording", async () => {
+		mocks.executeMicrosoftTeamsToolMock.mockImplementation(
+			async (tool: string) => {
+				if (tool === "get_meeting_by_join_url") {
+					return { meeting: { id: "meeting-1" } };
+				}
+				if (tool === "list_meeting_transcripts") {
+					return { transcripts: [], count: 0 };
+				}
+				if (tool === "list_recording_transcripts") {
+					return {
+						transcripts: [
+							{
+								id: "recording-1",
+								createdDateTime: "2026-06-16T10:30:00.000Z",
+								driveId: "drive-1",
+								recordingItemId: "item-1",
+								recordingWebUrl: "https://example.com/rec",
+							},
+						],
+					};
+				}
+				if (tool === "get_recording_transcript_content") {
+					return { entries: [{ speaker: "Alice", text: "Hello." }] };
+				}
+				return {};
+			},
+		);
+		// The fallback's own coverage check (calendar date) says "not
+		// covered"; a second look from the recording's timestamp must not
+		// happen at all.
+		mocks.hasTranscriptNearOccurrenceMock.mockResolvedValue(false);
+
+		const result = await fetchAndStoreMeetingTranscript({
+			...BASE_INPUT,
+			joinUrl:
+				"https://teams.microsoft.com/l/meetup-join/19%3Athread%40thread.tacv2/123",
+		});
+
+		expect(result.transcriptsFetched).toBe(1);
+		expect(mocks.hasTranscriptNearOccurrenceMock).toHaveBeenCalledTimes(1);
+		expect(mocks.hasTranscriptNearOccurrenceMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				occurrence: new Date(BASE_INPUT.meetingDate),
+			}),
+		);
+	});
+
+	it("does not ask about coverage for a transcript already stored under its id", async () => {
+		mocks.isTranscriptAlreadySyncedMock.mockResolvedValue(true);
+
+		const result = await fetchAndStoreMeetingTranscript(BASE_INPUT);
+
+		expect(result.transcriptsFetched).toBe(0);
+		expect(mocks.hasTranscriptNearOccurrenceMock).not.toHaveBeenCalled();
 	});
 });
