@@ -17,13 +17,31 @@
  * Once it is assigned to someone else, the creator keeps it through the read's
  * MANUAL-owner arm rather than losing the row they wrote.
  *
- * WHEN A PROJECT IS NAMED it is verified with `accessibleProjectWhere` — the
- * read's own predicate, not a bare existence check. Two things ride on that:
- * the project must belong to THIS organization (so a reachable project cannot
- * be paired with someone else's tenant id), and it must not be soft-deleted (a
+ * WHEN A PROJECT IS NAMED it is verified with `openableProjectWhere` — a
+ * shared predicate, not a bare existence check. Two things ride on that: the
+ * project must belong to THIS organization (so a reachable project cannot be
+ * paired with someone else's tenant id), and it must not be soft-deleted (a
  * soft delete fires no cascade, so a deleted project's rows are all still
- * there and would otherwise accept new ones). Creating into a project the
- * caller cannot reach would also produce a row they immediately cannot see.
+ * there and would otherwise accept new ones).
+ *
+ * AND IT IS THE STRICT PREDICATE, NOT THE WIDE ONE (#2615). This used to ask
+ * `organizationProjectWhere`, which admits every project of the tenant — so a
+ * member could file a to-do against a project they cannot open, and the row
+ * was born with a dead link: the list renders its project heading, the heading
+ * goes to `getProjectById`, and `getProjectById` runs the strict rule and says
+ * "Project not found". `openableProjectWhere` is that strict rule, so what a
+ * to-do may be filed against is exactly what its reader can open. Creating
+ * into a project the caller cannot reach at all would also produce a row they
+ * immediately cannot see.
+ *
+ * THERE IS NO PICKER IN FRONT OF THIS, which is why the check has to be here.
+ * The To Do page has no manual-create control at all today — the only project
+ * control it renders is a FILTER over the rows already loaded — so every
+ * caller of this endpoint reaches it directly, as `POST /todos` with a
+ * `projectId` of their choosing: an API-key client, a script, a future dialog
+ * nobody has written yet. A narrow picker would have been convenience; this
+ * check is the rule, and at present it is the only thing constraining which
+ * project a manual to-do can be filed against.
  *
  * `sourceDate` IS NOW. The model documents it as "the meeting's date for a
  * meeting-sourced row, creation for a manual one", and both the age cutoff and
@@ -48,7 +66,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { requireTodoListEnabled } from "../lib/mutation-access";
-import { accessibleProjectWhere } from "../lib/visibility";
+import { isProjectOpenable } from "../lib/visibility";
 import { requireOrganizationContext } from "./contacts/shared";
 
 export const createTodoInputSchema = z.object({
@@ -92,20 +110,19 @@ export const createTodoProcedure = tenantProtectedProcedure
 		const now = new Date();
 
 		if (input.projectId) {
-			const project = await db.project.findFirst({
-				where: {
-					...accessibleProjectWhere(
-						context.user.id,
-						organizationId,
-						now,
-					),
-					id: input.projectId,
-				},
-				select: { id: true },
+			// The STRICT rule — what `getProjectById` runs, and therefore what
+			// decides whether this to-do's project heading will open for the
+			// person who reads it. See the header.
+			const openable = await isProjectOpenable({
+				viewerUserId: context.user.id,
+				organizationId,
+				projectId: input.projectId,
+				now,
 			});
-			if (!project) {
+			if (!openable) {
 				// One refusal for "another organization's project", "no such
-				// project", "soft-deleted" and "you were removed from it".
+				// project", "soft-deleted", "you were removed from it" and
+				// "you are in the organization but not on this project".
 				// Telling them apart would let a caller enumerate projects of
 				// organizations they do not belong to.
 				throw new ORPCError("FORBIDDEN", {

@@ -11,6 +11,7 @@ import {
 	applyTodoOverride,
 	assigneeOptionKey,
 	dedupeTodos,
+	groupTodos,
 	groupUnassigned,
 	isSnoozed,
 	isSuggestedAssignment,
@@ -34,6 +35,9 @@ function item(overrides: Partial<TodoListItem> & { id: string }): TodoListItem {
 		title: "A to-do",
 		projectId: null,
 		projectName: null,
+		// Defaults TRUE: every rule written before Fizzy #2615 is about a
+		// project the viewer can open. `false` is the reporter's row.
+		canOpenProject: true,
 		assigneeUserId: null,
 		assigneeUser: null,
 		assigneeContactId: null,
@@ -431,5 +435,57 @@ describe("remembering the filter options", () => {
 		expect(
 			assigneeOptionKey({ kind: "user", id: "x", name: "Ada" }),
 		).not.toBe(assigneeOptionKey({ kind: "contact", id: "x", name: "Bo" }));
+	});
+});
+
+describe("groupTodos", () => {
+	it("carries the project's openability from the group's first row onto the heading", () => {
+		// The heading links into a project, so it needs the same verdict the
+		// rows have. Sound to take from the first row because a group is one
+		// meeting in one project — every row under it shares both.
+		const groups = groupTodos([
+			item({
+				id: "a",
+				source: "MEETING_DIGEST",
+				projectId: "proj-shut",
+				meetingTranscriptRef: "transcript-1",
+				canOpenProject: false,
+			}),
+			item({
+				id: "b",
+				source: "MEETING_DIGEST",
+				projectId: "proj-shut",
+				meetingTranscriptRef: "transcript-1",
+				canOpenProject: false,
+			}),
+		]);
+
+		expect(groups).toHaveLength(1);
+		expect(groups[0].canOpenProject).toBe(false);
+		expect(groups[0].projectId).toBe("proj-shut");
+	});
+
+	it("decides per group, so one unopenable meeting does not mute the others", () => {
+		const groups = groupTodos([
+			item({
+				id: "a",
+				source: "MEETING_DIGEST",
+				projectId: "proj-open",
+				meetingTranscriptRef: "transcript-open",
+				canOpenProject: true,
+			}),
+			item({
+				id: "b",
+				source: "MEETING_DIGEST",
+				projectId: "proj-shut",
+				meetingTranscriptRef: "transcript-shut",
+				canOpenProject: false,
+			}),
+		]);
+
+		expect(groups.map((group) => group.canOpenProject)).toEqual([
+			true,
+			false,
+		]);
 	});
 });

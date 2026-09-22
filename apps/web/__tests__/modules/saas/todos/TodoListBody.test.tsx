@@ -132,6 +132,10 @@ function item(overrides: Partial<TodoListItem> & { id: string }): TodoListItem {
 		title: "Write the migration note",
 		projectId: null,
 		projectName: null,
+		// Defaults TRUE so every scenario written before Fizzy #2615 keeps
+		// describing a project the viewer can open. A test passes `false` to
+		// describe the row that bug was about: in the tenant, not openable.
+		canOpenProject: true,
 		assigneeUserId: null,
 		assigneeUser: null,
 		assigneeContactId: null,
@@ -261,6 +265,97 @@ describe("TodoListBody rows", () => {
 		expect(
 			screen.getByTestId("todo-row-digest-link").getAttribute("href"),
 		).toContain("actionItem=item-key-1");
+	});
+
+	it("offers no link at all when the viewer cannot open the row's project", () => {
+		// Fizzy #2615. The owner matcher picks its owners from the whole
+		// organization, so a person can be handed work on a project they were
+		// never added to. Both links used to render and both landed on
+		// "Project not found"; the row and the heading now degrade to text.
+		renderBody({
+			items: [
+				item({
+					id: "todo-shut",
+					source: "MEETING_DIGEST",
+					title: "Confirm the launch date",
+					projectId: "proj-shut",
+					projectName: "Borealis",
+					canOpenProject: false,
+					assigneeUserId: ADA.id,
+					assigneeUser: ADA,
+					meetingTranscriptRef: "graph-transcript-1",
+					meetingItemKey: "item-key-1",
+					meetingTitle: "Weekly sync",
+				}),
+			],
+		});
+
+		expect(
+			screen.queryByTestId("todo-row-digest-link"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByTestId("todo-meeting-group-link"),
+		).not.toBeInTheDocument();
+
+		// Everything the reader needs to act on the commitment is still there —
+		// only the navigation that could not have worked is gone.
+		const group = screen.getByTestId("todo-meeting-group");
+		expect(within(group).getByText("Weekly sync")).toBeVisible();
+		expect(
+			within(group).getByText("Confirm the launch date"),
+		).toBeVisible();
+	});
+
+	it("links the row and the heading independently of each other's project", () => {
+		// One openable meeting and one not, in the same list. A single shared
+		// flag, or a heading that read its verdict off the wrong group, would
+		// show up here as both links appearing or neither.
+		renderBody({
+			items: [
+				item({
+					id: "todo-open",
+					source: "MEETING_DIGEST",
+					title: "Send the deck",
+					projectId: "proj-open",
+					projectName: "Apollo",
+					canOpenProject: true,
+					meetingTranscriptRef: "graph-transcript-open",
+					meetingItemKey: "key-open",
+					meetingTitle: "Apollo sync",
+					assigneeUserId: ADA.id,
+					assigneeUser: ADA,
+				}),
+				item({
+					id: "todo-shut",
+					source: "MEETING_DIGEST",
+					title: "Chase the invoice",
+					projectId: "proj-shut",
+					projectName: "Borealis",
+					canOpenProject: false,
+					meetingTranscriptRef: "graph-transcript-shut",
+					meetingItemKey: "key-shut",
+					meetingTitle: "Borealis sync",
+					assigneeUserId: ADA.id,
+					assigneeUser: ADA,
+				}),
+			],
+		});
+
+		const rowLinks = screen.getAllByTestId("todo-row-digest-link");
+		expect(rowLinks).toHaveLength(1);
+		expect(rowLinks[0].getAttribute("href")).toContain(
+			"actionItem=key-open",
+		);
+
+		const headingLinks = screen.getAllByTestId("todo-meeting-group-link");
+		expect(headingLinks).toHaveLength(1);
+		expect(headingLinks[0].getAttribute("href")).toContain(
+			"/app/acme/projects/proj-open",
+		);
+
+		// The unopenable meeting still has a heading; it is just not a link.
+		expect(screen.getAllByTestId("todo-meeting-group")).toHaveLength(2);
+		expect(screen.getByText("Borealis sync")).toBeVisible();
 	});
 
 	it("keeps two meetings apart even before the read names them", () => {

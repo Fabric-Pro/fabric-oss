@@ -15,7 +15,7 @@
  * spelling of the rule here: the last one was a security defect.
  *
  * WHAT THE SECOND SPELLING COST. The rule used to be "the caller owns the row,
- * OR the row has a project the caller can reach", and `accessibleProjectWhere`
+ * OR the row has a project the caller can reach", and `organizationProjectWhere`
  * grants every project of an organization to every member of it. But that
  * predicate is only the OUTER gate of the read, which then narrows to its arms.
  * So a to-do on a shared project ASSIGNED TO A COLLEAGUE was absent from the
@@ -37,13 +37,19 @@
  * be paired with another tenant's organization id), and it has no `deletedAt`
  * filter (so a soft-deleted project's to-dos would stay writable after the
  * project left every list — a soft delete fires no cascade, so those rows are
- * all still there). `accessibleProjectWhere`, which the read's scope composes,
- * closes both.
+ * all still there). The predicates the read's scope composes
+ * (`organizationProjectWhere` for the tenant gate, `openableProjectWhere` for
+ * the arms that show other people's work) close both.
  *
  * THE BATCH PATH asks the same exported predicate against a scope it resolves
- * ONCE per request (`../procedures/bulk-resolve.ts`): two bounded queries for
- * the whole batch, never one per row. The DECISION is still per row, so naming
- * twenty ids never pools the caller's rights across them.
+ * ONCE per request (`../procedures/bulk-resolve.ts`): a fixed, bounded number
+ * of queries for the whole batch, never one per row. The DECISION is still per
+ * row, so naming twenty ids never pools the caller's rights across them.
+ *
+ * The count is deliberately not written down here. It was "two", and became
+ * three when the scope grew a second project predicate; a number in prose that
+ * nobody re-derives is a claim that goes quietly false. What must hold is that
+ * it does not scale with the batch, and that is what the tests assert.
  *
  * WHAT "NOT FOUND" MEANS HERE. A to-do of another organization and a to-do that
  * never existed are reported identically, because the load is scoped by
