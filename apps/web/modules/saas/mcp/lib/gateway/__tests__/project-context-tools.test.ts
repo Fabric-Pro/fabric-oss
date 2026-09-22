@@ -10,6 +10,11 @@
  * than truncate silently, and a context outside the caller's tenant is
  * indistinguishable from one that does not exist.
  *
+ * The upsert tool pushes a text file into Context by its path: it is gated on
+ * the caller's live CONTEXT_CREATE before anything reads a context row, writes
+ * under the project's hosting organization, and reports a conflict — nothing
+ * written — with the stored hash, never the stored content.
+ *
  * The update tool is the Context tab's source-details edit and nothing more:
  * it requires the values the caller read (`expected`), refuses a stale one
  * with the current values and no write, and records exactly one audit row and
@@ -37,6 +42,7 @@ const mocks = vi.hoisted(() => ({
 	updateContextMetadata: vi.fn(),
 	recordAuditFromRequest: vi.fn(),
 	emitContextChange: vi.fn(),
+	upsertSyncedContext: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -48,7 +54,10 @@ vi.mock("@repo/database", () => ({
 	getCapturedConversationMarkdown: mocks.getCapturedConversationMarkdown,
 	resolveProjectAccess: mocks.resolveProjectAccess,
 	hasPermission: mocks.hasPermission,
-	Permissions: { CONTEXT_UPDATE: "context:update" },
+	Permissions: {
+		CONTEXT_CREATE: "context:create",
+		CONTEXT_UPDATE: "context:update",
+	},
 	updateContextMetadata: mocks.updateContextMetadata,
 	// The real rule is two lines and is tested in @repo/database; copied so
 	// the stale response's normalisation is observable here.
@@ -62,6 +71,13 @@ vi.mock("@repo/api/lib/audit", () => ({
 
 vi.mock("@repo/api/lib/realtime", () => ({
 	emitContextChange: mocks.emitContextChange,
+}));
+
+// The shared synced-file write is covered where it lives
+// (`packages/api/.../upsert-synced-file.test.ts`); here it is mocked so the
+// gate order, the tenant it is handed and the result mapping are observable.
+vi.mock("@repo/api/modules/projects/lib/upsert-synced-context", () => ({
+	upsertSyncedContext: mocks.upsertSyncedContext,
 }));
 
 vi.mock("@repo/storage", () => ({
@@ -193,6 +209,12 @@ beforeEach(() => {
 		changed: ["sourceType", "aiInstructions"],
 	});
 	mocks.emitContextChange.mockResolvedValue(undefined);
+	mocks.upsertSyncedContext.mockResolvedValue({
+		status: "created",
+		contextId: "ctx-synced",
+		sourcePath: "docs/architecture.md",
+		contentHash: "c".repeat(64),
+	});
 });
 
 describe("declarations", () => {
@@ -1402,5 +1424,375 @@ describe("an organization key stays inside its own organization on context reads
 
 		expect(payload(result).error).toMatch(/not found or access denied/i);
 		expect(mocks.listProjectContextSummaries).not.toHaveBeenCalled();
+	});
+});
+
+describe("a synced file's version is readable, so a caller can fill 'expectedContentHash'", () => {
+	it("returns sourcePath, contentHash and the content stamp from the list", async () => {
+		mocks.listProjectContextSummaries.mockResolvedValue({
+			contexts: [
+				{
+					id: "ctx-synced",
+					type: "TEXT",
+					sourceTitle: null,
+					originalFilename: null,
+					mimeType: null,
+					fileSize: null,
+					sourceUrl: null,
+					extractionStatus: "COMPLETED",
+					urlScope: null,
+					metadata: { title: "architecture.md" },
+					sourceType: null,
+					aiInstructions: null,
+					metadataUpdatedAt: null,
+					metadataUpdatedByUserId: null,
+					sourcePath: "docs/architecture.md",
+					contentHash: "c".repeat(64),
+					contentUpdatedAt: new Date("2026-09-22T12:00:00Z"),
+					contentUpdatedByUserId: "user-2",
+					createdAt: new Date("2026-09-22T12:00:00Z"),
+					updatedAt: new Date("2026-09-22T12:00:00Z"),
+					hasStoredFile: false,
+					hasContent: true,
+				},
+			],
+			total: 1,
+			hasMore: false,
+			excludedCodeContexts: 0,
+		});
+
+		const body = payload(
+			await executePlatformTool(
+				"fabric_list_project_contexts",
+				{ projectId: "proj-1" },
+				session,
+			),
+		);
+
+		expect(body.contexts[0]).toMatchObject({
+			sourcePath: "docs/architecture.md",
+			contentHash: "c".repeat(64),
+			contentUpdatedAt: "2026-09-22T12:00:00.000Z",
+			contentUpdatedByUserId: "user-2",
+		});
+	});
+
+	it("returns them from the single read too, and null for a source not pushed by path", async () => {
+		mocks.getContextById.mockResolvedValue(
+			transcriptRow({
+				sourcePath: "docs/architecture.md",
+				contentHash: "c".repeat(64),
+				contentUpdatedAt: new Date("2026-09-22T12:00:00Z"),
+				contentUpdatedByUserId: "user-2",
+			}),
+		);
+
+		const synced = payload(
+			await executePlatformTool(
+				"fabric_get_project_context",
+				{ contextId: "ctx-1" },
+				session,
+			),
+		);
+		expect(synced).toMatchObject({
+			sourcePath: "docs/architecture.md",
+			contentHash: "c".repeat(64),
+			contentUpdatedAt: "2026-09-22T12:00:00.000Z",
+			contentUpdatedByUserId: "user-2",
+		});
+
+		mocks.getContextById.mockResolvedValue(
+			transcriptRow({
+				sourcePath: null,
+				contentHash: null,
+				contentUpdatedAt: null,
+				contentUpdatedByUserId: null,
+			}),
+		);
+		const manual = payload(
+			await executePlatformTool(
+				"fabric_get_project_context",
+				{ contextId: "ctx-1" },
+				session,
+			),
+		);
+		expect(manual).toMatchObject({
+			sourcePath: null,
+			contentHash: null,
+		});
+	});
+});
+
+describe("fabric_upsert_project_context", () => {
+	const args = {
+		projectId: "proj-1",
+		sourcePath: "docs/architecture.md",
+		content: "# Architecture\n",
+	};
+
+	beforeEach(() => {
+		// An Editor: holds CONTEXT_CREATE on the project.
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: "org-1",
+			source: "project-member",
+			isVisible: true,
+			permissions: ["context:create", "context:update"],
+		});
+	});
+
+	function upsert(
+		extra: Record<string, unknown> = {},
+		overrides: Partial<GatewaySession> = {},
+	) {
+		return executePlatformTool(
+			"fabric_upsert_project_context",
+			{ ...args, ...extra },
+			{ ...session, ...overrides },
+		);
+	}
+
+	it("is declared as an idempotent write keyed by project and path, and never as additive-only", () => {
+		const definition = PLATFORM_TOOL_DEFINITIONS.find(
+			(tool) => tool.name === "fabric_upsert_project_context",
+		);
+
+		expect(definition?.annotations).toEqual({ idempotentHint: true });
+		expect(definition?.inputSchema.required).toEqual([
+			"projectId",
+			"sourcePath",
+			"content",
+		]);
+		expect(
+			Object.keys(
+				(definition?.inputSchema.properties ?? {}) as Record<
+					string,
+					unknown
+				>,
+			).sort(),
+		).toEqual(
+			[
+				"content",
+				"expectedContentHash",
+				"projectId",
+				"sourcePath",
+				"title",
+			].sort(),
+		);
+	});
+
+	it("tells an agent the overwrite rule and where coding instructions go instead", () => {
+		const definition = PLATFORM_TOOL_DEFINITIONS.find(
+			(tool) => tool.name === "fabric_upsert_project_context",
+		);
+		const description = definition?.description ?? "";
+
+		expect(description).toMatch(/keyed by the file's path/i);
+		expect(description).toMatch(/'unchanged'/);
+		expect(description).toMatch(/re-indexed/);
+		expect(description).toMatch(/'duplicate'/);
+		expect(description).toMatch(/fabric_get_project_context/);
+		expect(description).toMatch(/'expectedContentHash'/);
+		expect(description).toMatch(/never means overwrite/i);
+		expect(description).toMatch(/'conflict'/);
+		expect(description).toMatch(/CLAUDE\.md, AGENTS\.md/);
+		expect(description).toMatch(
+			/fabric_propose_project_instruction_change/,
+		);
+	});
+
+	it("writes under the project's hosting organization with the gateway as the surface", async () => {
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: "org-host",
+			source: "project-member",
+			isVisible: true,
+			permissions: ["context:create"],
+		});
+
+		const result = await upsert(
+			{ title: "Architecture", expectedContentHash: "d".repeat(64) },
+			{ organizationId: "org-guest" },
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(mocks.upsertSyncedContext).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			sourcePath: "docs/architecture.md",
+			content: "# Architecture\n",
+			title: "Architecture",
+			expectedContentHash: "d".repeat(64),
+			userId: "user-1",
+			organizationId: "org-host",
+			via: "mcp-gateway",
+			request: {
+				user: {
+					id: "user-1",
+					email: "agent@example.com",
+					name: "Example Agent",
+				},
+				session: { id: "sess-1", activeOrganizationId: "org-guest" },
+			},
+		});
+		expect(payload(result)).toMatchObject({
+			status: "created",
+			contextId: "ctx-synced",
+			sourcePath: "docs/architecture.md",
+			contentHash: "c".repeat(64),
+		});
+	});
+
+	it("asks for CONTEXT_CREATE before anything reads a context row", async () => {
+		await upsert();
+
+		expect(mocks.resolveProjectAccess).toHaveBeenCalledWith(
+			"proj-1",
+			"user-1",
+		);
+		expect(mocks.hasPermission).toHaveBeenCalledWith(
+			expect.anything(),
+			"context:create",
+		);
+		expect(
+			mocks.resolveProjectAccess.mock.invocationCallOrder[0],
+		).toBeLessThan(mocks.upsertSyncedContext.mock.invocationCallOrder[0]);
+	});
+
+	it.each([
+		[{ projectId: undefined }, /projectId is required/],
+		[{ sourcePath: "" }, /sourcePath is required/],
+		// The bound tested here is the 2048-character input bound, not the
+		// 512-character stored-path bound, and the message says which.
+		[{ sourcePath: "a".repeat(2049) }, /longer than 2048 characters/],
+		[{ content: undefined }, /content is required/],
+		[{ title: 42 }, /title must be a string/],
+		[{ expectedContentHash: 7 }, /expectedContentHash must be/],
+	])(
+		"refuses malformed arguments before any lookup: %o",
+		async (extra, message) => {
+			const result = await upsert(extra);
+
+			expect(result.isError).toBe(true);
+			expect(payload(result).error).toMatch(message);
+			expect(mocks.resolveProjectAccess).not.toHaveBeenCalled();
+			expect(mocks.upsertSyncedContext).not.toHaveBeenCalled();
+		},
+	);
+
+	it("returns a conflict as an error carrying the stored hash and the last editor, and nothing else", async () => {
+		mocks.upsertSyncedContext.mockResolvedValue({
+			status: "conflict",
+			contextId: "ctx-synced",
+			sourcePath: "docs/architecture.md",
+			contentHash: "c".repeat(64),
+			current: {
+				contextId: "ctx-synced",
+				contentHash: "e".repeat(64),
+				contentUpdatedAt: new Date("2026-09-22T11:00:00Z"),
+				contentUpdatedBy: { id: "user-2", name: "Other Dev" },
+			},
+		});
+
+		const result = await upsert();
+
+		expect(result.isError).toBe(true);
+		const body = payload(result);
+		expect(body).toMatchObject({
+			status: "conflict",
+			current: {
+				contentHash: "e".repeat(64),
+				contentUpdatedBy: { id: "user-2", name: "Other Dev" },
+			},
+		});
+		expect(body.error).toMatch(/nothing was written/i);
+		expect(body.error).toMatch(/expectedContentHash/);
+	});
+
+	it.each([
+		["unchanged", /already stored/i],
+		["duplicate", /duplicateOfContextId/],
+		["updated", /re-indexed/i],
+	])("reports %s as a success with a message", async (status, message) => {
+		mocks.upsertSyncedContext.mockResolvedValue({
+			status,
+			contextId: "ctx-synced",
+			sourcePath: "docs/architecture.md",
+			contentHash: "c".repeat(64),
+			...(status === "duplicate"
+				? {
+						duplicateOfContextId: "ctx-other",
+						duplicateOfSourcePath: "notes/copy.md",
+					}
+				: {}),
+		});
+
+		const result = await upsert();
+
+		expect(result.isError).toBeUndefined();
+		expect(payload(result).status).toBe(status);
+		expect(payload(result).message).toMatch(message);
+	});
+
+	it("quotes the shared function's own refusal back to the caller", async () => {
+		mocks.upsertSyncedContext.mockRejectedValue(
+			Object.assign(
+				new Error(
+					"sourcePath may not contain '.' or '..' segments; pass the file's relative path inside the project's working tree",
+				),
+				{ code: "BAD_REQUEST" },
+			),
+		);
+
+		const result = await upsert({ sourcePath: "../outside.md" });
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toMatch(/'\.\.' segments/);
+	});
+
+	it("does not repeat an internal error's text to the caller", async () => {
+		mocks.upsertSyncedContext.mockRejectedValue(
+			new Error('relation "project_context" violates constraint xyz'),
+		);
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+
+		const result = await upsert();
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).not.toMatch(/constraint|relation/);
+		expect(consoleError).toHaveBeenCalled();
+		consoleError.mockRestore();
+	});
+
+	it("refuses an organization key used on another organization's project, without a write", async () => {
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: "org-b",
+			source: "project-member",
+			isVisible: true,
+			permissions: ["context:create"],
+		});
+
+		const result = await upsert(
+			{},
+			{ organizationId: "org-a", credential: "organization-key" },
+		);
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toMatch(/not found or access denied/i);
+		expect(mocks.upsertSyncedContext).not.toHaveBeenCalled();
+	});
+
+	it("refuses a project outside the session's reach as not found, without a write", async () => {
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: "org-other",
+			source: "none",
+			isVisible: false,
+			permissions: [],
+		});
+
+		const result = await upsert({ projectId: "proj-other-org" });
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toMatch(/not found or access denied/i);
+		expect(mocks.upsertSyncedContext).not.toHaveBeenCalled();
 	});
 });

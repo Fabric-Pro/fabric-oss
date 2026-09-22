@@ -944,6 +944,54 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		annotations: { idempotentHint: true },
 		_gateway_source: "platform",
 	},
+	{
+		name: "fabric_upsert_project_context",
+		description:
+			"Pushes a text file into a project's Context tab as a knowledge source, keyed by the file's path in your working tree ('sourcePath') inside that project, so pushing the same path again updates that one source instead of adding another. " +
+			"The result's 'status' says what happened: 'created' for a path the project has not seen; 'unchanged' when the same content is already stored under this path (nothing is written, so repeating a call is harmless); 'updated' when changed content replaced the previous version, which is then re-indexed for search; 'duplicate' when identical content is already in the project under another path, in which case nothing is created and 'duplicateOfContextId' is the existing source. " +
+			"To replace a file that already exists under this path, first read it with fabric_get_project_context (find it with fabric_list_project_contexts), or take the hash from a 'conflict' result, and pass its 'contentHash' as 'expectedContentHash'. Omitting expectedContentHash means: create the file if the path is new, otherwise only accept identical content — it never means overwrite. If the stored version is not the one you name (someone else changed it since), the tool returns 'conflict' with the current 'contentHash' and who changed it, and writes nothing: read it again, merge, and retry with that hash. " +
+			"Keep coding-instruction files out of this tool — CLAUDE.md, AGENTS.md, anything under .claude/, and skills, agents and hooks belong to fabric_propose_project_instruction_change.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				projectId: {
+					type: "string",
+					description: "Project ID from fabric_list_projects",
+				},
+				sourcePath: {
+					type: "string",
+					minLength: 1,
+					maxLength: 512,
+					description:
+						"The file's path relative to the root of your working tree, e.g. 'docs/architecture.md'. Backslashes, repeated separators and a leading './' are normalised; absolute paths and '.' or '..' segments are refused. With the project, this is the source's key.",
+				},
+				content: {
+					type: "string",
+					description:
+						"The file's full text, at most 2 MiB of UTF-8. Must contain at least one non-whitespace character.",
+				},
+				title: {
+					type: "string",
+					minLength: 1,
+					maxLength: 255,
+					description:
+						"How the source is named on the Context tab. Defaults to the file name.",
+				},
+				expectedContentHash: {
+					type: "string",
+					pattern: "^[0-9a-fA-F]{64}$",
+					description:
+						"The 'contentHash' of the stored version you mean to replace, from fabric_get_project_context, fabric_list_project_contexts or a 'conflict' result. Required to replace a file that already exists under this path. Omit it to create the file if the path is new, or to confirm identical content; omitting it never overwrites.",
+				},
+			},
+			required: ["projectId", "sourcePath", "content"],
+		},
+		// Not `destructiveHint: false`: an update replaces the stored text.
+		// Idempotent because a repeat of a call that already landed finds the
+		// same content stored and writes nothing (see upsertContextBySourcePath).
+		annotations: { idempotentHint: true },
+		_gateway_source: "platform",
+	},
 
 	// ── Coding Instructions ──
 	{
@@ -1686,6 +1734,9 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 	// Contexts ride on the projects scopes, like the two reads above. The
 	// handler's live CONTEXT_UPDATE check is what holds the per-call line.
 	fabric_update_project_context: { scope: "projects:write", kind: "write" },
+	// Same scope as the edit above; the handler's live CONTEXT_CREATE check
+	// holds the per-call line.
+	fabric_upsert_project_context: { scope: "projects:write", kind: "write" },
 	fabric_list_project_instructions: {
 		scope: "instructions:read",
 		kind: "read",
@@ -1843,6 +1894,8 @@ export async function executePlatformTool(
 				return await handleGetProjectContext(args, session);
 			case "fabric_update_project_context":
 				return await handleUpdateProjectContext(args, session);
+			case "fabric_upsert_project_context":
+				return await handleUpsertProjectContext(args, session);
 			case "fabric_list_project_instructions":
 				return await handleListProjectInstructions(args, session);
 			case "fabric_get_project_instruction":
@@ -2481,6 +2534,7 @@ async function resolveGatewayProjectWriteAccess(
 type GatewayWritePermission =
 	| "PROJECT_UPDATE"
 	| "STORY_UPDATE"
+	| "CONTEXT_CREATE"
 	| "CONTEXT_UPDATE";
 
 /**
@@ -4252,6 +4306,13 @@ async function handleListProjectContexts(
 			aiInstructions: ctx.aiInstructions,
 			metadataUpdatedAt: ctx.metadataUpdatedAt,
 			metadataUpdatedByUserId: ctx.metadataUpdatedByUserId,
+			// A synced file's key and version (fabric_upsert_project_context):
+			// pass 'contentHash' back as its 'expectedContentHash' to replace it.
+			// Null on sources that were not pushed by path.
+			sourcePath: ctx.sourcePath,
+			contentHash: ctx.contentHash,
+			contentUpdatedAt: ctx.contentUpdatedAt,
+			contentUpdatedByUserId: ctx.contentUpdatedByUserId,
 			createdAt: ctx.createdAt,
 			updatedAt: ctx.updatedAt,
 		})),
@@ -4394,6 +4455,13 @@ async function handleGetProjectContext(
 		aiInstructions: ctx.aiInstructions,
 		metadataUpdatedAt: ctx.metadataUpdatedAt,
 		metadataUpdatedByUserId: ctx.metadataUpdatedByUserId,
+		// A synced file's key and version (fabric_upsert_project_context):
+		// pass 'contentHash' back as its 'expectedContentHash' to replace it.
+		// Null on sources that were not pushed by path.
+		sourcePath: ctx.sourcePath,
+		contentHash: ctx.contentHash,
+		contentUpdatedAt: ctx.contentUpdatedAt,
+		contentUpdatedByUserId: ctx.contentUpdatedByUserId,
 		createdAt: ctx.createdAt,
 		updatedAt: ctx.updatedAt,
 		contentAvailable: hasReadableText,
@@ -4666,6 +4734,161 @@ async function handleUpdateProjectContext(
 		metadataUpdatedAt: ctx.metadataUpdatedAt,
 		metadataUpdatedByUserId: ctx.metadataUpdatedByUserId,
 		updatedAt: ctx.updatedAt,
+	});
+}
+
+/**
+ * Bound on `sourcePath` as sent, before normalising — the same as the
+ * procedure's. The stored path is held to 512 characters by the normaliser;
+ * this only keeps an unbounded string out of it.
+ */
+const SYNCED_CONTEXT_SOURCE_PATH_INPUT_MAX_LENGTH = 2048;
+
+/** What to tell the agent about each non-conflict outcome. */
+const SYNCED_CONTEXT_OUTCOME_MESSAGES = {
+	created:
+		"Created a new context source for this path. It is being indexed for search.",
+	updated:
+		"Replaced the stored version of this file. It is being re-indexed for search.",
+	unchanged:
+		"The same content is already stored under this path. Nothing was written.",
+	duplicate:
+		"Identical content is already in this project under another source, so nothing was created. 'duplicateOfContextId' is that source.",
+} as const;
+
+/**
+ * `fabric_upsert_project_context` — push a text file into a project's Context
+ * by its relative path (Fizzy #2616). The MCP half of synced knowledge files;
+ * the oRPC half is `projects.contexts.upsertSyncedFile`, and both call the
+ * same `upsertSyncedContext`, which validates, writes, starts the (re-)embed
+ * and records the audit row.
+ *
+ * Order matters:
+ *  1. Check the argument types — nothing about the project yet.
+ *  2. Resolve the caller's LIVE CONTEXT_CREATE on the project and its hosting
+ *     organization, before anything reads a context row, with the
+ *     organization-key binding applied. Wildcard keys included: the scope at
+ *     the dispatcher is a ceiling, this is the floor.
+ *  3. Write through `upsertSyncedContext` under the HOSTING organization — the
+ *     tenant the app writes under for the same person, invited guests
+ *     included.
+ *  4. A conflict is an error result carrying the stored hash and who last
+ *     changed it (never the stored content): nothing was written, and the
+ *     agent must re-read before it may replace the file.
+ */
+async function handleUpsertProjectContext(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const { projectId, sourcePath, content, title, expectedContentHash } = args;
+	if (typeof projectId !== "string" || projectId.length === 0) {
+		return errorResult("projectId is required");
+	}
+	if (typeof sourcePath !== "string" || sourcePath.length === 0) {
+		return errorResult(
+			"sourcePath is required: the file's path relative to your working tree, e.g. docs/architecture.md",
+		);
+	}
+	if (sourcePath.length > SYNCED_CONTEXT_SOURCE_PATH_INPUT_MAX_LENGTH) {
+		return errorResult(
+			`sourcePath is longer than ${SYNCED_CONTEXT_SOURCE_PATH_INPUT_MAX_LENGTH} characters`,
+		);
+	}
+	if (typeof content !== "string") {
+		return errorResult("content is required: the file's full text");
+	}
+	if (title !== undefined && title !== null && typeof title !== "string") {
+		return errorResult("title must be a string");
+	}
+	if (
+		expectedContentHash !== undefined &&
+		expectedContentHash !== null &&
+		typeof expectedContentHash !== "string"
+	) {
+		return errorResult(
+			"expectedContentHash must be the 'contentHash' string of the stored version",
+		);
+	}
+
+	const access = await resolveGatewayProjectWriteAccessWithHost(
+		projectId,
+		session,
+		"CONTEXT_CREATE",
+	);
+	if (access.status === "not-found") {
+		return errorResult("Project not found or access denied");
+	}
+	if (access.status === "forbidden") {
+		return errorResult(
+			"No permission to add context sources to this project",
+		);
+	}
+
+	const { upsertSyncedContext } = await import(
+		"@repo/api/modules/projects/lib/upsert-synced-context"
+	);
+	let result: Awaited<ReturnType<typeof upsertSyncedContext>>;
+	try {
+		result = await upsertSyncedContext({
+			projectId,
+			sourcePath,
+			content,
+			title: title ?? undefined,
+			expectedContentHash: expectedContentHash ?? undefined,
+			userId: session.userId,
+			organizationId: access.organizationId,
+			via: "mcp-gateway",
+			// The same synthetic context `announceStoryCreated` builds: no HTTP
+			// request is in scope here, so ip / user-agent / request-id resolve
+			// to null rather than being invented.
+			request: {
+				user: {
+					id: session.userId,
+					email: session.email,
+					name: session.userName,
+				},
+				session: {
+					id: session.sessionId,
+					activeOrganizationId: session.organizationId,
+				},
+			},
+		});
+	} catch (error) {
+		// The shared function's own refusals (a bad path, empty or oversized
+		// content, a malformed hash) are written for the caller and quoted
+		// back. Anything else — a Prisma or storage error — names internals
+		// and gets one generic sentence, with the detail in the server log.
+		const refusal = instructionRefusalMessage(error);
+		if (refusal !== null) {
+			return errorResult(refusal);
+		}
+		console.error(
+			"[MCP Gateway] fabric_upsert_project_context failed:",
+			error,
+		);
+		return errorResult(
+			"Could not save the file to the project's Context. Try again: if this call did land, the retry is answered 'unchanged'.",
+		);
+	}
+
+	if (result.status === "conflict") {
+		return {
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						...result,
+						error: "This path holds a different version than the one you named in 'expectedContentHash' (or you named none), so nothing was written. Read it with fabric_get_project_context, merge your change into it, and push again with current.contentHash as 'expectedContentHash'.",
+					}),
+				},
+			],
+			isError: true,
+		};
+	}
+
+	return jsonResult({
+		...result,
+		message: SYNCED_CONTEXT_OUTCOME_MESSAGES[result.status],
 	});
 }
 

@@ -1368,7 +1368,8 @@
 					"context_source": {
 						"scan_stopped": "Kanal- oder Chat-Scan gestoppt oder fortgesetzt",
 						"reconnected": "Kanal- oder Chat-Monitor neu verbunden",
-						"metadata_updated": "Details der Kontextquelle aktualisiert"
+						"metadata_updated": "Details der Kontextquelle aktualisiert",
+						"content_upserted": "Synchronisierte Kontextdatei erstellt oder aktualisiert"
 					}
 				},
 				"story": {

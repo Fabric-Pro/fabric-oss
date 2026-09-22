@@ -17,6 +17,7 @@ import {
 	getProjectCodeIndexes,
 } from "../project-code-index";
 import { listProjectRepoIntegrations } from "../project-repository-integrations";
+import { hashContextContent } from "./context-content-hash";
 import { getProjectRagSettings } from "./rag-settings";
 
 /**
@@ -682,6 +683,15 @@ export interface ProjectContextInventoryItem {
 	/** Who last edited those two fields, and when — null until someone does. */
 	metadataUpdatedAt: Date | null;
 	metadataUpdatedByUserId: string | null;
+	/**
+	 * A synced knowledge file's key and version (Fizzy #2616) — null on every
+	 * row that did not come through the synced-file path. `contentHash` is
+	 * what a replace passes back as `expectedContentHash`.
+	 */
+	sourcePath: string | null;
+	contentHash: string | null;
+	contentUpdatedAt: Date | null;
+	contentUpdatedByUserId: string | null;
 	createdAt: Date;
 	updatedAt: Date;
 	/** True when the row points at an original object in storage. */
@@ -761,6 +771,10 @@ export async function listProjectContextSummaries(options: {
 				aiInstructions: true,
 				metadataUpdatedAt: true,
 				metadataUpdatedByUserId: true,
+				sourcePath: true,
+				contentHash: true,
+				contentUpdatedAt: true,
+				contentUpdatedByUserId: true,
 				createdAt: true,
 				updatedAt: true,
 				s3Path: true,
@@ -1176,6 +1190,262 @@ export async function updateContextMetadata(
 				select: CONTEXT_METADATA_SELECT,
 			});
 			return { status: "updated", context, before, after, changed };
+		},
+	);
+}
+
+/**
+ * What a synced-file write reads back (Fizzy #2616): the key, the hash, who
+ * last changed the content and when, and the title fields a caller needs to
+ * name the row. Never `content` — a caller that wants the body reads it with
+ * the existing get procedure or tool.
+ */
+const SYNCED_CONTEXT_SELECT = {
+	id: true,
+	projectId: true,
+	type: true,
+	sourceTitle: true,
+	originalFilename: true,
+	metadata: true,
+	sourcePath: true,
+	contentHash: true,
+	contentUpdatedAt: true,
+	contentUpdatedByUserId: true,
+	updatedAt: true,
+} satisfies Prisma.ProjectContextSelect;
+
+export type SyncedContextRow = Prisma.ProjectContextGetPayload<{
+	select: typeof SYNCED_CONTEXT_SELECT;
+}>;
+
+/**
+ * The stored version a conflicting push lost to. The last writer is named by
+ * id only at this layer; the API layer resolves a display name.
+ */
+export interface SyncedContextContentStamp {
+	contextId: string;
+	contentHash: string | null;
+	contentUpdatedAt: Date | null;
+	contentUpdatedByUserId: string | null;
+}
+
+export type UpsertContextBySourcePathResult =
+	/** A new row at this path. The caller starts its embedding. */
+	| { status: "created"; context: SyncedContextRow }
+	/** The row at this path now holds the new content; re-embed it. */
+	| {
+			status: "updated";
+			context: SyncedContextRow;
+			/** The hash of the content this write replaced. */
+			previousHash: string;
+	  }
+	/**
+	 * The row at this path already holds exactly this content. Nothing was
+	 * written or stamped. Checked before `expectedContentHash`, so a retry
+	 * whose first attempt landed succeeds instead of reporting a conflict.
+	 */
+	| { status: "unchanged"; context: SyncedContextRow }
+	/**
+	 * No row at this path, but this exact content is already in the project
+	 * under another hashed row. Nothing was created; `existing` is that row.
+	 */
+	| { status: "duplicate"; existing: SyncedContextRow }
+	/**
+	 * The row at this path holds different content and the caller did not
+	 * name its hash as `expectedContentHash`. Nothing was written.
+	 */
+	| { status: "conflict"; current: SyncedContextContentStamp };
+
+export interface UpsertContextBySourcePathInput {
+	projectId: string;
+	/** Already normalized with `normalizeContextSourcePath`. */
+	sourcePath: string;
+	content: string;
+	/** Stored as `metadata.title`, which the Context tab shows first. */
+	title: string;
+	/**
+	 * The hash of the stored version the caller means to replace. Absent
+	 * means "create if absent, otherwise only accept identical content" — it
+	 * NEVER means "overwrite".
+	 */
+	expectedContentHash?: string | null;
+	userId: string;
+	organizationId?: string | null;
+}
+
+function toContentStamp(row: SyncedContextRow): SyncedContextContentStamp {
+	return {
+		contextId: row.id,
+		contentHash: row.contentHash,
+		contentUpdatedAt: row.contentUpdatedAt,
+		contentUpdatedByUserId: row.contentUpdatedByUserId,
+	};
+}
+
+function isUniqueViolation(error: unknown): boolean {
+	return (error as { code?: unknown } | null)?.code === "P2002";
+}
+
+/**
+ * Create, update, or leave alone the context row a synced knowledge file maps
+ * to — the ONE write behind `projects.contexts.upsertSyncedFile` and the
+ * `fabric_upsert_project_context` MCP tool (Fizzy #2616).
+ *
+ * The row is keyed by `projectId` + `sourcePath`, under the same exclusive
+ * tenant filter as `getContextById`'s scoped form: organization rows by
+ * organization alone (every member of the project sees and updates the same
+ * row), personal rows by `organizationId: null` AND the user. The two arms are
+ * never OR-ed, and a row in another project at the same path is never read.
+ *
+ * Decision order, all inside one transaction:
+ *  1. Row at this path holds the same hash → `unchanged`. Before anything
+ *     looks at `expectedContentHash`, so an idempotent retry succeeds.
+ *  2. Row holds different content and `expectedContentHash` is absent or is
+ *     not the stored hash → `conflict`, nothing written. A caller may only
+ *     replace content it has seen, so two people pushing different versions
+ *     of one path get a conflict, never a silent clobber.
+ *  3. Row holds different content and the caller named the stored hash → a
+ *     conditional `updateMany` keyed on that hash. Zero rows means a
+ *     concurrent replace landed first: re-read and report `conflict` (or
+ *     `unchanged`, if it happened to store this very content).
+ *  4. No row at this path → identical content under another hashed row in
+ *     the project is a `duplicate`; otherwise `create`.
+ *
+ * A concurrent first push of the same path loses on the
+ * `(projectId, sourcePath)` unique index; the whole decision is then re-run
+ * once, and answers from the winner's row.
+ *
+ * Content writes stamp `contentUpdatedAt` / `contentUpdatedByUserId`, never
+ * the metadata edit's pair, and clear `embeddedAt` on replace so the row reads
+ * as not yet indexed until the caller's re-embed lands. Authorization is the
+ * CALLER's job and must happen before this is reached.
+ */
+export async function upsertContextBySourcePath(
+	input: UpsertContextBySourcePathInput,
+): Promise<UpsertContextBySourcePathResult> {
+	try {
+		return await runUpsertContextBySourcePath(input);
+	} catch (error) {
+		if (!isUniqueViolation(error)) {
+			throw error;
+		}
+		// Both requests found no row and both inserted; the other one won.
+		// Its row is committed now, so the re-run finds it at step 1-3.
+		return await runUpsertContextBySourcePath(input);
+	}
+}
+
+async function runUpsertContextBySourcePath(
+	input: UpsertContextBySourcePathInput,
+): Promise<UpsertContextBySourcePathResult> {
+	const { projectId, sourcePath, content, title, userId } = input;
+	const tenantFilter = input.organizationId
+		? { organizationId: input.organizationId }
+		: { organizationId: null, userId };
+	const pathScope = { projectId, sourcePath, ...tenantFilter };
+	const newHash = hashContextContent(content);
+
+	return await db.$transaction(
+		async (tx): Promise<UpsertContextBySourcePathResult> => {
+			const createOrReportDuplicate =
+				async (): Promise<UpsertContextBySourcePathResult> => {
+					// Dedup sees only rows that carry a hash. Manually uploaded
+					// sources have none until Fizzy #2619 backfills them, so
+					// identical content uploaded by hand is not detected here yet.
+					const duplicate = await tx.projectContext.findFirst({
+						where: {
+							projectId,
+							contentHash: newHash,
+							...tenantFilter,
+						},
+						select: SYNCED_CONTEXT_SELECT,
+					});
+					if (duplicate) {
+						return { status: "duplicate", existing: duplicate };
+					}
+					const context = await tx.projectContext.create({
+						data: {
+							projectId,
+							type: "TEXT",
+							content,
+							sourcePath,
+							contentHash: newHash,
+							contentUpdatedAt: new Date(),
+							contentUpdatedByUserId: userId,
+							metadata: { title, sourcePath },
+							userId,
+							organizationId: input.organizationId ?? null,
+						},
+						select: SYNCED_CONTEXT_SELECT,
+					});
+					return { status: "created", context };
+				};
+
+			const existing = await tx.projectContext.findFirst({
+				where: pathScope,
+				select: SYNCED_CONTEXT_SELECT,
+			});
+			if (!existing) {
+				return await createOrReportDuplicate();
+			}
+
+			if (existing.contentHash === newHash) {
+				return { status: "unchanged", context: existing };
+			}
+
+			const storedHash = existing.contentHash;
+			if (
+				storedHash === null ||
+				!input.expectedContentHash ||
+				input.expectedContentHash !== storedHash
+			) {
+				return {
+					status: "conflict",
+					current: toContentStamp(existing),
+				};
+			}
+
+			const baseMetadata =
+				existing.metadata &&
+				typeof existing.metadata === "object" &&
+				!Array.isArray(existing.metadata)
+					? (existing.metadata as Prisma.JsonObject)
+					: {};
+			const { count } = await tx.projectContext.updateMany({
+				where: {
+					id: existing.id,
+					projectId,
+					...tenantFilter,
+					contentHash: storedHash,
+				},
+				data: {
+					content,
+					contentHash: newHash,
+					contentUpdatedAt: new Date(),
+					contentUpdatedByUserId: userId,
+					metadata: { ...baseMetadata, title, sourcePath },
+					embeddedAt: null,
+				},
+			});
+			if (count === 0) {
+				const current = await tx.projectContext.findFirst({
+					where: pathScope,
+					select: SYNCED_CONTEXT_SELECT,
+				});
+				if (!current) {
+					return await createOrReportDuplicate();
+				}
+				if (current.contentHash === newHash) {
+					return { status: "unchanged", context: current };
+				}
+				return { status: "conflict", current: toContentStamp(current) };
+			}
+
+			const context = await tx.projectContext.findFirstOrThrow({
+				where: { id: existing.id, projectId, ...tenantFilter },
+				select: SYNCED_CONTEXT_SELECT,
+			});
+			return { status: "updated", context, previousHash: storedHash };
 		},
 	);
 }

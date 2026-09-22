@@ -1,0 +1,19 @@
+-- One synced file per path per project (Fizzy #2616).
+--
+-- This is what makes a concurrent first push of the same path safe: two
+-- requests that both find no row and both insert cannot both succeed, and the
+-- loser re-reads the winner's row instead of creating a second one. Every row
+-- that predates synced files has a NULL `sourcePath`, and Postgres treats NULLs
+-- as distinct in a unique index, so none of them conflict.
+--
+-- CONCURRENTLY because project_context is populated and a plain build takes a
+-- write lock on it for the length of the build. NO `IF NOT EXISTS`: a failed
+-- concurrent build leaves an invalid index behind under this name, and the
+-- clause would then skip the rebuild and record the migration as applied with
+-- no uniqueness enforced. Recovery per docs/database-promotion.md: find it with
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+-- then DROP INDEX that name before re-running the migration.
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT: CONCURRENTLY cannot run inside the
+-- transaction Prisma wraps a multi-statement migration in.
+CREATE UNIQUE INDEX CONCURRENTLY "project_context_projectId_sourcePath_key" ON "project_context"("projectId", "sourcePath");

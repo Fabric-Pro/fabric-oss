@@ -48,6 +48,13 @@ export interface ContextEmbeddingWorkflowInput {
 		sourceTitle?: string;
 		[key: string]: unknown;
 	};
+	/**
+	 * Delete the context's existing points before embedding — set when the
+	 * row's content replaced an already-embedded version (Fizzy #2616). Only
+	 * carried through to the activity, which decides what to call; absent, the
+	 * activity is scheduled with exactly the arguments it always was.
+	 */
+	reembed?: boolean;
 }
 
 export interface ContextEmbeddingWorkflowOutput {
@@ -79,6 +86,7 @@ export async function contextEmbeddingWorkflow(
 			content: input.content,
 			type: input.type,
 			metadata: input.metadata,
+			reembed: input.reembed,
 		});
 
 		if (result.success) {

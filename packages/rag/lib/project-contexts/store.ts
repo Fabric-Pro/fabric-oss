@@ -415,14 +415,24 @@ export async function searchSimilarProjectContexts(
  * - Also deletes by contextId for single-chunk contexts
  * - Falls back to point ID deletion for legacy formats
  *
+ * By default a failed filter delete is tolerated (older points may lack the
+ * filtered payload fields) and only the point-id deletion runs. Pass
+ * `{ strict: true }` when the delete must be complete before anything else
+ * happens — a re-embed (Fizzy #2616), where the filter delete is the only
+ * thing that removes `<contextId>-chunk-N` points and a swallowed failure
+ * would leave the previous version's tail answering searches. Strict, the
+ * filter failure rejects and the point-id fallback is not attempted.
+ *
  * @param contextId - Context ID (used for filter-based deletion)
  * @param organizationId - Organization ID for routing to correct collection
  * @param qdrantId - Optional: The stored Qdrant point ID (for legacy support)
+ * @param options.strict - Reject when the filter delete fails
  */
 export async function deleteProjectContext(
 	contextId: string,
 	organizationId?: string | null,
 	qdrantId?: string,
+	options: { strict?: boolean } = {},
 ): Promise<void> {
 	logger.info(`[ProjectContextStore] Deleting context: ${contextId}`);
 
@@ -452,6 +462,9 @@ export async function deleteProjectContext(
 				`[ProjectContextStore] Filter-based deletion completed for context: ${contextId}`,
 			);
 		} catch (filterError) {
+			if (options.strict) {
+				throw filterError;
+			}
 			// Filter deletion may fail if fields don't exist in older data
 			// Continue to point-based deletion as fallback
 			logger.warn(

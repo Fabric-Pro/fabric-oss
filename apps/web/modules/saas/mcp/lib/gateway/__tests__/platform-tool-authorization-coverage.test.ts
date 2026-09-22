@@ -59,6 +59,10 @@ const VISIBILITY_GATES = [
 const WRITE_PREFIXES = [
 	"handleCreate",
 	"handleUpdate",
+	// `fabric_upsert_project_context` creates or replaces a context row. Without
+	// this prefix the scan read it as a read, which only needs a visibility
+	// check — the exact gap this guard exists to close.
+	"handleUpsert",
 	"handleComplete",
 	"handleShare",
 	"handleExecute",

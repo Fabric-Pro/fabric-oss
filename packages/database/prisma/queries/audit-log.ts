@@ -225,6 +225,14 @@ export const AUDIT_ACTIONS = [
 	// "who changed what the AI is told about this source" had no answer once an
 	// API key could make the edit as well as a person.
 	"project.context_source.metadata_updated",
+	// A synced knowledge file's content was created or replaced by its path
+	// (Fizzy #2616) — text every AI prompt that retrieves the project's context
+	// can now draw on. Written by `projects.contexts.upsertSyncedFile` and the
+	// `fabric_upsert_project_context` MCP tool (`metadata.via` says which), with
+	// the path, the new and replaced hashes and the size, never the content:
+	// "who put this text in front of the AI, and what did it replace" had no
+	// answer once a CLI or an agent could push files as well as a person.
+	"project.context_source.content_upserted",
 	// Document generation fell back because the generation agent could not be
 	// reached. Written whether or not the fallback then succeeded: a generation
 	// that quietly ran on the degraded path is exactly what nobody could see.
