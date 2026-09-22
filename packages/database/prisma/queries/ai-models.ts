@@ -4,7 +4,7 @@
  * See: server-cache-lru rule from Vercel React Best Practices
  */
 
-import { db } from "../client";
+import { db, Prisma } from "../client";
 import type {
 	AIProvider,
 	AiModelCapability,
@@ -15,6 +15,7 @@ import type {
 	TaskComplexity,
 } from "../generated/client";
 import { estimateAiUsageCostUsd } from "./ai-credits";
+import { redactSensitiveKeys } from "./audit-log";
 import { aiModelCatalogCache, aiTaskDefaultsCache } from "./cache";
 
 // ============================================================================
@@ -947,6 +948,123 @@ export interface AiUsageLogData {
 	billingCustomerId?: string | null;
 	success?: boolean;
 	errorMessage?: string;
+	/** HTTP status code of the failed attempt (gateway or provider). */
+	errorStatusCode?: number;
+	/**
+	 * Small structured extract of a failure — name/type/code/isRetryable/
+	 * generationId/routing (see describeModelCallError). Only ever persisted
+	 * for a failed row; redacted and size-capped before it reaches the
+	 * database. Never the raw response body, headers, or request values.
+	 */
+	errorDetails?: unknown;
+}
+
+/** Serialized-form cap for `errorDetails` (Fizzy #2623): a gateway routing
+ * payload can carry an unbounded `fallbacksAvailable`/`attempts` list, and
+ * this ledger row must never grow unboundedly with it. Dropping `routing`
+ * when the redacted JSON exceeds this and keeping the scalar fields (name,
+ * type, code, isRetryable, generationId) preserves the fields cheap
+ * dashboards actually filter on. */
+const AI_USAGE_ERROR_DETAILS_MAX_CHARS = 4096;
+
+/**
+ * Credential-shaped substring matcher shared by `errorMessage` and
+ * `errorDetails` (Fizzy #2623 review): a provider/gateway failure can echo a
+ * submitted key back in free text ("Incorrect API key provided: sk-…") in
+ * EITHER field, and `redactSensitiveKeys` only matches on object KEYS — it
+ * never inspects string values, so it cannot catch this on its own. One
+ * pattern for both call sites so they cannot drift apart.
+ */
+const AI_USAGE_CREDENTIAL_PATTERN =
+	/\b(?:sk|wfk|rk)-[A-Za-z0-9]{16,}\b|Bearer\s+[A-Za-z0-9._~+/=-]{10,}/gi;
+
+/**
+ * Scrub credential-shaped substrings out of every string LEAF of a value
+ * (after `redactSensitiveKeys` has already handled key-shaped redaction),
+ * and strip NUL bytes — Postgres JSONB rejects `\u0000` outright, and an
+ * upstream error body is exactly the kind of untrusted text that could carry
+ * one. Recurses through arrays/objects; non-string, non-container values
+ * (numbers, booleans, null) pass through unchanged.
+ */
+function scrubCredentialLeaves(value: unknown): unknown {
+	if (typeof value === "string") {
+		return value
+			.replace(AI_USAGE_CREDENTIAL_PATTERN, "[redacted]")
+			.replaceAll("\u0000", "");
+	}
+	if (Array.isArray(value)) {
+		return value.map((entry) => scrubCredentialLeaves(entry));
+	}
+	if (value && typeof value === "object") {
+		const source = value as Record<string, unknown>;
+		const out: Record<string, unknown> = {};
+		for (const key of Object.keys(source)) {
+			out[key] = scrubCredentialLeaves(source[key]);
+		}
+		return out;
+	}
+	return value;
+}
+
+/**
+ * Redact and size-bound `errorDetails` before it is persisted. Returns
+ * `undefined` when there is nothing to store (success rows, or a failure
+ * whose error carried no structured detail at all).
+ */
+function prepareErrorDetailsForPersist(
+	success: boolean,
+	errorDetails: unknown,
+): Prisma.InputJsonValue | undefined {
+	if (success || typeof errorDetails !== "object" || errorDetails === null) {
+		return undefined;
+	}
+	const keyRedacted = redactSensitiveKeys(errorDetails) as Record<
+		string,
+		unknown
+	>;
+	// Key-based redaction first (structured secrets like `routing.apiKey`),
+	// then value-shaped scrubbing (a credential a provider echoed into free
+	// text, e.g. `routing.attempts[].error`) — the two catch different shapes
+	// of the same problem and neither substitutes for the other.
+	const scrubbed = scrubCredentialLeaves(keyRedacted) as Record<
+		string,
+		unknown
+	>;
+	const serialized = JSON.stringify(scrubbed);
+	if (serialized.length <= AI_USAGE_ERROR_DETAILS_MAX_CHARS) {
+		return scrubbed as Prisma.InputJsonValue;
+	}
+	// Over the cap: drop the (potentially unbounded) routing payload, keep the
+	// scalars, and flag the row as truncated so a reader knows routing was cut
+	// rather than simply absent. Never persist anything over the cap, even the
+	// trimmed form — if the scalars alone are still oversized, drop the whole
+	// thing.
+	const { routing: _routing, ...scalarsOnly } = scrubbed;
+	const truncatedPayload = { ...scalarsOnly, truncated: true };
+	const trimmedSerialized = JSON.stringify(truncatedPayload);
+	return trimmedSerialized.length <= AI_USAGE_ERROR_DETAILS_MAX_CHARS
+		? (truncatedPayload as Prisma.InputJsonValue)
+		: undefined;
+}
+
+/**
+ * `prepareErrorDetailsForPersist` must never turn into a rejected insert: an
+ * unexpected `errorDetails` shape (or a redactor failure) is a reason to drop
+ * the extra attribution, not to lose the whole usage row. Callers get
+ * `Prisma.DbNull` on any throw, identical to "nothing to store".
+ */
+function safePrepareErrorDetailsForPersist(
+	success: boolean,
+	errorDetails: unknown,
+): Prisma.InputJsonValue | typeof Prisma.DbNull {
+	try {
+		return (
+			prepareErrorDetailsForPersist(success, errorDetails) ??
+			Prisma.DbNull
+		);
+	} catch {
+		return Prisma.DbNull;
+	}
 }
 
 /**
@@ -977,6 +1095,10 @@ export async function logAiUsage(data: AiUsageLogData) {
 	const costMicroUsd = Math.round(
 		Number((Math.max(costUsd, 0) * 1_000_000).toFixed(0)),
 	);
+	// Resolved once and reused for `success` itself and for gating
+	// `errorStatusCode`/`errorDetails` — both must persist only on an actual
+	// failure, never on a success row that happens to carry stale fields.
+	const resolvedSuccess = data.success ?? true;
 
 	const logEntry = await db.aiUsageLog.create({
 		data: {
@@ -1008,17 +1130,33 @@ export async function logAiUsage(data: AiUsageLogData) {
 			latencyMs: data.latencyMs,
 			billingCategory: data.billingCategory ?? null,
 			billingCustomerId: data.billingCustomerId ?? null,
-			success: data.success ?? true,
+			success: resolvedSuccess,
 			// Provider/gateway failures can surface response bodies or stack
 			// traces of arbitrary size, and some upstream validation errors echo
-			// submitted credentials back. Bound the text and scrub key-shaped
-			// tokens before anything lands in the ledger (Fizzy #1894 review).
+			// submitted credentials back. Bound the text and scrub credential-
+			// shaped tokens before anything lands in the ledger (Fizzy #1894,
+			// #2623 review).
 			errorMessage: data.errorMessage
-				?.replace(
-					/\b(?:sk|wfk|rk)-[A-Za-z0-9]{16,}\b|Bearer\s+[A-Za-z0-9._~+/=-]{10,}/gi,
-					"[redacted]",
-				)
+				?.replace(AI_USAGE_CREDENTIAL_PATTERN, "[redacted]")
 				.slice(0, 500),
+			// Persisted only on an actual failure — a stale statusCode on a
+			// success row would misattribute an outage that never happened.
+			errorStatusCode:
+				!resolvedSuccess &&
+				typeof data.errorStatusCode === "number" &&
+				Number.isFinite(data.errorStatusCode) &&
+				Number.isInteger(data.errorStatusCode)
+					? data.errorStatusCode
+					: null,
+			// `Prisma.DbNull`, not a bare `null`: on a nullable Json column a
+			// bare `null` is ambiguous in Prisma's create input, and this must
+			// clear the column to real SQL NULL, not store a JSON `null` literal.
+			// Wrapped so a redactor/serialization failure drops the extra
+			// attribution rather than rejecting the whole usage-row insert.
+			errorDetails: safePrepareErrorDetailsForPersist(
+				resolvedSuccess,
+				data.errorDetails,
+			),
 		},
 	});
 

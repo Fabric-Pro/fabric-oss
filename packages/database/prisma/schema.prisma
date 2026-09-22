@@ -13423,6 +13423,14 @@ model AiUsageLog {
   // Status
   success      Boolean @default(true)
   errorMessage String?
+  // Gateway/provider failure attribution (Fizzy #2623): the HTTP status code
+  // of the failed attempt and a small structured extract of the gateway's
+  // routing metadata, so a gateway-side outage can be told apart from a
+  // provider-side one. Both null on success and on a failure whose error
+  // carried neither. See describeModelCallError in
+  // packages/ai/lib/usage-logging-middleware.ts for what populates errorDetails.
+  errorStatusCode Int?
+  errorDetails    Json?
 
   createdAt DateTime @default(now())
 

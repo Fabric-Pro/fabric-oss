@@ -7,10 +7,66 @@ import { getEvaluationModel } from "../../model-factory";
 import {
 	createEmbeddingUsageLoggingMiddleware,
 	createUsageLoggingMiddleware,
+	describeModelCallError,
 	recordAggregateUsage,
 	selectAggregateUsageForLogging,
 	wrapEvaluationModelWithUsageLogging,
 } from "../usage-logging-middleware";
+
+// A real gateway 503 error body (Fizzy #2623): `error` carries the
+// user-facing message/type, `providerMetadata.gateway.routing` carries the
+// gateway's own attribution of which upstream provider actually failed.
+const GATEWAY_ERROR_BODY = {
+	error: {
+		message: "Service temporarily unavailable. Please try again shortly.",
+		type: "service_unavailable_error",
+		statusCode: 503,
+	},
+	providerMetadata: {
+		gateway: {
+			routing: {
+				originalModelId: "typesafe-ai/jev",
+				resolvedProvider: "typesafe-ai",
+				fallbacksAvailable: [],
+				modelAttemptCount: 1,
+				totalProviderAttemptCount: 1,
+				isRetryable: true,
+				attempts: [
+					{
+						provider: "typesafe-ai",
+						statusCode: 503,
+						error: "Service temporarily unavailable",
+					},
+				],
+			},
+		},
+	},
+};
+
+/** Build a gateway-shaped error the way `asGatewayError` leaves one: a
+ * `GatewayInternalServerError`-like object with `name`/`type`/`isRetryable`
+ * set as OWN properties (constructor assignment, not inherited), and `cause`
+ * set to the original `@ai-sdk/provider` `APICallError` where the gateway's
+ * response body actually lives. */
+function buildGatewayShapedError(cause: {
+	responseBody?: string;
+	data?: unknown;
+}): Error {
+	return Object.assign(
+		new Error("Service temporarily unavailable. Please try again shortly."),
+		{
+			name: "GatewayInternalServerError",
+			statusCode: 503,
+			type: "internal_server_error",
+			isRetryable: true,
+			cause: {
+				statusCode: 503,
+				responseBody: cause.responseBody,
+				data: cause.data,
+			},
+		},
+	);
+}
 
 const CTX = {
 	userId: "u1",
@@ -144,6 +200,69 @@ describe("usage-logging middleware — wrapStream", () => {
 			success: true,
 		});
 	});
+
+	it("records statusCode/details when the stream never opens (Fizzy #2623)", async () => {
+		const doStream = vi.fn().mockRejectedValue(
+			buildGatewayShapedError({
+				responseBody: JSON.stringify(GATEWAY_ERROR_BODY),
+			}),
+		);
+		await expect(mw().wrapStream({ doStream })).rejects.toThrow(
+			"Service temporarily unavailable",
+		);
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		const arg = logAiUsageAsync.mock.calls[0][0];
+		expect(arg.success).toBe(false);
+		expect(arg.errorStatusCode).toBe(503);
+		expect(arg.errorDetails).toMatchObject({
+			type: "internal_server_error",
+			bodyType: "service_unavailable_error",
+			routing: expect.objectContaining({
+				resolvedProvider: "typesafe-ai",
+			}),
+		});
+	});
+
+	it("records statusCode/details from an in-stream 'error' chunk (Fizzy #2623)", async () => {
+		const chunks = [
+			{ type: "text-delta", delta: "hi" },
+			{
+				type: "error",
+				error: buildGatewayShapedError({
+					responseBody: JSON.stringify(GATEWAY_ERROR_BODY),
+				}),
+			},
+		];
+		const doStream = vi.fn().mockResolvedValue({
+			stream: new ReadableStream({
+				start(controller) {
+					for (const c of chunks) {
+						controller.enqueue(c);
+					}
+					controller.close();
+				},
+			}),
+		});
+		const { stream } = await mw().wrapStream({ doStream });
+		const reader = (stream as ReadableStream).getReader();
+		while (true) {
+			const { done } = await reader.read();
+			if (done) {
+				break;
+			}
+		}
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		const arg = logAiUsageAsync.mock.calls[0][0];
+		expect(arg.success).toBe(false);
+		expect(arg.errorStatusCode).toBe(503);
+		expect(arg.errorDetails).toMatchObject({
+			type: "internal_server_error",
+			bodyType: "service_unavailable_error",
+			routing: expect.objectContaining({
+				resolvedProvider: "typesafe-ai",
+			}),
+		});
+	});
 });
 
 describe("usage-logging middleware — wrapEmbed (embeddings)", () => {
@@ -270,6 +389,111 @@ describe("usage-logging middleware — evaluation models", () => {
 				errorMessage: "gateway down",
 			}),
 		);
+		// A plain Error carries no HTTP status or gateway body — the ledger row
+		// must not fabricate either (Fizzy #2623).
+		const arg = logAiUsageAsync.mock.calls[0][0];
+		expect(arg.errorStatusCode).toBeUndefined();
+		expect(arg.errorDetails).toBeUndefined();
+	});
+
+	it("captures the gateway's status code and routing metadata from a responseBody-carrying failure", async () => {
+		const doEvaluate = vi.fn().mockRejectedValue(
+			buildGatewayShapedError({
+				responseBody: JSON.stringify(GATEWAY_ERROR_BODY),
+			}),
+		);
+		const model = wrapEvaluationModelWithUsageLogging(
+			{
+				specificationVersion: "v4",
+				provider: "vercel-gateway",
+				modelId: "typesafe-ai/jev",
+				supportedQuestionTypes: ["choice"],
+				doEvaluate,
+			} as any,
+			{
+				...CTX,
+				provider: "VERCEL_GATEWAY" as any,
+				providerModelId: "typesafe-ai/jev",
+				taskType: "DECISION" as any,
+			},
+		);
+
+		await expect(
+			model.doEvaluate({
+				state: "evaluate this choice",
+				questions: {
+					choice: {
+						type: "choice",
+						instructions: "Choose one",
+						criteria: { yes: "yes", no: "no" },
+					},
+				},
+			}),
+		).rejects.toThrow("Service temporarily unavailable");
+
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		const arg = logAiUsageAsync.mock.calls[0][0];
+		expect(arg.success).toBe(false);
+		expect(arg.errorStatusCode).toBe(503);
+		expect(arg.errorDetails).toMatchObject({
+			type: "internal_server_error",
+			// The gateway maps the body's own `service_unavailable_error` to a
+			// generic `internal_server_error` bucket; `bodyType` keeps the
+			// upstream body's real classification from being lost (Fizzy #2623).
+			bodyType: "service_unavailable_error",
+			isRetryable: true,
+			routing: expect.objectContaining({
+				resolvedProvider: "typesafe-ai",
+			}),
+		});
+	});
+
+	it("captures the same gateway body when it arrives as cause.data instead of responseBody", async () => {
+		const doEvaluate = vi
+			.fn()
+			.mockRejectedValue(
+				buildGatewayShapedError({ data: GATEWAY_ERROR_BODY }),
+			);
+		const model = wrapEvaluationModelWithUsageLogging(
+			{
+				specificationVersion: "v4",
+				provider: "vercel-gateway",
+				modelId: "typesafe-ai/jev",
+				supportedQuestionTypes: ["choice"],
+				doEvaluate,
+			} as any,
+			{
+				...CTX,
+				provider: "VERCEL_GATEWAY" as any,
+				providerModelId: "typesafe-ai/jev",
+				taskType: "DECISION" as any,
+			},
+		);
+
+		await expect(
+			model.doEvaluate({
+				state: "evaluate this choice",
+				questions: {
+					choice: {
+						type: "choice",
+						instructions: "Choose one",
+						criteria: { yes: "yes", no: "no" },
+					},
+				},
+			}),
+		).rejects.toThrow("Service temporarily unavailable");
+
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		const arg = logAiUsageAsync.mock.calls[0][0];
+		expect(arg.errorStatusCode).toBe(503);
+		expect(arg.errorDetails).toMatchObject({
+			type: "internal_server_error",
+			bodyType: "service_unavailable_error",
+			isRetryable: true,
+			routing: expect.objectContaining({
+				resolvedProvider: "typesafe-ai",
+			}),
+		});
 	});
 });
 
@@ -456,5 +680,129 @@ describe("usage-logging middleware — job attribution", () => {
 		});
 		await mw().wrapGenerate({ doGenerate });
 		expect(logAiUsageAsync.mock.calls[0][0].jobType).toBeUndefined();
+	});
+});
+
+describe("usage-logging middleware — failure status code and details (Fizzy #2623)", () => {
+	beforeEach(() => logAiUsageAsync.mockReset());
+
+	it("captures statusCode and body-derived details from a bare APICallError-shaped doGenerate failure", async () => {
+		const apiCallError = Object.assign(new Error("Too many requests"), {
+			statusCode: 429,
+			data: { error: { type: "rate_limit", code: "x" } },
+		});
+		const doGenerate = vi.fn().mockRejectedValue(apiCallError);
+		await expect(mw().wrapGenerate({ doGenerate })).rejects.toThrow(
+			"Too many requests",
+		);
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		const arg = logAiUsageAsync.mock.calls[0][0];
+		expect(arg.success).toBe(false);
+		expect(arg.errorStatusCode).toBe(429);
+		expect(arg.errorDetails).toMatchObject({
+			type: "rate_limit",
+			code: "x",
+		});
+	});
+});
+
+describe("describeModelCallError", () => {
+	it("returns only the message for a non-Error, non-object throw", () => {
+		expect(describeModelCallError("boom")).toEqual({ message: "boom" });
+	});
+
+	it("returns only the message for a plain Error with no gateway/provider shape", () => {
+		const described = describeModelCallError(new Error("gateway down"));
+		expect(described.message).toBe("gateway down");
+		expect(described.statusCode).toBeUndefined();
+		expect(described.details).toBeUndefined();
+	});
+
+	it("keeps the status code but drops details when responseBody does not parse as JSON", () => {
+		const error = Object.assign(new Error("upstream failed"), {
+			cause: { statusCode: 502, responseBody: "not-json{" },
+		});
+		const described = describeModelCallError(error);
+		expect(described.statusCode).toBe(502);
+		expect(described.details).toBeUndefined();
+	});
+
+	it("extracts statusCode and routing from a gateway-shaped error's responseBody", () => {
+		const error = buildGatewayShapedError({
+			responseBody: JSON.stringify(GATEWAY_ERROR_BODY),
+		});
+		const described = describeModelCallError(error);
+		expect(described.statusCode).toBe(503);
+		expect(described.details).toMatchObject({
+			name: "GatewayInternalServerError",
+			type: "internal_server_error",
+			bodyType: "service_unavailable_error",
+			isRetryable: true,
+			routing: expect.objectContaining({
+				resolvedProvider: "typesafe-ai",
+			}),
+		});
+	});
+
+	it("does not invent a status code for a network failure with no HTTP response", () => {
+		// The gateway defaults `statusCode` to 500 on the WRAPPER even when the
+		// original `APICallError` never received a response (e.g. DNS failure,
+		// connection refused) — that 500 is `createGatewayErrorFromResponse`'s
+		// own default, not a real HTTP status. `cause` carrying `url` (only set
+		// on a genuine `APICallError`) with no `statusCode` of its own must win
+		// over the wrapper's invented default.
+		const error = Object.assign(new Error("fetch failed"), {
+			name: "GatewayInternalServerError",
+			statusCode: 500,
+			cause: {
+				url: "https://gateway.example.com/v1/chat",
+				message: "fetch failed",
+			},
+		});
+		const described = describeModelCallError(error);
+		expect(described.statusCode).toBeUndefined();
+	});
+
+	it("falls back to just the message when reading a property throws", () => {
+		const error = new Error("boom");
+		Object.defineProperty(error, "cause", {
+			get() {
+				throw new Error("cause getter exploded");
+			},
+			configurable: true,
+		});
+		expect(describeModelCallError(error)).toEqual({ message: "boom" });
+	});
+
+	it("never surfaces responseBody, responseHeaders, requestBodyValues, or url in details", () => {
+		const error = Object.assign(new Error("boom"), {
+			name: "GatewayInternalServerError",
+			statusCode: 503,
+			type: "internal_server_error",
+			isRetryable: true,
+			url: "https://gateway.example.com/v1/chat",
+			responseHeaders: { "x-request-id": "abc" },
+			requestBodyValues: { secret: "shh" },
+			cause: {
+				statusCode: 503,
+				responseBody: JSON.stringify(GATEWAY_ERROR_BODY),
+				responseHeaders: { "x-request-id": "abc" },
+				requestBodyValues: { secret: "shh" },
+			},
+		});
+		const described = describeModelCallError(error);
+		const keys = Object.keys(described.details ?? {});
+		const forbidden = [
+			"url",
+			"responseBody",
+			"responseHeaders",
+			"requestBodyValues",
+		];
+		// `arrayContaining` only asserts every LISTED item is present somewhere
+		// in `keys` — negating it (`not.toEqual(arrayContaining([...]))`) only
+		// fails when ALL four forbidden keys leak, so a single leaked key would
+		// pass. Assert the intersection is empty instead.
+		expect(keys.filter((key) => forbidden.includes(key))).toEqual([]);
+		expect(JSON.stringify(described.details)).not.toContain("shh");
 	});
 });
