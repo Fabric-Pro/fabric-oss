@@ -1,5 +1,16 @@
 # fabric-app
 
+## 1.16.8
+
+### Patch Changes
+
+- 9857fb1: A developer can now publish a coding-instructions change straight from the command line with `fabric instructions push --publish`, using an API key granted a new organization scope, `instructions:publish`, that is separate from the one the Connect dialog issues.
+- 1ed4a23: Meeting transcript sync no longer stores a meeting occurrence a second time when Microsoft Graph reissues its transcript under a new id, so the Proposal Inbox stops filling with suggestions re-analyzed from months-old meetings.
+- 603b887: A confirmed asset now leaves a draft's needs-confirmation list, and a draft can raise that confirmation question itself.
+- 1efe10b: The status-sync line on a project's PM settings card no longer shows a healthy check when tickets could not be read: a run that read some tickets but not all is shown as a warning, and a run that read none is shown as a failure.
+- c1b52a1: The To Do list now shows work from the projects you actually belong to, and the "Open in the meeting" link on a to-do reaches that meeting instead of a "Project not found" page.
+- 7838b96: The weave-readers agent bundle loads again: it no longer fails at start-up with `Dynamic require of "process" is not supported` from an inlined CommonJS dependency, and a load-time smoke test now runs the built bundle so the same class of failure is caught before a container image is built.
+
 ## 1.16.7
 
 ### Patch Changes
