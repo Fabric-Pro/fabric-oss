@@ -21,6 +21,14 @@ import path from "node:path";
 import type { FabricClient, PublishedInstructions } from "@fabricorg/sdk";
 import { Command } from "commander";
 import { getClient } from "../../lib/client.js";
+import {
+	asCliFailure,
+	CliFailure,
+	describeError,
+	type OutputFormat,
+	outputFormatFor,
+	withDeadline,
+} from "../../lib/command-boundary.js";
 import { getApiKey, getConfigPath } from "../../lib/config.js";
 import { applyPlan } from "../../lib/instructions/apply.js";
 import { extractBundle, fetchBundle } from "../../lib/instructions/bundle.js";
@@ -107,21 +115,6 @@ function collectAdded(value: string, previous: string[]): string[] {
 	return [...previous, value];
 }
 
-/**
- * A failure that already knows which documented exit code it is
- * (`src/bin/fabric.ts`). Errors from the SDK are translated into one of
- * these at the boundary so the command bodies can just throw.
- */
-class CliFailure extends Error {
-	constructor(
-		message: string,
-		readonly exitCode: number,
-	) {
-		super(message);
-		this.name = "CliFailure";
-	}
-}
-
 interface CommonOptions {
 	project: string;
 	dest?: string;
@@ -134,8 +127,6 @@ interface CommonOptions {
 	 */
 	format?: string;
 }
-
-type OutputFormat = "text" | "json";
 
 export function buildInstructionsCommand(): Command {
 	const instructions = new Command("instructions").description(
@@ -165,7 +156,9 @@ export function buildInstructionsCommand(): Command {
 			this: Command,
 			opts: CommonOptions & { verify?: boolean },
 		) {
-			await run(opts, "check", () => runCheck(opts, formatFor(this)));
+			await run(opts, "check", () =>
+				runCheck(opts, outputFormatFor(this)),
+			);
 		});
 
 	instructions
@@ -186,7 +179,7 @@ export function buildInstructionsCommand(): Command {
 			this: Command,
 			opts: CommonOptions & { dryRun?: boolean },
 		) {
-			await run(opts, "sync", () => runSync(opts, formatFor(this)));
+			await run(opts, "sync", () => runSync(opts, outputFormatFor(this)));
 		});
 
 	instructions
@@ -221,7 +214,7 @@ export function buildInstructionsCommand(): Command {
 			// than inherited, because `run`'s never-fail branch exists for
 			// commands a hook runs and this is not one.
 			await run({ ...opts, hook: false }, "push", () =>
-				runPush(opts, formatFor(this)),
+				runPush(opts, outputFormatFor(this)),
 			);
 		});
 
@@ -249,39 +242,11 @@ export function buildInstructionsCommand(): Command {
 			// Never hook mode: `init` is run by a person, so its failures
 			// are real failures with real exit codes.
 			await run({ ...opts, hook: false }, "init", () =>
-				runInit(opts, formatFor(this)),
+				runInit(opts, outputFormatFor(this)),
 			);
 		});
 
 	return instructions;
-}
-
-// ---------------------------------------------------------------------------
-// Output format
-// ---------------------------------------------------------------------------
-
-/**
- * The format this invocation should print in: `json`, or text.
- *
- * One reader, `optsWithGlobals()`, because Commander has already done the
- * resolving. The root command declares `--format` with a default of
- * `FABRIC_FORMAT ?? "table"`, these commands declare their own, and
- * `optsWithGlobals` merges them with the command's own value winning. Reading
- * `FABRIC_FORMAT` again here undid that: `FABRIC_FORMAT=json fabric --format
- * table instructions check` printed JSON at the very moment the flag said not
- * to (review round 2, finding 10).
- *
- * Anything that is not `json` prints text. `table`, `yaml` and `csv` are real
- * values elsewhere in this CLI and these commands have no such shape — one
- * paragraph or one JSON object — so they degrade rather than fail. Refusing
- * them here would also be a promise this cannot keep: when a parent and a
- * subcommand declare the same flag, Commander stores the value on the ROOT,
- * so `fabric instructions check --format yaml` never arrives as a local
- * option at all.
- */
-function formatFor(command: Command): OutputFormat {
-	const resolved = command.optsWithGlobals() as { format?: string };
-	return resolved.format === "json" ? "json" : "text";
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +271,15 @@ async function run(
 ): Promise<void> {
 	try {
 		if (opts.hook) {
-			await withDeadline(HOOK_DEADLINE_MS, body);
+			// The deadline's signal is published for the bundle download
+			// (`activeDeadline`) and withdrawn the moment the race settles,
+			// whichever side won it.
+			await withDeadline(HOOK_DEADLINE_MS, (signal) => {
+				activeDeadline = signal;
+				return body();
+			}).finally(() => {
+				activeDeadline = undefined;
+			});
 		} else {
 			await body();
 		}
@@ -324,84 +297,12 @@ async function run(
 }
 
 /**
- * The absolute bound on hook mode.
- *
- * A race rather than a chain of per-request timeouts: the guarantee has to
- * hold whatever the SDK, the runtime or a wedged socket does, and only the
- * caller can promise that. The losing work is abandoned rather than awaited,
- * which is safe because the boundary above exits the process immediately
- * afterwards.
- */
-async function withDeadline(
-	totalMs: number,
-	body: () => Promise<void>,
-): Promise<void> {
-	const controller = new AbortController();
-	let timer: NodeJS.Timeout | undefined;
-	const deadline = new Promise<never>((_resolve, reject) => {
-		timer = setTimeout(() => {
-			controller.abort();
-			reject(
-				new Error(
-					`gave up after ${totalMs}ms so the session is not held up`,
-				),
-			);
-		}, totalMs);
-	});
-	activeDeadline = controller.signal;
-	try {
-		await Promise.race([body(), deadline]);
-	} finally {
-		activeDeadline = undefined;
-		if (timer) {
-			clearTimeout(timer);
-		}
-	}
-}
-
-/**
  * The deadline signal in force, if any, so the bundle download can be
  * cancelled by the same clock that bounds the command. Module state rather
  * than a threaded parameter because every command body is single-shot within
  * one process.
  */
 let activeDeadline: AbortSignal | undefined;
-
-function describeError(error: unknown): string {
-	if (error instanceof Error) {
-		// Collapsed to one line: under `--hook` this lands in a terminal
-		// banner and, on Claude Code, in the agent's context.
-		return error.message.replace(/\s*\n\s*/g, " ");
-	}
-	return String(error);
-}
-
-/**
- * SDK errors carry an HTTP status; the CLI's documented exit codes do not
- * come from it automatically. Mapped once, here.
- */
-function asCliFailure(error: unknown): CliFailure {
-	if (error instanceof CliFailure) {
-		return error;
-	}
-	const status = (error as { status?: number }).status;
-	const message = error instanceof Error ? error.message : String(error);
-	switch (status) {
-		case 401:
-			return new CliFailure(message, 3);
-		case 403:
-			return new CliFailure(message, 5);
-		case 404:
-			return new CliFailure(message, 4);
-		case 429:
-			return new CliFailure(message, 6);
-		case 400:
-		case 422:
-			return new CliFailure(message, 7);
-		default:
-			return new CliFailure(message, 1);
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Shared steps

@@ -7,6 +7,12 @@
  * the write, the embedding and the audit row, so this file is authorization
  * and the wire contract only.
  *
+ * Session only: `tenantProtectedProcedure` authenticates with a Better Auth
+ * session cookie, so no API key reaches this route. The key-backed twin, which
+ * `fabric context push` calls behind the `projects:write` scope, is
+ * `PUT /api/v1/projects/:projectId/contexts/synced-files` in
+ * `modules/v1/contexts.ts`; change the two together.
+ *
  * Authorization, all answered server-side:
  *  - WHETHER the caller may see the project at all: `hasProjectAccess`, the
  *    check the Context tab's create path (`create-context.ts`) and the
@@ -36,8 +42,9 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { syncedContextConflictMessage } from "../../lib/synced-context-conflict";
+import { MAX_SYNCED_CONTEXT_BYTES } from "../../lib/synced-context-limits";
 import {
-	MAX_SYNCED_CONTEXT_BYTES,
 	MAX_SYNCED_CONTEXT_TITLE_LENGTH,
 	upsertSyncedContext,
 } from "../../lib/upsert-synced-context";
@@ -57,7 +64,7 @@ export const upsertSyncedFileProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Contexts"],
 		summary: "Create or update a synced context file by path",
 		description:
-			"Push a text file into the project's Context keyed by its relative path. A new path creates a source and indexes it; the same content again changes nothing; changed content replaces the stored version and re-indexes it, but only when `expectedContentHash` names the version being replaced — otherwise the call answers CONFLICT with the stored hash and who last changed it, and writes nothing. Content identical to another source in the project — synced or added in the Context tab — is reported as `duplicate` and not stored twice.",
+			"Push a text file into the project's Context keyed by its relative path. A new path creates a source and indexes it; the same content again changes nothing; changed content replaces the stored version and re-indexes it, but only when `expectedContentHash` names the version being replaced — otherwise the call answers CONFLICT with the stored hash and who last changed it, and writes nothing. A named hash on a path that no longer exists (deleted since) is a CONFLICT with `current: null`; push again without `expectedContentHash` to recreate it, which answers `duplicate` instead if that content already exists elsewhere in the project. Content identical to another source in the project — synced or added in the Context tab — is reported as `duplicate` and not stored twice.",
 	})
 	.input(
 		z.object({
@@ -149,8 +156,7 @@ export const upsertSyncedFileProcedure = tenantProtectedProcedure
 
 		if (result.status === "conflict") {
 			throw new ORPCError("CONFLICT", {
-				message:
-					"This file was changed by someone else since the version you are replacing. Nothing was written: read the stored version, merge, and push again with its contentHash as expectedContentHash.",
+				message: syncedContextConflictMessage(result),
 				data: result,
 			});
 		}

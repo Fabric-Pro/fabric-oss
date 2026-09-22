@@ -1278,10 +1278,15 @@ export type UpsertContextBySourcePathResult =
 	 */
 	| { status: "duplicate"; existing: SyncedContextRow }
 	/**
-	 * The row at this path holds different content and the caller did not
-	 * name its hash as `expectedContentHash`. Nothing was written.
+	 * Nothing was written, because the caller's view of this path is stale:
+	 *  - `current` is the stored row when it holds different content and the
+	 *    caller did not name its hash as `expectedContentHash`;
+	 *  - `current` is `null` when the caller named a hash but no row is at
+	 *    this path any more — it was deleted since the caller last saw it,
+	 *    and recreating it silently would undo that deletion. Sending again
+	 *    without `expectedContentHash` recreates it.
 	 */
-	| { status: "conflict"; current: SyncedContextContentStamp };
+	| { status: "conflict"; current: SyncedContextContentStamp | null };
 
 export interface UpsertContextBySourcePathInput {
 	projectId: string;
@@ -1335,8 +1340,13 @@ function isUniqueViolation(error: unknown): boolean {
  *     conditional `updateMany` keyed on that hash. Zero rows means a
  *     concurrent replace landed first: re-read and report `conflict` (or
  *     `unchanged`, if it happened to store this very content).
- *  4. No row at this path → identical content under another hashed row in
- *     the project is a `duplicate`; otherwise `create`.
+ *  4. No row at this path and the caller named an `expectedContentHash` →
+ *     `conflict` with `current: null`: the version the caller means to
+ *     replace was deleted since it last saw it, and a create would undo that
+ *     deletion. Nothing is written.
+ *  5. No row at this path and no hash named → identical content under
+ *     another hashed row in the project is a `duplicate`; otherwise
+ *     `create`.
  *
  * A concurrent first push of the same path loses on the
  * `(projectId, sourcePath)` unique index; the whole decision is then re-run
@@ -1414,6 +1424,9 @@ async function runUpsertContextBySourcePath(
 				select: SYNCED_CONTEXT_SELECT,
 			});
 			if (!existing) {
+				if (input.expectedContentHash) {
+					return { status: "conflict", current: null };
+				}
 				return await createOrReportDuplicate();
 			}
 
@@ -1461,7 +1474,9 @@ async function runUpsertContextBySourcePath(
 					select: SYNCED_CONTEXT_SELECT,
 				});
 				if (!current) {
-					return await createOrReportDuplicate();
+					// Deleted between the read and the write. The caller named
+					// the version it replaces, so this is step 4, not a create.
+					return { status: "conflict", current: null };
 				}
 				if (current.contentHash === newHash) {
 					return { status: "unchanged", context: current };

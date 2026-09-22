@@ -23,6 +23,7 @@ import { buildLogoutCommand } from "../commands/auth/logout.js";
 import { buildWhoamiCommand } from "../commands/auth/whoami.js";
 import { buildChatsCommand } from "../commands/chats/index.js";
 import { buildCompletionCommand } from "../commands/completion/index.js";
+import { buildContextCommand } from "../commands/context/index.js";
 import { buildCtxCommand } from "../commands/ctx/index.js";
 import { buildFeaturesCommand } from "../commands/features/index.js";
 import { buildFramesCommand } from "../commands/frames/index.js";
@@ -105,6 +106,11 @@ program.addCommand(buildSkillsCommand());
 // fabric instructions
 // ---------------------------------------------------------------------------
 program.addCommand(buildInstructionsCommand());
+
+// ---------------------------------------------------------------------------
+// fabric context — project Context (knowledge sources), not `fabric ctx`
+// ---------------------------------------------------------------------------
+program.addCommand(buildContextCommand());
 
 // ---------------------------------------------------------------------------
 // fabric mcp

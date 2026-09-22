@@ -1,10 +1,11 @@
 /**
  * The audit row for a synced knowledge file's content write (Fizzy #2616).
  *
- * Two surfaces push a file into a project's Context by its path: the oRPC
- * procedure `projects.contexts.upsertSyncedFile` and the
- * `fabric_upsert_project_context` MCP tool. Both go through
- * `upsertSyncedContext`, which records this row, built here, so the two cannot
+ * Three surfaces push a file into a project's Context by its path: the oRPC
+ * procedure `projects.contexts.upsertSyncedFile`, the
+ * `fabric_upsert_project_context` MCP tool, and the v1 REST route
+ * `PUT /api/v1/projects/:projectId/contexts/synced-files`. All go through
+ * `upsertSyncedContext`, which records this row, built here, so they cannot
  * drift on what the ledger says — the sibling of `context-metadata-audit.ts`
  * for the content half of a context row.
  *
@@ -18,8 +19,12 @@ import type { RecordAuditFromRequestInput } from "../../../lib/audit";
 export const CONTEXT_CONTENT_AUDIT_ACTION =
 	"project.context_source.content_upserted" as const;
 
-/** Where the push came from. */
-export type SyncedContextSurface = "web" | "mcp-gateway";
+/**
+ * Where the push came from: the app's own oRPC procedure, the MCP gateway
+ * tool, or the public v1 REST route an API key reaches (`fabric context
+ * push`).
+ */
+export type SyncedContextSurface = "web" | "mcp-gateway" | "v1-api";
 
 /**
  * Build the audit input for one synced-file write that happened. Call it ONLY

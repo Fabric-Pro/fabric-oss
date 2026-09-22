@@ -1,8 +1,9 @@
 /**
  * Push a text file into a project's Context by its relative path (Fizzy
  * #2616) — the ONE function behind the `projects.contexts.upsertSyncedFile`
- * procedure and the `fabric_upsert_project_context` MCP tool, so the embed
- * trigger, the audit row and the realtime refresh cannot drift between them.
+ * procedure, the `fabric_upsert_project_context` MCP tool and the v1 REST route
+ * `fabric context push` calls, so the embed trigger, the audit row and the
+ * realtime refresh cannot drift between them.
  *
  * A synced file is keyed by `projectId` + normalized `sourcePath`:
  *  - a new path creates a TEXT row and embeds it;
@@ -16,6 +17,11 @@
  *    push is a conflict and nothing is written. Omitting it means "create if
  *    absent, otherwise only accept identical content"; it never means
  *    "overwrite";
+ *  - with a hash but no row at the path any more (deleted since the caller
+ *    saw it), the push is a conflict with `current: null` and nothing is
+ *    written: recreating it would silently undo the deletion. Sending again
+ *    without the hash recreates it, or answers duplicate instead if that
+ *    content already exists elsewhere in the project;
  *  - identical content already in the project under another hashed row is
  *    reported as a duplicate instead of being stored twice.
  *
@@ -31,7 +37,10 @@
  *  - the MCP tool asks `resolveGatewayProjectWriteAccessWithHost`, which
  *    answers not-found for a project the caller cannot see, forbidden without
  *    CONTEXT_CREATE, and otherwise the hosting organization, with the API
- *    key's organization binding applied.
+ *    key's organization binding applied;
+ *  - the v1 route (`modules/v1/contexts.ts`) requires the key's
+ *    `projects:write` scope, then makes the procedure's two checks for the
+ *    key's creator, with the same organization-key binding.
  * `organizationId` here is that hosting organization, never a caller-supplied
  * value.
  */
@@ -58,14 +67,7 @@ import {
 	buildContextContentAuditEvent,
 	type SyncedContextSurface,
 } from "./context-content-audit";
-
-/**
- * The most UTF-8 bytes one synced file may carry: the same 2 MiB ceiling the
- * coding-instructions inline change set uses (`MAX_INLINE_CHANGE_BYTES` in
- * `procedures/instructions/submit-change.ts`), for the same reason — a 4.5 MB
- * serverless request body, which JSON escaping eats into.
- */
-export const MAX_SYNCED_CONTEXT_BYTES = 2 * 1024 * 1024;
+import { MAX_SYNCED_CONTEXT_BYTES } from "./synced-context-limits";
 
 /** Upper bound on a caller-supplied title. */
 export const MAX_SYNCED_CONTEXT_TITLE_LENGTH = 255;
@@ -124,9 +126,15 @@ export type UpsertSyncedContextResult =
 			duplicateOfContextId: string;
 			duplicateOfSourcePath: string | null;
 	  })
-	| (SyncedContextOutcomeBase & {
+	| (Omit<SyncedContextOutcomeBase, "contextId"> & {
 			status: "conflict";
-			current: SyncedContextConflict;
+			/** The row the push lost to; `null` when the path has none. */
+			contextId: string | null;
+			/**
+			 * The stored version, or `null` when the caller named a hash and
+			 * the path no longer holds a row: it was deleted since.
+			 */
+			current: SyncedContextConflict | null;
 	  });
 
 function badRequest(message: string): ORPCError<"BAD_REQUEST", unknown> {
@@ -336,6 +344,15 @@ export async function upsertSyncedContext(
 
 	if (result.status === "conflict") {
 		const { current } = result;
+		if (current === null) {
+			return {
+				status: "conflict",
+				contextId: null,
+				sourcePath,
+				contentHash,
+				current: null,
+			};
+		}
 		return {
 			status: "conflict",
 			contextId: current.contextId,
