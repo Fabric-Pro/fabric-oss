@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/client";
 import {
 	getStoryByIdWithSourceMeeting,
 	hasProjectAccess,
+	resolveMeetingDisplayName,
 } from "@repo/database";
 import { hasPermission, Permissions as ProjectPerms } from "@repo/permissions";
 import { z } from "zod";
@@ -81,8 +82,10 @@ export const getStoryProcedure = tenantProtectedProcedure
 				),
 			]);
 		// Map the raw sourceMeetingTranscript relation onto the flat `sourceMeeting`
-		// shape the ProvenanceSection component consumes, preferring the linked
-		// meeting series' subject over the transcript's own snapshot subject.
+		// shape the ProvenanceSection component consumes. The name comes from the
+		// occurrence, not the series it belongs to — see `resolveMeetingDisplayName`
+		// for why the reverse, which this used to do, renames every past meeting
+		// whenever a Teams series is renamed (#2340).
 		// Drop the raw relation from the response so we don't leak the transcript
 		// row (summary, extracted decisions, etc.) to the client.
 		const { sourceMeetingTranscript, ...storyWithoutTranscript } = story;
@@ -93,9 +96,11 @@ export const getStoryProcedure = tenantProtectedProcedure
 				resolvedAcceptanceCriteria ?? story.acceptanceCriteria,
 			sourceMeeting: sourceMeetingTranscript
 				? {
-						subject:
-							sourceMeetingTranscript.linkedMeeting?.subject ??
-							sourceMeetingTranscript.meetingSubject,
+						subject: resolveMeetingDisplayName({
+							occurrence: sourceMeetingTranscript.meetingSubject,
+							series: sourceMeetingTranscript.linkedMeeting
+								?.subject,
+						}),
 						meetingDate: sourceMeetingTranscript.meetingDate,
 					}
 				: null,
