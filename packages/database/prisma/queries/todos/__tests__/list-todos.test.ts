@@ -38,6 +38,8 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { PLACEHOLDER_SUBJECT } from "../../projects/meeting-display-name";
+
 const mocks = vi.hoisted(() => ({
 	queryRaw: vi.fn(),
 }));
@@ -321,11 +323,34 @@ describe("the statement", () => {
 		await listVisibleTodos(baseParams());
 
 		const sql = statement();
-		// `meetingDigest.getMeeting` resolves the subject as
-		// `linkedMeeting.subject ?? meetingSubject`; a different precedence here
-		// would send a user to a meeting titled something they never saw.
+		// Mirrors `resolveMeetingDisplayName`, which this query cannot call: the
+		// occurrence's own subject wins, the series name is the fallback, and a
+		// stored placeholder counts as no name at all. A different precedence
+		// here sends a user to a meeting titled something they never saw.
+		//
+		// Built from the resolver's own constant rather than retyped, so renaming
+		// the placeholder fails here loudly instead of leaving the SQL silently
+		// out of step with the rule it mirrors.
+		// Flattened the same way `statement()` flattens the SQL, because the
+		// trim character set is itself made of whitespace and would otherwise be
+		// collapsed on one side only. What this pins is the SHAPE — argument
+		// order, NULLIF nesting, the placeholder, and that BTRIM is given an
+		// explicit character set at all. What it cannot pin is which characters
+		// those are; the live parity test in __tests__/todo-list-query.test.ts
+		// is what proves the SQL and the resolver agree.
+		const flatten = (s: string) => s.replace(/\s+/g, " ").trim();
+		const chars = `E' \t\n\r\f\x0B\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF'`;
+		const occurrence = `NULLIF(BTRIM(tr."meetingSubject", ${chars}), '')`;
+		const series = `NULLIF(BTRIM(lm."subject", ${chars}), '')`;
 		expect(sql).toContain(
-			'COALESCE(lm."subject", tr."meetingSubject") AS "meetingTitle"',
+			flatten(
+				`COALESCE(
+					NULLIF(${occurrence}, '${PLACEHOLDER_SUBJECT}'),
+					NULLIF(${series}, '${PLACEHOLDER_SUBJECT}'),
+					${occurrence},
+					${series}
+				) AS "meetingTitle"`,
+			),
 		);
 		// The graph id, which addresses the digest — not the row cuid the
 		// binding uses, which addresses nothing outside the database.

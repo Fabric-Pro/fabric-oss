@@ -7,6 +7,7 @@ import {
 	hasProjectAccess,
 	isFeatureEnabled,
 	listActionItemLinks,
+	resolveMeetingDisplayName,
 } from "@repo/database";
 import { MEETING_INSIGHTS_VERSION } from "@repo/temporal/activities";
 import { z } from "zod";
@@ -255,8 +256,10 @@ export const getMeetingProcedure = tenantProtectedProcedure
 			: [];
 
 		return {
-			subject:
-				transcript.linkedMeeting?.subject ?? transcript.meetingSubject,
+			subject: resolveMeetingDisplayName({
+				occurrence: transcript.meetingSubject,
+				series: transcript.linkedMeeting?.subject,
+			}),
 			meetingDate: transcript.meetingDate,
 			organizer: transcript.linkedMeeting?.organizer ?? null,
 			participants: transcript.speakerNames,
