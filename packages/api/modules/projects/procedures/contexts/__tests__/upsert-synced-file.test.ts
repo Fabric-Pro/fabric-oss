@@ -382,6 +382,15 @@ describe("upsertSyncedFile — validation", () => {
 		expect(mocks.upsertContextBySourcePath).not.toHaveBeenCalled();
 	});
 
+	it("accepts a control character other than NUL in the content", async () => {
+		// The v1 route's body envelope is sized for this: U+0001 is six bytes
+		// on the wire, and it is valid content.
+		await expect(
+			call({ content: "# Notes\n\u0001 marker\n" }),
+		).resolves.toMatchObject({ status: "created" });
+		expect(mocks.upsertContextBySourcePath).toHaveBeenCalledTimes(1);
+	});
+
 	it("refuses a NUL byte in the title", async () => {
 		await expect(
 			call({ title: "Architecture\u0000" }),
@@ -604,6 +613,39 @@ describe("upsertSyncedFile — embedding and audit", () => {
 		expect(JSON.stringify((error as { data: unknown }).data)).not.toContain(
 			"someone else's version",
 		);
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+		expect(mocks.recordAuditFromRequest).not.toHaveBeenCalled();
+		expect(mocks.emitContextChange).not.toHaveBeenCalled();
+	});
+
+	it("answers a named hash on a deleted path with 409 and no current version, and names nobody", async () => {
+		mocks.upsertContextBySourcePath.mockResolvedValue({
+			status: "conflict",
+			current: null,
+		});
+
+		const error = await call({
+			content: "my version\n",
+			expectedContentHash: sha("the version I last saw\n"),
+		}).catch((caught: unknown) => caught);
+		await flushBackgroundWork();
+
+		expect(error).toMatchObject({
+			code: "CONFLICT",
+			data: {
+				status: "conflict",
+				contextId: null,
+				sourcePath: "docs/architecture.md",
+				contentHash: sha("my version\n"),
+				current: null,
+			},
+		});
+		expect((error as Error).message).toMatch(/deleted/i);
+		expect((error as Error).message).toMatch(/without expectedContentHash/);
+		expect((error as Error).message).toMatch(
+			/answers duplicate instead if that content already exists elsewhere in the project/,
+		);
+		expect(mocks.findUser).not.toHaveBeenCalled();
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
 		expect(mocks.recordAuditFromRequest).not.toHaveBeenCalled();
 		expect(mocks.emitContextChange).not.toHaveBeenCalled();

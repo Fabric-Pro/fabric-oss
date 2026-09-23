@@ -15,6 +15,8 @@
  *  - a replace that loses a race to a concurrent one (zero rows matched) is a
  *    conflict, not an overwrite, and a concurrent FIRST push of one path is
  *    answered from the winner's row instead of failing;
+ *  - a named hash on a path that no longer has a row is a conflict with no
+ *    current version, never a silent re-create of a deleted source;
  *  - identical content already in the project under another hashed row is
  *    reported as a duplicate and nothing is created;
  *  - tenant scoping: the organization arm does not narrow by user, the
@@ -329,8 +331,8 @@ describe("upsertContextBySourcePath — explicit overwrite", () => {
 
 		expect(second.status).toBe("conflict");
 		if (second.status === "conflict") {
-			expect(second.current.contentHash).toBe(sha(V1));
-			expect(second.current.contentUpdatedByUserId).toBe("user-1");
+			expect(second.current?.contentHash).toBe(sha(V1));
+			expect(second.current?.contentUpdatedByUserId).toBe("user-1");
 		}
 		expect(table.projectContext.updateMany).not.toHaveBeenCalled();
 		expect(table.state.rows).toHaveLength(1);
@@ -437,6 +439,66 @@ describe("upsertContextBySourcePath — explicit overwrite", () => {
 	});
 });
 
+describe("upsertContextBySourcePath — a named version whose path is gone", () => {
+	it("is a conflict with no current version, and creates nothing, when the caller names a hash and no row is at the path", async () => {
+		// The caller last saw V1 here; since then the source was deleted in
+		// the app. Recreating it silently would undo that deletion.
+		const result = await upsert({
+			content: V2,
+			expectedContentHash: sha(V1),
+		});
+
+		expect(result).toEqual({ status: "conflict", current: null });
+		expect(table.projectContext.create).not.toHaveBeenCalled();
+		expect(table.state.rows).toHaveLength(0);
+	});
+
+	it("is that conflict rather than a duplicate when identical content sits under another path", async () => {
+		seed({
+			sourcePath: "notes/architecture-copy.md",
+			content: V2,
+			contentHash: sha(V2),
+		});
+
+		const result = await upsert({
+			content: V2,
+			expectedContentHash: sha(V1),
+		});
+
+		expect(result).toEqual({ status: "conflict", current: null });
+		expect(table.projectContext.create).not.toHaveBeenCalled();
+	});
+
+	it("is that conflict when the row is deleted between the read and the conditional write", async () => {
+		const existing = seed();
+		table.projectContext.findFirst.mockImplementationOnce(async (args) => {
+			const snapshot = { ...existing };
+			table.state.rows = [];
+			return Object.fromEntries(
+				Object.keys(args.select ?? snapshot).map((key) => [
+					key,
+					snapshot[key] ?? null,
+				]),
+			);
+		});
+
+		const result = await upsert({
+			content: V2,
+			expectedContentHash: sha(V1),
+		});
+
+		expect(result).toEqual({ status: "conflict", current: null });
+		expect(table.projectContext.create).not.toHaveBeenCalled();
+		expect(table.state.rows).toHaveLength(0);
+	});
+
+	it("still creates the path when no hash is named", async () => {
+		const result = await upsert({ content: V2 });
+
+		expect(result.status).toBe("created");
+	});
+});
+
 describe("upsertContextBySourcePath — identical content under another path", () => {
 	it("reports the existing row as a duplicate and creates nothing", async () => {
 		const other = seed({ sourcePath: "notes/architecture-copy.md" });
@@ -540,27 +602,31 @@ describe("upsertContextBySourcePath — tenant scoping", () => {
 
 		// Same project, same path, different content, and even the right
 		// hash: under the personal filter the organization row does not
-		// exist, so this can neither update it nor be told about it.
-		await expect(
-			upsert({
-				organizationId: null,
-				content: V2,
-				expectedContentHash: sha(V1),
-			}),
-		).rejects.toThrow(/unique constraint/i);
+		// exist, so this can neither update it nor be told about it — the
+		// answer is the no-row conflict, naming nothing.
+		const result = await upsert({
+			organizationId: null,
+			content: V2,
+			expectedContentHash: sha(V1),
+		});
 
+		expect(result).toEqual({ status: "conflict", current: null });
 		expect(table.projectContext.updateMany).not.toHaveBeenCalled();
+		expect(table.projectContext.create).not.toHaveBeenCalled();
 		expect(orgRow).toMatchObject({ content: V1, contentHash: sha(V1) });
 	});
 
 	it("never reads or writes a personal row from the organization arm", async () => {
 		const personalRow = seed({ organizationId: null, userId: "user-1" });
 
-		await expect(
-			upsert({ content: V2, expectedContentHash: sha(V1) }),
-		).rejects.toThrow(/unique constraint/i);
+		const result = await upsert({
+			content: V2,
+			expectedContentHash: sha(V1),
+		});
 
+		expect(result).toEqual({ status: "conflict", current: null });
 		expect(table.projectContext.updateMany).not.toHaveBeenCalled();
+		expect(table.projectContext.create).not.toHaveBeenCalled();
 		expect(personalRow).toMatchObject({
 			content: V1,
 			organizationId: null,
@@ -587,12 +653,18 @@ describe("upsertContextBySourcePath — tenant scoping", () => {
 			contentHash: sha(V1),
 		});
 
-		const result = await upsert({
+		// The hash names proj-2's row, which this project cannot see: the
+		// path is empty here, so it is the no-row conflict, never a write
+		// to (or a report of) the other project's row.
+		const named = await upsert({
 			content: V2,
 			expectedContentHash: sha(V1),
 		});
+		expect(named).toEqual({ status: "conflict", current: null });
 
-		expect(result.status).toBe("created");
+		// Without a hash the path is created here, beside it.
+		const created = await upsert({ content: V2 });
+		expect(created.status).toBe("created");
 		expect(otherProject).toMatchObject({
 			content: V1,
 			contentHash: sha(V1),

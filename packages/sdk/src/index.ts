@@ -25,6 +25,7 @@ import { ApprovalsResource } from "./resources/approvals.js";
 import { AuthResource } from "./resources/auth.js";
 import { ChannelsResource } from "./resources/channels.js";
 import { ChatsResource } from "./resources/chats.js";
+import { ContextsResource } from "./resources/contexts.js";
 import { FramesResource } from "./resources/frames.js";
 import { InstructionsResource } from "./resources/instructions.js";
 import {
@@ -63,6 +64,7 @@ export class FabricClient {
 	readonly mcp: McpResource;
 	readonly frames: FramesResource;
 	readonly instructions: InstructionsResource;
+	readonly contexts: ContextsResource;
 	readonly workspaces: WorkspacesResource;
 	readonly chats: ChatsResource;
 	readonly reports: ReportsResource;
@@ -96,6 +98,7 @@ export class FabricClient {
 		this.mcp = new McpResource(this.http);
 		this.frames = new FramesResource(this.http);
 		this.instructions = new InstructionsResource(this.http);
+		this.contexts = new ContextsResource(this.http);
 		this.workspaces = new WorkspacesResource(this.http);
 		this.chats = new ChatsResource(this.http);
 		this.reports = new ReportsResource(this.http);
@@ -161,6 +164,14 @@ export type {
 	SendMessageResult,
 	UpdateChatOptions,
 } from "./resources/chats.js";
+export {
+	FabricContextConflictError,
+	type SyncedContextFileConflict,
+	type SyncedContextFileCurrentVersion,
+	type SyncedContextFileResult,
+	type UpsertSyncedContextFileInput,
+	type UpsertSyncedContextFileOptions,
+} from "./resources/contexts.js";
 export type { ListFramesOptions } from "./resources/frames.js";
 export type {
 	CreateInstructionDownloadOptions,
