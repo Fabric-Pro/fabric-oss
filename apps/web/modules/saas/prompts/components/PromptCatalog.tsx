@@ -1,11 +1,13 @@
 "use client";
 
 import {
+	findPromptAgentTarget,
 	listPromptActions,
 	PROMPT_FEATURE_TYPE_OPTIONS,
 	type PromptAction,
 	type PromptFeatureTypeKey,
 	promptActionId,
+	promptDocumentTypeLabel,
 } from "@repo/utils/prompt-action-catalog";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -52,6 +54,45 @@ type CatalogEntry = {
 };
 
 const ALL_ACTIONS = listPromptActions();
+const LISTED_ACTION_IDS = new Set(ALL_ACTIONS.map((a) => a.id));
+
+type RowAction = Pick<
+	PromptAction,
+	"id" | "label" | "targetKey" | "documentType" | "storyKind"
+>;
+
+/**
+ * Overrides saved against an action the catalog no longer lists.
+ *
+ * The action list is static, so a binding written at a slot that has since
+ * been retired or moved — the Feature Clean Spec default used to be saved at
+ * DRAFT before it moved to CLEAN_SPEC, where the runtime reads it — has no row
+ * to clear it from. Only a tier's live override qualifies: a SYSTEM binding is
+ * Fabric's own, and a cleared one is already nobody's default.
+ */
+function unlistedOverrides(entries: Iterable<[string, CatalogEntry]>) {
+	const rows: RowAction[] = [];
+	for (const [id, entry] of entries) {
+		if (
+			LISTED_ACTION_IDS.has(id) ||
+			!entry.prompts.some((p) => p.scope !== "SYSTEM" && p.isDefault)
+		) {
+			continue;
+		}
+		const kind =
+			entry.storyKind === null
+				? ""
+				: ` (${entry.storyKind === "FEATURE" ? "Feature" : "Bug"})`;
+		rows.push({
+			id,
+			targetKey: entry.targetKey,
+			documentType: entry.documentType,
+			storyKind: entry.storyKind,
+			label: `${findPromptAgentTarget(entry.targetKey)?.label ?? entry.targetKey} — ${promptDocumentTypeLabel(entry.documentType)}${kind}`,
+		});
+	}
+	return rows;
+}
 
 export function PromptCatalog() {
 	const { organizationId, basePath } = useOrganizationContext();
@@ -131,6 +172,14 @@ export function PromptCatalog() {
 		[query],
 	);
 
+	const unlisted = useMemo(
+		() =>
+			unlistedOverrides(bindingsByAction).filter(
+				(a) => !query || a.label.toLowerCase().includes(query),
+			),
+		[bindingsByAction, query],
+	);
+
 	const byFeatureType = useMemo(() => {
 		const map = new Map<PromptFeatureTypeKey, PromptAction[]>();
 		for (const action of matching) {
@@ -154,7 +203,7 @@ export function PromptCatalog() {
 				/>
 			</div>
 
-			{query && matching.length === 0 && (
+			{query && matching.length === 0 && unlisted.length === 0 && (
 				<p className="text-muted-foreground text-sm">
 					No action matches “{search}”.
 				</p>
@@ -240,6 +289,36 @@ export function PromptCatalog() {
 					</section>
 				);
 			})}
+
+			{unlisted.length > 0 && (
+				<section className="space-y-3">
+					<h2 className="font-medium text-foreground text-sm">
+						No longer listed
+					</h2>
+					<p className="text-muted-foreground text-sm">
+						Overrides saved for actions Fabric no longer lists here.
+						They may no longer take effect; clear them to tidy up.
+					</p>
+					<ul className="space-y-2">
+						{unlisted.map((action) => (
+							<li key={action.id}>
+								<ActionRow
+									action={action}
+									entry={bindingsByAction.get(action.id)}
+									basePath={basePath}
+									isLoading={isLoading}
+									isFocused={focusedActionIds.has(action.id)}
+									actionsByPrompt={actionsByPrompt}
+									onChanged={() => {
+										void refetch();
+									}}
+									allowSwitching={false}
+								/>
+							</li>
+						))}
+					</ul>
+				</section>
+			)}
 		</div>
 	);
 }
@@ -252,14 +331,16 @@ function ActionRow({
 	isFocused,
 	actionsByPrompt,
 	onChanged,
+	allowSwitching = true,
 }: {
-	action: PromptAction;
+	action: RowAction;
 	entry?: CatalogEntry;
 	basePath: string;
 	isLoading: boolean;
 	isFocused: boolean;
 	actionsByPrompt: Map<string, string[]>;
 	onChanged: () => void;
+	allowSwitching?: boolean;
 }) {
 	const effective = entry?.prompts.find((p) => p.isEffective);
 	const others = (entry?.prompts.length ?? 0) - (effective ? 1 : 0);
@@ -267,7 +348,9 @@ function ActionRow({
 	// FR9/FR10: Tier 3. Collapsed by default so a catalog of sixty actions
 	// stays scannable, and opened automatically when a deep link points here —
 	// the FR8 notification lands on this row expressly so the reader can switch.
-	const [expanded, setExpanded] = useState(false);
+	// An unlisted row is shown only so its override can be cleared, so it
+	// starts open on that control.
+	const [expanded, setExpanded] = useState(!allowSwitching);
 
 	// A deep link that lands above or below the fold has not really arrived —
 	// and one that only scrolls has arrived for sighted mouse users alone.
@@ -385,6 +468,7 @@ function ActionRow({
 							prompts={entry?.prompts ?? []}
 							basePath={basePath}
 							onChanged={onChanged}
+							allowSwitching={allowSwitching}
 						/>
 					</div>
 				)}

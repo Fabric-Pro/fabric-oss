@@ -18,7 +18,7 @@
 
 import { ActionPromptList } from "@saas/prompts/components/ActionPromptList";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -326,6 +326,47 @@ describe("FR11 — clearing an override", () => {
 		renderList([variant("Baseline drafter", "SYSTEM", true)]);
 
 		await screen.findByText("Baseline drafter");
+		expect(
+			screen.queryByRole("button", { name: /clear override/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("offers it on the organization's override even while the admin's own personal default wins", async () => {
+		// The org default is still in force for everyone without a personal
+		// one; the admin looking at it just happens to have their own. Hiding
+		// the control made them hand back their preference first to reach it.
+		isOrgAdmin.current = true;
+		const user = userEvent.setup();
+		renderList([
+			variant("Baseline drafter", "SYSTEM"),
+			{ ...variant("Our override", "ORG"), isDefault: true },
+			variant("My own", "USER", true),
+		]);
+
+		const orgRow = (await screen.findByText("Our override")).closest("li");
+		if (!orgRow) {
+			throw new Error("org variant row not rendered");
+		}
+		await user.click(
+			within(orgRow).getByRole("button", { name: /clear override/i }),
+		);
+
+		await waitFor(() => expect(bindClear).toHaveBeenCalledTimes(1));
+		expect(bindClear).toHaveBeenCalledWith(
+			expect.objectContaining({ scope: "ORG", organizationId: "org-1" }),
+		);
+	});
+
+	it("does not offer it on a binding that was already cleared", async () => {
+		// A soft-cleared override stays listed so it can be put back (FR12);
+		// it is no longer anyone's default, so there is nothing to clear.
+		isOrgAdmin.current = true;
+		renderList([
+			variant("Baseline drafter", "SYSTEM", true),
+			variant("Cleared earlier", "ORG"),
+		]);
+
+		await screen.findByText("Cleared earlier");
 		expect(
 			screen.queryByRole("button", { name: /clear override/i }),
 		).not.toBeInTheDocument();
