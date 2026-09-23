@@ -691,7 +691,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey:
 			"settings.auditLog.actions.project.instructions.upload_started",
 		description:
-			'Uploaded a coding-instructions folder for validation — written before checks run, so a rejected upload still leaves a trace. `metadata.keptCount` and `metadata.excludedCount` carry how many files were kept and skipped by the ignore rules, and `metadata.layer` which ignore-glob layer applied. A single-file edit, deletion or addition made in the tab records the same action with `metadata.mode: "derived"`, the `metadata.baseSnapshotId`/`baseVersion` it was edited from, and `metadata.putCount`/`deleteCount`/`inheritedCount` — never a file path, which is user content.',
+			'Uploaded a coding-instructions folder for validation — written before checks run, so a rejected upload still leaves a trace. `metadata.keptCount` and `metadata.excludedCount` carry how many files were kept and skipped by the ignore rules (the excluded count includes files the dialog left out client-side and never sent; `metadata.serverExcludedCount` is the part the server itself skipped), and `metadata.layer` which ignore-glob layer applied. A single-file edit, deletion or addition made in the tab records the same action with `metadata.mode: "derived"`, the `metadata.baseSnapshotId`/`baseVersion` it was edited from, and `metadata.putCount`/`deleteCount`/`inheritedCount` — never a file path, which is user content.',
 	},
 	{
 		key: "project.instructions.published",

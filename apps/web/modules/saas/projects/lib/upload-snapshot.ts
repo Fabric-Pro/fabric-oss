@@ -109,25 +109,41 @@ export async function uploadSnapshot(
 				projectId: input.projectId,
 				publishOnReady: input.publishOnReady,
 				fabricIgnoreText: input.fabricIgnoreText,
-				files: input.entries.map((e) => ({
-					path: e.path,
-					size: e.size,
-					sha256: e.sha256,
-				})),
+				// Only what the preview kept. Sending excluded paths made every
+				// `node_modules/` or build-output file count against the
+				// server's input cap and forced the browser to hash bytes nobody
+				// stores. The server still applies its own rules to what it
+				// receives, so this narrows what it CAN keep, never what it must.
+				files: kept.map((e) => {
+					if (e.sha256 === null) {
+						// `readFolderFiles` hashes every kept entry; a null here
+						// means the entries were built some other way, and
+						// sending no hash would fail validation with a message
+						// that names nothing.
+						throw new Error(`Missing hash for ${e.path}`);
+					}
+					return { path: e.path, size: e.size, sha256: e.sha256 };
+				}),
+				// So the stored version's "N files left out" still describes the
+				// whole pick, not just the part the server saw.
+				clientExcludedCount: input.entries.length - kept.length,
 			})
 		).snapshotId;
 	input.onSnapshotStarted?.(snapshotId);
 
-	// Keyed from EVERY entry the client read, not just the ones its own
-	// (possibly stale — see `CodingInstructionsTab`'s `settingsReady` gate)
-	// exclusion preview kept. The client's preview and the server's `begin`
-	// handler can legitimately disagree about which paths are excluded (the
-	// client previews against whatever `projectGlobs` it was handed; `begin`
-	// always re-resolves the project's LIVE settings). Building the map from
-	// the full entry list means a path the server decided to keep, that the
-	// client's preview had marked excluded, is still found here and uploaded
-	// correctly — the server's decision wins, not the client's stale preview.
-	const byPath = new Map(input.entries.map((e) => [e.path, e]));
+	// Keyed from the KEPT entries only, because those are the only paths the
+	// server was ever told about. The client's preview and the server's
+	// `begin` handler can still disagree about exclusions (the client previews
+	// against whatever `projectGlobs` it was handed; `begin` always
+	// re-resolves the project's LIVE settings), but now only in one direction:
+	// the server can leave out a path the client kept (reported below as
+	// `serverExcludedPaths`). The other direction — a path the client
+	// excluded that the server's live settings would have kept — can no longer
+	// happen, since the server never sees that path. That loss is accepted:
+	// the dialog only previews once the project's settings have loaded
+	// (`CodingInstructionsTab`'s `settingsReady` gate), and the person reviews
+	// exactly the list that is sent, so what they approved is what uploads.
+	const byPath = new Map(kept.map((e) => [e.path, e]));
 	// The server decides ids; fetch them via listFiles is not available before
 	// READY, so begin returns nothing per-file — createUploadUrls takes
 	// fileIds, so first list them:
@@ -161,10 +177,10 @@ export async function uploadSnapshot(
 				for (let u = queue.shift(); u; u = queue.shift()) {
 					const entry = byPath.get(u.path);
 					if (!entry) {
-						// A path neither kept NOR excluded by the client — the
-						// client never had this path at all. That is a real
-						// anomaly (a stale/foreign snapshot id, a corrupted
-						// response), not a settings race, so this still fails
+						// A path the client never sent — the server only ever
+						// creates rows for paths it was given, so this is a
+						// real anomaly (a stale/foreign snapshot id, a
+						// corrupted response), not a settings race, and fails
 						// loudly.
 						throw new Error(
 							`Server listed an unknown path: ${u.path}`,

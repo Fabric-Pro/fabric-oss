@@ -6,7 +6,7 @@ import {
 import {
 	buildIgnoreMatcher,
 	classifyPath,
-	collisionKey,
+	createTreeCollisionGuard,
 	describePortableNameRefusal,
 	resolveIgnoreGlobs,
 	SNAPSHOT_LIMITS,
@@ -69,6 +69,20 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 				)
 				.min(1)
 				.max(SNAPSHOT_LIMITS.maxFiles * 4),
+			// The number of entries the client left out under the same rules
+			// and therefore never sent. Informational only: it is folded into
+			// the snapshot's `excludedCount` so the published view's "N files
+			// left out" still describes the whole pick, not just what reached
+			// the server. Nothing is enforced from it — the server still
+			// applies its own rules to everything it receives, so a client
+			// that omits this field, or sends excluded paths anyway, keeps
+			// working.
+			clientExcludedCount: z
+				.number()
+				.int()
+				.min(0)
+				.max(1_000_000)
+				.optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -105,7 +119,7 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 		}> = [];
 		const excluded: Array<{ path: string; rule: string; layer: string }> =
 			[];
-		const seen = new Set<string>();
+		const tree = createTreeCollisionGuard();
 		let totalBytes = 0;
 
 		for (const file of input.files) {
@@ -135,13 +149,21 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 			// `collisionKey`, not `toLowerCase`: two spellings that differ
 			// only in Unicode normalisation are ONE file on macOS, so a
 			// version carrying both would upload two rows and install one.
-			const key = collisionKey(v.path);
-			if (seen.has(key)) {
+			// The same guard refuses a name used as both a file and a
+			// directory (`docs` beside `docs/a.md`), which no checkout can
+			// write at all. It is the one the browser preview runs, so the
+			// dialog refuses exactly what this refuses.
+			const collision = tree.add(v.path);
+			if (collision?.kind === "duplicate") {
 				throw new ORPCError("BAD_REQUEST", {
 					message: `Duplicate path (same file on a case-insensitive filesystem): ${v.path}`,
 				});
 			}
-			seen.add(key);
+			if (collision?.kind === "file-directory") {
+				throw new ORPCError("BAD_REQUEST", {
+					message: `A name cannot be both a file and a folder: ${collision.conflictsWith} and ${collision.path}`,
+				});
+			}
 			const portable = validatePortableName(v.path);
 			if (!portable.ok) {
 				throw new ORPCError("BAD_REQUEST", {
@@ -183,6 +205,9 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 			});
 		}
 
+		const excludedCount =
+			excluded.length + (input.clientExcludedCount ?? 0);
+
 		const snapshot = await createInstructionSnapshot({
 			projectId: input.projectId,
 			organizationId,
@@ -194,7 +219,7 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 				limits: SNAPSHOT_LIMITS,
 			},
 			publishOnReady: input.publishOnReady,
-			excludedCount: excluded.length,
+			excludedCount,
 			files: kept,
 		});
 
@@ -210,7 +235,10 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 			},
 			metadata: {
 				keptCount: kept.length,
-				excludedCount: excluded.length,
+				excludedCount,
+				// Kept apart from the total so an audit reader can tell rules
+				// the server applied from a count the client reported.
+				serverExcludedCount: excluded.length,
 				layer: resolved.layer,
 			},
 		});
@@ -219,7 +247,7 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 			snapshotId: snapshot.id,
 			version: snapshot.version,
 			keptCount: kept.length,
-			excludedCount: excluded.length,
+			excludedCount,
 			excluded,
 		};
 	});
