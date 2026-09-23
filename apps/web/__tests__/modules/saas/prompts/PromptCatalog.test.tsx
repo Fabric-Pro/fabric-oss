@@ -28,6 +28,13 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	}),
 }));
 
+// Unlisted-action rows open on ActionPromptList, which asks who may clear.
+const { isOrgAdmin } = vi.hoisted(() => ({ isOrgAdmin: { current: false } }));
+
+vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
+	useActiveOrganization: () => ({ isOrganizationAdmin: isOrgAdmin.current }),
+}));
+
 const { searchParams } = vi.hoisted(() => ({
 	searchParams: { current: new URLSearchParams() },
 }));
@@ -291,5 +298,108 @@ describe("PromptCatalog", () => {
 					.length,
 			).toBeGreaterThan(0),
 		);
+	});
+});
+
+/**
+ * An override saved at a slot the action list no longer contains — the Feature
+ * Clean Spec default was saved at DRAFT before it moved to CLEAN_SPEC — has no
+ * listed row, so without this section it could not be cleared from anywhere.
+ */
+describe("PromptCatalog — overrides on actions no longer listed", () => {
+	const binding = (
+		name: string,
+		scope: "SYSTEM" | "ORG" | "USER",
+		isDefault: boolean,
+		isEffective: boolean,
+	) => ({
+		promptId: `p-${name}`,
+		promptName: name,
+		promptVersionId: `pv-${name}`,
+		scope,
+		projectId: null,
+		isDefault,
+		isEffective,
+	});
+	const retiredSlot = (prompts: ReturnType<typeof binding>[]) => ({
+		entries: [
+			{
+				targetKey: "feature_clean_spec_generator",
+				documentType: "DRAFT",
+				storyKind: "FEATURE",
+				effectiveScope:
+					prompts.find((p) => p.isEffective)?.scope ?? null,
+				prompts,
+			},
+		],
+	});
+
+	beforeEach(() => {
+		catalogList.mockReset();
+		searchParams.current = new URLSearchParams();
+		isOrgAdmin.current = true;
+	});
+
+	it("lists a live override on a retired slot, open on its clear control", async () => {
+		catalogList.mockResolvedValue(
+			retiredSlot([
+				binding("Old org clean spec", "ORG", true, true),
+				binding("Fabric clean spec", "SYSTEM", true, false),
+			]),
+		);
+		wrap(<PromptCatalog />);
+
+		expect(
+			await screen.findByText(/no longer listed/i),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("Feature Clean Spec Generator — Draft (Feature)"),
+		).toBeInTheDocument();
+		expect(
+			await screen.findByRole("button", { name: /clear override/i }),
+		).toBeInTheDocument();
+	});
+
+	it("offers no way to write a new default to a retired slot", async () => {
+		catalogList.mockResolvedValue(
+			retiredSlot([
+				binding("Old org clean spec", "ORG", true, true),
+				binding("Fabric clean spec", "SYSTEM", true, false),
+			]),
+		);
+		wrap(<PromptCatalog />);
+
+		await screen.findByText("Fabric clean spec");
+		expect(
+			screen.queryByRole("button", { name: /use this/i }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /set for org/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("leaves out a retired slot holding only Fabric's own prompt", async () => {
+		catalogList.mockResolvedValue(
+			retiredSlot([binding("Fabric clean spec", "SYSTEM", true, true)]),
+		);
+		wrap(<PromptCatalog />);
+
+		await screen.findByText(/project documents/i);
+		await waitFor(() => expect(catalogList).toHaveBeenCalled());
+		expect(screen.queryByText(/no longer listed/i)).not.toBeInTheDocument();
+	});
+
+	it("leaves out an override that was already cleared", async () => {
+		catalogList.mockResolvedValue(
+			retiredSlot([
+				binding("Old org clean spec", "ORG", false, false),
+				binding("Fabric clean spec", "SYSTEM", true, true),
+			]),
+		);
+		wrap(<PromptCatalog />);
+
+		await screen.findByText(/project documents/i);
+		await waitFor(() => expect(catalogList).toHaveBeenCalled());
+		expect(screen.queryByText(/no longer listed/i)).not.toBeInTheDocument();
 	});
 });

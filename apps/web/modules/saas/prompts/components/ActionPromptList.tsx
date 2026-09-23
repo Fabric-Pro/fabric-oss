@@ -51,6 +51,10 @@ type Props = {
 	basePath: string;
 	/** Refetch the catalog after a switch lands. */
 	onChanged: () => void;
+	/** False for an action the catalog no longer lists: its overrides can be
+	 *  cleared, but nothing new should be written to a slot that may no longer
+	 *  be read. */
+	allowSwitching?: boolean;
 };
 
 /** The tier a variant competes at — an ORG row narrowed to a project is the
@@ -73,6 +77,7 @@ export function ActionPromptList({
 	prompts,
 	basePath,
 	onChanged,
+	allowSwitching = true,
 }: Props) {
 	const { organizationId, isOrgContext } = useOrganizationContext();
 	const { isOrganizationAdmin } = useActiveOrganization();
@@ -152,9 +157,12 @@ export function ActionPromptList({
 	/**
 	 * FR11: stand this tier's override down and let the tier below take over.
 	 *
-	 * Only offered on an override that is actually in force and that the caller
-	 * may write — clearing changes what everyone at and below the tier receives,
-	 * so it is the same authority as setting it. SYSTEM is never offered here:
+	 * Only offered on an override that is still its tier's default and that the
+	 * caller may write — clearing changes what everyone at and below the tier
+	 * receives, so it is the same authority as setting it. "Its tier's default",
+	 * not "in force for the viewer": an admin's own personal default outranks
+	 * the organization's for them alone, and must not hide the organization's
+	 * override from the person entitled to clear it. SYSTEM is never offered here:
 	 * there is no tier beneath it to reveal, so "clearing" it would leave the
 	 * action with no prompt rather than reverting anything.
 	 */
@@ -185,7 +193,7 @@ export function ActionPromptList({
 	});
 
 	const mayClear = (variant: ActionPromptVariant) => {
-		if (!variant.isEffective || variant.scope === "SYSTEM") {
+		if (!variant.isDefault || variant.scope === "SYSTEM") {
 			return false;
 		}
 		const tier = tierOf(variant);
@@ -225,6 +233,21 @@ export function ActionPromptList({
 					useForMe.variables?.promptVersionId ===
 						variant.promptVersionId;
 				const busy = useForMe.isPending || switchTo.isPending;
+				const clearButton = mayClear(variant) && (
+					<Button
+						variant="ghost"
+						size="sm"
+						disabled={clearOverride.isPending}
+						onClick={() => clearOverride.mutate(variant)}
+					>
+						{clearOverride.isPending &&
+							clearOverride.variables?.promptVersionId ===
+								variant.promptVersionId && (
+								<Loader2Icon className="mr-1.5 size-3 animate-spin" />
+							)}
+						Clear override
+					</Button>
+				);
 				return (
 					<li
 						key={variant.promptVersionId}
@@ -250,36 +273,24 @@ export function ActionPromptList({
 								<Badge className="bg-success/10 text-success">
 									In force
 								</Badge>
-								{mayClear(variant) && (
-									<Button
-										variant="ghost"
-										size="sm"
-										disabled={clearOverride.isPending}
-										onClick={() =>
-											clearOverride.mutate(variant)
-										}
-									>
-										{clearOverride.isPending && (
-											<Loader2Icon className="mr-1.5 size-3 animate-spin" />
-										)}
-										Clear override
-									</Button>
-								)}
+								{clearButton}
 							</div>
 						) : (
 							<div className="flex shrink-0 items-center gap-2">
-								<Button
-									variant="outline"
-									size="sm"
-									disabled={busy}
-									onClick={() => useForMe.mutate(variant)}
-								>
-									{pending && (
-										<Loader2Icon className="mr-1.5 size-3 animate-spin" />
-									)}
-									Use this
-								</Button>
-								{isOrgContext && (
+								{allowSwitching && (
+									<Button
+										variant="outline"
+										size="sm"
+										disabled={busy}
+										onClick={() => useForMe.mutate(variant)}
+									>
+										{pending && (
+											<Loader2Icon className="mr-1.5 size-3 animate-spin" />
+										)}
+										Use this
+									</Button>
+								)}
+								{allowSwitching && isOrgContext && (
 									<Button
 										variant="ghost"
 										size="sm"
@@ -291,6 +302,7 @@ export function ActionPromptList({
 											: "Set for org"}
 									</Button>
 								)}
+								{clearButton}
 							</div>
 						)}
 					</li>
