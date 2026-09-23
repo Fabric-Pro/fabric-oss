@@ -641,49 +641,27 @@ export async function POST(request: NextRequest) {
 		// open. Inaccessible ones are dropped (and logged) rather than failing
 		// the whole turn, mirroring the project-access handling below.
 		if (workspaceIds.length > 0) {
-			const { db, hasWorkspaceAccess } = await import("@repo/database");
-			// `hasWorkspaceAccess` answers "can this user open the workspace";
-			// the turn is additionally bound to one tenant, so a workspace the
-			// user can open in organization B must not feed a turn running on
-			// organization A. Exact, null-aware equality on the workspace's
-			// own organization.
-			const workspaceTenants = new Map(
-				(
-					await db.workspace.findMany({
-						where: { id: { in: workspaceIds } },
-						select: { id: true, organizationId: true },
-					})
-				).map((workspace) => [workspace.id, workspace.organizationId]),
+			const { filterAccessibleWorkspaceIds } = await import(
+				"@repo/database"
 			);
-			const accessible = await Promise.all(
-				workspaceIds.map(async (workspaceId) => {
-					if (!workspaceTenants.has(workspaceId)) {
-						return null;
-					}
-					if (
-						(workspaceTenants.get(workspaceId) ?? null) !==
-						(organizationId ?? null)
-					) {
-						return null;
-					}
-					return (await hasWorkspaceAccess(workspaceId, userId))
-						? workspaceId
-						: null;
-				}),
-			);
-			const denied = workspaceIds.filter(
-				(_, index) => accessible[index] === null,
-			);
+			// "Can this user open the workspace" is not enough on its own: the
+			// turn is bound to one tenant, so a workspace the user can open in
+			// organization B must not feed a turn running on organization A.
+			// The filter compares each workspace's own organization with the
+			// resolved one (exact, null-aware) before it checks access.
+			const { allowed, dropped: denied } =
+				await filterAccessibleWorkspaceIds({
+					workspaceIds,
+					userId,
+					organizationId,
+				});
 			if (denied.length > 0) {
 				console.warn(
 					"[Fabric AI Stream] Dropping workspaces the caller cannot access",
 					{ userId, denied },
 				);
-				workspaceIds = accessible.filter(
-					(workspaceId): workspaceId is string =>
-						workspaceId !== null,
-				);
 			}
+			workspaceIds = allowed;
 		}
 
 		// Resolve project ID from conversation if not provided
