@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/integrations-gmail",
-	"version": "0.1.7",
+	"version": "0.1.8",
 	"description": "Gmail integration plugin for Fabric — type augmentation + runtime",
 	"keywords": [
 		"fabric",

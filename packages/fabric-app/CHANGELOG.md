@@ -1,5 +1,20 @@
 # fabric-app
 
+## 1.16.10
+
+### Patch Changes
+
+- dfd3514: Agent instance runs now search only the attached workspaces that belong to the run's own organization (or, for a personal run, the user's own personal workspaces), so an instance saved before attachments were checked against its organization can no longer read documents from another organization's workspace or from a personal one.
+- 5f0539b: An "Indexing your repository" notice in the create-document dialog now clears on its own once indexing finishes.
+- df66752: Settings now warn when no chat channel is linked for Work Capture, and a document's auto-refresh settings warn when a refresh has nothing to read.
+- a3bf3cd: Capability gates now name the real prerequisite, offer a working fix or retry, refresh on their own, and support dismissing a warning for the session.
+- 539de46: Deleting an item from a project's Context tab now targets the search-index cleanup at the organization that hosts the project.
+- 25170b2: The Context tab's "Remove duplicates" flow now lists which items are duplicates and which item each one is a copy of, both in the banner and in the confirmation dialog, before anything is deleted.
+- 08da8e3: `fabric context push` now renames a moved or renamed file in the project's Context instead of leaving a second copy behind, and a new `--prune` flag deletes the server entries of files removed from the folder, but only in the version the folder last pushed.
+- 6f0f196: A browser that has never had a theme chosen in it now follows the operating system's light or dark setting on first load, instead of always opening in light mode. Anyone who has picked Light, Dark or System keeps that choice; nothing stored changes.
+- d9ef4fc: A meeting is now named by the occurrence it actually was, everywhere it is cited as a source: the To Do list, the meeting digest grid and detail pane, and a story's source-meeting label. Renaming a recurring Teams series no longer retitles every past occurrence that was recorded under the old name.
+- 15187f1: The orchestrator chat stream now drops attached workspaces the caller cannot open or that belong to a different organization, matching the direct chat stream.
+
 ## 1.16.9
 
 ### Patch Changes
