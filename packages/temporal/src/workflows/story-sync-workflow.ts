@@ -36,6 +36,10 @@ import type {
 	listWorkItemsFromPM as ListWorkItemsFromPMFn,
 	updateStoryExternalRefs as UpdateStoryExternalRefsFn,
 } from "../activities/pm-integration/story-sync";
+import type {
+	closeStorySyncJob as CloseStorySyncJobFn,
+	CloseStorySyncJobInput,
+} from "../activities/pm-integration/story-sync-job";
 import type { PMToolCapabilities } from "../activities/pm-integration/tool-analyzer";
 
 // =============================================================================
@@ -284,6 +288,54 @@ const { discoverPMToolCapabilities, detectAndStampPmPushConflict } =
 			maximumAttempts: 2,
 		},
 	});
+
+// Closes the PM_STORY_SYNC job row. Short and bounded: it is bookkeeping run
+// from `finally`, and a slow database must not hold the workflow open.
+const { closeStorySyncJob } = proxyActivities<{
+	closeStorySyncJob: typeof CloseStorySyncJobFn;
+}>({
+	startToCloseTimeout: "15 seconds",
+	retry: {
+		initialInterval: "1s",
+		maximumInterval: "5s",
+		backoffCoefficient: 2,
+		maximumAttempts: 3,
+	},
+});
+
+/**
+ * How the job row closes for the run's final progress. A `completed` run
+ * closes COMPLETED, including one where some items failed (the counts say
+ * so); a cancellation and every failure close as FAILED, with the progress
+ * message as the Job Hub's error text.
+ */
+export function closeArgsFrom(
+	progress: StorySyncProgress,
+): CloseStorySyncJobInput {
+	const counts = {
+		total: progress.totalStories,
+		synced: progress.syncedCount,
+		failed: progress.failedCount,
+		conflicted: progress.conflictedCount,
+	};
+	if (progress.status === "completed") {
+		return { outcome: "COMPLETED", message: progress.message, counts };
+	}
+	if (progress.status === "cancelled") {
+		return {
+			outcome: "FAILED",
+			message: progress.message,
+			errorClass: "Cancelled",
+			counts,
+		};
+	}
+	return {
+		outcome: "FAILED",
+		message: progress.message,
+		errorClass: "SyncFailed",
+		counts,
+	};
+}
 
 // =============================================================================
 // Workflow Implementation
@@ -1770,6 +1822,20 @@ export async function storySyncWorkflow(
 			errorMessage,
 			"STORY_SYNC_FAILED",
 		);
+	} finally {
+		// Close the durable "a PM sync is running" row on every exit. The inner
+		// try/catch is mandatory: a throw from `finally` would replace the
+		// workflow's own result or error.
+		if (patched("story-sync-job-row-v1")) {
+			try {
+				await closeStorySyncJob(closeArgsFrom(progress));
+			} catch (closeError) {
+				log.warn("Failed to close the PM story sync job row", {
+					projectId,
+					error: extractActivityError(closeError),
+				});
+			}
+		}
 	}
 }
 

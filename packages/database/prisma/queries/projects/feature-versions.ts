@@ -159,6 +159,14 @@ export async function restoreFeatureVersion(
 		return currentStory;
 	}
 
+	// Restoring content is a person's content edit of an AI-recommended item
+	// (Fizzy #2211); a stage-only restore is not.
+	const stampFirstHumanEdit =
+		currentStory.source === "AI_RECOMMENDED" &&
+		currentStory.firstHumanEditAt === null &&
+		(currentStory.description !== versionData.description ||
+			currentStory.acceptanceCriteria !== versionData.acceptanceCriteria);
+
 	return await db.$transaction(async (tx) => {
 		const changedAt = new Date();
 		// Stage-transition choke point (plan §F1): restoring an older version
@@ -238,6 +246,7 @@ export async function restoreFeatureVersion(
 				lastEditedAt: changedAt,
 				lastEditedByName: tenantContext.lastEditedByName ?? null,
 				lastEditedSource: "MANUAL",
+				...(stampFirstHumanEdit ? { firstHumanEditAt: changedAt } : {}),
 			},
 		});
 		if (updatedCount.count !== 1) {

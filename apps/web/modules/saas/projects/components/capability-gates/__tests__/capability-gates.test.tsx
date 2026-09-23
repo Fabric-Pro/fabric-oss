@@ -106,11 +106,12 @@ function renderGated(ui: ReactNode) {
  */
 function GateProbe({ capabilityKey = KEY }: { capabilityKey?: string }) {
 	const { isLoading, enabled } = useCapabilityGates();
-	const { blocked } = useCapabilityGate(capabilityKey);
+	const { blocked, hidden } = useCapabilityGate(capabilityKey);
 	return (
 		<span data-testid="probe">
 			{isLoading ? "loading" : enabled ? "resolved-on" : "resolved-off"}
 			{blocked ? " blocked" : " unblocked"}
+			{hidden ? " hidden" : ""}
 		</span>
 	);
 }
@@ -160,11 +161,9 @@ describe("what renders nothing", () => {
 		expect(container.querySelectorAll("div")).toHaveLength(0);
 	});
 
-	it("renders no banner for a hidden capability", async () => {
-		// `HIDDEN` should remove the action from the page altogether, which no
-		// surface implements and no rule emits — so today it behaves as
-		// available. Pinned so the behaviour is characterised rather than
-		// assumed; see the note in `capability-gate-view.ts`.
+	it("renders no banner for a hidden capability, and reports it hidden", async () => {
+		// `HIDDEN` removes the action from the page altogether. The banner has
+		// nothing to say; the surface reads `hidden` and leaves the action out.
 		serve([gate({ state: "HIDDEN" })]);
 		const { container } = renderGated(
 			<>
@@ -174,7 +173,16 @@ describe("what renders nothing", () => {
 		);
 
 		await screen.findByText(/resolved-on unblocked/);
+		expect(screen.getByTestId("probe")).toHaveTextContent("hidden");
 		expect(container.querySelectorAll("div")).toHaveLength(0);
+	});
+
+	it("never reports an available capability as hidden", async () => {
+		serve([gate({ state: "AVAILABLE" })]);
+		renderGated(<GateProbe />);
+
+		await screen.findByText(/resolved-on unblocked/);
+		expect(screen.getByTestId("probe")).not.toHaveTextContent("hidden");
 	});
 
 	it("hides a warning this viewer already dismissed", async () => {
@@ -249,6 +257,7 @@ describe("one resolution per page", () => {
 				"context",
 				"security",
 				"release-notes",
+				"roadmap",
 				"settings",
 			],
 		});

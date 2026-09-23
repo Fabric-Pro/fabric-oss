@@ -5,8 +5,9 @@
  * of the whole matrix is a fixed number of round trips rather than one per rule,
  * and every rule is testable against a plain object with no database in sight.
  *
- * Twelve reads, not one per capability: the aggregates are grouped counts, so a
- * single `groupBy` answers four fields at once wherever the shapes allow it.
+ * A fixed handful of reads, not one per capability: the aggregates are grouped
+ * counts, so a single `groupBy` answers four fields at once wherever the shapes
+ * allow it.
  *
  * ## What this file deliberately does not read
  *
@@ -33,13 +34,20 @@ import { ORPCError } from "@orpc/server";
 import {
 	canEditProject,
 	canEditProjectSettings,
+	countEligibleAiRecommendationBatches,
 	db,
 	type RepositoryIntegrationStatus,
+	resolvePMConfigForUser,
+	TERMINAL_DRAFTING_STAGES,
 } from "@repo/database";
 import {
 	isCodeIndexingDeploymentEnabled,
 	isCodeIndexingEnabled,
 } from "../projects/lib/code-indexing-enabled";
+import {
+	type PMTarget,
+	resolvePmTarget,
+} from "../projects/lib/resolve-pm-target";
 import type { CapabilityEvidence, JobSnapshot } from "./types";
 
 /**
@@ -217,11 +225,17 @@ const PRODUCT_LINK_CATEGORIES = new Set<string>([
 	"MARKETING_WEBSITE",
 ]);
 
-/** Background job kinds this bundle reports on, read in one grouped pass. */
+/**
+ * Background job kinds this bundle reports on, read in one grouped pass.
+ *
+ * `PM_STATE_POLL` is absent on purpose: it is the unattended hourly status
+ * poll, and a pull someone is waiting on must not read as busy because of it.
+ */
 const GATED_JOB_KINDS = [
 	"CODE_INDEXING",
 	"CONTEXT_PROCESSING",
 	"DOCUMENT_GENERATION",
+	"PM_STORY_SYNC",
 ] as const;
 
 /** Code index states that mean a run is in flight on that row. */
@@ -401,6 +415,43 @@ async function resolveAtlasStatus(
 }
 
 /**
+ * The bulk PM target and whether the single-item doors resolve a config, for
+ * one viewer, with no config read made twice.
+ *
+ * When the project pins a config, `resolvePmTarget` already makes exactly the
+ * item doors' read (same config, server, viewer and tenant): an `mcp` target
+ * means it resolved enabled, and no target means it did not. Only a project
+ * naming a server alone (the legacy shape, or GitLab over REST) still needs
+ * the item doors' own server-fallback read.
+ */
+async function resolvePmPaths(args: {
+	projectManagementMcpServerId: string | null;
+	projectManagementMcpConfigId: string | null;
+	userId: string;
+	organizationId: string | null;
+}): Promise<{ pmTarget: PMTarget | null; itemConfigResolvable: boolean }> {
+	const pmTarget = await resolvePmTarget({
+		project: {
+			projectManagementMcpServerId: args.projectManagementMcpServerId,
+			projectManagementMcpConfigId: args.projectManagementMcpConfigId,
+			organizationId: args.organizationId,
+		},
+		userId: args.userId,
+		organizationId: args.organizationId,
+	});
+	if (args.projectManagementMcpConfigId) {
+		return { pmTarget, itemConfigResolvable: pmTarget?.kind === "mcp" };
+	}
+	const itemConfig = await resolvePMConfigForUser({
+		configId: null,
+		mcpServerId: args.projectManagementMcpServerId,
+		userId: args.userId,
+		organizationId: args.organizationId ?? undefined,
+	});
+	return { pmTarget, itemConfigResolvable: itemConfig?.enabled === true };
+}
+
+/**
  * Thrown when the project does not resolve inside the caller's tenant.
  *
  * Gating fails CLOSED. Returning a default bundle would resolve every
@@ -465,6 +516,12 @@ export async function gatherCapabilityEvidence({
 			// Nested for the same reason as the scan config: a one-row join the
 			// gather pays nothing extra for. An absent row is the default, off.
 			ragSettings: { select: { codeSearchEnabled: true } },
+			// The project-management connection the Roadmap doors dispatch
+			// through, and the read-only switch that refuses writes to it.
+			readOnlyMode: true,
+			projectManagementMcpServerId: true,
+			projectManagementMcpConfigId: true,
+			projectManagementContainerId: true,
 			// Work Capture's conversations. Counted on the linked rows rather
 			// than read off a monitor flag: linking is what gives capture
 			// something to read, and the flag only decides how often it looks.
@@ -514,6 +571,10 @@ export async function gatherCapabilityEvidence({
 	}
 
 	const tenantOrganizationId = project.organizationId;
+	const pmToolSelected = Boolean(
+		project.projectManagementMcpServerId ||
+			project.projectManagementMcpConfigId,
+	);
 
 	const [
 		codeIndexes,
@@ -526,6 +587,9 @@ export async function gatherCapabilityEvidence({
 		viewerCanEditProjectSettings,
 		viewerCanUpdateProject,
 		atlasStatus,
+		{ pmTarget, itemConfigResolvable },
+		roadmapItemCount,
+		eligibleAiBatchCount,
 	] = await Promise.all([
 		// Every index row for the project, which is at most a handful — the
 		// table is unique on (project, repository, branch). One read answers
@@ -552,7 +616,7 @@ export async function gatherCapabilityEvidence({
 			select: { id: true, status: true, updatedAt: true },
 			orderBy: { updatedAt: "desc" },
 		}),
-		// Three job-backed snapshots in one read. Grouping by (kind, status)
+		// Four job-backed snapshots in one read. Grouping by (kind, status)
 		// and taking the max of each clock gives, per kind: whether anything is
 		// running, the newest heartbeat among the running rows, and which
 		// terminal outcome happened last — without materialising a single job
@@ -637,6 +701,33 @@ export async function gatherCapabilityEvidence({
 		includeAtlasStatus
 			? resolveAtlasStatus(projectId, userId, tenantOrganizationId)
 			: null,
+		// Both PM paths, for this viewer, because the doors disagree: the bulk
+		// pull and push dispatch through `resolvePmTarget`, which returns
+		// nothing for a legacy project that names only a server, while the
+		// single-item doors resolve the viewer's own config with the server
+		// fallback and succeed on that same project. Database reads only, and
+		// skipped outright when no PM tool is named.
+		pmToolSelected
+			? resolvePmPaths({
+					projectManagementMcpServerId:
+						project.projectManagementMcpServerId,
+					projectManagementMcpConfigId:
+						project.projectManagementMcpConfigId,
+					userId,
+					organizationId: tenantOrganizationId,
+				})
+			: { pmTarget: null, itemConfigResolvable: false },
+		// The live Roadmap, as grounding for a recommendation run.
+		db.userStory.count({
+			where: {
+				projectId,
+				draftingStage: { notIn: [...TERMINAL_DRAFTING_STAGES] },
+				pmAutoHidden: false,
+			},
+		}),
+		// The one predicate the batch removal door uses, so the gate can never
+		// offer a removal the door finds nothing to do for.
+		countEligibleAiRecommendationBatches(projectId),
 	]);
 
 	// ── Codebase ─────────────────────────────────────────────────────────────
@@ -957,6 +1048,19 @@ export async function gatherCapabilityEvidence({
 						},
 					)),
 		},
+
+		pm: {
+			toolSelected: pmToolSelected,
+			boardSelected: Boolean(project.projectManagementContainerId),
+			bulkTargetResolvable: pmTarget !== null,
+			itemConfigResolvable,
+			readOnly: project.readOnlyMode,
+			syncing: jobSnapshot("PM_STORY_SYNC"),
+		},
+
+		roadmap: { itemCount: roadmapItemCount },
+
+		aiRecommended: { eligibleBatchCount: eligibleAiBatchCount },
 
 		chat: {
 			linkedChannelCount:

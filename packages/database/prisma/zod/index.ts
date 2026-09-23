@@ -732,7 +732,7 @@ export type ProjectStoryStatusScalarFieldEnum = z.infer<typeof ProjectStoryStatu
 
 // File: UserStoryScalarFieldEnum.schema.ts
 
-export const UserStoryScalarFieldEnumSchema = z.enum(['id', 'projectId', 'statusId', 'identifier', 'title', 'description', 'acceptanceCriteria', 'kind', 'priority', 'size', 'storyPoints', 'order', 'roadmapOrder', 'priorityOrder', 'priorityChangedAt', 'priorityChangeReason', 'labels', 'createdById', 'assigneeId', 'externalId', 'externalUrl', 'externalMcpServerId', 'pmAutoSyncEnabled', 'lastSyncedStatusId', 'pipelineExecutionId', 'source', 'originTestCaseId', 'bugFingerprint', 'sourceMeetingTranscriptId', 'createdFromProposalId', 'sourceRef', 'proposalApplicationKey', 'sourceDependencyRaw', 'dependsOnRefs', 'dependsOnPhases', 'deliveryTrack', 'trackRationale', 'trackSetBy', 'trackUpdatedAt', 'estimateConfidence', 'aiGeneratedTitle', 'titleSource', 'releaseNotes', 'draftingStage', 'draftingStageUpdatedAt', 'maturationStatus', 'coverageOverrideReason', 'coverageOverrideById', 'coverageOverrideAt', 'pmTicketTerminal', 'pmTicketTerminalStatus', 'pmAutoHidden', 'version', 'needsMoreInfo', 'blocked', 'blockedReason', 'reporterName', 'reporterSource', 'reporterSourceUrl', 'lastSyncedPmHash', 'lastSyncedAt', 'lastPmSyncStatus', 'lastPmSyncError', 'lastPmSyncAttemptAt', 'pmStatusSyncBaseId', 'pmStatusSyncBaseAt', 'pmStatusSyncBaseLink', 'pmStatusSyncBaseFabricId', 'mergedIntoStoryId', 'lastEditedAt', 'lastEditedByName', 'lastEditedSource', 'summaryDigest', 'workingNotesContent', 'lastQuestionScanHash', 'lastSummaryHash', 'lastContextUpdateAt', 'maturationV2OptedIn', 'autoProposeAnswers', 'qaAnalysis', 'cleanSpecApprovalMode', 'decisionLogApprovalMode', 'summaryQuestionsApprovalMode', 'createdAt', 'updatedAt'])
+export const UserStoryScalarFieldEnumSchema = z.enum(['id', 'projectId', 'statusId', 'identifier', 'title', 'description', 'acceptanceCriteria', 'kind', 'priority', 'size', 'storyPoints', 'order', 'roadmapOrder', 'priorityOrder', 'priorityChangedAt', 'priorityChangeReason', 'labels', 'createdById', 'assigneeId', 'externalId', 'externalUrl', 'externalMcpServerId', 'pmAutoSyncEnabled', 'lastSyncedStatusId', 'pipelineExecutionId', 'source', 'originTestCaseId', 'bugFingerprint', 'sourceMeetingTranscriptId', 'createdFromProposalId', 'aiRecommendationBatchId', 'aiBatchProtectedAt', 'aiBatchProtectedById', 'firstHumanEditAt', 'sourceRef', 'proposalApplicationKey', 'sourceDependencyRaw', 'dependsOnRefs', 'dependsOnPhases', 'deliveryTrack', 'trackRationale', 'trackSetBy', 'trackUpdatedAt', 'estimateConfidence', 'aiGeneratedTitle', 'titleSource', 'releaseNotes', 'draftingStage', 'draftingStageUpdatedAt', 'maturationStatus', 'coverageOverrideReason', 'coverageOverrideById', 'coverageOverrideAt', 'pmTicketTerminal', 'pmTicketTerminalStatus', 'pmAutoHidden', 'version', 'needsMoreInfo', 'blocked', 'blockedReason', 'reporterName', 'reporterSource', 'reporterSourceUrl', 'lastSyncedPmHash', 'lastSyncedAt', 'lastPmSyncStatus', 'lastPmSyncError', 'lastPmSyncAttemptAt', 'pmStatusSyncBaseId', 'pmStatusSyncBaseAt', 'pmStatusSyncBaseLink', 'pmStatusSyncBaseFabricId', 'mergedIntoStoryId', 'lastEditedAt', 'lastEditedByName', 'lastEditedSource', 'summaryDigest', 'workingNotesContent', 'lastQuestionScanHash', 'lastSummaryHash', 'lastContextUpdateAt', 'maturationV2OptedIn', 'autoProposeAnswers', 'qaAnalysis', 'cleanSpecApprovalMode', 'decisionLogApprovalMode', 'summaryQuestionsApprovalMode', 'createdAt', 'updatedAt'])
 
 export type UserStoryScalarFieldEnum = z.infer<typeof UserStoryScalarFieldEnumSchema>;
 
@@ -2382,7 +2382,7 @@ export type MeetingAgendaStatus = z.infer<typeof MeetingAgendaStatusSchema>;
 
 // File: PendingBacklogProposalSource.schema.ts
 
-export const PendingBacklogProposalSourceSchema = z.enum(['TEAMS_CHANNEL', 'TEAMS_CHAT', 'SLACK_CHANNEL', 'AI_UPDATE_SIDEBAR', 'MONITORED_MEETING', 'SCOPE_DOCUMENT'])
+export const PendingBacklogProposalSourceSchema = z.enum(['TEAMS_CHANNEL', 'TEAMS_CHAT', 'SLACK_CHANNEL', 'AI_UPDATE_SIDEBAR', 'MONITORED_MEETING', 'SCOPE_DOCUMENT', 'ROADMAP_RECOMMENDATION'])
 
 export type PendingBacklogProposalSource = z.infer<typeof PendingBacklogProposalSourceSchema>;
 
@@ -2466,7 +2466,7 @@ export type StorySize = z.infer<typeof StorySizeSchema>;
 
 // File: StorySource.schema.ts
 
-export const StorySourceSchema = z.enum(['MANUAL', 'JIRA', 'AZURE_DEVOPS', 'FIZZY', 'GITLAB', 'LINEAR', 'GITHUB', 'AI_UPDATE', 'APPROVED_PROPOSAL', 'CUSTOM_AGENT', 'SLACK', 'SECURITY_SCAN', 'PIPELINE_FAILURE', 'IMPORTED_SCOPE'])
+export const StorySourceSchema = z.enum(['MANUAL', 'JIRA', 'AZURE_DEVOPS', 'FIZZY', 'GITLAB', 'LINEAR', 'GITHUB', 'AI_UPDATE', 'APPROVED_PROPOSAL', 'CUSTOM_AGENT', 'SLACK', 'SECURITY_SCAN', 'PIPELINE_FAILURE', 'IMPORTED_SCOPE', 'AI_RECOMMENDED'])
 
 export type StorySource = z.infer<typeof StorySourceSchema>;
 
@@ -3288,7 +3288,7 @@ export type SyncJobType = z.infer<typeof SyncJobTypeSchema>;
 
 // File: BackgroundJobKind.schema.ts
 
-export const BackgroundJobKindSchema = z.enum(['TEAMS_CHANNEL_MONITOR', 'TEAMS_CHAT_MONITOR', 'SLACK_CHANNEL_MONITOR', 'SLACK_BACKFILL', 'CODE_INDEXING', 'CONTEXT_PROCESSING', 'STORY_KIND_REGENERATION', 'PUBLISHING_TOPIC_GENERATION', 'PM_STATE_POLL', 'DOCUMENT_GENERATION'])
+export const BackgroundJobKindSchema = z.enum(['TEAMS_CHANNEL_MONITOR', 'TEAMS_CHAT_MONITOR', 'SLACK_CHANNEL_MONITOR', 'SLACK_BACKFILL', 'CODE_INDEXING', 'CONTEXT_PROCESSING', 'STORY_KIND_REGENERATION', 'PUBLISHING_TOPIC_GENERATION', 'PM_STATE_POLL', 'DOCUMENT_GENERATION', 'PM_STORY_SYNC'])
 
 export type BackgroundJobKind = z.infer<typeof BackgroundJobKindSchema>;
 
@@ -6295,6 +6295,10 @@ export const UserStorySchema = z.object({
   bugFingerprint: z.string().nullish(),
   sourceMeetingTranscriptId: z.string().nullish(),
   createdFromProposalId: z.string().nullish(),
+  aiRecommendationBatchId: z.string().nullish(),
+  aiBatchProtectedAt: z.date().nullish(),
+  aiBatchProtectedById: z.string().nullish(),
+  firstHumanEditAt: z.date().nullish(),
   sourceRef: z.string().nullish(),
   proposalApplicationKey: z.string().nullish(),
   sourceDependencyRaw: z.string().nullish(),

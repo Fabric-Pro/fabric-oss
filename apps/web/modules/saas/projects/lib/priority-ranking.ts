@@ -1,7 +1,7 @@
 import type {
 	FeatureDraftingStage,
-	StorySource,
 	StoryPriority,
+	StorySource,
 	UserStory,
 } from "./stories/types";
 
@@ -94,7 +94,7 @@ export function scoreSignals(item: PriorityRankInput, now: number): number {
 			PRIORITY_WEIGHTS.openDecisionCap,
 		) +
 		STAGE_SCORE[item.draftingStage] +
-		(item.source === "approved_proposal"
+		(item.source === "approved_proposal" || item.source === "ai_recommended"
 			? PRIORITY_WEIGHTS.proposalLinked
 			: 0);
 

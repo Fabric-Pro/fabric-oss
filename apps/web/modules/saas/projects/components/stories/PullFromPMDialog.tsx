@@ -28,6 +28,7 @@ import { cn } from "@ui/lib";
 import {
 	AlertCircleIcon,
 	AlertTriangleIcon,
+	CheckCircle2Icon,
 	ChevronLeftIcon,
 	ChevronRightIcon,
 	CloudDownloadIcon,
@@ -83,6 +84,17 @@ interface PullFromPMDialogProps {
 	pmToolName: string;
 	/** True while the bulk-pull workflow is being started */
 	isPulling?: boolean;
+	/**
+	 * Read the whole board on open, so a board with nothing left to import
+	 * says so instead of showing an empty picker (FR44). Costs one unfiltered
+	 * board read per open, so only the Roadmap's start flows ask for it.
+	 */
+	detectNothingNew?: boolean;
+	/**
+	 * Do both: offered beside Close when there is nothing new, to go straight
+	 * on to recommendations (FR45).
+	 */
+	onContinueWithNothingNew?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,9 +142,12 @@ export function PullFromPMDialog({
 	organizationId,
 	pmToolName,
 	isPulling = false,
+	detectNothingNew = false,
+	onContinueWithNothingNew,
 }: PullFromPMDialogProps) {
 	const { trackEvent } = useAnalytics();
 	const tStories = useTranslations("tooltips.stories");
+	const tNothingNew = useTranslations("projects.stories.pullNothingNew");
 
 	// Existing state
 	const [search, setSearch] = useState("");
@@ -225,6 +240,31 @@ export function PullFromPMDialog({
 				(appliedFilters?.ids != null && appliedFilters.ids.length > 0)),
 		placeholderData: (prev) => prev,
 	});
+
+	// FR44: the one read that can tell "everything is already imported".
+	// The picker's own query waits for a search, and a search's counts are
+	// the search's, not the board's.
+	const overview = useQuery({
+		queryKey: ["pm-tickets-overview", projectId, organizationId],
+		queryFn: () =>
+			orpcClient.projects.stories.listPMTickets({
+				projectId,
+				page: 1,
+				pageSize: 1,
+			}),
+		enabled: open && detectNothingNew,
+		staleTime: 0,
+	});
+	const nothingNew =
+		detectNothingNew &&
+		overview.data !== undefined &&
+		!overview.isFetching &&
+		!overview.isError &&
+		overview.data.total === 0 &&
+		overview.data.errors.length === 0 &&
+		debouncedSearch.length === 0 &&
+		appliedFilters === null &&
+		!includeAlreadySynced;
 
 	const tickets: PMTicket[] = useMemo(() => data?.tickets ?? [], [data]);
 
@@ -477,6 +517,19 @@ export function PullFromPMDialog({
 									: "Failed to load tickets"}
 							</span>
 						</div>
+					) : nothingNew ? (
+						<output className="flex flex-col items-center justify-center h-full gap-2 px-4 py-6 text-center">
+							<CheckCircle2Icon
+								aria-hidden
+								className="size-5 text-secondary"
+							/>
+							<span className="font-medium text-foreground text-sm">
+								{tNothingNew("title")}
+							</span>
+							<span className="text-muted-foreground text-sm">
+								{tNothingNew("body", { tool: pmToolName })}
+							</span>
+						</output>
 					) : tickets.length === 0 ? (
 						// Empty state
 						<div className="flex flex-col items-center justify-center h-full text-muted-foreground px-4 py-6">
@@ -657,61 +710,88 @@ export function PullFromPMDialog({
 
 				{/* ── Footer ── */}
 				<DialogFooter className="px-4 py-3 border-t border-border/60 flex-row gap-2 justify-end">
-					<Button
-						variant="outline"
-						size="sm"
-						onClick={onClose}
-						disabled={isPulling}
-					>
-						Cancel
-					</Button>
-					<Tooltip>
-						<TooltipTrigger asChild>
+					{nothingNew ? (
+						<>
 							<Button
+								variant="outline"
 								size="sm"
-								onClick={handleConfirm}
-								disabled={selected.size === 0 || isPulling}
-								className="min-w-[130px]"
+								onClick={onClose}
 							>
-								{isPulling ? (
-									<>
-										<Loader2Icon className="size-3.5 mr-1.5 animate-spin" />
-										Starting…
-									</>
-								) : (
-									<>
-										<CloudDownloadIcon className="size-3.5 mr-1.5" />
-										{(() => {
-											if (selected.size === 0) {
-												return "Pull selected";
-											}
-											const selectedSynced =
-												tickets.filter(
-													(t) =>
-														selected.has(t.id) &&
-														t.alreadySynced,
-												).length;
-											const selectedNew =
-												selected.size - selectedSynced;
-											if (
-												selectedSynced > 0 &&
-												selectedNew > 0
-											) {
-												return `Pull ${selectedNew} new + update ${selectedSynced}`;
-											}
-											if (selectedSynced > 0) {
-												return `Update ${selectedSynced} ticket${selectedSynced === 1 ? "" : "s"}`;
-											}
-											return `Pull ${selected.size} ticket${selected.size === 1 ? "" : "s"}`;
-										})()}
-									</>
-								)}
+								{tNothingNew("close")}
 							</Button>
-						</TooltipTrigger>
-						<TooltipContent>
-							{tStories("pullFromPmConfirm")}
-						</TooltipContent>
-					</Tooltip>
+							{onContinueWithNothingNew && (
+								<Button
+									size="sm"
+									onClick={onContinueWithNothingNew}
+								>
+									{tNothingNew("continue")}
+								</Button>
+							)}
+						</>
+					) : (
+						<>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={onClose}
+								disabled={isPulling}
+							>
+								Cancel
+							</Button>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										size="sm"
+										onClick={handleConfirm}
+										disabled={
+											selected.size === 0 || isPulling
+										}
+										className="min-w-[130px]"
+									>
+										{isPulling ? (
+											<>
+												<Loader2Icon className="size-3.5 mr-1.5 animate-spin" />
+												Starting…
+											</>
+										) : (
+											<>
+												<CloudDownloadIcon className="size-3.5 mr-1.5" />
+												{(() => {
+													if (selected.size === 0) {
+														return "Pull selected";
+													}
+													const selectedSynced =
+														tickets.filter(
+															(t) =>
+																selected.has(
+																	t.id,
+																) &&
+																t.alreadySynced,
+														).length;
+													const selectedNew =
+														selected.size -
+														selectedSynced;
+													if (
+														selectedSynced > 0 &&
+														selectedNew > 0
+													) {
+														return `Pull ${selectedNew} new + update ${selectedSynced}`;
+													}
+													if (selectedSynced > 0) {
+														return `Update ${selectedSynced} ticket${selectedSynced === 1 ? "" : "s"}`;
+													}
+													return `Pull ${selected.size} ticket${selected.size === 1 ? "" : "s"}`;
+												})()}
+											</>
+										)}
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent>
+									{tStories("pullFromPmConfirm")}
+								</TooltipContent>
+							</Tooltip>
+						</>
+					)}
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>

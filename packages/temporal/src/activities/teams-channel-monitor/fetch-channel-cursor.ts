@@ -317,6 +317,8 @@ export async function finalizeClaimedProposalActivity(
 		applyWorkflowId: input.applyWorkflowId,
 		outcome: input.outcome,
 		errorMessage: input.errorMessage,
+		errorClass: input.errorClass,
+		rawApplyError: input.rawApplyError,
 	});
 	if (finalized) {
 		if (input.outcome === "failed") {

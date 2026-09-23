@@ -1,3 +1,4 @@
+import { jobHeartbeat } from "../lib/job-progress";
 import { fetchPmTicket } from "./fetch-pm-ticket";
 import { getPmSyncBaseline, stampPmSyncConflict } from "./hierarchy-sync";
 import { computePmHash } from "./pm-sync-hash";
@@ -50,6 +51,10 @@ export interface DetectAndStampPmPushConflictInput
 export async function detectAndStampPmPushConflict(
 	input: DetectAndStampPmPushConflictInput,
 ): Promise<{ hasConflict: boolean }> {
+	// The bulk push loop's update path runs no other job-aware activity per
+	// story, so without this a long push reads as stale to
+	// `failStaleBackgroundJobs` while it is still running.
+	await jobHeartbeat();
 	const { itemType } = input;
 	const isStampable =
 		itemType === "story" || itemType === "bug" || itemType === "testCase";

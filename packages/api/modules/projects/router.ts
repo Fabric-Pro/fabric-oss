@@ -12,6 +12,11 @@ import {
 	listRunConfigurationsProcedure,
 	updateRunConfigurationProcedure,
 } from "./procedures/agentic-runs";
+// AI-recommended item lifecycle (Fizzy #2211)
+import { listAiRecommendationBatchesProcedure } from "./procedures/ai-recommended/list-batches";
+import { previewAiRecommendationBatchProcedure } from "./procedures/ai-recommended/preview-batch";
+import { protectAiRecommendedItemProcedure } from "./procedures/ai-recommended/protect";
+import { removeAiRecommendationBatchProcedure } from "./procedures/ai-recommended/remove-batch";
 import {
 	createArchitectureDecisionCommentProcedure,
 	listArchitectureDecisionCommentsProcedure,
@@ -51,6 +56,7 @@ import { applyProgressProcedure } from "./procedures/backlog/apply-progress";
 import { cancelPendingProposalProcedure } from "./procedures/backlog/cancel-pending-proposal";
 import { cancelProposalDraftProcedure } from "./procedures/backlog/cancel-proposal-draft";
 import { dismissFailedProposalProcedure } from "./procedures/backlog/dismiss-failed-proposal";
+import { generateRecommendationsProcedure } from "./procedures/backlog/generate-recommendations";
 import { getBacklogProposalsCountProcedure } from "./procedures/backlog/get-backlog-proposals-count";
 import { getFailedProposalsCountProcedure } from "./procedures/backlog/get-failed-proposals-count";
 import { getProposalDraftsProcedure } from "./procedures/backlog/get-proposal-drafts";
@@ -59,6 +65,7 @@ import { getBacklogSessionHistoryProcedure } from "./procedures/backlog/history-
 import { listBacklogSessionHistoryProcedure } from "./procedures/backlog/history-sessions-list";
 import { intakeProgressProcedure } from "./procedures/backlog/intake-progress";
 import { listCalendarMeetingsProcedure } from "./procedures/backlog/list-calendar-meetings";
+import { recommendationStatusProcedure } from "./procedures/backlog/recommendation-status";
 import { retryAllFailedProposalsProcedure } from "./procedures/backlog/retry-all-failed-proposals";
 import { retryFailedProposalProcedure } from "./procedures/backlog/retry-failed-proposal";
 import { startAnalysisProcedure } from "./procedures/backlog/start-analysis";
@@ -994,6 +1001,15 @@ export const projectsRouter = {
 		setAutoAnalyze: setAutoAnalyzeProcedure,
 	},
 
+	// AI-recommended item lifecycle (Fizzy #2211). Gated by
+	// AI_RECOMMENDED_LIFECYCLE for the project's organization; NOT_FOUND when off.
+	aiRecommended: {
+		protect: protectAiRecommendedItemProcedure,
+		listBatches: listAiRecommendationBatchesProcedure,
+		previewBatch: previewAiRecommendationBatchProcedure,
+		removeBatch: removeAiRecommendationBatchProcedure,
+	},
+
 	// Project readiness checklist — computed on read, never stored
 	readiness: {
 		get: getReadinessProcedure,
@@ -1215,6 +1231,9 @@ export const projectsRouter = {
 		// Scope intake (customer document → SCOPE_DOCUMENT proposal)
 		startScopeIntake: startScopeIntakeProcedure,
 		intakeProgress: intakeProgressProcedure,
+		// Roadmap recommendations (project context → ROADMAP_RECOMMENDATION batch)
+		generateRecommendations: generateRecommendationsProcedure,
+		recommendationStatus: recommendationStatusProcedure,
 		// Source-agnostic pending-proposal inbox. Same procedure objects as
 		// `teamsChannelMonitor.pendingProposals.*` (kept as an alias for one
 		// release); mounted flat to respect the oRPC depth ≤ 3 rule.

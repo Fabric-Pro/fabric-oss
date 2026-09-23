@@ -38,7 +38,10 @@ const activityStubs = vi.hoisted(() => ({
 	createOrUpdateStoryFromPMItem: vi.fn(),
 	deleteStoriesNotInPMList: vi.fn(),
 	executeMcpTool: vi.fn(),
+	closeStorySyncJob: vi.fn(),
 }));
+
+const patchedMock = vi.hoisted(() => vi.fn((_patchId: string) => true));
 
 vi.mock("@temporalio/workflow", async () => {
 	// Pull the real `ApplicationFailure` / `ActivityFailure` so the
@@ -59,11 +62,12 @@ vi.mock("@temporalio/workflow", async () => {
 		defineSignal: (name: string) => ({ name, type: "signal" as const }),
 		defineQuery: (name: string) => ({ name, type: "query" as const }),
 		setHandler: vi.fn(),
+		patched: patchedMock,
 		proxyActivities: vi.fn(() => activityStubs),
 	};
 });
 
-import { storySyncWorkflow } from "../story-sync-workflow";
+import { closeArgsFrom, storySyncWorkflow } from "../story-sync-workflow";
 
 // =============================================================================
 // Capability fixtures
@@ -751,5 +755,185 @@ describe("storySyncWorkflow — push workItemType resolution via enableTypeMappi
 
 		expect(output.success).toBe(true);
 		expect(lastCreateArgs()?.workItemType).toBe("User Story");
+	});
+});
+
+// =============================================================================
+// PM_STORY_SYNC job row close (FR54)
+// =============================================================================
+
+describe("storySyncWorkflow — closes the PM_STORY_SYNC job row", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		patchedMock.mockImplementation(() => true);
+		activityStubs.closeStorySyncJob.mockResolvedValue(undefined);
+		activityStubs.deleteStoriesNotInPMList.mockResolvedValue({
+			deletedCount: 0,
+		});
+		activityStubs.listAllFizzyCards.mockResolvedValue(null);
+	});
+
+	const pullInput = {
+		projectId: "proj-close",
+		mcpServerId: "srv-gl",
+		mcpConfigId: null,
+		containerId: "100",
+		userId: "user-1",
+		organizationId: "org-1",
+		direction: "pull" as const,
+	};
+
+	it("closes COMPLETED with the counts after a successful pull", async () => {
+		activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+			REST_GITLAB_CAPABILITIES,
+		);
+		activityStubs.listWorkItemsFromPM.mockResolvedValue({
+			items: [{ id: "1", title: "Issue 1", description: "first" }],
+			total: 1,
+		});
+		activityStubs.createOrUpdateStoryFromPMItem.mockResolvedValueOnce({
+			created: true,
+			storyId: "s-1",
+			identifier: "F-1",
+			externalId: "1",
+		});
+
+		const output = await storySyncWorkflow(pullInput);
+
+		expect(output.success).toBe(true);
+		expect(patchedMock).toHaveBeenCalledWith("story-sync-job-row-v1");
+		expect(activityStubs.closeStorySyncJob).toHaveBeenCalledTimes(1);
+		expect(activityStubs.closeStorySyncJob).toHaveBeenCalledWith(
+			expect.objectContaining({
+				outcome: "COMPLETED",
+				counts: { total: 1, synced: 1, failed: 0, conflicted: 0 },
+			}),
+		);
+	});
+
+	it('closes COMPLETED on the "No stories to sync" early return', async () => {
+		activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+			MCP_FIZZY_CAPABILITIES,
+		);
+		activityStubs.getStoriesToSync.mockResolvedValue([]);
+
+		const output = await storySyncWorkflow({
+			...pullInput,
+			mcpConfigId: "cfg-1",
+			direction: "push",
+		});
+
+		expect(output.success).toBe(true);
+		expect(activityStubs.closeStorySyncJob).toHaveBeenCalledWith(
+			expect.objectContaining({
+				outcome: "COMPLETED",
+				message: "No stories to sync",
+			}),
+		);
+	});
+
+	it("closes FAILED on a preflight failure", async () => {
+		activityStubs.discoverPMToolCapabilities.mockRejectedValue(
+			new Error("PM tool unreachable"),
+		);
+
+		const output = await storySyncWorkflow(pullInput);
+
+		expect(output.success).toBe(false);
+		expect(activityStubs.closeStorySyncJob).toHaveBeenCalledWith(
+			expect.objectContaining({
+				outcome: "FAILED",
+				errorClass: "SyncFailed",
+				message: expect.stringContaining("Couldn't reach the PM tool"),
+			}),
+		);
+	});
+
+	it("closes FAILED and still rethrows on the catch path", async () => {
+		activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+			REST_GITLAB_CAPABILITIES,
+		);
+		activityStubs.listWorkItemsFromPM.mockRejectedValue(
+			new Error("listing exploded"),
+		);
+
+		await expect(storySyncWorkflow(pullInput)).rejects.toThrow(
+			"listing exploded",
+		);
+		expect(activityStubs.closeStorySyncJob).toHaveBeenCalledWith(
+			expect.objectContaining({
+				outcome: "FAILED",
+				message: "listing exploded",
+			}),
+		);
+	});
+
+	it("keeps the run's result when the closer rejects", async () => {
+		activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+			MCP_FIZZY_CAPABILITIES,
+		);
+		activityStubs.getStoriesToSync.mockResolvedValue([]);
+		activityStubs.closeStorySyncJob.mockRejectedValue(
+			new Error("database down"),
+		);
+
+		const output = await storySyncWorkflow({
+			...pullInput,
+			mcpConfigId: "cfg-1",
+			direction: "push",
+		});
+
+		expect(output.success).toBe(true);
+	});
+
+	it("does not call the closer on a history recorded before the patch", async () => {
+		patchedMock.mockImplementation(() => false);
+		activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+			MCP_FIZZY_CAPABILITIES,
+		);
+		activityStubs.getStoriesToSync.mockResolvedValue([]);
+
+		await storySyncWorkflow({
+			...pullInput,
+			mcpConfigId: "cfg-1",
+			direction: "push",
+		});
+
+		expect(activityStubs.closeStorySyncJob).not.toHaveBeenCalled();
+	});
+});
+
+describe("closeArgsFrom", () => {
+	const base = {
+		totalStories: 4,
+		syncedCount: 2,
+		failedCount: 1,
+		conflictedCount: 1,
+		results: [],
+	};
+
+	it("maps a cancellation to FAILED / Cancelled", () => {
+		expect(
+			closeArgsFrom({
+				...base,
+				status: "cancelled",
+				message: "Sync cancelled by user",
+			}),
+		).toEqual({
+			outcome: "FAILED",
+			message: "Sync cancelled by user",
+			errorClass: "Cancelled",
+			counts: { total: 4, synced: 2, failed: 1, conflicted: 1 },
+		});
+	});
+
+	it("maps a run that never finished to FAILED / SyncFailed", () => {
+		expect(
+			closeArgsFrom({
+				...base,
+				status: "syncing",
+				message: "Syncing...",
+			}),
+		).toMatchObject({ outcome: "FAILED", errorClass: "SyncFailed" });
 	});
 });

@@ -84,6 +84,8 @@ const inPageSource = [
 	"apps/web/modules/saas/projects/components/ProjectOverview.tsx",
 	"apps/web/modules/saas/projects/components/DocumentsList.tsx",
 	"apps/web/modules/saas/projects/components/stories/StoriesRoadmap.tsx",
+	"apps/web/modules/saas/projects/components/stories/RoadmapStartBuilding.tsx",
+	"apps/web/modules/saas/projects/components/stories/RoadmapActionsMenu.tsx",
 	"apps/web/modules/saas/projects/components/stories/RoadmapSectionSwitcher.tsx",
 	"apps/web/modules/saas/projects/components/stories/PendingProposalsButton.tsx",
 	"apps/web/modules/saas/projects/components/security/SecurityAccessibilityPage.tsx",

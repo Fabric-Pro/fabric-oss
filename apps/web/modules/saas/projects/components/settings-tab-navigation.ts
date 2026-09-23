@@ -22,6 +22,8 @@ export const NAVIGATE_TO_SETTINGS_TAB_EVENT =
  */
 export const REPOSITORY_SETTINGS_ANCHOR_ID = "project-repository-settings";
 export const CODE_SEARCH_SETTINGS_ANCHOR_ID = "project-code-search-settings";
+/** The project-management settings block — the gates' "Choose a board". */
+export const PM_SETTINGS_ANCHOR_ID = "project-pm-settings";
 
 /** Mirrors `STORAGE_KEY_PREFIX` in `ProjectSettings.tsx`. */
 const SETTINGS_TAB_STORAGE_KEY_PREFIX = "fabric-project-settings-tab-";

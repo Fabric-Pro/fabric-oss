@@ -829,6 +829,20 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				body: "Dragging a card between stages syncs its status out to your PM tool (Jira/GitLab/ADO); 'Pull' brings changes back. Switch Table/Board/Plain views, save your own layout, and 'Scan for duplicates' semantically merges overlaps.",
 			},
 			{
+				id: "roadmap-start-building",
+				anchor: "roadmap-start-building",
+				title: "Start building an empty Roadmap",
+				body: "While nothing on the Roadmap counts as planned work yet, this panel offers the ways in: pull existing work items from your connected PM tool, have Fabric recommend feature candidates from project context, or do both in order. Items still in Backlog or Done, and hidden or declined items, don't count yet.",
+				conditional: true,
+			},
+			{
+				id: "roadmap-actions",
+				anchor: "roadmap-actions",
+				title: "More Roadmap actions",
+				body: "The ⋯ menu beside AI Update gathers Roadmap-wide actions, such as asking Fabric to recommend more feature candidates from the current context. It appears only when an action is available to you.",
+				conditional: true,
+			},
+			{
 				id: "roadmap-review-proposals",
 				anchor: "roadmap-review-proposals",
 				title: "Your approval inbox",

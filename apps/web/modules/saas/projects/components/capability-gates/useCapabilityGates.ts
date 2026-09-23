@@ -73,15 +73,17 @@ export const SNOOZE_DURATIONS: readonly SnoozeDuration[] = [
 /**
  * The surfaces a project page mounts a gate on: the document dialog and a
  * document's auto-refresh control, the Context tab, the Security tab, the
- * newsletter settings, and Settings → Knowledge's chat monitors. Atlas is
- * absent on purpose — it keeps its own status UI, and its gates are the
- * expensive ones to resolve. Settings is cheap: its rules read rows only.
+ * newsletter settings, Settings → Knowledge's chat monitors, and the
+ * Roadmap's entry points. Atlas is absent on purpose — it keeps its own
+ * status UI, and its gates are the expensive ones to resolve. Settings is
+ * cheap: its rules read rows only.
  */
 const MOUNTED_SURFACES = [
 	"documents",
 	"context",
 	"security",
 	"release-notes",
+	"roadmap",
 	"settings",
 ] as const;
 
@@ -420,6 +422,12 @@ export interface CapabilityGateSelection {
 	view: CapabilityGateView | null;
 	/** Whether the gated action must be disabled. False while loading and when the flag is off. */
 	blocked: boolean;
+	/**
+	 * Whether the action must leave the page entirely — the server resolved
+	 * `HIDDEN` because there is nothing for it to act on. False while loading
+	 * and when the flag is off, so the action shows and its own door refuses.
+	 */
+	hidden: boolean;
 }
 
 /**
@@ -432,11 +440,10 @@ export interface CapabilityGateSelection {
  * page load, and would disable them permanently wherever the flag is off, which
  * is the exact opposite of a rollback lever.
  *
- * There is no `hidden` verdict. `HIDDEN` would mean removing the action from
- * the page rather than disabling it, no rule emits it today, and no surface had
- * anywhere to act on it — so carrying the boolean would have been a field with
- * no reader. See the note in `capability-gate-view.ts` for what the first rule
- * to emit it will need to add.
+ * `hidden` is the one verdict a banner cannot express: `HIDDEN` removes the
+ * action rather than disabling it, so it builds no view and the surface reads
+ * the boolean to leave the action out. The same "nothing is known" rule holds —
+ * an absent gate is never hidden.
  */
 export function useCapabilityGate(
 	capabilityKey: string,
@@ -447,9 +454,14 @@ export function useCapabilityGate(
 
 	return useMemo(() => {
 		if (gate === null) {
-			return { gate: null, view: null, blocked: false };
+			return { gate: null, view: null, blocked: false, hidden: false };
 		}
 		const view = buildCapabilityGateView(gate, dismissedForSession);
-		return { gate, view, blocked: view?.blocksAction ?? false };
+		return {
+			gate,
+			view,
+			blocked: view?.blocksAction ?? false,
+			hidden: gate.state === "HIDDEN",
+		};
 	}, [gate, dismissedForSession]);
 }

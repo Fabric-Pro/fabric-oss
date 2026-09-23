@@ -142,6 +142,29 @@ describe("FEATURE_FLAG_REGISTRY", () => {
 		expect(FEATURE_FLAG_REGISTRY.PROJECT_FAVORITES.default).toBe(false);
 	});
 
+	// #2204 / #2208. Off by default and per organization: the recommendation
+	// entry points and their door must not appear for every tenant on deploy.
+	it("registers ROADMAP_RECOMMENDATIONS off by default, org-scopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.ROADMAP_RECOMMENDATIONS.envVar).toBe(
+			"FABRIC_FEATURE_ROADMAP_RECOMMENDATIONS",
+		);
+		expect(FEATURE_FLAG_REGISTRY.ROADMAP_RECOMMENDATIONS.default).toBe(
+			false,
+		);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("ROADMAP_RECOMMENDATIONS");
+	});
+
+	// #2211. The rollback lever for Protect and Remove, not for the stamp.
+	it("registers AI_RECOMMENDED_LIFECYCLE off by default, org-scopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.AI_RECOMMENDED_LIFECYCLE.envVar).toBe(
+			"FABRIC_FEATURE_AI_RECOMMENDED_LIFECYCLE",
+		);
+		expect(FEATURE_FLAG_REGISTRY.AI_RECOMMENDED_LIFECYCLE.default).toBe(
+			false,
+		);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("AI_RECOMMENDED_LIFECYCLE");
+	});
+
 	// The two #1694 flags are deliberately independent: the shortcuts work from
 	// recency alone, so a fault on the favorite write surface must not force the
 	// shortcuts off with it.

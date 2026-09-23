@@ -9,6 +9,7 @@ import {
 	inferDedupFamily,
 	listFailedProposals,
 	markPendingProposalApplied,
+	returnFailedRecommendationToReview,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
 import { z } from "zod";
@@ -81,7 +82,12 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 				z.object({
 					proposalId: z.string(),
 					workflowId: z.string().nullable(),
-					status: z.enum(["queued", "dedup_only_applied", "error"]),
+					status: z.enum([
+						"queued",
+						"dedup_only_applied",
+						"returned_to_review",
+						"error",
+					]),
 					message: z.string().optional(),
 				}),
 			),
@@ -138,7 +144,11 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 		const results: Array<{
 			proposalId: string;
 			workflowId: string | null;
-			status: "queued" | "dedup_only_applied" | "error";
+			status:
+				| "queued"
+				| "dedup_only_applied"
+				| "returned_to_review"
+				| "error";
 			message?: string;
 		}> = [];
 
@@ -160,6 +170,23 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 					message: fresh
 						? `Skipped — status is now '${fresh.status}'`
 						: "Skipped — proposal vanished",
+				});
+				continue;
+			}
+
+			// A recommendation batch goes back to review instead of replaying:
+			// its stored changes don't record which candidates were selected.
+			if (fresh.source === "ROADMAP_RECOMMENDATION") {
+				const returned = await returnFailedRecommendationToReview(
+					fresh.id,
+				);
+				results.push({
+					proposalId: proposal.id,
+					workflowId: null,
+					status: returned ? "returned_to_review" : "error",
+					message: returned
+						? "Returned to review — select the features to accept again."
+						: "Skipped — proposal is no longer FAILED",
 				});
 				continue;
 			}

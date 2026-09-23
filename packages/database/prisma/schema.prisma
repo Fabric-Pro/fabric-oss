@@ -4836,6 +4836,10 @@ enum PendingBacklogProposalSource {
   AI_UPDATE_SIDEBAR
   MONITORED_MEETING
   SCOPE_DOCUMENT
+  // One batch of Features recommended from project context and the live
+  // Roadmap. The row's id is the batch id stamped on every item accepted
+  // from it (`UserStory.aiRecommendationBatchId`).
+  ROADMAP_RECOMMENDATION
 }
 
 enum PendingBacklogProposalStatus {
@@ -6035,6 +6039,10 @@ enum StorySource {
   // Project.autoCreateBugsFromFailures.
   PIPELINE_FAILURE
   IMPORTED_SCOPE
+  // A Feature accepted from a ROADMAP_RECOMMENDATION proposal batch. Stays
+  // this source for life; whether it is still provisional is derived from
+  // `aiBatchProtectedAt`, never stored as a separate status.
+  AI_RECOMMENDED
 }
 
 enum StoryTitleSource {
@@ -6392,6 +6400,17 @@ model UserStory {
   // proposals are prunable, and a hard FK would either block their deletion or
   // cascade into work items.
   createdFromProposalId     String?
+  // AI-recommended item lifecycle. The batch id is the PendingBacklogProposal
+  // id of the ROADMAP_RECOMMENDATION row the item was accepted from, written
+  // only in the creating INSERT. Non-FK for the same reason as
+  // createdFromProposalId: proposals are prunable. Protecting an item or
+  // removing its batch never writes `lastEdited*` or a FeatureVersion.
+  // `firstHumanEditAt` is stamped only on AI_RECOMMENDED rows, once, on a
+  // person's content edit; it is not a general "first edit" fact.
+  aiRecommendationBatchId   String?
+  aiBatchProtectedAt        DateTime?
+  aiBatchProtectedById      String?
+  firstHumanEditAt          DateTime?
   // Scope intake provenance. sourceRef is the customer's own line ID (e.g. "VIS-02") — NOT externalId,
   // which is the PM-tool ID used by pm-sync. Partial unique (projectId, sourceRef) enforced in SQL.
   sourceRef              String?
@@ -16472,6 +16491,11 @@ enum BackgroundJobKind {
   // is currently blocked on.
   PM_STATE_POLL
   DOCUMENT_GENERATION
+  // One user- or onboarding-started story pull/push run against the project's
+  // PM tool, from dispatch to its terminal state. The durable "a PM sync is
+  // running" fact the Roadmap's Processing state and the sync doors key on.
+  // Distinct from PM_STATE_POLL, the unattended hourly status poll.
+  PM_STORY_SYNC
 }
 
 enum BackgroundJobStatus {

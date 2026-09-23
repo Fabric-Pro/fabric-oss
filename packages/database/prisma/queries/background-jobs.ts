@@ -27,6 +27,7 @@ import type {
 	BackgroundJobKind,
 	BackgroundJobStatus,
 } from "../generated/client";
+import { advisoryObjectKey } from "./lib/refresh-lock-key";
 
 // =============================================================================
 // Types
@@ -246,6 +247,85 @@ export async function createBackgroundJob(
 		// Best-effort: never block the workflow start on job bookkeeping.
 		return null;
 	}
+}
+
+/**
+ * Advisory-lock class id namespacing exclusive job opens (arbitrary but
+ * stable), distinct from every other `(int4, int4)` class in the package.
+ */
+const EXCLUSIVE_JOB_ADVISORY_CLASS = 0x424a4578; // "BJEx"
+
+export interface OpenExclusiveBackgroundJobArgs {
+	job: CreateBackgroundJobArgs;
+	/** Serializes every open of this job kind for this object, e.g. `pm-story-sync:<projectId>`. */
+	lockKey: string;
+	/** A RUNNING row of the same kind and project whose heartbeat is at or after this blocks the open. */
+	liveSince: Date;
+}
+
+export type OpenExclusiveBackgroundJobResult =
+	| { opened: true; id: string }
+	| {
+			opened: false;
+			active: {
+				workflowId: string;
+				sourceType: string | null;
+				createdAt: Date;
+			};
+	  };
+
+/**
+ * Open a job row only when no live run of the same kind holds the project —
+ * the check and the open under one transaction-scoped advisory lock, so two
+ * near-simultaneous requests cannot both see nothing running and both start.
+ *
+ * Unlike the other writers here this one THROWS on a database failure: it is
+ * the concurrency guard itself, not telemetry, and a caller that proceeded
+ * without it would start exactly the duplicate run it exists to refuse.
+ */
+export async function openExclusiveBackgroundJob(
+	args: OpenExclusiveBackgroundJobArgs,
+): Promise<OpenExclusiveBackgroundJobResult> {
+	const { job } = args;
+	return db.$transaction(
+		async (tx) => {
+			// `$executeRaw`, not `$queryRaw`: `pg_advisory_xact_lock()` returns
+			// void, which the driver adapter's `$queryRaw` cannot deserialize.
+			await tx.$executeRaw`SELECT pg_advisory_xact_lock(${EXCLUSIVE_JOB_ADVISORY_CLASS}::int, ${advisoryObjectKey(args.lockKey)}::int)`;
+			const active = await tx.backgroundJob.findFirst({
+				where: {
+					projectId: job.projectId,
+					kind: job.kind,
+					status: "RUNNING",
+					heartbeatAt: { gte: args.liveSince },
+				},
+				orderBy: { createdAt: "desc" },
+				select: { workflowId: true, sourceType: true, createdAt: true },
+			});
+			if (active) {
+				return { opened: false as const, active };
+			}
+			const row = await tx.backgroundJob.create({
+				data: {
+					kind: job.kind,
+					title: job.title,
+					projectId: job.projectId,
+					userId: job.userId,
+					organizationId: job.organizationId ?? null,
+					workflowId: job.workflowId,
+					runId: job.runId ?? null,
+					sourceType: job.sourceType ?? null,
+					sourceId: job.sourceId ?? null,
+					counts: (job.counts ?? {}) as Prisma.InputJsonValue,
+					steps: (job.steps ??
+						[]) as unknown as Prisma.InputJsonValue,
+				},
+				select: { id: true },
+			});
+			return { opened: true as const, id: row.id };
+		},
+		{ timeout: 10_000, maxWait: 10_000 },
+	);
 }
 
 /**

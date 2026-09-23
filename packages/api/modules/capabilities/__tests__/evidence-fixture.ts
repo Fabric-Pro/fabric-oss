@@ -55,6 +55,16 @@ export function healthyEvidence(): CapabilityEvidence {
 		// The default configuration: the two AI reviewers are on, neither
 		// repository scanner is, so the scan needs no codebase.
 		scan: { ...IDLE_JOB, requiresCodebase: false },
+		pm: {
+			toolSelected: true,
+			boardSelected: true,
+			bulkTargetResolvable: true,
+			itemConfigResolvable: true,
+			readOnly: false,
+			syncing: { ...IDLE_JOB },
+		},
+		roadmap: { itemCount: 12 },
+		aiRecommended: { eligibleBatchCount: 1 },
 		chat: { linkedChannelCount: 2 },
 		refreshSources: { readable: true },
 	};

@@ -259,6 +259,9 @@ export const updateStoryProcedure = tenantProtectedProcedure
 				// so metadata-only saves count while identical submissions do not.
 				lastEditedSource: "MANUAL",
 				lastEditedByName: user.name ?? null,
+				// An AI refresh the person confirmed is not their edit of an
+				// AI-recommended item.
+				aiContextRefresh: input.isContextUpdate === true,
 			},
 		);
 

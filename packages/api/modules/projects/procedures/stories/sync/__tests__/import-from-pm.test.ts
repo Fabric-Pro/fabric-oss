@@ -178,6 +178,13 @@ vi.mock("../../../../../../orpc/procedures", () => {
 	};
 });
 
+const mockAssertCapabilityAvailable = vi.fn();
+
+vi.mock("../../../../../capabilities/assert", () => ({
+	assertCapabilityAvailable: (...args: unknown[]) =>
+		mockAssertCapabilityAvailable(...args),
+}));
+
 import { db, Prisma, resolvePMConfigForUser } from "@repo/database";
 
 // ---- Fixtures --------------------------------------------------------------
@@ -1405,5 +1412,104 @@ describe("importFromPMProcedure", () => {
 			>;
 			expect(callArg).not.toHaveProperty("kind");
 		});
+	});
+});
+
+describe("importFromPMProcedure — roadmap.pm-import capability gate", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.resetModules();
+		mockAssertCapabilityAvailable.mockResolvedValue(null);
+	});
+
+	const expectedAssert = {
+		capabilityKey: "roadmap.pm-import",
+		projectId: "proj-1",
+		userId: "user-1",
+		organizationId: null,
+	};
+
+	it("asserts roadmap.pm-import on the MCP branch after the duplicate CONFLICT", async () => {
+		defaultSetup();
+		vi.mocked(db.userStory.findFirst).mockResolvedValue({
+			id: "story-1",
+			identifier: "F-001",
+			externalId: "42",
+		} as never);
+
+		const handler = await loadProcedureHandler();
+		await expect(
+			handler({
+				input: { projectId: "proj-1", externalId: "42" },
+				context: baseCtx,
+			}),
+		).rejects.toThrow(/already exists/);
+		expect(mockAssertCapabilityAvailable).not.toHaveBeenCalled();
+	});
+
+	it("stops the MCP import when the gate refuses", async () => {
+		defaultSetup();
+		vi.mocked(db.userStory.findFirst).mockResolvedValue(null as never);
+		mockAssertCapabilityAvailable.mockRejectedValueOnce(
+			new Error("gate refused"),
+		);
+
+		const handler = await loadProcedureHandler();
+		await expect(
+			handler({
+				input: { projectId: "proj-1", externalId: "42" },
+				context: baseCtx,
+			}),
+		).rejects.toThrow("gate refused");
+
+		expect(mockAssertCapabilityAvailable).toHaveBeenCalledWith(
+			expectedAssert,
+		);
+		expect(mockExecuteMcpTool).not.toHaveBeenCalled();
+		expect(mockCreateStory).not.toHaveBeenCalled();
+	});
+
+	it("asserts roadmap.pm-import on the GitLab branch and stops when refused", async () => {
+		defaultSetup();
+		mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
+		mockAssertCapabilityAvailable.mockRejectedValueOnce(
+			new Error("gate refused"),
+		);
+
+		const handler = await loadProcedureHandler();
+		await expect(
+			handler({
+				input: { projectId: "proj-1", externalId: "1" },
+				context: baseCtx,
+			}),
+		).rejects.toThrow("gate refused");
+
+		expect(mockAssertCapabilityAvailable).toHaveBeenCalledWith(
+			expectedAssert,
+		);
+		expect(mockResolveGitLabPMSource).not.toHaveBeenCalled();
+		expect(mockGetGitLabIssueForPM).not.toHaveBeenCalled();
+	});
+
+	it("keeps the GitLab missing-board BAD_REQUEST ahead of the gate", async () => {
+		defaultSetup();
+		mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
+		vi.mocked(db.project.findFirst).mockResolvedValue({
+			id: "proj-1",
+			organizationId: null,
+			projectManagementMcpServerId: "mcp-server-1",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: null,
+			projectManagementAdditionalContext: null,
+		} as never);
+
+		const handler = await loadProcedureHandler();
+		await expect(
+			handler({
+				input: { projectId: "proj-1", externalId: "1" },
+				context: baseCtx,
+			}),
+		).rejects.toThrow(/Select a GitLab project/);
+		expect(mockAssertCapabilityAvailable).not.toHaveBeenCalled();
 	});
 });

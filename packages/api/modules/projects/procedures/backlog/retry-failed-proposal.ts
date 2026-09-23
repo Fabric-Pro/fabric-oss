@@ -7,6 +7,7 @@ import {
 	getPendingBacklogProposal,
 	inferDedupFamily,
 	markPendingProposalApplied,
+	returnFailedRecommendationToReview,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
 import { z } from "zod";
@@ -125,6 +126,25 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 			throw new ORPCError("CONFLICT", {
 				message: `Proposal is in '${proposal.status}' state, not FAILED`,
 			});
+		}
+
+		// A recommendation batch goes back to review instead of replaying:
+		// its stored changes don't record which candidates were selected.
+		if (proposal.source === "ROADMAP_RECOMMENDATION") {
+			const returned = await returnFailedRecommendationToReview(
+				proposal.id,
+			);
+			if (!returned) {
+				throw new ORPCError("CONFLICT", {
+					message: "Proposal is no longer FAILED",
+				});
+			}
+			return {
+				workflowId: null,
+				dedupCollisionCount: 0,
+				message:
+					"Returned to review — select the features to accept again.",
+			};
 		}
 
 		// 2. Decode stored payload + metadata snapshot.

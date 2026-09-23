@@ -25,6 +25,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		proposalUpdate: vi.fn(),
 		getTemporalClient: vi.fn(),
 		workflowStart: vi.fn(),
+		returnFailedRecommendationToReview: vi.fn(),
 	};
 	return { handlers, mocks };
 });
@@ -39,6 +40,8 @@ vi.mock("@repo/database", () => ({
 	buildBacklogDedupGuard: mocks.buildBacklogDedupGuard,
 	inferDedupFamily: mocks.inferDedupFamily,
 	markPendingProposalApplied: mocks.markPendingProposalApplied,
+	returnFailedRecommendationToReview:
+		mocks.returnFailedRecommendationToReview,
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -316,5 +319,42 @@ describe("retryAllFailedProposalsProcedure — forbidEpics per-source gating (Co
 		// First start = channel-monitor row → true; second = sidebar → false.
 		expect(flagFor(0)).toBe(true);
 		expect(flagFor(1)).toBe(false);
+	});
+});
+
+describe("retryAllFailedProposalsProcedure — ROADMAP_RECOMMENDATION batch", () => {
+	it("returns a recommendation batch to review and queues the others", async () => {
+		const rows = [
+			rowFor("p1", { source: "ROADMAP_RECOMMENDATION" }),
+			rowFor("p2"),
+		];
+		mocks.listFailedProposals.mockResolvedValue(rows);
+		mocks.getPendingBacklogProposal.mockImplementation((id: string) =>
+			rows.find((r) => r.id === id),
+		);
+		mocks.returnFailedRecommendationToReview.mockResolvedValue(true);
+
+		const result = (await handlers.retryAll({
+			input: { projectId: "project-1", organizationId: "org-1" },
+			context: ctx,
+		})) as {
+			retriedCount: number;
+			results: Array<{
+				proposalId: string;
+				status: string;
+				workflowId: string | null;
+			}>;
+		};
+
+		expect(result.results[0]).toMatchObject({
+			proposalId: "p1",
+			status: "returned_to_review",
+			workflowId: null,
+		});
+		expect(result.results[1]?.status).toBe("queued");
+		expect(mocks.returnFailedRecommendationToReview).toHaveBeenCalledWith(
+			"p1",
+		);
+		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
 	});
 });

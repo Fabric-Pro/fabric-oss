@@ -51,6 +51,7 @@ import { orpcClient } from "../../../../../shared/lib/orpc-client";
 import { buildProjectSettingsRoute } from "../../../lib/stories/routes";
 import type { PmSyncStatus } from "../../../lib/stories/types";
 import { ConflictResolveDialog } from "../ConflictResolveDialog";
+import { GatedSyncMenuItem } from "./GatedSyncMenuItem";
 import { isPmTicketMissingError } from "./PmSyncFailureBadge";
 import { PmSyncFailureSidePanel } from "./PmSyncFailureSidePanel";
 import { useInvalidatePmSyncState } from "./use-invalidate-pm-sync-state";
@@ -463,11 +464,11 @@ export function PmSyncChip({
 								</DropdownMenuItem>
 							) : null}
 
-							<DropdownMenuItem onClick={onPush}>
-								<ArrowUpFromLineIcon
-									className="size-4 mr-2"
-									aria-hidden="true"
-								/>
+							<GatedSyncMenuItem
+								direction="push"
+								icon={ArrowUpFromLineIcon}
+								onActivate={onPush}
+							>
 								{externalId
 									? `Push to ${pmToolName}`
 									: `Start syncing — push to ${pmToolName}`}
@@ -476,16 +477,16 @@ export function PmSyncChip({
 										overwrite
 									</span>
 								) : null}
-							</DropdownMenuItem>
+							</GatedSyncMenuItem>
 
 							{externalId ? (
-								<DropdownMenuItem onClick={onPull}>
-									<ArrowDownToLineIcon
-										className="size-4 mr-2"
-										aria-hidden="true"
-									/>
+								<GatedSyncMenuItem
+									direction="pull"
+									icon={ArrowDownToLineIcon}
+									onActivate={onPull}
+								>
 									Pull from {pmToolName}
-								</DropdownMenuItem>
+								</GatedSyncMenuItem>
 							) : null}
 
 							<DropdownMenuItem

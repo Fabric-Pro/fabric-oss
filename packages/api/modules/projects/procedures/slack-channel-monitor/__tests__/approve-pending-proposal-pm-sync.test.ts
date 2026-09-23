@@ -379,3 +379,25 @@ describe("approvePendingProposal (Slack) — PM sync auto-enqueue on CREATE", ()
 		expect(warnedAboutEnqueue).toBe(true);
 	});
 });
+
+describe("approvePendingProposal (Slack) — ROADMAP_RECOMMENDATION refusal", () => {
+	it("refuses a roadmap-recommendation batch with BAD_REQUEST and creates nothing", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValueOnce({
+			...makeProposalRow({ changes: [CHANGE_BUG] }),
+			source: "ROADMAP_RECOMMENDATION",
+		});
+
+		await expect(
+			handlers.approve?.({
+				input: {
+					projectId: PROJECT_ID,
+					organizationId: ORG_ID,
+					proposalId: PROPOSAL_ID,
+					approvedChanges: [CHANGE_BUG],
+				},
+				context: APPROVAL_CTX,
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+	});
+});

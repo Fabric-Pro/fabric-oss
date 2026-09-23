@@ -6,12 +6,14 @@ const {
 	getPmSyncBaseline,
 	fetchPmTicket,
 	computePmHash,
+	jobHeartbeat,
 } = vi.hoisted(() => ({
 	previewPmSyncConflict: vi.fn(),
 	stampPmSyncConflict: vi.fn(),
 	getPmSyncBaseline: vi.fn(),
 	fetchPmTicket: vi.fn(),
 	computePmHash: vi.fn(),
+	jobHeartbeat: vi.fn(),
 }));
 
 vi.mock("../preview-pm-sync-conflict", () => ({ previewPmSyncConflict }));
@@ -21,6 +23,7 @@ vi.mock("../hierarchy-sync", () => ({
 }));
 vi.mock("../fetch-pm-ticket", () => ({ fetchPmTicket }));
 vi.mock("../pm-sync-hash", () => ({ computePmHash }));
+vi.mock("../../lib/job-progress", () => ({ jobHeartbeat }));
 
 import { detectAndStampPmPushConflict } from "../detect-pm-push-conflict";
 
@@ -109,5 +112,14 @@ describe("detectAndStampPmPushConflict — fallback (no caps / REST)", () => {
 		});
 		expect(r.hasConflict).toBe(true);
 		expect(stampPmSyncConflict).not.toHaveBeenCalled();
+	});
+});
+
+describe("detectAndStampPmPushConflict — job heartbeat", () => {
+	it("heartbeats the sync job once per checked story, so a long bulk push is not failed as stale", async () => {
+		getPmSyncBaseline.mockResolvedValue(null);
+		await detectAndStampPmPushConflict(FAST_INPUT);
+		await detectAndStampPmPushConflict({ ...FAST_INPUT, itemId: "s2" });
+		expect(jobHeartbeat).toHaveBeenCalledTimes(2);
 	});
 });

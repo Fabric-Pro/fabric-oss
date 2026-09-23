@@ -71,6 +71,12 @@ export type RemedyKind =
 	| "ADD_CONTEXT"
 	| "GENERATE_PREREQUISITE_DOCUMENT"
 	| "CONFIGURE_INTEGRATION"
+	/**
+	 * A PM tool is connected but no board is chosen. Separate from
+	 * `CONFIGURE_INTEGRATION` because the fix lives somewhere else: the board
+	 * is picked in Project Settings, the connection in Integrations.
+	 */
+	| "CONFIGURE_PM_BOARD"
 	| "ENABLE_CODE_SEARCH"
 	| "RETRY_JOB"
 	| "WAIT";
@@ -247,6 +253,30 @@ interface CodebaseEvidence {
 }
 
 /**
+ * The project's project-management connection, as the Roadmap doors reach it.
+ *
+ * Two connection booleans, not one, because the doors disagree. The bulk pull
+ * and push dispatch through `resolvePmTarget`, which returns nothing for a
+ * legacy project that names only a PM server; the single-item sync and import
+ * resolve the viewer's own config with the server-id fallback, and succeed on
+ * that same project. Collapsing the two would block a door that works.
+ */
+interface PmEvidence {
+	/** The project names a PM server or config at all. */
+	toolSelected: boolean;
+	/** A board (container) is chosen in Project Settings. */
+	boardSelected: boolean;
+	/** What the bulk pull and push dispatch through resolves for this viewer. */
+	bulkTargetResolvable: boolean;
+	/** The viewer's own enabled PM config resolves, with the server fallback. */
+	itemConfigResolvable: boolean;
+	/** The project's read-only mode, which refuses writes to the PM tool. */
+	readOnly: boolean;
+	/** Story pull/push runs. Never the hourly status poll. */
+	syncing: JobSnapshot;
+}
+
+/**
  * Everything the rules are allowed to read, gathered once per request in a
  * fixed number of aggregate queries.
  *
@@ -311,6 +341,21 @@ export interface CapabilityEvidence {
 	 * only when an engine that reads it has been switched on.
 	 */
 	scan: JobSnapshot & { requiresCodebase: boolean };
+	pm: PmEvidence;
+	roadmap: {
+		/**
+		 * Live Roadmap items: not CLOSED or DECLINED, and not auto-hidden by
+		 * the PM sync. Grounding for a recommendation run — a Roadmap the
+		 * model can read is context of its own.
+		 */
+		itemCount: number;
+	};
+	/**
+	 * AI-recommended batches that still have an item a batch removal would
+	 * take: unprotected, not closed or declined, not already awaiting approval
+	 * to close. Counted with the one predicate the removal door uses.
+	 */
+	aiRecommended: { eligibleBatchCount: number };
 	/**
 	 * Slack channels, Teams channels and Teams chats linked to this project for
 	 * Work Capture — the conversations it picks tasks up from. A paused one
@@ -385,4 +430,5 @@ export type CapabilitySurface =
 	| "atlas"
 	| "security"
 	| "release-notes"
-	| "settings";
+	| "settings"
+	| "roadmap";

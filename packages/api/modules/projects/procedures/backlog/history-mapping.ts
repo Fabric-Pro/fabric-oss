@@ -159,6 +159,10 @@ export function deriveChangeSource(metadata: unknown): string | null {
 	if (src === "AI_UPDATE" || src === "AI_BACKLOG_UPDATE") {
 		return "AI Update";
 	}
+	// Fizzy #2208: a Feature accepted from a roadmap-recommendation batch.
+	if (src === "AI_RECOMMENDED") {
+		return "AI Recommended";
+	}
 	if (src === "APPROVED_PROPOSAL") {
 		if (reporter === "SLACK") {
 			return "Slack";

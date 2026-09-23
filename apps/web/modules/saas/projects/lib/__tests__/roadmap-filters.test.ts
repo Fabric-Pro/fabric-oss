@@ -7,9 +7,10 @@ import {
 	hasActiveRoadmapFilters,
 	normalizeStorySource,
 	type RoadmapFilters,
+	STORY_SOURCE_LABELS,
 	selectHiddenMatches,
 } from "../roadmap-filters";
-import type { UserStory } from "../stories/types";
+import { dbSourceToFe, type UserStory } from "../stories/types";
 
 function makeStory(overrides: Partial<UserStory> & { id: string }): UserStory {
 	return {
@@ -73,6 +74,14 @@ describe("normalizeStorySource", () => {
 			"approved_proposal",
 		);
 		expect(normalizeStorySource("SLACK")).toBe("slack");
+	});
+
+	// #2208. A Feature accepted from a recommendation batch keeps its own
+	// source, so it must not collapse into "Manual entry" on the Roadmap.
+	it("keeps AI-recommended items as their own filterable source", () => {
+		expect(normalizeStorySource("AI_RECOMMENDED")).toBe("ai_recommended");
+		expect(dbSourceToFe("AI_RECOMMENDED")).toBe("ai_recommended");
+		expect(STORY_SOURCE_LABELS.ai_recommended).toBe("AI Recommended");
 	});
 
 	it("falls back to 'manual' for null, undefined, empty, or unknown values", () => {

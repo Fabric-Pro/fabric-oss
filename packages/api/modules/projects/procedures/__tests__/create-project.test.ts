@@ -54,6 +54,14 @@ vi.mock("../../lib/resolve-pm-target", () => ({
 	resolvePmTarget: vi.fn(),
 }));
 
+const mockOpenPmStorySyncJob = vi.fn();
+const mockFailPmStorySyncJob = vi.fn();
+
+vi.mock("../../lib/pm-story-sync-job", () => ({
+	openPmStorySyncJob: (...args: unknown[]) => mockOpenPmStorySyncJob(...args),
+	failPmStorySyncJob: (...args: unknown[]) => mockFailPmStorySyncJob(...args),
+}));
+
 const mockWorkflowStart = vi.fn();
 const mockGetTemporalClient = vi.fn();
 
@@ -142,6 +150,7 @@ beforeEach(() => {
 		workflow: { start: mockWorkflowStart },
 	});
 	mockWorkflowStart.mockResolvedValue({ workflowId: "wf-abc" });
+	mockOpenPmStorySyncJob.mockResolvedValue(undefined);
 });
 
 describe("createProjectProcedure — auto-sync dispatch", () => {
@@ -215,6 +224,135 @@ describe("createProjectProcedure — auto-sync dispatch", () => {
 			containerId: "200",
 			direction: "pull",
 		});
+	});
+
+	it("opens a PM_STORY_SYNC row just before the onboarding pull starts", async () => {
+		const project = projectFixture({
+			projectManagementMcpServerId: "srv-mcp",
+			projectManagementMcpConfigId: "cfg-1",
+			projectManagementContainerId: "200",
+		});
+		mockCreateProject.mockResolvedValue(project);
+		vi.mocked(resolvePmTarget).mockResolvedValue({
+			kind: "mcp",
+			mcpConfigId: "cfg-1",
+			mcpConfig: { id: "cfg-1", enabled: true } as never,
+		});
+
+		await handler({
+			input: {
+				name: "Test Project",
+				organizationId: null,
+				projectManagementMcpServerId: "srv-mcp",
+				projectManagementMcpConfigId: "cfg-1",
+				projectManagementContainerId: "200",
+			},
+			context: baseCtx,
+		});
+
+		const [, opts] = mockWorkflowStart.mock.calls[0];
+		expect(mockOpenPmStorySyncJob).toHaveBeenCalledWith({
+			workflowId: opts.workflowId,
+			projectId: "proj-1",
+			userId: "user-1",
+			organizationId: null,
+			direction: "pull",
+		});
+		expect(mockOpenPmStorySyncJob.mock.invocationCallOrder[0]).toBeLessThan(
+			mockWorkflowStart.mock.invocationCallOrder[0],
+		);
+		expect(mockFailPmStorySyncJob).not.toHaveBeenCalled();
+	});
+
+	it("fails the opened row when the onboarding pull fails to start, and still creates the project", async () => {
+		const project = projectFixture({
+			projectManagementMcpServerId: "srv-mcp",
+			projectManagementMcpConfigId: "cfg-1",
+			projectManagementContainerId: "200",
+		});
+		mockCreateProject.mockResolvedValue(project);
+		vi.mocked(resolvePmTarget).mockResolvedValue({
+			kind: "mcp",
+			mcpConfigId: "cfg-1",
+			mcpConfig: { id: "cfg-1", enabled: true } as never,
+		});
+		mockWorkflowStart.mockRejectedValueOnce(new Error("temporal down"));
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const result = await handler({
+			input: {
+				name: "Test Project",
+				organizationId: null,
+				projectManagementMcpServerId: "srv-mcp",
+				projectManagementMcpConfigId: "cfg-1",
+				projectManagementContainerId: "200",
+			},
+			context: baseCtx,
+		});
+
+		expect(result.storySyncStarted).toBe(false);
+		expect(mockFailPmStorySyncJob).toHaveBeenCalledWith({
+			workflowId: mockOpenPmStorySyncJob.mock.calls[0][0].workflowId,
+			projectId: "proj-1",
+			error: "The sync could not be started.",
+		});
+	});
+
+	it("skips the onboarding pull when a sync already holds the project, failing no row", async () => {
+		const project = projectFixture({
+			projectManagementMcpServerId: "srv-mcp",
+			projectManagementMcpConfigId: "cfg-1",
+			projectManagementContainerId: "200",
+		});
+		mockCreateProject.mockResolvedValue(project);
+		vi.mocked(resolvePmTarget).mockResolvedValue({
+			kind: "mcp",
+			mcpConfigId: "cfg-1",
+			mcpConfig: { id: "cfg-1", enabled: true } as never,
+		});
+		mockOpenPmStorySyncJob.mockResolvedValueOnce({
+			workflowId: "story-sync-live",
+			direction: "pull",
+			startedAt: new Date(),
+		});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const result = await handler({
+			input: {
+				name: "Test Project",
+				organizationId: null,
+				projectManagementMcpServerId: "srv-mcp",
+				projectManagementMcpConfigId: "cfg-1",
+				projectManagementContainerId: "200",
+			},
+			context: baseCtx,
+		});
+
+		expect(result.storySyncStarted).toBe(false);
+		expect(mockWorkflowStart).not.toHaveBeenCalled();
+		expect(mockFailPmStorySyncJob).not.toHaveBeenCalled();
+	});
+
+	it("opens no PM_STORY_SYNC row when no sync starts", async () => {
+		const project = projectFixture({
+			projectManagementMcpServerId: "srv-x",
+			projectManagementContainerId: "300",
+		});
+		mockCreateProject.mockResolvedValue(project);
+		vi.mocked(resolvePmTarget).mockResolvedValue(null);
+
+		await handler({
+			input: {
+				name: "Test Project",
+				organizationId: null,
+				projectManagementMcpServerId: "srv-x",
+				projectManagementContainerId: "300",
+			},
+			context: baseCtx,
+		});
+
+		expect(mockOpenPmStorySyncJob).not.toHaveBeenCalled();
+		expect(mockFailPmStorySyncJob).not.toHaveBeenCalled();
 	});
 
 	it("silently skips workflow start when resolvePmTarget returns null (project still created)", async () => {

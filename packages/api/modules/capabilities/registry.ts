@@ -7,22 +7,25 @@
  * the same discipline the project readiness registry uses and for the same
  * reason.
  *
- * ## What is deliberately absent
+ * ## Where the Roadmap rows live
  *
- * **Every Roadmap row.** The matrix covers Roadmap entry points, context-based
- * recommendation batches and the AI-recommended item lifecycle, and none of
- * those surfaces exist yet — they are built by the Project Suite 3A/3B/3C
- * cards, which land after this one. Writing rules against UI that does not
- * exist would produce dead code that the dead-code gate would reject anyway,
- * and would have to be rewritten once those surfaces take their real shape. The
- * gating requirements for them move into those cards.
+ * The Roadmap rows were first left to the Project Suite cards that build the
+ * Roadmap surfaces, and now sit here, by the user decision of 2026-09-18: PM
+ * pull, sync and import (3A, FR51-54), feature recommendations and Do Both
+ * (3B, FR55-59), and removing an AI-recommended batch (3C, FR60).
+ *
+ * Work Capture (FR76-81) and living-document refresh (FR72-75) were decided on
+ * 2026-09-23: each is a warning and never a block, because the capability
+ * still runs, only on less than it could.
+ *
+ * ## What is deliberately absent
  *
  * **Anything the card puts out of scope**: the readiness checklist, request
  * help, permissions, broad empty-state redesign, and the agent chat surfaces.
  *
- * **The Settings PM Sync toggle and terminal-status rows.** Decided — disabled
- * until a project-management tool is connected — and moved to the Project Suite
- * 3A card (#2204), which builds the PM surfaces those rows gate.
+ * **The Settings PM Sync toggle and terminal-status rows.** Those controls are
+ * disabled in place until a PM tool is connected, which says more than a
+ * banner above them could.
  *
  * **Paths that run ungated on purpose.** The scheduled newsletter send, the
  * scheduled document refresh and the PRD-to-tasks pipeline's child generations
@@ -441,6 +444,151 @@ function sourceFacts(evidence: CapabilityEvidence): string[] {
 	return [...groundingFacts(evidence), ...codebaseFacts(evidence)];
 }
 
+/** The verdicts a composite rule actually has, without the absent ones. */
+function present(verdicts: readonly (RuleVerdict | null)[]): RuleVerdict[] {
+	return verdicts.filter(
+		(verdict): verdict is RuleVerdict => verdict !== null,
+	);
+}
+
+/**
+ * Is the project-management tool reachable through either door path?
+ *
+ * Either is enough. A legacy project that names only a server has no bulk
+ * target, yet its single-item sync and import work, and blocking those would
+ * take away something that runs today.
+ */
+function pmConnectionVerdict(evidence: CapabilityEvidence): RuleVerdict | null {
+	if (evidence.pm.bulkTargetResolvable || evidence.pm.itemConfigResolvable) {
+		return null;
+	}
+	return {
+		state: "HARD_BLOCK",
+		reasonKey: "roadmap.pm-not-connected",
+		blockingDependency: "a connected project management system",
+		remedy: "CONFIGURE_INTEGRATION",
+	};
+}
+
+/** A board is chosen in Project Settings, which is where the fix lives. */
+function pmBoardVerdict(evidence: CapabilityEvidence): RuleVerdict | null {
+	if (evidence.pm.boardSelected) {
+		return null;
+	}
+	return {
+		state: "HARD_BLOCK",
+		reasonKey: "roadmap.pm-no-board",
+		blockingDependency:
+			"a project management board selected in Project Settings",
+		remedy: "CONFIGURE_PM_BOARD",
+	};
+}
+
+/**
+ * A story pull or push is in flight. A stalled run does not block — the
+ * watchdog closes it and a new pull supersedes it — and a failed last run never
+ * blocks, because running it again is the remedy.
+ */
+function pmRunningVerdict(
+	evidence: CapabilityEvidence,
+	now: Date,
+): RuleVerdict | null {
+	const { syncing } = evidence.pm;
+	if (!syncing.running || isStalled(syncing, "backgroundJob", now)) {
+		return null;
+	}
+	return {
+		state: "PROCESSING",
+		reasonKey: "roadmap.pm-sync-running",
+		blockingDependency: "the running project management sync",
+		remedy: "WAIT",
+	};
+}
+
+/**
+ * Can work items be pulled from the PM system right now? Shared by the pull
+ * rule and Do Both, so the two can never disagree about the pull half.
+ *
+ * The connection is listed first on purpose: `strictest` keeps the first of two
+ * equally severe verdicts, and "connect a system" must win over "choose a
+ * board" when both are missing.
+ */
+function pmPullVerdict(evidence: CapabilityEvidence, now: Date): RuleVerdict {
+	return strictest(
+		present([
+			pmConnectionVerdict(evidence),
+			pmBoardVerdict(evidence),
+			pmRunningVerdict(evidence, now),
+		]),
+	);
+}
+
+/** Which half of Do Both a block belongs to, and for the PM half, which fix. */
+function doBothReasonKey(verdict: RuleVerdict, pull: RuleVerdict): string {
+	if (verdict !== pull) {
+		return "roadmap.do-both.needs-context";
+	}
+	return pull.reasonKey === "roadmap.pm-no-board"
+		? "roadmap.do-both.needs-board"
+		: "roadmap.do-both.needs-pm";
+}
+
+/** The PM facts a Roadmap rule reads, for a suppression fingerprint. */
+function pmFacts(evidence: CapabilityEvidence): string[] {
+	const { pm } = evidence;
+	const connected = pm.bulkTargetResolvable || pm.itemConfigResolvable;
+	return [
+		`pm:${connected ? "on" : "off"}`,
+		`board:${pm.boardSelected ? "on" : "off"}`,
+		`ro:${pm.readOnly ? "on" : "off"}`,
+	];
+}
+
+/**
+ * Is there enough to recommend Features from?
+ *
+ * A real source grounds it outright. Short of one, a substantial description or
+ * a Roadmap with items still gives the model something to read, so the run is
+ * allowed with a warning. With neither, the batch would be invented, so it is a
+ * soft block pointing at adding context. Never HIDDEN and never PROCESSING, and
+ * the rollout flag is not an input: whether the feature exists is not a
+ * dependency it has.
+ */
+function recommendVerdict(evidence: CapabilityEvidence): RuleVerdict {
+	if (
+		evidence.context.product > 0 ||
+		evidence.context.technical > 0 ||
+		evidence.documents.usableTypes.size > 0
+	) {
+		return AVAILABLE;
+	}
+	if (
+		evidence.descriptionLength >= MIN_GROUNDING_DESCRIPTION_LENGTH ||
+		evidence.roadmap.itemCount > 0
+	) {
+		return {
+			state: "WARNING",
+			reasonKey: "context.thin",
+			blockingDependency: "project context",
+			remedy: "ADD_CONTEXT",
+		};
+	}
+	return {
+		state: "SOFT_BLOCK",
+		reasonKey: "roadmap.recommend.context-insufficient",
+		blockingDependency: "project context",
+		remedy: "ADD_CONTEXT",
+	};
+}
+
+/** The facts the recommendation verdict reads. */
+function recommendFacts(evidence: CapabilityEvidence): string[] {
+	return [
+		...groundingFacts(evidence),
+		`roadmap:${evidence.roadmap.itemCount > 0 ? "items" : "empty"}`,
+	];
+}
+
 export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 	// ---------------------------------------------------------------- Documents
 	{
@@ -848,6 +996,108 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 		fingerprint: (e) => [
 			e.chat.linkedChannelCount > 0 ? "linked" : "none-linked",
 		],
+	},
+
+	// ------------------------------------------------------------------ Roadmap
+	{
+		key: "roadmap.view",
+		label: "View the Roadmap",
+		surface: "roadmap",
+		// The page itself never gates: its actions do, one by one.
+		evaluate: () => AVAILABLE,
+		fingerprint: () => ["roadmap-view"],
+	},
+	{
+		key: "roadmap.pull-from-pm",
+		label: "Pull work items from the PM system",
+		surface: "roadmap",
+		evaluate: pmPullVerdict,
+		fingerprint: pmFacts,
+	},
+	{
+		key: "roadmap.sync-to-pm",
+		label: "Sync work items to the PM system",
+		surface: "roadmap",
+		// Read-only mode refuses writes to the PM tool and nothing else, so it
+		// blocks this and not the pull. It has no remedy to offer: turning it
+		// off is a deliberate project decision, not a setup step.
+		evaluate: (e, now) =>
+			strictest(
+				present([
+					pmConnectionVerdict(e),
+					pmBoardVerdict(e),
+					e.pm.readOnly
+						? {
+								state: "HARD_BLOCK",
+								reasonKey: "roadmap.pm-read-only",
+								blockingDependency:
+									"project management writes to be allowed (read-only mode is on)",
+								remedy: null,
+							}
+						: null,
+					pmRunningVerdict(e, now),
+				]),
+			),
+		fingerprint: pmFacts,
+	},
+	{
+		key: "roadmap.pm-import",
+		label: "Import a work item from the PM system",
+		surface: "roadmap",
+		// No board arm: only one provider's import needs a board, and its door
+		// checks that itself.
+		evaluate: (e, now) =>
+			strictest(
+				present([pmConnectionVerdict(e), pmRunningVerdict(e, now)]),
+			),
+		fingerprint: pmFacts,
+	},
+	{
+		key: "roadmap.recommend-features",
+		label: "Recommend Features from Context",
+		surface: "roadmap",
+		evaluate: (e) => recommendVerdict(e),
+		fingerprint: recommendFacts,
+	},
+	{
+		key: "roadmap.do-both",
+		label: "Do Both",
+		surface: "roadmap",
+		// The stricter of its two halves. A block is renamed to say which half
+		// is missing — "Do Both is not ready" helps nobody — while keeping that
+		// half's remedy. A missing board is named apart from a missing
+		// connection, because the fix is a different page. Processing and a
+		// thin-context warning pass through unchanged, so the warning is
+		// dismissible like any other.
+		evaluate: (e, now) => {
+			const pull = pmPullVerdict(e, now);
+			const verdict = strictest([pull, recommendVerdict(e)]);
+			if (
+				verdict.state !== "HARD_BLOCK" &&
+				verdict.state !== "SOFT_BLOCK"
+			) {
+				return verdict;
+			}
+			return { ...verdict, reasonKey: doBothReasonKey(verdict, pull) };
+		},
+		fingerprint: (e) => [...pmFacts(e), ...recommendFacts(e)],
+	},
+	{
+		key: "roadmap.remove-ai-recommended",
+		label: "Remove AI Recommended Items",
+		surface: "roadmap",
+		// Hidden, not blocked, with nothing to remove: there is no object to
+		// act on, so the entry has no business on the page.
+		evaluate: (e) =>
+			e.aiRecommended.eligibleBatchCount === 0
+				? {
+						state: "HIDDEN",
+						reasonKey: "roadmap.no-eligible-ai-batch",
+						blockingDependency: "an eligible AI-recommended batch",
+						remedy: null,
+					}
+				: AVAILABLE,
+		fingerprint: (e) => [`aiBatches:${e.aiRecommended.eligibleBatchCount}`],
 	},
 ];
 

@@ -83,7 +83,8 @@ export type GateDestination =
 	| "code-search"
 	| "context"
 	| "documents"
-	| "integrations";
+	| "integrations"
+	| "pm-settings";
 
 /**
  * The states that render something. `AVAILABLE` and `HIDDEN` do not.
@@ -189,6 +190,13 @@ const REMEDY: Record<
 		target: "integrations",
 		label: "remedy.configureIntegration",
 	},
+	// The tool is connected; what is missing is the board, which is chosen in
+	// Project Settings rather than on the Integrations page.
+	CONFIGURE_PM_BOARD: {
+		ctaKind: "navigate",
+		target: "pm-settings",
+		label: "remedy.configurePmBoard",
+	},
 	ENABLE_CODE_SEARCH: {
 		ctaKind: "navigate",
 		target: "code-search",
@@ -267,6 +275,17 @@ const KNOWN_REASON_KEYS: ReadonlySet<string> = new Set([
 	"settings.repository-unreachable",
 	"settings.connection-degraded",
 	"settings.no-linked-channel",
+	"roadmap.pm-not-connected",
+	"roadmap.pm-no-board",
+	"roadmap.pm-read-only",
+	"roadmap.pm-sync-running",
+	"roadmap.recommend.context-insufficient",
+	"roadmap.do-both.needs-pm",
+	"roadmap.do-both.needs-board",
+	"roadmap.do-both.needs-context",
+	// No `roadmap.no-eligible-ai-batch`: that reason only ever arrives on a
+	// HIDDEN gate, which builds no view. Its copy is read by the batch
+	// removal dialog's empty state.
 ]);
 
 /**
@@ -277,18 +296,12 @@ const KNOWN_REASON_KEYS: ReadonlySet<string> = new Set([
  * resurrects a warning somebody dismissed:
  *
  *  - `AVAILABLE` — the capability works. No banner, no disabled state.
- *  - `HIDDEN` — there is nothing for the capability to act on.
+ *  - `HIDDEN` — there is nothing for the capability to act on, so the action
+ *    leaves the page. That is the surface's job, not a banner's: it reads
+ *    `useCapabilityGate(key).hidden` and does not render the action at all.
  *  - `suppressed` — this viewer silenced this warning. The server still sends
  *    the gate (it flags rather than filters, so a restore control can know
  *    there is something to restore), which means the hiding has to happen here.
- *
- * **`HIDDEN` is not implemented beyond this.** It should remove the action from
- * the page entirely, which is a stronger statement than `AVAILABLE`, and no
- * surface acts on it — the distinction was carried by a generic action wrapper
- * that no page could use (see the note at the top of this file). No rule in the
- * registry emits `HIDDEN` today, so nothing is currently wrong; the first rule
- * that does must give some surface a way to act on it, or the capability will
- * quietly read as available.
  */
 export function buildCapabilityGateView(
 	gate: CapabilityGate,
@@ -299,26 +312,7 @@ export function buildCapabilityGateView(
 	 */
 	dismissedForSession = false,
 ): CapabilityGateView | null {
-	if (gate.state === "HIDDEN") {
-		// Hiding an action is not implemented in this client, and returning null
-		// here makes it indistinguishable from "available" — a capability that
-		// should have disappeared instead renders as working. Nothing emits
-		// HIDDEN today, so this costs nothing now and turns a silent wrong
-		// render into an obvious failure the first time a rule does. The first
-		// such rule must give some surface a way to remove its action, and then
-		// this throw goes with it.
-		//
-		// Development only: a user should never meet an exception because a
-		// state arrived that the page cannot draw.
-		if (process.env.NODE_ENV === "development") {
-			throw new Error(
-				`Capability "${gate.capabilityKey}" resolved to HIDDEN, which this client cannot act on. ` +
-					"Give the surface a way to remove the action before emitting this state.",
-			);
-		}
-		return null;
-	}
-	if (gate.state === "AVAILABLE") {
+	if (gate.state === "HIDDEN" || gate.state === "AVAILABLE") {
 		return null;
 	}
 	if (gate.suppressed) {

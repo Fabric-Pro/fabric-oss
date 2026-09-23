@@ -84,6 +84,7 @@ import {
 	PAYLOAD_HARD_LIMIT_BYTES,
 } from "../../lib/payload-size-guard";
 import { withHeartbeatTicker } from "../lib/activity-liveness";
+import { jobHeartbeat } from "../lib/job-progress";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
 import { runWithTimeout } from "../orchestrator/execution/mcp-call-timeout";
 import { type PMSource, resolvePmSource } from "../pm-source";
@@ -5476,6 +5477,8 @@ export async function listWorkItemsFromPM(input: {
 	/** Pre-discovered capabilities, supplied by a workflow that already ran discovery. */
 	capabilities?: PMToolCapabilities;
 }): Promise<ListWorkItemsResult> {
+	// Keeps the PM_STORY_SYNC job row alive for the Roadmap and the gate.
+	await jobHeartbeat();
 	const {
 		mcpConfigId: maybeMcpConfigId,
 		containerId,
@@ -8077,6 +8080,7 @@ export async function createOrUpdateStoryFromPMItem(input: {
 	externalId: string;
 	externalUrl?: string;
 }> {
+	await jobHeartbeat();
 	const {
 		projectId,
 		externalId,
@@ -8993,6 +8997,7 @@ export async function getStoriesToSync(input: {
 		kind?: string | null;
 	}>
 > {
+	await jobHeartbeat();
 	const where: {
 		projectId: string;
 		project?: { organizationId: string };
@@ -9067,6 +9072,7 @@ export async function updateStoryExternalRefs(input: {
 	externalId: string;
 	externalUrl?: string;
 }): Promise<void> {
+	await jobHeartbeat();
 	await updateStory(input.storyId, input.projectId, {
 		externalId: input.externalId,
 		externalUrl: input.externalUrl,

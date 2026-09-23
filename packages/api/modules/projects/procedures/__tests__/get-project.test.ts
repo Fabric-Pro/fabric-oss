@@ -39,6 +39,10 @@ const { handlers, mocks } = vi.hoisted(() => {
 		memberFindFirst: vi.fn(),
 		userHasProjectPermission: vi.fn(),
 		resolveAttachmentRetentionOverrides: vi.fn(),
+		isFeatureEnabled: vi.fn(),
+		isRoadmapRecommendationProviderAvailable: vi.fn(),
+		findActivePmStorySync: vi.fn(),
+		loggerWarn: vi.fn(),
 	};
 	return { handlers, mocks };
 });
@@ -49,6 +53,7 @@ vi.mock("@repo/database", () => ({
 	hasProjectAccess: (...args: unknown[]) => mocks.hasProjectAccess(...args),
 	resolveAttachmentRetentionOverrides: (...args: unknown[]) =>
 		mocks.resolveAttachmentRetentionOverrides(...args),
+	isFeatureEnabled: (...args: unknown[]) => mocks.isFeatureEnabled(...args),
 	db: {
 		project: { findUnique: mocks.projectFindUnique },
 		projectMember: { findUnique: mocks.projectMemberFindUnique },
@@ -62,6 +67,25 @@ vi.mock("@repo/database", () => ({
 vi.mock("../../../../lib/project-permissions", () => ({
 	userHasProjectPermission: (...args: unknown[]) =>
 		mocks.userHasProjectPermission(...args),
+}));
+
+vi.mock("../../lib/roadmap-recommendations/availability", () => ({
+	isRoadmapRecommendationProviderAvailable: (...args: unknown[]) =>
+		mocks.isRoadmapRecommendationProviderAvailable(...args),
+}));
+
+vi.mock("@repo/logs", () => ({
+	logger: {
+		warn: (...args: unknown[]) => mocks.loggerWarn(...args),
+		info: vi.fn(),
+		error: vi.fn(),
+		debug: vi.fn(),
+	},
+}));
+
+vi.mock("../../lib/pm-story-sync-job", () => ({
+	findActivePmStorySync: (...args: unknown[]) =>
+		mocks.findActivePmStorySync(...args),
 }));
 
 // Deliberately NOT mocked: "../../../../lib/effective-project-permissions"
@@ -128,6 +152,9 @@ beforeEach(() => {
 	mocks.resolveAttachmentRetentionOverrides.mockResolvedValue(
 		new Map([[PROJECT_ID, { days: null, settingChangedAt: null }]]),
 	);
+	mocks.isFeatureEnabled.mockResolvedValue(false);
+	mocks.isRoadmapRecommendationProviderAvailable.mockResolvedValue(false);
+	mocks.findActivePmStorySync.mockResolvedValue(null);
 });
 
 describe("getProjectProcedure — canPublish capability", () => {
@@ -462,5 +489,164 @@ describe("getProjectProcedure — effectiveAttachmentRetentionDays (Fizzy #1749)
 		});
 
 		expect(result.project.effectiveAttachmentRetentionDays).toBe(90);
+	});
+});
+
+describe("getProjectProcedure — roadmap block", () => {
+	const activeSync = {
+		workflowId: "story-sync-proj-1-1700000000000",
+		direction: "pull",
+		startedAt: new Date("2026-09-23T12:00:00.000Z"),
+	};
+
+	beforeEach(() => {
+		mocks.getProjectById.mockResolvedValue({
+			id: PROJECT_ID,
+			name: "Project",
+			organizationId: ORG_ID,
+		});
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+		});
+		mocks.findActivePmStorySync.mockResolvedValue(activeSync);
+	});
+
+	it("an org Member without a ProjectMember row can update and create stories, and sees the running sync", async () => {
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "member" });
+
+		const result = await handler({
+			input: { id: PROJECT_ID, organizationId: ORG_ID },
+			context: ctx,
+		});
+
+		expect(result.project.roadmap).toMatchObject({
+			canUpdateStories: true,
+			canCreateStories: true,
+			activePmSync: activeSync,
+		});
+		expect(mocks.findActivePmStorySync).toHaveBeenCalledWith(PROJECT_ID);
+	});
+
+	it("still loads the project, with no sync to poll, when the active-sync read fails", async () => {
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "member" });
+		mocks.findActivePmStorySync.mockRejectedValue(
+			new Error("connection reset"),
+		);
+
+		const result = await handler({
+			input: { id: PROJECT_ID, organizationId: ORG_ID },
+			context: ctx,
+		});
+
+		expect(result.project.roadmap).toMatchObject({
+			canUpdateStories: true,
+			activePmSync: null,
+		});
+		expect(mocks.loggerWarn).toHaveBeenCalledWith(
+			"[getProject] Active PM sync read failed",
+			{ projectId: PROJECT_ID, error: "connection reset" },
+		);
+	});
+
+	it("a project VIEWER can neither update nor create stories, and gets no sync to poll", async () => {
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role: "VIEWER",
+			acceptedAt: new Date(),
+			expiresAt: null,
+		});
+
+		const result = await handler({
+			input: { id: PROJECT_ID, organizationId: ORG_ID },
+			context: ctx,
+		});
+
+		expect(result.project.roadmap).toMatchObject({
+			canUpdateStories: false,
+			canCreateStories: false,
+			activePmSync: null,
+		});
+	});
+
+	it("resolves both Roadmap flags with the project's organization, not the session's", async () => {
+		mocks.isFeatureEnabled.mockImplementation(
+			async (flag: string) => flag === "ROADMAP_RECOMMENDATIONS",
+		);
+
+		const result = await handler({
+			input: { id: PROJECT_ID, organizationId: "org-session" },
+			context: ctx,
+		});
+
+		expect(mocks.isFeatureEnabled).toHaveBeenCalledWith(
+			"ROADMAP_RECOMMENDATIONS",
+			ORG_ID,
+		);
+		expect(mocks.isFeatureEnabled).toHaveBeenCalledWith(
+			"AI_RECOMMENDED_LIFECYCLE",
+			ORG_ID,
+		);
+		expect(result.project.roadmap).toMatchObject({
+			recommendationsEnabled: true,
+			aiRecommendedLifecycleEnabled: false,
+		});
+	});
+
+	it("carries the AI-recommended lifecycle flag", async () => {
+		mocks.isFeatureEnabled.mockImplementation(
+			async (flag: string) => flag === "AI_RECOMMENDED_LIFECYCLE",
+		);
+
+		const result = await handler({
+			input: { id: PROJECT_ID, organizationId: ORG_ID },
+			context: ctx,
+		});
+
+		expect(result.project.roadmap).toMatchObject({
+			recommendationsEnabled: false,
+			aiRecommendedLifecycleEnabled: true,
+		});
+	});
+
+	it("asks the provider seam with the project and its organization", async () => {
+		mocks.isRoadmapRecommendationProviderAvailable.mockResolvedValue(true);
+
+		const result = await handler({
+			input: { id: PROJECT_ID, organizationId: ORG_ID },
+			context: ctx,
+		});
+
+		expect(
+			mocks.isRoadmapRecommendationProviderAvailable,
+		).toHaveBeenCalledWith({
+			projectId: PROJECT_ID,
+			organizationId: ORG_ID,
+		});
+		expect(result.project.roadmap).toMatchObject({
+			providerAvailable: true,
+		});
+	});
+
+	it("returns exactly the agreed roadmap keys", async () => {
+		const result = await handler({
+			input: { id: PROJECT_ID, organizationId: ORG_ID },
+			context: ctx,
+		});
+
+		expect(
+			Object.keys(
+				result.project.roadmap as Record<string, unknown>,
+			).sort(),
+		).toEqual([
+			"activePmSync",
+			"aiRecommendedLifecycleEnabled",
+			"canCreateStories",
+			"canUpdateStories",
+			"providerAvailable",
+			"recommendationsEnabled",
+		]);
 	});
 });

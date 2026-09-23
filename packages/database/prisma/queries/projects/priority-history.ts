@@ -138,8 +138,17 @@ export async function applyPriorityChanges(
 
 	const current = await db.userStory.findMany({
 		where: { id: { in: [...byId.keys()] }, projectId },
-		select: { id: true, priority: true },
+		select: {
+			id: true,
+			priority: true,
+			source: true,
+			firstHumanEditAt: true,
+		},
 	});
+
+	// A person's priority move is a content edit of an AI-recommended item
+	// (Fizzy #2211), stamped once in the same write as the move itself.
+	const firstHumanEditIds = new Set<string>();
 
 	// The no-op filter — the whole point of the table.
 	const applied: AppliedPriorityChange[] = [];
@@ -147,6 +156,14 @@ export async function applyPriorityChanges(
 		const request = byId.get(story.id);
 		if (!request || request.toPriority === story.priority) {
 			continue;
+		}
+		if (
+			source === "MANUAL" &&
+			actor.id !== null &&
+			story.source === "AI_RECOMMENDED" &&
+			story.firstHumanEditAt === null
+		) {
+			firstHumanEditIds.add(story.id);
 		}
 		applied.push({
 			storyId: story.id,
@@ -199,6 +216,9 @@ export async function applyPriorityChanges(
 						lastEditedByName: actor.name,
 						lastEditedSource:
 							source === "AI" ? "AI_BACKLOG_UPDATE" : "MANUAL",
+						...(firstHumanEditIds.has(change.storyId)
+							? { firstHumanEditAt: changedAt }
+							: {}),
 					},
 				});
 			}

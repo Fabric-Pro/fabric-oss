@@ -128,6 +128,7 @@ import {
 	partitionByNameMatch,
 	selectHiddenMatches,
 } from "../../lib/roadmap-filters";
+import { isRoadmapPopulated } from "../../lib/roadmap-population";
 import {
 	compareStoriesByRelevance,
 	computeMatchPercentById,
@@ -173,6 +174,10 @@ import {
 } from "../../lib/stories/types";
 import { submitCreateStoryWithAttachments } from "../../lib/submit-create-story-with-attachments";
 import type { PendingDocAttachment } from "../../lib/text-attachment-validation";
+import {
+	useCapabilityGate,
+	useCapabilityGates,
+} from "../capability-gates/useCapabilityGates";
 import { CodingRunDialog } from "../coding-runs/CodingRunDialog";
 import { StartImplementationSessionButton } from "../coding-runs/StartImplementationSessionButton";
 import { AttachmentsField } from "./AttachmentsField";
@@ -188,12 +193,24 @@ import { PendingProposalsBanner } from "./PendingProposalsBanner";
 import { PullFromPMDialog } from "./PullFromPMDialog";
 import { ReviewCenterPanel } from "./pm-sync/review-center/ReviewCenterPanel";
 import { PriorityRankedList } from "./priority/PriorityRankedList";
+import { RoadmapActionsMenu } from "./RoadmapActionsMenu";
 import { RoadmapContextStrip, type RoadmapStats } from "./RoadmapContextStrip";
 import { RoadmapEmptyState } from "./RoadmapEmptyState";
 import { RoadmapFilterToolbar } from "./RoadmapFilterToolbar";
 import { RoadmapSectionSwitcher } from "./RoadmapSectionSwitcher";
 import { RoadmapSettingsMenu } from "./RoadmapSettingsMenu";
 import { RoadmapSortControl } from "./RoadmapSortControl";
+import { RoadmapStartBuilding } from "./RoadmapStartBuilding";
+import { startErrorToast } from "./recommendations/useRecommendationRun";
+import { useDoBothSequence } from "./roadmap-entry/do-both-sequence";
+import { EntryPointReasonGuard } from "./roadmap-entry/entry-point-reason";
+import { deriveEntryPointStates } from "./roadmap-entry/entry-point-states";
+import { useRoadmapRecommendationStarter } from "./roadmap-entry/recommendation-starter";
+import { useRoadmapActionItems } from "./roadmap-entry/roadmap-action-items";
+import {
+	type PmSyncTerminal,
+	usePmSyncProgressPoll,
+} from "./roadmap-entry/usePmSyncProgressPoll";
 import { StageRequestsButton } from "./StageRequestsButton";
 import { StageRequestsInbox } from "./StageRequestsInbox";
 import { StoryCard } from "./StoryCard";
@@ -424,6 +441,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 	const focusStoryId = searchParams.get("storyId");
 	const { organizationId, basePath } = useOrganizationContext();
 	const tStories = useTranslations("tooltips.stories");
+	const tRecommendations = useTranslations("projects.recommendations");
 	const tCreateRoadmap = useTranslations("projects.stories.create");
 	const tDuplicates = useTranslations("projects.stories.duplicates");
 	const {
@@ -619,21 +637,9 @@ export function StoriesRoadmap({ projectId }: Props) {
 		}
 	}, [syncLogRequests]);
 
-	// Sync workflow state
-	const [syncWorkflowId, setSyncWorkflowId] = useState<string | null>(null);
-	const [syncDirection, setSyncDirection] = useState<"push" | "pull" | null>(
-		null,
-	);
-	const [syncProgress, setSyncProgress] = useState<{
-		status: string;
-		syncedCount: number;
-		totalStories: number;
-		message: string;
-	} | null>(null);
 	// Opened from the post-sync "Review conflicts" toast CTA when a batch push
 	// routes drifted items to the Review Center instead of overwriting them.
 	const [reviewCenterOpen, setReviewCenterOpen] = useState(false);
-	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
 	// DnD sensors. The 8px activation distance keeps clicks/taps from starting a
 	// drag; the keyboard sensor makes reordering operable without a pointer.
@@ -988,6 +994,111 @@ export function StoriesRoadmap({ projectId }: Props) {
 		pmDetectedTypeDisplayName(pmCapabilitiesData?.detectedType) ??
 		"PM Tool";
 	const canPull = pmCapabilitiesData?.capabilities?.canList ?? false;
+
+	// ---- Roadmap entry points (Fizzy #2204) ----
+	// Flag, provider and permissions ride on `projects.get`, so they hold
+	// whether capability gating is on or off.
+	const roadmapBlock = projectData?.project?.roadmap;
+	const recommendationStarter = useRoadmapRecommendationStarter({
+		projectId,
+		roadmap: roadmapBlock,
+	});
+	const doBoth = useDoBothSequence(recommendationStarter, {
+		projectId,
+		activePmSyncWorkflowId:
+			roadmapBlock === undefined
+				? undefined
+				: (roadmapBlock.activePmSync?.workflowId ?? null),
+		roadmapEmpty: stories.length === 0,
+	});
+	const {
+		pullFinished: doBothPullFinished,
+		pullStarted: doBothPullStarted,
+		pullStartFailed: doBothPullStartFailed,
+		dialogClosed: doBothDialogClosed,
+		nothingNew: doBothNothingNew,
+	} = doBoth;
+	const openReviewCenter = useCallback(() => setReviewCenterOpen(true), []);
+	const handlePmSyncTerminal = useCallback(
+		({ workflowId, jobStatus, progress }: PmSyncTerminal) =>
+			doBothPullFinished({
+				workflowId,
+				// A run whose progress says it failed or was cancelled stopped,
+				// whatever its lagging job row still says.
+				jobStatus:
+					progress?.status === "failed" ||
+					progress?.status === "cancelled"
+						? "FAILED"
+						: jobStatus,
+				failedCount:
+					progress?.jobFailedCount ?? progress?.failedCount ?? 0,
+			}),
+		[doBothPullFinished],
+	);
+	const pmSync = usePmSyncProgressPoll({
+		projectId,
+		organizationId,
+		pmToolName,
+		activePmSync: roadmapBlock?.activePmSync,
+		onReviewConflicts: openReviewCenter,
+		onTerminal: handlePmSyncTerminal,
+	});
+	const { enabled: gatesEnabled } = useCapabilityGates();
+	const pullGate = useCapabilityGate("roadmap.pull-from-pm");
+	const recommendGate = useCapabilityGate("roadmap.recommend-features");
+	const doBothGate = useCapabilityGate("roadmap.do-both");
+	const syncGate = useCapabilityGate("roadmap.sync-to-pm");
+	const recommendRunning =
+		recommendationStarter !== null &&
+		(recommendationStarter.isStarting || recommendationStarter.isRunning);
+	const entryPoints = useMemo(
+		() =>
+			deriveEntryPointStates({
+				roadmap: roadmapBlock,
+				canUpdateProject: projectData?.project?.canUpdateProject,
+				starterAvailable: recommendationStarter !== null,
+				pm: pmCapabilitiesData
+					? {
+							hasIntegration:
+								pmCapabilitiesData.configured === true,
+							canList: canPull,
+						}
+					: undefined,
+				gatesEnabled,
+				pullGate,
+				recommendGate,
+				doBothGate,
+				syncGate,
+				syncRunning: pmSync.workflowId !== null,
+				recommendRunning,
+			}),
+		[
+			roadmapBlock,
+			projectData?.project?.canUpdateProject,
+			recommendationStarter,
+			pmCapabilitiesData,
+			canPull,
+			gatesEnabled,
+			pullGate,
+			recommendGate,
+			doBothGate,
+			syncGate,
+			pmSync.workflowId,
+			recommendRunning,
+		],
+	);
+	const roadmapPopulated = useMemo(
+		() => isRoadmapPopulated(stories, statuses),
+		[stories, statuses],
+	);
+	const roadmapActions = useRoadmapActionItems({
+		projectId,
+		organizationId,
+		roadmapPopulated,
+		roadmap: roadmapBlock,
+		recommendationStarter,
+		canUpdateProject: projectData?.project?.canUpdateProject,
+	});
 
 	// Flat sorted list, before user-applied filter UI is taken into account.
 	// Used to compute the "of N" denominator in the result count.
@@ -1581,171 +1692,6 @@ export function StoriesRoadmap({ projectId }: Props) {
 		setSelectedStoryIds(new Set());
 	}, [projectId]);
 
-	// Poll for sync progress
-	useEffect(() => {
-		if (!syncWorkflowId) {
-			return;
-		}
-
-		// Tolerate transient errors (e.g. a one-off 500 from the progress endpoint
-		// during a worker deploy or gRPC blip) instead of treating the first failure
-		// as a hard "Sync failed". Bulk syncs poll for a while — especially with the
-		// per-item conflict check — so an occasional blip is likely; only give up
-		// after several consecutive failures.
-		let consecutivePollErrors = 0;
-		const pollProgress = async () => {
-			try {
-				const progress = await orpcClient.projects.stories.syncProgress(
-					{
-						projectId,
-						workflowId: syncWorkflowId,
-						organizationId,
-					},
-				);
-				consecutivePollErrors = 0;
-
-				setSyncProgress({
-					status: progress.status,
-					syncedCount: progress.syncedCount,
-					totalStories: progress.totalStories,
-					message: progress.message,
-				});
-
-				if (progress.syncedCount > 0) {
-					queryClient.invalidateQueries({
-						queryKey: getStoriesQueryKey(projectId, organizationId),
-					});
-				}
-
-				if (
-					progress.status === "completed" ||
-					progress.status === "failed" ||
-					progress.status === "cancelled"
-				) {
-					if (pollIntervalRef.current) {
-						clearInterval(pollIntervalRef.current);
-						pollIntervalRef.current = null;
-					}
-					setSyncWorkflowId(null);
-
-					if (progress.status === "completed") {
-						const conflicted = progress.conflictedCount ?? 0;
-						const failed = progress.failedCount ?? 0;
-						const synced = progress.syncedCount;
-						if (conflicted > 0) {
-							// Some items drifted in the PM tool and were routed to
-							// the Review Center instead of being overwritten. Show a
-							// clear synced/needs-review/failed breakdown plus a
-							// direct resolution path (AC1–AC3).
-							const parts: string[] = [];
-							if (synced > 0) {
-								parts.push(`${synced} synced`);
-							}
-							parts.push(`${conflicted} need review`);
-							if (failed > 0) {
-								parts.push(`${failed} failed`);
-							}
-							toast.warning(
-								`Sync finished — ${parts.join(" · ")}`,
-								{
-									description: `${conflicted} item${
-										conflicted === 1 ? "" : "s"
-									} changed in ${pmToolName} since the last sync. Choose which version to keep in the Review Center.`,
-									action: {
-										label: "Review conflicts",
-										onClick: () =>
-											setReviewCenterOpen(true),
-									},
-									duration: 10000,
-								},
-							);
-						} else if (failed > 0) {
-							// Partial failure (no conflicts) — don't mask it behind
-							// a green success toast.
-							const parts: string[] = [];
-							if (synced > 0) {
-								parts.push(`${synced} synced`);
-							}
-							parts.push(`${failed} failed`);
-							toast.error(
-								`Sync finished — ${parts.join(" · ")}`,
-								{
-									description: progress.message,
-								},
-							);
-						} else if (synced > 0) {
-							const prep =
-								syncDirection === "pull" ? "from" : "to";
-							toast.success(
-								`Synced ${synced} stories ${prep} ${pmToolName}`,
-							);
-						} else {
-							toast.success("Sync finished");
-						}
-					} else if (progress.status === "cancelled") {
-						toast.info("Sync cancelled");
-					} else {
-						toast.error("Sync failed", {
-							description: progress.message,
-						});
-					}
-					setSyncDirection(null);
-					queryClient.invalidateQueries({
-						queryKey: getStoriesQueryKey(projectId, organizationId),
-					});
-					setSyncProgress(null);
-				}
-			} catch (error) {
-				const errorMessage =
-					error instanceof Error ? error.message : "Unknown error";
-				const workflowGone =
-					errorMessage.includes("not found") ||
-					errorMessage.includes("already completed");
-
-				// A transient endpoint error (e.g. a 500 during a worker deploy) is
-				// not a real failure — keep polling unless the workflow is gone or
-				// the errors persist across several consecutive polls.
-				if (!workflowGone && ++consecutivePollErrors < 4) {
-					return;
-				}
-
-				if (pollIntervalRef.current) {
-					clearInterval(pollIntervalRef.current);
-					pollIntervalRef.current = null;
-				}
-				setSyncWorkflowId(null);
-				setSyncDirection(null);
-				setSyncProgress(null);
-
-				if (workflowGone) {
-					toast.info("Sync finished");
-				} else {
-					toast.error("Sync failed", { description: errorMessage });
-				}
-				queryClient.invalidateQueries({
-					queryKey: getStoriesQueryKey(projectId, organizationId),
-				});
-			}
-		};
-
-		pollProgress();
-		pollIntervalRef.current = setInterval(pollProgress, 1000);
-
-		return () => {
-			if (pollIntervalRef.current) {
-				clearInterval(pollIntervalRef.current);
-				pollIntervalRef.current = null;
-			}
-		};
-	}, [
-		syncWorkflowId,
-		syncDirection,
-		projectId,
-		organizationId,
-		pmToolName,
-		queryClient,
-	]);
-
 	// ---- Mutations ----
 	const moveStoryRoadmapMutation = useMutation({
 		mutationFn: async (args: {
@@ -2322,11 +2268,11 @@ export function StoriesRoadmap({ projectId }: Props) {
 			});
 		},
 		onSuccess: (data, variables) => {
+			// A running sync is what the PM gates report as Processing.
+			queryClient.invalidateQueries({ queryKey: ["capability-gates"] });
 			if (data.workflowId) {
 				const dir = variables.direction ?? "push";
-				setSyncWorkflowId(data.workflowId);
-				setSyncDirection(dir);
-				setSyncProgress({
+				pmSync.track(data.workflowId, dir, {
 					status: "initializing",
 					syncedCount: 0,
 					totalStories: variables.storyIds?.length ?? 0,
@@ -2551,10 +2497,68 @@ export function StoriesRoadmap({ projectId }: Props) {
 	const handlePullFromPMConfirm = useCallback(
 		(pmExternalIds: string[]) => {
 			setPullFromPMDialogOpen(false);
-			bulkSyncMutation.mutate({ direction: "pull", pmExternalIds });
+			// Do both listens for the pull it asked for; outside a Do both
+			// sequence these reports are ignored.
+			bulkSyncMutation.mutate(
+				{ direction: "pull", pmExternalIds },
+				{
+					onSuccess: (data) => {
+						if (data.workflowId) {
+							doBothPullStarted(data.workflowId);
+						} else {
+							doBothPullStartFailed(
+								"Workflow could not be created. Check PM tool configuration.",
+							);
+						}
+					},
+					onError: (error) =>
+						doBothPullStartFailed(
+							error instanceof Error
+								? error.message
+								: String(error),
+						),
+				},
+			);
 		},
-		[bulkSyncMutation],
+		[bulkSyncMutation, doBothPullStarted, doBothPullStartFailed],
 	);
+
+	const handleClosePullFromPM = useCallback(() => {
+		setPullFromPMDialogOpen(false);
+		doBothDialogClosed();
+	}, [doBothDialogClosed]);
+
+	const { begin: doBothBegin, retryPull: doBothRetryPull } = doBoth;
+	const handleDoBoth = useCallback(() => {
+		doBothBegin();
+		setPullFromPMDialogOpen(true);
+	}, [doBothBegin]);
+	const handleRetryPull = useCallback(() => {
+		doBothRetryPull();
+		setPullFromPMDialogOpen(true);
+	}, [doBothRetryPull]);
+	const handleContinueWithNothingNew = useCallback(() => {
+		// Before closing: a close while still selecting abandons Do both.
+		doBothNothingNew();
+		setPullFromPMDialogOpen(false);
+	}, [doBothNothingNew]);
+	const roadmapEmpty = stories.length === 0;
+	const handleRecommend = useCallback(() => {
+		// EMPTY_ROADMAP only for a Roadmap with no items at all; parked items
+		// are still items the run reads.
+		recommendationStarter
+			?.start({
+				entryPoint: roadmapEmpty ? "EMPTY_ROADMAP" : "MATURE_ROADMAP",
+			})
+			.catch((error: unknown) => {
+				const { title, description } = startErrorToast(
+					error,
+					tRecommendations("startFailed"),
+					tRecommendations("generationFailed"),
+				);
+				toast.error(title, { description });
+			});
+	}, [recommendationStarter, roadmapEmpty, tRecommendations]);
 
 	// ---- DnD handlers ----
 	const handleDragStart = useCallback(
@@ -2861,6 +2865,15 @@ export function StoriesRoadmap({ projectId }: Props) {
 		/>
 	);
 
+	// "Start Building Your Roadmap": in place of the board when there is
+	// nothing at all, above it when every item is parked (Backlog, Done,
+	// hidden or declined), and for as long as a Do both sequence is on screen
+	// so its step list does not vanish when the pull populates the board.
+	const showStartBuilding =
+		stories.length === 0 ||
+		(!roadmapPopulated && !hasActiveRoadmapFilters) ||
+		doBoth.state.step !== "idle";
+
 	// ---- Loading state ----
 	if (storiesLoading) {
 		return (
@@ -2936,6 +2949,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 								{tStories("aiUpdateRoadmap")}
 							</TooltipContent>
 						</Tooltip>
+						<RoadmapActionsMenu items={roadmapActions.items} />
 
 						{/* Scan for duplicates */}
 						<Tooltip>
@@ -2961,25 +2975,30 @@ export function StoriesRoadmap({ projectId }: Props) {
 						</Tooltip>
 
 						{/* Pull from PM tool */}
-						{hasPMIntegration && canPull && !syncWorkflowId && (
-							<Tooltip>
-								<TooltipTrigger asChild>
+						{hasPMIntegration && canPull && !pmSync.workflowId && (
+							<EntryPointReasonGuard
+								reason={entryPoints.pull.reason}
+								hint={tStories("pullFromPmTool")}
+							>
+								{(guard) => (
 									<Button
+										{...guard}
 										variant="outline"
 										size="sm"
-										onClick={handleBulkPull}
+										onClick={
+											entryPoints.pull.disabled
+												? undefined
+												: handleBulkPull
+										}
 										disabled={bulkSyncMutation.isPending}
 										aria-label={`Pull items from ${pmToolName}`}
-										className="gap-2"
+										className="gap-2 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
 									>
 										<CloudDownloadIcon className="size-4" />
 										Pull from {pmToolName}
 									</Button>
-								</TooltipTrigger>
-								<TooltipContent>
-									{tStories("pullFromPmTool")}
-								</TooltipContent>
-							</Tooltip>
+								)}
+							</EntryPointReasonGuard>
 						)}
 
 						{/* F-171: single +Add button — classifier decides BUG vs FEATURE */}
@@ -3024,35 +3043,53 @@ export function StoriesRoadmap({ projectId }: Props) {
 
 						{/* Bulk sync */}
 						{hasPMIntegration && selectedStoryIds.size > 0 && (
-							<Tooltip>
-								<TooltipTrigger asChild>
+							<EntryPointReasonGuard
+								reason={entryPoints.sync.reason}
+								hint={tStories("syncSelectedToPm")}
+							>
+								{(guard) => (
 									<Button
+										{...guard}
 										variant="outline"
 										size="sm"
-										onClick={() =>
-											setSyncSelectedDialogOpen(true)
+										onClick={
+											entryPoints.sync.disabled
+												? undefined
+												: () =>
+														setSyncSelectedDialogOpen(
+															true,
+														)
 										}
-										className="gap-2"
+										className="gap-2 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
 									>
-										<CloudUploadIcon className="size-4" />
+										{entryPoints.sync.reason?.kind ===
+											"running" ||
+										(entryPoints.sync.reason?.kind ===
+											"gate" &&
+											entryPoints.sync.reason.view
+												.state === "PROCESSING") ? (
+											<Loader2Icon
+												aria-hidden
+												className="size-4 motion-safe:animate-spin"
+											/>
+										) : (
+											<CloudUploadIcon className="size-4" />
+										)}
 										Sync selected ({selectedStoryIds.size})
 									</Button>
-								</TooltipTrigger>
-								<TooltipContent>
-									{tStories("syncSelectedToPm")}
-								</TooltipContent>
-							</Tooltip>
+								)}
+							</EntryPointReasonGuard>
 						)}
 
 						{/* Sync progress indicator */}
-						{syncProgress && (
+						{pmSync.progress && (
 							<div className="flex items-center gap-2 text-sm text-muted-foreground">
 								<Loader2Icon className="size-4 animate-spin" />
-								<span>{syncProgress.message}</span>
-								{syncProgress.totalStories > 0 && (
+								<span>{pmSync.progress.message}</span>
+								{pmSync.progress.totalStories > 0 && (
 									<span>
-										({syncProgress.syncedCount}/
-										{syncProgress.totalStories})
+										({pmSync.progress.syncedCount}/
+										{pmSync.progress.totalStories})
 									</span>
 								)}
 							</div>
@@ -3215,8 +3252,30 @@ export function StoriesRoadmap({ projectId }: Props) {
 						className="border-t border-border/40"
 						data-onboarding-target="roadmap-board"
 					>
+						{showStartBuilding && (
+							<RoadmapStartBuilding
+								entry={entryPoints}
+								hasItems={stories.length > 0}
+								hiddenCount={
+									showClosed ? 0 : closedFeatureCount
+								}
+								onShowHidden={toggleShowClosed}
+								onPull={handleBulkPull}
+								onRecommend={handleRecommend}
+								onDoBoth={handleDoBoth}
+								doBoth={doBoth.state}
+								onRetryPull={handleRetryPull}
+								onRecommendInstead={doBoth.recommendInstead}
+								onDismissDoBoth={doBoth.reset}
+								isRecommendStarting={
+									recommendationStarter?.isStarting ?? false
+								}
+							/>
+						)}
 						{sortedStories.length === 0 ? (
-							hasActiveRoadmapFilters ? (
+							stories.length === 0 ||
+							(showStartBuilding &&
+								!hasActiveRoadmapFilters) ? null : hasActiveRoadmapFilters ? (
 								showHiddenMatchAffordance ? (
 									<div className="flex flex-col items-center gap-3 px-4 py-14 text-center">
 										<EyeOffIcon
@@ -3415,26 +3474,53 @@ export function StoriesRoadmap({ projectId }: Props) {
 												<span className="text-border">
 													|
 												</span>
-												<button
-													type="button"
-													onClick={() =>
-														setSyncSelectedDialogOpen(
-															true,
-														)
+												<EntryPointReasonGuard
+													reason={
+														entryPoints.sync.reason
 													}
-													className="flex items-center gap-1 rounded bg-primary px-2 py-0.5 font-medium text-primary-foreground transition-opacity hover:opacity-90"
 												>
-													<CloudUploadIcon className="size-3.5" />
-													Sync to {pmToolName}
-												</button>
-												<button
-													type="button"
-													onClick={handleBulkPull}
-													className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+													{(guard) => (
+														<button
+															{...guard}
+															type="button"
+															onClick={
+																entryPoints.sync
+																	.disabled
+																	? undefined
+																	: () =>
+																			setSyncSelectedDialogOpen(
+																				true,
+																			)
+															}
+															className="flex items-center gap-1 rounded bg-primary px-2 py-0.5 font-medium text-primary-foreground transition-opacity hover:opacity-90 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+														>
+															<CloudUploadIcon className="size-3.5" />
+															Sync to {pmToolName}
+														</button>
+													)}
+												</EntryPointReasonGuard>
+												<EntryPointReasonGuard
+													reason={
+														entryPoints.pull.reason
+													}
 												>
-													<CloudDownloadIcon className="size-3.5" />
-													Pull
-												</button>
+													{(guard) => (
+														<button
+															{...guard}
+															type="button"
+															onClick={
+																entryPoints.pull
+																	.disabled
+																	? undefined
+																	: handleBulkPull
+															}
+															className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+														>
+															<CloudDownloadIcon className="size-3.5" />
+															Pull
+														</button>
+													)}
+												</EntryPointReasonGuard>
 											</>
 										)}
 										<button
@@ -4093,13 +4179,24 @@ export function StoriesRoadmap({ projectId }: Props) {
 				{/* Pull from PM: selective ticket import */}
 				<PullFromPMDialog
 					open={pullFromPMDialogOpen}
-					onClose={() => setPullFromPMDialogOpen(false)}
+					onClose={handleClosePullFromPM}
 					onConfirm={handlePullFromPMConfirm}
 					projectId={projectId}
 					organizationId={organizationId}
 					pmToolName={pmToolName}
 					isPulling={bulkSyncMutation.isPending}
+					detectNothingNew={
+						showStartBuilding || doBoth.state.step === "selecting"
+					}
+					onContinueWithNothingNew={
+						doBoth.state.step === "selecting"
+							? handleContinueWithNothingNew
+							: undefined
+					}
 				/>
+
+				{/* Dialogs owned by the "More Roadmap actions" items (3B, 3C) */}
+				{roadmapActions.overlays}
 
 				{/* Review Center — opened from the post-sync "Review conflicts" CTA */}
 				<ReviewCenterPanel
@@ -4117,6 +4214,9 @@ export function StoriesRoadmap({ projectId }: Props) {
 					onOpenChange={handleInboxOpenChange}
 					defaultFilter={inboxDefaultFilter}
 					initialProposalId={pendingProposalId}
+					aiRecommendedLifecycleEnabled={
+						roadmapBlock?.aiRecommendedLifecycleEnabled === true
+					}
 					hasPMTool={hasPMIntegration ?? false}
 					pmToolName={pmToolName}
 					pmConfig={

@@ -256,3 +256,95 @@ describe("PullFromPMDialog — notes & issues regions (Group 6)", () => {
 		).toBeInTheDocument();
 	});
 });
+
+describe("PullFromPMDialog — nothing new to pull (FR44, FR45)", () => {
+	beforeEach(() => {
+		listPMTickets.mockReset();
+	});
+
+	afterEach(() => {
+		cleanup();
+	});
+
+	function renderNothingNew(
+		props: Partial<Parameters<typeof PullFromPMDialog>[0]> = {},
+	) {
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const onClose = vi.fn();
+		const onContinue = vi.fn();
+		render(
+			<QueryClientProvider client={client}>
+				<PullFromPMDialog
+					open
+					onClose={onClose}
+					onConfirm={() => {}}
+					projectId="project_1"
+					organizationId={null}
+					pmToolName="Azure DevOps"
+					detectNothingNew
+					onContinueWithNothingNew={onContinue}
+					{...props}
+				/>
+			</QueryClientProvider>,
+		);
+		return { onClose, onContinue };
+	}
+
+	it("says there is nothing new instead of an empty picker", async () => {
+		listPMTickets.mockResolvedValue(
+			baseResponse({ total: 0, totalOnBoard: 12, alreadySynced: 12 }),
+		);
+		renderNothingNew();
+		expect(await screen.findByText("title")).toBeInTheDocument();
+		expect(screen.getByText("body")).toBeInTheDocument();
+		// The board-wide read: no search, no filters.
+		expect(listPMTickets).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "project_1", page: 1 }),
+		);
+		expect(listPMTickets.mock.calls[0]?.[0]).not.toHaveProperty("search");
+		expect(
+			screen.queryByRole("button", { name: /pull selected/i }),
+		).toBeNull();
+	});
+
+	it("Do both: Continue goes on to recommendations, Close just closes", async () => {
+		listPMTickets.mockResolvedValue(baseResponse({ total: 0 }));
+		const user = userEvent.setup();
+		const { onClose, onContinue } = renderNothingNew();
+		await user.click(
+			await screen.findByRole("button", { name: "continue" }),
+		);
+		expect(onContinue).toHaveBeenCalledTimes(1);
+		await user.click(screen.getByRole("button", { name: "close" }));
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it("outside Do both there is only Close", async () => {
+		listPMTickets.mockResolvedValue(baseResponse({ total: 0 }));
+		renderNothingNew({ onContinueWithNothingNew: undefined });
+		expect(
+			await screen.findByRole("button", { name: "close" }),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "continue" })).toBeNull();
+	});
+
+	it("keeps the picker when there is something new", async () => {
+		listPMTickets.mockResolvedValue(
+			baseResponse({ total: 3, totalOnBoard: 3 }),
+		);
+		renderNothingNew();
+		await waitFor(() => expect(listPMTickets).toHaveBeenCalled());
+		expect(screen.queryByText("title")).toBeNull();
+		expect(
+			screen.getByRole("button", { name: /pull selected/i }),
+		).toBeInTheDocument();
+	});
+
+	it("does not read the whole board unless asked", () => {
+		listPMTickets.mockResolvedValue(baseResponse());
+		renderNothingNew({ detectNothingNew: false });
+		expect(listPMTickets).not.toHaveBeenCalled();
+	});
+});

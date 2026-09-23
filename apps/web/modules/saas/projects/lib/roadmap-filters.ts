@@ -54,6 +54,7 @@ export const FILTERABLE_SOURCES: StorySource[] = [
 	"approved_proposal",
 	"custom_agent",
 	"slack",
+	"ai_recommended",
 ];
 
 export const STORY_SOURCE_LABELS: Record<StorySource, string> = {
@@ -68,6 +69,7 @@ export const STORY_SOURCE_LABELS: Record<StorySource, string> = {
 	approved_proposal: "Approved Proposal",
 	custom_agent: "Custom Agent",
 	slack: "Slack",
+	ai_recommended: "AI Recommended",
 };
 
 export type RecencyWindowDays = 7 | 30 | 90;

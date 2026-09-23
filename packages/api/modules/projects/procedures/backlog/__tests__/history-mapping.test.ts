@@ -226,6 +226,12 @@ describe("STORY_AUDIT_ACTIONS", () => {
 });
 
 describe("deriveChangeSource", () => {
+	it("maps a Feature accepted from a roadmap recommendation", () => {
+		expect(deriveChangeSource({ source: "AI_RECOMMENDED" })).toBe(
+			"AI Recommended",
+		);
+	});
+
 	it("maps AI Update sources", () => {
 		expect(deriveChangeSource({ source: "AI_UPDATE" })).toBe("AI Update");
 		expect(deriveChangeSource({ source: "AI_BACKLOG_UPDATE" })).toBe(

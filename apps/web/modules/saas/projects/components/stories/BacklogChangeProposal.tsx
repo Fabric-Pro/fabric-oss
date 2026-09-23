@@ -569,7 +569,67 @@ type Props = {
 	 * offered on pending proposals only).
 	 */
 	onBacklog?: () => void;
+	/**
+	 * Changes already accepted from this proposal (a batch that stays open
+	 * after a partial accept). They render as "Accepted", cannot be selected,
+	 * and are never submitted again — even from a stale persisted selection.
+	 * The `changes` array is NOT filtered: persisted review state is by index.
+	 */
+	lockedIndexes?: ReadonlySet<number>;
+	/**
+	 * Why a locked row is locked, when it is not "accepted": a recommended
+	 * feature skipped because its title was already on the Roadmap. A locked
+	 * index missing here reads "Accepted".
+	 */
+	lockedReasons?: ReadonlyMap<number, LockedReason>;
+	/** Shows a Select all / Deselect all control over the unlocked rows. */
+	showSelectAll?: boolean;
+	/** False hides the Bug/Feature choice (a source that only makes Features). */
+	allowKindOverride?: boolean;
+	/**
+	 * False turns off drafting in review: no draft on open, no "Draft with
+	 * AI". The apply still drafts each accepted item through its prompt.
+	 */
+	allowInReviewDrafting?: boolean;
 };
+
+const NO_LOCKED_INDEXES: ReadonlySet<number> = new Set();
+
+export type LockedReason = "accepted" | "already-on-roadmap";
+
+const NO_LOCKED_REASONS: ReadonlyMap<number, LockedReason> = new Map();
+
+const LOCKED_REASON_COPY: Record<
+	LockedReason,
+	{ badge: string; ariaSuffix: string }
+> = {
+	accepted: { badge: "Accepted", ariaSuffix: "already accepted" },
+	"already-on-roadmap": {
+		badge: "Already on Roadmap",
+		ariaSuffix: "already on the Roadmap",
+	},
+};
+
+/**
+ * The starting selection. A stored selection that holds a locked row was
+ * saved before an apply locked it, so it no longer says what the reviewer
+ * wants next: a batch back for a second pass starts with every unlocked row
+ * selected instead of the few it was left with.
+ */
+function initialSelection(
+	persisted: Set<number> | undefined,
+	changeCount: number,
+	lockedIndexes: ReadonlySet<number>,
+): Set<number> {
+	const stale =
+		persisted !== undefined &&
+		Array.from(persisted).some((i) => lockedIndexes.has(i));
+	const base =
+		persisted === undefined || stale
+			? Array.from({ length: changeCount }, (_, i) => i)
+			: Array.from(persisted);
+	return new Set(base.filter((i) => !lockedIndexes.has(i)));
+}
 
 const SOURCE_LABELS: Record<string, string> = {
 	teams_messages: "Teams messages",
@@ -627,6 +687,11 @@ export function BacklogChangeProposal({
 	onApprove,
 	onReject,
 	onBacklog,
+	lockedIndexes = NO_LOCKED_INDEXES,
+	lockedReasons = NO_LOCKED_REASONS,
+	showSelectAll = false,
+	allowKindOverride = true,
+	allowInReviewDrafting = true,
 }: Props) {
 	// Normalize changes — LLM tool args may pass title/description as plain
 	// strings instead of the expected { from?, to } object format. `forbidEpics`
@@ -717,8 +782,12 @@ export function BacklogChangeProposal({
 		);
 	};
 
-	const [selected, setSelected] = useState<Set<number>>(
-		() => initialPersisted.selected ?? new Set(changes.map((_, i) => i)),
+	const [selected, setSelected] = useState<Set<number>>(() =>
+		initialSelection(
+			initialPersisted.selected,
+			changes.length,
+			lockedIndexes,
+		),
 	);
 	// Inbox (channel-monitor proposals) passes `defaultSyncToPM={false}` so
 	// approvals default to Fabric-only; the AI Update flow omits the prop and
@@ -1039,7 +1108,7 @@ export function BacklogChangeProposal({
 		// triggers it explicitly via "Draft with AI"; the ticket is always created
 		// through the prompt at apply regardless.
 		const change = changes[index];
-		if (change && !isPersistedDraftIndex(index)) {
+		if (change && allowInReviewDrafting && !isPersistedDraftIndex(index)) {
 			const selectedKind =
 				kindOverridesByIndex.get(index) ??
 				deriveDefaultKind(change.type);
@@ -1093,7 +1162,9 @@ export function BacklogChangeProposal({
 		if (runningKind) {
 			void persistedDrafts.cancelDraft(runningKind);
 		}
-		const selectedIndexes = Array.from(selected).sort((a, b) => a - b);
+		const selectedIndexes = Array.from(selected)
+			.filter((i) => !lockedIndexes.has(i))
+			.sort((a, b) => a - b);
 		const approvedChanges = selectedIndexes.map((i) =>
 			applyFieldSkips(
 				applyKindOverride(
@@ -1231,6 +1302,9 @@ export function BacklogChangeProposal({
 	}, [projectId, organizationId, eligibleIndexes]);
 
 	const toggleItem = (index: number) => {
+		if (lockedIndexes.has(index)) {
+			return;
+		}
 		setSelected((prev) => {
 			const next = new Set(prev);
 			if (next.has(index)) {
@@ -1243,6 +1317,15 @@ export function BacklogChangeProposal({
 	};
 
 	const selectedCount = selected.size;
+	const unlockedIndexes = changes
+		.map((_, i) => i)
+		.filter((i) => !lockedIndexes.has(i));
+	const allUnlockedSelected =
+		unlockedIndexes.length > 0 &&
+		unlockedIndexes.every((i) => selected.has(i));
+	const toggleAllUnlocked = () => {
+		setSelected(allUnlockedSelected ? new Set() : new Set(unlockedIndexes));
+	};
 	const isRejectedProposal = proposalStatus === "BACKLOG";
 
 	// Selected rows whose routing is not yet approvable: switched to Enrich with
@@ -1612,6 +1695,23 @@ export function BacklogChangeProposal({
 				/>
 			)}
 
+			{showSelectAll && unlockedIndexes.length > 1 && (
+				<div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+					<span>
+						{selectedCount} of {unlockedIndexes.length} selected
+					</span>
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						className="h-7 px-2 text-xs"
+						onClick={toggleAllUnlocked}
+					>
+						{allUnlockedSelected ? "Deselect all" : "Select all"}
+					</Button>
+				</div>
+			)}
+
 			{/* Change Items */}
 			<div className="space-y-2 max-h-[400px] overflow-y-auto">
 				{changes.map((change, index) => {
@@ -1678,7 +1778,12 @@ export function BacklogChangeProposal({
 									id={checkboxId}
 									checked={selected.has(index)}
 									onCheckedChange={() => toggleItem(index)}
-									aria-label={`Toggle ${change.title.to}`}
+									disabled={lockedIndexes.has(index)}
+									aria-label={
+										lockedIndexes.has(index)
+											? `${change.title.to} (${LOCKED_REASON_COPY[lockedReasons.get(index) ?? "accepted"].ariaSuffix})`
+											: `Toggle ${change.title.to}`
+									}
 									className="mt-0.5 shrink-0 cursor-pointer"
 								/>
 								<div className="flex-1 min-w-0">
@@ -1694,8 +1799,38 @@ export function BacklogChangeProposal({
 										>
 											{effectiveAction}
 										</Badge>
+										{lockedIndexes.has(index) && (
+											<Badge
+												variant="outline"
+												className="gap-1 text-xs"
+											>
+												<CheckIcon
+													aria-hidden
+													className="size-3"
+												/>
+												{
+													LOCKED_REASON_COPY[
+														lockedReasons.get(
+															index,
+														) ?? "accepted"
+													].badge
+												}
+											</Badge>
+										)}
 										{effectiveAction === "create" &&
-										change.type !== "epic" ? (
+										change.type !== "epic" &&
+										!allowKindOverride ? (
+											<Badge
+												variant="secondary"
+												className={cn(
+													"text-xs capitalize",
+													TYPE_COLORS[change.type],
+												)}
+											>
+												{change.type}
+											</Badge>
+										) : effectiveAction === "create" &&
+											change.type !== "epic" ? (
 											<KindSelector
 												selected={
 													kindOverridesByIndex.get(
@@ -2288,6 +2423,9 @@ export function BacklogChangeProposal({
 							canGoPrev={di > 0}
 							canGoNext={di < changes.length - 1}
 							onApprove={() => {
+								if (lockedIndexes.has(di)) {
+									return;
+								}
 								setSelected((prev) => {
 									const next = new Set(prev);
 									next.add(di);
@@ -2310,7 +2448,11 @@ export function BacklogChangeProposal({
 								toggleSkippedField(di, field)
 							}
 							kindOverride={kindOverridesByIndex.get(di)}
-							onKindOverride={(next) => setKindOverride(di, next)}
+							onKindOverride={
+								allowKindOverride
+									? (next) => setKindOverride(di, next)
+									: undefined
+							}
 							reformatting={isDrafting}
 							draftStartedAt={persisted?.startedAt}
 							draftStatus={persisted?.status}
@@ -2324,6 +2466,7 @@ export function BacklogChangeProposal({
 									: undefined
 							}
 							onStartDraft={
+								allowInReviewDrafting &&
 								isPersistedDraftIndex(di)
 									? () =>
 											persistedDrafts.startDraft(
