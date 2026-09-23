@@ -38,7 +38,7 @@ describe("codebase predicate — the split that must not collapse", () => {
 		// The regression this whole design exists to prevent. The graph is being
 		// served right now; a failed refresh must not take it away.
 		const gate = gateOf(
-			"atlas.explore",
+			"atlas.codebase-qa",
 			evidenceWith({
 				codebase: {
 					usable: true,
@@ -54,7 +54,7 @@ describe("codebase predicate — the split that must not collapse", () => {
 	it("hard-blocks when nothing was ever indexed and the last run failed", () => {
 		expect(
 			stateOf(
-				"atlas.explore",
+				"atlas.codebase-qa",
 				evidenceWith({
 					codebase: {
 						usable: false,
@@ -73,7 +73,7 @@ describe("codebase predicate — the split that must not collapse", () => {
 	it("shows processing while a first index is genuinely in flight", () => {
 		expect(
 			stateOf(
-				"atlas.explore",
+				"atlas.codebase-qa",
 				evidenceWith({
 					codebase: {
 						usable: false,
@@ -87,7 +87,7 @@ describe("codebase predicate — the split that must not collapse", () => {
 
 	it("stops calling a job Processing once it has gone quiet past its window", () => {
 		const gate = gateOf(
-			"atlas.explore",
+			"atlas.codebase-qa",
 			evidenceWith({
 				codebase: {
 					usable: false,
@@ -127,14 +127,24 @@ describe("codebase predicate — the split that must not collapse", () => {
 	it("hard-blocks every codebase-dependent capability on the same failure", () => {
 		// The requirement is explicit that an unusable source is unusable
 		// everywhere. One shared verdict is what makes that true by construction.
+		//
+		// The realistic case: an expired token over an index that completed
+		// and is still on disk. An earlier fixture paired the expired token
+		// with "no usable index" — a combination the gather cannot produce —
+		// and so hid that release notes let this through as AVAILABLE.
 		const broken = evidenceWith({
-			codebase: { integrationStatus: "TOKEN_EXPIRED" },
-			releaseNotes: { codebaseUsable: false },
+			codebase: {
+				integrationStatus: "TOKEN_EXPIRED",
+				usable: true,
+				healthy: false,
+			},
+			scan: { requiresCodebase: true },
 		});
 		for (const key of [
 			"atlas.explore",
 			"atlas.codebase-qa",
 			"release-notes.generate",
+			"security.run-scan",
 		]) {
 			expect(stateOf(key, broken), key).toBe("HARD_BLOCK");
 		}
@@ -262,7 +272,11 @@ describe("documents", () => {
 			stateOf(
 				"documents.generate-architecture",
 				evidenceWith({
-					codebase: { usable: false },
+					codebase: {
+						connected: false,
+						usable: false,
+						integrationStatus: null,
+					},
 					context: { technical: 0 },
 					documents: { usableTypes: new Set() },
 				}),
@@ -275,7 +289,11 @@ describe("documents", () => {
 			stateOf(
 				"documents.generate-tech-spec",
 				evidenceWith({
-					codebase: { usable: false },
+					codebase: {
+						connected: false,
+						usable: false,
+						integrationStatus: null,
+					},
 					context: { technical: 0 },
 					documents: { usableTypes: new Set() },
 				}),
@@ -288,7 +306,11 @@ describe("documents", () => {
 			stateOf(
 				"documents.generate-api-spec",
 				evidenceWith({
-					codebase: { usable: false },
+					codebase: {
+						connected: false,
+						usable: false,
+						integrationStatus: null,
+					},
 					context: { technical: 0 },
 					documents: { usableTypes: new Set() },
 				}),
@@ -438,7 +460,6 @@ describe("release notes", () => {
 			stateOf(
 				"release-notes.generate",
 				evidenceWith({
-					releaseNotes: { codebaseUsable: false },
 					codebase: {
 						connected: false,
 						usable: false,
@@ -479,7 +500,7 @@ describe("retry permission", () => {
 		// of what this feature is for — so the affordance stays and the copy
 		// refers the viewer to someone who can.
 		const gate = gateOf(
-			"atlas.explore",
+			"atlas.codebase-qa",
 			evidenceWith({
 				viewer: { canEditProjectSettings: false },
 				codebase: { usable: true, healthy: false },
@@ -522,7 +543,6 @@ describe("registry coverage", () => {
 			context: { total: 0, technical: 0, product: 0 },
 			documents: { usableTypes: new Set() },
 			descriptionLength: 0,
-			releaseNotes: { codebaseUsable: false },
 		});
 		for (const rule of CAPABILITY_RULES) {
 			const gate = resolveGate(rule, broken, NOW);
@@ -532,5 +552,430 @@ describe("registry coverage", () => {
 			expect(gate.reasonKey, rule.key).not.toBeNull();
 			expect(gate.blockingDependency, rule.key).not.toBeNull();
 		}
+	});
+});
+
+// ── Fizzy #1930 review round ─────────────────────────────────────────────────
+
+/** A connected repository that nothing has ever indexed. */
+function neverIndexed(overrides: { indexingEnabled: boolean }) {
+	return evidenceWith({
+		codebase: {
+			connected: true,
+			integrationStatus: "ACTIVE",
+			usable: false,
+			healthy: true,
+			indexingEnabled: overrides.indexingEnabled,
+			indexing: { ...IDLE_JOB },
+			lastIndexCompletedAt: null,
+		},
+	});
+}
+
+describe("Processing means a job is running — and nothing else", () => {
+	it("no rule returns PROCESSING when no job is running", () => {
+		// The default outcome of connecting a repository used to be a spinner
+		// that never stopped: nothing was indexing, and the gate said wait.
+		// Swept across every rule and every codebase shape a project can be in
+		// with nothing in flight.
+		const idle = [
+			neverIndexed({ indexingEnabled: false }),
+			neverIndexed({ indexingEnabled: true }),
+			evidenceWith({
+				codebase: {
+					usable: false,
+					indexing: { ...IDLE_JOB, lastRunFailed: true },
+				},
+			}),
+			evidenceWith({ codebase: { usable: true, healthy: false } }),
+			evidenceWith({
+				codebase: { connected: false, integrationStatus: null },
+			}),
+			evidenceWith({ codebase: { integrationStatus: "TOKEN_EXPIRED" } }),
+		].map((e) => ({
+			...e,
+			documents: { ...e.documents, usableTypes: new Set<string>() },
+			context: { ...e.context, technical: 0, product: 0, total: 0 },
+			scan: { ...IDLE_JOB, requiresCodebase: true },
+		}));
+		for (const evidence of idle) {
+			for (const rule of CAPABILITY_RULES) {
+				expect(
+					resolveGate(rule, evidence, NOW).state,
+					`${rule.key} / ${evidence.codebase.indexingEnabled}`,
+				).not.toBe("PROCESSING");
+			}
+		}
+	});
+
+	it("says code search is off, with the setting as its remedy", () => {
+		const gate = gateOf(
+			"atlas.codebase-qa",
+			neverIndexed({ indexingEnabled: false }),
+		);
+		expect(gate.state).toBe("HARD_BLOCK");
+		expect(gate.reasonKey).toBe("codebase.code-search-off");
+		expect(gate.remedy).toBe("ENABLE_CODE_SEARCH");
+		expect(gate.retry.supported).toBe(false);
+	});
+
+	it("hard-blocks a never-indexed repository with a first run as the retry", () => {
+		const gate = gateOf(
+			"atlas.codebase-qa",
+			neverIndexed({ indexingEnabled: true }),
+		);
+		expect(gate.state).toBe("HARD_BLOCK");
+		expect(gate.reasonKey).toBe("codebase.never-indexed");
+		expect(gate.remedy).toBe("RETRY_JOB");
+		expect(gate.retry).toMatchObject({
+			supported: true,
+			available: true,
+			targetId: "integration_example",
+		});
+	});
+
+	it("offers an AVAILABLE retry on a stalled index — a re-index supersedes it", () => {
+		const gate = gateOf(
+			"atlas.codebase-qa",
+			evidenceWith({
+				codebase: {
+					usable: false,
+					indexing: runningJob(
+						new Date(NOW.getTime() - 60 * 60 * 1000),
+					),
+				},
+			}),
+		);
+		expect(gate.reasonKey).toBe("codebase.indexing-stalled");
+		expect(gate.retry.available).toBe(true);
+	});
+
+	it("names code search, not a retry, when a failed run sits behind code search off", () => {
+		// A retry is refused at its own door while code search is off.
+		const gate = gateOf(
+			"atlas.codebase-qa",
+			evidenceWith({
+				codebase: {
+					usable: false,
+					indexingEnabled: false,
+					indexing: { ...IDLE_JOB, lastRunFailed: true },
+				},
+			}),
+		);
+		expect(gate.reasonKey).toBe("codebase.code-search-off");
+	});
+});
+
+describe("each capability depends on what it actually reads", () => {
+	it("atlas.explore needs the connection, never the code index", () => {
+		// Analysis BUILDS the graph; it cannot require it, and it never reads
+		// the index. This is also the Reanalyze retry path.
+		expect(
+			stateOf("atlas.explore", neverIndexed({ indexingEnabled: false })),
+		).toBe("AVAILABLE");
+		expect(
+			stateOf(
+				"atlas.explore",
+				evidenceWith({
+					codebase: { integrationStatus: "TOKEN_EXPIRED" },
+				}),
+			),
+		).toBe("HARD_BLOCK");
+	});
+
+	it("atlas.codebase-qa answers from a ready graph without any index", () => {
+		const e = neverIndexed({ indexingEnabled: false });
+		e.codebase.graphReady = true;
+		expect(stateOf("atlas.codebase-qa", e)).toBe("AVAILABLE");
+	});
+
+	it("security.run-scan needs the connection only — the scanners clone live", () => {
+		const e = neverIndexed({ indexingEnabled: false });
+		e.scan = { ...IDLE_JOB, requiresCodebase: true };
+		expect(stateOf("security.run-scan", e)).toBe("AVAILABLE");
+	});
+
+	it("release-notes.generate needs the connection only — it reads the provider live", () => {
+		expect(
+			stateOf(
+				"release-notes.generate",
+				neverIndexed({ indexingEnabled: false }),
+			),
+		).toBe("AVAILABLE");
+	});
+
+	it("release-notes.generate hard-blocks an unreachable repository over a good index", () => {
+		expect(
+			gateOf(
+				"release-notes.generate",
+				evidenceWith({
+					codebase: {
+						integrationStatus: "REPO_UNAVAILABLE",
+						usable: true,
+					},
+				}),
+			).remedy,
+		).toBe("INSTALL_REPOSITORY_APP");
+	});
+});
+
+describe("document generators and the repository", () => {
+	const onlyTheRepository = (codebase: object) =>
+		evidenceWith({
+			codebase,
+			context: { technical: 0, product: 0, total: 0 },
+			documents: { usableTypes: new Set(["PRD"]) },
+		});
+
+	it("points a brand-new project at code search when the repository is the only way", () => {
+		// PRD present, repository connected, code search off (the default):
+		// API Specification has nothing but the repository to draw on.
+		const gate = gateOf(
+			"documents.generate-api-spec",
+			onlyTheRepository({
+				usable: false,
+				indexingEnabled: false,
+				lastIndexCompletedAt: null,
+			}),
+		);
+		// Soft, not hard: pasted source text must be able to lift it, like
+		// any other "no source" answer a document generator gives. The
+		// reason and its remedy still point at code search.
+		expect(gate.state).toBe("SOFT_BLOCK");
+		expect(gate.reasonKey).toBe("codebase.code-search-off");
+		expect(gate.remedy).toBe("ENABLE_CODE_SEARCH");
+	});
+
+	it("keeps the repository's retry on the soft block, so 'Start indexing' still renders", () => {
+		const gate = gateOf(
+			"documents.generate-api-spec",
+			onlyTheRepository({ usable: false, lastIndexCompletedAt: null }),
+		);
+		expect(gate.state).toBe("SOFT_BLOCK");
+		expect(gate.reasonKey).toBe("codebase.never-indexed");
+		expect(gate.retry).toMatchObject({ supported: true, available: true });
+	});
+
+	it("is AVAILABLE over a usable index even while a PRD is still generating", () => {
+		// The index already grounds it; "waiting on a source" would describe a
+		// wait that is not happening.
+		const e = onlyTheRepository({ usable: true, healthy: true });
+		e.documents = {
+			...e.documents,
+			usableTypes: new Set<string>(),
+			inFlightTypes: new Set(["PRD"]),
+		};
+		expect(gateOf("documents.generate-architecture", e).state).toBe(
+			"AVAILABLE",
+		);
+	});
+
+	it("does not count an index behind an expired credential as a source", () => {
+		const gate = gateOf(
+			"documents.generate-api-spec",
+			onlyTheRepository({
+				integrationStatus: "TOKEN_EXPIRED",
+				usable: true,
+			}),
+		);
+		expect(gate.reasonKey).toBe("codebase.credentials-expired");
+	});
+
+	it("names an index that is genuinely running, still as a soft block", () => {
+		const gate = gateOf(
+			"documents.generate-api-spec",
+			onlyTheRepository({
+				usable: false,
+				indexing: runningJob(new Date(NOW.getTime() - 60_000)),
+			}),
+		);
+		expect(gate.state).toBe("SOFT_BLOCK");
+		expect(gate.reasonKey).toBe("codebase.indexing");
+	});
+
+	it("keeps the repository's hard blocks on the capabilities that read it directly", () => {
+		const e = onlyTheRepository({ usable: false, indexingEnabled: false });
+		expect(stateOf("atlas.codebase-qa", e)).toBe("HARD_BLOCK");
+	});
+
+	it("ignores the index entirely when a document grounds the generation", () => {
+		// A PRD grounds the tech spec on its own; the repository's state is
+		// then nobody's business.
+		expect(
+			stateOf(
+				"documents.generate-tech-spec",
+				onlyTheRepository({ usable: false, indexingEnabled: false }),
+			),
+		).toBe("AVAILABLE");
+	});
+
+	it("still says 'add a source' when there is no repository at all", () => {
+		expect(
+			gateOf(
+				"documents.generate-api-spec",
+				onlyTheRepository({
+					connected: false,
+					integrationStatus: null,
+					usable: false,
+				}),
+			).reasonKey,
+		).toBe("documents.no-api-source");
+	});
+});
+
+describe("retry permission follows the door the re-run goes through", () => {
+	it("a codebase retry needs settings-edit", () => {
+		const gate = gateOf(
+			"atlas.codebase-qa",
+			evidenceWith({
+				viewer: {
+					canEditProjectSettings: false,
+					canUpdateProject: true,
+				},
+				codebase: { usable: true, healthy: false },
+			}),
+		);
+		expect(gate.retry.permitted).toBe(false);
+	});
+
+	it("a scan retry needs project-update", () => {
+		const stalled = {
+			scan: {
+				requiresCodebase: false,
+				...runningJob(new Date(NOW.getTime() - 4 * 60 * 60 * 1000)),
+			},
+		};
+		expect(
+			gateOf(
+				"security.run-scan",
+				evidenceWith({
+					...stalled,
+					viewer: {
+						canEditProjectSettings: false,
+						canUpdateProject: true,
+					},
+				}),
+			).retry.permitted,
+		).toBe(true);
+		expect(
+			gateOf(
+				"security.run-scan",
+				evidenceWith({
+					...stalled,
+					viewer: {
+						canEditProjectSettings: true,
+						canUpdateProject: false,
+					},
+				}),
+			).retry.permitted,
+		).toBe(false);
+	});
+
+	it("a stalled context source offers no retry nobody could perform", () => {
+		const gate = gateOf(
+			"context.use-linked-source",
+			evidenceWith({
+				context: {
+					processing: runningJob(
+						new Date(NOW.getTime() - 60 * 60 * 1000),
+					),
+				},
+			}),
+		);
+		expect(gate.state).toBe("HARD_BLOCK");
+		expect(gate.retry.supported).toBe(false);
+		expect(gate.remedy).toBeNull();
+	});
+});
+
+describe("a source that is on its way is not a missing source", () => {
+	const barren = () =>
+		evidenceWith({
+			codebase: {
+				connected: false,
+				integrationStatus: null,
+				usable: false,
+			},
+			context: { total: 0, technical: 0, product: 0 },
+			documents: { usableTypes: new Set<string>() },
+		});
+
+	it("waits on a PRD that is still generating instead of asking for one", () => {
+		const e = barren();
+		e.documents = { ...e.documents, inFlightTypes: new Set(["PRD"]) };
+		const gate = gateOf("documents.generate-architecture", e);
+		expect(gate.state).toBe("PROCESSING");
+		expect(gate.reasonKey).toBe("documents.source-processing");
+	});
+
+	it("waits on a technical source still being ingested", () => {
+		const e = barren();
+		e.context = { ...e.context, technicalInFlight: 1 };
+		expect(gateOf("documents.generate-api-spec", e).reasonKey).toBe(
+			"documents.source-processing",
+		);
+	});
+
+	it("does not promise a wait the queue does not perform — same-tier documents", () => {
+		// The dependency queue holds an API specification back for a PRD or
+		// proposal only. An architecture document generating runs beside it,
+		// so it is not "a source on its way" for the API specification.
+		const e = barren();
+		e.documents = {
+			...e.documents,
+			inFlightTypes: new Set(["ARCHITECTURE", "TECHNICAL_SPEC"]),
+		};
+		expect(gateOf("documents.generate-api-spec", e).reasonKey).toBe(
+			"documents.no-api-source",
+		);
+	});
+
+	it("does not wait on a PRD for a generator the queue does not hold back", () => {
+		// QA strategy has no prerequisite in the dependency graph.
+		const e = barren();
+		e.documents = { ...e.documents, inFlightTypes: new Set(["PRD"]) };
+		expect(gateOf("documents.generate-qa-strategy", e).reasonKey).toBe(
+			"documents.no-requirements-source",
+		);
+	});
+
+	it("does not treat a generator's own document, regenerating, as its source", () => {
+		const e = barren();
+		e.documents = { ...e.documents, inFlightTypes: new Set(["API_SPEC"]) };
+		expect(gateOf("documents.generate-api-spec", e).reasonKey).toBe(
+			"documents.no-api-source",
+		);
+	});
+});
+
+describe("code indexing switched off for the whole deployment", () => {
+	it("says so, and offers no project setting as the remedy", () => {
+		const gate = gateOf(
+			"atlas.codebase-qa",
+			evidenceWith({
+				codebase: {
+					usable: false,
+					indexingAvailable: false,
+					indexingEnabled: false,
+				},
+			}),
+		);
+		expect(gate.reasonKey).toBe("codebase.indexing-unavailable");
+		expect(gate.remedy).toBeNull();
+		expect(gate.retry.supported).toBe(false);
+	});
+
+	it("keeps 'turn on code search' for the project-setting case", () => {
+		const gate = gateOf(
+			"atlas.codebase-qa",
+			evidenceWith({
+				codebase: {
+					usable: false,
+					indexingAvailable: true,
+					indexingEnabled: false,
+				},
+			}),
+		);
+		expect(gate.reasonKey).toBe("codebase.code-search-off");
 	});
 });

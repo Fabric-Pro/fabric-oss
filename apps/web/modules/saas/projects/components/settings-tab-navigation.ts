@@ -16,6 +16,13 @@ import type { SettingsTab } from "./ProjectSettingsNav";
 export const NAVIGATE_TO_SETTINGS_TAB_EVENT =
 	"fabric:project-navigate-to-settings-tab";
 
+/**
+ * Anchors inside the Development sub-tab that other pages link straight to —
+ * the capability gates' "Connect a repository" and "Turn on code search".
+ */
+export const REPOSITORY_SETTINGS_ANCHOR_ID = "project-repository-settings";
+export const CODE_SEARCH_SETTINGS_ANCHOR_ID = "project-code-search-settings";
+
 /** Mirrors `STORAGE_KEY_PREFIX` in `ProjectSettings.tsx`. */
 const SETTINGS_TAB_STORAGE_KEY_PREFIX = "fabric-project-settings-tab-";
 
@@ -32,9 +39,19 @@ export type NavigateToSettingsTabDetail = {
 export function navigateToProjectSettingsTab(
 	projectId: string,
 	settingsTab: SettingsTab,
+	options?: {
+		/**
+		 * An element id inside the sub-tab to bring into view once it renders —
+		 * for a caller that means one control on a long page, not its top.
+		 */
+		anchorId?: string;
+	},
 ) {
 	if (typeof window === "undefined") {
 		return;
+	}
+	if (options?.anchorId) {
+		scrollToWhenRendered(options.anchorId);
 	}
 	try {
 		sessionStorage.setItem(
@@ -50,4 +67,30 @@ export function navigateToProjectSettingsTab(
 			{ detail: { projectId, settingsTab } },
 		),
 	);
+}
+
+/** How long to wait for an anchor to render before giving up quietly. */
+const ANCHOR_WAIT_MS = 3_000;
+
+/**
+ * Scroll an element into view as soon as it exists.
+ *
+ * The switch above is asynchronous — the settings tab and its sub-tab mount
+ * on the next renders — so the anchor is usually not there yet when this is
+ * called. Polled per frame for a bounded time; an anchor that never appears
+ * (a sub-tab gated off for this viewer) leaves the viewer on the sub-tab.
+ */
+function scrollToWhenRendered(anchorId: string) {
+	const deadline = Date.now() + ANCHOR_WAIT_MS;
+	const attempt = () => {
+		const element = document.getElementById(anchorId);
+		if (element) {
+			element.scrollIntoView({ block: "start" });
+			return;
+		}
+		if (Date.now() < deadline) {
+			window.requestAnimationFrame(attempt);
+		}
+	};
+	window.requestAnimationFrame(attempt);
 }

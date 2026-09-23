@@ -20,7 +20,13 @@ function gate(overrides: Partial<CapabilityGate> = {}): CapabilityGate {
 		reasonKey: null,
 		blockingDependency: null,
 		remedy: null,
-		retry: { supported: false, permitted: false, available: false },
+		retry: {
+			supported: false,
+			permitted: false,
+			available: false,
+			targetId: null,
+		},
+		fingerprint: "fingerprint_example",
 		suppressed: false,
 		...overrides,
 	};
@@ -280,5 +286,69 @@ describe("HIDDEN fails loudly rather than reading as available", () => {
 
 	it("degrades quietly outside development — a user never meets the exception", () => {
 		expect(buildCapabilityGateView(hidden)).toBeNull();
+	});
+});
+
+describe("the review round's additions (Fizzy #1930)", () => {
+	it("sends 'code search is off' to the code-search toggle", () => {
+		const view = buildCapabilityGateView(
+			gate({
+				state: "HARD_BLOCK",
+				reasonKey: "codebase.code-search-off",
+				blockingDependency: "code search for this project",
+				remedy: "ENABLE_CODE_SEARCH",
+			}),
+		);
+		expect(view).toMatchObject({
+			title: "reason.codebase.code-search-off.title",
+			ctaKind: "navigate",
+			ctaTarget: "code-search",
+			ctaLabel: "remedy.enableCodeSearch",
+		});
+	});
+
+	it("labels the first run of an index 'Start indexing', not 'Try again'", () => {
+		const view = buildCapabilityGateView(
+			gate({
+				state: "HARD_BLOCK",
+				reasonKey: "codebase.never-indexed",
+				blockingDependency: "a completed index of the repository",
+				remedy: "RETRY_JOB",
+			}),
+		);
+		expect(view?.ctaLabel).toBe("remedy.startIndexing");
+	});
+
+	it("does not disable a generator whose source is on its way — the queue waits", () => {
+		const view = buildCapabilityGateView(
+			gate({
+				state: "PROCESSING",
+				reasonKey: "documents.source-processing",
+				blockingDependency: "a product or architecture source",
+				remedy: "WAIT",
+			}),
+		);
+		expect(view?.state).toBe("PROCESSING");
+		expect(view?.blocksAction).toBe(false);
+	});
+
+	it("hides a warning dismissed for the session, and never a block", () => {
+		const warning = gate({
+			state: "WARNING",
+			reasonKey: "context.thin",
+			blockingDependency: "project context",
+			remedy: "ADD_CONTEXT",
+		});
+		expect(buildCapabilityGateView(warning, true)).toBeNull();
+		expect(
+			buildCapabilityGateView(
+				{
+					...warning,
+					state: "HARD_BLOCK",
+					reasonKey: "codebase.not-connected",
+				},
+				true,
+			),
+		).not.toBeNull();
 	});
 });

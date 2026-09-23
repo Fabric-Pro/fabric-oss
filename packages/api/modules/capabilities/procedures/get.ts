@@ -16,7 +16,7 @@
  * the same second can legitimately see different gates.
  */
 
-import { db, isFeatureEnabled } from "@repo/database";
+import { db } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -28,6 +28,7 @@ import {
 	CapabilityEvidenceUnavailableError,
 	gatherCapabilityEvidence,
 } from "../evidence";
+import { isCapabilityGatingEnabled } from "../flag";
 import { CAPABILITY_RULES } from "../registry";
 import { resolveGate } from "../resolve";
 import { parseSuppressions } from "../suppression";
@@ -62,6 +63,7 @@ const gateSchema = z.object({
 			"ADD_CONTEXT",
 			"GENERATE_PREREQUISITE_DOCUMENT",
 			"CONFIGURE_INTEGRATION",
+			"ENABLE_CODE_SEARCH",
 			"RETRY_JOB",
 			"WAIT",
 		])
@@ -70,8 +72,10 @@ const gateSchema = z.object({
 		supported: z.boolean(),
 		permitted: z.boolean(),
 		available: z.boolean(),
+		targetId: z.string().nullable(),
 	}),
 	suppressed: z.boolean(),
+	fingerprint: z.string(),
 });
 
 export const getCapabilityGatesProcedure = tenantProtectedProcedure
@@ -89,6 +93,12 @@ export const getCapabilityGatesProcedure = tenantProtectedProcedure
 			projectId: z.string(),
 			/** Narrow to one surface so a page does not pay for the whole matrix. */
 			surface: z.enum(SURFACES).optional(),
+			/**
+			 * Narrow to several surfaces in one read — what a page that mounts
+			 * more than one gated surface asks for. Combined with `surface`
+			 * when both are given; with neither, the whole matrix.
+			 */
+			surfaces: z.array(z.enum(SURFACES)).optional(),
 		}),
 	)
 	.output(z.object({ enabled: z.boolean(), gates: z.array(gateSchema) }))
@@ -96,10 +106,20 @@ export const getCapabilityGatesProcedure = tenantProtectedProcedure
 		// Off means off everywhere: no resolution here, and no assert at the
 		// mutating doors either. Gating only the render would leave an action
 		// blocked after the flag was turned off, which is the opposite of what a
-		// rollback lever is for.
-		if (!(await isFeatureEnabled("CAPABILITY_GATING"))) {
+		// rollback lever is for. Resolved for the project's own organization —
+		// the same answer the doors reach — and this is the `enabled` value
+		// the client trusts to decide whether to draw anything at all.
+		if (!(await isCapabilityGatingEnabled(input.projectId))) {
 			return { enabled: false, gates: [] };
 		}
+
+		const requested: ReadonlySet<CapabilitySurface> | null =
+			input.surface || input.surfaces
+				? new Set([
+						...(input.surface ? [input.surface] : []),
+						...(input.surfaces ?? []),
+					])
+				: null;
 
 		// A project that cannot be resolved yields no gates rather than an error
 		// page. The asymmetry with the mutating doors is deliberate and is the
@@ -115,13 +135,15 @@ export const getCapabilityGatesProcedure = tenantProtectedProcedure
 				userId: context.user.id,
 				organizationId:
 					resolveOrganizationId(undefined, context.session) ?? null,
-				// Atlas's status accessor reaches the git provider over HTTP, so
-				// it is paid for only when an Atlas gate is actually being
-				// resolved. Every other surface answers from rows alone, which
-				// is why a project page no longer makes a third-party call just
-				// to decide what to draw.
-				includeAtlasStatus:
-					input.surface === undefined || input.surface === "atlas",
+				// Atlas's status accessor reaches the git provider over HTTP,
+				// may refresh a credential and can write an audit row, so it
+				// is paid for only when the Atlas surface is asked for BY NAME.
+				// Not for the whole matrix: that read is what a project page
+				// makes on load and after mutations, and it would otherwise
+				// make a third-party call each time for two gates no page
+				// renders. Without it the Atlas gates answer from rows alone,
+				// at the cost stated on `includeAtlasStatus`.
+				includeAtlasStatus: requested?.has("atlas") ?? false,
 			});
 		} catch (error) {
 			if (error instanceof CapabilityEvidenceUnavailableError) {
@@ -144,8 +166,8 @@ export const getCapabilityGatesProcedure = tenantProtectedProcedure
 		);
 
 		const now = new Date();
-		const rules = input.surface
-			? CAPABILITY_RULES.filter((rule) => rule.surface === input.surface)
+		const rules = requested
+			? CAPABILITY_RULES.filter((rule) => requested.has(rule.surface))
 			: CAPABILITY_RULES;
 
 		const gates: CapabilityGate[] = rules.map((rule) =>

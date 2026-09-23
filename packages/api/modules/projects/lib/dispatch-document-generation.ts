@@ -134,6 +134,19 @@ export interface DispatchDocumentGenerationInput {
 	 * a caller suppress arbitrary project context from someone else's run.
 	 */
 	excludeContextId?: string;
+	/**
+	 * The caller already asserted this type's capability, before a write that
+	 * changes the answer. Server-internal: no procedure schema carries it.
+	 *
+	 * The create route needs it. Creating a document stands down every active
+	 * document of the same type, and an existing one may be the very source
+	 * that grounded this generation — so a gate re-read after that write
+	 * refuses the run the gate had just allowed, and the person is left with
+	 * their document demoted and an empty draft in its place. That route
+	 * asserts BEFORE the write instead and says so here. Every other caller
+	 * leaves it unset and is asserted below as before.
+	 */
+	capabilityAlreadyAsserted?: boolean;
 
 	// NOTE — deliberately absent: `skipDependencyWait`. The workflow input
 	// carries that flag for exactly one in-process caller (the ingestion
@@ -222,15 +235,52 @@ function buildGenerationWorkflowId(
 	return `project-document-generation-${input.documentId}-${fingerprint}`;
 }
 
+/**
+ * Refuse a generation of this document type unless its capability may run.
+ *
+ * A no-op for a type with no refusable gate — see
+ * {@link GATED_DOCUMENT_CAPABILITY_KEYS}.
+ */
+export async function assertDocumentGenerationAvailable(input: {
+	documentType: string;
+	projectId: string;
+	userId: string;
+	organizationId: string | null;
+	/**
+	 * The request carries source text of its own — pasted into the create
+	 * dialog's source box — which is exactly what a "no source" soft block
+	 * asks for. See `permitSoftBlock` on the assert.
+	 */
+	suppliesSource?: boolean;
+}): Promise<void> {
+	const capabilityKey = documentCapabilityKey(input.documentType);
+	if (!capabilityKey) {
+		return;
+	}
+	await assertCapabilityAvailable({
+		capabilityKey,
+		projectId: input.projectId,
+		userId: input.userId,
+		organizationId: input.organizationId,
+		permitSoftBlock: input.suppliesSource ?? false,
+	});
+}
+
+/** The refusable capability behind a document type, if it has one. */
+export function documentCapabilityKey(
+	documentType: string,
+): string | undefined {
+	return GATED_DOCUMENT_CAPABILITY_KEYS[documentType];
+}
+
 export async function dispatchDocumentGeneration(
 	input: DispatchDocumentGenerationInput,
 ): Promise<DispatchDocumentGenerationResult> {
 	// Both dispatch paths funnel through here, and so does every caller that
 	// never rendered a button — the public API, MCP tools, agents.
-	const capabilityKey = GATED_DOCUMENT_CAPABILITY_KEYS[input.documentType];
-	if (capabilityKey) {
-		await assertCapabilityAvailable({
-			capabilityKey,
+	if (!input.capabilityAlreadyAsserted) {
+		await assertDocumentGenerationAvailable({
+			documentType: input.documentType,
 			projectId: input.projectId,
 			userId: input.userId,
 			organizationId: input.organizationId ?? null,

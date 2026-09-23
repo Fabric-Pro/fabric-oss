@@ -16,7 +16,6 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
-import { assertCapabilityAvailable } from "../../capabilities/assert";
 import { classifyReviewOutcome } from "../lib/review-outcome";
 
 /**
@@ -146,17 +145,13 @@ export const approveSendProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// On the dispatch path only, for the same reason `requireTemporal` is:
-		// running it right after authorization would answer an already-SENT row
-		// with a red refusal instead of the neutral notice #2172 exists to give.
-		// The APPROVED re-kick above is deliberately NOT gated — its content is
-		// already generated and frozen, so refusing it would only strand the row.
-		await assertCapabilityAvailable({
-			capabilityKey: "release-notes.generate",
-			projectId: project.id,
-			userId: context.user.id,
-			organizationId: project.organizationId ?? null,
-		});
+		// No capability gate here (Fizzy #1930). Approving sends content that
+		// was already generated and frozen onto this row — nothing is read from
+		// the repository again — so the release-notes gate has nothing to
+		// protect. It was gated once, and the same reasoning already exempted
+		// the APPROVED re-kick above; refusing the approval of finished content
+		// because a credential lapsed since would only strand the row. The gate
+		// stays on Send now, which is where content is generated.
 
 		// Last check before the point of no return: once the row flips to
 		// APPROVED it is never rolled back (see the forward-only recovery note

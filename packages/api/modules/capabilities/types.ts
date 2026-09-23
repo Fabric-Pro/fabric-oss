@@ -71,6 +71,7 @@ export type RemedyKind =
 	| "ADD_CONTEXT"
 	| "GENERATE_PREREQUISITE_DOCUMENT"
 	| "CONFIGURE_INTEGRATION"
+	| "ENABLE_CODE_SEARCH"
 	| "RETRY_JOB"
 	| "WAIT";
 
@@ -92,7 +93,27 @@ export interface RetryAffordance {
 	supported: boolean;
 	permitted: boolean;
 	available: boolean;
+	/**
+	 * What a retry re-runs, when the re-run needs one named. For a codebase
+	 * retry this is the repository integration to re-index — the one whose
+	 * index failed or never ran, not every repository on the project, because
+	 * a retry is a full rebuild and multiplying it across repositories nobody
+	 * asked about is expensive. `null` when the re-run needs no target, or
+	 * when there is none to name.
+	 */
+	targetId: string | null;
 }
+
+/**
+ * The permission a retry's re-run is checked against at its own door.
+ *
+ * Not one permission for every retry, because the doors disagree: re-indexing a
+ * repository is a settings action, starting a scan is an ordinary project
+ * update. Resolving both against one permission would hand some viewers an
+ * enabled button that is refused when pressed, and others a disabled one they
+ * could have used.
+ */
+type RetryPermission = "projectSettingsEdit" | "projectUpdate";
 
 /** A resolved gate for one capability. */
 export interface CapabilityGate {
@@ -116,6 +137,13 @@ export interface CapabilityGate {
 	retry: RetryAffordance;
 	/** True when suppression is currently hiding this warning from this viewer. */
 	suppressed: boolean;
+	/**
+	 * The facts this gate's rule read, in the form a suppression is matched
+	 * against. Carried on the gate so a client-held dismissal — one that lives
+	 * only for the browser session — can come back on exactly the same material
+	 * change a stored one does.
+	 */
+	fingerprint: string;
 }
 
 /**
@@ -173,6 +201,19 @@ export interface JobSnapshot {
 interface CodebaseEvidence {
 	/** A repository is attached to this project at all. */
 	connected: boolean;
+	/**
+	 * Whether anything would ever index this repository: the deployment's
+	 * code-indexing switch AND the project's own code-search setting. The
+	 * setting defaults off, so on most projects nothing runs, and a gate that
+	 * waited for an index there would wait forever.
+	 */
+	indexingEnabled: boolean;
+	/**
+	 * The deployment half of `indexingEnabled` on its own: whether code
+	 * indexing exists here at all. When it does not, the project's own
+	 * setting is not the remedy, and the gate must not say it is.
+	 */
+	indexingAvailable: boolean;
 	/** Durable: a full index completed and its output is still there. */
 	usable: boolean;
 	/** Transient: the latest run succeeded and the credential still works. */
@@ -183,6 +224,26 @@ interface CodebaseEvidence {
 	 */
 	integrationStatus: RepositoryIntegrationStatus | null;
 	indexing: JobSnapshot;
+	/**
+	 * When a full index last completed, across the project's repositories.
+	 * Not a usability fact — `usable` is that — but a completion marker: a
+	 * dismissed stale-index warning has to come back after a later run
+	 * succeeds and a still later one fails, and nothing else in this bundle
+	 * moves between those two moments.
+	 */
+	lastIndexCompletedAt: Date | null;
+	/**
+	 * The repository integration a codebase retry should re-index, or `null`
+	 * when there is none to name (a project attached only through the legacy
+	 * column has no integration row to target).
+	 */
+	retryTargetId: string | null;
+	/**
+	 * Atlas's own graph is built and serving. A separate pipeline from the
+	 * code index, and read only when the caller asked for Atlas's verdict —
+	 * `false` otherwise, which means "not asked", never "known not ready".
+	 */
+	graphReady: boolean;
 }
 
 /**
@@ -201,7 +262,10 @@ export interface CapabilityEvidence {
 	projectId: string;
 	/** Resolved once for the viewer, not per rule. */
 	viewer: {
+		/** Holds PROJECT_SETTINGS_EDIT — what re-indexing a repository needs. */
 		canEditProjectSettings: boolean;
+		/** Holds PROJECT_UPDATE — what starting a scan needs. */
+		canUpdateProject: boolean;
 	};
 	codebase: CodebaseEvidence;
 	/** Context sources that finished ingestion successfully, by kind. */
@@ -215,10 +279,19 @@ export interface CapabilityEvidence {
 		processing: JobSnapshot;
 		/** At least one source failed ingestion and is therefore not usable. */
 		hasFailedSource: boolean;
+		/**
+		 * Sources of each kind still being ingested. A generator whose only
+		 * source is one of these is waiting for it, not missing one — and the
+		 * right thing to show is that it is on its way, not "add a source".
+		 */
+		technicalInFlight: number;
+		productInFlight: number;
 	};
 	/** Document types that exist AND hold content, so they can ground a generation. */
 	documents: {
 		usableTypes: ReadonlySet<string>;
+		/** Types with a generation queued or running right now. */
+		inFlightTypes: ReadonlySet<string>;
 		generating: JobSnapshot;
 	};
 	/** The project's own description, the cheapest grounding of all. */
@@ -238,11 +311,6 @@ export interface CapabilityEvidence {
 	 * only when an engine that reads it has been switched on.
 	 */
 	scan: JobSnapshot & { requiresCodebase: boolean };
-	/** Newsletter / release-notes source health. */
-	releaseNotes: {
-		/** v1 is codebase-driven; a PM system may enrich but never substitutes. */
-		codebaseUsable: boolean;
-	};
 	/**
 	 * Optional, and optional on purpose — see `SufficiencySignal`. A rule that
 	 * finds nothing here falls back to its explicit minimum-dependency rule,
@@ -275,6 +343,14 @@ export interface CapabilityRule {
 	 * exact rather than approximate.
 	 */
 	evaluate: (evidence: CapabilityEvidence, now: Date) => RuleVerdict;
+	/**
+	 * The facts this rule reads, as the parts of its suppression fingerprint.
+	 *
+	 * Per rule rather than one global string, because a global one moves when
+	 * ANY fact moves: adding a context source would resurrect a stale-index
+	 * warning on the security page, which reads no context at all.
+	 */
+	fingerprint: (evidence: CapabilityEvidence) => readonly string[];
 }
 
 /** What a rule returns, before suppression is applied. */
@@ -283,7 +359,10 @@ export interface RuleVerdict {
 	reasonKey: string | null;
 	blockingDependency: string | null;
 	remedy: RemedyKind | null;
-	retry?: Partial<RetryAffordance>;
+	retry?: Partial<Omit<RetryAffordance, "permitted">> & {
+		/** Which permission the re-run's own door checks. */
+		requires: RetryPermission;
+	};
 }
 
 export type CapabilitySurface =

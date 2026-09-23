@@ -80,6 +80,7 @@ type GateCtaKind = "navigate" | "retry" | "none";
  */
 export type GateDestination =
 	| "repository"
+	| "code-search"
 	| "context"
 	| "documents"
 	| "integrations";
@@ -188,11 +189,39 @@ const REMEDY: Record<
 		target: "integrations",
 		label: "remedy.configureIntegration",
 	},
+	ENABLE_CODE_SEARCH: {
+		ctaKind: "navigate",
+		target: "code-search",
+		label: "remedy.enableCodeSearch",
+	},
 	RETRY_JOB: { ctaKind: "retry", target: null, label: "remedy.retryJob" },
 	// Nothing to press. A running job needs patience, not a button, and
 	// offering one would imply the wait is the viewer's problem to solve.
 	WAIT: { ctaKind: "none", target: null, label: null },
 };
+
+/**
+ * A retry whose label says more than "Try again".
+ *
+ * An index that never ran has nothing to try AGAIN — the button starts the
+ * first run, and saying so is the difference between a person pressing it and
+ * a person wondering what failed.
+ */
+const RETRY_LABEL_BY_REASON: Readonly<Record<string, string>> = {
+	"codebase.never-indexed": "remedy.startIndexing",
+};
+
+/**
+ * Processing reasons that do not disable the action.
+ *
+ * A generator whose source is still generating is queued by the generation
+ * workflow's own dependency wait, and the server lets the request through for
+ * exactly that reason. Disabling the button here would make a person wait by
+ * hand for something the queue waits for on their behalf.
+ */
+const QUEUED_BY_DEPENDENCY: ReadonlySet<string> = new Set([
+	"documents.source-processing",
+]);
 
 /**
  * Every reason the rule registry can currently produce.
@@ -213,6 +242,8 @@ const KNOWN_REASON_KEYS: ReadonlySet<string> = new Set([
 	"codebase.index-stale",
 	"codebase.indexing-failed",
 	"codebase.never-indexed",
+	"codebase.code-search-off",
+	"codebase.indexing-unavailable",
 	"context.thin",
 	"context.ingestion-stalled",
 	"context.ingesting",
@@ -220,6 +251,7 @@ const KNOWN_REASON_KEYS: ReadonlySet<string> = new Set([
 	"documents.no-technical-source",
 	"documents.no-api-source",
 	"documents.no-requirements-source",
+	"documents.source-processing",
 	// A scan block does not imply a repository problem: the rule consults the
 	// codebase only when a repository-reading engine is enabled, and it
 	// collapses its prerequisites by severity rather than reporting the first
@@ -257,6 +289,12 @@ const KNOWN_REASON_KEYS: ReadonlySet<string> = new Set([
  */
 export function buildCapabilityGateView(
 	gate: CapabilityGate,
+	/**
+	 * Whether this viewer dismissed this warning for the browser session. Held
+	 * client-side only — see `session-dismissals.ts` — and passed in so this
+	 * function stays pure.
+	 */
+	dismissedForSession = false,
 ): CapabilityGateView | null {
 	if (gate.state === "HIDDEN") {
 		// Hiding an action is not implemented in this client, and returning null
@@ -283,6 +321,12 @@ export function buildCapabilityGateView(
 	if (gate.suppressed) {
 		return null;
 	}
+	// Only a warning can be dismissed, for the session as for any duration: a
+	// stale session entry for a gate that has since become a block must not
+	// hide the block.
+	if (dismissedForSession && gate.state === "WARNING") {
+		return null;
+	}
 
 	const state = gate.state as VisibleGateState;
 	const remedy = gate.remedy ? REMEDY[gate.remedy] : null;
@@ -304,10 +348,18 @@ export function buildCapabilityGateView(
 		title: `${copyBase}.title`,
 		body: `${copyBase}.body`,
 		params: { dependency: gate.blockingDependency ?? "" },
-		ctaLabel: remedy?.label ?? null,
+		ctaLabel:
+			(gate.reasonKey && RETRY_LABEL_BY_REASON[gate.reasonKey]) ??
+			remedy?.label ??
+			null,
 		ctaKind: remedy?.ctaKind ?? "none",
 		ctaTarget: remedy?.target ?? null,
-		blocksAction: state !== "WARNING",
+		blocksAction:
+			state !== "WARNING" &&
+			!(
+				gate.reasonKey !== null &&
+				QUEUED_BY_DEPENDENCY.has(gate.reasonKey)
+			),
 		dismissible: state === "WARNING",
 		retry: gate.retry,
 	};

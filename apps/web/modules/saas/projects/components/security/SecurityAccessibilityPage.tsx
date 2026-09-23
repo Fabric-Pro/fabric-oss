@@ -446,11 +446,11 @@ export function SecurityAccessibilityPage({
 			 * #1930). Renders nothing when the capability is available, when the
 			 * flag is off, or while the gate is still resolving.
 			 *
-			 * `onRetry` is offered only for a reason this page can actually
-			 * clear. A stalled scan is re-run from here; a stalled or failed
-			 * repository index is not — re-running the scan would fail the same
-			 * way — so for those the banner explains and stops, rather than
-			 * offering a button that cannot help.
+			 * `onRetry` here covers the scan's own reasons: a stalled scan is
+			 * re-run from this page, and the trigger closes the stalled row
+			 * first. Remedy links ("Connect a repository") and any codebase
+			 * re-index come from the banner itself, so this page cannot omit
+			 * them.
 			 */}
 			<CapabilityGateBanner
 				capabilityKey="security.run-scan"

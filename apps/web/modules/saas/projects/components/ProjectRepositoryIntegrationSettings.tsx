@@ -83,6 +83,10 @@ import {
 } from "./CodeIndexDetailsPanel";
 import { EditRepositoryBranchDialog } from "./EditRepositoryBranchDialog";
 import { FullReindexConfirmDialog } from "./FullReindexConfirmDialog";
+import {
+	CODE_SEARCH_SETTINGS_ANCHOR_ID,
+	REPOSITORY_SETTINGS_ANCHOR_ID,
+} from "./settings-tab-navigation";
 // The repo pickers live under `wizard/` because project setup was their first
 // caller, not because they are setup-only. They take a `projectId` and write
 // project-scoped integrations, so Settings mounts the same components rather
@@ -628,6 +632,11 @@ export function ProjectRepositoryIntegrationSettings({
 			}),
 		});
 		queryClient.invalidateQueries({ queryKey: ["projects"] });
+		// Connecting through a PAT or the browse picker calls the client
+		// directly rather than through `useMutation`, so the central
+		// invalidation never sees it — and the gates kept saying "No
+		// repository connected" after one was (Fizzy #1930).
+		queryClient.invalidateQueries({ queryKey: ["capability-gates"] });
 	}, [queryClient, project.id, project.organizationId]);
 
 	// ── OAuth popup listener ─────────────────────────────────────────
@@ -1148,7 +1157,10 @@ export function ProjectRepositoryIntegrationSettings({
 	// ═════════════════════════════════════════════════════════════════
 
 	return (
-		<Card className="border-foreground/10 col-span-full">
+		<Card
+			id={REPOSITORY_SETTINGS_ANCHOR_ID}
+			className="border-foreground/10 col-span-full"
+		>
 			<CardHeader>
 				<div className="flex items-center gap-3">
 					<div className="rounded-lg bg-gradient-to-br from-gray-500/20 to-gray-600/20 p-2">
@@ -2529,11 +2541,14 @@ export function CodeSearchToggle({
 			queryClient.invalidateQueries({
 				queryKey: ragQueryOptions.queryKey,
 			});
+			// Code search decides whether the capability gates can say
+			// "indexing" or must say "turn code search on" (Fizzy #1930).
+			queryClient.invalidateQueries({ queryKey: ["capability-gates"] });
 		},
 	});
 
 	return (
-		<div className="space-y-2">
+		<div id={CODE_SEARCH_SETTINGS_ANCHOR_ID} className="space-y-2">
 			<div className="flex items-center justify-between rounded-lg border p-3 bg-muted/20">
 				<div className="space-y-0.5">
 					<Label

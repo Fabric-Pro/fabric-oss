@@ -8,6 +8,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { assertCapabilityAvailable } from "../../capabilities/assert";
 import { assertAtlasEnabled, mapAtlasError } from "../lib";
 
 /** Multi-repository (System map) AI chat, streamed — mirrors `chat`. */
@@ -30,6 +31,15 @@ export const systemChatProcedure = tenantProtectedProcedure
 		const organizationId =
 			resolveOrganizationId(input.organizationId, context.session) ??
 			null;
+		// Same capability as the single-repository chat (Fizzy #1930): this is
+		// AI over the codebase too, and an ungated sibling door would make the
+		// gate on the other one a suggestion.
+		await assertCapabilityAvailable({
+			capabilityKey: "atlas.codebase-qa",
+			projectId: input.projectId,
+			userId: context.user.id,
+			organizationId,
+		});
 		const service = new AtlasService({
 			userId: context.user.id,
 			organizationId,

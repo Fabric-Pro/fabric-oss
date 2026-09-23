@@ -14,7 +14,7 @@
  */
 
 import { ORPCError } from "@orpc/server";
-import { db, isFeatureEnabled } from "@repo/database";
+import { db } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -23,14 +23,15 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { gatherCapabilityEvidence } from "../evidence";
+import { isCapabilityGatingEnabled } from "../flag";
 import { CAPABILITY_RULES_BY_KEY } from "../registry";
-import { dependencyFingerprint, resolveGate } from "../resolve";
+import { resolveGate } from "../resolve";
 import {
 	expiryFor,
 	parseSuppressions,
 	SNOOZE_DURATIONS,
 	serializeSuppressions,
-	withoutSuppression,
+	withoutSuppressions,
 	withSuppression,
 } from "../suppression";
 
@@ -73,7 +74,7 @@ export const suppressCapabilityWarningProcedure = tenantProtectedProcedure
 	)
 	.output(z.object({ suppressed: z.boolean() }))
 	.handler(async ({ input, context }) => {
-		if (!(await isFeatureEnabled("CAPABILITY_GATING"))) {
+		if (!(await isCapabilityGatingEnabled(input.projectId))) {
 			throw new ORPCError("FORBIDDEN", { message: FLAG_OFF });
 		}
 
@@ -115,16 +116,18 @@ export const suppressCapabilityWarningProcedure = tenantProtectedProcedure
 			input.projectId,
 			context.user.id,
 		);
+		const duration = input.duration as Exclude<
+			(typeof SNOOZE_DURATIONS)[number],
+			"session"
+		>;
 		const next = withSuppression(existing, {
 			key: `${input.capabilityKey}:${input.reasonKey}`,
-			fingerprint: dependencyFingerprint(evidence),
-			expiresAt: expiryFor(
-				input.duration as Exclude<
-					(typeof SNOOZE_DURATIONS)[number],
-					"session"
-				>,
-				now,
-			),
+			// The resolved gate's own fingerprint, computed by the same
+			// function the read path matches against.
+			fingerprint: gate.fingerprint,
+			expiresAt: expiryFor(duration, now),
+			createdAt: now.toISOString(),
+			duration,
 		});
 
 		await db.projectUserPreference.upsert({
@@ -157,19 +160,34 @@ export const restoreCapabilityWarningsProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Capabilities"],
 		summary: "Restore dismissed capability warnings",
 		description:
-			"Brings back one dismissed warning, or every warning the calling user has dismissed on this project.",
+			"Brings back the named dismissed warnings, or every warning the calling user has dismissed on this project.",
 	})
 	.input(
 		z.object({
 			projectId: z.string(),
-			/** Omit to restore everything this user silenced on this project. */
-			capabilityKey: z.string().optional(),
-			reasonKey: z.string().optional(),
+			/**
+			 * The warnings to bring back, each named by capability AND reason.
+			 * Omit to restore everything this user silenced on this project; an
+			 * empty list restores nothing.
+			 *
+			 * A list, taken in one write. Restoring several warnings as several
+			 * calls raced on the one column they all rewrite, and the last
+			 * write won.
+			 */
+			targets: z
+				.array(
+					z.object({
+						capabilityKey: z.string(),
+						reasonKey: z.string(),
+					}),
+				)
+				.max(100)
+				.optional(),
 		}),
 	)
 	.output(z.object({ restored: z.boolean() }))
 	.handler(async ({ input, context }) => {
-		if (!(await isFeatureEnabled("CAPABILITY_GATING"))) {
+		if (!(await isCapabilityGatingEnabled(input.projectId))) {
 			throw new ORPCError("FORBIDDEN", { message: FLAG_OFF });
 		}
 
@@ -177,11 +195,12 @@ export const restoreCapabilityWarningsProcedure = tenantProtectedProcedure
 			input.projectId,
 			context.user.id,
 		);
-		const key =
-			input.capabilityKey && input.reasonKey
-				? `${input.capabilityKey}:${input.reasonKey}`
-				: undefined;
-		const next = withoutSuppression(existing, key);
+		const next = withoutSuppressions(
+			existing,
+			input.targets?.map(
+				(target) => `${target.capabilityKey}:${target.reasonKey}`,
+			),
+		);
 
 		await db.projectUserPreference.upsert({
 			where: {

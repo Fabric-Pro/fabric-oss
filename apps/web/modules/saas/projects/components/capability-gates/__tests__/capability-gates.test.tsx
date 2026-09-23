@@ -24,11 +24,14 @@ import {
 	useCapabilityGates,
 } from "../useCapabilityGates";
 
-const { gatesMock, suppressMock, restoreMock } = vi.hoisted(() => ({
-	gatesMock: vi.fn(),
-	suppressMock: vi.fn(),
-	restoreMock: vi.fn(),
-}));
+const { gatesMock, suppressMock, restoreMock, reindexMock, navigateMock } =
+	vi.hoisted(() => ({
+		gatesMock: vi.fn(),
+		suppressMock: vi.fn(),
+		restoreMock: vi.fn(),
+		reindexMock: vi.fn(),
+		navigateMock: vi.fn(),
+	}));
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
@@ -37,7 +40,13 @@ vi.mock("@shared/lib/orpc-client", () => ({
 			suppressWarning: suppressMock,
 			restoreWarnings: restoreMock,
 		},
+		projects: { repositoryIntegrations: { reindex: reindexMock } },
 	},
+}));
+
+vi.mock("../../settings-tab-navigation", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../settings-tab-navigation")>()),
+	navigateToProjectSettingsTab: navigateMock,
 }));
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
@@ -57,8 +66,14 @@ function gate(overrides: Partial<CapabilityGate> = {}): CapabilityGate {
 		reasonKey: null,
 		blockingDependency: null,
 		remedy: null,
-		retry: { supported: false, permitted: false, available: false },
+		retry: {
+			supported: false,
+			permitted: false,
+			available: false,
+			targetId: null,
+		},
 		suppressed: false,
+		fingerprint: "fingerprint_example",
 		...overrides,
 	};
 }
@@ -104,6 +119,10 @@ beforeEach(() => {
 	gatesMock.mockReset();
 	suppressMock.mockReset();
 	restoreMock.mockReset();
+	reindexMock.mockReset();
+	navigateMock.mockReset();
+	window.sessionStorage.clear();
+	reindexMock.mockResolvedValue({ success: true, started: 1 });
 	suppressMock.mockResolvedValue({ suppressed: true });
 	restoreMock.mockResolvedValue({ restored: true });
 });
@@ -165,7 +184,12 @@ describe("what renders nothing", () => {
 				reasonKey: "codebase.index-stale",
 				blockingDependency: "the most recent indexing run",
 				remedy: "RETRY_JOB",
-				retry: { supported: true, permitted: true, available: true },
+				retry: {
+					supported: true,
+					permitted: true,
+					available: true,
+					targetId: null,
+				},
 				suppressed: true,
 			}),
 		]);
@@ -208,13 +232,20 @@ describe("one resolution per page", () => {
 		expect(gatesMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("asks for the whole matrix rather than one surface", () => {
-		// Narrowing per surface reads like an optimisation and is the opposite
-		// of one: two surfaces on a page would mean two requests.
+	it("asks, in one request, for exactly the surfaces a page mounts", () => {
+		// Rewritten in the Fizzy #1930 review round. This used to pin the
+		// whole-matrix read, and the whole matrix included the Atlas gates —
+		// whose resolution calls the git provider, may refresh a credential and
+		// can write an audit row — on every page load and after every mutation,
+		// for gates no page renders.
 		serve([]);
 		renderGated(<GateProbe />);
 
-		expect(gatesMock).toHaveBeenCalledWith({ projectId: "proj_example" });
+		expect(gatesMock).toHaveBeenCalledTimes(1);
+		expect(gatesMock).toHaveBeenCalledWith({
+			projectId: "proj_example",
+			surfaces: ["documents", "context", "security", "release-notes"],
+		});
 	});
 
 	it("fails loudly in development when a gated component has no provider", () => {
@@ -255,7 +286,12 @@ describe("retry is disabled, never hidden, when the viewer may not run it", () =
 
 	it("shows a disabled retry and points at a project admin", async () => {
 		serve([
-			stalled({ supported: true, permitted: false, available: true }),
+			stalled({
+				supported: true,
+				permitted: false,
+				available: true,
+				targetId: null,
+			}),
 		]);
 		renderGated(
 			<CapabilityGateBanner capabilityKey={KEY} onRetry={vi.fn()} />,
@@ -273,7 +309,12 @@ describe("retry is disabled, never hidden, when the viewer may not run it", () =
 
 	it("keeps the reason on the page, not in a tooltip", async () => {
 		serve([
-			stalled({ supported: true, permitted: false, available: true }),
+			stalled({
+				supported: true,
+				permitted: false,
+				available: true,
+				targetId: null,
+			}),
 		]);
 		renderGated(
 			<CapabilityGateBanner capabilityKey={KEY} onRetry={vi.fn()} />,
@@ -288,7 +329,12 @@ describe("retry is disabled, never hidden, when the viewer may not run it", () =
 
 	it("disables retry while a run is already in flight", async () => {
 		serve([
-			stalled({ supported: true, permitted: true, available: false }),
+			stalled({
+				supported: true,
+				permitted: true,
+				available: false,
+				targetId: null,
+			}),
 		]);
 		renderGated(
 			<CapabilityGateBanner capabilityKey={KEY} onRetry={vi.fn()} />,
@@ -303,7 +349,14 @@ describe("retry is disabled, never hidden, when the viewer may not run it", () =
 
 	it("runs the retry when all three affordances hold", async () => {
 		const onRetry = vi.fn();
-		serve([stalled({ supported: true, permitted: true, available: true })]);
+		serve([
+			stalled({
+				supported: true,
+				permitted: true,
+				available: true,
+				targetId: null,
+			}),
+		]);
 		renderGated(
 			<CapabilityGateBanner capabilityKey={KEY} onRetry={onRetry} />,
 		);
@@ -340,7 +393,14 @@ describe("retry is disabled, never hidden, when the viewer may not run it", () =
 	it("offers no retry when the surface supplies no way to run one", async () => {
 		// Different from "you may not retry": this page has no retry path at
 		// all, so a button with nothing behind it would be worse than none.
-		serve([stalled({ supported: true, permitted: true, available: true })]);
+		serve([
+			stalled({
+				supported: true,
+				permitted: true,
+				available: true,
+				targetId: null,
+			}),
+		]);
 		renderGated(<CapabilityGateBanner capabilityKey={KEY} />);
 
 		await screen.findByText("reason.codebase.indexing-stalled.body");
@@ -449,14 +509,217 @@ describe("only a warning can be dismissed", () => {
 		);
 	});
 
-	it("never offers the session duration the server refuses", async () => {
+	it("offers 'for this session' first, and never sends it to the server", async () => {
+		// Rewritten in the Fizzy #1930 review round: this pinned the option's
+		// ABSENCE. FR27 asks for it; it is held in sessionStorage and dies with
+		// the tab, so it is never a stored row.
 		serve([dismissible("WARNING")]);
 		renderGated(<CapabilityGateBanner capabilityKey={KEY} />);
 
 		await userEvent.click(await screen.findByLabelText("dismiss.action"));
-		// `SNOOZE_DURATIONS` in the API package still lists "session", but the
-		// write path throws on it — a menu built from that constant would ship
-		// a button that always 400s.
-		expect(screen.queryByText(/session/i)).not.toBeInTheDocument();
+		const items = screen.getAllByRole("menuitem");
+		expect(items[0]).toHaveTextContent("dismiss.session");
+
+		await userEvent.click(items[0]);
+
+		await waitFor(() =>
+			expect(screen.queryByRole("status")).not.toBeInTheDocument(),
+		);
+		expect(suppressMock).not.toHaveBeenCalled();
+		expect(
+			window.sessionStorage.getItem(
+				"fabric-capability-dismissed:proj_example",
+			),
+		).toContain(`${KEY}:context.thin:fingerprint_example`);
+	});
+
+	it("brings a session dismissal back when the gate's facts change", async () => {
+		window.sessionStorage.setItem(
+			"fabric-capability-dismissed:proj_example",
+			JSON.stringify([`${KEY}:context.thin:an_older_fingerprint`]),
+		);
+		serve([dismissible("WARNING")]);
+		renderGated(<CapabilityGateBanner capabilityKey={KEY} />);
+
+		expect(await screen.findByRole("status")).toBeInTheDocument();
+	});
+});
+
+describe("remedies and retries every banner offers on its own (Fizzy #1930)", () => {
+	it("renders 'Connect a repository' and sends the viewer to the repository settings", async () => {
+		// No mount has to supply this. Before, Security supplied nothing and the
+		// button never rendered anywhere.
+		serve([
+			gate({
+				state: "HARD_BLOCK",
+				reasonKey: "codebase.not-connected",
+				blockingDependency: "a connected repository",
+				remedy: "CONNECT_REPOSITORY",
+			}),
+		]);
+		renderGated(<CapabilityGateBanner capabilityKey={KEY} />);
+
+		await userEvent.click(
+			await screen.findByRole("button", {
+				name: "remedy.connectRepository",
+			}),
+		);
+		expect(navigateMock).toHaveBeenCalledWith(
+			"proj_example",
+			"development",
+			{
+				anchorId: "project-repository-settings",
+			},
+		);
+	});
+
+	it("sends 'Turn on code search' to the code-search toggle itself", async () => {
+		serve([
+			gate({
+				state: "HARD_BLOCK",
+				reasonKey: "codebase.code-search-off",
+				blockingDependency: "code search for this project",
+				remedy: "ENABLE_CODE_SEARCH",
+			}),
+		]);
+		renderGated(<CapabilityGateBanner capabilityKey={KEY} />);
+
+		expect(
+			await screen.findByText("reason.codebase.code-search-off.title"),
+		).toBeInTheDocument();
+		await userEvent.click(
+			screen.getByRole("button", { name: "remedy.enableCodeSearch" }),
+		);
+		expect(navigateMock).toHaveBeenCalledWith(
+			"proj_example",
+			"development",
+			{
+				anchorId: "project-code-search-settings",
+			},
+		);
+	});
+
+	it("re-indexes exactly the repository the gate names", async () => {
+		serve([
+			gate({
+				state: "HARD_BLOCK",
+				reasonKey: "codebase.never-indexed",
+				blockingDependency: "a completed index of the repository",
+				remedy: "RETRY_JOB",
+				retry: {
+					supported: true,
+					permitted: true,
+					available: true,
+					targetId: "integration_broken",
+				},
+			}),
+		]);
+		renderGated(<CapabilityGateBanner capabilityKey={KEY} />);
+
+		// Nothing ran before, so the button starts the first run.
+		await userEvent.click(
+			await screen.findByRole("button", { name: "remedy.startIndexing" }),
+		);
+		await waitFor(() =>
+			expect(reindexMock).toHaveBeenCalledWith({
+				projectId: "proj_example",
+				integrationId: "integration_broken",
+				mode: "full",
+			}),
+		);
+	});
+
+	it("shows the codebase retry disabled for a viewer who may not re-index", async () => {
+		serve([
+			gate({
+				state: "HARD_BLOCK",
+				reasonKey: "codebase.indexing-failed",
+				blockingDependency: "a completed index of the repository",
+				remedy: "RETRY_JOB",
+				retry: {
+					supported: true,
+					permitted: false,
+					available: true,
+					targetId: "integration_broken",
+				},
+			}),
+		]);
+		renderGated(<CapabilityGateBanner capabilityKey={KEY} />);
+
+		expect(
+			await screen.findByRole("button", { name: /remedy\.retryJob/ }),
+		).toBeDisabled();
+		expect(screen.getByText("retry.notPermitted")).toBeInTheDocument();
+	});
+});
+
+describe("a gate that is Processing refreshes itself", () => {
+	it("re-reads while something is running, and stops once it is not", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			gatesMock
+				.mockResolvedValueOnce({
+					enabled: true,
+					gates: [
+						gate({
+							state: "PROCESSING",
+							reasonKey: "codebase.indexing",
+							blockingDependency: "repository indexing",
+							remedy: "WAIT",
+						}),
+					],
+				})
+				.mockResolvedValue({ enabled: true, gates: [gate()] });
+			renderGated(<GateProbe />);
+
+			await screen.findByText(/resolved-on blocked/);
+			await vi.advanceTimersByTimeAsync(5_000);
+			await screen.findByText(/resolved-on unblocked/);
+			const calls = gatesMock.mock.calls.length;
+
+			await vi.advanceTimersByTimeAsync(20_000);
+			expect(gatesMock.mock.calls.length).toBe(calls);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+describe("a session dismissal is honoured from the very first paint", () => {
+	it("never renders a session-dismissed warning, even from a warm cache", () => {
+		window.sessionStorage.setItem(
+			"fabric-capability-dismissed:proj_example",
+			JSON.stringify([`${KEY}:context.thin:fingerprint_example`]),
+		);
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		// The answer is already cached, so the first render has the gate.
+		queryClient.setQueryData(
+			["capability-gates", "proj_example", "org_example"],
+			{
+				enabled: true,
+				gates: [
+					gate({
+						state: "WARNING",
+						reasonKey: "context.thin",
+						blockingDependency: "project context",
+						remedy: "ADD_CONTEXT",
+					}),
+				],
+			},
+		);
+		gatesMock.mockReturnValue(new Promise(() => {}));
+
+		render(
+			<QueryClientProvider client={queryClient}>
+				<CapabilityGatesProvider projectId="proj_example">
+					<CapabilityGateBanner capabilityKey={KEY} />
+				</CapabilityGatesProvider>
+			</QueryClientProvider>,
+		);
+
+		// Asserted synchronously: no effect has run yet.
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
 	});
 });

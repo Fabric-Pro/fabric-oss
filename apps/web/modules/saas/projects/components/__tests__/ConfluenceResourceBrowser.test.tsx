@@ -36,6 +36,13 @@ vi.mock("sonner", () => ({
 	toast: { success: toastSuccessMock, error: toastErrorMock },
 }));
 
+// The browser refreshes the capability gates after adding pages (Fizzy
+// #1930); the query client itself is not what this file tests.
+const invalidateQueries = vi.fn();
+vi.mock("@tanstack/react-query", () => ({
+	useQueryClient: () => ({ invalidateQueries }),
+}));
+
 vi.mock("../ConfluencePageSelector", () => ({
 	ConfluencePageSelector: (props: Record<string, unknown>) => {
 		selectorProps.current = props;
@@ -102,6 +109,11 @@ describe("ConfluenceResourceBrowser", () => {
 		expect(toastSuccessMock).toHaveBeenCalledWith(
 			"Added 2 page(s) to project",
 		);
+		// The adds are direct client calls, which the central gate refresh
+		// never sees, so the browser refreshes the gates itself (Fizzy #1930).
+		expect(invalidateQueries).toHaveBeenCalledWith({
+			queryKey: ["capability-gates"],
+		});
 	});
 
 	it("creates a PENDING empty-content row for a failed fetch, warns, and continues (AC5.1/AC5.2)", async () => {

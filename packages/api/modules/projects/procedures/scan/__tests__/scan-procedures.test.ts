@@ -10,6 +10,7 @@
  */
 import { ORPCError } from "@orpc/client";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { evidenceWith } from "../../../../capabilities/__tests__/evidence-fixture";
 
 // --- @repo/database mock (hoisted spies shared across the suite) -------------
 const {
@@ -33,7 +34,11 @@ const {
 	mockHasActiveScan,
 	mockCountIncrementalChangedItems,
 	mockGetScanCheckpoint,
+	mockFailStaleProjectScans,
+	mockGatherCapabilityEvidence,
 } = vi.hoisted(() => ({
+	mockFailStaleProjectScans: vi.fn(),
+	mockGatherCapabilityEvidence: vi.fn(),
 	mockHasProjectAccess: vi.fn(),
 	mockUpdateScanFinding: vi.fn(),
 	mockRecordScanActivity: vi.fn(),
@@ -102,8 +107,23 @@ vi.mock("@repo/database", async () => {
 		countIncrementalChangedItems: (...a: unknown[]) =>
 			mockCountIncrementalChangedItems(...a),
 		getScanCheckpoint: (...a: unknown[]) => mockGetScanCheckpoint(...a),
+		// trigger-scan closes a stalled row before gating (Fizzy #1930).
+		failStaleProjectScans: (...a: unknown[]) =>
+			mockFailStaleProjectScans(...a),
 	};
 });
+
+// The capability gate runs for real; only its inputs are stood in for. The flag
+// is on, and the evidence is whatever each test says — by default a healthy
+// project whose scan reads as running once a scan row has been created, which
+// is exactly what the gather reports for a PENDING row mid-request.
+vi.mock("../../../../capabilities/flag", () => ({
+	isCapabilityGatingEnabled: async () => true,
+}));
+vi.mock("../../../../capabilities/evidence", () => ({
+	gatherCapabilityEvidence: (...a: unknown[]) =>
+		mockGatherCapabilityEvidence(...a),
+}));
 
 // --- temporal client mock (used by start-scan helper + start-review +
 // cancel-review). cancel-review reaches workflow.getHandle(id).terminate(...).
@@ -248,6 +268,17 @@ beforeEach(() => {
 	mockHasActiveScan.mockResolvedValue(false);
 	mockCountIncrementalChangedItems.mockResolvedValue(Number.MAX_SAFE_INTEGER);
 	mockGetScanCheckpoint.mockResolvedValue(null);
+	mockFailStaleProjectScans.mockResolvedValue(0);
+	mockGatherCapabilityEvidence.mockImplementation(async () =>
+		evidenceWith({
+			scan: {
+				requiresCodebase: false,
+				running: mockCreateProjectScan.mock.calls.length > 0,
+				lastProgressAt: new Date(),
+				lastRunFailed: false,
+			},
+		}),
+	);
 	mockListBranches.mockResolvedValue([]);
 });
 
@@ -1057,6 +1088,66 @@ describe("triggerScanProcedure — bulk / branch-targeted / force-full / no-op",
 		expect(wfInputs().map((w) => w.branch)).toEqual(["alpha", "beta"]);
 		expect(result.started.map((s) => s.branch)).toEqual(["alpha", "beta"]);
 		expect(result.skipped).toEqual([]);
+		// The gate runs ONCE, before any branch (Fizzy #1930). Asserted per
+		// branch, branch alpha's PENDING row read as "a scan is already
+		// running" and refused beta — which this evidence reproduces.
+		expect(mockGatherCapabilityEvidence).toHaveBeenCalledTimes(1);
+	});
+
+	it("closes a scan stalled past the gate's own window before gating a new one", async () => {
+		const handler = await loadHandler(
+			"../trigger-scan",
+			"triggerScanProcedure",
+		);
+
+		await handler({
+			input: { projectId: "proj-1", organizationId: null },
+			context: ctx,
+		});
+
+		// On the server's clock, with the gate's window, for this project only —
+		// so "Try again" on a stalled scan is no longer refused by the very
+		// stalled row it is meant to replace.
+		expect(mockFailStaleProjectScans).toHaveBeenCalledWith({
+			staleMinutes: 90,
+			projectId: "proj-1",
+		});
+		expect(
+			mockFailStaleProjectScans.mock.invocationCallOrder[0],
+		).toBeLessThan(
+			mockGatherCapabilityEvidence.mock.invocationCallOrder[0],
+		);
+	});
+
+	it("refuses before deleting anything when the gate says no", async () => {
+		mockGatherCapabilityEvidence.mockResolvedValue(
+			evidenceWith({
+				codebase: { connected: false, integrationStatus: null },
+				scan: {
+					requiresCodebase: true,
+					running: false,
+					lastProgressAt: null,
+					lastRunFailed: false,
+				},
+			}),
+		);
+		const handler = await loadHandler(
+			"../trigger-scan",
+			"triggerScanProcedure",
+		);
+
+		await expect(
+			handler({
+				input: {
+					projectId: "proj-1",
+					organizationId: null,
+					purgeUnresolved: true,
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+		expect(mockDeleteOpenProjectScanFindings).not.toHaveBeenCalled();
+		expect(mockCreateProjectScan).not.toHaveBeenCalled();
 	});
 
 	it("lands an already-scanning branch in `skipped` and still starts the rest", async () => {

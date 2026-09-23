@@ -19,9 +19,9 @@ import type { StoredSuppression } from "./resolve";
  * What the client may ask for.
  *
  * A fixed vocabulary, by explicit decision — there is no custom date picker in
- * v1. `session` is here for completeness and is refused by the write path: the
- * client holds it in session storage, where it dies with the tab, so letting it
- * reach the database would create a row nothing ever cleans up.
+ * v1. `session` is part of it and is refused by the write path: the client
+ * holds a session dismissal in `sessionStorage`, where it dies with the tab, so
+ * letting it reach the database would create a row nothing ever cleans up.
  */
 export const SNOOZE_DURATIONS = [
 	"session",
@@ -41,7 +41,11 @@ const DURATION_DAYS: Record<
 const storedEntrySchema = z.object({
 	fingerprint: z.string().min(1),
 	expiresAt: z.string().datetime().optional(),
+	createdAt: z.string().datetime().optional(),
+	duration: z.string().optional(),
 });
+
+type StoredEntry = z.infer<typeof storedEntrySchema>;
 
 const storedMapSchema = z.record(z.string(), storedEntrySchema);
 
@@ -62,6 +66,8 @@ export function parseSuppressions(raw: unknown): StoredSuppression[] {
 		key,
 		fingerprint: entry.fingerprint,
 		expiresAt: entry.expiresAt,
+		createdAt: entry.createdAt,
+		duration: entry.duration,
 	}));
 }
 
@@ -69,15 +75,25 @@ export function parseSuppressions(raw: unknown): StoredSuppression[] {
 export function serializeSuppressions(
 	suppressions: readonly StoredSuppression[],
 	now: Date,
-): Record<string, { fingerprint: string; expiresAt?: string }> {
-	const out: Record<string, { fingerprint: string; expiresAt?: string }> = {};
+): Record<string, StoredEntry> {
+	const out: Record<string, StoredEntry> = {};
 	for (const s of suppressions) {
 		if (s.expiresAt !== undefined && new Date(s.expiresAt) <= now) {
 			continue;
 		}
-		out[s.key] = s.expiresAt
-			? { fingerprint: s.fingerprint, expiresAt: s.expiresAt }
-			: { fingerprint: s.fingerprint };
+		// Absent fields stay absent rather than being written as undefined,
+		// so an entry from before they were recorded round-trips unchanged.
+		const entry: StoredEntry = { fingerprint: s.fingerprint };
+		if (s.expiresAt) {
+			entry.expiresAt = s.expiresAt;
+		}
+		if (s.createdAt) {
+			entry.createdAt = s.createdAt;
+		}
+		if (s.duration) {
+			entry.duration = s.duration;
+		}
+		out[s.key] = entry;
 	}
 	return out;
 }
@@ -113,13 +129,24 @@ export function withSuppression(
 	return [...existing.filter((s) => s.key !== entry.key), entry];
 }
 
-/** Remove one, or — with no key — every suppression on this project. */
-export function withoutSuppression(
+/**
+ * Remove the named suppressions, or — with no list at all — every one on this
+ * project.
+ *
+ * A list, so a restore of several warnings is one read and one write. One call
+ * per warning, fired together, each read the same column and wrote back its
+ * own copy of it, and the last write won: all but one restore were lost.
+ *
+ * An empty list removes nothing. Only an absent one means "everything", so a
+ * caller that computed an empty scope can never clear the project by accident.
+ */
+export function withoutSuppressions(
 	existing: readonly StoredSuppression[],
-	key?: string,
+	keys?: readonly string[],
 ): StoredSuppression[] {
-	if (key === undefined) {
+	if (keys === undefined) {
 		return [];
 	}
-	return existing.filter((s) => s.key !== key);
+	const removed = new Set(keys);
+	return existing.filter((s) => !removed.has(s.key));
 }

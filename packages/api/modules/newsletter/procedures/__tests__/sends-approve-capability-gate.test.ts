@@ -1,5 +1,8 @@
 /**
- * The capability gate on approving a release-notes send (Fizzy #1930).
+ * Approving a release-notes send is NOT capability-gated (Fizzy #1930).
+ *
+ * The history below is kept because it explains the placement the gate had;
+ * the review round then removed it — see the describe block.
  *
  * Placement carries most of the weight here, and it is not "as early as
  * possible". This procedure is reached with a deliberately stale row as the
@@ -117,15 +120,6 @@ function runApprove() {
 	}) as Promise<unknown>;
 }
 
-async function errorFrom(promise: Promise<unknown>) {
-	try {
-		await promise;
-	} catch (err) {
-		return err as { code?: string; message?: string };
-	}
-	throw new Error("expected the handler to throw");
-}
-
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.isFeatureEnabled.mockResolvedValue(true);
@@ -143,53 +137,36 @@ beforeEach(() => {
 	mocks.workflowStart.mockResolvedValue({ workflowId: "approved_example" });
 });
 
-describe("approveSendProcedure — the capability door", () => {
-	it("refuses with PRECONDITION_FAILED naming the repository it needs", async () => {
+describe("approveSendProcedure — exempt from the capability gate", () => {
+	// Rewritten in the Fizzy #1930 review round. These tests used to pin the
+	// approval of a PENDING_APPROVAL send being refused on codebase state.
+	// Approval sends content that was already generated and frozen onto the
+	// row — nothing is read from the repository again — which is the same
+	// reasoning that already exempted the APPROVED re-kick. The gate stays on
+	// Send now, where content is generated.
+
+	it("approves already-generated content even with no usable repository", async () => {
 		mocks.gatherCapabilityEvidence.mockResolvedValue(noCodebaseEvidence());
 
-		const err = await errorFrom(runApprove());
-
-		expect(err.code).toBe("PRECONDITION_FAILED");
-		expect(err.message).toContain("a connected repository");
-	});
-
-	it("refuses before the row is transitioned or anything is dispatched", async () => {
-		// Before the point of no return: the APPROVED transition is never
-		// rolled back, so a refusal after it would strand the send.
-		mocks.gatherCapabilityEvidence.mockResolvedValue(noCodebaseEvidence());
-
-		await errorFrom(runApprove());
-
-		expect(mocks.approveNewsletterSend).not.toHaveBeenCalled();
-		expect(mocks.workflowStart).not.toHaveBeenCalled();
-	});
-
-	it("proceeds when the codebase is usable", async () => {
 		await expect(runApprove()).resolves.toMatchObject({
 			approved: true,
 			outcome: "approved",
 		});
+		expect(mocks.approveNewsletterSend).toHaveBeenCalledTimes(1);
 		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
+		expect(mocks.gatherCapabilityEvidence).not.toHaveBeenCalled();
 	});
 
-	it("still gives an already-sent row its neutral notice, not a refusal", async () => {
-		// The #2172 placement proof. A stale row is the normal case here, and a
-		// gate in front of the status classification would turn every one of
-		// them into a red error the moment a prerequisite lapsed.
+	it("still gives an already-sent row its neutral notice", async () => {
 		mocks.getNewsletterSendForSendPhase.mockResolvedValue(sendRow("SENT"));
-		mocks.gatherCapabilityEvidence.mockResolvedValue(noCodebaseEvidence());
 
 		await expect(runApprove()).resolves.toMatchObject({
 			approved: true,
 			outcome: "already_resolved",
 		});
-		expect(mocks.gatherCapabilityEvidence).not.toHaveBeenCalled();
 	});
 
 	it("leaves the APPROVED re-kick ungated so a stranded row can recover", async () => {
-		// Nothing is generated on this path — the content is frozen and the
-		// workflow only delivers it. Refusing here would make the recovery
-		// impossible for exactly the rows that need it.
 		mocks.getNewsletterSendForSendPhase.mockResolvedValue(
 			sendRow("APPROVED"),
 		);
@@ -200,16 +177,6 @@ describe("approveSendProcedure — the capability door", () => {
 			outcome: "already_resolved",
 		});
 		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
-		expect(mocks.gatherCapabilityEvidence).not.toHaveBeenCalled();
-	});
-
-	it("is inert with the flag off — no evidence read, no refusal", async () => {
-		mocks.isFeatureEnabled.mockResolvedValue(false);
-		mocks.gatherCapabilityEvidence.mockResolvedValue(noCodebaseEvidence());
-
-		await expect(runApprove()).resolves.toMatchObject({
-			outcome: "approved",
-		});
 		expect(mocks.gatherCapabilityEvidence).not.toHaveBeenCalled();
 	});
 });

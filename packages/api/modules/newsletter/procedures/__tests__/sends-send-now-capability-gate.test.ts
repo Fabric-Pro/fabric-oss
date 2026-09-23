@@ -175,7 +175,13 @@ describe("sendNowProcedure — the capability door", () => {
 
 		await errorFrom(runSendNow());
 
-		expect(mocks.findUnique).toHaveBeenCalledTimes(1);
+		// The procedure's own row read comes first. A second read of the same
+		// row follows it — the flag is resolved for the project's organization
+		// (Fizzy #1930) — so this pins the order, not a count.
+		expect(mocks.findUnique).toHaveBeenCalled();
+		expect(mocks.findUnique.mock.invocationCallOrder[0]).toBeLessThan(
+			mocks.gatherCapabilityEvidence.mock.invocationCallOrder[0],
+		);
 	});
 
 	it("proceeds when the codebase is usable", async () => {

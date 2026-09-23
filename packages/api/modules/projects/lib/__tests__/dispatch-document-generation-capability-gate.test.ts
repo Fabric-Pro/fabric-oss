@@ -30,6 +30,14 @@ const { mocks } = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({
 	isFeatureEnabled: mocks.isFeatureEnabled,
+	// The flag is resolved for the project's own organization (Fizzy #1930).
+	db: {
+		project: {
+			findUnique: async () => ({
+				organizationId: "organization_example",
+			}),
+		},
+	},
 }));
 
 vi.mock("@repo/database/prisma/queries/projects/documents", () => ({

@@ -9,6 +9,8 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { findRefusedCapabilities } from "../../../capabilities/assert";
+import { documentCapabilityKey } from "../../lib/dispatch-document-generation";
 import { buildDocumentTitle } from "../../utils/document-title";
 
 /**
@@ -65,7 +67,7 @@ export const batchGenerateDocumentsProcedure = tenantProtectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
-		const { projectId, documents } = input;
+		const { projectId } = input;
 
 		// Get project data
 		const project = await db.project.findUnique({
@@ -78,6 +80,57 @@ export const batchGenerateDocumentsProcedure = tenantProtectedProcedure
 		if (!project) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Project not found",
+			});
+		}
+
+		// The capability gate, per type, before anything is written (Fizzy
+		// #1930). A batch is several independent generations, so one type that
+		// cannot run is skipped and reported rather than failing the rest — the
+		// wizard and the pipeline both want what CAN be generated.
+		//
+		// Types in this same batch count as on their way: the workflow runs
+		// them in dependency order, so the PRD it generates first grounds the
+		// architecture document it generates next.
+		const batchTypes = input.documents.map((doc) => doc.type);
+		const refused = await findRefusedCapabilities({
+			capabilityKeys: [
+				...new Set(
+					batchTypes.flatMap(
+						(type) => documentCapabilityKey(type) ?? [],
+					),
+				),
+			],
+			projectId,
+			userId: user.id,
+			organizationId: project.organizationId ?? null,
+			alsoInFlightTypes: batchTypes,
+		});
+		const refusedKeys = new Map(
+			refused.map((entry) => [entry.gate.capabilityKey, entry]),
+		);
+		const documents = input.documents.filter((doc) => {
+			const key = documentCapabilityKey(doc.type);
+			return key === undefined || !refusedKeys.has(key);
+		});
+		const skipped = input.documents.flatMap((doc) => {
+			const key = documentCapabilityKey(doc.type);
+			const entry = key ? refusedKeys.get(key) : undefined;
+			return entry
+				? [
+						{
+							type: doc.type,
+							reasonKey: entry.gate.reasonKey,
+							message: entry.message,
+						},
+					]
+				: [];
+		});
+		if (documents.length === 0 && skipped.length > 0) {
+			// Nothing left to run. A structured refusal naming the first missing
+			// source is the honest answer; an empty workflow would not be.
+			throw new ORPCError("PRECONDITION_FAILED", {
+				message: skipped[0].message,
+				data: { gate: refused[0].gate, skipped },
 			});
 		}
 
@@ -151,6 +204,8 @@ export const batchGenerateDocumentsProcedure = tenantProtectedProcedure
 				title: doc.title,
 				status: doc.status,
 			})),
+			// The types the gate refused, with why — empty when none were.
+			skipped,
 			message: `Batch generation started for ${createdDocuments.length} documents`,
 		};
 	});

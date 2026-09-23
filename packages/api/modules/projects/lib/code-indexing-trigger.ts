@@ -25,6 +25,10 @@ import { getGitHubAccessToken } from "@repo/integrations/github";
 import { resolveFreshRepoTokenForRow } from "@repo/integrations/repo-auth";
 import { decryptApiKey } from "@repo/utils";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
+import {
+	isCodeIndexingDeploymentEnabled,
+	isCodeIndexingEnabled,
+} from "./code-indexing-enabled";
 
 type RepoProvider = "GITHUB" | "AZURE_DEVOPS" | "GITLAB";
 
@@ -96,7 +100,7 @@ export async function startCodeIndexingForProject(
 	const { projectId, userId } = opts;
 	const skipped: StartCodeIndexingResult["skipped"] = [];
 
-	if (process.env.FEATURE_CODE_INDEXING !== "true") {
+	if (!isCodeIndexingDeploymentEnabled()) {
 		return { started: 0, skipped, disabledReason: "feature-flag" };
 	}
 
@@ -116,7 +120,7 @@ export async function startCodeIndexingForProject(
 		where: { projectId },
 		select: { codeSearchEnabled: true },
 	});
-	if (!ragSettings?.codeSearchEnabled) {
+	if (!isCodeIndexingEnabled(ragSettings?.codeSearchEnabled)) {
 		return { started: 0, skipped, disabledReason: "code-search-disabled" };
 	}
 

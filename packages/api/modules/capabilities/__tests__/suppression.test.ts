@@ -12,18 +12,18 @@ import { describe, expect, it } from "vitest";
 import { CAPABILITY_RULES_BY_KEY } from "../registry";
 import {
 	applySuppression,
-	dependencyFingerprint,
 	resolveGate,
+	ruleFingerprint,
 	type StoredSuppression,
 } from "../resolve";
 import {
 	expiryFor,
 	parseSuppressions,
 	serializeSuppressions,
-	withoutSuppression,
+	withoutSuppressions,
 	withSuppression,
 } from "../suppression";
-import type { CapabilityGate } from "../types";
+import type { CapabilityEvidence, CapabilityGate } from "../types";
 import { evidenceWith } from "./evidence-fixture";
 
 const NOW = new Date("2026-09-18T12:00:00.000Z");
@@ -33,12 +33,22 @@ const STALE_INDEX = evidenceWith({
 	codebase: { usable: true, healthy: false },
 });
 
-function atlasGate(suppressions: readonly StoredSuppression[] = []) {
-	const rule = CAPABILITY_RULES_BY_KEY.get("atlas.explore");
-	if (!rule) {
-		throw new Error("atlas.explore is not registered");
+const RULE_KEY = "atlas.codebase-qa";
+
+function rule() {
+	const found = CAPABILITY_RULES_BY_KEY.get(RULE_KEY);
+	if (!found) {
+		throw new Error(`${RULE_KEY} is not registered`);
 	}
-	return resolveGate(rule, STALE_INDEX, NOW, suppressions);
+	return found;
+}
+
+function dependencyFingerprint(evidence: CapabilityEvidence): string {
+	return ruleFingerprint(rule(), evidence);
+}
+
+function atlasGate(suppressions: readonly StoredSuppression[] = []) {
+	return resolveGate(rule(), STALE_INDEX, NOW, suppressions);
 }
 
 function suppressionFor(
@@ -75,8 +85,14 @@ describe("what suppression may hide", () => {
 				reasonKey: "codebase.not-connected",
 				blockingDependency: "a connected repository",
 				remedy: "CONNECT_REPOSITORY",
-				retry: { supported: false, permitted: false, available: false },
+				retry: {
+					supported: false,
+					permitted: false,
+					available: false,
+					targetId: null,
+				},
 				suppressed: false,
+				fingerprint: "anything",
 			};
 			const stored = suppressionFor(gate, "anything");
 			expect(
@@ -104,22 +120,58 @@ describe("when a suppressed warning comes back", () => {
 		expect(atlasGate([stored]).suppressed).toBe(true);
 	});
 
-	it("returns once the dependency materially changes", () => {
+	it("stays hidden when something this warning does not read changes", () => {
+		// Rewritten in the Fizzy #1930 review round. The fingerprint used to be
+		// one global string, so adding a context source resurrected a
+		// stale-index warning that reads no context at all — and this test
+		// pinned that as correct. The fingerprint is per rule now.
 		const stored = suppressionFor(
 			atlasGate(),
 			dependencyFingerprint(STALE_INDEX),
 		);
-		const rule = CAPABILITY_RULES_BY_KEY.get("atlas.explore");
-		if (!rule) {
-			throw new Error("atlas.explore is not registered");
-		}
-		// Somebody added context. The fingerprint moves, so the old dismissal no
-		// longer applies to what is now a different situation.
-		const changed = evidenceWith({
+		const moreContext = evidenceWith({
 			codebase: { usable: true, healthy: false },
 			context: { total: 9, technical: 5, product: 4 },
 		});
-		expect(resolveGate(rule, changed, NOW, [stored]).suppressed).toBe(
+		expect(resolveGate(rule(), moreContext, NOW, [stored]).suppressed).toBe(
+			true,
+		);
+	});
+
+	it("returns after a later run succeeds and a still later one fails", () => {
+		// The card lists "successful indexing" as a material change. The
+		// completion marker is the only fact that moves between the dismissed
+		// failure and the new one, so without it they fingerprint identically.
+		const stored = suppressionFor(
+			atlasGate(),
+			dependencyFingerprint(STALE_INDEX),
+		);
+		const failedAgainAfterASuccess = evidenceWith({
+			codebase: {
+				usable: true,
+				healthy: false,
+				lastIndexCompletedAt: new Date("2026-09-17T00:00:00.000Z"),
+			},
+		});
+		expect(
+			resolveGate(rule(), failedAgainAfterASuccess, NOW, [stored])
+				.suppressed,
+		).toBe(false);
+	});
+
+	it("returns when the credential or repository moves", () => {
+		const stored = suppressionFor(
+			atlasGate(),
+			dependencyFingerprint(STALE_INDEX),
+		);
+		const other = evidenceWith({
+			codebase: {
+				usable: true,
+				healthy: false,
+				integrationStatus: "ERROR",
+			},
+		});
+		expect(resolveGate(rule(), other, NOW, [stored]).suppressed).toBe(
 			false,
 		);
 	});
@@ -163,6 +215,27 @@ describe("the fingerprint", () => {
 		);
 		expect(a).not.toBe(b);
 	});
+
+	it("is the value the resolved gate carries, so a client dismissal can match it", () => {
+		expect(atlasGate().fingerprint).toBe(
+			dependencyFingerprint(STALE_INDEX),
+		);
+	});
+
+	it("ignores facts its own rule does not read", () => {
+		const prd = CAPABILITY_RULES_BY_KEY.get("documents.generate-prd");
+		if (!prd) {
+			throw new Error("documents.generate-prd is not registered");
+		}
+		const a = ruleFingerprint(prd, evidenceWith({}));
+		const b = ruleFingerprint(
+			prd,
+			evidenceWith({ codebase: { integrationStatus: "TOKEN_EXPIRED" } }),
+		);
+		// The PRD warning reads no codebase fact, so a codebase change must
+		// not move its fingerprint.
+		expect(a).toBe(b);
+	});
 });
 
 describe("storage round trip", () => {
@@ -175,6 +248,8 @@ describe("storage round trip", () => {
 				key: "atlas.explore:codebase.index-stale",
 				fingerprint: "f1",
 				expiresAt: undefined,
+				createdAt: undefined,
+				duration: undefined,
 			},
 		]);
 	});
@@ -210,15 +285,44 @@ describe("storage round trip", () => {
 		expect(next).toEqual([{ key: "a", fingerprint: "new" }]);
 	});
 
-	it("restores one entry, or all of them", () => {
+	it("restores the named entries in one pass, or all of them", () => {
 		const existing = [
 			{ key: "a", fingerprint: "f" },
 			{ key: "b", fingerprint: "g" },
+			{ key: "c", fingerprint: "h" },
 		];
-		expect(withoutSuppression(existing, "a")).toEqual([
+		expect(withoutSuppressions(existing, ["a", "c"])).toEqual([
 			{ key: "b", fingerprint: "g" },
 		]);
-		expect(withoutSuppression(existing)).toEqual([]);
+		expect(withoutSuppressions(existing)).toEqual([]);
+	});
+
+	it("restores nothing for an empty list — never the whole project", () => {
+		const existing = [{ key: "a", fingerprint: "f" }];
+		expect(withoutSuppressions(existing, [])).toEqual(existing);
+	});
+
+	it("keeps when a suppression was made and for how long", () => {
+		const out = serializeSuppressions(
+			[
+				{
+					key: "a",
+					fingerprint: "f",
+					createdAt: NOW.toISOString(),
+					duration: "forever",
+				},
+			],
+			NOW,
+		);
+		expect(out.a).toEqual({
+			fingerprint: "f",
+			createdAt: NOW.toISOString(),
+			duration: "forever",
+		});
+		expect(parseSuppressions(out)[0]).toMatchObject({
+			createdAt: NOW.toISOString(),
+			duration: "forever",
+		});
 	});
 
 	it("refuses to compute an expiry for a session dismissal", () => {

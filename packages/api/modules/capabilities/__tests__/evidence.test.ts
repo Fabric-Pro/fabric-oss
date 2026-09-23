@@ -24,23 +24,31 @@ import {
 	gatherCapabilityEvidence,
 } from "../evidence";
 
-const { dbMock, canEditProjectMock, getStatusMock } = vi.hoisted(() => ({
+const {
+	dbMock,
+	canEditProjectMock,
+	canEditProjectSettingsMock,
+	getStatusMock,
+} = vi.hoisted(() => ({
 	dbMock: {
 		project: { findUnique: vi.fn() },
 		projectCodeIndex: { findMany: vi.fn() },
 		projectRepositoryIntegration: { findMany: vi.fn() },
 		backgroundJob: { groupBy: vi.fn() },
 		projectContext: { groupBy: vi.fn() },
-		projectDocument: { groupBy: vi.fn(), count: vi.fn() },
+		projectDocument: { groupBy: vi.fn(), findMany: vi.fn() },
 		projectScan: { groupBy: vi.fn() },
 	},
 	canEditProjectMock: vi.fn(),
+	canEditProjectSettingsMock: vi.fn(),
 	getStatusMock: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
 	db: dbMock,
 	canEditProject: (...args: unknown[]) => canEditProjectMock(...args),
+	canEditProjectSettings: (...args: unknown[]) =>
+		canEditProjectSettingsMock(...args),
 }));
 
 // Replaced wholesale rather than partially: the real package pulls in the AI
@@ -62,8 +70,13 @@ const ORGANIZATION_ID = "org_example";
 
 const LAST_GOOD_INDEX = new Date("2026-09-10T08:00:00.000Z");
 
-type CodeIndexRow = { status: string; lastFullIndexAt: Date | null };
-type IntegrationRow = { status: string; updatedAt: Date };
+type CodeIndexRow = {
+	status: string;
+	lastFullIndexAt: Date | null;
+	updatedAt?: Date;
+	repositoryIntegrationId?: string | null;
+};
+type IntegrationRow = { id?: string; status: string; updatedAt: Date };
 type JobGroup = {
 	kind: string;
 	status: string;
@@ -105,9 +118,10 @@ interface Rows {
 	jobGroups: JobGroup[];
 	contextGroups: unknown[];
 	documentGroups: Array<{ type: string }>;
-	documentsInFlight: number;
+	documentsInFlight: Array<{ type: string }>;
 	scanGroups: unknown[];
 	canEdit: boolean;
+	canEditSettings: boolean;
 	atlas: { status: string } | Error;
 }
 
@@ -125,10 +139,19 @@ function healthyRows(): Rows {
 			repositoryUrl: null,
 			codeAnalysisStatus: null,
 			scanConfig: null,
+			ragSettings: { codeSearchEnabled: true },
 		},
-		codeIndexes: [{ status: "READY", lastFullIndexAt: LAST_GOOD_INDEX }],
+		codeIndexes: [
+			{
+				status: "READY",
+				lastFullIndexAt: LAST_GOOD_INDEX,
+				updatedAt: LAST_GOOD_INDEX,
+				repositoryIntegrationId: "integration_example",
+			},
+		],
 		integrations: [
 			{
+				id: "integration_example",
 				status: "ACTIVE",
 				updatedAt: new Date("2026-09-10T08:00:00.000Z"),
 			},
@@ -136,9 +159,10 @@ function healthyRows(): Rows {
 		jobGroups: [],
 		contextGroups: [],
 		documentGroups: [],
-		documentsInFlight: 0,
+		documentsInFlight: [],
 		scanGroups: [],
 		canEdit: true,
+		canEditSettings: true,
 		atlas: { status: "READY" },
 	};
 }
@@ -153,9 +177,10 @@ function gather(overrides: Partial<Rows> = {}, includeAtlasStatus?: boolean) {
 	dbMock.backgroundJob.groupBy.mockResolvedValue(rows.jobGroups);
 	dbMock.projectContext.groupBy.mockResolvedValue(rows.contextGroups);
 	dbMock.projectDocument.groupBy.mockResolvedValue(rows.documentGroups);
-	dbMock.projectDocument.count.mockResolvedValue(rows.documentsInFlight);
+	dbMock.projectDocument.findMany.mockResolvedValue(rows.documentsInFlight);
 	dbMock.projectScan.groupBy.mockResolvedValue(rows.scanGroups);
 	canEditProjectMock.mockResolvedValue(rows.canEdit);
+	canEditProjectSettingsMock.mockResolvedValue(rows.canEditSettings);
 	getStatusMock.mockImplementation(() =>
 		rows.atlas instanceof Error
 			? Promise.reject(rows.atlas)
@@ -172,6 +197,7 @@ function gather(overrides: Partial<Rows> = {}, includeAtlasStatus?: boolean) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.stubEnv("FEATURE_CODE_INDEXING", "true");
 });
 
 // ── The predicate this whole file exists for ─────────────────────────────────
@@ -471,7 +497,9 @@ describe("the document predicate", () => {
 	it("reports a document generation in flight from the row, not only from a job", async () => {
 		// A generation started before job records existed has no job row to
 		// report it, but the document itself is plainly QUEUED or GENERATING.
-		const evidence = await gather({ documentsInFlight: 1 });
+		const evidence = await gather({
+			documentsInFlight: [{ type: "PRD" }],
+		});
 
 		expect(evidence.documents.generating.running).toBe(true);
 	});
@@ -576,10 +604,238 @@ describe("the tenant guard fails closed", () => {
 			dbMock.backgroundJob.groupBy,
 			dbMock.projectContext.groupBy,
 			dbMock.projectDocument.groupBy,
-			dbMock.projectDocument.count,
+			dbMock.projectDocument.findMany,
 			dbMock.projectScan.groupBy,
 		]) {
 			expect(call.mock.calls[0]?.[0]?.where?.projectId).toBe(PROJECT_ID);
 		}
+	});
+});
+
+// ── Fizzy #1930 review round: facts the rules gained ─────────────────────────
+
+describe("whether anything will ever index the repository", () => {
+	it("is off when the project never switched code search on", async () => {
+		// The schema default. Connecting a repository indexes nothing then, and
+		// a gate that waited for an index would wait for good.
+		const evidence = await gather({
+			project: { ...healthyRows().project, ragSettings: null },
+		});
+		expect(evidence.codebase.indexingEnabled).toBe(false);
+	});
+
+	it("is off when the deployment has code indexing switched off", async () => {
+		vi.stubEnv("FEATURE_CODE_INDEXING", "false");
+		const evidence = await gather();
+		expect(evidence.codebase.indexingEnabled).toBe(false);
+		// And says which half is off, so the gate does not point at the
+		// project's own setting when the deployment is the reason.
+		expect(evidence.codebase.indexingAvailable).toBe(false);
+	});
+
+	it("is on only when both switches are", async () => {
+		const evidence = await gather();
+		expect(evidence.codebase.indexingEnabled).toBe(true);
+	});
+});
+
+describe("an index left in flight by a worker that died", () => {
+	const STUCK_SINCE = new Date("2026-09-18T08:00:00.000Z");
+
+	it("measures the run from the index row's last write when no job is running", async () => {
+		// Before: running with a null clock, which is never stalled — so the
+		// gate said "Indexing your repository" for good.
+		const evidence = await gather({
+			codeIndexes: [
+				{
+					status: "INDEXING",
+					lastFullIndexAt: null,
+					updatedAt: STUCK_SINCE,
+					repositoryIntegrationId: "integration_example",
+				},
+			],
+		});
+		expect(evidence.codebase.indexing.running).toBe(true);
+		expect(evidence.codebase.indexing.lastProgressAt).toEqual(STUCK_SINCE);
+	});
+
+	it("reports the run as over and failed once its job was closed as FAILED", async () => {
+		const evidence = await gather({
+			codeIndexes: [
+				{
+					status: "INDEXING",
+					lastFullIndexAt: null,
+					updatedAt: STUCK_SINCE,
+					repositoryIntegrationId: "integration_example",
+				},
+			],
+			jobGroups: [
+				jobGroup("CODE_INDEXING", "FAILED", "2026-09-18T08:45:00.000Z"),
+			],
+		});
+		expect(evidence.codebase.indexing.running).toBe(false);
+		expect(evidence.codebase.indexing.lastRunFailed).toBe(true);
+	});
+
+	it("keeps the job's own heartbeat when a job is running", async () => {
+		const heartbeat = "2026-09-18T11:59:00.000Z";
+		const evidence = await gather({
+			codeIndexes: [
+				{
+					status: "INDEXING",
+					lastFullIndexAt: null,
+					updatedAt: STUCK_SINCE,
+					repositoryIntegrationId: "integration_example",
+				},
+			],
+			jobGroups: [jobGroup("CODE_INDEXING", "RUNNING", heartbeat)],
+		});
+		expect(evidence.codebase.indexing.lastProgressAt).toEqual(
+			new Date(heartbeat),
+		);
+	});
+});
+
+describe("a context source extracting with no job row", () => {
+	it("is measured from the source's own last write", async () => {
+		const since = new Date("2026-09-18T08:00:00.000Z");
+		const evidence = await gather({
+			contextGroups: [
+				{
+					type: "LINK",
+					extractionStatus: "EXTRACTING",
+					knowledgeBaseSourceCategory: null,
+					_count: { _all: 1 },
+					_max: { updatedAt: since },
+				},
+			],
+		});
+		expect(evidence.context.processing.running).toBe(true);
+		expect(evidence.context.processing.lastProgressAt).toEqual(since);
+	});
+});
+
+describe("a scan that never started", () => {
+	it("is measured from when it was queued", async () => {
+		const queued = new Date("2026-09-18T08:00:00.000Z");
+		const evidence = await gather({
+			scanGroups: [
+				{
+					status: "PENDING",
+					_count: { _all: 1 },
+					_max: {
+						createdAt: queued,
+						completedAt: null,
+						startedAt: null,
+					},
+				},
+			],
+		});
+		expect(evidence.scan.running).toBe(true);
+		expect(evidence.scan.lastProgressAt).toEqual(queued);
+	});
+});
+
+describe("what a codebase retry targets", () => {
+	it("names the repository whose index failed, not every repository", async () => {
+		const evidence = await gather({
+			codeIndexes: [
+				{
+					status: "READY",
+					lastFullIndexAt: LAST_GOOD_INDEX,
+					repositoryIntegrationId: "integration_fine",
+				},
+				{
+					status: "FAILED",
+					lastFullIndexAt: null,
+					repositoryIntegrationId: "integration_broken",
+				},
+			],
+		});
+		expect(evidence.codebase.retryTargetId).toBe("integration_broken");
+	});
+
+	it("falls back to the reported integration when nothing has run", async () => {
+		const evidence = await gather({ codeIndexes: [] });
+		expect(evidence.codebase.retryTargetId).toBe("integration_example");
+	});
+});
+
+describe("the two retry permissions are read separately", () => {
+	it("carries settings-edit and project-update as they are", async () => {
+		const evidence = await gather({
+			canEdit: true,
+			canEditSettings: false,
+		});
+		expect(evidence.viewer).toEqual({
+			canEditProjectSettings: false,
+			canUpdateProject: true,
+		});
+	});
+});
+
+describe("Atlas's graph", () => {
+	it("is ready only when Atlas was asked and said READY", async () => {
+		expect((await gather({}, true)).codebase.graphReady).toBe(true);
+		expect((await gather({}, false)).codebase.graphReady).toBe(false);
+	});
+});
+
+describe("the tenant refusal is structured", () => {
+	it("is a NOT_FOUND, not a plain error that surfaces as a 500", async () => {
+		await expect(gather({ project: null })).rejects.toMatchObject({
+			code: "NOT_FOUND",
+			status: 404,
+		});
+	});
+});
+
+describe("sources on their way, and uploads", () => {
+	it("reports which document types are generating right now", async () => {
+		const evidence = await gather({
+			documentsInFlight: [{ type: "PRD" }, { type: "ARCHITECTURE" }],
+		});
+		expect([...evidence.documents.inFlightTypes].sort()).toEqual([
+			"ARCHITECTURE",
+			"PRD",
+		]);
+	});
+
+	it("classifies a source still being ingested the same way as a finished one", async () => {
+		const evidence = await gather({
+			contextGroups: [
+				{
+					type: "LINK",
+					extractionStatus: "EXTRACTING",
+					knowledgeBaseSourceCategory: "API_DOCUMENTATION",
+					_count: { _all: 2 },
+					_max: { updatedAt: new Date() },
+				},
+				{
+					type: "TEXT",
+					extractionStatus: "PENDING",
+					knowledgeBaseSourceCategory: null,
+					_count: { _all: 1 },
+					_max: { updatedAt: new Date() },
+				},
+			],
+		});
+		expect(evidence.context.technicalInFlight).toBe(2);
+		expect(evidence.context.productInFlight).toBe(1);
+		expect(evidence.context.technical).toBe(0);
+	});
+
+	it("counts an untagged uploaded file or document as product grounding, never technical", async () => {
+		const evidence = await gather({
+			contextGroups: ["FILE", "DOCUMENT"].map((type) => ({
+				type,
+				extractionStatus: "COMPLETED",
+				knowledgeBaseSourceCategory: null,
+				_count: { _all: 1 },
+				_max: { updatedAt: null },
+			})),
+		});
+		expect(evidence.context.product).toBe(2);
+		expect(evidence.context.technical).toBe(0);
 	});
 });

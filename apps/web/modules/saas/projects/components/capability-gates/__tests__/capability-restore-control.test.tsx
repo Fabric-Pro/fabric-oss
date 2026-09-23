@@ -54,8 +54,14 @@ function suppressedGate(
 		reasonKey,
 		blockingDependency: "project context",
 		remedy: "ADD_CONTEXT",
-		retry: { supported: false, permitted: false, available: false },
+		retry: {
+			supported: false,
+			permitted: false,
+			available: false,
+			targetId: null,
+		},
 		suppressed: true,
+		fingerprint: "fingerprint_example",
 	};
 }
 
@@ -90,6 +96,7 @@ beforeEach(() => {
 	suppressMock.mockReset();
 	restoreMock.mockReset();
 	suppressMock.mockResolvedValue({ suppressed: true });
+	window.sessionStorage.clear();
 	restoreMock.mockResolvedValue({ restored: true });
 });
 
@@ -211,16 +218,75 @@ describe("something dismissed means a way back", () => {
 
 		// Someone clicking this above their documents has not asked to undo a
 		// dismissal they made on the Atlas tab.
+		// One call naming its targets (Fizzy #1930): one call per warning
+		// raced on the column they all rewrite, and the last write won.
 		await waitFor(() =>
 			expect(restoreMock).toHaveBeenCalledWith({
 				projectId: "proj_example",
-				capabilityKey: "documents.generate-prd",
-				reasonKey: "context.thin",
+				targets: [
+					{
+						capabilityKey: "documents.generate-prd",
+						reasonKey: "context.thin",
+					},
+				],
 			}),
 		);
 		expect(restoreMock).toHaveBeenCalledTimes(1);
-		expect(restoreMock).not.toHaveBeenCalledWith(
-			expect.objectContaining({ capabilityKey: "atlas.explore" }),
+	});
+
+	it("restores several warnings in one call, never one call each", async () => {
+		serve([
+			suppressedGate("documents.generate-prd", "context.thin"),
+			suppressedGate("documents.generate-proposal", "context.thin"),
+		]);
+		renderGated(
+			<CapabilityRestoreControl
+				capabilityKeys={[
+					"documents.generate-prd",
+					"documents.generate-proposal",
+				]}
+			/>,
+		);
+
+		await userEvent.click(
+			await screen.findByRole("button", { name: /restore\.action/ }),
+		);
+
+		await waitFor(() => expect(restoreMock).toHaveBeenCalledTimes(1));
+		expect(restoreMock.mock.calls[0][0].targets).toHaveLength(2);
+	});
+
+	it("counts and restores a warning dismissed for the session", async () => {
+		window.sessionStorage.setItem(
+			"fabric-capability-dismissed:proj_example",
+			JSON.stringify([
+				"documents.generate-prd:context.thin:fingerprint_example",
+			]),
+		);
+		serve([
+			{
+				...suppressedGate("documents.generate-prd", "context.thin"),
+				suppressed: false,
+			},
+		]);
+		renderGated(
+			<CapabilityRestoreControl
+				capabilityKeys={["documents.generate-prd"]}
+			/>,
+		);
+
+		await userEvent.click(
+			await screen.findByRole("button", { name: /restore\.action/ }),
+		);
+
+		// Nothing stored to restore, so nothing is sent.
+		expect(restoreMock).not.toHaveBeenCalled();
+		await waitFor(() =>
+			expect(
+				window.sessionStorage.getItem(
+					"fabric-capability-dismissed:proj_example",
+				),
+			).toBe("[]"),
 		);
 	});
 });

@@ -72,6 +72,12 @@ vi.mock("../../../../orpc/procedures", () => {
 	};
 });
 
+// Capability gating is not what this file is about, and its flag lookup reads
+// the project row — off here, so the door is inert and never reaches a database.
+vi.mock("../../../capabilities/flag", () => ({
+	isCapabilityGatingEnabled: async () => false,
+}));
+
 process.env.FABRIC_FEATURE_ATLAS = "true";
 
 await import("../chat");

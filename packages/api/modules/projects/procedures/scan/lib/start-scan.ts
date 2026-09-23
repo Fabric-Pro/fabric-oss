@@ -58,6 +58,16 @@ export interface StartProjectScanArgs {
 	 * exists. Threaded straight into the workflow input.
 	 */
 	forceFull?: boolean;
+	/**
+	 * The caller already asserted `security.run-scan` for this request.
+	 * Server-internal, never on a procedure schema.
+	 *
+	 * A multi-branch trigger starts one scan per branch, and each one's PENDING
+	 * row is a scan in flight to the gate — so asserting per branch refused
+	 * branch two because of branch one. The trigger asserts once, before its
+	 * loop, and says so here.
+	 */
+	capabilityAlreadyAsserted?: boolean;
 }
 
 /**
@@ -85,14 +95,23 @@ export async function startProjectScan(
 	}
 
 	// After the nothing-to-scan guard so that contract still answers null, and
-	// here rather than in the trigger procedure because the maturation gate
-	// starts scans too — as do MCP tools and the public API, which see no button.
-	await assertCapabilityAvailable({
-		capabilityKey: "security.run-scan",
-		projectId: args.projectId,
-		userId: args.userId,
-		organizationId: args.organizationId ?? null,
-	});
+	// here as well as in the trigger procedure because other callers start
+	// scans too — MCP tools and the public API, which see no button.
+	//
+	// Project scans only. A feature-scoped scan reviews one story's planning
+	// text with the AI engines and never runs the repository scanners, so a
+	// missing repository is not its prerequisite — and the project's own scan
+	// running is no reason to hold it back either. Gating it on the project
+	// rule silently skipped the maturation-gate scan whenever the project's
+	// repository engines were on without a repository.
+	if (args.targetType === "PROJECT" && !args.capabilityAlreadyAsserted) {
+		await assertCapabilityAvailable({
+			capabilityKey: "security.run-scan",
+			projectId: args.projectId,
+			userId: args.userId,
+			organizationId: args.organizationId ?? null,
+		});
+	}
 
 	// Feature-scoped (maturation) scans always re-read their one feature in full.
 	const mode = args.targetType === "FEATURE" ? "FULL" : (args.mode ?? "FULL");
