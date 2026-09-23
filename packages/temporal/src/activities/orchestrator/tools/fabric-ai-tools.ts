@@ -17,6 +17,10 @@ import {
 	FABRIC_SHARE_FRAME_TOOL,
 	FABRIC_UPDATE_FRAME_TOOL,
 } from "../../../workflows/orchestrator/frame-tool-schemas";
+import {
+	PROJECT_FEATURE_GET_INPUT_SCHEMA,
+	PROJECT_FEATURE_LIST_INPUT_SCHEMA,
+} from "../../../workflows/orchestrator/project-feature-tool-schemas";
 
 export interface FabricAiTool {
 	name: string;
@@ -275,6 +279,62 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 						description:
 							"Total matching the filters, before the limit was applied",
 					},
+				},
+			},
+		},
+
+		// =======================================================================
+		// Project roadmap reads (Dynamic - executed on-demand)
+		// Live reads of the attached project's features (UserStory rows, shown
+		// as "Features" with F-XXX ids). project_rag_query only sees embedded
+		// contexts, so it cannot filter by status or see a feature's current
+		// state (Fizzy #2309/#2310). Named apart from the MCP gateway's
+		// fabric_list_features / fabric_get_feature, whose schemas take a
+		// projectId the chat never lets the model choose.
+		// =======================================================================
+		{
+			name: "fabric_list_project_features",
+			description:
+				"List the attached project's roadmap items (features and bugs) LIVE from Fabric, with identifier (e.g. F-040), title, status, priority, drafting stage, task progress and a short description. " +
+				"Use this — not project_rag_query — for any question about what is on the roadmap, a feature's current status, or which features are in a given status/priority. " +
+				"Filter with status (the project's status column name, e.g. 'In Review'), priority, kind or search text; page with offset when hasMore is true. " +
+				"Call fabric_get_project_feature for one feature's full description, acceptance criteria and tasks. " +
+				"KEYWORDS: roadmap, features, backlog, stories, work items, feature status, in progress, in review, what's next.",
+			inputSchema: PROJECT_FEATURE_LIST_INPUT_SCHEMA,
+			outputSchema: {
+				type: "object",
+				properties: {
+					features: {
+						type: "array",
+						items: { type: "object" },
+						description: "Matching roadmap items",
+					},
+					total: {
+						type: "number",
+						description: "Total matching the filters",
+					},
+					hasMore: {
+						type: "boolean",
+						description: "Whether more items exist past this page",
+					},
+				},
+			},
+		},
+		{
+			name: "fabric_get_project_feature",
+			description:
+				"Read one feature (or bug) of the attached project LIVE from Fabric: full description, acceptance criteria, status, priority, drafting stage and every task with its completion. " +
+				"Pass the identifier the user mentions (e.g. 'F-040', 'F40', '40') or an id from fabric_list_project_features.",
+			inputSchema: PROJECT_FEATURE_GET_INPUT_SCHEMA,
+			outputSchema: {
+				type: "object",
+				properties: {
+					identifier: { type: "string" },
+					title: { type: "string" },
+					status: { type: "string" },
+					description: { type: "string" },
+					acceptanceCriteria: { type: "string" },
+					tasks: { type: "array", items: { type: "object" } },
 				},
 			},
 		},
@@ -2010,7 +2070,7 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 					repo: {
 						type: "string",
 						description:
-							"Filter to a specific repository in owner/name format (e.g., 'acme/backend'). Omit to search all connected repos.",
+							"Filter to one of the project's indexed repositories by name, owner/name (e.g., 'acme/backend') or URL. When the conversation names the repository the user is viewing (a 'Repository URL' line), pass it here unless the user asks about another repository. Omit to search all connected repos.",
 					},
 				},
 				required: ["query"],

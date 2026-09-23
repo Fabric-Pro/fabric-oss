@@ -1126,6 +1126,7 @@ export function buildWorkflowOutput(
 		// input box, seeded with `summary` as the new conversation's
 		// carried-over context.
 		handoffRecommended: state.pendingHandoff || undefined,
+		...(state.truncated ? { truncated: state.truncated } : {}),
 	};
 }
 

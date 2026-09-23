@@ -13,6 +13,7 @@
 
 import { generateText } from "@repo/ai";
 import { db } from "@repo/database";
+import { isInlineDiagramRequest } from "../../../workflows/orchestrator/diagram-rendering";
 import { getTaskPlanningSystemPrompt } from "../../prompts";
 import type {
 	CapabilityMatch,
@@ -61,7 +62,10 @@ function detectRequestedFrameOutput(
 		"wireframe",
 		"dashboard",
 	];
-	if (framePatterns.some((pattern) => lower.includes(pattern))) {
+	if (
+		framePatterns.some((pattern) => lower.includes(pattern)) &&
+		!isInlineDiagramRequest(message)
+	) {
 		return "frame";
 	}
 

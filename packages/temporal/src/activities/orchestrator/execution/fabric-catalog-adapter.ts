@@ -42,6 +42,8 @@ const DIRECT_BUILDER_TOOLS: Record<string, AccessLevel> = {
 	code_search: "READ",
 	fabric_create_story: "WRITE",
 	fabric_list_meeting_transcripts: "READ",
+	fabric_list_project_features: "READ",
+	fabric_get_project_feature: "READ",
 	fabric_text_to_speech: "READ",
 };
 

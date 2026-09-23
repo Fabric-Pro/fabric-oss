@@ -51,4 +51,17 @@ describe("fabric-ai stream route — focused context stays out of systemPrompt",
 			/systemPrompt,\s*projectContext,\s*modelOverride,\s*\};/,
 		);
 	});
+
+	// Fizzy #2309: the grounding line may only advertise the live roadmap
+	// reads when this turn binds them, and the decision must come from the
+	// request's own Fabric tool list.
+	it("derives the live-roadmap grounding from the request's tool list", () => {
+		const source = readRoute();
+		expect(source).toMatch(
+			/liveFeatureTools:\s*bindsLiveFeatureTools\(enabledFabricToolIds\)/,
+		);
+		expect(source).toContain(
+			"projectContextGroundingLine(liveFeatureTools)",
+		);
+	});
 });

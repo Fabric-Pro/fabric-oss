@@ -135,9 +135,6 @@ async function main() {
 		{
 			name: "agent-templates",
 			file: "seed-agent-templates.ts",
-			// seed-agent-templates.ts imports DEFAULT_MODELS from ai-model-catalog.ts,
-			// so a catalog change (e.g. a new default model) must re-run this seed too.
-			dependencies: ["ai-model-catalog.ts"],
 			description: "Agent templates",
 		},
 		{

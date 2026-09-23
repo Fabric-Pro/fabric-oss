@@ -6,12 +6,32 @@ import {
 	mapBuiltInKeysToFabricToolIds,
 } from "../prisma/queries/agent-templates";
 
+const PROJECT_CONTEXT_TOOLS = [
+	"project_rag_query",
+	"fabric_list_meeting_transcripts",
+	"fabric_list_project_features",
+	"fabric_get_project_feature",
+];
+
 describe("BUILT_IN_TO_FABRIC_TOOLS", () => {
 	it("registers project-context as a built-in capability backed by project_rag_query", () => {
 		expect(BUILT_IN_TO_FABRIC_TOOLS["project-context"]).toEqual([
 			"project_rag_query",
 			"fabric_list_meeting_transcripts",
+			"fabric_list_project_features",
+			"fabric_get_project_feature",
 		]);
+	});
+
+	// Fizzy #2309: RAG cannot answer "what is In Review?" or "status of F-040";
+	// project context must carry the live roadmap reads.
+	it("ships the live roadmap reads alongside project RAG", () => {
+		expect(BUILT_IN_TO_FABRIC_TOOLS["project-context"]).toEqual(
+			expect.arrayContaining([
+				"fabric_list_project_features",
+				"fabric_get_project_feature",
+			]),
+		);
 	});
 
 	// Regression lock for Fizzy #2473: semantic search cannot filter or order by
@@ -130,27 +150,22 @@ describe("getBuiltInToolConfig", () => {
 });
 
 describe("mapBuiltInKeysToFabricToolIds", () => {
-	it("expands project-context to the project RAG and meeting lookup tools", () => {
-		expect(mapBuiltInKeysToFabricToolIds(["project-context"])).toEqual([
-			"project_rag_query",
-			"fabric_list_meeting_transcripts",
-		]);
+	it("expands project-context to the project RAG, meeting lookup and roadmap tools", () => {
+		expect(mapBuiltInKeysToFabricToolIds(["project-context"])).toEqual(
+			PROJECT_CONTEXT_TOOLS,
+		);
 	});
 
 	it("ignores keys without a registered mapping", () => {
 		expect(
 			mapBuiltInKeysToFabricToolIds(["project-context", "made-up-key"]),
-		).toEqual(["project_rag_query", "fabric_list_meeting_transcripts"]);
+		).toEqual(PROJECT_CONTEXT_TOOLS);
 	});
 
 	it("flattens multiple keys into the union of their tool ids", () => {
 		expect(
 			mapBuiltInKeysToFabricToolIds(["project-context", "create-images"]),
-		).toEqual([
-			"project_rag_query",
-			"fabric_list_meeting_transcripts",
-			"fabric_generate_image",
-		]);
+		).toEqual([...PROJECT_CONTEXT_TOOLS, "fabric_generate_image"]);
 	});
 
 	it("returns an empty array when no built-in keys are enabled", () => {

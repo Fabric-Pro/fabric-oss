@@ -19,10 +19,13 @@ import {
 } from "@repo/ai/skills";
 import { heartbeat } from "@temporalio/activity";
 import { publishExecutionEvent } from "../../../lib/redis-publisher";
+import { isInlineDiagramRequest } from "../../../workflows/orchestrator/diagram-rendering";
 import type { IterativeMessage } from "../../../workflows/orchestrator/types";
 import type { OrchestratorHeartbeatDetails } from "../types";
 import { getAiModel } from "../utils";
 import {
+	budgetImageAttachments,
+	omittedImagesNote,
 	resolveImageAttachments,
 	spliceImagePartsIntoLastUserMessage,
 } from "./vision-image-attachments";
@@ -70,7 +73,6 @@ function detectRequestedFrameOutput(
 		"build a visualization",
 		"data visualization",
 		"interactive visualization",
-		"visualize",
 		"create a chart",
 		"make a chart",
 		"generate a chart",
@@ -84,7 +86,10 @@ function detectRequestedFrameOutput(
 		"build a dashboard",
 		"interactive dashboard",
 	];
-	if (framePatterns.some((pattern) => lower.includes(pattern))) {
+	if (
+		framePatterns.some((pattern) => lower.includes(pattern)) &&
+		!isInlineDiagramRequest(message)
+	) {
 		return "frame";
 	}
 
@@ -120,6 +125,12 @@ export type AgentIterationResult =
 			 * the UI uses this to show a banner / toast.
 			 */
 			limitSignal?: LimitSignal;
+			/**
+			 * The provider stopped this answer at the output-token ceiling
+			 * (`finishReason: "length"`), so the text ends mid-way. Before
+			 * this it was returned as a complete answer (review F25).
+			 */
+			truncated?: "output_limit";
 	  }
 	| {
 			type: "tool_calls";
@@ -675,14 +686,25 @@ export async function runAgentIteration(
 			(model as { modelId?: string }).modelId ?? modelOverride ?? "";
 		if (getModelCapabilities(modelId).vision) {
 			try {
-				const images = await resolveImageAttachments(
+				const resolved = await resolveImageAttachments(
 					attachedDocumentIds,
 					userId,
 					organizationId,
 				);
+				// Over-budget images are left out with a note rather than
+				// failing the whole call at the provider (review F37).
+				const { kept: images, omitted } =
+					budgetImageAttachments(resolved);
+				if (omitted.length > 0) {
+					console.warn(
+						`[AgentIteration] Left out ${omitted.length} image(s) over the per-request budget`,
+						omitted,
+					);
+				}
 				const attached = spliceImagePartsIntoLastUserMessage(
 					messages as Array<{ role?: string; content?: unknown }>,
 					images,
+					omittedImagesNote(omitted),
 				);
 				if (attached > 0) {
 					console.log(
@@ -1179,6 +1201,9 @@ export async function runAgentIteration(
 			type: "response",
 			content: finalText,
 			usage,
+			...(finishReason === "length"
+				? { truncated: "output_limit" as const }
+				: {}),
 		};
 	} catch (error) {
 		const errorMessage =

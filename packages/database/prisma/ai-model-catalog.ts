@@ -19,6 +19,17 @@ import type {
 	TaskComplexity,
 } from "./generated/client";
 
+/**
+ * The default Fabric AI model (canonical name): the one source of truth for
+ * "which model runs when nobody picked one". The chat's default agent, the
+ * CHAT / COMPLEX / TOOL_CALLING task defaults on every provider that carries
+ * it, `DEFAULT_MODELS` (MCP sampling, cost estimates) all read this
+ * constant; seeded agent templates suggest no model and so land on the task
+ * defaults. A provider without a mapping for it keeps
+ * its own task default below.
+ */
+export const DEFAULT_FABRIC_AI_MODEL = "claude-sonnet-5";
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -2176,10 +2187,10 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	// COMPLEX Tasks - Capable models for detailed work
 	// ============================================================================
 	...createTaskDefaults("COMPLEX", "MEDIUM", {
-		DATABRICKS: "claude-sonnet-5",
-		VERCEL_GATEWAY: "claude-sonnet-5",
+		DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
+		VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
 		OPENAI_DIRECT: "gpt-4o",
-		ANTHROPIC_DIRECT: "claude-sonnet-5",
+		ANTHROPIC_DIRECT: DEFAULT_FABRIC_AI_MODEL,
 		GROQ: "llama-3-3-70b",
 		DEEPSEEK: "deepseek-chat",
 		CEREBRAS: "llama-3-3-70b",
@@ -2213,10 +2224,10 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	// CHAT Tasks - Conversational models
 	// ============================================================================
 	...createTaskDefaults("CHAT", "MEDIUM", {
-		DATABRICKS: "claude-sonnet-5",
-		VERCEL_GATEWAY: "claude-sonnet-5",
+		DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
+		VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
 		OPENAI_DIRECT: "gpt-4o",
-		ANTHROPIC_DIRECT: "claude-sonnet-5",
+		ANTHROPIC_DIRECT: DEFAULT_FABRIC_AI_MODEL,
 		GROQ: "llama-3-3-70b",
 		DEEPSEEK: "deepseek-chat",
 		CEREBRAS: "llama-3-3-70b",
@@ -2236,10 +2247,10 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 		"TOOL_CALLING",
 		"MEDIUM",
 		{
-			DATABRICKS: "claude-sonnet-5",
-			VERCEL_GATEWAY: "claude-sonnet-5",
+			DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
+			VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
 			OPENAI_DIRECT: "gpt-4o",
-			ANTHROPIC_DIRECT: "claude-sonnet-5",
+			ANTHROPIC_DIRECT: DEFAULT_FABRIC_AI_MODEL,
 			GROQ: "gpt-oss-120b",
 			DEEPSEEK: "deepseek-chat",
 			CEREBRAS: "gpt-oss-120b",
@@ -2476,11 +2487,11 @@ export const DEFAULT_MODELS = {
 	/** Fast, cheap model for simple tasks */
 	SIMPLE: "gpt-4o-mini",
 	/** Capable model for complex tasks */
-	COMPLEX: "gpt-4o",
+	COMPLEX: DEFAULT_FABRIC_AI_MODEL,
 	/** Conversational model */
-	CHAT: "gpt-4o",
+	CHAT: DEFAULT_FABRIC_AI_MODEL,
 	/** Model with tool calling support */
-	TOOL_CALLING: "gpt-4o",
+	TOOL_CALLING: DEFAULT_FABRIC_AI_MODEL,
 	/** Reasoning model for deep analysis */
 	REASONING: "o1",
 	/** Embedding model for RAG */

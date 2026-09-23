@@ -35,6 +35,7 @@ import type { ToolCategory } from "../../../activities/orchestrator";
 // own, so it carries nothing into the workflow sandbox. Same shape as
 // `safeEvaluateExpression` in template-execution.ts.
 import { DEFAULT_MCP_TOOL_TIMEOUT_MS } from "../../../activities/orchestrator/execution/mcp-call-timeout";
+import { DIAGRAM_RENDERING_GUIDANCE } from "../diagram-rendering";
 import { projectIntegrationTools } from "../integration-tool-projection";
 import {
 	BUDGET,
@@ -42,6 +43,12 @@ import {
 	TOOL_RESULTS,
 	TOOLS,
 } from "../orchestrator-config";
+import {
+	PROJECT_FEATURE_GET_DESCRIPTION,
+	PROJECT_FEATURE_GET_INPUT_SCHEMA,
+	PROJECT_FEATURE_LIST_DESCRIPTION,
+	PROJECT_FEATURE_LIST_INPUT_SCHEMA,
+} from "../project-feature-tool-schemas";
 import { assessToolCallRisk } from "../risk-assessment";
 import type {
 	ALTKConfig,
@@ -524,6 +531,21 @@ function pruneConversationHistory(
 			currentIteration,
 			pruneBeforeIteration,
 		});
+	}
+}
+
+/**
+ * Records that the turn's answer stopped at the output-token ceiling, for
+ * the workflow output (review F25). The marker is taken only when there is
+ * something to record, so histories without a truncated answer are
+ * unaffected; histories recorded before it replay without the field.
+ */
+function recordTruncation(
+	state: WorkflowState,
+	truncated: "output_limit" | undefined,
+): void {
+	if (truncated && patched("orch-truncation-signal-v1")) {
+		state.truncated = truncated;
 	}
 }
 
@@ -1240,6 +1262,11 @@ export async function executeIterativePhase(
 		}
 	}
 
+	// Set when the attached project's live roadmap reads are pre-registered
+	// below, so the focused-agent prompt lists them only on histories that
+	// actually have them.
+	let projectFeatureToolsRegistered = false;
+
 	// Pre-register project_rag_query when a project is attached so the LLM
 	// can use it immediately without wasting iterations on search_tools.
 	// Also pre-register search_slack_messages / search_teams_messages so the
@@ -1339,10 +1366,36 @@ export async function executeIterativePhase(
 				required: [],
 			},
 		};
+		// Live roadmap reads (Fizzy #2309/#2310): project_rag_query cannot
+		// filter by status or see a feature's current state, so without these
+		// "what is In Review?" or "status of F-040?" is answered from embedded
+		// snapshots or not at all. They have no loop arm of their own — the
+		// virtual Fabric config id routes the call through executeMcpTool to the
+		// catalog adapter, exactly as a search_tools discovery would. Without
+		// the config id the call would search the user's MCP servers instead.
+		//
+		// Patch-gated because it changes the tool set a recorded history saw;
+		// an older history replays without them.
+		if (patched("orch-project-feature-tools-v1")) {
+			discoveredTools.fabric_list_project_features = {
+				description: PROJECT_FEATURE_LIST_DESCRIPTION,
+				inputSchema: PROJECT_FEATURE_LIST_INPUT_SCHEMA,
+			};
+			discoveredTools.fabric_get_project_feature = {
+				description: PROJECT_FEATURE_GET_DESCRIPTION,
+				inputSchema: PROJECT_FEATURE_GET_INPUT_SCHEMA,
+			};
+			discoveredToolConfigIds.fabric_list_project_features =
+				"fabric-ai-server";
+			discoveredToolConfigIds.fabric_get_project_feature =
+				"fabric-ai-server";
+			projectFeatureToolsRegistered = true;
+		}
 		log.info(
 			"[IterativeExecution] Pre-registered project_rag_query, fabric_list_meeting_transcripts, search_slack_messages, and search_teams_messages tools",
 			{
 				projectId: input.projectId,
+				projectFeatureTools: projectFeatureToolsRegistered,
 			},
 		);
 	}
@@ -1595,6 +1648,8 @@ export async function executeIterativePhase(
 				: conversationHistory;
 
 			let synthesisContent = "";
+			// Set when the synthesis itself hit the output ceiling.
+			let synthesisTruncated: "output_limit" | undefined;
 			try {
 				// Do NOT add an extra pruneConversationHistory pass here. The
 				// per-iteration prune already retains the last
@@ -1627,6 +1682,7 @@ export async function executeIterativePhase(
 
 				if (synthesisResult.type === "response") {
 					synthesisContent = synthesisResult.content;
+					synthesisTruncated = synthesisResult.truncated;
 				}
 
 				log.info("LLM synthesis completed", {
@@ -1678,6 +1734,7 @@ export async function executeIterativePhase(
 							synthesisContent.trim().length
 					) {
 						synthesisContent = retryResult.content;
+						synthesisTruncated = retryResult.truncated;
 					}
 					log.info("LLM synthesis retry completed", {
 						responseLength: synthesisContent.length,
@@ -1706,6 +1763,7 @@ export async function executeIterativePhase(
 				synthesisContent = summarizeAccomplishments(state, {
 					includeFindings: compactSynthesis,
 				});
+				synthesisTruncated = undefined;
 			}
 
 			// Stash the summary on state so buildWorkflowOutput can surface
@@ -1718,6 +1776,8 @@ export async function executeIterativePhase(
 					budgetCheck.reason ?? "Conversation context limit reached",
 				summary: synthesisContent,
 			};
+
+			recordTruncation(state, synthesisTruncated);
 
 			return {
 				success: true,
@@ -1757,6 +1817,14 @@ export async function executeIterativePhase(
 Place each ![Generated Image](url) AFTER the text description, NOT before it. Copy the exact URL from each tool result. Do NOT omit any image URLs.`;
 		}
 
+		// Chat renders ```mermaid inline, so a plain diagram request is answered
+		// in the message rather than as a frame or an Excalidraw canvas (#2040
+		// review F34). `patched()` keeps pre-patch histories' prompt bytes; the
+		// unpatched branch appends nothing.
+		if (patched("orch-diagram-inline-mermaid-v1")) {
+			iterationSystemPrompt += `\n\n${DIAGRAM_RENDERING_GUIDANCE}`;
+		}
+
 		// Focused-agent mode: when tools were pre-loaded from assigned MCP servers,
 		// tell the model to use them directly instead of calling search_tools first.
 		//
@@ -1767,7 +1835,7 @@ Place each ![Generated Image](url) AFTER the text description, NOT before it. Co
 		// `search_tools`. Re-emitting costs ~1.5K tokens vs. the 48K/iter the
 		// eager-schema path would have spent.
 		if (preloadedToolCatalog) {
-			iterationSystemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; the loaded schema persists for the rest of this conversation. Tools NOT in the catalog (search_tools, project_rag_query, fabric_list_meeting_transcripts, search_slack_messages, search_teams_messages, OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
+			iterationSystemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; the loaded schema persists for the rest of this conversation. Tools NOT in the catalog (search_tools, project_rag_query, fabric_list_meeting_transcripts, ${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}search_slack_messages, search_teams_messages, OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
 		} else if (
 			iteration === 1 &&
 			preloadedServerNames.length > 0 &&
@@ -1969,7 +2037,12 @@ Never guess or use example values — always use real data from API responses.`;
 			log.info("Agent returned final response", {
 				iteration,
 				responseLength: finalResponse.length,
+				truncated: iterationResult.truncated,
 			});
+
+			// An answer cut at the output ceiling was shown as complete
+			// (review F25); the output now says so.
+			recordTruncation(state, iterationResult.truncated);
 
 			// Defensive flush before the phase exits successfully.
 			// In practice the per-tool-call flush already drained every

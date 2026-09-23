@@ -29,6 +29,14 @@ import {
 	shareFirstClassFrame,
 	updateFirstClassFrame,
 } from "../shared/frame-service";
+import { PROJECT_FEATURE_TOOL_IDS } from "../shared/project-feature-reads";
+import {
+	buildCodeSearchRepositories,
+	type CodeSearchRepository,
+	describeCodeSearchRepositories,
+	repositoryFilterTerm,
+	resolveCodeSearchRepository,
+} from "./code-search-repositories";
 import { retrieveWorkspaceDocumentsActivity } from "./rag-retrieval";
 
 const logger = {
@@ -71,6 +79,16 @@ interface BuiltInToolContext {
 
 interface CreateBuiltInToolsOptions extends BuiltInToolContext {
 	enabledFabricToolIds?: string[];
+	/**
+	 * Bind the attached project's live roadmap reads alongside a non-empty
+	 * explicit tool list. Set only by the interactive chat, where the project
+	 * is the one the user attached; agent runtimes (e.g. Slack triggers acting
+	 * as the agent's owner) get them only through their `project-context`
+	 * capability.
+	 */
+	includeProjectFeatureReads?: boolean;
+	/** See `CodeSearchToolContext.preferredRepositoryUrl`. */
+	preferredRepositoryUrl?: string;
 }
 
 async function getSearchProvider(
@@ -246,39 +264,148 @@ async function createWebSearchTool(
 	};
 }
 
+/**
+ * The project's code-indexed repositories, with each one's index status.
+ * Scoped by `projectId` only — the caller has already authorized the project.
+ */
+async function loadCodeSearchRepositories(projectId: string): Promise<{
+	indexes: Array<{ repositoryIntegrationId: string | null; status: string }>;
+	repositories: CodeSearchRepository[];
+}> {
+	const { getProjectCodeIndexes } = await import("@repo/database");
+	const [indexes, integrations] = await Promise.all([
+		getProjectCodeIndexes(projectId),
+		db.projectRepositoryIntegration.findMany({
+			where: { projectId },
+			select: {
+				id: true,
+				repositoryUrl: true,
+				repositoryOwner: true,
+				repositoryName: true,
+				roleTag: true,
+			},
+		}),
+	]);
+	// The project's own legacy repository backs only an index row with no
+	// integration, so it is looked up only when there is one.
+	const legacy = indexes.some(
+		(index) => index.repositoryIntegrationId === null,
+	)
+		? await db.project.findUnique({
+				where: { id: projectId },
+				select: {
+					repositoryUrl: true,
+					repositoryOwner: true,
+					repositoryName: true,
+				},
+			})
+		: null;
+	return {
+		indexes,
+		repositories: buildCodeSearchRepositories(
+			indexes,
+			integrations,
+			legacy,
+		),
+	};
+}
+
+interface CodeSearchToolContext extends BuiltInToolContext {
+	/**
+	 * Repository the user launched the chat from (the drawer's code context).
+	 * Becomes the default scope when it names one of the project's indexed
+	 * repositories.
+	 */
+	preferredRepositoryUrl?: string;
+}
+
 export async function createCodeSearchTool(
-	context: BuiltInToolContext,
+	context: CodeSearchToolContext,
 ): Promise<Record<string, unknown>> {
-	const { projectId, userId, organizationId } = context;
+	const { projectId, userId, organizationId, preferredRepositoryUrl } =
+		context;
 	if (!projectId) {
 		return {};
 	}
 
+	let knownRepositories: CodeSearchRepository[] = [];
+	try {
+		knownRepositories = (await loadCodeSearchRepositories(projectId))
+			.repositories;
+	} catch (error) {
+		logger.warn("[code_search] Could not list the project's repositories", {
+			projectId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+	const preferredRepository = preferredRepositoryUrl
+		? resolveCodeSearchRepository(knownRepositories, preferredRepositoryUrl)
+		: null;
+
 	return {
 		code_search: tool({
-			description:
-				"Search the project's indexed repository code. Returns file paths, symbols, snippets, citation metadata, and codebase role tags (e.g. Legacy, Primary) when a code index is available. When multiple codebases are attached, attribute findings to their respective codebase and highlight any differences.",
+			description: `Search the project's indexed repository code. Returns file paths, symbols, snippets, citation metadata, and codebase role tags (e.g. Legacy, Primary) when a code index is available. When multiple codebases are attached, attribute findings to their respective codebase and highlight any differences.${describeCodeSearchRepositories(knownRepositories, preferredRepository)}`,
 			inputSchema: z.object({
 				query: z.string().describe("The code search query"),
 				language: z
 					.string()
 					.optional()
 					.describe("Optional language filter"),
+				repository: z
+					.string()
+					.optional()
+					.describe(
+						'Optional repository to search: its name, owner/name or URL, or "all" for every repository of the project',
+					),
 				maxResults: z.number().min(1).max(10).default(5),
 			}),
 			execute: async (args: {
 				query: string;
 				language?: string;
+				repository?: string;
+				/** The orchestrator catalog's name for `repository`. */
+				repo?: string;
 				maxResults?: number;
 			}) => {
-				const { getProjectCodeIndexes } = await import(
-					"@repo/database"
-				);
-				const codeIndexes = await getProjectCodeIndexes(projectId);
-				const readyIndex = codeIndexes.find(
-					(index) => index.status === "READY",
-				);
-				if (!readyIndex) {
+				const { indexes: codeIndexes, repositories } =
+					await loadCodeSearchRepositories(projectId);
+				const requested = (args.repository ?? args.repo)?.trim();
+				let target: CodeSearchRepository | null = null;
+				if (requested && requested.toLowerCase() !== "all") {
+					target = resolveCodeSearchRepository(
+						repositories,
+						requested,
+					);
+					if (!target) {
+						return {
+							success: false,
+							message: `No indexed repository in this project matches "${requested}". Indexed repositories: ${
+								repositories.map((r) => r.label).join(", ") ||
+								"none"
+							}.`,
+							status: "unknown_repository",
+						};
+					}
+				} else if (!requested && preferredRepository) {
+					target =
+						repositories.find(
+							(r) =>
+								r.integrationId ===
+								preferredRepository.integrationId,
+						) ?? null;
+				}
+
+				if (target) {
+					if (target.status !== "READY") {
+						return {
+							success: false,
+							message: `The code index for ${target.label} is not ready yet.`,
+							status: target.status,
+						};
+					}
+				} else if (
+					!codeIndexes.some((index) => index.status === "READY")
+				) {
 					return {
 						success: false,
 						message:
@@ -319,6 +446,7 @@ export async function createCodeSearchTool(
 						key: "contextType",
 						match: { any: ["CODE_FILE", "CODE_FILE_SUMMARY"] },
 					},
+					...(target ? [repositoryFilterTerm(target)] : []),
 				];
 				const must = [...baseMust];
 				if (args.language) {
@@ -394,8 +522,9 @@ export async function createCodeSearchTool(
 					points = result.points ?? [];
 				}
 
+				const searchedRepository = target?.label ?? "all";
 				if (points.length === 0) {
-					return { success: true, results: [] };
+					return { success: true, searchedRepository, results: [] };
 				}
 
 				const { getProjectRoleTagMaps, resolveRoleTag } = await import(
@@ -405,6 +534,7 @@ export async function createCodeSearchTool(
 
 				return {
 					success: true,
+					searchedRepository,
 					results: points.map((point) => {
 						const payload = point.payload ?? {};
 						const repoStr = (payload.repo ||
@@ -431,6 +561,7 @@ export async function createCodeSearchTool(
 							language: payload.language,
 							symbolName: payload.symbolName,
 							symbolType: payload.symbolType,
+							repository: repoStr,
 							roleTag: roleTag ?? undefined,
 							excerpt,
 							citation: {
@@ -744,6 +875,27 @@ export async function createFabricTool(
 						transcriptCount: listing.transcriptCount,
 						total: listing.total,
 					};
+				},
+			} as unknown as Parameters<typeof tool>[0]),
+		};
+	}
+
+	if (
+		toolId === "fabric_list_project_features" ||
+		toolId === "fabric_get_project_feature"
+	) {
+		return {
+			[toolId]: tool({
+				description: toolDefinition.description || toolId,
+				inputSchema: jsonSchemaToZod(toolDefinition.inputSchema),
+				execute: async (args: Record<string, unknown>) => {
+					const { getProjectFeature, listProjectFeatures } =
+						await import("../shared/project-feature-reads");
+					const read =
+						toolId === "fabric_list_project_features"
+							? listProjectFeatures
+							: getProjectFeature;
+					return read(args, { projectId, userId });
 				},
 			} as unknown as Parameters<typeof tool>[0]),
 		};
@@ -1428,6 +1580,8 @@ export async function createBuiltInTools(
 		enabledFabricToolIds,
 		workspaceIds,
 		projectId,
+		includeProjectFeatureReads = false,
+		preferredRepositoryUrl,
 	} = options;
 
 	if (Array.isArray(enabledFabricToolIds)) {
@@ -1436,7 +1590,22 @@ export async function createBuiltInTools(
 		}
 
 		const tools: Record<string, unknown> = {};
-		for (const toolId of enabledFabricToolIds) {
+		// In the interactive chat the attached project's live roadmap reads
+		// ride along with any explicit tool list: the full-page chat sends its
+		// Fabric tool toggles, which never name project tools, and without
+		// these the model can only answer a roadmap question from the prompt's
+		// top-15 snapshot (Fizzy #2309/#2310). Read-only and gated on the
+		// user's project access, so a chosen tool set gains no write path.
+		const toolIds =
+			projectId && includeProjectFeatureReads
+				? [
+						...new Set([
+							...enabledFabricToolIds,
+							...PROJECT_FEATURE_TOOL_IDS,
+						]),
+					]
+				: enabledFabricToolIds;
+		for (const toolId of toolIds) {
 			Object.assign(
 				tools,
 				await createFabricTool(toolId, {
@@ -1473,6 +1642,18 @@ export async function createBuiltInTools(
 				workspaceIds,
 				projectId,
 			}),
+			await createFabricTool("fabric_list_project_features", {
+				userId,
+				organizationId,
+				workspaceIds,
+				projectId,
+			}),
+			await createFabricTool("fabric_get_project_feature", {
+				userId,
+				organizationId,
+				workspaceIds,
+				projectId,
+			}),
 			await createFabricTool("search_slack_messages", {
 				userId,
 				organizationId,
@@ -1490,6 +1671,7 @@ export async function createBuiltInTools(
 				organizationId,
 				workspaceIds,
 				projectId,
+				preferredRepositoryUrl,
 			}),
 			await createSymbolSearchTool({
 				userId,

@@ -45,9 +45,11 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 			data:
 				options?.queryKey?.[0] === "orchestrator-preferences"
 					? storedPreferences.current
-					: options?.queryKey?.[0] === "chat-agent-selection"
-						? storedAgentSelection.current
-						: undefined,
+					: options?.queryKey?.[0] === "project-get"
+						? projectLookup.current
+						: options?.queryKey?.[0] === "chat-agent-selection"
+							? storedAgentSelection.current
+							: undefined,
 			isLoading: false,
 		})),
 		// The drawer invalidates the conversation cache when a turn it started
@@ -55,6 +57,11 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 		useQueryClient: vi.fn(() => queryClientMock),
 	};
 });
+
+/** `projects.get` for a launch that carried only the project id (F46). */
+const projectLookup = vi.hoisted(() => ({
+	current: undefined as { project: { name: string } } | undefined,
+}));
 
 /** The saved picker selection, as the server returns it (FR13). */
 const storedAgentSelection = vi.hoisted(() => ({
@@ -86,6 +93,11 @@ const orpcClientMock = vi.hoisted(() => ({
 vi.mock("@shared/lib/orpc-client", () => ({ orpcClient: orpcClientMock }));
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
+		projects: {
+			get: {
+				queryOptions: () => ({ queryKey: ["project-get"] }),
+			},
+		},
 		agents: {
 			codeIndex: {
 				status: {
@@ -538,6 +550,53 @@ describe("FabricAgentLauncher", () => {
 		});
 
 		expectLauncherClosed();
+	});
+});
+
+describe("FabricAgentLauncher — project name in the header (F46)", () => {
+	function IdOnlyHarness() {
+		const { openLauncher } = useFabricAgentLauncher();
+		return (
+			<button
+				type="button"
+				onClick={() => openLauncher({ projectId: "cmraw0project0id" })}
+			>
+				Open with project id
+			</button>
+		);
+	}
+
+	afterEach(() => {
+		projectLookup.current = undefined;
+	});
+
+	it("never shows the raw project id while the name loads", () => {
+		render(
+			<FabricAgentLauncherProvider>
+				<IdOnlyHarness />
+			</FabricAgentLauncherProvider>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: /Open with project id/i }),
+		);
+
+		expect(screen.queryByText("cmraw0project0id")).not.toBeInTheDocument();
+		expect(screen.getByText("Project")).toBeInTheDocument();
+	});
+
+	it("shows the project's name once it is fetched", () => {
+		projectLookup.current = { project: { name: "Phoenix" } };
+		render(
+			<FabricAgentLauncherProvider>
+				<IdOnlyHarness />
+			</FabricAgentLauncherProvider>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: /Open with project id/i }),
+		);
+
+		expect(screen.getByText("Phoenix")).toBeInTheDocument();
+		expect(screen.queryByText("cmraw0project0id")).not.toBeInTheDocument();
 	});
 });
 

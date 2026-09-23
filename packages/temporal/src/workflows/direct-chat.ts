@@ -464,12 +464,30 @@ export async function directChatWorkflow(
 				error: result.error,
 				mcpServerCount: mcpToolInfo.length,
 			});
-			result = await executeDirectChatActivity(
-				{ ...input, ragContext, forceDisableTools: true },
-				[],
-				memoryContext,
-				toolSuggestionContext,
+			// Tell the retry WHY it has no tools, so it does not claim none
+			// are connected (review F4). The unpatched branch is the original
+			// call, byte for byte, for histories recorded before this marker.
+			const honestNoToolsRetry = patched(
+				"direct-chat-honest-no-tools-retry-v1",
 			);
+			result = honestNoToolsRetry
+				? await executeDirectChatActivity(
+						{
+							...input,
+							ragContext,
+							forceDisableTools: true,
+							toolFailureSummary: firstError,
+						},
+						[],
+						memoryContext,
+						toolSuggestionContext,
+					)
+				: await executeDirectChatActivity(
+						{ ...input, ragContext, forceDisableTools: true },
+						[],
+						memoryContext,
+						toolSuggestionContext,
+					);
 			if (!result.success && !result.error) {
 				result = { ...result, error: firstError };
 			}

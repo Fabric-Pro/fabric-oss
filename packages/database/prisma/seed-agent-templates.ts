@@ -21,13 +21,8 @@
  */
 
 import { logger } from "@repo/logs";
-// Import default model from catalog for consistent model naming
-import { DEFAULT_MODELS } from "./ai-model-catalog";
 import { db } from "./client";
 import type { AgentTemplateCategory } from "./generated/client";
-
-// Default model for agent templates (canonical name)
-const DEFAULT_AGENT_MODEL = DEFAULT_MODELS.COMPLEX;
 
 // ============================================
 // INSTRUCTION SECTION TYPES
@@ -58,6 +53,12 @@ interface AgentTemplateData {
 	knowledgeSources: string[];
 	tools: string[];
 	triggerTypes: string[];
+	/**
+	 * Left unset on the seeded templates: an agent with no model pin then runs
+	 * on its tenant's task default — the default Fabric AI model wherever the
+	 * tenant's provider carries it. A suggested canonical id is sent to the
+	 * provider as-is and fails on one that has no mapping for it.
+	 */
 	suggestedModel?: string;
 }
 
@@ -172,7 +173,6 @@ const dataTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["DATABASE"],
 		tools: ["execute-sql", "search"],
 		triggerTypes: ["slack", "webhook"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "analyst",
@@ -213,7 +213,6 @@ const dataTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["DATABASE", "GOOGLE_DRIVE", "NOTION"],
 		tools: ["execute-sql", "create-chart", "search"],
 		triggerTypes: ["slack", "webhook", "schedule"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "chart-builder",
@@ -249,7 +248,6 @@ const dataTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["GOOGLE_DRIVE"],
 		tools: ["create-chart", "search"],
 		triggerTypes: ["slack"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "data-catalog-explorer",
@@ -285,7 +283,6 @@ const dataTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["DATABASE", "NOTION", "CONFLUENCE"],
 		tools: ["search"],
 		triggerTypes: ["slack"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 ];
 
@@ -332,7 +329,6 @@ const engineeringTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["GITHUB", "CONFLUENCE"],
 		tools: ["search", "web-search"],
 		triggerTypes: ["webhook", "github-pr"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "debug-helper",
@@ -367,7 +363,6 @@ const engineeringTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["GITHUB", "CONFLUENCE"],
 		tools: ["search", "web-search"],
 		triggerTypes: ["slack"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "api-designer",
@@ -406,7 +401,6 @@ const engineeringTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["CONFLUENCE", "NOTION"],
 		tools: ["search"],
 		triggerTypes: ["slack"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "tech-debt-analyzer",
@@ -443,7 +437,6 @@ const engineeringTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["GITHUB", "CONFLUENCE", "LINEAR"],
 		tools: ["search"],
 		triggerTypes: ["schedule"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 ];
 
@@ -490,7 +483,6 @@ const salesTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["NOTION", "GOOGLE_DRIVE", "SLACK"],
 		tools: ["search", "web-search"],
 		triggerTypes: ["slack", "schedule"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "rfp-response",
@@ -531,7 +523,6 @@ const salesTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["GOOGLE_DRIVE", "NOTION", "CONFLUENCE"],
 		tools: ["search"],
 		triggerTypes: ["slack"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "competitive-intel",
@@ -569,7 +560,6 @@ const salesTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["NOTION", "GOOGLE_DRIVE"],
 		tools: ["search", "web-search"],
 		triggerTypes: ["slack", "schedule"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 ];
 
@@ -614,7 +604,6 @@ const supportTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["NOTION", "SLACK"],
 		tools: ["search"],
 		triggerTypes: ["schedule"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "faq-generator",
@@ -652,7 +641,6 @@ const supportTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["NOTION", "CONFLUENCE", "SLACK"],
 		tools: ["search"],
 		triggerTypes: ["schedule"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "customer-health",
@@ -690,7 +678,6 @@ const supportTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["NOTION", "SLACK"],
 		tools: ["search"],
 		triggerTypes: ["schedule"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 ];
 
@@ -736,7 +723,6 @@ const marketingTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["NOTION", "GOOGLE_DRIVE"],
 		tools: ["search", "web-search"],
 		triggerTypes: ["slack"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "campaign-brief",
@@ -773,7 +759,6 @@ const marketingTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["NOTION", "GOOGLE_DRIVE"],
 		tools: ["search"],
 		triggerTypes: ["slack"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "social-posts",
@@ -810,7 +795,6 @@ const marketingTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["NOTION", "GOOGLE_DRIVE"],
 		tools: ["search"],
 		triggerTypes: ["slack", "schedule"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 ];
 
@@ -857,7 +841,6 @@ const productTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["NOTION", "CONFLUENCE", "LINEAR"],
 		tools: ["search"],
 		triggerTypes: ["slack"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "feature-prioritizer",
@@ -893,7 +876,6 @@ const productTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["LINEAR", "NOTION"],
 		tools: ["search"],
 		triggerTypes: ["slack", "schedule"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 ];
 
@@ -939,7 +921,6 @@ const knowledgeTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["NOTION", "CONFLUENCE", "GOOGLE_DRIVE", "GITHUB"],
 		tools: ["search"],
 		triggerTypes: ["slack"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "onboarding-guide",
@@ -976,7 +957,6 @@ const knowledgeTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["NOTION", "CONFLUENCE", "GOOGLE_DRIVE"],
 		tools: ["search"],
 		triggerTypes: ["slack"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "process-expert",
@@ -1012,7 +992,6 @@ const knowledgeTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["NOTION", "CONFLUENCE"],
 		tools: ["search"],
 		triggerTypes: ["slack"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 ];
 
@@ -1052,7 +1031,6 @@ const generalTemplates: AgentTemplateData[] = [
 		knowledgeSources: [], // No required sources - user chooses what they need
 		tools: [], // No required tools - user chooses what they need
 		triggerTypes: ["slack", "webhook"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 ];
 
@@ -1095,7 +1073,6 @@ const productivityTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["NOTION", "GOOGLE_DRIVE"],
 		tools: ["search"],
 		triggerTypes: ["slack"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 	{
 		slug: "meeting-summarizer",
@@ -1132,7 +1109,6 @@ const productivityTemplates: AgentTemplateData[] = [
 		knowledgeSources: ["GOOGLE_DRIVE", "NOTION"],
 		tools: ["search"],
 		triggerTypes: ["slack"],
-		suggestedModel: DEFAULT_AGENT_MODEL,
 	},
 ];
 
@@ -1184,7 +1160,8 @@ async function seedAgentTemplates() {
 						instructions: formatInstructionSections(
 							template.instructionSections,
 						),
-						suggestedModel: template.suggestedModel,
+						// null, not undefined: the update must clear an earlier seeded value.
+						suggestedModel: template.suggestedModel ?? null,
 						scope: "SYSTEM",
 						isPublished: true,
 					},
@@ -1205,7 +1182,8 @@ async function seedAgentTemplates() {
 						instructions: formatInstructionSections(
 							template.instructionSections,
 						),
-						suggestedModel: template.suggestedModel,
+						// null, not undefined: the update must clear an earlier seeded value.
+						suggestedModel: template.suggestedModel ?? null,
 						scope: "SYSTEM",
 						isPublished: true,
 						isFeatured: [

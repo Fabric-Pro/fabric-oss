@@ -21,7 +21,8 @@ export interface ExecuteGoalStepInput {
 	userId: string;
 	organizationId?: string;
 	mcpConfigIds: string[];
-	model: string;
+	/** Unset: the executor resolves the tenant's task default. */
+	model?: string;
 	/** Execution ID for real-time event publishing via Redis */
 	executionId?: string;
 	/** Optional image references for multimodal input */

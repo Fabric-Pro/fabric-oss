@@ -12,7 +12,6 @@
  * - Pattern management
  */
 
-import { DEFAULT_MODELS } from "@repo/database/prisma/ai-model-catalog";
 import type {
 	ChatPrompt,
 	ChatRequest,
@@ -37,8 +36,11 @@ import type {
 
 const DEFAULT_TIMEOUT = 120000; // 2 minutes for long-running patterns
 
-// Default model from catalog (canonical name matches OpenAI Direct model ID)
-const DEFAULT_FABRIC_MODEL = DEFAULT_MODELS.COMPLEX;
+// The Fabric pattern server is called with vendor "openai" by default, so its
+// default must be an OpenAI model id. It deliberately does not follow the
+// default Fabric AI model (`DEFAULT_FABRIC_AI_MODEL`), an Anthropic model the
+// "openai" vendor cannot run.
+const DEFAULT_FABRIC_MODEL = "gpt-4o";
 
 export class FabricClient {
 	private baseUrl: string;

@@ -36,10 +36,12 @@ import { REDIS_KEEPALIVE_MS } from "@repo/utils/redis-connection";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
+import { assertChatWorkflowPayload } from "../../chat-workflow-payload";
 import {
 	EXECUTION_MODE_NAMES,
 	parseExecutionMode,
 } from "../../orchestrator-execution-mode";
+import { windowUntypedHistory } from "../../stream/history-window";
 import { unionDefaultMcpConfigIds } from "../../union-default-mcp-config-ids";
 
 const POLL_INTERVAL = 200; // Poll every 200ms for faster updates
@@ -131,7 +133,7 @@ export async function POST(request: NextRequest) {
 
 		const {
 			message,
-			history = [],
+			history: rawHistory,
 			executionId: requestedExecutionId,
 			organizationId,
 			executionMode: requestedExecutionMode = "balanced", // All modes now use iterative execution with mode-specific limits
@@ -158,6 +160,10 @@ export async function POST(request: NextRequest) {
 			surface,
 			organizationSlug,
 		} = body;
+
+		// Bounded before it reaches the workflow input: the history went in
+		// whole, with no size limit (review F38).
+		const history = windowUntypedHistory(rawHistory);
 
 		// The body is parsed by hand, so its workspace ids are whatever the
 		// client sent. Keep only string entries; the access filter below
@@ -689,6 +695,31 @@ export async function POST(request: NextRequest) {
 			surface,
 			organizationSlug,
 		};
+
+		// A new run's input must fit Temporal's start frame. Refused here with
+		// a message the user can act on, not by a gRPC error mid-stream
+		// (review F38). A reattach starts nothing, so it is not measured.
+		if (!requestedExecutionId) {
+			try {
+				assertChatWorkflowPayload(
+					workflowInput,
+					"orchestratorExecutionWorkflow start",
+				);
+			} catch (payloadError) {
+				return new Response(
+					JSON.stringify({
+						error:
+							payloadError instanceof Error
+								? payloadError.message
+								: "Request too large",
+					}),
+					{
+						status: 413,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
+			}
+		}
 
 		// Set up streaming response
 		const encoder = new TextEncoder();
@@ -1292,6 +1323,9 @@ export async function POST(request: NextRequest) {
 										artifacts: result.artifacts,
 										handoffRecommended:
 											result.handoffRecommended,
+										// The answer stopped at the output
+										// ceiling (review F25).
+										truncated: result.truncated,
 									});
 								}
 

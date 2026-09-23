@@ -52,13 +52,6 @@ export interface ConnectionMappings {
 }
 
 import { getCurrentDateContext } from "@repo/ai";
-import { DEFAULT_MODELS } from "@repo/database/prisma/ai-model-catalog";
-
-/**
- * Default model if none specified (canonical name from catalog).
- * The actual provider-specific ID is resolved at runtime.
- */
-const DEFAULT_MODEL = DEFAULT_MODELS.CHAT;
 
 /**
  * Build execution context from template and instance configuration
@@ -73,9 +66,14 @@ export function buildAgentExecutionContext(
 	// Build system prompt
 	const systemPrompt = buildSystemPrompt(template, instance);
 
-	// Determine model
+	// Determine model. With neither an instance pin nor a template suggestion
+	// the model is left unset, and the executor resolves the tenant's task
+	// default — the platform's default Fabric AI model wherever the tenant's
+	// provider carries it. A hardcoded fallback here was sent to the provider
+	// raw, so it ran GPT-4o for some tenants and failed outright for any whose
+	// provider has no such model (Fizzy #2040, F20).
 	const model =
-		instance.modelOverride || template.suggestedModel || DEFAULT_MODEL;
+		instance.modelOverride || template.suggestedModel || undefined;
 
 	// Map tools from template with connections
 	const tools = mapToolsFromTemplate(

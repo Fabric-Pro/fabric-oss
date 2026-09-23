@@ -124,6 +124,12 @@ import {
 } from "../../hooks/useOrchestratorConversation";
 import { useOrchestratorStream } from "../../hooks/useOrchestratorStream";
 import { useRemoveConversationProject } from "../../hooks/useRemoveConversationProject";
+import {
+	describeImageUploadFailure,
+	ImageUploadError,
+	shapePastedImageForAi,
+} from "../../lib/chat-image-upload";
+import { parseTurnTruncation } from "../../lib/chat-turn-truncation";
 import { formatClarificationTurn } from "../../lib/clarification-turns";
 import {
 	getSelectedOrchestratorToolIds,
@@ -162,6 +168,10 @@ import {
 	type TemporalOrchestratorActivityState,
 } from "./orchestrator";
 import {
+	selectLiveUserMessages,
+	turnQuestionMessageId,
+} from "./orchestrator/live-user-messages";
+import {
 	latestGeneratedImagePath,
 	selectTurnImagePaths,
 	uploadTurnImagesAsDocuments,
@@ -177,6 +187,8 @@ import {
 	type ToolCallItem,
 	ToolCallList,
 } from "./shared";
+import { TruncationNotice } from "./shared/TruncationNotice";
+import { toToolCallItems } from "./shared/tool-call-items";
 
 // Re-export types for external consumers
 export type { TemporalOrchestratorActivityState };
@@ -244,6 +256,11 @@ const LOOM_ORCHESTRATOR_FILE_ACCEPT = buildAiChatAcceptAttribute([
 	...AI_CHAT_IMAGE_MIME_TYPES,
 	...AI_CHAT_SERVER_ONLY_MIME_TYPES,
 ]);
+
+/** Stable, so the memoized tool rows are not re-rendered by a new lambda. */
+function orchestratorToolInputSummary(args: unknown): string | undefined {
+	return getToolInputSummary(args as Record<string, unknown>);
+}
 
 export function FabricTemporalOrchestratorChat({
 	organizationId,
@@ -338,12 +355,12 @@ export function FabricTemporalOrchestratorChat({
 	const [lastFrame, setLastFrame] = useState<FrameToolResult | null>(null);
 	const lastAutoOpenedFrameIdRef = useRef<string | null>(null);
 
-	const openFrame = (frame: FrameToolResult | null) => {
+	const openFrame = useCallback((frame: FrameToolResult | null) => {
 		setActiveFrame(frame);
 		if (frame) {
 			setLastFrame(frame);
 		}
-	};
+	}, []);
 	// Artifacts panel state
 	const [isArtifactsPanelOpen, setIsArtifactsPanelOpen] = useState(false);
 	// Memory panel state
@@ -726,6 +743,11 @@ export function FabricTemporalOrchestratorChat({
 		openFrame(latestFrame);
 	}, [completedExecutions, streamingToolCalls, stepResults, compactMode]);
 
+	const liveUserMessages = useMemo(
+		() => selectLiveUserMessages(messages, completedExecutions),
+		[messages, completedExecutions],
+	);
+
 	// Fetch attached project when conversationId changes
 	const { data: conversationProjectData } = useQuery({
 		...orpc.projects.conversations.getProject.queryOptions({
@@ -936,6 +958,10 @@ export function FabricTemporalOrchestratorChat({
 			});
 	}, [artifacts, completedExecutions]);
 
+	// Read by the conversation-change effect below without re-running it.
+	const propAttachedProjectIdRef = useRef(propAttachedProjectId);
+	propAttachedProjectIdRef.current = propAttachedProjectId;
+
 	// Sync internal conversationId with prop (for when user selects different conversation or starts new chat)
 	useEffect(() => {
 		const prevId = prevConversationIdRef.current;
@@ -961,6 +987,11 @@ export function FabricTemporalOrchestratorChat({
 				(newId && prevId && newId !== prevId)
 			) {
 				setCompletedExecutions([]);
+				// The project shown is the host's again: one filled in from the
+				// conversation being left must not linger on a new chat, where
+				// the host — and Direct, after an engine switch — holds none
+				// (review F45).
+				setAttachedProjectId(propAttachedProjectIdRef.current ?? null);
 				// Reset hydration tracking
 				hydratedConversationRef.current = null;
 				// Clear the last plan reference so sidebar doesn't show stale plan
@@ -1064,6 +1095,7 @@ export function FabricTemporalOrchestratorChat({
 						clarifications: Array.isArray(exec.clarifications)
 							? exec.clarifications
 							: undefined,
+						truncated: parseTurnTruncation(exec.truncated),
 						completedAt: new Date(
 							exec.completedAt || exec.startedAt,
 						),
@@ -1134,7 +1166,17 @@ export function FabricTemporalOrchestratorChat({
 					restoredExecutions = fallbackExecutions;
 				}
 
-				setCompletedExecutions(restoredExecutions);
+				// Keep the live-message link of turns that ran in this session,
+				// or their user bubbles would render a second time.
+				setCompletedExecutions((prev) => {
+					const liveIds = new Map(
+						prev.map((e) => [e.id, e.userMessageId]),
+					);
+					return restoredExecutions.map((e) => ({
+						...e,
+						userMessageId: liveIds.get(e.id),
+					}));
+				});
 
 				// Report the last execution's plan to the parent for sidebar display
 				const lastExecution = rawExecutions[rawExecutions.length - 1];
@@ -1424,6 +1466,9 @@ export function FabricTemporalOrchestratorChat({
 						state.answeredClarifications.length > 0
 							? state.answeredClarifications
 							: undefined,
+					// So a reload still says the answer stopped at the
+					// output ceiling (review F25).
+					truncated: state.result?.truncated,
 					// Include artifacts for persistence
 					artifacts: artifacts?.filter(
 						(a) => a.content && a.content.length > 100,
@@ -1652,6 +1697,10 @@ export function FabricTemporalOrchestratorChat({
 			lastCompletedExecutionRef.current = {
 				id: state.executionId,
 				userMessage: lastUserMessageRef.current,
+				userMessageId: turnQuestionMessageId(
+					messages,
+					lastUserMessageRef.current,
+				),
 				imageUrls: lastUserImageUrlsRef.current,
 				stepResults: [...stepResults],
 				response: responseMessage,
@@ -1665,6 +1714,7 @@ export function FabricTemporalOrchestratorChat({
 					state.answeredClarifications.length > 0
 						? [...state.answeredClarifications]
 						: undefined,
+				truncated: state.result?.truncated,
 				plan: state.plan
 					? {
 							id: state.plan.id,
@@ -1706,6 +1756,7 @@ export function FabricTemporalOrchestratorChat({
 		state.result?.response,
 		state.result?.error,
 		state.answeredClarifications,
+		messages,
 		persistConversation,
 	]);
 
@@ -1975,14 +2026,21 @@ export function FabricTemporalOrchestratorChat({
 	 * eventual `storagePath` returned to the orchestrator.
 	 */
 	const pastedImageUploader = useCallback(
-		async (file: File, _signal: AbortSignal): Promise<void> => {
+		async (pasted: File, _signal: AbortSignal): Promise<void> => {
+			// Same shaping as the paperclip: a raw screenshot can exceed the
+			// provider's per-image cap, or the upload route's body limit
+			// (review F37).
+			const file = await shapePastedImageForAi(pasted);
+			if (!file) {
+				return;
+			}
 			const id = `paste-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 			setAttachedImages((prev) => [
 				...prev,
 				{
 					id,
 					file,
-					name: file.name || "pasted-image",
+					name: pasted.name || "pasted-image",
 					previewUrl: URL.createObjectURL(file),
 					status: "pending" as const,
 				},
@@ -2035,8 +2093,16 @@ export function FabricTemporalOrchestratorChat({
 				);
 
 				if (!response.ok) {
-					const error = await response.json();
-					throw new Error(error.error || "Upload failed");
+					// The platform's own 413 is not JSON; reading it as JSON
+					// threw and hid why the upload failed (review F37).
+					const body = await response.json().catch(() => null);
+					throw new ImageUploadError(
+						describeImageUploadFailure(
+							response.status,
+							body,
+							img.name,
+						),
+					);
 				}
 
 				const result = await response.json();
@@ -2062,7 +2128,11 @@ export function FabricTemporalOrchestratorChat({
 						i.id === img.id ? { ...i, status: "error" } : i,
 					),
 				);
-				toast.error(`Failed to upload ${img.name}`);
+				toast.error(
+					error instanceof ImageUploadError
+						? error.message
+						: `Failed to upload ${img.name}`,
+				);
 			}
 		}
 
@@ -2228,13 +2298,19 @@ export function FabricTemporalOrchestratorChat({
 		adoptDocumentChat,
 	]);
 
-	const handleSendMessage = async () => {
-		if (!input.trim() || isLoading) {
+	// `prompt` is set by an in-thread action such as Continue; the composer's
+	// Send passes its click event, which is not a string.
+	const handleSendMessage = async (prompt?: unknown) => {
+		const text = typeof prompt === "string" ? prompt : input;
+		if (!text.trim() || isLoading) {
 			return;
 		}
 
-		const content = input.trim();
-		setInput("");
+		const content = text.trim();
+		// Continue must not wipe a draft the user is still writing.
+		if (typeof prompt !== "string") {
+			setInput("");
+		}
 
 		// Store the message in case we need to retry after connection
 		pendingMessageRef.current = content;
@@ -2780,7 +2856,7 @@ export function FabricTemporalOrchestratorChat({
 								.filter(
 									(e) => e != null && e.userMessage != null,
 								)
-								.map((execution) => (
+								.map((execution, index, shown) => (
 									<div
 										key={execution.id}
 										className="space-y-4"
@@ -2969,7 +3045,9 @@ export function FabricTemporalOrchestratorChat({
 																		</CollapsibleTrigger>
 																		<CollapsibleContent>
 																			<ToolCallList
-																				toolCalls={result.toolCalls.map(
+																				toolCalls={toToolCallItems(
+																					result.toolCalls,
+																					`${execution.id}-${result.stepId}`,
 																					(
 																						tc,
 																						idx,
@@ -2991,15 +3069,8 @@ export function FabricTemporalOrchestratorChat({
 																				defaultOpen={
 																					false
 																				}
-																				getInputSummary={(
-																					args,
-																				) =>
-																					getToolInputSummary(
-																						args as Record<
-																							string,
-																							unknown
-																						>,
-																					)
+																				getInputSummary={
+																					orchestratorToolInputSummary
 																				}
 																				activeFrameId={
 																					activeFrame?.frameId
@@ -3191,88 +3262,97 @@ export function FabricTemporalOrchestratorChat({
 															)}
 														</Response>
 													)}
+
+												{/* The answer stopped at the output ceiling
+												    (review F25). Continue is offered only on
+												    the latest turn of a reloaded thread. */}
+												{execution.truncated && (
+													<TruncationNotice
+														truncated={
+															execution.truncated
+														}
+														onContinue={
+															index ===
+																shown.length -
+																	1 &&
+															messages.length ===
+																0
+																? (prompt) =>
+																		void handleSendMessage(
+																			prompt,
+																		)
+																: undefined
+														}
+														disabled={isLoading}
+													/>
+												)}
 											</div>
 										</div>
 									</div>
 								))}
 
 							{/* Current user message (only if not in completedExecutions) */}
-							{messages
-								.filter((m) => m.role === "user")
-								.map((message) => {
-									// Skip if this message is already shown in a completed execution
-									if (
-										completedExecutions.some(
-											(e) =>
-												e != null &&
-												e.userMessage ===
-													message.content,
-										)
-									) {
-										return null;
-									}
-									return (
-										<Message
-											key={message.id}
-											from="user"
-											className="py-2"
+							{liveUserMessages.map((message) => {
+								return (
+									<Message
+										key={message.id}
+										from="user"
+										className="py-2"
+									>
+										<MessageContent
+											variant="flat"
+											className="max-w-[70%]"
 										>
-											<MessageContent
-												variant="flat"
-												className="max-w-[70%]"
-											>
-												{message.imageUrls &&
-													message.imageUrls.length >
-														0 && (
-														<div className="flex gap-2 mb-2 flex-wrap">
-															{message.imageUrls.map(
-																(url) => (
-																	<button
-																		key={
-																			url
-																		}
-																		type="button"
-																		onClick={() =>
-																			setLightboxImageUrl(
-																				storagePathToProxyUrl(
-																					url,
-																					organizationId,
-																				),
-																			)
-																		}
-																		className="cursor-pointer"
-																	>
-																		<Image
-																			src={storagePathToProxyUrl(
+											{message.imageUrls &&
+												message.imageUrls.length >
+													0 && (
+													<div className="flex gap-2 mb-2 flex-wrap">
+														{message.imageUrls.map(
+															(url) => (
+																<button
+																	key={url}
+																	type="button"
+																	onClick={() =>
+																		setLightboxImageUrl(
+																			storagePathToProxyUrl(
 																				url,
 																				organizationId,
-																			)}
-																			alt="Attached"
-																			width={
-																				80
-																			}
-																			height={
-																				80
-																			}
-																			unoptimized
-																			className="h-20 w-20 rounded-md border object-cover transition-shadow hover:ring-2 hover:ring-primary"
-																		/>
-																	</button>
-																),
-															)}
-														</div>
-													)}
-												<Response>
-													{message.content}
-												</Response>
-											</MessageContent>
-											<MessageAvatar
-												src={userAvatarSrc}
-												name={userDisplayName}
-											/>
-										</Message>
-									);
-								})}
+																			),
+																		)
+																	}
+																	className="cursor-pointer"
+																>
+																	<Image
+																		src={storagePathToProxyUrl(
+																			url,
+																			organizationId,
+																		)}
+																		alt="Attached"
+																		width={
+																			80
+																		}
+																		height={
+																			80
+																		}
+																		unoptimized
+																		className="h-20 w-20 rounded-md border object-cover transition-shadow hover:ring-2 hover:ring-primary"
+																	/>
+																</button>
+															),
+														)}
+													</div>
+												)}
+											<Response>
+												{message.content}
+											</Response>
+										</MessageContent>
+										<MessageAvatar
+											src={userAvatarSrc}
+											name={userDisplayName}
+										/>
+									</Message>
+								);
+							})}
 
 							{/* Execution Plan - Show when plan is available and not yet completed */}
 							{state.plan &&
@@ -3521,7 +3601,9 @@ export function FabricTemporalOrchestratorChat({
 																	</CollapsibleTrigger>
 																	<CollapsibleContent>
 																		<ToolCallList
-																			toolCalls={result.toolCalls.map(
+																			toolCalls={toToolCallItems(
+																				result.toolCalls,
+																				result.stepId,
 																				(
 																					tc,
 																					idx,
@@ -3543,15 +3625,8 @@ export function FabricTemporalOrchestratorChat({
 																			defaultOpen={
 																				false
 																			}
-																			getInputSummary={(
-																				args,
-																			) =>
-																				getToolInputSummary(
-																					args as Record<
-																						string,
-																						unknown
-																					>,
-																				)
+																			getInputSummary={
+																				orchestratorToolInputSummary
 																			}
 																			activeFrameId={
 																				activeFrame?.frameId
@@ -3741,7 +3816,9 @@ export function FabricTemporalOrchestratorChat({
 															</CollapsibleTrigger>
 															<CollapsibleContent>
 																<ToolCallList
-																	toolCalls={streamingToolCalls.map(
+																	toolCalls={toToolCallItems(
+																		streamingToolCalls,
+																		"streaming",
 																		(
 																			tc,
 																			idx,
@@ -3763,15 +3840,8 @@ export function FabricTemporalOrchestratorChat({
 																	defaultOpen={
 																		false
 																	}
-																	getInputSummary={(
-																		args,
-																	) =>
-																		getToolInputSummary(
-																			args as Record<
-																				string,
-																				unknown
-																			>,
-																		)
+																	getInputSummary={
+																		orchestratorToolInputSummary
 																	}
 																	activeFrameId={
 																		activeFrame?.frameId
@@ -4124,6 +4194,33 @@ export function FabricTemporalOrchestratorChat({
 										</div>
 									</div>
 								))}
+
+							{/* The live answer stopped at the output ceiling
+							    (review F25). Once the turn moves into the
+							    completed list, that entry shows it instead. */}
+							{isComplete &&
+								state.result?.truncated &&
+								!completedExecutions.some(
+									(e) =>
+										e != null && e.id === state.executionId,
+								) && (
+									<div className="flex gap-3">
+										<div className="w-8 shrink-0" />
+										<div className="flex-1 min-w-0">
+											<TruncationNotice
+												truncated={
+													state.result.truncated
+												}
+												onContinue={(prompt) =>
+													void handleSendMessage(
+														prompt,
+													)
+												}
+												disabled={isLoading}
+											/>
+										</div>
+									</div>
+								)}
 
 							{/* Approval request - using ApprovalDialog with full task plan */}
 							{isAwaitingApproval &&

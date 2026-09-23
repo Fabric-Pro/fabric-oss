@@ -116,8 +116,8 @@ function getCompatibleModel(framework: string, requestedModel: string): string {
 	if (framework === "claude-agents") {
 		// Claude Agents SDK only supports Anthropic models
 		if (provider === "anthropic") return requestedModel;
-		// Fallback to Claude 3.5 Sonnet if non-Anthropic model requested
-		return "anthropic/claude-3-5-sonnet-20241022";
+		// Fall back to the default Anthropic model if a non-Anthropic model was requested
+		return DEFAULT_MODEL;
 	}
 
 	// LangChain and AI SDK support both

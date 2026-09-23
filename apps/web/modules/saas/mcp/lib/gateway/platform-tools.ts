@@ -1483,7 +1483,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 			"Use this to create visualizations, diagrams, status boards, or rich-text reports that can be shared with teammates. " +
 			"Set shareOnCreate=true to immediately get a public share URL in the response. " +
 			"After creating, call fabric_share_frame(frameId) to get the share URL, or fabric_update_frame(frameId) to modify content. " +
-			"Use 'mermaid' format for flowcharts/sequence diagrams, 'html' for rich layouts, 'markdown' for formatted text.",
+			"Use 'mermaid' format for flowcharts/sequence diagrams, 'html' for rich layouts, 'markdown' for formatted text. " +
+			"When the user only wants to see a diagram in a chat that renders Markdown, answer with a ```mermaid code block instead — create a frame only when they ask for a frame or a shareable artifact.",
 		inputSchema: {
 			type: "object",
 			properties: {

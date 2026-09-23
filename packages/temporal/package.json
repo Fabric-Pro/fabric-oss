@@ -13,6 +13,7 @@
 		"./delete-channel-context": "./src/lib/delete-channel-context.ts",
 		"./duplicate-scan-core": "./src/lib/duplicate-scan-core.ts",
 		"./meeting-todo-matcher": "./src/lib/meeting-todo-matcher.ts",
+		"./payload-size-guard": "./src/lib/payload-size-guard.ts",
 		"./prompt-kind-guard": "./src/lib/prompt-kind-guard.ts",
 		"./test-case-context": "./src/lib/test-case-context-content.ts",
 		"./frame-service": "./src/activities/shared/frame-service.ts",

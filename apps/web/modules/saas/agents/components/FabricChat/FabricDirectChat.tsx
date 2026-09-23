@@ -25,6 +25,7 @@ import {
 } from "@repo/utils/ai-chat-attachment";
 import { useFabricAgentLauncher } from "@saas/agents/components/FabricAgentLauncher";
 import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
+import { LimitBanner } from "@saas/ai/components/shared/LimitBanner";
 import { useSession } from "@saas/auth/hooks/use-session";
 import type { FrameToolResult } from "@saas/frames/lib/frame-result";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
@@ -131,7 +132,10 @@ import { useEscToStopOrClose } from "../../hooks/useEscToStopOrClose";
 import { useRemoveConversationProject } from "../../hooks/useRemoveConversationProject";
 import { useSkillSlashCommand } from "../../hooks/useSkillSlashCommand";
 import { useSkillSuggestions } from "../../hooks/useSkillSuggestions";
+import { useStableHandlers } from "../../hooks/useStableHandlers";
 import { useToolSuggestions } from "../../hooks/useToolSuggestions";
+import { shapePastedImageForAi } from "../../lib/chat-image-upload";
+import { parseTurnTruncation } from "../../lib/chat-turn-truncation";
 import {
 	buildComprehensiveFileContext,
 	type CodeReference,
@@ -146,6 +150,11 @@ import {
 	getSelectedConversationToolIds,
 	mergeDirectConversationMetadata,
 } from "../../lib/direct-chat-tools";
+import {
+	dropDuplicatedOperationResults,
+	isConversationSwitch,
+	settleUnfinishedToolCalls,
+} from "../../lib/direct-chat-turns";
 import {
 	persistedToToolCallStatus,
 	toolCallToPersistedStatus,
@@ -165,8 +174,11 @@ import {
 	useTypewriterPlaceholder,
 } from "./shared";
 import { shouldShowAssistantActionCards } from "./shared/assistant-action-cards";
+import { MemoizedRow } from "./shared/MemoizedRow";
 import { SkillAutocomplete } from "./shared/SkillAutocomplete";
 import { SkillSuggestionChips } from "./shared/SkillSuggestionChips";
+import { TruncationNotice } from "./shared/TruncationNotice";
+import { toToolCallItems } from "./shared/tool-call-items";
 import { TrajectorySteps } from "./TrajectorySteps";
 
 interface PendingConfirmation {
@@ -536,6 +548,60 @@ function persistedMetadata(
 		: undefined;
 }
 
+/**
+ * The failure and tools-off-retry state saved with an assistant turn. Before
+ * this was persisted, a reload rendered a failed turn as a normal bubble —
+ * the partial preamble read as a finished answer (review F22).
+ */
+function readPersistedTurnOutcome(message: {
+	content: string;
+	streamStatus?: string;
+}): Pick<
+	DirectStreamMessage,
+	| "content"
+	| "isError"
+	| "errorMessage"
+	| "limit"
+	| "toolsFailed"
+	| "truncated"
+> {
+	const metadata = persistedMetadata(message);
+	const toolsFailed =
+		metadata?.toolsFailed && typeof metadata.toolsFailed === "object"
+			? (metadata.toolsFailed as DirectStreamMessage["toolsFailed"])
+			: undefined;
+	const truncated = parseTurnTruncation(metadata?.truncated);
+	if (message.streamStatus !== "error") {
+		return {
+			content: message.content,
+			...(toolsFailed ? { toolsFailed } : {}),
+			...(truncated ? { truncated } : {}),
+		};
+	}
+	const errorMessage =
+		typeof metadata?.errorMessage === "string"
+			? metadata.errorMessage
+			: message.content.replace(/^error:\s*/i, "");
+	const limit =
+		metadata?.limit &&
+		typeof (metadata.limit as { kind?: unknown }).kind === "string"
+			? (metadata.limit as DirectStreamMessage["limit"])
+			: undefined;
+	return {
+		// The body stored for a failure with no partial answer is the error
+		// itself; showing it twice would repeat the card.
+		content:
+			message.content === `Error: ${errorMessage}` ||
+			message.content.replace(/^error:\s*/i, "") === errorMessage
+				? ""
+				: message.content,
+		isError: true,
+		errorMessage,
+		...(limit ? { limit } : {}),
+		...(toolsFailed ? { toolsFailed } : {}),
+	};
+}
+
 function readPersistedUsage(
 	metadata: Record<string, unknown> | undefined,
 ): TokenUsage | undefined {
@@ -657,8 +723,11 @@ export const FabricDirectChat = forwardRef<
 	// downstream render-decision branches live inside the button
 	// component itself — we only forward inputs from here.
 	const launcherChatScope = useChatScopedProjectFromLauncher();
-	const { organizationId: activeOrgId, organizationSlug: activeOrgSlug } =
-		useOrganizationContext();
+	const {
+		organizationId: activeOrgId,
+		organizationSlug: activeOrgSlug,
+		isOrganizationAdmin,
+	} = useOrganizationContext();
 	const composedChatScope = useMemo(
 		() => ({
 			projectId: launcherChatScope.projectId,
@@ -852,6 +921,21 @@ export const FabricDirectChat = forwardRef<
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const inputRef = useRef<HTMLTextAreaElement>(null);
 	const lastPersistedRef = useRef<string | null>(null);
+	// The conversation this mount created itself (set before its id is
+	// written back through the URL), so that write is not mistaken for the
+	// user opening a different conversation.
+	const savedConversationIdRef = useRef<string | null>(null);
+	// Bumped when the user switches conversation. A create still in flight
+	// from the previous thread must not pull the view back to it.
+	const conversationEpochRef = useRef(0);
+	// `persistConversation` is declared below the load effect that needs it.
+	const persistConversationRef = useRef<
+		| ((
+				userMsg: DirectStreamMessage,
+				assistantMsg: DirectStreamMessage,
+		  ) => Promise<void>)
+		| null
+	>(null);
 	const lastAutoOpenedFrameIdRef = useRef<string | null>(null);
 
 	// Stop-failure toast — fires when the fire-and-forget cancel POST
@@ -1015,6 +1099,7 @@ export const FabricDirectChat = forwardRef<
 		workspaceIds: activeWorkspaceIds,
 		workspaceDocumentIds: attachedDocumentIds,
 		projectId: attachedProjectId,
+		repositoryUrl,
 		// Focused entity the user is viewing (the page the agent was opened on),
 		// so the backend can ground on its FULL content — sections, acceptance
 		// criteria, document body — not a truncated project list.
@@ -1295,11 +1380,43 @@ export const FabricDirectChat = forwardRef<
 				activeConversation.metadata,
 			);
 			setSelectedConversationMcpIds(selectedIds ?? null);
-			// CRITICAL: If we have streaming messages, we're in an active session.
-			// Never reset streaming messages - they represent the current conversation state.
-			// This handles the race condition where conversationId state update hasn't
-			// taken effect yet when URL change triggers this effect.
-			if (streamMessages.length > 0) {
+			// Streaming messages mean an active session. Our own create being
+			// written back into the URL must not reset them (the state update
+			// may not have landed yet) — but the user opening a different
+			// conversation must: skipping that left thread A on screen while
+			// saves and the next send went to B (review F27).
+			const switched =
+				streamMessages.length > 0 &&
+				isConversationSwitch({
+					externalConversationId,
+					currentConversationId: conversationId,
+					ownCreatedConversationId: savedConversationIdRef.current,
+				});
+			if (switched) {
+				conversationEpochRef.current += 1;
+				savedConversationIdRef.current = null;
+				if (isLoading) {
+					// Stop the running turn (this also cancels the workflow)
+					// and keep what it produced in ITS conversation. The
+					// persist call resolves its target synchronously, from
+					// state and the in-flight create, before the reset below.
+					stopStream("button");
+					const lastUser = [...streamMessages]
+						.reverse()
+						.find((m) => m.role === "user");
+					const lastAssistant = [...streamMessages]
+						.reverse()
+						.find((m) => m.role === "assistant");
+					if (lastUser && lastAssistant) {
+						void persistConversationRef.current?.(lastUser, {
+							...lastAssistant,
+							isStreaming: false,
+							streamStatus: "cancelled",
+							cancelledAt: new Date().toISOString(),
+						});
+					}
+				}
+			} else if (streamMessages.length > 0) {
 				console.log(
 					"[FabricDirectChat] Skipping reload - have active streaming messages",
 					{
@@ -1315,6 +1432,7 @@ export const FabricDirectChat = forwardRef<
 			}
 
 			if (
+				switched ||
 				externalConversationId !== conversationId ||
 				loadedMessages.length === 0
 			) {
@@ -1322,8 +1440,13 @@ export const FabricDirectChat = forwardRef<
 					"[FabricDirectChat] Loading conversation:",
 					activeConversation.id,
 				);
+				// The workflow also records each finished turn as a "SYSTEM"
+				// operation-result row; beside the saved answer it is a
+				// duplicate bubble and duplicated history (review F33).
 				const loaded: DirectStreamMessage[] =
-					activeConversation.messages.map((msg) => ({
+					dropDuplicatedOperationResults(
+						activeConversation.messages,
+					).map((msg) => ({
 						id: msg.id,
 						// Conversations persist a third role — `system`, written
 						// by `agents.conversations.recordOperationResult` — that
@@ -1332,17 +1455,20 @@ export const FabricDirectChat = forwardRef<
 						// the whole request, so one operation-result row made a
 						// thread permanently unusable ("Invalid request body").
 						role: msg.role === "user" ? "user" : "assistant",
-						content: msg.content,
 						timestamp: new Date(msg.timestamp),
-						toolCalls: msg.toolCalls?.map((tc) => ({
-							id: tc.id,
-							name: tc.name,
-							args: tc.args,
-							result: tc.result,
-							status: persistedToToolCallStatus(
-								tc.status ?? "pending",
-							),
-						})),
+						// A saved turn is over: a call it recorded as still
+						// pending/running can never resolve (review F11).
+						toolCalls: settleUnfinishedToolCalls(
+							msg.toolCalls?.map((tc) => ({
+								id: tc.id,
+								name: tc.name,
+								args: tc.args,
+								result: tc.result,
+								status: persistedToToolCallStatus(
+									tc.status ?? "pending",
+								),
+							})),
+						),
 						// Carry persisted stream lifecycle through rehydration so
 						// the inline `Stopped` caption survives a page reload
 						// (spec § 5.1 / AC-5).
@@ -1355,6 +1481,8 @@ export const FabricDirectChat = forwardRef<
 						// Persisted with the assistant message on save.
 						usage: readPersistedUsage(persistedMetadata(msg)),
 						model: readPersistedModel(persistedMetadata(msg)),
+						// `content`, plus the failure / tools-off-retry state.
+						...readPersistedTurnOutcome(msg),
 					}));
 				setLoadedMessages(loaded);
 				setConversationId(activeConversation.id);
@@ -1373,12 +1501,11 @@ export const FabricDirectChat = forwardRef<
 		conversationId,
 		loadedMessages.length,
 		streamMessages.length,
+		isLoading,
+		stopStream,
 		resetStream,
 		enabledMcpConfigIds,
 	]);
-
-	// Track if we've saved this conversation (to avoid resetting after our own save)
-	const savedConversationIdRef = useRef<string | null>(null);
 
 	// Reset when user explicitly starts a new chat (clicks New Chat button)
 	// This should NOT trigger when we save the current conversation
@@ -1447,6 +1574,7 @@ export const FabricDirectChat = forwardRef<
 			if (eagerCreateRef.current) {
 				return eagerCreateRef.current;
 			}
+			const epoch = conversationEpochRef.current;
 			const created = (async () => {
 				try {
 					const result = await orpcClient.agents.conversations.create(
@@ -1483,6 +1611,12 @@ export const FabricDirectChat = forwardRef<
 						});
 					}
 					eagerUserMessageIdRef.current = userMsg.id;
+					// The user moved to another conversation while this was in
+					// flight: the row exists (the stopped turn is saved into
+					// it), but it must not become the open conversation.
+					if (epoch !== conversationEpochRef.current) {
+						return result.id;
+					}
 					// Set before `setConversationId` so the new-chat reset
 					// effect recognises this as our own write and leaves it be.
 					savedConversationIdRef.current = result.id;
@@ -1555,7 +1689,12 @@ export const FabricDirectChat = forwardRef<
 				const assistantPayload = {
 					id: assistantMsg.id,
 					role: "assistant" as const,
-					content: assistantMsg.content,
+					// A failure with nothing streamed still needs a body.
+					content:
+						assistantMsg.content ||
+						(assistantMsg.errorMessage
+							? `Error: ${assistantMsg.errorMessage}`
+							: ""),
 					timestamp: assistantMsg.timestamp.toISOString(),
 					toolCalls: assistantMsg.toolCalls?.map((tc) => ({
 						id: tc.id,
@@ -1585,7 +1724,11 @@ export const FabricDirectChat = forwardRef<
 					cancelledAt: assistantMsg.cancelledAt,
 					// Usage and model of the turn, so the context meter can be
 					// restored when the conversation is reopened.
-					...(assistantMsg.usage || assistantMsg.model
+					...(assistantMsg.usage ||
+					assistantMsg.model ||
+					assistantMsg.errorMessage ||
+					assistantMsg.toolsFailed ||
+					assistantMsg.truncated
 						? {
 								metadata: {
 									...(assistantMsg.usage
@@ -1593,6 +1736,31 @@ export const FabricDirectChat = forwardRef<
 										: {}),
 									...(assistantMsg.model
 										? { model: assistantMsg.model }
+										: {}),
+									// So a reload still shows why the turn
+									// failed, not a bare partial answer.
+									...(assistantMsg.errorMessage
+										? {
+												errorMessage:
+													assistantMsg.errorMessage,
+											}
+										: {}),
+									...(assistantMsg.limit
+										? { limit: assistantMsg.limit }
+										: {}),
+									...(assistantMsg.toolsFailed
+										? {
+												toolsFailed:
+													assistantMsg.toolsFailed,
+											}
+										: {}),
+									// So a reload still says the answer
+									// stopped on a limit (review F25).
+									...(assistantMsg.truncated
+										? {
+												truncated:
+													assistantMsg.truncated,
+											}
 										: {}),
 								},
 							}
@@ -1644,6 +1812,8 @@ export const FabricDirectChat = forwardRef<
 		],
 	);
 
+	persistConversationRef.current = persistConversation;
+
 	// Persist when streaming completes
 	useEffect(() => {
 		if (streamMessages.length >= 2 && !isLoading) {
@@ -1663,7 +1833,9 @@ export const FabricDirectChat = forwardRef<
 				lastUser &&
 				lastAssistant &&
 				(lastAssistant.content ||
-					lastAssistant.streamStatus === "cancelled")
+					lastAssistant.streamStatus === "cancelled" ||
+					lastAssistant.streamStatus === "error" ||
+					lastAssistant.truncated)
 			) {
 				persistConversation(lastUser, lastAssistant);
 
@@ -1964,14 +2136,20 @@ export const FabricDirectChat = forwardRef<
 	 * (decisions §6.2 — Loom is on a hot path).
 	 */
 	const pastedImageUploader = useCallback(
-		async (file: File, _signal: AbortSignal): Promise<void> => {
+		async (pasted: File, _signal: AbortSignal): Promise<void> => {
+			// Same shaping as the paperclip: a raw screenshot can exceed the
+			// provider's per-image cap and fail the whole turn (review F37).
+			const file = await shapePastedImageForAi(pasted);
+			if (!file) {
+				return;
+			}
 			const fileId = `paste-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 			setAttachedFiles((prev) => [
 				...prev,
 				{
 					id: fileId,
 					file,
-					name: file.name || "pasted-image",
+					name: pasted.name || "pasted-image",
 					type: file.type || "application/octet-stream",
 					size: file.size,
 					documentId: null,
@@ -2208,13 +2386,19 @@ export const FabricDirectChat = forwardRef<
 		return { documentIds, inlineContexts, chatId: aiChatId };
 	}, [attachedFiles, organizationId, onDocumentChatCreated]);
 
-	const sendMessage = async () => {
-		if (!input.trim() || isLoading) {
+	// `prompt` is set by an in-thread action such as Continue; the composer's
+	// Send passes its click event, which is not a string.
+	const sendMessage = async (prompt?: unknown) => {
+		const text = typeof prompt === "string" ? prompt : input;
+		if (!text.trim() || isLoading) {
 			return;
 		}
 
-		let messageContent = input.trim();
-		setInput("");
+		let messageContent = text.trim();
+		// Continue must not wipe a draft the user is still writing.
+		if (typeof prompt !== "string") {
+			setInput("");
+		}
 
 		// Resolve file:line references if repository is connected
 		if (hasCodeReferences(messageContent) && !repositoryUrl) {
@@ -2770,7 +2954,7 @@ export const FabricDirectChat = forwardRef<
 							description:
 								"Review extracted tasks, then approve creation.",
 							icon: <ListChecksIcon className="size-3.5" />,
-							onClick: () => handlePreviewTasks(message),
+							onClick: () => rowActions.previewTasks(message),
 						},
 					]
 				: []),
@@ -2779,14 +2963,14 @@ export const FabricDirectChat = forwardRef<
 				description:
 					"Review this answer as a project update draft before saving.",
 				icon: <FilePenLineIcon className="size-3.5" />,
-				onClick: () => handlePreviewProjectUpdate(message),
+				onClick: () => rowActions.previewProjectUpdate(message),
 			},
 			{
 				label: "Draft project update",
 				description: "Ask Fabric to rewrite this as an update first.",
 				icon: <ScrollText className="size-3.5" />,
 				onClick: () =>
-					handleActionPrompt(
+					rowActions.actionPrompt(
 						"Using your previous response and the active project context, draft a concise project update. Keep it editable, cite source records, and do not publish it.",
 					),
 			},
@@ -2796,7 +2980,7 @@ export const FabricDirectChat = forwardRef<
 					"Convert the recommendation into reviewable tasks/checks.",
 				icon: <CheckCircle2 className="size-3.5" />,
 				onClick: () =>
-					handleActionPrompt(
+					rowActions.actionPrompt(
 						"Using your previous response and the active project context, turn this into a concise implementation checklist with validation steps. Do not create or update tasks unless I explicitly approve it. Put each proposed task on its own bullet line.",
 					),
 			},
@@ -2808,7 +2992,9 @@ export const FabricDirectChat = forwardRef<
 								"Review before starting a background implementation session.",
 							icon: <SquareTerminal className="size-3.5" />,
 							onClick: () =>
-								handlePreviewImplementationSession(message),
+								rowActions.previewImplementationSession(
+									message,
+								),
 						},
 					]
 				: []),
@@ -2816,7 +3002,7 @@ export const FabricDirectChat = forwardRef<
 				label: "Save workflow as Skill",
 				description: "Preview reusable Skill metadata before saving.",
 				icon: <BookmarkIcon className="size-3.5" />,
-				onClick: () => handlePreviewSkillDraft(message),
+				onClick: () => rowActions.previewSkillDraft(message),
 			},
 			{
 				label: "Plan implementation",
@@ -2824,12 +3010,62 @@ export const FabricDirectChat = forwardRef<
 					"Prepare a safe implementation plan before any handoff.",
 				icon: <GitBranch className="size-3.5" />,
 				onClick: () =>
-					handleActionPrompt(
+					rowActions.actionPrompt(
 						"Using your previous response and the active project context, propose an implementation plan. Recommend whether planning, local agents, workspace agents, or background agents fit best, and ask for approval before starting anything.",
 					),
 			},
 		];
 	};
+
+	// Message rows render only when their own message or the shared state
+	// below changes, so a streamed token re-renders the streaming row alone
+	// (Fizzy #2430). Every handler a row calls goes through `rowActions`,
+	// whose identities are stable, so a skipped row never holds a stale one.
+	const rowActions = useStableHandlers({
+		confirmExecution: handleConfirmExecution,
+		declineExecution: handleDeclineExecution,
+		createApprovedTasks: handleCreateApprovedTasks,
+		saveProjectUpdateDraft: handleSaveProjectUpdateDraft,
+		startImplementationSession: handleStartImplementationSession,
+		saveApprovedSkill: handleSaveApprovedSkill,
+		saveAutomationTag: handleSaveAutomationTag,
+		previewSkillDraft: handlePreviewSkillDraft,
+		previewTasks: handlePreviewTasks,
+		previewProjectUpdate: handlePreviewProjectUpdate,
+		previewImplementationSession: handlePreviewImplementationSession,
+		actionPrompt: handleActionPrompt,
+		openFrame,
+		sendMessage,
+	});
+	const lastMessageId = messages.at(-1)?.id;
+	const messageRowDeps = [
+		isLoading,
+		pendingConfirmation,
+		pendingTaskDraft,
+		pendingProjectUpdateDraft,
+		pendingImplementationSession,
+		pendingSkillDraft,
+		savedSkillAutomationPrompt,
+		isCreatingTasks,
+		isSavingProjectUpdateDraft,
+		isStartingImplementationSession,
+		isSavingSkillDraft,
+		isSavingAutomationTag,
+		isExecutingWorkflow,
+		activeFrame?.frameId,
+		showTrajectorySteps,
+		userAvatarSrc,
+		userDisplayName,
+		isOrganizationAdmin,
+		activeOrgSlug,
+		organizationId,
+		attachedProjectId,
+		attachedStoryId,
+		attachedTaskId,
+		composedChatScope,
+		excalidrawResolverOptions,
+		excalidrawResolverTarget,
+	];
 
 	// The composer. Docked under the conversation once there are messages;
 	// on the landing it sits under the heading inside ChatWelcome, so it is
@@ -3400,151 +3636,202 @@ export const FabricDirectChat = forwardRef<
 				) : (
 					<Conversation className="flex-1 relative">
 						<ConversationContent className="space-y-1 max-w-4xl mx-auto px-4 py-4">
-							{messages.map((message) => {
-								const actionCards =
-									buildAssistantActionCards(message);
-								// Caption rendered OUTSIDE the bubble for parity
-								// with the AI Feature Assistant (PR #727):
-								// paperclip + 11px filename, right-aligned,
-								// no border / no background. Skipped on
-								// assistant messages and on legacy
-								// persisted user messages without
-								// `attachmentNames`.
-								const captionNames =
-									message.role === "user" &&
-									message.attachmentNames
-										? message.attachmentNames
-										: [];
-								const trajectorySteps =
-									message.role === "assistant"
-										? deriveTrajectorySteps(message)
-										: [];
-								return (
-									<Fragment key={message.id}>
-										<Message from={message.role}>
-											{/* Avatar */}
-											{message.role === "assistant" ? (
-												<div className="shrink-0 mt-1">
-													<FabricLogo
-														className="h-8 w-8"
-														size={32}
-													/>
-												</div>
-											) : (
-												<MessageAvatar
-													src={userAvatarSrc}
-													name={userDisplayName}
-													className="mt-1"
-												/>
-											)}
-
-											{/* Message Content */}
-											<MessageContent
-												variant="flat"
-												className={cn(
-													message.role ===
-														"assistant" &&
-														"space-y-3",
-												)}
-											>
-												{showTrajectorySteps &&
-													trajectorySteps.length >
-														0 && (
-														<TrajectorySteps
-															steps={
-																trajectorySteps
+							{messages.map((message) => (
+								<MemoizedRow
+									key={message.id}
+									deps={[
+										message,
+										message.id === lastMessageId,
+										...messageRowDeps,
+									]}
+									render={() => {
+										const actionCards =
+											buildAssistantActionCards(message);
+										// Caption rendered OUTSIDE the bubble for parity
+										// with the AI Feature Assistant (PR #727):
+										// paperclip + 11px filename, right-aligned,
+										// no border / no background. Skipped on
+										// assistant messages and on legacy
+										// persisted user messages without
+										// `attachmentNames`.
+										const captionNames =
+											message.role === "user" &&
+											message.attachmentNames
+												? message.attachmentNames
+												: [];
+										const trajectorySteps =
+											message.role === "assistant"
+												? deriveTrajectorySteps(message)
+												: [];
+										return (
+											<Fragment key={message.id}>
+												<Message from={message.role}>
+													{/* Avatar */}
+													{message.role ===
+													"assistant" ? (
+														<div className="shrink-0 mt-1">
+															<FabricLogo
+																className="h-8 w-8"
+																size={32}
+															/>
+														</div>
+													) : (
+														<MessageAvatar
+															src={userAvatarSrc}
+															name={
+																userDisplayName
 															}
-															isRunning={
-																message.isStreaming ===
-																true
-															}
-															defaultExpanded={
-																message.isStreaming ===
-																true
-															}
-															// `stepsExpandable={false}` mirrors the
-															// `expandable={false}` we pass to ToolCallList
-															// below. Without this, the inline trajectory
-															// steps inside the "Reasoning Trace" box still
-															// expand to raw Tool/Input/Output JSON — the
-															// user reported this on staging after PR 1093:
-															// the bottom "skill · Completed" card no longer
-															// expanded but the in-trace step did. Both
-															// surfaces now consistently render as static
-															// rows in Fabric Loom.
-															stepsExpandable={
-																false
-															}
+															className="mt-1"
 														/>
 													)}
 
-												{/* Tool Calls - using shared ToolCallList component.
-												 *
-												 * `expandable={false}` collapses each tool/skill card
-												 * to a static pill — no chevron, no click, no
-												 * Parameters/Result JSON dump. The Fabric Loom launcher
-												 * is a quick page copilot; users want to know WHICH
-												 * tool ran (e.g., "skill · visual-generate-plan ·
-												 * Completed") without seeing the raw envelope.
-												 * Surfaces that need inspection (Orchestrator chat,
-												 * agent runs) keep the default expandable=true.
-												 */}
-												{message.toolCalls &&
-													message.toolCalls.length >
-														0 &&
-													(showTrajectorySteps &&
-													trajectorySteps.length >
-														0 ? (
-														/* The trace above already names every step, so the cards fold
+													{/* Message Content */}
+													<MessageContent
+														variant="flat"
+														className={cn(
+															message.role ===
+																"assistant" &&
+																"space-y-3",
+														)}
+													>
+														{showTrajectorySteps &&
+															trajectorySteps.length >
+																0 && (
+																<TrajectorySteps
+																	steps={
+																		trajectorySteps
+																	}
+																	isRunning={
+																		message.isStreaming ===
+																		true
+																	}
+																	defaultExpanded={
+																		message.isStreaming ===
+																		true
+																	}
+																	// `stepsExpandable={false}` mirrors the
+																	// `expandable={false}` we pass to ToolCallList
+																	// below. Without this, the inline trajectory
+																	// steps inside the "Reasoning Trace" box still
+																	// expand to raw Tool/Input/Output JSON — the
+																	// user reported this on staging after PR 1093:
+																	// the bottom "skill · Completed" card no longer
+																	// expanded but the in-trace step did. Both
+																	// surfaces now consistently render as static
+																	// rows in Fabric Loom.
+																	stepsExpandable={
+																		false
+																	}
+																/>
+															)}
+
+														{/* Tool Calls - using shared ToolCallList component.
+														 *
+														 * `expandable={false}` collapses each tool/skill card
+														 * to a static pill — no chevron, no click, no
+														 * Parameters/Result JSON dump. The Fabric Loom launcher
+														 * is a quick page copilot; users want to know WHICH
+														 * tool ran (e.g., "skill · visual-generate-plan ·
+														 * Completed") without seeing the raw envelope.
+														 * Surfaces that need inspection (Orchestrator chat,
+														 * agent runs) keep the default expandable=true.
+														 */}
+														{message.toolCalls &&
+															message.toolCalls
+																.length > 0 &&
+															(showTrajectorySteps &&
+															trajectorySteps.length >
+																0 ? (
+																/* The trace above already names every step, so the cards fold
 		   into one line: count, failures, and a chevron to inspect. */
-														<Collapsible className="group/tools">
-															<CollapsibleTrigger
-																asChild
-															>
-																<button
-																	type="button"
-																	className="flex items-center gap-1.5 rounded-[4px] px-2 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-																>
-																	<Wrench className="size-3.5" />
-																	<span>
-																		{
-																			message
-																				.toolCalls
-																				.length
-																		}{" "}
-																		{message
-																			.toolCalls
-																			.length ===
-																		1
-																			? "tool call"
-																			: "tool calls"}
-																	</span>
-																	{message.toolCalls.some(
-																		(tc) =>
-																			tc.status ===
-																			"error",
-																	) && (
-																		<span className="text-destructive">
-																			·{" "}
-																			{
-																				message.toolCalls.filter(
-																					(
-																						tc,
-																					) =>
-																						tc.status ===
-																						"error",
-																				)
-																					.length
-																			}{" "}
-																			failed
-																		</span>
-																	)}
-																	<ChevronDown className="size-3.5 transition-transform group-data-[state=open]/tools:rotate-180" />
-																</button>
-															</CollapsibleTrigger>
-															<CollapsibleContent className="mt-2">
+																<Collapsible className="group/tools">
+																	<CollapsibleTrigger
+																		asChild
+																	>
+																		<button
+																			type="button"
+																			className="flex items-center gap-1.5 rounded-[4px] px-2 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+																		>
+																			<Wrench className="size-3.5" />
+																			<span>
+																				{
+																					message
+																						.toolCalls
+																						.length
+																				}{" "}
+																				{message
+																					.toolCalls
+																					.length ===
+																				1
+																					? "tool call"
+																					: "tool calls"}
+																			</span>
+																			{message.toolCalls.some(
+																				(
+																					tc,
+																				) =>
+																					tc.status ===
+																					"error",
+																			) && (
+																				<span className="text-destructive">
+																					·{" "}
+																					{
+																						message.toolCalls.filter(
+																							(
+																								tc,
+																							) =>
+																								tc.status ===
+																								"error",
+																						)
+																							.length
+																					}{" "}
+																					failed
+																				</span>
+																			)}
+																			<ChevronDown className="size-3.5 transition-transform group-data-[state=open]/tools:rotate-180" />
+																		</button>
+																	</CollapsibleTrigger>
+																	<CollapsibleContent className="mt-2">
+																		<ToolCallList
+																			toolCalls={toToolCallItems(
+																				message.toolCalls,
+																				message.id,
+																				(
+																					tc,
+																					idx,
+																				): ToolCallItem => ({
+																					id: `${message.id}-${idx}`,
+																					name: tc.name,
+																					serverName:
+																						tc.serverName,
+																					args: tc.args,
+																					result: tc.result,
+																					status: tc.status,
+																				}),
+																			)}
+																			defaultOpen={
+																				false
+																			}
+																			expandable={
+																				false
+																			}
+																			getDisplayName={
+																				getOriginalToolName
+																			}
+																			activeFrameId={
+																				activeFrame?.frameId
+																			}
+																			onOpenFrame={
+																				rowActions.openFrame
+																			}
+																		/>
+																	</CollapsibleContent>
+																</Collapsible>
+															) : (
 																<ToolCallList
-																	toolCalls={message.toolCalls.map(
+																	toolCalls={toToolCallItems(
+																		message.toolCalls,
+																		message.id,
 																		(
 																			tc,
 																			idx,
@@ -3571,880 +3858,975 @@ export const FabricDirectChat = forwardRef<
 																		activeFrame?.frameId
 																	}
 																	onOpenFrame={
-																		openFrame
+																		rowActions.openFrame
 																	}
 																/>
-															</CollapsibleContent>
-														</Collapsible>
-													) : (
-														<ToolCallList
-															toolCalls={message.toolCalls.map(
-																(
-																	tc,
-																	idx,
-																): ToolCallItem => ({
-																	id: `${message.id}-${idx}`,
-																	name: tc.name,
-																	serverName:
-																		tc.serverName,
-																	args: tc.args,
-																	result: tc.result,
-																	status: tc.status,
-																}),
-															)}
-															defaultOpen={false}
-															expandable={false}
-															getDisplayName={
-																getOriginalToolName
-															}
-															activeFrameId={
-																activeFrame?.frameId
-															}
-															onOpenFrame={
-																openFrame
-															}
-														/>
-													))}
+															))}
 
-												{/* MCP App interactive UIs */}
-												{message.toolCalls
-													?.filter(
-														(tc) =>
-															tc.mcpAppResourceUri &&
-															tc.mcpAppConfigId &&
-															tc.status !==
-																"error",
-													)
-													.map((tc) => {
-														if (
-															!tc.mcpAppResourceUri ||
-															!tc.mcpAppConfigId
-														) {
-															return null;
-														}
+														{/* MCP App interactive UIs */}
+														{message.toolCalls
+															?.filter(
+																(tc) =>
+																	tc.mcpAppResourceUri &&
+																	tc.mcpAppConfigId &&
+																	tc.status !==
+																		"error",
+															)
+															.map((tc) => {
+																if (
+																	!tc.mcpAppResourceUri ||
+																	!tc.mcpAppConfigId
+																) {
+																	return null;
+																}
 
-														// Excalidraw chat -> editor auto-insert (spec § 8.1 wiring
-														// F3). The button is rendered as a sibling BELOW each
-														// `<McpAppFrame>` ONLY for successful Excalidraw
-														// `create_view` results — McpAppFrame itself is not
-														// modified. Non-Excalidraw MCP resources
-														// (calendar widgets, etc.) skip the button entirely.
-														const isExcalidrawCreateView =
-															tc.mcpAppResourceUri.includes(
-																"excalidraw",
-															) &&
-															tc.status ===
-																"complete";
-														const excalidrawArgs =
-															isExcalidrawCreateView &&
-															tc.args &&
-															typeof tc.args ===
-																"object"
-																? (tc.args as Record<
-																		string,
-																		unknown
-																	>)
-																: null;
-														const excalidrawResult =
-															isExcalidrawCreateView &&
-															tc.result &&
-															typeof tc.result ===
-																"object"
-																? (tc.result as Record<
-																		string,
-																		unknown
-																	>)
-																: null;
-														const excalidrawCheckpointId =
-															excalidrawResult &&
-															typeof excalidrawResult.checkpointId ===
-																"string"
-																? excalidrawResult.checkpointId
-																: excalidrawResult &&
-																		typeof (
-																			excalidrawResult as {
-																				checkpoint_id?: unknown;
-																			}
-																		)
-																			.checkpoint_id ===
-																			"string"
-																	? (
-																			excalidrawResult as {
-																				checkpoint_id: string;
-																			}
-																		)
-																			.checkpoint_id
-																	: "";
-														const derivedTitle =
-															deriveDiagramTitle({
-																userPromptText:
-																	composedChatScope.lastUserPromptForMessage(
-																		message.id,
-																	),
-															});
-
-														return (
-															<Fragment
-																key={tc.id}
-															>
-																<McpAppFrame
-																	resourceUri={
-																		tc.mcpAppResourceUri
-																	}
-																	configId={
-																		tc.mcpAppConfigId
-																	}
-																	organizationId={
-																		organizationId
-																	}
-																	toolArgs={
-																		tc.args as Record<
-																			string,
-																			unknown
-																		>
-																	}
-																	toolResult={
-																		tc.result
-																	}
-																	className="mt-2"
-																	onUpdateModelContext={(
-																		content,
-																	) => {
-																		const text =
-																			content
-																				.filter(
-																					(
-																						c: any,
-																					) =>
-																						c?.type ===
-																							"text" &&
-																						c?.text,
+																// Excalidraw chat -> editor auto-insert (spec § 8.1 wiring
+																// F3). The button is rendered as a sibling BELOW each
+																// `<McpAppFrame>` ONLY for successful Excalidraw
+																// `create_view` results — McpAppFrame itself is not
+																// modified. Non-Excalidraw MCP resources
+																// (calendar widgets, etc.) skip the button entirely.
+																const isExcalidrawCreateView =
+																	tc.mcpAppResourceUri.includes(
+																		"excalidraw",
+																	) &&
+																	tc.status ===
+																		"complete";
+																const excalidrawArgs =
+																	isExcalidrawCreateView &&
+																	tc.args &&
+																	typeof tc.args ===
+																		"object"
+																		? (tc.args as Record<
+																				string,
+																				unknown
+																			>)
+																		: null;
+																const excalidrawResult =
+																	isExcalidrawCreateView &&
+																	tc.result &&
+																	typeof tc.result ===
+																		"object"
+																		? (tc.result as Record<
+																				string,
+																				unknown
+																			>)
+																		: null;
+																const excalidrawCheckpointId =
+																	excalidrawResult &&
+																	typeof excalidrawResult.checkpointId ===
+																		"string"
+																		? excalidrawResult.checkpointId
+																		: excalidrawResult &&
+																				typeof (
+																					excalidrawResult as {
+																						checkpoint_id?: unknown;
+																					}
 																				)
-																				.map(
-																					(
-																						c: any,
-																					) =>
-																						c.text,
+																					.checkpoint_id ===
+																					"string"
+																			? (
+																					excalidrawResult as {
+																						checkpoint_id: string;
+																					}
 																				)
-																				.join(
-																					"\n",
-																				);
-																		if (
-																			text
-																		) {
-																			console.info(
-																				"[DirectChat] Diagram edit context:",
-																				text,
-																			);
-																		}
-																	}}
-																/>
-																{isExcalidrawCreateView ? (
-																	<ChatMessageInsertDiagramButton
-																		surface="in-feature"
-																		chatMessageId={
-																			message.id
-																		}
-																		toolResult={{
-																			elements:
-																				excalidrawArgs?.elements,
-																			appState:
-																				excalidrawArgs?.appState,
-																			checkpointId:
-																				excalidrawCheckpointId,
-																			mcpConfigId:
-																				tc.mcpAppConfigId,
-																			resourceUri:
-																				tc.mcpAppResourceUri,
-																		}}
-																		organizationSlug={
-																			activeOrgSlug
-																		}
-																		chatScope={
-																			composedChatScope
-																		}
-																		resolverOptions={
-																			excalidrawResolverOptions
-																		}
-																		resolverTarget={
-																			excalidrawResolverTarget
-																		}
-																		title={
-																			derivedTitle
-																		}
-																	/>
-																) : null}
-															</Fragment>
-														);
-													})}
+																					.checkpoint_id
+																			: "";
+																const derivedTitle =
+																	deriveDiagramTitle(
+																		{
+																			userPromptText:
+																				composedChatScope.lastUserPromptForMessage(
+																					message.id,
+																				),
+																		},
+																	);
 
-												{/* Message Content - using ai-elements Response for proper markdown.
+																return (
+																	<Fragment
+																		key={
+																			tc.id
+																		}
+																	>
+																		<McpAppFrame
+																			resourceUri={
+																				tc.mcpAppResourceUri
+																			}
+																			configId={
+																				tc.mcpAppConfigId
+																			}
+																			organizationId={
+																				organizationId
+																			}
+																			toolArgs={
+																				tc.args as Record<
+																					string,
+																					unknown
+																				>
+																			}
+																			toolResult={
+																				tc.result
+																			}
+																			className="mt-2"
+																			onUpdateModelContext={(
+																				content,
+																			) => {
+																				const text =
+																					content
+																						.filter(
+																							(
+																								c: any,
+																							) =>
+																								c?.type ===
+																									"text" &&
+																								c?.text,
+																						)
+																						.map(
+																							(
+																								c: any,
+																							) =>
+																								c.text,
+																						)
+																						.join(
+																							"\n",
+																						);
+																				if (
+																					text
+																				) {
+																					console.info(
+																						"[DirectChat] Diagram edit context:",
+																						text,
+																					);
+																				}
+																			}}
+																		/>
+																		{isExcalidrawCreateView ? (
+																			<ChatMessageInsertDiagramButton
+																				surface="in-feature"
+																				chatMessageId={
+																					message.id
+																				}
+																				toolResult={{
+																					elements:
+																						excalidrawArgs?.elements,
+																					appState:
+																						excalidrawArgs?.appState,
+																					checkpointId:
+																						excalidrawCheckpointId,
+																					mcpConfigId:
+																						tc.mcpAppConfigId,
+																					resourceUri:
+																						tc.mcpAppResourceUri,
+																				}}
+																				organizationSlug={
+																					activeOrgSlug
+																				}
+																				chatScope={
+																					composedChatScope
+																				}
+																				resolverOptions={
+																					excalidrawResolverOptions
+																				}
+																				resolverTarget={
+																					excalidrawResolverTarget
+																				}
+																				title={
+																					derivedTitle
+																				}
+																			/>
+																		) : null}
+																	</Fragment>
+																);
+															})}
+
+														{/* Message Content - using ai-elements Response for proper markdown.
 												    Errors get their own card: one quiet panel, an icon,
 												    a title and the message with its "Error:" prefix
 												    dropped, instead of a bordered box inside a tinted
 												    bubble. */}
-												{message.isError ? (
-													<div
-														role="alert"
-														className="flex items-start gap-2.5 rounded-[6px] border border-destructive/30 bg-destructive/5 px-3.5 py-3 text-sm leading-6"
-													>
-														<CircleAlert className="mt-1 size-4 shrink-0 text-destructive" />
-														<div className="min-w-0 space-y-0.5">
-															<p className="font-medium text-foreground">
-																The request did
-																not go through
-															</p>
-															<p className="break-words text-muted-foreground">
-																{message.content.replace(
-																	/^error:\s*/i,
-																	"",
-																)}
-															</p>
-														</div>
-													</div>
-												) : message.content ? (
-													<Response
-														streaming={
-															message.isStreaming
-														}
-													>
-														{message.content}
-													</Response>
-												) : (
-													/* Show "AI is thinking..." for streaming assistant with no content yet */
-													message.role ===
-														"assistant" &&
-													message.isStreaming &&
-													!(
-														message.toolCalls
-															?.length ?? 0
-													) && (
-														<div className="flex items-center gap-2">
-															<Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-															<span className="text-sm text-muted-foreground">
-																{message.statusLabel ||
-																	"AI is thinking..."}
-															</span>
-														</div>
-													)
-												)}
-
-												{/* Editorial "Stopped" chip — rendered at the
-												 * end of the assistant turn when the user
-												 * halted it (spec § 4.2 / 8.9). */}
-												{message.role === "assistant" &&
-													message.streamStatus ===
-														"cancelled" && (
-														<StoppedIndicator />
-													)}
-
-												{/* RAG Sources - show document citations when available */}
-												{message.sources &&
-													message.sources.length >
-														0 && (
-														<div className="mt-3 pt-3 border-t border-muted">
-															<Sources
-																sources={
-																	message.sources
-																}
-																defaultOpen={
-																	false
-																}
-															/>
-														</div>
-													)}
-
-												{actionCards.length > 0 && (
-													<div className="mt-3 rounded-xl border border-border/70 bg-muted/25 p-3">
-														<div className="mb-2 flex items-center justify-between gap-2">
-															<div>
-																<p className="text-xs font-semibold text-foreground">
-																	Suggested
-																	next actions
-																</p>
-																<p className="text-[11px] text-muted-foreground">
-																	Draft-only.
-																	Nothing
-																	changes
-																	until you
-																	approve it.
-																</p>
-															</div>
-															<Badge
-																variant="secondary"
-																className="text-[10px]"
-															>
-																Preview
-															</Badge>
-														</div>
-														<div className="grid gap-2 sm:grid-cols-3">
-															{actionCards.map(
-																(action) => (
-																	<button
-																		key={
-																			action.label
-																		}
-																		type="button"
-																		onClick={
-																			action.onClick
-																		}
-																		className="rounded-lg border border-border/70 bg-background/70 p-2 text-left transition-colors hover:border-primary/35 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-																	>
-																		<div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-foreground">
-																			<span className="text-primary">
-																				{
-																					action.icon
-																				}
-																			</span>
-																			{
-																				action.label
-																			}
-																		</div>
-																		<p className="text-[11px] leading-4 text-muted-foreground">
-																			{
-																				action.description
-																			}
-																		</p>
-																	</button>
-																),
-															)}
-														</div>
-														<div className="mt-2 flex justify-end">
-															<Button
-																type="button"
-																variant="ghost"
-																size="sm"
-																className="h-7 px-2 text-[11px]"
-																onClick={() =>
-																	handlePreviewSkillDraft(
-																		message,
-																	)
+														{message.content ? (
+															<Response
+																streaming={
+																	message.isStreaming
 																}
 															>
-																<BookmarkIcon className="mr-1 size-3" />
-																Save as Skill
-															</Button>
-														</div>
-													</div>
-												)}
+																{
+																	message.content
+																}
+															</Response>
+														) : (
+															/* Show "AI is thinking..." for streaming assistant with no content yet */
+															message.role ===
+																"assistant" &&
+															message.isStreaming &&
+															!(
+																message
+																	.toolCalls
+																	?.length ??
+																0
+															) && (
+																<div className="flex items-center gap-2">
+																	<Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+																	<span className="text-sm text-muted-foreground">
+																		{message.statusLabel ||
+																			"AI is thinking..."}
+																	</span>
+																</div>
+															)
+														)}
 
-												{pendingTaskDraft?.messageId ===
-													message.id && (
-													<Confirmation
-														approvalState="requested"
-														className="mt-3"
-													>
-														<ConfirmationTitle>
-															<ConfirmationIcon />
-															Create feature tasks
-														</ConfirmationTitle>
-														<ConfirmationDescription>
-															Review the proposed
-															tasks below. Fabric
-															will only add them
-															after you approve.
-														</ConfirmationDescription>
-														<div className="mt-3 space-y-2">
-															{pendingTaskDraft.tasks.map(
-																(task) => (
-																	<div
-																		key={
-																			task.id
-																		}
-																		className="rounded-lg border border-border/70 bg-background/70 px-3 py-2"
-																	>
-																		<p className="text-sm font-medium text-foreground">
-																			{
-																				task.title
-																			}
+														{/* Failure: its own card, below whatever part of
+												    the answer streamed first, so neither the text
+												    nor the cause is lost. A provider limit gets
+												    the shared limit banner instead. */}
+														{message.isError &&
+															(message.limit ? (
+																<LimitBanner
+																	signal={
+																		message.limit
+																	}
+																	canManageBilling={
+																		isOrganizationAdmin
+																	}
+																	organizationSlug={
+																		activeOrgSlug
+																	}
+																/>
+															) : (
+																<div
+																	role="alert"
+																	className={cn(
+																		"flex items-start gap-2.5 rounded-[6px] border border-destructive/30 bg-destructive/5 px-3.5 py-3 text-sm leading-6",
+																		message.content &&
+																			"mt-3",
+																	)}
+																>
+																	<CircleAlert className="mt-1 size-4 shrink-0 text-destructive" />
+																	<div className="min-w-0 space-y-0.5">
+																		<p className="font-medium text-foreground">
+																			{message.content
+																				? "The answer stopped early"
+																				: "The request did not go through"}
 																		</p>
-																		{task.description && (
-																			<p className="mt-1 text-xs text-muted-foreground">
-																				{
-																					task.description
-																				}
-																			</p>
-																		)}
+																		<p className="break-words text-muted-foreground">
+																			{message.errorMessage ??
+																				"Unknown error"}
+																		</p>
 																	</div>
-																),
+																</div>
+															))}
+
+														{message.role ===
+															"assistant" &&
+															message.toolsFailed && (
+																<p
+																	className="mt-2 flex items-center gap-1.5 text-muted-foreground text-xs"
+																	title={
+																		message
+																			.toolsFailed
+																			.summary
+																	}
+																>
+																	<Wrench className="size-3 shrink-0" />
+																	Tools failed
+																	on this turn
+																	— answered
+																	without
+																	them.
+																</p>
 															)}
-														</div>
-														<ConfirmationRequest>
-															<ConfirmationActions>
-																<ConfirmationAction
-																	onClick={
-																		handleCreateApprovedTasks
-																	}
-																	disabled={
-																		isLoading ||
-																		isCreatingTasks
-																	}
-																	className="bg-green-600 text-white hover:bg-green-700"
-																>
-																	<CheckCircle2 className="mr-2 h-4 w-4" />
-																	Create tasks
-																</ConfirmationAction>
-																<ConfirmationAction
-																	onClick={() =>
-																		setPendingTaskDraft(
-																			null,
-																		)
-																	}
-																	disabled={
-																		isLoading ||
-																		isCreatingTasks
-																	}
-																	variant="outline"
-																	className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
-																>
-																	<XCircle className="mr-2 h-4 w-4" />
-																	Cancel
-																</ConfirmationAction>
-															</ConfirmationActions>
-														</ConfirmationRequest>
-													</Confirmation>
-												)}
 
-												{pendingProjectUpdateDraft?.messageId ===
-													message.id && (
-													<Confirmation
-														approvalState="requested"
-														className="mt-3"
-													>
-														<ConfirmationTitle>
-															<ConfirmationIcon />
-															Save project update
-															draft
-														</ConfirmationTitle>
-														<ConfirmationDescription>
-															Fabric will save
-															this as a project
-															artifact only after
-															you approve. You can
-															review and edit it
-															before sharing.
-														</ConfirmationDescription>
-														<div className="mt-3 rounded-lg border border-border/70 bg-background/70 p-3">
-															<p className="text-sm font-medium text-foreground">
-																{
-																	pendingProjectUpdateDraft.title
-																}
-															</p>
-															<div className="mt-2 max-h-48 overflow-y-auto rounded border border-border/50 bg-muted/20 p-2 text-xs leading-5 text-muted-foreground whitespace-pre-wrap">
-																{
-																	pendingProjectUpdateDraft.content
-																}
-															</div>
-														</div>
-														<ConfirmationRequest>
-															<ConfirmationActions>
-																<ConfirmationAction
-																	onClick={
-																		handleSaveProjectUpdateDraft
+														{/* The answer stopped on the output ceiling or
+												    the step cap — say so, and let the latest
+												    turn pick up where it stopped (review F25). */}
+														{message.role ===
+															"assistant" &&
+															message.truncated &&
+															!message.isStreaming && (
+																<TruncationNotice
+																	truncated={
+																		message.truncated
+																	}
+																	onContinue={
+																		message.id ===
+																		lastMessageId
+																			? (
+																					prompt,
+																				) =>
+																					void rowActions.sendMessage(
+																						prompt,
+																					)
+																			: undefined
 																	}
 																	disabled={
-																		isLoading ||
-																		isSavingProjectUpdateDraft
+																		isLoading
 																	}
-																	className="bg-green-600 text-white hover:bg-green-700"
-																>
-																	<CheckCircle2 className="mr-2 h-4 w-4" />
-																	Save draft
-																</ConfirmationAction>
-																<ConfirmationAction
-																	onClick={() =>
-																		setPendingProjectUpdateDraft(
-																			null,
-																		)
-																	}
-																	disabled={
-																		isLoading ||
-																		isSavingProjectUpdateDraft
-																	}
-																	variant="outline"
-																	className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
-																>
-																	<XCircle className="mr-2 h-4 w-4" />
-																	Cancel
-																</ConfirmationAction>
-															</ConfirmationActions>
-														</ConfirmationRequest>
-													</Confirmation>
-												)}
+																/>
+															)}
 
-												{pendingImplementationSession?.messageId ===
-													message.id && (
-													<Confirmation
-														approvalState="requested"
-														className="mt-3"
-													>
-														<ConfirmationTitle>
-															<ConfirmationIcon />
-															Start implementation
-															session
-														</ConfirmationTitle>
-														<ConfirmationDescription>
-															Fabric will start a
-															Background Agents
-															implementation
-															session for this
-															feature only after
-															you approve.
-														</ConfirmationDescription>
-														<div className="mt-3 space-y-2 rounded-lg border border-border/70 bg-background/70 p-3 text-xs">
-															<div className="grid gap-2 sm:grid-cols-2">
-																<div>
-																	<p className="font-medium text-foreground">
-																		Provider
-																	</p>
-																	<p className="text-muted-foreground">
-																		Background
-																		Agents
-																	</p>
-																</div>
-																<div>
-																	<p className="font-medium text-foreground">
-																		Scope
-																	</p>
-																	<p className="text-muted-foreground">
-																		{attachedTaskId
-																			? "Current task"
-																			: "Current feature"}
-																	</p>
-																</div>
-															</div>
-															<div>
-																<p className="font-medium text-foreground">
-																	Agent
-																	context
-																	preview
-																</p>
-																<div className="mt-1 max-h-36 overflow-y-auto whitespace-pre-wrap rounded border border-border/50 bg-muted/20 p-2 text-muted-foreground">
-																	{
-																		pendingImplementationSession.summary
-																	}
-																</div>
-															</div>
-														</div>
-														<ConfirmationRequest>
-															<ConfirmationActions>
-																<ConfirmationAction
-																	onClick={
-																		handleStartImplementationSession
-																	}
-																	disabled={
-																		isLoading ||
-																		isStartingImplementationSession
-																	}
-																	className="bg-green-600 text-white hover:bg-green-700"
-																>
-																	<CheckCircle2 className="mr-2 h-4 w-4" />
-																	Start
-																	session
-																</ConfirmationAction>
-																<ConfirmationAction
-																	onClick={() =>
-																		setPendingImplementationSession(
-																			null,
-																		)
-																	}
-																	disabled={
-																		isLoading ||
-																		isStartingImplementationSession
-																	}
-																	variant="outline"
-																	className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
-																>
-																	<XCircle className="mr-2 h-4 w-4" />
-																	Cancel
-																</ConfirmationAction>
-															</ConfirmationActions>
-														</ConfirmationRequest>
-													</Confirmation>
-												)}
+														{/* Editorial "Stopped" chip — rendered at the
+														 * end of the assistant turn when the user
+														 * halted it (spec § 4.2 / 8.9). */}
+														{message.role ===
+															"assistant" &&
+															message.streamStatus ===
+																"cancelled" && (
+																<StoppedIndicator />
+															)}
 
-												{pendingSkillDraft?.messageId ===
-													message.id && (
-													<Confirmation
-														approvalState="requested"
-														className="mt-3"
-													>
-														<ConfirmationTitle>
-															<ConfirmationIcon />
-															Save reusable Skill
-														</ConfirmationTitle>
-														<ConfirmationDescription>
-															Review the Skill
-															metadata before
-															saving. Fabric will
-															not add automation
-															triggers unless you
-															choose to after
-															saving.
-														</ConfirmationDescription>
-														<div className="mt-3 space-y-3 rounded-lg border border-border/70 bg-background/70 p-3 text-xs">
-															<div className="grid gap-2 sm:grid-cols-2">
-																<div>
-																	<p className="font-medium text-foreground">
-																		Name
-																	</p>
-																	<p className="text-muted-foreground">
-																		{
-																			pendingSkillDraft.name
+														{/* RAG Sources - show document citations when available */}
+														{message.sources &&
+															message.sources
+																.length > 0 && (
+																<div className="mt-3 pt-3 border-t border-muted">
+																	<Sources
+																		sources={
+																			message.sources
 																		}
-																	</p>
+																		defaultOpen={
+																			false
+																		}
+																	/>
 																</div>
-																<div>
-																	<p className="font-medium text-foreground">
-																		Scope
-																	</p>
-																	<p className="text-muted-foreground">
-																		{pendingSkillDraft.scope ===
-																		"ORGANIZATION"
-																			? "Organization"
-																			: "Personal"}
-																	</p>
+															)}
+
+														{actionCards.length >
+															0 && (
+															<div className="mt-3 rounded-xl border border-border/70 bg-muted/25 p-3">
+																<div className="mb-2 flex items-center justify-between gap-2">
+																	<div>
+																		<p className="text-xs font-semibold text-foreground">
+																			Suggested
+																			next
+																			actions
+																		</p>
+																		<p className="text-[11px] text-muted-foreground">
+																			Draft-only.
+																			Nothing
+																			changes
+																			until
+																			you
+																			approve
+																			it.
+																		</p>
+																	</div>
+																	<Badge
+																		variant="secondary"
+																		className="text-[10px]"
+																	>
+																		Preview
+																	</Badge>
 																</div>
-															</div>
-															<div>
-																<p className="font-medium text-foreground">
-																	Description
-																</p>
-																<p className="text-muted-foreground">
-																	{
-																		pendingSkillDraft.description
-																	}
-																</p>
-															</div>
-															<div>
-																<p className="font-medium text-foreground">
-																	Tags
-																</p>
-																<div className="mt-1 flex flex-wrap gap-1">
-																	{pendingSkillDraft.tags.map(
+																<div className="grid gap-2 sm:grid-cols-3">
+																	{actionCards.map(
 																		(
-																			tag,
+																			action,
 																		) => (
-																			<Badge
+																			<button
 																				key={
-																					tag
+																					action.label
 																				}
-																				variant="secondary"
-																				className="text-[10px]"
+																				type="button"
+																				onClick={
+																					action.onClick
+																				}
+																				className="rounded-lg border border-border/70 bg-background/70 p-2 text-left transition-colors hover:border-primary/35 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
 																			>
-																				{
-																					tag
-																				}
-																			</Badge>
+																				<div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-foreground">
+																					<span className="text-primary">
+																						{
+																							action.icon
+																						}
+																					</span>
+																					{
+																						action.label
+																					}
+																				</div>
+																				<p className="text-[11px] leading-4 text-muted-foreground">
+																					{
+																						action.description
+																					}
+																				</p>
+																			</button>
 																		),
 																	)}
 																</div>
+																<div className="mt-2 flex justify-end">
+																	<Button
+																		type="button"
+																		variant="ghost"
+																		size="sm"
+																		className="h-7 px-2 text-[11px]"
+																		onClick={() =>
+																			rowActions.previewSkillDraft(
+																				message,
+																			)
+																		}
+																	>
+																		<BookmarkIcon className="mr-1 size-3" />
+																		Save as
+																		Skill
+																	</Button>
+																</div>
 															</div>
-														</div>
-														<ConfirmationRequest>
-															<ConfirmationActions>
-																<ConfirmationAction
-																	onClick={
-																		handleSaveApprovedSkill
-																	}
-																	disabled={
-																		isLoading ||
-																		isSavingSkillDraft
-																	}
-																	className="bg-green-600 text-white hover:bg-green-700"
-																>
-																	<CheckCircle2 className="mr-2 h-4 w-4" />
-																	Save Skill
-																</ConfirmationAction>
-																<ConfirmationAction
-																	onClick={() =>
-																		setPendingSkillDraft(
-																			null,
-																		)
-																	}
-																	disabled={
-																		isLoading ||
-																		isSavingSkillDraft
-																	}
-																	variant="outline"
-																	className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
-																>
-																	<XCircle className="mr-2 h-4 w-4" />
-																	Cancel
-																</ConfirmationAction>
-															</ConfirmationActions>
-														</ConfirmationRequest>
-													</Confirmation>
-												)}
+														)}
 
-												{savedSkillAutomationPrompt && (
-													<Confirmation
-														approvalState="requested"
-														className="mt-3"
-													>
-														<ConfirmationTitle>
-															<ConfirmationIcon />
-															Add triage
-															automation trigger
-														</ConfirmationTitle>
-														<ConfirmationDescription>
-															Fabric can tag this
-															Skill so the
-															existing column
-															automation runs it
-															when a feature
-															enters a matching
-															column.
-														</ConfirmationDescription>
-														<div className="mt-3 rounded-lg border border-border/70 bg-background/70 p-3 text-xs">
-															<p className="font-medium text-foreground">
-																{
-																	savedSkillAutomationPrompt.skillName
-																}
-															</p>
-															<label className="mt-3 block text-[11px] font-medium text-muted-foreground">
-																Column/tag to
-																trigger on
-																<input
-																	value={
-																		savedSkillAutomationPrompt.columnTag
-																	}
-																	onChange={(
-																		event,
-																	) =>
-																		setSavedSkillAutomationPrompt(
-																			(
-																				prev,
-																			) =>
-																				prev
-																					? {
-																							...prev,
-																							columnTag:
-																								event
-																									.target
-																									.value,
-																						}
-																					: prev,
-																		)
-																	}
-																	className="mt-1 h-8 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-																	placeholder="triage"
-																/>
-															</label>
-														</div>
-														<ConfirmationRequest>
-															<ConfirmationActions>
-																<ConfirmationAction
-																	onClick={
-																		handleSaveAutomationTag
-																	}
-																	disabled={
-																		isLoading ||
-																		isSavingAutomationTag
-																	}
-																	className="bg-green-600 text-white hover:bg-green-700"
-																>
-																	<CheckCircle2 className="mr-2 h-4 w-4" />
-																	Save trigger
-																</ConfirmationAction>
-																<ConfirmationAction
-																	onClick={() =>
-																		setSavedSkillAutomationPrompt(
-																			null,
-																		)
-																	}
-																	disabled={
-																		isLoading ||
-																		isSavingAutomationTag
-																	}
-																	variant="outline"
-																>
-																	Skip
-																</ConfirmationAction>
-															</ConfirmationActions>
-														</ConfirmationRequest>
-													</Confirmation>
-												)}
-
-												{/* Workflow Execution Confirmation - using AI Elements Confirmation component */}
-												{pendingConfirmation &&
-													pendingConfirmation.messageId ===
-														message.id && (
-														<Confirmation
-															approvalState="requested"
-															className="mt-3"
-														>
-															<ConfirmationTitle>
-																<ConfirmationIcon />
-																Execute
-																Workflow:{" "}
-																{
-																	pendingConfirmation.workflowName
-																}
-															</ConfirmationTitle>
-															{pendingConfirmation.workflowDescription && (
+														{pendingTaskDraft?.messageId ===
+															message.id && (
+															<Confirmation
+																approvalState="requested"
+																className="mt-3"
+															>
+																<ConfirmationTitle>
+																	<ConfirmationIcon />
+																	Create
+																	feature
+																	tasks
+																</ConfirmationTitle>
 																<ConfirmationDescription>
-																	{
-																		pendingConfirmation.workflowDescription
-																	}
+																	Review the
+																	proposed
+																	tasks below.
+																	Fabric will
+																	only add
+																	them after
+																	you approve.
 																</ConfirmationDescription>
-															)}
-															<ConfirmationRequest>
-																<ConfirmationActions>
-																	<ConfirmationAction
-																		onClick={
-																			handleConfirmExecution
+																<div className="mt-3 space-y-2">
+																	{pendingTaskDraft.tasks.map(
+																		(
+																			task,
+																		) => (
+																			<div
+																				key={
+																					task.id
+																				}
+																				className="rounded-lg border border-border/70 bg-background/70 px-3 py-2"
+																			>
+																				<p className="text-sm font-medium text-foreground">
+																					{
+																						task.title
+																					}
+																				</p>
+																				{task.description && (
+																					<p className="mt-1 text-xs text-muted-foreground">
+																						{
+																							task.description
+																						}
+																					</p>
+																				)}
+																			</div>
+																		),
+																	)}
+																</div>
+																<ConfirmationRequest>
+																	<ConfirmationActions>
+																		<ConfirmationAction
+																			onClick={
+																				rowActions.createApprovedTasks
+																			}
+																			disabled={
+																				isLoading ||
+																				isCreatingTasks
+																			}
+																			className="bg-green-600 text-white hover:bg-green-700"
+																		>
+																			<CheckCircle2 className="mr-2 h-4 w-4" />
+																			Create
+																			tasks
+																		</ConfirmationAction>
+																		<ConfirmationAction
+																			onClick={() =>
+																				setPendingTaskDraft(
+																					null,
+																				)
+																			}
+																			disabled={
+																				isLoading ||
+																				isCreatingTasks
+																			}
+																			variant="outline"
+																			className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
+																		>
+																			<XCircle className="mr-2 h-4 w-4" />
+																			Cancel
+																		</ConfirmationAction>
+																	</ConfirmationActions>
+																</ConfirmationRequest>
+															</Confirmation>
+														)}
+
+														{pendingProjectUpdateDraft?.messageId ===
+															message.id && (
+															<Confirmation
+																approvalState="requested"
+																className="mt-3"
+															>
+																<ConfirmationTitle>
+																	<ConfirmationIcon />
+																	Save project
+																	update draft
+																</ConfirmationTitle>
+																<ConfirmationDescription>
+																	Fabric will
+																	save this as
+																	a project
+																	artifact
+																	only after
+																	you approve.
+																	You can
+																	review and
+																	edit it
+																	before
+																	sharing.
+																</ConfirmationDescription>
+																<div className="mt-3 rounded-lg border border-border/70 bg-background/70 p-3">
+																	<p className="text-sm font-medium text-foreground">
+																		{
+																			pendingProjectUpdateDraft.title
 																		}
-																		disabled={
-																			isLoading ||
-																			isExecutingWorkflow
+																	</p>
+																	<div className="mt-2 max-h-48 overflow-y-auto rounded border border-border/50 bg-muted/20 p-2 text-xs leading-5 text-muted-foreground whitespace-pre-wrap">
+																		{
+																			pendingProjectUpdateDraft.content
 																		}
-																		className="bg-green-600 hover:bg-green-700 text-white"
-																	>
-																		<CheckCircle2 className="h-4 w-4 mr-2" />
+																	</div>
+																</div>
+																<ConfirmationRequest>
+																	<ConfirmationActions>
+																		<ConfirmationAction
+																			onClick={
+																				rowActions.saveProjectUpdateDraft
+																			}
+																			disabled={
+																				isLoading ||
+																				isSavingProjectUpdateDraft
+																			}
+																			className="bg-green-600 text-white hover:bg-green-700"
+																		>
+																			<CheckCircle2 className="mr-2 h-4 w-4" />
+																			Save
+																			draft
+																		</ConfirmationAction>
+																		<ConfirmationAction
+																			onClick={() =>
+																				setPendingProjectUpdateDraft(
+																					null,
+																				)
+																			}
+																			disabled={
+																				isLoading ||
+																				isSavingProjectUpdateDraft
+																			}
+																			variant="outline"
+																			className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
+																		>
+																			<XCircle className="mr-2 h-4 w-4" />
+																			Cancel
+																		</ConfirmationAction>
+																	</ConfirmationActions>
+																</ConfirmationRequest>
+															</Confirmation>
+														)}
+
+														{pendingImplementationSession?.messageId ===
+															message.id && (
+															<Confirmation
+																approvalState="requested"
+																className="mt-3"
+															>
+																<ConfirmationTitle>
+																	<ConfirmationIcon />
+																	Start
+																	implementation
+																	session
+																</ConfirmationTitle>
+																<ConfirmationDescription>
+																	Fabric will
+																	start a
+																	Background
+																	Agents
+																	implementation
+																	session for
+																	this feature
+																	only after
+																	you approve.
+																</ConfirmationDescription>
+																<div className="mt-3 space-y-2 rounded-lg border border-border/70 bg-background/70 p-3 text-xs">
+																	<div className="grid gap-2 sm:grid-cols-2">
+																		<div>
+																			<p className="font-medium text-foreground">
+																				Provider
+																			</p>
+																			<p className="text-muted-foreground">
+																				Background
+																				Agents
+																			</p>
+																		</div>
+																		<div>
+																			<p className="font-medium text-foreground">
+																				Scope
+																			</p>
+																			<p className="text-muted-foreground">
+																				{attachedTaskId
+																					? "Current task"
+																					: "Current feature"}
+																			</p>
+																		</div>
+																	</div>
+																	<div>
+																		<p className="font-medium text-foreground">
+																			Agent
+																			context
+																			preview
+																		</p>
+																		<div className="mt-1 max-h-36 overflow-y-auto whitespace-pre-wrap rounded border border-border/50 bg-muted/20 p-2 text-muted-foreground">
+																			{
+																				pendingImplementationSession.summary
+																			}
+																		</div>
+																	</div>
+																</div>
+																<ConfirmationRequest>
+																	<ConfirmationActions>
+																		<ConfirmationAction
+																			onClick={
+																				rowActions.startImplementationSession
+																			}
+																			disabled={
+																				isLoading ||
+																				isStartingImplementationSession
+																			}
+																			className="bg-green-600 text-white hover:bg-green-700"
+																		>
+																			<CheckCircle2 className="mr-2 h-4 w-4" />
+																			Start
+																			session
+																		</ConfirmationAction>
+																		<ConfirmationAction
+																			onClick={() =>
+																				setPendingImplementationSession(
+																					null,
+																				)
+																			}
+																			disabled={
+																				isLoading ||
+																				isStartingImplementationSession
+																			}
+																			variant="outline"
+																			className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
+																		>
+																			<XCircle className="mr-2 h-4 w-4" />
+																			Cancel
+																		</ConfirmationAction>
+																	</ConfirmationActions>
+																</ConfirmationRequest>
+															</Confirmation>
+														)}
+
+														{pendingSkillDraft?.messageId ===
+															message.id && (
+															<Confirmation
+																approvalState="requested"
+																className="mt-3"
+															>
+																<ConfirmationTitle>
+																	<ConfirmationIcon />
+																	Save
+																	reusable
+																	Skill
+																</ConfirmationTitle>
+																<ConfirmationDescription>
+																	Review the
+																	Skill
+																	metadata
+																	before
+																	saving.
+																	Fabric will
+																	not add
+																	automation
+																	triggers
+																	unless you
+																	choose to
+																	after
+																	saving.
+																</ConfirmationDescription>
+																<div className="mt-3 space-y-3 rounded-lg border border-border/70 bg-background/70 p-3 text-xs">
+																	<div className="grid gap-2 sm:grid-cols-2">
+																		<div>
+																			<p className="font-medium text-foreground">
+																				Name
+																			</p>
+																			<p className="text-muted-foreground">
+																				{
+																					pendingSkillDraft.name
+																				}
+																			</p>
+																		</div>
+																		<div>
+																			<p className="font-medium text-foreground">
+																				Scope
+																			</p>
+																			<p className="text-muted-foreground">
+																				{pendingSkillDraft.scope ===
+																				"ORGANIZATION"
+																					? "Organization"
+																					: "Personal"}
+																			</p>
+																		</div>
+																	</div>
+																	<div>
+																		<p className="font-medium text-foreground">
+																			Description
+																		</p>
+																		<p className="text-muted-foreground">
+																			{
+																				pendingSkillDraft.description
+																			}
+																		</p>
+																	</div>
+																	<div>
+																		<p className="font-medium text-foreground">
+																			Tags
+																		</p>
+																		<div className="mt-1 flex flex-wrap gap-1">
+																			{pendingSkillDraft.tags.map(
+																				(
+																					tag,
+																				) => (
+																					<Badge
+																						key={
+																							tag
+																						}
+																						variant="secondary"
+																						className="text-[10px]"
+																					>
+																						{
+																							tag
+																						}
+																					</Badge>
+																				),
+																			)}
+																		</div>
+																	</div>
+																</div>
+																<ConfirmationRequest>
+																	<ConfirmationActions>
+																		<ConfirmationAction
+																			onClick={
+																				rowActions.saveApprovedSkill
+																			}
+																			disabled={
+																				isLoading ||
+																				isSavingSkillDraft
+																			}
+																			className="bg-green-600 text-white hover:bg-green-700"
+																		>
+																			<CheckCircle2 className="mr-2 h-4 w-4" />
+																			Save
+																			Skill
+																		</ConfirmationAction>
+																		<ConfirmationAction
+																			onClick={() =>
+																				setPendingSkillDraft(
+																					null,
+																				)
+																			}
+																			disabled={
+																				isLoading ||
+																				isSavingSkillDraft
+																			}
+																			variant="outline"
+																			className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
+																		>
+																			<XCircle className="mr-2 h-4 w-4" />
+																			Cancel
+																		</ConfirmationAction>
+																	</ConfirmationActions>
+																</ConfirmationRequest>
+															</Confirmation>
+														)}
+
+														{savedSkillAutomationPrompt && (
+															<Confirmation
+																approvalState="requested"
+																className="mt-3"
+															>
+																<ConfirmationTitle>
+																	<ConfirmationIcon />
+																	Add triage
+																	automation
+																	trigger
+																</ConfirmationTitle>
+																<ConfirmationDescription>
+																	Fabric can
+																	tag this
+																	Skill so the
+																	existing
+																	column
+																	automation
+																	runs it when
+																	a feature
+																	enters a
+																	matching
+																	column.
+																</ConfirmationDescription>
+																<div className="mt-3 rounded-lg border border-border/70 bg-background/70 p-3 text-xs">
+																	<p className="font-medium text-foreground">
+																		{
+																			savedSkillAutomationPrompt.skillName
+																		}
+																	</p>
+																	<label className="mt-3 block text-[11px] font-medium text-muted-foreground">
+																		Column/tag
+																		to
+																		trigger
+																		on
+																		<input
+																			value={
+																				savedSkillAutomationPrompt.columnTag
+																			}
+																			onChange={(
+																				event,
+																			) =>
+																				setSavedSkillAutomationPrompt(
+																					(
+																						prev,
+																					) =>
+																						prev
+																							? {
+																									...prev,
+																									columnTag:
+																										event
+																											.target
+																											.value,
+																								}
+																							: prev,
+																				)
+																			}
+																			className="mt-1 h-8 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+																			placeholder="triage"
+																		/>
+																	</label>
+																</div>
+																<ConfirmationRequest>
+																	<ConfirmationActions>
+																		<ConfirmationAction
+																			onClick={
+																				rowActions.saveAutomationTag
+																			}
+																			disabled={
+																				isLoading ||
+																				isSavingAutomationTag
+																			}
+																			className="bg-green-600 text-white hover:bg-green-700"
+																		>
+																			<CheckCircle2 className="mr-2 h-4 w-4" />
+																			Save
+																			trigger
+																		</ConfirmationAction>
+																		<ConfirmationAction
+																			onClick={() =>
+																				setSavedSkillAutomationPrompt(
+																					null,
+																				)
+																			}
+																			disabled={
+																				isLoading ||
+																				isSavingAutomationTag
+																			}
+																			variant="outline"
+																		>
+																			Skip
+																		</ConfirmationAction>
+																	</ConfirmationActions>
+																</ConfirmationRequest>
+															</Confirmation>
+														)}
+
+														{/* Workflow Execution Confirmation - using AI Elements Confirmation component */}
+														{pendingConfirmation &&
+															pendingConfirmation.messageId ===
+																message.id && (
+																<Confirmation
+																	approvalState="requested"
+																	className="mt-3"
+																>
+																	<ConfirmationTitle>
+																		<ConfirmationIcon />
 																		Execute
-																	</ConfirmationAction>
-																	<ConfirmationAction
-																		onClick={
-																			handleDeclineExecution
+																		Workflow:{" "}
+																		{
+																			pendingConfirmation.workflowName
 																		}
-																		disabled={
-																			isLoading ||
-																			isExecutingWorkflow
-																		}
-																		variant="outline"
-																		className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
-																	>
-																		<XCircle className="h-4 w-4 mr-2" />
-																		Cancel
-																	</ConfirmationAction>
-																</ConfirmationActions>
-															</ConfirmationRequest>
-														</Confirmation>
-													)}
-											</MessageContent>
-										</Message>
-										{captionNames.length > 0 && (
-											<div className="-mt-1 mb-2 flex flex-wrap justify-end gap-x-3 gap-y-0.5 px-1 text-[11px] text-muted-foreground/70">
-												{captionNames.map((name) => (
-													<span
-														key={name}
-														className="inline-flex items-center gap-1"
-													>
-														<Paperclip
-															className="h-2.5 w-2.5"
-															aria-hidden="true"
-														/>
-														<span className="max-w-[220px] truncate">
-															{name}
-														</span>
-													</span>
-												))}
-											</div>
-										)}
-									</Fragment>
-								);
-							})}
+																	</ConfirmationTitle>
+																	{pendingConfirmation.workflowDescription && (
+																		<ConfirmationDescription>
+																			{
+																				pendingConfirmation.workflowDescription
+																			}
+																		</ConfirmationDescription>
+																	)}
+																	<ConfirmationRequest>
+																		<ConfirmationActions>
+																			<ConfirmationAction
+																				onClick={
+																					rowActions.confirmExecution
+																				}
+																				disabled={
+																					isLoading ||
+																					isExecutingWorkflow
+																				}
+																				className="bg-green-600 hover:bg-green-700 text-white"
+																			>
+																				<CheckCircle2 className="h-4 w-4 mr-2" />
+																				Execute
+																			</ConfirmationAction>
+																			<ConfirmationAction
+																				onClick={
+																					rowActions.declineExecution
+																				}
+																				disabled={
+																					isLoading ||
+																					isExecutingWorkflow
+																				}
+																				variant="outline"
+																				className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
+																			>
+																				<XCircle className="h-4 w-4 mr-2" />
+																				Cancel
+																			</ConfirmationAction>
+																		</ConfirmationActions>
+																	</ConfirmationRequest>
+																</Confirmation>
+															)}
+													</MessageContent>
+												</Message>
+												{captionNames.length > 0 && (
+													<div className="-mt-1 mb-2 flex flex-wrap justify-end gap-x-3 gap-y-0.5 px-1 text-[11px] text-muted-foreground/70">
+														{captionNames.map(
+															(name) => (
+																<span
+																	key={name}
+																	className="inline-flex items-center gap-1"
+																>
+																	<Paperclip
+																		className="h-2.5 w-2.5"
+																		aria-hidden="true"
+																	/>
+																	<span className="max-w-[220px] truncate">
+																		{name}
+																	</span>
+																</span>
+															),
+														)}
+													</div>
+												)}
+											</Fragment>
+										);
+									}}
+								/>
+							))}
 
 							{/* Loading indicator - "AI is thinking..." message */}
 							{/* Only show if loading AND no streaming assistant message exists */}

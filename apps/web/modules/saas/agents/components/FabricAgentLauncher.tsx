@@ -58,6 +58,27 @@ import {
 } from "react";
 import { toast } from "sonner";
 
+/**
+ * The attached project's name when the launch context carried only its id
+ * (review F46). Reads "Project" until the name arrives — never the raw id.
+ */
+function LauncherProjectName({
+	projectId,
+	organizationId,
+}: {
+	projectId: string;
+	organizationId: string | null;
+}) {
+	const { data } = useQuery({
+		...orpc.projects.get.queryOptions({
+			input: { id: projectId, organizationId },
+		}),
+		enabled: Boolean(projectId),
+		staleTime: 5 * 60_000,
+	});
+	return <>{data?.project?.name || "Project"}</>;
+}
+
 function LauncherChatLoading() {
 	return (
 		<div className="flex flex-1 items-center justify-center p-8 text-sm text-muted-foreground">
@@ -717,10 +738,12 @@ function FabricAgentLauncherSheet({
 		launchContext?.projectName || launchContext?.projectId
 			? {
 					label: "Project",
-					value:
-						launchContext.projectName ??
-						launchContext.projectId ??
-						"",
+					value: launchContext.projectName ?? (
+						<LauncherProjectName
+							projectId={launchContext.projectId ?? ""}
+							organizationId={organizationId ?? null}
+						/>
+					),
 				}
 			: null,
 		launchContext?.storyIdentifier || launchContext?.storyTitle
@@ -745,7 +768,7 @@ function FabricAgentLauncherSheet({
 						.join(" · "),
 				}
 			: null,
-	].filter(Boolean) as Array<{ label: string; value: string }>;
+	].filter(Boolean) as Array<{ label: string; value: React.ReactNode }>;
 
 	// Build code context chips separately
 	const codeContextChips: Array<{
