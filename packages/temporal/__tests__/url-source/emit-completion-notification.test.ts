@@ -79,7 +79,7 @@ describe("emitCompletionNotification — COMPLETED success path", () => {
 			category: "CONTEXT_INDEXING_COMPLETED",
 			title: "Indexed example.com/docs",
 			snippet: "12 pages ready for AI",
-			link: "/app/projects/proj-1/context",
+			link: "/app/projects/proj-1?tab=context",
 			projectId: "proj-1",
 			dedupeKey: "context-indexing-completed:ctx-1",
 		});
@@ -107,7 +107,7 @@ describe("emitCompletionNotification — COMPLETED success path", () => {
 
 		expect(mockNotificationCreate.mock.calls[0][0].data).toMatchObject({
 			organizationId: "org-1",
-			link: "/app/acme/projects/proj-1/context",
+			link: "/app/acme/projects/proj-1?tab=context",
 		});
 	});
 
@@ -130,7 +130,7 @@ describe("emitCompletionNotification — COMPLETED success path", () => {
 		// link defaults to personal form since the slug couldn't be resolved.
 		expect(mockNotificationCreate.mock.calls[0][0].data).toMatchObject({
 			organizationId: "org-1",
-			link: "/app/projects/proj-1/context",
+			link: "/app/projects/proj-1?tab=context",
 		});
 	});
 });
