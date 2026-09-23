@@ -1,5 +1,14 @@
 # @fabricorg/cli
 
+## 0.3.6
+
+### Patch Changes
+
+- 5bb7b31: The Fabric CLI can now sync a folder of knowledge files into a project's Context with `fabric context push <dir> --project <id>`, sending only the files that changed since the last push and never overwriting a version someone else changed on the server.
+- Updated dependencies [5bb7b31]
+  - @fabricorg/sdk@0.3.5
+  - @fabricorg/sdk-mcp@0.1.7
+
 ## 0.3.5
 
 ### Patch Changes
