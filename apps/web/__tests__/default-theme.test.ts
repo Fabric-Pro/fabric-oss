@@ -1,24 +1,32 @@
 /**
  * Pins the theme a visitor gets before they have ever chosen one.
  *
- * The app shipped `defaultTheme: "dark"`, so every new account — and every
- * signed-out marketing visitor on a fresh browser — landed in dark mode
- * regardless of what their OS asked for, which is not the first impression the
- * product wants to make (Fizzy #2359). The value now reads `"light"`.
+ * This value has now been wrong in both directions. It shipped as `"dark"`,
+ * which put every fresh browser in dark mode regardless of the operating
+ * system; Fizzy #2359 replaced that with `"light"`, which made the same
+ * mistake with the opposite colour. Fizzy #2518 settled it: the app defers to
+ * the operating system's `prefers-color-scheme` and only overrides it when
+ * someone has actually picked a theme. Any concrete value here is a
+ * regression, not a preference.
  *
  * A single word in `config/index.ts` is trivially reverted by a merge, a
  * copy-paste from an older branch, or a well-meaning "restore the old look"
- * edit, and nothing else in the suite would notice: the app renders fine either
- * way. So this is a deliberate exception to the house rule of testing behaviour
- * rather than implementation — the value IS the behaviour here, and pinning it
- * turns a silent regression into a red build.
+ * edit, and nothing else in the suite would notice: the app renders fine
+ * either way. So this is a deliberate exception to the house rule of testing
+ * behaviour rather than implementation — the value IS the behaviour here, and
+ * pinning it turns a silent regression into a red build.
  *
- * The second assertion is not redundant. `config/types.ts` types the default as
- * `Config["ui"]["enabledThemes"][number]`, which resolves to the *declared*
- * union `"light" | "dark"` — it does not track the array that is actually
- * configured. So narrowing `enabledThemes` to `["dark"]` while leaving
- * `defaultTheme: "light"` still compiles, and only the second assertion catches
- * a default nobody can select.
+ * The second assertion is not redundant. `config/types.ts` types the default
+ * as `Config["ui"]["enabledThemes"][number] | "system"`, a union of the
+ * *declared* theme names — it does not track the array that is actually
+ * configured. So narrowing `enabledThemes` to `["dark"]` still compiles, and
+ * only the second assertion catches a palette that cannot serve both arms of
+ * the system preference.
+ *
+ * Neither assertion can tell a configured `"system"` from an *honoured* one —
+ * both read configuration, and the provider is free to ignore it. That claim
+ * needs the real library resolving a real media query, and is made in
+ * `apps/web/__tests__/system-theme-resolution.test.tsx`.
  *
  * Deliberately imports the real `@repo/config` — mocking it here would pin the
  * mock, not the shipped configuration. The complementary check, that the
@@ -32,12 +40,16 @@ import { config } from "@repo/config";
 import { describe, expect, it } from "vitest";
 
 describe("default theme", () => {
-	it("defaults new visitors to the light theme", () => {
-		expect(config.ui.defaultTheme).toBe("light");
+	it("defers to the visitor's system preference", () => {
+		expect(config.ui.defaultTheme).toBe("system");
 	});
 
-	it("keeps the light theme selectable, so the default resolves", () => {
+	it("keeps both themes selectable, so either resolution lands", () => {
+		// "system" is not itself renderable: it resolves to one of these two.
+		// Dropping either one leaves half the visitors with a default that
+		// cannot be applied.
 		expect(config.ui.enabledThemes).toContain("light");
+		expect(config.ui.enabledThemes).toContain("dark");
 	});
 });
 

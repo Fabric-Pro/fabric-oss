@@ -132,8 +132,12 @@ export const config = {
 	ui: {
 		// the themes that should be available in the app
 		enabledThemes: ["light", "dark"],
-		// the default theme applied when a browser has no stored preference
-		defaultTheme: "light",
+		// What a browser gets before anyone has chosen a theme in it. "system"
+		// is not one of the themes above -- it defers to the operating system's
+		// `prefers-color-scheme`, which next-themes resolves into one of them
+		// before first paint. A concrete value here would override the OS
+		// instead, which is the behaviour Fizzy #2518 reverted.
+		defaultTheme: "system",
 		// the saas part of the application
 		saas: {
 			// whether the saas part should be enabled (otherwise all routes will be redirect to the marketing page)

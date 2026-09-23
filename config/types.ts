@@ -69,7 +69,10 @@ export type Config = {
 	};
 	ui: {
 		enabledThemes: Array<"light" | "dark">;
-		defaultTheme: Config["ui"]["enabledThemes"][number];
+		// "system" is deliberately not a member of `enabledThemes`: it is not a
+		// theme the app can render, it is an instruction to follow the
+		// operating system and resolve to one of the themes that are.
+		defaultTheme: Config["ui"]["enabledThemes"][number] | "system";
 		saas: {
 			enabled: boolean;
 			useSidebarLayout: boolean;
