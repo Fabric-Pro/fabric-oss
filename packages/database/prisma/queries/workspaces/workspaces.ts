@@ -565,8 +565,9 @@ export async function hasWorkspaceAccess(
  * It is a tenancy filter, not an access check: an organization workspace
  * passes for any user named here, member or not. A request boundary that
  * accepts workspace ids from a caller still needs `hasWorkspaceAccess` (or
- * {@link getWorkspaceAccessContext}); this only keeps ids that a tenant-checked
- * row already carried from reaching outside that tenant.
+ * {@link getWorkspaceAccessContext}), which {@link filterAccessibleWorkspaceIds}
+ * adds; this only keeps ids that a tenant-checked row already carried from
+ * reaching outside that tenant.
  */
 export async function filterWorkspaceIdsForTenant(params: {
 	workspaceIds: string[];
@@ -586,6 +587,63 @@ export async function filterWorkspaceIdsForTenant(params: {
 		userId: params.userId,
 		organizationId: params.organizationId,
 	});
+}
+
+/**
+ * Split workspace ids a caller supplied into those the caller may read inside
+ * one tenant and those it may not.
+ *
+ * This is the request-boundary counterpart of
+ * {@link filterWorkspaceIdsForTenant}. That filter is for ids a tenant-checked
+ * row already carried, and it deliberately checks nothing about the user. Ids
+ * that arrive in a request body, or from an attachment list the request named,
+ * carry no such guarantee: a caller can name any workspace id it has seen, so
+ * each one also has to pass {@link hasWorkspaceAccess}.
+ *
+ * The tenancy rule runs first and is the same one, so an unknown id, another
+ * organization's workspace, and a personal workspace outside its owner's
+ * personal tenant are dropped exactly as the tenancy filter drops them. The
+ * survivors are then kept only when the user can open them, which for an
+ * organization workspace means current membership of that organization plus
+ * ownership or a place in one of the workspace's groups. `dropped` holds both
+ * kinds of refusal. Order is preserved and repeats are collapsed in both
+ * lists, so the caller can use `allowed` in place of its input and log
+ * `dropped` as it stands.
+ */
+export async function filterAccessibleWorkspaceIds(params: {
+	workspaceIds: string[];
+	userId: string;
+	organizationId: string | null | undefined;
+}): Promise<{ allowed: string[]; dropped: string[] }> {
+	const inTenant = await filterWorkspaceIdsForTenant(params);
+	if (inTenant.allowed.length === 0) {
+		return inTenant;
+	}
+
+	const reachable = await Promise.all(
+		inTenant.allowed.map((workspaceId) =>
+			hasWorkspaceAccess(workspaceId, params.userId),
+		),
+	);
+	const allowed = inTenant.allowed.filter((_, index) => reachable[index]);
+	if (allowed.length === inTenant.allowed.length) {
+		return inTenant;
+	}
+
+	const allowedIds = new Set(allowed);
+	const dropped: string[] = [];
+	const seen = new Set<string>();
+	for (const workspaceId of params.workspaceIds) {
+		if (seen.has(workspaceId)) {
+			continue;
+		}
+		seen.add(workspaceId);
+		if (!allowedIds.has(workspaceId)) {
+			dropped.push(workspaceId);
+		}
+	}
+
+	return { allowed, dropped };
 }
 
 /**

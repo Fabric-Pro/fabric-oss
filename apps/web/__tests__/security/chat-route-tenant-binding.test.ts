@@ -1,13 +1,23 @@
 /**
- * The two non-oRPC chat entry points (`/api/copilotkit` and the direct-chat
- * stream) receive `organizationId` from the client. Both must bind it to the
- * caller's memberships through `resolveRequestedOrganization` before anything
- * tenant-scoped reads it, and neither may fall back to silently substituting
- * the session's active organization.
+ * The non-oRPC chat entry points (`/api/copilotkit`, the direct-chat stream
+ * and the orchestrator stream) receive `organizationId` and workspace ids from
+ * the client.
  *
- * The resolver itself is unit-tested in `@repo/api`; these assertions pin the
- * routes to it so a refactor cannot quietly reintroduce the raw query-string
- * read (Fizzy security review, September 2026).
+ * `/api/copilotkit` and the direct-chat stream must bind the organization to
+ * the caller's memberships through `resolveRequestedOrganization` before
+ * anything tenant-scoped reads it, and neither may fall back to silently
+ * substituting the session's active organization. The orchestrator stream
+ * checks membership of the requested organization directly.
+ *
+ * Both streams must then narrow the workspace ids, whether sent in the body or
+ * read from the conversation's attachments, through
+ * `filterAccessibleWorkspaceIds`, so retrieval only reads workspaces the
+ * caller can open inside the tenant the turn runs in.
+ *
+ * The resolver and the workspace filter are unit-tested in `@repo/api` and
+ * `@repo/database`; these assertions pin the routes to them so a refactor
+ * cannot quietly reintroduce the raw query-string read or pass workspace ids
+ * straight through (Fizzy security review, September 2026).
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,6 +28,16 @@ const STREAM_ROUTE = join(
 	process.cwd(),
 	"app/api/agents/fabric-ai/stream/route.ts",
 );
+const ORCHESTRATOR_STREAM_ROUTE = join(
+	process.cwd(),
+	"app/api/agents/fabric-ai/orchestrator-temporal/stream/route.ts",
+);
+
+/** The `filterAccessibleWorkspaceIds({ ... })` call, arguments included. */
+function workspaceFilterCall(source: string): { at: number; call: string } {
+	const at = source.indexOf("filterAccessibleWorkspaceIds({");
+	return { at, call: source.slice(at, source.indexOf("});", at) + 3) };
+}
 
 function read(path: string): string {
 	return readFileSync(path, "utf-8");
@@ -83,29 +103,72 @@ describe("direct-chat stream organization binding", () => {
 		);
 	});
 
-	it("filters workspace ids through hasWorkspaceAccess before retrieval", () => {
+	// `hasWorkspaceAccess` takes no organization, so access alone would admit a
+	// workspace the user can open in another organization. The shared filter
+	// makes the exact, null-aware tenant comparison first and the access check
+	// second; it must run against the resolved organization, not the raw one.
+	it("filters workspace ids through filterAccessibleWorkspaceIds after the organization is resolved", () => {
 		const resolveAt = source.indexOf("resolveRequestedOrganization({");
-		const accessMatch = source.match(
-			/hasWorkspaceAccess\(\s*workspaceId,\s*userId,?\s*\)/,
-		);
-		expect(accessMatch).not.toBeNull();
-		expect(accessMatch?.index ?? -1).toBeGreaterThan(resolveAt);
+		const { at, call } = workspaceFilterCall(source);
+		expect(resolveAt).toBeGreaterThan(-1);
+		expect(at).toBeGreaterThan(resolveAt);
+		expect(call).toMatch(/\bworkspaceIds\b/);
+		expect(call).toMatch(/\buserId\b/);
+		expect(call).toMatch(/\borganizationId\b/);
+		expect(call).not.toContain("rawOrganizationId");
 	});
 
-	// `hasWorkspaceAccess` takes no organization (it used to accept one and
-	// ignore it), so the tenant binding is this comparison of the workspace's
-	// own organization with the resolved one — exact and null-aware, and made
-	// before the access check admits the workspace.
-	it("binds each workspace to the resolved organization before admitting it", () => {
-		const resolveAt = source.indexOf("resolveRequestedOrganization({");
-		const tenantMatch = source.match(
-			/\(workspaceTenants\.get\(workspaceId\)\s*\?\?\s*null\)\s*!==\s*\(organizationId\s*\?\?\s*null\)/,
+	it("continues the turn with only the ids the filter allowed", () => {
+		const { at } = workspaceFilterCall(source);
+		const assignAt = source.indexOf("workspaceIds = allowed;");
+		expect(assignAt).toBeGreaterThan(at);
+		// No hand-rolled copy of the rule left beside the shared helper.
+		expect(source).not.toContain("workspaceTenants");
+	});
+});
+
+describe("orchestrator stream workspace binding", () => {
+	const source = read(ORCHESTRATOR_STREAM_ROUTE);
+	const membershipAt = source.indexOf("db.member.findFirst(");
+	const workflowInputAt = source.indexOf(
+		"const workflowInput: OrchestratorWorkflowInput = {",
+	);
+	const workflowInputLiteral = source.slice(
+		workflowInputAt,
+		source.indexOf("\n\t\t};", workflowInputAt),
+	);
+
+	it("filters workspace ids after the organization membership check and before the workflow input is built", () => {
+		const { at } = workspaceFilterCall(source);
+		expect(membershipAt).toBeGreaterThan(-1);
+		expect(workflowInputAt).toBeGreaterThan(-1);
+		expect(at).toBeGreaterThan(membershipAt);
+		expect(workflowInputAt).toBeGreaterThan(at);
+	});
+
+	it("binds the filter to the caller and the request's organization", () => {
+		const { call } = workspaceFilterCall(source);
+		expect(call).toMatch(/\bworkspaceIds\b/);
+		expect(call).toMatch(/\buserId\b/);
+		expect(call).toContain("organizationId: organizationId ?? null");
+	});
+
+	it("hands the workflow only the filtered list", () => {
+		const { at } = workspaceFilterCall(source);
+		const assignments = [...source.matchAll(/\bworkspaceIds\s*=[^=]/g)].map(
+			(match) => match.index ?? -1,
 		);
-		const accessAt =
-			source.match(/hasWorkspaceAccess\(\s*workspaceId,\s*userId,?\s*\)/)
-				?.index ?? -1;
-		expect(tenantMatch).not.toBeNull();
-		expect(tenantMatch?.index ?? -1).toBeGreaterThan(resolveAt);
-		expect(tenantMatch?.index ?? -1).toBeLessThan(accessAt);
+		// The last write to `workspaceIds` is the filter's result, and nothing
+		// after the filter rewrites it before the workflow input reads it.
+		const assignAt = source.indexOf("workspaceIds = allowed;");
+		expect(assignAt).toBeGreaterThan(at);
+		expect(assignAt).toBeLessThan(workflowInputAt);
+		expect(assignments.filter((index) => index > at)).toEqual([assignAt]);
+		expect(workflowInputLiteral).toMatch(/\n\s*workspaceIds,\n/);
+	});
+
+	it("does not trust the body's workspace ids to be an array of strings", () => {
+		expect(source).toMatch(/Array\.isArray\(rawWorkspaceIds\)/);
+		expect(source).not.toMatch(/workspaceIds:\s*providedWorkspaceIds\s*=/);
 	});
 });

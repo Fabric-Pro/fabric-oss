@@ -98,6 +98,11 @@ function getRedisUrl(): string | null {
 	return null;
 }
 
+// Bounds on the body's `workspaceIds`, matching `streamRequestSchema` in the
+// direct-chat stream (`../../stream/route.ts`).
+const MAX_WORKSPACE_IDS = 20;
+const MAX_WORKSPACE_ID_LENGTH = 200;
+
 interface StreamEvent {
 	type: string;
 	[key: string]: unknown;
@@ -137,7 +142,7 @@ export async function POST(request: NextRequest) {
 			prioritizedIntegrationIds,
 			policyContext,
 			replayTrajectoryId,
-			workspaceIds: providedWorkspaceIds = [],
+			workspaceIds: rawWorkspaceIds,
 			projectId: providedProjectId,
 			conversationId,
 			systemPrompt,
@@ -150,6 +155,36 @@ export async function POST(request: NextRequest) {
 			surface,
 			organizationSlug,
 		} = body;
+
+		// The body is parsed by hand, so its workspace ids are whatever the
+		// client sent. Keep only string entries; the access filter below
+		// decides which of those the turn may read.
+		const providedWorkspaceIds: string[] = Array.isArray(rawWorkspaceIds)
+			? rawWorkspaceIds.filter(
+					(workspaceId: unknown): workspaceId is string =>
+						typeof workspaceId === "string",
+				)
+			: [];
+		// Same bounds the direct-chat stream's request schema puts on this
+		// field. The access filter runs one lookup per id, so an unbounded
+		// list would be a database fan-out any member could trigger.
+		if (
+			providedWorkspaceIds.length > MAX_WORKSPACE_IDS ||
+			providedWorkspaceIds.some(
+				(workspaceId) => workspaceId.length > MAX_WORKSPACE_ID_LENGTH,
+			)
+		) {
+			return new Response(
+				JSON.stringify({
+					error: "Invalid request body",
+					message: `workspaceIds accepts at most ${MAX_WORKSPACE_IDS} ids of at most ${MAX_WORKSPACE_ID_LENGTH} characters`,
+				}),
+				{
+					status: 400,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
 
 		// Debug: Log workspace IDs received
 		console.log("[Orchestrator API] Received request context:", {
@@ -165,10 +200,7 @@ export async function POST(request: NextRequest) {
 		// Fetch workspace IDs from database if not provided but conversation exists
 		// This handles the race condition where frontend sends request before query returns
 		let workspaceIds = providedWorkspaceIds;
-		if (
-			(!providedWorkspaceIds || providedWorkspaceIds.length === 0) &&
-			conversationId
-		) {
+		if (providedWorkspaceIds.length === 0 && conversationId) {
 			console.log(
 				"[Orchestrator API] Fetching attached workspaces for conversation:",
 				{ conversationId },
@@ -315,6 +347,31 @@ export async function POST(request: NextRequest) {
 					},
 				);
 			}
+		}
+
+		// Workspace ids come from the client or from a conversation's
+		// attachments, and every workspace retrieval path in the workflow
+		// reads whatever lands in its input. Keep only the workspaces the
+		// caller can open inside the organization this turn runs in, now that
+		// membership of it is established. Inaccessible ones are dropped (and
+		// logged) rather than failing the turn, as the direct-chat stream does.
+		if (workspaceIds.length > 0) {
+			const { filterAccessibleWorkspaceIds } = await import(
+				"@repo/database"
+			);
+			const { allowed, dropped: denied } =
+				await filterAccessibleWorkspaceIds({
+					workspaceIds,
+					userId,
+					organizationId: organizationId ?? null,
+				});
+			if (denied.length > 0) {
+				console.warn(
+					"[Orchestrator Stream] Dropping workspaces the caller cannot access",
+					{ userId, denied },
+				);
+			}
+			workspaceIds = allowed;
 		}
 
 		// Get AI model and provider config using centralized entry point.
