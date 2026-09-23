@@ -3952,7 +3952,7 @@
 					"noFindings": "Reviewed {when} — no coverage gaps found.",
 					"heading": "Coverage gaps",
 					"model": "Reviewed by {model}",
-					"noProvider": "No AI provider is configured for this workspace, so the review could not run. Set one up in Settings ▸ AI Assistant.",
+					"noProvider": "No AI provider is configured for this project's organization, so the review could not run. An organization admin can add one in Settings ▸ AI Providers.",
 					"dropped": "{count, plural, =1 {# finding was} other {# findings were}} discarded for citing a file that is not in this change.",
 					"noDiff": "Fabric stored no diff for this pull request, so there is nothing to review.",
 					"accept": "Accept",

@@ -49,10 +49,6 @@ export const analysePullRequestQaProcedure = tenantProtectedProcedure
 			projectId: input.projectId,
 			reviewId: input.id,
 			userId: context.user.id,
-			// The project's own tenant, resolved by the lens from the project.
-			// Deliberately not taken from the caller — see the ratchet in
-			// `input-org-unverified-ratchet.test.ts`.
-			organizationId: null,
 		});
 		if (!result.configured) {
 			// Null is the "no AI provider configured" state, not a failure.

@@ -19,6 +19,7 @@ import {
 import {
 	getProjectImportGraph,
 	getProjectQaSettings,
+	getProjectTenantId,
 	getPullRequestReview,
 	listFeaturesForPrReview,
 	type PullRequestReviewFindingRow,
@@ -51,7 +52,6 @@ export async function runQaLens(input: {
 	projectId: string;
 	reviewId: string;
 	userId: string;
-	organizationId: string | null;
 }): Promise<QaLensResult> {
 	const settings = await getProjectQaSettings(input.projectId);
 	if (!settings.prReviewQaLensEnabled) {
@@ -80,6 +80,15 @@ export async function runQaLens(input: {
 		});
 	}
 
+	// The provider, the spend ledger and any usage cap all follow this tenant,
+	// so it comes from the project row and never from a caller. The button used
+	// to pass null here, which resolved the operator's personal context: an
+	// organization with a provider configured was told it had none.
+	const project = await getProjectTenantId(input.projectId);
+	if (!project) {
+		throw new ORPCError("NOT_FOUND", { message: "Project not found" });
+	}
+
 	const features = await listFeaturesForPrReview({
 		projectId: input.projectId,
 		limit: PR_REVIEW_MAX_FEATURES,
@@ -94,10 +103,7 @@ export async function runQaLens(input: {
 		strategyDepth: settings.strategyDepth,
 		context: {
 			userId: input.userId,
-			// The project's own tenant, resolved server-side by the query layer.
-			// Deliberately not taken from the caller — see the ratchet in
-			// `input-org-unverified-ratchet.test.ts`.
-			organizationId: input.organizationId,
+			organizationId: project.organizationId,
 			projectId: input.projectId,
 		},
 	});
