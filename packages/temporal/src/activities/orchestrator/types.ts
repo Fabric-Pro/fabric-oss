@@ -203,6 +203,20 @@ export interface ExecuteMcpToolInput {
 	 * grant approved for one chat session cannot authorize another.
 	 */
 	executionId?: string;
+	/**
+	 * Chat conversation the run belongs to. When set, runtime authority binds
+	 * to the conversation instead of the turn's `executionId`, so a grant the
+	 * user approved keeps working on the next message.
+	 */
+	conversationId?: string;
+	/**
+	 * Ask for runtime authority before a WRITE runs: on a miss the tool does
+	 * not run, a PENDING authority session is raised, and the result carries
+	 * `authorityRequired` for the caller to put in front of the user. Covers
+	 * generic MCP tools and the OAuth executors; integration tools always
+	 * check, and with this set they raise the session too.
+	 */
+	requestRuntimeAuthority?: boolean;
 	/** Letta agent ID for tool result caching */
 	lettaAgentId?: string | null;
 	/** Attached image URLs (fallback for image tools when not in args) */
@@ -242,6 +256,21 @@ export interface ExecuteMcpToolOutput {
 	mcpAppResourceUri?: string;
 	/** MCP App: MCP config ID for proxying tool calls back to the server */
 	mcpAppConfigId?: string;
+	/**
+	 * The tool did not run: it needs runtime authority the run does not hold.
+	 * Only returned when the caller set `requestRuntimeAuthority`.
+	 */
+	authorityRequired?: RuntimeAuthorityRequest;
+}
+
+export interface RuntimeAuthorityRequest {
+	/** PENDING session to approve; absent when none could be raised */
+	pendingSessionId?: string;
+	providerKey: string;
+	/** Human name of the provider, for the approval prompt */
+	providerDisplayName: string;
+	accessLevel: "READ" | "WRITE";
+	toolName: string;
 }
 
 export interface ExecuteAgentAsToolInput {

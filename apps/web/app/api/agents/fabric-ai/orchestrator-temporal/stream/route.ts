@@ -24,7 +24,6 @@ import { CARRIED_OVER_MARKER_PREFIX, db } from "@repo/database";
 import { metricsTracker } from "@repo/observability";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import type {
-	ExecutionMode,
 	OrchestratorProgressUpdate,
 	OrchestratorStepResult,
 	OrchestratorWorkflowInput,
@@ -37,6 +36,10 @@ import { REDIS_KEEPALIVE_MS } from "@repo/utils/redis-connection";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
+import {
+	EXECUTION_MODE_NAMES,
+	parseExecutionMode,
+} from "../../orchestrator-execution-mode";
 import { unionDefaultMcpConfigIds } from "../../union-default-mcp-config-ids";
 
 const POLL_INTERVAL = 200; // Poll every 200ms for faster updates
@@ -131,7 +134,7 @@ export async function POST(request: NextRequest) {
 			history = [],
 			executionId: requestedExecutionId,
 			organizationId,
-			executionMode = "balanced", // All modes now use iterative execution with mode-specific limits
+			executionMode: requestedExecutionMode = "balanced", // All modes now use iterative execution with mode-specific limits
 			enabledMcpConfigIds = null,
 			enabledAgentIds = null,
 			enabledFabricToolIds = null,
@@ -144,7 +147,7 @@ export async function POST(request: NextRequest) {
 			replayTrajectoryId,
 			workspaceIds: rawWorkspaceIds,
 			projectId: providedProjectId,
-			conversationId,
+			conversationId: requestedConversationId,
 			systemPrompt,
 			instanceId,
 			chatId,
@@ -184,6 +187,50 @@ export async function POST(request: NextRequest) {
 					headers: { "Content-Type": "application/json" },
 				},
 			);
+		}
+
+		const executionMode = parseExecutionMode(requestedExecutionMode);
+		if (!executionMode) {
+			return new Response(
+				JSON.stringify({
+					error: "Invalid request body",
+					message: `executionMode must be one of: ${EXECUTION_MODE_NAMES.join(", ")}`,
+				}),
+				{
+					status: 400,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
+
+		// A conversation id is only a lookup key for the caller's own
+		// conversations. Its attached workspaces and project, its carried-over
+		// summary, and the runtime-authority grants bound to it must not be
+		// reachable by sending another user's id, so an id the caller does not
+		// own is ignored — not adopted, not forwarded to the workflow. Same
+		// check as the direct-chat stream.
+		let conversationId: string | undefined =
+			typeof requestedConversationId === "string" &&
+			requestedConversationId
+				? requestedConversationId
+				: undefined;
+		if (conversationId) {
+			const owned = await db.agentConversation.findFirst({
+				where: { id: conversationId, userId },
+				select: { id: true, organizationId: true },
+			});
+			// Exact tenant equality, null included: a conversation from one
+			// organization must not feed another organization's turn.
+			const crossTenant =
+				owned !== null &&
+				(owned.organizationId ?? null) !== (organizationId ?? null);
+			if (!owned || crossTenant) {
+				console.warn(
+					"[Orchestrator Stream] Conversation is not accessible to the caller; ignoring it",
+					{ userId, conversationId },
+				);
+				conversationId = undefined;
+			}
 		}
 
 		// Debug: Log workspace IDs received
@@ -604,7 +651,7 @@ export async function POST(request: NextRequest) {
 			history: effectiveHistory,
 			userId,
 			organizationId,
-			executionMode: executionMode as ExecutionMode,
+			executionMode,
 			enabledMcpConfigIds: effectiveEnabledMcpConfigIds,
 			enabledAgentIds,
 			enabledFabricToolIds,

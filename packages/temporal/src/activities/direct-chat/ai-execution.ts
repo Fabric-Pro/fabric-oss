@@ -666,7 +666,11 @@ export async function executeDirectChatActivity(
 		enabledMcpConfigIds,
 		workspaceIds,
 		projectId,
+		conversationId,
 	} = input;
+	// A grant approved in this chat binds to the conversation, not the turn,
+	// so "approve, then ask again" does not prompt a second time.
+	const authorityRunId = conversationId ?? executionId;
 
 	logger.info("Executing direct chat", {
 		userId,
@@ -800,7 +804,7 @@ export async function executeDirectChatActivity(
 										providerDisplayName:
 											serverInfo.serverName,
 										runType: "AGENT_INSTANCE",
-										runId: executionId,
+										runId: authorityRunId,
 										toolName: serverInfo.originalName,
 									});
 

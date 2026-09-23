@@ -15,7 +15,11 @@
  * as an approval request.
  */
 
-import { checkAuthority, resolveCanonicalProviderKey } from "@repo/database";
+import {
+	checkAuthority,
+	ensureSensitiveOperationAuthority,
+	resolveCanonicalProviderKey,
+} from "@repo/database";
 import { getRegisteredOperationAccess } from "@repo/integrations/executor-registry";
 import {
 	hasReadToolPrefix,
@@ -131,7 +135,11 @@ export function classifyToolAccessLevel(toolName: string): "READ" | "WRITE" {
 	if (isContentCreationTool(lower)) {
 		return "READ";
 	}
-	if (hasReadToolPrefix(lower)) {
+	const snake = toSnakeLower(toolName).replace(/-/g, "_");
+	if (snake.split(/[^a-z0-9]+/).some((token) => MUTATING_TOKENS.has(token))) {
+		return "WRITE";
+	}
+	if (startsWithReadVerb(lower)) {
 		return "READ";
 	}
 	for (const prefix of WRITE_PREFIXES) {
@@ -139,12 +147,107 @@ export function classifyToolAccessLevel(toolName: string): "READ" | "WRITE" {
 			return "WRITE";
 		}
 	}
-	if (
-		toolNameReadCandidates(toSnakeLower(toolName)).some(hasReadToolPrefix)
-	) {
+	if (toolNameReadCandidates(snake).some(startsWithReadVerb)) {
+		return "READ";
+	}
+	if (isBareOrVendorReadVerb(lower)) {
 		return "READ";
 	}
 	return "WRITE"; // Conservative default
+}
+
+/**
+ * Read verbs this gate accepts on top of the shared `READ_TOOL_PREFIXES`.
+ * Kept here rather than in the shared list: Read-only mode answers a
+ * different question and widening its read set is a separate decision.
+ */
+const AUTHORITY_EXTRA_READ_VERBS = ["retrieve"] as const;
+
+function startsWithReadVerb(name: string): boolean {
+	return (
+		hasReadToolPrefix(name) ||
+		AUTHORITY_EXTRA_READ_VERBS.some(
+			(verb) =>
+				name.startsWith(`${verb}_`) || name.startsWith(`${verb}-`),
+		)
+	);
+}
+
+/**
+ * Verbs that make a name a write wherever they sit, as a whole token. This is
+ * the "a read verb and a write verb both appear" rule: `get_or_create_page`
+ * and `search_and_replace` start like reads but mutate. Whole tokens, never
+ * substrings, so `list_created_issues` and `get_closed_cards` stay reads.
+ *
+ * `post`, `set`, `add`, `run`, `merge`, `import` and `patch` are left out on
+ * purpose: each names a thing as often as an action (`get_post`,
+ * `get_workflow_run`, `get_merge_request`, `get_patch`), so as tokens they
+ * would turn real reads into writes. They still classify WRITE as a leading
+ * verb through `WRITE_PREFIXES`.
+ */
+const MUTATING_TOKENS = new Set([
+	"create",
+	"update",
+	"delete",
+	"remove",
+	"upload",
+	"send",
+	"write",
+	"move",
+	"insert",
+	"replace",
+	"duplicate",
+	"publish",
+	"push",
+	"submit",
+	"archive",
+	"transfer",
+	"assign",
+	"edit",
+	"close",
+	"cancel",
+]);
+
+/**
+ * Read verbs the prefix tests cannot see because nothing follows them: a bare
+ * `search` or `fetch`, and a vendor-hyphen name such as `notion-search`,
+ * where the verb is the last segment. Hyphen form only, and only two
+ * segments: `mark_read` or `fizzy_mark_notification_read` end in a read verb
+ * but are writes, and the first segment must not itself be a verb.
+ */
+const LEADING_NON_READ_VERBS = new Set([
+	...WRITE_PREFIXES,
+	...MUTATING_TOKENS,
+	"mark",
+	"toggle",
+	"clear",
+	"reset",
+	"sync",
+]);
+
+/** A bare read verb (`search`), tested through the shared prefix list. */
+function isReadVerb(word: string): boolean {
+	return /^[a-z0-9]+$/.test(word) && startsWithReadVerb(`${word}_`);
+}
+
+function isBareOrVendorReadVerb(lower: string): boolean {
+	if (isReadVerb(lower)) {
+		return true;
+	}
+	if (lower.includes("_")) {
+		const namespaceIdx = lower.lastIndexOf("__");
+		if (namespaceIdx < 0) {
+			return false;
+		}
+		return isBareOrVendorReadVerb(lower.slice(namespaceIdx + 2));
+	}
+	const segments = lower.split("-");
+	return (
+		segments.length === 2 &&
+		segments[0].length > 0 &&
+		!LEADING_NON_READ_VERBS.has(segments[0]) &&
+		isReadVerb(segments[1])
+	);
 }
 
 const ACCESS_LEVEL_RANK: Record<"READ" | "WRITE", number> = {
@@ -206,6 +309,90 @@ export interface AuthorityGateResult {
 	providerKey?: string;
 	/** Access level that was required */
 	requiredAccessLevel?: "READ" | "WRITE";
+	/**
+	 * The PENDING authority session the user can approve. Only set when the
+	 * caller asked for one (`requestIfMissing`) and the check was run-bound.
+	 */
+	pendingSessionId?: string;
+}
+
+type RunType = "ORCHESTRATOR" | "WORKFLOW";
+
+/**
+ * Find-or-create a PENDING session for a WRITE the run is not yet allowed to
+ * make, so there is something for the user to approve. Reuses a pending
+ * session this run already raised; READ and content-creation tools pass.
+ */
+async function requestAuthority(params: {
+	userId: string;
+	organizationId?: string;
+	providerKey: string;
+	providerType: "MCP" | "INTEGRATION";
+	providerRefId?: string;
+	providerDisplayName?: string;
+	accessLevel: "READ" | "WRITE";
+	toolName: string;
+	runType?: RunType;
+	runId?: string;
+}): Promise<AuthorityGateResult> {
+	const result = await ensureSensitiveOperationAuthority({
+		userId: params.userId,
+		organizationId: params.organizationId,
+		providerKey: params.providerKey,
+		accessLevel: params.accessLevel,
+		providerType: params.providerType,
+		providerRefId: params.providerRefId,
+		providerDisplayName: params.providerDisplayName ?? params.providerKey,
+		runType: params.runType,
+		runId: params.runId,
+		toolName: params.toolName,
+	});
+	if (result.authorized) {
+		return { authorized: true, grantId: result.grant?.id };
+	}
+	return {
+		authorized: false,
+		reason: result.reason,
+		providerKey: params.providerKey,
+		requiredAccessLevel: params.accessLevel,
+		pendingSessionId: result.pendingSessionId,
+	};
+}
+
+/**
+ * Runtime authority for a generic MCP tool about to run in a chat turn.
+ *
+ * Unlike `checkMcpToolAuthority` (which filters plan-step tool lists and must
+ * not raise a request per listed tool), this is called once, for the tool the
+ * model actually chose, and raises a PENDING session on a miss so the
+ * workflow can put an inline approval in front of the user.
+ */
+export async function ensureMcpToolAuthority(params: {
+	userId: string;
+	organizationId?: string;
+	serverKey: string;
+	serverDisplayName?: string;
+	configId?: string;
+	toolName: string;
+	runType?: RunType;
+	runId?: string;
+}): Promise<AuthorityGateResult> {
+	const accessLevel = classifyToolAccessLevel(params.toolName);
+	if (accessLevel === "READ") {
+		return { authorized: true };
+	}
+	return requestAuthority({
+		userId: params.userId,
+		organizationId: params.organizationId,
+		providerKey: resolveProviderKey(params.serverKey),
+		providerType: "MCP",
+		providerRefId: params.configId,
+		providerDisplayName: params.serverDisplayName,
+		accessLevel,
+		toolName: params.toolName,
+		runType: params.runType,
+		runId: params.runId,
+	});
 }
 
 /**
@@ -279,6 +466,13 @@ export async function checkIntegrationAuthority(params: {
 	operation: string;
 	runType?: "ORCHESTRATOR" | "WORKFLOW";
 	runId?: string;
+	/**
+	 * On a miss, raise (or reuse) a PENDING session for this run and return
+	 * its id, so the caller can ask the user instead of only failing. Opt-in:
+	 * plan steps raise their session up front in `checkStepAuthorityActivity`.
+	 */
+	requestIfMissing?: boolean;
+	providerDisplayName?: string;
 }): Promise<AuthorityGateResult> {
 	const { userId, organizationId, provider, operation, runType, runId } =
 		params;
@@ -290,6 +484,20 @@ export async function checkIntegrationAuthority(params: {
 		return {
 			authorized: true,
 		};
+	}
+
+	if (params.requestIfMissing) {
+		return requestAuthority({
+			userId,
+			organizationId,
+			providerKey,
+			providerType: "INTEGRATION",
+			providerDisplayName: params.providerDisplayName ?? provider,
+			accessLevel,
+			toolName: operation,
+			runType,
+			runId,
+		});
 	}
 
 	const result = await checkAuthority({

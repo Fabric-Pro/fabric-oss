@@ -6645,6 +6645,10 @@
 			"openInGraph": "Open this capability in the Atlas graph, focused on its node and its connections."
 		},
 		"agents": {
+			"interfaceMode": {
+				"simple": "Simple — just the chat. New chats run on the Orchestrator, working step by step without drafting a plan first.",
+				"advanced": "Advanced — engine, reasoning and agent controls."
+			},
 			"runsOnDay": "{count, plural, =0 {No agent runs on {date}.} one {# agent run on {date}.} other {# agent runs on {date}.}}",
 			"healthError": "The last health check on this agent failed: {error}",
 			"resetConversation": {

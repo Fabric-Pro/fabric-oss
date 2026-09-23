@@ -18,7 +18,14 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FabricAgentLauncherProvider } from "../FabricAgentLauncher";
+import {
+	FabricAgentLauncherProvider,
+	useFabricAgentLauncher,
+} from "../FabricAgentLauncher";
+
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({ user: { id: "user_1" } }),
+}));
 
 vi.mock("next/navigation", () => ({
 	usePathname: () => "/app/projects/project_1",
@@ -66,18 +73,53 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 
 /**
  * Stands in for the real chat and hands the test its two outward signals: the
- * conversation id the turn created, and whether a reply is in flight.
+ * conversation id the turn created, and whether a turn is in flight. A
+ * simple-mode drawer runs the orchestrator (#2040), whose "in flight" lasts
+ * until its client-side save lands; only that engine gets the controls, so
+ * these tests fail if the drawer mounts anything else.
  */
 vi.mock("next/dynamic", async () => {
-	function MockDirectChat({
+	function MockOrchestratorChat({
 		onConversationCreated,
 		onStreamingChange,
+		onDraftChange,
+		onAttachmentsChange,
 	}: {
 		onConversationCreated?: (id: string) => void;
 		onStreamingChange?: (streaming: boolean) => void;
+		onDraftChange?: (draft: string) => void;
+		onAttachmentsChange?: (attachments: unknown[]) => void;
 	}) {
 		return (
 			<div>
+				<button
+					type="button"
+					onClick={() => {
+						onDraftChange?.("half-written question");
+						onAttachmentsChange?.([
+							{
+								id: "a1",
+								name: "spec.pdf",
+								status: "pending",
+								documentId: null,
+							},
+							{
+								id: "a2",
+								name: "notes.md",
+								status: "ready",
+								documentId: "doc_2",
+							},
+							{
+								id: "a3",
+								name: "broken.pdf",
+								status: "error",
+								documentId: null,
+							},
+						]);
+					}}
+				>
+					compose
+				</button>
 				<button
 					type="button"
 					onClick={() => {
@@ -97,7 +139,16 @@ vi.mock("next/dynamic", async () => {
 		);
 	}
 
-	return { default: () => MockDirectChat };
+	function OtherEngine() {
+		return <div>unexpected engine</div>;
+	}
+
+	return {
+		default: (loader: () => unknown) =>
+			String(loader).includes("FabricTemporalOrchestratorChat")
+				? MockOrchestratorChat
+				: OtherEngine,
+	};
 });
 
 afterEach(() => {
@@ -204,5 +255,84 @@ describe("FabricAgentLauncher — expand while streaming (#2040)", () => {
 			"href",
 			"/app/acme/agents/fabric-ai",
 		);
+	});
+});
+
+function HandoffProbe() {
+	const { pendingExpandHandoff, openLauncher } = useFabricAgentLauncher();
+	return (
+		<div>
+			<button
+				type="button"
+				onClick={() =>
+					openLauncher({
+						projectId: "project_9",
+						projectName: "Atlas",
+					})
+				}
+			>
+				open on project
+			</button>
+			<output data-testid="handoff">
+				{JSON.stringify(
+					pendingExpandHandoff
+						? {
+								conversationId:
+									pendingExpandHandoff.conversationId,
+								draft: pendingExpandHandoff.draft,
+								attachments:
+									pendingExpandHandoff.attachments.map(
+										(file) => file.id,
+									),
+								projectId: pendingExpandHandoff.projectId,
+							}
+						: null,
+				)}
+			</output>
+		</div>
+	);
+}
+
+describe("FabricAgentLauncher — Expand hands the composer to the page (#2040)", () => {
+	it("leaves the draft, transferable files and project for the full page", () => {
+		render(
+			<FabricAgentLauncherProvider>
+				<HandoffProbe />
+			</FabricAgentLauncherProvider>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "open on project" }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "compose" }));
+		expect(screen.getByTestId("handoff")).toHaveTextContent("null");
+
+		fireEvent.click(screen.getByRole("link", { name: "Expand" }));
+
+		expect(
+			JSON.parse(screen.getByTestId("handoff").textContent ?? "null"),
+		).toEqual({
+			conversationId: null,
+			draft: "half-written question",
+			attachments: ["a1", "a2"],
+			projectId: "project_9",
+		});
+	});
+
+	it("keys the handoff on the drawer's conversation", () => {
+		render(
+			<FabricAgentLauncherProvider>
+				<HandoffProbe />
+			</FabricAgentLauncherProvider>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: /Fabric Agent/i }));
+		fireEvent.click(screen.getByRole("button", { name: "start turn" }));
+		fireEvent.click(screen.getByRole("button", { name: "finish turn" }));
+		fireEvent.click(screen.getByRole("button", { name: "compose" }));
+
+		fireEvent.click(screen.getByRole("link", { name: "Expand" }));
+
+		expect(
+			JSON.parse(screen.getByTestId("handoff").textContent ?? "null"),
+		).toMatchObject({ conversationId: "conv_42" });
 	});
 });

@@ -216,6 +216,40 @@ function GlyphField() {
 	);
 }
 
+function ResumeLink({
+	resume,
+	tucked = false,
+}: {
+	resume: ChatWelcomeResume;
+	/** Tucked under the composer, which overlaps its top edge. */
+	tucked?: boolean;
+}) {
+	return (
+		<button
+			type="button"
+			onClick={resume.onResume}
+			className={cn(
+				"group flex w-full items-center gap-2 bg-muted/50 px-5 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted",
+				tucked
+					? "rounded-[6px_6px_16px_16px] pt-7 pb-3"
+					: "rounded-md border border-border/60 py-3",
+			)}
+		>
+			<History className="size-4 shrink-0" />
+			<span className="min-w-0 truncate text-foreground">
+				{resume.title || "Untitled conversation"}
+			</span>
+			<span className="hidden shrink-0 text-xs font-normal sm:inline">
+				{resume.lastActiveLabel}
+			</span>
+			<span className="ml-auto flex shrink-0 items-center gap-1 text-xs">
+				Resume
+				<ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
+			</span>
+		</button>
+	);
+}
+
 export function ChatWelcome({
 	title = "What can I help you build?",
 	subtitle,
@@ -269,26 +303,17 @@ export function ChatWelcome({
 						<div className="relative z-10">{composer}</div>
 						{resume && (
 							<div className="relative z-0 -mt-4 px-3">
-								<button
-									type="button"
-									onClick={resume.onResume}
-									className="group flex w-full items-center gap-2 rounded-[6px_6px_16px_16px] bg-muted/50 px-5 pt-7 pb-3 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted"
-								>
-									<History className="size-4 shrink-0" />
-									<span className="min-w-0 truncate text-foreground">
-										{resume.title ||
-											"Untitled conversation"}
-									</span>
-									<span className="hidden shrink-0 text-xs font-normal sm:inline">
-										{resume.lastActiveLabel}
-									</span>
-									<span className="ml-auto flex shrink-0 items-center gap-1 text-xs">
-										Resume
-										<ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
-									</span>
-								</button>
+								<ResumeLink resume={resume} tucked />
 							</div>
 						)}
+					</div>
+				)}
+
+				{/* Without a composer (the orchestrator puts its own under the
+				    landing), the last conversation stands on its own. */}
+				{!composer && resume && (
+					<div className="mt-8 w-full sm:px-6">
+						<ResumeLink resume={resume} />
 					</div>
 				)}
 

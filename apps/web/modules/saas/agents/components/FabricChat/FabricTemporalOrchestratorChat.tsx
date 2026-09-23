@@ -64,6 +64,7 @@ import {
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
+import { formatDistanceToNow } from "date-fns";
 import {
 	AlertCircle,
 	CheckCircle2,
@@ -122,6 +123,7 @@ import {
 	useOrchestratorConversation,
 } from "../../hooks/useOrchestratorConversation";
 import { useOrchestratorStream } from "../../hooks/useOrchestratorStream";
+import { useRemoveConversationProject } from "../../hooks/useRemoveConversationProject";
 import { formatClarificationTurn } from "../../lib/clarification-turns";
 import {
 	getSelectedOrchestratorToolIds,
@@ -160,6 +162,11 @@ import {
 	type TemporalOrchestratorActivityState,
 } from "./orchestrator";
 import {
+	latestGeneratedImagePath,
+	selectTurnImagePaths,
+	uploadTurnImagesAsDocuments,
+} from "./orchestrator/turn-images";
+import {
 	AgentModelPicker,
 	ChatInput,
 	ChatWelcome,
@@ -191,6 +198,20 @@ function storagePathToProxyUrl(
 
 const ASSISTANT_RESPONSE_SHELL_CLASSNAME =
 	"rounded-[1.4rem] border border-border/60 bg-background/75 px-4 py-3 shadow-[0_18px_50px_-28px_hsl(var(--foreground)/0.55)] backdrop-blur-md supports-[backdrop-filter]:bg-background/55";
+
+function sameToolSelection(
+	stored: string[] | null,
+	selected: string[] | null,
+): boolean {
+	if (stored === null || selected === null) {
+		return stored === selected;
+	}
+	if (stored.length !== selected.length) {
+		return false;
+	}
+	const storedIds = new Set(stored);
+	return selected.every((id) => storedIds.has(id));
+}
 
 function stripPersistedAssistantLabelPrefix(content?: string): string {
 	if (!content) {
@@ -227,6 +248,7 @@ const LOOM_ORCHESTRATOR_FILE_ACCEPT = buildAiChatAcceptAttribute([
 export function FabricTemporalOrchestratorChat({
 	organizationId,
 	reasoningMode,
+	executionModeOverride,
 	welcomeMode = "default",
 	lockConversationToolPicker = false,
 	activeConversation,
@@ -254,14 +276,27 @@ export function FabricTemporalOrchestratorChat({
 	attachedWorkspaceIds,
 	attachedDocumentIds,
 	attachedProjectId: propAttachedProjectId,
+	onProjectRemove,
 	systemPrompt,
 	instanceId,
 	showAgentPicker = false,
+	agentPickerCatalog = "models",
 	starterMessages: agentStarterMessages,
 	initialInput,
+	initialAttachedDocuments,
+	onDraftChange,
+	onAttachmentsChange,
 	sessionTemplates,
 	onSessionTemplatesChange,
 	onEscClose,
+	onStreamingChange,
+	compactMode = false,
+	showToolPicker = true,
+	telemetrySurface,
+	recentConversation = null,
+	onResumeConversation,
+	documentChatId: externalDocumentChatId,
+	onDocumentChatCreated,
 }: FabricTemporalOrchestratorChatProps) {
 	const { user } = useSession();
 	const tooltipT = useTranslations("tooltips.agents");
@@ -359,8 +394,20 @@ export function FabricTemporalOrchestratorChat({
 	// RAG + inline extracted text (createUploadUrl → process). One paperclip
 	// fills both, split by MIME on selection.
 	const [attachedDocuments, setAttachedDocuments] = useState<AttachedFile[]>(
-		[],
+		() => initialAttachedDocuments ?? [],
 	);
+	// Lifted for Expand (#2040): the drawer keeps the latest values in refs
+	// and hands them to the full page only when the user expands.
+	const onDraftChangeRef = useRef(onDraftChange);
+	onDraftChangeRef.current = onDraftChange;
+	const onAttachmentsChangeRef = useRef(onAttachmentsChange);
+	onAttachmentsChangeRef.current = onAttachmentsChange;
+	useEffect(() => {
+		onDraftChangeRef.current?.(input);
+	}, [input]);
+	useEffect(() => {
+		onAttachmentsChangeRef.current?.(attachedDocuments);
+	}, [attachedDocuments]);
 	// Chat ID that documents are stored under, for RAG retrieval across
 	// follow-ups. Assigned by `createUploadUrl` on the first upload.
 	const [currentDocumentChatId, setCurrentDocumentChatId] = useState<
@@ -368,6 +415,25 @@ export function FabricTemporalOrchestratorChat({
 	>(null);
 	// One hidden input behind the paperclip; `accept` offers images + documents.
 	const fileInputRef = useRef<HTMLInputElement>(null);
+
+	// Adopt the document chat a restored conversation was saved with, so
+	// follow-up uploads land beside the earlier ones.
+	useEffect(() => {
+		if (
+			externalDocumentChatId &&
+			externalDocumentChatId !== currentDocumentChatId
+		) {
+			setCurrentDocumentChatId(externalDocumentChatId);
+		}
+	}, [externalDocumentChatId, currentDocumentChatId]);
+
+	// A first upload creates the document chat; the page shows its files.
+	const onDocumentChatCreatedRef = useRef(onDocumentChatCreated);
+	onDocumentChatCreatedRef.current = onDocumentChatCreated;
+	const adoptDocumentChat = useCallback((chatId: string) => {
+		setCurrentDocumentChatId(chatId);
+		onDocumentChatCreatedRef.current?.(chatId);
+	}, []);
 
 	// Set mounted state after hydration
 	useEffect(() => {
@@ -381,6 +447,20 @@ export function FabricTemporalOrchestratorChat({
 	// Track if we created a conversation in the current session (since activeConversationId was cleared)
 	// This helps distinguish "parent cleared for new chat" from "parent hasn't updated prop yet"
 	const createdConversationInSessionRef = useRef<boolean>(false);
+	// The conversation this instance created for its own first turn. Its
+	// state is local and authoritative, so it is never re-hydrated from the
+	// half-written record the page loads mid-turn (#2040).
+	const selfCreatedConversationIdRef = useRef<string | null>(null);
+	// The user message a conversation was created with, before its turn ran.
+	// The turn's save replaces it rather than appending a second copy.
+	const eagerFirstMessageRef = useRef<{
+		conversationId: string;
+		messageId: string;
+	} | null>(null);
+	// How many stored executions the last hydration saw. A record that grows
+	// while this instance is idle was written by another surface — the drawer
+	// finishing a turn after Expand — and is hydrated again.
+	const hydratedExecutionCountRef = useRef(0);
 
 	// Orchestrator conversation hook for full execution history persistence
 	const {
@@ -460,10 +540,9 @@ export function FabricTemporalOrchestratorChat({
 		},
 	});
 
-	// Hydrate once. No FR13 "agent no longer available" notice here on purpose:
-	// the server already drops unresolvable entries, and `FabricDirectChat`
-	// reads the same store — announcing it from both engines would toast twice
-	// for one fact.
+	// Hydrate once. The FR13 "agent no longer available" notice belongs to the
+	// surface (page or drawer), not to either engine — see
+	// `useSavedAgentUnavailableNotice`.
 	const agentSelectionHydratedRef = useRef(false);
 	useEffect(() => {
 		if (agentSelectionHydratedRef.current || !showAgentPicker) {
@@ -524,7 +603,10 @@ export function FabricTemporalOrchestratorChat({
 		stop: stopStream,
 	} = useOrchestratorStream({
 		organizationId,
-		executionMode: REASONING_TO_EXECUTION[reasoningMode] || "balanced",
+		executionMode:
+			executionModeOverride ??
+			REASONING_TO_EXECUTION[reasoningMode] ??
+			"balanced",
 		enabledMcpConfigIds: selectedConversationMcpIds ?? enabledToolIds,
 		enabledAgentIds: enabledAgentIds,
 		enabledFabricToolIds: enabledFabricToolIds,
@@ -547,6 +629,7 @@ export function FabricTemporalOrchestratorChat({
 		// task 3.3). Only consumer of `useOrchestratorStream` is the
 		// standalone Loom Orchestrator chat, so the default applies.
 		surface: "loom-orchestrator",
+		telemetrySurface,
 		onStopFailed: handleStopFailed,
 	});
 
@@ -588,14 +671,6 @@ export function FabricTemporalOrchestratorChat({
 		onStop: handleStopFromEsc,
 		onClose: onEscClose,
 	});
-
-	// Debug: Log workspace IDs being passed to orchestrator
-	useEffect(() => {
-		console.log(
-			"[OrchestratorChat] attachedWorkspaceIds:",
-			attachedWorkspaceIds,
-		);
-	}, [attachedWorkspaceIds]);
 
 	// Pre-fetch MCP App HTML when streaming tool calls arrive with a resourceUri.
 	// This caches the widget HTML so the iframe loads instantly on mount,
@@ -642,8 +717,14 @@ export function FabricTemporalOrchestratorChat({
 			return;
 		}
 		lastAutoOpenedFrameIdRef.current = latestFrame.frameId;
+		// The drawer has no room for a side panel beside the chat, so a
+		// frame waits behind its reopen button there.
+		if (compactMode) {
+			setLastFrame(latestFrame);
+			return;
+		}
 		openFrame(latestFrame);
-	}, [completedExecutions, streamingToolCalls, stepResults]);
+	}, [completedExecutions, streamingToolCalls, stepResults, compactMode]);
 
 	// Fetch attached project when conversationId changes
 	const { data: conversationProjectData } = useQuery({
@@ -676,6 +757,17 @@ export function FabricTemporalOrchestratorChat({
 		enabled: !!conversationId,
 		staleTime: 30_000,
 	});
+
+	const handleProjectRemoved = useCallback(() => {
+		setAttachedProjectId(null);
+		onProjectRemove?.();
+	}, [onProjectRemove]);
+	const { removeProject, isRemoving: isRemovingProject } =
+		useRemoveConversationProject({
+			conversationId,
+			organizationId,
+			onRemoved: handleProjectRemoved,
+		});
 
 	// Sync attached project from parent prop (pre-conversation selection)
 	useEffect(() => {
@@ -877,6 +969,7 @@ export function FabricTemporalOrchestratorChat({
 				reset();
 				// Reset session tracking - parent explicitly changed/cleared the conversation
 				createdConversationInSessionRef.current = false;
+				selfCreatedConversationIdRef.current = null;
 				// Notify parent to clear the plan display
 				onActivityChangeRef.current?.({
 					isActive: false,
@@ -922,11 +1015,22 @@ export function FabricTemporalOrchestratorChat({
 	}, [activeConversation?.metadata, activeConversationId]);
 
 	useEffect(() => {
+		const storedExecutionCount = Array.isArray(
+			(activeConversation?.metadata as any)?.executions,
+		)
+			? (activeConversation?.metadata as any).executions.length
+			: 0;
+		const grewWhileIdle =
+			hydratedConversationRef.current === activeConversationId &&
+			storedExecutionCount > hydratedExecutionCountRef.current &&
+			!isLoading;
 		// Only hydrate if we have a conversation and haven't hydrated this one yet
 		if (
 			activeConversation &&
 			activeConversationId &&
-			hydratedConversationRef.current !== activeConversationId
+			activeConversationId !== selfCreatedConversationIdRef.current &&
+			(hydratedConversationRef.current !== activeConversationId ||
+				grewWhileIdle)
 		) {
 			// Check if this conversation has orchestrator metadata
 			const metadata = (activeConversation as any).metadata as any;
@@ -1049,6 +1153,7 @@ export function FabricTemporalOrchestratorChat({
 
 				// Mark this conversation as hydrated
 				hydratedConversationRef.current = activeConversationId;
+				hydratedExecutionCountRef.current = storedExecutionCount;
 			}
 		}
 
@@ -1064,6 +1169,7 @@ export function FabricTemporalOrchestratorChat({
 		activeConversation,
 		activeConversationId,
 		state.executionId,
+		isLoading,
 		// Note: stepResults.length removed - we always exclude current execution now,
 		// so we don't need to re-run based on stepResults changes
 	]);
@@ -1083,6 +1189,32 @@ export function FabricTemporalOrchestratorChat({
 			(activeConversation?.metadata as Record<string, unknown> | null) ??
 			null;
 		if (!existingMetadata) {
+			return;
+		}
+		// Only write to this engine's own thread (Fizzy #2040). Opening a
+		// Direct thread from history can hand this component the thread's
+		// detail for a render before the page swaps engines; persisting then
+		// would rewrite the Direct thread's settings. Every Orchestrator
+		// thread is created with `mode: "orchestrator"`, so a thread without
+		// it is a legacy Direct one.
+		if (
+			activeConversation?.id !== conversationId ||
+			existingMetadata.mode !== "orchestrator"
+		) {
+			return;
+		}
+		// Nothing to write when the stored settings already match. Loading a
+		// conversation mid-turn hands this effect a snapshot without the
+		// turn's execution; rewriting from it could land after the turn's own
+		// save and erase that execution (#2040).
+		if (
+			sameToolSelection(
+				getSelectedOrchestratorToolIds(existingMetadata),
+				selectedConversationMcpIds,
+			) &&
+			existingMetadata.executionMode === reasoningMode &&
+			(!instanceId || existingMetadata.instanceId === instanceId)
+		) {
 			return;
 		}
 
@@ -1112,6 +1244,90 @@ export function FabricTemporalOrchestratorChat({
 		selectedConversationMcpIds,
 		activeConversation,
 	]);
+
+	// A turn is "in flight" for the host from the send until its save lands:
+	// this component persists client-side after the stream ends, so a host
+	// that navigates on the stream's end would drop the save (#2040).
+	const [isPreparingSend, setIsPreparingSend] = useState(false);
+	const [landedExecutionId, setLandedExecutionId] = useState<string | null>(
+		null,
+	);
+	const isTurnLanding =
+		isComplete &&
+		!!state.executionId &&
+		landedExecutionId !== state.executionId;
+	const isTurnInFlight =
+		isPreparingSend || isLoading || isAwaitingApproval || isTurnLanding;
+	const onStreamingChangeRef = useRef(onStreamingChange);
+	onStreamingChangeRef.current = onStreamingChange;
+	useEffect(() => {
+		onStreamingChangeRef.current?.(isTurnInFlight);
+	}, [isTurnInFlight]);
+
+	/**
+	 * Creates the conversation before the first stream call, so the turn
+	 * runs under its id (#2040). A runtime-authority approval binds to the
+	 * conversation; created after the turn, the approval bound to that turn's
+	 * execution and the next turn asked again. It also gives the drawer's
+	 * Expand a conversation to open mid-reply. Returns `null` on failure —
+	 * the turn still runs, and its save creates the conversation as before.
+	 */
+	const ensureConversation = useCallback(
+		async (
+			content: string,
+			documentChatId: string | undefined,
+		): Promise<string | null> => {
+			const messageId = generateMessageId();
+			try {
+				const result = await createOrchestratorConversation({
+					initialMessage: content,
+					initialMessageId: messageId,
+					documentChatId,
+					selectedMcpConfigIds:
+						selectedConversationMcpIds ?? undefined,
+				});
+				// Attach before `setConversationId`, which enables the
+				// getProject query; querying first would race the attach and
+				// clear `attachedProjectId` via the sync effect.
+				if (attachedProjectId) {
+					try {
+						await orpcClient.projects.conversations.attach({
+							conversationId: result.id,
+							projectId: attachedProjectId,
+							organizationId: organizationId ?? null,
+						});
+					} catch (err) {
+						console.warn(
+							"[OrchestratorChat] Failed to persist project attachment:",
+							err,
+						);
+					}
+				}
+				eagerFirstMessageRef.current = {
+					conversationId: result.id,
+					messageId,
+				};
+				selfCreatedConversationIdRef.current = result.id;
+				createdConversationInSessionRef.current = true;
+				setConversationId(result.id);
+				onConversationCreated?.(result.id);
+				return result.id;
+			} catch (error) {
+				console.error(
+					"[OrchestratorChat] Failed to create conversation:",
+					error,
+				);
+				return null;
+			}
+		},
+		[
+			createOrchestratorConversation,
+			attachedProjectId,
+			organizationId,
+			onConversationCreated,
+			selectedConversationMcpIds,
+		],
+	);
 
 	// Persist conversation with full execution metadata to database
 	const persistConversation = useCallback(
@@ -1216,9 +1432,17 @@ export function FabricTemporalOrchestratorChat({
 					sourcesUsed: planningAudit?.sourcesUsed || [],
 				};
 
+				// The user message this conversation was created with, when it
+				// was created for this turn: the save below replaces it.
+				const eagerFirstMessage =
+					eagerFirstMessageRef.current?.conversationId ===
+					conversationId
+						? eagerFirstMessageRef.current
+						: null;
+
 				// Build messages for this execution
 				const userMsg = {
-					id: generateMessageId(),
+					id: eagerFirstMessage?.messageId ?? generateMessageId(),
 					role: "user" as const,
 					content: userContent,
 					timestamp: execution.startedAt,
@@ -1271,8 +1495,12 @@ export function FabricTemporalOrchestratorChat({
 
 				if (!conversationId) {
 					// Create new conversation with first execution
-					const result =
-						await createOrchestratorConversation(userContent);
+					const result = await createOrchestratorConversation({
+						initialMessage: userContent,
+						documentChatId: currentDocumentChatId,
+						selectedMcpConfigIds:
+							selectedConversationMcpIds ?? undefined,
+					});
 
 					// Persist project attachment BEFORE setting conversationId.
 					// setConversationId enables the getProject query — if we set it
@@ -1303,12 +1531,13 @@ export function FabricTemporalOrchestratorChat({
 					// Pass selectedConversationMcpIds so it is saved atomically
 					// with the execution, preventing a race where the metadata
 					// update effect fires first and corrupts the metadata.
-					await saveExecution(
-						result.id,
+					await saveExecution({
+						conversationId: result.id,
 						execution,
-						[userMsg, ...clarificationMsgs, assistantMsg],
-						selectedConversationMcpIds,
-					);
+						messages: [userMsg, ...clarificationMsgs, assistantMsg],
+						selectedMcpConfigIds: selectedConversationMcpIds,
+						documentChatId: currentDocumentChatId,
+					});
 				} else {
 					// Add execution to existing conversation
 					// First get existing messages to append to
@@ -1316,8 +1545,12 @@ export function FabricTemporalOrchestratorChat({
 						await orpcClient.agents.conversations.get({
 							id: conversationId,
 						});
-					const existingMessages = (existingConvo.messages ||
-						[]) as (typeof userMsg)[];
+					// Messages the workflow appended mid-turn (an operation
+					// result) are kept; only the eager copy of the question
+					// is dropped.
+					const existingMessages = (
+						(existingConvo.messages || []) as (typeof userMsg)[]
+					).filter((m) => m.id !== eagerFirstMessage?.messageId);
 					const allMessages = [
 						...existingMessages,
 						userMsg,
@@ -1325,12 +1558,16 @@ export function FabricTemporalOrchestratorChat({
 						assistantMsg,
 					];
 
-					await saveExecution(
+					await saveExecution({
 						conversationId,
 						execution,
-						allMessages,
-						selectedConversationMcpIds,
-					);
+						messages: allMessages,
+						selectedMcpConfigIds: selectedConversationMcpIds,
+						documentChatId: currentDocumentChatId,
+					});
+					if (eagerFirstMessage) {
+						eagerFirstMessageRef.current = null;
+					}
 				}
 
 				// Reset tracking for next execution
@@ -1343,10 +1580,13 @@ export function FabricTemporalOrchestratorChat({
 					"[Orchestrator] Failed to persist conversation:",
 					error,
 				);
+			} finally {
+				setLandedExecutionId(state.executionId);
 			}
 		},
 		[
 			conversationId,
+			currentDocumentChatId,
 			state.executionId,
 			state.status,
 			state.result,
@@ -1885,7 +2125,7 @@ export function FabricTemporalOrchestratorChat({
 
 				if (!aiChatId && returnedChatId) {
 					aiChatId = returnedChatId;
-					setCurrentDocumentChatId(returnedChatId);
+					adoptDocumentChat(returnedChatId);
 				}
 
 				if (signedUploadUrl) {
@@ -1981,7 +2221,12 @@ export function FabricTemporalOrchestratorChat({
 		}
 
 		return { documentIds, inlineContexts, chatId: aiChatId };
-	}, [attachedDocuments, currentDocumentChatId, organizationId]);
+	}, [
+		attachedDocuments,
+		currentDocumentChatId,
+		organizationId,
+		adoptDocumentChat,
+	]);
 
 	const handleSendMessage = async () => {
 		if (!input.trim() || isLoading) {
@@ -2125,8 +2370,13 @@ export function FabricTemporalOrchestratorChat({
 						})),
 				];
 
-		// Upload attached images if any
+		// Upload attached images if any. The storage paths feed image
+		// editing (`fabric_generate_image`'s input image) and the thumbnails;
+		// the chat documents created below are what a vision model sees.
 		let newlyAttachedImageUrls: string[] | undefined;
+		const turnImages = attachedImages.filter(
+			(img) => img.status !== "error",
+		);
 		if (attachedImages.length > 0) {
 			try {
 				newlyAttachedImageUrls = await uploadAttachedImages();
@@ -2150,11 +2400,15 @@ export function FabricTemporalOrchestratorChat({
 		// retrieval-only.
 		let sessionDocumentIds: string[] = [];
 		let inlineAttachmentContexts: string[] = [];
+		// The chat this send's documents are stored under — a first upload
+		// just above creates it, before React state catches up.
+		let documentChatId = currentDocumentChatId || undefined;
 		if (attachedDocuments.length > 0) {
 			if (attachedDocuments.some((f) => f.status === "pending")) {
 				const uploadResult = await uploadDocuments();
 				sessionDocumentIds = uploadResult.documentIds;
 				inlineAttachmentContexts = uploadResult.inlineContexts;
+				documentChatId = uploadResult.chatId ?? documentChatId;
 			} else {
 				const readyFiles = attachedDocuments.filter(
 					(f) => f.status === "ready" && f.documentId,
@@ -2169,69 +2423,81 @@ export function FabricTemporalOrchestratorChat({
 			setAttachedDocuments([]);
 		}
 
-		// Build the full set of image URLs for the backend:
-		// - User-uploaded images from all previous messages (original references)
-		// - Generated images from the LATEST assistant response only (current state)
-		// - Newly attached images for this message
-		// This gives the LLM the original context + latest generated state without
-		// accumulating every intermediate generation.
-		let allImageUrls = newlyAttachedImageUrls;
-		if (!isNewChat) {
-			const collected: string[] = [];
-
-			// 1. User-uploaded images from previous messages
-			for (const m of messages) {
-				if (m.imageUrls && m.imageUrls.length > 0) {
-					collected.push(...m.imageUrls);
-				}
+		// This turn's images also become chat documents, so a vision model
+		// receives their pixels (`attachedDocumentIds` is the only channel
+		// that carries them). Best-effort: a failed one still leaves the
+		// storage path for image editing.
+		if (turnImages.length > 0) {
+			const imageDocuments = await uploadTurnImagesAsDocuments({
+				images: turnImages,
+				chatId: documentChatId,
+				organizationId: organizationId || undefined,
+				documents: orpcClient.ai.documents,
+				onUploadError: (name, error) => {
+					console.error(
+						"[ImageUpload] Vision document failed:",
+						error,
+					);
+					toast.error(`The assistant may not be able to see ${name}`);
+				},
+			});
+			if (imageDocuments.chatId && !documentChatId) {
+				documentChatId = imageDocuments.chatId;
+				adoptDocumentChat(imageDocuments.chatId);
 			}
-
-			// 2. Generated images from the latest assistant response
-			const lastAssistant = [...messages]
-				.reverse()
-				.find((m) => m.role === "assistant" && m.content);
-			if (lastAssistant?.content) {
-				const imageProxyPattern =
-					/\/api\/storage\/image\?path=([^&\s)]+)/g;
-				let proxyMatch = imageProxyPattern.exec(lastAssistant.content);
-				while (proxyMatch !== null) {
-					try {
-						collected.push(decodeURIComponent(proxyMatch[1]));
-					} catch {
-						// Skip malformed percent-encoded path fragments
-					}
-					proxyMatch = imageProxyPattern.exec(lastAssistant.content);
-				}
-			}
-
-			if (collected.length > 0) {
-				const newUrls = newlyAttachedImageUrls || [];
-				allImageUrls = [...new Set([...collected, ...newUrls])];
-			}
+			sessionDocumentIds = [
+				...sessionDocumentIds,
+				...imageDocuments.documentIds,
+			];
+			inlineAttachmentContexts = [
+				...inlineAttachmentContexts,
+				...imageDocuments.inlineContexts,
+			];
 		}
 
-		// Store only newly attached images for execution display (thumbnails).
-		// allImageUrls (which includes carry-forward) is sent separately to the backend.
-		lastUserImageUrlsRef.current = newlyAttachedImageUrls;
-
-		// Pass forceNewChat flag and template instructions to ensure hook starts fresh for new chats
-		// Template instructions are per-message scope (cleared after sending by ChatInput)
-		// Template integration/MCP IDs are merged with enabled IDs for this message only
-		await sendMessage(
-			content,
-			history,
-			isNewChat,
-			templateInstructions,
-			templateIntegrationIds,
-			templateMcpConfigIds,
-			templateFabricToolIds,
-			allImageUrls,
+		// Thumbnails show only this turn's uploads; the workflow also gets the
+		// latest generated image as an edit target (never as a vision document).
+		const turnImageUrls = selectTurnImagePaths(newlyAttachedImageUrls);
+		const workflowImageUrls = selectTurnImagePaths(
 			newlyAttachedImageUrls,
-			sessionDocumentIds.length > 0 ? sessionDocumentIds : undefined,
-			inlineAttachmentContexts.length > 0
-				? inlineAttachmentContexts
-				: undefined,
+			isNewChat ? undefined : latestGeneratedImagePath(messages),
 		);
+		lastUserImageUrlsRef.current = turnImageUrls;
+
+		// Everything that can reject the send has run, so an empty
+		// conversation is never left behind by a failed upload. From here the
+		// host sees the turn as in flight: the conversation it is told about
+		// below has no stream yet.
+		setIsPreparingSend(true);
+		try {
+			const turnConversationId =
+				(isNewChat ? null : conversationId) ??
+				(await ensureConversation(content, documentChatId));
+
+			// Pass forceNewChat flag and template instructions to ensure hook starts fresh for new chats
+			// Template instructions are per-message scope (cleared after sending by ChatInput)
+			// Template integration/MCP IDs are merged with enabled IDs for this message only
+			await sendMessage(
+				content,
+				history,
+				isNewChat,
+				templateInstructions,
+				templateIntegrationIds,
+				templateMcpConfigIds,
+				templateFabricToolIds,
+				workflowImageUrls,
+				turnImageUrls,
+				sessionDocumentIds.length > 0 ? sessionDocumentIds : undefined,
+				inlineAttachmentContexts.length > 0
+					? inlineAttachmentContexts
+					: undefined,
+				turnConversationId
+					? { conversationId: turnConversationId }
+					: undefined,
+			);
+		} finally {
+			setIsPreparingSend(false);
+		}
 	};
 
 	// Approval state for ApprovalDialog component
@@ -2425,14 +2691,68 @@ export function FabricTemporalOrchestratorChat({
 			<div className="flex min-w-0 flex-1 flex-col">
 				{/* Messages Area */}
 				{messages.length === 0 && completedExecutions.length === 0 ? (
-					<ChatWelcome
-						title={welcomeTitle}
-						subtitle={welcomeSubtitle}
-						suggestions={welcomeSuggestions}
-						categories={[]} // No categories for orchestrator - keep it focused
-						onSuggestionClick={handleSuggestionClick}
-						tips={welcomeTips}
-					/>
+					compactMode ? (
+						/* The drawer's empty state: one heading and the
+						   starters as flat rows, sized for a side panel. */
+						<div className="flex h-full flex-col overflow-y-auto px-4 py-5 sm:px-6">
+							<div className="mx-auto flex w-full max-w-2xl flex-col gap-5">
+								<h2 className="text-[20px] font-medium leading-7 tracking-[-0.02em] text-foreground">
+									What can I help you with?
+								</h2>
+								<ul className="flex flex-col gap-0.5">
+									{welcomeSuggestions.map((suggestion) => (
+										<li key={suggestion.label}>
+											<button
+												type="button"
+												onClick={() =>
+													handleSuggestionClick(
+														suggestion.value,
+													)
+												}
+												className="flex w-full items-start gap-2.5 rounded-[4px] px-2.5 py-2.5 text-left text-[13px] leading-5 text-muted-foreground transition-colors hover:bg-accent"
+											>
+												<span className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-primary [&_svg]:size-4">
+													{suggestion.icon}
+												</span>
+												<span className="min-w-0">
+													<span className="text-foreground">
+														{suggestion.label}
+													</span>{" "}
+													&mdash; {suggestion.value}
+												</span>
+											</button>
+										</li>
+									))}
+								</ul>
+							</div>
+						</div>
+					) : (
+						<ChatWelcome
+							title={welcomeTitle}
+							subtitle={welcomeSubtitle}
+							suggestions={welcomeSuggestions}
+							categories={[]} // No categories for orchestrator - keep it focused
+							onSuggestionClick={handleSuggestionClick}
+							tips={welcomeTips}
+							resume={
+								recentConversation && onResumeConversation
+									? {
+											title: recentConversation.title,
+											lastActiveLabel: `Last active ${formatDistanceToNow(
+												new Date(
+													recentConversation.updatedAt,
+												),
+												{ addSuffix: true },
+											)}`,
+											onResume: () =>
+												onResumeConversation(
+													recentConversation.id,
+												),
+										}
+									: null
+							}
+						/>
+					)
 				) : (
 					<Conversation className="flex-1">
 						<ConversationContent className="space-y-4 max-w-4xl mx-auto px-3 sm:px-4 py-4 overflow-x-hidden">
@@ -4032,7 +4352,7 @@ export function FabricTemporalOrchestratorChat({
 													organizationId={
 														organizationId
 													}
-													catalog="models"
+													catalog={agentPickerCatalog}
 												/>
 												{selectedAgent ? (
 													<Badge
@@ -4094,6 +4414,10 @@ export function FabricTemporalOrchestratorChat({
 												undefined
 											}
 											projectId={attachedProjectId}
+											onProjectRemove={removeProject}
+											projectRemoveDisabled={
+												isRemovingProject
+											}
 											prioritizedToolIds={
 												prioritizedToolIds
 											}
@@ -4116,50 +4440,59 @@ export function FabricTemporalOrchestratorChat({
 											}
 											organizationId={organizationId}
 										/>
-										{!lockConversationToolPicker && (
-											<Button
-												type="button"
-												variant="outline"
-												size="sm"
+										{showToolPicker &&
+											!lockConversationToolPicker && (
+												<Button
+													type="button"
+													variant="outline"
+													size="sm"
+													onClick={() =>
+														setConversationToolPickerOpen(
+															true,
+														)
+													}
+												>
+													<Wrench className="mr-2 h-4 w-4" />
+													Chat tools
+												</Button>
+											)}
+										{!compactMode &&
+											(state.plan ||
+												artifactSources.length > 0 ||
+												documentArtifacts.length >
+													0) && (
+												<ArtifactsPanelTrigger
+													onClick={() =>
+														setIsArtifactsPanelOpen(
+															true,
+														)
+													}
+													planSteps={
+														state.plan?.steps
+															.length || 0
+													}
+													completedSteps={
+														completedSteps
+													}
+													documentsCount={
+														documentArtifacts.length
+													}
+													sourcesCount={
+														artifactSources.length
+													}
+													isActive={
+														isArtifactsPanelOpen
+													}
+												/>
+											)}
+										{!compactMode && (
+											<MemoryPanelTrigger
 												onClick={() =>
-													setConversationToolPickerOpen(
-														true,
-													)
+													setIsMemoryPanelOpen(true)
 												}
-											>
-												<Wrench className="mr-2 h-4 w-4" />
-												Chat tools
-											</Button>
-										)}
-										{(state.plan ||
-											artifactSources.length > 0 ||
-											documentArtifacts.length > 0) && (
-											<ArtifactsPanelTrigger
-												onClick={() =>
-													setIsArtifactsPanelOpen(
-														true,
-													)
-												}
-												planSteps={
-													state.plan?.steps.length ||
-													0
-												}
-												completedSteps={completedSteps}
-												documentsCount={
-													documentArtifacts.length
-												}
-												sourcesCount={
-													artifactSources.length
-												}
-												isActive={isArtifactsPanelOpen}
+												isActive={isMemoryPanelOpen}
 											/>
 										)}
-										<MemoryPanelTrigger
-											onClick={() =>
-												setIsMemoryPanelOpen(true)
-											}
-											isActive={isMemoryPanelOpen}
-										/>
 									</div>
 								)
 							}

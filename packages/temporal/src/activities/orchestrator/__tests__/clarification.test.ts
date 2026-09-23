@@ -207,6 +207,41 @@ describe("analyzeIntentClarityActivity", () => {
 			expect(system).toContain("do NOT stay silent on a real gap");
 		});
 
+		it("sends the attached project ahead of the request (Fizzy #2040, F41)", async () => {
+			generateText.mockResolvedValue({ text: clearResponse });
+
+			await analyzeIntentClarityActivity({
+				message: "list the meeting transcripts for this project",
+				projectContext: "Attached project: Example Portal",
+				userId: "u",
+			});
+
+			const { user } = promptFor(generateText.mock.calls[0][0]);
+			expect(user).toContain(
+				"## Project context\nAttached project: Example Portal",
+			);
+			expect(user.indexOf("## Project context")).toBeLessThan(
+				user.indexOf("## User request"),
+			);
+		});
+
+		it("tells the model that 'this project' means the attached one", async () => {
+			generateText.mockResolvedValue({ text: clearResponse });
+
+			await analyzeIntentClarityActivity({
+				message: "anything",
+				userId: "u",
+			});
+
+			const { instructions: system } = promptFor(
+				generateText.mock.calls[0][0],
+			);
+			expect(system).toContain(
+				'"This project", "the project", "our project"',
+			);
+			expect(system).toContain("Never ask which project is meant");
+		});
+
 		it("still asks when the model judges the conversation insufficient", async () => {
 			generateText.mockResolvedValue({
 				text: JSON.stringify({

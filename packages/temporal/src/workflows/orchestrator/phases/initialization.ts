@@ -22,6 +22,10 @@ import type {
 	PreloadedResources,
 	WorkflowState,
 } from "../types";
+import {
+	attachedProjectReferenceLine,
+	buildClarityProjectContext,
+} from "./attached-project-context";
 
 const {
 	// Note: retrieveWorkspaceDocumentsActivity is now called on-demand during execution
@@ -100,6 +104,8 @@ export async function executeInitializationPhase(
 		enrichedMessage: string;
 		enrichedSystemPrompt: string;
 		preloadedResources: PreloadedResources;
+		/** Short summary of the attached project, for the clarity gate. */
+		clarityProjectContext?: string;
 	}>
 > {
 	const { executionId } = state;
@@ -319,6 +325,7 @@ export async function executeInitializationPhase(
 		let enrichedMessage = input.message;
 		// Start with custom system prompt from input (e.g., agent template instructions)
 		let enrichedSystemPrompt = input.systemPrompt || "";
+		let clarityProjectContext: string | undefined;
 
 		// Capture today's date so the LLM knows "today". Rendered date-only and
 		// appended as the LAST prompt segment (see Step 5b) so the stable
@@ -441,6 +448,9 @@ export async function executeInitializationPhase(
 					const projectContext = [
 						"<project_context>",
 						`Project: ${projectMetadata.name}`,
+						patched("orchestrator-clarity-project-context-v1")
+							? attachedProjectReferenceLine(projectMetadata.name)
+							: null,
 						projectMetadata.description
 							? `Description: ${projectMetadata.description}`
 							: null,
@@ -479,6 +489,8 @@ export async function executeInitializationPhase(
 					enrichedSystemPrompt = enrichedSystemPrompt
 						? `${enrichedSystemPrompt}\n\n${projectContext}`
 						: projectContext;
+					clarityProjectContext =
+						buildClarityProjectContext(projectMetadata);
 
 					state.planningAudit.contextSources.push({
 						type: "project_context",
@@ -806,6 +818,7 @@ export async function executeInitializationPhase(
 				enrichedMessage,
 				enrichedSystemPrompt,
 				preloadedResources,
+				clarityProjectContext,
 			},
 			shouldContinue: true,
 		};

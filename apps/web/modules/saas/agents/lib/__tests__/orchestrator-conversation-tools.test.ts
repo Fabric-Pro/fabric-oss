@@ -33,6 +33,24 @@ describe("orchestrator-conversation-tools", () => {
 		expect(result.selectedMcpConfigIds).toEqual(["cfg-9"]);
 	});
 
+	it("does not flip a direct conversation", () => {
+		const result = mergeOrchestratorConversationMetadata({
+			existing: { mode: "direct", selectedMcpConfigIds: ["cfg-1"] },
+			executionMode: "balanced",
+		});
+
+		expect(result.mode).toBe("direct");
+	});
+
+	it("stamps orchestrator on a conversation with no recorded mode", () => {
+		const result = mergeOrchestratorConversationMetadata({
+			existing: {},
+			executionMode: "balanced",
+		});
+
+		expect(result.mode).toBe("orchestrator");
+	});
+
 	it("removes stale selection when reverting to defaults", () => {
 		const result = mergeOrchestratorConversationMetadata({
 			existing: {

@@ -11,10 +11,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
 	checkAuthority: vi.fn(),
+	ensureSensitiveOperationAuthority: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
 	checkAuthority: h.checkAuthority,
+	ensureSensitiveOperationAuthority: h.ensureSensitiveOperationAuthority,
 	resolveCanonicalProviderKey: (key: string) =>
 		`custom:${key.toLowerCase().replace(/_/g, "-")}`,
 }));
@@ -23,6 +25,7 @@ const { checkIntegrationAuthority, classifyIntegrationAccessLevel } =
 	await import("../authority-gate");
 
 beforeEach(() => {
+	h.ensureSensitiveOperationAuthority.mockReset();
 	h.checkAuthority.mockReset();
 	h.checkAuthority.mockResolvedValue({
 		authorized: true,
@@ -142,5 +145,95 @@ describe("scoped grants", () => {
 			providerKey: "custom:slack",
 			requiredAccessLevel: "WRITE",
 		});
+	});
+});
+
+/**
+ * A chat turn needs something to approve: with `requestIfMissing` a miss
+ * raises (or reuses) a PENDING session for the run instead of only failing
+ * with a string. Plan steps leave it off — they raise their session up front.
+ */
+describe("requestIfMissing", () => {
+	it("raises a pending session bound to the run and returns its id", async () => {
+		h.ensureSensitiveOperationAuthority.mockResolvedValue({
+			authorized: false,
+			reason: "No active authority grant.",
+			action: "request_authority",
+			pendingSessionId: "sess-9",
+		});
+
+		const result = await checkIntegrationAuthority({
+			userId: "u1",
+			organizationId: "org-1",
+			provider: "SLACK",
+			operation: "send_message",
+			runType: "ORCHESTRATOR",
+			runId: "conv-1",
+			requestIfMissing: true,
+			providerDisplayName: "Slack",
+		});
+
+		expect(result).toEqual({
+			authorized: false,
+			reason: "No active authority grant.",
+			providerKey: "custom:slack",
+			requiredAccessLevel: "WRITE",
+			pendingSessionId: "sess-9",
+		});
+		expect(h.ensureSensitiveOperationAuthority).toHaveBeenCalledWith({
+			userId: "u1",
+			organizationId: "org-1",
+			providerKey: "custom:slack",
+			accessLevel: "WRITE",
+			providerType: "INTEGRATION",
+			providerRefId: undefined,
+			providerDisplayName: "Slack",
+			runType: "ORCHESTRATOR",
+			runId: "conv-1",
+			toolName: "send_message",
+		});
+		expect(h.checkAuthority).not.toHaveBeenCalled();
+	});
+
+	it("authorizes on an existing grant", async () => {
+		h.ensureSensitiveOperationAuthority.mockResolvedValue({
+			authorized: true,
+			grant: { id: "g2" },
+		});
+		const result = await checkIntegrationAuthority({
+			userId: "u1",
+			organizationId: "org-1",
+			provider: "SLACK",
+			operation: "send_message",
+			runType: "ORCHESTRATOR",
+			runId: "conv-1",
+			requestIfMissing: true,
+		});
+		expect(result).toEqual({ authorized: true, grantId: "g2" });
+	});
+
+	it("never raises a session for a read", async () => {
+		const result = await checkIntegrationAuthority({
+			userId: "u1",
+			provider: "NHTSA_VPIC",
+			operation: "decode_vin",
+			runType: "ORCHESTRATOR",
+			runId: "conv-1",
+			requestIfMissing: true,
+		});
+		expect(result.authorized).toBe(true);
+		expect(h.ensureSensitiveOperationAuthority).not.toHaveBeenCalled();
+	});
+
+	it("stays check-only without the flag (plan steps)", async () => {
+		await checkIntegrationAuthority({
+			userId: "u1",
+			provider: "SLACK",
+			operation: "send_message",
+			runType: "ORCHESTRATOR",
+			runId: "exec-1",
+		});
+		expect(h.ensureSensitiveOperationAuthority).not.toHaveBeenCalled();
+		expect(h.checkAuthority).toHaveBeenCalled();
 	});
 });

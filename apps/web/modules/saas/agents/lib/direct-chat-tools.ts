@@ -31,9 +31,18 @@ export function mergeDirectConversationMetadata(params: {
 	instanceId?: string | null;
 	selectedMcpConfigIds?: string[];
 }): Record<string, unknown> {
+	// A conversation keeps the engine it was recorded with (Fizzy #2040),
+	// mirroring `mergeOrchestratorConversationMetadata`: Direct can end up
+	// saving a thread another engine started (simple mode opens a Research
+	// thread on Direct), and stamping `direct` over it would move that thread
+	// to another engine for good. Only a missing mode is filled in.
+	const existingMode = params.existing?.mode;
 	const next: Record<string, unknown> = {
 		...(params.existing ?? {}),
-		mode: "direct",
+		mode:
+			typeof existingMode === "string" && existingMode.length > 0
+				? existingMode
+				: "direct",
 	};
 
 	if (params.documentChatId) {

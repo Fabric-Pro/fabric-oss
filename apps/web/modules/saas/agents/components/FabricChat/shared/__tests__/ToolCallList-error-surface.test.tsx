@@ -222,3 +222,58 @@ describe("<ToolCallList> error surface — a call with no result (Fizzy #2040)",
 		).toBeInTheDocument();
 	});
 });
+
+describe("<ToolCallList> error surface — never '[object Object]' (Fizzy #2040, F42)", () => {
+	it("reads an MCP isError result's content text", () => {
+		render(
+			<ToolCallList
+				expandable={false}
+				toolCalls={[
+					{
+						id: "t-mcp",
+						name: "notion_get_page",
+						args: {},
+						result: {
+							isError: true,
+							content: [
+								{
+									type: "text",
+									text: "Page is not shared with the integration",
+								},
+							],
+						},
+						status: "error",
+					},
+				]}
+			/>,
+		);
+		expect(
+			screen.getByText(/Page is not shared with the integration/i),
+		).toBeInTheDocument();
+	});
+
+	it("falls back to the result when an older run recorded '[object Object]'", () => {
+		const { container } = render(
+			<ToolCallList
+				expandable={false}
+				toolCalls={[
+					{
+						id: "t-legacy",
+						name: "notion_get_page",
+						args: {},
+						result: {
+							error: {
+								code: -32603,
+								message: "Resource not found",
+							},
+						},
+						status: "error",
+						error: "[object Object]",
+					},
+				]}
+			/>,
+		);
+		expect(screen.getByText(/Resource not found/i)).toBeInTheDocument();
+		expect(container.textContent).not.toContain("[object Object]");
+	});
+});

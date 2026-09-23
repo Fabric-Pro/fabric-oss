@@ -47,6 +47,17 @@ describe("Direct chat MCP tool execution", () => {
 		expect(closure).toMatch(/return toolDef\.execute\(args\);/);
 	});
 
+	it("binds a WRITE grant to the conversation, not the turn", () => {
+		// Bound to the per-turn executionId, an approval could never be used:
+		// the retry is a new turn with a new id, so it prompted again.
+		expect(aiExecutionSource).toMatch(
+			/const authorityRunId = conversationId \?\? executionId;/,
+		);
+		expect(aiExecutionSource).toMatch(
+			/runType: "AGENT_INSTANCE",\s*\n\s*runId: authorityRunId,/,
+		);
+	});
+
 	it("hands the model an error it can relay on timeout", () => {
 		// A thrown activity failure would surface as a dead stream; a tool
 		// result keeps the turn alive so the assistant can say what happened.

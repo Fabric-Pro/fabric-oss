@@ -246,7 +246,7 @@ async function createWebSearchTool(
 	};
 }
 
-async function createCodeSearchTool(
+export async function createCodeSearchTool(
 	context: BuiltInToolContext,
 ): Promise<Record<string, unknown>> {
 	const { projectId, userId, organizationId } = context;
@@ -510,7 +510,7 @@ async function createSymbolSearchTool(
 	};
 }
 
-async function createFabricTool(
+export async function createFabricTool(
 	toolId: string,
 	context: BuiltInToolContext,
 ): Promise<Record<string, unknown>> {

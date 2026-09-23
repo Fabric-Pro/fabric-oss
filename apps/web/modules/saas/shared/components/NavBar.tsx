@@ -2,6 +2,8 @@
 
 import { authClient } from "@repo/auth/client";
 import { config } from "@repo/config";
+import { useOptionalFabricAgentLauncher } from "@saas/agents/components/FabricAgentLauncher";
+import { buildFabricAgentHref } from "@saas/agents/lib/fabric-agent-links";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { GetStartedPointer } from "@saas/get-started/components/GetStartedPointer";
 import {
@@ -167,6 +169,10 @@ export function NavBar({
 	// the nav destination moves with the route redirect rather than stranding
 	// users on a surface the flag is meant to have turned off.
 	const unifiedAgentInterface = useFeatureFlag("UNIFIED_AGENT_INTERFACE");
+	// The project the current page registered with the ⌘J launcher, so the
+	// AI chat entry opens the full page on it rather than contextless (#2040).
+	const launcherAmbientContext =
+		useOptionalFabricAgentLauncher()?.ambientContext ?? null;
 	// Rollout gate for the consolidated To Do page (#2340). Read here because
 	// the entry has to be ABSENT when it is off — `todos.list` refuses the
 	// read with NOT_FOUND for an organization that is not enrolled, so a
@@ -227,6 +233,9 @@ export function NavBar({
 	// rooted in, so the chrome is rooted in the one they have.
 	const rootInOwnOrg = isGuest || !isOrgContext;
 	const effectiveBasePath = rootInOwnOrg ? ownBasePath : basePath;
+	// A nav rooted in the user's own org (a guest's) must not carry a
+	// project from the organization they are visiting.
+	const agentAmbientContext = rootInOwnOrg ? null : launcherAmbientContext;
 
 	// Quick-access project shortcuts (#1694). Called once here rather than
 	// inside a per-item child: the nav item array is already assembled once in
@@ -365,7 +374,11 @@ export function NavBar({
 						? t("app.menu.aiChatbot")
 						: t("app.menu.aiChatbotLegacy"),
 					href: unifiedAgentInterface
-						? `${effectiveBasePath}/agents/fabric-ai`
+						? buildFabricAgentHref({
+								basePath: effectiveBasePath,
+								projectId: agentAmbientContext?.projectId,
+								projectName: agentAmbientContext?.projectName,
+							})
 						: `${effectiveBasePath}/nexus`,
 					icon: SparklesIcon,
 					isActive:

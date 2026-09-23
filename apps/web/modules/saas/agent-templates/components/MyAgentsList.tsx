@@ -1,6 +1,8 @@
 "use client";
 
 import { getCategoryIcon } from "@saas/agents/lib/category-icons";
+import { buildAgentInstanceChatHref } from "@saas/agents/lib/fabric-agent-links";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -48,6 +50,7 @@ export function MyAgentsList({
 	organizationId,
 	basePath = "/app/agent-templates",
 }: Props) {
+	const unifiedAgentInterface = useFeatureFlag("UNIFIED_AGENT_INTERFACE");
 	const [searchQuery, setSearchQuery] = useState("");
 	const [debouncedSearch] = useDebounceValue(searchQuery, 300);
 	const createAgentPath = `${basePath.replace(/\/agent-templates$/, "/agents")}/create`;
@@ -268,18 +271,17 @@ export function MyAgentsList({
 												</DropdownMenuItem>
 												<DropdownMenuItem asChild>
 													<Link
-														href={`${basePath.replace(
-															/\/agent-templates$/,
-															"",
-														)}/nexus?agent=${encodeURIComponent(
-															JSON.stringify({
-																agentId: `template-instance:${instance.id}`,
-																name: instance.name,
-																description:
-																	instance.description ??
-																	"",
-															}),
-														)}`}
+														href={buildAgentInstanceChatHref(
+															{
+																basePath:
+																	basePath.replace(
+																		/\/agent-templates$/,
+																		"",
+																	),
+																instance,
+																unifiedAgentInterface,
+															},
+														)}
 													>
 														<PlayIcon className="mr-2 h-4 w-4" />
 														Start Chat

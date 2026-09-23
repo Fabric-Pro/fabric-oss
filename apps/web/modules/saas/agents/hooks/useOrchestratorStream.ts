@@ -74,12 +74,27 @@ export interface UseOrchestratorStreamOptions {
 	 */
 	surface?: "loom-orchestrator";
 	/**
+	 * Surface reported on the `ai_generation_cancelled` telemetry event,
+	 * when it differs from the workflow `surface`. The drawer runs the
+	 * Loom orchestrator workflow surface (so its clarifying-question card
+	 * works) but keeps its own analytics tag (#2040).
+	 */
+	telemetrySurface?: "loom-orchestrator" | "fabric-agent-launcher";
+	/**
 	 * Invoked when the fire-and-forget cancel POST receives a non-2xx
 	 * response. The consumer typically surfaces a non-blocking toast —
 	 * the visual state of the message does NOT revert (/
 	 * decision 11).
 	 */
 	onStopFailed?: () => void;
+}
+
+interface SendMessageOverrides {
+	/**
+	 * The conversation this send belongs to, when it was created for this
+	 * send and the hook's `conversationId` option has not caught up.
+	 */
+	conversationId?: string;
 }
 
 export interface OrchestratorStreamMessage {
@@ -435,12 +450,15 @@ export function useOrchestratorStream(
 		instanceId,
 		modelOverride,
 		surface = "loom-orchestrator",
+		telemetrySurface,
 		onStopFailed,
 	} = options;
 
 	// Latest-value refs so `stop` does not need to memoize on these.
 	const surfaceRef = useRef(surface);
 	surfaceRef.current = surface;
+	const telemetrySurfaceRef = useRef(telemetrySurface ?? surface);
+	telemetrySurfaceRef.current = telemetrySurface ?? surface;
 	const onStopFailedRef = useRef(onStopFailed);
 	onStopFailedRef.current = onStopFailed;
 
@@ -666,10 +684,15 @@ export function useOrchestratorStream(
 			 * these to the message.
 			 */
 			inlineAttachmentContexts?: string[],
+			overrides?: SendMessageOverrides,
 		) => {
 			if (!content.trim() || isLoading) {
 				return null;
 			}
+			// A conversation created for this very send has not reached the
+			// `conversationId` option yet (#2040).
+			const effectiveConversationId =
+				overrides?.conversationId ?? conversationId;
 
 			// Cancel any existing request
 			abortControllerRef.current?.abort();
@@ -785,7 +808,7 @@ export function useOrchestratorStream(
 					"[useOrchestratorStream] Sending request with workspaceIds:",
 					workspaceIds,
 					"conversationId:",
-					conversationId,
+					effectiveConversationId,
 				);
 
 				// Merge template instructions with system prompt (template takes precedence)
@@ -863,7 +886,7 @@ export function useOrchestratorStream(
 					attachedDocumentIds: mergedAttachedDocumentIds,
 					inlineAttachmentContexts,
 					projectId: projectId || undefined,
-					conversationId,
+					conversationId: effectiveConversationId,
 					attachedImageUrls,
 					// UI surface that started this run. Read by the
 					// orchestrator workflow to scope the up-front clarifying
@@ -882,7 +905,7 @@ export function useOrchestratorStream(
 					JSON.stringify({
 						executionId: executionIdRef.current,
 						organizationId,
-						conversationId,
+						conversationId: effectiveConversationId,
 						instanceId,
 						surface: surfaceRef.current,
 					});
@@ -2133,7 +2156,7 @@ export function useOrchestratorStream(
 			const partialTokenCount = Math.ceil(partialBody.length / 4);
 
 			emitCancelEvent({
-				surface: surfaceRef.current,
+				surface: telemetrySurfaceRef.current,
 				agentId: null,
 				executionId: state.executionId ?? null,
 				partial_token_count: partialTokenCount,

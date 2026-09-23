@@ -128,6 +128,7 @@ import {
 	useDirectStream,
 } from "../../hooks/useDirectStream";
 import { useEscToStopOrClose } from "../../hooks/useEscToStopOrClose";
+import { useRemoveConversationProject } from "../../hooks/useRemoveConversationProject";
 import { useSkillSlashCommand } from "../../hooks/useSkillSlashCommand";
 import { useSkillSuggestions } from "../../hooks/useSkillSuggestions";
 import { useToolSuggestions } from "../../hooks/useToolSuggestions";
@@ -384,6 +385,12 @@ interface FabricDirectChatProps {
 	attachedDocumentIds?: string[];
 	/** Attached project ID for visible context and conversation attachment */
 	attachedProjectId?: string | null;
+	/**
+	 * Removes the project from this chat. The pill offers its × only when
+	 * set: the project is the parent's prop here, so the parent has to drop
+	 * it. With a conversation open the attachment is detached first (#2040).
+	 */
+	onProjectRemove?: () => void;
 	/** Attached feature/story ID for approved task creation and implementation actions */
 	attachedStoryId?: string | null;
 	/** Attached task ID for task-scoped implementation actions */
@@ -408,6 +415,11 @@ interface FabricDirectChatProps {
 	 */
 	showAgentPicker?: boolean;
 	/**
+	 * What the picker lists — see `InterfaceModeChrome.agentPickerCatalog`.
+	 * Defaults to the full catalog.
+	 */
+	agentPickerCatalog?: "all" | "models";
+	/**
 	 * Whether to offer the chat-tools (MCP) picker in the composer.
 	 *
 	 * Simple mode hides it (#2040), same as the agent picker. Defaults to
@@ -420,6 +432,15 @@ interface FabricDirectChatProps {
 	instanceId?: string;
 	/** Optional initial draft text for contextual launches */
 	initialInput?: string;
+	/**
+	 * Files already in the composer when the chat mounts — the drawer's
+	 * attachments carried over by Expand (#2040).
+	 */
+	initialAttachedFiles?: CopilotAttachedFile[];
+	/** Reports the unsent composer text, so Expand can carry it (#2040). */
+	onDraftChange?: (draft: string) => void;
+	/** Reports the composer's attached files, so Expand can carry them. */
+	onAttachmentsChange?: (attachments: CopilotAttachedFile[]) => void;
 	/** Use a compact welcome layout for constrained surfaces like side sheets */
 	compactMode?: boolean;
 	/**
@@ -594,15 +615,20 @@ export const FabricDirectChat = forwardRef<
 		attachedWorkspaceIds,
 		attachedDocumentIds,
 		attachedProjectId,
+		onProjectRemove,
 		attachedStoryId,
 		attachedTaskId,
 		attachedCodeContext,
 		repositoryUrl,
 		showAgentPicker = true,
+		agentPickerCatalog = "all",
 		showToolPicker = true,
 		systemPrompt,
 		instanceId,
 		initialInput,
+		initialAttachedFiles,
+		onDraftChange,
+		onAttachmentsChange,
 		compactMode = false,
 		recentConversation = null,
 		onResumeConversation,
@@ -694,7 +720,30 @@ export const FabricDirectChat = forwardRef<
 		[],
 	);
 	// Document attachments state
-	const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+	const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>(
+		() => initialAttachedFiles ?? [],
+	);
+	const handleProjectRemoved = useCallback(() => {
+		onProjectRemove?.();
+	}, [onProjectRemove]);
+	const { removeProject, isRemoving: isRemovingProject } =
+		useRemoveConversationProject({
+			conversationId,
+			organizationId,
+			onRemoved: handleProjectRemoved,
+		});
+	// Lifted for Expand (#2040): the drawer keeps the latest values in refs
+	// and hands them to the full page only when the user expands.
+	const onDraftChangeRef = useRef(onDraftChange);
+	onDraftChangeRef.current = onDraftChange;
+	const onAttachmentsChangeRef = useRef(onAttachmentsChange);
+	onAttachmentsChangeRef.current = onAttachmentsChange;
+	useEffect(() => {
+		onDraftChangeRef.current?.(input);
+	}, [input]);
+	useEffect(() => {
+		onAttachmentsChangeRef.current?.(attachedFiles);
+	}, [attachedFiles]);
 	// Track current document chat ID (from uploads or loaded from history)
 	const [currentDocumentChatId, setCurrentDocumentChatId] = useState<
 		string | null
@@ -899,21 +948,8 @@ export const FabricDirectChat = forwardRef<
 		if (initial) {
 			setSelectedAgent(initial as SelectedAgent);
 		}
-		// FR13: the server drops entries whose targets no longer resolve for
-		// this tenant. Saying so is the difference between "my agent quietly
-		// changed" and "my agent went away, and I know why".
-		if (data.droppedCount > 0) {
-			toast.message(
-				first
-					? "Some saved agents are no longer available."
-					: "Your saved agent is no longer available.",
-				{
-					description: initial
-						? `Using ${initial.name} for this chat.`
-						: "Using your configured default for this chat.",
-				},
-			);
-		}
+		// The FR13 "no longer available" notice is the surface's, not this
+		// engine's — see `useSavedAgentUnavailableNotice`.
 	}, [agentSelectionQuery.data, showAgentPicker]);
 
 	const handleToggleAgent = useCallback(
@@ -2966,6 +3002,7 @@ export const FabricDirectChat = forwardRef<
 													handleToggleAgent
 												}
 												organizationId={organizationId}
+												catalog={agentPickerCatalog}
 											/>
 										) : null}
 										{/* The picker's own trigger is a
@@ -2997,6 +3034,14 @@ export const FabricDirectChat = forwardRef<
 										<ActiveContextIndicator
 											workspaceIds={attachedWorkspaceIds}
 											projectId={attachedProjectId}
+											onProjectRemove={
+												onProjectRemove
+													? removeProject
+													: undefined
+											}
+											projectRemoveDisabled={
+												isRemovingProject
+											}
 											mcpConfigIds={
 												selectedConversationMcpIds ??
 												enabledMcpConfigIds ??

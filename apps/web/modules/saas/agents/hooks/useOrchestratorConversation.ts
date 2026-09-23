@@ -136,6 +136,29 @@ export interface OrchestratorConversationDetail {
 	updatedAt: string;
 }
 
+interface CreateConversationInput {
+	/** The user's first message; also titles the conversation. */
+	initialMessage?: string;
+	/** Id for that message, so a later save can recognise it. */
+	initialMessageId?: string;
+	/** The AiChat that uploaded documents are stored under (Files tab). */
+	documentChatId?: string | null;
+	/**
+	 * The conversation's Chat-tools selection. Stored at creation, or the
+	 * page — which loads the new conversation mid-turn — reads "no
+	 * selection" back and the turn's save erases the user's choice.
+	 */
+	selectedMcpConfigIds?: string[];
+}
+
+interface SaveExecutionInput {
+	conversationId: string;
+	execution: OrchestratorExecution;
+	messages: ConversationMessage[];
+	selectedMcpConfigIds?: string[] | null;
+	documentChatId?: string | null;
+}
+
 interface UseOrchestratorConversationOptions {
 	organizationId?: string;
 	executionMode?: "lite" | "balanced" | "deep" | "planner";
@@ -251,12 +274,16 @@ export function useOrchestratorConversation(
 		mutationFn: async (input: {
 			title?: string;
 			initialMessage?: ConversationMessage;
+			documentChatId?: string | null;
+			selectedMcpConfigIds?: string[];
 		}) => {
 			const messages = input.initialMessage ? [input.initialMessage] : [];
 			const metadata = mergeOrchestratorConversationMetadata({
 				executionMode,
 				executions: [],
 				instanceId,
+				documentChatId: input.documentChatId,
+				selectedMcpConfigIds: input.selectedMcpConfigIds,
 			});
 
 			const result = await orpcClient.agents.conversations.create({
@@ -277,12 +304,7 @@ export function useOrchestratorConversation(
 
 	// Save execution mutation
 	const saveExecutionMutation = useMutation({
-		mutationFn: async (input: {
-			conversationId: string;
-			execution: OrchestratorExecution;
-			messages: ConversationMessage[];
-			selectedMcpConfigIds?: string[] | null;
-		}) => {
+		mutationFn: async (input: SaveExecutionInput) => {
 			// Get current conversation
 			const current = await orpcClient.agents.conversations.get({
 				id: input.conversationId,
@@ -316,6 +338,7 @@ export function useOrchestratorConversation(
 					input.selectedMcpConfigIds !== undefined
 						? (input.selectedMcpConfigIds ?? undefined)
 						: currentMetadata.selectedMcpConfigIds,
+				documentChatId: input.documentChatId,
 			});
 
 			// Update conversation with new messages and metadata
@@ -379,25 +402,27 @@ export function useOrchestratorConversation(
 
 	// Helper functions
 	const createConversation = useCallback(
-		async (initialMessage?: string) => {
-			const message = initialMessage
+		async (input: CreateConversationInput = {}) => {
+			const content = input.initialMessage;
+			const message = content
 				? {
-						id: generateMessageId(),
+						id: input.initialMessageId ?? generateMessageId(),
 						role: "user" as const,
-						content: initialMessage,
+						content,
 						timestamp: new Date().toISOString(),
 					}
 				: undefined;
 
 			// Generate title from initial message
-			const title = initialMessage
-				? initialMessage.slice(0, 50) +
-					(initialMessage.length > 50 ? "..." : "")
+			const title = content
+				? content.slice(0, 50) + (content.length > 50 ? "..." : "")
 				: undefined;
 
 			return createMutation.mutateAsync({
 				title,
 				initialMessage: message,
+				documentChatId: input.documentChatId,
+				selectedMcpConfigIds: input.selectedMcpConfigIds,
 			});
 		},
 		[createMutation],
@@ -408,18 +433,8 @@ export function useOrchestratorConversation(
 	}, []);
 
 	const saveExecution = useCallback(
-		async (
-			conversationId: string,
-			execution: OrchestratorExecution,
-			messages: ConversationMessage[],
-			selectedMcpConfigIds?: string[] | null,
-		) => {
-			return saveExecutionMutation.mutateAsync({
-				conversationId,
-				execution,
-				messages,
-				selectedMcpConfigIds,
-			});
+		async (input: SaveExecutionInput) => {
+			return saveExecutionMutation.mutateAsync(input);
 		},
 		[saveExecutionMutation],
 	);

@@ -154,8 +154,74 @@ describe("classifyToolAccessLevel — vendor-namespaced names", () => {
 
 	it("leaves the names that already classified correctly alone", () => {
 		expect(classifyToolAccessLevel("list_issues")).toBe("READ");
-		expect(classifyToolAccessLevel("get_or_create_page")).toBe("READ");
 		expect(classifyToolAccessLevel("create_view")).toBe("READ");
 		expect(classifyToolAccessLevel("some_unknown_shape")).toBe("WRITE");
+	});
+});
+
+/**
+ * The orchestrator's chat loop now gates every WRITE behind an inline
+ * approval, so this classifier decides what interrupts a conversation. Reads
+ * must not prompt (that trains people to grant writes), and a name carrying
+ * both a read verb and a write verb is a write. `get_or_create_page` used to
+ * read as READ on its leading `get`; it can create a page, so it is WRITE now.
+ */
+describe("classifyToolAccessLevel — chat gate table", () => {
+	const READS = [
+		"notion-search",
+		"notion-fetch",
+		"notion-get-users",
+		"notion-get-self",
+		"notion__notion-search",
+		"search",
+		"fetch",
+		"get_identity",
+		"get_workflow_run",
+		"get_merge_request",
+		"list_posts",
+		"get_post",
+		"get_closed_cards",
+		"list_created_issues",
+		"describe_table",
+		"retrieve_page",
+		"view_board",
+		"find_user",
+		"query_database",
+		"create_view",
+	];
+	const WRITES = [
+		"notion-create-pages",
+		"notion-update-page",
+		"notion-move-pages",
+		"notion-duplicate-page",
+		"notion-create-comment",
+		"get_or_create_page",
+		"find_or_create_issue",
+		"search_and_replace",
+		"get_and_send_report",
+		"mark_read",
+		"mark-read",
+		"fizzy_mark_notification_read",
+		"update_search_index",
+		"create_issue",
+		"update_page",
+		"delete_item",
+		"move_card",
+		"upload_file",
+		"send_message",
+		"post_comment",
+		"write_file",
+		"set_status",
+		"add_label",
+		"remove_member",
+		"some_unknown_shape",
+	];
+
+	it.each(READS)("%s is READ", (name) => {
+		expect(classifyToolAccessLevel(name)).toBe("READ");
+	});
+
+	it.each(WRITES)("%s is WRITE", (name) => {
+		expect(classifyToolAccessLevel(name)).toBe("WRITE");
 	});
 });

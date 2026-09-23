@@ -144,9 +144,12 @@ describe("executeMcpTool timeoutMs", () => {
 		});
 
 		expect(res.success).toBe(false);
+		// `content` is kept for the caller to classify; `error` carries the
+		// same text as a string for the chat loop and tool card (F42).
 		expect(res.output).toEqual({
 			content: [{ type: "text", text: "HTTP 404 Not Found" }],
 			isError: true,
+			error: "HTTP 404 Not Found",
 		});
 		expect(error).not.toHaveBeenCalled();
 		error.mockRestore();

@@ -67,3 +67,24 @@ describe("MCP server toggle accessibility", () => {
 		);
 	});
 });
+
+describe("simple mode engine", () => {
+	const source = readSource(
+		"modules/saas/agents/components/fabric-ai/FabricAIClient.tsx",
+	);
+
+	it("picks the engine through resolveChatEngine with the recorded engine", () => {
+		expect(source).toMatch(
+			/const chatEngine = resolveChatEngine\(\{[\s\S]{0,200}?conversationEngine,/,
+		);
+		expect(source).toMatch(
+			/setConversationEngine\(conversationEngineFromMetadata\(metadata\)\)/,
+		);
+	});
+
+	it("runs the Orchestrator's iterative preset in simple mode", () => {
+		expect(source).toMatch(
+			/executionModeOverride=\{\s*uiMode === "simple" \? "iterative" : undefined\s*\}/,
+		);
+	});
+});

@@ -481,6 +481,11 @@ export async function orchestratorExecutionWorkflow(
 			);
 		}
 
+		// The attached project, as the clarity gates see it. Set only by
+		// initialization, so it stays unset on a continueAsNew resume — where
+		// both gates are skipped anyway.
+		let attachedProjectContext: string | undefined;
+
 		// ======================================================================
 		// Phase 1: Initialization (skipped on continueAsNew resume — Issue #6)
 		// ======================================================================
@@ -507,6 +512,7 @@ export async function orchestratorExecutionWorkflow(
 			state.enrichedMessage = initResult.data!.enrichedMessage;
 			// biome-ignore lint/style/noNonNullAssertion: initResult.success guarantees data is defined
 			state.enrichedSystemPrompt = initResult.data!.enrichedSystemPrompt;
+			attachedProjectContext = initResult.data?.clarityProjectContext;
 		}
 
 		// ======================================================================
@@ -545,9 +551,19 @@ export async function orchestratorExecutionWorkflow(
 			// (Fizzy #2406). `input.history` is the same history planning and
 			// iterative execution already consume — it was simply never handed
 			// to the clarity check.
+			// Without the attached project the gate read "this project" as
+			// unresolved and asked which one (Fizzy #2040, F41).
+			const clarityProjectContext = patched(
+				"orchestrator-clarity-project-context-v1",
+			)
+				? attachedProjectContext
+				: undefined;
 			const clarity = await analyzeIntentClarityActivity({
 				message: state.enrichedMessage || input.message,
 				conversationSummary: buildConversationSummary(input.history),
+				...(clarityProjectContext
+					? { projectContext: clarityProjectContext }
+					: {}),
 				userId: input.userId,
 				organizationId: input.organizationId,
 			});
@@ -748,12 +764,20 @@ export async function orchestratorExecutionWorkflow(
 					content: state.enrichedMessage || input.message,
 				},
 			]);
+			const stepProjectContext = patched(
+				"orchestrator-clarity-project-context-v1",
+			)
+				? attachedProjectContext
+				: undefined;
 			const clarities = await Promise.all(
 				steps.map(async (step) => {
 					try {
 						return await analyzeIntentClarityActivity({
 							message: step.description,
 							conversationSummary: stepConversationSummary,
+							...(stepProjectContext
+								? { projectContext: stepProjectContext }
+								: {}),
 							userId: input.userId,
 							organizationId: input.organizationId,
 						});
