@@ -1,10 +1,7 @@
 "use client";
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
-import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { Spinner } from "@shared/components/Spinner";
-import { orpcClient } from "@shared/lib/orpc-client";
-import { useMutation } from "@tanstack/react-query";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { Badge } from "@ui/components/badge";
 import {
@@ -26,7 +23,6 @@ import {
 	ImageIcon,
 	LibraryIcon,
 	Link2Icon,
-	Link2OffIcon,
 	Lock,
 	MoreVerticalIcon,
 	Play,
@@ -124,14 +120,6 @@ type Props = {
 	 *  re-binding from this card lands in the right kind bucket instead of
 	 *  NULL. */
 	storyKindContext?: import("@repo/database").StoryKind;
-	/** The binding this card is standing in for, when it is rendered as one.
-	 *  Present only on surfaces that list bindings (the stage defaults panels);
-	 *  the library grid has no binding context and offers no clear action. */
-	binding?: {
-		targetKey: string;
-		documentType: string;
-		scope: "SYSTEM" | "ORG" | "USER";
-	};
 };
 
 // Render content with variable highlighting
@@ -180,12 +168,10 @@ export function PromptCard({
 	showPinButton: _showPinButton = false,
 	isPinned: _isPinned = false,
 	storyKindContext,
-	binding,
 }: Props) {
 	const router = useRouter();
 	const tTooltips = useTranslations("tooltips.common");
-	const { confirm } = useConfirmationAlert();
-	const { basePath, organizationId } = useOrganizationContext();
+	const { basePath } = useOrganizationContext();
 	const [setDefaultOpen, setSetDefaultOpen] = useState(false);
 	const [previewOpen, setPreviewOpen] = useState(false);
 
@@ -203,57 +189,6 @@ export function PromptCard({
 		router.push(`${basePath}/prompts/new?duplicateFrom=${prompt.id}`);
 	};
 
-	// Only an override can be cleared. A SYSTEM binding is the baseline the
-	// other tiers fall back TO, so clearing it from here would leave the action
-	// with no prompt at all rather than reverting it to something.
-	const clearableBinding =
-		binding && binding.scope !== "SYSTEM" ? binding : null;
-
-	const clearMutation = useMutation({
-		mutationFn: async () => {
-			if (!clearableBinding) {
-				throw new Error("No override to clear");
-			}
-			return await orpcClient.prompts.bindings.clear({
-				targetType: "AGENT",
-				targetKey: clearableBinding.targetKey,
-				documentType: clearableBinding.documentType,
-				storyKind: storyKindContext ?? null,
-				scope: clearableBinding.scope,
-				organizationId:
-					clearableBinding.scope === "ORG"
-						? (organizationId ?? null)
-						: null,
-			});
-		},
-		onSuccess: (result: { cleared?: boolean }) => {
-			toast.success(
-				result?.cleared
-					? "Override cleared — this action now uses the next level's default"
-					: "There was no override to clear",
-			);
-			onUpdate?.();
-		},
-		onError: (error) => {
-			toast.error("Failed to clear the override", {
-				description:
-					error instanceof Error ? error.message : String(error),
-			});
-		},
-	});
-
-	const handleClearOverride = () => {
-		confirm({
-			title: "Clear Default Override",
-			message:
-				clearableBinding?.scope === "ORG"
-					? "This action will fall back to the universal default for everyone in the organization who has not set their own. The prompt itself is kept, so you can set it again later."
-					: "This action will fall back to your organization's default, or the universal one. The prompt itself is kept, so you can set it again later.",
-			confirmLabel: "Clear override",
-			cancelLabel: "Cancel",
-			onConfirm: () => clearMutation.mutate(),
-		});
-	};
 	const [imageError, setImageError] = useState(false);
 	const videoRef = useRef<HTMLVideoElement>(null);
 	const [_isVisible, setIsVisible] = useState(false);
@@ -454,15 +389,6 @@ export function PromptCard({
 										<LibraryIcon className="mr-2 h-4 w-4" />
 										View in Catalog
 									</DropdownMenuItem>
-									{clearableBinding && (
-										<DropdownMenuItem
-											onClick={handleClearOverride}
-											disabled={clearMutation.isPending}
-										>
-											<Link2OffIcon className="mr-2 h-4 w-4" />
-											Clear Default Override
-										</DropdownMenuItem>
-									)}
 									{deletion.canDelete && (
 										<>
 											<DropdownMenuSeparator />
