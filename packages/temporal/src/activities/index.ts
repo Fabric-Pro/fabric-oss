@@ -68,18 +68,10 @@ export {
 	updateDeploymentHealth,
 	updateDeploymentStatus,
 } from "./agent-supervisor";
-// Agentic loop activities (advanced patterns: context pruning, sub-agent delegation, data source tools)
+// Agentic loop activities (advanced patterns: context pruning, sub-agent delegation)
 export {
 	type ConversationContext,
-	createDataSourceTools,
-	createListDataSourcesTool,
-	createMinimalDataSourceTools,
-	createReadDocumentTool,
 	createRunAgentTool,
-	createSearchDataSourcesTool,
-	createWorkspaceSummaryTool,
-	type DataSourceConfig,
-	type DocumentInfo,
 	getAvailableAgents,
 	getContextTokenCount,
 	type Message,
@@ -91,7 +83,6 @@ export {
 	type RunAgentMode,
 	type RunAgentOutput,
 	runAgent,
-	type SearchResult,
 	searchDataSources,
 } from "./agentic-loop";
 export * from "./approval-activities";

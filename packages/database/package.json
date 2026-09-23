@@ -135,6 +135,8 @@
 		"test:provider-sync": "vitest run __tests__/ai-provider-config-sync.test.ts",
 		"revoke:pre-org-keys": "dotenv -c -e ../../.env.local -- tsx ./scripts/revoke-pre-org-personal-keys.ts",
 		"revoke:pre-org-keys:staging": "dotenv -c -e ../../.env.staging -- tsx ./scripts/revoke-pre-org-personal-keys.ts",
+		"find:cross-tenant-instance-workspaces": "dotenv -c -e ../../.env.local -- tsx ./scripts/find-cross-tenant-instance-workspaces.ts",
+		"find:cross-tenant-instance-workspaces:staging": "dotenv -c -e ../../.env.staging -- tsx ./scripts/find-cross-tenant-instance-workspaces.ts",
 		"test:todos": "cross-env RUN_DB_INTEGRATION=1 dotenv -c -e ../../.env.local -- vitest run __tests__/todo-list-query.test.ts"
 	},
 	"types": "./index.ts",

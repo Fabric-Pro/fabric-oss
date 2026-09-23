@@ -139,8 +139,9 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 		// Validate workspace access if workspaceIds provided. Access alone only
 		// answers "can this user open it" - a member of two organizations can
 		// open both organizations' workspaces - so also require the workspace to
-		// be hosted by this instance's tenant. Execution trusts the stored ids
-		// and queries each workspace's vectors with no further tenancy check.
+		// be hosted by this instance's tenant. The stored ids are read at every
+		// run; execution narrows them to the tenant again, but only as a guard
+		// for rows saved before this check, not as a substitute for it.
 		if (input.workspaceIds && input.workspaceIds.length > 0) {
 			for (const workspaceId of input.workspaceIds) {
 				const access = await getWorkspaceAccessContext(

@@ -544,6 +544,92 @@ export async function hasWorkspaceAccess(
 }
 
 /**
+ * Split workspace ids into those hosted by one tenant and those that are not.
+ *
+ * This exists for ids that were stored earlier and are read back at execution
+ * time, above all `AgentTemplateInstance.workspaceIds`. Instance create and
+ * update used to accept any workspace the caller could open, and a member of
+ * two organizations can open both organizations' workspaces, so an instance
+ * hosted by one organization could carry another organization's workspace (or
+ * its creator's personal one). The write path now refuses that, but rows saved
+ * before it still hold such ids, and every run of the instance would read
+ * those workspaces' documents on the stored list's word.
+ *
+ * The rule is the tenant comparison the write path makes, done in bulk: a
+ * workspace stays when its stored `organizationId` equals the tenant's
+ * (`null` for a personal tenant) exactly, and a personal workspace stays only
+ * for the user who owns it, since that is the only user who can reach it. An
+ * id with no workspace row is dropped. Order is preserved and repeats are
+ * collapsed, so the caller can use `allowed` in place of its input.
+ *
+ * It is a tenancy filter, not an access check: an organization workspace
+ * passes for any user named here, member or not. A request boundary that
+ * accepts workspace ids from a caller still needs `hasWorkspaceAccess` (or
+ * {@link getWorkspaceAccessContext}); this only keeps ids that a tenant-checked
+ * row already carried from reaching outside that tenant.
+ */
+export async function filterWorkspaceIdsForTenant(params: {
+	workspaceIds: string[];
+	userId: string;
+	organizationId: string | null | undefined;
+}): Promise<{ allowed: string[]; dropped: string[] }> {
+	if (params.workspaceIds.length === 0) {
+		return { allowed: [], dropped: [] };
+	}
+
+	const workspaces = await db.workspace.findMany({
+		where: { id: { in: params.workspaceIds } },
+		select: { id: true, userId: true, organizationId: true },
+	});
+
+	return partitionWorkspaceIdsForTenant(params.workspaceIds, workspaces, {
+		userId: params.userId,
+		organizationId: params.organizationId,
+	});
+}
+
+/**
+ * The rule {@link filterWorkspaceIdsForTenant} applies, over workspace rows the
+ * caller has already loaded. It is separate so a sweep over many rows can load
+ * the referenced workspaces once and still judge each list by the same rule
+ * the execution path uses, rather than a copy of it.
+ */
+export function partitionWorkspaceIdsForTenant(
+	workspaceIds: string[],
+	workspaces: Array<{
+		id: string;
+		userId: string;
+		organizationId: string | null;
+	}>,
+	tenant: { userId: string; organizationId: string | null | undefined },
+): { allowed: string[]; dropped: string[] } {
+	const tenantOrganizationId = tenant.organizationId ?? null;
+	const byId = new Map(
+		workspaces.map((workspace) => [workspace.id, workspace]),
+	);
+	const allowed: string[] = [];
+	const dropped: string[] = [];
+	const seen = new Set<string>();
+
+	for (const workspaceId of workspaceIds) {
+		if (seen.has(workspaceId)) {
+			continue;
+		}
+		seen.add(workspaceId);
+
+		const workspace = byId.get(workspaceId);
+		const inTenant =
+			workspace !== undefined &&
+			workspace.organizationId === tenantOrganizationId &&
+			(tenantOrganizationId !== null ||
+				workspace.userId === tenant.userId);
+		(inTenant ? allowed : dropped).push(workspaceId);
+	}
+
+	return { allowed, dropped };
+}
+
+/**
  * Get user's role in a workspace
  *
  * SECURITY: For organization workspaces, we verify org membership first.

@@ -12,6 +12,7 @@
 
 import {
 	appendTemplateMessage,
+	filterWorkspaceIdsForTenant,
 	getAgentDeploymentById,
 	getBuiltInToolConfig,
 	getTemplateConversationMessages,
@@ -163,6 +164,29 @@ export async function loadDeploymentConfiguration(params: {
 	const instance = deployment.instance;
 	const template = instance.template;
 
+	// The deployment row is tenant-checked above; the workspace ids its
+	// instance stores are not. Instances saved before create and update bound
+	// workspaces to the instance's organization can name another
+	// organization's workspace, so narrow the list to the deployment's own
+	// tenant before it goes into the config every later activity reads.
+	const { allowed: workspaceIds, dropped } =
+		await filterWorkspaceIdsForTenant({
+			workspaceIds: instance.workspaceIds || [],
+			userId: deployment.userId,
+			organizationId: deployment.organizationId,
+		});
+	if (dropped.length > 0) {
+		logger.warn(
+			"[DeploymentExecution] Dropping workspaces outside the deployment's organization",
+			{
+				deploymentId,
+				instanceId: instance.id,
+				tenantContext,
+				dropped,
+			},
+		);
+	}
+
 	return {
 		deploymentId: deployment.id,
 		template: {
@@ -208,7 +232,7 @@ export async function loadDeploymentConfiguration(params: {
 				string,
 				Record<string, unknown>
 			>) || {},
-		workspaceIds: instance.workspaceIds || [],
+		workspaceIds,
 	};
 }
 
@@ -382,9 +406,14 @@ export async function buildExecutionContext(params: {
  * Fetch knowledge from configured sources for RAG context
  *
  * TENANT ISOLATION:
- * - Workspaces: searchMultipleWorkspaces uses physical collection isolation (org vs personal)
+ * - Workspaces: the deployment row is loaded under the caller's tenant, but the
+ *   workspace ids come from its instance's stored list, which older rows could
+ *   fill with another organization's workspaces. loadDeploymentConfiguration
+ *   narrows that list to the deployment's tenant, and the retrieval itself
+ *   (retrieveWorkspaceDocumentsActivity) narrows it again to this call's tenant
+ *   before searching. searchMultipleWorkspaces then searches only this tenant's
+ *   collection (org vs personal).
  * - Integrations: fetchCredentialsById enforces strict tenant filtering
- * - All workspace IDs and integration IDs come from the deployment config which is already tenant-isolated
  */
 export async function fetchKnowledge(params: {
 	executionId: string;
