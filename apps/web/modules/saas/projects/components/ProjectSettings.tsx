@@ -4,6 +4,7 @@ import type { Prisma } from "@repo/database";
 import type { EngagementProfile } from "@repo/database/prisma/generated/enums";
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { CapabilityGateBanner } from "@saas/projects/components/capability-gates/CapabilityGateBanner";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import type { ClarifyingQuestionFrequency } from "@saas/shared/components/copilot/useClarifyingQuestions";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
@@ -535,6 +536,11 @@ export function ProjectSettings({
 								className="space-y-4"
 								data-onboarding-target="settings-chat-monitors"
 							>
+								{/* Once, above all three cards, and never on each:
+								    Work Capture needs a conversation linked in any
+								    of them, so the warning is about the group
+								    (Fizzy #1930). */}
+								<CapabilityGateBanner capabilityKey="settings.work-capture" />
 								<TeamsChannelMonitorSettings
 									projectId={project.id}
 									organizationId={

@@ -71,16 +71,18 @@ export const SNOOZE_DURATIONS: readonly SnoozeDuration[] = [
 ];
 
 /**
- * The surfaces a project page mounts a gate on: the document dialog, the
- * Context tab, the Security tab, and the newsletter settings. Atlas is absent
- * on purpose — it keeps its own status UI, and its gates are the expensive
- * ones to resolve.
+ * The surfaces a project page mounts a gate on: the document dialog and a
+ * document's auto-refresh control, the Context tab, the Security tab, the
+ * newsletter settings, and Settings → Knowledge's chat monitors. Atlas is
+ * absent on purpose — it keeps its own status UI, and its gates are the
+ * expensive ones to resolve. Settings is cheap: its rules read rows only.
  */
 const MOUNTED_SURFACES = [
 	"documents",
 	"context",
 	"security",
 	"release-notes",
+	"settings",
 ] as const;
 
 /**

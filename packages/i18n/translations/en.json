@@ -5579,6 +5579,14 @@
 					"source-processing": {
 						"title": "Waiting on a source",
 						"body": "This is waiting on {dependency}, which is still being prepared. Generation waits for it and starts on its own."
+					},
+					"refresh-sources-processing": {
+						"title": "Sources are still processing",
+						"body": "Some of this project's sources are still being read, so a refresh that runs now may miss them."
+					},
+					"refresh-nothing-to-read": {
+						"title": "Nothing new to refresh from",
+						"body": "This project has no sources a refresh can read yet, so refreshes will keep finding nothing to change. Add context to give them something to work from."
 					}
 				},
 				"scan": {
@@ -5603,6 +5611,10 @@
 					"connection-degraded": {
 						"title": "Connected, with problems",
 						"body": "The connection is in place but the last run did not succeed. Open it for details."
+					},
+					"no-linked-channel": {
+						"title": "No channel linked yet",
+						"body": "Work Capture picks up tasks from Slack or Teams conversations, and no channel or chat is linked to this project yet. Link one below to start."
 					}
 				}
 			},

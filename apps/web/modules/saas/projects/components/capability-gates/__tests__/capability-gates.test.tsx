@@ -244,7 +244,13 @@ describe("one resolution per page", () => {
 		expect(gatesMock).toHaveBeenCalledTimes(1);
 		expect(gatesMock).toHaveBeenCalledWith({
 			projectId: "proj_example",
-			surfaces: ["documents", "context", "security", "release-notes"],
+			surfaces: [
+				"documents",
+				"context",
+				"security",
+				"release-notes",
+				"settings",
+			],
 		});
 	});
 

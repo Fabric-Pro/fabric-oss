@@ -312,6 +312,20 @@ export interface CapabilityEvidence {
 	 */
 	scan: JobSnapshot & { requiresCodebase: boolean };
 	/**
+	 * Slack channels, Teams channels and Teams chats linked to this project for
+	 * Work Capture — the conversations it picks tasks up from. A paused one
+	 * still counts: it is linked, and resuming it is one click away.
+	 */
+	chat: { linkedChannelCount: number };
+	/**
+	 * Whether the scheduled living-document refresh has anything it can read.
+	 *
+	 * Not `context.total` and not the codebase: the refresh reads its own,
+	 * narrower set — see the gather for exactly which rows, and why an indexed
+	 * repository is not one of them.
+	 */
+	refreshSources: { readable: boolean };
+	/**
 	 * Optional, and optional on purpose — see `SufficiencySignal`. A rule that
 	 * finds nothing here falls back to its explicit minimum-dependency rule,
 	 * which is what every v1 rule does.

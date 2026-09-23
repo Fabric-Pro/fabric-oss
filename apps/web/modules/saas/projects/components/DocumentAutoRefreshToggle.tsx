@@ -1,5 +1,7 @@
 "use client";
 
+import { CapabilityGateBanner } from "@saas/projects/components/capability-gates/CapabilityGateBanner";
+import { useCapabilityGate } from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { useTenantContext } from "@shared/hooks/use-tenant-query";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -154,6 +156,10 @@ function DocumentAutoRefreshToggleInner({
 	const { queryKeyPrefix, organizationId } = useTenantContext();
 	const key = [...queryKeyPrefix, "documents", "auto-refresh", documentId];
 	const [proposalOpen, setProposalOpen] = useState(false);
+	// Whether the refresh has anything to read (Fizzy #1930). A warning only —
+	// it never disables the toggle; see the banner in the settings popover.
+	const sourcesGate = useCapabilityGate("documents.auto-refresh");
+	const sourcesWarning = sourcesGate.view !== null;
 
 	const query = useQuery({
 		queryKey: key,
@@ -433,7 +439,9 @@ function DocumentAutoRefreshToggleInner({
 								aria-label={
 									lastStatus?.tone === "bad"
 										? `Auto-refresh settings — ${lastStatus.label}`
-										: "Auto-refresh settings"
+										: sourcesWarning
+											? "Auto-refresh settings — check what it can read"
+											: "Auto-refresh settings"
 								}
 								className={cn(
 									"h-8 gap-1 px-2 text-muted-foreground text-xs transition-colors hover:text-foreground",
@@ -444,9 +452,27 @@ function DocumentAutoRefreshToggleInner({
 								)}
 							>
 								{CADENCE_LABEL[cadence]}
+								{/* Points at the banner inside, so a warning about
+								    what the refresh can read is not left for
+								    someone to stumble on. */}
+								{sourcesWarning &&
+									lastStatus?.tone !== "bad" && (
+										<span
+											aria-hidden="true"
+											className="size-1.5 rounded-full bg-highlight"
+										/>
+									)}
 							</Button>
 						</PopoverTrigger>
 						<PopoverContent align="end" className="w-80 space-y-4">
+							{/* Where the schedule is configured, and only once it
+							    is on: a warning about what a refresh will find
+							    is news for someone who has scheduled one, not
+							    for every reader of every document. */}
+							<CapabilityGateBanner
+								capabilityKey="documents.auto-refresh"
+								className="p-3 pl-4"
+							/>
 							<div className="space-y-2">
 								<Label
 									htmlFor="auto-refresh-cadence"

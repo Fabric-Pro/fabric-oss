@@ -55,6 +55,8 @@ export function healthyEvidence(): CapabilityEvidence {
 		// The default configuration: the two AI reviewers are on, neither
 		// repository scanner is, so the scan needs no codebase.
 		scan: { ...IDLE_JOB, requiresCodebase: false },
+		chat: { linkedChannelCount: 2 },
+		refreshSources: { readable: true },
 	};
 }
 

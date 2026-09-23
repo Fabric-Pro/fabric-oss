@@ -401,6 +401,11 @@ export function TeamsChatSelectorDialog({
 					console.error("[Teams] enable channel monitor failed", err);
 				}
 			}
+			// Each add above links the conversation server-side through a
+			// direct client call, not a `useMutation`, so the central gate
+			// refresh never sees it — and Work Capture and document
+			// auto-refresh both gate on linked conversations (Fizzy #1930).
+			queryClient.invalidateQueries({ queryKey: ["capability-gates"] });
 
 			closingAfterSaveRef.current = true;
 			pendingSelectionsRef.current = null;

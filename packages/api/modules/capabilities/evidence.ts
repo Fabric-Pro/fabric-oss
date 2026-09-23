@@ -127,6 +127,29 @@ const CONTEXT_INDEXED = "COMPLETED" as const;
 const CONTEXT_IN_FLIGHT_STATUSES = ["PENDING", "EXTRACTING"] as const;
 
 /**
+ * Context kinds the living-document refresh's retrieval can never return.
+ *
+ * `INTEGRATION` rows are pointers with empty content, and retrieval skips them
+ * by kind; the chat ones are read live instead — see
+ * {@link LIVE_CHAT_PROVIDERS}. `CODE_FILE` / `CODE_FILE_SUMMARY` are here
+ * because the indexer never writes them as rows: its vectors carry synthetic
+ * `code:…` ids that retrieval cannot resolve to a row, so it drops every one.
+ * An indexed repository is therefore NOT something a refresh reads, whatever
+ * the comment at its call site says, and must not satisfy the rule.
+ */
+const REFRESH_UNRETRIEVABLE_CONTEXT_TYPES = [
+	"INTEGRATION",
+	"CODE_FILE",
+	"CODE_FILE_SUMMARY",
+] as const;
+
+/**
+ * `INTEGRATION` providers whose conversations the refresh fetches live, at any
+ * extraction status — the live fetch never looks at it.
+ */
+const LIVE_CHAT_PROVIDERS = ["SLACK", "MICROSOFT_TEAMS"] as const;
+
+/**
  * Context kinds that can ground an architecture or technical answer on their
  * own, without consulting the row's category.
  */
@@ -442,6 +465,45 @@ export async function gatherCapabilityEvidence({
 			// Nested for the same reason as the scan config: a one-row join the
 			// gather pays nothing extra for. An absent row is the default, off.
 			ragSettings: { select: { codeSearchEnabled: true } },
+			// Work Capture's conversations. Counted on the linked rows rather
+			// than read off a monitor flag: linking is what gives capture
+			// something to read, and the flag only decides how often it looks.
+			_count: {
+				select: {
+					linkedSlackChannels: true,
+					linkedTeamsChannels: true,
+					linkedTeamsChats: true,
+				},
+			},
+			// One row the scheduled document refresh could read, or none —
+			// existence, not a count, so a project with thousands of sources
+			// costs the same as one with a single row. The two arms are the
+			// refresh's own two inputs: what retrieval can return (a finished,
+			// embedded row of a kind it resolves), and the Slack and Teams
+			// conversations it fetches live. The `OR` is between those two
+			// content predicates on one project's rows — the tenant is decided
+			// by the project check below, never by this.
+			contexts: {
+				where: {
+					OR: [
+						{
+							type: {
+								notIn: [...REFRESH_UNRETRIEVABLE_CONTEXT_TYPES],
+							},
+							OR: [
+								{ embeddedAt: { not: null } },
+								{ extractionStatus: CONTEXT_INDEXED },
+							],
+						},
+						...LIVE_CHAT_PROVIDERS.map((provider) => ({
+							type: "INTEGRATION" as const,
+							metadata: { path: ["provider"], equals: provider },
+						})),
+					],
+				},
+				select: { id: true },
+				take: 1,
+			},
 		},
 	});
 
@@ -895,6 +957,15 @@ export async function gatherCapabilityEvidence({
 						},
 					)),
 		},
+
+		chat: {
+			linkedChannelCount:
+				project._count.linkedSlackChannels +
+				project._count.linkedTeamsChannels +
+				project._count.linkedTeamsChats,
+		},
+
+		refreshSources: { readable: project.contexts.length > 0 },
 
 		// `sufficiency` is omitted, not defaulted. No generating capability
 		// produces the signal yet, and an empty object would look like an
