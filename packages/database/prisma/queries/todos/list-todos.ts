@@ -69,6 +69,32 @@
 import { db, Prisma } from "../../client";
 
 /**
+ * What `trim()` removes, spelled out for Postgres.
+ *
+ * One-argument `BTRIM` strips U+0020 and nothing else — a tab-only subject
+ * would vanish in JS and survive here — so the whole ECMAScript whitespace set
+ * is named. A `Prisma.sql` fragment with no parameters, composed rather than
+ * interpolated, per this file's rule about text in SQL.
+ *
+ * FUNCTIONS, NOT CONSTANTS, and that is not style. A `const` here would call
+ * `Prisma.sql` while this module is being imported, which makes merely
+ * importing anything that reaches `queries/todos/index.ts` fail in any test
+ * that mocks `@repo/database/prisma/client` without re-exporting `Prisma` —
+ * a crash at import time, in files that never call this query. CI caught
+ * exactly that. Keep every `Prisma.sql` in this file inside a function body.
+ */
+const trimChars = () =>
+	Prisma.sql`E' \t\n\r\f\x0B\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF'`;
+
+/** The occurrence's own subject, blank-normalised to NULL. */
+const occurrenceSubject = () =>
+	Prisma.sql`NULLIF(BTRIM(tr."meetingSubject", ${trimChars()}), '')`;
+
+/** The recurring series' subject, blank-normalised to NULL. */
+const seriesSubject = () =>
+	Prisma.sql`NULLIF(BTRIM(lm."subject", ${trimChars()}), '')`;
+
+/**
  * The four scopes the read answers for.
  *
  * Exported as a tuple so the procedure's input schema is built FROM it rather
@@ -484,13 +510,29 @@ export async function listVisibleTodos(
 				-- the page must present it as one.
 				ai."tentativeOwnerName" AS "tentativeOwnerName",
 				-- The meeting reference. \`tr."transcriptId"\` is the GRAPH id the
-				-- digest is addressed by, NOT the cuid the to-do is bound on, and
-				-- the subject falls back from the linked meeting to the
-				-- transcript's own snapshot exactly as \`meetingDigest.getMeeting\`
-				-- resolves it — the two surfaces name a meeting identically or a
-				-- user follows a link to a title they have never seen.
+				-- digest is addressed by, NOT the cuid the to-do is bound on.
+				--
+				-- The title mirrors \`resolveMeetingDisplayName\`, which this query
+				-- cannot call because it is raw SQL. Same four branches, same order:
+				-- a usable occurrence subject, else a usable series name, else
+				-- whichever placeholder is stored rather than no label at all.
+				--
+				-- "Untitled Meeting" counts as no name because the write path can
+				-- never store a bare series name in its place, so letting the
+				-- placeholder through would hide a real title behind it.
+				--
+				-- Keep the two in step. The digest resolves a meeting's name through
+				-- that helper, and a user who follows a to-do to its meeting must
+				-- arrive at the title they just clicked. A live parity test in
+				-- \`packages/database/__tests__/todo-list-query.test.ts\` runs both
+				-- sides over the same inputs and fails naming any that disagree.
 				tr."transcriptId" AS "meetingTranscriptRef",
-				COALESCE(lm."subject", tr."meetingSubject") AS "meetingTitle",
+				COALESCE(
+					NULLIF(${occurrenceSubject()}, 'Untitled Meeting'),
+					NULLIF(${seriesSubject()}, 'Untitled Meeting'),
+					${occurrenceSubject()},
+					${seriesSubject()}
+				) AS "meetingTitle",
 				tr."meetingDate" AS "meetingDate"
 			FROM "todo_item" t
 			LEFT JOIN live_action_item ai

@@ -238,8 +238,11 @@ export interface UserStory {
 	reporterSource?: "SLACK" | "TEAMS" | "MANUAL" | null;
 	reporterSourceUrl?: string | null;
 	/** Meeting this story was created from (Meeting Digest auto-proposal), if
-	 * any. Prefers the linked meeting series' subject over the transcript's own
-	 * snapshot subject. Null for manually-created / non-meeting-origin stories.
+	 * any. Names the occurrence the story came out of, falling back to the
+	 * linked series' subject only when that occurrence has no usable name of its
+	 * own (Fizzy #2340 — the reverse order made a renamed series rewrite the
+	 * history of every past meeting). Null for manually-created /
+	 * non-meeting-origin stories.
 	 * Rendered read-only in ProvenanceSection — no deep link (YAGNI, Fizzy #1814). */
 	sourceMeeting?: {
 		subject: string | null;

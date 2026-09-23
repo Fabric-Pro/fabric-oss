@@ -82,9 +82,16 @@ vi.mock("@repo/database", async () => {
 	const detection = await vi.importActual<
 		typeof import("@repo/database/prisma/queries/projects/duplicate-detection")
 	>("@repo/database/prisma/queries/projects/duplicate-detection");
+	// Same reasoning: the name this activity feeds the model is resolved by a
+	// pure rule, and a stub here would let the prompt carry a meeting name the
+	// real rule would never produce (#2340).
+	const displayName = await vi.importActual<
+		typeof import("@repo/database/prisma/queries/projects/meeting-display-name")
+	>("@repo/database/prisma/queries/projects/meeting-display-name");
 	return {
 		...keys,
 		...detection,
+		...displayName,
 		linkStateKey: (itemKey: string, storyId: string) =>
 			`${itemKey}:${storyId}`,
 		isFeatureEnabled: mockIsFeatureEnabled,
@@ -120,11 +127,14 @@ const baseInput = {
 function transcript(texts: string[], overrides: Record<string, unknown> = {}) {
 	return {
 		id: "tr-cuid-1",
+		// Deliberately different from the series name below. When both carried
+		// "Weekly DSU" the prompt assertions passed either way and could not see
+		// which side the resolver had taken (#2340).
 		meetingSubject: "Weekly DSU",
 		actionItemsLinkVersion: null,
 		userId: null,
 		organizationId: "org-1",
-		linkedMeeting: { subject: "Weekly DSU" },
+		linkedMeeting: { subject: "Fabric Dev Sync" },
 		actionItems: texts.map((text) => ({ text, tentativeOwnerName: null })),
 		...overrides,
 	};
@@ -980,6 +990,21 @@ describe("typed decision fast path", () => {
 		expect(generateAt).toBeGreaterThanOrEqual(0);
 		expect(beatAt).toBeGreaterThan(evaluateAt);
 		expect(beatAt).toBeLessThan(generateAt);
+	});
+
+	it("names the occurrence, not the renamed series, in the verifier prompt (#2340)", async () => {
+		// The reported defect reaching the model rather than the screen. The
+		// fixture's series was renamed to "Fabric Dev Sync"; the occurrence this
+		// transcript came from was called "Weekly DSU". Feeding the model the
+		// series name tells it about a meeting that never happened under that
+		// title, which is the wrong context for judging whether an action item
+		// belongs to a story.
+		const result = await linkMeetingActionItemsActivity(baseInput);
+
+		expect(result).toBeDefined();
+		const prompt = mockGenerateObject.mock.calls[0][0].prompt;
+		expect(prompt).toContain("Weekly DSU");
+		expect(prompt).not.toContain("Fabric Dev Sync");
 	});
 
 	it("keeps the language path byte-identical when no decision model is configured", async () => {

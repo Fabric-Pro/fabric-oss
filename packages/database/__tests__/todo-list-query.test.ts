@@ -24,6 +24,10 @@
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { db, Prisma } from "../prisma/client";
+import {
+	PLACEHOLDER_SUBJECT,
+	resolveMeetingDisplayName,
+} from "../prisma/queries/projects/meeting-display-name";
 import { listVisibleTodos } from "../prisma/queries/todos/list-todos";
 
 const RUN_DB = process.env.RUN_DB_INTEGRATION === "1";
@@ -98,7 +102,13 @@ const ITEM_KEY = "todo-query-test-item-key";
  * things only a real row set can show.
  */
 async function seedMeetingTodo(
-	params: { linkedSubject?: string | null; snoozedUntil?: Date } = {},
+	params: {
+		linkedSubject?: string | null;
+		// The occurrence's own subject. Overridable because the fallback to the
+		// series name is only reachable when this one names nothing (#2340).
+		occurrenceSubject?: string | null;
+		snoozedUntil?: Date;
+	} = {},
 ) {
 	await db.todoItem.deleteMany({ where: { organizationId: ORG_ID } });
 	await db.projectMeetingActionItem.deleteMany({
@@ -131,7 +141,10 @@ async function seedMeetingTodo(
 			linkedMeetingId: LINKED_MEETING_ID,
 			meetingId: "todo-query-test-graph-meeting",
 			transcriptId: TRANSCRIPT_GRAPH_ID,
-			meetingSubject: "Weekly sync (transcript snapshot)",
+			meetingSubject:
+				params.occurrenceSubject === undefined
+					? "Weekly sync (transcript snapshot)"
+					: params.occurrenceSubject,
 			meetingDate: MEETING_DATE,
 			organizationId: ORG_ID,
 			userId: USER_ID,
@@ -858,9 +871,11 @@ describe.skipIf(!RUN_DB)("listVisibleTodos against PostgreSQL", () => {
 				// addresses nothing outside the database.
 				meetingTranscriptRef: TRANSCRIPT_GRAPH_ID,
 				transcriptId: TRANSCRIPT_ROW_ID,
-				// The linked meeting's subject wins, exactly as
-				// `meetingDigest.getMeeting` resolves it.
-				meetingTitle: "Weekly sync",
+				// The occurrence's own subject wins, exactly as
+				// `meetingDigest.getMeeting` resolves it. The linked meeting is
+				// seeded as "Weekly sync" and loses, which is the whole point:
+				// its subject is the series name and goes stale on rename.
+				meetingTitle: "Weekly sync (transcript snapshot)",
 				meetingDate: MEETING_DATE,
 				itemKey: ITEM_KEY,
 				// The join to the live action item still resolves beside it.
@@ -869,14 +884,23 @@ describe.skipIf(!RUN_DB)("listVisibleTodos against PostgreSQL", () => {
 			});
 		});
 
-		it("falls back to the transcript's own subject when the linked meeting has none", async () => {
-			await seedMeetingTodo({ linkedSubject: null });
+		it("falls back to the series name when the occurrence has none", async () => {
+			await seedMeetingTodo({ occurrenceSubject: null });
 
 			const page = await listVisibleTodos(baseParams);
 
-			expect(page.rows[0]?.meetingTitle).toBe(
-				"Weekly sync (transcript snapshot)",
-			);
+			expect(page.rows[0]?.meetingTitle).toBe("Weekly sync");
+		});
+
+		it("treats a stored placeholder as no name and uses the series", async () => {
+			// The write path can never store a bare series name — every Graph
+			// path defaults a subjectless event to this literal — so a
+			// null-keyed rule would let the placeholder beat a real name.
+			await seedMeetingTodo({ occurrenceSubject: "Untitled Meeting" });
+
+			const page = await listVisibleTodos(baseParams);
+
+			expect(page.rows[0]?.meetingTitle).toBe("Weekly sync");
 		});
 
 		it("leaves the reference null on a manual row", async () => {
@@ -901,7 +925,9 @@ describe.skipIf(!RUN_DB)("listVisibleTodos against PostgreSQL", () => {
 				view: "snoozed",
 			});
 
-			expect(page.rows[0]?.meetingTitle).toBe("Weekly sync");
+			expect(page.rows[0]?.meetingTitle).toBe(
+				"Weekly sync (transcript snapshot)",
+			);
 			expect(page.rows[0]?.meetingTranscriptRef).toBe(
 				TRANSCRIPT_GRAPH_ID,
 			);
@@ -971,5 +997,67 @@ describe.skipIf(!RUN_DB)("listVisibleTodos against PostgreSQL", () => {
 			where: { id: transcript.id },
 		});
 		await db.projectLinkedMeeting.deleteMany({ where: { id: linked.id } });
+	});
+});
+
+/**
+ * The mirror, proved rather than promised.
+ *
+ * `listVisibleTodos` cannot call `resolveMeetingDisplayName` — it is raw SQL —
+ * so the rule exists twice and the two can drift. The string assertion in
+ * `prisma/queries/todos/__tests__/list-todos.test.ts` pins the SQL's SHAPE, but
+ * a commit that edits the SQL and its expected string together would satisfy it
+ * while diverging from the resolver. This is the test that would not be
+ * satisfied: it runs the same inputs through both and compares the answers.
+ *
+ * It earns its place. Review found a real divergence this way — one-argument
+ * Postgres BTRIM strips U+0020 only, so a tab-padded subject was blank in
+ * TypeScript and a name in SQL, and every test on each side individually passed.
+ */
+describe.skipIf(!RUN_DB)("the SQL mirror agrees with the resolver", () => {
+	const NAMES = [
+		"Fabric DSU",
+		PLACEHOLDER_SUBJECT,
+		"",
+		"   ",
+		"\tFabric DSU\t",
+		"\t\t",
+		"\n",
+		`\u00A0${PLACEHOLDER_SUBJECT}\u00A0`,
+		"\u200B",
+		// Whitespace JS trim() strips that one-argument BTRIM does not:
+		// ideographic space, line separator, narrow no-break space.
+		"\u3000",
+		"\u2028",
+		`\u202F${PLACEHOLDER_SUBJECT}\u202F`,
+		null,
+	] as const;
+
+	it("resolves every occurrence/series combination identically", async () => {
+		const mismatches: string[] = [];
+
+		for (const occurrence of NAMES) {
+			for (const series of NAMES) {
+				const inTs = resolveMeetingDisplayName({ occurrence, series });
+				const [{ sql: inSql }] = await db.$queryRaw<
+					{ sql: string | null }[]
+				>`
+					SELECT COALESCE(
+						NULLIF(NULLIF(BTRIM(${occurrence}::text, E' \t\n\r\f\x0B\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF'), ''), ${PLACEHOLDER_SUBJECT}),
+						NULLIF(NULLIF(BTRIM(${series}::text, E' \t\n\r\f\x0B\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF'), ''), ${PLACEHOLDER_SUBJECT}),
+						NULLIF(BTRIM(${occurrence}::text, E' \t\n\r\f\x0B\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF'), ''),
+						NULLIF(BTRIM(${series}::text, E' \t\n\r\f\x0B\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF'), '')
+					) AS "sql"
+				`;
+
+				if (inTs !== inSql) {
+					mismatches.push(
+						`occurrence=${JSON.stringify(occurrence)} series=${JSON.stringify(series)}: ts=${JSON.stringify(inTs)} sql=${JSON.stringify(inSql)}`,
+					);
+				}
+			}
+		}
+
+		expect(mismatches).toEqual([]);
 	});
 });
