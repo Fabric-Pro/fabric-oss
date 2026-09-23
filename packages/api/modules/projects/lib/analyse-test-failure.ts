@@ -20,6 +20,7 @@ import { generateObject, getAIModelWithMetadata } from "@repo/ai";
 import {
 	FAILURE_MESSAGE_LIMIT,
 	getBoundPromptForAgent,
+	parseAssertionValues,
 	type TestFailureKind,
 	// The generated enum is a value as well as a type; aliased so the type name
 	// can be re-exported below without colliding with it.
@@ -151,6 +152,11 @@ export function describeRecurrence(input: {
 /** The evidence block appended below the org's instructions. */
 export function buildFailureEvidence(input: FailureAnalysisInput): string {
 	const message = input.failureMessage?.trim();
+	// Parsed once, up front: when it succeeds the model is handed the
+	// direction as a fact instead of being left to re-derive it from the raw
+	// text — which is exactly how "90 !== 80" reads backwards. When it fails,
+	// nothing is added; a guessed direction is worse than none stated at all.
+	const assertion = message ? parseAssertionValues(message) : null;
 	return [
 		"FAILING TEST:",
 		`Name: ${input.testName}`,
@@ -160,6 +166,14 @@ export function buildFailureEvidence(input: FailureAnalysisInput): string {
 		"RECURRENCE:",
 		describeRecurrence(input),
 		"",
+		...(assertion
+			? [
+					"ASSERTION (parsed from the runner's output — use these, do not re-derive direction from the raw text):",
+					`Expected: ${assertion.expected}`,
+					`Actual: ${assertion.actual}`,
+					"",
+				]
+			: []),
 		"WHAT CI REPORTED:",
 		// Said explicitly rather than left as an empty section. A model shown a
 		// blank block infers nothing; a model told the output is missing has the

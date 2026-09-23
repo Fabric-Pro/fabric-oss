@@ -183,3 +183,37 @@ describe("buildFailureEvidence", () => {
 		expect(evidence).not.toContain("Linked Fabric test case");
 	});
 });
+
+/**
+ * The card this section exists for: `node:assert/strict` prints ACTUAL first —
+ * `Expected values to be strictly equal:\n\n90 !== 80\n` — and the analysis
+ * told the user the test "expects 90 but the discount logic produced 80",
+ * backwards. The model must be handed the direction as a labelled fact, not
+ * left to re-derive it from the raw text.
+ */
+describe("buildFailureEvidence — assertion direction", () => {
+	it("labels the parsed expected/actual ahead of the raw text", () => {
+		const evidence = buildFailureEvidence({
+			...BASE,
+			failureMessage:
+				"Expected values to be strictly equal:\n\n90 !== 80\n",
+		});
+
+		expect(evidence).toContain("Expected: 80");
+		expect(evidence).toContain("Actual: 90");
+		// Ahead of the raw block, not instead of it — the model still gets the
+		// full text, now with the direction already resolved.
+		expect(evidence.indexOf("Expected: 80")).toBeLessThan(
+			evidence.indexOf("WHAT CI REPORTED:"),
+		);
+	});
+
+	it("adds no ASSERTION block when the direction cannot be recognised", () => {
+		const evidence = buildFailureEvidence({
+			...BASE,
+			failureMessage: "exit code 1",
+		});
+
+		expect(evidence).not.toContain("ASSERTION");
+	});
+});
