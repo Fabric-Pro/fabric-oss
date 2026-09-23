@@ -89,9 +89,18 @@ const MOUNTED_SURFACES = [
  * A gate only changes when project state does, and a finishing job changes it
  * without any mutation on this page — so without polling, "Indexing your
  * repository" stayed up until the window was refocused. Only while a gate is
- * actually Processing: an idle page polls nothing.
+ * waiting on a job: an idle page polls nothing.
+ *
+ * Waiting is read from the remedy as well as the state. A document generator
+ * whose only source is the repository reports indexing as a soft block with a
+ * WAIT remedy, so pasted text can still lift it — keyed on the state alone,
+ * that banner never cleared when the index finished.
  */
 const PROCESSING_REFETCH_MS = 5_000;
+
+function isWaitingOnJob(gate: CapabilityGate): boolean {
+	return gate.state === "PROCESSING" || gate.remedy === "WAIT";
+}
 
 interface CapabilityGatesValue {
 	projectId: string;
@@ -177,7 +186,7 @@ export function CapabilityGatesProvider({
 			}),
 		staleTime: 30_000,
 		refetchInterval: (query) =>
-			query.state.data?.gates.some((gate) => gate.state === "PROCESSING")
+			query.state.data?.gates.some(isWaitingOnJob)
 				? PROCESSING_REFETCH_MS
 				: false,
 	});

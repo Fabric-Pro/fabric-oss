@@ -683,6 +683,35 @@ describe("a gate that is Processing refreshes itself", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	// A document generator whose only source is the repository reports indexing
+	// as a soft block so pasted text can lift it. It is still waiting on a job,
+	// and it must clear on its own when the index finishes.
+	it("re-reads a soft block that is waiting on a job", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			gatesMock
+				.mockResolvedValueOnce({
+					enabled: true,
+					gates: [
+						gate({
+							state: "SOFT_BLOCK",
+							reasonKey: "codebase.indexing",
+							blockingDependency: "repository indexing",
+							remedy: "WAIT",
+						}),
+					],
+				})
+				.mockResolvedValue({ enabled: true, gates: [gate()] });
+			renderGated(<GateProbe />);
+
+			await screen.findByText(/resolved-on blocked/);
+			await vi.advanceTimersByTimeAsync(5_000);
+			await screen.findByText(/resolved-on unblocked/);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe("a session dismissal is honoured from the very first paint", () => {
