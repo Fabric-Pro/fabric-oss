@@ -315,3 +315,43 @@ describe("proposing an instruction change requires instructions:write", () => {
 		expect(body).toContain("instructions:read");
 	});
 });
+
+// The lesson tool's positive sibling to the proposal one above: it records a
+// lesson as a new proposal through the same path, so it sits behind the same
+// `instructions:write` scope for the same reason.
+describe("recording an instruction lesson requires instructions:write", () => {
+	it("does not refuse a key holding the exact scope", async () => {
+		keyWithScopes(["instructions:write"]);
+
+		const body = await initializeThenCall("fabric_add_instruction_lesson");
+
+		expect(body).not.toContain("does not have the");
+	});
+
+	it("does not refuse a key holding the coarse mcp:write scope either", async () => {
+		keyWithScopes(["mcp:write"]);
+
+		const body = await initializeThenCall("fabric_add_instruction_lesson");
+
+		expect(body).not.toContain("does not have the");
+	});
+
+	it("refuses a key holding only instructions:read", async () => {
+		keyWithScopes(["instructions:read"]);
+
+		const body = await initializeThenCall("fabric_add_instruction_lesson");
+
+		expect(body).toContain("does not have the");
+		expect(body).toContain("instructions:write");
+	});
+
+	// `mcp:read` satisfies every READ tool through the gateway's umbrella. It
+	// must stop here, the same as it does for the proposal tool.
+	it("refuses a key holding only the coarse mcp:read scope", async () => {
+		keyWithScopes(["mcp:read"]);
+
+		const body = await initializeThenCall("fabric_add_instruction_lesson");
+
+		expect(body).toContain("does not have the");
+	});
+});

@@ -43,8 +43,32 @@ const HOOK_TIMEOUT_SECONDS = 15;
 /** Local hook configuration is small; a bound prevents an untrusted file from consuming memory. */
 const MAX_HOOK_CONFIG_BYTES = 1024 * 1024;
 
-/** The subcommands a hook this tool wrote may name. */
-const HOOK_SUBCOMMANDS = new Set(["check", "sync"]);
+/**
+ * Every subcommand a hook this tool wrote may name, across every event.
+ * `isFabricHookFor`'s default: a caller that does not need to distinguish
+ * `check`/`sync` from `lesson-prompt` still matches anything this tool wrote.
+ */
+const HOOK_SUBCOMMANDS = new Set(["check", "sync", "lesson-prompt"]);
+
+/**
+ * The event this feature writes hooks under, and the subcommands each event
+ * may hold. A `lesson-prompt` entry must never be matched (and so never
+ * removed) by a `SessionStart` merge, and a `check`/`sync` entry must never be
+ * matched by the `Stop` merge — even though today the two events already live
+ * under different JSON keys and so cannot collide in practice, matching is
+ * scoped explicitly rather than resting on that.
+ */
+export type HookEvent = "SessionStart" | "Stop";
+
+const SESSION_START_SUBCOMMANDS: ReadonlySet<string> = new Set([
+	"check",
+	"sync",
+]);
+const STOP_SUBCOMMANDS: ReadonlySet<string> = new Set(["lesson-prompt"]);
+
+function subcommandsForEvent(event: HookEvent): ReadonlySet<string> {
+	return event === "Stop" ? STOP_SUBCOMMANDS : SESSION_START_SUBCOMMANDS;
+}
 
 interface CommandHook {
 	type: "command";
@@ -68,6 +92,17 @@ export interface MergeHookResult {
 	replacedCount: number;
 }
 
+export interface RemoveHookResult {
+	settingsPath: string;
+	/**
+	 * Whether any Fabric-authored entry for this project and subcommand was
+	 * removed. `false` means the file was left byte-for-byte untouched — this
+	 * function never creates the settings file and never writes when there is
+	 * nothing to remove.
+	 */
+	changed: boolean;
+}
+
 /**
  * The command the session hook runs.
  *
@@ -85,6 +120,20 @@ export function buildHookCommand(
 	const verb = apply ? "sync" : "check";
 	const context = org ? ` --org ${org}` : "";
 	return `fabric instructions ${verb} --project ${projectId}${context} --hook`;
+}
+
+/**
+ * The command the Stop hook runs for lesson capture. Same shape as
+ * {@link buildHookCommand} — no key, an explicit `--org` carried through when
+ * `init` was given one — but a fixed subcommand, because there is no
+ * apply/report distinction for a hook that only ever asks a question.
+ */
+export function buildLessonPromptCommand(
+	projectId: string,
+	org?: string,
+): string {
+	const context = org ? ` --org ${org}` : "";
+	return `fabric instructions lesson-prompt --project ${projectId}${context} --hook`;
 }
 
 /**
@@ -108,32 +157,22 @@ export async function assertKeyStaysOutside(
 }
 
 /**
- * Add — or replace — the Fabric SessionStart hook for one project.
- *
- * Idempotent by project id, and idempotent across a file that already has
- * duplicates: EVERY matching entry is removed and exactly one is written
- * back. Matching is on parsed argv tokens, not on a substring — `--project
- * abc` must not match `--project abc-extra`, and `--project=abc` is the same
- * request written differently. Every other key in the file, and every other
- * hook, is preserved exactly.
+ * Read and shape-check the hook config file, returning the parsed top-level
+ * object (`{}` when the file does not exist) and the raw text that was read
+ * (`null` when it does not exist). Shared by every reader below so a refusal
+ * reads the same regardless of which event it was checking.
  */
-export async function mergeSessionStartHook(input: {
-	/** An already-canonical destination from `resolveDestinationRoot`. */
-	root: string;
-	projectId: string;
-	command: string;
-	tool?: InstructionsHookTool;
-}): Promise<MergeHookResult> {
-	const hookTarget = hookTargetFor(input.tool ?? "claude-code");
-	const settingsPath = path.join(input.root, hookTarget.relativePath);
+async function readHookConfig(
+	root: string,
+	hookTarget: { relativePath: string; posixPath: string },
+): Promise<{ settings: Record<string, unknown>; existingRaw: string | null }> {
+	const settingsPath = path.join(root, hookTarget.relativePath);
 
 	let existingRaw: string | null;
 	try {
-		const existing = await readFileSafely(
-			input.root,
-			hookTarget.posixPath,
-			{ maxBytes: MAX_HOOK_CONFIG_BYTES },
-		);
+		const existing = await readFileSafely(root, hookTarget.posixPath, {
+			maxBytes: MAX_HOOK_CONFIG_BYTES,
+		});
 		existingRaw =
 			existing === null ? null : new TextDecoder().decode(existing.bytes);
 	} catch (error) {
@@ -143,69 +182,137 @@ export async function mergeSessionStartHook(input: {
 		);
 	}
 
-	let settings: Record<string, unknown> = {};
-	if (existingRaw !== null) {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(existingRaw);
-		} catch {
-			// Refused, never rewritten: this file is the developer's own, and
-			// a JSON error in it is nearly always a half-finished edit rather
-			// than something to discard.
-			throw new Error(
-				`${settingsPath} is not valid JSON. Fix or remove it, then run this again — it was left untouched.`,
-			);
-		}
-		if (
-			typeof parsed !== "object" ||
-			parsed === null ||
-			Array.isArray(parsed)
-		) {
-			throw new Error(
-				`${settingsPath} does not contain a JSON object. It was left untouched.`,
-			);
-		}
-		settings = parsed as Record<string, unknown>;
+	if (existingRaw === null) {
+		return { settings: {}, existingRaw: null };
 	}
 
-	// Every nested shape is checked before anything is rebuilt. Top-level JSON
-	// was refused carefully and these were not: `{"hooks": ["custom"]}` or a
-	// `SessionStart` that is not an array used to be replaced with a
-	// freshly-built hooks object, discarding whatever the developer had. A
-	// shape this tool does not understand is no more ours to normalise than a
-	// half-finished edit is.
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(existingRaw);
+	} catch {
+		// Refused, never rewritten: this file is the developer's own, and
+		// a JSON error in it is nearly always a half-finished edit rather
+		// than something to discard.
+		throw new Error(
+			`${settingsPath} is not valid JSON. Fix or remove it, then run this again — it was left untouched.`,
+		);
+	}
+	if (
+		typeof parsed !== "object" ||
+		parsed === null ||
+		Array.isArray(parsed)
+	) {
+		throw new Error(
+			`${settingsPath} does not contain a JSON object. It was left untouched.`,
+		);
+	}
+	return { settings: parsed as Record<string, unknown>, existingRaw };
+}
+
+/**
+ * Shape-check `hooks[event]` and return it as deep-cloned, well-formed
+ * groups. Every nested shape is checked before anything is rebuilt: top-level
+ * JSON is refused carefully above, and these were not — `{"hooks": ["custom"]}`
+ * or a `SessionStart` that is not an array used to be replaced with a
+ * freshly-built hooks object, discarding whatever the developer had. A shape
+ * this tool does not understand is no more ours to normalise than a
+ * half-finished edit is. Every event OTHER than `event` is left in `hooks` as
+ * an opaque, untouched value — this function only looks at the one key it was
+ * asked about.
+ */
+function readEventGroups(
+	settingsPath: string,
+	settings: Record<string, unknown>,
+	event: HookEvent,
+): { hooks: Record<string, unknown>; groups: HookGroup[] } {
 	if (settings.hooks !== undefined && !isRecord(settings.hooks)) {
 		throw refuseShape(settingsPath, '"hooks" is not an object');
 	}
 	const hooks = isRecord(settings.hooks) ? { ...settings.hooks } : {};
-	if (
-		hooks.SessionStart !== undefined &&
-		!Array.isArray(hooks.SessionStart)
-	) {
-		throw refuseShape(settingsPath, '"hooks.SessionStart" is not an array');
+	if (hooks[event] !== undefined && !Array.isArray(hooks[event])) {
+		throw refuseShape(settingsPath, `"hooks.${event}" is not an array`);
 	}
-	const rawGroups = Array.isArray(hooks.SessionStart)
-		? hooks.SessionStart
-		: [];
+	const rawGroups = Array.isArray(hooks[event]) ? hooks[event] : [];
 	for (const [index, group] of rawGroups.entries()) {
 		if (!isRecord(group)) {
 			throw refuseShape(
 				settingsPath,
-				`"hooks.SessionStart[${index}]" is not an object`,
+				`"hooks.${event}[${index}]" is not an object`,
 			);
 		}
 		if (group.hooks !== undefined && !Array.isArray(group.hooks)) {
 			throw refuseShape(
 				settingsPath,
-				`"hooks.SessionStart[${index}].hooks" is not an array`,
+				`"hooks.${event}[${index}].hooks" is not an array`,
 			);
 		}
 	}
-	const sessionStart: HookGroup[] = (rawGroups as HookGroup[]).map(
-		(group) => ({
-			...group,
-			hooks: Array.isArray(group?.hooks) ? [...group.hooks] : [],
-		}),
+	const groups: HookGroup[] = (rawGroups as HookGroup[]).map((group) => ({
+		...group,
+		hooks: Array.isArray(group?.hooks) ? [...group.hooks] : [],
+	}));
+	return { hooks, groups };
+}
+
+/**
+ * Remove every hook matching `projectId` and `subcommands` from `groups`,
+ * dropping a group that held nothing else. Shared pruning step behind both
+ * the merge (which adds one entry back) and the remove (which does not).
+ */
+function pruneMatching(
+	groups: HookGroup[],
+	projectId: string,
+	subcommands: ReadonlySet<string>,
+): { pruned: HookGroup[]; removedCount: number } {
+	let removedCount = 0;
+	const pruned: HookGroup[] = [];
+	for (const group of groups) {
+		const kept = group.hooks.filter(
+			(hook) => !isFabricHookFor(hook, projectId, subcommands),
+		);
+		const removed = group.hooks.length - kept.length;
+		removedCount += removed;
+		// A group we emptied held nothing but our own hook; leaving
+		// `{hooks: []}` behind would accumulate one husk per run. A group
+		// that was ALREADY empty is somebody else's and is kept untouched,
+		// which is why this turns on `removed` rather than on length alone.
+		if (kept.length === 0 && removed > 0) {
+			continue;
+		}
+		pruned.push({ ...group, hooks: kept });
+	}
+	return { pruned, removedCount };
+}
+
+/**
+ * Add — or replace — the Fabric hook for one project under one event
+ * (`SessionStart` or `Stop`).
+ *
+ * Idempotent by project id, and idempotent across a file that already has
+ * duplicates: EVERY matching entry for that event is removed and exactly one
+ * is written back. Matching is on parsed argv tokens, not on a substring —
+ * `--project abc` must not match `--project abc-extra`, and `--project=abc`
+ * is the same request written differently. Every other key in the file,
+ * every other event's array, and every other hook, is preserved exactly.
+ */
+export async function mergeCommandHook(input: {
+	/** An already-canonical destination from `resolveDestinationRoot`. */
+	root: string;
+	projectId: string;
+	command: string;
+	tool?: InstructionsHookTool;
+	event: HookEvent;
+}): Promise<MergeHookResult> {
+	const hookTarget = hookTargetFor(input.tool ?? "claude-code");
+	const settingsPath = path.join(input.root, hookTarget.relativePath);
+	const { settings, existingRaw } = await readHookConfig(
+		input.root,
+		hookTarget,
+	);
+	const { hooks, groups } = readEventGroups(
+		settingsPath,
+		settings,
+		input.event,
 	);
 
 	const replacement: CommandHook = {
@@ -217,29 +324,16 @@ export async function mergeSessionStartHook(input: {
 	// Remove EVERY entry for this project first, then add one back. Replacing
 	// in place and stopping at the first match left duplicates behind, and a
 	// file that has accumulated two of our hooks should come out with one.
-	let replacedCount = 0;
-	const pruned: HookGroup[] = [];
-	for (const group of sessionStart) {
-		const kept = group.hooks.filter(
-			(hook) => !isFabricHookFor(hook, input.projectId),
-		);
-		const removed = group.hooks.length - kept.length;
-		replacedCount += removed;
-		// A group we emptied held nothing but our own hook; leaving
-		// `{hooks: []}` behind would accumulate one husk per run. A group
-		// that was ALREADY empty is somebody else's and is kept untouched,
-		// which is why this turns on `removed` rather than on length alone.
-		if (kept.length === 0 && removed > 0) {
-			continue;
-		}
-		pruned.push({ ...group, hooks: kept });
-	}
-
+	const { pruned, removedCount } = pruneMatching(
+		groups,
+		input.projectId,
+		subcommandsForEvent(input.event),
+	);
 	pruned.push({ hooks: [replacement] });
 
 	const next = {
 		...settings,
-		hooks: { ...hooks, SessionStart: pruned },
+		hooks: { ...hooks, [input.event]: pruned },
 	};
 
 	await writeFileSafely({
@@ -254,8 +348,86 @@ export async function mergeSessionStartHook(input: {
 		settingsPath,
 		command: input.command,
 		createdFile: existingRaw === null,
-		replacedCount,
+		replacedCount: removedCount,
 	};
+}
+
+/**
+ * `mergeCommandHook`, fixed to the `SessionStart` event — the shape every
+ * existing caller of this module already depends on. Kept as its own export,
+ * with its exact original signature, so nothing that already calls it has to
+ * change.
+ */
+export async function mergeSessionStartHook(input: {
+	/** An already-canonical destination from `resolveDestinationRoot`. */
+	root: string;
+	projectId: string;
+	command: string;
+	tool?: InstructionsHookTool;
+}): Promise<MergeHookResult> {
+	return mergeCommandHook({ ...input, event: "SessionStart" });
+}
+
+/**
+ * Remove every Fabric-authored hook for one project AND one subcommand,
+ * under one event. `init` uses this to describe the DESIRED state: re-running
+ * it without `--lessons` uninstalls a Stop hook a previous run installed.
+ *
+ * Never creates the settings file, and never writes to it when nothing
+ * matches — the file is left byte-for-byte untouched, which is what lets a
+ * plain `init` (no lesson hook ever installed) keep producing exactly the
+ * bytes it always has.
+ */
+export async function removeCommandHook(input: {
+	/** An already-canonical destination from `resolveDestinationRoot`. */
+	root: string;
+	projectId: string;
+	subcommand: string;
+	tool?: InstructionsHookTool;
+	event: HookEvent;
+}): Promise<RemoveHookResult> {
+	const hookTarget = hookTargetFor(input.tool ?? "claude-code");
+	const settingsPath = path.join(input.root, hookTarget.relativePath);
+	const { settings, existingRaw } = await readHookConfig(
+		input.root,
+		hookTarget,
+	);
+
+	if (existingRaw === null) {
+		return { settingsPath, changed: false };
+	}
+
+	const { hooks, groups } = readEventGroups(
+		settingsPath,
+		settings,
+		input.event,
+	);
+	const { pruned, removedCount } = pruneMatching(
+		groups,
+		input.projectId,
+		new Set([input.subcommand]),
+	);
+
+	if (removedCount === 0) {
+		// Nothing matched: leave the file exactly as it was read, not even a
+		// round-tripped re-serialisation of it.
+		return { settingsPath, changed: false };
+	}
+
+	const next = {
+		...settings,
+		hooks: { ...hooks, [input.event]: pruned },
+	};
+
+	await writeFileSafely({
+		root: input.root,
+		relativePath: hookTarget.posixPath,
+		bytes: new TextEncoder().encode(
+			`${JSON.stringify(next, null, 2).replace(/\r\n/g, "\n")}\n`,
+		),
+	});
+
+	return { settingsPath, changed: true };
 }
 
 function hookTargetFor(tool: InstructionsHookTool): {
@@ -274,13 +446,23 @@ function hookTargetFor(tool: InstructionsHookTool): {
 }
 
 /**
- * Is this hook one this tool wrote for this project?
+ * Is this hook one this tool wrote for this project (and, when given, one of
+ * `subcommands`)?
  *
  * Token-exact. The command is split on whitespace — every command this tool
  * generates is a plain, unquoted argv line, so a command that needs shell
  * quoting to parse is by definition not ours.
+ *
+ * `subcommands` defaults to every subcommand this tool has ever written
+ * (`HOOK_SUBCOMMANDS`) rather than narrowing automatically, so a caller that
+ * needs `check`/`sync` kept apart from `lesson-prompt` passes the narrower set
+ * explicitly — see `subcommandsForEvent`.
  */
-function isFabricHookFor(hook: unknown, projectId: string): boolean {
+function isFabricHookFor(
+	hook: unknown,
+	projectId: string,
+	subcommands: ReadonlySet<string> = HOOK_SUBCOMMANDS,
+): boolean {
 	if (!isRecord(hook) || typeof hook.command !== "string") {
 		return false;
 	}
@@ -288,7 +470,7 @@ function isFabricHookFor(hook: unknown, projectId: string): boolean {
 	if (tokens[0] !== "fabric" || tokens[1] !== "instructions") {
 		return false;
 	}
-	if (tokens[2] === undefined || !HOOK_SUBCOMMANDS.has(tokens[2])) {
+	if (tokens[2] === undefined || !subcommands.has(tokens[2])) {
 		return false;
 	}
 	return readProjectToken(tokens) === projectId;

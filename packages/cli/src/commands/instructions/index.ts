@@ -35,11 +35,18 @@ import { extractBundle, fetchBundle } from "../../lib/instructions/bundle.js";
 import {
 	assertKeyStaysOutside,
 	buildHookCommand,
+	buildLessonPromptCommand,
 	CLAUDE_SETTINGS_RELATIVE_PATH,
 	CODEX_HOOKS_RELATIVE_PATH,
 	type InstructionsHookTool,
+	mergeCommandHook,
 	mergeSessionStartHook,
+	removeCommandHook,
 } from "../../lib/instructions/hook.js";
+import {
+	readAllStdin,
+	runLessonPrompt,
+} from "../../lib/instructions/lesson-prompt.js";
 import {
 	type InstructionsLock,
 	LOCK_DIRECTORY,
@@ -234,10 +241,18 @@ export function buildInstructionsCommand(): Command {
 			"--apply",
 			"Let the hook apply changes instead of only reporting them",
 		)
+		.option(
+			"--lessons",
+			"Also install a Stop hook that asks, once per session after the assistant has edited files, whether a mistake from the session should become a team lesson",
+		)
 		.option("--format <format>", "Output format: text|json")
 		.action(async function (
 			this: Command,
-			opts: CommonOptions & { tool: string; apply?: boolean },
+			opts: CommonOptions & {
+				tool: string;
+				apply?: boolean;
+				lessons?: boolean;
+			},
 		) {
 			// Never hook mode: `init` is run by a person, so its failures
 			// are real failures with real exit codes.
@@ -245,6 +260,27 @@ export function buildInstructionsCommand(): Command {
 				runInit(opts, outputFormatFor(this)),
 			);
 		});
+
+	instructions
+		.command("lesson-prompt", { hidden: true })
+		.description(
+			"Stop hook: ask, once per session, whether a mistake should become a team lesson",
+		)
+		.option("--project <id>", "Project ID")
+		.option("--org <slug>", "Organization context")
+		.option(
+			"--hook",
+			"Stop-hook mode: reads JSON from stdin, never fails, never prints unless it is asking",
+		)
+		.action(
+			async (opts: {
+				project?: string;
+				org?: string;
+				hook?: boolean;
+			}) => {
+				await runLessonPromptCommand(opts);
+			},
+		);
 
 	return instructions;
 }
@@ -1241,7 +1277,7 @@ function reportPush(outcome: PushOutcome): void {
 // ---------------------------------------------------------------------------
 
 async function runInit(
-	opts: CommonOptions & { tool: string; apply?: boolean },
+	opts: CommonOptions & { tool: string; apply?: boolean; lessons?: boolean },
 	format: OutputFormat,
 ): Promise<void> {
 	if (!isInstructionsHookTool(opts.tool)) {
@@ -1251,6 +1287,16 @@ async function runInit(
 		);
 	}
 	const tool = opts.tool;
+
+	// Before any write: Codex has no wired Stop hook for lesson capture yet,
+	// so a `--lessons` request against it is refused rather than silently
+	// dropped or half-applied.
+	if (opts.lessons && tool === "codex") {
+		throw new CliFailure(
+			"--lessons is not yet supported for codex; Codex hooks for lesson capture are not wired.",
+			2,
+		);
+	}
 
 	const root = await resolveDestinationRoot(destinationOf(opts));
 
@@ -1298,6 +1344,37 @@ async function runInit(
 		tool,
 	});
 
+	// The Stop hook for lesson capture describes the DESIRED state, same as
+	// the SessionStart hook above: `--lessons` installs it, and its absence
+	// uninstalls whatever an earlier `init` installed. Always after the
+	// SessionStart write, so a failure here never leaves that one half-done,
+	// and always attempted (even for a plain re-run with no lessons hook
+	// ever installed) because the removal is a no-op — and writes nothing —
+	// when there is nothing to remove.
+	const lessonsHook = Boolean(opts.lessons);
+	let lessonsHookLine: string | null = null;
+	if (lessonsHook) {
+		const installed = await mergeCommandHook({
+			root,
+			projectId: opts.project,
+			command: buildLessonPromptCommand(opts.project, opts.org),
+			tool,
+			event: "Stop",
+		});
+		lessonsHookLine = `Added a Stop hook for lesson capture to ${installed.settingsPath}.`;
+	} else {
+		const removed = await removeCommandHook({
+			root,
+			projectId: opts.project,
+			subcommand: "lesson-prompt",
+			tool,
+			event: "Stop",
+		});
+		if (removed.changed) {
+			lessonsHookLine = `Removed the Stop hook for lesson capture from ${removed.settingsPath}.`;
+		}
+	}
+
 	if (format === "json") {
 		printOutput(
 			{
@@ -1307,6 +1384,7 @@ async function runInit(
 				hookCommand: merged.command,
 				createdSettingsFile: merged.createdFile,
 				replacedHooks: merged.replacedCount,
+				lessonsHook,
 				sync: outcome,
 			},
 			{ format: "json" },
@@ -1325,6 +1403,9 @@ async function runInit(
 			? "  It applies changes at session start."
 			: "  It only reports changes; add --apply to init to have it apply them.",
 	);
+	if (lessonsHookLine !== null) {
+		line(lessonsHookLine);
+	}
 	if (tool === "codex") {
 		line(
 			"  Start Codex in this checkout, then use `/hooks` to review and trust the project hook.",
@@ -1354,4 +1435,54 @@ function hookPathFor(tool: InstructionsHookTool): string {
 	return tool === "codex"
 		? CODEX_HOOKS_RELATIVE_PATH
 		: CLAUDE_SETTINGS_RELATIVE_PATH;
+}
+
+// ---------------------------------------------------------------------------
+// lesson-prompt
+// ---------------------------------------------------------------------------
+
+/**
+ * The `fabric instructions lesson-prompt --hook` wiring: read stdin, ask
+ * `runLessonPrompt` what to do, print its answer (if any), and stop.
+ *
+ * Deliberately outside the `run()` boundary every other command in this file
+ * goes through: that boundary still prints one line to stderr and calls
+ * `process.exit(0)` on a caught failure, and even that is more than this
+ * command's contract allows. `runLessonPrompt` already turns every failure
+ * mode — bad stdin, an unreadable transcript, a marker directory it cannot
+ * create — into `{ output: null }`, so there is nothing left for this
+ * wrapper to catch. It does not call `process.exit` at all: like every other
+ * command in this package that does not need to force a specific exit code,
+ * it simply returns and lets the process exit on its own once stdout has
+ * flushed, which `process.exit` would risk cutting short.
+ */
+async function runLessonPromptCommand(opts: {
+	project?: string;
+	org?: string;
+	hook?: boolean;
+}): Promise<void> {
+	let stdinText = "";
+	try {
+		stdinText = await readAllStdin(process.stdin);
+	} catch {
+		// An unreadable stdin behaves exactly like empty stdin:
+		// `parseStopHookInput("")` already answers `null`, which
+		// `runLessonPrompt` turns into a silent exit.
+	}
+
+	const markerDir = path.join(
+		path.dirname(getConfigPath()),
+		"lesson-prompts",
+	);
+
+	const result = await runLessonPrompt({
+		stdinText,
+		markerDir,
+		now: new Date(),
+		projectId: opts.project,
+	});
+
+	if (result.output !== null) {
+		process.stdout.write(`${result.output}\n`);
+	}
 }

@@ -18,6 +18,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { Command } from "commander";
 import { zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -213,6 +214,7 @@ beforeEach(() => {
 	mocks.getDefaultContext.mockReturnValue(undefined);
 	mocks.getClient.mockReset();
 	delete process.env.FABRIC_FORMAT;
+	delete process.env.FABRIC_DEBUG;
 });
 
 afterEach(() => {
@@ -1015,6 +1017,234 @@ describe("fabric instructions init", () => {
 			"fabric instructions sync --project project-1 --hook",
 		);
 		expect(result.stdout).toContain("nothing published yet");
+	});
+
+	it("writes both a SessionStart and a Stop hook with --lessons", async () => {
+		const dest = await makeTree();
+		mocks.getPublished.mockResolvedValue({
+			published: false,
+			sourceOfTruth: "UPLOAD",
+		});
+
+		const result = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"claude-code",
+			"--dest",
+			dest,
+			"--lessons",
+		]);
+
+		expect(result.code).toBe(0);
+		const settings = JSON.parse(
+			await readFile(
+				path.join(dest, ".claude", "settings.local.json"),
+				"utf8",
+			),
+		);
+		expect(settings.hooks.SessionStart[0].hooks[0].command).toBe(
+			"fabric instructions check --project project-1 --hook",
+		);
+		expect(settings.hooks.Stop[0].hooks[0]).toEqual({
+			type: "command",
+			command:
+				"fabric instructions lesson-prompt --project project-1 --hook",
+			timeout: 15,
+		});
+		expect(result.stdout).toContain("Added a Stop hook for lesson capture");
+	});
+
+	it("removes a previously installed Stop hook when --lessons is dropped, and keeps SessionStart", async () => {
+		const dest = await makeTree();
+		mocks.getPublished.mockResolvedValue({
+			published: false,
+			sourceOfTruth: "UPLOAD",
+		});
+
+		await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"claude-code",
+			"--dest",
+			dest,
+			"--lessons",
+		]);
+
+		const result = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"claude-code",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		const settings = JSON.parse(
+			await readFile(
+				path.join(dest, ".claude", "settings.local.json"),
+				"utf8",
+			),
+		);
+		expect(settings.hooks.SessionStart[0].hooks[0].command).toBe(
+			"fabric instructions check --project project-1 --hook",
+		);
+		expect(settings.hooks.Stop).toEqual([]);
+		expect(result.stdout).toContain(
+			"Removed the Stop hook for lesson capture",
+		);
+	});
+
+	it("refuses --lessons for codex before any write", async () => {
+		const dest = await makeTree();
+
+		const result = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"codex",
+			"--dest",
+			dest,
+			"--lessons",
+		]);
+
+		expect(result.code).toBe(2);
+		expect(result.stderr).toContain(
+			"--lessons is not yet supported for codex",
+		);
+		expect(mocks.getPublished).not.toHaveBeenCalled();
+		await expect(
+			stat(path.join(dest, ".codex", "hooks.json")),
+		).rejects.toThrow();
+	});
+
+	it("carries lessonsHook in the JSON summary", async () => {
+		const dest = await makeTree();
+		mocks.getPublished.mockResolvedValue({
+			published: false,
+			sourceOfTruth: "UPLOAD",
+		});
+
+		const withLessons = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"claude-code",
+			"--dest",
+			dest,
+			"--lessons",
+			"--format",
+			"json",
+		]);
+		expect(JSON.parse(withLessons.stdout).lessonsHook).toBe(true);
+
+		const withoutLessons = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"claude-code",
+			"--dest",
+			dest,
+			"--format",
+			"json",
+		]);
+		expect(JSON.parse(withoutLessons.stdout).lessonsHook).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// lesson-prompt (Stop hook wiring — see __tests__/lesson-prompt.test.ts for
+// the unit tests behind runLessonPrompt itself)
+// ---------------------------------------------------------------------------
+describe("fabric instructions lesson-prompt", () => {
+	/**
+	 * `process.stdin` is a lazily-created, configurable property on `process`
+	 * rather than a plain field, so it can be swapped for a fixed-content
+	 * stream and restored afterward without touching the real one.
+	 */
+	function withStdin(text: string): () => void {
+		const stream = Readable.from([Buffer.from(text, "utf8")]);
+		const original = Object.getOwnPropertyDescriptor(process, "stdin");
+		Object.defineProperty(process, "stdin", {
+			value: stream,
+			configurable: true,
+			enumerable: true,
+		});
+		return () => {
+			if (original) {
+				Object.defineProperty(process, "stdin", original);
+			}
+		};
+	}
+
+	it("prints nothing and exits 0 when stop_hook_active is true", async () => {
+		const restoreStdin = withStdin(
+			JSON.stringify({
+				session_id: "session-1",
+				transcript_path: "/nonexistent.jsonl",
+				stop_hook_active: true,
+				hook_event_name: "Stop",
+			}),
+		);
+		try {
+			const result = await runCli([
+				"lesson-prompt",
+				"--project",
+				"p",
+				"--hook",
+			]);
+
+			expect(result.code).toBe(0);
+			expect(result.stdout).toBe("");
+			expect(result.stderr).toBe("");
+		} finally {
+			restoreStdin();
+		}
+	});
+
+	/**
+	 * `FABRIC_DEBUG=1` turns on `debugLog` inside `runLessonPrompt`, and a
+	 * transcript path that does not exist is exactly the "could not read
+	 * transcript" branch that logs. The never-fail contract still has to
+	 * hold with debug logging on: at most one line on stderr, nothing on
+	 * stdout, exit 0.
+	 */
+	it("logs at most one debug line and prints nothing under FABRIC_DEBUG", async () => {
+		const restoreStdin = withStdin(
+			JSON.stringify({
+				session_id: "session-1",
+				transcript_path: "/nonexistent-transcript.jsonl",
+				stop_hook_active: false,
+				hook_event_name: "Stop",
+			}),
+		);
+		process.env.FABRIC_DEBUG = "1";
+		try {
+			const result = await runCli([
+				"lesson-prompt",
+				"--project",
+				"project-1",
+				"--hook",
+			]);
+
+			expect(result.code).toBe(0);
+			expect(result.stdout).toBe("");
+			expect(
+				result.stderr === "" ||
+					result.stderr.split("\n").filter(Boolean).length <= 1,
+			).toBe(true);
+		} finally {
+			restoreStdin();
+			delete process.env.FABRIC_DEBUG;
+		}
 	});
 });
 

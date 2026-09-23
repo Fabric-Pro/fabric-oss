@@ -134,6 +134,22 @@ describe("initialize instructions", () => {
 		expect(instructions).toMatch(/approve|awaiting review|review/i);
 	});
 
+	// The lesson tool's positive sibling to the proposal one above (Fizzy
+	// #2644-adjacent): an agent that just watched a mistake happen has a way
+	// to record it so the next agent does not repeat it, and the handshake is
+	// the only place it learns the tool exists before it ever needs it.
+	it("names the lesson tool and says it opens a proposal too", async () => {
+		const instructions = await initialize();
+
+		expect(instructions).toContain("fabric_add_instruction_lesson");
+		const section = instructions.slice(
+			instructions.indexOf("## Coding instructions"),
+			instructions.indexOf("## Bootstrap a project"),
+		);
+		expect(section).toMatch(/lesson/i);
+		expect(section).toContain("proposal");
+	});
+
 	// Bootstrapping a thin project (Fizzy #2459). The handshake is the only
 	// place an agent learns that it can seed a project's Context from the
 	// working tree, and it must learn the routing rule with it: knowledge

@@ -20,10 +20,10 @@ Working on the project is also when the instructions are most obviously wrong,
 so the traffic goes both ways: `fabric instructions push` sends the checkout's
 edits back as a **proposal** an editor approves in the tab, or — with
 `--publish`, and a key granted that separate authority — as a new version
-directly. An agent with no CLI can only propose: the MCP tool
-`fabric_propose_project_instruction_change` has no publish mode and no scope
-that would reach one. All of it lands in the same place and runs the same
-checks as a folder upload from the browser.
+directly. An agent with no CLI can only propose: the MCP tools
+`fabric_propose_project_instruction_change` and `fabric_add_instruction_lesson`
+have no publish mode and no scope that would reach one. All of it lands in the
+same place and runs the same checks as a folder upload from the browser.
 
 ## Install and authenticate
 
@@ -190,7 +190,7 @@ Two refusals are worth recognising:
   `REPOSITORY`, so the files are changed in git and mirrored into Fabric. Commit
   and push to the repository instead. Nothing was sent.
 
-### `fabric instructions init --project <id> --tool <claude-code|codex> [--dest <dir>] [--apply]`
+### `fabric instructions init --project <id> --tool <claude-code|codex> [--dest <dir>] [--apply] [--lessons]`
 
 For a published snapshot, takes the first copy before writing a `SessionStart`
 hook. Claude Code writes `<dest>/.claude/settings.local.json` — never
@@ -213,6 +213,38 @@ says so rather than becoming that second writer.
 An explicit `--org <slug>` is carried into the generated hook command. These
 commands read no stored default context, so a slug supplied once on the
 command line has nowhere else to live.
+
+#### `--lessons`: a Stop hook that asks for a lesson
+
+With `--lessons`, `init` also writes a Claude Code `Stop` hook running
+`fabric instructions lesson-prompt --project <id> --hook`. A lesson is a
+mistake the team should not repeat, written down as
+`Lessons/<date>-<slug>.md` so it becomes a rule instead of a memory. The hook
+turns the end of a piece of work into the moment it gets written:
+
+- It asks **at most once per session**, and only after the assistant has
+  edited files in that session; a session that only answered questions is
+  never interrupted. Once-per-session is tracked in a marker directory next to
+  the CLI's own config file, keyed by a hash of the session and project, never
+  by the raw ids.
+- It makes **no network calls** and needs no API key. It reads the hook's
+  stdin and the session transcript, and either prints nothing or prints one
+  `{"decision":"block","reason":…}` object that tells the assistant to ask the
+  developer the question — *was there a mistake in this session the team
+  should not repeat?* — and, only after the developer confirms a draft, to
+  call the MCP tool `fabric_add_instruction_lesson`. The tool opens a
+  proposal; a person approves it in the tab.
+- It **never fails the stop**: malformed input, an unreadable transcript or a
+  missing marker directory all exit 0 with nothing on stdout, and a stop the
+  assistant is already continuing through (`stop_hook_active`) is passed
+  straight through so the hook cannot loop. To see why it stayed quiet, set
+  `FABRIC_DEBUG=1`: the reason goes to stderr as one line, which Claude Code
+  does not treat as hook output on exit 0.
+
+Running `init` again without `--lessons` removes the Stop entry and leaves the
+`SessionStart` one alone; `init` describes the hooks you want, not the ones you
+have. `--lessons` is refused with `--tool codex` for now: a Codex hook for
+lesson capture is not wired.
 
 ## What these commands will not do
 
@@ -416,13 +448,15 @@ repository does not already; `init` does not edit `.gitignore`.
 | REST routes | `packages/api/modules/v1/instructions.ts` |
 | The shared server entry point behind a change | `packages/api/modules/projects/procedures/instructions/submit-change.ts` |
 | MCP proposal tool | `apps/web/modules/saas/mcp/lib/gateway/platform-tools.ts` |
+| MCP lesson tool (file name and frontmatter) | `apps/web/modules/saas/mcp/lib/gateway/instruction-lessons.ts` |
+| Stop hook command (`lesson-prompt`) | `packages/cli/src/lib/instructions/lesson-prompt.ts` |
 
 Three scopes, one per authority:
 
 | Scope | Reaches | Live permission re-checked per call |
 |---|---|---|
 | `instructions:read` | `GET .../instructions/published`, `POST .../published/download` — `check`, `sync`, `init` | `INSTRUCTION_READ` |
-| `instructions:write` | `POST .../instructions/changes` — `push`, and the MCP tool `fabric_propose_project_instruction_change` | `INSTRUCTION_READ` |
+| `instructions:write` | `POST .../instructions/changes` — `push`, and the MCP tools `fabric_propose_project_instruction_change` and `fabric_add_instruction_lesson` | `INSTRUCTION_READ` |
 | `instructions:publish` | `POST .../instructions/versions` — `push --publish` | `INSTRUCTION_CREATE` |
 
 The scope is a ceiling and never a grant: every route independently re-checks
@@ -448,8 +482,8 @@ every call re-checks that the key's creator still holds `INSTRUCTION_CREATE`
 on that project at that moment. Holding only this scope means a key can
 publish but cannot open a proposal, and holding only `instructions:write`
 means the reverse; a key may of course carry both. No MCP tool asks for it:
-`fabric_propose_project_instruction_change` is proposal-only and an agent
-cannot publish.
+`fabric_propose_project_instruction_change` and `fabric_add_instruction_lesson`
+are proposal-only and an agent cannot publish.
 
 **The publish route requires an organization key by TYPE, not only by scope
 name.** A personal (`fab_*`) key is refused here even when it happens to
