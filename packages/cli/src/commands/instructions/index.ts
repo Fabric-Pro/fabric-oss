@@ -2,6 +2,8 @@
  * fabric instructions
  *
  *   fabric instructions check --project <id>   Is the local copy current?
+ *   fabric instructions doctor --project <id>  Is this machine set up the way the
+ *                                             instructions expect? Reads only; runs nothing.
  *   fabric instructions sync  --project <id>   Make it current.
  *   fabric instructions push  --project <id>   Suggest the local edits back.
  *   fabric instructions init  --project <id> --tool claude-code|codex
@@ -32,6 +34,7 @@ import {
 import { getApiKey, getConfigPath } from "../../lib/config.js";
 import { applyPlan } from "../../lib/instructions/apply.js";
 import { extractBundle, fetchBundle } from "../../lib/instructions/bundle.js";
+import { formatDoctorText, runDoctor } from "../../lib/instructions/doctor.js";
 import {
 	assertKeyStaysOutside,
 	buildHookCommand,
@@ -165,6 +168,30 @@ export function buildInstructionsCommand(): Command {
 		) {
 			await run(opts, "check", () =>
 				runCheck(opts, outputFormatFor(this)),
+			);
+		});
+
+	instructions
+		.command("doctor")
+		.description(
+			"Check whether this machine is set up the way the project's coding instructions expect",
+		)
+		.requiredOption("--project <id>", "Project ID")
+		.option("--dest <dir>", "Destination directory (default: cwd)")
+		.option("--org <slug>", "Organization context")
+		.option(
+			"--probe-network",
+			"Also send one HTTP GET to each url server in .mcp.json to see whether it answers",
+		)
+		.option("--format <format>", "Output format: text|json")
+		.action(async function (
+			this: Command,
+			opts: CommonOptions & { probeNetwork?: boolean },
+		) {
+			// Never hook mode: doctor is run by a person (or an agent acting
+			// for one), and a failed check is a real exit code.
+			await run({ ...opts, hook: false }, "doctor", () =>
+				runDoctorCommand(opts, outputFormatFor(this)),
 			);
 		});
 
@@ -643,6 +670,62 @@ function reportDrift(
 	line(
 		`Run \`fabric instructions sync --project ${opts.project}\` to put them back.`,
 	);
+}
+
+// ---------------------------------------------------------------------------
+// doctor
+// ---------------------------------------------------------------------------
+
+/**
+ * Nine checks, one report, exit 1 when any of them fails.
+ *
+ * Informational like `check`: nothing is written, the destination is not
+ * created, and every failure inside a check becomes that check's verdict
+ * rather than an exception — so a missing key produces a report whose `auth`
+ * check fails, not a stack trace. The only thrown failure is the one that
+ * turns "a check failed" into exit code 1, AFTER the report is printed.
+ *
+ * The same context-free clients `check` and `sync` use: an ambient
+ * `FABRIC_ORG` must not turn a project the key can read into a refusal.
+ */
+async function runDoctorCommand(
+	opts: CommonOptions & { probeNetwork?: boolean },
+	format: OutputFormat,
+): Promise<void> {
+	const destination = destinationOf(opts);
+	const root = await resolveExistingRoot(destination);
+	const report = await runDoctor({
+		projectId: opts.project,
+		org: orgSlugFor(opts),
+		destination,
+		root,
+		commandDest: opts.dest === undefined ? undefined : destination,
+		probeNetwork: Boolean(opts.probeNetwork),
+		env: process.env,
+		platform: process.platform,
+		apiKeyPresent: Boolean(getApiKey()),
+		client: () => instructionsClient({ hook: false }, CHECK_TIMEOUT_MS),
+		createDownloadUrl: (projectId, options) =>
+			downloadUrlClient({ hook: false }).instructions.createDownloadUrl(
+				projectId,
+				options,
+			),
+		fetchArchive: (url, maxBytes) =>
+			fetchBundle(url, { timeoutMs: BUNDLE_TIMEOUT_MS, maxBytes }),
+	});
+
+	if (format === "json") {
+		printOutput(report, { format: "json" });
+	} else {
+		process.stdout.write(formatDoctorText(report, destination));
+	}
+
+	if (!report.ok) {
+		throw new CliFailure(
+			`${report.summary.fail} check${report.summary.fail === 1 ? "" : "s"} failed; the report above lists a proposed fix for each`,
+			1,
+		);
+	}
 }
 
 // ---------------------------------------------------------------------------

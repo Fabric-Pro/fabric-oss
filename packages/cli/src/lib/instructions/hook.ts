@@ -430,6 +430,97 @@ export async function removeCommandHook(input: {
 	return { settingsPath, changed: true };
 }
 
+/**
+ * What one coding tool's hook file says about this project, read-only.
+ *
+ * `absent`: no file. `unreadable`: the file is there but could not be read
+ * safely, is not JSON, or has a shape `mergeSessionStartHook` would refuse to
+ * touch. `ok`: the `command` of every SessionStart hook this tool would
+ * recognise as its own for this project — the same token-exact matcher the
+ * merge uses, so "configured" means the same thing to both.
+ *
+ * Carries no reason text on purpose: its caller, `fabric instructions
+ * doctor`, reports content-free diagnostics, and the file is the developer's.
+ */
+export type SessionStartHookScan =
+	| { state: "absent" }
+	| { state: "unreadable" }
+	| { state: "ok"; commands: string[] };
+
+export async function findSessionStartHooks(input: {
+	/** An already-canonical destination. */
+	root: string;
+	projectId: string;
+	tool: InstructionsHookTool;
+}): Promise<SessionStartHookScan> {
+	const hookTarget = hookTargetFor(input.tool);
+	let raw: string;
+	try {
+		const existing = await readFileSafely(
+			input.root,
+			hookTarget.posixPath,
+			{ maxBytes: MAX_HOOK_CONFIG_BYTES },
+		);
+		if (existing === null) {
+			return { state: "absent" };
+		}
+		raw = new TextDecoder().decode(existing.bytes);
+	} catch {
+		return { state: "unreadable" };
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return { state: "unreadable" };
+	}
+	if (!isRecord(parsed)) {
+		return { state: "unreadable" };
+	}
+	if (parsed.hooks === undefined) {
+		return { state: "ok", commands: [] };
+	}
+	if (!isRecord(parsed.hooks)) {
+		return { state: "unreadable" };
+	}
+	const sessionStart = parsed.hooks.SessionStart;
+	if (sessionStart === undefined) {
+		return { state: "ok", commands: [] };
+	}
+	if (!Array.isArray(sessionStart)) {
+		return { state: "unreadable" };
+	}
+	const commands: string[] = [];
+	for (const group of sessionStart) {
+		if (!isRecord(group)) {
+			return { state: "unreadable" };
+		}
+		if (group.hooks === undefined) {
+			continue;
+		}
+		if (!Array.isArray(group.hooks)) {
+			return { state: "unreadable" };
+		}
+		for (const hook of group.hooks) {
+			if (
+				isFabricHookFor(hook, input.projectId) &&
+				SESSION_START_SUBCOMMANDS.has(subcommandOf(hook))
+			) {
+				commands.push((hook as CommandHook).command);
+			}
+		}
+	}
+	return { state: "ok", commands };
+}
+
+function subcommandOf(hook: unknown): string {
+	const command = isRecord(hook) ? hook.command : undefined;
+	return typeof command === "string"
+		? (command.trim().split(/\s+/)[2] ?? "")
+		: "";
+}
+
 function hookTargetFor(tool: InstructionsHookTool): {
 	relativePath: string;
 	posixPath: string;

@@ -1,6 +1,6 @@
 # Developer Guide: Coding Instructions on the Command Line
 
-How `fabric instructions check | sync | push | init` keeps a checkout current with a project's published coding instructions, how a local edit gets suggested back, and what each command is allowed to touch.
+How `fabric instructions check | sync | push | init` keeps a checkout current with a project's published coding instructions, how a local edit gets suggested back, how `fabric instructions doctor` checks a machine against what the instructions expect, and what each command is allowed to touch.
 
 - **Audience**: engineers working on `@fabricorg/cli`, `@fabricorg/sdk` or the v1 REST surface; developers setting a project up on their own machine
 - **Owner**: Projects / Platform team
@@ -246,6 +246,190 @@ Running `init` again without `--lessons` removes the Stop entry and leaves the
 have. `--lessons` is refused with `--tool codex` for now: a Codex hook for
 lesson capture is not wired.
 
+### `fabric instructions doctor --project <id> [--dest <dir>] [--org <slug>] [--probe-network] [--format text|json]`
+
+Answers "is this machine set up the way this project's coding instructions
+expect?" — the question `check` cannot, because `check` only compares digests.
+Nine checks run in a fixed order. Each one reports a status, the evidence it
+rests on, a one-line detail, and at most one proposed fix. Nothing is written,
+nothing named by published content or by `.mcp.json` is executed, and no
+declared environment variable's value is read, printed or transmitted: the
+environment check compares names only. The CLI does read some variables to do
+its own job, and it never prints them. These are its settings (`FABRIC_API_KEY`,
+`FABRIC_BASE_URL` and the other `FABRIC_*` variables), `PATH`, `PATHEXT`, and
+the variables that locate its config file, such as `HOME`. It reads them
+whether or not a declaration also names them.
+
+| Check | What it verifies | Evidence | Proposed fix |
+|---|---|---|---|
+| API key (`auth`) | A key is configured, `GET /auth/whoami` accepts it, and its scopes include `instructions:read` (or a legacy `*`). The detail names the key type, its prefix and the scope that satisfied the check. | server | `fabric auth login --key <api-key>`. A personal key without the scope is pointed at an organization key, because personal keys cannot carry `instructions:*` scopes. |
+| Project access (`access`) | `GET .../instructions/published` succeeds for this project. A missing scope (403 `MISSING_SCOPE`), a missing project permission (other 403) and an unknown project (404) are reported as three different failures. | server | Ask a project maintainer for access, or check the project id and `--org`. |
+| Published instructions (`published`) | A version is published. The detail gives its version, a digest prefix and its file count. Nothing published is a warning. | server | Publish a version from the project's Coding Instructions tab. |
+| Lock (`lock`) | `.fabric/instructions.lock` exists, belongs to this project, names the published digest, and its ledger matches the published manifest path for path, hash for hash and mode for mode. | machine | `fabric instructions sync --project <id>`. A lock written for another project gets no command, because `sync` refuses such a lock. The fix says to rerun doctor with the `--dest` that was synced for this project. |
+| Local files (`drift`) | Every file the lock names still hashes to what the lock recorded, and still has the recorded mode. Each drifted file is listed. | machine | `sync` to restore the published bytes, or `fabric instructions push` to propose the edits instead. |
+| Hook configuration (`hook`) | `.claude/settings.local.json` and `.codex/hooks.json` are checked separately. A hook passes when a `SessionStart` entry for this project runs exactly one of the two commands `init` writes today (`check` or `sync`, with the same `--org`). A Fabric entry for the project under another event, or running another subcommand, is ignored. Also looks `fabric` up on PATH. | machine | `fabric instructions init --project <id> --tool claude-code`, which also takes a first sync (`--tool codex` for Codex); `npm install -g @fabricorg/cli` when `fabric` is not on PATH. |
+| Environment variables (`environment`) | Every variable [`fabric.environment.json`](#the-environment-declaration-fabricenvironmentjson) declares is present in this shell, checked by name. A missing required variable fails and a missing optional one warns. | machine | Set the named variables. The fix is a description only, never an `export NAME=` line. |
+| Tools (`tools`) | Every tool the declaration names resolves on PATH, checked for presence only. A declared version is shown as "declared, not verified". | machine | Install the named tools. The fix is a description only. |
+| MCP servers (`mcp-servers`) | For each server in `<dest>/.mcp.json`, a `command` must resolve on PATH (or at its absolute path, or at a relative path under the checkout). A `url` server is probed only under `--probe-network`. | machine | Fix or remove the failing server. |
+
+A hook check that passes proves one thing: the command recorded in the file is
+one this CLI writes today. The hook records no binary path and no CLI version.
+Whether the coding tool trusts and runs the hook, and whether `fabric` is on
+that tool's PATH as opposed to this shell's, is not verified, and the detail
+says so.
+
+**Status and exit codes.** `pass` means no failure was found under the
+evidence the check names. It is not a guarantee beyond that evidence. `fail`
+means a problem was found, and every failing check proposes a fix, including a
+check that could not run. `warn` does not block but deserves attention: an
+optional variable is missing, a hook differs from the canonical command, or a
+declaration exists locally but is not published. `skip` means the check was
+not evaluated here, because a prerequisite failed, nothing is declared, or the
+check does not apply. A skip never fails the run. The command exits `0` when
+no check fails, warnings and skips included, and `1` when any check fails,
+after printing the whole report. A missing or refused key does not crash the
+command. The `auth` check fails, the checks that need the server skip, and
+`mcp-servers` still runs because it needs nothing from the server.
+
+**A repository-backed project** (source of truth `REPOSITORY`) skips `lock`,
+`drift` and `hook`, because git manages those files and a hook would fight
+`git pull`. The environment declaration is read from the checkout, and every
+detail that depends on it starts with "from the local checkout". Doctor never
+proposes `init` for such a project.
+
+**Where the declaration is read from.** If the published manifest lists
+`fabric.environment.json`, the lock names the published digest, and the local
+file's sha256 equals the manifest entry, the local file is read. Otherwise the
+file is taken from the published bundle, with three checks:
+
+- The manifest entry's size is checked first. An entry over 64 KiB is refused
+  before anything is downloaded.
+- The download endpoint resolves the *current* snapshot, so its snapshot id
+  and digest are compared with the manifest being checked. When they differ,
+  the manifest read and the download are both retried once. A second mismatch
+  is reported as a warning: "publication changed while checking; rerun".
+- The extracted bytes are hashed against the manifest before they are parsed,
+  and the same buffer is hashed and then parsed. A mismatch fails with
+  "published declaration failed integrity check".
+
+A declaration that exists only on disk is still evaluated, and the detail adds
+"declaration exists locally but is not published". A result that would pass is
+reported as a warning instead. A missing required variable still fails.
+
+**Every generated command is built only from what you typed.** A
+`fix.command` uses the project id, `--org` and `--dest` you gave doctor,
+POSIX-shell-quoted. It carries `--org` and `--dest` whenever doctor had them,
+so a pasted command acts on the same project, context and checkout. No part of
+it comes from declaration text, `.mcp.json`, or a server response.
+
+**Fixes are proposals, not authority.** The report lists findings and proposed
+remedies. It grants no authority to install software, change credentials or
+overwrite files. A person decides whether to run a fix. `sync` in particular
+overwrites local edits to instruction files. This applies equally when an
+agent reads the report, whether from `--format json` or from the MCP gateway's
+`fabric_instruction_checks` tool. That tool returns the same report shape with
+`surface: "mcp"`. It runs on the server, so it cannot see this machine's files,
+hooks, PATH or `.mcp.json`, and it reports the local-only checks as skipped.
+What the caller sends it, the lock digest and the names of the variables that
+are present, is marked `evidence: "caller-reported"`. The server compares that
+input with the published version but cannot check it independently, so a
+`pass` on caller-reported evidence is only as accurate as the input it was
+given.
+
+#### `--probe-network`, and why it is opt-in
+
+Without the flag, doctor contacts only Fabric. A `url` server in `.mcp.json`
+is listed as skipped with "network probe disabled (rerun with
+--probe-network)". `command` servers are always checked, because a PATH lookup
+sends nothing anywhere.
+
+`.mcp.json` is repository content: each URL in it is an address somebody else
+chose. Contacting it from your machine tells that host you ran doctor and from
+which network, and a URL can just as easily name an internal host that is only
+reachable from where you are sitting. So the request is sent only when you ask
+for it. With `--probe-network`:
+
+- Only `http:` and `https:` URLs are probed. A URL that embeds a user name or
+  password is not probed, and is reported as a warning.
+- One `GET` is sent per server. It carries no headers from the config, and an
+  entry's `env` is never read. A redirect is not followed: a `3xx` counts as
+  reachable. The response body is never read.
+- Each request has 5 seconds. At most 20 servers are probed, 4 at a time,
+  within 15 seconds in total. Servers the budget does not reach are skipped
+  with "probe budget exhausted".
+- Any HTTP response counts as reachable, including `401`, `403` and `404`.
+  That means a server answered, not that it is a working MCP server or that
+  your credentials for it work, and the detail says so.
+- A failure is reported only as a class: connection refused, timed out, DNS
+  lookup failed, TLS error, connection reset, or unsupported scheme. The URL is
+  never printed. A server is identified by its key in `mcpServers`, with
+  control characters removed and a 64-character limit.
+
+#### What doctor will not do
+
+- **Execute anything.** Tools named by the declaration and commands named by
+  `.mcp.json` are found with `stat`. A candidate counts when it is a regular
+  file with an execute bit, or has a `PATHEXT` extension on Windows. Only
+  absolute PATH entries are searched. Running `<tool> --version` would be code
+  execution chosen by whoever can publish the instructions or commit to the
+  repository.
+- **Read a declared variable's value.** Declared variables are checked by
+  name, against the names in the environment. Doctor necessarily uses its own
+  settings (`FABRIC_API_KEY`, `FABRIC_BASE_URL` and the other `FABRIC_*`
+  variables), `PATH`, `PATHEXT` and the variables that locate its config file
+  to do its job, and it never prints them.
+- **Repeat content.** Details are fixed wording, numbers, validated
+  identifiers, or published and repository text with control characters
+  removed and a length limit applied. A server's error message, an exception
+  message, a parser excerpt and a URL are never printed. An unexpected error
+  inside one check fails that check with the error's class name, for example
+  "check could not run (TypeError)", and the next check runs.
+- **Read without bounds.** `fabric.environment.json` is read through the
+  guarded reader with a 64 KiB limit and `.mcp.json` with a 256 KiB limit and
+  at most 50 servers. The guarded reader refuses a symlinked component or
+  anything that is not a regular file. The lock is read through the same
+  guarded reader with a 16 MiB limit, so a symlinked `.fabric` directory or
+  lock is refused rather than followed, and then checked with the validator
+  `sync` uses. The hook files are read through it with the 1 MiB limit `init`
+  applies to them.
+- **Write anything**, or create `--dest` if it does not exist.
+
+Text output puts one line per check, then its items and its fix:
+
+```text
+✓ API key                 organization key org_abc12345 with instructions:read
+✗ Lock                    lock is at version 3, published is 4
+    fix: fabric instructions sync --project project-id
+         brings this checkout to the published version; local edits to instruction files are overwritten and reported as replaced
+! Hook configuration      a hook for this project is not in the canonical form; execution, trust and the coding tool's PATH are not verified
+- MCP servers             no .mcp.json in /path/to/checkout
+
+6 passed, 1 failed, 1 warning, 1 skipped
+Fixes are proposals: doctor installed nothing, changed no credentials and wrote no files.
+```
+
+`--format json` prints the report object, which has the same shape as the MCP
+tool's report:
+
+```ts
+interface InstructionChecksReport {
+  projectId: string;
+  surface: "cli" | "mcp";
+  checks: Array<{
+    id: "auth" | "access" | "published" | "lock" | "drift" | "hook"
+      | "environment" | "tools" | "mcp-servers";   // always in this order
+    title: string;
+    status: "pass" | "fail" | "warn" | "skip";
+    evidence: "server" | "machine" | "caller-reported";
+    detail: string;
+    items?: Array<{ name: string; status: string; detail?: string }>;
+    fix?: { command?: string; description: string };
+  }>;
+  summary: { pass: number; fail: number; warn: number; skip: number };
+  ok: boolean;   // no failures among the evaluated checks — not a readiness attestation
+}
+```
+
 ## What these commands will not do
 
 These are guarantees, and the tests under `packages/cli/__tests__/` exist to
@@ -436,6 +620,63 @@ tree.
 to one machine. Add the paths you use to your own ignore rules if the
 repository does not already; `init` does not edit `.gitignore`.
 
+## The environment declaration: `fabric.environment.json`
+
+A project states which environment variables and command-line tools its
+instructions assume by adding `fabric.environment.json` at the root of the
+instruction set. It is published and synced like any other file and lands at
+`<dest>/fabric.environment.json`. It does not live under `.fabric/`, because
+`.fabric/**` is reserved to the CLI and a manifest that names a path there is
+refused as a whole.
+
+```json
+{
+  "version": 1,
+  "variables": [
+    { "name": "OPENAI_API_KEY", "description": "Model access for the eval scripts", "required": true },
+    { "name": "SENTRY_DSN", "required": false }
+  ],
+  "tools": [
+    { "name": "pnpm", "version": ">=11", "description": "Package manager" },
+    { "name": "gh" }
+  ]
+}
+```
+
+| Field | Rule |
+|---|---|
+| `version` | Must be the number `1`. Unknown top-level keys are ignored, so a later version can add fields. |
+| `variables[].name` | Required. A POSIX identifier, `^[A-Za-z_][A-Za-z0-9_]*$`, of at most 128 characters. Unique, compared case-sensitively. |
+| `variables[].required` | Optional boolean, default `true`. A missing required variable fails the check, and a missing optional one warns. |
+| `variables[].description`, `tools[].description` | Optional string of at most 200 characters. Control characters are replaced when it is displayed. |
+| `tools[].name` | Required. A bare executable name, `^[A-Za-z0-9][A-Za-z0-9._+-]*$`, of at most 64 characters: no path separators, no whitespace, no leading dot. Unique. |
+| `tools[].version` | Optional string of at most 64 characters. It is informational only and is reported as "declared, not verified". |
+
+**Limits.** The file may be at most 65,536 bytes and may list at most 200
+variables and 100 tools. A file over a limit, or malformed in any way, makes
+the `environment` check fail with a reason that refers to a position (for
+example `variables[3].name must be an environment variable name`), never to
+the offending value. The `tools` check is then skipped as "declaration
+unreadable".
+
+**Names only.** The file declares variable *names*. Neither the CLI nor the
+MCP gateway reads, prints or transmits the value of a variable declared here
+in order to check it. The CLI reads its own settings, `PATH`, `PATHEXT` and
+the variables that locate its config file to do its job, even when a
+declaration also names them, and never prints them. Never put a value in this
+file. Like everything else in the instruction set, it is published content
+that everyone with read access can see.
+
+**Nothing named here is executed.** Tools are checked by PATH lookup, and a
+declared `version` is never verified by running the tool. The declaration is
+published content, so running `<tool> --version` because it names `<tool>`
+would be code execution chosen by whoever can publish the instruction set.
+
+**Classification.** The instruction-file classifier reports
+`fabric.environment.json` as kind `OTHER` for now. A follow-up change will
+classify it as `SETTINGS`. Doctor reads it by its path, so its kind makes no
+difference to the checks.
+
 ## What it talks to
 
 | Layer | Where |
@@ -444,6 +685,8 @@ repository does not already; `init` does not edit `.gitignore`.
 | Filesystem modules | `packages/cli/src/lib/instructions/` |
 | The one guarded writer | `packages/cli/src/lib/instructions/safe-write.ts` |
 | Push plan (local diff against the lock) | `packages/cli/src/lib/instructions/push.ts` |
+| `doctor` checks, PATH lookup, `.mcp.json` reader | `packages/cli/src/lib/instructions/doctor.ts`, `path-lookup.ts`, `mcp-config.ts` |
+| Shared report vocabulary and declaration parser | `packages/cli/src/lib/instructions/checks.ts`, byte-identical after its header to `apps/web/modules/saas/mcp/lib/gateway/instruction-checks.ts`; `packages/cli/__tests__/checks-agree-with-gateway.test.ts` fails on any divergence |
 | SDK resource | `packages/sdk/src/resources/instructions.ts` |
 | REST routes | `packages/api/modules/v1/instructions.ts` |
 | The shared server entry point behind a change | `packages/api/modules/projects/procedures/instructions/submit-change.ts` |
@@ -455,7 +698,7 @@ Three scopes, one per authority:
 
 | Scope | Reaches | Live permission re-checked per call |
 |---|---|---|
-| `instructions:read` | `GET .../instructions/published`, `POST .../published/download` — `check`, `sync`, `init` | `INSTRUCTION_READ` |
+| `instructions:read` | `GET .../instructions/published`, `POST .../published/download` — `check`, `sync`, `init`, `doctor`, and the MCP tool `fabric_instruction_checks` | `INSTRUCTION_READ` |
 | `instructions:write` | `POST .../instructions/changes` — `push`, and the MCP tools `fabric_propose_project_instruction_change` and `fabric_add_instruction_lesson` | `INSTRUCTION_READ` |
 | `instructions:publish` | `POST .../instructions/versions` — `push --publish` | `INSTRUCTION_CREATE` |
 

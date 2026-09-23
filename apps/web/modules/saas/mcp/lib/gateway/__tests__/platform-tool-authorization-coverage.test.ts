@@ -133,6 +133,10 @@ const READ_EXEMPT = new Map<string, string>([
 		"handleGetProjectInstructionBundle",
 		"delegates to resolvePublishedInstructionSnapshot, which gates on resolveGatewayProjectReadAccess (project access plus the organization-key binding)",
 	],
+	[
+		"handleGetInstructionChecks",
+		"delegates to resolvePublishedInstructionSnapshot, which gates on resolveGatewayProjectReadAccess (project access plus the organization-key binding)",
+	],
 ]);
 
 /**

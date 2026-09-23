@@ -155,6 +155,35 @@ export async function verifyLedger(input: {
 	root: string;
 	lock: InstructionsLock;
 }): Promise<string[]> {
+	const drift = await findLedgerDrift(input);
+	return drift.map((entry) => `${entry.path} (${entry.detail})`);
+}
+
+/**
+ * Why one locked path no longer matches, as a class a caller can branch on.
+ * `refused` is a guarded-read refusal: a symlinked ancestor, a directory
+ * where a file belongs, a path resolving outside the root.
+ */
+export type LedgerDriftReason = "missing" | "edited" | "mode" | "refused";
+
+export interface LedgerDrift {
+	path: string;
+	reason: LedgerDriftReason;
+	/** The parenthetical `verifyLedger` prints after the path. */
+	detail: string;
+}
+
+/**
+ * `verifyLedger`, structured: one entry per locked path that no longer
+ * matches, with its reason as a class rather than folded into a sentence.
+ * `fabric instructions doctor` reports these as check items and must not
+ * repeat a refusal's message (it names local paths), so it needs the class.
+ */
+export async function findLedgerDrift(input: {
+	/** An already-canonical root — `resolveDestinationRoot` or `resolveExistingRoot`. */
+	root: string;
+	lock: InstructionsLock;
+}): Promise<LedgerDrift[]> {
 	// FIRST, before a single path is joined or opened. This function reads
 	// paths that come out of an unauthenticated file in the checkout, and it
 	// used to read them raw: `../outside` reached outside the destination, and
@@ -162,7 +191,7 @@ export async function verifyLedger(input: {
 	// same validation `computeSyncPlan` runs, run before anything is touched.
 	assertSafeLockPaths(lockPaths(input.lock));
 
-	const drifted: string[] = [];
+	const drifted: LedgerDrift[] = [];
 	for (const [lockedPath, locked] of Object.entries(input.lock.files)) {
 		// A refusal from the guarded reader — a symlinked ancestor, a
 		// directory where a file belongs — is drift, not a crash: the caller
@@ -171,18 +200,33 @@ export async function verifyLedger(input: {
 		try {
 			read = await readFileSafely(input.root, lockedPath);
 		} catch (error) {
-			drifted.push(
-				`${lockedPath} (${error instanceof Error ? error.message.replace(/^Refusing to sync: /, "").replace(/\.$/, "") : String(error)})`,
-			);
+			drifted.push({
+				path: lockedPath,
+				reason: "refused",
+				detail:
+					error instanceof Error
+						? error.message
+								.replace(/^Refusing to sync: /, "")
+								.replace(/\.$/, "")
+						: String(error),
+			});
 			continue;
 		}
 		if (read === null) {
-			drifted.push(`${lockedPath} (missing)`);
+			drifted.push({
+				path: lockedPath,
+				reason: "missing",
+				detail: "missing",
+			});
 			continue;
 		}
 		const actual = createHash("sha256").update(read.bytes).digest("hex");
 		if (actual !== locked.sha256) {
-			drifted.push(`${lockedPath} (edited)`);
+			drifted.push({
+				path: lockedPath,
+				reason: "edited",
+				detail: "edited",
+			});
 			continue;
 		}
 		// Modes are meaningless on Windows and a published `0755` that arrived
@@ -193,9 +237,11 @@ export async function verifyLedger(input: {
 			locked.mode !== null &&
 			(read.mode & 0o7777) !== (locked.mode & 0o7777)
 		) {
-			drifted.push(
-				`${lockedPath} (mode ${(read.mode & 0o7777).toString(8)}, published as ${(locked.mode & 0o7777).toString(8)})`,
-			);
+			drifted.push({
+				path: lockedPath,
+				reason: "mode",
+				detail: `mode ${(read.mode & 0o7777).toString(8)}, published as ${(locked.mode & 0o7777).toString(8)}`,
+			});
 		}
 	}
 	return drifted;
