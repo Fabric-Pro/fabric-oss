@@ -120,6 +120,82 @@ export function collisionKey(input: string): string {
 }
 
 /**
+ * Why a path cannot join a tree the guard has already been shown.
+ *
+ * `duplicate`: the same file under another spelling (see `collisionKey`).
+ * `file-directory`: one path needs a name to be a FILE while another needs
+ * the same name to be a DIRECTORY — `docs` next to `docs/a.md`. No
+ * filesystem can hold both, so a version carrying that pair installs
+ * nowhere: the checkout fails on whichever of the two it writes second.
+ * `conflictsWith` is the already-added path on the other side of the pair.
+ */
+export type TreeCollision =
+	| { kind: "duplicate"; path: string }
+	| { kind: "file-directory"; path: string; conflictsWith: string };
+
+/**
+ * An incremental check that a set of file paths can coexist as one tree on
+ * disk. Shared by every boundary that assembles a tree from paths it was
+ * handed — the browser preview and the upload procedure today — so the rule
+ * is written once and the two cannot disagree about what installs.
+ *
+ * Every added file's `collisionKey` is recorded, and so is the key of each
+ * of its directory prefixes, cut on segment boundaries only (so `docs.md`
+ * and `docs/a.md` share nothing). A new path is refused when its own key is
+ * an existing file (duplicate) or an existing directory, or when one of its
+ * directory prefixes is an existing file. A refused path is NOT recorded:
+ * the caller is expected to stop, and recording it would make the next
+ * report name a path that was never accepted.
+ *
+ * Paths are expected already normalised by `validateRelativePath`.
+ */
+export function createTreeCollisionGuard(): {
+	add(path: string): TreeCollision | null;
+} {
+	const files = new Map<string, string>();
+	// Directory key -> the first file that made it a directory, which is the
+	// path a later conflicting file is reported against.
+	const directories = new Map<string, string>();
+	return {
+		add(path) {
+			const key = collisionKey(path);
+			if (files.has(key)) {
+				return { kind: "duplicate", path };
+			}
+			const fileUnder = directories.get(key);
+			if (fileUnder !== undefined) {
+				return {
+					kind: "file-directory",
+					path,
+					conflictsWith: fileUnder,
+				};
+			}
+			const segments = path.split("/");
+			const prefixKeys: string[] = [];
+			for (let i = 1; i < segments.length; i++) {
+				const prefixKey = collisionKey(segments.slice(0, i).join("/"));
+				const file = files.get(prefixKey);
+				if (file !== undefined) {
+					return {
+						kind: "file-directory",
+						path,
+						conflictsWith: file,
+					};
+				}
+				prefixKeys.push(prefixKey);
+			}
+			files.set(key, path);
+			for (const prefixKey of prefixKeys) {
+				if (!directories.has(prefixKey)) {
+					directories.set(prefixKey, path);
+				}
+			}
+			return null;
+		},
+	};
+}
+
+/**
  * Is every SEGMENT of this path a name a checkout can actually write?
  *
  * Separate from `validateRelativePath` on purpose, and the separation is not

@@ -125,6 +125,36 @@ describe("projects.instructions.begin", () => {
 		});
 	});
 
+	// The browser no longer sends the paths its own preview excluded, only
+	// how many there were. The stored count still has to describe the whole
+	// pick, and the audit row has to say which part the server itself judged.
+	it("folds the client's excluded count into the stored and returned count, and audits both", async () => {
+		const result = await m.handlers.begin?.({
+			input: {
+				projectId: "proj_1",
+				publishOnReady: true,
+				clientExcludedCount: 5,
+				files: [
+					{ path: "CLAUDE.md", size: 10, sha256: "a".repeat(64) },
+					{ path: ".git/HEAD", size: 10, sha256: "c".repeat(64) },
+				],
+			},
+			context: ctx,
+		});
+		const call = m.createInstructionSnapshot.mock.calls[0]?.[0] as {
+			excludedCount: number;
+		};
+		expect(call.excludedCount).toBe(6);
+		expect(result).toMatchObject({ keptCount: 1, excludedCount: 6 });
+		expect(m.recordAuditFromRequest.mock.calls[0]?.[1]).toMatchObject({
+			metadata: {
+				keptCount: 1,
+				excludedCount: 6,
+				serverExcludedCount: 1,
+			},
+		});
+	});
+
 	it("rejects a traversal path before touching the database", async () => {
 		await expect(
 			m.handlers.begin!({
@@ -322,6 +352,32 @@ describe("projects.instructions.begin", () => {
 		).rejects.toMatchObject({ code: "BAD_REQUEST" });
 		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
 	});
+
+	// Two rows that pass the duplicate check can still be impossible to
+	// write together: `docs` has to be a file for one and a folder for the
+	// other, and the CLI sync fails on whichever it writes second.
+	it.each([[["docs", "docs/a.md"]], [["docs/a.md", "Docs"]]])(
+		"refuses %j — one name as both a file and a folder",
+		async (paths) => {
+			const attempt = m.handlers.begin?.({
+				input: {
+					projectId: "proj_1",
+					publishOnReady: true,
+					files: paths.map((path) => ({
+						path,
+						size: 1,
+						sha256: "a".repeat(64),
+					})),
+				},
+				context: ctx,
+			});
+			await expect(attempt).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+			});
+			await expect(attempt).rejects.toThrow(/both a file and a folder/);
+			expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
+		},
+	);
 
 	it("uses .fabricignore from the upload when present", async () => {
 		await m.handlers.begin!({

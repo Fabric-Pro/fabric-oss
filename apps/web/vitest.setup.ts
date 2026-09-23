@@ -259,7 +259,7 @@ if (typeof Blob.prototype.text !== "function") {
 }
 
 // Same JSDOM gap, `.arrayBuffer()` this time: `readFolderFiles`
-// (projects/lib/read-folder.ts) hashes every picked file with
+// (projects/lib/read-folder.ts) hashes every kept picked file with
 // `crypto.subtle.digest`, which needs the raw bytes behind the File — without
 // this polyfill every test that picks a folder fails with "file.arrayBuffer
 // is not a function".

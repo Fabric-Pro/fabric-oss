@@ -304,16 +304,12 @@ describe("uploadSnapshot", () => {
 		expect(result.serverExcludedPaths).toEqual(["extra.md"]);
 	});
 
-	it("uploads a client-excluded entry that the server's listFiles still includes (server's live settings win over the client's stale preview)", async () => {
+	// The excluded half of a pick used to be sent too, so every
+	// `node_modules/` file counted against the server's input cap and had to
+	// be hashed. Now only the kept half is sent, and the rest is a count.
+	it("sends begin only the kept entries, plus how many were left out", async () => {
 		begin.mockResolvedValue({ snapshotId: "snap_1" });
-		// The client's preview excluded "notes.log" (e.g. against a
-		// stale/default projectGlobs), but the server's live settings at
-		// `begin` time decided to keep it anyway — `listFiles` reflects that
-		// authoritative decision, not the client's preview.
-		listFiles.mockResolvedValue([
-			{ id: "file_1", path: "CLAUDE.md" },
-			{ id: "file_2", path: "notes.log" },
-		]);
+		listFiles.mockResolvedValue([{ id: "file_1", path: "CLAUDE.md" }]);
 		createUploadUrls.mockResolvedValue({
 			uploads: [
 				{
@@ -322,6 +318,46 @@ describe("uploadSnapshot", () => {
 					url: "https://storage.example.com/put/file_1",
 					contentType: "text/markdown",
 				},
+			],
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({ ok: true, status: 200 } as Response),
+		);
+
+		await uploadSnapshot({
+			projectId: "proj_1",
+			entries: [
+				entry("CLAUDE.md"),
+				entry("notes.log", {
+					sha256: null,
+					excluded: { rule: "*.log", layer: "fabricignore" },
+				}),
+				entry("node_modules/x/index.js", {
+					sha256: null,
+					excluded: { rule: "**/node_modules/**", layer: "default" },
+				}),
+			],
+			fabricIgnoreText: "*.log\n",
+			publishOnReady: true,
+		});
+
+		expect(begin).toHaveBeenCalledWith({
+			projectId: "proj_1",
+			publishOnReady: true,
+			fabricIgnoreText: "*.log\n",
+			files: [{ path: "CLAUDE.md", size: 10, sha256: "a".repeat(64) }],
+			clientExcludedCount: 2,
+		});
+	});
+
+	// The server only creates rows for paths it was sent, so a listed path
+	// the client excluded is as foreign as one it never had.
+	it("throws for a server-listed path the client excluded and therefore never sent", async () => {
+		begin.mockResolvedValue({ snapshotId: "snap_1" });
+		listFiles.mockResolvedValue([{ id: "file_2", path: "notes.log" }]);
+		createUploadUrls.mockResolvedValue({
+			uploads: [
 				{
 					fileId: "file_2",
 					path: "notes.log",
@@ -330,35 +366,37 @@ describe("uploadSnapshot", () => {
 				},
 			],
 		});
-		const fetchMock = vi
-			.fn()
-			.mockResolvedValue({ ok: true, status: 200 } as Response);
-		vi.stubGlobal("fetch", fetchMock);
-
-		const excludedEntry = entry("notes.log", {
-			excluded: { rule: "*.log", layer: "fabricignore" },
-		});
-		await uploadSnapshot({
-			projectId: "proj_1",
-			entries: [entry("CLAUDE.md"), excludedEntry],
-			fabricIgnoreText: null,
-			publishOnReady: true,
-		});
-
-		// Would throw "Server listed an unknown path: notes.log" if `byPath`
-		// were built from kept (non-excluded) entries only, since a
-		// client-excluded entry would be absent from that map. Verified by
-		// temporarily reverting `byPath` to `kept.map(...)` in
-		// upload-snapshot.ts and confirming this assertion fails, then
-		// restoring the fix.
-		expect(fetchMock).toHaveBeenCalledWith(
-			"https://storage.example.com/put/file_2",
-			{
-				method: "PUT",
-				body: excludedEntry.file,
-				headers: { "Content-Type": "text/plain" },
-			},
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({ ok: true, status: 200 } as Response),
 		);
+
+		await expect(
+			uploadSnapshot({
+				projectId: "proj_1",
+				entries: [
+					entry("CLAUDE.md"),
+					entry("notes.log", {
+						sha256: null,
+						excluded: { rule: "*.log", layer: "fabricignore" },
+					}),
+				],
+				fabricIgnoreText: null,
+				publishOnReady: true,
+			}),
+		).rejects.toThrow(/notes\.log/);
+	});
+
+	it("refuses to begin when a kept entry has no hash", async () => {
+		await expect(
+			uploadSnapshot({
+				projectId: "proj_1",
+				entries: [entry("CLAUDE.md", { sha256: null })],
+				fabricIgnoreText: null,
+				publishOnReady: true,
+			}),
+		).rejects.toThrow(/CLAUDE\.md/);
+		expect(begin).not.toHaveBeenCalled();
 	});
 
 	it("reports a client-kept entry the server's listFiles omits as excluded, without throwing, and still uploads the rest", async () => {

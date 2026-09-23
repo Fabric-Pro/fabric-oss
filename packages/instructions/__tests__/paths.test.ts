@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	createTreeCollisionGuard,
 	describePortableNameRefusal,
 	validatePortableName,
 	validateRelativePath,
@@ -119,5 +120,96 @@ describe("validatePortableName", () => {
 		expect(message).toContain("docs/CON.md");
 		expect(message).toContain("CON.md");
 		expect(message).toContain("Rename");
+	});
+});
+
+describe("createTreeCollisionGuard", () => {
+	function addAll(paths: string[]) {
+		const guard = createTreeCollisionGuard();
+		return paths.map((p) => guard.add(p));
+	}
+
+	// A file and a directory with one name cannot both exist on disk, so a
+	// version holding both cannot be installed — whichever order they come in.
+	it("refuses a file whose name is an existing directory", () => {
+		expect(addAll(["docs/a.md", "docs"])).toEqual([
+			null,
+			{
+				kind: "file-directory",
+				path: "docs",
+				conflictsWith: "docs/a.md",
+			},
+		]);
+	});
+
+	it("refuses a path under an existing file", () => {
+		expect(addAll(["docs", "docs/a.md"])).toEqual([
+			null,
+			{
+				kind: "file-directory",
+				path: "docs/a.md",
+				conflictsWith: "docs",
+			},
+		]);
+	});
+
+	it("judges a deep prefix, not only the top segment", () => {
+		expect(addAll([".claude/agents", ".claude/agents/a.md"])).toEqual([
+			null,
+			{
+				kind: "file-directory",
+				path: ".claude/agents/a.md",
+				conflictsWith: ".claude/agents",
+			},
+		]);
+	});
+
+	it("compares names the way a case-insensitive, normalising filesystem does", () => {
+		expect(addAll(["Docs", "docs/a.md"])[1]).toMatchObject({
+			kind: "file-directory",
+		});
+		expect(addAll(["caf\u00e9/a.md", "cafe\u0301"])[1]).toMatchObject({
+			kind: "file-directory",
+		});
+		expect(addAll(["README.md", "readme.md"])).toEqual([
+			null,
+			{ kind: "duplicate", path: "readme.md" },
+		]);
+	});
+
+	it("cuts prefixes on segment boundaries only", () => {
+		expect(
+			addAll(["docs.md", "docs/a.md", "docsx/b.md", "docs/b.md"]),
+		).toEqual([null, null, null, null]);
+	});
+
+	// A refused path leaves no trace: the caller stops at the first refusal,
+	// and a guard that had recorded the loser anyway would refuse a LATER,
+	// perfectly valid path against a file that was never accepted.
+	it("does not record a refused path", () => {
+		expect(addAll(["docs/a.md", "docs", "docs/b.md", "DOCS/A.md"])).toEqual(
+			[
+				null,
+				{
+					kind: "file-directory",
+					path: "docs",
+					conflictsWith: "docs/a.md",
+				},
+				null,
+				{ kind: "duplicate", path: "DOCS/A.md" },
+			],
+		);
+		// And the reverse shape: a refused directory-under-file leaves
+		// `readme/` unregistered as a directory, so a later `readme` file is
+		// the plain duplicate it should be, not a file-directory conflict.
+		expect(addAll(["readme", "readme/x.md", "README"])).toEqual([
+			null,
+			{
+				kind: "file-directory",
+				path: "readme/x.md",
+				conflictsWith: "readme",
+			},
+			{ kind: "duplicate", path: "README" },
+		]);
 	});
 });
