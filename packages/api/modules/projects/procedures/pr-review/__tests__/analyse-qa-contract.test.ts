@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockSettings = vi.fn();
 const mockGetReview = vi.fn();
 const mockFeatures = vi.fn();
+const mockTenant = vi.fn();
 const mockReplace = vi.fn();
 const mockReview = vi.fn();
 const mockAudit = vi.fn();
@@ -21,6 +22,7 @@ vi.mock("@repo/database", () => ({
 	getProjectQaSettings: (...a: unknown[]) => mockSettings(...a),
 	getPullRequestReview: (...a: unknown[]) => mockGetReview(...a),
 	listFeaturesForPrReview: (...a: unknown[]) => mockFeatures(...a),
+	getProjectTenantId: (...a: unknown[]) => mockTenant(...a),
 	replaceLensFindings: (...a: unknown[]) => mockReplace(...a),
 	setPullRequestReviewFindingStatus: vi.fn(),
 	getProjectImportGraph: vi.fn(),
@@ -93,6 +95,7 @@ beforeEach(() => {
 	});
 	mockGetReview.mockResolvedValue(READ_REVIEW);
 	mockFeatures.mockResolvedValue([]);
+	mockTenant.mockResolvedValue({ organizationId: "org-1" });
 	mockReplace.mockResolvedValue([]);
 	mockReview.mockResolvedValue({ findings: [], dropped: 0, model: "m" });
 });
@@ -218,4 +221,34 @@ describe("QA depth reaches the lens (the pull-request review work scope)", () =>
 			);
 		},
 	);
+});
+
+describe("the tenant the lens runs under", () => {
+	it("is the project's organization, not the caller's default context", async () => {
+		// The button passed `organizationId: null`, which resolved the operator's
+		// personal context. An organization with a provider configured was told it
+		// had none, and spend would have landed on a personal ledger no
+		// organization cap governs.
+		mockTenant.mockResolvedValue({ organizationId: "org-of-project" });
+
+		await call();
+
+		expect(mockTenant).toHaveBeenCalledWith("proj-1");
+		expect(mockReview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				context: expect.objectContaining({
+					organizationId: "org-of-project",
+					projectId: "proj-1",
+				}),
+			}),
+		);
+	});
+
+	it("refuses a project that no longer exists without calling the model", async () => {
+		mockTenant.mockResolvedValue(null);
+
+		await expect(call()).rejects.toThrow(/project not found/i);
+		expect(mockReview).not.toHaveBeenCalled();
+		expect(mockReplace).not.toHaveBeenCalled();
+	});
 });

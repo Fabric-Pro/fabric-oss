@@ -200,7 +200,6 @@ export async function runAutomaticPrReview(input: {
 				projectId: input.projectId,
 				reviewId,
 				userId: input.actingUserId,
-				organizationId: input.organizationId,
 			});
 			outcome.qaFindings = qa.findings.length;
 			if (!qa.configured) {

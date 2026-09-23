@@ -301,7 +301,6 @@ describe("runAutomaticPrReview — the run", () => {
 			projectId: "proj-1",
 			reviewId: "review-1",
 			userId: "user-1",
-			organizationId: "org-1",
 		});
 	});
 

@@ -21,6 +21,7 @@ vi.mock("@repo/database", () => ({
 	getProjectQaSettings: (...a: unknown[]) => mockSettings(...a),
 	getPullRequestReview: (...a: unknown[]) => mockGetReview(...a),
 	getProjectImportGraph: (...a: unknown[]) => mockGraph(...a),
+	getProjectTenantId: async () => ({ organizationId: "org-1" }),
 	replaceLensFindings: (...a: unknown[]) => mockReplace(...a),
 	listFeaturesForPrReview: vi.fn(),
 	setPullRequestReviewFindingStatus: vi.fn(),

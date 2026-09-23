@@ -3076,7 +3076,7 @@
 					"noFindings": "Geprüft {when} — keine Abdeckungslücken gefunden.",
 					"heading": "Abdeckungslücken",
 					"model": "Geprüft von {model}",
-					"noProvider": "Für diesen Workspace ist kein AI-Provider konfiguriert, daher konnte die Prüfung nicht laufen. Richte einen unter Einstellungen ▸ AI-Assistent ein.",
+					"noProvider": "Für die Organisation dieses Projekts ist kein AI-Provider konfiguriert, daher konnte die Prüfung nicht laufen. Ein Organisations-Admin kann einen unter Einstellungen ▸ AI Providers hinzufügen.",
 					"dropped": "{count, plural, =1 {# Finding wurde} other {# Findings wurden}} verworfen, weil sie eine Datei nennen, die nicht Teil dieser Änderung ist.",
 					"noDiff": "Fabric hat für diesen Pull Request kein Diff gespeichert, es gibt also nichts zu prüfen.",
 					"accept": "Übernehmen",
