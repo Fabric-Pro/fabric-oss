@@ -736,6 +736,9 @@ export async function listPipelineSyncStates(input: { projectId: string }) {
 			lastErrorDetail: true,
 			lastErrorKind: true,
 			lastErrorAt: true,
+			// Written by both terminal writers, so the QA tab can tell a sync
+			// has finished for this source whether it succeeded or failed.
+			updatedAt: true,
 		},
 	});
 }

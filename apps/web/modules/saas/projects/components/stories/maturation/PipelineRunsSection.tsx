@@ -1,6 +1,7 @@
 "use client";
 
 import { PipelineRunsPanel } from "../../test-cases/pipeline/PipelineRunsPanel";
+import { usePipelineIngestionRefresh } from "../../test-cases/pipeline/use-pipeline-sync-watch";
 
 /**
  * QA pipeline-results surface (cards 1834 / 1688) inside the feature QA tab.
@@ -29,6 +30,7 @@ export function PipelineRunsSection({
 	 */
 	storyId?: string;
 }) {
+	usePipelineIngestionRefresh(projectId);
 	return (
 		<PipelineRunsPanel
 			projectId={projectId}

@@ -16,7 +16,7 @@ import {
 	TriangleAlertIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	HISTORY_DIALOG_PAGE,
@@ -34,6 +34,11 @@ import { RunFilters, type RunStatusFilter } from "./RunFilters";
 import { SyncFailureBanner } from "./SyncFailureBanner";
 import { TriggerRunDialog } from "./TriggerRunDialog";
 import { UnmatchedTestsSection } from "./UnmatchedTestsSection";
+import {
+	pipelineSyncPollInterval,
+	usePipelineSyncWatch,
+	watchPipelineSync,
+} from "./use-pipeline-sync-watch";
 
 /**
  * The QA pipeline-results surface: a "Sync now" trigger that
@@ -49,6 +54,10 @@ import { UnmatchedTestsSection } from "./UnmatchedTestsSection";
  * project-level by definition — is omitted. Without it (the QA tab)
  * everything is project-wide, which is the right answer for a project-level
  * surface.
+ *
+ * Both hosts mount `usePipelineIngestionRefresh` above this panel: it is what
+ * re-reads findings, case results and pass rates once a sync's ingest lands,
+ * and it has to outlive this panel's sub-tab.
  */
 export function PipelineRunsPanel({
 	projectId,
@@ -76,11 +85,16 @@ export function PipelineRunsPanel({
 	const [detailRunId, setDetailRunId] = useState<string | null>(null);
 	const [runOpen, setRunOpen] = useState(false);
 
-	// Poll briefly after a sync is triggered so freshly-ingested runs appear
-	// without a manual refresh. The interval callback re-reads the deadline each
-	// tick, so it self-stops (no lingering timer).
-	const pollDeadlineRef = useRef(0);
-	const polling = () => (Date.now() < pollDeadlineRef.current ? 3000 : false);
+	// Poll while a requested sync is still running so freshly-ingested runs
+	// appear without a manual refresh. The watch ends when every source has
+	// finished, not after a fixed delay, so a slow CI is not cut off.
+	// A triggered CI run keeps its own short window: nothing about it ends a
+	// sync, so it cannot use the watch's completion signal.
+	const syncWatch = usePipelineSyncWatch(projectId);
+	const triggerDeadlineRef = useRef(0);
+	const polling = () =>
+		pipelineSyncPollInterval(syncWatch) ||
+		(Date.now() < triggerDeadlineRef.current ? 3000 : false);
 
 	// Filters are query INPUT, not a post-filter of the page: the list is capped
 	// at HISTORY_PANEL_PREVIEW, so narrowing what came back would answer "which
@@ -166,7 +180,7 @@ export function PipelineRunsPanel({
 		orpc.projects.pipelineResults.sync.mutationOptions({
 			onSuccess: () => {
 				toast.success(t("syncStarted"));
-				pollDeadlineRef.current = Date.now() + 30000;
+				watchPipelineSync(projectId, syncStatesQuery.data ?? []);
 				for (const key of [
 					orpc.projects.pipelineResults.listRuns.key(),
 					orpc.projects.pipelineResults.listRunsPage.key(),
@@ -188,33 +202,6 @@ export function PipelineRunsPanel({
 		return ms > max ? ms : max;
 	}, 0);
 	const lastFetchedAt = latestFetchMs > 0 ? new Date(latestFetchMs) : null;
-
-	// The sync mutation only STARTS a workflow, so refetching the findings and
-	// per-case results in its onSuccess read the pre-sync state and kept it:
-	// "Seen 1 time" beside two ingested red runs, "Not run" beside a failed
-	// case, until a full reload. A source's lastFetchedAt advances only after
-	// its ingest has written runs, results and findings, so a newer value is
-	// the moment everything downstream of that ingestion is worth re-reading.
-	const syncStatesLoaded = syncStatesQuery.data !== undefined;
-	const seenFetchMsRef = useRef<number | null>(null);
-	useEffect(() => {
-		if (!syncStatesLoaded) {
-			return;
-		}
-		const previous = seenFetchMsRef.current;
-		seenFetchMsRef.current = latestFetchMs;
-		if (previous === null || latestFetchMs <= previous) {
-			return;
-		}
-		for (const key of [
-			orpc.projects.pipelineResults.findings.key(),
-			orpc.projects.pipelineResults.unmatchedTests.key(),
-			orpc.projects.testCases.list.key(),
-			orpc.projects.testCases.resultHistory.key(),
-		]) {
-			queryClient.invalidateQueries({ queryKey: key });
-		}
-	}, [syncStatesLoaded, latestFetchMs, queryClient]);
 
 	// A source that fails is real signal, but one broken source among several
 	// must not report a sync that DID ingest runs as a total failure — partial
@@ -400,7 +387,7 @@ export function PipelineRunsPanel({
 				// runs the provider has already registered; the full result still
 				// arrives on a later sync.
 				onTriggered={() => {
-					pollDeadlineRef.current = Date.now() + 30000;
+					triggerDeadlineRef.current = Date.now() + 30000;
 				}}
 			/>
 
