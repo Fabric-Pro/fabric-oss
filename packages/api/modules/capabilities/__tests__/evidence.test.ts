@@ -491,6 +491,21 @@ describe("scan.requiresCodebase asks the configuration, not any run", () => {
 	});
 });
 
+// ── The context predicate ────────────────────────────────────────────────────
+
+describe("the context predicate", () => {
+	// Asserted on the query for the reason the document predicate below gives.
+	it("leaves out the text behind a document created as-is", async () => {
+		await gather();
+
+		const where = dbMock.projectContext.groupBy.mock.calls[0]?.[0]?.where;
+
+		// That row is never embedded and stays PENDING for good, so counting it
+		// read as a source in flight on a project with no sources at all.
+		expect(where.importedDocuments).toEqual({ none: {} });
+	});
+});
+
 // ── The document predicate ───────────────────────────────────────────────────
 
 describe("the document predicate", () => {

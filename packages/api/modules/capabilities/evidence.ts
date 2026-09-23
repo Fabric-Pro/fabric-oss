@@ -637,6 +637,13 @@ export async function gatherCapabilityEvidence({
 			where: {
 				projectId,
 				type: { in: [...HUMAN_SUPPLIED_CONTEXT_TYPES] },
+				// Not the text behind a document created as-is. That row is kept
+				// only as the document's provenance: it is linked to the document,
+				// hidden from the Context tab, and never embedded, so it stays
+				// PENDING for good. Counted here it read as a source in flight
+				// that could never finish — "Processing your sources" on a project
+				// with none, and a stall once the clock ran out.
+				importedDocuments: { none: {} },
 			},
 			_count: { _all: true },
 			// The fallback clock for a source in flight with no job row —

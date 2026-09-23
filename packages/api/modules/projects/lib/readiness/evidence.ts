@@ -430,6 +430,10 @@ export async function gatherReadinessEvidence(
 			where: {
 				projectId,
 				extractionStatus: { in: ["PENDING", "EXTRACTING"] },
+				// The text behind a document created as-is is never embedded and
+				// stays PENDING for good; it is the document's provenance, not a
+				// source on its way. Counted, it held "Add context" In Progress.
+				importedDocuments: { none: {} },
 			},
 			select: { type: true, knowledgeBaseSourceCategory: true },
 		}),
