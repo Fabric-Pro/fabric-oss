@@ -2,11 +2,11 @@
  * Agent-template instance create/update — attached workspaces are bound to the
  * instance's tenant.
  *
- * The workspace ids an instance stores are trusted at execution time: the
- * agentic loop's data-source tools query `workspace_<id>` directly with no
- * tenancy recheck. So the attach-time check must refuse a workspace hosted by
- * a different organization even when the caller can open it (a member of both
- * organizations), not only a workspace the caller cannot open at all.
+ * The workspace ids an instance stores are read back at every run, whose
+ * documents reach whoever can run the instance. So the attach-time check must
+ * refuse a workspace hosted by a different organization even when the caller
+ * can open it (a member of both organizations), not only a workspace the
+ * caller cannot open at all.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 

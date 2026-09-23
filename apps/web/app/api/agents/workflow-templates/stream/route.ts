@@ -17,6 +17,7 @@
  */
 
 import {
+	filterWorkspaceIdsForTenant,
 	getInstanceWithTemplate,
 	getOrganizationMembership,
 	getTemplateWorkflow,
@@ -138,8 +139,23 @@ export async function POST(request: NextRequest) {
 				);
 			}
 
-			// Extract workspace IDs for RAG
-			instanceWorkspaceIds = instance.workspaceIds ?? [];
+			// Extract workspace IDs for RAG. The instance row is tenant-checked
+			// above, but the ids it stores are not: rows saved before instance
+			// writes bound workspaces to the instance's organization can name
+			// another organization's workspace. Narrow them here so a foreign id
+			// never enters the workflow input or its history.
+			const { allowed, dropped } = await filterWorkspaceIdsForTenant({
+				workspaceIds: instance.workspaceIds ?? [],
+				userId,
+				organizationId: organizationId ?? null,
+			});
+			if (dropped.length > 0) {
+				console.warn(
+					"[Workflow Template Stream] Dropping workspaces outside the instance's organization",
+					{ userId, instanceId, dropped },
+				);
+			}
+			instanceWorkspaceIds = allowed;
 
 			// Build instance context from goal and custom instructions
 			const contextParts: string[] = [];

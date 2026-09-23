@@ -7,6 +7,7 @@
 import { getRAGProviderConfig } from "@repo/ai";
 import {
 	db,
+	filterWorkspaceIdsForTenant,
 	getDefaultRagSettings,
 	getEffectiveRagSettings,
 } from "@repo/database";
@@ -269,12 +270,18 @@ export async function retrieveRagContextForDirectChatActivity(
  * Uses workspace-specific RAG settings for topK and similarityThreshold.
  * When multiple workspaces are selected, loads settings for each workspace
  * and applies per-workspace filtering after the initial search.
+ *
+ * Every workspace search the workers run comes through here, and some of the
+ * ids arrive from rows saved long before the run: an agent instance's stored
+ * `workspaceIds` could name another organization's workspace until the write
+ * path started refusing it. So the ids are narrowed to this call's tenant
+ * before anything is read for them, whichever caller supplied them.
  */
 export async function retrieveWorkspaceDocumentsActivity(
 	message: string,
 	userId: string,
 	organizationId?: string,
-	workspaceIds?: string[],
+	requestedWorkspaceIds?: string[],
 	documentIds?: string[],
 	topKOverride?: number,
 	minSimilarityOverride?: number,
@@ -283,10 +290,30 @@ export async function retrieveWorkspaceDocumentsActivity(
 	chunkCount: number;
 	sources?: RagSource[];
 }> {
-	if (!workspaceIds || workspaceIds.length === 0) {
+	if (!requestedWorkspaceIds || requestedWorkspaceIds.length === 0) {
 		logger.info(
 			"No workspaces attached, skipping workspace document retrieval",
 		);
+		return { context: "", chunkCount: 0 };
+	}
+
+	const { allowed: workspaceIds, dropped } =
+		await filterWorkspaceIdsForTenant({
+			workspaceIds: requestedWorkspaceIds,
+			userId,
+			organizationId,
+		});
+	if (dropped.length > 0) {
+		logger.warn(
+			"[WorkspaceRAG] Dropping workspaces outside the caller's tenant",
+			{
+				userId,
+				organizationId: organizationId || "(personal)",
+				dropped,
+			},
+		);
+	}
+	if (workspaceIds.length === 0) {
 		return { context: "", chunkCount: 0 };
 	}
 
