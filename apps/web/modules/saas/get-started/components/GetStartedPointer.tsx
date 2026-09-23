@@ -116,7 +116,7 @@ type Props = {
 	 *
 	 * False for the mobile navigation sheet: its copy mounts only while the
 	 * sheet is open, so a callout there would be anchored inside a 280px drawer
-	 * (too narrow for the 288px callout), would cover the nav the user just
+	 * (too narrow for the 352px callout), would cover the nav the user just
 	 * opened, and would burn the once-per-session flag the moment they tap a
 	 * destination and the sheet unmounts.
 	 */
@@ -351,7 +351,7 @@ export function GetStartedPointer({ calloutEnabled = true, children }: Props) {
 			<PopoverContent
 				side="right"
 				align="start"
-				className="w-72"
+				className="w-[22rem]"
 				aria-labelledby="get-started-pointer-title"
 				onFocusCapture={() => {
 					focusEnteredRef.current = true;
@@ -399,7 +399,7 @@ export function GetStartedPointer({ calloutEnabled = true, children }: Props) {
 				<p className="mb-3.5 text-[13px] leading-relaxed text-muted-foreground">
 					{t("onboarding.tour.pointer.body")}
 				</p>
-				<div className="flex items-center justify-between gap-2">
+				<div className="flex flex-wrap items-center justify-between gap-2">
 					<Button
 						type="button"
 						variant="ghost"
