@@ -16,7 +16,7 @@ import {
 	TriangleAlertIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	HISTORY_DIALOG_PAGE,
@@ -171,12 +171,6 @@ export function PipelineRunsPanel({
 					orpc.projects.pipelineResults.listRuns.key(),
 					orpc.projects.pipelineResults.listRunsPage.key(),
 					orpc.projects.pipelineResults.syncStates.key(),
-					// Pre-existing omission, and a sharper one now that the
-					// failure list sits directly under a scoped run list: a sync
-					// that opens or resolves findings left the list below still
-					// showing the previous sync's answer.
-					orpc.projects.pipelineResults.findings.key(),
-					orpc.projects.testCases.list.key(),
 				]) {
 					queryClient.invalidateQueries({ queryKey: key });
 				}
@@ -194,6 +188,34 @@ export function PipelineRunsPanel({
 		return ms > max ? ms : max;
 	}, 0);
 	const lastFetchedAt = latestFetchMs > 0 ? new Date(latestFetchMs) : null;
+
+	// The sync mutation only STARTS a workflow, so refetching the findings and
+	// per-case results in its onSuccess read the pre-sync state and kept it:
+	// "Seen 1 time" beside two ingested red runs, "Not run" beside a failed
+	// case, until a full reload. A source's lastFetchedAt advances only after
+	// its ingest has written runs, results and findings, so a newer value is
+	// the moment everything downstream of that ingestion is worth re-reading.
+	const syncStatesLoaded = syncStatesQuery.data !== undefined;
+	const seenFetchMsRef = useRef<number | null>(null);
+	useEffect(() => {
+		if (!syncStatesLoaded) {
+			return;
+		}
+		const previous = seenFetchMsRef.current;
+		seenFetchMsRef.current = latestFetchMs;
+		if (previous === null || latestFetchMs <= previous) {
+			return;
+		}
+		for (const key of [
+			orpc.projects.pipelineResults.findings.key(),
+			orpc.projects.pipelineResults.unmatchedTests.key(),
+			orpc.projects.testCases.list.key(),
+			orpc.projects.testCases.resultHistory.key(),
+		]) {
+			queryClient.invalidateQueries({ queryKey: key });
+		}
+	}, [syncStatesLoaded, latestFetchMs, queryClient]);
+
 	// A source that fails is real signal, but one broken source among several
 	// must not report a sync that DID ingest runs as a total failure — partial
 	// failure reads as a warning beside the last-synced time, not as an error.
