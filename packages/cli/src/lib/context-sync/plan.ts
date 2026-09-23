@@ -11,12 +11,22 @@
  *   skipped          not something this command sends (see
  *                    `ContextSkipReason`), with the reason
  *
- * and per path the lock names that is no longer on disk: `removed`, reported
- * and nothing more. The product has not decided what deleting a local file
- * should do to its server copy, so the server entry — and the lock entry —
- * are kept. The exception is a lock entry recorded as a `duplicate`: the
- * server never stored that path, so there is nothing to keep, and it is
- * `forgotten` (dropped from the lock without a report line).
+ * and per path the lock names that is no longer on disk: `removed`. Without
+ * `--prune` that is reported and nothing more — the server entry and the
+ * lock entry are kept; with it, the push deletes the server entry, only in
+ * the version the lock names (Fizzy #2636). The exception is a lock entry
+ * recorded as a `duplicate`: the server never stored that path, so there is
+ * nothing to keep or delete, and it is `forgotten` (dropped from the lock
+ * without a report line).
+ *
+ * A removed path and a new file with the same content are a `move` (Fizzy
+ * #2636), sent as one rename so the server keeps the row, its id and its
+ * history instead of deleting one source and creating another. Pairing is
+ * one to one and deterministic: removed paths in sorted order, each taking
+ * the first unpaired new file (sorted) with its hash. "Removed" is a
+ * confirmed lock entry gone from disk; "new" is a file the lock does not name
+ * at all. A file the lock names is a change to its own row, whatever it now
+ * holds.
  *
  * "No longer on disk" is decided from the names the walk listed, never by
  * asking the filesystem about the lock's spelling: a case-insensitive
@@ -56,9 +66,27 @@ export interface ContextPushCandidate {
 	expectedContentHash?: string;
 }
 
+/** A confirmed lock path gone from disk, and the new file that holds its content. */
+export interface ContextMoveCandidate {
+	/** The lock's path, no longer on disk. */
+	from: string;
+	/** The new file's normalized path, which the server keys it on. */
+	to: string;
+	/** The new file's path on disk, relative to the folder. */
+	diskPath: string;
+	/** Of both: the lock's hash for `from`, and the new file's as planned. */
+	sha256: string;
+	/** UTF-8 bytes of the new file. */
+	bytes: number;
+	/** The row the lock recorded for `from`. */
+	contextId: string;
+}
+
 export interface ContextPlan {
 	/** In sorted `sourcePath` order, which is the order they are sent in. */
 	push: ContextPushCandidate[];
+	/** In sorted `from` order; sent before `push`. */
+	moves: ContextMoveCandidate[];
 	unchangedLocal: string[];
 	removed: string[];
 	/** `duplicate` lock entries whose file is gone: dropped from the lock. */
@@ -279,9 +307,61 @@ export async function computeContextPlan(input: {
 	}
 
 	push.sort((a, b) => byPath(a.sourcePath, b.sourcePath));
-	unchangedLocal.sort(byPath);
 	removed.sort(byPath);
+	const moves = pairMoves(lock, removed, push);
+	const moved = new Set(moves.map((move) => move.from));
+	const arrived = new Set(moves.map((move) => move.to));
+
+	unchangedLocal.sort(byPath);
 	forgotten.sort(byPath);
 	skipped.sort((a, b) => byPath(a.path, b.path));
-	return { push, unchangedLocal, removed, forgotten, skipped };
+	return {
+		push: push.filter((entry) => !arrived.has(entry.sourcePath)),
+		moves,
+		unchangedLocal,
+		removed: removed.filter((sourcePath) => !moved.has(sourcePath)),
+		forgotten,
+		skipped,
+	};
+}
+
+/**
+ * The moves among `removed` (confirmed lock paths gone from disk, sorted) and
+ * the new files among `push` (sorted, the lock naming none of them): each
+ * removed path in order takes the first unpaired new file with its hash.
+ */
+function pairMoves(
+	lock: ContextLock | null,
+	removed: readonly string[],
+	push: readonly ContextPushCandidate[],
+): ContextMoveCandidate[] {
+	const added = push.filter(
+		(entry) => lock?.files[entry.sourcePath] === undefined,
+	);
+	const taken = new Set<string>();
+	const moves: ContextMoveCandidate[] = [];
+	for (const from of removed) {
+		const entry = lock?.files[from];
+		if (!entry || entry.state === "duplicate") {
+			continue;
+		}
+		const match = added.find(
+			(candidate) =>
+				!taken.has(candidate.sourcePath) &&
+				candidate.sha256 === entry.sha256,
+		);
+		if (!match) {
+			continue;
+		}
+		taken.add(match.sourcePath);
+		moves.push({
+			from,
+			to: match.sourcePath,
+			diskPath: match.diskPath,
+			sha256: match.sha256,
+			bytes: match.bytes,
+			contextId: entry.contextId,
+		});
+	}
+	return moves;
 }

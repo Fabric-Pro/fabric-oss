@@ -165,9 +165,13 @@ export type {
 	UpdateChatOptions,
 } from "./resources/chats.js";
 export {
+	type DeletedSyncedContextFileResult,
+	type DeleteSyncedContextFileInput,
 	FabricContextConflictError,
 	type SyncedContextFileConflict,
 	type SyncedContextFileCurrentVersion,
+	type SyncedContextFileMoveNotApplied,
+	type SyncedContextFileMoveNotAppliedReason,
 	type SyncedContextFileResult,
 	type UpsertSyncedContextFileInput,
 	type UpsertSyncedContextFileOptions,

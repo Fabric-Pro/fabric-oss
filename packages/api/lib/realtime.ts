@@ -7,7 +7,16 @@
  * @see https://upstash.com/blog/realtime-cursors-next-16
  */
 
-import { conversationMessageAppendedSchema } from "@repo/utils/realtime-emit";
+import {
+	type ActivityPayload,
+	activitySchema,
+	type ContextChangePayload,
+	contextChangeSchema,
+	conversationMessageAppendedSchema,
+	getProjectChannelName,
+	emitActivity as sharedEmitActivity,
+	emitContextChange as sharedEmitContextChange,
+} from "@repo/utils/realtime-emit";
 import { Realtime } from "@upstash/realtime";
 import { Redis } from "@upstash/redis";
 import { z } from "zod";
@@ -16,9 +25,21 @@ import { z } from "zod";
 // `@repo/temporal` static-imports them and cannot depend on `@repo/api`).
 // We re-export them here so existing callers that import from
 // `@repo/api/lib/realtime` keep working without changes.
+//
+// `emitContextChange` and `emitActivity` are implemented there too since the
+// synced-file deletion workflow publishes its deletes itself (Fizzy #2636);
+// the schema below uses their zod objects, so emitter and subscriber agree.
+// The API keeps its own wrappers for those two (below), which hand the shared
+// emitters this module's client, so an API caller never splits its events
+// across two clients.
+export type {
+	ActivityPayload,
+	ContextChangePayload,
+} from "@repo/utils/realtime-emit";
 export {
 	emitConversationMessageAppended,
 	getConversationChannelName,
+	getProjectChannelName,
 } from "@repo/utils/realtime-emit";
 
 /**
@@ -70,17 +91,10 @@ const projectRealtimeSchema = {
 	}),
 
 	/**
-	 * Context changes: added, updated, deleted
+	 * Context changes: added, updated, deleted. The SHARED schema from
+	 * `@repo/utils/realtime-emit`, whose emitter a Temporal activity uses.
 	 */
-	context_change: z.object({
-		projectId: z.string(),
-		contextId: z.string(),
-		action: z.enum(["added", "updated", "deleted"]),
-		userId: z.string(),
-		userName: z.string(),
-		contextType: z.string().optional(),
-		contextName: z.string().optional(),
-	}),
+	context_change: contextChangeSchema,
 
 	/**
 	 * Document locking for edit conflict prevention
@@ -94,18 +108,10 @@ const projectRealtimeSchema = {
 	}),
 
 	/**
-	 * Activity feed events
+	 * Activity feed events. The SHARED schema from
+	 * `@repo/utils/realtime-emit`, whose emitter a Temporal activity uses.
 	 */
-	activity: z.object({
-		projectId: z.string(),
-		userId: z.string(),
-		userName: z.string(),
-		activityType: z.string(),
-		resourceType: z.string().optional(),
-		resourceId: z.string().optional(),
-		resourceName: z.string().optional(),
-		timestamp: z.string(),
-	}),
+	activity: activitySchema,
 };
 
 /**
@@ -121,13 +127,9 @@ export type PresenceUpdatePayload = z.infer<
 export type DocumentChangePayload = z.infer<
 	typeof projectRealtimeSchema.document_change
 >;
-export type ContextChangePayload = z.infer<
-	typeof projectRealtimeSchema.context_change
->;
 export type LockUpdatePayload = z.infer<
 	typeof projectRealtimeSchema.lock_update
 >;
-export type ActivityPayload = z.infer<typeof projectRealtimeSchema.activity>;
 
 /**
  * @upstash/realtime gracefully closes each SSE stream at
@@ -224,17 +226,28 @@ export function getProjectRealtime(): Realtime<RealtimeOptions> | null {
 	}
 }
 
+// `getConversationChannelName`, `getProjectChannelName` and
+// `emitConversationMessageAppended` are re-exported from
+// `@repo/utils/realtime-emit` at the top of this file. See the comment block
+// there for the rationale (Temporal worker cannot reach @repo/api).
+
 /**
- * Get channel name for a project
+ * Emit a context change event, through this module's Realtime client (the
+ * one `emitDocumentChange` and the others use). Never throws.
  */
-export function getProjectChannelName(projectId: string): string {
-	return `project:${projectId}`;
+export function emitContextChange(
+	payload: ContextChangePayload,
+): Promise<void> {
+	return sharedEmitContextChange(payload, getProjectRealtime());
 }
 
-// `getConversationChannelName` and `emitConversationMessageAppended` are
-// re-exported from `@repo/utils/realtime-emit` at the top of this file.
-// See the comment block there for the rationale (Temporal worker cannot
-// reach @repo/api).
+/**
+ * Emit an activity feed event, through this module's Realtime client.
+ * Never throws.
+ */
+export function emitActivity(payload: ActivityPayload): Promise<void> {
+	return sharedEmitActivity(payload, getProjectRealtime());
+}
 
 /**
  * Emit a presence update event
@@ -279,27 +292,6 @@ export async function emitDocumentChange(
 }
 
 /**
- * Emit a context change event
- */
-export async function emitContextChange(
-	payload: ContextChangePayload,
-): Promise<void> {
-	const realtime = getProjectRealtime();
-	if (!realtime) {
-		return;
-	}
-
-	try {
-		const channel = realtime.channel(
-			getProjectChannelName(payload.projectId),
-		);
-		await channel.emit("context_change", payload);
-	} catch (error) {
-		console.error("[Realtime] Failed to emit context_change:", error);
-	}
-}
-
-/**
  * Emit a lock update event
  */
 export async function emitLockUpdate(
@@ -317,24 +309,5 @@ export async function emitLockUpdate(
 		await channel.emit("lock_update", payload);
 	} catch (error) {
 		console.error("[Realtime] Failed to emit lock_update:", error);
-	}
-}
-
-/**
- * Emit an activity event
- */
-export async function emitActivity(payload: ActivityPayload): Promise<void> {
-	const realtime = getProjectRealtime();
-	if (!realtime) {
-		return;
-	}
-
-	try {
-		const channel = realtime.channel(
-			getProjectChannelName(payload.projectId),
-		);
-		await channel.emit("activity", payload);
-	} catch (error) {
-		console.error("[Realtime] Failed to emit activity:", error);
 	}
 }

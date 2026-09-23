@@ -165,6 +165,45 @@ function resolveCorrelationId(headers: Headers | undefined): string | null {
 }
 
 /**
+ * The request half of an audit row: what `recordAuditFromRequest` reads from
+ * a request, reduced to plain values.
+ */
+export interface AuditRequestFields {
+	impersonatedById: string | null;
+	ipAddress: string | null;
+	userAgent: string | null;
+	requestId: string | null;
+	sessionId: string | null;
+	correlationId: string | null;
+}
+
+/**
+ * Derive the request half of an audit row exactly as `recordAuditFromRequest`
+ * does, for a row written somewhere else: a Temporal activity that commits
+ * the row in the same transaction as the mutation it records (the synced-file
+ * delete, Fizzy #2636). Plain values only — never a header, a cookie or a
+ * token — because the result rides in a workflow's input, which Temporal
+ * keeps in history. `sessionId` is the session row's id, not its token.
+ *
+ * Read the correlation id inside the request, where the AsyncLocalStorage
+ * frame that holds it is still active.
+ */
+export function auditRequestFields(
+	context: AuditRequestContext,
+): AuditRequestFields {
+	const headers = context.headers;
+	const ipAddress = headers ? getTrustedClientIp(headers) || null : null;
+	return {
+		impersonatedById: context.session?.impersonatedBy ?? null,
+		ipAddress: ipAddress === "unknown" ? null : ipAddress,
+		userAgent: headers?.get("user-agent") ?? null,
+		requestId: headers ? readRequestId(headers) : null,
+		sessionId: context.session?.id ?? null,
+		correlationId: resolveCorrelationId(headers),
+	};
+}
+
+/**
  * Default-actor builder. When the caller does not pass an actor we
  * assume the logged-in user from `context.user` made the action. If
  * there is no user (e.g. unauthenticated callsite that somehow
@@ -232,18 +271,15 @@ export function recordAuditFromRequest(
 	// `context.headers` is optional so the wrapper survives synthetic
 	// procedure-test contexts that omit the public-procedure `headers`
 	// field. Production callers always pass a real `Headers` instance.
-	const headers = context.headers;
-	const ipAddress = headers ? getTrustedClientIp(headers) || null : null;
-	const userAgent = headers?.get("user-agent") ?? null;
-	const requestId = headers ? readRequestId(headers) : null;
-	const sessionId = context.session?.id ?? null;
+	const fields = auditRequestFields(context);
+	const { ipAddress, userAgent, requestId, sessionId } = fields;
 	// Caller can override (e.g. a Temporal activity wrapping a request
 	// emit with its workflow runId). Otherwise resolve from
 	// AsyncLocalStorage first, then headers.
 	const correlationId =
 		input.correlationId !== undefined
 			? input.correlationId
-			: resolveCorrelationId(headers);
+			: fields.correlationId;
 
 	// Read the elapsed wall-clock time from the auditTimingMiddleware's
 	// AsyncLocalStorage frame. Returns null when called outside the
@@ -266,7 +302,7 @@ export function recordAuditFromRequest(
 		recordAudit({
 			...input,
 			actor,
-			ipAddress: ipAddress === "unknown" ? null : ipAddress,
+			ipAddress,
 			userAgent,
 			requestId,
 			sessionId,

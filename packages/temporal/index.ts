@@ -174,6 +174,14 @@ export {
 	cancelContextSummarizationWorkflow,
 	startContextSummarizationWorkflow,
 } from "./src/lib/start-context-summarization";
+// Synced context deletion (Fizzy #2636): what the API needs to start
+// syncedContextDeletionWorkflow and read its answer, without workflow code.
+export {
+	SYNCED_CONTEXT_DELETION_FAILURE,
+	SYNCED_CONTEXT_DELETION_TASK_QUEUE,
+	type SyncedContextDeletionWorkflowInput,
+	type SyncedContextDeletionWorkflowOutput,
+} from "./src/lib/synced-context-deletion-contract";
 export {
 	type TriggerDuplicateDetectionParams,
 	triggerDuplicateDetection,

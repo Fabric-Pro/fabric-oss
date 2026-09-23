@@ -12,6 +12,7 @@ import {
 	Prisma,
 	type ProjectContextType,
 } from "../../client";
+import { recordAuditTx } from "../audit-log";
 import {
 	aggregateCodeIndexStatus,
 	getProjectCodeIndexes,
@@ -23,6 +24,11 @@ import {
 } from "./context-content-hash";
 import { normalizeContextSourcePathPrefix } from "./context-source-path";
 import { getProjectRagSettings } from "./rag-settings";
+import {
+	buildSyncedContextDeleteAuditEvent,
+	SYNCED_CONTEXT_DELETE_AUDIT_ACTION,
+	type SyncedContextDeletionAuditContext,
+} from "./synced-context-delete-audit";
 
 /**
  * Create a new context
@@ -1300,9 +1306,40 @@ export interface SyncedContextContentStamp {
 	contentUpdatedByUserId: string | null;
 }
 
+/**
+ * Why a move (`movedFromSourcePath`, Fizzy #2636) was not applied as a
+ * rename. Every one leaves the row at the old path exactly as it was:
+ *  - `source-changed` — the old path holds a version other than the one the
+ *    caller named; the answer is a conflict whose `current` is that row;
+ *  - `source-missing` — no row at the old path (deleted, or already moved);
+ *    the new path got the ordinary answer;
+ *  - `target-exists` — the new path already has its own row, and the old
+ *    row is still there; the new path got the ordinary answer, naming no
+ *    version, since the caller's hash was for the old path;
+ *  - `content-differs` — the old path holds the named version but the
+ *    content sent is different, and a move never replaces content; the new
+ *    path got the ordinary answer.
+ */
+export type SyncedContextMoveNotAppliedReason =
+	| "source-changed"
+	| "source-missing"
+	| "target-exists"
+	| "content-differs";
+
+export interface SyncedContextMoveNotApplied {
+	/** The old path the caller asked to move from, normalized. */
+	movedFromSourcePath: string;
+	reason: SyncedContextMoveNotAppliedReason;
+}
+
+/** Present on every non-`moved` answer to a call that asked for a move. */
+interface MoveAnnotation {
+	moveNotApplied?: SyncedContextMoveNotApplied;
+}
+
 export type UpsertContextBySourcePathResult =
 	/** A new row at this path. The caller starts its embedding. */
-	| { status: "created"; context: SyncedContextRow }
+	| ({ status: "created"; context: SyncedContextRow } & MoveAnnotation)
 	/** The row at this path now holds the new content; re-embed it. */
 	| {
 			status: "updated";
@@ -1315,12 +1352,12 @@ export type UpsertContextBySourcePathResult =
 	 * written or stamped. Checked before `expectedContentHash`, so a retry
 	 * whose first attempt landed succeeds instead of reporting a conflict.
 	 */
-	| { status: "unchanged"; context: SyncedContextRow }
+	| ({ status: "unchanged"; context: SyncedContextRow } & MoveAnnotation)
 	/**
 	 * No row at this path, but this exact content is already in the project
 	 * under another hashed row. Nothing was created; `existing` is that row.
 	 */
-	| { status: "duplicate"; existing: SyncedContextRow }
+	| ({ status: "duplicate"; existing: SyncedContextRow } & MoveAnnotation)
 	/**
 	 * Nothing was written, because the caller's view of this path is stale:
 	 *  - `current` is the stored row when it holds different content and the
@@ -1329,8 +1366,23 @@ export type UpsertContextBySourcePathResult =
 	 *    this path any more — it was deleted since the caller last saw it,
 	 *    and recreating it silently would undo that deletion. Sending again
 	 *    without `expectedContentHash` recreates it.
+	 * With `moveNotApplied.reason === "source-changed"`, `current` is the row
+	 * at the OLD path instead (Fizzy #2636).
 	 */
-	| { status: "conflict"; current: SyncedContextContentStamp | null };
+	| ({
+			status: "conflict";
+			current: SyncedContextContentStamp | null;
+	  } & MoveAnnotation)
+	/**
+	 * The row at `movedFromSourcePath` now lives at this path: same row, same
+	 * content, new key (Fizzy #2636). The caller re-embeds it, because the
+	 * index carries the path and the title.
+	 */
+	| {
+			status: "moved";
+			context: SyncedContextRow;
+			movedFromSourcePath: string;
+	  };
 
 export interface UpsertContextBySourcePathInput {
 	projectId: string;
@@ -1342,9 +1394,17 @@ export interface UpsertContextBySourcePathInput {
 	/**
 	 * The hash of the stored version the caller means to replace. Absent
 	 * means "create if absent, otherwise only accept identical content" — it
-	 * NEVER means "overwrite".
+	 * NEVER means "overwrite". With `movedFromSourcePath`, the hash of the
+	 * version at the OLD path the caller last saw.
 	 */
 	expectedContentHash?: string | null;
+	/**
+	 * The path this file used to have, already normalized and different from
+	 * `sourcePath` (Fizzy #2636). The row there is renamed to `sourcePath`
+	 * when it still holds `expectedContentHash` and `content` is that same
+	 * version; see `upsertContextBySourcePath` for every other case.
+	 */
+	movedFromSourcePath?: string | null;
 	userId: string;
 	organizationId?: string | null;
 }
@@ -1395,6 +1455,31 @@ function isUniqueViolation(error: unknown): boolean {
  * A concurrent first push of the same path loses on the
  * `(projectId, sourcePath)` unique index; the whole decision is then re-run
  * once, and answers from the winner's row.
+ *
+ * ## A move (`movedFromSourcePath`, Fizzy #2636)
+ *
+ * Checked before the steps above, under the same tenant filter for BOTH
+ * paths, so a row in another project or tenant at the old path is never
+ * renamed or named:
+ *  a. The new path already has a row → the move is ignored and that row gets
+ *     steps 1–3 with NO expected hash (the caller's hash named the old path's
+ *     version, not this one): `unchanged` or `conflict`. The old row is left
+ *     alone (`target-exists`), or reported gone (`source-missing`).
+ *  b. No row at the old path → step 5 at the new path (`source-missing`):
+ *     nothing was named for replacement there, so it is not a conflict.
+ *  c. The old path holds another version than `expectedContentHash` →
+ *     `conflict` whose `current` is the OLD row (`source-changed`).
+ *  d. The old path holds the named version but `content` differs → step 5 at
+ *     the new path (`content-differs`); the old row is left. A move never
+ *     replaces content in the same call.
+ *  e. Otherwise the row is renamed in place by a conditional `updateMany`
+ *     keyed on its id, the project, the tenant, the old path and the stored
+ *     hash, stamping the content pair as a replace does, clearing
+ *     `embeddedAt` (the index carries the path), and taking the new file
+ *     name as its title when its title was the old file name. Zero rows means
+ *     it changed or went since the read: re-read → c or b. A concurrent push
+ *     creating the new path loses the rename to the unique index; the re-run
+ *     then answers a.
  *
  * Content writes stamp `contentUpdatedAt` / `contentUpdatedByUserId`, never
  * the metadata edit's pair, and clear `embeddedAt` on replace so the row reads
@@ -1463,78 +1548,517 @@ async function runUpsertContextBySourcePath(
 					return { status: "created", context };
 				};
 
+			/** Steps 1–3, for the row at this path, against `expected`. */
+			const answerExistingRow = async (
+				existing: SyncedContextRow,
+				expected: string | null | undefined,
+			): Promise<UpsertContextBySourcePathResult> => {
+				if (existing.contentHash === newHash) {
+					return { status: "unchanged", context: existing };
+				}
+
+				const storedHash = existing.contentHash;
+				if (
+					storedHash === null ||
+					!expected ||
+					expected !== storedHash
+				) {
+					return {
+						status: "conflict",
+						current: toContentStamp(existing),
+					};
+				}
+
+				const { count } = await tx.projectContext.updateMany({
+					where: {
+						id: existing.id,
+						projectId,
+						...tenantFilter,
+						contentHash: storedHash,
+					},
+					data: {
+						content,
+						contentHash: newHash,
+						contentUpdatedAt: new Date(),
+						contentUpdatedByUserId: userId,
+						metadata: {
+							...metadataObject(existing.metadata),
+							title,
+							sourcePath,
+						},
+						embeddedAt: null,
+					},
+				});
+				if (count === 0) {
+					const current = await tx.projectContext.findFirst({
+						where: pathScope,
+						select: SYNCED_CONTEXT_SELECT,
+					});
+					if (!current) {
+						// Deleted between the read and the write. The caller
+						// named the version it replaces, so this is step 4,
+						// not a create.
+						return { status: "conflict", current: null };
+					}
+					if (current.contentHash === newHash) {
+						return { status: "unchanged", context: current };
+					}
+					return {
+						status: "conflict",
+						current: toContentStamp(current),
+					};
+				}
+
+				const context = await tx.projectContext.findFirstOrThrow({
+					where: { id: existing.id, projectId, ...tenantFilter },
+					select: SYNCED_CONTEXT_SELECT,
+				});
+				return { status: "updated", context, previousHash: storedHash };
+			};
+
 			const existing = await tx.projectContext.findFirst({
 				where: pathScope,
 				select: SYNCED_CONTEXT_SELECT,
 			});
+
+			const movedFrom = input.movedFromSourcePath ?? null;
+			if (movedFrom !== null) {
+				const sourceScope = {
+					projectId,
+					sourcePath: movedFrom,
+					...tenantFilter,
+				};
+				const readSource = () =>
+					tx.projectContext.findFirst({
+						where: sourceScope,
+						select: SYNCED_CONTEXT_SELECT,
+					});
+				const notApplied = async (
+					reason: SyncedContextMoveNotAppliedReason,
+					answer: Promise<UpsertContextBySourcePathResult>,
+				): Promise<UpsertContextBySourcePathResult> => {
+					const result = await answer;
+					return result.status === "moved" ||
+						result.status === "updated"
+						? result
+						: {
+								...result,
+								moveNotApplied: {
+									movedFromSourcePath: movedFrom,
+									reason,
+								},
+							};
+				};
+
+				const source = await readSource();
+				// (a) The new path is already somebody's row: the hash named
+				// the old path, so the new one is answered naming none.
+				if (existing) {
+					return await notApplied(
+						source ? "target-exists" : "source-missing",
+						answerExistingRow(existing, undefined),
+					);
+				}
+				// (b) Nothing to move: the new path is an ordinary new file.
+				if (!source) {
+					return await notApplied(
+						"source-missing",
+						createOrReportDuplicate(),
+					);
+				}
+				// (c) The old path changed since the caller saw it.
+				if (
+					source.contentHash === null ||
+					source.contentHash !== input.expectedContentHash
+				) {
+					return {
+						status: "conflict",
+						current: toContentStamp(source),
+						moveNotApplied: {
+							movedFromSourcePath: movedFrom,
+							reason: "source-changed",
+						},
+					};
+				}
+				// (d) A move never replaces content in the same call.
+				if (source.contentHash !== newHash) {
+					return await notApplied(
+						"content-differs",
+						createOrReportDuplicate(),
+					);
+				}
+
+				// (e) The rename. A P2002 here (the new path was created
+				// concurrently) aborts the transaction; the caller's single
+				// re-run then finds that row and answers (a).
+				const storedMetadata = metadataObject(source.metadata);
+				const storedTitle = storedMetadata.title;
+				const { count } = await tx.projectContext.updateMany({
+					where: {
+						id: source.id,
+						...sourceScope,
+						contentHash: source.contentHash,
+					},
+					data: {
+						sourcePath,
+						contentUpdatedAt: new Date(),
+						contentUpdatedByUserId: userId,
+						metadata: {
+							...storedMetadata,
+							title:
+								typeof storedTitle === "string" &&
+								storedTitle !== pathBasename(movedFrom)
+									? storedTitle
+									: pathBasename(sourcePath),
+							sourcePath,
+						},
+						// The index carries the path and the title: the row
+						// reads as not yet indexed until the re-embed lands.
+						embeddedAt: null,
+					},
+				});
+				if (count === 0) {
+					const current = await readSource();
+					if (!current) {
+						return await notApplied(
+							"source-missing",
+							createOrReportDuplicate(),
+						);
+					}
+					return {
+						status: "conflict",
+						current: toContentStamp(current),
+						moveNotApplied: {
+							movedFromSourcePath: movedFrom,
+							reason: "source-changed",
+						},
+					};
+				}
+				const context = await tx.projectContext.findFirstOrThrow({
+					where: { id: source.id, projectId, ...tenantFilter },
+					select: SYNCED_CONTEXT_SELECT,
+				});
+				return {
+					status: "moved",
+					context,
+					movedFromSourcePath: movedFrom,
+				};
+			}
+
 			if (!existing) {
 				if (input.expectedContentHash) {
 					return { status: "conflict", current: null };
 				}
 				return await createOrReportDuplicate();
 			}
-
-			if (existing.contentHash === newHash) {
-				return { status: "unchanged", context: existing };
-			}
-
-			const storedHash = existing.contentHash;
-			if (
-				storedHash === null ||
-				!input.expectedContentHash ||
-				input.expectedContentHash !== storedHash
-			) {
-				return {
-					status: "conflict",
-					current: toContentStamp(existing),
-				};
-			}
-
-			const baseMetadata =
-				existing.metadata &&
-				typeof existing.metadata === "object" &&
-				!Array.isArray(existing.metadata)
-					? (existing.metadata as Prisma.JsonObject)
-					: {};
-			const { count } = await tx.projectContext.updateMany({
-				where: {
-					id: existing.id,
-					projectId,
-					...tenantFilter,
-					contentHash: storedHash,
-				},
-				data: {
-					content,
-					contentHash: newHash,
-					contentUpdatedAt: new Date(),
-					contentUpdatedByUserId: userId,
-					metadata: { ...baseMetadata, title, sourcePath },
-					embeddedAt: null,
-				},
-			});
-			if (count === 0) {
-				const current = await tx.projectContext.findFirst({
-					where: pathScope,
-					select: SYNCED_CONTEXT_SELECT,
-				});
-				if (!current) {
-					// Deleted between the read and the write. The caller named
-					// the version it replaces, so this is step 4, not a create.
-					return { status: "conflict", current: null };
-				}
-				if (current.contentHash === newHash) {
-					return { status: "unchanged", context: current };
-				}
-				return { status: "conflict", current: toContentStamp(current) };
-			}
-
-			const context = await tx.projectContext.findFirstOrThrow({
-				where: { id: existing.id, projectId, ...tenantFilter },
-				select: SYNCED_CONTEXT_SELECT,
-			});
-			return { status: "updated", context, previousHash: storedHash };
+			return await answerExistingRow(existing, input.expectedContentHash);
 		},
 	);
+}
+
+/** A synced row as the delete reads it: the index cleanup needs `qdrantId`. */
+const SYNCED_CONTEXT_DELETE_SELECT = {
+	...SYNCED_CONTEXT_SELECT,
+	qdrantId: true,
+} satisfies Prisma.ProjectContextSelect;
+
+export type SyncedContextDeleteRow = Prisma.ProjectContextGetPayload<{
+	select: typeof SYNCED_CONTEXT_DELETE_SELECT;
+}>;
+
+/**
+ * The version a compare-and-set delete names: a path in a project, under one
+ * tenant arm, holding one hash.
+ */
+export interface SyncedContextDeletionTarget {
+	projectId: string;
+	/** Already normalized with `normalizeContextSourcePath`. */
+	sourcePath: string;
+	/** The `contentHash` of the version the caller means to delete. */
+	expectedContentHash: string;
+	userId: string;
+	organizationId?: string | null;
+}
+
+function syncedContextDeletionScope(
+	input: Omit<SyncedContextDeletionTarget, "expectedContentHash">,
+) {
+	const tenantFilter = input.organizationId
+		? { organizationId: input.organizationId }
+		: { organizationId: null, userId: input.userId };
+	return {
+		tenantFilter,
+		pathScope: {
+			projectId: input.projectId,
+			sourcePath: input.sourcePath,
+			...tenantFilter,
+		},
+	};
+}
+
+/**
+ * The id of the synced row at a path, or `null` — the read that names a
+ * compare-and-set delete before it starts (the deletion workflow's id is
+ * derived from it). Advisory only: the claim re-reads and compares.
+ *
+ * The same exclusive tenant filter as the claim; a pathless (manual) row is
+ * never matched, because the path is part of the filter.
+ */
+export async function findSyncedContextIdAtPath(
+	input: Omit<SyncedContextDeletionTarget, "expectedContentHash">,
+): Promise<string | null> {
+	const { pathScope } = syncedContextDeletionScope(input);
+	const row = await db.projectContext.findFirst({
+		where: pathScope,
+		select: { id: true, sourcePath: true },
+	});
+	return row && row.sourcePath === input.sourcePath ? row.id : null;
+}
+
+export type ClaimSyncedContextRowForDeletionResult =
+	/**
+	 * The row holds the named version and is now marked unindexed
+	 * (`embeddedAt: null`), so whatever happens to its points next, the row
+	 * never claims an index it may no longer have.
+	 */
+	| { status: "claimed"; context: SyncedContextDeleteRow }
+	/**
+	 * No synced row at this path: deleted already (a retry whose first
+	 * attempt landed hears this), or never pushed. Nothing was changed.
+	 */
+	| { status: "absent" }
+	/**
+	 * The path holds a version other than the one named, or one with no
+	 * hash, which nobody can name. Nothing was changed; `current` says whose.
+	 */
+	| { status: "conflict"; current: SyncedContextContentStamp };
+
+/**
+ * Step 1 of the compare-and-set delete behind `fabric context push --prune`
+ * (Fizzy #2636): check that the path still holds the named version, and
+ * claim it by clearing `embeddedAt` in the same guarded write.
+ *
+ * The row is found by `projectId` + `sourcePath` under the same exclusive
+ * tenant filter as `upsertContextBySourcePath`. Only a synced row has a path,
+ * so a row added in the Context tab is never reachable here, whatever it
+ * holds. The claim is an `updateMany` keyed on the id, the project, the
+ * tenant, the path and the named hash — the replace's guard shape — so a push
+ * that lands between the read and the claim makes it match nothing, and the
+ * answer comes from a re-read.
+ *
+ * Why the claim writes `embeddedAt: null`: the next step removes the row's
+ * points from the vector index, and the one after deletes the row. If the
+ * process stops between those two, the row must not go on saying it is
+ * indexed when it is not; unindexed, it is what `projects.contexts.embed`
+ * picks up, and a retry of the delete finishes the job. Repeating the claim
+ * is harmless: the row still matches, and `embeddedAt` is already null.
+ *
+ * Authorization is the CALLER's job and must happen before this is reached.
+ */
+export async function claimSyncedContextRowForDeletion(
+	input: SyncedContextDeletionTarget,
+): Promise<ClaimSyncedContextRowForDeletionResult> {
+	const { pathScope } = syncedContextDeletionScope(input);
+	const { sourcePath, expectedContentHash } = input;
+
+	const row = await db.projectContext.findFirst({
+		where: pathScope,
+		select: SYNCED_CONTEXT_DELETE_SELECT,
+	});
+	// The path is part of the filter, so a pathless (manual) row cannot be
+	// read here; the check keeps that true if the filter ever changes.
+	if (!row || row.sourcePath !== sourcePath) {
+		return { status: "absent" };
+	}
+	if (row.contentHash === null || row.contentHash !== expectedContentHash) {
+		return { status: "conflict", current: toContentStamp(row) };
+	}
+
+	const { count } = await db.projectContext.updateMany({
+		where: { id: row.id, ...pathScope, contentHash: expectedContentHash },
+		data: { embeddedAt: null },
+	});
+	if (count > 0) {
+		return { status: "claimed", context: row };
+	}
+
+	// Changed, moved or deleted between the read and the claim.
+	const current = await db.projectContext.findFirst({
+		where: pathScope,
+		select: SYNCED_CONTEXT_SELECT,
+	});
+	return current
+		? { status: "conflict", current: toContentStamp(current) }
+		: { status: "absent" };
+}
+
+export type DeleteClaimedSyncedContextRowResult =
+	/**
+	 * The claimed row held the named version and is deleted, with its audit
+	 * row: by this call, or by an earlier attempt of the same operation that
+	 * committed before its answer was lost (its receipt is found).
+	 */
+	| { status: "deleted" }
+	/**
+	 * No row is left under the claimed id, and no receipt of this operation:
+	 * somebody else deleted the row after the claim (the Context tab's delete,
+	 * or another request). This call deleted and recorded nothing.
+	 */
+	| { status: "gone" }
+	/**
+	 * The claimed row still exists but no longer at this path (moved after
+	 * the claim), and nothing else is at the path. Nothing was deleted;
+	 * `reindex` is the row whose points the caller removed, to rebuild.
+	 */
+	| { status: "absent"; reindex: SyncedContextRow }
+	/**
+	 * The claimed row changed (or moved and something else took the path)
+	 * after the claim. Nothing was deleted; `current` is the version at the
+	 * path, `reindex` the claimed row whose points the caller removed.
+	 */
+	| {
+			status: "conflict";
+			current: SyncedContextContentStamp;
+			reindex: SyncedContextRow;
+	  };
+
+export interface DeleteClaimedSyncedContextRowInput
+	extends SyncedContextDeletionTarget {
+	/** The claimed row. */
+	contextId: string;
+	/**
+	 * This delete's operation id — the deletion workflow's id, the same on
+	 * every attempt and every request that joins it. Stored as the audit
+	 * row's `metadata.operationId`: the receipt a repeat looks for.
+	 */
+	operationId: string;
+	/** The claimed row's name, recorded as the audit row's resource name. */
+	title: string;
+	/** The request the delete came from, for the audit row. */
+	audit: SyncedContextDeletionAuditContext;
+}
+
+/**
+ * Step 3 of the compare-and-set delete, after the caller removed the claimed
+ * row's points from the vector index: delete the row, with the claim's guard
+ * — the id, the project, the tenant, the path and the named hash — so a
+ * version pushed after the claim is never deleted unseen.
+ *
+ * The audit row is the delete's durable receipt. One transaction holds the
+ * guarded `deleteMany` and, when it deleted the row, the insert of the
+ * `project.context_source.synced_file_deleted` row keyed by `operationId`
+ * (`recordAuditTx`): the row is never gone without its audit row, whatever
+ * happens to the process that asked, and a failed insert rolls the delete
+ * back, so the activity's retry deletes and records again.
+ *
+ * Safe to repeat. When the delete matches nothing and no row is left under
+ * the id, the receipt tells the two causes apart: this operation's audit row,
+ * under the same tenant and project, means an earlier attempt committed
+ * (`deleted`, and no second row); none means somebody else deleted it
+ * (`gone`). If the row is still there, it changed or moved after the claim,
+ * and it is handed back so its points (which the caller removed) can be
+ * rebuilt; nothing is recorded.
+ *
+ * The receipt lookup filters on the action, the project, the tenant, the row
+ * and `metadata.operationId`; the existing `(action, createdAt)` and
+ * `(projectId, createdAt)` indexes bound it to this action's rows, and it
+ * runs only on the rare path where the row is already gone.
+ *
+ * Authorization is the CALLER's job and must happen before this is reached.
+ */
+export async function deleteClaimedSyncedContextRow(
+	input: DeleteClaimedSyncedContextRowInput,
+): Promise<DeleteClaimedSyncedContextRowResult> {
+	const { pathScope, tenantFilter } = syncedContextDeletionScope(input);
+
+	return await db.$transaction(
+		async (tx): Promise<DeleteClaimedSyncedContextRowResult> => {
+			const { count } = await tx.projectContext.deleteMany({
+				where: {
+					id: input.contextId,
+					...pathScope,
+					contentHash: input.expectedContentHash,
+				},
+			});
+			if (count > 0) {
+				// The snapshots are read here, at write time (the workflow's
+				// history carries only the user's id). A user deleted since the
+				// request is recorded by no id rather than failing the insert.
+				const user = await tx.user.findUnique({
+					where: { id: input.userId },
+					select: { email: true, name: true },
+				});
+				await recordAuditTx(
+					tx,
+					buildSyncedContextDeleteAuditEvent({
+						organizationId: input.organizationId,
+						projectId: input.projectId,
+						contextId: input.contextId,
+						title: input.title,
+						sourcePath: input.sourcePath,
+						contentHash: input.expectedContentHash,
+						operationId: input.operationId,
+						actor: {
+							userId: user ? input.userId : null,
+							emailSnapshot: user?.email ?? null,
+							nameSnapshot: user?.name ?? null,
+						},
+						audit: input.audit,
+					}),
+				);
+				return { status: "deleted" };
+			}
+
+			const survivor = await tx.projectContext.findFirst({
+				where: {
+					id: input.contextId,
+					projectId: input.projectId,
+					...tenantFilter,
+				},
+				select: SYNCED_CONTEXT_SELECT,
+			});
+			if (!survivor) {
+				const receipt = await tx.auditLog.findFirst({
+					where: {
+						action: SYNCED_CONTEXT_DELETE_AUDIT_ACTION,
+						projectId: input.projectId,
+						...tenantFilter,
+						resourceType: "project_context",
+						resourceId: input.contextId,
+						metadata: {
+							path: ["operationId"],
+							equals: input.operationId,
+						},
+					},
+					select: { id: true },
+				});
+				return receipt ? { status: "deleted" } : { status: "gone" };
+			}
+			const current = await tx.projectContext.findFirst({
+				where: pathScope,
+				select: SYNCED_CONTEXT_SELECT,
+			});
+			return current
+				? {
+						status: "conflict",
+						current: toContentStamp(current),
+						reindex: survivor,
+					}
+				: { status: "absent", reindex: survivor };
+		},
+	);
+}
+
+/** A row's `metadata` as an object to spread, or an empty one. */
+function metadataObject(metadata: Prisma.JsonValue): Prisma.JsonObject {
+	return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+		? (metadata as Prisma.JsonObject)
+		: {};
+}
+
+/** The last segment of a normalized source path. */
+function pathBasename(sourcePath: string): string {
+	return sourcePath.slice(sourcePath.lastIndexOf("/") + 1);
 }
 
 /**

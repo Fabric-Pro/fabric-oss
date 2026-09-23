@@ -233,6 +233,16 @@ export const AUDIT_ACTIONS = [
 	// "who put this text in front of the AI, and what did it replace" had no
 	// answer once a CLI or an agent could push files as well as a person.
 	"project.context_source.content_upserted",
+	// A synced knowledge file was deleted by its path (Fizzy #2636) — the
+	// `--prune` of `fabric context push`, through the v1 REST route or
+	// `projects.contexts.deleteSyncedFile`. Compare-and-set: only the version
+	// the caller named is deleted, and the row records that hash and the path,
+	// never the content. Written by the deletion workflow in the row delete's
+	// own transaction, keyed by `metadata.operationId` (the workflow id), so
+	// no deletion goes unrecorded when its request dies. The Context tab's own
+	// delete is not this row: it is captured under `activity.*`, which the
+	// key-backed REST route never reaches.
+	"project.context_source.synced_file_deleted",
 	// Document generation fell back because the generation agent could not be
 	// reached. Written whether or not the fallback then succeeded: a generation
 	// that quietly ran on the degraded path is exactly what nobody could see.

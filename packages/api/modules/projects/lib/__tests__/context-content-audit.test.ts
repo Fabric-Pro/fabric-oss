@@ -6,7 +6,9 @@
  * Pins what the ledger depends on: the row identifies the write by path, hash
  * and size and never carries the content; the replaced hash appears on an
  * update and only there; and no metadata key is one the shared sensitive-key
- * redactor would blank out.
+ * redactor would blank out. The deletion's row is built, and tested, in the
+ * database package (`synced-context-delete-audit.ts`), since the deletion
+ * workflow writes it with the delete (Fizzy #2636).
  */
 import { keyIsSensitive } from "@repo/utils/sensitive-keys";
 import { describe, expect, it } from "vitest";
@@ -110,5 +112,40 @@ describe("buildContextContentAuditEvent", () => {
 
 		expect(keys.length).toBeGreaterThan(0);
 		expect(keys.filter((key) => keyIsSensitive(key))).toEqual([]);
+	});
+});
+
+describe("buildContextContentAuditEvent — a move (Fizzy #2636)", () => {
+	it("records both paths and the hash of the version that moved", () => {
+		const event = buildContextContentAuditEvent({
+			...base,
+			outcome: "moved",
+			contentHash: HASH_V1,
+			previousSourcePath: "notes/arch.md",
+			// Ignored: a move replaced no content.
+			previousContentHash: HASH_V2,
+			via: "v1-api",
+		});
+
+		expect(event.action).toBe("project.context_source.content_upserted");
+		expect(event.metadata).toEqual({
+			outcome: "moved",
+			sourcePath: "docs/architecture.md",
+			previousSourcePath: "notes/arch.md",
+			contentHash: HASH_V1,
+			bytes: 42,
+			via: "v1-api",
+		});
+	});
+
+	it("records no previous path on anything but a move", () => {
+		const event = buildContextContentAuditEvent({
+			...base,
+			outcome: "created",
+			contentHash: HASH_V1,
+			previousSourcePath: "notes/arch.md",
+		});
+
+		expect(event.metadata).not.toHaveProperty("previousSourcePath");
 	});
 });

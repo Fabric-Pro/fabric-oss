@@ -76,6 +76,7 @@ import { createContextDownloadUrlProcedure } from "./procedures/contexts/create-
 import { createContextUploadUrlProcedure } from "./procedures/contexts/create-context-upload-url";
 import { createContextsBatchDownloadUrlProcedure } from "./procedures/contexts/create-contexts-batch-download-url";
 import { deleteContextProcedure } from "./procedures/contexts/delete-context";
+import { deleteSyncedFileProcedure } from "./procedures/contexts/delete-synced-file";
 import { embedProjectContextsProcedure } from "./procedures/contexts/embed-contexts";
 import { getContextSummaryProcedure } from "./procedures/contexts/get-summary";
 import { getContextSummaryVersionProcedure } from "./procedures/contexts/get-summary-version";
@@ -877,6 +878,7 @@ export const projectsRouter = {
 		// Synced knowledge files (Fizzy #2616) — a text file pushed by its
 		// relative path, idempotent, with an explicit-overwrite hash check
 		upsertSyncedFile: upsertSyncedFileProcedure,
+		deleteSyncedFile: deleteSyncedFileProcedure,
 		// URL Context Sources (spec 2026-05-13-url-context-sources)
 		updateUrlSource: updateUrlSourceProcedure,
 		resyncUrlSource: resyncUrlSourceProcedure,

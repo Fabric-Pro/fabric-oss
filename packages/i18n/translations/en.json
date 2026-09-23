@@ -1612,7 +1612,8 @@
 						"scan_stopped": "Channel or chat scanning stopped or resumed",
 						"reconnected": "Channel or chat monitor reconnected",
 						"metadata_updated": "Context source details updated",
-						"content_upserted": "Synced context file created or updated"
+						"content_upserted": "Synced context file created, updated or moved",
+						"synced_file_deleted": "Synced context file deleted"
 					},
 					"instructions": {
 						"upload_started": "Coding-instructions upload started",

@@ -30,6 +30,7 @@ const { mocks } = vi.hoisted(() => ({
 		resolveEffectiveProjectPermissions: vi.fn(),
 		hasProjectAccess: vi.fn(),
 		upsertSyncedContext: vi.fn(),
+		deleteSyncedContext: vi.fn(),
 		/** `db.organization.findFirst`, for the explicit `?org=` binding. */
 		findOrganization: vi.fn(),
 		/** `db.user.findUnique`, for the audit actor snapshot. */
@@ -54,6 +55,10 @@ vi.mock("../../../lib/effective-project-permissions", () => ({
 
 vi.mock("../../projects/lib/upsert-synced-context", () => ({
 	upsertSyncedContext: mocks.upsertSyncedContext,
+}));
+
+vi.mock("../../projects/lib/delete-synced-context", () => ({
+	deleteSyncedContext: mocks.deleteSyncedContext,
 }));
 
 /**
@@ -177,6 +182,12 @@ beforeEach(() => {
 	});
 	mocks.upsertSyncedContext.mockResolvedValue({
 		status: "created",
+		contextId: "ctx-1",
+		sourcePath: "docs/architecture.md",
+		contentHash: HASH_A,
+	});
+	mocks.deleteSyncedContext.mockResolvedValue({
+		status: "deleted",
 		contextId: "ctx-1",
 		sourcePath: "docs/architecture.md",
 		contentHash: HASH_A,
@@ -663,5 +674,438 @@ describe("PUT /projects/:projectId/contexts/synced-files — the body's size", (
 		expect(mocks.upsertSyncedContext.mock.calls[0]?.[0]).toMatchObject({
 			content,
 		});
+	});
+});
+
+describe("PUT /projects/:projectId/contexts/synced-files — a move (Fizzy #2636)", () => {
+	it("passes movedFromSourcePath through with the old path's hash", async () => {
+		mocks.upsertSyncedContext.mockResolvedValue({
+			status: "moved",
+			contextId: "ctx-1",
+			sourcePath: "docs/architecture.md",
+			contentHash: HASH_A,
+			movedFromSourcePath: "notes/arch.md",
+		});
+
+		const res = await buildApp().fetch(
+			put(
+				fileBody({
+					movedFromSourcePath: "notes/arch.md",
+					expectedContentHash: HASH_A,
+				}),
+			),
+		);
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({
+			data: {
+				status: "moved",
+				contextId: "ctx-1",
+				sourcePath: "docs/architecture.md",
+				contentHash: HASH_A,
+				movedFromSourcePath: "notes/arch.md",
+			},
+		});
+		expect(mocks.upsertSyncedContext).toHaveBeenCalledWith(
+			expect.objectContaining({
+				movedFromSourcePath: "notes/arch.md",
+				expectedContentHash: HASH_A,
+			}),
+		);
+	});
+
+	it("requires expectedContentHash with movedFromSourcePath, before resolving the project", async () => {
+		const res = await buildApp().fetch(
+			put(fileBody({ movedFromSourcePath: "notes/arch.md" })),
+		);
+
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: { message: string } };
+		expect(body.error.message).toMatch(/expectedContentHash/);
+		expect(mocks.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+		expect(mocks.upsertSyncedContext).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["a non-string", 7],
+		["an empty string", ""],
+		["a path over 2048 characters", "a".repeat(2049)],
+	])(
+		"refuses %s movedFromSourcePath with 400",
+		async (_label, movedFromSourcePath) => {
+			const res = await buildApp().fetch(
+				put(
+					fileBody({
+						movedFromSourcePath,
+						expectedContentHash: HASH_A,
+					}),
+				),
+			);
+
+			expect(res.status).toBe(400);
+			expect(mocks.upsertSyncedContext).not.toHaveBeenCalled();
+		},
+	);
+
+	it("answers a changed old path with 409 carrying why the move was not applied", async () => {
+		mocks.upsertSyncedContext.mockResolvedValue({
+			status: "conflict",
+			contextId: "ctx-1",
+			sourcePath: "docs/architecture.md",
+			contentHash: HASH_A,
+			current: {
+				contextId: "ctx-1",
+				contentHash: HASH_B,
+				contentUpdatedAt: new Date("2026-09-22T10:00:00.000Z"),
+				contentUpdatedBy: { id: "user-2", name: "Example Editor" },
+			},
+			moveNotApplied: {
+				movedFromSourcePath: "notes/arch.md",
+				reason: "source-changed",
+			},
+		});
+
+		const res = await buildApp().fetch(
+			put(
+				fileBody({
+					movedFromSourcePath: "notes/arch.md",
+					expectedContentHash: HASH_A,
+				}),
+			),
+		);
+
+		expect(res.status).toBe(409);
+		const body = (await res.json()) as {
+			error: { message: string; data: { moveNotApplied: unknown } };
+		};
+		expect(body.error.message).toMatch(/notes\/arch\.md/);
+		expect(body.error.data.moveNotApplied).toEqual({
+			movedFromSourcePath: "notes/arch.md",
+			reason: "source-changed",
+		});
+	});
+});
+
+function del(body: unknown, query = "") {
+	return new Request(`http://localhost${PATH}${query}`, {
+		method: "DELETE",
+		headers: { "content-type": "application/json" },
+		body: typeof body === "string" ? body : JSON.stringify(body),
+	});
+}
+
+function deleteBody(overrides: Record<string, unknown> = {}) {
+	return {
+		sourcePath: "docs/architecture.md",
+		expectedContentHash: HASH_A,
+		...overrides,
+	};
+}
+
+const DELETE_PERMISSIONS = ["context:create", "context:delete"];
+
+describe("DELETE /projects/:projectId/contexts/synced-files — the key's scope and the creator's permission", () => {
+	beforeEach(() => {
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: DELETE_PERMISSIONS,
+			source: "org",
+			organizationId: ORG,
+		});
+	});
+
+	it("refuses a key without projects:write with the flat scope refusal, before any lookup", async () => {
+		mocks.scopes = ["projects:read", "mcp:write"];
+
+		const res = await buildApp().fetch(del(deleteBody()));
+
+		expect(res.status).toBe(403);
+		expect(await res.json()).toEqual({
+			error: "Missing required scope: projects:write",
+		});
+		expect(mocks.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+		expect(mocks.deleteSyncedContext).not.toHaveBeenCalled();
+	});
+
+	it("still requires the creator's live CONTEXT_DELETE for a wildcard key, as a nested permission refusal", async () => {
+		mocks.scopes = ["*"];
+		// May add sources, may not delete them.
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: ["context:read", "context:create"],
+			source: "org",
+			organizationId: ORG,
+		});
+
+		const res = await buildApp().fetch(del(deleteBody()));
+
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as { error: { message: string } };
+		expect(typeof body.error).toBe("object");
+		expect(body.error.message).toMatch(/permission/i);
+		expect(body.error.message).toMatch(/delete/i);
+		expect(body.error.message).not.toMatch(/scope/i);
+		expect(mocks.deleteSyncedContext).not.toHaveBeenCalled();
+	});
+
+	it("refuses ?personal=1 before resolving anything", async () => {
+		const res = await buildApp().fetch(del(deleteBody(), "?personal=1"));
+
+		expect(res.status).toBe(403);
+		expect(mocks.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+		expect(mocks.deleteSyncedContext).not.toHaveBeenCalled();
+	});
+
+	it("answers 404 for a project that does not exist", async () => {
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue(null);
+
+		const res = await buildApp().fetch(del(deleteBody()));
+
+		expect(res.status).toBe(404);
+		// The route's own answer, not the router's for an unknown route.
+		expect(await res.json()).toEqual({
+			error: { message: "Project not found" },
+		});
+		expect(mocks.deleteSyncedContext).not.toHaveBeenCalled();
+	});
+
+	it("answers 404 when an organization key names another organization's project", async () => {
+		apiContext = organizationKey("org-other");
+
+		const res = await buildApp().fetch(del(deleteBody()));
+
+		expect(res.status).toBe(404);
+		// The route's own answer, not the router's for an unknown route.
+		expect(await res.json()).toEqual({
+			error: { message: "Project not found" },
+		});
+		expect(mocks.deleteSyncedContext).not.toHaveBeenCalled();
+	});
+
+	it("answers 404 for a project the caller cannot see, even with the org role's permission", async () => {
+		mocks.hasProjectAccess.mockResolvedValue(false);
+
+		const res = await buildApp().fetch(del(deleteBody()));
+
+		expect(res.status).toBe(404);
+		// The route's own answer, not the router's for an unknown route.
+		expect(await res.json()).toEqual({
+			error: { message: "Project not found" },
+		});
+		expect(mocks.deleteSyncedContext).not.toHaveBeenCalled();
+	});
+
+	it("checks visibility before the permission, so an invisible project never reads as forbidden", async () => {
+		mocks.hasProjectAccess.mockResolvedValue(false);
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: [],
+			source: "org",
+			organizationId: ORG,
+		});
+
+		const res = await buildApp().fetch(del(deleteBody()));
+
+		expect(res.status).toBe(404);
+		// The route's own answer, not the router's for an unknown route.
+		expect(await res.json()).toEqual({
+			error: { message: "Project not found" },
+		});
+	});
+
+	it("refuses a personal project: there is no organization to delete under", async () => {
+		apiContext = personalKey();
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: DELETE_PERMISSIONS,
+			source: "owner",
+			organizationId: null,
+		});
+
+		const res = await buildApp().fetch(del(deleteBody()));
+
+		expect(res.status).toBe(403);
+		expect(mocks.deleteSyncedContext).not.toHaveBeenCalled();
+	});
+
+	it("answers 404 for an explicit ?org= that is not the project's", async () => {
+		mocks.findOrganization.mockResolvedValue({ id: "org-other" });
+
+		const res = await buildApp().fetch(del(deleteBody(), "?org=other-org"));
+
+		expect(res.status).toBe(404);
+		// The route's own answer, not the router's for an unknown route.
+		expect(await res.json()).toEqual({
+			error: { message: "Project not found" },
+		});
+		expect(mocks.deleteSyncedContext).not.toHaveBeenCalled();
+	});
+});
+
+describe("DELETE /projects/:projectId/contexts/synced-files — outcomes", () => {
+	beforeEach(() => {
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: DELETE_PERMISSIONS,
+			source: "project-member",
+			organizationId: ORG,
+		});
+	});
+
+	it("deletes under the project's hosting organization as the key's creator, and answers 200", async () => {
+		const res = await buildApp().fetch(
+			del(
+				deleteBody({ organizationId: "org-evil", userId: "user-evil" }),
+			),
+		);
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({
+			data: {
+				status: "deleted",
+				contextId: "ctx-1",
+				sourcePath: "docs/architecture.md",
+				contentHash: HASH_A,
+			},
+		});
+		expect(mocks.deleteSyncedContext).toHaveBeenCalledTimes(1);
+		expect(mocks.deleteSyncedContext).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: PROJECT,
+				sourcePath: "docs/architecture.md",
+				expectedContentHash: HASH_A,
+				userId: "user-1",
+				organizationId: ORG,
+				via: "v1-api",
+				request: expect.objectContaining({
+					user: {
+						id: "user-1",
+						email: "dev@example.com",
+						name: "Example Developer",
+					},
+				}),
+			}),
+		);
+	});
+
+	it("answers a path with no row with 200 absent, so a retried delete is not an error", async () => {
+		mocks.deleteSyncedContext.mockResolvedValue({
+			status: "absent",
+			sourcePath: "docs/architecture.md",
+		});
+
+		const res = await buildApp().fetch(del(deleteBody()));
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({
+			data: { status: "absent", sourcePath: "docs/architecture.md" },
+		});
+	});
+
+	it("answers a deletion still running on the server with 202 in-progress", async () => {
+		mocks.deleteSyncedContext.mockResolvedValue({
+			status: "in-progress",
+			sourcePath: "docs/architecture.md",
+		});
+
+		const res = await buildApp().fetch(del(deleteBody()));
+
+		expect(res.status).toBe(202);
+		expect(await res.json()).toEqual({
+			data: { status: "in-progress", sourcePath: "docs/architecture.md" },
+		});
+	});
+
+	it("answers a conflict with 409, the delete's own sentence and the stored version's stamp", async () => {
+		mocks.deleteSyncedContext.mockResolvedValue({
+			status: "conflict",
+			contextId: "ctx-1",
+			sourcePath: "docs/architecture.md",
+			contentHash: HASH_A,
+			current: {
+				contextId: "ctx-1",
+				contentHash: HASH_B,
+				contentUpdatedAt: new Date("2026-09-22T10:00:00.000Z"),
+				contentUpdatedBy: { id: "user-2", name: "Example Editor" },
+			},
+		});
+
+		const res = await buildApp().fetch(del(deleteBody()));
+
+		expect(res.status).toBe(409);
+		const body = (await res.json()) as {
+			error: { message: string; code: string; data: unknown };
+		};
+		expect(body.error.code).toBe("CONFLICT");
+		expect(body.error.message).toMatch(/nothing was deleted/i);
+		expect(body.error.data).toEqual({
+			status: "conflict",
+			contextId: "ctx-1",
+			sourcePath: "docs/architecture.md",
+			contentHash: HASH_A,
+			current: {
+				contextId: "ctx-1",
+				contentHash: HASH_B,
+				contentUpdatedAt: "2026-09-22T10:00:00.000Z",
+				contentUpdatedBy: { id: "user-2", name: "Example Editor" },
+			},
+		});
+	});
+
+	it("maps the shared function's BAD_REQUEST to a 400 carrying its sentence", async () => {
+		mocks.deleteSyncedContext.mockRejectedValue(
+			orpcRefusal("BAD_REQUEST", "sourcePath may not be absolute"),
+		);
+
+		const res = await buildApp().fetch(
+			del(deleteBody({ sourcePath: "/etc/hosts" })),
+		);
+
+		expect(res.status).toBe(400);
+		expect(await res.json()).toEqual({
+			error: { message: "sourcePath may not be absolute" },
+		});
+	});
+
+	it("lets an unexpected failure propagate rather than inventing a status", async () => {
+		mocks.deleteSyncedContext.mockRejectedValue(
+			orpcRefusal("INTERNAL_SERVER_ERROR", "index unavailable"),
+		);
+		const app = buildApp();
+		app.onError((_error, c) => c.json({ error: "boom" }, 500));
+
+		const res = await app.fetch(del(deleteBody()));
+
+		expect(res.status).toBe(500);
+	});
+
+	it.each([
+		["not JSON", "{ nope"],
+		["an array", []],
+		["no sourcePath", { expectedContentHash: HASH_A }],
+		["no expectedContentHash", { sourcePath: "a.md" }],
+		[
+			"a non-string expectedContentHash",
+			{ sourcePath: "a.md", expectedContentHash: 7 },
+		],
+		[
+			"a sourcePath over 2048 characters",
+			{ sourcePath: "a".repeat(2049), expectedContentHash: HASH_A },
+		],
+	])(
+		"refuses %s with 400 before resolving the project",
+		async (_label, body) => {
+			const res = await buildApp().fetch(del(body));
+
+			expect(res.status).toBe(400);
+			expect(
+				mocks.resolveEffectiveProjectPermissions,
+			).not.toHaveBeenCalled();
+			expect(mocks.deleteSyncedContext).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses a body over its small bound with 413, unread", async () => {
+		const res = await buildApp().fetch(
+			del(deleteBody({ padding: "x".repeat(128 * 1024) })),
+		);
+
+		expect(res.status).toBe(413);
+		expect(mocks.deleteSyncedContext).not.toHaveBeenCalled();
 	});
 });

@@ -459,7 +459,19 @@ export class FabricHttpClient {
 		});
 	}
 
-	delete<T>(path: string) {
-		return this.request<T>("DELETE", path);
+	/**
+	 * A DELETE, with a JSON body when the route takes one (the synced-context
+	 * delete names the path and the version in its body). Without `body`,
+	 * nothing is sent, as before.
+	 */
+	delete<T>(
+		path: string,
+		body?: unknown,
+		options: { idempotencyKey?: string } = {},
+	) {
+		return this.request<T>("DELETE", path, {
+			body,
+			idempotencyKey: options.idempotencyKey,
+		});
 	}
 }

@@ -950,6 +950,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 			"Pushes a text file into a project's Context tab as a knowledge source, keyed by the file's path in your working tree ('sourcePath') inside that project, so pushing the same path again updates that one source instead of adding another. " +
 			"The result's 'status' says what happened: 'created' for a path the project has not seen; 'unchanged' when the same content is already stored under this path (nothing is written, so repeating a call is harmless); 'updated' when changed content replaced the previous version, which is then re-indexed for search; 'duplicate' when identical content is already in the project as another source (another pushed file, or one added in the Context tab), in which case nothing is created and 'duplicateOfContextId' is the existing source. " +
 			"To replace a file that already exists under this path, first read it with fabric_get_project_context (find it with fabric_list_project_contexts), or take the hash from a 'conflict' result, and pass its 'contentHash' as 'expectedContentHash'. Omitting expectedContentHash means: create the file if the path is new, otherwise only accept identical content — it never means overwrite. If the stored version is not the one you name (someone else changed it since), the tool returns 'conflict' with the current 'contentHash' and who changed it, and writes nothing: read it again, merge, and retry with that hash. A 'conflict' with 'current' null means the file you named was deleted on the server since you read it; nothing was written; call again without expectedContentHash to recreate it, which answers 'duplicate' instead if that content already exists elsewhere in the project. " +
+			"When you renamed a file, pass its old path as 'movedFromSourcePath' with that path's 'contentHash' as 'expectedContentHash': the source is renamed in place ('moved') when it still holds that version and the content is unchanged, otherwise the new path gets the ordinary answer and 'moveNotApplied' says why. " +
 			"Keep coding-instruction files out of this tool — CLAUDE.md, AGENTS.md, anything under .claude/, and skills, agents and hooks belong to fabric_propose_project_instruction_change.",
 		inputSchema: {
 			type: "object",
@@ -982,6 +983,13 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					pattern: "^[0-9a-fA-F]{64}$",
 					description:
 						"The 'contentHash' of the stored version you mean to replace, from fabric_get_project_context, fabric_list_project_contexts or a 'conflict' result. Required to replace a file that already exists under this path. Omit it to create the file if the path is new, or to confirm identical content; omitting it never overwrites.",
+				},
+				movedFromSourcePath: {
+					type: "string",
+					minLength: 1,
+					maxLength: 512,
+					description:
+						"The file's previous path when you renamed it, under the same rules as 'sourcePath'. Requires 'expectedContentHash', naming the version at that old path; a move never replaces content.",
 				},
 			},
 			required: ["projectId", "sourcePath", "content"],
@@ -4807,6 +4815,7 @@ const SYNCED_CONTEXT_OUTCOME_MESSAGES = {
 		"The same content is already stored under this path. Nothing was written.",
 	duplicate:
 		"Identical content is already in this project under another source, so nothing was created. 'duplicateOfContextId' is that source.",
+	moved: "Renamed the source at 'movedFromSourcePath' to this path; its content is unchanged. It is being re-indexed under the new name.",
 } as const;
 
 /**
@@ -4836,7 +4845,14 @@ async function handleUpsertProjectContext(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { projectId, sourcePath, content, title, expectedContentHash } = args;
+	const {
+		projectId,
+		sourcePath,
+		content,
+		title,
+		expectedContentHash,
+		movedFromSourcePath,
+	} = args;
 	if (typeof projectId !== "string" || projectId.length === 0) {
 		return errorResult("projectId is required");
 	}
@@ -4865,6 +4881,17 @@ async function handleUpsertProjectContext(
 			"expectedContentHash must be the 'contentHash' string of the stored version",
 		);
 	}
+	if (
+		movedFromSourcePath !== undefined &&
+		movedFromSourcePath !== null &&
+		(typeof movedFromSourcePath !== "string" ||
+			movedFromSourcePath.length >
+				SYNCED_CONTEXT_SOURCE_PATH_INPUT_MAX_LENGTH)
+	) {
+		return errorResult(
+			`movedFromSourcePath must be the file's previous path, a string of at most ${SYNCED_CONTEXT_SOURCE_PATH_INPUT_MAX_LENGTH} characters`,
+		);
+	}
 
 	const access = await resolveGatewayProjectWriteAccessWithHost(
 		projectId,
@@ -4891,6 +4918,7 @@ async function handleUpsertProjectContext(
 			content,
 			title: title ?? undefined,
 			expectedContentHash: expectedContentHash ?? undefined,
+			movedFromSourcePath: movedFromSourcePath || undefined,
 			userId: session.userId,
 			organizationId: access.organizationId,
 			via: "mcp-gateway",
@@ -4935,9 +4963,11 @@ async function handleUpsertProjectContext(
 					text: JSON.stringify({
 						...result,
 						error:
-							result.current === null
-								? "The file you named in 'expectedContentHash' was deleted on the server since you read it, so nothing was written. Call again without 'expectedContentHash' to recreate it, which answers 'duplicate' instead if that content already exists elsewhere in the project."
-								: "This path holds a different version than the one you named in 'expectedContentHash' (or you named none), so nothing was written. Read it with fabric_get_project_context, merge your change into it, and push again with current.contentHash as 'expectedContentHash'.",
+							result.moveNotApplied?.reason === "source-changed"
+								? `The file at ${result.moveNotApplied.movedFromSourcePath} was changed on the server since the version you named in 'expectedContentHash', so nothing was written and it was not moved. Read it with fabric_get_project_context and call again with its current.contentHash.`
+								: result.current === null
+									? "The file you named in 'expectedContentHash' was deleted on the server since you read it, so nothing was written. Call again without 'expectedContentHash' to recreate it, which answers 'duplicate' instead if that content already exists elsewhere in the project."
+									: "This path holds a different version than the one you named in 'expectedContentHash' (or you named none), so nothing was written. Read it with fabric_get_project_context, merge your change into it, and push again with current.contentHash as 'expectedContentHash'.",
 					}),
 				},
 			],

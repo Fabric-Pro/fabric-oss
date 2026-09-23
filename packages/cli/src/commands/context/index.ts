@@ -16,6 +16,12 @@
  * the version it replaces — which is what turns somebody else's edit on the
  * server into a conflict instead of a silent overwrite.
  *
+ * A file moved or renamed with its content unchanged is one rename on the
+ * server, keeping its history and its place in the Context tab. A file
+ * removed locally keeps its server entry unless `--prune` is given; then it
+ * is deleted, but only in the version the lock names, so an edit somebody
+ * made on the server since is a conflict rather than lost (Fizzy #2636).
+ *
  * Everything that touches the filesystem lives in `lib/context-sync/`; this
  * file is argument parsing, the sequence, and the exit code.
  */
@@ -44,6 +50,7 @@ import {
 } from "../../lib/context-sync/plan.js";
 import {
 	type ContextPushResult,
+	DELETE_STATUSES,
 	nextContextLock,
 	pushContextPlan,
 } from "../../lib/context-sync/push.js";
@@ -71,6 +78,7 @@ interface PushOptions {
 	org?: string;
 	force?: boolean;
 	dryRun?: boolean;
+	prune?: boolean;
 	hook?: boolean;
 	exclude?: string[];
 	/** Read through `optsWithGlobals()`, never off this object. */
@@ -100,6 +108,10 @@ export function buildContextCommand(): Command {
 		.option(
 			"--force",
 			"On a conflict, replace the server's version once with this folder's",
+		)
+		.option(
+			"--prune",
+			"Delete the server entries of files removed locally, only in the version last pushed",
 		)
 		.option("--dry-run", "Print the plan; send nothing and write no lock")
 		.option(
@@ -241,6 +253,7 @@ async function runPush(
 				projectId: opts.project,
 				directory: root,
 				plan,
+				prune: Boolean(opts.prune),
 			}),
 		);
 		return;
@@ -253,6 +266,8 @@ async function runPush(
 		root,
 		plan,
 		force: Boolean(opts.force),
+		prune: Boolean(opts.prune),
+		lock,
 	});
 
 	// LAST, after every request, and only with what the server answered.
@@ -285,14 +300,24 @@ async function runPush(
 				directory: root,
 				plan,
 				results: pushed.results,
+				prune: Boolean(opts.prune),
+				pruneTargets: pushed.pruneTargets,
 			}),
 		);
 	}
 
+	const prune = Boolean(opts.prune);
 	if (pushed.stoppedBy !== null) {
-		throw pushed.stoppedBy;
+		// Under --prune, say how far the deletions got: a hook's one line is
+		// all its user sees.
+		throw prune
+			? new CliFailure(
+					`${pushed.stoppedBy.message} (${pruneSummary(pushed.results, pushed.pruneTargets)})`,
+					pushed.stoppedBy.exitCode,
+				)
+			: pushed.stoppedBy;
 	}
-	throwIfIncomplete(pushed.results);
+	throwIfIncomplete(pushed.results, prune, pushed.pruneTargets);
 }
 
 function jsonOutcome(input: {
@@ -309,45 +334,130 @@ function jsonOutcome(input: {
 		lockWritten: input.lockWritten,
 		dryRun: Boolean(input.opts.dryRun),
 		force: Boolean(input.opts.force),
+		prune: Boolean(input.opts.prune),
 		plan: input.plan,
 		results: input.results,
 	});
 }
 
 /**
+ * `--prune: 1 deleted, 0 already gone, 1 not deleted`, with the first
+ * failure's cause. Counted from the plan's targets, not only from answers:
+ * a target a run-level refusal stopped before it was tried is not deleted
+ * too.
+ */
+function pruneSummary(
+	results: readonly ContextPushResult[],
+	targets: readonly string[],
+): string {
+	const count = (status: ContextPushResult["status"]) =>
+		results.filter((r) => r.status === status).length;
+	const settled = new Set(
+		results
+			.filter(
+				(r) => r.status === "deleted" || r.status === "already-gone",
+			)
+			.map((r) => r.sourcePath),
+	);
+	const notDeleted = targets.filter((path) => !settled.has(path)).length;
+	let text = `--prune: ${count("deleted")} deleted, ${count("already-gone")} already gone, ${notDeleted} not deleted`;
+	const first = results.find((r) => r.status === "delete-failed");
+	if (first && first.status === "delete-failed") {
+		text += `, first ${first.sourcePath}: ${first.error}`;
+	}
+	return text;
+}
+
+/**
  * The run's exit, once everything that could be pushed has been.
  *
  * A failed request exits with the code its error maps to (a 400 is 7, a 5xx
- * is 1); remaining conflicts alone exit 1. Either way the report above has
+ * is 1); remaining conflicts, or `--prune` deletions still running on the
+ * server, alone exit 1. Either way the report above has
  * already named every file, so this sentence only says what to do next.
+ * A push's failure decides the code before a `--prune` deletion's does.
  */
-function throwIfIncomplete(results: readonly ContextPushResult[]): void {
-	const failed = results.filter((r) => r.status === "failed");
-	const conflicts = results.filter((r) => r.status === "conflict");
-	if (failed.length === 0 && conflicts.length === 0) {
+function throwIfIncomplete(
+	results: readonly ContextPushResult[],
+	prune: boolean,
+	pruneTargets: readonly string[],
+): void {
+	const pushes = results.filter((r) => !DELETE_STATUSES.has(r.status));
+	const failed = pushes.filter((r) => r.status === "failed");
+	const conflicts = pushes.filter((r) => r.status === "conflict");
+	const unsupported = pushes.filter((r) => r.status === "move-unsupported");
+	const deleteFailed = results.filter((r) => r.status === "delete-failed");
+	const deleteConflicts = results.filter(
+		(r) => r.status === "delete-conflict",
+	);
+	const stillDeleting = results.filter(
+		(r) => r.status === "delete-in-progress",
+	);
+	if (
+		failed.length === 0 &&
+		conflicts.length === 0 &&
+		unsupported.length === 0 &&
+		deleteFailed.length === 0 &&
+		deleteConflicts.length === 0 &&
+		stillDeleting.length === 0
+	) {
 		return;
 	}
-	const parts: string[] = [];
-	if (conflicts.length > 0) {
-		parts.push(
-			`${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"}`,
+	const sentences: string[] = [];
+	const total = conflicts.length + failed.length + unsupported.length;
+	if (total > 0) {
+		const parts: string[] = [];
+		if (conflicts.length > 0) {
+			parts.push(
+				`${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"}`,
+			);
+		}
+		if (unsupported.length > 0) {
+			parts.push(
+				`${unsupported.length} move${unsupported.length === 1 ? "" : "s"} the server does not support yet`,
+			);
+		}
+		const first = failed[0];
+		if (first && first.status === "failed") {
+			// The first cause, so a hook's single stderr line says why.
+			parts.push(
+				`${failed.length} failed, first ${first.sourcePath}: ${first.error}`,
+			);
+		}
+		sentences.push(
+			`${total} of ${pushes.length} file${pushes.length === 1 ? "" : "s"} sent ${total === 1 ? "was" : "were"} not stored (${parts.join(", ")}).`,
+		);
+		if (conflicts.length > 0) {
+			sentences.push(
+				"A conflict means the server holds a version this folder did not name, or deleted the one it named: compare the two in the project's Context tab, and use --force to replace the version the conflict reported with this folder's (or to send a deleted file again with no version, which recreates it, or answers duplicate if that content is already stored under another path).",
+			);
+		}
+	}
+	if (unsupported.length > 0) {
+		sentences.push(
+			"This server does not support moves yet: a moved file's old path stays on the server and in the lock, its new path is not pushed, and the move is sent again on the next push.",
 		);
 	}
-	const first = failed[0];
-	if (first && first.status === "failed") {
-		// The first cause, so a hook's single stderr line says why.
-		parts.push(
-			`${failed.length} failed, first ${first.sourcePath}: ${first.error}`,
-		);
+	if (prune) {
+		sentences.push(`${pruneSummary(results, pruneTargets)}.`);
+		if (deleteConflicts.length > 0) {
+			sentences.push(
+				"A file changed on the server since your last push is not deleted: compare it in the project's Context tab, and use --force to delete the version the conflict reported.",
+			);
+		}
+		if (stillDeleting.length > 0) {
+			sentences.push(
+				"A deletion still running on the server keeps its lock entry: run again to confirm it.",
+			);
+		}
 	}
-	const total = conflicts.length + failed.length;
-	let message = `${total} of ${results.length} file${results.length === 1 ? "" : "s"} sent ${total === 1 ? "was" : "were"} not stored (${parts.join(", ")}).`;
-	if (conflicts.length > 0) {
-		message +=
-			" A conflict means the server holds a version this folder did not name, or deleted the one it named: compare the two in the project's Context tab, and use --force to replace the version the conflict reported with this folder's (or to send a deleted file again with no version, which recreates it, or answers duplicate if that content is already stored under another path).";
-	}
+	const firstFailure = failed[0] ?? deleteFailed[0];
 	throw new CliFailure(
-		message,
-		first && first.status === "failed" ? first.exitCode : 1,
+		sentences.join(" "),
+		firstFailure &&
+			(firstFailure.status === "failed" ||
+				firstFailure.status === "delete-failed")
+			? firstFailure.exitCode
+			: 1,
 	);
 }

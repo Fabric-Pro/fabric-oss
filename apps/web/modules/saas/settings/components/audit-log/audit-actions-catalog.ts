@@ -667,7 +667,15 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey:
 			"settings.auditLog.actions.project.context_source.content_upserted",
 		description:
-			"A synced knowledge file was pushed into a project's Context by its path, from the API (`web`) or an MCP client (`mcp-gateway`), as `metadata.via` says. `metadata.outcome` is `created` for a new path or `updated` when it replaced the stored version, which it only does when the caller named that version's hash; `metadata.sourcePath`, `metadata.contentHash`, `metadata.bytes` and, on an update, `metadata.previousContentHash` identify what was written and what it replaced. The resource name is the file's title; its content is never recorded. A push of unchanged content, of content already present as another source, or one refused because someone else changed the file first writes no row.",
+			"A synced knowledge file was pushed into a project's Context by its path, from the app (`web`), an MCP client (`mcp-gateway`) or the public API (`v1-api`), as `metadata.via` says. `metadata.outcome` is `created` for a new path, `updated` when it replaced the stored version, which it only does when the caller named that version's hash, or `moved` when the file was renamed and the same version now lives under a new path; `metadata.sourcePath`, `metadata.contentHash`, `metadata.bytes`, on an update `metadata.previousContentHash`, and on a move `metadata.previousSourcePath` identify what was written and what it replaced. The resource name is the file's title; its content is never recorded. A push of unchanged content, of content already present as another source, or one refused because someone else changed the file first writes no row.",
+	},
+	{
+		key: "project.context_source.synced_file_deleted",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_source.synced_file_deleted",
+		description:
+			"A synced knowledge file was deleted from a project's Context by its path, from the app (`web`) or the public API (`v1-api`, which `fabric context push --prune` uses), as `metadata.via` says. The delete only happens when the caller named the stored version's hash, so a file someone else changed since is never deleted by it; `metadata.sourcePath` and `metadata.contentHash` identify the version that was deleted. The resource name is the file's title; its content is never recorded. A delete of a path that no longer exists, or one refused because the file changed first, writes no row. Deleting a source from the Context tab is recorded separately, not as this action.",
 	},
 	{
 		key: "project.document_generation.failed",

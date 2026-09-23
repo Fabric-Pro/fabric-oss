@@ -21,7 +21,12 @@
  *    reported as a duplicate and nothing is created;
  *  - tenant scoping: the organization arm does not narrow by user, the
  *    personal arm does, the two never see each other's rows, and another
- *    project's row at the same path is never touched.
+ *    project's row at the same path is never touched;
+ *  - a move (`movedFromSourcePath`, Fizzy #2636) renames the row in place
+ *    only when the old path still holds the version the caller named AND the
+ *    content sent is that same version; every other case says why the move
+ *    was not applied and falls back to the ordinary rules at the new path,
+ *    never touching the old row, and never naming a row outside the scope.
  *
  * The transaction client is an in-memory table that evaluates each `where`
  * by equality, so a scope that is too wide or too narrow shows up as the
@@ -670,5 +675,337 @@ describe("upsertContextBySourcePath — tenant scoping", () => {
 			contentHash: sha(V1),
 		});
 		expect(table.state.rows).toHaveLength(2);
+	});
+});
+
+describe("upsertContextBySourcePath — a move (movedFromSourcePath)", () => {
+	const FROM = "notes/arch.md";
+	const TO = "docs/architecture.md";
+
+	/** The row a previous push left at the old path. */
+	function seedAtOldPath(overrides: Row = {}): Row {
+		return seed({
+			sourcePath: FROM,
+			metadata: { title: "arch.md", sourcePath: FROM, importedBy: "cli" },
+			...overrides,
+		});
+	}
+
+	function move(overrides: Partial<Parameters<typeof upsert>[0]> = {}) {
+		return upsert({
+			sourcePath: TO,
+			title: "architecture.md",
+			movedFromSourcePath: FROM,
+			expectedContentHash: sha(V1),
+			userId: "user-2",
+			...overrides,
+		});
+	}
+
+	it("renames the row in place when the old path holds the named version and the content is that version", async () => {
+		const existing = seedAtOldPath();
+
+		const result = await move();
+
+		expect(result.status).toBe("moved");
+		if (result.status === "moved") {
+			expect(result.movedFromSourcePath).toBe(FROM);
+			expect(result.context).toMatchObject({
+				id: existing.id,
+				sourcePath: TO,
+				contentHash: sha(V1),
+				contentUpdatedByUserId: "user-2",
+			});
+		}
+		expect(table.state.rows).toHaveLength(1);
+		expect(table.projectContext.create).not.toHaveBeenCalled();
+		expect(existing).toMatchObject({
+			sourcePath: TO,
+			// The content is untouched: a move is a rename, never a replace.
+			content: V1,
+			contentHash: sha(V1),
+			contentUpdatedByUserId: "user-2",
+			// Cleared so the row reads as not yet indexed until the re-embed
+			// refreshes the path the index carries.
+			embeddedAt: null,
+			// The title followed the file name; other keys survive.
+			metadata: {
+				title: "architecture.md",
+				sourcePath: TO,
+				importedBy: "cli",
+			},
+		});
+		expect(existing.contentUpdatedAt).not.toEqual(
+			new Date("2026-09-20T09:00:00Z"),
+		);
+	});
+
+	it("keeps a title somebody chose instead of the old file name", async () => {
+		const existing = seedAtOldPath({
+			metadata: { title: "Architecture overview", sourcePath: FROM },
+		});
+
+		await move();
+
+		expect(existing.metadata).toEqual({
+			title: "Architecture overview",
+			sourcePath: TO,
+		});
+	});
+
+	it("keys the rename on the row, the project, the tenant, the old path and the stored hash", async () => {
+		const existing = seedAtOldPath();
+
+		await move();
+
+		expect(table.projectContext.updateMany.mock.calls[0][0].where).toEqual({
+			id: existing.id,
+			projectId: "proj-1",
+			organizationId: "org-1",
+			sourcePath: FROM,
+			contentHash: sha(V1),
+		});
+	});
+
+	it("is a conflict naming the old path's version, and writes nothing, when it changed since the caller saw it", async () => {
+		const existing = seedAtOldPath({
+			content: V2,
+			contentHash: sha(V2),
+			contentUpdatedByUserId: "user-3",
+		});
+
+		const result = await move({ content: V1 });
+
+		expect(result).toEqual({
+			status: "conflict",
+			current: {
+				contextId: existing.id,
+				contentHash: sha(V2),
+				contentUpdatedAt: new Date("2026-09-20T09:00:00Z"),
+				contentUpdatedByUserId: "user-3",
+			},
+			moveNotApplied: {
+				movedFromSourcePath: FROM,
+				reason: "source-changed",
+			},
+		});
+		expect(table.projectContext.updateMany).not.toHaveBeenCalled();
+		expect(table.projectContext.create).not.toHaveBeenCalled();
+		expect(existing.sourcePath).toBe(FROM);
+	});
+
+	it("creates the new path, and says the old one is gone, when no row is at the old path", async () => {
+		const result = await move();
+
+		expect(result).toMatchObject({
+			status: "created",
+			context: { sourcePath: TO, contentHash: sha(V1) },
+			moveNotApplied: {
+				movedFromSourcePath: FROM,
+				reason: "source-missing",
+			},
+		});
+		expect(table.state.rows).toHaveLength(1);
+	});
+
+	it("answers duplicate at the new path when the old path is gone and the content lives elsewhere", async () => {
+		const other = seed({ sourcePath: "elsewhere/copy.md" });
+
+		const result = await move();
+
+		expect(result).toMatchObject({
+			status: "duplicate",
+			existing: { id: other.id },
+			moveNotApplied: {
+				movedFromSourcePath: FROM,
+				reason: "source-missing",
+			},
+		});
+		expect(table.projectContext.create).not.toHaveBeenCalled();
+	});
+
+	it("ignores the move and confirms the new path when it already holds this content, leaving the old row alone", async () => {
+		const old = seedAtOldPath();
+		const target = seed({ sourcePath: TO, metadata: { title: "x" } });
+
+		const result = await move();
+
+		expect(result).toMatchObject({
+			status: "unchanged",
+			context: { id: target.id },
+			moveNotApplied: {
+				movedFromSourcePath: FROM,
+				reason: "target-exists",
+			},
+		});
+		expect(table.projectContext.updateMany).not.toHaveBeenCalled();
+		expect(old).toMatchObject({ sourcePath: FROM, content: V1 });
+	});
+
+	it("is the new path's own conflict when it holds other content: the hash named the old path, never the new one", async () => {
+		const old = seedAtOldPath();
+		const target = seed({
+			sourcePath: TO,
+			content: V2,
+			contentHash: sha(V2),
+		});
+
+		const result = await move();
+
+		expect(result).toMatchObject({
+			status: "conflict",
+			current: { contextId: target.id, contentHash: sha(V2) },
+			moveNotApplied: {
+				movedFromSourcePath: FROM,
+				reason: "target-exists",
+			},
+		});
+		expect(table.projectContext.updateMany).not.toHaveBeenCalled();
+		expect(target.content).toBe(V2);
+		expect(old.sourcePath).toBe(FROM);
+	});
+
+	it("does not replace the new path's row even when it happens to hold the named version", async () => {
+		// The hash names what the caller last saw at the OLD path. The new
+		// path holds that same text under its own row; sending V2 there must
+		// not read as "replace V1 at the new path".
+		seed({ sourcePath: TO });
+
+		const result = await move({ content: V2 });
+
+		expect(result.status).toBe("conflict");
+		expect(table.projectContext.updateMany).not.toHaveBeenCalled();
+	});
+
+	it("says the old row is gone rather than kept when the new path exists and the old one does not", async () => {
+		seed({ sourcePath: TO });
+
+		const result = await move();
+
+		expect(result).toMatchObject({
+			status: "unchanged",
+			moveNotApplied: {
+				movedFromSourcePath: FROM,
+				reason: "source-missing",
+			},
+		});
+	});
+
+	it("does not rename and replace in one call: different content is created at the new path and the old row is left", async () => {
+		const old = seedAtOldPath();
+
+		const result = await move({ content: V2 });
+
+		expect(result).toMatchObject({
+			status: "created",
+			context: { sourcePath: TO, contentHash: sha(V2) },
+			moveNotApplied: {
+				movedFromSourcePath: FROM,
+				reason: "content-differs",
+			},
+		});
+		expect(table.projectContext.updateMany).not.toHaveBeenCalled();
+		expect(old).toMatchObject({ sourcePath: FROM, content: V1 });
+		expect(table.state.rows).toHaveLength(2);
+	});
+
+	it("answers from the new path when a concurrent push created it before the rename landed", async () => {
+		const old = seedAtOldPath();
+		table.projectContext.updateMany.mockImplementationOnce(async () => {
+			seed({ sourcePath: TO, contentUpdatedByUserId: "user-3" });
+			throw table.uniqueViolation();
+		});
+
+		const result = await move();
+
+		expect(result).toMatchObject({
+			status: "unchanged",
+			moveNotApplied: {
+				movedFromSourcePath: FROM,
+				reason: "target-exists",
+			},
+		});
+		expect(old.sourcePath).toBe(FROM);
+	});
+
+	it("is a conflict when the old row changed between the read and the rename", async () => {
+		const old = seedAtOldPath();
+		table.projectContext.updateMany.mockImplementationOnce(async () => {
+			Object.assign(old, {
+				content: V3,
+				contentHash: sha(V3),
+				contentUpdatedByUserId: "user-3",
+			});
+			return { count: 0 };
+		});
+
+		const result = await move();
+
+		expect(result).toMatchObject({
+			status: "conflict",
+			current: { contextId: old.id, contentHash: sha(V3) },
+			moveNotApplied: {
+				movedFromSourcePath: FROM,
+				reason: "source-changed",
+			},
+		});
+		expect(old.sourcePath).toBe(FROM);
+	});
+
+	it("creates the new path when the old row was deleted between the read and the rename", async () => {
+		seedAtOldPath();
+		table.projectContext.updateMany.mockImplementationOnce(async () => {
+			table.state.rows = [];
+			return { count: 0 };
+		});
+
+		const result = await move();
+
+		expect(result).toMatchObject({
+			status: "created",
+			context: { sourcePath: TO },
+			moveNotApplied: {
+				movedFromSourcePath: FROM,
+				reason: "source-missing",
+			},
+		});
+	});
+
+	it("never moves or names another project's row at the old path", async () => {
+		const other = seedAtOldPath({ projectId: "proj-2" });
+
+		const result = await move();
+
+		expect(result).toMatchObject({
+			status: "created",
+			moveNotApplied: { reason: "source-missing" },
+		});
+		expect(other).toMatchObject({ projectId: "proj-2", sourcePath: FROM });
+		expect(table.projectContext.updateMany).not.toHaveBeenCalled();
+	});
+
+	it("never moves or names a personal row from the organization arm", async () => {
+		const personal = seedAtOldPath({ organizationId: null });
+
+		const result = await move();
+
+		expect(result).toMatchObject({
+			status: "created",
+			moveNotApplied: { reason: "source-missing" },
+		});
+		expect(personal.sourcePath).toBe(FROM);
+		for (const call of table.projectContext.findFirst.mock.calls) {
+			expect(call[0].where).toMatchObject({ organizationId: "org-1" });
+			expect(call[0].where).not.toHaveProperty("OR");
+		}
+	});
+
+	it("never moves another organization's row", async () => {
+		const foreign = seedAtOldPath({ organizationId: "org-2" });
+
+		const result = await move();
+
+		expect(result.status).toBe("created");
+		expect(foreign.sourcePath).toBe(FROM);
 	});
 });

@@ -185,6 +185,10 @@ someone else has changed the file since, the push answers `conflict` with the cu
 who changed it, and nothing is overwritten. If the file was deleted since, the push answers
 `conflict` with `current` set to `null`; call again without `expectedContentHash` to recreate it,
 which answers `duplicate` instead if that content already exists elsewhere in the project.
+When a file was renamed or moved without changing, push it at its new path with the old path as
+`movedFromSourcePath` and the old path's `contentHash` as `expectedContentHash`: the stored source
+is renamed in place and answers `moved`, keeping its history, instead of leaving a second copy
+behind.
 
 Coding-instruction files — `CLAUDE.md`, `AGENTS.md`, anything under `.claude/`, and skills,
 agents, hooks, rules and scripts — do not go through this flow. The agent proposes those with

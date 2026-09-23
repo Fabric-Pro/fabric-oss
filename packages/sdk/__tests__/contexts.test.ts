@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	createFabric,
+	type DeletedSyncedContextFileResult,
 	type FabricClient,
 	FabricContextConflictError,
 	FabricError,
@@ -231,6 +232,200 @@ describe("ContextsResource.upsertSyncedFile", () => {
 
 		expect(error).toBeInstanceOf(FabricForbiddenError);
 		expect((error as FabricForbiddenError).code).toBe("MISSING_SCOPE");
+	});
+});
+
+describe("ContextsResource.upsertSyncedFile — a move (Fizzy #2636)", () => {
+	it("sends movedFromSourcePath with the old path's hash, and returns the moved result", async () => {
+		const moved = {
+			status: "moved",
+			contextId: "ctx-1",
+			sourcePath: "docs/a.md",
+			contentHash: "a".repeat(64),
+			movedFromSourcePath: "a.md",
+		};
+		const { client, captured } = buildClient({ rawBody: { data: moved } });
+
+		const result = await client.contexts.upsertSyncedFile("proj-1", {
+			sourcePath: "docs/a.md",
+			content: "# A\n",
+			movedFromSourcePath: "a.md",
+			expectedContentHash: "a".repeat(64),
+		});
+
+		expect(result).toEqual(moved);
+		expect(captured[0]?.body).toEqual({
+			sourcePath: "docs/a.md",
+			content: "# A\n",
+			expectedContentHash: "a".repeat(64),
+			movedFromSourcePath: "a.md",
+		});
+	});
+
+	it("keeps why a move was not applied on an ordinary answer", async () => {
+		const created = {
+			status: "created",
+			contextId: "ctx-2",
+			sourcePath: "docs/a.md",
+			contentHash: "a".repeat(64),
+			moveNotApplied: {
+				movedFromSourcePath: "a.md",
+				reason: "source-missing",
+			},
+		};
+		const { client } = buildClient({ rawBody: { data: created } });
+
+		const result = await client.contexts.upsertSyncedFile("proj-1", {
+			sourcePath: "docs/a.md",
+			content: "# A\n",
+			movedFromSourcePath: "a.md",
+			expectedContentHash: "a".repeat(64),
+		});
+
+		expect(result.status).toBe("created");
+		if (result.status === "created") {
+			expect(result.moveNotApplied?.reason).toBe("source-missing");
+		}
+	});
+});
+
+describe("ContextsResource.deleteSyncedFile (Fizzy #2636)", () => {
+	const DELETED = {
+		status: "deleted",
+		contextId: "ctx-1",
+		sourcePath: "docs/a.md",
+		contentHash: "a".repeat(64),
+	};
+
+	it("sends a DELETE to the synced-files route with the path and the named hash in the body", async () => {
+		const { client, captured } = buildClient({
+			rawBody: { data: DELETED },
+		});
+
+		const result = await client.contexts.deleteSyncedFile("proj 1", {
+			sourcePath: "docs/a.md",
+			expectedContentHash: "a".repeat(64),
+		});
+
+		expect(result).toEqual(DELETED);
+		const request = captured[0];
+		expect(request?.method).toBe("DELETE");
+		expect(request?.url).toBe(
+			"https://test.fabric/api/v1/projects/proj%201/contexts/synced-files",
+		);
+		expect(request?.headers["content-type"]).toBe("application/json");
+		expect(request?.body).toEqual({
+			sourcePath: "docs/a.md",
+			expectedContentHash: "a".repeat(64),
+		});
+	});
+
+	it("binds ?org= when given", async () => {
+		const { client, captured } = buildClient({
+			rawBody: { data: DELETED },
+		});
+
+		await client.contexts.deleteSyncedFile(
+			"proj-1",
+			{ sourcePath: "docs/a.md", expectedContentHash: "a".repeat(64) },
+			{ org: "example-org" },
+		);
+
+		expect(captured[0]?.url).toBe(
+			"https://test.fabric/api/v1/projects/proj-1/contexts/synced-files?org=example-org",
+		);
+	});
+
+	it("returns absent for a path with no source", async () => {
+		const absent = { status: "absent", sourcePath: "docs/a.md" };
+		const { client } = buildClient({ rawBody: { data: absent } });
+
+		const result = await client.contexts.deleteSyncedFile("proj-1", {
+			sourcePath: "docs/a.md",
+			expectedContentHash: "a".repeat(64),
+		});
+
+		expect(result).toEqual(absent);
+	});
+
+	it("resolves a 202 in-progress as its answer, once, without retrying: the deletion is still running on the server", async () => {
+		const inProgress = {
+			status: "in-progress",
+			sourcePath: "docs/a.md",
+		} satisfies DeletedSyncedContextFileResult;
+		const { client, captured } = buildClient({
+			status: 202,
+			rawBody: { data: inProgress },
+		});
+
+		const result = await client.contexts.deleteSyncedFile("proj-1", {
+			sourcePath: "docs/a.md",
+			expectedContentHash: "a".repeat(64),
+		});
+
+		expect(result).toEqual(inProgress);
+		expect(captured).toHaveLength(1);
+	});
+
+	it("throws a typed conflict carrying the stored version's stamp on 409", async () => {
+		const body = {
+			error: {
+				message:
+					"This file was changed on the server since the version you are deleting, so nothing was deleted.",
+				code: "CONFLICT",
+				data: {
+					...CONFLICT_BODY.error.data,
+				},
+			},
+		};
+		const { client } = buildClient({ status: 409, rawBody: body });
+
+		const error = await client.contexts
+			.deleteSyncedFile("proj-1", {
+				sourcePath: "docs/a.md",
+				expectedContentHash: "a".repeat(64),
+			})
+			.catch((e: unknown) => e);
+
+		expect(error).toBeInstanceOf(FabricContextConflictError);
+		const conflict = error as FabricContextConflictError;
+		expect(conflict.conflict.current?.contentHash).toBe("b".repeat(64));
+		expect(conflict.message).toMatch(/nothing was deleted/);
+	});
+
+	it("keeps a missing permission a FabricForbiddenError", async () => {
+		const { client } = buildClient({
+			status: 403,
+			rawBody: {
+				error: {
+					message:
+						"No permission to delete context sources from this project",
+				},
+			},
+		});
+
+		const error = await client.contexts
+			.deleteSyncedFile("proj-1", {
+				sourcePath: "docs/a.md",
+				expectedContentHash: "a".repeat(64),
+			})
+			.catch((e: unknown) => e);
+
+		expect(error).toBeInstanceOf(FabricForbiddenError);
+		expect(error).not.toBeInstanceOf(FabricContextConflictError);
+	});
+});
+
+describe("FabricHttpClient.delete", () => {
+	it("still sends no body for a DELETE that has none", async () => {
+		const { client, captured } = buildClient({
+			rawBody: { data: { id: "chat_1", deleted: true } },
+		});
+
+		await client.chats.delete("chat_1");
+
+		expect(captured[0]?.method).toBe("DELETE");
+		expect(captured[0]?.body).toBeNull();
 	});
 });
 
