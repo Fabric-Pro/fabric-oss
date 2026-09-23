@@ -298,12 +298,106 @@ export type DerivedInstructionChange =
  * imported — and the comparison has to happen HERE, inside the transaction
  * that can see the base's rows. Four lines duplicated beats a dependency
  * edge, but they must not drift: `derived-instruction-snapshot.test.ts`
- * asserts the NFC/NFD pair is caught here, and
+ * asserts the NFC/NFD pair is caught here,
+ * `tree-guard-agrees-with-instructions.test.ts` runs the same sequences
+ * through both packages' guards, and
  * `packages/instructions/__tests__/portable-names-agree-with-cli.test.ts`
  * pins the canonical definition.
  */
 function instructionCollisionKey(path: string): string {
 	return path.normalize("NFC").toLowerCase();
+}
+
+/** The keys of every directory a path sits under, outermost first. */
+function instructionDirectoryKeys(path: string): string[] {
+	const segments = path.split("/");
+	const keys: string[] = [];
+	// Cut on segment boundaries only, so `docs.md` and `docs/a.md` share
+	// nothing and `doc` is not a prefix of `docs/a.md`.
+	for (let i = 1; i < segments.length; i++) {
+		keys.push(instructionCollisionKey(segments.slice(0, i).join("/")));
+	}
+	return keys;
+}
+
+/**
+ * Why a put cannot join the tree: `duplicate` is a file already there under
+ * the same key, `file-directory` is a name that is a file on one side and a
+ * directory on the other. `conflictsWith` is the path already in the tree.
+ */
+type InstructionTreeConflict = {
+	kind: "duplicate" | "file-directory";
+	conflictsWith: string;
+};
+
+/**
+ * Can the result's paths coexist as ONE tree on a developer's disk?
+ *
+ * The same rule as `createTreeCollisionGuard` in
+ * `packages/instructions/src/paths.ts`, carried here as a copy for the
+ * reason `instructionCollisionKey` gives above: the question is about the
+ * BASE's rows meeting the new ones, and only this transaction sees both.
+ * Every file's key is recorded, and so is the key of each directory it sits
+ * under; a path is refused when its own key is already a file (two rows,
+ * one file), already a directory (`docs` next to `docs/a.md` — the CLI
+ * writes whichever comes first and the other fails, leaving a sync
+ * stopped part-way), or when a directory it needs is already a file
+ * (`docs/a.md` under a file named `docs`).
+ *
+ * What the canonical guard has no notion of is INHERITANCE. A base admitted
+ * before these rules existed may already hold a colliding pair, and refusing
+ * the derivation would mean no version of that project could ever be edited
+ * again — including the edit that removes one of them. So `inherit`
+ * RECORDS a row without checking it (the first spelling wins as the one a
+ * put is compared against), and only `put` refuses: against an inherited
+ * row, or against an earlier put. A refused put is not recorded, as in the
+ * canonical guard.
+ *
+ * Exported for `tree-guard-agrees-with-instructions.test.ts` only, which
+ * is what keeps this copy and the canonical guard from drifting.
+ */
+export function createInstructionTreeGuard(): {
+	inherit(path: string): void;
+	put(path: string): InstructionTreeConflict | null;
+} {
+	const files = new Map<string, string>();
+	// Directory key -> the first file that made it a directory, which is the
+	// path a later conflicting file is reported against.
+	const directories = new Map<string, string>();
+	const record = (path: string, key: string) => {
+		if (!files.has(key)) {
+			files.set(key, path);
+		}
+		for (const directoryKey of instructionDirectoryKeys(path)) {
+			if (!directories.has(directoryKey)) {
+				directories.set(directoryKey, path);
+			}
+		}
+	};
+	return {
+		inherit(path) {
+			record(path, instructionCollisionKey(path));
+		},
+		put(path) {
+			const key = instructionCollisionKey(path);
+			const sameName = files.get(key);
+			if (sameName !== undefined) {
+				return { kind: "duplicate", conflictsWith: sameName };
+			}
+			const fileUnder = directories.get(key);
+			if (fileUnder !== undefined) {
+				return { kind: "file-directory", conflictsWith: fileUnder };
+			}
+			for (const directoryKey of instructionDirectoryKeys(path)) {
+				const file = files.get(directoryKey);
+				if (file !== undefined) {
+					return { kind: "file-directory", conflictsWith: file };
+				}
+			}
+			record(path, key);
+			return null;
+		},
+	};
 }
 
 export type DerivedInstructionRefusal =
@@ -319,7 +413,14 @@ export type DerivedInstructionRefusal =
 	| "base_not_published"
 	| "base_key_unexpected"
 	| "delete_path_missing"
+	/** Two files that are one file on a case-insensitive filesystem. */
 	| "path_collision"
+	/**
+	 * A name that would be a file and a directory at once — `docs` beside
+	 * `docs/a.md` — which no filesystem can hold, so the CLI's sync would
+	 * write one and fail on the other.
+	 */
+	| "path_tree_collision"
 	| "empty_result"
 	| "too_many_files"
 	| "too_large"
@@ -747,7 +848,9 @@ function allocateAndCreateDerivedSnapshot(
 			// Across the RESULT, not across the change set: adding `Claude.md`
 			// to a base that already stores `CLAUDE.md` produces two rows that
 			// are one file on a case-insensitive filesystem, and whichever
-			// lands second wins on the developer's machine.
+			// lands second wins on the developer's machine. Adding a file
+			// `docs` to a base that stores `docs/a.md` produces a tree no
+			// filesystem can hold at all.
 			//
 			// Two things make this more than a lowercase comparison.
 			//
@@ -757,34 +860,29 @@ function allocateAndCreateDerivedSnapshot(
 			// only here — where the base's rows meet the new ones — is the
 			// pair visible at all.
 			//
-			// The INHERITED rows are exempt from colliding with EACH OTHER. A
-			// base admitted before these rules existed may already hold such a
-			// pair, and refusing the derivation would mean no version of that
-			// project could ever be edited again — including the edit that
-			// removes one of them. So an inherited pair is carried forward as
-			// it stands, and only a NEW put is refused: against an inherited
-			// row, or against another put.
-			const seen = new Map<string, string>();
+			// The INHERITED rows are exempt from colliding with EACH OTHER;
+			// `createInstructionTreeGuard` says why. Only a NEW put is
+			// refused: against an inherited row, or against another put.
+			const tree = createInstructionTreeGuard();
 			for (const file of inherited) {
-				const key = instructionCollisionKey(file.path);
-				// `set`, not a collision check: the first spelling wins as the
-				// one a put is compared against, and a second inherited row
-				// carrying the same key is carried forward untouched.
-				if (!seen.has(key)) {
-					seen.set(key, file.path);
-				}
+				tree.inherit(file.path);
 			}
 			for (const change of putList) {
-				const key = instructionCollisionKey(change.path);
-				const previous = seen.get(key);
-				if (previous !== undefined) {
-					return {
-						ok: false,
-						reason: "path_collision",
-						detail: `${previous} / ${change.path}`,
-					};
+				const conflict = tree.put(change.path);
+				if (conflict === null) {
+					continue;
 				}
-				seen.set(key, change.path);
+				return conflict.kind === "duplicate"
+					? {
+							ok: false,
+							reason: "path_collision",
+							detail: `${conflict.conflictsWith} / ${change.path}`,
+						}
+					: {
+							ok: false,
+							reason: "path_tree_collision",
+							detail: `${conflict.conflictsWith} and ${change.path}`,
+						};
 			}
 
 			const fileCount = inherited.length + putList.length;
