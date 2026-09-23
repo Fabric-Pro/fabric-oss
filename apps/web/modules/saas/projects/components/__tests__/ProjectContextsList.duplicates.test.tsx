@@ -17,7 +17,7 @@ import de from "@repo/i18n/translations/de.json";
 import en from "@repo/i18n/translations/en.json";
 import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -182,11 +182,12 @@ function wrap(ui: React.ReactElement) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
-	return render(
+	render(
 		<QueryClientProvider client={client}>
 			<FeatureFlagProvider value={{}}>{ui}</FeatureFlagProvider>
 		</QueryClientProvider>,
 	);
+	return client;
 }
 
 function fileContext(
@@ -317,6 +318,118 @@ describe("ProjectContextsList — duplicate content (Fizzy #2619)", () => {
 		expect(
 			screen.getByTestId("context-duplicates-remove"),
 		).toHaveTextContent(`${NS}.removeAction`);
+	});
+
+	it("names both titles for each copy in the confirm dialog, and never lists the kept item", async () => {
+		contextsListMock.mockResolvedValue(tripled);
+		const user = userEvent.setup();
+
+		wrap(<ProjectContextsList projectId="proj_1" />);
+
+		await user.click(
+			await screen.findByTestId("context-duplicates-remove"),
+		);
+
+		const list = await screen.findByTestId("context-duplicates-list");
+		const item1 = screen.getByTestId(
+			"context-duplicates-list-item-ctx_copy_1",
+		);
+		const item2 = screen.getByTestId(
+			"context-duplicates-list-item-ctx_copy_2",
+		);
+		expect(list).toContainElement(item1);
+		expect(list).toContainElement(item2);
+		expect(item1).toHaveTextContent(
+			`${NS}.confirmItem${JSON.stringify({
+				copyTitle: "Scope (1).pdf",
+				keptTitle: "Scope.pdf",
+			})}`,
+		);
+		expect(item2).toHaveTextContent(
+			`${NS}.confirmItem${JSON.stringify({
+				copyTitle: "Scope (2).pdf",
+				keptTitle: "Scope.pdf",
+			})}`,
+		);
+		expect(
+			screen.queryByTestId("context-duplicates-list-item-ctx_original"),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps the banner's item list collapsed by default and expands it via the toggle", async () => {
+		contextsListMock.mockResolvedValue(tripled);
+		const user = userEvent.setup();
+
+		wrap(<ProjectContextsList projectId="proj_1" />);
+
+		const toggle = await screen.findByTestId("context-duplicates-toggle");
+		expect(toggle).toHaveAttribute("aria-expanded", "false");
+		expect(
+			screen.queryByTestId("context-duplicates-list"),
+		).not.toBeInTheDocument();
+
+		await user.click(toggle);
+
+		expect(toggle).toHaveAttribute("aria-expanded", "true");
+		const list = await screen.findByTestId("context-duplicates-list");
+		// The disclosure names the list it reveals.
+		expect(list.id).not.toBe("");
+		expect(toggle).toHaveAttribute("aria-controls", list.id);
+		expect(
+			within(list).getByTestId("context-duplicates-list-item-ctx_copy_1"),
+		).toHaveTextContent(
+			`${NS}.confirmItem${JSON.stringify({
+				copyTitle: "Scope (1).pdf",
+				keptTitle: "Scope.pdf",
+			})}`,
+		);
+		expect(
+			within(list).getByTestId("context-duplicates-list-item-ctx_copy_2"),
+		).toBeInTheDocument();
+
+		// Collapses again on a second click.
+		await user.click(toggle);
+		expect(toggle).toHaveAttribute("aria-expanded", "false");
+		expect(
+			screen.queryByTestId("context-duplicates-list"),
+		).not.toBeInTheDocument();
+	});
+
+	it("collapses the banner's item list again when the duplicates go away and come back", async () => {
+		const undoubled = {
+			contexts: [fileContext("ctx_original", "Scope.pdf", null)],
+			total: 1,
+			hasMore: false,
+		};
+		contextsListMock.mockResolvedValue(tripled);
+		const user = userEvent.setup();
+
+		const client = wrap(<ProjectContextsList projectId="proj_1" />);
+
+		await user.click(
+			await screen.findByTestId("context-duplicates-toggle"),
+		);
+		expect(
+			await screen.findByTestId("context-duplicates-list"),
+		).toBeInTheDocument();
+
+		// The copies disappear on the next read (e.g. someone else removed
+		// them), then a later read brings a new set back.
+		contextsListMock.mockResolvedValue(undoubled);
+		await act(() => client.invalidateQueries());
+		await waitFor(() =>
+			expect(
+				screen.queryByTestId("context-duplicates-banner"),
+			).not.toBeInTheDocument(),
+		);
+
+		contextsListMock.mockResolvedValue(tripled);
+		await act(() => client.invalidateQueries());
+		const toggle = await screen.findByTestId("context-duplicates-toggle");
+		expect(toggle).toHaveAttribute("aria-expanded", "false");
+		expect(
+			screen.queryByTestId("context-duplicates-list"),
+		).not.toBeInTheDocument();
 	});
 
 	it("shows no banner and no markers when nothing is duplicated", async () => {
