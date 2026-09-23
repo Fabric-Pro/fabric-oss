@@ -458,6 +458,27 @@ describe("authorization", () => {
 		});
 	});
 
+	it("answers a personal key with no tie to an existing project exactly as a missing one (Fizzy #2639)", async () => {
+		// A personal key skips the hosting-organization comparison that
+		// protects organization keys, so an outsider used to reach the
+		// permission check and hear 403 — which said the project exists.
+		apiContext = personalKey();
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue(null);
+		const missing = await buildApp().request(PUBLISHED_PATH);
+
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: [],
+			source: "none",
+			organizationId: "org-other",
+		});
+		const invisible = await buildApp().request(PUBLISHED_PATH);
+
+		expect(missing.status).toBe(404);
+		expect(invisible.status).toBe(missing.status);
+		await expect(invisible.json()).resolves.toEqual(await missing.json());
+		expect(mocks.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
 	it("refuses a personal project, whose host organization is null", async () => {
 		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
 			permissions: ["instruction:read"],
