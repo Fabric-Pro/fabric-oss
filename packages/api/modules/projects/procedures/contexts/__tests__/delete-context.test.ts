@@ -53,18 +53,6 @@ vi.mock("../../../../../orpc/procedures", () => {
 	builder.handler = (fn: unknown) => ({ handler: fn });
 	return {
 		tenantProtectedProcedure: builder,
-		resolveOrganizationId: (
-			input: string | null | undefined,
-			session: { activeOrganizationId?: string | null },
-		) => {
-			if (input) {
-				return input;
-			}
-			if (input === null) {
-				return undefined;
-			}
-			return session?.activeOrganizationId ?? undefined;
-		},
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
 		requireProjectPermission: () => (c: unknown) => c,
@@ -95,6 +83,9 @@ const personalCtx = {
 	session: { activeOrganizationId: undefined },
 };
 
+/** The `project` relation `getContextById` loads on every row. */
+const personalProject = { organizationId: null };
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockHasProjectAccess.mockResolvedValue(true);
@@ -113,6 +104,7 @@ describe("deleteContext — URL Source schedule cleanup", () => {
 		mockGetContextById.mockResolvedValue({
 			id: "ctx-link",
 			projectId: "proj-1",
+			project: personalProject,
 			type: "LINK",
 			sourceTitle: "Docs",
 			urlScheduleId: "url-source-schedule-ctx-link",
@@ -146,6 +138,7 @@ describe("deleteContext — URL Source schedule cleanup", () => {
 		mockGetContextById.mockResolvedValue({
 			id: "ctx-link",
 			projectId: "proj-1",
+			project: personalProject,
 			type: "LINK",
 			sourceTitle: "Article",
 			urlScheduleId: null,
@@ -164,6 +157,7 @@ describe("deleteContext — URL Source schedule cleanup", () => {
 		mockGetContextById.mockResolvedValue({
 			id: "ctx-file",
 			projectId: "proj-1",
+			project: personalProject,
 			type: "FILE",
 			urlScheduleId: null,
 		});
@@ -188,6 +182,7 @@ describe("deleteContext — URL Source schedule cleanup", () => {
 			mockGetContextById.mockResolvedValue({
 				id: "ctx-link",
 				projectId: "proj-1",
+				project: personalProject,
 				type: "LINK",
 				sourceTitle: "Docs",
 				urlScheduleId: null,
@@ -221,6 +216,7 @@ describe("deleteContext — URL Source schedule cleanup", () => {
 			mockGetContextById.mockResolvedValue({
 				id: "ctx-link",
 				projectId: "proj-1",
+				project: personalProject,
 				type: "LINK",
 				sourceTitle: "Docs",
 				urlScheduleId: null,
@@ -243,6 +239,7 @@ describe("deleteContext — URL Source schedule cleanup", () => {
 		mockGetContextById.mockResolvedValue({
 			id: "ctx-file",
 			projectId: "proj-1",
+			project: personalProject,
 			type: "FILE",
 			extractionStatus: "EXTRACTING",
 			urlScheduleId: null,
@@ -261,6 +258,7 @@ describe("deleteContext — URL Source schedule cleanup", () => {
 		mockGetContextById.mockResolvedValue({
 			id: "ctx-link",
 			projectId: "proj-1",
+			project: personalProject,
 			type: "LINK",
 			sourceTitle: "Docs",
 			urlScheduleId: "url-source-schedule-ctx-link",
@@ -289,6 +287,7 @@ describe("deleteContext — workflow start failure", () => {
 		mockGetContextById.mockResolvedValue({
 			id: "ctx-file",
 			projectId: "proj-1",
+			project: personalProject,
 			type: "FILE",
 			urlScheduleId: null,
 		});
@@ -319,6 +318,7 @@ describe("deleteContext — expectedDuplicateOfContextId guard", () => {
 	const copy = {
 		id: "ctx-copy",
 		projectId: "proj-1",
+		project: personalProject,
 		type: "FILE",
 		urlScheduleId: null,
 		contentHash: "hash-a",
@@ -326,6 +326,7 @@ describe("deleteContext — expectedDuplicateOfContextId guard", () => {
 	const original = {
 		id: "ctx-original",
 		projectId: "proj-1",
+		project: personalProject,
 		type: "FILE",
 		urlScheduleId: null,
 		contentHash: "hash-a",
@@ -468,5 +469,144 @@ describe("deleteContext — expectedDuplicateOfContextId guard", () => {
 		expect(result).toEqual({ success: true });
 		expect(mockGetContextById).toHaveBeenCalledTimes(1);
 		expect(mockTemporalStart).toHaveBeenCalled();
+	});
+});
+
+/**
+ * Fizzy #2638: the tenant the deletion workflow runs under is the project's
+ * hosting organization, read from the loaded row. `requireProjectPermission`
+ * never reads the organization and `hasProjectAccess` ignores it, so a value
+ * taken from the request body was never verified: a caller who reaches an
+ * organization-A project and also belongs to organization B could send B, or
+ * null, and have A's points deleted from the wrong collection.
+ */
+describe("deleteContext — the workflow runs under the project's hosting organization", () => {
+	const orgRow = {
+		id: "ctx-file",
+		projectId: "proj-1",
+		project: { organizationId: "org-a" },
+		type: "FILE",
+		urlScheduleId: null,
+	};
+
+	function workflowInput(): Record<string, unknown> {
+		expect(mockTemporalStart).toHaveBeenCalledTimes(1);
+		const options = mockTemporalStart.mock.calls[0][1] as {
+			args: [Record<string, unknown>];
+		};
+		return options.args[0];
+	}
+
+	it("passes the hosting organization when the caller sends it", async () => {
+		mockGetContextById.mockResolvedValue(orgRow);
+
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				id: "ctx-file",
+				projectId: "proj-1",
+				organizationId: "org-a",
+			},
+			context: personalCtx,
+		});
+
+		expect(workflowInput().organizationId).toBe("org-a");
+	});
+
+	it("passes the hosting organization when the caller sends null", async () => {
+		mockGetContextById.mockResolvedValue(orgRow);
+
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				id: "ctx-file",
+				projectId: "proj-1",
+				organizationId: null,
+			},
+			context: personalCtx,
+		});
+
+		expect(workflowInput().organizationId).toBe("org-a");
+	});
+
+	it("ignores the session's active organization when the caller sends nothing", async () => {
+		mockGetContextById.mockResolvedValue(orgRow);
+
+		const handler = await loadHandler();
+		await handler({
+			input: { id: "ctx-file", projectId: "proj-1" },
+			context: {
+				...personalCtx,
+				session: { activeOrganizationId: "org-b" },
+			},
+		});
+
+		expect(workflowInput().organizationId).toBe("org-a");
+	});
+
+	it("refuses another organization's id and starts nothing", async () => {
+		mockGetContextById.mockResolvedValue({
+			...orgRow,
+			type: "LINK",
+			urlScheduleId: "url-source-schedule-ctx-file",
+		});
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					id: "ctx-file",
+					projectId: "proj-1",
+					organizationId: "org-b",
+				},
+				context: personalCtx,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: "organizationId does not match the project",
+		});
+
+		expect(mockDeleteUrlSourceSchedule).not.toHaveBeenCalled();
+		expect(mockTemporalStart).not.toHaveBeenCalled();
+		expect(mockEmitContextChange).not.toHaveBeenCalled();
+		expect(mockEmitActivity).not.toHaveBeenCalled();
+	});
+
+	it("refuses an organization id for a personal project", async () => {
+		mockGetContextById.mockResolvedValue({
+			...orgRow,
+			project: personalProject,
+		});
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					id: "ctx-file",
+					projectId: "proj-1",
+					organizationId: "org-b",
+				},
+				context: personalCtx,
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(mockTemporalStart).not.toHaveBeenCalled();
+	});
+
+	it("passes no organization for a personal project", async () => {
+		mockGetContextById.mockResolvedValue({
+			...orgRow,
+			project: personalProject,
+		});
+
+		const handler = await loadHandler();
+		await handler({
+			input: { id: "ctx-file", projectId: "proj-1" },
+			context: {
+				...personalCtx,
+				session: { activeOrganizationId: "org-b" },
+			},
+		});
+
+		expect(workflowInput().organizationId).toBeUndefined();
 	});
 });

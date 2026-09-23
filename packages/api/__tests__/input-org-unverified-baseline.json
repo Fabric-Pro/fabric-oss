@@ -114,7 +114,6 @@
 	"packages/api/modules/projects/procedures/contexts/cancel-summary.ts",
 	"packages/api/modules/projects/procedures/contexts/cancel-url-source-crawl.ts",
 	"packages/api/modules/projects/procedures/contexts/create-context.ts",
-	"packages/api/modules/projects/procedures/contexts/delete-context.ts",
 	"packages/api/modules/projects/procedures/contexts/get-summary-version.ts",
 	"packages/api/modules/projects/procedures/contexts/get-summary.ts",
 	"packages/api/modules/projects/procedures/contexts/get-url-page-content.ts",

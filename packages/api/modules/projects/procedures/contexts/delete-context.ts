@@ -6,12 +6,12 @@ import {
 	getTemporalClient,
 } from "@repo/temporal";
 import { z } from "zod";
+import { assertInputOrgMatchesProject } from "../../../../lib/authorized-project-tenant";
 import { emitActivity, emitContextChange } from "../../../../lib/realtime";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
 	Permissions,
 	requireProjectPermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 
@@ -29,6 +29,10 @@ export const deleteContextProcedure = tenantProtectedProcedure
 		z.object({
 			projectId: z.string(),
 			id: z.string(),
+			/**
+			 * A guard only, never the tenant the delete runs under: the
+			 * hosting organization comes from the project row (Fizzy #2638).
+			 */
 			organizationId: z.string().nullable().optional(),
 			/**
 			 * "Remove duplicates" (Fizzy #2619) names the item this one was
@@ -41,17 +45,9 @@ export const deleteContextProcedure = tenantProtectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const user = context.user;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
 
 		// Check project access
-		const hasAccess = await hasProjectAccess(
-			input.projectId,
-			user.id,
-			organizationId,
-		);
+		const hasAccess = await hasProjectAccess(input.projectId, user.id);
 
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
@@ -67,6 +63,23 @@ export const deleteContextProcedure = tenantProtectedProcedure
 				message: "Context not found",
 			});
 		}
+
+		// The tenant the deletion runs under is the project's hosting
+		// organization, read from the loaded row — never the request body
+		// (Fizzy #2638). `requireProjectPermission` authorizes on
+		// (projectId, userId) without reading the organization, and
+		// `hasProjectAccess` ignores its organization argument, so a
+		// caller-supplied id was never verified: the creator of an
+		// organization-A project who also belongs to organization B could
+		// send B (or null), and the workflow deleted points from B's
+		// collection (or the personal arm) before deleting A's row, leaving
+		// A's points orphaned. `input.organizationId` stays as a guard only.
+		assertInputOrgMatchesProject(
+			input.organizationId,
+			projectContext.project,
+		);
+		const organizationId =
+			projectContext.project.organizationId ?? undefined;
 
 		// Duplicate removal (Fizzy #2619): the caller decided this row was a
 		// copy from a list it read earlier. Content can change and the
