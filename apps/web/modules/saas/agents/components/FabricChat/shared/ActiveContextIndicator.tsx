@@ -24,7 +24,7 @@ import {
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
-import { FolderKanban, FolderOpen, Info, Plug2, Star } from "lucide-react";
+import { FolderKanban, FolderOpen, Info, Plug2, Star, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useMemo } from "react";
 
@@ -183,6 +183,13 @@ interface ActiveContextIndicatorProps {
 	projectId?: string | null;
 	/** Callback when project pill is clicked */
 	onProjectClick?: () => void;
+	/**
+	 * Removes the attached project. The pill shows its × only when set, so a
+	 * surface that cannot drop the project never offers to.
+	 */
+	onProjectRemove?: () => void;
+	/** Holds the × while a removal is in flight. */
+	projectRemoveDisabled?: boolean;
 	/** IDs of prioritized tools (Fabric AI) */
 	prioritizedToolIds?: string[];
 	/** IDs of prioritized agents */
@@ -428,6 +435,8 @@ export function ActiveContextIndicator({
 	integrationIds = [],
 	projectId,
 	onProjectClick,
+	onProjectRemove,
+	projectRemoveDisabled = false,
 	prioritizedToolIds = [],
 	prioritizedAgentIds = [],
 	prioritizedMcpConfigIds = [],
@@ -760,17 +769,33 @@ export function ActiveContextIndicator({
 			)}
 
 			{projectId && (
-				<button
-					type="button"
-					onClick={onProjectClick}
-					className={cn(
-						"inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium cursor-pointer transition-colors hover:opacity-80",
-						"bg-primary/10 text-primary",
-					)}
-				>
-					<FolderKanban className="h-2.5 w-2.5" />
-					{projectName}
-				</button>
+				<span className="inline-flex items-center gap-0.5 rounded-full bg-primary/10 pr-0.5 text-[10px] font-medium text-primary">
+					<button
+						type="button"
+						onClick={onProjectClick}
+						className={cn(
+							"inline-flex items-center gap-1 rounded-full py-0.5 pl-1.5 transition-opacity hover:opacity-80",
+							onProjectRemove ? "pr-0.5" : "pr-1.5",
+							onProjectClick
+								? "cursor-pointer"
+								: "cursor-default",
+						)}
+					>
+						<FolderKanban className="h-2.5 w-2.5" />
+						{projectName}
+					</button>
+					{onProjectRemove ? (
+						<button
+							type="button"
+							onClick={onProjectRemove}
+							disabled={projectRemoveDisabled}
+							aria-label={`Remove project ${projectName}`}
+							className="rounded-full p-0.5 text-primary/70 transition-colors hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+						>
+							<X className="h-2.5 w-2.5" />
+						</button>
+					) : null}
+				</span>
 			)}
 		</div>
 	);

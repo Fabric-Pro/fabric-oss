@@ -27,6 +27,17 @@ describe("getInterfaceModeChrome", () => {
 		expect(getInterfaceModeChrome("advanced").showAgentPicker).toBe(true);
 	});
 
+	it("lists models only in simple mode and the full catalog in advanced", () => {
+		// Decision 2026-09-23: advanced offers agents, templates and models on
+		// both engines; simple offers models only (FR17).
+		expect(getInterfaceModeChrome("simple").agentPickerCatalog).toBe(
+			"models",
+		);
+		expect(getInterfaceModeChrome("advanced").agentPickerCatalog).toBe(
+			"all",
+		);
+	});
+
 	it("keeps the tool picker advanced-only", () => {
 		expect(getInterfaceModeChrome("simple").showToolPicker).toBe(false);
 		expect(getInterfaceModeChrome("advanced").showToolPicker).toBe(true);

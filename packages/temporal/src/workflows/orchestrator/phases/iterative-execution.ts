@@ -53,8 +53,18 @@ import type {
 	McpDefaultToolSurface,
 	OrchestratorWorkflowInput,
 	PhaseResult,
+	WaitForApprovalOptions,
 	WorkflowState,
 } from "../types";
+import {
+	attachedImagesSystemNote,
+	attachedImagesUserNote,
+} from "./image-attachment-prompt";
+import { resolveRuntimeAuthority } from "./runtime-authority-round";
+import {
+	buildSynthesisHistory,
+	renderPartialFindings,
+} from "./synthesis-history";
 
 /**
  * Build a `TokenBudgetStatus` snapshot from the current `iterationCosts`.
@@ -95,6 +105,8 @@ const {
 	searchAvailableIntegrations,
 	createOrchestratorApprovalRequest,
 	updateApprovalTaskStatus,
+	approveAuthoritySessionActivity,
+	denyAuthoritySessionActivity,
 	summarizeLargeToolResult,
 	preloadMcpToolsForConfigsActivity,
 	compactConversationHistoryActivity,
@@ -1109,7 +1121,9 @@ export async function executeIterativePhase(
 	modeConfig: ExecutionModeConfig,
 	_altkConfig: ALTKConfig,
 	updateProgress: (phase: string, message: string) => void,
-	waitForApproval: () => Promise<ApprovalSignalData | null>,
+	waitForApproval: (
+		options?: WaitForApprovalOptions,
+	) => Promise<ApprovalSignalData | null>,
 	isCancelled: () => boolean,
 ): Promise<
 	PhaseResult<{
@@ -1135,8 +1149,16 @@ export async function executeIterativePhase(
 	// Append attached image context to user message so LLM knows about them
 	// These are S3 storage paths (not URLs) - the image generation activity downloads from S3 directly
 	let userContent = state.enrichedMessage;
+	// Evaluated only when images are attached (input is immutable, so the
+	// marker is recorded identically on every replay of this execution).
+	const imageVisionPrompt = input.attachedImageUrls?.length
+		? patched("orch-image-vision-prompt-v1")
+		: false;
 	if (input.attachedImageUrls?.length) {
-		userContent += `\n\n[ATTACHED IMAGES: ${input.attachedImageUrls.length} image(s). Storage paths: ${input.attachedImageUrls.join(", ")}. Use fabric_generate_image with the storage path as inputImage parameter for image editing/modification tasks.]`;
+		userContent += attachedImagesUserNote(
+			input.attachedImageUrls,
+			imageVisionPrompt,
+		);
 	}
 
 	// Add the current user message after the history
@@ -1562,6 +1584,16 @@ export async function executeIterativePhase(
 			// the deterministic `summarizeAccomplishments` static summary.
 			const MIN_USEFUL_SYNTHESIS_CHARS = 200;
 
+			// Synthesis over a compacted copy of the history, and a fallback
+			// that carries the run's latest findings. Gated: both change what
+			// the synthesis activity is sent and what the turn answers, so a
+			// history recorded before this replays with the full history and
+			// the old fallback text.
+			const compactSynthesis = patched("orch-synthesis-compacted-v1");
+			const synthesisHistory = compactSynthesis
+				? buildSynthesisHistory(conversationHistory)
+				: conversationHistory;
+
 			let synthesisContent = "";
 			try {
 				// Do NOT add an extra pruneConversationHistory pass here. The
@@ -1570,7 +1602,7 @@ export async function executeIterativePhase(
 				// pruning again strips them and synthesis sees only
 				// `[Previous tool result pruned]` placeholders.
 				const synthesisResult = await runAgentIteration({
-					conversationHistory,
+					conversationHistory: synthesisHistory,
 					availableTools: {}, // No tools → forces text response
 					systemPrompt: SYNTHESIS_SYSTEM_PROMPT,
 					userId: input.userId,
@@ -1623,7 +1655,7 @@ export async function executeIterativePhase(
 					);
 					const retrySystemPrompt = `${SYNTHESIS_SYSTEM_PROMPT}\n\nRETRY NOTE: A previous attempt returned a response under ${MIN_USEFUL_SYNTHESIS_CHARS} characters. That response was discarded. Produce the full structured summary now with all three required sections (## Summary, ## What I did, ## What's still needed). Do NOT respond with single-line acknowledgments like "Task completed." — that mode of response failed validation.`;
 					const retryResult = await runAgentIteration({
-						conversationHistory,
+						conversationHistory: synthesisHistory,
 						availableTools: {},
 						systemPrompt: retrySystemPrompt,
 						userId: input.userId,
@@ -1671,7 +1703,9 @@ export async function executeIterativePhase(
 						minRequired: MIN_USEFUL_SYNTHESIS_CHARS,
 					},
 				);
-				synthesisContent = summarizeAccomplishments(state);
+				synthesisContent = summarizeAccomplishments(state, {
+					includeFindings: compactSynthesis,
+				});
 			}
 
 			// Stash the summary on state so buildWorkflowOutput can surface
@@ -1701,9 +1735,10 @@ export async function executeIterativePhase(
 			? `${state.enrichedSystemPrompt}${budgetWarning}`
 			: state.enrichedSystemPrompt;
 
-		// When images are attached, hint the LLM to search for image tools
+		// When images are attached, tell the model how to treat them
 		if (input.attachedImageUrls?.length && iteration === 1) {
-			iterationSystemPrompt += `\n\nIMPORTANT: The user has attached image(s). You MUST use the search_tools function to find image generation/editing tools (e.g. search for "image generation") before responding. Do NOT describe images textually — use the discovered tool to process or generate images.`;
+			iterationSystemPrompt +=
+				attachedImagesSystemNote(imageVisionPrompt);
 		}
 
 		// When image generation results exist, instruct LLM to inline them
@@ -2723,7 +2758,7 @@ Never guess or use example values — always use real data from API responses.`;
 					toolResult = skillResult;
 				} else {
 					// Regular MCP tool execution
-					const result = await executeMcpTool({
+					const mcpToolInput = {
 						toolName: toolCall.name,
 						args: toolCall.args,
 						userId: input.userId,
@@ -2749,7 +2784,48 @@ Never guess or use example values — always use real data from API responses.`;
 						timeoutMs: patched("loom-mcp-tool-call-ceiling-v1")
 							? DEFAULT_MCP_TOOL_TIMEOUT_MS
 							: undefined,
-					});
+						// Runtime authority for WRITE tools, which this loop
+						// never checked (Direct did): the activity refuses an
+						// unauthorized write and raises a pending session that
+						// the round below puts in front of the user. Grants bind
+						// to the conversation so they carry into the next turn.
+						// Its own marker: it widens the recorded activity input
+						// and adds an approval wait, so a history from before it
+						// must replay with neither.
+						...(patched("orch-iterative-runtime-authority-v1")
+							? {
+									conversationId: input.conversationId,
+									requestRuntimeAuthority: true,
+								}
+							: {}),
+					};
+					let result = await executeMcpTool(mcpToolInput);
+					if (mcpToolInput.requestRuntimeAuthority) {
+						result = await resolveRuntimeAuthority(result, {
+							state,
+							toolCallId: toolCall.id,
+							runTool: () => executeMcpTool(mcpToolInput),
+							waitForApproval,
+							approveSession: ({
+								authoritySessionId,
+								instructions,
+							}) =>
+								approveAuthoritySessionActivity({
+									authoritySessionId,
+									userId: input.userId,
+									organizationId: input.organizationId,
+									instructions,
+								}),
+							denySession: ({ authoritySessionId, reason }) =>
+								denyAuthoritySessionActivity({
+									authoritySessionId,
+									userId: input.userId,
+									organizationId: input.organizationId,
+									reason,
+								}),
+							updateProgress,
+						});
+					}
 
 					toolResult = result.output;
 					// Capture MCP App resource URI for iframe rendering
@@ -3338,7 +3414,10 @@ function renderToolCallArgs(args: unknown): string {
 const MAX_TOOLS_LISTED = 8;
 const MAX_CALLS_PER_TOOL_SHOWN = 4;
 const MAX_ORIGINAL_TASK_CHARS = 400;
-export function summarizeAccomplishments(state: WorkflowState): string {
+export function summarizeAccomplishments(
+	state: WorkflowState,
+	options: { includeFindings?: boolean } = {},
+): string {
 	const sections: string[] = [];
 
 	const originalTask = (state.enrichedMessage || "").trim();
@@ -3351,18 +3430,24 @@ export function summarizeAccomplishments(state: WorkflowState): string {
 	const successful = state.toolCalls.filter((tc) => tc.status === "success");
 	const failed = state.toolCalls.filter((tc) => tc.status === "error");
 	const iterations = state.currentIteration ?? 0;
+	// The patched wording matches the handoff card: it is this answer's step
+	// budget that ran out, not the conversation.
+	const stopped = options.includeFindings
+		? `Ran out of this answer's step budget after ${iterations} iteration(s)`
+		: `Reached the conversation limit after ${iterations} iteration(s)`;
+	const toContinue = options.includeFindings
+		? "## To continue\n\nAsk me to continue, narrow the question, or open a new chat with this summary carried over."
+		: "## To continue\n\nOpen a new chat. The summary above will be carried over as context.";
 
 	if (state.toolCalls.length === 0) {
 		sections.push(
-			`## What I attempted\n\nReached the conversation limit after ${iterations} iteration(s) without successfully invoking any tools.`,
+			`## What I attempted\n\n${stopped} without successfully invoking any tools.`,
 		);
-		sections.push(
-			"## To continue\n\nOpen a new chat. The summary above will be carried over as context.",
-		);
+		sections.push(toContinue);
 		return sections.join("\n\n");
 	}
 
-	const headline = `Reached the conversation limit after ${iterations} iteration(s). Made ${state.toolCalls.length} tool call(s) — ${successful.length} successful${failed.length ? `, ${failed.length} failed` : ""}.`;
+	const headline = `${stopped}. Made ${state.toolCalls.length} tool call(s) — ${successful.length} successful${failed.length ? `, ${failed.length} failed` : ""}.`;
 
 	// Group by tool name preserving first-seen order so the output is
 	// deterministic and reads chronologically.
@@ -3419,9 +3504,13 @@ export function summarizeAccomplishments(state: WorkflowState): string {
 	sections.push(
 		`## What I attempted\n\n${headline}\n\n${toolLines.join("\n")}`,
 	);
-	sections.push(
-		"## To continue\n\nOpen a new chat. The summary above will be carried over as context.",
-	);
+	const findings = options.includeFindings
+		? renderPartialFindings(state.toolCalls)
+		: null;
+	if (findings) {
+		sections.push(findings);
+	}
+	sections.push(toContinue);
 
 	return sections.join("\n\n");
 }

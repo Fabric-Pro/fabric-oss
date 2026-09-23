@@ -35,6 +35,17 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useAccountPath: (path: string) => `/app/own-org/${path}`,
 }));
 
+// The project the page registered with the ⌘J launcher (#2040). `null` is a
+// page without one, or a shell rendered outside the launcher's provider.
+const launcherAmbientContext = vi.hoisted(() => ({
+	current: null as { projectId: string; projectName: string } | null,
+}));
+vi.mock("@saas/agents/components/FabricAgentLauncher", () => ({
+	useOptionalFabricAgentLauncher: () => ({
+		ambientContext: launcherAmbientContext.current,
+	}),
+}));
+
 const guestMock = vi.fn();
 vi.mock("@saas/organizations/hooks/use-is-guest-in-org", () => ({
 	useIsGuestInOrg: () => guestMock(),
@@ -241,6 +252,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	stubOnScreen();
 	mockIsCollapsed = false;
+	launcherAmbientContext.current = null;
 });
 
 describe("NavBar — guest sidebar hygiene", () => {
@@ -334,6 +346,42 @@ describe("NavBar — guest sidebar hygiene", () => {
 		expect(projects.length).toBeGreaterThan(0);
 		for (const link of projects) {
 			expect(link).toHaveAttribute("href", "/app/own-org/projects");
+		}
+	});
+
+	it("opens the AI chat on the project the page is showing (#2040)", () => {
+		setupNonGuestOrgContext();
+		launcherAmbientContext.current = {
+			projectId: "project_1",
+			projectName: "Atlas",
+		};
+		renderNavBar();
+
+		for (const link of screen.getAllByRole("link", {
+			name: /app\.menu\.aiChatbot/,
+		})) {
+			expect(link).toHaveAttribute(
+				"href",
+				"/app/org-1/agents/fabric-ai?projectId=project_1&projectName=Atlas",
+			);
+		}
+	});
+
+	it("never carries the visited organization's project into a guest's own-org chat", () => {
+		setupGuestOrgContext();
+		launcherAmbientContext.current = {
+			projectId: "host_project",
+			projectName: "Host",
+		};
+		renderNavBar();
+
+		for (const link of screen.getAllByRole("link", {
+			name: /app\.menu\.aiChatbot/,
+		})) {
+			expect(link).toHaveAttribute(
+				"href",
+				"/app/own-org/agents/fabric-ai",
+			);
 		}
 	});
 

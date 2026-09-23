@@ -33,10 +33,19 @@ export function mergeOrchestratorConversationMetadata(params: {
 	instanceId?: string;
 	executions?: unknown[];
 	selectedMcpConfigIds?: string[];
+	/** The AiChat that uploaded documents are stored under (Files tab). */
+	documentChatId?: string | null;
 }): Record<string, unknown> {
+	// A conversation keeps the engine it was created on (Fizzy #2040). Stamping
+	// `orchestrator` over a Direct thread would hand it to an engine that
+	// cannot hydrate it, so only a missing mode is filled in.
+	const existingMode = params.existing?.mode;
 	const next: Record<string, unknown> = {
 		...(params.existing ?? {}),
-		mode: "orchestrator",
+		mode:
+			typeof existingMode === "string" && existingMode.length > 0
+				? existingMode
+				: "orchestrator",
 		executionMode: params.executionMode,
 		lastUpdated: new Date().toISOString(),
 	};
@@ -47,6 +56,10 @@ export function mergeOrchestratorConversationMetadata(params: {
 
 	if (params.executions !== undefined) {
 		next.executions = params.executions;
+	}
+
+	if (params.documentChatId) {
+		next.documentChatId = params.documentChatId;
 	}
 
 	if (params.selectedMcpConfigIds !== undefined) {

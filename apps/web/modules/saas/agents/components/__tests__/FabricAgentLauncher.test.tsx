@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	FabricAgentLauncherProvider,
@@ -6,8 +12,28 @@ import {
 	useRegisterFabricAgentContext,
 } from "../FabricAgentLauncher";
 
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({ user: { id: "user_1" } }),
+}));
+
 vi.mock("next/navigation", () => ({
 	usePathname: () => "/app/projects/project_1",
+}));
+
+/**
+ * The stored preferences the drawer reads (#2040). Tests set it before
+ * rendering; `undefined` is a user whose preference has not resolved, which
+ * the drawer treats as simple mode.
+ */
+const storedPreferences = vi.hoisted(() => ({
+	current: undefined as
+		| {
+				uiMode: "simple" | "advanced";
+				chatMode: "direct" | "orchestrator" | "research";
+				reasoningMode: "lite" | "balanced" | "deep" | "planner";
+				enabledMcpConfigIds: string[];
+		  }
+		| undefined,
 }));
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
@@ -15,62 +41,173 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 		await importOriginal<typeof import("@tanstack/react-query")>();
 	return {
 		...actual,
-		useQuery: vi.fn(() => ({ data: undefined, isLoading: false })),
+		useQuery: vi.fn((options: { queryKey?: unknown[] }) => ({
+			data:
+				options?.queryKey?.[0] === "orchestrator-preferences"
+					? storedPreferences.current
+					: options?.queryKey?.[0] === "chat-agent-selection"
+						? storedAgentSelection.current
+						: undefined,
+			isLoading: false,
+		})),
 		// The drawer invalidates the conversation cache when a turn it started
 		// finishes, so the full page picks it up after an expand (#2040).
-		useQueryClient: vi.fn(() => ({ invalidateQueries: vi.fn() })),
+		useQueryClient: vi.fn(() => queryClientMock),
 	};
 });
 
+/** The saved picker selection, as the server returns it (FR13). */
+const storedAgentSelection = vi.hoisted(() => ({
+	current: undefined as
+		| {
+				selectedAgents: Array<{ agentId: string; name: string }>;
+				defaultAgent: { agentId: string; name: string } | null;
+				droppedCount: number;
+		  }
+		| undefined,
+}));
+
+const toastMock = vi.hoisted(() => ({ message: vi.fn(), error: vi.fn() }));
+vi.mock("sonner", () => ({ toast: toastMock }));
+
+const queryClientMock = vi.hoisted(() => ({
+	invalidateQueries: vi.fn(),
+	setQueryData: vi.fn(),
+}));
+
+const orpcClientMock = vi.hoisted(() => ({
+	users: {
+		orchestratorPreferences: {
+			update: vi.fn(async () => ({})),
+		},
+	},
+}));
+
+vi.mock("@shared/lib/orpc-client", () => ({ orpcClient: orpcClientMock }));
+vi.mock("@shared/lib/orpc-query-utils", () => ({
+	orpc: {
+		agents: {
+			codeIndex: {
+				status: {
+					queryOptions: () => ({ queryKey: ["code-index-status"] }),
+				},
+			},
+		},
+	},
+}));
+
+/**
+ * Both engines render through `next/dynamic`; the mock tells them apart by
+ * the module their loader imports and renders the props the drawer passes.
+ */
 vi.mock("next/dynamic", async () => {
 	const React = await import("react");
 
-	function MockDynamicFabricDirectChat({
-		initialInput,
-		attachedProjectId,
-		attachedCodeContext,
-		systemPrompt,
-	}: {
+	interface MockChatProps {
 		initialInput?: string;
 		attachedProjectId?: string | null;
 		attachedCodeContext?: {
 			filePath?: string | null;
 			lineStart?: number | null;
 			lineEnd?: number | null;
-			snippet?: string | null;
 		} | null;
 		systemPrompt?: string;
-	}) {
-		const [mockInput, setMockInput] = React.useState(initialInput ?? "");
-
-		React.useEffect(() => {
-			setMockInput(initialInput ?? "");
-		}, [initialInput]);
-
-		return (
-			<div>
-				<div>mock direct chat</div>
-				<div>initial input: {mockInput}</div>
-				<div>attached project: {attachedProjectId ?? ""}</div>
-				<div data-testid="system-prompt">{systemPrompt ?? ""}</div>
-				<div>
-					attached code: {attachedCodeContext?.filePath ?? ""}
-					{attachedCodeContext?.lineStart
-						? `:${attachedCodeContext.lineStart}${
-								attachedCodeContext.lineEnd &&
-								attachedCodeContext.lineEnd !==
-									attachedCodeContext.lineStart
-									? `-${attachedCodeContext.lineEnd}`
-									: ""
-							}`
-						: ""}
-				</div>
-			</div>
-		);
+		reasoningMode?: string;
+		executionModeOverride?: string;
+		enabledToolIds?: string[] | null;
+		enabledMcpConfigIds?: string[] | null;
+		compactMode?: boolean;
+		telemetrySurface?: string;
+		surface?: string;
+		onConversationCreated?: (id: string) => void;
+		onStreamingChange?: (streaming: boolean) => void;
+		onProjectRemove?: () => void;
+		agentPickerCatalog?: string;
 	}
 
+	function mockChat(engine: "direct" | "orchestrator") {
+		return function MockChat({
+			initialInput,
+			attachedProjectId,
+			attachedCodeContext,
+			systemPrompt,
+			reasoningMode,
+			executionModeOverride,
+			enabledToolIds,
+			enabledMcpConfigIds,
+			compactMode,
+			telemetrySurface,
+			surface,
+			onConversationCreated,
+			onStreamingChange,
+			onProjectRemove,
+			agentPickerCatalog,
+		}: MockChatProps) {
+			const [mockInput, setMockInput] = React.useState(
+				initialInput ?? "",
+			);
+
+			React.useEffect(() => {
+				setMockInput(initialInput ?? "");
+			}, [initialInput]);
+
+			return (
+				<div data-testid="drawer-chat" data-engine={engine}>
+					<div>mock {engine} chat</div>
+					<div>initial input: {mockInput}</div>
+					<div>attached project: {attachedProjectId ?? ""}</div>
+					<div data-testid="system-prompt">{systemPrompt ?? ""}</div>
+					<div data-testid="reasoning-mode">
+						{reasoningMode ?? ""}
+					</div>
+					<div data-testid="execution-mode">
+						{executionModeOverride ?? ""}
+					</div>
+					<div data-testid="mcp-ids">
+						{(enabledToolIds ?? enabledMcpConfigIds ?? []).join(
+							",",
+						)}
+					</div>
+					<div data-testid="compact">
+						{String(Boolean(compactMode))}
+					</div>
+					<div data-testid="telemetry-surface">
+						{telemetrySurface ?? surface ?? ""}
+					</div>
+					<div>
+						attached code: {attachedCodeContext?.filePath ?? ""}
+					</div>
+					<button
+						type="button"
+						onClick={() => onConversationCreated?.("conv_1")}
+					>
+						start conversation
+					</button>
+					<button
+						type="button"
+						onClick={() => onStreamingChange?.(true)}
+					>
+						start streaming
+					</button>
+					<button type="button" onClick={() => onProjectRemove?.()}>
+						remove project
+					</button>
+					<div data-testid="picker-catalog">
+						{agentPickerCatalog ?? ""}
+					</div>
+				</div>
+			);
+		};
+	}
+
+	const MockDirectChat = mockChat("direct");
+	const MockOrchestratorChat = mockChat("orchestrator");
+
 	return {
-		default: () => MockDynamicFabricDirectChat,
+		default: (loader: () => unknown) =>
+			String(loader).includes("FabricTemporalOrchestratorChat")
+				? MockOrchestratorChat
+				: MockDirectChat,
 	};
 });
 
@@ -83,7 +220,36 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 
 afterEach(() => {
 	cleanup();
+	storedPreferences.current = undefined;
+	storedAgentSelection.current = undefined;
+	vi.clearAllMocks();
 });
+
+function preferences(
+	overrides: Partial<NonNullable<typeof storedPreferences.current>>,
+) {
+	return {
+		uiMode: "simple" as const,
+		chatMode: "orchestrator" as const,
+		reasoningMode: "balanced" as const,
+		enabledMcpConfigIds: [],
+		...overrides,
+	};
+}
+
+function openBareDrawer() {
+	const view = render(
+		<FabricAgentLauncherProvider>
+			<div>page content</div>
+		</FabricAgentLauncherProvider>,
+	);
+	fireEvent.click(screen.getByRole("button", { name: /Fabric Agent/i }));
+	return view;
+}
+
+function drawerEngine() {
+	return screen.getByTestId("drawer-chat").getAttribute("data-engine");
+}
 
 function expectLauncherOpen() {
 	expect(screen.getByLabelText("Fabric Agent")).toHaveAttribute(
@@ -178,7 +344,9 @@ describe("FabricAgentLauncher", () => {
 
 		expectLauncherOpen();
 		expect(screen.getByText("Expand")).toBeInTheDocument();
-		expect(await screen.findByText("mock direct chat")).toBeInTheDocument();
+		expect(
+			await screen.findByText("mock orchestrator chat"),
+		).toBeInTheDocument();
 	});
 
 	/**
@@ -243,7 +411,9 @@ describe("FabricAgentLauncher", () => {
 		);
 
 		expectLauncherOpen();
-		expect(await screen.findByText("mock direct chat")).toBeInTheDocument();
+		expect(
+			await screen.findByText("mock orchestrator chat"),
+		).toBeInTheDocument();
 		expect(screen.getByText("Phoenix")).toBeInTheDocument();
 		expect(
 			screen.getByText("US-1 · Ship the launcher"),
@@ -267,14 +437,26 @@ describe("FabricAgentLauncher", () => {
 		);
 
 		expectLauncherOpen();
-		expect(await screen.findByText("mock direct chat")).toBeInTheDocument();
+		expect(
+			await screen.findByText("mock orchestrator chat"),
+		).toBeInTheDocument();
 		expect(screen.getByText("acme/fabric")).toBeInTheDocument();
 		expect(
 			screen.getByText(
 				"apps/web/modules/saas/agents/components/FabricAgentLauncher.tsx:42-66",
 			),
 		).toBeInTheDocument();
-		expect(screen.getByText(/attached code:/i)).toBeInTheDocument();
+		// The orchestrator has no code-context field; the location, branch
+		// and snippet reach it through the prepended context block.
+		const prompt = screen.getByTestId("system-prompt").textContent ?? "";
+		expect(prompt).toContain(
+			"Code file: apps/web/modules/saas/agents/components/FabricAgentLauncher.tsx:42-66",
+		);
+		expect(prompt).toContain("Branch: main");
+		expect(prompt).toContain("export function example()");
+		expect(prompt).toContain(
+			"Repository URL: https://github.com/acme/fabric",
+		);
 		expect(
 			screen.getByRole("button", { name: /Trace dependencies/i }),
 		).toBeInTheDocument();
@@ -308,7 +490,9 @@ describe("FabricAgentLauncher", () => {
 		});
 
 		expectLauncherOpen();
-		expect(await screen.findByText("mock direct chat")).toBeInTheDocument();
+		expect(
+			await screen.findByText("mock orchestrator chat"),
+		).toBeInTheDocument();
 	});
 
 	it("uses ambient workspace context when opened globally from the keyboard shortcut", async () => {
@@ -354,5 +538,320 @@ describe("FabricAgentLauncher", () => {
 		});
 
 		expectLauncherClosed();
+	});
+});
+
+describe("FabricAgentLauncher — engine selection (#2040)", () => {
+	it("runs a simple-mode drawer chat on the orchestrator's iterative preset", () => {
+		storedPreferences.current = preferences({
+			uiMode: "simple",
+			reasoningMode: "deep",
+			enabledMcpConfigIds: ["mcp_1", "mcp_2"],
+		});
+
+		openBareDrawer();
+
+		expect(drawerEngine()).toBe("orchestrator");
+		expect(screen.getByTestId("execution-mode")).toHaveTextContent(
+			"iterative",
+		);
+		// The user's own reasoning mode, not the old hardcoded "balanced".
+		expect(screen.getByTestId("reasoning-mode")).toHaveTextContent("deep");
+		// The stored MCP selection becomes the orchestrator's tool filter.
+		expect(screen.getByTestId("mcp-ids")).toHaveTextContent("mcp_1,mcp_2");
+		expect(screen.getByTestId("compact")).toHaveTextContent("true");
+		expect(screen.getByTestId("telemetry-surface")).toHaveTextContent(
+			"fabric-agent-launcher",
+		);
+	});
+
+	it("follows the saved engine choice in advanced mode", () => {
+		storedPreferences.current = preferences({
+			uiMode: "advanced",
+			chatMode: "direct",
+			reasoningMode: "lite",
+		});
+
+		openBareDrawer();
+
+		expect(drawerEngine()).toBe("direct");
+		expect(screen.getByTestId("reasoning-mode")).toHaveTextContent("lite");
+	});
+
+	it("runs advanced orchestrator chats on the user's reasoning mode, not the simple preset", () => {
+		storedPreferences.current = preferences({
+			uiMode: "advanced",
+			chatMode: "orchestrator",
+			reasoningMode: "planner",
+		});
+
+		openBareDrawer();
+
+		expect(drawerEngine()).toBe("orchestrator");
+		expect(screen.getByTestId("execution-mode")).toHaveTextContent("");
+		expect(screen.getByTestId("reasoning-mode")).toHaveTextContent(
+			"planner",
+		);
+	});
+
+	it("runs a saved Research choice on the orchestrator, since the drawer has no Research surface", () => {
+		storedPreferences.current = preferences({
+			uiMode: "advanced",
+			chatMode: "research",
+		});
+
+		openBareDrawer();
+
+		expect(drawerEngine()).toBe("orchestrator");
+	});
+
+	it("keeps an open Direct conversation on Direct when the mode switches to simple", () => {
+		storedPreferences.current = preferences({
+			uiMode: "advanced",
+			chatMode: "direct",
+		});
+		const { rerender } = openBareDrawer();
+		fireEvent.click(
+			screen.getByRole("button", { name: "start conversation" }),
+		);
+
+		storedPreferences.current = preferences({ uiMode: "simple" });
+		rerender(
+			<FabricAgentLauncherProvider>
+				<div>page content</div>
+			</FabricAgentLauncherProvider>,
+		);
+
+		expect(drawerEngine()).toBe("direct");
+
+		// A fresh chat is free to take the current mode's engine.
+		fireEvent.click(
+			screen.getByRole("button", { name: "Reset conversation" }),
+		);
+		expect(drawerEngine()).toBe("orchestrator");
+	});
+
+	it("switches engines with the mode while no conversation has started", () => {
+		storedPreferences.current = preferences({
+			uiMode: "advanced",
+			chatMode: "direct",
+		});
+		const { rerender } = openBareDrawer();
+		expect(drawerEngine()).toBe("direct");
+
+		storedPreferences.current = preferences({ uiMode: "simple" });
+		rerender(
+			<FabricAgentLauncherProvider>
+				<div>page content</div>
+			</FabricAgentLauncherProvider>,
+		);
+
+		expect(drawerEngine()).toBe("orchestrator");
+	});
+
+	it("prefills the orchestrator composer from a quick-action chip", () => {
+		render(
+			<FabricAgentLauncherProvider>
+				<LauncherHarness />
+			</FabricAgentLauncherProvider>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: /Open with context/i }),
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: /Catch me up/i }));
+
+		expect(drawerEngine()).toBe("orchestrator");
+		expect(document.body).toHaveTextContent(
+			"initial input: Catch me up on this project.",
+		);
+		expect(document.body).toHaveTextContent("- Project: Phoenix");
+	});
+
+	it("gives the orchestrator the feature and task ids it has no field for", () => {
+		render(
+			<FabricAgentLauncherProvider>
+				<LauncherHarness />
+			</FabricAgentLauncherProvider>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: /Open with context/i }),
+		);
+
+		const prompt = screen.getByTestId("system-prompt").textContent ?? "";
+		expect(prompt).toContain(
+			"Feature: US-1 · Ship the launcher (feature id: story_1)",
+		);
+		expect(prompt).toContain(
+			"Task: TASK-1 · Wire shortcut (task id: task_1)",
+		);
+		expect(document.body).toHaveTextContent("attached project: project_1");
+	});
+
+	/**
+	 * The prompt is prepended to the engine's own instructions. A claim about
+	 * what the panel cannot run contradicts the orchestrator it now runs on.
+	 */
+	it("makes no claim about what the drawer can or cannot run", () => {
+		openBareDrawer();
+
+		const prompt = screen.getByTestId("system-prompt").textContent ?? "";
+		expect(prompt).not.toMatch(/orchestration/i);
+		expect(prompt).not.toMatch(/does not run/i);
+		expect(prompt).not.toMatch(/reasoning modes/i);
+	});
+
+	describe("interface mode control (#2040)", () => {
+		function modeButton(name: "Simple" | "Advanced") {
+			return within(
+				screen.getByRole("group", { name: "Interface mode" }),
+			).getByRole("button", { name: new RegExp(`^${name}$`, "i") });
+		}
+
+		it("shows the stored mode and writes a switch to the shared cache and the server", () => {
+			storedPreferences.current = preferences({ uiMode: "simple" });
+			openBareDrawer();
+
+			expect(modeButton("Simple")).toHaveAttribute(
+				"aria-pressed",
+				"true",
+			);
+			fireEvent.click(modeButton("Advanced"));
+
+			expect(
+				orpcClientMock.users.orchestratorPreferences.update,
+			).toHaveBeenCalledWith({ uiMode: "advanced" });
+			const [key, updater] = queryClientMock.setQueryData.mock
+				.calls[0] as [unknown, (previous: unknown) => unknown];
+			expect(key).toEqual(["orchestrator-preferences", null]);
+			expect(updater(preferences({ uiMode: "simple" }))).toMatchObject({
+				uiMode: "advanced",
+			});
+		});
+
+		it("is held while a turn streams", () => {
+			storedPreferences.current = preferences({ uiMode: "simple" });
+			openBareDrawer();
+
+			fireEvent.click(
+				screen.getByRole("button", { name: "start streaming" }),
+			);
+
+			expect(modeButton("Advanced")).toBeDisabled();
+			fireEvent.click(modeButton("Advanced"));
+			expect(
+				orpcClientMock.users.orchestratorPreferences.update,
+			).not.toHaveBeenCalled();
+		});
+
+		it("keeps an open conversation on its engine when the mode changes", () => {
+			storedPreferences.current = preferences({
+				uiMode: "advanced",
+				chatMode: "direct",
+			});
+			const view = openBareDrawer();
+			expect(drawerEngine()).toBe("direct");
+			fireEvent.click(
+				screen.getByRole("button", { name: "start conversation" }),
+			);
+
+			storedPreferences.current = preferences({ uiMode: "simple" });
+			view.rerender(
+				<FabricAgentLauncherProvider>
+					<div>page content</div>
+				</FabricAgentLauncherProvider>,
+			);
+
+			expect(modeButton("Simple")).toHaveAttribute(
+				"aria-pressed",
+				"true",
+			);
+			expect(drawerEngine()).toBe("direct");
+		});
+	});
+
+	it("drops only the project when the user removes it, keeping the chat", () => {
+		render(
+			<FabricAgentLauncherProvider>
+				<LauncherHarness />
+			</FabricAgentLauncherProvider>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: /Open with context/i }),
+		);
+		expect(document.body).toHaveTextContent("attached project: project_1");
+		const chatBefore = screen.getByTestId("drawer-chat");
+
+		fireEvent.click(screen.getByRole("button", { name: "remove project" }));
+
+		expect(document.body).not.toHaveTextContent(
+			"attached project: project_1",
+		);
+		expect(screen.getByTestId("system-prompt").textContent).not.toContain(
+			"Project: Phoenix",
+		);
+		// Same chat instance: the conversation was not reset.
+		expect(screen.getByTestId("drawer-chat")).toBe(chatBefore);
+		expect(screen.getByTestId("system-prompt").textContent).toContain(
+			"Feature: US-1",
+		);
+	});
+
+	it("lists models only in simple mode and the full catalog in advanced", () => {
+		storedPreferences.current = preferences({ uiMode: "simple" });
+		const view = openBareDrawer();
+		expect(screen.getByTestId("picker-catalog")).toHaveTextContent(
+			"models",
+		);
+
+		storedPreferences.current = preferences({ uiMode: "advanced" });
+		view.rerender(
+			<FabricAgentLauncherProvider>
+				<div>page content</div>
+			</FabricAgentLauncherProvider>,
+		);
+		expect(screen.getByTestId("picker-catalog")).toHaveTextContent("all");
+	});
+
+	describe("saved agent no longer available (FR13)", () => {
+		it("tells the user once the drawer opens, whichever engine it runs", () => {
+			storedPreferences.current = preferences({ uiMode: "simple" });
+			storedAgentSelection.current = {
+				selectedAgents: [],
+				defaultAgent: { agentId: "model:default", name: "Default" },
+				droppedCount: 1,
+			};
+			render(
+				<FabricAgentLauncherProvider>
+					<div>page content</div>
+				</FabricAgentLauncherProvider>,
+			);
+			expect(toastMock.message).not.toHaveBeenCalled();
+
+			fireEvent.click(
+				screen.getByRole("button", { name: /Fabric Agent/i }),
+			);
+
+			expect(drawerEngine()).toBe("orchestrator");
+			expect(toastMock.message).toHaveBeenCalledTimes(1);
+			expect(toastMock.message).toHaveBeenCalledWith(
+				"Your saved agent is no longer available.",
+				expect.objectContaining({
+					id: "saved-agent-unavailable",
+					description: "Using Default for this chat.",
+				}),
+			);
+		});
+
+		it("stays quiet when nothing was dropped", () => {
+			storedAgentSelection.current = {
+				selectedAgents: [],
+				defaultAgent: null,
+				droppedCount: 0,
+			};
+			openBareDrawer();
+
+			expect(toastMock.message).not.toHaveBeenCalled();
+		});
 	});
 });

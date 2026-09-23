@@ -862,7 +862,7 @@ Use primaryAgent: "mcp_direct" to execute MCP tools directly without agent deleg
 
 	// Append image context if images are attached
 	if (input.attachedImageUrls?.length) {
-		userPrompt += `\n\n[ATTACHED IMAGES: ${input.attachedImageUrls.length} image(s) attached. Storage paths: ${input.attachedImageUrls.join(", ")}. Route to fabric_generate_image for image editing/modification tasks.]`;
+		userPrompt += `\n\n[ATTACHED IMAGES: ${input.attachedImageUrls.length} image(s) attached. Storage paths: ${input.attachedImageUrls.join(", ")}. Route to fabric_generate_image only when the user asks to create or edit an image; a question about what the image shows needs no image tool.]`;
 	}
 
 	const response = await generateText({

@@ -41,4 +41,19 @@ describe("direct chat tool metadata", () => {
 
 		expect(metadata).toEqual({ mode: "direct" });
 	});
+
+	it("does not flip a thread another engine recorded (#2040)", () => {
+		for (const mode of ["research", "orchestrator"]) {
+			expect(
+				mergeDirectConversationMetadata({ existing: { mode } }).mode,
+			).toBe(mode);
+		}
+	});
+
+	it("records Direct on a thread with no mode yet", () => {
+		expect(mergeDirectConversationMetadata({}).mode).toBe("direct");
+		expect(
+			mergeDirectConversationMetadata({ existing: { mode: "" } }).mode,
+		).toBe("direct");
+	});
 });

@@ -48,6 +48,14 @@ import { executeMicrosoftTeamsTool } from "../../shared/oauth-tool-executors";
 import { guardToolWriteForReadOnly } from "../../shared/read-only-gate";
 import { HEARTBEAT_INTERVALS } from "../config";
 import type { ExecuteMcpToolInput, ExecuteMcpToolOutput } from "../types";
+import type { AuthorityGateResult } from "./authority-gate";
+import { describeError } from "./describe-error";
+import {
+	FABRIC_AI_SERVER_CONFIG_ID,
+	fabricCatalogAuthority,
+	resolveFabricCatalogRoute,
+	runFabricCatalogTool,
+} from "./fabric-catalog-adapter";
 import { runWithTimeout } from "./mcp-call-timeout";
 
 /**
@@ -677,7 +685,7 @@ export async function executeMcpTool(
 		// whatever cannot be expressed within the frame fails here with a named
 		// error instead of a post-retry core rejection.
 		const bounded = truncateMcpTextOutput(
-			result.output,
+			result.success ? result.output : withReadableError(result.output),
 			MCP_TOOL_RESULT_MAX_BYTES,
 		);
 		if (bounded.truncated) {
@@ -701,6 +709,116 @@ export async function executeMcpTool(
 		return { ...result, output: bounded.output };
 	} finally {
 		clearInterval(heartbeatInterval);
+	}
+}
+
+/**
+ * A failed call's `output.error` is read as a string by the chat loop and the
+ * tool card, so a nested error object (a JSON-RPC error, an SDK error body)
+ * becomes its message, and an MCP `isError` result with only `content[].text`
+ * gets that text as its `error`. Other fields are kept for callers that parse
+ * `content` themselves.
+ */
+function withReadableError(output: unknown): unknown {
+	if (!output || typeof output !== "object" || Array.isArray(output)) {
+		return output;
+	}
+	const record = output as Record<string, unknown>;
+	if ("error" in record) {
+		return typeof record.error === "string"
+			? output
+			: { ...record, error: describeError(record.error) };
+	}
+	if (record.isError === true) {
+		return { ...record, error: describeError(record) };
+	}
+	return output;
+}
+
+/**
+ * The run a runtime-authority grant is bound to: the chat conversation when
+ * there is one, so an approval survives into the next turn, else the turn.
+ */
+function authorityRunId(input: ExecuteMcpToolInput): string | undefined {
+	return input.conversationId ?? input.executionId;
+}
+
+/**
+ * A tool that did not run for lack of runtime authority. The `error` text is
+ * what the model sees if the caller does not handle `authorityRequired`.
+ */
+function authorityRequiredResult(
+	input: ExecuteMcpToolInput,
+	gate: AuthorityGateResult,
+	providerDisplayName: string,
+	startTime: number,
+): ExecuteMcpToolOutput {
+	const accessLevel = gate.requiredAccessLevel ?? "WRITE";
+	console.log(
+		`[Orchestrator] "${input.toolName}" needs ${accessLevel} authority for ${gate.providerKey} (pending session: ${gate.pendingSessionId ?? "none"})`,
+	);
+	return {
+		success: false,
+		output: {
+			error: `Runtime authority required: ${accessLevel} access to ${providerDisplayName} has not been approved for this conversation, so "${input.toolName}" was not run.`,
+		},
+		durationMs: Date.now() - startTime,
+		cached: false,
+		authorityRequired: {
+			pendingSessionId: gate.pendingSessionId,
+			providerKey: gate.providerKey ?? providerDisplayName,
+			providerDisplayName,
+			accessLevel,
+			toolName: input.toolName,
+		},
+	};
+}
+
+/**
+ * Runtime authority for an OAuth-executor tool (Teams, GitHub, Slack). These
+ * run before the generic MCP path, so without this a `GitHub__create_issue`
+ * would skip the chat gate entirely. Returns the result to hand back when
+ * the tool must not run, or null to proceed. Fails closed.
+ */
+async function gateOAuthExecutorTool(
+	input: ExecuteMcpToolInput,
+	provider: string,
+	providerDisplayName: string,
+	operation: string,
+	startTime: number,
+): Promise<ExecuteMcpToolOutput | null> {
+	if (!input.requestRuntimeAuthority) {
+		return null;
+	}
+	try {
+		const { checkIntegrationAuthority } = await import("./authority-gate");
+		const gate = await checkIntegrationAuthority({
+			userId: input.userId,
+			organizationId: input.organizationId,
+			provider,
+			operation,
+			runType: "ORCHESTRATOR",
+			runId: authorityRunId(input),
+			requestIfMissing: true,
+			providerDisplayName,
+		});
+		return gate.authorized
+			? null
+			: authorityRequiredResult(
+					input,
+					gate,
+					providerDisplayName,
+					startTime,
+				);
+	} catch (error) {
+		return {
+			success: false,
+			output: {
+				error: `Authority check failed: ${describeError(error)}`,
+			},
+			durationMs: Date.now() - startTime,
+			cached: false,
+		};
 	}
 }
 
@@ -783,7 +901,7 @@ async function executeIntegrationTool(
 			operation,
 		);
 	} catch (error) {
-		return fail(error instanceof Error ? error.message : String(error));
+		return fail(describeError(error));
 	}
 	if (!operationDefinition.chatEnabled) {
 		return fail(
@@ -834,18 +952,25 @@ async function executeIntegrationTool(
 			provider,
 			operation,
 			runType: "ORCHESTRATOR",
-			runId: input.executionId,
+			runId: authorityRunId(input),
+			requestIfMissing: input.requestRuntimeAuthority,
 		});
 		if (!authorityResult.authorized) {
+			if (input.requestRuntimeAuthority) {
+				return authorityRequiredResult(
+					input,
+					authorityResult,
+					provider,
+					startTime,
+				);
+			}
 			return fail(
 				`Runtime authority required for ${provider} (${authorityResult.requiredAccessLevel} access for "${authorityResult.providerKey}"). ${authorityResult.reason ?? ""}`.trim(),
 			);
 		}
 	} catch (error) {
 		// Fail closed — an authority check that errors must not admit the call.
-		return fail(
-			`Authority check failed: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		return fail(`Authority check failed: ${describeError(error)}`);
 	}
 
 	// ── 4. Credentials for the EXACT discovered integration ──────────────────
@@ -888,15 +1013,157 @@ async function executeIntegrationTool(
 		return {
 			success: false,
 			output: {
-				error:
-					error instanceof Error
-						? error.message
-						: "Integration execution failed",
+				error: describeError(error),
 			},
 			durationMs: Date.now() - startTime,
 			cached: false,
 		};
 	}
+}
+
+/**
+ * Runtime authority for a tool on a connected MCP server, resolved from the
+ * config that actually serves it. The provider key comes from the server's
+ * catalog key (as plan-mode authority resolves it), so a grant raised here is
+ * the same grant a plan step would look for. Fails closed.
+ */
+async function gateMcpServerTool(
+	input: ExecuteMcpToolInput,
+	configId: string,
+	serverName: string | undefined,
+	startTime: number,
+): Promise<ExecuteMcpToolOutput | null> {
+	try {
+		const config = await db.mCPConfig.findFirst({
+			where: {
+				id: configId,
+				userId: input.userId,
+				organizationId: input.organizationId ?? null,
+			},
+			select: {
+				displayName: true,
+				mcpServer: { select: { key: true, name: true } },
+			},
+		});
+		const serverKey = config?.mcpServer?.key ?? serverName ?? configId;
+		const providerDisplayName =
+			config?.mcpServer?.name ??
+			config?.displayName ??
+			serverName ??
+			serverKey;
+		const { ensureMcpToolAuthority } = await import("./authority-gate");
+		const gate = await ensureMcpToolAuthority({
+			userId: input.userId,
+			organizationId: input.organizationId,
+			serverKey,
+			serverDisplayName: providerDisplayName,
+			configId,
+			toolName: input.toolName,
+			runType: "ORCHESTRATOR",
+			runId: authorityRunId(input),
+		});
+		return gate.authorized
+			? null
+			: authorityRequiredResult(
+					input,
+					gate,
+					providerDisplayName,
+					startTime,
+				);
+	} catch (error) {
+		return {
+			success: false,
+			output: {
+				error: `Authority check failed: ${describeError(error)}`,
+			},
+			durationMs: Date.now() - startTime,
+			cached: false,
+		};
+	}
+}
+
+/**
+ * Runtime authority for a WRITE on Fabric itself (e.g. creating a story),
+ * raised against the conversation like any other chat write. Fails closed.
+ */
+async function gateFabricWriteTool(
+	input: ExecuteMcpToolInput,
+	startTime: number,
+): Promise<ExecuteMcpToolOutput | null> {
+	try {
+		const { ensureMcpToolAuthority } = await import("./authority-gate");
+		const gate = await ensureMcpToolAuthority({
+			userId: input.userId,
+			organizationId: input.organizationId,
+			serverKey: "fabric",
+			serverDisplayName: "Fabric",
+			toolName: input.toolName,
+			runType: "ORCHESTRATOR",
+			runId: authorityRunId(input),
+		});
+		return gate.authorized
+			? null
+			: authorityRequiredResult(input, gate, "Fabric", startTime);
+	} catch (error) {
+		return {
+			success: false,
+			output: {
+				error: `Authority check failed: ${describeError(error)}`,
+			},
+			durationMs: Date.now() - startTime,
+			cached: false,
+		};
+	}
+}
+
+/**
+ * A Fabric AI catalog tool found through `search_tools` that the in-process
+ * switch does not run. Read-only mode was already enforced upstream on the
+ * tool's declared access (the switch's re-gate for `fabric_*`, the top gate
+ * for the rest).
+ */
+async function executeFabricCatalogTool(
+	input: ExecuteMcpToolInput,
+	startTime: number,
+): Promise<ExecuteMcpToolOutput> {
+	const route = resolveFabricCatalogRoute(input.toolName);
+	if (route?.access === "WRITE" && input.requestRuntimeAuthority) {
+		const authority = fabricCatalogAuthority(input.toolName);
+		const authorityBlock =
+			authority.kind === "integration"
+				? await gateOAuthExecutorTool(
+						input,
+						authority.provider,
+						authority.providerDisplayName,
+						authority.operation,
+						startTime,
+					)
+				: await gateFabricWriteTool(input, startTime);
+		if (authorityBlock) {
+			return authorityBlock;
+		}
+	}
+
+	safeHeartbeat({ phase: "fabric-catalog", toolName: input.toolName });
+	const result = await runFabricCatalogTool({
+		toolName: input.toolName,
+		args: input.args || {},
+		userId: input.userId,
+		organizationId: input.organizationId,
+		projectId: input.projectId,
+		attachedImageUrls: input.attachedImageUrls,
+	});
+	if (!result.success) {
+		console.warn(
+			`[Orchestrator] Fabric tool "${input.toolName}" failed: ${result.error}`,
+		);
+	}
+	return {
+		output: result.success ? result.output : { error: result.error },
+		durationMs: Date.now() - startTime,
+		success: result.success,
+		cached: false,
+	};
 }
 
 async function executeMcpToolImpl(
@@ -926,10 +1193,22 @@ async function executeMcpToolImpl(
 	// their registry-declared access instead of on a name. `fabric_*` names are
 	// exempt HERE because they route to the in-process Fabric AI switch below;
 	// the unknown-name fallthrough to external MCP re-gates strictly.
+	//
+	// A Fabric AI catalog tool on the virtual config only ever runs in-process
+	// (the catalog adapter), so its declared access is trusted over the name —
+	// otherwise reads such as `code_tree` or `fabric_youtube_transcript` would
+	// be refused in a Read-only project for lacking a read verb.
+	const catalogRoute =
+		input.mcpConfigId === FABRIC_AI_SERVER_CONFIG_ID
+			? resolveFabricCatalogRoute(input.toolName)
+			: undefined;
 	const readOnlyBlock = await guardToolWriteForReadOnly(
 		input.projectId,
 		input.toolName,
-		{ exemptFabricInternalTools: true },
+		{
+			exemptFabricInternalTools: true,
+			accessOverride: catalogRoute?.access,
+		},
 	);
 	if (readOnlyBlock) {
 		console.log(
@@ -1007,6 +1286,17 @@ async function executeMcpToolImpl(
 			? input.toolName.split("__")[1]
 			: input.toolName;
 
+		const authorityBlock = await gateOAuthExecutorTool(
+			input,
+			"MICROSOFT_TEAMS",
+			"Microsoft Teams",
+			methodName,
+			startTime,
+		);
+		if (authorityBlock) {
+			return authorityBlock;
+		}
+
 		try {
 			const output = await executeMicrosoftTeamsTool(
 				methodName,
@@ -1047,8 +1337,7 @@ async function executeMcpToolImpl(
 				cached: false,
 			};
 		} catch (error) {
-			const errorMessage =
-				error instanceof Error ? error.message : String(error);
+			const errorMessage = describeError(error);
 			console.error(
 				`[Orchestrator] Microsoft Teams tool "${input.toolName}" execution failed:`,
 				errorMessage,
@@ -1104,6 +1393,17 @@ async function executeMcpToolImpl(
 			? input.toolName.split("__")[1]
 			: input.toolName;
 
+		const authorityBlock = await gateOAuthExecutorTool(
+			input,
+			"GITHUB",
+			"GitHub",
+			methodName,
+			startTime,
+		);
+		if (authorityBlock) {
+			return authorityBlock;
+		}
+
 		try {
 			const output = await executeGitHubTool(
 				methodName,
@@ -1143,8 +1443,7 @@ async function executeMcpToolImpl(
 				cached: false,
 			};
 		} catch (error) {
-			const errorMessage =
-				error instanceof Error ? error.message : String(error);
+			const errorMessage = describeError(error);
 			console.error(
 				`[Orchestrator] GitHub tool "${input.toolName}" execution failed:`,
 				errorMessage,
@@ -1196,6 +1495,17 @@ async function executeMcpToolImpl(
 			? input.toolName.split("__")[1]
 			: input.toolName;
 
+		const authorityBlock = await gateOAuthExecutorTool(
+			input,
+			"SLACK",
+			"Slack",
+			methodName,
+			startTime,
+		);
+		if (authorityBlock) {
+			return authorityBlock;
+		}
+
 		try {
 			const output = await executeSlackTool(
 				methodName,
@@ -1235,8 +1545,7 @@ async function executeMcpToolImpl(
 				cached: false,
 			};
 		} catch (error) {
-			const errorMessage =
-				error instanceof Error ? error.message : String(error);
+			const errorMessage = describeError(error);
 			console.error(
 				`[Orchestrator] Slack tool "${input.toolName}" execution failed:`,
 				errorMessage,
@@ -1481,6 +1790,7 @@ async function executeMcpToolImpl(
 					const fallthroughBlock = await guardToolWriteForReadOnly(
 						input.projectId,
 						input.toolName,
+						{ accessOverride: catalogRoute?.access },
 					);
 					if (fallthroughBlock) {
 						output = fallthroughBlock;
@@ -1531,8 +1841,7 @@ async function executeMcpToolImpl(
 				};
 			}
 		} catch (error) {
-			const errorMessage =
-				error instanceof Error ? error.message : String(error);
+			const errorMessage = describeError(error);
 			console.error(
 				`[Orchestrator] Fabric AI tool "${input.toolName}" failed:`,
 				errorMessage,
@@ -1650,6 +1959,18 @@ async function executeMcpToolImpl(
 				coercedArgs = normalizeExcalidrawCreateViewArgs(coercedArgs);
 			}
 
+			if (input.requestRuntimeAuthority) {
+				const authorityBlock = await gateMcpServerTool(
+					input,
+					configId,
+					serverName || resolvedServerName,
+					startTime,
+				);
+				if (authorityBlock) {
+					return authorityBlock;
+				}
+			}
+
 			console.log(
 				`[Orchestrator] Found tool "${input.toolName}" on ${serverName || resolvedServerName}, executing`,
 			);
@@ -1753,10 +2074,7 @@ async function executeMcpToolImpl(
 				};
 			}
 
-			const errorMessage =
-				execError instanceof Error
-					? execError.message
-					: String(execError);
+			const errorMessage = describeError(execError);
 
 			// Detect "closed client" errors (stale cached connection).
 			// Invalidate the cache and retry once with a fresh connection.
@@ -1781,10 +2099,7 @@ async function executeMcpToolImpl(
 					// Pass a flag so we don't recurse infinitely
 					return await executeOnConfig(configId, serverName, true);
 				} catch (retryError) {
-					const retryMsg =
-						retryError instanceof Error
-							? retryError.message
-							: String(retryError);
+					const retryMsg = describeError(retryError);
 					console.error(
 						`[Orchestrator] Retry after reconnect also failed for "${input.toolName}":`,
 						retryMsg,
@@ -1852,6 +2167,12 @@ async function executeMcpToolImpl(
 	// execution — falling back to other configs could mutate data on the wrong
 	// server if two configs expose a same-named tool.
 	// ==========================================================================
+	// The Fabric AI catalog is indexed under a virtual config id that no MCP
+	// server answers to; what the switch above does not run, the adapter does.
+	if (input.mcpConfigId === FABRIC_AI_SERVER_CONFIG_ID) {
+		return executeFabricCatalogTool(input, startTime);
+	}
+
 	if (input.mcpConfigId) {
 		const result = await executeOnConfig(input.mcpConfigId);
 		if (result) {

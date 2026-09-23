@@ -1,6 +1,8 @@
 "use client";
 
 import { getCategoryIcon } from "@saas/agents/lib/category-icons";
+import { buildAgentInstanceChatHref } from "@saas/agents/lib/fabric-agent-links";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
@@ -130,13 +132,12 @@ function InstanceListRow({
 		instance.template?.category,
 	);
 	const editHref = `${basePath}/agents/${instance.id}/edit`;
-	const chatbotHref = `${basePath}/nexus?agent=${encodeURIComponent(
-		JSON.stringify({
-			agentId: `template-instance:${instance.id}`,
-			name: instance.name,
-			description: instance.description ?? "",
-		}),
-	)}`;
+	const unifiedAgentInterface = useFeatureFlag("UNIFIED_AGENT_INTERFACE");
+	const chatbotHref = buildAgentInstanceChatHref({
+		basePath,
+		instance,
+		unifiedAgentInterface,
+	});
 
 	return (
 		<Card className="hover:shadow-md transition-all group">

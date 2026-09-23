@@ -1,5 +1,7 @@
 "use client";
 
+import { buildAgentInstanceChatHref } from "@saas/agents/lib/fabric-agent-links";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { Button } from "@ui/components/button";
 import {
 	DropdownMenu,
@@ -65,13 +67,12 @@ export function InstanceAgentCard({
 	const router = useRouter();
 	const status = STATUS[instance.status] ?? STATUS.DRAFT;
 	const editHref = `${basePath}/agents/${instance.id}/edit`;
-	const chatbotHref = `${basePath}/nexus?agent=${encodeURIComponent(
-		JSON.stringify({
-			agentId: `template-instance:${instance.id}`,
-			name: instance.name,
-			description: instance.description ?? "",
-		}),
-	)}`;
+	const unifiedAgentInterface = useFeatureFlag("UNIFIED_AGENT_INTERFACE");
+	const chatbotHref = buildAgentInstanceChatHref({
+		basePath,
+		instance,
+		unifiedAgentInterface,
+	});
 	const runCount = instance.runCount ?? 0;
 	const category = instance.template?.category
 		? instance.template.category.toLowerCase().replace(/_/g, " ")

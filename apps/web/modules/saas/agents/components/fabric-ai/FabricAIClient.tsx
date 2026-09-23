@@ -19,10 +19,29 @@
  */
 
 import { AgentErrorBoundary } from "@saas/agents/components/AgentErrorBoundary";
+import { useOptionalFabricAgentLauncher } from "@saas/agents/components/FabricAgentLauncher";
 import type { TemporalOrchestratorActivityState } from "@saas/agents/components/FabricChat/FabricTemporalOrchestratorChat";
+import { InterfaceModeToggle } from "@saas/agents/components/InterfaceModeToggle";
 import { useOrchestratorConfig } from "@saas/agents/components/OrchestratorConfigPanel";
 import type { MentionableTemplate } from "@saas/agents/hooks/useTemplateMention";
+import {
+	type ExpandHandoff,
+	isExpandHandoffFor,
+} from "@saas/agents/lib/expand-handoff";
 import { getInterfaceModeChrome } from "@saas/agents/lib/interface-mode-chrome";
+import {
+	type ChatEngine,
+	conversationEngineFromMetadata,
+	resolveChatEngine,
+} from "@saas/agents/lib/interface-mode-engine";
+import {
+	orchestratorPreferencesQueryKey,
+	setCachedUiMode,
+} from "@saas/agents/lib/interface-mode-preference";
+import {
+	pendingProjectOnNewChat,
+	pendingProjectOnOpen,
+} from "@saas/agents/lib/pending-project";
 import dynamic from "next/dynamic";
 
 // Dynamic imports for heavy components to improve initial load time
@@ -83,6 +102,7 @@ import {
 	WorkspacePanel,
 } from "@saas/agents/components/WorkspacePanel";
 import { useConversationHistory } from "@saas/agents/hooks/useConversationHistory";
+import { useSavedAgentUnavailableNotice } from "@saas/agents/hooks/useSavedAgentUnavailableNotice";
 import { useWorkflowTemplateStream } from "@saas/agents/hooks/useWorkflowTemplateStream";
 import { useWorkspaceFiles } from "@saas/agents/hooks/useWorkspaceFiles";
 import {
@@ -567,6 +587,7 @@ export default function FabricAIPage({
 	//   3. Otherwise hydrate from the persisted value once the query
 	//      resolves; if the user has clicked something else in the meantime,
 	//      respect their choice and skip the seed (race-window guard).
+	const queryClient = useQueryClient();
 	const persistedPrefsQuery = useQuery({
 		// Shared cache key with `OrchestratorConfigPanel` (the Loom settings
 		// drawer) — both observers want the SAME procedure response, so they
@@ -579,7 +600,7 @@ export default function FabricAIPage({
 		// OrchestratorConfigPanel key exactly so both observers still share one
 		// cache entry within an org, while a workspace switch (org changes) no
 		// longer serves the previous org's settings.
-		queryKey: ["orchestrator-preferences", organizationId ?? null],
+		queryKey: orchestratorPreferencesQueryKey(organizationId),
 		queryFn: async () => orpcClient.users.orchestratorPreferences.get(),
 		// SSR `initialData` short-circuits the client-side fetch on first
 		// mount. With `staleTime: Infinity` and `refetchOnMount: false`,
@@ -599,10 +620,14 @@ export default function FabricAIPage({
 	});
 
 	// Simple / advanced interface mode (#2040). Orthogonal to `chatMode`:
-	// simple hides the engine control and runs Direct, advanced restores the
-	// full surface. Persisted per (user × org) alongside the Loom prefs above.
+	// simple hides the engine control and starts new chats on the Orchestrator
+	// (iterative preset), advanced restores the full surface. Persisted per
+	// (user × org) alongside the Loom prefs above.
 	const [uiMode, setUiMode] = useState<"simple" | "advanced">("simple");
 	const lastPersistedUiModeRef = useRef<"simple" | "advanced" | null>(null);
+	// The last `uiMode` seen in the shared preferences cache — see the
+	// adoption effect below the hydration effect.
+	const observedUiModeRef = useRef<"simple" | "advanced" | null>(null);
 
 	const loomPrefsHydratedRef = useRef(false);
 	// Mirror of `loomPrefsHydratedRef` as React state so the mode-tab
@@ -702,8 +727,29 @@ export default function FabricAIPage({
 		// reads `loomPrefsHydrated` to decide whether to paint an active
 		// highlight at all — so the first render with any active
 		// highlight is always already the correct one. No flash.
+		observedUiModeRef.current = data.uiMode;
 		setLoomPrefsHydrated(true);
 	}, [persistedPrefsQuery.data, modeFromUrl, instanceIdFromUrl]);
+
+	// The ⌘J drawer writes the same preference into the same cache entry, so
+	// a switch made there arrives here as a changed `uiMode` after hydration
+	// (#2040). Only a CHANGE is adopted — re-applying the first value would
+	// undo the per-visit `?mode=research` override above.
+	const cachedUiMode = persistedPrefsQuery.data?.uiMode;
+	useEffect(() => {
+		if (!loomPrefsHydratedRef.current) {
+			return;
+		}
+		if (cachedUiMode !== "simple" && cachedUiMode !== "advanced") {
+			return;
+		}
+		if (observedUiModeRef.current === cachedUiMode) {
+			return;
+		}
+		observedUiModeRef.current = cachedUiMode;
+		lastPersistedUiModeRef.current = cachedUiMode;
+		setUiMode(cachedUiMode);
+	}, [cachedUiMode]);
 
 	const persistLoomPrefsMutation = useMutation({
 		mutationFn: async (input: {
@@ -742,16 +788,6 @@ export default function FabricAIPage({
 		},
 	});
 
-	// Simple mode runs Direct — but as a *view* over the user's choice, not by
-	// resetting it. Calling `setUseOrchestrator(false)` here would fire the
-	// persist effect below and overwrite the saved `chatMode`, so switching
-	// back to advanced would land on Direct instead of whatever the user had.
-	// Deriving the effective value leaves the stored preference untouched.
-	const effectiveUseOrchestrator =
-		uiMode === "simple" ? false : useOrchestrator;
-	const effectiveDeepResearchEnabled =
-		uiMode === "simple" ? false : deepResearchEnabled;
-
 	const handleUiModeChange = useCallback(
 		(next: "simple" | "advanced") => {
 			userTouchedLoomPrefsRef.current = true;
@@ -760,9 +796,12 @@ export default function FabricAIPage({
 				return;
 			}
 			lastPersistedUiModeRef.current = next;
+			observedUiModeRef.current = next;
+			// Into the cache the drawer reads too, so it follows (#2040).
+			setCachedUiMode(queryClient, organizationId, next);
 			persistUiModeMutation.mutate(next);
 		},
-		[persistUiModeMutation],
+		[persistUiModeMutation, queryClient, organizationId],
 	);
 
 	// Orchestrator activity state for sidebar display
@@ -984,7 +1023,7 @@ export default function FabricAIPage({
 						basePath={basePath}
 						reasoningMode={reasoningMode}
 						setReasoningMode={setReasoningMode}
-						deepResearchEnabled={effectiveDeepResearchEnabled}
+						deepResearchEnabled={deepResearchEnabled}
 						setDeepResearchEnabled={setDeepResearchEnabled}
 						// Simple mode keeps the control deck — MCP servers,
 						// Fabric tools, integrations, frames — off screen. Held
@@ -996,7 +1035,7 @@ export default function FabricAIPage({
 						setSidebarOpen={setSidebarOpen}
 						activeTab={activeTab}
 						setActiveTab={setActiveTab}
-						useOrchestrator={effectiveUseOrchestrator}
+						useOrchestrator={useOrchestrator}
 						setUseOrchestrator={setUseOrchestrator}
 						uiMode={uiMode}
 						onUiModeChange={handleUiModeChange}
@@ -1048,12 +1087,17 @@ interface FabricChatContentProps {
 	setSidebarOpen: (open: boolean) => void;
 	activeTab: TabType;
 	setActiveTab: (tab: TabType) => void;
+	/**
+	 * The user's engine tabs. They pick the engine for a new advanced chat
+	 * only — the engine that actually runs is `resolveChatEngine`'s answer.
+	 */
 	useOrchestrator: boolean;
 	setUseOrchestrator: (use: boolean) => void;
 	/**
-	 * Interface mode. Simple hides the engine control, the reasoning control
-	 * and the agent picker, and runs Direct; advanced restores the full
-	 * surface. Orthogonal to `chatMode` — see the parent's derivation.
+	 * Interface mode. Simple hides the engine and reasoning controls and runs
+	 * new chats on the Orchestrator's iterative preset; advanced restores the
+	 * full surface. Orthogonal to `chatMode` — the engine tabs are kept while
+	 * hidden, so returning to advanced lands on whatever was set.
 	 */
 	uiMode: "simple" | "advanced";
 	onUiModeChange: (next: "simple" | "advanced") => void;
@@ -1122,7 +1166,7 @@ function FabricChatContent({
 	basePath,
 	reasoningMode,
 	setReasoningMode,
-	deepResearchEnabled,
+	deepResearchEnabled: deepResearchTabSelected,
 	setDeepResearchEnabled,
 	sidebarOpen,
 	isFullscreen,
@@ -1130,7 +1174,7 @@ function FabricChatContent({
 	setSidebarOpen,
 	activeTab,
 	setActiveTab,
-	useOrchestrator,
+	useOrchestrator: orchestratorTabSelected,
 	setUseOrchestrator,
 	uiMode,
 	onUiModeChange,
@@ -1156,6 +1200,27 @@ function FabricChatContent({
 	// This ensures all state is completely reset
 	const [chatInstanceKey, setChatInstanceKey] = useState(0);
 	const isAgentInstanceMode = Boolean(instanceId);
+	// The engine the open conversation was created on — `null` for a new chat.
+	// Recorded by the restore effect below and cleared with the conversation.
+	const [conversationEngine, setConversationEngine] =
+		useState<ChatEngine | null>(null);
+	const chatEngine = resolveChatEngine({
+		uiMode,
+		useOrchestrator: orchestratorTabSelected,
+		deepResearch: deepResearchTabSelected,
+		conversationEngine,
+		isAgentInstance: isAgentInstanceMode,
+	});
+	const useOrchestrator = chatEngine === "orchestrator";
+	const deepResearchEnabled = chatEngine === "research";
+	// Whether the mounted Direct / Orchestrator chat has a turn in flight.
+	// Switching the interface mode is held meanwhile: a switch can change
+	// which engine is mounted, and the reply would go with it (#2040).
+	const [isChatStreaming, setIsChatStreaming] = useState(false);
+	// A remount starts idle; an unmounting chat never reports its own stop.
+	useEffect(() => {
+		setIsChatStreaming(false);
+	}, [chatInstanceKey, chatEngine]);
 
 	// Map UI reasoning mode to workflow reasoning effort
 	const researchReasoningEffort = useMemo(():
@@ -1482,16 +1547,22 @@ function FabricChatContent({
 	useEffect(() => {
 		if (activeConversation) {
 			const metadata = activeConversation.metadata as any;
+			// Lock the engine to the one this conversation was created on, so
+			// simple mode keeps an old Direct thread on Direct (Fizzy #2040).
+			setConversationEngine(conversationEngineFromMetadata(metadata));
 			if (metadata?.mode === "research") {
 				setDeepResearchEnabled(true);
 				setUseOrchestrator(false);
-			} else if (metadata?.mode === "orchestrator" && !useOrchestrator) {
+			} else if (
+				metadata?.mode === "orchestrator" &&
+				!orchestratorTabSelected
+			) {
 				setDeepResearchEnabled(false);
 				setUseOrchestrator(true);
 				setActiveTab("agents");
 			} else if (
 				(metadata?.mode === "direct" || !metadata?.mode) &&
-				useOrchestrator
+				orchestratorTabSelected
 			) {
 				// Switch to direct mode for direct conversations or legacy conversations without mode metadata
 				setDeepResearchEnabled(false);
@@ -1517,7 +1588,7 @@ function FabricChatContent({
 			// No active conversation at all — clear restored instanceId
 			onInstanceIdRestored?.(null);
 		}
-	}, [activeConversation, useOrchestrator, onInstanceIdRestored]);
+	}, [activeConversation, orchestratorTabSelected, onInstanceIdRestored]);
 
 	// Wrapper that also updates URL
 	const selectConversation = useCallback(
@@ -1529,6 +1600,10 @@ function FabricChatContent({
 	);
 
 	const chrome = getInterfaceModeChrome(uiMode);
+	useSavedAgentUnavailableNotice({
+		organizationId,
+		enabled: chrome.showAgentPicker,
+	});
 
 	// The landing offers the last conversation with a Resume link, but only
 	// while nothing is open: once a conversation is active the landing is gone.
@@ -1673,6 +1748,121 @@ function FabricChatContent({
 		// pendingProjectId would clobber the user's own project selection.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [boundProjectId]);
+
+	// Expand from the ⌘J drawer (#2040): take the draft, files and project it
+	// left for this page, once, when this page opened the conversation it was
+	// written for. The chat reads its draft and files only on mount, so it
+	// is remounted to receive them.
+	const launcher = useOptionalFabricAgentLauncher();
+	const pendingExpandHandoff = launcher?.pendingExpandHandoff ?? null;
+	const clearExpandHandoff = launcher?.clearExpandHandoff;
+	const [expandHandoff, setExpandHandoff] = useState<ExpandHandoff | null>(
+		null,
+	);
+	useEffect(() => {
+		if (
+			!isExpandHandoffFor(
+				pendingExpandHandoff,
+				conversationIdFromUrl,
+				Date.now(),
+			)
+		) {
+			return;
+		}
+		clearExpandHandoff?.();
+		setExpandHandoff(pendingExpandHandoff);
+		if (pendingExpandHandoff.projectId) {
+			setPendingProjectId(pendingExpandHandoff.projectId);
+		}
+		setChatInstanceKey((prev) => prev + 1);
+	}, [pendingExpandHandoff, conversationIdFromUrl, clearExpandHandoff]);
+	// Delivered to the one chat it was taken for: dropped as soon as the page
+	// moves to another conversation (or a new one), which then starts empty.
+	const handoffForChat =
+		expandHandoff &&
+		expandHandoff.conversationId === (conversationIdFromUrl ?? null)
+			? expandHandoff
+			: null;
+	useEffect(() => {
+		if (
+			expandHandoff &&
+			expandHandoff.conversationId !== (conversationIdFromUrl ?? null)
+		) {
+			setExpandHandoff(null);
+		}
+	}, [expandHandoff, conversationIdFromUrl]);
+
+	// The pill reads `pendingProjectId`, which a Direct thread never fills
+	// from its stored attachment. Restore it from the open conversation's
+	// project — once per conversation, so removing the project afterwards
+	// (#2040) is not undone by the refetch. A restored project belongs to
+	// its conversation: moving to another one, or to a new chat, drops it
+	// again, while a project the user picked stays selected as before.
+	const { data: activeConversationProject } = useQuery({
+		...orpc.projects.conversations.getProject.queryOptions({
+			input: {
+				conversationId: activeConversationId ?? "",
+				organizationId: organizationId ?? null,
+			},
+		}),
+		enabled: Boolean(activeConversationId),
+	});
+	const handleProjectRemove = useCallback(() => {
+		setPendingProjectId(null);
+	}, []);
+	const pendingProjectIdRef = useRef(pendingProjectId);
+	pendingProjectIdRef.current = pendingProjectId;
+	const restoredProjectIdRef = useRef<string | null>(null);
+	const projectRestoredForConversationRef = useRef<string | null>(null);
+	const applyPendingProject = useCallback(
+		(next: { pending: string | null; restored: string | null }) => {
+			restoredProjectIdRef.current = next.restored;
+			if (next.pending !== pendingProjectIdRef.current) {
+				setPendingProjectId(next.pending);
+			}
+		},
+		[],
+	);
+	useEffect(() => {
+		if (!activeConversationId || !activeConversationProject) {
+			return;
+		}
+		if (
+			projectRestoredForConversationRef.current === activeConversationId
+		) {
+			return;
+		}
+		projectRestoredForConversationRef.current = activeConversationId;
+		applyPendingProject(
+			pendingProjectOnOpen(
+				{
+					pending: pendingProjectIdRef.current,
+					restored: restoredProjectIdRef.current,
+				},
+				activeConversationProject.project?.id ?? null,
+			),
+		);
+	}, [activeConversationId, activeConversationProject, applyPendingProject]);
+	const defaultProjectId =
+		contextLaunch?.projectId ?? instanceToolConfig?.boundProjectId ?? null;
+	useEffect(() => {
+		if (activeConversationId) {
+			return;
+		}
+		projectRestoredForConversationRef.current = null;
+		applyPendingProject(
+			pendingProjectOnNewChat(
+				{
+					pending: pendingProjectIdRef.current,
+					restored: restoredProjectIdRef.current,
+				},
+				defaultProjectId,
+			),
+		);
+		// Keyed on leaving a conversation only; the default is read as it
+		// stands at that moment.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [activeConversationId, applyPendingProject]);
 
 	// Convert enabledWorkspaceIds array to Set for compatibility with existing components
 	const pendingWorkspaceIds = useMemo(
@@ -1873,6 +2063,7 @@ function FabricChatContent({
 	useEffect(() => {
 		if (activeConversationId === null) {
 			setDocumentChatId(null);
+			setConversationEngine(null);
 			resetDeepResearch();
 		}
 	}, [activeConversationId, resetDeepResearch]);
@@ -2483,6 +2674,8 @@ function FabricChatContent({
 								// preference and surprised users whose default
 								// was Direct or Research.
 								resetLoomModeToUserDefault();
+								setConversationEngine(null);
+								setExpandHandoff(null);
 								resetDeepResearch();
 								setActiveTab("history");
 								handleClearAllPrioritized();
@@ -2543,49 +2736,20 @@ function FabricChatContent({
 						{/*
 						 * Interface mode (#2040). Simple is the reduced surface:
 						 * the engine control and the reasoning control come off
-						 * screen and the chat runs Direct. Advanced restores
-						 * everything. The two are orthogonal — the engine choice
-						 * is preserved while hidden, so returning to advanced
-						 * lands back on whatever was set, not on Direct.
+						 * screen and new chats run on the Orchestrator's
+						 * iterative preset. Advanced restores everything. The
+						 * two are orthogonal — the engine tabs are preserved
+						 * while hidden, so returning to advanced lands back on
+						 * whatever was set. An open conversation stays on the
+						 * engine it was created on in both modes.
 						 */}
-						<TooltipProvider>
-							<div className="flex items-center gap-1 rounded-md border border-border/60 bg-card/35 p-1">
-								{(["simple", "advanced"] as const).map(
-									(mode) => (
-										<Tooltip key={mode}>
-											<TooltipTrigger asChild>
-												<button
-													type="button"
-													onClick={() =>
-														onUiModeChange(mode)
-													}
-													aria-pressed={
-														uiMode === mode
-													}
-													className={cn(
-														"flex h-9 items-center justify-center rounded-md px-2.5 gap-1.5 transition-colors",
-														uiMode === mode
-															? "bg-background shadow-sm text-foreground"
-															: "hover:bg-background/50 text-muted-foreground",
-													)}
-												>
-													<span className="text-xs font-medium capitalize">
-														{mode}
-													</span>
-												</button>
-											</TooltipTrigger>
-											<TooltipContent>
-												<p>
-													{mode === "simple"
-														? "Simple — just the chat, running Direct"
-														: "Advanced — engine, reasoning and agent controls"}
-												</p>
-											</TooltipContent>
-										</Tooltip>
-									),
-								)}
-							</div>
-						</TooltipProvider>
+						<InterfaceModeToggle
+							value={uiMode}
+							onChange={onUiModeChange}
+							disabled={
+								isChatStreaming || deepResearchStream.isLoading
+							}
+						/>
 
 						{uiMode === "advanced" && (
 							<>
@@ -2929,13 +3093,19 @@ function FabricChatContent({
 							activeConversationId={activeConversationId}
 							onConversationSaved={refetchList}
 							onConversationCreated={(convId) => {
+								// Lock the engine now, not when the fetched
+								// conversation arrives: a mode switch in
+								// between would otherwise remount (#2040).
+								setConversationEngine("direct");
 								onConversationChange(convId);
 								refetchList();
 							}}
+							onStreamingChange={setIsChatStreaming}
 							onUsageChange={setTokenUsage}
 							enabledMcpConfigIds={effectiveMcpConfigIds}
 							enabledFabricToolIds={effectiveFabricToolIds}
 							showAgentPicker={chrome.showAgentPicker}
+							agentPickerCatalog={chrome.agentPickerCatalog}
 							showToolPicker={chrome.showToolPicker}
 							onDocumentChatCreated={handleDocumentChatCreated}
 							documentChatId={documentChatId}
@@ -2946,10 +3116,12 @@ function FabricChatContent({
 							recentConversation={recentConversation}
 							onResumeConversation={selectConversation}
 							initialInput={
-								!activeConversationId
+								handoffForChat?.draft ||
+								(!activeConversationId
 									? (contextLaunch?.prompt ?? undefined)
-									: undefined
+									: undefined)
 							}
+							initialAttachedFiles={handoffForChat?.attachments}
 						/>
 					) : useOrchestrator ? (
 						/* Orchestrator Mode: Temporal-based durable orchestration
@@ -2965,16 +3137,30 @@ function FabricChatContent({
 							key={`orchestrator-${chatInstanceKey}`}
 							organizationId={organizationId}
 							reasoningMode={reasoningMode}
+							// Simple mode hides the reasoning control, so it
+							// runs the iterative preset: step by step, no
+							// up-front plan or reflection pass (#2040).
+							executionModeOverride={
+								uiMode === "simple" ? "iterative" : undefined
+							}
 							activeConversation={activeConversation}
 							activeConversationId={activeConversationId}
 							onConversationSaved={refetchList}
 							onConversationCreated={(convId) => {
+								setConversationEngine("orchestrator");
 								onConversationChange(convId);
 								refetchList();
 							}}
+							onStreamingChange={setIsChatStreaming}
 							onActivityChange={handleTemporalActivityChange}
 							onUsageChange={setTokenUsage}
 							showAgentPicker={chrome.showAgentPicker}
+							agentPickerCatalog={chrome.agentPickerCatalog}
+							showToolPicker={chrome.showToolPicker}
+							onDocumentChatCreated={handleDocumentChatCreated}
+							documentChatId={documentChatId}
+							recentConversation={recentConversation}
+							onResumeConversation={selectConversation}
 							// Pass empty array when all disabled to explicitly disable all MCP/agents
 							// null means "no filter, use all" whereas [] means "use none"
 							enabledToolIds={effectiveMcpConfigIds}
@@ -2998,6 +3184,7 @@ function FabricChatContent({
 							attachedWorkspaceIds={effectiveWorkspaceIds}
 							attachedDocumentIds={resolvedAgentDocumentIds}
 							attachedProjectId={pendingProjectId}
+							onProjectRemove={handleProjectRemove}
 							// Agent template instance props
 							systemPrompt={systemPrompt}
 							instanceId={instanceId}
@@ -3010,9 +3197,13 @@ function FabricChatContent({
 							sessionTemplates={sessionTemplates}
 							onSessionTemplatesChange={setSessionTemplates}
 							initialInput={
-								!activeConversationId
+								handoffForChat?.draft ||
+								(!activeConversationId
 									? (contextLaunch?.prompt ?? undefined)
-									: undefined
+									: undefined)
+							}
+							initialAttachedDocuments={
+								handoffForChat?.attachments
 							}
 						/>
 					) : (
@@ -3032,27 +3223,36 @@ function FabricChatContent({
 							activeConversationId={activeConversationId}
 							onConversationSaved={refetchList}
 							onConversationCreated={(convId) => {
+								// Lock the engine now, not when the fetched
+								// conversation arrives: a mode switch in
+								// between would otherwise remount (#2040).
+								setConversationEngine("direct");
 								onConversationChange(convId);
 								refetchList();
 							}}
+							onStreamingChange={setIsChatStreaming}
 							onUsageChange={setTokenUsage}
 							// Pass empty array when all disabled to explicitly disable all MCP servers
 							enabledMcpConfigIds={effectiveMcpConfigIds}
 							enabledFabricToolIds={effectiveFabricToolIds}
 							showAgentPicker={chrome.showAgentPicker}
+							agentPickerCatalog={chrome.agentPickerCatalog}
 							showToolPicker={chrome.showToolPicker}
 							onDocumentChatCreated={handleDocumentChatCreated}
 							documentChatId={documentChatId}
 							attachedWorkspaceIds={effectiveWorkspaceIds}
 							attachedDocumentIds={resolvedAgentDocumentIds}
 							attachedProjectId={pendingProjectId}
+							onProjectRemove={handleProjectRemove}
 							recentConversation={recentConversation}
 							onResumeConversation={selectConversation}
 							initialInput={
-								!activeConversationId
+								handoffForChat?.draft ||
+								(!activeConversationId
 									? (contextLaunch?.prompt ?? undefined)
-									: undefined
+									: undefined)
 							}
+							initialAttachedFiles={handoffForChat?.attachments}
 						/>
 					)}
 				</div>

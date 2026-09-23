@@ -24,6 +24,8 @@ const startWorkflowMock = vi.fn();
 const memberFindFirstMock = vi.fn();
 const getConversationWorkspacesMock = vi.fn();
 const filterAccessibleWorkspaceIdsMock = vi.fn();
+const conversationFindFirstMock = vi.fn();
+const getConversationProjectMock = vi.fn();
 
 vi.mock("@saas/auth/lib/server", () => ({
 	getSession: () => getSessionMock(),
@@ -53,7 +55,10 @@ vi.mock("@repo/temporal", () => ({
 vi.mock("@repo/database", () => ({
 	CARRIED_OVER_MARKER_PREFIX: "[carried-over]",
 	db: {
-		agentConversation: { findFirst: vi.fn(async () => null) },
+		agentConversation: {
+			findFirst: (...args: unknown[]) =>
+				conversationFindFirstMock(...args),
+		},
 		member: {
 			findFirst: (...args: unknown[]) => memberFindFirstMock(...args),
 		},
@@ -61,7 +66,8 @@ vi.mock("@repo/database", () => ({
 	},
 	getConversationWorkspaces: (...args: unknown[]) =>
 		getConversationWorkspacesMock(...args),
-	getConversationProject: vi.fn(async () => null),
+	getConversationProject: (...args: unknown[]) =>
+		getConversationProjectMock(...args),
 	hasProjectAccess: vi.fn(async () => true),
 	filterAccessibleWorkspaceIds: (...args: unknown[]) =>
 		filterAccessibleWorkspaceIdsMock(...args),
@@ -81,6 +87,12 @@ async function post(body: Record<string, unknown>) {
 	const response = await POST(postBody(body));
 	await response.text();
 	return response;
+}
+
+function startedInput(): Record<string, unknown> | undefined {
+	return startWorkflowMock.mock.calls[0]?.[1]?.args?.[0] as
+		| Record<string, unknown>
+		| undefined;
 }
 
 function startedWorkspaceIds(): unknown {
@@ -106,6 +118,20 @@ describe("POST orchestrator-temporal/stream — workspace access", () => {
 		});
 		memberFindFirstMock.mockResolvedValue({ id: "member-1" });
 		getConversationWorkspacesMock.mockResolvedValue([]);
+		getConversationProjectMock.mockResolvedValue(null);
+		// The caller owns "conversation-1" in ORGANIZATION_ID; nothing else.
+		conversationFindFirstMock.mockImplementation(
+			async (query: { where: { id: string; userId: string } }) =>
+				query.where.id === "conversation-1" &&
+				query.where.userId === SESSION_USER_ID
+					? {
+							id: "conversation-1",
+							organizationId: ORGANIZATION_ID,
+							parentConversationId: null,
+							carriedOverSummary: null,
+						}
+					: null,
+		);
 		filterAccessibleWorkspaceIdsMock.mockImplementation(
 			async (params: { workspaceIds: string[] }) => ({
 				allowed: params.workspaceIds.filter((id) =>
@@ -178,6 +204,62 @@ describe("POST orchestrator-temporal/stream — workspace access", () => {
 			organizationId: ORGANIZATION_ID,
 		});
 		expect(startedWorkspaceIds()).toEqual(["ws-ok-attached"]);
+	});
+
+	it("ignores a conversation the caller does not own: nothing adopted, nothing forwarded", async () => {
+		getConversationWorkspacesMock.mockResolvedValue([
+			{ workspace: { id: "ws-ok-theirs" } },
+		]);
+		getConversationProjectMock.mockResolvedValue({
+			project: { id: "project-theirs" },
+		});
+
+		await post({
+			message: "hello",
+			organizationId: ORGANIZATION_ID,
+			conversationId: "conversation-of-someone-else",
+		});
+
+		expect(conversationFindFirstMock).toHaveBeenCalledWith({
+			where: {
+				id: "conversation-of-someone-else",
+				userId: SESSION_USER_ID,
+			},
+			select: { id: true, organizationId: true },
+		});
+		expect(getConversationWorkspacesMock).not.toHaveBeenCalled();
+		expect(getConversationProjectMock).not.toHaveBeenCalled();
+		expect(startedInput()?.conversationId).toBeUndefined();
+		expect(startedInput()?.projectId).toBeUndefined();
+		expect(startedWorkspaceIds()).toEqual([]);
+	});
+
+	it("ignores the caller's own conversation from another organization", async () => {
+		conversationFindFirstMock.mockResolvedValue({
+			id: "conversation-1",
+			organizationId: "another-org",
+		});
+		getConversationWorkspacesMock.mockResolvedValue([
+			{ workspace: { id: "ws-ok-other-org" } },
+		]);
+
+		await post({
+			message: "hello",
+			organizationId: ORGANIZATION_ID,
+			conversationId: "conversation-1",
+		});
+
+		expect(getConversationWorkspacesMock).not.toHaveBeenCalled();
+		expect(startedInput()?.conversationId).toBeUndefined();
+	});
+
+	it("forwards an owned conversation to the workflow", async () => {
+		await post({
+			message: "hello",
+			organizationId: ORGANIZATION_ID,
+			conversationId: "conversation-1",
+		});
+		expect(startedInput()?.conversationId).toBe("conversation-1");
 	});
 
 	it("drops non-string entries before filtering and treats a non-array value as none", async () => {

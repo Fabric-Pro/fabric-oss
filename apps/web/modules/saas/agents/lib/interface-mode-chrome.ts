@@ -13,7 +13,8 @@ import type { UiMode } from "@repo/database";
  * The rule the modes actually encode: simple mode hides how the work is
  * *carried out* — the engine, the reasoning depth, the tools, the deck — but
  * not *which model* answers. Picking a model is a first-class choice in both
- * modes.
+ * modes; picking a registered agent or template — which brings its own
+ * instructions and tools — is an advanced-mode choice.
  */
 export interface InterfaceModeChrome {
 	/** The left control deck, and the collapsed icon rail that expands it. */
@@ -22,6 +23,12 @@ export interface InterfaceModeChrome {
 	showAgentPicker: boolean;
 	/** The per-conversation tool picker in the composer. */
 	showToolPicker: boolean;
+	/**
+	 * What the agent / model picker lists: models only in simple mode, the
+	 * full catalog (agents, templates and models) in advanced — on both
+	 * engines (Fizzy #2040, FR17).
+	 */
+	agentPickerCatalog: "all" | "models";
 }
 
 export function getInterfaceModeChrome(uiMode: UiMode): InterfaceModeChrome {
@@ -31,5 +38,6 @@ export function getInterfaceModeChrome(uiMode: UiMode): InterfaceModeChrome {
 		showControlDeck: isAdvanced,
 		showAgentPicker: true,
 		showToolPicker: isAdvanced,
+		agentPickerCatalog: isAdvanced ? "all" : "models",
 	};
 }

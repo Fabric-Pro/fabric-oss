@@ -71,6 +71,13 @@ interface TemporalOrchestratorTokenUsage {
 export interface FabricTemporalOrchestratorChatProps {
 	organizationId?: string;
 	reasoningMode: "lite" | "balanced" | "deep" | "planner";
+	/**
+	 * Runs every turn on this execution mode instead of the one
+	 * `reasoningMode` maps to. Simple mode passes `iterative` (#2040): the
+	 * iterative loop with no decomposition or reflection. The conversation
+	 * still records `reasoningMode`.
+	 */
+	executionModeOverride?: ExecutionMode;
 	welcomeMode?: "default" | "focused-agent";
 	lockConversationToolPicker?: boolean;
 	activeConversation?: ConversationDetail | null;
@@ -111,6 +118,13 @@ export interface FabricTemporalOrchestratorChatProps {
 	 * The unified interface opts in for its Orchestrator tab.
 	 */
 	showAgentPicker?: boolean;
+	/**
+	 * What the picker lists — see `InterfaceModeChrome.agentPickerCatalog`.
+	 * Defaults to models only. A picked agent or template applies only its
+	 * model override here: its instructions would replace the orchestrator's
+	 * own, so the chip says "not applied" when it carries no model.
+	 */
+	agentPickerCatalog?: "all" | "models";
 	onActivityChange?: (activity: TemporalOrchestratorActivityState) => void;
 	onUsageChange?: (usage: TemporalOrchestratorTokenUsage) => void;
 	// Optional customization for different agent types
@@ -123,6 +137,13 @@ export interface FabricTemporalOrchestratorChatProps {
 	attachedDocumentIds?: string[];
 	/** Attached project ID for project context retrieval */
 	attachedProjectId?: string | null;
+	/**
+	 * Fires after the user removes the project from the chat (and, with a
+	 * conversation open, after it was detached), so the parent drops its
+	 * own copy — otherwise the `attachedProjectId` it passes would bring the
+	 * project back.
+	 */
+	onProjectRemove?: () => void;
 	/** System prompt / instructions (for agent template instances) */
 	systemPrompt?: string;
 	/** Agent template instance ID */
@@ -131,6 +152,17 @@ export interface FabricTemporalOrchestratorChatProps {
 	starterMessages?: Array<{ label: string; emoji: string; prompt: string }>;
 	/** Optional initial draft text for contextual launches */
 	initialInput?: string;
+	/**
+	 * Files already in the composer when the chat mounts — the drawer's
+	 * attachments carried over by Expand (#2040).
+	 */
+	initialAttachedDocuments?: import("@saas/shared/components/copilot/use-copilot-document-upload").AttachedFile[];
+	/** Reports the unsent composer text, so Expand can carry it (#2040). */
+	onDraftChange?: (draft: string) => void;
+	/** Reports the composer's attached documents, so Expand can carry them. */
+	onAttachmentsChange?: (
+		attachments: import("@saas/shared/components/copilot/use-copilot-document-upload").AttachedFile[],
+	) => void;
 	/** Session-level selected templates that persist across conversations */
 	sessionTemplates?: import("../../../hooks/useTemplateMention").MentionableTemplate[];
 	/** Callback when selected templates change (for session persistence) */
@@ -146,6 +178,44 @@ export interface FabricTemporalOrchestratorChatProps {
 	 * a no-op (AC-7 / spec § 8.8 / decision 9).
 	 */
 	onEscClose?: () => void;
+	/**
+	 * Fires when a turn starts and once it has landed — streamed AND saved.
+	 * This component persists a turn client-side after the stream ends, so
+	 * the drawer must not treat the stream's end as "safe to navigate"
+	 * (#2040).
+	 */
+	onStreamingChange?: (isStreaming: boolean) => void;
+	/**
+	 * Narrow layout for the ⌘J drawer: a compact empty state, no memory or
+	 * artifacts triggers, and interactive frames open only on request.
+	 */
+	compactMode?: boolean;
+	/**
+	 * Whether to offer the "Chat tools" (MCP) picker in the composer.
+	 * Simple mode hides it (#2040). Defaults to `true`.
+	 */
+	showToolPicker?: boolean;
+	/**
+	 * Analytics tag for the cancel telemetry event. The workflow surface
+	 * stays `loom-orchestrator` either way, so the clarifying-question card
+	 * works on every mount.
+	 */
+	telemetrySurface?: "loom-orchestrator" | "fabric-agent-launcher";
+	/**
+	 * The most recent conversation, shown on the landing with a Resume
+	 * link. The page passes it only while no conversation is open.
+	 */
+	recentConversation?: {
+		id: string;
+		title: string | null;
+		updatedAt: string;
+	} | null;
+	/** Opens `recentConversation`. */
+	onResumeConversation?: (id: string) => void;
+	/** The AiChat uploaded documents are stored under (restored from history). */
+	documentChatId?: string | null;
+	/** Fires when the first upload creates that AiChat (page Files tab). */
+	onDocumentChatCreated?: (chatId: string) => void;
 }
 
 // Completed execution for collapsible display

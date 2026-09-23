@@ -1,5 +1,7 @@
 "use client";
 
+import { buildAgentInstanceChatHref } from "@saas/agents/lib/fabric-agent-links";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { PuzzleIcon } from "@saas/shared/components/icons/PuzzleIcon";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { getIntegration } from "@saas/workflows/lib/plugins";
@@ -221,16 +223,26 @@ export function AgentInstanceDetail({
 	);
 
 	const skillFiles = memoryData?.files ?? [];
-	const chatbotAgentHref = useMemo(() => {
-		const payload = encodeURIComponent(
-			JSON.stringify({
-				agentId: `template-instance:${instanceId}`,
-				name: instance?.name,
-				description: instance?.description ?? "",
+	const unifiedAgentInterface = useFeatureFlag("UNIFIED_AGENT_INTERFACE");
+	const chatbotAgentHref = useMemo(
+		() =>
+			buildAgentInstanceChatHref({
+				basePath: basePath.replace(/\/agent-templates$/, ""),
+				instance: {
+					id: instanceId,
+					name: instance?.name,
+					description: instance?.description,
+				},
+				unifiedAgentInterface,
 			}),
-		);
-		return `${basePath.replace(/\/agent-templates$/, "")}/nexus?agent=${payload}`;
-	}, [basePath, instance?.description, instance?.name, instanceId]);
+		[
+			basePath,
+			instance?.description,
+			instance?.name,
+			instanceId,
+			unifiedAgentInterface,
+		],
+	);
 
 	const deleteMutation = useMutation(
 		orpc.agentTemplates.instances.delete.mutationOptions(),

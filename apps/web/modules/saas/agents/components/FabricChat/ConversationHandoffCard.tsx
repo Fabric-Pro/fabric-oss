@@ -20,6 +20,15 @@ interface Props {
 	onDismiss?: () => void;
 }
 
+/**
+ * The orchestrator stops a single answer when it has spent its own step or
+ * token budget — the conversation itself can go on. Those stops report
+ * `Token budget exceeded: n/m` or `Iteration limit reached: n/m`.
+ */
+function isAnswerBudgetStop(reason: string): boolean {
+	return /^(Token budget exceeded|Iteration limit reached)\b/.test(reason);
+}
+
 export function ConversationHandoffCard({
 	parentConversationId,
 	reason,
@@ -56,6 +65,7 @@ export function ConversationHandoffCard({
 	};
 
 	const wordCount = summary.trim().split(/\s+/).length;
+	const answerBudgetStop = isAnswerBudgetStop(reason);
 
 	return (
 		<div className="rounded-lg border border-amber-300/50 bg-amber-50/40 dark:border-amber-700/50 dark:bg-amber-950/20 p-4 mb-3">
@@ -65,14 +75,32 @@ export function ConversationHandoffCard({
 					aria-hidden="true"
 				/>
 				<div className="flex-1 min-w-0">
-					<h3 className="text-sm font-semibold text-foreground">
-						This conversation has reached its context limit
-					</h3>
-					<p className="mt-1 text-xs text-muted-foreground">
-						{reason}. Start a fresh chat with the progress summary
-						attached so the agent can continue from where we left
-						off without the prior thread's context bloat.
-					</p>
+					{answerBudgetStop ? (
+						<>
+							<h3 className="text-sm font-semibold text-foreground">
+								This answer ran out of its step budget
+							</h3>
+							<p className="mt-1 text-xs text-muted-foreground">
+								The reply above covers what was found before the
+								assistant used up the steps it has for one
+								answer. Ask it to continue, narrow the question,
+								or start a fresh chat with the progress summary
+								attached.
+							</p>
+						</>
+					) : (
+						<>
+							<h3 className="text-sm font-semibold text-foreground">
+								This conversation has reached its context limit
+							</h3>
+							<p className="mt-1 text-xs text-muted-foreground">
+								{reason}. Start a fresh chat with the progress
+								summary attached so the agent can continue from
+								where we left off without the prior thread's
+								context bloat.
+							</p>
+						</>
+					)}
 
 					<Collapsible
 						open={summaryOpen}

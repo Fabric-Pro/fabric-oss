@@ -19,7 +19,6 @@ import { hasOrganizationTie } from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import type {
 	AgentVariable,
-	ExecutionMode,
 	OrchestratorProgressUpdate,
 	OrchestratorWorkflowInput,
 	TaskPlan,
@@ -28,6 +27,10 @@ import { getTemporalClient, ORCHESTRATOR_TASK_QUEUE } from "@repo/temporal";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
+import {
+	EXECUTION_MODE_NAMES,
+	parseExecutionMode,
+} from "../orchestrator-execution-mode";
 
 // Rate limit configurations
 const RATE_LIMITS = {
@@ -87,7 +90,7 @@ export async function POST(request: NextRequest) {
 			message,
 			history = [],
 			organizationId: requestedOrganizationId,
-			executionMode = "balanced", // All modes now use iterative execution with mode-specific limits
+			executionMode: requestedExecutionMode = "balanced", // All modes now use iterative execution with mode-specific limits
 			enabledMcpConfigIds = null,
 			enabledAgentIds = null,
 			enabledFabricToolIds = null,
@@ -122,6 +125,20 @@ export async function POST(request: NextRequest) {
 				JSON.stringify({
 					error: "Invalid message",
 					message: "Message must be a string under 100KB",
+				}),
+				{
+					status: 400,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
+
+		const executionMode = parseExecutionMode(requestedExecutionMode);
+		if (!executionMode) {
+			return new Response(
+				JSON.stringify({
+					error: "Invalid request body",
+					message: `executionMode must be one of: ${EXECUTION_MODE_NAMES.join(", ")}`,
 				}),
 				{
 					status: 400,
@@ -293,7 +310,7 @@ export async function POST(request: NextRequest) {
 			history,
 			userId,
 			organizationId,
-			executionMode: executionMode as ExecutionMode,
+			executionMode,
 			enabledMcpConfigIds: effectiveEnabledMcpConfigIds,
 			enabledAgentIds,
 			enabledFabricToolIds,

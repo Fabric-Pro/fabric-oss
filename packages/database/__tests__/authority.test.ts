@@ -24,6 +24,7 @@ import {
 	createAuthorityRequest,
 	createAuthoritySession,
 	denyAuthoritySession,
+	ensureSensitiveOperationAuthority,
 	expireAuthoritySessions,
 	findActiveAuthoritySession,
 	findAuthoritySessionForRun,
@@ -688,6 +689,43 @@ describe("checkAuthority", () => {
 			boundRunId: "session-456",
 		});
 		expect(nonMatching.authorized).toBe(false);
+	});
+
+	it("carries a chat grant bound to the conversation into the next turn", async () => {
+		// Chat grants bind runId to the conversation (not the per-turn
+		// execution id), so "approve, then ask again" does not re-prompt.
+		const request = {
+			userId: USER_A,
+			providerKey: "notion",
+			accessLevel: "WRITE" as const,
+			providerType: "MCP" as const,
+			runType: "ORCHESTRATOR" as const,
+			runId: "conversation-1",
+			toolName: "notion-create-pages",
+		};
+
+		const firstTurn = await ensureSensitiveOperationAuthority(request);
+		expect(firstTurn.authorized).toBe(false);
+		expect(firstTurn.pendingSessionId).toBeDefined();
+
+		// Asking again before approving reuses the same pending request.
+		const retry = await ensureSensitiveOperationAuthority(request);
+		expect(retry.pendingSessionId).toBe(firstTurn.pendingSessionId);
+
+		await approveAuthoritySession(
+			firstTurn.pendingSessionId as string,
+			USER_A,
+		);
+
+		const nextTurn = await ensureSensitiveOperationAuthority(request);
+		expect(nextTurn.authorized).toBe(true);
+
+		// Another conversation does not inherit it.
+		const otherConversation = await ensureSensitiveOperationAuthority({
+			...request,
+			runId: "conversation-2",
+		});
+		expect(otherConversation.authorized).toBe(false);
 	});
 
 	it("should respect boundSessionId filter", async () => {

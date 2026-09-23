@@ -3,10 +3,11 @@
  *
  * Spec: `specs/2026-05-09-stop-ai-generation/spec.md` § 9.1 (Task 6.2).
  *
- * Surface B in `spec.md` § 1.3: the global Cmd/Ctrl+J launcher mounts
- * `FabricDirectChat` inside a side-sheet. The launcher passes
- * `surface="fabric-agent-launcher"` so cancel telemetry is tagged
- * accordingly.
+ * Surface B in `spec.md` § 1.3: the global Cmd/Ctrl+J launcher. A new
+ * drawer chat in simple mode (the default) mounts
+ * `FabricTemporalOrchestratorChat` (#2040), tagged
+ * `telemetrySurface="fabric-agent-launcher"` so cancel telemetry keeps the
+ * launcher's own surface.
  *
  * This spec exercises:
  *   - AC-1  — Stop halts the in-flight generation immediately and the
@@ -15,7 +16,7 @@
  *   - AC-7  — Esc is context-sensitive: while the turn is in-flight Esc
  *             stops it; while idle Esc closes the launcher.
  *
- * The test mocks `/api/agents/fabric-ai/stream` via a `window.fetch`
+ * The test mocks the orchestrator stream route via a `window.fetch`
  * override (see `helpers/stop-ai.ts`) so the SSE stream emits a
  * deterministic `started` event quickly and then deliberately holds the
  * connection open. That gives us a stable mid-stream window in which to
@@ -35,8 +36,8 @@ const LAUNCHER_PANEL_SELECTOR = "[data-fabric-agent-chat]";
 test.describe("Stop AI generation — Fabric Agent launcher", () => {
 	test.beforeEach(async ({ page }) => {
 		await installSlowStream(page, {
-			endpoint: "fabric-ai-stream",
-			executionIdPrefix: "direct-chat-",
+			endpoint: "orchestrator-temporal-stream",
+			executionIdPrefix: "orch-",
 		});
 		await page.goto("/app");
 		await page.waitForLoadState("networkidle");

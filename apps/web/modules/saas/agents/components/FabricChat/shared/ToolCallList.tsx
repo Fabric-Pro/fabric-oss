@@ -47,8 +47,8 @@ export interface ToolCallListProps {
  *
  * Tools report failures as `{ error: "..." }`, and that object used to be
  * printed as raw JSON, braces and quotes included. Unwrap the message from
- * an object or a JSON string, fall back to the raw text, and say so when a
- * tool sent nothing at all.
+ * an object, a JSON string or an MCP `content[].text` result, fall back to the
+ * raw text, and say so when a tool sent nothing at all.
  */
 export function formatToolError(error: unknown, result: unknown): string {
 	const fromValue = (value: unknown): string | null => {
@@ -57,7 +57,9 @@ export function formatToolError(error: unknown, result: unknown): string {
 		}
 		if (typeof value === "string") {
 			const text = value.trim();
-			if (!text) {
+			// Older runs stringified an error object; the result may still
+			// carry the real message.
+			if (!text || text === "[object Object]") {
 				return null;
 			}
 			if (text.startsWith("{") || text.startsWith("[")) {
@@ -81,6 +83,23 @@ export function formatToolError(error: unknown, result: unknown): string {
 					if (nested) {
 						return nested;
 					}
+				}
+			}
+			// An MCP `isError` result carries its message in content[].text.
+			if (Array.isArray(obj.content)) {
+				const text = obj.content
+					.map((part) =>
+						part && typeof part === "object"
+							? (part as { text?: unknown }).text
+							: undefined,
+					)
+					.filter(
+						(t): t is string => typeof t === "string" && !!t.trim(),
+					)
+					.join("\n")
+					.trim();
+				if (text) {
+					return text;
 				}
 			}
 			return JSON.stringify(value);
@@ -176,22 +195,11 @@ interface ChartArtifactData {
  */
 function extractChartArtifact(result: unknown): ChartArtifactData | null {
 	if (!result) {
-		console.log("[extractChartArtifact] No result provided");
 		return null;
 	}
 
-	console.log("[extractChartArtifact] Checking result:", {
-		type: typeof result,
-		isString: typeof result === "string",
-		preview:
-			typeof result === "string"
-				? result.slice(0, 200)
-				: JSON.stringify(result).slice(0, 200),
-	});
-
 	// Direct chart artifact
 	if (isChartArtifact(result)) {
-		console.log("[extractChartArtifact] Found direct chart artifact");
 		return result as ChartArtifactData;
 	}
 
@@ -199,59 +207,34 @@ function extractChartArtifact(result: unknown): ChartArtifactData | null {
 	if (typeof result === "string") {
 		try {
 			const parsed = JSON.parse(result);
-			console.log(
-				"[extractChartArtifact] Parsed JSON, checking for artifact:",
-				{
-					hasArtifact: !!parsed.artifact,
-					parsedType: typeof parsed,
-				},
-			);
 			// Check for chart artifact wrapped in response
 			if (parsed.artifact && isChartArtifact(parsed.artifact)) {
-				console.log(
-					"[extractChartArtifact] Found artifact in parsed.artifact",
-				);
 				return parsed.artifact as ChartArtifactData;
 			}
 			// Check if the parsed result itself is a chart artifact
 			if (isChartArtifact(parsed)) {
-				console.log(
-					"[extractChartArtifact] Parsed result is a chart artifact",
-				);
 				return parsed as ChartArtifactData;
 			}
-		} catch (e) {
-			console.log("[extractChartArtifact] Failed to parse JSON:", e);
+		} catch {
+			// Not JSON — fall through to the object checks.
 		}
 	}
 
 	// Check for nested artifact in object
 	if (typeof result === "object" && result !== null) {
 		const obj = result as Record<string, unknown>;
-		console.log("[extractChartArtifact] Checking object for artifact:", {
-			hasArtifact: !!obj.artifact,
-			hasArtifacts: Array.isArray(obj.artifacts),
-			keys: Object.keys(obj).slice(0, 10),
-		});
 		if (obj.artifact && isChartArtifact(obj.artifact)) {
-			console.log(
-				"[extractChartArtifact] Found artifact in obj.artifact",
-			);
 			return obj.artifact as ChartArtifactData;
 		}
 		// Check artifacts array
 		if (Array.isArray(obj.artifacts)) {
 			const chartArtifact = obj.artifacts.find(isChartArtifact);
 			if (chartArtifact) {
-				console.log(
-					"[extractChartArtifact] Found chart in artifacts array",
-				);
 				return chartArtifact as ChartArtifactData;
 			}
 		}
 	}
 
-	console.log("[extractChartArtifact] No chart artifact found");
 	return null;
 }
 
@@ -308,17 +291,6 @@ export function ToolCallList({
 		return null;
 	}
 
-	// Debug logging for chart tool detection
-	console.log(
-		"[ToolCallList] Rendering tool calls:",
-		toolCalls.map((tc) => ({
-			name: tc.name,
-			isChartTool: isChartTool(tc.name),
-			hasResult: tc.result !== undefined && tc.result !== null,
-			resultType: typeof tc.result,
-		})),
-	);
-
 	return (
 		<div className={className}>
 			<div className="space-y-2">
@@ -333,9 +305,6 @@ export function ToolCallList({
 
 					// Check if this is a chart tool with a chart artifact result
 					const isChart = isChartTool(toolCall.name);
-					console.log(
-						`[ToolCallList] Tool "${toolCall.name}" isChartTool: ${isChart}`,
-					);
 					const chartArtifact = isChart
 						? extractChartArtifact(toolCall.result)
 						: null;
@@ -344,10 +313,6 @@ export function ToolCallList({
 						: null;
 					const authorityState = extractAuthorityState(
 						toolCall.result,
-					);
-					console.log(
-						"[ToolCallList] Chart artifact extracted:",
-						chartArtifact ? "YES" : "NO",
 					);
 
 					// If we have a chart artifact, render ChartCard instead of tool output
