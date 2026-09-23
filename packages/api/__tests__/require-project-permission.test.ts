@@ -13,7 +13,7 @@
  *     and fall through to the org-role path — they must not restrict.
  */
 
-import { Permissions } from "@repo/permissions";
+import { type Permission, Permissions } from "@repo/permissions";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const grantSpy = vi.fn();
@@ -241,7 +241,7 @@ describe("requireProjectPermission — project role overrides org role", () => {
 		expect(mocks.memberFindFirst).not.toHaveBeenCalled();
 	});
 
-	it("personal project, caller with no membership at all is denied and seeds nothing", async () => {
+	it("personal project, caller with no membership at all is answered NOT_FOUND and seeds nothing", async () => {
 		mocks.projectFindUnique.mockResolvedValue({
 			id: PROJECT_ID,
 			organizationId: null,
@@ -252,6 +252,8 @@ describe("requireProjectPermission — project role overrides org role", () => {
 		const requireProjectPermission = await loadMiddleware();
 		const mw = requireProjectPermission(Permissions.PROJECT_SETTINGS_READ);
 
+		// Not FORBIDDEN: a caller with no tie to the project must not learn
+		// that it exists (Fizzy #2639). See the existence-oracle block below.
 		await expect(
 			invokeMw(
 				mw,
@@ -264,7 +266,7 @@ describe("requireProjectPermission — project role overrides org role", () => {
 				}),
 				{ projectId: PROJECT_ID },
 			),
-		).rejects.toThrow(/FORBIDDEN|Missing required permission/);
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
 		expect(grantSpy).not.toHaveBeenCalled();
 	});
 
@@ -352,6 +354,96 @@ describe("requireProjectPermission — project role overrides org role", () => {
 	});
 });
 
+/**
+ * The gate must not be an existence oracle across tenants (Fizzy #2639).
+ *
+ * An authenticated caller with no tie to a project — not its owner, no active
+ * ProjectMember row, not a member of its host organization — hears exactly
+ * what an id that names no project gets: the same code AND the same message.
+ * FORBIDDEN is reserved for a caller the resolver ties to the project, who
+ * already knows it exists. The v1 API-key routes apply the same rule in their
+ * own project resolution (`modules/v1/instructions.ts`, and `hasProjectAccess`
+ * in the others); this pins the oRPC gate.
+ */
+describe("requireProjectPermission — invisible and nonexistent projects are indistinguishable", () => {
+	async function rejectionFor(
+		setup: () => void,
+		permission: Permission = Permissions.PROJECT_SETTINGS_READ,
+	): Promise<{ code: string; message: string }> {
+		setup();
+		const requireProjectPermission = await loadMiddleware();
+		const mw = requireProjectPermission(permission);
+		try {
+			await invokeMw(mw, makeCtx(GUEST_ID), { projectId: PROJECT_ID });
+		} catch (error) {
+			const { code, message } = error as {
+				code: string;
+				message: string;
+			};
+			return { code, message };
+		}
+		throw new Error("expected the middleware to reject");
+	}
+
+	function nonexistentProject() {
+		mocks.projectFindUnique.mockResolvedValue(null);
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+	}
+
+	function orgProjectWithOutsiderCaller() {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue(null);
+	}
+
+	it("an existing project in an organization the caller does not belong to gets the nonexistent-project answer", async () => {
+		const missing = await rejectionFor(nonexistentProject);
+		const invisible = await rejectionFor(orgProjectWithOutsiderCaller);
+
+		expect(missing.code).toBe("NOT_FOUND");
+		expect(invisible).toEqual(missing);
+		expect(grantSpy).not.toHaveBeenCalled();
+	});
+
+	it("a pending invitee with no org membership is still an outsider", async () => {
+		const missing = await rejectionFor(nonexistentProject);
+		const pending = await rejectionFor(() => {
+			mocks.projectFindUnique.mockResolvedValue({
+				id: PROJECT_ID,
+				organizationId: ORG_ID,
+				userId: OWNER_ID,
+			});
+			mocks.projectMemberFindUnique.mockResolvedValue({
+				role: "EDITOR",
+				acceptedAt: null,
+				expiresAt: null,
+			});
+			mocks.memberFindFirst.mockResolvedValue(null);
+		});
+
+		expect(pending).toEqual(missing);
+	});
+
+	it("an org member whose role lacks the permission still hears FORBIDDEN — they already know the project exists", async () => {
+		const denied = await rejectionFor(() => {
+			mocks.projectFindUnique.mockResolvedValue({
+				id: PROJECT_ID,
+				organizationId: ORG_ID,
+				userId: OWNER_ID,
+			});
+			mocks.projectMemberFindUnique.mockResolvedValue(null);
+			mocks.memberFindFirst.mockResolvedValue({ role: "member" });
+		}, Permissions.PROJECT_DELETE);
+
+		expect(denied.code).toBe("FORBIDDEN");
+		expect(denied.message).toContain("Missing required permission");
+	});
+});
+
 describe("requireProjectPermission — RBAC_DRY_RUN security property", () => {
 	beforeEach(() => {
 		vi.stubEnv("RBAC_DRY_RUN", "true");
@@ -362,6 +454,28 @@ describe("requireProjectPermission — RBAC_DRY_RUN security property", () => {
 		// stubbed env leaks to any subsequent test file that imports
 		// require-permission.ts with a fresh module graph.
 		vi.unstubAllEnvs();
+	});
+
+	it("an outsider is still answered NOT_FOUND — existence is not a permission decision and is never downgraded", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue(null);
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const requireProjectPermission = await loadMiddleware();
+		const mw = requireProjectPermission(Permissions.PROJECT_UPDATE);
+
+		await expect(
+			invokeMw(mw, makeCtx(GUEST_ID), { projectId: PROJECT_ID }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(warnSpy).not.toHaveBeenCalled();
+		expect(grantSpy).not.toHaveBeenCalled();
+
+		warnSpy.mockRestore();
 	});
 
 	it("demoted viewer: denial is logged, request continues, but grantProjectAccess is NOT called", async () => {
