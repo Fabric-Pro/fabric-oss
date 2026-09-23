@@ -25,7 +25,10 @@ import { describe, expect, it } from "vitest";
 import {
 	assertKeyStaysOutside,
 	buildHookCommand,
+	buildLessonPromptCommand,
+	mergeCommandHook,
 	mergeSessionStartHook,
+	removeCommandHook,
 } from "../src/lib/instructions/hook.js";
 import { resolveDestinationRoot } from "../src/lib/instructions/safe-write.js";
 
@@ -58,6 +61,17 @@ function commandsIn(settings: unknown): string[] {
 		}
 	).hooks.SessionStart;
 	return groups.flatMap((group) => group.hooks.map((hook) => hook.command));
+}
+
+function stopCommandsIn(settings: unknown): string[] {
+	const groups = (
+		settings as {
+			hooks?: { Stop?: { hooks: { command: string }[] }[] };
+		}
+	).hooks?.Stop;
+	return (groups ?? []).flatMap((group) =>
+		group.hooks.map((hook) => hook.command),
+	);
 }
 
 function merge(root: string, projectId: string, apply = false) {
@@ -603,6 +617,176 @@ describe("mergeSessionStartHook", () => {
 		);
 		expect(raw).not.toContain("\r");
 		expect(raw.endsWith("}\n")).toBe(true);
+	});
+});
+
+describe("mergeCommandHook across events", () => {
+	/**
+	 * A `lesson-prompt` entry must never be touched by the `SessionStart`
+	 * merge, and a `check`/`sync` entry must never be touched by the `Stop`
+	 * merge — even though the two events already live under different JSON
+	 * keys, so a bug here would have to reach across `hooks.SessionStart` and
+	 * `hooks.Stop` to matter at all.
+	 */
+	it("adding a Stop hook does not disturb an existing SessionStart hook", async () => {
+		const root = await makeTree();
+		await mergeSessionStartHook({
+			root,
+			projectId: "project-1",
+			command: buildHookCommand("project-1", false),
+		});
+
+		await mergeCommandHook({
+			root,
+			projectId: "project-1",
+			command: buildLessonPromptCommand("project-1"),
+			event: "Stop",
+		});
+
+		const settings = await readSettings(root);
+		expect(commandsIn(settings)).toEqual([
+			"fabric instructions check --project project-1 --hook",
+		]);
+		expect(stopCommandsIn(settings)).toEqual([
+			"fabric instructions lesson-prompt --project project-1 --hook",
+		]);
+	});
+
+	it("adding a SessionStart hook does not disturb an existing Stop hook", async () => {
+		const root = await makeTree();
+		await mergeCommandHook({
+			root,
+			projectId: "project-1",
+			command: buildLessonPromptCommand("project-1"),
+			event: "Stop",
+		});
+
+		await mergeSessionStartHook({
+			root,
+			projectId: "project-1",
+			command: buildHookCommand("project-1", false),
+		});
+
+		const settings = await readSettings(root);
+		expect(commandsIn(settings)).toEqual([
+			"fabric instructions check --project project-1 --hook",
+		]);
+		expect(stopCommandsIn(settings)).toEqual([
+			"fabric instructions lesson-prompt --project project-1 --hook",
+		]);
+	});
+});
+
+describe("removeCommandHook", () => {
+	it("removes only the matching subcommand's entries", async () => {
+		const root = await makeTree();
+		await mergeSessionStartHook({
+			root,
+			projectId: "project-1",
+			command: buildHookCommand("project-1", false),
+		});
+		await mergeCommandHook({
+			root,
+			projectId: "project-1",
+			command: buildLessonPromptCommand("project-1"),
+			event: "Stop",
+		});
+
+		const result = await removeCommandHook({
+			root,
+			projectId: "project-1",
+			subcommand: "lesson-prompt",
+			event: "Stop",
+		});
+
+		expect(result.changed).toBe(true);
+		const settings = await readSettings(root);
+		expect(stopCommandsIn(settings)).toEqual([]);
+		expect(commandsIn(settings)).toEqual([
+			"fabric instructions check --project project-1 --hook",
+		]);
+	});
+
+	it("returns false and does not create the file when nothing matches", async () => {
+		const root = await makeTree();
+
+		const result = await removeCommandHook({
+			root,
+			projectId: "project-1",
+			subcommand: "lesson-prompt",
+			event: "Stop",
+		});
+
+		expect(result.changed).toBe(false);
+		await expect(
+			readFile(path.join(root, ".claude", "settings.local.json"), "utf8"),
+		).rejects.toThrow();
+	});
+
+	it("leaves an existing file byte-for-byte untouched when nothing matches", async () => {
+		const root = await makeTree();
+		await mergeSessionStartHook({
+			root,
+			projectId: "project-1",
+			command: buildHookCommand("project-1", false),
+		});
+		const settingsFile = path.join(root, ".claude", "settings.local.json");
+		const before = await readFile(settingsFile, "utf8");
+
+		const result = await removeCommandHook({
+			root,
+			projectId: "project-1",
+			subcommand: "lesson-prompt",
+			event: "Stop",
+		});
+
+		expect(result.changed).toBe(false);
+		expect(await readFile(settingsFile, "utf8")).toBe(before);
+	});
+
+	it("does not remove another project's matching subcommand", async () => {
+		const root = await makeTree();
+		await mergeCommandHook({
+			root,
+			projectId: "project-2",
+			command: buildLessonPromptCommand("project-2"),
+			event: "Stop",
+		});
+
+		const result = await removeCommandHook({
+			root,
+			projectId: "project-1",
+			subcommand: "lesson-prompt",
+			event: "Stop",
+		});
+
+		expect(result.changed).toBe(false);
+		const settings = await readSettings(root);
+		expect(stopCommandsIn(settings)).toEqual([
+			"fabric instructions lesson-prompt --project project-2 --hook",
+		]);
+	});
+
+	it("never leaves an empty-object group behind", async () => {
+		const root = await makeTree();
+		await mergeCommandHook({
+			root,
+			projectId: "project-1",
+			command: buildLessonPromptCommand("project-1"),
+			event: "Stop",
+		});
+
+		await removeCommandHook({
+			root,
+			projectId: "project-1",
+			subcommand: "lesson-prompt",
+			event: "Stop",
+		});
+
+		const settings = (await readSettings(root)) as {
+			hooks: { Stop: unknown[] };
+		};
+		expect(settings.hooks.Stop).toEqual([]);
 	});
 });
 

@@ -1803,13 +1803,18 @@ describe("the proposal tool's error surface", () => {
  * made to.
  */
 describe("what instructions:write can reach", () => {
-	it("maps only the proposal tool, never a publishing one", () => {
+	// Both tools that hold this scope propose and never publish — the lesson
+	// tool is the positive sibling of the proposal tool, added later, and
+	// shares its scope for the same reason: what it reaches is the proposal
+	// path, which is what a reader can already do in the tab.
+	it("maps only the proposal tools, never a publishing one", () => {
 		const writeScoped = Object.entries(TOOL_SCOPES)
 			.filter(([, v]) => v.scope === "instructions:write")
 			.map(([name]) => name);
 
 		expect(writeScoped).toEqual([
 			"fabric_propose_project_instruction_change",
+			"fabric_add_instruction_lesson",
 		]);
 	});
 
@@ -1851,5 +1856,529 @@ describe("what instructions:write can reach", () => {
 			unknown
 		>;
 		expect(call.mode).toBe("proposal");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// fabric_add_instruction_lesson
+// ---------------------------------------------------------------------------
+/**
+ * The positive sibling of `fabric_propose_project_instruction_change`: an
+ * agent records a lesson (a mistake the team should not repeat) as a new
+ * `Lessons/<date>-<slug>.md` file, submitted through the same
+ * `submitInstructionChange` proposal path. Same scope, same access gate, same
+ * `mode: "proposal"` constant, same refusal handling — the one difference is
+ * that this tool resolves `baseSnapshotId` itself instead of requiring the
+ * caller to state it, so the mocked `getPublishedInstructionSnapshot` and
+ * `listInstructionFiles` reads stand in for that resolution.
+ */
+describe("fabric_add_instruction_lesson", () => {
+	const publishedSnapshot = {
+		id: "snap_1",
+		organizationId: "org_1",
+		version: 7,
+		status: "READY",
+		digest: "d",
+		fileCount: 3,
+		projectId: "proj_1",
+	};
+
+	function accepted(overrides: Record<string, unknown> = {}) {
+		return {
+			snapshotId: "snap_new",
+			version: 8,
+			baseSnapshotId: "snap_1",
+			baseVersion: 7,
+			fileCount: 4,
+			inheritedCount: 3,
+			putCount: 1,
+			deleteCount: 0,
+			proposalStatus: "PENDING",
+			mode: "proposal",
+			status: "VALIDATING",
+			...overrides,
+		};
+	}
+
+	const LESSON_PATH_RE = /^Lessons\/\d{4}-\d{2}-\d{2}-[a-z0-9-]+\.md$/;
+
+	beforeEach(() => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.getPublishedInstructionSnapshot.mockResolvedValue(publishedSnapshot);
+		m.listInstructionFiles.mockResolvedValue([]);
+	});
+
+	it("requires a projectId", async () => {
+		const r = await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{ title: "Title", body: "Body." },
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(m.getProjectAccessContext).not.toHaveBeenCalled();
+	});
+
+	it("requires a title", async () => {
+		const r = await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{ projectId: "proj_1", body: "Body." },
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain("title is required");
+		expect(m.getProjectAccessContext).not.toHaveBeenCalled();
+	});
+
+	it("refuses a title over 120 characters", async () => {
+		const r = await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{ projectId: "proj_1", title: "x".repeat(121), body: "Body." },
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain("120 characters");
+		expect(m.getProjectAccessContext).not.toHaveBeenCalled();
+	});
+
+	it("refuses an empty body", async () => {
+		const r = await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{ projectId: "proj_1", title: "Title", body: "   " },
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain("body is required");
+		expect(m.getProjectAccessContext).not.toHaveBeenCalled();
+	});
+
+	it("refuses a relatedPaths entry that escapes the instruction tree", async () => {
+		const r = await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{
+				projectId: "proj_1",
+				title: "Title",
+				body: "Body.",
+				relatedPaths: ["../../etc/passwd"],
+			},
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain(
+			"not a valid instruction-tree path",
+		);
+		expect(m.getProjectAccessContext).not.toHaveBeenCalled();
+	});
+
+	it("refuses more than 20 relatedPaths", async () => {
+		const relatedPaths = Array.from({ length: 21 }, (_, i) => `f${i}.md`);
+
+		const r = await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{
+				projectId: "proj_1",
+				title: "Title",
+				body: "Body.",
+				relatedPaths,
+			},
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain("relatedPaths");
+		expect(m.getProjectAccessContext).not.toHaveBeenCalled();
+	});
+
+	it("is refused by a read-only session, before touching the project", async () => {
+		const r = await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{ projectId: "proj_1", title: "Title", body: "Body." },
+			session,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain("instructions:write");
+		expect(m.getProjectAccessContext).not.toHaveBeenCalled();
+	});
+
+	it("refuses a caller with no project access, before reading any snapshot", async () => {
+		m.getProjectAccessContext.mockResolvedValue(null);
+
+		const r = await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{ projectId: "proj_other", title: "Title", body: "Body." },
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain("not found or access denied");
+		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	it("refuses a project with no published coding instructions yet", async () => {
+		m.getPublishedInstructionSnapshot.mockResolvedValue(null);
+
+		const r = await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{ projectId: "proj_1", title: "Title", body: "Body." },
+			writeSession,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain(
+			"no published coding instructions yet",
+		);
+		expect(m.submitInstructionChange).not.toHaveBeenCalled();
+	});
+
+	// This tool now resolves the base snapshot through
+	// `resolvePublishedInstructionSnapshot` — the same scoped resolver the
+	// three read tools use — instead of calling the unscoped
+	// `getPublishedInstructionSnapshot` pointer directly. These three mirror
+	// the invariants pinned for the read tools in the "organization resolution
+	// (R31 / spec §6.5)" suite above: a snapshot that fails any of them reads
+	// as nothing published, identically, and neither `listInstructionFiles`
+	// nor `submitInstructionChange` is ever reached.
+	describe("tenant scoping", () => {
+		it("treats a snapshot from another organization as nothing published", async () => {
+			m.getPublishedInstructionSnapshot.mockResolvedValue({
+				...publishedSnapshot,
+				organizationId: "org_other",
+			});
+
+			const r = await executePlatformTool(
+				"fabric_add_instruction_lesson",
+				{ projectId: "proj_1", title: "Title", body: "Body." },
+				writeSession,
+			);
+
+			expect(r.isError).toBe(true);
+			expect(JSON.stringify(r)).toContain(
+				"no published coding instructions yet",
+			);
+			expect(m.listInstructionFiles).not.toHaveBeenCalled();
+			expect(m.submitInstructionChange).not.toHaveBeenCalled();
+		});
+
+		it("treats a non-READY snapshot as nothing published", async () => {
+			m.getPublishedInstructionSnapshot.mockResolvedValue({
+				...publishedSnapshot,
+				status: "PENDING",
+			});
+
+			const r = await executePlatformTool(
+				"fabric_add_instruction_lesson",
+				{ projectId: "proj_1", title: "Title", body: "Body." },
+				writeSession,
+			);
+
+			expect(r.isError).toBe(true);
+			expect(JSON.stringify(r)).toContain(
+				"no published coding instructions yet",
+			);
+			expect(m.listInstructionFiles).not.toHaveBeenCalled();
+			expect(m.submitInstructionChange).not.toHaveBeenCalled();
+		});
+
+		it("treats a snapshot whose projectId does not match the requested project as nothing published", async () => {
+			m.getPublishedInstructionSnapshot.mockResolvedValue({
+				...publishedSnapshot,
+				projectId: "proj_other",
+			});
+
+			const r = await executePlatformTool(
+				"fabric_add_instruction_lesson",
+				{ projectId: "proj_1", title: "Title", body: "Body." },
+				writeSession,
+			);
+
+			expect(r.isError).toBe(true);
+			expect(JSON.stringify(r)).toContain(
+				"no published coding instructions yet",
+			);
+			expect(m.listInstructionFiles).not.toHaveBeenCalled();
+			expect(m.submitInstructionChange).not.toHaveBeenCalled();
+		});
+	});
+
+	it("drafts the lesson file and proposes it", async () => {
+		m.submitInstructionChange.mockResolvedValue(accepted());
+
+		const r = await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{
+				projectId: "proj_1",
+				title: "Never skip the migration check",
+				body: "We shipped a migration without running it. Run pnpm migrate before every deploy.",
+			},
+			writeSession,
+		);
+
+		expect(r.isError).toBeFalsy();
+		const text = JSON.stringify(r);
+		expect(text).toContain("PENDING");
+		expect(text).toContain("Lesson drafted as Lessons/");
+
+		expect(m.submitInstructionChange).toHaveBeenCalledTimes(1);
+		const call = m.submitInstructionChange.mock.calls[0]?.[0] as {
+			userId: string;
+			projectId: string;
+			baseSnapshotId: string;
+			mode: string;
+			via: string;
+			changes: Array<{
+				op: string;
+				path: string;
+				content: string;
+				encoding: string;
+			}>;
+		};
+		expect(call.userId).toBe("user_1");
+		expect(call.projectId).toBe("proj_1");
+		expect(call.baseSnapshotId).toBe("snap_1");
+		expect(call.mode).toBe("proposal");
+		expect(call.via).toBe("mcp-gateway");
+		expect(call.changes).toHaveLength(1);
+		const [change] = call.changes;
+		expect(change.op).toBe("put");
+		expect(change.encoding).toBe("utf8");
+		expect(change.path).toMatch(LESSON_PATH_RE);
+		expect(change.content).toContain("---\n");
+		expect(change.content).toContain(
+			'name: "Never skip the migration check"',
+		);
+		expect(change.content).toContain("# Never skip the migration check");
+		expect(change.content).toContain(
+			"We shipped a migration without running it.",
+		);
+	});
+
+	it("suffixes the path when the base snapshot already has today's lesson file", async () => {
+		const todayIso = new Date().toISOString().slice(0, 10);
+		m.listInstructionFiles.mockResolvedValue([
+			{ path: `Lessons/${todayIso}-title.md` },
+		]);
+		m.submitInstructionChange.mockResolvedValue(accepted());
+
+		await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{ projectId: "proj_1", title: "Title", body: "Body." },
+			writeSession,
+		);
+
+		const call = m.submitInstructionChange.mock.calls[0]?.[0] as {
+			changes: Array<{ path: string }>;
+		};
+		expect(call.changes[0]?.path).toBe(`Lessons/${todayIso}-title-2.md`);
+	});
+
+	it("passes an audit context built from the gateway session", async () => {
+		m.submitInstructionChange.mockResolvedValue(accepted());
+
+		await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{ projectId: "proj_1", title: "Title", body: "Body." },
+			writeSession,
+		);
+
+		expect(m.submitInstructionChange).toHaveBeenCalledWith(
+			expect.objectContaining({
+				audit: {
+					user: {
+						id: "user_1",
+						email: "dev@example.com",
+						name: "Example Developer",
+					},
+					session: {
+						id: "gateway_session_1",
+						activeOrganizationId: "org_1",
+					},
+				},
+			}),
+		);
+	});
+
+	it("passes related paths through, normalized, into the rendered file", async () => {
+		m.submitInstructionChange.mockResolvedValue(accepted());
+
+		await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{
+				projectId: "proj_1",
+				title: "Title",
+				body: "Body.",
+				relatedPaths: ["fabric/standards/backend/migrations.md"],
+			},
+			writeSession,
+		);
+
+		const call = m.submitInstructionChange.mock.calls[0]?.[0] as {
+			changes: Array<{ content: string }>;
+		};
+		expect(call.changes[0]?.content).toContain(
+			"  - fabric/standards/backend/migrations.md",
+		);
+	});
+
+	describe("error surface", () => {
+		it("quotes a CONFLICT refusal from the shared entry point back to the agent", async () => {
+			m.submitInstructionChange.mockRejectedValue(
+				Object.assign(
+					new Error(
+						"The published version changed since your copy was taken.",
+					),
+					{ code: "CONFLICT" },
+				),
+			);
+
+			const r = await executePlatformTool(
+				"fabric_add_instruction_lesson",
+				{ projectId: "proj_1", title: "Title", body: "Body." },
+				writeSession,
+			);
+
+			expect(r.isError).toBe(true);
+			expect(JSON.stringify(r)).toContain("published version changed");
+		});
+
+		it("quotes a PRECONDITION_FAILED refusal (repository-backed project) back to the agent", async () => {
+			m.submitInstructionChange.mockRejectedValue(
+				Object.assign(
+					new Error(
+						"This project's coding instructions come from its repository.",
+					),
+					{ code: "PRECONDITION_FAILED" },
+				),
+			);
+
+			const r = await executePlatformTool(
+				"fabric_add_instruction_lesson",
+				{ projectId: "proj_1", title: "Title", body: "Body." },
+				writeSession,
+			);
+
+			expect(r.isError).toBe(true);
+			expect(JSON.stringify(r)).toContain("repository");
+		});
+
+		it("does not quote a generic error back to the agent", async () => {
+			const logged = vi
+				.spyOn(console, "error")
+				.mockImplementation(() => undefined);
+			m.submitInstructionChange.mockRejectedValue(
+				new Error("connect ECONNREFUSED 10.0.0.4:5432"),
+			);
+
+			const r = await executePlatformTool(
+				"fabric_add_instruction_lesson",
+				{ projectId: "proj_1", title: "Title", body: "Body." },
+				writeSession,
+			);
+
+			expect(r.isError).toBe(true);
+			const text = JSON.stringify(r.content);
+			expect(text).not.toContain("ECONNREFUSED");
+			expect(text).not.toContain("10.0.0.4");
+			expect(text).toContain("internal error");
+			expect(logged).toHaveBeenCalled();
+			logged.mockRestore();
+		});
+
+		// Fix: the snapshot resolution used to run outside the handler's
+		// try/catch, so a Prisma/storage failure here would have escaped
+		// `instructionRefusalMessage` entirely and propagated as an unhandled
+		// rejection rather than a tool error. It now runs inside the same
+		// try/catch as the submission, so it is reported identically to one.
+		it("does not quote a getPublishedInstructionSnapshot failure back to the agent", async () => {
+			const logged = vi
+				.spyOn(console, "error")
+				.mockImplementation(() => undefined);
+			m.getPublishedInstructionSnapshot.mockRejectedValue(
+				new Error("connect ECONNREFUSED db.internal.example:5432"),
+			);
+
+			const r = await executePlatformTool(
+				"fabric_add_instruction_lesson",
+				{ projectId: "proj_1", title: "Title", body: "Body." },
+				writeSession,
+			);
+
+			expect(r.isError).toBe(true);
+			const text = JSON.stringify(r);
+			expect(text).not.toContain("db.internal.example");
+			expect(text).toContain("internal error");
+			expect(m.submitInstructionChange).not.toHaveBeenCalled();
+			expect(logged).toHaveBeenCalled();
+			logged.mockRestore();
+		});
+
+		it("does not quote a listInstructionFiles failure back to the agent", async () => {
+			const logged = vi
+				.spyOn(console, "error")
+				.mockImplementation(() => undefined);
+			m.listInstructionFiles.mockRejectedValue(
+				new Error("connect ECONNREFUSED db.internal.example:5432"),
+			);
+
+			const r = await executePlatformTool(
+				"fabric_add_instruction_lesson",
+				{ projectId: "proj_1", title: "Title", body: "Body." },
+				writeSession,
+			);
+
+			expect(r.isError).toBe(true);
+			const text = JSON.stringify(r);
+			expect(text).not.toContain("db.internal.example");
+			expect(text).toContain("internal error");
+			expect(m.submitInstructionChange).not.toHaveBeenCalled();
+			expect(logged).toHaveBeenCalled();
+			logged.mockRestore();
+		});
+	});
+
+	describe("scope and definition", () => {
+		it("is instructions:write, as a write", () => {
+			expect(TOOL_SCOPES.fabric_add_instruction_lesson).toEqual({
+				scope: "instructions:write",
+				kind: "write",
+			});
+		});
+
+		it("carries no readOnlyHint", () => {
+			const tool = PLATFORM_TOOL_DEFINITIONS.find(
+				(t) => t.name === "fabric_add_instruction_lesson",
+			);
+			expect(tool).toBeDefined();
+			expect(tool?.annotations?.readOnlyHint).toBeUndefined();
+		});
+
+		it("offers an agent no mode argument", () => {
+			const tool = PLATFORM_TOOL_DEFINITIONS.find(
+				(t) => t.name === "fabric_add_instruction_lesson",
+			);
+			const properties = (
+				tool?.inputSchema as { properties?: Record<string, unknown> }
+			).properties;
+			expect(properties).not.toHaveProperty("mode");
+			expect(properties).not.toHaveProperty("baseSnapshotId");
+			expect(properties).toHaveProperty("title");
+			expect(properties).toHaveProperty("body");
+		});
+
+		it("requires only projectId, title and body", () => {
+			const tool = PLATFORM_TOOL_DEFINITIONS.find(
+				(t) => t.name === "fabric_add_instruction_lesson",
+			);
+			expect(
+				(tool?.inputSchema as { required?: string[] }).required,
+			).toEqual(["projectId", "title", "body"]);
+		});
 	});
 });

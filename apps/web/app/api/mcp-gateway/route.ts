@@ -977,7 +977,8 @@ function handleInitialize(
 				"and follow those instructions while working on that project. " +
 				"Pass the `digest` you last installed as `sinceDigest`: an unchanged digest is answered without a download, a changed one adds the changed paths to the response.\n" +
 				"If the work shows the instructions are wrong or incomplete, call `fabric_propose_project_instruction_change` with the files' new content. " +
-				"That opens a proposal for a person to approve in Fabric — nothing changes for anyone else until they do, so report it as a suggestion awaiting review rather than as a change you made.\n\n" +
+				"That opens a proposal for a person to approve in Fabric — nothing changes for anyone else until they do, so report it as a suggestion awaiting review rather than as a change you made.\n" +
+				"If the work shows a mistake the team should not repeat, call `fabric_add_instruction_lesson` to record it as a lesson — it opens a proposal the same way, for a person to approve.\n\n" +
 				"## Bootstrap a project\n" +
 				"When the developer is working on a project that has little context (few or no results from `fabric_list_project_contexts`), offer to bootstrap it from their working tree.\n" +
 				"1. Set the project's description with `fabric_update_project`\n" +

@@ -37,7 +37,9 @@ import type { getPublishedInstructionSnapshot as GetPublishedInstructionSnapshot
 import {
 	INSTRUCTION_FILE_KINDS,
 	type InstructionFileKind,
+	validateRelativePath,
 } from "@repo/instructions";
+import { lessonPath, renderLesson } from "./instruction-lessons";
 import type {
 	GatewaySession,
 	GatewayToolDefinition,
@@ -1168,6 +1170,51 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		// proposes, full stop. Publishing stays with a person in the tab.
 		_gateway_source: "platform",
 	},
+	{
+		name: "fabric_add_instruction_lesson",
+		description:
+			"Records a lesson — a mistake the team should not repeat — as a new file under this project's coding instructions, so the next agent that reads them learns from it. " +
+			"Use it when the work just showed something went wrong: a check that was skipped, an assumption that turned out false, a fix for a bug that could recur. Write what happened, why it was a mistake, and what to do instead. " +
+			"This does NOT change anything a project reads: like fabric_propose_project_instruction_change, it opens a proposal that somebody with permission to edit the instructions approves or rejects in Fabric's Coding Instructions tab. Say so when you report back, and do not describe the lesson as recorded or applied — it is awaiting review. " +
+			"The file is created at Lessons/<today's date>-<a slug of the title>.md; a title that collides with an existing file on the same day is suffixed -2, -3, and so on. " +
+			"On a project whose coding instructions come from its repository (source of truth is REPOSITORY, changed in git and synced), this tool is refused — add the lesson as a file there instead.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				projectId: { type: "string", description: "Project ID" },
+				title: {
+					type: "string",
+					description:
+						"A short, single-line summary of the lesson. Becomes the file's name and the slug of its path. 1-120 characters after trimming.",
+					minLength: 1,
+					maxLength: 120,
+				},
+				body: {
+					type: "string",
+					description:
+						"The lesson itself, as markdown: what happened, why it was a mistake, and what to do instead. 1-20000 characters after trimming.",
+					minLength: 1,
+					maxLength: 20000,
+				},
+				relatedPaths: {
+					type: "array",
+					maxItems: 20,
+					description:
+						"Optional paths, relative to the instruction tree root, of the rules, skills or files this lesson relates to — the ones an agent should read alongside it. Use the paths fabric_list_project_instructions reports.",
+					items: {
+						type: "string",
+						minLength: 1,
+						maxLength: 512,
+					},
+				},
+			},
+			required: ["projectId", "title", "body"],
+		},
+		// No `readOnlyHint`: this writes a row and starts a validation run,
+		// the same as the proposal tool above. No `mode` either, for the
+		// same reason — this surface proposes, full stop.
+		_gateway_source: "platform",
+	},
 
 	// ── Workspaces (RAG Knowledge Bases) ──
 	{
@@ -1766,6 +1813,12 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 		scope: "instructions:write",
 		kind: "write",
 	},
+	// The lesson-recording sibling of the proposal tool above: same surface,
+	// same review-gated scope, same reasoning.
+	fabric_add_instruction_lesson: {
+		scope: "instructions:write",
+		kind: "write",
+	},
 	fabric_create_project: { scope: "projects:write", kind: "write" },
 	fabric_update_project: { scope: "projects:write", kind: "write" },
 	fabric_create_document: { scope: "projects:write", kind: "write" },
@@ -1915,6 +1968,8 @@ export async function executePlatformTool(
 					args,
 					session,
 				);
+			case "fabric_add_instruction_lesson":
+				return await handleAddInstructionLesson(args, session);
 			case "fabric_list_workspaces":
 				return await handleListWorkspaces(args, session);
 			case "fabric_get_workspace":
@@ -5715,6 +5770,260 @@ async function handleProposeProjectInstructionChange(
 		);
 		return errorResult(
 			"The proposal could not be created because of an internal error. Nothing was changed. Try again, or use the project's Coding Instructions tab.",
+		);
+	}
+}
+
+const MAX_LESSON_TITLE_LENGTH = 120;
+const MAX_LESSON_BODY_LENGTH = 20000;
+const MAX_LESSON_RELATED_PATHS = 20;
+const MAX_LESSON_RELATED_PATH_LENGTH = 512;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters (including the newlines a "single line" title forbids) is the point.
+const LESSON_TITLE_CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
+
+/**
+ * Read and validate `fabric_add_instruction_lesson`'s arguments, the way
+ * {@link readProposedChanges} does for the proposal tool: the gateway does
+ * not enforce a tool definition's `inputSchema`, so everything the schema
+ * advertises is re-checked here — these values reach a database write.
+ */
+function readAddInstructionLessonArgs(
+	args: Record<string, unknown>,
+):
+	| { title: string; body: string; relatedPaths: string[] }
+	| { error: ToolCallResult } {
+	const rawTitle = args.title;
+	if (typeof rawTitle !== "string" || rawTitle.trim().length === 0) {
+		return { error: errorResult("title is required") };
+	}
+	const title = rawTitle.trim();
+	if (title.length > MAX_LESSON_TITLE_LENGTH) {
+		return {
+			error: errorResult(
+				`title must be ${MAX_LESSON_TITLE_LENGTH} characters or fewer after trimming (got ${title.length}).`,
+			),
+		};
+	}
+	// Also catches an embedded newline or carriage return, which is what
+	// keeps a multi-line "title" from silently becoming one.
+	if (LESSON_TITLE_CONTROL_CHAR.test(title)) {
+		return {
+			error: errorResult(
+				"title must be a single line with no control characters.",
+			),
+		};
+	}
+
+	const rawBody = args.body;
+	if (typeof rawBody !== "string" || rawBody.trim().length === 0) {
+		return { error: errorResult("body is required") };
+	}
+	const body = rawBody.trim();
+	if (body.length > MAX_LESSON_BODY_LENGTH) {
+		return {
+			error: errorResult(
+				`body must be ${MAX_LESSON_BODY_LENGTH} characters or fewer after trimming (got ${body.length}).`,
+			),
+		};
+	}
+
+	const relatedPaths: string[] = [];
+	const rawRelated = args.relatedPaths;
+	if (rawRelated !== undefined) {
+		if (!Array.isArray(rawRelated)) {
+			return {
+				error: errorResult("relatedPaths must be an array of strings."),
+			};
+		}
+		if (rawRelated.length > MAX_LESSON_RELATED_PATHS) {
+			return {
+				error: errorResult(
+					`relatedPaths accepts at most ${MAX_LESSON_RELATED_PATHS} paths (got ${rawRelated.length}).`,
+				),
+			};
+		}
+		for (const entry of rawRelated) {
+			if (
+				typeof entry !== "string" ||
+				entry.length === 0 ||
+				entry.length > MAX_LESSON_RELATED_PATH_LENGTH
+			) {
+				return {
+					error: errorResult(
+						`Each relatedPaths entry must be a string of 1-${MAX_LESSON_RELATED_PATH_LENGTH} characters.`,
+					),
+				};
+			}
+			// The same leaf validator the instruction tree's own path rules
+			// come from — no absolute path, no ".." segment, no control
+			// character — rather than a second hand-written copy of it here.
+			const validated = validateRelativePath(entry);
+			if (!validated.ok) {
+				return {
+					error: errorResult(
+						`relatedPaths entry is not a valid instruction-tree path (${validated.reason}): ${entry}`,
+					),
+				};
+			}
+			relatedPaths.push(validated.path);
+		}
+	}
+
+	return { title, body, relatedPaths };
+}
+
+/**
+ * `fabric_add_instruction_lesson` — record a lesson (a mistake the team
+ * should not repeat) as a new `Lessons/<date>-<slug>.md` file, submitted
+ * through the same `submitInstructionChange` proposal path as
+ * {@link handleProposeProjectInstructionChange}, whose structure this
+ * mirrors: the same live access gate, the same synthetic audit context, the
+ * same `mode: "proposal"` constant, and the same refusal handling.
+ *
+ * The one thing the sibling leaves to its caller that this handler does not:
+ * `baseSnapshotId`. The proposal tool requires it because the caller might
+ * be proposing a change against a version it read minutes ago, and the
+ * published version silently moving under it would rebase the edit onto
+ * content the caller never saw. A lesson carries no such risk — it always
+ * adds one new file under `Lessons/` and touches nothing an agent has read —
+ * so this handler resolves the current published snapshot itself, the
+ * instant before the write, through {@link resolvePublishedInstructionSnapshot}
+ * — the SAME scoped resolver the read tools use (see
+ * {@link handleListProjectInstructions}) — rather than calling
+ * `getPublishedInstructionSnapshot` directly. That pointer read is UNSCOPED (a
+ * project-level pointer, not a tenant-filtered query): calling it directly
+ * here, as this handler once did, skipped the resolver's own
+ * `snapshot.organizationId !== access.organizationId` check, so a project
+ * whose published snapshot happens to belong to a different organization than
+ * the one this caller was granted access against would still resolve to that
+ * snapshot instead of `null`. Going through the shared resolver keeps this
+ * write path and the three read tools answering the identical question the
+ * identical way.
+ * `submitInstructionChange` still re-resolves and re-checks everything
+ * server-side; nothing here is trusted past that point.
+ *
+ * A project with no published snapshot yet gets a clear refusal here rather
+ * than reaching `submitInstructionChange`, which needs a snapshot id to
+ * accept: there is nothing to resolve, and the resolver's `snapshot: null`
+ * answer is the cheapest way to know that before doing any of the path or
+ * file-listing work below. Both that resolution and the file listing run
+ * inside this handler's try/catch alongside the submission itself, so a
+ * Prisma or storage failure in either read is reported through the same
+ * `instructionRefusalMessage` → generic-message path as a submission failure,
+ * rather than surfacing a raw driver error to the caller.
+ */
+async function handleAddInstructionLesson(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const projectId = args.projectId as string;
+	if (!projectId) {
+		return errorResult("projectId is required");
+	}
+	const parsed = readAddInstructionLessonArgs(args);
+	if ("error" in parsed) {
+		return parsed.error;
+	}
+
+	try {
+		// Live access check plus the org-scoped snapshot match, unconditional
+		// (wildcard keys included) — the same shared, scoped resolver the read
+		// tools use, rather than the unscoped pointer read directly.
+		const resolved = await resolvePublishedInstructionSnapshot(
+			args,
+			session,
+		);
+		if ("error" in resolved) {
+			return resolved.error;
+		}
+		if (!resolved.snapshot) {
+			return errorResult(
+				"This project has no published coding instructions yet; publish a set before adding a lesson.",
+			);
+		}
+		const base = resolved.snapshot;
+
+		const { listInstructionFiles } = await import("@repo/database");
+		const files = await listInstructionFiles(base.id, base.organizationId);
+		const taken = new Set(files.map((f) => f.path));
+		const date = new Date();
+		let path: string;
+		try {
+			path = lessonPath(parsed.title, date, taken);
+		} catch (error) {
+			console.error(
+				"[MCP Gateway] fabric_add_instruction_lesson could not place the file:",
+				error,
+			);
+			return errorResult(
+				"Could not find an unused file name for this lesson today. Try a more specific title.",
+			);
+		}
+		const content = renderLesson({
+			title: parsed.title,
+			body: parsed.body,
+			date,
+			relatedPaths: parsed.relatedPaths,
+		});
+
+		const { submitInstructionChange } = await import(
+			"@repo/api/modules/projects/procedures/instructions/submit-change"
+		);
+		const result = await submitInstructionChange({
+			userId: session.userId,
+			projectId,
+			baseSnapshotId: base.id,
+			changes: [{ op: "put", path, content, encoding: "utf8" }],
+			// A CONSTANT, never `args.mode` — there is no `mode` argument on
+			// this tool at all, the same as the proposal tool: this surface
+			// proposes, full stop.
+			mode: "proposal",
+			// The same synthetic context `announceStoryCreated` and the
+			// proposal tool above build: there is no HTTP request in scope at
+			// this layer.
+			audit: {
+				user: {
+					id: session.userId,
+					email: session.email,
+					name: session.userName,
+				},
+				session: {
+					id: session.sessionId,
+					activeOrganizationId: session.organizationId,
+				},
+			},
+			via: "mcp-gateway",
+		});
+		return jsonResult({
+			lesson: { path },
+			proposal: {
+				snapshotId: result.snapshotId,
+				version: result.version,
+				baseVersion: result.baseVersion,
+				status: result.proposalStatus,
+				snapshotStatus: result.status,
+				changedFiles: result.putCount,
+				deletedFiles: result.deleteCount,
+				fileCount: result.fileCount,
+			},
+			message: `Lesson drafted as ${path}. ${proposalOutcomeMessage(result)}`,
+		});
+	} catch (error) {
+		// Same disclosure rule as the proposal tool above: only the shared
+		// function's OWN refusals — `ORPCError`s with a known code and a
+		// message written for a person — are quoted back to the agent. This
+		// now also covers a Prisma/storage failure in the snapshot resolution
+		// or file listing above, not just a `submitInstructionChange` failure.
+		const refusal = instructionRefusalMessage(error);
+		if (refusal !== null) {
+			return errorResult(refusal);
+		}
+		console.error(
+			"[MCP Gateway] fabric_add_instruction_lesson failed:",
+			error,
+		);
+		return errorResult(
+			"The lesson could not be recorded because of an internal error. Nothing was changed. Try again, or use the project's Coding Instructions tab.",
 		);
 	}
 }
