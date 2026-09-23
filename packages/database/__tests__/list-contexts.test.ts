@@ -32,6 +32,7 @@ vi.mock("../prisma/client", () => ({
 	Prisma: { sql: vi.fn() },
 }));
 
+import { ContextSourcePathError } from "../prisma/queries/projects/context-source-path";
 import { listContexts } from "../prisma/queries/projects/contexts";
 
 function seedMixedContexts(total: number): ContextRow[] {
@@ -139,5 +140,90 @@ describe("listContexts", () => {
 		expect(result.contexts).toHaveLength(17);
 		expect(result.total).toBe(67);
 		expect(result.hasMore).toBe(false);
+	});
+
+	// Fizzy #2620: `sourcePathPrefix` narrows the list to synced knowledge
+	// files under one folder of the working tree.
+	describe("sourcePathPrefix", () => {
+		function whereOfOnlyQuery(): Record<string, unknown> {
+			expect(findManyMock).toHaveBeenCalledTimes(1);
+			const findManyArgs = findManyMock.mock.calls[0]?.[0] as {
+				where: Record<string, unknown>;
+			};
+			// The count must use the same filter, or `total` would disagree
+			// with the rows returned.
+			expect(countMock.mock.calls[0]?.[0]).toEqual({
+				where: findManyArgs.where,
+			});
+			return findManyArgs.where;
+		}
+
+		beforeEach(() => {
+			findManyMock.mockResolvedValue([]);
+			countMock.mockResolvedValue(0);
+		});
+
+		it("filters a folder as a directory prefix ending in one slash", async () => {
+			await listContexts({
+				projectId: "proj-1",
+				excludeLinkedDocuments: true,
+				limit: "none",
+				sourcePathPrefix: "./docs/guides",
+			});
+
+			expect(whereOfOnlyQuery()).toEqual({
+				projectId: "proj-1",
+				importedDocuments: { none: {} },
+				sourcePath: { startsWith: "docs/guides/" },
+			});
+		});
+
+		it.each(["", ".", "./"])(
+			"selects every synced row for the root spelling %j",
+			async (prefix) => {
+				await listContexts({
+					projectId: "proj-1",
+					limit: "none",
+					sourcePathPrefix: prefix,
+				});
+
+				expect(whereOfOnlyQuery()).toEqual({
+					projectId: "proj-1",
+					sourcePath: { not: null },
+				});
+			},
+		);
+
+		it("escapes LIKE wildcards so a folder name matches only itself", async () => {
+			// Prisma hands a `startsWith` value to `LIKE` unescaped, so `_`
+			// would otherwise match any character (`myXdocs/…`).
+			await listContexts({
+				projectId: "proj-1",
+				limit: "none",
+				sourcePathPrefix: "my_docs/100%",
+			});
+
+			expect(whereOfOnlyQuery()).toMatchObject({
+				sourcePath: { startsWith: "my\\_docs/100\\%/" },
+			});
+		});
+
+		it("adds no path filter when the prefix is absent", async () => {
+			await listContexts({ projectId: "proj-1", limit: "none" });
+
+			expect(whereOfOnlyQuery()).not.toHaveProperty("sourcePath");
+		});
+
+		it("refuses an invalid prefix before running any query", async () => {
+			await expect(
+				listContexts({
+					projectId: "proj-1",
+					limit: "none",
+					sourcePathPrefix: "docs/../secrets",
+				}),
+			).rejects.toBeInstanceOf(ContextSourcePathError);
+			expect(findManyMock).not.toHaveBeenCalled();
+			expect(countMock).not.toHaveBeenCalled();
+		});
 	});
 });

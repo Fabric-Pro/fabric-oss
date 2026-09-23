@@ -27,6 +27,9 @@
  *
  * Pure: no Prisma, no I/O. Throws {@link ContextSourcePathError}, which the
  * API layer maps to a 400.
+ *
+ * `normalizeContextSourcePathPrefix` applies the same rules to the folder a
+ * contexts-list filter selects (Fizzy #2620).
  */
 
 export const MAX_CONTEXT_SOURCE_PATH_LENGTH = 512;
@@ -37,7 +40,18 @@ export type ContextSourcePathErrorReason =
 	| "dot-segment"
 	| "trailing-slash"
 	| "control-character"
-	| "too-long";
+	| "too-long"
+	// Raised only by the directory-prefix filter, which refuses these
+	// spellings instead of rewriting them (see
+	// `normalizeContextSourcePathPrefix`).
+	| "backslash"
+	| "empty-segment";
+
+/** The reasons `normalizeContextSourcePathPrefix` can refuse a prefix for. */
+export type ContextSourcePathPrefixErrorReason = Exclude<
+	ContextSourcePathErrorReason,
+	"empty" | "trailing-slash"
+>;
 
 const REASON_MESSAGES: Record<ContextSourcePathErrorReason, string> = {
 	empty: "sourcePath is empty",
@@ -49,13 +63,35 @@ const REASON_MESSAGES: Record<ContextSourcePathErrorReason, string> = {
 	"control-character":
 		"sourcePath contains a control character or an invisible format character (zero-width, bidi override, byte-order mark)",
 	"too-long": `sourcePath is longer than ${MAX_CONTEXT_SOURCE_PATH_LENGTH} characters`,
+	backslash: "sourcePath contains a backslash; separate folders with '/'",
+	"empty-segment": "sourcePath contains an empty segment ('//')",
+};
+
+const PREFIX_REASON_MESSAGES: Record<
+	ContextSourcePathPrefixErrorReason,
+	string
+> = {
+	absolute:
+		"sourcePathPrefix is absolute; pass a folder's relative path inside the project's working tree",
+	"dot-segment":
+		"sourcePathPrefix may not contain '.' or '..' segments; pass a folder's relative path inside the project's working tree",
+	"control-character":
+		"sourcePathPrefix contains a control character or an invisible format character (zero-width, bidi override, byte-order mark)",
+	"too-long": `sourcePathPrefix leaves no room for a file name within ${MAX_CONTEXT_SOURCE_PATH_LENGTH} characters`,
+	backslash:
+		"sourcePathPrefix contains a backslash; separate folders with '/'",
+	"empty-segment":
+		"sourcePathPrefix contains an empty segment ('//'); pass a folder's relative path such as 'docs/guides'",
 };
 
 export class ContextSourcePathError extends Error {
 	readonly reason: ContextSourcePathErrorReason;
 
-	constructor(reason: ContextSourcePathErrorReason) {
-		super(REASON_MESSAGES[reason]);
+	constructor(
+		reason: ContextSourcePathErrorReason,
+		message: string = REASON_MESSAGES[reason],
+	) {
+		super(message);
 		this.name = "ContextSourcePathError";
 		this.reason = reason;
 	}
@@ -111,4 +147,74 @@ export function normalizeContextSourcePath(input: string): string {
 		throw new ContextSourcePathError("too-long");
 	}
 	return path;
+}
+
+function prefixError(
+	reason: ContextSourcePathPrefixErrorReason,
+): ContextSourcePathError {
+	return new ContextSourcePathError(reason, PREFIX_REASON_MESSAGES[reason]);
+}
+
+/**
+ * The directory a contexts-list filter selects synced files under (Fizzy
+ * #2620), spelled so it can be compared as a string prefix of the stored
+ * keys {@link normalizeContextSourcePath} produces.
+ *
+ * Returns `""` for the tree's root (`""`, `.`, `./`), meaning "every synced
+ * file". Otherwise returns the directory path with exactly one trailing
+ * `/`, so `docs` selects `docs/a.md` and `docs/guides/b.md` but never
+ * `docs-archive/c.md`, and `docs` and `docs/` are one filter.
+ *
+ * The rules are the file-path rules, applied to a directory: NFC, a leading
+ * `./` stripped, and refusals for control/format characters, an absolute
+ * path, a `.` or `..` segment, and a result that leaves no room for a file
+ * name within {@link MAX_CONTEXT_SOURCE_PATH_LENGTH} characters. Two
+ * spellings the file-path helper
+ * rewrites are refused here instead — a backslash and an empty segment
+ * (`docs//guides`) — because a stored key never contains either, so a
+ * prefix holding one could only ever match nothing, silently.
+ *
+ * Pure: no Prisma, no I/O. Throws {@link ContextSourcePathError}, which the
+ * API layer maps to a 400. The result is NOT escaped for SQL `LIKE`; a
+ * caller building a `startsWith` filter has to do that itself.
+ */
+export function normalizeContextSourcePathPrefix(input: string): string {
+	const value = input.normalize("NFC");
+
+	if (hasControlOrFormatCharacter(value)) {
+		throw prefixError("control-character");
+	}
+	if (value.includes("\\")) {
+		throw prefixError("backslash");
+	}
+	if (value.startsWith("/") || DRIVE_LETTER_PREFIX.test(value)) {
+		throw prefixError("absolute");
+	}
+
+	let path = value;
+	while (path.startsWith("./")) {
+		path = path.slice(2);
+	}
+	if (path === "" || path === ".") {
+		return "";
+	}
+	if (path.endsWith("/")) {
+		path = path.slice(0, -1);
+	}
+
+	const segments = path.split("/");
+	if (segments.some((segment) => segment === "")) {
+		throw prefixError("empty-segment");
+	}
+	if (segments.some((segment) => segment === "." || segment === "..")) {
+		throw prefixError("dot-segment");
+	}
+
+	// A prefix has to leave room for at least one character of file name
+	// under it, or no stored key could ever start with it.
+	const prefix = `${path}/`;
+	if (prefix.length >= MAX_CONTEXT_SOURCE_PATH_LENGTH) {
+		throw prefixError("too-long");
+	}
+	return prefix;
 }

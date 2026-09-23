@@ -20,8 +20,12 @@ vi.mock("@repo/database", async () => {
 	const { annotateDuplicateContexts } = await vi.importActual<
 		typeof import("@repo/database/prisma/queries/projects/context-duplicates")
 	>("@repo/database/prisma/queries/projects/context-duplicates");
+	const { ContextSourcePathError } = await vi.importActual<
+		typeof import("@repo/database/prisma/queries/projects/context-source-path")
+	>("@repo/database/prisma/queries/projects/context-source-path");
 	return {
 		annotateDuplicateContexts,
+		ContextSourcePathError,
 		hasProjectAccess: mockHasProjectAccess,
 		listContexts: mockListContexts,
 	};
@@ -64,7 +68,11 @@ type Row = {
 };
 
 type Handler = (args: {
-	input: { projectId: string; organizationId?: string | null };
+	input: {
+		projectId: string;
+		organizationId?: string | null;
+		sourcePathPrefix?: string;
+	};
 	context: {
 		user: { id: string };
 		session: { activeOrganizationId?: string };
@@ -197,6 +205,78 @@ describe("listContexts procedure — duplicateOfContextId", () => {
 		const handler = await loadHandler();
 		await expect(
 			handler({ input: { projectId: "proj-1" }, context: orgCtx }),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(mockListContexts).not.toHaveBeenCalled();
+	});
+});
+
+describe("listContexts procedure — sourcePathPrefix (Fizzy #2620)", () => {
+	it("passes the folder filter through to the query", async () => {
+		mockListContexts.mockResolvedValue({
+			contexts: [
+				row("guide", "h1", "2026-05-01T00:00:00Z", "docs/guides/a.md"),
+			],
+			total: 1,
+			hasMore: false,
+		});
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: { projectId: "proj-1", sourcePathPrefix: "docs/guides" },
+			context: orgCtx,
+		});
+
+		expect(mockListContexts).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			type: undefined,
+			excludeLinkedDocuments: true,
+			limit: "none",
+			sourcePathPrefix: "docs/guides",
+		});
+		expect(result.contexts.map((ctx) => ctx.id)).toEqual(["guide"]);
+	});
+
+	it("answers an invalid prefix with BAD_REQUEST carrying the reason", async () => {
+		// The class the procedure checks against: the mocked barrel's export.
+		const { ContextSourcePathError } = await import("@repo/database");
+		mockListContexts.mockRejectedValue(
+			new ContextSourcePathError(
+				"dot-segment",
+				"sourcePathPrefix may not contain '.' or '..' segments",
+			),
+		);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: { projectId: "proj-1", sourcePathPrefix: "../secrets" },
+				context: orgCtx,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: "sourcePathPrefix may not contain '.' or '..' segments",
+		});
+	});
+
+	it("lets any other failure through unchanged", async () => {
+		const failure = new Error("connection reset");
+		mockListContexts.mockRejectedValue(failure);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({ input: { projectId: "proj-1" }, context: orgCtx }),
+		).rejects.toBe(failure);
+	});
+
+	it("checks project access before validating the prefix", async () => {
+		mockHasProjectAccess.mockResolvedValue(false);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: { projectId: "proj-1", sourcePathPrefix: "../secrets" },
+				context: orgCtx,
+			}),
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
 		expect(mockListContexts).not.toHaveBeenCalled();
 	});

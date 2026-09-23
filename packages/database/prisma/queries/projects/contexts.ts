@@ -21,6 +21,7 @@ import {
 	contextContentHashOrNull,
 	hashContextContent,
 } from "./context-content-hash";
+import { normalizeContextSourcePathPrefix } from "./context-source-path";
 import { getProjectRagSettings } from "./rag-settings";
 
 /**
@@ -624,6 +625,20 @@ export async function getProjectForDownload(
 }
 
 /**
+ * Escape SQL `LIKE` metacharacters so a string matches only itself.
+ *
+ * Prisma passes a `startsWith` value into `LIKE $n` verbatim — checked
+ * against this repo's Prisma 6.18 query compiler, where
+ * `startsWith: "a_b%/"` becomes `"sourcePath"::text LIKE $2` with
+ * `$2 = 'a_b%/%'` — so an unescaped `_` or `%` in a folder name would act
+ * as a wildcard. Backslash is Postgres's default `LIKE` escape character,
+ * so it goes first.
+ */
+function escapeLikeLiteral(value: string): string {
+	return value.replace(/[\\%_]/g, "\\$&");
+}
+
+/**
  * List contexts for a project
  */
 export async function listContexts(options: {
@@ -638,6 +653,18 @@ export async function listContexts(options: {
 	limit?: number | "none";
 	offset?: number;
 	excludeLinkedDocuments?: boolean;
+	/**
+	 * Only synced knowledge files under this folder of the working tree
+	 * (Fizzy #2620), e.g. `docs/guides` — a directory prefix, not a string
+	 * prefix: `docs` never selects `docs-archive/a.md`. `""`, `.` or `./`
+	 * selects every synced file. Absent means no path filter at all, so rows
+	 * without a `sourcePath` are listed too.
+	 *
+	 * Normalized with `normalizeContextSourcePathPrefix`, which throws
+	 * `ContextSourcePathError` (before any query runs) for a spelling no
+	 * stored key could start with.
+	 */
+	sourcePathPrefix?: string;
 }) {
 	const {
 		projectId,
@@ -645,12 +672,29 @@ export async function listContexts(options: {
 		limit = 50,
 		offset = 0,
 		excludeLinkedDocuments,
+		sourcePathPrefix,
 	} = options;
+
+	const normalizedPrefix =
+		sourcePathPrefix === undefined
+			? undefined
+			: normalizeContextSourcePathPrefix(sourcePathPrefix);
 
 	const where: Prisma.ProjectContextWhereInput = {
 		projectId,
 		...(type ? { type } : {}),
 		...(excludeLinkedDocuments ? { importedDocuments: { none: {} } } : {}),
+		...(normalizedPrefix === undefined
+			? {}
+			: {
+					sourcePath:
+						normalizedPrefix === ""
+							? { not: null }
+							: {
+									startsWith:
+										escapeLikeLiteral(normalizedPrefix),
+								},
+				}),
 	};
 
 	const paginate = limit !== "none";
