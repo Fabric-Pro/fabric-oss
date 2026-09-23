@@ -72,7 +72,7 @@ import {
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useCallback, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
 	renderMarkdownToDocx,
@@ -887,6 +887,11 @@ export function ProjectContextsList({ projectId }: Props) {
 	const livingMemoryId = useId();
 	const [confirmRemoveDuplicatesOpen, setConfirmRemoveDuplicatesOpen] =
 		useState(false);
+	// Collapsed by default: the banner toggle reveals the same pairs the
+	// confirm dialog shows, without forcing that dialog open just to look.
+	const [duplicatesListExpanded, setDuplicatesListExpanded] = useState(false);
+	// Ties the toggle to the banner's list for assistive technology.
+	const duplicatesListId = useId();
 	const { trackEvent } = useAnalytics();
 	const router = useRouter();
 	const pathname = usePathname();
@@ -1221,6 +1226,77 @@ export function ProjectContextsList({ projectId }: Props) {
 				)
 				.map((ctx) => ctx.id),
 		[contexts, contextsById],
+	);
+
+	// One row per copy, naming both the copy and the item it duplicates, so
+	// the banner toggle and the confirm dialog can show the same pairs
+	// instead of only a count. Order follows `duplicateContextIds`, which is
+	// itself list order.
+	const duplicateGroups = useMemo(
+		() =>
+			duplicateContextIds.flatMap((copyId) => {
+				const ctx = contextsById.get(copyId);
+				const original = ctx?.duplicateOfContextId
+					? contextsById.get(ctx.duplicateOfContextId)
+					: undefined;
+				if (!ctx || !original) {
+					return [];
+				}
+				return [
+					{
+						copyId: ctx.id,
+						copyTitle: getContextDisplayTitle(
+							ctx as unknown as RowContext,
+						),
+						keptId: original.id,
+						keptTitle: getContextDisplayTitle(
+							original as unknown as RowContext,
+						),
+					},
+				];
+			}),
+		[duplicateContextIds, contextsById],
+	);
+
+	// The banner only renders while duplicates exist, but its expanded state
+	// lives here in the persistent parent. Collapse it whenever the banner
+	// goes away or the project changes so every appearance starts collapsed.
+	const hasDuplicates = duplicateContextIds.length > 0;
+	useEffect(() => {
+		if (!hasDuplicates) {
+			setDuplicatesListExpanded(false);
+		}
+	}, [hasDuplicates]);
+	useEffect(() => {
+		setDuplicatesListExpanded(false);
+	}, [projectId]);
+
+	// Shared between the banner's inline toggle and the confirm dialog so the
+	// two surfaces never drift. Only the banner copy carries the id the
+	// toggle's aria-controls points at.
+	const renderDuplicatesList = (id?: string) => (
+		<ul
+			id={id}
+			className="max-h-64 space-y-1 overflow-y-auto rounded-md border border-foreground/10 bg-background/50 p-2"
+			data-testid="context-duplicates-list"
+		>
+			{duplicateGroups.map((group) => (
+				<li
+					key={group.copyId}
+					data-testid={`context-duplicates-list-item-${group.copyId}`}
+					className="truncate text-foreground/80"
+					title={tDuplicates("confirmItem", {
+						copyTitle: group.copyTitle,
+						keptTitle: group.keptTitle,
+					})}
+				>
+					{tDuplicates("confirmItem", {
+						copyTitle: group.copyTitle,
+						keptTitle: group.keptTitle,
+					})}
+				</li>
+			))}
+		</ul>
 	);
 
 	const renderDuplicateBadge = (ctx: {
@@ -2077,33 +2153,65 @@ export function ProjectContextsList({ projectId }: Props) {
 			    procedure enforces CONTEXT_DELETE for every copy. */}
 			{duplicateContextIds.length > 0 && (
 				<output
-					className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-foreground/10 bg-muted px-4 py-3 text-sm"
+					className="flex flex-col gap-3 rounded-lg border border-foreground/10 bg-muted px-4 py-3 text-sm"
 					data-testid="context-duplicates-banner"
 				>
-					<div className="flex items-center gap-2">
-						<CopyIcon
-							className="size-4 shrink-0 text-highlight"
-							aria-hidden="true"
-						/>
-						<span className="text-foreground/80">
-							{tDuplicates("bannerMessage", {
-								count: duplicateContextIds.length,
-							})}
-						</span>
+					<div className="flex flex-wrap items-center justify-between gap-3">
+						<div className="flex flex-wrap items-center gap-2">
+							<CopyIcon
+								className="size-4 shrink-0 text-highlight"
+								aria-hidden="true"
+							/>
+							<span className="text-foreground/80">
+								{tDuplicates("bannerMessage", {
+									count: duplicateContextIds.length,
+								})}
+							</span>
+							<Button
+								size="sm"
+								variant="ghost"
+								className="gap-1 text-foreground/70"
+								onClick={() =>
+									setDuplicatesListExpanded(
+										(expanded) => !expanded,
+									)
+								}
+								aria-expanded={duplicatesListExpanded}
+								aria-controls={
+									duplicatesListExpanded
+										? duplicatesListId
+										: undefined
+								}
+								data-testid="context-duplicates-toggle"
+							>
+								<ChevronDownIcon
+									className={cn(
+										"size-4 transition-transform",
+										duplicatesListExpanded && "rotate-180",
+									)}
+									aria-hidden="true"
+								/>
+								{duplicatesListExpanded
+									? tDuplicates("hideItems")
+									: tDuplicates("showItems")}
+							</Button>
+						</div>
+						<Button
+							size="sm"
+							variant="ghost"
+							className="gap-2 text-destructive hover:text-destructive"
+							onClick={() => setConfirmRemoveDuplicatesOpen(true)}
+							disabled={removeDuplicates.isPending}
+							data-testid="context-duplicates-remove"
+						>
+							<TrashIcon className="size-4" aria-hidden="true" />
+							{removeDuplicates.isPending
+								? tDuplicates("removing")
+								: tDuplicates("removeAction")}
+						</Button>
 					</div>
-					<Button
-						size="sm"
-						variant="ghost"
-						className="gap-2 text-destructive hover:text-destructive"
-						onClick={() => setConfirmRemoveDuplicatesOpen(true)}
-						disabled={removeDuplicates.isPending}
-						data-testid="context-duplicates-remove"
-					>
-						<TrashIcon className="size-4" aria-hidden="true" />
-						{removeDuplicates.isPending
-							? tDuplicates("removing")
-							: tDuplicates("removeAction")}
-					</Button>
+					{duplicatesListExpanded &&
+						renderDuplicatesList(duplicatesListId)}
 				</output>
 			)}
 
@@ -3137,6 +3245,7 @@ export function ProjectContextsList({ projectId }: Props) {
 							})}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
+					{renderDuplicatesList()}
 					<AlertDialogFooter>
 						<AlertDialogCancel>
 							{tDuplicates("cancel")}

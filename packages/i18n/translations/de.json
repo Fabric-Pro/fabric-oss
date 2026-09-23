@@ -2325,8 +2325,11 @@
 				"removing": "Duplikate werden entfernt…",
 				"confirmTitle": "{count, plural, one {# Duplikat entfernen?} other {# Duplikate entfernen?}}",
 				"confirmDescription": "{count, plural, one {Die zusätzliche Kopie wird gelöscht und aus der Suche entfernt. Das Element, das sie dupliziert, bleibt erhalten. Dies kann nicht rückgängig gemacht werden.} other {Die # zusätzlichen Kopien werden gelöscht und aus der Suche entfernt. Das jeweils duplizierte Element bleibt erhalten. Dies kann nicht rückgängig gemacht werden.}}",
+				"confirmItem": "„{copyTitle}“ – Duplikat von „{keptTitle}“ (behalten)",
 				"confirmAction": "Duplikate entfernen",
 				"cancel": "Abbrechen",
+				"showItems": "Elemente anzeigen",
+				"hideItems": "Elemente ausblenden",
 				"removed": "{count, plural, one {# Duplikat wird entfernt. Es verschwindet, sobald die Bereinigung abgeschlossen ist.} other {# Duplikate werden entfernt. Sie verschwinden, sobald die Bereinigung abgeschlossen ist.}}",
 				"removeFailed": "{count, plural, one {Das Duplikat konnte nicht entfernt werden. Bitte versuchen Sie es erneut.} other {# Duplikate konnten nicht entfernt werden. Bitte versuchen Sie es erneut.}}",
 				"removedPartial": "Entfernen für {removed} von {total} Duplikaten gestartet. {failed} konnten nicht gestartet werden; bitte versuchen Sie es erneut."
