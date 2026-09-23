@@ -12,7 +12,15 @@ function unquote(value: string): string {
 	const trimmed = value.trim();
 	const isDoubleQuoted = trimmed.startsWith('"') && trimmed.endsWith('"');
 	const isSingleQuoted = trimmed.startsWith("'") && trimmed.endsWith("'");
-	if (isDoubleQuoted || isSingleQuoted) {
+	if (isDoubleQuoted) {
+		// A YAML double-quoted scalar escapes the two characters that would
+		// otherwise end it or start an escape: `\"` and `\\`. Decode exactly
+		// those two so a writer that quotes correctly round-trips, and leave
+		// every other backslash sequence as it is so files that never
+		// escaped anything still read exactly as before.
+		return trimmed.slice(1, -1).replace(/\\(["\\])/g, "$1");
+	}
+	if (isSingleQuoted) {
 		return trimmed.slice(1, -1);
 	}
 	return trimmed;

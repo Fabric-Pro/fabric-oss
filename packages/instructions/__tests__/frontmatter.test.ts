@@ -44,4 +44,33 @@ describe("parseFrontmatter", () => {
 		);
 		expect(fm.fields.paths).toBe('- .claude/skills/**\n- "**/*.md"');
 	});
+	it("decodes an escaped quote inside a double-quoted value", () => {
+		const fm = parseFrontmatter(
+			'---\nname: "Say \\"hello\\" first"\n---\n',
+		);
+		expect(fm.name).toBe('Say "hello" first');
+	});
+	it("decodes an escaped backslash inside a double-quoted value", () => {
+		const fm = parseFrontmatter(
+			'---\ndescription: "Paths like C:\\\\Users\\\\me"\n---\n',
+		);
+		expect(fm.description).toBe("Paths like C:\\Users\\me");
+	});
+	it("leaves other backslash sequences in a double-quoted value untouched", () => {
+		const fm = parseFrontmatter('---\nname: "tab\\there \\d+"\n---\n');
+		expect(fm.name).toBe("tab\\there \\d+");
+	});
+	it("still reads a plain title and an apostrophe title exactly", () => {
+		expect(
+			parseFrontmatter("---\nname: Plain title here\n---\n").name,
+		).toBe("Plain title here");
+		expect(
+			parseFrontmatter('---\nname: "Don\'t repeat the migration"\n---\n')
+				.name,
+		).toBe("Don't repeat the migration");
+		const single = ["---", "name: 'single \\\"quoted'", "---", ""].join(
+			"\n",
+		);
+		expect(parseFrontmatter(single).name).toBe('single \\"quoted');
+	});
 });
