@@ -12,6 +12,7 @@
 
 import { TERMINAL_DRAFTING_STAGES } from "../../../utils";
 import { db } from "../../client";
+import { buildAssertionLines, buildCauseLines } from "./bug-cause-lines";
 import { createStory } from "./stories";
 
 /**
@@ -198,6 +199,20 @@ export async function openBugsForFailedCases(
 			: undefined;
 		const failureMessage = findFailureMessage(run?.results, c.id);
 
+		// Facts first, then the cause — never the other way round, so a reader
+		// meets the parsed assertion before any hedge about why it might have
+		// happened.
+		const assertionLines = buildAssertionLines(failureMessage);
+		// This path never runs an AI analysis, so the cause line always reads
+		// "not established" — the same wording `promoteFindingToBug` falls back
+		// to, rather than silence a reader could mistake for "not yet looked at".
+		const causeLines = buildCauseLines({
+			analysedAt: null,
+			suspectedCause: null,
+			suspectedKind: null,
+			analysisModel: null,
+		});
+
 		const lines = [
 			`The automated test linked to ${c.identifier} — “${c.title}” — is failing in ${runLabel}.`,
 			"",
@@ -205,6 +220,10 @@ export async function openBugsForFailedCases(
 			run?.branch ? `Branch: ${run.branch}` : null,
 			run?.commitSha ? `Commit: ${run.commitSha.slice(0, 8)}` : null,
 			evt?.externalRunUrl ? `Run: ${evt.externalRunUrl}` : null,
+			"",
+			...assertionLines,
+			...(assertionLines.length > 0 ? [""] : []),
+			...causeLines,
 			// The assertion CI actually printed. Fenced so a stack trace keeps its
 			// formatting instead of being re-wrapped into soup by the markdown
 			// renderer, and truncated because some runners emit whole log files.

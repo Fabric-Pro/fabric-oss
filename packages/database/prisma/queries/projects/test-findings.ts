@@ -12,6 +12,8 @@
  */
 
 import { db, Prisma, type TestFailureKind } from "../../client";
+import { buildAssertionLines, buildCauseLines } from "./bug-cause-lines";
+import { FAILURE_MESSAGE_LIMIT } from "./pipeline-results-rca";
 import { createStory } from "./stories";
 
 /** One failure as the caller observed it in a run. */
@@ -225,6 +227,10 @@ export async function promoteFindingToBug(input: {
 			firstSeenAt: true,
 			testCaseId: true,
 			promotedStoryId: true,
+			suspectedCause: true,
+			suspectedKind: true,
+			analysisModel: true,
+			analysedAt: true,
 		},
 	});
 	if (!finding) {
@@ -234,13 +240,31 @@ export async function promoteFindingToBug(input: {
 		return { storyId: finding.promotedStoryId, alreadyPromoted: true };
 	}
 
+	// Facts first, then the cause — never the other way round, so a reader
+	// meets the parsed assertion before any hedge about why it might have
+	// happened.
+	const assertionLines = buildAssertionLines(finding.failureMessage);
+	// The cause line never asserts more than the analysis behind it did — an
+	// Inconclusive or absent analysis must not read as a firm diagnosis just
+	// because it landed in a bug's AI Summary.
+	const causeLines = buildCauseLines({
+		analysedAt: finding.analysedAt,
+		suspectedCause: finding.suspectedCause,
+		suspectedKind: finding.suspectedKind,
+		analysisModel: finding.analysisModel,
+	});
+
 	const lines = [
 		`Automated test failing: ${finding.testName}`,
 		finding.classname ? `In: ${finding.classname}` : null,
 		"",
 		`Seen ${finding.occurrences} time(s) since ${finding.firstSeenAt.toISOString().slice(0, 10)}.`,
+		"",
+		...assertionLines,
+		...(assertionLines.length > 0 ? [""] : []),
+		...causeLines,
 		finding.failureMessage
-			? `\nWhat CI reported:\n\n\`\`\`\n${finding.failureMessage.slice(0, 1500)}\n\`\`\``
+			? `\nWhat CI reported:\n\n\`\`\`\n${finding.failureMessage.slice(0, FAILURE_MESSAGE_LIMIT)}\n\`\`\``
 			: null,
 		"",
 		`Promoted from QA finding \`${finding.fingerprint}\`.`,

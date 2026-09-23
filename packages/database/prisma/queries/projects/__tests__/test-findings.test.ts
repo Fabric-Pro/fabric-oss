@@ -226,6 +226,10 @@ describe("promoteFindingToBug", () => {
 		firstSeenAt: new Date("2026-07-01T00:00:00Z"),
 		testCaseId: "c1",
 		promotedStoryId: null,
+		suspectedCause: null,
+		suspectedKind: null,
+		analysisModel: null,
+		analysedAt: null,
 	};
 
 	it("opens a bug carrying the recurrence and the failure", async () => {
@@ -245,11 +249,89 @@ describe("promoteFindingToBug", () => {
 		expect(body).toContain("4 time(s)");
 		expect(body).toContain("AssertionError: nope");
 		expect(body).toContain("abc123");
+		// No analysis ran — the bug must say so, not stay silent about it.
+		expect(body).toContain("Cause: not established");
 		// And the finding is marked so ingestion stops reopening it.
 		expect(dbMock.testFinding.update.mock.calls[0][0].data).toMatchObject({
 			status: "PROMOTED",
 			promotedStoryId: "bug1",
 		});
+	});
+
+	it("carries the parsed assertion direction into the bug body", async () => {
+		// The card's own scenario: expected 80, actual 90.
+		dbMock.testFinding.findFirst.mockResolvedValue({
+			...finding,
+			failureMessage:
+				"Expected values to be strictly equal:\n\n90 !== 80\n",
+		});
+		createStoryMock.mockResolvedValue({ id: "bug1" });
+
+		await promoteFindingToBug({
+			projectId: "p1",
+			findingId: "f1",
+			createdById: "u1",
+		});
+
+		const body = createStoryMock.mock.calls[0][0].description as string;
+		expect(body).toContain("Expected: 80");
+		expect(body).toContain("Actual: 90");
+		// Facts first, then the cause — a reader meets the parsed assertion
+		// before any hedge about why it might have happened.
+		expect(body.indexOf("Expected: 80")).toBeLessThan(
+			body.indexOf("Cause:"),
+		);
+	});
+
+	it("never overstates an Inconclusive analysis as a firm cause", async () => {
+		// The exact defect the card reports: an Inconclusive verdict must not
+		// read as "the discount calculation is off by 10 units" — a stated fact.
+		dbMock.testFinding.findFirst.mockResolvedValue({
+			...finding,
+			suspectedCause: "the discount calculation is off by 10 units",
+			suspectedKind: "UNKNOWN",
+			analysisModel: "gpt-test",
+			analysedAt: new Date("2026-07-05T00:00:00Z"),
+		});
+		createStoryMock.mockResolvedValue({ id: "bug1" });
+
+		await promoteFindingToBug({
+			projectId: "p1",
+			findingId: "f1",
+			createdById: "u1",
+		});
+
+		const body = createStoryMock.mock.calls[0][0].description as string;
+		expect(body).toContain("not established");
+		expect(body).toContain("inconclusive");
+		expect(body).toContain("Unverified AI hypothesis");
+		expect(body).toContain("the discount calculation is off by 10 units");
+		// Never presented as a plain, unlabelled statement of fact.
+		expect(body).not.toMatch(
+			/^the discount calculation is off by 10 units/m,
+		);
+	});
+
+	it("labels a confident analysis as an AI hypothesis, not a verified diagnosis", async () => {
+		dbMock.testFinding.findFirst.mockResolvedValue({
+			...finding,
+			suspectedCause: "the discount logic dropped the percentage sign",
+			suspectedKind: "PRODUCT_BUG",
+			analysisModel: "gpt-test",
+			analysedAt: new Date("2026-07-05T00:00:00Z"),
+		});
+		createStoryMock.mockResolvedValue({ id: "bug1" });
+
+		await promoteFindingToBug({
+			projectId: "p1",
+			findingId: "f1",
+			createdById: "u1",
+		});
+
+		const body = createStoryMock.mock.calls[0][0].description as string;
+		expect(body).toContain("AI hypothesis");
+		expect(body).toContain("not a verified diagnosis");
+		expect(body).toContain("Product bug");
 	});
 
 	it("is idempotent — a second promote returns the first bug", async () => {

@@ -247,6 +247,45 @@ describe("openBugsForFailedCases", () => {
 		expect(dbMock.testResultEvent.findFirst).not.toHaveBeenCalled();
 	});
 
+	it("states the cause is not established — this path never runs an analysis", async () => {
+		arrange([
+			{
+				name: "t",
+				status: "FAILED",
+				matchedCaseId: "c1",
+				failureMessage: "boom",
+			},
+		]);
+
+		await openBugsForFailedCases(INPUT);
+
+		expect(bodyOfOpenedBug()).toContain("Cause: not established");
+	});
+
+	it("carries the parsed assertion direction into the bug body", async () => {
+		// The card's own scenario: expected 80, actual 90.
+		arrange([
+			{
+				name: "t",
+				status: "FAILED",
+				matchedCaseId: "c1",
+				failureMessage:
+					"Expected values to be strictly equal:\n\n90 !== 80\n",
+			},
+		]);
+
+		await openBugsForFailedCases(INPUT);
+
+		const body = bodyOfOpenedBug();
+		expect(body).toContain("Expected: 80");
+		expect(body).toContain("Actual: 90");
+		// Facts first, then the cause — a reader meets the parsed assertion
+		// before any hedge about why it might have happened.
+		expect(body.indexOf("Expected: 80")).toBeLessThan(
+			body.indexOf("Cause:"),
+		);
+	});
+
 	it("asks for one latest failure per case, not the whole failure history", async () => {
 		// The bug body needs exactly one event per failing case. Reading every
 		// FAILED event those cases ever produced and picking one in Node made the
