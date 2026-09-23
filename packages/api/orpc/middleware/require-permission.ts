@@ -30,6 +30,7 @@ import {
 import { runWithProjectContext } from "@repo/utils/project-context";
 import { resolveEffectiveProjectPermissions } from "../../lib/effective-project-permissions";
 import { MISSING_ORGANIZATION_CONTEXT_ERROR_CODE } from "../../lib/missing-organization-context";
+import { PROJECT_NOT_FOUND_MESSAGE } from "./project-visibility";
 
 /**
  * When RBAC_DRY_RUN=true, permission denials are logged as warnings
@@ -170,7 +171,10 @@ export function requirePermission(permission: Permission) {
  *     new organization project. Remove it and every organization project is
  *     inert from birth: nobody can reach `PROJECT_MEMBERS_MANAGE` to create
  *     the first member row.
- *  4. Otherwise, FORBIDDEN.
+ *  4. Otherwise, NOT_FOUND — in the same words as an id that names no
+ *     project. A caller none of the three paths tie to the project must not
+ *     learn that it exists (Fizzy #2639). FORBIDDEN is reserved for a caller
+ *     one of the paths DOES tie to the project whose role lacks the permission.
  *
  * THIS GATE IS WIDER THAN `buildProjectAccessWhere`, ON PURPOSE. That predicate
  * (`@repo/database`, behind `getProjectById` and `hasProjectAccess`) has no
@@ -209,7 +213,26 @@ export async function assertProjectPermission(
 ): Promise<void> {
 	const access = await resolveEffectiveProjectPermissions(projectId, userId);
 	if (!access) {
-		throw new ORPCError("NOT_FOUND", { message: "Project not found" });
+		throw new ORPCError("NOT_FOUND", {
+			message: PROJECT_NOT_FOUND_MESSAGE,
+		});
+	}
+
+	// EXISTENCE BEFORE PERMISSION. A caller with no tie to the project at all
+	// — not its owner, no active ProjectMember row, not a member of its host
+	// organization — is answered exactly as an id that names no project is.
+	// Answering FORBIDDEN here instead told anyone who could authenticate
+	// which project ids exist in organizations they have no part in (Fizzy
+	// #2639). Only a caller the resolver ties to the project is allowed to
+	// hear FORBIDDEN, and such a caller already knows it exists.
+	//
+	// Deliberately not routed through `denyPermission`: RBAC_DRY_RUN downgrades
+	// a permission denial to a warning, but this is not a permission decision
+	// and must never be downgraded.
+	if (access.source === "none") {
+		throw new ORPCError("NOT_FOUND", {
+			message: PROJECT_NOT_FOUND_MESSAGE,
+		});
 	}
 
 	// A personal-project owner passes unconditionally, matching the middleware

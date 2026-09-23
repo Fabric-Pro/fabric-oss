@@ -140,7 +140,14 @@ async function resolveInstructionProject(
 		projectId,
 		apiCtx.userId,
 	);
-	if (!access) {
+	// A caller with no tie to the project at all — not its owner, no active
+	// ProjectMember row, not a member of its host organization — is answered
+	// as a missing project is, in the same words. An organization key already
+	// got that from the hosting-organization comparison below; a PERSONAL key
+	// skips that comparison, and without this it reached the permission check
+	// and heard 403, which told it the project exists (Fizzy #2639). Same
+	// rule as `assertProjectPermission` on the oRPC twin.
+	if (!access || access.source === "none") {
 		return { error: notFound("Project").error, status: 404 };
 	}
 

@@ -2,27 +2,26 @@
  * Answer NOT_FOUND for a project the caller cannot see, before any permission
  * is evaluated, and in exactly the words an id that names no project gets.
  *
- * ## Why this runs first
+ * ## What this adds over the permission gate
  *
- * `requireProjectPermission` answers two different ways for the two ways a
- * caller can be kept out of a project. An id that names no project is
- * NOT_FOUND. A project that exists, in an organization the caller does not
- * belong to, resolves through `resolveEffectiveProjectPermissions` to no
- * permissions and is refused FORBIDDEN. So the permission gate alone tells
- * anyone who can authenticate which project ids are real in organizations
- * they have no part in. That is an existence oracle across tenants.
+ * `requireProjectPermission` already answers NOT_FOUND, in these same words,
+ * for a caller with no tie to the project at all — not its owner, no active
+ * ProjectMember row, not a member of its host organization (Fizzy #2639). The
+ * cross-tenant existence oracle is closed there, for every project procedure.
  *
- * Asking `hasProjectAccess` (the "may you discover" predicate) first closes it.
- * A project the caller cannot see is NOT_FOUND, with the same message as a
- * missing one. A caller who can see the project, and lacks the permission,
- * still hears FORBIDDEN from the permission gate after this, which is correct:
- * they already know the project exists.
+ * This middleware is STRICTER: it asks `hasProjectAccess`, the "may you
+ * discover" predicate, which has no org-role path. An organization member
+ * with no ProjectMember row who did not create the project can act on it
+ * through the gate's org-role fallback but cannot discover it, and here is
+ * answered NOT_FOUND. A caller who can see the project, and lacks the
+ * permission, still hears FORBIDDEN from the permission gate after this,
+ * which is correct: they already know the project exists.
  *
  * It is opt-in, like `resolveUnambiguousOrganization`: a procedure composes it
- * ahead of its permission middleware, and nothing else changes. The global
- * `requireProjectPermission` keeps its shape because it serves procedures
- * whose callers are allowed to act on projects `hasProjectAccess` hides from
- * them (the org-role fallback; see that middleware's docblock).
+ * ahead of its permission middleware when discovery, not just existence, is
+ * the boundary it wants. The global `requireProjectPermission` keeps its
+ * org-role fallback because it is also the bootstrap for every new
+ * organization project (see that middleware's docblock).
  *
  * The name deliberately does not start with `require`: the permission-coverage
  * test counts any `require…(` call as a permission declaration, and this is
