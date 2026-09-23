@@ -1,0 +1,13 @@
+-- AlterEnum
+-- A user- or onboarding-started PM story pull/push, tracked as a background job
+-- so the Roadmap and the sync doors can ask whether one is running right now.
+--
+-- PM_STATE_POLL is the unattended hourly status poll and says nothing about a
+-- pull a person started, so it cannot stand in for this.
+--
+-- Kept in its own migration, mirroring 20260909120000_add_pm_state_poll_job_kind:
+-- a value added by ALTER TYPE cannot be referenced in the transaction that adds
+-- it. Enum additions are additive and cannot be safely removed while rows may
+-- hold the value; IF NOT EXISTS makes recovery from a partially applied
+-- deployment idempotent.
+ALTER TYPE "BackgroundJobKind" ADD VALUE IF NOT EXISTS 'PM_STORY_SYNC';

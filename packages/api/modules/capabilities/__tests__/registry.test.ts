@@ -671,14 +671,26 @@ describe("retry permission", () => {
 });
 
 describe("registry coverage", () => {
-	it("registers no Roadmap capability", () => {
-		// Those rows gate surfaces that Project Suite 3A/3B/3C build. A rule
-		// written against UI that does not exist is dead code today and the
-		// wrong shape tomorrow.
+	it("registers exactly the Roadmap rows 3A, 3B and 3C own, on the roadmap surface", () => {
+		// The Roadmap rows moved into this registry by the user decision of
+		// 2026-09-18: 3A's PM rows (FR51-54), 3B's recommendation rows
+		// (FR55-59) and 3C's batch removal (FR60). Exact, so a fourth card
+		// cannot add or drop one without this test naming it.
 		const roadmap = CAPABILITY_RULES.filter((r) =>
 			r.key.startsWith("roadmap."),
 		);
-		expect(roadmap).toEqual([]);
+		expect(roadmap.map((r) => r.key).sort()).toEqual([
+			"roadmap.do-both",
+			"roadmap.pm-import",
+			"roadmap.pull-from-pm",
+			"roadmap.recommend-features",
+			"roadmap.remove-ai-recommended",
+			"roadmap.sync-to-pm",
+			"roadmap.view",
+		]);
+		for (const rule of roadmap) {
+			expect(rule.surface, rule.key).toBe("roadmap");
+		}
 	});
 
 	it("gives every rule a unique key and a non-empty label", () => {
@@ -702,6 +714,14 @@ describe("registry coverage", () => {
 			context: { total: 0, technical: 0, product: 0 },
 			documents: { usableTypes: new Set() },
 			descriptionLength: 0,
+			pm: {
+				bulkTargetResolvable: false,
+				itemConfigResolvable: false,
+				boardSelected: false,
+			},
+			roadmap: { itemCount: 0 },
+			aiRecommended: { eligibleBatchCount: 0 },
+			chat: { linkedChannelCount: 0 },
 		});
 		for (const rule of CAPABILITY_RULES) {
 			const gate = resolveGate(rule, broken, NOW);
@@ -1136,5 +1156,299 @@ describe("code indexing switched off for the whole deployment", () => {
 			}),
 		);
 		expect(gate.reasonKey).toBe("codebase.code-search-off");
+	});
+});
+
+// ── Roadmap: PM rows (Fizzy #2204, FR51-54) ──────────────────────────────────
+
+/** A connected PM tool with a board, as far as the given overrides leave it. */
+function pmWith(pm: Parameters<typeof evidenceWith>[0]["pm"]) {
+	return evidenceWith({ pm });
+}
+
+const NOT_CONNECTED = {
+	bulkTargetResolvable: false,
+	itemConfigResolvable: false,
+};
+
+describe("roadmap.view", () => {
+	it("is available under every PM state", () => {
+		for (const evidence of [
+			pmWith({ ...NOT_CONNECTED, boardSelected: false }),
+			pmWith({ syncing: runningJob(new Date(NOW.getTime() - 60_000)) }),
+			pmWith({ readOnly: true }),
+			evidenceWith({ aiRecommended: { eligibleBatchCount: 0 } }),
+		]) {
+			expect(stateOf("roadmap.view", evidence)).toBe("AVAILABLE");
+		}
+	});
+});
+
+describe("roadmap.pull-from-pm", () => {
+	it("hard-blocks with no connection, pointing at the integration", () => {
+		const gate = gateOf("roadmap.pull-from-pm", pmWith(NOT_CONNECTED));
+		expect(gate.state).toBe("HARD_BLOCK");
+		expect(gate.reasonKey).toBe("roadmap.pm-not-connected");
+		expect(gate.remedy).toBe("CONFIGURE_INTEGRATION");
+	});
+
+	it("accepts an item-path-only connection (a legacy server-id project)", () => {
+		expect(
+			stateOf(
+				"roadmap.pull-from-pm",
+				pmWith({
+					bulkTargetResolvable: false,
+					itemConfigResolvable: true,
+				}),
+			),
+		).toBe("AVAILABLE");
+	});
+
+	it("hard-blocks without a board, pointing at Project Settings", () => {
+		const gate = gateOf(
+			"roadmap.pull-from-pm",
+			pmWith({ boardSelected: false }),
+		);
+		expect(gate.state).toBe("HARD_BLOCK");
+		expect(gate.reasonKey).toBe("roadmap.pm-no-board");
+		expect(gate.remedy).toBe("CONFIGURE_PM_BOARD");
+	});
+
+	it("names the connection before the board when both are missing", () => {
+		expect(
+			gateOf(
+				"roadmap.pull-from-pm",
+				pmWith({ ...NOT_CONNECTED, boardSelected: false }),
+			).reasonKey,
+		).toBe("roadmap.pm-not-connected");
+	});
+
+	it("shows Processing while a PM story sync runs", () => {
+		const gate = gateOf(
+			"roadmap.pull-from-pm",
+			pmWith({ syncing: runningJob(new Date(NOW.getTime() - 60_000)) }),
+		);
+		expect(gate.state).toBe("PROCESSING");
+		expect(gate.reasonKey).toBe("roadmap.pm-sync-running");
+		expect(gate.remedy).toBe("WAIT");
+	});
+
+	it("stops showing Processing after the 40-minute stall window", () => {
+		expect(
+			stateOf(
+				"roadmap.pull-from-pm",
+				pmWith({
+					syncing: runningJob(new Date(NOW.getTime() - 41 * 60_000)),
+				}),
+			),
+		).toBe("AVAILABLE");
+	});
+
+	it("is not blocked by a failed last run", () => {
+		expect(
+			stateOf(
+				"roadmap.pull-from-pm",
+				pmWith({ syncing: { ...IDLE_JOB, lastRunFailed: true } }),
+			),
+		).toBe("AVAILABLE");
+	});
+});
+
+describe("roadmap.sync-to-pm", () => {
+	it("hard-blocks a read-only project with no remedy to offer", () => {
+		const gate = gateOf("roadmap.sync-to-pm", pmWith({ readOnly: true }));
+		expect(gate.state).toBe("HARD_BLOCK");
+		expect(gate.reasonKey).toBe("roadmap.pm-read-only");
+		expect(gate.remedy).toBeNull();
+	});
+
+	it("leaves the pull open on a read-only project", () => {
+		expect(
+			stateOf("roadmap.pull-from-pm", pmWith({ readOnly: true })),
+		).toBe("AVAILABLE");
+	});
+});
+
+describe("roadmap.pm-import", () => {
+	it("needs a connection and no board", () => {
+		expect(
+			gateOf("roadmap.pm-import", pmWith(NOT_CONNECTED)).reasonKey,
+		).toBe("roadmap.pm-not-connected");
+		expect(
+			stateOf("roadmap.pm-import", pmWith({ boardSelected: false })),
+		).toBe("AVAILABLE");
+	});
+
+	it("shows Processing while a PM story sync runs", () => {
+		expect(
+			stateOf(
+				"roadmap.pm-import",
+				pmWith({
+					syncing: runningJob(new Date(NOW.getTime() - 60_000)),
+				}),
+			),
+		).toBe("PROCESSING");
+	});
+});
+
+// ── Roadmap: recommendations and Do Both (Fizzy #2208, FR55-59) ──────────────
+
+/** No sources at all; each test adds back the one thing it is about. */
+function ungrounded(overrides: Parameters<typeof evidenceWith>[0] = {}) {
+	return evidenceWith({
+		context: { total: 0, technical: 0, product: 0 },
+		documents: { usableTypes: new Set<string>() },
+		descriptionLength: 0,
+		roadmap: { itemCount: 0 },
+		...overrides,
+	});
+}
+
+describe("roadmap.recommend-features", () => {
+	it("is available with a PRD", () => {
+		expect(
+			stateOf(
+				"roadmap.recommend-features",
+				ungrounded({ documents: { usableTypes: new Set(["PRD"]) } }),
+			),
+		).toBe("AVAILABLE");
+	});
+
+	it("is available with transcripts only (FR55)", () => {
+		expect(
+			stateOf(
+				"roadmap.recommend-features",
+				ungrounded({ context: { total: 1, product: 1, technical: 0 } }),
+			),
+		).toBe("AVAILABLE");
+	});
+
+	it("warns on a substantial description alone (FR56)", () => {
+		const gate = gateOf(
+			"roadmap.recommend-features",
+			ungrounded({ descriptionLength: MIN_GROUNDING_DESCRIPTION_LENGTH }),
+		);
+		expect(gate.state).toBe("WARNING");
+		expect(gate.reasonKey).toBe("context.thin");
+	});
+
+	it("warns on a Roadmap with items and nothing else (FR56)", () => {
+		expect(
+			gateOf(
+				"roadmap.recommend-features",
+				ungrounded({ roadmap: { itemCount: 3 } }),
+			).state,
+		).toBe("WARNING");
+	});
+
+	it("soft-blocks with nothing to ground it, pointing at context (FR37)", () => {
+		const gate = gateOf("roadmap.recommend-features", ungrounded());
+		expect(gate.state).toBe("SOFT_BLOCK");
+		expect(gate.reasonKey).toBe("roadmap.recommend.context-insufficient");
+		expect(gate.remedy).toBe("ADD_CONTEXT");
+	});
+
+	it("changes its fingerprint when the Roadmap goes from empty to having items", () => {
+		expect(
+			gateOf(
+				"roadmap.recommend-features",
+				ungrounded({ roadmap: { itemCount: 0 } }),
+			).fingerprint,
+		).not.toBe(
+			gateOf(
+				"roadmap.recommend-features",
+				ungrounded({ roadmap: { itemCount: 1 } }),
+			).fingerprint,
+		);
+	});
+});
+
+describe("roadmap.do-both", () => {
+	it("names the PM half when the pull is blocked, keeping its remedy (FR57)", () => {
+		const gate = gateOf("roadmap.do-both", pmWith(NOT_CONNECTED));
+		expect(gate.state).toBe("HARD_BLOCK");
+		expect(gate.reasonKey).toBe("roadmap.do-both.needs-pm");
+		expect(gate.remedy).toBe("CONFIGURE_INTEGRATION");
+	});
+
+	it("names a missing board apart from a missing connection, pointing at the board setting", () => {
+		const gate = gateOf(
+			"roadmap.do-both",
+			pmWith({ boardSelected: false }),
+		);
+		expect(gate.state).toBe("HARD_BLOCK");
+		expect(gate.reasonKey).toBe("roadmap.do-both.needs-board");
+		expect(gate.remedy).toBe("CONFIGURE_PM_BOARD");
+	});
+
+	it("names the connection, not the board, when both are missing", () => {
+		const gate = gateOf(
+			"roadmap.do-both",
+			pmWith({ ...NOT_CONNECTED, boardSelected: false }),
+		);
+		expect(gate.reasonKey).toBe("roadmap.do-both.needs-pm");
+		expect(gate.remedy).toBe("CONFIGURE_INTEGRATION");
+	});
+
+	it("names the context half when the recommendation is blocked (FR58)", () => {
+		const gate = gateOf("roadmap.do-both", ungrounded());
+		expect(gate.state).toBe("SOFT_BLOCK");
+		expect(gate.reasonKey).toBe("roadmap.do-both.needs-context");
+		expect(gate.remedy).toBe("ADD_CONTEXT");
+	});
+
+	it("warns on thin context when both halves can run (FR59)", () => {
+		const gate = gateOf(
+			"roadmap.do-both",
+			ungrounded({ roadmap: { itemCount: 3 } }),
+		);
+		expect(gate.state).toBe("WARNING");
+		expect(gate.reasonKey).toBe("context.thin");
+	});
+
+	it("lets the thin-context warning be dismissed, but never a block", () => {
+		const rule = CAPABILITY_RULES_BY_KEY.get("roadmap.do-both");
+		if (!rule) {
+			throw new Error("No rule registered for roadmap.do-both");
+		}
+		for (const [evidence, suppressed] of [
+			[ungrounded({ roadmap: { itemCount: 3 } }), true],
+			[ungrounded(), false],
+		] as const) {
+			const gate = resolveGate(rule, evidence, NOW);
+			const dismissed = resolveGate(rule, evidence, NOW, [
+				{
+					key: `roadmap.do-both:${gate.reasonKey}`,
+					fingerprint: gate.fingerprint,
+				},
+			]);
+			expect(dismissed.suppressed, gate.state).toBe(suppressed);
+		}
+	});
+
+	it("is available when both halves are", () => {
+		expect(stateOf("roadmap.do-both")).toBe("AVAILABLE");
+	});
+});
+
+// ── Roadmap: removing an AI-recommended batch (Fizzy #2211, FR60) ────────────
+
+describe("roadmap.remove-ai-recommended", () => {
+	it("is hidden when no batch has an eligible item", () => {
+		const gate = gateOf(
+			"roadmap.remove-ai-recommended",
+			evidenceWith({ aiRecommended: { eligibleBatchCount: 0 } }),
+		);
+		expect(gate.state).toBe("HIDDEN");
+		expect(gate.reasonKey).toBe("roadmap.no-eligible-ai-batch");
+	});
+
+	it("is available when a batch has an eligible item", () => {
+		expect(
+			stateOf(
+				"roadmap.remove-ai-recommended",
+				evidenceWith({ aiRecommended: { eligibleBatchCount: 2 } }),
+			),
+		).toBe("AVAILABLE");
 	});
 });

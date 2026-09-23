@@ -9,6 +9,11 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import { assertCapabilityAvailable } from "../../../../capabilities/assert";
+import {
+	failPmStorySyncJob,
+	openPmStorySyncJob,
+} from "../../../lib/pm-story-sync-job";
 import { resolvePmTarget } from "../../../lib/resolve-pm-target";
 
 /**
@@ -111,6 +116,37 @@ export const syncStoriesBulkProcedure = tenantProtectedProcedure
 			});
 		}
 
+		await assertCapabilityAvailable({
+			capabilityKey:
+				input.direction === "pull"
+					? "roadmap.pull-from-pm"
+					: "roadmap.sync-to-pm",
+			projectId: project.id,
+			userId: user.id,
+			organizationId: project.organizationId,
+		});
+
+		const workflowId = `story-sync-${input.projectId}-${Date.now()}`;
+
+		// FR54: the gate above read "nothing running" without holding it, so
+		// two near-simultaneous calls can both pass. The open re-checks under
+		// the project's lock and opens this run's row in the same step. It
+		// sits before the start's try so its CONFLICT is not rewritten as a
+		// start failure, and a refused call never fails a row it did not open.
+		const running = await openPmStorySyncJob({
+			workflowId,
+			projectId: project.id,
+			userId: user.id,
+			organizationId: project.organizationId,
+			direction: input.direction,
+		});
+		if (running) {
+			throw new ORPCError("CONFLICT", {
+				message:
+					"A project management sync is already running for this project. Wait for it to finish, then try again.",
+			});
+		}
+
 		// Start Temporal workflow
 		try {
 			const { getTemporalClient } = await import("@repo/temporal");
@@ -121,8 +157,6 @@ export const syncStoriesBulkProcedure = tenantProtectedProcedure
 					string,
 					string
 				> | null;
-
-			const workflowId = `story-sync-${input.projectId}-${Date.now()}`;
 
 			// Use string workflow name to avoid minification issues in production builds
 			// SECURITY: Pass the current user's MCP config ID, not the admin's
@@ -192,6 +226,11 @@ export const syncStoriesBulkProcedure = tenantProtectedProcedure
 				err instanceof Error
 					? err.message
 					: "Failed to start sync workflow";
+			await failPmStorySyncJob({
+				workflowId,
+				projectId: project.id,
+				error: "The sync could not be started.",
+			});
 			// Return user-friendly error instead of generic "Internal server error"
 			throw new ORPCError("INTERNAL_SERVER_ERROR", {
 				message:

@@ -194,7 +194,8 @@
 				"STORY_KIND_REGENERATION": "Neufassung für den neuen Typ",
 				"PUBLISHING_TOPIC_GENERATION": "Themenvorschläge",
 				"PM_STATE_POLL": "Projektmanagement-Scan",
-				"DOCUMENT_GENERATION": "Dokumenterstellung"
+				"DOCUMENT_GENERATION": "Dokumenterstellung",
+				"PM_STORY_SYNC": "Projektmanagement-Synchronisierung"
 			},
 			"steps": {
 				"fetch": "Nachrichten abrufen",
@@ -2835,6 +2836,60 @@
 					"completeFailed": "Vertrag konnte nicht als vollständig markiert werden",
 					"cancelled": "Discovery-Lauf abgebrochen",
 					"cancelFailed": "Discovery-Lauf konnte nicht abgebrochen werden"
+				}
+			},
+			"aiRecommended": {
+				"guidance": {
+					"body": "Dieses Element wurde im Rahmen eines KI-Empfehlungs-Batches erstellt. Um einen ganzen Batch zu entfernen, verwenden Sie das Kontextmenü in der Roadmap. Um ein Element vor dem Entfernen zu schützen, verwenden Sie das Kontextmenü auf dieser Seite und wählen Sie ‚Arbeitselement schützen‘.",
+					"bodyProtected": "Dieses Element wurde im Rahmen eines KI-Empfehlungs-Batches erstellt und ist geschützt, daher wird es beim Entfernen seines Batches übersprungen. Um einen ganzen Batch zu entfernen, verwenden Sie das Kontextmenü in der Roadmap.",
+					"dismiss": "Hinweis zu KI-Empfehlungen ausblenden"
+				},
+				"protect": {
+					"trigger": "Weitere Aktionen für {identifier}",
+					"action": "Arbeitselement schützen",
+					"protected": "Vor dem Batch-Entfernen geschützt",
+					"success": "Vor dem Batch-Entfernen geschützt",
+					"successDescription": "Beim Entfernen des KI-empfohlenen Batches wird dieses Element übersprungen.",
+					"error": "Element konnte nicht geschützt werden"
+				},
+				"removeDialog": {
+					"menuItem": "KI-empfohlene Elemente entfernen",
+					"title": "KI-empfohlene Elemente entfernen",
+					"pickDescription": "Wählen Sie einen KI-empfohlenen Batch. Nur seine ungeschützten Elemente werden ausgeblendet.",
+					"loading": "Batches werden geladen…",
+					"loadError": "Die KI-empfohlenen Batches konnten nicht geladen werden.",
+					"batchLabel": "Empfohlen am {date} · {count, plural, one {# Element} other {# Elemente}}",
+					"batchProtected": "{count} geschützt",
+					"batchEdited": "{count} bearbeitet",
+					"batchAwaiting": "{count} warten auf Genehmigung",
+					"next": "Batch prüfen",
+					"back": "Zurück",
+					"cancel": "Abbrechen",
+					"close": "Schließen",
+					"previewLoading": "Batch wird geladen…",
+					"previewDescription": "Diese Elemente werden in der Roadmap ausgeblendet:",
+					"editedBadge": "Bearbeitet",
+					"protectedSkipped": "{count, plural, one {# geschütztes Element wird übersprungen} other {# geschützte Elemente werden übersprungen}}",
+					"showProtected": "Geschützte Elemente anzeigen",
+					"awaitingApproval": "{count, plural, one {# Element wartet bereits auf Genehmigung} other {# Elemente warten bereits auf Genehmigung}}",
+					"editedWarningPrefix": "Warnung:",
+					"editedWarning": "Dieser Batch enthält {count, plural, one {# vorläufiges Element, das nach der Erstellung bearbeitet wurde} other {# vorläufige Elemente, die nach der Erstellung bearbeitet wurden}}. Prüfen Sie diese, bevor Sie den Batch in das Backlog verschieben.",
+					"governedNotice": "Für dieses Projekt müssen Phasenänderungen genehmigt werden. Jedes Element wird zu einer Genehmigungsanfrage, statt sofort verschoben zu werden, und ersetzt eine bereits offene Anfrage dazu.",
+					"hiddenNotDeleted": "Elemente werden in der Roadmap ausgeblendet, nicht gelöscht. Verknüpfte Arbeitselemente in Ihrem PM-Tool bleiben unverändert.",
+					"confirm": "{count, plural, one {# Element ausblenden} other {# Elemente ausblenden}}",
+					"confirmGoverned": "{count, plural, one {Ausblenden von # Element beantragen} other {Ausblenden von # Elementen beantragen}}",
+					"confirming": "Wird ausgeblendet…",
+					"resultTitle": "Batch-Entfernung abgeschlossen",
+					"resultSummary": "{moved} ausgeblendet · {requested} zur Genehmigung gesendet · {skipped} übersprungen · {failed} fehlgeschlagen",
+					"notPreviewed": "{count, plural, one {# nach der Vorschau hinzugefügtes Element wurde nicht angetastet.} other {# nach der Vorschau hinzugefügte Elemente wurden nicht angetastet.}}",
+					"failedHeading": "Diese Elemente konnten nicht ausgeblendet werden:",
+					"noEligible": "In diesem Batch kann nichts mehr entfernt werden: {protectedCount} geschützt, {requestedCount} warten bereits auf Genehmigung, {ineligibleCount} seit der Vorschau bereits ausgeblendet oder geändert.",
+					"noEligiblePreview": "In diesem Batch kann nichts mehr entfernt werden: {protectedCount} geschützt, {requestedCount} warten bereits auf Genehmigung.",
+					"error": "Batch konnte nicht entfernt werden"
+				},
+				"acceptedNotice": {
+					"title": "{count, plural, one {# empfohlenes Feature zur Roadmap hinzugefügt} other {# empfohlene Features zur Roadmap hinzugefügt}}",
+					"body": "Diese Elemente sind als KI-empfohlen gekennzeichnet. Um den ganzen Batch später zu entfernen, verwenden Sie „KI-empfohlene Elemente entfernen“ im ⋯-Menü der Roadmap. Das ändert nur Fabric; bereits mit Ihrem PM-Tool synchronisierte Elemente bleiben dort."
 				}
 			},
 			"readiness": {

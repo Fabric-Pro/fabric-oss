@@ -369,7 +369,8 @@ function PriorityRowImpl({
 					</div>
 				)}
 
-				{story.source === "approved_proposal" &&
+				{(story.source === "approved_proposal" ||
+					story.source === "ai_recommended") &&
 					(story.createdFromProposalId && proposalHref ? (
 						<Link
 							href={proposalHref}

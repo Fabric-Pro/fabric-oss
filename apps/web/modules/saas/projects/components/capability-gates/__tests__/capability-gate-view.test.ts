@@ -9,6 +9,9 @@
  * the sentence.
  */
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { CapabilityGate } from "@repo/api/modules/capabilities/types";
 import { describe, expect, it, vi } from "vitest";
 import { buildCapabilityGateView } from "../../../lib/capability-gate-view";
@@ -40,10 +43,9 @@ describe("buildCapabilityGateView — what renders nothing", () => {
 	});
 
 	it("builds no view for a hidden capability", () => {
-		// `HIDDEN` means more than "available" — the action should leave the
-		// page entirely — but no rule emits it and no surface acts on it, so
-		// the two are indistinguishable here today, on purpose. The note in
-		// `capability-gate-view.ts` says what the first such rule must add.
+		// `HIDDEN` means more than "available" — the action leaves the page —
+		// but that is the surface's call, read from `useCapabilityGate().hidden`.
+		// A banner has nothing to say about it.
 		expect(buildCapabilityGateView(gate({ state: "HIDDEN" }))).toBeNull();
 	});
 
@@ -110,6 +112,7 @@ describe("buildCapabilityGateView — remedy drives the call to action", () => {
 				"remedy.generatePrerequisiteDocument",
 			],
 			["CONFIGURE_INTEGRATION", "remedy.configureIntegration"],
+			["CONFIGURE_PM_BOARD", "remedy.configurePmBoard"],
 			["RETRY_JOB", "remedy.retryJob"],
 		] as const;
 
@@ -258,33 +261,27 @@ describe("buildCapabilityGateView — naming the missing dependency", () => {
 	});
 });
 
-describe("HIDDEN fails loudly rather than reading as available", () => {
-	// No rule emits HIDDEN today. The point of this pair is that the day one
-	// does, it is a build-time surprise for the engineer rather than a
-	// capability that quietly renders as working for a user.
-	const hidden = {
-		capabilityKey: "example.capability",
-		state: "HIDDEN" as const,
-		reasonKey: null,
-		blockingDependency: null,
-		remedy: null,
-		retry: { supported: false, permitted: false, available: false },
-		suppressed: false,
-	};
+describe("HIDDEN builds no view in every environment", () => {
+	// The Roadmap's batch-removal rule emits HIDDEN, so it is a real state now,
+	// not a surprise to fail loudly on. The surface removes the action; the
+	// view builder must never throw on the way there, development included.
+	const hidden = gate({
+		capabilityKey: "roadmap.remove-ai-recommended",
+		state: "HIDDEN",
+		reasonKey: "roadmap.no-eligible-ai-batch",
+	});
 
-	it("throws in development, naming what the emitting rule must add", () => {
+	it("returns null in development", () => {
 		const previous = process.env.NODE_ENV;
 		vi.stubEnv("NODE_ENV", "development");
 		try {
-			expect(() => buildCapabilityGateView(hidden)).toThrow(
-				/cannot act on/,
-			);
+			expect(buildCapabilityGateView(hidden)).toBeNull();
 		} finally {
 			vi.stubEnv("NODE_ENV", previous ?? "test");
 		}
 	});
 
-	it("degrades quietly outside development — a user never meets the exception", () => {
+	it("returns null outside development", () => {
 		expect(buildCapabilityGateView(hidden)).toBeNull();
 	});
 });
@@ -350,5 +347,86 @@ describe("the review round's additions (Fizzy #1930)", () => {
 				true,
 			),
 		).not.toBeNull();
+	});
+});
+
+describe("buildCapabilityGateView — Roadmap reasons", () => {
+	const here = path.dirname(fileURLToPath(import.meta.url));
+	const messages = JSON.parse(
+		readFileSync(
+			path.resolve(
+				here,
+				"../../../../../../../../packages/i18n/translations/en.json",
+			),
+			"utf8",
+		),
+	) as { projects: { capabilityGates: Record<string, unknown> } };
+
+	/** Walk a dotted key, treating each segment as a whole property name. */
+	function copyAt(key: string): unknown {
+		return key
+			.split(".")
+			.reduce<unknown>(
+				(node, segment) =>
+					node && typeof node === "object"
+						? (node as Record<string, unknown>)[segment]
+						: undefined,
+				messages.projects.capabilityGates,
+			);
+	}
+
+	it.each([
+		"roadmap.pm-not-connected",
+		"roadmap.pm-no-board",
+		"roadmap.pm-read-only",
+		"roadmap.pm-sync-running",
+		"roadmap.recommend.context-insufficient",
+		"roadmap.do-both.needs-pm",
+		"roadmap.do-both.needs-context",
+	])(
+		"uses the reason's own copy for %s, and that copy exists",
+		(reasonKey) => {
+			const view = buildCapabilityGateView(
+				gate({
+					state: "WARNING",
+					reasonKey,
+					blockingDependency: "a dependency",
+					remedy: "ADD_CONTEXT",
+				}),
+			);
+
+			expect(view?.title).toBe(`reason.${reasonKey}.title`);
+			expect(view?.body).toBe(`reason.${reasonKey}.body`);
+			expect(copyAt(`reason.${reasonKey}.title`)).toEqual(
+				expect.any(String),
+			);
+			expect(copyAt(`reason.${reasonKey}.body`)).toEqual(
+				expect.any(String),
+			);
+		},
+	);
+
+	it("has copy for the hidden batch-removal reason, read by its dialog", () => {
+		expect(copyAt("reason.roadmap.no-eligible-ai-batch.title")).toEqual(
+			expect.any(String),
+		);
+		expect(copyAt("reason.roadmap.no-eligible-ai-batch.body")).toEqual(
+			expect.any(String),
+		);
+	});
+
+	it("sends a missing board to the PM settings, not the integrations page", () => {
+		const view = buildCapabilityGateView(
+			gate({
+				state: "HARD_BLOCK",
+				reasonKey: "roadmap.pm-no-board",
+				blockingDependency: "a board",
+				remedy: "CONFIGURE_PM_BOARD",
+			}),
+		);
+
+		expect(view?.ctaKind).toBe("navigate");
+		expect(view?.ctaTarget).toBe("pm-settings");
+		expect(copyAt("remedy.configurePmBoard")).toEqual(expect.any(String));
 	});
 });

@@ -972,6 +972,8 @@ export {
 	syncTaskToPM,
 	updateStoryExternalRefs,
 } from "./pm-integration/story-sync";
+// Closes the PM_STORY_SYNC job row from storySyncWorkflow's `finally`.
+export { closeStorySyncJob } from "./pm-integration/story-sync-job";
 // PM Integration - Test case sync activities (QA feature)
 export {
 	createOrUpdateTestCaseFromPMItem,
@@ -1152,6 +1154,17 @@ export {
 	findDueReportInstancesActivity,
 	reconcileScheduledReportInstancesActivity,
 } from "./scheduled-report";
+// Roadmap recommendation activities (project context → ROADMAP_RECOMMENDATION batch)
+export {
+	type GatherRoadmapRecommendationContextInput,
+	type GatherRoadmapRecommendationContextOutput,
+	gatherRoadmapRecommendationContext,
+	type PersistRoadmapRecommendationsInput,
+	type PersistRoadmapRecommendationsOutput,
+	persistRoadmapRecommendations,
+	type RoadmapRecommendationEntryPoint,
+	type RoadmapRecommendationStats,
+} from "./roadmap-recommendation";
 // Scope intake activities (customer scope document → SCOPE_DOCUMENT proposal)
 export {
 	type AwaitContextExtractedInput,

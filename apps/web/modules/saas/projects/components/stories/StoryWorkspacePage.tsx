@@ -48,6 +48,8 @@ import {
 } from "../../lib/stories/roadmap-return";
 import { getPriorityLabel, transformStory } from "../../lib/stories/types";
 import { StoryTestCoverageLine } from "../test-cases/StoryTestCoverageLine";
+import { AiRecommendedGuidance } from "./AiRecommendedGuidance";
+import { AiRecommendedItemMenu } from "./AiRecommendedItemMenu";
 import { MaturationViewToggle } from "./maturation/MaturationViewToggle";
 import { NeedsMoreInfoBadge } from "./NeedsMoreInfoBadge";
 import { PmSyncChip } from "./pm-sync/PmSyncChip";
@@ -276,6 +278,13 @@ export function StoryWorkspacePage({
 	const canAddTags: boolean = storyData?.canAddTags ?? false;
 	const canManageAllTags: boolean = storyData?.canManageAllTags ?? false;
 	const project = projectData?.project;
+	// Protect and the batch guidance (Fizzy #2211) are editor actions on an
+	// AI-recommended item, behind the lifecycle flag.
+	const showAiRecommendedLifecycle =
+		canEdit &&
+		story?.source === "ai_recommended" &&
+		!!story.aiRecommendationBatchId &&
+		project?.roadmap.aiRecommendedLifecycleEnabled === true;
 
 	// Build the back URL using basePath from context, with the roadmap filter
 	// query the user left behind re-applied (see `roadmap-return.ts`). Feeds
@@ -656,6 +665,14 @@ export function StoryWorkspacePage({
 					ref={setActionSlotEl}
 					className="flex items-center gap-2"
 				/>
+				{showAiRecommendedLifecycle && (
+					<AiRecommendedItemMenu
+						projectId={projectId}
+						storyId={story.id}
+						identifier={story.identifier}
+						protectedAt={story.aiBatchProtectedAt ?? null}
+					/>
+				)}
 				<StartWorkButton
 					projectId={projectId}
 					storyId={storyId}
@@ -683,6 +700,13 @@ export function StoryWorkspacePage({
 				/>
 				<div ref={setSaveSlotEl} className="flex items-center" />
 			</div>
+
+			{showAiRecommendedLifecycle && (
+				<AiRecommendedGuidance
+					projectId={projectId}
+					isProtected={story.aiBatchProtectedAt != null}
+				/>
+			)}
 
 			{/* F-171 reporter strip (REQ-8, REQ-15). Bug detail pages only —
 			  shows where the bug came from and who reported it. Placement is

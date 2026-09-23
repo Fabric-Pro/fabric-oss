@@ -29,6 +29,12 @@ const { handlers, mocks } = vi.hoisted(() => {
 		workflowStart: vi.fn(),
 		recordAuditFromRequest: vi.fn(),
 		runDecisionPrecheck: vi.fn(),
+		getPendingBacklogProposal: vi.fn(),
+		getAppliedChangeIndexes: vi.fn(),
+		claimPendingProposalForApply: vi.fn(),
+		finalizeClaimedProposal: vi.fn(),
+		getBoundPromptForAgent: vi.fn(),
+		markProposalApplyDispatched: vi.fn(),
 		callOrder: [] as string[],
 	};
 	return { handlers, mocks };
@@ -48,7 +54,12 @@ vi.mock("@repo/database", () => ({
 			},
 		},
 	},
-	markProposalApplyDispatched: () => Promise.resolve(),
+	markProposalApplyDispatched: mocks.markProposalApplyDispatched,
+	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
+	getAppliedChangeIndexes: mocks.getAppliedChangeIndexes,
+	claimPendingProposalForApply: mocks.claimPendingProposalForApply,
+	finalizeClaimedProposal: mocks.finalizeClaimedProposal,
+	getBoundPromptForAgent: mocks.getBoundPromptForAgent,
 	createPendingBacklogProposal: (...args: unknown[]) => {
 		mocks.callOrder.push("createPendingBacklogProposal");
 		return mocks.createPendingBacklogProposal(...args);
@@ -155,6 +166,7 @@ beforeEach(() => {
 	mocks.createPendingBacklogProposal.mockResolvedValue({
 		id: "proposal-new-1",
 	});
+	mocks.markProposalApplyDispatched.mockResolvedValue(1);
 	mocks.pendingBacklogProposalUpdate.mockResolvedValue({
 		id: "proposal-new-1",
 	});
@@ -188,6 +200,19 @@ describe("applyChangesProcedure — proposal row up-front (AC #1)", () => {
 			"createPendingBacklogProposal",
 			"workflow.start",
 		]);
+	});
+
+	it("stamps the dispatch on the fresh row, guarded as unclaimed, with the started workflow", async () => {
+		await handlers.applyChanges({ input: baseInput, context: ctx });
+
+		const startOpts = mocks.workflowStart.mock.calls[0]?.[1] as {
+			workflowId: string;
+		};
+		expect(mocks.markProposalApplyDispatched).toHaveBeenCalledWith({
+			proposalId: "proposal-new-1",
+			applyWorkflowId: startOpts.workflowId,
+			mode: "fresh",
+		});
 	});
 
 	it("returns the persisted proposal id", async () => {
@@ -691,5 +716,102 @@ describe("applyChangesProcedure — server-authoritative pre-check (cannot be su
 		});
 		expect(mocks.runDecisionPrecheck).toHaveBeenCalledTimes(1);
 		expect(mocks.recordAuditFromRequest).not.toHaveBeenCalled();
+	});
+});
+
+describe("applyChangesProcedure — ROADMAP_RECOMMENDATION accept (Fizzy #2208)", () => {
+	function storedProposal(source: string) {
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			id: "batch-1",
+			projectId: "project-1",
+			source,
+			status: "PENDING",
+			proposal: { changes: [baseChange] },
+		});
+		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set<number>());
+		// Stop right after the claim; these cases pin the pre-flight + claim.
+		mocks.claimPendingProposalForApply.mockResolvedValue(false);
+	}
+
+	const acceptInput = { ...baseInput, proposalId: "batch-1" };
+
+	it("refuses with PRECONDITION_FAILED and claims nothing when no Clean Spec prompt is bound", async () => {
+		storedProposal("ROADMAP_RECOMMENDATION");
+		mocks.getBoundPromptForAgent.mockResolvedValue(null);
+
+		const error = await handlers
+			.applyChanges({ input: acceptInput, context: ctx })
+			.then(
+				() => null,
+				(e: unknown) => e,
+			);
+
+		expect(error).toBeInstanceOf(ORPCError);
+		expect((error as ORPCError<string, unknown>).code).toBe(
+			"PRECONDITION_FAILED",
+		);
+		expect(mocks.getBoundPromptForAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				agentName: "feature_clean_spec_generator",
+				documentType: "CLEAN_SPEC",
+				storyKind: "FEATURE",
+				userId: "user-1",
+				organizationId: "org-1",
+			}),
+		);
+		expect(mocks.claimPendingProposalForApply).not.toHaveBeenCalled();
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+	});
+
+	it("claims with admitBacklog once the Clean Spec prompt is bound", async () => {
+		storedProposal("ROADMAP_RECOMMENDATION");
+		mocks.getBoundPromptForAgent.mockResolvedValue({
+			version: { content: "clean spec" },
+		});
+
+		await expect(
+			handlers.applyChanges({ input: acceptInput, context: ctx }),
+		).rejects.toBeInstanceOf(ORPCError);
+
+		expect(mocks.claimPendingProposalForApply).toHaveBeenCalledWith({
+			proposalId: "batch-1",
+			reviewedBy: "user-1",
+			applyWorkflowId: expect.any(String),
+			admitBacklog: true,
+		});
+	});
+
+	it("stamps the dispatch of a claimed batch as the claimant, not as a fresh row", async () => {
+		storedProposal("ROADMAP_RECOMMENDATION");
+		mocks.getBoundPromptForAgent.mockResolvedValue({
+			version: { content: "clean spec" },
+		});
+		mocks.claimPendingProposalForApply.mockResolvedValue(true);
+
+		await handlers.applyChanges({ input: acceptInput, context: ctx });
+
+		const claim = mocks.claimPendingProposalForApply.mock.calls[0]?.[0] as {
+			applyWorkflowId: string;
+		};
+		expect(mocks.markProposalApplyDispatched).toHaveBeenCalledWith({
+			proposalId: "batch-1",
+			applyWorkflowId: claim.applyWorkflowId,
+			mode: "claimed",
+		});
+	});
+
+	it("leaves any other source unchanged: no pre-flight, no BACKLOG admission", async () => {
+		storedProposal("SCOPE_DOCUMENT");
+
+		await expect(
+			handlers.applyChanges({ input: acceptInput, context: ctx }),
+		).rejects.toBeInstanceOf(ORPCError);
+
+		expect(mocks.getBoundPromptForAgent).not.toHaveBeenCalled();
+		expect(mocks.claimPendingProposalForApply).toHaveBeenCalledWith({
+			proposalId: "batch-1",
+			reviewedBy: "user-1",
+			applyWorkflowId: expect.any(String),
+		});
 	});
 });

@@ -614,6 +614,16 @@ export {
 	repoIntegrationHealthCheckWorkflow,
 } from "./repo-integration-health-check";
 export { requestSpanRetentionWorkflow } from "./request-span-retention";
+// Roadmap recommendation workflow (project context → ROADMAP_RECOMMENDATION batch)
+export {
+	type RoadmapRecommendationInput,
+	type RoadmapRecommendationOutcome,
+	type RoadmapRecommendationOutput,
+	type RoadmapRecommendationPhase,
+	type RoadmapRecommendationProgress,
+	roadmapRecommendationProgressQuery,
+	roadmapRecommendationWorkflow,
+} from "./roadmap-recommendation-workflow";
 // Security finding AI false-positive review workflow (G7 — on-demand adversarial judge)
 export {
 	type ScanFindingReviewInput,

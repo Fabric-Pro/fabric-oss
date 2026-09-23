@@ -41,6 +41,7 @@ const SURFACES = [
 	"security",
 	"release-notes",
 	"settings",
+	"roadmap",
 ] as const satisfies readonly CapabilitySurface[];
 
 const gateSchema = z.object({
@@ -63,6 +64,7 @@ const gateSchema = z.object({
 			"ADD_CONTEXT",
 			"GENERATE_PREREQUISITE_DOCUMENT",
 			"CONFIGURE_INTEGRATION",
+			"CONFIGURE_PM_BOARD",
 			"ENABLE_CODE_SEARCH",
 			"RETRY_JOB",
 			"WAIT",

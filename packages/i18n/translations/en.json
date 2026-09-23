@@ -217,7 +217,8 @@
 				"STORY_KIND_REGENERATION": "Rewriting for the new type",
 				"PUBLISHING_TOPIC_GENERATION": "Topic suggestions",
 				"PM_STATE_POLL": "Project management scan",
-				"DOCUMENT_GENERATION": "Document generation"
+				"DOCUMENT_GENERATION": "Document generation",
+				"PM_STORY_SYNC": "Project management sync"
 			},
 			"steps": {
 				"fetch": "Fetch messages",
@@ -3746,7 +3747,131 @@
 					"buttonLabel": "{count, plural, one {# stage approval} other {# stage approvals}}",
 					"buttonTooltip": "Review drafting-stage changes that need an approver on this governed project."
 				}
+			},
+			"startBuilding": {
+				"heading": "Start Building Your Roadmap",
+				"intro": "Bring in the work you already track, or let Fabric suggest where to begin.",
+				"introWithItems": "Nothing here counts as planned work yet: items in Backlog or Done, and hidden or declined items, are not counted.",
+				"pull": {
+					"title": "Pull work items",
+					"description": "Bring existing work items into Roadmap from your connected project management system."
+				},
+				"recommend": {
+					"title": "Recommend features",
+					"description": "Use Fabric’s project context to suggest feature candidates for review."
+				},
+				"doBoth": {
+					"title": "Do both",
+					"description": "Pull existing work items first, then have Fabric recommend additional feature candidates from project context."
+				},
+				"reason": {
+					"permission": "You don’t have permission to do this in this project.",
+					"running": "A sync with your project management tool is already running. Wait for it to finish.",
+					"notConnected": "Connect a project management tool to pull work items.",
+					"notConnectedAction": "Set up a connection"
+				},
+				"steps": {
+					"label": "Do both",
+					"pull": {
+						"title": "Pull work items",
+						"waiting": "Waiting",
+						"running": "Pulling…",
+						"done": "Pulled",
+						"nothingNew": "No new work items",
+						"failed": "Pull failed",
+						"unknown": "Couldn’t confirm the pull finished"
+					},
+					"recommend": {
+						"title": "Recommend features",
+						"waiting": "Waiting for the pull",
+						"running": "Recommending…",
+						"done": "Started",
+						"failed": "Not started",
+						"unknown": "Not started"
+					},
+					"retryPull": "Retry pull",
+					"recommendInstead": "Recommend features instead",
+					"dismiss": "Dismiss"
+				},
+				"showHidden": "{count, plural, one {Show # hidden work item} other {Show # hidden work items}}"
+			},
+			"actionsMenu": {
+				"trigger": "More Roadmap actions"
+			},
+			"pullNothingNew": {
+				"title": "No new work items",
+				"body": "Your Roadmap already has everything from {tool}.",
+				"continue": "Continue to recommendations",
+				"close": "Close"
+			},
+			"aiRecommended": {
+				"guidance": {
+					"body": "This was created as part of an AI-recommendation batch. To remove a full batch, use the context menu in the Roadmap. To protect an item from removal, use the context menu on this page and choose ‘Protect Work Item.’",
+					"bodyProtected": "This was created as part of an AI-recommendation batch and is protected, so removing its batch will skip it. To remove a full batch, use the context menu in the Roadmap.",
+					"dismiss": "Dismiss AI recommendation guidance"
+				},
+				"protect": {
+					"trigger": "More actions for {identifier}",
+					"action": "Protect Work Item",
+					"protected": "Protected from batch removal",
+					"success": "Protected from batch removal",
+					"successDescription": "Removing its AI-recommended batch will skip this item.",
+					"error": "Couldn't protect this item"
+				},
+				"removeDialog": {
+					"menuItem": "Remove AI Recommended Items",
+					"title": "Remove AI Recommended Items",
+					"pickDescription": "Choose one AI-recommended batch. Only its unprotected items are hidden.",
+					"loading": "Loading batches…",
+					"loadError": "Couldn't load the AI-recommended batches.",
+					"batchLabel": "Recommended {date} · {count, plural, one {# item} other {# items}}",
+					"batchProtected": "{count} protected",
+					"batchEdited": "{count} edited",
+					"batchAwaiting": "{count} awaiting approval",
+					"next": "Review batch",
+					"back": "Back",
+					"cancel": "Cancel",
+					"close": "Close",
+					"previewLoading": "Loading the batch…",
+					"previewDescription": "These items will be hidden from the Roadmap:",
+					"editedBadge": "Edited",
+					"protectedSkipped": "{count, plural, one {# protected item will be skipped} other {# protected items will be skipped}}",
+					"showProtected": "Show protected items",
+					"awaitingApproval": "{count, plural, one {# item is already waiting for approval} other {# items are already waiting for approval}}",
+					"editedWarningPrefix": "Warning:",
+					"editedWarning": "This batch includes {count, plural, one {# provisional item that was edited after creation} other {# provisional items that were edited after creation}}. Review them before moving the batch to backlog.",
+					"governedNotice": "This project requires approval for stage changes. Each item becomes an approval request instead of moving right away, and replaces any request already pending on it.",
+					"hiddenNotDeleted": "Items are hidden from the Roadmap, not deleted. Linked work items in your PM tool are not changed.",
+					"confirm": "{count, plural, one {Hide # item} other {Hide # items}}",
+					"confirmGoverned": "{count, plural, one {Request hiding # item} other {Request hiding # items}}",
+					"confirming": "Hiding…",
+					"resultTitle": "Batch removal finished",
+					"resultSummary": "{moved} hidden · {requested} sent for approval · {skipped} skipped · {failed} failed",
+					"notPreviewed": "{count, plural, one {# item added after the preview was left alone.} other {# items added after the preview were left alone.}}",
+					"failedHeading": "These items could not be hidden:",
+					"noEligible": "Nothing in this batch can be removed now: {protectedCount} protected, {requestedCount} already waiting for approval, {ineligibleCount} already hidden or changed since the preview.",
+					"noEligiblePreview": "Nothing in this batch can be removed now: {protectedCount} protected, {requestedCount} already waiting for approval.",
+					"error": "Couldn't remove the batch"
+				},
+				"acceptedNotice": {
+					"title": "{count, plural, one {# recommended feature added to the Roadmap} other {# recommended features added to the Roadmap}}",
+					"body": "These items are labeled AI Recommended. To remove the whole batch later, use Remove AI Recommended Items in the Roadmap's ⋯ menu. This only changes Fabric; items already synced to your PM tool stay there."
+				}
 			}
+		},
+		"recommendations": {
+			"menuItem": "Recommend Features from Context",
+			"menuDescription": "Ask Fabric to suggest additional feature candidates based on the current project context and Roadmap.",
+			"unavailable": "Recommendations are not available for this project.",
+			"running": "Fabric is already recommending features for this project.",
+			"started": "Recommending features from your project context",
+			"startedDescription": "This runs in the background. You'll be told here when the recommendations are ready to review.",
+			"alreadyRunning": "Fabric is already recommending features for this project.",
+			"startFailed": "Could not start recommendations",
+			"generated": "{count, plural, one {# feature} other {# features}} ready to review",
+			"generatedDescription": "Accept the ones you want. Any you don't accept stay in the Proposal Inbox.",
+			"noRecommendations": "Fabric didn't find new features to recommend from the current project context, so no recommendations were created.",
+			"generationFailed": "Fabric couldn’t generate feature recommendations. Please try again. If the problem continues, check project context, connected sources, or background job status before retrying."
 		},
 		"decisionPrecheck": {
 			"proposalBanner": "This proposal contradicts {count, plural, one {# logged decision} other {# logged decisions}}",
@@ -4645,7 +4770,8 @@
 				"successDescriptionFallback": "Follow the link to view the test work item",
 				"failedTitle": "Test failed",
 				"openAction": "Open"
-			}
+			},
+			"connectPmToolFirst": "Connect a PM tool first to change this."
 		},
 		"atlas": {
 			"tabLabel": "Atlas",
@@ -5616,6 +5742,48 @@
 						"title": "No channel linked yet",
 						"body": "Work Capture picks up tasks from Slack or Teams conversations, and no channel or chat is linked to this project yet. Link one below to start."
 					}
+				},
+				"roadmap": {
+					"pm-not-connected": {
+						"title": "No project management system connected",
+						"body": "Connect your project management tool in Integrations, then choose it in Project Settings → Project Management."
+					},
+					"pm-no-board": {
+						"title": "No board selected",
+						"body": "Choose the board to sync with in Project Settings → Project Management."
+					},
+					"pm-read-only": {
+						"title": "This project is read-only",
+						"body": "Read-only mode blocks writes to your project management tool. Pulling still works."
+					},
+					"pm-sync-running": {
+						"title": "A sync is already running",
+						"body": "Wait for the current project management sync to finish, then try again."
+					},
+					"recommend": {
+						"context-insufficient": {
+							"title": "Not enough project context yet",
+							"body": "Fabric doesn’t have enough project context to recommend features yet. Add more project context, connect a source, or pull work items from your project management system, then try again."
+						}
+					},
+					"do-both": {
+						"needs-pm": {
+							"title": "Do both needs a project management connection",
+							"body": "Connect a project management system before using Do both. The pull step cannot run without a project management connection."
+						},
+						"needs-board": {
+							"title": "Do both needs a project management board",
+							"body": "Choose the board to sync with in Project Settings → Project Management."
+						},
+						"needs-context": {
+							"title": "Do both needs more project context",
+							"body": "Fabric doesn’t have enough project context to recommend features yet. Add more project context, connect a source, or pull work items from your project management system, then try again."
+						}
+					},
+					"no-eligible-ai-batch": {
+						"title": "No AI-recommended batch to remove",
+						"body": "Every item in the AI-recommended batches is already hidden, protected, done or waiting for approval."
+					}
 				}
 			},
 			"fallback": {
@@ -5645,7 +5813,8 @@
 				"configureIntegration": "Configure the connection",
 				"retryJob": "Try again",
 				"enableCodeSearch": "Turn on code search",
-				"startIndexing": "Start indexing"
+				"startIndexing": "Start indexing",
+				"configurePmBoard": "Choose a board"
 			},
 			"retry": {
 				"action": "Try again",

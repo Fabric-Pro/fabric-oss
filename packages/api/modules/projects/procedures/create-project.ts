@@ -23,6 +23,10 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import {
+	failPmStorySyncJob,
+	openPmStorySyncJob,
+} from "../lib/pm-story-sync-job";
 import { resolvePmTarget } from "../lib/resolve-pm-target";
 
 export const createProjectProcedure = tenantProtectedProcedure
@@ -573,6 +577,7 @@ export const createProjectProcedure = tenantProtectedProcedure
 			// Auto-sync tasks from PM tool when project has PM integration (existing project flow)
 			// Skip when existingProjectSetupWorkflow will handle backlog ingest instead
 			let storySyncStarted = false;
+			let openedSyncWorkflowId: string | null = null;
 			if (
 				!input.skipAutoSync &&
 				project.projectManagementMcpServerId &&
@@ -594,6 +599,20 @@ export const createProjectProcedure = tenantProtectedProcedure
 					if (target) {
 						const temporalClient = await getTemporalClient();
 						const workflowId = `story-sync-${project.id}-${Date.now()}`;
+
+						const running = await openPmStorySyncJob({
+							workflowId,
+							projectId: project.id,
+							userId: user.id,
+							organizationId: project.organizationId,
+							direction: "pull",
+						});
+						if (running) {
+							throw new Error(
+								`a PM sync is already running (${running.workflowId})`,
+							);
+						}
+						openedSyncWorkflowId = workflowId;
 
 						await temporalClient.workflow.start(
 							"storySyncWorkflow",
@@ -642,6 +661,13 @@ export const createProjectProcedure = tenantProtectedProcedure
 						"[CreateProject] Failed to start task sync:",
 						syncError,
 					);
+					if (openedSyncWorkflowId && !storySyncStarted) {
+						await failPmStorySyncJob({
+							workflowId: openedSyncWorkflowId,
+							projectId: project.id,
+							error: "The sync could not be started.",
+						});
+					}
 				}
 			}
 

@@ -236,6 +236,90 @@ describe("applyPriorityChanges — only real moves are written", () => {
 	});
 });
 
+describe("applyPriorityChanges — first human edit (Fizzy #2211)", () => {
+	function writeData(): Record<string, unknown> {
+		return (
+			userStoryUpdateMany.mock.calls.at(-1)?.[0] as {
+				data: Record<string, unknown>;
+			}
+		).data;
+	}
+
+	it("stamps firstHumanEditAt in the same write when a person moves an AI-recommended item", async () => {
+		userStoryFindMany.mockResolvedValue([
+			{
+				id: "s-1",
+				priority: "P2_MEDIUM",
+				source: "AI_RECOMMENDED",
+				firstHumanEditAt: null,
+			},
+		]);
+
+		await applyPriorityChanges(
+			"p-1",
+			[{ storyId: "s-1", toPriority: "P0_CRITICAL" }],
+			"MANUAL",
+			ACTOR,
+		);
+
+		expect(userStoryUpdateMany).toHaveBeenCalledTimes(1);
+		expect(writeData().firstHumanEditAt).toBeInstanceOf(Date);
+		expect(writeData().firstHumanEditAt).toBe(writeData().lastEditedAt);
+	});
+
+	it("does not stamp an AI move of an AI-recommended item", async () => {
+		userStoryFindMany.mockResolvedValue([
+			{
+				id: "s-1",
+				priority: "P2_MEDIUM",
+				source: "AI_RECOMMENDED",
+				firstHumanEditAt: null,
+			},
+		]);
+
+		await applyPriorityChanges(
+			"p-1",
+			[{ storyId: "s-1", toPriority: "P0_CRITICAL" }],
+			"AI",
+			ACTOR,
+		);
+
+		expect(writeData()).not.toHaveProperty("firstHumanEditAt");
+	});
+
+	it("never overwrites an existing stamp, and ignores items that were not AI-recommended", async () => {
+		userStoryFindMany.mockResolvedValue([
+			{
+				id: "s-1",
+				priority: "P2_MEDIUM",
+				source: "AI_RECOMMENDED",
+				firstHumanEditAt: new Date("2026-08-01T00:00:00.000Z"),
+			},
+			{
+				id: "s-2",
+				priority: "P2_MEDIUM",
+				source: "MANUAL",
+				firstHumanEditAt: null,
+			},
+		]);
+
+		await applyPriorityChanges(
+			"p-1",
+			[
+				{ storyId: "s-1", toPriority: "P0_CRITICAL" },
+				{ storyId: "s-2", toPriority: "P0_CRITICAL" },
+			],
+			"MANUAL",
+			ACTOR,
+		);
+
+		expect(userStoryUpdateMany).toHaveBeenCalledTimes(2);
+		for (const [call] of userStoryUpdateMany.mock.calls) {
+			expect(call.data).not.toHaveProperty("firstHumanEditAt");
+		}
+	});
+});
+
 describe("applyPriorityChanges — roadmap ranks", () => {
 	it("gives two items landing in the same band consecutive roadmapOrder values", async () => {
 		userStoryFindMany.mockResolvedValue([

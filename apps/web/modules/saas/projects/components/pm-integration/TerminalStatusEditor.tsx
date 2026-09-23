@@ -11,6 +11,10 @@ export interface TerminalStatusEditorProps {
 	onChange: (next: string[]) => void;
 	onSuggest?: () => void;
 	isSuggesting?: boolean;
+	/** Read-only, e.g. until a PM tool is connected. */
+	disabled?: boolean;
+	/** Id of the text explaining why the editor is disabled. */
+	describedBy?: string;
 }
 
 /**
@@ -25,6 +29,8 @@ export interface TerminalStatusEditorProps {
 export function TerminalStatusEditor({
 	value,
 	onChange,
+	disabled = false,
+	describedBy,
 }: TerminalStatusEditorProps) {
 	const [draft, setDraft] = useState("");
 
@@ -68,6 +74,7 @@ export function TerminalStatusEditor({
 							type="button"
 							aria-label={`Remove ${status}`}
 							onClick={() => removeStatus(status)}
+							disabled={disabled}
 							className="text-muted-foreground hover:text-foreground"
 						>
 							<XIcon className="size-3" />
@@ -79,8 +86,10 @@ export function TerminalStatusEditor({
 			<div className="flex items-center gap-2">
 				<Input
 					aria-label="Add a terminal status"
+					aria-describedby={describedBy}
 					placeholder="add a status…"
 					value={draft}
+					disabled={disabled}
 					onChange={(e) => setDraft(e.target.value)}
 					onKeyDown={(e) => {
 						if (e.key === "Enter") {
@@ -94,6 +103,8 @@ export function TerminalStatusEditor({
 					variant="outline"
 					size="sm"
 					onClick={addStatus}
+					disabled={disabled}
+					aria-describedby={describedBy}
 				>
 					Add
 				</Button>

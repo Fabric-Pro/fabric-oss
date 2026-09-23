@@ -3,8 +3,10 @@ import {
 	getProjectById,
 	getProjectRole,
 	hasProjectAccess,
+	isFeatureEnabled,
 	resolveAttachmentRetentionOverrides,
 } from "@repo/database";
+import { logger } from "@repo/logs";
 import { hasPermission, Permissions as ProjectPerms } from "@repo/permissions";
 import {
 	DEFAULT_ATTACHMENT_RETENTION_DAYS,
@@ -20,6 +22,24 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { userHasProjectPermissionStrict } from "../lib/governance";
+import { findActivePmStorySync } from "../lib/pm-story-sync-job";
+import { isRoadmapRecommendationProviderAvailable } from "../lib/roadmap-recommendations/availability";
+
+/**
+ * The running bulk PM sync only drives the Roadmap's progress banner, so a
+ * failed read degrades to "no sync" instead of failing the whole project load.
+ */
+async function findActivePmStorySyncOrNull(projectId: string) {
+	try {
+		return await findActivePmStorySync(projectId);
+	} catch (error) {
+		logger.warn("[getProject] Active PM sync read failed", {
+			projectId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	}
+}
 
 export const getProjectProcedure = tenantProtectedProcedure
 	.use(
@@ -80,9 +100,32 @@ export const getProjectProcedure = tenantProtectedProcedure
 		// `hasProjectAccess` (used by canManageMembers below) is independent of
 		// the permission resolver, so run both in parallel — getProject is a hot
 		// read path hit on every project load.
-		const [effective, hasAccess] = await Promise.all([
+		// The Roadmap inputs ride along: flags are always resolved with the
+		// PROJECT's organization, never the caller's session.
+		const projectOrganizationId = project.organizationId ?? null;
+		const [
+			effective,
+			hasAccess,
+			recommendationsEnabled,
+			aiRecommendedLifecycleEnabled,
+			providerAvailable,
+			activePmSyncRow,
+		] = await Promise.all([
 			resolveEffectiveProjectPermissions(input.id, user.id),
 			hasProjectAccess(input.id, user.id),
+			isFeatureEnabled(
+				"ROADMAP_RECOMMENDATIONS",
+				projectOrganizationId ?? undefined,
+			),
+			isFeatureEnabled(
+				"AI_RECOMMENDED_LIFECYCLE",
+				projectOrganizationId ?? undefined,
+			),
+			isRoadmapRecommendationProviderAvailable({
+				projectId: project.id,
+				organizationId: projectOrganizationId,
+			}),
+			findActivePmStorySyncOrNull(project.id),
 		]);
 		const canPublish = hasPermission(
 			effective?.permissions ?? [],
@@ -91,6 +134,14 @@ export const getProjectProcedure = tenantProtectedProcedure
 		const canUpdateProject = hasPermission(
 			effective?.permissions ?? [],
 			Permissions.PROJECT_UPDATE,
+		);
+		const canUpdateStories = hasPermission(
+			effective?.permissions ?? [],
+			ProjectPerms.STORY_UPDATE,
+		);
+		const canCreateStories = hasPermission(
+			effective?.permissions ?? [],
+			ProjectPerms.STORY_CREATE,
 		);
 		const canEditInstructions = hasPermission(
 			effective?.permissions ?? [],
@@ -147,6 +198,16 @@ export const getProjectProcedure = tenantProtectedProcedure
 				canManageMembers,
 				effectiveAttachmentRetentionDays,
 				canManageGovernance,
+				roadmap: {
+					canUpdateStories,
+					canCreateStories,
+					recommendationsEnabled,
+					providerAvailable,
+					// Seeds the Roadmap's sync polling after a reload. Only for a
+					// viewer who could poll it: progress needs STORY_UPDATE.
+					activePmSync: canUpdateStories ? activePmSyncRow : null,
+					aiRecommendedLifecycleEnabled,
+				},
 			},
 		};
 	});

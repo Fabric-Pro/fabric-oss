@@ -69,10 +69,13 @@ import {
 	XIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { SlackIcon } from "../../../workflows/lib/plugins/slack/icon";
-import { BacklogChangeProposal } from "./BacklogChangeProposal";
+import {
+	BacklogChangeProposal,
+	type LockedReason,
+} from "./BacklogChangeProposal";
 import { failureClassToCopy } from "./lib/failure-class-copy";
 
 type Props = {
@@ -115,6 +118,45 @@ type Props = {
 		containerId: string;
 		additionalContext?: Record<string, string>;
 	};
+	/**
+	 * `project.roadmap.aiRecommendedLifecycleEnabled` (Fizzy #2211). When on,
+	 * accepting a Roadmap recommendation batch also says how to remove the
+	 * batch later.
+	 */
+	aiRecommendedLifecycleEnabled?: boolean;
+};
+
+/** Roadmap recommendation batches (Fizzy #2208). */
+const ROADMAP_RECOMMENDATION_SOURCE = "ROADMAP_RECOMMENDATION";
+
+/**
+ * Sources applied through the backlog apply workflow with the proposal id,
+ * never through a channel-monitor approve door.
+ */
+const ASYNC_APPLY_SOURCES = new Set([
+	"SCOPE_DOCUMENT",
+	ROADMAP_RECOMMENDATION_SOURCE,
+]);
+
+/**
+ * How often, and for how long, an accepted recommendation batch is watched
+ * until its apply finishes (about three minutes, then it gives up and
+ * refreshes anyway).
+ */
+const APPLY_WATCH_INTERVAL_MS = 2_000;
+const APPLY_WATCH_MAX_POLLS = 90;
+
+/** The post-accept notice carries about 60 words; the global 5s is too short. */
+const ACCEPTED_NOTICE_DURATION_MS = 12_000;
+
+function isApplyInFlight(status: string | null | undefined): boolean {
+	return status === "APPROVED" || status === "APPLYING";
+}
+
+const RECOMMENDATION_ENTRY_POINT_LABELS: Record<string, string> = {
+	EMPTY_ROADMAP: "Start Building Your Roadmap",
+	MATURE_ROADMAP: "Recommend Features from Context",
+	DO_BOTH_AFTER_PULL: "Do both, after the pull",
 };
 
 type ProposalStatus =
@@ -131,6 +173,7 @@ const SOURCE_BADGE_LABELS: Record<string, string> = {
 	TEAMS_CHANNEL: "Teams channel",
 	TEAMS_CHAT: "Teams chat",
 	SCOPE_DOCUMENT: "Scope document",
+	ROADMAP_RECOMMENDATION: "Recommended from project context",
 };
 
 function filenameFromMetadata(
@@ -166,6 +209,14 @@ type PendingProposalRow = {
 };
 
 type PendingProposalDetail = PendingProposalRow & {
+	/**
+	 * Mirror of the change indexes already resolved from this proposal —
+	 * including a recommended feature skipped because its title was already on
+	 * the Roadmap.
+	 */
+	appliedChangeIndexes?: number[];
+	/** The indexes this proposal actually created, from the application table. */
+	createdChangeIndexes?: number[];
 	projectId: string;
 	proposal: unknown;
 	userId: string | null;
@@ -438,6 +489,18 @@ function ProposalSourceBadge({
 		);
 	}
 
+	if (source === ROADMAP_RECOMMENDATION_SOURCE) {
+		return (
+			<span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+				<SparklesIcon
+					className="size-3 text-muted-foreground"
+					aria-hidden="true"
+				/>
+				Recommended from project context
+			</span>
+		);
+	}
+
 	if (source === "MONITORED_MEETING") {
 		// Auto-analyzed monitored-meeting transcript: no channel, so prefer the
 		// meeting subject + date from sourceMetadata for a recognizable label,
@@ -520,6 +583,7 @@ export function PendingBacklogProposalsInbox({
 	hasPMTool = false,
 	pmToolName,
 	pmConfig,
+	aiRecommendedLifecycleEnabled = false,
 }: Props) {
 	const queryClient = useQueryClient();
 	const t = useTranslations("projects.decisionPrecheck");
@@ -557,20 +621,26 @@ export function PendingBacklogProposalsInbox({
 		}
 	}, [open, initialProposalId]);
 
-	const listQueryKey = [
-		"teams-channel-monitor-pending-proposals",
-		projectId,
-		organizationId,
-	];
+	const listQueryKey = useMemo(
+		() => [
+			"teams-channel-monitor-pending-proposals",
+			projectId,
+			organizationId,
+		],
+		[projectId, organizationId],
+	);
 	// Rejected rows are fetched separately (stored as status ["BACKLOG"]) so the
 	// active list stays lean; this backs the dedicated "Rejected proposals" list
 	// and is keyed distinctly by the trailing "backlog" segment.
-	const backlogQueryKey = [
-		"teams-channel-monitor-pending-proposals",
-		projectId,
-		organizationId,
-		"backlog",
-	];
+	const backlogQueryKey = useMemo(
+		() => [
+			"teams-channel-monitor-pending-proposals",
+			projectId,
+			organizationId,
+			"backlog",
+		],
+		[projectId, organizationId],
+	);
 
 	const listQuery = useQuery({
 		queryKey: listQueryKey,
@@ -630,6 +700,67 @@ export function PendingBacklogProposalsInbox({
 		enabled: open && !!selectedProposalId,
 	});
 
+	// The accepted recommendation batch whose apply is still running. Its
+	// items (and the Roadmap gates that key off them) only exist once the
+	// apply workflow finishes, so the refresh has to wait for the row to
+	// leave APPLYING rather than fire at dispatch. Deliberately not gated on
+	// `open`: the reviewer usually closes the drawer right after accepting.
+	const [watchedApply, setWatchedApply] = useState<{
+		proposalId: string;
+		/** Items the batch had already created before this accept. */
+		createdBefore: number;
+	} | null>(null);
+	const watchedApplyId = watchedApply?.proposalId ?? null;
+	const applyWatchPollsRef = useRef(0);
+	// The accept the notice already spoke for; the settle effect can re-run
+	// before the cleared watch commits.
+	const notifiedApplyRef = useRef<typeof watchedApply>(null);
+	const tAcceptedNotice = useTranslations(
+		"projects.stories.aiRecommended.acceptedNotice",
+	);
+	const applyWatchQueryKey = useMemo(
+		() => [
+			"teams-channel-monitor-pending-proposal-apply-watch",
+			projectId,
+			organizationId,
+			watchedApplyId,
+		],
+		[projectId, organizationId, watchedApplyId],
+	);
+	const applyWatchQuery = useQuery({
+		queryKey: applyWatchQueryKey,
+		queryFn: async () => {
+			applyWatchPollsRef.current += 1;
+			const row = watchedApplyId
+				? await orpcClient.projects.teamsChannelMonitor.pendingProposals.get(
+						{
+							projectId,
+							organizationId,
+							proposalId: watchedApplyId,
+						},
+					)
+				: null;
+			const watched = row as {
+				status?: string;
+				createdChangeIndexes?: number[];
+			} | null;
+			const status = watched?.status ?? null;
+			// Only a row that left APPROVED/APPLYING really finished; running
+			// out of polls just stops watching.
+			const finished = !isApplyInFlight(status);
+			return {
+				done:
+					finished ||
+					applyWatchPollsRef.current >= APPLY_WATCH_MAX_POLLS,
+				finished,
+				createdTotal: watched?.createdChangeIndexes?.length ?? null,
+			};
+		},
+		enabled: !!watchedApplyId,
+		refetchInterval: (query) =>
+			query.state.data?.done === false ? APPLY_WATCH_INTERVAL_MS : false,
+	});
+
 	const invalidateAll = useCallback(() => {
 		queryClient.invalidateQueries({ queryKey: listQueryKey });
 		queryClient.invalidateQueries({
@@ -669,12 +800,60 @@ export function PendingBacklogProposalsInbox({
 		});
 	}, [queryClient, listQueryKey, backlogQueryKey, projectId, organizationId]);
 
+	const applyWatchSettled =
+		!!watchedApplyId &&
+		(applyWatchQuery.isError || applyWatchQuery.data?.done === true);
+	useEffect(() => {
+		if (!applyWatchSettled) {
+			return;
+		}
+		// The post-accept notice (Fizzy #2211 FR12/13) waits for the apply to
+		// finish and only speaks when this accept created something — the
+		// items it describes as labeled AI Recommended exist by now.
+		const outcome = applyWatchQuery.data;
+		const createdNow =
+			outcome?.finished && outcome.createdTotal !== null && watchedApply
+				? outcome.createdTotal - watchedApply.createdBefore
+				: 0;
+		if (
+			aiRecommendedLifecycleEnabled &&
+			createdNow > 0 &&
+			notifiedApplyRef.current !== watchedApply
+		) {
+			notifiedApplyRef.current = watchedApply;
+			toast.success(tAcceptedNotice("title", { count: createdNow }), {
+				description: tAcceptedNotice("body"),
+				duration: ACCEPTED_NOTICE_DURATION_MS,
+			});
+		}
+		queryClient.invalidateQueries({ queryKey: ["capability-gates"] });
+		invalidateAll();
+		// Drop the settled answer so a later accept of the same batch (the
+		// items left behind) starts watching afresh instead of reading it.
+		queryClient.removeQueries({
+			queryKey: applyWatchQueryKey,
+			exact: true,
+		});
+		setWatchedApply(null);
+	}, [
+		applyWatchSettled,
+		applyWatchQuery.data,
+		watchedApply,
+		aiRecommendedLifecycleEnabled,
+		tAcceptedNotice,
+		queryClient,
+		invalidateAll,
+		applyWatchQueryKey,
+	]);
+
 	const approveMutation = useMutation({
 		mutationFn: async (payload: {
 			proposalId: string;
 			source: string;
 			approvedChanges: unknown[];
 			syncToPM: boolean;
+			/** Items the proposal had already created (a returned batch). */
+			createdBefore?: number;
 		}) => {
 			// Scope-document proposals (inverted-loop Slice 1) are applied
 			// through the backlog apply workflow with the proposal id: the
@@ -682,14 +861,27 @@ export function PendingBacklogProposalsInbox({
 			// with an application key, so a retried apply cannot create the
 			// same items twice. The channel-monitor approve path materialises
 			// creates synchronously and must not be used for them.
-			if (payload.source === "SCOPE_DOCUMENT") {
+			//
+			// Roadmap recommendation batches (Fizzy #2208) take the same door,
+			// and honour the reviewer's PM-sync choice: the server defaults to
+			// no sync (FR43), so only an explicit tick pushes.
+			if (ASYNC_APPLY_SOURCES.has(payload.source)) {
+				const isRecommendation =
+					payload.source === ROADMAP_RECOMMENDATION_SOURCE;
 				const dispatched =
 					await orpcClient.projects.backlog.applyChanges({
 						projectId,
 						organizationId,
 						proposalId: payload.proposalId,
 						approvedChanges: payload.approvedChanges as never,
-						syncToPM: false,
+						...(isRecommendation
+							? {
+									syncToPM: payload.syncToPM,
+									pmConfig: payload.syncToPM
+										? pmConfig
+										: undefined,
+								}
+							: { syncToPM: false }),
 					});
 				return {
 					status: dispatched.workflowId ? "dispatched" : "failed",
@@ -716,7 +908,7 @@ export function PendingBacklogProposalsInbox({
 				pmConfig,
 			});
 		},
-		onSuccess: (outcome) => {
+		onSuccess: (outcome, variables) => {
 			// Two shapes land here: the channel-monitor approve result and the
 			// dispatch stub for scope documents (above). Only the fields the
 			// toasts read are looked at.
@@ -748,6 +940,25 @@ export function PendingBacklogProposalsInbox({
 						description: `${result.skipped.length} already existed: ${skippedList}`,
 					},
 				);
+			} else if (
+				result?.status === "dispatched" &&
+				variables.source === ROADMAP_RECOMMENDATION_SOURCE
+			) {
+				toast.success("Recommendations accepted", {
+					description:
+						"Accepting in the background — features appear on the Roadmap as they are created; any you didn't accept stay in the inbox.",
+				});
+				// An accepted batch changes what the Roadmap gates read. This
+				// covers the dispatch; the watch above refreshes again once the
+				// apply has actually created the items.
+				queryClient.invalidateQueries({
+					queryKey: ["capability-gates"],
+				});
+				applyWatchPollsRef.current = 0;
+				setWatchedApply({
+					proposalId: variables.proposalId,
+					createdBefore: variables.createdBefore ?? 0,
+				});
 			} else if (result?.status === "dispatched") {
 				toast.success("Proposal approved", {
 					description:
@@ -927,8 +1138,11 @@ export function PendingBacklogProposalsInbox({
 	const headerHasAiUpdate = headerSources.some(
 		(s) => s === "AI_UPDATE_SIDEBAR",
 	);
+	const headerHasRecommendation = headerSources.some(
+		(s) => s === ROADMAP_RECOMMENDATION_SOURCE,
+	);
 	const headerHasChannel = headerSources.some(
-		(s) => s !== "AI_UPDATE_SIDEBAR",
+		(s) => s !== "AI_UPDATE_SIDEBAR" && s !== ROADMAP_RECOMMENDATION_SOURCE,
 	);
 	// Opened from the Roadmap archive icon: this drawer becomes a dedicated
 	// Rejected list (stored as BACKLOG), not the active review queue.
@@ -940,29 +1154,43 @@ export function PendingBacklogProposalsInbox({
 				description:
 					"Proposals you moved to Rejected remain recoverable here. Restore and apply one when it becomes relevant, or delete it permanently.",
 			}
-		: headerHasAiUpdate && !headerHasChannel
+		: headerHasRecommendation && !headerHasAiUpdate && !headerHasChannel
 			? {
-					eyebrow: "From AI Update",
-					title: "Pending AI Update changes",
+					eyebrow: "From project context",
+					title: "Proposal Inbox",
 					description:
-						"Review and apply the backlog changes proposed by your AI Update run.",
+						"Review the features Fabric recommended from your project context. Accept some now and come back for the rest.",
 				}
-			: headerHasAiUpdate && headerHasChannel
+			: headerHasAiUpdate && !headerHasChannel && !headerHasRecommendation
 				? {
-						eyebrow: "Backlog proposals",
-						title: "Proposal Inbox",
+						eyebrow: "From AI Update",
+						title: "Pending AI Update changes",
 						description:
-							"Review and apply backlog changes from AI Update and your monitored meeting transcripts, Teams, and Slack channels.",
+							"Review and apply the backlog changes proposed by your AI Update run.",
 					}
-				: {
-						eyebrow: "From monitored sources",
-						title: "Proposal Inbox",
-						description:
-							"Review and approve proposals surfaced from your monitored meeting transcripts, Teams, and Slack channels.",
-					};
+				: headerHasRecommendation
+					? {
+							eyebrow: "Backlog proposals",
+							title: "Proposal Inbox",
+							description:
+								"Review and apply backlog changes recommended from your project context, from AI Update, and from your monitored meeting transcripts, Teams, and Slack channels.",
+						}
+					: headerHasAiUpdate && headerHasChannel
+						? {
+								eyebrow: "Backlog proposals",
+								title: "Proposal Inbox",
+								description:
+									"Review and apply backlog changes from AI Update and your monitored meeting transcripts, Teams, and Slack channels.",
+							}
+						: {
+								eyebrow: "From monitored sources",
+								title: "Proposal Inbox",
+								description:
+									"Review and approve proposals surfaced from your monitored meeting transcripts, Teams, and Slack channels.",
+							};
 	const HeaderIcon = isBacklogView
 		? ArchiveIcon
-		: headerHasAiUpdate && !headerHasChannel
+		: (headerHasAiUpdate || headerHasRecommendation) && !headerHasChannel
 			? SparklesIcon
 			: InboxIcon;
 
@@ -1210,6 +1438,44 @@ export function PendingBacklogProposalsInbox({
 		const isScopeDocument = detail.source === "SCOPE_DOCUMENT";
 		const isInFlight =
 			detail.status === "APPLYING" || detail.status === "APPROVED";
+		const isRecommendation =
+			detail.source === ROADMAP_RECOMMENDATION_SOURCE;
+		// Locked = everything the mirror resolved. Of those, only what the
+		// application table recorded was created; the rest were skipped as
+		// already on the Roadmap. An older response without the created list
+		// reads as all accepted.
+		const lockedIndexes = new Set(detail.appliedChangeIndexes ?? []);
+		const createdIndexes = detail.createdChangeIndexes
+			? new Set(detail.createdChangeIndexes)
+			: null;
+		const lockedReasons = new Map<number, LockedReason>();
+		for (const index of lockedIndexes) {
+			lockedReasons.set(
+				index,
+				createdIndexes === null || createdIndexes.has(index)
+					? "accepted"
+					: "already-on-roadmap",
+			);
+		}
+		const acceptedCount = Array.from(lockedReasons.values()).filter(
+			(reason) => reason === "accepted",
+		).length;
+		const alreadyOnRoadmapCount = lockedIndexes.size - acceptedCount;
+		const entryPointLabel =
+			typeof metadata?.entryPoint === "string"
+				? (RECOMMENDATION_ENTRY_POINT_LABELS[metadata.entryPoint] ??
+					null)
+				: null;
+		const requestedAt =
+			typeof metadata?.requestedAt === "string"
+				? new Date(metadata.requestedAt)
+				: null;
+		// A batch returns to review after an accept that partly failed; the
+		// Failed group never sees it, so the reason is shown here (AC-15).
+		const lastAcceptError =
+			isRecommendation && detail.status === "PENDING"
+				? (detail.errorMessage?.replace(/\.+$/, "") ?? null)
+				: null;
 
 		return (
 			<div className="space-y-4">
@@ -1244,6 +1510,56 @@ export function PendingBacklogProposalsInbox({
 								</span>
 							)}
 						</div>
+					</div>
+				)}
+
+				{isRecommendation && (
+					<div className="space-y-1 rounded-lg border border-foreground/10 bg-muted/40 p-3 text-sm">
+						<div className="flex flex-wrap items-center gap-2">
+							<SparklesIcon
+								className="size-3.5 text-muted-foreground"
+								aria-hidden="true"
+							/>
+							<span className="text-muted-foreground">
+								Recommended from project context
+							</span>
+							{entryPointLabel && (
+								<span className="font-medium text-foreground">
+									{entryPointLabel}
+								</span>
+							)}
+							{requestedAt &&
+								!Number.isNaN(requestedAt.getTime()) && (
+									<span className="text-xs text-muted-foreground">
+										requested{" "}
+										{formatDistanceToNow(requestedAt, {
+											addSuffix: true,
+										})}
+									</span>
+								)}
+						</div>
+						<p className="text-xs text-muted-foreground">
+							{acceptedCount} of {detail.changeCount} accepted
+							{alreadyOnRoadmapCount > 0 &&
+								` · ${alreadyOnRoadmapCount} skipped, already on the Roadmap`}
+						</p>
+					</div>
+				)}
+
+				{lastAcceptError && (
+					<div
+						role="alert"
+						className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+					>
+						<AlertTriangleIcon
+							className="mt-0.5 size-4 shrink-0"
+							aria-hidden="true"
+						/>
+						<p>
+							Some features from your last accept weren't created:{" "}
+							{lastAcceptError}. They are still selectable below —
+							accept them again.
+						</p>
 					</div>
 				)}
 
@@ -1427,6 +1743,14 @@ export function PendingBacklogProposalsInbox({
 					// in this inbox (e.g. FAILED general AI Update rows) and
 					// keep `epic` first-class — they must NOT be rewritten.
 					forbidEpics={isChannelMonitorSource(detail.source)}
+					// A recommendation batch stays open after a partial accept:
+					// what was accepted is locked, it makes Features only, and
+					// every accepted item is drafted through Clean Spec at apply.
+					lockedIndexes={isRecommendation ? lockedIndexes : undefined}
+					lockedReasons={isRecommendation ? lockedReasons : undefined}
+					showSelectAll={isRecommendation}
+					allowKindOverride={!isRecommendation}
+					allowInReviewDrafting={!isRecommendation}
 					applyProgressMsg={
 						approveMutation.isPending
 							? "Submitting proposal..."
@@ -1438,6 +1762,7 @@ export function PendingBacklogProposalsInbox({
 							source: detail.source,
 							approvedChanges,
 							syncToPM,
+							createdBefore: createdIndexes?.size ?? 0,
 						});
 					}}
 					onReject={() => {
@@ -1457,12 +1782,19 @@ export function PendingBacklogProposalsInbox({
 					}}
 				/>
 
-				<p className="rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">
-					Open a proposal to draft its description and acceptance
-					criteria through your project's prompt — and to switch it
-					between Bug and Feature. Proposals you approve without
-					opening are drafted on approve.
-				</p>
+				{isRecommendation ? (
+					<p className="rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">
+						Each feature you accept is written up through your
+						project's feature specification prompt as it is created.
+					</p>
+				) : (
+					<p className="rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">
+						Open a proposal to draft its description and acceptance
+						criteria through your project's prompt — and to switch
+						it between Bug and Feature. Proposals you approve
+						without opening are drafted on approve.
+					</p>
+				)}
 			</div>
 		);
 	};

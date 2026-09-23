@@ -448,6 +448,15 @@ export {
 	projectDeleteCleanupWorkflow,
 	projectPermanentDeleteWorkflow,
 } from "./src/workflows/project-deletion";
+// Roadmap Recommendation Workflow (project context → ROADMAP_RECOMMENDATION batch)
+export type {
+	RoadmapRecommendationInput,
+	RoadmapRecommendationOutcome,
+	RoadmapRecommendationOutput,
+	RoadmapRecommendationPhase,
+	RoadmapRecommendationProgress,
+} from "./src/workflows/roadmap-recommendation-workflow";
+export { roadmapRecommendationProgressQuery } from "./src/workflows/roadmap-recommendation-workflow";
 // Scope Intake Workflow (customer scope document → SCOPE_DOCUMENT proposal)
 export type {
 	ScopeIntakeInput,

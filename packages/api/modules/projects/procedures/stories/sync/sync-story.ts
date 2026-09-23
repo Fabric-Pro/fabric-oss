@@ -16,6 +16,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import { assertCapabilityAvailable } from "../../../../capabilities/assert";
 import { stripInternalStoryFields } from "../../../lib/strip-internal-story-fields";
 
 const SyncDirectionSchema = z.enum(["push", "pull"]);
@@ -187,6 +188,16 @@ export const syncStoryProcedure = tenantProtectedProcedure
 					"Cannot pull: story has not been synced to PM tool yet. Push first.",
 			});
 		}
+
+		await assertCapabilityAvailable({
+			capabilityKey:
+				input.direction === "pull"
+					? "roadmap.pull-from-pm"
+					: "roadmap.sync-to-pm",
+			projectId: project.id,
+			userId: user.id,
+			organizationId: project.organizationId,
+		});
 
 		// Import sync functions dynamically to avoid circular deps
 		const { syncStoryToPM, syncTaskToPM } = await import("@repo/temporal");

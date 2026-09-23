@@ -35,6 +35,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import { assertCapabilityAvailable } from "../../../../capabilities/assert";
 import { stripInternalStoryFields } from "../../../lib/strip-internal-story-fields";
 import {
 	getGitLabIssueForPM,
@@ -727,6 +728,19 @@ async function logImportPull(args: {
 	}
 }
 
+/** Called on both import branches, after their own typed checks. */
+function assertPmImportAvailable(
+	project: { id: string; organizationId: string | null },
+	userId: string,
+) {
+	return assertCapabilityAvailable({
+		capabilityKey: "roadmap.pm-import",
+		projectId: project.id,
+		userId,
+		organizationId: project.organizationId,
+	});
+}
+
 export const importFromPMProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.STORY_UPDATE))
 	.route({
@@ -793,6 +807,7 @@ export const importFromPMProcedure = tenantProtectedProcedure
 						"Select a GitLab project in Project Settings before importing.",
 				});
 			}
+			await assertPmImportAvailable(project, user.id);
 			const gitlabResult = await handleGitLabImport({
 				projectId: input.projectId,
 				gitlabProjectId: project.projectManagementContainerId,
@@ -852,6 +867,8 @@ export const importFromPMProcedure = tenantProtectedProcedure
 				message: `Story with external ID "${input.externalId}" already exists: ${existingStory.identifier}`,
 			});
 		}
+
+		await assertPmImportAvailable(project, user.id);
 
 		const projectOrgIdForPM = project.organizationId || undefined;
 

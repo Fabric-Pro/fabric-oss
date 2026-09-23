@@ -8,11 +8,16 @@ import {
 	finalizeBacklogUpdateSession,
 	finalizeClaimedProposal,
 	getAppliedChangeIndexes,
+	getBoundPromptForAgent,
 	getPendingBacklogProposal,
 	markProposalApplyDispatched,
 	type Prisma,
 } from "@repo/database";
 import { getTemporalClient, runDecisionPrecheck } from "@repo/temporal";
+import {
+	CLEAN_SPEC_DOCUMENT_TYPE,
+	cleanSpecAgentForKind,
+} from "@repo/temporal/clean-spec-agent-for-kind";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
@@ -376,10 +381,31 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			const remaining = indexed.filter(
 				({ index }) => !alreadyApplied.has(index),
 			);
+			// Fizzy #2208 (FR27): an accepted recommendation is drafted through
+			// the Clean Spec prompt, never as a stub. Refuse up front when no
+			// prompt is bound rather than failing every item inside the apply.
+			const isRecommendation =
+				existing.source === "ROADMAP_RECOMMENDATION";
+			if (isRecommendation) {
+				const cleanSpecPrompt = await getBoundPromptForAgent({
+					agentName: cleanSpecAgentForKind("FEATURE"),
+					documentType: CLEAN_SPEC_DOCUMENT_TYPE,
+					storyKind: "FEATURE",
+					userId: user.id,
+					organizationId: resolvedOrganizationId,
+				});
+				if (!cleanSpecPrompt?.version?.content?.trim()) {
+					throw new ORPCError("PRECONDITION_FAILED", {
+						message:
+							"Accepting recommended features needs the feature specification prompt. Ask a project admin to bind the Clean Spec prompt, then try again.",
+					});
+				}
+			}
 			const claimed = await claimPendingProposalForApply({
 				proposalId: input.proposalId,
 				reviewedBy: user.id,
 				applyWorkflowId: workflowId,
+				...(isRecommendation ? { admitBacklog: true } : {}),
 			});
 			if (!claimed) {
 				throw new ORPCError("CONFLICT", {
@@ -537,10 +563,14 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			// find and terminate this apply. Best-effort: the workflow has
 			// already started, so a stamp failure must NOT fail the apply — it
 			// only means the watchdog can't auto-recover this row (the user can
-			// still dismiss / retry it from the inbox).
-			await markProposalApplyDispatched(proposalId, workflowId).catch(
-				() => {},
-			);
+			// still dismiss / retry it from the inbox). Guarded on the row's
+			// state, so a stamp that lands after the workflow already finalized
+			// (or after another claimant took the row) is a no-op.
+			await markProposalApplyDispatched({
+				proposalId,
+				applyWorkflowId: workflowId,
+				mode: input.proposalId ? "claimed" : "fresh",
+			}).catch(() => 0);
 
 			// Server-authoritative override log: the user applied AI output that
 			// contradicts a logged decision. Write one immutable

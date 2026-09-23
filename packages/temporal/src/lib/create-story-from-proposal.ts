@@ -218,6 +218,21 @@ export interface CreateStoryFromProposalParams {
 	createdFromProposalId?: string;
 
 	/**
+	 * The roadmap-recommendation batch (a ROADMAP_RECOMMENDATION proposal id)
+	 * this story is accepted from. Like `createdFromProposalId`, EVERY
+	 * `createStory` branch below must forward it.
+	 */
+	aiRecommendationBatchId?: string;
+
+	/**
+	 * The story must be drafted through the bound Clean Spec prompt: no
+	 * `skipDrafting` / `bodyAlreadyDrafted` shortcut, no legacy prompt fallback
+	 * and no raw-field stub when drafting fails. Each of those throws instead,
+	 * so the item stays unapplied rather than landing as a thin stub.
+	 */
+	requireCleanSpec?: boolean;
+
+	/**
 	 * Stable dedup key for a machine-filed bug — a hash of the normalized error
 	 * signature supplied by an autonomous monitoring agent through the MCP
 	 * gateway's `fabric_create_bug` tool. Recorded on `UserStory.bugFingerprint`
@@ -520,6 +535,7 @@ async function resolvePrompt(params: {
 	storyKind: StoryKind;
 	explicitPromptId?: string;
 	explicitPromptVersionId?: string;
+	requireCleanSpec?: boolean;
 }): Promise<{
 	content: string;
 	format: TemplateFormat;
@@ -604,6 +620,10 @@ async function resolvePrompt(params: {
 			agentName: cleanSpecAgentName,
 			documentType: CLEAN_SPEC_DOCUMENT_TYPE,
 		};
+	}
+
+	if (params.requireCleanSpec) {
+		return null;
 	}
 
 	// Fallback (load-bearing): when no Clean Spec prompt is bound for this env/project,
@@ -760,6 +780,7 @@ export async function createStoryFromProposal(
 	// persisted verbatim for BUGS too, with the caller-supplied needsMoreInfo —
 	// the bug was still drafted (just earlier), so the F-171 triage flag holds.
 	const skipDrafting =
+		params.requireCleanSpec !== true &&
 		params.skipDrafting === true &&
 		(effectiveKind !== "BUG" || params.bodyAlreadyDrafted === true);
 	if (skipDrafting) {
@@ -783,7 +804,14 @@ export async function createStoryFromProposal(
 				storyKind: effectiveKind,
 				explicitPromptId: params.explicitPromptId,
 				explicitPromptVersionId: params.explicitPromptVersionId,
+				requireCleanSpec: params.requireCleanSpec,
 			});
+
+	if (!resolvedPrompt && params.requireCleanSpec) {
+		throw new Error(
+			"Feature specification prompt is not configured. Bind the Clean Spec prompt, then try again.",
+		);
+	}
 
 	// No prompt configured — create story directly with whatever raw fields were
 	// provided (identical to the manual path's non-AI branch).
@@ -821,6 +849,9 @@ export async function createStoryFromProposal(
 			reporterSourceUrl: params.reporterSourceUrl,
 			pmAutoSyncEnabled: params.enablePmAutoSync,
 			createdFromProposalId: params.createdFromProposalId,
+			...(params.aiRecommendationBatchId !== undefined && {
+				aiRecommendationBatchId: params.aiRecommendationBatchId,
+			}),
 			bugFingerprint: params.bugFingerprint,
 			proposalApplicationKey: params.proposalApplicationKey,
 			deliveryTrack: params.deliveryTrack,
@@ -935,6 +966,12 @@ export async function createStoryFromProposal(
 		projectId: params.projectId,
 	});
 
+	if (!drafted && params.requireCleanSpec) {
+		throw new Error(
+			"The feature specification could not be drafted. Try accepting it again.",
+		);
+	}
+
 	if (!drafted) {
 		// AI failed — create story from raw fields. For bugs, fall back to
 		// the F-171 title fallback (REQ-21, AC12).
@@ -962,6 +999,9 @@ export async function createStoryFromProposal(
 			reporterSourceUrl: params.reporterSourceUrl,
 			pmAutoSyncEnabled: params.enablePmAutoSync,
 			createdFromProposalId: params.createdFromProposalId,
+			...(params.aiRecommendationBatchId !== undefined && {
+				aiRecommendationBatchId: params.aiRecommendationBatchId,
+			}),
 			bugFingerprint: params.bugFingerprint,
 			proposalApplicationKey: params.proposalApplicationKey,
 			deliveryTrack: params.deliveryTrack,
@@ -1016,6 +1056,9 @@ export async function createStoryFromProposal(
 		reporterSourceUrl: params.reporterSourceUrl,
 		pmAutoSyncEnabled: params.enablePmAutoSync,
 		createdFromProposalId: params.createdFromProposalId,
+		...(params.aiRecommendationBatchId !== undefined && {
+			aiRecommendationBatchId: params.aiRecommendationBatchId,
+		}),
 		bugFingerprint: params.bugFingerprint,
 		proposalApplicationKey: params.proposalApplicationKey,
 		deliveryTrack: params.deliveryTrack,

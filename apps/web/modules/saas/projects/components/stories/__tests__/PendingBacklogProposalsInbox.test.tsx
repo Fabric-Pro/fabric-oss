@@ -48,6 +48,7 @@ const proposalsRetry = vi.fn();
 const proposalsDismiss = vi.fn();
 const proposalsRetryAllFailed = vi.fn();
 const proposalsFailedCount = vi.fn();
+const backlogApplyChanges = vi.fn();
 
 // Both import specifiers (`@shared/lib/orpc-client` from the inbox AND
 // `../../../../../shared/lib/orpc-client` from `BacklogChangeProposal`)
@@ -96,6 +97,8 @@ vi.mock("@shared/lib/orpc-client", () => ({
 			},
 			update: (...args: unknown[]) => projectsUpdate(...args),
 			backlog: {
+				applyChanges: (...args: unknown[]) =>
+					backlogApplyChanges(...args),
 				proposals: {
 					retry: (...args: unknown[]) => proposalsRetry(...args),
 					dismiss: (...args: unknown[]) => proposalsDismiss(...args),
@@ -147,6 +150,8 @@ vi.mock("../../../../../shared/lib/orpc-client", () => ({
 			},
 			update: (...args: unknown[]) => projectsUpdate(...args),
 			backlog: {
+				applyChanges: (...args: unknown[]) =>
+					backlogApplyChanges(...args),
 				proposals: {
 					retry: (...args: unknown[]) => proposalsRetry(...args),
 					dismiss: (...args: unknown[]) => proposalsDismiss(...args),
@@ -221,7 +226,9 @@ type RowSource =
 	| "SLACK_CHANNEL"
 	| "TEAMS_CHANNEL"
 	| "TEAMS_CHAT"
-	| "AI_UPDATE_SIDEBAR";
+	| "AI_UPDATE_SIDEBAR"
+	| "SCOPE_DOCUMENT"
+	| "ROADMAP_RECOMMENDATION";
 
 function makeListRow(
 	overrides: Partial<{
@@ -305,6 +312,8 @@ function renderInbox(
 		defaultFilter?: "all" | "failed" | "backlog";
 		hasPMTool?: boolean;
 		pmToolName?: string;
+		pmConfig?: { mcpConfigId: string; containerId: string };
+		aiRecommendedLifecycleEnabled?: boolean;
 	} = {},
 ) {
 	const client = new QueryClient({
@@ -323,6 +332,10 @@ function renderInbox(
 				defaultFilter={options.defaultFilter}
 				hasPMTool={options.hasPMTool}
 				pmToolName={options.pmToolName}
+				pmConfig={options.pmConfig}
+				aiRecommendedLifecycleEnabled={
+					options.aiRecommendedLifecycleEnabled
+				}
 			/>
 		</QueryClientProvider>,
 	);
@@ -1298,5 +1311,438 @@ describe("PendingBacklogProposalsInbox — forwards projectId for in-review draf
 		);
 		// …but opening must NOT start a draft (explicit only).
 		expect(draftsStart).not.toHaveBeenCalled();
+	});
+});
+
+// ============================================================================
+// Roadmap recommendation batches (Fizzy #2208 W1/W2, #2211 W5).
+// ============================================================================
+
+describe("PendingBacklogProposalsInbox — Roadmap recommendation batches", () => {
+	const PM_CONFIG = { mcpConfigId: "mcp_1", containerId: "board_1" };
+
+	function recommendationDetail(
+		overrides: Partial<{
+			status: "PENDING" | "FAILED";
+			errorMessage: string | null;
+			appliedChangeIndexes: number[];
+			createdChangeIndexes: number[];
+		}> = {},
+	) {
+		return {
+			...makeListRow({
+				source: "ROADMAP_RECOMMENDATION",
+				summary: "Recommended features for the Roadmap",
+				status: overrides.status ?? "PENDING",
+				errorMessage: overrides.errorMessage ?? null,
+				sourceMetadata: {
+					entryPoint: "MATURE_ROADMAP",
+					requestedAt: "2026-09-20T12:00:00.000Z",
+				},
+			}),
+			changeCount: 2,
+			appliedChangeIndexes: overrides.appliedChangeIndexes ?? [],
+			...(overrides.createdChangeIndexes
+				? { createdChangeIndexes: overrides.createdChangeIndexes }
+				: {}),
+			projectId: PROJECT_ID,
+			userId: "user_1",
+			organizationId: null,
+			proposal: {
+				summary: "Recommended features for the Roadmap",
+				contextSummary: "From the project brief and documents",
+				changes: [
+					{
+						type: "feature",
+						action: "create",
+						title: { to: "Saved searches" },
+						description: { to: "Let people save a search." },
+						reasoning: "Asked for in the brief.",
+						sourceContext: "multiple",
+					},
+					{
+						type: "feature",
+						action: "create",
+						title: { to: "Export to CSV" },
+						description: { to: "Export any list to CSV." },
+						reasoning: "Named in the scope document.",
+						sourceContext: "multiple",
+					},
+				],
+			},
+		};
+	}
+
+	function listWith(detail: ReturnType<typeof recommendationDetail>) {
+		pendingProposalsList.mockResolvedValue([detail]);
+		pendingProposalsGet.mockResolvedValue(detail);
+	}
+
+	beforeEach(async () => {
+		// Earlier cases persist a review selection under the same proposal id.
+		window.localStorage.clear();
+		pendingProposalsList.mockReset();
+		pendingProposalsGet.mockReset();
+		teamsChannelApprove.mockReset();
+		slackChannelApprove.mockReset();
+		teamsChatApprove.mockReset();
+		backlogApplyChanges.mockReset();
+		backlogApplyChanges.mockResolvedValue({
+			workflowId: "apply-1",
+			message: "started",
+		});
+		storiesCheckPmSyncConflicts.mockReset();
+		storiesCheckPmSyncConflicts.mockResolvedValue({ results: [] });
+		const { toast } = await import("sonner");
+		vi.mocked(toast.success).mockClear();
+	});
+
+	it("badges the batch and heads the inbox with its own source", async () => {
+		listWith(recommendationDetail());
+		renderInbox();
+		expect(
+			await screen.findByText("Recommended from project context"),
+		).toBeInTheDocument();
+		expect(screen.getByText("From project context")).toBeInTheDocument();
+	});
+
+	it("accepts through backlog.applyChanges with the proposal id, never a channel approve", async () => {
+		listWith(recommendationDetail());
+		const { client } = renderInbox({
+			hasPMTool: true,
+			pmToolName: "Fizzy",
+			pmConfig: PM_CONFIG,
+		});
+		const invalidate = vi.spyOn(client, "invalidateQueries");
+
+		(
+			await screen.findByText(/Recommended features for the Roadmap/)
+		).click();
+		(await screen.findByRole("button", { name: /Apply Selected/ })).click();
+
+		await waitFor(() =>
+			expect(backlogApplyChanges).toHaveBeenCalledTimes(1),
+		);
+		const call = backlogApplyChanges.mock.calls[0]?.[0] as Record<
+			string,
+			unknown
+		>;
+		expect(call).toMatchObject({
+			projectId: PROJECT_ID,
+			proposalId: PROPOSAL_ID,
+			syncToPM: false,
+		});
+		expect(call.pmConfig).toBeUndefined();
+		expect(teamsChannelApprove).not.toHaveBeenCalled();
+		expect(slackChannelApprove).not.toHaveBeenCalled();
+		expect(teamsChatApprove).not.toHaveBeenCalled();
+		await waitFor(() =>
+			expect(invalidate).toHaveBeenCalledWith({
+				queryKey: ["capability-gates"],
+			}),
+		);
+	});
+
+	it("refreshes the Roadmap gates again once the accepted batch leaves APPLYING", async () => {
+		const detail = recommendationDetail();
+		let watchedStatus = "APPLYING";
+		pendingProposalsList.mockResolvedValue([detail]);
+		pendingProposalsGet.mockImplementation(async () => detail);
+		const { client } = renderInbox();
+		const invalidate = vi.spyOn(client, "invalidateQueries");
+		const gateInvalidations = () =>
+			invalidate.mock.calls.filter(
+				([filters]) => filters?.queryKey?.[0] === "capability-gates",
+			).length;
+
+		(
+			await screen.findByText(/Recommended features for the Roadmap/)
+		).click();
+		await screen.findByRole("button", { name: /Apply Selected/ });
+		pendingProposalsGet.mockImplementation(async () => ({
+			...detail,
+			status: watchedStatus,
+		}));
+		const getCallsBeforeApply = pendingProposalsGet.mock.calls.length;
+		screen.getByRole("button", { name: /Apply Selected/ }).click();
+
+		// Dispatch refreshes once; the watch then sees the apply still running.
+		await waitFor(() =>
+			expect(pendingProposalsGet.mock.calls.length).toBeGreaterThan(
+				getCallsBeforeApply,
+			),
+		);
+		await waitFor(() => expect(gateInvalidations()).toBe(1));
+		const storiesBeforeFinish = invalidate.mock.calls.filter(
+			([filters]) => filters?.queryKey?.[0] === "stories-list",
+		).length;
+
+		watchedStatus = "APPLIED";
+		await client.refetchQueries({
+			queryKey: ["teams-channel-monitor-pending-proposal-apply-watch"],
+		});
+
+		await waitFor(() => expect(gateInvalidations()).toBe(2));
+		expect(
+			invalidate.mock.calls.filter(
+				([filters]) => filters?.queryKey?.[0] === "stories-list",
+			).length,
+		).toBeGreaterThan(storiesBeforeFinish);
+	});
+
+	it("honours an explicit PM sync tick, with the PM target", async () => {
+		listWith(recommendationDetail());
+		renderInbox({
+			hasPMTool: true,
+			pmToolName: "Fizzy",
+			pmConfig: PM_CONFIG,
+		});
+
+		(
+			await screen.findByText(/Recommended features for the Roadmap/)
+		).click();
+		const checkbox = await screen.findByRole("checkbox", {
+			name: /Also sync to Fizzy/i,
+		});
+		fireEvent.click(checkbox);
+		await waitFor(() => expect(checkbox).toBeChecked());
+		(await screen.findByRole("button", { name: /Apply Selected/ })).click();
+
+		await waitFor(() =>
+			expect(backlogApplyChanges).toHaveBeenCalledTimes(1),
+		);
+		expect(backlogApplyChanges).toHaveBeenCalledWith(
+			expect.objectContaining({ syncToPM: true, pmConfig: PM_CONFIG }),
+		);
+	});
+
+	it("keeps a scope document Fabric-only whatever the box says", async () => {
+		const detail = {
+			...makeDetail({ source: "SCOPE_DOCUMENT" }),
+			summary: "Extracted from the scope document",
+		};
+		pendingProposalsList.mockResolvedValue([detail]);
+		pendingProposalsGet.mockResolvedValue(detail);
+		renderInbox({
+			hasPMTool: true,
+			pmToolName: "Fizzy",
+			pmConfig: PM_CONFIG,
+		});
+
+		(await screen.findByText(/Extracted from the scope document/)).click();
+		const checkbox = await screen.findByRole("checkbox", {
+			name: /Also sync to Fizzy/i,
+		});
+		fireEvent.click(checkbox);
+		await waitFor(() => expect(checkbox).toBeChecked());
+		(await screen.findByRole("button", { name: /Apply Selected/ })).click();
+
+		await waitFor(() =>
+			expect(backlogApplyChanges).toHaveBeenCalledTimes(1),
+		);
+		const call = backlogApplyChanges.mock.calls[0]?.[0] as Record<
+			string,
+			unknown
+		>;
+		expect(call.syncToPM).toBe(false);
+		expect(call.pmConfig).toBeUndefined();
+	});
+
+	it.each([false, true])(
+		"with the AI-recommended lifecycle %s, the dispatch toast does not yet talk about the AI Recommended label",
+		async (aiRecommendedLifecycleEnabled) => {
+			listWith(recommendationDetail());
+			renderInbox({ aiRecommendedLifecycleEnabled });
+
+			(
+				await screen.findByText(/Recommended features for the Roadmap/)
+			).click();
+			(
+				await screen.findByRole("button", { name: /Apply Selected/ })
+			).click();
+
+			const { toast } = await import("sonner");
+			await waitFor(() =>
+				expect(toast.success).toHaveBeenCalledWith(
+					"Recommendations accepted",
+					expect.anything(),
+				),
+			);
+			const description = (
+				vi.mocked(toast.success).mock.calls.at(-1)?.[1] as {
+					description: string;
+				}
+			).description;
+			expect(description).toContain(
+				"any you didn't accept stay in the inbox",
+			);
+			expect(description).not.toContain("Remove AI Recommended Items");
+		},
+	);
+
+	/**
+	 * Accepts the open batch, lets the watch see it still APPLYING, then
+	 * finishes the apply with `finishedAs`.
+	 */
+	async function acceptAndFinish(
+		finishedAs: Record<string, unknown>,
+		options: { aiRecommendedLifecycleEnabled?: boolean } = {},
+	) {
+		const detail = recommendationDetail();
+		pendingProposalsList.mockResolvedValue([detail]);
+		pendingProposalsGet.mockImplementation(async () => detail);
+		const { client } = renderInbox(options);
+		(
+			await screen.findByText(/Recommended features for the Roadmap/)
+		).click();
+		await screen.findByRole("button", { name: /Apply Selected/ });
+		pendingProposalsGet.mockImplementation(async () => ({
+			...detail,
+			status: "APPLYING",
+		}));
+		const getCallsBeforeApply = pendingProposalsGet.mock.calls.length;
+		screen.getByRole("button", { name: /Apply Selected/ }).click();
+		await waitFor(() =>
+			expect(pendingProposalsGet.mock.calls.length).toBeGreaterThan(
+				getCallsBeforeApply,
+			),
+		);
+		const { toast } = await import("sonner");
+		// Settled = the watch on this proposal id is gone (an idle, disabled
+		// watch keyed on null stays in the cache).
+		const settles = () =>
+			client
+				.getQueryCache()
+				.findAll({
+					queryKey: [
+						"teams-channel-monitor-pending-proposal-apply-watch",
+					],
+				})
+				.every((query) => query.queryKey[3] === null);
+
+		pendingProposalsGet.mockImplementation(async () => ({
+			...detail,
+			...finishedAs,
+		}));
+		await client.refetchQueries({
+			queryKey: ["teams-channel-monitor-pending-proposal-apply-watch"],
+		});
+		await waitFor(() => expect(settles()).toBe(true));
+		return vi.mocked(toast.success);
+	}
+
+	it("tells the reviewer about the AI Recommended label once the apply finishes, for 12s", async () => {
+		const success = await acceptAndFinish(
+			{
+				status: "APPLIED",
+				appliedChangeIndexes: [0, 1],
+				createdChangeIndexes: [0, 1],
+			},
+			{ aiRecommendedLifecycleEnabled: true },
+		);
+		// The echo translator returns keys: acceptedNotice.title / .body.
+		const notices = success.mock.calls.filter(
+			([title]) => title === "title",
+		);
+		expect(notices).toHaveLength(1);
+		expect(notices[0]?.[1]).toEqual({
+			description: "body",
+			duration: 12_000,
+		});
+	});
+
+	it("says nothing about the label when the finished apply created nothing", async () => {
+		const success = await acceptAndFinish(
+			{
+				status: "APPLIED",
+				appliedChangeIndexes: [0, 1],
+				createdChangeIndexes: [],
+			},
+			{ aiRecommendedLifecycleEnabled: true },
+		);
+		expect(success.mock.calls.some(([title]) => title === "title")).toBe(
+			false,
+		);
+	});
+
+	it("keeps the post-accept notice off without the AI-recommended lifecycle", async () => {
+		const success = await acceptAndFinish({
+			status: "APPLIED",
+			appliedChangeIndexes: [0, 1],
+			createdChangeIndexes: [0, 1],
+		});
+		expect(success.mock.calls.some(([title]) => title === "title")).toBe(
+			false,
+		);
+	});
+
+	it("shows a duplicate-skipped candidate as already on the Roadmap, not accepted", async () => {
+		listWith(
+			recommendationDetail({
+				appliedChangeIndexes: [0, 1],
+				createdChangeIndexes: [0],
+			}),
+		);
+		renderInbox();
+
+		(
+			await screen.findByText(/Recommended features for the Roadmap/)
+		).click();
+
+		expect(
+			await screen.findByText(
+				"1 of 2 accepted · 1 skipped, already on the Roadmap",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("checkbox", {
+				name: "Saved searches (already accepted)",
+			}),
+		).toBeDisabled();
+		expect(
+			screen.getByRole("checkbox", {
+				name: "Export to CSV (already on the Roadmap)",
+			}),
+		).toBeDisabled();
+		expect(screen.getByText("Already on Roadmap")).toBeInTheDocument();
+	});
+
+	it("locks what was already accepted and explains a partly failed accept", async () => {
+		listWith(
+			recommendationDetail({
+				appliedChangeIndexes: [0],
+				errorMessage: "The feature specification prompt timed out.",
+			}),
+		);
+		renderInbox();
+
+		(
+			await screen.findByText(/Recommended features for the Roadmap/)
+		).click();
+
+		expect(await screen.findByText("1 of 2 accepted")).toBeInTheDocument();
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Some features from your last accept weren't created: The feature specification prompt timed out. They are still selectable below — accept them again.",
+		);
+		expect(
+			screen.getByRole("checkbox", {
+				name: "Saved searches (already accepted)",
+			}),
+		).toBeDisabled();
+		expect(screen.queryByRole("radiogroup")).toBeNull();
+		expect(
+			screen.queryByText(/switch it between Bug and Feature/),
+		).toBeNull();
+
+		(await screen.findByRole("button", { name: /Apply Selected/ })).click();
+		await waitFor(() =>
+			expect(backlogApplyChanges).toHaveBeenCalledTimes(1),
+		);
+		const approved = (
+			backlogApplyChanges.mock.calls[0]?.[0] as {
+				approvedChanges: Array<{ title: { to: string } }>;
+			}
+		).approvedChanges;
+		expect(approved.map((c) => c.title.to)).toEqual(["Export to CSV"]);
 	});
 });

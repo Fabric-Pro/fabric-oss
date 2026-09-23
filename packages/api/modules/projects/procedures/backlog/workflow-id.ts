@@ -78,3 +78,13 @@ export function isBacklogApplyWorkflowIdFor(
 	}
 	return false;
 }
+
+/**
+ * The Temporal workflow id for a project's roadmap-recommendation run
+ * (Fizzy #2208). Deterministic per project, so a second start while one is
+ * running collapses onto it, and the status read addresses it by project
+ * alone.
+ */
+export function roadmapRecommendationWorkflowId(projectId: string): string {
+	return `roadmap-recommendation-${projectId}`;
+}

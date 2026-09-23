@@ -124,6 +124,7 @@ import { ConvertKindConfirmDialog } from "./ConvertKindConfirmDialog";
 import { DeclinedDuplicateBadge } from "./DeclinedDuplicateBadge";
 import { DuplicateBadge } from "./DuplicateBadge";
 import { NeedsMoreInfoBadge } from "./NeedsMoreInfoBadge";
+import { GatedSyncMenuItem } from "./pm-sync/GatedSyncMenuItem";
 import { PmSyncCloudToggle } from "./pm-sync/PmSyncCloudToggle";
 import { PmSyncConflictBadge } from "./pm-sync/PmSyncConflictBadge";
 import { PmSyncFailureBadge } from "./pm-sync/PmSyncFailureBadge";
@@ -1982,8 +1983,10 @@ function StoryCardImpl({
 									{hasPMIntegration && onSync && (
 										<>
 											<DropdownMenuSeparator />
-											<DropdownMenuItem
-												onClick={(e) => {
+											<GatedSyncMenuItem
+												direction="push"
+												icon={ArrowUpIcon}
+												onActivate={(e) => {
 													e.stopPropagation();
 													if (story.externalId) {
 														setSyncConfirm({
@@ -1997,13 +2000,14 @@ function StoryCardImpl({
 													}
 												}}
 											>
-												<ArrowUpIcon className="size-4 mr-2" />
 												Push to {pmToolName}
-											</DropdownMenuItem>
+											</GatedSyncMenuItem>
 											{story.externalId && (
 												<>
-													<DropdownMenuItem
-														onClick={(e) => {
+													<GatedSyncMenuItem
+														direction="pull"
+														icon={ArrowDownIcon}
+														onActivate={(e) => {
 															e.stopPropagation();
 															setSyncConfirm({
 																direction:
@@ -2011,9 +2015,8 @@ function StoryCardImpl({
 															});
 														}}
 													>
-														<ArrowDownIcon className="size-4 mr-2" />
 														Pull from {pmToolName}
-													</DropdownMenuItem>
+													</GatedSyncMenuItem>
 													{getValidExternalUrl(
 														story.externalUrl,
 													) && (

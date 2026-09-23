@@ -66,6 +66,7 @@ import { PmStatusSyncLastRunLine } from "./pm-integration/PmStatusSyncLastRunLin
 import { PmToolConnectedBanner } from "./pm-integration/PmToolConnectedBanner";
 import { TerminalStatusEditor } from "./pm-integration/TerminalStatusEditor";
 import { PMToolSelect } from "./pm-tool-select";
+import { PM_SETTINGS_ANCHOR_ID } from "./settings-tab-navigation";
 
 type Project = {
 	id: string;
@@ -171,6 +172,7 @@ export function ProjectManagementSettings({ project }: Props) {
 	const queryClient = useQueryClient();
 	const t = useTranslations("tooltips.projectSettings");
 	const tPm = useTranslations("projects.projectManagement.testSync");
+	const tPmSettings = useTranslations("projects.projectManagement");
 	const mcpSettingsUrl = useContextPath("mcp-servers");
 	const { organizationName, basePath } = useOrganizationContext();
 	const syncLogUrl = buildProjectSyncLogRoute(basePath, project.id);
@@ -620,6 +622,9 @@ export function ProjectManagementSettings({ project }: Props) {
 			queryClient.invalidateQueries({
 				queryKey: pmCapabilitiesQueryKey,
 			});
+			// Connecting, disconnecting or changing the board changes what the
+			// Roadmap's PM gates read (Fizzy #2204).
+			queryClient.invalidateQueries({ queryKey: ["capability-gates"] });
 			// Update local state for immediate UI feedback
 			setSavedContainerName(variables.containerName);
 			// Use the config ID directly — no need to re-resolve from server ID
@@ -1454,7 +1459,7 @@ export function ProjectManagementSettings({ project }: Props) {
 	};
 
 	return (
-		<Card className="h-full">
+		<Card id={PM_SETTINGS_ANCHOR_ID} className="h-full">
 			<CardHeader>
 				<CardTitle className="flex items-center gap-2">
 					<ListTodoIcon className="w-5 h-5" />
@@ -2096,8 +2101,9 @@ export function ProjectManagementSettings({ project }: Props) {
 				    statuses. Rendered AFTER the tool-selection/edit form so the
 				    tool dropdown keeps the connected card's top slot on edit and
 				    these settings sit below it. */}
-				{/* Auto-push toggle — visible when PM is configured */}
-				{isPMConfigured && isProjectOwner && (
+				{/* Auto-push toggle — shown to the owner, disabled until a PM
+				    tool is connected (Fizzy #2204). */}
+				{isProjectOwner && (
 					<div className="flex items-center justify-between py-2 border-t">
 						<div className="flex-1 pr-4">
 							<Label htmlFor="auto-push-pm-sync">
@@ -2109,10 +2115,24 @@ export function ProjectManagementSettings({ project }: Props) {
 								automatically. Conflicts pause auto-push until
 								resolved.
 							</p>
+							{!isPMConfigured && (
+								<p
+									id="auto-push-pm-sync-connect-first"
+									className="text-muted-foreground text-xs mt-1"
+								>
+									{tPmSettings("connectPmToolFirst")}
+								</p>
+							)}
 						</div>
 						<Switch
 							id="auto-push-pm-sync"
 							checked={autoPushChecked}
+							disabled={!isPMConfigured}
+							aria-describedby={
+								isPMConfigured
+									? undefined
+									: "auto-push-pm-sync-connect-first"
+							}
 							onCheckedChange={(checked) => {
 								// Re-entrancy guard: ignore clicks while a write is
 								// in flight so concurrent PATCHes can't resolve out
@@ -2214,8 +2234,34 @@ export function ProjectManagementSettings({ project }: Props) {
 					</div>
 				)}
 
-				{/* Auto-close toggle (card #1360 Phase A) */}
-				{isPMConfigured && isProjectOwner && (
+				{/* The status-sync switch above needs a connected tool and a
+				    board. Before a tool is connected it still shows, disabled,
+				    so the owner can see what connecting unlocks (Fizzy #2204). */}
+				{!isPMConfigured && isProjectOwner && (
+					<div className="flex items-start justify-between gap-4 py-2 border-t">
+						<div className="flex-1 space-y-1.5">
+							<Label htmlFor="pm-status-sync">
+								Keep status in sync with the PM tool
+							</Label>
+							<p
+								id="pm-status-sync-connect-first"
+								className="text-muted-foreground text-xs"
+							>
+								{tPmSettings("connectPmToolFirst")}
+							</p>
+						</div>
+						<Switch
+							id="pm-status-sync"
+							checked={false}
+							disabled
+							aria-describedby="pm-status-sync-connect-first"
+						/>
+					</div>
+				)}
+
+				{/* Auto-close toggle (card #1360 Phase A); disabled until a PM
+				    tool is connected (Fizzy #2204). */}
+				{isProjectOwner && (
 					<div className="flex items-center justify-between py-2 border-t">
 						<div className="flex-1 pr-4">
 							<Label htmlFor="pm-auto-close">
@@ -2228,10 +2274,24 @@ export function ProjectManagementSettings({ project }: Props) {
 								roadmap on the next sync. The checkmark always
 								shows regardless of this setting.
 							</p>
+							{!isPMConfigured && (
+								<p
+									id="pm-auto-close-connect-first"
+									className="text-muted-foreground text-xs mt-1"
+								>
+									{tPmSettings("connectPmToolFirst")}
+								</p>
+							)}
 						</div>
 						<Switch
 							id="pm-auto-close"
 							checked={autoCloseChecked}
+							disabled={!isPMConfigured}
+							aria-describedby={
+								isPMConfigured
+									? undefined
+									: "pm-auto-close-connect-first"
+							}
 							onCheckedChange={(checked) => {
 								// Re-entrancy guard: ignore clicks while a write is
 								// in flight so concurrent PATCHes can't resolve out
@@ -2303,15 +2363,31 @@ export function ProjectManagementSettings({ project }: Props) {
 						</div>
 					)}
 
-				{/* Terminal-status chip editor (card #1360 Phase A) */}
-				{isPMConfigured && isProjectOwner && (
+				{/* Terminal-status chip editor (card #1360 Phase A) — the
+				    statuses that count as done; disabled until a PM tool is
+				    connected (Fizzy #2204). */}
+				{isProjectOwner && (
 					<div className="py-2 border-t">
 						<TerminalStatusEditor
 							value={terminalStatuses}
 							onChange={persistTerminalStatuses}
 							onSuggest={handleSuggestStatuses}
 							isSuggesting={isSuggesting}
+							disabled={!isPMConfigured}
+							describedBy={
+								isPMConfigured
+									? undefined
+									: "pm-terminal-statuses-connect-first"
+							}
 						/>
+						{!isPMConfigured && (
+							<p
+								id="pm-terminal-statuses-connect-first"
+								className="text-muted-foreground text-xs mt-2"
+							>
+								{tPmSettings("connectPmToolFirst")}
+							</p>
+						)}
 					</div>
 				)}
 			</CardContent>

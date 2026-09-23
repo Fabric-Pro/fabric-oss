@@ -1,5 +1,8 @@
 import { ORPCError } from "@orpc/server";
-import { getPendingBacklogProposal } from "@repo/database";
+import {
+	getAppliedChangeIndexes,
+	getPendingBacklogProposal,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -13,6 +16,11 @@ import {
  *
  * The projectId is verified against the stored record to prevent cross-project
  * access via guessed proposal IDs.
+ *
+ * `createdChangeIndexes` lists the changes this proposal actually applied,
+ * from the application table. It differs from the `appliedChangeIndexes`
+ * mirror, which also counts a recommended feature skipped because its title
+ * was already on the Roadmap.
  */
 export const getPendingProposalProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_READ))
@@ -39,5 +47,9 @@ export const getPendingProposalProcedure = tenantProtectedProcedure
 			});
 		}
 
-		return proposal;
+		const createdChangeIndexes = Array.from(
+			await getAppliedChangeIndexes(proposal.id),
+		).sort((a, b) => a - b);
+
+		return { ...proposal, createdChangeIndexes };
 	});

@@ -61,6 +61,13 @@ vi.mock("../../../../../../orpc/procedures", () => {
 	};
 });
 
+const mockAssertCapabilityAvailable = vi.fn();
+
+vi.mock("../../../../../capabilities/assert", () => ({
+	assertCapabilityAvailable: (...args: unknown[]) =>
+		mockAssertCapabilityAvailable(...args),
+}));
+
 import {
 	db,
 	getStoryById,
@@ -325,5 +332,101 @@ describe("syncStoryProcedure lifecycle passthrough (#1360)", () => {
 		expect(caught?.code).toBe("BAD_REQUEST");
 		expect(caught?.data?.errorCode).toBe("EXTERNAL_ID_NOT_FOUND");
 		expect(caught?.data?.linkPreserved).toBe(true);
+	});
+});
+
+describe("syncStoryProcedure capability gate", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.resetModules();
+		mockAssertCapabilityAvailable.mockResolvedValue(null);
+	});
+
+	function mockMcpProject(overrides: Record<string, unknown> = {}) {
+		vi.mocked(hasProjectAccess).mockResolvedValue(true as never);
+		vi.mocked(db.project.findUnique).mockResolvedValue({
+			id: "proj-1",
+			organizationId: "org-1",
+			readOnlyMode: false,
+			projectManagementMcpServerId: "mcp-server-1",
+			projectManagementMcpConfigId: "cfg-1",
+			projectManagementContainerId: "container-1",
+			projectManagementContainerName: "alice/widgets",
+			projectManagementAdditionalContext: null,
+			...overrides,
+		} as never);
+		vi.mocked(resolvePMConfigForUser).mockResolvedValue({
+			id: "cfg-1",
+			enabled: true,
+		} as never);
+		vi.mocked(getStoryById).mockResolvedValue({
+			id: "story-1",
+			title: "A story",
+			externalId: "123",
+			tasks: [],
+		} as never);
+		mockSyncStoryToPM.mockResolvedValue({ success: true });
+	}
+
+	it.each([
+		["pull", "roadmap.pull-from-pm"],
+		["push", "roadmap.sync-to-pm"],
+	] as const)(
+		"asserts a %s against %s with the project's organization",
+		async (direction, capabilityKey) => {
+			mockMcpProject();
+
+			const handler = await loadProcedureHandler();
+			await handler({
+				input: { projectId: "proj-1", storyId: "story-1", direction },
+				context: baseCtx,
+			});
+
+			expect(mockAssertCapabilityAvailable).toHaveBeenCalledWith({
+				capabilityKey,
+				projectId: "proj-1",
+				userId: "user-1",
+				organizationId: "org-1",
+			});
+		},
+	);
+
+	it("throws the read-only push CONFLICT before the assert", async () => {
+		mockMcpProject({ readOnlyMode: true });
+
+		const handler = await loadProcedureHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "proj-1",
+					storyId: "story-1",
+					direction: "push",
+				},
+				context: baseCtx,
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+
+		expect(mockAssertCapabilityAvailable).not.toHaveBeenCalled();
+	});
+
+	it("stops the sync when the gate refuses", async () => {
+		mockMcpProject();
+		mockAssertCapabilityAvailable.mockRejectedValueOnce(
+			new Error("gate refused"),
+		);
+
+		const handler = await loadProcedureHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "proj-1",
+					storyId: "story-1",
+					direction: "pull",
+				},
+				context: baseCtx,
+			}),
+		).rejects.toThrow("gate refused");
+
+		expect(mockSyncStoryToPM).not.toHaveBeenCalled();
 	});
 });

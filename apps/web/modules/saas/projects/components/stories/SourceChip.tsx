@@ -21,6 +21,7 @@ export function sourceIcon(source: StorySource) {
 		case "ai_update":
 		case "custom_agent":
 		case "approved_proposal":
+		case "ai_recommended":
 			return SparklesIcon;
 		case "slack":
 			return MessageSquareIcon;

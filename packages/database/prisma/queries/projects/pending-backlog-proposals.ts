@@ -12,6 +12,7 @@ import type {
 	PendingBacklogProposalSource,
 	PendingBacklogProposalStatus,
 } from "../../generated/enums";
+import { advisoryObjectKey } from "../lib/refresh-lock-key";
 
 /**
  * Structural shape of one `AttachmentWarning` carried on
@@ -125,7 +126,7 @@ function mergeDecisionPrecheck(
 	return { ...base, decisionPrecheck } as unknown as Prisma.InputJsonValue;
 }
 
-export async function createPendingBacklogProposal(params: {
+export interface CreatePendingBacklogProposalParams {
 	projectId: string;
 	source: PendingBacklogProposalSource;
 	proposal: Prisma.InputJsonValue;
@@ -139,8 +140,13 @@ export async function createPendingBacklogProposal(params: {
 	decisionPrecheck?: Prisma.InputJsonValue;
 	userId?: string;
 	organizationId?: string;
-}) {
-	return await db.pendingBacklogProposal.create({
+}
+
+export async function createPendingBacklogProposal(
+	params: CreatePendingBacklogProposalParams,
+	client: Prisma.TransactionClient = db,
+) {
+	return await client.pendingBacklogProposal.create({
 		data: {
 			projectId: params.projectId,
 			source: params.source,
@@ -158,6 +164,56 @@ export async function createPendingBacklogProposal(params: {
 			organizationId: params.organizationId,
 		},
 	});
+}
+
+/**
+ * Advisory-lock class id namespacing the once-per-run recommendation batch
+ * write (arbitrary but stable). Distinct from every other `(int4, int4)`
+ * class in the package, so it never collides with an unrelated lock domain.
+ */
+const ROADMAP_RECOMMENDATION_BATCH_ADVISORY_CLASS = 0x52524263; // "RRBc"
+
+/**
+ * Create the ROADMAP_RECOMMENDATION batch for one workflow run, at most once
+ * (Fizzy #2208). Temporal can run two attempts of the persist activity at
+ * once (a heartbeat-timed-out attempt keeps running beside its retry), so a
+ * plain find-then-create would let both miss and insert two batches. The
+ * run's advisory lock serializes the check and the create: the second
+ * attempt waits, then finds the first one's row.
+ */
+export async function createRoadmapRecommendationBatchOnce(
+	params: Omit<CreatePendingBacklogProposalParams, "source"> & {
+		workflowRunId: string;
+	},
+): Promise<{ id: string; changeCount: number; created: boolean }> {
+	const { workflowRunId, ...create } = params;
+	return db.$transaction(
+		async (tx) => {
+			// `$executeRaw`, not `$queryRaw`: `pg_advisory_xact_lock()` returns
+			// void, which the driver adapter's `$queryRaw` cannot deserialize.
+			await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ROADMAP_RECOMMENDATION_BATCH_ADVISORY_CLASS}::int, ${advisoryObjectKey(workflowRunId)}::int)`;
+			const existing = await tx.pendingBacklogProposal.findFirst({
+				where: {
+					projectId: create.projectId,
+					source: "ROADMAP_RECOMMENDATION",
+					sourceMetadata: {
+						path: ["workflowRunId"],
+						equals: workflowRunId,
+					},
+				},
+				select: { id: true, changeCount: true },
+			});
+			if (existing) {
+				return { ...existing, created: false };
+			}
+			const row = await createPendingBacklogProposal(
+				{ ...create, source: "ROADMAP_RECOMMENDATION" },
+				tx,
+			);
+			return { id: row.id, changeCount: row.changeCount, created: true };
+		},
+		{ timeout: 10_000, maxWait: 10_000 },
+	);
 }
 
 export async function listPendingBacklogProposals(params: {
@@ -340,20 +396,45 @@ export async function markPendingProposalFailed(
  * AI Update apply path (the retry paths fold both fields into their atomic
  * PENDING flip instead, so they need no extra write).
  *
- * Race note: a fast workflow can finalize before this update lands. That is
- * harmless — this only writes `applyWorkflowId` / `applyStartedAt`, never
- * `status`, so it can never clobber a terminal transition. A leftover
- * `applyStartedAt` on an APPLIED/FAILED row is ignored (the watchdog filters on
- * `status === "PENDING"`).
+ * The write is a compare-and-set, because a fast workflow can finalize before
+ * it lands:
+ *   - `claimed`: the row carries this caller's claim (APPLYING + this
+ *     workflow id). A late stamp after a keep-open finalize (the row is back
+ *     to PENDING, awaiting review) or after another tab re-claimed the row
+ *     matches nothing, so it can neither arm the watchdog against a batch
+ *     waiting on a person nor overwrite the live claimant.
+ *   - `fresh`: the row was created by this call and never claimed (PENDING,
+ *     no workflow id yet). A row someone else claimed in between is left alone.
+ *
+ * Only `claimed` is distinguished by the caller: after a keep-open finalize a
+ * claimed row looks exactly like a fresh one.
+ *
+ * @returns rows stamped — 0 when the row moved on before the stamp landed.
  */
-export async function markProposalApplyDispatched(
-	proposalId: string,
-	applyWorkflowId: string,
-): Promise<void> {
-	await db.pendingBacklogProposal.update({
-		where: { id: proposalId },
-		data: { applyWorkflowId, applyStartedAt: new Date() },
+export async function markProposalApplyDispatched(params: {
+	proposalId: string;
+	applyWorkflowId: string;
+	mode: "claimed" | "fresh";
+}): Promise<number> {
+	const res = await db.pendingBacklogProposal.updateMany({
+		where:
+			params.mode === "claimed"
+				? {
+						id: params.proposalId,
+						status: "APPLYING",
+						applyWorkflowId: params.applyWorkflowId,
+					}
+				: {
+						id: params.proposalId,
+						status: "PENDING",
+						applyWorkflowId: null,
+					},
+		data: {
+			applyWorkflowId: params.applyWorkflowId,
+			applyStartedAt: new Date(),
+		},
 	});
+	return res.count;
 }
 
 /**
@@ -628,11 +709,21 @@ export async function claimPendingProposalForApply(params: {
 	proposalId: string;
 	reviewedBy: string;
 	applyWorkflowId: string;
+	/**
+	 * Also claim a BACKLOG (moved-to-Rejected) row. Passed only for a
+	 * ROADMAP_RECOMMENDATION batch, whose only accept door is apply-changes;
+	 * without it a batch moved to Rejected could never be restored.
+	 */
+	admitBacklog?: boolean;
 }): Promise<boolean> {
+	const claimable: Array<"PENDING" | "FAILED" | "BACKLOG"> =
+		params.admitBacklog
+			? ["PENDING", "FAILED", "BACKLOG"]
+			: ["PENDING", "FAILED"];
 	const result = await db.pendingBacklogProposal.updateMany({
 		where: {
 			id: params.proposalId,
-			status: { in: ["PENDING", "FAILED"] },
+			status: { in: claimable },
 		},
 		data: {
 			status: "APPLYING",
@@ -640,6 +731,31 @@ export async function claimPendingProposalForApply(params: {
 			reviewedBy: params.reviewedBy,
 			applyWorkflowId: params.applyWorkflowId,
 			applyError: null,
+		},
+	});
+	return result.count === 1;
+}
+
+/**
+ * Retry-door branch for a FAILED ROADMAP_RECOMMENDATION batch (Fizzy #2208):
+ * FAILED → PENDING with the claim and failure fields cleared, so the reviewer
+ * re-selects what to accept. The stored changes do not record which
+ * candidates were selected, so replaying them would create features nobody
+ * accepted. Returns false when the row is no longer FAILED.
+ */
+export async function returnFailedRecommendationToReview(
+	proposalId: string,
+): Promise<boolean> {
+	const result = await db.pendingBacklogProposal.updateMany({
+		where: { id: proposalId, status: "FAILED" },
+		data: {
+			status: "PENDING",
+			applyWorkflowId: null,
+			applyStartedAt: null,
+			applyError: null,
+			errorClass: null,
+			errorMessage: null,
+			failedAt: null,
 		},
 	});
 	return result.count === 1;
@@ -715,7 +831,68 @@ export async function finalizeClaimedProposal(params: {
 	applyWorkflowId: string;
 	outcome: "applied" | "failed";
 	errorMessage?: string;
+	errorClass?: string;
+	rawApplyError?: string;
 }): Promise<boolean> {
+	// Fizzy #2208 partial accept: a ROADMAP_RECOMMENDATION batch keeps its
+	// unaccepted candidates in review. While any change is unresolved the row
+	// returns to PENDING (claim released, watchdog clock cleared) instead of
+	// closing, whether this apply succeeded or failed: a retry door would
+	// replay every unapplied change, including candidates nobody selected.
+	const row = await db.pendingBacklogProposal.findUnique({
+		where: { id: params.proposalId },
+		select: { source: true, changeCount: true, appliedChangeIndexes: true },
+	});
+	if (row?.source === "ROADMAP_RECOMMENDATION") {
+		const applications =
+			await db.pendingBacklogProposalApplication.findMany({
+				where: { proposalId: params.proposalId },
+				select: { changeIndex: true },
+			});
+		const resolved = new Set([
+			...applications.map((a) => a.changeIndex),
+			...row.appliedChangeIndexes,
+		]);
+		if (resolved.size < row.changeCount) {
+			const failed = params.outcome === "failed";
+			const reopened = await db.pendingBacklogProposal.updateMany({
+				where: {
+					id: params.proposalId,
+					status: "APPLYING",
+					applyWorkflowId: params.applyWorkflowId,
+				},
+				data: {
+					status: "PENDING",
+					applyWorkflowId: null,
+					applyStartedAt: null,
+					...(failed
+						? {
+								applyError: (
+									params.rawApplyError ??
+									params.errorMessage ??
+									"apply workflow failed"
+								).slice(0, 4000),
+								errorClass: (
+									params.errorClass ?? "default"
+								).slice(0, 200),
+								errorMessage: (
+									params.errorMessage ??
+									"apply workflow failed"
+								).slice(0, 500),
+								failedAt: new Date(),
+							}
+						: {
+								applyError: null,
+								errorClass: null,
+								errorMessage: null,
+								failedAt: null,
+							}),
+				},
+			});
+			return reopened.count === 1;
+		}
+	}
+
 	const result = await db.pendingBacklogProposal.updateMany({
 		where: {
 			id: params.proposalId,

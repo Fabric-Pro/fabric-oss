@@ -825,6 +825,9 @@ export async function createStory(data: {
 	// proposal-approval and AI Update apply paths so the provenance is written
 	// in the same INSERT as the row itself (never a post-create stamp).
 	createdFromProposalId?: string;
+	// The roadmap-recommendation batch (a ROADMAP_RECOMMENDATION proposal id)
+	// this story was accepted from. Set together with source=AI_RECOMMENDED.
+	aiRecommendationBatchId?: string;
 	// Failure-to-bug: the test case whose red pipeline result opened this
 	// bug. Set only for source=PIPELINE_FAILURE; also the dedup key. Written in
 	// the same INSERT so the link can never be missing.
@@ -990,6 +993,9 @@ export async function createStory(data: {
 					// callers that have no proposal, leaving the column null.
 					...(data.createdFromProposalId !== undefined && {
 						createdFromProposalId: data.createdFromProposalId,
+					}),
+					...(data.aiRecommendationBatchId !== undefined && {
+						aiRecommendationBatchId: data.aiRecommendationBatchId,
 					}),
 					// RCA→BUG link, written in the same INSERT.
 					...(data.originTestCaseId != null && {
@@ -1233,6 +1239,30 @@ export function hasGenuineStoryEdit(
 }
 
 /**
+ * The fields whose change by a person marks an AI-recommended item as
+ * "edited" (Fizzy #2211): its content, not its workflow position. Moving the
+ * status, stage, kind, labels or assignee leaves the item as provisional as
+ * the recommendation made it.
+ */
+const HUMAN_CONTENT_EDIT_FIELDS = [
+	"title",
+	"description",
+	"acceptanceCriteria",
+	"priority",
+	"size",
+	"storyPoints",
+] as const satisfies readonly (keyof GenuineEditStoryState)[];
+
+function hasHumanContentEdit(
+	current: GenuineEditStoryState,
+	next: UpdateStoryData,
+): boolean {
+	return HUMAN_CONTENT_EDIT_FIELDS.some((field) =>
+		GENUINE_EDIT_COMPARATORS[field](current, next),
+	);
+}
+
+/**
  * Provenance + concurrency context for a story update. Named so the locked
  * read-modify-write wrapper below can take exactly what `updateStory` takes.
  */
@@ -1262,6 +1292,12 @@ export type UpdateStoryVersionContext = {
 	transitionReason?: StageTransitionReason;
 	/** Approval path only: skip governed request creation. */
 	bypassGovernedReview?: boolean;
+	/**
+	 * The save applies an AI context refresh the person confirmed. It is still
+	 * their MANUAL edit, but the words are the AI's, so it never marks an
+	 * AI-recommended item as edited by a person (`firstHumanEditAt`).
+	 */
+	aiContextRefresh?: boolean;
 };
 
 export async function updateStory(
@@ -1305,6 +1341,8 @@ export async function updateStory(
 				roadmapOrder: true,
 				externalId: true,
 				externalMcpServerId: true,
+				source: true,
+				firstHumanEditAt: true,
 			},
 		});
 
@@ -1377,6 +1415,17 @@ export async function updateStory(
 			genuineEditChanged &&
 			versionContext?.lastEditedSource !== undefined;
 		const lastEditedAt = stampLastEdited ? new Date() : undefined;
+		// Set once, never moved. A MANUAL edit with no userId is the PM webhook,
+		// not a person. The public v1 API passes the key owner's userId, so an
+		// API-key or agent edit counts as a person's — a known limitation.
+		const stampFirstHumanEdit =
+			stampLastEdited &&
+			currentStory.source === "AI_RECOMMENDED" &&
+			currentStory.firstHumanEditAt === null &&
+			versionContext?.lastEditedSource === "MANUAL" &&
+			versionContext.userId !== undefined &&
+			versionContext.aiContextRefresh !== true &&
+			hasHumanContentEdit(currentStory, data);
 
 		/**
 		 * `kind` counts (Fizzy #2048). A kind change is material: it selects which
@@ -1486,6 +1535,7 @@ export async function updateStory(
 						lastEditedSource: versionContext?.lastEditedSource,
 					}
 				: {}),
+			...(stampFirstHumanEdit ? { firstHumanEditAt: lastEditedAt } : {}),
 		};
 
 		if (!shouldCreateVersion) {

@@ -29,9 +29,13 @@ const {
 	canEditProjectMock,
 	canEditProjectSettingsMock,
 	getStatusMock,
+	resolvePmTargetMock,
+	resolvePMConfigForUserMock,
+	countEligibleBatchesMock,
 } = vi.hoisted(() => ({
 	dbMock: {
 		project: { findUnique: vi.fn() },
+		userStory: { count: vi.fn() },
 		projectCodeIndex: { findMany: vi.fn() },
 		projectRepositoryIntegration: { findMany: vi.fn() },
 		backgroundJob: { groupBy: vi.fn() },
@@ -42,6 +46,9 @@ const {
 	canEditProjectMock: vi.fn(),
 	canEditProjectSettingsMock: vi.fn(),
 	getStatusMock: vi.fn(),
+	resolvePmTargetMock: vi.fn(),
+	resolvePMConfigForUserMock: vi.fn(),
+	countEligibleBatchesMock: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -49,6 +56,17 @@ vi.mock("@repo/database", () => ({
 	canEditProject: (...args: unknown[]) => canEditProjectMock(...args),
 	canEditProjectSettings: (...args: unknown[]) =>
 		canEditProjectSettingsMock(...args),
+	resolvePMConfigForUser: (...args: unknown[]) =>
+		resolvePMConfigForUserMock(...args),
+	countEligibleAiRecommendationBatches: (...args: unknown[]) =>
+		countEligibleBatchesMock(...args),
+	TERMINAL_DRAFTING_STAGES: ["DECLINED", "CLOSED"],
+}));
+
+// Replaced wholesale: the real helper reads MCP config and credential rows,
+// which is the database seam this file already mocks at the package boundary.
+vi.mock("../../projects/lib/resolve-pm-target", () => ({
+	resolvePmTarget: (...args: unknown[]) => resolvePmTargetMock(...args),
 }));
 
 // Replaced wholesale rather than partially: the real package pulls in the AI
@@ -123,6 +141,10 @@ interface Rows {
 	canEdit: boolean;
 	canEditSettings: boolean;
 	atlas: { status: string } | Error;
+	pmTarget: { kind: string } | null;
+	pmItemConfig: { enabled: boolean } | null;
+	roadmapItemCount: number;
+	eligibleBatchCount: number;
 }
 
 /**
@@ -140,6 +162,10 @@ function healthyRows(): Rows {
 			codeAnalysisStatus: null,
 			scanConfig: null,
 			ragSettings: { codeSearchEnabled: true },
+			readOnlyMode: false,
+			projectManagementMcpServerId: "mcp_server_example",
+			projectManagementMcpConfigId: "mcp_config_example",
+			projectManagementContainerId: "board_example",
 			_count: {
 				linkedSlackChannels: 1,
 				linkedTeamsChannels: 0,
@@ -170,6 +196,10 @@ function healthyRows(): Rows {
 		canEdit: true,
 		canEditSettings: true,
 		atlas: { status: "READY" },
+		pmTarget: { kind: "mcp" },
+		pmItemConfig: { enabled: true },
+		roadmapItemCount: 0,
+		eligibleBatchCount: 0,
 	};
 }
 
@@ -187,6 +217,10 @@ function gather(overrides: Partial<Rows> = {}, includeAtlasStatus?: boolean) {
 	dbMock.projectScan.groupBy.mockResolvedValue(rows.scanGroups);
 	canEditProjectMock.mockResolvedValue(rows.canEdit);
 	canEditProjectSettingsMock.mockResolvedValue(rows.canEditSettings);
+	resolvePmTargetMock.mockResolvedValue(rows.pmTarget);
+	resolvePMConfigForUserMock.mockResolvedValue(rows.pmItemConfig);
+	dbMock.userStory.count.mockResolvedValue(rows.roadmapItemCount);
+	countEligibleBatchesMock.mockResolvedValue(rows.eligibleBatchCount);
 	getStatusMock.mockImplementation(() =>
 		rows.atlas instanceof Error
 			? Promise.reject(rows.atlas)
@@ -843,6 +877,144 @@ describe("sources on their way, and uploads", () => {
 		});
 		expect(evidence.context.product).toBe(2);
 		expect(evidence.context.technical).toBe(0);
+	});
+});
+
+// ── Roadmap and PM facts (Fizzy #2204 / #2208 / #2211) ──
+
+describe("the PM connection the Roadmap doors reach", () => {
+	it("reports a running PM story sync from the grouped job read", async () => {
+		const heartbeat = "2026-09-18T11:55:00.000Z";
+		const evidence = await gather({
+			jobGroups: [jobGroup("PM_STORY_SYNC", "RUNNING", heartbeat)],
+		});
+
+		expect(evidence.pm.syncing.running).toBe(true);
+		expect(evidence.pm.syncing.lastProgressAt).toEqual(new Date(heartbeat));
+		expect(dbMock.backgroundJob.groupBy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					kind: { in: expect.arrayContaining(["PM_STORY_SYNC"]) },
+				}),
+			}),
+		);
+	});
+
+	it("never reads PM_STATE_POLL as a PM sync", async () => {
+		// The hourly status poll runs unattended; a pull someone is waiting on
+		// must not read as busy because of it.
+		const evidence = await gather({
+			jobGroups: [
+				jobGroup(
+					"PM_STATE_POLL",
+					"RUNNING",
+					"2026-09-18T11:55:00.000Z",
+				),
+			],
+		});
+
+		expect(evidence.pm.syncing.running).toBe(false);
+		const [args] = dbMock.backgroundJob.groupBy.mock.calls[0] as [
+			{ where: { kind: { in: string[] } } },
+		];
+		expect(args.where.kind.in).not.toContain("PM_STATE_POLL");
+	});
+
+	it("skips PM resolution when the project names no PM tool", async () => {
+		const evidence = await gather({
+			project: {
+				...healthyRows().project,
+				projectManagementMcpServerId: null,
+				projectManagementMcpConfigId: null,
+			},
+		});
+
+		expect(resolvePmTargetMock).not.toHaveBeenCalled();
+		expect(resolvePMConfigForUserMock).not.toHaveBeenCalled();
+		expect(evidence.pm).toMatchObject({
+			toolSelected: false,
+			bulkTargetResolvable: false,
+			itemConfigResolvable: false,
+		});
+	});
+
+	it("reports the item path separately from the bulk target", async () => {
+		// A legacy project naming only a server: no bulk target, yet the
+		// single-item doors resolve the viewer's own config and work.
+		const evidence = await gather({
+			project: {
+				...healthyRows().project,
+				projectManagementMcpConfigId: null,
+			},
+			pmTarget: null,
+			pmItemConfig: { enabled: true },
+		});
+
+		expect(evidence.pm.bulkTargetResolvable).toBe(false);
+		expect(evidence.pm.itemConfigResolvable).toBe(true);
+		expect(resolvePMConfigForUserMock).toHaveBeenCalledWith({
+			configId: null,
+			mcpServerId: "mcp_server_example",
+			userId: USER_ID,
+			organizationId: ORGANIZATION_ID,
+		});
+	});
+
+	it("derives the item path from the bulk target when the project pins a config, reading it once", async () => {
+		const resolved = await gather();
+		expect(resolved.pm).toMatchObject({
+			bulkTargetResolvable: true,
+			itemConfigResolvable: true,
+		});
+		expect(resolvePmTargetMock).toHaveBeenCalledTimes(1);
+		expect(resolvePMConfigForUserMock).not.toHaveBeenCalled();
+
+		vi.clearAllMocks();
+		const unresolved = await gather({ pmTarget: null });
+		expect(unresolved.pm).toMatchObject({
+			bulkTargetResolvable: false,
+			itemConfigResolvable: false,
+		});
+		expect(resolvePMConfigForUserMock).not.toHaveBeenCalled();
+	});
+
+	it("reads the board, read-only mode and a disabled item config from the rows", async () => {
+		const evidence = await gather({
+			project: {
+				...healthyRows().project,
+				projectManagementContainerId: null,
+				readOnlyMode: true,
+			},
+			// A pinned config that no longer resolves enabled: no bulk target.
+			pmTarget: null,
+			pmItemConfig: { enabled: false },
+		});
+
+		expect(evidence.pm.boardSelected).toBe(false);
+		expect(evidence.pm.readOnly).toBe(true);
+		expect(evidence.pm.itemConfigResolvable).toBe(false);
+	});
+});
+
+describe("the Roadmap facts", () => {
+	it("counts only live Roadmap items", async () => {
+		const evidence = await gather({ roadmapItemCount: 7 });
+
+		expect(evidence.roadmap.itemCount).toBe(7);
+		expect(dbMock.userStory.count).toHaveBeenCalledWith({
+			where: {
+				projectId: PROJECT_ID,
+				draftingStage: { notIn: ["DECLINED", "CLOSED"] },
+				pmAutoHidden: false,
+			},
+		});
+	});
+
+	it("returns the eligible AI-recommended batch count for this project", async () => {
+		const evidence = await gather({ eligibleBatchCount: 3 });
+
+		expect(evidence.aiRecommended.eligibleBatchCount).toBe(3);
+		expect(countEligibleBatchesMock).toHaveBeenCalledWith(PROJECT_ID);
 	});
 });
 

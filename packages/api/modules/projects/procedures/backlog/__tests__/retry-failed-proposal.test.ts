@@ -28,6 +28,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		proposalUpdate: vi.fn(),
 		getTemporalClient: vi.fn(),
 		workflowStart: vi.fn(),
+		returnFailedRecommendationToReview: vi.fn(),
 	};
 	return { handlers, mocks };
 });
@@ -41,6 +42,8 @@ vi.mock("@repo/database", () => ({
 	buildBacklogDedupGuard: mocks.buildBacklogDedupGuard,
 	inferDedupFamily: mocks.inferDedupFamily,
 	markPendingProposalApplied: mocks.markPendingProposalApplied,
+	returnFailedRecommendationToReview:
+		mocks.returnFailedRecommendationToReview,
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -448,5 +451,52 @@ describe("retryFailedProposalProcedure — forbidEpics gated on proposal.source 
 
 		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
 		expect(startArgForbidEpics()).toBe(false);
+	});
+});
+
+describe("retryFailedProposalProcedure — ROADMAP_RECOMMENDATION batch", () => {
+	it("returns the batch to review instead of replaying its stored changes", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			...baseProposal,
+			source: "ROADMAP_RECOMMENDATION",
+		});
+		mocks.returnFailedRecommendationToReview.mockResolvedValue(true);
+
+		const result = (await handlers.retry({
+			input: {
+				projectId: "project-1",
+				proposalId: "proposal-1",
+				organizationId: "org-1",
+			},
+			context: ctx,
+		})) as { workflowId: string | null; message: string };
+
+		expect(result.workflowId).toBeNull();
+		expect(result.message).toMatch(/Returned to review/);
+		expect(mocks.returnFailedRecommendationToReview).toHaveBeenCalledWith(
+			"proposal-1",
+		);
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+		expect(mocks.buildBacklogDedupGuard).not.toHaveBeenCalled();
+	});
+
+	it("throws CONFLICT when another caller already moved the row", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			...baseProposal,
+			source: "ROADMAP_RECOMMENDATION",
+		});
+		mocks.returnFailedRecommendationToReview.mockResolvedValue(false);
+
+		await expect(
+			handlers.retry({
+				input: {
+					projectId: "project-1",
+					proposalId: "proposal-1",
+					organizationId: "org-1",
+				},
+				context: ctx,
+			}),
+		).rejects.toBeInstanceOf(ORPCError);
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
 	});
 });

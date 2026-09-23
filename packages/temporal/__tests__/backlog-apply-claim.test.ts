@@ -13,7 +13,7 @@
  * proposal create goes through `createStoryFromProposal`; areas are labels.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mockDb, mocks } = vi.hoisted(() => {
 	const mockDb = {
@@ -36,6 +36,7 @@ const { mockDb, mocks } = vi.hoisted(() => {
 		recordAudit: vi.fn(),
 		recordProposalApplication: vi.fn(),
 		createStoryFromProposal: vi.fn(),
+		activityContext: vi.fn(),
 	};
 	return { mockDb, mocks };
 });
@@ -85,11 +86,14 @@ vi.mock("@repo/logs", () => ({
 vi.mock("@temporalio/activity", () => ({
 	heartbeat: vi.fn(),
 	ApplicationFailure: { nonRetryable: (m: string) => new Error(m) },
+	CancelledFailure: class CancelledFailure extends Error {},
+	Context: { current: () => mocks.activityContext() },
 }));
 
 import {
 	claimPendingProposalForApply,
 	finalizeClaimedProposal,
+	markProposalApplyDispatched,
 } from "../../database/prisma/queries/projects/pending-backlog-proposals";
 import {
 	applyBacklogChanges,
@@ -122,6 +126,9 @@ function p2002(target: string) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.activityContext.mockImplementation(() => {
+		throw new Error("not in an activity");
+	});
 	mockDb.project.findFirst.mockResolvedValue({ id: "p1" });
 	mockDb.userStory.findMany.mockResolvedValue([]);
 	mockDb.pendingBacklogProposalApplication.findMany.mockResolvedValue([]);
@@ -234,6 +241,286 @@ describe("finalizeClaimedProposal", () => {
 		expect(call.data).toMatchObject({
 			status: "FAILED",
 			applyError: "boom",
+		});
+	});
+});
+
+describe("finalizeClaimedProposal — ROADMAP_RECOMMENDATION keep-open", () => {
+	function recommendationRow(appliedChangeIndexes: number[] = []) {
+		mockDb.pendingBacklogProposal.findUnique.mockResolvedValueOnce({
+			source: "ROADMAP_RECOMMENDATION",
+			changeCount: 4,
+			appliedChangeIndexes,
+		});
+	}
+
+	it("returns a partly accepted batch to PENDING with the error fields cleared", async () => {
+		recommendationRow([2]);
+		mockDb.pendingBacklogProposalApplication.findMany.mockResolvedValueOnce(
+			[{ changeIndex: 0 }],
+		);
+		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
+			count: 1,
+		});
+		const ok = await finalizeClaimedProposal({
+			proposalId: "batch-1",
+			applyWorkflowId: "wf-1",
+			outcome: "applied",
+		});
+		expect(ok).toBe(true);
+		const call = mockDb.pendingBacklogProposal.updateMany.mock.calls[0][0];
+		expect(call.where).toEqual({
+			id: "batch-1",
+			status: "APPLYING",
+			applyWorkflowId: "wf-1",
+		});
+		expect(call.data).toEqual({
+			status: "PENDING",
+			applyWorkflowId: null,
+			applyStartedAt: null,
+			applyError: null,
+			errorClass: null,
+			errorMessage: null,
+			failedAt: null,
+		});
+	});
+
+	it("returns a failed partial apply to PENDING carrying the error", async () => {
+		recommendationRow();
+		mockDb.pendingBacklogProposalApplication.findMany.mockResolvedValueOnce(
+			[{ changeIndex: 1 }],
+		);
+		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
+			count: 1,
+		});
+		const ok = await finalizeClaimedProposal({
+			proposalId: "batch-1",
+			applyWorkflowId: "wf-1",
+			outcome: "failed",
+			errorMessage: "Clean Spec draft failed",
+			errorClass: "default",
+			rawApplyError: "Clean Spec draft failed\nsecond error",
+		});
+		expect(ok).toBe(true);
+		const call = mockDb.pendingBacklogProposal.updateMany.mock.calls[0][0];
+		expect(call.data).toMatchObject({
+			status: "PENDING",
+			applyWorkflowId: null,
+			applyStartedAt: null,
+			errorClass: "default",
+			errorMessage: "Clean Spec draft failed",
+			applyError: "Clean Spec draft failed\nsecond error",
+		});
+		expect(call.data.failedAt).toBeInstanceOf(Date);
+	});
+
+	it("closes the batch as APPLIED once every change is resolved", async () => {
+		recommendationRow([3]);
+		mockDb.pendingBacklogProposalApplication.findMany.mockResolvedValueOnce(
+			[{ changeIndex: 0 }, { changeIndex: 1 }, { changeIndex: 2 }],
+		);
+		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
+			count: 1,
+		});
+		const ok = await finalizeClaimedProposal({
+			proposalId: "batch-1",
+			applyWorkflowId: "wf-1",
+			outcome: "applied",
+		});
+		expect(ok).toBe(true);
+		const call = mockDb.pendingBacklogProposal.updateMany.mock.calls[0][0];
+		expect(call.data.status).toBe("APPLIED");
+	});
+
+	it("still refuses a non-claimant", async () => {
+		recommendationRow();
+		mockDb.pendingBacklogProposalApplication.findMany.mockResolvedValueOnce(
+			[],
+		);
+		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
+			count: 0,
+		});
+		const ok = await finalizeClaimedProposal({
+			proposalId: "batch-1",
+			applyWorkflowId: "wf-intruder",
+			outcome: "applied",
+		});
+		expect(ok).toBe(false);
+		const call = mockDb.pendingBacklogProposal.updateMany.mock.calls[0][0];
+		expect(call.where.applyWorkflowId).toBe("wf-intruder");
+	});
+});
+
+describe("markProposalApplyDispatched — late stamp guard", () => {
+	type Row = Record<string, unknown>;
+
+	afterEach(() => {
+		mockDb.pendingBacklogProposal.updateMany.mockReset();
+		mockDb.pendingBacklogProposal.findUnique.mockReset();
+		mockDb.pendingBacklogProposalApplication.findMany.mockReset();
+	});
+
+	/**
+	 * One in-memory proposal row behind `updateMany`, so a claim, a finalize
+	 * and a stamp run in the order the race produces and each CAS sees the
+	 * row the previous write left.
+	 */
+	function statefulRow(initial: Row): Row {
+		const row: Row = { ...initial };
+		const matches = (where: Row) =>
+			Object.entries(where).every(([key, expected]) => {
+				if (
+					expected !== null &&
+					typeof expected === "object" &&
+					"in" in expected
+				) {
+					return (expected.in as unknown[]).includes(row[key]);
+				}
+				return row[key] === expected;
+			});
+		mockDb.pendingBacklogProposal.updateMany.mockImplementation(
+			async ({ where, data }: { where: Row; data: Row }) => {
+				if (!matches(where)) {
+					return { count: 0 };
+				}
+				Object.assign(row, data);
+				return { count: 1 };
+			},
+		);
+		mockDb.pendingBacklogProposal.findUnique.mockImplementation(
+			async () => ({
+				source: row.source,
+				changeCount: row.changeCount,
+				appliedChangeIndexes: [],
+			}),
+		);
+		return row;
+	}
+
+	const batch = {
+		id: "batch-1",
+		source: "ROADMAP_RECOMMENDATION",
+		changeCount: 3,
+		status: "PENDING",
+		applyWorkflowId: null,
+		applyStartedAt: null,
+	};
+
+	it("stamps the claimant's own claim", async () => {
+		const row = statefulRow(batch);
+		await claimPendingProposalForApply({
+			proposalId: "batch-1",
+			reviewedBy: "u1",
+			applyWorkflowId: "wf-1",
+		});
+
+		const stamped = await markProposalApplyDispatched({
+			proposalId: "batch-1",
+			applyWorkflowId: "wf-1",
+			mode: "claimed",
+		});
+
+		expect(stamped).toBe(1);
+		expect(row.applyStartedAt).toBeInstanceOf(Date);
+	});
+
+	it("is a no-op when the batch was already finalized back to PENDING for review", async () => {
+		const row = statefulRow(batch);
+		mockDb.pendingBacklogProposalApplication.findMany.mockResolvedValue([
+			{ changeIndex: 0 },
+		]);
+		await claimPendingProposalForApply({
+			proposalId: "batch-1",
+			reviewedBy: "u1",
+			applyWorkflowId: "wf-1",
+		});
+		// A fast apply of one candidate reopens the batch before the stamp lands.
+		await finalizeClaimedProposal({
+			proposalId: "batch-1",
+			applyWorkflowId: "wf-1",
+			outcome: "applied",
+		});
+		expect(row.status).toBe("PENDING");
+
+		const stamped = await markProposalApplyDispatched({
+			proposalId: "batch-1",
+			applyWorkflowId: "wf-1",
+			mode: "claimed",
+		});
+
+		expect(stamped).toBe(0);
+		// The watchdog only fails PENDING rows with a dispatch stamp; this one
+		// is waiting on a person and must stay unstamped.
+		expect(row.applyStartedAt).toBeNull();
+		expect(row.applyWorkflowId).toBeNull();
+	});
+
+	it("is a no-op for a stale claimant, leaving the live claim intact", async () => {
+		const row = statefulRow(batch);
+		mockDb.pendingBacklogProposalApplication.findMany.mockResolvedValue([
+			{ changeIndex: 0 },
+		]);
+		await claimPendingProposalForApply({
+			proposalId: "batch-1",
+			reviewedBy: "u1",
+			applyWorkflowId: "wf-1",
+		});
+		await finalizeClaimedProposal({
+			proposalId: "batch-1",
+			applyWorkflowId: "wf-1",
+			outcome: "applied",
+		});
+		// A second tab accepts more candidates before the first stamp lands.
+		await claimPendingProposalForApply({
+			proposalId: "batch-1",
+			reviewedBy: "u2",
+			applyWorkflowId: "wf-2",
+		});
+
+		const stamped = await markProposalApplyDispatched({
+			proposalId: "batch-1",
+			applyWorkflowId: "wf-1",
+			mode: "claimed",
+		});
+
+		expect(stamped).toBe(0);
+		expect(row.status).toBe("APPLYING");
+		expect(row.applyWorkflowId).toBe("wf-2");
+	});
+
+	it("stamps a fresh row only while nobody has claimed it", async () => {
+		const row = statefulRow({ ...batch, source: "AI_UPDATE_SIDEBAR" });
+		await claimPendingProposalForApply({
+			proposalId: "batch-1",
+			reviewedBy: "u2",
+			applyWorkflowId: "wf-other",
+		});
+
+		const stamped = await markProposalApplyDispatched({
+			proposalId: "batch-1",
+			applyWorkflowId: "wf-1",
+			mode: "fresh",
+		});
+
+		expect(stamped).toBe(0);
+		expect(row.applyWorkflowId).toBe("wf-other");
+	});
+});
+
+describe("claimPendingProposalForApply — admitBacklog", () => {
+	it("also claims a BACKLOG row when admitBacklog is set", async () => {
+		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
+			count: 1,
+		});
+		await claimPendingProposalForApply({
+			proposalId: "batch-1",
+			reviewedBy: "u1",
+			applyWorkflowId: "wf-1",
+			admitBacklog: true,
+		});
+		const call = mockDb.pendingBacklogProposal.updateMany.mock.calls[0][0];
+		expect(call.where.status).toEqual({
+			in: ["PENDING", "FAILED", "BACKLOG"],
 		});
 	});
 });
@@ -432,6 +719,72 @@ describe("applyBacklogChanges with proposalId", () => {
 			mocks.createStoryFromProposal.mock.calls[0][0]
 				.proposalApplicationKey,
 		).toBeUndefined();
+	});
+});
+
+describe("applyBacklogChanges — cancelled attempt", () => {
+	it("stops between changes once Temporal cancels the attempt, drafting nothing more", async () => {
+		const controller = new AbortController();
+		mocks.activityContext.mockReturnValue({
+			cancellationSignal: controller.signal,
+		});
+		mocks.createStoryFromProposal.mockImplementationOnce(
+			async (params: { title: string }) => {
+				// The attempt times out on its heartbeat mid-draft; a retry is
+				// already walking the same changes.
+				controller.abort();
+				return {
+					story: {
+						id: "drafted-1",
+						identifier: "F-101",
+						title: params.title,
+						description: null,
+					},
+					aiDrafted: false,
+				};
+			},
+		);
+
+		const { CancelledFailure } = await import("@temporalio/activity");
+		await expect(
+			applyBacklogChanges({
+				projectId: "p1",
+				userId: "u1",
+				approvedChanges: [
+					featureChange("A"),
+					featureChange("B"),
+					featureChange("C"),
+				],
+				existingBacklog: emptyBacklog,
+				proposalId: "prop-1",
+				approvedChangeIndexes: [0, 1, 2],
+			}),
+		).rejects.toBeInstanceOf(CancelledFailure);
+
+		// The change in flight finishes and is recorded, so the live attempt
+		// skips it; nothing after it is drafted.
+		expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(1);
+		expect(mocks.recordProposalApplication).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not start at all when the attempt is already cancelled", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		mocks.activityContext.mockReturnValue({
+			cancellationSignal: controller.signal,
+		});
+
+		await expect(
+			applyBacklogChanges({
+				projectId: "p1",
+				userId: "u1",
+				approvedChanges: [featureChange("A")],
+				existingBacklog: emptyBacklog,
+				proposalId: "prop-1",
+				approvedChangeIndexes: [0],
+			}),
+		).rejects.toThrow();
+		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
 	});
 });
 

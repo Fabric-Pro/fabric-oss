@@ -5,6 +5,7 @@
 
 export * from "./action-item-routing";
 export * from "./agentic-runs";
+export * from "./ai-recommendation-batches";
 export * from "./architecture-decisions";
 export * from "./attachment-retention";
 export * from "./backlog-dedup-guard";

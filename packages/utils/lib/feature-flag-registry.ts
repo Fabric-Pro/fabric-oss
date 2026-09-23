@@ -223,6 +223,24 @@ export const FEATURE_FLAG_REGISTRY = {
 		orgScopable: true,
 		note: "Fizzy #1930. Gates the server-side gate resolution AND the fail-closed assert every mutating procedure makes before it acts — deliberately not the client render alone. That pairing is what makes rollback work: a flag that gated only rendering would leave an action blocked while it was on still blocked after it was turned off, because the assert would go on refusing what nothing on the page was left to explain. Off means every gated surface behaves exactly as it does today — no gate is resolved, no assert is thrown, nothing is hidden or disabled. Deliberately NOT tied to PROJECT_READINESS, and the independence is stronger than the one SIMPLIFIED_PROJECT_CREATION and CLI_CONNECTION_NUDGE record: those two read the readiness payload, so their coupling is structural and only a code AND was rejected. This feature never reads readiness at all — not an item state, not a level, not its evidence — because a snoozed item is a person saying 'stop asking', not the dependency appearing, and it must never unlock anything. The two answer different questions: readiness asks whether a project has been set up, gating asks whether a capability can run right now, and either ships without the other. Nothing about a gate is stored; the one persisted thing is a warning suppression, which is left untouched when this goes off, so flipping it back on restores them exactly.",
 	},
+	ROADMAP_RECOMMENDATIONS: {
+		label: "Roadmap feature recommendations",
+		description:
+			"Lets a member ask Fabric to recommend a batch of Features from the project's context and live Roadmap, reviewed in the proposal inbox before anything is created.",
+		envVar: "FABRIC_FEATURE_ROADMAP_RECOMMENDATIONS",
+		default: false,
+		orgScopable: true,
+		note: "Fizzy #2204 and #2208. One flag for every recommendation entry point: the empty-state Recommend and Do Both cards, the mature Roadmap's Recommend menu item, and the server door that starts a recommendation run. Off means the entries are not rendered and the door answers NOT_FOUND, rather than present and failing. Always resolved with the organization that owns the project, and only in API code, never in workflow code. It is not capability-gating evidence: the gate says whether a recommendation can run well, this says whether the feature exists at all, and folding one into the other would make a rollback look like a missing dependency. Rollback: turn it off. Features already accepted from a batch stay, with their AI Recommended source.",
+	},
+	AI_RECOMMENDED_LIFECYCLE: {
+		label: "AI-recommended item lifecycle",
+		description:
+			"Lets an editor protect a Feature accepted from a recommendation batch, or remove the batch's unprotected, untouched items in one step.",
+		envVar: "FABRIC_FEATURE_AI_RECOMMENDED_LIFECYCLE",
+		default: false,
+		orgScopable: true,
+		note: "Fizzy #2211. The rollback lever for Protect, Remove, the provisional-item guidance, the post-accept notice and the projects.aiRecommended.* procedures, which answer NOT_FOUND when it is off. Stamping an item's source and batch at creation is NOT gated, so turning this off and on again loses no durable fact. Resolved with the organization that owns the project, and only in API code. Hiding the Remove entry when no batch is eligible also needs CAPABILITY_GATING; with gating off the entry shows to anyone who may update work items, and the door refuses an empty batch on its own.",
+	},
 	TODO_LIST: {
 		label: "Consolidated To Do list",
 		description:

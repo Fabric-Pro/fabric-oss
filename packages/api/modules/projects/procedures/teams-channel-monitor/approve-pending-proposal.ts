@@ -447,6 +447,15 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// A roadmap-recommendation batch has its own accept path (Clean Spec
+		// pre-flight, partial accept, the AI_RECOMMENDED stamp).
+		if (proposal.source === "ROADMAP_RECOMMENDATION") {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Recommended features are accepted through backlog.applyChanges.",
+			});
+		}
+
 		if (
 			proposal.status !== "PENDING" &&
 			proposal.status !== "FAILED" &&

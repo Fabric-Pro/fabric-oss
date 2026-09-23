@@ -116,10 +116,13 @@ async function main() {
 		const sources = new Set(c.members.map((m) => m.source));
 		const anyAiUpdate = sources.has("AI_UPDATE");
 		const anyApprovedProposal = sources.has("APPROVED_PROPOSAL");
-		const aiInvolved = anyAiUpdate || anyApprovedProposal;
+		const anyAiRecommended = sources.has("AI_RECOMMENDED");
+		const aiInvolved =
+			anyAiUpdate || anyApprovedProposal || anyAiRecommended;
 		const allAi =
 			c.members.every((m) => m.source === "AI_UPDATE") ||
-			c.members.every((m) => m.source === "APPROVED_PROPOSAL");
+			c.members.every((m) => m.source === "APPROVED_PROPOSAL") ||
+			c.members.every((m) => m.source === "AI_RECOMMENDED");
 		const anyPost1041 = c.members.some(
 			(m) => m.createdAt >= PR_1041_MERGE_DATE,
 		);

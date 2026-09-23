@@ -11,6 +11,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		workflowStart: vi.fn(),
 		recordAudit: vi.fn(),
 		resolvePMConfigForUser: vi.fn(),
+		setLastContextUpdateAt: vi.fn(),
 	};
 	return { handlers, mocks };
 });
@@ -42,6 +43,7 @@ vi.mock("@repo/database", () => ({
 	]),
 	MaturationStatusSchema: z.enum(["TO_DO", "DISCOVERY", "DONE"]),
 	resolvePMConfigForUser: mocks.resolvePMConfigForUser,
+	setLastContextUpdateAt: mocks.setLastContextUpdateAt,
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -91,6 +93,7 @@ beforeEach(() => {
 		(m as ReturnType<typeof vi.fn>).mockReset(),
 	);
 	mocks.resolvePMConfigForUser.mockResolvedValue(null);
+	mocks.setLastContextUpdateAt.mockResolvedValue(undefined);
 });
 
 describe("update-story procedure — priority rebase + no PM sync", () => {
@@ -168,5 +171,51 @@ describe("update-story procedure — priority rebase + no PM sync", () => {
 				}),
 			}),
 		);
+	});
+});
+
+describe("update-story procedure — AI context refresh (Fizzy #2211)", () => {
+	const story = {
+		id: "story-1",
+		title: "T",
+		priority: "P2_MEDIUM",
+		pmAutoSyncEnabled: false,
+		externalId: null,
+	};
+
+	it("marks a confirmed AI context refresh so it never counts as a person's edit", async () => {
+		mocks.updateStory.mockResolvedValue(story);
+		await handlers.updateStory({
+			input: {
+				projectId: "p-1",
+				storyId: "story-1",
+				organizationId: null,
+				description: "Refreshed from new project context",
+				isContextUpdate: true,
+			},
+			context: ctx,
+		});
+
+		const [, , , versionContext] = mocks.updateStory.mock.calls[0];
+		expect(versionContext).toMatchObject({
+			lastEditedSource: "MANUAL",
+			aiContextRefresh: true,
+		});
+	});
+
+	it("leaves an ordinary save counted as the person's edit", async () => {
+		mocks.updateStory.mockResolvedValue(story);
+		await handlers.updateStory({
+			input: {
+				projectId: "p-1",
+				storyId: "story-1",
+				organizationId: null,
+				description: "Rewritten by a person",
+			},
+			context: ctx,
+		});
+
+		const [, , , versionContext] = mocks.updateStory.mock.calls[0];
+		expect(versionContext.aiContextRefresh).toBe(false);
 	});
 });
