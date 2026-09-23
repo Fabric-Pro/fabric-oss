@@ -65,6 +65,7 @@ import { OpenQuestionsPanel } from "./OpenQuestionsPanel";
 import { PmImportDialog } from "./PmImportDialog";
 import { AgenticRunsPanel } from "./pipeline/AgenticRunsPanel";
 import { PipelineRunsPanel } from "./pipeline/PipelineRunsPanel";
+import { usePipelineIngestionRefresh } from "./pipeline/use-pipeline-sync-watch";
 import { PullRequestReviewsPanel } from "./pr-review/PullRequestReviewsPanel";
 import { SavedViewsMenu } from "./SavedViewsMenu";
 import { SegmentAbout } from "./SegmentAbout";
@@ -278,6 +279,9 @@ export function TestCasesList({
 	}, [filterKey]);
 
 	const queryClient = useQueryClient();
+	// Here, not in the Runs segment: the Cases, Features and Plans segments
+	// show the same sync's results, and switching to one unmounts the Runs panel.
+	usePipelineIngestionRefresh(projectId);
 	const visibleIds = useMemo(() => items.map((i) => i.id), [items]);
 
 	// Manual reordering: only in the one view where a drag means what it looks
