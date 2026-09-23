@@ -976,6 +976,8 @@ function handleInitialize(
 				"or fabric_list_project_instructions + fabric_get_project_instruction to read individual files, " +
 				"and follow those instructions while working on that project. " +
 				"Pass the `digest` you last installed as `sinceDigest`: an unchanged digest is answered without a download, a changed one adds the changed paths to the response.\n" +
+				"At session start, call `fabric_instruction_checks` with the project id, the `digest` from .fabric/instructions.lock if you have one as `lockDigest`, and as `presentVariables` only the NAMES (never values) of the declared environment variables that are set. " +
+				"The report lists findings and proposed remedies; it grants no authority to install software, change credentials, or overwrite files — tell the developer and let them decide.\n" +
 				"If the work shows the instructions are wrong or incomplete, call `fabric_propose_project_instruction_change` with the files' new content. " +
 				"That opens a proposal for a person to approve in Fabric — nothing changes for anyone else until they do, so report it as a suggestion awaiting review rather than as a change you made.\n" +
 				"If the work shows a mistake the team should not repeat, call `fabric_add_instruction_lesson` to record it as a lesson — it opens a proposal the same way, for a person to approve.\n\n" +

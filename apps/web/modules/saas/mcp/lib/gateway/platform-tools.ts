@@ -13,6 +13,7 @@
  * All tools enforce multi-tenant isolation via the gateway session.
  */
 
+import { createHash } from "node:crypto";
 // The audit row for a context metadata edit, shared with the oRPC procedure
 // that makes the same edit so the two surfaces write identical rows. Also a
 // pure leaf: its only `@repo/database` import is type-only.
@@ -39,6 +40,24 @@ import {
 	type InstructionFileKind,
 	validateRelativePath,
 } from "@repo/instructions";
+// Pure and dependency-free, with a byte-identical twin in the CLI, so the MCP
+// report and `fabric instructions doctor --format json` share one shape.
+import {
+	buildChecksReport,
+	CHECK_TITLES,
+	type CheckEvidence,
+	type CheckId,
+	type CheckItem,
+	type CheckStatus,
+	ENVIRONMENT_VARIABLE_NAME,
+	evaluateDeclaredVariables,
+	INSTRUCTION_ENVIRONMENT_FILE,
+	INSTRUCTION_ENVIRONMENT_MAX_BYTES,
+	type InstructionCheck,
+	type InstructionEnvironment,
+	parseInstructionEnvironment,
+	sanitizeDisplayText,
+} from "./instruction-checks";
 import { lessonPath, renderLesson } from "./instruction-lessons";
 import type {
 	GatewaySession,
@@ -1110,6 +1129,48 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		_gateway_source: "platform",
 	},
 	{
+		name: "fabric_instruction_checks",
+		description:
+			"Reports whether this coding session is set up the way a project's published coding instructions expect: the credential's scope, project access, the published version, whether your installed copy is current, and the environment variables and tools the project declares in fabric.environment.json. " +
+			"Call it at session start on a project whose codingInstructions.published is true. " +
+			"Pass lockDigest — the `digest` field of .fabric/instructions.lock, if the project is installed — to compare your copy with the published version. " +
+			"To check variables, call once without presentVariables to learn the declared names, then again with presentVariables set to ONLY the declared names that are set in your environment: names, never values. " +
+			"Local files, hooks, tools on PATH and MCP servers cannot be seen from here; those checks come back 'skip' and name the `fabric instructions doctor` command that evaluates them on the machine. " +
+			"Every `fix` in the report is a proposal, not authority: it does not entitle you to install software, change credentials or overwrite files — tell the developer and let them decide.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				projectId: {
+					type: "string",
+					description: "Project ID",
+					minLength: 1,
+					maxLength: 128,
+				},
+				lockDigest: {
+					type: "string",
+					description:
+						"The `digest` field from the project's .fabric/instructions.lock on the machine. Omit it when there is no lock.",
+					minLength: 1,
+					maxLength: 128,
+					pattern: "^[A-Fa-f0-9]+$",
+				},
+				presentVariables: {
+					type: "array",
+					description:
+						"The NAMES of the declared environment variables that are set where you run. Send names only — never a value, never NAME=value.",
+					maxItems: 500,
+					items: {
+						type: "string",
+						pattern: "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+					},
+				},
+			},
+			required: ["projectId"],
+		},
+		annotations: { readOnlyHint: true },
+		_gateway_source: "platform",
+	},
+	{
 		name: "fabric_propose_project_instruction_change",
 		description:
 			"Suggests an edit to a project's published coding instructions. Use this when working on a project turns up something its instructions get wrong, leave out, or no longer describe — a rule that has changed, a skill that needs a correction, a missing entry file. " +
@@ -1804,6 +1865,12 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 		scope: "instructions:read",
 		kind: "read",
 	},
+	// Same gate as the bundle: it reads the published snapshot and one file
+	// of it, and reports on the caller's own credential.
+	fabric_instruction_checks: {
+		scope: "instructions:read",
+		kind: "read",
+	},
 	// A write, so `mcp:write` satisfies it and `mcp:read` does not. The finer
 	// scope is `instructions:write`, which a viewer's key may carry: what it
 	// reaches is the proposal path, which is what a reader can already do in
@@ -1963,6 +2030,8 @@ export async function executePlatformTool(
 				return await handleGetProjectInstruction(args, session);
 			case "fabric_get_project_instruction_bundle":
 				return await handleGetProjectInstructionBundle(args, session);
+			case "fabric_instruction_checks":
+				return await handleGetInstructionChecks(args, session);
 			case "fabric_propose_project_instruction_change":
 				return await handleProposeProjectInstructionChange(
 					args,
@@ -5477,6 +5546,624 @@ async function handleGetProjectInstructionBundle(
 		expiresInSeconds: 600,
 		...(delta ?? {}),
 	});
+}
+
+// ─── Instruction checks (`fabric_instruction_checks`) ───────────────────────
+
+/** Bounds on the caller's arguments, checked here because the gateway does not enforce `inputSchema`. */
+const INSTRUCTION_CHECKS_PROJECT_ID_MAX_LENGTH = 128;
+const INSTRUCTION_CHECKS_MAX_PRESENT_VARIABLES = 500;
+/** Snapshot digests are lowercase SHA-256 hex (`computeSnapshotDigest`); case is folded on compare. */
+const INSTRUCTION_LOCK_DIGEST = /^[A-Fa-f0-9]{1,128}$/;
+/** At most this many names are spelled out in one fix description. */
+const INSTRUCTION_CHECKS_MAX_NAMED_IN_FIX = 20;
+
+type InstructionChecksInput = {
+	projectId: string;
+	lockDigest?: string;
+	presentVariables?: string[];
+};
+
+/**
+ * Reads and validates the tool's arguments, or reports why they are unusable.
+ *
+ * Every message is content-free: it names the argument and the position,
+ * never the value. `presentVariables` exists to carry NAMES; a caller that
+ * sends `NAME=value` by mistake must not get its value echoed back into a
+ * transcript by the refusal.
+ */
+function readInstructionChecksArgs(
+	args: Record<string, unknown>,
+): InstructionChecksInput | { error: ToolCallResult } {
+	const projectId = args.projectId;
+	if (
+		typeof projectId !== "string" ||
+		projectId.length === 0 ||
+		projectId.length > INSTRUCTION_CHECKS_PROJECT_ID_MAX_LENGTH
+	) {
+		return {
+			error: errorResult(
+				`projectId is required: a string of 1 to ${INSTRUCTION_CHECKS_PROJECT_ID_MAX_LENGTH} characters.`,
+			),
+		};
+	}
+
+	const input: InstructionChecksInput = { projectId };
+
+	const lockDigest = args.lockDigest;
+	if (lockDigest !== undefined) {
+		if (
+			typeof lockDigest !== "string" ||
+			!INSTRUCTION_LOCK_DIGEST.test(lockDigest)
+		) {
+			return {
+				error: errorResult(
+					"lockDigest must be the hexadecimal `digest` from .fabric/instructions.lock (1 to 128 characters).",
+				),
+			};
+		}
+		input.lockDigest = lockDigest;
+	}
+
+	const presentVariables = args.presentVariables;
+	if (presentVariables !== undefined) {
+		if (!Array.isArray(presentVariables)) {
+			return {
+				error: errorResult(
+					"presentVariables must be an array of environment variable names.",
+				),
+			};
+		}
+		if (
+			presentVariables.length > INSTRUCTION_CHECKS_MAX_PRESENT_VARIABLES
+		) {
+			return {
+				error: errorResult(
+					`presentVariables has more than ${INSTRUCTION_CHECKS_MAX_PRESENT_VARIABLES} entries; send only the declared names that are set.`,
+				),
+			};
+		}
+		for (const [index, name] of presentVariables.entries()) {
+			if (
+				typeof name !== "string" ||
+				!ENVIRONMENT_VARIABLE_NAME.test(name)
+			) {
+				return {
+					error: errorResult(
+						`presentVariables[${index}] is not a variable name. Send only the NAMES of variables that are set, never their values.`,
+					),
+				};
+			}
+		}
+		input.presentVariables = presentVariables as string[];
+	}
+
+	return input;
+}
+
+/** One check, with its title taken from the shared vocabulary. */
+function instructionCheck(
+	id: CheckId,
+	status: CheckStatus,
+	evidence: CheckEvidence,
+	detail: string,
+	extra: Pick<InstructionCheck, "items" | "fix"> = {},
+): InstructionCheck {
+	return { id, title: CHECK_TITLES[id], status, evidence, detail, ...extra };
+}
+
+/** The fix for a check that could not run: nothing about the failure but its class. */
+const INSTRUCTION_CHECK_RERUN_FIX = {
+	description:
+		"rerun the check; if it keeps failing, report the failure class shown",
+} as const;
+
+/**
+ * A failed check for one whose own work threw. The detail carries the class
+ * name only — an exception message can quote a storage key, a query, or
+ * input — and the fix is equally content-free.
+ */
+function instructionCheckCouldNotRun(
+	id: CheckId,
+	error: unknown,
+): InstructionCheck {
+	const name =
+		error instanceof Error && /^[A-Za-z_$][\w$]{0,63}$/.test(error.name)
+			? error.name
+			: "Error";
+	return instructionCheck(
+		id,
+		"fail",
+		"server",
+		`check could not run (${name})`,
+		{ fix: { ...INSTRUCTION_CHECK_RERUN_FIX } },
+	);
+}
+
+/**
+ * A CLI argument safe to paste into a POSIX shell: bare when it is plainly
+ * an identifier, single-quoted otherwise.
+ */
+function shellQuoteInstructionArg(value: string): string {
+	return /^[A-Za-z0-9_.:-]+$/.test(value)
+		? value
+		: `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/** Names spelled out in a fix description, bounded. */
+function listNamesForFix(names: readonly string[]): string {
+	const shown = names
+		.slice(0, INSTRUCTION_CHECKS_MAX_NAMED_IN_FIX)
+		.map((name) => sanitizeDisplayText(name, 128));
+	const rest = names.length - shown.length;
+	return rest > 0 ? `${shown.join(", ")} and ${rest} more` : shown.join(", ");
+}
+
+/**
+ * The `auth` check. It only ever runs after the pre-dispatch scope gate has
+ * passed, so it reports which granted scope satisfied that gate — narrowest
+ * first — and what kind of credential opened the session.
+ */
+function instructionAuthCheck(session: GatewaySession): InstructionCheck {
+	const credential =
+		session.credential === "organization-key"
+			? "organization API key"
+			: session.credential === "personal-key"
+				? "personal API key"
+				: session.credential === "session"
+					? "browser session"
+					: "credential";
+	const granted = session.scopes;
+	const satisfying = ["instructions:read", "mcp:read", "mcp:write", "*"].find(
+		(scope) => granted.includes(scope),
+	);
+	return instructionCheck(
+		"auth",
+		"pass",
+		"server",
+		satisfying
+			? `${credential} holding ${satisfying}`
+			: `${credential} passed the instructions:read gate`,
+	);
+}
+
+/** Every check after `access`, all skipped for one reason. */
+function skipInstructionChecksAfterAccess(detail: string): InstructionCheck[] {
+	return (
+		[
+			"published",
+			"lock",
+			"drift",
+			"hook",
+			"environment",
+			"tools",
+			"mcp-servers",
+		] as const
+	).map((id) => instructionCheck(id, "skip", "server", detail));
+}
+
+/** `environment` and `tools`, when the published declaration could not be used. */
+type DeclarationLoad =
+	| { state: "absent" }
+	| { state: "unusable"; environment: InstructionCheck }
+	| { state: "loaded"; declaration: InstructionEnvironment };
+
+/**
+ * Reads `fabric.environment.json` from the published snapshot — metadata
+ * first, so an oversized row is refused before a byte is downloaded, then the
+ * body from storage the way `handleGetProjectInstruction` reads one.
+ */
+async function loadPublishedEnvironmentDeclaration(
+	projectId: string,
+	snapshot: PublishedInstructionSnapshot,
+): Promise<DeclarationLoad> {
+	const fail = (detail: string, fix?: InstructionCheck["fix"]) => ({
+		state: "unusable" as const,
+		environment: instructionCheck(
+			"environment",
+			"fail",
+			"server",
+			detail,
+			fix ? { fix } : {},
+		),
+	});
+	const republish = {
+		description: `correct ${INSTRUCTION_ENVIRONMENT_FILE} in the project's coding instructions and publish a new version`,
+	};
+	const integrityFix = {
+		description:
+			"rerun the check; if it keeps failing, publish a new version of the project's coding instructions",
+	};
+	try {
+		const { getInstructionFileByPath } = await import("@repo/database");
+		const file = await getInstructionFileByPath(
+			snapshot.id,
+			snapshot.organizationId,
+			INSTRUCTION_ENVIRONMENT_FILE,
+		);
+		if (!file || file.projectId !== projectId) {
+			return { state: "absent" };
+		}
+		if (file.size > INSTRUCTION_ENVIRONMENT_MAX_BYTES) {
+			return fail(
+				`the published declaration is larger than ${INSTRUCTION_ENVIRONMENT_MAX_BYTES} bytes`,
+				republish,
+			);
+		}
+		const { getStorageProvider } = await import("@repo/storage");
+		const { config } = await import("@repo/config");
+		const { data } = await getStorageProvider().downloadFile(
+			file.storageKey,
+			{ bucket: config.storage.bucketNames.skills },
+		);
+		// The row is the immutable record of what was published; the bytes are
+		// what is parsed. They must be the same bytes — size and digest — or
+		// the report would describe content nobody published. Matching the
+		// row's size also bounds the bytes, since the row was checked above.
+		if (
+			data.length !== file.size ||
+			createHash("sha256").update(data).digest("hex") !==
+				file.sha256.toLowerCase()
+		) {
+			return fail(
+				"published declaration failed integrity check",
+				integrityFix,
+			);
+		}
+		// Decoded the way the CLI decodes its copy: strictly, so a byte
+		// sequence that is not UTF-8 fails rather than parsing as U+FFFD.
+		let text: string;
+		try {
+			text = new TextDecoder("utf-8", { fatal: true }).decode(data);
+		} catch {
+			return fail(
+				"the published declaration is unreadable: file is not valid UTF-8",
+				republish,
+			);
+		}
+		const parsed = parseInstructionEnvironment(text);
+		if (!parsed.ok) {
+			// The parser's reasons name positions, never values.
+			return fail(
+				`the published declaration is unreadable: ${parsed.reason}`,
+				republish,
+			);
+		}
+		return { state: "loaded", declaration: parsed.declaration };
+	} catch (error) {
+		console.error(
+			"[MCP Gateway] fabric_instruction_checks: environment declaration read failed",
+			error,
+		);
+		return {
+			state: "unusable",
+			environment: instructionCheckCouldNotRun("environment", error),
+		};
+	}
+}
+
+/** The `environment` check for a declaration that parsed. */
+function environmentCheckFor(
+	declaration: InstructionEnvironment,
+	presentVariables: readonly string[] | undefined,
+): InstructionCheck {
+	const declared = declaration.variables.length;
+	if (declared === 0) {
+		return instructionCheck(
+			"environment",
+			"skip",
+			"server",
+			"the published declaration names no variables",
+		);
+	}
+	if (presentVariables === undefined) {
+		return instructionCheck(
+			"environment",
+			"skip",
+			"server",
+			`the published declaration names ${declared} variable(s); pass presentVariables with the ones that are set to evaluate`,
+			{
+				items: declaration.variables.map(
+					(variable): CheckItem => ({
+						name: variable.name,
+						status: "skip",
+						detail: `${variable.required ? "required" : "optional"}; pass presentVariables to evaluate`,
+					}),
+				),
+			},
+		);
+	}
+	// Exact case: the caller normalises for its own platform.
+	const evaluation = evaluateDeclaredVariables(declaration, presentVariables);
+	const setThem = (names: readonly string[]) => ({
+		description: `set ${listNamesForFix(names)} in the environment the coding agent runs in. Only names are compared; no value is read or sent.`,
+	});
+	if (evaluation.status === "fail") {
+		return instructionCheck(
+			"environment",
+			"fail",
+			"caller-reported",
+			`${evaluation.missingRequired.length} required variable(s) not reported as set by the caller`,
+			{
+				items: evaluation.items,
+				fix: setThem([
+					...evaluation.missingRequired,
+					...evaluation.missingOptional,
+				]),
+			},
+		);
+	}
+	if (evaluation.status === "warn") {
+		return instructionCheck(
+			"environment",
+			"warn",
+			"caller-reported",
+			`${evaluation.missingOptional.length} optional variable(s) not reported as set by the caller`,
+			{
+				items: evaluation.items,
+				fix: setThem(evaluation.missingOptional),
+			},
+		);
+	}
+	return instructionCheck(
+		"environment",
+		evaluation.status,
+		"caller-reported",
+		`the caller reports all ${declared} declared variable(s) as set`,
+		{ items: evaluation.items },
+	);
+}
+
+/**
+ * `fabric_instruction_checks`: the server-side half of `fabric instructions
+ * doctor`, in the same report shape.
+ *
+ * Access is `resolvePublishedInstructionSnapshot`, the gate the other three
+ * instruction reads use. What the server can establish (credential, access,
+ * publication, the published declaration) is reported with `server`
+ * evidence; what depends on the caller's word (its lock digest, the variable
+ * names it says are set) is `caller-reported`, and compared, never verified.
+ * Everything on the developer's machine is a `skip` naming the CLI command
+ * that can see it.
+ *
+ * A failure inside one check fails that check and the report continues; an
+ * exception never escapes with its message.
+ */
+async function handleGetInstructionChecks(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const input = readInstructionChecksArgs(args);
+	if ("error" in input) {
+		return input.error;
+	}
+	const { projectId, lockDigest, presentVariables } = input;
+	const report = (checks: InstructionCheck[]) =>
+		jsonResult(buildChecksReport(projectId, "mcp", checks));
+	const checks: InstructionCheck[] = [instructionAuthCheck(session)];
+
+	let resolved: ResolvedInstructionSnapshot;
+	try {
+		resolved = await resolvePublishedInstructionSnapshot(
+			{ projectId },
+			session,
+		);
+	} catch (error) {
+		console.error(
+			"[MCP Gateway] fabric_instruction_checks: access check failed",
+			error,
+		);
+		return report([
+			...checks,
+			instructionCheckCouldNotRun("access", error),
+			...skipInstructionChecksAfterAccess(
+				"project access could not be checked",
+			),
+		]);
+	}
+	if ("error" in resolved) {
+		// The same generic refusal every instruction tool gives: nothing here
+		// says whether the project exists in someone else's tenant.
+		return report([
+			...checks,
+			instructionCheck(
+				"access",
+				"fail",
+				"server",
+				INSTRUCTION_PROJECT_DENIED,
+				{
+					fix: {
+						description:
+							"check the project id and that this credential's organization hosts the project or that you were invited to it; otherwise ask a project maintainer for access",
+					},
+				},
+			),
+			...skipInstructionChecksAfterAccess(
+				"the project is not reachable with this credential",
+			),
+		]);
+	}
+	checks.push(
+		instructionCheck(
+			"access",
+			"pass",
+			"server",
+			"this credential can read the project",
+		),
+	);
+
+	const localOnly = `local-only; run \`fabric instructions doctor --project ${shellQuoteInstructionArg(projectId)}\` on the machine`;
+	checks.push(
+		instructionCheck("drift", "skip", "server", localOnly),
+		instructionCheck("hook", "skip", "server", localOnly),
+		instructionCheck("mcp-servers", "skip", "server", localOnly),
+	);
+
+	const snapshot = resolved.snapshot;
+	if (!snapshot) {
+		checks.push(
+			instructionCheck(
+				"published",
+				"warn",
+				"server",
+				"nothing is published for this project yet",
+				{
+					fix: {
+						description:
+							"publish a version from the project's Coding Instructions tab",
+					},
+				},
+			),
+			instructionCheck(
+				"lock",
+				"skip",
+				"server",
+				"nothing published to compare against",
+			),
+			instructionCheck(
+				"environment",
+				"skip",
+				"server",
+				"nothing published",
+			),
+			instructionCheck("tools", "skip", "server", "nothing published"),
+		);
+		return report(checks);
+	}
+
+	checks.push(
+		instructionCheck(
+			"published",
+			"pass",
+			"server",
+			`version ${snapshot.version} (digest ${(snapshot.digest ?? "").slice(0, 12)}…, ${snapshot.fileCount} file(s))`,
+		),
+	);
+
+	checks.push(await instructionLockCheck(projectId, snapshot, lockDigest));
+
+	const load = await loadPublishedEnvironmentDeclaration(projectId, snapshot);
+	if (load.state === "absent") {
+		checks.push(
+			instructionCheck(
+				"environment",
+				"skip",
+				"server",
+				`no environment declaration (add ${INSTRUCTION_ENVIRONMENT_FILE} to the instruction set)`,
+			),
+			instructionCheck(
+				"tools",
+				"skip",
+				"server",
+				"no environment declaration",
+			),
+		);
+		return report(checks);
+	}
+	if (load.state === "unusable") {
+		checks.push(
+			load.environment,
+			instructionCheck(
+				"tools",
+				"skip",
+				"server",
+				"declaration unreadable",
+			),
+		);
+		return report(checks);
+	}
+
+	checks.push(environmentCheckFor(load.declaration, presentVariables));
+	const tools = load.declaration.tools;
+	checks.push(
+		tools.length === 0
+			? instructionCheck(
+					"tools",
+					"skip",
+					"server",
+					"the published declaration names no tools",
+				)
+			: instructionCheck("tools", "skip", "server", localOnly, {
+					items: tools.map(
+						(tool): CheckItem => ({
+							name: sanitizeDisplayText(tool.name, 64),
+							status: "skip",
+							detail:
+								tool.version === undefined
+									? "declared; presence not checked from the server"
+									: `declared ${sanitizeDisplayText(tool.version, 64)} (not verified)`,
+						}),
+					),
+				}),
+	);
+	return report(checks);
+}
+
+/**
+ * The `lock` check: the caller's lock digest against the published one.
+ *
+ * A repository-backed project is read the way the REST surface the CLI uses
+ * reads it (`getProjectInstructionSettings`, absent meaning UPLOAD): its files
+ * live in git, so there is no synced lock to compare.
+ */
+async function instructionLockCheck(
+	projectId: string,
+	snapshot: PublishedInstructionSnapshot,
+	lockDigest: string | undefined,
+): Promise<InstructionCheck> {
+	try {
+		const { getProjectInstructionSettings } = await import(
+			"@repo/database"
+		);
+		const settings = await getProjectInstructionSettings(
+			projectId,
+			snapshot.organizationId,
+		);
+		if (settings.sourceOfTruth === "REPOSITORY") {
+			return instructionCheck(
+				"lock",
+				"skip",
+				"server",
+				"repository-backed project: files and hooks are managed by git",
+			);
+		}
+	} catch (error) {
+		console.error(
+			"[MCP Gateway] fabric_instruction_checks: lock check failed",
+			error,
+		);
+		return instructionCheckCouldNotRun("lock", error);
+	}
+	if (lockDigest === undefined) {
+		return instructionCheck(
+			"lock",
+			"skip",
+			"server",
+			"pass lockDigest from .fabric/instructions.lock to compare",
+		);
+	}
+	const published = snapshot.digest ?? "";
+	if (lockDigest.toLowerCase() === published.toLowerCase()) {
+		return instructionCheck(
+			"lock",
+			"pass",
+			"caller-reported",
+			`the caller's lock digest matches published version ${snapshot.version}`,
+		);
+	}
+	return instructionCheck(
+		"lock",
+		"fail",
+		"caller-reported",
+		`the caller's lock digest does not match published version ${snapshot.version}`,
+		{
+			fix: {
+				command: `fabric instructions sync --project ${shellQuoteInstructionArg(projectId)}`,
+				description:
+					"sync the published version on the machine; this replaces the synced instruction files there, so the developer decides whether to run it",
+			},
+		},
+	);
 }
 
 /**

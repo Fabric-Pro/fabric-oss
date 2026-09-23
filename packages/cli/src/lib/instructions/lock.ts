@@ -24,7 +24,7 @@
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { writeFileSafely } from "./safe-write.js";
+import { readFileSafely, writeFileSafely } from "./safe-write.js";
 
 export const LOCK_DIRECTORY = ".fabric";
 export const LOCK_FILENAME = "instructions.lock";
@@ -79,22 +79,80 @@ export async function readLock(
 		}
 		throw error;
 	}
+	return parseLock(raw, file);
+}
 
+/**
+ * The validating half of `readLock`: the text of a lock file, as a lock, or
+ * an error saying why it is not one. `source` names the file in that error.
+ */
+export function parseLock(
+	text: string,
+	source: string = LOCK_RELATIVE_PATH,
+): InstructionsLock {
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(raw);
+		parsed = JSON.parse(text);
 	} catch {
 		throw new Error(
-			`${file} is unreadable: it is not valid JSON. Delete it to start from a clean sync.`,
+			`${source} is unreadable: it is not valid JSON. Delete it to start from a clean sync.`,
 		);
 	}
 	const problem = lockProblem(parsed);
 	if (problem !== null) {
 		throw new Error(
-			`${file} is unreadable: ${problem}. Delete it to start from a clean sync.`,
+			`${source} is unreadable: ${problem}. Delete it to start from a clean sync.`,
 		);
 	}
 	return parsed as InstructionsLock;
+}
+
+/**
+ * `readFileSafely` refused the lock before a byte of it was parsed: a
+ * symlinked `.fabric` or lock, something that is not a regular file, or a
+ * file over the caller's bound. The guard's own error is the `cause`.
+ */
+export class LockReadRefusedError extends Error {
+	constructor(options: { cause: unknown }) {
+		super(`${LOCK_RELATIVE_PATH} could not be read safely.`, options);
+		this.name = "LockReadRefusedError";
+	}
+}
+
+/**
+ * `readLock` for a reader that must not be steered outside `root`.
+ *
+ * `readLock` opens `<destination>/.fabric/instructions.lock` with a plain
+ * `readFile`, which follows a symlinked `.fabric` or lock to wherever it
+ * points and reads the whole file. This goes through `readFileSafely`
+ * instead: descriptor-based, refusing a symlinked ancestor or final
+ * component, refusing anything but a regular file, and reading at most
+ * `maxBytes`. A refusal throws `LockReadRefusedError`; a file that reads but
+ * does not validate throws `parseLock`'s error. `root` must already be
+ * canonical, as for every guarded read.
+ */
+export async function readLockSafely(
+	root: string,
+	options: { maxBytes: number },
+): Promise<InstructionsLock | null> {
+	let read: Awaited<ReturnType<typeof readFileSafely>>;
+	try {
+		read = await readFileSafely(root, LOCK_RELATIVE_PATH, {
+			maxBytes: options.maxBytes,
+		});
+	} catch (error) {
+		throw new LockReadRefusedError({ cause: error });
+	}
+	if (read === null) {
+		return null;
+	}
+	// The decoder `readFile(file, "utf8")` uses, so both readers see the same text.
+	const text = Buffer.from(
+		read.bytes.buffer,
+		read.bytes.byteOffset,
+		read.bytes.byteLength,
+	).toString("utf8");
+	return parseLock(text, lockPath(root));
 }
 
 /** Pretty JSON with LF endings and a trailing newline, so a diff of it reads. */
