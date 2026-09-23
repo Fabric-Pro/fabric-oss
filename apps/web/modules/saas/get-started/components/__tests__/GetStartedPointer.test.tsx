@@ -495,3 +495,43 @@ describe("GetStartedPointer — callout disabled (mobile sheet copy)", () => {
 		).toBeNull();
 	});
 });
+
+describe("GetStartedPointer — action row containment", () => {
+	it("keeps the callout wide enough for its actions, and the row wrap-tolerant", async () => {
+		// The primary CTA used to render outside the callout's right edge.
+		// jsdom computes no layout, so the overflow itself is not observable
+		// here — this pins the two structural causes instead, and both matter:
+		//
+		// Width is the actual repair. The two actions measure ~284px, and the
+		// popover's own `p-4` leaves the content box 32px narrower than its
+		// width class — at the previous `w-72` that was 256px, so the row spilled
+		// out of the card. Asserting the width class is a deliberate tripwire:
+		// resizing this callout should force a re-measurement that the actions
+		// still fit, rather than silently reintroducing the overflow.
+		//
+		// `flex-wrap` is the safety net. The shared Button base carries
+		// `whitespace-nowrap shrink-0`, so neither action can wrap its label or
+		// compress; without it a row wider than the content box overflows the
+		// card instead of reflowing onto a second line.
+		getState.mockResolvedValue(
+			makeOnboardingStateData({ eligibleForPointer: true }),
+		);
+		renderPointer();
+		expect(await screen.findByText(TITLE)).toBeInTheDocument();
+
+		const actionRow = screen.getByRole("button", {
+			name: CTA,
+		}).parentElement;
+
+		// Confirm this really is the row holding both actions before asserting
+		// on it — a `closest(".flex")` lookup would be ambiguous, since the
+		// Button's own base class carries the `inline-flex` token.
+		expect(actionRow).not.toBeNull();
+		expect(actionRow).toContainElement(
+			screen.getByRole("button", { name: DONT_SHOW }),
+		);
+		expect(actionRow).toHaveClass("flex-wrap");
+		// The row's parent is the popover content box it has to fit inside.
+		expect(actionRow?.parentElement).toHaveClass("w-[22rem]");
+	});
+});
