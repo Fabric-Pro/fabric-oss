@@ -177,6 +177,26 @@ describe("gatherReadinessEvidence — documents in flight", () => {
 	});
 });
 
+describe("gatherReadinessEvidence — context in flight", () => {
+	/**
+	 * Creating a document as-is keeps the pasted text as a context row linked to
+	 * that document. Nothing ever embeds it, so it stays PENDING for good, and
+	 * counting it held "Add context" In Progress on a project with no sources.
+	 */
+	it("leaves out the text behind a document created as-is", async () => {
+		await gatherReadinessEvidence("p1");
+
+		expect(mockDb.projectContext.findMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					extractionStatus: { in: ["PENDING", "EXTRACTING"] },
+					importedDocuments: { none: {} },
+				}),
+			}),
+		);
+	});
+});
+
 describe("gatherReadinessEvidence — codebase connection", () => {
 	it("counts an ACTIVE repository integration as a connected codebase", async () => {
 		mockDb.projectRepositoryIntegration.count.mockResolvedValue(1);
