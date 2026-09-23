@@ -140,6 +140,12 @@ function healthyRows(): Rows {
 			codeAnalysisStatus: null,
 			scanConfig: null,
 			ragSettings: { codeSearchEnabled: true },
+			_count: {
+				linkedSlackChannels: 1,
+				linkedTeamsChannels: 0,
+				linkedTeamsChats: 0,
+			},
+			contexts: [{ id: "context_example" }],
 		},
 		codeIndexes: [
 			{
@@ -837,5 +843,76 @@ describe("sources on their way, and uploads", () => {
 		});
 		expect(evidence.context.product).toBe(2);
 		expect(evidence.context.technical).toBe(0);
+	});
+});
+
+describe("Work Capture's linked conversations", () => {
+	it("sums Slack channels, Teams channels and Teams chats", async () => {
+		const evidence = await gather({
+			project: {
+				...healthyRows().project,
+				_count: {
+					linkedSlackChannels: 2,
+					linkedTeamsChannels: 1,
+					linkedTeamsChats: 3,
+				},
+			},
+		});
+		expect(evidence.chat.linkedChannelCount).toBe(6);
+	});
+
+	it("asks for all three counts on the project read, not in extra round trips", async () => {
+		await gather();
+		const [args] = dbMock.project.findUnique.mock.calls[0];
+		expect(args.select._count).toEqual({
+			select: {
+				linkedSlackChannels: true,
+				linkedTeamsChannels: true,
+				linkedTeamsChats: true,
+			},
+		});
+	});
+});
+
+describe("what the living-document refresh can read", () => {
+	it("is readable when the probe finds a row, and not when it finds none", async () => {
+		expect((await gather()).refreshSources.readable).toBe(true);
+		const empty = await gather({
+			project: { ...healthyRows().project, contexts: [] },
+		});
+		expect(empty.refreshSources.readable).toBe(false);
+	});
+
+	// The filter runs in Postgres, so it is asserted on the query sent.
+	it("probes for one row across exactly the refresh's two inputs", async () => {
+		await gather();
+		const [args] = dbMock.project.findUnique.mock.calls[0];
+		const probe = args.select.contexts;
+
+		expect(probe.take).toBe(1);
+		expect(probe.select).toEqual({ id: true });
+		expect(probe.where.OR).toEqual([
+			{
+				// Retrieval skips integration pointers by kind, and the
+				// indexer's vectors never resolve to a row — an indexed
+				// repository is not a refresh input.
+				type: {
+					notIn: ["INTEGRATION", "CODE_FILE", "CODE_FILE_SUMMARY"],
+				},
+				OR: [
+					{ embeddedAt: { not: null } },
+					{ extractionStatus: "COMPLETED" },
+				],
+			},
+			// Linked conversations are fetched live, at any status.
+			{
+				type: "INTEGRATION",
+				metadata: { path: ["provider"], equals: "SLACK" },
+			},
+			{
+				type: "INTEGRATION",
+				metadata: { path: ["provider"], equals: "MICROSOFT_TEAMS" },
+			},
+		]);
 	});
 });

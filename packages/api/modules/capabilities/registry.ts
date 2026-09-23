@@ -20,15 +20,9 @@
  * **Anything the card puts out of scope**: the readiness checklist, request
  * help, permissions, broad empty-state redesign, and the agent chat surfaces.
  *
- * **Rows with no rule yet, pending a product decision** — not overlooked, and
- * not decided either:
- *
- * - Work Capture (chat-channel capture: FR76-81).
- * - Automation and living-document refresh (FR72-75).
- * - The Settings PM Sync toggle and terminal-status rows.
- *
- * Each needs a call on what the gate should say before a rule is worth writing,
- * and those calls are open with the product owner.
+ * **The Settings PM Sync toggle and terminal-status rows.** Decided — disabled
+ * until a project-management tool is connected — and moved to the Project Suite
+ * 3A card (#2204), which builds the PM surfaces those rows gate.
  *
  * **Paths that run ungated on purpose.** The scheduled newsletter send, the
  * scheduled document refresh and the PRD-to-tasks pipeline's child generations
@@ -531,6 +525,54 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 			}),
 		fingerprint: groundingFacts,
 	},
+	{
+		key: "documents.auto-refresh",
+		label: "Refresh a living document automatically",
+		surface: "documents",
+		// Warnings only, by product decision: a refresh with nothing to read
+		// simply finds nothing to change, which costs a cycle and harms nothing,
+		// so the toggle stays usable and the owner is told what it will find.
+		//
+		// Built from exactly what a refresh reads — retrieved context rows and
+		// the linked Slack and Teams conversations fetched live — and nothing
+		// else. Not the codebase: its vectors never resolve in that retrieval.
+		// Not features or decision threads either: no story is embedded, and a
+		// document refresh passes no story to fetch threads for. Retrieval
+		// also skips context older than the document itself; that is a fact
+		// about one document, and this gate is project-wide, so it answers
+		// "is there anything at all" rather than "anything new for this one".
+		evaluate: (e, now) => {
+			// Processing first. A source still being read is on its way, so
+			// "nothing to read" would be false for a project whose only source
+			// is that one — and for a project that has others, a refresh that
+			// runs now reads them without it. A stalled ingestion is not on its
+			// way, which is why it falls through.
+			if (
+				e.context.processing.running &&
+				!isStalled(e.context.processing, "backgroundJob", now)
+			) {
+				return {
+					state: "WARNING",
+					reasonKey: "documents.refresh-sources-processing",
+					blockingDependency: "sources still being processed",
+					remedy: "WAIT",
+				};
+			}
+			if (!e.refreshSources.readable) {
+				return {
+					state: "WARNING",
+					reasonKey: "documents.refresh-nothing-to-read",
+					blockingDependency: "a source a refresh can read",
+					remedy: "ADD_CONTEXT",
+				};
+			}
+			return AVAILABLE;
+		},
+		fingerprint: (e) => [
+			e.context.processing.running ? "processing" : "idle",
+			e.refreshSources.readable ? "readable" : "nothing-readable",
+		],
+	},
 
 	// ------------------------------------------------------------------ Context
 	{
@@ -784,6 +826,28 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 			return AVAILABLE;
 		},
 		fingerprint: codebaseFacts,
+	},
+	{
+		key: "settings.work-capture",
+		label: "Capture work from chat",
+		surface: "settings",
+		// A warning, never a block — this page is where a conversation gets
+		// linked, so taking it away would remove the way out. No remedy: the
+		// link controls are the cards directly beneath the banner, and a
+		// button pointing back at them would be the same section twice.
+		evaluate: (e) =>
+			e.chat.linkedChannelCount > 0
+				? AVAILABLE
+				: {
+						state: "WARNING",
+						reasonKey: "settings.no-linked-channel",
+						blockingDependency:
+							"a linked Slack or Teams conversation",
+						remedy: null,
+					},
+		fingerprint: (e) => [
+			e.chat.linkedChannelCount > 0 ? "linked" : "none-linked",
+		],
 	},
 ];
 

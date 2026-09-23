@@ -335,6 +335,122 @@ describe("documents", () => {
 	});
 });
 
+describe("living-document refresh", () => {
+	const KEY = "documents.auto-refresh";
+	const ingesting = (minutesAgo: number) =>
+		runningJob(new Date(NOW.getTime() - minutesAgo * 60 * 1000));
+
+	it("documents.auto-refresh is available when the refresh has something to read", () => {
+		expect(stateOf(KEY)).toBe("AVAILABLE");
+	});
+
+	it("documents.auto-refresh warns, never blocks, when there is nothing to read", () => {
+		const gate = gateOf(
+			KEY,
+			evidenceWith({ refreshSources: { readable: false } }),
+		);
+		expect(gate.state).toBe("WARNING");
+		expect(gate.reasonKey).toBe("documents.refresh-nothing-to-read");
+		expect(gate.remedy).toBe("ADD_CONTEXT");
+	});
+
+	it("documents.auto-refresh warns while sources are still processing", () => {
+		const gate = gateOf(
+			KEY,
+			evidenceWith({ context: { processing: ingesting(1) } }),
+		);
+		expect(gate.state).toBe("WARNING");
+		expect(gate.reasonKey).toBe("documents.refresh-sources-processing");
+		expect(gate.remedy).toBe("WAIT");
+	});
+
+	it("says a source is on its way rather than that there is nothing to read", () => {
+		// The project's only source is the one being read. "Nothing to read"
+		// would tell someone to add what they just added.
+		const gate = gateOf(
+			KEY,
+			evidenceWith({
+				context: { processing: ingesting(1) },
+				refreshSources: { readable: false },
+			}),
+		);
+		expect(gate.reasonKey).toBe("documents.refresh-sources-processing");
+	});
+
+	it("does not keep saying 'still processing' over an ingestion that stalled", () => {
+		const gate = gateOf(
+			KEY,
+			evidenceWith({
+				context: { processing: ingesting(60) },
+				refreshSources: { readable: false },
+			}),
+		);
+		expect(gate.reasonKey).toBe("documents.refresh-nothing-to-read");
+		expect(
+			stateOf(
+				KEY,
+				evidenceWith({ context: { processing: ingesting(60) } }),
+			),
+		).toBe("AVAILABLE");
+	});
+
+	it("ignores the codebase and every other context count — the refresh reads neither", () => {
+		// An indexed repository never reaches the refresh's retrieval, so it
+		// cannot stand in for a source; a context count the refresh does not
+		// read cannot either.
+		const gate = gateOf(
+			KEY,
+			evidenceWith({
+				refreshSources: { readable: false },
+				context: { total: 9, technical: 5, product: 4 },
+			}),
+		);
+		expect(gate.reasonKey).toBe("documents.refresh-nothing-to-read");
+		expect(
+			stateOf(
+				KEY,
+				evidenceWith({
+					codebase: {
+						connected: false,
+						usable: false,
+						integrationStatus: null,
+					},
+					context: { total: 0, technical: 0, product: 0 },
+				}),
+			),
+		).toBe("AVAILABLE");
+	});
+
+	it("moves its fingerprint only on the facts it reads", () => {
+		const fingerprint = gateOf(
+			KEY,
+			evidenceWith({ refreshSources: { readable: false } }),
+		).fingerprint;
+
+		expect(
+			gateOf(
+				KEY,
+				evidenceWith({
+					refreshSources: { readable: false },
+					codebase: { usable: false, healthy: false },
+					context: { total: 0, product: 0 },
+					chat: { linkedChannelCount: 0 },
+				}),
+			).fingerprint,
+		).toBe(fingerprint);
+		expect(
+			gateOf(
+				KEY,
+				evidenceWith({
+					refreshSources: { readable: false },
+					context: { processing: ingesting(1) },
+				}),
+			).fingerprint,
+		).not.toBe(fingerprint);
+		expect(gateOf(KEY).fingerprint).not.toBe(fingerprint);
+	});
+});
+
 describe("context", () => {
 	it("context.use-linked-source shows processing while ingestion runs", () => {
 		expect(
@@ -491,6 +607,49 @@ describe("settings", () => {
 				evidenceWith({ codebase: { healthy: false } }),
 			),
 		).not.toBe("AVAILABLE");
+	});
+
+	it("settings.work-capture is available once a conversation is linked", () => {
+		expect(
+			stateOf(
+				"settings.work-capture",
+				evidenceWith({ chat: { linkedChannelCount: 1 } }),
+			),
+		).toBe("AVAILABLE");
+	});
+
+	it("settings.work-capture warns, with no remedy button, when nothing is linked", () => {
+		// The link controls sit directly beneath the banner; a button pointing
+		// back at them would be the same section twice.
+		const gate = gateOf(
+			"settings.work-capture",
+			evidenceWith({ chat: { linkedChannelCount: 0 } }),
+		);
+		expect(gate.state).toBe("WARNING");
+		expect(gate.reasonKey).toBe("settings.no-linked-channel");
+		expect(gate.remedy).toBeNull();
+	});
+
+	it("settings.work-capture fingerprints on being linked, and nothing else", () => {
+		const none = (over: Parameters<typeof evidenceWith>[0] = {}) =>
+			gateOf(
+				"settings.work-capture",
+				evidenceWith({ ...over, chat: { linkedChannelCount: 0 } }),
+			).fingerprint;
+
+		expect(
+			none({
+				codebase: { usable: false },
+				refreshSources: { readable: false },
+				context: { total: 0 },
+			}),
+		).toBe(none());
+		expect(
+			gateOf(
+				"settings.work-capture",
+				evidenceWith({ chat: { linkedChannelCount: 3 } }),
+			).fingerprint,
+		).not.toBe(none());
 	});
 });
 

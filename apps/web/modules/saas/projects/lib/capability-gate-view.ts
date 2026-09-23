@@ -252,6 +252,8 @@ const KNOWN_REASON_KEYS: ReadonlySet<string> = new Set([
 	"documents.no-api-source",
 	"documents.no-requirements-source",
 	"documents.source-processing",
+	"documents.refresh-sources-processing",
+	"documents.refresh-nothing-to-read",
 	// A scan block does not imply a repository problem: the rule consults the
 	// codebase only when a repository-reading engine is enabled, and it
 	// collapses its prerequisites by severity rather than reporting the first
@@ -264,6 +266,7 @@ const KNOWN_REASON_KEYS: ReadonlySet<string> = new Set([
 	"settings.credentials-expired",
 	"settings.repository-unreachable",
 	"settings.connection-degraded",
+	"settings.no-linked-channel",
 ]);
 
 /**
