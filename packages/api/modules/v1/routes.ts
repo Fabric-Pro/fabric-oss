@@ -15,6 +15,7 @@
  *   POST /projects/:id/instructions/changes  → Propose a coding-instructions change, for review
  *   POST /projects/:id/instructions/versions → Publish a coding-instructions change directly
  *   PUT  /projects/:id/contexts/synced-files → Push one knowledge file into the project's Context by path
+ *   DELETE /projects/:id/contexts/synced-files → Delete one synced knowledge file by path, in the version named
  */
 
 import { createHash, randomBytes } from "node:crypto";

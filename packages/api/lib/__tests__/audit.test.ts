@@ -46,7 +46,11 @@ vi.mock("@repo/auth/lib/client-ip", () => ({
 		mocks.getTrustedClientIpMock(headers),
 }));
 
-import { recordAuditFromRequest, wireAuditObservability } from "../audit";
+import {
+	auditRequestFields,
+	recordAuditFromRequest,
+	wireAuditObservability,
+} from "../audit";
 
 beforeEach(() => {
 	mocks.recordAuditMock.mockReset();
@@ -297,6 +301,80 @@ describe("recordAuditFromRequest - correlation ID (D16)", () => {
 			correlationId: string | null;
 		};
 		expect(arg.correlationId).toBeNull();
+	});
+});
+
+describe("auditRequestFields — the request half of a row written elsewhere", () => {
+	it("derives what recordAuditFromRequest records, as plain values", () => {
+		const ctx = buildContext({
+			ip: "198.51.100.7",
+			userAgent: "fabric-cli/1.0",
+			requestId: "req-abc",
+			correlationId: "corr-abc",
+			session: {
+				id: "sess-1",
+				impersonatedBy: "admin-1",
+				activeOrganizationId: "org-1",
+			},
+		});
+
+		const fields = auditRequestFields(ctx);
+		recordAuditFromRequest(ctx, { action: "auth.login.success" });
+		const recorded = mocks.recordAuditMock.mock.calls[0]?.[0] as Record<
+			string,
+			unknown
+		> & { actor: { impersonatedById: unknown } };
+
+		expect(fields).toEqual({
+			impersonatedById: "admin-1",
+			ipAddress: "198.51.100.7",
+			userAgent: "fabric-cli/1.0",
+			requestId: "req-abc",
+			sessionId: "sess-1",
+			correlationId: "corr-abc",
+		});
+		expect(fields).toEqual({
+			impersonatedById: recorded.actor.impersonatedById,
+			ipAddress: recorded.ipAddress,
+			userAgent: recorded.userAgent,
+			requestId: recorded.requestId,
+			sessionId: recorded.sessionId,
+			correlationId: recorded.correlationId,
+		});
+	});
+
+	it("never carries a header, a cookie or a token: it travels through workflow history", () => {
+		const ctx = buildContext({ userAgent: "fabric-cli/1.0" });
+		ctx.headers.set("cookie", "better-auth.session_token=secret-cookie");
+		ctx.headers.set("authorization", "Bearer secret-key");
+
+		const fields = auditRequestFields(ctx);
+
+		expect(Object.keys(fields).sort()).toEqual([
+			"correlationId",
+			"impersonatedById",
+			"ipAddress",
+			"requestId",
+			"sessionId",
+			"userAgent",
+		]);
+		expect(JSON.stringify(fields)).not.toMatch(/secret/);
+	});
+
+	it("is all null for a context with no headers and no session, and maps an unknown IP to null", () => {
+		mocks.getTrustedClientIpMock.mockReturnValue("unknown");
+
+		expect(auditRequestFields({ user: null, session: null })).toEqual({
+			impersonatedById: null,
+			ipAddress: null,
+			userAgent: null,
+			requestId: null,
+			sessionId: null,
+			correlationId: null,
+		});
+		expect(
+			auditRequestFields(buildContext({ session: null })).ipAddress,
+		).toBeNull();
 	});
 });
 

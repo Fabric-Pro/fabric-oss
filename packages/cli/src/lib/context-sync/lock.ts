@@ -2,25 +2,34 @@
  * `<dir>/.fabric/context.lock` — what the server confirmed at the last push.
  *
  * A CONTENT LEDGER: each path with the hash the server holds for it and the
- * context row it is stored as. It decides two things and nothing else:
+ * context row it is stored as. It decides these things and nothing else:
  *
  *  - a file whose bytes still hash to the ledger's value is not sent at all;
  *  - a changed file names the ledger's hash as `expectedContentHash`, so the
  *    push replaces exactly the version this folder last saw, and anybody
- *    else's edit since is a conflict rather than a silent overwrite.
+ *    else's edit since is a conflict rather than a silent overwrite;
+ *  - a path gone from disk whose hash a new file has is a move, sent naming
+ *    the old path and that hash (Fizzy #2636);
+ *  - with `--prune`, a path gone from disk is deleted naming the ledger's
+ *    hash, so only the version this folder last saw can be deleted.
  *
- * It never causes a read (only the walk decides what is read) and never a
- * deletion (this command deletes nothing). A tampered lock can therefore make
- * a push skip a file, or state a version the server will check; it cannot
- * make one reach outside the folder.
+ * It never causes a read (only the walk decides what is read), and a
+ * deletion only under `--prune` and only of the version it names: the server
+ * compares that hash before deleting anything, the way it does before a
+ * replace. A tampered lock can therefore make a push skip a file, state a
+ * version the server will check, or (with `--prune`) ask for a path to be
+ * deleted in a version the server will check; it cannot make one reach
+ * outside the folder, nor delete anything the key's owner could not delete
+ * in the Context tab.
  *
  * Written LAST, after every request, with what the server answered:
  * `created`, `updated` or `unchanged` record the hash and the row; a
  * `duplicate` records the hash with `state: "duplicate"` and no row, because
  * the path has none of its own (its content is stored under another path).
  * An unchanged duplicate is therefore not sent again, and a changed one is
- * sent naming no version. A conflict and a failure leave their entry as it
- * was. An interrupted run leaves the old lock, and the next run repairs
+ * sent naming no version. A `moved` answer moves the entry to the new path;
+ * a `--prune` deletion that happened, or found the path already gone, drops
+ * it. A conflict and a failure leave their entry as it was. An interrupted run leaves the old lock, and the next run repairs
  * itself: content the server already holds is answered `unchanged` and
  * recorded then.
  *

@@ -35,6 +35,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	resolveEffectiveProjectPermissions: vi.fn(),
 	hasProjectAccess: vi.fn(),
+	grantProjectAccess: vi.fn(),
 	upsertContextBySourcePath: vi.fn(),
 	findUser: vi.fn(),
 	workflowStart: vi.fn(),
@@ -42,7 +43,11 @@ const mocks = vi.hoisted(() => ({
 	recordAuditFromRequest: vi.fn(),
 	emitContextChange: vi.fn(),
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-	captured: { inputSchema: undefined as unknown },
+	captured: {
+		inputSchema: undefined as unknown,
+		/** The procedure's `.use(...)` middlewares, in declaration order. */
+		middlewares: [] as unknown[],
+	},
 }));
 
 vi.mock("@repo/database", async () => {
@@ -58,6 +63,7 @@ vi.mock("@repo/database", async () => {
 		...path,
 		...hash,
 		hasProjectAccess: mocks.hasProjectAccess,
+		grantProjectAccess: mocks.grantProjectAccess,
 		upsertContextBySourcePath: mocks.upsertContextBySourcePath,
 		db: { user: { findUnique: mocks.findUser } },
 	};
@@ -86,9 +92,20 @@ vi.mock("../../../../../lib/realtime", () => ({
 
 vi.mock("@repo/logs", () => ({ logger: mocks.logger }));
 
-vi.mock("../../../../../orpc/procedures", () => {
+// The builder records each `.use(...)` so `call()` can run the procedure's
+// real middleware chain, in its declared order, before the handler: which
+// gate answers first is part of what the procedure promises (visibility
+// before permission, so an invisible project and a missing one cannot be
+// told apart). `requireProjectPermission` is the real one.
+vi.mock("../../../../../orpc/procedures", async () => {
+	const { requireProjectPermission } = await vi.importActual<
+		typeof import("../../../../../orpc/middleware/require-permission")
+	>("../../../../../orpc/middleware/require-permission");
 	const builder: Record<string, unknown> = {};
-	builder.use = () => builder;
+	builder.use = (middleware: unknown) => {
+		mocks.captured.middlewares.push(middleware);
+		return builder;
+	};
 	builder.route = () => builder;
 	builder.input = (schema: unknown) => {
 		mocks.captured.inputSchema = schema;
@@ -97,7 +114,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 	builder.handler = (fn: unknown) => ({ handler: fn });
 	return {
 		tenantProtectedProcedure: builder,
-		requireProjectPermission: () => (c: unknown) => c,
+		requireProjectPermission,
 	};
 });
 
@@ -108,6 +125,7 @@ type Handler = (args: {
 		content: string;
 		title?: string;
 		expectedContentHash?: string;
+		movedFromSourcePath?: string;
 	};
 	context: {
 		user: { id: string; name?: string; email: string };
@@ -167,16 +185,56 @@ function row(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-async function call(input: Partial<Parameters<Handler>[0]["input"]> = {}) {
+type Middleware = (
+	options: {
+		context: typeof requestContext;
+		next: (options?: {
+			context?: object;
+		}) => Promise<{ output: unknown; context: object }>;
+	},
+	input: unknown,
+) => Promise<{ output: unknown }>;
+
+/**
+ * Run the procedure as oRPC would: each recorded middleware in order, then
+ * the handler, with the context a middleware hands `next` merged in.
+ */
+async function throughMiddleware(
+	input: Parameters<Handler>[0]["input"],
+): Promise<Record<string, unknown>> {
 	const handler = await loadHandler();
-	return handler({
-		input: {
-			projectId: "proj-1",
-			sourcePath: "./docs\\architecture.md",
-			content: CONTENT,
-			...input,
-		},
-		context: requestContext,
+	const chain = mocks.captured.middlewares as Middleware[];
+	const run = async (
+		index: number,
+		context: typeof requestContext,
+	): Promise<{ output: unknown; context: object }> => {
+		const middleware = chain[index];
+		if (!middleware) {
+			return { output: await handler({ input, context }), context: {} };
+		}
+		return (await middleware(
+			{
+				context,
+				next: (options) =>
+					run(
+						index + 1,
+						options?.context
+							? { ...context, ...options.context }
+							: context,
+					),
+			},
+			input,
+		)) as { output: unknown; context: object };
+	};
+	return (await run(0, requestContext)).output as Record<string, unknown>;
+}
+
+async function call(input: Partial<Parameters<Handler>[0]["input"]> = {}) {
+	return throughMiddleware({
+		projectId: "proj-1",
+		sourcePath: "./docs\\architecture.md",
+		content: CONTENT,
+		...input,
 	});
 }
 
@@ -187,6 +245,9 @@ async function flushBackgroundWork() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	// The real permission middleware records a guest's carve-out on the
+	// request context; start every case from the context as sent.
+	Reflect.deleteProperty(requestContext, "allowedProjectIds");
 	mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
 		permissions: EDITOR_PERMISSIONS,
 		source: "project-member",
@@ -224,7 +285,7 @@ describe("upsertSyncedFile — authorization", () => {
 		expect(mocks.recordAuditFromRequest).not.toHaveBeenCalled();
 	});
 
-	it("refuses an org member the org role alone lets write, when the project is hidden from them", async () => {
+	it("answers an org member the org role alone lets write, on a project hidden from them, as if it did not exist", async () => {
 		// `resolveEffectiveProjectPermissions` path 3 hands every org member
 		// their org role's permissions on every project in the organization,
 		// including CONTEXT_CREATE on a project they have no standing on. The
@@ -238,15 +299,11 @@ describe("upsertSyncedFile — authorization", () => {
 		mocks.hasProjectAccess.mockResolvedValue(false);
 
 		await expect(call()).rejects.toMatchObject({
-			code: "FORBIDDEN",
-			message: "You don't have access to this project",
+			code: "NOT_FOUND",
+			message: "Project not found",
 		});
 
-		expect(mocks.hasProjectAccess).toHaveBeenCalledWith(
-			"proj-1",
-			"user-1",
-			"org-host",
-		);
+		expect(mocks.hasProjectAccess).toHaveBeenCalledWith("proj-1", "user-1");
 		expect(mocks.upsertContextBySourcePath).not.toHaveBeenCalled();
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
 		expect(mocks.recordAuditFromRequest).not.toHaveBeenCalled();
@@ -293,6 +350,59 @@ describe("upsertSyncedFile — authorization", () => {
 		});
 
 		await expect(call()).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(mocks.upsertContextBySourcePath).not.toHaveBeenCalled();
+	});
+});
+
+describe("upsertSyncedFile — visibility is decided before permission", () => {
+	// Same rule as the delete twin: a permission refusal says the project
+	// exists, so a caller who cannot see it hears what a missing id hears.
+
+	it("answers an existing project in another organization exactly as it answers an id that does not exist", async () => {
+		mocks.hasProjectAccess.mockResolvedValue(false);
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: [],
+			source: "none",
+			organizationId: "org-other",
+		});
+		const foreign = (await call({ projectId: "proj-foreign" }).catch(
+			(caught: unknown) => caught,
+		)) as { code: string; status: number; message: string };
+
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue(null);
+		const missing = (await call({ projectId: "proj-missing" }).catch(
+			(caught: unknown) => caught,
+		)) as { code: string; status: number; message: string };
+
+		expect(foreign).toMatchObject({
+			code: "NOT_FOUND",
+			message: "Project not found",
+		});
+		expect({
+			code: foreign.code,
+			status: foreign.status,
+			message: foreign.message,
+		}).toEqual({
+			code: missing.code,
+			status: missing.status,
+			message: missing.message,
+		});
+		expect(mocks.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+		expect(mocks.upsertContextBySourcePath).not.toHaveBeenCalled();
+	});
+
+	it("still answers FORBIDDEN, naming the permission, to a caller who can see the project but may not add to it", async () => {
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: ["context:read"],
+			source: "project-member",
+			organizationId: "org-host",
+		});
+
+		await expect(call()).rejects.toMatchObject({
+			code: "FORBIDDEN",
+			message: "Missing required permission: context:create",
+		});
+		expect(mocks.hasProjectAccess).toHaveBeenCalledWith("proj-1", "user-1");
 		expect(mocks.upsertContextBySourcePath).not.toHaveBeenCalled();
 	});
 });
@@ -666,5 +776,247 @@ describe("upsertSyncedFile — embedding and audit", () => {
 				"Failed to start context embedding workflow for ctx-1",
 			),
 		);
+	});
+});
+
+describe("upsertSyncedFile — a move (Fizzy #2636)", () => {
+	const FROM_HASH = sha(CONTENT);
+
+	function movedRow(overrides: Record<string, unknown> = {}) {
+		return row({
+			metadata: {
+				title: "architecture.md",
+				sourcePath: "docs/architecture.md",
+			},
+			...overrides,
+		});
+	}
+
+	it("accepts movedFromSourcePath in the input schema", async () => {
+		const schema = await inputSchema();
+
+		const parsed = schema.safeParse({
+			projectId: "proj-1",
+			sourcePath: "docs/a.md",
+			content: CONTENT,
+			movedFromSourcePath: "a.md",
+			expectedContentHash: FROM_HASH,
+		});
+		expect(parsed.success).toBe(true);
+		// Kept, not stripped as an unknown key.
+		expect(parsed.data?.movedFromSourcePath).toBe("a.md");
+	});
+
+	it("requires expectedContentHash with movedFromSourcePath, before the database", async () => {
+		await expect(
+			call({ movedFromSourcePath: "notes/arch.md" }),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: expect.stringMatching(/expectedContentHash/),
+		});
+		expect(mocks.upsertContextBySourcePath).not.toHaveBeenCalled();
+	});
+
+	it("refuses a movedFromSourcePath that normalizes to the same path", async () => {
+		await expect(
+			call({
+				movedFromSourcePath: "docs//architecture.md",
+				expectedContentHash: FROM_HASH,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: expect.stringMatching(/movedFromSourcePath/),
+		});
+		expect(mocks.upsertContextBySourcePath).not.toHaveBeenCalled();
+	});
+
+	it("refuses a movedFromSourcePath the path rules refuse, naming the field", async () => {
+		await expect(
+			call({
+				movedFromSourcePath: "../outside.md",
+				expectedContentHash: FROM_HASH,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: expect.stringMatching(/movedFromSourcePath/),
+		});
+		expect(mocks.upsertContextBySourcePath).not.toHaveBeenCalled();
+	});
+
+	it("hands the normalized old path and the named hash to the database", async () => {
+		mocks.upsertContextBySourcePath.mockResolvedValue({
+			status: "moved",
+			context: movedRow(),
+			movedFromSourcePath: "notes/arch.md",
+		});
+
+		await call({
+			movedFromSourcePath: ".\\notes\\arch.md",
+			expectedContentHash: FROM_HASH,
+		});
+
+		expect(mocks.upsertContextBySourcePath).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sourcePath: "docs/architecture.md",
+				movedFromSourcePath: "notes/arch.md",
+				expectedContentHash: FROM_HASH,
+			}),
+		);
+	});
+
+	it("answers moved, re-embeds under the new path and audits both paths", async () => {
+		mocks.upsertContextBySourcePath.mockResolvedValue({
+			status: "moved",
+			context: movedRow({
+				metadata: {
+					title: "Architecture overview",
+					sourcePath: "docs/architecture.md",
+				},
+			}),
+			movedFromSourcePath: "notes/arch.md",
+		});
+
+		const result = await call({
+			movedFromSourcePath: "notes/arch.md",
+			expectedContentHash: FROM_HASH,
+		});
+		await flushBackgroundWork();
+
+		expect(result).toEqual({
+			status: "moved",
+			contextId: "ctx-1",
+			sourcePath: "docs/architecture.md",
+			contentHash: FROM_HASH,
+			movedFromSourcePath: "notes/arch.md",
+		});
+		// The index carries the path (as the filename) and the title, so a
+		// move re-embeds exactly as a replace does.
+		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
+		expect(mocks.workflowStart.mock.calls[0][1].args[0]).toEqual({
+			contextId: "ctx-1",
+			projectId: "proj-1",
+			userId: "user-1",
+			organizationId: "org-host",
+			type: "TEXT",
+			metadata: {
+				filename: "docs/architecture.md",
+				sourceTitle: "Architecture overview",
+				sourcePath: "docs/architecture.md",
+			},
+			reembed: true,
+		});
+		expect(mocks.recordAuditFromRequest).toHaveBeenCalledTimes(1);
+		const [, event] = mocks.recordAuditFromRequest.mock.calls[0];
+		expect(event).toMatchObject({
+			action: "project.context_source.content_upserted",
+			resource: { id: "ctx-1", name: "Architecture overview" },
+			metadata: {
+				outcome: "moved",
+				sourcePath: "docs/architecture.md",
+				previousSourcePath: "notes/arch.md",
+				contentHash: FROM_HASH,
+				via: "web",
+			},
+		});
+		expect(mocks.emitContextChange).toHaveBeenCalledWith(
+			expect.objectContaining({ action: "updated", contextId: "ctx-1" }),
+		);
+	});
+
+	it.each([
+		["created", "source-missing"],
+		["unchanged", "target-exists"],
+	] as const)(
+		"passes on why a move was not applied with a %s answer",
+		async (status, reason) => {
+			mocks.upsertContextBySourcePath.mockResolvedValue({
+				status,
+				context: row(),
+				moveNotApplied: {
+					movedFromSourcePath: "notes/arch.md",
+					reason,
+				},
+			});
+
+			const result = await call({
+				movedFromSourcePath: "notes/arch.md",
+				expectedContentHash: FROM_HASH,
+			});
+
+			expect(result).toEqual({
+				status,
+				contextId: "ctx-1",
+				sourcePath: "docs/architecture.md",
+				contentHash: FROM_HASH,
+				moveNotApplied: {
+					movedFromSourcePath: "notes/arch.md",
+					reason,
+				},
+			});
+		},
+	);
+
+	it("passes on why a move was not applied with a duplicate answer", async () => {
+		mocks.upsertContextBySourcePath.mockResolvedValue({
+			status: "duplicate",
+			existing: row({ id: "ctx-other", sourcePath: "elsewhere.md" }),
+			moveNotApplied: {
+				movedFromSourcePath: "notes/arch.md",
+				reason: "source-missing",
+			},
+		});
+
+		const result = await call({
+			movedFromSourcePath: "notes/arch.md",
+			expectedContentHash: FROM_HASH,
+		});
+
+		expect(result).toMatchObject({
+			status: "duplicate",
+			duplicateOfContextId: "ctx-other",
+			moveNotApplied: { reason: "source-missing" },
+		});
+	});
+
+	it("answers a changed old path with 409 naming its version, the old path and what to do", async () => {
+		mocks.upsertContextBySourcePath.mockResolvedValue({
+			status: "conflict",
+			current: {
+				contextId: "ctx-1",
+				contentHash: sha("someone else's version\n"),
+				contentUpdatedAt: new Date("2026-09-22T11:00:00Z"),
+				contentUpdatedByUserId: "user-2",
+			},
+			moveNotApplied: {
+				movedFromSourcePath: "notes/arch.md",
+				reason: "source-changed",
+			},
+		});
+
+		const error = await call({
+			movedFromSourcePath: "notes/arch.md",
+			expectedContentHash: FROM_HASH,
+		}).catch((caught: unknown) => caught);
+
+		expect(error).toMatchObject({
+			code: "CONFLICT",
+			data: {
+				status: "conflict",
+				contextId: "ctx-1",
+				sourcePath: "docs/architecture.md",
+				current: {
+					contentHash: sha("someone else's version\n"),
+					contentUpdatedBy: { id: "user-2", name: "Other Dev" },
+				},
+				moveNotApplied: {
+					movedFromSourcePath: "notes/arch.md",
+					reason: "source-changed",
+				},
+			},
+		});
+		expect((error as Error).message).toMatch(/notes\/arch\.md/);
+		expect((error as Error).message).toMatch(/nothing was written/i);
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+		expect(mocks.recordAuditFromRequest).not.toHaveBeenCalled();
 	});
 });

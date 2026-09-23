@@ -1253,6 +1253,19 @@ export {
 	type RegenerateBodyForKindStatus,
 	regenerateBodyForKindActivity,
 } from "./stories/regenerate-body-for-kind";
+// Synced context deletion activities (the three steps of
+// syncedContextDeletionWorkflow and its realtime publish, Fizzy #2636). Only
+// the activities and their types: every value exported here is schedulable
+// by any workflow.
+export {
+	type ClaimSyncedContextForDeletionOutput,
+	claimSyncedContextForDeletion,
+	type DeleteSyncedContextRowOutput,
+	deleteSyncedContextRow,
+	deleteSyncedContextVectors,
+	type PublishSyncedContextDeletedInput,
+	publishSyncedContextDeleted,
+} from "./synced-context-deletion";
 // Task Agent activities (Weft-style agent execution for story tasks)
 export {
 	type AddWorkflowLogInput,

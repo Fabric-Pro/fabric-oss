@@ -183,3 +183,127 @@ describe("emitConversationMessageAppended", () => {
 		expect(emitMock).toHaveBeenCalledTimes(2);
 	});
 });
+
+/**
+ * The project-channel events a Temporal activity publishes as well as the
+ * API (`publishSyncedContextDeleted`, Fizzy #2636): moved here from
+ * `packages/api/lib/realtime.ts`, which re-exports them, so both publish on
+ * the same channel with the same payload schema.
+ */
+describe("emitContextChange / emitActivity", () => {
+	function realtimeWith(emitMock: ReturnType<typeof vi.fn>) {
+		const channelMock = vi.fn(() => ({ emit: emitMock }));
+		// biome-ignore lint/complexity/useArrowFunction: must stay constructable for `new Realtime()`
+		const RealtimeMock = vi.fn(function () {
+			return { channel: channelMock };
+		});
+		vi.doMock("@upstash/realtime", () => ({ Realtime: RealtimeMock }));
+		vi.doMock("@upstash/redis", () => ({ Redis: vi.fn() }));
+		process.env.UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
+		process.env.UPSTASH_REDIS_REST_TOKEN = "test-token";
+		return { channelMock, RealtimeMock };
+	}
+
+	const contextChange = {
+		projectId: "proj-1",
+		contextId: "ctx-1",
+		action: "deleted" as const,
+		userId: "user-1",
+		userName: "Example Dev",
+		contextType: "TEXT",
+		contextName: "glossary.md",
+	};
+
+	const activity = {
+		projectId: "proj-1",
+		userId: "user-1",
+		userName: "Example Dev",
+		activityType: "context_deleted",
+		resourceType: "context",
+		resourceId: "ctx-1",
+		resourceName: "glossary.md",
+		timestamp: "2026-09-22T12:00:00.000Z",
+	};
+
+	it("names the project channel as the API's subscriber does", async () => {
+		const mod = await import("../lib/realtime-emit");
+		expect(mod.getProjectChannelName("proj-1")).toBe("project:proj-1");
+	});
+
+	it("emits context_change and activity on the project's channel", async () => {
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const { channelMock } = realtimeWith(emitMock);
+
+		const mod = await import("../lib/realtime-emit");
+		await mod.emitContextChange(contextChange);
+		await mod.emitActivity(activity);
+
+		expect(channelMock).toHaveBeenCalledWith("project:proj-1");
+		expect(emitMock).toHaveBeenNthCalledWith(
+			1,
+			"context_change",
+			contextChange,
+		);
+		expect(emitMock).toHaveBeenNthCalledWith(2, "activity", activity);
+	});
+
+	it("never throws: a Redis outage degrades to the next refresh", async () => {
+		const emitMock = vi.fn().mockRejectedValue(new Error("Redis down"));
+		realtimeWith(emitMock);
+
+		const mod = await import("../lib/realtime-emit");
+
+		await expect(mod.emitContextChange(contextChange)).resolves.toBe(
+			undefined,
+		);
+		await expect(mod.emitActivity(activity)).resolves.toBeUndefined();
+		expect(emitMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("is a no-op when realtime is not configured", async () => {
+		const emitMock = vi.fn();
+		const { RealtimeMock } = realtimeWith(emitMock);
+		process.env.UPSTASH_REDIS_REST_URL = undefined;
+		process.env.UPSTASH_REDIS_REST_TOKEN = undefined;
+
+		const mod = await import("../lib/realtime-emit");
+		await mod.emitContextChange(contextChange);
+		await mod.emitActivity(activity);
+
+		expect(RealtimeMock).not.toHaveBeenCalled();
+		expect(emitMock).not.toHaveBeenCalled();
+	});
+
+	it("emits through a client the caller passes, building none of its own", async () => {
+		const ownEmit = vi.fn();
+		const { RealtimeMock } = realtimeWith(ownEmit);
+		const callerEmit = vi.fn().mockResolvedValue(undefined);
+		const channel = vi.fn(() => ({ emit: callerEmit }));
+
+		const mod = await import("../lib/realtime-emit");
+		await mod.emitContextChange(contextChange, { channel });
+		await mod.emitActivity(activity, { channel });
+
+		expect(RealtimeMock).not.toHaveBeenCalled();
+		expect(ownEmit).not.toHaveBeenCalled();
+		expect(channel).toHaveBeenCalledWith("project:proj-1");
+		expect(callerEmit).toHaveBeenNthCalledWith(
+			1,
+			"context_change",
+			contextChange,
+		);
+		expect(callerEmit).toHaveBeenNthCalledWith(2, "activity", activity);
+	});
+
+	it("emits nothing when the caller passes no client, and does not fall back to its own", async () => {
+		const ownEmit = vi.fn();
+		const { RealtimeMock } = realtimeWith(ownEmit);
+
+		const mod = await import("../lib/realtime-emit");
+		await mod.emitContextChange(contextChange, null);
+		await mod.emitActivity(activity, null);
+
+		expect(RealtimeMock).not.toHaveBeenCalled();
+		expect(ownEmit).not.toHaveBeenCalled();
+	});
+});

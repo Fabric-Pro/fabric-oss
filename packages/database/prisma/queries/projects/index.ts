@@ -95,6 +95,7 @@ export * from "./story-activity-ranking";
 export * from "./story-attachments";
 export * from "./story-blocked";
 export * from "./story-semantic-activity";
+export * from "./synced-context-delete-audit";
 export * from "./teams-channel-monitor";
 export * from "./teams-chat-monitor";
 export * from "./teams-integration-context";

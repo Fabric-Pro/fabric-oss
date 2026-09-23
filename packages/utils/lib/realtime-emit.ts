@@ -1,5 +1,7 @@
 /**
- * Conversation-channel realtime emit helpers.
+ * Realtime emit helpers for the events a Temporal activity publishes: the
+ * conversation channel's `message_appended`, and the project channel's
+ * `context_change` and `activity`.
  *
  * Lives in `@repo/utils` (and NOT in `@repo/api`) so that
  * `@repo/temporal` can static-import it without inverting the workspace
@@ -20,23 +22,28 @@
  *   - `UPSTASH_REDIS_REST_URL`
  *   - `UPSTASH_REDIS_REST_TOKEN`
  *
- * When either is missing, `getRealtimeClient()` returns `null` and
- * `emitConversationMessageAppended()` becomes a no-op. This keeps local
- * dev + CI green without Redis credentials.
+ * When either is missing, `getRealtimeClient()` returns `null` and every
+ * emit helper becomes a no-op. This keeps local dev + CI green without
+ * Redis credentials.
  *
  * # Error handling
  *
- * `emitConversationMessageAppended` NEVER throws. A Redis outage degrades
- * to "next polling refresh", not "the operation result is lost" — the
- * persistence write already landed before this helper was called.
+ * No emit helper here ever throws. A Redis outage degrades to "next
+ * polling refresh", not "the operation result is lost" — the persistence
+ * write already landed before the helper was called.
  *
  * # Schema scope
  *
- * Only `message_appended` lives here. The richer
- * `projectRealtimeSchema` (presence, document_change, lock_update, etc.)
- * stays in `packages/api/lib/realtime.ts` because it carries project-
- * domain knowledge that does not belong in `@repo/utils`. The two
- * `Realtime` instances co-exist; they share the same underlying Redis
+ * Only the events a Temporal activity emits live here: `message_appended`,
+ * and `context_change` and `activity`, which the synced-file deletion
+ * workflow publishes after it deleted a row (Fizzy #2636) — moved here from
+ * `packages/api/lib/realtime.ts`, which re-exports the emitters and builds
+ * its SSE schema from the same zod objects, so the two sides cannot drift.
+ * The rest of `projectRealtimeSchema` (presence, document_change,
+ * lock_update, etc.) stays in `packages/api/lib/realtime.ts`, whose
+ * `emitContextChange`/`emitActivity` wrappers call the emitters here with the
+ * API's own client, so an API caller publishes everything through one
+ * instance. The two `Realtime` instances (API and Temporal worker) co-exist; they share the same underlying Redis
  * backend so events written by one and read by another (e.g. SSE route
  * subscribes via the api-side instance, emits come from the utils-side
  * instance) work fine — Redis is a shared message bus, the Realtime
@@ -78,19 +85,59 @@ export function getConversationChannelName(conversationId: string): string {
 	return `conversation:${conversationId}`;
 }
 
-const conversationRealtimeSchema = {
+/**
+ * A project's Context changed: a source added, updated or deleted. The
+ * SSE-side schema in `packages/api/lib/realtime.ts` uses this same object.
+ */
+export const contextChangeSchema = z.object({
+	projectId: z.string(),
+	contextId: z.string(),
+	action: z.enum(["added", "updated", "deleted"]),
+	userId: z.string(),
+	userName: z.string(),
+	contextType: z.string().optional(),
+	contextName: z.string().optional(),
+});
+
+export type ContextChangePayload = z.infer<typeof contextChangeSchema>;
+
+/**
+ * A project activity-feed event. The SSE-side schema in
+ * `packages/api/lib/realtime.ts` uses this same object.
+ */
+export const activitySchema = z.object({
+	projectId: z.string(),
+	userId: z.string(),
+	userName: z.string(),
+	activityType: z.string(),
+	resourceType: z.string().optional(),
+	resourceId: z.string().optional(),
+	resourceName: z.string().optional(),
+	timestamp: z.string(),
+});
+
+export type ActivityPayload = z.infer<typeof activitySchema>;
+
+/** Channel name for a project's realtime stream. */
+export function getProjectChannelName(projectId: string): string {
+	return `project:${projectId}`;
+}
+
+const realtimeEmitSchema = {
 	message_appended: conversationMessageAppendedSchema,
+	context_change: contextChangeSchema,
+	activity: activitySchema,
 };
 
-type ConversationRealtimeOptions = {
-	schema: typeof conversationRealtimeSchema;
+type RealtimeEmitOptions = {
+	schema: typeof realtimeEmitSchema;
 	redis: Redis;
 };
 
 // Lazy-initialised + memoised across the process lifetime. Matches the
 // pattern in `packages/api/lib/realtime.ts:getProjectRealtime`.
 let redisClient: Redis | null = null;
-let realtimeInstance: Realtime<ConversationRealtimeOptions> | null = null;
+let realtimeInstance: Realtime<RealtimeEmitOptions> | null = null;
 let initializationAttempted = false;
 
 function getRedisClient(): Redis | null {
@@ -115,13 +162,12 @@ function getRedisClient(): Redis | null {
 }
 
 /**
- * Returns a memoised `Realtime` client for the conversation channel
- * schema, or `null` if Upstash env vars are not configured. Safe to
- * call from any process (Temporal worker, Next.js server route, oRPC
- * handler) — it produces at most one Redis + one Realtime instance per
- * process.
+ * Returns a memoised `Realtime` client for the events emitted here, or
+ * `null` if Upstash env vars are not configured. Safe to call from any
+ * process (Temporal worker, Next.js server route, oRPC handler) — it
+ * produces at most one Redis + one Realtime instance per process.
  */
-export function getRealtimeClient(): Realtime<ConversationRealtimeOptions> | null {
+export function getRealtimeClient(): Realtime<RealtimeEmitOptions> | null {
 	if (realtimeInstance) {
 		return realtimeInstance;
 	}
@@ -138,8 +184,8 @@ export function getRealtimeClient(): Realtime<ConversationRealtimeOptions> | nul
 	}
 
 	try {
-		realtimeInstance = new Realtime<ConversationRealtimeOptions>({
-			schema: conversationRealtimeSchema,
+		realtimeInstance = new Realtime<RealtimeEmitOptions>({
+			schema: realtimeEmitSchema,
 			redis,
 		});
 		return realtimeInstance;
@@ -175,6 +221,66 @@ export async function emitConversationMessageAppended(
 			"[realtime-emit] Failed to emit message_appended:",
 			error,
 		);
+	}
+}
+
+/**
+ * The part of a `Realtime` client the project-channel emitters use. Both
+ * this module's client and the API's richer `getProjectRealtime()` client
+ * satisfy it, so an API caller can hand its own instance in and keep every
+ * event it emits on one client.
+ */
+export interface ProjectEventRealtime {
+	channel(name: string): {
+		emit(
+			event: "context_change",
+			data: ContextChangePayload,
+		): Promise<void>;
+		emit(event: "activity", data: ActivityPayload): Promise<void>;
+	};
+}
+
+/**
+ * Emit a `context_change` event onto the project's channel. Never throws.
+ * `realtime` defaults to this module's client; `null` emits nothing.
+ */
+export async function emitContextChange(
+	payload: ContextChangePayload,
+	realtime: ProjectEventRealtime | null = getRealtimeClient(),
+): Promise<void> {
+	if (!realtime) {
+		return;
+	}
+
+	try {
+		const channel = realtime.channel(
+			getProjectChannelName(payload.projectId),
+		);
+		await channel.emit("context_change", payload);
+	} catch (error) {
+		console.error("[realtime-emit] Failed to emit context_change:", error);
+	}
+}
+
+/**
+ * Emit an `activity` event onto the project's channel. Never throws.
+ * `realtime` defaults to this module's client; `null` emits nothing.
+ */
+export async function emitActivity(
+	payload: ActivityPayload,
+	realtime: ProjectEventRealtime | null = getRealtimeClient(),
+): Promise<void> {
+	if (!realtime) {
+		return;
+	}
+
+	try {
+		const channel = realtime.channel(
+			getProjectChannelName(payload.projectId),
+		);
+		await channel.emit("activity", payload);
+	} catch (error) {
+		console.error("[realtime-emit] Failed to emit activity:", error);
 	}
 }
 

@@ -37,6 +37,7 @@ import type { ContextLock } from "../src/lib/context-sync/lock.js";
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		upsertSyncedFile: vi.fn(),
+		deleteSyncedFile: vi.fn(),
 		getApiKey: vi.fn<() => string | undefined>(),
 		/** The overrides the command handed `getClient`. */
 		clientOverrides: vi.fn(),
@@ -53,7 +54,10 @@ vi.mock("../src/lib/config.js", () => ({
 
 vi.mock("../src/lib/client.js", () => {
 	const client = {
-		contexts: { upsertSyncedFile: mocks.upsertSyncedFile },
+		contexts: {
+			upsertSyncedFile: mocks.upsertSyncedFile,
+			deleteSyncedFile: mocks.deleteSyncedFile,
+		},
 		withoutContext: () => client,
 	};
 	return {
@@ -246,6 +250,7 @@ function callsFor(sourcePath: string) {
 
 beforeEach(() => {
 	mocks.upsertSyncedFile.mockReset();
+	mocks.deleteSyncedFile.mockReset();
 	mocks.clientOverrides.mockReset();
 	mocks.getApiKey.mockReset();
 	mocks.getApiKey.mockReturnValue("org_test_key");
@@ -720,6 +725,8 @@ describe("fabric context push — other outcomes", () => {
 
 		expect(result.code).toBe(0);
 		expect(mocks.upsertSyncedFile).not.toHaveBeenCalled();
+		// Without --prune, nothing is ever deleted.
+		expect(mocks.deleteSyncedFile).not.toHaveBeenCalled();
 		expect(result.stdout).toContain(
 			"gone.md: removed locally; server entry kept",
 		);
@@ -1026,5 +1033,1036 @@ describe("fabric context push --hook", () => {
 		};
 		expect(overrides.retry).toEqual({ maxRetries: 0 });
 		expect(overrides.timeoutMs).toBeLessThanOrEqual(10_000);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Moves (Fizzy #2636)
+// ---------------------------------------------------------------------------
+const A = "# A\n";
+
+/** The server's answer for a move that renamed the row. */
+function moved(from: string, to: string, content: string) {
+	return {
+		status: "moved" as const,
+		contextId: `ctx-${from}`,
+		sourcePath: to,
+		contentHash: sha256(content),
+		movedFromSourcePath: from,
+	};
+}
+
+/** A 409 for a move whose old path changed on the server. */
+function sourceChangedConflict(
+	from: string,
+	to: string,
+	content: string,
+	current: {
+		contentHash: string | null;
+	} | null = { contentHash: "e".repeat(64) },
+) {
+	return new FabricContextConflictError(
+		`The file at ${from} was changed on the server since the version you are moving, so nothing was written and it was not moved.`,
+		{
+			status: "conflict",
+			contextId: current === null ? null : `ctx-${from}`,
+			sourcePath: to,
+			contentHash: sha256(content),
+			current:
+				current === null
+					? null
+					: {
+							contextId: `ctx-${from}`,
+							contentHash: current.contentHash,
+							contentUpdatedAt: "2026-09-22T09:30:00.000Z",
+							contentUpdatedBy: {
+								id: "user-2",
+								name: "Example Editor",
+							},
+						},
+			moveNotApplied: {
+				movedFromSourcePath: from,
+				reason: "source-changed",
+			},
+		},
+	);
+}
+
+describe("fabric context push — moves", () => {
+	it("sends a moved file as one rename naming the old path and its version, and moves the lock entry", async () => {
+		const dir = await makeFolder({ "docs/a.md": A });
+		await seedLock(dir, { "a.md": A });
+		mocks.upsertSyncedFile.mockResolvedValue(moved("a.md", "docs/a.md", A));
+
+		const result = await runCli(["push", dir, "--project", "project-1"]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.upsertSyncedFile).toHaveBeenCalledTimes(1);
+		expect(mocks.upsertSyncedFile).toHaveBeenCalledWith(
+			"project-1",
+			{
+				sourcePath: "docs/a.md",
+				content: A,
+				expectedContentHash: sha256(A),
+				movedFromSourcePath: "a.md",
+			},
+			{ org: undefined },
+		);
+		expect(mocks.deleteSyncedFile).not.toHaveBeenCalled();
+		expect((await readLockFile(dir)).files).toEqual({
+			"docs/a.md": { sha256: sha256(A), contextId: "ctx-a.md" },
+		});
+		expect(result.stdout).toContain("moved (1)");
+		expect(result.stdout).toContain("a.md -> docs/a.md");
+		expect(result.stdout).not.toContain("removed locally");
+	});
+
+	it("records the new path and drops the old one when the server had no row there any more", async () => {
+		const dir = await makeFolder({ "docs/a.md": A });
+		await seedLock(dir, { "a.md": A });
+		mocks.upsertSyncedFile.mockResolvedValue({
+			...stored("created", "docs/a.md", A),
+			moveNotApplied: {
+				movedFromSourcePath: "a.md",
+				reason: "source-missing",
+			},
+		});
+
+		const result = await runCli(["push", dir, "--project", "project-1"]);
+
+		expect(result.code).toBe(0);
+		expect((await readLockFile(dir)).files).toEqual({
+			"docs/a.md": { sha256: sha256(A), contextId: "ctx-docs/a.md" },
+		});
+		expect(result.stdout).toContain(
+			"a.md: gone on the server; docs/a.md pushed as created",
+		);
+	});
+
+	it("records the new path and keeps the old entry as a removal when the new path already had its own row", async () => {
+		const dir = await makeFolder({ "docs/a.md": A });
+		const before = await seedLock(dir, { "a.md": A });
+		mocks.upsertSyncedFile.mockResolvedValue({
+			...stored("unchanged", "docs/a.md", A),
+			moveNotApplied: {
+				movedFromSourcePath: "a.md",
+				reason: "target-exists",
+			},
+		});
+
+		const result = await runCli(["push", dir, "--project", "project-1"]);
+
+		expect(result.code).toBe(0);
+		const lock = await readLockFile(dir);
+		expect(lock.files["docs/a.md"]).toEqual({
+			sha256: sha256(A),
+			contextId: "ctx-docs/a.md",
+		});
+		expect(lock.files["a.md"]).toEqual(before.files["a.md"]);
+		expect(result.stdout).toContain(
+			"a.md: not moved, docs/a.md is already on the server; docs/a.md pushed as unchanged; a.md kept",
+		);
+		expect(mocks.deleteSyncedFile).not.toHaveBeenCalled();
+	});
+
+	it("reports a conflict on the old path when it changed on the server, and leaves the lock and the new path alone", async () => {
+		const dir = await makeFolder({ "docs/a.md": A });
+		const before = await seedLock(dir, { "a.md": A });
+		mocks.upsertSyncedFile.mockRejectedValue(
+			sourceChangedConflict("a.md", "docs/a.md", A),
+		);
+
+		const result = await runCli(["push", dir, "--project", "project-1"]);
+
+		expect(result.code).toBe(1);
+		expect(mocks.upsertSyncedFile).toHaveBeenCalledTimes(1);
+		expect(await readLockFile(dir)).toEqual(before);
+		expect(result.stdout).toContain(
+			"a.md: changed on the server by Example Editor at 2026-09-22T09:30:00.000Z since your last push; not moved to docs/a.md",
+		);
+	});
+
+	it("with --force, resends the move once naming the old path's current version", async () => {
+		const dir = await makeFolder({ "docs/a.md": A });
+		const before = await seedLock(dir, { "a.md": A });
+		mocks.upsertSyncedFile
+			.mockRejectedValueOnce(
+				sourceChangedConflict("a.md", "docs/a.md", A),
+			)
+			// A move never replaces content: the server keeps the edited old
+			// row and stores this folder's version at the new path.
+			.mockResolvedValueOnce({
+				...stored("created", "docs/a.md", A),
+				moveNotApplied: {
+					movedFromSourcePath: "a.md",
+					reason: "content-differs",
+				},
+			});
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--force",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.upsertSyncedFile).toHaveBeenCalledTimes(2);
+		expect(mocks.upsertSyncedFile.mock.calls[1]?.[1]).toEqual({
+			sourcePath: "docs/a.md",
+			content: A,
+			expectedContentHash: "e".repeat(64),
+			movedFromSourcePath: "a.md",
+		});
+		const lock = await readLockFile(dir);
+		expect(lock.files["docs/a.md"]?.sha256).toBe(sha256(A));
+		// The old row still holds the edit: its entry stays, as a removal.
+		expect(lock.files["a.md"]).toEqual(before.files["a.md"]);
+	});
+
+	it("with --force, pushes the new path as an ordinary new file and drops the old one when the old row is gone", async () => {
+		const dir = await makeFolder({ "docs/a.md": A });
+		await seedLock(dir, { "a.md": A });
+		mocks.upsertSyncedFile
+			.mockRejectedValueOnce(
+				sourceChangedConflict("a.md", "docs/a.md", A, null),
+			)
+			.mockResolvedValueOnce(stored("created", "docs/a.md", A));
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--force",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.upsertSyncedFile.mock.calls[1]?.[1]).toEqual({
+			sourcePath: "docs/a.md",
+			content: A,
+		});
+		expect((await readLockFile(dir)).files).toEqual({
+			"docs/a.md": { sha256: sha256(A), contextId: "ctx-docs/a.md" },
+		});
+	});
+
+	it("with --force, reports a second conflict on the old path and does not try a third time", async () => {
+		const dir = await makeFolder({ "docs/a.md": A });
+		const before = await seedLock(dir, { "a.md": A });
+		mocks.upsertSyncedFile.mockRejectedValue(
+			sourceChangedConflict("a.md", "docs/a.md", A),
+		);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--force",
+		]);
+
+		expect(result.code).toBe(1);
+		expect(mocks.upsertSyncedFile).toHaveBeenCalledTimes(2);
+		expect(await readLockFile(dir)).toEqual(before);
+		expect(result.stdout).toContain("while --force was moving it");
+	});
+
+	it("does not send a move whose new file changed after planning, keeps its lock entry and does not prune it", async () => {
+		const B = "# B\n";
+		const dir = await makeFolder({ "docs/a.md": A, "docs/b.md": B });
+		const before = await seedLock(dir, { "a.md": A, "b.md": B });
+		mocks.upsertSyncedFile.mockImplementation(
+			async (_p: string, input: { sourcePath: string }) => {
+				// docs/b.md is saved again while the first move is on the wire.
+				if (input.sourcePath === "docs/a.md") {
+					await writeFile(path.join(dir, "docs", "b.md"), "# B v2\n");
+				}
+				return moved("a.md", "docs/a.md", A);
+			},
+		);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(callsFor("docs/b.md")).toHaveLength(0);
+		expect(mocks.deleteSyncedFile).not.toHaveBeenCalled();
+		const lock = await readLockFile(dir);
+		expect(lock.files["b.md"]).toEqual(before.files["b.md"]);
+		expect(lock.files).not.toHaveProperty("docs/b.md");
+		expect(result.stdout).toContain("docs/b.md: changed-during-run");
+	});
+
+	it("--dry-run lists a move and sends nothing", async () => {
+		const dir = await makeFolder({ "docs/a.md": A });
+		await seedLock(dir, { "a.md": A });
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--dry-run",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.upsertSyncedFile).not.toHaveBeenCalled();
+		expect(result.stdout).toContain("moved (1)");
+		expect(result.stdout).toContain("a.md -> docs/a.md");
+	});
+
+	it("drops the old entry, and leaves the new path unrecorded, when the new path's conflict says the old row is gone", async () => {
+		// Lock: old.md at A. Disk: new.md at A. Server: no old.md, and its own
+		// new.md at B, so the move is answered as a conflict about new.md.
+		const B = "# B, stored on the server\n";
+		const dir = await makeFolder({ "new.md": A });
+		await seedLock(dir, { "old.md": A });
+		mocks.upsertSyncedFile.mockRejectedValue(
+			new FabricContextConflictError(
+				"This file is already on the server with different content, so nothing was written.",
+				{
+					status: "conflict",
+					contextId: "ctx-new.md",
+					sourcePath: "new.md",
+					contentHash: sha256(A),
+					current: {
+						contextId: "ctx-new.md",
+						contentHash: sha256(B),
+						contentUpdatedAt: "2026-09-22T09:30:00.000Z",
+						contentUpdatedBy: {
+							id: "user-2",
+							name: "Example Editor",
+						},
+					},
+					moveNotApplied: {
+						movedFromSourcePath: "old.md",
+						reason: "source-missing",
+					},
+				},
+			),
+		);
+
+		const result = await runCli(["push", dir, "--project", "project-1"]);
+
+		expect(result.code).toBe(1);
+		expect(mocks.upsertSyncedFile).toHaveBeenCalledTimes(1);
+		// The old path has nothing left to name; new.md was not stored.
+		expect((await readLockFile(dir)).files).toEqual({});
+		expect(result.stdout).toContain(
+			"new.md: already on the server with different content, last changed by Example Editor at 2026-09-22T09:30:00.000Z; old.md gone on the server",
+		);
+
+		// The next run no longer plans the same move: new.md is an ordinary
+		// new file, sent naming no old path.
+		mocks.upsertSyncedFile.mockClear();
+		await runCli(["push", dir, "--project", "project-1"]);
+		expect(mocks.upsertSyncedFile).toHaveBeenCalledTimes(1);
+		expect(mocks.upsertSyncedFile.mock.calls[0]?.[1]).toEqual({
+			sourcePath: "new.md",
+			content: A,
+		});
+	});
+
+	it("with --force, still drops the old entry when the replace of the new path conflicts again", async () => {
+		const B = "# B, stored on the server\n";
+		const dir = await makeFolder({ "new.md": A });
+		await seedLock(dir, { "old.md": A });
+		mocks.upsertSyncedFile
+			.mockRejectedValueOnce(
+				new FabricContextConflictError(
+					"This file is already on the server with different content, so nothing was written.",
+					{
+						status: "conflict",
+						contextId: "ctx-new.md",
+						sourcePath: "new.md",
+						contentHash: sha256(A),
+						current: {
+							contextId: "ctx-new.md",
+							contentHash: sha256(B),
+							contentUpdatedAt: "2026-09-22T09:30:00.000Z",
+							contentUpdatedBy: {
+								id: "user-2",
+								name: "Example Editor",
+							},
+						},
+						moveNotApplied: {
+							movedFromSourcePath: "old.md",
+							reason: "source-missing",
+						},
+					},
+				),
+			)
+			// The replace of new.md (not a move) loses to yet another edit.
+			.mockRejectedValueOnce(conflictError("new.md", A));
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--force",
+		]);
+
+		expect(result.code).toBe(1);
+		expect(mocks.upsertSyncedFile).toHaveBeenCalledTimes(2);
+		expect((await readLockFile(dir)).files).toEqual({});
+	});
+
+	it("recognises a server that does not support moves, sends nothing more even with --force, and keeps the lock", async () => {
+		// A server from before moves ignores movedFromSourcePath, so it
+		// answers the new path as an ordinary push naming a version: a
+		// conflict with no current version and no moveNotApplied.
+		for (const force of [false, true]) {
+			mocks.upsertSyncedFile.mockReset();
+			mocks.deleteSyncedFile.mockReset();
+			const dir = await makeFolder({ "docs/a.md": A });
+			const before = await seedLock(dir, { "a.md": A });
+			mocks.upsertSyncedFile.mockRejectedValue(
+				deletedConflictError("docs/a.md", A),
+			);
+
+			const result = await runCli([
+				"push",
+				dir,
+				"--project",
+				"project-1",
+				"--prune",
+				...(force ? ["--force"] : []),
+			]);
+
+			expect(result.code).toBe(1);
+			expect(mocks.upsertSyncedFile).toHaveBeenCalledTimes(1);
+			expect(mocks.deleteSyncedFile).not.toHaveBeenCalled();
+			expect(await readLockFile(dir)).toEqual(before);
+			expect(result.stdout).toContain(
+				"a.md -> docs/a.md: the server does not support moves yet; a.md kept, docs/a.md not pushed",
+			);
+			expect(result.stdout).not.toContain("deleted on the server");
+			expect(result.stderr).toContain("does not support moves yet");
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// --prune (Fizzy #2636)
+// ---------------------------------------------------------------------------
+function deleteConflict(sourcePath: string, lockedContent: string) {
+	return new FabricContextConflictError(
+		"This file was changed on the server since the version you are deleting, so nothing was deleted.",
+		{
+			status: "conflict",
+			contextId: `ctx-${sourcePath}`,
+			sourcePath,
+			contentHash: sha256(lockedContent),
+			current: {
+				contextId: `ctx-${sourcePath}`,
+				contentHash: "e".repeat(64),
+				contentUpdatedAt: "2026-09-22T09:30:00.000Z",
+				contentUpdatedBy: { id: "user-2", name: "Example Editor" },
+			},
+		},
+	);
+}
+
+const GONE = "# Gone\n";
+
+describe("fabric context push --prune", () => {
+	it("deletes a removed file's server entry in the version the lock names, and drops it from the lock", async () => {
+		const dir = await makeFolder({ "kept.md": "# Kept\n" });
+		await seedLock(dir, { "kept.md": "# Kept\n", "gone.md": GONE });
+		mocks.deleteSyncedFile.mockResolvedValue({
+			status: "deleted",
+			contextId: "ctx-gone.md",
+			sourcePath: "gone.md",
+			contentHash: sha256(GONE),
+		});
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.deleteSyncedFile).toHaveBeenCalledTimes(1);
+		expect(mocks.deleteSyncedFile).toHaveBeenCalledWith(
+			"project-1",
+			{ sourcePath: "gone.md", expectedContentHash: sha256(GONE) },
+			{ org: undefined },
+		);
+		expect(Object.keys((await readLockFile(dir)).files)).toEqual([
+			"kept.md",
+		]);
+		expect(result.stdout).toContain("deleted (1)");
+		expect(result.stdout).toMatch(/deleted \(1\)\n {2}gone\.md\n/);
+		expect(result.stdout).not.toContain("removed locally");
+	});
+
+	it("drops an entry the server no longer has, and says so", async () => {
+		const dir = await makeFolder({});
+		await seedLock(dir, { "gone.md": GONE });
+		mocks.deleteSyncedFile.mockResolvedValue({
+			status: "absent",
+			sourcePath: "gone.md",
+		});
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+		]);
+
+		expect(result.code).toBe(0);
+		expect((await readLockFile(dir)).files).toEqual({});
+		expect(result.stdout).toContain("already gone (1)");
+		expect(result.stdout).toContain("gone.md: already gone on the server");
+	});
+
+	it("does not delete a file changed on the server since the last push, keeps its entry, and exits 1", async () => {
+		const dir = await makeFolder({});
+		const before = await seedLock(dir, { "gone.md": GONE });
+		mocks.deleteSyncedFile.mockRejectedValue(
+			deleteConflict("gone.md", GONE),
+		);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+		]);
+
+		expect(result.code).toBe(1);
+		expect(mocks.deleteSyncedFile).toHaveBeenCalledTimes(1);
+		expect(await readLockFile(dir).catch(() => before)).toEqual(before);
+		expect(result.stdout).toContain(
+			"gone.md: changed on the server by Example Editor at 2026-09-22T09:30:00.000Z since your last push; not deleted",
+		);
+		expect(result.stderr).toMatch(/not deleted/);
+	});
+
+	it("with --force, deletes the version the conflict reported, once", async () => {
+		const dir = await makeFolder({});
+		await seedLock(dir, { "gone.md": GONE });
+		mocks.deleteSyncedFile
+			.mockRejectedValueOnce(deleteConflict("gone.md", GONE))
+			.mockResolvedValueOnce({
+				status: "deleted",
+				contextId: "ctx-gone.md",
+				sourcePath: "gone.md",
+				contentHash: "e".repeat(64),
+			});
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+			"--force",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.deleteSyncedFile).toHaveBeenCalledTimes(2);
+		expect(mocks.deleteSyncedFile.mock.calls[1]?.[1]).toEqual({
+			sourcePath: "gone.md",
+			expectedContentHash: "e".repeat(64),
+		});
+		expect((await readLockFile(dir)).files).toEqual({});
+		expect(result.stdout).toContain(
+			"gone.md: deleted the version Example Editor changed at 2026-09-22T09:30:00.000Z (--force)",
+		);
+	});
+
+	it("with --force, reports a second conflict and does not try a third time", async () => {
+		const dir = await makeFolder({});
+		const before = await seedLock(dir, { "gone.md": GONE });
+		mocks.deleteSyncedFile.mockRejectedValue(
+			deleteConflict("gone.md", GONE),
+		);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+			"--force",
+		]);
+
+		expect(result.code).toBe(1);
+		expect(mocks.deleteSyncedFile).toHaveBeenCalledTimes(2);
+		expect(await readLockFile(dir)).toEqual(before);
+		expect(result.stdout).toContain("while --force was deleting it");
+	});
+
+	it("stops at a missing delete permission with exit 5, after recording what already landed", async () => {
+		const dir = await makeFolder({ "new.md": "# New\n" });
+		await seedLock(dir, { "a-gone.md": GONE, "b-gone.md": GONE });
+		mocks.deleteSyncedFile.mockRejectedValue(
+			new FabricError(
+				"No permission to delete context sources from this project",
+				403,
+			),
+		);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+		]);
+
+		expect(result.code).toBe(5);
+		// One refusal is enough: it would repeat for every file.
+		expect(mocks.deleteSyncedFile).toHaveBeenCalledTimes(1);
+		expect(result.stderr).toContain(
+			"No permission to delete context sources from this project",
+		);
+		const lock = await readLockFile(dir);
+		expect(lock.files).toHaveProperty("new.md");
+		expect(lock.files).toHaveProperty("a-gone.md");
+		expect(lock.files).toHaveProperty("b-gone.md");
+	});
+
+	it("prunes after every push and move, so a run that stops early deletes nothing", async () => {
+		const dir = await makeFolder({ "a.md": "# A\n" });
+		await seedLock(dir, { "gone.md": GONE });
+		mocks.upsertSyncedFile.mockRejectedValue(
+			new FabricError(
+				"Missing required scope: projects:write",
+				403,
+				"MISSING_SCOPE",
+			),
+		);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+		]);
+
+		expect(result.code).toBe(5);
+		expect(mocks.deleteSyncedFile).not.toHaveBeenCalled();
+	});
+
+	it("deletes the old path in the same run when a move fell back because the new path already existed", async () => {
+		const dir = await makeFolder({ "docs/a.md": A });
+		await seedLock(dir, { "a.md": A });
+		mocks.upsertSyncedFile.mockResolvedValue({
+			...stored("unchanged", "docs/a.md", A),
+			moveNotApplied: {
+				movedFromSourcePath: "a.md",
+				reason: "target-exists",
+			},
+		});
+		mocks.deleteSyncedFile.mockResolvedValue({
+			status: "deleted",
+			contextId: "ctx-a.md",
+			sourcePath: "a.md",
+			contentHash: sha256(A),
+		});
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.deleteSyncedFile).toHaveBeenCalledWith(
+			"project-1",
+			{ sourcePath: "a.md", expectedContentHash: sha256(A) },
+			{ org: undefined },
+		);
+		expect(Object.keys((await readLockFile(dir)).files)).toEqual([
+			"docs/a.md",
+		]);
+	});
+
+	it("never deletes the old path of a move that was applied", async () => {
+		const dir = await makeFolder({ "docs/a.md": A });
+		await seedLock(dir, { "a.md": A });
+		mocks.upsertSyncedFile.mockResolvedValue(moved("a.md", "docs/a.md", A));
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.deleteSyncedFile).not.toHaveBeenCalled();
+	});
+
+	it("--dry-run lists what would be deleted and sends nothing", async () => {
+		const dir = await makeFolder({ "kept.md": "# Kept\n" });
+		const before = await seedLock(dir, {
+			"kept.md": "# Kept\n",
+			"gone.md": GONE,
+		});
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+			"--dry-run",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.deleteSyncedFile).not.toHaveBeenCalled();
+		expect(result.stdout).toContain("would delete (1)");
+		expect(result.stdout).toContain("gone.md");
+		expect(result.stdout).not.toContain("server entry would be kept");
+		expect(await readLockFile(dir)).toEqual(before);
+	});
+
+	it("keeps the entry of a deletion still running on the server, says to run again, counts it as not deleted and exits 1", async () => {
+		const dir = await makeFolder({});
+		const before = await seedLock(dir, {
+			"a-gone.md": GONE,
+			"b-gone.md": GONE,
+		});
+		mocks.deleteSyncedFile
+			.mockResolvedValueOnce({
+				status: "deleted",
+				contextId: "ctx-a-gone.md",
+				sourcePath: "a-gone.md",
+				contentHash: sha256(GONE),
+			})
+			.mockResolvedValueOnce({
+				status: "in-progress",
+				sourcePath: "b-gone.md",
+			});
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+		]);
+
+		expect(result.code).toBe(1);
+		expect(mocks.deleteSyncedFile).toHaveBeenCalledTimes(2);
+		// The server may or may not have deleted it yet: the entry stays, so
+		// the next --prune names the same version and confirms.
+		const lock = await readLockFile(dir);
+		expect(Object.keys(lock.files)).toEqual(["b-gone.md"]);
+		expect(lock.files["b-gone.md"]).toEqual(before.files["b-gone.md"]);
+		expect(result.stdout).toMatch(
+			/deletion still running \(1\)\n {2}b-gone\.md: deletion still running on the server; run again to confirm\n/,
+		);
+		expect(result.stdout).not.toContain("b-gone.md: removed locally");
+		expect(result.stderr).toContain(
+			"--prune: 1 deleted, 0 already gone, 1 not deleted",
+		);
+		expect(result.stderr).toMatch(/run again to confirm/);
+	});
+
+	it("never forces a deletion that is still running: --force resends only a conflict", async () => {
+		const dir = await makeFolder({});
+		await seedLock(dir, { "gone.md": GONE });
+		mocks.deleteSyncedFile.mockResolvedValue({
+			status: "in-progress",
+			sourcePath: "gone.md",
+		});
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+			"--force",
+		]);
+
+		expect(result.code).toBe(1);
+		expect(mocks.deleteSyncedFile).toHaveBeenCalledTimes(1);
+		expect(Object.keys((await readLockFile(dir)).files)).toEqual([
+			"gone.md",
+		]);
+	});
+
+	it("keeps the entry when the --force resend after a conflict is still running", async () => {
+		const dir = await makeFolder({});
+		const before = await seedLock(dir, { "gone.md": GONE });
+		mocks.deleteSyncedFile
+			.mockRejectedValueOnce(deleteConflict("gone.md", GONE))
+			.mockResolvedValueOnce({
+				status: "in-progress",
+				sourcePath: "gone.md",
+			});
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+			"--force",
+		]);
+
+		expect(result.code).toBe(1);
+		expect(mocks.deleteSyncedFile).toHaveBeenCalledTimes(2);
+		expect(await readLockFile(dir).catch(() => before)).toEqual(before);
+		expect(result.stdout).toContain(
+			"gone.md: deletion still running on the server; run again to confirm",
+		);
+	});
+
+	it("counts a deletion still running as not deleted in the --hook line and in --format json", async () => {
+		const dir = await makeFolder({});
+		await seedLock(dir, { "gone.md": GONE });
+		mocks.deleteSyncedFile.mockResolvedValue({
+			status: "in-progress",
+			sourcePath: "gone.md",
+		});
+
+		const hook = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+			"--hook",
+		]);
+		const lines = hook.stderr.split("\n").filter(Boolean);
+		expect(hook.code).toBe(0);
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain(
+			"--prune: 0 deleted, 0 already gone, 1 not deleted",
+		);
+
+		const json = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+			"--format",
+			"json",
+		]);
+		const parsed = JSON.parse(json.stdout) as {
+			results: { sourcePath: string; status: string }[];
+			counts: Record<string, number>;
+		};
+		expect(parsed.results).toEqual([
+			{ sourcePath: "gone.md", status: "delete-in-progress" },
+		]);
+		expect(parsed.counts.deleteInProgress).toBe(1);
+		expect(parsed.counts.deleted).toBe(0);
+	});
+
+	it("reports moves, prunes and their outcomes in --format json", async () => {
+		const dir = await makeFolder({ "docs/a.md": A });
+		await seedLock(dir, { "a.md": A, "gone.md": GONE });
+		mocks.upsertSyncedFile.mockResolvedValue(moved("a.md", "docs/a.md", A));
+		mocks.deleteSyncedFile.mockResolvedValue({
+			status: "deleted",
+			contextId: "ctx-gone.md",
+			sourcePath: "gone.md",
+			contentHash: sha256(GONE),
+		});
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+			"--format",
+			"json",
+		]);
+
+		expect(result.code).toBe(0);
+		const parsed = JSON.parse(result.stdout) as {
+			prune: boolean;
+			plan: { moves: unknown[]; removed: string[] };
+			results: {
+				sourcePath: string;
+				status: string;
+				movedFrom?: string;
+			}[];
+			counts: Record<string, number>;
+		};
+		expect(parsed.prune).toBe(true);
+		expect(parsed.plan.moves).toEqual([
+			{
+				from: "a.md",
+				to: "docs/a.md",
+				sha256: sha256(A),
+				contextId: "ctx-a.md",
+			},
+		]);
+		expect(parsed.plan.removed).toEqual(["gone.md"]);
+		expect(parsed.results).toEqual([
+			expect.objectContaining({
+				sourcePath: "docs/a.md",
+				status: "moved",
+				movedFrom: "a.md",
+			}),
+			expect.objectContaining({
+				sourcePath: "gone.md",
+				status: "deleted",
+			}),
+		]);
+		expect(parsed.counts.moved).toBe(1);
+		expect(parsed.counts.deleted).toBe(1);
+	});
+
+	it("names deletions in the one line a --hook run leaves on stderr", async () => {
+		const dir = await makeFolder({});
+		await seedLock(dir, { "a-gone.md": GONE, "b-gone.md": GONE });
+		mocks.deleteSyncedFile
+			.mockResolvedValueOnce({
+				status: "deleted",
+				contextId: "ctx-a-gone.md",
+				sourcePath: "a-gone.md",
+				contentHash: sha256(GONE),
+			})
+			.mockRejectedValueOnce(deleteConflict("b-gone.md", GONE));
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+			"--hook",
+		]);
+
+		expect(result.code).toBe(0);
+		const lines = result.stderr.split("\n").filter(Boolean);
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toMatch(/^fabric: context push /);
+		expect(lines[0]).toMatch(/1 deleted/);
+		expect(lines[0]).toMatch(/1 not deleted/);
+	});
+
+	it("counts a deletion a run-level refusal stopped before it was tried as not deleted, in the --hook line", async () => {
+		const dir = await makeFolder({});
+		await seedLock(dir, { "a-gone.md": GONE, "b-gone.md": GONE });
+		mocks.deleteSyncedFile
+			.mockResolvedValueOnce({
+				status: "deleted",
+				contextId: "ctx-a-gone.md",
+				sourcePath: "a-gone.md",
+				contentHash: sha256(GONE),
+			})
+			.mockRejectedValueOnce(
+				new FabricError(
+					"No permission to delete context sources from this project",
+					403,
+				),
+			);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+			"--hook",
+		]);
+
+		expect(mocks.deleteSyncedFile).toHaveBeenCalledTimes(2);
+		const lines = result.stderr.split("\n").filter(Boolean);
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain(
+			"No permission to delete context sources from this project",
+		);
+		expect(lines[0]).toContain(
+			"--prune: 1 deleted, 0 already gone, 1 not deleted",
+		);
+		const lock = await readLockFile(dir);
+		expect(lock.files).not.toHaveProperty("a-gone.md");
+		expect(lock.files).toHaveProperty("b-gone.md");
+	});
+
+	it("counts every removed file as not deleted when the run stops before the deletions", async () => {
+		const dir = await makeFolder({ "a.md": "# A\n" });
+		await seedLock(dir, { "gone.md": GONE });
+		mocks.upsertSyncedFile.mockRejectedValue(
+			new FabricError(
+				"Missing required scope: projects:write",
+				403,
+				"MISSING_SCOPE",
+			),
+		);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+			"--hook",
+		]);
+
+		expect(mocks.deleteSyncedFile).not.toHaveBeenCalled();
+		expect(result.stderr).toContain(
+			"--prune: 0 deleted, 0 already gone, 1 not deleted",
+		);
+	});
+
+	it("lists the kept old path of a declined move when the run stops before deleting it", async () => {
+		const dir = await makeFolder({ "docs/b.md": A });
+		await seedLock(dir, { "aaa-gone.md": GONE, "b.md": A });
+		mocks.upsertSyncedFile.mockResolvedValue({
+			...stored("unchanged", "docs/b.md", A),
+			moveNotApplied: {
+				movedFromSourcePath: "b.md",
+				reason: "target-exists",
+			},
+		});
+		// The first deletion (aaa-gone.md sorts first) stops the run.
+		mocks.deleteSyncedFile.mockRejectedValue(
+			new FabricError(
+				"No permission to delete context sources from this project",
+				403,
+			),
+		);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+		]);
+
+		expect(result.code).toBe(5);
+		expect(mocks.deleteSyncedFile).toHaveBeenCalledTimes(1);
+		expect(result.stdout).toContain(
+			"aaa-gone.md: removed locally; server entry kept",
+		);
+		expect(result.stdout).toContain(
+			"b.md: removed locally; server entry kept",
+		);
+		expect(result.stderr).toContain(
+			"--prune: 0 deleted, 0 already gone, 2 not deleted",
+		);
 	});
 });

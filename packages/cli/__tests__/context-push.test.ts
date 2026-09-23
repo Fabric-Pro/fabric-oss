@@ -484,6 +484,150 @@ describe("plan against the lock", () => {
 	});
 });
 
+// ---------------------------------------------------------------------------
+// Moves (Fizzy #2636)
+// ---------------------------------------------------------------------------
+describe("move detection", () => {
+	it("pairs a locked path gone from disk with a new file of the same content as one move", async () => {
+		const root = await makeFolder({ "docs/a.md": "# A\n" });
+
+		const plan = await computeContextPlan({
+			root,
+			lock: lockOf({ "a.md": "# A\n" }),
+		});
+
+		expect(plan.moves).toEqual([
+			{
+				from: "a.md",
+				to: "docs/a.md",
+				diskPath: "docs/a.md",
+				sha256: sha256("# A\n"),
+				bytes: 4,
+				contextId: "ctx-a.md",
+			},
+		]);
+		expect(plan.removed).toEqual([]);
+		expect(plan.push).toEqual([]);
+	});
+
+	it("pairs one to one: of two removed with the same content, the first in path order moves and the other stays removed", async () => {
+		const root = await makeFolder({ "c.md": "# Same\n" });
+
+		const plan = await computeContextPlan({
+			root,
+			lock: lockOf({ "b.md": "# Same\n", "a.md": "# Same\n" }),
+		});
+
+		expect(plan.moves.map((m) => [m.from, m.to])).toEqual([
+			["a.md", "c.md"],
+		]);
+		expect(plan.moves[0]?.contextId).toBe("ctx-a.md");
+		expect(plan.removed).toEqual(["b.md"]);
+		expect(plan.push).toEqual([]);
+	});
+
+	it("pairs one to one: a removed file moves to the first new file in path order, and the other is pushed as new", async () => {
+		const root = await makeFolder({
+			"d.md": "# Same\n",
+			"c.md": "# Same\n",
+		});
+
+		const plan = await computeContextPlan({
+			root,
+			lock: lockOf({ "a.md": "# Same\n" }),
+		});
+
+		expect(plan.moves.map((m) => [m.from, m.to])).toEqual([
+			["a.md", "c.md"],
+		]);
+		expect(pushed(plan)).toEqual(["d.md"]);
+		expect(plan.push[0]).not.toHaveProperty("expectedContentHash");
+		expect(plan.removed).toEqual([]);
+	});
+
+	it("pairs each removed file with its own content when several move at once", async () => {
+		const root = await makeFolder({
+			"new/one.md": "# One\n",
+			"new/two.md": "# Two\n",
+		});
+
+		const plan = await computeContextPlan({
+			root,
+			lock: lockOf({ "two.md": "# Two\n", "one.md": "# One\n" }),
+		});
+
+		expect(plan.moves.map((m) => [m.from, m.to])).toEqual([
+			["one.md", "new/one.md"],
+			["two.md", "new/two.md"],
+		]);
+	});
+
+	it("does not pair different content: that is a removal and a new file", async () => {
+		const root = await makeFolder({ "b.md": "# B\n" });
+
+		const plan = await computeContextPlan({
+			root,
+			lock: lockOf({ "a.md": "# A\n" }),
+		});
+
+		expect(plan.moves).toEqual([]);
+		expect(plan.removed).toEqual(["a.md"]);
+		expect(pushed(plan)).toEqual(["b.md"]);
+	});
+
+	it("never pairs a duplicate entry, which has no server row to move", async () => {
+		const root = await makeFolder({ "b.md": "# Same\n" });
+		const lock: ContextLock = {
+			...lockOf({}),
+			files: {
+				"a.md": { sha256: sha256("# Same\n"), state: "duplicate" },
+			},
+		};
+
+		const plan = await computeContextPlan({ root, lock });
+
+		expect(plan.moves).toEqual([]);
+		expect(plan.forgotten).toEqual(["a.md"]);
+		expect(pushed(plan)).toEqual(["b.md"]);
+	});
+
+	it("never pairs a file the lock already names, even when its new content matches a removed one", async () => {
+		// b.md was edited to read exactly like a.md, and a.md was deleted:
+		// b.md is a change to b.md's own row, not a.md moving.
+		const root = await makeFolder({ "b.md": "# A\n" });
+
+		const plan = await computeContextPlan({
+			root,
+			lock: lockOf({ "a.md": "# A\n", "b.md": "# B\n" }),
+		});
+
+		expect(plan.moves).toEqual([]);
+		expect(plan.removed).toEqual(["a.md"]);
+		expect(plan.push).toEqual([
+			expect.objectContaining({
+				sourcePath: "b.md",
+				expectedContentHash: sha256("# B\n"),
+			}),
+		]);
+	});
+
+	it("never pairs a path the ignore rules now leave out", async () => {
+		const root = await makeFolder({
+			".contextignore": "private/\n",
+			"private/a.md": "# A\n",
+			"b.md": "# A\n",
+		});
+
+		const plan = await computeContextPlan({
+			root,
+			lock: lockOf({ "private/a.md": "# A\n" }),
+		});
+
+		expect(plan.moves).toEqual([]);
+		expect(pushed(plan)).toEqual(["b.md"]);
+	});
+});
+
 describe("case-only collisions", () => {
 	it("sends neither of two files whose paths differ only in case, and says why", async (context) => {
 		const root = await makeFolder({ "Guide.md": "# One\n" });

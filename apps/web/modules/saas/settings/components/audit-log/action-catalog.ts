@@ -458,9 +458,16 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 	),
 	"project.context_source.content_upserted": D(
 		"project.context_source.content_upserted",
-		"Synced context file created or updated",
+		"Synced context file created, updated or moved",
 		Upload,
 		"info",
+		"project",
+	),
+	"project.context_source.synced_file_deleted": D(
+		"project.context_source.synced_file_deleted",
+		"Synced context file deleted",
+		Trash2,
+		"warning",
 		"project",
 	),
 

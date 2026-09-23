@@ -76,37 +76,62 @@ function sha256(text: string): string {
 	return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
+async function renamedFolder(content: string): Promise<string> {
+	const dir = await realpath(
+		await mkdtemp(path.join(tmpdir(), "fabric-context-case-")),
+	);
+	await mkdir(path.join(dir, "docs"), { recursive: true });
+	await writeFile(path.join(dir, "docs", "guide.md"), content);
+	return dir;
+}
+
+const LOCK = {
+	version: 1,
+	projectId: "project-1",
+	pushedAt: "2026-09-20T10:00:00.000Z",
+	files: {
+		"Docs/Guide.md": {
+			sha256: sha256("# Guide\n"),
+			contextId: "ctx-old",
+		},
+	},
+};
+
 describe("a case-only rename on a case-insensitive filesystem", () => {
-	it("reports the old spelling as removed and pushes the new one as a new path", async () => {
-		const dir = await realpath(
-			await mkdtemp(path.join(tmpdir(), "fabric-context-case-")),
-		);
-		await mkdir(path.join(dir, "docs"), { recursive: true });
-		await writeFile(path.join(dir, "docs", "guide.md"), "# Guide\n");
+	it("sees the old spelling as gone, so an unchanged file is planned as a move to the new spelling (Fizzy #2636)", async () => {
+		const dir = await renamedFolder("# Guide\n");
 
-		const plan = await computeContextPlan({
-			root: dir,
-			lock: {
-				version: 1,
-				projectId: "project-1",
-				pushedAt: "2026-09-20T10:00:00.000Z",
-				files: {
-					"Docs/Guide.md": {
-						sha256: sha256("# Guide\n"),
-						contextId: "ctx-old",
-					},
-				},
+		const plan = await computeContextPlan({ root: dir, lock: LOCK });
+
+		expect(plan.skipped).toEqual([]);
+		expect(plan.moves).toEqual([
+			{
+				from: "Docs/Guide.md",
+				to: "docs/guide.md",
+				diskPath: "docs/guide.md",
+				sha256: sha256("# Guide\n"),
+				bytes: 8,
+				contextId: "ctx-old",
 			},
-		});
+		]);
+		expect(plan.removed).toEqual([]);
+		expect(plan.push).toEqual([]);
+	});
 
+	it("reports the old spelling as removed and pushes the new one as a new path when the content changed too", async () => {
+		const dir = await renamedFolder("# Guide, edited\n");
+
+		const plan = await computeContextPlan({ root: dir, lock: LOCK });
+
+		expect(plan.moves).toEqual([]);
 		expect(plan.removed).toEqual(["Docs/Guide.md"]);
 		expect(plan.skipped).toEqual([]);
 		expect(plan.push).toEqual([
 			{
 				sourcePath: "docs/guide.md",
 				diskPath: "docs/guide.md",
-				sha256: sha256("# Guide\n"),
-				bytes: 8,
+				sha256: sha256("# Guide, edited\n"),
+				bytes: 16,
 			},
 		]);
 	});

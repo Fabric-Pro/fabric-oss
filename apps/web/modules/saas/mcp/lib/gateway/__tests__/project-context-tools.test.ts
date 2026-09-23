@@ -1666,6 +1666,7 @@ describe("fabric_upsert_project_context", () => {
 			[
 				"content",
 				"expectedContentHash",
+				"movedFromSourcePath",
 				"projectId",
 				"sourcePath",
 				"title",
@@ -1821,6 +1822,95 @@ describe("fabric_upsert_project_context", () => {
 		expect(body.error).toMatch(/'duplicate'.*elsewhere in the project/);
 		// Not the stale-version advice: there is nothing to read and merge.
 		expect(body.error).not.toMatch(/fabric_get_project_context/);
+	});
+
+	it("describes movedFromSourcePath: a rename needs the old path's hash, and never replaces content (Fizzy #2636)", () => {
+		const definition = PLATFORM_TOOL_DEFINITIONS.find(
+			(tool) => tool.name === "fabric_upsert_project_context",
+		);
+		const properties = (definition?.inputSchema.properties ?? {}) as Record<
+			string,
+			{ type?: string; description?: string; maxLength?: number }
+		>;
+
+		expect(properties.movedFromSourcePath).toMatchObject({
+			type: "string",
+			maxLength: 512,
+		});
+		expect(properties.movedFromSourcePath?.description).toMatch(
+			/expectedContentHash/,
+		);
+		expect(definition?.description).toMatch(/'movedFromSourcePath'/);
+		expect(definition?.description).toMatch(/'moved'/);
+	});
+
+	it("passes movedFromSourcePath through and reports a move as a success", async () => {
+		mocks.upsertSyncedContext.mockResolvedValue({
+			status: "moved",
+			contextId: "ctx-synced",
+			sourcePath: "docs/architecture.md",
+			contentHash: "c".repeat(64),
+			movedFromSourcePath: "notes/arch.md",
+		});
+
+		const result = await upsert({
+			movedFromSourcePath: "notes/arch.md",
+			expectedContentHash: "c".repeat(64),
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(mocks.upsertSyncedContext).toHaveBeenCalledWith(
+			expect.objectContaining({
+				movedFromSourcePath: "notes/arch.md",
+				expectedContentHash: "c".repeat(64),
+			}),
+		);
+		expect(payload(result)).toMatchObject({
+			status: "moved",
+			movedFromSourcePath: "notes/arch.md",
+		});
+		expect(payload(result).message).toMatch(/renamed|moved/i);
+	});
+
+	it("refuses a movedFromSourcePath that is not a string before any lookup", async () => {
+		const result = await upsert({ movedFromSourcePath: 7 });
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toMatch(/movedFromSourcePath/);
+		expect(mocks.resolveProjectAccess).not.toHaveBeenCalled();
+	});
+
+	it("tells the agent the old path changed when a move lost to an edit there", async () => {
+		mocks.upsertSyncedContext.mockResolvedValue({
+			status: "conflict",
+			contextId: "ctx-synced",
+			sourcePath: "docs/architecture.md",
+			contentHash: "c".repeat(64),
+			current: {
+				contextId: "ctx-synced",
+				contentHash: "e".repeat(64),
+				contentUpdatedAt: new Date("2026-09-22T11:00:00Z"),
+				contentUpdatedBy: { id: "user-2", name: "Other Dev" },
+			},
+			moveNotApplied: {
+				movedFromSourcePath: "notes/arch.md",
+				reason: "source-changed",
+			},
+		});
+
+		const result = await upsert({
+			movedFromSourcePath: "notes/arch.md",
+			expectedContentHash: "c".repeat(64),
+		});
+
+		expect(result.isError).toBe(true);
+		const body = payload(result);
+		expect(body.moveNotApplied).toEqual({
+			movedFromSourcePath: "notes/arch.md",
+			reason: "source-changed",
+		});
+		expect(body.error).toMatch(/notes\/arch\.md/);
+		expect(body.error).toMatch(/nothing was written/i);
 	});
 
 	it("tells an agent what a conflict with no current version means", () => {

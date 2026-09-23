@@ -13,20 +13,26 @@
  * `PUT /api/v1/projects/:projectId/contexts/synced-files` in
  * `modules/v1/contexts.ts`; change the two together.
  *
- * Authorization, all answered server-side:
- *  - WHETHER the caller may see the project at all: `hasProjectAccess`, the
- *    check the Context tab's create path (`create-context.ts`) and the
- *    sibling `update-context-metadata.ts` make. The permission resolver
- *    alone is not enough: its org-role fallback grants an organization
- *    member their org role's permissions on EVERY project in the
- *    organization, including a project they have no standing on, so an org
- *    `member` would hold CONTEXT_CREATE here on a project the app hides from
- *    them. The MCP twin refuses that caller too (not-found when the project
- *    is not visible).
+ * Authorization, all answered server-side, in this order:
+ *  - WHETHER the caller may see the project at all, FIRST:
+ *    `projectNotFoundUnlessVisible` asks `hasProjectAccess`, the check the
+ *    Context tab's create path (`create-context.ts`) and the sibling
+ *    `update-context-metadata.ts` make, and answers a project the caller
+ *    cannot see with NOT_FOUND in the words a missing id gets. First,
+ *    because the permission gate refuses an existing project FORBIDDEN and
+ *    a missing one NOT_FOUND, which would tell an outsider which ids are
+ *    real in organizations they do not belong to. And needed on its own
+ *    terms: the permission resolver's org-role fallback grants an
+ *    organization member their org role's permissions on EVERY project in
+ *    the organization, including a project they have no standing on, so an
+ *    org `member` would hold CONTEXT_CREATE here on a project the app hides
+ *    from them. The MCP twin refuses that caller too (not-found when the
+ *    project is not visible).
  *  - WHAT the caller may do: CONTEXT_CREATE on the project, the permission
- *    the MCP tool asks for too. The middleware checks it; the handler asks
- *    the same resolver again because it needs the answer's organization, and
- *    refuses on the same terms, so the two can never disagree.
+ *    the MCP tool asks for too (FORBIDDEN, to a caller who can see the
+ *    project). The middleware checks it; the handler asks the same resolver
+ *    again because it needs the answer's organization, and refuses on the
+ *    same terms, so the two can never disagree.
  *  - WHICH organization: the project's hosting organization, from that same
  *    resolution. No caller-supplied `organizationId` is accepted: a
  *    multi-organization member's active session organization is not
@@ -34,10 +40,13 @@
  *    be a context in one tenant pointing at a project in another.
  */
 import { ORPCError } from "@orpc/client";
-import { hasProjectAccess } from "@repo/database";
 import { hasPermission, Permissions } from "@repo/permissions";
 import { z } from "zod";
 import { resolveEffectiveProjectPermissions } from "../../../../lib/effective-project-permissions";
+import {
+	PROJECT_NOT_FOUND_MESSAGE,
+	projectNotFoundUnlessVisible,
+} from "../../../../orpc/middleware/project-visibility";
 import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
@@ -57,6 +66,8 @@ import {
 const MAX_SOURCE_PATH_INPUT_LENGTH = 2048;
 
 export const upsertSyncedFileProcedure = tenantProtectedProcedure
+	// Visibility before permission: see the file comment.
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.CONTEXT_CREATE))
 	.route({
 		method: "PUT",
@@ -64,7 +75,7 @@ export const upsertSyncedFileProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Contexts"],
 		summary: "Create or update a synced context file by path",
 		description:
-			"Push a text file into the project's Context keyed by its relative path. A new path creates a source and indexes it; the same content again changes nothing; changed content replaces the stored version and re-indexes it, but only when `expectedContentHash` names the version being replaced — otherwise the call answers CONFLICT with the stored hash and who last changed it, and writes nothing. A named hash on a path that no longer exists (deleted since) is a CONFLICT with `current: null`; push again without `expectedContentHash` to recreate it, which answers `duplicate` instead if that content already exists elsewhere in the project. Content identical to another source in the project — synced or added in the Context tab — is reported as `duplicate` and not stored twice.",
+			"Push a text file into the project's Context keyed by its relative path. A new path creates a source and indexes it; the same content again changes nothing; changed content replaces the stored version and re-indexes it, but only when `expectedContentHash` names the version being replaced — otherwise the call answers CONFLICT with the stored hash and who last changed it, and writes nothing. A named hash on a path that no longer exists (deleted since) is a CONFLICT with `current: null`; push again without `expectedContentHash` to recreate it, which answers `duplicate` instead if that content already exists elsewhere in the project. Content identical to another source in the project — synced or added in the Context tab — is reported as `duplicate` and not stored twice. A renamed file names its old path in `movedFromSourcePath`, with that path's hash as `expectedContentHash`: the source is renamed in place (`moved`) when it still holds that version and the content is unchanged; otherwise the answer is the ordinary one for the new path with `moveNotApplied` saying why, or a CONFLICT about the old path when it changed since.",
 	})
 	.input(
 		z.object({
@@ -104,7 +115,15 @@ export const upsertSyncedFileProcedure = tenantProtectedProcedure
 				.regex(/^[0-9a-fA-F]{64}$/)
 				.optional()
 				.describe(
-					"The `contentHash` of the stored version you mean to replace, from a previous response or from a CONFLICT. Omitting it means: create the source if the path is new, otherwise only accept content identical to what is stored. Omitting it never means overwrite.",
+					"The `contentHash` of the stored version you mean to replace, from a previous response or from a CONFLICT. Omitting it means: create the source if the path is new, otherwise only accept content identical to what is stored. Omitting it never means overwrite. Required with `movedFromSourcePath`, where it names the version at the old path.",
+				),
+			movedFromSourcePath: z
+				.string()
+				.min(1)
+				.max(MAX_SOURCE_PATH_INPUT_LENGTH)
+				.optional()
+				.describe(
+					"The path this file had before it was renamed, under the same rules as `sourcePath` and different from it. The source there is renamed to `sourcePath` when it still holds the version named in `expectedContentHash` and `content` is that same version.",
 				),
 		}),
 	)
@@ -115,21 +134,12 @@ export const upsertSyncedFileProcedure = tenantProtectedProcedure
 			input.projectId,
 			user.id,
 		);
+		// Visibility was answered by `projectNotFoundUnlessVisible`; this
+		// resolution is for the hosting organization, and refuses on the
+		// permission gate's terms so the two can never disagree.
 		if (!access) {
-			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
-		}
-
-		// Project access — required because the permission resolver's
-		// org-role fallback grants org permissions on projects the caller
-		// cannot see. Same check, same refusal, as update-context-metadata.
-		const hasAccess = await hasProjectAccess(
-			input.projectId,
-			user.id,
-			access.organizationId ?? undefined,
-		);
-		if (!hasAccess) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "You don't have access to this project",
+			throw new ORPCError("NOT_FOUND", {
+				message: PROJECT_NOT_FOUND_MESSAGE,
 			});
 		}
 
@@ -148,6 +158,7 @@ export const upsertSyncedFileProcedure = tenantProtectedProcedure
 			content: input.content,
 			title: input.title,
 			expectedContentHash: input.expectedContentHash,
+			movedFromSourcePath: input.movedFromSourcePath,
 			userId: user.id,
 			organizationId: access.organizationId,
 			via: "web",

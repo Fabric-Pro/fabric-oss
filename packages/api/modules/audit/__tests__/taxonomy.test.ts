@@ -214,7 +214,11 @@ describe("audit.taxonomy handler", () => {
 		// created or replaced by its path from the API or the
 		// `fabric_upsert_project_context` MCP tool, with the path and the new
 		// and replaced hashes but never the content, Fizzy #2616) = 138.
-		expect(result.actions).toHaveLength(138);
+		// + 1 project.context_source.synced_file_deleted (a synced knowledge
+		// file deleted by its path, only in the version the caller named — the
+		// `--prune` of `fabric context push` — with the path and the deleted
+		// hash, Fizzy #2636) = 139.
+		expect(result.actions).toHaveLength(139);
 		// The To Do list's writes. Completion is one toggle key; unsnoozing is
 		// its own, because "returned this to everyone's open view" is not a
 		// weaker form of "hid it".
@@ -247,6 +251,10 @@ describe("audit.taxonomy handler", () => {
 		// Synced knowledge files, created or replaced by path, from either surface.
 		expect(result.actions).toContain(
 			"project.context_source.content_upserted",
+		);
+		// ...and deleted by path, compare-and-set, from the API or the CLI.
+		expect(result.actions).toContain(
+			"project.context_source.synced_file_deleted",
 		);
 		// Organization deletion corridor: taking a deactivated organization
 		// back, and the scheduled purge that ends the window.

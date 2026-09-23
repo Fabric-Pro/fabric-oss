@@ -82,6 +82,24 @@ describe("public v1 CORS preflight", () => {
 		expect(res.headers.get("access-control-allow-origin")).toBe("*");
 	});
 
+	it("allows DELETE for the synced context route, without a key (Fizzy #2636)", async () => {
+		const res = await createPublicV1Routes().fetch(
+			preflight("/projects/project-1/contexts/synced-files", "DELETE"),
+		);
+
+		expect(res.status).toBe(204);
+		const allowed = (res.headers.get("access-control-allow-methods") ?? "")
+			.split(",")
+			.map((method) => method.trim());
+		expect(allowed).toContain("DELETE");
+		// A DELETE with a JSON body needs Content-Type allowed as well.
+		expect(
+			(
+				res.headers.get("access-control-allow-headers") ?? ""
+			).toLowerCase(),
+		).toContain("content-type");
+	});
+
 	it.each([["GET"], ["POST"], ["PATCH"], ["DELETE"]])(
 		"still allows %s",
 		async (method) => {

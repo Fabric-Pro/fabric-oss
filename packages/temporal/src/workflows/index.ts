@@ -696,6 +696,9 @@ export {
 	type StorySyncWorkflowOutput,
 	storySyncWorkflow,
 } from "./story-sync-workflow";
+// Synced context deletion workflow (compare-and-set delete behind
+// `fabric context push --prune`, Fizzy #2636)
+export { syncedContextDeletionWorkflow } from "./synced-context-deletion";
 // Task Agent workflow (Weft-style agent execution for story tasks)
 export {
 	type AgentStep,

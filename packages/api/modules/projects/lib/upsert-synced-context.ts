@@ -23,7 +23,15 @@
  *    without the hash recreates it, or answers duplicate instead if that
  *    content already exists elsewhere in the project;
  *  - identical content already in the project under another hashed row is
- *    reported as a duplicate instead of being stored twice.
+ *    reported as a duplicate instead of being stored twice;
+ *  - with `movedFromSourcePath` (Fizzy #2636), the file was renamed: the row
+ *    at the old path is renamed in place when it still holds the version
+ *    named in `expectedContentHash` (required with it) and the content sent is
+ *    that same version, and is re-embedded, because the index carries the
+ *    path and the title. Otherwise the answer is the ordinary one for the new
+ *    path, with `moveNotApplied` saying why, and the old row is untouched —
+ *    or, when the old path changed since the caller saw it, a conflict about
+ *    the OLD row. A move never replaces content in the same call.
  *
  * ## Authorization is the caller's
  *
@@ -52,6 +60,7 @@ import {
 	hasControlOrFormatCharacter,
 	hashContextContent,
 	normalizeContextSourcePath,
+	type SyncedContextMoveNotApplied,
 	type SyncedContextRow,
 	upsertContextBySourcePath,
 } from "@repo/database";
@@ -72,7 +81,8 @@ import { MAX_SYNCED_CONTEXT_BYTES } from "./synced-context-limits";
 /** Upper bound on a caller-supplied title. */
 export const MAX_SYNCED_CONTEXT_TITLE_LENGTH = 255;
 
-const SHA256_HEX = /^[0-9a-f]{64}$/;
+/** A lower-case sha256 hex digest, as `contentHash` is stored. */
+export const SHA256_HEX = /^[0-9a-f]{64}$/;
 const HAS_NON_WHITESPACE = /\S/;
 
 export interface UpsertSyncedContextInput {
@@ -85,8 +95,15 @@ export interface UpsertSyncedContextInput {
 	/**
 	 * The `contentHash` of the stored version the caller means to replace.
 	 * Absent: create if absent, otherwise only accept identical content.
+	 * With `movedFromSourcePath`, required: the version at the OLD path the
+	 * caller last saw.
 	 */
 	expectedContentHash?: string | null;
+	/**
+	 * The path this file had before it was renamed, as the caller sent it;
+	 * normalized here, and it must name a different path than `sourcePath`.
+	 */
+	movedFromSourcePath?: string | null;
 	/** The human the request acts as. Never a client-supplied field. */
 	userId: string;
 	/** The project's hosting organization, resolved server-side. */
@@ -101,7 +118,7 @@ export interface UpsertSyncedContextInput {
 }
 
 /** The version a conflicting push lost to. Never its content. */
-interface SyncedContextConflict {
+export interface SyncedContextConflict {
 	contextId: string;
 	contentHash: string | null;
 	contentUpdatedAt: Date | null;
@@ -117,14 +134,28 @@ interface SyncedContextOutcomeBase {
 	contentHash: string;
 }
 
+/**
+ * On every answer to a move that was not applied as a rename: which old path,
+ * and why (see `SyncedContextMoveNotAppliedReason` in `@repo/database`). Only
+ * `source-missing` means the old path has no row on the server any more.
+ */
+interface MoveNotAppliedField {
+	moveNotApplied?: SyncedContextMoveNotApplied;
+}
+
 export type UpsertSyncedContextResult =
 	| (SyncedContextOutcomeBase & {
 			status: "created" | "updated" | "unchanged";
-	  })
+	  } & MoveNotAppliedField)
 	| (SyncedContextOutcomeBase & {
 			status: "duplicate";
 			duplicateOfContextId: string;
 			duplicateOfSourcePath: string | null;
+	  } & MoveNotAppliedField)
+	| (SyncedContextOutcomeBase & {
+			/** The row at `movedFromSourcePath` now lives at `sourcePath`. */
+			status: "moved";
+			movedFromSourcePath: string;
 	  })
 	| (Omit<SyncedContextOutcomeBase, "contextId"> & {
 			status: "conflict";
@@ -132,10 +163,12 @@ export type UpsertSyncedContextResult =
 			contextId: string | null;
 			/**
 			 * The stored version, or `null` when the caller named a hash and
-			 * the path no longer holds a row: it was deleted since.
+			 * the path no longer holds a row: it was deleted since. With
+			 * `moveNotApplied.reason === "source-changed"`, the version at
+			 * the OLD path.
 			 */
 			current: SyncedContextConflict | null;
-	  });
+	  } & MoveNotAppliedField);
 
 function badRequest(message: string): ORPCError<"BAD_REQUEST", unknown> {
 	return new ORPCError("BAD_REQUEST", { message });
@@ -149,6 +182,7 @@ function validate(input: UpsertSyncedContextInput): {
 	sourcePath: string;
 	title: string;
 	expectedContentHash: string | undefined;
+	movedFromSourcePath: string | undefined;
 	bytes: number;
 } {
 	let sourcePath: string;
@@ -159,6 +193,33 @@ function validate(input: UpsertSyncedContextInput): {
 			throw badRequest(error.message);
 		}
 		throw error;
+	}
+
+	// The same rules as the path itself, compared once both are normalized:
+	// `docs//a.md` and `docs/a.md` are one path, and a move to itself is not
+	// a move.
+	let movedFromSourcePath: string | undefined;
+	if (input.movedFromSourcePath) {
+		try {
+			movedFromSourcePath = normalizeContextSourcePath(
+				input.movedFromSourcePath,
+			);
+		} catch (error) {
+			if (error instanceof ContextSourcePathError) {
+				throw badRequest(`movedFromSourcePath: ${error.message}`);
+			}
+			throw error;
+		}
+		if (movedFromSourcePath === sourcePath) {
+			throw badRequest(
+				"movedFromSourcePath names the same path as sourcePath; send the file without it",
+			);
+		}
+		if (!input.expectedContentHash) {
+			throw badRequest(
+				"movedFromSourcePath requires expectedContentHash: the contentHash of the version at the old path you last saw",
+			);
+		}
 	}
 
 	// The length test first: it is free, and a UTF-8 encoding is never
@@ -215,11 +276,35 @@ function validate(input: UpsertSyncedContextInput): {
 		sourcePath,
 		title,
 		expectedContentHash,
+		movedFromSourcePath,
 		bytes: Buffer.byteLength(input.content, "utf8"),
 	};
 }
 
-async function resolveEditor(
+/**
+ * The title a stored row is shown under: `metadata.title`, else its file name.
+ * `activities/synced-context-deletion.ts` in `@repo/temporal`, which cannot
+ * import this package, applies the same rule; change the two together.
+ */
+function storedSyncedContextTitle(
+	context: SyncedContextRow,
+	sourcePath: string,
+): string {
+	const metadata = context.metadata;
+	const title =
+		metadata && typeof metadata === "object" && !Array.isArray(metadata)
+			? (metadata as { title?: unknown }).title
+			: undefined;
+	return typeof title === "string" && title.trim()
+		? title
+		: basename(sourcePath);
+}
+
+/**
+ * Who last changed a conflicting version, by id and display name. Shared with
+ * `delete-synced-context.ts`.
+ */
+export async function resolveSyncedContextEditor(
 	userId: string | null,
 ): Promise<SyncedContextConflict["contentUpdatedBy"]> {
 	if (!userId) {
@@ -249,8 +334,12 @@ async function resolveEditor(
  * first) while it has moved, a bounded number of times before failing for
  * Temporal to retry; it marks `embeddedAt` only for the version it embedded.
  * See `embedSingleContextActivity` in `@repo/temporal`.
+ *
+ * `syncedContextDeletionWorkflow` starts the same workflow, with the same
+ * input shape, for a row whose points it removed before losing the delete to
+ * a concurrent change; change the two together.
  */
-function startEmbedding(params: {
+function startSyncedContextEmbedding(params: {
 	context: SyncedContextRow;
 	projectId: string;
 	userId: string;
@@ -308,7 +397,13 @@ function startEmbedding(params: {
 export async function upsertSyncedContext(
 	input: UpsertSyncedContextInput,
 ): Promise<UpsertSyncedContextResult> {
-	const { sourcePath, title, expectedContentHash, bytes } = validate(input);
+	const {
+		sourcePath,
+		title,
+		expectedContentHash,
+		movedFromSourcePath,
+		bytes,
+	} = validate(input);
 
 	// ADR-018: an organization is the only tenant context. A project with no
 	// hosting organization means something upstream failed to resolve one;
@@ -327,9 +422,20 @@ export async function upsertSyncedContext(
 		content: input.content,
 		title,
 		expectedContentHash,
+		...(movedFromSourcePath ? { movedFromSourcePath } : {}),
 		userId: input.userId,
 		organizationId,
 	});
+
+	// Why a requested move was not applied, passed on with every answer
+	// that carries it, so a client knows whether the old path still has a
+	// row (only `source-missing` says it does not).
+	const moveNotApplied =
+		result.status !== "moved" &&
+		result.status !== "updated" &&
+		result.moveNotApplied
+			? { moveNotApplied: result.moveNotApplied }
+			: {};
 
 	if (result.status === "duplicate") {
 		return {
@@ -339,6 +445,7 @@ export async function upsertSyncedContext(
 			contentHash,
 			duplicateOfContextId: result.existing.id,
 			duplicateOfSourcePath: result.existing.sourcePath,
+			...moveNotApplied,
 		};
 	}
 
@@ -351,6 +458,7 @@ export async function upsertSyncedContext(
 				sourcePath,
 				contentHash,
 				current: null,
+				...moveNotApplied,
 			};
 		}
 		return {
@@ -362,10 +470,11 @@ export async function upsertSyncedContext(
 				contextId: current.contextId,
 				contentHash: current.contentHash,
 				contentUpdatedAt: current.contentUpdatedAt,
-				contentUpdatedBy: await resolveEditor(
+				contentUpdatedBy: await resolveSyncedContextEditor(
 					current.contentUpdatedByUserId,
 				),
 			},
+			...moveNotApplied,
 		};
 	}
 
@@ -376,17 +485,30 @@ export async function upsertSyncedContext(
 			contextId: context.id,
 			sourcePath,
 			contentHash,
+			...moveNotApplied,
 		};
 	}
 
-	// created or updated: a write happened, and only now do the side effects.
-	startEmbedding({
+	// A rename keeps the title the row already had (the database took the
+	// new file name as its title if its title was the old file name); the
+	// index and the ledger are told that one, not this call's default.
+	const writtenTitle =
+		result.status === "moved"
+			? storedSyncedContextTitle(context, sourcePath)
+			: title;
+
+	// created, updated or moved: a write happened, and only now do the side
+	// effects. A move re-embeds as a replace does: the points carry the path
+	// (as `filename`, which chunking and enrichment also read) and the title
+	// (`sourceTitle`) — `storeProjectContext` in `@repo/rag` — so leaving them
+	// would answer searches under the old name.
+	startSyncedContextEmbedding({
 		context,
 		projectId: input.projectId,
 		userId: input.userId,
 		organizationId,
 		sourcePath,
-		title,
+		title: writtenTitle,
 		// Every synced write, a create included, takes the hash-guarded
 		// re-embed pass. A create's workflow reads the row when it runs, so a
 		// replace that lands first would otherwise be overwritten in the
@@ -402,13 +524,17 @@ export async function upsertSyncedContext(
 			organizationId,
 			projectId: input.projectId,
 			contextId: context.id,
-			title,
+			title: writtenTitle,
 			outcome: result.status,
 			sourcePath,
 			contentHash,
 			bytes,
 			previousContentHash:
 				result.status === "updated" ? result.previousHash : undefined,
+			previousSourcePath:
+				result.status === "moved"
+					? result.movedFromSourcePath
+					: undefined,
 			via: input.via,
 		}),
 	);
@@ -422,13 +548,23 @@ export async function upsertSyncedContext(
 		userId: input.userId,
 		userName: input.request.user?.name || "Anonymous",
 		contextType: context.type,
-		contextName: title,
+		contextName: writtenTitle,
 	});
 
+	if (result.status === "moved") {
+		return {
+			status: "moved",
+			contextId: context.id,
+			sourcePath,
+			contentHash,
+			movedFromSourcePath: result.movedFromSourcePath,
+		};
+	}
 	return {
 		status: result.status,
 		contextId: context.id,
 		sourcePath,
 		contentHash,
+		...moveNotApplied,
 	};
 }
