@@ -135,6 +135,12 @@ export function derivedSnapshotRefusal(
 			return new ORPCError("BAD_REQUEST", {
 				message: `Two files would have the same name: ${detail}`,
 			});
+		case "path_tree_collision":
+			// Same wording as the folder-upload procedure's refusal of the
+			// same pair, so the two entry points describe one rule alike.
+			return new ORPCError("BAD_REQUEST", {
+				message: `A name cannot be both a file and a folder: ${detail}`,
+			});
 		case "empty_result":
 			return new ORPCError("BAD_REQUEST", {
 				message: "That would leave no files at all",

@@ -728,6 +728,150 @@ describe("createDerivedInstructionSnapshot", () => {
 		});
 	});
 
+	/**
+	 * A tree the CLI cannot write. `docs` beside `docs/a.md` is not two
+	 * spellings of one file, it is a file and a directory with one name:
+	 * whichever `fabric instructions sync` writes first makes the other
+	 * fail, and the sync stops part-way. Both orders are refused because a
+	 * base is allowed to hold either side.
+	 */
+	describe("file-and-directory collisions between inherited rows and new puts", () => {
+		function stagedPaths(): string[] {
+			return (
+				mocks.file.createMany.mock.calls[0]![0] as {
+					data: Array<Record<string, unknown>>;
+				}
+			).data.map((r) => r.path as string);
+		}
+
+		it("refuses a file named like a directory the base already has", async () => {
+			withBaseFiles([baseFile("bf1", "docs/a.md")]);
+
+			const result = await createDerivedInstructionSnapshot(
+				input([put("docs")]),
+			);
+
+			expect(result).toEqual({
+				ok: false,
+				reason: "path_tree_collision",
+				detail: "docs/a.md and docs",
+			});
+			expect(mocks.snapshot.create).not.toHaveBeenCalled();
+		});
+
+		it("refuses a file under a directory the base stores as a file", async () => {
+			withBaseFiles([baseFile("bf1", "docs")]);
+
+			const result = await createDerivedInstructionSnapshot(
+				input([put("docs/a.md")]),
+			);
+
+			expect(result).toEqual({
+				ok: false,
+				reason: "path_tree_collision",
+				detail: "docs and docs/a.md",
+			});
+			expect(mocks.snapshot.create).not.toHaveBeenCalled();
+		});
+
+		// The directory name is compared by the same key as a file name, so
+		// a case or normalisation variant of the directory is the same
+		// directory.
+		it("compares directory names by the collision key, not byte equality", async () => {
+			withBaseFiles([baseFile("bf1", "Docs/a.md")]);
+
+			expect(
+				await createDerivedInstructionSnapshot(input([put("docs")])),
+			).toMatchObject({ ok: false, reason: "path_tree_collision" });
+		});
+
+		it("checks the deeper directories of a nested put, not only the first", async () => {
+			withBaseFiles([baseFile("bf1", "docs/guides")]);
+
+			expect(
+				await createDerivedInstructionSnapshot(
+					input([put("docs/guides/setup.md")]),
+				),
+			).toEqual({
+				ok: false,
+				reason: "path_tree_collision",
+				detail: "docs/guides and docs/guides/setup.md",
+			});
+		});
+
+		it("refuses the pair when both sides are new puts", async () => {
+			withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+			expect(
+				await createDerivedInstructionSnapshot(
+					input([put("docs/a.md"), put("docs")]),
+				),
+			).toMatchObject({ ok: false, reason: "path_tree_collision" });
+		});
+
+		// Cut on segment boundaries only: a shared PREFIX of a name is not a
+		// directory.
+		it("does not mistake a name prefix for a directory", async () => {
+			withBaseFiles([
+				baseFile("bf1", "docs/a.md"),
+				baseFile("bf2", "doc"),
+			]);
+
+			const result = await createDerivedInstructionSnapshot(
+				input([put("docs.md"), put("do")]),
+			);
+
+			expect(result).toMatchObject({ ok: true });
+			expect(stagedPaths().sort()).toEqual(
+				["doc", "docs.md", "docs/a.md", "do"].sort(),
+			);
+		});
+
+		// The same grandfathering as the case-insensitive pair: a base that
+		// already holds both sides is carried forward, so it can still be
+		// edited — including the edit that repairs it.
+		it("carries an inherited file-and-directory pair forward rather than refusing", async () => {
+			withBaseFiles([
+				baseFile("bf1", "docs"),
+				baseFile("bf2", "docs/a.md"),
+			]);
+
+			const result = await createDerivedInstructionSnapshot(
+				input([put("README.md")]),
+			);
+
+			expect(result).toMatchObject({ ok: true });
+			expect(stagedPaths().sort()).toEqual(
+				["docs", "docs/a.md", "README.md"].sort(),
+			);
+		});
+
+		it("lets the pair be repaired by deleting one side in the same change set", async () => {
+			withBaseFiles([baseFile("bf1", "docs")]);
+
+			const result = await createDerivedInstructionSnapshot(
+				input([{ op: "delete", path: "docs" }, put("docs/a.md")]),
+			);
+
+			expect(result).toMatchObject({ ok: true, inheritedCount: 0 });
+			expect(stagedPaths()).toEqual(["docs/a.md"]);
+		});
+
+		// Overwriting one side while the other is still inherited would
+		// still publish the unwritable tree, so — like the case-variant
+		// pair — the fix is to remove a row, not to overwrite one.
+		it("still refuses an edit of one side while the other is inherited", async () => {
+			withBaseFiles([
+				baseFile("bf1", "docs"),
+				baseFile("bf2", "docs/a.md"),
+			]);
+
+			expect(
+				await createDerivedInstructionSnapshot(input([put("docs")])),
+			).toMatchObject({ ok: false, reason: "path_tree_collision" });
+		});
+	});
+
 	it("drops a deleted path from the new file set", async () => {
 		withBaseFiles([
 			baseFile("bf1", "CLAUDE.md"),
