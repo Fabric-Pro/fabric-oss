@@ -1,5 +1,12 @@
 # @fabricorg/integrations-github
 
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies [5bb7b31]
+  - @fabricorg/sdk@0.3.5
+
 ## 0.1.6
 
 ### Patch Changes

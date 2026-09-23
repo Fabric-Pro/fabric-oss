@@ -1,5 +1,20 @@
 # fabric-app
 
+## 1.16.9
+
+### Patch Changes
+
+- 1ab7705: Failed AI usage records now capture the provider's HTTP status code and the gateway's routing details so outages can be attributed to the gateway or the upstream model provider.
+- d84faaf: Files synced into a project's Context tab from a working tree now appear under Living Memory, grouped by folder, and the contexts list can be filtered by folder path.
+- 5bb7b31: The Fabric CLI can now sync a folder of knowledge files into a project's Context with `fabric context push <dir> --project <id>`, sending only the files that changed since the last push and never overwriting a version someone else changed on the server.
+- e336c58: Project context items now record a content hash for every upload, and the Context tab flags items whose content duplicates another item and can remove the extra copies together.
+- bbb1f10: MCP clients and the API can now push a text file into a project's Context by its path, with unchanged files skipped and changed files re-indexed in place instead of duplicated.
+- fbd496c: The `fabric_get_project_context` and `fabric_get_feature_decisions` MCP tools now return crawled URL text, captured channel conversations, and decision log entries to invited guests from another organization, instead of an empty result.
+- 26c7299: A coding agent connected to the Fabric MCP gateway is now told how to bootstrap a project's context — setting its description and pushing the README and key docs from the working tree — and the MCP gateway documentation describes the same flow.
+- 1e9d19d: Organization-scoped MCP API keys are now refused as not found on projects hosted by another organization, across the gateway's project read and write tools, so a key issued for one organization can no longer reach another organization's project through its creator's guest membership.
+- 14c11b8: MCP clients can now update a project context's source type and AI instructions with the new `fabric_update_project_context` tool, matching the edit available in the project Context tab.
+- 060c136: Organization-scoped API keys are now refused as not found on workspaces hosted by another organization, in the MCP gateway's `fabric_get_workspace` and `fabric_query_workspace` tools and in the v1 REST `POST /workspaces/:id/query` route, so a key issued for one organization can no longer read another organization's workspace through its creator's membership there.
+
 ## 1.16.8
 
 ### Patch Changes
