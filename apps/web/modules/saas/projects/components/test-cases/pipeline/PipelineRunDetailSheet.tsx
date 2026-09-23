@@ -2,7 +2,6 @@
 
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
-import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Input } from "@ui/components/input";
 import {
@@ -27,6 +26,7 @@ import {
 	pipelineProviderLabel,
 } from "./PipelineProviderIcon";
 import { formatAbsoluteTime, formatDuration } from "./pipeline-run";
+import { RunTallyBadge } from "./RunTallyBadge";
 
 /** How many per-test rows to render at once — a run can carry thousands. */
 const PAGE = 100;
@@ -198,16 +198,7 @@ export function PipelineRunDetailSheet({
 
 							{/* Result mix — the run's headline numbers. */}
 							<div className="flex flex-wrap items-center gap-2">
-								<Badge
-									variant={
-										run.failedCount > 0
-											? "error"
-											: "success"
-									}
-								>
-									{run.passedCount}/{run.totalCount}{" "}
-									{t("passed")}
-								</Badge>
+								<RunTallyBadge run={run} />
 								{run.failedCount > 0 && (
 									<span className="text-destructive text-xs">
 										{t("failedCount", {
