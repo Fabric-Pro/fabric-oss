@@ -1,0 +1,78 @@
+# Advisory check: fails fast on a PR title the ops relay will refuse.
+#
+# The ops relay builds the public squash commit's message from this
+# repository's PR TITLE, and only validates it as part of the relay itself --
+# after the PR has already consumed a public validation slot, roughly 15
+# minutes. Observed on fabric-dev PR #505, refused with "synthetic commit
+# message must contain only the sanitized subject and exact corporate
+# attribution trailer". This workflow runs the same rules in seconds, on
+# every title and every edit that changes the title (see the job `if:` --
+# a body-only edit is a no-op here), so an author can fix it before
+# authorizing relay instead of after paying for a wasted validation slot.
+#
+# This check is NOT a required check today -- it is purely advisory -- but
+# the relay WILL still refuse a title that fails it, so treat a failure here
+# as something to fix before authorizing relay, not something to override.
+#
+# The rule logic lives in tooling/relay-title-preflight/check.sh (with a
+# self-test in tooling/relay-title-preflight/test.sh) rather than inline
+# here, so the same rules are exercised by both this workflow and that
+# self-test. Keep both in sync with the ops relay's own
+# create-synthetic-commit.sh (private ops repo, Fabric-Pro/fabric) if its
+# rules ever change.
+#
+# Inert on the public repository (see the job `if:` below): a relayed PR's
+# title there is always the relay's own already-sanitized synthetic subject,
+# so there is nothing for this check to catch.
+
+name: Relay Title Preflight
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Relay title preflight
+    # Job-scoped, not workflow-scoped: a workflow-level group is entered by
+    # every run before any job `if:` is evaluated, so a body-only `edited`
+    # event (skipped by the `if:` below) would still cancel a useful in-flight
+    # title check and leave a cancelled advisory result. At job scope only
+    # runs whose `if:` matches enter the group, so a newer title edit cancels
+    # only an older title check, which is the intended superseding.
+    concurrency:
+      group: relay-title-preflight-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    # `edited` also fires on body-only edits, where the title did not
+    # change; `github.event.changes.title` is present only when the title
+    # itself was the field that changed, so this skips the no-op re-run.
+    if: >-
+      github.repository == 'Fabric-Pro/fabric-dev' &&
+      (github.event.action != 'edited' || github.event.changes.title != null)
+    # arm64: checkout plus one bash/grep script -- architecture-neutral.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+
+      # The title is untrusted PR-author-controlled text, so two separate
+      # injection paths are closed here. First: it is passed only through
+      # this env var -- never interpolated into a `run:` script body or a
+      # command-line argument -- exactly as the workflow-injection guidance
+      # for `github.event.pull_request.title` requires. Second: check.sh
+      # forwards it unchanged to its own environment and never echoes it (or
+      # any part of it) back to its own stdout, because GitHub's legacy
+      # log-command parser matches `##[...]`/`::name::` anywhere within a
+      # log line -- so echoing the title verbatim would let a crafted title
+      # forge annotations or mask arbitrary later output. See check.sh's own
+      # header for the details of that second path.
+      - name: Check the PR title against the relay's synthetic-commit rules
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: tooling/relay-title-preflight/check.sh

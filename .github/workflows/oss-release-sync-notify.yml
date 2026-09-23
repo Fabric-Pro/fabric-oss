@@ -1,0 +1,153 @@
+# Wakes the ops relay's private-mirror sync immediately after the release
+# App's Version PR lands on the PUBLIC repository's master.
+#
+# The release process squash-merges the "chore: release" Version PR directly
+# on fabric-oss master (via the release App), which is a write to the public
+# repository the ops relay in Fabric-Pro/fabric (workflow oss-relay.yml on
+# branch `ops`) did not perform itself. Until that relay's `sync` mode runs,
+# fabric-dev master and fabric-oss master are no longer the same commit, and
+# the relay's queue for every other PR waiting behind it stalls. Today `sync`
+# mode only runs on its own cron (17,47 * * * *) or as a side effect of the
+# next relay; measured cost on 2026-09-23 was a 37-minute stall of the whole
+# relay queue after one release merge. This workflow removes that wait by
+# dispatching `sync` mode the moment the release merge itself completes.
+#
+# Like oss-relay-notify.yml, this file exists identically (byte-for-byte) in
+# fabric-dev and fabric-oss so the two repositories' master commits can stay
+# in exact sync -- but where that file's repository guard makes IT live only
+# in Fabric-Pro/fabric-dev, THIS file's guard makes it live only in
+# Fabric-Pro/fabric-oss: the release App merges directly on the public repo,
+# so only the public repo ever sees the push this workflow reacts to. It is
+# inert (the `if:` below is false) when this same file sits in fabric-dev.
+#
+# This workflow is a wake-up, never an authority: `sync` mode is idempotent
+# and re-derives all of its state on the ops side by reading the two
+# repositories' live master commits. A missed, duplicated, or spuriously
+# triggered dispatch costs at most one redundant sync run; it can never move
+# either master to the wrong place. That is also why cancelling a superseded,
+# still-queued dispatch (see the job's `concurrency` block) is safe here in a
+# way it was deliberately rejected for oss-relay-notify.yml: a relay
+# authorization encodes one specific human decision that must not be
+# silently dropped, but a queued sync only re-confirms state that the next
+# push's sync will re-derive anyway. For the same reason, a manual re-run of
+# an old release-triggered run -- which keeps that run's original
+# `github.actor` -- still matches the job's `if:` and dispatches another
+# sync; that is an accepted redundant wake, not a bug, so this workflow adds
+# no `run_attempt` guard to suppress it.
+#
+# Owner prerequisite (not yet done as of this writing): create the
+# `oss-relay-notifier` environment on Fabric-Pro/fabric-oss -- same name as
+# the environment fabric-dev's oss-relay-notify.yml already uses -- with the
+# same two secrets, OSS_RELAY_DISPATCH_APP_ID and
+# OSS_RELAY_DISPATCH_APP_PRIVATE_KEY, matching the values already configured
+# on fabric-dev. Recommend restricting that environment to the `master`
+# branch, since this workflow only ever runs there. Until those secrets
+# exist, this workflow degrades to a single `::notice::` and a green,
+# no-op run (see the first job step) -- it will never turn a release merge
+# red for a missing environment.
+
+name: OSS Release Sync Notify
+
+on:
+  push:
+    branches: [master]
+
+permissions: {}
+
+jobs:
+  notify-sync:
+    name: Wake the private mirror sync
+    # Job-scoped (not workflow-scoped) deliberately: a concurrency group is
+    # entered per job, respecting that job's own `if:`, whereas a
+    # workflow-level group is entered by every run of the workflow before
+    # any job's `if:` is evaluated. With a workflow-level group here, a push
+    # by anyone other than the release App would still have entered the
+    # group and could have cancelled an eligible, in-flight
+    # release-triggered run before its own job was skipped -- silently
+    # losing the wake this workflow exists to deliver. Job-scoping means
+    # only runs whose `if:` below actually matches ever enter the group, so
+    # `cancel-in-progress` can only ever cancel another eligible run. Keyed
+    # on the workflow's own name rather than a ref, since this workflow has
+    # a single trigger (push to master) and every eligible run already
+    # targets the same branch; the newest release push's sync dispatch is
+    # all that matters (see header), so cancelling a superseded one costs
+    # nothing.
+    concurrency:
+      group: oss-release-sync-notify
+      cancel-in-progress: true
+    # All of:
+    #   - live only on the public repository (see header);
+    #   - the pusher is the release App specifically, identified by the
+    #     `vars.RELEASE_APP_LOGIN` repository variable (same variable
+    #     dco.yml already trusts for its own release-App exemption). An
+    #     unset variable must exempt/match nobody, so this checks
+    #     `!= ''` before comparing -- mirroring dco.yml's handling of the
+    #     same concern -- rather than letting a blank-vs-blank comparison
+    #     accidentally match every pusher.
+    #   - checked against both `github.actor` and the payload's
+    #     `sender.login`, since a push made through the API under an
+    #     App installation token can surface the App's identity in
+    #     either field depending on how the merge was performed.
+    #
+    # This also naturally excludes the relay App's own pushes (it syncs
+    # after its own squash already) and every other pusher, human or bot,
+    # without needing a separate exclusion list.
+    if: >-
+      github.repository == 'Fabric-Pro/fabric-oss' &&
+      vars.RELEASE_APP_LOGIN != '' &&
+      (github.actor == vars.RELEASE_APP_LOGIN ||
+       github.event.sender.login == vars.RELEASE_APP_LOGIN)
+    # arm64: every step here is `gh api`/`jq`/shell plus one JS action
+    # (actions/create-github-app-token) -- architecture-neutral throughout.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    environment: oss-relay-notifier
+    steps:
+      # The oss-relay-notifier environment and its two secrets do not exist
+      # on this repository yet (see header). Every later step is gated on
+      # this one's output so a release merge before the owner adds them
+      # produces a single informational notice and a green run, never a red
+      # one.
+      - name: Check whether the dispatch credentials exist yet
+        id: has-app
+        env:
+          HAS_APP: ${{ secrets.OSS_RELAY_DISPATCH_APP_ID != '' && secrets.OSS_RELAY_DISPATCH_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          echo "present=$HAS_APP" >>"$GITHUB_OUTPUT"
+          if [[ "$HAS_APP" != "true" ]]; then
+            echo "::notice::This repository's 'oss-relay-notifier' environment is missing OSS_RELAY_DISPATCH_APP_ID and/or OSS_RELAY_DISPATCH_APP_PRIVATE_KEY. Add both secrets (matching the values already configured on Fabric-Pro/fabric-dev's 'oss-relay-notifier' environment) to let this workflow wake the ops relay's sync mode right after a release merge. Until then the mirror still catches up on its own cron (17,47 * * * *) or after the next relay -- this is a latency gap, not a correctness one."
+          fi
+
+      # Minted per run, scoped to nothing but dispatching one workflow in one
+      # repository -- identical scoping to oss-relay-notify.yml's own token,
+      # and for the same reason: attributing the woken run to the App rather
+      # than to any individual's credential.
+      - name: Mint the dispatch App token
+        id: dispatch-token
+        if: steps.has-app.outputs.present == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.OSS_RELAY_DISPATCH_APP_ID }}
+          private-key: ${{ secrets.OSS_RELAY_DISPATCH_APP_PRIVATE_KEY }}
+          owner: Fabric-Pro
+          repositories: fabric
+          permission-actions: write
+
+      - name: Dispatch the ops relay in sync mode
+        if: steps.has-app.outputs.present == 'true'
+        env:
+          DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+          PUSHED_SHA: ${{ github.sha }}
+          PUSHED_BY: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          # Audit trail only -- neither value is sent in the dispatch body
+          # below. The sync job reads nothing but `mode`.
+          echo "Release merge landed as $PUSHED_SHA (pushed by $PUSHED_BY); waking the ops relay in sync mode."
+          [[ -n "$DISPATCH_TOKEN" ]] \
+            || { echo "::error::the dispatch App token was not minted"; exit 1; }
+          jq -n '{ref:"ops",inputs:{mode:"sync"}}' >"$RUNNER_TEMP/dispatch.json"
+          GH_TOKEN="$DISPATCH_TOKEN" gh api --method POST \
+            repos/Fabric-Pro/fabric/actions/workflows/oss-relay.yml/dispatches \
+            --input "$RUNNER_TEMP/dispatch.json"
