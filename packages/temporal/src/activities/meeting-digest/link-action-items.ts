@@ -55,6 +55,7 @@ import {
 	listStoryDuplicateEmbeddingMetadata,
 	listStoryDuplicateEmbeddings,
 	markActionItemsLinked,
+	resolveMeetingDisplayName,
 	upsertStoryDuplicateEmbeddings,
 } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -357,8 +358,12 @@ export async function linkMeetingActionItemsActivity(
 	const decidedKeys = await listDecidedLinkKeys(transcriptCuid);
 	const minConfidence = resolveMinConfidence();
 	const storyById = new Map(candidateStories.map((s) => [s.id, s]));
-	const meetingSubject =
-		transcript.linkedMeeting?.subject ?? transcript.meetingSubject ?? null;
+	// The occurrence's name, not the series', so the model is told what the
+	// meeting was actually called (#2340).
+	const meetingSubject = resolveMeetingDisplayName({
+		occurrence: transcript.meetingSubject,
+		series: transcript.linkedMeeting?.subject,
+	});
 
 	const { model, trackUsage } = await getAIModelWithMetadata(
 		{ taskType: "COMPLEX" },

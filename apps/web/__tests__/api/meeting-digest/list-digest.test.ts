@@ -36,6 +36,33 @@ import {
 	findSeriesWithoutTranscripts,
 } from "@repo/api/modules/projects/procedures/meeting-digest/list-digest";
 
+/**
+ * A transcript row with only the naming fields that matter set, so a precedence
+ * test reads as the two subjects it is about rather than as fifteen fields of
+ * scaffolding.
+ */
+function baseTranscript(overrides: {
+	id: string;
+	meetingSubject: string | null;
+}) {
+	return {
+		linkedMeetingId: "lm1",
+		transcriptId: `graph-${overrides.id}`,
+		meetingDate: new Date("2026-07-06"),
+		contextId: "ctx1",
+		speakerNames: [],
+		analysisStatus: "SCANNED" as const,
+		analyzedProposalId: null,
+		insightsExtractedAt: null,
+		insightsVersion: null,
+		extractedDecisions: [],
+		extractedQuestions: [],
+		extractedActionItems: null,
+		actionItemRows: [],
+		...overrides,
+	};
+}
+
 describe("buildDigestRows", () => {
 	beforeEach(() => vi.clearAllMocks());
 
@@ -46,6 +73,7 @@ describe("buildDigestRows", () => {
 				{
 					id: "cuidA",
 					linkedMeetingId: "lm1",
+					meetingSubject: "DSU",
 					transcriptId: "t1",
 					meetingDate: new Date("2026-06-10"),
 					contextId: "ctx1",
@@ -90,6 +118,7 @@ describe("buildDigestRows", () => {
 				{
 					id: "cuidB",
 					linkedMeetingId: "lm1",
+					meetingSubject: "DSU",
 					transcriptId: "t1",
 					meetingDate: null,
 					contextId: null,
@@ -126,6 +155,62 @@ describe("buildDigestRows", () => {
 		});
 	});
 
+	it("names each row by its own occurrence, not the renamed series (#2340)", () => {
+		// The defect as the digest sheet shows it. One series, two occurrences that
+		// happened under their own names, and a series since renamed. Before this
+		// change every row here read "Fabric Dev Sync".
+		const rows = buildDigestRows({
+			linked: [
+				{
+					id: "lm1",
+					subject: "Fabric Dev Sync",
+					includedInDigest: true,
+				},
+			],
+			transcripts: [
+				baseTranscript({ id: "cuidOld", meetingSubject: "Fabric DSU" }),
+				baseTranscript({
+					id: "cuidNewer",
+					meetingSubject: "Fabric Dev Sync",
+				}),
+			],
+			createCountByProposalId: new Map(),
+		});
+
+		expect(rows.map((r) => r.subject)).toEqual([
+			"Fabric DSU",
+			"Fabric Dev Sync",
+		]);
+	});
+
+	it("falls back to the series name when the occurrence has no usable one", () => {
+		// Both arms of the fallback. A null occurrence subject is the pre-sync
+		// shape; the literal placeholder is what the sync stores for a calendar
+		// event with no subject of its own, and it must not beat a real name.
+		const rows = buildDigestRows({
+			linked: [
+				{
+					id: "lm1",
+					subject: "Fabric Dev Sync",
+					includedInDigest: true,
+				},
+			],
+			transcripts: [
+				baseTranscript({ id: "cuidNull", meetingSubject: null }),
+				baseTranscript({
+					id: "cuidPlaceholder",
+					meetingSubject: "Untitled Meeting",
+				}),
+			],
+			createCountByProposalId: new Map(),
+		});
+
+		expect(rows.map((r) => r.subject)).toEqual([
+			"Fabric Dev Sync",
+			"Fabric Dev Sync",
+		]);
+	});
+
 	it("exposes insights fields on digest rows", () => {
 		const rows = buildDigestRows({
 			linked: [{ id: "lm1", subject: "DSU", includedInDigest: true }],
@@ -133,6 +218,7 @@ describe("buildDigestRows", () => {
 				{
 					id: "cuid1",
 					linkedMeetingId: "lm1",
+					meetingSubject: "DSU",
 					transcriptId: "graph-t1",
 					meetingDate: new Date("2026-07-06"),
 					contextId: "ctx1",
@@ -174,6 +260,7 @@ describe("buildDigestRows", () => {
 				{
 					id: "cuidPre",
 					linkedMeetingId: "lm1",
+					meetingSubject: "DSU",
 					transcriptId: "t1",
 					meetingDate: new Date("2026-06-01"),
 					contextId: "ctx1",

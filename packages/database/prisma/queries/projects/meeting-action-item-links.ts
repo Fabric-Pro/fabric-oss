@@ -18,6 +18,7 @@
  */
 
 import { db } from "../../client";
+import { resolveMeetingDisplayName } from "./meeting-display-name";
 
 export type ActionItemLinkRow = {
 	id: string;
@@ -279,13 +280,15 @@ export async function listMeetingReferencesForStory(
 		itemKey: r.itemKey,
 		itemText: r.itemTextSnapshot,
 		origin: r.origin,
-		// The linked-meeting subject is the series name and is the more stable
-		// label; the per-instance subject is the fallback. Same precedence
-		// getMeeting uses.
-		meetingSubject:
-			r.transcript.linkedMeeting?.subject ??
-			r.transcript.meetingSubject ??
-			null,
+		// The occurrence's own subject, with the series name as the fallback —
+		// the same precedence getMeeting uses. This is the reverse of what stood
+		// here, which preferred the series name as "the more stable label": it is
+		// stable, but it is captured once at link time, so a renamed series made
+		// every past occurrence answer to a title it never had (#2340).
+		meetingSubject: resolveMeetingDisplayName({
+			occurrence: r.transcript.meetingSubject,
+			series: r.transcript.linkedMeeting?.subject,
+		}),
 		meetingDate: r.transcript.meetingDate,
 		transcriptRef: r.transcript.transcriptId,
 		projectId: r.projectId,

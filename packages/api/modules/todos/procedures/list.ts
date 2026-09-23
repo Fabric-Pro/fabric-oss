@@ -182,9 +182,11 @@ interface TodoListItem {
 	 * `meetingItemKey` is the durable item key rather than an action item row
 	 * id, because those ids are recreated on every extraction and a shared URL
 	 * has to survive that. `meetingTitle` is resolved the way the digest itself
-	 * resolves it (the linked meeting's subject, falling back to the
-	 * transcript's snapshot), so the two surfaces can never disagree about what
-	 * a meeting is called.
+	 * resolves it — the occurrence's own subject, falling back to the series
+	 * name — so the two surfaces can never disagree about what a meeting is
+	 * called. The reverse order stood here until #2340: the series name is
+	 * captured once at link time, so renaming a Teams series retitled every
+	 * past occurrence under it.
 	 *
 	 * `meetingTranscriptRef` is also the exact grouping key for "from <meeting>"
 	 * headings: grouping by `sourceDate` instead merges two meetings held the

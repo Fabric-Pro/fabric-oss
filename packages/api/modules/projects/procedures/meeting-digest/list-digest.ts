@@ -1,5 +1,9 @@
 import { ORPCError } from "@orpc/server";
-import { db, hasProjectAccess } from "@repo/database";
+import {
+	db,
+	hasProjectAccess,
+	resolveMeetingDisplayName,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -55,6 +59,7 @@ export function buildDigestRows(params: {
 		id: string;
 		linkedMeetingId: string;
 		transcriptId: string;
+		meetingSubject: string | null;
 		meetingDate: Date | null;
 		contextId: string | null;
 		speakerNames: string[];
@@ -89,7 +94,15 @@ export function buildDigestRows(params: {
 		linkedMeetingId: t.linkedMeetingId,
 		transcriptId: t.transcriptId,
 		transcriptRef: t.id,
-		subject: subjectByLinkedId.get(t.linkedMeetingId) ?? null,
+		// The occurrence's own subject, with the series name as the fallback.
+		// It matters here more than anywhere: this is the grid cell a user
+		// clicks, and the click opens `getMeeting`, so naming it by series while
+		// the sheet names it by occurrence would put two different titles on one
+		// meeting (#2340).
+		subject: resolveMeetingDisplayName({
+			occurrence: t.meetingSubject,
+			series: subjectByLinkedId.get(t.linkedMeetingId),
+		}),
 		meetingDate: t.meetingDate,
 		hasTranscript: Boolean(t.contextId),
 		analysisStatus: t.analysisStatus,
@@ -344,6 +357,7 @@ export const listDigestProcedure = tenantProtectedProcedure
 						id: true,
 						linkedMeetingId: true,
 						transcriptId: true,
+						meetingSubject: true,
 						meetingDate: true,
 						contextId: true,
 						speakerNames: true,
