@@ -531,7 +531,7 @@ export function RemoveAiBatchDialog({
 
 	return (
 		<Dialog open onOpenChange={(open) => !open && !removing && onClose()}>
-			<DialogContent className="sm:max-w-lg">
+			<DialogContent className="sm:max-w-lg [&>*]:min-w-0">
 				<DialogHeader>
 					<DialogTitle
 						ref={titleRef}
