@@ -91,20 +91,23 @@ describe("PipelineRunRow", () => {
 	});
 
 	it("does not dress a run that reported no tests as a success", () => {
-		// Regression: a pipeline that dies before its test step ingests with
-		// every count at zero, and the badge tone keyed only on failedCount > 0
-		// — so "0/0 passed" rendered GREEN and read as a clean run.
+		// Regression: a pipeline that dies before its test step — or a webhook
+		// delivery that lands before the sweep fetches the breakdown — ingests
+		// with every count at zero, and "0/0 passed" rendered GREEN and read as
+		// a clean run while the suite had actually failed.
 		render(
 			<PipelineRunRow
 				run={makeRun({ totalCount: 0, passedCount: 0, failedCount: 0 })}
 				onOpenDetail={vi.fn()}
 			/>,
 		);
-		// Target the COUNT badge itself, not merely the first span in the row —
-		// the provider mark renders one first, and matching that made this
-		// assertion pass against the broken component.
-		const badge = screen.getByText(/0\/0/);
+		// No test passed, so the badge must not claim one did.
+		expect(screen.queryByText(/0\/0/)).toBeNull();
+		const badge = screen.getByText("noTestResults");
+		// Assert the neutral tone positively: ruling out only `text-success`
+		// once let a `secondary` badge through while that token was emerald.
 		expect(badge.className).not.toContain("text-success");
+		expect(badge.className).toContain("text-muted-foreground");
 	});
 
 	it("opens the in-Fabric detail when the row is activated", () => {

@@ -3292,6 +3292,7 @@
 						"empty": "No pipeline runs yet. Connect a repository whose CI publishes test results — GitHub Actions, GitLab CI or Azure DevOps — then press Sync now.",
 						"emptyForFeature": "No CI run has tested this feature yet. Runs appear here once an automated test linked to one of its cases reports a result.",
 						"passed": "passed",
+						"noTestResults": "No test results",
 						"failedCount": "{count, plural, one {# failing} other {# failing}}",
 						"runLabel": "Run {id}",
 						"openRun": "Open the run in the CI provider",

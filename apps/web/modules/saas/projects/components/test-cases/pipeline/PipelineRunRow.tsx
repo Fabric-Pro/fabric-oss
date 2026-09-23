@@ -1,6 +1,5 @@
 "use client";
 
-import { Badge } from "@ui/components/badge";
 import { cn } from "@ui/lib";
 import { ExternalLinkIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -11,6 +10,7 @@ import {
 	type PipelineRun,
 	timeAgo,
 } from "./pipeline-run";
+import { RunTallyBadge } from "./RunTallyBadge";
 
 /**
  * One CI run, rendered identically wherever runs are listed (feature-editor QA
@@ -34,10 +34,6 @@ export function PipelineRunRow({
 	const t = useTranslations("projects.stories.maturation.qa.pipelineRuns");
 
 	const hasFailures = run.failedCount > 0;
-	// A run that reported NO tests is not a pass. A pipeline that dies before the
-	// test step ingests with every count at zero, and a green "0/0 passed" badge
-	// read as a clean run — the one shape where success tone is actively wrong.
-	const reportedNothing = run.totalCount === 0;
 	const occurredAt = run.startedAt ?? run.createdAt;
 	const when = timeAgo(occurredAt);
 	const absoluteWhen = formatAbsoluteTime(occurredAt);
@@ -57,18 +53,7 @@ export function PipelineRunRow({
 				<PipelineProviderIcon provider={run.provider} />
 				<div className="min-w-0 space-y-1">
 					<div className="flex items-center gap-2">
-						<Badge
-							variant={
-								hasFailures
-									? "error"
-									: reportedNothing
-										? "secondary"
-										: "success"
-							}
-							className="shrink-0"
-						>
-							{run.passedCount}/{run.totalCount} {t("passed")}
-						</Badge>
+						<RunTallyBadge run={run} className="shrink-0" />
 						<span className="truncate font-medium text-sm">
 							{title}
 						</span>
