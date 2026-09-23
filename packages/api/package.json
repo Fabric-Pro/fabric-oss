@@ -71,6 +71,6 @@
 		"test:watch": "vitest",
 		"type-check": "tsc --noEmit"
 	},
-	"version": "0.0.12",
+	"version": "0.0.13",
 	"license": "Apache-2.0"
 }

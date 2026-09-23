@@ -1,5 +1,14 @@
 # @fabricorg/cli
 
+## 0.3.7
+
+### Patch Changes
+
+- 08da8e3: `fabric context push` now renames a moved or renamed file in the project's Context instead of leaving a second copy behind, and a new `--prune` flag deletes the server entries of files removed from the folder, but only in the version the folder last pushed.
+- Updated dependencies [08da8e3]
+  - @fabricorg/sdk@0.4.0
+  - @fabricorg/sdk-mcp@0.1.8
+
 ## 0.3.6
 
 ### Patch Changes
