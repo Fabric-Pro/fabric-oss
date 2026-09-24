@@ -17262,7 +17262,9 @@ model ProjectInstructionRepositorySync {
   generation              Int      @default(1)
 
   /// Automatic-run scheduling (spec §6.1). Written from PR 1 on, read from PR 2.
-  nextCheckAt             DateTime @default(now())
+  /// Null while the sync is paused: no check is scheduled until a re-configure
+  /// clears the pause and sets it due again.
+  nextCheckAt             DateTime? @default(now())
   failureCount            Int      @default(0)
   automaticPausedReason   ProjectInstructionSyncPause?
   automaticPausedAt       DateTime?

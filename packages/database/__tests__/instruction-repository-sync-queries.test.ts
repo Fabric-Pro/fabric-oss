@@ -572,7 +572,11 @@ describe("completeInstructionRepositorySyncRun", () => {
 			"pause",
 			{ kind: "pause", reason: "REF_MISSING" },
 			0,
-			{ automaticPausedReason: "REF_MISSING", automaticPausedAt: NOW },
+			{
+				nextCheckAt: null,
+				automaticPausedReason: "REF_MISSING",
+				automaticPausedAt: NOW,
+			},
 		],
 	] as const)(
 		"applies the %s effect",
@@ -769,10 +773,14 @@ describe("computeSchedulingPatch (spec §5.4, §6.1, Decision 46)", () => {
 			},
 		],
 		[
-			"pause stamps the reason and the time",
+			"pause stamps the reason and the time and clears the schedule",
 			{ kind: "pause", reason: "REF_MISSING" },
 			1,
-			{ automaticPausedReason: "REF_MISSING", automaticPausedAt: NOW },
+			{
+				nextCheckAt: null,
+				automaticPausedReason: "REF_MISSING",
+				automaticPausedAt: NOW,
+			},
 		],
 	] as const)("%s", (_label, effect, failureCount, expected) => {
 		expect(
@@ -1018,8 +1026,10 @@ describe("recordInstructionSyncCheckFailure (spec §6.1, Decision 35)", () => {
 		// The caller owns the transaction (Decision 46).
 		expect(m.$transaction).not.toHaveBeenCalled();
 		expect(sent(m.$executeRaw)).toEqual({
-			text: `UPDATE "project_instruction_repository_sync" SET "automaticPausedReason" = $1::"ProjectInstructionSyncPause", "automaticPausedAt" = $2, "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC') WHERE ${fenceSql(3)}`,
-			values: ["REF_MISSING", NOW, ...FENCE_VALUES],
+			// The pause clears the schedule: the claim's lease must not be
+			// left behind as an overdue `nextCheckAt` on a row nothing claims.
+			text: `UPDATE "project_instruction_repository_sync" SET "nextCheckAt" = $1, "automaticPausedReason" = $2::"ProjectInstructionSyncPause", "automaticPausedAt" = $3, "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC') WHERE ${fenceSql(4)}`,
+			values: [null, "REF_MISSING", NOW, ...FENCE_VALUES],
 		});
 		expect(m.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
 			m.run.createMany.mock.invocationCallOrder[0] ?? 0,
@@ -1080,7 +1090,8 @@ describe("recordInstructionSyncCheckFailure (spec §6.1, Decision 35)", () => {
 			pause: "PERMISSION_REVOKED",
 		});
 
-		expect(sent(m.$executeRaw).values.slice(0, 2)).toEqual([
+		expect(sent(m.$executeRaw).values.slice(0, 3)).toEqual([
+			null,
 			"PERMISSION_REVOKED",
 			NOW,
 		]);
