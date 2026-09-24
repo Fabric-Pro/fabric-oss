@@ -44,6 +44,8 @@ const m = vi.hoisted(() => ({
 		leaseHeld: vi.fn(),
 		writeBack: vi.fn(),
 		recordCheckFailure: vi.fn(),
+		recordPendingHead: vi.fn(),
+		settlePendingHead: vi.fn(),
 		findByRepository: vi.fn(),
 		checkPermission: vi.fn(),
 		startRun: vi.fn(),
@@ -168,6 +170,8 @@ beforeEach(() => {
 		m.subject.leaseHeld,
 		m.subject.writeBack,
 		m.subject.recordCheckFailure,
+		m.subject.recordPendingHead,
+		m.subject.settlePendingHead,
 		m.subject.findByRepository,
 		m.subject.checkPermission,
 		m.subject.startRun,
@@ -189,6 +193,11 @@ beforeEach(() => {
 	m.subject.checkPermission.mockResolvedValue(true);
 	m.subject.writeBack.mockResolvedValue({ applied: true });
 	m.subject.recordCheckFailure.mockResolvedValue({ applied: true });
+	m.subject.recordPendingHead.mockResolvedValue({ applied: true });
+	m.subject.settlePendingHead.mockResolvedValue({
+		applied: false,
+		settled: "consumer_pending",
+	});
 	m.subject.startRun.mockResolvedValue(STARTED);
 	m.getProjectRepoIntegration.mockResolvedValue(INTEGRATION);
 	m.resolveFreshRepoToken.mockResolvedValue({
@@ -361,6 +370,8 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 		expect(m.subject.startRun.mock.invocationCallOrder[0]).toBeLessThan(
 			m.subject.writeBack.mock.invocationCallOrder[0] ?? 0,
 		);
+		// The run it started reads the head itself: nothing is left pending.
+		expect(m.subject.recordPendingHead).not.toHaveBeenCalled();
 	});
 
 	it("re-reads the lease before it starts, and starts nothing once it is lost", async () => {
@@ -403,6 +414,112 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 			FENCE,
 			patchFor({ kind: "reschedule", delayMs: 15 * MIN }),
 		);
+	});
+
+	it("leaves a re-check request for an open run and settles it against that run's receipt, then reschedules as before (Fizzy #2682)", async () => {
+		m.subject.startRun.mockResolvedValue(ALREADY_RUNNING);
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "already_running",
+		});
+		// One start: `already_running` is settled against the receipt, never
+		// retried.
+		expect(m.subject.startRun).toHaveBeenCalledTimes(1);
+		expect(m.subject.recordPendingHead).toHaveBeenCalledTimes(1);
+		expect(m.subject.recordPendingHead).toHaveBeenCalledWith(
+			m.db,
+			ROW,
+			SHA,
+		);
+		expect(m.subject.settlePendingHead).toHaveBeenCalledTimes(1);
+		expect(m.subject.settlePendingHead).toHaveBeenCalledWith(
+			m.db,
+			ROW,
+			"run_open",
+		);
+		const [marker] = m.subject.recordPendingHead.mock.invocationCallOrder;
+		const [settle] = m.subject.settlePendingHead.mock.invocationCallOrder;
+		expect(marker).toBeLessThan(settle ?? 0);
+		expect(settle).toBeLessThan(
+			m.subject.writeBack.mock.invocationCallOrder[0] ?? 0,
+		);
+		expect(m.subject.writeBack).toHaveBeenCalledTimes(1);
+		expect(m.subject.writeBack).toHaveBeenCalledWith(
+			m.db,
+			FENCE,
+			patchFor({ kind: "reschedule", delayMs: 15 * MIN }),
+		);
+	});
+
+	it("keeps the reschedule unchanged when the settle made the row due itself: that ended the lease, so the reschedule applies nothing (Fizzy #2682)", async () => {
+		m.subject.startRun.mockResolvedValue(ALREADY_RUNNING);
+		m.subject.settlePendingHead.mockResolvedValue({
+			applied: true,
+			settled: "made_due",
+		});
+		m.subject.writeBack.mockResolvedValue({ applied: false });
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "already_running",
+		});
+		expect(m.subject.writeBack).toHaveBeenCalledWith(
+			m.db,
+			FENCE,
+			patchFor({ kind: "reschedule", delayMs: 15 * MIN }),
+		);
+	});
+
+	it("still reschedules when the settle found the row moved on (stale)", async () => {
+		m.subject.startRun.mockResolvedValue(ALREADY_RUNNING);
+		m.subject.settlePendingHead.mockResolvedValue({
+			applied: false,
+			settled: "stale",
+		});
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "already_running",
+		});
+		expect(m.subject.writeBack).toHaveBeenCalledTimes(1);
+	});
+
+	it("leaves a settle that throws to the lease, like any other write here: no reschedule", async () => {
+		m.subject.startRun.mockResolvedValue(ALREADY_RUNNING);
+		m.subject.settlePendingHead.mockRejectedValue(
+			new Error("connection reset"),
+		);
+		await expect(checkInstructionSyncRemoteHead(CHECK)).rejects.toThrow(
+			"connection reset",
+		);
+		expect(m.subject.recordPendingHead).toHaveBeenCalledTimes(1);
+		expect(m.subject.writeBack).not.toHaveBeenCalled();
+	});
+
+	it("neither settles nor stops rescheduling when the row moved and the marker applied nothing", async () => {
+		m.subject.startRun.mockResolvedValue(ALREADY_RUNNING);
+		m.subject.recordPendingHead.mockResolvedValue({ applied: false });
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "already_running",
+		});
+		expect(m.subject.settlePendingHead).not.toHaveBeenCalled();
+		expect(m.subject.writeBack).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not settle once the marker write took it past its deadline (Decision 50)", async () => {
+		m.subject.startRun.mockResolvedValue(ALREADY_RUNNING);
+		m.subject.recordPendingHead.mockImplementation(async () => {
+			vi.setSystemTime(LATE);
+			return { applied: true };
+		});
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "already_running",
+		});
+		expect(m.subject.settlePendingHead).not.toHaveBeenCalled();
+		expect(m.subject.writeBack).not.toHaveBeenCalled();
+	});
+
+	it("leaves nothing pending for a run it started: that run reads the head itself", async () => {
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "started",
+		});
+		expect(m.subject.recordPendingHead).not.toHaveBeenCalled();
+		expect(m.subject.settlePendingHead).not.toHaveBeenCalled();
 	});
 
 	it("re-checks in two minutes when the open run belongs to a configuration this generation never evaluated (Decision 34)", async () => {
@@ -693,6 +810,20 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 			outcome: "started",
 		});
 		// The run's own completion writes the schedule; the lease covers the rest.
+		expect(m.subject.writeBack).not.toHaveBeenCalled();
+	});
+
+	it("leaves no pending head when an open run's answer came back after the deadline (Decision 50)", async () => {
+		m.subject.startRun.mockImplementation(async () => {
+			vi.setSystemTime(LATE);
+			return ALREADY_RUNNING;
+		});
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "already_running",
+		});
+		expect(m.subject.recordPendingHead).not.toHaveBeenCalled();
+		expect(m.subject.settlePendingHead).not.toHaveBeenCalled();
+		expect(m.subject.startRun).toHaveBeenCalledTimes(1);
 		expect(m.subject.writeBack).not.toHaveBeenCalled();
 	});
 

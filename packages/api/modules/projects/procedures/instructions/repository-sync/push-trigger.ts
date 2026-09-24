@@ -19,7 +19,23 @@
  * `after` is only a skip hint: a forged value either skips (the poll still
  * checks the real head, normally 15 to 20 minutes after the push; longer
  * while it works through a backlog or the sync is backing off after
- * failures) or starts a run that reads the real head.
+ * failures), starts a run that reads the real head, or, while a run is open,
+ * costs one early poll check that reads the real head.
+ *
+ * A push that finds the project's run already open (`already_running`) may
+ * have landed after that run read the branch, and the run's completion
+ * would schedule the next check 15 minutes out. So when the push names a
+ * valid head, the hook leaves a re-check request on the row through the
+ * subject's `recordPendingHead`, which that completion turns into "due now"
+ * (Fizzy #2682). The hook never writes `nextCheckAt` itself: the completion
+ * would overwrite it, and it would end a poll check's lease.
+ *
+ * `already_running` proves only that the workflow has not closed: its
+ * completion may already have committed, and would then never read a marker
+ * written after it. So the hook settles the marker against the open run's
+ * receipt under the sync-row lock (`settlePendingHead`, with the run id the
+ * answer carried): an unfinished receipt means that completion is still to
+ * come and will consume it; a finished one means it is applied on the spot.
  *
  * Bounded (Decision 36): each subject's lookup and each row's start runs in
  * its own try/catch under `Promise.allSettled`, so one failure or one slow
@@ -31,7 +47,7 @@
  * its own run id to `begin` and `record` (Decision 44), and `begin` refuses
  * the run when the row has moved since this lookup found it (Decision 56).
  */
-import type { RepositorySyncPushRow } from "@repo/database";
+import { db, type RepositorySyncPushRow } from "@repo/database";
 import { shouldStartAutomaticSync } from "@repo/instructions";
 import { logger } from "@repo/logs";
 import {
@@ -57,8 +73,8 @@ export async function startInstructionSyncsForPush(push: {
 	repositoryUrl: string;
 	ref: string | undefined;
 	after: string | undefined;
-}): Promise<{ started: number; failed: number }> {
-	const outcome = { started: 0, failed: 0 };
+}): Promise<{ started: number; failed: number; deferred: number }> {
+	const outcome = { started: 0, failed: 0, deferred: 0 };
 	if (!push.ref?.startsWith(BRANCH_REF_PREFIX)) {
 		return outcome;
 	}
@@ -78,6 +94,7 @@ export async function startInstructionSyncsForPush(push: {
 		subject: RepositorySyncSubject,
 		row: RepositorySyncPushRow,
 	): Promise<void> => {
+		let stage: "start" | "record_pending" | "settle_pending" = "start";
 		try {
 			if (!shouldStartAutomaticSync(row, headSha).start) {
 				return;
@@ -88,7 +105,48 @@ export async function startInstructionSyncsForPush(push: {
 			});
 			if (started.outcome === "started") {
 				outcome.started++;
+				return;
 			}
+			// The open run's completion re-checks the branch (Fizzy #2682).
+			// Without a valid head the push has nothing to record, and the poll
+			// stays the fallback.
+			if (headSha === undefined) {
+				return;
+			}
+			stage = "record_pending";
+			const { applied } = await subject.recordPendingHead(
+				db,
+				row,
+				headSha,
+			);
+			// Not applied: the row was re-configured (which made it due now)
+			// or removed since the lookup. There is no marker to settle.
+			if (!applied) {
+				return;
+			}
+			// The open run's completion may already have committed; its
+			// receipt, read under the row lock, says whether it is still to
+			// come or the marker must be applied now.
+			stage = "settle_pending";
+			const { settled } = await subject.settlePendingHead(
+				db,
+				row,
+				started.runId,
+			);
+			if (settled === "stale") {
+				return;
+			}
+			outcome.deferred++;
+			logger.info(
+				{
+					event: "instructions.sync.webhook_deferred",
+					kind: subject.kind,
+					projectId: row.projectId,
+					syncId: row.id,
+					settled,
+				},
+				"[RepositorySync] a GitHub push reached an open sync run; the branch will be re-checked when it finishes",
+			);
 		} catch (error) {
 			outcome.failed++;
 			logger.warn(
@@ -96,6 +154,7 @@ export async function startInstructionSyncsForPush(push: {
 					event: "instructions.sync.webhook_start_failed",
 					kind: subject.kind,
 					projectId: row.projectId,
+					stage,
 					errorClass: errorClass(error),
 				},
 				"[RepositorySync] could not start a sync for a GitHub push",

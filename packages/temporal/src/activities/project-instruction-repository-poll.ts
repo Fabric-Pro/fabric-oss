@@ -132,11 +132,13 @@ export async function claimDueInstructionSyncChecks(input: {
  *    - anything transient: backoff (Decision 20);
  *    - a moved head: start a POLL run FIRST, carrying the claimed row as
  *      `expected` (Decision 56), then a conditional reschedule
- *      (Decision 34).
+ *      (Decision 34). A run already open also gets a re-check request,
+ *      settled against that run's receipt so a completion that already
+ *      committed cannot leave it unread (Fizzy #2682).
  *
- * Every write goes through the subject and is fenced on the lease, so a
- * check that outlived it writes nothing and reports `stale`. A thrown error
- * is left to the lease.
+ * Every write goes through the subject and, but for the re-check request
+ * and its settle, is fenced on the lease, so a check that outlived it writes
+ * nothing and reports `stale`. A thrown error is left to the lease.
  *
  * The check also keeps its own deadline (Decision 50). Temporal's timeouts
  * make Temporal stop waiting for this activity; they do not stop its
@@ -329,6 +331,25 @@ async function runRemoteHeadCheck(
 			"[InstructionSync] could not start an automatic sync; its lease will expire",
 		);
 		return stale;
+	}
+	// The open run may have read the branch before this head, and its
+	// completion would schedule the next check 15 minutes out, past this
+	// reschedule. A re-check request on the row makes that completion set
+	// the row due now instead (Fizzy #2682). Neither write below is fenced on
+	// the lease, and the request never moves `nextCheckAt`. Each is skipped
+	// past the deadline like every other write (Decision 50), and a throw is
+	// left to the lease.
+	if (started.outcome === "already_running" && inTime()) {
+		const { applied } = await subject.recordPendingHead(db, row, head.sha);
+		// `already_running` proves only that the workflow has not closed; its
+		// completion may already have committed and will never read the
+		// marker. The open run's receipt, read under the row lock, decides:
+		// unfinished, and that completion consumes it later; finished, and
+		// the settle applies it now. Applying it makes the row due, which ends
+		// this check's lease, so the reschedule below then applies nothing.
+		if (applied && inTime()) {
+			await subject.settlePendingHead(db, row, started.runId);
+		}
 	}
 	// Conditional (Decision 34): a run that already finished moved
 	// `nextCheckAt` itself, and then this applies nothing, which is right. A

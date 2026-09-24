@@ -11,6 +11,10 @@
  *   transaction client throws once its transaction has closed, so code that
  *   uses `db` where the caller's `tx` is required fails.
  * - A transaction whose callback throws restores every table.
+ * - `SELECT … FOR UPDATE` runs only on a transaction client: outside one it
+ *   would hold no lock, so it throws. The store runs one caller at a time,
+ *   so the lock itself needs no modelling; a test orders the competing
+ *   writers explicitly.
  * - `now()` is the database clock that `clock_timestamp()` reads. Only
  *   `advance` and `reset` move it; nothing here reads the host clock.
  *
@@ -37,6 +41,8 @@ type SyncRow = {
 	lastEvaluatedGeneration: number | null;
 	suppressedCommitSha: string | null;
 	suppressedGeneration: number | null;
+	/** The head a push or a poll left while a run was open (Fizzy #2682). */
+	pendingCommitSha: string | null;
 	updatedAt: Date;
 	/** The row's integration's status, which the claim's join reads. */
 	integrationStatus: "ACTIVE" | "TOKEN_EXPIRED";
@@ -72,6 +78,7 @@ const ROW_DEFAULTS: Omit<SyncRow, "id" | "nextCheckAt" | "updatedAt"> = {
 	lastEvaluatedGeneration: null,
 	suppressedCommitSha: null,
 	suppressedGeneration: null,
+	pendingCommitSha: null,
 	integrationStatus: "ACTIVE",
 };
 
@@ -237,20 +244,36 @@ function createInstructionSyncRowStore() {
 			});
 	}
 
-	function query({ text, values }: Statement): unknown[] {
+	function query(
+		{ text, values }: Statement,
+		inTransaction: boolean,
+	): unknown[] {
 		if (text.includes(CLAIM_MARK)) {
 			return claim(values);
 		}
 		const select = new RegExp(
-			`^SELECT "id" FROM ${TABLE} WHERE (.+)$`,
+			`^SELECT ("\\w+"(?:, "\\w+")*) FROM ${TABLE} WHERE (.+?)( FOR UPDATE)?$`,
 		).exec(text);
 		if (!select) {
 			throw new Error(`the row store cannot run: ${text}`);
 		}
-		const where = select[1] ?? "";
+		if (select[3] !== undefined && !inTransaction) {
+			throw new Error(
+				"FOR UPDATE outside a transaction holds no lock: run it on the transaction client",
+			);
+		}
+		const names = (select[1] ?? "")
+			.split(", ")
+			.map((name) => name.slice(1, -1));
+		const where = select[2] ?? "";
 		return [...rows.values()]
 			.filter((row) => matches(row, where, values))
-			.map((row) => ({ id: row.id }));
+			.map((row) => {
+				const copy = copyRow(row);
+				return Object.fromEntries(
+					names.map((name) => [name, copy[column(copy, name)]]),
+				);
+			});
 	}
 
 	function execute({ text, values }: Statement): number {
@@ -274,17 +297,112 @@ function createInstructionSyncRowStore() {
 		return count;
 	}
 
-	function client(usable: () => void): Prisma.TransactionClient {
+	/** Only plain values: an operator object or a relation throws. */
+	function assertPlain(
+		method: string,
+		entries: ReadonlyArray<readonly [string, unknown]>,
+	): void {
+		for (const [name, value] of entries) {
+			if (
+				value !== null &&
+				!(value instanceof Date) &&
+				!["string", "number", "boolean"].includes(typeof value)
+			) {
+				throw new Error(
+					`the row store cannot evaluate a non-scalar ${method} value for "${name}"`,
+				);
+			}
+		}
+	}
+
+	/**
+	 * Prisma's `updateMany` in the shape `recordPendingInstructionSyncHead`
+	 * and `settlePendingInstructionSyncHead` send: equality on columns, plain
+	 * values. An operator object, a relation or an unknown column throws.
+	 * Prisma stamps `@updatedAt` itself; the store leaves it, since no fence
+	 * reads it.
+	 */
+	function updateMany(input: {
+		where: Record<string, unknown>;
+		data: Record<string, unknown>;
+	}): { count: number } {
+		assertPlain("updateMany", [
+			...Object.entries(input.where),
+			...Object.entries(input.data),
+		]);
+		let count = 0;
+		for (const row of rows.values()) {
+			const hit = Object.entries(input.where).every(([name, value]) =>
+				same(row[column(row, name)], value),
+			);
+			if (hit) {
+				const target = row as Record<string, unknown>;
+				for (const [name, value] of Object.entries(input.data)) {
+					target[column(row, name)] =
+						value instanceof Date ? new Date(value) : value;
+				}
+				count++;
+			}
+		}
+		return { count };
+	}
+
+	/** Prisma's run-row `findFirst`: equality on the receipt's fields, then `select`. */
+	function findRun(input: {
+		where: Record<string, unknown>;
+		select: Record<string, true>;
+	}): Record<string, unknown> | null {
+		assertPlain("findFirst", Object.entries(input.where));
+		const run = [...runs.values()].find((candidate) =>
+			Object.entries(input.where).every(([name, value]) =>
+				same(candidate[name], value),
+			),
+		);
+		if (run === undefined) {
+			return null;
+		}
+		return Object.fromEntries(
+			Object.keys(input.select).map((name) => {
+				if (!(name in run)) {
+					throw new Error(
+						`the row store's run has no field "${name}"`,
+					);
+				}
+				return [name, run[name]];
+			}),
+		);
+	}
+
+	function client(
+		usable: () => void,
+		inTransaction: boolean,
+	): Prisma.TransactionClient {
 		const api = {
 			$queryRaw: async (...args: unknown[]) => {
 				usable();
-				return query(statementOf(args));
+				return query(statementOf(args), inTransaction);
 			},
 			$executeRaw: async (...args: unknown[]) => {
 				usable();
 				return execute(statementOf(args));
 			},
+			projectInstructionRepositorySync: {
+				updateMany: async (input: {
+					where: Record<string, unknown>;
+					data: Record<string, unknown>;
+				}) => {
+					usable();
+					return updateMany(input);
+				},
+			},
 			projectInstructionRepositorySyncRun: {
+				findFirst: async (input: {
+					where: Record<string, unknown>;
+					select: Record<string, true>;
+				}) => {
+					usable();
+					return findRun(input);
+				},
 				createMany: async (input: {
 					data: RunRow[];
 					skipDuplicates?: boolean;
@@ -315,7 +433,7 @@ function createInstructionSyncRowStore() {
 					"db was used while a transaction was open: pass the transaction client",
 				);
 			}
-		}),
+		}, false),
 		{
 			async $transaction<T>(
 				fn: (tx: Prisma.TransactionClient) => Promise<T>,
@@ -339,7 +457,7 @@ function createInstructionSyncRowStore() {
 							"a transaction client was used after its transaction closed",
 						);
 					}
-				});
+				}, true);
 				openTx = tx;
 				try {
 					return await fn(tx);
@@ -399,6 +517,10 @@ function createInstructionSyncRowStore() {
 		row(id: string): SyncRow | undefined {
 			const row = rows.get(id);
 			return row && copyRow(row);
+		},
+		/** Stores a run receipt, as `begin` inserts it and a completion finishes it. */
+		putRun(run: RunRow): void {
+			runs.set(run.id, { ...run });
 		},
 		runs: (): RunRow[] => [...runs.values()],
 		audits: (): unknown[] => [...audits],

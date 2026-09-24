@@ -20,7 +20,9 @@ import type {
 	ClaimedRepositorySyncRow,
 	RepositorySyncCheckFailure,
 	RepositorySyncFence,
+	RepositorySyncPendingHeadSettlement,
 	RepositorySyncPushRow,
+	RepositorySyncTransactionRunner,
 } from "./repository-sync-subjects";
 
 /**
@@ -146,13 +148,15 @@ export async function writeProjectInstructionSettings(
 	) {
 		// Due now (Decision 9): a run in flight under the old generation will
 		// land NOT_PUBLISHED, and the next poll tick must re-evaluate the head
-		// under the new rules so its run replaces that line on the tab.
+		// under the new rules so its run replaces that line on the tab. A
+		// pending re-check belongs to the old generation; due now covers it.
 		const { count } = await tx.projectInstructionRepositorySync.updateMany({
 			where: { projectId, organizationId },
 			data: {
 				generation: { increment: 1 },
 				lastEvaluatedCommitSha: null,
 				lastEvaluatedGeneration: null,
+				pendingCommitSha: null,
 				nextCheckAt: new Date(),
 			},
 		});
@@ -290,8 +294,9 @@ export function getInstructionRepositorySyncForRun(projectId: string) {
 /**
  * `configure` (spec §5.1): one transaction under the project row lock
  * creates or re-points the configuration, makes the caller its delegate,
- * bumps the generation, clears pause, suppression, the poll cursor and the
- * failure count, and flips the project to REPOSITORY. Run history is kept.
+ * bumps the generation, clears pause, suppression, the poll cursor, the
+ * pending head and the failure count, and flips the project to REPOSITORY.
+ * Run history is kept.
  * `automatic` is kept when omitted, and `false` on insert.
  */
 export async function upsertInstructionRepositorySync(input: {
@@ -333,6 +338,7 @@ export async function upsertInstructionRepositorySync(input: {
 			suppressedGeneration: null,
 			lastEvaluatedCommitSha: null,
 			lastEvaluatedGeneration: null,
+			pendingCommitSha: null,
 			failureCount: 0,
 			nextCheckAt: new Date(),
 		};
@@ -785,9 +791,10 @@ export async function claimDueInstructionSyncRows(
  *
  * Every writer that competes with a check moves one of these: a later claim
  * and every finishing run move `nextCheckAt` to a value computed from their
- * own clock, a re-configure or settings change bumps the generation, a pause
- * sets `automaticPausedReason` and clears `nextCheckAt`, and turning
- * automatic sync off clears
+ * own clock, as does settling a re-check request whose run already finished
+ * (`settlePendingInstructionSyncHead`), a re-configure or settings change
+ * bumps the generation, a pause sets `automaticPausedReason` and clears
+ * `nextCheckAt`, and turning automatic sync off clears
  * `automatic`. A lease nobody else touched ends by the clock alone. Two
  * claims of one row never write the same lease: a row is re-claimable only
  * once its lease has passed, and the next claim's lease is its own `now`
@@ -1040,6 +1047,149 @@ export async function findInstructionSyncsForPush(input: {
 }
 
 /**
+ * Asks the open run's completion for a re-check (Fizzy #2682; see
+ * `completeInstructionRepositorySyncRun`), when a push or a poll check found
+ * a run already open on the row. The open run may have read the branch
+ * before the head moved, and its completion would otherwise schedule the
+ * next check 15 minutes out. The caller then settles the marker against
+ * that run's receipt (`settlePendingInstructionSyncHead`): `already_running`
+ * says only that the workflow has not closed, and its completion may
+ * already have committed.
+ *
+ * The marker is a re-check flag. `pendingCommitSha` holds the last head
+ * observed, for diagnostics only; the completion never compares it with the
+ * run's commit. Webhook deliveries are unordered hints (a delayed or
+ * redelivered push can land after a newer one), and one slot cannot keep two
+ * observations, so "the run covered this head" is not something the marker
+ * can prove. The last write wins, and any marker makes the row due.
+ *
+ * The marker, not a `nextCheckAt` write, because the completion overwrites
+ * `nextCheckAt` moments later, and because a write to `nextCheckAt` from
+ * outside the writers `leaseFenceSql` names would end a poll check's lease.
+ * This write never touches `nextCheckAt`, so a held lease stays held.
+ *
+ * Fenced on the configuration's identity and tenant, `(id, generation)` plus
+ * `projectId` and `organizationId`, and NOT on a lease: the webhook holds
+ * none, and the marker changes nothing a lease protects. A re-configure bumps
+ * the generation and clears the marker, so a head seen under the old
+ * configuration writes nothing.
+ */
+export async function recordPendingInstructionSyncHead(
+	tx: Prisma.TransactionClient,
+	input: {
+		syncId: string;
+		projectId: string;
+		organizationId: string;
+		generation: number;
+		commitSha: string;
+	},
+): Promise<{ applied: boolean }> {
+	const { count } = await tx.projectInstructionRepositorySync.updateMany({
+		where: {
+			id: input.syncId,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			generation: input.generation,
+		},
+		data: { pendingCommitSha: input.commitSha },
+	});
+	return { applied: count > 0 };
+}
+
+/**
+ * Settles a re-check request against the run it was left for (Fizzy #2682),
+ * right after `recordPendingInstructionSyncHead` applied. An
+ * `already_running` answer proves only that the workflow has not closed:
+ * its completion activity commits before the workflow returns, so a marker
+ * written in between would wait for a completion that already happened.
+ *
+ * One transaction. It locks the sync row first, fenced on the
+ * configuration's identity, tenant and generation, the same lock and order
+ * the completion takes before it completes the receipt `<syncId>:<runId>`
+ * (the key `begin` inserts). Under that lock the receipt is either finished,
+ * and that completion committed before this read, or it is not, and that
+ * completion will take this lock after this commits and read the marker:
+ *
+ * - no row at this generation: `stale`, nothing written (a re-configure
+ *   made the row due now and cleared the marker);
+ * - receipt unfinished, or not inserted yet (`begin` has not run):
+ *   `consumer_pending`, nothing written;
+ * - receipt finished and the marker still there: the completion missed it,
+ *   so it is applied here as the completion would (due now, or no next
+ *   check on a paused row, Fizzy #2703) and cleared: `made_due`;
+ * - receipt finished and no marker: that completion, or another settle,
+ *   already applied it: `made_due`, nothing written.
+ *
+ * Making the row due moves `nextCheckAt`, so it ends any lease a poll check
+ * holds, as a finishing run does (see `leaseFenceSql`); the check that
+ * called this then reschedules nothing, and the next tick re-checks.
+ */
+export async function settlePendingInstructionSyncHead(
+	client: RepositorySyncTransactionRunner,
+	input: {
+		syncId: string;
+		projectId: string;
+		organizationId: string;
+		generation: number;
+		runId: string;
+		now?: Date;
+	},
+): Promise<{
+	applied: boolean;
+	settled: RepositorySyncPendingHeadSettlement;
+}> {
+	const now = input.now ?? new Date();
+	return client.$transaction(async (tx) => {
+		const locked = await tx.$queryRaw<
+			Array<{
+				automaticPausedReason: string | null;
+				pendingCommitSha: string | null;
+			}>
+		>`
+			SELECT "automaticPausedReason", "pendingCommitSha"
+			FROM "project_instruction_repository_sync"
+			WHERE "id" = ${input.syncId}
+				AND "projectId" = ${input.projectId}
+				AND "organizationId" = ${input.organizationId}
+				AND "generation" = ${input.generation}
+			FOR UPDATE
+		`;
+		const row = locked[0];
+		if (row === undefined) {
+			return { applied: false, settled: "stale" as const };
+		}
+		const receipt = await tx.projectInstructionRepositorySyncRun.findFirst({
+			where: {
+				id: `${input.syncId}:${input.runId}`,
+				syncId: input.syncId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+			},
+			select: { finishedAt: true },
+		});
+		if (receipt === null || receipt.finishedAt === null) {
+			return { applied: false, settled: "consumer_pending" as const };
+		}
+		if (row.pendingCommitSha === null) {
+			return { applied: false, settled: "made_due" as const };
+		}
+		const { count } = await tx.projectInstructionRepositorySync.updateMany({
+			where: {
+				id: input.syncId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				generation: input.generation,
+			},
+			data: {
+				nextCheckAt: row.automaticPausedReason === null ? now : null,
+				pendingCommitSha: null,
+			},
+		});
+		return { applied: count > 0, settled: "made_due" as const };
+	});
+}
+
+/**
  * The scheduling patch for a finishing run, or a backoff when the effect is
  * one this module does not know (Fizzy #2687). `computeSchedulingPatch`
  * throws on an unknown kind so the mistake is never a silent no-op; but this
@@ -1077,6 +1227,43 @@ function schedulingPatchOrBackoff(
 }
 
 /**
+ * Folds the row's re-check request (Fizzy #2682) into a finishing run's
+ * scheduling patch, under the row lock the completion already holds.
+ *
+ * - No marker: the patch as it is.
+ * - A marker: the row is due now, whatever the effect scheduled (the `none`
+ *   effect included), so the next poll tick checks the branch rather than
+ *   the 15-minute schedule. Even when the marker's SHA equals this run's
+ *   commit: deliveries are unordered, so an older head recorded after a
+ *   newer one must not stand for both (see `recordPendingInstructionSyncHead`).
+ * - A paused row, or a patch that pauses it: no next check at all, whatever
+ *   the effect wrote. The poll never claims a paused row, and a paused row
+ *   keeps no schedule (Fizzy #2703).
+ *
+ * Every case with a marker clears it; the rest of the effect's patch stands.
+ */
+function withPendingHead(
+	patch: RepositorySyncSchedulingPatch | null,
+	row: {
+		pendingCommitSha: string | null;
+		automaticPausedReason: string | null;
+	},
+	now: Date,
+): (RepositorySyncSchedulingPatch & { pendingCommitSha?: null }) | null {
+	if (row.pendingCommitSha === null) {
+		return patch;
+	}
+	const paused =
+		row.automaticPausedReason !== null ||
+		patch?.automaticPausedReason !== undefined;
+	return {
+		...patch,
+		nextCheckAt: paused ? null : now,
+		pendingCommitSha: null,
+	};
+}
+
+/**
  * `record`'s Part B (spec §5.4): locks the sync row FIRST, tenant-scoped,
  * before touching the run row, so every transaction that touches both takes
  * them in one order. `deleteInstructionRepositorySync` and
@@ -1110,6 +1297,14 @@ function schedulingPatchOrBackoff(
  * caller passed. A stale fence already applies no scheduling effect. Never
  * for the with-context `record`: a publish that succeeded under its own fence
  * and was then followed by a configuration change is truthfully SUCCEEDED.
+ *
+ * The same lock read carries the re-check request a push or a poll left
+ * while this run was open (`recordPendingInstructionSyncHead`, Fizzy
+ * #2682), and the scheduling write applies and clears it
+ * (`withPendingHead`). A request written after this commits is applied by
+ * `settlePendingInstructionSyncHead`, which finds this receipt finished. A
+ * run of an older generation leaves it alone, like the rest of the
+ * schedule.
  */
 export async function completeInstructionRepositorySyncRun(input: {
 	runKey: string;
@@ -1131,9 +1326,14 @@ export async function completeInstructionRepositorySyncRun(input: {
 	const now = input.now ?? new Date();
 	return db.$transaction(async (tx) => {
 		const locked = await tx.$queryRaw<
-			Array<{ generation: number; failureCount: number }>
+			Array<{
+				generation: number;
+				failureCount: number;
+				automaticPausedReason: string | null;
+				pendingCommitSha: string | null;
+			}>
 		>`
-			SELECT "generation", "failureCount"
+			SELECT "generation", "failureCount", "automaticPausedReason", "pendingCommitSha"
 			FROM "project_instruction_repository_sync"
 			WHERE "id" = ${input.syncId}
 				AND "projectId" = ${input.projectId}
@@ -1179,11 +1379,15 @@ export async function completeInstructionRepositorySyncRun(input: {
 		const configurationCurrent =
 			current !== undefined && current.generation === input.generation;
 		if (configurationCurrent && current !== undefined) {
-			const data = schedulingPatchOrBackoff(input, {
+			const data = withPendingHead(
+				schedulingPatchOrBackoff(input, {
+					now,
+					failureCount: current.failureCount,
+					generation: input.generation,
+				}),
+				current,
 				now,
-				failureCount: current.failureCount,
-				generation: input.generation,
-			});
+			);
 			if (data) {
 				await tx.projectInstructionRepositorySync.update({
 					where: {

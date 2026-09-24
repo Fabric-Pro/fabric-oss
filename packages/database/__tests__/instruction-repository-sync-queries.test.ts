@@ -82,11 +82,14 @@ import {
 	listInstructionRepositorySyncRuns,
 	listUnfinishedInstructionRepositorySyncRunReceipts,
 	recordInstructionSyncCheckFailure,
+	recordPendingInstructionSyncHead,
+	settlePendingInstructionSyncHead,
 	upsertInstructionRepositorySync,
 	writeBackInstructionSync,
 } from "../prisma/queries/instruction-repository-sync";
 import { updateProjectInstructionSettings } from "../prisma/queries/instructions";
 import { deleteRepoIntegrationReleasingSyncs } from "../prisma/queries/projects/repository-integration-disconnect";
+import type { RepositorySyncTransactionRunner } from "../prisma/queries/repository-sync-subjects";
 
 const NOW = new Date("2026-09-23T12:00:00.000Z");
 const MIN = 60 * 1000;
@@ -210,6 +213,7 @@ describe("upsertInstructionRepositorySync", () => {
 			suppressedGeneration: null,
 			lastEvaluatedCommitSha: null,
 			lastEvaluatedGeneration: null,
+			pendingCommitSha: null,
 			failureCount: 0,
 		});
 		expect(data.nextCheckAt).toBeInstanceOf(Date);
@@ -585,7 +589,14 @@ describe("completeInstructionRepositorySyncRun", () => {
 
 	it("completes the run row once, applies the scheduling fenced on the generation, and audits in the same transaction", async () => {
 		m.run.updateMany.mockResolvedValue({ count: 1 });
-		m.$queryRaw.mockResolvedValueOnce([{ generation: 3, failureCount: 2 }]);
+		m.$queryRaw.mockResolvedValueOnce([
+			{
+				generation: 3,
+				failureCount: 2,
+				automaticPausedReason: null,
+				pendingCommitSha: null,
+			},
+		]);
 
 		expect(await completeInstructionRepositorySyncRun(base)).toEqual({
 			completed: true,
@@ -604,6 +615,10 @@ describe("completeInstructionRepositorySyncRun", () => {
 		];
 		const sql = strings.join(" ");
 		expect(sql).toContain('"generation"');
+		// Read under the same lock the scheduling write holds (Fizzy #2682).
+		expect(sql).toContain('"automaticPausedReason"');
+		expect(sql).toContain('"pendingCommitSha"');
+		expect(sql).toContain("FOR UPDATE");
 		expect(sql).toContain('"projectId" =');
 		expect(sql).toContain('"organizationId" =');
 		expect(values).toEqual(["sync_1", "proj_1", "org_1"]);
@@ -659,7 +674,14 @@ describe("completeInstructionRepositorySyncRun", () => {
 
 	it("a second delivery, or a late attempt of an older run, still locks the sync row (same order as a disable) but writes nothing else", async () => {
 		m.run.updateMany.mockResolvedValue({ count: 0 });
-		m.$queryRaw.mockResolvedValueOnce([{ generation: 3, failureCount: 0 }]);
+		m.$queryRaw.mockResolvedValueOnce([
+			{
+				generation: 3,
+				failureCount: 0,
+				automaticPausedReason: null,
+				pendingCommitSha: null,
+			},
+		]);
 		expect(await completeInstructionRepositorySyncRun(base)).toEqual({
 			completed: false,
 			configurationCurrent: false,
@@ -676,7 +698,12 @@ describe("completeInstructionRepositorySyncRun", () => {
 		// (`current.generation === input.generation`) must catch now that the
 		// comparison is no longer a SQL predicate (design review B1).
 		m.$queryRaw.mockResolvedValueOnce([
-			{ generation: 99, failureCount: 0 },
+			{
+				generation: 99,
+				failureCount: 0,
+				automaticPausedReason: null,
+				pendingCommitSha: null,
+			},
 		]);
 		expect(await completeInstructionRepositorySyncRun(base)).toEqual({
 			completed: true,
@@ -825,7 +852,12 @@ describe("completeInstructionRepositorySyncRun", () => {
 
 		it("keeps the caller's outcome, and applies its scheduling effect, while the locked configuration is still the receipt's", async () => {
 			m.$queryRaw.mockResolvedValueOnce([
-				{ generation: 3, failureCount: 2 },
+				{
+					generation: 3,
+					failureCount: 2,
+					automaticPausedReason: null,
+					pendingCommitSha: null,
+				},
 			]);
 			m.run.updateMany.mockResolvedValue({ count: 1 });
 
@@ -922,7 +954,12 @@ describe("completeInstructionRepositorySyncRun", () => {
 		async (_label, scheduling, failureCount, expected) => {
 			m.run.updateMany.mockResolvedValue({ count: 1 });
 			m.$queryRaw.mockResolvedValueOnce([
-				{ generation: 3, failureCount },
+				{
+					generation: 3,
+					failureCount,
+					automaticPausedReason: null,
+					pendingCommitSha: null,
+				},
 			]);
 			await completeInstructionRepositorySyncRun({ ...base, scheduling });
 			expect(m.sync.update).toHaveBeenCalledWith({
@@ -940,7 +977,14 @@ describe("completeInstructionRepositorySyncRun", () => {
 		const { logger } = await import("@repo/logs");
 		const error = vi.spyOn(logger, "error").mockImplementation(() => {});
 		m.run.updateMany.mockResolvedValue({ count: 1 });
-		m.$queryRaw.mockResolvedValueOnce([{ generation: 3, failureCount: 0 }]);
+		m.$queryRaw.mockResolvedValueOnce([
+			{
+				generation: 3,
+				failureCount: 0,
+				automaticPausedReason: null,
+				pendingCommitSha: null,
+			},
+		]);
 		await expect(
 			completeInstructionRepositorySyncRun({
 				...base,
@@ -975,13 +1019,188 @@ describe("completeInstructionRepositorySyncRun", () => {
 
 	it("the none effect touches no scheduling column", async () => {
 		m.run.updateMany.mockResolvedValue({ count: 1 });
-		m.$queryRaw.mockResolvedValueOnce([{ generation: 3, failureCount: 0 }]);
+		m.$queryRaw.mockResolvedValueOnce([
+			{
+				generation: 3,
+				failureCount: 0,
+				automaticPausedReason: null,
+				pendingCommitSha: null,
+			},
+		]);
 		await completeInstructionRepositorySyncRun({
 			...base,
 			status: "SKIPPED",
 			scheduling: { kind: "none" },
 		});
 		expect(m.sync.update).not.toHaveBeenCalled();
+	});
+
+	describe("the re-check request a push or a poll left while the run was open (Fizzy #2682)", () => {
+		const PUSHED = "d".repeat(40);
+		const WHERE = {
+			id: "sync_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+		};
+
+		/** The locked sync row, carrying `pendingCommitSha`. */
+		function lockedWith(row: {
+			pendingCommitSha: string;
+			automaticPausedReason?: string;
+			generation?: number;
+			failureCount?: number;
+		}) {
+			m.run.updateMany.mockResolvedValue({ count: 1 });
+			m.$queryRaw.mockResolvedValueOnce([
+				{
+					generation: 3,
+					failureCount: 0,
+					automaticPausedReason: null,
+					...row,
+				},
+			]);
+		}
+
+		it("makes the row due now instead of in 15 minutes, and clears the marker", async () => {
+			lockedWith({ pendingCommitSha: PUSHED });
+			await completeInstructionRepositorySyncRun(base);
+			expect(m.sync.update).toHaveBeenCalledWith({
+				where: WHERE,
+				data: {
+					failureCount: 0,
+					nextCheckAt: NOW,
+					lastEvaluatedCommitSha: "c0ffee",
+					lastEvaluatedGeneration: 3,
+					pendingCommitSha: null,
+				},
+			});
+		});
+
+		it("still makes the row due when the marker names the run's own commit: an older head delivered after a newer one must not stand for both", async () => {
+			// The run read "c0ffee". Push PUSHED recorded its head, then a
+			// delayed delivery of the older push overwrote it with "c0ffee".
+			// The one slot kept only the older observation, so equality
+			// proves nothing about PUSHED.
+			lockedWith({ pendingCommitSha: "c0ffee" });
+			await completeInstructionRepositorySyncRun(base);
+			expect(m.sync.update).toHaveBeenCalledWith({
+				where: WHERE,
+				data: {
+					failureCount: 0,
+					nextCheckAt: NOW,
+					lastEvaluatedCommitSha: "c0ffee",
+					lastEvaluatedGeneration: 3,
+					pendingCommitSha: null,
+				},
+			});
+		});
+
+		it("makes the row due over a failed run's backoff", async () => {
+			lockedWith({ pendingCommitSha: PUSHED });
+			await completeInstructionRepositorySyncRun({
+				...base,
+				status: "FAILED",
+				error: "CLONE_FAILED",
+				commitSha: null,
+				snapshotId: null,
+				scheduling: { kind: "backoff" },
+			});
+			expect(m.sync.update).toHaveBeenCalledWith({
+				where: WHERE,
+				data: {
+					failureCount: 1,
+					nextCheckAt: NOW,
+					pendingCommitSha: null,
+				},
+			});
+		});
+
+		it("the none effect, which schedules nothing, still makes the row due now and clears the marker", async () => {
+			lockedWith({ pendingCommitSha: PUSHED });
+			await completeInstructionRepositorySyncRun({
+				...base,
+				status: "NOT_PUBLISHED",
+				scheduling: { kind: "none" },
+			});
+			expect(m.sync.update).toHaveBeenCalledWith({
+				where: WHERE,
+				data: { nextCheckAt: NOW, pendingCommitSha: null },
+			});
+		});
+
+		it("a pause wins: the schedule stays cleared (Fizzy #2703) and the marker goes", async () => {
+			lockedWith({ pendingCommitSha: PUSHED });
+			await completeInstructionRepositorySyncRun({
+				...base,
+				trigger: "WEBHOOK",
+				status: "FAILED",
+				error: "REF_MISSING",
+				scheduling: { kind: "pause", reason: "REF_MISSING" },
+			});
+			expect(m.sync.update).toHaveBeenCalledWith({
+				where: WHERE,
+				data: {
+					nextCheckAt: null,
+					automaticPausedReason: "REF_MISSING",
+					automaticPausedAt: NOW,
+					pendingCommitSha: null,
+				},
+			});
+		});
+
+		it.each([
+			[
+				"success",
+				{ kind: "success", commitSha: "c0ffee" },
+				{
+					failureCount: 0,
+					nextCheckAt: null,
+					lastEvaluatedCommitSha: "c0ffee",
+					lastEvaluatedGeneration: 3,
+					pendingCommitSha: null,
+				},
+			],
+			[
+				"backoff",
+				{ kind: "backoff" },
+				{
+					failureCount: 3,
+					nextCheckAt: null,
+					pendingCommitSha: null,
+				},
+			],
+			[
+				"none",
+				{ kind: "none" },
+				{ nextCheckAt: null, pendingCommitSha: null },
+			],
+		] as const)(
+			"a row already paused keeps no next check under the %s effect, and the marker goes (Fizzy #2703)",
+			async (_label, scheduling, expected) => {
+				lockedWith({
+					pendingCommitSha: PUSHED,
+					automaticPausedReason: "REF_MISSING",
+					failureCount: 2,
+				});
+				await completeInstructionRepositorySyncRun({
+					...base,
+					scheduling,
+				});
+				expect(m.sync.update).toHaveBeenCalledWith({
+					where: WHERE,
+					data: expected,
+				});
+			},
+		);
+
+		it("a run of an older generation leaves the marker to the current configuration's runs", async () => {
+			lockedWith({ pendingCommitSha: PUSHED, generation: 99 });
+			expect(await completeInstructionRepositorySyncRun(base)).toEqual({
+				completed: true,
+				configurationCurrent: false,
+			});
+			expect(m.sync.update).not.toHaveBeenCalled();
+		});
 	});
 });
 
@@ -1057,6 +1276,7 @@ describe("updateProjectInstructionSettings (spec §4.4)", () => {
 				generation: { increment: 1 },
 				lastEvaluatedCommitSha: null,
 				lastEvaluatedGeneration: null,
+				pendingCommitSha: null,
 				nextCheckAt: expect.any(Date),
 			},
 		});
@@ -1629,5 +1849,180 @@ describe("findInstructionSyncsForPush (spec §6.2, Decision 46)", () => {
 		});
 		// The consistent row still counts; the other is dropped.
 		expect(rows.map((row) => row.id)).toEqual(["sync_2"]);
+	});
+});
+
+describe("recordPendingInstructionSyncHead (Fizzy #2682)", () => {
+	const input = {
+		syncId: "sync_1",
+		projectId: "proj_1",
+		organizationId: "org_1",
+		generation: 3,
+		commitSha: HEAD,
+	};
+
+	it("protocol: one update on the caller's client, fenced on the row's id, tenant and generation, writing only the marker", async () => {
+		m.sync.updateMany.mockResolvedValueOnce({ count: 1 });
+
+		expect(await recordPendingInstructionSyncHead(tx, input)).toEqual({
+			applied: true,
+		});
+		expect(m.sync.updateMany).toHaveBeenCalledTimes(1);
+		expect(m.sync.updateMany).toHaveBeenCalledWith({
+			where: {
+				id: "sync_1",
+				projectId: "proj_1",
+				organizationId: "org_1",
+				generation: 3,
+			},
+			// No `nextCheckAt`: a poll check's lease stays held, and the open
+			// run's completion is what schedules the row.
+			data: { pendingCommitSha: HEAD },
+		});
+		// Not the lease fence: no raw statement, and no transaction of its own.
+		expect(m.$executeRaw).not.toHaveBeenCalled();
+		expect(m.$queryRaw).not.toHaveBeenCalled();
+		expect(m.$transaction).not.toHaveBeenCalled();
+	});
+
+	it("protocol: a row whose generation moved on, or that is gone, applies nothing", async () => {
+		m.sync.updateMany.mockResolvedValueOnce({ count: 0 });
+		expect(await recordPendingInstructionSyncHead(tx, input)).toEqual({
+			applied: false,
+		});
+	});
+});
+
+describe("settlePendingInstructionSyncHead (Fizzy #2682)", () => {
+	/** Stands for `db`: its transaction hands the callback the fake client. */
+	const runner: RepositorySyncTransactionRunner = {
+		$transaction: (fn) => m.$transaction(fn),
+	};
+	const input = {
+		syncId: "sync_1",
+		projectId: "proj_1",
+		organizationId: "org_1",
+		generation: 3,
+		runId: "run_open",
+		now: NOW,
+	};
+	const FENCE_WHERE = {
+		id: "sync_1",
+		projectId: "proj_1",
+		organizationId: "org_1",
+		generation: 3,
+	};
+
+	/** The sync row the settle locks. */
+	function lockedRow(row: {
+		automaticPausedReason: string | null;
+		pendingCommitSha: string | null;
+	}) {
+		m.$queryRaw.mockResolvedValueOnce([row]);
+	}
+
+	it("protocol: locks the sync row FIRST, fenced on its id, tenant and generation, then reads the run's receipt, in one transaction", async () => {
+		lockedRow({ automaticPausedReason: null, pendingCommitSha: HEAD });
+		m.run.findFirst.mockResolvedValueOnce({ finishedAt: null });
+
+		await settlePendingInstructionSyncHead(runner, input);
+
+		expect(m.$transaction).toHaveBeenCalledTimes(1);
+		const [strings, ...values] = m.$queryRaw.mock.calls[0] as [
+			TemplateStringsArray,
+			...unknown[],
+		];
+		const sql = strings.join("?").replace(/\s+/g, " ");
+		expect(sql).toContain(
+			'SELECT "automaticPausedReason", "pendingCommitSha" FROM "project_instruction_repository_sync"',
+		);
+		expect(sql).toContain(
+			'WHERE "id" = ? AND "projectId" = ? AND "organizationId" = ? AND "generation" = ? FOR UPDATE',
+		);
+		expect(values).toEqual(["sync_1", "proj_1", "org_1", 3]);
+		// The receipt is the one `begin` keys `<syncId>:<runId>`, in this tenant.
+		expect(m.run.findFirst).toHaveBeenCalledWith({
+			where: {
+				id: "sync_1:run_open",
+				syncId: "sync_1",
+				projectId: "proj_1",
+				organizationId: "org_1",
+			},
+			select: { finishedAt: true },
+		});
+		expect(m.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+			m.run.findFirst.mock.invocationCallOrder[0] ?? 0,
+		);
+	});
+
+	it("an unfinished receipt writes nothing: its completion takes this lock later and consumes the marker", async () => {
+		lockedRow({ automaticPausedReason: null, pendingCommitSha: HEAD });
+		m.run.findFirst.mockResolvedValueOnce({ finishedAt: null });
+		expect(await settlePendingInstructionSyncHead(runner, input)).toEqual({
+			applied: false,
+			settled: "consumer_pending",
+		});
+		expect(m.sync.updateMany).not.toHaveBeenCalled();
+	});
+
+	it("a receipt `begin` has not inserted yet writes nothing either", async () => {
+		lockedRow({ automaticPausedReason: null, pendingCommitSha: HEAD });
+		m.run.findFirst.mockResolvedValueOnce(null);
+		expect(await settlePendingInstructionSyncHead(runner, input)).toEqual({
+			applied: false,
+			settled: "consumer_pending",
+		});
+		expect(m.sync.updateMany).not.toHaveBeenCalled();
+	});
+
+	it("a finished receipt means the completion already committed without the marker: the row is due now and the marker cleared", async () => {
+		lockedRow({ automaticPausedReason: null, pendingCommitSha: HEAD });
+		m.run.findFirst.mockResolvedValueOnce({ finishedAt: NOW });
+		m.sync.updateMany.mockResolvedValueOnce({ count: 1 });
+		expect(await settlePendingInstructionSyncHead(runner, input)).toEqual({
+			applied: true,
+			settled: "made_due",
+		});
+		expect(m.sync.updateMany).toHaveBeenCalledWith({
+			where: FENCE_WHERE,
+			data: { nextCheckAt: NOW, pendingCommitSha: null },
+		});
+	});
+
+	it("a finished receipt on a paused row clears the marker and keeps no next check (Fizzy #2703)", async () => {
+		lockedRow({
+			automaticPausedReason: "REF_MISSING",
+			pendingCommitSha: HEAD,
+		});
+		m.run.findFirst.mockResolvedValueOnce({ finishedAt: NOW });
+		m.sync.updateMany.mockResolvedValueOnce({ count: 1 });
+		expect(await settlePendingInstructionSyncHead(runner, input)).toEqual({
+			applied: true,
+			settled: "made_due",
+		});
+		expect(m.sync.updateMany).toHaveBeenCalledWith({
+			where: FENCE_WHERE,
+			data: { nextCheckAt: null, pendingCommitSha: null },
+		});
+	});
+
+	it("a finished receipt with no marker left writes nothing: that completion already consumed it", async () => {
+		lockedRow({ automaticPausedReason: null, pendingCommitSha: null });
+		m.run.findFirst.mockResolvedValueOnce({ finishedAt: NOW });
+		expect(await settlePendingInstructionSyncHead(runner, input)).toEqual({
+			applied: false,
+			settled: "made_due",
+		});
+		expect(m.sync.updateMany).not.toHaveBeenCalled();
+	});
+
+	it("a row whose generation moved on, or that is gone, is stale: no receipt read and nothing written", async () => {
+		m.$queryRaw.mockResolvedValueOnce([]);
+		expect(await settlePendingInstructionSyncHead(runner, input)).toEqual({
+			applied: false,
+			settled: "stale",
+		});
+		expect(m.run.findFirst).not.toHaveBeenCalled();
+		expect(m.sync.updateMany).not.toHaveBeenCalled();
 	});
 });

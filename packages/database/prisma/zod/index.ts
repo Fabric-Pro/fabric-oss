@@ -1908,7 +1908,7 @@ export type ProjectInstructionFileScalarFieldEnum = z.infer<typeof ProjectInstru
 
 // File: ProjectInstructionRepositorySyncScalarFieldEnum.schema.ts
 
-export const ProjectInstructionRepositorySyncScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'repositoryIntegrationId', 'ref', 'rootPath', 'automatic', 'generation', 'nextCheckAt', 'failureCount', 'automaticPausedReason', 'automaticPausedAt', 'suppressedCommitSha', 'suppressedGeneration', 'lastEvaluatedCommitSha', 'lastEvaluatedGeneration', 'createdAt', 'updatedAt'])
+export const ProjectInstructionRepositorySyncScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'repositoryIntegrationId', 'ref', 'rootPath', 'automatic', 'generation', 'nextCheckAt', 'failureCount', 'automaticPausedReason', 'automaticPausedAt', 'suppressedCommitSha', 'suppressedGeneration', 'lastEvaluatedCommitSha', 'lastEvaluatedGeneration', 'pendingCommitSha', 'createdAt', 'updatedAt'])
 
 export type ProjectInstructionRepositorySyncScalarFieldEnum = z.infer<typeof ProjectInstructionRepositorySyncScalarFieldEnumSchema>;
 
@@ -10886,6 +10886,7 @@ export const ProjectInstructionRepositorySyncSchema = z.object({
   suppressedGeneration: z.number().int().nullish(),
   lastEvaluatedCommitSha: z.string().nullish(),
   lastEvaluatedGeneration: z.number().int().nullish(),
+  pendingCommitSha: z.string().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
