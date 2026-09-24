@@ -135,7 +135,15 @@ export interface RepositorySyncSubjectStore {
 		tx: Prisma.TransactionClient,
 		fence: RepositorySyncFence,
 	): Promise<{ held: boolean; dbNow: Date }>;
-	/** Applies `patch` only while the row matches the fence. */
+	/**
+	 * Applies `patch` only while the row matches the fence, and nothing
+	 * otherwise. The contract every kind's store keeps (Fizzy #2689): a
+	 * check's outcome is written under the whole lease fence, and every
+	 * other writer of the kind's scheduling columns moves a fence input (the
+	 * generation or the next check time) in the same statement, or deletes
+	 * the row. The clauses and the competitor each one excludes:
+	 * `leaseFenceSql` in instruction-repository-sync.ts.
+	 */
 	writeBack(
 		tx: Prisma.TransactionClient,
 		fence: RepositorySyncFence,

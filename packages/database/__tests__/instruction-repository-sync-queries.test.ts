@@ -1580,6 +1580,11 @@ const FENCE = { id: "sync_1", generation: 3, leaseUntil: ROW.leaseUntil };
  * reaches Postgres. What the fence does to a row, expiry by the database's
  * clock included, is pinned against the stateful row store in
  * instruction-repository-sync-lease.test.ts (Decision 54).
+ *
+ * This is also the pin for the fence invariant (Fizzy #2689): every lease
+ * read and fenced write below must send this whole text, so a refactor that
+ * drops a clause, or a writer that fences on a subset, fails here. The
+ * reason for each clause is on `leaseFenceSql`.
  */
 function fenceSql(first: number): string {
 	return `"id" = $${first} AND "generation" = $${first + 1} AND "nextCheckAt" = $${first + 2} AND "nextCheckAt" > (clock_timestamp() AT TIME ZONE 'UTC') AND "automatic" = true AND "automaticPausedReason" IS NULL`;
