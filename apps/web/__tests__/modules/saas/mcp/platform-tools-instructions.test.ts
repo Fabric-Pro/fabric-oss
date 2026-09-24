@@ -734,6 +734,34 @@ describe("sinceDigest", () => {
 			});
 		});
 
+		// Fizzy #2671: a version that only flips a file's executable bit now
+		// carries a new digest (`computeSnapshotDigest` folds mode in), and
+		// this tool must surface that path under `changes.changed` rather
+		// than an empty delta. The mode-aware comparison itself is pinned in
+		// `packages/database/__tests__/instruction-manifest-diff.test.ts`;
+		// this only pins the tool's pass-through of the diff result.
+		it("lists a mode-only changed path under changes.changed", async () => {
+			published();
+			m.getInstructionManifestDiff.mockResolvedValue({
+				base: { id: "snap_base", version: 8, digest: "digest_base" },
+				added: [],
+				removed: [],
+				changed: ["scripts/run.sh"],
+			});
+
+			const { body } = await call(tool, {
+				projectId: "proj_1",
+				sinceDigest: "digest_base",
+			});
+
+			expect(body.unchanged).toBe(false);
+			expect(body.changes).toEqual({
+				added: [],
+				removed: [],
+				changed: ["scripts/run.sh"],
+			});
+		});
+
 		// The base lookup is scoped by project, so a digest from ANOTHER
 		// project matches nothing here — it is reported as an unknown base,
 		// never as that project's history.

@@ -46,7 +46,12 @@ export interface InstructionChanges {
 export interface PublishedInstructionSnapshot {
 	id: string;
 	version: number;
-	/** sha256 over the snapshot's sorted path+hash lines — the sync key. */
+	/**
+	 * sha256 over the snapshot's sorted path+hash lines — the sync key. A
+	 * file's normalised mode (permission bits only; null/absent reads as
+	 * 0644) is folded into its line when it is not the default, so a
+	 * mode-only republish gets a new digest too.
+	 */
 	digest: string;
 	fileCount: number;
 	/** ISO 8601, or null for a snapshot published before the column existed. */

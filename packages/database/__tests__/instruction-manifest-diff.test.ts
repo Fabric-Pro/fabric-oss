@@ -34,8 +34,8 @@ import {
 } from "../prisma/queries/instructions";
 
 /** A manifest entry, written the way the query selects it. */
-function file(path: string, sha256: string) {
-	return { path, sha256 };
+function file(path: string, sha256: string, mode?: number | null) {
+	return { path, sha256, mode };
 }
 
 describe("diffInstructionManifests", () => {
@@ -129,6 +129,67 @@ describe("diffInstructionManifests", () => {
 			removed: ["a-gone.md", "z-gone.md"],
 			changed: ["a-edit.md", "z-edit.md"],
 		});
+	});
+
+	// Fizzy #2671: modes are now part of the digest, so a mode-only republish
+	// (a chmod committed with no content change) is a real tree change and
+	// must not read as `unchanged: []` here either — the same rule
+	// `computeSnapshotDigest` applies.
+	it("reports a path whose mode differs, even when sha256 matches, as changed", () => {
+		expect(
+			diffInstructionManifests(
+				[file("scripts/run.sh", "same", 0o644)],
+				[file("scripts/run.sh", "same", 0o755)],
+			),
+		).toEqual({ added: [], removed: [], changed: ["scripts/run.sh"] });
+	});
+
+	// `null`, `undefined` and `0o644` are all "no mode recorded" — the same
+	// normalisation `computeSnapshotDigest` and `treesEqual` use — so none of
+	// them may report a change against each other.
+	it("does not report null vs 0o644 (or a missing field) as a mode change", () => {
+		expect(
+			diffInstructionManifests(
+				[file("AGENTS.md", "same", null)],
+				[file("AGENTS.md", "same", 0o644)],
+			),
+		).toEqual({ added: [], removed: [], changed: [] });
+		expect(
+			diffInstructionManifests(
+				[{ path: "AGENTS.md", sha256: "same" }],
+				[file("AGENTS.md", "same", null)],
+			),
+		).toEqual({ added: [], removed: [], changed: [] });
+	});
+
+	// Review round 2 (Fizzy #2671): the wire contract admits a full `st_mode`
+	// — `isAllowedMode` (`packages/cli/src/lib/instructions/safe-write.ts`)
+	// masks with `& 0o7777` and explicitly accepts e.g. `0o100644` — and the
+	// installer applies both representations identically. A diff that told
+	// them apart would report `changed` for two manifests describing the
+	// same tree.
+	it("does not report a full st_mode against its bare permission bits as changed", () => {
+		expect(
+			diffInstructionManifests(
+				[file("AGENTS.md", "same", 0o644)],
+				[file("AGENTS.md", "same", 0o100644)],
+			),
+		).toEqual({ added: [], removed: [], changed: [] });
+		expect(
+			diffInstructionManifests(
+				[file("scripts/run.sh", "same", 0o755)],
+				[file("scripts/run.sh", "same", 0o100755)],
+			),
+		).toEqual({ added: [], removed: [], changed: [] });
+	});
+
+	it("still reports a real permission difference under a full st_mode", () => {
+		expect(
+			diffInstructionManifests(
+				[file("scripts/run.sh", "same", 0o100644)],
+				[file("scripts/run.sh", "same", 0o100755)],
+			),
+		).toEqual({ added: [], removed: [], changed: ["scripts/run.sh"] });
 	});
 });
 
@@ -278,6 +339,28 @@ describe("getInstructionManifestDiff tenant scoping", () => {
 			snapshotId: "snap_head",
 			projectId: "proj_1",
 			organizationId: HOST_ORG,
+		});
+	});
+
+	// Fizzy #2671: both `select`s widened to carry `mode`, and the diff must
+	// actually use it — a mode-only republish reported as `changed: []` here
+	// is what left `sinceDigest` callers thinking a mode-only version was
+	// unchanged, even after the digest itself started moving.
+	it("reports a mode-only difference between base and head as changed", async () => {
+		prisma.snapshotFindFirst.mockResolvedValue({
+			id: "snap_base",
+			version: 8,
+			files: [{ path: "scripts/run.sh", sha256: "same", mode: 0o644 }],
+		});
+		prisma.fileFindMany.mockResolvedValue([
+			{ path: "scripts/run.sh", sha256: "same", mode: 0o755 },
+		]);
+
+		expect(await diffAsHost()).toEqual({
+			base: { id: "snap_base", version: 8, digest: "digest_base" },
+			added: [],
+			removed: [],
+			changed: ["scripts/run.sh"],
 		});
 	});
 });

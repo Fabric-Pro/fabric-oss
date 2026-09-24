@@ -17,9 +17,11 @@
  *     catches a list that is the right length and the wrong content.
  *
  * The digest recipe is the server's (`packages/instructions/src/manifest.ts`):
- * sha256 over `path\0sha256\n` lines sorted by path. It is reimplemented
- * here rather than imported because `@repo/instructions` is a private
- * workspace package and this one is published to npm.
+ * sha256 over `path\0sha256\n` lines sorted by path, with a mode appended to
+ * a line when the file's mode is not the default `0o644`. It is
+ * reimplemented here rather than imported because `@repo/instructions` is a
+ * private workspace package and this one is published to npm. Keep the two
+ * copies in step — a divergence turns every sync into a refusal.
  */
 import { createHash } from "node:crypto";
 import type { InstructionManifestEntry } from "@fabricorg/sdk";
@@ -93,22 +95,83 @@ export function maxArchiveBytes(
 }
 
 /**
+ * `0o644` is the mode a file has when no source recorded one at all (an
+ * upload's `mode: null`), so it is the one value that never needs to change
+ * the digest.
+ */
+const DEFAULT_MODE = 0o644;
+
+/** Everything but the permission bits — setuid/setgid/sticky and the file-type nibble. */
+const PERMISSION_MASK = 0o7777;
+
+/**
+ * The one normalisation every mode-aware comparison in this feature applies
+ * before comparing or hashing: `null`/`undefined` reads as the default
+ * `0o644`, and anything else is masked down to its permission bits.
+ *
+ * The mask matters because `isAllowedMode` below validates a manifest
+ * entry's mode on `mode & 0o7777` and explicitly accepts a full `st_mode`
+ * (e.g. `0o100644`), not only `0o644` itself — two representations of the
+ * same permission that skipped this normalisation would hash differently
+ * even though `permissionBits` (also below) applies them identically.
+ */
+function normalizeMode(mode: number | null | undefined): number {
+	return mode == null ? DEFAULT_MODE : mode & PERMISSION_MASK;
+}
+
+/**
  * The snapshot digest, computed the way the server computes it.
  *
  * Keep in step with `computeSnapshotDigest` in `@repo/instructions`. A
  * divergence here turns every sync into a refusal, which is the safe
  * direction but still a break.
+ *
+ * A file's mode is folded in, but only when its normalised value
+ * (`normalizeMode`) is not the default: a line for a `null`, `undefined`,
+ * `0o644` or `0o100644` entry is byte-identical to the pre-mode-aware recipe
+ * (`path\0sha256\n`), and only a non-default mode appends a third field
+ * (`path\0sha256\0755\n`, always the normalised permission bits). That is
+ * what lets every snapshot already published without an executable file
+ * keep a digest an old CLI can still verify.
  */
 export function computeSnapshotDigest(
-	entries: ReadonlyArray<{ path: string; sha256: string }>,
+	entries: ReadonlyArray<{
+		path: string;
+		sha256: string;
+		mode?: number | null;
+	}>,
 ): string {
 	const lines = [...entries]
 		.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-		.map((entry) => `${entry.path}\0${entry.sha256}\n`)
+		.map((entry) => {
+			const mode = normalizeMode(entry.mode);
+			return mode === DEFAULT_MODE
+				? `${entry.path}\0${entry.sha256}\n`
+				: `${entry.path}\0${entry.sha256}\0${mode.toString(8)}\n`;
+		})
 		.join("");
 	return createHash("sha256")
 		.update(Buffer.from(lines, "utf8"))
 		.digest("hex");
+}
+
+/**
+ * The digest a snapshot published BEFORE this change would carry, even if it
+ * contains a `0755` file: the pre-mode-aware recipe, computed by stripping
+ * every entry's mode before hashing rather than duplicating the hashing code
+ * a third time.
+ *
+ * Such a snapshot is never recomputed after the fact, so a new CLI must still
+ * be able to install it. Accepting EITHER value is therefore not a laxer
+ * check — it is the same check against the two digests a manifest can
+ * legitimately carry.
+ */
+function computeLegacySnapshotDigest(
+	entries: ReadonlyArray<{ path: string; sha256: string }>,
+): string {
+	return computeSnapshotDigest(
+		entries.map((entry) => ({ ...entry, mode: undefined })),
+	);
 }
 
 /**
@@ -165,8 +228,17 @@ export function assertValidManifest(input: {
 		);
 	}
 
+	// A snapshot published before mode joined the digest recipe carries the
+	// LEGACY (mode-less) value even when one of its files is 0755, and that
+	// snapshot is never recomputed — so a manifest is accepted when it
+	// matches either recipe. The error still reports the new recipe's hash:
+	// that is the one a fresh publish is expected to match, and the message
+	// is unchanged either way.
 	const recomputed = computeSnapshotDigest(entries);
-	if (recomputed !== snapshot.digest) {
+	if (
+		recomputed !== snapshot.digest &&
+		computeLegacySnapshotDigest(entries) !== snapshot.digest
+	) {
 		throw new Error(
 			`The manifest for version ${snapshot.version} does not match its own digest (${snapshot.digest}); it hashes to ${recomputed}. Nothing was changed.`,
 		);

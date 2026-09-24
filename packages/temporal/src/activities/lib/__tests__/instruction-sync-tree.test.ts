@@ -196,11 +196,40 @@ describe("treesEqual", () => {
 		).toBe(true);
 	});
 
-	it("is not equal on a mode-only change, which the digest cannot see", () => {
+	// A mode-only change now moves `computeSnapshotDigest` too (Fizzy #2671),
+	// but this remains the check that decides WHETHER a repository-sync
+	// version needs publishing at all — it compares the kept git tree
+	// against the last published manifest directly, before any digest is
+	// computed.
+	it("is not equal on a mode-only change", () => {
 		expect(
 			treesEqual(kept, [
 				{ path: "CLAUDE.md", sha256: "h1", mode: null },
 				{ path: "run.sh", sha256: "h2", mode: 0o644 },
+			]),
+		).toBe(false);
+	});
+
+	// Fizzy #2671 review: the wire contract admits a full `st_mode`, not only
+	// bare permission bits — `isAllowedMode`
+	// (`packages/cli/src/lib/instructions/safe-write.ts`) masks with
+	// `& 0o7777` and explicitly accepts e.g. `0o100644`. Two representations
+	// of the same permission must compare equal here, the same way
+	// `computeSnapshotDigest` and `normalizedMode` now treat them.
+	it("treats a full st_mode and its bare permission bits as the same mode", () => {
+		expect(
+			treesEqual(kept, [
+				{ path: "CLAUDE.md", sha256: "h1", mode: 0o100644 },
+				{ path: "run.sh", sha256: "h2", mode: 0o100755 },
+			]),
+		).toBe(true);
+	});
+
+	it("still reports a real permission difference under a full st_mode", () => {
+		expect(
+			treesEqual(kept, [
+				{ path: "CLAUDE.md", sha256: "h1", mode: 0o100755 },
+				{ path: "run.sh", sha256: "h2", mode: 0o100755 },
 			]),
 		).toBe(false);
 	});

@@ -84,9 +84,10 @@ export const compareSnapshotsProcedure = tenantProtectedProcedure
 		const fromByPath = new Map(fromFiles.map((f) => [f.path, f]));
 		const toByPath = new Map(toFiles.map((f) => [f.path, f]));
 		// The one manifest diff this repository has, rather than a second
-		// implementation of the same comparison: `sha256` is the digest's own
-		// unit of change, so "changed" here means exactly what it means to the
-		// installed-copy diff MCP clients read.
+		// implementation of the same comparison: a different `sha256` OR a
+		// different normalised `mode` is the digest's own unit of change, so
+		// "changed" here means exactly what it means to the installed-copy
+		// diff MCP clients read.
 		const changes = diffInstructionManifests(fromFiles, toFiles);
 
 		const added = changes.added.flatMap((path) => {

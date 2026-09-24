@@ -1375,7 +1375,12 @@ export async function getPublishedInstructionSummariesForProjects(
 }
 
 /** One manifest entry, reduced to what a diff is decided on. */
-export type InstructionManifestEntry = { path: string; sha256: string };
+export type InstructionManifestEntry = {
+	path: string;
+	sha256: string;
+	/** POSIX permission bits, or null/undefined when none was recorded. */
+	mode?: number | null;
+};
 
 /** What changed between two manifests, by path. Each list is sorted. */
 export type InstructionManifestChanges = {
@@ -1385,8 +1390,25 @@ export type InstructionManifestChanges = {
 };
 
 /**
+ * `0o644` is the mode a file has when no source recorded one at all, so it
+ * is what every other spelling of "no mode" normalises to before comparison.
+ * A present mode is also masked to its permission bits: the wire contract
+ * admits a full `st_mode` (`isAllowedMode` in
+ * `packages/cli/src/lib/instructions/safe-write.ts` validates on
+ * `mode & 0o7777` and explicitly accepts e.g. `0o100644`), and two
+ * representations of the same permission must diff as identical. This is the
+ * same rule `computeSnapshotDigest` (`packages/instructions/src/manifest.ts`)
+ * and `treesEqual`
+ * (`packages/temporal/src/activities/lib/instruction-sync-tree.ts`) use.
+ */
+function normalizedMode(mode: number | null | undefined): number {
+	return mode == null ? 0o644 : mode & 0o7777;
+}
+
+/**
  * The PURE diff of two manifests, by path: added is head-only, removed is
- * base-only, changed is both sides at a different `sha256`.
+ * base-only, changed is both sides at a different `sha256` OR a different
+ * (normalised) `mode`.
  *
  * Separated from the queries below so the rule itself is testable without a
  * database, and so both callers — the list tool and the bundle tool — decide
@@ -1395,28 +1417,42 @@ export type InstructionManifestChanges = {
  * Every list is sorted, so a caller diffing two responses sees a stable order
  * rather than whatever order the rows came back in.
  *
- * MODES are deliberately not part of this diff, and are not part of the
- * snapshot digest either: an upload carries no modes, so a file's `mode` is
- * DERIVED from its content at upload time (a shebang makes it 0755), and a
- * mode change therefore implies a content change that `sha256` already
- * reports. If a future source ever carries real modes — a git import, a
- * tarball — the digest has to include them before this diff can, or two
- * manifests that differ only in mode would share a digest and read as
- * unchanged.
+ * MODES are now part of this diff, because they are part of the snapshot
+ * digest: repository-sync-backed projects carry git's real mode
+ * (`packages/temporal/src/activities/lib/instruction-sync-tree.ts`), so a
+ * mode-only republish — a chmod committed with no content change — is a real
+ * tree change and `computeSnapshotDigest` gives it a new digest. Reporting it
+ * here too keeps this diff in step with what "unchanged" already means for
+ * `sinceDigest`: a mode-only version must not read as `changed: []`, which is
+ * what an upload-only project (whose files never carry a mode) still gets,
+ * since `null`/`undefined`/`0o644` all normalise to the one default value.
  */
 export function diffInstructionManifests(
 	base: InstructionManifestEntry[],
 	head: InstructionManifestEntry[],
 ): InstructionManifestChanges {
-	const baseByPath = new Map(base.map((f) => [f.path, f.sha256]));
-	const headByPath = new Map(head.map((f) => [f.path, f.sha256]));
+	const baseByPath = new Map(
+		base.map((f) => [
+			f.path,
+			{ sha256: f.sha256, mode: normalizedMode(f.mode) },
+		]),
+	);
+	const headByPath = new Map(
+		head.map((f) => [
+			f.path,
+			{ sha256: f.sha256, mode: normalizedMode(f.mode) },
+		]),
+	);
 	const added: string[] = [];
 	const changed: string[] = [];
-	for (const [path, sha256] of headByPath) {
+	for (const [path, entry] of headByPath) {
 		const before = baseByPath.get(path);
 		if (before === undefined) {
 			added.push(path);
-		} else if (before !== sha256) {
+		} else if (
+			before.sha256 !== entry.sha256 ||
+			before.mode !== entry.mode
+		) {
 			changed.push(path);
 		}
 	}
@@ -1490,7 +1526,7 @@ export async function getInstructionManifestDiff(input: {
 					projectId: input.projectId,
 					organizationId: input.organizationId,
 				},
-				select: { path: true, sha256: true },
+				select: { path: true, sha256: true, mode: true },
 			},
 		},
 	});
@@ -1503,7 +1539,7 @@ export async function getInstructionManifestDiff(input: {
 			projectId: input.projectId,
 			organizationId: input.organizationId,
 		},
-		select: { path: true, sha256: true },
+		select: { path: true, sha256: true, mode: true },
 	});
 	return {
 		// `digest` is not re-read off the row: the WHERE clause above pinned it

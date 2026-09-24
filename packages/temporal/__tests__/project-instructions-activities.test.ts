@@ -1327,6 +1327,52 @@ describe("finalizeInstructionSnapshot", () => {
 			{ bucket: "skills" },
 		);
 	});
+
+	// Fizzy #2671: the digest used to hash paths and content only, so a
+	// repository-sync version that flips a file's executable bit with no
+	// content change published with the SAME digest as the version before
+	// it, and every `sinceDigest` consumer answered "unchanged". `f.mode` is
+	// read off the same `listInstructionFiles` row the gate's
+	// `persistVerifiedFileMetadata` already wrote it to, so finalizing two
+	// otherwise-identical snapshots that differ only in one file's mode must
+	// produce two different digests.
+	it("gives a mode-only republish a different digest than the identical-content version before it", async () => {
+		await stage([
+			{
+				id: "f1",
+				path: "scripts/run.sh",
+				data: Buffer.from("#!/bin/sh\n"),
+				mode: 0o644,
+			},
+		]);
+		expect(await finalizeInstructionSnapshot(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		const nonExecutableDigest =
+			m.markInstructionSnapshotReady.mock.calls[0]?.[0]?.digest;
+
+		// Same path, same bytes, already at the snapshot key (as it would be
+		// for a derived/republished snapshot) — only the mode differs.
+		await stage([
+			{
+				id: "f1",
+				path: "scripts/run.sh",
+				data: Buffer.from("#!/bin/sh\n"),
+				mode: 0o755,
+				storageKey: snapshotKey("p", "s", "f1"),
+			},
+		]);
+		expect(await finalizeInstructionSnapshot(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		const executableDigest =
+			m.markInstructionSnapshotReady.mock.calls[1]?.[0]?.digest;
+
+		expect(typeof nonExecutableDigest).toBe("string");
+		expect(executableDigest).not.toBe(nonExecutableDigest);
+	});
 });
 
 describe("rejectInstructionSnapshot", () => {

@@ -1621,6 +1621,52 @@ describe("an unchanged digest over a drifted tree", () => {
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 	});
 
+	// Fizzy #2671: a republish that only flips a file's executable bit now
+	// carries a different digest from the version the lock recorded, so
+	// `sync` fetches the new manifest instead of short-circuiting on
+	// "unchanged" — unlike the drift case above, where the SERVER's digest
+	// never moved and only the local file had drifted.
+	it("chmods a file whose published mode changed and records the new mode in the lock", async () => {
+		const oldManifest = [manifestEntry("script.sh", "#!/bin/sh\n")];
+		const dest = await seedSyncedTree(oldManifest, {
+			"script.sh": "#!/bin/sh\n",
+		});
+		const newManifest = [
+			{ ...manifestEntry("script.sh", "#!/bin/sh\n"), mode: 0o100755 },
+		];
+		// Sanity: the republish really does carry a different digest — a
+		// mode-only version must not look unchanged to begin with.
+		expect(computeSnapshotDigest(newManifest)).not.toBe(
+			computeSnapshotDigest(oldManifest),
+		);
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: snapshotFor(newManifest),
+			unchanged: false,
+			changes: { added: [], removed: [], changed: ["script.sh"] },
+			manifest: newManifest,
+		});
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect((await stat(path.join(dest, "script.sh"))).mode & 0o777).toBe(
+			0o755,
+		);
+		// Bytes already matched the new manifest, so nothing was downloaded.
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+		const lock = await readLock(dest);
+		expect(lock?.files["script.sh"]?.mode).toBe(0o100755);
+		expect(lock?.digest).toBe(computeSnapshotDigest(newManifest));
+	});
+
 	it("still says unchanged when the tree really does match", async () => {
 		const manifest = [manifestEntry("AGENTS.md", "published\n")];
 		const dest = await seedSyncedTree(manifest, {

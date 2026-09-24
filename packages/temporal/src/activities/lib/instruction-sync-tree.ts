@@ -155,10 +155,28 @@ export function fileModeForGitMode(mode: "100644" | "100755"): number {
 }
 
 /**
+ * The one normalisation every mode-aware comparison in the coding-instructions
+ * feature applies before comparing or hashing: `null`/`undefined` reads as
+ * the default `0o644`, and anything else is masked down to its permission
+ * bits. The mask matters because the wire contract admits more than bare
+ * permission bits — `isAllowedMode`
+ * (`packages/cli/src/lib/instructions/safe-write.ts`) validates a manifest
+ * entry's mode on `mode & 0o7777` and explicitly accepts a full `st_mode`
+ * (e.g. `0o100644`) — so two representations of the same permission must
+ * compare equal here too. Mirrored in `computeSnapshotDigest`
+ * (`packages/instructions/src/manifest.ts`) and `normalizedMode`
+ * (`packages/database/prisma/queries/instructions.ts`).
+ */
+function normalizeMode(mode: number | null | undefined): number {
+	return mode == null ? 0o644 : mode & 0o7777;
+}
+
+/**
  * Whether the kept tree is the published tree, content AND modes (spec
- * §5.3.2 step 10). `computeSnapshotDigest` hashes paths and content only, so
- * this is the check that sees a chmod. A null mode on the published side is
- * an upload's "no mode recorded", read as 0644.
+ * §5.3.2 step 10). A null mode on the published side is an upload's "no mode
+ * recorded", read as 0644 — the same normalisation `computeSnapshotDigest`
+ * now applies, so a mode-only difference this function reports also moves
+ * the digest and is never silently absorbed by a `sinceDigest` comparison.
  */
 export function treesEqual(
 	kept: readonly { path: string; sha256: string; mode: number }[],
@@ -173,7 +191,7 @@ export function treesEqual(
 		return (
 			other !== undefined &&
 			other.sha256 === f.sha256 &&
-			(other.mode ?? 0o644) === f.mode
+			normalizeMode(other.mode) === normalizeMode(f.mode)
 		);
 	});
 }
