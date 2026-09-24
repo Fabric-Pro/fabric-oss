@@ -13,7 +13,7 @@ const OLD_SHA = "b".repeat(40);
 
 const m = vi.hoisted(() => ({
 	getInstructionRepositorySyncForRun: vi.fn(),
-	getInstructionRepositorySyncRunReceipt: vi.fn(),
+	listUnfinishedInstructionRepositorySyncRunReceipts: vi.fn(),
 	insertInstructionRepositorySyncRun: vi.fn(),
 	canCreateProjectInstructions: vi.fn(),
 	getInstructionSnapshotBySyncRunKey: vi.fn(),
@@ -50,8 +50,8 @@ const m = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({
 	getInstructionRepositorySyncForRun: m.getInstructionRepositorySyncForRun,
-	getInstructionRepositorySyncRunReceipt:
-		m.getInstructionRepositorySyncRunReceipt,
+	listUnfinishedInstructionRepositorySyncRunReceipts:
+		m.listUnfinishedInstructionRepositorySyncRunReceipts,
 	insertInstructionRepositorySyncRun: m.insertInstructionRepositorySyncRun,
 	canCreateProjectInstructions: m.canCreateProjectInstructions,
 	getInstructionSnapshotBySyncRunKey: m.getInstructionSnapshotBySyncRunKey,
@@ -276,6 +276,8 @@ beforeEach(() => {
 		completed: true,
 		configurationCurrent: true,
 	});
+	// No other receipt for the workflow run unless a test says so.
+	m.listUnfinishedInstructionRepositorySyncRunReceipts.mockResolvedValue([]);
 	m.describe.mockRejectedValue(
 		Object.assign(new Error("not found"), {
 			name: "WorkflowNotFoundError",
@@ -1306,8 +1308,8 @@ describe("recordInstructionRepositorySyncRun (spec §5.4)", () => {
 	// Finding 2: `begin` inserts the receipt first, then can still throw (a
 	// permission read that exhausts its retries) or be cancelled. The
 	// workflow then records with a null context, and `record` must find and
-	// complete the receipt by the run key it rebuilds from the run id.
-	describe("without a context, by the rebuilt run key", () => {
+	// complete every receipt the run began, by its workflow run id.
+	describe("without a context, by the workflow run id", () => {
 		const syncRow = {
 			id: "sync_1",
 			projectId: "proj_1",
@@ -1333,6 +1335,13 @@ describe("recordInstructionRepositorySyncRun (spec §5.4)", () => {
 			commitSha: null,
 			childResult: null,
 		};
+		const receipt = (syncId: string, generation: number) => ({
+			id: `${syncId}:run_a`,
+			syncId,
+			userId: "user_1",
+			generation,
+			trigger: "MANUAL" as const,
+		});
 
 		beforeEach(() => {
 			m.getInstructionRepositorySyncForRun.mockResolvedValue(syncRow);
@@ -1364,13 +1373,9 @@ describe("recordInstructionRepositorySyncRun (spec §5.4)", () => {
 				...syncRow,
 				generation: 4,
 			});
-			m.getInstructionRepositorySyncRunReceipt.mockResolvedValue({
-				syncId: "sync_1",
-				userId: "user_1",
-				generation: 3,
-				trigger: "MANUAL",
-				finishedAt: null,
-			});
+			m.listUnfinishedInstructionRepositorySyncRunReceipts.mockResolvedValue(
+				[receipt("sync_1", 3)],
+			);
 
 			expect(await recordInstructionRepositorySyncRun(orphan)).toEqual({
 				recorded: true,
@@ -1381,8 +1386,11 @@ describe("recordInstructionRepositorySyncRun (spec §5.4)", () => {
 				m.getInstructionRepositorySyncForRun,
 			).toHaveBeenLastCalledWith("proj_1");
 			expect(
-				m.getInstructionRepositorySyncRunReceipt,
-			).toHaveBeenCalledWith("sync_1:run_a", "proj_1", "org_1");
+				m.listUnfinishedInstructionRepositorySyncRunReceipts,
+			).toHaveBeenCalledWith("run_a", "proj_1", "org_1");
+			expect(
+				m.completeInstructionRepositorySyncRun,
+			).toHaveBeenCalledTimes(1);
 			expect(m.completeInstructionRepositorySyncRun).toHaveBeenCalledWith(
 				expect.objectContaining({
 					runKey: "sync_1:run_a",
@@ -1398,6 +1406,11 @@ describe("recordInstructionRepositorySyncRun (spec §5.4)", () => {
 					snapshotId: null,
 					// A manual run never backs the schedule off (Fizzy #2706).
 					scheduling: { kind: "none" },
+					// The unlocked read above is the caller's belief only: under
+					// its lock the completion records a receipt whose
+					// (syncId, generation) is no longer current, as this one's
+					// generation 3 is not, as CONFIGURATION_CHANGED.
+					classifyStaleAsConfigurationChanged: true,
 				}),
 			);
 			// No snapshot can exist without a context: Part A never runs.
@@ -1406,45 +1419,24 @@ describe("recordInstructionRepositorySyncRun (spec §5.4)", () => {
 			).not.toHaveBeenCalled();
 		});
 
-		it("is a no-op, and does not throw, when begin failed before inserting the receipt", async () => {
-			m.getInstructionRepositorySyncRunReceipt.mockResolvedValue(null);
+		it("is a no-op, and does not throw, when begin failed before inserting the receipt or every receipt is already finished", async () => {
 			expect(await recordInstructionRepositorySyncRun(orphan)).toEqual({
 				recorded: false,
 				status: null,
 			});
 			expect(
-				m.getInstructionRepositorySyncRunReceipt,
-			).toHaveBeenCalledWith("sync_1:run_a", "proj_1", "org_1");
+				m.listUnfinishedInstructionRepositorySyncRunReceipts,
+			).toHaveBeenCalledWith("run_a", "proj_1", "org_1");
 			expect(
 				m.completeInstructionRepositorySyncRun,
 			).not.toHaveBeenCalled();
 		});
 
-		it("leaves an already finished receipt alone", async () => {
-			m.getInstructionRepositorySyncRunReceipt.mockResolvedValue({
-				syncId: "sync_1",
-				userId: "user_1",
-				generation: 3,
-				trigger: "MANUAL",
-				finishedAt: new Date(),
+		it("reads no receipt for a configuration row of another organization", async () => {
+			m.getInstructionRepositorySyncForRun.mockResolvedValue({
+				...syncRow,
+				organizationId: "org_other",
 			});
-			expect(await recordInstructionRepositorySyncRun(orphan)).toEqual({
-				recorded: false,
-				status: null,
-			});
-			expect(
-				m.completeInstructionRepositorySyncRun,
-			).not.toHaveBeenCalled();
-		});
-
-		it.each([
-			["no configuration row (NOT_CONFIGURED)", null],
-			[
-				"a configuration row of another organization",
-				{ ...syncRow, organizationId: "org_other" },
-			],
-		])("reads no receipt for %s", async (_label, row) => {
-			m.getInstructionRepositorySyncForRun.mockResolvedValue(row);
 			expect(
 				await recordInstructionRepositorySyncRun({
 					...orphan,
@@ -1452,12 +1444,280 @@ describe("recordInstructionRepositorySyncRun (spec §5.4)", () => {
 				}),
 			).toEqual({ recorded: false, status: null });
 			expect(
-				m.getInstructionRepositorySyncRunReceipt,
+				m.listUnfinishedInstructionRepositorySyncRunReceipts,
 			).not.toHaveBeenCalled();
 			expect(
 				m.completeInstructionRepositorySyncRun,
 			).not.toHaveBeenCalled();
 		});
+
+		it("is a no-op with no configuration row and no receipt (NOT_CONFIGURED: begin inserted nothing)", async () => {
+			m.getInstructionRepositorySyncForRun.mockResolvedValue(null);
+			expect(
+				await recordInstructionRepositorySyncRun({
+					...orphan,
+					error: "NOT_CONFIGURED",
+				}),
+			).toEqual({ recorded: false, status: null });
+			expect(
+				m.listUnfinishedInstructionRepositorySyncRunReceipts,
+			).toHaveBeenCalledWith("run_a", "proj_1", "org_1");
+			expect(
+				m.completeInstructionRepositorySyncRun,
+			).not.toHaveBeenCalled();
+		});
+
+		// Fizzy #2672: the receipt outlives a disable or disconnect, so a
+		// "no configuration" answer no longer means "nothing to record".
+		it("completes the receipt of a run whose sync was switched off after begin inserted it, as CONFIGURATION_CHANGED", async () => {
+			m.getInstructionRepositorySyncForRun.mockResolvedValue(null);
+			m.listUnfinishedInstructionRepositorySyncRunReceipts.mockResolvedValue(
+				[receipt("sync_1", 3)],
+			);
+			m.completeInstructionRepositorySyncRun.mockResolvedValue({
+				completed: true,
+				configurationCurrent: false,
+			});
+
+			expect(
+				await recordInstructionRepositorySyncRun({
+					...orphan,
+					// A begin retry that found the row gone.
+					error: "NOT_CONFIGURED",
+				}),
+			).toEqual({ recorded: true, status: "FAILED" });
+
+			expect(m.completeInstructionRepositorySyncRun).toHaveBeenCalledWith(
+				expect.objectContaining({
+					runKey: "sync_1:run_a",
+					syncId: "sync_1",
+					generation: 3,
+					projectId: "proj_1",
+					organizationId: "org_1",
+					userId: "user_1",
+					trigger: "MANUAL",
+					status: "FAILED",
+					error: "CONFIGURATION_CHANGED",
+					commitSha: null,
+					snapshotId: null,
+					scheduling: { kind: "none" },
+					classifyStaleAsConfigurationChanged: true,
+				}),
+			);
+		});
+
+		// Codex review of Fizzy #2672: `begin` keys its receipt on the row it
+		// reads, so attempt 1 inserts `sync_1:run_a` and throws, the sync is
+		// switched off and set up again, and the retry inserts
+		// `sync_2:run_a`. Both receipts belong to this run.
+		describe("a begin retry that inserted a second receipt under a new configuration", () => {
+			beforeEach(() => {
+				m.getInstructionRepositorySyncForRun.mockResolvedValue({
+					...syncRow,
+					id: "sync_2",
+					generation: 1,
+				});
+			});
+
+			it("closes both: the current configuration's with the run's own error, the stale one as CONFIGURATION_CHANGED", async () => {
+				m.listUnfinishedInstructionRepositorySyncRunReceipts.mockResolvedValue(
+					[receipt("sync_2", 1), receipt("sync_1", 3)],
+				);
+
+				expect(
+					await recordInstructionRepositorySyncRun(orphan),
+				).toEqual({ recorded: true, status: "FAILED" });
+
+				expect(
+					m.completeInstructionRepositorySyncRun,
+				).toHaveBeenCalledTimes(2);
+				expect(
+					m.completeInstructionRepositorySyncRun,
+				).toHaveBeenCalledWith(
+					expect.objectContaining({
+						runKey: "sync_2:run_a",
+						syncId: "sync_2",
+						generation: 1,
+						status: "FAILED",
+						error: "CLONE_FAILED",
+						// A manual run never backs the schedule off (Fizzy #2706).
+						scheduling: { kind: "none" },
+						classifyStaleAsConfigurationChanged: true,
+					}),
+				);
+				expect(
+					m.completeInstructionRepositorySyncRun,
+				).toHaveBeenCalledWith(
+					expect.objectContaining({
+						runKey: "sync_1:run_a",
+						syncId: "sync_1",
+						generation: 3,
+						status: "FAILED",
+						error: "CONFIGURATION_CHANGED",
+						scheduling: { kind: "none" },
+					}),
+				);
+			});
+
+			it("still closes the stale one when the current configuration's receipt is already finished, and leaves that one alone", async () => {
+				// The finished sync_2 receipt is not listed: only unfinished
+				// receipts are.
+				m.listUnfinishedInstructionRepositorySyncRunReceipts.mockResolvedValue(
+					[receipt("sync_1", 3)],
+				);
+
+				expect(
+					await recordInstructionRepositorySyncRun(orphan),
+				).toEqual({ recorded: true, status: "FAILED" });
+
+				expect(
+					m.completeInstructionRepositorySyncRun,
+				).toHaveBeenCalledTimes(1);
+				expect(
+					m.completeInstructionRepositorySyncRun,
+				).toHaveBeenCalledWith(
+					expect.objectContaining({
+						runKey: "sync_1:run_a",
+						syncId: "sync_1",
+						status: "FAILED",
+						error: "CONFIGURATION_CHANGED",
+						scheduling: { kind: "none" },
+					}),
+				);
+			});
+		});
+	});
+
+	// Fizzy #2672: a run in flight when its sync is switched off. The child's
+	// publish is fenced, and `record` completes the receipt that now survives
+	// the delete, without reading the configuration at all.
+	it("records NOT_PUBLISHED / CONFIGURATION_CHANGED for a run whose sync row is gone, without reading the configuration", async () => {
+		m.getInstructionSnapshotWithPublishedPointer.mockResolvedValue({
+			snapshot: summary({ publishedAt: null }),
+			publishedPointer: { id: "snap_older" },
+		});
+		m.completeInstructionRepositorySyncRun.mockResolvedValue({
+			completed: true,
+			configurationCurrent: false,
+		});
+
+		expect(
+			await recordInstructionRepositorySyncRun({
+				...base,
+				childResult: {
+					status: "READY",
+					published: false,
+					publishReason: "configuration_changed",
+				},
+			}),
+		).toEqual({ recorded: true, status: "NOT_PUBLISHED" });
+
+		expect(m.getInstructionRepositorySyncForRun).not.toHaveBeenCalled();
+		expect(m.completeInstructionRepositorySyncRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runKey: "sync_1:run_a",
+				syncId: "sync_1",
+				generation: 3,
+				status: "NOT_PUBLISHED",
+				error: "CONFIGURATION_CHANGED",
+				snapshotId: "snap_1",
+				scheduling: { kind: "none" },
+			}),
+		);
+		// The run's own receipt is judged by its snapshot and its own fence:
+		// never reclassified under the lock.
+		expect(
+			m.completeInstructionRepositorySyncRun.mock.calls[0][0],
+		).not.toHaveProperty("classifyStaleAsConfigurationChanged");
+	});
+
+	// Codex review of Fizzy #2672: a begin attempt that inserted a receipt
+	// under an earlier configuration and threw, before the retry that gave
+	// this run its context under the current one. The run closes it too.
+	it("after completing its own receipt, closes any other unfinished receipt of the same workflow run as FAILED / CONFIGURATION_CHANGED", async () => {
+		const contextOnSync2: SyncRunContext = {
+			...CONTEXT,
+			syncId: "sync_2",
+			generation: 1,
+			runKey: "sync_2:run_a",
+		};
+		m.getInstructionSnapshotWithPublishedPointer.mockResolvedValue({
+			snapshot: summary(),
+			publishedPointer: { id: "snap_1" },
+		});
+		m.listUnfinishedInstructionRepositorySyncRunReceipts.mockResolvedValue([
+			// Its own receipt, were it still listed, is never touched twice.
+			{
+				id: "sync_2:run_a",
+				syncId: "sync_2",
+				userId: "user_1",
+				generation: 1,
+				trigger: "MANUAL",
+			},
+			{
+				id: "sync_1:run_a",
+				syncId: "sync_1",
+				userId: "delegate_1",
+				generation: 3,
+				trigger: "MANUAL",
+			},
+		]);
+
+		expect(
+			await recordInstructionRepositorySyncRun({
+				...base,
+				workflowRunId: "run_a",
+				context: contextOnSync2,
+			}),
+		).toEqual({ recorded: true, status: "SUCCEEDED" });
+
+		expect(
+			m.listUnfinishedInstructionRepositorySyncRunReceipts,
+		).toHaveBeenCalledWith("run_a", "proj_1", "org_1");
+		expect(m.completeInstructionRepositorySyncRun).toHaveBeenCalledTimes(2);
+		// Its own receipt first, as before.
+		expect(m.completeInstructionRepositorySyncRun).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({
+				runKey: "sync_2:run_a",
+				syncId: "sync_2",
+				status: "SUCCEEDED",
+			}),
+		);
+		expect(m.completeInstructionRepositorySyncRun).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				runKey: "sync_1:run_a",
+				syncId: "sync_1",
+				generation: 3,
+				userId: "delegate_1",
+				trigger: "MANUAL",
+				status: "FAILED",
+				error: "CONFIGURATION_CHANGED",
+				note: null,
+				commitSha: null,
+				snapshotId: null,
+				scheduling: { kind: "none" },
+				classifyStaleAsConfigurationChanged: true,
+			}),
+		);
+		// A publish that succeeded under its own fence stays SUCCEEDED even
+		// if the configuration changes before the completion's lock.
+		expect(
+			m.completeInstructionRepositorySyncRun.mock.calls[0][0],
+		).not.toHaveProperty("classifyStaleAsConfigurationChanged");
+	});
+
+	it("derives the workflow run id from the run key for a history that never passed it", async () => {
+		m.getInstructionSnapshotWithPublishedPointer.mockResolvedValue({
+			snapshot: summary(),
+			publishedPointer: { id: "snap_1" },
+		});
+		await recordInstructionRepositorySyncRun(base);
+		expect(
+			m.listUnfinishedInstructionRepositorySyncRunReceipts,
+		).toHaveBeenCalledWith("run_a", "proj_1", "org_1");
+		expect(m.completeInstructionRepositorySyncRun).toHaveBeenCalledTimes(1);
 	});
 
 	it("completes the run from durable state: this snapshot holds the pointer", async () => {

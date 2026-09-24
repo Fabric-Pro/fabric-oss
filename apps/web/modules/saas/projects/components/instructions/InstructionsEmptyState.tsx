@@ -7,6 +7,7 @@ import { Card } from "@ui/components/card";
 import {
 	FolderIcon,
 	GitBranchIcon,
+	HistoryIcon,
 	Loader2Icon,
 	PlugIcon,
 	RefreshCwIcon,
@@ -21,6 +22,8 @@ import {
 	offersSyncNow,
 	type RepositorySyncControls,
 } from "../../lib/instructions-repository-sync";
+import { InstructionsHistory } from "./InstructionsHistory";
+import { RepositorySyncRuns } from "./RepositorySyncRuns";
 import { RepositorySyncSettingsSection } from "./RepositorySyncSettingsSection";
 import { RepositorySyncStatus } from "./RepositorySyncStatus";
 
@@ -52,6 +55,7 @@ export function InstructionsEmptyState({
 }) {
 	const t = useTranslations("projects.codingInstructions.emptyState");
 	const [connectOpen, setConnectOpen] = useState(false);
+	const [historyOpen, setHistoryOpen] = useState(false);
 	// Fails closed the same way InstructionsPublishedView does: with no
 	// organization id there is nothing to mint the key against. An invited
 	// guest views this project under the HOST organization's thin record
@@ -72,6 +76,11 @@ export function InstructionsEmptyState({
 			(syncState.configured !== null ||
 				syncState.sourceOfTruth === "REPOSITORY"),
 	);
+	// Sync runs outlive the configuration (Fizzy #2672): a first sync that
+	// failed before anything was published, then a switch to upload mode,
+	// leaves runs this screen's status line rightly leaves out. History is
+	// where they are kept, so it is reachable here too once any run exists.
+	const showHistory = Boolean(syncState?.latestRun);
 	return (
 		<div className="flex flex-col gap-6">
 			<div className="flex flex-col gap-1">
@@ -137,6 +146,18 @@ export function InstructionsEmptyState({
 								aria-hidden="true"
 							/>
 							{t("syncButton")}
+						</Button>
+					) : null}
+					{showHistory ? (
+						<Button
+							variant="outline"
+							onClick={() => setHistoryOpen(true)}
+						>
+							<HistoryIcon
+								className="size-4"
+								aria-hidden="true"
+							/>
+							{t("historyButton")}
 						</Button>
 					) : null}
 				</div>
@@ -217,6 +238,28 @@ export function InstructionsEmptyState({
 					) : null}
 				</Card>
 			</div>
+			{historyOpen && repositorySync ? (
+				// The published view's History dialog and its sync-runs list,
+				// mounted only while open. With no version kept there is no
+				// snapshot row to publish, download or delete, so nothing in
+				// it can change what this screen shows.
+				<InstructionsHistory
+					projectId={projectId}
+					open
+					onOpenChange={setHistoryOpen}
+					snapshots={[]}
+					publishedId={null}
+					publishedVersion={null}
+					canMutate={false}
+					syncRuns={
+						<RepositorySyncRuns
+							projectId={projectId}
+							running={repositorySync.state.running}
+						/>
+					}
+					onChanged={() => undefined}
+				/>
+			) : null}
 			{canConnectAgent && organizationId ? (
 				<ConnectCliDialog
 					open={connectOpen}

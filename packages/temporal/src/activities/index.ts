@@ -1115,6 +1115,7 @@ export {
 // module exports nothing else, so `export *` registers exactly these four.
 export * from "./project-instruction-repository-sync";
 export { reapInstructionSnapshots } from "./project-instructions-reaper";
+export { reapStrandedInstructionSyncReceipts } from "./project-instruction-sync-receipt-reaper";
 // Project metadata activities (orchestrator project context injection)
 export {
 	getProjectMetadataActivity,

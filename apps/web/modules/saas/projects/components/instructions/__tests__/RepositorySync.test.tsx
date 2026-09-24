@@ -170,6 +170,7 @@ function run(overrides: Partial<SyncRunView> = {}): SyncRunView {
 		snapshotId: "snap_1",
 		snapshotVersion: 4,
 		userName: "Example Member",
+		fromCurrentConfiguration: true,
 		...overrides,
 	};
 }
@@ -730,6 +731,102 @@ describe("RepositorySyncStatus (§7.3)", () => {
 		);
 		expect(container).toBeEmptyDOMElement();
 	});
+
+	it("leaves out the last run of a sync that was switched off: it stays in History, not on the status line (Fizzy #2672)", () => {
+		const { container } = render(
+			<RepositorySyncStatus
+				state={{
+					...CONFIGURED,
+					sourceOfTruth: "UPLOAD",
+					configured: null,
+					latestRun: run({
+						status: "NOT_PUBLISHED",
+						error: "CONFIGURATION_CHANGED",
+						fromCurrentConfiguration: false,
+					}),
+				}}
+				onSyncNow={vi.fn()}
+			/>,
+		);
+		expect(container).toBeEmptyDOMElement();
+		expect(
+			screen.queryByRole("button", { name: copy.syncAgainButton }),
+		).not.toBeInTheDocument();
+	});
+
+	// Fizzy #2672: `running` is the project's (a sync workflow is open), not
+	// this configuration's. A run left going by a switch to upload mode, or
+	// by a switch-off-and-set-up-again, belongs to the sync that was switched
+	// off and shows in History, not as progress of the current setup.
+	it("shows no progress for a run of a sync that was switched off while it ran", () => {
+		const { container } = render(
+			<RepositorySyncStatus
+				state={{
+					...CONFIGURED,
+					sourceOfTruth: "UPLOAD",
+					configured: null,
+					running: true,
+					latestRun: run({
+						finishedAt: null,
+						status: null,
+						snapshotVersion: null,
+						fromCurrentConfiguration: false,
+					}),
+				}}
+			/>,
+		);
+		expect(container).toBeEmptyDOMElement();
+		expect(screen.queryByText(copy.running)).not.toBeInTheDocument();
+	});
+
+	it("shows no progress when a run is open but no sync is configured and no receipt is in yet", () => {
+		const { container } = render(
+			<RepositorySyncStatus
+				state={{
+					...CONFIGURED,
+					sourceOfTruth: "UPLOAD",
+					configured: null,
+					running: true,
+				}}
+			/>,
+		);
+		expect(container).toBeEmptyDOMElement();
+	});
+
+	it("shows no progress for the sync set up again while the switched-off one's run is still open", () => {
+		render(
+			<RepositorySyncStatus
+				state={{
+					...CONFIGURED,
+					running: true,
+					latestRun: run({
+						finishedAt: null,
+						status: null,
+						snapshotVersion: null,
+						fromCurrentConfiguration: false,
+					}),
+				}}
+			/>,
+		);
+		expect(screen.queryByText(copy.running)).not.toBeInTheDocument();
+	});
+
+	it("still shows progress for a run of the current configuration", () => {
+		render(
+			<RepositorySyncStatus
+				state={{
+					...CONFIGURED,
+					running: true,
+					latestRun: run({
+						finishedAt: null,
+						status: null,
+						snapshotVersion: null,
+					}),
+				}}
+			/>,
+		);
+		expect(screen.getByText(copy.running)).toBeInTheDocument();
+	});
 });
 
 describe("RepositorySyncRuns (§7.3 History list)", () => {
@@ -776,6 +873,30 @@ describe("RepositorySyncRuns (§7.3 History list)", () => {
 		});
 		expect(await screen.findByText(copy.runs.empty)).toBeInTheDocument();
 	});
+
+	it("marks only the runs of a sync that was switched off (Fizzy #2672)", async () => {
+		m.listRuns.mockResolvedValue({
+			runs: [
+				run({ id: "sync_2:run_b", trigger: "POLL" }),
+				run({
+					id: "sync_1:run_a",
+					status: "NOT_PUBLISHED",
+					error: "CONFIGURATION_CHANGED",
+					fromCurrentConfiguration: false,
+				}),
+			],
+		});
+		render(<RepositorySyncRuns projectId="proj_1" running={false} />, {
+			wrapper: Providers,
+		});
+		const items = await screen.findAllByRole("listitem");
+		expect(items).toHaveLength(2);
+		expect(items[0]).not.toHaveTextContent(copy.runs.previousConfiguration);
+		expect(items[1]).toHaveTextContent(copy.runs.previousConfiguration);
+		expect(items[1]).toHaveTextContent(
+			copy.outcomes.notPublished.configuration_changed,
+		);
+	});
 });
 
 describe("RepositorySyncSettingsSection (§7.4)", () => {
@@ -819,6 +940,8 @@ describe("RepositorySyncSettingsSection (§7.4)", () => {
 				"example-org/instructions",
 			),
 		);
+		// The run history survives the switch, and the confirmation says so.
+		expect(copy.settings.switchConfirm).toContain("Sync history is kept.");
 		await waitFor(() =>
 			expect(m.disable).toHaveBeenCalledWith({ projectId: "proj_1" }),
 		);
@@ -837,6 +960,9 @@ describe("RepositorySyncSettingsSection (§7.4)", () => {
 				"{repository}",
 				"example-org/instructions",
 			),
+		);
+		expect(copy.settings.switchConfirmRunning).toContain(
+			"Sync history is kept.",
 		);
 		expect(m.disable).not.toHaveBeenCalled();
 	});

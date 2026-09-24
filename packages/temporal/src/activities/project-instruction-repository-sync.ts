@@ -13,13 +13,13 @@ import {
 	completeInstructionRepositorySyncRun,
 	createInstructionSnapshot,
 	getInstructionRepositorySyncForRun,
-	getInstructionRepositorySyncRunReceipt,
 	getInstructionSnapshotBySyncRunKey,
 	getInstructionSnapshotWithPublishedPointer,
 	getProjectInstructionSettings,
 	getProjectRepoIntegration,
 	getPublishedInstructionTree,
 	insertInstructionRepositorySyncRun,
+	listUnfinishedInstructionRepositorySyncRunReceipts,
 	recordAudit,
 	rejectAbandonedInstructionSnapshot,
 } from "@repo/database";
@@ -940,14 +940,78 @@ export async function awaitInstructionSnapshotSettled(
 // record (§5.4)
 // ---------------------------------------------------------------------------
 
+type UnfinishedSyncRunReceipt = Awaited<
+	ReturnType<typeof listUnfinishedInstructionRepositorySyncRunReceipts>
+>[number];
+
+/**
+ * Completes one receipt that has no snapshot to judge it by, under the
+ * acting user, trigger and generation it was inserted with. Through
+ * `completeInstructionRepositorySyncRun`, so each receipt gets its own
+ * completion audit row and its scheduling effect is fenced on its own
+ * `(syncId, generation)`.
+ *
+ * The caller's `error` rests on a configuration read taken before the
+ * completion's transaction, and a disable, re-configure or replacement can
+ * commit in between. So the completion classifies under its own lock
+ * (`classifyStaleAsConfigurationChanged`): a receipt whose
+ * `(syncId, generation)` is not current there is recorded FAILED /
+ * CONFIGURATION_CHANGED whatever was passed. Only here, for receipts with no
+ * fence of their own; never for the run's own receipt when it has a context.
+ */
+async function completeReceiptWithoutSnapshot(
+	receipt: UnfinishedSyncRunReceipt,
+	tenant: { projectId: string; organizationId: string },
+	error: InstructionSyncErrorCode | null,
+): Promise<RecordSyncRunResult> {
+	const outcome = deriveSyncRunOutcome({
+		trigger: receipt.trigger,
+		skipped: false,
+		unchanged: false,
+		error,
+		commitSha: null,
+		snapshot: null,
+		publishReason: null,
+	});
+	const completed = await completeInstructionRepositorySyncRun({
+		runKey: receipt.id,
+		syncId: receipt.syncId,
+		generation: receipt.generation,
+		...tenant,
+		userId: receipt.userId,
+		trigger: receipt.trigger,
+		status: outcome.status,
+		error: outcome.error,
+		note: outcome.note,
+		commitSha: null,
+		snapshotId: null,
+		scheduling: outcome.scheduling,
+		classifyStaleAsConfigurationChanged: true,
+	});
+	return { recorded: completed.completed, status: outcome.status };
+}
+
 /**
  * `record` without a context. Either `begin` found no configuration row
- * (NOT_CONFIGURED: nothing was inserted), or `begin` threw or was cancelled,
- * possibly AFTER inserting the run receipt (a failed permission read that
- * exhausted its retries, say). The reaper does not cover receipts, so the
- * run key is rebuilt from the workflow's own identifiers and an unfinished
- * receipt is completed as FAILED here. No snapshot can exist: acquisition
- * never ran without a context.
+ * (NOT_CONFIGURED: nothing was inserted, unless an earlier attempt did),
+ * or `begin` threw or was cancelled, possibly AFTER inserting the run
+ * receipt (a failed permission read that exhausted its retries, say). This
+ * is the fast path: every unfinished receipt this workflow run began is
+ * found by its run id and completed as FAILED here. A receipt that commits
+ * only after `record` ran (a timed-out `begin` attempt's late insert), or
+ * one a terminated workflow never recorded, is the hourly reaper's
+ * (`reapStrandedInstructionSyncReceipts`). No snapshot can exist:
+ * acquisition never ran without a context.
+ *
+ * Receipts outlive their configuration (no foreign key, Fizzy #2672), so
+ * "no configuration row" is not "nothing to record", and one run can hold
+ * two receipts: an attempt that inserted under one configuration and threw,
+ * then a retry after the sync was switched off and set up again. A receipt
+ * of the current configuration records the run's own error; any other is
+ * CONFIGURATION_CHANGED, as when `begin` itself reports it, with no
+ * scheduling effect. With no typed error the outcome table's default is an
+ * untyped failure (CLONE_FAILED, backing off), the same code the workflow
+ * already records for any untyped acquisition failure.
  */
 async function completeReceiptWithoutContext(
 	input: RecordSyncRunInput,
@@ -959,48 +1023,52 @@ async function completeReceiptWithoutContext(
 	}
 	// Unscoped read, then the tenant check, exactly as `begin` does: the
 	// configuration is unique per project, and its id is the run key's prefix.
+	// Unlocked, so it only picks the error to pass: the completion re-checks
+	// each receipt's fence under its lock (`completeReceiptWithoutSnapshot`).
 	const sync = await getInstructionRepositorySyncForRun(input.projectId);
-	if (!sync || sync.organizationId !== input.organizationId) {
+	if (sync && sync.organizationId !== input.organizationId) {
 		return nothing;
 	}
-	const runKey = `${sync.id}:${input.workflowRunId}`;
-	const receipt = await getInstructionRepositorySyncRunReceipt(
-		runKey,
-		input.projectId,
-		input.organizationId,
-	);
-	if (!receipt || receipt.finishedAt !== null) {
-		// `begin` failed before inserting, or the receipt is already complete.
-		return nothing;
-	}
-	// No snapshot and no typed error: the outcome table's default for an
-	// untyped failure (CLONE_FAILED, backing off), the same code the workflow
-	// already records for any untyped acquisition failure.
-	const outcome = deriveSyncRunOutcome({
-		trigger: receipt.trigger,
-		skipped: false,
-		unchanged: false,
-		error: input.error,
-		commitSha: null,
-		snapshot: null,
-		publishReason: null,
-	});
-	const completed = await completeInstructionRepositorySyncRun({
-		runKey,
-		syncId: receipt.syncId,
-		generation: receipt.generation,
+	const tenant = {
 		projectId: input.projectId,
 		organizationId: input.organizationId,
-		userId: receipt.userId,
-		trigger: receipt.trigger,
-		status: outcome.status,
-		error: outcome.error,
-		note: outcome.note,
-		commitSha: null,
-		snapshotId: null,
-		scheduling: outcome.scheduling,
-	});
-	return { recorded: completed.completed, status: outcome.status };
+	};
+	const receipts = await listUnfinishedInstructionRepositorySyncRunReceipts(
+		input.workflowRunId,
+		tenant.projectId,
+		tenant.organizationId,
+	);
+	// Newest first: the newest receipt's status is the run's answer.
+	let result = nothing;
+	for (const receipt of receipts) {
+		const done = await completeReceiptWithoutSnapshot(
+			receipt,
+			tenant,
+			receipt.syncId === sync?.id ? input.error : "CONFIGURATION_CHANGED",
+		);
+		result = {
+			recorded: result.recorded || done.recorded,
+			status: result.status ?? done.status,
+		};
+	}
+	return result;
+}
+
+/**
+ * The workflow run id `record` sweeps by: passed by the workflow, or, for a
+ * history started before it was, the suffix of `begin`'s run key.
+ */
+function workflowRunIdOf(
+	input: RecordSyncRunInput,
+	context: SyncRunContext,
+): string | null {
+	if (input.workflowRunId) {
+		return input.workflowRunId;
+	}
+	const prefix = `${context.syncId}:`;
+	return context.runKey.startsWith(prefix)
+		? context.runKey.slice(prefix.length)
+		: null;
 }
 
 export async function recordInstructionRepositorySyncRun(
@@ -1098,5 +1166,30 @@ export async function recordInstructionRepositorySyncRun(
 		snapshotId: snapshot ? snapshotId : null,
 		scheduling: outcome.scheduling,
 	});
+
+	// A `begin` attempt that inserted a receipt under an earlier
+	// configuration and threw, before the retry that gave this run its
+	// context, left that receipt behind; it outlives its configuration
+	// (Fizzy #2672), so the run closes it rather than leave it open. This
+	// sees only receipts already committed: one whose insert lands after
+	// this sweep is closed by the hourly reaper once the run has ended.
+	const workflowRunId = workflowRunIdOf(input, context);
+	if (workflowRunId) {
+		const receipts =
+			await listUnfinishedInstructionRepositorySyncRunReceipts(
+				workflowRunId,
+				tenant.projectId,
+				tenant.organizationId,
+			);
+		for (const receipt of receipts) {
+			if (receipt.syncId !== context.syncId) {
+				await completeReceiptWithoutSnapshot(
+					receipt,
+					tenant,
+					"CONFIGURATION_CHANGED",
+				);
+			}
+		}
+	}
 	return { recorded: completed.completed, status: outcome.status };
 }

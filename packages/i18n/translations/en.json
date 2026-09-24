@@ -5431,6 +5431,7 @@
 				"uploadButton": "Upload folder",
 				"syncButton": "Sync from repository",
 				"syncNowButton": "Sync now",
+				"historyButton": "History",
 				"connectedRepository": "This project is connected to <repo></repo>.",
 				"secretsTitle": "Secrets are checked first",
 				"secretsDescription": "Every upload is scanned before anything is stored. If a file contains a token or password, the whole upload is rejected and nothing is kept.",
@@ -5735,7 +5736,8 @@
 					"loadFailed": "Could not load sync runs.",
 					"commit": "commit {commit}",
 					"version": "version {version}",
-					"by": "by {name}"
+					"by": "by {name}",
+					"previousConfiguration": "from a sync that was switched off"
 				},
 				"settings": {
 					"title": "Repository",
@@ -5751,8 +5753,8 @@
 					"automaticTurnedOff": "Automatic sync is off.",
 					"changeButton": "Change…",
 					"switchToUpload": "Switch to upload mode",
-					"switchConfirm": "Stop syncing from {repository}? The published files stay as they are, and editing and uploading in Fabric come back.",
-					"switchConfirmRunning": "Stop syncing from {repository}? A sync is running now and will finish without publishing. The published files stay as they are, and editing and uploading in Fabric come back.",
+					"switchConfirm": "Stop syncing from {repository}? The published files stay as they are, and editing and uploading in Fabric come back. Sync history is kept.",
+					"switchConfirmRunning": "Stop syncing from {repository}? A sync is running now and will finish without publishing. The published files stay as they are, and editing and uploading in Fabric come back. Sync history is kept.",
 					"switchConfirmDisconnected": "Switch this project back to upload mode? The published files stay as they are, and editing and uploading in Fabric come back.",
 					"disconnected": "Repository disconnected. The repository these instructions synced from is no longer connected to this project.",
 					"switched": "Switched to upload mode."

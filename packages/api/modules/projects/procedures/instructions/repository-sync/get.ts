@@ -83,7 +83,11 @@ export const getRepositorySyncProcedure = tenantProtectedProcedure
 						delegateName: sync.user.name,
 					}
 				: null,
-			latestRun: latestRun ? toSyncRunView(latestRun) : null,
+			// Kept after a switch to upload mode, and marked, so History stays
+			// reachable while the status line leaves it out (Fizzy #2672).
+			latestRun: latestRun
+				? toSyncRunView(latestRun, sync?.id ?? null)
+				: null,
 			availableIntegrations: integrations
 				.filter((i) => i.status === "ACTIVE")
 				.map((i) => ({

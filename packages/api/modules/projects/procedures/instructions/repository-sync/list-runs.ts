@@ -1,4 +1,7 @@
-import { listInstructionRepositorySyncRuns } from "@repo/database";
+import {
+	getInstructionRepositorySync,
+	listInstructionRepositorySyncRuns,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -13,7 +16,9 @@ const MAX_RUNS = 50;
 /**
  * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ).
  *
- * History's "Sync runs" list, newest first (design 2026-09-23 §7.3).
+ * History's "Sync runs" list, newest first (design 2026-09-23 §7.3),
+ * including the runs of a sync that was switched off, each marked by
+ * whether it came from the current configuration (Fizzy #2672).
  */
 export const listRepositorySyncRunsProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
@@ -35,10 +40,14 @@ export const listRepositorySyncRunsProcedure = tenantProtectedProcedure
 			input.projectId,
 			context.user.id,
 		);
-		const runs = await listInstructionRepositorySyncRuns(
-			input.projectId,
-			organizationId,
-			Math.min(input.limit ?? 20, MAX_RUNS),
-		);
-		return { runs: runs.map(toSyncRunView) };
+		const [runs, sync] = await Promise.all([
+			listInstructionRepositorySyncRuns(
+				input.projectId,
+				organizationId,
+				Math.min(input.limit ?? 20, MAX_RUNS),
+			),
+			getInstructionRepositorySync(input.projectId, organizationId),
+		]);
+		const currentSyncId = sync?.id ?? null;
+		return { runs: runs.map((run) => toSyncRunView(run, currentSyncId)) };
 	});
