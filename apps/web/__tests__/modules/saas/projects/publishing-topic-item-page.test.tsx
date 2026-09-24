@@ -3625,3 +3625,63 @@ describe("#2646 — status is editable on the topic page", () => {
 		).not.toBeInTheDocument();
 	});
 });
+
+// Fizzy #2646 follow-up: "Saving… / Saved" appearing BEFORE the header status
+// control pushed it sideways under the pointer whenever the header wrapped.
+// jsdom has no layout, so these pin the structure that keeps it still.
+describe("#2646 — the header status control does not move while the save note shows", () => {
+	// Scoped to the control's own cluster, so "after" means beside it — not
+	// merely somewhere later on the page.
+	const headerParts = () => {
+		const control = screen.getByRole("combobox", {
+			name: /^Status for /,
+		});
+		const cluster = control.parentElement as HTMLElement;
+		return {
+			control,
+			note: within(cluster).getByTestId("topic-status-save-indicator"),
+		};
+	};
+
+	it("puts the note after the status control", () => {
+		renderPage();
+
+		const { control, note } = headerParts();
+		expect(
+			control.compareDocumentPosition(note) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+	});
+
+	it("gives the note a fixed-width slot from sm up", () => {
+		renderPage();
+
+		expect(headerParts().note).toHaveClass("sm:w-20");
+	});
+
+	// Below sm there is no reserved slot, so the note must only ever have
+	// free space to its right. The status cluster gets a line of its own
+	// there: not right-anchored beside a short title (the note appearing
+	// would pull the control left), and not beside the rank-reason pill (a
+	// pill that can shrink would hand the note its width, and the control
+	// would move left). A rank reason is set so the pill actually renders.
+	it("below sm, stacks the rank-reason pill above a status cluster on its own left-aligned line", () => {
+		state.topic = topic({ rankReason: { kind: "contributed" } });
+		renderPage();
+
+		const cluster = headerParts().control.parentElement as HTMLElement;
+		const outer = cluster.parentElement as HTMLElement;
+		expect(outer).toHaveClass(
+			"w-full",
+			"flex-col",
+			"items-start",
+			"sm:w-auto",
+			"sm:flex-row",
+			"sm:items-center",
+		);
+		const pill = screen.getByText("Based on your contribution");
+		expect(outer.children).toHaveLength(2);
+		expect(outer.children[0]).toBe(pill);
+		expect(outer.children[1]).toBe(cluster);
+	});
+});
