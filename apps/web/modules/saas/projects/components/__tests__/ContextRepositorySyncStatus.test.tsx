@@ -72,6 +72,22 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 							...opts,
 						}),
 					},
+					// The configure dialog's tree browser (Fizzy #2674); its
+					// behavior is covered by the dialog's own test.
+					listTree: {
+						queryOptions: (options: {
+							input: unknown;
+							[key: string]: unknown;
+						}) => ({
+							...options,
+							queryKey: ["listTree", options.input],
+							queryFn: () => ({
+								supported: true,
+								entries: [],
+								truncated: false,
+							}),
+						}),
+					},
 				},
 			},
 		},

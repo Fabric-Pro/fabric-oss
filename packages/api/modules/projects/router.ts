@@ -100,6 +100,7 @@ import { processContextLinkProcedure } from "./procedures/contexts/process-conte
 import { configureContextRepositorySyncProcedure } from "./procedures/contexts/repository-sync/configure";
 import { disableContextRepositorySyncProcedure } from "./procedures/contexts/repository-sync/disable";
 import { getContextRepositorySyncProcedure } from "./procedures/contexts/repository-sync/get";
+import { listContextRepositoryTreeProcedure } from "./procedures/contexts/repository-sync/list-tree";
 import { syncContextRepositoryNowProcedure } from "./procedures/contexts/repository-sync/sync-now";
 import { resolveContextSummaryReferenceProcedure } from "./procedures/contexts/resolve-summary-reference";
 import { restoreContextSummaryVersionProcedure } from "./procedures/contexts/restore-summary-version";
@@ -897,6 +898,7 @@ export const projectsRouter = {
 		// connected repository's branch, applied by "Sync now"
 		repositorySync: {
 			get: getContextRepositorySyncProcedure,
+			listTree: listContextRepositoryTreeProcedure,
 			configure: configureContextRepositorySyncProcedure,
 			syncNow: syncContextRepositoryNowProcedure,
 			disable: disableContextRepositorySyncProcedure,

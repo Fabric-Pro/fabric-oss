@@ -57,12 +57,12 @@ export type {
 	RepoAccessOutcome,
 	VerifyRepositoryAccessInput,
 } from "./repository-access";
+export { verifyRepositoryAccess } from "./repository-access";
 export type {
 	RepoAccessVerdict,
 	RepoAccessVerdictFor,
 } from "./repository-access-status";
 export { integrationStatusForRepoAccess } from "./repository-access-status";
-export { verifyRepositoryAccess } from "./repository-access";
 export type {
 	BranchVerifyOutcome,
 	ListRepositoryBranchesInput,
@@ -81,6 +81,18 @@ export {
 // GitHub / GitLab PAT validation (request-path helpers)
 export type { ValidateRepoPatResult } from "./repository-pat";
 export { validateGitHubPat, validateGitLabPat } from "./repository-pat";
+// Repository tree listing (request-path helper)
+export type {
+	ListRepositoryTreeInput,
+	ListRepositoryTreeOutcome,
+	ListRepositoryTreeResult,
+	RepositoryTreeEntry,
+} from "./repository-tree";
+export {
+	isRepositoryTreeProvider,
+	listRepositoryTree,
+	MAX_REPOSITORY_TREE_ENTRIES,
+} from "./repository-tree";
 // Slack connector
 export { SlackConnector } from "./slack";
 // Federated connectors (auto-register on import)

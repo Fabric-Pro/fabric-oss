@@ -15,6 +15,7 @@ import {
 	contextSyncPathValidationMessage,
 	contextSyncPollInterval,
 	contextSyncRunEnded,
+	contextSyncTreeErrorMessage,
 	offersSyncFromRepository,
 	offersSyncNow,
 	shortCommit,
@@ -315,6 +316,23 @@ describe("configure dialog error mapping (§5.1, §7.2)", () => {
 		expect(mapped.field).toBeNull();
 	});
 
+	it("words a server EXCLUDED_PATH for a .fabric path with the .fabric copy", () => {
+		const mapped = contextSyncConfigureErrorMessage(
+			orpcLikeError("EXCLUDED_PATH", { path: ".FABRIC/x.md" }),
+		);
+		expect(mapped).toMatchObject({
+			key: "configureDialog.errors.EXCLUDED_FABRIC_PATH",
+			inline: true,
+			field: "paths",
+			values: { path: ".FABRIC/x.md" },
+		});
+		expect(
+			contextSyncConfigureErrorMessage(
+				orpcLikeError("EXCLUDED_PATH", { path: "docs/AGENTS.md" }),
+			).key,
+		).toBe("configureDialog.errors.EXCLUDED_PATH");
+	});
+
 	it("carries managedCount for REPOSITORY_CHANGE_REQUIRES_DISCONNECT", () => {
 		const mapped = contextSyncConfigureErrorMessage(
 			orpcLikeError("REPOSITORY_CHANGE_REQUIRES_DISCONNECT", {
@@ -463,6 +481,38 @@ describe("paths editor validation (§2, §5.1)", () => {
 		});
 	});
 
+	it.each([
+		".fabric",
+		".fabric/notes.md",
+		".FABRIC/x.md",
+		"docs/.Fabric/state.json",
+		".fabric/CLAUDE.md",
+	])(
+		"rejects %s, with a .fabric segment at any depth and in any case, as EXCLUDED_PATH",
+		(path) => {
+			const result = validateContextSyncPathAddition(path, []);
+			expect(result).toEqual({
+				ok: false,
+				error: { code: "EXCLUDED_PATH", path },
+			});
+			if (!result.ok) {
+				expect(contextSyncPathValidationMessage(result.error)).toEqual({
+					key: "pathErrors.EXCLUDED_FABRIC_PATH",
+					values: { path },
+				});
+			}
+		},
+	);
+
+	it("matches .fabric as a whole segment only", () => {
+		for (const path of ["docs/.fabricrc", "fabric/notes.md", "my.fabric"]) {
+			expect(validateContextSyncPathAddition(path, []), path).toEqual({
+				ok: true,
+				path,
+			});
+		}
+	});
+
 	it("does not exclude a folder that merely shares a name with an excluded file", () => {
 		// Only the FILE patterns exclude by basename; "skills/" is a folder
 		// pattern the server applies inside a selected folder, not here.
@@ -518,6 +568,44 @@ describe("Remove duplicates tallying (§6, §7.3)", () => {
 			deleted: 0,
 			skipped: 0,
 			failed: 0,
+		});
+	});
+});
+
+describe("contextSyncTreeErrorMessage", () => {
+	it.each([
+		"REPOSITORY_NOT_FOUND",
+		"REPOSITORY_UNAVAILABLE",
+		"REPOSITORY_CREDENTIALS_EXPIRED",
+	])("reuses configure's copy for %s", (code) => {
+		expect(contextSyncTreeErrorMessage({ data: { code } }, "main")).toEqual(
+			{
+				key: `configureDialog.errors.${code}`,
+				values: { path: "", withPath: "", managedCount: 0 },
+			},
+		);
+	});
+
+	it("names the branch in BRANCH_NOT_FOUND, which the error data does not carry", () => {
+		expect(
+			contextSyncTreeErrorMessage(
+				{ data: { code: "BRANCH_NOT_FOUND" } },
+				"feature/x",
+			),
+		).toEqual({
+			key: "configureDialog.errors.BRANCH_NOT_FOUND",
+			values: { path: "feature/x", withPath: "", managedCount: 0 },
+		});
+	});
+
+	it.each([
+		{ data: { code: "REPOSITORY_UNREACHABLE" } },
+		{ data: { code: "FORBIDDEN" } },
+		new Error("network"),
+		undefined,
+	])("falls back to the tree's own message for %j", (error) => {
+		expect(contextSyncTreeErrorMessage(error, "main")).toEqual({
+			key: "tree.error",
 		});
 	});
 });

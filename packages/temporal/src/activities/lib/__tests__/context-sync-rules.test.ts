@@ -359,6 +359,11 @@ describe("a directly selected file (the basename rule, as paths.ts applies it)",
 		["agents/plan.md", false],
 		["docs/claude.md.bak", false],
 		["docs/README.md", false],
+		// `.fabric` at any depth, in any case (Fizzy #2704).
+		[".fabric/notes.md", true],
+		[".FABRIC/x.md", true],
+		["docs/.Fabric/state.json", true],
+		["docs/.fabricrc", false],
 	])("%j excluded: %s", (repositoryPath, excluded) => {
 		expect(isExcludedDirectlySelectedFile(repositoryPath)).toBe(excluded);
 	});
