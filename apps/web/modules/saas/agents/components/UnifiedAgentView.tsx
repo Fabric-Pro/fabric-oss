@@ -30,7 +30,7 @@ import { FeaturedAgentCard } from "./FeaturedAgentCard";
 import { InstanceAgentCard } from "./InstanceAgentCard";
 import { UnifiedAgentListView } from "./UnifiedAgentListView";
 
-/** Registry ids that the Fabric Loom row already represents. */
+/** Registry ids that the Advisor row already represents. */
 const LOOM_AGENT_IDS = new Set(["fabric-workspace-assistant", "fabric-ai"]);
 
 type ViewMode = "grid" | "list";
@@ -118,7 +118,7 @@ export function UnifiedAgentView() {
 		return (
 			registryData.agents
 				.filter((agent) => agent.scope === "SYSTEM")
-				// The workspace assistant is the Fabric Loom row above the grid,
+				// The workspace assistant is the Advisor row above the grid,
 				// and `fabric-ai` is its compatibility alias; a tile for either
 				// would be a second Fabric with nowhere useful to go.
 				.filter((agent) => !LOOM_AGENT_IDS.has(agent.agentId))
@@ -304,10 +304,10 @@ export function UnifiedAgentView() {
 				</div>
 			</div>
 
-			{/* Fabric Loom, the orchestrator, always first and full width. */}
+			{/* Advisor, the orchestrator, always first and full width. */}
 			<div data-onboarding-target="agents-featured">
 				<FeaturedAgentCard
-					name="Fabric Loom"
+					name="Advisor"
 					description="Hub-and-spoke orchestrator that routes tasks to specialized agents via A2A protocol"
 					href={`${basePath}/fabric-ai`}
 					icon={<FabricLogo className="h-6 w-6" size={24} />}

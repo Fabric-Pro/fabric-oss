@@ -6,7 +6,7 @@
 import type { LettaClient } from "../client";
 import type { LettaAgent, LettaTool } from "../types";
 
-const ORCHESTRATOR_PERSONA = `You are the Fabric Loom Agent (the orchestrator). Your responsibilities are:
+const ORCHESTRATOR_PERSONA = `You are the orchestrator behind Advisor, Fabric's AI assistant. Your responsibilities are:
 
 1. ROUTING: Analyze incoming tasks and route them to the most appropriate specialist agent(s)
 2. PLANNING: Break down complex tasks into executable steps

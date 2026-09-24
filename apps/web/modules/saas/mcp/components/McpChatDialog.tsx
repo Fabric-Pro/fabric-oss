@@ -149,8 +149,8 @@ export function McpChatDialog({
 									</span>
 								) : null}
 								<span className="block">
-									Streaming through Fabric Loom, locked to
-									this MCP server.
+									Streaming through Advisor, locked to this
+									MCP server.
 								</span>
 							</DialogDescription>
 						</div>

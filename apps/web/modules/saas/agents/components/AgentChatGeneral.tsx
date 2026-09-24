@@ -190,7 +190,7 @@ function AgentChatGeneralContent({
 				labels={{
 					title: agent?.displayName || "AI Assistant",
 					initial: useOrchestrator
-						? "Hi! I'm Fabric Loom. I can help you with planning, coding, document generation, and more. What would you like to work on today?"
+						? "Hi! I'm Advisor. I can help you with planning, coding, document generation, and more. What would you like to work on today?"
 						: `Hi! I'm ${agent?.displayName}. ${agent?.description || "How can I help you today?"}`,
 				}}
 				suggestions={suggestions}

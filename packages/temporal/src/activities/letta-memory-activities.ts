@@ -203,8 +203,8 @@ export async function initializeLettaMemory(
 				{
 					label: "persona",
 					description:
-						"Your role and goals as a memory agent for Fabric Loom",
-					value: `You are a memory agent that tracks execution patterns, tool results, and user preferences for Fabric Loom (the orchestrator).
+						"Your role and goals as a memory agent for Advisor's orchestrator",
+					value: `You are a memory agent that tracks execution patterns, tool results, and user preferences for the orchestrator behind Advisor, Fabric's AI assistant.
 
 Your goals:
 1. Cache tool results to avoid redundant API calls
