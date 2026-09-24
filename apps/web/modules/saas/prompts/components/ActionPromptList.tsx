@@ -233,6 +233,11 @@ export function ActionPromptList({
 					useForMe.variables?.promptVersionId ===
 						variant.promptVersionId;
 				const busy = useForMe.isPending || switchTo.isPending;
+				// Up to three buttons share a row (a shadowed org default carries
+				// Use this, Set for org and Clear override). On a phone they wrap
+				// instead of running off the card; from sm up they hold one line.
+				const actionsClass =
+					"flex flex-wrap items-center gap-2 sm:shrink-0";
 				const clearButton = mayClear(variant) && (
 					<Button
 						variant="ghost"
@@ -269,14 +274,14 @@ export function ActionPromptList({
 						</div>
 
 						{variant.isEffective ? (
-							<div className="flex shrink-0 items-center gap-2">
+							<div className={actionsClass}>
 								<Badge className="bg-success/10 text-success">
 									In force
 								</Badge>
 								{clearButton}
 							</div>
 						) : (
-							<div className="flex shrink-0 items-center gap-2">
+							<div className={actionsClass}>
 								{allowSwitching && (
 									<Button
 										variant="outline"

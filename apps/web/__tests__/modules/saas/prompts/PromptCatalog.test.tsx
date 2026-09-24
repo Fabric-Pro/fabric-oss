@@ -349,9 +349,12 @@ describe("PromptCatalog — overrides on actions no longer listed", () => {
 		);
 		wrap(<PromptCatalog />);
 
-		expect(
-			await screen.findByText(/no longer listed/i),
-		).toBeInTheDocument();
+		// A named region, labelled like its sibling groups rather than as an
+		// h2, which the global stylesheet renders larger than them.
+		const section = await screen.findByRole("region", {
+			name: /no longer listed/i,
+		});
+		expect(section.querySelector("h2")).toBeNull();
 		expect(
 			screen.getByText("Feature Clean Spec Generator — Draft (Feature)"),
 		).toBeInTheDocument();
