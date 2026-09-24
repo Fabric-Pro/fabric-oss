@@ -291,10 +291,18 @@ export function PromptCatalog() {
 			})}
 
 			{unlisted.length > 0 && (
-				<section className="space-y-3">
-					<h2 className="font-medium text-foreground text-sm">
+				// Labelled like the feature-type groups above, not as a heading:
+				// the global h2 rule would render it larger than its siblings.
+				<section
+					aria-labelledby="unlisted-overrides-label"
+					className="space-y-3"
+				>
+					<p
+						id="unlisted-overrides-label"
+						className="font-medium text-foreground text-sm"
+					>
 						No longer listed
-					</h2>
+					</p>
 					<p className="text-muted-foreground text-sm">
 						Overrides saved for actions Fabric no longer lists here.
 						They may no longer take effect; clear them to tidy up.
