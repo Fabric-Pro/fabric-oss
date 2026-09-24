@@ -3844,6 +3844,7 @@
 				"heading": "Start Building Your Roadmap",
 				"intro": "Bring in the work you already track, or let Fabric suggest where to begin.",
 				"introWithItems": "Nothing here counts as planned work yet: items in Backlog or Done, and hidden or declined items, are not counted.",
+				"introWithItemsMaturation": "Nothing here counts as planned work yet: items still in To Do, and hidden or declined items, are not counted. Move an item to Discovery to start.",
 				"pull": {
 					"title": "Pull work items",
 					"description": "Bring existing work items into Roadmap from your connected project management system."
@@ -6594,7 +6595,7 @@
 			"resetColumnTitles": "Revert renamed columns back to their default status names.",
 			"swimlaneGroup": "Group kanban cards into swimlanes by priority.",
 			"reviewProposals": "Review backlog proposals queued by the Teams channel monitor. Each proposal can be accepted as a new work item or rejected.",
-			"pendingProposalsBanner": "Review backlog proposals suggested by the Teams channel monitor.",
+			"pendingProposalsBanner": "Review backlog proposals Fabric suggested from monitored channels and your project context.",
 			"storyDownload": "Download this work item as Markdown, PDF, or Word.",
 			"storyOpenDetails": "Open the full story editor for this work item.",
 			"storyCopyLink": "Copy",

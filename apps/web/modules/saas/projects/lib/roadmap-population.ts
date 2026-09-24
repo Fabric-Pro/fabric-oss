@@ -10,21 +10,34 @@
  * project's default status, and items already in a final status. The default
  * and final rules were a product decision — a Roadmap of only Backlog or only
  * Done items still needs building.
+ *
+ * Maturation V2 boards edit the maturation stage, never the status, so every
+ * item there stays in the default status. With V2 on, an item in the default
+ * status still counts once its stage is past the first one ("To Do").
  */
 
-import type { StoryStatus, UserStory } from "./stories/types";
+import {
+	getMaturationStatus,
+	type StoryStatus,
+	type UserStory,
+} from "./stories/types";
 
-type PopulationStory = Pick<UserStory, "draftingStage" | "statusId">;
+type PopulationStory = Pick<
+	UserStory,
+	"draftingStage" | "statusId" | "maturationStatus"
+>;
+
+interface PopulationContext {
+	status: StoryStatus | undefined;
+	maturationV2Enabled: boolean;
+}
 
 interface PopulationRule {
 	id: "declined" | "hidden-archived" | "backlog" | "completed";
 	fr: string;
 	reason: string;
 	/** `status` is undefined when the item's status is not (yet) known. */
-	excludes: (
-		story: PopulationStory,
-		status: StoryStatus | undefined,
-	) => boolean;
+	excludes: (story: PopulationStory, context: PopulationContext) => boolean;
 }
 
 export const ROADMAP_POPULATION_POLICY: readonly PopulationRule[] = [
@@ -43,14 +56,16 @@ export const ROADMAP_POPULATION_POLICY: readonly PopulationRule[] = [
 	{
 		id: "backlog",
 		fr: "FR41",
-		reason: "An item still in the default status has not been planned yet.",
-		excludes: (_story, status) => status?.isDefault === true,
+		reason: "An item still in the default status, and on a Maturation V2 board still in the first stage, has not been planned yet.",
+		excludes: (story, { status, maturationV2Enabled }) =>
+			status?.isDefault === true &&
+			(!maturationV2Enabled || getMaturationStatus(story) === "TO_DO"),
 	},
 	{
 		id: "completed",
 		fr: "FR42",
 		reason: "A finished item is history, not upcoming work.",
-		excludes: (_story, status) => status?.isFinal === true,
+		excludes: (_story, { status }) => status?.isFinal === true,
 	},
 ];
 
@@ -64,12 +79,16 @@ export const ROADMAP_POPULATION_POLICY: readonly PopulationRule[] = [
 export function isRoadmapPopulated(
 	stories: readonly PopulationStory[],
 	statuses: readonly StoryStatus[],
+	maturationV2Enabled: boolean,
 ): boolean {
 	const statusById = new Map(statuses.map((s) => [s.id, s]));
 	return stories.some((story) => {
-		const status = statusById.get(story.statusId);
+		const context = {
+			status: statusById.get(story.statusId),
+			maturationV2Enabled,
+		};
 		return !ROADMAP_POPULATION_POLICY.some((rule) =>
-			rule.excludes(story, status),
+			rule.excludes(story, context),
 		);
 	});
 }

@@ -56,6 +56,7 @@ function renderIt(
 	const props = {
 		entry: entry(),
 		hasItems: false,
+		maturationStages: false,
 		hiddenCount: 0,
 		onShowHidden: vi.fn(),
 		onPull: vi.fn(),
@@ -107,12 +108,29 @@ describe("approved copy (FR2, FR7–FR9, FR33)", () => {
 		expect(copy.introWithItems).not.toMatch(/default or a final/);
 	});
 
+	it("on a Maturation V2 board, names the To Do stage instead of statuses", () => {
+		expect(copy.introWithItemsMaturation).toContain("To Do");
+		expect(copy.introWithItemsMaturation).not.toMatch(/Backlog/);
+	});
+
 	it("never says 'Seed'", () => {
 		expect(JSON.stringify(copy)).not.toMatch(/seed/i);
 	});
 });
 
 describe("RoadmapStartBuilding", () => {
+	it("picks the intro for the board the items move through", () => {
+		renderIt({ hasItems: true });
+		expect(screen.getByText("introWithItems")).toBeInTheDocument();
+	});
+
+	it("uses the stage intro on a Maturation V2 board", () => {
+		renderIt({ hasItems: true, maturationStages: true });
+		expect(
+			screen.getByText("introWithItemsMaturation"),
+		).toBeInTheDocument();
+	});
+
 	it("renders the heading and all three options", () => {
 		renderIt();
 		expect(

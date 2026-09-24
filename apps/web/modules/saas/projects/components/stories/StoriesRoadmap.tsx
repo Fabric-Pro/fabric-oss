@@ -1088,8 +1088,8 @@ export function StoriesRoadmap({ projectId }: Props) {
 		],
 	);
 	const roadmapPopulated = useMemo(
-		() => isRoadmapPopulated(stories, statuses),
-		[stories, statuses],
+		() => isRoadmapPopulated(stories, statuses, maturationV2Enabled),
+		[stories, statuses, maturationV2Enabled],
 	);
 	const roadmapActions = useRoadmapActionItems({
 		projectId,
@@ -2949,7 +2949,6 @@ export function StoriesRoadmap({ projectId }: Props) {
 								{tStories("aiUpdateRoadmap")}
 							</TooltipContent>
 						</Tooltip>
-						<RoadmapActionsMenu items={roadmapActions.items} />
 
 						{/* Scan for duplicates */}
 						<Tooltip>
@@ -3040,6 +3039,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 								{tStories("refreshRoadmap")}
 							</TooltipContent>
 						</Tooltip>
+						<RoadmapActionsMenu items={roadmapActions.items} />
 
 						{/* Bulk sync */}
 						{hasPMIntegration && selectedStoryIds.size > 0 && (
@@ -3256,6 +3256,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 							<RoadmapStartBuilding
 								entry={entryPoints}
 								hasItems={stories.length > 0}
+								maturationStages={maturationV2Enabled}
 								hiddenCount={
 									showClosed ? 0 : closedFeatureCount
 								}

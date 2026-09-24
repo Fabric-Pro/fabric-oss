@@ -96,8 +96,8 @@ export function PendingProposalsBanner({
 				<div className="min-w-0 space-y-1.5">
 					<span className="editorial-label">Pending Review</span>
 					<p className="text-sm text-foreground/85">
-						{count} proposal{count === 1 ? "" : "s"} from monitored
-						Teams channels awaiting your review.
+						{count} proposal{count === 1 ? "" : "s"} awaiting your
+						review.
 					</p>
 				</div>
 				<div className="flex shrink-0 items-center gap-2">

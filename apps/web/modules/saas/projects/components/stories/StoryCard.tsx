@@ -951,7 +951,7 @@ function StoryCardImpl({
 					<div
 						key="source"
 						style={{ order: orderOf("source") }}
-						className="hidden w-28 shrink-0 items-center md:flex"
+						className="hidden w-32 shrink-0 items-center md:flex"
 					>
 						<SourceChip
 							source={story.source}
