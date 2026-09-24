@@ -429,6 +429,19 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 		);
 		// No second write: the failed one is not retried as a backoff.
 		expect(m.subject.writeBack).toHaveBeenCalledTimes(1);
+		// The throw is named by stage and sync before it leaves (Fizzy #2684).
+		expect(m.log.error).toHaveBeenCalledWith(
+			{
+				event: "instructions.sync.check_failed",
+				kind: "instructions",
+				syncId: "sync_1",
+				projectId: "proj_1",
+				organizationId: "org_1",
+				stage: "write_back",
+				errorClass: "Error",
+			},
+			expect.any(String),
+		);
 
 		// The lease expired and a later tick claimed the row again.
 		m.subject.startRun.mockResolvedValue(ALREADY_RUNNING);
@@ -443,6 +456,78 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 			{ ...FENCE, leaseUntil: new Date(LATER_LEASE_ISO) },
 			patchFor({ kind: "reschedule", delayMs: 15 * MIN }),
 		);
+	});
+
+	// Every stage whose throw escapes to the wrapper (Fizzy #2684). The
+	// write-back stage is pinned by the crash test above; the token and
+	// start stages swallow their own throws and are pinned separately below.
+	it.each([
+		[
+			"lease",
+			() =>
+				m.subject.leaseHeld.mockRejectedValueOnce(new Error("db gone")),
+		],
+		[
+			"permission",
+			() =>
+				m.subject.checkPermission.mockRejectedValueOnce(
+					new Error("db gone"),
+				),
+		],
+		[
+			"remote_head",
+			() =>
+				m.getProjectRepoIntegration.mockRejectedValueOnce(
+					new Error("db gone"),
+				),
+		],
+		[
+			"record_failure",
+			() => {
+				m.subject.checkPermission.mockResolvedValueOnce(false);
+				m.db.$transaction.mockRejectedValueOnce(new Error("db gone"));
+			},
+		],
+	] as const)(
+		"a throw that escapes the %s stage is logged with that stage and the error's class, never its message (Fizzy #2684)",
+		async (stage, arrange) => {
+			arrange();
+			await expect(checkInstructionSyncRemoteHead(CHECK)).rejects.toThrow(
+				"db gone",
+			);
+			expect(m.log.error).toHaveBeenCalledTimes(1);
+			const [fields] = m.log.error.mock.calls[0] as [
+				Record<string, unknown>,
+			];
+			expect(fields).toMatchObject({
+				event: "instructions.sync.check_failed",
+				kind: "instructions",
+				syncId: "sync_1",
+				projectId: "proj_1",
+				organizationId: "org_1",
+				stage,
+				errorClass: "Error",
+			});
+			expect(JSON.stringify(fields)).not.toContain("db gone");
+		},
+	);
+
+	it("a token failure is still a transient outcome, not a logged throw (Fizzy #2684)", async () => {
+		m.resolveFreshRepoToken.mockRejectedValueOnce(
+			new TypeError("fetch failed"),
+		);
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "transient",
+		});
+		expect(m.log.error).not.toHaveBeenCalled();
+	});
+
+	it("a failed start is still left to the lease as stale, not a logged throw (Decision 51, Fizzy #2684)", async () => {
+		m.subject.startRun.mockRejectedValueOnce(new Error("start failed"));
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "stale",
+		});
+		expect(m.log.error).not.toHaveBeenCalled();
 	});
 
 	it("leaves a start whose outcome is unknown to the lease: stale, no retry, no backoff, and no token logged (Decision 51)", async () => {
