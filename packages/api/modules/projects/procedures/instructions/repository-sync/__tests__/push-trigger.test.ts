@@ -46,6 +46,7 @@ vi.mock("@repo/database", () => ({ db: m.db }));
 import {
 	startInstructionSyncsForPush,
 	WEBHOOK_SYNC_START_BUDGET_MS,
+	WEBHOOK_SYNC_START_CAP,
 } from "../push-trigger";
 
 const { instructions, fake } = m.subjects;
@@ -149,6 +150,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 1,
 			failed: 0,
 			deferred: 0,
+			capped: 0,
 		});
 		expect(instructions.findByRepository).toHaveBeenCalledWith({
 			repositoryUrl: REPO_URL,
@@ -183,6 +185,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 0,
 			failed: 0,
 			deferred: 0,
+			capped: 0,
 		});
 		expect(instructions.findByRepository).not.toHaveBeenCalled();
 		expect(instructions.startRun).not.toHaveBeenCalled();
@@ -201,6 +204,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 0,
 			failed: 0,
 			deferred: 0,
+			capped: 0,
 		});
 		expect(instructions.startRun).not.toHaveBeenCalled();
 	});
@@ -216,6 +220,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 0,
 			failed: 0,
 			deferred: 0,
+			capped: 0,
 		});
 		expect(instructions.startRun).not.toHaveBeenCalled();
 	});
@@ -226,6 +231,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 0,
 			failed: 0,
 			deferred: 0,
+			capped: 0,
 		});
 	});
 
@@ -235,6 +241,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 0,
 			failed: 0,
 			deferred: 1,
+			capped: 0,
 		});
 		// One start: `already_running` is settled against the receipt, never
 		// retried.
@@ -280,6 +287,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 0,
 			failed: 0,
 			deferred: 1,
+			capped: 0,
 		});
 		expect(m.log.info).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -300,6 +308,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 0,
 			failed: 0,
 			deferred: 0,
+			capped: 0,
 		});
 		expect(m.log.info).not.toHaveBeenCalled();
 	});
@@ -316,6 +325,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 					started: 0,
 					failed: 0,
 					deferred: 0,
+					capped: 0,
 				},
 			);
 			expect(instructions.startRun).toHaveBeenCalledTimes(1);
@@ -337,6 +347,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 0,
 			failed: 0,
 			deferred: 0,
+			capped: 0,
 		});
 		expect(instructions.settlePendingHead).not.toHaveBeenCalled();
 		expect(m.log.info).not.toHaveBeenCalled();
@@ -351,6 +362,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 0,
 			failed: 1,
 			deferred: 0,
+			capped: 0,
 		});
 		expect(instructions.recordPendingHead).toHaveBeenCalledTimes(1);
 		expect(m.log.warn).toHaveBeenCalledWith(
@@ -374,6 +386,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 0,
 			failed: 1,
 			deferred: 0,
+			capped: 0,
 		});
 		expect(instructions.startRun).toHaveBeenCalledTimes(1);
 		expect(instructions.settlePendingHead).not.toHaveBeenCalled();
@@ -408,11 +421,51 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 2,
 			failed: 0,
 			deferred: 0,
+			capped: 0,
 		});
 		expect(instructions.startRun).toHaveBeenCalledWith(
 			SECOND,
 			"WEBHOOK",
 			startOptions(SECOND),
+		);
+	});
+
+	it("starts at most WEBHOOK_SYNC_START_CAP runs per delivery across every kind, leaves the rest to the poll and logs how many (Fizzy #2700)", async () => {
+		m.kinds.push("fake");
+		const many = Array.from(
+			{ length: WEBHOOK_SYNC_START_CAP - 1 },
+			(_, i) => syncRow({ id: `sync_${i}`, projectId: `proj_${i}` }),
+		);
+		instructions.findByRepository.mockResolvedValue(many);
+		fake.findByRepository.mockResolvedValue([
+			syncRow({ id: "fake_1", projectId: "fake_p1" }),
+			syncRow({ id: "fake_2", projectId: "fake_p2" }),
+			syncRow({ id: "fake_3", projectId: "fake_p3" }),
+		]);
+		expect(await startInstructionSyncsForPush(push())).toEqual({
+			started: WEBHOOK_SYNC_START_CAP,
+			failed: 0,
+			deferred: 0,
+			capped: 2,
+		});
+		expect(instructions.startRun).toHaveBeenCalledTimes(
+			WEBHOOK_SYNC_START_CAP - 1,
+		);
+		// The shared slots ran out one row into the second kind.
+		expect(fake.startRun).toHaveBeenCalledTimes(1);
+		expect(fake.startRun).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "fake_1" }),
+			"WEBHOOK",
+			expect.anything(),
+		);
+		expect(m.log.warn).toHaveBeenCalledWith(
+			{
+				event: "instructions.sync.webhook_fanout_capped",
+				kind: "fake",
+				cap: WEBHOOK_SYNC_START_CAP,
+				capped: 2,
+			},
+			expect.any(String),
 		);
 	});
 
@@ -424,6 +477,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 2,
 			failed: 0,
 			deferred: 0,
+			capped: 0,
 		});
 		expect(fake.findByRepository).toHaveBeenCalledWith({
 			repositoryUrl: REPO_URL,
@@ -454,6 +508,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 1,
 			failed: 1,
 			deferred: 0,
+			capped: 0,
 		});
 		expect(fake.startRun).toHaveBeenCalledTimes(1);
 		expect(m.log.warn).toHaveBeenCalledWith(
@@ -483,6 +538,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 			started: 1,
 			failed: 1,
 			deferred: 0,
+			capped: 0,
 		});
 		expect(m.log.warn).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -518,6 +574,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 				started: 1,
 				failed: 0,
 				deferred: 0,
+				capped: 0,
 			});
 			expect(m.log.warn).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -543,6 +600,7 @@ describe("startInstructionSyncsForPush (spec §6.2)", () => {
 					started: 2,
 					failed: 0,
 					deferred: 0,
+					capped: 0,
 				},
 			);
 			expect(vi.getTimerCount()).toBe(0);
