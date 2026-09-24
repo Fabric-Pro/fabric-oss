@@ -23,6 +23,20 @@ export type IgnoreMatch = { rule: string; layer: IgnoreLayer };
  * instructions, and it stays root-anchored like the hook paths because it
  * names one folder at the top of a tree.
  *
+ * `.fabric/` is the CLI's own state: `fabric instructions sync` keeps its
+ * ledger at `.fabric/instructions.lock` inside the checkout, and the CLI
+ * refuses a published bundle that names anything under `.fabric` (its
+ * reserved root, `packages/cli/src/lib/instructions/paths.ts`). A repository
+ * that commits the lock, which any team syncing into the repository they
+ * publish from will do, must therefore never have it published, or every
+ * later `sync` refuses the whole bundle (Fizzy #2704). Root-anchored, like
+ * `.guild/`.
+ *
+ * The bare `.fabric` and `.git` entries cover a root FILE of that name: the
+ * CLI reserves the first path segment, so a file called `.git` (what a git
+ * worktree or submodule checkout has at its root) or `.fabric` is refused
+ * there too, and `x/**` never matches a path with no slash.
+ *
  * `**\/CLAUDE.local.md` is the odd one out among the file-specific rules: it
  * is deliberately NOT root-anchored, unlike the two hook files and
  * `.guild/`. Claude Code reads `CLAUDE.local.md` as machine-personal notes in
@@ -32,8 +46,11 @@ export type IgnoreMatch = { rule: string; layer: IgnoreLayer };
  */
 export const ALWAYS_IGNORE_GLOBS: readonly string[] = [
 	"**/.git/**",
+	".git",
 	".claude/settings.local.json",
 	".codex/hooks.json",
+	".fabric",
+	".fabric/**",
 	".guild/**",
 	"**/CLAUDE.local.md",
 ];

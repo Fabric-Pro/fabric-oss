@@ -495,12 +495,14 @@ keep them:
   the plan was made. A file edited while the bundle was downloading is
   reported as *kept, modified locally* instead of removed. `.git/**` and
   `.fabric/**` are refused outright, from the manifest and from the lock
-  alike. The root-level hook files `init` owns —
-  `.claude/settings.local.json` and `.codex/hooks.json` — are additionally
-  always excluded from uploads, even when project ignore settings or
-  `.fabricignore` otherwise exclude nothing. The CLI also refuses them from a
-  manifest or lock; the rest of `.claude/` and `.codex/`, including nested
-  same-name paths, is ordinary instruction content.
+  alike. The server never publishes `.fabric/` either: it is always excluded
+  from folder uploads and repository syncs, even when project ignore settings
+  or `.fabricignore` otherwise exclude nothing, so a repository that commits
+  its `.fabric/instructions.lock` still publishes a bundle the CLI accepts.
+  The root-level hook files `init` owns — `.claude/settings.local.json` and
+  `.codex/hooks.json` — are always excluded the same way. The CLI also
+  refuses them from a manifest or lock; the rest of `.claude/` and `.codex/`,
+  including nested same-name paths, is ordinary instruction content.
 - **Only ordinary files are touched, and every read is guarded as well as
   every write.** Manifest paths, delete paths and the lock's own ledger paths
   all go through the same per-segment walk: nothing resolving outside the

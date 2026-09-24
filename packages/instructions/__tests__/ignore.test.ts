@@ -23,6 +23,9 @@ describe("compileIgnore", () => {
 		["deep/nested/file.jsonl", "default"],
 		[".claude/settings.local.json", "always"],
 		[".codex/hooks.json", "always"],
+		[".fabric/instructions.lock", "always"],
+		[".fabric", "always"],
+		[".git", "always"],
 		["areas/.DS_Store", "default"],
 		["CLAUDE.local.md", "always"],
 	] as const)("%s is ignored by the %s layer", (path, layer) => {
@@ -243,6 +246,51 @@ describe("CLAUDE.local.md is machine-personal, excluded at any depth", () => {
 			rule: "**/CLAUDE.local.md",
 			layer: "always",
 		});
+	});
+});
+
+describe(".fabric/ is the CLI's own state, never instructions (Fizzy #2704)", () => {
+	// The CLI reserves the `.fabric` root and refuses a published bundle that
+	// names anything under it, so a repository that commits its
+	// `.fabric/instructions.lock` must never see it published.
+	it.each([
+		".fabric/instructions.lock",
+		".fabric/cache/anything.json",
+		".Fabric/instructions.lock",
+	])(
+		"%s is excluded by the always layer under every configuration",
+		(path) => {
+			for (const input of [
+				{ fabricIgnoreText: null, projectGlobs: null },
+				{ fabricIgnoreText: null, projectGlobs: [] as string[] },
+				{ fabricIgnoreText: "docs/\n", projectGlobs: ["dist/**"] },
+			]) {
+				expect(
+					buildIgnoreMatcher(resolveIgnoreGlobs(input))(path),
+				).toEqual({
+					rule: ".fabric/**",
+					layer: "always",
+				});
+			}
+		},
+	);
+
+	it("stays root-anchored, like .guild/: a nested .fabric is ordinary content", () => {
+		const m = buildIgnoreMatcher(resolveIgnoreGlobs({}));
+		expect(m("tools/.fabric/notes.md")).toBeNull();
+	});
+
+	// The CLI reserves the first path SEGMENT, so a root file named `.fabric`
+	// or `.git` (a worktree or submodule checkout has a `.git` file) is refused
+	// there too; `x/**` alone never matches a path with no slash.
+	it.each([
+		[".fabric", ".fabric"],
+		[".Fabric", ".fabric"],
+		[".git", ".git"],
+		[".GIT", ".git"],
+	])("a root file named %s is excluded by the always layer", (path, rule) => {
+		const m = buildIgnoreMatcher(resolveIgnoreGlobs({}));
+		expect(m(path)).toEqual({ rule, layer: "always" });
 	});
 });
 
