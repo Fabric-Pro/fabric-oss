@@ -300,7 +300,7 @@ export type ProjectContextPendingVectorCleanupScalarFieldEnum = z.infer<typeof P
 
 // File: ProjectContextRepositorySyncScalarFieldEnum.schema.ts
 
-export const ProjectContextRepositorySyncScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'repositoryIntegrationId', 'ref', 'paths', 'generation', 'activeRunKey', 'lastAppliedCommitSha', 'lastAppliedRunId', 'createdAt', 'updatedAt'])
+export const ProjectContextRepositorySyncScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'repositoryIntegrationId', 'ref', 'paths', 'generation', 'activeRunKey', 'lastAppliedCommitSha', 'lastAppliedRunId', 'automatic', 'nextCheckAt', 'failureCount', 'automaticPausedReason', 'automaticPausedAt', 'suppressedCommitSha', 'suppressedGeneration', 'lastEvaluatedCommitSha', 'lastEvaluatedGeneration', 'pendingCommitSha', 'createdAt', 'updatedAt'])
 
 export type ProjectContextRepositorySyncScalarFieldEnum = z.infer<typeof ProjectContextRepositorySyncScalarFieldEnumSchema>;
 
@@ -2236,9 +2236,15 @@ export const ProjectReadinessItemStateValueSchema = z.enum(['SNOOZED', 'NOT_APPL
 
 export type ProjectReadinessItemStateValue = z.infer<typeof ProjectReadinessItemStateValueSchema>;
 
+// File: ProjectContextSyncPause.schema.ts
+
+export const ProjectContextSyncPauseSchema = z.enum(['PERMISSION_REVOKED', 'REF_MISSING'])
+
+export type ProjectContextSyncPause = z.infer<typeof ProjectContextSyncPauseSchema>;
+
 // File: ProjectContextSyncTrigger.schema.ts
 
-export const ProjectContextSyncTriggerSchema = z.enum(['MANUAL'])
+export const ProjectContextSyncTriggerSchema = z.enum(['MANUAL', 'POLL', 'WEBHOOK'])
 
 export type ProjectContextSyncTrigger = z.infer<typeof ProjectContextSyncTriggerSchema>;
 
@@ -4666,6 +4672,16 @@ export const ProjectContextRepositorySyncSchema = z.object({
   activeRunKey: z.string().nullish(),
   lastAppliedCommitSha: z.string().nullish(),
   lastAppliedRunId: z.string().nullish(),
+  automatic: z.boolean(),
+  nextCheckAt: z.date().nullish(),
+  failureCount: z.number().int(),
+  automaticPausedReason: ProjectContextSyncPauseSchema.nullish(),
+  automaticPausedAt: z.date().nullish(),
+  suppressedCommitSha: z.string().nullish(),
+  suppressedGeneration: z.number().int().nullish(),
+  lastEvaluatedCommitSha: z.string().nullish(),
+  lastEvaluatedGeneration: z.number().int().nullish(),
+  pendingCommitSha: z.string().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });

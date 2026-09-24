@@ -306,14 +306,15 @@ export const databaseMock = {
 
 	listPruneCandidates: vi.fn(
 		async (
-			projectId: string,
+			scope: { projectId: string; organizationId: string },
 			syncId: string,
 			page: { afterKey?: string | null; limit: number },
 		) =>
 			committed()
 				.context.filter(
 					(c) =>
-						c.projectId === projectId &&
+						c.projectId === scope.projectId &&
+						c.organizationId === scope.organizationId &&
 						c.repositorySyncId === syncId &&
 						typeof c.sourcePath === "string" &&
 						(page.afterKey == null ||
@@ -426,14 +427,15 @@ export const databaseMock = {
 
 	listContextRepositorySyncAwaitingIndex: vi.fn(
 		async (
-			projectId: string,
+			scope: { projectId: string; organizationId: string },
 			syncId: string,
 			page: { afterKey?: string | null; limit: number },
 		) =>
 			committed()
 				.context.filter(
 					(c) =>
-						c.projectId === projectId &&
+						c.projectId === scope.projectId &&
+						c.organizationId === scope.organizationId &&
 						c.repositorySyncId === syncId &&
 						c.embeddedAt === null &&
 						typeof c.sourcePath === "string" &&

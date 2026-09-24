@@ -1,10 +1,12 @@
 /**
- * A stateful stand-in for the tables the instructions subject's store
- * writes (Decision 54): `project_instruction_repository_sync`, its run
- * table, and the audit rows `recordAuditTx` would add. It is not a SQL
- * engine. It evaluates exactly the statements the store sends, with real
+ * A stateful stand-in for the tables a repository-sync subject's store
+ * writes (Decision 54): the subject's configuration table, its run table,
+ * and the audit rows `recordAuditTx` would add. It is not a SQL engine. It
+ * evaluates exactly the statements the store sends, with real
  * conditional-update semantics, and throws on anything else, so a statement
- * it cannot evaluate fails the test instead of passing silently.
+ * it cannot evaluate fails the test instead of passing silently. The
+ * statements a store sends to a table other than its own are among the ones
+ * it throws on.
  *
  * - `root` stands for `db`. `$transaction` hands its callback a DIFFERENT
  *   client. While a transaction is open a call on `root` throws, and a
@@ -18,8 +20,11 @@
  * - `now()` is the database clock that `clock_timestamp()` reads. Only
  *   `advance` and `reset` move it; nothing here reads the host clock.
  *
- * One shared instance, `instructionSyncRowStore`, so a `vi.mock` factory can
- * import it and hand out `root` as `db`. Call `reset()` in `beforeEach`.
+ * One shared instance per subject, `instructionSyncRowStore` and
+ * `contextSyncRowStore` (Fizzy #2673), so a `vi.mock` factory can import it
+ * and hand out `root` as `db`. Call `reset()` in `beforeEach`. The Living
+ * Memory store also answers the two reads its failure receipt makes: the
+ * configuration's paths and the integration's name.
  */
 import type { Prisma } from "../../prisma/client";
 
@@ -46,6 +51,8 @@ type SyncRow = {
 	updatedAt: Date;
 	/** The row's integration's status, which the claim's join reads. */
 	integrationStatus: "ACTIVE" | "TOKEN_EXPIRED";
+	/** Living Memory only: the selected paths a failure receipt freezes. */
+	paths: string[];
 };
 
 type RunRow = { id: string } & Record<string, unknown>;
@@ -59,7 +66,6 @@ type RowStoreRoot = Prisma.TransactionClient & {
 };
 
 const START = new Date("2026-09-23T12:00:00.000Z");
-const TABLE = '"project_instruction_repository_sync"';
 /** Only the claim carries this; the store models it from its parameters. */
 const CLAIM_MARK = "FOR UPDATE OF s2 SKIP LOCKED";
 /**
@@ -91,6 +97,7 @@ const ROW_DEFAULTS: Omit<SyncRow, "id" | "nextCheckAt" | "updatedAt"> = {
 	suppressedGeneration: null,
 	pendingCommitSha: null,
 	integrationStatus: "ACTIVE",
+	paths: ["docs"],
 };
 
 function squash(text: string): string {
@@ -133,13 +140,36 @@ function copyRow(row: SyncRow): SyncRow {
 
 /** A column the fence or a `SET` names; anything else is a statement the store does not know. */
 function column(row: SyncRow, name: string | undefined): keyof SyncRow {
-	if (name === undefined || !(name in row) || name === "integrationStatus") {
+	if (
+		name === undefined ||
+		!(name in row) ||
+		name === "integrationStatus" ||
+		name === "paths"
+	) {
 		throw new Error(`the row store has no column "${name}"`);
 	}
 	return name as keyof SyncRow;
 }
 
-function createInstructionSyncRowStore() {
+type RowStoreOptions = {
+	/** The configuration table, quoted as the SQL names it. */
+	table: string;
+	/** The Postgres enum the fenced pause casts to. */
+	pauseEnum: string;
+	/** The run table's Prisma delegate. */
+	runDelegate: string;
+	/** The configuration table's Prisma delegate. */
+	syncDelegate: string;
+	/**
+	 * Living Memory only: the two reads its failure receipt makes, the
+	 * configuration's paths (the sync delegate's `findFirst`) and the
+	 * integration's name.
+	 */
+	failureReceiptReads?: boolean;
+};
+
+function createRepositorySyncRowStore(options: RowStoreOptions) {
+	const TABLE = options.table;
 	let clock = START.getTime();
 	let rows = new Map<string, SyncRow>();
 	let runs = new Map<string, RunRow>();
@@ -198,8 +228,13 @@ function createInstructionSyncRowStore() {
 		values: readonly unknown[],
 	): void {
 		const target = row as Record<string, unknown>;
-		const param = /^"(\w+)" = \$(\d+)(?:::"\w+")?$/.exec(assignment);
+		const param = /^"(\w+)" = \$(\d+)(?:::"(\w+)")?$/.exec(assignment);
 		if (param) {
+			if (param[3] !== undefined && param[3] !== options.pauseEnum) {
+				throw new Error(
+					`the row store's pause is "${options.pauseEnum}", not "${param[3]}"`,
+				);
+			}
 			const value = values[Number(param[2]) - 1];
 			target[column(row, param[1])] =
 				value instanceof Date ? new Date(value) : value;
@@ -219,10 +254,17 @@ function createInstructionSyncRowStore() {
 	/**
 	 * Task 2's claim, from its two parameters, the lease's length and the
 	 * limit. Due and lease both read this store's clock, as
-	 * `clock_timestamp()` does (Fizzy #2683); no worker date is involved.
+	 * `clock_timestamp()` does (Fizzy #2683); no worker date is involved. A
+	 * claim of another subject's table throws, like any other statement to
+	 * it.
 	 */
 	function claim(text: string, values: readonly unknown[]): unknown[] {
-		if (!text.includes(CLAIM_LEASE) || !text.includes(CLAIM_DUE)) {
+		if (
+			!text.startsWith(`UPDATE ${TABLE} AS s `) ||
+			!text.includes(`FROM ${TABLE} AS s2 `) ||
+			!text.includes(CLAIM_LEASE) ||
+			!text.includes(CLAIM_DUE)
+		) {
 			throw new Error(
 				`the row store cannot evaluate this claim: ${text}`,
 			);
@@ -419,7 +461,7 @@ function createInstructionSyncRowStore() {
 		usable: () => void,
 		inTransaction: boolean,
 	): Prisma.TransactionClient {
-		const api = {
+		const api: Record<string, unknown> = {
 			$queryRaw: async (...args: unknown[]) => {
 				usable();
 				return query(statementOf(args), inTransaction);
@@ -428,16 +470,7 @@ function createInstructionSyncRowStore() {
 				usable();
 				return execute(statementOf(args));
 			},
-			projectInstructionRepositorySync: {
-				updateMany: async (input: {
-					where: Record<string, unknown>;
-					data: Record<string, unknown>;
-				}) => {
-					usable();
-					return updateMany(input);
-				},
-			},
-			projectInstructionRepositorySyncRun: {
+			[options.runDelegate]: {
 				findFirst: async (input: {
 					where: Record<string, unknown>;
 					select: Record<string, true>;
@@ -464,7 +497,48 @@ function createInstructionSyncRowStore() {
 					return { count };
 				},
 			},
+			[options.syncDelegate]: {
+				updateMany: async (input: {
+					where: Record<string, unknown>;
+					data: Record<string, unknown>;
+				}) => {
+					usable();
+					return updateMany(input);
+				},
+			},
 		};
+		if (options.failureReceiptReads === true) {
+			const sync = api[options.syncDelegate] as Record<string, unknown>;
+			sync.findFirst = async (input: {
+				where: Record<string, unknown>;
+				select: Record<string, unknown>;
+			}) => {
+				usable();
+				if (
+					JSON.stringify(input.select) !==
+					JSON.stringify({ paths: true })
+				) {
+					throw new Error("the row store reads paths only");
+				}
+				const row = [...rows.values()].find((candidate) =>
+					Object.entries(input.where).every(
+						([key, value]) =>
+							(candidate as Record<string, unknown>)[key] ===
+							value,
+					),
+				);
+				return row ? { paths: [...row.paths] } : null;
+			};
+			api.projectRepositoryIntegration = {
+				findFirst: async () => {
+					usable();
+					return {
+						repositoryOwner: "example-org",
+						repositoryName: "handbook",
+					};
+				},
+			};
+		}
 		return api as unknown as Prisma.TransactionClient;
 	}
 
@@ -581,4 +655,17 @@ function createInstructionSyncRowStore() {
 	};
 }
 
-export const instructionSyncRowStore = createInstructionSyncRowStore();
+export const instructionSyncRowStore = createRepositorySyncRowStore({
+	table: '"project_instruction_repository_sync"',
+	pauseEnum: "ProjectInstructionSyncPause",
+	runDelegate: "projectInstructionRepositorySyncRun",
+	syncDelegate: "projectInstructionRepositorySync",
+});
+
+export const contextSyncRowStore = createRepositorySyncRowStore({
+	table: '"project_context_repository_sync"',
+	pauseEnum: "ProjectContextSyncPause",
+	runDelegate: "projectContextRepositorySyncRun",
+	syncDelegate: "projectContextRepositorySync",
+	failureReceiptReads: true,
+});

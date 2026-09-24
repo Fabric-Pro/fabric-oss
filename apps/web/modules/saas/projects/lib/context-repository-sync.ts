@@ -81,11 +81,20 @@ export type ContextSyncIntegration = {
 	status: string;
 };
 
+/** Why the poll and the push webhook stopped starting runs (§11.1). */
+export type ContextSyncPauseReason = "PERMISSION_REVOKED" | "REF_MISSING";
+
 export type ContextSyncConfiguration = {
 	syncId: string;
 	repositoryIntegrationId: string;
 	ref: string;
 	paths: string[];
+	/** The shared poll and the GitHub push webhook start runs (§11.1). */
+	automatic: boolean;
+	automaticPausedReason: ContextSyncPauseReason | null;
+	automaticPausedAt: string | Date | null;
+	nextCheckAt: string | Date | null;
+	failureCount: number;
 	lastAppliedCommitSha: string | null;
 	configuredByName: string | null;
 	createdAt: string | Date;
@@ -143,6 +152,72 @@ export function offersSyncNow(
 	state: Pick<ContextSyncState, "canConfigure" | "configured">,
 ): boolean {
 	return state.canConfigure && state.configured !== null;
+}
+
+// ── Automatic sync (§11.1, Fizzy #2673) ────────────────────────────────────
+
+/**
+ * The pause to show, or `null`. A pause left on a configuration whose
+ * automatic sync is off is dormant — nothing is waiting to resume, so the
+ * status says nothing about it (the coding-instructions sibling's rule,
+ * `RepositorySyncStatus`).
+ */
+export function contextSyncPausedReason(
+	configured: Pick<
+		ContextSyncConfiguration,
+		"automatic" | "automaticPausedReason"
+	> | null,
+): ContextSyncPauseReason | null {
+	return configured?.automatic && configured.automaticPausedReason
+		? configured.automaticPausedReason
+		: null;
+}
+
+type ContextSyncTrigger = "MANUAL" | "POLL" | "WEBHOOK";
+
+/**
+ * `projects.contexts.livingMemory.repositorySync.triggers.<TRIGGER>`. The
+ * switch is exhaustive over `ContextSyncTrigger`; a value the server adds
+ * before this client knows it reads as the generic label.
+ */
+export function contextSyncTriggerLabelKey(
+	trigger: string,
+): "triggers.MANUAL" | "triggers.POLL" | "triggers.WEBHOOK" | "triggers.OTHER" {
+	const known = trigger as ContextSyncTrigger;
+	switch (known) {
+		case "MANUAL":
+			return "triggers.MANUAL";
+		case "POLL":
+			return "triggers.POLL";
+		case "WEBHOOK":
+			return "triggers.WEBHOOK";
+		default:
+			return unlabelledContextSyncTrigger(known);
+	}
+}
+
+/** Compile-time exhaustiveness for `contextSyncTriggerLabelKey`. */
+function unlabelledContextSyncTrigger(_trigger: never): "triggers.OTHER" {
+	return "triggers.OTHER";
+}
+
+/**
+ * The configure dialog's `automatic` field. A first configure always sends
+ * the checkbox (the server would otherwise store off). Changing a
+ * configuration sends it only once the member touched the checkbox: omitted,
+ * the server keeps the stored value, so saving a branch or paths change
+ * cannot undo a toggle made elsewhere since the dialog opened.
+ */
+export function contextSyncAutomaticInput({
+	current,
+	touched,
+	automatic,
+}: {
+	current: ContextSyncConfiguration | null;
+	touched: boolean;
+	automatic: boolean;
+}): { automatic?: boolean } {
+	return current === null || touched ? { automatic } : {};
 }
 
 export function shortCommit(sha: string | null | undefined): string | null {

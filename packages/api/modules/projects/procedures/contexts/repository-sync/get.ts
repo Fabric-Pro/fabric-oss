@@ -96,8 +96,8 @@ export const getContextRepositorySyncProcedure = tenantProtectedProcedure
 			sync.lastAppliedRunId
 				? getContextRepositorySyncRun(sync.lastAppliedRunId, scope)
 				: Promise.resolve<ContextRepositorySyncRunReceipt | null>(null),
-			countManagedContexts(db, input.projectId, sync.id),
-			countAwaitingIndexContexts(input.projectId, sync.id),
+			countManagedContexts(db, scope, sync.id),
+			countAwaitingIndexContexts(scope, sync.id),
 		]);
 		// Live from the queue: the records the run's prune stamped with its
 		// run key that no drain has cleared yet (see the query's doc comment).

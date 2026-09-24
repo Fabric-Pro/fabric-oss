@@ -9,11 +9,15 @@
  * key from this workflow's run id. An execution that is TERMINATED never
  * reaches `finally`; the next "Sync now" reconciles its receipt (§5.6).
  *
- * Started by the API (`packages/api/modules/projects/lib/context-repository-sync-workflow.ts`)
- * by name on `project-documents`, id `context-repository-sync-<projectId>`
+ * Started by the API (`packages/api/modules/projects/lib/context-repository-sync-workflow.ts`,
+ * MANUAL) and by the shared repository-sync poll and push webhook
+ * (`activities/lib/context-sync-start.ts`, POLL / WEBHOOK, §11.1) by name
+ * on `project-documents`, id `context-repository-sync-<projectId>`
  * (`contextRepositorySyncWorkflowId` in `@repo/instructions/workflow-ids`),
  * with `workflowIdConflictPolicy: "FAIL"`. Its activities run on
- * `fabric-worker` (`CONTEXT_SYNC_ACTIVITY_TASK_QUEUE`).
+ * `fabric-worker` (`CONTEXT_SYNC_ACTIVITY_TASK_QUEUE`). An automatic run
+ * that `begin` skips (automatic sync off or paused) inserts no receipt, so
+ * `record` finds nothing to complete.
  *
  * Workflow sandbox: imports only pure modules (`../lib/context-sync-types`,
  * `../task-queues`), never a package barrel. No I/O, clock, randomness or

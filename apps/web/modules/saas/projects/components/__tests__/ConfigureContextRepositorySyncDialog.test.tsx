@@ -10,6 +10,10 @@
  *  - a server error code renders inline, and `configure`'s
  *    `REPOSITORY_CHANGE_REQUIRES_DISCONNECT` names the repository change it
  *    refuses;
+ *  - "Keep in sync automatically" (design §11.1, Fizzy #2673) is ticked for
+ *    a first configure and sent, is seeded from the stored value when
+ *    changing one, and is sent then only when the member touched it —
+ *    omitted, the server keeps the stored value.
  *  - the tree browser (Fizzy #2674) lists the branch through `listTree`,
  *    writes to the same chips as the typed input, disables what the chip
  *    validation would refuse, searches, and degrades to typed paths.
@@ -370,6 +374,7 @@ describe("ConfigureContextRepositorySyncDialog — submit", () => {
 				repositoryIntegrationId: "int_1",
 				ref: "main",
 				paths: ["docs"],
+				automatic: true,
 			}),
 		);
 		await waitFor(() =>
@@ -431,6 +436,108 @@ describe("ConfigureContextRepositorySyncDialog — submit", () => {
 			),
 		).toBeInTheDocument();
 		expect(syncNowMock).not.toHaveBeenCalled();
+	});
+});
+
+const CURRENT = {
+	syncId: "sync_1",
+	repositoryIntegrationId: "int_1",
+	ref: "release",
+	paths: ["docs"],
+	automatic: false,
+	automaticPausedReason: null,
+	automaticPausedAt: null,
+	nextCheckAt: "2026-09-23T10:00:00.000Z",
+	failureCount: 0,
+	lastAppliedCommitSha: null,
+	configuredByName: "Example Member",
+	createdAt: "2026-09-23T09:00:00.000Z",
+	updatedAt: "2026-09-23T09:00:00.000Z",
+	integration: {
+		provider: "GITHUB",
+		repositoryOwner: "example-org",
+		repositoryName: "memory",
+		status: "ACTIVE",
+	},
+};
+
+function automaticCheckbox() {
+	return screen.getByRole("checkbox", {
+		name: `${NS}.configureDialog.automaticLabel`,
+	});
+}
+
+describe("ConfigureContextRepositorySyncDialog — Keep in sync automatically", () => {
+	beforeEach(() => {
+		configureMock.mockReset();
+		syncNowMock.mockReset();
+		configureMock.mockResolvedValue({ syncId: "sync_1", generation: 2 });
+		syncNowMock.mockResolvedValue({ started: true });
+	});
+
+	it("is ticked for a first configure and says whom automatic syncs run as", () => {
+		renderDialog();
+		expect(automaticCheckbox()).toBeChecked();
+		expect(automaticCheckbox()).toHaveAttribute(
+			"aria-describedby",
+			"context-sync-automatic-hint",
+		);
+		expect(
+			screen.getByText(`${NS}.configureDialog.automaticHint`),
+		).toHaveAttribute("id", "context-sync-automatic-hint");
+	});
+
+	it("sends automatic: false when the member unticks it on a first configure", async () => {
+		const user = userEvent.setup();
+		const { onOpenChange } = renderDialog();
+		await addPath(user, "docs");
+		await user.click(automaticCheckbox());
+		await user.click(screen.getByText(`${NS}.configureDialog.submit`));
+		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+		expect(configureMock).toHaveBeenCalledWith(
+			expect.objectContaining({ automatic: false }),
+		);
+	});
+
+	it("seeds from the stored value when changing a configuration", () => {
+		renderDialog({ current: CURRENT });
+		expect(automaticCheckbox()).not.toBeChecked();
+	});
+
+	it("seeds a stored on as ticked", () => {
+		renderDialog({ current: { ...CURRENT, automatic: true } });
+		expect(automaticCheckbox()).toBeChecked();
+	});
+
+	it("omits automatic from configure when changing a configuration without touching it", async () => {
+		const user = userEvent.setup();
+		const { onOpenChange } = renderDialog({
+			current: { ...CURRENT, automatic: true },
+		});
+		await user.click(screen.getByText(`${NS}.configureDialog.submit`));
+		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+		expect(configureMock).toHaveBeenCalledTimes(1);
+		expect(configureMock.mock.calls[0]?.[0]).toEqual({
+			projectId: "proj_1",
+			organizationId: "org_1",
+			repositoryIntegrationId: "int_1",
+			ref: "release",
+			paths: ["docs"],
+		});
+		expect(configureMock.mock.calls[0]?.[0]).not.toHaveProperty(
+			"automatic",
+		);
+	});
+
+	it("sends the new value when changing a configuration after touching it", async () => {
+		const user = userEvent.setup();
+		const { onOpenChange } = renderDialog({ current: CURRENT });
+		await user.click(automaticCheckbox());
+		await user.click(screen.getByText(`${NS}.configureDialog.submit`));
+		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+		expect(configureMock).toHaveBeenCalledWith(
+			expect.objectContaining({ automatic: true }),
+		);
 	});
 });
 
@@ -721,6 +828,9 @@ describe("ConfigureContextRepositorySyncDialog — tree selection", () => {
 				repositoryIntegrationId: "int_1",
 				ref: "main",
 				paths: ["README.md", "docs"],
+				// A first configure always sends the automatic checkbox, ticked
+				// by default (Fizzy #2673).
+				automatic: true,
 			}),
 		);
 		// The typed "docs" is the tree's "docs": its row reads as checked.

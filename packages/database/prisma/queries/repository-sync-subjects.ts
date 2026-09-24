@@ -5,8 +5,9 @@
  * The automatic machinery (the poll and the GitHub push webhook) reaches a
  * subject's table only through its store here, and its workflow only through
  * the Temporal half (packages/temporal/src/activities/lib/
- * repository-sync-subjects.ts), which adds `startRun`. This PR registers
- * exactly one subject, `instructions`.
+ * repository-sync-subjects.ts), which adds `startRun`. Two subjects are
+ * registered: `instructions` (Coding Instructions, Fizzy #2540) and
+ * `context` (Living Memory, Fizzy #2673).
  *
  * The column contract a subject's table carries, with PR 1's meanings:
  * `automatic`, `nextCheckAt`, `failureCount`, `automaticPausedReason`,
@@ -15,11 +16,15 @@
  * `computeSchedulingPatch` writes only these, and a store's fence compares
  * `generation`, `nextCheckAt`, `automatic` and `automaticPausedReason`.
  * `pendingCommitSha` backs `recordPendingHead` and `settlePendingHead`
- * (Fizzy #2682): a re-check request written outside the fence and applied
- * by the subject's own run completion, or by the settle when that run has
- * already finished.
+ * (Fizzy #2682; the `context` twin, Fizzy #2673): a re-check request
+ * written outside the fence and applied by the subject's own run
+ * completion, or by the settle when that run has already finished.
  */
 import type { Prisma } from "../client";
+import type {
+	ProjectContextSyncTrigger,
+	ProjectInstructionSyncTrigger,
+} from "../generated/client";
 import {
 	claimDueInstructionSyncRows,
 	findInstructionSyncsForPush,
@@ -31,9 +36,34 @@ import {
 	settlePendingInstructionSyncHead,
 	writeBackInstructionSync,
 } from "./instruction-repository-sync";
-import { canCreateProjectInstructions } from "./projects/projects";
+import {
+	claimDueContextSyncRows,
+	contextSyncLeaseHeld,
+	findContextSyncsForPush,
+	recordContextSyncCheckFailure,
+	recordPendingContextSyncHead,
+	settlePendingContextSyncHead,
+	writeBackContextSync,
+} from "./projects/context-repository-sync-automatic";
+import {
+	canCreateProjectContexts,
+	canCreateProjectInstructions,
+} from "./projects/projects";
 
-export type RepositorySyncSubjectKind = "instructions";
+export type RepositorySyncSubjectKind = "instructions" | "context";
+
+/**
+ * What an automatic start passes as the run's trigger, whatever the subject
+ * (Fizzy #2673): the non-MANUAL triggers EVERY registered subject's run
+ * table can store, so one `startRun` signature serves them all. Today that
+ * is `"POLL" | "WEBHOOK"`.
+ */
+// A trigger only one subject's enum gains (a merge-started instructions run, say) drops out of this seam by the intersection, with no edit here.
+export type AutomaticRepositorySyncTrigger = Exclude<
+	ProjectInstructionSyncTrigger,
+	"MANUAL"
+> &
+	Exclude<ProjectContextSyncTrigger, "MANUAL">;
 
 /** One claimed row, in the shape every subject returns (spec §6.1). */
 export type ClaimedRepositorySyncRow = {
@@ -184,7 +214,7 @@ export interface RepositorySyncSubjectStore {
 		repositoryUrl: string;
 		ref: string;
 	}): Promise<RepositorySyncPushRow[]>;
-	/** Whether the delegate may still publish this subject. */
+	/** Whether the delegate may still publish this subject (INSTRUCTION_CREATE, CONTEXT_CREATE). */
 	checkPermission(row: {
 		projectId: string;
 		userId: string;
@@ -219,5 +249,31 @@ export const REPOSITORY_SYNC_SUBJECT_STORES: Readonly<
 		findByRepository: findInstructionSyncsForPush,
 		checkPermission: (row) =>
 			canCreateProjectInstructions(row.projectId, row.userId),
+	},
+	context: {
+		kind: "context",
+		listDueAndClaim: claimDueContextSyncRows,
+		leaseHeld: contextSyncLeaseHeld,
+		writeBack: writeBackContextSync,
+		recordCheckFailure: recordContextSyncCheckFailure,
+		recordPendingHead: (tx, row, commitSha) =>
+			recordPendingContextSyncHead(tx, {
+				syncId: row.id,
+				projectId: row.projectId,
+				organizationId: row.organizationId,
+				generation: row.generation,
+				commitSha,
+			}),
+		settlePendingHead: (client, row, runId) =>
+			settlePendingContextSyncHead(client, {
+				syncId: row.id,
+				projectId: row.projectId,
+				organizationId: row.organizationId,
+				generation: row.generation,
+				runId,
+			}),
+		findByRepository: findContextSyncsForPush,
+		checkPermission: (row) =>
+			canCreateProjectContexts(row.projectId, row.userId),
 	},
 };

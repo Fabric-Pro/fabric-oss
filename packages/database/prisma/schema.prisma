@@ -2783,10 +2783,21 @@ model ProjectContextPendingVectorCleanup {
 // LIVING MEMORY REPOSITORY SYNC (design 2026-09-23, Fizzy #2657)
 // =============================================================================
 
-/// Who started a Living Memory repository sync run (design §4.2). This slice
-/// writes MANUAL only ("Sync now").
+/// Who started a Living Memory repository sync run (design §4.2, §11.1).
+/// MANUAL is "Sync now"; POLL and WEBHOOK are the automatic triggers the
+/// shared repository-sync poll and GitHub push webhook start (Fizzy #2673).
 enum ProjectContextSyncTrigger {
   MANUAL
+  POLL
+  WEBHOOK
+}
+
+/// Why automatic sync stopped for a project's Living Memory until someone
+/// re-configures it. The same values as `ProjectInstructionSyncPause`: the
+/// shared scheduling contract writes either (design §11.1).
+enum ProjectContextSyncPause {
+  PERMISSION_REVOKED
+  REF_MISSING
 }
 
 /// A finished context sync run's outcome (design §5.4). Null on the run row
@@ -2843,6 +2854,30 @@ model ProjectContextRepositorySync {
   /// The commit and run the Context tab reports as last applied.
   lastAppliedCommitSha    String?
   lastAppliedRunId        String?
+  /// Automatic sync (design §11.1): the shared poll and push webhook start
+  /// POLL / WEBHOOK runs only while this is on. Runs act as `userId`.
+  automatic               Boolean  @default(false)
+
+  /// Automatic-run scheduling: the repository-sync column contract
+  /// (`packages/database/prisma/queries/repository-sync-subjects.ts`).
+  /// Null while the sync is paused: no check is scheduled until a re-configure
+  /// clears the pause and sets it due again.
+  nextCheckAt             DateTime? @default(now())
+  failureCount            Int      @default(0)
+  automaticPausedReason   ProjectContextSyncPause?
+  automaticPausedAt       DateTime?
+  suppressedCommitSha     String?
+  suppressedGeneration    Int?
+  lastEvaluatedCommitSha  String?
+  lastEvaluatedGeneration Int?
+  /// A re-check request (Fizzy #2673, the Living Memory twin of #2682): set
+  /// when a push or a poll finds a run already open, holding the last head
+  /// observed, for diagnostics only. The open run's completion makes the row
+  /// due now whatever the SHA (webhook deliveries are unordered hints, and
+  /// one slot cannot keep two observations) and clears it; when that run's
+  /// receipt had already finished, the writer's settle under the row lock
+  /// does the same. A re-configure clears it too.
+  pendingCommitSha        String?
 
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
@@ -2854,6 +2889,7 @@ model ProjectContextRepositorySync {
   /// The rows this sync authored. Deleting the configuration releases them.
   contexts              ProjectContext[]
 
+  @@index([automatic, nextCheckAt])
   @@index([organizationId])
   @@index([userId])
   @@index([repositoryIntegrationId], map: "project_context_repository_sync_integration_idx")
@@ -2870,7 +2906,8 @@ model ProjectContextRepositorySyncRun {
   syncId         String
   projectId      String
   organizationId String
-  /// The acting user: the requester of a MANUAL run.
+  /// The acting user: the requester of a MANUAL run, the configuration's
+  /// `userId` for POLL and WEBHOOK.
   userId         String
   generation     Int
   /// Frozen at begin: { ref, paths, repositoryIntegrationId, actingUserId }.

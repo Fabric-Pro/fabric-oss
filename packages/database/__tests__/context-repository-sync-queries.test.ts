@@ -24,7 +24,12 @@
  *    and a row whose hash changed is a conflict, recorded once;
  *  - the integration disconnect locks the project row, releases the
  *    coding-instructions sync and the Living Memory sync that read from the
- *    integration, and deletes it, all in one transaction.
+ *    integration, and deletes it, all in one transaction;
+ *  - automatic sync (§11.1, Fizzy #2673): `configure` keeps `automatic`
+ *    when omitted (off on insert) and resets the whole schedule on every
+ *    configure, as the coding-instructions configure does; `record` without
+ *    a frozen context finds its receipt by the workflow run id alone, in the
+ *    caller's tenant, whether or not the configuration survives.
  *
  * The client is an in-memory store. Each `where` is evaluated (equality, plus
  * the `not`/`gt` operators the queries use), so a guard that is too wide
@@ -81,6 +86,12 @@ const h = vi.hoisted(() => {
 			}
 			if ("gt" in c) {
 				return actual != null && String(actual) > String(c.gt);
+			}
+			if ("endsWith" in c) {
+				return (
+					typeof actual === "string" &&
+					actual.endsWith(String(c.endsWith))
+				);
 			}
 			if ("gte" in c || "lte" in c) {
 				const time = (value: unknown) =>
@@ -386,6 +397,9 @@ const h = vi.hoisted(() => {
 								paths: 1,
 								generation: 1,
 								activeRunKey: 1,
+								automatic: 1,
+								automaticPausedReason: 1,
+								failureCount: 1,
 							}),
 						]
 					: [];
@@ -488,7 +502,9 @@ import {
 	completeInterruptedContextRepositorySyncRuns,
 	countAwaitingIndexContexts,
 	countContextRepositorySyncRunCleanupPending,
+	countManagedContexts,
 	deleteContextRepositorySync,
+	findContextRepositorySyncRunReceiptByWorkflowRunId,
 	getContextRepositorySyncRun,
 	getContextRepositorySyncRunForUpdate,
 	getContextSyncIntegration,
@@ -521,6 +537,8 @@ const PROJECT = "proj-1";
 const ORG = "org-1";
 const SYNC = "sync-1";
 const RUN = `${SYNC}:run-a`;
+/** The tenant every read of a sync's managed rows is scoped to. */
+const SCOPE = { projectId: PROJECT, organizationId: ORG };
 const committed = () => h.state.committed;
 
 function seedIntegration(overrides: Row = {}) {
@@ -545,6 +563,16 @@ function seedSync(overrides: Row = {}): Row {
 		activeRunKey: RUN,
 		lastAppliedCommitSha: "c0ffee",
 		lastAppliedRunId: "sync-1:run-0",
+		automatic: false,
+		nextCheckAt: new Date("2026-09-23T11:00:00Z"),
+		failureCount: 0,
+		automaticPausedReason: null,
+		automaticPausedAt: null,
+		suppressedCommitSha: null,
+		suppressedGeneration: null,
+		lastEvaluatedCommitSha: null,
+		lastEvaluatedGeneration: null,
+		pendingCommitSha: null,
 		...overrides,
 	};
 	committed().sync.push(row);
@@ -651,6 +679,7 @@ describe("upsertContextRepositorySync (configure, §5.1)", () => {
 				repositoryIntegrationId: "int-1",
 				ref: "release",
 				paths: ["docs", "notes/glossary.md"],
+				automatic: false,
 			},
 			previous: null,
 		});
@@ -723,7 +752,11 @@ describe("upsertContextRepositorySync (configure, §5.1)", () => {
 		expect(lockOrder).toBeGreaterThan(0);
 		expect(countOrder).toBeGreaterThan(lockOrder);
 		expect(h.models.projectContext.count).toHaveBeenCalledWith({
-			where: { projectId: PROJECT, repositorySyncId: SYNC },
+			where: {
+				projectId: PROJECT,
+				organizationId: ORG,
+				repositorySyncId: SYNC,
+			},
 		});
 	});
 
@@ -755,6 +788,114 @@ describe("upsertContextRepositorySync (configure, §5.1)", () => {
 		expect(committed().sync).toEqual([]);
 	});
 
+	it("creates the configuration with automatic sync off and a fresh schedule, due now (§11.1)", async () => {
+		seedIntegration();
+		const before = Date.now();
+
+		await upsertContextRepositorySync(input);
+
+		const row = committed().sync[0];
+		expect(row).toMatchObject({
+			automatic: false,
+			failureCount: 0,
+			automaticPausedReason: null,
+			automaticPausedAt: null,
+			suppressedCommitSha: null,
+			suppressedGeneration: null,
+			lastEvaluatedCommitSha: null,
+			lastEvaluatedGeneration: null,
+			pendingCommitSha: null,
+		});
+		expect((row?.nextCheckAt as Date).getTime()).toBeGreaterThanOrEqual(
+			before,
+		);
+	});
+
+	it("creates the configuration with automatic sync on when asked", async () => {
+		seedIntegration();
+
+		const result = await upsertContextRepositorySync({
+			...input,
+			automatic: true,
+		});
+
+		expect(result).toMatchObject({ sync: { automatic: true } });
+		expect(committed().sync[0]?.automatic).toBe(true);
+	});
+
+	it("re-configuring keeps automatic sync when omitted and resets the whole schedule: pause, suppression, cursor, pending re-check and failures, due now (§11.1)", async () => {
+		seedIntegration();
+		seedSync({
+			automatic: true,
+			failureCount: 4,
+			nextCheckAt: new Date("2026-09-23T18:00:00Z"),
+			automaticPausedReason: "REF_MISSING",
+			automaticPausedAt: new Date("2026-09-23T10:00:00Z"),
+			suppressedCommitSha: "a".repeat(40),
+			suppressedGeneration: 3,
+			lastEvaluatedCommitSha: "b".repeat(40),
+			lastEvaluatedGeneration: 3,
+			// A re-check request belongs to the old generation; due now
+			// covers it (Fizzy #2673, the twin of #2682).
+			pendingCommitSha: "e".repeat(40),
+		});
+		const before = Date.now();
+
+		const result = await upsertContextRepositorySync(input);
+
+		expect(result).toMatchObject({
+			sync: { id: SYNC, generation: 4, automatic: true },
+		});
+		const row = committed().sync[0];
+		expect(row).toMatchObject({
+			automatic: true,
+			generation: 4,
+			failureCount: 0,
+			automaticPausedReason: null,
+			automaticPausedAt: null,
+			suppressedCommitSha: null,
+			suppressedGeneration: null,
+			lastEvaluatedCommitSha: null,
+			lastEvaluatedGeneration: null,
+			pendingCommitSha: null,
+		});
+		expect((row?.nextCheckAt as Date).getTime()).toBeGreaterThanOrEqual(
+			before,
+		);
+	});
+
+	it("re-configuring with automatic off turns it off", async () => {
+		seedIntegration();
+		seedSync({ automatic: true });
+
+		const result = await upsertContextRepositorySync({
+			...input,
+			automatic: false,
+		});
+
+		expect(result).toMatchObject({ sync: { automatic: false } });
+		expect(committed().sync[0]?.automatic).toBe(false);
+	});
+
+	it("a refused repository change leaves automatic sync and its schedule alone", async () => {
+		seedIntegration();
+		seedIntegration({ id: "int-2" });
+		seedSync({ automatic: true, failureCount: 2 });
+		seedContext({ repositorySyncId: SYNC });
+
+		await upsertContextRepositorySync({
+			...input,
+			repositoryIntegrationId: "int-2",
+			automatic: false,
+		});
+
+		expect(committed().sync[0]).toMatchObject({
+			automatic: true,
+			failureCount: 2,
+			generation: 3,
+		});
+	});
+
 	it("a concurrent first configure that loses the project's unique key re-points the winner's row", async () => {
 		seedIntegration();
 		h.models.projectContextRepositorySync.create.mockImplementationOnce(
@@ -774,6 +915,55 @@ describe("upsertContextRepositorySync (configure, §5.1)", () => {
 			sync: { id: SYNC, generation: 2, ref: "release" },
 		});
 		expect(committed().sync).toHaveLength(1);
+	});
+});
+
+describe("findContextRepositorySyncRunReceiptByWorkflowRunId (§5.4, Fizzy #2672)", () => {
+	it("finds a receipt by the workflow run id alone, whether or not its configuration survives", async () => {
+		// No configuration row at all: disabled after begin inserted this.
+		seedRun({ id: `${SYNC}:run-z`, syncId: SYNC });
+
+		expect(
+			await findContextRepositorySyncRunReceiptByWorkflowRunId("run-z", {
+				projectId: PROJECT,
+				organizationId: ORG,
+			}),
+		).toEqual({ id: `${SYNC}:run-z`, syncId: SYNC });
+	});
+
+	it("finds a receipt keyed under a configuration another one has replaced", async () => {
+		seedSync({ id: "sync-new", activeRunKey: null });
+		seedRun({ id: "sync-old:run-z", syncId: "sync-old" });
+
+		expect(
+			await findContextRepositorySyncRunReceiptByWorkflowRunId("run-z", {
+				projectId: PROJECT,
+				organizationId: ORG,
+			}),
+		).toEqual({ id: "sync-old:run-z", syncId: "sync-old" });
+	});
+
+	it("never answers with another tenant's receipt, a poll check's receipt, or another run's", async () => {
+		seedRun({ id: `${SYNC}:run-z`, organizationId: "org-other" });
+		seedRun({ id: `${SYNC}:run-z`, projectId: "proj-other" });
+		// A poll check's receipt `<syncId>:<pollRunId>:<generation>`.
+		seedRun({ id: `${SYNC}:run-z:3` });
+		seedRun({ id: `${SYNC}:run-zz` });
+		// A key whose prefix is not its own sync id.
+		seedRun({ id: "other:run-z", syncId: SYNC });
+
+		expect(
+			await findContextRepositorySyncRunReceiptByWorkflowRunId("run-z", {
+				projectId: PROJECT,
+				organizationId: ORG,
+			}),
+		).toBeNull();
+		expect(
+			await findContextRepositorySyncRunReceiptByWorkflowRunId("", {
+				projectId: PROJECT,
+				organizationId: ORG,
+			}),
+		).toBeNull();
 	});
 });
 
@@ -858,6 +1048,16 @@ describe("withContextRepositorySyncRunFence (§4.5)", () => {
 		];
 		const sql = strings.join(" ");
 		expect(sql).toContain('FROM "project_context_repository_sync"');
+		// The pause and the re-check request are read under this lock, so a
+		// run's scheduling write folds the marker in without a second read
+		// (Fizzy #2673, the twin of #2682).
+		expect(sql).toContain('"automaticPausedReason"');
+		expect(sql).toContain('"pendingCommitSha"');
+		// And the database's clock, read under that lock, which a completion
+		// or a refusal dates its receipt and next check from (Fizzy #2683).
+		expect(sql).toContain(
+			`(clock_timestamp() AT TIME ZONE 'UTC') AS "now"`,
+		);
 		expect(sql).toContain('"projectId" =');
 		expect(sql).toContain('"organizationId" =');
 		expect(sql).toContain("FOR UPDATE");
@@ -1628,9 +1828,15 @@ describe("prune (§5.3.1 step 8)", () => {
 		seedContext({ repositorySyncId: SYNC, sourcePath: "docs/b.md" });
 		seedContext({ sourcePath: "docs/unowned.md" });
 		seedContext({ repositorySyncId: SYNC, projectId: "proj-2" });
+		// The right project and sync id, but another organization's.
+		seedContext({
+			repositorySyncId: SYNC,
+			organizationId: "org-2",
+			sourcePath: "docs/a0.md",
+		});
 
-		const first = await listPruneCandidates(PROJECT, SYNC, { limit: 2 });
-		const second = await listPruneCandidates(PROJECT, SYNC, {
+		const first = await listPruneCandidates(SCOPE, SYNC, { limit: 2 });
+		const second = await listPruneCandidates(SCOPE, SYNC, {
 			afterKey: first.at(-1)?.sourcePath,
 			limit: 2,
 		});
@@ -1658,7 +1864,22 @@ describe("counts", () => {
 		});
 		seedContext({ sourcePath: "docs/c.md", embeddedAt: null });
 
-		expect(await countAwaitingIndexContexts(PROJECT, SYNC)).toBe(1);
+		expect(await countAwaitingIndexContexts(SCOPE, SYNC)).toBe(1);
+	});
+
+	it("counts a sync's managed rows in the tenant only", async () => {
+		seedContext({ repositorySyncId: SYNC, embeddedAt: null });
+		seedContext({ repositorySyncId: SYNC, sourcePath: "docs/b.md" });
+		// The right project and sync id, but another organization's.
+		seedContext({
+			repositorySyncId: SYNC,
+			organizationId: "org-2",
+			sourcePath: "docs/c.md",
+			embeddedAt: null,
+		});
+
+		expect(await countManagedContexts(h.db as never, SCOPE, SYNC)).toBe(2);
+		expect(await countAwaitingIndexContexts(SCOPE, SYNC)).toBe(1);
 	});
 
 	it("pages a sync's managed rows awaiting indexing by key, each with the title its embedding starts under", async () => {
@@ -1693,14 +1914,21 @@ describe("counts", () => {
 			sourcePath: "docs/g.md",
 			embeddedAt: null,
 		});
+		// The right project and sync id, but another organization's.
+		seedContext({
+			repositorySyncId: SYNC,
+			organizationId: "org-2",
+			sourcePath: "docs/b0.md",
+			embeddedAt: null,
+		});
 
 		const first = await listContextRepositorySyncAwaitingIndex(
-			PROJECT,
+			SCOPE,
 			SYNC,
 			{ limit: 2 },
 		);
 		const second = await listContextRepositorySyncAwaitingIndex(
-			PROJECT,
+			SCOPE,
 			SYNC,
 			{ afterKey: first.at(-1)?.sourcePath, limit: 2 },
 		);

@@ -42,7 +42,12 @@
  * The activities name no task queue: they run on the workflow's own queue,
  * `fabric-worker` (schedules.ts), alongside the sync's own activities.
  */
-import { log, proxyActivities, workflowInfo } from "@temporalio/workflow";
+import {
+	log,
+	patched,
+	proxyActivities,
+	workflowInfo,
+} from "@temporalio/workflow";
 import type * as pollActivities from "../activities/project-instruction-repository-poll";
 import {
 	type ClaimedInstructionSyncCheck,
@@ -131,8 +136,16 @@ function errorName(error: unknown): string {
 export async function projectInstructionRepositoryPollWorkflow(
 	input: InstructionSyncPollInput = {},
 ): Promise<InstructionSyncPollResult> {
+	// The default kind list grew from one kind to every registered kind when
+	// Living Memory joined the adapter. A run recorded before that claimed
+	// one kind per wave; replaying it against a two-kind default would issue
+	// a claim its history never saw. The patch keeps old histories on the
+	// one-kind path and lets every new run walk the registered kinds.
 	const kinds: NonNullable<InstructionSyncPollInput["kinds"]> =
-		input.kinds ?? REPOSITORY_SYNC_SUBJECT_KINDS;
+		input.kinds ??
+		(patched("repository-sync-subject-kinds-v2")
+			? REPOSITORY_SYNC_SUBJECT_KINDS
+			: ["instructions"]);
 	const deadline = Date.now() + INSTRUCTION_SYNC_POLL_BUDGET_MS;
 	const deadlineAt = new Date(deadline).toISOString();
 	const budgetLeft = (): number => deadline - Date.now();

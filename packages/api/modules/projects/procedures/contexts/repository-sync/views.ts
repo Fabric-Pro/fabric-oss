@@ -83,7 +83,12 @@ export function toContextSyncRunView(run: ContextRepositorySyncRunReceipt) {
 	};
 }
 
-/** The configuration minus internals, with its integration summary. */
+/**
+ * The configuration minus internals, with its integration summary and its
+ * automatic-sync state (§11.1): whether the poll and the push webhook start
+ * runs, why they stopped if they did, when the poll next looks, and how
+ * many checks in a row have failed. The cursors stay server-side.
+ */
 export function toContextSyncConfigurationView(
 	sync: ContextRepositorySyncView,
 ) {
@@ -92,6 +97,11 @@ export function toContextSyncConfigurationView(
 		repositoryIntegrationId: sync.repositoryIntegrationId,
 		ref: sync.ref,
 		paths: sync.paths,
+		automatic: sync.automatic,
+		automaticPausedReason: sync.automaticPausedReason,
+		automaticPausedAt: sync.automaticPausedAt,
+		nextCheckAt: sync.nextCheckAt,
+		failureCount: sync.failureCount,
 		lastAppliedCommitSha: sync.lastAppliedCommitSha,
 		configuredByName: sync.user.name,
 		createdAt: sync.createdAt,

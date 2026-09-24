@@ -25,6 +25,10 @@
  */
 
 import { db, type Prisma } from "../../client";
+import type {
+	ProjectContextSyncPause,
+	ProjectContextSyncTrigger,
+} from "../../generated/client";
 import { createPendingVectorCleanup } from "./pending-vector-cleanup";
 import {
 	buildSyncedContextCreateData,
@@ -37,7 +41,15 @@ import {
 // Vocabulary
 // =============================================================================
 
-export type ContextSyncTrigger = "MANUAL";
+/**
+ * What started a run: the run row's `trigger` enum
+ * (`ProjectContextSyncTrigger` in schema.prisma), derived rather than
+ * restated, as `InstructionSyncTrigger` is. MANUAL is "Sync now"; POLL and
+ * WEBHOOK are the automatic triggers (design §11.1, Fizzy #2673).
+ */
+export type ContextSyncTrigger = ProjectContextSyncTrigger;
+/** Why automatic sync stopped until a re-configure (design §11.1). */
+export type ContextSyncPause = ProjectContextSyncPause;
 export type ContextSyncRunStatus =
 	| "SUCCEEDED"
 	| "PARTIAL"
@@ -158,6 +170,11 @@ const syncViewSelect = {
 	activeRunKey: true,
 	lastAppliedCommitSha: true,
 	lastAppliedRunId: true,
+	automatic: true,
+	automaticPausedReason: true,
+	automaticPausedAt: true,
+	nextCheckAt: true,
+	failureCount: true,
 	createdAt: true,
 	updatedAt: true,
 	user: { select: { id: true, name: true } },
@@ -204,6 +221,23 @@ export interface LockedContextRepositorySync {
 	paths: string[];
 	generation: number;
 	activeRunKey: string | null;
+	/** `begin` refuses an automatic run while this is off (design §11.1). */
+	automatic: boolean;
+	/** `begin` refuses an automatic run while this is set. */
+	automaticPausedReason: ContextSyncPause | null;
+	/** Backoff counts from this, read under the same lock as the write. */
+	failureCount: number;
+	/**
+	 * The re-check request a push or a poll left while a run was open
+	 * (`recordPendingContextSyncHead`), which the run's scheduling write
+	 * folds in under this lock.
+	 */
+	pendingCommitSha: string | null;
+	/**
+	 * The database's clock, read by the lock statement (Fizzy #2683): a
+	 * completion or a refusal dates its receipt and next check from it.
+	 */
+	now: Date;
 }
 
 /**
@@ -219,7 +253,9 @@ export async function getContextRepositorySyncForUpdate(
 ): Promise<LockedContextRepositorySync | null> {
 	const rows = await tx.$queryRaw<LockedContextRepositorySync[]>`
 		SELECT "id", "projectId", "organizationId", "userId",
-			"repositoryIntegrationId", "ref", "paths", "generation", "activeRunKey"
+			"repositoryIntegrationId", "ref", "paths", "generation", "activeRunKey",
+			"automatic", "automaticPausedReason", "failureCount", "pendingCommitSha",
+			(clock_timestamp() AT TIME ZONE 'UTC') AS "now"
 		FROM "project_context_repository_sync"
 		WHERE "id" = ${syncId}
 			AND "projectId" = ${scope.projectId}
@@ -236,7 +272,9 @@ async function lockContextRepositorySyncByProject(
 ): Promise<LockedContextRepositorySync | null> {
 	const rows = await tx.$queryRaw<LockedContextRepositorySync[]>`
 		SELECT "id", "projectId", "organizationId", "userId",
-			"repositoryIntegrationId", "ref", "paths", "generation", "activeRunKey"
+			"repositoryIntegrationId", "ref", "paths", "generation", "activeRunKey",
+			"automatic", "automaticPausedReason", "failureCount", "pendingCommitSha",
+			(clock_timestamp() AT TIME ZONE 'UTC') AS "now"
 		FROM "project_context_repository_sync"
 		WHERE "projectId" = ${scope.projectId}
 			AND "organizationId" = ${scope.organizationId}
@@ -245,29 +283,44 @@ async function lockContextRepositorySyncByProject(
 	return rows[0] ?? null;
 }
 
+/** The tenant every read of a sync's managed rows is scoped to. */
+type ManagedContextScope = { projectId: string; organizationId: string };
+
 /**
- * How many rows a sync manages. Pass the transaction client of a caller that
- * holds lock 1 when the count decides a write (configure, disable): the
- * sync's writer holds the same lock, so no managed row can appear between
- * the count and the write.
+ * How many rows a sync manages, in the tenant. Pass the transaction client
+ * of a caller that holds lock 1 when the count decides a write (configure,
+ * disable): the sync's writer holds the same lock, so no managed row can
+ * appear between the count and the write.
  */
 export function countManagedContexts(
 	client: Prisma.TransactionClient,
-	projectId: string,
+	scope: ManagedContextScope,
 	syncId: string,
 ): Promise<number> {
 	return client.projectContext.count({
-		where: { projectId, repositorySyncId: syncId },
+		where: {
+			projectId: scope.projectId,
+			organizationId: scope.organizationId,
+			repositorySyncId: syncId,
+		},
 	});
 }
 
-/** Managed rows not yet indexed (`embeddedAt IS NULL`), for the tab (§5.1). */
+/**
+ * Managed rows not yet indexed (`embeddedAt IS NULL`), in the tenant, for
+ * the tab (§5.1).
+ */
 export function countAwaitingIndexContexts(
-	projectId: string,
+	scope: ManagedContextScope,
 	syncId: string,
 ): Promise<number> {
 	return db.projectContext.count({
-		where: { projectId, repositorySyncId: syncId, embeddedAt: null },
+		where: {
+			projectId: scope.projectId,
+			organizationId: scope.organizationId,
+			repositorySyncId: syncId,
+			embeddedAt: null,
+		},
 	});
 }
 
@@ -280,13 +333,14 @@ export function countAwaitingIndexContexts(
  * embeddings, and an embedding re-reads its row.
  */
 export async function listContextRepositorySyncAwaitingIndex(
-	projectId: string,
+	scope: ManagedContextScope,
 	syncId: string,
 	page: { afterKey?: string | null; limit: number },
 ): Promise<Array<{ id: string; sourcePath: string; title: string }>> {
 	const rows = await db.projectContext.findMany({
 		where: {
-			projectId,
+			projectId: scope.projectId,
+			organizationId: scope.organizationId,
 			repositorySyncId: syncId,
 			embeddedAt: null,
 			sourcePath:
@@ -323,6 +377,7 @@ export type UpsertContextRepositorySyncResult =
 				repositoryIntegrationId: string;
 				ref: string;
 				paths: string[];
+				automatic: boolean;
 			};
 			/** What the configuration said before, or `null` on first configure. */
 			previous: {
@@ -356,6 +411,12 @@ export type UpsertContextRepositorySyncResult =
  * `activeRunKey` is left alone (an in-flight run is fenced by the bump
  * instead). Paths are stored as given; the procedure canonicalizes them.
  *
+ * Automatic sync (§11.1), exactly as `upsertInstructionRepositorySync`: every
+ * configure clears the pause, the suppression, the poll cursor and the
+ * failure count and makes the sync due now, so the next poll tick evaluates
+ * the new configuration. `automatic` is kept when omitted, and `false` on
+ * insert.
+ *
  * Two first configures of one project race on the `projectId` unique index;
  * the loser re-runs once and re-points the winner's row.
  */
@@ -366,6 +427,7 @@ export async function upsertContextRepositorySync(input: {
 	repositoryIntegrationId: string;
 	ref: string;
 	paths: string[];
+	automatic?: boolean;
 }): Promise<UpsertContextRepositorySyncResult> {
 	try {
 		return await runUpsertContextRepositorySync(input);
@@ -384,6 +446,7 @@ function runUpsertContextRepositorySync(input: {
 	repositoryIntegrationId: string;
 	ref: string;
 	paths: string[];
+	automatic?: boolean;
 }): Promise<UpsertContextRepositorySyncResult> {
 	const scope = {
 		projectId: input.projectId,
@@ -416,7 +479,7 @@ function runUpsertContextRepositorySync(input: {
 			) {
 				const managedCount = await countManagedContexts(
 					tx,
-					input.projectId,
+					scope,
 					existing.id,
 				);
 				if (managedCount > 0) {
@@ -435,7 +498,21 @@ function runUpsertContextRepositorySync(input: {
 				repositoryIntegrationId: true,
 				ref: true,
 				paths: true,
+				automatic: true,
 			} as const;
+			// The scheduling reset `upsertInstructionRepositorySync` applies:
+			// a new configuration is evaluated afresh, now.
+			const reset = {
+				automaticPausedReason: null,
+				automaticPausedAt: null,
+				suppressedCommitSha: null,
+				suppressedGeneration: null,
+				lastEvaluatedCommitSha: null,
+				lastEvaluatedGeneration: null,
+				pendingCommitSha: null,
+				failureCount: 0,
+				nextCheckAt: new Date(),
+			};
 			const sync = existing
 				? await tx.projectContextRepositorySync.update({
 						where: { id: existing.id },
@@ -445,9 +522,11 @@ function runUpsertContextRepositorySync(input: {
 								input.repositoryIntegrationId,
 							ref: input.ref,
 							paths: input.paths,
+							automatic: input.automatic ?? existing.automatic,
 							generation: { increment: 1 },
 							lastAppliedCommitSha: null,
 							lastAppliedRunId: null,
+							...reset,
 						},
 						select,
 					})
@@ -460,6 +539,8 @@ function runUpsertContextRepositorySync(input: {
 								input.repositoryIntegrationId,
 							ref: input.ref,
 							paths: input.paths,
+							automatic: input.automatic ?? false,
+							...reset,
 						},
 						select,
 					});
@@ -518,7 +599,10 @@ export function deleteContextRepositorySync(input: {
 			}
 			const managedCount = await countManagedContexts(
 				tx,
-				input.projectId,
+				{
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+				},
 				existing.id,
 			);
 			await tx.projectContextRepositorySync.delete({
@@ -1202,7 +1286,7 @@ async function applyOne(
  * protected keys. No lock: every delete re-checks under the fence.
  */
 export async function listPruneCandidates(
-	projectId: string,
+	scope: ManagedContextScope,
 	syncId: string,
 	page: { afterKey?: string | null; limit: number },
 ): Promise<
@@ -1210,7 +1294,8 @@ export async function listPruneCandidates(
 > {
 	const rows = await db.projectContext.findMany({
 		where: {
-			projectId,
+			projectId: scope.projectId,
+			organizationId: scope.organizationId,
 			repositorySyncId: syncId,
 			sourcePath:
 				page.afterKey === undefined || page.afterKey === null
@@ -1398,6 +1483,39 @@ export async function getContextRepositorySyncRun(
 		select: receiptViewSelect,
 	});
 	return row ? toReceipt(row) : null;
+}
+
+/**
+ * The receipt a workflow execution's `begin` inserted, found by that
+ * execution's run id alone (§5.4, Fizzy #2672): its key is
+ * `<syncId>:<workflowRunId>`, and `record` without a frozen context may no
+ * longer have the configuration whose id is the key's first half — a
+ * disable or disconnect deleted it, or a re-configure after one replaced it
+ * with a row of another id — while the receipt survives either. Bound to the
+ * caller's project and organization, and to the exact key shape, so a stray
+ * run id never reaches another tenant's receipt or a poll check's
+ * `<syncId>:<pollRunId>:<generation>` one. `null` unless exactly one matches.
+ * No lock.
+ */
+export async function findContextRepositorySyncRunReceiptByWorkflowRunId(
+	workflowRunId: string,
+	scope: { projectId: string; organizationId: string },
+): Promise<{ id: string; syncId: string } | null> {
+	if (workflowRunId.length === 0) {
+		return null;
+	}
+	const rows = await db.projectContextRepositorySyncRun.findMany({
+		where: {
+			projectId: scope.projectId,
+			organizationId: scope.organizationId,
+			id: { endsWith: `:${workflowRunId}` },
+		},
+		select: { id: true, syncId: true },
+	});
+	const exact = rows.filter(
+		(row) => row.id === `${row.syncId}:${workflowRunId}`,
+	);
+	return exact.length === 1 && exact[0] ? exact[0] : null;
 }
 
 /**
@@ -1713,7 +1831,7 @@ export async function releaseContextRepositorySyncForIntegration(
 	}
 	const managedCount = await countManagedContexts(
 		tx,
-		input.projectId,
+		{ projectId: input.projectId, organizationId: locked.organizationId },
 		locked.id,
 	);
 	await tx.projectContextRepositorySync.delete({ where: { id: locked.id } });

@@ -15,6 +15,7 @@ import {
 import { Button } from "@ui/components/button";
 import {
 	DropdownMenu,
+	DropdownMenuCheckboxItem,
 	DropdownMenuContent,
 	DropdownMenuItem,
 	DropdownMenuTrigger,
@@ -29,9 +30,12 @@ import {
 	type ContextSyncNowResult,
 	type ContextSyncState,
 	contextSyncAttentionMessageKey,
+	contextSyncConfigureErrorMessage,
 	contextSyncLastAppliedMessage,
 	contextSyncLastAppliedSummary,
 	contextSyncNowResultMessage,
+	contextSyncPausedReason,
+	contextSyncTriggerLabelKey,
 	offersSyncFromRepository,
 	offersSyncNow,
 } from "../lib/context-repository-sync";
@@ -42,9 +46,20 @@ import { ConfigureContextRepositorySyncDialog } from "./ConfigureContextReposito
  * §7.1, Fizzy #2657): "Sync from repository" when nothing is configured yet;
  * once configured, the repository/branch line, the last applied run's
  * outcome, awaiting-index and cleanup-pending notes, an attention list,
- * "Sync now", and a menu (Change branch or paths…, Disconnect). Read-only
- * members (no `CONTEXT_CREATE`) see the status only — every button here is
- * gated on `state.canConfigure`.
+ * "Sync now", and a menu (Automatic sync, Change branch or paths…,
+ * Disconnect). Read-only members (no `CONTEXT_CREATE`) see the status only —
+ * every button here is gated on `state.canConfigure`.
+ *
+ * Automatic sync (§11.1, Fizzy #2673) mirrors the coding-instructions
+ * sibling: the status line names the applied run's trigger; the menu toggle
+ * calls `configure` with the stored repository, branch and paths and the
+ * flipped flag (so it goes through the same branch check and makes the
+ * member the one automatic runs act as); a pause shows its reason, and
+ * "Re-enable" reopens the configure dialog, whose save clears it. A pause
+ * is dormant while automatic sync is off. Readers see the state as text.
+ * While the toggle or a disconnect is in flight, the other menu actions are
+ * disabled, so a second change is not built from the configuration the
+ * first is replacing.
  */
 export function ContextRepositorySyncStatus({
 	projectId,
@@ -84,6 +99,25 @@ export function ContextRepositorySyncStatus({
 			onError: (error) => toast.error(error.message),
 		}),
 	);
+	const configure = useMutation(
+		orpc.projects.contexts.repositorySync.configure.mutationOptions({
+			onSuccess: (_result, variables) => {
+				toast.success(
+					t(
+						variables.automatic
+							? "settings.automaticTurnedOn"
+							: "settings.automaticTurnedOff",
+					),
+				);
+				onChanged();
+			},
+			onError: (error) => {
+				const mapped = contextSyncConfigureErrorMessage(error);
+				toast.error(t(mapped.key, mapped.values));
+			},
+		}),
+	);
+	const busy = configure.isPending || disable.isPending;
 
 	if (!state) {
 		return null;
@@ -140,6 +174,25 @@ export function ContextRepositorySyncStatus({
 
 	const attentionItems = attentionItemsOf(state.lastAppliedRun);
 	const canManage = offersSyncNow(state);
+	const trigger =
+		summary.kind === "not-synced" || !state.lastAppliedRun
+			? null
+			: t(contextSyncTriggerLabelKey(state.lastAppliedRun.trigger));
+	const paused = contextSyncPausedReason(configured);
+
+	function setAutomatic(next: boolean) {
+		if (!configured) {
+			return;
+		}
+		configure.mutate({
+			projectId,
+			organizationId,
+			repositoryIntegrationId: configured.repositoryIntegrationId,
+			ref: configured.ref,
+			paths: configured.paths,
+			automatic: next,
+		});
+	}
 
 	return (
 		<div
@@ -176,6 +229,7 @@ export function ContextRepositorySyncStatus({
 						data-testid="context-sync-status-line"
 					>
 						{t(statusMessage.key, statusValues)}
+						{trigger ? ` · ${trigger}` : null}
 					</p>
 				)}
 				{state.awaitingIndexCount > 0 ? (
@@ -196,6 +250,26 @@ export function ContextRepositorySyncStatus({
 						{t("cleanupPending", { count: state.cleanupPending })}
 					</p>
 				) : null}
+				{paused ? (
+					<p
+						className="flex flex-wrap items-center gap-x-2 text-muted-foreground"
+						data-testid="context-sync-paused"
+					>
+						{t("pausedLine", {
+							reason: t(`pausedReasons.${paused}`),
+						})}
+						{canManage ? (
+							<Button
+								size="sm"
+								variant="link"
+								className="h-auto px-0"
+								onClick={() => setDialogOpen(true)}
+							>
+								{t("reEnableButton")}
+							</Button>
+						) : null}
+					</p>
+				) : null}
 			</div>
 			{attentionItems.length > 0 ? (
 				<ul
@@ -211,6 +285,20 @@ export function ContextRepositorySyncStatus({
 					))}
 				</ul>
 			) : null}
+			{canManage ? null : (
+				<p
+					className="text-muted-foreground"
+					data-testid="context-sync-automatic-state"
+				>
+					{t("settings.automaticState", {
+						state: t(
+							configured.automatic
+								? "settings.automaticOn"
+								: "settings.automaticOff",
+						),
+					})}
+				</p>
+			)}
 			{canManage ? (
 				<div className="flex items-center gap-2 pt-1">
 					<Button
@@ -242,9 +330,30 @@ export function ContextRepositorySyncStatus({
 								<MoreVerticalIcon className="size-4" />
 							</Button>
 						</DropdownMenuTrigger>
-						<DropdownMenuContent align="start">
+						<DropdownMenuContent align="start" className="max-w-xs">
+							<DropdownMenuCheckboxItem
+								data-testid="context-sync-automatic"
+								checked={configured.automatic}
+								disabled={busy}
+								onCheckedChange={setAutomatic}
+								aria-labelledby="context-sync-automatic-setting"
+								aria-describedby="context-sync-automatic-setting-hint"
+							>
+								<span className="flex flex-col gap-0.5">
+									<span id="context-sync-automatic-setting">
+										{t("settings.automatic")}
+									</span>
+									<span
+										id="context-sync-automatic-setting-hint"
+										className="text-muted-foreground text-xs"
+									>
+										{t("settings.automaticHint")}
+									</span>
+								</span>
+							</DropdownMenuCheckboxItem>
 							<DropdownMenuItem
 								data-testid="context-sync-change"
+								disabled={busy}
 								onSelect={() => setDialogOpen(true)}
 							>
 								{t("menu.changeButton")}
@@ -252,6 +361,7 @@ export function ContextRepositorySyncStatus({
 							<DropdownMenuItem
 								className="text-destructive focus:text-destructive"
 								data-testid="context-sync-disconnect"
+								disabled={busy}
 								onSelect={() => setDisconnectConfirmOpen(true)}
 							>
 								{t("menu.disconnect")}

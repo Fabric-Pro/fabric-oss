@@ -1,0 +1,16 @@
+-- Living Memory repository sync: the re-check request (design 2026-09-23
+-- §11.1, Fizzy #2673), the twin of the coding-instructions column
+-- (20260924183000_instruction_sync_pending_commit_sha, Fizzy #2682).
+--
+-- Set when a GitHub push or a poll check finds a sync run already open; it
+-- holds the last head observed, for diagnostics only. The open run's
+-- completion (or, when that run had already finished, the writer's settle)
+-- reads it under the row lock and makes the row due now, instead of leaving
+-- the push to the 15-minute schedule.
+--
+-- Additive: a nullable column with no default, so the ADD COLUMN is
+-- metadata-only and existing rows read as "nothing pending". The previous
+-- app version neither reads nor writes it. RLS and the tenant extension
+-- already cover the table (`scripts/apply-rls-direct.ts`,
+-- `src/tenant-db.ts`); a new column needs no policy change.
+ALTER TABLE "project_context_repository_sync" ADD COLUMN "pendingCommitSha" TEXT;

@@ -20,7 +20,18 @@
  *    releases the key on every terminal outcome, names the run last applied
  *    only with a plan receipt, a pinned commit and a matching generation,
  *    audits counts and never paths, writes nothing on a second delivery, and
- *    still completes the run row when the configuration is gone.
+ *    still completes the run row when the configuration is gone;
+ *  - automatic sync (§11.1, Fizzy #2673): `begin` skips a POLL / WEBHOOK run,
+ *    writing nothing, while automatic sync is off or paused, refuses one
+ *    whose configuration moved since its start was decided
+ *    (`CONFIGURATION_CHANGED`), and runs it as the configuration's member;
+ *    every receipt and audit row carries the run's own trigger; a refusal
+ *    and a completion write the verdict's scheduling effect while the
+ *    configuration is at the run's generation; and `record` without a
+ *    context, when the current configuration holds no receipt for the run,
+ *    finds it by the workflow's run id and completes one whose configuration
+ *    is gone or replaced as FAILED / CONFIGURATION_CHANGED, with its audit
+ *    row and no schedule (the instructions sync's twin, Fizzy #2672).
  *
  * The database is an in-memory fake of exactly the `@repo/database` helpers
  * the activities call, with the semantics their own tests pin
@@ -41,12 +52,15 @@ const h = vi.hoisted(() => {
 		run: Row[];
 		integration: Row[];
 		audit: Row[];
+		/** Each scheduling effect written: `{ syncId, generation, effect }`. */
+		schedule: Row[];
 	};
 	const empty = (): Tables => ({
 		sync: [],
 		run: [],
 		integration: [],
 		audit: [],
+		schedule: [],
 	});
 	const TX = { __transaction: true } as const;
 	const state = {
@@ -279,6 +293,75 @@ const h = vi.hoisted(() => {
 				return Boolean(row);
 			},
 		),
+		findContextRepositorySyncRunReceiptByWorkflowRunId: vi.fn(
+			async (
+				workflowRunId: string,
+				scope: { projectId: string; organizationId: string },
+			) => {
+				// The helper's contract (context-repository-sync-queries.test.ts):
+				// the one receipt in the tenant keyed `<its syncId>:<run id>`.
+				const matches = tables().run.filter(
+					(r) =>
+						r.projectId === scope.projectId &&
+						r.organizationId === scope.organizationId &&
+						r.id === `${r.syncId}:${workflowRunId}`,
+				);
+				return matches.length === 1
+					? { id: matches[0]?.id, syncId: matches[0]?.syncId }
+					: null;
+			},
+		),
+		writeContextRepositorySyncScheduling: vi.fn(
+			async (
+				tx: unknown,
+				input: {
+					sync: {
+						id: string;
+						generation: number;
+						automaticPausedReason: string | null;
+						pendingCommitSha: string | null;
+					};
+					generation: number;
+					effect: { kind: string };
+				},
+			) => {
+				expect(tx).toBe(TX);
+				// The helper's contract (context-repository-sync-automatic-
+				// queries.test.ts): the run's generation must still be the
+				// row's, and `none` writes nothing unless the locked row
+				// carries a re-check request, which any effect folds in: due
+				// now, or no next check on a paused row (Fizzy #2673).
+				const marker = input.sync.pendingCommitSha ?? null;
+				if (
+					input.sync.generation !== input.generation ||
+					(input.effect.kind === "none" && marker === null)
+				) {
+					return { applied: false };
+				}
+				const paused =
+					(input.sync.automaticPausedReason ?? null) !== null ||
+					input.effect.kind === "pause";
+				tables().schedule.push(
+					clone({
+						syncId: input.sync.id,
+						generation: input.generation,
+						effect: input.effect,
+						...(marker === null
+							? {}
+							: { recheck: paused ? "unscheduled" : "due_now" }),
+					}),
+				);
+				if (marker !== null) {
+					const row = tables().sync.find(
+						(r) => r.id === input.sync.id,
+					);
+					if (row) {
+						row.pendingCommitSha = null;
+					}
+				}
+				return { applied: true };
+			},
+		),
 		getContextSyncIntegration: vi.fn(
 			async (
 				client: unknown,
@@ -372,6 +455,17 @@ const INPUT = {
 	workflowRunId: RUN_ID,
 };
 
+/** What the poll and the push webhook start: no requester. */
+const AUTOMATIC = {
+	projectId: PROJECT,
+	organizationId: ORG,
+	trigger: "POLL" as "POLL" | "WEBHOOK",
+	workflowRunId: RUN_ID,
+};
+
+/** The configuration's member, whom an automatic run acts as. */
+const DELEGATE = "user-9";
+
 const committed = () => h.state.committed;
 
 function seedSync(overrides: Row = {}): Row {
@@ -387,6 +481,10 @@ function seedSync(overrides: Row = {}): Row {
 		activeRunKey: null,
 		lastAppliedCommitSha: "0ld",
 		lastAppliedRunId: `${SYNC}:run-0`,
+		automatic: false,
+		automaticPausedReason: null,
+		failureCount: 0,
+		pendingCommitSha: null,
 		...overrides,
 	};
 	committed().sync.push(row);
@@ -715,14 +813,25 @@ describe("beginContextRepositorySyncRun", () => {
 	});
 
 	it.each([
+		// A manual run never backs off automatic sync (§11.1): the poll's
+		// own runs find the integration unavailable and back off themselves.
 		[
 			"the integration is not ACTIVE",
 			"INTEGRATION_UNAVAILABLE",
 			() => seedIntegration({ status: "REVOKED" }),
 			"example-org/handbook",
+			[],
 		],
-		["the integration is gone", "INTEGRATION_UNAVAILABLE", () => {}, null],
 		[
+			"the integration is gone",
+			"INTEGRATION_UNAVAILABLE",
+			() => {},
+			null,
+			[],
+		],
+		[
+			// A manual run's revoked requester says nothing about the
+			// configuration's member: no pause (§11.1).
 			"the requester lost CONTEXT_CREATE",
 			"PERMISSION_DENIED",
 			() => {
@@ -730,17 +839,22 @@ describe("beginContextRepositorySyncRun", () => {
 				h.state.permitted = new Set();
 			},
 			"example-org/handbook",
+			[],
 		],
 	])(
-		"refuses when %s, leaving a finished receipt, a completed audit row and no key",
-		async (_case, error, arrange, repository) => {
+		"refuses when %s, leaving a finished receipt, a completed audit row, its scheduling effect and no key",
+		async (_case, error, arrange, repository, schedule) => {
 			seedSync();
 			arrange();
 
 			const result = await beginContextRepositorySyncRun(INPUT);
 
 			expect(result).toEqual({ ok: false, error, context: context() });
-			expect(runRow()).toMatchObject({ status: "FAILED", error });
+			expect(runRow()).toMatchObject({
+				status: "FAILED",
+				error,
+				trigger: "MANUAL",
+			});
 			expect(runRow()?.finishedAt).not.toBeNull();
 			expect(syncRow()?.activeRunKey).toBeNull();
 			expect(committed().audit).toEqual([
@@ -752,8 +866,10 @@ describe("beginContextRepositorySyncRun", () => {
 						id: SYNC,
 						name: repository,
 					},
+					metadata: expect.objectContaining({ trigger: "MANUAL" }),
 				}),
 			]);
+			expect(committed().schedule).toEqual(schedule);
 		},
 	);
 
@@ -775,6 +891,264 @@ describe("beginContextRepositorySyncRun", () => {
 			type: "CONTEXT_SYNC_INPUT_INVALID",
 			nonRetryable: true,
 		});
+	});
+
+	it("refuses a trigger it does not know, finally, before reading anything", async () => {
+		await expect(
+			beginContextRepositorySyncRun({
+				...AUTOMATIC,
+				trigger: "SCHEDULE" as unknown as "POLL",
+			}),
+		).rejects.toMatchObject({
+			type: "CONTEXT_SYNC_INPUT_INVALID",
+			nonRetryable: true,
+		});
+		expect(h.api.getContextRepositorySync).not.toHaveBeenCalled();
+	});
+});
+
+// =============================================================================
+// begin, automatic triggers (§11.1, Fizzy #2673)
+// =============================================================================
+
+describe("beginContextRepositorySyncRun, automatic triggers", () => {
+	it.each(["POLL", "WEBHOOK"] as const)(
+		"runs a %s run as the configuration's member, re-checked through the transaction, and stores its trigger",
+		async (trigger) => {
+			seedSync({ automatic: true });
+			seedIntegration();
+			h.state.permitted = new Set([DELEGATE]);
+
+			const result = await beginContextRepositorySyncRun({
+				...AUTOMATIC,
+				trigger,
+				expected: { syncId: SYNC, generation: 3 },
+			});
+
+			expect(result).toEqual({
+				ok: true,
+				context: context({ trigger, actingUserId: DELEGATE }),
+			});
+			expect(runRow()).toMatchObject({
+				userId: DELEGATE,
+				trigger,
+				finishedAt: null,
+				context: expect.objectContaining({ actingUserId: DELEGATE }),
+			});
+			expect(syncRow()?.activeRunKey).toBe(RUN);
+			expect(h.api.canCreateProjectContexts).toHaveBeenCalledWith(
+				PROJECT,
+				DELEGATE,
+				h.TX,
+			);
+		},
+	);
+
+	it.each([
+		["automatic sync is off", { automatic: false }, "automatic_disabled"],
+		[
+			"automatic sync is paused",
+			{ automatic: true, automaticPausedReason: "REF_MISSING" },
+			"paused",
+		],
+		[
+			// Off wins: turning automatic sync off re-configures the row, and
+			// that must read as a skip, not as a configuration change.
+			"automatic sync is off and the row moved",
+			{ automatic: false, generation: 4 },
+			"automatic_disabled",
+		],
+	])(
+		"skips an automatic run while %s, writing nothing — no receipt, no audit row, no schedule, no key",
+		async (_case, sync, skipped) => {
+			seedSync(sync);
+			seedIntegration();
+			h.state.permitted = new Set([DELEGATE]);
+			const before = structuredClone(committed());
+
+			const result = await beginContextRepositorySyncRun({
+				...AUTOMATIC,
+				trigger: "WEBHOOK",
+				expected: { syncId: SYNC, generation: 3 },
+			});
+
+			expect(result).toEqual({ ok: false, error: null, skipped });
+			expect(committed()).toEqual(before);
+			expect(h.api.canCreateProjectContexts).not.toHaveBeenCalled();
+		},
+	);
+
+	it("never gates a manual run on automatic sync: Sync now runs while it is off or paused", async () => {
+		seedSync({
+			automatic: true,
+			automaticPausedReason: "PERMISSION_REVOKED",
+		});
+		seedIntegration();
+
+		expect(await beginContextRepositorySyncRun(INPUT)).toEqual({
+			ok: true,
+			context: context(),
+		});
+	});
+
+	it.each([
+		["re-configured", { syncId: SYNC, generation: 2 }],
+		["replaced", { syncId: "sync-0", generation: 3 }],
+	])(
+		"refuses an automatic run whose configuration was %s since its start was decided: CONFIGURATION_CHANGED, with a receipt and an audit row carrying its trigger, and no schedule",
+		async (_case, expected) => {
+			seedSync({ automatic: true });
+			seedIntegration();
+			h.state.permitted = new Set([DELEGATE]);
+
+			const result = await beginContextRepositorySyncRun({
+				...AUTOMATIC,
+				expected,
+			});
+
+			expect(result).toEqual({
+				ok: false,
+				error: "CONFIGURATION_CHANGED",
+				context: context({ trigger: "POLL", actingUserId: DELEGATE }),
+			});
+			expect(runRow()).toMatchObject({
+				status: "FAILED",
+				error: "CONFIGURATION_CHANGED",
+				trigger: "POLL",
+				userId: DELEGATE,
+			});
+			expect(syncRow()?.activeRunKey).toBeNull();
+			expect(committed().audit).toEqual([
+				expect.objectContaining({
+					actor: { type: "user", userId: DELEGATE },
+					metadata: expect.objectContaining({
+						trigger: "POLL",
+						error: "CONFIGURATION_CHANGED",
+					}),
+				}),
+			]);
+			// The re-configure already made the row due; the refusal leaves
+			// the schedule to it.
+			expect(committed().schedule).toEqual([]);
+			// Refused before the permission re-check.
+			expect(h.api.canCreateProjectContexts).not.toHaveBeenCalled();
+		},
+	);
+
+	it("pauses automatic sync as PERMISSION_REVOKED when the configuration's member lost CONTEXT_CREATE", async () => {
+		seedSync({ automatic: true });
+		seedIntegration();
+		h.state.permitted = new Set(["user-1"]);
+
+		const result = await beginContextRepositorySyncRun({
+			...AUTOMATIC,
+			trigger: "WEBHOOK",
+		});
+
+		expect(result).toEqual({
+			ok: false,
+			error: "PERMISSION_DENIED",
+			context: context({ trigger: "WEBHOOK", actingUserId: DELEGATE }),
+		});
+		expect(runRow()).toMatchObject({
+			status: "FAILED",
+			error: "PERMISSION_DENIED",
+			trigger: "WEBHOOK",
+		});
+		expect(committed().schedule).toEqual([
+			{
+				syncId: SYNC,
+				generation: 3,
+				effect: { kind: "pause", reason: "PERMISSION_REVOKED" },
+			},
+		]);
+		expect(committed().audit).toEqual([
+			expect.objectContaining({
+				metadata: expect.objectContaining({ trigger: "WEBHOOK" }),
+			}),
+		]);
+	});
+
+	it("backs off an automatic run whose integration is not ACTIVE, counting from the row's failures", async () => {
+		seedSync({ automatic: true, failureCount: 2 });
+		seedIntegration({ status: "REVOKED" });
+		h.state.permitted = new Set([DELEGATE]);
+
+		expect(await beginContextRepositorySyncRun(AUTOMATIC)).toMatchObject({
+			ok: false,
+			error: "INTEGRATION_UNAVAILABLE",
+		});
+		expect(h.api.writeContextRepositorySyncScheduling).toHaveBeenCalledWith(
+			h.TX,
+			{
+				sync: expect.objectContaining({
+					id: SYNC,
+					generation: 3,
+					failureCount: 2,
+				}),
+				generation: 3,
+				effect: { kind: "backoff" },
+				now: expect.any(Date),
+			},
+		);
+	});
+
+	it("dates a refusal's receipt and next check on the database's clock lock 1 read, not this worker's (Fizzy #2683)", async () => {
+		const DB_NOW = new Date("2026-09-23T15:00:00Z");
+		seedSync({ automatic: true, failureCount: 2, now: DB_NOW });
+		seedIntegration({ status: "REVOKED" });
+		h.state.permitted = new Set([DELEGATE]);
+
+		expect(await beginContextRepositorySyncRun(AUTOMATIC)).toMatchObject({
+			ok: false,
+			error: "INTEGRATION_UNAVAILABLE",
+		});
+		expect(h.api.insertContextRepositorySyncRun).toHaveBeenCalledWith(
+			h.TX,
+			expect.objectContaining({
+				startedAt: DB_NOW,
+				finished: expect.objectContaining({ at: DB_NOW }),
+			}),
+		);
+		expect(h.api.writeContextRepositorySyncScheduling).toHaveBeenCalledWith(
+			h.TX,
+			expect.objectContaining({ now: DB_NOW }),
+		);
+	});
+
+	it("folds a re-check request left while the refused run was open into the refusal's schedule, read under the same lock (Fizzy #2673)", async () => {
+		const PUSHED = "d".repeat(40);
+		seedSync({
+			automatic: true,
+			failureCount: 2,
+			pendingCommitSha: PUSHED,
+		});
+		seedIntegration({ status: "REVOKED" });
+		h.state.permitted = new Set([DELEGATE]);
+
+		expect(await beginContextRepositorySyncRun(AUTOMATIC)).toMatchObject({
+			ok: false,
+			error: "INTEGRATION_UNAVAILABLE",
+		});
+		expect(h.api.writeContextRepositorySyncScheduling).toHaveBeenCalledWith(
+			h.TX,
+			expect.objectContaining({
+				sync: expect.objectContaining({
+					id: SYNC,
+					automaticPausedReason: null,
+					pendingCommitSha: PUSHED,
+				}),
+			}),
+		);
+		expect(committed().schedule).toEqual([
+			{
+				syncId: SYNC,
+				generation: 3,
+				effect: { kind: "backoff" },
+				recheck: "due_now",
+			},
+		]);
+		expect(syncRow()?.pendingCommitSha).toBeNull();
 	});
 });
 
@@ -1080,7 +1454,7 @@ describe("recordContextRepositorySyncRun", () => {
 		expect(committed().audit).toHaveLength(1);
 	});
 
-	it("without a context, rebuilds the run key from the workflow's run id and completes what begin committed", async () => {
+	it("without a context, rebuilds the run key from the current configuration and the workflow's run id, and completes what begin committed", async () => {
 		seedSync({ activeRunKey: RUN });
 		seedIntegration();
 		seedRun();
@@ -1099,6 +1473,9 @@ describe("recordContextRepositorySyncRun", () => {
 			error: "STORE_FAILED",
 		});
 		expect(syncRow()?.activeRunKey).toBeNull();
+		expect(
+			h.api.findContextRepositorySyncRunReceiptByWorkflowRunId,
+		).not.toHaveBeenCalled();
 	});
 
 	it("without a context, completes a cancelled run as INTERRUPTED — never as a clone failure", async () => {
@@ -1138,5 +1515,572 @@ describe("recordContextRepositorySyncRun", () => {
 			error: null,
 		});
 		expect(committed()).toEqual(before);
+	});
+});
+
+// =============================================================================
+// record, the schedule and the run's own trigger (§11.1, Fizzy #2673)
+// =============================================================================
+
+describe("recordContextRepositorySyncRun, automatic sync", () => {
+	it("audits the run's own trigger and marks the applied head evaluated", async () => {
+		seedSync({ activeRunKey: RUN, automatic: true });
+		seedIntegration();
+		seedRun({
+			trigger: "WEBHOOK",
+			userId: DELEGATE,
+			commitSha: SHA,
+			plan: PLAN,
+			outcomes: { "docs/a.md": "created" },
+		});
+
+		expect(
+			await recordContextRepositorySyncRun(
+				recordInput({
+					trigger: "WEBHOOK",
+					context: context({
+						trigger: "WEBHOOK",
+						actingUserId: DELEGATE,
+					}),
+				}),
+			),
+		).toEqual({ recorded: true, status: "SUCCEEDED", error: null });
+
+		expect(committed().audit).toEqual([
+			expect.objectContaining({
+				actor: { type: "user", userId: DELEGATE },
+				metadata: expect.objectContaining({
+					trigger: "WEBHOOK",
+					status: "SUCCEEDED",
+				}),
+			}),
+		]);
+		expect(committed().schedule).toEqual([
+			{
+				syncId: SYNC,
+				generation: 3,
+				effect: { kind: "success", commitSha: SHA },
+			},
+		]);
+		expect(syncRow()?.activeRunKey).toBeNull();
+	});
+
+	it("takes the trigger from the receipt, not from the workflow's input", async () => {
+		seedSync({ activeRunKey: RUN, automatic: true });
+		seedIntegration();
+		seedRun({ trigger: "POLL", userId: DELEGATE });
+
+		await recordContextRepositorySyncRun(
+			recordInput({
+				context: null,
+				error: "CLONE_FAILED",
+				commitSha: null,
+			}),
+		);
+
+		expect(committed().audit).toEqual([
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					trigger: "POLL",
+					error: "CLONE_FAILED",
+				}),
+			}),
+		]);
+	});
+
+	it.each([
+		[
+			"a clean run",
+			{},
+			{
+				plan: PLAN,
+				commitSha: SHA,
+				outcomes: { "docs/a.md": "unchanged" },
+			},
+			{ kind: "success", commitSha: SHA },
+		],
+		[
+			"a PARTIAL run: every file it could was applied",
+			{},
+			{
+				plan: PLAN,
+				commitSha: SHA,
+				outcomes: { "docs/a.md": "conflict" },
+			},
+			{ kind: "success", commitSha: SHA },
+		],
+		[
+			"LIMITS_EXCEEDED at a pinned head",
+			{ error: "LIMITS_EXCEEDED" as const },
+			{ commitSha: SHA },
+			{ kind: "suppress", commitSha: SHA },
+		],
+		[
+			"LIMITS_EXCEEDED before a head was pinned",
+			{ error: "LIMITS_EXCEEDED" as const, commitSha: null },
+			{},
+			{ kind: "backoff" },
+		],
+		[
+			"PATHS_MISSING",
+			{ error: "PATHS_MISSING" as const },
+			{ commitSha: SHA },
+			{ kind: "pause", reason: "REF_MISSING" },
+		],
+		[
+			"REF_MISSING",
+			{ error: "REF_MISSING" as const, commitSha: null },
+			{},
+			{ kind: "pause", reason: "REF_MISSING" },
+		],
+		[
+			"a clone failure",
+			{ error: "CLONE_FAILED" as const, commitSha: null },
+			{},
+			{ kind: "backoff" },
+		],
+		[
+			"a cancellation",
+			{ cancelled: true, commitSha: null },
+			{},
+			{ kind: "backoff" },
+		],
+	])(
+		"schedules %s from its verdict",
+		async (_case, input, ledger, effect) => {
+			seedSync({ activeRunKey: RUN, automatic: true });
+			seedIntegration();
+			seedRun({ trigger: "POLL", userId: DELEGATE, ...ledger });
+
+			await recordContextRepositorySyncRun(
+				recordInput({
+					trigger: "POLL",
+					context: context({
+						trigger: "POLL",
+						actingUserId: DELEGATE,
+					}),
+					...input,
+				}),
+			);
+
+			expect(committed().schedule).toEqual([
+				{ syncId: SYNC, generation: 3, effect },
+			]);
+		},
+	);
+
+	it.each([
+		[
+			"CONFIGURATION_CHANGED",
+			{ error: "CONFIGURATION_CHANGED" as const },
+			{},
+		],
+		["SUPERSEDED", { error: "SUPERSEDED" as const }, {}],
+		[
+			"a run of an older generation: the re-configure reset the schedule",
+			{},
+			{ generation: 4 },
+		],
+	])("writes no schedule for %s", async (_case, input, sync) => {
+		seedSync({ activeRunKey: RUN, automatic: true, ...sync });
+		seedIntegration();
+		seedRun({ trigger: "POLL", plan: PLAN, commitSha: SHA });
+
+		await recordContextRepositorySyncRun(
+			recordInput({ context: context({ trigger: "POLL" }), ...input }),
+		);
+
+		expect(runRow()?.finishedAt).not.toBeNull();
+		expect(committed().schedule).toEqual([]);
+	});
+
+	it("records a manual run's applied head evaluated for the poll", async () => {
+		seedSync({ activeRunKey: RUN, automatic: true });
+		seedIntegration();
+		seedRun({
+			trigger: "MANUAL",
+			commitSha: SHA,
+			plan: PLAN,
+			outcomes: { "docs/a.md": "created" },
+		});
+
+		await recordContextRepositorySyncRun(recordInput());
+
+		expect(committed().schedule).toEqual([
+			{
+				syncId: SYNC,
+				generation: 3,
+				effect: { kind: "success", commitSha: SHA },
+			},
+		]);
+	});
+
+	it.each([
+		[
+			"PATHS_MISSING",
+			{ error: "PATHS_MISSING" as const },
+			{ commitSha: SHA },
+		],
+		["REF_MISSING", { error: "REF_MISSING" as const, commitSha: null }, {}],
+		[
+			"a clone failure",
+			{ error: "CLONE_FAILED" as const, commitSha: null },
+			{},
+		],
+		[
+			"a store failure",
+			{ error: "STORE_FAILED" as const },
+			{ commitSha: SHA },
+		],
+		["a cancellation", { cancelled: true, commitSha: null }, {}],
+		[
+			"LIMITS_EXCEEDED before a head was pinned",
+			{ error: "LIMITS_EXCEEDED" as const, commitSha: null },
+			{},
+		],
+	])(
+		"never pauses or backs off automatic sync for a manual run's %s",
+		async (_case, input, ledger) => {
+			seedSync({ activeRunKey: RUN, automatic: true, failureCount: 2 });
+			seedIntegration();
+			seedRun({ trigger: "MANUAL", ...ledger });
+
+			await recordContextRepositorySyncRun(recordInput(input));
+
+			expect(
+				h.api.writeContextRepositorySyncScheduling,
+			).toHaveBeenCalledWith(
+				h.TX,
+				expect.objectContaining({ effect: { kind: "none" } }),
+			);
+			expect(committed().schedule).toEqual([]);
+			expect(syncRow()).toMatchObject({
+				automaticPausedReason: null,
+				failureCount: 2,
+			});
+		},
+	);
+
+	it("suppresses the pinned head a manual run failed on, so the poll does not retry it", async () => {
+		seedSync({ activeRunKey: RUN, automatic: true });
+		seedIntegration();
+		seedRun({ trigger: "MANUAL", commitSha: SHA });
+
+		await recordContextRepositorySyncRun(
+			recordInput({ error: "LIMITS_EXCEEDED" }),
+		);
+
+		expect(committed().schedule).toEqual([
+			{
+				syncId: SYNC,
+				generation: 3,
+				effect: { kind: "suppress", commitSha: SHA },
+			},
+		]);
+	});
+
+	it("writes no schedule when the configuration is gone", async () => {
+		seedIntegration();
+		seedRun({ trigger: "POLL", plan: PLAN, commitSha: SHA });
+
+		await recordContextRepositorySyncRun(
+			recordInput({ context: context({ trigger: "POLL" }) }),
+		);
+
+		expect(
+			h.api.writeContextRepositorySyncScheduling,
+		).not.toHaveBeenCalled();
+	});
+
+	it("dates the receipt's completion on the database's clock lock 1 read, not this worker's (Fizzy #2683)", async () => {
+		const DB_NOW = new Date("2026-09-23T15:00:00Z");
+		seedSync({ activeRunKey: RUN, automatic: true, now: DB_NOW });
+		seedIntegration();
+		seedRun({ trigger: "POLL", userId: DELEGATE });
+
+		await recordContextRepositorySyncRun(
+			recordInput({
+				context: null,
+				error: "CLONE_FAILED",
+				commitSha: null,
+			}),
+		);
+
+		expect(h.api.completeContextRepositorySyncRun).toHaveBeenCalledWith(
+			h.TX,
+			RUN,
+			expect.objectContaining({ now: DB_NOW }),
+		);
+		// The scheduling write reads the same clock off the locked row.
+		expect(h.api.writeContextRepositorySyncScheduling).toHaveBeenCalledWith(
+			h.TX,
+			expect.objectContaining({
+				sync: expect.objectContaining({ now: DB_NOW }),
+			}),
+		);
+	});
+
+	describe("the re-check request a push or a poll left while the run was open (Fizzy #2673)", () => {
+		const PUSHED = "d".repeat(40);
+
+		it("hands the locked row's marker and pause to the scheduling write, which makes the row due now and clears the marker", async () => {
+			seedSync({
+				activeRunKey: RUN,
+				automatic: true,
+				pendingCommitSha: PUSHED,
+			});
+			seedIntegration();
+			seedRun({
+				trigger: "WEBHOOK",
+				userId: DELEGATE,
+				commitSha: SHA,
+				plan: PLAN,
+				outcomes: { "docs/a.md": "created" },
+			});
+
+			await recordContextRepositorySyncRun(
+				recordInput({
+					trigger: "WEBHOOK",
+					context: context({
+						trigger: "WEBHOOK",
+						actingUserId: DELEGATE,
+					}),
+				}),
+			);
+
+			// The same lock-1 read, not a second one: the row the lock
+			// returned is what the write folds.
+			expect(
+				h.api.writeContextRepositorySyncScheduling,
+			).toHaveBeenCalledWith(
+				h.TX,
+				expect.objectContaining({
+					sync: expect.objectContaining({
+						id: SYNC,
+						automaticPausedReason: null,
+						pendingCommitSha: PUSHED,
+					}),
+				}),
+			);
+			expect(committed().schedule).toEqual([
+				{
+					syncId: SYNC,
+					generation: 3,
+					effect: { kind: "success", commitSha: SHA },
+					recheck: "due_now",
+				},
+			]);
+			expect(syncRow()?.pendingCommitSha).toBeNull();
+		});
+
+		it("a paused row keeps no next check, and the marker goes", async () => {
+			seedSync({
+				activeRunKey: RUN,
+				automatic: true,
+				automaticPausedReason: "REF_MISSING",
+				pendingCommitSha: PUSHED,
+			});
+			seedIntegration();
+			seedRun({ trigger: "POLL", userId: DELEGATE });
+
+			await recordContextRepositorySyncRun(
+				recordInput({
+					context: null,
+					error: "CLONE_FAILED",
+					commitSha: null,
+				}),
+			);
+
+			expect(committed().schedule).toEqual([
+				{
+					syncId: SYNC,
+					generation: 3,
+					effect: { kind: "backoff" },
+					recheck: "unscheduled",
+				},
+			]);
+			expect(syncRow()?.pendingCommitSha).toBeNull();
+		});
+
+		it("a cancelled manual run's none effect, which schedules nothing, still folds the marker", async () => {
+			seedSync({
+				activeRunKey: RUN,
+				automatic: true,
+				pendingCommitSha: PUSHED,
+			});
+			seedIntegration();
+			seedRun({ trigger: "MANUAL" });
+
+			await recordContextRepositorySyncRun(
+				recordInput({ cancelled: true, commitSha: null }),
+			);
+
+			expect(
+				h.api.writeContextRepositorySyncScheduling,
+			).toHaveBeenCalledWith(
+				h.TX,
+				expect.objectContaining({ effect: { kind: "none" } }),
+			);
+
+			expect(committed().schedule).toEqual([
+				{
+					syncId: SYNC,
+					generation: 3,
+					effect: { kind: "none" },
+					recheck: "due_now",
+				},
+			]);
+			expect(syncRow()?.pendingCommitSha).toBeNull();
+		});
+	});
+});
+
+// =============================================================================
+// record without a context: the receipt, found by its run (§11.1, Decision 7)
+// =============================================================================
+
+describe("recordContextRepositorySyncRun without a context", () => {
+	it.each([
+		["a cancellation", { cancelled: true }],
+		["a crash", { error: "STORE_FAILED" as const }],
+		["no error at all", {}],
+	])(
+		"completes an open receipt whose configuration is gone as FAILED/CONFIGURATION_CHANGED, whatever the workflow saw (%s), with its audit row and no schedule",
+		async (_case, input) => {
+			// Disabled or disconnected after begin inserted the receipt and
+			// before its answer arrived: the receipt survives (Fizzy #2672)
+			// and nothing else would ever close it.
+			seedIntegration();
+			seedRun({ trigger: "WEBHOOK", userId: DELEGATE });
+
+			const result = await recordContextRepositorySyncRun(
+				recordInput({ context: null, commitSha: null, ...input }),
+			);
+
+			expect(result).toEqual({
+				recorded: true,
+				status: "FAILED",
+				error: "CONFIGURATION_CHANGED",
+			});
+			expect(runRow()).toMatchObject({
+				status: "FAILED",
+				error: "CONFIGURATION_CHANGED",
+			});
+			expect(runRow()?.finishedAt).not.toBeNull();
+			expect(h.state.log).toEqual([`lock:run:${RUN}`]);
+			expect(committed().audit).toEqual([
+				expect.objectContaining({
+					action: "project.context.repository_sync_completed",
+					severity: "warning",
+					outcome: "failure",
+					actor: { type: "user", userId: DELEGATE },
+					metadata: expect.objectContaining({
+						runId: RUN,
+						trigger: "WEBHOOK",
+						status: "FAILED",
+						error: "CONFIGURATION_CHANGED",
+					}),
+				}),
+			]);
+			expect(
+				h.api.writeContextRepositorySyncScheduling,
+			).not.toHaveBeenCalled();
+			expect(
+				h.api.findContextRepositorySyncRunReceiptByWorkflowRunId,
+			).toHaveBeenCalledWith(RUN_ID, {
+				projectId: PROJECT,
+				organizationId: ORG,
+			});
+		},
+	);
+
+	it("treats a configuration replaced by one of another id as gone, and leaves the new one alone", async () => {
+		const successor = "sync-2";
+		seedSync({
+			id: successor,
+			automatic: true,
+			activeRunKey: `${successor}:run-x`,
+		});
+		seedIntegration();
+		seedRun();
+		const successorBefore = structuredClone(syncRow());
+
+		const result = await recordContextRepositorySyncRun(
+			recordInput({ context: null, cancelled: true, commitSha: null }),
+		);
+
+		expect(result).toEqual({
+			recorded: true,
+			status: "FAILED",
+			error: "CONFIGURATION_CHANGED",
+		});
+		expect(runRow()).toMatchObject({
+			syncId: SYNC,
+			status: "FAILED",
+			error: "CONFIGURATION_CHANGED",
+		});
+		// Looked for under the current configuration first, by its exact key.
+		expect(h.api.getContextRepositorySyncRun).toHaveBeenCalledWith(
+			`${successor}:${RUN_ID}`,
+			{ projectId: PROJECT, organizationId: ORG },
+		);
+		expect(syncRow()).toEqual(successorBefore);
+		expect(committed().schedule).toEqual([]);
+		expect(committed().audit).toHaveLength(1);
+	});
+
+	it("leaves a receipt whose configuration is gone alone once it is finished", async () => {
+		seedIntegration();
+		seedRun({
+			finishedAt: new Date("2026-09-23T12:30:00Z"),
+			status: "FAILED",
+			error: "INTERRUPTED",
+		});
+		const before = structuredClone(committed());
+
+		expect(
+			await recordContextRepositorySyncRun(
+				recordInput({
+					context: null,
+					cancelled: true,
+					commitSha: null,
+				}),
+			),
+		).toEqual({ recorded: false, status: "FAILED", error: "INTERRUPTED" });
+		expect(committed()).toEqual(before);
+	});
+
+	it("records nothing, and opens no transaction, for a run begin skipped", async () => {
+		seedSync({ automatic: false });
+		seedIntegration();
+
+		expect(
+			await recordContextRepositorySyncRun(
+				recordInput({
+					trigger: "POLL",
+					context: null,
+					commitSha: null,
+				}),
+			),
+		).toEqual({ recorded: false, status: null, error: null });
+		expect(h.api.db.$transaction).not.toHaveBeenCalled();
+	});
+
+	it("never finds another tenant's receipt", async () => {
+		seedIntegration();
+		seedRun({ organizationId: "org-other" });
+		const before = structuredClone(committed());
+
+		expect(
+			await recordContextRepositorySyncRun(
+				recordInput({
+					context: null,
+					cancelled: true,
+					commitSha: null,
+				}),
+			),
+		).toEqual({ recorded: false, status: null, error: null });
+		expect(committed()).toEqual(before);
+		expect(h.api.db.$transaction).not.toHaveBeenCalled();
 	});
 });

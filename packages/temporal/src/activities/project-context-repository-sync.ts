@@ -24,6 +24,7 @@ import {
 	canCreateProjectContexts,
 	completeContextRepositorySyncRun,
 	db,
+	findContextRepositorySyncRunReceiptByWorkflowRunId,
 	getContextRepositorySync,
 	getContextRepositorySyncForUpdate,
 	getContextRepositorySyncRun,
@@ -45,8 +46,10 @@ import {
 	recordContextRepositorySyncLastApplied,
 	recordContextRepositorySyncPrune,
 	releaseContextRepositorySyncRunKey,
+	type ContextSyncTrigger as StoredContextSyncTrigger,
 	withContextRepositorySyncRunFence,
 	writeContextRepositorySyncRunPlan,
+	writeContextRepositorySyncScheduling,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { emitContextChange } from "@repo/utils/realtime-emit";
@@ -63,7 +66,9 @@ import {
 	CONTEXT_SYNC_BEGIN_MAX_ATTEMPTS,
 	type ContextSyncFailureDetails,
 	type ContextSyncFrozenContext,
+	type ContextSyncTrigger,
 	contextSyncRunKey,
+	isAutomaticContextSyncTrigger,
 	type ProjectContextSyncError,
 	type RecordContextSyncRunInput,
 	type RecordContextSyncRunResult,
@@ -101,6 +106,7 @@ import {
 } from "./lib/context-sync-plan";
 import {
 	deriveContextSyncRunVerdict,
+	deriveContextSyncScheduling,
 	EMPTY_CONTEXT_SYNC_RUN_COUNTS,
 	recordContextSyncCompletedAudit,
 	tallyContextSyncRun,
@@ -139,6 +145,17 @@ function toStoredError(error: ProjectContextSyncError): ContextSyncError {
 function fromStoredError(error: ContextSyncError): ProjectContextSyncError {
 	return error;
 }
+/** The same pin for the trigger (§11.1): the workflow's union is the Prisma enum. */
+function toStoredTrigger(
+	trigger: ContextSyncTrigger,
+): StoredContextSyncTrigger {
+	return trigger;
+}
+function fromStoredTrigger(
+	trigger: StoredContextSyncTrigger,
+): ContextSyncTrigger {
+	return trigger;
+}
 
 // ---------------------------------------------------------------------------
 // begin (§5.3.0)
@@ -171,11 +188,16 @@ type BeginPass =
  *   attempt, or a key another run holds → `RUN_IN_PROGRESS`, never a
  *   takeover. On an earlier attempt an undescribed predecessor throws a
  *   retryable failure instead, so Temporal asks again after a back-off.
- * - Then the integration must be `ACTIVE` and the requester must hold
+ * - An automatic run (POLL, WEBHOOK; §11.1) is skipped, with nothing
+ *   written, while automatic sync is off or paused, and refused
+ *   `CONFIGURATION_CHANGED` when the configuration is no longer the row its
+ *   start was decided on (`expected`). It acts as the configuration's
+ *   `userId`, read under the lock; a manual run acts as its requester.
+ * - Then the integration must be `ACTIVE` and the acting member must hold
  *   `CONTEXT_CREATE`, read through the transaction.
- * - Refusals insert a FINISHED receipt (with its completed audit row) so
- *   history shows them; `NOT_CONFIGURED` has no configuration to key one on
- *   and inserts nothing.
+ * - Refusals insert a FINISHED receipt (with its completed audit row and its
+ *   scheduling effect) so history shows them; `NOT_CONFIGURED` has no
+ *   configuration to key one on and inserts nothing.
  * - Otherwise insert the receipt with the frozen context and take the key.
  *
  * State that moved between the read and the lock (a receipt vanished, was
@@ -186,12 +208,15 @@ export async function beginContextRepositorySyncRun(
 	input: BeginContextSyncRunInput,
 ): Promise<BeginContextSyncRunResult> {
 	if (
-		input.trigger !== "MANUAL" ||
-		!input.requesterUserId ||
+		!(
+			input.trigger === "MANUAL" ||
+			isAutomaticContextSyncTrigger(input.trigger)
+		) ||
+		(input.trigger === "MANUAL" && !input.requesterUserId) ||
 		!input.workflowRunId
 	) {
 		throw ApplicationFailure.nonRetryable(
-			"A manual Living Memory sync needs the requesting member and the workflow run id",
+			"A Living Memory sync needs a known trigger, the requesting member of a manual run, and the workflow run id",
 			"CONTEXT_SYNC_INPUT_INVALID",
 		);
 	}
@@ -302,7 +327,7 @@ function frozenFromReceipt(
 		syncId: run.syncId,
 		generation: run.generation,
 		runKey: run.id,
-		trigger: "MANUAL",
+		trigger: fromStoredTrigger(run.trigger),
 		repositoryIntegrationId: run.context.repositoryIntegrationId,
 		ref: run.context.ref,
 		paths: [...run.context.paths],
@@ -315,17 +340,30 @@ function frozenFromConfiguration(
 	sync: LockedContextRepositorySync,
 	runKey: string,
 ): ContextSyncFrozenContext {
+	// MANUAL acts as whoever pressed "Sync now"; an automatic run acts as the
+	// configuration's member NOW, so a run queued before a re-configure acts
+	// as the new one against the new configuration (as the instructions
+	// sync's `begin` does).
+	const actingUserId =
+		input.trigger === "MANUAL" ? input.requesterUserId : sync.userId;
+	if (!actingUserId) {
+		// The input check above makes this unreachable.
+		throw ApplicationFailure.nonRetryable(
+			"A manual Living Memory sync needs the requesting member",
+			"CONTEXT_SYNC_INPUT_INVALID",
+		);
+	}
 	return {
 		projectId: input.projectId,
 		organizationId: input.organizationId,
 		syncId: sync.id,
 		generation: sync.generation,
 		runKey,
-		trigger: "MANUAL",
+		trigger: input.trigger,
 		repositoryIntegrationId: sync.repositoryIntegrationId,
 		ref: sync.ref,
 		paths: [...sync.paths],
-		actingUserId: input.requesterUserId,
+		actingUserId,
 	};
 }
 
@@ -401,7 +439,46 @@ async function beginUnderLock(
 		return { kind: "result", result: { ok: true, context } };
 	}
 
-	// A new run. The unfinished predecessors must be the ones described.
+	// A new run. An automatic one is eligible only while automatic sync is on
+	// and unpaused (§11.1). Checked before `expected`, as the instructions
+	// sync does: turning automatic sync off re-configures the row, and that
+	// must read as a skip, not as a warning-severity configuration change.
+	// A skip writes nothing: the run did nothing.
+	if (isAutomaticContextSyncTrigger(input.trigger)) {
+		if (!sync.automatic) {
+			return {
+				kind: "result",
+				result: {
+					ok: false,
+					error: null,
+					skipped: "automatic_disabled",
+				},
+			};
+		}
+		if (sync.automaticPausedReason !== null) {
+			return {
+				kind: "result",
+				result: { ok: false, error: null, skipped: "paused" },
+			};
+		}
+	}
+	if (
+		input.expected !== undefined &&
+		(input.expected.syncId !== sync.id ||
+			input.expected.generation !== sync.generation)
+	) {
+		// Decided on a row that has since been replaced or re-configured. The
+		// re-configure made the sync due now, so the next check starts the
+		// run for the configuration that is current.
+		return refuse(
+			tx,
+			sync,
+			frozenFromConfiguration(input, sync, runKey),
+			"CONFIGURATION_CHANGED",
+		);
+	}
+
+	// The unfinished predecessors must be the ones described.
 	const predecessors = (
 		await listUnfinishedContextRepositorySyncRuns(
 			sync.id,
@@ -455,7 +532,7 @@ async function beginUnderLock(
 		return { kind: "undescribed" };
 	}
 	if (running || undescribed || activeRunKey !== null) {
-		return refuse(tx, context, "RUN_IN_PROGRESS");
+		return refuse(tx, sync, context, "RUN_IN_PROGRESS");
 	}
 
 	const integration = await getContextSyncIntegration(tx, {
@@ -463,7 +540,13 @@ async function beginUnderLock(
 		projectId: input.projectId,
 	});
 	if (!integration || integration.status !== "ACTIVE") {
-		return refuse(tx, context, "INTEGRATION_UNAVAILABLE", integration);
+		return refuse(
+			tx,
+			sync,
+			context,
+			"INTEGRATION_UNAVAILABLE",
+			integration,
+		);
 	}
 	if (
 		!(await canCreateProjectContexts(
@@ -472,7 +555,7 @@ async function beginUnderLock(
 			tx,
 		))
 	) {
-		return refuse(tx, context, "PERMISSION_DENIED", integration);
+		return refuse(tx, sync, context, "PERMISSION_DENIED", integration);
 	}
 
 	const { inserted } = await insertContextRepositorySyncRun(tx, {
@@ -488,7 +571,7 @@ async function beginUnderLock(
 			repositoryIntegrationId: context.repositoryIntegrationId,
 			actingUserId: context.actingUserId,
 		},
-		trigger: "MANUAL",
+		trigger: toStoredTrigger(context.trigger),
 		startedAt: new Date(),
 	});
 	if (
@@ -502,16 +585,21 @@ async function beginUnderLock(
 }
 
 /**
- * A refusal: its receipt, inserted already finished, and its completed audit
- * row, in the lock's transaction.
+ * A refusal: its receipt, inserted already finished, its scheduling effect
+ * (§11.1: a lost integration backs off, a revoked member pauses an automatic
+ * sync), and its completed audit row, in the lock's transaction. `sync` is
+ * the row lock 1 holds; its generation is the refusal's.
  */
 async function refuse(
 	tx: Prisma.TransactionClient,
+	sync: LockedContextRepositorySync,
 	context: ContextSyncFrozenContext,
 	error: ProjectContextSyncError,
 	integration?: { repositoryOwner: string; repositoryName: string } | null,
 ): Promise<BeginPass> {
-	const now = new Date();
+	// The database's clock, read by lock 1 (Fizzy #2683): the receipt and
+	// the next check are dated on it, not on this worker's clock.
+	const now = sync.now ?? new Date();
 	await insertContextRepositorySyncRun(tx, {
 		id: context.runKey,
 		syncId: context.syncId,
@@ -525,9 +613,20 @@ async function refuse(
 			repositoryIntegrationId: context.repositoryIntegrationId,
 			actingUserId: context.actingUserId,
 		},
-		trigger: "MANUAL",
+		trigger: toStoredTrigger(context.trigger),
 		startedAt: now,
 		finished: { at: now, status: "FAILED", error: toStoredError(error) },
+	});
+	await writeContextRepositorySyncScheduling(tx, {
+		sync,
+		generation: context.generation,
+		effect: deriveContextSyncScheduling({
+			trigger: context.trigger,
+			status: "FAILED",
+			error,
+			commitSha: null,
+		}),
+		now,
 	});
 	const label =
 		integration === undefined
@@ -542,6 +641,7 @@ async function refuse(
 		syncId: context.syncId,
 		runKey: context.runKey,
 		actingUserId: context.actingUserId,
+		trigger: context.trigger,
 		repository: label
 			? `${label.repositoryOwner}/${label.repositoryName}`
 			: null,
@@ -1121,10 +1221,14 @@ async function pruneManagedRows(
 	for (;;) {
 		throwIfStopped(run);
 		const page = await storeStep(run.details, run.secrets, () =>
-			listPruneCandidates(context.projectId, context.syncId, {
-				afterKey,
-				limit: SYNC_PAGE_SIZE,
-			}),
+			listPruneCandidates(
+				{
+					projectId: context.projectId,
+					organizationId: context.organizationId,
+				},
+				context.syncId,
+				{ afterKey, limit: SYNC_PAGE_SIZE },
+			),
 		);
 		for (const row of page) {
 			if (eligible(row.sourcePath)) {
@@ -1248,7 +1352,10 @@ async function startPendingIndexing(run: SyncAttempt): Promise<void> {
 		throwIfStopped(run);
 		const page = await storeStep(run.details, run.secrets, () =>
 			listContextRepositorySyncAwaitingIndex(
-				context.projectId,
+				{
+					projectId: context.projectId,
+					organizationId: context.organizationId,
+				},
 				context.syncId,
 				{ afterKey, limit: SYNC_PAGE_SIZE },
 			),
@@ -1467,11 +1574,24 @@ type RecordTarget = { runKey: string; syncId: string; begun: boolean };
  * EVERY terminal outcome the key is released when it names this run. When
  * the run wrote a plan and pinned a commit, and still holds the
  * configuration at its generation, the configuration names it as last
- * applied. The completed audit row commits with the receipt.
+ * applied. While the configuration is still at the run's generation, the
+ * verdict's scheduling effect (`deriveContextSyncScheduling`, §11.1) is
+ * written under the same lock, as the instructions sync's completion does.
+ * The completed audit row, with the run's own trigger, commits with the
+ * receipt.
  *
  * Without a context (`begin` threw, or its answer was lost to a
- * cancellation) the run key is rebuilt from the configuration's id and the
- * workflow's run id; with no configuration left there is nothing to find.
+ * cancellation, possibly after its receipt committed) the run key is rebuilt
+ * from the current configuration's id and the workflow's run id. The receipt
+ * outlives its configuration (no foreign key, Fizzy #2672), so "no receipt
+ * under the current configuration" is not "nothing to record": when the
+ * configuration is gone, or was replaced by one of another id, the receipt is
+ * found by the workflow run id alone and completed `FAILED` /
+ * `CONFIGURATION_CHANGED`, with no scheduling effect and its completed audit
+ * row, as the instructions sync's `record` does. "Gone" is decided under the
+ * lock: lock 1 on the receipt's own configuration finds no row. No receipt at
+ * all (NOT_CONFIGURED, a skipped automatic run, another organization's run)
+ * means nothing to record, and a finished one is left as it is.
  */
 export async function recordContextRepositorySyncRun(
 	input: RecordContextSyncRunInput,
@@ -1514,18 +1634,31 @@ async function recordTarget(
 	if (!input.workflowRunId) {
 		return null;
 	}
+	const scope = {
+		projectId: input.projectId,
+		organizationId: input.organizationId,
+	};
+	// The current configuration's receipt for this run: one exact read.
 	const sync = await getContextRepositorySync(
 		input.projectId,
 		input.organizationId,
 	);
-	if (!sync) {
+	if (sync) {
+		const runKey = contextSyncRunKey(sync.id, input.workflowRunId);
+		if (await getContextRepositorySyncRun(runKey, scope)) {
+			return { runKey, syncId: sync.id, begun: false };
+		}
+	}
+	// None there: begun under a configuration since switched off or
+	// replaced, or never inserted.
+	const receipt = await findContextRepositorySyncRunReceiptByWorkflowRunId(
+		input.workflowRunId,
+		scope,
+	);
+	if (!receipt) {
 		return null;
 	}
-	return {
-		runKey: contextSyncRunKey(sync.id, input.workflowRunId),
-		syncId: sync.id,
-		begun: false,
-	};
+	return { runKey: receipt.id, syncId: receipt.syncId, begun: false };
 }
 
 async function recordUnderLock(
@@ -1552,17 +1685,25 @@ async function recordUnderLock(
 	}
 
 	const counts = tallyContextSyncRun(run);
+	// Without a context, a receipt whose configuration is gone (lock 1 found
+	// no row by the receipt's own sync id) is CONFIGURATION_CHANGED, as when
+	// `begin` itself reports it; whatever else the workflow saw is moot.
+	const configurationGone = !target.begun && !sync;
 	const verdict = deriveContextSyncRunVerdict({
 		begun: target.begun,
-		error: input.error,
-		cancelled: input.cancelled,
+		error: configurationGone ? "CONFIGURATION_CHANGED" : input.error,
+		cancelled: configurationGone ? false : input.cancelled,
 		counts,
 	});
 	const commitSha = run.commitSha ?? input.commitSha;
+	const trigger = fromStoredTrigger(run.trigger);
 
+	// Dated on the database's clock lock 1 read, when the configuration is
+	// still there (Fizzy #2683); the scheduling write below reads the same.
 	const completed = await completeContextRepositorySyncRun(tx, run.id, {
 		status: verdict.status,
 		error: verdict.error ? toStoredError(verdict.error) : null,
+		...(sync?.now ? { now: sync.now } : {}),
 	});
 
 	if (sync) {
@@ -1575,6 +1716,18 @@ async function recordUnderLock(
 				commitSha: run.commitSha,
 			});
 		}
+		// The schedule, fenced on the generation alone: no lease, because a
+		// finishing run writes the real outcome whichever check started it.
+		await writeContextRepositorySyncScheduling(tx, {
+			sync,
+			generation: run.generation,
+			effect: deriveContextSyncScheduling({
+				trigger,
+				status: verdict.status,
+				error: verdict.error,
+				commitSha,
+			}),
+		});
 		if (sync.activeRunKey === run.id) {
 			await releaseContextRepositorySyncRunKey(tx, sync.id, run.id);
 		}
@@ -1590,6 +1743,7 @@ async function recordUnderLock(
 		syncId: run.syncId,
 		runKey: run.id,
 		actingUserId: run.userId,
+		trigger,
 		repository: integration
 			? `${integration.repositoryOwner}/${integration.repositoryName}`
 			: null,

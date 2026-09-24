@@ -1,8 +1,9 @@
 /**
  * How a Living Memory sync run is completed (design 2026-09-23 §5.4, Fizzy
- * #2657): the status table over a run's ledger, and the one audit row every
- * completed receipt gets. Used by `record` and by `begin`'s refusals, which
- * insert their receipt already finished.
+ * #2657): the status table over a run's ledger, the scheduling effect the
+ * verdict has on automatic sync (§11.1, Fizzy #2673), and the one audit row
+ * every completed receipt gets. Used by `record` and by `begin`'s refusals,
+ * which insert their receipt already finished.
  *
  * Not in the activity module on purpose: every export there is a
  * schedulable activity.
@@ -11,12 +12,15 @@ import {
 	type ContextSyncOutcomes,
 	type ContextSyncPlan,
 	type ContextSyncPruneConflicts,
+	type InstructionSyncSchedulingEffect,
 	type Prisma,
 	recordAuditTx,
 } from "@repo/database";
-import type {
-	ContextSyncRunStatus,
-	ProjectContextSyncError,
+import {
+	type ContextSyncRunStatus,
+	type ContextSyncTrigger,
+	isAutomaticContextSyncTrigger,
+	type ProjectContextSyncError,
 } from "../../lib/context-sync-types";
 
 /** A run's ledger as tallies: what the audit row and the status table read. */
@@ -131,6 +135,69 @@ export function deriveContextSyncRunVerdict(input: {
 }
 
 /**
+ * What a finished run does to the configuration's automatic-sync schedule
+ * (§11.1): the scheduling column of the instructions sync's outcome table
+ * (`deriveSyncRunOutcome`), mapped onto this sync's verdicts. The
+ * commit-keyed effects apply to every trigger: a "Sync now" that applies a
+ * head marks it evaluated for the poll, and one that fails on a pinned head
+ * it must not retry suppresses that head, since either only stops the poll
+ * re-running the same commit. A manual run never pauses automatic sync or
+ * backs it off: a member's "Sync now" against a missing path, or one that
+ * hit a transient failure, leaves the schedule as the automatic runs set it.
+ *
+ *  - SUCCEEDED, PARTIAL, UNCHANGED: the head was applied, so it is
+ *    evaluated (the cursor, the failure count reset, 15 minutes out). A
+ *    PARTIAL run applied every file it could; running the same head again
+ *    would leave the same files needing attention.
+ *  - LIMITS_EXCEEDED: suppressed, so the poll does not retry that head
+ *    (backoff instead when no commit was pinned).
+ *  - REF_MISSING, PATHS_MISSING (no selected path at the head, the twin of
+ *    the instructions sync's ROOT_MISSING): paused as REF_MISSING.
+ *  - PERMISSION_DENIED: paused as PERMISSION_REVOKED for an automatic run.
+ *  - CONFIGURATION_CHANGED, SUPERSEDED, RUN_IN_PROGRESS, NOT_CONFIGURED:
+ *    nothing; another configuration or another run owns the schedule.
+ *  - Anything else (CLONE_FAILED, STORE_FAILED, INTEGRATION_UNAVAILABLE,
+ *    INTERRUPTED): backoff.
+ *
+ * For a MANUAL trigger, a pause or a backoff becomes nothing.
+ */
+export function deriveContextSyncScheduling(input: {
+	trigger: ContextSyncTrigger;
+	status: ContextSyncRunStatus;
+	error: ProjectContextSyncError | null;
+	/** The commit the run pinned, if it got that far. */
+	commitSha: string | null;
+}): InstructionSyncSchedulingEffect {
+	const automatic = isAutomaticContextSyncTrigger(input.trigger);
+	const none = { kind: "none" } as const;
+	// Only the automatic runs own the pause and the backoff.
+	const backoff = automatic ? ({ kind: "backoff" } as const) : none;
+	if (input.status !== "FAILED") {
+		return { kind: "success", commitSha: input.commitSha };
+	}
+	switch (input.error) {
+		case "LIMITS_EXCEEDED":
+			return input.commitSha
+				? { kind: "suppress", commitSha: input.commitSha }
+				: backoff;
+		case "REF_MISSING":
+		case "PATHS_MISSING":
+			return automatic ? { kind: "pause", reason: "REF_MISSING" } : none;
+		case "PERMISSION_DENIED":
+			return automatic
+				? { kind: "pause", reason: "PERMISSION_REVOKED" }
+				: none;
+		case "CONFIGURATION_CHANGED":
+		case "SUPERSEDED":
+		case "RUN_IN_PROGRESS":
+		case "NOT_CONFIGURED":
+			return none;
+		default:
+			return backoff;
+	}
+}
+
+/**
  * `project.context.repository_sync_completed`, in the caller's transaction so
  * it commits with the receipt it describes. Attributed to the member the run
  * acted as. Status, error, commit and counts — never a path, a key, a URL or
@@ -144,6 +211,8 @@ export async function recordContextSyncCompletedAudit(
 		syncId: string;
 		runKey: string;
 		actingUserId: string;
+		/** The run's own trigger, as its receipt stores it. */
+		trigger: ContextSyncTrigger;
 		/** `owner/name`, when the integration still exists. */
 		repository: string | null;
 		status: ContextSyncRunStatus;
@@ -168,7 +237,7 @@ export async function recordContextSyncCompletedAudit(
 		},
 		metadata: {
 			runId: input.runKey,
-			trigger: "MANUAL",
+			trigger: input.trigger,
 			status: input.status,
 			error: input.error,
 			commitSha: input.commitSha,

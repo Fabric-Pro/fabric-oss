@@ -2561,6 +2561,27 @@
 					},
 					"awaitingIndex": "{count, plural, one {# file awaiting indexing} other {# files awaiting indexing}}",
 					"cleanupPending": "{count, plural, one {# removed file still being cleaned up} other {# removed files still being cleaned up}}",
+					"pausedLine": "Automatic sync paused: {reason}",
+					"pausedReasons": {
+						"PERMISSION_REVOKED": "the member it acts as can no longer add context to this project",
+						"REF_MISSING": "the branch or a selected folder or file no longer exists"
+					},
+					"reEnableButton": "Re-enable",
+					"triggers": {
+						"MANUAL": "Sync now",
+						"POLL": "Scheduled",
+						"WEBHOOK": "Push",
+						"OTHER": "Automatic"
+					},
+					"settings": {
+						"automatic": "Automatic sync",
+						"automaticOn": "On",
+						"automaticOff": "Off",
+						"automaticState": "Automatic sync: {state}",
+						"automaticHint": "Picks up a pushed change right after each push to GitHub, and otherwise normally 15 to 20 minutes after a push. Changing this makes you the member automatic syncs run as.",
+						"automaticTurnedOn": "Automatic sync is on.",
+						"automaticTurnedOff": "Automatic sync is off."
+					},
 					"attention": {
 						"path-in-use": "“{key}” already exists with different content and wasn't overwritten.",
 						"too-large": "“{key}” is larger than the sync allows and was skipped.",
@@ -2604,6 +2625,8 @@
 						"contextignoreNotice": "Each selected folder's own .contextignore is honored, the same way `fabric context push` applies it.",
 						"pruneNotice": "A file no longer selected, or removed from the repository, is pruned from Living Memory on the next sync.",
 						"actingNotice": "Every sync after this one runs as you, the member who configured it.",
+						"automaticLabel": "Keep in sync automatically",
+						"automaticHint": "Fabric picks up a pushed change right after each push to a GitHub repository, and otherwise normally 15 to 20 minutes after a push; longer while the poll works through a backlog or a sync is backing off after failures. Automatic syncs run as you.",
 						"cancel": "Cancel",
 						"submit": "Save and sync",
 						"errors": {

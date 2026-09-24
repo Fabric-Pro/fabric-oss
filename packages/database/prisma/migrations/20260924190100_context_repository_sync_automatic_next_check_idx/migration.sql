@@ -1,0 +1,18 @@
+-- The ("automatic", "nextCheckAt") index on project_context_repository_sync
+-- (Living Memory automatic sync, design 2026-09-23 §11.1, Fizzy #2673): the
+-- shared repository-sync poll's claim selects automatic rows whose
+-- "nextCheckAt" has come due, oldest first, the same index the
+-- coding-instructions sync's table carries.
+--
+-- CONCURRENTLY because project_context_repository_sync exists already and a
+-- plain build takes a write lock on it for the length of the build. NO
+-- `IF NOT EXISTS`: a failed concurrent build leaves an invalid index behind
+-- under this name, and the clause would then skip the rebuild and record the
+-- migration as applied with no index. Recovery per
+-- docs/database-promotion.md: find it with
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+-- then DROP INDEX that name before re-running the migration.
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT: CONCURRENTLY cannot run inside the
+-- transaction Prisma wraps a multi-statement migration in.
+CREATE INDEX CONCURRENTLY "project_context_repository_sync_automatic_nextCheckAt_idx" ON "project_context_repository_sync"("automatic", "nextCheckAt");
