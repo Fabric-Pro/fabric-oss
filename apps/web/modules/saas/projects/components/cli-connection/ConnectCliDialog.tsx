@@ -46,7 +46,7 @@ const DISCLOSURE_POINTS = [
 	"The key authenticates as you. A tool holding it reads everything you can read in this organization — every project in it, not only this one.",
 	"It is read-only: a tool holding it can read your work in Fabric, and cannot change it.",
 	"It stays valid until you revoke it, or until it expires 90 days from now, whichever comes first.",
-	"Both connection blocks shown next contain a live credential. Treat it like a password — do not paste it into a shared document, a ticket or a chat.",
+	"After you create a key, the configuration and any local setup commands below will contain a live credential. Treat it like a password: do not paste it into a shared document, a ticket or a chat.",
 ] as const;
 
 /**
@@ -86,6 +86,19 @@ const CONFIGURATION_LABEL = "Your configuration";
 
 const CONFIGURATION_INTRO =
 	"Paste this into your coding tool's MCP configuration.";
+
+/**
+ * Stands in for a real key everywhere one is needed before the reader has
+ * minted one: the configuration block below and the local-sync commands.
+ * Shaped like an ordinary value rather than an obvious dummy, so a reader who
+ * already holds a key can copy the template as-is and paste their own key
+ * over the placeholder.
+ */
+const PLACEHOLDER_KEY = "YOUR_API_KEY";
+
+/** Shown only while `PLACEHOLDER_KEY` is standing in for a real one. */
+const PLACEHOLDER_KEY_NOTE =
+	"YOUR_API_KEY stands in for a key you already hold, or the one you create above.";
 
 const SHOWN_ONCE_TITLE = "Shown once";
 
@@ -484,6 +497,29 @@ export function ConnectCliDialog({
 	 * to tab back through the page to where they were.
 	 */
 	const invokerRef = useRef<HTMLElement | null>(null);
+	/**
+	 * Fences a `copy()` call to the mint/close it started under.
+	 *
+	 * `copy()` is async — it awaits `navigator.clipboard.writeText()` — so its
+	 * continuation can resolve after either onSuccess (a placeholder copy still
+	 * in flight when a mint lands) or a close (a real-key copy still in flight
+	 * when the reader hits Done) has already reset the state it is about to
+	 * write. Bumped in both of those places; `copy()` captures the generation
+	 * before awaiting and discards its result if the generation has moved on,
+	 * rather than writing `copied`/`announcement`/`keyCopied` into a view that
+	 * has already moved past the copy it started for.
+	 */
+	const copyGenerationRef = useRef(0);
+
+	/**
+	 * The single source of truth for "does a real key exist yet".
+	 *
+	 * Replaces every place that used to branch on `configuration === null` /
+	 * `!== null` now that the configuration and commands blocks render
+	 * unconditionally with a placeholder — `configuration` itself is never
+	 * `null` any more, so it can no longer stand in for this question.
+	 */
+	const keyIssued = rawKey !== null;
 
 	// Read on the client only, so the rendered URL cannot differ between the
 	// server pass and hydration. Same approach as the API keys settings page.
@@ -501,6 +537,19 @@ export function ConnectCliDialog({
 			}),
 		onSuccess: (data) => {
 			setRawKey(data.rawKey);
+			// A placeholder copy taken before this mint would otherwise leave
+			// a stale "Copied" confirmation sitting beside the real secret —
+			// the guard is still correctly armed (`keyCopied` is untouched,
+			// and gating it on `keyIssued` in `copy` already keeps it false
+			// here), but the visible label would contradict that and could
+			// read as "you already copied this one, it's safe to close".
+			setCopied(null);
+			setAnnouncement("");
+			// Fences off a placeholder copy that is still in flight: if its
+			// `navigator.clipboard.writeText()` resolves after this point, it
+			// must not reinstate "Copied" beside the real key the two lines
+			// above just cleared.
+			copyGenerationRef.current += 1;
 			onKeyIssued?.();
 		},
 		onError: (error) => {
@@ -513,14 +562,17 @@ export function ConnectCliDialog({
 		},
 	});
 
-	// Initial focus lands on the copy control the moment the configuration
-	// appears: it is the only thing in this view that must happen before the
-	// dialog closes, and the secret is unrecoverable if it does not.
+	// Initial focus lands on the create control when the dialog opens, and
+	// moves to the copy control the moment a key is minted: it is the only
+	// thing in this view that must happen before the dialog closes, and the
+	// secret is unrecoverable if it does not. One effect covers both, because
+	// `initialFocusRef` is attached to whichever control is the right target
+	// for the current value of `keyIssued` — the create button before, the
+	// first copy control after — and this reruns whenever that flips,
+	// including the initial mount.
 	useEffect(() => {
-		if (rawKey) {
-			initialFocusRef.current?.focus();
-		}
-	}, [rawKey]);
+		initialFocusRef.current?.focus();
+	}, [keyIssued]);
 
 	const handleOpenChange = (nextOpen: boolean) => {
 		if (!nextOpen) {
@@ -533,16 +585,44 @@ export function ConnectCliDialog({
 			setLocalSetupTool("claude-code");
 			setAnnouncement("");
 			createKeyMutation.reset();
+			// Fences off a copy still in flight when Done (or a disarmed
+			// dismissal, before any key exists) closes this view: were its
+			// `navigator.clipboard.writeText()` to resolve after the reset
+			// above, it must not set `keyCopied` for a key this close just
+			// discarded, arming the dismissal guard for nothing — or, worse,
+			// falsely satisfying it for whatever gets minted on the next open.
+			copyGenerationRef.current += 1;
 		}
 		onOpenChange(nextOpen);
 	};
 
 	const copy = async (target: CopyTarget, value: string) => {
+		// Captured before awaiting: a mint's `onSuccess` or a close's reset
+		// bumps this ref, and either can land while `writeText()` below is
+		// still pending. If it has moved on by the time this resolves, every
+		// write below would be writing into a view this copy no longer
+		// describes — a placeholder copy resolving after a mint reinstating
+		// "Copied" beside the real key, or a real-key copy resolving after a
+		// close arming the guard for whatever gets minted next. Neither
+		// success nor failure below touches state once the generation has
+		// moved.
+		const generation = copyGenerationRef.current;
 		try {
 			await navigator.clipboard.writeText(value);
+			if (generation !== copyGenerationRef.current) {
+				return;
+			}
 			setCopied(target);
-			// Both blocks carry the key; taking either is taking the key.
-			if (target === "configuration" || target === "command") {
+			// Both blocks carry the key ONCE ONE HAS BEEN MINTED; taking either
+			// is taking the key then. Before that, both blocks carry only the
+			// placeholder, and copying a template that reads "YOUR_API_KEY" is
+			// not taking a secret — gating on `keyIssued` keeps a pre-mint copy
+			// from silently disarming the dismissal guard for a key minted
+			// later in the same visit.
+			if (
+				(target === "configuration" || target === "command") &&
+				keyIssued
+			) {
 				setKeyCopied(true);
 			}
 			setAnnouncement(
@@ -553,22 +633,34 @@ export function ConnectCliDialog({
 						: COMMANDS_COPIED_ANNOUNCEMENT,
 			);
 		} catch {
+			if (generation !== copyGenerationRef.current) {
+				return;
+			}
 			setCopied(null);
 			setAnnouncement(COPY_FAILED_ANNOUNCEMENT);
 		}
 	};
 
-	const configuration = rawKey ? buildMcpConfiguration(origin, rawKey) : null;
+	// Built with the placeholder standing in for `rawKey` until one is minted
+	// (design point 3): visibility no longer depends on a key existing, only
+	// its CONTENT does.
+	const configuration = buildMcpConfiguration(
+		origin,
+		rawKey ?? PLACEHOLDER_KEY,
+	);
 	const starterInstruction = buildStarterInstruction(projectName, purpose);
 	const localSyncCommands =
-		purpose === "coding-instructions" &&
-		localSyncAvailable &&
-		projectId &&
-		rawKey
+		purpose === "coding-instructions" && localSyncAvailable && projectId
 			? buildLocalSyncCommands(
 					projectId,
-					rawKey,
-					window.location.origin,
+					rawKey ?? PLACEHOLDER_KEY,
+					// `origin`, not `window.location.origin`: this block now
+					// renders unconditionally, including on the server pass,
+					// where `window` does not exist. Before the single-screen
+					// change, `rawKey` gated this branch so it only ran
+					// client-side after a mint; `buildMcpConfiguration` above
+					// already uses the hydration-safe state for the same reason.
+					origin,
 					automaticallyApplyUpdates,
 					localSetupTool,
 				)
@@ -579,13 +671,14 @@ export function ConnectCliDialog({
 	/**
 	 * A live credential is on screen that exists nowhere else.
 	 *
-	 * Gated on `keyCopied` and not on `rawKey` alone: the loss this
+	 * Gated on `keyCopied` and not on `keyIssued` alone: the loss this
 	 * guards against is losing the ONLY copy, and once the reader has taken one
 	 * there is nothing left to lose. Trapping them past that point would be a
 	 * modal that refuses to close for no remaining reason — worse for keyboard
-	 * users than the accident it was meant to prevent.
+	 * users than the accident it was meant to prevent. False whenever
+	 * `!keyIssued`, so a placeholder on screen never arms the guard.
 	 */
-	const uncopiedSecretOnScreen = configuration !== null && !keyCopied;
+	const uncopiedSecretOnScreen = keyIssued && !keyCopied;
 
 	/**
 	 * Disarm one incidental dismissal and say so.
@@ -603,10 +696,14 @@ export function ConnectCliDialog({
 	};
 
 	/**
-	 * The once-only warning and the disarmed-dismissal note, rendered under
-	 * whichever block shows the key FIRST: the commands when the checkout
-	 * route leads, the configuration otherwise. One copy of each, because
-	 * they are about the key, not about a block.
+	 * The once-only warning and the disarmed-dismissal note. Rendered exactly
+	 * once, in the create-control slot directly under the disclosure, once a
+	 * key exists — replacing the create button there, per the single-screen
+	 * design (Fizzy #2702). Not repeated under the configuration or commands
+	 * block below: both blocks stay in place whether or not a key has been
+	 * minted, but this notice is about the KEY, not about either block, so it
+	 * has exactly one home regardless of which route (checkout or MCP) the
+	 * reader is looking at.
 	 */
 	const keyNotice = (
 		<>
@@ -710,305 +807,59 @@ export function ConnectCliDialog({
 					{announcement}
 				</p>
 
-				{configuration === null ? (
-					<div className="min-w-0 space-y-4">
-						{/* Section 1. Disclosure, above the create control, so
-						 * nothing is minted before it has been read. */}
-						<section
-							aria-labelledby="connect-cli-disclosure-label"
-							className="space-y-3 rounded-lg border border-border bg-muted/40 p-4"
+				{/* One screen from the first open (Fizzy #2702): the disclosure,
+				 * the create control, and every setup instruction below all
+				 * render unconditionally. Only the create control's own
+				 * content, and the KEY each instruction block carries, change
+				 * with `keyIssued`. */}
+				<div className="min-w-0 space-y-4">
+					{/* Section 1. Disclosure, above the create control, so
+					 * nothing is minted — and no real key is shown — before
+					 * it has been read. */}
+					<section
+						aria-labelledby="connect-cli-disclosure-label"
+						className="space-y-3 rounded-lg border border-border bg-muted/40 p-4"
+					>
+						<h3
+							id="connect-cli-disclosure-label"
+							className="app-editorial-label"
 						>
-							<h3
-								id="connect-cli-disclosure-label"
-								className="app-editorial-label"
-							>
-								{DISCLOSURE_LABEL}
-							</h3>
-							<ul className="space-y-2 text-muted-foreground text-sm">
-								{disclosurePointsFor(purpose).map((point) => (
-									<li
-										key={point}
-										className="flex items-start gap-2"
-									>
-										<span
-											aria-hidden="true"
-											className="mt-2 size-1 shrink-0 rounded-full bg-primary"
-										/>
-										<span>{point}</span>
-									</li>
-								))}
-							</ul>
-						</section>
-
-						{issueError ? (
-							<Alert variant="error">
-								<AlertTriangleIcon aria-hidden="true" />
-								<AlertTitle>{ISSUE_ERROR_TITLE}</AlertTitle>
-								{/* Always the fallback copy, never `issueError.message`:
-								 * this repo is public, and a Prisma or driver
-								 * message reaching this alert would paint an
-								 * internal detail in front of any organization
-								 * member who clicks create. The real error is
-								 * logged in the mutation's `onError` instead. */}
-								<AlertDescription>
-									{ISSUE_ERROR_FALLBACK}
-								</AlertDescription>
-							</Alert>
-						) : null}
-					</div>
-				) : (
-					<div className="min-w-0 space-y-4">
-						{cliFirst ? (
-							<p className="text-muted-foreground text-sm">
-								{ROUTES_INTRO}
-							</p>
-						) : null}
-
-						{/* The checkout route, first when it applies. */}
-						{localSyncCommands ? (
-							<section
-								aria-labelledby="connect-cli-local-sync-label"
-								className="space-y-3"
-							>
-								<h3
-									id="connect-cli-local-sync-label"
-									className="app-editorial-label"
+							{DISCLOSURE_LABEL}
+						</h3>
+						<ul className="space-y-2 text-muted-foreground text-sm">
+							{disclosurePointsFor(purpose).map((point) => (
+								<li
+									key={point}
+									className="flex items-start gap-2"
 								>
-									{LOCAL_SYNC_LABEL}
-								</h3>
-								<p className="text-muted-foreground text-sm">
-									{LOCAL_SYNC_INTRO}
-								</p>
-								<div className="space-y-2">
-									<p
-										className="text-sm font-medium"
-										id="connect-cli-tool-label"
-									>
-										{LOCAL_SETUP_TOOL_LABEL}
-									</p>
-									<RadioGroup
-										aria-labelledby="connect-cli-tool-label"
-										className="flex gap-4"
-										onValueChange={(value) => {
-											if (
-												value === "claude-code" ||
-												value === "codex"
-											) {
-												setLocalSetupTool(value);
-												setCopied(null);
-												setAnnouncement("");
-											}
-										}}
-										value={localSetupTool}
-									>
-										<div className="flex items-center gap-2">
-											<RadioGroupItem
-												id="connect-cli-tool-claude-code"
-												value="claude-code"
-											/>
-											<Label htmlFor="connect-cli-tool-claude-code">
-												Claude Code
-											</Label>
-										</div>
-										<div className="flex items-center gap-2">
-											<RadioGroupItem
-												id="connect-cli-tool-codex"
-												value="codex"
-											/>
-											<Label htmlFor="connect-cli-tool-codex">
-												Codex
-											</Label>
-										</div>
-									</RadioGroup>
-								</div>
-								{localSetupTool === "codex" ? (
-									<p className="text-muted-foreground text-sm">
-										{CODEX_HOOK_TRUST_NOTE}
-									</p>
-								) : null}
-								<div className="flex items-start gap-3 rounded-lg border border-border bg-muted/40 p-3">
-									<Checkbox
-										aria-describedby={
-											APPLY_UPDATES_DESCRIPTION_ID
-										}
-										checked={automaticallyApplyUpdates}
-										id={APPLY_UPDATES_CHECKBOX_ID}
-										onCheckedChange={(checked) => {
-											setAutomaticallyApplyUpdates(
-												checked === true,
-											);
-											setCopied(null);
-											setAnnouncement("");
-										}}
+									<span
+										aria-hidden="true"
+										className="mt-2 size-1 shrink-0 rounded-full bg-primary"
 									/>
-									<div className="flex flex-col gap-1">
-										<Label
-											className="cursor-pointer"
-											htmlFor={APPLY_UPDATES_CHECKBOX_ID}
-										>
-											{APPLY_UPDATES_LABEL}
-										</Label>
-										<p
-											className="text-muted-foreground text-sm"
-											id={APPLY_UPDATES_DESCRIPTION_ID}
-										>
-											{APPLY_UPDATES_DESCRIPTION}
-										</p>
-									</div>
-								</div>
-								{/* Wraps rather than scrolls: a line longer
-								 * than the dialog is wide would otherwise hide
-								 * its end behind a scrollbar — the project id,
-								 * exactly where it stops being obvious.
-								 * `min-w-0` on the wrapper above is what keeps
-								 * a block like this from widening the dialog's
-								 * grid column and clipping every paragraph. */}
-								<pre
-									className="whitespace-pre-wrap break-all rounded-lg border border-border bg-muted p-4 font-mono text-xs"
-									data-testid="connect-cli-local-sync-command"
-								>
-									{localSyncCommands}
-								</pre>
-								<Button
-									ref={initialFocusRef}
-									aria-describedby={
-										uncopiedSecretOnScreen
-											? "connect-cli-dismissal-note"
-											: undefined
-									}
-									autoLoading={false}
-									className="w-full"
-									onClick={() =>
-										copy("command", localSyncCommands)
-									}
-								>
-									{copied === "command" ? (
-										<>
-											<CheckIcon aria-hidden="true" />
-											{COPIED_LABEL}
-										</>
-									) : (
-										<>
-											<CopyIcon aria-hidden="true" />
-											{COPY_COMMANDS_LABEL}
-										</>
-									)}
-								</Button>
-								{keyNotice}
-							</section>
-						) : null}
+									<span>{point}</span>
+								</li>
+							))}
+						</ul>
+					</section>
 
-						{/* The MCP route: the configuration, then the sentence. */}
-						<section
-							aria-labelledby="connect-cli-configuration-label"
-							className="space-y-3"
-						>
-							<h3
-								id="connect-cli-configuration-label"
-								className="app-editorial-label"
-							>
-								{cliFirst
-									? MCP_ROUTE_LABEL
-									: CONFIGURATION_LABEL}
-							</h3>
-							<p className="text-muted-foreground text-sm">
-								{CONFIGURATION_INTRO}
-							</p>
-							<pre className="overflow-x-auto rounded-lg border border-border bg-muted p-4 text-xs">
-								<code data-testid="connect-cli-configuration">
-									{configuration}
-								</code>
-							</pre>
-							<Button
-								ref={cliFirst ? undefined : initialFocusRef}
-								// Initial focus lands on the first copy control,
-								// so the note below is read out as that
-								// control's description — the disarmed
-								// dismissals are announced before a reader can
-								// discover them by pressing Escape.
-								aria-describedby={
-									uncopiedSecretOnScreen && !cliFirst
-										? "connect-cli-dismissal-note"
-										: undefined
-								}
-								autoLoading={false}
-								className="w-full"
-								onClick={() =>
-									copy("configuration", configuration)
-								}
-							>
-								{copied === "configuration" ? (
-									<>
-										<CheckIcon aria-hidden="true" />
-										{COPIED_LABEL}
-									</>
-								) : (
-									<>
-										<CopyIcon aria-hidden="true" />
-										{COPY_CONFIGURATION_LABEL}
-									</>
-								)}
-							</Button>
-							{cliFirst ? null : keyNotice}
-						</section>
-
-						<section
-							aria-labelledby="connect-cli-instruction-label"
-							className="space-y-3"
-						>
-							<h3
-								id="connect-cli-instruction-label"
-								className="app-editorial-label"
-							>
-								{INSTRUCTION_LABEL}
-							</h3>
-							<p className="text-muted-foreground text-sm">
-								{INSTRUCTION_INTRO}
-							</p>
-							<p
-								className="rounded-lg border border-border bg-muted/40 p-4 text-sm"
-								data-testid="connect-cli-starter-instruction"
-							>
-								{starterInstruction}
-							</p>
-							<Button
-								autoLoading={false}
-								onClick={() =>
-									copy("instruction", starterInstruction)
-								}
-								size="sm"
-								variant="outline"
-							>
-								{copied === "instruction" ? (
-									<>
-										<CheckIcon aria-hidden="true" />
-										{COPIED_LABEL}
-									</>
-								) : (
-									<>
-										<CopyIcon aria-hidden="true" />
-										{COPY_INSTRUCTION_LABEL}
-									</>
-								)}
-							</Button>
-						</section>
-					</div>
-				)}
-
-				<DialogFooter>
-					{configuration === null ? (
+					{/* Section 2. The create control: directly under the
+					 * disclosure and above every instruction block, so
+					 * nothing about setup is read before the reader has been
+					 * told what the key can do. Before a key exists, the
+					 * mint button and its error; once one does, that button
+					 * is replaced by `keyNotice` — the create affordance
+					 * disappears and the disclosure stays exactly where it
+					 * was. */}
+					{keyIssued ? (
+						keyNotice
+					) : (
 						<>
-							<Button
-								autoLoading={false}
-								onClick={() => handleOpenChange(false)}
-								variant="outline"
-							>
-								{CANCEL_LABEL}
-							</Button>
 							{/* The ONLY place a key is minted. Never on open:
 							 * a curious click must leave nothing behind. */}
 							<Button
+								ref={initialFocusRef}
 								autoLoading={false}
+								className="w-full"
 								loading={createKeyMutation.isPending}
 								onClick={() => createKeyMutation.mutate()}
 							>
@@ -1021,14 +872,282 @@ export function ConnectCliDialog({
 									</>
 								)}
 							</Button>
+							{issueError ? (
+								<Alert variant="error">
+									<AlertTriangleIcon aria-hidden="true" />
+									<AlertTitle>{ISSUE_ERROR_TITLE}</AlertTitle>
+									{/* Always the fallback copy, never `issueError.message`:
+									 * this repo is public, and a Prisma or driver
+									 * message reaching this alert would paint an
+									 * internal detail in front of any organization
+									 * member who clicks create. The real error is
+									 * logged in the mutation's `onError` instead. */}
+									<AlertDescription>
+										{ISSUE_ERROR_FALLBACK}
+									</AlertDescription>
+								</Alert>
+							) : null}
 						</>
-					) : (
+					)}
+
+					{/* Section 3. Setup instructions — shown from the first
+					 * open, with `PLACEHOLDER_KEY` standing in for the
+					 * blocks below until Section 2 mints a real one. */}
+					{cliFirst ? (
+						<p className="text-muted-foreground text-sm">
+							{ROUTES_INTRO}
+						</p>
+					) : null}
+
+					{/* The checkout route, first when it applies. */}
+					{localSyncCommands ? (
+						<section
+							aria-labelledby="connect-cli-local-sync-label"
+							className="space-y-3"
+						>
+							<h3
+								id="connect-cli-local-sync-label"
+								className="app-editorial-label"
+							>
+								{LOCAL_SYNC_LABEL}
+							</h3>
+							<p className="text-muted-foreground text-sm">
+								{LOCAL_SYNC_INTRO}
+							</p>
+							<div className="space-y-2">
+								<p
+									className="text-sm font-medium"
+									id="connect-cli-tool-label"
+								>
+									{LOCAL_SETUP_TOOL_LABEL}
+								</p>
+								<RadioGroup
+									aria-labelledby="connect-cli-tool-label"
+									className="flex gap-4"
+									onValueChange={(value) => {
+										if (
+											value === "claude-code" ||
+											value === "codex"
+										) {
+											setLocalSetupTool(value);
+											setCopied(null);
+											setAnnouncement("");
+										}
+									}}
+									value={localSetupTool}
+								>
+									<div className="flex items-center gap-2">
+										<RadioGroupItem
+											id="connect-cli-tool-claude-code"
+											value="claude-code"
+										/>
+										<Label htmlFor="connect-cli-tool-claude-code">
+											Claude Code
+										</Label>
+									</div>
+									<div className="flex items-center gap-2">
+										<RadioGroupItem
+											id="connect-cli-tool-codex"
+											value="codex"
+										/>
+										<Label htmlFor="connect-cli-tool-codex">
+											Codex
+										</Label>
+									</div>
+								</RadioGroup>
+							</div>
+							{localSetupTool === "codex" ? (
+								<p className="text-muted-foreground text-sm">
+									{CODEX_HOOK_TRUST_NOTE}
+								</p>
+							) : null}
+							<div className="flex items-start gap-3 rounded-lg border border-border bg-muted/40 p-3">
+								<Checkbox
+									aria-describedby={
+										APPLY_UPDATES_DESCRIPTION_ID
+									}
+									checked={automaticallyApplyUpdates}
+									id={APPLY_UPDATES_CHECKBOX_ID}
+									onCheckedChange={(checked) => {
+										setAutomaticallyApplyUpdates(
+											checked === true,
+										);
+										setCopied(null);
+										setAnnouncement("");
+									}}
+								/>
+								<div className="flex flex-col gap-1">
+									<Label
+										className="cursor-pointer"
+										htmlFor={APPLY_UPDATES_CHECKBOX_ID}
+									>
+										{APPLY_UPDATES_LABEL}
+									</Label>
+									<p
+										className="text-muted-foreground text-sm"
+										id={APPLY_UPDATES_DESCRIPTION_ID}
+									>
+										{APPLY_UPDATES_DESCRIPTION}
+									</p>
+								</div>
+							</div>
+							{/* Wraps rather than scrolls: a line longer
+							 * than the dialog is wide would otherwise hide
+							 * its end behind a scrollbar — the project id,
+							 * exactly where it stops being obvious.
+							 * `min-w-0` on the wrapper above is what keeps
+							 * a block like this from widening the dialog's
+							 * grid column and clipping every paragraph. */}
+							<pre
+								className="whitespace-pre-wrap break-all rounded-lg border border-border bg-muted p-4 font-mono text-xs"
+								data-testid="connect-cli-local-sync-command"
+							>
+								{localSyncCommands}
+							</pre>
+							<Button
+								ref={keyIssued ? initialFocusRef : undefined}
+								aria-describedby={
+									uncopiedSecretOnScreen
+										? "connect-cli-dismissal-note"
+										: undefined
+								}
+								autoLoading={false}
+								className="w-full"
+								onClick={() =>
+									copy("command", localSyncCommands)
+								}
+							>
+								{copied === "command" ? (
+									<>
+										<CheckIcon aria-hidden="true" />
+										{COPIED_LABEL}
+									</>
+								) : (
+									<>
+										<CopyIcon aria-hidden="true" />
+										{COPY_COMMANDS_LABEL}
+									</>
+								)}
+							</Button>
+						</section>
+					) : null}
+
+					{/* The MCP route: the configuration, then the sentence. */}
+					<section
+						aria-labelledby="connect-cli-configuration-label"
+						className="space-y-3"
+					>
+						<h3
+							id="connect-cli-configuration-label"
+							className="app-editorial-label"
+						>
+							{cliFirst ? MCP_ROUTE_LABEL : CONFIGURATION_LABEL}
+						</h3>
+						<p className="text-muted-foreground text-sm">
+							{CONFIGURATION_INTRO}
+						</p>
+						<pre className="overflow-x-auto rounded-lg border border-border bg-muted p-4 text-xs">
+							<code data-testid="connect-cli-configuration">
+								{configuration}
+							</code>
+						</pre>
+						{keyIssued ? null : (
+							<p className="text-muted-foreground text-sm">
+								{PLACEHOLDER_KEY_NOTE}
+							</p>
+						)}
+						<Button
+							ref={
+								keyIssued && !cliFirst
+									? initialFocusRef
+									: undefined
+							}
+							// Initial focus lands on the first copy control,
+							// so the note below is read out as that
+							// control's description — the disarmed
+							// dismissals are announced before a reader can
+							// discover them by pressing Escape.
+							aria-describedby={
+								uncopiedSecretOnScreen && !cliFirst
+									? "connect-cli-dismissal-note"
+									: undefined
+							}
+							autoLoading={false}
+							className="w-full"
+							onClick={() => copy("configuration", configuration)}
+						>
+							{copied === "configuration" ? (
+								<>
+									<CheckIcon aria-hidden="true" />
+									{COPIED_LABEL}
+								</>
+							) : (
+								<>
+									<CopyIcon aria-hidden="true" />
+									{COPY_CONFIGURATION_LABEL}
+								</>
+							)}
+						</Button>
+					</section>
+
+					<section
+						aria-labelledby="connect-cli-instruction-label"
+						className="space-y-3"
+					>
+						<h3
+							id="connect-cli-instruction-label"
+							className="app-editorial-label"
+						>
+							{INSTRUCTION_LABEL}
+						</h3>
+						<p className="text-muted-foreground text-sm">
+							{INSTRUCTION_INTRO}
+						</p>
+						<p
+							className="rounded-lg border border-border bg-muted/40 p-4 text-sm"
+							data-testid="connect-cli-starter-instruction"
+						>
+							{starterInstruction}
+						</p>
+						<Button
+							autoLoading={false}
+							onClick={() =>
+								copy("instruction", starterInstruction)
+							}
+							size="sm"
+							variant="outline"
+						>
+							{copied === "instruction" ? (
+								<>
+									<CheckIcon aria-hidden="true" />
+									{COPIED_LABEL}
+								</>
+							) : (
+								<>
+									<CopyIcon aria-hidden="true" />
+									{COPY_INSTRUCTION_LABEL}
+								</>
+							)}
+						</Button>
+					</section>
+				</div>
+
+				<DialogFooter>
+					{keyIssued ? (
 						<Button
 							autoLoading={false}
 							onClick={() => handleOpenChange(false)}
 						>
 							<PlugIcon aria-hidden="true" />
 							{DONE_LABEL}
+						</Button>
+					) : (
+						<Button
+							autoLoading={false}
+							onClick={() => handleOpenChange(false)}
+							variant="outline"
+						>
+							{CANCEL_LABEL}
 						</Button>
 					)}
 				</DialogFooter>
