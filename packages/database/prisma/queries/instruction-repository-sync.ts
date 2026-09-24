@@ -796,16 +796,54 @@ export async function claimDueInstructionSyncRows(
  * claim wrote, that `nextCheckAt` is still ahead of the database's clock,
  * and automatic sync is still on and unpaused.
  *
- * Every writer that competes with a check moves one of these: a later claim
- * moves `nextCheckAt` to a new lease, every finishing run moves it to a
- * value computed from its own clock, as does settling a re-check request whose run already finished
- * (`settlePendingInstructionSyncHead`), a re-configure or settings change
- * bumps the generation, a pause sets `automaticPausedReason` and clears
- * `nextCheckAt`, and turning automatic sync off clears
- * `automatic`. A lease nobody else touched ends by the clock alone. Two
- * claims of one row never write the same lease: a row is re-claimable only
- * once its lease has passed, and the next claim's lease is the database's
- * clock at that claim plus two minutes.
+ * INVARIANT (Fizzy #2689). This condition is the only thing that makes a
+ * poll check's write safe once the check may have outlived its lease, and
+ * every writer of this table keeps it true in one of three ways:
+ *
+ * 1. A write that applies a check's outcome (`writeBackInstructionSync`,
+ *    and through it `recordInstructionSyncCheckFailure`) carries this whole
+ *    condition, never a subset. Each clause excludes a different competitor:
+ *    `"id"`: exactly the claimed row (the id comes only from the server-side
+ *    claim, never from a request, so there is no tenant arm).
+ *    `"generation"`: no re-configure or settings change landed since the
+ *    claim; the run such a change starts must replace this check's work.
+ *    `"nextCheckAt" = leaseUntil`: no later claim, finishing run or settled
+ *    re-check request moved the schedule since the claim; the value the
+ *    claim wrote is the lease itself, so equality is holding it.
+ *    `"nextCheckAt" > clock_timestamp()`: the lease has not expired by the
+ *    database's clock, even when nothing else touched the row.
+ *    `"automatic"` and `"automaticPausedReason"`: the sync was not switched
+ *    off or paused meanwhile.
+ * 2. Any other writer of a column a check also writes (`nextCheckAt`,
+ *    `failureCount`, `lastEvaluated*`, `suppressed*`, `automaticPaused*`)
+ *    moves a fence input in the same statement, so a check holding a lease
+ *    taken before it can no longer apply a patch computed from the row its
+ *    claim returned: a re-configure of an existing row
+ *    (`upsertInstructionRepositorySync`; its create branch starts a row no
+ *    lease can exist on) or a settings change
+ *    (`writeProjectInstructionSettings`) bumps `generation`; a finishing run
+ *    that applies a scheduling patch (`completeInstructionRepositorySyncRun`,
+ *    under the row lock; a `none` effect writes nothing) and a settled
+ *    re-check request (`settlePendingInstructionSyncHead`) write
+ *    `nextCheckAt`; a pause sets `automaticPausedReason`; configuring
+ *    automatic sync off keeps the row, clears `automatic` and bumps
+ *    `generation`; switching the project back to upload mode or
+ *    disconnecting its integration deletes the row. A lease nobody touched
+ *    ends by the clock alone.
+ * 3. A writer of only columns neither the fence nor a check reads
+ *    (`recordPendingInstructionSyncHead`: `pendingCommitSha`) needs neither.
+ *
+ * A new writer, whether in this module, in a second subject kind's store or
+ * in a repair script, must fit one of the three, or a check that lost its
+ * lease can overwrite what it wrote. `RepositorySyncSubjectStore.writeBack`
+ * (repository-sync-subjects.ts) states the contract for every kind. The
+ * protocol tests in `__tests__/instruction-repository-sync-queries.test.ts`
+ * pin this text verbatim (`fenceSql`) on every lease read and fenced write,
+ * so dropping a clause fails them.
+ *
+ * Two claims of one row never write the same lease: a row is re-claimable
+ * only once its lease has passed, and the next claim's lease is the
+ * database's clock at that claim plus two minutes.
  *
  * The clock is Postgres's, never a JS `Date`, end to end (Fizzy #2683): the
  * claim writes the lease from `clock_timestamp()`, and this fence ends it by
@@ -815,9 +853,6 @@ export async function claimDueInstructionSyncRows(
  * inside the receipt's transaction; `AT TIME ZONE 'UTC'` because the columns
  * are `timestamp without time zone` holding UTC. Both as in
  * `publishingEmailClaimableSql` (projects/publishing-notification-delivery.ts).
- *
- * No tenant arm: the id comes only from the server-side claim, never from a
- * request, and names exactly one row.
  */
 function leaseFenceSql(fence: RepositorySyncFence): Prisma.Sql {
 	return Prisma.sql`"id" = ${fence.id}
