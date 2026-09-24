@@ -62,6 +62,12 @@ describe("repository sync subjects (Decision 46)", () => {
 		expect(subject.checkPermission).toBe(m.store.checkPermission);
 	});
 
+	it("claims with a lease length, never a date from the worker's clock (Fizzy #2683)", () => {
+		expectTypeOf<
+			Parameters<RepositorySyncSubject["listDueAndClaim"]>[1]
+		>().toEqualTypeOf<{ limit: number; leaseMs: number }>();
+	});
+
 	it("starts a run with any trigger but MANUAL, and answers with the start's result (Decisions 47 and 56)", () => {
 		expectTypeOf<
 			Parameters<RepositorySyncSubject["startRun"]>[1]

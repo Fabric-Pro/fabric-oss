@@ -8,7 +8,7 @@
  * The SQL each function sends is pinned separately, by the protocol tests in
  * instruction-repository-sync-queries.test.ts.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { instructionSyncRowStore as store } from "./_helpers/instruction-sync-row-store";
 
 vi.mock("../prisma/client", async () => {
@@ -45,6 +45,8 @@ vi.mock("../prisma/queries/projects/projects", () => ({
 
 import {
 	claimDueInstructionSyncRows,
+	computeSchedulingPatch,
+	instructionSyncBackoffMs,
 	instructionSyncLeaseHeld,
 	recordInstructionSyncCheckFailure,
 	recordPendingInstructionSyncHead,
@@ -58,13 +60,17 @@ const LEASE_MS = 2 * MIN;
 const at = (hhmm: string) => new Date(`2026-09-23T${hhmm}:00.000Z`);
 const PATCH = { nextCheckAt: at("12:15") };
 
-/** Task 4's claim activity: a two-minute lease from the database's clock. */
+/** Task 4's claim activity: a two-minute lease, which the database dates. */
 function claim(limit: number): Promise<ClaimedRepositorySyncRow[]> {
 	return claimDueInstructionSyncRows(store.root, {
 		limit,
-		leaseUntil: new Date(store.now().getTime() + LEASE_MS),
-		now: store.now(),
+		leaseMs: LEASE_MS,
 	});
+}
+
+/** Whether the lease read finds the lease still held. */
+async function held(row: ClaimedRepositorySyncRow): Promise<boolean> {
+	return (await instructionSyncLeaseHeld(store.root, row)).held;
 }
 
 async function claimOne(): Promise<ClaimedRepositorySyncRow> {
@@ -98,7 +104,7 @@ describe("the lease fence on a stateful row store (Decisions 31, 48 and 54)", ()
 		expect(row.leaseUntil).toEqual(at("12:02"));
 		store.advance(MIN);
 
-		expect(await instructionSyncLeaseHeld(store.root, row)).toBe(true);
+		expect(await held(row)).toBe(true);
 		expect(await writeBackInstructionSync(store.root, row, PATCH)).toEqual({
 			applied: true,
 		});
@@ -107,6 +113,153 @@ describe("the lease fence on a stateful row store (Decisions 31, 48 and 54)", ()
 			updatedAt: at("12:01"),
 		});
 	});
+
+	it.each([
+		["behind", at("11:00")],
+		["ahead of", at("13:00")],
+	])(
+		"dates the lease from the database's clock, with the worker's clock an hour %s it (Fizzy #2683)",
+		async (_label, workerNow) => {
+			vi.useFakeTimers({ now: workerNow });
+			try {
+				// The store's clock is T = 12:00; the worker's is an hour off.
+				const row = await claimOne();
+				expect(row.leaseUntil).toEqual(at("12:02"));
+				expect(store.row("sync_1")?.nextCheckAt).toEqual(at("12:02"));
+				// The fence judges it by the same clock: held until 12:02.
+				store.advance(LEASE_MS - 1);
+				expect(await held(row)).toBe(true);
+				expect(
+					await writeBackInstructionSync(store.root, row, PATCH),
+				).toEqual({ applied: true });
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
+
+	/**
+	 * The check's calibration, as `checkInstructionSyncRemoteHead` does it on
+	 * the worker that runs the check: the offset from its own first lease
+	 * read, added to that worker's clock for every schedule write
+	 * (Fizzy #2683).
+	 */
+	async function calibrate(
+		row: ClaimedRepositorySyncRow,
+	): Promise<() => Date> {
+		const lease = await instructionSyncLeaseHeld(store.root, row);
+		expect(lease).toEqual({ held: true, dbNow: store.now() });
+		const clockSkewMs = lease.dbNow.getTime() - Date.now();
+		return () => new Date(Date.now() + clockSkewMs);
+	}
+
+	const WRITTEN_EFFECTS = [
+		["a reschedule", { kind: "reschedule", delayMs: 2 * MIN }, 2 * MIN],
+		// The claimed failure count is 1, so this backoff counts 2.
+		["a backoff", { kind: "backoff" }, instructionSyncBackoffMs(2)],
+		["a success", { kind: "success", commitSha: "c".repeat(40) }, 15 * MIN],
+	] as const;
+
+	/**
+	 * The claiming worker's clock and the checking worker's, against the
+	 * database's 12:00. Temporal gives the claim and the check no worker
+	 * affinity, so the two can differ; the check's offset must be its own.
+	 */
+	describe.each([
+		["both an hour behind the database", at("11:00"), at("11:00")],
+		["both an hour ahead of the database", at("13:00"), at("13:00")],
+		[
+			"the claimer an hour ahead and the checker on the database's time",
+			at("13:00"),
+			at("12:00"),
+		],
+		[
+			"the claimer an hour behind and the checker an hour ahead",
+			at("11:00"),
+			at("13:00"),
+		],
+	])("with %s (Fizzy #2683)", (_label, claimerNow, checkerNow) => {
+		beforeEach(() => {
+			vi.useFakeTimers({ now: claimerNow });
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it.each(WRITTEN_EFFECTS)(
+			"dates %s on the database's clock, so the written check is ahead of it by exactly its delay",
+			async (_effect, effect, delayMs) => {
+				const row = await claimOne();
+				// The check runs on another worker, with its own clock.
+				vi.setSystemTime(checkerNow);
+				const dbNow = await calibrate(row);
+				// A minute of work, on both clocks.
+				store.advance(MIN);
+				vi.advanceTimersByTime(MIN);
+
+				const patch = computeSchedulingPatch(effect, {
+					now: dbNow(),
+					failureCount: row.failureCount,
+					generation: row.generation,
+				});
+				expect(
+					await writeBackInstructionSync(store.root, row, patch),
+				).toEqual({ applied: true });
+				const written = store.row("sync_1")?.nextCheckAt;
+				expect(written?.getTime()).toBe(
+					store.now().getTime() + delayMs,
+				);
+				// Not due again until the delay has passed on the database's
+				// clock: nothing re-claims it this poll.
+				expect(await claim(1)).toEqual([]);
+			},
+		);
+	});
+
+	describe.each([
+		["behind", at("11:00")],
+		["ahead of", at("13:00")],
+	])(
+		"with the caller's clock an hour %s the database's (Fizzy #2683)",
+		(_label, workerNow) => {
+			beforeEach(() => {
+				vi.useFakeTimers({ now: workerNow });
+			});
+			afterEach(() => {
+				vi.useRealTimers();
+			});
+
+			it("makes a settled re-check due on the database's clock, not the caller's", async () => {
+				store.putRun({
+					id: "sync_1:run_open",
+					syncId: "sync_1",
+					projectId: "proj_1",
+					organizationId: "org_1",
+					generation: 3,
+					finishedAt: at("12:00"),
+				});
+				store.update("sync_1", { nextCheckAt: at("12:15") });
+				store.advance(MIN);
+				const sync = {
+					syncId: "sync_1",
+					projectId: "proj_1",
+					organizationId: "org_1",
+					generation: 3,
+				};
+				await recordPendingInstructionSyncHead(store.root, {
+					...sync,
+					commitSha: "d".repeat(40),
+				});
+				expect(
+					await settlePendingInstructionSyncHead(store.root, {
+						...sync,
+						runId: "run_open",
+					}),
+				).toEqual({ applied: true, settled: "made_due" });
+				expect(store.row("sync_1")?.nextCheckAt).toEqual(at("12:01"));
+			});
+		},
+	);
 
 	it("a row with no schedule is never claimed, even when automatic and unpaused", async () => {
 		// The state a pause leaves behind, or a pause that was cleared
@@ -123,11 +276,11 @@ describe("the lease fence on a stateful row store (Decisions 31, 48 and 54)", ()
 	it("an expired lease with no competing writer applies nothing (Review Focus 3)", async () => {
 		const row = await claimOne();
 		store.advance(LEASE_MS - 1);
-		expect(await instructionSyncLeaseHeld(store.root, row)).toBe(true);
+		expect(await held(row)).toBe(true);
 
 		// Nothing else touched the row. Only the database's clock moved.
 		store.advance(1);
-		expect(await instructionSyncLeaseHeld(store.root, row)).toBe(false);
+		expect(await held(row)).toBe(false);
 		expect(await writeBackInstructionSync(store.root, row, PATCH)).toEqual({
 			applied: false,
 		});
@@ -169,7 +322,7 @@ describe("the lease fence on a stateful row store (Decisions 31, 48 and 54)", ()
 			store.update("sync_1", changes);
 			const before = store.row("sync_1");
 
-			expect(await instructionSyncLeaseHeld(store.root, row)).toBe(false);
+			expect(await held(row)).toBe(false);
 			expect(
 				await writeBackInstructionSync(store.root, row, PATCH),
 			).toEqual({
@@ -275,7 +428,7 @@ describe("the poll's failure receipt on a stateful row store (Decisions 35 and 5
 		expect(store.runs()).toEqual([]);
 		expect(store.audits()).toEqual([]);
 		// Nothing was left half written, and the lease still holds.
-		expect(await instructionSyncLeaseHeld(store.root, row)).toBe(true);
+		expect(await held(row)).toBe(true);
 	});
 
 	it("writes nothing more when retried: the first receipt's pause ended the lease", async () => {
@@ -332,7 +485,7 @@ describe("the pending head on a stateful row store (Fizzy #2682)", () => {
 			...before,
 			pendingCommitSha: PUSHED,
 		});
-		expect(await instructionSyncLeaseHeld(store.root, row)).toBe(true);
+		expect(await held(row)).toBe(true);
 		expect(await writeBackInstructionSync(store.root, row, PATCH)).toEqual({
 			applied: true,
 		});
@@ -345,7 +498,7 @@ describe("the pending head on a stateful row store (Fizzy #2682)", () => {
 	it("needs no lease: it lands on a row whose lease has lapsed", async () => {
 		const row = await claimOne();
 		store.advance(LEASE_MS);
-		expect(await instructionSyncLeaseHeld(store.root, row)).toBe(false);
+		expect(await held(row)).toBe(false);
 
 		expect(await recordPending()).toEqual({ applied: true });
 		expect(store.row("sync_1")).toMatchObject({
@@ -414,10 +567,10 @@ describe("settling a re-check request against the open run's receipt, on a state
 	}
 
 	function settle() {
+		// No `now`: the settle reads the database's clock under its lock.
 		return settlePendingInstructionSyncHead(store.root, {
 			...SYNC,
 			runId: "run_open",
-			now: store.now(),
 		});
 	}
 
@@ -485,7 +638,7 @@ describe("settling a re-check request against the open run's receipt, on a state
 		expect(await writeMarker()).toEqual({ applied: true });
 
 		expect(await settle()).toEqual({ applied: true, settled: "made_due" });
-		expect(await instructionSyncLeaseHeld(store.root, row)).toBe(false);
+		expect(await held(row)).toBe(false);
 		expect(await writeBackInstructionSync(store.root, row, PATCH)).toEqual({
 			applied: false,
 		});

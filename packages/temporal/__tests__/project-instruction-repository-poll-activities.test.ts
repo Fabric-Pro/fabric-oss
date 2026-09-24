@@ -139,6 +139,15 @@ function patchFor(effect: object): { effect: object } {
 	return { effect };
 }
 
+/**
+ * A lease read's answer (Fizzy #2683): whether it holds, and the database's
+ * clock, which here agrees with this worker's unless a case says otherwise.
+ * Built at call time, so it reads the faked clock of the moment.
+ */
+function leaseRead(held: boolean, dbNow = new Date()) {
+	return { held, dbNow };
+}
+
 /** Everything a check could leak to: its result and every log line. */
 function everyOutput(result: unknown): string {
 	return JSON.stringify([
@@ -187,7 +196,7 @@ beforeEach(() => {
 		fn(m.tx),
 	);
 	m.patch.mockImplementation((effect: object) => patchFor(effect));
-	m.subject.leaseHeld.mockResolvedValue(true);
+	m.subject.leaseHeld.mockImplementation(async () => leaseRead(true));
 	m.subject.checkPermission.mockResolvedValue(true);
 	m.subject.writeBack.mockResolvedValue({ applied: true });
 	m.subject.recordCheckFailure.mockResolvedValue({ applied: true });
@@ -224,7 +233,7 @@ describe("claimDueInstructionSyncChecks (spec §6.1)", () => {
 		vi.useRealTimers();
 	});
 
-	it("claims through the requested kind's subject, with a two-minute lease from this activity's clock (Decision 46)", async () => {
+	it("claims through the requested kind's subject, with a two-minute lease the database dates, never a date from this activity's clock (Decision 46, Fizzy #2683)", async () => {
 		m.subject.listDueAndClaim.mockResolvedValue([ROW]);
 		expect(
 			await claimDueInstructionSyncChecks({
@@ -235,9 +244,20 @@ describe("claimDueInstructionSyncChecks (spec §6.1)", () => {
 		expect(m.subjectFor).toHaveBeenCalledWith("instructions");
 		expect(m.subject.listDueAndClaim).toHaveBeenCalledWith(m.db, {
 			limit: 8,
-			leaseUntil: new Date(LEASE_ISO),
-			now: new Date(NOW_ISO),
+			leaseMs: 2 * MIN,
 		});
+	});
+
+	it("hands on the lease the database wrote, whatever this worker's clock reads (Fizzy #2683)", async () => {
+		// The worker's clock is an hour behind the database's lease.
+		vi.setSystemTime(new Date("2026-09-23T11:00:00.000Z"));
+		m.subject.listDueAndClaim.mockResolvedValue([ROW]);
+		expect(
+			await claimDueInstructionSyncChecks({
+				kind: "instructions",
+				limit: 8,
+			}),
+		).toEqual([CLAIMED]);
 	});
 
 	it("hands each lease on as an ISO string that keeps its milliseconds (Decision 31)", async () => {
@@ -374,8 +394,8 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 
 	it("re-reads the lease before it starts, and starts nothing once it is lost", async () => {
 		m.subject.leaseHeld
-			.mockResolvedValueOnce(true)
-			.mockResolvedValueOnce(false);
+			.mockImplementationOnce(async () => leaseRead(true))
+			.mockImplementationOnce(async () => leaseRead(false));
 		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
 			outcome: "stale",
 		});
@@ -699,13 +719,15 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 			"2026-09-23T12:00:55.000Z",
 		],
 	])(
-		"reads nothing once it is within five seconds of %s ending, as when the task queue held it (Decision 50)",
+		"reads nothing but its lease once it is within five seconds of %s ending, as when the task queue held it (Decision 50)",
 		async (_label, input, now) => {
 			vi.setSystemTime(new Date(now));
 			expect(await checkInstructionSyncRemoteHead(input)).toEqual({
 				outcome: "stale",
 			});
-			expect(m.subject.leaseHeld).not.toHaveBeenCalled();
+			// The one lease read is how the check learns the database's
+			// clock, so it comes before the deadline test (Fizzy #2683).
+			expect(m.subject.leaseHeld).toHaveBeenCalledTimes(1);
 			expect(m.subject.checkPermission).not.toHaveBeenCalled();
 			expectNoRepositoryAccess();
 			expect(m.subject.writeBack).not.toHaveBeenCalled();
@@ -779,10 +801,10 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 			"the start",
 			() =>
 				m.subject.leaseHeld
-					.mockResolvedValueOnce(true)
+					.mockImplementationOnce(async () => leaseRead(true))
 					.mockImplementationOnce(async () => {
 						vi.setSystemTime(LATE);
-						return true;
+						return leaseRead(true);
 					}),
 		],
 	])(
@@ -826,7 +848,7 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 	});
 
 	it("a check whose lease is gone reads nothing and starts nothing (Review Focus 3)", async () => {
-		m.subject.leaseHeld.mockResolvedValue(false);
+		m.subject.leaseHeld.mockImplementation(async () => leaseRead(false));
 		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
 			outcome: "stale",
 		});
@@ -857,6 +879,7 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 			pollRunId: "poll_run_1",
 			error: "REF_MISSING",
 			pause: "REF_MISSING",
+			now: new Date(NOW_ISO),
 		});
 		expect(m.subject.writeBack).not.toHaveBeenCalled();
 		expect(m.subject.startRun).not.toHaveBeenCalled();
@@ -896,6 +919,7 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 				pollRunId: "poll_run_1",
 				error: "PERMISSION_DENIED",
 				pause: "PERMISSION_REVOKED",
+				now: new Date(NOW_ISO),
 			});
 			expectNoRepositoryAccess();
 			expect(m.subject.writeBack).not.toHaveBeenCalled();
@@ -991,6 +1015,257 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 			m.db,
 			FENCE,
 			patchFor({ kind: "backoff" }),
+		);
+	});
+});
+
+describe("the lease fence refusing a check's write while it is in time (Fizzy #2683)", () => {
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+		vi.setSystemTime(new Date(NOW_ISO));
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/** The warnings this card adds, and only those. */
+	function fenceRejections(): unknown[] {
+		return m.log.warn.mock.calls
+			.map(([fields]) => fields as { event?: string })
+			.filter(
+				(fields) =>
+					fields.event === "instructions.sync.lease_fence_rejected",
+			);
+	}
+
+	it.each([
+		[
+			"the evaluated write",
+			"write_back",
+			"stale",
+			() => {
+				m.lsRemoteHead.mockResolvedValue({
+					kind: "found",
+					sha: OLD_SHA,
+				});
+				m.subject.writeBack.mockResolvedValue({ applied: false });
+			},
+		],
+		[
+			"the failure receipt",
+			"record_failure",
+			"stale",
+			() => {
+				m.lsRemoteHead.mockResolvedValue({ kind: "missing" });
+				m.subject.recordCheckFailure.mockResolvedValue({
+					applied: false,
+				});
+			},
+		],
+		[
+			"the reschedule after a start",
+			"reschedule",
+			"started",
+			() => m.subject.writeBack.mockResolvedValue({ applied: false }),
+		],
+	] as const)(
+		"warns once, with identifiers and both clocks only, when the fence refuses %s, and changes no outcome",
+		async (_label, stage, outcome, arrange) => {
+			arrange();
+			const result = await checkInstructionSyncRemoteHead(CHECK);
+			expect(result).toEqual({ outcome });
+			expect(fenceRejections()).toEqual([
+				{
+					event: "instructions.sync.lease_fence_rejected",
+					kind: "instructions",
+					syncId: "sync_1",
+					projectId: "proj_1",
+					organizationId: "org_1",
+					stage,
+					leaseUntil: LEASE_ISO,
+					dbNow: NOW_ISO,
+					workerNow: NOW_ISO,
+				},
+			]);
+			const output = everyOutput(result);
+			expect(output).not.toContain(TOKEN);
+			expect(output).not.toContain("github.com");
+			expect(output).not.toContain('"main"');
+		},
+	);
+
+	it("does not warn when the write lands", async () => {
+		m.lsRemoteHead.mockResolvedValue({ kind: "found", sha: OLD_SHA });
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "evaluated",
+		});
+		expect(fenceRejections()).toEqual([]);
+	});
+
+	it("does not warn when the write came back after the check's deadline: the lease ended as expected", async () => {
+		m.lsRemoteHead.mockResolvedValue({ kind: "found", sha: OLD_SHA });
+		m.subject.writeBack.mockImplementation(async () => {
+			vi.setSystemTime(LATE);
+			return { applied: false };
+		});
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "stale",
+		});
+		expect(fenceRejections()).toEqual([]);
+	});
+
+	it.each([
+		[
+			"the settle made the row due",
+			() =>
+				m.subject.settlePendingHead.mockResolvedValue({
+					applied: true,
+					settled: "made_due",
+				}),
+		],
+		[
+			"the settle found the row re-configured",
+			() =>
+				m.subject.settlePendingHead.mockResolvedValue({
+					applied: false,
+					settled: "stale",
+				}),
+		],
+		[
+			"the re-check request found the row re-configured",
+			() =>
+				m.subject.recordPendingHead.mockResolvedValue({
+					applied: false,
+				}),
+		],
+	])(
+		"does not warn about the reschedule when %s: that ended the lease on purpose",
+		async (_label, arrange) => {
+			m.subject.startRun.mockResolvedValue(ALREADY_RUNNING);
+			arrange();
+			m.subject.writeBack.mockResolvedValue({ applied: false });
+			expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+				outcome: "already_running",
+			});
+			expect(m.subject.writeBack).toHaveBeenCalledTimes(1);
+			expect(fenceRejections()).toEqual([]);
+		},
+	);
+
+	it("still warns about the reschedule after an open run's request is left for its completion", async () => {
+		m.subject.startRun.mockResolvedValue(ALREADY_RUNNING);
+		m.subject.writeBack.mockResolvedValue({ applied: false });
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "already_running",
+		});
+		expect(fenceRejections()).toEqual([
+			expect.objectContaining({ stage: "reschedule" }),
+		]);
+	});
+});
+
+describe("the check on the database's clock, measured by its own lease read (Fizzy #2683)", () => {
+	/** The database's clock at the start of every case: the claim's 12:00. */
+	const DB_NOW = new Date(NOW_ISO);
+
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/** This worker's clock is `workerNow`; its lease read answers 12:00. */
+	function workerAt(workerNow: string): void {
+		vi.setSystemTime(new Date(workerNow));
+		m.subject.leaseHeld.mockImplementation(async () =>
+			leaseRead(
+				true,
+				new Date(
+					DB_NOW.getTime() + (Date.now() - Date.parse(workerNow)),
+				),
+			),
+		);
+	}
+
+	it.each([
+		["ahead of", "2026-09-23T13:00:00.000Z"],
+		["behind", "2026-09-23T11:00:00.000Z"],
+	])(
+		"runs the whole check while the lease is live, with this worker's clock an hour %s the database's, and dates every schedule write on the database's clock",
+		async (_label, workerNow) => {
+			workerAt(workerNow);
+			m.lsRemoteHead.mockResolvedValue({ kind: "found", sha: OLD_SHA });
+			expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+				outcome: "evaluated",
+			});
+			expect(m.lsRemoteHead).toHaveBeenCalledTimes(1);
+			expect(m.patch).toHaveBeenCalledWith(
+				{ kind: "success", commitSha: OLD_SHA },
+				{ now: DB_NOW, failureCount: 2, generation: 3 },
+			);
+			expect(m.subject.writeBack).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it.each([
+		["ahead of", "2026-09-23T13:00:00.000Z"],
+		["behind", "2026-09-23T11:00:00.000Z"],
+	])(
+		"dates a reschedule after a start on the database's clock, with this worker's clock an hour %s it",
+		async (_label, workerNow) => {
+			workerAt(workerNow);
+			expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+				outcome: "started",
+			});
+			expect(m.patch).toHaveBeenCalledWith(
+				{ kind: "reschedule", delayMs: 15 * MIN },
+				{ now: DB_NOW, failureCount: 2, generation: 3 },
+			);
+		},
+	);
+
+	it("dates a failure receipt on the database's clock", async () => {
+		workerAt("2026-09-23T11:00:00.000Z");
+		m.lsRemoteHead.mockResolvedValue({ kind: "missing" });
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "ref_missing",
+		});
+		expect(m.subject.recordCheckFailure).toHaveBeenCalledWith(
+			m.tx,
+			expect.objectContaining({ now: DB_NOW }),
+		);
+	});
+
+	it("stops at the lease on the database's clock, with this worker's clock an hour behind it", async () => {
+		// The lease read says 12:01:56: past the 12:01:55 stop, although this
+		// worker's 11:01:56 is nowhere near the lease.
+		vi.setSystemTime(new Date("2026-09-23T11:01:56.000Z"));
+		m.subject.leaseHeld.mockImplementation(async () =>
+			leaseRead(true, new Date("2026-09-23T12:01:56.000Z")),
+		);
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "stale",
+		});
+		expect(m.subject.leaseHeld).toHaveBeenCalledTimes(1);
+		expect(m.subject.checkPermission).not.toHaveBeenCalled();
+		expectNoRepositoryAccess();
+		expect(m.subject.writeBack).not.toHaveBeenCalled();
+	});
+
+	it("logs the calibrated and the raw time when the fence refuses a write", async () => {
+		workerAt("2026-09-23T11:00:00.000Z");
+		m.lsRemoteHead.mockResolvedValue({ kind: "found", sha: OLD_SHA });
+		m.subject.writeBack.mockResolvedValue({ applied: false });
+		await checkInstructionSyncRemoteHead(CHECK);
+		expect(m.log.warn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event: "instructions.sync.lease_fence_rejected",
+				leaseUntil: LEASE_ISO,
+				dbNow: NOW_ISO,
+				workerNow: "2026-09-23T11:00:00.000Z",
+			}),
+			expect.any(String),
 		);
 	});
 });

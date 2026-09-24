@@ -62,6 +62,17 @@ const START = new Date("2026-09-23T12:00:00.000Z");
 const TABLE = '"project_instruction_repository_sync"';
 /** Only the claim carries this; the store models it from its parameters. */
 const CLAIM_MARK = "FOR UPDATE OF s2 SKIP LOCKED";
+/**
+ * The claim's lease and due predicate, both on the database clock (Fizzy
+ * #2683). The store evaluates a claim only when it carries exactly these,
+ * so a claim that went back to a caller's date fails instead of passing.
+ */
+const CLAIM_LEASE =
+	"SET \"nextCheckAt\" = (clock_timestamp() AT TIME ZONE 'UTC') + make_interval(secs => $1::double precision / 1000)";
+/** The database's clock as a lock read returns it (Fizzy #2683). */
+const CLOCK_COLUMN = `, (clock_timestamp() AT TIME ZONE 'UTC') AS "now"`;
+const CLAIM_DUE =
+	"s2.\"nextCheckAt\" <= (clock_timestamp() AT TIME ZONE 'UTC')";
 
 const ROW_DEFAULTS: Omit<SyncRow, "id" | "nextCheckAt" | "updatedAt"> = {
 	projectId: "proj_1",
@@ -205,9 +216,20 @@ function createInstructionSyncRowStore() {
 		throw new Error(`the row store cannot apply: ${assignment}`);
 	}
 
-	/** Task 2's claim, from its three parameters: the lease, `now` and the limit. */
-	function claim(values: readonly unknown[]): unknown[] {
-		const [leaseUntil, at, limit] = values as [Date, Date, number];
+	/**
+	 * Task 2's claim, from its two parameters, the lease's length and the
+	 * limit. Due and lease both read this store's clock, as
+	 * `clock_timestamp()` does (Fizzy #2683); no worker date is involved.
+	 */
+	function claim(text: string, values: readonly unknown[]): unknown[] {
+		if (!text.includes(CLAIM_LEASE) || !text.includes(CLAIM_DUE)) {
+			throw new Error(
+				`the row store cannot evaluate this claim: ${text}`,
+			);
+		}
+		const [leaseMs, limit] = values as [number, number];
+		const at = clock;
+		const leaseUntil = new Date(at + leaseMs);
 		return [...rows.values()]
 			.filter(
 				(row) =>
@@ -215,7 +237,7 @@ function createInstructionSyncRowStore() {
 					row.automaticPausedReason === null &&
 					row.integrationStatus === "ACTIVE" &&
 					row.nextCheckAt !== null &&
-					row.nextCheckAt.getTime() <= at.getTime(),
+					row.nextCheckAt.getTime() <= at,
 			)
 			.sort(
 				(a, b) =>
@@ -249,11 +271,30 @@ function createInstructionSyncRowStore() {
 		inTransaction: boolean,
 	): unknown[] {
 		if (text.includes(CLAIM_MARK)) {
-			return claim(values);
+			return claim(text, values);
 		}
+		// The lease read: the fence as an EXISTS, beside the database's
+		// clock, answered from this store's clock (Fizzy #2683).
+		const leaseRead = new RegExp(
+			`^SELECT \\(clock_timestamp\\(\\) AT TIME ZONE 'UTC'\\) AS "dbNow", EXISTS \\(SELECT 1 FROM ${TABLE} WHERE (.+)\\) AS "held"$`,
+		).exec(text);
+		if (leaseRead) {
+			const where = leaseRead[1] ?? "";
+			return [
+				{
+					dbNow: now(),
+					held: [...rows.values()].some((row) =>
+						matches(row, where, values),
+					),
+				},
+			];
+		}
+		// The one computed column a lock read may add: the database's clock
+		// (Fizzy #2683), answered from this store's clock.
+		const clocked = text.includes(CLOCK_COLUMN);
 		const select = new RegExp(
 			`^SELECT ("\\w+"(?:, "\\w+")*) FROM ${TABLE} WHERE (.+?)( FOR UPDATE)?$`,
-		).exec(text);
+		).exec(clocked ? text.replace(CLOCK_COLUMN, "") : text);
 		if (!select) {
 			throw new Error(`the row store cannot run: ${text}`);
 		}
@@ -270,9 +311,10 @@ function createInstructionSyncRowStore() {
 			.filter((row) => matches(row, where, values))
 			.map((row) => {
 				const copy = copyRow(row);
-				return Object.fromEntries(
-					names.map((name) => [name, copy[column(copy, name)]]),
-				);
+				return Object.fromEntries([
+					...names.map((name) => [name, copy[column(copy, name)]]),
+					...(clocked ? [["now", now()]] : []),
+				]);
 			});
 	}
 

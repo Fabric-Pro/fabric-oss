@@ -595,6 +595,7 @@ describe("completeInstructionRepositorySyncRun", () => {
 				failureCount: 2,
 				automaticPausedReason: null,
 				pendingCommitSha: null,
+				now: NOW,
 			},
 		]);
 
@@ -618,6 +619,10 @@ describe("completeInstructionRepositorySyncRun", () => {
 		// Read under the same lock the scheduling write holds (Fizzy #2682).
 		expect(sql).toContain('"automaticPausedReason"');
 		expect(sql).toContain('"pendingCommitSha"');
+		// And the database's clock, read under that lock (Fizzy #2683).
+		expect(sql).toContain(
+			`(clock_timestamp() AT TIME ZONE 'UTC') AS "now"`,
+		);
 		expect(sql).toContain("FOR UPDATE");
 		expect(sql).toContain('"projectId" =');
 		expect(sql).toContain('"organizationId" =');
@@ -672,6 +677,38 @@ describe("completeInstructionRepositorySyncRun", () => {
 		);
 	});
 
+	it("dates the receipt and the next check on the database's clock read under the lock when the caller passes no time (Fizzy #2683)", async () => {
+		const dbNow = new Date(NOW.getTime() + 60 * MIN);
+		m.run.updateMany.mockResolvedValue({ count: 1 });
+		m.$queryRaw.mockResolvedValueOnce([
+			{
+				generation: 3,
+				failureCount: 2,
+				automaticPausedReason: null,
+				pendingCommitSha: null,
+				now: dbNow,
+			},
+		]);
+		const { now: _callerNow, ...withoutNow } = base;
+
+		expect(await completeInstructionRepositorySyncRun(withoutNow)).toEqual({
+			completed: true,
+			configurationCurrent: true,
+		});
+		expect(m.run.updateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ finishedAt: dbNow }),
+			}),
+		);
+		expect(m.sync.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					nextCheckAt: new Date(dbNow.getTime() + 15 * MIN),
+				}),
+			}),
+		);
+	});
+
 	it("a second delivery, or a late attempt of an older run, still locks the sync row (same order as a disable) but writes nothing else", async () => {
 		m.run.updateMany.mockResolvedValue({ count: 0 });
 		m.$queryRaw.mockResolvedValueOnce([
@@ -680,6 +717,7 @@ describe("completeInstructionRepositorySyncRun", () => {
 				failureCount: 0,
 				automaticPausedReason: null,
 				pendingCommitSha: null,
+				now: NOW,
 			},
 		]);
 		expect(await completeInstructionRepositorySyncRun(base)).toEqual({
@@ -703,6 +741,7 @@ describe("completeInstructionRepositorySyncRun", () => {
 				failureCount: 0,
 				automaticPausedReason: null,
 				pendingCommitSha: null,
+				now: NOW,
 			},
 		]);
 		expect(await completeInstructionRepositorySyncRun(base)).toEqual({
@@ -857,6 +896,7 @@ describe("completeInstructionRepositorySyncRun", () => {
 					failureCount: 2,
 					automaticPausedReason: null,
 					pendingCommitSha: null,
+					now: NOW,
 				},
 			]);
 			m.run.updateMany.mockResolvedValue({ count: 1 });
@@ -959,6 +999,7 @@ describe("completeInstructionRepositorySyncRun", () => {
 					failureCount,
 					automaticPausedReason: null,
 					pendingCommitSha: null,
+					now: NOW,
 				},
 			]);
 			await completeInstructionRepositorySyncRun({ ...base, scheduling });
@@ -983,6 +1024,7 @@ describe("completeInstructionRepositorySyncRun", () => {
 				failureCount: 0,
 				automaticPausedReason: null,
 				pendingCommitSha: null,
+				now: NOW,
 			},
 		]);
 		await expect(
@@ -1025,6 +1067,7 @@ describe("completeInstructionRepositorySyncRun", () => {
 				failureCount: 0,
 				automaticPausedReason: null,
 				pendingCommitSha: null,
+				now: NOW,
 			},
 		]);
 		await completeInstructionRepositorySyncRun({
@@ -1056,6 +1099,7 @@ describe("completeInstructionRepositorySyncRun", () => {
 					generation: 3,
 					failureCount: 0,
 					automaticPausedReason: null,
+					now: NOW,
 					...row,
 				},
 			]);
@@ -1439,8 +1483,7 @@ describe("claimDueInstructionSyncRows (spec §6.1)", () => {
 		expect(
 			await claimDueInstructionSyncRows(tx, {
 				limit: 8,
-				leaseUntil: LEASE_UNTIL,
-				now: NOW,
+				leaseMs: 2 * MIN,
 			}),
 		).toEqual(claimed);
 
@@ -1453,8 +1496,11 @@ describe("claimDueInstructionSyncRows (spec §6.1)", () => {
 			...unknown[],
 		];
 		const sql = strings.join("?").replace(/\s+/g, " ");
+		// The lease is born on the database's clock, the clock the fence ends
+		// it by, from a bound duration: no worker date reaches the row
+		// (Fizzy #2683).
 		expect(sql).toContain(
-			'UPDATE "project_instruction_repository_sync" AS s SET "nextCheckAt" = ?',
+			`UPDATE "project_instruction_repository_sync" AS s SET "nextCheckAt" = (clock_timestamp() AT TIME ZONE 'UTC') + make_interval(secs => ?::double precision / 1000) WHERE`,
 		);
 		expect(sql).toContain('WHERE s."id" = ANY (ARRAY(');
 		expect(sql).toContain(
@@ -1462,7 +1508,9 @@ describe("claimDueInstructionSyncRows (spec §6.1)", () => {
 		);
 		expect(sql).toContain('s2."automatic" = true');
 		expect(sql).toContain('s2."automaticPausedReason" IS NULL');
-		expect(sql).toContain('s2."nextCheckAt" <= ?');
+		expect(sql).toContain(
+			`s2."nextCheckAt" <= (clock_timestamp() AT TIME ZONE 'UTC')`,
+		);
 		expect(sql).toContain(`i."status" = 'ACTIVE'`);
 		// Oldest due first: an unprocessed lease (now + 2 min) sorts ahead of
 		// every row a finished check pushed to now + 15 min.
@@ -1489,7 +1537,12 @@ describe("claimDueInstructionSyncRows (spec §6.1)", () => {
 		}
 		// The lease's identity is the value the claim wrote (Decision 31).
 		expect(sql).toContain('s."nextCheckAt" AS "leaseUntil"');
-		expect(values).toEqual([LEASE_UNTIL, NOW, 8]);
+		// Only the lease: the check measures its own clock offset from its
+		// own lease read, on the worker that uses it (Fizzy #2683).
+		expect(sql).not.toContain('AS "claimedAt"');
+		// The lease's length and the limit, and nothing dated.
+		expect(values).toEqual([2 * MIN, 8]);
+		expect(values.some((value) => value instanceof Date)).toBe(false);
 	});
 
 	it("protocol: returns an empty batch when nothing is due", async () => {
@@ -1497,7 +1550,7 @@ describe("claimDueInstructionSyncRows (spec §6.1)", () => {
 		expect(
 			await claimDueInstructionSyncRows(tx, {
 				limit: 8,
-				leaseUntil: LEASE_UNTIL,
+				leaseMs: 2 * MIN,
 			}),
 		).toEqual([]);
 	});
@@ -1549,19 +1602,27 @@ function sent(method: ReturnType<typeof vi.fn>): {
 }
 
 describe("instructionSyncLeaseHeld (Decisions 31 and 48)", () => {
-	it("protocol: reads the lease with one raw SELECT on the fence, on the caller's client", async () => {
-		m.$queryRaw.mockResolvedValueOnce([{ id: "sync_1" }]);
-		expect(await instructionSyncLeaseHeld(tx, FENCE)).toBe(true);
+	const DB_NOW = new Date(NOW.getTime() + 60 * MIN);
+
+	it("protocol: reads the lease and the database's clock in one raw SELECT on the fence, on the caller's client (Fizzy #2683)", async () => {
+		m.$queryRaw.mockResolvedValueOnce([{ dbNow: DB_NOW, held: true }]);
+		expect(await instructionSyncLeaseHeld(tx, FENCE)).toEqual({
+			held: true,
+			dbNow: DB_NOW,
+		});
 		expect(sent(m.$queryRaw)).toEqual({
-			text: `SELECT "id" FROM "project_instruction_repository_sync" WHERE ${fenceSql(1)}`,
+			text: `SELECT (clock_timestamp() AT TIME ZONE 'UTC') AS "dbNow", EXISTS (SELECT 1 FROM "project_instruction_repository_sync" WHERE ${fenceSql(1)}) AS "held"`,
 			values: FENCE_VALUES,
 		});
 		expect(m.sync.findFirst).not.toHaveBeenCalled();
 	});
 
-	it("protocol: no row back means the lease is lost", async () => {
-		m.$queryRaw.mockResolvedValueOnce([]);
-		expect(await instructionSyncLeaseHeld(tx, FENCE)).toBe(false);
+	it("protocol: a lost lease still reports the database's clock", async () => {
+		m.$queryRaw.mockResolvedValueOnce([{ dbNow: DB_NOW, held: false }]);
+		expect(await instructionSyncLeaseHeld(tx, FENCE)).toEqual({
+			held: false,
+			dbNow: DB_NOW,
+		});
 	});
 });
 
@@ -1913,12 +1974,13 @@ describe("settlePendingInstructionSyncHead (Fizzy #2682)", () => {
 		generation: 3,
 	};
 
-	/** The sync row the settle locks. */
+	/** The sync row the settle locks, with the database's clock it read. */
 	function lockedRow(row: {
 		automaticPausedReason: string | null;
 		pendingCommitSha: string | null;
+		now?: Date;
 	}) {
-		m.$queryRaw.mockResolvedValueOnce([row]);
+		m.$queryRaw.mockResolvedValueOnce([{ now: NOW, ...row }]);
 	}
 
 	it("protocol: locks the sync row FIRST, fenced on its id, tenant and generation, then reads the run's receipt, in one transaction", async () => {
@@ -1933,8 +1995,9 @@ describe("settlePendingInstructionSyncHead (Fizzy #2682)", () => {
 			...unknown[],
 		];
 		const sql = strings.join("?").replace(/\s+/g, " ");
+		// The database's clock is read under the same lock (Fizzy #2683).
 		expect(sql).toContain(
-			'SELECT "automaticPausedReason", "pendingCommitSha" FROM "project_instruction_repository_sync"',
+			`SELECT "automaticPausedReason", "pendingCommitSha", (clock_timestamp() AT TIME ZONE 'UTC') AS "now" FROM "project_instruction_repository_sync"`,
 		);
 		expect(sql).toContain(
 			'WHERE "id" = ? AND "projectId" = ? AND "organizationId" = ? AND "generation" = ? FOR UPDATE',
@@ -1973,6 +2036,25 @@ describe("settlePendingInstructionSyncHead (Fizzy #2682)", () => {
 			settled: "consumer_pending",
 		});
 		expect(m.sync.updateMany).not.toHaveBeenCalled();
+	});
+
+	it("makes the row due at the database's clock read under the lock when the caller passes no time (Fizzy #2683)", async () => {
+		const dbNow = new Date(NOW.getTime() + 60 * MIN);
+		lockedRow({
+			automaticPausedReason: null,
+			pendingCommitSha: HEAD,
+			now: dbNow,
+		});
+		m.run.findFirst.mockResolvedValueOnce({ finishedAt: NOW });
+		m.sync.updateMany.mockResolvedValueOnce({ count: 1 });
+		const { now: _callerNow, ...withoutNow } = input;
+		expect(
+			await settlePendingInstructionSyncHead(runner, withoutNow),
+		).toEqual({ applied: true, settled: "made_due" });
+		expect(m.sync.updateMany).toHaveBeenCalledWith({
+			where: FENCE_WHERE,
+			data: { nextCheckAt: dbNow, pendingCommitSha: null },
+		});
 	});
 
 	it("a finished receipt means the completion already committed without the marker: the row is due now and the marker cleared", async () => {
