@@ -100,6 +100,12 @@ export async function createPendingVectorCleanup(
 		projectId: string;
 		contextIds: string[];
 		tenant: ConversationCaptureTenant;
+		/**
+		 * The Living Memory repository sync run whose prune queued this
+		 * record, so that run's receipt can count its still-queued cleanups
+		 * live, whichever drain clears them. Omitted by every other delete.
+		 */
+		syncRunKey?: string;
 	},
 ): Promise<string> {
 	const record = await client.projectContextPendingVectorCleanup.create({
@@ -107,6 +113,9 @@ export async function createPendingVectorCleanup(
 			projectId: params.projectId,
 			contextIds: params.contextIds,
 			...conversationTenantColumns(params.tenant),
+			...(params.syncRunKey !== undefined
+				? { syncRunKey: params.syncRunKey }
+				: {}),
 		},
 		select: { id: true },
 	});

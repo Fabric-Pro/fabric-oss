@@ -80,6 +80,19 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				},
 				delete: { call: deleteCallMock },
 				createDownloadUrl: { call: vi.fn() },
+				repositorySync: {
+					get: {
+						queryOptions: () => ({
+							queryKey: [
+								"projects.contexts.repositorySync.get",
+							] as const,
+							queryFn: async () => null,
+						}),
+					},
+					configure: { mutationOptions: () => ({}) },
+					syncNow: { mutationOptions: () => ({}) },
+					disable: { mutationOptions: () => ({}) },
+				},
 			},
 		},
 		integrations: {

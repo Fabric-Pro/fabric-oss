@@ -6,9 +6,12 @@
  * calls behind the `projects:write` scope, is
  * `DELETE /api/v1/projects/:projectId/contexts/synced-files` in
  * `modules/v1/contexts.ts`. Both call `deleteSyncedContext`, which owns the
- * validation, the index cleanup and the delete (whose workflow writes the
- * audit row and publishes the realtime events), so this file is
- * authorization and the wire contract only; change the two together.
+ * validation, the row-first delete (with its queued index cleanup and audit
+ * row, in one transaction) and the realtime events, so this file is
+ * authorization and the wire contract only; change the two together. Every
+ * answer is final (Living Memory design 2026-09-23 §6): `deleted`, `absent`,
+ * CONFLICT with the stored version, or CONFLICT with
+ * `data.code: "REPOSITORY_MANAGED"` for a row a repository sync owns.
  *
  * Authorization, all answered server-side, on the terms of the upsert twin
  * (`upsert-synced-file.ts`) with the Context tab's delete permission, in
@@ -55,7 +58,7 @@ export const deleteSyncedFileProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Contexts"],
 		summary: "Delete a synced context file by path",
 		description:
-			"Delete a file pushed into the project's Context by its path, but only the version named in `expectedContentHash`: when the path holds another version (someone changed it since), the call answers CONFLICT with the stored hash and who last changed it, and deletes nothing. A path with no source answers `absent`. The file's entries in the search index are removed before the source itself. A deletion that has not finished within 45 seconds answers `in-progress` and keeps running; call again to confirm.",
+			"Delete a file pushed into the project's Context by its path, but only the version named in `expectedContentHash`: when the path holds another version (someone changed it since), the call answers CONFLICT with the stored hash and who last changed it, and deletes nothing. A path with no source answers `absent`. A file synced from a connected repository answers CONFLICT with `data.code` `REPOSITORY_MANAGED`, naming the repository and branch to remove it from. The source is deleted at once and its entries in the search index are queued for removal in the same step.",
 	})
 	.input(
 		z.object({

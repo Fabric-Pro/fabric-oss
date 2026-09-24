@@ -26,7 +26,12 @@
  *    only when the old path still holds the version the caller named AND the
  *    content sent is that same version; every other case says why the move
  *    was not applied and falls back to the ordinary rules at the new path,
- *    never touching the old row, and never naming a row outside the scope.
+ *    never touching the old row, and never naming a row outside the scope;
+ *  - a row a Living Memory repository sync authored (`repositorySyncId` set,
+ *    design 2026-09-23 §6) is never written: every conditional write carries
+ *    `repositorySyncId IS NULL`, and a managed row at the path, at the move's
+ *    old path, or one adopted between the read and the write, is answered
+ *    `repository-managed` with the repository and branch it comes from.
  *
  * The transaction client is an in-memory table that evaluates each `where`
  * by equality, so a scope that is too wide or too narrow shows up as the
@@ -145,13 +150,40 @@ const table = vi.hoisted(() => {
 		),
 	};
 
-	return { state, projectContext, uniqueViolation };
+	/** Repository sync configurations, as the label lookup reads them. */
+	const syncs: Row[] = [];
+	const projectContextRepositorySync = {
+		findFirst: vi.fn(async (args: { where: Record<string, unknown> }) => {
+			const sync = syncs.find((row) => matches(row, args.where));
+			return sync
+				? {
+						ref: sync.ref,
+						repositoryIntegration: {
+							repositoryOwner: sync.repositoryOwner,
+							repositoryName: sync.repositoryName,
+						},
+					}
+				: null;
+		}),
+	};
+
+	return {
+		state,
+		syncs,
+		projectContext,
+		projectContextRepositorySync,
+		uniqueViolation,
+	};
 });
 
 vi.mock("../prisma/client", () => ({
 	db: {
 		$transaction: (fn: (client: unknown) => Promise<unknown>) =>
-			fn({ projectContext: table.projectContext }),
+			fn({
+				projectContext: table.projectContext,
+				projectContextRepositorySync:
+					table.projectContextRepositorySync,
+			}),
 	},
 	Prisma: { sql: vi.fn(), join: vi.fn() },
 }));
@@ -213,6 +245,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	table.state.rows = [];
 	table.state.nextId = 1;
+	table.syncs.length = 0;
 });
 
 describe("upsertContextBySourcePath — a path seen for the first time", () => {
@@ -402,6 +435,8 @@ describe("upsertContextBySourcePath — explicit overwrite", () => {
 			projectId: "proj-1",
 			organizationId: "org-1",
 			contentHash: sha(V1),
+			// Never a row a repository sync authored (design 2026-09-23 §6).
+			repositorySyncId: null,
 		});
 	});
 
@@ -764,6 +799,8 @@ describe("upsertContextBySourcePath — a move (movedFromSourcePath)", () => {
 			organizationId: "org-1",
 			sourcePath: FROM,
 			contentHash: sha(V1),
+			// Never a row a repository sync authored (design 2026-09-23 §6).
+			repositorySyncId: null,
 		});
 	});
 
@@ -1007,5 +1044,182 @@ describe("upsertContextBySourcePath — a move (movedFromSourcePath)", () => {
 
 		expect(result.status).toBe("created");
 		expect(foreign.sourcePath).toBe(FROM);
+	});
+});
+
+describe("upsertContextBySourcePath — a row a repository sync authored (design 2026-09-23 §6)", () => {
+	const FROM = "notes/arch.md";
+	const TO = "docs/architecture.md";
+	const MANAGED = {
+		status: "repository-managed",
+		sync: { repository: "example-org/handbook", ref: "main" },
+	} as const;
+
+	beforeEach(() => {
+		table.syncs.push({
+			id: "sync-1",
+			projectId: "proj-1",
+			organizationId: "org-1",
+			ref: "main",
+			repositoryOwner: "example-org",
+			repositoryName: "handbook",
+		});
+	});
+
+	/** A row the sync wrote at `sourcePath`. */
+	function seedManaged(overrides: Row = {}): Row {
+		return seed({ repositorySyncId: "sync-1", ...overrides });
+	}
+
+	it("refuses to replace it even when the caller names the stored hash, and writes nothing", async () => {
+		const managed = seedManaged();
+
+		const result = await upsert({
+			content: V2,
+			expectedContentHash: sha(V1),
+		});
+
+		expect(result).toMatchObject({
+			...MANAGED,
+			context: { id: managed.id, repositorySyncId: "sync-1" },
+		});
+		expect(table.projectContext.updateMany).not.toHaveBeenCalled();
+		expect(managed).toMatchObject({ content: V1, contentHash: sha(V1) });
+	});
+
+	it("answers repository-managed rather than unchanged or conflict when no hash is named", async () => {
+		seedManaged();
+
+		expect(await upsert()).toMatchObject(MANAGED);
+		expect(await upsert({ content: V2 })).toMatchObject(MANAGED);
+		expect(table.projectContext.create).not.toHaveBeenCalled();
+		expect(table.projectContext.updateMany).not.toHaveBeenCalled();
+	});
+
+	it("reads the label from the sync under the row's project, never another project's configuration", async () => {
+		seedManaged();
+
+		await upsert({ content: V2 });
+
+		expect(
+			table.projectContextRepositorySync.findFirst.mock.calls[0][0].where,
+		).toEqual({ id: "sync-1", projectId: "proj-1" });
+	});
+
+	it("is repository-managed, not a create, when the sync inserted the path between the read and the create", async () => {
+		table.projectContext.create.mockImplementationOnce(async () => {
+			seedManaged({ content: V2, contentHash: sha(V2) });
+			throw table.uniqueViolation();
+		});
+
+		const result = await upsert();
+
+		expect(result).toMatchObject(MANAGED);
+		expect(table.state.rows).toHaveLength(1);
+		expect(table.state.rows[0]).toMatchObject({ content: V2 });
+	});
+
+	it("never replaces a row the sync adopted between the read and the conditional write", async () => {
+		const existing = seed();
+		// Unowned when read; adopted (same content, same path) before the
+		// write. The replace's guard must match nothing.
+		table.projectContext.findFirst.mockImplementationOnce(async (args) => {
+			const snapshot = { ...existing };
+			existing.repositorySyncId = "sync-1";
+			return Object.fromEntries(
+				Object.keys(args.select ?? snapshot).map((key) => [
+					key,
+					snapshot[key] ?? null,
+				]),
+			);
+		});
+
+		const result = await upsert({
+			content: V2,
+			expectedContentHash: sha(V1),
+		});
+
+		expect(result).toMatchObject(MANAGED);
+		expect(existing).toMatchObject({
+			content: V1,
+			contentHash: sha(V1),
+			repositorySyncId: "sync-1",
+		});
+	});
+
+	it("refuses a move whose old path is managed, and leaves the row where it is", async () => {
+		const managed = seedManaged({
+			sourcePath: FROM,
+			metadata: { title: "arch.md", sourcePath: FROM },
+		});
+
+		const result = await upsert({
+			sourcePath: TO,
+			movedFromSourcePath: FROM,
+			expectedContentHash: sha(V1),
+		});
+
+		expect(result).toMatchObject({
+			...MANAGED,
+			context: { id: managed.id, sourcePath: FROM },
+		});
+		expect(table.projectContext.updateMany).not.toHaveBeenCalled();
+		expect(table.projectContext.create).not.toHaveBeenCalled();
+		expect(managed.sourcePath).toBe(FROM);
+	});
+
+	it("refuses a move onto a managed path", async () => {
+		const old = seed({ sourcePath: FROM });
+		const target = seedManaged({ sourcePath: TO });
+
+		const result = await upsert({
+			sourcePath: TO,
+			movedFromSourcePath: FROM,
+			expectedContentHash: sha(V1),
+		});
+
+		expect(result).toMatchObject({
+			...MANAGED,
+			context: { id: target.id },
+		});
+		expect(table.projectContext.updateMany).not.toHaveBeenCalled();
+		expect(old.sourcePath).toBe(FROM);
+	});
+
+	it("never renames a row the sync adopted between the read and the rename", async () => {
+		const old = seed({
+			sourcePath: FROM,
+			metadata: { title: "arch.md", sourcePath: FROM },
+		});
+		table.projectContext.updateMany.mockImplementationOnce(async (args) => {
+			// Adopted just before the rename's guarded write runs.
+			old.repositorySyncId = "sync-1";
+			const matched = Object.entries(args.where).every(
+				([key, value]) => (old[key] ?? null) === value,
+			);
+			if (matched) {
+				Object.assign(old, args.data);
+			}
+			return { count: matched ? 1 : 0 };
+		});
+
+		const result = await upsert({
+			sourcePath: TO,
+			movedFromSourcePath: FROM,
+			expectedContentHash: sha(V1),
+		});
+
+		expect(result).toMatchObject({
+			...MANAGED,
+			context: { id: old.id },
+		});
+		expect(old.sourcePath).toBe(FROM);
+	});
+
+	it("still answers an ordinary row at the path as before", async () => {
+		seed();
+		seedManaged({ sourcePath: "docs/other.md" });
+
+		expect((await upsert()).status).toBe("unchanged");
 	});
 });

@@ -72,13 +72,29 @@ import {
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useId,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { toast } from "sonner";
+import {
+	type ContextDeleteOutcome,
+	type ContextSyncState,
+	contextSyncPollInterval,
+	contextSyncRunEnded,
+	offersSyncFromRepository,
+	tallyContextDeleteOutcomes,
+} from "../lib/context-repository-sync";
 import {
 	renderMarkdownToDocx,
 	renderMarkdownToPdf,
 	triggerBlobDownload,
 } from "../lib/markdown-to-document";
+import { ContextRepositorySyncStatus } from "./ContextRepositorySyncStatus";
 import {
 	ContextSourceDetailsDialog,
 	ContextSourceMetaLine,
@@ -87,6 +103,7 @@ import {
 import { ContextSummaryPanel } from "./ContextSummaryPanel";
 import { ContextUploaderDialog } from "./ContextUploaderDialog";
 import { DownloadAllContextsButton } from "./DownloadAllContextsButton";
+import { getOrpcCode } from "./field-mapping/orpc-error";
 import {
 	LinkContextManagePanel,
 	type LinkContextRefreshMode,
@@ -1190,11 +1207,23 @@ export function ProjectContextsList({ projectId }: Props) {
 	const queryClient = useQueryClient();
 
 	const deleteMutation = useMutation({
-		mutationFn: (contextId: string) =>
+		mutationFn: (params: {
+			id: string;
+			/**
+			 * The displayed `contentHash` of a synced row (Living Memory
+			 * design 2026-09-23 §6). Required by the procedure for a row
+			 * with a `sourcePath`; ignored for every other context type, so
+			 * callers outside Living Memory omit it.
+			 */
+			expectedContentHash?: string;
+		}) =>
 			orpc.projects.contexts.delete.call({
-				id: contextId,
+				id: params.id,
 				projectId,
 				organizationId,
+				...(params.expectedContentHash !== undefined
+					? { expectedContentHash: params.expectedContentHash }
+					: {}),
 			}),
 		onSuccess: () => {
 			queryClient.invalidateQueries({
@@ -1216,13 +1245,19 @@ export function ProjectContextsList({ projectId }: Props) {
 		() => new Map(contexts.map((ctx) => [ctx.id, ctx])),
 		[contexts],
 	);
+	// A repository-managed row (Living Memory design 2026-09-23 §6, §7.3)
+	// never leaves "Remove duplicates" candidates: its own delete route
+	// refuses it, and `annotateDuplicateContexts` already prefers a managed
+	// row as canonical, so this filter only matters for a race between a
+	// list read and an adoption.
 	const duplicateContextIds = useMemo(
 		() =>
 			contexts
 				.filter(
 					(ctx) =>
 						ctx.duplicateOfContextId != null &&
-						contextsById.has(ctx.duplicateOfContextId),
+						contextsById.has(ctx.duplicateOfContextId) &&
+						ctx.repositorySyncId == null,
 				)
 				.map((ctx) => ctx.id),
 		[contexts, contextsById],
@@ -1320,43 +1355,65 @@ export function ProjectContextsList({ projectId }: Props) {
 	};
 
 	// One delete per copy through the same procedure the row menus call, so
-	// every copy goes through the same permission check and Qdrant cleanup.
-	// Each call names the item the copy was matched against; the server
-	// re-checks that match and refuses (CONFLICT) if the list it came from is
-	// stale. Sequential on purpose: each delete starts a workflow, and a burst
-	// of them buys nothing the user can see.
+	// every copy goes through the same permission check and Qdrant cleanup
+	// (or, for a synced copy, the same row-first delete, Living Memory
+	// design 2026-09-23 §6). Each call names the item the copy was matched
+	// against and, for a synced copy, the displayed contentHash; the server
+	// re-checks both and refuses (CONFLICT) if the list it came from is
+	// stale — that answer counts as `skipped`, not a toast-storm failure
+	// (§7.3). Sequential on purpose: each delete starts a workflow or does
+	// its own transaction, and a burst of them buys nothing the user can
+	// see.
 	const removeDuplicates = useMutation({
 		mutationFn: async (contextIds: string[]) => {
-			let removed = 0;
-			let failed = 0;
+			const outcomes: ContextDeleteOutcome[] = [];
 			for (const contextId of contextIds) {
+				const ctx = contextsById.get(contextId);
 				try {
 					await orpc.projects.contexts.delete.call({
 						id: contextId,
 						projectId,
 						organizationId,
 						expectedDuplicateOfContextId:
-							contextsById.get(contextId)?.duplicateOfContextId ??
-							undefined,
+							ctx?.duplicateOfContextId ?? undefined,
+						...(ctx?.sourcePath
+							? {
+									expectedContentHash:
+										ctx.contentHash ?? undefined,
+								}
+							: {}),
 					});
-					removed += 1;
-				} catch {
-					failed += 1;
+					outcomes.push("deleted");
+				} catch (error) {
+					outcomes.push(
+						getOrpcCode(error) === "CONFLICT"
+							? "skipped"
+							: "failed",
+					);
 				}
 			}
-			return { removed, failed };
+			return tallyContextDeleteOutcomes(outcomes);
 		},
-		onSuccess: ({ removed, failed }) => {
-			if (failed === 0) {
-				toast.success(tDuplicates("removed", { count: removed }));
-			} else if (removed === 0) {
+		onSuccess: ({ deleted, skipped, failed }) => {
+			if (skipped > 0) {
+				toast[failed > 0 ? "error" : "success"](
+					tDuplicates("removedWithSkipped", {
+						deleted,
+						skipped,
+						failed,
+						total: deleted + skipped + failed,
+					}),
+				);
+			} else if (failed === 0) {
+				toast.success(tDuplicates("removed", { count: deleted }));
+			} else if (deleted === 0) {
 				toast.error(tDuplicates("removeFailed", { count: failed }));
 			} else {
 				toast.error(
 					tDuplicates("removedPartial", {
-						removed,
+						removed: deleted,
 						failed,
-						total: removed + failed,
+						total: deleted + failed,
 					}),
 				);
 			}
@@ -1468,6 +1525,76 @@ export function ProjectContextsList({ projectId }: Props) {
 		};
 	}, [contexts]);
 
+	// Living Memory's repository sync (design 2026-09-23 §7.1, Fizzy #2657):
+	// one `get` read shared by the entry point / status, the gating decision
+	// for the whole Living Memory section below, and the poll. Polling: every
+	// 3s while a run is open, then every 15s while files still await
+	// indexing, for up to 10 minutes of that state — `indexingSinceRef` marks
+	// when awaiting-index was first observed, mutated during render like
+	// `wasSyncRunningRef` below, so the interval callback (evaluated by
+	// react-query's own scheduler) always reads the latest elapsed time.
+	const repositorySyncQueryOptions =
+		orpc.projects.contexts.repositorySync.get.queryOptions({
+			input: { projectId, organizationId },
+		});
+	const indexingSinceRef = useRef<number | null>(null);
+	const wasSyncRunningRef = useRef(false);
+	const repositorySyncQuery = useQuery({
+		...repositorySyncQueryOptions,
+		refetchInterval: (query) => {
+			const syncState = query.state.data as ContextSyncState | undefined;
+			const awaitingIndexCount = syncState?.awaitingIndexCount ?? 0;
+			if (awaitingIndexCount > 0 && indexingSinceRef.current === null) {
+				indexingSinceRef.current = Date.now();
+			} else if (awaitingIndexCount === 0) {
+				indexingSinceRef.current = null;
+			}
+			const elapsed = indexingSinceRef.current
+				? Date.now() - indexingSinceRef.current
+				: 0;
+			return contextSyncPollInterval(syncState, elapsed);
+		},
+	});
+	const repositorySyncState = repositorySyncQuery.data as
+		| ContextSyncState
+		| undefined;
+	const syncRunning = repositorySyncState?.running ?? false;
+	// A run just closed: whatever it produced (new/changed/removed files) is
+	// readable now, so read it rather than wait on a poll that may have just
+	// switched off.
+	useEffect(() => {
+		if (contextSyncRunEnded(wasSyncRunningRef.current, syncRunning)) {
+			queryClient.invalidateQueries({
+				queryKey: orpc.projects.contexts.list.queryOptions({
+					input: { projectId, organizationId },
+				}).queryKey,
+			});
+		}
+		wasSyncRunningRef.current = syncRunning;
+	}, [syncRunning, projectId, organizationId, queryClient]);
+	// Configure / syncNow / disable all changed the configuration or started
+	// a run: re-read both the sync status and the contexts list right away.
+	const onRepositorySyncChanged = () => {
+		queryClient.invalidateQueries({
+			queryKey: repositorySyncQueryOptions.queryKey,
+		});
+		queryClient.invalidateQueries({
+			queryKey: orpc.projects.contexts.list.queryOptions({
+				input: { projectId, organizationId },
+			}).queryKey,
+		});
+	};
+	const showLivingMemorySection =
+		livingMemoryFolders.length > 0 ||
+		Boolean(repositorySyncState?.configured) ||
+		offersSyncFromRepository(
+			repositorySyncState ?? {
+				canConfigure: false,
+				configured: null,
+				availableIntegrations: [],
+			},
+		);
+
 	// Per-viewer Teams access (Fizzy #2450): a linked Teams chat/channel is
 	// read under the VIEWING user's own Microsoft token, so a Graph 403 for
 	// one member doesn't mean the context is broken — it means this
@@ -1551,7 +1678,7 @@ export function ProjectContextsList({ projectId }: Props) {
 					key={context.id}
 					context={context as unknown as UrlContextRowFields}
 					projectId={projectId}
-					onDelete={(id) => deleteMutation.mutate(id)}
+					onDelete={(id) => deleteMutation.mutate({ id })}
 					deletePending={deleteMutation.isPending}
 					deleteCopy={
 						t.raw("deleteContext") as {
@@ -1708,6 +1835,21 @@ export function ProjectContextsList({ projectId }: Props) {
 									>
 										{badgeLabel}
 									</Badge>
+									{context.repositorySyncId && (
+										<Badge
+											variant="outline"
+											className="shrink-0 gap-1 border-primary/30 text-primary text-xs"
+											data-testid={`context-repository-badge-${context.id}`}
+										>
+											<FolderSyncIcon
+												className="size-3"
+												aria-hidden="true"
+											/>
+											{tLivingMemory(
+												"repositorySync.repositoryBadge",
+											)}
+										</Badge>
+									)}
 								</div>
 								{synced && (
 									<p
@@ -1874,30 +2016,41 @@ export function ProjectContextsList({ projectId }: Props) {
 											<DropdownMenuSeparator />
 										</>
 									)}
-									<DestructiveTooltip
-										copy={
-											t.raw("deleteContext") as {
-												label: string;
-												warning: string;
+									{!context.repositorySyncId ? (
+										<DestructiveTooltip
+											copy={
+												t.raw("deleteContext") as {
+													label: string;
+													warning: string;
+												}
 											}
-										}
-									>
-										<DropdownMenuItem
-											className="text-destructive focus:text-destructive"
-											onClick={(e) => {
-												e.stopPropagation();
-												deleteMutation.mutate(
-													context.id,
-												);
-											}}
-											disabled={deleteMutation.isPending}
 										>
-											<TrashIcon className="mr-2 size-4" />
-											{deleteMutation.isPending
-												? "Deleting..."
-												: "Delete"}
-										</DropdownMenuItem>
-									</DestructiveTooltip>
+											<DropdownMenuItem
+												className="text-destructive focus:text-destructive"
+												onClick={(e) => {
+													e.stopPropagation();
+													deleteMutation.mutate({
+														id: context.id,
+														...(context.sourcePath
+															? {
+																	expectedContentHash:
+																		context.contentHash ??
+																		undefined,
+																}
+															: {}),
+													});
+												}}
+												disabled={
+													deleteMutation.isPending
+												}
+											>
+												<TrashIcon className="mr-2 size-4" />
+												{deleteMutation.isPending
+													? "Deleting..."
+													: "Delete"}
+											</DropdownMenuItem>
+										</DestructiveTooltip>
+									) : null}
 								</DropdownMenuContent>
 							</DropdownMenu>
 						</div>
@@ -2610,7 +2763,9 @@ export function ProjectContextsList({ projectId }: Props) {
 																											) => {
 																												e.stopPropagation();
 																												deleteMutation.mutate(
-																													context.id,
+																													{
+																														id: context.id,
+																													},
 																												);
 																											}}
 																											disabled={
@@ -2884,7 +3039,9 @@ export function ProjectContextsList({ projectId }: Props) {
 																		) => {
 																			e.stopPropagation();
 																			deleteMutation.mutate(
-																				context.id,
+																				{
+																					id: context.id,
+																				},
 																			);
 																		}}
 																		disabled={
@@ -3072,7 +3229,9 @@ export function ProjectContextsList({ projectId }: Props) {
 																		) => {
 																			e.stopPropagation();
 																			deleteMutation.mutate(
-																				context.id,
+																				{
+																					id: context.id,
+																				},
 																			);
 																		}}
 																		disabled={
@@ -3099,27 +3258,40 @@ export function ProjectContextsList({ projectId }: Props) {
 
 					{/* Living Memory (Fizzy #2620): files a connected agent
 					    pushed from a working tree, one collapsible section per
-					    folder. Rows without a sourcePath stay in the grid below. */}
-					{livingMemoryFolders.length > 0 && (
+					    folder, plus the repository-sync entry point / status
+					    (Fizzy #2657). Rows without a sourcePath stay in the
+					    grid below. Shown whenever there is either a synced
+					    file or something the sync status can say (a
+					    configuration, or a configurer's "Sync from
+					    repository" offer). */}
+					{showLivingMemorySection && (
 						<section
 							aria-labelledby={`${livingMemoryId}-title`}
 							className="space-y-3"
 							data-testid="context-living-memory"
 						>
-							<div>
-								<h3
-									id={`${livingMemoryId}-title`}
-									className="flex items-center gap-2 font-semibold text-sm"
-								>
-									<FolderSyncIcon
-										className="size-4 shrink-0 text-primary"
-										aria-hidden="true"
-									/>
-									{tLivingMemory("title")}
-								</h3>
-								<p className="mt-1 text-foreground/50 text-xs">
-									{tLivingMemory("description")}
-								</p>
+							<div className="flex flex-wrap items-start justify-between gap-3">
+								<div>
+									<h3
+										id={`${livingMemoryId}-title`}
+										className="flex items-center gap-2 font-semibold text-sm"
+									>
+										<FolderSyncIcon
+											className="size-4 shrink-0 text-primary"
+											aria-hidden="true"
+										/>
+										{tLivingMemory("title")}
+									</h3>
+									<p className="mt-1 text-foreground/50 text-xs">
+										{tLivingMemory("description")}
+									</p>
+								</div>
+								<ContextRepositorySyncStatus
+									projectId={projectId}
+									organizationId={organizationId}
+									state={repositorySyncState}
+									onChanged={onRepositorySyncChanged}
+								/>
 							</div>
 							{livingMemoryFolders.map((folder, folderIndex) => {
 								const slug = livingMemoryFolderSlug(

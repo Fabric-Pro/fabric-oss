@@ -62,7 +62,7 @@ outcome except `unchanged`, which is only counted:
 | failed | that request failed; the other files were still sent |
 | deleted | `--prune` only: removed locally, and its server entry was deleted |
 | already gone | `--prune` only: removed locally, and the server had no entry at that path any more |
-| deletion still running | `--prune` only: the server's deletion had not finished when it answered; the lock entry is kept |
+| deletion still running | `--prune` only, and only from an older server: its deletion had not finished when it answered; the lock entry is kept |
 | removed | removed locally; the server entry is kept (without `--prune`) |
 | skipped | not something this command sends, with the reason |
 
@@ -198,6 +198,20 @@ entry stays, and `--force` sends the file once more with no version, which
 recreates it, or answers `duplicate` instead if that content already exists
 elsewhere in the project.
 
+A path a Living Memory repository sync owns is not a conflict: a create, a
+replace, either side of a move, or a `--prune` delete all answer the same
+way, and the file is reported once under `skipped`:
+
+```text
+skipped (1)
+  docs/architecture.md is synced from example-org/handbook @ main; change it in the repository and run Sync now.
+```
+
+Nothing was written, the lock entry for that path is left exactly as it
+was, and `--force` never retries it — there is no version to replace; the
+file changes in the connected repository, and "Sync now" on the project's
+Context tab brings the change in.
+
 ## Moves
 
 A lock path that is gone from the folder and a new file with exactly the
@@ -281,24 +295,23 @@ third attempt.
 
 - A path the server no longer has is reported as *already gone on the
   server*, and its lock entry is dropped.
-- A deletion the server has not finished within about 45 seconds is
-  reported as *deletion still running on the server; run again to confirm*:
-  it keeps running, the lock entry is kept, it counts as not deleted, the
-  run exits 1, and it is never retried with `--force`.
+- Every deletion answer is final. An older server could answer that a
+  deletion had not finished within about 45 seconds; the CLI still reports
+  that as *deletion still running on the server; run again to confirm*: the
+  lock entry is kept, it counts as not deleted, the run exits 1, and it is
+  never retried with `--force`.
 - Only sources pushed by path are addressable. A file, link or note added
   in the Context tab has no path and is never deleted.
 - The old path of a move the server did not apply because the new path was
   already there is deleted in the same run.
 - The deletions come last, so a run stopped early by a refusal deletes
   nothing it had not reached.
-- A deleted source's search-index entries are removed before the source
-  itself, in a durable background job the request waits for: if the server
-  restarts partway, the job carries on from the step it reached instead of
-  leaving a source that has lost its index. If removing the index entries
-  fails, nothing is deleted and the file is reported as failed; if the
-  source itself cannot then be deleted, the file is reported as failed and
-  the next `--prune` finishes it. The deletion is recorded in the
-  organization's audit log as *Synced context file deleted*.
+- The source is deleted, its search-index entries are queued for removal,
+  and the deletion is recorded in the organization's audit log as *Synced
+  context file deleted*, all in one step on the server: either all of it
+  happens or none of it does. The server then removes the index entries
+  straight away when it can, and a background sweep removes whatever it
+  could not; a search never returns a deleted source's text in between.
 - The key's creator needs the permission to delete context sources in that
   project, the same one the Context tab checks. Without it, the first
   deletion answers `No permission to delete context sources from this
@@ -384,8 +397,8 @@ reconciles it (a deletion the server finished in the meantime is answered
 | SDK resource | `packages/sdk/src/resources/contexts.ts` (`client.contexts.upsertSyncedFile`, `client.contexts.deleteSyncedFile`) |
 | REST routes | `PUT` and `DELETE /api/v1/projects/:projectId/contexts/synced-files` in `packages/api/modules/v1/contexts.ts` |
 | Shared server logic | `packages/api/modules/projects/lib/upsert-synced-context.ts`, `packages/api/modules/projects/lib/delete-synced-context.ts` |
-| Compare-and-set queries | `upsertContextBySourcePath`, and the delete's `findSyncedContextIdAtPath`, `claimSyncedContextRowForDeletion` and `deleteClaimedSyncedContextRow`, in `packages/database/prisma/queries/projects/contexts.ts` |
-| Durable delete | `syncedContextDeletionWorkflow` in `packages/temporal/src/workflows/synced-context-deletion.ts`, with its activities in `packages/temporal/src/activities/synced-context-deletion.ts` |
+| Compare-and-set queries | `upsertContextBySourcePath` and the delete's `deleteSyncedContextRow`, in `packages/database/prisma/queries/projects/contexts.ts` |
+| Index cleanup after a delete | `createPendingVectorCleanup` in `packages/database/prisma/queries/projects/pending-vector-cleanup.ts`, drained by the request and by the scheduled sweep through `drainPendingVectorCleanup` in `packages/temporal/src/lib/delete-channel-context.ts` |
 | Path rules (server) | `packages/database/prisma/queries/projects/context-source-path.ts` |
 
 The REST route is the key-backed twin of the session-only oRPC procedure

@@ -1,0 +1,17 @@
+-- The ("projectId", "repositorySyncId") index on project_context (Living
+-- Memory repository sync, design 2026-09-23 §4.4): a sync's managed rows, read
+-- by its prune pagination and its managed and awaiting-index counts, and the
+-- rows the foreign key's ON DELETE SET NULL has to find when a sync is
+-- disconnected.
+--
+-- CONCURRENTLY because project_context is populated and a plain build takes a
+-- write lock on it for the length of the build. NO `IF NOT EXISTS`: a failed
+-- concurrent build leaves an invalid index behind under this name, and the
+-- clause would then skip the rebuild and record the migration as applied with
+-- no index. Recovery per docs/database-promotion.md: find it with
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+-- then DROP INDEX that name before re-running the migration.
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT: CONCURRENTLY cannot run inside the
+-- transaction Prisma wraps a multi-statement migration in.
+CREATE INDEX CONCURRENTLY "project_context_projectId_repositorySyncId_idx" ON "project_context"("projectId", "repositorySyncId");

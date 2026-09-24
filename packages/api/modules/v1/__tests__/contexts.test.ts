@@ -474,6 +474,70 @@ describe("PUT /projects/:projectId/contexts/synced-files — outcomes", () => {
 		});
 	});
 
+	it("answers a path a repository sync owns with 409 and a body of its own, distinct from the hash conflict", async () => {
+		// Living Memory design 2026-09-23 §6. `upsertSyncedContext` throws the
+		// same ORPCError every surface throws for a managed row.
+		const { repositoryManagedError } = await import(
+			"../../projects/lib/repository-managed"
+		);
+		mocks.upsertSyncedContext.mockRejectedValue(
+			repositoryManagedError("docs/architecture.md", {
+				repository: "example-org/handbook",
+				ref: "main",
+			}),
+		);
+
+		const res = await buildApp().fetch(put(fileBody()));
+
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({
+			error: {
+				message:
+					"docs/architecture.md is synced from example-org/handbook @ main; change it in the repository and run Sync now.",
+				code: "REPOSITORY_MANAGED",
+				repository: "example-org/handbook",
+				ref: "main",
+			},
+		});
+	});
+
+	it("keeps the repository fields in the PUT's 409 body, as null, when the configuration was removed between the reads", async () => {
+		const { repositoryManagedError } = await import(
+			"../../projects/lib/repository-managed"
+		);
+		mocks.upsertSyncedContext.mockRejectedValue(
+			repositoryManagedError("docs/architecture.md", {
+				repository: null,
+				ref: null,
+			}),
+		);
+
+		const res = await buildApp().fetch(put(fileBody()));
+
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({
+			error: {
+				message:
+					"docs/architecture.md is synced from the connected repository; change it in the repository and run Sync now.",
+				code: "REPOSITORY_MANAGED",
+				repository: null,
+				ref: null,
+			},
+		});
+	});
+
+	it("lets any other CONFLICT the shared function throws propagate rather than dressing it as repository-managed", async () => {
+		mocks.upsertSyncedContext.mockRejectedValue(
+			orpcRefusal("CONFLICT", "something else"),
+		);
+		const app = buildApp();
+		app.onError((_error, c) => c.json({ error: "boom" }, 500));
+
+		const res = await app.fetch(put(fileBody()));
+
+		expect(res.status).toBe(500);
+	});
+
 	it.each([["unchanged"], ["updated"]])(
 		"answers %s with 200 and the result",
 		async (status) => {
@@ -997,18 +1061,68 @@ describe("DELETE /projects/:projectId/contexts/synced-files — outcomes", () =>
 		});
 	});
 
-	it("answers a deletion still running on the server with 202 in-progress", async () => {
-		mocks.deleteSyncedContext.mockResolvedValue({
-			status: "in-progress",
-			sourcePath: "docs/architecture.md",
-		});
+	it("answers a file a repository sync owns with 409 and a body of its own, distinct from the hash conflict", async () => {
+		// Living Memory design 2026-09-23 §6. The shared function throws the
+		// same ORPCError every surface throws for a managed row.
+		const { repositoryManagedError } = await import(
+			"../../projects/lib/repository-managed"
+		);
+		mocks.deleteSyncedContext.mockRejectedValue(
+			repositoryManagedError("docs/architecture.md", {
+				repository: "example-org/handbook",
+				ref: "main",
+			}),
+		);
 
 		const res = await buildApp().fetch(del(deleteBody()));
 
-		expect(res.status).toBe(202);
+		expect(res.status).toBe(409);
 		expect(await res.json()).toEqual({
-			data: { status: "in-progress", sourcePath: "docs/architecture.md" },
+			error: {
+				message:
+					"docs/architecture.md is synced from example-org/handbook @ main; change it in the repository and run Sync now.",
+				code: "REPOSITORY_MANAGED",
+				repository: "example-org/handbook",
+				ref: "main",
+			},
 		});
+	});
+
+	it("keeps the repository fields in the 409 body, as null, when the configuration was removed between the reads", async () => {
+		const { repositoryManagedError } = await import(
+			"../../projects/lib/repository-managed"
+		);
+		mocks.deleteSyncedContext.mockRejectedValue(
+			repositoryManagedError("docs/architecture.md", {
+				repository: null,
+				ref: null,
+			}),
+		);
+
+		const res = await buildApp().fetch(del(deleteBody()));
+
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({
+			error: {
+				message:
+					"docs/architecture.md is synced from the connected repository; change it in the repository and run Sync now.",
+				code: "REPOSITORY_MANAGED",
+				repository: null,
+				ref: null,
+			},
+		});
+	});
+
+	it("lets any other CONFLICT the shared function throws propagate rather than dressing it as repository-managed", async () => {
+		mocks.deleteSyncedContext.mockRejectedValue(
+			orpcRefusal("CONFLICT", "something else"),
+		);
+		const app = buildApp();
+		app.onError((_error, c) => c.json({ error: "boom" }, 500));
+
+		const res = await app.fetch(del(deleteBody()));
+
+		expect(res.status).toBe(500);
 	});
 
 	it("answers a conflict with 409, the delete's own sentence and the stored version's stamp", async () => {

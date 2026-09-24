@@ -45,6 +45,32 @@ export interface ContextPushCounts {
 	deleteFailed: number;
 }
 
+/**
+ * A `repository-managed` result, recast as a `SkippedContextFile` (Living
+ * Memory design 2026-09-23 §6): it is decided after the send, not by the
+ * planner, but it is reported through the same `skipped` group and count as
+ * the reasons the planner decides before sending. The server's own sentence
+ * is the line, carried as `detail` — see `skippedLine`.
+ */
+function managedSkips(
+	results: readonly ContextPushResult[],
+): SkippedContextFile[] {
+	return results
+		.filter(
+			(
+				r,
+			): r is Extract<
+				ContextPushResult,
+				{ status: "repository-managed" }
+			> => r.status === "repository-managed",
+		)
+		.map((r) => ({
+			path: r.sourcePath,
+			reason: "repository-managed" as const,
+			detail: r.message,
+		}));
+}
+
 function countOutcomes(
 	plan: ContextPlan,
 	results: readonly ContextPushResult[],
@@ -62,7 +88,7 @@ function countOutcomes(
 		changedDuringRun: count("changed-during-run"),
 		failed: count("failed"),
 		removed: plan.removed.length,
-		skipped: plan.skipped.length,
+		skipped: plan.skipped.length + managedSkips(results).length,
 		deleted: count("deleted"),
 		alreadyGone: count("already-gone"),
 		deleteInProgress: count("delete-in-progress"),
@@ -197,6 +223,11 @@ function skippedLine(skip: SkippedContextFile): string {
 	if (skip.reason === "ignored") {
 		return `${skip.path}: now excluded by the ignore rules; server entry kept`;
 	}
+	if (skip.reason === "repository-managed") {
+		// `detail` already carries the server's whole sentence, which names
+		// the path itself — nothing to prefix.
+		return skip.detail ?? `${skip.path}: repository-managed`;
+	}
 	return skip.detail
 		? `${skip.path}: ${skip.reason} (${skip.detail})`
 		: `${skip.path}: ${skip.reason}`;
@@ -306,10 +337,16 @@ export function formatPushReport(input: {
 	);
 	// Removed paths `--prune` did not reach (a run stopped early) keep their
 	// server entries, as every removed path does without it; so does the old
-	// path of a declined move it set out to delete and never reached.
+	// path of a declined move it set out to delete and never reached. A
+	// `--prune` target a repository sync refused is settled too — it is
+	// reported under `skipped`, not here, so it must not also read as kept.
 	const pruned = new Set(
 		results
-			.filter((r) => DELETE_STATUSES.has(r.status))
+			.filter(
+				(r) =>
+					DELETE_STATUSES.has(r.status) ||
+					r.status === "repository-managed",
+			)
 			.map((r) => r.sourcePath),
 	);
 	const kept = [
@@ -323,7 +360,11 @@ export function formatPushReport(input: {
 			.filter((p) => !pruned.has(p))
 			.map((p) => `${p}: removed locally; server entry kept`),
 	);
-	group(lines, "skipped", plan.skipped.map(skippedLine));
+	group(
+		lines,
+		"skipped",
+		[...plan.skipped, ...managedSkips(results)].map(skippedLine),
+	);
 	const unchanged = countOutcomes(plan, results).unchanged;
 	if (unchanged > 0) {
 		lines.push(`unchanged (${unchanged})`);

@@ -343,9 +343,10 @@ function readSyncedFileDeleteBody(
  * (`upsertSyncedContext`, `deleteSyncedContext`), or `null` for anything else.
  * They signal with `ORPCError`; two codes are mapped here — BAD_REQUEST for
  * the caller's input, FORBIDDEN for a project with no organization — and
- * anything else (a Prisma or storage error, the delete's failed index
- * cleanup) propagates to the app's error handler rather than being given a
- * status it did not earn.
+ * anything else (a Prisma or storage error) propagates to the app's error
+ * handler rather than being given a status it did not earn. A row a
+ * repository sync owns is not one of these: the PUT and the DELETE both map
+ * that CONFLICT to their own 409 body first (`repositoryManagedBody`).
  */
 function syncedFileRefusalStatus(error: unknown): 400 | 403 | null {
 	if (typeof error !== "object" || error === null || !("code" in error)) {
@@ -381,7 +382,12 @@ export function registerContextRoutes(
 	 * named hash on a path that no longer exists is a 409 too, with
 	 * `current: null`: the file was deleted since, and sending it again
 	 * without `expectedContentHash` recreates it, or answers `duplicate`
-	 * instead if that content already exists elsewhere in the project.
+	 * instead if that content already exists elsewhere in the project. A
+	 * path a repository sync owns answers 409 with its own body,
+	 * `{ error: { message, code: "REPOSITORY_MANAGED", repository, ref } }`
+	 * (Living Memory design 2026-09-23 §6), distinct from the hash-conflict
+	 * 409, so a client never mistakes it for a version it could resolve by
+	 * naming the stored hash.
 	 *
 	 * A body over `MAX_SYNCED_FILE_BODY_BYTES` answers 413 with the flat
 	 * `{ error: "…" }` before anything is parsed or resolved.
@@ -447,6 +453,9 @@ export function registerContextRoutes(
 			const { upsertSyncedContext } = await import(
 				"../projects/lib/upsert-synced-context"
 			);
+			const { repositoryManagedBody } = await import(
+				"../projects/lib/repository-managed"
+			);
 			let result: Awaited<ReturnType<typeof upsertSyncedContext>>;
 			try {
 				result = await upsertSyncedContext({
@@ -471,6 +480,10 @@ export function registerContextRoutes(
 					},
 				});
 			} catch (error) {
+				const managed = repositoryManagedBody(error);
+				if (managed) {
+					return c.json(managed, 409);
+				}
 				const status = syncedFileRefusalStatus(error);
 				if (status === null) {
 					throw error;
@@ -506,14 +519,20 @@ export function registerContextRoutes(
 	 * `DELETE` and hands the raw request to Hono — so the path, which may be
 	 * 2048 characters, stays out of the URL and out of access logs.
 	 *
-	 * Outcomes are `deleteSyncedContext`'s: `deleted` and `absent` answer 200
-	 * (`absent` is what a retry of a delete whose response was lost hears);
-	 * `in-progress` answers 202 with `{ status: "in-progress", sourcePath }`
-	 * — the deletion is still running on the server and the file may or may
-	 * not be gone yet; calling again confirms it; `conflict` answers 409 with
-	 * the stored version's stamp under `error.data`, as the PUT does. Same
-	 * gates, same order, as the PUT, with `CONTEXT_DELETE` for
-	 * `CONTEXT_CREATE`.
+	 * Outcomes are `deleteSyncedContext`'s, all final (Living Memory design
+	 * 2026-09-23 §6): `deleted` and `absent` answer 200 (`absent` is what a
+	 * retry of a delete whose response was lost hears); `conflict` answers
+	 * 409 with the stored version's stamp under `error.data`, as the PUT
+	 * does; a file a repository sync owns answers 409 with its own body,
+	 * `{ error: { message, code: "REPOSITORY_MANAGED", repository, ref } }`,
+	 * so a client never mistakes it for a hash conflict it could resolve by
+	 * naming the stored version. Same gates, same order, as the PUT, with
+	 * `CONTEXT_DELETE` for `CONTEXT_CREATE`.
+	 *
+	 * No longer produced: the 202 `{ status: "in-progress", sourcePath }` the
+	 * old workflow-backed delete answered when its wait ran out. The delete
+	 * is synchronous now; `fabric context push --prune` keeps handling 202
+	 * only for an older server.
 	 */
 	app.delete(
 		"/projects/:projectId/contexts/synced-files",
@@ -567,6 +586,9 @@ export function registerContextRoutes(
 			const { deleteSyncedContext } = await import(
 				"../projects/lib/delete-synced-context"
 			);
+			const { repositoryManagedBody } = await import(
+				"../projects/lib/repository-managed"
+			);
 			let result: Awaited<ReturnType<typeof deleteSyncedContext>>;
 			try {
 				result = await deleteSyncedContext({
@@ -586,6 +608,10 @@ export function registerContextRoutes(
 					},
 				});
 			} catch (error) {
+				const managed = repositoryManagedBody(error);
+				if (managed) {
+					return c.json(managed, 409);
+				}
 				const status = syncedFileRefusalStatus(error);
 				if (status === null) {
 					throw error;
@@ -606,11 +632,6 @@ export function registerContextRoutes(
 					},
 					409,
 				);
-			}
-
-			if (result.status === "in-progress") {
-				// Accepted, not done: the workflow is still running.
-				return c.json(ok(result), 202);
 			}
 
 			return c.json(ok(result));

@@ -5,8 +5,10 @@
  * from Qdrant and database. Provides durable deletion with retries.
  */
 
-import { deleteContext, getContextById } from "@repo/database";
+import { deleteUnmanagedContextRow, getContextById } from "@repo/database";
 import { deleteProjectContext, deleteUrlSourceChunks } from "@repo/rag";
+import { getTemporalClient } from "../client";
+import { startContextEmbeddingWorkflow } from "../lib/context-embedding-start";
 import { activityLogger } from "./lib/activity-logger";
 
 export interface DeleteSingleContextInput {
@@ -22,6 +24,22 @@ export interface DeleteSingleContextOutput {
 	error?: string;
 	qdrantDeleted: boolean;
 	dbDeleted: boolean;
+	/**
+	 * Why the row was not deleted, when `dbDeleted` is false for a reason
+	 * other than an operational failure. `repository-managed`: a Living
+	 * Memory repository sync owns the row (it adopted it, possibly after this
+	 * activity read it), so it is kept; `changed`: the guarded delete matched
+	 * nothing although the row is still there. Optional, so the workflow's
+	 * handling of the result is unchanged.
+	 */
+	dbSkippedReason?: "repository-managed" | "changed";
+	/**
+	 * A kept row whose points this activity had already removed was marked
+	 * unindexed, and an embedding start was requested for it (`true`) or the
+	 * start failed and was logged (`false`; the row's `embeddedAt = NULL`
+	 * remains the durable repair obligation).
+	 */
+	reembedRequested?: boolean;
 }
 
 /**
@@ -116,6 +134,51 @@ export async function deleteSingleContextActivity(
 			};
 		}
 
+		// The tenant the input carries, when it carries one: a row under
+		// another organization is not this deletion's to touch, and its
+		// points are not in this organization's collection. Some starters
+		// pass `null` for "none" (the type says string | undefined, the
+		// history says otherwise), so only a string counts as carried.
+		const tenantOrganizationId =
+			typeof organizationId === "string" ? organizationId : undefined;
+		// A row with no organization of its own (written before rows were
+		// stamped, or by a writer that left it off) is judged by its project
+		// alone: the mismatch that matters is two organizations disagreeing.
+		if (
+			tenantOrganizationId !== undefined &&
+			context.organizationId !== null &&
+			context.organizationId !== tenantOrganizationId
+		) {
+			activityLogger.error("Context organization mismatch", null, {
+				contextId,
+				projectId,
+			});
+			return {
+				success: false,
+				error: "Context does not belong to the specified organization",
+				qdrantDeleted: false,
+				dbDeleted: false,
+			};
+		}
+
+		// A row a Living Memory repository sync manages is the sync's alone
+		// to delete (design 2026-09-23 §6). This workflow is no longer
+		// started for synced files, but an execution open at deploy time
+		// replays here; a row adopted since it started is left, points and
+		// all.
+		if (context.repositorySyncId !== null) {
+			activityLogger.info(
+				"Context is managed by a repository sync; not deleting it",
+				{ contextId, projectId },
+			);
+			return {
+				success: true,
+				qdrantDeleted: false,
+				dbDeleted: false,
+				dbSkippedReason: "repository-managed",
+			};
+		}
+
 		const effectiveQdrantId = qdrantId || context.qdrantId;
 
 		// Step 1b: URL Context Sources (LINK + PATH_PREFIX) store one Qdrant
@@ -181,21 +244,57 @@ export async function deleteSingleContextActivity(
 			});
 		}
 
-		// Step 3: Delete from database
-		await deleteContext(contextId);
-		dbDeleted = true;
-
-		activityLogger.info("Context deleted successfully", {
+		// Step 3: Delete from database — guarded, so a row a repository sync
+		// adopted between the read above and here survives (design
+		// 2026-09-23 §4.3, §6). The points of that row are gone by now, so
+		// the guarded delete leaves it unindexed and it is re-embedded.
+		const removed = await deleteUnmanagedContextRow({
 			contextId,
-			qdrantDeleted,
-			dbDeleted,
+			projectId,
+			// Scoped by organization only when the row carries one (checked
+			// equal above); a null-organization row is scoped by project.
+			...(tenantOrganizationId !== undefined &&
+			context.organizationId !== null
+				? { organizationId: tenantOrganizationId }
+				: {}),
 		});
 
-		return {
-			success: true,
-			qdrantDeleted,
-			dbDeleted,
-		};
+		if (removed.status === "deleted" || removed.status === "absent") {
+			dbDeleted = removed.status === "deleted";
+			activityLogger.info(
+				dbDeleted
+					? "Context deleted successfully"
+					: "Context row already deleted",
+				{ contextId, qdrantDeleted, dbDeleted },
+			);
+			return {
+				success: true,
+				qdrantDeleted,
+				dbDeleted,
+			};
+		}
+
+		activityLogger.warn(
+			"Context row survived its guarded delete; kept and queued for re-indexing",
+			{ contextId, projectId, reason: removed.status },
+		);
+		const reembedRequested = await requestReembed(removed.context, userId);
+		return removed.status === "repository-managed"
+			? {
+					success: true,
+					qdrantDeleted,
+					dbDeleted: false,
+					dbSkippedReason: "repository-managed",
+					reembedRequested,
+				}
+			: {
+					success: false,
+					error: "Context changed during deletion; it was kept",
+					qdrantDeleted,
+					dbDeleted: false,
+					dbSkippedReason: "changed",
+					reembedRequested,
+				};
 	} catch (error) {
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
@@ -211,5 +310,50 @@ export async function deleteSingleContextActivity(
 			qdrantDeleted,
 			dbDeleted,
 		};
+	}
+}
+
+/**
+ * Ask for a re-embed of a row the guarded delete kept after its points were
+ * removed. Its `embeddedAt` is already NULL — the durable obligation a later
+ * re-embed or repository sync run picks up — so a failed start is logged,
+ * not thrown: the deletion workflow is finishing either way.
+ */
+async function requestReembed(
+	context: {
+		id: string;
+		projectId: string;
+		organizationId: string | null;
+		sourcePath: string | null;
+		title: string;
+	},
+	userId: string,
+): Promise<boolean> {
+	if (context.sourcePath === null || context.organizationId === null) {
+		// Only a synced file (a path) in an organization can be managed or
+		// adopted; anything else has no embedding start of this shape.
+		activityLogger.warn("Kept context has no re-embed target", {
+			contextId: context.id,
+		});
+		return false;
+	}
+	try {
+		const client = await getTemporalClient();
+		await startContextEmbeddingWorkflow(client, {
+			contextId: context.id,
+			projectId: context.projectId,
+			userId,
+			organizationId: context.organizationId,
+			sourcePath: context.sourcePath,
+			title: context.title,
+			reembed: true,
+		});
+		return true;
+	} catch (error) {
+		activityLogger.warn("Could not start re-embedding of a kept context", {
+			contextId: context.id,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return false;
 	}
 }

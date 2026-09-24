@@ -243,6 +243,18 @@ export const AUDIT_ACTIONS = [
 	// delete is not this row: it is captured under `activity.*`, which the
 	// key-backed REST route never reaches.
 	"project.context_source.synced_file_deleted",
+	// Living Memory repository sync (design 2026-09-23 §5.1, §5.4, §8,
+	// Fizzy #2657): the project's Context pointed at paths of a connected
+	// repository's branch (configured), a run requested (started), each
+	// run's outcome with the commit it applied and its counts (completed),
+	// and the configuration removed — by a member, or because the integration
+	// it read from was disconnected (disabled). Repository, branch, commit and
+	// counts only; never a credential, a file path or file content. The rows
+	// a run writes are the repository's, so per-file rows are not written.
+	"project.context.repository_sync_configured",
+	"project.context.repository_sync_started",
+	"project.context.repository_sync_completed",
+	"project.context.repository_sync_disabled",
 	// Document generation fell back because the generation agent could not be
 	// reached. Written whether or not the fallback then succeeded: a generation
 	// that quietly ran on the degraded path is exactly what nobody could see.

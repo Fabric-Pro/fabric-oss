@@ -271,6 +271,17 @@ async function applyRLS() {
 				name: "project_context_pending_vector_cleanup",
 				policy: "user_owned",
 			},
+			// Living Memory repository sync configuration (one row per project)
+			// and its run receipts. The receipts carry no foreign key to the
+			// configuration, so each table is registered in its own right.
+			{
+				name: "project_context_repository_sync",
+				policy: "user_owned",
+			},
+			{
+				name: "project_context_repository_sync_run",
+				policy: "user_owned",
+			},
 			{ name: "project_readiness_item_state", policy: "user_owned" }, // Manual readiness states (snooze / not applicable / help requested)
 			{ name: "project_readiness_verdict", policy: "user_owned" }, // Last computed readiness verdict per item
 			{ name: "project_context_summary", policy: "user_owned" }, // Compressed project-history summaries

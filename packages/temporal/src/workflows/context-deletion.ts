@@ -7,6 +7,14 @@
  * - An uploaded file is deleted
  * - Any project context is deleted
  *
+ * Except a synced knowledge file (a row with a `sourcePath`): since the
+ * Living Memory design 2026-09-23 §6 (PR 1 task T2), the Context tab deletes
+ * those synchronously and row-first through `deleteSyncedContextRow`, guarded
+ * on the version it displays and on the row not being repository-managed,
+ * and never starts this workflow for them. This workflow's code is
+ * unchanged and still serves every other context type; an execution for a
+ * synced row that was open at deploy time replays and finishes here.
+ *
  * Benefits of using Temporal:
  * - Automatic retries on transient failures (network errors, rate limits)
  * - Durability (survives server restarts)

@@ -16,6 +16,12 @@ export interface ContextDuplicateCandidate {
 	contentHash: string | null;
 	sourcePath: string | null;
 	createdAt: Date | string;
+	/**
+	 * Set when a Living Memory repository sync manages the row. Optional so
+	 * a caller holding rows without the column still type-checks; absent is
+	 * read as unmanaged.
+	 */
+	repositorySyncId?: string | null;
 }
 
 function createdAtMs(row: ContextDuplicateCandidate): number {
@@ -25,15 +31,23 @@ function createdAtMs(row: ContextDuplicateCandidate): number {
 }
 
 /**
- * Order two rows sharing a hash by which one should be kept. A synced file
- * (`sourcePath` set) wins: it is system-managed, and removing it would only
- * have the next push put it back. Then the earliest `createdAt`, then the
- * smallest id, so the choice is stable across reads.
+ * Order two rows sharing a hash by which one should be kept. A row a
+ * repository sync manages wins first (Living Memory design 2026-09-23 §7.3):
+ * no other surface may delete it, so Remove duplicates must never be offered
+ * it as a copy. Then a synced file (`sourcePath` set): it is system-managed,
+ * and removing it would only have the next push put it back. Then the
+ * earliest `createdAt`, then the smallest id, so the choice is stable across
+ * reads.
  */
 function compareCanonical(
 	a: ContextDuplicateCandidate,
 	b: ContextDuplicateCandidate,
 ) {
+	const aManaged = Boolean(a.repositorySyncId);
+	const bManaged = Boolean(b.repositorySyncId);
+	if (aManaged !== bManaged) {
+		return aManaged ? -1 : 1;
+	}
 	const aSynced = a.sourcePath !== null && a.sourcePath !== "";
 	const bSynced = b.sourcePath !== null && b.sourcePath !== "";
 	if (aSynced !== bSynced) {

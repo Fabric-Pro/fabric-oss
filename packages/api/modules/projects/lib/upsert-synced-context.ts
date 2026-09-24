@@ -66,6 +66,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
+import { startContextEmbeddingWorkflow } from "@repo/temporal/context-embedding-start";
 import {
 	type AuditRequestContext,
 	recordAuditFromRequest,
@@ -76,6 +77,7 @@ import {
 	buildContextContentAuditEvent,
 	type SyncedContextSurface,
 } from "./context-content-audit";
+import { repositoryManagedError } from "./repository-managed";
 import { MAX_SYNCED_CONTEXT_BYTES } from "./synced-context-limits";
 
 /** Upper bound on a caller-supplied title. */
@@ -337,7 +339,9 @@ export async function resolveSyncedContextEditor(
  *
  * `syncedContextDeletionWorkflow` starts the same workflow, with the same
  * input shape, for a row whose points it removed before losing the delete to
- * a concurrent change; change the two together.
+ * a concurrent change; change the two together. The start itself is
+ * `startContextEmbeddingWorkflow` (`@repo/temporal/context-embedding-start`),
+ * which the Living Memory repository sync's index step shares.
  */
 function startSyncedContextEmbedding(params: {
 	context: SyncedContextRow;
@@ -353,34 +357,20 @@ function startSyncedContextEmbedding(params: {
 	(async () => {
 		try {
 			const client = await getTemporalClient();
-			const workflowId = `context-embedding-${context.id}-${Date.now()}`;
-
-			await client.workflow.start(
-				"contextEmbeddingWorkflow",
-				withCorrelationMemo({
-					taskQueue: "project-documents",
-					workflowId,
-					args: [
-						{
-							contextId: context.id,
-							projectId,
-							userId,
-							organizationId,
-							type: "TEXT",
-							metadata: {
-								// The path as the filename, so chunking sees the
-								// extension (markdown, an OpenAPI document, code).
-								filename: sourcePath,
-								sourceTitle: title,
-								sourcePath,
-							},
-							// The hash-guarded pass: delete the row's old chunks,
-							// embed, then re-read the hash and repeat if a later
-							// push moved it (see `reembedStoredVersion`).
-							...(params.reembed ? { reembed: true } : {}),
-						},
-					],
-				}),
+			// The id scheme, queue and input live in `@repo/temporal`, shared
+			// with the Living Memory repository sync's index step.
+			const { workflowId } = await startContextEmbeddingWorkflow(
+				client,
+				{
+					contextId: context.id,
+					projectId,
+					userId,
+					organizationId,
+					sourcePath,
+					title,
+					reembed: params.reembed,
+				},
+				{ decorateStartOptions: withCorrelationMemo },
 			);
 
 			logger.info(
@@ -436,6 +426,16 @@ export async function upsertSyncedContext(
 		result.moveNotApplied
 			? { moveNotApplied: result.moveNotApplied }
 			: {};
+
+	if (result.status === "repository-managed") {
+		// A Living Memory repository sync authored the row at this path (or
+		// at the move's source): nothing was written, and the repository is
+		// where it changes (design 2026-09-23 §6).
+		throw repositoryManagedError(
+			result.context.sourcePath ?? sourcePath,
+			result.sync,
+		);
+	}
 
 	if (result.status === "duplicate") {
 		return {

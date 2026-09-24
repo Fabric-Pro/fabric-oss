@@ -678,6 +678,38 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"A synced knowledge file was deleted from a project's Context by its path, from the app (`web`) or the public API (`v1-api`, which `fabric context push --prune` uses), as `metadata.via` says. The delete only happens when the caller named the stored version's hash, so a file someone else changed since is never deleted by it; `metadata.sourcePath` and `metadata.contentHash` identify the version that was deleted. The resource name is the file's title; its content is never recorded. A delete of a path that no longer exists, or one refused because the file changed first, writes no row. Deleting a source from the Context tab is recorded separately, not as this action.",
 	},
 	{
+		key: "project.context.repository_sync_configured",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context.repository_sync_configured",
+		description:
+			"Pointed the project's Living Memory at selected folders and files of a branch in one of its connected repositories. The repository becomes the author of record for every file a sync brings in, and other surfaces refuse to overwrite or delete those files. The branch was checked on the remote before anything was saved, and no sync runs until one is requested. The resource names the repository; `metadata.provider`, `metadata.pathCount`, `metadata.refChanged` and `metadata.pathsChanged` say what was set or changed, and `metadata.generation` is the configuration version any run in flight is now fenced against. The selected paths themselves are not recorded.",
+	},
+	{
+		key: "project.context.repository_sync_started",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context.repository_sync_started",
+		description:
+			'Asked Fabric to sync the project\'s Living Memory from the configured repository now. Written only when a run actually started; a request refused because a run was already in progress, the sync was not configured, or its repository connection needed attention writes nothing. `metadata.trigger` is "MANUAL".',
+	},
+	{
+		key: "project.context.repository_sync_completed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context.repository_sync_completed",
+		description:
+			"A Living Memory repository sync run finished, attributed to the member it acted as. `metadata.status` is the outcome (succeeded, partial, unchanged or failed) with `metadata.error` naming why a run failed; `metadata.commitSha` is the commit it applied, and the counts say how many files it created, updated, adopted and removed and how many need attention. Never a credential, file path or file content.",
+	},
+	{
+		key: "project.context.repository_sync_disabled",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context.repository_sync_disabled",
+		description:
+			'The project\'s Living Memory stopped syncing from a repository: the configuration was removed and the files it had brought in were kept as ordinary synced files. `metadata.reason` is "user" when a member turned it off, or "integration_disconnected" when the repository it read from was disconnected; `metadata.managedCount` is how many files were released. A run in progress at that moment stops at its next step without writing.',
+	},
+	{
 		key: "project.document_generation.failed",
 		categoryId: "project",
 		labelKey:

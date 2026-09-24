@@ -685,6 +685,57 @@ describe("upsertSyncedFile — embedding and audit", () => {
 		expect(mocks.emitContextChange).not.toHaveBeenCalled();
 	});
 
+	it("refuses a row a repository sync owns with CONFLICT naming the repository and branch, and does nothing further", async () => {
+		// Living Memory design 2026-09-23 §6: the repository is the file's
+		// author of record.
+		mocks.upsertContextBySourcePath.mockResolvedValue({
+			status: "repository-managed",
+			context: row({ repositorySyncId: "sync-1" }),
+			sync: { repository: "example-org/handbook", ref: "main" },
+		});
+
+		const error = await call().catch((caught: unknown) => caught);
+		await flushBackgroundWork();
+
+		expect(error).toMatchObject({
+			code: "CONFLICT",
+			message:
+				"docs/architecture.md is synced from example-org/handbook @ main; change it in the repository and run Sync now.",
+			data: {
+				code: "REPOSITORY_MANAGED",
+				repository: "example-org/handbook",
+				ref: "main",
+			},
+		});
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+		expect(mocks.recordAuditFromRequest).not.toHaveBeenCalled();
+		expect(mocks.emitContextChange).not.toHaveBeenCalled();
+	});
+
+	it("names the connected repository when the sync configuration was removed between the reads", async () => {
+		mocks.upsertContextBySourcePath.mockResolvedValue({
+			status: "repository-managed",
+			context: row({
+				repositorySyncId: "sync-1",
+				sourcePath: "docs/old-name.md",
+			}),
+			sync: { repository: null, ref: null },
+		});
+
+		const error = await call({
+			movedFromSourcePath: "docs/old-name.md",
+			expectedContentHash: sha(CONTENT),
+		}).catch((caught: unknown) => caught);
+
+		// The managed row's own path: here the move's source.
+		expect(error).toMatchObject({
+			code: "CONFLICT",
+			message:
+				"docs/old-name.md is synced from the connected repository; change it in the repository and run Sync now.",
+			data: { code: "REPOSITORY_MANAGED", repository: null, ref: null },
+		});
+	});
+
 	it("answers a conflict with 409, the stored hash and who last changed it — never the content", async () => {
 		mocks.upsertContextBySourcePath.mockResolvedValue({
 			status: "conflict",

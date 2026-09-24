@@ -1,4 +1,21 @@
 /**
+ * The Temporal workflow id of a project's Living Memory repository sync
+ * (design 2026-09-23 §5.2, Fizzy #2657).
+ *
+ * ONE id per project, not per run: the API starts it with
+ * `workflowIdConflictPolicy: "FAIL"`, so a second "Sync now" while a run is
+ * open is refused by Temporal itself. Two places must agree on the string:
+ * the API's start and "is it running" check
+ * (`packages/api/modules/projects/lib/context-repository-sync-workflow.ts`,
+ * which holds its own copy of this literal) and the sync's `begin` activity
+ * in `@repo/temporal`, which describes each unfinished predecessor's exact
+ * execution (this id plus the run id in its run key). Change them together.
+ */
+export function contextRepositorySyncWorkflowId(projectId: string): string {
+	return `context-repository-sync-${projectId}`;
+}
+
+/**
  * The deterministic Temporal workflow id of a Coding Instructions snapshot's
  * validation run.
  *

@@ -218,13 +218,32 @@ describe("audit.taxonomy handler", () => {
 		// file deleted by its path, only in the version the caller named — the
 		// `--prune` of `fabric context push` — with the path and the deleted
 		// hash, Fizzy #2636) = 139.
+		// + 4 project.context.repository_sync_{configured, started,
+		// completed, disabled} (a project's Living Memory pointed at selected
+		// paths of a repository branch, a run requested, a run's outcome with
+		// the commit it applied and its counts, and the configuration removed
+		// by a member or by disconnecting the integration; repository, branch,
+		// commit and counts, never a credential, file path or file content,
+		// Fizzy #2657) = 143.
+		expect(result.actions).toHaveLength(147);
+		expect(result.actions).toContain(
+			"project.context.repository_sync_configured",
+		);
+		expect(result.actions).toContain(
+			"project.context.repository_sync_started",
+		);
+		expect(result.actions).toContain(
+			"project.context.repository_sync_completed",
+		);
+		expect(result.actions).toContain(
+			"project.context.repository_sync_disabled",
+		);
 		// + 4 project.instructions.repository_sync_{configured, started,
 		// completed, disabled} (a project's coding instructions pointed at a
 		// repository branch, a run requested, a run's outcome, and the source
 		// released by a member or by disconnecting the integration; repository
 		// and branch names and a commit SHA, never a credential or file
-		// content, Fizzy #2538) = 143.
-		expect(result.actions).toHaveLength(143);
+		// content, Fizzy #2538) = 147.
 		expect(result.actions).toContain(
 			"project.instructions.repository_sync_configured",
 		);

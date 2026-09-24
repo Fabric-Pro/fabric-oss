@@ -1,6 +1,15 @@
 /**
  * Synced Context Deletion Workflow (Fizzy #2636)
  *
+ * NO LONGER STARTED (Living Memory design 2026-09-23 §6; PR 1 task T2).
+ * `fabric context push --prune`, `projects.contexts.deleteSyncedFile` and the
+ * Context tab's delete of a row with a `sourcePath` now delete synchronously
+ * and row-first through `deleteSyncedContextRow` (`@repo/database`), called
+ * by `packages/api/modules/projects/lib/delete-synced-context.ts`. The code
+ * and its registration stay, unchanged, so an execution open at deploy time
+ * replays and finishes; its claim and row delete now also refuse a row a
+ * repository sync owns. Remove it once no execution can be open.
+ *
  * The durable compare-and-set delete behind `fabric context push --prune`
  * and `projects.contexts.deleteSyncedFile`: delete the synced file at a path,
  * but only the version the caller names. The API starts it and waits for the

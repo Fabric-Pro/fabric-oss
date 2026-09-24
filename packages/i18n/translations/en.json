@@ -1616,6 +1616,12 @@
 						"content_upserted": "Synced context file created, updated or moved",
 						"synced_file_deleted": "Synced context file deleted"
 					},
+					"context": {
+						"repository_sync_configured": "Living Memory repository sync configured",
+						"repository_sync_started": "Living Memory repository sync started",
+						"repository_sync_completed": "Living Memory repository sync finished",
+						"repository_sync_disabled": "Living Memory repository sync turned off"
+					},
 					"instructions": {
 						"upload_started": "Coding-instructions upload started",
 						"published": "Coding-instructions version published",
@@ -2533,13 +2539,94 @@
 				"hideItems": "Hide items",
 				"removed": "{count, plural, one {Removing # duplicate. It disappears once cleanup finishes.} other {Removing # duplicates. They disappear once cleanup finishes.}}",
 				"removeFailed": "{count, plural, one {The duplicate could not be removed. Please try again.} other {# duplicates could not be removed. Please try again.}}",
-				"removedPartial": "Removal started for {removed} of {total} duplicates. {failed} could not be started; please try again."
+				"removedPartial": "Removal started for {removed} of {total} duplicates. {failed} could not be started; please try again.",
+				"removedWithSkipped": "{deleted, plural, one {# deleted} other {# deleted}}, {skipped, plural, one {# skipped (already changed or repository-managed)} other {# skipped (already changed or repository-managed)}}{failed, plural, =0 {} other {, # failed}}"
 			},
 			"livingMemory": {
 				"title": "Living Memory",
 				"description": "Files synced from a working tree, grouped by folder.",
 				"rootFolder": "Project root",
-				"fileCount": "{count, plural, one {# file} other {# files}}"
+				"fileCount": "{count, plural, one {# file} other {# files}}",
+				"repositorySync": {
+					"entry": "Sync from repository",
+					"running": "Syncing…",
+					"repositoryLine": "{repository} @ {ref}",
+					"repositoryBadge": "Repository",
+					"syncNow": "Sync now",
+					"status": {
+						"notSynced": "Not synced yet",
+						"applied": "Applied commit {sha} · {time} ago · {count, plural, one {# file} other {# files}}",
+						"partial": "Partially applied commit {sha} · {count, plural, one {# file kept an older version} other {# files kept an older version}}",
+						"failed": "Sync failed part-way at commit {sha} · previous content remains"
+					},
+					"awaitingIndex": "{count, plural, one {# file awaiting indexing} other {# files awaiting indexing}}",
+					"cleanupPending": "{count, plural, one {# removed file still being cleaned up} other {# removed files still being cleaned up}}",
+					"attention": {
+						"path-in-use": "“{key}” already exists with different content and wasn't overwritten.",
+						"too-large": "“{key}” is larger than the sync allows and was skipped.",
+						"binary": "“{key}” isn't a text file and was skipped.",
+						"empty": "“{key}” is empty and was skipped.",
+						"invalid-path": "“{key}” isn't a path Living Memory can store and was skipped.",
+						"conflict": "“{key}” changed on this row before the sync could apply it.",
+						"prune-conflict": "“{key}” changed on this row before the sync could remove it.",
+						"path-missing": "“{key}” is no longer in the repository at the selected paths.",
+						"ignore-policy-unreadable": "“{key}”'s .contextignore couldn't be read, so its whole folder was left untouched."
+					},
+					"menu": {
+						"label": "Repository sync options",
+						"changeButton": "Change branch or paths…",
+						"disconnect": "Disconnect"
+					},
+					"disconnectConfirm": {
+						"title": "Disconnect from {repository}?",
+						"description": "The files this sync brought in stay in Living Memory as ordinary synced files — nobody's memory is deleted. To clear them too, delete them from this tab after disconnecting.",
+						"confirm": "Disconnect",
+						"cancel": "Cancel",
+						"disconnected": "Disconnected. The synced files stay as ordinary synced files."
+					},
+					"syncNowResult": {
+						"started": "Sync started.",
+						"already_running": "A sync is already running.",
+						"not_configured": "Nothing is configured to sync.",
+						"integration_unavailable": "This repository connection needs attention before it can be synced from."
+					},
+					"configureDialog": {
+						"title": "Sync Living Memory from a repository",
+						"description": "Point this at selected folders or files on one branch of a connected repository. Sync now pulls their content in from the pinned commit; the repository becomes the author of record for every file it produces.",
+						"repositoryLabel": "Repository",
+						"branchLabel": "Branch",
+						"pathsLabel": "Folders and files",
+						"pathsPlaceholder": "e.g. docs or docs/guide.md",
+						"pathsHint": "Press Enter or Add to select a folder or file. Leave blank and press Add to select the whole repository — only when nothing else is selected.",
+						"addPath": "Add",
+						"wholeRepo": "Whole repository",
+						"removePath": "Remove {path}",
+						"contextignoreNotice": "Each selected folder's own .contextignore is honored, the same way `fabric context push` applies it.",
+						"pruneNotice": "A file no longer selected, or removed from the repository, is pruned from Living Memory on the next sync.",
+						"actingNotice": "Every sync after this one runs as you, the member who configured it.",
+						"cancel": "Cancel",
+						"submit": "Save and sync",
+						"errors": {
+							"INVALID_PATH": "“{path}” isn't a repository path in its plain form.",
+							"EXCLUDED_PATH": "“{path}” is a coding-instructions file, which Living Memory never syncs.",
+							"PATH_PREFIX_OVERLAP": "“{path}” overlaps another selected path.",
+							"TOO_MANY_PATHS": "Select at most 50 folders or files.",
+							"BRANCH_NOT_FOUND": "Branch \"{path}\" wasn't found on the remote.",
+							"REPOSITORY_NOT_FOUND": "That repository connection wasn't found.",
+							"REPOSITORY_UNAVAILABLE": "This repository connection needs attention before it can be synced from.",
+							"REPOSITORY_CREDENTIALS_EXPIRED": "Repository credentials have expired — reconnect the repository to sync from it.",
+							"REPOSITORY_CHANGE_REQUIRES_DISCONNECT": "This project's Living Memory still has {managedCount, plural, one {# file} other {# files}} synced from another repository. Disconnect that sync first to change the repository.",
+							"generic": "Couldn't save the sync configuration. Try again."
+						}
+					},
+					"pathErrors": {
+						"INVALID_PATH": "“{path}” isn't a repository path in its plain form: use '/' between folders, with no leading './' or '/', no trailing '/', no '.' or '..' segments and no surrounding spaces.",
+						"EXCLUDED_PATH": "“{path}” is a coding-instructions file, which Living Memory never syncs.",
+						"TOO_MANY_PATHS": "Select at most {max} folders or files.",
+						"PATH_PREFIX_OVERLAP": "“{path}” overlaps “{withPath}”, which is already selected.",
+						"DUPLICATE_PATH": "“{path}” is already selected."
+					}
+				}
 			}
 		},
 		"contextSummary": {

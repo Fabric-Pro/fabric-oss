@@ -199,9 +199,13 @@ describe("embedSingleContextActivity — reembed", () => {
 		expect(mocks.embedProjectContext).not.toHaveBeenCalled();
 		expect(mocks.updateMany).not.toHaveBeenCalled();
 		expect(mocks.updateContextExtractionStatus).not.toHaveBeenCalled();
+		// The strict delete may have removed some points before it failed,
+		// so the row is recorded as no longer indexed (design 2026-09-23
+		// §5.3.1 step 9).
 		expect(mocks.recordContextIndexingFailure).toHaveBeenCalledWith(
 			"ctx-1",
 			"Search indexing failed: Failed to delete project context: qdrant unavailable",
+			{ pointsRemoved: true },
 		);
 	});
 
@@ -294,10 +298,140 @@ describe("embedSingleContextActivity — reembed", () => {
 			embedSingleContextActivity({ ...input, reembed: true }),
 		).rejects.toThrow("deployment does not exist");
 		expect(mocks.updateMany).not.toHaveBeenCalled();
+		// The pass deleted the row's points before the embed failed.
+		expect(mocks.recordContextIndexingFailure).toHaveBeenCalledWith(
+			"ctx-1",
+			"Search indexing failed: deployment does not exist",
+			{ pointsRemoved: true },
+		);
+	});
+});
+
+/**
+ * Living Memory design 2026-09-23 §5.3.1 step 9: two passes on one row
+ * (a sync's index step and a CLI replace, say) must only ever cost work.
+ *
+ * (a) A pass that deleted the row's points and then failed used to leave
+ *     `embeddedAt` as it was: a row that said it was indexed while the index
+ *     held nothing for it. The failure write now says the points were
+ *     removed, and the query clears `embeddedAt` with the reason.
+ * (b) The completion stamp is a conditional write on the embedded hash. When
+ *     it matched no row (a replace landed between the re-read and the
+ *     stamp), the pass used to return success with nothing stamped and the
+ *     index on the older version. It now re-reads and embeds again within
+ *     the same bound, and fails — leaving `embeddedAt` cleared — rather than
+ *     succeed after a stamp that matched nothing.
+ */
+describe("embedSingleContextActivity — a failed or unstamped pass stays repairable", () => {
+	it("(a) tells the failure write the points were removed when a pass fails after its delete", async () => {
+		mocks.embedProjectContext.mockResolvedValue({
+			success: false,
+			error: "deployment does not exist",
+		});
+
+		await expect(
+			embedSingleContextActivity({ ...input, reembed: true }),
+		).rejects.toThrow("deployment does not exist");
+
+		expect(mocks.deleteProjectContext).toHaveBeenCalledTimes(1);
+		expect(mocks.recordContextIndexingFailure).toHaveBeenCalledWith(
+			"ctx-1",
+			"Search indexing failed: deployment does not exist",
+			{ pointsRemoved: true },
+		);
+	});
+
+	it("(a) does not say points were removed when an embed without reembed fails", async () => {
+		mocks.embedProjectContext.mockResolvedValue({
+			success: false,
+			error: "deployment does not exist",
+		});
+
+		await expect(embedSingleContextActivity(input)).rejects.toThrow(
+			"deployment does not exist",
+		);
+
+		expect(mocks.deleteProjectContext).not.toHaveBeenCalled();
 		expect(mocks.recordContextIndexingFailure).toHaveBeenCalledWith(
 			"ctx-1",
 			"Search indexing failed: deployment does not exist",
 		);
+	});
+
+	it("(b) embeds again when the completion stamp matches no row, and stamps the version the row then holds", async () => {
+		// Pass 1 embeds V2 and its re-read still says V2, but a replace lands
+		// before the stamp, so the stamp matches nothing. Pass 2 reads V3.
+		mocks.findUnique
+			.mockResolvedValueOnce(V2)
+			.mockResolvedValueOnce({ contentHash: V2.contentHash })
+			.mockResolvedValueOnce(V3)
+			.mockResolvedValueOnce({ contentHash: V3.contentHash });
+		mocks.updateMany
+			.mockResolvedValueOnce({ count: 0 })
+			.mockResolvedValueOnce({ count: 1 });
+
+		const result = await embedSingleContextActivity({
+			...input,
+			reembed: true,
+		});
+
+		expect(result).toEqual({ success: true, qdrantId: "ctx-1-chunk-0" });
+		expect(mocks.embedProjectContext).toHaveBeenCalledTimes(2);
+		expect(mocks.embedProjectContext.mock.calls[1][0].content).toBe(
+			V3.content,
+		);
+		expect(mocks.deleteProjectContext).toHaveBeenCalledTimes(2);
+		expect(mocks.updateMany).toHaveBeenCalledTimes(2);
+		expect(mocks.updateMany.mock.calls[1][0].where).toEqual({
+			id: "ctx-1",
+			contentHash: V3.contentHash,
+		});
+		expect(mocks.recordContextIndexingFailure).not.toHaveBeenCalled();
+	});
+
+	it("(b) fails, never succeeds, when every completion stamp matches no row, and clears embeddedAt with the failure", async () => {
+		mocks.findUnique.mockImplementation(
+			async (args: { select: Record<string, boolean> }) =>
+				args.select.content ? V2 : { contentHash: V2.contentHash },
+		);
+		mocks.updateMany.mockResolvedValue({ count: 0 });
+
+		await expect(
+			embedSingleContextActivity({ ...input, reembed: true }),
+		).rejects.toThrow(/re-embedded/);
+
+		// Bounded by the existing pass count.
+		expect(mocks.embedProjectContext).toHaveBeenCalledTimes(3);
+		expect(mocks.updateMany).toHaveBeenCalledTimes(3);
+		expect(mocks.updateContextExtractionStatus).not.toHaveBeenCalled();
+		expect(mocks.recordContextIndexingFailure).toHaveBeenCalledWith(
+			"ctx-1",
+			expect.stringMatching(/^Search indexing failed: /),
+			{ pointsRemoved: true },
+		);
+	});
+
+	it("(b) removes the pass's points and indexes nothing when the stamp matched no row because the row was deleted", async () => {
+		mocks.findUnique
+			.mockResolvedValueOnce(V2)
+			.mockResolvedValueOnce({ contentHash: V2.contentHash })
+			.mockResolvedValueOnce(null);
+		mocks.updateMany.mockResolvedValueOnce({ count: 0 });
+
+		const result = await embedSingleContextActivity({
+			...input,
+			reembed: true,
+		});
+
+		// Nothing to index: the row is gone, so no `embeddedAt` can claim
+		// anything, and the points just written go with it.
+		expect(result).toEqual({ success: true });
+		expect(mocks.embedProjectContext).toHaveBeenCalledTimes(1);
+		expect(mocks.deleteProjectContext).toHaveBeenCalledTimes(2);
+		expect(
+			mocks.embedProjectContext.mock.invocationCallOrder[0],
+		).toBeLessThan(mocks.deleteProjectContext.mock.invocationCallOrder[1]);
+		expect(mocks.updateContextExtractionStatus).not.toHaveBeenCalled();
 	});
 });
 

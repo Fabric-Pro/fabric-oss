@@ -258,7 +258,7 @@ export type ProjectDocumentAssetScalarFieldEnum = z.infer<typeof ProjectDocument
 
 // File: ProjectContextScalarFieldEnum.schema.ts
 
-export const ProjectContextScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'content', 'qdrantId', 'embeddedAt', 'metadata', 's3Path', 's3Bucket', 'originalFilename', 'mimeType', 'fileSize', 'extractionStatus', 'extractionError', 'extractedAt', 'sourceUrl', 'sourceTitle', 'knowledgeBaseSourceCategory', 'knowledgeBaseSourceCategoryOther', 'urlScope', 'urlMaxPages', 'urlRefreshMode', 'urlNextRefreshAt', 'urlLastSyncedAt', 'urlScheduleId', 'urlActiveWorkflowId', 'sourceType', 'aiInstructions', 'metadataUpdatedAt', 'metadataUpdatedByUserId', 'sourcePath', 'contentHash', 'contentUpdatedAt', 'contentUpdatedByUserId', 'userId', 'organizationId', 'ownerKey', 'createdAt', 'updatedAt'])
+export const ProjectContextScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'content', 'qdrantId', 'embeddedAt', 'metadata', 's3Path', 's3Bucket', 'originalFilename', 'mimeType', 'fileSize', 'extractionStatus', 'extractionError', 'extractedAt', 'sourceUrl', 'sourceTitle', 'knowledgeBaseSourceCategory', 'knowledgeBaseSourceCategoryOther', 'urlScope', 'urlMaxPages', 'urlRefreshMode', 'urlNextRefreshAt', 'urlLastSyncedAt', 'urlScheduleId', 'urlActiveWorkflowId', 'sourceType', 'aiInstructions', 'metadataUpdatedAt', 'metadataUpdatedByUserId', 'sourcePath', 'contentHash', 'contentUpdatedAt', 'contentUpdatedByUserId', 'repositorySyncId', 'userId', 'organizationId', 'ownerKey', 'createdAt', 'updatedAt'])
 
 export type ProjectContextScalarFieldEnum = z.infer<typeof ProjectContextScalarFieldEnumSchema>;
 
@@ -294,9 +294,21 @@ export type ProjectContextConversationClaimScalarFieldEnum = z.infer<typeof Proj
 
 // File: ProjectContextPendingVectorCleanupScalarFieldEnum.schema.ts
 
-export const ProjectContextPendingVectorCleanupScalarFieldEnumSchema = z.enum(['id', 'projectId', 'contextIds', 'attempts', 'lastError', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
+export const ProjectContextPendingVectorCleanupScalarFieldEnumSchema = z.enum(['id', 'projectId', 'contextIds', 'attempts', 'lastError', 'userId', 'organizationId', 'syncRunKey', 'createdAt', 'updatedAt'])
 
 export type ProjectContextPendingVectorCleanupScalarFieldEnum = z.infer<typeof ProjectContextPendingVectorCleanupScalarFieldEnumSchema>;
+
+// File: ProjectContextRepositorySyncScalarFieldEnum.schema.ts
+
+export const ProjectContextRepositorySyncScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'repositoryIntegrationId', 'ref', 'paths', 'generation', 'activeRunKey', 'lastAppliedCommitSha', 'lastAppliedRunId', 'createdAt', 'updatedAt'])
+
+export type ProjectContextRepositorySyncScalarFieldEnum = z.infer<typeof ProjectContextRepositorySyncScalarFieldEnumSchema>;
+
+// File: ProjectContextRepositorySyncRunScalarFieldEnum.schema.ts
+
+export const ProjectContextRepositorySyncRunScalarFieldEnumSchema = z.enum(['id', 'syncId', 'projectId', 'organizationId', 'userId', 'generation', 'context', 'trigger', 'startedAt', 'finishedAt', 'status', 'error', 'commitSha', 'plan', 'outcomes', 'removedCount', 'pruneConflicts'])
+
+export type ProjectContextRepositorySyncRunScalarFieldEnum = z.infer<typeof ProjectContextRepositorySyncRunScalarFieldEnumSchema>;
 
 // File: ProjectContextSummaryScalarFieldEnum.schema.ts
 
@@ -2223,6 +2235,24 @@ export type UrlRefreshMode = z.infer<typeof UrlRefreshModeSchema>;
 export const ProjectReadinessItemStateValueSchema = z.enum(['SNOOZED', 'NOT_APPLICABLE', 'HELP_REQUESTED'])
 
 export type ProjectReadinessItemStateValue = z.infer<typeof ProjectReadinessItemStateValueSchema>;
+
+// File: ProjectContextSyncTrigger.schema.ts
+
+export const ProjectContextSyncTriggerSchema = z.enum(['MANUAL'])
+
+export type ProjectContextSyncTrigger = z.infer<typeof ProjectContextSyncTriggerSchema>;
+
+// File: ProjectContextSyncRunStatus.schema.ts
+
+export const ProjectContextSyncRunStatusSchema = z.enum(['SUCCEEDED', 'PARTIAL', 'UNCHANGED', 'FAILED'])
+
+export type ProjectContextSyncRunStatus = z.infer<typeof ProjectContextSyncRunStatusSchema>;
+
+// File: ProjectContextSyncError.schema.ts
+
+export const ProjectContextSyncErrorSchema = z.enum(['NOT_CONFIGURED', 'INTEGRATION_UNAVAILABLE', 'PERMISSION_DENIED', 'RUN_IN_PROGRESS', 'REF_MISSING', 'PATHS_MISSING', 'LIMITS_EXCEEDED', 'CLONE_FAILED', 'STORE_FAILED', 'CONFIGURATION_CHANGED', 'SUPERSEDED', 'INTERRUPTED'])
+
+export type ProjectContextSyncError = z.infer<typeof ProjectContextSyncErrorSchema>;
 
 // File: ContextSummaryStatus.schema.ts
 
@@ -4481,6 +4511,7 @@ export const ProjectContextSchema = z.object({
   contentHash: z.string().nullish(),
   contentUpdatedAt: z.date().nullish(),
   contentUpdatedByUserId: z.string().nullish(),
+  repositorySyncId: z.string().nullish(),
   userId: z.string().nullish(),
   organizationId: z.string().nullish(),
   ownerKey: z.string().nullish(),
@@ -4613,11 +4644,58 @@ export const ProjectContextPendingVectorCleanupSchema = z.object({
   lastError: z.string().nullish(),
   userId: z.string().nullish(),
   organizationId: z.string().nullish(),
+  syncRunKey: z.string().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
 
 export type ProjectContextPendingVectorCleanupType = z.infer<typeof ProjectContextPendingVectorCleanupSchema>;
+
+
+// File: ProjectContextRepositorySync.schema.ts
+
+export const ProjectContextRepositorySyncSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  repositoryIntegrationId: z.string(),
+  ref: z.string(),
+  paths: z.array(z.string()),
+  generation: z.number().int().default(1),
+  activeRunKey: z.string().nullish(),
+  lastAppliedCommitSha: z.string().nullish(),
+  lastAppliedRunId: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectContextRepositorySyncType = z.infer<typeof ProjectContextRepositorySyncSchema>;
+
+
+// File: ProjectContextRepositorySyncRun.schema.ts
+
+export const ProjectContextRepositorySyncRunSchema = z.object({
+  id: z.string(),
+  syncId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  generation: z.number().int(),
+  context: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  trigger: ProjectContextSyncTriggerSchema,
+  startedAt: z.date(),
+  finishedAt: z.date().nullish(),
+  status: ProjectContextSyncRunStatusSchema.nullish(),
+  error: ProjectContextSyncErrorSchema.nullish(),
+  commitSha: z.string().nullish(),
+  plan: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  outcomes: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").default("{}"),
+  removedCount: z.number().int(),
+  pruneConflicts: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").default("{}"),
+});
+
+export type ProjectContextRepositorySyncRunType = z.infer<typeof ProjectContextRepositorySyncRunSchema>;
 
 
 // File: ProjectContextSummary.schema.ts

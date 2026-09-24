@@ -971,6 +971,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 			"Pushes a text file into a project's Context tab as a knowledge source, keyed by the file's path in your working tree ('sourcePath') inside that project, so pushing the same path again updates that one source instead of adding another. " +
 			"The result's 'status' says what happened: 'created' for a path the project has not seen; 'unchanged' when the same content is already stored under this path (nothing is written, so repeating a call is harmless); 'updated' when changed content replaced the previous version, which is then re-indexed for search; 'duplicate' when identical content is already in the project as another source (another pushed file, or one added in the Context tab), in which case nothing is created and 'duplicateOfContextId' is the existing source. " +
 			"To replace a file that already exists under this path, first read it with fabric_get_project_context (find it with fabric_list_project_contexts), or take the hash from a 'conflict' result, and pass its 'contentHash' as 'expectedContentHash'. Omitting expectedContentHash means: create the file if the path is new, otherwise only accept identical content — it never means overwrite. If the stored version is not the one you name (someone else changed it since), the tool returns 'conflict' with the current 'contentHash' and who changed it, and writes nothing: read it again, merge, and retry with that hash. A 'conflict' with 'current' null means the file you named was deleted on the server since you read it; nothing was written; call again without expectedContentHash to recreate it, which answers 'duplicate' instead if that content already exists elsewhere in the project. " +
+			"A path a Living Memory repository sync owns is refused with an error whose 'code' is 'REPOSITORY_MANAGED', naming the 'repository' and 'ref' (or 'the connected repository' in the message when the sync configuration was removed since); this is final, not a conflict to retry — the file changes in the repository, and a project member runs 'Sync now' to bring the change in. " +
 			"When you renamed a file, pass its old path as 'movedFromSourcePath' with that path's 'contentHash' as 'expectedContentHash': the source is renamed in place ('moved') when it still holds that version and the content is unchanged, otherwise the new path gets the ordinary answer and 'moveNotApplied' says why. " +
 			"Keep coding-instruction files out of this tool — CLAUDE.md, AGENTS.md, anything under .claude/, and skills, agents and hooks belong to fabric_propose_project_instruction_change.",
 		inputSchema: {
@@ -5063,6 +5064,23 @@ async function handleUpsertProjectContext(
 			},
 		});
 	} catch (error) {
+		// A Living Memory repository sync's refusal (Living Memory design
+		// 2026-09-23 §6): checked first, and by its own `data.code`, never by
+		// matching `instructionRefusalMessage`'s generic CONFLICT text —
+		// this is a distinct outcome from a hash conflict (there is no
+		// version to name and retry; the file changes in the repository, via
+		// "Sync now"), so the code and the repository/ref travel with the
+		// message rather than being flattened into a sentence.
+		const { repositoryManagedBody } = await import(
+			"@repo/api/modules/projects/lib/repository-managed"
+		);
+		const managed = repositoryManagedBody(error);
+		if (managed) {
+			return {
+				content: [{ type: "text", text: JSON.stringify(managed) }],
+				isError: true,
+			};
+		}
 		// The shared function's own refusals (a bad path, empty or oversized
 		// content, a malformed hash) are written for the caller and quoted
 		// back. Anything else — a Prisma or storage error — names internals

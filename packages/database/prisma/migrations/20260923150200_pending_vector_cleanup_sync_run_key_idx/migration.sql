@@ -1,0 +1,17 @@
+-- The ("syncRunKey") index on project_context_pending_vector_cleanup (Living
+-- Memory repository sync, design 2026-09-23 §5.3.1 step 8): a sync run's
+-- receipt counts the vector cleanup records its prune queued and no drain has
+-- cleared yet, live, by run key.
+--
+-- CONCURRENTLY because project_context_pending_vector_cleanup exists already
+-- and a plain build takes a write lock on it for the length of the build. NO
+-- `IF NOT EXISTS`: a failed concurrent build leaves an invalid index behind
+-- under this name, and the clause would then skip the rebuild and record the
+-- migration as applied with no index. Recovery per
+-- docs/database-promotion.md: find it with
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+-- then DROP INDEX that name before re-running the migration.
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT: CONCURRENTLY cannot run inside the
+-- transaction Prisma wraps a multi-statement migration in.
+CREATE INDEX CONCURRENTLY "project_context_pending_vector_cleanup_syncRunKey_idx" ON "project_context_pending_vector_cleanup"("syncRunKey");

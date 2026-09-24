@@ -22,6 +22,11 @@
  * is deleted, but only in the version the lock names, so an edit somebody
  * made on the server since is a conflict rather than lost (Fizzy #2636).
  *
+ * A path a Living Memory repository sync owns refuses a create, a replace, a
+ * move or a `--prune` delete the same way every time: nothing is written,
+ * it is reported as skipped, and `--force` never retries it — the file
+ * changes in the repository, not here (Living Memory design 2026-09-23 §6).
+ *
  * Everything that touches the filesystem lives in `lib/context-sync/`; this
  * file is argument parsing, the sequence, and the exit code.
  */
@@ -107,7 +112,7 @@ export function buildContextCommand(): Command {
 		.option("--org <slug>", "Organization context")
 		.option(
 			"--force",
-			"On a conflict, replace the server's version once with this folder's",
+			"On a conflict, replace the server's version once with this folder's; never retries a path a repository sync owns",
 		)
 		.option(
 			"--prune",

@@ -600,6 +600,120 @@ describe("fabric context push — conflicts", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Repository-managed files (Living Memory design 2026-09-23 §6)
+// ---------------------------------------------------------------------------
+/** The server's 409 for a path a repository sync owns. */
+function repositoryManagedError(
+	sourcePath: string,
+	repository: string | null = "example-org/handbook",
+	ref: string | null = "main",
+) {
+	const origin = repository
+		? ref
+			? `${repository} @ ${ref}`
+			: repository
+		: "the connected repository";
+	return new FabricError(
+		`${sourcePath} is synced from ${origin}; change it in the repository and run Sync now.`,
+		409,
+		"REPOSITORY_MANAGED",
+	);
+}
+
+describe("fabric context push — repository-managed files (Living Memory design 2026-09-23 §6)", () => {
+	it("reports a new file a repository sync already owns as skipped, and records no lock entry (PUT create)", async () => {
+		const dir = await makeFolder({ "docs/architecture.md": "# A\n" });
+		mocks.upsertSyncedFile.mockRejectedValue(
+			repositoryManagedError("docs/architecture.md"),
+		);
+
+		const result = await runCli(["push", dir, "--project", "project-1"]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.upsertSyncedFile).toHaveBeenCalledTimes(1);
+		expect(result.stdout).toContain("skipped (1)");
+		expect(result.stdout).toContain(
+			"docs/architecture.md is synced from example-org/handbook @ main; change it in the repository and run Sync now.",
+		);
+		expect(await lockExists(dir)).toBe(false);
+	});
+
+	it("reports a changed file a repository sync owns as skipped, and leaves its lock entry untouched (PUT replace)", async () => {
+		const dir = await makeFolder({
+			"docs/architecture.md": "# A mine\n",
+		});
+		const before = await seedLock(dir, {
+			"docs/architecture.md": "# A v1\n",
+		});
+		mocks.upsertSyncedFile.mockRejectedValue(
+			repositoryManagedError("docs/architecture.md"),
+		);
+
+		const result = await runCli(["push", dir, "--project", "project-1"]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.upsertSyncedFile).toHaveBeenCalledTimes(1);
+		expect(mocks.upsertSyncedFile).toHaveBeenCalledWith(
+			"project-1",
+			{
+				sourcePath: "docs/architecture.md",
+				content: "# A mine\n",
+				expectedContentHash: sha256("# A v1\n"),
+			},
+			{ org: undefined },
+		);
+		expect(result.stdout).toContain("skipped (1)");
+		expect(result.stdout).toContain(
+			"docs/architecture.md is synced from example-org/handbook @ main; change it in the repository and run Sync now.",
+		);
+		// Lock untouched: the pre-sync version stays exactly as it was.
+		expect((await readLockFile(dir)).files["docs/architecture.md"]).toEqual(
+			before.files["docs/architecture.md"],
+		);
+	});
+
+	it("with --force, does not retry a repository-managed refusal", async () => {
+		const dir = await makeFolder({
+			"docs/architecture.md": "# A mine\n",
+		});
+		const before = await seedLock(dir, {
+			"docs/architecture.md": "# A v1\n",
+		});
+		mocks.upsertSyncedFile.mockRejectedValue(
+			repositoryManagedError("docs/architecture.md"),
+		);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--force",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.upsertSyncedFile).toHaveBeenCalledTimes(1);
+		expect((await readLockFile(dir)).files["docs/architecture.md"]).toEqual(
+			before.files["docs/architecture.md"],
+		);
+	});
+
+	it("names 'the connected repository' when the sync configuration was removed between the reads", async () => {
+		const dir = await makeFolder({ "docs/architecture.md": "# A\n" });
+		mocks.upsertSyncedFile.mockRejectedValue(
+			repositoryManagedError("docs/architecture.md", null, null),
+		);
+
+		const result = await runCli(["push", dir, "--project", "project-1"]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(
+			"docs/architecture.md is synced from the connected repository; change it in the repository and run Sync now.",
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Duplicates, removals, failures
 // ---------------------------------------------------------------------------
 describe("fabric context push — other outcomes", () => {
@@ -1448,6 +1562,30 @@ describe("fabric context push — moves", () => {
 			expect(result.stderr).toContain("does not support moves yet");
 		}
 	});
+
+	it("reports a move whose new path a repository sync owns as skipped, and leaves both lock entries untouched", async () => {
+		const dir = await makeFolder({ "docs/a.md": A });
+		const before = await seedLock(dir, { "a.md": A });
+		mocks.upsertSyncedFile.mockRejectedValue(
+			new FabricError(
+				"docs/a.md is synced from example-org/handbook @ main; change it in the repository and run Sync now.",
+				409,
+				"REPOSITORY_MANAGED",
+			),
+		);
+
+		const result = await runCli(["push", dir, "--project", "project-1"]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.upsertSyncedFile).toHaveBeenCalledTimes(1);
+		expect(mocks.deleteSyncedFile).not.toHaveBeenCalled();
+		expect(result.stdout).toContain("skipped (1)");
+		expect(result.stdout).toContain(
+			"docs/a.md is synced from example-org/handbook @ main; change it in the repository and run Sync now.",
+		);
+		// Neither the old path's entry nor (absent) a new one changed.
+		expect(await readLockFile(dir)).toEqual(before);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -1606,6 +1744,38 @@ describe("fabric context push --prune", () => {
 		expect(mocks.deleteSyncedFile).toHaveBeenCalledTimes(2);
 		expect(await readLockFile(dir)).toEqual(before);
 		expect(result.stdout).toContain("while --force was deleting it");
+	});
+
+	it("reports a prune target a repository sync owns as skipped, keeps its lock entry, and never retries with --force", async () => {
+		const dir = await makeFolder({});
+		const before = await seedLock(dir, { "gone.md": GONE });
+		mocks.deleteSyncedFile.mockRejectedValue(
+			new FabricError(
+				"gone.md is synced from example-org/handbook @ main; change it in the repository and run Sync now.",
+				409,
+				"REPOSITORY_MANAGED",
+			),
+		);
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--prune",
+			"--force",
+		]);
+
+		expect(result.code).toBe(0);
+		// Final: the one attempt, never a --force resend.
+		expect(mocks.deleteSyncedFile).toHaveBeenCalledTimes(1);
+		expect(result.stdout).toContain("skipped (1)");
+		expect(result.stdout).toContain(
+			"gone.md is synced from example-org/handbook @ main; change it in the repository and run Sync now.",
+		);
+		expect(result.stdout).not.toContain("removed locally");
+		// The lock entry is kept, exactly as it was.
+		expect(await readLockFile(dir)).toEqual(before);
 	});
 
 	it("stops at a missing delete permission with exit 5, after recording what already landed", async () => {

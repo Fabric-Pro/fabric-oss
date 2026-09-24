@@ -104,6 +104,40 @@ describe("listContexts", () => {
 		expect(types).toContain("TEXT");
 	});
 
+	// Living Memory repository sync (design 2026-09-23 §7.3): the Context tab
+	// badges a managed row and hides its Delete from `repositorySyncId`, which
+	// reaches it only because this query reads whole rows. A `select` or
+	// `omit` here would drop the column without any type error downstream,
+	// since the list procedure spreads each row.
+	it("reads whole rows, so repositorySyncId reaches the Context tab", async () => {
+		findManyMock.mockResolvedValue([
+			{
+				id: "ctx-managed",
+				projectId: "proj-1",
+				type: "TEXT",
+				createdAt: new Date("2026-09-23T00:00:00Z"),
+				repositorySyncId: "sync-1",
+			},
+		]);
+		countMock.mockResolvedValue(1);
+
+		const result = await listContexts({
+			projectId: "proj-1",
+			limit: "none",
+		});
+
+		const findManyArgs = findManyMock.mock.calls[0]?.[0] as Record<
+			string,
+			unknown
+		>;
+		expect(findManyArgs).not.toHaveProperty("select");
+		expect(findManyArgs).not.toHaveProperty("omit");
+		// Typed: the returned row type carries the column.
+		const owner: string | null =
+			result.contexts[0]?.repositorySyncId ?? null;
+		expect(owner).toBe("sync-1");
+	});
+
 	it("defaults to 50-row pagination for batching callers", async () => {
 		const firstPage = seedMixedContexts(67).slice(0, 50);
 		findManyMock.mockResolvedValue(firstPage);

@@ -23,12 +23,24 @@ import {
 	hashContextContent,
 } from "./context-content-hash";
 import { normalizeContextSourcePathPrefix } from "./context-source-path";
+import { createPendingVectorCleanup } from "./pending-vector-cleanup";
 import { getProjectRagSettings } from "./rag-settings";
 import {
 	buildSyncedContextDeleteAuditEvent,
 	SYNCED_CONTEXT_DELETE_AUDIT_ACTION,
 	type SyncedContextDeletionAuditContext,
 } from "./synced-context-delete-audit";
+import {
+	buildSyncedContextCreateData,
+	buildSyncedContextReplaceData,
+	metadataObject,
+	pathBasename,
+	type RepositorySyncLabel,
+	readRepositorySyncLabel,
+	storedSyncedContextTitle,
+} from "./synced-context-write";
+
+export type { RepositorySyncLabel } from "./synced-context-write";
 
 /**
  * Create a new context
@@ -244,20 +256,46 @@ export async function updateContextExtractionStatus(
 export function buildIndexingFailureUpdate(
 	currentStatus: ExtractionStatus | null | undefined,
 	message: string,
-): { extractionStatus?: ExtractionStatus; extractionError: string } {
+	options: IndexingFailureOptions = {},
+): {
+	extractionStatus?: ExtractionStatus;
+	extractionError: string;
+	embeddedAt?: null;
+} {
+	// Independent of the status rule: whatever extraction says, a row whose
+	// points this pass removed is no longer indexed.
+	const unindexed = options.pointsRemoved ? { embeddedAt: null } : {};
 	if (currentStatus === "COMPLETED") {
-		return { extractionError: message };
+		return { extractionError: message, ...unindexed };
 	}
-	return { extractionStatus: "FAILED", extractionError: message };
+	return {
+		extractionStatus: "FAILED",
+		extractionError: message,
+		...unindexed,
+	};
+}
+
+export interface IndexingFailureOptions {
+	/**
+	 * The failing pass had already deleted the row's points (a re-embed's
+	 * destructive pass, `context-embedding.ts`). The failure write then also
+	 * clears `embeddedAt`, so the row reads as awaiting indexing — a durable
+	 * repair obligation the next re-embed or Living Memory sync picks up —
+	 * instead of claiming an index it no longer has (Living Memory design
+	 * 2026-09-23 §5.3.1 step 9). Absent or false: `embeddedAt` is untouched.
+	 */
+	pointsRemoved?: boolean;
 }
 
 /**
  * Record that search indexing failed for a context, without lying about
- * whether its content was extracted. See `buildIndexingFailureUpdate`.
+ * whether its content was extracted, or — with `pointsRemoved` — about
+ * whether it is still indexed. See `buildIndexingFailureUpdate`.
  */
 export async function recordContextIndexingFailure(
 	contextId: string,
 	message: string,
+	options?: IndexingFailureOptions,
 ) {
 	const existing = await db.projectContext.findUnique({
 		where: { id: contextId },
@@ -266,7 +304,11 @@ export async function recordContextIndexingFailure(
 
 	return await db.projectContext.update({
 		where: { id: contextId },
-		data: buildIndexingFailureUpdate(existing?.extractionStatus, message),
+		data: buildIndexingFailureUpdate(
+			existing?.extractionStatus,
+			message,
+			options,
+		),
 	});
 }
 
@@ -1289,6 +1331,8 @@ const SYNCED_CONTEXT_SELECT = {
 	contentUpdatedAt: true,
 	contentUpdatedByUserId: true,
 	updatedAt: true,
+	/** Set when a Living Memory repository sync authored the row. */
+	repositorySyncId: true,
 } satisfies Prisma.ProjectContextSelect;
 
 export type SyncedContextRow = Prisma.ProjectContextGetPayload<{
@@ -1382,7 +1426,20 @@ export type UpsertContextBySourcePathResult =
 			status: "moved";
 			context: SyncedContextRow;
 			movedFromSourcePath: string;
-	  };
+	  }
+	/**
+	 * Nothing was written: the row this call would change — at this path, or
+	 * at `movedFromSourcePath` — was authored by a Living Memory repository
+	 * sync (design 2026-09-23 §6), which is its author of record. `context`
+	 * is that row; `sync` names the repository (`owner/name`) and branch to
+	 * change it in. Final: sending again, with any hash, gets the same answer.
+	 * `moveNotApplied` is never set on it; the whole call was refused.
+	 */
+	| ({
+			status: "repository-managed";
+			context: SyncedContextRow;
+			sync: RepositorySyncLabel;
+	  } & MoveAnnotation);
 
 export interface UpsertContextBySourcePathInput {
 	projectId: string;
@@ -1481,10 +1538,23 @@ function isUniqueViolation(error: unknown): boolean {
  *     creating the new path loses the rename to the unique index; the re-run
  *     then answers a.
  *
+ * ## A row a repository sync authored (design 2026-09-23 §6)
+ *
+ * A row with `repositorySyncId` set belongs to the Living Memory repository
+ * sync that wrote it. Before any of the steps above, a managed row at this
+ * path — or, for a move, at either path — answers `repository-managed` and
+ * nothing is written, whatever hash was named. Every conditional write also
+ * carries `repositorySyncId IS NULL`, so a row the sync adopts between this
+ * call's read and its write is never replaced or renamed: the zero-row
+ * re-read answers `repository-managed`. A create has no predicate to carry;
+ * a sync insert that lands first wins the `(projectId, sourcePath)` unique
+ * index, and the re-run answers from its row.
+ *
  * Content writes stamp `contentUpdatedAt` / `contentUpdatedByUserId`, never
  * the metadata edit's pair, and clear `embeddedAt` on replace so the row reads
- * as not yet indexed until the caller's re-embed lands. Authorization is the
- * CALLER's job and must happen before this is reached.
+ * as not yet indexed until the caller's re-embed lands. The row shape is
+ * shared with the repository sync's writer (`synced-context-write.ts`).
+ * Authorization is the CALLER's job and must happen before this is reached.
  */
 export async function upsertContextBySourcePath(
 	input: UpsertContextBySourcePathInput,
@@ -1513,6 +1583,22 @@ async function runUpsertContextBySourcePath(
 
 	return await db.$transaction(
 		async (tx): Promise<UpsertContextBySourcePathResult> => {
+			/** The refusal for a row a repository sync authored. */
+			const repositoryManaged = async (
+				row: SyncedContextRow & { repositorySyncId: string },
+			): Promise<UpsertContextBySourcePathResult> => ({
+				status: "repository-managed",
+				context: row,
+				sync: await readRepositorySyncLabel(tx, {
+					syncId: row.repositorySyncId,
+					projectId,
+				}),
+			});
+			const isManaged = (
+				row: SyncedContextRow | null,
+			): row is SyncedContextRow & { repositorySyncId: string } =>
+				row !== null && row.repositorySyncId !== null;
+
 			const createOrReportDuplicate =
 				async (): Promise<UpsertContextBySourcePathResult> => {
 					// Dedup sees only rows that carry a hash. Every content write
@@ -1531,18 +1617,16 @@ async function runUpsertContextBySourcePath(
 						return { status: "duplicate", existing: duplicate };
 					}
 					const context = await tx.projectContext.create({
-						data: {
+						data: buildSyncedContextCreateData({
 							projectId,
-							type: "TEXT",
-							content,
 							sourcePath,
+							content,
 							contentHash: newHash,
-							contentUpdatedAt: new Date(),
-							contentUpdatedByUserId: userId,
-							metadata: { title, sourcePath },
+							title,
 							userId,
 							organizationId: input.organizationId ?? null,
-						},
+							now: new Date(),
+						}),
 						select: SYNCED_CONTEXT_SELECT,
 					});
 					return { status: "created", context };
@@ -1553,6 +1637,9 @@ async function runUpsertContextBySourcePath(
 				existing: SyncedContextRow,
 				expected: string | null | undefined,
 			): Promise<UpsertContextBySourcePathResult> => {
+				if (isManaged(existing)) {
+					return await repositoryManaged(existing);
+				}
 				if (existing.contentHash === newHash) {
 					return { status: "unchanged", context: existing };
 				}
@@ -1575,19 +1662,17 @@ async function runUpsertContextBySourcePath(
 						projectId,
 						...tenantFilter,
 						contentHash: storedHash,
+						repositorySyncId: null,
 					},
-					data: {
+					data: buildSyncedContextReplaceData({
+						storedMetadata: existing.metadata,
+						sourcePath,
 						content,
 						contentHash: newHash,
-						contentUpdatedAt: new Date(),
-						contentUpdatedByUserId: userId,
-						metadata: {
-							...metadataObject(existing.metadata),
-							title,
-							sourcePath,
-						},
-						embeddedAt: null,
-					},
+						title,
+						userId,
+						now: new Date(),
+					}),
 				});
 				if (count === 0) {
 					const current = await tx.projectContext.findFirst({
@@ -1599,6 +1684,10 @@ async function runUpsertContextBySourcePath(
 						// named the version it replaces, so this is step 4,
 						// not a create.
 						return { status: "conflict", current: null };
+					}
+					if (isManaged(current)) {
+						// Adopted by a repository sync since the read.
+						return await repositoryManaged(current);
 					}
 					if (current.contentHash === newHash) {
 						return { status: "unchanged", context: current };
@@ -1651,6 +1740,14 @@ async function runUpsertContextBySourcePath(
 				};
 
 				const source = await readSource();
+				// A managed row at either path refuses the whole call: the
+				// repository is its author of record (design 2026-09-23 §6).
+				if (isManaged(existing)) {
+					return await repositoryManaged(existing);
+				}
+				if (isManaged(source)) {
+					return await repositoryManaged(source);
+				}
 				// (a) The new path is already somebody's row: the hash named
 				// the old path, so the new one is answered naming none.
 				if (existing) {
@@ -1698,6 +1795,7 @@ async function runUpsertContextBySourcePath(
 						id: source.id,
 						...sourceScope,
 						contentHash: source.contentHash,
+						repositorySyncId: null,
 					},
 					data: {
 						sourcePath,
@@ -1724,6 +1822,10 @@ async function runUpsertContextBySourcePath(
 							"source-missing",
 							createOrReportDuplicate(),
 						);
+					}
+					if (isManaged(current)) {
+						// Adopted by a repository sync since the read.
+						return await repositoryManaged(current);
 					}
 					return {
 						status: "conflict",
@@ -1838,6 +1940,12 @@ export type ClaimSyncedContextRowForDeletionResult =
  * (Fizzy #2636): check that the path still holds the named version, and
  * claim it by clearing `embeddedAt` in the same guarded write.
  *
+ * Retired (Living Memory design 2026-09-23 §6): every surface now deletes a
+ * synced row with `deleteSyncedContextRow`, synchronously and row-first.
+ * This and `deleteClaimedSyncedContextRow` stay only for
+ * `syncedContextDeletionWorkflow` executions still open at deploy time, and
+ * both refuse a row a repository sync owns.
+ *
  * The row is found by `projectId` + `sourcePath` under the same exclusive
  * tenant filter as `upsertContextBySourcePath`. Only a synced row has a path,
  * so a row added in the Context tab is never reachable here, whatever it
@@ -1875,7 +1983,17 @@ export async function claimSyncedContextRowForDeletion(
 	}
 
 	const { count } = await db.projectContext.updateMany({
-		where: { id: row.id, ...pathScope, contentHash: expectedContentHash },
+		where: {
+			id: row.id,
+			...pathScope,
+			contentHash: expectedContentHash,
+			// Never a row a Living Memory repository sync owns (design
+			// 2026-09-23 §6). Nothing starts this claim any more, but an
+			// execution of the old workflow still open at deploy time runs
+			// it; a row adopted since then makes it match nothing, and the
+			// re-read below answers `conflict`.
+			repositorySyncId: null,
+		},
 		data: { embeddedAt: null },
 	});
 	if (count > 0) {
@@ -1978,6 +2096,10 @@ export async function deleteClaimedSyncedContextRow(
 					id: input.contextId,
 					...pathScope,
 					contentHash: input.expectedContentHash,
+					// As the claim's: a row a repository sync adopted after the
+					// claim survives, and is handed back below to rebuild the
+					// points the caller removed (design 2026-09-23 §6).
+					repositorySyncId: null,
 				},
 			});
 			if (count > 0) {
@@ -2049,26 +2171,332 @@ export async function deleteClaimedSyncedContextRow(
 	);
 }
 
-/** A row's `metadata` as an object to spread, or an empty one. */
-function metadataObject(metadata: Prisma.JsonValue): Prisma.JsonObject {
-	return metadata && typeof metadata === "object" && !Array.isArray(metadata)
-		? (metadata as Prisma.JsonObject)
-		: {};
+export interface DeleteSyncedContextRowInput {
+	projectId: string;
+	/**
+	 * The hosting organization, resolved by the caller — never a value the
+	 * request supplied. `null` selects the personal (fail-closed) arm; it is
+	 * required so that an `undefined` never selects that arm silently.
+	 */
+	organizationId: string | null;
+	/** Already normalized with `normalizeContextSourcePath`. */
+	sourcePath: string;
+	/** The `contentHash` of the version the caller means to delete. */
+	expectedContentHash: string;
+	/**
+	 * The row the caller displayed, when it addresses one (the Context tab).
+	 * Only that row is deleted; another row at the path is a conflict.
+	 */
+	contextId?: string;
+	/** The human the request acted as, recorded on the audit row. */
+	userId: string;
+	/**
+	 * This delete's operation id, stored as the audit row's
+	 * `metadata.operationId`: the receipt a repeat of the same operation
+	 * finds, as `deleteClaimedSyncedContextRow`'s does.
+	 */
+	operationId: string;
+	/** The request the delete came from, for the audit row. */
+	audit: SyncedContextDeletionAuditContext;
 }
 
-/** The last segment of a normalized source path. */
-function pathBasename(sourcePath: string): string {
-	return sourcePath.slice(sourcePath.lastIndexOf("/") + 1);
+export type DeleteSyncedContextRowResult =
+	/**
+	 * The row held the named version and is deleted, its vector cleanup is
+	 * queued and its audit row written, all in one transaction. `cleanupId`
+	 * is the queued `ProjectContextPendingVectorCleanup` record, for the
+	 * caller's bounded drain attempt (the sweep drains it otherwise).
+	 * `context` and `cleanupId` are null only when an earlier attempt of this
+	 * operation committed and this answer comes from its receipt.
+	 */
+	| {
+			status: "deleted";
+			context: SyncedContextDeleteRow | null;
+			cleanupId: string | null;
+	  }
+	/** No synced row at this path (under this tenant). Nothing happened. */
+	| { status: "absent" }
+	/**
+	 * The path holds another version than the one named (or another row
+	 * than `contextId`, or a version with no hash). Nothing happened;
+	 * `current` is the stored version.
+	 */
+	| { status: "conflict"; current: SyncedContextContentStamp }
+	/**
+	 * The row at the path belongs to a Living Memory repository sync
+	 * (design 2026-09-23 §6). Nothing happened; `sync` names the repository
+	 * and branch to remove it from.
+	 */
+	| {
+			status: "repository-managed";
+			context: SyncedContextRow;
+			sync: RepositorySyncLabel;
+	  };
+
+/**
+ * Delete a synced knowledge file's row, synchronously and row-first
+ * (design 2026-09-23 §6) — the one delete behind `fabric context push
+ * --prune`, `delete-synced-context.ts` and the Context tab's delete of a row
+ * with a `sourcePath`, replacing the claim → vectors → row workflow.
+ *
+ * ONE transaction:
+ *  1. read the row at the path under the exclusive tenant filter;
+ *  2. a managed row → `repository-managed`; another row than `contextId`, or
+ *     another version than `expectedContentHash` → `conflict`; none →
+ *     `absent` (or `deleted`, from this operation's receipt);
+ *  3. the guarded `DELETE` — the id, the project, the tenant, the path, the
+ *     named hash and `repositorySyncId IS NULL` — so a version pushed, or an
+ *     adoption committed, after the read makes it match nothing, and the
+ *     answer comes from a re-read;
+ *  4. `createPendingVectorCleanup` for the id, in the same transaction, so
+ *     the row is never gone while its points are unrecorded;
+ *  5. the `project.context_source.synced_file_deleted` audit row via
+ *     `recordAuditTx`, keyed by `operationId`; a failed insert rolls the
+ *     delete back.
+ * The caller then attempts one bounded drain of `cleanupId` and publishes
+ * the change; neither is needed for correctness.
+ *
+ * Adoption and deletion serialize on the row: an adopt that commits first
+ * makes the delete's guard match nothing (`repository-managed`); a delete
+ * that commits first leaves the adopt's guarded update nothing to match.
+ *
+ * Authorization is the CALLER's job and must happen before this is reached.
+ */
+export async function deleteSyncedContextRow(
+	input: DeleteSyncedContextRowInput,
+): Promise<DeleteSyncedContextRowResult> {
+	const { pathScope, tenantFilter } = syncedContextDeletionScope(input);
+	const { projectId, sourcePath, expectedContentHash } = input;
+
+	return await db.$transaction(
+		async (tx): Promise<DeleteSyncedContextRowResult> => {
+			/** No row at the path: this operation's receipt, or `absent`. */
+			const absentOrReceipt =
+				async (): Promise<DeleteSyncedContextRowResult> => {
+					const receipt = await tx.auditLog.findFirst({
+						where: {
+							action: SYNCED_CONTEXT_DELETE_AUDIT_ACTION,
+							projectId,
+							...tenantFilter,
+							resourceType: "project_context",
+							...(input.contextId
+								? { resourceId: input.contextId }
+								: {}),
+							metadata: {
+								path: ["operationId"],
+								equals: input.operationId,
+							},
+						},
+						select: { id: true },
+					});
+					return receipt
+						? { status: "deleted", context: null, cleanupId: null }
+						: { status: "absent" };
+				};
+
+			/** The answer for a row that is still at the path. */
+			const refusal = async (
+				row: SyncedContextDeleteRow,
+			): Promise<DeleteSyncedContextRowResult> =>
+				row.repositorySyncId !== null
+					? {
+							status: "repository-managed",
+							context: row,
+							sync: await readRepositorySyncLabel(tx, {
+								syncId: row.repositorySyncId,
+								projectId,
+							}),
+						}
+					: { status: "conflict", current: toContentStamp(row) };
+
+			const row = await tx.projectContext.findFirst({
+				where: pathScope,
+				select: SYNCED_CONTEXT_DELETE_SELECT,
+			});
+			// The path is part of the filter, so a pathless (manual) row is
+			// never read here; the check keeps that true if the filter changes.
+			if (!row || row.sourcePath !== sourcePath) {
+				return await absentOrReceipt();
+			}
+			if (
+				row.repositorySyncId !== null ||
+				(input.contextId !== undefined && row.id !== input.contextId) ||
+				row.contentHash === null ||
+				row.contentHash !== expectedContentHash
+			) {
+				return await refusal(row);
+			}
+
+			const { count } = await tx.projectContext.deleteMany({
+				where: {
+					id: row.id,
+					...pathScope,
+					contentHash: expectedContentHash,
+					repositorySyncId: null,
+				},
+			});
+			if (count === 0) {
+				// Changed, moved, adopted or deleted since the read.
+				const current = await tx.projectContext.findFirst({
+					where: pathScope,
+					select: SYNCED_CONTEXT_DELETE_SELECT,
+				});
+				return current
+					? await refusal(current)
+					: await absentOrReceipt();
+			}
+
+			const cleanupId = await createPendingVectorCleanup(tx, {
+				projectId,
+				contextIds: [row.id],
+				tenant: {
+					userId: input.userId,
+					organizationId: input.organizationId,
+				},
+			});
+
+			// A user deleted since the request is recorded by no id rather
+			// than failing the insert (and with it, the delete).
+			const user = await tx.user.findUnique({
+				where: { id: input.userId },
+				select: { email: true, name: true },
+			});
+			await recordAuditTx(
+				tx,
+				buildSyncedContextDeleteAuditEvent({
+					organizationId: input.organizationId,
+					projectId,
+					contextId: row.id,
+					title: storedSyncedContextTitle(row.metadata, sourcePath),
+					sourcePath,
+					contentHash: expectedContentHash,
+					operationId: input.operationId,
+					actor: {
+						userId: user ? input.userId : null,
+						emailSnapshot: user?.email ?? null,
+						nameSnapshot: user?.name ?? null,
+					},
+					audit: input.audit,
+				}),
+			);
+			return { status: "deleted", context: row, cleanupId };
+		},
+	);
 }
 
 /**
- * Delete context
+ * Delete a context row by id — never a row a Living Memory repository sync
+ * manages (design 2026-09-23 §6): only the sync's own prune deletes those.
+ * `deleteMany`, so a row that is gone or managed deletes nothing (`count` 0)
+ * rather than throwing.
+ *
  * Note: Caller should also delete from Qdrant using qdrantId
  */
 export async function deleteContext(contextId: string) {
-	return await db.projectContext.delete({
-		where: { id: contextId },
+	return await db.projectContext.deleteMany({
+		where: { id: contextId, repositorySyncId: null },
 	});
+}
+
+/** A row the legacy deletion's guarded delete did not remove. */
+export interface UnmanagedContextDeleteSurvivor {
+	id: string;
+	projectId: string;
+	organizationId: string | null;
+	sourcePath: string | null;
+	/** The title a synced file's embedding carries, from the stored row. */
+	title: string;
+}
+
+export type DeleteUnmanagedContextRowResult =
+	| { status: "deleted" }
+	/** No row under the id and scope: somebody else deleted it first. */
+	| { status: "absent" }
+	/**
+	 * A repository sync adopted the row after the caller read it. It is kept,
+	 * and marked unindexed (`embeddedAt: null`) because the caller already
+	 * removed its points.
+	 */
+	| { status: "repository-managed"; context: UnmanagedContextDeleteSurvivor }
+	/**
+	 * The guard matched nothing although the row is unmanaged now — it
+	 * changed between the delete and the re-read. Kept and marked unindexed,
+	 * as above.
+	 */
+	| { status: "changed"; context: UnmanagedContextDeleteSurvivor };
+
+/**
+ * The final step of the legacy `contextDeletionWorkflow`, after the caller
+ * removed the row's points: delete the row guarded on its id, its project,
+ * the tenant the workflow's input carries (when it carries one) and
+ * `repositorySyncId IS NULL`.
+ *
+ * That workflow is no longer started for synced files, but an execution open
+ * at deploy time replays and finishes, and a repository sync can adopt the
+ * same path and hash between its vector delete and this row delete (design
+ * 2026-09-23 §4.3, §6). The guard then matches nothing and the managed row
+ * survives; because its points are gone, this also clears its `embeddedAt`,
+ * the durable "needs re-embedding" state (`context-embedding.ts`), in the
+ * same transaction, and hands the row back so the caller can request a
+ * re-embed. A retry is safe: a deleted row reads `absent`; a survivor is
+ * cleared again.
+ *
+ * Authorization is the CALLER's job and must happen before this is reached.
+ */
+export async function deleteUnmanagedContextRow(input: {
+	contextId: string;
+	projectId: string;
+	/** The workflow input's organization; omitted when it carries none. */
+	organizationId?: string;
+}): Promise<DeleteUnmanagedContextRowResult> {
+	const scope = {
+		id: input.contextId,
+		projectId: input.projectId,
+		...(input.organizationId !== undefined
+			? { organizationId: input.organizationId }
+			: {}),
+	};
+	return await db.$transaction(
+		async (tx): Promise<DeleteUnmanagedContextRowResult> => {
+			const { count } = await tx.projectContext.deleteMany({
+				where: { ...scope, repositorySyncId: null },
+			});
+			if (count > 0) {
+				return { status: "deleted" };
+			}
+			const row = await tx.projectContext.findFirst({
+				where: scope,
+				select: {
+					id: true,
+					projectId: true,
+					organizationId: true,
+					sourcePath: true,
+					sourceTitle: true,
+					metadata: true,
+					repositorySyncId: true,
+				},
+			});
+			if (!row) {
+				return { status: "absent" };
+			}
+			await tx.projectContext.updateMany({
+				where: scope,
+				data: { embeddedAt: null },
+			});
+			const context: UnmanagedContextDeleteSurvivor = {
+				id: row.id,
+				projectId: row.projectId,
+				organizationId: row.organizationId,
+				sourcePath: row.sourcePath,
+				title: row.sourcePath
+					? storedSyncedContextTitle(row.metadata, row.sourcePath)
+					: (row.sourceTitle ?? row.id),
+			};
+			return row.repositorySyncId !== null
+				? { status: "repository-managed", context }
+				: { status: "changed", context };
+		},
+	);
 }
 
 /**
