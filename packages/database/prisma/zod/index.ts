@@ -10878,7 +10878,7 @@ export const ProjectInstructionRepositorySyncSchema = z.object({
   rootPath: z.string(),
   automatic: z.boolean(),
   generation: z.number().int().default(1),
-  nextCheckAt: z.date(),
+  nextCheckAt: z.date().nullish(),
   failureCount: z.number().int(),
   automaticPausedReason: ProjectInstructionSyncPauseSchema.nullish(),
   automaticPausedAt: z.date().nullish(),

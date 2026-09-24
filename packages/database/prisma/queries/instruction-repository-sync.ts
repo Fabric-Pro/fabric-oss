@@ -526,7 +526,8 @@ export function getInstructionRepositorySyncRunReceipt(
  * fenced writer can apply it.
  */
 export type RepositorySyncSchedulingPatch = {
-	nextCheckAt?: Date;
+	/** Null clears the schedule: a paused row has no next check. */
+	nextCheckAt?: Date | null;
 	failureCount?: number;
 	automaticPausedReason?: InstructionSyncPause;
 	automaticPausedAt?: Date;
@@ -596,7 +597,11 @@ export function computeSchedulingPatch(
 			};
 		}
 		case "pause":
+			// No next check while paused: the claim wrote its lease into
+			// `nextCheckAt`, and leaving that behind reads as an overdue check
+			// on a row nothing will claim. A re-configure sets it due again.
 			return {
+				nextCheckAt: null,
 				automaticPausedReason: effect.reason,
 				automaticPausedAt: now,
 			};
@@ -670,7 +675,8 @@ export async function claimDueInstructionSyncRows(
  * Every writer that competes with a check moves one of these: a later claim
  * and every finishing run move `nextCheckAt` to a value computed from their
  * own clock, a re-configure or settings change bumps the generation, a pause
- * sets `automaticPausedReason`, and turning automatic sync off clears
+ * sets `automaticPausedReason` and clears `nextCheckAt`, and turning
+ * automatic sync off clears
  * `automatic`. A lease nobody else touched ends by the clock alone. Two
  * claims of one row never write the same lease: a row is re-claimable only
  * once its lease has passed, and the next claim's lease is its own `now`

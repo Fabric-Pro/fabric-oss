@@ -105,6 +105,18 @@ describe("the lease fence on a stateful row store (Decisions 31, 48 and 54)", ()
 		});
 	});
 
+	it("a row with no schedule is never claimed, even when automatic and unpaused", async () => {
+		// The state a pause leaves behind, or a pause that was cleared
+		// without setting the row due: `nextCheckAt <= now` is never true
+		// for NULL, so the claim's own predicate keeps it out.
+		store.put({
+			id: "sync_null",
+			nextCheckAt: null,
+			automaticPausedReason: null,
+		});
+		expect((await claim(10)).map((row) => row.id)).toEqual(["sync_1"]);
+	});
+
 	it("an expired lease with no competing writer applies nothing (Review Focus 3)", async () => {
 		const row = await claimOne();
 		store.advance(LEASE_MS - 1);
@@ -228,7 +240,8 @@ describe("the poll's failure receipt on a stateful row store (Decisions 35 and 5
 		expect(store.row("sync_1")).toMatchObject({
 			automaticPausedReason: "REF_MISSING",
 			automaticPausedAt: at("12:01"),
-			nextCheckAt: at("12:02"),
+			// The claim's lease is gone: a paused row has no next check.
+			nextCheckAt: null,
 		});
 		expect(store.runs()).toEqual([
 			expect.objectContaining({

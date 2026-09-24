@@ -30,7 +30,8 @@ type SyncRow = {
 	automatic: boolean;
 	automaticPausedReason: string | null;
 	automaticPausedAt: Date | null;
-	nextCheckAt: Date;
+	/** Null while paused: nothing is scheduled. */
+	nextCheckAt: Date | null;
 	failureCount: number;
 	lastEvaluatedCommitSha: string | null;
 	lastEvaluatedGeneration: number | null;
@@ -105,7 +106,7 @@ function same(a: unknown, b: unknown): boolean {
 function copyRow(row: SyncRow): SyncRow {
 	return {
 		...row,
-		nextCheckAt: new Date(row.nextCheckAt),
+		nextCheckAt: row.nextCheckAt && new Date(row.nextCheckAt),
 		updatedAt: new Date(row.updatedAt),
 		automaticPausedAt:
 			row.automaticPausedAt && new Date(row.automaticPausedAt),
@@ -206,11 +207,13 @@ function createInstructionSyncRowStore() {
 					row.automatic &&
 					row.automaticPausedReason === null &&
 					row.integrationStatus === "ACTIVE" &&
+					row.nextCheckAt !== null &&
 					row.nextCheckAt.getTime() <= at.getTime(),
 			)
 			.sort(
 				(a, b) =>
-					a.nextCheckAt.getTime() - b.nextCheckAt.getTime() ||
+					(a.nextCheckAt?.getTime() ?? 0) -
+						(b.nextCheckAt?.getTime() ?? 0) ||
 					a.id.localeCompare(b.id),
 			)
 			.slice(0, limit)
