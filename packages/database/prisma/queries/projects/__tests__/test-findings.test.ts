@@ -274,11 +274,13 @@ describe("promoteFindingToBug", () => {
 		});
 
 		const body = createStoryMock.mock.calls[0][0].description as string;
-		expect(body).toContain("Expected: 80");
-		expect(body).toContain("Actual: 90");
+		// A markdown list item, not a bare line — two plain lines in a row
+		// collapse into one paragraph in the rendered body.
+		expect(body).toContain("- Expected: 80");
+		expect(body).toContain("- Actual: 90");
 		// Facts first, then the cause — a reader meets the parsed assertion
 		// before any hedge about why it might have happened.
-		expect(body.indexOf("Expected: 80")).toBeLessThan(
+		expect(body.indexOf("- Expected: 80")).toBeLessThan(
 			body.indexOf("Cause:"),
 		);
 	});

@@ -249,4 +249,107 @@ describe("parseAssertionValues", () => {
 
 		expect(parseAssertionValues(message)).toBeNull();
 	});
+
+	describe("a trailing value is bounded, never running into the next section", () => {
+		it("returns null for more than one Expected/Received pair — which one failed is ambiguous", () => {
+			// Jest's own multi-failure output concatenates a second report right
+			// below the first. Picking the first pair would silently report the
+			// wrong failure; this module's rule is null over a guess.
+			const message = [
+				"1) expect(a).toBe(b)",
+				"",
+				"Expected: 80",
+				"Received: 90",
+				"",
+				"2) expect(c).toBe(d)",
+				"",
+				"Expected: 5",
+				"Received: 3",
+			].join("\n");
+
+			expect(parseAssertionValues(message)).toBeNull();
+		});
+
+		it("ends Playwright's trailing value at the blank line before 'Call log:'", () => {
+			const message = [
+				"Timed out retrying: expected 2 elements",
+				"Expected: 2",
+				"Received: 3",
+				"",
+				"Call log:",
+				"  - waiting for locator",
+				"  - element is visible",
+			].join("\n");
+
+			expect(parseAssertionValues(message)).toEqual({
+				expected: "2",
+				actual: "3",
+			});
+		});
+
+		it("ends Jest's trailing value at the blank line before 'Number of calls:'", () => {
+			const message =
+				"Expected: 80\nReceived: 90, 100\n\nNumber of calls: 1";
+
+			expect(parseAssertionValues(message)).toEqual({
+				expected: "80",
+				actual: "90, 100",
+			});
+		});
+	});
+
+	describe("performance: stays linear on an unbounded, adversarial failureMessage", () => {
+		// `failureMessage` is a `@db.Text` column with no size cap, and this runs
+		// synchronously on both the request path and the sync path. Every one of
+		// these inputs used to walk a backtracking regex into quadratic-or-worse
+		// behaviour (290ms at n=500, ~2s at n=2000, ~21s at n=5000, a timeout at
+		// n=10000, measured before the fix). The bound here is deliberately
+		// generous — the point is "nowhere near linear-in-milliseconds", not a
+		// tight budget CI could flake on.
+		const BUDGET_MS = 50;
+
+		function assertFast(label: string, input: string) {
+			const start = performance.now();
+			parseAssertionValues(input);
+			const elapsed = performance.now() - start;
+			expect(
+				elapsed,
+				`${label} took ${elapsed.toFixed(1)}ms`,
+			).toBeLessThan(BUDGET_MS);
+		}
+
+		it("Chai/Vitest padding that never resolves to a match", () => {
+			assertFast(
+				"chai padding",
+				`expected${" ".repeat(5000)}to equal${" ".repeat(1000)}y`,
+			);
+		});
+
+		it("Node one-liner padding after the header", () => {
+			assertFast(
+				"node one-liner padding",
+				`Expected values to be strictly equal:\n${"x".repeat(5000)}${" ".repeat(1000)}z`,
+			);
+		});
+
+		it("JUnit unbracketed padding with no 'but was:'", () => {
+			assertFast(
+				"junit padding",
+				`expected:${" ".repeat(5000)}y but nothing else here${" ".repeat(1000)}`,
+			);
+		});
+
+		it("a 200 KB single line mixing every trigger word", () => {
+			const mixed =
+				"expected " +
+				"x ".repeat(80_000) +
+				"to " +
+				"y ".repeat(40_000) +
+				"but was: " +
+				"!==".repeat(1000);
+			expect(mixed.length).toBeGreaterThan(200_000);
+
+			assertFast("200KB mixed line", mixed);
+		});
+	});
 });

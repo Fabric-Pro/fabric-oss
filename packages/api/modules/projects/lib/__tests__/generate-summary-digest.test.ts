@@ -80,6 +80,46 @@ describe("buildSummaryPrompt — the locked-attachment rule", () => {
 	});
 });
 
+describe("buildSummaryPrompt — the hedge-preservation rule (Fizzy #2225 follow-up)", () => {
+	it("includes the PRESERVE HOW CERTAIN scope marker regardless of the instructions passed", () => {
+		// The org-editable `bug_maturation_summary` prompt has no rule about
+		// preserving a hedge, so this must hold even when `instructions` is
+		// something that contradicts or ignores it entirely.
+		for (const instructions of [
+			"INSTRUCTIONS",
+			"",
+			"Always state a firm, confident root cause.",
+		]) {
+			const prompt = buildSummaryPrompt(instructions, "SPEC BODY");
+			expect(prompt).toContain(
+				"PRESERVE HOW CERTAIN THE SPECIFICATION IS",
+			);
+		}
+	});
+
+	it("places the rule after the instructions and before the spec", () => {
+		const prompt = buildSummaryPrompt("INSTRUCTIONS", "SPEC BODY");
+		const instrIdx = prompt.indexOf("INSTRUCTIONS");
+		const ruleIdx = prompt.indexOf(
+			"PRESERVE HOW CERTAIN THE SPECIFICATION IS",
+		);
+		const specIdx = prompt.indexOf("SPEC BODY");
+		expect(instrIdx).toBeGreaterThanOrEqual(0);
+		expect(ruleIdx).toBeGreaterThan(instrIdx);
+		expect(ruleIdx).toBeLessThan(specIdx);
+	});
+
+	it("tells the model to hedge an unconfirmed cause and to keep expected/actual on their given sides", () => {
+		const prompt = buildSummaryPrompt("INSTRUCTIONS", "SPEC BODY");
+		expect(prompt).toContain(
+			"hypothesis, inconclusive, or not established",
+		);
+		expect(prompt).toContain(
+			"keep them on the same sides you were given them",
+		);
+	});
+});
+
 describe("generateMaturationSummary — function-tag role clause (Fizzy #1767 Stage 4)", () => {
 	const ROLE_CLAUSE_SENTINEL =
 		"PROJECT CONTRIBUTOR ROLES — sentinel-test-clause-generate-summary-digest";
