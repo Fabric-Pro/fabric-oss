@@ -307,6 +307,18 @@ export function CodingInstructionsTab({
 									},
 								).queryKey,
 						}),
+						// History marks each run as from the current
+						// configuration or an earlier one, judged against the
+						// row a change just replaced or removed; re-read it
+						// with the state, not a minute later (Fizzy #2694).
+						queryClient.invalidateQueries({
+							queryKey:
+								orpc.projects.instructions.repositorySync.listRuns.queryOptions(
+									{
+										input: { projectId },
+									},
+								).queryKey,
+						}),
 						invalidate(),
 					]);
 				},

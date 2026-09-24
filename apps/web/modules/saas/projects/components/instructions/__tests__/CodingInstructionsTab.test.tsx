@@ -46,6 +46,7 @@ const state = vi.hoisted(() => ({
 	listCalls: 0,
 	publishedCalls: 0,
 	syncCalls: 0,
+	listRunsCalls: 0,
 	/** While set, `repositorySync.get` waits for it before answering. */
 	syncGate: null as Promise<void> | null,
 	/** How many `onChanged` promises the published-view stub saw resolve. */
@@ -116,9 +117,10 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					listRuns: {
 						queryOptions: queryOptionsStub(
 							"repositorySync-listRuns",
-							async () => ({
-								runs: [],
-							}),
+							async () => {
+								state.listRunsCalls++;
+								return { runs: [] };
+							},
 						),
 					},
 					syncNow: {
@@ -139,49 +141,67 @@ vi.mock("../ConfigureRepositorySyncDialog", () => ({
 	ConfigureRepositorySyncDialog: () => null,
 }));
 
-vi.mock("../InstructionsPublishedView", () => ({
-	InstructionsPublishedView: ({
-		published,
-		repositoryBacked,
-		repositoryConfirmed,
-		repositorySync,
-	}: {
-		published: { id?: string } | null;
-		repositoryBacked?: boolean;
-		repositoryConfirmed?: boolean;
-		repositorySync?: {
-			state: { latestRun: { id: string } | null };
-			onChanged: () => Promise<void> | void;
-		};
-	}) => (
-		<>
-			<div data-testid="published-id">{published?.id ?? "none"}</div>
-			<div data-testid="latest-run">
-				{repositorySync?.state.latestRun?.id ?? "none"}
-			</div>
-			<button
-				type="button"
-				onClick={() => {
-					// `Promise.resolve` so the stub also runs against a
-					// handler that returns nothing.
-					void Promise.resolve(repositorySync?.onChanged()).then(
-						() => {
-							state.changedSettled++;
-						},
-					);
-				}}
-			>
-				settings-changed
-			</button>
-			<div data-testid="repository-backed">
-				{String(repositoryBacked)}
-			</div>
-			<div data-testid="repository-confirmed">
-				{String(repositoryConfirmed)}
-			</div>
-		</>
-	),
-}));
+vi.mock("../InstructionsPublishedView", async () => {
+	// History's run list is a query only History mounts. The stub mounts
+	// one observer of it, so the tab's invalidation has something to
+	// refetch and the test can see the re-read (Fizzy #2694).
+	const { useQuery } = await import("@tanstack/react-query");
+	const { orpc } = await import("@shared/lib/orpc-query-utils");
+	function RunsObserver({ projectId }: { projectId: string }) {
+		useQuery(
+			orpc.projects.instructions.repositorySync.listRuns.queryOptions({
+				input: { projectId },
+			}),
+		);
+		return null;
+	}
+	return {
+		InstructionsPublishedView: ({
+			projectId,
+			published,
+			repositoryBacked,
+			repositoryConfirmed,
+			repositorySync,
+		}: {
+			projectId: string;
+			published: { id?: string } | null;
+			repositoryBacked?: boolean;
+			repositoryConfirmed?: boolean;
+			repositorySync?: {
+				state: { latestRun: { id: string } | null };
+				onChanged: () => Promise<void> | void;
+			};
+		}) => (
+			<>
+				<RunsObserver projectId={projectId} />
+				<div data-testid="published-id">{published?.id ?? "none"}</div>
+				<div data-testid="latest-run">
+					{repositorySync?.state.latestRun?.id ?? "none"}
+				</div>
+				<button
+					type="button"
+					onClick={() => {
+						// `Promise.resolve` so the stub also runs against a
+						// handler that returns nothing.
+						void Promise.resolve(repositorySync?.onChanged()).then(
+							() => {
+								state.changedSettled++;
+							},
+						);
+					}}
+				>
+					settings-changed
+				</button>
+				<div data-testid="repository-backed">
+					{String(repositoryBacked)}
+				</div>
+				<div data-testid="repository-confirmed">
+					{String(repositoryConfirmed)}
+				</div>
+			</>
+		),
+	};
+});
 vi.mock("../InstructionsEmptyState", () => ({
 	InstructionsEmptyState: () => <div data-testid="empty" />,
 }));
@@ -230,6 +250,7 @@ beforeEach(() => {
 	state.listCalls = 0;
 	state.publishedCalls = 0;
 	state.syncCalls = 0;
+	state.listRunsCalls = 0;
 	state.syncGate = null;
 	state.changedSettled = 0;
 });
@@ -536,6 +557,7 @@ describe("CodingInstructionsTab settings changes (Decision 53)", () => {
 		);
 		await tick(0);
 		const before = state.syncCalls;
+		const runsBefore = state.listRunsCalls;
 
 		let release: () => void = () => {};
 		state.syncGate = new Promise<void>((resolve) => {
@@ -554,6 +576,9 @@ describe("CodingInstructionsTab settings changes (Decision 53)", () => {
 		release();
 		await tick(0);
 		expect(state.changedSettled).toBe(1);
+		// History's run list was re-read with the change, not left to the
+		// next idle poll (Fizzy #2694).
+		expect(state.listRunsCalls).toBe(runsBefore + 1);
 	});
 });
 
