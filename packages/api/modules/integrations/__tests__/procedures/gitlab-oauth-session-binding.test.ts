@@ -63,17 +63,24 @@ vi.mock("../../lib/gitlab-recheck", () => ({
 	GitLabIntegrationNotConnectedError: class extends Error {},
 }));
 
-vi.mock("@repo/database", () => ({
-	db: {
-		workflowIntegration: { findFirst: vi.fn() },
-		mCPConfig: { findFirst: vi.fn(), findMany: mockMcpConfigFindMany },
-		dataConnection: { updateMany: mockDataConnectionUpdateMany },
-	},
-	getOrganizationMembership: mockGetOrganizationMembership,
-	getProjectMemberRole: vi.fn(),
-	logRepoIntegrationActivity: vi.fn(),
-	syncLegacyProjectRepoOnConnect: vi.fn(),
-}));
+vi.mock("@repo/database", async (importOriginal) => {
+	// `parseRepoUrl` is real (not stubbed) here: the project-target start
+	// tests below exercise `resolveProjectRepositoryIdentity`, which needs
+	// the actual canonicalisation/legacy-shape/refusal behaviour, not a mock.
+	const actual = await importOriginal<typeof import("@repo/database")>();
+	return {
+		...actual,
+		db: {
+			workflowIntegration: { findFirst: vi.fn() },
+			mCPConfig: { findFirst: vi.fn(), findMany: mockMcpConfigFindMany },
+			dataConnection: { updateMany: mockDataConnectionUpdateMany },
+		},
+		getOrganizationMembership: mockGetOrganizationMembership,
+		getProjectMemberRole: vi.fn(),
+		logRepoIntegrationActivity: vi.fn(),
+		syncLegacyProjectRepoOnConnect: vi.fn(),
+	};
+});
 
 // `@repo/permissions` is NOT stubbed here, unlike the reconcile suite: the
 // callback guard resolves the caller's current role to its permission set,
@@ -171,6 +178,20 @@ const callback = gitlabOAuthProcedures.callback as unknown as Handler<
 >;
 const start = gitlabOAuthProcedures.start as unknown as Handler<
 	{ redirectUri: string; organizationId?: string | null },
+	{ authorizationUrl: string }
+>;
+type ProjectTargetStartInput = {
+	redirectUri: string;
+	organizationId?: string | null;
+	targetType?: "user" | "project";
+	projectId?: string;
+	repositoryUrl?: string;
+	repositoryOwner?: string;
+	repositoryName?: string;
+	defaultBranch?: string;
+};
+const startProjectTarget = gitlabOAuthProcedures.start as unknown as Handler<
+	ProjectTargetStartInput,
 	{ authorizationUrl: string }
 >;
 
@@ -475,4 +496,206 @@ describe("integrations.gitlab.start", () => {
 			codeVerifier: "verifier",
 		});
 	});
+});
+
+describe("integrations.gitlab.start — project-target repository identity (Fizzy #2662 Codex round 2)", () => {
+	beforeEach(() => {
+		mockResolveOrganizationIdForCaller.mockResolvedValue("org-1");
+		mockGetGitLabOAuthUrl.mockReturnValue(
+			"https://gitlab.com/oauth/authorize?state=x",
+		);
+	});
+
+	function mintedState(): ReturnType<typeof decodeOAuthState> {
+		const signedState = mockGetGitLabOAuthUrl.mock.calls.at(-1)?.[2];
+		return decodeOAuthState(signedState as string);
+	}
+
+	// GitLab's project picker (list-projects.ts's `transformProject`) sends
+	// `repositoryName` as GitLab's `path_with_namespace`, which already
+	// repeats the owner: for a project in "group/subgroup", `owner` is
+	// "group/subgroup" and `name` is "group/subgroup/repo" — not the bare
+	// slug "repo" `parseRepoUrl` returns. An exact-match check refuses every
+	// such selection outright.
+	it("accepts a fresh picker selection whose repositoryName repeats the owner, and signs the bare owner/name pair", async () => {
+		await expect(
+			startProjectTarget.handler({
+				input: {
+					redirectUri: REDIRECT_URI,
+					organizationId: "org-1",
+					targetType: "project",
+					projectId: "proj-1",
+					repositoryUrl: "https://gitlab.com/group/subgroup/repo",
+					repositoryOwner: "group/subgroup",
+					repositoryName: "group/subgroup/repo",
+				},
+				context: contextFor("user-1"),
+			}),
+		).resolves.toEqual({
+			authorizationUrl: "https://gitlab.com/oauth/authorize?state=x",
+		});
+
+		expect(mintedState()).toMatchObject({
+			repositoryUrl: "https://gitlab.com/group/subgroup/repo",
+			repositoryOwner: "group/subgroup",
+			repositoryName: "repo",
+		});
+	});
+
+	// Reconnecting a row a picker created before this fix (or from any client
+	// that still sends the legacy shape) hits `start` again with the same
+	// stored owner/full-path-name pair — must succeed exactly like a fresh
+	// pick, not be treated as newly invalid.
+	it("accepts a reconnect built from a historical picker-created row's legacy full-path repositoryName", async () => {
+		await expect(
+			startProjectTarget.handler({
+				input: {
+					redirectUri: REDIRECT_URI,
+					organizationId: "org-1",
+					targetType: "project",
+					projectId: "proj-1",
+					repositoryUrl: "https://gitlab.com/group/subgroup/repo",
+					repositoryOwner: "group/subgroup",
+					repositoryName: "group/subgroup/repo",
+					defaultBranch: "main",
+				},
+				context: contextFor("user-1"),
+			}),
+		).resolves.toMatchObject({ authorizationUrl: expect.any(String) });
+
+		expect(mintedState()).toMatchObject({
+			repositoryOwner: "group/subgroup",
+			repositoryName: "repo",
+		});
+	});
+
+	// The legacy-shape acceptance above must not become a rubber stamp: the
+	// owner still has to match `parsed.owner` exactly, even when the name
+	// carries the full-path shape.
+	it("still refuses a genuine mismatch even when repositoryName has the legacy full-path shape", async () => {
+		await expect(
+			startProjectTarget.handler({
+				input: {
+					redirectUri: REDIRECT_URI,
+					organizationId: "org-1",
+					targetType: "project",
+					projectId: "proj-1",
+					repositoryUrl: "https://gitlab.com/group/subgroup/repo",
+					repositoryOwner: "some-other-group",
+					repositoryName: "group/subgroup/repo",
+				},
+				context: contextFor("user-1"),
+			}),
+		).rejects.toMatchObject({
+			message: "Repository URL does not match the selected repository",
+		});
+
+		expect(mockGetGitLabOAuthUrl).not.toHaveBeenCalled();
+	});
+
+	// Codex round-2 item 2: a URL that fails to parse (userinfo aside — that's
+	// stripped, not refused) must never reach `encodeOAuthState`.
+	it("signs a userinfo-free canonical URL when the candidate carries userinfo", async () => {
+		const withUserinfo = new URL("https://gitlab.com/acme/widgets");
+		withUserinfo.username = "someuser";
+		withUserinfo.password = "somepassword";
+
+		await expect(
+			startProjectTarget.handler({
+				input: {
+					redirectUri: REDIRECT_URI,
+					organizationId: "org-1",
+					targetType: "project",
+					projectId: "proj-1",
+					repositoryUrl: withUserinfo.toString(),
+					repositoryOwner: "acme",
+					repositoryName: "widgets",
+				},
+				context: contextFor("user-1"),
+			}),
+		).resolves.toMatchObject({ authorizationUrl: expect.any(String) });
+
+		const state = mintedState();
+		expect(state?.repositoryUrl).toBe("https://gitlab.com/acme/widgets");
+		expect(state?.repositoryUrl).not.toContain("@");
+	});
+
+	it.each([
+		["a query string", "https://gitlab.com/acme/widgets?ref=main"],
+		["a fragment", "https://gitlab.com/acme/widgets#readme"],
+		["a non-default port", "https://gitlab.com:8443/acme/widgets"],
+	])("mints no state when repositoryUrl carries %s", async (_label, url) => {
+		await expect(
+			startProjectTarget.handler({
+				input: {
+					redirectUri: REDIRECT_URI,
+					organizationId: "org-1",
+					targetType: "project",
+					projectId: "proj-1",
+					repositoryUrl: url,
+					repositoryOwner: "acme",
+					repositoryName: "widgets",
+				},
+				context: contextFor("user-1"),
+			}),
+		).rejects.toMatchObject({ message: "Cannot parse repository URL" });
+
+		expect(mockGetGitLabOAuthUrl).not.toHaveBeenCalled();
+	});
+
+	// Codex round-3 item 3: previously, when the helper couldn't build ANY
+	// candidate (too little identity info), the raw partial fields were
+	// still signed into the state and the OAuth flow started anyway. A
+	// project-target request now requires `projectId` and a resolvable
+	// identity before minting anything.
+	it.each([
+		[
+			"owner-only (no repositoryName, no repositoryUrl)",
+			{
+				projectId: "proj-1",
+				repositoryOwner: "acme",
+			},
+		],
+		[
+			"name-only (no repositoryOwner, no repositoryUrl)",
+			{
+				projectId: "proj-1",
+				repositoryName: "widgets",
+			},
+		],
+		[
+			"no identity at all",
+			{
+				projectId: "proj-1",
+			},
+		],
+		[
+			"a full identity but no projectId",
+			{
+				repositoryUrl: "https://gitlab.com/acme/widgets",
+				repositoryOwner: "acme",
+				repositoryName: "widgets",
+			},
+		],
+	])(
+		"mints no state for a project-target request with %s",
+		async (_label, extra) => {
+			await expect(
+				startProjectTarget.handler({
+					input: {
+						redirectUri: REDIRECT_URI,
+						organizationId: "org-1",
+						targetType: "project",
+						...extra,
+					},
+					context: contextFor("user-1"),
+				}),
+			).rejects.toMatchObject({
+				message:
+					"Missing project integration fields (projectId, repositoryOwner, or repositoryName)",
+			});
+
+			expect(mockGetGitLabOAuthUrl).not.toHaveBeenCalled();
+		},
+	);
 });

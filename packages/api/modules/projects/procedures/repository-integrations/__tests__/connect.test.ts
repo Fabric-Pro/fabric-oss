@@ -134,6 +134,7 @@ beforeEach(() => {
 		provider: "AZURE_DEVOPS",
 		owner: "my-org",
 		name: "repo",
+		url: "https://dev.azure.com/my-org/Proj/_git/repo",
 	});
 	mockEncryptApiKey.mockReturnValue("encrypted:secret-pat");
 	mockValidateAzureDevOpsPat.mockResolvedValue({ ok: true });
@@ -257,6 +258,88 @@ describe("connectRepoIntegrationProcedure — ADO PAT validation refactor", () =
 	});
 });
 
+describe("connectRepoIntegrationProcedure — repository URL canonicalisation (Fizzy #2662)", () => {
+	it("rejects a repository URL with a query string before parseRepoUrl or any validator runs", async () => {
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					...adoInput,
+					repositoryUrl:
+						"https://dev.azure.com/my-org/Proj/_git/repo?version=GBmain",
+				},
+				context: baseContext,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message:
+				"Repository URL must not include a query string or fragment",
+		});
+
+		expect(mockParseRepoUrl).not.toHaveBeenCalled();
+		expect(mockValidateAzureDevOpsPat).not.toHaveBeenCalled();
+		expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
+	});
+
+	it("rejects a repository URL with a fragment before parseRepoUrl or any validator runs", async () => {
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					...adoInput,
+					repositoryUrl:
+						"https://dev.azure.com/my-org/Proj/_git/repo#readme",
+				},
+				context: baseContext,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message:
+				"Repository URL must not include a query string or fragment",
+		});
+
+		expect(mockParseRepoUrl).not.toHaveBeenCalled();
+		expect(mockValidateAzureDevOpsPat).not.toHaveBeenCalled();
+		expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
+	});
+
+	it("uses parseRepoUrl's canonical url — not the raw input — for resolveDefaultBranch, createProjectRepoIntegration, and syncLegacyProjectRepoOnConnect", async () => {
+		// The raw input carries a trailing `.git` the canonical form drops, so a
+		// test that only checked `toHaveBeenCalled()` couldn't tell which one
+		// the handler actually forwarded.
+		const canonicalUrl = "https://dev.azure.com/my-org/Proj/_git/repo";
+		mockParseRepoUrl.mockReturnValue({
+			provider: "AZURE_DEVOPS",
+			owner: "my-org",
+			name: "repo",
+			url: canonicalUrl,
+		});
+
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				...adoInput,
+				repositoryUrl: `${adoInput.repositoryUrl}.git`,
+			},
+			context: baseContext,
+		});
+
+		expect(mockResolveDefaultBranch).toHaveBeenCalledWith(
+			expect.objectContaining({ repositoryUrl: canonicalUrl }),
+		);
+		expect(mockCreateProjectRepoIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({ repositoryUrl: canonicalUrl }),
+		);
+		expect(mockSyncLegacyProjectRepoOnConnect).toHaveBeenCalledWith(
+			adoInput.projectId,
+			canonicalUrl,
+			"my-org",
+			"repo",
+			"main",
+		);
+	});
+});
+
 describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () => {
 	const githubInput = {
 		projectId: "p1",
@@ -284,6 +367,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "store",
+			url: "https://github.com/acme/store",
 		});
 		const handler = await loadHandler();
 		const result = await handler({
@@ -315,6 +399,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "store",
+			url: "https://github.com/acme/store",
 		});
 		mockValidateGitHubPat.mockResolvedValue({ ok: false, status: 403 });
 		const handler = await loadHandler();
@@ -334,6 +419,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "store",
+			url: "https://github.com/acme/store",
 		});
 		mockValidateGitHubPat.mockResolvedValue({ ok: false, status: 404 });
 		const handler = await loadHandler();
@@ -351,6 +437,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "store",
+			url: "https://github.com/acme/store",
 		});
 		mockValidateGitHubPat.mockResolvedValue({ ok: false, status: 401 });
 		const handler = await loadHandler();
@@ -368,6 +455,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITLAB",
 			owner: "group",
 			name: "app",
+			url: "https://gitlab.com/group/app",
 		});
 		const handler = await loadHandler();
 		await handler({ input: gitlabInput, context: baseContext });
@@ -393,6 +481,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITLAB",
 			owner: "a",
 			name: "b",
+			url: "https://169.254.169.254/gitlab.com/a/b",
 		});
 		const handler = await loadHandler();
 		await expect(
@@ -415,6 +504,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITLAB",
 			owner: "group",
 			name: "app",
+			url: "https://gitlab.com/group/app",
 		});
 		mockValidateGitLabPat.mockResolvedValue({ ok: false, status: 401 });
 		const handler = await loadHandler();
@@ -431,6 +521,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "store",
+			url: "https://github.com/acme/store",
 		});
 		mockValidateGitHubPat.mockResolvedValue({ ok: true, status: 200 });
 		mockCreateProjectRepoIntegration.mockRejectedValueOnce({
@@ -450,6 +541,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "store",
+			url: "https://github.com/acme/store",
 		});
 		mockValidateGitHubPat.mockResolvedValue({ ok: true, status: 200 });
 		mockRepoFindFirst.mockResolvedValue({
@@ -476,6 +568,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "second-repo",
+			url: "https://github.com/acme/second-repo",
 		});
 		mockRepoFindMany.mockResolvedValueOnce([
 			{
@@ -540,6 +633,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "second-repo",
+			url: "https://github.com/acme/second-repo",
 		});
 		mockRepoFindMany.mockResolvedValueOnce([
 			{
@@ -586,6 +680,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "second-repo",
+			url: "https://github.com/acme/second-repo",
 		});
 		mockRepoFindMany.mockResolvedValueOnce([
 			{
@@ -636,6 +731,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "second-repo",
+			url: "https://github.com/acme/second-repo",
 		});
 		mockRepoFindMany.mockResolvedValueOnce([
 			{
@@ -673,6 +769,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "second-repo",
+			url: "https://github.com/acme/second-repo",
 		});
 		mockRepoFindMany.mockResolvedValueOnce([
 			{
@@ -713,6 +810,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "AZURE_DEVOPS",
 			owner: "acme",
 			name: "second-repo",
+			url: "https://dev.azure.com/acme/proj/_git/second-repo",
 		});
 
 		const handler = await loadHandler();
@@ -745,6 +843,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "second-repo",
+			url: "https://github.com/acme/second-repo",
 		});
 
 		const handler = await loadHandler();
@@ -776,6 +875,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "second-repo",
+			url: "https://github.com/acme/second-repo",
 		});
 		mockRepoFindMany.mockResolvedValueOnce([]);
 		mockGetGitHubWorkflowCredential.mockResolvedValue({
@@ -818,6 +918,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "second-repo",
+			url: "https://github.com/acme/second-repo",
 		});
 		mockRepoFindMany.mockResolvedValueOnce([]);
 		// An App grant cannot be stored as a PAT — it needs its authorization flow
@@ -855,6 +956,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "second-repo",
+			url: "https://github.com/acme/second-repo",
 		});
 		mockRepoFindMany.mockResolvedValueOnce([
 			{ id: "int-1", encryptedPat: "enc_project_pat" },
@@ -893,6 +995,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "second-repo",
+			url: "https://github.com/acme/second-repo",
 		});
 		mockRepoFindMany.mockResolvedValueOnce([]);
 
@@ -926,6 +1029,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "second-repo",
+			url: "https://github.com/acme/second-repo",
 		});
 		mockRepoFindMany.mockResolvedValueOnce([
 			{
@@ -980,6 +1084,7 @@ describe("connectRepoIntegrationProcedure — GitHub / GitLab PAT connect", () =
 			provider: "GITHUB",
 			owner: "acme",
 			name: "second-repo",
+			url: "https://github.com/acme/second-repo",
 		});
 		mockRepoFindMany.mockResolvedValueOnce([
 			{

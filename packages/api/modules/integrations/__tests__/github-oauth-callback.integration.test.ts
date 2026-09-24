@@ -231,4 +231,123 @@ describe("GitHub OAuth callback — project target", () => {
 		// whatever count the previous credential accumulated.
 		expect(data.probeFailCount).toBe(0);
 	});
+
+	// Fizzy #2662: the URL signed into `state` at OAuth start is caller-supplied
+	// and was never re-validated before this write.
+	it("stores the canonical form of a caller-supplied repositoryUrl (trailing .git removed)", async () => {
+		// The previous test left `findFirst` resolving an existing row (it is a
+		// module-level mock, not reset by this file's `beforeEach`); reset it so
+		// this test takes the CREATE branch it means to exercise.
+		const db = (await import("@repo/database")).db;
+		vi.mocked(db.projectRepositoryIntegration.findFirst).mockResolvedValue(
+			null,
+		);
+
+		const { handleProjectTargetCallback } = await import(
+			"../procedures/github-oauth"
+		);
+		await handleProjectTargetCallback({
+			state: {
+				...projectState(),
+				repositoryUrl: "https://github.com/acme/widgets.git",
+			},
+			tokenResponse: tokenResponse(),
+			githubUser: { id: 1, login: "u", name: "U", avatar_url: "" },
+		});
+
+		expect(createProjectRepo.mock.calls[0][0].repositoryUrl).toBe(
+			"https://github.com/acme/widgets",
+		);
+	});
+
+	it("refuses a caller-supplied repositoryUrl carrying a query string, before writing anything", async () => {
+		const { handleProjectTargetCallback } = await import(
+			"../procedures/github-oauth"
+		);
+		await expect(
+			handleProjectTargetCallback({
+				state: {
+					...projectState(),
+					repositoryUrl: "https://github.com/acme/widgets?ref=main",
+				},
+				tokenResponse: tokenResponse(),
+				githubUser: { id: 1, login: "u", name: "U", avatar_url: "" },
+			}),
+		).rejects.toMatchObject({ message: "Cannot parse repository URL" });
+
+		expect(createProjectRepo).not.toHaveBeenCalled();
+	});
+
+	// Codex follow-up on Fizzy #2662: `repositoryUrl` is optional on the OAuth
+	// start schema. When it's omitted, the fallback built from
+	// `repositoryOwner`/`repositoryName` (also unvalidated strings on that
+	// schema) used to be interpolated straight into the stored URL without
+	// ever going through `parseRepoUrl`.
+	it("refuses a query string carried in repositoryName when repositoryUrl is omitted", async () => {
+		const { handleProjectTargetCallback } = await import(
+			"../procedures/github-oauth"
+		);
+		const repositoryNameWithQuery = ["widgets", "ref=main"].join("?");
+		await expect(
+			handleProjectTargetCallback({
+				state: {
+					...projectState(),
+					repositoryUrl: undefined,
+					repositoryName: repositoryNameWithQuery,
+				},
+				tokenResponse: tokenResponse(),
+				githubUser: { id: 1, login: "u", name: "U", avatar_url: "" },
+			}),
+		).rejects.toMatchObject({ message: "Cannot parse repository URL" });
+
+		expect(createProjectRepo).not.toHaveBeenCalled();
+	});
+
+	it("refuses a fragment carried in repositoryName when repositoryUrl is omitted", async () => {
+		const { handleProjectTargetCallback } = await import(
+			"../procedures/github-oauth"
+		);
+		const repositoryNameWithFragment = ["widgets", "readme"].join("#");
+		await expect(
+			handleProjectTargetCallback({
+				state: {
+					...projectState(),
+					repositoryUrl: undefined,
+					repositoryName: repositoryNameWithFragment,
+				},
+				tokenResponse: tokenResponse(),
+				githubUser: { id: 1, login: "u", name: "U", avatar_url: "" },
+			}),
+		).rejects.toMatchObject({ message: "Cannot parse repository URL" });
+
+		expect(createProjectRepo).not.toHaveBeenCalled();
+	});
+
+	// Codex follow-up on Fizzy #2662: `repositoryUrl`, `repositoryOwner`, and
+	// `repositoryName` are three independent, unvalidated fields on the signed
+	// state. Without this check, a state naming repository A in
+	// owner/name but carrying a URL for repository B would probe and store a
+	// row for A using B's URL — a mismatch nothing upstream catches.
+	it("refuses when repositoryUrl names a different repository than repositoryOwner/repositoryName", async () => {
+		const { handleProjectTargetCallback } = await import(
+			"../procedures/github-oauth"
+		);
+		await expect(
+			handleProjectTargetCallback({
+				state: {
+					...projectState(),
+					repositoryUrl: "https://github.com/other-org/other-repo",
+					repositoryOwner: "acme",
+					repositoryName: "widgets",
+				},
+				tokenResponse: tokenResponse(),
+				githubUser: { id: 1, login: "u", name: "U", avatar_url: "" },
+			}),
+		).rejects.toMatchObject({
+			message: "Repository URL does not match the selected repository",
+		});
+
+		expect(createProjectRepo).not.toHaveBeenCalled();
+		expect(verifyRepositoryAccess).not.toHaveBeenCalled();
+	});
 });
