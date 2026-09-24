@@ -257,6 +257,17 @@ export const INSTRUCTION_SYNC_CHECK_RESERVE_MS = 60 * 1000;
 export const INSTRUCTION_SYNC_CHECK_START_TO_CLOSE_MS = 90 * 1000;
 
 /**
+ * The most rows one poll tick claims (Fizzy #2685). Every claim wave and
+ * every check is an activity round trip in the tick's history, and nothing
+ * else bounds their number: a backlog of fast checks could record thousands
+ * before the budget ends, within Temporal's limits but large to store and
+ * slow to replay. At this cap a tick whose checks never wait records on the
+ * order of 3,000 events, well under the server's 10,000-event warning. Rows
+ * past it stay due and the next tick, five minutes on, claims them first.
+ */
+export const INSTRUCTION_SYNC_POLL_CLAIM_CAP = 400;
+
+/**
  * One row the poll claimed (spec §6.1): the subject's claimed row, tagged
  * with its kind so the check resolves the same subject (Decision 46), with
  * `leaseUntil` as the ISO string a Temporal payload carries. Derived from
