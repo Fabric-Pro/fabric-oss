@@ -10,6 +10,8 @@
  * `completeInstructionRepositorySyncRun`. Snapshot cleanup is NOT fenced; it
  * is keyed on the snapshot.
  */
+
+import { logger } from "@repo/logs";
 import { db, Prisma } from "../client";
 import type { ProjectInstructionSyncTrigger } from "../generated/client";
 import { recordAuditTx } from "./audit-log";
@@ -605,6 +607,17 @@ export function computeSchedulingPatch(
 				automaticPausedReason: effect.reason,
 				automaticPausedAt: now,
 			};
+		default: {
+			// The union is closed at compile time; a value that still gets
+			// here (a stale worker, a hand-made payload) must fail the caller
+			// loudly. Returning nothing would skip the write and leave the
+			// lease in `nextCheckAt`, a silent no-op that only surfaces as a
+			// re-claim once the lease passes.
+			const unknown: never = effect;
+			throw new Error(
+				`Unknown scheduling effect: ${String((unknown as { kind?: unknown }).kind)}`,
+			);
+		}
 	}
 }
 
@@ -929,6 +942,43 @@ export async function findInstructionSyncsForPush(input: {
 }
 
 /**
+ * The scheduling patch for a finishing run, or a backoff when the effect is
+ * one this module does not know (Fizzy #2687). `computeSchedulingPatch`
+ * throws on an unknown kind so the mistake is never a silent no-op; but this
+ * runs inside the completion transaction, and letting the throw escape would
+ * roll back the receipt and fail every retry of the completion activity,
+ * leaving the run unfinished. So the receipt still commits: the error is
+ * logged with the kind, and the row backs off as a failed check would, which
+ * is the safe side (a later check re-evaluates the head).
+ */
+function schedulingPatchOrBackoff(
+	input: {
+		syncId: string;
+		projectId: string;
+		organizationId: string;
+		scheduling: InstructionSyncSchedulingEffect;
+	},
+	patchInput: SchedulingPatchInput,
+): RepositorySyncSchedulingPatch | null {
+	try {
+		return computeSchedulingPatch(input.scheduling, patchInput);
+	} catch (error) {
+		logger.error(
+			{
+				event: "instructions.sync.unknown_scheduling_effect",
+				syncId: input.syncId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				kind: String((input.scheduling as { kind?: unknown }).kind),
+				error: error instanceof Error ? error.message : String(error),
+			},
+			"[InstructionSync] unknown scheduling effect at completion; backing off",
+		);
+		return computeSchedulingPatch({ kind: "backoff" }, patchInput);
+	}
+}
+
+/**
  * `record`'s Part B (spec §5.4): locks the sync row FIRST, tenant-scoped,
  * before touching the run row — the same order `deleteInstructionRepositorySync`
  * and `releaseInstructionRepositorySyncForIntegration` use when they lock the
@@ -1000,7 +1050,7 @@ export async function completeInstructionRepositorySyncRun(input: {
 		const configurationCurrent =
 			current !== undefined && current.generation === input.generation;
 		if (configurationCurrent && current !== undefined) {
-			const data = computeSchedulingPatch(input.scheduling, {
+			const data = schedulingPatchOrBackoff(input, {
 				now,
 				failureCount: current.failureCount,
 				generation: input.generation,

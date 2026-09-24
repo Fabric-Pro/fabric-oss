@@ -597,6 +597,43 @@ describe("completeInstructionRepositorySyncRun", () => {
 		},
 	);
 
+	it("still completes the receipt on an unknown effect, logs it, and backs off (Fizzy #2687)", async () => {
+		const { logger } = await import("@repo/logs");
+		const error = vi.spyOn(logger, "error").mockImplementation(() => {});
+		m.run.updateMany.mockResolvedValue({ count: 1 });
+		m.$queryRaw.mockResolvedValueOnce([{ generation: 3, failureCount: 0 }]);
+		await expect(
+			completeInstructionRepositorySyncRun({
+				...base,
+				scheduling: { kind: "retry_later" } as unknown as Parameters<
+					typeof completeInstructionRepositorySyncRun
+				>[0]["scheduling"],
+			}),
+		).resolves.toEqual({ completed: true, configurationCurrent: true });
+		// The receipt committed; the throw never escaped the transaction.
+		expect(m.run.updateMany).toHaveBeenCalledTimes(1);
+		expect(m.sync.update).toHaveBeenCalledWith({
+			where: {
+				id: "sync_1",
+				projectId: "proj_1",
+				organizationId: "org_1",
+			},
+			data: {
+				failureCount: 1,
+				nextCheckAt: new Date(NOW.getTime() + 10 * MIN),
+			},
+		});
+		expect(error).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event: "instructions.sync.unknown_scheduling_effect",
+				syncId: "sync_1",
+				kind: "retry_later",
+			}),
+			expect.any(String),
+		);
+		error.mockRestore();
+	});
+
 	it("the none effect touches no scheduling column", async () => {
 		m.run.updateMany.mockResolvedValue({ count: 1 });
 		m.$queryRaw.mockResolvedValueOnce([{ generation: 3, failureCount: 0 }]);
@@ -790,6 +827,17 @@ describe("computeSchedulingPatch (spec §5.4, §6.1, Decision 46)", () => {
 				generation: 3,
 			}),
 		).toEqual(expected);
+	});
+
+	it("throws on a kind it does not know, rather than writing nothing (Fizzy #2687)", () => {
+		expect(() =>
+			computeSchedulingPatch(
+				{ kind: "retry_later" } as unknown as Parameters<
+					typeof computeSchedulingPatch
+				>[0],
+				{ now: NOW, failureCount: 0, generation: 3 },
+			),
+		).toThrow(/Unknown scheduling effect: retry_later/);
 	});
 
 	it("writes nothing for the none effect", () => {
