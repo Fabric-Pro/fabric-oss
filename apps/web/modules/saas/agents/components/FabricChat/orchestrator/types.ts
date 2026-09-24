@@ -12,6 +12,7 @@ import type {
 	TaskPlan,
 	TaskStep,
 } from "@repo/temporal";
+import type { ChatTurnTruncation } from "../../../lib/chat-turn-truncation";
 import type { ClarificationTurn } from "../../../lib/clarification-turns";
 
 interface ConversationDetail {
@@ -222,6 +223,12 @@ export interface FabricTemporalOrchestratorChatProps {
 export interface CompletedExecution {
 	id: string;
 	userMessage: string;
+	/**
+	 * Id of the live stream message that asked this turn, when the turn ran in
+	 * this session. The live list hides a user bubble by this id — never by its
+	 * text, which would swallow a repeated question (review F31).
+	 */
+	userMessageId?: string;
 	imageUrls?: string[];
 	stepResults: StepResult[];
 	response?: string;
@@ -233,6 +240,8 @@ export interface CompletedExecution {
 	 * the next turn's `history` or the clarity gate re-asks them (Fizzy #2406).
 	 */
 	clarifications?: ClarificationTurn[];
+	/** The answer stopped at the output-token ceiling (review F25). */
+	truncated?: ChatTurnTruncation;
 	plan?: {
 		id: string;
 		description: string;

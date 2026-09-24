@@ -13,6 +13,7 @@ import {
 	type FrameToolResult,
 	isFrameToolName,
 } from "@saas/frames/lib/frame-result";
+import { memo } from "react";
 import {
 	Tool,
 	ToolContent,
@@ -277,7 +278,183 @@ function extractAuthorityState(result: unknown): {
 	};
 }
 
-export function ToolCallList({
+interface ToolCallRowProps
+	extends Pick<
+		ToolCallListProps,
+		"getDisplayName" | "activeFrameId" | "onOpenFrame"
+	> {
+	toolCall: ToolCallItem;
+	defaultOpen: boolean;
+	expandable: boolean;
+	getInputSummary: (args: unknown) => string | undefined;
+}
+
+/** One tool call; memoized so a streaming sibling does not re-render it. */
+const ToolCallRow = memo(function ToolCallRow({
+	toolCall,
+	defaultOpen,
+	expandable,
+	getDisplayName,
+	getInputSummary,
+	activeFrameId,
+	onOpenFrame,
+}: ToolCallRowProps) {
+	const displayName = getDisplayName
+		? getDisplayName(toolCall.name)
+		: toolCall.name;
+	const title = toolCall.serverName
+		? `${displayName} (${toolCall.serverName})`
+		: displayName;
+	const inputSummary = getInputSummary(toolCall.args);
+
+	// Check if this is a chart tool with a chart artifact result
+	const isChart = isChartTool(toolCall.name);
+	const chartArtifact = isChart
+		? extractChartArtifact(toolCall.result)
+		: null;
+	const frameResult = isFrameToolName(toolCall.name)
+		? extractFrameToolResult(toolCall.result)
+		: null;
+	const authorityState = extractAuthorityState(toolCall.result);
+
+	// If we have a chart artifact, render ChartCard instead of tool output
+	if (chartArtifact) {
+		return (
+			<div className="space-y-2">
+				<Tool
+					defaultExpanded={false}
+					expandable={expandable}
+					toolName={toolCall.name}
+				>
+					<ToolHeader
+						title={title}
+						type="tool-invocation"
+						state={getToolState(toolCall.status)}
+						inputSummary={
+							chartArtifact.config.title || "Chart created"
+						}
+					/>
+					<ToolContent>
+						{Object.keys((toolCall.args as object) || {}).length >
+							0 && <ToolInput input={toolCall.args} />}
+					</ToolContent>
+				</Tool>
+				<ChartCard artifact={chartArtifact} />
+			</div>
+		);
+	}
+
+	return (
+		<div className="space-y-2">
+			<Tool
+				defaultExpanded={defaultOpen}
+				expandable={expandable}
+				toolName={toolCall.name}
+			>
+				<ToolHeader
+					title={title}
+					type="tool-invocation"
+					state={getToolState(toolCall.status)}
+					inputSummary={inputSummary}
+				/>
+				<ToolContent>
+					{Object.keys((toolCall.args as object) || {}).length >
+						0 && <ToolInput input={toolCall.args} />}
+					{toolCall.result !== undefined &&
+						toolCall.status !== "error" && (
+							<ToolOutput
+								output={toolCall.result}
+								errorText={undefined}
+							/>
+						)}
+				</ToolContent>
+			</Tool>
+			{/*
+			 * Error / authority surfaces (PR 1093 review #1+#2).
+			 *
+			 * The error message and Runtime-Authority recovery
+			 * banner USED to live inside <ToolContent>, which
+			 * meant a Tool rendered with expandable={false}
+			 * (Fabric Loom) silently hid both — users saw only
+			 * the red "Error" status badge with no actionable
+			 * info. Lift them OUT so they always render
+			 * alongside the tool card, regardless of expand
+			 * state. Same pattern as the frameResult panel
+			 * below.
+			 *
+			 * In expandable surfaces (Orchestrator chat) this
+			 * means the banner is also always visible — a
+			 * small UX upgrade (errors no longer require a
+			 * click to see).
+			 */}
+			{toolCall.status === "error" && (
+				<div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+					<p className="font-medium">Error</p>
+					<p className="mt-1 wrap-break-word">
+						{/* `JSON.stringify(undefined)` returns
+							    undefined, not a string, so a call
+							    carrying neither an error nor a
+							    result used to render this box
+							    empty - a red "Error" heading over
+							    nothing at all. */}
+						{formatToolError(toolCall.error, toolCall.result)}
+					</p>
+				</div>
+			)}
+			{authorityState && (
+				<div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+					<p className="font-medium">Runtime authority required</p>
+					<p className="mt-1">
+						Approve {authorityState.providerKey || "this provider"}
+						{authorityState.requiredAccessLevel
+							? ` (${authorityState.requiredAccessLevel})`
+							: ""}{" "}
+						in Runtime Authority, then retry.
+					</p>
+					{authorityState.pendingSessionId && (
+						<p className="mt-1 text-[11px] opacity-80">
+							Session: {authorityState.pendingSessionId}
+						</p>
+					)}
+					{authorityState.hint && (
+						<p className="mt-1 text-[11px] opacity-80">
+							{authorityState.hint}
+						</p>
+					)}
+				</div>
+			)}
+			{frameResult ? (
+				<div className="mt-2 rounded-md border border-border/60 bg-background/80 px-3 py-2 text-xs text-muted-foreground">
+					<p className="font-medium text-foreground">
+						Interactive content ready
+					</p>
+					<p className="mt-1">
+						{activeFrameId === frameResult.frameId
+							? "Opened in the interactive content panel."
+							: "Open this frame in the interactive content panel."}
+					</p>
+					{onOpenFrame ? (
+						<button
+							type="button"
+							onClick={() => onOpenFrame(frameResult)}
+							className="mt-2 font-medium text-foreground transition-colors hover:text-primary"
+						>
+							{activeFrameId === frameResult.frameId
+								? "Re-open interactive content"
+								: "Open interactive content"}
+						</button>
+					) : null}
+				</div>
+			) : null}
+		</div>
+	);
+});
+
+/**
+ * Memoized: pass stable props (see `toToolCallItems`) and a message that is
+ * not streaming renders nothing again while another one streams (Fizzy #2430).
+ */
+export const ToolCallList = memo(function ToolCallList({
 	toolCalls,
 	defaultOpen = false,
 	className,
@@ -294,178 +471,19 @@ export function ToolCallList({
 	return (
 		<div className={className}>
 			<div className="space-y-2">
-				{toolCalls.map((toolCall) => {
-					const displayName = getDisplayName
-						? getDisplayName(toolCall.name)
-						: toolCall.name;
-					const title = toolCall.serverName
-						? `${displayName} (${toolCall.serverName})`
-						: displayName;
-					const inputSummary = getInputSummary(toolCall.args);
-
-					// Check if this is a chart tool with a chart artifact result
-					const isChart = isChartTool(toolCall.name);
-					const chartArtifact = isChart
-						? extractChartArtifact(toolCall.result)
-						: null;
-					const frameResult = isFrameToolName(toolCall.name)
-						? extractFrameToolResult(toolCall.result)
-						: null;
-					const authorityState = extractAuthorityState(
-						toolCall.result,
-					);
-
-					// If we have a chart artifact, render ChartCard instead of tool output
-					if (chartArtifact) {
-						return (
-							<div key={toolCall.id} className="space-y-2">
-								<Tool
-									defaultExpanded={false}
-									expandable={expandable}
-									toolName={toolCall.name}
-								>
-									<ToolHeader
-										title={title}
-										type="tool-invocation"
-										state={getToolState(toolCall.status)}
-										inputSummary={
-											chartArtifact.config.title ||
-											"Chart created"
-										}
-									/>
-									<ToolContent>
-										{Object.keys(
-											(toolCall.args as object) || {},
-										).length > 0 && (
-											<ToolInput input={toolCall.args} />
-										)}
-									</ToolContent>
-								</Tool>
-								<ChartCard artifact={chartArtifact} />
-							</div>
-						);
-					}
-
-					return (
-						<div key={toolCall.id} className="space-y-2">
-							<Tool
-								defaultExpanded={defaultOpen}
-								expandable={expandable}
-								toolName={toolCall.name}
-							>
-								<ToolHeader
-									title={title}
-									type="tool-invocation"
-									state={getToolState(toolCall.status)}
-									inputSummary={inputSummary}
-								/>
-								<ToolContent>
-									{Object.keys(
-										(toolCall.args as object) || {},
-									).length > 0 && (
-										<ToolInput input={toolCall.args} />
-									)}
-									{toolCall.result !== undefined &&
-										toolCall.status !== "error" && (
-											<ToolOutput
-												output={toolCall.result}
-												errorText={undefined}
-											/>
-										)}
-								</ToolContent>
-							</Tool>
-							{/*
-							 * Error / authority surfaces (PR 1093 review #1+#2).
-							 *
-							 * The error message and Runtime-Authority recovery
-							 * banner USED to live inside <ToolContent>, which
-							 * meant a Tool rendered with expandable={false}
-							 * (Fabric Loom) silently hid both — users saw only
-							 * the red "Error" status badge with no actionable
-							 * info. Lift them OUT so they always render
-							 * alongside the tool card, regardless of expand
-							 * state. Same pattern as the frameResult panel
-							 * below.
-							 *
-							 * In expandable surfaces (Orchestrator chat) this
-							 * means the banner is also always visible — a
-							 * small UX upgrade (errors no longer require a
-							 * click to see).
-							 */}
-							{toolCall.status === "error" && (
-								<div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-									<p className="font-medium">Error</p>
-									<p className="mt-1 wrap-break-word">
-										{/* `JSON.stringify(undefined)` returns
-										    undefined, not a string, so a call
-										    carrying neither an error nor a
-										    result used to render this box
-										    empty - a red "Error" heading over
-										    nothing at all. */}
-										{formatToolError(
-											toolCall.error,
-											toolCall.result,
-										)}
-									</p>
-								</div>
-							)}
-							{authorityState && (
-								<div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-									<p className="font-medium">
-										Runtime authority required
-									</p>
-									<p className="mt-1">
-										Approve{" "}
-										{authorityState.providerKey ||
-											"this provider"}
-										{authorityState.requiredAccessLevel
-											? ` (${authorityState.requiredAccessLevel})`
-											: ""}{" "}
-										in Runtime Authority, then retry.
-									</p>
-									{authorityState.pendingSessionId && (
-										<p className="mt-1 text-[11px] opacity-80">
-											Session:{" "}
-											{authorityState.pendingSessionId}
-										</p>
-									)}
-									{authorityState.hint && (
-										<p className="mt-1 text-[11px] opacity-80">
-											{authorityState.hint}
-										</p>
-									)}
-								</div>
-							)}
-							{frameResult ? (
-								<div className="mt-2 rounded-md border border-border/60 bg-background/80 px-3 py-2 text-xs text-muted-foreground">
-									<p className="font-medium text-foreground">
-										Interactive content ready
-									</p>
-									<p className="mt-1">
-										{activeFrameId === frameResult.frameId
-											? "Opened in the interactive content panel."
-											: "Open this frame in the interactive content panel."}
-									</p>
-									{onOpenFrame ? (
-										<button
-											type="button"
-											onClick={() =>
-												onOpenFrame(frameResult)
-											}
-											className="mt-2 font-medium text-foreground transition-colors hover:text-primary"
-										>
-											{activeFrameId ===
-											frameResult.frameId
-												? "Re-open interactive content"
-												: "Open interactive content"}
-										</button>
-									) : null}
-								</div>
-							) : null}
-						</div>
-					);
-				})}
+				{toolCalls.map((toolCall) => (
+					<ToolCallRow
+						key={toolCall.id}
+						toolCall={toolCall}
+						defaultOpen={defaultOpen}
+						expandable={expandable}
+						getDisplayName={getDisplayName}
+						getInputSummary={getInputSummary}
+						activeFrameId={activeFrameId}
+						onOpenFrame={onOpenFrame}
+					/>
+				))}
 			</div>
 		</div>
 	);
-}
+});

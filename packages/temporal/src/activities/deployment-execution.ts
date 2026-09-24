@@ -74,7 +74,8 @@ export interface DeploymentConfig {
 export interface ExecutionContext {
 	agentInstanceId: string;
 	systemPrompt: string;
-	model: string;
+	/** Unset: the executor resolves the tenant's task default. */
+	model?: string;
 	tools: Array<{
 		name: string;
 		type: string;

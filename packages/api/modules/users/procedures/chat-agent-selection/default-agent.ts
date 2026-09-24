@@ -3,14 +3,16 @@ import {
 	db,
 	type PersistedSelectedAgent,
 } from "@repo/database";
+import { DEFAULT_FABRIC_AI_MODEL } from "@repo/database/prisma/ai-model-catalog";
 import { getConfiguredProviders } from "../../../ai-config/lib/configured-providers";
 
 /**
  * The agent a user gets when they have no stored preference (#2040 § Scope,
- * per the 5/8 DSU). Expressed as a canonical model name so it resolves through
- * the same `model:`-prefixed pseudo-agent path the picker already uses.
+ * per the 5/8 DSU): the platform's default Fabric AI model. Expressed as a
+ * canonical model name so it resolves through the same `model:`-prefixed
+ * pseudo-agent path the picker already uses.
  */
-const DEFAULT_CHAT_AGENT_MODEL = "claude-sonnet-5";
+const DEFAULT_CHAT_AGENT_MODEL = DEFAULT_FABRIC_AI_MODEL;
 
 /**
  * Resolve the default agent for a tenant, or null if they cannot run it.

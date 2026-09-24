@@ -19,12 +19,24 @@ import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
+import { assertChatWorkflowPayload } from "../chat-workflow-payload";
 import { unionDefaultMcpConfigIds } from "../union-default-mcp-config-ids";
 import { extractAiUsageLimitExceededError } from "./extract-ai-usage-limit-error";
+import { historyWindowSchema } from "./history-window";
+import {
+	bindsLiveFeatureTools,
+	projectContextGroundingLine,
+} from "./live-feature-tools";
 import {
 	type FrontendReasoningMode,
 	normalizeReasoningMode,
 } from "./normalize-reasoning-mode";
+import {
+	doneTurnEvent,
+	failedTurnEvent,
+	partialTurnEvent,
+	ROUTE_TIMEOUT_MESSAGE,
+} from "./turn-events";
 import { extractWorkflowFailureMessage } from "./workflow-failure-message";
 
 function buildWorkflowErrorEvent(error: unknown) {
@@ -58,19 +70,9 @@ const AGENT_CONTEXT_STALE_DAYS = 14;
 
 const streamRequestSchema = z.object({
 	message: z.string().min(1).max(100_000),
-	// `system` is accepted and folded into the assistant turn below. Persisted
-	// conversations legitimately hold system rows (operation results), so a
-	// client replaying its own history must not be rejected outright — that
-	// turned one such row into a permanently dead thread.
-	history: z
-		.array(
-			z.object({
-				role: z.enum(["user", "assistant", "system"]),
-				content: z.string().max(200_000),
-			}),
-		)
-		.max(200)
-		.default([]),
+	// Keeps the most recent window rather than rejecting a long thread; see
+	// `history-window.ts`.
+	history: historyWindowSchema,
 	organizationId: z.string().nullish(),
 	reasoningMode: z
 		.enum(["lite", "balanced", "deep", "planner"])
@@ -95,6 +97,10 @@ const streamRequestSchema = z.object({
 	workspaceIds: z.array(z.string().max(200)).max(20).default([]),
 	workspaceDocumentIds: z.array(z.string().max(200)).max(200).default([]),
 	projectId: z.string().max(200).nullish(),
+	// Repository the chat was launched from (the drawer's code context). Only
+	// a default scope for `code_search`, matched against the attached project's
+	// own indexed repositories — never a way to reach another project's code.
+	repositoryUrl: z.string().max(2000).nullish(),
 	// Focused entity the user is currently VIEWING (the page the Fabric Agent
 	// was opened on). When present, the agent is grounded on this item's FULL
 	// content (untruncated description + acceptance criteria + document body) —
@@ -145,12 +151,14 @@ async function buildAgentContextSystemPrompt({
 	focusedStoryId,
 	focusedDocumentId,
 	focusedTaskId,
+	liveFeatureTools,
 }: {
 	projectId: string;
 	baseSystemPrompt?: string;
 	focusedStoryId?: string | null;
 	focusedDocumentId?: string | null;
 	focusedTaskId?: string | null;
+	liveFeatureTools: boolean;
 }): Promise<{ systemPrompt?: string; projectContext?: string }> {
 	try {
 		const { db } = await import("@repo/database");
@@ -395,7 +403,7 @@ async function buildAgentContextSystemPrompt({
 		const contextBlock = [
 			focusedBlock,
 			"## Fabric Workspace Context",
-			"Use this bounded, tenant-authorized project context to ground project catch-up, risk review, backlog analysis, project-update, and implementation-planning requests. Cite the source labels/IDs below when you use them. If a needed record is not listed, say what else you need rather than guessing.",
+			projectContextGroundingLine(liveFeatureTools),
 			getCurrentDateContext(),
 			`Project: ${project.name} (${project.id})`,
 			project.description
@@ -550,6 +558,7 @@ export async function POST(request: NextRequest) {
 			workspaceIds: providedWorkspaceIds,
 			workspaceDocumentIds,
 			projectId: providedProjectId,
+			repositoryUrl,
 			storyId,
 			documentId,
 			taskId,
@@ -729,6 +738,8 @@ export async function POST(request: NextRequest) {
 						focusedStoryId: storyId,
 						focusedDocumentId: documentId,
 						focusedTaskId: taskId,
+						liveFeatureTools:
+							bindsLiveFeatureTools(enabledFabricToolIds),
 					})
 				: {
 						systemPrompt: systemPrompt ?? undefined,
@@ -833,6 +844,9 @@ export async function POST(request: NextRequest) {
 			workspaceIds,
 			workspaceDocumentIds,
 			projectId,
+			preferredRepositoryUrl: projectId
+				? (repositoryUrl ?? undefined)
+				: undefined,
 			enabledMcpConfigIds: enabledMcpConfigIds ?? undefined,
 			enabledFabricToolIds: enabledFabricToolIds ?? undefined,
 			systemPrompt: contextualSystemPrompt,
@@ -886,6 +900,8 @@ async function handleTemporalWorkflow(params: {
 	workspaceIds?: string[];
 	workspaceDocumentIds?: string[];
 	projectId?: string;
+	/** See `DirectChatWorkflowInput.preferredRepositoryUrl`. */
+	preferredRepositoryUrl?: string;
 	enabledMcpConfigIds?: string[];
 	enabledFabricToolIds?: string[];
 	systemPrompt?: string;
@@ -920,6 +936,7 @@ async function handleTemporalWorkflow(params: {
 		workspaceIds,
 		workspaceDocumentIds,
 		projectId,
+		preferredRepositoryUrl,
 		enabledMcpConfigIds,
 		enabledFabricToolIds,
 		systemPrompt,
@@ -1146,6 +1163,7 @@ async function handleTemporalWorkflow(params: {
 					workspaceIds,
 					workspaceDocumentIds,
 					projectId,
+					preferredRepositoryUrl,
 					enabledMcpConfigIds: effectiveEnabledMcpConfigIds,
 					enabledFabricToolIds,
 					systemPrompt,
@@ -1158,6 +1176,13 @@ async function handleTemporalWorkflow(params: {
 				// ownership verification (`memo.userId`, `memo.organizationId`).
 				// Without it, any authenticated user knowing a `direct-chat-*`
 				// id could cancel another tenant's workflow.
+				// Refused here, by name, rather than by Temporal's gRPC frame
+				// limit with an error nobody can act on (review F38).
+				assertChatWorkflowPayload(
+					workflowInput,
+					"directChatWorkflow start",
+				);
+
 				const handle = await temporalClient.workflow.start(
 					"directChatWorkflow",
 					{
@@ -1233,15 +1258,10 @@ async function handleTemporalWorkflow(params: {
 							const result: DirectChatWorkflowOutput =
 								await handle.result();
 
-							if (!result.success) {
-								sendEvent({
-									type: "error",
-									message: result.error || "Workflow failed",
-								});
-								isComplete = true;
-								break;
-							}
-
+							// Tool calls are forwarded on failure too: the
+							// activity settles any call the turn abandoned, and
+							// without this the cards already drawn from
+							// heartbeats kept spinning (review F11).
 							if (result.toolCalls) {
 								for (const toolCall of result.toolCalls) {
 									emitToolCallDelta({
@@ -1257,6 +1277,12 @@ async function handleTemporalWorkflow(params: {
 										mcpAppConfigId: toolCall.mcpAppConfigId,
 									});
 								}
+							}
+
+							if (!result.success) {
+								sendEvent(failedTurnEvent(result));
+								isComplete = true;
+								break;
 							}
 
 							emitResponseDelta(result.responseText);
@@ -1284,13 +1310,13 @@ async function handleTemporalWorkflow(params: {
 								});
 							}
 
+							const partialError = partialTurnEvent(result);
+							if (partialError) {
+								sendEvent(partialError);
+							}
+
 							// Send completion event with token usage
-							sendEvent({
-								type: "done",
-								durationMs: result.durationMs,
-								usage: result.usage,
-								model: result.model,
-							});
+							sendEvent(doneTurnEvent(result));
 
 							isComplete = true;
 						} else if (description.status.name === "FAILED") {
@@ -1454,11 +1480,37 @@ async function handleTemporalWorkflow(params: {
 					}
 				}
 
-				// Handle timeout
-				if (!isComplete && !isClosed) {
+				// Out of poll budget: stop the workflow too, or it keeps
+				// running (and spending) with nobody reading it. Bounded so
+				// the error event still lands inside `maxDuration`.
+				if (
+					!isComplete &&
+					Date.now() - startTime >= MAX_POLL_DURATION
+				) {
+					try {
+						await Promise.race([
+							handle.cancel(),
+							new Promise((_, reject) =>
+								setTimeout(
+									() =>
+										reject(
+											new Error(
+												"Workflow cancel timed out",
+											),
+										),
+									3000,
+								),
+							),
+						]);
+					} catch (cancelError) {
+						console.warn(
+							"[Fabric AI Stream] Failed to cancel timed-out workflow:",
+							cancelError,
+						);
+					}
 					sendEvent({
 						type: "error",
-						message: "Workflow timed out",
+						message: ROUTE_TIMEOUT_MESSAGE,
 					});
 				}
 

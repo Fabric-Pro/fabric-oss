@@ -1,4 +1,5 @@
 import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
+import { DEFAULT_ANTHROPIC_MODEL_NAME } from "../constants";
 
 interface StreamMessage {
 	type: string;
@@ -26,7 +27,7 @@ export async function handleClaudeAgentsFramework(
 	// Extract model name from "anthropic/claude-xxx" format
 	const modelId = model?.startsWith("anthropic/")
 		? model.replace("anthropic/", "")
-		: model || "claude-sonnet-4-5-20250929";
+		: model || DEFAULT_ANTHROPIC_MODEL_NAME;
 
 	const options: Options = {
 		model: modelId,

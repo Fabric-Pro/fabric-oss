@@ -392,6 +392,11 @@ export interface WorkflowState {
 	 * `handoffRecommended` for the frontend's "Continue in new chat" CTA.
 	 */
 	pendingHandoff: { reason: string; summary: string } | null;
+	/**
+	 * Set when the final answer stopped at the output-token ceiling rather
+	 * than finishing (review F25). Surfaced as `truncated` on the output.
+	 */
+	truncated?: "output_limit";
 
 	// Circuit breaker: per-agent failure tracking within this workflow execution
 	agentCircuitBreakers: Record<string, CircuitBreakerState>;

@@ -188,3 +188,33 @@ describe("resolveStreamOutcome — failing a turn that produced nothing", () => 
 		expect(outcome.error).toBeUndefined();
 	});
 });
+
+describe("resolveStreamOutcome — a provider error after part of the answer", () => {
+	/**
+	 * An `error` stream part after a preamble ("I'll search the project
+	 * first…") used to be dropped: any text meant success, so a 429 or an
+	 * overloaded provider on step 2 rendered the preamble as a finished
+	 * answer with no error at all (Fizzy #2040, review F26).
+	 */
+	it("keeps the partial text but reports why the turn stopped", () => {
+		const outcome = resolveStreamOutcome({
+			responseText: "I'll search the project first.",
+			toolCalls: [],
+			streamErrorMessage: "429 Too Many Requests",
+		});
+
+		// Not a failure: failing it would fire the tools-off retry, which
+		// answers from scratch after the preamble already on screen.
+		expect(outcome.error).toBeUndefined();
+		expect(outcome.partialError).toBe("429 Too Many Requests");
+	});
+
+	it("leaves a clean turn without a partial error", () => {
+		const outcome = resolveStreamOutcome({
+			responseText: "Done.",
+			toolCalls: [],
+		});
+
+		expect(outcome.partialError).toBeUndefined();
+	});
+});

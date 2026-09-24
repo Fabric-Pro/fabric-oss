@@ -7,6 +7,8 @@
  * Run with: pnpm --filter @repo/temporal test
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	buildAgentExecutionContext,
@@ -321,7 +323,12 @@ describe("Agent Execution Context Builder", () => {
 			expect(context.model).toBe("anthropic/claude-opus-4-20250514");
 		});
 
-		it("should use default model when none specified", () => {
+		// Fizzy #2040 F20: no hardcoded fallback. An unset model makes the
+		// executor resolve the tenant's TOOL_CALLING/COMPLEX task default, which
+		// is DEFAULT_FABRIC_AI_MODEL on every provider that carries it (pinned in
+		// packages/database/__tests__/default-fabric-ai-model.test.ts). The old
+		// literal ran GPT-4o, and was sent raw to providers without it.
+		it("leaves the model to the tenant's task default when none is specified", () => {
 			const templateNoModel: TemplateConfig = {
 				...mockTemplate,
 				suggestedModel: null,
@@ -334,8 +341,38 @@ describe("Agent Execution Context Builder", () => {
 				"user-123",
 			);
 
-			// DEFAULT_MODELS.CHAT from ai-model-catalog.ts
-			expect(context.model).toBe("gpt-4o");
+			expect(context.model).toBeUndefined();
+		});
+
+		// The other half of the chain: an unset model is resolved by the
+		// executor's dynamic selection (TOOL_CALLING / COMPLEX task defaults),
+		// never sent to the provider as an override.
+		it("resolves an unset model through the task-default selector", () => {
+			const src = (relative: string) =>
+				readFileSync(join(__dirname, relative), "utf8");
+			const executor = src(
+				"../src/activities/agent-execution-core/agent-executor.ts",
+			);
+			expect(executor).toMatch(
+				/model\s*\?\s*await getModelWithOverride\(model, userId, organizationId\)\s*:\s*await getAiModel\(userId, organizationId, hasTools\)/,
+			);
+			const selector = src(
+				"../src/activities/orchestrator/utils/model-selector.ts",
+			);
+			expect(selector).toContain(
+				'const taskType = hasTools ? "TOOL_CALLING" : "COMPLEX";',
+			);
+		});
+
+		it("keeps the template's suggested model when the instance has no pin", () => {
+			const context = buildAgentExecutionContext(
+				{ ...mockTemplate, suggestedModel: "claude-sonnet-5" },
+				{ ...mockInstance, modelOverride: null },
+				mockConnections,
+				"user-123",
+			);
+
+			expect(context.model).toBe("claude-sonnet-5");
 		});
 
 		it("should map tools correctly", () => {

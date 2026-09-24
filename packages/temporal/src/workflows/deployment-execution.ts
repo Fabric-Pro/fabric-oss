@@ -422,7 +422,7 @@ export async function deploymentExecutionWorkflow(
 		// Step 4: Execute the agent with tool loop
 		updateProgress({
 			phase: "executing_agent",
-			message: `Executing agent with ${context.model}...`,
+			message: `Executing agent with ${context.model ?? "the default model"}...`,
 		});
 		emitEvent("execution.phase_changed", {
 			phase: "executing_agent",

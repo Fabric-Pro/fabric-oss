@@ -9,6 +9,11 @@ export const AVAILABLE_MODELS = [
 		provider: "anthropic",
 	},
 	{
+		id: "anthropic/claude-sonnet-5",
+		name: "Claude Sonnet 5",
+		provider: "anthropic",
+	},
+	{
 		id: "anthropic/claude-sonnet-4-5-20250929",
 		name: "Claude Sonnet 4.5",
 		provider: "anthropic",
@@ -20,7 +25,16 @@ export const AVAILABLE_MODELS = [
 	},
 ] as const;
 
-export const DEFAULT_MODEL = "anthropic/claude-sonnet-4-5-20250929";
+// Matches the platform's default Fabric AI model (`DEFAULT_FABRIC_AI_MODEL` in
+// packages/database/prisma/ai-model-catalog.ts); this standalone app cannot
+// import it, so keep the two in step.
+export const DEFAULT_MODEL = "anthropic/claude-sonnet-5";
+
+/** DEFAULT_MODEL without its provider prefix, for Anthropic-only SDKs. */
+export const DEFAULT_ANTHROPIC_MODEL_NAME = DEFAULT_MODEL.replace(
+	"anthropic/",
+	"",
+);
 
 export const AVAILABLE_FRAMEWORKS = [
 	{ id: "ai-sdk", name: "Vercel AI SDK", description: "streamText with MCP" },

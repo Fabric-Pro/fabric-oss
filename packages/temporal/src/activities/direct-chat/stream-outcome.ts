@@ -1,4 +1,5 @@
 import type {
+	ChatTurnTruncation,
 	DirectChatToolCall,
 	DirectChatWorkflowConfirmation,
 } from "../../types";
@@ -43,6 +44,9 @@ export interface StreamOutcomeInput {
 	pendingConfirmation?: DirectChatWorkflowConfirmation;
 	/** Provider's reason for ending the stream, when it reported one. */
 	finishReason?: string;
+	/** Model steps the turn ran, and the most it was allowed. */
+	stepCount?: number;
+	maxSteps?: number;
 }
 
 export interface StreamOutcome {
@@ -50,6 +54,18 @@ export interface StreamOutcome {
 	error?: string;
 	/** `toolCalls` with anything left mid-flight settled as an error. */
 	toolCalls: DirectChatToolCall[];
+	/**
+	 * The provider failed after part of the answer had streamed. The turn
+	 * keeps that text, but this is why it stopped short.
+	 */
+	partialError?: string;
+	/**
+	 * The turn ended on a limit rather than on an answer: the output-token
+	 * ceiling cut the text mid-way, or the step cap stopped the loop while
+	 * the model still wanted tools. Either way the text reads as finished
+	 * unless the user is told (review F25, Fizzy #2166).
+	 */
+	truncated?: ChatTurnTruncation;
 }
 
 const UNFINISHED_TOOL_CALL_ERROR =
@@ -57,6 +73,36 @@ const UNFINISHED_TOOL_CALL_ERROR =
 
 function isUnfinished(toolCall: DirectChatToolCall): boolean {
 	return toolCall.status === "pending" || toolCall.status === "running";
+}
+
+/**
+ * Whether a turn that finished without an error stopped on a limit.
+ *
+ * `finishReason` is the LAST step's reason. `length` means the output
+ * ceiling cut the answer. `tool-calls` on the final step means the model
+ * asked for more tools and the step cap refused it another step — only a
+ * cap, though: a step that ended on tool calls below the cap would have
+ * been followed by another one.
+ */
+export function resolveTruncation(input: {
+	finishReason?: string;
+	stepCount?: number;
+	maxSteps?: number;
+	pendingConfirmation?: DirectChatWorkflowConfirmation;
+}): ChatTurnTruncation | undefined {
+	if (input.finishReason === "length") {
+		return "output_limit";
+	}
+	if (
+		input.finishReason === "tool-calls" &&
+		input.pendingConfirmation === undefined &&
+		input.stepCount !== undefined &&
+		input.maxSteps !== undefined &&
+		input.stepCount >= input.maxSteps
+	) {
+		return "step_limit";
+	}
+	return undefined;
 }
 
 export function resolveStreamOutcome(input: StreamOutcomeInput): StreamOutcome {
@@ -90,8 +136,21 @@ export function resolveStreamOutcome(input: StreamOutcomeInput): StreamOutcome {
 	const producedSomething =
 		responseText.trim().length > 0 || pendingConfirmation !== undefined;
 
+	// An error part after some text is still an error: returning plain
+	// success here rendered the preamble as a finished answer and hid the
+	// provider's message entirely. It is not a failed turn either — that
+	// would fire the tools-off retry and restart the answer from scratch.
 	if (producedSomething) {
-		return { toolCalls: settledToolCalls };
+		if (streamErrorMessage) {
+			return {
+				toolCalls: settledToolCalls,
+				partialError: streamErrorMessage,
+			};
+		}
+		const truncated = resolveTruncation(input);
+		return truncated
+			? { toolCalls: settledToolCalls, truncated }
+			: { toolCalls: settledToolCalls };
 	}
 
 	const suffix = finishReason
@@ -113,5 +172,10 @@ export function resolveStreamOutcome(input: StreamOutcomeInput): StreamOutcome {
 		};
 	}
 
-	return { toolCalls: settledToolCalls };
+	// Nothing to show, but nothing failed either: the step cap can stop a
+	// turn that spent every step on tools before writing a word.
+	const truncated = resolveTruncation(input);
+	return truncated
+		? { toolCalls: settledToolCalls, truncated }
+		: { toolCalls: settledToolCalls };
 }

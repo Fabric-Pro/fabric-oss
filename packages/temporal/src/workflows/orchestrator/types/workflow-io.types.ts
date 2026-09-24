@@ -362,6 +362,11 @@ export interface OrchestratorWorkflowOutput {
 		reason: string;
 		summary: string;
 	};
+	/**
+	 * The final answer stopped at the output-token ceiling, so it ends
+	 * mid-way. The chat says so and offers to continue (review F25).
+	 */
+	truncated?: "output_limit";
 }
 
 // =============================================================================

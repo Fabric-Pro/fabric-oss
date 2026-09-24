@@ -38,8 +38,11 @@ export interface ToolConfig {
 export interface AgentExecutionContext {
 	/** System prompt for the agent */
 	systemPrompt: string;
-	/** AI model identifier */
-	model: string;
+	/**
+	 * AI model identifier; unset means the tenant's task default (the default
+	 * Fabric AI model wherever the tenant's provider carries it).
+	 */
+	model?: string;
 	/** Available tools */
 	tools: ToolConfig[];
 	/** Knowledge sources for RAG */

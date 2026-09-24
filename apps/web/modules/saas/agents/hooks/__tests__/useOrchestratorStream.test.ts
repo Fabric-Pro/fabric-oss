@@ -1774,3 +1774,54 @@ describe("useOrchestratorStream clarifying questions", () => {
 		).toBe(false);
 	});
 });
+
+describe("useOrchestratorStream — a failed run's tool cards (#2040 F11)", () => {
+	const originalFetch = global.fetch;
+	afterEach(() => {
+		global.fetch = originalFetch;
+		vi.restoreAllMocks();
+	});
+
+	it("settles calls the run left open instead of leaving them spinning", async () => {
+		const { response, enqueueLine, enqueueDone } = makeSseResponse();
+		vi.spyOn(global, "fetch").mockImplementation(((..._args: unknown[]) =>
+			Promise.resolve(response)) as unknown as typeof fetch);
+
+		const { result } = renderHook(() => useOrchestratorStream());
+
+		let sendPromise: Promise<string | null> | undefined;
+		act(() => {
+			sendPromise = result.current.sendMessage("hello");
+		});
+		await act(async () => {
+			enqueueLine('data: {"type":"started","executionId":"orch-bbbb"}');
+		});
+		await act(async () => {
+			enqueueLine(
+				'data: {"type":"tool_start","toolCallId":"c1","toolName":"mcp_example_search","status":"running"}',
+			);
+		});
+		await waitFor(() => {
+			expect(result.current.streamingToolCalls[0]?.status).toBe(
+				"running",
+			);
+		});
+
+		await act(async () => {
+			enqueueLine(
+				'data: {"type":"error","message":"provider overloaded"}',
+			);
+		});
+
+		await waitFor(() => {
+			expect(result.current.streamingToolCalls[0]?.status).toBe("error");
+		});
+
+		await act(async () => {
+			enqueueDone();
+		});
+		await act(async () => {
+			await sendPromise;
+		});
+	});
+});

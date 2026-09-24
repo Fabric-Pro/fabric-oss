@@ -3,6 +3,7 @@ import { ChatAnthropic } from "@langchain/anthropic";
 import { ChatOpenAI } from "@langchain/openai";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { HumanMessage, AIMessage, BaseMessage } from "@langchain/core/messages";
+import { DEFAULT_ANTHROPIC_MODEL_NAME } from "../constants";
 
 export async function handleLangchainFramework(
 	mcpUrl: string,
@@ -40,7 +41,7 @@ export async function handleLangchainFramework(
 	} else {
 		llm = new ChatAnthropic({
 			apiKey: process.env.ANTHROPIC_API_KEY,
-			modelName: "claude-sonnet-4-5-20250929",
+			modelName: DEFAULT_ANTHROPIC_MODEL_NAME,
 			temperature: 0,
 		});
 	}

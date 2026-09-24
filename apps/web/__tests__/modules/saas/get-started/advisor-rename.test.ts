@@ -119,6 +119,29 @@ describe("Get Started — Advisor rename", () => {
 		expect(stale).toEqual([]);
 	});
 
+	// "Fabric Loom" was the full-page chat's name before it became the Advisor
+	// (#2040 review F19); the drawer and page tours kept saying it.
+	it("no drawer or page-tour copy still says 'Loom'", () => {
+		const staleItems = allItems
+			.filter(
+				(item) =>
+					/\bLoom\b/.test(item.label) ||
+					/\bLoom\b/.test(item.description),
+			)
+			.map((item) => item.id);
+		const staleComponents = GET_STARTED_PAGES.flatMap((page) =>
+			page.components
+				.filter(
+					(component) =>
+						/\bLoom\b/.test(component.title) ||
+						/\bLoom\b/.test(component.body),
+				)
+				.map((component) => `${page.tab}/${component.id}`),
+		);
+
+		expect([...staleItems, ...staleComponents]).toEqual([]);
+	});
+
 	it("the assistant drawer entry keeps its id and its sidebar anchor", () => {
 		const navCard = allItems.find((item) => item.id === "nexus");
 

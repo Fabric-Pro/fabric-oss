@@ -113,6 +113,32 @@ describe("runFabricCatalogTool — Direct builders", () => {
 	});
 });
 
+describe("runFabricCatalogTool — live roadmap reads", () => {
+	it("builds the read with the chat's project and passes its refusal through as a failure", async () => {
+		const execute = vi.fn().mockResolvedValue({
+			error: "Project not found or access denied.",
+		});
+		h.createFabricTool.mockResolvedValue({
+			fabric_list_project_features: { execute },
+		});
+
+		const res = await runFabricCatalogTool({
+			...call,
+			args: { status: "In Review" },
+			toolName: "fabric_list_project_features",
+		});
+
+		expect(h.createFabricTool).toHaveBeenCalledWith(
+			"fabric_list_project_features",
+			{ userId: "u1", organizationId: "org-1", projectId: "p1" },
+		);
+		expect(res).toEqual({
+			success: false,
+			error: "Project not found or access denied.",
+		});
+	});
+});
+
 describe("runFabricCatalogTool — plan-mode step handlers", () => {
 	it("runs the tool as a one-step plan and returns its response", async () => {
 		h.handlerExecute.mockResolvedValue({

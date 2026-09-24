@@ -21,7 +21,12 @@ import {
 } from "@saas/payments/lib/ai-usage-limit-toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { emitCancelEvent } from "../lib/cancel-telemetry";
+import {
+	type ChatTurnTruncation,
+	parseTurnTruncation,
+} from "../lib/chat-turn-truncation";
 import { formatClarificationTurn } from "../lib/clarification-turns";
+import { settleUnfinishedToolCalls } from "../lib/direct-chat-turns";
 import type { StreamStatus } from "./useDirectStream";
 import { useOrchestratorPartyKit } from "./useOrchestratorPartyKit";
 
@@ -185,6 +190,11 @@ export interface OrchestratorStreamState {
 	result: {
 		response?: string;
 		status?: string;
+		/**
+		 * The final answer stopped at the output-token ceiling — the chat
+		 * says so and offers to continue (review F25).
+		 */
+		truncated?: ChatTurnTruncation;
 		routingDecision?: {
 			primaryAgent: string;
 			agentName: string;
@@ -1698,6 +1708,7 @@ export function useOrchestratorStream(
 							...prev.result,
 							response: data.response,
 							status: data.status,
+							truncated: parseTurnTruncation(data.truncated),
 						},
 						plan: data.plan || prev.plan,
 						variables: data.variables || {},
@@ -1852,6 +1863,11 @@ export function useOrchestratorStream(
 						break;
 					}
 					setCurrentPhase("error");
+					// A failed run cannot finish the calls it left open; leave
+					// them spinning and they read as still working (F11).
+					setStreamingToolCalls(
+						(prev) => settleUnfinishedToolCalls(prev) ?? prev,
+					);
 					// Handle both `error` and `message` field names for compatibility
 					const errorMessage =
 						data.error || data.message || "Unknown error";

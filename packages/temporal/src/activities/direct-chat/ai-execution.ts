@@ -25,6 +25,11 @@ import {
 	streamText,
 	tool,
 } from "@repo/ai";
+import {
+	DEFAULT_MODEL_CAPABILITIES,
+	getModelCapabilities,
+} from "@repo/ai/capabilities";
+import { classifyLimitError } from "@repo/ai/limits";
 import { supportsAnthropicMidConversationSystem } from "@repo/ai/prompt-cache";
 import {
 	buildSkillsSystemBlock,
@@ -48,6 +53,10 @@ import type {
 	DirectChatWorkflowOutput,
 } from "../../types";
 import {
+	DIAGRAM_RENDERING_GUIDANCE,
+	isInlineDiagramRequest,
+} from "../../workflows/orchestrator/diagram-rendering";
+import {
 	classifyToolAccessLevel,
 	resolveProviderKey,
 } from "../orchestrator/execution/authority-gate";
@@ -56,6 +65,11 @@ import {
 	DEFAULT_MCP_TOOL_TIMEOUT_MS,
 	runWithTimeout,
 } from "../orchestrator/execution/mcp-call-timeout";
+import {
+	budgetImageAttachments,
+	omittedImagesNote,
+	spliceImagePartsIntoLastUserMessage,
+} from "../orchestrator/execution/vision-image-attachments";
 import { jsonSchemaToZod } from "../orchestrator/utils";
 import {
 	buildDatabricksKnowledgeToolDefinition,
@@ -68,12 +82,21 @@ import { guardToolWriteForReadOnly } from "../shared/read-only-gate";
 import { createAdvisorTools } from "./advisor-tools";
 import { createDirectChatAggregateUsageTracker } from "./aggregate-usage";
 import {
+	type BackgroundHeartbeat,
+	startBackgroundHeartbeat,
+} from "./background-heartbeat";
+import {
 	buildProviderOptions,
 	isAnthropicProvider,
 	resolveOutputTokenBudget,
 } from "./build-provider-options";
 import { createBuiltInTools } from "./built-in-tools";
 import { decideForcedToolChoice } from "./decide-forced-tool-choice";
+import {
+	fitHistoryToContext,
+	omittedHistoryNote,
+	resolveContextWindow,
+} from "./history-budget";
 import type { McpToolInfo } from "./mcp-tools";
 import {
 	buildDirectChatPromptCacheRequest,
@@ -83,6 +106,7 @@ import {
 import { extractReasoningText } from "./reasoning-stream";
 import { extractStreamErrorMessage } from "./stream-error";
 import { resolveStreamOutcome } from "./stream-outcome";
+import { describeToolAvailability } from "./tool-availability-line";
 import {
 	buildMcpToolName,
 	capToolSet,
@@ -135,7 +159,6 @@ function detectRequestedFrameOutput(
 		"build a visualization",
 		"data visualization",
 		"interactive visualization",
-		"visualize",
 		"create a chart",
 		"make a chart",
 		"generate a chart",
@@ -149,7 +172,10 @@ function detectRequestedFrameOutput(
 		"build a dashboard",
 		"interactive dashboard",
 	];
-	if (framePatterns.some((pattern) => lower.includes(pattern))) {
+	if (
+		framePatterns.some((pattern) => lower.includes(pattern)) &&
+		!isInlineDiagramRequest(message)
+	) {
 		return "frame";
 	}
 
@@ -636,17 +662,75 @@ function createWorkflowTools(
 	};
 }
 
+/** The catalog's context window for a model id, or undefined if it is unknown. */
+function catalogContextWindow(modelId: string): number | undefined {
+	const capabilities = getModelCapabilities(modelId);
+	return capabilities === DEFAULT_MODEL_CAPABILITIES
+		? undefined
+		: capabilities.contextWindow;
+}
+
 /**
  * Execute the AI interaction with tools
  */
+function limitSignalFor(
+	error: unknown,
+): Pick<DirectChatWorkflowOutput, "limitSignal"> {
+	const limitSignal = error ? classifyLimitError(error) : null;
+	return limitSignal ? { limitSignal } : {};
+}
+
 export async function executeDirectChatActivity(
 	input: DirectChatWorkflowInput,
 	mcpToolInfo: McpToolInfo[],
 	memoryContext: string,
 	toolSuggestionContext: string,
 ): Promise<DirectChatWorkflowOutput> {
+	// Started before anything else and stopped in `finally`, so MCP loading,
+	// retrieval, a slow tool and a silent reasoning step are all covered —
+	// and a setup-phase throw never leaks the interval into the worker.
+	const backgroundHeartbeat = startBackgroundHeartbeat({
+		// Same caption the workflow's progress query reports for this step,
+		// so the two sources do not alternate on screen.
+		phase: "executing_ai",
+		message: "Executing AI interaction...",
+		progress: 60,
+		toolCalls: [],
+		timestamp: Date.now(),
+	});
+	try {
+		return await runDirectChatTurn({
+			input,
+			mcpToolInfo,
+			memoryContext,
+			toolSuggestionContext,
+			backgroundHeartbeat,
+		});
+	} finally {
+		backgroundHeartbeat.stop();
+	}
+}
+
+interface DirectChatTurnParams {
+	input: DirectChatWorkflowInput;
+	mcpToolInfo: McpToolInfo[];
+	memoryContext: string;
+	toolSuggestionContext: string;
+	backgroundHeartbeat: BackgroundHeartbeat;
+}
+
+async function runDirectChatTurn({
+	input,
+	mcpToolInfo,
+	memoryContext,
+	toolSuggestionContext,
+	backgroundHeartbeat,
+}: DirectChatTurnParams): Promise<DirectChatWorkflowOutput> {
 	const startTime = Date.now();
 	let streamErrorMessage: string | undefined;
+	// The raw error part, kept for limit classification: its status code and
+	// headers are what tell a 429 from a context overflow.
+	let streamErrorRaw: unknown;
 	let streamFinishReason: string | undefined;
 	let aggregateUsageRecorded = false;
 	let recordAggregateUsage:
@@ -656,7 +740,7 @@ export async function executeDirectChatActivity(
 	const {
 		executionId,
 		message,
-		history,
+		history: requestHistory,
 		instanceId,
 		userId,
 		organizationId,
@@ -878,6 +962,9 @@ export async function executeDirectChatActivity(
 		enabledFabricToolIds,
 		workspaceIds,
 		projectId,
+		// The interactive chat: the project is the one the user attached.
+		includeProjectFeatureReads: true,
+		preferredRepositoryUrl: input.preferredRepositoryUrl,
 	});
 	const hasBuiltInWebSearch =
 		"webSearch" in builtInTools || "fabric_web_search" in builtInTools;
@@ -1084,7 +1171,11 @@ export async function executeDirectChatActivity(
 	trackUsage();
 
 	const capabilitiesInstructions = `CAPABILITIES:
-${toolsEnabled ? "- You have access to tools. Use them when they can help answer the user's question." : "- No tools connected. Suggest the user connect tools in Settings."}
+${describeToolAvailability({
+	toolsEnabled,
+	forceDisableTools: input.forceDisableTools,
+	toolFailureSummary: input.toolFailureSummary,
+})}
 ${toolsEnabled && hasBuiltInWebSearch ? "- Web search is available via the webSearch tool. Use it for current information, news, research, and fact-checking." : ""}
 ${
 	mcpToolsEnabled
@@ -1093,7 +1184,7 @@ ${
 AVAILABLE MCP TOOLS:
 ${mcpToolNames.map((name) => `  • ${name}`).join("\n")}
 
-CRITICAL: When the user asks you to draw, create a diagram, visualize, sketch, or generate any visual content, call the appropriate MCP tool immediately. Never explain how to use the tool — call it.`
+Drawing tools (Excalidraw and similar) are the exception: call one only when the user explicitly asks for a hand-drawn, whiteboard or Excalidraw diagram. A plain diagram request is answered inline — see DIAGRAMS below.`
 		: ""
 }
 ${
@@ -1108,7 +1199,9 @@ If the user asks for something one of them does, say those tools were left out o
 		: ""
 }
 ${toolsEnabled && hasWorkflowTools ? "- User workflows can be listed and executed." : ""}
-${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its connections can be reviewed with list_recent_sessions, get_session, list_agents and list_connections. When asked to review usage or to suggest configuration changes (agents, connections, skills, workflows), call these, plus list_workflows and list_skills, and base the suggestions on what they return. Never use workspace document tools for that." : ""}`;
+${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its connections can be reviewed with list_recent_sessions, get_session, list_agents and list_connections. When asked to review usage or to suggest configuration changes (agents, connections, skills, workflows), call these, plus list_workflows and list_skills, and base the suggestions on what they return. Never use workspace document tools for that." : ""}
+
+${DIAGRAM_RENDERING_GUIDANCE}`;
 
 	const webSearchInstructions =
 		toolsEnabled && hasBuiltInWebSearch
@@ -1247,6 +1340,31 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 		role: "user" | "assistant";
 		parts: Array<{ type: "text"; text: string }>;
 	}> = [];
+
+	// Fit the replayed transcript to the model's window before it is sent:
+	// an unbounded one made every later turn of a long thread fail at the
+	// provider (review F38). Newest turns win; the model is told what went.
+	const fittedHistory = fitHistoryToContext({
+		history: requestHistory ?? [],
+		contextWindow: resolveContextWindow(metadata, catalogContextWindow),
+		fixedPromptChars:
+			(promptCacheEnabled
+				? DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT.length
+				: 0) +
+			fullSystemContext.length +
+			message.length,
+	});
+	const history = fittedHistory.history;
+	const historyNote = omittedHistoryNote(fittedHistory);
+	if (historyNote) {
+		fullSystemContext = `${fullSystemContext}\n\n${historyNote}`;
+		logger.warn("Direct chat history trimmed to fit the context window", {
+			contextWindow: metadata.contextWindow,
+			requestedEntries: requestHistory?.length ?? 0,
+			omittedCount: fittedHistory.omittedCount,
+			truncatedNewest: fittedHistory.truncatedNewest,
+		});
+	}
 
 	history.forEach((h: { role: string; content: string }, i: number) => {
 		uiMessages.push({
@@ -1393,54 +1511,31 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 		// `convertToLanguageModelPrompt` runs all string-typed `image`
 		// parts through `downloadAssets`, which calls
 		// `validateDownloadUrl` and rejects the `data:` scheme.
-		if (imageAttachments.length > 0) {
-			let lastUserIdx = -1;
-			for (let i = convertedMessages.length - 1; i >= 0; i--) {
-				if (
-					(convertedMessages[i] as { role?: string })?.role === "user"
-				) {
-					lastUserIdx = i;
-					break;
-				}
-			}
-			if (lastUserIdx >= 0) {
-				const target = convertedMessages[lastUserIdx] as {
-					role: "user";
-					content: unknown;
-				};
-				const existingText =
-					typeof target.content === "string"
-						? [{ type: "text" as const, text: target.content }]
-						: Array.isArray(target.content)
-							? (target.content as Array<{
-									type: string;
-									[k: string]: unknown;
-								}>)
-							: [];
-				// AI SDK 7 deprecates the `image` message part in favour of the
-				// canonical flat `file` part (FilePart: { type, data, mediaType }),
-				// where mediaType is required. Keep the attachment's real MIME type.
-				const imageParts = imageAttachments.map((att) => ({
-					type: "file" as const,
-					data: att.bytes,
-					mediaType: att.mediaType,
-				}));
-				(
-					convertedMessages[lastUserIdx] as {
-						role: "user";
-						content: unknown;
-					}
-				).content = [...existingText, ...imageParts];
-				logger.info("Spliced image content parts into user message", {
-					images: imageAttachments.length,
-					existingTextParts: existingText.length,
-				});
-			} else {
-				logger.warn(
-					"No user message in converted prompt to attach images to",
-					{ images: imageAttachments.length },
-				);
-			}
+		// Over-budget images are left out, and the model told which, rather
+		// than failing the whole turn at the provider (review F37).
+		const imageBudget = budgetImageAttachments(imageAttachments);
+		if (imageBudget.omitted.length > 0) {
+			logger.warn(
+				"Image attachments over the per-request budget left out",
+				{
+					omitted: imageBudget.omitted,
+				},
+			);
+		}
+		const imageNote = omittedImagesNote(imageBudget.omitted);
+		if (imageBudget.kept.length > 0 || imageNote) {
+			const attached = spliceImagePartsIntoLastUserMessage(
+				convertedMessages as Array<{
+					role?: string;
+					content?: unknown;
+				}>,
+				imageBudget.kept,
+				imageNote,
+			);
+			logger.info("Spliced image content parts into user message", {
+				images: attached,
+				omitted: imageBudget.omitted.length,
+			});
 		}
 
 		logger.info("Calling streamText", {
@@ -1448,7 +1543,7 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 			hasTools,
 			messageCount: uiMessages.length,
 			convertedMessageCount: convertedMessages.length,
-			imageAttachmentsAttached: imageAttachments.length,
+			imageAttachmentsAttached: imageBudget.kept.length,
 		});
 
 		const shouldUseTools = toolsEnabled;
@@ -1562,12 +1657,18 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 		let lastHeartbeatTime = Date.now();
 		const HEARTBEAT_INTERVAL_MS = 350;
 
+		let currentPhase = {
+			phase: "streaming",
+			message: "Processing AI response...",
+			progress: 65,
+		};
 		const sendHeartbeat = (
 			phase: string,
 			message: string,
 			progress: number,
 		) => {
 			const now = Date.now();
+			currentPhase = { phase, message, progress };
 			if (now - lastHeartbeatTime >= HEARTBEAT_INTERVAL_MS) {
 				const details: ActivityHeartbeatDetails = {
 					phase,
@@ -1587,6 +1688,18 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 				});
 			}
 		};
+
+		// Between stream parts the background ticker re-sends this, so a
+		// tool that runs for a minute keeps the activity alive and the cards
+		// and text on screen stay as they were.
+		backgroundHeartbeat.track(() => ({
+			...currentPhase,
+			toolCalls: [...toolCalls],
+			responseText,
+			reasoningText,
+			reasoningDurationMs,
+			timestamp: Date.now(),
+		}));
 
 		// Send initial heartbeat
 		sendHeartbeat("streaming", "Processing AI response...", 65);
@@ -1850,6 +1963,7 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 				}
 			} else if (part.type === "error") {
 				streamErrorMessage ??= extractStreamErrorMessage(part);
+				streamErrorRaw ??= (part as { error?: unknown }).error;
 				logger.error("Stream error", {
 					error: part,
 					partCount,
@@ -1934,13 +2048,24 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 		// outcome and to fire the tools-disabled retry, and the client
 		// renders an unsettled tool call as an indefinite spinner. See
 		// `stream-outcome.ts` for the failure this was written against.
+		const steps = await result.steps;
 		const streamOutcome = resolveStreamOutcome({
 			responseText,
 			toolCalls,
 			streamErrorMessage,
 			pendingConfirmation,
 			finishReason: streamFinishReason,
+			stepCount: steps.length,
+			maxSteps,
 		});
+		if (streamOutcome.truncated) {
+			logger.warn("Direct chat turn stopped on a limit", {
+				truncated: streamOutcome.truncated,
+				finishReason: streamFinishReason,
+				stepCount: steps.length,
+				maxSteps,
+			});
+		}
 		const durationMs = Date.now() - startTime;
 		recordAggregateUsage({
 			// A success with no provider usage would otherwise be dropped by the
@@ -1951,9 +2076,9 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 				? usage
 				: selectAggregateUsageForLogging(usage, tokenUsage),
 			latencyMs: durationMs,
-			success: !streamOutcome.error,
-			errorMessage: streamOutcome.error,
-			steps: await result.steps,
+			success: !streamOutcome.error && !streamOutcome.partialError,
+			errorMessage: streamOutcome.error ?? streamOutcome.partialError,
+			steps,
 		});
 		aggregateUsageRecorded = true;
 
@@ -1974,6 +2099,7 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 				error: streamOutcome.error,
 				durationMs,
 				usage: tokenUsage,
+				...limitSignalFor(streamErrorRaw ?? streamErrorMessage),
 			};
 		}
 
@@ -2016,6 +2142,22 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 			pendingConfirmation,
 			durationMs,
 			usage: tokenUsage,
+			...(streamOutcome.partialError
+				? {
+						partialError: streamOutcome.partialError,
+						...limitSignalFor(streamErrorRaw ?? streamErrorMessage),
+					}
+				: {}),
+			...(streamOutcome.truncated
+				? { truncated: streamOutcome.truncated }
+				: {}),
+			...(input.forceDisableTools
+				? {
+						toolsFailedThisTurn: {
+							summary: input.toolFailureSummary,
+						},
+					}
+				: {}),
 			model: {
 				id: metadata.modelString,
 				canonicalName: metadata.canonicalName,
@@ -2064,6 +2206,11 @@ ${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its con
 			success: false,
 			error: surfacedError,
 			durationMs: Date.now() - startTime,
+			...limitSignalFor(
+				rawMessage.includes("No output generated") && streamErrorRaw
+					? streamErrorRaw
+					: error,
+			),
 		};
 	} finally {
 		for (const client of mcpClients) {

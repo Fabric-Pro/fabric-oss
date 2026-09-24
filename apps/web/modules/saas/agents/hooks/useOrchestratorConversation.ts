@@ -13,6 +13,7 @@ import type { StepResult } from "@repo/temporal";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
+import type { ChatTurnTruncation } from "../lib/chat-turn-truncation";
 import { mergeOrchestratorConversationMetadata } from "../lib/orchestrator-conversation-tools";
 import {
 	type AgentTrajectory,
@@ -45,6 +46,11 @@ export interface OrchestratorExecution {
 	 * `history` — the clarity gate re-asks anything it cannot see (Fizzy #2406).
 	 */
 	clarifications?: Array<{ question: string; answer: string }>;
+	/**
+	 * The final answer stopped at the output-token ceiling (review F25).
+	 * Persisted so a reload still says so.
+	 */
+	truncated?: ChatTurnTruncation;
 	routingDecision?: {
 		primaryAgent: string;
 		agentName: string;

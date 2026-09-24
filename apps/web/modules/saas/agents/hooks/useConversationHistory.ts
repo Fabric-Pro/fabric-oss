@@ -296,11 +296,13 @@ export function useConversationHistory(
 			const result = await orpcClient.agents.conversations.delete({ id });
 			return result;
 		},
-		onSuccess: () => {
+		onSuccess: (_result, deletedId) => {
 			queryClient.invalidateQueries({ queryKey: listKey });
-			if (activeConversationId) {
-				setActiveConversationId(null);
-			}
+			// Only the open conversation's own deletion may clear the selection —
+			// a transient null wipes its document-RAG chat id and research state.
+			setActiveConversationId((current) =>
+				current === deletedId ? null : current,
+			);
 		},
 	});
 

@@ -11,7 +11,7 @@
 const FRAME_DESCRIPTION_RULES =
 	"PREFERRED — produce content directly via `blocks`: emit one block per kind=frame, or one block per slide for kind=slideshow. Skipping `blocks` triggers a slower server-side generation step from your `description` and is reserved for cases where you want the server to draft from a brief.\n\n" +
 	"BLOCK CONTENT FORMAT RULES:\n" +
-	"- type='html': complete HTML document (<!doctype html>…</html>); inline <style> and <script>; CDN OK for Chart.js/D3/Mermaid/ApexCharts; no external images/fonts from unknown domains; Google Fonts OK; never set height on html/body or use 100vh/overflow on body — frame must grow to natural content height; avoid runtime code-string evaluation and avoid stream-mutation APIs that synchronously rewrite the document. Palette (hex — CSS vars unavailable in iframe): Primary #9F2A3A, Neutral #18181b, Surface #fafaf9, Muted #a1a1aa, Success #059669, Highlight #f59e0b.\n" +
+	"- type='html': complete HTML document (<!doctype html>…</html>); inline <style> and <script>; CDN OK for Chart.js/D3/ApexCharts; no external images/fonts from unknown domains; Google Fonts OK; never set height on html/body or use 100vh/overflow on body — frame must grow to natural content height; avoid runtime code-string evaluation and avoid stream-mutation APIs that synchronously rewrite the document. Palette (hex — CSS vars unavailable in iframe): Primary #9F2A3A, Neutral #18181b, Surface #fafaf9, Muted #a1a1aa, Success #059669, Highlight #f59e0b.\n" +
 	"- type='mermaid': only the Mermaid diagram source.\n" +
 	"- type='json': only valid JSON.\n" +
 	"- type='markdown': only Markdown.\n" +
@@ -44,7 +44,7 @@ const BLOCK_ARRAY_SCHEMA = {
 export const FABRIC_CREATE_FRAME_TOOL = {
 	name: "fabric_create_frame",
 	description:
-		"Create a first-class Fabric Frame artifact. Frames are shareable, typed visual documents that can render interactive HTML, charts, graphs, data visualizations, dashboards, Mermaid diagrams, JSON, or markdown. Use this for: interactive visualizations, charts, graphs, data dashboards, wireframes, reports, and living documents. When the user asks to visualize data, create a chart, build a dashboard, or produce any interactive visual output, use this tool instead of writing content as plain prose.\n\n" +
+		"Create a first-class Fabric Frame artifact. Frames are shareable, typed visual documents that can render interactive HTML, charts, graphs, data visualizations, dashboards, Mermaid diagrams, JSON, or markdown. Use this for: interactive visualizations, charts, graphs, data dashboards, wireframes, reports, and living documents. When the user asks to visualize data, create a chart, build a dashboard, or produce any interactive visual output, use this tool instead of writing content as plain prose. A plain diagram, flowchart or sequence diagram does NOT need a frame: the chat renders a ```mermaid code block inline, so answer with one unless the user asks for a frame.\n\n" +
 		FRAME_DESCRIPTION_RULES,
 	inputSchema: {
 		type: "object" as const,

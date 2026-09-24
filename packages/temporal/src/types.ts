@@ -2,6 +2,8 @@
  * Shared types for Temporal workflows and activities
  */
 
+import type { LimitSignal } from "@repo/ai/limits";
+
 /**
  * Workflow status enum matching Prisma schema
  */
@@ -341,6 +343,12 @@ export interface DirectChatWorkflowInput {
 	workspaceDocumentIds?: string[];
 	/** Attached project ID for project metadata injection and project RAG */
 	projectId?: string;
+	/**
+	 * Repository the chat was launched from (the drawer's code context). The
+	 * default scope of `code_search` when it names one of the project's
+	 * indexed repositories; ignored otherwise.
+	 */
+	preferredRepositoryUrl?: string;
 	/** Model override — canonical model name to use instead of user's default (e.g. "gpt-4o", "claude-3-5-sonnet") */
 	modelOverride?: string;
 	/**
@@ -348,6 +356,13 @@ export interface DirectChatWorkflowInput {
 	 * the workflow's degraded retry after a tools-related failure (#1644).
 	 */
 	forceDisableTools?: boolean;
+	/**
+	 * Why the tools-bound attempt of this turn failed, set by the workflow's
+	 * degraded retry alongside `forceDisableTools`. The retry prompt tells the
+	 * model the tools failed on this turn — not that none are connected, which
+	 * sent users to Settings for tools that were connected all along.
+	 */
+	toolFailureSummary?: string;
 }
 
 /**
@@ -423,7 +438,35 @@ export interface DirectChatWorkflowOutput {
 	model?: DirectChatModelInfo;
 	/** RAG sources used to generate the response */
 	sources?: DirectChatSource[];
+	/**
+	 * Set when this answer came from the tools-disabled retry: the tools failed
+	 * earlier in the turn. Carries the first failure's summary so the client
+	 * can say "Tools failed on this turn — answered without them".
+	 */
+	toolsFailedThisTurn?: { summary?: string };
+	/**
+	 * The provider failed after part of the answer had already streamed. The
+	 * turn still returns its partial text (`success: true`, so the tools-off
+	 * retry does not restart it from scratch), and this says why it stopped.
+	 */
+	partialError?: string;
+	/** Provider limit behind `error` / `partialError`, when it was one. */
+	limitSignal?: LimitSignal;
+	/**
+	 * The answer stopped on a limit, not because it was finished — the
+	 * output-token ceiling or the step cap. The client says so and offers
+	 * to continue (review F25, Fizzy #2166).
+	 */
+	truncated?: ChatTurnTruncation;
 }
+
+/**
+ * Why a chat answer stopped before it was finished. Shared by both chat
+ * engines: `output_limit` when the output-token ceiling cut the text,
+ * `step_limit` when the step/iteration cap ended the loop while the model
+ * still wanted tools.
+ */
+export type ChatTurnTruncation = "output_limit" | "step_limit";
 
 /**
  * Progress update for DirectChatWorkflow (queryable state)

@@ -34,6 +34,7 @@ function readSource(relativePath: string): string {
 const DIRECT_CHAT_PATH =
 	"modules/saas/agents/components/FabricChat/FabricDirectChat.tsx";
 const STREAM_ROUTE_PATH = "app/api/agents/fabric-ai/stream/route.ts";
+const HISTORY_WINDOW_PATH = "app/api/agents/fabric-ai/stream/history-window.ts";
 
 describe("Direct chat MCP selection", () => {
 	const source = readSource(DIRECT_CHAT_PATH);
@@ -118,7 +119,10 @@ describe("chat stream route history contract", () => {
 	const source = readSource(STREAM_ROUTE_PATH);
 
 	it("accepts the system role a persisted conversation can carry", () => {
-		expect(source).toMatch(
+		// The history schema lives beside the route (it also trims long
+		// threads); the route must still use it.
+		expect(source).toMatch(/history: historyWindowSchema,/);
+		expect(readSource(HISTORY_WINDOW_PATH)).toMatch(
 			/role: z\.enum\(\["user", "assistant", "system"\]\)/,
 		);
 	});

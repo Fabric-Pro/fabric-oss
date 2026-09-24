@@ -224,7 +224,7 @@ const WORKSPACE_GROUP: GsGroup = {
 			id: "agents",
 			label: "AI Agents",
 			description:
-				"Build and manage AI agents, plus the Skills and Templates that extend what they can do. Fabric Loom is the full-page agent chat — the same conversation the floating button opens.",
+				"Build and manage AI agents, plus the Skills and Templates that extend what they can do. Every agent runs in the Advisor — the full-page chat that is also the conversation the floating button opens.",
 			icon: BotIcon,
 			anchor: "nav-agents",
 			href: ({ basePath }) => `${basePath}/agents`,
@@ -1419,8 +1419,8 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 			{
 				id: "agents-featured",
 				anchor: "agents-featured",
-				title: "Start with Fabric Loom",
-				body: "Loom is the orchestrator — rather than answering itself, it reads your task and routes it to the best specialist agent. Not sure which agent you need? Start here. (Clicking any agent drops you into an Advisor chat with it.)",
+				title: "Start with the orchestrator",
+				body: "The featured orchestrator doesn't answer itself — it reads your task and routes it to the best specialist agent, in the Advisor chat. Not sure which agent you need? Start here. (Clicking any agent drops you into an Advisor chat with it.)",
 			},
 		],
 	},

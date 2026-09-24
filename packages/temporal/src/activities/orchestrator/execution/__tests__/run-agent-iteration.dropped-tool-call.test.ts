@@ -549,3 +549,36 @@ describe("runAgentIteration — dropped tool-call guard", () => {
 		expect(result.type).toBe("stream_error");
 	});
 });
+
+describe("runAgentIteration — output-ceiling truncation (review F25)", () => {
+	it("marks a final answer cut at the output ceiling as truncated", async () => {
+		aiStubs.streamTextMock.mockImplementationOnce(() =>
+			makeStreamResult({
+				parts: [{ type: "text-delta", text: "The first half of" }],
+				finishReason: "length",
+			}),
+		);
+
+		const result = await runAgentIteration(buildInput());
+
+		expect(result).toMatchObject({
+			type: "response",
+			content: "The first half of",
+			truncated: "output_limit",
+		});
+	});
+
+	it("does not mark a finished answer", async () => {
+		aiStubs.streamTextMock.mockImplementationOnce(() =>
+			makeStreamResult({
+				parts: [{ type: "text-delta", text: "Done." }],
+				finishReason: "stop",
+			}),
+		);
+
+		const result = await runAgentIteration(buildInput());
+
+		expect(result.type).toBe("response");
+		expect(result).not.toHaveProperty("truncated");
+	});
+});

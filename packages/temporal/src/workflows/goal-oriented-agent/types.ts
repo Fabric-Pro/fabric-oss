@@ -185,7 +185,8 @@ export interface GoalOrientedWorkflowState {
 	/** Agent template context */
 	agentContext: {
 		systemPrompt: string;
-		model: string;
+		/** Unset: the executor resolves the tenant's task default. */
+		model?: string;
 		mcpConfigIds: string[];
 		workspaceIds: string[];
 	} | null;

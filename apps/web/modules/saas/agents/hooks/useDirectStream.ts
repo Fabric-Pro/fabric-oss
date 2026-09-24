@@ -8,12 +8,22 @@
  * MCP tool execution without Temporal workflow orchestration.
  */
 
+import type { LimitSignal } from "@repo/ai/limits";
 import {
 	isAiUsageLimitExceededPayload,
 	useShowAiUsageLimitToast,
 } from "@saas/payments/lib/ai-usage-limit-toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { emitCancelEvent } from "../lib/cancel-telemetry";
+import {
+	type ChatTurnTruncation,
+	parseTurnTruncation,
+} from "../lib/chat-turn-truncation";
+import {
+	findToolCallIndex,
+	settleUnfinishedToolCalls,
+	trimHistoryForRequest,
+} from "../lib/direct-chat-turns";
 
 /**
  * Stream-level status surfaced on assistant messages so the renderer can
@@ -49,6 +59,11 @@ export interface UseDirectStreamOptions {
 	workspaceDocumentIds?: string[];
 	/** Attached project ID for project-aware context retrieval */
 	projectId?: string | null;
+	/**
+	 * Repository the chat was launched from; the default scope of the
+	 * project's `code_search` when it is one of the project's repositories.
+	 */
+	repositoryUrl?: string | null;
 	/**
 	 * Focused entity the user is currently viewing (the page the agent was
 	 * opened on). Forwarded to the backend so it grounds the agent on this
@@ -112,6 +127,25 @@ export interface DirectStreamMessage {
 	toolCalls?: Array<DirectStreamToolCall>;
 	isStreaming?: boolean;
 	isError?: boolean;
+	/**
+	 * Why the turn failed, kept apart from `content`: when part of the answer
+	 * had already streamed, writing the error into `content` either lost the
+	 * cause (content was kept) or the answer (content was replaced).
+	 */
+	errorMessage?: string;
+	/** Provider limit behind the failure — renders the shared limit banner. */
+	limit?: LimitSignal;
+	/**
+	 * Set when the tools failed and the answer came from the tools-off retry.
+	 * `summary` is the first attempt's error, when the workflow passed one.
+	 */
+	toolsFailed?: { summary?: string };
+	/**
+	 * The answer stopped on a limit rather than finishing: the output-token
+	 * ceiling (`output_limit`) or the step cap (`step_limit`). The chat says
+	 * so under the answer and offers to continue (review F25).
+	 */
+	truncated?: ChatTurnTruncation;
 	/** Pending confirmation for workflow execution */
 	pendingConfirmation?: {
 		workflowId: string;
@@ -295,8 +329,12 @@ export function applyToolResult(
 		if (m.id !== assistantMessageId) {
 			return m;
 		}
-		const updatedToolCalls = (m.toolCalls || []).map((tc) =>
-			tc.id === event.toolCallId || tc.name === resultToolName
+		const targetIndex = findToolCallIndex(m.toolCalls || [], {
+			toolCallId: event.toolCallId,
+			toolName: resultToolName,
+		});
+		const updatedToolCalls = (m.toolCalls || []).map((tc, index) =>
+			index === targetIndex
 				? {
 						...tc,
 						result: event.result,
@@ -370,6 +408,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 		workspaceIds,
 		workspaceDocumentIds,
 		projectId,
+		repositoryUrl,
 		storyId,
 		documentId,
 		taskId,
@@ -440,6 +479,8 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 	 * the server keeps streaming for a moment.
 	 */
 	const cancelledMessageIdsRef = useRef<Set<string>>(new Set());
+	/** Assistant message id → the error its turn ended with. */
+	const erroredMessagesRef = useRef<Map<string, string>>(new Map());
 	/**
 	 * Wall-clock instant the most recent stream started, used to compute
 	 * `latency_to_cancel_ms` for the telemetry event (spec section 10.1).
@@ -590,10 +631,12 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
 						message: content.trim(),
-						history: history.map((m) => ({
-							role: m.role,
-							content: m.content,
-						})),
+						history: trimHistoryForRequest(
+							history.map((m) => ({
+								role: m.role,
+								content: m.content,
+							})),
+						),
 						organizationId,
 						reasoningMode,
 						modelOverride,
@@ -606,6 +649,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 						workspaceIds,
 						workspaceDocumentIds,
 						projectId,
+						repositoryUrl,
 						storyId,
 						documentId,
 						taskId,
@@ -643,7 +687,13 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 						setState({ status: "idle" });
 						return;
 					}
-					throw new Error(error.error || "Failed to stream response");
+					// `message` carries the specifics (the rate limiter's
+					// "try again in N seconds"); `error` is only the category.
+					throw new Error(
+						error?.message ||
+							error?.error ||
+							"Failed to stream response",
+					);
 				}
 
 				// Process SSE stream
@@ -678,20 +728,34 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 				}
 
 				// Mark streaming complete — but never overwrite a message
-				// the user has already cancelled (decision 12 /).
+				// the user has already cancelled (decision 12 /), and never
+				// turn a failed turn back into a completed one: the route
+				// closes the stream right after its `error` event.
 				if (!cancelledMessageIdsRef.current.has(assistantMessage.id)) {
+					const failure = erroredMessagesRef.current.get(
+						assistantMessage.id,
+					);
 					setMessages((prev) =>
 						prev.map((m) =>
 							m.id === assistantMessage.id
 								? {
 										...m,
 										isStreaming: false,
-										streamStatus: "completed",
+										streamStatus: failure
+											? "error"
+											: "completed",
+										toolCalls: settleUnfinishedToolCalls(
+											m.toolCalls,
+										),
 									}
 								: m,
 						),
 					);
-					setState({ status: "completed" });
+					setState(
+						failure
+							? { status: "error", error: failure }
+							: { status: "completed" },
+					);
 				}
 			} catch (error) {
 				if ((error as Error).name === "AbortError") {
@@ -713,17 +777,23 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 					if (
 						!cancelledMessageIdsRef.current.has(assistantMessage.id)
 					) {
+						erroredMessagesRef.current.set(
+							assistantMessage.id,
+							errorMessage,
+						);
 						setMessages((prev) =>
 							prev.map((m) =>
 								m.id === assistantMessage.id
 									? {
 											...m,
-											content:
-												m.content ||
-												`Error: ${errorMessage}`,
+											errorMessage,
 											isStreaming: false,
 											isError: true,
 											streamStatus: "error",
+											toolCalls:
+												settleUnfinishedToolCalls(
+													m.toolCalls,
+												),
 										}
 									: m,
 							),
@@ -750,6 +820,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 			chatId,
 			workspaceIds,
 			projectId,
+			repositoryUrl,
 			conversationId,
 			systemPrompt,
 		],
@@ -917,10 +988,12 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 								return m;
 							}
 							const existingToolCalls = m.toolCalls || [];
-							const existingIndex = existingToolCalls.findIndex(
-								(tc) =>
-									tc.id === data.toolCallId ||
-									tc.name === inputToolName,
+							const existingIndex = findToolCallIndex(
+								existingToolCalls,
+								{
+									toolCallId: data.toolCallId,
+									toolName: inputToolName,
+								},
 							);
 							if (existingIndex < 0) {
 								return {
@@ -1024,21 +1097,35 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 						setState({ status: "idle" });
 						break;
 					}
-					// Error occurred
+					// The cause goes in its own field so a partial answer that
+					// streamed first keeps both: the text, and why it stopped.
+					const errorMessage: string =
+						data.message || "Unknown error";
+					const limit: LimitSignal | undefined =
+						data.limit && typeof data.limit.kind === "string"
+							? data.limit
+							: undefined;
+					erroredMessagesRef.current.set(
+						assistantMessageId,
+						errorMessage,
+					);
 					setMessages((prev) =>
 						prev.map((m) =>
 							m.id === assistantMessageId
 								? {
 										...m,
-										content:
-											m.content ||
-											`Error: ${data.message || "Unknown error"}`,
+										errorMessage,
+										...(limit ? { limit } : {}),
 										isError: true,
+										streamStatus: "error",
+										toolCalls: settleUnfinishedToolCalls(
+											m.toolCalls,
+										),
 									}
 								: m,
 						),
 					);
-					setState({ status: "error", error: data.message });
+					setState({ status: "error", error: errorMessage });
 					break;
 				}
 
@@ -1096,6 +1183,16 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 								cachedInputTokens: data.usage.cachedInputTokens,
 							}
 						: undefined;
+					const toolsFailed: DirectStreamMessage["toolsFailed"] =
+						data.toolsFailed && typeof data.toolsFailed === "object"
+							? {
+									summary:
+										typeof data.toolsFailed.summary ===
+										"string"
+											? data.toolsFailed.summary
+											: undefined,
+								}
+							: undefined;
 					const turnModel: StreamModelInfo | undefined =
 						data.model && typeof data.model.id === "string"
 							? {
@@ -1109,6 +1206,21 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 											: undefined,
 								}
 							: undefined;
+					const truncated = parseTurnTruncation(data.truncated);
+					setMessages((prev) =>
+						prev.map((m) =>
+							m.id === assistantMessageId
+								? {
+										...m,
+										...(toolsFailed ? { toolsFailed } : {}),
+										...(truncated ? { truncated } : {}),
+										toolCalls: settleUnfinishedToolCalls(
+											m.toolCalls,
+										),
+									}
+								: m,
+						),
+					);
 					if (turnUsage || turnModel) {
 						setContextInfo((prev) => ({
 							...prev,
@@ -1133,7 +1245,11 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 							),
 						);
 					}
-					setState({ status: "completed" });
+					// A partial-answer failure sends `error` then `done`; the
+					// turn stays failed.
+					if (!erroredMessagesRef.current.has(assistantMessageId)) {
+						setState({ status: "completed" });
+					}
 					break;
 				}
 
@@ -1260,6 +1376,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 		setState({ status: "idle" });
 		startFreshRef.current = true;
 		cancelledMessageIdsRef.current = new Set();
+		erroredMessagesRef.current = new Map();
 		streamStartedAtRef.current = null;
 		executionIdRef.current = null;
 		activeAssistantIdRef.current = null;

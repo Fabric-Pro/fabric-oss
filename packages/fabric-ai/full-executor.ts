@@ -13,13 +13,15 @@
  * API keys and costs. Use Hybrid or Delegated mode for multi-tenant deployments.
  */
 
-import { DEFAULT_MODELS } from "@repo/database/prisma/ai-model-catalog";
 import { logger } from "@repo/logs";
 import { createFabricClient } from "./client";
 import type { FabricConfig, FabricPattern } from "./types";
 
-// Default model from catalog (canonical name matches OpenAI Direct model ID)
-const DEFAULT_FABRIC_MODEL = DEFAULT_MODELS.COMPLEX;
+// The Fabric pattern server is called with vendor "openai" by default, so its
+// default must be an OpenAI model id. It deliberately does not follow the
+// default Fabric AI model (`DEFAULT_FABRIC_AI_MODEL`), an Anthropic model the
+// "openai" vendor cannot run.
+const DEFAULT_FABRIC_MODEL = "gpt-4o";
 
 /**
  * Options for full mode pattern execution

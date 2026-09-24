@@ -302,7 +302,12 @@ const BUILT_IN_TO_FABRIC_TOOLS: Record<string, string[]> = {
 	// packages/database/prisma/queries/agent-templates.ts. This copy is what
 	// builds `enabledFabricToolIds` for the request, and an id missing here is
 	// simply never requested — no error, the tool just never fires (Fizzy #2473).
-	"project-context": ["project_rag_query", "fabric_list_meeting_transcripts"],
+	"project-context": [
+		"project_rag_query",
+		"fabric_list_meeting_transcripts",
+		"fabric_list_project_features",
+		"fabric_get_project_feature",
+	],
 	"create-story": ["fabric_create_story"],
 };
 

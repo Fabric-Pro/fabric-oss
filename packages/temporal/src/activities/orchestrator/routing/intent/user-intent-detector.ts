@@ -6,6 +6,7 @@
  * handle agent/tool selection.
  */
 
+import { isInlineDiagramRequest } from "../../../../workflows/orchestrator/diagram-rendering";
 import type { UserIntent } from "./types";
 
 // YouTube URL patterns
@@ -176,7 +177,6 @@ const FRAME_PATTERNS = [
 	"build a visualization",
 	"data visualization",
 	"interactive visualization",
-	"visualize",
 	"create a chart",
 	"make a chart",
 	"generate a chart",
@@ -268,7 +268,10 @@ export function detectUserIntent(message: string): UserIntent {
 		result.requestedFabricAi = true;
 		mentionedCapabilities.push("create_frames");
 		mentionedCapabilities.push("fabric_ai");
-	} else if (FRAME_PATTERNS.some((p) => messageLower.includes(p))) {
+	} else if (
+		FRAME_PATTERNS.some((p) => messageLower.includes(p)) &&
+		!isInlineDiagramRequest(message)
+	) {
 		result.requestedFrameOutput = "frame";
 		result.requestedFabricAi = true;
 		mentionedCapabilities.push("create_frames");
