@@ -2,6 +2,7 @@
 
 import { CopilotKit } from "@copilotkit/react-core";
 import "@copilotkit/react-ui/styles.css";
+import { isDeprecatedDocumentType } from "@repo/utils/document-type-catalog";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import {
 	AI_SIDEBAR_CONTENT_SHIFT_CLASS,
@@ -40,6 +41,10 @@ import { DocumentAutoRefreshToggle } from "./DocumentAutoRefreshToggle";
 import { DocumentEditor, getDocumentTypeLabel } from "./DocumentEditor";
 import { DocumentEditorAiUnavailable } from "./DocumentEditorAiUnavailable";
 import { DocumentTitleInlineEdit } from "./DocumentTitleInlineEdit";
+import {
+	DeprecatedDocumentTypeBadge,
+	FeaturesDeprecationNotice,
+} from "./FeaturesDeprecationNotice";
 
 // Error boundary to catch CopilotKit initialization failures. The fallback
 // must not mount anything that calls a CopilotKit hook — `<DocumentEditor>`
@@ -206,6 +211,9 @@ export function DocumentEditorPage({
 	const handleClose = useCallback(() => {
 		router.push(backUrl);
 	}, [router, backUrl]);
+	const roadmapUrl = organizationSlug
+		? `/app/${organizationSlug}/projects/${projectId}?tab=stories`
+		: `/app/projects/${projectId}?tab=stories`;
 
 	// Slot mounts for the page-chrome action bar (line 3). DocumentEditor
 	// portals its state-coupled chrome into these so the page-level layout
@@ -308,6 +316,16 @@ export function DocumentEditorPage({
 			</div>
 		);
 	}
+
+	// Both marks key on the ref kind as well as the type: a live Roadmap
+	// feature is not a deprecated document, whatever its type field says.
+	const isProjectDocument = documentRefKind === "PROJECT_DOCUMENT";
+	const isTypeDeprecated =
+		isProjectDocument &&
+		!!document.type &&
+		isDeprecatedDocumentType(document.type);
+	const isFeaturesSnapshot =
+		isProjectDocument && document.type === "USER_STORY";
 
 	return (
 		// Page chrome shifts its right edge when the CopilotKit chat
@@ -525,14 +543,17 @@ export function DocumentEditorPage({
 						<Tooltip>
 							<TooltipTrigger asChild>
 								<div
-									className="flex items-center shrink-0 h-8 px-2"
+									className="flex items-center gap-2 shrink-0 h-8 px-2"
 									aria-label={`Document type: ${getDocumentTypeLabel(
 										document.type,
-									)}`}
+									)}${isTypeDeprecated ? " (deprecated)" : ""}`}
 								>
 									<span className="text-xs font-mono uppercase tracking-wider text-foreground">
 										{getDocumentTypeLabel(document.type)}
 									</span>
+									{isTypeDeprecated && (
+										<DeprecatedDocumentTypeBadge />
+									)}
 								</div>
 							</TooltipTrigger>
 							<TooltipContent>
@@ -564,6 +585,13 @@ export function DocumentEditorPage({
 				/>
 				<div ref={setSaveSlotEl} className="flex items-center" />
 			</div>
+
+			{/* A Features document is a snapshot now, not a Roadmap source. */}
+			{isFeaturesSnapshot && (
+				<div className="border-b bg-background px-6 py-2">
+					<FeaturesDeprecationNotice roadmapHref={roadmapUrl} />
+				</div>
+			)}
 
 			{/* Editor body — DocumentEditor renders its inline AI/prompt row
 			  (analog of feature-editor stage row) at the top of this region.

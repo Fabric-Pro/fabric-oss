@@ -21,7 +21,8 @@
  * The map is keyed by the schema's own union, so a type added to the enum and
  * not to this file is a compile error rather than a silent gap — that is the
  * property the catalog exists for. Keep the entry order: it is the order the
- * create flow's type dropdown presents.
+ * create flow's type dropdown presents, which is why deprecated types sit at
+ * the end.
  *
  * This lives in a shared package rather than the web app because the server
  * needs the same labels to default a document's title (see
@@ -70,6 +71,12 @@ export type DocumentTypeCatalogEntry = {
 	shortLabel: string;
 	/** Presentational only — never load-bearing for behavior. */
 	icon: string;
+	/**
+	 * Still creatable and still readable, but no longer the recommended path.
+	 * Surfaces that show the type mark it; nothing refuses it. Never fold the
+	 * marker into `label`: that is also the server's default document title.
+	 */
+	deprecated?: true;
 };
 
 export const DOCUMENT_TYPE_CATALOG: Record<
@@ -108,7 +115,6 @@ export const DOCUMENT_TYPE_CATALOG: Record<
 		shortLabel: "Technical Spec",
 		icon: "⚙️",
 	},
-	USER_STORY: { label: "Features", shortLabel: "Feature", icon: "👤" },
 	API_SPEC: {
 		label: "API Specification",
 		shortLabel: "API Spec",
@@ -136,6 +142,15 @@ export const DOCUMENT_TYPE_CATALOG: Record<
 		shortLabel: "Integration Contract",
 		icon: "🧩",
 	},
+	// Deprecated: feature recommendations now live in Roadmap. Existing
+	// Features documents stay readable as historical snapshots, and the type
+	// stays creatable.
+	USER_STORY: {
+		label: "Features",
+		shortLabel: "Feature",
+		icon: "👤",
+		deprecated: true,
+	},
 };
 
 /** The catalog as an ordered list, for rendering a type picker. */
@@ -160,6 +175,20 @@ export function documentTypeLabel(type: string): string {
 		>
 	)[type];
 	return entry?.label ?? type.replace(/_/g, " ");
+}
+
+/**
+ * Whether a type is deprecated. An unknown type is not: the flag marks a
+ * deliberate retirement, never a gap in the catalog.
+ */
+export function isDeprecatedDocumentType(type: string): boolean {
+	const entry = (
+		DOCUMENT_TYPE_CATALOG as Record<
+			string,
+			DocumentTypeCatalogEntry | undefined
+		>
+	)[type];
+	return entry?.deprecated === true;
 }
 
 /** The dense display label for a type. Falls back exactly as `documentTypeLabel`. */

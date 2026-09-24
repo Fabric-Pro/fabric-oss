@@ -2803,6 +2803,11 @@
 				"alreadyQueued": "A generation for this document is already queued — a second one was not started",
 				"alreadyRunning": "A generation for this document is already running — a second one was not started",
 				"failed": "Failed to regenerate: {message}"
+			},
+			"featuresDeprecation": {
+				"badge": "Deprecated",
+				"message": "Feature recommendations now live in Roadmap. Use Roadmap to generate, review, accept, and manage AI-recommended Feature work items. Existing generated Features documents remain available as historical snapshots.",
+				"roadmapLink": "Go to Roadmap"
 			}
 		},
 		"stories": {
@@ -6300,23 +6305,6 @@
 			"costEstimateBasis": "{count, plural, one {Median of the last # successful run of this operation.} other {Median of the last # successful runs of this operation.}} Actual time and cost vary with the input.",
 			"startPageTour": "Walk through this page one component at a time, with a short note on what each one does."
 		},
-		"pipeline": {
-			"editConfiguration": "Reopen the document generation setup so you can change selected documents, the PRD source, or prompt bindings.",
-			"generateDocuments": "Start generation for the selected documents. Regenerating replaces the existing content of any document that is reselected.",
-			"clearAllFeatures": {
-				"label": "Delete all pipeline-generated features and tasks, and remove the generated Features document.",
-				"warning": "Warning: this cannot be undone. Manually created Roadmap stories are preserved."
-			},
-			"openRoadmap": "Switch to the Roadmap tab to see all features.",
-			"editFeaturesDocument": "Open the generated Features document in the editor.",
-			"pushToRoadmap": "Parse the Features document and create one Roadmap card per feature (with its tasks). You can optionally clear existing stories first from the dialog.",
-			"alreadyPushed": "Features from this document are already on the Roadmap. Disabled until you regenerate the Features document or clear the existing Roadmap stories.",
-			"generateFeatures": "Generate the Features document from the selected PRD.",
-			"confirmPush": "Push the Features document to the Roadmap now. If \"Clear existing stories\" is checked, current stories are deleted first.",
-			"openStoryEditor": "Open this feature in the story editor.",
-			"generateTasks": "Generate tasks for this feature from the selected AI planner.",
-			"editTask": "Edit this task's title, description, or estimate."
-		},
 		"documentEditor": {
 			"bubbleMenuAiAssist": "Open the AI assistant with options to rewrite, shorten, lengthen, or fix spelling and grammar in the selection.",
 			"bold": "Toggle bold on the selected text (Cmd+B / Ctrl+B).",
@@ -6512,7 +6500,7 @@
 			"autoSyncToggle": "Turn automatic transcript syncing on or off. When on, Fabric checks for new transcripts on the chosen interval.",
 			"clearPrdSource": {
 				"label": "Unlink this project's external PRD source.",
-				"warning": "Warning: the pipeline falls back to the generated PRD. The Notion page is not deleted; you can reconnect it anytime."
+				"warning": "Warning: this removes the project context and embeddings synced from the page, so the AI stops drawing on it. The Notion page is not deleted; you can reconnect it anytime."
 			},
 			"changePrdSource": "Pick a different Notion page as the project's PRD without first clearing the current one.",
 			"openIntegrations": "Go to Integrations to connect or sync a Notion workspace.",

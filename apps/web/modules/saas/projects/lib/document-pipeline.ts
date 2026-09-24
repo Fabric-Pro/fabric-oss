@@ -212,7 +212,7 @@ export function isDocumentInFlight(status: string): boolean {
 }
 
 /** Opening cadence: fast enough that a state change reads as immediate. */
-export const DOCUMENT_POLL_BASE_MS = 3000;
+const DOCUMENT_POLL_BASE_MS = 3000;
 
 /**
  * Widest cadence for a document that is still legitimately waiting. Half a

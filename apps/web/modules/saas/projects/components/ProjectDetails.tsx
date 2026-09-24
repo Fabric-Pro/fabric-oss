@@ -124,11 +124,6 @@ const DiagramsList = dynamic(
 	{ loading: () => <TabContentSkeleton />, ssr: false },
 );
 
-const ProjectPipeline = dynamic(
-	() => import("./ProjectPipeline").then((m) => m.ProjectPipeline),
-	{ loading: () => <TabContentSkeleton />, ssr: false },
-);
-
 const StoriesRoadmap = dynamic(
 	() => import("./stories").then((m) => m.StoriesRoadmap),
 	{ loading: () => <TabContentSkeleton />, ssr: false },
@@ -255,7 +250,6 @@ const TAB_GROUPS: ReadonlyArray<{ label: string; ids: readonly TabId[] }> = [
 	{
 		label: "Build",
 		ids: [
-			"pipeline",
 			"kanban",
 			"coding-instructions",
 			"agent-activity",
@@ -1505,13 +1499,6 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 						{activeTab === "artifacts" && (
 							<ArtifactBrowser projectId={projectId} />
 						)} */}
-						{activeTab === "pipeline" && (
-							<ProjectPipeline
-								projectId={projectId}
-								project={project}
-								onNavigateToTab={setActiveTab}
-							/>
-						)}
 						{activeTab === "weave" && (
 							<WeaveDashboard projectId={projectId} />
 						)}

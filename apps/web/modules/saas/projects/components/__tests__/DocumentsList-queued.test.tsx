@@ -299,6 +299,45 @@ describe("DocumentsList — queued documents", () => {
 	});
 });
 
+// The Features type is deprecated but its documents stay: every one is still
+// listed and still opens, now marked as a snapshot rather than a Roadmap source.
+describe("DocumentsList — deprecated Features documents", () => {
+	beforeEach(() => {
+		documentsListMock.mockReset();
+	});
+
+	const featuresDocument = () =>
+		makeDocument({
+			id: "doc_features",
+			title: "Checkout features",
+			type: "USER_STORY",
+			status: "COMPLETE",
+			content: "# EPIC-001: Checkout",
+			wordCount: 3,
+			generationQueueReason: null,
+		});
+
+	it("marks a Features document as deprecated and describes it as a snapshot", async () => {
+		await renderWithDocuments([featuresDocument()]);
+
+		expect(screen.getByText("Deprecated")).toBeInTheDocument();
+		expect(
+			screen.getByText(/^Historical snapshot of generated features/),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(/Actionable features/),
+		).not.toBeInTheDocument();
+	});
+
+	it("leaves every other type unmarked", async () => {
+		await renderWithDocuments([
+			makeDocument({ status: "COMPLETE", generationQueueReason: null }),
+		]);
+
+		expect(screen.queryByText("Deprecated")).not.toBeInTheDocument();
+	});
+});
+
 describe("canBeMadeActive", () => {
 	it("excludes a queued document, which has no body to be canonical with", () => {
 		expect(canBeMadeActive("QUEUED")).toBe(false);

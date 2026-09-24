@@ -101,7 +101,6 @@ const inPageSource = [
 	// buttons (design 2026-09-23 §7.5) on the buttons themselves. This one
 	// file covers the whole page.
 	"apps/web/modules/saas/projects/components/instructions/InstructionsPublishedView.tsx",
-	"apps/web/modules/saas/projects/components/ProjectPipeline.tsx",
 	"apps/web/modules/saas/projects/components/ProjectReports.tsx",
 	"apps/web/modules/saas/projects/components/outcomes/ProjectOutcomesTab.tsx",
 	"apps/web/modules/saas/projects/components/outcomes/ProjectMetricsPanel.tsx",
@@ -187,7 +186,6 @@ const launcherSource = [
 	"apps/web/modules/saas/projects/components/DocumentsList.tsx",
 	"apps/web/modules/saas/projects/components/ProjectContextsList.tsx",
 	"apps/web/modules/saas/projects/components/instructions/InstructionsPublishedView.tsx",
-	"apps/web/modules/saas/projects/components/ProjectPipeline.tsx",
 	"apps/web/modules/saas/projects/components/ProjectReports.tsx",
 	"apps/web/modules/saas/projects/components/security/SecurityAccessibilityPage.tsx",
 	"apps/web/modules/saas/projects/components/ProjectDetails.tsx",

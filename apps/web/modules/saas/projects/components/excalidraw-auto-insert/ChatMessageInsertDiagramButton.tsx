@@ -355,7 +355,7 @@ function ChatMessageInsertDiagramButtonBody({
 			// Build the destination route. `basePath` is `/app/<slug>` for
 			// org scope (always set here because we early-return above on
 			// `organizationId === null`). Mirrors the canonical pattern
-			// from `StoriesRoadmap.tsx:1065` + `ProjectPipeline.tsx:843`.
+			// from `StoriesRoadmap.tsx`.
 			const slug = activeOrgSlug ?? "";
 			const routeBase = slug ? `/app/${slug}` : basePath;
 			const route =

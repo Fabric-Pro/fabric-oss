@@ -516,7 +516,6 @@ import { removeAttachmentProcedure } from "./procedures/stories/attachments/remo
 import { setAttachmentDesignationProcedure } from "./procedures/stories/attachments/set-attachment-designation";
 import { classificationProgressProcedure } from "./procedures/stories/classification-progress";
 import { classifyTracksProcedure } from "./procedures/stories/classify-tracks";
-import { clearStoriesProcedure } from "./procedures/stories/clear-stories";
 import {
 	createStoryCommentProcedure,
 	listStoryCommentsProcedure,
@@ -567,7 +566,6 @@ import { previewEnrichmentProcedure } from "./procedures/stories/preview-enrichm
 import { checkPmSyncConflictsProcedure } from "./procedures/stories/preview-pm-sync-conflicts";
 import { priorityHistoryProcedure } from "./procedures/stories/priority-history";
 import { proposeDuplicateMergeProcedure } from "./procedures/stories/propose-duplicate-merge";
-import { pushToKanbanProcedure } from "./procedures/stories/push-to-kanban";
 import { queueForKanbanProcedure } from "./procedures/stories/queue-for-kanban";
 import { storyReadinessProcedure } from "./procedures/stories/readiness";
 import { reevaluateBugProcedure } from "./procedures/stories/reevaluate-bug";
@@ -1755,7 +1753,6 @@ export const projectsRouter = {
 		setBlocked: setBlockedProcedure,
 		share: shareStoryProcedure,
 		delete: deleteStoryProcedure,
-		clear: clearStoriesProcedure,
 		createBatchDownloadUrl: createStoriesBatchDownloadUrlProcedure,
 		move: moveStoryProcedure,
 		reorder: reorderStoriesProcedure,
@@ -1777,7 +1774,6 @@ export const projectsRouter = {
 		reprioritize: reprioritizeStoriesProcedure,
 		reprioritizeStory: reprioritizeStoryProcedure,
 		priorityHistory: priorityHistoryProcedure,
-		pushToKanban: pushToKanbanProcedure,
 		queueForKanban: queueForKanbanProcedure,
 		generateTasks: generateTasksProcedure,
 		regenerateTitle: regenerateStoryTitleProcedure,

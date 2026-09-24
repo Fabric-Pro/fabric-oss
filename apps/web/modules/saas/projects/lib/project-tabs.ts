@@ -40,7 +40,6 @@ import {
 	SettingsIcon,
 	ShieldCheckIcon,
 	TargetIcon,
-	WorkflowIcon,
 } from "lucide-react";
 
 export const tabs = [
@@ -74,11 +73,6 @@ export const tabs = [
 		id: "context",
 		label: "Context",
 		icon: FolderIcon,
-	},
-	{
-		id: "pipeline",
-		label: "Pipeline",
-		icon: WorkflowIcon,
 	},
 	{
 		id: "stories",

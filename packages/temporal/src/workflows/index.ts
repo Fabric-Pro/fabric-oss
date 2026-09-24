@@ -540,7 +540,6 @@ export {
 	type PmSyncSingleStoryWorkflowOutput,
 	pmSyncSingleStoryWorkflow,
 } from "./pm-sync-single-story-workflow";
-export * from "./prd-to-tasks-pipeline";
 export * from "./project-context-embedding";
 // Project context processing workflow (post-creation uploads: extract + embed)
 export {

@@ -331,4 +331,34 @@ describe("ProjectDetails — ?tab= deep link wiring", () => {
 		expect(nav.state.search).toBe("tab=bogus");
 		expect(nav.replace).not.toHaveBeenCalled();
 	});
+
+	// The Pipeline tab was retired. Links and tab choices saved before that
+	// still name it, and they must land somewhere ordinary rather than throw
+	// or render an empty tab.
+	it("treats a stale ?tab=pipeline as unrecognized", async () => {
+		nav.state.search = "tab=pipeline";
+
+		renderWithClient(<ProjectDetails projectId="proj-1" />);
+
+		expect(
+			await screen.findByTestId("dynamic-tab-stub-ProjectOverview"),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /^pipeline$/i }),
+		).toBeNull();
+		expect(nav.replace).not.toHaveBeenCalled();
+	});
+
+	it("ignores a stored pipeline tab from before the retirement", async () => {
+		window.sessionStorage.setItem(
+			"fabric-project-active-tab-proj-1",
+			"pipeline",
+		);
+
+		renderWithClient(<ProjectDetails projectId="proj-1" />);
+
+		expect(
+			await screen.findByTestId("dynamic-tab-stub-ProjectOverview"),
+		).toBeInTheDocument();
+	});
 });

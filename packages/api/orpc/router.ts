@@ -31,7 +31,6 @@ import { orchestratorRouter } from "../modules/orchestrator/router";
 import { organizationsRouter } from "../modules/organizations/router";
 import { outcomesRouter } from "../modules/outcomes/router";
 import { paymentsRouter } from "../modules/payments/router";
-import { pipelineRouter } from "../modules/pipeline/router";
 import { capabilitiesRouter } from "../modules/capabilities/router";
 import { projectsRouter } from "../modules/projects/router";
 import { promptsRouter } from "../modules/prompts/router";
@@ -91,7 +90,6 @@ export const router = publicProcedure
 		organizations: organizationsRouter,
 		outcomes: outcomesRouter,
 		payments: paymentsRouter,
-		pipeline: pipelineRouter,
 		projects: projectsRouter,
 		capabilities: capabilitiesRouter,
 		prompts: promptsRouter,

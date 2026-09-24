@@ -48,6 +48,10 @@ const ALLOWLIST: ReadonlyMap<string, string> = new Map([
 		"surfaces search/scrape tools only — no write tools exposed to the loop",
 	],
 	[
+		"packages/temporal/src/activities/mcp-activities.ts",
+		"MCP server health check only — lists tools to prove the connection, never calls one (its write paths left with the retired Pipeline)",
+	],
+	[
 		"packages/temporal/src/activities/meeting-transcript-sync.ts",
 		"Teams transcript READS only (list meetings / get transcript content)",
 	],

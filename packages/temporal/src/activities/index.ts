@@ -579,7 +579,6 @@ export {
 	transcribeAudioActivity,
 } from "./fabric-ai";
 export * from "./fabric-mention-comments";
-export * from "./fizzy-activities";
 // Frame Export activities (PDF generation).
 //
 // The unsuffixed aliases are the activity type names `exportFrameToPDF` has
