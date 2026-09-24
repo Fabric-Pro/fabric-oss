@@ -693,6 +693,54 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 		expect(m.listTree).not.toHaveBeenCalled();
 	});
 
+	it("re-plans the same commit when the published tree holds a path the always layer now excludes (Fizzy #2705)", async () => {
+		// The published version was filtered through an older built-in list
+		// and still carries the committed `CLAUDE.local.md`; the current
+		// always layer excludes it, so the same-commit shortcut must not keep
+		// that version, and the planning pass must drop the path.
+		serveRepo([
+			{ path: "CLAUDE.md", body: "x" },
+			{ path: "CLAUDE.local.md", body: "mine" },
+		]);
+		m.getPublishedInstructionTree.mockResolvedValue({
+			snapshotId: "snap_0",
+			sourceCommitSha: SHA,
+			settingsFrozen: { syncId: "sync_1", syncGeneration: 3 },
+			files: [
+				{ path: "CLAUDE.md", sha256: sha256("x"), mode: null },
+				{ path: "CLAUDE.local.md", sha256: sha256("mine"), mode: null },
+			],
+		});
+		const result = await acquireInstructionTreeFromRepository(CONTEXT);
+		expect(result.outcome).toBe("staged");
+		expect(m.listTree).toHaveBeenCalled();
+		// The plan is the current tree only; the stale path is not carried.
+		const rows = m.createInstructionSnapshot.mock.calls[0]?.[0].files as {
+			path: string;
+		}[];
+		expect(rows.map((r) => r.path)).toEqual(["CLAUDE.md"]);
+	});
+
+	it("keeps a same-commit version unchanged when EVERY published path is now always-excluded (Fizzy #2705)", async () => {
+		// Same commit and same pair: a planning pass would keep nothing and
+		// be refused, on this sync and on every later one. Leave the version
+		// alone; only a repository change can repair it.
+		serveRepo([{ path: "CLAUDE.local.md", body: "mine" }]);
+		m.getPublishedInstructionTree.mockResolvedValue({
+			snapshotId: "snap_0",
+			sourceCommitSha: SHA,
+			settingsFrozen: { syncId: "sync_1", syncGeneration: 3 },
+			files: [
+				{ path: "CLAUDE.local.md", sha256: sha256("mine"), mode: null },
+			],
+		});
+		expect(await acquireInstructionTreeFromRepository(CONTEXT)).toEqual({
+			outcome: "unchanged",
+			commitSha: SHA,
+		});
+		expect(m.listTree).not.toHaveBeenCalled();
+	});
+
 	it("is unchanged by tree across a new commit, including a 0644 file that starts with #! (Review Focus 2)", async () => {
 		serveRepo([
 			{ path: "CLAUDE.md", body: "same" },

@@ -24,7 +24,9 @@ import {
 	rejectAbandonedInstructionSnapshot,
 } from "@repo/database";
 import {
+	ALWAYS_IGNORE_GLOBS,
 	classifyPath,
+	compileIgnore,
 	FABRIC_IGNORE_FILE,
 	fileTypingFor,
 	type InstructionFileKind,
@@ -385,7 +387,8 @@ async function acquireOnce(input: {
 	if (
 		published &&
 		published.sourceCommitSha === commitSha &&
-		frozenPairMatches(published.settingsFrozen, context)
+		frozenPairMatches(published.settingsFrozen, context) &&
+		!publishedTreeNeedsRepair(published.files)
 	) {
 		return { kind: "done", result: { outcome: "unchanged", commitSha } };
 	}
@@ -555,6 +558,45 @@ async function acquireOnce(input: {
 		kind: "done",
 		result: { outcome: "staged", snapshotId, commitSha },
 	};
+}
+
+/**
+ * The always-excluded layer has no version: `settingsFrozen` records the
+ * configuration a version was published under, not the built-in list it was
+ * filtered through. When that list grows (`.fabric/**`, Fizzy #2704), a
+ * version published earlier can hold a path the server no longer publishes,
+ * and the same-commit shortcut above would keep it forever, since no new
+ * commit ever arrives to force a planning pass. So the shortcut also asks
+ * whether the published tree still passes the CURRENT always layer; one
+ * planning pass then re-publishes without the path, and the next sync of
+ * the same commit is unchanged again (Fizzy #2705).
+ *
+ * Only the always layer: the project's own rules ARE versioned, through the
+ * `(syncId, generation)` pair a re-configure bumps.
+ *
+ * A repair needs something left to publish. Same commit and same pair mean
+ * the planning pass keeps exactly the published set minus the newly
+ * excluded paths, so a tree made ONLY of such paths would plan to nothing,
+ * be refused (`nothing_kept`), and be refused again on every later sync.
+ * That tree stays "unchanged": the stale version is refused by the CLI
+ * either way, and only a change to the repository can fix it. This relies on
+ * the always list only ever growing, which is its history so far; if a rule
+ * is ever removed or narrowed, a planning pass could keep a file the
+ * published set lacks, and the excluded-only shortcut must be revisited.
+ */
+const alwaysExcluded = compileIgnore(ALWAYS_IGNORE_GLOBS);
+
+function publishedTreeNeedsRepair(files: readonly { path: string }[]): boolean {
+	let stale = false;
+	let kept = false;
+	for (const file of files) {
+		if (alwaysExcluded(file.path) === null) {
+			kept = true;
+		} else {
+			stale = true;
+		}
+	}
+	return stale && kept;
 }
 
 function frozenPairMatches(
