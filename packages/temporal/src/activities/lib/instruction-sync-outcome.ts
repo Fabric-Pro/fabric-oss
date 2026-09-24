@@ -53,14 +53,25 @@ function hasAbandonedMarker(rejection: unknown): boolean {
 
 export function deriveSyncRunOutcome(input: SyncOutcomeInput): SyncOutcome {
 	const none = { kind: "none" } as const;
-	const backoff = { kind: "backoff" } as const;
+	// A pause or a backoff is the automatic schedule reacting to its own
+	// failure. A manual "Sync now" that fails says nothing about the poll,
+	// so for a non-automatic trigger both become no effect (Fizzy #2706):
+	// the failure shows in the run's own row, and healthy polling goes on.
+	// A successful head evaluation and a commit-keyed suppression stay
+	// regardless of trigger, so a manual success still moves the schedule
+	// and records the cursor.
+	const automatic = isAutomaticInstructionSyncTrigger(input.trigger);
+	const backoff = automatic ? ({ kind: "backoff" } as const) : none;
 	const success = { kind: "success", commitSha: input.commitSha } as const;
 	// Suppressing needs a commit to key on; without one, back off instead.
 	const suppress = input.commitSha
 		? ({ kind: "suppress", commitSha: input.commitSha } as const)
 		: backoff;
-	const revoked = isAutomaticInstructionSyncTrigger(input.trigger)
+	const revoked = automatic
 		? ({ kind: "pause", reason: "PERMISSION_REVOKED" } as const)
+		: none;
+	const refMissing = automatic
+		? ({ kind: "pause", reason: "REF_MISSING" } as const)
 		: none;
 	const result = (
 		status: InstructionSyncRunStatus,
@@ -120,10 +131,7 @@ export function deriveSyncRunOutcome(input: SyncOutcomeInput): SyncOutcome {
 			return result("FAILED", input.error, revoked);
 		case "REF_MISSING":
 		case "ROOT_MISSING":
-			return result("FAILED", input.error, {
-				kind: "pause",
-				reason: "REF_MISSING",
-			});
+			return result("FAILED", input.error, refMissing);
 		case "CONFIGURATION_CHANGED":
 			return result("FAILED", input.error, none);
 		default:

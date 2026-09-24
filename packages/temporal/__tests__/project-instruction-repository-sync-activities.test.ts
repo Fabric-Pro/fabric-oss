@@ -1396,7 +1396,8 @@ describe("recordInstructionRepositorySyncRun (spec §5.4)", () => {
 					error: "CLONE_FAILED",
 					commitSha: null,
 					snapshotId: null,
-					scheduling: { kind: "backoff" },
+					// A manual run never backs the schedule off (Fizzy #2706).
+					scheduling: { kind: "none" },
 				}),
 			);
 			// No snapshot can exist without a context: Part A never runs.
@@ -1519,7 +1520,8 @@ describe("recordInstructionRepositorySyncRun (spec §5.4)", () => {
 			expect.objectContaining({
 				status: "FAILED",
 				error: "STORAGE_FAILED",
-				scheduling: { kind: "backoff" },
+				// A manual run never backs the schedule off (Fizzy #2706).
+				scheduling: { kind: "none" },
 			}),
 		);
 	});

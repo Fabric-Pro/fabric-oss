@@ -99,8 +99,18 @@ describe("deriveSyncRunOutcome: the spec §5.4 outcome table", () => {
 			},
 		],
 		[
-			"READY, reason unknown (the child threw before reporting)",
+			"READY, reason unknown (the child threw before reporting), manual",
 			{ snapshot: ready },
+			{
+				status: "FAILED",
+				error: "CHILD_ABORTED",
+				note: null,
+				scheduling: { kind: "none" },
+			},
+		],
+		[
+			"READY, reason unknown (the child threw before reporting), automatic",
+			{ trigger: "POLL", snapshot: ready },
 			{
 				status: "FAILED",
 				error: "CHILD_ABORTED",
@@ -111,6 +121,7 @@ describe("deriveSyncRunOutcome: the spec §5.4 outcome table", () => {
 		[
 			"REJECTED with the abandoned marker, checked before the generic REJECTED row",
 			{
+				trigger: "POLL",
 				snapshot: {
 					...ready,
 					status: "REJECTED",
@@ -127,6 +138,7 @@ describe("deriveSyncRunOutcome: the spec §5.4 outcome table", () => {
 		[
 			"abandoned after the acquisition itself failed: its own error wins",
 			{
+				trigger: "POLL",
 				error: "STORAGE_FAILED",
 				snapshot: {
 					...ready,
@@ -159,7 +171,7 @@ describe("deriveSyncRunOutcome: the spec §5.4 outcome table", () => {
 		],
 		[
 			"FAILED",
-			{ snapshot: { ...ready, status: "FAILED" } },
+			{ trigger: "POLL", snapshot: { ...ready, status: "FAILED" } },
 			{
 				status: "FAILED",
 				error: "CHILD_ABORTED",
@@ -169,7 +181,7 @@ describe("deriveSyncRunOutcome: the spec §5.4 outcome table", () => {
 		],
 		[
 			"still RECEIVING (child still unknown)",
-			{ snapshot: { ...ready, status: "RECEIVING" } },
+			{ trigger: "POLL", snapshot: { ...ready, status: "RECEIVING" } },
 			{
 				status: "FAILED",
 				error: "CHILD_ABORTED",
@@ -209,7 +221,7 @@ describe("deriveSyncRunOutcome: the spec §5.4 outcome table", () => {
 		],
 		[
 			"no snapshot, LIMITS_EXCEEDED before the commit was known",
-			{ error: "LIMITS_EXCEEDED", commitSha: null },
+			{ trigger: "POLL", error: "LIMITS_EXCEEDED", commitSha: null },
 			{
 				status: "FAILED",
 				error: "LIMITS_EXCEEDED",
@@ -248,8 +260,8 @@ describe("deriveSyncRunOutcome: the spec §5.4 outcome table", () => {
 			},
 		],
 		[
-			"no snapshot, REF_MISSING (any trigger)",
-			{ error: "REF_MISSING" },
+			"no snapshot, REF_MISSING, automatic",
+			{ trigger: "POLL", error: "REF_MISSING" },
 			{
 				status: "FAILED",
 				error: "REF_MISSING",
@@ -258,8 +270,8 @@ describe("deriveSyncRunOutcome: the spec §5.4 outcome table", () => {
 			},
 		],
 		[
-			"no snapshot, ROOT_MISSING",
-			{ error: "ROOT_MISSING" },
+			"no snapshot, ROOT_MISSING, automatic",
+			{ trigger: "WEBHOOK", error: "ROOT_MISSING" },
 			{
 				status: "FAILED",
 				error: "ROOT_MISSING",
@@ -276,8 +288,8 @@ describe("deriveSyncRunOutcome: the spec §5.4 outcome table", () => {
 		).map(
 			(error) =>
 				[
-					`no snapshot, ${error}`,
-					{ error },
+					`no snapshot, ${error}, automatic`,
+					{ trigger: "POLL", error },
 					{
 						status: "FAILED",
 						error,
@@ -349,5 +361,98 @@ describe("automatic eligibility is AUTOMATIC_INSTRUCTION_SYNC_TRIGGERS, not ever
 		).toEqual(
 			deriveSyncRunOutcome({ ...base, trigger: "MANUAL", skipped: true }),
 		);
+	});
+});
+
+describe("a manual run never pauses or backs off the automatic schedule (Fizzy #2706)", () => {
+	// Every row of the table that would pause or back off, keyed by the
+	// input that reaches it. For MANUAL (and any trigger outside the
+	// automatic set) the effect is none: the failure belongs to the run's
+	// own row, and polling that was healthy stays healthy.
+	const WOULD_PAUSE_OR_BACK_OFF = [
+		[
+			"REF_MISSING",
+			{ error: "REF_MISSING" },
+			{ kind: "pause", reason: "REF_MISSING" },
+		],
+		[
+			"ROOT_MISSING",
+			{ error: "ROOT_MISSING" },
+			{ kind: "pause", reason: "REF_MISSING" },
+		],
+		[
+			"PERMISSION_DENIED",
+			{ error: "PERMISSION_DENIED" },
+			{ kind: "pause", reason: "PERMISSION_REVOKED" },
+		],
+		["CLONE_FAILED", { error: "CLONE_FAILED" }, { kind: "backoff" }],
+		[
+			"INTEGRATION_UNAVAILABLE",
+			{ error: "INTEGRATION_UNAVAILABLE" },
+			{ kind: "backoff" },
+		],
+		["STORAGE_FAILED", { error: "STORAGE_FAILED" }, { kind: "backoff" }],
+		["INTERRUPTED", { error: "INTERRUPTED" }, { kind: "backoff" }],
+		[
+			"LIMITS_EXCEEDED before the commit was known",
+			{ error: "LIMITS_EXCEEDED", commitSha: null },
+			{ kind: "backoff" },
+		],
+		["child aborted", { snapshot: ready }, { kind: "backoff" }],
+		[
+			"snapshot FAILED",
+			{ snapshot: { ...ready, status: "FAILED" } },
+			{ kind: "backoff" },
+		],
+		[
+			"abandoned",
+			{
+				snapshot: {
+					...ready,
+					status: "REJECTED",
+					rejection: abandoned,
+				},
+			},
+			{ kind: "backoff" },
+		],
+	] as const;
+
+	it.each(WOULD_PAUSE_OR_BACK_OFF)(
+		"%s: no effect for MANUAL, the automatic effect for POLL and WEBHOOK",
+		(_label, overrides, automaticEffect) => {
+			const input = {
+				...base,
+				...(overrides as Partial<SyncOutcomeInput>),
+			};
+			expect(
+				deriveSyncRunOutcome({ ...input, trigger: "MANUAL" })
+					.scheduling,
+			).toEqual({ kind: "none" });
+			for (const trigger of AUTOMATIC_INSTRUCTION_SYNC_TRIGGERS) {
+				expect(
+					deriveSyncRunOutcome({ ...input, trigger }).scheduling,
+				).toEqual(automaticEffect);
+			}
+		},
+	);
+
+	it("a manual failure still records its status and error; only the schedule is untouched", () => {
+		expect(deriveSyncRunOutcome({ ...base, error: "REF_MISSING" })).toEqual(
+			{
+				status: "FAILED",
+				error: "REF_MISSING",
+				note: null,
+				scheduling: { kind: "none" },
+			},
+		);
+	});
+
+	it("a manual success and a commit-keyed suppression keep moving the schedule", () => {
+		expect(
+			deriveSyncRunOutcome({ ...base, unchanged: true }).scheduling,
+		).toEqual({ kind: "success", commitSha: SHA });
+		expect(
+			deriveSyncRunOutcome({ ...base, error: "TREE_REFUSED" }).scheduling,
+		).toEqual({ kind: "suppress", commitSha: SHA });
 	});
 });
