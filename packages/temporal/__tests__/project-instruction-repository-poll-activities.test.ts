@@ -20,13 +20,11 @@ const STARTED = {
 	outcome: "started",
 	workflowId: "project-instruction-repository-sync-proj_1",
 	runId: "run_1",
-	runKey: "sync_1:run_1",
 } as const;
 const ALREADY_RUNNING = {
 	outcome: "already_running",
 	workflowId: "project-instruction-repository-sync-proj_1",
 	runId: "run_open",
-	runKey: "sync_1:run_open",
 } as const;
 /** The claimed row, as the start's `expected` (Decision 56). */
 const EXPECTED = { syncId: "sync_1", generation: 3 };

@@ -57,7 +57,6 @@ export const REPOSITORY_SYNC_SUBJECTS: Readonly<
 		startRun: (row, trigger, options = {}) =>
 			startAutomaticInstructionSync(
 				{
-					syncId: row.id,
 					projectId: row.projectId,
 					organizationId: row.organizationId,
 					trigger,

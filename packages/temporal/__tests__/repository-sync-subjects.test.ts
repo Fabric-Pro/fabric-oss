@@ -71,12 +71,11 @@ describe("repository sync subjects (Decision 46)", () => {
 		>().toEqualTypeOf<RepositorySyncStartResult>();
 	});
 
-	it("starts the instructions subject's run through the sync starter, passing the row's id, the expected row and the decorator on (Decision 56)", async () => {
+	it("starts the instructions subject's run through the sync starter, passing the expected row and the decorator on (Decision 56)", async () => {
 		const reached = {
 			outcome: "already_running",
 			workflowId: "project-instruction-repository-sync-proj_1",
 			runId: "run_open",
-			runKey: "sync_1:run_open",
 		};
 		m.start.mockResolvedValue(reached);
 		await expect(
@@ -91,7 +90,6 @@ describe("repository sync subjects (Decision 46)", () => {
 		).resolves.toBe(reached);
 		expect(m.start).toHaveBeenCalledWith(
 			{
-				syncId: "sync_1",
 				projectId: "proj_1",
 				organizationId: "org_1",
 				trigger: "WEBHOOK",
