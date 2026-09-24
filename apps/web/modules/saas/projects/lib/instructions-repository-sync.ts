@@ -84,8 +84,12 @@ export type RepositorySyncControls = {
 	onConfigure: () => void;
 	onSyncNow: () => void;
 	syncNowPending: boolean;
-	/** Re-read everything a configuration change can move. */
-	onChanged: () => void;
+	/**
+	 * Re-read everything a configuration change can move, resolving once
+	 * those reads have settled. The settings section awaits it before it
+	 * leaves its busy state (Decision 53).
+	 */
+	onChanged: () => Promise<void>;
 };
 
 export type SyncNowResult =
@@ -105,12 +109,51 @@ type SyncMessage = {
 };
 
 export const REPOSITORY_SYNC_POLL_MS = 3_000;
+/**
+ * While automatic sync is on and not paused, the tab reads the sync state
+ * once a minute even with no run open, so a run the scheduled check or a
+ * push started, or a pause the check recorded, shows without a reload
+ * (Decision 39).
+ */
+export const REPOSITORY_SYNC_IDLE_POLL_MS = 60_000;
 
-/** `refetchInterval` for `repositorySync.get`: every 3 s while a run is open. */
+/**
+ * `refetchInterval` for `repositorySync.get`: every 3 s while a run is open,
+ * every 60 s while automatic sync is on and not paused, and not at all
+ * otherwise.
+ */
 export function repositorySyncPollInterval(
-	state: { running: boolean } | null | undefined,
+	state:
+		| {
+				running: boolean;
+				configured?: {
+					automatic: boolean;
+					automaticPausedReason: string | null;
+				} | null;
+		  }
+		| null
+		| undefined,
 ): number | false {
-	return state?.running ? REPOSITORY_SYNC_POLL_MS : false;
+	if (state?.running) {
+		return REPOSITORY_SYNC_POLL_MS;
+	}
+	const configured = state?.configured;
+	return configured?.automatic && !configured.automaticPausedReason
+		? REPOSITORY_SYNC_IDLE_POLL_MS
+		: false;
+}
+
+/**
+ * The latest run changed between two reads: a run started and finished
+ * without the tab seeing it open, or the scheduled check recorded a failure
+ * receipt. `undefined` means not loaded yet, so the first read never counts;
+ * `null` (no run yet) does, so a sync's first run is noticed.
+ */
+export function latestSyncRunChanged(
+	seen: string | null | undefined,
+	current: string | null | undefined,
+): boolean {
+	return seen !== undefined && current !== undefined && seen !== current;
 }
 
 /** The poll saw a run close: its outcome, whatever it was, is now readable. */
@@ -203,11 +246,18 @@ export function syncOutcomeMessage(outcome: SyncRunOutcome): SyncMessage {
  * The line under a failed run. LIMITS_EXCEEDED states all three limits
  * (files, size per file, total size): the run row has no count columns
  * (§4.1a) and does not record which limit was hit, so naming only some of
- * them would send someone hunting in the wrong place.
+ * them would send someone hunting in the wrong place. CLONE_FAILED promises
+ * a retry only while one will actually happen: automatic sync on and not
+ * paused, so the poll backs off and tries again (spec §7.3).
  */
 export function syncErrorMessage(
 	error: SyncErrorCode | null,
-	configuration: { ref: string; rootPath: string } | null,
+	configuration: {
+		ref: string;
+		rootPath: string;
+		automatic?: boolean;
+		automaticPausedReason?: string | null;
+	} | null,
 ): SyncMessage | null {
 	if (error === null) {
 		return null;
@@ -234,9 +284,45 @@ export function syncErrorMessage(
 					),
 				},
 			};
+		case "CLONE_FAILED":
+			return configuration?.automatic &&
+				!configuration.automaticPausedReason
+				? { key: "errors.CLONE_FAILED_RETRYING" }
+				: { key: "errors.CLONE_FAILED" };
 		default:
 			return { key: `errors.${error}` };
 	}
+}
+
+/** The triggers this build has a label for (spec §6): "Sync now", the scheduled check, a GitHub push. */
+type SyncTrigger = "MANUAL" | "POLL" | "WEBHOOK";
+
+/**
+ * History and the status line name what started each run (spec §7.3). The
+ * switch is exhaustive over `SyncTrigger`: a trigger added there without a
+ * case fails to compile at `unlabelledTrigger`. A value the server sends
+ * that this build does not know, such as one a later migration adds to the
+ * enum, renders the generic label instead of throwing (Decision 47).
+ */
+export function triggerLabelKey(
+	trigger: string,
+): "triggers.MANUAL" | "triggers.POLL" | "triggers.WEBHOOK" | "triggers.OTHER" {
+	const known = trigger as SyncTrigger;
+	switch (known) {
+		case "MANUAL":
+			return "triggers.MANUAL";
+		case "POLL":
+			return "triggers.POLL";
+		case "WEBHOOK":
+			return "triggers.WEBHOOK";
+		default:
+			return unlabelledTrigger(known);
+	}
+}
+
+/** Compile-time exhaustiveness for `triggerLabelKey`; at run time, the generic label. */
+function unlabelledTrigger(_trigger: never): "triggers.OTHER" {
+	return "triggers.OTHER";
 }
 
 function orpcErrorCode(error: unknown): string | undefined {

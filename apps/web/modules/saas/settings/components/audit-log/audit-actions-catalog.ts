@@ -768,7 +768,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey:
 			"settings.auditLog.actions.project.instructions.repository_sync_started",
 		description:
-			'Asked Fabric to read the coding instructions from the configured repository now. Written only when a run actually started; a request made while one was already running is refused and writes nothing. `metadata.trigger` is "MANUAL".',
+			'A member pressed "Sync now" and a repository sync run started. Written only when a run actually started; a request made while one was already running is refused and writes nothing. `metadata.trigger` is always "MANUAL": automatic runs, started by the scheduled check or a GitHub push, write no start row and are recorded by their completion.',
 	},
 	{
 		key: "project.instructions.repository_sync_completed",
@@ -776,7 +776,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey:
 			"settings.auditLog.actions.project.instructions.repository_sync_completed",
 		description:
-			"A repository sync run finished, attributed to the member it acted as. `metadata.status` is the outcome (published, unchanged, not published, rejected, failed or skipped), with `metadata.error` and `metadata.note` naming why when it did not publish. `metadata.commitSha` is the commit it read and `metadata.snapshotId` the version it produced, if any. Written with warning severity when the run failed or its snapshot was rejected. Never a credential, file path or file content.",
+			'A repository sync run finished, attributed to the member it acted as: the requester for "Sync now", and for an automatic run the member who last configured the sync. `metadata.trigger` is "MANUAL" for "Sync now", "POLL" for the scheduled check (including a check that paused the sync because the branch was deleted or the member lost permission) and "WEBHOOK" for a GitHub push. `metadata.status` is the outcome (published, unchanged, not published, rejected, failed or skipped), with `metadata.error` and `metadata.note` naming why when it did not publish. `metadata.commitSha` is the commit it read and `metadata.snapshotId` the version it produced, if any. Written with warning severity when the run failed or its snapshot was rejected. Never a credential, file path or file content.',
 	},
 	{
 		key: "project.instructions.repository_sync_disabled",

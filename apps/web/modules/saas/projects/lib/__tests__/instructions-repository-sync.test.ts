@@ -2,8 +2,10 @@ import { SNAPSHOT_LIMITS } from "@repo/instructions";
 import { describe, expect, it } from "vitest";
 import {
 	configureErrorMessage,
+	latestSyncRunChanged,
 	offersSyncFromRepository,
 	offersSyncNow,
+	REPOSITORY_SYNC_IDLE_POLL_MS,
 	type RepositorySyncState,
 	repositorySyncPollInterval,
 	type SyncRunView,
@@ -13,6 +15,7 @@ import {
 	syncOutcomeMessage,
 	syncRunEnded,
 	syncRunOutcome,
+	triggerLabelKey,
 } from "../instructions-repository-sync";
 
 const IDLE: RepositorySyncState = {
@@ -255,5 +258,104 @@ describe("Sync now results", () => {
 	it("shortens a commit to seven characters", () => {
 		expect(shortCommit("0123456789abcdef")).toBe("0123456");
 		expect(shortCommit(null)).toBeNull();
+	});
+});
+
+describe("automatic sync copy (§7.3, PR 2)", () => {
+	it.each([
+		["MANUAL", "triggers.MANUAL"],
+		["POLL", "triggers.POLL"],
+		["WEBHOOK", "triggers.WEBHOOK"],
+	] as const)("labels a %s run with %s", (trigger, key) => {
+		expect(triggerLabelKey(trigger)).toBe(key);
+	});
+
+	it("labels a trigger this build does not know with the generic label instead of throwing (Decision 47)", () => {
+		// A value a later migration might add to the enum.
+		expect(triggerLabelKey("FUTURE_AUTOMATIC_TRIGGER")).toBe(
+			"triggers.OTHER",
+		);
+	});
+
+	it("says a failed fetch is being retried only while automatic sync is on and not paused", () => {
+		const base = { ref: "main", rootPath: "agents" };
+		expect(
+			syncErrorMessage("CLONE_FAILED", {
+				...base,
+				automatic: true,
+				automaticPausedReason: null,
+			}),
+		).toEqual({ key: "errors.CLONE_FAILED_RETRYING" });
+		expect(
+			syncErrorMessage("CLONE_FAILED", {
+				...base,
+				automatic: false,
+				automaticPausedReason: null,
+			}),
+		).toEqual({ key: "errors.CLONE_FAILED" });
+		expect(
+			syncErrorMessage("CLONE_FAILED", {
+				...base,
+				automatic: true,
+				automaticPausedReason: "PERMISSION_REVOKED",
+			}),
+		).toEqual({ key: "errors.CLONE_FAILED" });
+		expect(syncErrorMessage("CLONE_FAILED", null)).toEqual({
+			key: "errors.CLONE_FAILED",
+		});
+	});
+});
+
+describe("idle discovery of automatic runs (Decision 39)", () => {
+	const automatic = { automatic: true, automaticPausedReason: null };
+
+	it("reads an idle automatic sync every 60 s, and an open run every 3 s", () => {
+		expect(REPOSITORY_SYNC_IDLE_POLL_MS).toBe(60_000);
+		expect(
+			repositorySyncPollInterval({
+				running: false,
+				configured: automatic,
+			}),
+		).toBe(60_000);
+		expect(
+			repositorySyncPollInterval({
+				running: true,
+				configured: automatic,
+			}),
+		).toBe(3_000);
+	});
+
+	it("does not poll an idle sync that is manual, paused or not configured", () => {
+		expect(
+			repositorySyncPollInterval({
+				running: false,
+				configured: { ...automatic, automatic: false },
+			}),
+		).toBe(false);
+		expect(
+			repositorySyncPollInterval({
+				running: false,
+				configured: {
+					...automatic,
+					automaticPausedReason: "REF_MISSING",
+				},
+			}),
+		).toBe(false);
+		expect(
+			repositorySyncPollInterval({ running: false, configured: null }),
+		).toBe(false);
+		expect(repositorySyncPollInterval(undefined)).toBe(false);
+	});
+
+	it("reports a new latest run only once both ids are known", () => {
+		expect(latestSyncRunChanged("sync_1:run_a", "sync_1:run_b")).toBe(true);
+		// The first run of a sync that had none.
+		expect(latestSyncRunChanged(null, "sync_1:run_a")).toBe(true);
+		expect(latestSyncRunChanged("sync_1:run_a", "sync_1:run_a")).toBe(
+			false,
+		);
+		// Not loaded yet: the first read is never a change.
+		expect(latestSyncRunChanged(undefined, "sync_1:run_a")).toBe(false);
+		expect(latestSyncRunChanged("sync_1:run_a", undefined)).toBe(false);
 	});
 });

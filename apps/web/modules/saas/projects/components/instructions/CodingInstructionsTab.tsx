@@ -10,6 +10,7 @@ import {
 	instructionsPollInterval,
 } from "../../lib/instructions-poll";
 import {
+	latestSyncRunChanged,
 	REPOSITORY_SYNC_POLL_MS,
 	type RepositorySyncControls,
 	type RepositorySyncState,
@@ -95,6 +96,10 @@ export function CodingInstructionsTab({
 	const syncRunningRef = useRef(false);
 	// The last `running` this tab saw, to notice a run closing.
 	const wasSyncRunningRef = useRef(false);
+	// The last latest-run id this tab saw, to notice a run that started and
+	// finished between two idle reads (Decision 39). `undefined` until the
+	// sync state first loads.
+	const lastSyncRunIdRef = useRef<string | null | undefined>(undefined);
 
 	/**
 	 * Poll while validation is running, and then while auto-publication is
@@ -155,7 +160,9 @@ export function CodingInstructionsTab({
 		});
 	const repositorySync = useQuery({
 		...syncQuery,
-		// Every 3 s while a run is open, and not at all otherwise (§7.1).
+		// Every 3 s while a run is open (§7.1); every 60 s while automatic
+		// sync is on and not paused, to find runs the scheduled check or a
+		// push started (Decision 39); not at all otherwise.
 		refetchInterval: (query) =>
 			repositorySyncPollInterval(
 				query.state.data as RepositorySyncState | undefined,
@@ -164,6 +171,9 @@ export function CodingInstructionsTab({
 	const syncState = repositorySync.data as RepositorySyncState | undefined;
 	const syncRunning = syncState?.running ?? false;
 	syncRunningRef.current = syncRunning;
+	const latestSyncRunId = syncState
+		? (syncState.latestRun?.id ?? null)
+		: undefined;
 	const syncNow = useMutation(
 		orpc.projects.instructions.repositorySync.syncNow.mutationOptions({
 			onSuccess: (result) => {
@@ -217,10 +227,15 @@ export function CodingInstructionsTab({
 	}, [newestId, newestStatus, projectId, queryClient]);
 
 	useEffect(() => {
-		// A run closed. Whatever it produced (a new version, a rejected one,
-		// or nothing) is readable now, so read it rather than wait on a poll
-		// that has just been switched off.
-		if (syncRunEnded(wasSyncRunningRef.current, syncRunning)) {
+		// A run closed, or a new latest run appeared between two idle reads:
+		// a run the scheduled check or a push started and finished unseen, or
+		// a failure the check recorded. Whatever it produced (a new version, a
+		// rejected one, or nothing) is readable now, so read it rather than
+		// wait on a poll that is off or a minute away.
+		if (
+			syncRunEnded(wasSyncRunningRef.current, syncRunning) ||
+			latestSyncRunChanged(lastSyncRunIdRef.current, latestSyncRunId)
+		) {
 			queryClient.invalidateQueries({
 				queryKey: orpc.projects.instructions.list.queryOptions({
 					input: { projectId },
@@ -241,25 +256,32 @@ export function CodingInstructionsTab({
 			});
 		}
 		wasSyncRunningRef.current = syncRunning;
-	}, [syncRunning, projectId, queryClient]);
+		if (latestSyncRunId !== undefined) {
+			lastSyncRunIdRef.current = latestSyncRunId;
+		}
+	}, [syncRunning, latestSyncRunId, projectId, queryClient]);
 
-	const invalidate = () => {
-		queryClient.invalidateQueries({
-			queryKey: orpc.projects.instructions.list.queryOptions({
-				input: { projectId },
-			}).queryKey,
-		});
-		queryClient.invalidateQueries({
-			queryKey: orpc.projects.instructions.getPublished.queryOptions({
-				input: { projectId },
-			}).queryKey,
-		});
-		queryClient.invalidateQueries({
-			queryKey: orpc.projects.instructions.proposals.list.queryOptions({
-				input: { projectId },
-			}).queryKey,
-		});
-	};
+	// Resolves once the three re-reads settle. The upload dialog and the
+	// published view ignore the promise; `onChanged` below waits for it.
+	const invalidate = () =>
+		Promise.all([
+			queryClient.invalidateQueries({
+				queryKey: orpc.projects.instructions.list.queryOptions({
+					input: { projectId },
+				}).queryKey,
+			}),
+			queryClient.invalidateQueries({
+				queryKey: orpc.projects.instructions.getPublished.queryOptions({
+					input: { projectId },
+				}).queryKey,
+			}),
+			queryClient.invalidateQueries({
+				queryKey:
+					orpc.projects.instructions.proposals.list.queryOptions({
+						input: { projectId },
+					}).queryKey,
+			}),
+		]);
 
 	const syncControls: RepositorySyncControls | undefined = syncState
 		? {
@@ -267,21 +289,26 @@ export function CodingInstructionsTab({
 				onConfigure: () => setConfigureOpen(true),
 				onSyncNow: () => syncNow.mutate({ projectId }),
 				syncNowPending: syncNow.isPending,
-				onChanged: () => {
-					queryClient.invalidateQueries({
-						queryKey: syncQuery.queryKey,
-					});
-					// The mode flips with a configuration change, and
-					// `repositoryBacked` is read from the settings.
-					queryClient.invalidateQueries({
-						queryKey:
-							orpc.projects.instructions.getSettings.queryOptions(
-								{
-									input: { projectId },
-								},
-							).queryKey,
-					});
-					invalidate();
+				// Resolves only once every re-read has settled, so the
+				// settings section stays busy until the new state is on
+				// screen (Decision 53).
+				onChanged: async () => {
+					await Promise.all([
+						queryClient.invalidateQueries({
+							queryKey: syncQuery.queryKey,
+						}),
+						// The mode flips with a configuration change, and
+						// `repositoryBacked` is read from the settings.
+						queryClient.invalidateQueries({
+							queryKey:
+								orpc.projects.instructions.getSettings.queryOptions(
+									{
+										input: { projectId },
+									},
+								).queryKey,
+						}),
+						invalidate(),
+					]);
 				},
 			}
 		: undefined;

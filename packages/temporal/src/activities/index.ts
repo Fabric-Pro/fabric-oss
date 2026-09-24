@@ -1104,6 +1104,13 @@ export {
 } from "./project-deletion";
 export * from "./project-document-generation";
 export * from "./project-instructions";
+// Automatic repository sync poll (spec §6.1, §8.2). Named, so a future
+// export of that module cannot become a schedulable activity by accident.
+export {
+	checkInstructionSyncRemoteHead,
+	claimDueInstructionSyncChecks,
+	sweepInstructionSyncTempDirs,
+} from "./project-instruction-repository-poll";
 // Coding Instructions repository sync: begin, acquire, settle, record. The
 // module exports nothing else, so `export *` registers exactly these four.
 export * from "./project-instruction-repository-sync";

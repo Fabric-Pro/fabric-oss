@@ -317,6 +317,27 @@ export const PROJECT_INSTRUCTION_REAPER_WORKFLOW_NAME =
 // shares the `fabric-worker` queue.
 export const PROJECT_INSTRUCTION_REAPER_CRON_SCHEDULE = "40 * * * *";
 
+// Exported for the same reason as the reaper's: the registration test asserts
+// the COMPLETE create() payload.
+export const PROJECT_INSTRUCTION_REPOSITORY_POLL_SCHEDULE_ID =
+	"project-instruction-repository-poll";
+export const PROJECT_INSTRUCTION_REPOSITORY_POLL_WORKFLOW_NAME =
+	"projectInstructionRepositoryPollWorkflow";
+// Every five minutes (spec §6.1). The 15-minute interval is carried per sync
+// by `nextCheckAt`, not by this cron; the shorter cron drains a backlog, and
+// a branch that receives no webhook has a pushed change picked up normally
+// 15 to 20 minutes after the push, longer while the poll works through a
+// backlog or a sync is backing off after failures (Decision 55).
+export const PROJECT_INSTRUCTION_REPOSITORY_POLL_CRON_SCHEDULE = "*/5 * * * *";
+// overlap SKIP is safe only because a run is bounded STRICTLY below the
+// interval between triggers, as PUBLISHING_RECONCILE_EXECUTION_TIMEOUT_MS is
+// for the reconcile schedule: a wedged run is terminated before the next
+// trigger instead of swallowing it. The workflow's own four-minute budget
+// ends a healthy run well before this (Decision 32). 270 s leaves 30 s, not
+// the reconcile's ten minutes, because the interval is five minutes. The
+// schedule test derives the interval from the cron and asserts both sides.
+export const PROJECT_INSTRUCTION_REPOSITORY_POLL_EXECUTION_TIMEOUT_MS = 270_000;
+
 const ATTACHMENT_TEMP_ORPHAN_SWEEP_SCHEDULE_ID = "attachment-temp-orphan-sweep";
 const ATTACHMENT_TEMP_ORPHAN_SWEEP_WORKFLOW_NAME =
 	"attachmentTempOrphanSweepWorkflow";
@@ -396,6 +417,7 @@ export async function registerSystemSchedules(): Promise<void> {
 		await registerMeetingArchiveRetentionSchedule(scheduleClient);
 		await registerBackgroundJobWatchdogSchedule(scheduleClient);
 		await registerProjectInstructionReaperSchedule(scheduleClient);
+		await registerProjectInstructionRepositoryPollSchedule(scheduleClient);
 		await registerAttachmentTempOrphanSweepSchedule(scheduleClient);
 		await registerAttachmentFinalOrphanSweepSchedule(scheduleClient);
 		await registerAttachmentRetentionPurgeSchedule(scheduleClient);
@@ -762,6 +784,63 @@ export async function registerProjectInstructionReaperSchedule(
 		if (error instanceof ScheduleAlreadyRunning) {
 			console.log(
 				`[Worker] Schedule "${PROJECT_INSTRUCTION_REAPER_SCHEDULE_ID}" already exists, skipping`,
+			);
+		} else {
+			throw error;
+		}
+	}
+}
+
+/**
+ * Register the Coding Instructions automatic-sync poll (spec §6.1, Fizzy #2540).
+ *
+ * On `TASK_QUEUE` (`fabric-worker`), like the reaper: the poll's activities
+ * inherit it, and the `project-instructions` queue's two slots stay reserved
+ * for uploads. `overlap: "SKIP"` is safe because the workflow keeps to its
+ * four-minute budget, the 270 s execution timeout terminates a run that does
+ * not before the next trigger, and a claimed row it never checks is a
+ * two-minute lease that comes due again. A terminated run's checks stop
+ * themselves at the budget's end (Decision 50). No arguments: the workflow
+ * serves every registered subject kind (Decision 52). The catchup window is one interval:
+ * after an outage one tick runs, not a backlog, because every missed tick
+ * would claim the same due rows.
+ */
+export async function registerProjectInstructionRepositoryPollSchedule(
+	scheduleClient: ScheduleClient,
+): Promise<void> {
+	try {
+		await scheduleClient.create({
+			scheduleId: PROJECT_INSTRUCTION_REPOSITORY_POLL_SCHEDULE_ID,
+			spec: {
+				cronExpressions: [
+					PROJECT_INSTRUCTION_REPOSITORY_POLL_CRON_SCHEDULE,
+				],
+			},
+			action: {
+				type: "startWorkflow",
+				workflowType: PROJECT_INSTRUCTION_REPOSITORY_POLL_WORKFLOW_NAME,
+				taskQueue: TASK_QUEUE,
+				args: [],
+				workflowExecutionTimeout:
+					PROJECT_INSTRUCTION_REPOSITORY_POLL_EXECUTION_TIMEOUT_MS,
+			},
+			policies: {
+				overlap: "SKIP",
+				catchupWindow: "5 minutes",
+			},
+			state: {
+				paused: false,
+				note: "Checks each automatic Coding Instructions repository sync, so a pushed change is picked up normally 15 to 20 minutes after a push (longer while the poll works through a backlog or a sync is backing off after failures); starts a sync run when its branch moved, and pauses a sync whose branch was deleted or whose delegate lost permission.",
+			},
+		});
+
+		console.log(
+			`[Worker] Schedule "${PROJECT_INSTRUCTION_REPOSITORY_POLL_SCHEDULE_ID}" registered (every 5 minutes)`,
+		);
+	} catch (error) {
+		if (error instanceof ScheduleAlreadyRunning) {
+			console.log(
+				`[Worker] Schedule "${PROJECT_INSTRUCTION_REPOSITORY_POLL_SCHEDULE_ID}" already exists, skipping`,
 			);
 		} else {
 			throw error;

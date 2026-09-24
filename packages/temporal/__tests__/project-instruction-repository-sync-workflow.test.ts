@@ -22,9 +22,11 @@ import {
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type {
 	AcquireTreeResult,
+	AutomaticInstructionSyncWorkflowInput,
 	AwaitSnapshotSettledResult,
 	BeginSyncRunInput,
 	BeginSyncRunResult,
+	InstructionSyncWorkflowInput,
 	RecordSyncRunInput,
 	RecordSyncRunResult,
 	SyncRunContext,
@@ -140,6 +142,7 @@ async function run(
 	sync: ReturnType<typeof syncMocks>,
 	child: ReturnType<typeof childMocks>,
 	prelude?: (taskQueue: string) => Promise<void>,
+	input: InstructionSyncWorkflowInput = INPUT,
 ) {
 	const taskQueue = `instruction-sync-${seq++}`;
 	const workflowWorker = await Worker.create({
@@ -159,7 +162,7 @@ async function run(
 			(async () => {
 				await prelude?.(taskQueue);
 				const handle = await env.client.workflow.start(WORKFLOW_NAME, {
-					args: [INPUT],
+					args: [input],
 					taskQueue,
 					workflowId: `${taskQueue}-wf`,
 				});
@@ -739,6 +742,75 @@ describe("projectInstructionRepositorySyncWorkflow", () => {
 		expect(recorded(sync)).toMatchObject({
 			projectId: "proj_1",
 			organizationId: "org_1",
+			workflowRunId: [...runIds][0],
+			context: null,
+			error: null,
+		});
+	}, 120_000);
+
+	// Decision 44 (PR 2): an automatic start passes the project, the
+	// organization, the trigger and the row it was decided on (Decision 56),
+	// and no run id. The workflow hands `begin` that input whole plus its own
+	// run id, and puts the run id into the state `record` rebuilds the run
+	// key from, for every trigger, exactly as for a manual run.
+	it.each(["POLL", "WEBHOOK"] as const)(
+		"hands begin the start's whole input with its own run id, and record the same run id, for a %s start (Decisions 44 and 56)",
+		async (trigger) => {
+			// Exactly what the automatic starter sends (Decisions 47 and 56).
+			const input: AutomaticInstructionSyncWorkflowInput = {
+				projectId: "proj_1",
+				organizationId: "org_1",
+				trigger,
+				expected: { syncId: "sync_1", generation: 3 },
+			};
+			const sync = syncMocks(`snap_${trigger.toLowerCase()}`);
+
+			const { runId } = await run(sync, childMocks(), undefined, input);
+
+			expect(sync.beginInstructionRepositorySyncRun).toHaveBeenCalledWith(
+				{
+					...input,
+					workflowRunId: runId,
+				},
+			);
+			expect(recorded(sync)).toMatchObject({
+				trigger,
+				workflowRunId: runId,
+			});
+		},
+		60_000,
+	);
+
+	it("records a POLL run with its run id when begin fails after inserting the receipt (Decision 44)", async () => {
+		const runIds = new Set<string>();
+		const input: AutomaticInstructionSyncWorkflowInput = {
+			projectId: "proj_1",
+			organizationId: "org_1",
+			trigger: "POLL",
+			expected: { syncId: "sync_1", generation: 3 },
+		};
+		const sync = syncMocks("snap_poll_begin_exhausted", {
+			beginInstructionRepositorySyncRun: vi.fn(
+				async (begin: BeginSyncRunInput) => {
+					runIds.add(begin.workflowRunId);
+					throw new Error("connection terminated");
+				},
+			),
+		});
+
+		const failure = await run(sync, childMocks(), undefined, input).then(
+			() => {
+				throw new Error(
+					"expected the workflow to fail, but it completed",
+				);
+			},
+			(error: unknown) => error,
+		);
+
+		expect(failure).toBeInstanceOf(WorkflowFailedError);
+		expect(runIds.size).toBe(1);
+		expect(recorded(sync)).toMatchObject({
+			trigger: "POLL",
 			workflowRunId: [...runIds][0],
 			context: null,
 			error: null,

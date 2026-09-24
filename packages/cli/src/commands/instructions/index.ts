@@ -34,7 +34,11 @@ import {
 import { getApiKey, getConfigPath } from "../../lib/config.js";
 import { applyPlan } from "../../lib/instructions/apply.js";
 import { extractBundle, fetchBundle } from "../../lib/instructions/bundle.js";
-import { formatDoctorText, runDoctor } from "../../lib/instructions/doctor.js";
+import {
+	buildFabricCommand,
+	formatDoctorText,
+	runDoctor,
+} from "../../lib/instructions/doctor.js";
 import {
 	assertKeyStaysOutside,
 	buildHookCommand,
@@ -63,9 +67,12 @@ import {
 } from "../../lib/instructions/manifest.js";
 import {
 	computeSyncPlan,
+	describeLedgerDrift,
+	findLedgerDrift,
+	type LedgerDrift,
 	nextLock,
+	reconcileKeptInLock,
 	type SyncPlan,
-	verifyLedger,
 } from "../../lib/instructions/plan.js";
 import {
 	computePushPlan,
@@ -205,13 +212,17 @@ export function buildInstructionsCommand(): Command {
 		.option("--org <slug>", "Organization context")
 		.option("--dry-run", "Print the plan and write nothing")
 		.option(
+			"--repair",
+			"Replace local edits to synced files with the published version; without it, sync keeps them",
+		)
+		.option(
 			"--hook",
 			"Session-hook mode: plain text, never fails, never blocks a session",
 		)
 		.option("--format <format>", "Output format: text|json")
 		.action(async function (
 			this: Command,
-			opts: CommonOptions & { dryRun?: boolean },
+			opts: CommonOptions & { dryRun?: boolean; repair?: boolean },
 		) {
 			await run(opts, "sync", () => runSync(opts, outputFormatFor(this)));
 		});
@@ -572,8 +583,10 @@ async function runCheck(
 	// `--verify` it also hashes every file the lock names, which is what
 	// answers "is my checkout still what was published" as opposed to "has
 	// the published version moved". `sync` always does this.
-	const drifted =
-		opts.verify && lock !== null ? await verifyLedger({ root, lock }) : [];
+	const drift =
+		opts.verify && lock !== null
+			? await findLedgerDrift({ root, lock })
+			: [];
 
 	if (format === "json") {
 		printOutput(
@@ -583,7 +596,11 @@ async function runCheck(
 				synced: lock !== null,
 				localDigest: lock?.digest ?? null,
 				verified: Boolean(opts.verify),
-				drifted,
+				drifted: drift.map(describeLedgerDrift),
+				// Spec §6.4: the edits an earlier sync saw and kept.
+				keptEdited: drift
+					.filter((entry) => entry.reason === "edited" && entry.kept)
+					.map((entry) => entry.path),
 				...published,
 			},
 			{ format: "json" },
@@ -597,7 +614,7 @@ async function runCheck(
 	// `--verify` promises to report local drift and three of those branches
 	// used to return before saying a word about it.
 	if (opts.verify) {
-		reportDrift(opts, destination, drifted);
+		reportDrift(opts, destination, drift);
 	}
 }
 
@@ -659,17 +676,27 @@ function reportPublishedState(
 function reportDrift(
 	opts: CommonOptions,
 	destination: string,
-	drifted: string[],
+	drift: LedgerDrift[],
 ): void {
-	if (drifted.length === 0) {
+	if (drift.length === 0) {
 		line(`Every file in ${destination} matches the lock.`);
 		return;
 	}
-	line(`${drifted.length} local file(s) no longer match the lock:`);
-	listPaths("drifted", drifted);
-	line(
-		`Run \`fabric instructions sync --project ${opts.project}\` to put them back.`,
-	);
+	line(`${drift.length} local file(s) no longer match the lock:`);
+	listPaths("drifted", drift.map(describeLedgerDrift));
+	// Spec §6.4: `sync` puts back what is missing or chmod-ed, and keeps an
+	// edit unless it is given `--repair`.
+	const edits = drift.filter((entry) => entry.reason === "edited").length;
+	if (edits < drift.length) {
+		line(
+			`Run \`fabric instructions sync --project ${opts.project}\` to put ${edits === 0 ? "them" : "the others"} back.`,
+		);
+	}
+	if (edits > 0) {
+		line(
+			`Sync keeps local edits. Run ${repairInstruction(opts)} to replace them with the published version.`,
+		);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -733,15 +760,23 @@ async function runDoctorCommand(
 // ---------------------------------------------------------------------------
 
 async function runSync(
-	opts: CommonOptions & { dryRun?: boolean },
+	opts: CommonOptions & { dryRun?: boolean; repair?: boolean },
 	format: OutputFormat,
 ): Promise<void> {
 	const result = await syncOnce(opts);
 	if (format === "json") {
 		printOutput(result, { format: "json" });
-		return;
+	} else {
+		reportSync(result, opts);
 	}
-	reportSync(result, opts);
+	// Spec §6.4: a session start must not bury the one thing the developer
+	// needs to know, that their edits were kept rather than replaced. One
+	// line on stderr, the channel the hook boundary already uses.
+	if (opts.hook && result.keptEdited.length > 0) {
+		process.stderr.write(
+			`fabric: ${result.keptEdited.length} local edit(s) kept; run ${repairInstruction(opts)} to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.\n`,
+		);
+	}
 }
 
 interface SyncOutcome {
@@ -769,6 +804,11 @@ interface SyncOutcome {
 	 * repaired local drift rather than applying a new version.
 	 */
 	drifted: string[];
+	/**
+	 * Still-published paths whose local edits this run left in place (spec
+	 * §6.4). Always empty under `--repair`, which reports them as `replaced`.
+	 */
+	keptEdited: string[];
 	verified: number;
 	lockPath: string;
 }
@@ -792,19 +832,28 @@ function emptyOutcome(
 		keptModified: [],
 		keptRenamed: [],
 		drifted: [],
+		keptEdited: [],
 		verified: 0,
 		lockPath: lockPath(destination),
 	};
 }
 
 async function syncOnce(
-	opts: CommonOptions & { dryRun?: boolean; rejectRepository?: boolean },
+	opts: CommonOptions & {
+		dryRun?: boolean;
+		repair?: boolean;
+		rejectRepository?: boolean;
+	},
 ): Promise<SyncOutcome> {
 	// Canonical from here on: every write resolves against this, so a
 	// symlinked `--dest` (or `/tmp` on macOS) is decided once rather than at
 	// each write.
 	const root = await resolveDestinationRoot(destinationOf(opts));
 	const outcome = emptyOutcome(opts, root);
+	// Spec §6.4: a local edit to a synced file is the developer's, and only
+	// `--repair` replaces it. `init`'s first sync keeps too: it never passes
+	// `repair`.
+	const keepLocalEdits = !opts.repair;
 
 	const lock = await readLockForProject(root, opts.project);
 	const client = instructionsClient(opts, SYNC_TIMEOUT_MS);
@@ -835,13 +884,34 @@ async function syncOnce(
 		// tree reported success indefinitely. The ledger is the local half of
 		// the question, and hashing it is the price of a command that applies
 		// things.
-		const drifted = lock === null ? [] : await verifyLedger({ root, lock });
-		if (drifted.length === 0) {
+		const drift =
+			lock === null ? [] : await findLedgerDrift({ root, lock });
+		const edits = drift.filter((entry) => entry.reason === "edited");
+		// Spec §6.4: without `--repair` an edit is kept, so a tree whose only
+		// differences are edits needs no manifest and no download. Recording
+		// the keep in the lock is what lets `check --verify` and doctor say so.
+		if (
+			drift.length === 0 ||
+			(keepLocalEdits && edits.length === drift.length)
+		) {
 			outcome.unchanged = true;
+			outcome.keptEdited = edits.map((entry) => entry.path);
+			if (lock !== null && !opts.dryRun) {
+				// Decision 41: mark what is kept now, and drop a marker whose
+				// file was put back by hand, so the lock says what is true. A
+				// run that finds the same edits again writes nothing.
+				const reconciled = reconcileKeptInLock(
+					lock,
+					outcome.keptEdited,
+				);
+				if (reconciled.changed) {
+					await writeLock(root, reconciled.lock);
+				}
+			}
 			return outcome;
 		}
 
-		outcome.drifted = drifted;
+		outcome.drifted = drift.map(describeLedgerDrift);
 		// The first call answered with a delta and therefore carries no
 		// manifest. Ask again without a base digest: the plan needs the whole
 		// published list to put the tree back.
@@ -866,7 +936,10 @@ async function syncOnce(
 		snapshot: published.snapshot,
 	});
 
-	const plan = await computeSyncPlan({ destination: root, manifest, lock });
+	const plan = await computeSyncPlan(
+		{ destination: root, manifest, lock },
+		{ keepLocalEdits },
+	);
 	fillPlanPaths(outcome, plan);
 
 	if (opts.dryRun) {
@@ -909,11 +982,21 @@ async function syncOnce(
 		);
 	}
 
-	const applied = await applyPlan({ root, plan, contents });
+	const applied = await applyPlan({ root, plan, contents, keepLocalEdits });
 	// What actually happened, not what was planned: a delete whose file was
 	// edited between planning and the unlink is reported as kept, because that
-	// is what it is.
+	// is what it is. So is a write whose file was saved after planning
+	// (Decision 37): it is a kept edit, not an add or an update.
 	outcome.removed = applied.deleted;
+	if (applied.keptEdited.length > 0) {
+		const late = new Set(applied.keptEdited);
+		outcome.added = outcome.added.filter((p) => !late.has(p));
+		outcome.updated = outcome.updated.filter((p) => !late.has(p));
+		outcome.keptEdited = [
+			...outcome.keptEdited,
+			...applied.keptEdited,
+		].sort();
+	}
 	outcome.keptModified = [
 		...outcome.keptModified,
 		...applied.keptModified,
@@ -930,6 +1013,9 @@ async function syncOnce(
 			digest: published.snapshot.digest,
 		},
 		manifest,
+		// Published hash plus `kept: true`: `push` diffs the edit against the
+		// version everyone else has, and the next run still knows it was kept.
+		kept: outcome.keptEdited,
 	});
 	await writeLock(root, lockToWrite);
 
@@ -966,6 +1052,7 @@ function fillPlanPaths(outcome: SyncOutcome, plan: SyncPlan): void {
 	outcome.removed = plan.deletes.map((entry) => entry.path);
 	outcome.keptModified = plan.keptModified.map((entry) => entry.path);
 	outcome.keptRenamed = plan.keptRenamed.map((entry) => entry.path);
+	outcome.keptEdited = plan.keptEdited.map((entry) => entry.path);
 	outcome.verified = plan.verified.length;
 }
 
@@ -977,6 +1064,7 @@ function reportSync(
 		line(
 			`Coding instructions are up to date (version ${outcome.version}).`,
 		);
+		reportKeptEdits(outcome, opts);
 		return;
 	}
 
@@ -1008,10 +1096,53 @@ function reportSync(
 	if (
 		total === 0 &&
 		outcome.keptModified.length === 0 &&
-		outcome.keptRenamed.length === 0
+		outcome.keptRenamed.length === 0 &&
+		outcome.keptEdited.length === 0
 	) {
 		line(`Everything in ${outcome.destination} already matched.`);
 	}
+	reportKeptEdits(outcome, opts);
+}
+
+/**
+ * Spec §6.4: what was kept, the command that replaces it, and where notes
+ * meant only for this machine belong.
+ */
+function reportKeptEdits(outcome: SyncOutcome, opts: CommonOptions): void {
+	if (outcome.keptEdited.length === 0) {
+		return;
+	}
+	listPaths("kept local edits", outcome.keptEdited);
+	line(
+		`Sync keeps local edits to synced files. Run ${repairInstruction(opts)} to replace them with the published version. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json instead.`,
+	);
+}
+
+/**
+ * The command that replaces kept edits. It carries the `--org` and the
+ * resolved `--dest` this run was given, so a pasted copy acts on the same
+ * project, context and checkout: the rule doctor's generated fixes follow,
+ * through the same guarded builder (Decision 42). `undefined` when a word
+ * cannot be pasted safely, such as a `--dest` holding a newline.
+ */
+function repairCommand(opts: CommonOptions): string | undefined {
+	return buildFabricCommand([
+		"instructions",
+		"sync",
+		"--project",
+		opts.project,
+		...(opts.org !== undefined ? ["--org", opts.org] : []),
+		...(opts.dest !== undefined ? ["--dest", destinationOf(opts)] : []),
+		"--repair",
+	]);
+}
+
+/** The repair command in backticks, or what to run when none can be printed. */
+function repairInstruction(opts: CommonOptions): string {
+	const command = repairCommand(opts);
+	return command !== undefined
+		? `\`${command}\``
+		: "`fabric instructions sync --repair` with this run's --project and --dest";
 }
 
 // ---------------------------------------------------------------------------

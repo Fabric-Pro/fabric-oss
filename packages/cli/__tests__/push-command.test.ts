@@ -23,6 +23,7 @@ import { Command } from "commander";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildInstructionsCommand } from "../src/commands/instructions/index.js";
 import type { InstructionsLock } from "../src/lib/instructions/lock.js";
+import { nextLock } from "../src/lib/instructions/plan.js";
 
 const OUTSIDE_CONFIG_PATH = path.join(tmpdir(), "fabricai", "config.json");
 
@@ -778,6 +779,68 @@ describe("the request", () => {
 		expect(result.stdout).toContain("already been approved");
 		expect(result.stdout).toContain("fabric instructions sync");
 		expect(result.stdout).not.toContain("pending review");
+	});
+
+	/**
+	 * Review Focus 4, Decision 38. After a sync kept an edit across a
+	 * republish, the lock is version 2, names the NEW snapshot and carries the
+	 * published hash with `kept: true`. Push reads it and offers the kept note
+	 * as a change against the version everyone else now has.
+	 */
+	it("pushes a kept edit against the version the keeping sync recorded", async () => {
+		mocks.submitChange.mockResolvedValue(
+			accepted({ baseSnapshotId: "snap-8", baseVersion: 8 }),
+		);
+		const dest = await mkdtemp(path.join(tmpdir(), "fabric-push-cmd-"));
+		await writeFile(path.join(dest, "AGENTS.md"), "my note\n");
+		const published = publishedFor(
+			{ "AGENTS.md": "published v8\n" },
+			{
+				snapshot: {
+					id: "snap-8",
+					version: 8,
+					digest: "e".repeat(64),
+					fileCount: 1,
+					publishedAt: "2026-09-18T09:00:00.000Z",
+				},
+			},
+		);
+		const lock = nextLock({
+			projectId: "proj-1",
+			snapshot: { id: "snap-8", version: 8, digest: "e".repeat(64) },
+			manifest: published.manifest as Parameters<
+				typeof nextLock
+			>[0]["manifest"],
+			kept: ["AGENTS.md"],
+		});
+		expect(lock.version).toBe(2);
+		await mkdir(path.join(dest, ".fabric"), { recursive: true });
+		await writeFile(
+			path.join(dest, ".fabric", "instructions.lock"),
+			`${JSON.stringify(lock, null, 2)}\n`,
+		);
+		mocks.getPublished.mockResolvedValue(published);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		const [, baseSnapshotId, changes] =
+			mocks.submitChange.mock.calls[0] ?? [];
+		expect(baseSnapshotId).toBe("snap-8");
+		expect(changes).toEqual([
+			{
+				op: "put",
+				path: "AGENTS.md",
+				content: "my note\n",
+				encoding: "utf8",
+			},
+		]);
 	});
 });
 

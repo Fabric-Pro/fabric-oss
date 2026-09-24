@@ -154,6 +154,7 @@ import {
 	recordInstructionRepositorySyncRun,
 } from "../src/activities/project-instruction-repository-sync";
 import type {
+	InstructionSyncTrigger,
 	RecordSyncRunInput,
 	SyncRunContext,
 } from "../src/lib/instruction-sync-types";
@@ -367,6 +368,66 @@ describe("beginInstructionRepositorySyncRun (spec §5.3.1)", () => {
 		});
 	});
 
+	it("skips POLL and WEBHOOK when automatic is off, but not a trigger outside AUTOMATIC_INSTRUCTION_SYNC_TRIGGERS (Decision 47)", async () => {
+		m.getInstructionRepositorySyncForRun.mockResolvedValue({
+			...row,
+			automatic: false,
+		});
+		for (const trigger of ["POLL", "WEBHOOK"] as const) {
+			expect(
+				await beginInstructionRepositorySyncRun({
+					...input,
+					trigger,
+					requesterUserId: undefined,
+				}),
+			).toMatchObject({ ok: false, skipped: "automatic_disabled" });
+		}
+
+		const future = "FUTURE_TRIGGER" as unknown as InstructionSyncTrigger;
+		expect(
+			await beginInstructionRepositorySyncRun({
+				...input,
+				trigger: future,
+				requesterUserId: undefined,
+			}),
+		).toMatchObject({
+			ok: true,
+			context: { actingUserId: "delegate_1", trigger: future },
+		});
+	});
+
+	it("checks automatic eligibility before `expected`, so a stale generation on a now-disabled sync is skipped, not CONFIGURATION_CHANGED", async () => {
+		const stale = { syncId: "sync_1", generation: 2 };
+		m.getInstructionRepositorySyncForRun.mockResolvedValueOnce({
+			...row,
+			automatic: false,
+		});
+		expect(
+			await beginInstructionRepositorySyncRun({
+				...input,
+				trigger: "POLL",
+				requesterUserId: undefined,
+				expected: stale,
+			}),
+		).toMatchObject({ ok: false, skipped: "automatic_disabled" });
+
+		// Eligibility does not swallow a real re-configure: a still-automatic
+		// sync with a stale `expected` generation is refused as
+		// CONFIGURATION_CHANGED, same as before the reorder.
+		m.getInstructionRepositorySyncForRun.mockResolvedValueOnce({
+			...row,
+			automatic: true,
+		});
+		expect(
+			await beginInstructionRepositorySyncRun({
+				...input,
+				trigger: "POLL",
+				requesterUserId: undefined,
+				expected: stale,
+			}),
+		).toMatchObject({ ok: false, error: "CONFIGURATION_CHANGED" });
+	});
+
 	it("reports an inactive integration with context, after inserting the run row (so the tab can show it)", async () => {
 		m.getInstructionRepositorySyncForRun.mockResolvedValue({
 			...row,
@@ -438,6 +499,71 @@ describe("beginInstructionRepositorySyncRun (spec §5.3.1)", () => {
 			context: { generation: 3 },
 		});
 		expect(m.canCreateProjectInstructions).not.toHaveBeenCalled();
+	});
+
+	describe("the row an automatic start was decided on (Decision 56)", () => {
+		const automatic = {
+			...input,
+			trigger: "POLL" as const,
+			requesterUserId: undefined,
+		};
+
+		it.each([
+			[
+				"another sync id (the configuration was replaced)",
+				{ syncId: "sync_0", generation: 3 },
+			],
+			[
+				"another generation (the configuration was changed)",
+				{ syncId: "sync_1", generation: 2 },
+			],
+		])(
+			"refuses a run whose row now has %s, after inserting its receipt",
+			async (_label, expected) => {
+				expect(
+					await beginInstructionRepositorySyncRun({
+						...automatic,
+						expected,
+					}),
+				).toEqual({
+					ok: false,
+					error: "CONFIGURATION_CHANGED",
+					context: {
+						...CONTEXT,
+						actingUserId: "delegate_1",
+						trigger: "POLL",
+					},
+				});
+				// The receipt went in first, so the refusal has a run row.
+				expect(
+					m.insertInstructionRepositorySyncRun,
+				).toHaveBeenCalledTimes(1);
+				expect(m.canCreateProjectInstructions).not.toHaveBeenCalled();
+			},
+		);
+
+		it("begins a run whose row still matches", async () => {
+			expect(
+				await beginInstructionRepositorySyncRun({
+					...automatic,
+					expected: { syncId: "sync_1", generation: 3 },
+				}),
+			).toMatchObject({
+				ok: true,
+				context: { syncId: "sync_1", generation: 3, trigger: "POLL" },
+			});
+		});
+
+		it("begins a run that carries no expectation, as a manual one never does", async () => {
+			expect(
+				await beginInstructionRepositorySyncRun(automatic),
+			).toMatchObject({ ok: true });
+			expect(
+				await beginInstructionRepositorySyncRun(input),
+			).toMatchObject({
+				ok: true,
+			});
+		});
 	});
 });
 

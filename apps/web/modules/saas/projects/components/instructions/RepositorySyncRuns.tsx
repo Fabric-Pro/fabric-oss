@@ -9,13 +9,14 @@ import {
 	shortCommit,
 	syncOutcomeMessage,
 	syncRunOutcome,
+	triggerLabelKey,
 } from "../../lib/instructions-repository-sync";
 
 /**
- * History's "Sync runs" list (design 2026-09-23 §7.3): time, outcome,
- * commit, version and the member each run acted as, newest first. Rendered
- * inside the History dialog, so it is queried only while History is open.
- * The trigger column arrives with automatic sync (PR 2).
+ * History's "Sync runs" list (design 2026-09-23 §7.3): time, trigger,
+ * outcome, commit, version and the member each run acted as, newest first.
+ * Rendered inside the History dialog, so it is queried only while History
+ * is open.
  */
 export function RepositorySyncRuns({
 	projectId,
@@ -54,6 +55,7 @@ export function RepositorySyncRuns({
 						const commit = shortCommit(run.commitSha);
 						const parts = [
 							formatRelativeTime(run.startedAt),
+							t(triggerLabelKey(run.trigger)),
 							t(message.key, message.values),
 						];
 						if (commit) {

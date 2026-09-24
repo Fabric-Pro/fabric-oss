@@ -563,6 +563,8 @@ export {
 } from "./project-deletion";
 export * from "./project-document-generation";
 export { projectInstructionReaperWorkflow } from "./project-instruction-reaper";
+// Coding Instructions automatic sync poll (spec §6.1). Named, like the sync.
+export { projectInstructionRepositoryPollWorkflow } from "./project-instruction-repository-poll";
 // Coding Instructions repository sync (design 2026-09-23 §5.2). Named, not
 // `export *`: only the workflow function belongs in the bundle's registry.
 export { projectInstructionRepositorySyncWorkflow } from "./project-instruction-repository-sync";

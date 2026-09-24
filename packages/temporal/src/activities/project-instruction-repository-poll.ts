@@ -1,0 +1,423 @@
+/**
+ * Automatic repository sync: the poll's activities (spec §6.1, §8.2). The
+ * activities barrel re-exports exactly the three functions below. Each one
+ * reaches a synced subject's table and workflow only through the subject's
+ * adapter (./lib/repository-sync-subjects.ts, Decision 46), resolved by the
+ * kind the claim carries; the git, temp-dir and registry helpers live in
+ * ./lib. The repository read itself (integration, token, ls-remote) is the
+ * same for every subject, because every subject follows a branch of a
+ * connected repository.
+ */
+import {
+	type ClaimedRepositorySyncRow,
+	computeSchedulingPatch,
+	db,
+	getProjectRepoIntegration,
+	type InstructionSyncPause,
+	type InstructionSyncSchedulingEffect,
+	type RepositorySyncFence,
+	type RepositorySyncSubjectKind,
+} from "@repo/database";
+import { shouldStartAutomaticSync } from "@repo/instructions";
+import { resolveFreshRepoToken } from "@repo/integrations";
+import { logger } from "@repo/logs";
+import type {
+	ClaimedInstructionSyncCheck,
+	InstructionSyncCheckInput,
+	InstructionSyncCheckOutcome,
+	InstructionSyncCheckResult,
+} from "../lib/instruction-sync-types";
+import {
+	buildGitEnv,
+	credentialFreeUrl,
+	GitCommandError,
+	gitUsernameFor,
+	LS_REMOTE_TIMEOUT_MS,
+	lsRemoteHead,
+	type RemoteHead,
+	redactSecrets,
+} from "./lib/instruction-sync-git";
+import type { RepositorySyncStartResult } from "./lib/instruction-sync-start";
+import {
+	createSyncRunDir,
+	removeSyncRunDir,
+	sweepStaleSyncRunDirs,
+} from "./lib/instruction-sync-temp";
+import { repositorySyncSubject } from "./lib/repository-sync-subjects";
+
+/** Spec §6.1: a claim leases the row for two minutes. */
+const CLAIM_LEASE_MS = 2 * 60 * 1000;
+/**
+ * After a start: the run's own completion writes the real outcome, so this
+ * is only the fallback clock (the same 15 minutes as `NEXT_CHECK_AFTER_MS`
+ * in `@repo/database`).
+ */
+const STARTED_RECHECK_MS = 15 * 60 * 1000;
+/**
+ * After `already_running` for a configuration nobody has evaluated yet (a
+ * re-configure during a run): the open run will land NOT_PUBLISHED and move
+ * nothing, so look again at the next tick rather than in 15 minutes
+ * (Decision 34).
+ */
+const UNEVALUATED_RECHECK_MS = 2 * 60 * 1000;
+/**
+ * A check stops this long before its lease or the poll's budget ends,
+ * whichever is first (Decision 50), so the one statement it has in flight
+ * lands inside both.
+ */
+const CHECK_DEADLINE_MARGIN_MS = 5_000;
+
+type WrittenEffect = Exclude<InstructionSyncSchedulingEffect, { kind: "none" }>;
+
+/** Spec §8.2: the poll's first step removes clone directories older than an hour. */
+export async function sweepInstructionSyncTempDirs(): Promise<{
+	removed: number;
+}> {
+	return sweepStaleSyncRunDirs();
+}
+
+/**
+ * Spec §6.1: lease up to `limit` of one subject's due rows, oldest due
+ * first. Cross-tenant; see the subject's `listDueAndClaim`. The lease is
+ * computed from this activity's clock, so every row of one claim carries
+ * the same `leaseUntil`; whether it still holds is judged by the database's
+ * clock (Decision 48).
+ */
+export async function claimDueInstructionSyncChecks(input: {
+	kind: RepositorySyncSubjectKind;
+	limit: number;
+}): Promise<ClaimedInstructionSyncCheck[]> {
+	const now = new Date();
+	const rows = await repositorySyncSubject(input.kind).listDueAndClaim(db, {
+		limit: input.limit,
+		leaseUntil: new Date(now.getTime() + CLAIM_LEASE_MS),
+		now,
+	});
+	// A Date does not survive a Temporal payload as a Date. The lease
+	// travels as its ISO string, which keeps the milliseconds the
+	// compare-and-set matches on (Decision 31), and the kind travels with
+	// it so the check resolves the same subject.
+	return rows.map((row) => ({
+		...row,
+		kind: input.kind,
+		leaseUntil: row.leaseUntil.toISOString(),
+	}));
+}
+
+/**
+ * Spec §6.1: one claimed row, in this order.
+ *
+ * 1. The lease is still this check's (Decision 31); otherwise `stale`,
+ *    before anything is read.
+ * 2. The delegate may still publish the subject (spec §8.5, Decision 33);
+ *    otherwise a FAILED / PERMISSION_DENIED receipt that pauses with
+ *    PERMISSION_REVOKED, and no repository access at all.
+ * 3. `ls-remote`, then the shared `shouldStartAutomaticSync`:
+ *    - evaluated or suppressed: the cursor effect, 15 minutes out;
+ *    - missing branch: a FAILED / REF_MISSING receipt that pauses the sync;
+ *    - anything transient: backoff (Decision 20);
+ *    - a moved head: start a POLL run FIRST, carrying the claimed row as
+ *      `expected` (Decision 56), then a conditional reschedule
+ *      (Decision 34).
+ *
+ * Every write goes through the subject and is fenced on the lease, so a
+ * check that outlived it writes nothing and reports `stale`. A thrown error
+ * is left to the lease.
+ *
+ * The check also keeps its own deadline (Decision 50). Temporal's timeouts
+ * make Temporal stop waiting for this activity; they do not stop its
+ * JavaScript, which keeps running on the worker until it returns. So before
+ * each stage that could have a side effect (the token, `ls-remote`, the
+ * start, each write) it requires `Date.now()` to be more than
+ * `CHECK_DEADLINE_MARGIN_MS` before its lease or the poll's budget ends,
+ * and returns `stale` with nothing done when it is not.
+ */
+export async function checkInstructionSyncRemoteHead(
+	input: InstructionSyncCheckInput,
+): Promise<InstructionSyncCheckResult> {
+	const subject = repositorySyncSubject(input.kind);
+	const row: ClaimedRepositorySyncRow = {
+		id: input.id,
+		projectId: input.projectId,
+		organizationId: input.organizationId,
+		userId: input.userId,
+		generation: input.generation,
+		repositoryIntegrationId: input.repositoryIntegrationId,
+		ref: input.ref,
+		lastEvaluatedCommitSha: input.lastEvaluatedCommitSha,
+		lastEvaluatedGeneration: input.lastEvaluatedGeneration,
+		suppressedCommitSha: input.suppressedCommitSha,
+		suppressedGeneration: input.suppressedGeneration,
+		failureCount: input.failureCount,
+		leaseUntil: new Date(input.leaseUntil),
+	};
+	const fence: RepositorySyncFence = {
+		id: row.id,
+		generation: row.generation,
+		leaseUntil: row.leaseUntil,
+	};
+	const stopAt =
+		Math.min(row.leaseUntil.getTime(), Date.parse(input.deadlineAt)) -
+		CHECK_DEADLINE_MARGIN_MS;
+	const inTime = (): boolean => Date.now() < stopAt;
+	const stale: InstructionSyncCheckResult = { outcome: "stale" };
+	// While the lease holds, the claimed failure count is the stored one:
+	// every writer of `failureCount` also moves the fence (Task 2).
+	const writeBack = (effect: WrittenEffect) =>
+		subject.writeBack(
+			db,
+			fence,
+			computeSchedulingPatch(effect, {
+				now: new Date(),
+				failureCount: row.failureCount,
+				generation: row.generation,
+			}),
+		);
+	const settle = async (
+		effect: WrittenEffect,
+		outcome: InstructionSyncCheckOutcome,
+	): Promise<InstructionSyncCheckResult> => {
+		if (!inTime()) {
+			return stale;
+		}
+		const { applied } = await writeBack(effect);
+		return { outcome: applied ? outcome : "stale" };
+	};
+	const recordFailure = async (
+		error: "REF_MISSING" | "PERMISSION_DENIED",
+		pause: InstructionSyncPause,
+		outcome: InstructionSyncCheckOutcome,
+	): Promise<InstructionSyncCheckResult> => {
+		if (!inTime()) {
+			return stale;
+		}
+		const { applied } = await db.$transaction((tx) =>
+			subject.recordCheckFailure(tx, {
+				row,
+				pollRunId: input.pollRunId,
+				error,
+				pause,
+			}),
+		);
+		return { outcome: applied ? outcome : "stale" };
+	};
+
+	// A check the task queue held past its deadline reads nothing at all.
+	if (!inTime() || !(await subject.leaseHeld(db, fence))) {
+		return stale;
+	}
+	if (!(await subject.checkPermission(row))) {
+		return recordFailure(
+			"PERMISSION_DENIED",
+			"PERMISSION_REVOKED",
+			"permission_revoked",
+		);
+	}
+
+	const head = await readRemoteHead(row, stopAt);
+	if (head.kind === "expired") {
+		return stale;
+	}
+	if (head.kind === "transient") {
+		return settle({ kind: "backoff" }, "transient");
+	}
+	if (head.kind === "missing") {
+		return recordFailure("REF_MISSING", "REF_MISSING", "ref_missing");
+	}
+
+	const decision = shouldStartAutomaticSync(
+		{
+			// The claim selected only automatic, unpaused rows, and the lease
+			// read above re-confirmed both; `begin` re-checks them when a
+			// started run actually begins.
+			automatic: true,
+			automaticPausedReason: null,
+			generation: row.generation,
+			lastEvaluatedCommitSha: row.lastEvaluatedCommitSha,
+			lastEvaluatedGeneration: row.lastEvaluatedGeneration,
+			suppressedCommitSha: row.suppressedCommitSha,
+			suppressedGeneration: row.suppressedGeneration,
+		},
+		head.sha,
+	);
+	if (!decision.start) {
+		if (decision.reason === "evaluated") {
+			return settle(
+				{ kind: "success", commitSha: head.sha },
+				"evaluated",
+			);
+		}
+		if (decision.reason === "suppressed") {
+			return settle(
+				{ kind: "suppress", commitSha: head.sha },
+				"suppressed",
+			);
+		}
+		return stale;
+	}
+
+	// The ls-remote took up to 30 s: start nothing for a row this check no
+	// longer holds, or has no time left for. A run that completes between
+	// this read and the start below is the one way a second run can follow
+	// the first (Decision 51); `expected` still refuses it if the row was
+	// re-configured meanwhile (Decision 56).
+	if (!(await subject.leaseHeld(db, fence)) || !inTime()) {
+		return stale;
+	}
+	let started: RepositorySyncStartResult;
+	try {
+		started = await subject.startRun(row, "POLL", {
+			expected: { syncId: row.id, generation: row.generation },
+		});
+	} catch (error) {
+		// The outcome is unknown: the server may have started the run before
+		// its answer was lost. Not retried and not backed off (Decision 51):
+		// the lease is left to expire, and the next claim finds the run open
+		// or its completion's cursor.
+		logger.warn(
+			{
+				event: "instructions.sync.poll_start_failed",
+				projectId: row.projectId,
+				errorClass: error instanceof Error ? error.name : typeof error,
+			},
+			"[InstructionSync] could not start an automatic sync; its lease will expire",
+		);
+		return stale;
+	}
+	// Conditional (Decision 34): a run that already finished moved
+	// `nextCheckAt` itself, and then this applies nothing, which is right. A
+	// crash before this line leaves the row to its lease; the next claim
+	// finds the run open or its completion's cursor. Past the deadline the
+	// reschedule is skipped for the same reason (Decision 50), and the start
+	// is still reported.
+	if (inTime()) {
+		await writeBack({
+			kind: "reschedule",
+			delayMs:
+				started.outcome === "already_running" &&
+				row.lastEvaluatedGeneration !== row.generation
+					? UNEVALUATED_RECHECK_MS
+					: STARTED_RECHECK_MS,
+		});
+	}
+	return { outcome: started.outcome };
+}
+
+/** `expired`: the check reached its deadline, so it did nothing (Decision 50). */
+type HeadRead = RemoteHead | { kind: "transient" } | { kind: "expired" };
+
+async function readRemoteHead(
+	row: ClaimedRepositorySyncRow,
+	stopAt: number,
+): Promise<HeadRead> {
+	const integration = await getProjectRepoIntegration(
+		row.repositoryIntegrationId,
+		row.projectId,
+	);
+	// PR 1's helper (Decision 45): origin and path only, userinfo stripped,
+	// and null for anything that is not HTTPS or carries a query or a
+	// fragment. `lsRemoteHead` re-checks the same at the git sink.
+	const url = integration
+		? credentialFreeUrl(integration.repositoryUrl)
+		: null;
+	if (!integration || integration.status !== "ACTIVE" || url === null) {
+		return { kind: "transient" };
+	}
+	// No credential is resolved for a check out of time.
+	if (Date.now() >= stopAt) {
+		return { kind: "expired" };
+	}
+	let token: string | null;
+	try {
+		({ token } = await resolveFreshRepoToken({
+			integrationId: row.repositoryIntegrationId,
+			projectId: row.projectId,
+			userId: row.userId,
+			organizationId: row.organizationId,
+		}));
+	} catch (error) {
+		logger.debug(
+			{
+				event: "instructions.sync.poll_token_failed",
+				projectId: row.projectId,
+				errorClass: error instanceof Error ? error.name : typeof error,
+			},
+			"[InstructionSync] could not resolve a repository token",
+		);
+		return { kind: "transient" };
+	}
+	// Token resolution can stall (a slow secret store, a refresh). A check
+	// released after its deadline runs no git.
+	if (Date.now() >= stopAt) {
+		return { kind: "expired" };
+	}
+	if (!token) {
+		return { kind: "transient" };
+	}
+	const home = await createSyncRunDir();
+	const deadline = deadlineSignal(stopAt);
+	try {
+		return await lsRemoteHead({
+			cwd: home,
+			url,
+			ref: row.ref,
+			timeoutMs: LS_REMOTE_TIMEOUT_MS,
+			signal: deadline.signal,
+			env: buildGitEnv({
+				home,
+				username: gitUsernameFor(integration.provider),
+				credential: token,
+				host: new URL(url).host,
+			}),
+		});
+	} catch (error) {
+		if (deadline.signal.aborted) {
+			return { kind: "expired" };
+		}
+		logGitFailure(error, [token]);
+		return { kind: "transient" };
+	} finally {
+		deadline.clear();
+		await removeSyncRunDir(home).catch(() => {});
+	}
+}
+
+/**
+ * An `AbortSignal` that fires at `stopAt` (Decision 50). Its reason is a
+ * `DOMException` named `TimeoutError`, which the git runner reports as a
+ * timeout (`instruction-sync-git.ts:156-160`); `lsRemoteHead` joins it with
+ * its own 30 s bound.
+ */
+function deadlineSignal(stopAt: number): {
+	signal: AbortSignal;
+	clear: () => void;
+} {
+	const controller = new AbortController();
+	const timer = setTimeout(
+		() =>
+			controller.abort(
+				new DOMException(
+					"The check reached its deadline",
+					"TimeoutError",
+				),
+			),
+		Math.max(0, stopAt - Date.now()),
+	);
+	return { signal: controller.signal, clear: () => clearTimeout(timer) };
+}
+
+/** Debug level only, after redaction (spec §8.3). */
+function logGitFailure(error: unknown, secrets: readonly string[]): void {
+	if (error instanceof GitCommandError) {
+		logger.debug(
+			{
+				event: "instructions.sync.poll_git_failed",
+				label: error.label,
+				kind: error.kind,
+				exitCode: error.exitCode,
+				stderr: redactSecrets(error.stderrTail, secrets),
+			},
+			"[InstructionSync] ls-remote failed",
+		);
+	}
+}

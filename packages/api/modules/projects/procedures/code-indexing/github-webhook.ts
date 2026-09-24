@@ -31,6 +31,7 @@ import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import { publicProcedure } from "../../../../orpc/procedures";
 import { codeIndexWorkflowId } from "../../lib/code-indexing-trigger";
+import { startInstructionSyncsForPush } from "../instructions/repository-sync/push-trigger";
 
 const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || "";
 
@@ -154,6 +155,8 @@ export async function handleGitHubPushWebhook(params: {
 			modified?: string[];
 		}>;
 		ref?: string;
+		/** The branch head after the push; all zeros when the branch was deleted. */
+		after?: string;
 	};
 
 	// Prefer html_url (matches how the integration is stored). Fall back to
@@ -180,6 +183,24 @@ export async function handleGitHubPushWebhook(params: {
 			message: "No integration found for this repository",
 			action: "ignored",
 		};
+	}
+
+	// Coding Instructions automatic sync (spec §6.2): every project whose sync
+	// follows the pushed branch, not only the integration code indexing picked.
+	// The hook returns within WEBHOOK_SYNC_START_BUDGET_MS (5 s). It must never
+	// change the code-indexing outcome below, so a failure is logged by error
+	// class only (no payload, no URL) and the handler carries on.
+	try {
+		await startInstructionSyncsForPush({
+			repositoryUrl: rawRepoUrl,
+			ref: pushPayload.ref,
+			after: pushPayload.after,
+		});
+	} catch (error) {
+		console.error(
+			"[GitHub Push Webhook] Coding Instructions sync hook failed:",
+			error instanceof Error ? error.name : typeof error,
+		);
 	}
 
 	const projectId = integration.projectId;

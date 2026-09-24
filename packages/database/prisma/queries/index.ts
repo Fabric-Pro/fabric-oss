@@ -104,6 +104,7 @@ export * from "./repo-integration-notifications";
 export * from "./report-execution-email";
 export * from "./report-execution-notification";
 export * from "./reports";
+export * from "./repository-sync-subjects";
 export * from "./resolve-user-organization";
 export * from "./review-center";
 export * from "./search-providers";

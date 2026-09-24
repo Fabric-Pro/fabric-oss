@@ -42,6 +42,17 @@ describe("classifyPath", () => {
 		expect(classifyPath("./.claude/agents/a.md")).toBe("AGENT");
 		expect(classifyPath(".claude\\agents\\a.md")).toBe("AGENT");
 	});
+
+	it.each([
+		// The environment declaration the CLI doctor reads (Fizzy #2653).
+		["fabric.environment.json", "SETTINGS"],
+		["Fabric.Environment.json", "SETTINGS"],
+		// Only at the tree root: a nested copy is not the declaration.
+		["docs/fabric.environment.json", "OTHER"],
+		[".claude/fabric.environment.json", "OTHER"],
+	] as const)("environment declaration %s → %s", (path, kind) => {
+		expect(classifyPath(path)).toBe(kind);
+	});
 });
 
 describe("classifyPath: Guild-shaped trees (spec §5.8)", () => {

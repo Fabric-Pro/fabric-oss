@@ -16,6 +16,7 @@ import {
 	type InstructionsLock,
 	LOCK_DIRECTORY,
 	LOCK_FILENAME,
+	LOCK_VERSION,
 	lockPath,
 	readLock,
 	writeLock,
@@ -139,9 +140,9 @@ describe("a lock that does not validate", () => {
 
 	it.each([
 		[
-			"a version this build does not write",
-			JSON.stringify({ ...sampleLock(), version: 2 }),
-			/its version is 2/,
+			"a version this build does not read",
+			JSON.stringify({ ...sampleLock(), version: 3 }),
+			/its version is 3 and this build reads versions 1 and 2/,
 		],
 		[
 			"a missing projectId",
@@ -198,5 +199,111 @@ describe("a lock that does not validate", () => {
 		await writeRawLock(root, body);
 
 		await expect(readLock(root)).rejects.toThrow(matcher);
+	});
+});
+
+/**
+ * What every released build (lock version 1) does with a lock this build
+ * writes, frozen here as released (`lockProblem` and `parseLock`,
+ * `lock.ts:98-104` and `:191-192` before this change) because the released
+ * code cannot be imported. Anything but version 1 is refused whole, and the
+ * error stops `sync`, in hook mode too, before a plan exists.
+ */
+function releasedV1Refusal(text: string): string | null {
+	const { version } = JSON.parse(text) as { version?: unknown };
+	return version === 1
+		? null
+		: `.fabric/instructions.lock is unreadable: its version is ${JSON.stringify(version)} and this build writes version 1. Delete it to start from a clean sync.`;
+}
+
+/**
+ * Spec §6.4, Decision 38. Version 2 adds one optional entry field, `kept`,
+ * with one value. This build reads versions 1 and 2 and writes 2, so a
+ * released build, which cannot see the marker, never acts on a lock that
+ * carries one: it refuses the whole file and writes nothing.
+ */
+describe("lock version 2 and the kept marker", () => {
+	it("round-trips a version 2 lock with a kept entry", async () => {
+		const root = await makeTree();
+		const lock = sampleLock({
+			version: 2,
+			files: {
+				"AGENTS.md": {
+					sha256: "a".repeat(64),
+					mode: 33188,
+					kept: true,
+				},
+			},
+		});
+
+		await writeLock(root, lock);
+
+		await expect(readLock(root)).resolves.toEqual(lock);
+	});
+
+	it("still reads a version 1 lock, as every released build wrote it", async () => {
+		const root = await makeTree();
+		await writeRawLock(root, JSON.stringify(sampleLock()));
+
+		await expect(readLock(root)).resolves.toEqual(sampleLock());
+	});
+
+	it.each([
+		["false", false],
+		["a string", "true"],
+		["null", null],
+	])("refuses kept as %s", async (_label, kept) => {
+		const root = await makeTree();
+		await writeRawLock(
+			root,
+			JSON.stringify({
+				...sampleLock(),
+				version: 2,
+				files: { "a.md": { sha256: "a".repeat(64), mode: null, kept } },
+			}),
+		);
+
+		await expect(readLock(root)).rejects.toThrow(
+			/entry for "a\.md" has a "kept" that is not true/,
+		);
+	});
+
+	it("refuses a kept marker in a version 1 lock, which no released build would honour", async () => {
+		const root = await makeTree();
+		await writeRawLock(
+			root,
+			JSON.stringify({
+				...sampleLock(),
+				files: {
+					"a.md": { sha256: "a".repeat(64), mode: null, kept: true },
+				},
+			}),
+		);
+
+		await expect(readLock(root)).rejects.toThrow(
+			/entry for "a\.md" has a "kept" marker, which a version 1 lock cannot carry/,
+		);
+	});
+
+	it("is refused whole by every released build, which therefore never overwrites a kept edit (Decision 38)", async () => {
+		const root = await makeTree();
+		await writeLock(
+			root,
+			sampleLock({
+				version: LOCK_VERSION,
+				files: {
+					"AGENTS.md": {
+						sha256: "a".repeat(64),
+						mode: 33188,
+						kept: true,
+					},
+				},
+			}),
+		);
+
+		expect(LOCK_VERSION).toBe(2);
+		expect(releasedV1Refusal(await readFile(lockPath(root), "utf8"))).toBe(
+			".fabric/instructions.lock is unreadable: its version is 2 and this build writes version 1. Delete it to start from a clean sync.",
+		);
 	});
 });

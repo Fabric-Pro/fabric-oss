@@ -20,6 +20,7 @@
 		"./frame-service": "./src/activities/shared/frame-service.ts",
 		"./workflows": "./src/workflows/index.ts",
 		"./coding-execution": "./src/lib/coding-execution/index.ts",
+		"./repository-sync-subjects": "./src/activities/lib/repository-sync-subjects.ts",
 		"./report-diagnostics": "./src/activities/template-instance/mcp-diagnostics.ts"
 	},
 	"scripts": {

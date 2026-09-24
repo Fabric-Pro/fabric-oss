@@ -19,6 +19,7 @@ const mockFindByRepoUrl = vi.fn();
 const mockGetProjectCodeIndex = vi.fn();
 const mockMarkCodeIndexStale = vi.fn();
 const mockParseRepoUrl = vi.fn();
+const mockStartSyncs = vi.fn();
 // `workflow.start` resolves to a WorkflowHandle; the Job Hub row records
 // its firstExecutionRunId.
 const mockStart = vi.fn(async () => ({
@@ -43,6 +44,10 @@ vi.mock("@repo/temporal", () => ({
 
 vi.mock("../../../../../lib/temporal-correlation", () => ({
 	withCorrelationMemo: (o: unknown) => o,
+}));
+
+vi.mock("../../instructions/repository-sync/push-trigger", () => ({
+	startInstructionSyncsForPush: (...a: unknown[]) => mockStartSyncs(...a),
 }));
 
 // Avoid pulling the full oRPC/@repo/payments chain in just to load the exported
@@ -85,6 +90,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	process.env.FEATURE_CODE_INDEXING = undefined;
 	mockFindByRepoUrl.mockResolvedValue(integration);
+	mockStartSyncs.mockResolvedValue({ started: 0, failed: 0 });
 	mockParseRepoUrl.mockReturnValue({
 		provider: "GITHUB",
 		owner: "acme",
@@ -153,5 +159,61 @@ describe("handleGitHubPushWebhook — per-repo", () => {
 		expect(opts.args[0].branch).toBe("main");
 		expect(opts.args[0].incremental).toBe(true);
 		expect(opts.args[0].changedFiles).toEqual(["src/a.ts"]);
+	});
+});
+
+describe("handleGitHubPushWebhook — Coding Instructions automatic sync (spec §6.2)", () => {
+	const REPO = "https://github.com/example-org/example-repo";
+	const HEAD = "a".repeat(40);
+
+	it("hands the push to the sync hook before the code-indexing branch check", async () => {
+		const result = await call({
+			repository: { html_url: REPO },
+			ref: "refs/heads/feature-x",
+			after: HEAD,
+			commits: [],
+		});
+		expect(mockStartSyncs).toHaveBeenCalledWith({
+			repositoryUrl: REPO,
+			ref: "refs/heads/feature-x",
+			after: HEAD,
+		});
+		// Code indexing still ignores the non-default branch.
+		expect(result.action).toBe("ignored_branch");
+	});
+
+	it("never lets a failing sync hook change the code-indexing response, and logs only the error class", async () => {
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		mockStartSyncs.mockRejectedValue(new TypeError(`boom ${REPO}`));
+		mockGetProjectCodeIndex.mockResolvedValue(null);
+
+		const result = await call({
+			repository: { html_url: REPO },
+			ref: "refs/heads/main",
+			after: HEAD,
+			commits: [],
+		});
+
+		expect(result.action).toBe("no_index");
+		expect(consoleError).toHaveBeenCalledWith(
+			"[GitHub Push Webhook] Coding Instructions sync hook failed:",
+			"TypeError",
+		);
+		expect(JSON.stringify(consoleError.mock.calls)).not.toContain(REPO);
+		consoleError.mockRestore();
+	});
+
+	it("does not call the hook for a repository no project connected", async () => {
+		mockFindByRepoUrl.mockResolvedValue(null);
+		const result = await call({
+			repository: { html_url: REPO },
+			ref: "refs/heads/main",
+			after: HEAD,
+			commits: [],
+		});
+		expect(result.action).toBe("ignored");
+		expect(mockStartSyncs).not.toHaveBeenCalled();
 	});
 });

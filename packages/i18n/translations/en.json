@@ -5650,8 +5650,8 @@
 			},
 			"repositorySync": {
 				"running": "Syncing from the repository…",
-				"lastRun": "Last sync {time}: {outcome}",
-				"lastRunBy": "Last sync {time} by {name}: {outcome}",
+				"lastRun": "Last sync {time} ({trigger}): {outcome}",
+				"lastRunBy": "Last sync {time} by {name} ({trigger}): {outcome}",
 				"syncAgainButton": "Sync again",
 				"pausedLine": "Automatic sync paused: {reason}",
 				"pausedReasons": {
@@ -5659,6 +5659,12 @@
 					"REF_MISSING": "the branch or folder no longer exists"
 				},
 				"reEnableButton": "Re-enable",
+				"triggers": {
+					"MANUAL": "Sync now",
+					"POLL": "Scheduled",
+					"WEBHOOK": "Push",
+					"OTHER": "Automatic"
+				},
 				"outcomes": {
 					"running": "in progress",
 					"interrupted": "stopped before it finished",
@@ -5682,6 +5688,7 @@
 					"ROOT_MISSING": "The folder {rootPath} was not found on {ref}.",
 					"LIMITS_EXCEEDED": "The folder is over the limits of {maxFiles} files, {maxFileMb} MB per file, or {maxTotalMb} MB in total.",
 					"CLONE_FAILED": "Could not fetch the repository. Try Sync now again.",
+					"CLONE_FAILED_RETRYING": "Could not fetch the repository; retrying automatically.",
 					"STORAGE_FAILED": "The files could not be stored. Try Sync now again.",
 					"CHILD_ABORTED": "Checking the synced files stopped before it finished. Try Sync now again.",
 					"CONFIGURATION_CHANGED": "The sync settings changed while it ran, so nothing was published.",
@@ -5700,8 +5707,10 @@
 					"rootPathLabel": "Folder",
 					"rootPathPlaceholder": "repository root",
 					"rootPathHint": "Leave empty to use the whole repository.",
+					"automaticLabel": "Keep in sync automatically",
+					"automaticHint": "Fabric picks up a pushed change right after each push to a GitHub repository, and otherwise normally 15 to 20 minutes after a push; longer while the poll works through a backlog or a sync is backing off after failures. It publishes what changed as you.",
 					"afterSyncNotice": "After this, change the files in the repository and sync again. Editing in Fabric and pushing from the CLI are turned off while the repository is the source.",
-					"actingNotice": "Each sync is published as the member who starts it.",
+					"actingNotice": "Sync now publishes as the member who presses it; automatic syncs publish as the member who saved this configuration.",
 					"cancel": "Cancel",
 					"submit": "Save and sync",
 					"errors": {
@@ -5734,6 +5743,12 @@
 					"branch": "Branch",
 					"folder": "Folder",
 					"folderRoot": "repository root",
+					"automatic": "Automatic sync",
+					"automaticOn": "On",
+					"automaticOff": "Off",
+					"automaticHint": "Picks up a pushed change right after each push to GitHub, and otherwise normally 15 to 20 minutes after a push; longer while the poll works through a backlog or a sync is backing off after failures. Changing this makes you the member syncs publish as.",
+					"automaticTurnedOn": "Automatic sync is on.",
+					"automaticTurnedOff": "Automatic sync is off.",
 					"changeButton": "Change…",
 					"switchToUpload": "Switch to upload mode",
 					"switchConfirm": "Stop syncing from {repository}? The published files stay as they are, and editing and uploading in Fabric come back.",

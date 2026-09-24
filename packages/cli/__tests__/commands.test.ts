@@ -14,6 +14,7 @@ import {
 	readdir,
 	readFile,
 	stat,
+	unlink,
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -726,7 +727,7 @@ describe("fabric instructions sync", () => {
 		expect(Object.keys(lock?.files ?? {})).toEqual(["readme.md"]);
 	});
 
-	it("reports a replaced local edit by name", async () => {
+	it("replaces a local edit under --repair and reports it by name", async () => {
 		const dest = await makeTree();
 		await writeFile(path.join(dest, "AGENTS.md"), "my own edit");
 		await seedLock(dest, "c".repeat(64), {
@@ -757,11 +758,306 @@ describe("fabric instructions sync", () => {
 			"project-1",
 			"--dest",
 			dest,
+			"--repair",
 		]);
 
 		expect(result.code).toBe(0);
 		expect(result.stdout).toContain("replaced local edits:");
 		expect(result.stdout).toContain("    AGENTS.md");
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"published\n",
+		);
+		const lock = await readLock(dest);
+		expect(lock?.files["AGENTS.md"]).toEqual({
+			sha256: sha256("published\n"),
+			mode: 0o100644,
+		});
+	});
+
+	/** Spec §6.4 (Fizzy #2540): the default keeps the edit and says how to replace it. */
+	it("keeps a local edit by default and says where local notes belong", async () => {
+		const dest = await makeTree();
+		await writeFile(path.join(dest, "AGENTS.md"), "my own edit");
+		await seedLock(dest, "c".repeat(64), {
+			"AGENTS.md": { sha256: sha256("previous"), mode: 0o100644 },
+		});
+		const manifest = [manifestEntry("AGENTS.md", "published\n")];
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: snapshotFor(manifest, 8),
+			unchanged: false,
+			changes: null,
+			manifest,
+		});
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"my own edit",
+		);
+		expect(result.stdout).toContain("kept local edits:");
+		expect(result.stdout).toContain("    AGENTS.md");
+		expect(result.stdout).not.toContain("replaced local edits:");
+		expect(result.stdout).toContain(
+			`fabric instructions sync --project project-1 --dest ${dest} --repair`,
+		);
+		expect(result.stdout).toContain("CLAUDE.local.md");
+		expect(result.stdout).toContain(".claude/settings.local.json");
+		// Nothing to write, so nothing to download.
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+		const lock = await readLock(dest);
+		expect(lock?.snapshotVersion).toBe(8);
+		expect(lock?.files["AGENTS.md"]).toEqual({
+			sha256: sha256("published\n"),
+			mode: 0o100644,
+			kept: true,
+		});
+	});
+
+	/**
+	 * Review Focus 4. The kept file stays, and the lock follows the NEW
+	 * published version, so `push` diffs the edit against the version
+	 * everyone else now has.
+	 */
+	it("keeps an edit across a republish and records the new published hash", async () => {
+		const dest = await makeTree();
+		await writeFile(path.join(dest, "AGENTS.md"), "my note\n");
+		await seedLock(dest, "c".repeat(64), {
+			"AGENTS.md": {
+				sha256: sha256("published v7\n"),
+				mode: 0o100644,
+				kept: true,
+			},
+		});
+		const manifest = [
+			manifestEntry("AGENTS.md", "published v8\n"),
+			manifestEntry("rules/new.md", "new rule\n"),
+		];
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: snapshotFor(manifest, 8),
+			unchanged: false,
+			changes: null,
+			manifest,
+		});
+		mocks.createDownloadUrl.mockResolvedValue({
+			snapshotId: "snap-2",
+			digest: computeSnapshotDigest(manifest),
+			url: "https://storage.example.com/exports/snap-2.zip",
+			expiresInSeconds: 600,
+		});
+		stubBundle({ "rules/new.md": "new rule\n" });
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"my note\n",
+		);
+		expect(await readFile(path.join(dest, "rules/new.md"), "utf8")).toBe(
+			"new rule\n",
+		);
+		expect(result.stdout).toContain("1 added");
+		expect(result.stdout).toContain("kept local edits:");
+		const lock = await readLock(dest);
+		expect(lock?.snapshotVersion).toBe(8);
+		expect(lock?.files).toEqual({
+			"AGENTS.md": {
+				sha256: sha256("published v8\n"),
+				mode: 0o100644,
+				kept: true,
+			},
+			"rules/new.md": { sha256: sha256("new rule\n"), mode: 0o100644 },
+		});
+	});
+
+	/**
+	 * Decision 37. The plan saw AGENTS.md at the locked bytes and rules/new.md
+	 * absent; an editor saved one and created the other while the bundle was
+	 * downloading. Both are the developer's now.
+	 */
+	it("keeps a file saved or created after planning, and records both as kept", async () => {
+		const dest = await makeTree();
+		await writeFile(path.join(dest, "AGENTS.md"), "published v7\n");
+		await seedLock(dest, "c".repeat(64), {
+			"AGENTS.md": { sha256: sha256("published v7\n"), mode: 0o100644 },
+		});
+		const manifest = [
+			manifestEntry("AGENTS.md", "published v8\n"),
+			manifestEntry("rules/new.md", "new rule\n"),
+		];
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: snapshotFor(manifest, 8),
+			unchanged: false,
+			changes: null,
+			manifest,
+		});
+		mocks.createDownloadUrl.mockResolvedValue({
+			snapshotId: "snap-2",
+			digest: computeSnapshotDigest(manifest),
+			url: "https://storage.example.com/exports/snap-2.zip",
+			expiresInSeconds: 600,
+		});
+		stubBundle(
+			{ "AGENTS.md": "published v8\n", "rules/new.md": "new rule\n" },
+			async () => {
+				await writeFile(path.join(dest, "AGENTS.md"), "late save\n");
+				await mkdir(path.join(dest, "rules"), { recursive: true });
+				await writeFile(
+					path.join(dest, "rules/new.md"),
+					"late create\n",
+				);
+			},
+		);
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"late save\n",
+		);
+		expect(await readFile(path.join(dest, "rules/new.md"), "utf8")).toBe(
+			"late create\n",
+		);
+		// What happened, not what was planned.
+		expect(result.stdout).toContain(
+			"Applied coding instructions version 8: 0 added, 0 updated, 0 replaced, 0 removed (0 already current).",
+		);
+		expect(result.stdout).toContain("kept local edits:");
+		expect(result.stdout).toContain("    AGENTS.md");
+		expect(result.stdout).toContain("    rules/new.md");
+		const lock = await readLock(dest);
+		expect(lock?.version).toBe(2);
+		expect(lock?.files).toEqual({
+			"AGENTS.md": {
+				sha256: sha256("published v8\n"),
+				mode: 0o100644,
+				kept: true,
+			},
+			"rules/new.md": {
+				sha256: sha256("new rule\n"),
+				mode: 0o100644,
+				kept: true,
+			},
+		});
+	});
+
+	it("replaces a save that landed after planning under --repair", async () => {
+		const dest = await makeTree();
+		await writeFile(path.join(dest, "AGENTS.md"), "published v7\n");
+		await seedLock(dest, "c".repeat(64), {
+			"AGENTS.md": { sha256: sha256("published v7\n"), mode: 0o100644 },
+		});
+		const manifest = [manifestEntry("AGENTS.md", "published v8\n")];
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: snapshotFor(manifest, 8),
+			unchanged: false,
+			changes: null,
+			manifest,
+		});
+		mocks.createDownloadUrl.mockResolvedValue({
+			snapshotId: "snap-2",
+			digest: computeSnapshotDigest(manifest),
+			url: "https://storage.example.com/exports/snap-2.zip",
+			expiresInSeconds: 600,
+		});
+		stubBundle({ "AGENTS.md": "published v8\n" }, async () => {
+			await writeFile(path.join(dest, "AGENTS.md"), "late save\n");
+		});
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--repair",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"published v8\n",
+		);
+		expect(result.stdout).toContain("1 updated");
+		expect(result.stdout).not.toContain("kept local edits:");
+		const lock = await readLock(dest);
+		expect(lock?.files["AGENTS.md"]).toEqual({
+			sha256: sha256("published v8\n"),
+			mode: 0o100644,
+		});
+	});
+
+	/**
+	 * Review finding 2 (Minor, Fizzy #2540). Planning saw the file present and
+	 * matching the lock, so its write is `updated`. If it is deleted before
+	 * the write lands, re-hashing it now finds nothing — which is exactly
+	 * what planning would have called `added`, not a conflicting edit — so
+	 * the write proceeds instead of being reported kept.
+	 */
+	it("writes a file deleted after planning rather than reporting it kept", async () => {
+		const dest = await makeTree();
+		await writeFile(path.join(dest, "AGENTS.md"), "published v7\n");
+		await seedLock(dest, "c".repeat(64), {
+			"AGENTS.md": { sha256: sha256("published v7\n"), mode: 0o100644 },
+		});
+		const manifest = [manifestEntry("AGENTS.md", "published v8\n")];
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: snapshotFor(manifest, 8),
+			unchanged: false,
+			changes: null,
+			manifest,
+		});
+		mocks.createDownloadUrl.mockResolvedValue({
+			snapshotId: "snap-2",
+			digest: computeSnapshotDigest(manifest),
+			url: "https://storage.example.com/exports/snap-2.zip",
+			expiresInSeconds: 600,
+		});
+		stubBundle({ "AGENTS.md": "published v8\n" }, async () => {
+			await unlink(path.join(dest, "AGENTS.md"));
+		});
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"published v8\n",
+		);
+		expect(result.stdout).toContain("1 updated");
+		expect(result.stdout).not.toContain("kept local edits:");
 	});
 });
 
@@ -1527,10 +1823,51 @@ describe("an unchanged digest over a drifted tree", () => {
 		return dest;
 	}
 
-	it("rewrites a file that was edited locally", async () => {
+	/** Spec §6.4 (Fizzy #2540): an edit alone needs no second request, and the keep is recorded. */
+	it("keeps a file that was edited locally, without a second request", async () => {
 		const manifest = [manifestEntry("AGENTS.md", "published\n")];
 		const dest = await seedSyncedTree(manifest, {
 			"AGENTS.md": "someone edited this\n",
+		});
+		serveUnchangedThenFull(manifest);
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"someone edited this\n",
+		);
+		expect(result.stdout).toContain(
+			"Coding instructions are up to date (version 7).",
+		);
+		expect(result.stdout).toContain("kept local edits:");
+		expect(mocks.getPublished).toHaveBeenCalledTimes(1);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+		// Recorded, so `check --verify` and doctor can say the edit was kept.
+		const lock = await readLock(dest);
+		expect(lock?.files["AGENTS.md"]).toEqual({
+			sha256: manifest[0].sha256,
+			mode: 0o100644,
+			kept: true,
+		});
+	});
+
+	it("rewrites a file that was edited locally under --repair, dropping the kept marker", async () => {
+		const manifest = [manifestEntry("AGENTS.md", "published\n")];
+		const dest = await makeTree();
+		await writeFile(path.join(dest, "AGENTS.md"), "someone edited this\n");
+		await seedLock(dest, computeSnapshotDigest(manifest), {
+			"AGENTS.md": {
+				sha256: manifest[0].sha256,
+				mode: 0o100644,
+				kept: true,
+			},
 		});
 		serveUnchangedThenFull(manifest);
 		mocks.createDownloadUrl.mockResolvedValue({
@@ -1547,18 +1884,24 @@ describe("an unchanged digest over a drifted tree", () => {
 			"project-1",
 			"--dest",
 			dest,
+			"--repair",
 		]);
 
 		expect(result.code).toBe(0);
 		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
 			"published\n",
 		);
-		expect(result.stdout).toContain("AGENTS.md (edited)");
+		expect(result.stdout).toContain("AGENTS.md (kept)");
 		// The second call is the repair: same project, no base digest.
 		expect(mocks.getPublished).toHaveBeenCalledTimes(2);
 		expect(mocks.getPublished).toHaveBeenLastCalledWith("project-1", {
 			org: undefined,
 			sinceDigest: undefined,
+		});
+		const lock = await readLock(dest);
+		expect(lock?.files["AGENTS.md"]).toEqual({
+			sha256: manifest[0].sha256,
+			mode: 0o100644,
 		});
 	});
 
@@ -1687,11 +2030,9 @@ describe("an unchanged digest over a drifted tree", () => {
 		expect(mocks.getPublished).toHaveBeenCalledTimes(1);
 	});
 
-	it("repairs under --hook too, still exiting 0", async () => {
+	it("re-adds a deleted file under --hook too, still exiting 0", async () => {
 		const manifest = [manifestEntry("AGENTS.md", "published\n")];
-		const dest = await seedSyncedTree(manifest, {
-			"AGENTS.md": "edited\n",
-		});
+		const dest = await seedSyncedTree(manifest, {});
 		serveUnchangedThenFull(manifest);
 		mocks.createDownloadUrl.mockResolvedValue({
 			snapshotId: "snap-2",
@@ -1721,6 +2062,33 @@ describe("an unchanged digest over a drifted tree", () => {
 			{ timeoutMs: 10_000, retry: { maxRetries: 0 } },
 			{ timeoutMs: 10_000, retry: { maxRetries: 0 } },
 		]);
+	});
+
+	/** Spec §6.4 (Fizzy #2540): a session start keeps the edit and says so in one line. */
+	it("keeps an edit under --hook and says so in one stderr line", async () => {
+		const manifest = [manifestEntry("AGENTS.md", "published\n")];
+		const dest = await seedSyncedTree(manifest, {
+			"AGENTS.md": "edited\n",
+		});
+		serveUnchangedThenFull(manifest);
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--hook",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"edited\n",
+		);
+		expect(result.stderr).toBe(
+			`fabric: 1 local edit(s) kept; run \`fabric instructions sync --project project-1 --dest ${dest} --repair\` to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.\n`,
+		);
+		expect(mocks.getPublished).toHaveBeenCalledTimes(1);
 	});
 
 	it("check without --verify reads nothing local and says so", async () => {
@@ -1766,6 +2134,51 @@ describe("an unchanged digest over a drifted tree", () => {
 		expect(result.stdout).toContain("AGENTS.md (edited)");
 		// Still informational: it reports, it does not write.
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+	});
+
+	it("check --verify labels a kept edit and names --repair", async () => {
+		const manifest = [manifestEntry("AGENTS.md", "published\n")];
+		const dest = await makeTree();
+		await writeFile(path.join(dest, "AGENTS.md"), "my note\n");
+		await seedLock(dest, computeSnapshotDigest(manifest), {
+			"AGENTS.md": {
+				sha256: manifest[0].sha256,
+				mode: 0o100644,
+				kept: true,
+			},
+		});
+		serveUnchangedThenFull(manifest);
+
+		const text = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--verify",
+		]);
+
+		expect(text.code).toBe(0);
+		expect(text.stdout).toContain("AGENTS.md (kept)");
+		expect(text.stdout).toContain(
+			`fabric instructions sync --project project-1 --dest ${dest} --repair`,
+		);
+		expect(text.stdout).not.toContain("to put");
+
+		const json = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--verify",
+			"--format",
+			"json",
+		]);
+
+		const report = JSON.parse(json.stdout);
+		expect(report.drifted).toEqual(["AGENTS.md (kept)"]);
+		expect(report.keptEdited).toEqual(["AGENTS.md"]);
 	});
 
 	/**
@@ -1844,6 +2257,158 @@ describe("an unchanged digest over a drifted tree", () => {
 
 		expect(result.code).toBe(0);
 		expect(result.stdout).toContain("matches the lock");
+	});
+
+	it("lists kept edits in sync's JSON output (Decision 37)", async () => {
+		const manifest = [manifestEntry("AGENTS.md", "published\n")];
+		const dest = await seedSyncedTree(manifest, {
+			"AGENTS.md": "my note\n",
+		});
+		serveUnchangedThenFull(manifest);
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--format",
+			"json",
+		]);
+
+		expect(result.code).toBe(0);
+		const report = JSON.parse(result.stdout);
+		expect(report.unchanged).toBe(true);
+		expect(report.keptEdited).toEqual(["AGENTS.md"]);
+	});
+
+	it("records nothing on a dry run, even with an edit to keep (Decision 41)", async () => {
+		const manifest = [manifestEntry("AGENTS.md", "published\n")];
+		const dest = await seedSyncedTree(manifest, {
+			"AGENTS.md": "my note\n",
+		});
+		serveUnchangedThenFull(manifest);
+		const lockFile = path.join(dest, ".fabric", "instructions.lock");
+		const before = await readFile(lockFile, "utf8");
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--dry-run",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("kept local edits:");
+		expect(await readFile(lockFile, "utf8")).toBe(before);
+	});
+
+	it("keeps the same edit on the next run without rewriting the lock (Decision 41)", async () => {
+		const manifest = [manifestEntry("AGENTS.md", "published\n")];
+		const dest = await seedSyncedTree(manifest, {
+			"AGENTS.md": "my note\n",
+		});
+		serveUnchangedThenFull(manifest);
+		const lockFile = path.join(dest, ".fabric", "instructions.lock");
+		const args = ["sync", "--project", "project-1", "--dest", dest];
+
+		expect((await runCli(args)).code).toBe(0);
+		const afterFirst = await readFile(lockFile, "utf8");
+		expect(JSON.parse(afterFirst).files["AGENTS.md"].kept).toBe(true);
+
+		const second = await runCli(args);
+
+		expect(second.code).toBe(0);
+		expect(second.stdout).toContain("kept local edits:");
+		// Byte for byte: not even `syncedAt` moves when nothing changed.
+		expect(await readFile(lockFile, "utf8")).toBe(afterFirst);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+	});
+
+	it("keeps the lock's markers true through a hand restore, a new edit and --repair (Decision 41)", async () => {
+		const manifest = [manifestEntry("AGENTS.md", "published\n")];
+		const dest = await seedSyncedTree(manifest, {
+			"AGENTS.md": "my note\n",
+		});
+		serveUnchangedThenFull(manifest);
+		mocks.createDownloadUrl.mockResolvedValue({
+			snapshotId: "snap-2",
+			digest: computeSnapshotDigest(manifest),
+			url: "https://storage.example.com/exports/snap-2.zip",
+			expiresInSeconds: 600,
+		});
+		stubBundle({ "AGENTS.md": "published\n" });
+		const sync = (...extra: string[]) =>
+			runCli([
+				"sync",
+				"--project",
+				"project-1",
+				"--dest",
+				dest,
+				...extra,
+			]);
+		const marker = async () =>
+			(await readLock(dest))?.files["AGENTS.md"]?.kept;
+
+		// Kept.
+		expect((await sync()).code).toBe(0);
+		expect(await marker()).toBe(true);
+
+		// The developer puts the published bytes back by hand: the marker goes.
+		await writeFile(path.join(dest, "AGENTS.md"), "published\n");
+		expect((await sync()).code).toBe(0);
+		expect(await marker()).toBeUndefined();
+
+		// A new edit is kept, and marked, again.
+		await writeFile(path.join(dest, "AGENTS.md"), "another note\n");
+		expect((await sync()).code).toBe(0);
+		expect(await marker()).toBe(true);
+
+		// --repair replaces it and drops the marker.
+		expect((await sync("--repair")).code).toBe(0);
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"published\n",
+		);
+		expect(await marker()).toBeUndefined();
+	});
+
+	/**
+	 * Decision 42. A newline in a path cannot be quoted into something a
+	 * person can safely paste, so no command is printed at all; the report
+	 * says what to run instead, in stdout and in the hook's stderr line.
+	 */
+	it("prints no repair command for a --dest with a newline, and says what to run instead", async () => {
+		const manifest = [manifestEntry("AGENTS.md", "published\n")];
+		const dest = await mkdtemp(
+			path.join(tmpdir(), "fabric-cmd-new\nline-"),
+		);
+		await writeFile(path.join(dest, "AGENTS.md"), "edited\n");
+		await seedLock(dest, computeSnapshotDigest(manifest), {
+			"AGENTS.md": { sha256: manifest[0].sha256, mode: 0o100644 },
+		});
+		serveUnchangedThenFull(manifest);
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--hook",
+		]);
+
+		const instead =
+			"`fabric instructions sync --repair` with this run's --project and --dest";
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(instead);
+		expect(result.stderr).toBe(
+			`fabric: 1 local edit(s) kept; run ${instead} to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.\n`,
+		);
+		expect(`${result.stdout}${result.stderr}`).not.toContain(
+			"fabric-cmd-new",
+		);
 	});
 });
 
@@ -1965,7 +2530,8 @@ describe("a source of truth that changed after the hook was installed", () => {
 		const published = manifestEntry("AGENTS.md", "published\n");
 		const manifest = [published];
 		const dest = await makeTree();
-		await writeFile(path.join(dest, "AGENTS.md"), "edited\n");
+		// Missing rather than edited: since spec §6.4 an edit alone is kept
+		// without a second request, and this case is about the second request.
 		await seedLock(dest, computeSnapshotDigest(manifest), {
 			"AGENTS.md": { sha256: published.sha256, mode: 0o100644 },
 		});
@@ -2000,10 +2566,8 @@ describe("a source of truth that changed after the hook was installed", () => {
 		expect(result.stderr).toContain("come from a git repository");
 		expect(mocks.getPublished).toHaveBeenCalledTimes(2);
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
-		// The drifted file is left exactly as the developer left it.
-		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
-			"edited\n",
-		);
+		// Nothing was put back: the refusal came before the plan.
+		expect(await readdir(dest)).toEqual([".fabric"]);
 	});
 
 	/**
@@ -2138,6 +2702,7 @@ describe("output format", () => {
 
 		expect(result.code).toBe(0);
 		expect(JSON.parse(result.stdout).added).toEqual(["AGENTS.md"]);
+		expect(JSON.parse(result.stdout).keptEdited).toEqual([]);
 	});
 
 	it("prints JSON from init when asked", async () => {
@@ -2205,14 +2770,14 @@ describe("output format", () => {
 async function seedLock(
 	dest: string,
 	digest: string,
-	files: Record<string, { sha256: string; mode: number | null }>,
+	files: Record<string, { sha256: string; mode: number | null; kept?: true }>,
 	projectId = "project-1",
 ): Promise<void> {
 	await seedRawLock(
 		dest,
 		JSON.stringify(
 			{
-				version: 1,
+				version: Object.values(files).some((file) => file.kept) ? 2 : 1,
 				projectId,
 				snapshotId: "snap-1",
 				snapshotVersion: 6,
@@ -2235,8 +2800,15 @@ async function seedRawLock(dest: string, body: string): Promise<void> {
 	);
 }
 
-/** Serve one zip from the stubbed global fetch the bundle download uses. */
-function stubBundle(files: Record<string, string>): void {
+/**
+ * Serve one zip from the stubbed global fetch the bundle download uses.
+ * `beforeServe` runs inside the download, after the plan was made and before
+ * any write: the window an editor's save can land in (Decision 37).
+ */
+function stubBundle(
+	files: Record<string, string>,
+	beforeServe?: () => Promise<void>,
+): void {
 	const archive = zipSync(
 		Object.fromEntries(
 			Object.entries(files).map(([key, value]) => [
@@ -2247,8 +2819,9 @@ function stubBundle(files: Record<string, string>): void {
 	);
 	vi.stubGlobal(
 		"fetch",
-		vi.fn(
-			async () => new Response(archive.slice().buffer, { status: 200 }),
-		),
+		vi.fn(async () => {
+			await beforeServe?.();
+			return new Response(archive.slice().buffer, { status: 200 });
+		}),
 	);
 }

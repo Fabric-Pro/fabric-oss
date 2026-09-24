@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Prisma } from "../prisma/client";
 
 const m = vi.hoisted(() => ({
 	sync: {
 		findFirst: vi.fn(),
+		findMany: vi.fn(),
 		findUnique: vi.fn(),
 		create: vi.fn(),
 		update: vi.fn(),
@@ -21,6 +23,7 @@ const m = vi.hoisted(() => ({
 	integration: { deleteMany: vi.fn() },
 	contextSync: { findFirst: vi.fn() },
 	$queryRaw: vi.fn(),
+	$executeRaw: vi.fn(),
 	$transaction: vi.fn(),
 	recordAuditTx: vi.fn(),
 	canCreateProjectInstructions: vi.fn(),
@@ -34,15 +37,25 @@ const client = vi.hoisted(() => ({
 	projectRepositoryIntegration: m.integration,
 	projectContextRepositorySync: m.contextSync,
 	$queryRaw: (...a: unknown[]) => m.$queryRaw(...a),
+	$executeRaw: (...a: unknown[]) => m.$executeRaw(...a),
 }));
 
-vi.mock("../prisma/client", () => ({
-	db: { ...client, $transaction: m.$transaction },
-	Prisma: {
-		PrismaClientKnownRequestError: class extends Error {},
-		JsonNull: "JsonNull",
-	},
-}));
+vi.mock("../prisma/client", async () => {
+	// The real tagged-template builders (`Prisma.sql` is `sqltag`), so the
+	// lease fence reaches the fake client exactly as Postgres would get it.
+	const { join, sqltag } = await vi.importActual<
+		typeof import("@prisma/client/runtime/client")
+	>("@prisma/client/runtime/client");
+	return {
+		db: { ...client, $transaction: m.$transaction },
+		Prisma: {
+			PrismaClientKnownRequestError: class extends Error {},
+			JsonNull: "JsonNull",
+			join,
+			sql: sqltag,
+		},
+	};
+});
 vi.mock("../prisma/queries/audit-log", () => ({
 	recordAuditTx: m.recordAuditTx,
 }));
@@ -51,13 +64,19 @@ vi.mock("../prisma/queries/projects/projects", () => ({
 }));
 
 import {
+	claimDueInstructionSyncRows,
 	completeInstructionRepositorySyncRun,
+	computeSchedulingPatch,
 	deleteInstructionRepositorySync,
+	findInstructionSyncsForPush,
 	getInstructionRepositorySyncRunReceipt,
 	insertInstructionRepositorySyncRun,
 	instructionSyncBackoffMs,
+	instructionSyncLeaseHeld,
 	listInstructionRepositorySyncRuns,
+	recordInstructionSyncCheckFailure,
 	upsertInstructionRepositorySync,
+	writeBackInstructionSync,
 } from "../prisma/queries/instruction-repository-sync";
 import { updateProjectInstructionSettings } from "../prisma/queries/instructions";
 import { deleteRepoIntegrationReleasingSyncs } from "../prisma/queries/projects/repository-integration-disconnect";
@@ -79,6 +98,7 @@ beforeEach(() => {
 	// No Living Memory sync reads from the integration unless a test says so.
 	m.contextSync.findFirst.mockResolvedValue(null);
 	m.$queryRaw.mockReset();
+	m.$executeRaw.mockReset();
 	m.recordAuditTx.mockReset();
 	m.$transaction.mockReset();
 	m.$transaction.mockImplementation(async (cb: (tx: unknown) => unknown) =>
@@ -198,6 +218,34 @@ describe("upsertInstructionRepositorySync", () => {
 		expect(await upsertInstructionRepositorySync(input)).toBeNull();
 		expect(m.sync.create).not.toHaveBeenCalled();
 		expect(m.sync.update).not.toHaveBeenCalled();
+	});
+
+	it("makes a re-configured sync due now, so the next poll tick evaluates it (Decision 9)", async () => {
+		lockedSettings({ sourceOfTruth: "REPOSITORY" });
+		m.sync.findFirst.mockResolvedValue({
+			id: "sync_1",
+			ref: "main",
+			rootPath: "agents",
+			repositoryIntegrationId: "int_1",
+			automatic: true,
+		});
+		m.sync.update.mockResolvedValue({
+			id: "sync_1",
+			generation: 6,
+			ref: "main",
+			rootPath: "agents",
+			automatic: true,
+		});
+
+		const before = Date.now();
+		await upsertInstructionRepositorySync({ ...input, automatic: true });
+		const after = Date.now();
+
+		const { nextCheckAt } = m.sync.update.mock.calls[0]?.[0].data as {
+			nextCheckAt: Date;
+		};
+		expect(nextCheckAt.getTime()).toBeGreaterThanOrEqual(before);
+		expect(nextCheckAt.getTime()).toBeLessThanOrEqual(after);
 	});
 });
 
@@ -625,6 +673,7 @@ describe("updateProjectInstructionSettings (spec §4.4)", () => {
 				generation: { increment: 1 },
 				lastEvaluatedCommitSha: null,
 				lastEvaluatedGeneration: null,
+				nextCheckAt: expect.any(Date),
 			},
 		});
 		expect(m.project.update).toHaveBeenCalledWith({
@@ -646,5 +695,537 @@ describe("updateProjectInstructionSettings (spec §4.4)", () => {
 			}),
 		).toEqual({ syncGenerationBumped: false });
 		expect(m.sync.updateMany).not.toHaveBeenCalled();
+	});
+
+	it("a generation bump makes the sync due now, so a run it fenced is replaced at the next tick (Decision 9)", async () => {
+		lockedSettings({ ignoreGlobs: [], sourceOfTruth: "REPOSITORY" });
+		m.sync.updateMany.mockResolvedValue({ count: 1 });
+
+		const before = Date.now();
+		await updateProjectInstructionSettings("proj_1", "org_1", {
+			ignoreGlobs: ["build/**"],
+		});
+		const after = Date.now();
+
+		const { nextCheckAt } = m.sync.updateMany.mock.calls[0]?.[0].data as {
+			nextCheckAt: Date;
+		};
+		expect(nextCheckAt.getTime()).toBeGreaterThanOrEqual(before);
+		expect(nextCheckAt.getTime()).toBeLessThanOrEqual(after);
+	});
+});
+
+/** The fake client, as the `tx` every store function takes. */
+const tx = client as unknown as Prisma.TransactionClient;
+const HEAD = "c".repeat(40);
+const REPO_URL = "https://github.com/example-org/example-repo";
+
+describe("computeSchedulingPatch (spec §5.4, §6.1, Decision 46)", () => {
+	it.each([
+		[
+			"reschedule moves only the clock",
+			{ kind: "reschedule", delayMs: 2 * MIN },
+			2,
+			{ nextCheckAt: new Date(NOW.getTime() + 2 * MIN) },
+		],
+		[
+			"success with a head resets the count and records the cursor",
+			{ kind: "success", commitSha: HEAD },
+			2,
+			{
+				failureCount: 0,
+				nextCheckAt: new Date(NOW.getTime() + 15 * MIN),
+				lastEvaluatedCommitSha: HEAD,
+				lastEvaluatedGeneration: 3,
+			},
+		],
+		[
+			"success without a head leaves the cursor alone",
+			{ kind: "success", commitSha: null },
+			2,
+			{
+				failureCount: 0,
+				nextCheckAt: new Date(NOW.getTime() + 15 * MIN),
+			},
+		],
+		[
+			"suppress records the suppressed head",
+			{ kind: "suppress", commitSha: HEAD },
+			0,
+			{
+				failureCount: 0,
+				nextCheckAt: new Date(NOW.getTime() + 15 * MIN),
+				suppressedCommitSha: HEAD,
+				suppressedGeneration: 3,
+			},
+		],
+		[
+			"backoff counts from the failure count it is given",
+			{ kind: "backoff" },
+			2,
+			{
+				failureCount: 3,
+				nextCheckAt: new Date(NOW.getTime() + 40 * MIN),
+			},
+		],
+		[
+			"pause stamps the reason and the time",
+			{ kind: "pause", reason: "REF_MISSING" },
+			1,
+			{ automaticPausedReason: "REF_MISSING", automaticPausedAt: NOW },
+		],
+	] as const)("%s", (_label, effect, failureCount, expected) => {
+		expect(
+			computeSchedulingPatch(effect, {
+				now: NOW,
+				failureCount,
+				generation: 3,
+			}),
+		).toEqual(expected);
+	});
+
+	it("writes nothing for the none effect", () => {
+		expect(
+			computeSchedulingPatch(
+				{ kind: "none" },
+				{ now: NOW, failureCount: 0, generation: 3 },
+			),
+		).toBeNull();
+	});
+});
+
+describe("claimDueInstructionSyncRows (spec §6.1)", () => {
+	const LEASE_UNTIL = new Date(NOW.getTime() + 2 * MIN);
+	const claimed = [
+		{
+			id: "sync_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+			userId: "user_1",
+			generation: 3,
+			repositoryIntegrationId: "int_1",
+			ref: "main",
+			lastEvaluatedCommitSha: null,
+			lastEvaluatedGeneration: null,
+			suppressedCommitSha: null,
+			suppressedGeneration: null,
+			failureCount: 0,
+			leaseUntil: LEASE_UNTIL,
+		},
+	];
+
+	it("protocol: leases the oldest-due rows of active integrations in one statement that skips locked rows, and returns each lease", async () => {
+		m.$queryRaw.mockResolvedValueOnce(claimed);
+
+		expect(
+			await claimDueInstructionSyncRows(tx, {
+				limit: 8,
+				leaseUntil: LEASE_UNTIL,
+				now: NOW,
+			}),
+		).toEqual(claimed);
+
+		// One statement, no interactive transaction: the claim and the lease
+		// are the same UPDATE, so two overlapping ticks cannot claim one row.
+		expect(m.$transaction).not.toHaveBeenCalled();
+		expect(m.$queryRaw).toHaveBeenCalledTimes(1);
+		const [strings, ...values] = m.$queryRaw.mock.calls[0] as [
+			TemplateStringsArray,
+			...unknown[],
+		];
+		const sql = strings.join("?").replace(/\s+/g, " ");
+		expect(sql).toContain(
+			'UPDATE "project_instruction_repository_sync" AS s SET "nextCheckAt" = ?',
+		);
+		expect(sql).toContain('WHERE s."id" = ANY (ARRAY(');
+		expect(sql).toContain(
+			'JOIN "project_repository_integration" AS i ON i."id" = s2."repositoryIntegrationId"',
+		);
+		expect(sql).toContain('s2."automatic" = true');
+		expect(sql).toContain('s2."automaticPausedReason" IS NULL');
+		expect(sql).toContain('s2."nextCheckAt" <= ?');
+		expect(sql).toContain(`i."status" = 'ACTIVE'`);
+		// Oldest due first: an unprocessed lease (now + 2 min) sorts ahead of
+		// every row a finished check pushed to now + 15 min.
+		expect(sql).toContain(
+			'ORDER BY s2."nextCheckAt" ASC, s2."id" ASC LIMIT ?',
+		);
+		expect(sql).toContain("FOR UPDATE OF s2 SKIP LOCKED");
+		// The subject-neutral row shape (Decision 46).
+		for (const column of [
+			'"id"',
+			'"projectId"',
+			'"organizationId"',
+			'"userId"',
+			'"generation"',
+			'"repositoryIntegrationId"',
+			'"ref"',
+			'"lastEvaluatedCommitSha"',
+			'"lastEvaluatedGeneration"',
+			'"suppressedCommitSha"',
+			'"suppressedGeneration"',
+			'"failureCount"',
+		]) {
+			expect(sql).toContain(`s.${column}`);
+		}
+		// The lease's identity is the value the claim wrote (Decision 31).
+		expect(sql).toContain('s."nextCheckAt" AS "leaseUntil"');
+		expect(values).toEqual([LEASE_UNTIL, NOW, 8]);
+	});
+
+	it("protocol: returns an empty batch when nothing is due", async () => {
+		m.$queryRaw.mockResolvedValueOnce([]);
+		expect(
+			await claimDueInstructionSyncRows(tx, {
+				limit: 8,
+				leaseUntil: LEASE_UNTIL,
+			}),
+		).toEqual([]);
+	});
+});
+
+/** A row as the claim above returned it (Decision 46). */
+const ROW = {
+	id: "sync_1",
+	projectId: "proj_1",
+	organizationId: "org_1",
+	userId: "user_1",
+	generation: 3,
+	repositoryIntegrationId: "int_1",
+	ref: "main",
+	lastEvaluatedCommitSha: null,
+	lastEvaluatedGeneration: null,
+	suppressedCommitSha: null,
+	suppressedGeneration: null,
+	failureCount: 1,
+	leaseUntil: new Date(NOW.getTime() + 2 * MIN),
+};
+const FENCE = { id: "sync_1", generation: 3, leaseUntil: ROW.leaseUntil };
+
+/**
+ * The fence every lease read and write sends, with its first placeholder at
+ * `$first` (Decisions 31 and 48). These are protocol pins: they fix what
+ * reaches Postgres. What the fence does to a row, expiry by the database's
+ * clock included, is pinned against the stateful row store in
+ * instruction-repository-sync-lease.test.ts (Decision 54).
+ */
+function fenceSql(first: number): string {
+	return `"id" = $${first} AND "generation" = $${first + 1} AND "nextCheckAt" = $${first + 2} AND "nextCheckAt" > (clock_timestamp() AT TIME ZONE 'UTC') AND "automatic" = true AND "automaticPausedReason" IS NULL`;
+}
+const FENCE_VALUES = ["sync_1", 3, ROW.leaseUntil];
+
+/** The one raw statement a client method received, whitespace squashed. */
+function sent(method: ReturnType<typeof vi.fn>): {
+	text: string;
+	values: unknown[];
+} {
+	expect(method).toHaveBeenCalledTimes(1);
+	const [query] = method.mock.calls[0] as [
+		{ text: string; values: unknown[] },
+	];
+	return {
+		text: query.text.replace(/\s+/g, " ").trim(),
+		values: query.values,
+	};
+}
+
+describe("instructionSyncLeaseHeld (Decisions 31 and 48)", () => {
+	it("protocol: reads the lease with one raw SELECT on the fence, on the caller's client", async () => {
+		m.$queryRaw.mockResolvedValueOnce([{ id: "sync_1" }]);
+		expect(await instructionSyncLeaseHeld(tx, FENCE)).toBe(true);
+		expect(sent(m.$queryRaw)).toEqual({
+			text: `SELECT "id" FROM "project_instruction_repository_sync" WHERE ${fenceSql(1)}`,
+			values: FENCE_VALUES,
+		});
+		expect(m.sync.findFirst).not.toHaveBeenCalled();
+	});
+
+	it("protocol: no row back means the lease is lost", async () => {
+		m.$queryRaw.mockResolvedValueOnce([]);
+		expect(await instructionSyncLeaseHeld(tx, FENCE)).toBe(false);
+	});
+});
+
+describe("writeBackInstructionSync (spec §6.1, Decisions 31, 46 and 48)", () => {
+	const PATCH = { nextCheckAt: new Date(NOW.getTime() + 15 * MIN) };
+
+	it("protocol: one raw UPDATE of the patch's columns and updatedAt on the fence, with no transaction", async () => {
+		m.$executeRaw.mockResolvedValueOnce(1);
+		expect(await writeBackInstructionSync(tx, FENCE, PATCH)).toEqual({
+			applied: true,
+		});
+		expect(sent(m.$executeRaw)).toEqual({
+			text: `UPDATE "project_instruction_repository_sync" SET "nextCheckAt" = $1, "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC') WHERE ${fenceSql(2)}`,
+			values: [PATCH.nextCheckAt, ...FENCE_VALUES],
+		});
+		expect(m.$transaction).not.toHaveBeenCalled();
+		expect(m.sync.updateMany).not.toHaveBeenCalled();
+	});
+
+	it("protocol: sets every contract column a patch names, in a fixed order, casting the pause to its enum", async () => {
+		m.$executeRaw.mockResolvedValueOnce(1);
+		await writeBackInstructionSync(tx, FENCE, {
+			nextCheckAt: PATCH.nextCheckAt,
+			failureCount: 0,
+			automaticPausedReason: "REF_MISSING",
+			automaticPausedAt: NOW,
+			suppressedCommitSha: null,
+			suppressedGeneration: 3,
+			lastEvaluatedCommitSha: HEAD,
+			lastEvaluatedGeneration: 3,
+		});
+		expect(sent(m.$executeRaw)).toEqual({
+			text: `UPDATE "project_instruction_repository_sync" SET "nextCheckAt" = $1, "failureCount" = $2, "automaticPausedReason" = $3::"ProjectInstructionSyncPause", "automaticPausedAt" = $4, "suppressedCommitSha" = $5, "suppressedGeneration" = $6, "lastEvaluatedCommitSha" = $7, "lastEvaluatedGeneration" = $8, "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC') WHERE ${fenceSql(9)}`,
+			values: [
+				PATCH.nextCheckAt,
+				0,
+				"REF_MISSING",
+				NOW,
+				null,
+				3,
+				HEAD,
+				3,
+				...FENCE_VALUES,
+			],
+		});
+	});
+
+	it("protocol: no row updated means nothing applied", async () => {
+		m.$executeRaw.mockResolvedValueOnce(0);
+		expect(await writeBackInstructionSync(tx, FENCE, PATCH)).toEqual({
+			applied: false,
+		});
+	});
+});
+
+describe("recordInstructionSyncCheckFailure (spec §6.1, Decision 35)", () => {
+	const failure = {
+		row: ROW,
+		pollRunId: "poll_run_1",
+		error: "REF_MISSING" as const,
+		pause: "REF_MISSING" as const,
+		now: NOW,
+	};
+
+	it("protocol: pauses on the fence first, then writes the FAILED POLL run row and the completion audit, all on the caller's client", async () => {
+		m.$executeRaw.mockResolvedValueOnce(1);
+		m.run.createMany.mockResolvedValue({ count: 1 });
+
+		expect(await recordInstructionSyncCheckFailure(tx, failure)).toEqual({
+			applied: true,
+		});
+
+		// The caller owns the transaction (Decision 46).
+		expect(m.$transaction).not.toHaveBeenCalled();
+		expect(sent(m.$executeRaw)).toEqual({
+			text: `UPDATE "project_instruction_repository_sync" SET "automaticPausedReason" = $1::"ProjectInstructionSyncPause", "automaticPausedAt" = $2, "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC') WHERE ${fenceSql(3)}`,
+			values: ["REF_MISSING", NOW, ...FENCE_VALUES],
+		});
+		expect(m.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+			m.run.createMany.mock.invocationCallOrder[0] ?? 0,
+		);
+		expect(m.run.createMany).toHaveBeenCalledWith({
+			data: [
+				{
+					// The generation is part of the key: one poll run can claim
+					// the same sync again after a re-configure (Decision 35).
+					id: "sync_1:poll_run_1:3",
+					syncId: "sync_1",
+					projectId: "proj_1",
+					organizationId: "org_1",
+					userId: "user_1",
+					generation: 3,
+					trigger: "POLL",
+					startedAt: NOW,
+					finishedAt: NOW,
+					status: "FAILED",
+					error: "REF_MISSING",
+				},
+			],
+			skipDuplicates: true,
+		});
+		// Exactly the audit `completeInstructionRepositorySyncRun` writes.
+		expect(m.recordAuditTx).toHaveBeenCalledTimes(1);
+		expect(m.recordAuditTx).toHaveBeenCalledWith(tx, {
+			action: "project.instructions.repository_sync_completed",
+			category: "project",
+			severity: "warning",
+			outcome: "failure",
+			actor: { type: "user", userId: "user_1" },
+			organizationId: "org_1",
+			projectId: "proj_1",
+			resource: {
+				type: "project_instruction_repository_sync",
+				id: "sync_1",
+			},
+			metadata: {
+				trigger: "POLL",
+				status: "FAILED",
+				error: "REF_MISSING",
+				note: null,
+				commitSha: null,
+				snapshotId: null,
+				generation: 3,
+			},
+		});
+	});
+
+	it("protocol: records a revoked delegate the same way, pausing with PERMISSION_REVOKED (Decision 33)", async () => {
+		m.$executeRaw.mockResolvedValueOnce(1);
+		m.run.createMany.mockResolvedValue({ count: 1 });
+
+		await recordInstructionSyncCheckFailure(tx, {
+			...failure,
+			error: "PERMISSION_DENIED",
+			pause: "PERMISSION_REVOKED",
+		});
+
+		expect(sent(m.$executeRaw).values.slice(0, 2)).toEqual([
+			"PERMISSION_REVOKED",
+			NOW,
+		]);
+		expect(m.run.createMany.mock.calls[0]?.[0].data[0]).toMatchObject({
+			status: "FAILED",
+			error: "PERMISSION_DENIED",
+		});
+		expect(m.recordAuditTx).toHaveBeenCalledWith(
+			tx,
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					error: "PERMISSION_DENIED",
+				}),
+			}),
+		);
+	});
+
+	it("protocol: stops after a pause that matched no row", async () => {
+		m.$executeRaw.mockResolvedValueOnce(0);
+		expect(await recordInstructionSyncCheckFailure(tx, failure)).toEqual({
+			applied: false,
+		});
+		expect(m.run.createMany).not.toHaveBeenCalled();
+		expect(m.recordAuditTx).not.toHaveBeenCalled();
+	});
+});
+
+describe("findInstructionSyncsForPush (spec §6.2, Decision 46)", () => {
+	function stored(overrides: Record<string, unknown> = {}) {
+		return {
+			id: "sync_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+			generation: 3,
+			ref: "main",
+			automatic: true,
+			automaticPausedReason: null,
+			lastEvaluatedCommitSha: HEAD,
+			lastEvaluatedGeneration: 3,
+			suppressedCommitSha: null,
+			suppressedGeneration: null,
+			repositoryIntegration: {
+				projectId: "proj_1",
+				project: { organizationId: "org_1" },
+			},
+			...overrides,
+		};
+	}
+
+	it("reads the syncs that follow the pushed branch on the repository's active integrations, oldest first", async () => {
+		m.sync.findMany.mockResolvedValue([stored()]);
+
+		expect(
+			await findInstructionSyncsForPush({
+				repositoryUrl: REPO_URL,
+				ref: "main",
+			}),
+		).toEqual([
+			{
+				id: "sync_1",
+				projectId: "proj_1",
+				organizationId: "org_1",
+				generation: 3,
+				ref: "main",
+				automatic: true,
+				automaticPausedReason: null,
+				lastEvaluatedCommitSha: HEAD,
+				lastEvaluatedGeneration: 3,
+				suppressedCommitSha: null,
+				suppressedGeneration: null,
+			},
+		]);
+		expect(m.sync.findMany).toHaveBeenCalledWith({
+			where: {
+				ref: "main",
+				repositoryIntegration: {
+					repositoryUrl: REPO_URL,
+					status: "ACTIVE",
+				},
+			},
+			orderBy: { createdAt: "asc" },
+			select: expect.objectContaining({
+				id: true,
+				organizationId: true,
+				automatic: true,
+				automaticPausedReason: true,
+				lastEvaluatedCommitSha: true,
+				lastEvaluatedGeneration: true,
+				suppressedCommitSha: true,
+				suppressedGeneration: true,
+				repositoryIntegration: {
+					select: {
+						projectId: true,
+						project: { select: { organizationId: true } },
+					},
+				},
+			}),
+		});
+	});
+
+	it.each([
+		[
+			"a push naming another project's organization starts nothing (Review Focus 1)",
+			{
+				repositoryIntegration: {
+					projectId: "proj_1",
+					project: { organizationId: "org_2" },
+				},
+			},
+		],
+		[
+			"a row whose integration belongs to another project is dropped",
+			{
+				repositoryIntegration: {
+					projectId: "proj_2",
+					project: { organizationId: "org_1" },
+				},
+			},
+		],
+		[
+			"a row whose integration's project has no organization is dropped",
+			{
+				repositoryIntegration: {
+					projectId: "proj_1",
+					project: { organizationId: null },
+				},
+			},
+		],
+	])("%s", async (_label, overrides) => {
+		m.sync.findMany.mockResolvedValue([
+			stored(overrides),
+			stored({
+				id: "sync_2",
+				projectId: "proj_2",
+				repositoryIntegration: {
+					projectId: "proj_2",
+					project: { organizationId: "org_1" },
+				},
+			}),
+		]);
+		const rows = await findInstructionSyncsForPush({
+			repositoryUrl: REPO_URL,
+			ref: "main",
+		});
+		// The consistent row still counts; the other is dropped.
+		expect(rows.map((row) => row.id)).toEqual(["sync_2"]);
 	});
 });

@@ -39,18 +39,19 @@ import {
 import { getStorageProvider } from "@repo/storage";
 import { ApplicationFailure } from "@temporalio/activity";
 import { getTemporalClient } from "../client";
-import type {
-	AcquireTreeResult,
-	AwaitSnapshotSettledInput,
-	AwaitSnapshotSettledResult,
-	BeginSyncRunInput,
-	BeginSyncRunResult,
-	InstructionSyncErrorCode,
-	RecordSyncRunInput,
-	RecordSyncRunResult,
-	SnapshotChildResult,
-	SyncFailureDetails,
-	SyncRunContext,
+import {
+	type AcquireTreeResult,
+	type AwaitSnapshotSettledInput,
+	type AwaitSnapshotSettledResult,
+	type BeginSyncRunInput,
+	type BeginSyncRunResult,
+	type InstructionSyncErrorCode,
+	isAutomaticInstructionSyncTrigger,
+	type RecordSyncRunInput,
+	type RecordSyncRunResult,
+	type SnapshotChildResult,
+	type SyncFailureDetails,
+	type SyncRunContext,
 } from "../lib/instruction-sync-types";
 import {
 	requestAbortSignal,
@@ -175,19 +176,40 @@ export async function beginInstructionRepositorySyncRun(
 			context: { ...context, generation: receipt.generation },
 		};
 	}
-	if (
-		row.repositoryIntegration.status !== "ACTIVE" ||
-		row.repositoryIntegration.projectId !== row.projectId
-	) {
-		return { ok: false, error: "INTEGRATION_UNAVAILABLE", context };
-	}
-	if (input.trigger !== "MANUAL") {
+	if (isAutomaticInstructionSyncTrigger(input.trigger)) {
+		// Eligibility is checked before `expected`: every writer of `automatic`
+		// bumps the generation, and the poll/webhook always pass `expected`
+		// from the row they read. Checking `expected` first would turn a
+		// member's automatic-off flip after a poll/webhook already started
+		// into a warning-severity CONFIGURATION_CHANGED failure instead of the
+		// intended SKIPPED outcome (plan Decision 47).
 		if (!row.automatic) {
 			return { ok: false, skipped: "automatic_disabled", context };
 		}
 		if (row.automaticPausedReason !== null) {
 			return { ok: false, skipped: "paused", context };
 		}
+	}
+	if (
+		input.expected !== undefined &&
+		(input.expected.syncId !== row.id ||
+			input.expected.generation !== row.generation)
+	) {
+		// An automatic start decided on a row that has since been replaced or
+		// re-configured (PR 2 Decision 56). The receipt above is this run's
+		// row, and `record` completes it FAILED with no scheduling effect. The
+		// re-configure made the sync due now, so the next check starts the run
+		// for the configuration that is current.
+		return { ok: false, error: "CONFIGURATION_CHANGED", context };
+	}
+	if (
+		row.repositoryIntegration.status !== "ACTIVE" ||
+		row.repositoryIntegration.projectId !== row.projectId
+	) {
+		// The `expected` check stays above this one: a mismatch caught here
+		// on a broken integration would back off the new generation instead of
+		// surfacing the configuration change (plan Decision 56).
+		return { ok: false, error: "INTEGRATION_UNAVAILABLE", context };
 	}
 	if (!(await canCreateProjectInstructions(row.projectId, actingUserId))) {
 		return { ok: false, error: "PERMISSION_DENIED", context };

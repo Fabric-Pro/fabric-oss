@@ -857,7 +857,7 @@ describe("published, lock and drift", () => {
 		});
 	});
 
-	it("lists drifted files as items and proposes sync, naming push for keeping edits", async () => {
+	it("fails mixed drift with sync, marking the edit as a warning and naming --repair and push", async () => {
 		const { dest } = await syncedTree({
 			"AGENTS.md": "# a\n",
 			"rules/one.md": "one\n",
@@ -874,12 +874,63 @@ describe("published, lock and drift", () => {
 		expect(drift.detail).toBe(
 			"2 of 3 files the last sync wrote no longer match the lock",
 		);
+		// Spec §6.4: sync keeps the edit, so only the missing file fails.
 		expect(drift.items).toEqual([
-			{ name: "AGENTS.md", status: "fail", detail: "edited" },
+			{ name: "AGENTS.md", status: "warn", detail: "edited" },
 			{ name: "rules/two.md", status: "fail", detail: "missing" },
 		]);
 		expect(drift.fix?.command).toBe(
 			`fabric instructions sync --project project-1 --dest ${dest}`,
+		);
+		expect(drift.fix?.description).toContain(
+			`fabric instructions sync --project project-1 --dest ${dest} --repair`,
+		);
+		expect(drift.fix?.description).toContain(
+			`fabric instructions push --project project-1 --dest ${dest}`,
+		);
+	});
+
+	it("warns on edits alone, naming the ones sync kept, and proposes sync --repair", async () => {
+		const { dest, manifest, published } = await syncedTree({
+			"AGENTS.md": "# a\n",
+			"rules/one.md": "one\n",
+		});
+		await writeFile(path.join(dest, "AGENTS.md"), "# my note\n", "utf8");
+		await writeFile(
+			path.join(dest, "rules/one.md"),
+			"one, edited\n",
+			"utf8",
+		);
+		// The lock a keeping sync leaves: it saw and kept AGENTS.md; the other
+		// edit is newer than the last sync.
+		await writeLock(
+			dest,
+			nextLock({
+				projectId: "project-1",
+				snapshot: published.snapshot,
+				manifest,
+				kept: ["AGENTS.md"],
+			}),
+		);
+
+		const { report } = await doctorJson(dest);
+
+		expect(checkOf(report, "lock").status).toBe("pass");
+		const drift = checkOf(report, "drift");
+		expect(drift.status).toBe("warn");
+		expect(drift.detail).toBe(
+			"2 of 2 files the last sync wrote carry local edits, which sync keeps",
+		);
+		expect(drift.items).toEqual([
+			{
+				name: "AGENTS.md",
+				status: "warn",
+				detail: "edited (kept by sync)",
+			},
+			{ name: "rules/one.md", status: "warn", detail: "edited" },
+		]);
+		expect(drift.fix?.command).toBe(
+			`fabric instructions sync --project project-1 --dest ${dest} --repair`,
 		);
 		expect(drift.fix?.description).toContain(
 			`fabric instructions push --project project-1 --dest ${dest}`,

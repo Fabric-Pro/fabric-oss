@@ -16,7 +16,7 @@
 import { createHash } from "node:crypto";
 import { chmod } from "node:fs/promises";
 import { describeRejection } from "./paths.js";
-import type { PlanEntry, SyncPlan } from "./plan.js";
+import { hashLocalFile, type PlanEntry, type SyncPlan } from "./plan.js";
 import {
 	assertWritableTarget,
 	deleteFileSafely,
@@ -36,6 +36,12 @@ export interface ApplyResult {
 	 * left where they are.
 	 */
 	keptModified: string[];
+	/**
+	 * Planned writes left alone because the file changed after planning: an
+	 * editor saved over a file the plan meant to update, or created one where
+	 * it meant to add (Decision 37). Only when `keepLocalEdits` is set.
+	 */
+	keptEdited: string[];
 }
 
 export interface ApplyInput {
@@ -44,6 +50,12 @@ export interface ApplyInput {
 	plan: SyncPlan;
 	/** Extracted archive entries, keyed by the manifest path. */
 	contents: Map<string, Uint8Array>;
+	/**
+	 * Re-hash each write's target just before writing it, and leave it alone
+	 * when it no longer holds what the plan saw (`PlanEntry.localSha256`).
+	 * The CLI sets it unless `sync --repair` was given (spec §6.4).
+	 */
+	keepLocalEdits?: boolean;
 }
 
 export async function applyPlan(input: ApplyInput): Promise<ApplyResult> {
@@ -62,6 +74,9 @@ export async function applyPlan(input: ApplyInput): Promise<ApplyResult> {
 		...plan.verified,
 		...plan.deletes,
 		...plan.keptRenamed,
+		// Never written, but the lock is about to record it as a synced
+		// file, so it has to be one.
+		...plan.keptEdited,
 	]) {
 		const check = await assertWritableTarget(root, entry.path);
 		if (!check.ok) {
@@ -96,8 +111,30 @@ export async function applyPlan(input: ApplyInput): Promise<ApplyResult> {
 	const deleted: string[] = [];
 	const remoded: string[] = [];
 	const keptModified: string[] = [];
+	const keptEdited: string[] = [];
 
 	for (const entry of plan.writes) {
+		// Planning ran before the download and the extraction, and an editor
+		// saving in that window must not lose the save: the same window the
+		// expected hash on each delete below closes (Decision 37). What is
+		// left is the moment between this read and the rename, which no
+		// portable file API closes.
+		//
+		// A re-hash of `null` — the target vanished after planning — proceeds
+		// with the write rather than counting as kept: planning would have
+		// called that same absence `added`, not a conflicting edit, so this
+		// keeps apply time agreeing with plan time (review finding, Fizzy
+		// #2540).
+		if (input.keepLocalEdits && entry.localSha256 !== undefined) {
+			const currentLocalHash = await hashLocalFile(root, entry.path);
+			if (
+				currentLocalHash !== null &&
+				currentLocalHash !== entry.localSha256
+			) {
+				keptEdited.push(entry.path);
+				continue;
+			}
+		}
 		// Non-null: phase 1 refused the whole plan if any byte was missing.
 		const bytes = contents.get(entry.path) as Uint8Array;
 		await writeFileSafely({
@@ -139,7 +176,7 @@ export async function applyPlan(input: ApplyInput): Promise<ApplyResult> {
 	// Directories are deliberately left behind. An empty directory is
 	// harmless; removing one races with anything the developer put in it.
 
-	return { written, deleted, remoded, keptModified };
+	return { written, deleted, remoded, keptModified, keptEdited };
 }
 
 /** Returns true when a mode was actually applied. */
