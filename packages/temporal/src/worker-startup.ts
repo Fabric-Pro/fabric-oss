@@ -1,4 +1,5 @@
 import type { Worker } from "@temporalio/worker";
+import { sweepStaleSyncRunDirs } from "./activities/lib/instruction-sync-temp";
 import { registerSystemSchedules } from "./schedules";
 
 /**
@@ -25,6 +26,16 @@ export function startWorkerRuntime(
 	registerSystemSchedules().catch((error) => {
 		console.error(
 			"[Worker] Failed to register system schedules:",
+			error instanceof Error ? error.message : error,
+		);
+	});
+
+	// Repository-sync clones a crashed worker left behind (design 2026-09-23
+	// §8.2). Same contract as the schedule registration above: best-effort,
+	// never blocks polling, and the swallow is explicit.
+	sweepStaleSyncRunDirs().catch((error) => {
+		console.error(
+			"[Worker] Failed to sweep instruction sync temp dirs:",
 			error instanceof Error ? error.message : error,
 		);
 	});

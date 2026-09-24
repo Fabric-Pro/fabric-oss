@@ -22,12 +22,29 @@ import {
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { useTranslations } from "next-intl";
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 // Script/settings/other files render as plain preformatted text — no
 // Markdown or frontmatter parsing, since they are not Markdown documents.
 const PLAIN_KINDS = new Set(["SCRIPT", "SETTINGS", "OTHER"]);
+
+/**
+ * Frontmatter keys the header already shows, as its heading, its
+ * description, or a row of its own. Every other top-level key is shown as
+ * written, so a Guild-shaped file's `owner`, `tags`, `status`, `since` and
+ * `areas` (design 2026-09-23 §5.8) are readable in the tab.
+ */
+const HEADER_FIELD_KEYS = new Set([
+	"name",
+	"description",
+	"argument-hint",
+	"allowed-tools",
+	"tools",
+	"model",
+	"paths",
+	"disable-model-invocation",
+]);
 
 async function copyMcpCall(
 	text: string,
@@ -206,7 +223,15 @@ export function InstructionFileView({
 		return <p className="text-muted-foreground">{t("couldNotLoad")}</p>;
 	}
 	const f = q.data;
-	const showHeader = Boolean(f.name || f.description);
+	const extraFields = parsed
+		? Object.entries(parsed.fields).filter(
+				([key, value]) =>
+					!HEADER_FIELD_KEYS.has(key) && value.length > 0,
+			)
+		: [];
+	const showHeader = Boolean(
+		f.name || f.description || extraFields.length > 0,
+	);
 	const refusal = editRefusal(f, t);
 	const draftForPath = draft?.path === f.path ? draft : null;
 	// Saveable only while the version it was taken from is still the one this
@@ -498,6 +523,16 @@ export function InstructionFileView({
 											</dd>
 										</>
 									) : null}
+									{extraFields.map(([key, value]) => (
+										<Fragment key={key}>
+											<dt className="text-muted-foreground">
+												{key}
+											</dt>
+											<dd className="whitespace-pre-line">
+												{value}
+											</dd>
+										</Fragment>
+									))}
 								</dl>
 							) : null}
 						</div>

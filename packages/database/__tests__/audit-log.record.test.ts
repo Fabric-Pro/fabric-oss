@@ -440,4 +440,23 @@ describe("audit taxonomy — closed action set", () => {
 			"project.instructions.settings_updated",
 		);
 	});
+
+	// Repository sync (design 2026-09-23 §8.5). Same failure mode as above: an
+	// unregistered key is written as `audit.unknown_action` and cannot be
+	// filtered for, which for "who pointed this project at that repository"
+	// is the question an incident starts from.
+	it("includes the coding-instructions repository sync lifecycle in the closed taxonomy", () => {
+		expect(AUDIT_ACTIONS).toContain(
+			"project.instructions.repository_sync_configured",
+		);
+		expect(AUDIT_ACTIONS).toContain(
+			"project.instructions.repository_sync_started",
+		);
+		expect(AUDIT_ACTIONS).toContain(
+			"project.instructions.repository_sync_completed",
+		);
+		expect(AUDIT_ACTIONS).toContain(
+			"project.instructions.repository_sync_disabled",
+		);
+	});
 });

@@ -29,11 +29,23 @@ type Snapshot = {
 	publishOnReady: boolean;
 };
 
+const IDLE_SYNC = {
+	sourceOfTruth: "UPLOAD",
+	canConfigure: false,
+	running: false,
+	configured: null,
+	latestRun: null,
+	availableIntegrations: [],
+};
+
 const state = vi.hoisted(() => ({
 	snapshots: [] as unknown[],
 	published: null as unknown,
+	sync: null as unknown,
+	settingsPending: false,
 	listCalls: 0,
 	publishedCalls: 0,
+	syncCalls: 0,
 }));
 
 /**
@@ -66,11 +78,15 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					}),
 				},
 				getSettings: {
-					queryOptions: queryOptionsStub("getSettings", async () => ({
-						ignoreGlobs: null,
-						defaultIgnoreGlobs: [],
-						sourceOfTruth: null,
-					})),
+					queryOptions: queryOptionsStub("getSettings", () =>
+						state.settingsPending
+							? new Promise(() => undefined)
+							: Promise.resolve({
+									ignoreGlobs: null,
+									defaultIgnoreGlobs: [],
+									sourceOfTruth: null,
+								}),
+					),
 				},
 				proposals: {
 					list: {
@@ -80,17 +96,62 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						),
 					},
 				},
+				repositorySync: {
+					get: {
+						queryOptions: queryOptionsStub(
+							"repositorySync-get",
+							async () => {
+								state.syncCalls++;
+								return state.sync;
+							},
+						),
+					},
+					listRuns: {
+						queryOptions: queryOptionsStub(
+							"repositorySync-listRuns",
+							async () => ({
+								runs: [],
+							}),
+						),
+					},
+					syncNow: {
+						mutationOptions: (
+							opts: Record<string, unknown> = {},
+						) => ({
+							mutationFn: async () => ({ started: true }),
+							...opts,
+						}),
+					},
+				},
 			},
 		},
 	},
 }));
 
+vi.mock("../ConfigureRepositorySyncDialog", () => ({
+	ConfigureRepositorySyncDialog: () => null,
+}));
+
 vi.mock("../InstructionsPublishedView", () => ({
 	InstructionsPublishedView: ({
 		published,
+		repositoryBacked,
+		repositoryConfirmed,
 	}: {
 		published: { id?: string } | null;
-	}) => <div data-testid="published-id">{published?.id ?? "none"}</div>,
+		repositoryBacked?: boolean;
+		repositoryConfirmed?: boolean;
+	}) => (
+		<>
+			<div data-testid="published-id">{published?.id ?? "none"}</div>
+			<div data-testid="repository-backed">
+				{String(repositoryBacked)}
+			</div>
+			<div data-testid="repository-confirmed">
+				{String(repositoryConfirmed)}
+			</div>
+		</>
+	),
 }));
 vi.mock("../InstructionsEmptyState", () => ({
 	InstructionsEmptyState: () => <div data-testid="empty" />,
@@ -134,8 +195,11 @@ beforeEach(() => {
 	vi.useFakeTimers();
 	state.snapshots = [snapshot("snap_2", "VALIDATING")];
 	state.published = { id: "snap_1", version: 1, status: "READY" };
+	state.sync = IDLE_SYNC;
+	state.settingsPending = false;
 	state.listCalls = 0;
 	state.publishedCalls = 0;
+	state.syncCalls = 0;
 });
 
 afterEach(() => {
@@ -257,4 +321,105 @@ describe("CodingInstructionsTab publication convergence", () => {
 			expect(state.publishedCalls).toBe(settled.published);
 		},
 	);
+});
+
+describe("CodingInstructionsTab repository sync polling", () => {
+	it("re-reads the sync state and the list while a run is open, and stops once it closes", async () => {
+		state.snapshots = [snapshot("snap_1", "READY")];
+		state.published = { id: "snap_1", version: 2, status: "READY" };
+		state.sync = { ...IDLE_SYNC, running: true };
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{
+				wrapper: Wrapper,
+			},
+		);
+		await tick(0);
+		const opened = { sync: state.syncCalls, list: state.listCalls };
+
+		await tick(POLL_MS);
+		await tick(POLL_MS);
+		// Nothing in the list is in flight; only the open run keeps it polled,
+		// so the snapshot the run creates appears without a reload.
+		expect(state.syncCalls).toBeGreaterThan(opened.sync);
+		expect(state.listCalls).toBeGreaterThan(opened.list);
+
+		state.sync = IDLE_SYNC;
+		await tick(POLL_MS);
+		await tick(POLL_MS);
+		const settled = {
+			sync: state.syncCalls,
+			list: state.listCalls,
+			published: state.publishedCalls,
+		};
+		for (let i = 0; i < 5; i++) {
+			await tick(POLL_MS);
+		}
+		expect(state.syncCalls).toBe(settled.sync);
+		expect(state.listCalls).toBe(settled.list);
+		expect(state.publishedCalls).toBe(settled.published);
+	});
+
+	it("reads the sync state once and never polls it with no run open", async () => {
+		state.snapshots = [snapshot("snap_1", "READY")];
+		state.published = { id: "snap_1", version: 2, status: "READY" };
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{
+				wrapper: Wrapper,
+			},
+		);
+		await tick(0);
+		expect(state.syncCalls).toBe(1);
+		for (let i = 0; i < 5; i++) {
+			await tick(POLL_MS);
+		}
+		expect(state.syncCalls).toBe(1);
+	});
+});
+
+describe("CodingInstructionsTab source-of-truth while settings load", () => {
+	// The actions fail closed (treated as repository-backed until settings
+	// load), but the rejected banner's copy must not claim the files live in
+	// the repository before that is known.
+	it("hides actions but does not confirm repository mode while settings are loading", async () => {
+		state.settingsPending = true;
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+		expect(screen.getByTestId("repository-backed")).toHaveTextContent(
+			"true",
+		);
+		expect(screen.getByTestId("repository-confirmed")).toHaveTextContent(
+			"false",
+		);
+	});
+
+	it("leaves both off once the settings resolve to upload mode", async () => {
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+		expect(screen.getByTestId("repository-backed")).toHaveTextContent(
+			"false",
+		);
+		expect(screen.getByTestId("repository-confirmed")).toHaveTextContent(
+			"false",
+		);
+	});
 });

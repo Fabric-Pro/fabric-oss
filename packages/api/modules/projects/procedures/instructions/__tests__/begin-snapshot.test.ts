@@ -215,6 +215,32 @@ describe("projects.instructions.begin", () => {
 		});
 	});
 
+	// Spec §4: while a repository is the source of truth, a browser or API
+	// upload would publish files the repository never had.
+	it("refuses an upload while the repository is the source of truth", async () => {
+		m.getProjectInstructionSettings.mockResolvedValue({
+			ignoreGlobs: null,
+			sourceOfTruth: "REPOSITORY",
+		});
+		await expect(
+			m.handlers.begin!({
+				input: {
+					projectId: "proj_1",
+					publishOnReady: true,
+					files: [
+						{ path: "CLAUDE.md", size: 10, sha256: "a".repeat(64) },
+					],
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			message: expect.stringContaining("come from its repository"),
+		});
+		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+	});
+
 	it("refuses a project with no hosting organization", async () => {
 		m.resolveEffectiveProjectPermissions.mockResolvedValue({
 			permissions: ["instruction:create"],

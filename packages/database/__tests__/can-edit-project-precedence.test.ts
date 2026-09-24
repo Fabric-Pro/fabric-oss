@@ -45,6 +45,7 @@ vi.mock("../prisma/client", () => ({
 }));
 
 import {
+	canCreateProjectInstructions,
 	canCreateProjectStory,
 	canEditProject,
 	resolveProjectAccess,
@@ -310,5 +311,79 @@ describe("canCreateProjectStory walks the SAME ladder", () => {
 		mocks.projectFindUnique.mockResolvedValue(null);
 
 		expect(await canCreateProjectStory(PROJECT_ID, USER_ID)).toBe(false);
+	});
+});
+
+describe("canCreateProjectInstructions", () => {
+	it("grants an active EDITOR project member", async () => {
+		orgProject();
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role: "EDITOR",
+			acceptedAt: new Date(),
+			expiresAt: null,
+		});
+		expect(await canCreateProjectInstructions(PROJECT_ID, USER_ID)).toBe(
+			true,
+		);
+	});
+
+	it("refuses a VIEWER project member even when their org role would grant it", async () => {
+		orgProject();
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role: "VIEWER",
+			acceptedAt: new Date(),
+			expiresAt: null,
+		});
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+		expect(await canCreateProjectInstructions(PROJECT_ID, USER_ID)).toBe(
+			false,
+		);
+	});
+
+	it("grants a plain org member with no project row (org role member holds instruction:create)", async () => {
+		orgProject();
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "member" });
+		expect(await canCreateProjectInstructions(PROJECT_ID, USER_ID)).toBe(
+			true,
+		);
+	});
+
+	it("refuses a user with no tie to the project", async () => {
+		orgProject();
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue(null);
+		expect(await canCreateProjectInstructions(PROJECT_ID, USER_ID)).toBe(
+			false,
+		);
+	});
+
+	it("reads through the transaction client it is given, never the global client", async () => {
+		const tx = {
+			project: {
+				findUnique: vi.fn().mockResolvedValue({
+					userId: OWNER_ID,
+					organizationId: ORG_ID,
+				}),
+			},
+			projectMember: {
+				findUnique: vi.fn().mockResolvedValue({
+					role: "EDITOR",
+					acceptedAt: new Date(),
+					expiresAt: null,
+				}),
+			},
+			member: { findFirst: vi.fn() },
+		};
+		expect(
+			await canCreateProjectInstructions(
+				PROJECT_ID,
+				USER_ID,
+				tx as never,
+			),
+		).toBe(true);
+		expect(tx.project.findUnique).toHaveBeenCalled();
+		expect(mocks.projectFindUnique).not.toHaveBeenCalled();
+		expect(mocks.projectMemberFindUnique).not.toHaveBeenCalled();
 	});
 });

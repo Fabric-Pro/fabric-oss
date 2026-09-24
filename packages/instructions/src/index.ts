@@ -1,3 +1,4 @@
+export * from "./file-typing";
 export * from "./frontmatter";
 export * from "./ignore";
 export * from "./kinds";
@@ -5,6 +6,7 @@ export * from "./lifecycle";
 export * from "./limits";
 export * from "./manifest";
 export * from "./paths";
+export * from "./plan-files";
 export * from "./secrets";
 export * from "./storage-keys";
 export * from "./workflow-ids";

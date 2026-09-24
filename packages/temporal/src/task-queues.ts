@@ -14,3 +14,13 @@
 
 /** Queue the CUGA-inspired orchestrator worker polls. */
 export const ORCHESTRATOR_TASK_QUEUE = "fabric-orchestrator" as const;
+
+/**
+ * Where the repository sync workflow's OWN activities run (begin, acquire,
+ * settle, record). The workflow itself, and the snapshot workflow it starts
+ * as a child, stay on `project-instructions`; that queue's two activity slots
+ * are sized for upload validation, and a ten-minute clone or a ten-minute
+ * settle poll holding one of them would make an upload wait (the reaper
+ * schedule is kept off it for the same reason, `schedules.ts:710-722`).
+ */
+export const INSTRUCTION_SYNC_ACTIVITY_TASK_QUEUE = "fabric-worker" as const;

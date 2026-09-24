@@ -25,13 +25,13 @@ import {
 	collisionKey,
 	describePortableNameRefusal,
 	FABRIC_IGNORE_FILE,
+	fileTypingFor,
 	isSecretFileName,
 	SNAPSHOT_LIMITS,
 	stagingKey,
 	validatePortableName,
 	validateRelativePath,
 } from "@repo/instructions";
-import { fileTypingFor } from "./file-typing";
 
 /**
  * The most paths one derivation may touch.

@@ -621,4 +621,34 @@ describe("InstructionFileView", () => {
 			expect(await call.edits[0]!.body.text()).toBe("# Theirs plus mine");
 		});
 	});
+
+	// Design 2026-09-23 §5.8: a Guild file's frontmatter carries keys the
+	// header has no dedicated row for. `parseFrontmatter` already keeps them;
+	// the header now shows them as written.
+	it("shows frontmatter keys it has no dedicated row for, as written", async () => {
+		fileResponse.current = {
+			...TEXT_FILE,
+			path: "Knowledge/deploys.md",
+			kind: "KNOWLEDGE",
+			name: "deploys",
+			description: "How deploys work.",
+			body: "---\nname: deploys\ndescription: How deploys work.\nowner: platform-team\ntags: [deploy, ops]\nstatus: active\nsince: 2026-01-01\nareas:\n  - api\n  - web\n---\n\nBody.",
+		};
+		render(
+			<InstructionFileView
+				projectId="p"
+				snapshotId="s"
+				path="Knowledge/deploys.md"
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+		expect(await screen.findByText("owner")).toBeInTheDocument();
+		expect(screen.getByText("platform-team")).toBeInTheDocument();
+		expect(screen.getByText("[deploy, ops]")).toBeInTheDocument();
+		expect(screen.getByText("active")).toBeInTheDocument();
+		expect(screen.getByText("2026-01-01")).toBeInTheDocument();
+		expect(screen.getByText(/- api\s+- web/)).toBeInTheDocument();
+		// The heading and description are not repeated as rows.
+		expect(screen.queryByText("description")).toBeNull();
+	});
 });

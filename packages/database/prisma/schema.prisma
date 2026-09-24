@@ -324,6 +324,8 @@ model User {
   instructionSnapshots         ProjectInstructionSnapshot[] @relation("InstructionSnapshotCreator")
   reviewedInstructionSnapshots ProjectInstructionSnapshot[] @relation("InstructionSnapshotReviewer")
   instructionFiles     ProjectInstructionFile[]
+  instructionRepositorySyncs     ProjectInstructionRepositorySync[]    @relation("InstructionRepositorySyncDelegate")
+  instructionRepositorySyncRuns  ProjectInstructionRepositorySyncRun[] @relation("InstructionRepositorySyncRunActor")
 
   // Meeting transcript sync relations
   linkedMeetings     ProjectLinkedMeeting[]
@@ -776,6 +778,8 @@ model Organization {
   // Coding Instructions
   instructionSnapshots ProjectInstructionSnapshot[]
   instructionFiles     ProjectInstructionFile[]
+  instructionRepositorySyncs     ProjectInstructionRepositorySync[]
+  instructionRepositorySyncRuns  ProjectInstructionRepositorySyncRun[]
 
   // Frame sharing policy
   canShareFramesPublicly   Boolean  @default(true)
@@ -2029,6 +2033,8 @@ model Project {
   /// { ignoreGlobs?: string[]; sourceOfTruth?: "UPLOAD" | "REPOSITORY" }
   instructionSettings            Json?
   instructionSnapshots           ProjectInstructionSnapshot[] @relation("ProjectInstructionSnapshots")
+  instructionRepositorySync      ProjectInstructionRepositorySync?     @relation("ProjectInstructionRepositorySync")
+  instructionRepositorySyncRuns  ProjectInstructionRepositorySyncRun[] @relation("ProjectInstructionRepositorySyncRuns")
 
   // Weave (multi-agent orchestration)
   weaveConfig ProjectWeaveConfig?
@@ -16892,6 +16898,45 @@ enum ProjectInstructionFileKind {
   OTHER
 }
 
+/// Who started a repository sync run (spec 2026-09-23 §4.1a). PR 1 writes MANUAL only.
+enum ProjectInstructionSyncTrigger {
+  MANUAL
+  POLL
+  WEBHOOK
+}
+
+/// A finished run's outcome. Null on the run row while the run is in flight.
+enum ProjectInstructionSyncRunStatus {
+  SUCCEEDED
+  UNCHANGED
+  NOT_PUBLISHED
+  REJECTED
+  FAILED
+  SKIPPED
+}
+
+/// Closed failure vocabulary (spec §5.5, plus TREE_REFUSED for planner refusals).
+/// Never free text: the tab maps each value to copy.
+enum ProjectInstructionSyncError {
+  NOT_CONFIGURED
+  INTEGRATION_UNAVAILABLE
+  PERMISSION_DENIED
+  REF_MISSING
+  ROOT_MISSING
+  LIMITS_EXCEEDED
+  CLONE_FAILED
+  STORAGE_FAILED
+  CHILD_ABORTED
+  CONFIGURATION_CHANGED
+  TREE_REFUSED
+}
+
+/// Why automatic sync stopped for a project until someone re-configures it.
+enum ProjectInstructionSyncPause {
+  PERMISSION_REVOKED
+  REF_MISSING
+}
+
 model ProjectInstructionSnapshot {
   id             String @id @default(cuid())
   projectId      String
@@ -16939,6 +16984,12 @@ model ProjectInstructionSnapshot {
   repositoryIntegrationId String?
   sourceRef               String?
   sourceCommitSha         String?
+
+  /// `<syncId>:<workflow run id>` for a snapshot a repository sync created:
+  /// the database-enforced identity of one logical acquisition. A retried
+  /// acquisition finds its own row by this key and adopts it instead of
+  /// allocating a second version. Null for every other source.
+  syncRunKey              String? @unique
 
   /// The READY snapshot this one was derived from: an in-tab file edit, a
   /// file added or deleted, or (later) a CLI push. Unchanged files are
@@ -17036,6 +17087,86 @@ model ProjectInstructionFile {
   @@map("project_instruction_file")
 }
 
+/// A project's repository-sync configuration: at most one per project. The
+/// configuration identity is (id, generation); every change that alters what
+/// a run would produce, or whom it acts as, bumps `generation`, and every
+/// durable effect of a run is conditioned on the pair it captured.
+model ProjectInstructionRepositorySync {
+  id                      String   @id @default(cuid())
+  projectId               String   @unique
+  /// Organization-backed projects only, like the snapshots this produces.
+  organizationId          String
+  /// The member who last configured it: the delegate automatic runs act as.
+  userId                  String
+  repositoryIntegrationId String
+  /// Branch name, without the `refs/heads/` prefix.
+  ref                     String
+  /// POSIX, relative, no trailing slash. "" is the repository root.
+  rootPath                String   @default("")
+  automatic               Boolean  @default(false)
+  generation              Int      @default(1)
+
+  /// Automatic-run scheduling (spec §6.1). Written from PR 1 on, read from PR 2.
+  nextCheckAt             DateTime @default(now())
+  failureCount            Int      @default(0)
+  automaticPausedReason   ProjectInstructionSyncPause?
+  automaticPausedAt       DateTime?
+  suppressedCommitSha     String?
+  suppressedGeneration    Int?
+  lastEvaluatedCommitSha  String?
+  lastEvaluatedGeneration Int?
+
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  project               Project                             @relation("ProjectInstructionRepositorySync", fields: [projectId], references: [id], onDelete: Cascade)
+  organization          Organization                        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                  User                                @relation("InstructionRepositorySyncDelegate", fields: [userId], references: [id], onDelete: Cascade)
+  repositoryIntegration ProjectRepositoryIntegration        @relation(fields: [repositoryIntegrationId], references: [id], onDelete: Cascade, map: "project_instruction_repository_sync_integration_fkey")
+  runs                  ProjectInstructionRepositorySyncRun[]
+
+  @@index([automatic, nextCheckAt])
+  @@index([organizationId])
+  @@index([userId])
+  @@index([repositoryIntegrationId], map: "project_instruction_repository_sync_integration_idx")
+  @@map("project_instruction_repository_sync")
+}
+
+/// One logical sync run: inserted by `begin` (status null), completed once by
+/// `record` with `UPDATE ... WHERE finishedAt IS NULL`. It is the run's
+/// completion receipt and the History "Sync runs" list.
+model ProjectInstructionRepositorySyncRun {
+  /// runKey = `<syncId>:<workflow run id>`; unique by construction.
+  id             String                           @id
+  syncId         String
+  projectId      String
+  organizationId String
+  /// The acting user: the requester for MANUAL, the delegate otherwise.
+  userId         String
+  generation     Int
+  trigger        ProjectInstructionSyncTrigger
+  startedAt      DateTime
+  finishedAt     DateTime?
+  status         ProjectInstructionSyncRunStatus?
+  error          ProjectInstructionSyncError?
+  /// Closed set: "superseded" only.
+  note           String?
+  commitSha      String?
+  /// No foreign key: the snapshot may be pruned while the run stays in History.
+  snapshotId     String?
+
+  sync         ProjectInstructionRepositorySync @relation(fields: [syncId], references: [id], onDelete: Cascade)
+  project      Project                          @relation("ProjectInstructionRepositorySyncRuns", fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization                     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User                             @relation("InstructionRepositorySyncRunActor", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([syncId, startedAt])
+  @@index([projectId, startedAt])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("project_instruction_repository_sync_run")
+}
+
 // =============================================================================
 // PROJECT REPOSITORY INTEGRATIONS
 // =============================================================================
@@ -17127,6 +17258,7 @@ model ProjectRepositoryIntegration {
   // Relations
   project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   configuredBy User?   @relation("RepoIntegrationConfiguredBy", fields: [configuredByUserId], references: [id], onDelete: SetNull)
+  instructionRepositorySyncs ProjectInstructionRepositorySync[]
 
   @@unique([projectId, provider, repositoryOwner, repositoryName])
   @@index([projectId])

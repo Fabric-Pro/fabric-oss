@@ -14,6 +14,7 @@
  * `t.rich` calls.
  */
 import en from "@repo/i18n/translations/en.json";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Fragment, type ReactNode } from "react";
@@ -59,17 +60,89 @@ function richRender(
 	return nodes;
 }
 
+function resolve(path: string): unknown {
+	return path.split(".").reduce<unknown>((node, key) => {
+		if (node && typeof node === "object") {
+			return (node as Record<string, unknown>)[key];
+		}
+		return undefined;
+	}, en);
+}
+
+/**
+ * Namespace-aware, unlike the flat `emptyStateCopy` lookup this suite used
+ * before it rendered anything beyond `InstructionsEmptyState` itself: fixing
+ * B-1 (Task 9 review) mounts the real `RepositorySyncSettingsSection`, whose
+ * copy lives under `repositorySync.settings`, not under `emptyState`.
+ */
 vi.mock("next-intl", () => ({
-	useTranslations: () => {
-		const t = (key: string) => emptyStateCopy[key] ?? key;
+	useTranslations: (namespace: string) => {
+		const t = (key: string, values?: Record<string, unknown>) => {
+			const raw = resolve(`${namespace}.${key}`);
+			if (typeof raw !== "string") {
+				throw new Error(`missing translation: ${namespace}.${key}`);
+			}
+			let out = raw;
+			for (const [name, value] of Object.entries(values ?? {})) {
+				out = out.replaceAll(`{${name}}`, String(value));
+			}
+			return out;
+		};
 		t.rich = (
 			key: string,
 			tags: Record<string, (chunks: string) => ReactNode>,
-		) => richRender(emptyStateCopy[key] ?? key, tags);
-		t.raw = (key: string) => emptyStateCopy[key] ?? key;
+		) => {
+			const raw = resolve(`${namespace}.${key}`);
+			if (typeof raw !== "string") {
+				throw new Error(`missing translation: ${namespace}.${key}`);
+			}
+			return richRender(raw, tags);
+		};
+		t.raw = (key: string) => resolve(`${namespace}.${key}`);
 		return t;
 	},
 }));
+
+const disableCalls: Array<Record<string, unknown>> = [];
+function mutationOptionsStub(mutationFn: (input: unknown) => Promise<unknown>) {
+	return (
+		opts: {
+			onSuccess?: (data: unknown, vars: unknown) => void;
+			onError?: (error: Error) => void;
+		} = {},
+	) => ({ mutationFn, ...opts });
+}
+
+// Only `RepositorySyncSettingsSection`'s own procedure: it is the one real
+// (unmocked) query/mutation consumer this suite now mounts, per B-1.
+vi.mock("@shared/lib/orpc-query-utils", () => ({
+	orpc: {
+		projects: {
+			instructions: {
+				repositorySync: {
+					disable: {
+						mutationOptions: mutationOptionsStub(async (input) => {
+							disableCalls.push(input as Record<string, unknown>);
+							return { disabled: true, hadConfiguration: true };
+						}),
+					},
+				},
+			},
+		},
+	},
+}));
+
+function Providers({ children }: { children: ReactNode }) {
+	const client = new QueryClient({
+		defaultOptions: {
+			queries: { retry: false },
+			mutations: { retry: false },
+		},
+	});
+	return (
+		<QueryClientProvider client={client}>{children}</QueryClientProvider>
+	);
+}
 
 /**
  * Controllable per test, mirroring `InstructionsPublishedView.test.tsx`: the
@@ -108,6 +181,7 @@ beforeEach(() => {
 	orgContextState.organizationSlug = "example-org";
 	orgContextState.isGuest = false;
 	connectCliDialogProps.length = 0;
+	disableCalls.length = 0;
 });
 
 describe("InstructionsEmptyState — connect your agent", () => {
@@ -214,5 +288,145 @@ describe("InstructionsEmptyState — connect your agent", () => {
 		expect(
 			screen.queryByTestId("connect-cli-dialog-stub"),
 		).not.toBeInTheDocument();
+	});
+});
+
+describe("InstructionsEmptyState — repository sync (§7.1)", () => {
+	const configured = {
+		syncId: "sync_1",
+		repositoryIntegrationId: "int_1",
+		provider: "GITHUB",
+		repositoryOwner: "example-org",
+		repositoryName: "instructions",
+		integrationStatus: "ACTIVE",
+		ref: "main",
+		rootPath: "",
+		automatic: false,
+		automaticPausedReason: null,
+		automaticPausedAt: null,
+		delegateName: "Example Member",
+	};
+	function controls(state: Record<string, unknown> = {}) {
+		return {
+			state: {
+				sourceOfTruth: "UPLOAD" as const,
+				canConfigure: true,
+				running: false,
+				configured: null,
+				latestRun: null,
+				availableIntegrations: [
+					{
+						id: "int_1",
+						provider: "GITHUB",
+						repositoryOwner: "example-org",
+						repositoryName: "instructions",
+						defaultBranch: "main",
+					},
+				],
+				...state,
+			},
+			onConfigure: vi.fn(),
+			onSyncNow: vi.fn(),
+			syncNowPending: false,
+			onChanged: vi.fn(),
+		};
+	}
+
+	it("offers Sync from repository beside Upload folder and opens the configure dialog", async () => {
+		const c = controls();
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				repositorySync={c}
+			/>,
+		);
+		await userEvent.click(
+			screen.getByRole("button", { name: emptyStateCopy.syncButton }),
+		);
+		expect(c.onConfigure).toHaveBeenCalled();
+	});
+
+	it("offers Sync now once configured, held while a run is open", () => {
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				repositorySync={controls({
+					configured,
+					sourceOfTruth: "REPOSITORY",
+					running: true,
+				})}
+			/>,
+			{ wrapper: Providers },
+		);
+		expect(
+			screen.getByRole("button", { name: emptyStateCopy.syncNowButton }),
+		).toBeDisabled();
+	});
+
+	// B-1 (Task 9 review): a first sync that fails before any snapshot exists
+	// (ROOT_MISSING, LIMITS_EXCEEDED, TREE_REFUSED, or a vanished integration)
+	// leaves the project here, in REPOSITORY mode, with nothing published.
+	// Spec §7.4 promises the project is never locked, so both the recovery
+	// actions must be reachable from this screen too, not only from Settings.
+	it("never locks a project whose first sync failed: Change… and Switch to upload mode are reachable here", () => {
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				repositorySync={controls({
+					configured,
+					sourceOfTruth: "REPOSITORY",
+					latestRun: {
+						id: "sync_1:run_a",
+						trigger: "MANUAL",
+						startedAt: new Date(),
+						finishedAt: new Date(),
+						status: "FAILED",
+						error: "ROOT_MISSING",
+						note: null,
+						commitSha: null,
+						snapshotId: null,
+						snapshotVersion: null,
+						userName: "Example Member",
+					},
+				})}
+			/>,
+			{ wrapper: Providers },
+		);
+		expect(
+			screen.getByRole("button", { name: "Change…" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Switch to upload mode" }),
+		).toBeInTheDocument();
+	});
+
+	it("offers no sync button to a member who cannot configure, and no dead one without the controls", () => {
+		const { rerender } = render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				repositorySync={controls({ canConfigure: false })}
+			/>,
+		);
+		expect(
+			screen.queryByRole("button", { name: emptyStateCopy.syncButton }),
+		).toBeNull();
+		rerender(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+			/>,
+		);
+		expect(
+			screen.queryByRole("button", { name: emptyStateCopy.syncButton }),
+		).toBeNull();
 	});
 });

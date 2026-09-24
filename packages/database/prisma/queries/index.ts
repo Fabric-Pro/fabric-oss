@@ -49,6 +49,7 @@ export * from "./frames";
 export * from "./incident-notifications";
 export * from "./incident-weekly-digest";
 export * from "./incidents";
+export * from "./instruction-repository-sync";
 export * from "./instructions";
 export * from "./integration-provider-registry-sync";
 export * from "./invite-reconciliation";

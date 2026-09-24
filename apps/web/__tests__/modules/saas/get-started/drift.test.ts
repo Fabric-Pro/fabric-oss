@@ -92,9 +92,10 @@ const inPageSource = [
 	"apps/web/modules/saas/projects/components/security/ScanConfigCard.tsx",
 	"apps/web/modules/saas/projects/components/ProjectContextsList.tsx",
 	"apps/web/modules/saas/projects/components/ContextSummaryPanel.tsx",
-	// All three coding-instructions page-tour anchors sit on wrapper elements
-	// in the composing view rather than the tree/file-view/history components
-	// themselves, so this one file covers the whole page.
+	// Every coding-instructions page-tour anchor sits in the composing view:
+	// the tree, file-view and history ones on wrapper elements, the two sync
+	// buttons (design 2026-09-23 §7.5) on the buttons themselves. This one
+	// file covers the whole page.
 	"apps/web/modules/saas/projects/components/instructions/InstructionsPublishedView.tsx",
 	"apps/web/modules/saas/projects/components/ProjectPipeline.tsx",
 	"apps/web/modules/saas/projects/components/ProjectReports.tsx",

@@ -20,3 +20,17 @@
 export function instructionSnapshotWorkflowId(snapshotId: string): string {
 	return `project-instruction-snapshot-${snapshotId}`;
 }
+
+/**
+ * The deterministic Temporal workflow id of a project's repository sync run
+ * (spec §5.2).
+ *
+ * ONE id per project, not per run: the start uses
+ * `workflowIdConflictPolicy: "FAIL"`, so a second "Sync now" while a run is
+ * open is refused by Temporal itself and reported as `already_running`,
+ * with no lock row to leak. The procedure that starts it and the procedure
+ * that reports `running` both build it here.
+ */
+export function instructionRepositorySyncWorkflowId(projectId: string): string {
+	return `project-instruction-repository-sync-${projectId}`;
+}

@@ -554,7 +554,7 @@ async function rejectionFromStoredSize(
  */
 async function persistVerifiedFileMetadata(
 	ref: SnapshotRef,
-	f: { id: string; path: string; size: number },
+	f: { id: string; path: string; size: number; mode: number | null },
 	text: string | null,
 ): Promise<void> {
 	const kind = classifyPath(f.path);
@@ -574,10 +574,14 @@ async function persistVerifiedFileMetadata(
 	// would install every script non-executable — a hook that invokes
 	// `scripts/run.sh` bare then fails with "permission denied" on the first
 	// session. The one signal the bytes themselves carry is a shebang, so a
-	// text file that starts with `#!` is recorded as 0755. Everything else
-	// keeps null; a source that supplies real modes (repository sync) will set
-	// them at ingest instead of coming through here.
-	const mode = text?.startsWith("#!") ? 0o755 : undefined;
+	// text file that starts with `#!` is recorded as 0755.
+	// Everything else keeps null. A row that already carries a mode got it
+	// from a source that knows (repository sync writes git's mode at ingest,
+	// design 2026-09-23 §4.2) and is left alone: inferring over it would turn
+	// a 0644 file that happens to start with `#!` into 0755, and every
+	// re-sync of an unchanged tree would then look like a mode change.
+	const mode =
+		(f.mode ?? null) === null && text?.startsWith("#!") ? 0o755 : undefined;
 	await updateInstructionFileMetadata(f.id, ref.organizationId, {
 		kind,
 		name,

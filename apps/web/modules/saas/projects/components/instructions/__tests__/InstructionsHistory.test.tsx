@@ -710,4 +710,84 @@ describe("InstructionsHistory", () => {
 			expect(window.confirm).toHaveBeenCalledWith("rollbackConfirm:7");
 		});
 	});
+
+	it("lets a reviewer publish a synced version without offering delete, and shows the sync runs it is given", () => {
+		render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={[
+					{
+						id: "synced",
+						version: 8,
+						status: "READY",
+						source: "REPOSITORY",
+						fileCount: 3,
+						createdAt: new Date(),
+					},
+				]}
+				publishedId="published"
+				publishedVersion={7}
+				canMutate={false}
+				canPublish
+				syncRuns={<div data-testid="sync-runs" />}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+		expect(
+			screen.getByRole("button", { name: "publishAction" }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "deleteAction" }),
+		).toBeNull();
+		expect(screen.getByTestId("sync-runs")).toBeInTheDocument();
+	});
+
+	// Spec §4: while the repository is the source of truth the server refuses
+	// to publish an uploaded version, so its row offers no Publish; a synced
+	// version (including an earlier one, as a rollback) keeps it.
+	it("offers Publish only for synced versions on a repository-backed project", () => {
+		render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={[
+					{
+						id: "synced",
+						version: 9,
+						status: "READY",
+						source: "REPOSITORY",
+						fileCount: 3,
+						createdAt: new Date(),
+					},
+					{
+						id: "uploaded",
+						version: 8,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 3,
+						createdAt: new Date(),
+					},
+				]}
+				publishedId="published"
+				publishedVersion={7}
+				canMutate={false}
+				canPublish
+				repositoryBacked
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+		expect(
+			screen.getAllByRole("button", { name: "publishAction" }),
+		).toHaveLength(1);
+		expect(
+			screen.queryByRole("button", { name: "rollbackAction" }),
+		).toBeNull();
+		expect(screen.getByText("versionLabel:9")).toBeTruthy();
+		expect(screen.getByText("versionLabel:8")).toBeTruthy();
+	});
 });

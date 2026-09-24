@@ -74,3 +74,21 @@ describe("parseFrontmatter", () => {
 		expect(parseFrontmatter(single).name).toBe('single \\"quoted');
 	});
 });
+
+describe("parseFrontmatter keeps keys it has no special meaning for (spec §5.8)", () => {
+	it("returns Guild's owner/tags/tools/status/since/areas in `fields`", () => {
+		const fm = parseFrontmatter(
+			"---\nname: review\ndescription: Reviews a diff\nowner: dev-example\ntags: [review, quality]\ntools: Read, Grep\nstatus: active\nsince: 2026-09-01\nareas:\n  - backend\n  - api\n---\nBody\n",
+		);
+		expect(fm.fields).toEqual({
+			name: "review",
+			description: "Reviews a diff",
+			owner: "dev-example",
+			tags: "[review, quality]",
+			tools: "Read, Grep",
+			status: "active",
+			since: "2026-09-01",
+			areas: "- backend\n- api",
+		});
+	});
+});

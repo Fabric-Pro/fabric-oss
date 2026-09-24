@@ -1100,6 +1100,9 @@ export {
 } from "./project-deletion";
 export * from "./project-document-generation";
 export * from "./project-instructions";
+// Coding Instructions repository sync: begin, acquire, settle, record. The
+// module exports nothing else, so `export *` registers exactly these four.
+export * from "./project-instruction-repository-sync";
 export { reapInstructionSnapshots } from "./project-instructions-reaper";
 // Project metadata activities (orchestrator project context injection)
 export {

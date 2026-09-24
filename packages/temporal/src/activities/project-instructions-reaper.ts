@@ -32,8 +32,11 @@
  * LIVENESS: a RECEIVING row is not by itself proof that nothing is running.
  * `finalize` starts the validation workflow BEFORE it writes VALIDATING, and
  * tolerates losing that write, so phase 1 asks Temporal about the snapshot's
- * deterministic workflow id first and leaves any row that has an execution —
- * running or closed — alone.
+ * deterministic workflow id first, through `describeSnapshotWorkflow` in
+ * `./lib/instruction-abandonment` (shared with the repository sync's own
+ * `record` activity), and leaves any row whose execution is still RUNNING
+ * alone; a closed execution that never claimed the row is abandoned like a
+ * missing one (design 2026-09-23 §5.7).
  *
  * The row itself is what actually decides it, though. `verifyAndScanInstruc-
  * tionFiles` CLAIMS the snapshot (RECEIVING -> VALIDATING, and only from
@@ -85,27 +88,24 @@ import {
 	listPendingAbandonedInstructionSnapshots,
 	listProjectsWithPrunableInstructionSnapshots,
 	listStaleValidatingInstructionSnapshots,
-	markAbandonedInstructionSnapshotSwept,
 	rejectAbandonedInstructionSnapshot,
-	rotateAbandonedInstructionSnapshot,
 } from "@repo/database";
 import {
-	instructionSnapshotWorkflowId,
 	PROPOSAL_UPLOAD_SIGNING_WINDOW_MS,
 	RECEIVING_ABANDON_AFTER_MS,
-	stagingPrefix,
 	VALIDATING_STALE_AFTER_MS,
 } from "@repo/instructions";
 import { logger } from "@repo/logs";
-import {
-	getStorageProvider,
-	type StorageProviderInterface,
-} from "@repo/storage";
+import { getStorageProvider } from "@repo/storage";
 import type { Client } from "@temporalio/client";
 import { getTemporalClient } from "../client";
 import { safeHeartbeat } from "./lib/activity-liveness";
 import {
-	deleteObjectsUnderPrefix,
+	describeSnapshotWorkflow,
+	errorFacts,
+	sweepClosedAbandonment,
+} from "./lib/instruction-abandonment";
+import {
 	FAILED_SNAPSHOT_RETENTION,
 	MAX_PREFIX_PAGES,
 	pruneProjectInstructionSnapshots,
@@ -157,147 +157,6 @@ const RUN_TIME_BUDGET_MS = 10 * 60 * 1000;
 
 /** How far the prune rotation advances per hour: one full slice. */
 const PRUNE_ROTATION_PERIOD_MS = 60 * 60 * 1000;
-
-/**
- * The ONLY things a caught error contributes to a log event here: the name of
- * its class and, when the thrower set one, its `code`.
- *
- * Never `err.message`. The comments this replaces assumed a storage failure
- * came from `assertAllDeleted`, whose message is a count of failed objects —
- * but `listObjects`, `deleteObjects`, the provider SDK and Prisma all throw
- * on their own, and their messages carry request URLs, bucket names, prefixes
- * and object keys. A key names a project, a snapshot and a file, and these
- * strings reach the worker log. The result object's counts are what a run
- * reports; a name and a code are what tell an operator which KIND of failure
- * they are looking at.
- *
- * `code` is sliced because it is still a value off an arbitrary thrown
- * object: the codes worth having (`ECONNRESET`, `NoSuchBucket`, `P2025`) are
- * short, and nothing longer is a code.
- */
-function errorFacts(err: unknown): { errorName: string; code?: string } {
-	const errorName = err instanceof Error ? err.name : "unknown";
-	const code = (err as { code?: unknown } | null | undefined)?.code;
-	return typeof code === "string"
-		? { errorName, code: code.slice(0, 64) }
-		: { errorName };
-}
-
-/**
- * What Temporal knows about the execution behind a snapshot's validation
- * workflow: the guard that stops phase 1 rejecting a live upload, and the
- * evidence phase 0 heals a stranded VALIDATING row on.
- *
- * `finalize` starts the workflow BEFORE it writes VALIDATING, deliberately:
- * writing the status first would strand the row in VALIDATING forever if the
- * start then failed, because every later finalize short-circuits on
- * `status !== "RECEIVING"`. It also TOLERATES a lost status write — a
- * pre-read RECEIVING plus `WorkflowExecutionAlreadyStartedError` is treated
- * as a confirmed retry. So a row that still reads RECEIVING can legitimately
- * have a live execution behind it, and closing it out would delete the very
- * bytes that execution is about to verify.
- *
- * The two callers read the answer differently, which is why RUNNING and
- * CLOSED are separate here. For phase 1, either one means hands off: closed
- * means `finalize` was called and the workflow owns the RECEIVING row's
- * verdict. For phase 0 they are opposites — a running execution is the reason
- * a row is legitimately VALIDATING, and a closed one is proof that whatever
- * was going to write the verdict has already stopped.
- *
- * Errs toward live on every uncertainty, exactly as the stale-generation
- * watchdog does (`document-generation-watchdog-activities.ts`): only the
- * "Temporal has never heard of this id" answer, or an explicitly closed
- * execution, is proof of anything. An unreachable Temporal, or any other
- * describe failure, leaves the row for the next run — a stale row costs a tab
- * that keeps polling, a wrongly-closed one costs a user's upload.
- */
-async function describeSnapshotWorkflow(
-	client: Client,
-	snapshotId: string,
-): Promise<"running" | "closed" | "absent" | "unknown"> {
-	try {
-		const description = await client.workflow
-			.getHandle(instructionSnapshotWorkflowId(snapshotId))
-			.describe();
-		return description.status.name === "RUNNING" ? "running" : "closed";
-	} catch (error) {
-		const name = error instanceof Error ? error.name : "";
-		return name === "WorkflowNotFoundError" ? "absent" : "unknown";
-	}
-}
-
-/**
- * Sweeps one closed abandonment's staging prefix and records the outcome on
- * its row, which is the whole of phase 1b's per-row work and the tail of
- * phase 1's.
- *
- * Success — including a sweep that stopped at `MAX_PREFIX_PAGES`, whose
- * residue belongs to the bucket-lifecycle follow-up — clears the completion
- * mark, and the row leaves the pending population for good. Failure leaves
- * the mark alone, so the row is rediscovered on the next run, and rotates it
- * to the back of the oldest-first queue so it cannot block the rows behind
- * it. Either way the caller carries on to the next row.
- *
- * The third outcome is the run's OBJECT budget stopping the sweep part-way.
- * That is neither: the row keeps its pending mark and is NOT rotated, because
- * nothing failed and the next run — whose budget is fresh — should find it at
- * the same place in the oldest-first queue. Marking it swept is what must not
- * happen: the mark is permanent, and clearing it over a prefix that still has
- * bytes in it would strand them for good.
- */
-async function sweepClosedAbandonment(
-	storage: StorageProviderInterface,
-	row: { id: string; projectId: string; organizationId: string },
-	phase: string,
-	budget: StorageBudget,
-): Promise<{ deleted: number; truncated: boolean; failed: boolean }> {
-	const tenant = {
-		snapshotId: row.id,
-		projectId: row.projectId,
-		organizationId: row.organizationId,
-	};
-	try {
-		const sweep = await deleteObjectsUnderPrefix(
-			storage,
-			stagingPrefix(row.projectId, row.id),
-			budget,
-		);
-		if (sweep.truncated && budget.remaining <= 0) {
-			// Stopped by the run budget rather than by the page budget. Leave
-			// the mark; the next run resumes this prefix from the top.
-			return {
-				deleted: sweep.deleted,
-				truncated: true,
-				failed: false,
-			};
-		}
-		// The mark comes AFTER the prefix is actually clean, and only then:
-		// it is what takes the row out of the pending population, so a row
-		// that was not finished must keep it.
-		await markAbandonedInstructionSnapshotSwept(tenant);
-		return {
-			deleted: sweep.deleted,
-			truncated: sweep.truncated,
-			failed: false,
-		};
-	} catch (err) {
-		// Counted and carried past, with the error's CLASS and code only — see
-		// `errorFacts`. The snapshot/project/organization ids stay: they are
-		// this feature's structured-log convention, and they are what makes a
-		// standing failure diagnosable at all.
-		logger.warn(
-			{
-				event: "instructions.reaper.abandoned_sweep_error",
-				phase,
-				...tenant,
-				...errorFacts(err),
-			},
-			"[InstructionReaper] Staging sweep failed for one abandonment; it stays pending and is retried next run",
-		);
-		await rotateAbandonedInstructionSnapshot(tenant);
-		return { deleted: 0, truncated: false, failed: true };
-	}
-}
 
 /**
  * One run's slice of the prune candidate population: a window of
@@ -646,14 +505,16 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 		// is the needless verdict avoided on an execution that is merely
 		// QUEUED: started, not yet claimed, and a live upload all the same.
 		//
-		// ANY execution counts here, running or closed, which is the opposite
-		// of phase 0's reading: closed means `finalize` was called and the
-		// workflow owns this row's verdict.
+		// Only a RUNNING execution counts here (design 2026-09-23 §5.7). A
+		// closed one that claimed the row moved it off RECEIVING, so the
+		// conditional write below matches nothing; a closed one that did NOT
+		// claim it (terminated or timed out before its first activity) left a
+		// row nothing else will ever close, and is abandoned like a missing one.
 		const liveness =
 			temporalClient === null
 				? "unknown"
 				: await describeSnapshotWorkflow(temporalClient, row.id);
-		if (liveness === "running" || liveness === "closed") {
+		if (liveness === "running") {
 			skippedLive++;
 			continue;
 		}

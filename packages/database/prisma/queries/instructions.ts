@@ -17,6 +17,10 @@ import type {
 	ProjectInstructionSource,
 } from "../generated/client";
 import { type RecordAuditInput, recordAuditTx } from "./audit-log";
+import {
+	repositorySyncPublishRefusal,
+	writeProjectInstructionSettings,
+} from "./instruction-repository-sync";
 
 export type InstructionSnapshotStatus = ProjectInstructionSnapshotStatus;
 export type InstructionProposalStatus = ProjectInstructionProposalStatus;
@@ -115,6 +119,7 @@ const summarySelect = {
 	storedBytes: true,
 	excludedCount: true,
 	digest: true,
+	repositoryIntegrationId: true,
 	sourceRef: true,
 	sourceCommitSha: true,
 	// The snapshot this one was derived from (a single-file edit, add or
@@ -146,6 +151,16 @@ type CreateInstructionSnapshotInput = {
 	settingsFrozen: unknown;
 	publishOnReady: boolean;
 	excludedCount: number;
+	/** Repository sync only (design 2026-09-23 §4.2). */
+	repositoryIntegrationId?: string | null;
+	sourceRef?: string | null;
+	sourceCommitSha?: string | null;
+	/**
+	 * `<syncId>:<workflow run id>`. Unique: a second create for the same run
+	 * returns the row the first one made (`existing: true`) instead of
+	 * allocating another version.
+	 */
+	syncRunKey?: string | null;
 	files: Array<{
 		path: string;
 		size: number;
@@ -154,7 +169,17 @@ type CreateInstructionSnapshotInput = {
 		isText: boolean;
 		kind: InstructionFileKind;
 		storageKey: string;
+		/** Unix mode from git (0o755 / 0o644). Uploads omit it and store null. */
+		mode?: number | null;
 	}>;
+};
+
+type CreatedInstructionSnapshot = {
+	id: string;
+	version: number;
+	files: Array<{ id: string; path: string; storageKey: string }>;
+	/** Set when a concurrent attempt of the same sync run had already created the row. */
+	existing?: true;
 };
 
 /**
@@ -180,9 +205,25 @@ function isVersionCollision(error: unknown): boolean {
 	);
 }
 
+/**
+ * Allocates the next version and creates the snapshot row, retrying the
+ * allocation on a version collision (see `VERSION_ALLOCATION_ATTEMPTS`
+ * above).
+ *
+ * For a repository sync's `syncRunKey`, a P2002 might instead be the run's
+ * OWN unique constraint — a retried acquisition racing itself — rather than
+ * an ordinary version collision. Under this repo's driver adapter a P2002
+ * carries no usable `meta.target` (see `uniqueViolationConstraint` in
+ * `projects/publishing-tenant-lock.ts`), so which constraint fired is not
+ * something the error can answer; the run key is checked by reading the row
+ * instead. When a snapshot already exists under the key, it is the winner of
+ * that race and is returned as `existing: true` rather than allocating a
+ * second version; when nothing is found under the key, the P2002 was an
+ * ordinary version collision and the loop retries as before.
+ */
 export async function createInstructionSnapshot(
 	input: CreateInstructionSnapshotInput,
-) {
+): Promise<CreatedInstructionSnapshot> {
 	let lastError: unknown;
 	for (let attempt = 0; attempt < VERSION_ALLOCATION_ATTEMPTS; attempt++) {
 		try {
@@ -191,10 +232,45 @@ export async function createInstructionSnapshot(
 			if (!isVersionCollision(error)) {
 				throw error;
 			}
+			if (input.syncRunKey) {
+				const existing = await findSnapshotForSyncRun(
+					input.syncRunKey,
+					input,
+				);
+				if (existing) {
+					return existing;
+				}
+			}
 			lastError = error;
 		}
 	}
 	throw lastError;
+}
+
+async function findSnapshotForSyncRun(
+	syncRunKey: string,
+	tenant: { projectId: string; organizationId: string },
+): Promise<CreatedInstructionSnapshot | null> {
+	const row = await db.projectInstructionSnapshot.findFirst({
+		where: {
+			syncRunKey,
+			projectId: tenant.projectId,
+			organizationId: tenant.organizationId,
+		},
+		select: { id: true, version: true },
+	});
+	if (!row) {
+		return null;
+	}
+	const files = await db.projectInstructionFile.findMany({
+		where: {
+			snapshotId: row.id,
+			projectId: tenant.projectId,
+			organizationId: tenant.organizationId,
+		},
+		select: { id: true, path: true, storageKey: true },
+	});
+	return { id: row.id, version: row.version, files, existing: true };
 }
 
 function allocateAndCreateSnapshot(input: CreateInstructionSnapshotInput) {
@@ -219,6 +295,10 @@ function allocateAndCreateSnapshot(input: CreateInstructionSnapshotInput) {
 				publishOnReady: input.publishOnReady,
 				excludedCount: input.excludedCount,
 				fileCount: input.files.length,
+				repositoryIntegrationId: input.repositoryIntegrationId ?? null,
+				sourceRef: input.sourceRef ?? null,
+				sourceCommitSha: input.sourceCommitSha ?? null,
+				syncRunKey: input.syncRunKey ?? null,
 			},
 			select: { id: true, version: true },
 		});
@@ -235,6 +315,7 @@ function allocateAndCreateSnapshot(input: CreateInstructionSnapshotInput) {
 				size: f.size,
 				mimeType: f.mimeType,
 				isText: f.isText,
+				mode: f.mode ?? null,
 			})),
 		});
 		const files = await tx.projectInstructionFile.findMany({
@@ -1994,7 +2075,8 @@ export type InstructionProposalDecisionResult =
 				| "not_ready"
 				| "in_progress"
 				| "stale"
-				| "already_decided";
+				| "already_decided"
+				| "repository_backed";
 	  };
 
 /**
@@ -2008,6 +2090,11 @@ export type InstructionProposalDecisionResult =
  * write, and any unexpected pointer miss throws so the transaction rolls the
  * APPROVED marker back rather than committing an approved-but-unpublished
  * proposal.
+ *
+ * A PENDING proposal is refused as `repository_backed` while the project's
+ * settings, read under the same lock, name the repository as the source of
+ * truth (design 2026-09-23 §4): publishing it would put files in front of
+ * agents that the repository never had.
  */
 export async function approveInstructionProposal(input: {
 	snapshotId: string;
@@ -2017,8 +2104,11 @@ export async function approveInstructionProposal(input: {
 	audit: RecordAuditInput;
 }): Promise<InstructionProposalDecisionResult> {
 	return db.$transaction(async (tx) => {
-		const locked = await tx.$queryRaw<Array<{ pointerId: string | null }>>`
-			SELECT p."publishedInstructionSnapshotId" AS "pointerId"
+		const locked = await tx.$queryRaw<
+			Array<{ pointerId: string | null; instructionSettings: unknown }>
+		>`
+			SELECT p."publishedInstructionSnapshotId" AS "pointerId",
+				p."instructionSettings" AS "instructionSettings"
 			FROM "project" p
 			WHERE p."id" = ${input.projectId}
 				AND p."organizationId" = ${input.organizationId}
@@ -2056,6 +2146,14 @@ export async function approveInstructionProposal(input: {
 		}
 		if (proposal.proposalStatus !== "PENDING") {
 			return { ok: false as const, reason: "already_decided" as const };
+		}
+		if (
+			pointer.instructionSettings !== null &&
+			typeof pointer.instructionSettings === "object" &&
+			(pointer.instructionSettings as { sourceOfTruth?: unknown })
+				.sourceOfTruth === "REPOSITORY"
+		) {
+			return { ok: false as const, reason: "repository_backed" as const };
 		}
 		if (proposal.status !== "READY") {
 			return { ok: false as const, reason: "not_ready" as const };
@@ -2351,7 +2449,10 @@ type PublishInstructionSnapshotResult =
 				| "not_ready"
 				| "proposal_not_approved"
 				| "older_than_current"
-				| "base_moved";
+				| "base_moved"
+				| "configuration_changed"
+				| "permission_revoked"
+				| "repository_backed";
 	  };
 
 /**
@@ -2494,10 +2595,15 @@ export async function publishInstructionSnapshot(input: {
 		// the nullable side of an outer join, and the join is what turns the
 		// pointer id into the version number in one round trip.
 		const locked = await tx.$queryRaw<
-			Array<{ pointerId: string | null; pointerVersion: number | null }>
+			Array<{
+				pointerId: string | null;
+				pointerVersion: number | null;
+				instructionSettings: unknown;
+			}>
 		>`
 			SELECT p."publishedInstructionSnapshotId" AS "pointerId",
-				s."version" AS "pointerVersion"
+				s."version" AS "pointerVersion",
+				p."instructionSettings" AS "instructionSettings"
 			FROM "project" p
 			LEFT JOIN "project_instruction_snapshot" s
 				ON s."id" = p."publishedInstructionSnapshotId"
@@ -2531,6 +2637,9 @@ export async function publishInstructionSnapshot(input: {
 				baseSnapshotId: true,
 				baseVersion: true,
 				publishedAt: true,
+				source: true,
+				userId: true,
+				settingsFrozen: true,
 			},
 		});
 		if (!snapshot) {
@@ -2582,6 +2691,58 @@ export async function publishInstructionSnapshot(input: {
 		// published before is the whole point of History.
 		if (input.allowRollback !== true && snapshot.publishedAt !== null) {
 			return { published: true as const, changed: false as const };
+		}
+		// Repository sync fence (design 2026-09-23 §5.6). Automatic path only:
+		// a snapshot a sync produced may take the pointer only while the
+		// configuration it captured is still THE configuration, the project is
+		// still repository-backed, and the member it acts as still holds
+		// instruction:create — all read here, under the project row lock this
+		// transaction already holds. History's manual publish (`allowRollback`)
+		// is a person choosing this version, so it is not fenced. After the
+		// `publishedAt` arm on purpose: an already-published snapshot's retry
+		// stays idempotent even if the configuration has since moved.
+		if (input.allowRollback !== true && snapshot.source === "REPOSITORY") {
+			const refusal = await repositorySyncPublishRefusal(tx, {
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				settingsFrozen: snapshot.settingsFrozen,
+				instructionSettings: pointer.instructionSettings,
+				actingUserId: snapshot.userId,
+			});
+			if (refusal) {
+				return {
+					published: false as const,
+					changed: false as const,
+					reason: refusal,
+				};
+			}
+		}
+		// The converse fence (design 2026-09-23 §4): while a repository is
+		// the project's source of truth, only a version the repository
+		// produced may take the pointer. Read from the same locked settings as
+		// the fence above, so a mode flip and this publish are serialized.
+		//
+		// Automatic path: an upload or edit that began before the flip is
+		// refused as `configuration_changed`, because that is what happened
+		// to it. Manual path (History): choosing an uploaded version would put
+		// files in front of agents that the repository never had, just as an
+		// upload would, so it is refused as `repository_backed`. Choosing an
+		// earlier SYNCED version stays a deliberate rollback.
+		if (
+			snapshot.source !== "REPOSITORY" &&
+			pointer.instructionSettings !== null &&
+			typeof pointer.instructionSettings === "object" &&
+			(pointer.instructionSettings as { sourceOfTruth?: unknown })
+				.sourceOfTruth === "REPOSITORY"
+		) {
+			return {
+				published: false as const,
+				changed: false as const,
+				reason:
+					input.allowRollback === true
+						? ("repository_backed" as const)
+						: ("configuration_changed" as const),
+			};
 		}
 		// One predicate or the other, never both, and always inside the
 		// single conditional write. The pointer read above informs the
@@ -3768,22 +3929,25 @@ export async function getProjectInstructionSettings(
 	};
 }
 
+/**
+ * The settings procedure's write: ignore globs only. Goes through
+ * `writeProjectInstructionSettings`, the one writer of the column, so it
+ * takes the project row lock and bumps the repository-sync generation when
+ * the rules actually change (design 2026-09-23 §4.4). `sourceOfTruth` is
+ * written only by the sync configuration functions.
+ */
 export async function updateProjectInstructionSettings(
 	projectId: string,
 	organizationId: string,
 	settings: { ignoreGlobs?: string[] | null },
-) {
-	const current = await getProjectInstructionSettings(
-		projectId,
-		organizationId,
+): Promise<{ syncGenerationBumped: boolean }> {
+	const result = await db.$transaction((tx) =>
+		writeProjectInstructionSettings(
+			tx,
+			projectId,
+			organizationId,
+			settings,
+		),
 	);
-	await db.project.update({
-		where: { id: projectId, organizationId },
-		data: {
-			instructionSettings: {
-				...current,
-				...settings,
-			} as unknown as Prisma.InputJsonValue,
-		},
-	});
+	return { syncGenerationBumped: result.syncGenerationBumped };
 }

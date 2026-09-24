@@ -13,6 +13,7 @@ import {
 } from "@ui/components/dialog";
 import { Textarea } from "@ui/components/textarea";
 import { useTranslations } from "next-intl";
+import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -27,10 +28,13 @@ export function InstructionsSettingsDialog({
 	projectId,
 	open,
 	onOpenChange,
+	repositorySection,
 }: {
 	projectId: string;
 	open: boolean;
 	onOpenChange: (o: boolean) => void;
+	/** The Repository section (§7.4), when the project syncs or is left in repository mode. */
+	repositorySection?: ReactNode;
 }) {
 	const t = useTranslations("projects.codingInstructions.settingsDialog");
 	const queryClient = useQueryClient();
@@ -97,6 +101,7 @@ export function InstructionsSettingsDialog({
 					<DialogTitle>{t("title")}</DialogTitle>
 					<DialogDescription>{t("description")}</DialogDescription>
 				</DialogHeader>
+				{repositorySection}
 				<Textarea
 					aria-label={t("textareaLabel")}
 					placeholder={(settings.data?.defaultIgnoreGlobs ?? []).join(

@@ -560,6 +560,9 @@ export {
 } from "./project-deletion";
 export * from "./project-document-generation";
 export { projectInstructionReaperWorkflow } from "./project-instruction-reaper";
+// Coding Instructions repository sync (design 2026-09-23 §5.2). Named, not
+// `export *`: only the workflow function belongs in the bundle's registry.
+export { projectInstructionRepositorySyncWorkflow } from "./project-instruction-repository-sync";
 export * from "./project-instruction-snapshot";
 // Publishing Suite 1C-2d-2a — hourly reconciliation sweep (the cycle-level
 // PENDING -> ABANDONED write and the enrolment pass that feeds it).

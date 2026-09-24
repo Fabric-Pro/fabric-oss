@@ -402,10 +402,19 @@ function decisionError(
 		| "not_ready"
 		| "in_progress"
 		| "stale"
-		| "already_decided",
+		| "already_decided"
+		| "repository_backed",
 ): never {
 	if (reason === "not_found") {
 		throw new ORPCError("NOT_FOUND", { message: "Proposal not found" });
+	}
+	if (reason === "repository_backed") {
+		// Spec §4: the same refusal `derive-snapshot.ts` gives an edit.
+		throw new ORPCError("PRECONDITION_FAILED", {
+			message:
+				"This project's coding instructions come from its repository. Change the files there and sync the project.",
+			data: { reason: "REPOSITORY_BACKED" },
+		});
 	}
 	if (reason === "not_ready") {
 		throw new ORPCError("PRECONDITION_FAILED", {

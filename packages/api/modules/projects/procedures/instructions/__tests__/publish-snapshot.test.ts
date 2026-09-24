@@ -61,6 +61,27 @@ beforeEach(() => {
 });
 
 describe("projects.instructions.publish", () => {
+	// Spec §4: while a repository is the source of truth, History may not
+	// publish an uploaded version — the same refusal an edit gets.
+	it("maps a repository_backed refusal to PRECONDITION_FAILED and audits nothing", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: false,
+			changed: false,
+			reason: "repository_backed",
+		});
+		await expect(
+			m.handlers.publish!({
+				input: { projectId: "p", snapshotId: "s" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			message: expect.stringContaining("come from its repository"),
+		});
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		expect(m.runInBackground).not.toHaveBeenCalled();
+	});
+
 	it("publishes and audits the call that moved the pointer", async () => {
 		m.publishInstructionSnapshot.mockResolvedValue({
 			published: true,

@@ -15,6 +15,7 @@
 import type { InstructionRejection } from "@repo/database";
 import en from "@repo/i18n/translations/en.json";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -81,5 +82,68 @@ describe("InstructionsRejectedBanner", () => {
 		).toBeInTheDocument();
 		expect(screen.queryByText("(truncated)")).not.toBeInTheDocument();
 		expect(container.querySelectorAll("code")).toHaveLength(3);
+	});
+
+	it("sends a repository-backed project back to its repository and offers to sync again", async () => {
+		const onSyncAgain = vi.fn();
+		render(
+			<InstructionsRejectedBanner
+				rejection={[{ path: "a.md", reason: "hash_mismatch" }]}
+				onUploadAgain={() => undefined}
+				mode="repository"
+				onSyncAgain={onSyncAgain}
+			/>,
+		);
+		expect(
+			screen.getByRole("heading", {
+				name: "Sync rejected: 1 file failed checks",
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				en.projects.codingInstructions.rejectedBanner.bodyRepository,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Upload again" }),
+		).toBeNull();
+		await userEvent.click(
+			screen.getByRole("button", { name: "Sync again" }),
+		);
+		expect(onSyncAgain).toHaveBeenCalled();
+	});
+
+	it("keeps the neutral body for an abandoned upload and still offers Upload again", () => {
+		const banner = en.projects.codingInstructions.rejectedBanner;
+		const { container } = render(
+			<InstructionsRejectedBanner
+				rejection={[{ path: "(upload)", reason: "abandoned" }]}
+				onUploadAgain={() => undefined}
+			/>,
+		);
+		expect(
+			screen.getByRole("heading", { name: banner.titleAbandoned }),
+		).toBeInTheDocument();
+		expect(screen.getByText(banner.bodyAbandoned)).toBeInTheDocument();
+		expect(screen.queryByText(banner.body)).toBeNull();
+		expect(container.querySelectorAll("code")).toHaveLength(0);
+		expect(
+			screen.getByRole("button", { name: "Upload again" }),
+		).toBeInTheDocument();
+	});
+
+	it("still asks for files to be fixed when an abandoned row sits beside a real finding", () => {
+		const banner = en.projects.codingInstructions.rejectedBanner;
+		render(
+			<InstructionsRejectedBanner
+				rejection={[
+					{ path: "(upload)", reason: "abandoned" },
+					{ path: "a.md", reason: "missing" },
+				]}
+				onUploadAgain={() => undefined}
+			/>,
+		);
+		expect(screen.getByText(banner.body)).toBeInTheDocument();
+		expect(screen.getByText("a.md")).toBeInTheDocument();
 	});
 });

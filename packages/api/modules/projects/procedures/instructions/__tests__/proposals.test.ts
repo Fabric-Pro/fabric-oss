@@ -453,6 +453,28 @@ describe("projects.instructions.proposals", () => {
 		});
 	});
 
+	// Spec §4: while the repository is the source of truth, approving a
+	// pending proposal would publish files the repository never had.
+	it("refuses approval while the repository is the source of truth", async () => {
+		m.getInstructionProposal.mockResolvedValue(proposal);
+		m.approveInstructionProposal.mockResolvedValue({
+			ok: false,
+			reason: "repository_backed",
+		});
+
+		await expect(
+			run(APPROVE, {
+				projectId: "project_1",
+				snapshotId: "proposal_1",
+			}),
+		).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			message: expect.stringContaining("come from its repository"),
+			data: { reason: "REPOSITORY_BACKED" },
+		});
+		expect(m.runInBackground).not.toHaveBeenCalled();
+	});
+
 	it("returns terminal retry success without exposing decision internals", async () => {
 		m.getInstructionProposal.mockResolvedValue({
 			...proposal,

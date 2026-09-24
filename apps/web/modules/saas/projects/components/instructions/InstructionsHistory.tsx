@@ -14,6 +14,7 @@ import {
 	DialogTitle,
 } from "@ui/components/dialog";
 import { useTranslations } from "next-intl";
+import type { ReactNode } from "react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { InstructionsCompareDialog } from "./InstructionsCompareDialog";
@@ -105,6 +106,9 @@ export function InstructionsHistory({
 	publishedVersion,
 	publishedUnknown = false,
 	canMutate = true,
+	canPublish,
+	repositoryBacked = false,
+	syncRuns,
 	onChanged,
 }: {
 	projectId: string;
@@ -118,6 +122,22 @@ export function InstructionsHistory({
 	publishedUnknown?: boolean;
 	/** Direct History mutations are unavailable for readers and repository-backed projects. */
 	canMutate?: boolean;
+	/**
+	 * Publish and roll back; defaults to `canMutate`. On a repository-backed
+	 * project the tab passes the reviewer permission instead: publishing
+	 * needs INSTRUCTION_UPDATE (`publish-snapshot.ts:35`), and choosing which
+	 * synced version is live is a review decision, not an edit (plan
+	 * Decision 28). Delete stays behind `canMutate`.
+	 */
+	canPublish?: boolean;
+	/**
+	 * The repository is the project's source of truth (spec §4). Only a
+	 * version it produced may then be published: the server refuses an
+	 * uploaded one, so its row offers no Publish button.
+	 */
+	repositoryBacked?: boolean;
+	/** The repository's "Sync runs" list, when the project syncs (§7.3). */
+	syncRuns?: ReactNode;
 	onChanged: () => void;
 }) {
 	const t = useTranslations("projects.codingInstructions.history");
@@ -135,6 +155,7 @@ export function InstructionsHistory({
 	// mounted, and so closing it cannot leave a stale query mounted behind the
 	// row it was opened from.
 	const [compareId, setCompareId] = useState<string | null>(null);
+	const publishAllowed = canPublish ?? canMutate;
 
 	const publish = useMutation(
 		orpc.projects.instructions.publish.mutationOptions({
@@ -249,7 +270,9 @@ export function InstructionsHistory({
 											{s.status === "READY" &&
 											!isPublished &&
 											!awaitingProposalDecision &&
-											canMutate &&
+											publishAllowed &&
+											(!repositoryBacked ||
+												s.source === "REPOSITORY") &&
 											!publishedUnknown ? (
 												<Button
 													size="sm"
@@ -423,6 +446,7 @@ export function InstructionsHistory({
 							);
 						})}
 					</div>
+					{syncRuns}
 				</DialogContent>
 			</Dialog>
 			{compareId !== null && publishedId !== null ? (

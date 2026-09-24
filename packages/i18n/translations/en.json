@@ -899,7 +899,7 @@
 					"title": "Explore your codebase with Atlas"
 				},
 				"coding-instructions": {
-					"body": "Upload the folder your coding agents follow. Fabric checks it for secrets, keeps one published version, and hands it to agents over MCP.",
+					"body": "Upload the folder your coding agents follow, or sync it from a connected repository. Fabric checks it for secrets, keeps one published version, and hands it to agents over MCP.",
 					"title": "Coding instructions"
 				},
 				"documents": {
@@ -1621,7 +1621,11 @@
 						"published": "Coding-instructions version published",
 						"rejected": "Coding-instructions upload rejected",
 						"deleted": "Coding-instructions version deleted",
-						"settings_updated": "Coding-instructions settings updated"
+						"settings_updated": "Coding-instructions settings updated",
+						"repository_sync_configured": "Coding-instructions repository sync configured",
+						"repository_sync_started": "Coding-instructions repository sync started",
+						"repository_sync_completed": "Coding-instructions repository sync finished",
+						"repository_sync_disabled": "Coding-instructions repository sync turned off"
 					}
 				},
 				"story": {
@@ -5333,7 +5337,7 @@
 				"body": "Upload the folder that holds your <claudeDir>.claude</claudeDir> directory, <claudeMd>CLAUDE.md</claudeMd>, knowledge docs and scripts, or sync it from the repository connected to this project.",
 				"uploadButton": "Upload folder",
 				"syncButton": "Sync from repository",
-				"syncButtonTitle": "Repository sync arrives in a later release",
+				"syncNowButton": "Sync now",
 				"connectedRepository": "This project is connected to <repo></repo>.",
 				"secretsTitle": "Secrets are checked first",
 				"secretsDescription": "Every upload is scanned before anything is stored. If a file contains a token or password, the whole upload is rejected and nothing is kept.",
@@ -5437,7 +5441,17 @@
 				"titleSecretsPlural": "Upload rejected: {count} files contain secrets",
 				"titleChecksSingular": "Upload rejected: {count} file failed checks",
 				"titleChecksPlural": "Upload rejected: {count} files failed checks",
+				"titleSecretsSingularRepository": "Sync rejected: {count} file contains secrets",
+				"titleSecretsPluralRepository": "Sync rejected: {count} files contain secrets",
+				"titleChecksSingularRepository": "Sync rejected: {count} file failed checks",
+				"titleChecksPluralRepository": "Sync rejected: {count} files failed checks",
+				"titleAbandoned": "Upload rejected: it was never finished",
+				"titleAbandonedRepository": "Sync rejected: it was never finished",
 				"body": "Nothing from this upload was kept. Fix these files in the source folder, then upload again. Fabric does not store credentials, so there is no way to allow them through.",
+				"bodyRepository": "Nothing from this sync was kept. Fix these files in the repository, then sync again. Fabric does not store credentials, so there is no way to allow them through.",
+				"bodyUploadRepositoryBacked": "Nothing from this upload was kept. This project's coding instructions now come from its repository, so change the files there and sync the project.",
+				"bodyAbandoned": "Nothing from this upload was kept. It stopped before its files were checked, so nothing was found wrong with them.",
+				"bodyAbandonedRepository": "Nothing from this sync was kept. It stopped before its files were checked, so nothing was found wrong with them.",
 				"columnFile": "File",
 				"columnFound": "What was found",
 				"columnWhere": "Where",
@@ -5445,6 +5459,7 @@
 				"credentialFile": "Credential file (rejected by name)",
 				"truncatedSummary": "…and {detail}, not shown here.",
 				"uploadAgain": "Upload again",
+				"syncAgain": "Sync again",
 				"secretLabels": {
 					"private-key-block": "Private key block",
 					"aws-access-key": "AWS access key id",
@@ -5528,12 +5543,112 @@
 				"addFileButton": "Add file",
 				"proposeFileButton": "Propose file",
 				"uploadButton": "Upload folder",
+				"repositorySummary": "Synced from {repository} @ {ref} ({commit}) and published by {name} {time}. {fileCount} files stored, {excludedCount} left out {reason}. Coding agents read this version through Fabric MCP.",
+				"repositoryUnknown": "the repository",
+				"syncFromRepositoryButton": "Sync from repository",
+				"syncNowButton": "Sync now",
+				"syncingButton": "Syncing…",
 				"selectFilePrompt": "Select a file to read it.",
 				"supersededBody": "Version {version} passed its checks but was not published: it was edited from version {baseVersion}, and version {publishedVersion} has been published since. Publishing it now would undo that change. Open History to publish it anyway, or make your change again on version {publishedVersion}.",
 				"supersededHistoryButton": "Open History",
 				"changedInThisVersion": "Changed from version {baseVersion}: {added} added, {removed} removed, {changed} changed.",
 				"noChangesFromBase": "No file changes from version {baseVersion}.",
 				"compareButton": "See what changed"
+			},
+			"repositorySync": {
+				"running": "Syncing from the repository…",
+				"lastRun": "Last sync {time}: {outcome}",
+				"lastRunBy": "Last sync {time} by {name}: {outcome}",
+				"syncAgainButton": "Sync again",
+				"pausedLine": "Automatic sync paused: {reason}",
+				"pausedReasons": {
+					"PERMISSION_REVOKED": "the member it acts as can no longer publish coding instructions",
+					"REF_MISSING": "the branch or folder no longer exists"
+				},
+				"reEnableButton": "Re-enable",
+				"outcomes": {
+					"running": "in progress",
+					"interrupted": "stopped before it finished",
+					"published": "published version {version}",
+					"publishedNoVersion": "published a new version",
+					"unchanged": "no changes since the published version",
+					"notPublished": {
+						"configuration_changed": "not published, because the sync settings changed while it ran",
+						"permission_revoked": "not published, because the member it acted as can no longer publish",
+						"older": "not published, because a newer version was already published"
+					},
+					"rejected": "rejected by the checks",
+					"skipped": "skipped",
+					"failed": "failed"
+				},
+				"errors": {
+					"NOT_CONFIGURED": "Repository sync is not set up for this project.",
+					"INTEGRATION_UNAVAILABLE": "The repository connection needs attention. Reconnect it in the project's repository settings, then sync again.",
+					"PERMISSION_DENIED": "The member this sync acted as can no longer publish coding instructions.",
+					"REF_MISSING": "Branch {ref} no longer exists.",
+					"ROOT_MISSING": "The folder {rootPath} was not found on {ref}.",
+					"LIMITS_EXCEEDED": "The folder is over the limits of {maxFiles} files, {maxFileMb} MB per file, or {maxTotalMb} MB in total.",
+					"CLONE_FAILED": "Could not fetch the repository. Try Sync now again.",
+					"STORAGE_FAILED": "The files could not be stored. Try Sync now again.",
+					"CHILD_ABORTED": "Checking the synced files stopped before it finished. Try Sync now again.",
+					"CONFIGURATION_CHANGED": "The sync settings changed while it ran, so nothing was published.",
+					"TREE_REFUSED": "The folder cannot be stored as coding instructions: every file is excluded, or a name is invalid, differs from another only in case, is both a file and a folder, or cannot be written on Windows. Fix it in the repository and sync again."
+				},
+				"providers": {
+					"GITHUB": "GitHub",
+					"GITLAB": "GitLab",
+					"AZURE_DEVOPS": "Azure DevOps"
+				},
+				"configureDialog": {
+					"title": "Sync coding instructions from a repository",
+					"description": "Fabric reads the files from a branch of a repository connected to this project, checks them, and publishes them as a new version.",
+					"repositoryLabel": "Repository",
+					"branchLabel": "Branch",
+					"rootPathLabel": "Folder",
+					"rootPathPlaceholder": "repository root",
+					"rootPathHint": "Leave empty to use the whole repository.",
+					"afterSyncNotice": "After this, change the files in the repository and sync again. Editing in Fabric and pushing from the CLI are turned off while the repository is the source.",
+					"actingNotice": "Each sync is published as the member who starts it.",
+					"cancel": "Cancel",
+					"submit": "Save and sync",
+					"errors": {
+						"BRANCH_NOT_FOUND": "Branch {ref} wasn't found in the repository.",
+						"REPOSITORY_CREDENTIALS_EXPIRED": "This repository's credentials are no longer valid. Reconnect it, then try again.",
+						"REPOSITORY_UNAVAILABLE": "This repository connection needs attention before it can be synced from.",
+						"REPOSITORY_NOT_FOUND": "This repository is no longer connected to the project.",
+						"INVALID_ROOT_PATH": "Enter a folder inside the repository, such as agents or tools/claude.",
+						"REPOSITORY_UNREACHABLE": "Couldn't reach the repository. Try again in a moment.",
+						"generic": "Could not save the sync settings."
+					}
+				},
+				"syncNowResult": {
+					"started": "Sync started.",
+					"already_running": "A sync is already running.",
+					"not_configured": "Set up repository sync first.",
+					"integration_unavailable": "The repository connection needs attention before it can be synced from."
+				},
+				"runs": {
+					"title": "Sync runs",
+					"empty": "No syncs yet.",
+					"loadFailed": "Could not load sync runs.",
+					"commit": "commit {commit}",
+					"version": "version {version}",
+					"by": "by {name}"
+				},
+				"settings": {
+					"title": "Repository",
+					"repository": "Repository",
+					"branch": "Branch",
+					"folder": "Folder",
+					"folderRoot": "repository root",
+					"changeButton": "Change…",
+					"switchToUpload": "Switch to upload mode",
+					"switchConfirm": "Stop syncing from {repository}? The published files stay as they are, and editing and uploading in Fabric come back.",
+					"switchConfirmRunning": "Stop syncing from {repository}? A sync is running now and will finish without publishing. The published files stay as they are, and editing and uploading in Fabric come back.",
+					"switchConfirmDisconnected": "Switch this project back to upload mode? The published files stay as they are, and editing and uploading in Fabric come back.",
+					"disconnected": "Repository disconnected. The repository these instructions synced from is no longer connected to this project.",
+					"switched": "Switched to upload mode."
+				}
 			},
 			"addFileDialog": {
 				"title": "Add a file",
