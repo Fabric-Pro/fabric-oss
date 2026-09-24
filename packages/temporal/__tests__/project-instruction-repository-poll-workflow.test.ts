@@ -31,7 +31,9 @@ import {
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	type ClaimedInstructionSyncCheck,
+	INSTRUCTION_SYNC_CHECK_RESERVE_MS,
 	INSTRUCTION_SYNC_POLL_BUDGET_MS,
+	INSTRUCTION_SYNC_POLL_CLAIM_CAP,
 	type InstructionSyncCheckInput,
 	type InstructionSyncCheckOutcome,
 	type InstructionSyncCheckResult,
@@ -438,6 +440,34 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 		expect(limits.reduce((sum, limit) => sum + limit, 0)).toBe(12);
 		await expectReplays(workflowId);
 	});
+
+	it("stops claiming at the tick's claim cap while budget remains, leaving the rest to the next tick, and the run replays (Fizzy #2685)", async () => {
+		// Instant checks: the budget alone would let this backlog run for
+		// the whole four minutes, so only the cap can end the claiming.
+		const claim = backlog("c");
+		const startedAt = await env.currentTimeMs();
+		const { result, workflowId } = await run(
+			pollMocks({ claimDueInstructionSyncChecks: claim }),
+		);
+		const elapsed = (await env.currentTimeMs()) - startedAt;
+
+		expect(result).toEqual({
+			...ZERO,
+			claimed: INSTRUCTION_SYNC_POLL_CLAIM_CAP,
+			evaluated: INSTRUCTION_SYNC_POLL_CLAIM_CAP,
+		});
+		// Budget was left: the run ended well before the reserve, not at it.
+		expect(elapsed).toBeLessThan(
+			INSTRUCTION_SYNC_POLL_BUDGET_MS - INSTRUCTION_SYNC_CHECK_RESERVE_MS,
+		);
+		const limits = claim.mock.calls.map(([input]) => input.limit);
+		expect(Math.max(...limits)).toBeLessThanOrEqual(4);
+		// No claim asked for a row past the cap.
+		expect(limits.reduce((sum, limit) => sum + limit, 0)).toBe(
+			INSTRUCTION_SYNC_POLL_CLAIM_CAP,
+		);
+		await expectReplays(workflowId);
+	}, 120_000);
 
 	it("does not dispatch a claimed row with less lease left than the check's 90 s start-to-close, and claims nothing more that tick (Decision 49)", async () => {
 		const claim = vi.fn<Claim>(async (input) => {

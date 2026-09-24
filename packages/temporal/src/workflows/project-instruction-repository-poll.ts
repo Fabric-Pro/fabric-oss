@@ -20,6 +20,15 @@
  *   never stops another kind or the run. A deep backlog of slow checks in
  *   one kind therefore cannot hold every lane while another kind has due
  *   rows.
+ * - A tick claims at most `INSTRUCTION_SYNC_POLL_CLAIM_CAP` rows in all
+ *   (Fizzy #2685), so a deep backlog of fast checks cannot record thousands
+ *   of activity round trips in one history. Rows past the cap stay due for
+ *   the next tick. The cap is deliberately not gated behind `patched()`:
+ *   this is a schedule tick bounded by a 270 s execution timeout, so a
+ *   pre-cap run that had already passed 400 claims when a worker restarted
+ *   onto this code fails replay, times out, and loses that one tick; its
+ *   two-minute leases expire and a later tick claims the rows. That bounded
+ *   one-time cost does not justify carrying two wave-control paths.
  * - Every activity call's schedule-to-close is the budget left, so a call
  *   no worker serves, or one stuck in retries, cannot hold the run past it.
  *   Each check also receives the budget's end as `deadlineAt` and stops
@@ -40,6 +49,7 @@ import {
 	INSTRUCTION_SYNC_CHECK_RESERVE_MS,
 	INSTRUCTION_SYNC_CHECK_START_TO_CLOSE_MS,
 	INSTRUCTION_SYNC_POLL_BUDGET_MS,
+	INSTRUCTION_SYNC_POLL_CLAIM_CAP,
 	type InstructionSyncCheckOutcome,
 	type InstructionSyncPollInput,
 	type InstructionSyncPollResult,
@@ -246,13 +256,24 @@ export async function projectInstructionRepositoryPollWorkflow(
 	};
 
 	while (true) {
-		const freeLanes = CONCURRENCY - lanes.size;
+		// Lanes free, and no more than the tick may still claim under its cap.
+		const freeLanes = Math.min(
+			CONCURRENCY - lanes.size,
+			INSTRUCTION_SYNC_POLL_CLAIM_CAP - result.claimed,
+		);
 		if (
 			freeLanes > 0 &&
 			open.size > 0 &&
 			budgetLeft() >= INSTRUCTION_SYNC_CHECK_RESERVE_MS
 		) {
 			const wave = await claimWave(freeLanes);
+			if (result.claimed >= INSTRUCTION_SYNC_POLL_CLAIM_CAP) {
+				// Logged once: with the cap reached, no later wave is claimed.
+				log.info(
+					"Instruction sync poll reached its claim cap; the rest wait for the next tick",
+					{ cap: INSTRUCTION_SYNC_POLL_CLAIM_CAP },
+				);
+			}
 			const refused = wave.filter((row) => !dispatch(row)).length;
 			if (refused > 0) {
 				// Claimed too late to check in time. Their leases expire and they
