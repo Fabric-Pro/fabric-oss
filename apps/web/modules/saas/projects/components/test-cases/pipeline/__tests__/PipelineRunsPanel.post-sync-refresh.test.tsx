@@ -341,6 +341,31 @@ describe("Testing tab — what a completed sync produced is visible without a re
 		expect(server.syncStateReads).toBe(readsWhenSettled);
 	});
 
+	it("stops polling even when one source's row is long stale", async () => {
+		// A repository disconnected since its last sync keeps its row, and no
+		// sync writes it again. Staging had one ten hours old.
+		const stale = {
+			id: "s-stale",
+			provider: "GITHUB_ACTIONS",
+			status: "OK",
+			lastFetchedAt: new Date("2026-08-17T07:00:00Z"),
+			updatedAt: new Date("2026-08-17T07:00:00Z"),
+		};
+		server.syncStates = [...server.syncStates, stale];
+		renderTab();
+		expect(await screen.findByText("Seen 1")).toBeInTheDocument();
+
+		await clickSync();
+		ingestLands();
+		server.syncStates = [...server.syncStates, stale];
+		await advance(3100);
+		expect(await screen.findByText("Seen 2")).toBeInTheDocument();
+
+		const readsWhenSettled = server.syncStateReads;
+		await advance(60_000);
+		expect(server.syncStateReads).toBe(readsWhenSettled);
+	});
+
 	it("does not re-read on a poll that found no finished source", async () => {
 		renderTab();
 		expect(await screen.findByText("Seen 1")).toBeInTheDocument();
