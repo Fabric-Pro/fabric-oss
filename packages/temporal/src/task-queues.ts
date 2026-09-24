@@ -16,6 +16,18 @@
 export const ORCHESTRATOR_TASK_QUEUE = "fabric-orchestrator" as const;
 
 /**
+ * Where the Living Memory repository sync workflow's OWN activities run
+ * (begin, sync, record; design 2026-09-23 §5.2). The workflow itself stays on
+ * `project-documents`, whose five activity slots serve a member waiting on
+ * "Update using context": a twenty-minute clone-and-apply holding one of them
+ * would make that member wait.
+ *
+ * Deliberately the same string as `INSTRUCTION_SYNC_ACTIVITY_TASK_QUEUE`
+ * below: both repository syncs share the general worker's activity slots.
+ */
+export const CONTEXT_SYNC_ACTIVITY_TASK_QUEUE = "fabric-worker" as const;
+
+/**
  * Where the repository sync workflow's OWN activities run (begin, acquire,
  * settle, record). The workflow itself, and the snapshot workflow it starts
  * as a child, stay on `project-instructions`; that queue's two activity slots

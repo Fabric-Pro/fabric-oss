@@ -97,6 +97,10 @@ import { listContextSummarySourcesProcedure } from "./procedures/contexts/list-s
 import { listUrlPagesProcedure } from "./procedures/contexts/list-url-pages";
 import { processContextFileProcedure } from "./procedures/contexts/process-context-file";
 import { processContextLinkProcedure } from "./procedures/contexts/process-context-link";
+import { configureContextRepositorySyncProcedure } from "./procedures/contexts/repository-sync/configure";
+import { disableContextRepositorySyncProcedure } from "./procedures/contexts/repository-sync/disable";
+import { getContextRepositorySyncProcedure } from "./procedures/contexts/repository-sync/get";
+import { syncContextRepositoryNowProcedure } from "./procedures/contexts/repository-sync/sync-now";
 import { resolveContextSummaryReferenceProcedure } from "./procedures/contexts/resolve-summary-reference";
 import { restoreContextSummaryVersionProcedure } from "./procedures/contexts/restore-summary-version";
 import { resyncUrlPageProcedure } from "./procedures/contexts/resync-url-page";
@@ -891,6 +895,14 @@ export const projectsRouter = {
 		// relative path, idempotent, with an explicit-overwrite hash check
 		upsertSyncedFile: upsertSyncedFileProcedure,
 		deleteSyncedFile: deleteSyncedFileProcedure,
+		// Living Memory repository sync (Fizzy #2657) — selected paths of a
+		// connected repository's branch, applied by "Sync now"
+		repositorySync: {
+			get: getContextRepositorySyncProcedure,
+			configure: configureContextRepositorySyncProcedure,
+			syncNow: syncContextRepositoryNowProcedure,
+			disable: disableContextRepositorySyncProcedure,
+		},
 		// URL Context Sources (spec 2026-05-13-url-context-sources)
 		updateUrlSource: updateUrlSourceProcedure,
 		resyncUrlSource: resyncUrlSourceProcedure,

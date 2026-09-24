@@ -396,52 +396,44 @@ export async function deleteInstructionRepositorySync(input: {
 }
 
 /**
- * The repository-integration disconnect, extended (spec §5.1): when the
- * integration being removed is the project's instruction source, the sync
- * row goes and the project flips to UPLOAD in the SAME transaction as the
- * integration delete. The FK cascade would remove the row anyway; doing it
- * explicitly is what keeps the mode flip atomic with it.
+ * The coding-instructions half of the repository-integration disconnect
+ * (spec §5.1): when the integration being removed is the project's
+ * instruction source, the sync row goes and the project flips to UPLOAD in
+ * the caller's transaction, so both commit with the integration delete. The
+ * FK cascade would remove the row anyway; doing it explicitly is what keeps
+ * the mode flip atomic with it.
+ *
+ * ASSUMES the caller already holds the project row lock, so a concurrent
+ * `configure` cannot attach the integration between the read below and the
+ * delete. `deleteRepoIntegrationReleasingSyncs`
+ * (`./projects/repository-integration-disconnect`) is the caller.
  */
-export async function deleteRepoIntegrationReleasingInstructionSync(input: {
-	integrationId: string;
-	projectId: string;
-}): Promise<{
-	deletedIntegration: boolean;
-	releasedSync: { organizationId: string } | null;
-}> {
-	return db.$transaction(async (tx) => {
-		// Lock first, so a concurrent `configure` cannot attach the integration
-		// between the read below and the delete.
-		await tx.$queryRaw`
-			SELECT "id" FROM "project" WHERE "id" = ${input.projectId} FOR UPDATE
-		`;
-		const sync = await tx.projectInstructionRepositorySync.findFirst({
-			where: {
-				projectId: input.projectId,
-				repositoryIntegrationId: input.integrationId,
-			},
-			select: { id: true, organizationId: true },
-		});
-		let releasedSync: { organizationId: string } | null = null;
-		if (sync) {
-			await writeProjectInstructionSettings(
-				tx,
-				input.projectId,
-				sync.organizationId,
-				{
-					sourceOfTruth: "UPLOAD",
-				},
-			);
-			await tx.projectInstructionRepositorySync.delete({
-				where: { id: sync.id },
-			});
-			releasedSync = { organizationId: sync.organizationId };
-		}
-		const { count } = await tx.projectRepositoryIntegration.deleteMany({
-			where: { id: input.integrationId, projectId: input.projectId },
-		});
-		return { deletedIntegration: count > 0, releasedSync };
+export async function releaseInstructionRepositorySyncForIntegration(
+	tx: Prisma.TransactionClient,
+	input: { integrationId: string; projectId: string },
+): Promise<{ organizationId: string } | null> {
+	const sync = await tx.projectInstructionRepositorySync.findFirst({
+		where: {
+			projectId: input.projectId,
+			repositoryIntegrationId: input.integrationId,
+		},
+		select: { id: true, organizationId: true },
 	});
+	if (!sync) {
+		return null;
+	}
+	await writeProjectInstructionSettings(
+		tx,
+		input.projectId,
+		sync.organizationId,
+		{
+			sourceOfTruth: "UPLOAD",
+		},
+	);
+	await tx.projectInstructionRepositorySync.delete({
+		where: { id: sync.id },
+	});
+	return { organizationId: sync.organizationId };
 }
 
 /**
@@ -548,7 +540,7 @@ function schedulingData(
 /**
  * `record`'s Part B (spec §5.4): locks the sync row FIRST, tenant-scoped,
  * before touching the run row — the same order `deleteInstructionRepositorySync`
- * and `deleteRepoIntegrationReleasingInstructionSync` use when they lock the
+ * and `releaseInstructionRepositorySyncForIntegration` use when they lock the
  * sync row and then cascade-delete its run rows. Locking the run row first
  * (as this used to) is the opposite order: a disable or disconnect racing a
  * completion can then deadlock, Postgres aborting one side with `40P01`

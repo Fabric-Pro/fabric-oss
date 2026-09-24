@@ -5,6 +5,11 @@
 			"constraint": "project_instruction_snapshot_reviewerUserId_fkey",
 			"validateBy": "2026-10-02",
 			"followUp": "Validate in the next release after instruction file proposals deploy."
+		},
+		{
+			"constraint": "project_context_repositorySyncId_fkey",
+			"validateBy": "2026-10-14",
+			"followUp": "Validate in the next release after Living Memory repository sync deploys; every pre-existing row is NULL, so it checks nothing but the rows the sync wrote."
 		}
 	]
 }

@@ -23,8 +23,27 @@
  *   pnpm --filter @repo/database test __tests__/context-indexing-failure.test.ts
  */
 
-import { describe, expect, it } from "vitest";
-import { buildIndexingFailureUpdate } from "../prisma/queries/projects/contexts";
+import { describe, expect, it, vi } from "vitest";
+
+const client = vi.hoisted(() => ({
+	findUnique: vi.fn(),
+	update: vi.fn(),
+}));
+
+vi.mock("../prisma/client", () => ({
+	db: {
+		projectContext: {
+			findUnique: client.findUnique,
+			update: client.update,
+		},
+	},
+	Prisma: { sql: vi.fn(), join: vi.fn() },
+}));
+
+import {
+	buildIndexingFailureUpdate,
+	recordContextIndexingFailure,
+} from "../prisma/queries/projects/contexts";
 
 const MESSAGE = "Search indexing failed: the embedding deployment is missing";
 
@@ -53,5 +72,72 @@ describe("buildIndexingFailureUpdate", () => {
 		const update = buildIndexingFailureUpdate(null, MESSAGE);
 
 		expect(update.extractionStatus).toBe("FAILED");
+	});
+});
+
+/**
+ * Living Memory design 2026-09-23 §5.3.1 step 9: a re-embed deletes the
+ * row's points before it embeds. A pass that fails after that left a row
+ * whose `embeddedAt` still said it was indexed while the index held nothing
+ * for it, and nothing ever came back for it. The failure write now clears
+ * `embeddedAt` when the caller says its points were removed, so the row
+ * reads as awaiting indexing and the next repair re-embeds it. The status
+ * rule above is unchanged either way.
+ */
+describe("buildIndexingFailureUpdate — a pass that had removed the row's points", () => {
+	it("also clears embeddedAt, with the status rule unchanged", () => {
+		expect(
+			buildIndexingFailureUpdate("COMPLETED", MESSAGE, {
+				pointsRemoved: true,
+			}),
+		).toEqual({ extractionError: MESSAGE, embeddedAt: null });
+		expect(
+			buildIndexingFailureUpdate("PENDING", MESSAGE, {
+				pointsRemoved: true,
+			}),
+		).toEqual({
+			extractionStatus: "FAILED",
+			extractionError: MESSAGE,
+			embeddedAt: null,
+		});
+	});
+
+	it("leaves embeddedAt alone when no points were removed", () => {
+		expect(
+			buildIndexingFailureUpdate("COMPLETED", MESSAGE),
+		).not.toHaveProperty("embeddedAt");
+		expect(
+			buildIndexingFailureUpdate("COMPLETED", MESSAGE, {
+				pointsRemoved: false,
+			}),
+		).not.toHaveProperty("embeddedAt");
+	});
+});
+
+describe("recordContextIndexingFailure", () => {
+	it("writes the cleared embeddedAt with the reason when the pass removed the row's points", async () => {
+		client.findUnique.mockResolvedValue({ extractionStatus: "COMPLETED" });
+		client.update.mockResolvedValue({});
+
+		await recordContextIndexingFailure("ctx-1", MESSAGE, {
+			pointsRemoved: true,
+		});
+
+		expect(client.update).toHaveBeenCalledWith({
+			where: { id: "ctx-1" },
+			data: { extractionError: MESSAGE, embeddedAt: null },
+		});
+	});
+
+	it("writes only the reason, as before, when called without the flag", async () => {
+		client.findUnique.mockResolvedValue({ extractionStatus: "COMPLETED" });
+		client.update.mockResolvedValue({});
+
+		await recordContextIndexingFailure("ctx-1", MESSAGE);
+
+		expect(client.update).toHaveBeenCalledWith({
+			where: { id: "ctx-1" },
+			data: { extractionError: MESSAGE },
+		});
 	});
 });

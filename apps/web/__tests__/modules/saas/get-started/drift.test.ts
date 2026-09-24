@@ -92,6 +92,10 @@ const inPageSource = [
 	"apps/web/modules/saas/projects/components/security/ScanConfigCard.tsx",
 	"apps/web/modules/saas/projects/components/ProjectContextsList.tsx",
 	"apps/web/modules/saas/projects/components/ContextSummaryPanel.tsx",
+	// The repository-sync entry point / status carries its own two page-tour
+	// anchors ("Sync from repository", "Sync now") even though it mounts
+	// inside ProjectContextsList's Living Memory section header.
+	"apps/web/modules/saas/projects/components/ContextRepositorySyncStatus.tsx",
 	// Every coding-instructions page-tour anchor sits in the composing view:
 	// the tree, file-view and history ones on wrapper elements, the two sync
 	// buttons (design 2026-09-23 §7.5) on the buttons themselves. This one

@@ -4,7 +4,7 @@
  * becomes a schedulable activity: helpers stay unexported or live in ./lib.
  */
 import { createHash } from "node:crypto";
-import { lstat, readFile, rm } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
@@ -36,13 +36,6 @@ import {
 	stagingKey,
 	validateRelativePath,
 } from "@repo/instructions";
-import {
-	forceReExchangeRepoCredentials,
-	isGitAuthError,
-	markRepoReauthRequired,
-	resolveFreshRepoToken,
-} from "@repo/integrations";
-import { logger } from "@repo/logs";
 import { getStorageProvider } from "@repo/storage";
 import { ApplicationFailure } from "@temporalio/activity";
 import { getTemporalClient } from "../client";
@@ -70,18 +63,12 @@ import {
 } from "./lib/instruction-abandonment";
 import { INSTRUCTIONS_BUCKET } from "./lib/instruction-prune";
 import {
-	buildGitEnv,
-	classifyGitFailure,
-	cloneTreeless,
 	credentialFreeUrl,
 	fetchPinnedCommit,
-	GitCommandError,
-	gitUsernameFor,
 	listTree,
 	MAX_FABRICIGNORE_BYTES,
 	MAX_INVENTORY_ENTRIES,
 	readBlobCapped,
-	redactSecrets,
 	revParseHead,
 	sparseCheckout,
 } from "./lib/instruction-sync-git";
@@ -99,6 +86,11 @@ import {
 	type TreeEntry,
 	treesEqual,
 } from "./lib/instruction-sync-tree";
+import {
+	cloneWithAuthRecovery as cloneRepositoryWithAuthRecovery,
+	gitStepFailureCode,
+	logGitFailure,
+} from "./lib/repository-sync-clone";
 
 /** Git's share of the 10-minute activity timeout, so a hung transfer dies first. */
 const ACQUIRE_GIT_BUDGET_MS = 9 * 60 * 1000;
@@ -560,6 +552,12 @@ function frozenPairMatches(
 	);
 }
 
+/** This sync's names for its git failures in the debug log. */
+const INSTRUCTION_SYNC_GIT_LOG = {
+	event: "instructions.sync.git_failed",
+	message: "[InstructionSync] git command failed",
+} as const;
+
 /** Git failures after the clone: the watchdog is a limit, everything else is a failed fetch. */
 async function gitStep<T>(
 	fn: () => Promise<T>,
@@ -569,65 +567,16 @@ async function gitStep<T>(
 	try {
 		return await fn();
 	} catch (error) {
-		logGitFailure(error, secrets);
-		if (error instanceof GitCommandError && error.kind === "disk_limit") {
-			throw syncFailure("LIMITS_EXCEEDED", details);
-		}
-		throw syncFailure("CLONE_FAILED", details);
+		logGitFailure(error, secrets, INSTRUCTION_SYNC_GIT_LOG);
+		throw syncFailure(gitStepFailureCode(error), details);
 	}
-}
-
-/** Debug level only, after redaction (spec §8.3). */
-function logGitFailure(error: unknown, secrets: readonly string[]): void {
-	if (error instanceof GitCommandError) {
-		logger.debug(
-			{
-				event: "instructions.sync.git_failed",
-				label: error.label,
-				kind: error.kind,
-				exitCode: error.exitCode,
-				stderr: redactSecrets(error.stderrTail, secrets),
-			},
-			"[InstructionSync] git command failed",
-		);
-	}
-}
-
-function isAuthFailure(error: unknown): boolean {
-	return (
-		error instanceof GitCommandError &&
-		error.kind === "exit" &&
-		isGitAuthError(new Error(error.stderrTail))
-	);
-}
-
-function cloneFailure(
-	error: unknown,
-	details: SyncFailureDetails,
-): ApplicationFailure {
-	if (error instanceof GitCommandError) {
-		if (error.kind === "disk_limit") {
-			return syncFailure("LIMITS_EXCEEDED", details);
-		}
-		if (error.kind === "exit") {
-			const kind = classifyGitFailure(error.stderrTail);
-			if (kind === "ref_missing") {
-				return syncFailure("REF_MISSING", details);
-			}
-			if (kind === "repo_not_found") {
-				return syncFailure("INTEGRATION_UNAVAILABLE", details);
-			}
-		}
-	}
-	return syncFailure("CLONE_FAILED", details);
 }
 
 /**
- * The clone, with the code-indexing clone's self-heal: an authentication
- * failure forces one credential re-exchange and one more clone, and only
- * then flags the integration for reconnect (spec §5.3.2 step 3).
+ * The clone, with the code-indexing clone's self-heal (spec §5.3.2 step 3):
+ * `cloneWithAuthRecovery`, shared with the Living Memory sync.
  */
-async function cloneWithAuthRecovery(input: {
+function cloneWithAuthRecovery(input: {
 	context: SyncRunContext;
 	provider: string;
 	url: string;
@@ -637,67 +586,24 @@ async function cloneWithAuthRecovery(input: {
 	details: SyncFailureDetails;
 }): Promise<{ env: NodeJS.ProcessEnv; token: string }> {
 	const { context } = input;
-	const resolveToken = async () =>
-		(
-			await resolveFreshRepoToken({
-				integrationId: context.repositoryIntegrationId,
-				projectId: context.projectId,
-				userId: context.actingUserId,
-				organizationId: context.organizationId,
-			})
-		).token;
-	const attempt = async (token: string) => {
-		const env = buildGitEnv({
-			home: input.runDir,
-			username: gitUsernameFor(input.provider),
-			credential: token,
-			host: new URL(input.url).host,
-		});
-		await rm(input.dir, { recursive: true, force: true });
-		await cloneTreeless({
-			cwd: input.runDir,
-			url: input.url,
-			ref: context.ref,
-			dir: input.dir,
-			env,
-			signal: input.signal,
-		});
-		return { env, token };
-	};
-	const token = await resolveToken();
-	if (!token) {
-		throw syncFailure("INTEGRATION_UNAVAILABLE", input.details, true);
-	}
-	try {
-		return await attempt(token);
-	} catch (error) {
-		logGitFailure(error, [token]);
-		if (!isAuthFailure(error)) {
-			throw cloneFailure(error, input.details);
-		}
-	}
-	const { refreshed } = await forceReExchangeRepoCredentials({
+	return cloneRepositoryWithAuthRecovery({
 		integrationId: context.repositoryIntegrationId,
+		projectId: context.projectId,
 		userId: context.actingUserId,
 		organizationId: context.organizationId,
+		ref: context.ref,
+		provider: input.provider,
+		url: input.url,
+		runDir: input.runDir,
+		dir: input.dir,
+		signal: input.signal,
+		log: INSTRUCTION_SYNC_GIT_LOG,
+		reauthReason:
+			"Repository authentication failed during a coding-instructions sync; reconnect required.",
+		// Retrying cannot help once a forced re-exchange failed (plan Decision 16).
+		fail: (code, nonRetryable) =>
+			syncFailure(code, input.details, nonRetryable),
 	});
-	const fresh = refreshed ? await resolveToken() : null;
-	if (fresh) {
-		try {
-			return await attempt(fresh);
-		} catch (error) {
-			logGitFailure(error, [fresh]);
-			if (!isAuthFailure(error)) {
-				throw cloneFailure(error, input.details);
-			}
-		}
-	}
-	await markRepoReauthRequired({
-		integrationId: context.repositoryIntegrationId,
-		reason: "Repository authentication failed during a coding-instructions sync; reconnect required.",
-	});
-	// Retrying cannot help once a forced re-exchange failed (plan Decision 16).
-	throw syncFailure("INTEGRATION_UNAVAILABLE", input.details, true);
 }
 
 /** Spec §5.3.2 steps 6-7: `.fabricignore` from the inventory, then the shared planner. */

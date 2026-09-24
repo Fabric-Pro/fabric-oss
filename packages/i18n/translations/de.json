@@ -2334,13 +2334,94 @@
 				"hideItems": "Elemente ausblenden",
 				"removed": "{count, plural, one {# Duplikat wird entfernt. Es verschwindet, sobald die Bereinigung abgeschlossen ist.} other {# Duplikate werden entfernt. Sie verschwinden, sobald die Bereinigung abgeschlossen ist.}}",
 				"removeFailed": "{count, plural, one {Das Duplikat konnte nicht entfernt werden. Bitte versuchen Sie es erneut.} other {# Duplikate konnten nicht entfernt werden. Bitte versuchen Sie es erneut.}}",
-				"removedPartial": "Entfernen für {removed} von {total} Duplikaten gestartet. {failed} konnten nicht gestartet werden; bitte versuchen Sie es erneut."
+				"removedPartial": "Entfernen für {removed} von {total} Duplikaten gestartet. {failed} konnten nicht gestartet werden; bitte versuchen Sie es erneut.",
+				"removedWithSkipped": "{deleted, plural, one {# gelöscht} other {# gelöscht}}, {skipped, plural, one {# übersprungen (bereits geändert oder vom Repository verwaltet)} other {# übersprungen (bereits geändert oder vom Repository verwaltet)}}{failed, plural, =0 {} other {, # fehlgeschlagen}}"
 			},
 			"livingMemory": {
 				"title": "Living Memory",
 				"description": "Aus einem Arbeitsverzeichnis synchronisierte Dateien, nach Ordner gruppiert.",
 				"rootFolder": "Projektstammverzeichnis",
-				"fileCount": "{count, plural, one {# Datei} other {# Dateien}}"
+				"fileCount": "{count, plural, one {# Datei} other {# Dateien}}",
+				"repositorySync": {
+					"entry": "Von einem Repository synchronisieren",
+					"running": "Wird synchronisiert…",
+					"repositoryLine": "{repository} @ {ref}",
+					"repositoryBadge": "Repository",
+					"syncNow": "Jetzt synchronisieren",
+					"status": {
+						"notSynced": "Noch nicht synchronisiert",
+						"applied": "Commit {sha} angewendet · vor {time} · {count, plural, one {# Datei} other {# Dateien}}",
+						"partial": "Commit {sha} teilweise angewendet · {count, plural, one {# Datei behielt eine ältere Version} other {# Dateien behielten eine ältere Version}}",
+						"failed": "Synchronisierung bei Commit {sha} teilweise fehlgeschlagen · vorheriger Inhalt bleibt erhalten"
+					},
+					"awaitingIndex": "{count, plural, one {# Datei wartet auf Indizierung} other {# Dateien warten auf Indizierung}}",
+					"cleanupPending": "{count, plural, one {# entfernte Datei wird noch bereinigt} other {# entfernte Dateien werden noch bereinigt}}",
+					"attention": {
+						"path-in-use": "„{key}“ existiert bereits mit anderem Inhalt und wurde nicht überschrieben.",
+						"too-large": "„{key}“ ist größer als von der Synchronisierung erlaubt und wurde übersprungen.",
+						"binary": "„{key}“ ist keine Textdatei und wurde übersprungen.",
+						"empty": "„{key}“ ist leer und wurde übersprungen.",
+						"invalid-path": "„{key}“ ist kein Pfad, den Living Memory speichern kann, und wurde übersprungen.",
+						"conflict": "„{key}“ wurde an dieser Zeile geändert, bevor die Synchronisierung sie anwenden konnte.",
+						"prune-conflict": "„{key}“ wurde an dieser Zeile geändert, bevor die Synchronisierung sie entfernen konnte.",
+						"path-missing": "„{key}“ befindet sich nicht mehr im Repository unter den ausgewählten Pfaden.",
+						"ignore-policy-unreadable": "Die .contextignore von „{key}“ konnte nicht gelesen werden, daher blieb der gesamte Ordner unangetastet."
+					},
+					"menu": {
+						"label": "Optionen für die Repository-Synchronisierung",
+						"changeButton": "Branch oder Pfade ändern…",
+						"disconnect": "Trennen"
+					},
+					"disconnectConfirm": {
+						"title": "Von {repository} trennen?",
+						"description": "Die von dieser Synchronisierung eingebrachten Dateien bleiben als normale synchronisierte Dateien in Living Memory erhalten — es wird kein Wissen gelöscht. Um sie ebenfalls zu entfernen, löschen Sie sie nach dem Trennen in diesem Tab.",
+						"confirm": "Trennen",
+						"cancel": "Abbrechen",
+						"disconnected": "Getrennt. Die synchronisierten Dateien bleiben als normale synchronisierte Dateien erhalten."
+					},
+					"syncNowResult": {
+						"started": "Synchronisierung gestartet.",
+						"already_running": "Eine Synchronisierung läuft bereits.",
+						"not_configured": "Es ist nichts zum Synchronisieren konfiguriert.",
+						"integration_unavailable": "Diese Repository-Verbindung benötigt Aufmerksamkeit, bevor sie synchronisiert werden kann."
+					},
+					"configureDialog": {
+						"title": "Living Memory von einem Repository synchronisieren",
+						"description": "Wählen Sie ausgewählte Ordner oder Dateien auf einem Branch eines verbundenen Repositorys aus. „Jetzt synchronisieren“ übernimmt deren Inhalt vom festgelegten Commit; das Repository wird zur verantwortlichen Quelle für jede von ihm erzeugte Datei.",
+						"repositoryLabel": "Repository",
+						"branchLabel": "Branch",
+						"pathsLabel": "Ordner und Dateien",
+						"pathsPlaceholder": "z. B. docs oder docs/guide.md",
+						"pathsHint": "Enter oder Hinzufügen drücken, um einen Ordner oder eine Datei auszuwählen. Leer lassen und Hinzufügen drücken, um das gesamte Repository auszuwählen — nur wenn nichts anderes ausgewählt ist.",
+						"addPath": "Hinzufügen",
+						"wholeRepo": "Gesamtes Repository",
+						"removePath": "{path} entfernen",
+						"contextignoreNotice": "Die eigene .contextignore jedes ausgewählten Ordners wird berücksichtigt, genau wie `fabric context push` sie anwendet.",
+						"pruneNotice": "Eine nicht mehr ausgewählte oder aus dem Repository entfernte Datei wird bei der nächsten Synchronisierung aus Living Memory entfernt.",
+						"actingNotice": "Jede Synchronisierung nach dieser läuft als Sie, das Mitglied, das sie konfiguriert hat.",
+						"cancel": "Abbrechen",
+						"submit": "Speichern und synchronisieren",
+						"errors": {
+							"INVALID_PATH": "„{path}“ ist kein Repository-Pfad in seiner einfachen Form.",
+							"EXCLUDED_PATH": "„{path}“ ist eine Coding-Instructions-Datei, die Living Memory niemals synchronisiert.",
+							"PATH_PREFIX_OVERLAP": "„{path}“ überschneidet sich mit einem bereits ausgewählten Pfad.",
+							"TOO_MANY_PATHS": "Wählen Sie höchstens 50 Ordner oder Dateien aus.",
+							"BRANCH_NOT_FOUND": "Branch \"{path}\" wurde auf dem Remote nicht gefunden.",
+							"REPOSITORY_NOT_FOUND": "Diese Repository-Verbindung wurde nicht gefunden.",
+							"REPOSITORY_UNAVAILABLE": "Diese Repository-Verbindung benötigt Aufmerksamkeit, bevor sie synchronisiert werden kann.",
+							"REPOSITORY_CREDENTIALS_EXPIRED": "Die Repository-Zugangsdaten sind abgelaufen — verbinden Sie das Repository erneut, um daraus zu synchronisieren.",
+							"REPOSITORY_CHANGE_REQUIRES_DISCONNECT": "Living Memory dieses Projekts hat noch {managedCount, plural, one {# Datei} other {# Dateien}}, die von einem anderen Repository synchronisiert wurden. Trennen Sie diese Synchronisierung zuerst, um das Repository zu ändern.",
+							"generic": "Die Synchronisierungskonfiguration konnte nicht gespeichert werden. Bitte versuchen Sie es erneut."
+						}
+					},
+					"pathErrors": {
+						"INVALID_PATH": "„{path}“ ist kein Repository-Pfad in seiner einfachen Form: verwenden Sie '/' zwischen Ordnern, ohne führendes './' oder '/', ohne abschließendes '/', ohne '.'- oder '..'-Segmente und ohne umgebende Leerzeichen.",
+						"EXCLUDED_PATH": "„{path}“ ist eine Coding-Instructions-Datei, die Living Memory niemals synchronisiert.",
+						"TOO_MANY_PATHS": "Wählen Sie höchstens {max} Ordner oder Dateien aus.",
+						"PATH_PREFIX_OVERLAP": "„{path}“ überschneidet sich mit „{withPath}“, das bereits ausgewählt ist.",
+						"DUPLICATE_PATH": "„{path}“ ist bereits ausgewählt."
+					}
+				}
 			}
 		},
 		"stories": {

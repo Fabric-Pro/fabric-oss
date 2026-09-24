@@ -176,6 +176,8 @@ model User {
   projectContextConversationBundles               ProjectContextConversationBundle[]
   projectContextConversationClaims                ProjectContextConversationClaim[]
   projectContextPendingVectorCleanups             ProjectContextPendingVectorCleanup[]
+  projectContextRepositorySyncs                   ProjectContextRepositorySync[]    @relation("ContextRepositorySyncConfigurer")
+  projectContextRepositorySyncRuns                ProjectContextRepositorySyncRun[] @relation("ContextRepositorySyncRunActor")
   projectReadinessItemStates                      ProjectReadinessItemState[]
   projectReadinessVerdicts                        ProjectReadinessVerdict[]
   projectContextSummaries                         ProjectContextSummary[]
@@ -674,6 +676,8 @@ model Organization {
   projectContextConversationBundles       ProjectContextConversationBundle[]
   projectContextConversationClaims        ProjectContextConversationClaim[]
   projectContextPendingVectorCleanups     ProjectContextPendingVectorCleanup[]
+  projectContextRepositorySyncs           ProjectContextRepositorySync[]
+  projectContextRepositorySyncRuns        ProjectContextRepositorySyncRun[]
   projectReadinessItemStates              ProjectReadinessItemState[]
   projectReadinessVerdicts                ProjectReadinessVerdict[]
   projectContextSummaries                 ProjectContextSummary[]
@@ -1920,6 +1924,8 @@ model Project {
   user                                  User                               @relation(fields: [userId], references: [id], onDelete: Cascade)
   contexts                              ProjectContext[]                   @relation("ProjectContexts")
   contextPendingVectorCleanups          ProjectContextPendingVectorCleanup[]
+  contextRepositorySync                 ProjectContextRepositorySync?      @relation("ProjectContextRepositorySync")
+  contextRepositorySyncRuns             ProjectContextRepositorySyncRun[]  @relation("ProjectContextRepositorySyncRuns")
   contextSummaries                      ProjectContextSummary[]
   prdSourceContext                      ProjectContext?                    @relation("PrdSourceContext", fields: [prdSourceContextId], references: [id])
   // Engagement profile + delivery-track governance (docs/features/inverted-loop-delivery-tracks.md)
@@ -2314,6 +2320,17 @@ model ProjectContext {
   contentUpdatedAt       DateTime?
   contentUpdatedByUserId String?
 
+  // The Living Memory repository sync that authored this synced file
+  // (design 2026-09-23 §4.4), or NULL for every row it did not write. While
+  // set, the repository is the author of record: every content write and
+  // every row delete on every other surface (CLI, MCP, Context tab) carries
+  // `repositorySyncId IS NULL` and answers `repository-managed` instead, and
+  // only the sync's own writer changes the row. Metadata edits stay allowed.
+  // SetNull: disconnecting the sync releases its rows as ordinary synced
+  // files rather than deleting them. The foreign key was added NOT VALID
+  // (migration 20260923150000); the index is its own migration, CONCURRENTLY.
+  repositorySyncId String?
+
   // Tenant isolation (copied from parent Project)
   userId         String?
   organizationId String?
@@ -2341,6 +2358,7 @@ model ProjectContext {
   project      Project       @relation("ProjectContexts", fields: [projectId], references: [id], onDelete: Cascade)
   user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repositorySync ProjectContextRepositorySync? @relation(fields: [repositorySyncId], references: [id], onDelete: SetNull)
 
   // Back-reference for project PRD source binding (one-to-one with Project.prdSourceContextId)
   prdSourceProject Project? @relation("PrdSourceContext")
@@ -2370,6 +2388,9 @@ model ProjectContext {
   /// The synced-file path's "is this content already here under another
   /// path?" check. Built CONCURRENTLY in migration 20260922200200.
   @@index([projectId, contentHash])
+  /// A repository sync's managed rows: its prune pagination, managed and
+  /// awaiting-index counts. Built CONCURRENTLY in migration 20260923150100.
+  @@index([projectId, repositorySyncId])
   @@index([projectId])
   @@index([type])
   @@index([userId])
@@ -2737,6 +2758,13 @@ model ProjectContextPendingVectorCleanup {
   userId         String?
   organizationId String?
 
+  /// The Living Memory repository sync run whose prune queued this record
+  /// (its run key, `<syncId>:<workflow run id>`), or NULL for every other
+  /// delete. A run's receipt counts its still-queued records by it, live,
+  /// whichever drain clears them (design 2026-09-23 §5.3.1 step 8). No
+  /// foreign key: a record outlives nothing it would reference.
+  syncRunKey String?
+
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -2745,9 +2773,136 @@ model ProjectContextPendingVectorCleanup {
   @@index([projectId])
   @@index([userId])
   @@index([organizationId])
+  @@index([syncRunKey])
   /// The sweep's queue order: fewest failures first, oldest first within that.
   @@index([attempts, createdAt], map: "project_context_pending_vector_cleanup_queue_idx")
   @@map("project_context_pending_vector_cleanup")
+}
+
+// =============================================================================
+// LIVING MEMORY REPOSITORY SYNC (design 2026-09-23, Fizzy #2657)
+// =============================================================================
+
+/// Who started a Living Memory repository sync run (design §4.2). This slice
+/// writes MANUAL only ("Sync now").
+enum ProjectContextSyncTrigger {
+  MANUAL
+}
+
+/// A finished context sync run's outcome (design §5.4). Null on the run row
+/// while the run is in flight.
+enum ProjectContextSyncRunStatus {
+  SUCCEEDED
+  PARTIAL
+  UNCHANGED
+  FAILED
+}
+
+/// Closed failure vocabulary of a context sync run (design §5.5). Never free
+/// text: the Context tab maps each value to copy, and details carry the
+/// commit and counters only.
+enum ProjectContextSyncError {
+  NOT_CONFIGURED
+  INTEGRATION_UNAVAILABLE
+  PERMISSION_DENIED
+  RUN_IN_PROGRESS
+  REF_MISSING
+  PATHS_MISSING
+  LIMITS_EXCEEDED
+  CLONE_FAILED
+  STORE_FAILED
+  CONFIGURATION_CHANGED
+  SUPERSEDED
+  INTERRUPTED
+}
+
+/// A project's Living Memory repository sync configuration: at most one per
+/// project (design §4.1). The configuration identity is (id, generation):
+/// `configure` bumps `generation` and clears `lastApplied*`, and every
+/// mutating transaction of a run locks this row first and requires the pair
+/// it captured plus `activeRunKey = runKey` (§4.5). Lock order everywhere:
+/// this row, then the run row.
+model ProjectContextRepositorySync {
+  id                      String   @id @default(cuid())
+  projectId               String   @unique
+  /// Organization-backed projects only.
+  organizationId          String
+  /// The member who last configured it.
+  userId                  String
+  repositoryIntegrationId String
+  /// Branch name, without the `refs/heads/` prefix.
+  ref                     String
+  /// Canonical repository-relative POSIX paths, each a folder or a file,
+  /// sorted, none a prefix of another; `""` (the whole repository) only alone.
+  paths                   String[]
+  generation              Int      @default(1)
+  /// `<id>:<workflow run id>` of the run that holds the configuration, or
+  /// NULL when none does. Set by `begin`, cleared by `record` and by
+  /// reconciliation; `configure` leaves it alone.
+  activeRunKey            String?
+  /// The commit and run the Context tab reports as last applied.
+  lastAppliedCommitSha    String?
+  lastAppliedRunId        String?
+
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  project               Project                      @relation("ProjectContextRepositorySync", fields: [projectId], references: [id], onDelete: Cascade)
+  organization          Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                  User                         @relation("ContextRepositorySyncConfigurer", fields: [userId], references: [id], onDelete: Cascade)
+  repositoryIntegration ProjectRepositoryIntegration @relation(fields: [repositoryIntegrationId], references: [id], onDelete: Cascade, map: "project_context_repository_sync_integration_fkey")
+  /// The rows this sync authored. Deleting the configuration releases them.
+  contexts              ProjectContext[]
+
+  @@index([organizationId])
+  @@index([userId])
+  @@index([repositoryIntegrationId], map: "project_context_repository_sync_integration_idx")
+  @@map("project_context_repository_sync")
+}
+
+/// One Living Memory sync run: its receipt, the context frozen at `begin`,
+/// and the ledger (design §4.2, §4.3). Inserted by `begin`, completed once by
+/// `record` (`finishedAt IS NULL` → set). Deliberately NO foreign key to the
+/// sync row: a receipt outlives a disconnect, so `syncId` is a plain column.
+model ProjectContextRepositorySyncRun {
+  /// runKey = `<syncId>:<workflow run id>`; unique by construction.
+  id             String                       @id
+  syncId         String
+  projectId      String
+  organizationId String
+  /// The acting user: the requester of a MANUAL run.
+  userId         String
+  generation     Int
+  /// Frozen at begin: { ref, paths, repositoryIntegrationId, actingUserId }.
+  context        Json
+  trigger        ProjectContextSyncTrigger
+  startedAt      DateTime
+  finishedAt     DateTime?
+  status         ProjectContextSyncRunStatus?
+  error          ProjectContextSyncError?
+  /// The commit the run applies, pinned once (`WHERE commitSha IS NULL`).
+  commitSha      String?
+  /// The plan receipt, written once before the first mutation
+  /// (`WHERE plan IS NULL`); a retry applies exactly its kept keys.
+  plan           Json?
+  /// Apply ledger: { [storageKey]: "created" | "updated" | "adopted" |
+  /// "unchanged" | "conflict" | "path-in-use" }, at most 5 000 keys. A key is
+  /// decided once per run.
+  outcomes       Json                         @default("{}")
+  /// Rows pruned, incremented by each committed prune batch.
+  removedCount   Int                          @default(0)
+  /// { keys: string[] (at most 100), overflow: number }.
+  pruneConflicts Json                         @default("{}")
+
+  project      Project      @relation("ProjectContextRepositorySyncRuns", fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation("ContextRepositorySyncRunActor", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, startedAt])
+  @@index([syncId, finishedAt])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("project_context_repository_sync_run")
 }
 
 // Compressed project-history summary. Holds an LLM-generated digest of a project's
@@ -17258,6 +17413,8 @@ model ProjectRepositoryIntegration {
   // Relations
   project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   configuredBy User?   @relation("RepoIntegrationConfiguredBy", fields: [configuredByUserId], references: [id], onDelete: SetNull)
+  /// Living Memory repository syncs reading from this integration (at most one per project).
+  contextRepositorySyncs ProjectContextRepositorySync[]
   instructionRepositorySyncs ProjectInstructionRepositorySync[]
 
   @@unique([projectId, provider, repositoryOwner, repositoryName])

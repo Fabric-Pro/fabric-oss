@@ -1047,6 +1047,11 @@ export {
 	retryProjectContext,
 	updateProjectContextStatus,
 } from "./project-context-processing";
+// Living Memory repository sync (design 2026-09-23 §5.3, §5.4; Fizzy #2657):
+// begin, sync, record. The module exports nothing else, so `export *`
+// registers exactly these three. `syncContextTreeFromRepository` is a stub
+// that fails every run as STORE_FAILED until PR 1 task T3b.
+export * from "./project-context-repository-sync";
 export * from "./project-contexts-reprocess";
 // Organization purge activities (reminder, guarded hard delete, and the
 // vector / object-storage / billing teardown the cascade cannot reach).

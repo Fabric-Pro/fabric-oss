@@ -241,6 +241,8 @@ vi.mock("../prisma/client", () => ({
 import {
 	claimSyncedContextRowForDeletion,
 	deleteClaimedSyncedContextRow,
+	deleteContext,
+	deleteUnmanagedContextRow,
 	findSyncedContextIdAtPath,
 } from "../prisma/queries/projects/contexts";
 import {
@@ -416,6 +418,9 @@ describe("claimSyncedContextRowForDeletion — the named version", () => {
 				organizationId: "org-1",
 				sourcePath: PATH,
 				contentHash: sha(V1),
+				// Living Memory design 2026-09-23 §6: never a row a
+				// repository sync owns.
+				repositorySyncId: null,
 			},
 			data: { embeddedAt: null },
 		});
@@ -505,6 +510,42 @@ describe("claimSyncedContextRowForDeletion — the named version", () => {
 	});
 });
 
+/**
+ * Living Memory design 2026-09-23 §6: these two steps are no longer started
+ * by any caller, but an execution of the old vectors-first workflow still
+ * open at deploy time runs them. Their guards carry `repositorySyncId IS
+ * NULL`, so a row a repository sync adopted after that execution started is
+ * never claimed or deleted by it.
+ */
+describe("the claim and the delete — a row a repository sync owns", () => {
+	it("never claims an adopted row, even holding the named version: a conflict that changes nothing", async () => {
+		const row = seed({ repositorySyncId: "sync-1" });
+
+		const result = await claim();
+
+		expect(result).toMatchObject({
+			status: "conflict",
+			current: { contextId: row.id, contentHash: sha(V1) },
+		});
+		expect(row.embeddedAt).toBe(EMBEDDED_AT);
+		expect(table.committed.rows).toHaveLength(1);
+	});
+
+	it("never deletes a row adopted after the claim: a conflict that hands the row back to rebuild, recording nothing", async () => {
+		const row = seed({ embeddedAt: null, repositorySyncId: "sync-1" });
+
+		const result = await removeRow(row.id as string);
+
+		expect(result).toMatchObject({
+			status: "conflict",
+			current: { contextId: row.id, contentHash: sha(V1) },
+			reindex: { id: row.id, sourcePath: PATH },
+		});
+		expect(table.committed.rows).toHaveLength(1);
+		expect(receipts()).toHaveLength(0);
+	});
+});
+
 describe("deleteClaimedSyncedContextRow — after the index cleanup", () => {
 	it("deletes the claimed row, keyed on the claim's guard", async () => {
 		const row = seed({ embeddedAt: null });
@@ -519,6 +560,7 @@ describe("deleteClaimedSyncedContextRow — after the index cleanup", () => {
 			organizationId: "org-1",
 			sourcePath: PATH,
 			contentHash: sha(V1),
+			repositorySyncId: null,
 		});
 	});
 
@@ -883,5 +925,115 @@ describe("the claim and the delete — tenant scoping", () => {
 		).toEqual({ status: "gone" });
 		expect(table.committed.rows).toEqual([orgRow]);
 		expect(orgRow.embeddedAt).toBe(EMBEDDED_AT);
+	});
+});
+
+/**
+ * The legacy `contextDeletionWorkflow`'s final step (design 2026-09-23 §4.3,
+ * §6): an execution open at deploy time deletes vectors first and the row
+ * last, and a repository sync can adopt the row in between.
+ */
+describe("deleteUnmanagedContextRow", () => {
+	const LEGACY = { projectId: "proj-1", organizationId: "org-1" };
+
+	it("deletes an unmanaged row by id, project and the input's organization", async () => {
+		const row = seed();
+
+		expect(
+			await deleteUnmanagedContextRow({
+				...LEGACY,
+				contextId: row.id as string,
+			}),
+		).toEqual({ status: "deleted" });
+		expect(table.committed.rows).toEqual([]);
+		expect(table.projectContext.deleteMany).toHaveBeenCalledWith({
+			where: {
+				id: row.id,
+				projectId: "proj-1",
+				organizationId: "org-1",
+				repositorySyncId: null,
+			},
+		});
+	});
+
+	it("keeps a row a repository sync adopted, marks it unindexed and hands it back for a re-embed", async () => {
+		const row = seed({ repositorySyncId: "sync-1" });
+
+		expect(
+			await deleteUnmanagedContextRow({
+				...LEGACY,
+				contextId: row.id as string,
+			}),
+		).toEqual({
+			status: "repository-managed",
+			context: {
+				id: row.id,
+				projectId: "proj-1",
+				organizationId: "org-1",
+				sourcePath: PATH,
+				title: "glossary.md",
+			},
+		});
+		expect(table.committed.rows).toHaveLength(1);
+		expect(table.committed.rows[0]?.repositorySyncId).toBe("sync-1");
+		expect(table.committed.rows[0]?.embeddedAt).toBeNull();
+	});
+
+	it("answers absent for a row somebody else deleted, and never touches another project's or organization's row", async () => {
+		const foreignProject = seed({ projectId: "proj-2" });
+		const foreignOrg = seed({ organizationId: "org-2" });
+
+		expect(
+			await deleteUnmanagedContextRow({
+				...LEGACY,
+				contextId: "ctx-gone",
+			}),
+		).toEqual({ status: "absent" });
+		expect(
+			await deleteUnmanagedContextRow({
+				...LEGACY,
+				contextId: foreignProject.id as string,
+			}),
+		).toEqual({ status: "absent" });
+		expect(
+			await deleteUnmanagedContextRow({
+				...LEGACY,
+				contextId: foreignOrg.id as string,
+			}),
+		).toEqual({ status: "absent" });
+		expect(table.committed.rows).toEqual([foreignProject, foreignOrg]);
+		expect(foreignProject.embeddedAt).toBe(EMBEDDED_AT);
+		expect(foreignOrg.embeddedAt).toBe(EMBEDDED_AT);
+	});
+
+	it("scopes by no organization when the input carries none", async () => {
+		const row = seed();
+
+		expect(
+			await deleteUnmanagedContextRow({
+				projectId: "proj-1",
+				contextId: row.id as string,
+			}),
+		).toEqual({ status: "deleted" });
+		expect(table.projectContext.deleteMany).toHaveBeenCalledWith({
+			where: { id: row.id, projectId: "proj-1", repositorySyncId: null },
+		});
+	});
+});
+
+describe("deleteContext", () => {
+	it("never deletes a row a repository sync manages, and reports a zero count instead of throwing", async () => {
+		const managed = seed({ repositorySyncId: "sync-1" });
+
+		expect(await deleteContext(managed.id as string)).toEqual({ count: 0 });
+		expect(table.committed.rows).toEqual([managed]);
+		expect(await deleteContext("ctx-gone")).toEqual({ count: 0 });
+	});
+
+	it("deletes an unmanaged row by id", async () => {
+		const row = seed({ sourcePath: null });
+
+		expect(await deleteContext(row.id as string)).toEqual({ count: 1 });
+		expect(table.committed.rows).toEqual([]);
 	});
 });

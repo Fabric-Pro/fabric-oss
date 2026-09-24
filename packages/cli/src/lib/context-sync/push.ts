@@ -66,6 +66,19 @@
  * entry too, since the file may or may not be gone yet: the next `--prune`
  * names the same version and confirms. It is never forced. A run stopped
  * early deletes nothing it had not reached.
+ *
+ * ## Repository-managed files (Living Memory design 2026-09-23 §6)
+ *
+ * A Living Memory repository sync is the author of record for the files it
+ * produced: the server refuses a create, a replace, a move (either side) or
+ * a `--prune` delete that would touch one, with a 409 whose `code` is
+ * `REPOSITORY_MANAGED` — recognised by that code, never by matching the
+ * message text, which the server is free to reword. Nothing was written, so
+ * this is reported as `skipped`, not a failure: `--force` never retries it
+ * (a hash conflict has a version to replace; this refusal has none — the
+ * repository owns the file, and the fix is to change it there and run "Sync
+ * now"), and the lock entry for that path — its old, pre-sync version, or
+ * none — is left exactly as it was, never recorded and never dropped.
  */
 import type {
 	FabricClient,
@@ -174,6 +187,21 @@ export type ContextPushResult =
 			/** The documented exit code this failure maps to. */
 			exitCode: number;
 	  } & MoveFields)
+	// A Living Memory repository sync owns this path: nothing was written or
+	// deleted, and this is final — `--force` never retries it. Reported as
+	// `skipped`, for a create, a replace, either side of a move, or a
+	// `--prune` delete alike.
+	| ({
+			sourcePath: string;
+			status: "repository-managed";
+			/**
+			 * The server's own sentence: "<path> is synced from <owner/name>
+			 * @ <ref>; change it in the repository and run Sync now." (or
+			 * "the connected repository" in place of the repository and ref
+			 * when the sync configuration was removed between the reads).
+			 */
+			message: string;
+	  } & MoveFields)
 	// --prune: a removed path's server entry.
 	| {
 			sourcePath: string;
@@ -274,6 +302,23 @@ function conflictOf(error: unknown): SyncedContextFileConflict | null {
 		return conflict as SyncedContextFileConflict;
 	}
 	return null;
+}
+
+/**
+ * The repository-managed refusal (Living Memory design 2026-09-23 §6), from
+ * the SDK's typed error, read by shape as `conflictOf` is — never by
+ * matching the message text, which the server is free to reword. The
+ * server's `code` is `REPOSITORY_MANAGED` and its `message` is already the
+ * exact sentence this prints, so nothing here reconstructs it.
+ */
+function repositoryManagedOf(error: unknown): string | null {
+	if (typeof error !== "object" || error === null) {
+		return null;
+	}
+	const { code, message } = error as { code?: unknown; message?: unknown };
+	return code === "REPOSITORY_MANAGED" && typeof message === "string"
+		? message
+		: null;
 }
 
 /**
@@ -432,6 +477,15 @@ export async function pushContextPlan(input: {
 				),
 			);
 		} catch (error) {
+			const managed = repositoryManagedOf(error);
+			if (managed !== null) {
+				// Final: no version to name, so --force has nothing to retry.
+				return {
+					sourcePath: entry.sourcePath,
+					status: "repository-managed",
+					message: managed,
+				};
+			}
 			const conflict = conflictOf(error);
 			if (conflict === null) {
 				throw error;
@@ -479,6 +533,16 @@ export async function pushContextPlan(input: {
 					? { ...forced, overwrote: current }
 					: forced;
 			} catch (retryError) {
+				const managedOnRetry = repositoryManagedOf(retryError);
+				if (managedOnRetry !== null) {
+					// Adopted by a sync between the conflict and the resend:
+					// still final, still nothing to retry a third time.
+					return {
+						sourcePath: entry.sourcePath,
+						status: "repository-managed",
+						message: managedOnRetry,
+					};
+				}
 				const again = conflictOf(retryError);
 				if (again === null) {
 					throw retryError;
@@ -537,6 +601,19 @@ export async function pushContextPlan(input: {
 				move.from,
 			);
 		} catch (error) {
+			const managed = repositoryManagedOf(error);
+			if (managed !== null) {
+				// The target path is a repository sync's (or its ownership
+				// predicate refused the write for another reason the server
+				// reports this way): nothing was stored or renamed, the old
+				// path is untouched, and --force has nothing to retry.
+				return {
+					sourcePath: move.to,
+					status: "repository-managed",
+					message: managed,
+					...moveFields,
+				};
+			}
 			const conflict = conflictOf(error);
 			if (conflict === null) {
 				throw error;
@@ -620,6 +697,15 @@ export async function pushContextPlan(input: {
 						: {}),
 				};
 			} catch (retryError) {
+				const managedOnRetry = repositoryManagedOf(retryError);
+				if (managedOnRetry !== null) {
+					return {
+						sourcePath: move.to,
+						status: "repository-managed",
+						message: managedOnRetry,
+						...moveFields,
+					};
+				}
 				const again = conflictOf(retryError);
 				if (again === null) {
 					throw retryError;
@@ -687,6 +773,17 @@ export async function pushContextPlan(input: {
 		try {
 			return fromAnswer(await remove(sha256));
 		} catch (error) {
+			const managed = repositoryManagedOf(error);
+			if (managed !== null) {
+				// A repository sync owns this row now: it was not deleted,
+				// the lock entry stays (the next --prune would only refuse
+				// again), and --force has nothing to retry.
+				return {
+					sourcePath,
+					status: "repository-managed",
+					message: managed,
+				};
+			}
 			const conflict = conflictOf(error);
 			if (conflict === null || conflict.current === null) {
 				throw error;
@@ -703,6 +800,14 @@ export async function pushContextPlan(input: {
 			try {
 				return fromAnswer(await remove(current.contentHash), current);
 			} catch (retryError) {
+				const managedOnRetry = repositoryManagedOf(retryError);
+				if (managedOnRetry !== null) {
+					return {
+						sourcePath,
+						status: "repository-managed",
+						message: managedOnRetry,
+					};
+				}
 				const again = conflictOf(retryError);
 				if (again === null || again.current === null) {
 					throw retryError;

@@ -75,6 +75,19 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				},
 				delete: { call: deleteCallMock },
 				createDownloadUrl: { call: vi.fn() },
+				repositorySync: {
+					get: {
+						queryOptions: () => ({
+							queryKey: [
+								"projects.contexts.repositorySync.get",
+							] as const,
+							queryFn: async () => null,
+						}),
+					},
+					configure: { mutationOptions: () => ({}) },
+					syncNow: { mutationOptions: () => ({}) },
+					disable: { mutationOptions: () => ({}) },
+				},
 			},
 		},
 		integrations: {
@@ -421,6 +434,10 @@ describe("ProjectContextsList — Living Memory folders (Fizzy #2620)", () => {
 				id: "ctx_api",
 				projectId: "proj_1",
 				organizationId: "org_1",
+				// The row's displayed contentHash (Living Memory design
+				// 2026-09-23 §6): required for a synced row so a version
+				// changed since the tab read it is never deleted unseen.
+				expectedContentHash: "hash-ctx_api",
 			}),
 		);
 	});

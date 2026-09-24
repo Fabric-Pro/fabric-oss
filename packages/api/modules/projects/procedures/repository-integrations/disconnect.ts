@@ -3,13 +3,18 @@
  *
  * Removes a project-level repository integration.
  * PROJECT_ADMIN+ (via PROJECT_SETTINGS_EDIT). Does NOT delete previously
- * extracted ProjectContext entries.
+ * extracted ProjectContext entries. Every sync that reads from the
+ * integration is released in the same transaction as the delete (design
+ * 2026-09-23 §2, §5.1): the coding-instructions sync goes and the project
+ * flips back to upload mode, so it is never left in repository mode pointing
+ * at nothing; the Living Memory sync configuration is deleted and its files
+ * are kept, released as ordinary synced files.
  */
 
 import { ORPCError } from "@orpc/client";
 import {
 	cleanupCodeSearchOnRepoUnlink,
-	deleteRepoIntegrationReleasingInstructionSync,
+	deleteRepoIntegrationReleasingSyncs,
 	getProjectRepoIntegration,
 	logRepoIntegrationActivity,
 	syncLegacyProjectRepoOnDisconnect,
@@ -58,20 +63,40 @@ export const disconnectRepoIntegrationProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// The coding-instructions sync reads from this integration: release it
-		// and flip the project back to upload mode in the SAME transaction as
-		// the delete (design 2026-09-23 §5.1), so the project is never left in
-		// repository mode pointing at nothing.
-		const { releasedSync } =
-			await deleteRepoIntegrationReleasingInstructionSync({
+		// Both syncs read from this integration: release them in the SAME
+		// transaction as the integration delete, under the project lock and
+		// the Living Memory configuration lock, so a run in flight is fenced,
+		// the project is never left in repository mode pointing at nothing,
+		// and the audit rows can say what was released.
+		const { releasedInstructionSync, releasedContextSync } =
+			await deleteRepoIntegrationReleasingSyncs({
 				integrationId: input.integrationId,
 				projectId: input.projectId,
 			});
-		if (releasedSync) {
+		if (releasedContextSync) {
+			recordAuditFromRequest(context, {
+				action: "project.context.repository_sync_disabled",
+				category: "project",
+				// The configuration's own organization — the project's host —
+				// not the caller's session organization.
+				organizationId: releasedContextSync.organizationId,
+				projectId: input.projectId,
+				resource: {
+					type: "project_context_repository_sync",
+					id: releasedContextSync.syncId,
+					name: `${integration.repositoryOwner}/${integration.repositoryName}`,
+				},
+				metadata: {
+					reason: "integration_disconnected",
+					managedCount: releasedContextSync.managedCount,
+				},
+			});
+		}
+		if (releasedInstructionSync) {
 			recordAuditFromRequest(context, {
 				action: "project.instructions.repository_sync_disabled",
 				category: "project",
-				organizationId: releasedSync.organizationId,
+				organizationId: releasedInstructionSync.organizationId,
 				projectId: input.projectId,
 				resource: { type: "project", id: input.projectId, name: null },
 				metadata: {

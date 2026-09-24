@@ -1556,6 +1556,29 @@ export async function canCreateProjectStory(
 }
 
 /**
+ * Background counterpart of `requireProjectPermission(CONTEXT_CREATE)`: what
+ * a Living Memory repository sync's acting user must hold when its run
+ * begins and again before its first apply and first prune batch
+ * (design 2026-09-23 §2, §5.3.0, §5.3.1). `resolveEffectiveProjectPermissions`
+ * is the request-time authority but lives in `@repo/api`, which neither the
+ * Temporal worker nor this package may import; this walks the same ladder.
+ * Pass the batch's transaction client so the check reads the same moment as
+ * the write it guards.
+ */
+export async function canCreateProjectContexts(
+	projectId: string,
+	userId: string,
+	client: Prisma.TransactionClient = db,
+): Promise<boolean> {
+	return projectPermissionHolds(
+		projectId,
+		userId,
+		Permissions.CONTEXT_CREATE,
+		client,
+	);
+}
+
+/**
  * Returns `true` if `userId` may modify stories — and the tasks hanging off
  * them — on `projectId`, matching the authorization paths of
  * `requireProjectPermission(STORY_UPDATE)`.

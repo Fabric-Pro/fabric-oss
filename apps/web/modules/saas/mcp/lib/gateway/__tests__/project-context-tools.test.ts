@@ -98,6 +98,11 @@ vi.mock("@repo/utils/attachment", async (importOriginal) => ({
 		`attachment; filename="${filename}"`,
 }));
 
+// Real, not mocked: it has no dependency but `@orpc/client`'s ORPCError, and
+// the v1 route's own test imports it the same way for the same reason — the
+// exact refusal `upsertSyncedContext` throws for a repository-managed row
+// (Living Memory design 2026-09-23 §6).
+import { repositoryManagedError } from "@repo/api/modules/projects/lib/repository-managed";
 import {
 	AI_CHAT_ATTACHMENT_TAG,
 	neutralizeAiChatAttachmentBody,
@@ -1688,6 +1693,7 @@ describe("fabric_upsert_project_context", () => {
 		expect(description).toMatch(/'expectedContentHash'/);
 		expect(description).toMatch(/never means overwrite/i);
 		expect(description).toMatch(/'conflict'/);
+		expect(description).toMatch(/'REPOSITORY_MANAGED'/);
 		expect(description).toMatch(/CLAUDE\.md, AGENTS\.md/);
 		expect(description).toMatch(
 			/fabric_propose_project_instruction_change/,
@@ -1962,6 +1968,50 @@ describe("fabric_upsert_project_context", () => {
 
 		expect(result.isError).toBe(true);
 		expect(payload(result).error).toMatch(/'\.\.' segments/);
+	});
+
+	it("reports a path a repository sync owns as a distinct outcome, with the code, the message and the repository/ref, not a flattened sentence (Living Memory design 2026-09-23 §6)", async () => {
+		mocks.upsertSyncedContext.mockRejectedValue(
+			repositoryManagedError("docs/architecture.md", {
+				repository: "example-org/handbook",
+				ref: "main",
+			}),
+		);
+
+		const result = await upsert();
+
+		expect(result.isError).toBe(true);
+		expect(payload(result)).toEqual({
+			error: {
+				message:
+					"docs/architecture.md is synced from example-org/handbook @ main; change it in the repository and run Sync now.",
+				code: "REPOSITORY_MANAGED",
+				repository: "example-org/handbook",
+				ref: "main",
+			},
+		});
+	});
+
+	it("names 'the connected repository' when the sync configuration was removed between the reads", async () => {
+		mocks.upsertSyncedContext.mockRejectedValue(
+			repositoryManagedError("docs/architecture.md", {
+				repository: null,
+				ref: null,
+			}),
+		);
+
+		const result = await upsert();
+
+		expect(result.isError).toBe(true);
+		expect(payload(result)).toEqual({
+			error: {
+				message:
+					"docs/architecture.md is synced from the connected repository; change it in the repository and run Sync now.",
+				code: "REPOSITORY_MANAGED",
+				repository: null,
+				ref: null,
+			},
+		});
 	});
 
 	it("does not repeat an internal error's text to the caller", async () => {

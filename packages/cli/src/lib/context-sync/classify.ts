@@ -30,15 +30,22 @@ const CONTEXT_TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
 /**
  * Why a file under the folder was not sent.
  *
- *  - `unsupported-type`  not one of the text extensions, or not a regular file
- *  - `binary`            not valid UTF-8, or contains NUL
- *  - `empty`             no bytes, or only whitespace
- *  - `too-large`         over 2 MiB of UTF-8
- *  - `invalid-path`      a path the server would refuse (`detail` carries the
- *                        server's reason word) or one two files would share
- *  - `symlink`           never followed, never sent
- *  - `ignored`           the lock names it but the ignore rules now leave it
- *                        out; its server entry is kept
+ *  - `unsupported-type`   not one of the text extensions, or not a regular file
+ *  - `binary`             not valid UTF-8, or contains NUL
+ *  - `empty`              no bytes, or only whitespace
+ *  - `too-large`          over 2 MiB of UTF-8
+ *  - `invalid-path`       a path the server would refuse (`detail` carries the
+ *                         server's reason word) or one two files would share
+ *  - `symlink`            never followed, never sent
+ *  - `ignored`            the lock names it but the ignore rules now leave it
+ *                         out; its server entry is kept
+ *  - `repository-managed` the server refused a create, a replace, a move or
+ *                         a `--prune` delete because a Living Memory
+ *                         repository sync owns this path (`detail` carries
+ *                         the server's own sentence); final, and never
+ *                         retried with `--force`. Set after the send, not by
+ *                         the planner, but reported through the same
+ *                         `skipped` group as the reasons decided before it.
  */
 type ContextSkipReason =
 	| "unsupported-type"
@@ -47,7 +54,8 @@ type ContextSkipReason =
 	| "too-large"
 	| "invalid-path"
 	| "symlink"
-	| "ignored";
+	| "ignored"
+	| "repository-managed";
 
 export interface SkippedContextFile {
 	path: string;

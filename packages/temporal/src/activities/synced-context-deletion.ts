@@ -3,6 +3,10 @@
  * compare-and-set delete behind `fabric context push --prune`, run in order
  * by `syncedContextDeletionWorkflow`, and the publish that follows a delete.
  *
+ * Kept registered only for executions of that workflow still open at deploy
+ * time: nothing starts it since the Living Memory design 2026-09-23 §6 made
+ * every synced-row delete synchronous and row-first (see the workflow).
+ *
  *  1. `claimSyncedContextForDeletion` — the path still holds the named
  *     version: mark it unindexed (`embeddedAt: null`) in the same guarded
  *     write, or answer `absent` / `conflict` and change nothing.

@@ -1,5 +1,9 @@
 import { ORPCError } from "@orpc/client";
-import { getContextById, hasProjectAccess } from "@repo/database";
+import {
+	getContextById,
+	getContextRepositorySync,
+	hasProjectAccess,
+} from "@repo/database";
 import {
 	deleteUrlSourceSchedule,
 	getScheduleClient,
@@ -14,6 +18,39 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { deleteSyncedContext } from "../../lib/delete-synced-context";
+import {
+	type RepositoryManagedLabel,
+	repositoryManagedError,
+} from "../../lib/repository-managed";
+import { syncedContextDeleteConflictMessage } from "../../lib/synced-context-conflict";
+
+/** The duplicate guard's refusal, for a synced row as for any other. */
+const NO_LONGER_A_DUPLICATE_MESSAGE =
+	"This item is no longer a duplicate of the item it was matched with";
+
+/**
+ * Which repository and branch own a managed row, for the fast refusal. The
+ * project's one sync configuration names it; any other state (the
+ * configuration removed or replaced since the row was read) names none, and
+ * the message falls back to "the connected repository".
+ */
+async function repositoryLabelFor(
+	projectId: string,
+	organizationId: string | null,
+	repositorySyncId: string,
+): Promise<RepositoryManagedLabel> {
+	const sync = organizationId
+		? await getContextRepositorySync(projectId, organizationId)
+		: null;
+	if (!sync || sync.id !== repositorySyncId) {
+		return { repository: null, ref: null };
+	}
+	return {
+		repository: `${sync.repositoryIntegration.repositoryOwner}/${sync.repositoryIntegration.repositoryName}`,
+		ref: sync.ref,
+	};
+}
 
 export const deleteContextProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.CONTEXT_DELETE))
@@ -23,7 +60,7 @@ export const deleteContextProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Contexts"],
 		summary: "Delete context",
 		description:
-			"Delete a context from database and Qdrant via Temporal workflow. With `expectedDuplicateOfContextId`, the delete only proceeds while the context still holds the same content as that item in the same project, and answers CONFLICT otherwise.",
+			"Delete a context from database and Qdrant via Temporal workflow. With `expectedDuplicateOfContextId`, the delete only proceeds while the context still holds the same content as that item in the same project, and answers CONFLICT otherwise. A synced file (a context with a source path) is deleted at once, and only in the version named by `expectedContentHash`, which it requires: another version answers CONFLICT with the stored one, and a file synced from a connected repository answers CONFLICT with `data.code` `REPOSITORY_MANAGED`.",
 	})
 	.input(
 		z.object({
@@ -41,6 +78,16 @@ export const deleteContextProcedure = tenantProtectedProcedure
 			 * that has since stopped being a copy.
 			 */
 			expectedDuplicateOfContextId: z.string().optional(),
+			/**
+			 * The `contentHash` of the version the tab displays. Required for
+			 * a synced file (a row with a `sourcePath`), which is deleted only
+			 * in that version (Living Memory design 2026-09-23 §6); ignored
+			 * for every other context.
+			 */
+			expectedContentHash: z
+				.string()
+				.regex(/^[0-9a-fA-F]{64}$/)
+				.optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -81,6 +128,74 @@ export const deleteContextProcedure = tenantProtectedProcedure
 		const organizationId =
 			projectContext.project.organizationId ?? undefined;
 
+		// A synced knowledge file (Living Memory design 2026-09-23 §6): no
+		// workflow. It is deleted synchronously and row-first by
+		// `deleteSyncedContext`, the helper behind `--prune`, only in the
+		// version the tab displays, and the answer is final.
+		if (projectContext.sourcePath) {
+			const { sourcePath, repositorySyncId } = projectContext;
+			// Fast path, before any other work: the repository owns this
+			// row. The helper's guard refuses it too, if it is adopted after
+			// this read.
+			if (repositorySyncId) {
+				throw repositoryManagedError(
+					sourcePath,
+					await repositoryLabelFor(
+						input.projectId,
+						projectContext.project.organizationId,
+						repositorySyncId,
+					),
+				);
+			}
+			if (input.expectedContentHash === undefined) {
+				throw new ORPCError("BAD_REQUEST", {
+					message:
+						"expectedContentHash is required to delete a synced file: the Context tab must send the contentHash of the version it displays, so a version changed since is never deleted unseen.",
+				});
+			}
+			const expectedContentHash = input.expectedContentHash.toLowerCase();
+
+			// Remove duplicates (Fizzy #2619), combined with the hash guard:
+			// the original must still hold the version this copy is deleted
+			// in, and the delete itself is guarded on that version.
+			if (input.expectedDuplicateOfContextId !== undefined) {
+				const original = await getContextById(
+					input.expectedDuplicateOfContextId,
+				);
+				if (
+					!original ||
+					original.id === projectContext.id ||
+					original.projectId !== input.projectId ||
+					original.contentHash !== expectedContentHash
+				) {
+					throw new ORPCError("CONFLICT", {
+						message: NO_LONGER_A_DUPLICATE_MESSAGE,
+					});
+				}
+			}
+
+			const result = await deleteSyncedContext({
+				projectId: input.projectId,
+				sourcePath,
+				expectedContentHash,
+				contextId: projectContext.id,
+				userId: user.id,
+				// The hosting organization, from the project row.
+				organizationId: projectContext.project.organizationId,
+				via: "web",
+				request: context,
+			});
+			if (result.status === "conflict") {
+				throw new ORPCError("CONFLICT", {
+					message: syncedContextDeleteConflictMessage(),
+					data: result,
+				});
+			}
+			// `deleted`, or `absent` when it went since the tab read it.
+			// `deleteSyncedContext` recorded and published it.
+			return { success: true, ...result };
+		}
+
 		// Duplicate removal (Fizzy #2619): the caller decided this row was a
 		// copy from a list it read earlier. Content can change and the
 		// original can be deleted in between, so the match is re-established
@@ -96,8 +211,7 @@ export const deleteContextProcedure = tenantProtectedProcedure
 				original.contentHash !== projectContext.contentHash
 			) {
 				throw new ORPCError("CONFLICT", {
-					message:
-						"This item is no longer a duplicate of the item it was matched with",
+					message: NO_LONGER_A_DUPLICATE_MESSAGE,
 				});
 			}
 		}

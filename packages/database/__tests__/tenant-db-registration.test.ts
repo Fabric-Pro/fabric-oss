@@ -34,6 +34,34 @@ describe("Coding Instructions tables are registered on the tenant path", () => {
 });
 
 /**
+ * Living Memory repository sync (design 2026-09-23 §4.1, §4.2). Both tables
+ * carry `organizationId`, `userId` and `projectId`; unregistered, they fail
+ * OPEN on the tenant path. The sets are sliced (see `setMembers` below) so a
+ * table registered in the wrong set fails here.
+ */
+describe("Living Memory repository sync tables are registered on the tenant path", () => {
+	it.each([
+		"ProjectContextRepositorySync",
+		"ProjectContextRepositorySyncRun",
+	])("%s is user-owned and project-scoped", (model) => {
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).toContain(model);
+		expect(tenantDb).toMatch(new RegExp(`\\b${model}: "projectId",`));
+	});
+	it.each([
+		"project_context_repository_sync",
+		"project_context_repository_sync_run",
+	])("%s has a user_owned RLS policy", (table) => {
+		expect(rls).toMatch(
+			new RegExp(
+				`\\{\\s*name: "${table}",\\s*policy: "user_owned",?\\s*\\}`,
+			),
+		);
+	});
+});
+
+/**
  * #2340. The suite above matches a bare substring anywhere in tenant-db.ts,
  * which cannot tell one registration set from another — a model listed in the
  * wrong set would still pass it. These cases slice the actual set literals, so

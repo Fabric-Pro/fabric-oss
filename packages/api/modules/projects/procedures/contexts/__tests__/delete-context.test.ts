@@ -18,7 +18,11 @@ const {
 	mockDeleteUrlSourceSchedule,
 	mockEmitContextChange,
 	mockEmitActivity,
+	mockDeleteSyncedContext,
+	mockGetContextRepositorySync,
 } = vi.hoisted(() => ({
+	mockDeleteSyncedContext: vi.fn(),
+	mockGetContextRepositorySync: vi.fn(),
 	mockGetContextById: vi.fn(),
 	mockHasProjectAccess: vi.fn(),
 	mockGetTemporalClient: vi.fn(),
@@ -31,7 +35,14 @@ const {
 
 vi.mock("@repo/database", () => ({
 	getContextById: mockGetContextById,
+	getContextRepositorySync: mockGetContextRepositorySync,
 	hasProjectAccess: mockHasProjectAccess,
+}));
+
+// The synced-row delete is its own unit (`delete-synced-file.test.ts`); here
+// only the route's choice of it, and what it hands it, are pinned.
+vi.mock("../../../lib/delete-synced-context", () => ({
+	deleteSyncedContext: mockDeleteSyncedContext,
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -40,7 +51,7 @@ vi.mock("@repo/temporal", () => ({
 	deleteUrlSourceSchedule: mockDeleteUrlSourceSchedule,
 }));
 
-vi.mock("../../../../lib/realtime", () => ({
+vi.mock("../../../../../lib/realtime", () => ({
 	emitContextChange: mockEmitContextChange,
 	emitActivity: mockEmitActivity,
 }));
@@ -65,6 +76,7 @@ type Handler = (args: {
 		projectId: string;
 		organizationId?: string | null;
 		expectedDuplicateOfContextId?: string;
+		expectedContentHash?: string;
 	};
 	context: {
 		user: { id: string; name?: string; email?: string };
@@ -608,5 +620,336 @@ describe("deleteContext — the workflow runs under the project's hosting organi
 		});
 
 		expect(workflowInput().organizationId).toBeUndefined();
+	});
+});
+
+/**
+ * Living Memory design 2026-09-23 §6: a synced knowledge file (a row with a
+ * `sourcePath`) is no longer deleted by `contextDeletionWorkflow`. The tab
+ * names the version it displays, the row is deleted synchronously and
+ * row-first by the helper behind `--prune`, and the answer is final. A row a
+ * repository sync owns is refused before any work.
+ */
+describe("deleteContext — a synced file is deleted row-first, in the version the tab displays", () => {
+	const HASH = "c".repeat(64);
+	const OTHER_HASH = "d".repeat(64);
+	const synced = {
+		id: "ctx-synced",
+		projectId: "proj-1",
+		project: { organizationId: "org-a" },
+		type: "TEXT",
+		sourcePath: "docs/glossary.md",
+		contentHash: HASH,
+		repositorySyncId: null,
+		urlScheduleId: null,
+	};
+	const orgCtx = {
+		user: { id: "user-1", name: "Example Dev", email: "dev@example.com" },
+		session: { activeOrganizationId: "org-a" },
+	};
+
+	function storedRows(rows: Array<Record<string, unknown>>) {
+		mockGetContextById.mockImplementation(
+			async (id: string) => rows.find((row) => row.id === id) ?? null,
+		);
+	}
+
+	beforeEach(() => {
+		mockDeleteSyncedContext.mockResolvedValue({
+			status: "deleted",
+			contextId: "ctx-synced",
+			sourcePath: "docs/glossary.md",
+			contentHash: HASH,
+		});
+		mockGetContextRepositorySync.mockResolvedValue(null);
+	});
+
+	it("requires expectedContentHash for a synced row, and starts nothing without it", async () => {
+		storedRows([synced]);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: { id: "ctx-synced", projectId: "proj-1" },
+				context: orgCtx,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: expect.stringMatching(
+				/expectedContentHash.*version it displays/,
+			),
+		});
+		expect(mockDeleteSyncedContext).not.toHaveBeenCalled();
+		expect(mockTemporalStart).not.toHaveBeenCalled();
+		expect(mockEmitContextChange).not.toHaveBeenCalled();
+	});
+
+	it("deletes through the synced-row helper, never the workflow, under the hosting organization, and answers finally", async () => {
+		storedRows([synced]);
+		const context = {
+			...orgCtx,
+			session: { activeOrganizationId: "org-b" },
+		};
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: {
+				id: "ctx-synced",
+				projectId: "proj-1",
+				expectedContentHash: HASH.toUpperCase(),
+			},
+			context,
+		});
+
+		expect(result).toEqual({
+			success: true,
+			status: "deleted",
+			contextId: "ctx-synced",
+			sourcePath: "docs/glossary.md",
+			contentHash: HASH,
+		});
+		expect(mockDeleteSyncedContext).toHaveBeenCalledTimes(1);
+		expect(mockDeleteSyncedContext).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			sourcePath: "docs/glossary.md",
+			expectedContentHash: HASH,
+			// Only the row the tab displayed.
+			contextId: "ctx-synced",
+			userId: "user-1",
+			// The project's, not the session's.
+			organizationId: "org-a",
+			via: "web",
+			request: context,
+		});
+		expect(mockTemporalStart).not.toHaveBeenCalled();
+		// The helper recorded and published it; the route adds nothing.
+		expect(mockEmitContextChange).not.toHaveBeenCalled();
+		expect(mockEmitActivity).not.toHaveBeenCalled();
+	});
+
+	it("answers absent when the row went after the tab read it", async () => {
+		storedRows([synced]);
+		mockDeleteSyncedContext.mockResolvedValue({
+			status: "absent",
+			sourcePath: "docs/glossary.md",
+		});
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: {
+				id: "ctx-synced",
+				projectId: "proj-1",
+				expectedContentHash: HASH,
+			},
+			context: orgCtx,
+		});
+
+		expect(result).toEqual({
+			success: true,
+			status: "absent",
+			sourcePath: "docs/glossary.md",
+		});
+	});
+
+	it("answers another stored version with the existing CONFLICT shape and its stamp", async () => {
+		storedRows([synced]);
+		const conflict = {
+			status: "conflict",
+			contextId: "ctx-synced",
+			sourcePath: "docs/glossary.md",
+			contentHash: HASH,
+			current: {
+				contextId: "ctx-synced",
+				contentHash: OTHER_HASH,
+				contentUpdatedAt: new Date("2026-09-22T11:00:00Z"),
+				contentUpdatedBy: { id: "user-2", name: "Other Dev" },
+			},
+		};
+		mockDeleteSyncedContext.mockResolvedValue(conflict);
+
+		const handler = await loadHandler();
+		const error = await handler({
+			input: {
+				id: "ctx-synced",
+				projectId: "proj-1",
+				expectedContentHash: HASH,
+			},
+			context: orgCtx,
+		}).catch((caught: unknown) => caught);
+
+		expect(error).toMatchObject({ code: "CONFLICT", data: conflict });
+		expect((error as Error).message).toMatch(/nothing was deleted/i);
+		expect(mockTemporalStart).not.toHaveBeenCalled();
+	});
+
+	it("refuses a row a repository sync owns before any work, naming the repository and branch — even without a hash", async () => {
+		storedRows([{ ...synced, repositorySyncId: "sync-1" }]);
+		mockGetContextRepositorySync.mockResolvedValue({
+			id: "sync-1",
+			ref: "main",
+			repositoryIntegration: {
+				repositoryOwner: "example-org",
+				repositoryName: "handbook",
+			},
+		});
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: { id: "ctx-synced", projectId: "proj-1" },
+				context: orgCtx,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message:
+				"docs/glossary.md is synced from example-org/handbook @ main; change it in the repository and run Sync now.",
+			data: {
+				code: "REPOSITORY_MANAGED",
+				repository: "example-org/handbook",
+				ref: "main",
+			},
+		});
+		expect(mockGetContextRepositorySync).toHaveBeenCalledWith(
+			"proj-1",
+			"org-a",
+		);
+		expect(mockDeleteSyncedContext).not.toHaveBeenCalled();
+		expect(mockTemporalStart).not.toHaveBeenCalled();
+		expect(mockEmitContextChange).not.toHaveBeenCalled();
+	});
+
+	it("names the connected repository when the configuration that owned the row is gone", async () => {
+		storedRows([{ ...synced, repositorySyncId: "sync-1" }]);
+		mockGetContextRepositorySync.mockResolvedValue(null);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					id: "ctx-synced",
+					projectId: "proj-1",
+					expectedContentHash: HASH,
+				},
+				context: orgCtx,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			data: { code: "REPOSITORY_MANAGED", repository: null, ref: null },
+		});
+		expect(mockDeleteSyncedContext).not.toHaveBeenCalled();
+	});
+
+	it("passes on the helper's refusal for a row adopted after the tab read it", async () => {
+		storedRows([synced]);
+		const refusal = Object.assign(new Error("adopted"), {
+			code: "CONFLICT",
+			data: { code: "REPOSITORY_MANAGED", repository: null, ref: null },
+		});
+		mockDeleteSyncedContext.mockRejectedValue(refusal);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					id: "ctx-synced",
+					projectId: "proj-1",
+					expectedContentHash: HASH,
+				},
+				context: orgCtx,
+			}),
+		).rejects.toBe(refusal);
+		expect(mockTemporalStart).not.toHaveBeenCalled();
+	});
+
+	it("Remove duplicates: deletes the copy in the displayed version while the original still holds it", async () => {
+		storedRows([
+			synced,
+			{ ...synced, id: "ctx-original", sourcePath: "notes/glossary.md" },
+		]);
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: {
+				id: "ctx-synced",
+				projectId: "proj-1",
+				expectedDuplicateOfContextId: "ctx-original",
+				expectedContentHash: HASH,
+			},
+			context: orgCtx,
+		});
+
+		expect(result).toMatchObject({ success: true, status: "deleted" });
+		expect(mockDeleteSyncedContext).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextId: "ctx-synced",
+				expectedContentHash: HASH,
+			}),
+		);
+	});
+
+	it("Remove duplicates: answers CONFLICT, deleting nothing, when the original no longer holds the displayed version", async () => {
+		storedRows([
+			synced,
+			{
+				...synced,
+				id: "ctx-original",
+				sourcePath: "notes/glossary.md",
+				contentHash: OTHER_HASH,
+			},
+		]);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					id: "ctx-synced",
+					projectId: "proj-1",
+					expectedDuplicateOfContextId: "ctx-original",
+					expectedContentHash: HASH,
+				},
+				context: orgCtx,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message:
+				"This item is no longer a duplicate of the item it was matched with",
+		});
+		expect(mockDeleteSyncedContext).not.toHaveBeenCalled();
+		expect(mockTemporalStart).not.toHaveBeenCalled();
+	});
+
+	it("keeps the workflow route for a context with no source path, whatever hash is sent", async () => {
+		storedRows([
+			{
+				id: "ctx-text",
+				projectId: "proj-1",
+				project: { organizationId: "org-a" },
+				type: "TEXT",
+				sourcePath: null,
+				contentHash: HASH,
+				repositorySyncId: null,
+				urlScheduleId: null,
+			},
+		]);
+
+		const handler = await loadHandler();
+		const result = await handler({
+			input: {
+				id: "ctx-text",
+				projectId: "proj-1",
+				expectedContentHash: OTHER_HASH,
+			},
+			context: orgCtx,
+		});
+
+		expect(result).toEqual({ success: true });
+		expect(mockDeleteSyncedContext).not.toHaveBeenCalled();
+		expect(mockTemporalStart).toHaveBeenCalledWith(
+			"contextDeletionWorkflow",
+			expect.objectContaining({
+				args: [expect.objectContaining({ contextId: "ctx-text" })],
+			}),
+		);
+		expect(mockEmitContextChange).toHaveBeenCalledTimes(1);
 	});
 });

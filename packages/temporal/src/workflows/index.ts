@@ -548,6 +548,10 @@ export {
 	type ProjectContextProcessingOutput,
 	projectContextProcessingWorkflow,
 } from "./project-context-processing";
+// Living Memory repository sync (design 2026-09-23 §5.2, Fizzy #2657),
+// started by the API on "project-documents". Named, not `export *`: only
+// the workflow function belongs in the bundle's registry.
+export { projectContextRepositorySyncWorkflow } from "./project-context-repository-sync";
 export * from "./project-contexts-reprocess";
 // Project deletion workflows (soft delete cleanup and permanent delete)
 export {

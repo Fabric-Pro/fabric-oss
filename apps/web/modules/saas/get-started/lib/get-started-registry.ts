@@ -900,6 +900,20 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				body: "As context piles up, Fabric compresses the older history into one traceable summary — goals, decisions, constraints, and open items — that the AI reads instead of the full backlog, so prompts stay small without losing knowledge. Each point links back to its original source, and raw context is never deleted. Open it for the full read.",
 				conditional: true,
 			},
+			{
+				id: "context-sync-from-repository",
+				anchor: "context-sync-from-repository",
+				title: "Sync Living Memory from a repository",
+				body: "Point this at selected folders or files on one branch of a connected repository, and Fabric keeps them applied — the repository stays the author of record, so nothing else can overwrite or delete the files it produced.",
+				conditional: true,
+			},
+			{
+				id: "context-sync-now",
+				anchor: "context-sync-now",
+				title: "Sync now",
+				body: "Re-applies the configured paths from the pinned commit — edits, new files and removals in the repository all land here on the next run, with the outcome and anything needing attention shown right below.",
+				conditional: true,
+			},
 		],
 	},
 	{

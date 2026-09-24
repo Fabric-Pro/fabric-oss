@@ -136,6 +136,8 @@ const USER_OWNED_TABLES = new Set([
 	// collection to aim at off the record — so it gets the same floor as the
 	// tables it cleans up after.
 	"ProjectContextPendingVectorCleanup",
+	"ProjectContextRepositorySync", // Living Memory repository sync configuration
+	"ProjectContextRepositorySyncRun", // Living Memory repository sync run receipts
 	"ProjectReadinessItemState", // Manual readiness item states — snooze / not applicable / help requested
 	"ProjectReadinessVerdict", // Last computed readiness verdict per item, for "recently completed"
 	"BackgroundJob", // Job Hub — background job progress rows (tenant XOR + projectId)
@@ -278,6 +280,8 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectContextConversationBundle: "projectId",
 	ProjectContextConversationClaim: "projectId",
 	ProjectContextPendingVectorCleanup: "projectId",
+	ProjectContextRepositorySync: "projectId",
+	ProjectContextRepositorySyncRun: "projectId",
 	ProjectReadinessItemState: "projectId",
 	ProjectReadinessVerdict: "projectId",
 	BackgroundJob: "projectId",

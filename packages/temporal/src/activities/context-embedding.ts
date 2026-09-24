@@ -91,6 +91,16 @@ async function readStoredVersion(
  *     and the mark is not marked as embedded) and stop. Changed: go round
  *     again with the new version, at most {@link MAX_REEMBED_PASSES} passes,
  *     then throw so Temporal retries once the row has settled.
+ *  5. The mark itself matched no row (a replace landed between the re-read
+ *     and the mark): nothing is stamped, so this is not a success. Re-read
+ *     the row and go round again, within the same bound, and throw once it
+ *     is spent (Living Memory design 2026-09-23 §5.3.1 step 9). Never
+ *     return success after a mark that matched nothing: the index would be
+ *     on an older version than the row, with nothing left to repair it.
+ *
+ * `progress.pointsRemoved` is set before the first delete of the row's
+ * points, so a failure from then on — the delete's own included, which may
+ * have removed some — is recorded as one that left the row unindexed.
  *
  * Returns `null` when there is nothing to index: the row is gone or empty.
  */
@@ -103,13 +113,17 @@ async function reembedStoredVersion(params: {
 	apiKey: Parameters<typeof embedProjectContext>[0]["apiKey"];
 	metadata?: EmbedSingleContextInput["metadata"];
 	initial: StoredVersion | null;
+	progress: ReembedProgress;
 }): Promise<EmbedResult | null> {
-	const { contextId, organizationId, initial, ...embedOptions } = params;
+	const { contextId, organizationId, initial, progress, ...embedOptions } =
+		params;
 	// Strict: a failed delete rejects instead of leaving old chunks behind.
-	const deleteAllPoints = () =>
-		deleteProjectContext(contextId, organizationId, undefined, {
+	const deleteAllPoints = () => {
+		progress.pointsRemoved = true;
+		return deleteProjectContext(contextId, organizationId, undefined, {
 			strict: true,
 		});
+	};
 	let version = initial;
 
 	for (let pass = 1; pass <= MAX_REEMBED_PASSES; pass++) {
@@ -146,19 +160,28 @@ async function reembedStoredVersion(params: {
 			return null;
 		}
 		if (current.contentHash === version.contentHash) {
-			if (result.qdrantId) {
-				await db.projectContext.updateMany({
-					where: { id: contextId, contentHash: version.contentHash },
-					data: { qdrantId: result.qdrantId, embeddedAt: new Date() },
-				});
+			if (!result.qdrantId) {
+				return result;
 			}
-			return result;
+			const { count } = await db.projectContext.updateMany({
+				where: { id: contextId, contentHash: version.contentHash },
+				data: { qdrantId: result.qdrantId, embeddedAt: new Date() },
+			});
+			if (count > 0) {
+				return result;
+			}
+			// Replaced (or deleted) between the re-read and the mark: this
+			// pass embedded a version the row no longer holds.
+			activityLogger.info(
+				"Context changed before its re-embed could be marked; embedding again",
+				{ contextId, pass },
+			);
+		} else {
+			activityLogger.info(
+				"Context content changed while it was being re-embedded",
+				{ contextId, pass },
+			);
 		}
-
-		activityLogger.info(
-			"Context content changed while it was being re-embedded",
-			{ contextId, pass },
-		);
 		if (pass < MAX_REEMBED_PASSES) {
 			version = await readStoredVersion(contextId);
 		}
@@ -167,6 +190,12 @@ async function reembedStoredVersion(params: {
 	throw new Error(
 		`Context ${contextId} kept changing while it was being re-embedded (${MAX_REEMBED_PASSES} passes); retrying once it settles`,
 	);
+}
+
+/** What a re-embed did before it returned or threw. */
+interface ReembedProgress {
+	/** The row's points were (or may have been) deleted by this pass. */
+	pointsRemoved: boolean;
 }
 
 export interface EmbedSingleContextOutput {
@@ -200,6 +229,18 @@ export async function embedSingleContextActivity(
 		projectId,
 		type,
 	});
+
+	const progress: ReembedProgress = { pointsRemoved: false };
+	// A failure after this pass deleted the row's points also clears
+	// `embeddedAt`, so the row reads as awaiting indexing rather than
+	// claiming an index it no longer has (Living Memory design 2026-09-23
+	// §5.3.1 step 9). Every other failure is recorded exactly as before.
+	const recordFailure = (message: string) =>
+		progress.pointsRemoved
+			? recordContextIndexingFailure(contextId, message, {
+					pointsRemoved: true,
+				})
+			: recordContextIndexingFailure(contextId, message);
 
 	try {
 		// A caller may omit the body and let us read it back instead, so that an
@@ -272,6 +313,7 @@ export async function embedSingleContextActivity(
 					apiKey: providerConfig,
 					metadata,
 					initial: stored,
+					progress,
 				});
 				if (!reembedded) {
 					activityLogger.info(
@@ -375,8 +417,7 @@ export async function embedSingleContextActivity(
 			//
 			// Best-effort: swallow any error here so the activity itself
 			// stays a success — the workflow caller is fire-and-forget.
-			await recordContextIndexingFailure(
-				contextId,
+			await recordFailure(
 				"AI provider not configured. Configure an embedding provider in Settings → AI to enable retrieval for this context.",
 			).catch((writeError) => {
 				activityLogger.warn(
@@ -404,15 +445,14 @@ export async function embedSingleContextActivity(
 		// intact and the only casualty is search. `ProjectContextsList` narrows
 		// the badge on the same evidence (a FAILED row that still has content);
 		// this makes the detail text agree with it.
-		await recordContextIndexingFailure(
-			contextId,
-			`Search indexing failed: ${errorMessage}`,
-		).catch((writeError) => {
-			activityLogger.warn("Failed to flag context as FAILED", {
-				contextId,
-				writeError,
-			});
-		});
+		await recordFailure(`Search indexing failed: ${errorMessage}`).catch(
+			(writeError) => {
+				activityLogger.warn("Failed to flag context as FAILED", {
+					contextId,
+					writeError,
+				});
+			},
+		);
 
 		// Re-throw so Temporal applies the activity's retry policy
 		// (maximumAttempts: 3) — a transient embedding/provider failure

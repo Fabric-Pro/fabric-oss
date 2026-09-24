@@ -19,6 +19,7 @@ const m = vi.hoisted(() => ({
 	project: { update: vi.fn(), findFirst: vi.fn() },
 	snapshot: { findMany: vi.fn(), findFirst: vi.fn() },
 	integration: { deleteMany: vi.fn() },
+	contextSync: { findFirst: vi.fn() },
 	$queryRaw: vi.fn(),
 	$transaction: vi.fn(),
 	recordAuditTx: vi.fn(),
@@ -31,6 +32,7 @@ const client = vi.hoisted(() => ({
 	project: m.project,
 	projectInstructionSnapshot: m.snapshot,
 	projectRepositoryIntegration: m.integration,
+	projectContextRepositorySync: m.contextSync,
 	$queryRaw: (...a: unknown[]) => m.$queryRaw(...a),
 }));
 
@@ -51,7 +53,6 @@ vi.mock("../prisma/queries/projects/projects", () => ({
 import {
 	completeInstructionRepositorySyncRun,
 	deleteInstructionRepositorySync,
-	deleteRepoIntegrationReleasingInstructionSync,
 	getInstructionRepositorySyncRunReceipt,
 	insertInstructionRepositorySyncRun,
 	instructionSyncBackoffMs,
@@ -59,14 +60,24 @@ import {
 	upsertInstructionRepositorySync,
 } from "../prisma/queries/instruction-repository-sync";
 import { updateProjectInstructionSettings } from "../prisma/queries/instructions";
+import { deleteRepoIntegrationReleasingSyncs } from "../prisma/queries/projects/repository-integration-disconnect";
 
 const NOW = new Date("2026-09-23T12:00:00.000Z");
 const MIN = 60 * 1000;
 
 beforeEach(() => {
-	for (const group of [m.sync, m.run, m.project, m.snapshot, m.integration]) {
+	for (const group of [
+		m.sync,
+		m.run,
+		m.project,
+		m.snapshot,
+		m.integration,
+		m.contextSync,
+	]) {
 		for (const fn of Object.values(group)) fn.mockReset();
 	}
+	// No Living Memory sync reads from the integration unless a test says so.
+	m.contextSync.findFirst.mockResolvedValue(null);
 	m.$queryRaw.mockReset();
 	m.recordAuditTx.mockReset();
 	m.$transaction.mockReset();
@@ -225,7 +236,7 @@ describe("deleteInstructionRepositorySync", () => {
 	});
 });
 
-describe("deleteRepoIntegrationReleasingInstructionSync", () => {
+describe("deleteRepoIntegrationReleasingSyncs: the coding-instructions release", () => {
 	it("releases the sync configuration and flips the mode when the disconnected integration is its source", async () => {
 		m.$queryRaw.mockResolvedValueOnce([{ organizationId: "org_1" }]); // project lock
 		m.sync.findFirst.mockResolvedValue({
@@ -236,14 +247,24 @@ describe("deleteRepoIntegrationReleasingInstructionSync", () => {
 		m.integration.deleteMany.mockResolvedValue({ count: 1 });
 
 		expect(
-			await deleteRepoIntegrationReleasingInstructionSync({
+			await deleteRepoIntegrationReleasingSyncs({
 				integrationId: "int_1",
 				projectId: "proj_1",
 			}),
 		).toEqual({
 			deletedIntegration: true,
-			releasedSync: { organizationId: "org_1" },
+			releasedInstructionSync: { organizationId: "org_1" },
+			releasedContextSync: null,
 		});
+		// The project row lock comes first, before any read of the sync.
+		expect(String(m.$queryRaw.mock.calls[0]?.[0])).toContain(
+			'FROM "project" WHERE "id" =',
+		);
+		// NO KEY: a sync run's inserts take KEY SHARE on the project row while
+		// holding its configuration lock; plain FOR UPDATE would deadlock.
+		expect(String(m.$queryRaw.mock.calls[0]?.[0])).toContain(
+			"FOR NO KEY UPDATE",
+		);
 		expect(m.sync.findFirst).toHaveBeenCalledWith(
 			expect.objectContaining({
 				where: {
@@ -264,11 +285,15 @@ describe("deleteRepoIntegrationReleasingInstructionSync", () => {
 		m.integration.deleteMany.mockResolvedValue({ count: 1 });
 
 		expect(
-			await deleteRepoIntegrationReleasingInstructionSync({
+			await deleteRepoIntegrationReleasingSyncs({
 				integrationId: "int_2",
 				projectId: "proj_1",
 			}),
-		).toEqual({ deletedIntegration: true, releasedSync: null });
+		).toEqual({
+			deletedIntegration: true,
+			releasedInstructionSync: null,
+			releasedContextSync: null,
+		});
 		expect(m.sync.delete).not.toHaveBeenCalled();
 		expect(m.project.update).not.toHaveBeenCalled();
 	});

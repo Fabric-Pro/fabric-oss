@@ -4,9 +4,12 @@
  *
  * What this pins:
  *  - a hash seen once is not a duplicate; rows with no hash are never grouped;
- *  - the row kept is a synced file (`sourcePath` set) when there is one, then
- *    the earliest `createdAt`, then the smallest id — so the choice is stable
- *    and never depends on the order the rows arrived in;
+ *  - the row kept is a row a repository sync manages (`repositorySyncId`
+ *    set, Living Memory design 2026-09-23 §7.3) when there is one, then a
+ *    synced file (`sourcePath` set), then the earliest `createdAt`, then the
+ *    smallest id — so the choice is stable and never depends on the order
+ *    the rows arrived in, and Remove duplicates never offers the managed
+ *    copy for deletion;
  *  - every extra copy in a group points at the same kept row, and the kept row
  *    itself is never marked.
  *
@@ -21,6 +24,7 @@ type Row = {
 	contentHash: string | null;
 	sourcePath: string | null;
 	createdAt: Date | string;
+	repositorySyncId?: string | null;
 };
 
 function row(
@@ -65,6 +69,56 @@ describe("annotateDuplicateContexts", () => {
 			row("synced", "h1", "2026-06-01T00:00:00Z", "docs/readme.md"),
 		]);
 		expect(Object.fromEntries(result)).toEqual({ upload: "synced" });
+	});
+
+	it("prefers a repository-managed row over an older synced file and an older upload", () => {
+		const managed = {
+			...row("managed", "h1", "2026-09-01T00:00:00Z", "docs/readme.md"),
+			repositorySyncId: "sync-1",
+		};
+		const forward = annotateDuplicateContexts([
+			row("upload", "h1", "2026-01-01T00:00:00Z"),
+			row("pushed", "h1", "2026-02-01T00:00:00Z", "notes/readme.md"),
+			managed,
+		]);
+		const reversed = annotateDuplicateContexts([
+			managed,
+			row("pushed", "h1", "2026-02-01T00:00:00Z", "notes/readme.md"),
+			row("upload", "h1", "2026-01-01T00:00:00Z"),
+		]);
+		expect(Object.fromEntries(forward)).toEqual({
+			upload: "managed",
+			pushed: "managed",
+		});
+		expect(Object.fromEntries(reversed)).toEqual(
+			Object.fromEntries(forward),
+		);
+		expect(forward.has("managed")).toBe(false);
+	});
+
+	it("orders two managed copies by createdAt, then id, like any other pair", () => {
+		const result = annotateDuplicateContexts([
+			{
+				...row("later", "h1", "2026-03-01T00:00:00Z", "b.md"),
+				repositorySyncId: "sync-1",
+			},
+			{
+				...row("earlier", "h1", "2026-01-01T00:00:00Z", "a.md"),
+				repositorySyncId: "sync-1",
+			},
+		]);
+		expect(Object.fromEntries(result)).toEqual({ later: "earlier" });
+	});
+
+	it("treats a row with no repositorySyncId field as unmanaged", () => {
+		const result = annotateDuplicateContexts([
+			row("synced", "h1", "2026-06-01T00:00:00Z", "docs/readme.md"),
+			{
+				...row("released", "h1", "2026-01-01T00:00:00Z", "a.md"),
+				repositorySyncId: null,
+			},
+		]);
+		expect(Object.fromEntries(result)).toEqual({ synced: "released" });
 	});
 
 	it("breaks a createdAt tie on the smallest id, whatever the input order", () => {
