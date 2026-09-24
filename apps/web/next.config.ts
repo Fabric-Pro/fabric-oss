@@ -752,6 +752,18 @@ const nextConfig: NextConfig = {
 				destination: "/app/admin/users",
 				permanent: true,
 			},
+			// Deep link legacy /context URLs to ?tab=context non-permanently (HTTP 307).
+			// Load-bearing: pre-change unread notification rows in the DB retain /context.
+			{
+				source: "/app/:organizationSlug/projects/:id/context",
+				destination: "/app/:organizationSlug/projects/:id?tab=context",
+				permanent: false,
+			},
+			{
+				source: "/app/projects/:id/context",
+				destination: "/app/projects/:id?tab=context",
+				permanent: false,
+			},
 		];
 	},
 	async headers() {

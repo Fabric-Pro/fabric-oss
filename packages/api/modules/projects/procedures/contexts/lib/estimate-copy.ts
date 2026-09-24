@@ -87,10 +87,10 @@ export function displayUrl(url: string): string {
  * build the `/app/${slug}/...` form, otherwise the personal `/app/...` form.
  *
  * Why this lives here: the spec (§8.2) calls for the link to point at the
- * project's Context tab. The contexts list page already mounts under
- * `/app/projects/[projectId]/context` (personal) and
- * `/app/[slug]/projects/[projectId]/context` (org). Both notification emit
- * sites build the same href so they're trivially aligned.
+ * project's Context tab. Project tabs are client-side views addressed via
+ * `?tab=context` on the project details page (`ProjectDetails.tsx`), consumed
+ * by `useProjectTabDeepLink`. Both notification emit sites build the same
+ * href so they're trivially aligned.
  *
  * NOTE: `organizationSlug` is the human-readable URL slug, not the
  * organization id. The emit sites resolve the slug from the organization
@@ -101,6 +101,6 @@ export function contextTabHref(
 	organizationSlug: string | null,
 ): string {
 	return organizationSlug
-		? `/app/${organizationSlug}/projects/${projectId}/context`
-		: `/app/projects/${projectId}/context`;
+		? `/app/${organizationSlug}/projects/${projectId}?tab=context`
+		: `/app/projects/${projectId}?tab=context`;
 }

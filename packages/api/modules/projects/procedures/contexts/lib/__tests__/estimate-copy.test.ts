@@ -107,13 +107,13 @@ describe("displayUrl", () => {
 describe("contextTabHref", () => {
 	it("builds the personal href when slug is null", () => {
 		expect(contextTabHref("proj-1", null)).toBe(
-			"/app/projects/proj-1/context",
+			"/app/projects/proj-1?tab=context",
 		);
 	});
 
 	it("builds the org-scoped href when a slug is supplied", () => {
 		expect(contextTabHref("proj-1", "acme")).toBe(
-			"/app/acme/projects/proj-1/context",
+			"/app/acme/projects/proj-1?tab=context",
 		);
 	});
 });

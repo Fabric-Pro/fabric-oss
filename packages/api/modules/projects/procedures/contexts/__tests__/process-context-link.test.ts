@@ -758,7 +758,7 @@ describe("processContextLink — CONTEXT_INDEXING_STARTED notification (Group 6)
 			title: "Indexing example.com/docs/api",
 			// 100 pages × 5s + 30s = 530s = ~9 min.
 			snippet: "Estimated 9 min — we'll notify you when it's ready.",
-			link: "/app/projects/proj-1/context",
+			link: "/app/projects/proj-1?tab=context",
 			source: { projectId: "proj-1" },
 			payload: {
 				contextId: "ctx-notify-1",
@@ -794,7 +794,7 @@ describe("processContextLink — CONTEXT_INDEXING_STARTED notification (Group 6)
 		expect(mockCreateNotification.mock.calls[0][0]).toMatchObject({
 			organizationId: "org-1",
 			snippet: "About 30 seconds — we'll notify you when it's ready.",
-			link: "/app/acme/projects/proj-org/context",
+			link: "/app/acme/projects/proj-org?tab=context",
 		});
 	});
 
