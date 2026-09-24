@@ -69,6 +69,20 @@ const CHECK_DEADLINE_MARGIN_MS = 5_000;
 
 type WrittenEffect = Exclude<InstructionSyncSchedulingEffect, { kind: "none" }>;
 
+/**
+ * The stage a check was in when it threw (Fizzy #2684). Logged with the
+ * sync's identifiers so an operator can tell a token problem from a
+ * network one without recovering it from the receipt row; the error's
+ * class only, never its message, which for git can carry a URL.
+ */
+type CheckStage =
+	| "lease"
+	| "permission"
+	| "remote_head"
+	| "record_failure"
+	| "start"
+	| "write_back";
+
 /** Spec §8.2: the poll's first step removes clone directories older than an hour. */
 export async function sweepInstructionSyncTempDirs(): Promise<{
 	removed: number;
@@ -135,6 +149,32 @@ export async function claimDueInstructionSyncChecks(input: {
 export async function checkInstructionSyncRemoteHead(
 	input: InstructionSyncCheckInput,
 ): Promise<InstructionSyncCheckResult> {
+	const stage: { current: CheckStage } = { current: "lease" };
+	try {
+		return await runRemoteHeadCheck(input, stage);
+	} catch (error) {
+		// The throw itself is left to the lease (above); this only names
+		// where it happened, which the wrapped ActivityFailure does not.
+		logger.error(
+			{
+				event: "instructions.sync.check_failed",
+				kind: input.kind,
+				syncId: input.id,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				stage: stage.current,
+				errorClass: error instanceof Error ? error.name : typeof error,
+			},
+			"[InstructionSync] automatic check failed; its lease will expire",
+		);
+		throw error;
+	}
+}
+
+async function runRemoteHeadCheck(
+	input: InstructionSyncCheckInput,
+	stage: { current: CheckStage },
+): Promise<InstructionSyncCheckResult> {
 	const subject = repositorySyncSubject(input.kind);
 	const row: ClaimedRepositorySyncRow = {
 		id: input.id,
@@ -180,6 +220,7 @@ export async function checkInstructionSyncRemoteHead(
 		if (!inTime()) {
 			return stale;
 		}
+		stage.current = "write_back";
 		const { applied } = await writeBack(effect);
 		return { outcome: applied ? outcome : "stale" };
 	};
@@ -191,6 +232,7 @@ export async function checkInstructionSyncRemoteHead(
 		if (!inTime()) {
 			return stale;
 		}
+		stage.current = "record_failure";
 		const { applied } = await db.$transaction((tx) =>
 			subject.recordCheckFailure(tx, {
 				row,
@@ -206,6 +248,7 @@ export async function checkInstructionSyncRemoteHead(
 	if (!inTime() || !(await subject.leaseHeld(db, fence))) {
 		return stale;
 	}
+	stage.current = "permission";
 	if (!(await subject.checkPermission(row))) {
 		return recordFailure(
 			"PERMISSION_DENIED",
@@ -214,6 +257,7 @@ export async function checkInstructionSyncRemoteHead(
 		);
 	}
 
+	stage.current = "remote_head";
 	const head = await readRemoteHead(row, stopAt);
 	if (head.kind === "expired") {
 		return stale;
@@ -261,10 +305,12 @@ export async function checkInstructionSyncRemoteHead(
 	// this read and the start below is the one way a second run can follow
 	// the first (Decision 51); `expected` still refuses it if the row was
 	// re-configured meanwhile (Decision 56).
+	stage.current = "lease";
 	if (!(await subject.leaseHeld(db, fence)) || !inTime()) {
 		return stale;
 	}
 	let started: RepositorySyncStartResult;
+	stage.current = "start";
 	try {
 		started = await subject.startRun(row, "POLL", {
 			expected: { syncId: row.id, generation: row.generation },
@@ -291,6 +337,7 @@ export async function checkInstructionSyncRemoteHead(
 	// reschedule is skipped for the same reason (Decision 50), and the start
 	// is still reported.
 	if (inTime()) {
+		stage.current = "write_back";
 		await writeBack({
 			kind: "reschedule",
 			delayMs:
