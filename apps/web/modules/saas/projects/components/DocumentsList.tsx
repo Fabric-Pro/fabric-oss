@@ -1,6 +1,7 @@
 "use client";
 
 import { GENERATION_DEPENDENCY_CATEGORIES } from "@repo/database/src/generation-dependency-categories";
+import { isDeprecatedDocumentType } from "@repo/utils/document-type-catalog";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -54,6 +55,7 @@ import {
 import { CreateDocumentDialog } from "./CreateDocumentDialog";
 import { DocumentDownloadDropdown } from "./DocumentDownloadDropdown";
 import { DocumentTitleInlineEdit } from "./DocumentTitleInlineEdit";
+import { DeprecatedDocumentTypeBadge } from "./FeaturesDeprecationNotice";
 import { ProjectSectionHero } from "./ProjectSectionHero";
 
 type Props = {
@@ -277,7 +279,7 @@ const documentTypeDescriptions: Record<string, string> = {
 	TECHNICAL_SPEC:
 		"Detailed technical requirements and implementation details",
 	USER_STORY:
-		"Actionable features with acceptance criteria (Given/When/Then)",
+		"Historical snapshot of generated features. Feature recommendations now live in Roadmap",
 	API_SPEC: "API endpoints, request/response formats, and authentication",
 	QA_STRATEGY:
 		"Testing overview: risks, scope, tools, environments, and ramp-up — depth scaled to QA maturity",
@@ -1161,6 +1163,9 @@ export function DocumentsList({
 											{documentTypeLabels[doc.type] ??
 												doc.type.replace(/_/g, " ")}
 										</Badge>
+										{isDeprecatedDocumentType(doc.type) && (
+											<DeprecatedDocumentTypeBadge />
+										)}
 
 										{/* Source badge for imported/external docs */}
 										{doc.source === "IMPORTED" && (

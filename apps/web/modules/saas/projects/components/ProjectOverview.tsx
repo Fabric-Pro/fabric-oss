@@ -253,7 +253,7 @@ export function ProjectOverview({
 						</p>
 						<p className="text-sm text-muted-foreground">
 							{completedDocs === totalDocs
-								? "Core planning documents are complete. The AI and the Pipeline have enough to build from."
+								? "Core planning documents are complete. The AI has enough to build from."
 								: `${completedDocs} of ${totalDocs} core planning documents complete, ${inFlightDocs} in progress.`}
 						</p>
 					</div>

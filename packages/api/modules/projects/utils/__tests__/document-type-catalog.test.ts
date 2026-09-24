@@ -14,6 +14,7 @@ import {
 	DOCUMENT_TYPE_CATALOG,
 	DOCUMENT_TYPE_OPTIONS,
 	documentTypeLabel,
+	isDeprecatedDocumentType,
 } from "@repo/utils/document-type-catalog";
 import { describe, expect, it } from "vitest";
 
@@ -60,5 +61,33 @@ describe("document type catalog", () => {
 			Object.keys(DOCUMENT_TYPE_CATALOG),
 		);
 		expect(DOCUMENT_TYPE_OPTIONS[0]?.value).toBe("GENERAL");
+	});
+
+	describe("deprecation", () => {
+		it("marks Features (USER_STORY) and nothing else", () => {
+			const deprecated = ProjectDocumentTypeSchema.options.filter(
+				(type) => isDeprecatedDocumentType(type),
+			);
+			expect(deprecated).toEqual(["USER_STORY"]);
+		});
+
+		it("keeps the Features label unmarked, because it is also the default title", () => {
+			expect(documentTypeLabel("USER_STORY")).toBe("Features");
+		});
+
+		it("lists deprecated types after every current one", () => {
+			const values = DOCUMENT_TYPE_OPTIONS.map((o) => o.value);
+			const firstDeprecated = values.findIndex((type) =>
+				isDeprecatedDocumentType(type),
+			);
+			expect(firstDeprecated).toBeGreaterThan(-1);
+			expect(
+				values.slice(firstDeprecated).every(isDeprecatedDocumentType),
+			).toBe(true);
+		});
+
+		it("does not treat an unknown type as deprecated", () => {
+			expect(isDeprecatedDocumentType("SOME_RETIRED_TYPE")).toBe(false);
+		});
 	});
 });

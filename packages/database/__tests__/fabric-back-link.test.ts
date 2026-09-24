@@ -1,8 +1,8 @@
 /**
- * Unit tests for the Fabric back-link helpers used by createStory and
- * bulkCreateStories. Pure functions — no DB / Prisma involvement, so
- * vitest can run them in isolation. The integration with createStory is
- * exercised by the staging smoke test (see plan).
+ * Unit tests for the Fabric back-link helpers used by createStory. Pure
+ * functions — no DB / Prisma involvement, so vitest can run them in
+ * isolation. The integration with createStory is exercised by the staging
+ * smoke test (see plan).
  */
 
 import { describe, expect, it } from "vitest";

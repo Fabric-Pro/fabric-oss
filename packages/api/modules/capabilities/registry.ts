@@ -27,10 +27,10 @@
  * disabled in place until a PM tool is connected, which says more than a
  * banner above them could.
  *
- * **Paths that run ungated on purpose.** The scheduled newsletter send, the
- * scheduled document refresh and the PRD-to-tasks pipeline's child generations
- * all start inside Temporal, with no person at a door to show a gate to. The
- * doors guard the actions a person or an API caller takes.
+ * **Paths that run ungated on purpose.** The scheduled newsletter send and the
+ * scheduled document refresh both start inside Temporal, with no person at a
+ * door to show a gate to. The doors guard the actions a person or an API
+ * caller takes.
  *
  * **Reports.** AC-13 is unmet by design — see the note where a Reports rule
  * would sit.

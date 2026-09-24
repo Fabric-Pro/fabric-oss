@@ -82,6 +82,14 @@ const INTENTIONAL_REWRITE_SKIP = new Set<string>([
 	// never reached prod), which can't replay against the new code and will age
 	// out of the fetch window (--since-days).
 	"releaseNotificationWorkflow",
+	// The Pipeline tab was retired, and with it the only thing that started this
+	// workflow (the `pipeline.start` procedure). Unlike the entries above, it DID
+	// run in prod, so prod and staging both hold histories of it; none can replay
+	// against code that no longer defines the workflow or its pipeline-only
+	// activities. Any execution still running must be drained before the worker
+	// deploy that drops it. Remove this entry once those histories have aged out
+	// of the fetch window (--since-days).
+	"prdToTasksPipelineWorkflow",
 ]);
 
 /**

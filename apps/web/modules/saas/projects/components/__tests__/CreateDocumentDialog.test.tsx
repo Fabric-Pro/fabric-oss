@@ -572,6 +572,65 @@ describe("CreateDocumentDialog", () => {
 		expect(titleField().value).toBe("Test Plan");
 	});
 
+	// ── Features is deprecated: marked and explained, never refused ──
+
+	it("marks Features as deprecated, explains why, and still creates it unchanged", async () => {
+		const user = userEvent.setup();
+		getAiConfigStatus.mockResolvedValue(aiUnavailable());
+		renderDialog();
+
+		await user.click(screen.getByRole("combobox", { name: /typeLabel/i }));
+		const features = await screen.findByRole("option", {
+			name: /Features/,
+		});
+		expect(features).toHaveTextContent("badge");
+		// Current types carry no marker.
+		expect(
+			screen.getByRole("option", { name: /Technical Architecture/ }),
+		).not.toHaveTextContent("badge");
+		await user.click(features);
+
+		const notice = screen.getByRole("note");
+		expect(notice).toHaveTextContent("message");
+		expect(
+			screen.getByRole("link", { name: "roadmapLink" }),
+		).toHaveAttribute("href", "/app/projects/project-1?tab=stories");
+
+		const describedBy = screen
+			.getByRole("combobox", { name: /typeLabel/i })
+			.getAttribute("aria-describedby");
+		expect(describedBy).toBeTruthy();
+		expect(document.getElementById(describedBy ?? "")).toHaveTextContent(
+			"message",
+		);
+
+		// The label is also the default title, so it never picks up the marker.
+		expect(titleField().value).toBe("Features");
+		await user.click(screen.getByRole("button", { name: "submit" }));
+		await waitFor(() => expect(createDocument).toHaveBeenCalledTimes(1));
+		expect(createDocument.mock.calls[0][0]).toMatchObject({
+			title: "Features",
+			type: "USER_STORY",
+		});
+	});
+
+	it("shows no deprecation notice for a current type", async () => {
+		getAiConfigStatus.mockResolvedValue(aiUnavailable());
+		renderDialog();
+
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("ai-unavailable-notice"),
+			).toBeInTheDocument(),
+		);
+		expect(screen.queryByRole("note")).toBeNull();
+		expect(
+			screen
+				.getByRole("combobox", { name: /typeLabel/i })
+				.hasAttribute("aria-describedby"),
+		).toBe(false);
+	});
+
 	it("submits the title visible in the field, not the type default", async () => {
 		const user = userEvent.setup();
 		getAiConfigStatus.mockResolvedValue(aiAvailable());

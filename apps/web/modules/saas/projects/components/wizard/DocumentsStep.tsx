@@ -1,5 +1,6 @@
 "use client";
 
+import { isDeprecatedDocumentType } from "@repo/utils/document-type-catalog";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -22,6 +23,7 @@ import {
 	SwatchBookIcon,
 	UsersIcon,
 } from "lucide-react";
+import { DeprecatedDocumentTypeBadge } from "../FeaturesDeprecationNotice";
 import {
 	DOCUMENT_TIERS,
 	getPrerequisiteHint,
@@ -369,8 +371,13 @@ export function DocumentsStep({
 												/>
 											)}
 										</div>
-										<CardTitle className="text-base">
+										<CardTitle className="flex items-center gap-2 text-base">
 											{doc.title}
+											{isDeprecatedDocumentType(
+												doc.id,
+											) && (
+												<DeprecatedDocumentTypeBadge />
+											)}
 										</CardTitle>
 									</CardHeader>
 									<CardContent className="space-y-2">

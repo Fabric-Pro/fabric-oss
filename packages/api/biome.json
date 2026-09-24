@@ -22,7 +22,6 @@
 			"includes": [
 				"modules/agents/procedures/suggest-skills.ts",
 				"modules/vscode-auth/routes.ts",
-				"modules/projects/procedures/stories/push-to-kanban.ts",
 				"modules/projects/procedures/stories/enhance-feature.ts",
 				"modules/projects/procedures/stories/generate-tasks.ts",
 				"modules/workflows/procedures/generate-code.ts",

@@ -98,7 +98,6 @@ export type ProjectTabId =
 	| "documents"
 	| "decisions"
 	| "context"
-	| "pipeline"
 	| "stories"
 	| "test-cases"
 	| "publishing-suite"

@@ -47,7 +47,6 @@ All tooltip copy lives in `packages/i18n/translations/en.json` under the `toolti
 
 ```
 tooltips.common          -- shared actions reused across surfaces (delete, disconnect, clearSearch)
-tooltips.pipeline        -- feature pipeline page
 tooltips.documentEditor  -- document editor
 tooltips.contextSources  -- context/sources section
 tooltips.projectSettings -- project settings tabs
@@ -62,7 +61,7 @@ Add a new surface bucket when introducing a distinctly new area of the app. Reus
 
 - **Informational** — a plain string.
   ```json
-  "pushToRoadmap": "Parse the Features document and create one Roadmap card per feature."
+  "aiUpdateRoadmap": "Open an AI chat panel to draft roadmap updates."
   ```
 - **Destructive** — an object with `label` and `warning`. The `warning` value must start with the literal prefix `"Warning: "` (enforced by the i18n sanity test).
   ```json
@@ -83,15 +82,15 @@ import { useTranslations } from "next-intl";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@ui/components/tooltip";
 import { Button } from "@ui/components/button";
 
-export function PushButton({ onClick }: { onClick: () => void }) {
-  const t = useTranslations("tooltips.pipeline");
+export function AiUpdateButton({ onClick }: { onClick: () => void }) {
+  const t = useTranslations("tooltips.stories");
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button onClick={onClick}>Push to Roadmap</Button>
+        <Button onClick={onClick}>AI Update</Button>
       </TooltipTrigger>
-      <TooltipContent>{t("pushToRoadmap")}</TooltipContent>
+      <TooltipContent>{t("aiUpdateRoadmap")}</TooltipContent>
     </Tooltip>
   );
 }

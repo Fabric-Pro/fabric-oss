@@ -90,8 +90,8 @@ export async function buildReleaseNotesUrl(args: {
  * This helper only adds bytes at the end — it never modifies what's
  * already there.
  *
- * Used by createStory and bulkCreateStories to persist the back-link in
- * the Fabric DB at story-creation time.
+ * Used by createStory to persist the back-link in the Fabric DB at
+ * story-creation time.
  */
 export function appendFabricBackLink(
 	description: string | null | undefined,
@@ -151,7 +151,7 @@ function stripFabricBackLinkFromText(text: string): string {
  *
  * Returns the pair of updated columns. Callers store both — even when only
  * one changed — so the helper can safely be the single source of truth for
- * back-link placement across createStory, bulkCreateStories, the AI flows,
+ * back-link placement across createStory, the AI flows,
  * and any future caller that mutates `description` / `acceptanceCriteria`.
  *
  * Push pipelines (hierarchy-sync, story-sync-workflow) still extract the
