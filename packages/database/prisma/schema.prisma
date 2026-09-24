@@ -17272,6 +17272,14 @@ model ProjectInstructionRepositorySync {
   suppressedGeneration    Int?
   lastEvaluatedCommitSha  String?
   lastEvaluatedGeneration Int?
+  /// A re-check request (Fizzy #2682): set when a push or a poll finds a run
+  /// already open, holding the last head observed, for diagnostics only. The
+  /// open run's completion makes the row due now whatever the SHA (webhook
+  /// deliveries are unordered hints, and one slot cannot keep two
+  /// observations) and clears it; when that run's receipt had already
+  /// finished, the writer's settle under the row lock does the same. A
+  /// re-configure clears it too.
+  pendingCommitSha        String?
 
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt

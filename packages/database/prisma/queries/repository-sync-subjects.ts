@@ -14,6 +14,10 @@
  * `lastEvaluatedCommitSha`, `lastEvaluatedGeneration` and `generation`.
  * `computeSchedulingPatch` writes only these, and a store's fence compares
  * `generation`, `nextCheckAt`, `automatic` and `automaticPausedReason`.
+ * `pendingCommitSha` backs `recordPendingHead` and `settlePendingHead`
+ * (Fizzy #2682): a re-check request written outside the fence and applied
+ * by the subject's own run completion, or by the settle when that run has
+ * already finished.
  */
 import type { Prisma } from "../client";
 import {
@@ -23,6 +27,8 @@ import {
 	instructionSyncLeaseHeld,
 	type RepositorySyncSchedulingPatch,
 	recordInstructionSyncCheckFailure,
+	recordPendingInstructionSyncHead,
+	settlePendingInstructionSyncHead,
 	writeBackInstructionSync,
 } from "./instruction-repository-sync";
 import { canCreateProjectInstructions } from "./projects/projects";
@@ -69,6 +75,36 @@ export type RepositorySyncPushRow = {
 	suppressedGeneration: number | null;
 };
 
+/** The configuration a pending head is recorded against: the row's identity and tenant. */
+export type RepositorySyncPendingHeadRow = Pick<
+	RepositorySyncPushRow,
+	"id" | "projectId" | "organizationId" | "generation"
+>;
+
+/** A client that opens an interactive transaction: `db`, or a test's stand-in. */
+export type RepositorySyncTransactionRunner = {
+	$transaction<T>(
+		fn: (tx: Prisma.TransactionClient) => Promise<T>,
+	): Promise<T>;
+};
+
+/**
+ * What settling a re-check request found (Fizzy #2682), under the sync-row
+ * lock:
+ * - `consumer_pending`: the open run's receipt is unfinished or not yet
+ *   inserted, so its completion takes the same lock later and consumes the
+ *   marker. Nothing written.
+ * - `made_due`: the run's receipt is already finished, so no completion is
+ *   left to read the marker. The settle applied it (due now, or no check at
+ *   all on a paused row) and cleared it, or found it already consumed.
+ * - `stale`: the row was re-configured or removed since the marker write;
+ *   the re-configure made it due now. Nothing written.
+ */
+export type RepositorySyncPendingHeadSettlement =
+	| "consumer_pending"
+	| "made_due"
+	| "stale";
+
 /** A poll check's terminal receipt (Decisions 33 and 35). */
 export type RepositorySyncCheckFailure = {
 	row: ClaimedRepositorySyncRow;
@@ -101,6 +137,31 @@ export interface RepositorySyncSubjectStore {
 		tx: Prisma.TransactionClient,
 		input: RepositorySyncCheckFailure,
 	): Promise<{ applied: boolean }>;
+	/**
+	 * Asks the open run's completion for a re-check, when a push or a poll
+	 * check found a run already open (Fizzy #2682). `commitSha` is kept for
+	 * diagnostics only. Fenced on the row's generation and tenant, not on a
+	 * lease, and never moves `nextCheckAt`. The caller settles it next.
+	 */
+	recordPendingHead(
+		tx: Prisma.TransactionClient,
+		row: RepositorySyncPendingHeadRow,
+		commitSha: string,
+	): Promise<{ applied: boolean }>;
+	/**
+	 * Right after `recordPendingHead` applied: checks, under the sync-row
+	 * lock, whether the open run `runId` (from the `already_running` answer)
+	 * has already finished its receipt, and applies the marker itself when
+	 * it has (Fizzy #2682). One transaction of its own.
+	 */
+	settlePendingHead(
+		client: RepositorySyncTransactionRunner,
+		row: RepositorySyncPendingHeadRow,
+		runId: string,
+	): Promise<{
+		applied: boolean;
+		settled: RepositorySyncPendingHeadSettlement;
+	}>;
 	/** The syncs that follow `ref` on the pushed repository, tenant-consistent only. */
 	findByRepository(input: {
 		repositoryUrl: string;
@@ -122,6 +183,22 @@ export const REPOSITORY_SYNC_SUBJECT_STORES: Readonly<
 		leaseHeld: instructionSyncLeaseHeld,
 		writeBack: writeBackInstructionSync,
 		recordCheckFailure: recordInstructionSyncCheckFailure,
+		recordPendingHead: (tx, row, commitSha) =>
+			recordPendingInstructionSyncHead(tx, {
+				syncId: row.id,
+				projectId: row.projectId,
+				organizationId: row.organizationId,
+				generation: row.generation,
+				commitSha,
+			}),
+		settlePendingHead: (client, row, runId) =>
+			settlePendingInstructionSyncHead(client, {
+				syncId: row.id,
+				projectId: row.projectId,
+				organizationId: row.organizationId,
+				generation: row.generation,
+				runId,
+			}),
 		findByRepository: findInstructionSyncsForPush,
 		checkPermission: (row) =>
 			canCreateProjectInstructions(row.projectId, row.userId),

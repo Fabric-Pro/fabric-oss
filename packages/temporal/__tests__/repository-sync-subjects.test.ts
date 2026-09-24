@@ -13,6 +13,8 @@ const m = vi.hoisted(() => ({
 		leaseHeld: vi.fn(),
 		writeBack: vi.fn(),
 		recordCheckFailure: vi.fn(),
+		recordPendingHead: vi.fn(),
+		settlePendingHead: vi.fn(),
 		findByRepository: vi.fn(),
 		checkPermission: vi.fn(),
 	},
@@ -52,6 +54,10 @@ describe("repository sync subjects (Decision 46)", () => {
 		expect(subject.leaseHeld).toBe(m.store.leaseHeld);
 		expect(subject.writeBack).toBe(m.store.writeBack);
 		expect(subject.recordCheckFailure).toBe(m.store.recordCheckFailure);
+		// The webhook and the poll leave and settle an open run's re-check
+		// request through the subject, never the query (Fizzy #2682).
+		expect(subject.recordPendingHead).toBe(m.store.recordPendingHead);
+		expect(subject.settlePendingHead).toBe(m.store.settlePendingHead);
 		expect(subject.findByRepository).toBe(m.store.findByRepository);
 		expect(subject.checkPermission).toBe(m.store.checkPermission);
 	});

@@ -1,6 +1,7 @@
 /**
- * The instructions subject's lease, crash recovery and failure receipt,
- * against a stateful row store (Decisions 31, 35, 48 and 54). Each case here
+ * The instructions subject's lease, crash recovery, failure receipt and
+ * re-check request with its settle, against a stateful row store
+ * (Decisions 31, 35, 48 and 54; Fizzy #2682). Each case here
  * is about what the SQL does to a row, so none of them can pass on call
  * shapes alone: the store evaluates every predicate of the fence, the
  * database clock included, and throws on any statement it cannot evaluate.
@@ -46,6 +47,8 @@ import {
 	claimDueInstructionSyncRows,
 	instructionSyncLeaseHeld,
 	recordInstructionSyncCheckFailure,
+	recordPendingInstructionSyncHead,
+	settlePendingInstructionSyncHead,
 	writeBackInstructionSync,
 } from "../prisma/queries/instruction-repository-sync";
 import type { ClaimedRepositorySyncRow } from "../prisma/queries/repository-sync-subjects";
@@ -299,5 +302,193 @@ describe("the poll's failure receipt on a stateful row store (Decisions 35 and 5
 			),
 		).rejects.toThrow("db was used while a transaction was open");
 		expect(store.row("sync_1")?.automaticPausedReason).toBeNull();
+	});
+});
+
+describe("the pending head on a stateful row store (Fizzy #2682)", () => {
+	const PUSHED = "d".repeat(40);
+	const TARGET = {
+		syncId: "sync_1",
+		projectId: "proj_1",
+		organizationId: "org_1",
+		generation: 3,
+	};
+
+	function recordPending(overrides: Partial<typeof TARGET> = {}) {
+		return recordPendingInstructionSyncHead(store.root, {
+			...TARGET,
+			...overrides,
+			commitSha: PUSHED,
+		});
+	}
+
+	it("never disturbs a held lease: only the marker moves, and the check's reschedule still lands", async () => {
+		const row = await claimOne();
+		store.advance(MIN);
+		const before = store.row("sync_1");
+
+		expect(await recordPending()).toEqual({ applied: true });
+		expect(store.row("sync_1")).toEqual({
+			...before,
+			pendingCommitSha: PUSHED,
+		});
+		expect(await instructionSyncLeaseHeld(store.root, row)).toBe(true);
+		expect(await writeBackInstructionSync(store.root, row, PATCH)).toEqual({
+			applied: true,
+		});
+		expect(store.row("sync_1")).toMatchObject({
+			nextCheckAt: at("12:15"),
+			pendingCommitSha: PUSHED,
+		});
+	});
+
+	it("needs no lease: it lands on a row whose lease has lapsed", async () => {
+		const row = await claimOne();
+		store.advance(LEASE_MS);
+		expect(await instructionSyncLeaseHeld(store.root, row)).toBe(false);
+
+		expect(await recordPending()).toEqual({ applied: true });
+		expect(store.row("sync_1")).toMatchObject({
+			nextCheckAt: at("12:02"),
+			pendingCommitSha: PUSHED,
+		});
+	});
+
+	it("keeps only the last head written, even when an older push is delivered after a newer one", async () => {
+		expect(
+			await recordPendingInstructionSyncHead(store.root, {
+				...TARGET,
+				commitSha: PUSHED,
+			}),
+		).toEqual({ applied: true });
+		const older = "b".repeat(40);
+		expect(
+			await recordPendingInstructionSyncHead(store.root, {
+				...TARGET,
+				commitSha: older,
+			}),
+		).toEqual({ applied: true });
+		// One slot, last write wins: the newer head is gone. This is why the
+		// completion treats any marker as a re-check request and never
+		// compares its SHA with the run's commit.
+		expect(store.row("sync_1")?.pendingCommitSha).toBe(older);
+	});
+
+	it.each([
+		["the generation moved (a re-configure)", { generation: 2 }],
+		["the row is another organization's", { organizationId: "org_2" }],
+		["the row is another project's", { projectId: "proj_2" }],
+	] as const)("writes nothing when %s", async (_label, overrides) => {
+		const before = store.row("sync_1");
+		expect(await recordPending(overrides)).toEqual({ applied: false });
+		expect(store.row("sync_1")).toEqual(before);
+	});
+});
+
+describe("settling a re-check request against the open run's receipt, on a stateful row store (Fizzy #2682)", () => {
+	const PUSHED = "d".repeat(40);
+	const SYNC = {
+		syncId: "sync_1",
+		projectId: "proj_1",
+		organizationId: "org_1",
+		generation: 3,
+	};
+
+	/** The open run's receipt, as `begin` inserted it and, once finished, its completion left it. */
+	function receipt(finishedAt: Date | null) {
+		store.putRun({
+			id: "sync_1:run_open",
+			syncId: "sync_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+			generation: 3,
+			finishedAt,
+		});
+	}
+
+	function writeMarker() {
+		return recordPendingInstructionSyncHead(store.root, {
+			...SYNC,
+			commitSha: PUSHED,
+		});
+	}
+
+	function settle() {
+		return settlePendingInstructionSyncHead(store.root, {
+			...SYNC,
+			runId: "run_open",
+			now: store.now(),
+		});
+	}
+
+	it("writes nothing while the receipt is unfinished: that completion is still to come and will consume the marker", async () => {
+		receipt(null);
+		expect(await writeMarker()).toEqual({ applied: true });
+		const before = store.row("sync_1");
+
+		expect(await settle()).toEqual({
+			applied: false,
+			settled: "consumer_pending",
+		});
+		expect(store.row("sync_1")).toEqual(before);
+		expect(store.row("sync_1")?.pendingCommitSha).toBe(PUSHED);
+	});
+
+	it("applies the marker itself when the completion committed before it, while the workflow was still closing: due now, marker cleared", async () => {
+		// The completion committed at 12:00, found no marker and scheduled
+		// 12:15; `already_running` was still the answer because the workflow
+		// had not returned. The marker lands a minute later.
+		store.update("sync_1", { nextCheckAt: at("12:15") });
+		receipt(at("12:00"));
+		store.advance(MIN);
+		expect(await writeMarker()).toEqual({ applied: true });
+
+		expect(await settle()).toEqual({ applied: true, settled: "made_due" });
+		expect(store.row("sync_1")).toMatchObject({
+			nextCheckAt: at("12:01"),
+			pendingCommitSha: null,
+		});
+		// The next tick claims it rather than waiting for 12:15.
+		expect((await claim(1)).map((row) => row.id)).toEqual(["sync_1"]);
+	});
+
+	it("keeps a paused row unscheduled when it applies the marker (Fizzy #2703)", async () => {
+		store.update("sync_1", {
+			automaticPausedReason: "REF_MISSING",
+			automaticPausedAt: at("12:00"),
+			nextCheckAt: null,
+		});
+		receipt(at("12:00"));
+		expect(await writeMarker()).toEqual({ applied: true });
+
+		expect(await settle()).toEqual({ applied: true, settled: "made_due" });
+		expect(store.row("sync_1")).toMatchObject({
+			nextCheckAt: null,
+			pendingCommitSha: null,
+		});
+	});
+
+	it("is stale, and writes nothing, once the generation moved", async () => {
+		receipt(at("12:00"));
+		expect(await writeMarker()).toEqual({ applied: true });
+		store.update("sync_1", { generation: 4 });
+		const before = store.row("sync_1");
+
+		expect(await settle()).toEqual({ applied: false, settled: "stale" });
+		expect(store.row("sync_1")).toEqual(before);
+	});
+
+	it("making the row due ends a check's held lease, so that check's reschedule applies nothing", async () => {
+		const row = await claimOne();
+		store.advance(MIN);
+		receipt(at("12:00"));
+		expect(await writeMarker()).toEqual({ applied: true });
+
+		expect(await settle()).toEqual({ applied: true, settled: "made_due" });
+		expect(await instructionSyncLeaseHeld(store.root, row)).toBe(false);
+		expect(await writeBackInstructionSync(store.root, row, PATCH)).toEqual({
+			applied: false,
+		});
+		expect(store.row("sync_1")?.nextCheckAt).toEqual(at("12:01"));
 	});
 });
