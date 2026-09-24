@@ -5,7 +5,7 @@
  *
  * Two capabilities, not one (see the task brief / roles.ts): the cadence,
  * lookback and notification controls are gated on `canEdit`
- * (PROJECT_SETTINGS_EDIT, admin/owner only), but "Generate now" is gated on
+ * (PROJECT_SETTINGS_EDIT, admin/owner only), but "Scan for topics" is gated on
  * the separate `canGenerate` (PUBLISHING_TOPIC_CREATE, which Editors hold
  * too). Collapsing both into one prop would make the manual trigger
  * unreachable for the role the endpoint was written for, and MANUAL cadence
@@ -44,6 +44,7 @@ import { Textarea } from "@ui/components/textarea";
 import { SparklesIcon } from "lucide-react";
 import { toast } from "sonner";
 import { ConnectChatChannelButton } from "./ConnectChatChannelButton";
+import { useScanForTopics } from "./publishing-suite/use-scan-for-topics";
 
 type PublishingCadence = "MANUAL" | "WEEKLY" | "BIWEEKLY" | "MONTHLY";
 
@@ -81,7 +82,7 @@ type Props = {
 	/** PROJECT_SETTINGS_EDIT — admin/owner only. Gates cadence, lookback and
 	 *  the notification switch. */
 	canEdit: boolean;
-	/** PUBLISHING_TOPIC_CREATE — Editors too. Gates ONLY "Generate now". */
+	/** PUBLISHING_TOPIC_CREATE — Editors too. Gates ONLY "Scan for topics". */
 	canGenerate: boolean;
 	/** Sends the reader to where channels are LINKED (Settings → Knowledge);
 	 *  this card only selects among channels already linked. Optional, and
@@ -172,48 +173,7 @@ export function PublishingSuiteSettings({
 		},
 	});
 
-	const generateNow = useMutation({
-		mutationFn: () =>
-			orpcClient.projects.publishingSuite.generateNow({
-				projectId,
-				organizationId,
-			}),
-		onSuccess: (result) => {
-			switch (result.status) {
-				case "started":
-					toast.success("Generating new topic suggestions now.");
-					break;
-				case "in_flight":
-					toast.info("A generation run is already in progress.");
-					break;
-				case "rate_limited":
-					toast.error(
-						"Generate now was used recently — please wait up to an hour before trying again.",
-					);
-					break;
-				case "unavailable":
-					toast.error(
-						"Topic generation is temporarily unavailable. Try again shortly.",
-					);
-					break;
-				default:
-					// Guards against a server-side status the client doesn't
-					// know about yet — silence here would look like a dead
-					// button, so surface something actionable instead.
-					toast.error(
-						"Generate now returned an unrecognized response. Try again shortly.",
-					);
-					break;
-			}
-		},
-		onError: (error) => {
-			toast.error(
-				error instanceof Error
-					? error.message
-					: "Failed to start topic generation",
-			);
-		},
-	});
+	const scanForTopics = useScanForTopics({ projectId, organizationId });
 
 	const s = settingsQuery.data?.settings;
 	// No client-side default here, deliberately: the server read already
@@ -353,11 +313,11 @@ export function PublishingSuiteSettings({
 
 	const settingsDisabled =
 		!canEdit || settingsQuery.isLoading || updateSettings.isPending;
-	// Deliberately NOT gated on `settingsQuery.isLoading` — Generate now
+	// Deliberately NOT gated on `settingsQuery.isLoading` — Scan for topics
 	// doesn't read the settings row at all, and an Editor (who can't see the
 	// settings load complete any differently than an admin) must be able to
 	// use it the instant the card mounts, not after an unrelated fetch settles.
-	const generateDisabled = !canGenerate || generateNow.isPending;
+	const scanDisabled = !canGenerate || scanForTopics.isPending;
 
 	return (
 		<Card className="bg-card p-6">
@@ -400,7 +360,7 @@ export function PublishingSuiteSettings({
 							</SelectContent>
 						</Select>
 						<p className="text-xs text-muted-foreground">
-							Manual disables scheduled runs — use Generate now
+							Manual disables scheduled runs — use Scan for topics
 							below whenever you want new suggestions.
 						</p>
 					</div>
@@ -651,16 +611,17 @@ export function PublishingSuiteSettings({
 
 				<div>
 					<Button
-						onClick={() => generateNow.mutate()}
-						disabled={generateDisabled}
-						loading={generateNow.isPending}
+						onClick={() => scanForTopics.scan()}
+						disabled={scanDisabled}
+						loading={scanForTopics.isPending}
 					>
 						<SparklesIcon className="size-4" aria-hidden="true" />
-						Generate now
+						Scan for topics
 					</Button>
 					<p className="mt-2 text-xs text-muted-foreground">
-						Runs the topic-suggestion generator immediately, outside
-						the configured cadence. Limited to once per hour.
+						Scans recent project activity for new topics right away,
+						outside the configured cadence. Limited to once per
+						hour.
 					</p>
 				</div>
 			</div>

@@ -62,7 +62,7 @@ export interface CreateOrGetCycleInput {
 	occurrenceKey?: string;
 	/**
 	 * Audit breadcrumb only — NOT the AI-usage actor (that stays `actorUserId`).
-	 * Set for a manual "Generate now" run to the clicking user; omitted/undefined
+	 * Set for a manual "Scan for topics" run to the clicking user; omitted/undefined
 	 * for the scheduled sweep, which persists as NULL.
 	 */
 	triggeredByUserId?: string;

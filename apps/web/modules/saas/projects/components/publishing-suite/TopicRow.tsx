@@ -27,6 +27,7 @@ import {
 	ChevronDownIcon,
 	MailIcon,
 	MailOpenIcon,
+	UserPlusIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -38,6 +39,7 @@ import { DeclineTopicDialog } from "./DeclineTopicDialog";
 import { PublishTopicDialog } from "./PublishTopicDialog";
 import { type SnoozePreset, SnoozeTopicDialog } from "./SnoozeTopicDialog";
 import { TopicDetails, TopicRankReason } from "./TopicDetails";
+import { TopicStatusSaveIndicator } from "./TopicStatusSaveIndicator";
 import {
 	type PostType,
 	type ProjectMember,
@@ -45,6 +47,11 @@ import {
 	TOPIC_STATUSES,
 	type TopicStatus,
 } from "./topic-shared";
+import {
+	applyStatusOverlay,
+	type TopicStatusOverlay,
+	type TopicStatusSaveState,
+} from "./use-topic-status-overlay";
 
 // ---------------------------------------------------------------------------
 // Row: title + pitch + status control (with the styled decline dialog).
@@ -101,6 +108,8 @@ export function TopicRow({
 	onChangeAssignees,
 	onSetReadState,
 	onSetSnooze,
+	statusOverlay = null,
+	statusSaveState = "idle",
 }: {
 	topic: PublishingTopic;
 	canEdit: boolean;
@@ -113,7 +122,11 @@ export function TopicRow({
 	 * it is mounted.
 	 */
 	topicHref: string;
-	/** True while THIS topic's status mutation is in flight (C-Med2). */
+	/**
+	 * True while THIS topic has a write in flight (C-Med2) — on the Inbox
+	 * path including, for a status change, until the list refetch that
+	 * confirms it has landed (#2646).
+	 */
 	isPending: boolean;
 	/**
 	 * How long this topic has gone untouched and which threshold that has
@@ -170,6 +183,15 @@ export function TopicRow({
 		preset: SnoozePreset | null,
 		reason: string | null,
 	) => Promise<void>;
+	/**
+	 * Fizzy #2646: the status this topic is being moved to, held by the LIST
+	 * (it survives this row being remounted in another Inbox section when
+	 * the confirming refetch lands). `null` = follow the server. Only ever
+	 * set on the Inbox path.
+	 */
+	statusOverlay?: TopicStatusOverlay | null;
+	/** Fizzy #2646: Saving… / Saved / Not saved for this topic's status. */
+	statusSaveState?: TopicStatusSaveState;
 }) {
 	// Visible hint for the two icon-only controls. The `aria-label` on each
 	// button is what a screen reader announces and stays authoritative; this
@@ -186,6 +208,11 @@ export function TopicRow({
 	const [contributorsPending, setContributorsPending] = useState(false);
 	const [assigneesOpen, setAssigneesOpen] = useState(false);
 	const [assigneesPending, setAssigneesPending] = useState(false);
+	// Fizzy #2646: the collapsed Inbox row's own assignee picker, separate
+	// from `assigneesOpen` (the picker inside the expanded details). Radix
+	// closes an open popover on any pointer-down or focus outside it, so
+	// opening one closes the other; a successful save closes whichever is open.
+	const [rowAssigneesOpen, setRowAssigneesOpen] = useState(false);
 	const [snoozeOpen, setSnoozeOpen] = useState(false);
 	const [snoozePending, setSnoozePending] = useState(false);
 	const [expanded, setExpanded] = useState(false);
@@ -202,8 +229,29 @@ export function TopicRow({
 	// label and lets a second click fire a redundant (if idempotent) write.
 	const [snoozeOverride, setSnoozeOverride] = useState<boolean | null>(null);
 
+	// What the row SHOWS for status, reason and URL: the pending status until
+	// the list confirms it, the server's otherwise. The same object as
+	// `topic` at rest (and always on the flag-off path, which never has an
+	// overlay), so such a row renders exactly the markup it always did.
+	const shown = applyStatusOverlay(topic, statusOverlay);
+
+	// What the publish dialog was OPENED with — mode and starting URL —
+	// snapshotted here and never read live. `PublishTopicDialog` re-seeds its
+	// field whenever `initialUrl` changes while open, so a live value would
+	// wipe the URL the user typed the moment a failed write took the overlay
+	// away (and flip the title mid-write).
+	const [publishSeed, setPublishSeed] = useState<{
+		edit: boolean;
+		initialUrl: string | null;
+	}>({ edit: false, initialUrl: null });
+	const openPublishDialog = () => {
+		const edit = shown.status === "PUBLISHED";
+		setPublishSeed({ edit, initialUrl: edit ? shown.publishedUrl : null });
+		setPublishOpen(true);
+	};
+
 	const handleValueChange = (next: string) => {
-		if (next === topic.status) {
+		if (next === shown.status) {
 			return;
 		}
 		if (next === "DECLINED") {
@@ -213,7 +261,7 @@ export function TopicRow({
 		}
 		if (next === "PUBLISHED") {
 			// Route through the styled dialog to collect an optional URL.
-			setPublishOpen(true);
+			openPublishDialog();
 			return;
 		}
 		// Fire-and-forget: a failure is surfaced by the shared mutation's
@@ -289,6 +337,7 @@ export function TopicRow({
 		try {
 			await onChangeAssignees(assigneeUserIds);
 			setAssigneesOpen(false);
+			setRowAssigneesOpen(false);
 		} catch {
 			// Surfaced by the shared mutation's onError toast; keep the dialog
 			// open so the user's checkbox choices aren't lost (mirrors
@@ -426,7 +475,7 @@ export function TopicRow({
 
 	const details = (
 		<TopicDetails
-			topic={topic}
+			topic={shown}
 			canEdit={canEdit}
 			isPending={isPending}
 			// The Inbox row lifts the rank-reason line into its collapsed
@@ -434,7 +483,7 @@ export function TopicRow({
 			// The flag-off row has no summary column to lift it into and keeps
 			// rendering it here, exactly where it shipped.
 			showRankReason={!inbox}
-			onEditUrl={() => setPublishOpen(true)}
+			onEditUrl={openPublishDialog}
 			onChangePostTypes={handlePostTypesSubmit}
 			contributorsControl={
 				<ContributorsPicker
@@ -528,6 +577,74 @@ export function TopicRow({
 				))}
 			</ul>
 		) : null;
+
+	/**
+	 * Fizzy #2646: on an editable row the people ARE the control. Assigned →
+	 * the avatars open the picker (add and remove); unassigned → "Assign".
+	 * A viewer keeps the read-only `assigneeCluster` above.
+	 *
+	 * Spans, not a list: a `ul` is not allowed inside a `button`. The
+	 * accessible name is exactly the list's old name, so a screen reader
+	 * hears the same people, now announced as a button that opens a dialog.
+	 * `title` gives a mouse user the names without a nested tooltip trigger,
+	 * which could not share this element with the popover's trigger.
+	 *
+	 * Neither trigger sets `disabled`: the picker disables whichever element
+	 * opens it while its write is pending, and a `disabled` set here would
+	 * override that gate.
+	 */
+	const assigneeNames = topic.assignees.map((a) => a.name).join(", ");
+	const assigneeTrigger =
+		topic.assignees.length > 0 ? (
+			<button
+				type="button"
+				aria-label={`Assigned to ${assigneeNames}`}
+				title={`Assigned to ${assigneeNames}`}
+				className="flex items-center -space-x-1.5 rounded-full p-0.5 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+			>
+				{topic.assignees.map((a) => (
+					<Avatar
+						key={a.id}
+						aria-hidden="true"
+						className="size-5 border border-background"
+					>
+						<AvatarImage src={a.image ?? undefined} alt="" />
+						<AvatarFallback className="font-medium text-[9px] text-muted-foreground">
+							{a.name.charAt(0).toUpperCase()}
+						</AvatarFallback>
+					</Avatar>
+				))}
+			</button>
+		) : (
+			<Button
+				type="button"
+				variant="ghost"
+				size="sm"
+				aria-label={`Assign people to ${topic.title}`}
+				className="h-6 gap-1 px-1.5 text-muted-foreground text-xs"
+			>
+				<UserPlusIcon className="size-3.5" aria-hidden="true" />
+				Assign
+			</Button>
+		);
+	const assigneeControl = canEdit ? (
+		<AssigneesPicker
+			topicTitle={topic.title}
+			open={rowAssigneesOpen}
+			onOpenChange={setRowAssigneesOpen}
+			members={members}
+			assignees={topic.assignees}
+			initialSelected={topic.assigneeUserIds}
+			viewerUserId={viewerUserId}
+			onSubmit={handleAssigneesSubmit}
+			isPending={assigneesPending}
+			membersPending={membersPending}
+			membersError={membersError}
+			trigger={assigneeTrigger}
+		/>
+	) : (
+		assigneeCluster
+	);
 
 	// Last activity, mirroring `StoryTile`'s `lastEditedAt ?? createdAt`: what
 	// the reader wants at a glance is when the topic was last TOUCHED, not when
@@ -693,7 +810,7 @@ export function TopicRow({
 	// into a node both branches render.
 	const renderStatusSelect = (triggerClassName: string) => (
 		<Select
-			value={topic.status}
+			value={shown.status}
 			onValueChange={handleValueChange}
 			disabled={!canEdit || isPending}
 		>
@@ -728,13 +845,9 @@ export function TopicRow({
 				onOpenChange={setPublishOpen}
 				onConfirm={handlePublishConfirm}
 				isPending={publishPending}
-				initialUrl={topic.publishedUrl}
-				title={
-					topic.status === "PUBLISHED"
-						? "Edit published URL"
-						: undefined
-				}
-				confirmLabel={topic.status === "PUBLISHED" ? "Save" : undefined}
+				initialUrl={publishSeed.initialUrl}
+				title={publishSeed.edit ? "Edit published URL" : undefined}
+				confirmLabel={publishSeed.edit ? "Save" : undefined}
 			/>
 			<SnoozeTopicDialog
 				topicTitle={topic.title}
@@ -890,7 +1003,7 @@ export function TopicRow({
 					{topic.rankReason ||
 					neglectBadge ||
 					highlightChip ||
-					assigneeCluster ? (
+					assigneeControl ? (
 						<div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 pt-0.5">
 							{highlightChip}
 							<TopicRankReason
@@ -899,7 +1012,7 @@ export function TopicRow({
 								className="break-words"
 							/>
 							{neglectBadge}
-							{assigneeCluster}
+							{assigneeControl}
 						</div>
 					) : null}
 					{isSnoozed && topic.snoozedUntil ? (
@@ -987,6 +1100,7 @@ export function TopicRow({
 							</TooltipContent>
 						</Tooltip>
 					) : null}
+					<TopicStatusSaveIndicator state={statusSaveState} />
 					{renderStatusSelect("w-full sm:w-[10rem]")}
 				</div>
 			</div>
@@ -996,14 +1110,14 @@ export function TopicRow({
 					className="mt-3 space-y-1 border-t border-border pt-3"
 				>
 					{details}
-					{topic.status === "DECLINED" &&
-					topic.declineReason?.trim() ? (
+					{shown.status === "DECLINED" &&
+					shown.declineReason?.trim() ? (
 						<div className="pt-2">
 							<span className="publishing-label">
 								Why this was declined
 							</span>
 							<p className="mt-1 text-sm leading-6 text-muted-foreground">
-								{topic.declineReason.trim()}
+								{shown.declineReason.trim()}
 							</p>
 						</div>
 					) : null}

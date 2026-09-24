@@ -34,8 +34,10 @@ import { cn } from "@ui/lib";
 import {
 	AlertTriangleIcon,
 	HistoryIcon,
+	Loader2Icon,
 	PlusIcon,
 	RefreshCwIcon,
+	ScanSearchIcon,
 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
@@ -50,6 +52,9 @@ import {
 	TOPIC_STATUSES,
 	type TopicStatus,
 } from "./topic-shared";
+import { useLatestCycle } from "./use-latest-cycle";
+import { useScanForTopics } from "./use-scan-for-topics";
+import { useTopicStatusOverlay } from "./use-topic-status-overlay";
 
 // FR2 caps Recently Modified at three. A single constant so `maxRecent`, the
 // overflow-button condition and the "Showing N of …" label can never drift
@@ -119,11 +124,6 @@ export function PublishingSuiteList({
 			input: { projectId, organizationId },
 		}),
 	);
-	const cycleQuery = useQuery(
-		orpc.projects.publishingSuite.latestCycle.queryOptions({
-			input: { projectId, organizationId },
-		}),
-	);
 	// For the contributors picker (Task 6). Fetched ONCE here, not inside
 	// `TopicRow` — a query per rendered row would fire once per topic instead
 	// of once for the whole list.
@@ -139,9 +139,52 @@ export function PublishingSuiteList({
 				input: { projectId, organizationId },
 			}),
 		});
+	// `key()` (partial), not `queryKey()`: the run history reads this
+	// procedure with paging and a status filter in its input, which an exact
+	// key would never match.
+	const invalidateCycleHistory = () =>
+		queryClient.invalidateQueries({
+			queryKey: orpc.projects.publishingSuite.listCycles.key({
+				input: { projectId, organizationId },
+			}),
+		});
+
+	// Fizzy #2646: the latest cycle, re-read while a run is live, and a
+	// refresh of what a run produced when it is seen to finish.
+	const { cycleQuery, scanAccepted } = useLatestCycle({
+		projectId,
+		organizationId,
+		onFinished: () => {
+			const topicsKey = orpc.projects.publishingSuite.listTopics.queryKey(
+				{
+					input: { projectId, organizationId },
+				},
+			);
+			// Cancel FIRST: an initial topics read still in flight (no data
+			// yet) may predate the run's commit, and a refetch would just join
+			// it. `invalidate()` re-reads exactly this key.
+			void queryClient
+				.cancelQueries({ queryKey: topicsKey })
+				.then(() => invalidate());
+			void invalidateCycleHistory();
+		},
+	});
+
+	const scanForTopics = useScanForTopics({
+		projectId,
+		organizationId,
+		onStarted: () => {
+			scanAccepted();
+			// The history lists the run as soon as it exists.
+			void invalidateCycleHistory();
+		},
+	});
 	const updateStatus = useMutation(
 		orpc.projects.publishingSuite.updateTopicStatus.mutationOptions({
-			onSuccess: invalidate,
+			// No `onSuccess: invalidate` (Fizzy #2646): `changeStatus` runs the
+			// refetch itself. On the Inbox path the overlay must take the
+			// write's settle time BEFORE the refetch starts — that ordering is
+			// what lets it recognise the refetch that confirms the write.
 			// C-Med2: never fail silently. Surface the failure so the user knows
 			// the change didn't land and can retry, instead of the control
 			// snapping back to the old value with no explanation.
@@ -150,30 +193,6 @@ export function PublishingSuiteList({
 			},
 		}),
 	);
-
-	// Runs a status change with per-topic in-flight tracking. Returns the
-	// mutation promise so the decline flow can await success before closing its
-	// dialog (and keep the typed reason on failure).
-	const changeStatus = async (
-		topicId: string,
-		status: TopicStatus,
-		declineReason: string | null,
-		publishedUrl: string | null,
-	) => {
-		beginPending(topicId);
-		try {
-			await updateStatus.mutateAsync({
-				projectId,
-				organizationId,
-				topicId,
-				status,
-				declineReason,
-				publishedUrl,
-			});
-		} finally {
-			endPending(topicId);
-		}
-	};
 
 	const updatePostTypes = useMutation(
 		orpc.projects.publishingSuite.updateTopicPostTypes.mutationOptions({
@@ -362,6 +381,85 @@ export function PublishingSuiteList({
 					: new Date(t.snoozedUntil),
 		}),
 	);
+
+	// Fizzy #2646: the optimistic status of every topic, held HERE rather
+	// than in the row — the refetch that confirms a status change moves the
+	// row between Inbox sections, which remounts it. Called unconditionally
+	// (hooks cannot be conditional); it only ever holds entries on the Inbox
+	// path, because only that path calls `run`.
+	const statusOverlay = useTopicStatusOverlay(
+		topics,
+		topicsQuery.dataUpdatedAt,
+		topicsQuery.errorUpdatedAt,
+	);
+
+	// Runs a status change with per-topic in-flight tracking. Returns the
+	// write's promise so the decline/publish dialogs can await success before
+	// closing (and keep the typed text on failure).
+	const changeStatus = async (
+		topicId: string,
+		status: TopicStatus,
+		declineReason: string | null,
+		publishedUrl: string | null,
+	) => {
+		const write = () =>
+			updateStatus.mutateAsync({
+				projectId,
+				organizationId,
+				topicId,
+				status,
+				declineReason,
+				publishedUrl,
+			});
+		beginPending(topicId);
+		try {
+			if (!inboxEnabled) {
+				// PUBLISHING_INBOX off is the documented rollback path: exactly
+				// today's sequence — the write, then the list refetch, both
+				// awaited before the row's pending count drops. No overlay.
+				await write();
+				await invalidate();
+				return;
+			}
+			await statusOverlay.run(
+				topicId,
+				{ status, declineReason, publishedUrl },
+				write,
+				() => {
+					void invalidate();
+					// The topic page reads this topic through `getTopic`, which
+					// stays fresh for a minute: mark it stale so opening the
+					// topic next does not show the status from before this
+					// change. Normally inactive here, so nothing refetches now.
+					void queryClient.invalidateQueries({
+						queryKey:
+							orpc.projects.publishingSuite.getTopic.queryKey({
+								input: { projectId, topicId, organizationId },
+							}),
+					});
+					// Selecting a topic auto-starts its planning analysis on
+					// the server: the page's cached "no analysis" read is stale.
+					if (status === "SELECTED") {
+						void queryClient.invalidateQueries({
+							queryKey:
+								orpc.projects.publishingSuite.getPlanningAnalysis.queryKey(
+									{
+										input: {
+											projectId,
+											topicId,
+											organizationId,
+										},
+									},
+								),
+						});
+					}
+				},
+			);
+		} finally {
+			endPending(topicId);
+		}
+	};
+
 	// ONE `now` for the whole render, shared by the archive, the Archived chip
 	// and every row's neglect badge. Two separate `new Date()` calls can
 	// straddle a day boundary and render a row that is badged stale but was
@@ -524,7 +622,16 @@ export function PublishingSuiteList({
 			topic={t}
 			canEdit={canEdit}
 			inbox={inboxEnabled}
-			isPending={(pendingTopicIds.get(t.id) ?? 0) > 0}
+			// On the Inbox path a status change keeps the row busy until the
+			// list refetch that confirms it has landed (#2646), not just while
+			// the write is out. Flag off: the overlay is always empty, so this
+			// is the count alone, as before.
+			isPending={
+				(pendingTopicIds.get(t.id) ?? 0) > 0 ||
+				statusOverlay.isBusy(t.id)
+			}
+			statusOverlay={statusOverlay.overlayFor(t.id)}
+			statusSaveState={statusOverlay.saveStateFor(t.id)}
 			// Computed for EVERY row from the same predicate that sinks the
 			// Suggested section, not only for the rows inside it: a topic does
 			// not stop being neglected because you reached it through the
@@ -841,6 +948,31 @@ export function PublishingSuiteList({
 						) : null}
 					</Button>
 					<PageTourButton pageId="publishing-suite" />
+					{/* A plain Button, never a Radix root: anything here that
+					    allocates a `useId` renumbers the ids the flag-off
+					    parity snapshot pins. Its own spinner, not `loading`:
+					    the shared one spins even under reduced motion. */}
+					{canEdit && (
+						<Button
+							variant="outline"
+							data-onboarding-target="publishing-suite-scan"
+							onClick={() => scanForTopics.scan()}
+							disabled={scanForTopics.isPending}
+						>
+							{scanForTopics.isPending ? (
+								<Loader2Icon
+									className="size-4 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : (
+								<ScanSearchIcon
+									className="size-4"
+									aria-hidden="true"
+								/>
+							)}
+							Scan for topics
+						</Button>
+					)}
 					{canEdit && (
 						<Button
 							data-onboarding-target="publishing-suite-new"

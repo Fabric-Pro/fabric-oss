@@ -134,7 +134,7 @@ describe("enrolOrganizations", () => {
 	// nothing sets a project's cadence automatically.
 	//
 	// Under-warning, the worse direction on a cost path: implying NO cost
-	// accrues until a cadence changes. False — the manual "Generate now" route
+	// accrues until a cadence changes. False — the manual "Scan for topics" route
 	// (generate-now.ts) checks ONLY the PUBLISHING_SUITE flag. Cadence was
 	// never one of `requestPublishingGeneration`'s "BOTH spend guards" that a
 	// forced run bypasses; it is a sweep-selection filter, never re-derived on
@@ -200,7 +200,7 @@ describe("enrolOrganizations", () => {
 		expect(noteEvent).not.toMatch(/NEXT_PUBLIC/);
 		// Must name the manual-generate exposure — the immediate,
 		// cadence-independent spend path.
-		expect(noteEvent).toMatch(/generate now/i);
+		expect(noteEvent).toMatch(/scan for topics/i);
 		// Must NOT claim cost is gated on cadence generally.
 		expect(noteEvent).not.toMatch(/no cost accrues until/i);
 		// The sweep's OWN gate must still be stated accurately.

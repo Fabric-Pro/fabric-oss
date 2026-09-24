@@ -1,5 +1,5 @@
 /**
- * Publishing Suite — manual "Generate now".
+ * Publishing Suite — manual "Scan for topics".
  *
  * Exists because a MANUAL cadence with no manual trigger would be a setting
  * that silently disables the feature forever.

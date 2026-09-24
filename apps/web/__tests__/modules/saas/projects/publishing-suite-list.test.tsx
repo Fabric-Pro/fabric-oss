@@ -34,6 +34,12 @@ const {
 	refetchTopics,
 	refetchCycle,
 	pendingGate,
+	toastSuccess,
+	toastInfo,
+	generateNowMock,
+	invalidateQueriesSpy,
+	cancelQueriesSpy,
+	latestCycleOptions,
 } = vi.hoisted(() => ({
 	state: {
 		topics: [] as Array<Record<string, unknown>>,
@@ -61,6 +67,11 @@ const {
 		// topic (mirrors how the component's own `pendingTopicIds` tracking
 		// works — see `changeStatus` in PublishingSuiteList.tsx).
 		updateStatusHangs: false,
+		// Fizzy #2646: `dataUpdatedAt` of the latest-cycle read. 0 = no answer
+		// has been fetched since any scan this test requested.
+		cycleUpdatedAt: 0,
+		// Fizzy #2646: the scan mutation's own pending flag.
+		scanPending: false,
 	},
 	updateStatusMutate: vi.fn(),
 	updatePostTypesMutate: vi.fn(),
@@ -70,9 +81,19 @@ const {
 	refetchTopics: vi.fn(),
 	refetchCycle: vi.fn(),
 	pendingGate: { resolve: null as (() => void) | null },
+	toastSuccess: vi.fn(),
+	toastInfo: vi.fn(),
+	generateNowMock: vi.fn(),
+	invalidateQueriesSpy: vi.fn(),
+	cancelQueriesSpy: vi.fn(() => Promise.resolve()),
+	latestCycleOptions: {
+		current: null as null | { refetchInterval?: unknown },
+	},
 }));
 
-vi.mock("sonner", () => ({ toast: { error: toastError } }));
+vi.mock("sonner", () => ({
+	toast: { error: toastError, success: toastSuccess, info: toastInfo },
+}));
 
 // Task 6: PublishingSuiteList now reads the viewer's own id (for the
 // contributors picker's "(You)" label) via this hook, mirroring
@@ -96,7 +117,7 @@ vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 }));
 
 vi.mock("@tanstack/react-query", () => ({
-	useQuery: (opts: { queryKey?: unknown[] }) => {
+	useQuery: (opts: { queryKey?: unknown[]; refetchInterval?: unknown }) => {
 		const procedure = Array.isArray(opts?.queryKey)
 			? opts.queryKey[0]
 			: undefined;
@@ -110,8 +131,10 @@ vi.mock("@tanstack/react-query", () => ({
 			};
 		}
 		if (procedure === "projects.publishingSuite.latestCycle") {
+			latestCycleOptions.current = opts;
 			return {
 				data: state.cycleError ? undefined : { cycle: state.cycle },
+				dataUpdatedAt: state.cycleUpdatedAt,
 				isPending: state.cyclePending,
 				isLoading: state.cyclePending,
 				isError: state.cycleError,
@@ -143,6 +166,7 @@ vi.mock("@tanstack/react-query", () => ({
 	},
 	useMutation: (opts: {
 		mutationKey?: unknown[];
+		mutationFn?: (v: unknown) => Promise<unknown>;
 		onSuccess?: (...args: unknown[]) => unknown;
 		onError?: (...args: unknown[]) => unknown;
 	}) => {
@@ -216,9 +240,33 @@ vi.mock("@tanstack/react-query", () => ({
 				reset: vi.fn(),
 			};
 		}
+		if (procedure === "publishing-suite.scanForTopics") {
+			// Runs the hook's real mutationFn / onSuccess / onError, so the
+			// toasts and the follow-up are the component's, not the mock's.
+			const run = async (vars: unknown) => {
+				try {
+					const result = await opts.mutationFn?.(vars);
+					await opts.onSuccess?.(result, vars, undefined);
+					return result;
+				} catch (err) {
+					await opts.onError?.(err, vars, undefined);
+					throw err;
+				}
+			};
+			return {
+				mutate: (vars: unknown) => {
+					void run(vars).catch(() => {});
+				},
+				mutateAsync: run,
+				isPending: state.scanPending,
+			};
+		}
 		return { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
 	},
-	useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+	useQueryClient: () => ({
+		invalidateQueries: invalidateQueriesSpy,
+		cancelQueries: cancelQueriesSpy,
+	}),
 }));
 
 vi.mock("@shared/lib/orpc-query-utils", () => {
@@ -228,6 +276,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 			queryFn: async () => undefined,
 		}),
 		queryKey: ({ input }: { input?: unknown }) => [procedure, input],
+		key: ({ input }: { input?: unknown } = {}) => [procedure, input],
 	});
 	const m = (procedure: string) => ({
 		mutationOptions: (opts: Record<string, unknown>) => ({
@@ -310,7 +359,15 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 	};
 });
 
-vi.mock("@shared/lib/orpc-client", () => ({ orpcClient: {} }));
+vi.mock("@shared/lib/orpc-client", () => ({
+	orpcClient: {
+		projects: {
+			publishingSuite: {
+				generateNow: (...a: unknown[]) => generateNowMock(...a),
+			},
+		},
+	},
+}));
 
 import type { FunctionTag } from "@repo/database/prisma/generated/client";
 import { PublishingSuiteList } from "@saas/projects/components/publishing-suite";
@@ -458,6 +515,16 @@ beforeEach(() => {
 	toastError.mockReset();
 	refetchTopics.mockReset();
 	refetchCycle.mockReset();
+	toastSuccess.mockReset();
+	toastInfo.mockReset();
+	generateNowMock.mockReset();
+	generateNowMock.mockResolvedValue({ status: "started" });
+	invalidateQueriesSpy.mockReset();
+	cancelQueriesSpy.mockReset();
+	cancelQueriesSpy.mockImplementation(() => Promise.resolve());
+	latestCycleOptions.current = null;
+	state.cycleUpdatedAt = 0;
+	state.scanPending = false;
 });
 
 describe("PublishingSuiteList", () => {
@@ -2264,5 +2331,353 @@ describe("PublishingSuiteList", () => {
 			expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
 			expect(updateContributorsMutate).not.toHaveBeenCalled();
 		});
+	});
+
+	// -----------------------------------------------------------------------
+	// Fizzy #2646: Scan for topics on the list.
+	// -----------------------------------------------------------------------
+	const LATEST_CYCLE_KEY = {
+		queryKey: [
+			"projects.publishingSuite.latestCycle",
+			{ projectId: "proj-1", organizationId: null },
+		],
+	};
+	const callsFor = (spy: { mock: { calls: unknown[][] } }, arg: unknown) =>
+		spy.mock.calls.filter(
+			(c) => JSON.stringify(c[0]) === JSON.stringify(arg),
+		).length;
+
+	it("#2646: offers Scan for topics to an editor, requests a scan, and re-reads the cycle only after cancelling the in-flight read", async () => {
+		const user = userEvent.setup();
+		let releaseCancel: () => void = () => {};
+		cancelQueriesSpy.mockImplementation(
+			() =>
+				new Promise<void>((r) => {
+					releaseCancel = r;
+				}),
+		);
+		state.cycle = cycle("READY");
+		renderList();
+
+		await user.click(
+			screen.getByRole("button", { name: "Scan for topics" }),
+		);
+
+		await waitFor(() =>
+			expect(generateNowMock).toHaveBeenCalledWith({
+				projectId: "proj-1",
+				organizationId: null,
+			}),
+		);
+		await waitFor(() =>
+			expect(toastSuccess).toHaveBeenCalledWith(
+				"Scan requested. Its result will appear in Refresh history.",
+			),
+		);
+		await waitFor(() =>
+			expect(cancelQueriesSpy).toHaveBeenCalledWith(LATEST_CYCLE_KEY),
+		);
+		// Not re-read until the cancellation has SETTLED.
+		expect(callsFor(invalidateQueriesSpy, LATEST_CYCLE_KEY)).toBe(0);
+		releaseCancel();
+		await waitFor(() =>
+			expect(callsFor(invalidateQueriesSpy, LATEST_CYCLE_KEY)).toBe(1),
+		);
+		const cancelAt = cancelQueriesSpy.mock.invocationCallOrder[0];
+		const invalidateAt =
+			invalidateQueriesSpy.mock.invocationCallOrder[
+				invalidateQueriesSpy.mock.calls.findIndex(
+					(c) =>
+						JSON.stringify(c[0]) ===
+						JSON.stringify(LATEST_CYCLE_KEY),
+				)
+			];
+		expect(cancelAt).toBeLessThan(invalidateAt);
+	});
+
+	it("#2646: hides Scan for topics from a viewer", () => {
+		state.cycle = cycle("READY");
+		renderList({ canEdit: false });
+		expect(
+			screen.queryByRole("button", { name: "Scan for topics" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("#2646: disables Scan for topics and shows a reduced-motion-safe spinner while it runs", () => {
+		state.scanPending = true;
+		state.cycle = cycle("READY");
+		renderList();
+		const button = screen.getByRole("button", { name: "Scan for topics" });
+		expect(button).toBeDisabled();
+		const spinner = button.querySelector("svg");
+		expect(spinner?.getAttribute("class")).toContain(
+			"motion-safe:animate-spin",
+		);
+		expect(spinner?.getAttribute("class")).not.toMatch(
+			/(^|\s)animate-spin/,
+		);
+	});
+
+	it.each([
+		[
+			{ status: "in_flight", cycleId: "c9" },
+			"info",
+			/already in progress/i,
+			true,
+		],
+		[{ status: "rate_limited" }, "error", /recently.*hour/i, false],
+		[{ status: "unavailable" }, "error", /temporarily unavailable/i, false],
+		[{ status: "surprise" }, "error", /unrecognized response/i, false],
+	] as const)(
+		"#2646: reports %o as a %s toast",
+		async (result, kind, text, follows) => {
+			const user = userEvent.setup();
+			generateNowMock.mockResolvedValue(result);
+			state.cycle = cycle("READY");
+			renderList();
+
+			await user.click(
+				screen.getByRole("button", { name: "Scan for topics" }),
+			);
+
+			const spy = kind === "info" ? toastInfo : toastError;
+			await waitFor(() =>
+				expect(spy).toHaveBeenCalledWith(expect.stringMatching(text)),
+			);
+			expect(callsFor(cancelQueriesSpy, LATEST_CYCLE_KEY) > 0).toBe(
+				follows,
+			);
+		},
+	);
+
+	it("#2646: reports a thrown scan with the error's own message", async () => {
+		const user = userEvent.setup();
+		generateNowMock.mockRejectedValue(new Error("Forbidden"));
+		state.cycle = cycle("READY");
+		renderList();
+		await user.click(
+			screen.getByRole("button", { name: "Scan for topics" }),
+		);
+		await waitFor(() =>
+			expect(toastError).toHaveBeenCalledWith("Forbidden"),
+		);
+	});
+
+	it("#2646: polls the latest cycle while a run is live, and while an accepted scan is unanswered", async () => {
+		const user = userEvent.setup();
+		state.cycle = {
+			id: "c1",
+			status: "GENERATING",
+			startedAt: new Date(Date.now() - 60_000),
+			completedAt: null,
+		};
+		renderList();
+		const interval = () =>
+			latestCycleOptions.current?.refetchInterval as (
+				q: unknown,
+			) => unknown;
+		const reading = (c: unknown) => ({ state: { data: { cycle: c } } });
+		const ready = { ...state.cycle, status: "READY" };
+
+		expect(interval()(reading(state.cycle))).toBe(5000);
+		expect(interval()(reading(ready))).toBe(false);
+		expect(
+			interval()(
+				reading({
+					...state.cycle,
+					startedAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+				}),
+			),
+		).toBe(false);
+
+		// `state.cycleUpdatedAt` stays 0: no answer fetched after the scan.
+		await user.click(
+			screen.getByRole("button", { name: "Scan for topics" }),
+		);
+		await waitFor(() => expect(generateNowMock).toHaveBeenCalled());
+		await waitFor(() => expect(interval()(reading(ready))).toBe(5000));
+	});
+
+	// Rollback-path guards (panel C): `onSuccess: invalidate` moves out of the
+	// shared mutation into `changeStatus`'s flag-off branch. These pass on
+	// today's code and must keep passing; Step 9b re-proves them.
+	it("#2646 rollback path: a status change still re-reads the list", async () => {
+		const user = userEvent.setup();
+		state.topics = [
+			makeTopic({ id: "t1", title: "Alpha topic", status: "SUGGESTION" }),
+		];
+		state.cycle = cycle("READY");
+		renderList();
+
+		await user.click(
+			screen.getByRole("combobox", { name: "Status for Alpha topic" }),
+		);
+		await user.click(
+			await screen.findByRole("option", { name: "Selected" }),
+		);
+
+		await waitFor(() =>
+			expect(invalidateQueriesSpy).toHaveBeenCalledWith({
+				queryKey: [
+					"projects.publishingSuite.listTopics",
+					{ projectId: "proj-1", organizationId: null },
+				],
+			}),
+		);
+	});
+
+	it("#2646 rollback path: the row stays busy until that re-read settles", async () => {
+		const user = userEvent.setup();
+		const releases: Array<() => void> = [];
+		invalidateQueriesSpy.mockImplementation(
+			() =>
+				new Promise<void>((r) => {
+					releases.push(r);
+				}),
+		);
+		state.topics = [
+			makeTopic({ id: "t1", title: "Alpha topic", status: "SUGGESTION" }),
+		];
+		state.cycle = cycle("READY");
+		renderList();
+
+		await user.click(
+			screen.getByRole("combobox", { name: "Status for Alpha topic" }),
+		);
+		await user.click(
+			await screen.findByRole("option", { name: "Selected" }),
+		);
+		await waitFor(() => expect(updateStatusMutate).toHaveBeenCalled());
+		await waitFor(() => expect(releases.length).toBeGreaterThan(0));
+		expect(
+			screen.getByRole("combobox", { name: "Status for Alpha topic" }),
+		).toBeDisabled();
+
+		for (const release of releases) {
+			release();
+		}
+		await waitFor(() =>
+			expect(
+				screen.getByRole("combobox", {
+					name: "Status for Alpha topic",
+				}),
+			).toBeEnabled(),
+		);
+	});
+
+	const LIST_TOPICS_KEY = {
+		queryKey: [
+			"projects.publishingSuite.listTopics",
+			{ projectId: "proj-1", organizationId: null },
+		],
+	};
+	const firstCallOrder = (
+		spy: {
+			mock: { calls: unknown[][]; invocationCallOrder: number[] };
+		},
+		arg: unknown,
+	) =>
+		spy.mock.invocationCallOrder[
+			spy.mock.calls.findIndex(
+				(c) => JSON.stringify(c[0]) === JSON.stringify(arg),
+			)
+		];
+
+	it("#2646: refreshes the topics and the run history when a watched run finishes", async () => {
+		state.cycle = {
+			id: "c1",
+			status: "GENERATING",
+			startedAt: new Date(),
+			completedAt: null,
+		};
+		const { rerender } = renderList();
+		invalidateQueriesSpy.mockClear();
+		cancelQueriesSpy.mockClear();
+
+		state.cycle = {
+			id: "c1",
+			status: "READY",
+			startedAt: new Date(),
+			completedAt: new Date(),
+		};
+		rerender(
+			<PublishingSuiteList
+				projectId="proj-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+
+		const input = { projectId: "proj-1", organizationId: null };
+		// The topics are re-read only after a cancellation settles.
+		await waitFor(() =>
+			expect(invalidateQueriesSpy).toHaveBeenCalledWith({
+				queryKey: ["projects.publishingSuite.listTopics", input],
+			}),
+		);
+		expect(invalidateQueriesSpy).toHaveBeenCalledWith({
+			queryKey: ["projects.publishingSuite.listCycles", input],
+		});
+		// Cancel FIRST: an initial topics read still in flight may predate
+		// the run's commit, and a refetch would just join it.
+		expect(cancelQueriesSpy).toHaveBeenCalledWith(LIST_TOPICS_KEY);
+		expect(firstCallOrder(cancelQueriesSpy, LIST_TOPICS_KEY)).toBeLessThan(
+			firstCallOrder(invalidateQueriesSpy, LIST_TOPICS_KEY),
+		);
+	});
+
+	it("#2646: re-reads the topics only once cancelling the in-flight topics read has settled", async () => {
+		let releaseTopicsCancel: () => void = () => {};
+		cancelQueriesSpy.mockImplementation((...args: unknown[]) =>
+			JSON.stringify(args[0]) === JSON.stringify(LIST_TOPICS_KEY)
+				? new Promise<void>((r) => {
+						releaseTopicsCancel = r;
+					})
+				: Promise.resolve(),
+		);
+		state.cycle = {
+			id: "c1",
+			status: "GENERATING",
+			startedAt: new Date(),
+			completedAt: null,
+		};
+		const { rerender } = renderList();
+
+		state.cycle = {
+			id: "c1",
+			status: "READY",
+			startedAt: new Date(),
+			completedAt: new Date(),
+		};
+		rerender(
+			<PublishingSuiteList
+				projectId="proj-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+
+		await waitFor(() =>
+			expect(callsFor(cancelQueriesSpy, LIST_TOPICS_KEY)).toBe(1),
+		);
+		// The run history does not wait on the topics' cancellation.
+		expect(
+			callsFor(invalidateQueriesSpy, {
+				queryKey: [
+					"projects.publishingSuite.listCycles",
+					{ projectId: "proj-1", organizationId: null },
+				],
+			}),
+		).toBe(1);
+		// Flush pending microtasks: still no topics re-read while the
+		// cancellation is held.
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(callsFor(invalidateQueriesSpy, LIST_TOPICS_KEY)).toBe(0);
+
+		releaseTopicsCancel();
+		await waitFor(() =>
+			expect(callsFor(invalidateQueriesSpy, LIST_TOPICS_KEY)).toBe(1),
+		);
 	});
 });

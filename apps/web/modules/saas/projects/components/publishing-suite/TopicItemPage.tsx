@@ -14,6 +14,13 @@ import {
 	PopoverContent,
 	PopoverTrigger,
 } from "@ui/components/popover";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@ui/components/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
@@ -24,6 +31,7 @@ import { toast } from "sonner";
 import { AssigneesPicker } from "./AssigneesPicker";
 import { ContentTypesChecklist } from "./ContentTypesChecklist";
 import { ContributorsPicker } from "./ContributorsPicker";
+import { DeclineTopicDialog } from "./DeclineTopicDialog";
 import {
 	buildGenerationTabModel,
 	GenerationTabPanels,
@@ -48,12 +56,18 @@ import {
 	TopicQuestionsPanel,
 } from "./TopicQuestionsPanel";
 import { TopicReadiness } from "./TopicReadiness";
+import { TopicStatusSaveIndicator } from "./TopicStatusSaveIndicator";
 import {
 	ALL_POST_TYPES,
 	GENERATION_ACTIVE_POST_TYPES,
 	type PostType,
 	TOPIC_STATUSES,
+	type TopicStatus,
 } from "./topic-shared";
+import {
+	applyStatusOverlay,
+	useTopicStatusOverlay,
+} from "./use-topic-status-overlay";
 
 /**
  * The assistant rail, loaded on demand.
@@ -194,6 +208,16 @@ export function TopicItemPage({
 	const [addTypeOpen, setAddTypeOpen] = useState(false);
 	const [urlOpen, setUrlOpen] = useState(false);
 	const [urlPending, setUrlPending] = useState(false);
+	// Fizzy #2646: the header status control and its two dialogs. The lock
+	// that keeps this and Edit URL from racing is the overlay's own `isBusy`
+	// (both writes go through it) — see `statusBusy` below.
+	const [statusDeclineOpen, setStatusDeclineOpen] = useState(false);
+	const [statusDeclinePending, setStatusDeclinePending] = useState(false);
+	const [statusPublishOpen, setStatusPublishOpen] = useState(false);
+	const [statusPublishPending, setStatusPublishPending] = useState(false);
+	// Edit URL's starting value, snapshotted when the dialog OPENS — see
+	// `TopicRow`'s `publishSeed` for why it must never be read live.
+	const [urlSeed, setUrlSeed] = useState<string | null>(null);
 	const [contributorsOpen, setContributorsOpen] = useState(false);
 	const [contributorsPending, setContributorsPending] = useState(false);
 	const [assigneesOpen, setAssigneesOpen] = useState(false);
@@ -259,6 +283,16 @@ export function TopicItemPage({
 		}),
 	);
 	const topic = topicQuery.data?.topic;
+
+	// One topic, the same overlay the list uses (Fizzy #2646). Memoised so
+	// the hook's tidy step runs when the topic changes, not on every render.
+	const overlayTopics = useMemo(() => (topic ? [topic] : []), [topic]);
+	const statusOverlay = useTopicStatusOverlay(
+		overlayTopics,
+		topicQuery.dataUpdatedAt,
+		topicQuery.errorUpdatedAt,
+	);
+	const statusBusy = statusOverlay.isBusy(topicId);
 
 	// STABLE across any re-render that carries no real change — see the same
 	// memo in `TopicRow.tsx` for the full reasoning. Keyed on the two
@@ -614,6 +648,9 @@ export function TopicItemPage({
 			title: topicQuery.data?.topic?.title ?? "",
 			angle: topicQuery.data?.topic?.angle ?? null,
 			pitch: topicQuery.data?.topic?.pitch ?? null,
+			// The SAVED status on purpose (Fizzy #2646): the assistant reasons
+			// about the stored topic, and the header's pending value may yet
+			// fail to save. The gap is one refetch.
 			status: topicQuery.data?.topic?.status ?? "",
 			postTypes: selectedPostTypes,
 			openQuestions: (decisionsQuery.data?.threads ?? [])
@@ -867,12 +904,80 @@ export function TopicItemPage({
 
 	const updateStatus = useMutation(
 		orpc.projects.publishingSuite.updateTopicStatus.mutationOptions({
-			onSuccess: invalidateTopic,
+			// No onSuccess invalidation (Fizzy #2646): the overlay invalidates
+			// after taking the write's settle time — see writeStatus.
 			onError: () => {
 				toast.error("We couldn't update that topic. Please try again.");
 			},
 		}),
 	);
+
+	/**
+	 * Every status write on this page — the header control and Edit URL — so
+	 * the page shows the pending value at once and the two cannot overlap
+	 * (the overlay refuses a second write while the first is unconfirmed).
+	 * Selecting a topic auto-starts its planning analysis on the server;
+	 * refreshing that read is what lets the page find the run and poll it.
+	 */
+	const writeStatus = (
+		status: TopicStatus,
+		declineReason: string | null,
+		publishedUrl: string | null,
+	) =>
+		statusOverlay.run(
+			topicId,
+			{ status, declineReason, publishedUrl },
+			() =>
+				updateStatus.mutateAsync({
+					projectId,
+					organizationId,
+					topicId,
+					status,
+					declineReason,
+					publishedUrl,
+				}),
+			() => {
+				invalidateTopic();
+				if (status === "SELECTED") {
+					void queryClient.invalidateQueries({
+						queryKey:
+							orpc.projects.publishingSuite.getPlanningAnalysis.queryKey(
+								{
+									input: {
+										projectId,
+										topicId,
+										organizationId,
+									},
+								},
+							),
+					});
+				}
+			},
+		);
+
+	const handleStatusDeclineConfirm = async (reason: string | null) => {
+		setStatusDeclinePending(true);
+		try {
+			await writeStatus("DECLINED", reason, null);
+			setStatusDeclineOpen(false);
+		} catch {
+			// Surfaced by `updateStatus`'s onError toast; keep the typed reason.
+		} finally {
+			setStatusDeclinePending(false);
+		}
+	};
+
+	const handleStatusPublishConfirm = async (url: string | null) => {
+		setStatusPublishPending(true);
+		try {
+			await writeStatus("PUBLISHED", null, url);
+			setStatusPublishOpen(false);
+		} catch {
+			// Surfaced by `updateStatus`'s onError toast; keep the typed URL.
+		} finally {
+			setStatusPublishPending(false);
+		}
+	};
 
 	const updateAssignees = useMutation(
 		orpc.projects.publishingSuite.updateTopicAssignees.mutationOptions({
@@ -996,14 +1101,7 @@ export function TopicItemPage({
 	const handleUrlConfirm = async (url: string | null) => {
 		setUrlPending(true);
 		try {
-			await updateStatus.mutateAsync({
-				projectId,
-				organizationId,
-				topicId,
-				status: "PUBLISHED",
-				declineReason: null,
-				publishedUrl: url,
-			});
+			await writeStatus("PUBLISHED", null, url);
 			setUrlOpen(false);
 		} catch {
 			// Surfaced by this mutation's onError toast above.
@@ -1039,9 +1137,26 @@ export function TopicItemPage({
 		);
 	}
 
+	const shown = applyStatusOverlay(topic, statusOverlay.overlayFor(topicId));
 	const statusLabel =
-		TOPIC_STATUSES.find((s) => s.value === topic.status)?.label ??
-		topic.status;
+		TOPIC_STATUSES.find((s) => s.value === shown.status)?.label ??
+		shown.status;
+
+	const handleStatusValueChange = (next: string) => {
+		if (next === shown.status) {
+			return;
+		}
+		if (next === "DECLINED") {
+			setStatusDeclineOpen(true);
+			return;
+		}
+		if (next === "PUBLISHED") {
+			setStatusPublishOpen(true);
+			return;
+		}
+		// A failure is surfaced by the mutation's onError toast.
+		void writeStatus(next as TopicStatus, null, null).catch(() => {});
+	};
 
 	return (
 		// Page padding is the ROUTE's (it owns the breadcrumb trail above
@@ -1088,17 +1203,47 @@ export function TopicItemPage({
 					    already does. */}
 					<div className="flex shrink-0 items-center gap-2">
 						<TopicRankReason topic={topic} variant="pill" />
-						<span
-							className="shrink-0 rounded-full border border-border bg-muted px-3 py-1 text-muted-foreground text-xs"
-							data-testid="topic-status"
-						>
-							{statusLabel}
-						</span>
+						{canEdit ? (
+							<div className="flex shrink-0 items-center gap-2">
+								<TopicStatusSaveIndicator
+									state={statusOverlay.saveStateFor(topicId)}
+								/>
+								<Select
+									value={shown.status}
+									onValueChange={handleStatusValueChange}
+									disabled={statusBusy}
+								>
+									<SelectTrigger
+										className="h-8 w-[10rem]"
+										aria-label={`Status for ${topic.title}`}
+									>
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										{TOPIC_STATUSES.map((s) => (
+											<SelectItem
+												key={s.value}
+												value={s.value}
+											>
+												{s.label}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+							</div>
+						) : (
+							<span
+								className="shrink-0 rounded-full border border-border bg-muted px-3 py-1 text-muted-foreground text-xs"
+								data-testid="topic-status"
+							>
+								{statusLabel}
+							</span>
+						)}
 					</div>
 				</div>
-				{topic.declineReason ? (
+				{shown.declineReason ? (
 					<p className="border-destructive border-l-2 pl-3 text-muted-foreground text-sm">
-						{topic.declineReason}
+						{shown.declineReason}
 					</p>
 				) : null}
 				{/* Who was in the room, in the header rather than down in the
@@ -1131,15 +1276,19 @@ export function TopicItemPage({
 				    component. */}
 			<div className="space-y-1.5">
 				<TopicDetails
-					topic={topic}
+					topic={shown}
 					canEdit={canEdit}
 					isPending={
 						postTypesPending ||
 						urlPending ||
 						contributorsPending ||
-						assigneesPending
+						assigneesPending ||
+						statusBusy
 					}
-					onEditUrl={() => setUrlOpen(true)}
+					onEditUrl={() => {
+						setUrlSeed(shown.publishedUrl);
+						setUrlOpen(true);
+					}}
 					contributorsControl={
 						<ContributorsPicker
 							topicTitle={topic.title}
@@ -1558,10 +1707,24 @@ export function TopicItemPage({
 						open={urlOpen}
 						onOpenChange={setUrlOpen}
 						onConfirm={handleUrlConfirm}
-						isPending={urlPending}
-						initialUrl={topic.publishedUrl}
+						isPending={urlPending || statusBusy}
+						initialUrl={urlSeed}
 						title="Edit published URL"
 						confirmLabel="Save"
+					/>
+					<DeclineTopicDialog
+						topicTitle={topic.title}
+						open={statusDeclineOpen}
+						onOpenChange={setStatusDeclineOpen}
+						onConfirm={handleStatusDeclineConfirm}
+						isPending={statusDeclinePending || statusBusy}
+					/>
+					<PublishTopicDialog
+						topicTitle={topic.title}
+						open={statusPublishOpen}
+						onOpenChange={setStatusPublishOpen}
+						onConfirm={handleStatusPublishConfirm}
+						isPending={statusPublishPending || statusBusy}
 					/>
 				</>
 			) : null}

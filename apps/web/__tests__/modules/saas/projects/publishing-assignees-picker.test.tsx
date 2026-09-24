@@ -222,3 +222,57 @@ describe("AssigneesPicker behaviour", () => {
 		).toBeInTheDocument();
 	});
 });
+
+describe("AssigneesPicker trigger (Fizzy #2646)", () => {
+	it("renders a caller-supplied trigger instead of the default button", async () => {
+		const user = userEvent.setup();
+		const onOpenChange = vi.fn();
+		renderDialog({
+			open: false,
+			onOpenChange,
+			trigger: (
+				<button type="button" aria-label="Assigned to Ada">
+					A
+				</button>
+			),
+		});
+		expect(
+			screen.queryByRole("button", { name: "Assign people" }),
+		).not.toBeInTheDocument();
+		await user.click(
+			screen.getByRole("button", { name: "Assigned to Ada" }),
+		);
+		expect(onOpenChange).toHaveBeenCalledWith(true);
+	});
+
+	it("disables a caller-supplied trigger while the write is pending", () => {
+		// The default trigger carried `disabled={isPending}`; a custom one
+		// must not silently drop that gate (spec §4.6, panel B #4).
+		renderDialog({
+			open: false,
+			isPending: true,
+			trigger: (
+				<button type="button" aria-label="Assigned to Ada">
+					A
+				</button>
+			),
+		});
+		expect(
+			screen.getByRole("button", { name: "Assigned to Ada" }),
+		).toBeDisabled();
+	});
+
+	it("keeps the default trigger when none is supplied", () => {
+		renderDialog({ open: false });
+		expect(
+			screen.getByRole("button", { name: "Assign people" }),
+		).toBeInTheDocument();
+	});
+
+	it("still disables the default trigger while the write is pending", () => {
+		renderDialog({ open: false, isPending: true });
+		expect(
+			screen.getByRole("button", { name: "Assign people" }),
+		).toBeDisabled();
+	});
+});
