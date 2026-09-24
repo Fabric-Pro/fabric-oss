@@ -116,16 +116,25 @@ export type RepositorySyncCheckFailure = {
 
 export interface RepositorySyncSubjectStore {
 	readonly kind: RepositorySyncSubjectKind;
-	/** Leases up to `limit` due rows at `leaseUntil`, oldest due first. Cross-tenant. */
+	/**
+	 * Leases up to `limit` due rows for `leaseMs`, oldest due first.
+	 * Cross-tenant. Due and lease are both read from the database's clock,
+	 * the clock the fence judges the lease by, so the caller passes a
+	 * duration and never a date (Fizzy #2683).
+	 */
 	listDueAndClaim(
 		tx: Prisma.TransactionClient,
-		input: { limit: number; leaseUntil: Date; now?: Date },
+		input: { limit: number; leaseMs: number },
 	): Promise<ClaimedRepositorySyncRow[]>;
-	/** Whether a row still matches the fence. */
+	/**
+	 * Whether a row still matches the fence, and the database's clock read
+	 * in the same statement, which the check calibrates its own clock from
+	 * (Fizzy #2683).
+	 */
 	leaseHeld(
 		tx: Prisma.TransactionClient,
 		fence: RepositorySyncFence,
-	): Promise<boolean>;
+	): Promise<{ held: boolean; dbNow: Date }>;
 	/** Applies `patch` only while the row matches the fence. */
 	writeBack(
 		tx: Prisma.TransactionClient,

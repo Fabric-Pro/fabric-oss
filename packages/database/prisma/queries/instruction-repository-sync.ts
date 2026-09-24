@@ -733,26 +733,33 @@ export function computeSchedulingPatch(
  *
  * One statement selects due rows (automatic on, not paused, `nextCheckAt`
  * reached, integration ACTIVE), oldest due first, and leases them by moving
- * `nextCheckAt` to the caller's `leaseUntil`. A lease that is never
- * processed (budget ran out, tick crashed) comes due again at the front of
- * the order, ahead of every row a finished check moved 15 minutes out.
+ * `nextCheckAt` to the database's clock plus `leaseMs` (Fizzy #2683). Both
+ * the due predicate and the lease read `clock_timestamp()`, the clock the
+ * fence (`leaseFenceSql`) judges the lease by, so the lease is born and ends
+ * on one clock: a worker whose clock drifts from the database's can neither
+ * shorten nor stretch it. The caller passes a duration, never a date. A
+ * lease that is never processed (budget ran out, tick crashed) comes due
+ * again at the front of the order, ahead of every row a finished check
+ * moved 15 minutes out.
  *
  * `FOR UPDATE OF s2 SKIP LOCKED` makes two overlapping claims take disjoint
  * rows rather than wait. `= ANY (ARRAY(subquery))` evaluates the locking
  * subquery once, as in `PUBLISHING_NULL_CLOCK_ENROL_SQL`
  * (projects/publishing-notification-reconcile.ts); an `IN (subquery)` may be
- * planned as a join that re-runs it. adapter-pg sends a Date as UTC, which
- * matches the TIMESTAMP(3) columns. `RETURNING` reads the written value back
- * as `leaseUntil`, the lease every later write compares with.
+ * planned as a join that re-runs it. `AT TIME ZONE 'UTC'` because the
+ * TIMESTAMP(3) columns hold UTC without a zone; `leaseMs` is a bound
+ * parameter, cast so Postgres never has to guess its type. `RETURNING` reads
+ * the written value back, rounded to the column's milliseconds, as
+ * `leaseUntil`: the lease every later write compares with.
  */
 export async function claimDueInstructionSyncRows(
 	tx: Prisma.TransactionClient,
-	input: { limit: number; leaseUntil: Date; now?: Date },
+	input: { limit: number; leaseMs: number },
 ): Promise<ClaimedRepositorySyncRow[]> {
-	const now = input.now ?? new Date();
 	return tx.$queryRaw<ClaimedRepositorySyncRow[]>`
 		UPDATE "project_instruction_repository_sync" AS s
-		SET "nextCheckAt" = ${input.leaseUntil}
+		SET "nextCheckAt" = (clock_timestamp() AT TIME ZONE 'UTC')
+			+ make_interval(secs => ${input.leaseMs}::double precision / 1000)
 		WHERE s."id" = ANY (ARRAY(
 			SELECT s2."id"
 			FROM "project_instruction_repository_sync" AS s2
@@ -760,7 +767,7 @@ export async function claimDueInstructionSyncRows(
 				ON i."id" = s2."repositoryIntegrationId"
 			WHERE s2."automatic" = true
 				AND s2."automaticPausedReason" IS NULL
-				AND s2."nextCheckAt" <= ${now}
+				AND s2."nextCheckAt" <= (clock_timestamp() AT TIME ZONE 'UTC')
 				AND i."status" = 'ACTIVE'
 			ORDER BY s2."nextCheckAt" ASC, s2."id" ASC
 			LIMIT ${input.limit}
@@ -790,18 +797,20 @@ export async function claimDueInstructionSyncRows(
  * and automatic sync is still on and unpaused.
  *
  * Every writer that competes with a check moves one of these: a later claim
- * and every finishing run move `nextCheckAt` to a value computed from their
- * own clock, as does settling a re-check request whose run already finished
+ * moves `nextCheckAt` to a new lease, every finishing run moves it to a
+ * value computed from its own clock, as does settling a re-check request whose run already finished
  * (`settlePendingInstructionSyncHead`), a re-configure or settings change
  * bumps the generation, a pause sets `automaticPausedReason` and clears
  * `nextCheckAt`, and turning automatic sync off clears
  * `automatic`. A lease nobody else touched ends by the clock alone. Two
  * claims of one row never write the same lease: a row is re-claimable only
- * once its lease has passed, and the next claim's lease is its own `now`
- * plus two minutes.
+ * once its lease has passed, and the next claim's lease is the database's
+ * clock at that claim plus two minutes.
  *
- * The clock is Postgres's, never a JS `Date`, so a worker whose clock runs
- * behind the database's cannot stretch a lease. `clock_timestamp()` rather
+ * The clock is Postgres's, never a JS `Date`, end to end (Fizzy #2683): the
+ * claim writes the lease from `clock_timestamp()`, and this fence ends it by
+ * the same clock, so a worker whose clock runs behind or ahead of the
+ * database's can neither shorten nor stretch a lease. `clock_timestamp()` rather
  * than `now()`, which is the transaction's start and would stand still
  * inside the receipt's transaction; `AT TIME ZONE 'UTC'` because the columns
  * are `timestamp without time zone` holding UTC. Both as in
@@ -868,15 +877,26 @@ function patchAssignments(patch: RepositorySyncSchedulingPatch): Prisma.Sql[] {
  * An unlocked read of the lease (Decisions 31 and 48), for a check's early
  * exits: before it touches the repository, and again just before it starts
  * a run. The writes below send the same fence in their own `WHERE`.
+ *
+ * The same statement reads the database's clock as `dbNow`, whether or not
+ * the lease holds (Fizzy #2683). The check measures its own worker's offset
+ * from it, on the worker that will use it, and dates its schedule writes
+ * and places its deadline on the database's clock. One round trip: the
+ * clock and the fence come from one statement.
  */
 export async function instructionSyncLeaseHeld(
 	tx: Prisma.TransactionClient,
 	fence: RepositorySyncFence,
-): Promise<boolean> {
-	const rows = await tx.$queryRaw<{ id: string }[]>(
-		Prisma.sql`SELECT "id" FROM "project_instruction_repository_sync" WHERE ${leaseFenceSql(fence)}`,
+): Promise<{ held: boolean; dbNow: Date }> {
+	const rows = await tx.$queryRaw<{ held: boolean; dbNow: Date }[]>(
+		Prisma.sql`SELECT (clock_timestamp() AT TIME ZONE 'UTC') AS "dbNow", EXISTS (SELECT 1 FROM "project_instruction_repository_sync" WHERE ${leaseFenceSql(fence)}) AS "held"`,
 	);
-	return rows.length > 0;
+	const [row] = rows;
+	if (row === undefined) {
+		// A SELECT without FROM always returns one row; none is a driver fault.
+		throw new Error("the lease read returned no row");
+	}
+	return { held: row.held === true, dbNow: row.dbNow };
 }
 
 /**
@@ -1138,15 +1158,15 @@ export async function settlePendingInstructionSyncHead(
 	applied: boolean;
 	settled: RepositorySyncPendingHeadSettlement;
 }> {
-	const now = input.now ?? new Date();
 	return client.$transaction(async (tx) => {
 		const locked = await tx.$queryRaw<
 			Array<{
 				automaticPausedReason: string | null;
 				pendingCommitSha: string | null;
+				now: Date;
 			}>
 		>`
-			SELECT "automaticPausedReason", "pendingCommitSha"
+			SELECT "automaticPausedReason", "pendingCommitSha", (clock_timestamp() AT TIME ZONE 'UTC') AS "now"
 			FROM "project_instruction_repository_sync"
 			WHERE "id" = ${input.syncId}
 				AND "projectId" = ${input.projectId}
@@ -1158,6 +1178,9 @@ export async function settlePendingInstructionSyncHead(
 		if (row === undefined) {
 			return { applied: false, settled: "stale" as const };
 		}
+		// Due now on the database's clock, read under the lock, so a caller
+		// whose clock runs ahead cannot push the re-check out (Fizzy #2683).
+		const now = input.now ?? row.now ?? new Date();
 		const receipt = await tx.projectInstructionRepositorySyncRun.findFirst({
 			where: {
 				id: `${input.syncId}:${input.runId}`,
@@ -1323,7 +1346,6 @@ export async function completeInstructionRepositorySyncRun(input: {
 	classifyStaleAsConfigurationChanged?: boolean;
 	now?: Date;
 }): Promise<{ completed: boolean; configurationCurrent: boolean }> {
-	const now = input.now ?? new Date();
 	return db.$transaction(async (tx) => {
 		const locked = await tx.$queryRaw<
 			Array<{
@@ -1331,9 +1353,10 @@ export async function completeInstructionRepositorySyncRun(input: {
 				failureCount: number;
 				automaticPausedReason: string | null;
 				pendingCommitSha: string | null;
+				now: Date;
 			}>
 		>`
-			SELECT "generation", "failureCount", "automaticPausedReason", "pendingCommitSha"
+			SELECT "generation", "failureCount", "automaticPausedReason", "pendingCommitSha", (clock_timestamp() AT TIME ZONE 'UTC') AS "now"
 			FROM "project_instruction_repository_sync"
 			WHERE "id" = ${input.syncId}
 				AND "projectId" = ${input.projectId}
@@ -1341,6 +1364,12 @@ export async function completeInstructionRepositorySyncRun(input: {
 			FOR UPDATE
 		`;
 		const lockedRow = locked[0];
+		// The receipt's `finishedAt` and the next check are dated on the
+		// database's clock, read under the lock, so a worker whose clock
+		// drifts cannot schedule a check that is already due or far out
+		// (Fizzy #2683). No row to lock (a disable or a disconnect committed
+		// first) leaves only the worker's clock for the receipt.
+		const now = input.now ?? lockedRow?.now ?? new Date();
 		const outcome =
 			input.classifyStaleAsConfigurationChanged === true &&
 			(lockedRow === undefined ||

@@ -180,7 +180,15 @@ export async function projectInstructionRepositoryPollWorkflow(
 		}
 	};
 
-	/** Starts a lane for `row`, or refuses a row it could not finish in time. */
+	/**
+	 * Starts a lane for `row`, or refuses a row it could not finish in time.
+	 * The lease-left test compares a database-clock lease with the
+	 * workflow's clock, which is Temporal's, not the database's, and is not
+	 * calibrated as the check calibrates its own (Fizzy #2683: a documented
+	 * residual).
+	 * A refusal only leaves the row to its lease, and the next tick claims it
+	 * again; it never lets a write through, which the fence decides.
+	 */
 	const dispatch = (row: ClaimedInstructionSyncCheck): boolean => {
 		const left = budgetLeft();
 		if (

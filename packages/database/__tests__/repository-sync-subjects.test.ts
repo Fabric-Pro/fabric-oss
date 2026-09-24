@@ -3,7 +3,7 @@
  * instruction queries are stand-ins here: this file pins the wiring, and
  * instruction-repository-sync-queries.test.ts pins what each query does.
  */
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { Prisma } from "../prisma/client";
 
 const m = vi.hoisted(() => ({
@@ -30,7 +30,10 @@ vi.mock("../prisma/queries/projects/projects", () => ({
 	canCreateProjectInstructions: m.canCreate,
 }));
 
-import { REPOSITORY_SYNC_SUBJECT_STORES } from "../prisma/queries/repository-sync-subjects";
+import {
+	REPOSITORY_SYNC_SUBJECT_STORES,
+	type RepositorySyncSubjectStore,
+} from "../prisma/queries/repository-sync-subjects";
 
 describe("REPOSITORY_SYNC_SUBJECT_STORES (Decision 46)", () => {
 	it("registers exactly the instructions subject", () => {
@@ -49,6 +52,18 @@ describe("REPOSITORY_SYNC_SUBJECT_STORES (Decision 46)", () => {
 		expect(store.writeBack).toBe(m.writeBack);
 		expect(store.recordCheckFailure).toBe(m.recordFailure);
 		expect(store.findByRepository).toBe(m.findForPush);
+	});
+
+	it("claims with a lease length, never a caller's date: the database dates the lease (Fizzy #2683)", () => {
+		expectTypeOf<
+			Parameters<RepositorySyncSubjectStore["listDueAndClaim"]>[1]
+		>().toEqualTypeOf<{ limit: number; leaseMs: number }>();
+	});
+
+	it("reads the lease with the database's clock, which the check calibrates its own clock from (Fizzy #2683)", () => {
+		expectTypeOf<
+			Awaited<ReturnType<RepositorySyncSubjectStore["leaseHeld"]>>
+		>().toEqualTypeOf<{ held: boolean; dbNow: Date }>();
 	});
 
 	it("records a pending head on the row's own identity, tenant and generation (Fizzy #2682)", async () => {

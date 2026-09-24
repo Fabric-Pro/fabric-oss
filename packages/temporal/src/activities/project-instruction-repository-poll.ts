@@ -83,6 +83,9 @@ type CheckStage =
 	| "start"
 	| "write_back";
 
+/** A lease-fenced write a check makes, for the fence-rejection warning. */
+type FencedWrite = "write_back" | "record_failure" | "reschedule";
+
 /** Spec §8.2: the poll's first step removes clone directories older than an hour. */
 export async function sweepInstructionSyncTempDirs(): Promise<{
 	removed: number;
@@ -92,20 +95,19 @@ export async function sweepInstructionSyncTempDirs(): Promise<{
 
 /**
  * Spec §6.1: lease up to `limit` of one subject's due rows, oldest due
- * first. Cross-tenant; see the subject's `listDueAndClaim`. The lease is
- * computed from this activity's clock, so every row of one claim carries
- * the same `leaseUntil`; whether it still holds is judged by the database's
- * clock (Decision 48).
+ * first. Cross-tenant; see the subject's `listDueAndClaim`. This activity
+ * passes only the lease's length: the database dates the lease from its own
+ * clock, the one that judges whether it still holds (Decision 48), so a
+ * worker whose clock drifts cannot write a lease that is already short or
+ * expired (Fizzy #2683).
  */
 export async function claimDueInstructionSyncChecks(input: {
 	kind: RepositorySyncSubjectKind;
 	limit: number;
 }): Promise<ClaimedInstructionSyncCheck[]> {
-	const now = new Date();
 	const rows = await repositorySyncSubject(input.kind).listDueAndClaim(db, {
 		limit: input.limit,
-		leaseUntil: new Date(now.getTime() + CLAIM_LEASE_MS),
-		now,
+		leaseMs: CLAIM_LEASE_MS,
 	});
 	// A Date does not survive a Temporal payload as a Date. The lease
 	// travels as its ISO string, which keeps the milliseconds the
@@ -144,9 +146,11 @@ export async function claimDueInstructionSyncChecks(input: {
  * make Temporal stop waiting for this activity; they do not stop its
  * JavaScript, which keeps running on the worker until it returns. So before
  * each stage that could have a side effect (the token, `ls-remote`, the
- * start, each write) it requires `Date.now()` to be more than
+ * start, each write) it requires the database's time, calibrated from its
+ * own first lease read (Fizzy #2683), to be more than
  * `CHECK_DEADLINE_MARGIN_MS` before its lease or the poll's budget ends,
- * and returns `stale` with nothing done when it is not.
+ * and returns `stale` with nothing done when it is not. Its schedule writes
+ * are dated on the same calibrated time.
  */
 export async function checkInstructionSyncRemoteHead(
 	input: InstructionSyncCheckInput,
@@ -198,19 +202,74 @@ async function runRemoteHeadCheck(
 		generation: row.generation,
 		leaseUntil: row.leaseUntil,
 	};
+	// The first database read, before anything else: whether the lease still
+	// holds, and the database's clock from the same statement (Fizzy #2683).
+	// `leaseHeld` is the stale-lease guard before any remote access: it
+	// compares the lease with the database's clock, the clock that dated it,
+	// so a second `leaseUntil > now` test on this worker's clock would answer
+	// nothing the database does not already answer.
+	const lease = await subject.leaseHeld(db, fence);
+	// This worker's offset from the database, measured here, on the worker
+	// that uses it: Temporal gives the claim and the check no worker
+	// affinity, so an offset measured by the claim could belong to another
+	// clock. Measured once per check, authoritative to within the drift over
+	// one two-minute lease plus this read's round trip; the second lease read
+	// before the start does not refresh it. The fence still judges ownership
+	// on Postgres's clock; this only dates the schedule this check writes and
+	// places its deadline.
+	const clockSkewMs = lease.dbNow.getTime() - Date.now();
+	const dbNow = (): Date => new Date(Date.now() + clockSkewMs);
+	// `inTime()` is `dbNow() < min(lease, budget end) - margin`, kept as a
+	// stop time on this worker's clock (minus the offset) because the git
+	// deadline below is a timer on it. A worker ahead of the database no
+	// longer gives up a live lease, nor does one behind overrun it. The
+	// budget end is the workflow's time, Temporal's server clock; judging it
+	// on the calibrated clock takes the two server clocks to agree, which is
+	// closer than trusting the drift this corrects.
 	const stopAt =
 		Math.min(row.leaseUntil.getTime(), Date.parse(input.deadlineAt)) -
-		CHECK_DEADLINE_MARGIN_MS;
+		CHECK_DEADLINE_MARGIN_MS -
+		clockSkewMs;
 	const inTime = (): boolean => Date.now() < stopAt;
 	const stale: InstructionSyncCheckResult = { outcome: "stale" };
+	// A lease-fenced write the fence refused while this worker still thought
+	// the lease live (Fizzy #2683). Some refusals are ordinary (a run or a
+	// re-configure moved the row, a run finished in between); the operator
+	// compares `leaseUntil` with the calibrated `dbNow` and the raw
+	// `workerNow`. Identifiers and times only, never the ref, URL, token or
+	// an error. Logging only: the outcome is unchanged.
+	const warnIfFenceRejected = (
+		applied: boolean,
+		write: FencedWrite,
+	): void => {
+		if (applied || !inTime()) {
+			return;
+		}
+		logger.warn(
+			{
+				event: "instructions.sync.lease_fence_rejected",
+				kind: input.kind,
+				syncId: row.id,
+				projectId: row.projectId,
+				organizationId: row.organizationId,
+				stage: write,
+				leaseUntil: row.leaseUntil.toISOString(),
+				dbNow: dbNow().toISOString(),
+				workerNow: new Date().toISOString(),
+			},
+			"[InstructionSync] the lease fence refused a check's write while the check was still in time",
+		);
+	};
 	// While the lease holds, the claimed failure count is the stored one:
 	// every writer of `failureCount` also moves the fence (Task 2).
 	const writeBack = (effect: WrittenEffect) =>
 		subject.writeBack(
 			db,
 			fence,
+			// Dated on the database's clock: a worker behind it would
+			// otherwise write a next check that is already due (Fizzy #2683).
 			computeSchedulingPatch(effect, {
-				now: new Date(),
+				now: dbNow(),
 				failureCount: row.failureCount,
 				generation: row.generation,
 			}),
@@ -224,6 +283,7 @@ async function runRemoteHeadCheck(
 		}
 		stage.current = "write_back";
 		const { applied } = await writeBack(effect);
+		warnIfFenceRejected(applied, "write_back");
 		return { outcome: applied ? outcome : "stale" };
 	};
 	const recordFailure = async (
@@ -241,13 +301,17 @@ async function runRemoteHeadCheck(
 				pollRunId: input.pollRunId,
 				error,
 				pause,
+				now: dbNow(),
 			}),
 		);
+		warnIfFenceRejected(applied, "record_failure");
 		return { outcome: applied ? outcome : "stale" };
 	};
 
-	// A check the task queue held past its deadline reads nothing at all.
-	if (!inTime() || !(await subject.leaseHeld(db, fence))) {
+	// A check the task queue held past its deadline, or whose lease is gone,
+	// reads nothing more: the lease read above is its only database read,
+	// and it never reaches the repository.
+	if (!lease.held || !inTime()) {
 		return stale;
 	}
 	stage.current = "permission";
@@ -308,7 +372,7 @@ async function runRemoteHeadCheck(
 	// the first (Decision 51); `expected` still refuses it if the row was
 	// re-configured meanwhile (Decision 56).
 	stage.current = "lease";
-	if (!(await subject.leaseHeld(db, fence)) || !inTime()) {
+	if (!(await subject.leaseHeld(db, fence)).held || !inTime()) {
 		return stale;
 	}
 	let started: RepositorySyncStartResult;
@@ -339,6 +403,11 @@ async function runRemoteHeadCheck(
 	// the lease, and the request never moves `nextCheckAt`. Each is skipped
 	// past the deadline like every other write (Decision 50), and a throw is
 	// left to the lease.
+	// Whether the re-check request found the row moved on purpose: a
+	// re-configure refused the marker or its settle, or the settle made the
+	// row due. Each ends this check's lease, so the reschedule's refusal
+	// below is expected and not worth a warning (Fizzy #2683).
+	let rowMovedOnPurpose = false;
 	if (started.outcome === "already_running" && inTime()) {
 		const { applied } = await subject.recordPendingHead(db, row, head.sha);
 		// `already_running` proves only that the workflow has not closed; its
@@ -347,8 +416,14 @@ async function runRemoteHeadCheck(
 		// unfinished, and that completion consumes it later; finished, and
 		// the settle applies it now. Applying it makes the row due, which ends
 		// this check's lease, so the reschedule below then applies nothing.
+		rowMovedOnPurpose = !applied;
 		if (applied && inTime()) {
-			await subject.settlePendingHead(db, row, started.runId);
+			const settlement = await subject.settlePendingHead(
+				db,
+				row,
+				started.runId,
+			);
+			rowMovedOnPurpose = settlement.settled !== "consumer_pending";
 		}
 	}
 	// Conditional (Decision 34): a run that already finished moved
@@ -359,7 +434,7 @@ async function runRemoteHeadCheck(
 	// is still reported.
 	if (inTime()) {
 		stage.current = "write_back";
-		await writeBack({
+		const { applied } = await writeBack({
 			kind: "reschedule",
 			delayMs:
 				started.outcome === "already_running" &&
@@ -367,6 +442,9 @@ async function runRemoteHeadCheck(
 					? UNEVALUATED_RECHECK_MS
 					: STARTED_RECHECK_MS,
 		});
+		if (!rowMovedOnPurpose) {
+			warnIfFenceRejected(applied, "reschedule");
+		}
 	}
 	return { outcome: started.outcome };
 }
