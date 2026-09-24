@@ -148,6 +148,8 @@ describe("listProjectFeatures", () => {
 			}),
 		);
 		expect(res).toEqual({
+			summary:
+				"41 items on the roadmap matching these filters; 41 items closed and hidden, already excluded from total — report 41, never subtract the hidden count. total covers every page, not just the items below.",
 			features: [
 				{
 					id: "s-1",
@@ -192,6 +194,40 @@ describe("listProjectFeatures", () => {
 			}),
 		);
 		expect(res).toMatchObject({ total: 199, hiddenCount: 8 });
+	});
+
+	it("states that total already excludes the hidden items, so they are never subtracted", async () => {
+		h.listStorySummaries.mockImplementation(
+			async (options: { draftingStage?: string }) =>
+				options.draftingStage === "CLOSED"
+					? { stories: [], total: 8 }
+					: { stories: [summary], total: 199 },
+		);
+
+		const res = await listProjectFeatures({}, CTX);
+
+		expect(res).toMatchObject({ total: 199, hiddenCount: 8 });
+		const text = (res as { summary: string }).summary;
+		expect(text).toMatch(
+			/^199 items on the roadmap; 8 items closed and hidden, already excluded from total/,
+		);
+		expect(text).toContain("report 199");
+		expect(text).not.toContain("191");
+		expect(text).not.toContain("matching these filters");
+	});
+
+	it("summarises an includeHidden listing without a hidden count", async () => {
+		h.listStorySummaries.mockResolvedValue({
+			stories: [summary],
+			total: 1,
+		});
+
+		const res = await listProjectFeatures({ includeHidden: true }, CTX);
+
+		expect(res).toMatchObject({
+			summary:
+				"1 item, closed items included; declined items are never listed.",
+		});
 	});
 
 	it("lists closed items with includeHidden, still never declined ones", async () => {
@@ -256,6 +292,47 @@ describe("getProjectFeature", () => {
 				expect.objectContaining({ identifier: "TASK-001" }),
 				expect.objectContaining({ subtasks: "1/2 done" }),
 			],
+		});
+	});
+
+	it("marks an item the roadmap shows as on the roadmap", async () => {
+		h.getStoryById.mockResolvedValue(story);
+
+		const res = await getProjectFeature({ feature: "s-1" }, CTX);
+
+		expect(res).toMatchObject({ identifier: "F-040", onRoadmap: true });
+		expect(res).not.toHaveProperty("hiddenReason");
+		expect(res).not.toHaveProperty("note");
+	});
+
+	it("says a declined item exists but is never on the roadmap", async () => {
+		h.getStoryById.mockResolvedValue({
+			...story,
+			identifier: "B-001",
+			kind: "BUG",
+			draftingStage: "DECLINED",
+		});
+
+		const res = await getProjectFeature({ feature: "B-001" }, CTX);
+
+		expect(res).toMatchObject({
+			identifier: "B-001",
+			draftingStage: "DECLINED",
+			onRoadmap: false,
+			hiddenReason: "declined",
+			note: expect.stringContaining("B-001 exists but was declined"),
+		});
+	});
+
+	it("says a closed item exists and where the roadmap shows it", async () => {
+		h.getStoryById.mockResolvedValue({ ...story, draftingStage: "CLOSED" });
+
+		const res = await getProjectFeature({ feature: "F-040" }, CTX);
+
+		expect(res).toMatchObject({
+			onRoadmap: false,
+			hiddenReason: "closed",
+			note: expect.stringContaining("includeHidden=true"),
 		});
 	});
 
