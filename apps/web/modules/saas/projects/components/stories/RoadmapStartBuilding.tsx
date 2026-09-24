@@ -58,6 +58,8 @@ interface RoadmapStartBuildingProps {
 	entry: EntryPointStates;
 	/** Whether the Roadmap already has (parked) items; changes the intro. */
 	hasItems: boolean;
+	/** Items move through maturation stages here, not statuses. */
+	maturationStages: boolean;
 	hiddenCount: number;
 	onShowHidden: () => void;
 	onPull: () => void;
@@ -367,6 +369,7 @@ function DoBothProgress({
 export function RoadmapStartBuilding({
 	entry,
 	hasItems,
+	maturationStages,
 	hiddenCount,
 	onShowHidden,
 	onPull,
@@ -402,7 +405,13 @@ export function RoadmapStartBuilding({
 					{t("heading")}
 				</h2>
 				<p className="max-w-2xl text-muted-foreground text-sm">
-					{hasItems ? t("introWithItems") : t("intro")}
+					{hasItems
+						? t(
+								maturationStages
+									? "introWithItemsMaturation"
+									: "introWithItems",
+							)
+						: t("intro")}
 				</p>
 			</div>
 

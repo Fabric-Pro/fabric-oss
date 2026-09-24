@@ -832,7 +832,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "roadmap-start-building",
 				anchor: "roadmap-start-building",
 				title: "Start building an empty Roadmap",
-				body: "While nothing on the Roadmap counts as planned work yet, this panel offers the ways in: pull existing work items from your connected PM tool, have Fabric recommend feature candidates from project context, or do both in order. Items still in Backlog or Done, and hidden or declined items, don't count yet.",
+				body: "While nothing on the Roadmap counts as planned work yet, this panel offers the ways in: pull existing work items from your connected PM tool, have Fabric recommend feature candidates from project context, or do both in order. Items not yet moved past their first stage or status, finished items, and hidden or declined items don't count yet.",
 				conditional: true,
 			},
 			{

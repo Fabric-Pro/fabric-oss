@@ -243,51 +243,59 @@ export function CapabilityGateBanner({
 				/>
 			</span>
 
-			<div className="min-w-0 flex-1">
-				<p className="font-semibold text-foreground text-sm">
-					{t(view.title)}
-				</p>
-				<p className="mt-0.5 max-w-[70ch] text-muted-foreground text-sm leading-relaxed">
-					{t(view.body, view.params)}
-				</p>
-			</div>
+			{/* A container query, not a breakpoint: the banner also sits in
+			    narrow popovers, where the action has to drop below the text. */}
+			<div className="@container min-w-0 flex-1">
+				<div className="flex flex-col items-start gap-3 @md:flex-row @md:items-center">
+					<div className="min-w-0 flex-1">
+						<p className="font-semibold text-foreground text-sm">
+							{t(view.title)}
+						</p>
+						<p className="mt-0.5 max-w-[70ch] text-muted-foreground text-sm leading-relaxed">
+							{t(view.body, view.params)}
+						</p>
+					</div>
 
-			<div className="flex shrink-0 items-center gap-2 self-center">
-				{view.ctaKind === "retry" && (
-					<CapabilityGateRetryButton
-						view={view}
-						onRetry={retry}
-						isRetrying={retrying}
-					/>
-				)}
-				{link &&
-					view.ctaLabel &&
-					("href" in link ? (
-						<Button
-							asChild
-							size="sm"
-							variant={
-								view.tone === "destructive"
-									? "error"
-									: "primary"
-							}
-						>
-							<Link href={link.href}>{t(view.ctaLabel)}</Link>
-						</Button>
-					) : (
-						<Button
-							type="button"
-							size="sm"
-							variant={
-								view.tone === "destructive"
-									? "error"
-									: "primary"
-							}
-							onClick={link.onSelect}
-						>
-							{t(view.ctaLabel)}
-						</Button>
-					))}
+					<div className="flex shrink-0 items-center gap-2 empty:hidden">
+						{view.ctaKind === "retry" && (
+							<CapabilityGateRetryButton
+								view={view}
+								onRetry={retry}
+								isRetrying={retrying}
+							/>
+						)}
+						{link &&
+							view.ctaLabel &&
+							("href" in link ? (
+								<Button
+									asChild
+									size="sm"
+									variant={
+										view.tone === "destructive"
+											? "error"
+											: "primary"
+									}
+								>
+									<Link href={link.href}>
+										{t(view.ctaLabel)}
+									</Link>
+								</Button>
+							) : (
+								<Button
+									type="button"
+									size="sm"
+									variant={
+										view.tone === "destructive"
+											? "error"
+											: "primary"
+									}
+									onClick={link.onSelect}
+								>
+									{t(view.ctaLabel)}
+								</Button>
+							))}
+					</div>
+				</div>
 			</div>
 
 			{view.dismissible && (

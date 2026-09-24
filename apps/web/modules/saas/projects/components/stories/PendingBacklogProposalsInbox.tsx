@@ -1470,6 +1470,8 @@ export function PendingBacklogProposalsInbox({
 			typeof metadata?.requestedAt === "string"
 				? new Date(metadata.requestedAt)
 				: null;
+		const hasRequestedAt =
+			requestedAt !== null && !Number.isNaN(requestedAt.getTime());
 		// A batch returns to review after an accept that partly failed; the
 		// Failed group never sees it, so the reason is shown here (AC-15).
 		const lastAcceptError =
@@ -1520,24 +1522,23 @@ export function PendingBacklogProposalsInbox({
 								className="size-3.5 text-muted-foreground"
 								aria-hidden="true"
 							/>
-							<span className="text-muted-foreground">
+							<span className="font-medium text-foreground">
 								Recommended from project context
 							</span>
-							{entryPointLabel && (
-								<span className="font-medium text-foreground">
-									{entryPointLabel}
-								</span>
-							)}
-							{requestedAt &&
-								!Number.isNaN(requestedAt.getTime()) && (
-									<span className="text-xs text-muted-foreground">
-										requested{" "}
-										{formatDistanceToNow(requestedAt, {
-											addSuffix: true,
-										})}
-									</span>
-								)}
 						</div>
+						{(entryPointLabel || hasRequestedAt) && (
+							<p className="text-xs text-muted-foreground">
+								{entryPointLabel && `via ${entryPointLabel}`}
+								{entryPointLabel && hasRequestedAt && " · "}
+								{hasRequestedAt &&
+									`requested ${formatDistanceToNow(
+										requestedAt,
+										{
+											addSuffix: true,
+										},
+									)}`}
+							</p>
+						)}
 						<p className="text-xs text-muted-foreground">
 							{acceptedCount} of {detail.changeCount} accepted
 							{alreadyOnRoadmapCount > 0 &&
