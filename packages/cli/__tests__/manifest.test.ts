@@ -80,6 +80,66 @@ describe("computeSnapshotDigest", () => {
 			computeSnapshotDigest([b, a]),
 		);
 	});
+
+	// Fizzy #2671: the server's finalize activity used to hash paths and
+	// content only, so a repository-sync version that flipped a file's
+	// executable bit published with the SAME digest as the version before
+	// it, and every `sinceDigest` consumer answered "unchanged".
+	it("changes the digest when only a file's mode changes", () => {
+		const nonExecutable = computeSnapshotDigest([
+			{ path: "scripts/run.sh", sha256: "1".repeat(64), mode: 0o644 },
+		]);
+		const executable = computeSnapshotDigest([
+			{ path: "scripts/run.sh", sha256: "1".repeat(64), mode: 0o755 },
+		]);
+		expect(executable).not.toBe(nonExecutable);
+	});
+
+	// `treesEqual` (`instruction-sync-tree.ts`) treats a null published mode
+	// as 0o644 — an upload's "no mode recorded" — so the digest has to agree,
+	// or these four spellings of "the default mode" would look like four
+	// different snapshots.
+	it("hashes null, undefined, 0o644 and a missing mode field identically", () => {
+		const entry = { path: "AGENTS.md", sha256: "2".repeat(64) };
+		const withNull = computeSnapshotDigest([{ ...entry, mode: null }]);
+		const withUndefined = computeSnapshotDigest([
+			{ ...entry, mode: undefined },
+		]);
+		const withDefault = computeSnapshotDigest([{ ...entry, mode: 0o644 }]);
+		const withMissingField = computeSnapshotDigest([entry]);
+		expect(withUndefined).toBe(withNull);
+		expect(withDefault).toBe(withNull);
+		expect(withMissingField).toBe(withNull);
+	});
+
+	// Review round 2 (Fizzy #2671): `isAllowedMode` below validates a
+	// manifest entry's mode on `mode & 0o7777` and explicitly accepts a full
+	// `st_mode` (e.g. `0o100644`), not only bare permission bits — and
+	// `permissionBits` (also below) applies both representations to disk
+	// identically. A digest that told them apart would move for two
+	// manifests the installer treats as the same tree.
+	it("hashes a full st_mode the same as its bare permission bits", () => {
+		const entry = { path: "AGENTS.md", sha256: "3".repeat(64) };
+		const bareDefault = computeSnapshotDigest([{ ...entry, mode: 0o644 }]);
+		const fullStatDefault = computeSnapshotDigest([
+			{ ...entry, mode: 0o100644 },
+		]);
+		expect(fullStatDefault).toBe(bareDefault);
+
+		const executable = { path: "scripts/run.sh", sha256: "4".repeat(64) };
+		const bareExecutable = computeSnapshotDigest([
+			{ ...executable, mode: 0o755 },
+		]);
+		const fullStatExecutable = computeSnapshotDigest([
+			{ ...executable, mode: 0o100755 },
+		]);
+		expect(fullStatExecutable).toBe(bareExecutable);
+
+		// And a real permission difference still moves the digest under
+		// either representation.
+		expect(bareExecutable).not.toBe(bareDefault);
+		expect(fullStatExecutable).not.toBe(fullStatDefault);
+	});
 });
 
 describe("assertValidManifest", () => {
@@ -128,6 +188,53 @@ describe("assertValidManifest", () => {
 				snapshot: { ...snapshotFor(entries), digest: "d".repeat(64) },
 			}),
 		).toThrow(/does not match its own digest/);
+	});
+
+	// Fizzy #2671: a snapshot published before mode joined the digest recipe
+	// carries the LEGACY (mode-less) digest even when it contains a 0755
+	// file, and it is never recomputed — so a new CLI still has to install
+	// it.
+	describe("legacy (mode-less) digest fallback", () => {
+		it("accepts a manifest with a 0755 entry whose snapshot digest is the legacy value", () => {
+			const entries = [
+				entry("AGENTS.md", "hello", 0o644),
+				entry("scripts/run.sh", "#!/bin/sh\n", 0o755),
+			];
+			const legacyDigest = computeSnapshotDigest(
+				entries.map((e) => ({ ...e, mode: undefined })),
+			);
+			// Sanity: the two recipes really do disagree for this manifest,
+			// or this test would not be exercising the fallback at all.
+			expect(legacyDigest).not.toBe(computeSnapshotDigest(entries));
+
+			expect(
+				assertValidManifest({
+					manifest: entries,
+					snapshot: {
+						digest: legacyDigest,
+						fileCount: entries.length,
+						version: 7,
+					},
+				}),
+			).toEqual(entries);
+		});
+
+		it("still refuses a digest that matches neither the new nor the legacy recipe", () => {
+			const entries = [
+				entry("AGENTS.md", "hello", 0o644),
+				entry("scripts/run.sh", "#!/bin/sh\n", 0o755),
+			];
+			expect(() =>
+				assertValidManifest({
+					manifest: entries,
+					snapshot: {
+						digest: "d".repeat(64),
+						fileCount: entries.length,
+						version: 7,
+					},
+				}),
+			).toThrow(/does not match its own digest/);
+		});
 	});
 
 	it("refuses two entries that name the same file", () => {

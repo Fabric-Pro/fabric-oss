@@ -571,7 +571,7 @@ every path it wrote or verified:
   "projectId": "project-id",
   "snapshotId": "snapshot-id",
   "snapshotVersion": 7,
-  "digest": "<sha256 over the sorted path+hash lines>",
+  "digest": "<sha256 over the sorted path+hash lines, plus the mode when it is not 0644>",
   "syncedAt": "2026-09-17T10:00:00.000Z",
   "files": { "AGENTS.md": { "sha256": "…", "mode": 33188 } }
 }

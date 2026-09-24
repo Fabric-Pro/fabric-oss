@@ -687,6 +687,35 @@ describe("GET /projects/:projectId/instructions/published", () => {
 		});
 	});
 
+	// Fizzy #2671: a version that only flips a file's executable bit now
+	// carries a new digest (`computeSnapshotDigest` folds mode in), and this
+	// route must surface that path under `changes.changed` rather than an
+	// empty delta — this pins the route's pass-through of
+	// `getInstructionManifestDiff`'s result, which is where the mode-aware
+	// comparison itself lives (`packages/database/__tests__/instruction-manifest-diff.test.ts`).
+	it("lists a mode-only changed path under changes.changed", async () => {
+		mocks.getInstructionManifestDiff.mockResolvedValue({
+			base: { id: "snap-1", version: 6, digest: "c".repeat(64) },
+			added: [],
+			removed: [],
+			changed: ["scripts/run.sh"],
+		});
+
+		const response = await buildApp().request(
+			`${PUBLISHED_PATH}?sinceDigest=${"c".repeat(64)}`,
+		);
+		const body = (await response.json()) as {
+			data: { unchanged: boolean; changes: unknown };
+		};
+
+		expect(body.data.unchanged).toBe(false);
+		expect(body.data.changes).toEqual({
+			added: [],
+			removed: [],
+			changed: ["scripts/run.sh"],
+		});
+	});
+
 	it("answers changes: null with a full manifest when the base is unknown", async () => {
 		mocks.getInstructionManifestDiff.mockResolvedValue(null);
 

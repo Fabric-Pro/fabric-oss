@@ -1026,8 +1026,17 @@ export async function finalizeInstructionSnapshot(
 		// nothing serves bytes from a snapshot that is not READY.
 		return { ok: false, rejections: capRejections(rejections) };
 	}
+	// `f.mode` is read straight off the `ProjectInstructionFile` row
+	// (`listInstructionFiles` selects it), and every source that writes a
+	// mode does so before this activity runs: repository sync writes git's
+	// mode at ingest, and the gate's `persistVerifiedFileMetadata` infers
+	// 0755 from a shebang before this snapshot reaches finalize. That is
+	// the SAME column the served manifest reads it from (the REST
+	// `GET .../instructions/published` route and the MCP bundle tool both
+	// map `f.mode` off the same `listInstructionFiles` rows), so the digest
+	// is computed from the value that ends up on the wire.
 	const digest = await computeSnapshotDigest(
-		files.map((f) => ({ path: f.path, sha256: f.sha256 })),
+		files.map((f) => ({ path: f.path, sha256: f.sha256, mode: f.mode })),
 	);
 	// Cleanup BEFORE the terminal status, not after (I2). `cleanupStagingObjects`
 	// throws on any per-key delete failure, and READY is terminal:
