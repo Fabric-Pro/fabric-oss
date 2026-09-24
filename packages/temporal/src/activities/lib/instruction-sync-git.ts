@@ -691,3 +691,62 @@ export async function sparseCheckout(
 		...watched(input.dir),
 	});
 }
+
+/** Spec §6.1: the poll's head check is bounded to 30 s. */
+export const LS_REMOTE_TIMEOUT_MS = 30_000;
+/** One line per ref ending in the pattern; tail matching can list several. */
+const LS_REMOTE_MAX_STDOUT_BYTES = 64 * 1024;
+
+export type RemoteHead = { kind: "found"; sha: string } | { kind: "missing" };
+
+/**
+ * Spec §6.1: the head of `refs/heads/<ref>` on the remote, without cloning.
+ * Same process-group runner, safe config and askpass env as the clone, so
+ * the credential never reaches argv. `url` must be `credentialFreeUrl`'s
+ * output, and the clone's own sink, `assertNoUrlCredentials`, re-checks it:
+ * userinfo, a password, a query or a fragment is refused before git spawns.
+ *
+ * `ls-remote` matches patterns from the TAIL: `refs/heads/main` also lists
+ * `refs/heads/x/refs/heads/main`. Only the line whose name is exactly the
+ * wanted ref counts, and no exact line means `missing`, even when a
+ * look-alike was listed. Every other failure (auth, repository not found,
+ * network, timeout, unparseable output) throws `GitCommandError`, which the
+ * poll treats as transient.
+ */
+export async function lsRemoteHead(
+	input: GitCallBase & {
+		cwd: string;
+		url: string;
+		ref: string;
+		timeoutMs?: number;
+	},
+): Promise<RemoteHead> {
+	assertNoUrlCredentials(input.url, "ls-remote");
+	const wanted = `refs/heads/${input.ref}`;
+	const timeout = AbortSignal.timeout(
+		input.timeoutMs ?? LS_REMOTE_TIMEOUT_MS,
+	);
+	const signal = input.signal
+		? AbortSignal.any([timeout, input.signal])
+		: timeout;
+	const { stdout } = await runGit({
+		cwd: input.cwd,
+		args: ["ls-remote", "--", input.url, wanted],
+		env: input.env,
+		signal,
+		label: "ls-remote",
+		maxStdoutBytes: LS_REMOTE_MAX_STDOUT_BYTES,
+	});
+	for (const line of stdout.toString("utf8").split("\n")) {
+		const tab = line.indexOf("\t");
+		if (tab === -1 || line.slice(tab + 1).trimEnd() !== wanted) {
+			continue;
+		}
+		const sha = line.slice(0, tab);
+		if (!OBJECT_ID_PATTERN.test(sha)) {
+			throw new GitCommandError("exit", 0, "", "ls-remote");
+		}
+		return { kind: "found", sha };
+	}
+	return { kind: "missing" };
+}

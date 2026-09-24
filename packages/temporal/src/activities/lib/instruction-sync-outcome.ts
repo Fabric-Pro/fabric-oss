@@ -7,9 +7,10 @@ import type {
 	InstructionSyncRunStatus,
 	InstructionSyncSchedulingEffect,
 } from "@repo/database";
-import type {
-	InstructionSyncErrorCode,
-	InstructionSyncTrigger,
+import {
+	type InstructionSyncErrorCode,
+	type InstructionSyncTrigger,
+	isAutomaticInstructionSyncTrigger,
 } from "../../lib/instruction-sync-types";
 
 export type SyncSnapshotState = {
@@ -58,10 +59,9 @@ export function deriveSyncRunOutcome(input: SyncOutcomeInput): SyncOutcome {
 	const suppress = input.commitSha
 		? ({ kind: "suppress", commitSha: input.commitSha } as const)
 		: backoff;
-	const revoked =
-		input.trigger === "MANUAL"
-			? none
-			: ({ kind: "pause", reason: "PERMISSION_REVOKED" } as const);
+	const revoked = isAutomaticInstructionSyncTrigger(input.trigger)
+		? ({ kind: "pause", reason: "PERMISSION_REVOKED" } as const)
+		: none;
 	const result = (
 		status: InstructionSyncRunStatus,
 		error: InstructionSyncErrorCode | null,

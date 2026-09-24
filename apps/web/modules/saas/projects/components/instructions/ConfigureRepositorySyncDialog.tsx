@@ -3,6 +3,7 @@
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
+import { Checkbox } from "@ui/components/checkbox";
 import {
 	Dialog,
 	DialogContent,
@@ -34,7 +35,9 @@ import {
  * Mounted only while open, so the fields are seeded once from the props and a
  * background poll of the tab cannot overwrite what someone is typing.
  *
- * No "Keep in sync automatically" checkbox yet: automatic sync is PR 2.
+ * "Keep in sync automatically" defaults to on for a new configuration and
+ * to the stored value when changing one (spec §7.2). Saving makes the
+ * member the one automatic runs publish as, which the hint says.
  */
 export function ConfigureRepositorySyncDialog({
 	projectId,
@@ -63,6 +66,7 @@ export function ConfigureRepositorySyncDialog({
 	const [integrationId, setIntegrationId] = useState(seed?.id ?? "");
 	const [ref, setRef] = useState(current?.ref ?? seed?.defaultBranch ?? "");
 	const [rootPath, setRootPath] = useState(current?.rootPath ?? "");
+	const [automatic, setAutomatic] = useState(current?.automatic ?? true);
 	const [inlineError, setInlineError] = useState<string | null>(null);
 	// Which field the inline error is ABOUT, derived from `mapped.key`
 	// (`configureDialog.errors.<CODE>`, set only while `mapped.inline`):
@@ -94,6 +98,7 @@ export function ConfigureRepositorySyncDialog({
 				repositoryIntegrationId: integrationId,
 				ref: branch,
 				rootPath: rootPath.trim(),
+				automatic,
 			});
 		} catch (error) {
 			const mapped = configureErrorMessage(error);
@@ -237,6 +242,28 @@ export function ConfigureRepositorySyncDialog({
 							{inlineError}
 						</p>
 					) : null}
+					<div className="flex items-start gap-2">
+						<Checkbox
+							id="instructions-sync-automatic"
+							className="mt-0.5"
+							checked={automatic}
+							onCheckedChange={(value) =>
+								setAutomatic(value === true)
+							}
+							aria-describedby="instructions-sync-automatic-hint"
+						/>
+						<div className="flex flex-col gap-0.5">
+							<Label htmlFor="instructions-sync-automatic">
+								{t("configureDialog.automaticLabel")}
+							</Label>
+							<p
+								id="instructions-sync-automatic-hint"
+								className="text-muted-foreground text-xs"
+							>
+								{t("configureDialog.automaticHint")}
+							</p>
+						</div>
+					</div>
 					<p className="text-muted-foreground text-sm">
 						{t("configureDialog.afterSyncNotice")}
 					</p>

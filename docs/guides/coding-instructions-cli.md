@@ -57,9 +57,11 @@ coding instructions unchanged" is the wording: it means the published version
 has not moved, not that your copy still matches it. `--verify` also hashes
 every file the lock names and reports the ones that drifted — edited,
 deleted, chmod-ed or replaced by a symlink. It stays informational and still
-exits 0.
+exits 0. A file whose edit an earlier `sync` kept is reported as `(kept)`, and
+the report names `fabric instructions sync --repair` as the way to replace it.
+`--format json` also lists those paths as `keptEdited`.
 
-### `fabric instructions sync --project <id> [--dest <dir>] [--dry-run] [--hook]`
+### `fabric instructions sync --project <id> [--dest <dir>] [--dry-run] [--repair] [--hook]`
 
 Applies the published version. It plans against the working tree rather than
 the lock alone, so it can tell a file it wrote from a file the developer
@@ -69,7 +71,8 @@ edited, and reports which is which:
 |---|---|
 | added | the file was not there |
 | updated | the file matched the lock, so the sync's own copy moved forward |
-| replaced local edits | the file matched neither the lock nor the published bytes |
+| replaced local edits | the file matched neither the lock nor the published bytes, and `--repair` was given |
+| kept local edits | the same without `--repair`: the file stays as it is, and the lock records the published hash with `kept: true` |
 | removed | the file left the snapshot and still matched the lock |
 | kept, modified locally | the file left the snapshot but had been edited, so it stayed |
 | kept, renamed in the published snapshot | the lock names it under one spelling and the manifest under another that means the same file — the write covers it, so the old spelling is left alone |
@@ -81,10 +84,38 @@ checks is validated before it is read: a lock naming `../outside`, a reserved
 path, or two paths one filesystem cannot tell apart stops the run rather than
 directing a read. That answer is
 about the published snapshot, so before acting on it the command verifies the
-lock's own ledger against the working tree; if anything drifted it asks for
-the full manifest and plans normally, which puts edited files back, restores
-deleted ones and repairs modes. An edited file comes back as **replaced local
-edits**, because that is what overwriting it is.
+lock's own ledger against the working tree. If a file is missing, has the
+wrong mode or is no longer a regular file, it asks for the full manifest and
+plans normally, which restores deleted files and repairs modes. An edit alone
+needs neither: it is kept and listed, and the command answers from the
+unchanged digest. With `--repair`, every drifted file is restored from the
+published version, and an edited file comes back as **replaced local edits**,
+because that is what overwriting it is.
+
+**Local edits are kept.** A `sync` never overwrites a local edit to a synced
+file unless `--repair` is given, in hook mode and by hand alike. New files and
+the sync's own files still move forward in the same run. The report lists the
+kept files under **kept local edits** and prints the `--repair` command with
+the `--org` and `--dest` the run had. In hook mode the same news is also one
+line on stderr, which also names the local-notes files:
+``fabric: 3 local edit(s) kept; run `fabric instructions sync --project <id> --repair` to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.``
+
+- A file that was already in the checkout before the first sync, and differs
+  from the published one, is kept the same way.
+- So is a file saved or created while the run was downloading: every write
+  re-hashes its target first and leaves it alone if it changed since the plan
+  was made.
+- When the `--dest` path cannot be pasted safely (it holds a newline), no
+  command is printed; the report says to run `fabric instructions sync
+  --repair` with the run's `--project` and `--dest` instead.
+- A kept file whose published version later changes stays as it is. The lock
+  records the NEW published hash, so `fabric instructions push` offers the edit
+  as a change against the version everyone else now has.
+- Notes meant only for one machine belong in `CLAUDE.local.md` or
+  `.claude/settings.local.json`. Neither is ever part of a snapshot
+  (`.claude/settings.local.json` at the top of the instruction set,
+  `CLAUDE.local.md` at any depth), and `fabric instructions` never writes,
+  deletes or pushes either one.
 
 Every response is checked for the project's source of truth, not just the
 first one, so a project switched to a repository while a sync was already in
@@ -266,7 +297,7 @@ whether or not a declaration also names them.
 | Project access (`access`) | `GET .../instructions/published` succeeds for this project. A missing scope (403 `MISSING_SCOPE`), a missing project permission (other 403) and an unknown project (404) are reported as three different failures. | server | Ask a project maintainer for access, or check the project id and `--org`. |
 | Published instructions (`published`) | A version is published. The detail gives its version, a digest prefix and its file count. Nothing published is a warning. | server | Publish a version from the project's Coding Instructions tab. |
 | Lock (`lock`) | `.fabric/instructions.lock` exists, belongs to this project, names the published digest, and its ledger matches the published manifest path for path, hash for hash and mode for mode. | machine | `fabric instructions sync --project <id>`. A lock written for another project gets no command, because `sync` refuses such a lock. The fix says to rerun doctor with the `--dest` that was synced for this project. |
-| Local files (`drift`) | Every file the lock names still hashes to what the lock recorded, and still has the recorded mode. Each drifted file is listed. | machine | `sync` to restore the published bytes, or `fabric instructions push` to propose the edits instead. |
+| Local files (`drift`) | Every file the lock names still hashes to what the lock recorded, and still has the recorded mode. Each drifted file is listed. Edits alone are a warning, because `sync` keeps them; an edit a sync already kept reads `edited (kept by sync)`. A missing file, a changed mode or a path that is not a regular file fails. | machine | `sync --repair` to replace edits with the published bytes, `sync` to restore anything else, or `fabric instructions push` to propose the edits instead. |
 | Hook configuration (`hook`) | `.claude/settings.local.json` and `.codex/hooks.json` are checked separately. A hook passes when a `SessionStart` entry for this project runs exactly one of the two commands `init` writes today (`check` or `sync`, with the same `--org`). A Fabric entry for the project under another event, or running another subcommand, is ignored. Also looks `fabric` up on PATH. | machine | `fabric instructions init --project <id> --tool claude-code`, which also takes a first sync (`--tool codex` for Codex); `npm install -g @fabricorg/cli` when `fabric` is not on PATH. |
 | Environment variables (`environment`) | Every variable [`fabric.environment.json`](#the-environment-declaration-fabricenvironmentjson) declares is present in this shell, checked by name. A missing required variable fails and a missing optional one warns. | machine | Set the named variables. The fix is a description only, never an `export NAME=` line. |
 | Tools (`tools`) | Every tool the declaration names resolves on PATH, checked for presence only. A declared version is shown as "declared, not verified". | machine | Install the named tools. The fix is a description only. |
@@ -324,8 +355,8 @@ it comes from declaration text, `.mcp.json`, or a server response.
 
 **Fixes are proposals, not authority.** The report lists findings and proposed
 remedies. It grants no authority to install software, change credentials or
-overwrite files. A person decides whether to run a fix. `sync` in particular
-overwrites local edits to instruction files. This applies equally when an
+overwrite files. A person decides whether to run a fix. `sync --repair` in
+particular overwrites local edits to instruction files. This applies equally when an
 agent reads the report, whether from `--format json` or from the MCP gateway's
 `fabric_instruction_checks` tool. That tool returns the same report shape with
 `surface: "mcp"`. It runs on the server, so it cannot see this machine's files,
@@ -400,7 +431,7 @@ Text output puts one line per check, then its items and its fix:
 ✓ API key                 organization key org_abc12345 with instructions:read
 ✗ Lock                    lock is at version 3, published is 4
     fix: fabric instructions sync --project project-id
-         brings this checkout to the published version; local edits to instruction files are overwritten and reported as replaced
+         brings this checkout to the published version; a local edit to an instruction file is kept and listed, and `sync --repair` replaces it
 ! Hook configuration      a hook for this project is not in the canonical form; execution, trust and the coding tool's PATH are not verified
 - MCP servers             no .mcp.json in /path/to/checkout
 
@@ -529,8 +560,9 @@ keep them:
   always still be **deleted** — that is how such a name gets fixed.
 - **A `sync` never reports success over a tree it has not checked.** An
   unchanged published digest is verified against the ledger before it is
-  accepted, so an edited or deleted instruction file is repaired on the next
-  sync rather than surviving until someone happens to publish again.
+  accepted, so a deleted or chmod-ed instruction file is restored on the next
+  sync rather than surviving until someone happens to publish again, and an
+  edited one is reported as kept rather than passed over in silence.
 - **Nothing outside `<dest>` decides which organization a request names.** A
   stored default context and `FABRIC_ORG` are not consulted: the project
   decides, which is what keeps an invited guest — whose own organization is
@@ -567,19 +599,38 @@ every path it wrote or verified:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "projectId": "project-id",
   "snapshotId": "snapshot-id",
   "snapshotVersion": 7,
   "digest": "<sha256 over the sorted path+hash lines, plus the mode when it is not 0644>",
   "syncedAt": "2026-09-17T10:00:00.000Z",
-  "files": { "AGENTS.md": { "sha256": "…", "mode": 33188 } }
+  "files": {
+    "AGENTS.md": { "sha256": "…", "mode": 33188 },
+    "CLAUDE.md": { "sha256": "…", "mode": 33188, "kept": true }
+  }
 }
 ```
 
 It is rewritten last, after every write has succeeded. A lock naming files
 that are not there would authorise deleting whatever is in their place on the
 next run.
+
+An entry carries `"kept": true` when a sync left a local edit at that path.
+Its `sha256` and `mode` are still the published values. That is what lets
+`check --verify` and doctor report the edit as kept, and `push` diff it
+against the published file. `--repair` drops the marker along with the edit,
+and so does a sync that finds the file matching the published version again.
+
+**Lock version 2.** The marker is why this build writes version 2. It still
+reads version 1, so an existing checkout needs nothing. An older `fabric`
+reads only version 1 and refuses a version 2 lock whole ("its version is 2
+and this build writes version 1"), writing nothing, so it never overwrites a
+kept edit it cannot see. Deleting the lock is the one way around that: the
+next sync, by any build, then starts from no ledger at all. That also ends
+the fail-closed protection for edits made before the delete — an older CLI
+can no longer see they were kept and plans a plain replacement over them, so
+the safe move on a refused lock is to upgrade the CLI rather than delete it.
 
 ### The lock is a content ledger, not an authenticated one
 
@@ -672,10 +723,10 @@ declared `version` is never verified by running the tool. The declaration is
 published content, so running `<tool> --version` because it names `<tool>`
 would be code execution chosen by whoever can publish the instruction set.
 
-**Classification.** The instruction-file classifier reports
-`fabric.environment.json` as kind `OTHER` for now. A follow-up change will
-classify it as `SETTINGS`. Doctor reads it by its path, so its kind makes no
-difference to the checks.
+**Classification.** The instruction-file classifier reports a root-level
+`fabric.environment.json` as kind `SETTINGS`; the same name in a subfolder
+stays `OTHER`. Doctor reads it by its path, so its kind makes no difference to
+the checks.
 
 ## What it talks to
 

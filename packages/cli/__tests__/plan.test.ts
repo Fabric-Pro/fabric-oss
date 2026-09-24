@@ -14,7 +14,9 @@ import { describe, expect, it } from "vitest";
 import type { InstructionsLock } from "../src/lib/instructions/lock.js";
 import {
 	computeSyncPlan,
+	findLedgerDrift,
 	nextLock,
+	reconcileKeptInLock,
 	verifyLedger,
 } from "../src/lib/instructions/plan.js";
 
@@ -489,7 +491,7 @@ describe("nextLock", () => {
 		});
 
 		expect(lock).toEqual({
-			version: 1,
+			version: 2,
 			projectId: "project-1",
 			snapshotId: "snap-2",
 			snapshotVersion: 7,
@@ -500,5 +502,248 @@ describe("nextLock", () => {
 				"script.sh": { sha256: sha256("#!"), mode: 33261 },
 			},
 		});
+	});
+});
+
+/**
+ * Spec §6.4 (Fizzy #2540). A local edit to a still-published file is the
+ * developer's. Keeping it is the caller's choice, so the planner's default
+ * stays `replaced` for every other caller.
+ */
+describe("keeping local edits", () => {
+	it("keeps a locally edited file instead of replacing it", async () => {
+		const dest = await makeTree({ "AGENTS.md": "my own edit" });
+
+		const plan = await computeSyncPlan(
+			{
+				destination: dest,
+				manifest: [entry("AGENTS.md", "new")],
+				lock: lockOf({ "AGENTS.md": { contents: "old" } }),
+			},
+			{ keepLocalEdits: true },
+		);
+
+		expect(actionOf(plan, "AGENTS.md")).toBe("kept-edited");
+		expect(plan.writes).toEqual([]);
+		expect(plan.keptEdited).toEqual([
+			{
+				path: "AGENTS.md",
+				action: "kept-edited",
+				sha256: sha256("new"),
+				mode: 33188,
+				localSha256: sha256("my own edit"),
+			},
+		]);
+	});
+
+	it("records the hash each planned write saw, so the write can tell a later save (Decision 37)", async () => {
+		const dest = await makeTree({ "rules/a.md": "old" });
+
+		const plan = await computeSyncPlan(
+			{
+				destination: dest,
+				manifest: [
+					entry("rules/a.md", "newer"),
+					entry("rules/b.md", "new"),
+				],
+				lock: lockOf({ "rules/a.md": { contents: "old" } }),
+			},
+			{ keepLocalEdits: true },
+		);
+
+		expect(
+			plan.writes.map((w) => [w.path, w.action, w.localSha256]),
+		).toEqual([
+			["rules/a.md", "updated", sha256("old")],
+			["rules/b.md", "added", null],
+		]);
+	});
+
+	it("keeps a file that was there before the first sync", async () => {
+		const dest = await makeTree({ "CLAUDE.md": "written by hand" });
+
+		const plan = await computeSyncPlan(
+			{
+				destination: dest,
+				manifest: [entry("CLAUDE.md", "published")],
+				lock: null,
+			},
+			{ keepLocalEdits: true },
+		);
+
+		expect(actionOf(plan, "CLAUDE.md")).toBe("kept-edited");
+	});
+
+	it("still writes new files and the sync's own files while keeping an edit", async () => {
+		const dest = await makeTree({
+			"AGENTS.md": "my own edit",
+			"rules/a.md": "old",
+		});
+
+		const plan = await computeSyncPlan(
+			{
+				destination: dest,
+				manifest: [
+					entry("AGENTS.md", "new"),
+					entry("rules/a.md", "newer"),
+					entry("rules/b.md", "brand new"),
+				],
+				lock: lockOf({
+					"AGENTS.md": { contents: "old" },
+					"rules/a.md": { contents: "old" },
+				}),
+			},
+			{ keepLocalEdits: true },
+		);
+
+		expect(plan.writes.map((w) => [w.path, w.action])).toEqual([
+			["rules/a.md", "updated"],
+			["rules/b.md", "added"],
+		]);
+		expect(plan.keptEdited.map((k) => k.path)).toEqual(["AGENTS.md"]);
+	});
+
+	it("replaces the edit when keeping is not asked for", async () => {
+		const dest = await makeTree({ "AGENTS.md": "my own edit" });
+
+		const plan = await computeSyncPlan({
+			destination: dest,
+			manifest: [entry("AGENTS.md", "new")],
+			lock: lockOf({ "AGENTS.md": { contents: "old" } }),
+		});
+
+		expect(actionOf(plan, "AGENTS.md")).toBe("replaced");
+		expect(plan.keptEdited).toEqual([]);
+	});
+
+	it("records the published hash with a kept marker for a kept path", () => {
+		const lock = nextLock({
+			projectId: "project-1",
+			snapshot: { id: "snap-2", version: 7, digest: "d".repeat(64) },
+			manifest: [
+				entry("AGENTS.md", "published"),
+				entry("rules/a.md", "a"),
+			],
+			kept: ["AGENTS.md"],
+		});
+
+		expect(lock.files).toEqual({
+			"AGENTS.md": {
+				sha256: sha256("published"),
+				mode: 33188,
+				kept: true,
+			},
+			"rules/a.md": { sha256: sha256("a"), mode: 33188 },
+		});
+	});
+
+	it("marks only the named paths, at the current lock version, when the lock is rewritten without a manifest (Decision 41)", () => {
+		const lock = lockOf({
+			"AGENTS.md": { contents: "published" },
+			"rules/a.md": { contents: "a" },
+		});
+
+		const reconciled = reconcileKeptInLock(lock, ["AGENTS.md"]);
+
+		expect(reconciled).toEqual({
+			changed: true,
+			lock: {
+				...lock,
+				// Only a version 2 lock may carry a marker (Decision 38).
+				version: 2,
+				files: {
+					"AGENTS.md": {
+						sha256: sha256("published"),
+						mode: 33188,
+						kept: true,
+					},
+					"rules/a.md": { sha256: sha256("a"), mode: 33188 },
+				},
+			},
+		});
+		// A copy: the lock that was read is not changed under its reader.
+		expect(lock.version).toBe(1);
+		expect(lock.files["AGENTS.md"]).toEqual({
+			sha256: sha256("published"),
+			mode: 33188,
+		});
+	});
+
+	it("drops a marker whose file is no longer an edit, and changes nothing when every marker is already right (Decision 41)", () => {
+		const { lock: kept } = reconcileKeptInLock(
+			lockOf({
+				"AGENTS.md": { contents: "published" },
+				"rules/a.md": { contents: "a" },
+			}),
+			["AGENTS.md"],
+		);
+
+		// The developer put the published bytes back by hand.
+		const restored = reconcileKeptInLock(kept, []);
+		expect(restored.changed).toBe(true);
+		expect(restored.lock.files["AGENTS.md"]).toEqual({
+			sha256: sha256("published"),
+			mode: 33188,
+		});
+
+		// The same edit, seen again.
+		expect(reconcileKeptInLock(kept, ["AGENTS.md"]).changed).toBe(false);
+	});
+
+	it("labels an edit the lock records as kept", async () => {
+		const dest = await makeTree({
+			"AGENTS.md": "my note",
+			"rules/a.md": "edited since",
+		});
+		const { lock } = reconcileKeptInLock(
+			lockOf({
+				"AGENTS.md": { contents: "published" },
+				"rules/a.md": { contents: "a" },
+			}),
+			["AGENTS.md"],
+		);
+
+		expect(await findLedgerDrift({ root: dest, lock })).toEqual([
+			{ path: "AGENTS.md", reason: "edited", detail: "kept", kept: true },
+			{
+				path: "rules/a.md",
+				reason: "edited",
+				detail: "edited",
+				kept: false,
+			},
+		]);
+		expect(await verifyLedger({ root: dest, lock })).toEqual([
+			"AGENTS.md (kept)",
+			"rules/a.md (edited)",
+		]);
+	});
+
+	/**
+	 * Review finding 1 (Fizzy #2540). On a case-insensitive filesystem,
+	 * reading the manifest's own spelling ("readme.md") returns the bytes the
+	 * lock recorded under the OLD spelling ("README.md"), because there both
+	 * names are one file. Without a collision-key fallback that lock entry is
+	 * invisible under the new spelling, so the read looks like a local edit
+	 * with nothing to compare against — and in keep mode the rename's write
+	 * never happens, leaving the file stale until `--repair`. Simulated with
+	 * a real file at the manifest's own spelling holding the OLD bytes, so
+	 * this proves the same thing on Linux's case-sensitive filesystem too,
+	 * without depending on the host OS.
+	 */
+	it("treats a case-only rename as the update it is, not a kept local edit", async () => {
+		const dest = await makeTree({ "readme.md": "old" });
+
+		const plan = await computeSyncPlan(
+			{
+				destination: dest,
+				manifest: [entry("readme.md", "new")],
+				lock: lockOf({ "README.md": { contents: "old" } }),
+			},
+			{ keepLocalEdits: true },
+		);
+
+		expect(actionOf(plan, "readme.md")).toBe("updated");
+		expect(plan.keptRenamed.map((k) => k.path)).toEqual(["README.md"]);
+		expect(plan.keptEdited).toEqual([]);
 	});
 });

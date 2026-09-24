@@ -7,14 +7,18 @@
  * overwritten with no notice, and a file they deleted would never come back
  * because the lock still claims it is present. So every path is hashed.
  *
- * Seven outcomes, and the distinctions between them are the whole point:
+ * Eight outcomes, and the distinctions between them are the whole point:
  *
  *   verified        local bytes already equal the published bytes — no write
  *   added           nothing local — a new file
  *   updated         local matches the lock, so this is the sync's own file
  *                   moving forward
- *   replaced        local matches neither the lock nor the manifest — local
- *                   edits are about to be overwritten, and the report says so
+ *   replaced        local matches neither the lock nor the manifest, and the
+ *                   caller did not ask to keep local edits (`sync --repair`) —
+ *                   they are about to be overwritten, and the report says so
+ *   kept-edited     the same, when the caller keeps local edits (every `sync`
+ *                   without `--repair`, spec §6.4) — the file stays as it is
+ *                   and the lock records the published hash with `kept: true`
  *   deleted         gone from the manifest, and local still matches the lock,
  *                   so the sync wrote it and may remove it
  *   kept-modified   gone from the manifest, but local differs from the lock —
@@ -49,7 +53,8 @@ type PlanAction =
 	| "replaced"
 	| "deleted"
 	| "kept-modified"
-	| "kept-renamed";
+	| "kept-renamed"
+	| "kept-edited";
 
 export interface PlanEntry {
 	path: string;
@@ -57,6 +62,13 @@ export interface PlanEntry {
 	/** The published hash, for everything the manifest still carries. */
 	sha256?: string;
 	mode?: number | null;
+	/**
+	 * For a manifest entry that is not `verified`: the hash the planner read
+	 * at this path, or null when nothing was there. A keeping apply re-hashes
+	 * before it writes and leaves the file alone when it changed since
+	 * (Decision 37).
+	 */
+	localSha256?: string | null;
 }
 
 export interface SyncPlan {
@@ -73,6 +85,13 @@ export interface SyncPlan {
 	 * a surprise on the filesystems where it survives.
 	 */
 	keptRenamed: PlanEntry[];
+	/**
+	 * Still-published paths whose local bytes match neither the lock nor the
+	 * manifest, left alone because the caller keeps local edits. Never
+	 * written; the lock records them with the published hash and
+	 * `kept: true`.
+	 */
+	keptEdited: PlanEntry[];
 }
 
 /**
@@ -85,7 +104,7 @@ export interface SyncPlan {
  * become `verified` — no write, no check, and a lock written over a path that
  * is not a file.
  */
-async function hashLocalFile(
+export async function hashLocalFile(
 	root: string,
 	relativePath: string,
 ): Promise<string | null> {
@@ -156,7 +175,7 @@ export async function verifyLedger(input: {
 	lock: InstructionsLock;
 }): Promise<string[]> {
 	const drift = await findLedgerDrift(input);
-	return drift.map((entry) => `${entry.path} (${entry.detail})`);
+	return drift.map(describeLedgerDrift);
 }
 
 /**
@@ -171,6 +190,16 @@ export interface LedgerDrift {
 	reason: LedgerDriftReason;
 	/** The parenthetical `verifyLedger` prints after the path. */
 	detail: string;
+	/**
+	 * The lock marks this path as a local edit an earlier sync kept (spec
+	 * §6.4). An `edited` entry with this set has the detail `kept`.
+	 */
+	kept: boolean;
+}
+
+/** One drift entry as `verifyLedger` prints it: `AGENTS.md (edited)`. */
+export function describeLedgerDrift(entry: LedgerDrift): string {
+	return `${entry.path} (${entry.detail})`;
 }
 
 /**
@@ -209,6 +238,7 @@ export async function findLedgerDrift(input: {
 								.replace(/^Refusing to sync: /, "")
 								.replace(/\.$/, "")
 						: String(error),
+				kept: locked.kept === true,
 			});
 			continue;
 		}
@@ -217,6 +247,7 @@ export async function findLedgerDrift(input: {
 				path: lockedPath,
 				reason: "missing",
 				detail: "missing",
+				kept: locked.kept === true,
 			});
 			continue;
 		}
@@ -225,7 +256,8 @@ export async function findLedgerDrift(input: {
 			drifted.push({
 				path: lockedPath,
 				reason: "edited",
-				detail: "edited",
+				detail: locked.kept === true ? "kept" : "edited",
+				kept: locked.kept === true,
 			});
 			continue;
 		}
@@ -241,18 +273,30 @@ export async function findLedgerDrift(input: {
 				path: lockedPath,
 				reason: "mode",
 				detail: `mode ${(read.mode & 0o7777).toString(8)}, published as ${(locked.mode & 0o7777).toString(8)}`,
+				kept: locked.kept === true,
 			});
 		}
 	}
 	return drifted;
 }
 
-export async function computeSyncPlan(input: {
-	/** An already-canonical root, as every guarded read resolves against it. */
-	destination: string;
-	manifest: InstructionManifestEntry[];
-	lock: InstructionsLock | null;
-}): Promise<SyncPlan> {
+export async function computeSyncPlan(
+	input: {
+		/** An already-canonical root, as every guarded read resolves against it. */
+		destination: string;
+		manifest: InstructionManifestEntry[];
+		lock: InstructionsLock | null;
+	},
+	options: {
+		/**
+		 * Leave a still-published file whose local bytes match neither the
+		 * lock nor the manifest as it is (`kept-edited`) instead of
+		 * overwriting it (`replaced`). The CLI passes `true` unless
+		 * `sync --repair` was given (spec §6.4).
+		 */
+		keepLocalEdits?: boolean;
+	} = {},
+): Promise<SyncPlan> {
 	const { destination, manifest, lock } = input;
 
 	// `assertValidManifest` has already checked every manifest entry's path,
@@ -276,6 +320,19 @@ export async function computeSyncPlan(input: {
 			(entry) => [collisionKey(entry.path), entry.path] as const,
 		),
 	);
+	// The lock's own collision keys. A manifest entry whose EXACT spelling the
+	// lock does not know may still be the same file the lock already tracks
+	// under a different spelling — a case-only or Unicode-normalization-only
+	// rename — and on the filesystems that fold those, reading the manifest's
+	// spelling returns the OLD spelling's bytes. Without this fallback that
+	// read looked like a local edit with nothing to compare against, so in
+	// keep mode the rename's write never happened and the file stayed stale
+	// until `--repair` (review finding, Fizzy #2540).
+	const lockedKeys = new Map(
+		Array.from(lockedFiles.keys()).map(
+			(lockedPath) => [collisionKey(lockedPath), lockedPath] as const,
+		),
+	);
 	const entries: PlanEntry[] = [];
 
 	for (const entry of manifest) {
@@ -289,18 +346,33 @@ export async function computeSyncPlan(input: {
 			});
 			continue;
 		}
-		const lockedHash = lockedFiles.get(entry.path)?.sha256;
+		const renamedFrom = lockedKeys.get(collisionKey(entry.path));
+		const locked =
+			lockedFiles.get(entry.path) ??
+			(renamedFrom === undefined
+				? undefined
+				: lockedFiles.get(renamedFrom));
+		const lockedHash = locked?.sha256;
+		// A path the lock does not name under this spelling OR a renamed one
+		// (a file that was there before the first sync) has no `lockedHash`,
+		// so it lands here too: it is the developer's until `--repair` says
+		// otherwise.
 		const action: PlanAction =
 			localHash === null
 				? "added"
 				: localHash === lockedHash
 					? "updated"
-					: "replaced";
+					: options.keepLocalEdits
+						? "kept-edited"
+						: "replaced";
 		entries.push({
 			path: entry.path,
 			action,
 			sha256: entry.sha256,
 			mode: entry.mode,
+			// What the plan saw here, so a keeping apply can tell a save that
+			// landed after planning (Decision 37).
+			localSha256: localHash,
 		});
 	}
 
@@ -358,6 +430,7 @@ export async function computeSyncPlan(input: {
 			(entry) => entry.action === "kept-modified",
 		),
 		keptRenamed: entries.filter((entry) => entry.action === "kept-renamed"),
+		keptEdited: entries.filter((entry) => entry.action === "kept-edited"),
 	};
 }
 
@@ -366,6 +439,12 @@ export function nextLock(input: {
 	projectId: string;
 	snapshot: { id: string; version: number; digest: string };
 	manifest: InstructionManifestEntry[];
+	/**
+	 * Paths the plan kept as local edits. Their entries still carry the
+	 * PUBLISHED hash and mode, so `push` diffs the edit against the published
+	 * file, plus `kept: true`, so `check --verify` and doctor can say so.
+	 */
+	kept?: readonly string[];
 	now?: Date;
 }): InstructionsLock {
 	// `Object.fromEntries` rather than assignment into `{}`: assigning
@@ -373,10 +452,17 @@ export function nextLock(input: {
 	// property, so a published file called `__proto__` was written to disk and
 	// then left out of the ledger — and a later snapshot that dropped it could
 	// not prove the sync had created it.
+	const kept = new Set(input.kept ?? []);
 	const files: InstructionsLock["files"] = Object.fromEntries(
 		input.manifest.map((entry) => [
 			entry.path,
-			{ sha256: entry.sha256, mode: entry.mode },
+			kept.has(entry.path)
+				? {
+						sha256: entry.sha256,
+						mode: entry.mode,
+						kept: true as const,
+					}
+				: { sha256: entry.sha256, mode: entry.mode },
 		]),
 	);
 	return {
@@ -388,4 +474,46 @@ export function nextLock(input: {
 		syncedAt: (input.now ?? new Date()).toISOString(),
 		files,
 	};
+}
+
+/**
+ * `lock` with `kept: true` on exactly `paths` and on no other entry, for a
+ * run that keeps local edits without a manifest in hand (the server answered
+ * "unchanged"). A marker whose file matches the published bytes again, put
+ * back by hand, is dropped, so the lock never claims an edit that is gone
+ * (Decision 41). Everything else, including `syncedAt`, is left as it was:
+ * nothing was synced, only recorded.
+ *
+ * The result is always at `LOCK_VERSION`, because only a version 2 lock may
+ * carry a marker (Decision 38). `changed` is true only when a marker was
+ * added or dropped, so a run that finds the same edits again writes nothing.
+ * A copy, so the caller's parsed lock is untouched.
+ */
+export function reconcileKeptInLock(
+	lock: InstructionsLock,
+	paths: readonly string[],
+): { lock: InstructionsLock; changed: boolean } {
+	const kept = new Set(paths);
+	let changed = false;
+	// `Object.fromEntries` for the same `__proto__` reason as `nextLock`.
+	const files: InstructionsLock["files"] = Object.fromEntries(
+		Object.entries(lock.files).map(([lockedPath, entry]) => {
+			const keep = kept.has(lockedPath);
+			if (keep === (entry.kept === true)) {
+				return [lockedPath, entry];
+			}
+			changed = true;
+			return [
+				lockedPath,
+				keep
+					? {
+							sha256: entry.sha256,
+							mode: entry.mode,
+							kept: true as const,
+						}
+					: { sha256: entry.sha256, mode: entry.mode },
+			];
+		}),
+	);
+	return { lock: { ...lock, version: LOCK_VERSION, files }, changed };
 }

@@ -828,9 +828,9 @@ export function InstructionsPublishedView({
 								setSettingsOpen(false);
 								repositorySync.onConfigure();
 							}}
-							onChanged={() => {
+							onChanged={async () => {
+								await repositorySync.onChanged();
 								setSettingsOpen(false);
-								repositorySync.onChanged();
 							}}
 						/>
 					) : null

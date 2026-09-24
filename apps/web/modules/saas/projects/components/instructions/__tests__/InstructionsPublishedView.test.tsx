@@ -200,6 +200,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					),
 				},
 				repositorySync: {
+					configure: {
+						mutationOptions: mutationOptionsStub(async () => ({
+							syncId: "sync_1",
+							generation: 2,
+						})),
+					},
 					listRuns: {
 						queryOptions: queryOptionsStub(async () => ({
 							runs: [],

@@ -9,12 +9,14 @@ import {
 	syncErrorMessage,
 	syncOutcomeMessage,
 	syncRunOutcome,
+	triggerLabelKey,
 } from "../../lib/instructions-repository-sync";
 
 /**
- * The last repository sync, under the tab's summary (design 2026-09-23
- * §7.3). Everyone who can read the tab sees it; its actions exist only when
- * the tab passes the callbacks, which it does for configurers.
+ * The last repository sync, under the tab's summary: outcome, trigger and
+ * time (design 2026-09-23 §7.3). Everyone who can read the tab sees it; its
+ * actions exist only when the tab passes the callbacks, which it does for
+ * configurers.
  *
  * A REJECTED run's detail is the rejected banner above, not this line.
  */
@@ -62,6 +64,7 @@ export function RepositorySyncStatus({
 					{t(run.userName ? "lastRunBy" : "lastRun", {
 						time: formatRelativeTime(run.startedAt),
 						name: run.userName ?? "",
+						trigger: t(triggerLabelKey(run.trigger)),
 						outcome: t(outcomeMessage.key, outcomeMessage.values),
 					})}
 				</p>

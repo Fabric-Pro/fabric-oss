@@ -303,6 +303,21 @@ function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * `fabric <args>` as one pasteable POSIX command, or `undefined` when any
+ * word carries a control character: a newline in a path cannot be quoted
+ * into something a person can safely paste, so no command is offered at all.
+ * Doctor's fixes and the sync report's repair command both come from here.
+ */
+export function buildFabricCommand(
+	args: readonly string[],
+): string | undefined {
+	if (args.some(hasControlCharacter)) {
+		return undefined;
+	}
+	return ["fabric", ...args].map(shellQuote).join(" ");
+}
+
 function sha256Hex(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
@@ -355,10 +370,7 @@ class Commands {
 	}
 
 	private build(args: string[]): string | undefined {
-		if (args.some(hasControlCharacter)) {
-			return undefined;
-		}
-		return ["fabric", ...args].map(shellQuote).join(" ");
+		return buildFabricCommand(args);
 	}
 
 	sync(): string | undefined {
@@ -368,6 +380,17 @@ class Commands {
 			"--project",
 			this.input.projectId,
 			...this.context(),
+		]);
+	}
+
+	repair(): string | undefined {
+		return this.build([
+			"instructions",
+			"sync",
+			"--project",
+			this.input.projectId,
+			...this.context(),
+			"--repair",
 		]);
 	}
 
@@ -998,7 +1021,7 @@ async function checkLock(
 				`lock is at version ${lock.snapshotVersion}, published is ${Number(published.version)}`,
 				{
 					fix: fixOf(
-						"brings this checkout to the published version; local edits to instruction files are overwritten and reported as replaced",
+						"brings this checkout to the published version; a local edit to an instruction file is kept and listed, and `sync --repair` replaces it",
 						commands.sync(),
 					),
 				},
@@ -1154,23 +1177,53 @@ async function checkDrift(
 			`all ${plural(total, "file")} the last sync wrote still match the lock`,
 		);
 	}
-	const push = commands.push();
+	const push = commands.push() ?? "fabric instructions push";
+	const edits = drift.filter((entry) => entry.reason === "edited").length;
+	// Spec §6.4: `sync` keeps a local edit unless it is given `--repair`, so
+	// an edit is the intended state and only a warning. Anything else is
+	// something `sync` puts back, and still fails.
+	const status = edits === drift.length ? "warn" : "fail";
+	const items = capItems(
+		drift.map((entry) => ({
+			name: sanitizeDisplayText(entry.path, 200),
+			status:
+				entry.reason === "edited"
+					? ("warn" as const)
+					: ("fail" as const),
+			detail:
+				entry.reason === "edited" && entry.kept
+					? "edited (kept by sync)"
+					: DRIFT_DETAIL[entry.reason],
+		})),
+		status,
+	);
+	if (status === "warn") {
+		return makeCheck(
+			id,
+			"machine",
+			"warn",
+			`${drift.length} of ${plural(total, "file")} the last sync wrote carry local edits, which sync keeps`,
+			{
+				items,
+				fix: fixOf(
+					`replaces these local edits with the published bytes; to propose them instead, run \`${push}\``,
+					commands.repair(),
+				),
+			},
+		);
+	}
+	const repair = commands.repair() ?? "fabric instructions sync --repair";
 	return makeCheck(
 		id,
 		"machine",
 		"fail",
 		`${drift.length} of ${plural(total, "file")} the last sync wrote no longer match the lock`,
 		{
-			items: capItems(
-				drift.map((entry) => ({
-					name: sanitizeDisplayText(entry.path, 200),
-					status: "fail" as const,
-					detail: DRIFT_DETAIL[entry.reason],
-				})),
-				"fail",
-			),
+			items,
 			fix: fixOf(
-				`restores the published bytes over these local changes; to propose your edits instead, run \`${push ?? "fabric instructions push"}\``,
+				edits === 0
+					? `restores the published bytes over these local changes; to propose your edits instead, run \`${push}\``
+					: `restores the files that are not local edits; sync keeps those, so run \`${repair}\` to replace them too, or \`${push}\` to propose them`,
 				commands.sync(),
 			),
 		},

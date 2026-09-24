@@ -145,6 +145,13 @@ export function classifyPath(path: string): InstructionFileKind {
 		return "INSTRUCTIONS";
 	}
 
+	// The environment declaration `fabric instructions doctor` reads
+	// (packages/cli/src/lib/instructions/checks.ts, INSTRUCTION_ENVIRONMENT_FILE).
+	// Only the root copy is the declaration; a nested one stays OTHER.
+	if (segments.length === 1 && base === "fabric.environment.json") {
+		return "SETTINGS";
+	}
+
 	if (
 		base === ".mcp.json" ||
 		base === "mcp.json" ||

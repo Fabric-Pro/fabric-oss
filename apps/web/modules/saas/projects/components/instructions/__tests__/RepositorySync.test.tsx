@@ -227,6 +227,11 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		expect(
 			screen.getByText(copy.configureDialog.afterSyncNotice),
 		).toBeInTheDocument();
+		expect(
+			screen.getByRole("checkbox", {
+				name: copy.configureDialog.automaticLabel,
+			}),
+		).toBeChecked();
 
 		await user.type(
 			screen.getByLabelText(copy.configureDialog.rootPathLabel),
@@ -242,6 +247,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			repositoryIntegrationId: "int_1",
 			ref: "develop",
 			rootPath: "agents/",
+			automatic: true,
 		});
 		expect(m.syncNow).toHaveBeenCalledWith({ projectId: "proj_1" });
 		expect(m.toastSuccess).toHaveBeenCalledWith(copy.syncNowResult.started);
@@ -306,6 +312,35 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		expect(
 			screen.getByLabelText(copy.configureDialog.rootPathLabel),
 		).toHaveValue("agents");
+	});
+
+	it("sends automatic: false when the member unticks Keep in sync automatically", async () => {
+		const user = userEvent.setup();
+		const { onOpenChange } = renderDialog();
+		await user.click(
+			screen.getByRole("checkbox", {
+				name: copy.configureDialog.automaticLabel,
+			}),
+		);
+		await user.click(
+			screen.getByRole("button", { name: copy.configureDialog.submit }),
+		);
+		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+		expect(m.configure).toHaveBeenCalledWith(
+			expect.objectContaining({ automatic: false }),
+		);
+	});
+
+	it("seeds the checkbox from the current configuration and says whom automatic runs publish as", () => {
+		renderDialog({ current: CONFIGURED.configured });
+		expect(
+			screen.getByRole("checkbox", {
+				name: copy.configureDialog.automaticLabel,
+			}),
+		).not.toBeChecked();
+		expect(
+			screen.getByText(copy.configureDialog.automaticHint),
+		).toBeInTheDocument();
 	});
 
 	it("reports a run that was already going without calling it a failure", async () => {
@@ -464,6 +499,146 @@ describe("RepositorySyncStatus (§7.3)", () => {
 		expect(screen.getByRole("status")).toHaveTextContent("Example Member");
 	});
 
+	it("names what started the last run", () => {
+		render(
+			<RepositorySyncStatus
+				state={{
+					...CONFIGURED,
+					latestRun: run({ trigger: "WEBHOOK" }),
+				}}
+			/>,
+		);
+		expect(screen.getByRole("status")).toHaveTextContent(
+			`(${copy.triggers.WEBHOOK})`,
+		);
+	});
+
+	it("renders a trigger this build has no label for with the generic label (Decision 47)", () => {
+		render(
+			<RepositorySyncStatus
+				state={{
+					...CONFIGURED,
+					latestRun: run({ trigger: "FUTURE_AUTOMATIC_TRIGGER" }),
+				}}
+			/>,
+		);
+		expect(screen.getByRole("status")).toHaveTextContent(
+			`(${copy.triggers.OTHER})`,
+		);
+	});
+
+	it("says a failed fetch is retried while automatic sync is on, and asks for Sync now otherwise", () => {
+		const configured = CONFIGURED.configured as NonNullable<
+			RepositorySyncState["configured"]
+		>;
+		const failed = run({ status: "FAILED", error: "CLONE_FAILED" });
+		const { rerender } = render(
+			<RepositorySyncStatus
+				state={{
+					...CONFIGURED,
+					configured: { ...configured, automatic: true },
+					latestRun: failed,
+				}}
+			/>,
+		);
+		expect(
+			screen.getByText(copy.errors.CLONE_FAILED_RETRYING),
+		).toBeInTheDocument();
+		rerender(
+			<RepositorySyncStatus
+				state={{ ...CONFIGURED, latestRun: failed }}
+			/>,
+		);
+		expect(screen.getByText(copy.errors.CLONE_FAILED)).toBeInTheDocument();
+	});
+
+	it("a newer POLL run replaces a NOT_PUBLISHED line (Decision 9, Review Focus 5)", () => {
+		const configured = CONFIGURED.configured as NonNullable<
+			RepositorySyncState["configured"]
+		>;
+		const automatic = { ...configured, automatic: true };
+		const { rerender } = render(
+			<RepositorySyncStatus
+				state={{
+					...CONFIGURED,
+					configured: automatic,
+					latestRun: run({
+						status: "NOT_PUBLISHED",
+						error: "CONFIGURATION_CHANGED",
+						startedAt: new Date(Date.now() - 10 * 60_000),
+					}),
+				}}
+				onSyncNow={vi.fn()}
+			/>,
+		);
+		expect(screen.getByRole("status")).toHaveTextContent(
+			copy.outcomes.notPublished.configuration_changed,
+		);
+		// The settings change made the sync due at once (Task 2), and the
+		// next tick's POLL run is now the latest.
+		rerender(
+			<RepositorySyncStatus
+				state={{
+					...CONFIGURED,
+					configured: automatic,
+					latestRun: run({
+						id: "sync_1:run_poll",
+						trigger: "POLL",
+						snapshotVersion: 5,
+					}),
+				}}
+				onSyncNow={vi.fn()}
+			/>,
+		);
+		const status = screen.getByRole("status");
+		expect(status).toHaveTextContent("published version 5");
+		expect(status).toHaveTextContent(`(${copy.triggers.POLL})`);
+		expect(status).not.toHaveTextContent(
+			copy.outcomes.notPublished.configuration_changed,
+		);
+		expect(
+			screen.queryByRole("button", { name: copy.syncAgainButton }),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows a pause with Re-enable, which reopens the configure dialog", async () => {
+		const configured = CONFIGURED.configured as NonNullable<
+			RepositorySyncState["configured"]
+		>;
+		const onConfigure = vi.fn();
+		const user = userEvent.setup();
+		render(
+			<RepositorySyncStatus
+				state={{
+					...CONFIGURED,
+					configured: {
+						...configured,
+						automatic: true,
+						automaticPausedReason: "REF_MISSING",
+					},
+					latestRun: run({
+						trigger: "POLL",
+						status: "FAILED",
+						error: "REF_MISSING",
+					}),
+				}}
+				onConfigure={onConfigure}
+			/>,
+		);
+		expect(
+			screen.getByText(
+				copy.pausedLine.replace(
+					"{reason}",
+					copy.pausedReasons.REF_MISSING,
+				),
+			),
+		).toBeInTheDocument();
+		await user.click(
+			screen.getByRole("button", { name: copy.reEnableButton }),
+		);
+		expect(onConfigure).toHaveBeenCalled();
+	});
+
 	it("names the missing branch", () => {
 		render(
 			<RepositorySyncStatus
@@ -558,16 +733,22 @@ describe("RepositorySyncStatus (§7.3)", () => {
 });
 
 describe("RepositorySyncRuns (§7.3 History list)", () => {
-	it("lists each run with its outcome, commit, version and member, and no trigger column", async () => {
+	it("lists each run with its time, trigger, outcome, commit, version and member", async () => {
 		m.listRuns.mockResolvedValue({
 			runs: [
 				run(),
 				run({
 					id: "sync_1:run_b",
+					trigger: "POLL",
 					status: "FAILED",
 					error: "CLONE_FAILED",
 					snapshotVersion: null,
 					commitSha: null,
+				}),
+				run({
+					id: "sync_1:run_c",
+					trigger: "WEBHOOK",
+					status: "UNCHANGED",
 				}),
 			],
 		});
@@ -576,11 +757,17 @@ describe("RepositorySyncRuns (§7.3 History list)", () => {
 		});
 		expect(
 			await screen.findByText(
-				/published version 4 · commit 0123456 · version 4 · by Example Member/,
+				/Sync now · published version 4 · commit 0123456 · version 4 · by Example Member/,
 			),
 		).toBeInTheDocument();
-		expect(screen.getByText(/failed/)).toBeInTheDocument();
-		expect(screen.queryByText(/MANUAL/)).not.toBeInTheDocument();
+		expect(screen.getByText(/Scheduled · failed/)).toBeInTheDocument();
+		expect(
+			screen.getByText(/Push · no changes since the published version/),
+		).toBeInTheDocument();
+		// The raw enum value is never shown.
+		expect(
+			screen.queryByText(/MANUAL|POLL|WEBHOOK/),
+		).not.toBeInTheDocument();
 	});
 
 	it("says when there are no runs", async () => {
@@ -592,9 +779,11 @@ describe("RepositorySyncRuns (§7.3 History list)", () => {
 });
 
 describe("RepositorySyncSettingsSection (§7.4)", () => {
-	function renderSection(state: RepositorySyncState) {
+	function renderSection(
+		state: RepositorySyncState,
+		onChanged = vi.fn(async (): Promise<void> => {}),
+	) {
 		const onChange = vi.fn();
-		const onChanged = vi.fn();
 		render(
 			<RepositorySyncSettingsSection
 				projectId="proj_1"
@@ -662,11 +851,185 @@ describe("RepositorySyncSettingsSection (§7.4)", () => {
 		).toBeInTheDocument();
 	});
 
-	it("shows a reader the configuration without the actions", () => {
+	it("turns automatic sync on through configure with the current values", async () => {
+		const user = userEvent.setup();
+		const { onChanged } = renderSection(CONFIGURED);
+		const toggle = screen.getByRole("switch", {
+			name: copy.settings.automatic,
+		});
+		expect(toggle).not.toBeChecked();
+		expect(
+			screen.getByText(copy.settings.automaticHint),
+		).toBeInTheDocument();
+
+		await user.click(toggle);
+
+		await waitFor(() =>
+			expect(m.configure).toHaveBeenCalledWith({
+				projectId: "proj_1",
+				repositoryIntegrationId: "int_1",
+				ref: "main",
+				rootPath: "agents",
+				automatic: true,
+			}),
+		);
+		await waitFor(() =>
+			expect(m.toastSuccess).toHaveBeenCalledWith(
+				copy.settings.automaticTurnedOn,
+			),
+		);
+		expect(onChanged).toHaveBeenCalled();
+	});
+
+	it("turns automatic sync off the same way", async () => {
+		const configured = CONFIGURED.configured as NonNullable<
+			RepositorySyncState["configured"]
+		>;
+		const user = userEvent.setup();
+		renderSection({
+			...CONFIGURED,
+			configured: { ...configured, automatic: true },
+		});
+		await user.click(
+			screen.getByRole("switch", { name: copy.settings.automatic }),
+		);
+		await waitFor(() =>
+			expect(m.configure).toHaveBeenCalledWith(
+				expect.objectContaining({ automatic: false }),
+			),
+		);
+		await waitFor(() =>
+			expect(m.toastSuccess).toHaveBeenCalledWith(
+				copy.settings.automaticTurnedOff,
+			),
+		);
+	});
+
+	it("reports a refused toggle with the configure dialog's copy", async () => {
+		m.configure.mockRejectedValue(orpcError("BRANCH_NOT_FOUND"));
+		const user = userEvent.setup();
+		const { onChanged } = renderSection(CONFIGURED);
+		await user.click(
+			screen.getByRole("switch", { name: copy.settings.automatic }),
+		);
+		await waitFor(() =>
+			expect(m.toastError).toHaveBeenCalledWith(
+				copy.configureDialog.errors.BRANCH_NOT_FOUND.replace(
+					"{ref}",
+					"main",
+				),
+			),
+		);
+		expect(onChanged).not.toHaveBeenCalled();
+	});
+
+	it("disables every settings action while a toggle is saving, so two changes never race (Decision 40)", async () => {
+		let finish: (value: { syncId: string; generation: number }) => void =
+			() => {};
+		m.configure.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					finish = resolve;
+				}),
+		);
+		const user = userEvent.setup();
+		renderSection(CONFIGURED);
+		await user.click(
+			screen.getByRole("switch", { name: copy.settings.automatic }),
+		);
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("switch", { name: copy.settings.automatic }),
+			).toBeDisabled(),
+		);
+		expect(
+			screen.getByRole("button", { name: copy.settings.changeButton }),
+		).toBeDisabled();
+		expect(
+			screen.getByRole("button", { name: copy.settings.switchToUpload }),
+		).toBeDisabled();
+
+		finish({ syncId: "sync_1", generation: 2 });
+		await waitFor(() =>
+			expect(
+				screen.getByRole("switch", { name: copy.settings.automatic }),
+			).toBeEnabled(),
+		);
+		expect(
+			screen.getByRole("button", { name: copy.settings.changeButton }),
+		).toBeEnabled();
+		expect(m.configure).toHaveBeenCalledTimes(1);
+	});
+
+	it("disables the toggle and Change… while a switch to upload mode is in flight (Decision 40)", async () => {
+		vi.spyOn(window, "confirm").mockReturnValue(true);
+		m.disable.mockImplementation(() => new Promise(() => {}));
+		const user = userEvent.setup();
+		renderSection(CONFIGURED);
+		await user.click(
+			screen.getByRole("button", { name: copy.settings.switchToUpload }),
+		);
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("switch", { name: copy.settings.automatic }),
+			).toBeDisabled(),
+		);
+		expect(
+			screen.getByRole("button", { name: copy.settings.changeButton }),
+		).toBeDisabled();
+		expect(m.configure).not.toHaveBeenCalled();
+	});
+
+	it("keeps every settings action disabled until the tab has re-read what a switch to upload mode changed (Decision 53)", async () => {
+		vi.spyOn(window, "confirm").mockReturnValue(true);
+		let settle: () => void = () => {};
+		const onChanged = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					settle = resolve;
+				}),
+		);
+		const user = userEvent.setup();
+		renderSection(CONFIGURED, onChanged);
+		await user.click(
+			screen.getByRole("button", { name: copy.settings.switchToUpload }),
+		);
+
+		// The switch succeeded and the tab is re-reading. Until it has, the
+		// section still shows the configuration the switch removed.
+		await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+		expect(m.toastSuccess).toHaveBeenCalledWith(copy.settings.switched);
+		const toggle = screen.getByRole("switch", {
+			name: copy.settings.automatic,
+		});
+		expect(toggle).toBeDisabled();
+		expect(
+			screen.getByRole("button", { name: copy.settings.changeButton }),
+		).toBeDisabled();
+		// A click on the stale toggle builds no change from that configuration.
+		await user.click(toggle);
+		expect(m.configure).not.toHaveBeenCalled();
+
+		settle();
+		await waitFor(() =>
+			expect(
+				screen.getByRole("switch", { name: copy.settings.automatic }),
+			).toBeEnabled(),
+		);
+		expect(m.configure).not.toHaveBeenCalled();
+	});
+
+	it("shows a reader the configuration and the automatic state without the actions", () => {
 		renderSection({ ...CONFIGURED, canConfigure: false });
 		expect(
 			screen.getByText("example-org/instructions"),
 		).toBeInTheDocument();
+		expect(
+			screen.getByText(copy.settings.automaticOff),
+		).toBeInTheDocument();
 		expect(screen.queryByRole("button")).not.toBeInTheDocument();
+		expect(screen.queryByRole("switch")).not.toBeInTheDocument();
 	});
 });

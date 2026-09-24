@@ -57,4 +57,19 @@ describe("audit action catalog coverage", () => {
 	it("has no duplicate keys", () => {
 		expect(described.size).toBe(CATALOG.length);
 	});
+
+	it("names the repository-sync triggers where an operator reads them", () => {
+		const started = describeActionKey(
+			"project.instructions.repository_sync_started",
+		);
+		const completed = describeActionKey(
+			"project.instructions.repository_sync_completed",
+		);
+		// Automatic runs write no start row, so the start entry must say so.
+		expect(started).toContain('"MANUAL"');
+		expect(started).toMatch(/automatic/i);
+		for (const trigger of ['"MANUAL"', '"POLL"', '"WEBHOOK"']) {
+			expect(completed).toContain(trigger);
+		}
+	});
 });

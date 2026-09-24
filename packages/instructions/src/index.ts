@@ -1,3 +1,4 @@
+export * from "./automatic-sync";
 export * from "./file-typing";
 export * from "./frontmatter";
 export * from "./ignore";

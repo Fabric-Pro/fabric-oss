@@ -29,8 +29,17 @@ import { readFileSafely, writeFileSafely } from "./safe-write.js";
 export const LOCK_DIRECTORY = ".fabric";
 export const LOCK_FILENAME = "instructions.lock";
 
-/** Bumped only if the shape below changes incompatibly. */
-export const LOCK_VERSION = 1;
+/**
+ * The version this build writes. Version 2 adds `LockFileEntry.kept` (spec
+ * §6.4, Decision 38). Every released build reads only version 1 and refuses
+ * anything else whole, so a lock carrying a kept marker is never acted on,
+ * and a kept edit never overwritten, by a build that cannot see the marker.
+ * This build reads both.
+ */
+export const LOCK_VERSION = 2;
+
+/** Every lock version this build reads. It writes only `LOCK_VERSION`. */
+const READABLE_LOCK_VERSIONS: readonly number[] = [1, LOCK_VERSION];
 
 /** The lock's own path, relative to the destination — never from a manifest. */
 const LOCK_RELATIVE_PATH = `${LOCK_DIRECTORY}/${LOCK_FILENAME}`;
@@ -41,6 +50,13 @@ interface LockFileEntry {
 	sha256: string;
 	/** POSIX mode as published, or null when the snapshot recorded none. */
 	mode: number | null;
+	/**
+	 * Present only when a sync left a local edit at this path in place
+	 * (`fabric instructions sync` without `--repair`, spec §6.4). `sha256`
+	 * and `mode` are still the PUBLISHED values. Only a version 2 lock may
+	 * carry it.
+	 */
+	kept?: true;
 }
 
 export interface InstructionsLock {
@@ -188,8 +204,11 @@ function lockProblem(value: unknown): string | null {
 	}
 	const candidate = value as Record<string, unknown>;
 
-	if (candidate.version !== LOCK_VERSION) {
-		return `its version is ${JSON.stringify(candidate.version)} and this build writes version ${LOCK_VERSION}`;
+	if (
+		typeof candidate.version !== "number" ||
+		!READABLE_LOCK_VERSIONS.includes(candidate.version)
+	) {
+		return `its version is ${JSON.stringify(candidate.version)} and this build reads versions ${READABLE_LOCK_VERSIONS.join(" and ")}`;
 	}
 	for (const field of [
 		"projectId",
@@ -241,6 +260,16 @@ function lockProblem(value: unknown): string | null {
 				record.mode < 0)
 		) {
 			return `its entry for ${JSON.stringify(filePath)} has a mode that is neither null nor a non-negative integer`;
+		}
+		if (record.kept !== undefined) {
+			if (record.kept !== true) {
+				return `its entry for ${JSON.stringify(filePath)} has a "kept" that is not true`;
+			}
+			// A released build reads version 1 and would ignore the marker,
+			// so a version 1 lock carrying one is not a lock this tool wrote.
+			if (candidate.version === 1) {
+				return `its entry for ${JSON.stringify(filePath)} has a "kept" marker, which a version 1 lock cannot carry`;
+			}
 		}
 	}
 	return null;

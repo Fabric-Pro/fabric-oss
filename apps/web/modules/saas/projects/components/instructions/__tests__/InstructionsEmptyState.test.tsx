@@ -113,13 +113,20 @@ function mutationOptionsStub(mutationFn: (input: unknown) => Promise<unknown>) {
 	) => ({ mutationFn, ...opts });
 }
 
-// Only `RepositorySyncSettingsSection`'s own procedure: it is the one real
-// (unmocked) query/mutation consumer this suite now mounts, per B-1.
+// Only `RepositorySyncSettingsSection`'s own procedures (disable, and the
+// automatic toggle's configure): it is the one real (unmocked)
+// query/mutation consumer this suite mounts, per B-1.
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
 			instructions: {
 				repositorySync: {
+					configure: {
+						mutationOptions: mutationOptionsStub(async () => ({
+							syncId: "sync_1",
+							generation: 2,
+						})),
+					},
 					disable: {
 						mutationOptions: mutationOptionsStub(async (input) => {
 							disableCalls.push(input as Record<string, unknown>);

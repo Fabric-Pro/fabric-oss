@@ -1,8 +1,10 @@
+import type { InstructionSyncTrigger } from "@repo/database";
 import { describe, expect, it } from "vitest";
 import {
 	deriveSyncRunOutcome,
 	type SyncOutcomeInput,
 } from "../src/activities/lib/instruction-sync-outcome";
+import { AUTOMATIC_INSTRUCTION_SYNC_TRIGGERS } from "../src/lib/instruction-sync-types";
 
 const SHA = "c".repeat(40);
 const base: SyncOutcomeInput = {
@@ -301,5 +303,51 @@ describe("deriveSyncRunOutcome: the spec §5.4 outcome table", () => {
 				...(overrides as Partial<SyncOutcomeInput>),
 			}),
 		).toEqual(expected);
+	});
+});
+
+describe("automatic eligibility is AUTOMATIC_INSTRUCTION_SYNC_TRIGGERS, not every non-MANUAL trigger (Decision 47)", () => {
+	// A value no migration has added yet, e.g. a future PULL_REQUEST_MERGED
+	// trigger. It is not in AUTOMATIC_INSTRUCTION_SYNC_TRIGGERS, so it must be
+	// treated like MANUAL: never paused for a revoked delegate.
+	const FUTURE = "FUTURE_TRIGGER" as unknown as InstructionSyncTrigger;
+
+	it("does not pause a revoked delegate's run for a trigger outside AUTOMATIC_INSTRUCTION_SYNC_TRIGGERS", () => {
+		expect(
+			deriveSyncRunOutcome({
+				...base,
+				trigger: FUTURE,
+				error: "PERMISSION_DENIED",
+			}).scheduling,
+		).toEqual({ kind: "none" });
+	});
+
+	it("pauses a revoked delegate's run for POLL and WEBHOOK, the automatic set", () => {
+		for (const trigger of AUTOMATIC_INSTRUCTION_SYNC_TRIGGERS) {
+			expect(
+				deriveSyncRunOutcome({
+					...base,
+					trigger,
+					error: "PERMISSION_DENIED",
+				}).scheduling,
+			).toEqual({ kind: "pause", reason: "PERMISSION_REVOKED" });
+		}
+	});
+
+	it("still reads outcomes that do not depend on the delegate's permission the same for a future trigger as for MANUAL", () => {
+		expect(
+			deriveSyncRunOutcome({ ...base, trigger: FUTURE, unchanged: true }),
+		).toEqual(
+			deriveSyncRunOutcome({
+				...base,
+				trigger: "MANUAL",
+				unchanged: true,
+			}),
+		);
+		expect(
+			deriveSyncRunOutcome({ ...base, trigger: FUTURE, skipped: true }),
+		).toEqual(
+			deriveSyncRunOutcome({ ...base, trigger: "MANUAL", skipped: true }),
+		);
 	});
 });

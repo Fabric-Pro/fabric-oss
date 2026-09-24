@@ -46,6 +46,10 @@ const state = vi.hoisted(() => ({
 	listCalls: 0,
 	publishedCalls: 0,
 	syncCalls: 0,
+	/** While set, `repositorySync.get` waits for it before answering. */
+	syncGate: null as Promise<void> | null,
+	/** How many `onChanged` promises the published-view stub saw resolve. */
+	changedSettled: 0,
 }));
 
 /**
@@ -102,6 +106,9 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 							"repositorySync-get",
 							async () => {
 								state.syncCalls++;
+								if (state.syncGate) {
+									await state.syncGate;
+								}
 								return state.sync;
 							},
 						),
@@ -137,13 +144,35 @@ vi.mock("../InstructionsPublishedView", () => ({
 		published,
 		repositoryBacked,
 		repositoryConfirmed,
+		repositorySync,
 	}: {
 		published: { id?: string } | null;
 		repositoryBacked?: boolean;
 		repositoryConfirmed?: boolean;
+		repositorySync?: {
+			state: { latestRun: { id: string } | null };
+			onChanged: () => Promise<void> | void;
+		};
 	}) => (
 		<>
 			<div data-testid="published-id">{published?.id ?? "none"}</div>
+			<div data-testid="latest-run">
+				{repositorySync?.state.latestRun?.id ?? "none"}
+			</div>
+			<button
+				type="button"
+				onClick={() => {
+					// `Promise.resolve` so the stub also runs against a
+					// handler that returns nothing.
+					void Promise.resolve(repositorySync?.onChanged()).then(
+						() => {
+							state.changedSettled++;
+						},
+					);
+				}}
+			>
+				settings-changed
+			</button>
 			<div data-testid="repository-backed">
 				{String(repositoryBacked)}
 			</div>
@@ -163,6 +192,7 @@ vi.mock("../UploadFolderDialog", () => ({
 import { CodingInstructionsTab } from "../CodingInstructionsTab";
 
 const POLL_MS = 3_000;
+const IDLE_POLL_MS = 60_000;
 
 function snapshot(id: string, status: string): Snapshot {
 	return { id, version: 2, status, publishOnReady: true };
@@ -200,6 +230,8 @@ beforeEach(() => {
 	state.listCalls = 0;
 	state.publishedCalls = 0;
 	state.syncCalls = 0;
+	state.syncGate = null;
+	state.changedSettled = 0;
 });
 
 afterEach(() => {
@@ -381,6 +413,147 @@ describe("CodingInstructionsTab repository sync polling", () => {
 			await tick(POLL_MS);
 		}
 		expect(state.syncCalls).toBe(1);
+	});
+});
+
+describe("CodingInstructionsTab automatic sync discovery (Decision 39)", () => {
+	const AUTOMATIC_SYNC = {
+		...IDLE_SYNC,
+		sourceOfTruth: "REPOSITORY",
+		configured: { automatic: true, automaticPausedReason: null },
+		latestRun: { id: "sync_1:run_a" },
+	};
+
+	beforeEach(() => {
+		state.snapshots = [snapshot("snap_1", "READY")];
+		state.published = { id: "snap_1", version: 2, status: "READY" };
+		state.sync = AUTOMATIC_SYNC;
+	});
+
+	it("reads an idle automatic sync once a minute, and re-reads the tab when a run it never saw open appears", async () => {
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+		expect(state.syncCalls).toBe(1);
+		const mounted = {
+			list: state.listCalls,
+			published: state.publishedCalls,
+		};
+
+		// No run is open, so nothing is read at the 3 s cadence.
+		await tick(POLL_MS);
+		expect(state.syncCalls).toBe(1);
+
+		// A push started a run that published before the next idle read.
+		state.sync = { ...AUTOMATIC_SYNC, latestRun: { id: "sync_1:run_b" } };
+		await tick(IDLE_POLL_MS - POLL_MS);
+		// The read fires at the very end of that advance. TanStack Query hands
+		// its answer to React on a zero-delay timer, which Node runs after 1 ms.
+		await tick(1);
+		expect(state.syncCalls).toBe(2);
+		expect(screen.getByTestId("latest-run")).toHaveTextContent(
+			"sync_1:run_b",
+		);
+		// The tab never saw it open, so `running` never flipped; the new id
+		// alone re-reads the list and the pointer.
+		expect(state.listCalls).toBeGreaterThan(mounted.list);
+		expect(state.publishedCalls).toBeGreaterThan(mounted.published);
+	});
+
+	it("surfaces a REF_MISSING receipt the scheduled check wrote, then stops polling while the sync is paused", async () => {
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+
+		// Task 2's failure receipt: `<syncId>:<pollRunId>:<generation>`.
+		state.sync = {
+			...AUTOMATIC_SYNC,
+			configured: {
+				automatic: true,
+				automaticPausedReason: "REF_MISSING",
+			},
+			latestRun: { id: "sync_1:poll_run_1:3" },
+		};
+		await tick(IDLE_POLL_MS);
+		await tick(1);
+		expect(screen.getByTestId("latest-run")).toHaveTextContent(
+			"sync_1:poll_run_1:3",
+		);
+
+		const paused = state.syncCalls;
+		for (let i = 0; i < 3; i++) {
+			await tick(IDLE_POLL_MS);
+		}
+		expect(state.syncCalls).toBe(paused);
+	});
+
+	it.each([
+		["not configured", IDLE_SYNC],
+		[
+			"manual",
+			{
+				...IDLE_SYNC,
+				configured: { automatic: false, automaticPausedReason: null },
+			},
+		],
+	])("never idle-polls a sync that is %s", async (_label, sync) => {
+		state.sync = sync;
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+		for (let i = 0; i < 3; i++) {
+			await tick(IDLE_POLL_MS);
+		}
+		expect(state.syncCalls).toBe(1);
+	});
+});
+
+describe("CodingInstructionsTab settings changes (Decision 53)", () => {
+	it("resolves onChanged only once the sync state it changed has been read again", async () => {
+		state.snapshots = [snapshot("snap_1", "READY")];
+		state.published = { id: "snap_1", version: 2, status: "READY" };
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+		const before = state.syncCalls;
+
+		let release: () => void = () => {};
+		state.syncGate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		await act(async () => {
+			screen.getByRole("button", { name: "settings-changed" }).click();
+		});
+		await tick(0);
+
+		// The re-read started and is held, so the change is still pending.
+		expect(state.syncCalls).toBe(before + 1);
+		await tick(1_000);
+		expect(state.changedSettled).toBe(0);
+
+		release();
+		await tick(0);
+		expect(state.changedSettled).toBe(1);
 	});
 });
 

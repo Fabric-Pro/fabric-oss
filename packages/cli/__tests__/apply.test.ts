@@ -269,6 +269,7 @@ describe("applyPlan", () => {
 				deletes: [],
 				keptModified: [],
 				keptRenamed: [],
+				keptEdited: [],
 				verified: [
 					{
 						path: "real.md",
@@ -294,6 +295,7 @@ describe("applyPlan", () => {
 					deletes: [],
 					keptModified: [],
 					keptRenamed: [],
+					keptEdited: [],
 					verified: [
 						{
 							path: "linked.md",
@@ -337,6 +339,7 @@ describe("applyPlan", () => {
 			verified: [],
 			keptModified: [],
 			keptRenamed: [],
+			keptEdited: [],
 		};
 
 		await expect(
@@ -557,3 +560,146 @@ function zipWithDuplicate(
 
 	return new Uint8Array(Buffer.concat([aLocal, bLocal, directory, end]));
 }
+
+/**
+ * Spec §6.4 (Fizzy #2540). A kept path is never written, but the lock is
+ * about to record it as a synced file, so it must still be one.
+ */
+describe("applyPlan and a kept local edit", () => {
+	it("refuses a symlink at a kept path, writing nothing", async () => {
+		const dest = await makeTree();
+		const outside = await makeTree({ "victim.md": "original" });
+		await symlink(
+			path.join(outside, "victim.md"),
+			path.join(dest, "AGENTS.md"),
+		);
+
+		await expect(
+			applyPlan({
+				root: dest,
+				plan: {
+					entries: [],
+					writes: [
+						{
+							path: "a.md",
+							action: "added",
+							sha256: sha256("first"),
+							mode: null,
+						},
+					],
+					deletes: [],
+					verified: [],
+					keptModified: [],
+					keptRenamed: [],
+					keptEdited: [
+						{
+							path: "AGENTS.md",
+							action: "kept-edited",
+							sha256: sha256("published"),
+							mode: null,
+						},
+					],
+				},
+				contents: contentsOf({ "a.md": "first" }),
+			}),
+		).rejects.toThrow(/symlink/);
+
+		expect(await readdir(dest)).toEqual(["AGENTS.md"]);
+	});
+});
+
+/**
+ * Decision 37. Planning runs before the download and the extraction, and an
+ * editor saving in that window must not lose the save: in keep mode each
+ * write re-hashes its target first, the same window `deleteFileSafely`'s
+ * expected hash closes for deletes.
+ */
+describe("applyPlan and a save that lands after planning", () => {
+	function planWriting(localSha256: string | null) {
+		const write = {
+			path: "AGENTS.md",
+			action:
+				localSha256 === null
+					? ("added" as const)
+					: ("updated" as const),
+			sha256: sha256("published"),
+			mode: null,
+			localSha256,
+		};
+		return {
+			entries: [write],
+			writes: [write],
+			deletes: [],
+			verified: [],
+			keptModified: [],
+			keptRenamed: [],
+			keptEdited: [],
+		};
+	}
+
+	it("keeps a file saved after planning, and reports it as kept", async () => {
+		const dest = await makeTree({ "AGENTS.md": "late save" });
+
+		const result = await applyPlan({
+			root: dest,
+			plan: planWriting(sha256("as planned")),
+			contents: contentsOf({ "AGENTS.md": "published" }),
+			keepLocalEdits: true,
+		});
+
+		expect(result.written).toEqual([]);
+		expect(result.keptEdited).toEqual(["AGENTS.md"]);
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"late save",
+		);
+	});
+
+	it("keeps a file created after planning where the plan meant to add one", async () => {
+		const dest = await makeTree({ "AGENTS.md": "late create" });
+
+		const result = await applyPlan({
+			root: dest,
+			plan: planWriting(null),
+			contents: contentsOf({ "AGENTS.md": "published" }),
+			keepLocalEdits: true,
+		});
+
+		expect(result.keptEdited).toEqual(["AGENTS.md"]);
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"late create",
+		);
+	});
+
+	it("writes as planned when the file still holds what the plan saw", async () => {
+		const dest = await makeTree({ "AGENTS.md": "as planned" });
+
+		const result = await applyPlan({
+			root: dest,
+			plan: planWriting(sha256("as planned")),
+			contents: contentsOf({ "AGENTS.md": "published" }),
+			keepLocalEdits: true,
+		});
+
+		expect(result.written).toEqual(["AGENTS.md"]);
+		expect(result.keptEdited).toEqual([]);
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"published",
+		);
+	});
+
+	it("replaces a late save when local edits are not kept (`--repair`)", async () => {
+		const dest = await makeTree({ "AGENTS.md": "late save" });
+
+		const result = await applyPlan({
+			root: dest,
+			plan: planWriting(sha256("as planned")),
+			contents: contentsOf({ "AGENTS.md": "published" }),
+		});
+
+		expect(result.written).toEqual(["AGENTS.md"]);
+		expect(result.keptEdited).toEqual([]);
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"published",
+		);
+	});
+});
