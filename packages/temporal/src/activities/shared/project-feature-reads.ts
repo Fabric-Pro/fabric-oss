@@ -80,29 +80,94 @@ async function canReadProject(
 	return (await getProjectAccessContext(projectId, userId)) !== null;
 }
 
+export interface IdentifierCandidate {
+	identifier: string;
+	/** Set when the identifier alone does not say which kind it names. */
+	kind?: Kind;
+}
+
+const PREFIX_KIND: Record<string, Kind> = {
+	F: "FEATURE",
+	US: "FEATURE",
+	B: "BUG",
+};
+
 /**
- * Candidate identifiers for a user-typed feature reference. Identifiers are
- * either legacy prefixed ("F-040", "US-001", "B-002") or plain decimal, so
- * "F40", "f-040", "40" and "040" must all reach the same row.
+ * Candidate identifiers for a user-typed reference, most specific first.
+ * Identifiers are legacy prefixed ("F-040", "US-001", "B-002") or plain
+ * decimal ("40"), and plain numbers are allocated from ONE per-project
+ * sequence for features and bugs alike — so "40" alone does not say which
+ * kind it is.
+ *
+ * - The reference exactly as typed always comes first.
+ * - A prefix pins the kind: "F-001" reaches F-001 or a FEATURE numbered 1,
+ *   never B-001 or a bug numbered 1.
+ * - No prefix: plain numbers, then F-, then US-, then B-.
  */
-export function featureIdentifierCandidates(ref: string): string[] {
+export function featureIdentifierCandidates(
+	ref: string,
+): IdentifierCandidate[] {
 	const trimmed = ref.trim();
-	const match = trimmed.match(/^(?:F|B|US|TASK)?-?0*(\d+)$/i);
+	const match = trimmed.match(/^(F|B|US)?-?0*(\d+)$/i);
 	if (!match) {
-		return [trimmed];
+		return [{ identifier: trimmed }];
 	}
-	const digits = match[1];
+	const prefix = match[1]?.toUpperCase();
+	const digits = match[2];
 	const padded = digits.padStart(3, "0");
-	return [
-		...new Set([
-			trimmed,
-			digits,
-			padded,
-			`F-${padded}`,
-			`B-${padded}`,
-			`US-${padded}`,
-		]),
+	const prefixed = (p: string): IdentifierCandidate[] => [
+		{ identifier: `${p}-${padded}` },
+		{ identifier: `${p}-${digits}` },
 	];
+	const plain = (kind?: Kind): IdentifierCandidate[] => [
+		{ identifier: digits, kind },
+		{ identifier: padded, kind },
+	];
+	const ordered: IdentifierCandidate[] = prefix
+		? [...prefixed(prefix), ...plain(PREFIX_KIND[prefix])]
+		: [...plain(), ...prefixed("F"), ...prefixed("US"), ...prefixed("B")];
+	const seen = new Set<string>();
+	return [{ identifier: trimmed }, ...ordered].filter((candidate) => {
+		const key = `${candidate.identifier.toLowerCase()}|${candidate.kind ?? ""}`;
+		if (seen.has(key)) {
+			return false;
+		}
+		seen.add(key);
+		return true;
+	});
+}
+
+/**
+ * The row the first candidate names. The lookup returns every row any
+ * candidate could match; taking the database's first hit instead let
+ * "F-001" come back as bug B-001 on a project with no F-001.
+ */
+export function pickByCandidateOrder<
+	T extends { identifier: string; kind: string },
+>(rows: T[], candidates: IdentifierCandidate[]): T | undefined {
+	for (const candidate of candidates) {
+		const wanted = candidate.identifier.toLowerCase();
+		const row = rows.find(
+			(r) =>
+				r.identifier.toLowerCase() === wanted &&
+				(!candidate.kind || r.kind === candidate.kind),
+		);
+		if (row) {
+			return row;
+		}
+	}
+	return undefined;
+}
+
+function describeReference(ref: string): string {
+	const prefix = ref
+		.trim()
+		.match(/^(F|B|US)-?\d/i)?.[1]
+		?.toUpperCase();
+	if (!prefix) {
+		return "roadmap item";
+	}
+	return PREFIX_KIND[prefix] === "BUG" ? "bug" : "feature";
 }
 
 async function resolveStatusId(
@@ -170,16 +235,37 @@ export async function listProjectFeatures(
 			? Math.max(Math.trunc(args.offset), 0)
 			: 0;
 
-	const { db, listStorySummaries } = await import("@repo/database");
-	const { stories, total } = await listStorySummaries({
+	const includeHidden = args.includeHidden === true;
+	const filters = {
 		projectId,
 		statusId,
 		priority: priority as Priority | undefined,
 		kind: kind as Kind | undefined,
 		search: readString(args.search),
-		limit,
-		offset,
-	});
+	};
+
+	const { db, listStorySummaries } = await import("@repo/database");
+	// The roadmap's own set: declined items never show there, closed ones
+	// only behind "Show hidden". Counting both silently made the total
+	// disagree with the page.
+	const [{ stories, total }, hidden] = await Promise.all([
+		listStorySummaries({
+			...filters,
+			excludeDraftingStages: includeHidden
+				? ["DECLINED"]
+				: ["DECLINED", "CLOSED"],
+			orderBy: "identifier",
+			limit,
+			offset,
+		}),
+		includeHidden
+			? null
+			: listStorySummaries({
+					...filters,
+					draftingStage: "CLOSED",
+					limit: 1,
+				}),
+	]);
 
 	// listStorySummaries deliberately loads no descriptions; one scoped query
 	// adds the short summary the model needs to tell features apart.
@@ -209,6 +295,7 @@ export async function listProjectFeatures(
 			),
 		})),
 		total,
+		...(hidden ? { hiddenCount: hidden.total } : {}),
 		hasMore: offset + stories.length < total,
 	};
 }
@@ -231,25 +318,33 @@ export async function getProjectFeature(
 		return NO_ACCESS;
 	}
 
+	if (/^TASK-?\d+$/i.test(ref)) {
+		return {
+			error: `"${ref}" is a task identifier, not a feature. Tasks are listed under their feature — find the feature with fabric_list_project_features and read it with fabric_get_project_feature.`,
+		};
+	}
+
 	const { db, getStoryById } = await import("@repo/database");
 	let story = await getStoryById(ref, projectId);
 	if (!story) {
-		const byIdentifier = await db.userStory.findFirst({
+		const candidates = featureIdentifierCandidates(ref);
+		const rows = await db.userStory.findMany({
 			where: {
 				projectId,
-				OR: featureIdentifierCandidates(ref).map((identifier) => ({
-					identifier: { equals: identifier, mode: "insensitive" },
-				})),
+				OR: [...new Set(candidates.map((c) => c.identifier))].map(
+					(identifier) => ({
+						identifier: { equals: identifier, mode: "insensitive" },
+					}),
+				),
 			},
-			select: { id: true },
+			select: { id: true, identifier: true, kind: true },
 		});
-		story = byIdentifier
-			? await getStoryById(byIdentifier.id, projectId)
-			: null;
+		const picked = pickByCandidateOrder(rows, candidates);
+		story = picked ? await getStoryById(picked.id, projectId) : null;
 	}
 	if (!story) {
 		return {
-			error: `No feature "${ref}" in this project. Use fabric_list_project_features to find it.`,
+			error: `No ${describeReference(ref)} "${ref}" in this project. Use fabric_list_project_features to find it.`,
 		};
 	}
 

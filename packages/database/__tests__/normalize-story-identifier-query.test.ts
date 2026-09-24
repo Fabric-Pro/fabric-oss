@@ -12,7 +12,10 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { normalizeStoryIdentifierQuery } from "../prisma/queries/projects/stories";
+import {
+	compareStoryIdentifiers,
+	normalizeStoryIdentifierQuery,
+} from "../prisma/queries/projects/stories";
 
 describe("normalizeStoryIdentifierQuery (spec 2026-05-21 Group 3)", () => {
 	describe("strips legacy uppercase prefixes", () => {
@@ -119,5 +122,28 @@ describe("normalizeStoryIdentifierQuery (spec 2026-05-21 Group 3)", () => {
 				expect(twice).toBe(once);
 			});
 		}
+	});
+});
+
+describe("compareStoryIdentifiers", () => {
+	it("orders by number, not as text, across legacy and plain identifiers", () => {
+		const shuffled = [
+			"F-100",
+			"abc",
+			"F-094",
+			"100",
+			"B-002",
+			"99",
+			"F-215",
+		];
+		expect([...shuffled].sort(compareStoryIdentifiers)).toEqual([
+			"B-002",
+			"F-094",
+			"99",
+			"100",
+			"F-100",
+			"F-215",
+			"abc",
+		]);
 	});
 });

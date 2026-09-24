@@ -608,16 +608,19 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 			// Add messages
 			// CRITICAL: If existingMessages is provided, use it instead of prev
 			// This fixes the React batching issue where seedMessages + setMessages
-			// in the same render cycle causes the functional update to use stale state
-			if (shouldStartFresh) {
-				setMessages([userMessage, assistantMessage]);
-			} else if (existingMessages && existingMessages.length > 0) {
-				// Use explicit existing messages (avoids React batching issues)
+			// in the same render cycle causes the functional update to use stale state.
+			// They win over a pending fresh start: opening a saved conversation
+			// resets the stream (arming the fresh start) and then hands its thread
+			// in here on the first send. Starting fresh dropped that thread from
+			// the screen while the history still carried it to the model.
+			if (existingMessages && existingMessages.length > 0) {
 				setMessages([
 					...existingMessages,
 					userMessage,
 					assistantMessage,
 				]);
+			} else if (shouldStartFresh) {
+				setMessages([userMessage, assistantMessage]);
 			} else {
 				setMessages((prev) => [...prev, userMessage, assistantMessage]);
 			}

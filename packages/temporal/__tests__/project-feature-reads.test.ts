@@ -2,8 +2,10 @@
  * The chat's live roadmap reads (Fizzy #2309/#2310). Pinned here: the access
  * gate (a project the user cannot reach — another organization's included —
  * is refused before any story query runs), the project scoping of every query,
- * the status-name filter the model can actually use, and identifier matching
- * for the forms people type ("F-040", "F40", "40").
+ * the status-name filter the model can actually use, identifier matching for
+ * the forms people type ("F-040", "F40", "40"), a typed prefix never resolving
+ * to another kind ("F-001" returned bug B-001), and the list counting what the
+ * roadmap page counts.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -107,7 +109,7 @@ describe("access", () => {
 		expect(h.getProjectAccessContext).toHaveBeenCalledWith("p-1", "u-1");
 		expect(h.listStorySummaries).not.toHaveBeenCalled();
 		expect(h.getStoryById).not.toHaveBeenCalled();
-		expect(h.storyFindFirst).not.toHaveBeenCalled();
+		expect(h.storyFindMany).not.toHaveBeenCalled();
 	});
 
 	it("asks for a project when none is attached", async () => {
@@ -142,6 +144,7 @@ describe("listProjectFeatures", () => {
 				statusId: "st-review",
 				limit: 10,
 				offset: 0,
+				orderBy: "identifier",
 			}),
 		);
 		expect(res).toEqual({
@@ -159,8 +162,46 @@ describe("listProjectFeatures", () => {
 				},
 			],
 			total: 41,
+			hiddenCount: 41,
 			hasMore: true,
 		});
+	});
+
+	it("counts what the roadmap shows: no declined items, closed ones reported as hidden", async () => {
+		h.listStorySummaries.mockImplementation(
+			async (options: { draftingStage?: string }) =>
+				options.draftingStage === "CLOSED"
+					? { stories: [summary], total: 8 }
+					: { stories: [summary], total: 199 },
+		);
+
+		const res = await listProjectFeatures({ kind: "FEATURE" }, CTX);
+
+		expect(h.listStorySummaries).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "FEATURE",
+				excludeDraftingStages: ["DECLINED", "CLOSED"],
+				orderBy: "identifier",
+			}),
+		);
+		// The hidden count runs under the same filters.
+		expect(h.listStorySummaries).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "FEATURE",
+				draftingStage: "CLOSED",
+			}),
+		);
+		expect(res).toMatchObject({ total: 199, hiddenCount: 8 });
+	});
+
+	it("lists closed items with includeHidden, still never declined ones", async () => {
+		const res = await listProjectFeatures({ includeHidden: true }, CTX);
+
+		expect(h.listStorySummaries).toHaveBeenCalledTimes(1);
+		expect(h.listStorySummaries).toHaveBeenCalledWith(
+			expect.objectContaining({ excludeDraftingStages: ["DECLINED"] }),
+		);
+		expect(res).not.toHaveProperty("hiddenCount");
 	});
 
 	it("scopes the description lookup to the project", async () => {
@@ -196,12 +237,14 @@ describe("getProjectFeature", () => {
 		h.getStoryById.mockImplementation(async (id: string) =>
 			id === "s-1" ? story : null,
 		);
-		h.storyFindFirst.mockResolvedValue({ id: "s-1" });
+		h.storyFindMany.mockResolvedValue([
+			{ id: "s-1", identifier: "F-040", kind: "FEATURE" },
+		]);
 
 		const res = await getProjectFeature({ feature: "f40" }, CTX);
 
 		expect(h.getStoryById).toHaveBeenNthCalledWith(1, "f40", "p-1");
-		const where = h.storyFindFirst.mock.calls[0][0].where;
+		const where = h.storyFindMany.mock.calls[0][0].where;
 		expect(where.projectId).toBe("p-1");
 		expect(h.getStoryById).toHaveBeenLastCalledWith("s-1", "p-1");
 		expect(res).toMatchObject({
@@ -218,9 +261,87 @@ describe("getProjectFeature", () => {
 
 	it("says the feature is missing rather than guessing", async () => {
 		h.getStoryById.mockResolvedValue(null);
-		h.storyFindFirst.mockResolvedValue(null);
+		h.storyFindMany.mockResolvedValue([]);
 		const res = await getProjectFeature({ feature: "F-999" }, CTX);
 		expect(res).toMatchObject({ error: expect.stringContaining("F-999") });
+	});
+
+	/** Rows the identifier lookup returns; getStoryById resolves their ids. */
+	function withRows(
+		rows: Array<{ id: string; identifier: string; kind: string }>,
+	) {
+		h.storyFindMany.mockResolvedValue(rows);
+		h.getStoryById.mockImplementation(async (id: string) => {
+			const row = rows.find((r) => r.id === id);
+			return row ? { ...story, ...row } : null;
+		});
+	}
+
+	it("never answers F-001 with a bug (legacy B-001 or a bug numbered 1)", async () => {
+		withRows([
+			{ id: "bug-legacy", identifier: "B-001", kind: "BUG" },
+			{ id: "bug-plain", identifier: "1", kind: "BUG" },
+		]);
+
+		const res = await getProjectFeature({ feature: "F-001" }, CTX);
+
+		expect(res).toEqual({
+			error: 'No feature "F-001" in this project. Use fabric_list_project_features to find it.',
+		});
+	});
+
+	it("resolves F-001 to a feature numbered 1", async () => {
+		withRows([
+			{ id: "bug-legacy", identifier: "B-001", kind: "BUG" },
+			{ id: "feat-plain", identifier: "1", kind: "FEATURE" },
+		]);
+
+		const res = await getProjectFeature({ feature: "F-001" }, CTX);
+
+		expect(res).toMatchObject({ id: "feat-plain", identifier: "1" });
+	});
+
+	it("prefers the exact identifier over any other candidate", async () => {
+		// Returned in the order a database might: the plain-number row first.
+		withRows([
+			{ id: "feat-plain", identifier: "1", kind: "FEATURE" },
+			{ id: "feat-legacy", identifier: "F-001", kind: "FEATURE" },
+		]);
+
+		expect(
+			await getProjectFeature({ feature: "F-001" }, CTX),
+		).toMatchObject({ id: "feat-legacy" });
+		expect(await getProjectFeature({ feature: "1" }, CTX)).toMatchObject({
+			id: "feat-plain",
+		});
+	});
+
+	it("tries a bare number as plain, then F-, then B-", async () => {
+		withRows([
+			{ id: "bug-legacy", identifier: "B-007", kind: "BUG" },
+			{ id: "feat-legacy", identifier: "F-007", kind: "FEATURE" },
+		]);
+		expect(await getProjectFeature({ feature: "7" }, CTX)).toMatchObject({
+			id: "feat-legacy",
+		});
+	});
+
+	it("names a bug reference as a bug when it is missing", async () => {
+		withRows([{ id: "feat-legacy", identifier: "F-002", kind: "FEATURE" }]);
+		expect(
+			await getProjectFeature({ feature: "B-002" }, CTX),
+		).toMatchObject({
+			error: expect.stringContaining('No bug "B-002"'),
+		});
+	});
+
+	it("refuses a task identifier instead of mapping it to a feature number", async () => {
+		h.getStoryById.mockResolvedValue(null);
+		const res = await getProjectFeature({ feature: "TASK-005" }, CTX);
+		expect(res).toMatchObject({
+			error: expect.stringContaining("task identifier"),
+		});
+		expect(h.storyFindMany).not.toHaveBeenCalled();
 	});
 
 	it("requires a feature reference", async () => {
@@ -231,17 +352,43 @@ describe("getProjectFeature", () => {
 });
 
 describe("featureIdentifierCandidates", () => {
-	it.each(["F-040", "f40", "40", "040", "F-40"])(
-		"%s reaches both legacy and plain-decimal forms",
+	const ids = (ref: string) =>
+		featureIdentifierCandidates(ref).map((c) =>
+			c.kind ? `${c.identifier}:${c.kind}` : c.identifier,
+		);
+
+	it.each(["F-040", "f40", "F-40"])(
+		"%s reaches legacy F- and plain-decimal FEATURE rows, nothing else",
 		(ref) => {
-			const candidates = featureIdentifierCandidates(ref);
-			expect(candidates).toEqual(
-				expect.arrayContaining(["F-040", "40", "040"]),
+			const got = ids(ref);
+			expect(got[0]).toBe(ref);
+			expect(got).toEqual(
+				expect.arrayContaining(["F-040", "40:FEATURE", "040:FEATURE"]),
 			);
+			expect(
+				got.some((c) => c.startsWith("B-") || c.startsWith("US-")),
+			).toBe(false);
 		},
 	);
 
+	it("B-002 stays with bugs", () => {
+		expect(ids("B-002")).toEqual(["B-002", "B-2", "2:BUG", "002:BUG"]);
+	});
+
+	it("a bare number tries plain, then F-, US-, B-", () => {
+		expect(ids("040")).toEqual([
+			"040",
+			"40",
+			"F-040",
+			"F-40",
+			"US-040",
+			"US-40",
+			"B-040",
+			"B-40",
+		]);
+	});
+
 	it("leaves a non-identifier reference alone", () => {
-		expect(featureIdentifierCandidates("cm1abcdef")).toEqual(["cm1abcdef"]);
+		expect(ids("cm1abcdef")).toEqual(["cm1abcdef"]);
 	});
 });
