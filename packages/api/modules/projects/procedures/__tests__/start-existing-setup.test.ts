@@ -188,6 +188,7 @@ beforeEach(() => {
 		provider: "AZURE_DEVOPS",
 		owner: "my-org",
 		name: "repo",
+		url: ADO_URL,
 	});
 	mockWorkflowStart.mockResolvedValue({ workflowId: "wf-1" });
 	mockGetTemporalClient.mockResolvedValue({
@@ -367,6 +368,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITHUB",
 			owner: "my-org",
 			name: "my-repo",
+			url: "https://github.com/my-org/my-repo",
 		});
 		mockRepoIntegrationFindFirst.mockResolvedValue(null);
 
@@ -427,6 +429,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITLAB",
 			owner: "my-org",
 			name: "my-repo",
+			url: "https://gitlab.com/my-org/my-repo",
 		});
 		mockRepoIntegrationFindFirst.mockResolvedValue(null);
 
@@ -479,6 +482,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITHUB",
 			owner: "my-org",
 			name: "my-repo",
+			url: "https://github.com/my-org/my-repo",
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: encryptApiKey(
@@ -522,6 +526,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITHUB",
 			owner: "my-org",
 			name: "my-repo",
+			url: "https://github.com/my-org/my-repo",
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: encryptApiKey(
@@ -570,6 +575,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITLAB",
 			owner: "my-org",
 			name: "my-repo",
+			url: "https://gitlab.com/my-org/my-repo",
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: encryptApiKey(
@@ -619,6 +625,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITHUB",
 			owner: "my-org",
 			name: "my-repo",
+			url: "https://github.com/my-org/my-repo",
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: encryptApiKey(
@@ -686,6 +693,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITHUB",
 			owner: "my-org",
 			name: "legacy-repo",
+			url: GITHUB_URL,
 		});
 		mockRepoIntegrationFindFirst.mockResolvedValue(null);
 		mockResolveDefaultBranch.mockResolvedValueOnce("main");
@@ -774,6 +782,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITHUB",
 			owner: "my-org",
 			name: "my-repo",
+			url: "https://github.com/my-org/my-repo",
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: encryptApiKey(
@@ -809,6 +818,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITLAB",
 			owner: "my-org",
 			name: "my-repo",
+			url: "https://gitlab.com/my-org/my-repo",
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: encryptApiKey(
@@ -844,10 +854,20 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 	it("connects successful repos and skips failing repos across providers when one credential fails its probe", async () => {
 		mockParseRepoUrl.mockImplementation((url: string) => {
 			if (url.includes("github.com")) {
-				return { provider: "GITHUB", owner: "gh-org", name: "gh-repo" };
+				return {
+					provider: "GITHUB",
+					owner: "gh-org",
+					name: "gh-repo",
+					url,
+				};
 			}
 			if (url.includes("gitlab.com")) {
-				return { provider: "GITLAB", owner: "gl-org", name: "gl-repo" };
+				return {
+					provider: "GITLAB",
+					owner: "gl-org",
+					name: "gl-repo",
+					url,
+				};
 			}
 			return null;
 		});
@@ -922,10 +942,20 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 	it("probes each GitHub repo separately, skipping only the one the credential cannot read", async () => {
 		mockParseRepoUrl.mockImplementation((url: string) => {
 			if (url.includes("repo-1")) {
-				return { provider: "GITHUB", owner: "org-a", name: "repo-1" };
+				return {
+					provider: "GITHUB",
+					owner: "org-a",
+					name: "repo-1",
+					url,
+				};
 			}
 			if (url.includes("repo-2")) {
-				return { provider: "GITHUB", owner: "org-a", name: "repo-2" };
+				return {
+					provider: "GITHUB",
+					owner: "org-a",
+					name: "repo-2",
+					url,
+				};
 			}
 			return null;
 		});
@@ -993,6 +1023,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITLAB",
 			owner: "my-org",
 			name: "my-repo",
+			url: "https://gitlab.com/my-org/my-repo",
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: encryptApiKey(
@@ -1032,6 +1063,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITHUB",
 			owner: "my-org",
 			name: "my-repo",
+			url: "https://github.com/my-org/my-repo",
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: encryptApiKey(
@@ -1066,6 +1098,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITLAB",
 			owner: "example-org",
 			name: "example-repo",
+			url: "https://gitlab.example.com/example-org/example-repo",
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: encryptApiKey(
@@ -1101,6 +1134,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITLAB",
 			owner: "example-org",
 			name: "example-repo",
+			url: "https://gitlab.example.com/example-org/example-repo",
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: encryptApiKey(
@@ -1139,6 +1173,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITHUB",
 			owner: "example-org",
 			name: "example-repo",
+			url: "https://github.com/example-org/example-repo",
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: encryptApiKey(
@@ -1174,6 +1209,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITLAB",
 			owner: "example-org",
 			name: "example-repo",
+			url: "https://gitlab.com/example-org/example-repo",
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: encryptApiKey(
@@ -1209,6 +1245,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			provider: "GITHUB",
 			owner: "example-org",
 			name: "example-repo",
+			url: "https://github.com/example-org/example-repo",
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: "invalid_encrypted_data",
@@ -1233,5 +1270,169 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 		]);
 		expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
 		expect(mockWorkflowStart).toHaveBeenCalled();
+	});
+
+	// Fizzy #2662: this procedure stored the caller-supplied `repoUrl.trim()`
+	// verbatim rather than `parseRepoUrl`'s canonical form. Userinfo is built at
+	// runtime (never a literal `user@host`) so it isn't mistaken for a real
+	// credential/email by the OSS relay's identifier scan.
+	it("stores the canonical form of a caller-supplied GitHub repositoryUrl (userinfo stripped, trailing .git removed)", async () => {
+		const rawGitHubUrl = new URL("https://github.com/my-org/my-repo.git");
+		rawGitHubUrl.username = "someuser";
+
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "my-org",
+			name: "my-repo",
+			url: "https://github.com/my-org/my-repo",
+		});
+		mockWorkflowIntegrationFindFirst.mockResolvedValue({
+			credentials: encryptApiKey(
+				JSON.stringify({
+					access_token: "fake-github-token",
+					scope: "repo",
+				}),
+			),
+		});
+		mockRepoIntegrationFindFirst.mockResolvedValue(null);
+		mockResolveDefaultBranch.mockResolvedValueOnce("main");
+
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				projectId: "p1",
+				organizationId: "org-1",
+				repoUrls: [rawGitHubUrl.toString()],
+				selectedDocumentTypes: [],
+				projectTypes: [],
+				projectName: "Proj",
+			},
+			context: baseContext,
+		});
+
+		expect(mockCreateProjectRepoIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({
+				repositoryUrl: "https://github.com/my-org/my-repo",
+			}),
+		);
+		expect(mockSyncLegacyProjectRepoOnConnect).toHaveBeenCalledWith(
+			"p1",
+			"https://github.com/my-org/my-repo",
+			"my-org",
+			"my-repo",
+			"main",
+		);
+	});
+
+	it("stores the canonical form of a caller-supplied GitLab repositoryUrl (userinfo stripped, trailing .git removed)", async () => {
+		const rawGitLabUrl = new URL("https://gitlab.com/my-org/my-repo.git");
+		rawGitLabUrl.username = "someuser";
+
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITLAB",
+			owner: "my-org",
+			name: "my-repo",
+			url: "https://gitlab.com/my-org/my-repo",
+		});
+		mockWorkflowIntegrationFindFirst.mockResolvedValue({
+			credentials: encryptApiKey(
+				JSON.stringify({ access_token: "fake-gitlab-token" }),
+			),
+		});
+		mockRepoIntegrationFindFirst.mockResolvedValue(null);
+		mockResolveDefaultBranch.mockResolvedValueOnce("main");
+
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				projectId: "p1",
+				organizationId: "org-1",
+				repoUrls: [rawGitLabUrl.toString()],
+				selectedDocumentTypes: [],
+				projectTypes: [],
+				projectName: "Proj",
+			},
+			context: baseContext,
+		});
+
+		// The OAuth arm's own repository probe — one of the call sites that
+		// used to forward the raw, uncanonicalized URL.
+		expect(mockVerifyRepositoryAccess).toHaveBeenCalledWith({
+			provider: "GITLAB",
+			token: "fake-gitlab-token",
+			gitlabAuth: "bearer",
+			repositoryUrl: "https://gitlab.com/my-org/my-repo",
+			owner: "my-org",
+			repo: "my-repo",
+		});
+		expect(mockResolveDefaultBranch).toHaveBeenCalledWith(
+			expect.objectContaining({
+				repositoryUrl: "https://gitlab.com/my-org/my-repo",
+			}),
+		);
+		expect(mockCreateProjectRepoIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({
+				repositoryUrl: "https://gitlab.com/my-org/my-repo",
+			}),
+		);
+		expect(mockSyncLegacyProjectRepoOnConnect).toHaveBeenCalledWith(
+			"p1",
+			"https://gitlab.com/my-org/my-repo",
+			"my-org",
+			"my-repo",
+			"main",
+		);
+	});
+
+	// Fizzy #2662 Codex follow-up: the integration writes were canonicalized,
+	// but the workflow-start args and the repo_scan_triggered audit metadata
+	// still forwarded the raw caller string — which the workflow then echoes
+	// verbatim into its analysis prompt and `ProjectContext.sourceUrl`.
+	it("passes the canonical url — not the raw userinfo/`.git` string — to the workflow-start args and the repo_scan_triggered audit metadata", async () => {
+		const rawUrl = new URL("https://github.com/my-org/my-repo.git");
+		rawUrl.username = "someuser";
+		rawUrl.password = "somepassword";
+
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "my-org",
+			name: "my-repo",
+			url: "https://github.com/my-org/my-repo",
+		});
+		// No stored GitHub/GitLab credential — this test is only about the
+		// workflow-start args and audit metadata, not integration
+		// auto-population, so it deliberately skips that path.
+		mockWorkflowIntegrationFindFirst.mockResolvedValue(null);
+
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				projectId: "p1",
+				organizationId: "org-1",
+				repoUrls: [rawUrl.toString()],
+				selectedDocumentTypes: [],
+				projectTypes: [],
+				projectName: "Proj",
+			},
+			context: baseContext,
+		});
+
+		const [, options] = mockWorkflowStart.mock.calls[0];
+		const workflowArgs = (options as { args: unknown[] }).args[0] as {
+			repoUrls: string[];
+		};
+		expect(workflowArgs.repoUrls).toEqual([
+			"https://github.com/my-org/my-repo",
+		]);
+
+		const auditCall = mockLogRepoIntegrationActivity.mock.calls.find(
+			(call) =>
+				(call[0] as { activityType?: string }).activityType ===
+				"repo_scan_triggered",
+		);
+		expect(
+			(auditCall?.[0] as { metadata: { repoUrls: string[] } })?.metadata
+				.repoUrls,
+		).toEqual(["https://github.com/my-org/my-repo"]);
 	});
 });

@@ -97,6 +97,19 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
+		// A query string or fragment is refused outright, with a message
+		// that says why, rather than falling through to the generic
+		// "Cannot parse repository URL" below (which also refuses it, just
+		// without naming the reason). Zod's `.url()` on the input schema
+		// already guarantees this parses.
+		const rawUrl = new URL(input.repositoryUrl);
+		if (rawUrl.search !== "" || rawUrl.hash !== "") {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Repository URL must not include a query string or fragment",
+			});
+		}
+
 		// Validate repo URL
 		const parsed = parseRepoUrl(input.repositoryUrl);
 		if (!parsed) {
@@ -336,9 +349,7 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 				// repositoryUrl) can be pointed at an internal host (SSRF).
 				let hostname: string;
 				try {
-					hostname = new URL(
-						input.repositoryUrl,
-					).hostname.toLowerCase();
+					hostname = new URL(parsed.url).hostname.toLowerCase();
 				} catch {
 					throw new ORPCError("BAD_REQUEST", {
 						message: "Invalid GitLab repository URL",
@@ -366,7 +377,7 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 				providedBranch: input.defaultBranch,
 				provider,
 				token: patToUse,
-				repositoryUrl: input.repositoryUrl,
+				repositoryUrl: parsed.url,
 				owner: repositoryOwner,
 				repo: repositoryName,
 				azureOrganization: input.azureOrganization,
@@ -408,7 +419,7 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 					projectId: input.projectId,
 					provider,
 					authMethod: input.authMethod,
-					repositoryUrl: input.repositoryUrl,
+					repositoryUrl: parsed.url,
 					repositoryOwner,
 					repositoryName,
 					defaultBranch: resolvedBranch,
@@ -429,7 +440,7 @@ export const connectRepoIntegrationProcedure = tenantProtectedProcedure
 
 			await syncLegacyProjectRepoOnConnect(
 				input.projectId,
-				input.repositoryUrl,
+				parsed.url,
 				repositoryOwner,
 				repositoryName,
 				resolvedBranch,

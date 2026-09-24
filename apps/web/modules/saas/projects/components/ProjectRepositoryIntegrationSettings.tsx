@@ -997,13 +997,21 @@ export function ProjectRepositoryIntegrationSettings({
 	const handleGitLabPickerConfirm = useCallback(
 		(repos: GitLabProject[]) => {
 			setShowGitLabPicker(false);
+			// The picker's `repo.name` is GitLab's `path_with_namespace` (the
+			// full path, e.g. "group/subgroup/repo"), but a connected
+			// integration's stored `repositoryName` is now the bare slug
+			// (e.g. "repo") — a row created before that normalization may
+			// still carry the legacy full-path form. Match either shape so an
+			// already-connected repo (old or new row) isn't shown as fresh.
 			const fresh = repos.filter(
 				(repo) =>
 					!integrationList.some(
 						(i) =>
 							i.provider === "GITLAB" &&
 							i.repositoryOwner === repo.owner &&
-							i.repositoryName === repo.name,
+							(i.repositoryName === repo.name ||
+								`${i.repositoryOwner}/${i.repositoryName}` ===
+									repo.name),
 					),
 			);
 			if (fresh.length === 0) {

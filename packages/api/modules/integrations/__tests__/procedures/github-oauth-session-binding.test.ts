@@ -45,25 +45,32 @@ vi.mock("@repo/connectors", () => ({
 	verifyRepositoryAccess: vi.fn(),
 }));
 
-vi.mock("@repo/database", () => ({
-	db: {
-		workflowIntegration: {
-			findFirst: mockWorkflowIntegrationFindFirst,
-			create: mockWorkflowIntegrationCreate,
-			update: mockWorkflowIntegrationUpdate,
+vi.mock("@repo/database", async (importOriginal) => {
+	// `parseRepoUrl` is real (not stubbed) here: the project-target start
+	// tests below exercise `resolveProjectRepositoryIdentity`, which needs
+	// the actual canonicalisation/refusal behaviour, not a mock.
+	const actual = await importOriginal<typeof import("@repo/database")>();
+	return {
+		...actual,
+		db: {
+			workflowIntegration: {
+				findFirst: mockWorkflowIntegrationFindFirst,
+				create: mockWorkflowIntegrationCreate,
+				update: mockWorkflowIntegrationUpdate,
+			},
+			dataConnection: { updateMany: mockDataConnectionUpdateMany },
+			projectRepositoryIntegration: {
+				findFirst: vi.fn(),
+				create: vi.fn(),
+				update: vi.fn(),
+			},
 		},
-		dataConnection: { updateMany: mockDataConnectionUpdateMany },
-		projectRepositoryIntegration: {
-			findFirst: vi.fn(),
-			create: vi.fn(),
-			update: vi.fn(),
-		},
-	},
-	createProjectRepoIntegration: vi.fn(),
-	getOrganizationMembership: mockGetOrganizationMembership,
-	logRepoIntegrationActivity: vi.fn(),
-	syncLegacyProjectRepoOnConnect: vi.fn(),
-}));
+		createProjectRepoIntegration: vi.fn(),
+		getOrganizationMembership: mockGetOrganizationMembership,
+		logRepoIntegrationActivity: vi.fn(),
+		syncLegacyProjectRepoOnConnect: vi.fn(),
+	};
+});
 
 vi.mock("@repo/integrations", () => ({
 	getGitHubToken: vi.fn(),
@@ -151,6 +158,20 @@ const callback = githubOAuthProcedures.callback as unknown as Handler<
 >;
 const start = githubOAuthProcedures.start as unknown as Handler<
 	{ redirectUri: string; organizationId?: string | null },
+	{ authorizationUrl: string }
+>;
+type ProjectTargetStartInput = {
+	redirectUri: string;
+	organizationId?: string | null;
+	targetType?: "user" | "project";
+	projectId?: string;
+	repositoryUrl?: string;
+	repositoryOwner?: string;
+	repositoryName?: string;
+	defaultBranch?: string;
+};
+const startProjectTarget = githubOAuthProcedures.start as unknown as Handler<
+	ProjectTargetStartInput,
 	{ authorizationUrl: string }
 >;
 
@@ -444,4 +465,147 @@ describe("integrations.github.start", () => {
 			provider: "github",
 		});
 	});
+});
+
+describe("integrations.github.start — project-target repository identity (Fizzy #2662 Codex round 2)", () => {
+	beforeEach(() => {
+		mockResolveOrganizationIdForCaller.mockResolvedValue("org-1");
+		mockGetGitHubOAuthUrl.mockReturnValue(
+			"https://github.com/login/oauth/authorize?state=x",
+		);
+	});
+
+	function mintedState(): ReturnType<typeof decodeOAuthState> {
+		const signedState = mockGetGitHubOAuthUrl.mock.calls.at(-1)?.[2];
+		return decodeOAuthState(signedState as string);
+	}
+
+	// A URL that fails to parse (userinfo aside — that's stripped, not
+	// refused) must never reach `encodeOAuthState`.
+	it("signs a userinfo-free canonical URL when the candidate carries userinfo", async () => {
+		const withUserinfo = new URL("https://github.com/acme/widgets");
+		withUserinfo.username = "someuser";
+		withUserinfo.password = "somepassword";
+
+		await expect(
+			startProjectTarget.handler({
+				input: {
+					redirectUri: REDIRECT_URI,
+					organizationId: "org-1",
+					targetType: "project",
+					projectId: "proj-1",
+					repositoryUrl: withUserinfo.toString(),
+					repositoryOwner: "acme",
+					repositoryName: "widgets",
+				},
+				context: contextFor("user-1"),
+			}),
+		).resolves.toMatchObject({ authorizationUrl: expect.any(String) });
+
+		const state = mintedState();
+		expect(state?.repositoryUrl).toBe("https://github.com/acme/widgets");
+		expect(state?.repositoryUrl).not.toContain("@");
+	});
+
+	it.each([
+		["a query string", "https://github.com/acme/widgets?ref=main"],
+		["a fragment", "https://github.com/acme/widgets#readme"],
+		["a non-default port", "https://github.com:8443/acme/widgets"],
+	])("mints no state when repositoryUrl carries %s", async (_label, url) => {
+		await expect(
+			startProjectTarget.handler({
+				input: {
+					redirectUri: REDIRECT_URI,
+					organizationId: "org-1",
+					targetType: "project",
+					projectId: "proj-1",
+					repositoryUrl: url,
+					repositoryOwner: "acme",
+					repositoryName: "widgets",
+				},
+				context: contextFor("user-1"),
+			}),
+		).rejects.toMatchObject({ message: "Cannot parse repository URL" });
+
+		expect(mockGetGitHubOAuthUrl).not.toHaveBeenCalled();
+	});
+
+	// `repositoryOwner`/`repositoryName` sent WITHOUT a `repositoryUrl` build
+	// the same `https://github.com/{owner}/{name}` fallback the callback
+	// uses — this must also be validated (and canonicalised) before signing,
+	// not left to the callback.
+	it("mints no state when the owner/name fallback candidate carries a query string", async () => {
+		const repositoryNameWithQuery = ["widgets", "ref=main"].join("?");
+		await expect(
+			startProjectTarget.handler({
+				input: {
+					redirectUri: REDIRECT_URI,
+					organizationId: "org-1",
+					targetType: "project",
+					projectId: "proj-1",
+					repositoryOwner: "acme",
+					repositoryName: repositoryNameWithQuery,
+				},
+				context: contextFor("user-1"),
+			}),
+		).rejects.toMatchObject({ message: "Cannot parse repository URL" });
+
+		expect(mockGetGitHubOAuthUrl).not.toHaveBeenCalled();
+	});
+
+	// Codex round-3 item 3: previously, when the helper couldn't build ANY
+	// candidate (too little identity info), the raw partial fields were
+	// still signed into the state and the OAuth flow started anyway. A
+	// project-target request now requires `projectId` and a resolvable
+	// identity before minting anything.
+	it.each([
+		[
+			"owner-only (no repositoryName, no repositoryUrl)",
+			{
+				projectId: "proj-1",
+				repositoryOwner: "acme",
+			},
+		],
+		[
+			"name-only (no repositoryOwner, no repositoryUrl)",
+			{
+				projectId: "proj-1",
+				repositoryName: "widgets",
+			},
+		],
+		[
+			"no identity at all",
+			{
+				projectId: "proj-1",
+			},
+		],
+		[
+			"a full identity but no projectId",
+			{
+				repositoryUrl: "https://github.com/acme/widgets",
+				repositoryOwner: "acme",
+				repositoryName: "widgets",
+			},
+		],
+	])(
+		"mints no state for a project-target request with %s",
+		async (_label, extra) => {
+			await expect(
+				startProjectTarget.handler({
+					input: {
+						redirectUri: REDIRECT_URI,
+						organizationId: "org-1",
+						targetType: "project",
+						...extra,
+					},
+					context: contextFor("user-1"),
+				}),
+			).rejects.toMatchObject({
+				message:
+					"Missing project integration fields (projectId, repositoryOwner, or repositoryName)",
+			});
+
+			expect(mockGetGitHubOAuthUrl).not.toHaveBeenCalled();
+		},
+	);
 });

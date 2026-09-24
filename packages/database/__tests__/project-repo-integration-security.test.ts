@@ -165,6 +165,7 @@ describe("Security — URL Parsing Safety", () => {
 			provider: "GITHUB",
 			owner: "my-org",
 			name: "my_repo",
+			url: "https://github.com/my-org/my_repo",
 		});
 	});
 });

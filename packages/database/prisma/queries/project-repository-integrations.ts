@@ -906,6 +906,17 @@ interface ParsedRepoUrl {
 	 * project-scoped, so the pipeline-results sync needs this.
 	 */
 	project?: string;
+	/**
+	 * The canonical form callers should store and pass onward: `origin +
+	 * pathname`, HTTPS only, with a trailing slash and a trailing `.git` on
+	 * the last path segment removed. `origin` never carries userinfo, so a
+	 * caller-supplied `user@host` (e.g. the Azure DevOps "Clone" button's own
+	 * URL shape) is stripped here rather than refused. A query string or
+	 * fragment is refused outright below — never silently dropped — so
+	 * something like `?access_token=…` or `#token` cannot ride along into
+	 * storage, a clone-URL builder, a display link, or an LLM prompt.
+	 */
+	url: string;
 }
 
 /**
@@ -931,15 +942,38 @@ export function parseRepoUrl(url: string): ParsedRepoUrl | null {
 	} catch {
 		return null;
 	}
+	// HTTPS only. Userinfo (`user@host` — e.g. Azure DevOps's own "Clone"
+	// button URL) is no longer refused here: `origin` below never carries it,
+	// so it gets stripped rather than rejected. A query string or fragment IS
+	// refused — neither is ever part of a repository's identity, and letting
+	// either through would carry something like `?access_token=…` or
+	// `#token` into storage and every downstream consumer. An explicit
+	// non-default port is refused too: `parsed.origin` includes it
+	// (`https://github.com:8443/...`), which would both defeat the hostname
+	// checks below in spirit (the provider match still fires on `hostname`
+	// alone) and store/probe a host:port pair that isn't actually
+	// github.com/gitlab.com/dev.azure.com on 443. `URL` already normalizes an
+	// explicit `:443` away, so this never rejects a plain default-port input.
 	if (
-		(parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
-		parsed.username ||
-		parsed.password
+		parsed.protocol !== "https:" ||
+		parsed.search !== "" ||
+		parsed.hash !== "" ||
+		parsed.port !== ""
 	) {
 		return null;
 	}
 
-	const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+	// A trailing DNS root dot (`github.com.`) is refused rather than
+	// stripped: the hostname match below already tolerates it (so provider
+	// detection still fires), but `canonicalUrl` is built from `parsed.origin`
+	// — which keeps the dot — so silently matching on the dot-stripped form
+	// while storing the dotted one would canonicalize to a URL provider
+	// detection itself would then refuse to re-parse.
+	if (parsed.hostname.endsWith(".")) {
+		return null;
+	}
+
+	const hostname = parsed.hostname.toLowerCase();
 	const path = parsed.pathname.split("/").filter(Boolean);
 	const name = path.at(-1)?.replace(/\.git$/i, "");
 	const firstPathSegment = path[0];
@@ -947,11 +981,17 @@ export function parseRepoUrl(url: string): ParsedRepoUrl | null {
 		return null;
 	}
 
+	// Canonical stored form: origin (never carries userinfo) + pathname,
+	// rebuilt from the already-`filter(Boolean)`-ed segments (drops a
+	// trailing slash) with the trailing `.git` stripped from the last one.
+	const canonicalUrl = `${parsed.origin}/${[...path.slice(0, -1), name].join("/")}`;
+
 	if (hostname === "github.com" && path.length === 2) {
 		return {
 			provider: "GITHUB",
 			owner: firstPathSegment,
 			name,
+			url: canonicalUrl,
 		};
 	}
 
@@ -968,6 +1008,7 @@ export function parseRepoUrl(url: string): ParsedRepoUrl | null {
 			owner: firstPathSegment,
 			...(gitIndex === 2 ? { project: path[1] } : {}),
 			name,
+			url: canonicalUrl,
 		};
 	}
 
@@ -983,6 +1024,7 @@ export function parseRepoUrl(url: string): ParsedRepoUrl | null {
 			owner: adoOwner,
 			...(gitIndex === 1 ? { project: path[0] } : {}),
 			name,
+			url: canonicalUrl,
 		};
 	}
 
@@ -991,6 +1033,7 @@ export function parseRepoUrl(url: string): ParsedRepoUrl | null {
 			provider: "GITLAB",
 			owner: path.slice(0, -1).join("/"),
 			name,
+			url: canonicalUrl,
 		};
 	}
 

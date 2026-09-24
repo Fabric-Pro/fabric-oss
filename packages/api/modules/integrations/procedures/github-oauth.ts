@@ -44,6 +44,7 @@ import {
 } from "../lib/oauth-callback-guard";
 import { assertOAuthStartOrganization } from "../lib/oauth-start-organization";
 import { decodeOAuthState, encodeOAuthState } from "../lib/oauth-state";
+import { resolveProjectRepositoryIdentity } from "../lib/repository-identity";
 
 /**
  * Get GitHub OAuth configuration from environment
@@ -161,6 +162,44 @@ export const githubOAuthProcedures = {
 			// it narrows the type so no state is ever minted without one.
 			assertOAuthStartOrganization(organizationId);
 
+			// `repositoryUrl` and `repositoryOwner`/`repositoryName` are three
+			// independent, unvalidated fields on this input. Resolving and
+			// validating identity here — before the user is ever sent to
+			// GitHub — is better UX than the callback's own refusal after the
+			// round trip; it also means the state below signs the canonical
+			// `parsed.url`/`owner`/`name` rather than whatever the caller sent
+			// (a URL that fails to parse, carries userinfo, or names a
+			// different repository than repositoryOwner/repositoryName never
+			// reaches `encodeOAuthState`). A project-target flow with no
+			// `projectId`, or with too little identity info for the helper to
+			// build ANY candidate from (both repositoryUrl and a full
+			// owner/name pair absent), is refused here too — signing a
+			// state that the callback's own "missing project integration
+			// fields" check would refuse anyway is worse UX than refusing at
+			// start, and previously signed the raw, unvalidated partial
+			// fields into the state in the meantime.
+			let projectRepositoryUrl: string | undefined;
+			let projectRepositoryOwner: string | undefined;
+			let projectRepositoryName: string | undefined;
+			if (input.targetType === "project") {
+				const resolved = resolveProjectRepositoryIdentity({
+					provider: "GITHUB",
+					repositoryUrl: input.repositoryUrl,
+					repositoryOwner: input.repositoryOwner,
+					repositoryName: input.repositoryName,
+					caseSensitive: false,
+				});
+				if (!input.projectId || !resolved) {
+					throw new ORPCError("BAD_REQUEST", {
+						message:
+							"Missing project integration fields (projectId, repositoryOwner, or repositoryName)",
+					});
+				}
+				projectRepositoryUrl = resolved.url;
+				projectRepositoryOwner = resolved.owner;
+				projectRepositoryName = resolved.name;
+			}
+
 			// Generate signed state (include redirectUri so callback uses same value)
 			const state = encodeOAuthState({
 				userId,
@@ -170,9 +209,9 @@ export const githubOAuthProcedures = {
 				redirectUri: input.redirectUri,
 				targetType: input.targetType,
 				projectId: input.projectId,
-				repositoryUrl: input.repositoryUrl,
-				repositoryOwner: input.repositoryOwner,
-				repositoryName: input.repositoryName,
+				repositoryUrl: projectRepositoryUrl,
+				repositoryOwner: projectRepositoryOwner,
+				repositoryName: projectRepositoryName,
 				defaultBranch: input.defaultBranch,
 				roleTag: input.roleTag,
 			});
@@ -853,6 +892,38 @@ export async function handleProjectTargetCallback(args: {
 }> {
 	const { state, tokenResponse, githubUser } = args;
 
+	// Resolve and validate identity from whatever candidate can be built (the
+	// caller-supplied `repositoryUrl` from the OAuth start request, or the
+	// `github.com/{owner}/{name}` fallback) through the same canonicalisation
+	// the connect/PAT path uses, and require it to match `repositoryOwner`/
+	// `repositoryName` (case-insensitively — GitHub treats a repo's path
+	// case-insensitively). `state.repositoryOwner`/`repositoryName` are
+	// required by this function's signature (the outer callback already
+	// validated their presence), so a candidate can always be built and
+	// `resolved` is never null here in practice; the defensive branch below
+	// keeps this function's own contract self-checking rather than trusting
+	// that.
+	const resolved = resolveProjectRepositoryIdentity({
+		provider: "GITHUB",
+		repositoryUrl: state.repositoryUrl,
+		repositoryOwner: state.repositoryOwner,
+		repositoryName: state.repositoryName,
+		caseSensitive: false,
+	});
+	if (!resolved) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: "Cannot parse repository URL",
+		});
+	}
+	const canonicalRepositoryUrl = resolved.url;
+	// Every downstream consumer (the probe, resolveDefaultBranch, the upsert
+	// key, the audit log) uses this resolved, bare owner/name pair — never
+	// `state.repositoryOwner`/`repositoryName` directly — so a picker or
+	// caller that sent a doubled/legacy-shaped name never produces a
+	// mismatched or malformed stored identity.
+	const repositoryOwner = resolved.owner;
+	const repositoryName = resolved.name;
+
 	// Observe the REPOSITORY, not just the token. The exchange and GET /user
 	// above prove the credential is alive; only a repo-scoped probe proves
 	// Fabric can work with this repository — the two come apart when the app
@@ -862,9 +933,9 @@ export async function handleProjectTargetCallback(args: {
 		await verifyRepositoryAccess({
 			provider: "GITHUB",
 			token: tokenResponse.access_token,
-			repositoryUrl: `https://github.com/${state.repositoryOwner}/${state.repositoryName}`,
-			owner: state.repositoryOwner,
-			repo: state.repositoryName,
+			repositoryUrl: canonicalRepositoryUrl,
+			owner: repositoryOwner,
+			repo: repositoryName,
 		});
 	const verdict = integrationStatusForRepoAccess(accessOutcome, "GITHUB");
 
@@ -902,8 +973,8 @@ export async function handleProjectTargetCallback(args: {
 		where: {
 			projectId: state.projectId,
 			provider: "GITHUB",
-			repositoryOwner: state.repositoryOwner,
-			repositoryName: state.repositoryName,
+			repositoryOwner,
+			repositoryName,
 		},
 	});
 
@@ -913,9 +984,9 @@ export async function handleProjectTargetCallback(args: {
 		providedBranch: state.defaultBranch ?? probedDefaultBranch,
 		provider: "GITHUB",
 		token: tokenResponse.access_token,
-		repositoryUrl: `https://github.com/${state.repositoryOwner}/${state.repositoryName}`,
-		owner: state.repositoryOwner,
-		repo: state.repositoryName,
+		repositoryUrl: canonicalRepositoryUrl,
+		owner: repositoryOwner,
+		repo: repositoryName,
 	});
 
 	let integrationId: string;
@@ -931,11 +1002,9 @@ export async function handleProjectTargetCallback(args: {
 			projectId: state.projectId,
 			provider: "GITHUB",
 			authMethod: "OAUTH",
-			repositoryUrl:
-				state.repositoryUrl ??
-				`https://github.com/${state.repositoryOwner}/${state.repositoryName}`,
-			repositoryOwner: state.repositoryOwner,
-			repositoryName: state.repositoryName,
+			repositoryUrl: canonicalRepositoryUrl,
+			repositoryOwner,
+			repositoryName,
 			defaultBranch: resolvedBranch,
 			roleTag: state.roleTag ?? null,
 			encryptedAccessToken: integrationData.encryptedAccessToken,
@@ -952,10 +1021,9 @@ export async function handleProjectTargetCallback(args: {
 
 	await syncLegacyProjectRepoOnConnect(
 		state.projectId,
-		state.repositoryUrl ??
-			`https://github.com/${state.repositoryOwner}/${state.repositoryName}`,
-		state.repositoryOwner,
-		state.repositoryName,
+		canonicalRepositoryUrl,
+		repositoryOwner,
+		repositoryName,
 		resolvedBranch,
 	);
 
@@ -979,7 +1047,7 @@ export async function handleProjectTargetCallback(args: {
 		userName: githubUser.login,
 		organizationId: state.organizationId ?? null,
 		activityType: "repo_integration_configured",
-		repositoryName: `${state.repositoryOwner}/${state.repositoryName}`,
+		repositoryName: `${repositoryOwner}/${repositoryName}`,
 		metadata: {
 			provider: "GITHUB",
 			authMethod: "OAUTH",

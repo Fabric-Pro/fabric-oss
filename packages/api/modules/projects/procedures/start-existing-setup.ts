@@ -134,6 +134,41 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 		);
 		await assertSafeRepositoryUrls(repoUrls);
 
+		// Parse each input URL exactly once into a `{ raw, parsed }` pair.
+		// `assertSafeRepositoryUrls` above already required every entry to
+		// parse, so this never throws in practice — but it means every
+		// downstream consumer (the workflow-start args below, which the
+		// workflow forwards verbatim into its analysis prompt and
+		// `ProjectContext.sourceUrl`; the audit/activity metadata; and the
+		// per-provider integration writes) reads `parsed.url` — the
+		// canonical, userinfo-free, query/fragment-free form — instead of
+		// re-parsing (and risking a different outcome, or a raw string
+		// falling through unparsed) at each site. `raw` is kept only for the
+		// `input.repoTags` lookup, which is keyed by the caller's original
+		// string.
+		const parsedRepoUrls: Array<{
+			raw: string;
+			parsed: NonNullable<ReturnType<typeof parseRepoUrl>>;
+		}> = [];
+		for (const url of repoUrls) {
+			const raw = url.trim();
+			if (!raw) {
+				continue;
+			}
+			const parsed = parseRepoUrl(raw);
+			if (!parsed) {
+				// Unreachable in practice (see above) — but never silently
+				// store or forward a raw string that failed to parse.
+				throw new ORPCError("BAD_REQUEST", {
+					message: `Unsupported repository URL: ${raw}`,
+				});
+			}
+			parsedRepoUrls.push({ raw, parsed });
+		}
+		const canonicalRepoUrls = parsedRepoUrls.map(
+			(entry) => entry.parsed.url,
+		);
+
 		// Authorization is enforced by `requireProjectPermission` above.
 
 		// Get project with PM config info
@@ -262,9 +297,8 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 					Boolean(patToken);
 				const token = (isPat ? patToken : credJson.access_token) || "";
 
-				for (const repoUrl of repoUrls) {
-					const parsed = parseRepoUrl(repoUrl.trim());
-					if (!parsed || parsed.provider !== "GITHUB") {
+				for (const { raw, parsed } of parsedRepoUrls) {
+					if (parsed.provider !== "GITHUB") {
 						continue;
 					}
 
@@ -343,7 +377,7 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 							projectId,
 							provider: "GITHUB",
 							authMethod: isPat ? "PAT" : "OAUTH",
-							repositoryUrl: repoUrl.trim(),
+							repositoryUrl: parsed.url,
 							repositoryOwner: parsed.owner,
 							repositoryName: parsed.name,
 							defaultBranch: resolvedBranch,
@@ -373,14 +407,14 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 									? credJson.scope.split(",")
 									: [],
 							configuredByUserId: user.id,
-							roleTag: input.repoTags?.[repoUrl.trim()] ?? null,
+							roleTag: input.repoTags?.[raw] ?? null,
 						});
 						created = true;
 						stagedRepos.add(repoKey);
 
 						await syncLegacyProjectRepoOnConnect(
 							projectId,
-							repoUrl.trim(),
+							parsed.url,
 							parsed.owner,
 							parsed.name,
 							resolvedBranch,
@@ -446,9 +480,8 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 					Boolean(patToken);
 				const token = (isPat ? patToken : credJson.access_token) || "";
 
-				for (const repoUrl of repoUrls) {
-					const parsed = parseRepoUrl(repoUrl.trim());
-					if (!parsed || parsed.provider !== "GITLAB") {
+				for (const { raw, parsed } of parsedRepoUrls) {
+					if (parsed.provider !== "GITLAB") {
 						continue;
 					}
 
@@ -491,7 +524,7 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 							let hostname = "";
 							try {
 								hostname = new URL(
-									outboundRepositoryUrl(repoUrl),
+									outboundRepositoryUrl(raw),
 								).hostname
 									.toLowerCase()
 									.replace(/\.$/, "");
@@ -535,7 +568,7 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 								provider: "GITLAB",
 								token,
 								gitlabAuth: "bearer",
-								repositoryUrl: repoUrl.trim(),
+								repositoryUrl: parsed.url,
 								owner: parsed.owner,
 								repo: parsed.name,
 							});
@@ -558,7 +591,7 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 								project.defaultBranch ?? probedGitLabBranch,
 							provider: "GITLAB",
 							token,
-							repositoryUrl: repoUrl.trim(),
+							repositoryUrl: parsed.url,
 							owner: parsed.owner,
 							repo: parsed.name,
 						});
@@ -567,7 +600,7 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 							projectId,
 							provider: "GITLAB",
 							authMethod: isPat ? "PAT" : "OAUTH",
-							repositoryUrl: repoUrl.trim(),
+							repositoryUrl: parsed.url,
 							repositoryOwner: parsed.owner,
 							repositoryName: parsed.name,
 							defaultBranch: resolvedBranch,
@@ -597,14 +630,14 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 									? credJson.scope.split(" ")
 									: [],
 							configuredByUserId: user.id,
-							roleTag: input.repoTags?.[repoUrl.trim()] ?? null,
+							roleTag: input.repoTags?.[raw] ?? null,
 						});
 						created = true;
 						stagedRepos.add(repoKey);
 
 						await syncLegacyProjectRepoOnConnect(
 							projectId,
-							repoUrl.trim(),
+							parsed.url,
 							parsed.owner,
 							parsed.name,
 							resolvedBranch,
@@ -657,9 +690,8 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 		// code context. This explicit branch documents that contract so a future
 		// reader cannot re-introduce the silent drop.
 		if (repoUrls.length > 0 && projectRole === ProjectMemberRole.OWNER) {
-			for (const repoUrl of repoUrls) {
-				const parsed = parseRepoUrl(repoUrl.trim());
-				if (!parsed || parsed.provider !== "AZURE_DEVOPS") {
+			for (const { parsed } of parsedRepoUrls) {
+				if (parsed.provider !== "AZURE_DEVOPS") {
 					continue;
 				}
 				const existing =
@@ -697,7 +729,7 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 						userId: user.id,
 						organizationId,
 						aiToken,
-						repoUrls: repoUrls.filter((u) => u.trim()),
+						repoUrls: canonicalRepoUrls,
 						selectedDocumentTypes,
 						projectTypes,
 						projectName,
@@ -729,7 +761,7 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 				organizationId,
 				activityType: "repo_scan_triggered",
 				metadata: {
-					repoUrls: repoUrls.filter((u) => u.trim()),
+					repoUrls: canonicalRepoUrls,
 					workflowId,
 				},
 			}).catch((err) => {

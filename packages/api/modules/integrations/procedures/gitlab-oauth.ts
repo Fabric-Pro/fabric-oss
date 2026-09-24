@@ -72,6 +72,7 @@ import {
 } from "../lib/oauth-providers";
 import { assertOAuthStartOrganization } from "../lib/oauth-start-organization";
 import { decodeOAuthState, encodeOAuthState } from "../lib/oauth-state";
+import { resolveProjectRepositoryIdentity } from "../lib/repository-identity";
 
 /**
  * Get GitLab OAuth configuration from environment OR database.
@@ -252,6 +253,47 @@ export const gitlabOAuthProcedures = {
 				}
 			}
 
+			// `repositoryUrl` and `repositoryOwner`/`repositoryName` are three
+			// independent, unvalidated fields on this input. Resolving and
+			// validating identity here — before the user is ever sent to
+			// GitLab — is better UX than the callback's own refusal after the
+			// round trip; it also means the state below signs the canonical
+			// `parsed.url`/`owner`/`name` rather than whatever the caller
+			// sent. The GitLab project picker sends `repositoryName` as
+			// GitLab's `path_with_namespace`, which already repeats the owner
+			// (e.g. owner "group/subgroup", name "group/subgroup/repo") —
+			// `resolveProjectRepositoryIdentity` accepts that legacy shape as
+			// a match and returns the bare owner/name split instead, so the
+			// probe and the stored row never see the doubled path. A
+			// project-target flow with no `projectId`, or with too little
+			// identity info for the helper to build ANY candidate from (both
+			// repositoryUrl and a full owner/name pair absent), is refused
+			// here too — signing a state that the callback's own "missing
+			// project integration fields" check would refuse anyway is worse
+			// UX than refusing at start, and previously signed the raw,
+			// unvalidated partial fields into the state in the meantime.
+			let projectRepositoryUrl: string | undefined;
+			let projectRepositoryOwner: string | undefined;
+			let projectRepositoryName: string | undefined;
+			if (input.targetType === "project") {
+				const resolved = resolveProjectRepositoryIdentity({
+					provider: "GITLAB",
+					repositoryUrl: input.repositoryUrl,
+					repositoryOwner: input.repositoryOwner,
+					repositoryName: input.repositoryName,
+					caseSensitive: true,
+				});
+				if (!input.projectId || !resolved) {
+					throw new ORPCError("BAD_REQUEST", {
+						message:
+							"Missing project integration fields (projectId, repositoryOwner, or repositoryName)",
+					});
+				}
+				projectRepositoryUrl = resolved.url;
+				projectRepositoryOwner = resolved.owner;
+				projectRepositoryName = resolved.name;
+			}
+
 			// PKCE (S256): bind this authorization request to the
 			// verifier stored in our signed state so an intercepted code
 			// cannot be redeemed by a third party. See generatePkce().
@@ -266,9 +308,9 @@ export const gitlabOAuthProcedures = {
 				redirectUri: input.redirectUri,
 				targetType: input.targetType,
 				projectId: input.projectId,
-				repositoryUrl: input.repositoryUrl,
-				repositoryOwner: input.repositoryOwner,
-				repositoryName: input.repositoryName,
+				repositoryUrl: projectRepositoryUrl,
+				repositoryOwner: projectRepositoryOwner,
+				repositoryName: projectRepositoryName,
 				defaultBranch: input.defaultBranch,
 				roleTag: input.roleTag,
 				codeVerifier,
@@ -443,9 +485,15 @@ export const gitlabOAuthProcedures = {
 								userId: state.userId,
 								organizationId: state.organizationId ?? null,
 								projectId: state.projectId,
-								repositoryUrl:
-									state.repositoryUrl ??
-									`https://gitlab.com/${state.repositoryOwner}/${state.repositoryName}`,
+								// Passed through as-is — `handleProjectTargetCallback`
+								// (via `resolveProjectRepositoryIdentity`) builds its
+								// own fallback candidate when this is absent, using
+								// the legacy-shape-aware construction. Pre-building it
+								// here with a naive `${owner}/${name}` concatenation
+								// doubled the path for a legacy-shaped
+								// `repositoryName` (owner "group/subgroup", name
+								// "group/subgroup/repo").
+								repositoryUrl: state.repositoryUrl,
 								repositoryOwner: state.repositoryOwner,
 								repositoryName: state.repositoryName,
 								defaultBranch: state.defaultBranch,
@@ -1525,7 +1573,14 @@ export async function handleProjectTargetCallback(args: {
 		userId: string;
 		organizationId?: string | null;
 		projectId: string;
-		repositoryUrl: string;
+		/**
+		 * Optional: when absent, `resolveProjectRepositoryIdentity` below
+		 * builds its own `https://gitlab.com/...` fallback candidate from
+		 * `repositoryOwner`/`repositoryName` (legacy-shape aware), which is
+		 * inherently gitlab.com by construction — the SSRF pin further down
+		 * only needs to run when a caller-supplied URL is actually present.
+		 */
+		repositoryUrl?: string;
 		repositoryOwner: string;
 		repositoryName: string;
 		defaultBranch?: string;
@@ -1552,15 +1607,57 @@ export async function handleProjectTargetCallback(args: {
 	const { state, tokenResponse, gitlabUser } = args;
 
 	// Last-gate SSRF pin: every API call this helper and its downstream flows
-	// make carries a live token, so the stored URL must name gitlab.com. The
-	// START path validates this too — this covers states minted before that
-	// guard existed.
-	if (new URL(state.repositoryUrl).hostname.toLowerCase() !== "gitlab.com") {
+	// make carries a live token, so a caller-supplied stored URL must name
+	// gitlab.com. The START path validates this too — this covers states
+	// minted before that guard existed. Skipped when `repositoryUrl` is
+	// absent: the fallback candidate `resolveProjectRepositoryIdentity`
+	// builds below is always `https://gitlab.com/...` by construction, so
+	// there is nothing caller-controlled to pin here.
+	if (
+		state.repositoryUrl &&
+		new URL(state.repositoryUrl).hostname.toLowerCase() !== "gitlab.com"
+	) {
 		throw new ORPCError("BAD_REQUEST", {
 			message:
 				"Only gitlab.com repositories are supported for GitLab connections",
 		});
 	}
+
+	// Route the caller-supplied URL (from the OAuth start request, signed
+	// into `state`) through the same canonicalisation the connect/PAT path
+	// uses before anything is written: userinfo is stripped, and a query
+	// string or fragment — never part of a repository's identity — is
+	// refused rather than stored. GitLab's own project picker sends
+	// `repositoryName` as `path_with_namespace`, which already repeats the
+	// owner (e.g. owner "group/subgroup", name "group/subgroup/repo");
+	// `resolveProjectRepositoryIdentity` accepts that legacy shape as a
+	// match and returns the bare owner/name split, so the probe and every
+	// write below use that resolved pair — never `state.repositoryOwner`/
+	// `repositoryName` directly — rather than the doubled path a naive
+	// concatenation would build. GitLab paths are case-sensitive, so the
+	// comparison is exact (unlike the GitHub callback's case-insensitive
+	// one). `state.repositoryOwner`/`repositoryName` are required by this
+	// function's signature and `state.repositoryUrl` is always populated by
+	// the outer callback (falling back to the owner/name shape when the
+	// signed state omitted it), so a candidate can always be built and
+	// `resolved` is never null here in practice; the defensive branch below
+	// keeps this function's own contract self-checking rather than trusting
+	// that.
+	const resolved = resolveProjectRepositoryIdentity({
+		provider: "GITLAB",
+		repositoryUrl: state.repositoryUrl,
+		repositoryOwner: state.repositoryOwner,
+		repositoryName: state.repositoryName,
+		caseSensitive: true,
+	});
+	if (!resolved) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: "Cannot parse repository URL",
+		});
+	}
+	const repositoryUrl = resolved.url;
+	const repositoryOwner = resolved.owner;
+	const repositoryName = resolved.name;
 
 	// Observe the REPOSITORY, not just the token — same reasoning as the GitHub
 	// callback: the exchange proves the credential is alive, only a repo-scoped
@@ -1572,9 +1669,9 @@ export async function handleProjectTargetCallback(args: {
 			provider: "GITLAB",
 			token: tokenResponse.access_token,
 			gitlabAuth: "bearer",
-			repositoryUrl: state.repositoryUrl,
-			owner: state.repositoryOwner,
-			repo: state.repositoryName,
+			repositoryUrl,
+			owner: repositoryOwner,
+			repo: repositoryName,
 		});
 	const verdict = integrationStatusForRepoAccess(accessOutcome, "GITLAB");
 
@@ -1609,39 +1706,91 @@ export async function handleProjectTargetCallback(args: {
 		providedBranch: state.defaultBranch ?? probeDefaultBranch,
 		provider: "GITLAB",
 		token: tokenResponse.access_token,
-		repositoryUrl: state.repositoryUrl,
-		owner: state.repositoryOwner,
-		repo: state.repositoryName,
+		repositoryUrl,
+		owner: repositoryOwner,
+		repo: repositoryName,
 	});
 
-	const integration = await db.projectRepositoryIntegration.upsert({
-		where: {
-			projectId_provider_repositoryOwner_repositoryName: {
+	// A plain upsert on the canonical [projectId, provider, repositoryOwner,
+	// repositoryName] key would never find a row a picker created before this
+	// fix (or while the picker's own owner/name bug was live): those rows are
+	// stored under the LEGACY doubled name — `${repositoryOwner}/${repositoryName}`
+	// as `repositoryName`, with the same `repositoryOwner`. Reconnecting one
+	// with a blind upsert would silently CREATE A SECOND row instead of
+	// updating the first. So: in one transaction, look up both keys. If only
+	// the legacy row exists, migrate it to the canonical owner/name/url IN
+	// PLACE (same `id`, so anything referencing this row — audit history, the
+	// legacy `Project.repositoryOwner`/`repositoryName` sync, a future FK —
+	// keeps pointing at it) and treat it as an update. If BOTH exist (the
+	// legacy row was reconnected once while the old exact-match bug was live,
+	// creating a second, canonical row alongside it), update the canonical
+	// one and leave the legacy row untouched — it may still be referenced
+	// elsewhere, so this is not the place to delete it silently.
+	const legacyRepositoryName = `${repositoryOwner}/${repositoryName}`;
+	const integration = await db.$transaction(async (tx) => {
+		const [canonicalRow, legacyRow] = await Promise.all([
+			tx.projectRepositoryIntegration.findFirst({
+				where: {
+					projectId: state.projectId,
+					provider: "GITLAB",
+					repositoryOwner,
+					repositoryName,
+				},
+			}),
+			tx.projectRepositoryIntegration.findFirst({
+				where: {
+					projectId: state.projectId,
+					provider: "GITLAB",
+					repositoryOwner,
+					repositoryName: legacyRepositoryName,
+				},
+			}),
+		]);
+
+		if (canonicalRow) {
+			if (legacyRow) {
+				console.warn(
+					`[gitlab-oauth] Both a canonical (id=${canonicalRow.id}) and a legacy-named (id=${legacyRow.id}, repositoryName="${legacyRepositoryName}") ProjectRepositoryIntegration row exist for project ${state.projectId} (${repositoryOwner}/${repositoryName}). Updated the canonical row; the legacy row was left untouched and needs manual review.`,
+				);
+			}
+			return tx.projectRepositoryIntegration.update({
+				where: { id: canonicalRow.id },
+				data: credentialFields,
+			});
+		}
+
+		if (legacyRow) {
+			return tx.projectRepositoryIntegration.update({
+				where: { id: legacyRow.id },
+				data: {
+					repositoryUrl,
+					repositoryOwner,
+					repositoryName,
+					...credentialFields,
+				},
+			});
+		}
+
+		return tx.projectRepositoryIntegration.create({
+			data: {
 				projectId: state.projectId,
 				provider: "GITLAB",
-				repositoryOwner: state.repositoryOwner,
-				repositoryName: state.repositoryName,
+				repositoryUrl,
+				repositoryOwner,
+				repositoryName,
+				defaultBranch: resolvedBranch,
+				roleTag: state.roleTag ?? null,
+				configuredByUserId: state.userId,
+				...credentialFields,
 			},
-		},
-		create: {
-			projectId: state.projectId,
-			provider: "GITLAB",
-			repositoryUrl: state.repositoryUrl,
-			repositoryOwner: state.repositoryOwner,
-			repositoryName: state.repositoryName,
-			defaultBranch: resolvedBranch,
-			roleTag: state.roleTag ?? null,
-			configuredByUserId: state.userId,
-			...credentialFields,
-		},
-		update: credentialFields,
+		});
 	});
 
 	await syncLegacyProjectRepoOnConnect(
 		state.projectId,
-		state.repositoryUrl,
-		state.repositoryOwner,
-		state.repositoryName,
+		repositoryUrl,
+		repositoryOwner,
+		repositoryName,
 		resolvedBranch,
 	);
 
@@ -1666,7 +1815,7 @@ export async function handleProjectTargetCallback(args: {
 		// Not a Prisma where-clause — activity logger accepts optional string.
 		organizationId: state.organizationId ?? undefined,
 		activityType: "repo_integration_configured",
-		repositoryName: `${state.repositoryOwner}/${state.repositoryName}`,
+		repositoryName: `${repositoryOwner}/${repositoryName}`,
 		metadata: {
 			provider: "GITLAB",
 			authMethod: "OAUTH",
@@ -1683,8 +1832,8 @@ export async function handleProjectTargetCallback(args: {
 			userId: state.userId,
 			organizationId: state.organizationId ?? null,
 			projectId: state.projectId,
-			repositoryOwner: state.repositoryOwner,
-			repositoryName: state.repositoryName,
+			repositoryOwner,
+			repositoryName,
 			token: {
 				accessToken: tokenResponse.access_token,
 				refreshToken: tokenResponse.refresh_token ?? null,

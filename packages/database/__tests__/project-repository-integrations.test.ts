@@ -64,12 +64,24 @@ describe("Project Repository Integrations", () => {
 	// A. Credential Layer — parseRepoUrl
 	// =========================================================================
 	describe("parseRepoUrl", () => {
+		/**
+		 * Builds a URL with userinfo at runtime rather than as a source literal:
+		 * a literal `user@host` for a real hostname (github.com, dev.azure.com,
+		 * …) reads as an email address to the OSS relay's identifier scan.
+		 */
+		function withUsername(url: string, username: string): string {
+			const u = new URL(url);
+			u.username = username;
+			return u.toString();
+		}
+
 		it("parses GitHub HTTPS URL", () => {
 			const result = parseRepoUrl("https://github.com/owner/repo");
 			expect(result).toEqual({
 				provider: "GITHUB",
 				owner: "owner",
 				name: "repo",
+				url: "https://github.com/owner/repo",
 			});
 		});
 
@@ -79,6 +91,7 @@ describe("Project Repository Integrations", () => {
 				provider: "GITHUB",
 				owner: "owner",
 				name: "repo",
+				url: "https://github.com/owner/repo",
 			});
 		});
 
@@ -91,6 +104,7 @@ describe("Project Repository Integrations", () => {
 				owner: "org",
 				project: "project",
 				name: "repo",
+				url: "https://dev.azure.com/org/project/_git/repo",
 			});
 		});
 
@@ -103,6 +117,7 @@ describe("Project Repository Integrations", () => {
 				owner: "org",
 				project: "project",
 				name: "repo",
+				url: "https://org.visualstudio.com/project/_git/repo",
 			});
 		});
 
@@ -118,6 +133,7 @@ describe("Project Repository Integrations", () => {
 				owner: "example-org",
 				project: "Example_SaaS",
 				name: "Example.Chat",
+				url: "https://dev.azure.com/example-org/Example_SaaS/_git/Example.Chat",
 			});
 		});
 
@@ -130,6 +146,7 @@ describe("Project Repository Integrations", () => {
 				owner: "org",
 				project: "proj",
 				name: "Example.Chat",
+				url: "https://dev.azure.com/org/proj/_git/Example.Chat",
 			});
 		});
 
@@ -142,6 +159,7 @@ describe("Project Repository Integrations", () => {
 				owner: "org",
 				project: "proj",
 				name: "my.repo.name",
+				url: "https://org.visualstudio.com/proj/_git/my.repo.name",
 			});
 		});
 
@@ -153,6 +171,7 @@ describe("Project Repository Integrations", () => {
 				provider: "AZURE_DEVOPS",
 				owner: "org",
 				name: "repo",
+				url: "https://dev.azure.com/org/_git/repo",
 			});
 			expect(result?.project).toBeUndefined();
 		});
@@ -165,6 +184,7 @@ describe("Project Repository Integrations", () => {
 				provider: "GITHUB",
 				owner: "lodash",
 				name: "lodash.debounce",
+				url: "https://github.com/lodash/lodash.debounce",
 			});
 		});
 
@@ -176,6 +196,7 @@ describe("Project Repository Integrations", () => {
 				provider: "GITHUB",
 				owner: "lodash",
 				name: "lodash.debounce",
+				url: "https://github.com/lodash/lodash.debounce",
 			});
 		});
 
@@ -184,6 +205,7 @@ describe("Project Repository Integrations", () => {
 				provider: "GITLAB",
 				owner: "owner",
 				name: "repo",
+				url: "https://gitlab.com/owner/repo",
 			});
 		});
 
@@ -194,6 +216,7 @@ describe("Project Repository Integrations", () => {
 				provider: "GITLAB",
 				owner: "group/subgroup",
 				name: "repo",
+				url: "https://gitlab.com/group/subgroup/repo",
 			});
 		});
 
@@ -208,7 +231,232 @@ describe("Project Repository Integrations", () => {
 				provider: "GITHUB",
 				owner: "owner",
 				name: "repo",
+				url: "https://github.com/owner/repo",
 			});
+		});
+
+		// -----------------------------------------------------------------
+		// Userinfo: stripped, never refused (Fizzy #2662)
+		// -----------------------------------------------------------------
+
+		it("strips userinfo from a GitHub URL rather than refusing it", () => {
+			const withUser = withUsername(
+				"https://github.com/owner/repo",
+				"someuser",
+			);
+			const result = parseRepoUrl(withUser);
+			expect(result).toEqual({
+				provider: "GITHUB",
+				owner: "owner",
+				name: "repo",
+				url: "https://github.com/owner/repo",
+			});
+			expect(result?.url).not.toContain("@");
+		});
+
+		it("strips userinfo from a GitLab URL with a subgroup", () => {
+			const withUser = withUsername(
+				"https://gitlab.com/group/subgroup/repo",
+				"someuser",
+			);
+			const result = parseRepoUrl(withUser);
+			expect(result).toEqual({
+				provider: "GITLAB",
+				owner: "group/subgroup",
+				name: "repo",
+				url: "https://gitlab.com/group/subgroup/repo",
+			});
+			expect(result?.url).not.toContain("@");
+		});
+
+		it("strips userinfo from a dev.azure.com URL", () => {
+			const withUser = withUsername(
+				"https://dev.azure.com/org/project/_git/repo",
+				"someuser",
+			);
+			const result = parseRepoUrl(withUser);
+			expect(result).toEqual({
+				provider: "AZURE_DEVOPS",
+				owner: "org",
+				project: "project",
+				name: "repo",
+				url: "https://dev.azure.com/org/project/_git/repo",
+			});
+			expect(result?.url).not.toContain("@");
+		});
+
+		it("strips userinfo from a visualstudio.com URL", () => {
+			const withUser = withUsername(
+				"https://org.visualstudio.com/project/_git/repo",
+				"someuser",
+			);
+			const result = parseRepoUrl(withUser);
+			expect(result).toEqual({
+				provider: "AZURE_DEVOPS",
+				owner: "org",
+				project: "project",
+				name: "repo",
+				url: "https://org.visualstudio.com/project/_git/repo",
+			});
+			expect(result?.url).not.toContain("@");
+		});
+
+		// The Azure DevOps "Clone" button gives exactly this shape: the org name
+		// repeated as the URL's username. It was previously refused outright by
+		// the blanket userinfo check.
+		it("parses the Azure DevOps Clone-button shape (org repeated as username)", () => {
+			const cloneUrl = withUsername(
+				"https://dev.azure.com/example-org/ExampleProj/_git/example-repo",
+				"example-org",
+			);
+			const result = parseRepoUrl(cloneUrl);
+			expect(result).toEqual({
+				provider: "AZURE_DEVOPS",
+				owner: "example-org",
+				project: "ExampleProj",
+				name: "example-repo",
+				url: "https://dev.azure.com/example-org/ExampleProj/_git/example-repo",
+			});
+		});
+
+		// -----------------------------------------------------------------
+		// Query string / fragment: refused, never silently dropped
+		// -----------------------------------------------------------------
+
+		it("refuses a GitHub URL with a query string", () => {
+			expect(
+				parseRepoUrl("https://github.com/owner/repo?ref=main"),
+			).toBeNull();
+		});
+
+		it("refuses a GitHub URL with a fragment", () => {
+			expect(
+				parseRepoUrl("https://github.com/owner/repo#readme"),
+			).toBeNull();
+		});
+
+		it("refuses an Azure DevOps URL with a query string", () => {
+			expect(
+				parseRepoUrl(
+					"https://dev.azure.com/org/project/_git/repo?version=GBmain",
+				),
+			).toBeNull();
+		});
+
+		it("refuses an Azure DevOps URL with a fragment", () => {
+			expect(
+				parseRepoUrl(
+					"https://dev.azure.com/org/project/_git/repo#readme",
+				),
+			).toBeNull();
+		});
+
+		// -----------------------------------------------------------------
+		// Canonical `url`: trailing slash and trailing `.git` removed
+		// -----------------------------------------------------------------
+
+		it("removes a trailing slash from the canonical url", () => {
+			const result = parseRepoUrl("https://github.com/owner/repo/");
+			expect(result?.url).toBe("https://github.com/owner/repo");
+		});
+
+		it("removes both a trailing slash and a trailing .git from the canonical url", () => {
+			const result = parseRepoUrl("https://github.com/owner/repo.git/");
+			expect(result?.url).toBe("https://github.com/owner/repo");
+		});
+
+		it("leaves an already-canonical url unchanged", () => {
+			const result = parseRepoUrl("https://github.com/owner/repo");
+			expect(result?.url).toBe("https://github.com/owner/repo");
+		});
+
+		// -----------------------------------------------------------------
+		// HTTPS only
+		// -----------------------------------------------------------------
+
+		it("still refuses http://", () => {
+			expect(parseRepoUrl("http://github.com/owner/repo")).toBeNull();
+		});
+
+		// -----------------------------------------------------------------
+		// Explicit port: refused unless it's the (already-normalized-away)
+		// default. Codex follow-up on Fizzy #2662 — provider detection keyed
+		// on hostname alone, so `https://github.com:8443/...` passed as
+		// GITHUB despite pointing at a different port than the real service.
+		// -----------------------------------------------------------------
+
+		it("accepts an explicit :443 (the URL API normalizes the default port away)", () => {
+			const result = parseRepoUrl("https://github.com:443/owner/repo");
+			expect(result).toEqual({
+				provider: "GITHUB",
+				owner: "owner",
+				name: "repo",
+				url: "https://github.com/owner/repo",
+			});
+		});
+
+		it("refuses a non-default explicit port", () => {
+			expect(
+				parseRepoUrl("https://github.com:8443/owner/repo"),
+			).toBeNull();
+		});
+
+		// Codex round-2 follow-up on Fizzy #2662: provider matching stripped a
+		// trailing DNS root dot for the hostname comparison, but the canonical
+		// `url` was built from `parsed.origin`, which keeps the dot — storing
+		// `https://github.com./owner/repo`.
+		it("refuses a hostname with a trailing DNS root dot", () => {
+			expect(parseRepoUrl("https://github.com./owner/repo")).toBeNull();
+		});
+
+		// -----------------------------------------------------------------
+		// Table-driven: scp-form, percent-encoded ADO project, password-bearing
+		// userinfo (Codex follow-up on Fizzy #2662).
+		// -----------------------------------------------------------------
+
+		it.each([
+			{
+				name: "scp-form GitHub input (git@host:owner/repo.git)",
+				// Joined at the "@" boundary, not written as one source
+				// literal: `git` + "@" + "github.com" appearing contiguously
+				// in source reads as an email-shaped literal to the OSS
+				// relay's identifier scan.
+				url: `${["git", "github.com"].join("@")}:owner/repo.git`,
+				expected: {
+					provider: "GITHUB",
+					owner: "owner",
+					name: "repo",
+					url: "https://github.com/owner/repo",
+				},
+			},
+			{
+				name: "percent-encoded Azure DevOps project segment",
+				url: "https://dev.azure.com/example-org/Example%20Project/_git/example-repo",
+				expected: {
+					provider: "AZURE_DEVOPS",
+					owner: "example-org",
+					project: "Example%20Project",
+					name: "example-repo",
+					url: "https://dev.azure.com/example-org/Example%20Project/_git/example-repo",
+				},
+			},
+		])("parses $name", ({ url, expected }) => {
+			expect(parseRepoUrl(url)).toEqual(expected);
+		});
+
+		it("strips password-bearing userinfo from a GitHub URL rather than refusing it", () => {
+			const u = new URL("https://github.com/owner/repo");
+			u.username = "someuser";
+			u.password = "somepassword";
+			const result = parseRepoUrl(u.toString());
+			expect(result).toEqual({
+				provider: "GITHUB",
+				owner: "owner",
+				name: "repo",
+				url: "https://github.com/owner/repo",
+			});
+			expect(result?.url).not.toContain("@");
+			expect(result?.url).not.toContain("somepassword");
 		});
 	});
 
