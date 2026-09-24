@@ -24,7 +24,6 @@ const WORKFLOW_ID = "project-instruction-repository-sync-proj_1";
 const EXPECTED = { syncId: "sync_1", generation: 3 };
 /** What the poll passes: the claimed row's id, and that row as `expected`. */
 const POLL = {
-	syncId: "sync_1",
 	projectId: "proj_1",
 	organizationId: "org_1",
 	trigger: "POLL",
@@ -61,7 +60,6 @@ describe("startAutomaticInstructionSync (spec §6.1)", () => {
 			outcome: "started" | "already_running";
 			workflowId: string;
 			runId: string;
-			runKey: string;
 		}>();
 	});
 
@@ -72,8 +70,6 @@ describe("startAutomaticInstructionSync (spec §6.1)", () => {
 			outcome: "started",
 			workflowId: WORKFLOW_ID,
 			runId: "run_1",
-			// The key `begin` gives this run's receipt.
-			runKey: "sync_1:run_1",
 		});
 
 		expect(m.start).toHaveBeenCalledWith(
@@ -104,7 +100,6 @@ describe("startAutomaticInstructionSync (spec §6.1)", () => {
 	it("sends no expected row when the caller passes none", async () => {
 		m.start.mockResolvedValue({ firstExecutionRunId: "run_1" });
 		await startAutomaticInstructionSync({
-			syncId: "sync_1",
 			projectId: "proj_1",
 			organizationId: "org_1",
 			trigger: "POLL",
@@ -161,7 +156,6 @@ describe("startAutomaticInstructionSync (spec §6.1)", () => {
 			outcome: "already_running",
 			workflowId: WORKFLOW_ID,
 			runId: "run_open",
-			runKey: "sync_1:run_open",
 		});
 		expect(m.start).toHaveBeenCalledTimes(1);
 		expect(m.getHandle).toHaveBeenCalledWith(WORKFLOW_ID);

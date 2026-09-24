@@ -34,8 +34,12 @@
  * completion's cursor.
  *
  * The result names the run the start reached (Decision 56): the new run's
- * id from the start handle, or the open run's from `describe()`, and the key
- * `begin` gives that run's receipt, `<syncId>:<runId>`.
+ * id from the start handle, or the open run's from `describe()`. `runId` is
+ * the identity to adopt; a caller that needs the receipt key builds
+ * `<syncId>:<runId>` from its own row, as `settlePendingHead` does. The
+ * result carries no key of its own (Fizzy #2701): a started run's `begin`
+ * can still refuse it under `expected`, so a key named here would describe
+ * a run that never happened.
  *
  * Lives in ./lib so the activities barrel never exposes it as an activity.
  */
@@ -53,15 +57,10 @@ export type RepositorySyncStartResult = {
 	workflowId: string;
 	/** The run this start began, or the one already open. */
 	runId: string;
-	/** `<syncId>:<runId>`, exactly as `begin` keys that run's receipt. */
-	runKey: string;
 };
 
 export async function startAutomaticInstructionSync(
-	input: AutomaticInstructionSyncWorkflowInput & {
-		/** The row's id, for the run key; not part of the workflow input. */
-		syncId: string;
-	},
+	input: AutomaticInstructionSyncWorkflowInput,
 	decorate?: RepositorySyncStartDecorator,
 ): Promise<RepositorySyncStartResult> {
 	const args: [AutomaticInstructionSyncWorkflowInput] = [
@@ -84,12 +83,7 @@ export async function startAutomaticInstructionSync(
 	const reached = (
 		outcome: RepositorySyncStartResult["outcome"],
 		runId: string,
-	): RepositorySyncStartResult => ({
-		outcome,
-		workflowId,
-		runId,
-		runKey: `${input.syncId}:${runId}`,
-	});
+	): RepositorySyncStartResult => ({ outcome, workflowId, runId });
 	try {
 		const handle = await client.workflow.start(
 			"projectInstructionRepositorySyncWorkflow",
