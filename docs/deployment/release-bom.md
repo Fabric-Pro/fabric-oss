@@ -108,6 +108,20 @@ If a build workflow itself failed (not the BOM workflow), **re-run that run** in
 Actions UI, or `gh run rerun <run-id>` / `gh run rerun <run-id> --failed`. The assembler reads
 the newest **push** run for each producer, so it picks up a green re-run automatically.
 
+For `oss-snapshot-images.yml` on `master` that first re-run already happens by itself:
+`oss-snapshot-retry.yml` fires when the build completes and issues `gh run rerun --failed` once,
+for a `push` run whose `run_attempt` is 1. Most of its failures are transient registry or API
+errors in the SBOM, attestation or verification steps after the image was pushed, and the second
+attempt clears them without rebuilding the components that already succeeded. A run that is still
+red at attempt 2 is not retried again; read it and re-run or fix forward by hand.
+
+The retry does not restart an assembler that has already given up. The BOM polls the snapshot run
+every 30 seconds and fails as soon as it sees attempt 1 `completed` with `failure`; if that poll
+lands before the retry workflow has registered the re-run, the BOM fails even though attempt 2
+then goes green. Re-dispatch the assembler with `--ref <tag>` once the build is green (§ Re-running
+the assembler against a tag); only an assembler that was still waiting when the re-run registered
+picks it up on its own.
+
 **Dispatching a fresh run of a producer workflow does not help.** The assembler only ever
 considers runs triggered by a `push` event; a `workflow_dispatch` run is ignored — never
 selected, never recorded — because a dispatched run decides for itself what it checks out, and
