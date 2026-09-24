@@ -287,7 +287,7 @@ export function FabricTemporalOrchestratorChat({
 	onActivityChange,
 	onUsageChange: _onUsageChange, // TODO: Implement usage tracking for Temporal orchestrator
 	agentId: _agentId = "fabric-ai",
-	agentName: _agentName = "Fabric Loom",
+	agentName: _agentName = "Advisor",
 	agentDescription:
 		_agentDescription = "Durable multi-agent orchestration powered by Temporal.",
 	attachedWorkspaceIds,

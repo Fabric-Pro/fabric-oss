@@ -2,14 +2,14 @@ import {
 	cacheableSystem,
 	withRollingCacheBreakpoint,
 } from "@repo/ai/prompt-cache";
+import { ADVISOR_IDENTITY } from "../../lib/assistant-identity";
 
 /**
  * Direct-chat instructions that are identical across conversations and turns.
  * Keep request-, tenant-, tool-, and date-specific content out of this prefix
  * so provider prompt caches can reuse it safely.
  */
-export const DIRECT_CHAT_IDENTITY =
-	"You are Fabric Loom, an intelligent assistant that helps users accomplish tasks.";
+export const DIRECT_CHAT_IDENTITY = ADVISOR_IDENTITY;
 
 export const DIRECT_CHAT_TOOL_USAGE_GUIDELINES = `TOOL USAGE GUIDELINES:
 - CAREFULLY read the tool's input schema to understand ALL available filter/query parameters

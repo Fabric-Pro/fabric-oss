@@ -16,7 +16,7 @@ describe("buildLegacyDirectChatSystemInstructions", () => {
 				frameOutputInstructions: "",
 				currentDateContext: "Today is September 9, 2026.",
 			}),
-		).toBe(`You are Fabric Loom, an intelligent assistant that helps users accomplish tasks.
+		).toBe(`You are Advisor, Fabric's AI assistant that helps users accomplish tasks.
 
 CAPABILITIES:
 - No tools connected.

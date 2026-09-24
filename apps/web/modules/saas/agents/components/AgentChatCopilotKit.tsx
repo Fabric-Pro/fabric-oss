@@ -80,7 +80,7 @@ export function AgentChatCopilotKit({
 	// For orchestrator mode, use a default config
 	const orchestratorConfig = useOrchestrator
 		? {
-				displayName: "Fabric Loom",
+				displayName: "Advisor",
 				description:
 					"Your intelligent assistant that automatically routes tasks to specialized agents",
 				status: "ACTIVE",

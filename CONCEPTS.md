@@ -20,15 +20,17 @@ The discriminated state describing whether — and if not, why not — the assis
 
 ## AI surfaces
 
-### Loom
-The standalone agent workbench, distinct from the assistant embedded in a document. Carries its own history, agent picker, tool and MCP-server toggles, and frames.
+### Advisor
+The workspace assistant's page, and the name the assistant gives itself. Distinct from the assistant embedded in a document. Carries its own history, agent picker, tool and MCP-server toggles, and frames.
 
-Not a single chat: Loom runs in **Direct** and **Orchestrator** modes, and the two are distinct implementations rather than one shared surface. Both now accept document attachments (Excel, PDF, DOCX, and the rest of the shared chat allowlist) alongside images — Direct through its single attachment queue, Orchestrator through two queues (images feed the multimodal-vision path; documents feed RAG plus inline extracted text). Treating "Loom" as one surface when reasoning about attachment behavior still produces wrong scope — always name the mode.
+Two interface modes, a per-user preference: **Simple** runs every new chat on the Orchestrator and hides how the work is routed; **Advanced** exposes the engine tabs — **Direct**, **Orchestrator** and **Research**. The engines are distinct implementations rather than one shared surface. Direct and Orchestrator both accept document attachments (Excel, PDF, DOCX, and the rest of the shared chat allowlist) alongside images — Direct through its single attachment queue, Orchestrator through two queues (images feed the multimodal-vision path; documents feed RAG plus inline extracted text). A mode does not tell you the engine — Simple and Advanced can both be running the Orchestrator — so always name the engine when reasoning about behavior.
+
+"Loom" (and "Nexus", merged into this page by #2040) is a retired name. It survives only as structure — surface literals such as `loom-orchestrator`, Temporal patch ids — and as the name of Weave's routing agent, which is a different thing. Copy and prompts say Advisor.
 
 ### Attached file
 A file the user supplied in the current turn, as opposed to a chunk the knowledge base returned.
 
-All three surfaces deliver an attached file's full text **inline** — injected into the prompt, so the model has already read every word and must not be told to "open" or "see" it. Nexus and Loom Direct used to upload and extract the same file and then discard the extracted text, leaving its content to reach the model only if similarity retrieval happened to surface a chunk of it. That is no longer true, and reasoning from it now produces wrong scope in the opposite direction.
+Advisor's Direct and Orchestrator engines and the legacy Nexus page all deliver an attached file's full text **inline** — injected into the prompt, so the model has already read every word and must not be told to "open" or "see" it. Nexus and Loom Direct used to upload and extract the same file and then discard the extracted text, leaving its content to reach the model only if similarity retrieval happened to surface a chunk of it. That is no longer true, and reasoning from it now produces wrong scope in the opposite direction.
 
 Inline is **additive to retrieval, never a replacement**. Both run: inline gives completeness on a file small enough to deliver whole, retrieval gives relevance on one that is not — and a file cut by the character budget is exactly the case where retrieval earns its keep. A surface that dropped retrieval on the grounds that it "has the text now" would lose the tail of every large document.
 
