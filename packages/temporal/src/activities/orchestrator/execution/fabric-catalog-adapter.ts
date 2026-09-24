@@ -11,11 +11,15 @@
  * one exists, else the plan-mode step handler for the tool.
  */
 
+import {
+	FABRIC_CATALOG_DIRECT_BUILDER_ACCESS as DIRECT_BUILDER_TOOLS,
+	FABRIC_CATALOG_STEP_HANDLER_ACCESS as STEP_HANDLER_TOOLS,
+} from "../../../workflows/orchestrator/fabric-catalog-access";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../types";
 import { describeError } from "./describe-error";
 import type { StepHandler } from "./handlers/types";
 
-export const FABRIC_AI_SERVER_CONFIG_ID = "fabric-ai-server";
+export { FABRIC_AI_SERVER_CONFIG_ID } from "../../../workflows/orchestrator/fabric-catalog-access";
 
 type AccessLevel = "READ" | "WRITE";
 
@@ -37,45 +41,6 @@ interface CatalogRoute {
 	executor: "direct-builder" | "step-handler";
 	access: AccessLevel;
 }
-
-const DIRECT_BUILDER_TOOLS: Record<string, AccessLevel> = {
-	code_search: "READ",
-	fabric_create_story: "WRITE",
-	fabric_list_meeting_transcripts: "READ",
-	fabric_list_project_features: "READ",
-	fabric_get_project_feature: "READ",
-	fabric_text_to_speech: "READ",
-};
-
-const STEP_HANDLER_TOOLS: Record<string, AccessLevel> = {
-	weave_query: "READ",
-	code_file_get: "READ",
-	code_tree: "READ",
-	code_search_semantic: "READ",
-	fabric_list_architecture_decisions: "READ",
-	fabric_list_feature_decisions: "READ",
-	fabric_list_security_findings: "READ",
-	fabric_youtube_transcript: "READ",
-	fabric_analyze_youtube: "READ",
-	fabric_youtube_metadata: "READ",
-	fabric_youtube_comments: "READ",
-	fabric_youtube_playlist: "READ",
-	fabric_list_patterns: "READ",
-	fabric_transcribe_audio: "READ",
-	fabric_readability: "READ",
-	fabric_template: "READ",
-	fabric_list_strategies: "READ",
-	fabric_get_strategy: "READ",
-	fabric_list_contexts: "READ",
-	fabric_get_context: "READ",
-	fabric_asana_create_task: "WRITE",
-	fabric_asana_list_tasks: "READ",
-	fabric_attio_create_record: "WRITE",
-	fabric_attio_search_records: "READ",
-	fabric_front_create_conversation: "WRITE",
-	fabric_front_list_conversations: "READ",
-	fabric_canva_list_designs: "READ",
-};
 
 const VENDORS: Record<string, { provider: string; displayName: string }> = {
 	asana: { provider: "ASANA", displayName: "Asana" },

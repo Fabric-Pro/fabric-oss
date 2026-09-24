@@ -18,17 +18,22 @@ import { createHash } from "node:crypto";
 // that makes the same edit so the two surfaces write identical rows. Also a
 // pure leaf: its only `@repo/database` import is type-only.
 import { buildContextMetadataAuditEvent } from "@repo/api/modules/projects/lib/context-metadata-audit";
-// The export's conversation-pointer classifier, reused rather than
-// reimplemented (Fizzy #2228). Both surfaces answer "why is this row's body
-// empty" about the same metadata, and the last time this repo kept two copies
-// of one explanation, only one of them got fixed. Importing a pure leaf module
-// — no I/O, no Prisma, no oRPC — keeps that from happening again.
-import { classifyConversationPointer } from "@repo/api/modules/projects/lib/context-skip-reason";
 // Type-only: erased at compile time, so this does not pull `@repo/database`
 // (and Prisma) into module scope the way a value import would. The runtime
 // binding is always the dynamic `await import("@repo/database")` used inside
 // each handler.
 import type { getPublishedInstructionSnapshot as GetPublishedInstructionSnapshotFn } from "@repo/database";
+// How a context row reads to an agent — title, provider, why it has no text —
+// shared with the chat engines' live source reads and the export's
+// skip-reason taxonomy (Fizzy #2228, #2578). The last time this repo kept two
+// copies of one explanation, only one of them got fixed. A deep import of a
+// pure leaf — no I/O, no Prisma — so the database barrel stays out of module
+// scope.
+import {
+	resolveContextProvider,
+	resolveContextTitle,
+	resolveContextUnavailableReason,
+} from "@repo/database/src/project-context-presentation";
 // A value import, deliberately: the ROOT entry of `@repo/instructions` is a
 // pure leaf (string and RegExp work only — no I/O, no Prisma), so it costs
 // nothing at module scope, and the alternative is a second hand-written copy
@@ -4321,118 +4326,8 @@ const CONTEXT_BODY_MAX_LENGTH = 200_000;
 // PostgreSQL substring positions are int4. Reserve one for its one-based index.
 const CONTEXT_BODY_MAX_OFFSET = 2_147_483_646;
 
-/** Slice by Unicode code point, matching PostgreSQL substring/length. */
-function sliceUnicodeCharacters(
-	body: string,
-	offset: number,
-	maxLength: number,
-): { content: string; contentLength: number } {
-	const characters = Array.from(body);
-	return {
-		content: characters.slice(offset, offset + maxLength).join(""),
-		contentLength: characters.length,
-	};
-}
-
 /** How long the presigned link to a stored file stays valid. */
 const CONTEXT_FILE_URL_EXPIRY_SECONDS = 300;
-
-/** Context types whose bytes are the point — the extracted text is secondary. */
-const BINARY_CONTEXT_TYPES = new Set([
-	"FILE",
-	"IMAGE",
-	"DOCUMENT",
-	"SPREADSHEET",
-]);
-
-interface ContextRowLike {
-	type: string;
-	sourceTitle?: string | null;
-	originalFilename?: string | null;
-	extractionStatus?: string | null;
-	extractionError?: string | null;
-	metadata?: unknown;
-}
-
-/** Narrow a context row's loose `metadata` JSON to a plain record. */
-function contextMetadata(metadata: unknown): Record<string, unknown> {
-	return metadata && typeof metadata === "object" && !Array.isArray(metadata)
-		? (metadata as Record<string, unknown>)
-		: {};
-}
-
-/** Resolve a display title from the columns, then the metadata fallbacks. */
-function resolveContextTitle(ctx: ContextRowLike): string {
-	if (ctx.sourceTitle) {
-		return ctx.sourceTitle;
-	}
-	const meta = contextMetadata(ctx.metadata);
-	for (const key of ["title", "documentTitle", "sourceTitle", "filename"]) {
-		const value = meta[key];
-		if (typeof value === "string" && value.length > 0) {
-			return value;
-		}
-	}
-	return ctx.originalFilename || "Untitled context";
-}
-
-/** Resolve the integration provider slug, if this context came from one. */
-function resolveContextProvider(ctx: ContextRowLike): string | null {
-	const meta = contextMetadata(ctx.metadata);
-	const provider = meta.provider ?? meta.integrationProvider;
-	return typeof provider === "string" && provider.length > 0
-		? provider
-		: null;
-}
-
-/**
- * Explain why a context has no readable body, in terms the caller can act
- * on. The INTEGRATION branch is the one that matters most: a linked Teams or
- * Slack conversation is a monitor pointer, so it is marked COMPLETED with an
- * empty `content` forever — its messages are analysed into backlog proposals
- * and never stored on the context. Returning a bare empty string there would
- * read as "the conversation was empty".
- *
- * A one-to-one or group chat gets its own sentence ahead of that one, because
- * the generic wording is false for it: it says the messages *are* captured
- * elsewhere, and for a private chat nothing is captured anywhere. An agent
- * told to look in "separate conversation records" would search for something
- * that does not exist. This matches `PRIVATE_CONVERSATION_EXCLUDED` in the
- * export's taxonomy — one fact, told the same way on both surfaces.
- */
-function resolveContextUnavailableReason(ctx: ContextRowLike): string {
-	const status = ctx.extractionStatus ?? "";
-
-	if (status === "PENDING" || status === "EXTRACTING") {
-		return "Extraction is still in progress — retry shortly.";
-	}
-	if (status === "FAILED") {
-		return ctx.extractionError
-			? `Extraction failed: ${ctx.extractionError}`
-			: "Extraction failed for this source.";
-	}
-	if (ctx.type === "INTEGRATION") {
-		const pointer = classifyConversationPointer({
-			type: ctx.type,
-			metadata: ctx.metadata ?? null,
-		});
-		if (pointer?.kind === "PRIVATE_CHAT") {
-			return (
-				`This source pins a linked ${pointer.sourceSystem} chat. One-to-one and group chats are ` +
-				`not captured by design, so no messages are stored for it here — read them in ${pointer.sourceSystem}.`
-			);
-		}
-		return (
-			"This source pins a monitored external conversation. Its messages are captured into " +
-			"separate conversation records rather than onto the context row, so an empty body " +
-			"does not mean an empty conversation."
-		);
-	}
-	if (BINARY_CONTEXT_TYPES.has(ctx.type)) {
-		return "No text was extracted from this file — read the original via 'originalFile.url'.";
-	}
-	return "No content is stored for this context.";
-}
 
 async function handleListProjectContexts(
 	args: Record<string, unknown>,
@@ -4505,11 +4400,9 @@ async function handleGetProjectContext(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const {
-		getCapturedConversationMarkdown,
-		getContextById,
-		getCrawledUrlSourceMarkdownPage,
-	} = await import("@repo/database");
+	const { getContextById, readProjectContextBodyPage } = await import(
+		"@repo/database"
+	);
 
 	const contextId = args.contextId as string;
 	if (!contextId) {
@@ -4561,66 +4454,21 @@ async function handleGetProjectContext(
 		);
 	}
 
-	// Two kinds of row keep their text somewhere other than `content`. Crawled
-	// URL pages use a SQL-side slice so an offset read does not transfer every
-	// child body; conversation bundles still return their existing full text.
-	//
-	// A PATH_PREFIX URL source scatters its markdown across child page rows. A
-	// monitored Teams or Slack channel is a pointer whose captured conversation
-	// lives in `ProjectContextConversationBundle` (Fizzy #2228) — this read is a
-	// path no retrieval-time guard covers, so it is exactly where an empty body
-	// used to be indistinguishable from an empty conversation.
-	//
-	// The bundle text arrives already neutralized against prompt injection: the
-	// capture path applies the guard before the row write so every derived copy
-	// inherits it. Nothing is re-applied here.
-	let body: string;
-	let crawledPage:
-		| {
-				content: string;
-				contentLength: number;
-				hasReadableText: boolean;
-		  }
-		| undefined;
-	if (ctx.type === "LINK" && ctx.urlScope === "PATH_PREFIX") {
-		crawledPage = await getCrawledUrlSourceMarkdownPage(
-			ctx.id,
-			{ userId: session.userId, organizationId: hostOrganizationId },
-			{ offset, maxLength },
-		);
-		body = "";
-	} else if (ctx.type === "INTEGRATION") {
-		const captured = await getCapturedConversationMarkdown(ctx.id, {
-			userId: session.userId,
-			organizationId: hostOrganizationId,
-		});
-		// An integration with nothing captured falls back to whatever the row
-		// itself holds — which for a monitored channel is "", and then
-		// `resolveContextUnavailableReason` explains why rather than implying
-		// the conversation was empty.
-		body = captured.length > 0 ? captured : (ctx.content ?? "");
-	} else {
-		body = ctx.content ?? "";
-	}
-
-	const localPage = crawledPage
-		? undefined
-		: sliceUnicodeCharacters(body, offset, maxLength);
-	const page = crawledPage?.content ?? localPage?.content ?? "";
-	const contentLength =
-		crawledPage?.contentLength ?? localPage?.contentLength ?? 0;
-	const returnedLength = Array.from(page).length;
-	const truncated = offset + returnedLength < contentLength;
-
-	// Blank is not the same as non-empty. A scanned or photo-only PDF extracts
-	// to whitespace — COMPLETED status, `"\n\n"` for content — and reporting
-	// that as readable hands the caller two newlines while telling them it is
-	// text. Treat whitespace-only as nothing to read; the Class A branch of
-	// `resolveContextUnavailableReason` then points at the original file,
-	// which for these rows is exactly where the information actually is.
-	const hasReadableText = crawledPage
-		? crawledPage.hasReadableText
-		: body.trim().length > 0;
+	// Crawled PATH_PREFIX pages and captured Teams/Slack conversations keep
+	// their text off the row; the shared reader knows where, pages it, and
+	// treats a whitespace-only body as nothing to read — the Class A branch of
+	// `resolveContextUnavailableReason` then points at the original file.
+	const {
+		content: page,
+		contentLength,
+		returnedLength,
+		truncated,
+		hasReadableText,
+	} = await readProjectContextBodyPage(
+		ctx,
+		{ userId: session.userId, organizationId: hostOrganizationId },
+		{ offset, maxLength },
+	);
 
 	const originalFile = await resolveOriginalFileLink(ctx);
 

@@ -264,6 +264,27 @@ describe("analyzeIntentClarityActivity", () => {
 			expect(system).toContain("do NOT stay silent on a real gap");
 		});
 
+		// Fizzy #2578: "What does this project's PRD say about auth?" was met
+		// with "one PRD or multiple?" — the system can list them itself.
+		it("never asks which of the attached project's documents or sources exist", async () => {
+			generateText.mockResolvedValue({ text: clearResponse });
+
+			await analyzeIntentClarityActivity({
+				message:
+					"What does this project's PRD say about authentication?",
+				userId: "u",
+				projectContext: "Attached project: Example Portal",
+			});
+
+			const { instructions: system } = promptFor(
+				generateText.mock.calls[0][0],
+			);
+			expect(system).toContain(
+				"Never ask which documents, PRDs, files or sources exist",
+			);
+			expect(system).toContain("do NOT stay silent on a real gap");
+		});
+
 		it("still asks when the model judges the conversation insufficient", async () => {
 			generateText.mockResolvedValue({
 				text: JSON.stringify({

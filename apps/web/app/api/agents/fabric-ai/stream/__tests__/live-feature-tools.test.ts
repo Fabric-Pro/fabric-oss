@@ -29,9 +29,18 @@ describe("projectContextGroundingLine", () => {
 		expect(line).toContain("snapshot");
 	});
 
+	// Fizzy #2578: a documents question went to semantic search, which
+	// returned a guessed, mixed list.
+	it("points the model at the live document and source listings", () => {
+		const line = projectContextGroundingLine(true);
+		expect(line).toContain("fabric_list_project_documents");
+		expect(line).toContain("fabric_list_project_sources");
+	});
+
 	it("never advertises tools the turn does not have", () => {
 		const line = projectContextGroundingLine(false);
 		expect(line).not.toContain("fabric_list_project_features");
+		expect(line).not.toContain("fabric_list_project_documents");
 		expect(line).toContain("say what else you need");
 	});
 });

@@ -164,7 +164,9 @@ describe("code_search repository scope", () => {
 		expect(h.query).not.toHaveBeenCalled();
 	});
 
-	it("reports a named repository whose index is not ready", async () => {
+	// Not a failure (Fizzy #2578): a failed call counted toward the
+	// orchestrator's three-strike breaker, which aborted the turn.
+	it("reports a named repository whose index is not ready as a plain result", async () => {
 		h.getProjectCodeIndexes.mockResolvedValue([
 			{ repositoryIntegrationId: "ri-web", status: "READY" },
 			{ repositoryIntegrationId: "ri-legacy", status: "INDEXING" },
@@ -174,7 +176,31 @@ describe("code_search repository scope", () => {
 			query: "auth",
 			repository: "legacy-app",
 		});
-		expect(result).toMatchObject({ success: false, status: "INDEXING" });
+		expect(result).toMatchObject({
+			available: false,
+			status: "INDEXING",
+			results: [],
+			message: expect.stringContaining(
+				"The code index for example-org/legacy-app is still building",
+			),
+		});
+		expect(result).not.toHaveProperty("success");
+		expect(result).not.toHaveProperty("error");
+		expect(h.query).not.toHaveBeenCalled();
+	});
+
+	it("reports a project whose only index is still building as a plain result", async () => {
+		h.getProjectCodeIndexes.mockResolvedValue([
+			{ repositoryIntegrationId: "ri-web", status: "PENDING" },
+		]);
+		const tool = await buildTool();
+		const result = await tool.execute({ query: "auth" });
+		expect(result).toMatchObject({
+			available: false,
+			status: "PENDING",
+			message: expect.stringContaining("Do not call code_search again"),
+		});
+		expect(result).not.toHaveProperty("success");
 	});
 
 	it("scopes to the project's own default repository by an empty integration id", async () => {

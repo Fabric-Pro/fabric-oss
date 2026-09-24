@@ -77,8 +77,8 @@ describe("runFabricCatalogTool — Direct builders", () => {
 	it("maps code search's { success: false, message } to a failure", async () => {
 		h.codeSearchExecute.mockResolvedValue({
 			success: false,
-			message: "Code index is not ready for this project yet.",
-			status: "missing",
+			message: 'No indexed repository in this project matches "other".',
+			status: "unknown_repository",
 		});
 		const res = await runFabricCatalogTool({
 			...call,
@@ -86,8 +86,26 @@ describe("runFabricCatalogTool — Direct builders", () => {
 		});
 		expect(res).toEqual({
 			success: false,
-			error: "Code index is not ready for this project yet.",
+			error: 'No indexed repository in this project matches "other".',
 		});
+	});
+
+	// Fizzy #2578: an index that is still building is not the model's
+	// mistake. As a failure it tripped the loop's three-strike breaker and
+	// aborted the turn; as a result the model reads it and answers otherwise.
+	it("passes an unavailable code index through as a successful result", async () => {
+		const unavailable = {
+			available: false,
+			status: "INDEXING",
+			results: [],
+			message: "This project's code index is still building…",
+		};
+		h.codeSearchExecute.mockResolvedValue(unavailable);
+		const res = await runFabricCatalogTool({
+			...call,
+			toolName: "code_search",
+		});
+		expect(res).toEqual({ success: true, output: unavailable });
 	});
 
 	it("maps a thrown error to a failure", async () => {

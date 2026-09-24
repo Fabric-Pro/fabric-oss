@@ -307,6 +307,10 @@ const BUILT_IN_TO_FABRIC_TOOLS: Record<string, string[]> = {
 		"fabric_list_meeting_transcripts",
 		"fabric_list_project_features",
 		"fabric_get_project_feature",
+		"fabric_list_project_documents",
+		"fabric_get_project_document",
+		"fabric_list_project_sources",
+		"fabric_get_project_source",
 	],
 	"create-story": ["fabric_create_story"],
 };

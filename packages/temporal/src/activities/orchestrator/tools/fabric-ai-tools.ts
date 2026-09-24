@@ -18,6 +18,17 @@ import {
 	FABRIC_UPDATE_FRAME_TOOL,
 } from "../../../workflows/orchestrator/frame-tool-schemas";
 import {
+	PROJECT_DOCUMENT_GET_DESCRIPTION,
+	PROJECT_DOCUMENT_GET_INPUT_SCHEMA,
+	PROJECT_DOCUMENT_LIST_DESCRIPTION,
+	PROJECT_DOCUMENT_LIST_INPUT_SCHEMA,
+	PROJECT_RAG_QUERY_LISTING_HINT,
+	PROJECT_SOURCE_GET_DESCRIPTION,
+	PROJECT_SOURCE_GET_INPUT_SCHEMA,
+	PROJECT_SOURCE_LIST_DESCRIPTION,
+	PROJECT_SOURCE_LIST_INPUT_SCHEMA,
+} from "../../../workflows/orchestrator/project-document-tool-schemas";
+import {
 	PROJECT_FEATURE_GET_INPUT_SCHEMA,
 	PROJECT_FEATURE_LIST_INPUT_SCHEMA,
 } from "../../../workflows/orchestrator/project-feature-tool-schemas";
@@ -173,6 +184,7 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 				"Use this when answering questions about the project, its requirements, architecture, or any project-specific context. " +
 				"This tool searches the project's knowledge base including uploaded documents, PRDs, meeting notes, " +
 				"code analysis results, and other project contexts using semantic similarity. " +
+				`${PROJECT_RAG_QUERY_LISTING_HINT} ` +
 				"KEYWORDS: project context, project documents, project requirements, project architecture, project codebase, " +
 				"project knowledge, feature details, tech stack, project goals, project specs.",
 			inputSchema: {
@@ -361,6 +373,111 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 					description: { type: "string" },
 					acceptanceCriteria: { type: "string" },
 					tasks: { type: "array", items: { type: "object" } },
+				},
+			},
+		},
+
+		// =======================================================================
+		// Project document and Context-tab source reads (Dynamic)
+		// Live, exact listings of the Documents tab and the Context tab, and a
+		// paged read of one item's text. project_rag_query returns a similarity
+		// sample and cannot say what exists (Fizzy #2578). Named apart from the
+		// MCP gateway's fabric_list_documents / fabric_list_project_contexts,
+		// whose schemas take a projectId the chat never lets the model choose.
+		// =======================================================================
+		{
+			name: "fabric_list_project_documents",
+			description: `${PROJECT_DOCUMENT_LIST_DESCRIPTION} KEYWORDS: documents, list documents, PRD, product requirements, technical spec, architecture document, proposal, specs, documents tab, how many documents.`,
+			inputSchema: PROJECT_DOCUMENT_LIST_INPUT_SCHEMA,
+			outputSchema: {
+				type: "object",
+				properties: {
+					summary: {
+						type: "string",
+						description: "The total in one sentence",
+					},
+					documents: {
+						type: "array",
+						items: { type: "object" },
+						description: "Matching documents on this page",
+					},
+					total: {
+						type: "number",
+						description: "Matching documents across every page",
+					},
+					hasMore: { type: "boolean" },
+				},
+			},
+		},
+		{
+			name: "fabric_get_project_document",
+			description: PROJECT_DOCUMENT_GET_DESCRIPTION,
+			inputSchema: PROJECT_DOCUMENT_GET_INPUT_SCHEMA,
+			outputSchema: {
+				type: "object",
+				properties: {
+					title: { type: "string" },
+					type: { type: "string" },
+					content: {
+						type: "string",
+						description: "This part of the document's text",
+					},
+					truncated: { type: "boolean" },
+					nextOffset: {
+						type: "number",
+						description: "Pass as offset to read the next part",
+					},
+					contentAvailable: { type: "boolean" },
+					unavailableReason: { type: "string" },
+				},
+			},
+		},
+		{
+			name: "fabric_list_project_sources",
+			description: `${PROJECT_SOURCE_LIST_DESCRIPTION} KEYWORDS: context tab, sources, files, uploaded files, links, attachments, notes, transcripts, what files, list sources, how many files.`,
+			inputSchema: PROJECT_SOURCE_LIST_INPUT_SCHEMA,
+			outputSchema: {
+				type: "object",
+				properties: {
+					summary: {
+						type: "string",
+						description:
+							"The total in one sentence, including how many code-index entries were left out",
+					},
+					sources: {
+						type: "array",
+						items: { type: "object" },
+						description: "Matching sources on this page",
+					},
+					total: {
+						type: "number",
+						description: "Matching sources across every page",
+					},
+					hasMore: { type: "boolean" },
+					excludedCodeContexts: { type: "number" },
+				},
+			},
+		},
+		{
+			name: "fabric_get_project_source",
+			description: PROJECT_SOURCE_GET_DESCRIPTION,
+			inputSchema: PROJECT_SOURCE_GET_INPUT_SCHEMA,
+			outputSchema: {
+				type: "object",
+				properties: {
+					title: { type: "string" },
+					kind: { type: "string" },
+					content: {
+						type: "string",
+						description: "This part of the source's text",
+					},
+					truncated: { type: "boolean" },
+					nextOffset: {
+						type: "number",
+						description: "Pass as offset to read the next part",
+					},
+					contentAvailable: { type: "boolean" },
+					unavailableReason: { type: "string" },
 				},
 			},
 		},

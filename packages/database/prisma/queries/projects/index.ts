@@ -14,6 +14,7 @@ export * from "./backlog-proposal-drafts";
 export * from "./backlog-update-sessions";
 export * from "./bug-cause-lines";
 export * from "./comments";
+export * from "./context-body";
 export * from "./context-content-hash";
 export * from "./context-duplicates";
 export * from "./context-repository-sync";

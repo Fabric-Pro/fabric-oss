@@ -25,6 +25,10 @@
  * string lived elsewhere, so the user-facing text went on lying.
  */
 
+// The pointer classifier lives beside the other context-row helpers in
+// @repo/database (pure leaf, deep-imported so no Prisma enters this module):
+// the MCP gateway and the chat engines read the same rows (Fizzy #2578).
+import { classifyConversationPointer } from "@repo/database/src/project-context-presentation";
 import type { ContextDownloadClass } from "./context-download-filename";
 
 /**
@@ -105,102 +109,6 @@ export interface SkipReasonContextRow {
 /** Extraction states that will never produce text on their own. */
 const EXTRACTION_FAILED_STATUS = "FAILED";
 const EXTRACTION_CANCELLED_STATUS = "CANCELLED";
-
-/**
- * Chat providers whose channels are registered as `INTEGRATION` pointer rows,
- * mapped to the name a user would recognize. A provider absent from this map
- * is not treated as a conversation: an unrecognized integration with no text
- * is reported as `NOTHING_STORED` rather than guessing at a source system.
- */
-const CONVERSATION_SOURCE_SYSTEMS: Record<string, string> = {
-	MICROSOFT_TEAMS: "Microsoft Teams",
-	TEAMS: "Microsoft Teams",
-	SLACK: "Slack",
-};
-
-function readMetadataRecord(value: unknown): Record<string, unknown> | null {
-	return value && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: null;
-}
-
-/**
- * What a linked-conversation pointer row points at.
- *
- * `CHANNEL` is a shared channel — a space a project is a plausible audience
- * for, and the only kind conversation capture monitors. `PRIVATE_CHAT` is a
- * one-to-one or group chat, which the capture path deliberately leaves alone.
- */
-type ConversationPointerKind = "CHANNEL" | "PRIVATE_CHAT";
-
-/** A recognized conversation pointer: which system, and which kind. */
-export interface ConversationPointer {
-	sourceSystem: string;
-	kind: ConversationPointerKind;
-}
-
-/**
- * Classify a linked-conversation pointer row, or `null` when the row is not
- * one.
- *
- * Matches the metadata shape the channel and chat writers persist —
- * `buildTeamsChannelContextMetadata`, `buildTeamsChatContextMetadata` and
- * `buildSlackChannelContextMetadata` — which is
- * `{ provider, chatType?, channelId | chatId, … }` on an `INTEGRATION` row. The
- * conversation identifier is required as well as the provider: a document
- * pulled from a chat provider's file store is an integration, not a
- * conversation, and reporting it as one would trade a vague lie for a
- * confident one.
- *
- * The channel test is `channelId` present AND `chatType` either absent or
- * `"channel"`, in that combination on purpose:
- *
- *   - Teams stamps `chatType: "channel"` beside `teamId`/`channelId`, and
- *     `chatType: "group"` beside `chatId` — the two never overlap.
- *   - Slack writes `channelId` with no `chatType` at all, so an absent
- *     `chatType` next to a channel id means Slack channel, not "unknown".
- *   - Any other `chatType` — `"group"`, Graph's `"oneOnOne"`, a value this
- *     module has not seen — is NOT assumed to be a channel. It falls through
- *     to the `chatId` test, so an unrecognized chat kind is reported as a
- *     private chat rather than as a channel that will be captured one day.
- *     Erring that way keeps the module from promising capture it cannot
- *     deliver, which is the whole point of the split.
- */
-export function classifyConversationPointer(
-	ctx: Pick<SkipReasonContextRow, "type" | "metadata">,
-): ConversationPointer | null {
-	if (ctx.type !== "INTEGRATION") {
-		return null;
-	}
-	const metadata = readMetadataRecord(ctx.metadata);
-	if (!metadata) {
-		return null;
-	}
-	const provider =
-		typeof metadata.provider === "string"
-			? metadata.provider.toUpperCase()
-			: null;
-	const sourceSystem = provider
-		? CONVERSATION_SOURCE_SYSTEMS[provider]
-		: undefined;
-	if (!sourceSystem) {
-		return null;
-	}
-	const chatType =
-		typeof metadata.chatType === "string"
-			? metadata.chatType.toLowerCase()
-			: null;
-	if (
-		typeof metadata.channelId === "string" &&
-		(chatType === null || chatType === "channel")
-	) {
-		return { sourceSystem, kind: "CHANNEL" };
-	}
-	if (typeof metadata.chatId === "string") {
-		return { sourceSystem, kind: "PRIVATE_CHAT" };
-	}
-	return null;
-}
 
 /**
  * Why this row cannot go into the archive — or `null` when it can.

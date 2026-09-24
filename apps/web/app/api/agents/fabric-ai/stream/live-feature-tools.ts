@@ -1,6 +1,8 @@
 /**
  * Whether this Direct turn binds the live roadmap reads
- * (`fabric_list_project_features`, `fabric_get_project_feature`). Mirrors
+ * (`fabric_list_project_features`, `fabric_get_project_feature`) and the
+ * document and Context-tab source reads that ride along with them
+ * (`fabric_list_project_documents`, `fabric_list_project_sources`, …). Mirrors
  * `createBuiltInTools` in @repo/temporal: with a project attached they ride
  * along with the default bundle and with any non-empty explicit tool list; an
  * explicit empty list disables every Fabric tool.
@@ -24,6 +26,6 @@ const GROUNDING =
  */
 export function projectContextGroundingLine(liveFeatureTools: boolean): string {
 	return liveFeatureTools
-		? `${GROUNDING} The feature list below is a snapshot of the top of the roadmap taken at the start of this turn: for any feature not listed, a status or priority filter (e.g. everything In Review), or a feature's acceptance criteria and tasks, call fabric_list_project_features or fabric_get_project_feature — they read the roadmap live. Never say a feature does not exist because it is missing from the snapshot.`
+		? `${GROUNDING} The feature list below is a snapshot of the top of the roadmap taken at the start of this turn: for any feature not listed, a status or priority filter (e.g. everything In Review), or a feature's acceptance criteria and tasks, call fabric_list_project_features or fabric_get_project_feature — they read the roadmap live. Never say a feature does not exist because it is missing from the snapshot. For which documents or Context-tab files, links and sources the project has, call fabric_list_project_documents or fabric_list_project_sources — they list them exactly — and read one with fabric_get_project_document or fabric_get_project_source; never ask the user which documents exist.`
 		: `${GROUNDING} If a needed record is not listed, say what else you need rather than guessing.`;
 }

@@ -148,3 +148,33 @@ export function describeCodeSearchRepositories(
 		: "Without `repository` it searches all of them; pass one to scope the search.";
 	return ` This project's indexed repositories: ${list}. ${scope}`;
 }
+
+/**
+ * The result `code_search` returns when the code index cannot be searched
+ * right now. A plain result, not a failure: nothing the model did caused it
+ * and retrying cannot fix it. As a failure it tripped the orchestrator's
+ * three-strike breaker, which aborted the whole turn with a raw error
+ * (Fizzy #2578). The message tells the model what to do instead.
+ */
+export function codeIndexUnavailableResult(
+	status: string,
+	repositoryLabel?: string,
+): { available: false; status: string; results: []; message: string } {
+	const subject = repositoryLabel
+		? `The code index for ${repositoryLabel}`
+		: "This project's code index";
+	const state =
+		status === "PENDING" || status === "INDEXING"
+			? "is still building"
+			: status === "FAILED"
+				? "failed to build and needs a re-index from the project's repository settings"
+				: status === "missing"
+					? "does not exist — no repository has been indexed for this project"
+					: `is not searchable right now (status ${status})`;
+	return {
+		available: false,
+		status,
+		results: [],
+		message: `${subject} ${state}, so code search is unavailable for now. Do not call code_search again in this turn: answer from the project's other sources (documents, features, Context-tab sources), and tell the user that code search will work once the repository is indexed.`,
+	};
+}

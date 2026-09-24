@@ -36,6 +36,10 @@ import type { ToolCategory } from "../../../activities/orchestrator";
 // `safeEvaluateExpression` in template-execution.ts.
 import { DEFAULT_MCP_TOOL_TIMEOUT_MS } from "../../../activities/orchestrator/execution/mcp-call-timeout";
 import { DIAGRAM_RENDERING_GUIDANCE } from "../diagram-rendering";
+import {
+	FABRIC_AI_SERVER_CONFIG_ID,
+	isLoopBuiltInReadTool,
+} from "../fabric-catalog-access";
 import { projectIntegrationTools } from "../integration-tool-projection";
 import {
 	BUDGET,
@@ -44,12 +48,24 @@ import {
 	TOOLS,
 } from "../orchestrator-config";
 import {
+	PROJECT_DOCUMENT_GET_DESCRIPTION,
+	PROJECT_DOCUMENT_GET_INPUT_SCHEMA,
+	PROJECT_DOCUMENT_LIST_DESCRIPTION,
+	PROJECT_DOCUMENT_LIST_INPUT_SCHEMA,
+	PROJECT_RAG_QUERY_LISTING_HINT,
+	PROJECT_SOURCE_GET_DESCRIPTION,
+	PROJECT_SOURCE_GET_INPUT_SCHEMA,
+	PROJECT_SOURCE_LIST_DESCRIPTION,
+	PROJECT_SOURCE_LIST_INPUT_SCHEMA,
+} from "../project-document-tool-schemas";
+import {
 	PROJECT_FEATURE_GET_DESCRIPTION,
 	PROJECT_FEATURE_GET_INPUT_SCHEMA,
 	PROJECT_FEATURE_LIST_DESCRIPTION,
 	PROJECT_FEATURE_LIST_INPUT_SCHEMA,
 } from "../project-feature-tool-schemas";
 import { assessToolCallRisk } from "../risk-assessment";
+import { formatToolFailureAbort } from "../tool-failure-message";
 import type {
 	ALTKConfig,
 	ApprovalSignalData,
@@ -1266,6 +1282,8 @@ export async function executeIterativePhase(
 	// below, so the focused-agent prompt lists them only on histories that
 	// actually have them.
 	let projectFeatureToolsRegistered = false;
+	// Same, for the document and Context-tab source reads.
+	let projectDocumentToolsRegistered = false;
 
 	// Pre-register project_rag_query when a project is attached so the LLM
 	// can use it immediately without wasting iterations on search_tools.
@@ -1391,11 +1409,48 @@ export async function executeIterativePhase(
 				"fabric-ai-server";
 			projectFeatureToolsRegistered = true;
 		}
+		// Live document and Context-tab source reads (Fizzy #2578): semantic
+		// search returns a similarity sample, so "list every document" or
+		// "which files are on the Context tab" came back as a guessed, mixed
+		// list after a dozen searches. Routed like the roadmap reads above, and
+		// patch-gated for the same reason: an older history replays without them.
+		if (patched("orch-project-document-tools-v1")) {
+			discoveredTools.fabric_list_project_documents = {
+				description: PROJECT_DOCUMENT_LIST_DESCRIPTION,
+				inputSchema: PROJECT_DOCUMENT_LIST_INPUT_SCHEMA,
+			};
+			discoveredTools.fabric_get_project_document = {
+				description: PROJECT_DOCUMENT_GET_DESCRIPTION,
+				inputSchema: PROJECT_DOCUMENT_GET_INPUT_SCHEMA,
+			};
+			discoveredTools.fabric_list_project_sources = {
+				description: PROJECT_SOURCE_LIST_DESCRIPTION,
+				inputSchema: PROJECT_SOURCE_LIST_INPUT_SCHEMA,
+			};
+			discoveredTools.fabric_get_project_source = {
+				description: PROJECT_SOURCE_GET_DESCRIPTION,
+				inputSchema: PROJECT_SOURCE_GET_INPUT_SCHEMA,
+			};
+			discoveredToolConfigIds.fabric_list_project_documents =
+				"fabric-ai-server";
+			discoveredToolConfigIds.fabric_get_project_document =
+				"fabric-ai-server";
+			discoveredToolConfigIds.fabric_list_project_sources =
+				"fabric-ai-server";
+			discoveredToolConfigIds.fabric_get_project_source =
+				"fabric-ai-server";
+			const ragQuery = discoveredTools.project_rag_query as {
+				description: string;
+			};
+			ragQuery.description = `${ragQuery.description} ${PROJECT_RAG_QUERY_LISTING_HINT}`;
+			projectDocumentToolsRegistered = true;
+		}
 		log.info(
 			"[IterativeExecution] Pre-registered project_rag_query, fabric_list_meeting_transcripts, search_slack_messages, and search_teams_messages tools",
 			{
 				projectId: input.projectId,
 				projectFeatureTools: projectFeatureToolsRegistered,
+				projectDocumentTools: projectDocumentToolsRegistered,
 			},
 		);
 	}
@@ -1835,7 +1890,7 @@ Place each ![Generated Image](url) AFTER the text description, NOT before it. Co
 		// `search_tools`. Re-emitting costs ~1.5K tokens vs. the 48K/iter the
 		// eager-schema path would have spent.
 		if (preloadedToolCatalog) {
-			iterationSystemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; the loaded schema persists for the rest of this conversation. Tools NOT in the catalog (search_tools, project_rag_query, fabric_list_meeting_transcripts, ${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}search_slack_messages, search_teams_messages, OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
+			iterationSystemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; the loaded schema persists for the rest of this conversation. Tools NOT in the catalog (search_tools, project_rag_query, fabric_list_meeting_transcripts, ${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}search_slack_messages, search_teams_messages, OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
 		} else if (
 			iteration === 1 &&
 			preloadedServerNames.length > 0 &&
@@ -2082,7 +2137,27 @@ Never guess or use example values — always use real data from API responses.`;
 			// Respect autonomy level from user preferences or agent config
 			// ================================================================
 			const autonomyLevel = input.autonomyLevel ?? "BALANCED";
-			const riskAssessment = assessToolCallRisk(toolCall, autonomyLevel);
+			// The decision feeds the approval activities below, so the newer
+			// rules — a Fabric-owned read is never keyword-scanned, and
+			// arguments match by word (Fizzy #2578) — apply only to histories
+			// that recorded this marker. `fabricRouted` is where the dispatch
+			// below will send the call: one of the loop's own built-ins
+			// (matched by name, ahead of any MCP lookup) or the Fabric
+			// catalog's virtual config. A same-named tool on another MCP
+			// server is scanned as usual.
+			const riskAssessment = assessToolCallRisk(
+				toolCall,
+				autonomyLevel,
+				patched("orch-risk-read-only-exempt-v1")
+					? {
+							rules: "read-only-exempt-v1",
+							fabricRouted:
+								isLoopBuiltInReadTool(toolCall.name) ||
+								discoveredToolConfigIds[toolCall.name] ===
+									FABRIC_AI_SERVER_CONFIG_ID,
+						}
+					: { rules: "legacy" },
+			);
 
 			if (riskAssessment.requiresApproval) {
 				log.info("Tool call requires approval", {
@@ -3095,13 +3170,17 @@ Never guess or use example values — always use real data from API responses.`;
 							threshold: TOOL_FAILURE_THRESHOLD,
 							lastError: toolError,
 						});
+						// `error` is what the chat shows the user: the workflow returns it
+						// as the failed turn's message, and nothing reads a finalResponse on
+						// this path. The operator detail is in the log line above. Text
+						// only — on the iterative path it feeds no command or activity input.
 						return {
 							success: false,
-							error: `Tool "${toolCall.name}" failed ${next} times in a row; aborting iteration loop. Last error: ${toolError}`,
+							error: formatToolFailureAbort(
+								toolCall.name,
+								toolError,
+							),
 							shouldContinue: false,
-							data: {
-								finalResponse: `I tried to use \`${toolCall.name}\` ${next} times in a row and it kept failing with: ${toolError}\n\nI'm stopping here so we don't loop. Please check the tool's status or rephrase your request.`,
-							},
 						};
 					}
 				} else if (state.consecutiveToolFailures[toolCall.name]) {

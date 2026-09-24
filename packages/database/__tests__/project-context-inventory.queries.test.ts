@@ -151,6 +151,34 @@ describe("listProjectContextSummaries", () => {
 		expect(result.excludedCodeContexts).toBe(0);
 	});
 
+	// The chat's source listing filters by text (Fizzy #2578). The code-index
+	// count still reports what the default hides, not what matched.
+	it("matches search text in the title, file name or URL, project-scoped", async () => {
+		stubFindMany([], []);
+		stubCounts(0, 12);
+
+		const result = await listProjectContextSummaries({
+			projectId: "proj-1",
+			search: "roadmap",
+		});
+
+		expect(contextFindMany.mock.calls[0][0].where).toEqual({
+			projectId: "proj-1",
+			type: { notIn: ["CODE_FILE", "CODE_FILE_SUMMARY"] },
+			OR: [
+				{ sourceTitle: { contains: "roadmap", mode: "insensitive" } },
+				{
+					originalFilename: {
+						contains: "roadmap",
+						mode: "insensitive",
+					},
+				},
+				{ sourceUrl: { contains: "roadmap", mode: "insensitive" } },
+			],
+		});
+		expect(result.excludedCodeContexts).toBe(12);
+	});
+
 	it("lets an explicit type win over the code-index default", async () => {
 		stubFindMany([], []);
 

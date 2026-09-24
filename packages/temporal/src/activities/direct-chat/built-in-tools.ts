@@ -29,10 +29,12 @@ import {
 	shareFirstClassFrame,
 	updateFirstClassFrame,
 } from "../shared/frame-service";
+import { PROJECT_DOCUMENT_TOOL_IDS } from "../shared/project-document-reads";
 import { PROJECT_FEATURE_TOOL_IDS } from "../shared/project-feature-reads";
 import {
 	buildCodeSearchRepositories,
 	type CodeSearchRepository,
+	codeIndexUnavailableResult,
 	describeCodeSearchRepositories,
 	repositoryFilterTerm,
 	resolveCodeSearchRepository,
@@ -80,8 +82,8 @@ interface BuiltInToolContext {
 interface CreateBuiltInToolsOptions extends BuiltInToolContext {
 	enabledFabricToolIds?: string[];
 	/**
-	 * Bind the attached project's live roadmap reads alongside a non-empty
-	 * explicit tool list. Set only by the interactive chat, where the project
+	 * Bind the attached project's live roadmap, document and Context-tab
+	 * source reads alongside a non-empty explicit tool list. Set only by the interactive chat, where the project
 	 * is the one the user attached; agent runtimes (e.g. Slack triggers acting
 	 * as the agent's owner) get them only through their `project-context`
 	 * capability.
@@ -397,21 +399,17 @@ export async function createCodeSearchTool(
 
 				if (target) {
 					if (target.status !== "READY") {
-						return {
-							success: false,
-							message: `The code index for ${target.label} is not ready yet.`,
-							status: target.status,
-						};
+						return codeIndexUnavailableResult(
+							target.status,
+							target.label,
+						);
 					}
 				} else if (
 					!codeIndexes.some((index) => index.status === "READY")
 				) {
-					return {
-						success: false,
-						message:
-							"Code index is not ready for this project yet.",
-						status: codeIndexes[0]?.status ?? "missing",
-					};
+					return codeIndexUnavailableResult(
+						codeIndexes[0]?.status ?? "missing",
+					);
 				}
 
 				const { generateEmbedding } = await import(
@@ -895,6 +893,33 @@ export async function createFabricTool(
 						toolId === "fabric_list_project_features"
 							? listProjectFeatures
 							: getProjectFeature;
+					return read(args, { projectId, userId });
+				},
+			} as unknown as Parameters<typeof tool>[0]),
+		};
+	}
+
+	if (
+		toolId === "fabric_list_project_documents" ||
+		toolId === "fabric_get_project_document" ||
+		toolId === "fabric_list_project_sources" ||
+		toolId === "fabric_get_project_source"
+	) {
+		return {
+			[toolId]: tool({
+				description: toolDefinition.description || toolId,
+				inputSchema: jsonSchemaToZod(toolDefinition.inputSchema),
+				execute: async (args: Record<string, unknown>) => {
+					const reads = await import(
+						"../shared/project-document-reads"
+					);
+					const read = {
+						fabric_list_project_documents:
+							reads.listProjectDocuments,
+						fabric_get_project_document: reads.getProjectDocument,
+						fabric_list_project_sources: reads.listProjectSources,
+						fabric_get_project_source: reads.getProjectSource,
+					}[toolId as (typeof PROJECT_DOCUMENT_TOOL_IDS)[number]];
 					return read(args, { projectId, userId });
 				},
 			} as unknown as Parameters<typeof tool>[0]),
@@ -1594,7 +1619,9 @@ export async function createBuiltInTools(
 		// ride along with any explicit tool list: the full-page chat sends its
 		// Fabric tool toggles, which never name project tools, and without
 		// these the model can only answer a roadmap question from the prompt's
-		// top-15 snapshot (Fizzy #2309/#2310). Read-only and gated on the
+		// top-15 snapshot (Fizzy #2309/#2310). The document and source reads
+		// ride along for the same reason: a documents question otherwise
+		// gets a semantic-search sample (Fizzy #2578). Read-only and gated on the
 		// user's project access, so a chosen tool set gains no write path.
 		const toolIds =
 			projectId && includeProjectFeatureReads
@@ -1602,6 +1629,7 @@ export async function createBuiltInTools(
 						...new Set([
 							...enabledFabricToolIds,
 							...PROJECT_FEATURE_TOOL_IDS,
+							...PROJECT_DOCUMENT_TOOL_IDS,
 						]),
 					]
 				: enabledFabricToolIds;
@@ -1649,6 +1677,30 @@ export async function createBuiltInTools(
 				projectId,
 			}),
 			await createFabricTool("fabric_get_project_feature", {
+				userId,
+				organizationId,
+				workspaceIds,
+				projectId,
+			}),
+			await createFabricTool("fabric_list_project_documents", {
+				userId,
+				organizationId,
+				workspaceIds,
+				projectId,
+			}),
+			await createFabricTool("fabric_get_project_document", {
+				userId,
+				organizationId,
+				workspaceIds,
+				projectId,
+			}),
+			await createFabricTool("fabric_list_project_sources", {
+				userId,
+				organizationId,
+				workspaceIds,
+				projectId,
+			}),
+			await createFabricTool("fabric_get_project_source", {
 				userId,
 				organizationId,
 				workspaceIds,
