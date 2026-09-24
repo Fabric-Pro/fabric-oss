@@ -10,13 +10,14 @@
 
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	state,
 	updateStatusMutate,
 	setReadStateMutate,
 	setSnoozeMutate,
+	updateAssigneesMutate,
 	toastError,
 	invalidateQueriesMock,
 } = vi.hoisted(() => ({
@@ -45,10 +46,21 @@ const {
 		// component's now-unconditional `members.list` query has something to
 		// resolve rather than crashing every case in the file.
 		members: [] as Array<Record<string, unknown>>,
+		// Fizzy #2646: `dataUpdatedAt` of the topics query. The default — later
+		// than any write can settle — is the "refetch is instant" world every
+		// pre-existing case assumes; the hook retires a settled write at READ
+		// time when this is already newer, so no existing case gains a busy
+		// tail. Cases that HOLD the confirming refetch set it to 0 and bump it.
+		topicsUpdatedAt: Number.MAX_SAFE_INTEGER as number,
+		// Fizzy #2646: the status write has never been able to fail here.
+		updateStatusRejects: false,
+		// Fizzy #2646 (Task 5): hold the assignee write open.
+		assigneesMutationGate: null as Promise<void> | null,
 	},
 	updateStatusMutate: vi.fn(),
 	setReadStateMutate: vi.fn(),
 	setSnoozeMutate: vi.fn(),
+	updateAssigneesMutate: vi.fn(),
 	toastError: vi.fn(),
 	// Fix 1: a stable spy (unlike a fresh `vi.fn()` per `useQueryClient()`
 	// call) so a test can `waitFor` the exact moment a mutation's `onSuccess`
@@ -107,6 +119,8 @@ vi.mock("@tanstack/react-query", () => ({
 				isPending: false,
 				isLoading: false,
 				isError: false,
+				dataUpdatedAt: state.topicsUpdatedAt,
+				errorUpdatedAt: 0,
 				refetch: vi.fn(),
 			};
 		}
@@ -149,12 +163,17 @@ vi.mock("@tanstack/react-query", () => ({
 				? setReadStateMutate
 				: procedure === "projects.publishingSuite.setTopicSnooze"
 					? setSnoozeMutate
-					: updateStatusMutate;
+					: procedure ===
+							"projects.publishingSuite.updateTopicAssignees"
+						? updateAssigneesMutate
+						: updateStatusMutate;
 		const rejects =
 			(procedure === "projects.publishingSuite.setTopicReadState" &&
 				state.setReadStateRejects) ||
 			(procedure === "projects.publishingSuite.setTopicSnooze" &&
-				state.setSnoozeRejects);
+				state.setSnoozeRejects) ||
+			(procedure === "projects.publishingSuite.updateTopicStatus" &&
+				state.updateStatusRejects);
 		const run = async (vars: unknown) => {
 			spy(vars);
 			if (
@@ -172,6 +191,12 @@ vi.mock("@tanstack/react-query", () => ({
 				// Mirrors the status gate above, for the read-state write.
 				await state.readStateMutationGate;
 			}
+			if (
+				procedure === "projects.publishingSuite.updateTopicAssignees" &&
+				state.assigneesMutationGate
+			) {
+				await state.assigneesMutationGate;
+			}
 			if (rejects) {
 				const err = new Error("write failed");
 				await opts.onError?.(err);
@@ -188,7 +213,10 @@ vi.mock("@tanstack/react-query", () => ({
 			isPending: false,
 		};
 	},
-	useQueryClient: () => ({ invalidateQueries: invalidateQueriesMock }),
+	useQueryClient: () => ({
+		invalidateQueries: invalidateQueriesMock,
+		cancelQueries: () => Promise.resolve(),
+	}),
 }));
 
 vi.mock("@shared/lib/orpc-query-utils", () => {
@@ -208,6 +236,14 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 			projects: {
 				publishingSuite: {
 					listTopics: proc("projects.publishingSuite.listTopics"),
+					// Fizzy #2646: the Inbox's status refresh marks the topic
+					// page's own read of the topic stale.
+					getTopic: proc("projects.publishingSuite.getTopic"),
+					// …and, for a topic just Selected, the topic page's read
+					// of its planning analysis, which the server auto-starts.
+					getPlanningAnalysis: proc(
+						"projects.publishingSuite.getPlanningAnalysis",
+					),
 					latestCycle: proc("projects.publishingSuite.latestCycle"),
 					updateTopicStatus: proc(
 						"projects.publishingSuite.updateTopicStatus",
@@ -339,12 +375,12 @@ function daysAgo(n: number): Date {
 	return new Date(Date.now() - n * 24 * 60 * 60 * 1000);
 }
 
-function renderList() {
+function renderList({ canEdit = true }: { canEdit?: boolean } = {}) {
 	return render(
 		<PublishingSuiteList
 			projectId="proj-1"
 			organizationId={null}
-			canEdit
+			canEdit={canEdit}
 		/>,
 	);
 }
@@ -355,9 +391,13 @@ beforeEach(() => {
 	state.setSnoozeRejects = false;
 	state.statusMutationGate = null;
 	state.readStateMutationGate = null;
+	state.topicsUpdatedAt = Number.MAX_SAFE_INTEGER;
+	state.updateStatusRejects = false;
+	state.assigneesMutationGate = null;
 	updateStatusMutate.mockReset();
 	setReadStateMutate.mockReset();
 	setSnoozeMutate.mockReset();
+	updateAssigneesMutate.mockReset();
 	toastError.mockReset();
 	invalidateQueriesMock.mockReset();
 });
@@ -587,12 +627,18 @@ describe("read state", () => {
 			expect(setReadStateMutate).toHaveBeenCalledTimes(1);
 
 			// Settle the STATUS write only. `waitFor` on `invalidateQueriesMock`
-			// (called from the status mutation's `onSuccess`) is the reliable
+			// (called from the status write's refresh, which runs after the
+			// write settles) is the reliable
 			// signal that changeStatus's whole promise chain — including its
 			// `finally` — has run, not just that the gate promise resolved.
 			releaseStatusMutation();
 			await waitFor(() =>
-				expect(invalidateQueriesMock).toHaveBeenCalledTimes(1),
+				expect(invalidateQueriesMock).toHaveBeenCalledWith({
+					queryKey: [
+						"projects.publishingSuite.listTopics",
+						{ projectId: "proj-1", organizationId: null },
+					],
+				}),
 			);
 
 			// The read write is still outstanding: the row's controls must
@@ -607,6 +653,21 @@ describe("read state", () => {
 			expect(
 				screen.getByRole("button", { name: /mark as unread/i }),
 			).toBeDisabled();
+
+			// #2646 positive control: once the read write settles too, the row
+			// must come back. A status overlay that left a busy tail (for
+			// example, one that only retires on a CHANGE of the topics
+			// timestamp, which this harness holds constant) would keep it
+			// disabled — and the assertions above would be passing for the
+			// wrong reason.
+			releaseReadMutation();
+			await waitFor(() =>
+				expect(
+					screen.getByRole("combobox", {
+						name: "Status for Alpha topic",
+					}),
+				).toBeEnabled(),
+			);
 		} finally {
 			releaseReadMutation();
 			releaseStatusMutation();
@@ -1894,7 +1955,7 @@ describe("Inbox row — assignees are visible without expanding", () => {
 		).toBeInTheDocument();
 	});
 
-	it("says nothing at all when nobody is assigned", () => {
+	it("an editor's unassigned row has no 'Assigned to' list (it offers Assign instead)", () => {
 		state.topics = [makeTopic()];
 		renderList();
 
@@ -1947,5 +2008,591 @@ describe("Inbox — the Unread and Assigned-to-me views", () => {
 		expect(
 			screen.getByRole("button", { name: /^Unread$/ }),
 		).toBeInTheDocument();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Fizzy #2646: a status change must LOOK saved the moment it is made.
+// ---------------------------------------------------------------------------
+
+const LIST_TOPICS_KEY = {
+	queryKey: [
+		"projects.publishingSuite.listTopics",
+		{ projectId: "proj-1", organizationId: null },
+	],
+};
+
+/**
+ * The row's status Select while a modal dialog is open.
+ *
+ * Radix hides the rest of the page from the accessibility tree, but the
+ * `aria-hidden` library it uses exempts `[aria-live]` elements. The row's
+ * always-mounted save indicator is one, so its ancestors stay exposed and its
+ * SIBLINGS — the status control among them — are marked `aria-hidden`
+ * individually. Testing Library computes no accessible name for an element
+ * that is itself `aria-hidden`, so `getByRole({ name, hidden: true })` cannot
+ * find it; the `aria-label` attribute still identifies it.
+ */
+const statusSelectBehindModal = (title: string) => {
+	const matches = screen
+		.getAllByRole("combobox", { hidden: true })
+		.filter(
+			(el) => el.getAttribute("aria-label") === `Status for ${title}`,
+		);
+	expect(matches).toHaveLength(1);
+	return matches[0];
+};
+
+describe("#2646 — status save feedback on the Inbox row", () => {
+	it("shows the new status with Saving… while the write is in flight, then Saved", async () => {
+		const user = userEvent.setup();
+		let release: () => void = () => {};
+		state.statusMutationGate = new Promise<void>((r) => {
+			release = r;
+		});
+		state.topics = [makeTopic({ id: "t1", title: "Alpha topic" })];
+		renderList();
+
+		try {
+			await user.click(
+				screen.getByRole("combobox", {
+					name: "Status for Alpha topic",
+				}),
+			);
+			await user.click(
+				await screen.findByRole("option", { name: "Selected" }),
+			);
+
+			// Before #2646 the control kept the CACHED value (Suggestion) here.
+			await waitFor(() =>
+				expect(
+					screen.getByRole("combobox", {
+						name: "Status for Alpha topic",
+					}),
+				).toHaveTextContent("Selected"),
+			);
+			expect(
+				screen.getByTestId("topic-status-save-indicator"),
+			).toHaveTextContent("Saving…");
+			// Not before the write has settled: a refetch started before the
+			// server commits could land after the settle time with the OLD
+			// value (spec §4.1).
+			expect(invalidateQueriesMock).not.toHaveBeenCalledWith(
+				LIST_TOPICS_KEY,
+			);
+		} finally {
+			release();
+		}
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("topic-status-save-indicator"),
+			).toHaveTextContent("Saved"),
+		);
+	});
+
+	it("holds the new value, disabled, until the confirming refetch — and keeps 'Saved' when that refetch moves the row", async () => {
+		const user = userEvent.setup();
+		state.topicsUpdatedAt = 0; // the confirming refetch has not landed
+		state.topics = [
+			makeTopic({ id: "t1", title: "Alpha topic", status: "SUGGESTION" }),
+		];
+		const { rerender } = renderList();
+
+		await user.click(
+			screen.getByRole("combobox", { name: "Status for Alpha topic" }),
+		);
+		await user.click(
+			await screen.findByRole("option", { name: "Selected" }),
+		);
+		await waitFor(() =>
+			expect(invalidateQueriesMock).toHaveBeenCalledWith(LIST_TOPICS_KEY),
+		);
+		// …and marks the topic page's own read of it stale (spec §4.3).
+		expect(invalidateQueriesMock).toHaveBeenCalledWith({
+			queryKey: [
+				"projects.publishingSuite.getTopic",
+				{ projectId: "proj-1", topicId: "t1", organizationId: null },
+			],
+		});
+		// Selecting auto-starts the planning analysis on the server: the topic
+		// page's cached "no analysis yet" read is stale too.
+		expect(invalidateQueriesMock).toHaveBeenCalledWith({
+			queryKey: [
+				"projects.publishingSuite.getPlanningAnalysis",
+				{ projectId: "proj-1", topicId: "t1", organizationId: null },
+			],
+		});
+
+		const held = screen.getByRole("combobox", {
+			name: "Status for Alpha topic",
+		});
+		expect(held).toHaveTextContent("Selected");
+		expect(held).toBeDisabled();
+		expect(
+			screen.getByTestId("topic-status-save-indicator"),
+		).toHaveTextContent("Saved");
+
+		// The refetch lands: SELECTED moves the topic out of Suggested and
+		// into Recently Modified — a different <ul>, so a NEW row instance.
+		state.topics = [
+			makeTopic({ id: "t1", title: "Alpha topic", status: "SELECTED" }),
+		];
+		state.topicsUpdatedAt = Date.now() + 60_000;
+		rerender(
+			<PublishingSuiteList
+				projectId="proj-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+
+		const control = screen.getByRole("combobox", {
+			name: "Status for Alpha topic",
+		});
+		expect(control).toBeEnabled();
+		expect(control).toHaveTextContent("Selected");
+		expect(
+			screen.getByRole("region", { name: /recently modified/i }),
+		).toContainElement(control);
+		const row = control.closest("li") as HTMLElement;
+		expect(
+			within(row).getByTestId("topic-status-save-indicator"),
+		).toHaveTextContent("Saved");
+	});
+
+	it("puts the server's status back, says Not saved, and still refreshes when the write fails", async () => {
+		const user = userEvent.setup();
+		state.updateStatusRejects = true;
+		state.topics = [
+			makeTopic({ id: "t1", title: "Alpha topic", status: "SUGGESTION" }),
+		];
+		renderList();
+
+		await user.click(
+			screen.getByRole("combobox", { name: "Status for Alpha topic" }),
+		);
+		await user.click(
+			await screen.findByRole("option", { name: "Selected" }),
+		);
+
+		await waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
+		const control = screen.getByRole("combobox", {
+			name: "Status for Alpha topic",
+		});
+		expect(control).toHaveTextContent("Suggestion");
+		expect(control).toBeEnabled();
+		expect(
+			screen.getByTestId("topic-status-save-indicator"),
+		).toHaveTextContent("Not saved");
+		// A request can fail AFTER the server committed — the list must catch
+		// up rather than trust the failure (spec §4.1, panel A #2).
+		expect(invalidateQueriesMock).toHaveBeenCalledWith(LIST_TOPICS_KEY);
+	});
+
+	it("does not refresh the planning analysis for a status other than Selected", async () => {
+		const user = userEvent.setup();
+		state.topics = [
+			makeTopic({ id: "t1", title: "Alpha topic", status: "SUGGESTION" }),
+		];
+		renderList();
+
+		await user.click(
+			screen.getByRole("combobox", { name: "Status for Alpha topic" }),
+		);
+		await user.click(
+			await screen.findByRole("option", { name: "In progress" }),
+		);
+		// The refresh has run — only then is the absence meaningful.
+		await waitFor(() =>
+			expect(invalidateQueriesMock).toHaveBeenCalledWith(LIST_TOPICS_KEY),
+		);
+		expect(
+			invalidateQueriesMock.mock.calls.some((c) =>
+				JSON.stringify(c[0]).includes("getPlanningAnalysis"),
+			),
+		).toBe(false);
+	});
+
+	it("keeps the typed URL when publishing fails", async () => {
+		const user = userEvent.setup();
+		state.updateStatusRejects = true;
+		state.topics = [
+			makeTopic({ id: "t1", title: "Alpha topic", status: "SUGGESTION" }),
+		];
+		renderList();
+
+		await user.click(
+			screen.getByRole("combobox", { name: "Status for Alpha topic" }),
+		);
+		await user.click(
+			await screen.findByRole("option", { name: "Published" }),
+		);
+		const dialog = await screen.findByRole("dialog");
+		await user.type(
+			within(dialog).getByRole("textbox"),
+			"https://blog.example.com/typed",
+		);
+		await user.click(
+			within(dialog).getByRole("button", { name: "Mark as published" }),
+		);
+
+		await waitFor(() => expect(toastError).toHaveBeenCalled());
+		// A LIVE `initialUrl` (the overlay's URL while the write was out, then
+		// the cached empty one when the failure removed the overlay) would
+		// have re-seeded the field and wiped what was typed.
+		expect(
+			within(screen.getByRole("dialog")).getByRole("textbox"),
+		).toHaveValue("https://blog.example.com/typed");
+		// The dialog is modal and still open: the row's control is hidden
+		// from the accessibility tree (see `statusSelectBehindModal`).
+		expect(statusSelectBehindModal("Alpha topic")).toHaveTextContent(
+			"Suggestion",
+		);
+	});
+
+	it("keeps Edit URL and the status control disabled after a URL edit saves, until the refetch confirms it", async () => {
+		const user = userEvent.setup();
+		state.topicsUpdatedAt = 0;
+		state.topics = [
+			makeTopic({
+				id: "t1",
+				title: "Alpha topic",
+				status: "PUBLISHED",
+				publishedUrl: "https://blog.example.com/old",
+				isRead: true,
+			}),
+		];
+		const { rerender } = renderList();
+
+		// PUBLISHED belongs to neither Inbox section — reach it via its chip.
+		await user.click(screen.getByRole("button", { name: "Published" }));
+		await user.click(screen.getByTestId("topic-disclosure"));
+		await user.click(screen.getByRole("button", { name: "Edit URL" }));
+		const dialog = await screen.findByRole("dialog");
+		const field = within(dialog).getByRole("textbox");
+		expect(field).toHaveValue("https://blog.example.com/old");
+		await user.clear(field);
+		await user.type(field, "https://blog.example.com/new");
+		await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+		// The write succeeded and the dialog closed — but the list has not
+		// re-read the topic, so a second write must still be impossible.
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+		expect(screen.getByRole("button", { name: "Edit URL" })).toBeDisabled();
+		expect(
+			screen.getByRole("combobox", { name: "Status for Alpha topic" }),
+		).toBeDisabled();
+		expect(
+			screen.getByText("https://blog.example.com/new"),
+		).toBeInTheDocument();
+
+		state.topics = [
+			makeTopic({
+				id: "t1",
+				title: "Alpha topic",
+				status: "PUBLISHED",
+				publishedUrl: "https://blog.example.com/new",
+				isRead: true,
+			}),
+		];
+		state.topicsUpdatedAt = Date.now() + 60_000;
+		rerender(
+			<PublishingSuiteList
+				projectId="proj-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+		expect(screen.getByRole("button", { name: "Edit URL" })).toBeEnabled();
+	});
+
+	it("shows the NEW decline reason in the expanded row before the refetch lands", async () => {
+		const user = userEvent.setup();
+		state.topicsUpdatedAt = 0;
+		state.topics = [
+			makeTopic({ id: "t1", title: "Alpha topic", isRead: true }),
+		];
+		renderList();
+
+		await user.click(
+			screen.getByRole("combobox", { name: "Status for Alpha topic" }),
+		);
+		await user.click(
+			await screen.findByRole("option", { name: "Declined" }),
+		);
+		const dialog = await screen.findByRole("dialog");
+		await user.type(within(dialog).getByRole("textbox"), "Too niche");
+		await user.click(
+			within(dialog).getByRole("button", { name: "Decline topic" }),
+		);
+		await waitFor(() => expect(updateStatusMutate).toHaveBeenCalled());
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+
+		// The cache still says SUGGESTION with no reason (refetch held), so the
+		// row is still in Suggested — expanded, it must show what was sent.
+		await user.click(screen.getByTestId("topic-disclosure"));
+		expect(screen.getByText("Why this was declined")).toBeInTheDocument();
+		expect(screen.getByText("Too niche")).toBeInTheDocument();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Fizzy #2646: the people on a collapsed row ARE the control that changes
+// them — an editor assigns and unassigns without expanding or leaving the list.
+// ---------------------------------------------------------------------------
+
+describe("#2646 — assign people from the collapsed Inbox row", () => {
+	const ADA = { id: "u1", name: "Ada Lovelace", image: null, username: null };
+	const GRACE = {
+		id: "u2",
+		name: "Grace Hopper",
+		image: null,
+		username: null,
+	};
+	const member = (u: typeof ADA) => ({
+		userId: u.id,
+		role: "EDITOR",
+		user: {
+			id: u.id,
+			name: u.name,
+			email: `${u.id}@example.com`,
+			image: null,
+		},
+		isOwner: false,
+		isCreator: false,
+		isGuest: false,
+		invitedAt: null,
+		acceptedAt: null,
+		expiresAt: null,
+	});
+	const rowOf = (title: string) =>
+		screen.getByText(title).closest("li") as HTMLElement;
+
+	beforeEach(() => {
+		state.members = [member(ADA), member(GRACE)];
+		// The file-level `beforeEach` does not reset this spy, so without the
+		// clear a navigation from an earlier case would be read as this one's.
+		routerPush.mockClear();
+	});
+	afterEach(() => {
+		state.members = [];
+	});
+
+	it("opens the picker from the assignee avatars without leaving the list", async () => {
+		const user = userEvent.setup();
+		state.topics = [
+			makeTopic({
+				assigneeUserIds: [ADA.id, GRACE.id],
+				assignees: [ADA, GRACE],
+			}),
+		];
+		renderList();
+
+		const trigger = screen.getByRole("button", {
+			name: "Assigned to Ada Lovelace, Grace Hopper",
+		});
+		expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
+		// The same string as the name: a title that differs becomes the
+		// accessible description, and the names are read out twice.
+		expect(trigger).toHaveAttribute(
+			"title",
+			"Assigned to Ada Lovelace, Grace Hopper",
+		);
+		await user.click(trigger);
+
+		expect(await screen.findByText("Assignees")).toBeInTheDocument();
+		expect(routerPush).not.toHaveBeenCalled();
+	});
+
+	it("unassigns by unchecking and saving", async () => {
+		const user = userEvent.setup();
+		state.topics = [
+			makeTopic({
+				assigneeUserIds: [ADA.id, GRACE.id],
+				assignees: [ADA, GRACE],
+			}),
+		];
+		renderList();
+
+		await user.click(
+			screen.getByRole("button", {
+				name: "Assigned to Ada Lovelace, Grace Hopper",
+			}),
+		);
+		await user.click(
+			await screen.findByRole("checkbox", { name: /Grace Hopper/ }),
+		);
+		await user.click(screen.getByRole("button", { name: "Save" }));
+
+		await waitFor(() =>
+			expect(updateAssigneesMutate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					topicId: "t1",
+					assigneeUserIds: [ADA.id],
+				}),
+			),
+		);
+		// A successful save closes the row's picker.
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+		expect(updateStatusMutate).not.toHaveBeenCalled();
+		expect(routerPush).not.toHaveBeenCalled();
+	});
+
+	it("unassigns everyone by unchecking all and saving", async () => {
+		const user = userEvent.setup();
+		state.topics = [
+			makeTopic({ assigneeUserIds: [ADA.id], assignees: [ADA] }),
+		];
+		renderList();
+
+		await user.click(
+			screen.getByRole("button", { name: "Assigned to Ada Lovelace" }),
+		);
+		await user.click(
+			await screen.findByRole("checkbox", { name: /Ada Lovelace/ }),
+		);
+		await user.click(screen.getByRole("button", { name: "Save" }));
+
+		await waitFor(() =>
+			expect(updateAssigneesMutate).toHaveBeenCalledWith(
+				expect.objectContaining({ topicId: "t1", assigneeUserIds: [] }),
+			),
+		);
+		// A successful save closes the row's picker.
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+	});
+
+	it("offers 'Assign' on an unassigned topic and saves the selection", async () => {
+		const user = userEvent.setup();
+		state.topics = [makeTopic({ title: "Alpha topic" })];
+		renderList();
+
+		const assign = screen.getByRole("button", {
+			name: "Assign people to Alpha topic",
+		});
+		expect(assign).toHaveTextContent("Assign");
+		await user.click(assign);
+		await user.click(
+			await screen.findByRole("checkbox", { name: /Ada Lovelace/ }),
+		);
+		await user.click(screen.getByRole("button", { name: "Save" }));
+
+		await waitFor(() =>
+			expect(updateAssigneesMutate).toHaveBeenCalledWith(
+				expect.objectContaining({ assigneeUserIds: [ADA.id] }),
+			),
+		);
+		// A successful save closes the row's picker.
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+	});
+
+	it("disables the row's assignee control while its own write is pending", async () => {
+		const user = userEvent.setup();
+		let release: () => void = () => {};
+		state.assigneesMutationGate = new Promise<void>((r) => {
+			release = r;
+		});
+		state.topics = [makeTopic({ title: "Alpha topic" })];
+		renderList();
+
+		try {
+			await user.click(
+				screen.getByRole("button", {
+					name: "Assign people to Alpha topic",
+				}),
+			);
+			await user.click(
+				await screen.findByRole("checkbox", { name: /Ada Lovelace/ }),
+			);
+			await user.click(screen.getByRole("button", { name: "Save" }));
+			await waitFor(() =>
+				expect(updateAssigneesMutate).toHaveBeenCalled(),
+			);
+
+			// The custom trigger carries no `disabled` of its own — this is the
+			// picker's gate reaching it through the trigger slot (Task 4).
+			expect(
+				screen.getByRole("button", {
+					name: "Assign people to Alpha topic",
+				}),
+			).toBeDisabled();
+		} finally {
+			release();
+		}
+	});
+
+	// Behaviour, not wiring: Radix's outside-dismissal alone makes this hold.
+	it("only one assignee picker is ever open", async () => {
+		const user = userEvent.setup();
+		state.topics = [
+			makeTopic({
+				title: "Alpha topic",
+				assigneeUserIds: [ADA.id],
+				assignees: [ADA],
+				isRead: true,
+			}),
+		];
+		renderList();
+
+		await user.click(screen.getByTestId("topic-disclosure"));
+		await user.click(
+			screen.getByRole("button", { name: "Edit assignees" }),
+		);
+		// Each open picker is one Radix PopoverContent (role "dialog").
+		expect(await screen.findAllByRole("dialog")).toHaveLength(1);
+
+		await user.click(
+			screen.getByRole("button", { name: "Assigned to Ada Lovelace" }),
+		);
+		await waitFor(() =>
+			expect(screen.getAllByRole("dialog")).toHaveLength(1),
+		);
+		expect(
+			screen.getByRole("button", { name: "Assigned to Ada Lovelace" }),
+		).toHaveAttribute("aria-expanded", "true");
+	});
+
+	it("viewer, assigned: keeps the read-only list and offers no control", () => {
+		state.topics = [
+			makeTopic({
+				title: "Alpha topic",
+				assigneeUserIds: [ADA.id],
+				assignees: [ADA],
+			}),
+		];
+		renderList({ canEdit: false });
+
+		// Scoped to the row: the list's "Assigned to me" view chip is itself
+		// a button matching /assign/i.
+		const row = rowOf("Alpha topic");
+		expect(
+			within(row).getByRole("list", { name: "Assigned to Ada Lovelace" }),
+		).toBeInTheDocument();
+		expect(
+			within(row).queryByRole("button", { name: /assign/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("viewer, unassigned: says nothing and offers no control", () => {
+		state.topics = [makeTopic({ title: "Alpha topic" })];
+		renderList({ canEdit: false });
+
+		const row = rowOf("Alpha topic");
+		expect(
+			within(row).queryByRole("button", { name: /assign/i }),
+		).not.toBeInTheDocument();
+		expect(
+			within(row).queryByLabelText(/^Assigned to/),
+		).not.toBeInTheDocument();
 	});
 });

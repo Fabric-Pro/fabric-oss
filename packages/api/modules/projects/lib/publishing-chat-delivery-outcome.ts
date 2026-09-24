@@ -59,7 +59,7 @@ const UNCONFIRMED =
  * A row is SENDING for the WHOLE duration of the provider call, not only when
  * it has been stranded — and the cycle is already terminal and listed in the
  * history table before the broadcast is even dispatched. So the operator most
- * likely to open this panel, the one who just clicked "Generate now", would be
+ * likely to open this panel, the one who just clicked "Scan for topics", would be
  * shown `UNCONFIRMED` for a delivery still in flight and told to post manually.
  * If they did, the message lands twice in a shared room, which is the exact
  * outcome the fail-closed claim exists to prevent.

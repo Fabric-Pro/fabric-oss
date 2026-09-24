@@ -11,7 +11,7 @@ import {
 	PopoverTrigger,
 } from "@ui/components/popover";
 import { cn } from "@ui/lib";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import type { ProjectMember, TopicAssignee } from "./topic-shared";
 
 /**
@@ -72,6 +72,7 @@ export function AssigneesPicker({
 	isPending,
 	membersPending,
 	membersError,
+	trigger,
 }: {
 	topicTitle: string;
 	open: boolean;
@@ -91,6 +92,16 @@ export function AssigneesPicker({
 	membersPending: boolean;
 	/** True when the members query failed. */
 	membersError: boolean;
+	/**
+	 * Fizzy #2646: what opens the picker. Omitted → the "Assign people" /
+	 * "Edit assignees" button. The collapsed Inbox row passes its avatar
+	 * cluster so the people on a topic are the control that changes them.
+	 * Must be ONE element that forwards props and ref (`PopoverTrigger
+	 * asChild` merges onto it) and must not set `disabled` itself — the
+	 * picker disables it while the write is pending, and a child's own
+	 * `disabled` would win over that.
+	 */
+	trigger?: ReactNode;
 }) {
 	const [selected, setSelected] = useState<Set<string>>(
 		() => new Set(initialSelected),
@@ -178,15 +189,19 @@ export function AssigneesPicker({
 
 	return (
 		<Popover open={open} onOpenChange={onOpenChange}>
-			<PopoverTrigger asChild>
-				<Button
-					type="button"
-					variant="ghost"
-					size="sm"
-					disabled={isPending}
-				>
-					{assignedLabel}
-				</Button>
+			{/* The gate lives on the trigger SLOT, so it reaches whichever
+			    element opens the picker — a custom trigger cannot drop it. */}
+			<PopoverTrigger asChild disabled={isPending}>
+				{trigger ?? (
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						disabled={isPending}
+					>
+						{assignedLabel}
+					</Button>
+				)}
 			</PopoverTrigger>
 			<PopoverContent
 				align="start"

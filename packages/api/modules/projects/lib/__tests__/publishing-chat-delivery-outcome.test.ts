@@ -13,7 +13,7 @@ describe("SENDING distinguishes in-flight from stranded", () => {
 
 	// A row is SENDING for the whole duration of the provider call, and the
 	// cycle is listed before the broadcast is dispatched — so the operator who
-	// just clicked "Generate now" is the one most likely to see this.
+	// just clicked "Scan for topics" is the one most likely to see this.
 	it("says a fresh row is still broadcasting", () => {
 		const out = d("SENDING", null, null, "SLACK", at(5_000), NOW) ?? "";
 		expect(out).toContain("still broadcasting");

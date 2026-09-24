@@ -1203,6 +1203,13 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				conditional: true,
 			},
 			{
+				id: "publishing-suite-scan",
+				anchor: "publishing-suite-scan",
+				title: "Scan for topics now",
+				body: "Scan for topics looks through this project's recent work right away and adds anything worth writing about to this list — whether or not scheduled scans are turned on in Settings. It can run once an hour per project, and each run's result is listed in Refresh history.",
+				conditional: true,
+			},
+			{
 				id: "publishing-suite-new",
 				anchor: "publishing-suite-new",
 				title: "Add your own topic",

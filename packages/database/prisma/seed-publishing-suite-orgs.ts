@@ -145,7 +145,7 @@ export async function enrolOrganizations(
 	// warning below says so: under-stating this is the expensive direction.
 	//
 	// Two distinct spends follow, and they start at different times:
-	//   - the manual "Generate now" route is reachable the moment this write
+	//   - the manual "Scan for topics" route is reachable the moment this write
 	//     lands (bounded by a one-hour per-project cooldown). It gates on the
 	//     flag, on `Permissions.PUBLISHING_TOPIC_CREATE`, and on an ACTIVE,
 	//     non-deleted project — but never on cadence. See
@@ -159,7 +159,7 @@ export async function enrolOrganizations(
 	// Printed unconditionally, with no prompt: this runs from deploy tooling
 	// where stdin is not a terminal.
 	log(
-		`[seed:publishing-orgs] WARNING: enrolling ${ids.length} organization(s) makes the Publishing Suite visible to members of those organizations — the deep-link Publishing page stops 404ing, the project Settings → Publishing sub-tab appears, the API stops refusing, and the project TAB appears in EVERY project those organizations own (a project admin now has to turn it off, not on). It also opens the manual "Generate now" route immediately: that route gates on the PUBLISHING_SUITE flag, the caller's PUBLISHING_TOPIC_CREATE permission and an active project, but never on cadence, so any active project in these organizations can trigger a model-inference generation on demand once this write lands (bounded only by a one-hour per-project cooldown). The daily sweep is narrower: it additionally requires a project's cadence to be set away from MANUAL through Settings.`,
+		`[seed:publishing-orgs] WARNING: enrolling ${ids.length} organization(s) makes the Publishing Suite visible to members of those organizations — the deep-link Publishing page stops 404ing, the project Settings → Publishing sub-tab appears, the API stops refusing, and the project TAB appears in EVERY project those organizations own (a project admin now has to turn it off, not on). It also opens the manual "Scan for topics" route immediately: that route gates on the PUBLISHING_SUITE flag, the caller's PUBLISHING_TOPIC_CREATE permission and an active project, but never on cadence, so any active project in these organizations can trigger a model-inference generation on demand once this write lands (bounded only by a one-hour per-project cooldown). The daily sweep is narrower: it additionally requires a project's cadence to be set away from MANUAL through Settings.`,
 	);
 
 	// One statement for every row: atomic by construction, so there is no

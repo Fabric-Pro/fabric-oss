@@ -101,6 +101,16 @@ const {
 		// And for the summary write, for the same reason: a failed save must
 		// leave the editor open on the text the person typed.
 		summaryRejects: false,
+		// Fizzy #2646: the status write can fail, and can be HELD open so a
+		// case can look at the page while it is in flight.
+		updateStatusRejects: false,
+		updateStatusGate: null as Promise<void> | null,
+		// `getTopic`'s `dataUpdatedAt`. The default is "the confirming refetch
+		// is instant" — the world every pre-existing case assumes; the status
+		// overlay releases a settled write at READ time when this is already
+		// newer, so none of them gains a busy tail. A case that HOLDS the
+		// confirming refetch sets 0 and later bumps it.
+		topicUpdatedAt: Number.MAX_SAFE_INTEGER as number,
 	},
 	refetchTopic: vi.fn(),
 	setReadStateMutate: vi.fn(),
@@ -133,7 +143,9 @@ vi.mock("sonner", () => ({ toast: { error: toastError } }));
  * "what is still open" describe block below can assert on it directly.
  */
 const assistantCapture = vi.hoisted(() => ({
-	context: null as { openQuestions: string[] } | null,
+	// `status` too (Fizzy #2646): the assistant must be told the SAVED status,
+	// not the header's pending one.
+	context: null as { openQuestions: string[]; status: string } | null,
 	// The rewrite hand-off, captured so a test can fire it the way the
 	// assistant's accept card does. Force-mounting the analysis tab changed
 	// WHY `handleApplyRewrite` switches tabs — it used to be the only way the
@@ -144,7 +156,7 @@ const assistantCapture = vi.hoisted(() => ({
 
 vi.mock("@saas/projects/components/publishing-suite/TopicAssistant", () => ({
 	TopicAssistant: (props: {
-		context: { openQuestions: string[] };
+		context: { openQuestions: string[]; status: string };
 		onApplyRewrite: (markdown: string) => void;
 	}) => {
 		assistantCapture.context = props.context;
@@ -179,6 +191,8 @@ vi.mock("@tanstack/react-query", () => ({
 				isPending: state.pending,
 				isLoading: state.pending,
 				isError: state.error,
+				dataUpdatedAt: state.topicUpdatedAt,
+				errorUpdatedAt: 0,
 				refetch: refetchTopic,
 			};
 		}
@@ -309,6 +323,14 @@ vi.mock("@tanstack/react-query", () => ({
 		if (procedure === "projects.publishingSuite.updateTopicStatus") {
 			const run = async (vars: unknown) => {
 				updateStatusMutate(vars);
+				if (state.updateStatusGate) {
+					await state.updateStatusGate;
+				}
+				if (state.updateStatusRejects) {
+					const err = new Error("rejected");
+					await opts.onError?.(err, vars, undefined);
+					throw err;
+				}
 				await opts.onSuccess?.(undefined, vars, undefined);
 				return undefined;
 			};
@@ -770,6 +792,9 @@ beforeEach(() => {
 	state.readStateRejects = false;
 	state.postTypesRejects = false;
 	state.summaryRejects = false;
+	state.updateStatusRejects = false;
+	state.updateStatusGate = null;
+	state.topicUpdatedAt = Number.MAX_SAFE_INTEGER;
 	refetchTopic.mockReset();
 	setReadStateMutate.mockReset();
 	updatePostTypesMutate.mockReset();
@@ -3191,5 +3216,412 @@ describe("TopicItemPage — a question link", () => {
 		expect(
 			within(answered).getByRole("button", { name: /^answered/i }),
 		).toHaveAttribute("aria-expanded", "true");
+	});
+});
+
+describe("#2646 — status is editable on the topic page", () => {
+	const statusControl = () =>
+		screen.getByRole("combobox", { name: /^Status for / });
+	// While a Radix modal Dialog is open, everything outside it is
+	// aria-hidden and `getByRole` skips it (executed by panel C). Matched on
+	// the `aria-label` ATTRIBUTE, not the computed name: `aria-hidden`'s
+	// `hideOthers` keeps every `[aria-live]` region reachable, so the save
+	// indicator's sibling — the combobox itself — is marked aria-hidden
+	// directly, and a node that is itself aria-hidden computes an EMPTY
+	// accessible name (testing-library does not pass `hidden` through to
+	// the name computation). `name:` would then never match.
+	const statusControlBehindModal = () => {
+		const matches = screen
+			.getAllByRole("combobox", { hidden: true })
+			.filter((el) =>
+				el.getAttribute("aria-label")?.startsWith("Status for "),
+			);
+		expect(matches).toHaveLength(1);
+		return matches[0];
+	};
+
+	it("offers all five statuses to an editor, with the current one shown", async () => {
+		const user = userEvent.setup();
+		state.topic = topic({ status: "SUGGESTION" });
+		renderPage();
+
+		expect(statusControl()).toHaveTextContent("Suggestion");
+		await user.click(statusControl());
+		for (const label of [
+			"Suggestion",
+			"Selected",
+			"In progress",
+			"Published",
+			"Declined",
+		]) {
+			expect(
+				await screen.findByRole("option", { name: label }),
+			).toBeInTheDocument();
+		}
+	});
+
+	it("shows Selected at once, says Saving… then Saved, and refreshes the planning analysis", async () => {
+		const user = userEvent.setup();
+		let release!: () => void;
+		state.updateStatusGate = new Promise<void>((r) => {
+			release = r;
+		});
+		state.topic = topic({ status: "SUGGESTION" });
+		renderPage();
+
+		const getTopicInvalidations = () =>
+			invalidateQueries.mock.calls.filter((c) =>
+				JSON.stringify(c[0]).includes("getTopic"),
+			).length;
+		const before = getTopicInvalidations();
+		await user.click(statusControl());
+		await user.click(
+			await screen.findByRole("option", { name: "Selected" }),
+		);
+
+		await waitFor(() =>
+			expect(statusControl()).toHaveTextContent("Selected"),
+		);
+		expect(
+			screen.getByTestId("topic-status-save-indicator"),
+		).toHaveTextContent("Saving…");
+		// No re-read while the write is out (spec §4.1).
+		expect(getTopicInvalidations()).toBe(before);
+		release();
+
+		await waitFor(() =>
+			expect(updateStatusMutate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					topicId: "topic-1",
+					status: "SELECTED",
+				}),
+			),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("topic-status-save-indicator"),
+			).toHaveTextContent("Saved"),
+		);
+		const keys = invalidateQueries.mock.calls.map((c) =>
+			JSON.stringify(c[0]),
+		);
+		expect(keys.some((k) => k.includes("getPlanningAnalysis"))).toBe(true);
+		expect(keys.some((k) => k.includes("getTopic"))).toBe(true);
+		expect(keys.some((k) => k.includes("listTopics"))).toBe(true);
+	});
+
+	it("does not refresh the planning analysis for a status other than Selected", async () => {
+		const user = userEvent.setup();
+		state.topic = topic({ status: "SUGGESTION" });
+		renderPage();
+
+		await user.click(statusControl());
+		await user.click(
+			await screen.findByRole("option", { name: "In progress" }),
+		);
+		await waitFor(() => expect(updateStatusMutate).toHaveBeenCalled());
+		// The refresh has run — only then is the absence meaningful.
+		await waitFor(() =>
+			expect(
+				invalidateQueries.mock.calls.some((c) =>
+					JSON.stringify(c[0]).includes("getTopic"),
+				),
+			).toBe(true),
+		);
+		const keys = invalidateQueries.mock.calls.map((c) =>
+			JSON.stringify(c[0]),
+		);
+		expect(keys.some((k) => k.includes("getPlanningAnalysis"))).toBe(false);
+	});
+
+	it("routes Declined through the reason dialog", async () => {
+		const user = userEvent.setup();
+		state.topic = topic({ status: "SUGGESTION" });
+		renderPage();
+
+		await user.click(statusControl());
+		await user.click(
+			await screen.findByRole("option", { name: "Declined" }),
+		);
+		const dialog = await screen.findByRole("dialog");
+		await user.type(within(dialog).getByRole("textbox"), "Out of scope");
+		await user.click(
+			within(dialog).getByRole("button", { name: /^decline/i }),
+		);
+
+		await waitFor(() =>
+			expect(updateStatusMutate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					status: "DECLINED",
+					declineReason: "Out of scope",
+				}),
+			),
+		);
+	});
+
+	it("routes Published through the URL dialog", async () => {
+		const user = userEvent.setup();
+		state.topic = topic({ status: "IN_PROGRESS" });
+		renderPage();
+
+		await user.click(statusControl());
+		await user.click(
+			await screen.findByRole("option", { name: "Published" }),
+		);
+		const dialog = await screen.findByRole("dialog");
+		await user.type(
+			within(dialog).getByRole("textbox"),
+			"https://blog.example.com/post",
+		);
+		await user.click(
+			within(dialog).getByRole("button", { name: "Mark as published" }),
+		);
+
+		await waitFor(() =>
+			expect(updateStatusMutate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					status: "PUBLISHED",
+					publishedUrl: "https://blog.example.com/post",
+				}),
+			),
+		);
+	});
+
+	it("keeps the typed reason and the old status, and toasts, when a decline fails", async () => {
+		const user = userEvent.setup();
+		state.updateStatusRejects = true;
+		state.topic = topic({ status: "SUGGESTION" });
+		renderPage();
+
+		await user.click(statusControl());
+		await user.click(
+			await screen.findByRole("option", { name: "Declined" }),
+		);
+		const dialog = await screen.findByRole("dialog");
+		await user.type(within(dialog).getByRole("textbox"), "Keep this text");
+		await user.click(
+			within(dialog).getByRole("button", { name: /^decline/i }),
+		);
+
+		await waitFor(() => expect(toastError).toHaveBeenCalled());
+		expect(
+			within(screen.getByRole("dialog")).getByRole("textbox"),
+		).toHaveValue("Keep this text");
+		expect(statusControlBehindModal()).toHaveTextContent("Suggestion");
+		expect(statusControlBehindModal()).toBeEnabled();
+		expect(
+			screen.getByTestId("topic-status-save-indicator"),
+		).toHaveTextContent("Not saved");
+		// A request can fail after the server committed: the page re-reads the
+		// topic rather than trust the failure (spec §4.1, panel A #2).
+		const keys = invalidateQueries.mock.calls.map((c) =>
+			JSON.stringify(c[0]),
+		);
+		expect(keys.some((k) => k.includes("getTopic"))).toBe(true);
+	});
+
+	it("keeps the typed URL when a header publish fails", async () => {
+		const user = userEvent.setup();
+		state.updateStatusRejects = true;
+		state.topic = topic({ status: "IN_PROGRESS" });
+		renderPage();
+
+		await user.click(statusControl());
+		await user.click(
+			await screen.findByRole("option", { name: "Published" }),
+		);
+		const dialog = await screen.findByRole("dialog");
+		await user.type(
+			within(dialog).getByRole("textbox"),
+			"https://blog.example.com/typed",
+		);
+		await user.click(
+			within(dialog).getByRole("button", { name: "Mark as published" }),
+		);
+
+		await waitFor(() => expect(toastError).toHaveBeenCalled());
+		expect(
+			within(screen.getByRole("dialog")).getByRole("textbox"),
+		).toHaveValue("https://blog.example.com/typed");
+		expect(statusControlBehindModal()).toHaveTextContent("In progress");
+	});
+
+	it("while a header write to another status is held, the control is locked and Edit URL is gone", async () => {
+		const user = userEvent.setup();
+		state.updateStatusGate = new Promise<void>(() => {});
+		state.topic = topic({
+			status: "PUBLISHED",
+			publishedUrl: "https://blog.example.com/post",
+		});
+		renderPage();
+		expect(
+			screen.getByRole("button", { name: "Edit URL" }),
+		).toBeInTheDocument();
+
+		await user.click(statusControl());
+		await user.click(
+			await screen.findByRole("option", { name: "In progress" }),
+		);
+
+		await waitFor(() => expect(statusControl()).toBeDisabled());
+		// The page shows the pending status, and an In-progress topic has no
+		// URL control: a racing second write is closed by absence.
+		expect(
+			screen.queryByRole("button", { name: "Edit URL" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("while an Edit URL write is held, the header status control is locked", async () => {
+		const user = userEvent.setup();
+		state.updateStatusGate = new Promise<void>(() => {});
+		state.topic = topic({
+			status: "PUBLISHED",
+			publishedUrl: "https://blog.example.com/post",
+		});
+		renderPage();
+
+		await user.click(screen.getByRole("button", { name: "Edit URL" }));
+		const dialog = await screen.findByRole("dialog");
+		const field = within(dialog).getByRole("textbox");
+		expect(field).toHaveValue("https://blog.example.com/post");
+		await user.clear(field);
+		await user.type(field, "https://blog.example.com/new");
+		await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+		await waitFor(() => expect(updateStatusMutate).toHaveBeenCalled());
+		// The only evidence of the shared lock here: the dialog's own Save is
+		// disabled by its pending state and the @ui Button's auto-loading
+		// whether or not the lock exists, so it is not asserted.
+		expect(statusControlBehindModal()).toBeDisabled();
+	});
+
+	it("while a header Publish is held, the status control is locked", async () => {
+		const user = userEvent.setup();
+		state.updateStatusGate = new Promise<void>(() => {});
+		state.topic = topic({ status: "IN_PROGRESS" });
+		renderPage();
+
+		await user.click(statusControl());
+		await user.click(
+			await screen.findByRole("option", { name: "Published" }),
+		);
+		const dialog = await screen.findByRole("dialog");
+		await user.click(
+			within(dialog).getByRole("button", { name: "Mark as published" }),
+		);
+
+		await waitFor(() => expect(updateStatusMutate).toHaveBeenCalled());
+		// Not the confirm button: its own pending state disables it regardless.
+		expect(statusControlBehindModal()).toBeDisabled();
+	});
+
+	// The second window the design creates (panel C #6): the write has
+	// SUCCEEDED and its dialog has closed, but the page has not re-read the
+	// topic yet. A second write must still be impossible until it has.
+	it("after a successful Edit URL, keeps Edit URL and the status control locked until the topic is re-read", async () => {
+		const user = userEvent.setup();
+		state.topicUpdatedAt = 0; // the confirming refetch has not landed
+		state.topic = topic({
+			status: "PUBLISHED",
+			publishedUrl: "https://blog.example.com/post",
+		});
+		const { rerender } = renderPage();
+
+		await user.click(screen.getByRole("button", { name: "Edit URL" }));
+		const dialog = await screen.findByRole("dialog");
+		const field = within(dialog).getByRole("textbox");
+		await user.clear(field);
+		await user.type(field, "https://blog.example.com/new");
+		await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+		expect(screen.getByRole("button", { name: "Edit URL" })).toBeDisabled();
+		expect(statusControl()).toBeDisabled();
+		expect(
+			screen.getByTestId("topic-status-save-indicator"),
+		).toHaveTextContent("Saved");
+
+		state.topic = topic({
+			status: "PUBLISHED",
+			publishedUrl: "https://blog.example.com/new",
+		});
+		state.topicUpdatedAt = Date.now() + 60_000;
+		rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+		expect(screen.getByRole("button", { name: "Edit URL" })).toBeEnabled();
+		expect(statusControl()).toBeEnabled();
+	});
+
+	it("after a successful header change, keeps the control locked on the new value, saying Saved, until the topic is re-read", async () => {
+		const user = userEvent.setup();
+		state.topicUpdatedAt = 0;
+		state.topic = topic({ status: "SUGGESTION" });
+		const { rerender } = renderPage();
+
+		await user.click(statusControl());
+		await user.click(
+			await screen.findByRole("option", { name: "Selected" }),
+		);
+		await waitFor(() => expect(updateStatusMutate).toHaveBeenCalled());
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("topic-status-save-indicator"),
+			).toHaveTextContent("Saved"),
+		);
+		expect(statusControl()).toHaveTextContent("Selected");
+		expect(statusControl()).toBeDisabled();
+
+		state.topic = topic({ status: "SELECTED" });
+		state.topicUpdatedAt = Date.now() + 60_000;
+		rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+		expect(statusControl()).toBeEnabled();
+		expect(statusControl()).toHaveTextContent("Selected");
+	});
+
+	it("keeps telling the assistant the SAVED status while a change is still being saved", async () => {
+		const user = userEvent.setup();
+		state.updateStatusGate = new Promise<void>(() => {});
+		state.topic = topic({ status: "SUGGESTION" });
+		renderPage();
+
+		await user.click(statusControl());
+		await user.click(
+			await screen.findByRole("option", { name: "Selected" }),
+		);
+		await waitFor(() =>
+			expect(statusControl()).toHaveTextContent("Selected"),
+		);
+
+		expect(assistantCapture.context?.status).toBe("SUGGESTION");
+	});
+
+	// Viewer evidence (panels B #3, C #1): the pre-existing "renders the topic
+	// status (FR4)" case renders as an EDITOR, so after this task it covers
+	// the editor's Select, not the pill.
+	it("keeps the read-only pill for a viewer", () => {
+		state.topic = topic({ status: "SELECTED" });
+		renderPage(false);
+
+		expect(screen.getByTestId("topic-status")).toHaveTextContent(
+			"Selected",
+		);
+		expect(
+			screen.queryByRole("combobox", { name: /^Status for / }),
+		).not.toBeInTheDocument();
 	});
 });

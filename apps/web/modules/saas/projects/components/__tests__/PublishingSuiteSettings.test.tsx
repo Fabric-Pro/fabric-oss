@@ -159,11 +159,11 @@ describe("PublishingSuiteSettings", () => {
 		const select = await screen.findByLabelText(/suggestion cadence/i);
 		expect(select).toBeDisabled();
 		expect(
-			screen.getByRole("button", { name: /generate now/i }),
+			screen.getByRole("button", { name: /scan for topics/i }),
 		).toBeDisabled();
 	});
 
-	it("lets an Editor generate while the admin-only settings stay locked", async () => {
+	it("lets an Editor scan while the admin-only settings stay locked", async () => {
 		// An Editor holds PUBLISHING_TOPIC_CREATE but not PROJECT_SETTINGS_EDIT.
 		// Gating the button on the settings capability would make MANUAL cadence
 		// unusable for the very role the endpoint authorizes.
@@ -173,7 +173,9 @@ describe("PublishingSuiteSettings", () => {
 		expect(
 			await screen.findByLabelText(/suggestion cadence/i),
 		).toBeDisabled();
-		const generate = screen.getByRole("button", { name: /generate now/i });
+		const generate = screen.getByRole("button", {
+			name: /scan for topics/i,
+		});
 		expect(generate).toBeEnabled();
 
 		await user.click(generate);
@@ -183,18 +185,18 @@ describe("PublishingSuiteSettings", () => {
 		// toast too, not just that the mutation fired.
 		await waitFor(() => {
 			expect(toastSuccess).toHaveBeenCalledWith(
-				"Generating new topic suggestions now.",
+				"Scan requested. Its result will appear in Refresh history.",
 			);
 		});
 	});
 
-	it("surfaces an in-progress generate as an informational message distinct from success or error", async () => {
+	it("surfaces an in-progress scan as an informational message distinct from success or error", async () => {
 		generateMock.mockResolvedValue({ status: "in_flight" });
 		const user = userEvent.setup();
 		renderCard(true);
 
 		await user.click(
-			await screen.findByRole("button", { name: /generate now/i }),
+			await screen.findByRole("button", { name: /scan for topics/i }),
 		);
 
 		await waitFor(() => {
@@ -206,13 +208,13 @@ describe("PublishingSuiteSettings", () => {
 		expect(toastError).not.toHaveBeenCalled();
 	});
 
-	it("surfaces a rate-limited generate as a message rather than silence", async () => {
+	it("surfaces a rate-limited scan as a message rather than silence", async () => {
 		generateMock.mockResolvedValue({ status: "rate_limited" });
 		const user = userEvent.setup();
 		renderCard(true);
 
 		await user.click(
-			await screen.findByRole("button", { name: /generate now/i }),
+			await screen.findByRole("button", { name: /scan for topics/i }),
 		);
 
 		await waitFor(() => {
@@ -222,13 +224,13 @@ describe("PublishingSuiteSettings", () => {
 		});
 	});
 
-	it("surfaces an unavailable generate as an error distinct from rate-limiting", async () => {
+	it("surfaces an unavailable scan as an error distinct from rate-limiting", async () => {
 		generateMock.mockResolvedValue({ status: "unavailable" });
 		const user = userEvent.setup();
 		renderCard(true);
 
 		await user.click(
-			await screen.findByRole("button", { name: /generate now/i }),
+			await screen.findByRole("button", { name: /scan for topics/i }),
 		);
 
 		await waitFor(() => {
@@ -241,6 +243,14 @@ describe("PublishingSuiteSettings", () => {
 		expect(toastError).not.toHaveBeenCalledWith(
 			expect.stringMatching(/recently|wait|hour/i),
 		);
+	});
+
+	it("says 'Scan for topics' in the cadence help text", async () => {
+		renderCard(true);
+		expect(
+			await screen.findByText(/use Scan for topics below/i),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/generate now/i)).not.toBeInTheDocument();
 	});
 
 	it("reports a save failure instead of failing silently", async () => {
