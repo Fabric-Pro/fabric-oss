@@ -51,10 +51,11 @@ export const MAX_CHANGES = 50;
  *
  * Mirrors `readFrozenIgnoreSettings` in the validation activity, and for the
  * same reason: nothing in the database constrains the column, and an older row
- * can hold anything. A shape this cannot read means the ignore check is
- * skipped here — the gate re-applies the real authority on the stored
- * `.fabricignore` regardless — rather than refusing an edit over a column
- * surprise.
+ * can hold anything. A shape this cannot read means only the snapshot's OWN
+ * frozen rules are skipped here, rather than refusing an edit over a column
+ * surprise; the always-excluded paths (`ALWAYS_IGNORE_GLOBS`) still apply,
+ * because nothing downstream re-checks them: the gate re-applies the stored
+ * `.fabricignore` provenance, not the always layer (Fizzy #2704).
  */
 function readFrozenIgnoreGlobs(
 	settingsFrozen: unknown,
@@ -199,7 +200,12 @@ export function validateInstructionChanges(input: {
 	settingsFrozen: unknown;
 }): ValidatedChangeSet {
 	const frozen = readFrozenIgnoreGlobs(input.settingsFrozen);
-	const isIgnored = frozen ? buildIgnoreMatcher(frozen) : null;
+	// An unreadable frozen shape drops the snapshot's own rules, never the
+	// always layer: `buildIgnoreMatcher` puts `ALWAYS_IGNORE_GLOBS` first
+	// whatever the configurable layer holds.
+	const isIgnored = buildIgnoreMatcher(
+		frozen ?? { globs: [], layer: "default" },
+	);
 
 	const seen = new Set<string>();
 	const changes: DerivedInstructionChange[] = [];
@@ -242,7 +248,7 @@ export function validateInstructionChanges(input: {
 				message: `Fabric never stores credential files: ${v.path}`,
 			});
 		}
-		const excluded = isIgnored?.(v.path);
+		const excluded = isIgnored(v.path);
 		if (excluded) {
 			throw new ORPCError("BAD_REQUEST", {
 				message: `This version's rules leave that path out (${excluded.rule}): ${v.path}`,

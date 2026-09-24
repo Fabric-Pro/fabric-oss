@@ -413,6 +413,36 @@ describe("projects.instructions.derive", () => {
 			expect(m.createDerivedInstructionSnapshot).not.toHaveBeenCalled();
 		});
 
+		it("refuses an always-excluded path even when the base's frozen settings are unreadable (Fizzy #2704)", async () => {
+			// An older row can hold any shape in `settingsFrozen`. That drops
+			// the base's own rules, never the always layer: nothing after this
+			// point re-checks it, and the CLI refuses a bundle naming
+			// `.fabric/…` outright.
+			m.getInstructionSnapshot.mockResolvedValue({
+				id: "base",
+				version: 7,
+				status: "READY",
+				settingsFrozen: { legacy: true },
+			});
+			await expect(
+				m.handlers.derive!({
+					input: deriveInput([
+						{
+							op: "put",
+							path: ".fabric/instructions.lock",
+							size: 1,
+							sha256: "a".repeat(64),
+						},
+					]),
+					context: ctx,
+				}),
+			).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+				message: expect.stringContaining(".fabric/**"),
+			});
+			expect(m.createDerivedInstructionSnapshot).not.toHaveBeenCalled();
+		});
+
 		it("refuses any change to .fabricignore, edit or delete", async () => {
 			for (const change of [
 				{
