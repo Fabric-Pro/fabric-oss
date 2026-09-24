@@ -45,13 +45,26 @@ const mocks = vi.hoisted(() => ({
 	upsertSyncedContext: vi.fn(),
 }));
 
-vi.mock("@repo/database", () => ({
+// The body reader is shared with the chat engines and runs for real here; only
+// the two storage readers under it are mocked, by the module paths it imports
+// them from, so the crawled / captured / paging cases below still exercise it.
+vi.mock("@repo/database/prisma/queries/projects/contexts", () => ({
+	getCrawledUrlSourceMarkdownPage: mocks.getCrawledUrlSourceMarkdownPage,
+}));
+vi.mock("@repo/database/prisma/queries/projects/conversation-bundles", () => ({
+	getCapturedConversationMarkdown: mocks.getCapturedConversationMarkdown,
+}));
+
+vi.mock("@repo/database", async () => ({
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	listProjectContextSummaries: mocks.listProjectContextSummaries,
 	getContextById: mocks.getContextById,
 	getCrawledUrlSourceMarkdown: mocks.getCrawledUrlSourceMarkdown,
-	getCrawledUrlSourceMarkdownPage: mocks.getCrawledUrlSourceMarkdownPage,
-	getCapturedConversationMarkdown: mocks.getCapturedConversationMarkdown,
+	readProjectContextBodyPage: (
+		await vi.importActual<
+			typeof import("@repo/database/prisma/queries/projects/context-body")
+		>("@repo/database/prisma/queries/projects/context-body")
+	).readProjectContextBodyPage,
 	resolveProjectAccess: mocks.resolveProjectAccess,
 	hasPermission: mocks.hasPermission,
 	Permissions: {

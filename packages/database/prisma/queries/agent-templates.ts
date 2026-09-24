@@ -59,12 +59,17 @@ export const BUILT_IN_TO_FABRIC_TOOLS: Record<string, string[]> = {
 	// cannot list meetings by date answers "was there a meeting on the 10th?"
 	// from whatever the similarity sample happened to contain (Fizzy #2473),
 	// and one without the live roadmap reads answers "what is In Review?" the
-	// same way (Fizzy #2309).
+	// same way (Fizzy #2309) — as does one without the document and source
+	// listings for "which documents does this project have?" (Fizzy #2578).
 	"project-context": [
 		"project_rag_query",
 		"fabric_list_meeting_transcripts",
 		"fabric_list_project_features",
 		"fabric_get_project_feature",
+		"fabric_list_project_documents",
+		"fabric_get_project_document",
+		"fabric_list_project_sources",
+		"fabric_get_project_source",
 	],
 	"create-story": ["fabric_create_story"],
 };

@@ -61,6 +61,19 @@ const TITLE_TEMPLATES: Record<string, (tc: DirectStreamToolCall) => string> = {
 		return "Read document";
 	},
 	fabric_list_workflows: () => "Listed workflows",
+
+	// The chat's own live project reads (packages/temporal/src/activities/
+	// shared/project-document-reads.ts), named apart from the gateway's.
+	fabric_list_project_documents: () => "Listed project documents",
+	fabric_get_project_document: (tc) => {
+		const title = resultString(tc, "title");
+		return title ? `Read document “${title}”` : "Read document";
+	},
+	fabric_list_project_sources: () => "Listed Context-tab sources",
+	fabric_get_project_source: (tc) => {
+		const title = resultString(tc, "title");
+		return title ? `Read source “${title}”` : "Read source";
+	},
 	list_recent_sessions: () => "Reviewed recent Advisor sessions",
 	get_session: () => "Read a session transcript",
 	list_agents: () => "Listed agents",

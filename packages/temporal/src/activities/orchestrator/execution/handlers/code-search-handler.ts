@@ -10,6 +10,7 @@ import type {
 	RepoCredentialRow,
 	ResolvedRepoToken,
 } from "@repo/integrations/repo-auth";
+import { codeIndexUnavailableResult } from "../../../direct-chat/code-search-repositories";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../../types";
 import type {
 	HandlerContext,
@@ -70,7 +71,8 @@ export class CodeSearchHandler implements StepHandler {
 
 	/**
 	 * Search the AST-aware code index in Qdrant.
-	 * Returns formatted code chunks from the indexed repository.
+	 * Returns formatted code chunks from the indexed repository, or the index
+	 * status when no repository's index is searchable yet.
 	 */
 	private async searchCodeIndex(
 		projectId: string,
@@ -78,13 +80,13 @@ export class CodeSearchHandler implements StepHandler {
 		userId: string,
 		organizationId: string | undefined,
 		language?: string,
-	): Promise<string[]> {
+	): Promise<string[] | { unavailableStatus: string }> {
 		const { getProjectCodeIndexes } = await import("@repo/database");
 		const codeIndexes = await getProjectCodeIndexes(projectId);
 		// Search spans every connected repo, so any READY repo makes the index
 		// usable. Search results are project-scoped below (all repos).
 		if (!codeIndexes.some((index) => index.status === "READY")) {
-			return [];
+			return { unavailableStatus: codeIndexes[0]?.status ?? "missing" };
 		}
 
 		const { generateEmbedding } = await import("@repo/rag/lib/embedding");
@@ -357,7 +359,9 @@ export class CodeSearchHandler implements StepHandler {
 							input.organizationId,
 							stepInputs?.language as string | undefined,
 						);
-						indexedResults = semanticResults;
+						if (Array.isArray(semanticResults)) {
+							indexedResults = semanticResults;
+						}
 					} catch {
 						// Index not available, continue with API results only
 					}
@@ -411,7 +415,14 @@ export class CodeSearchHandler implements StepHandler {
 						stepInputs?.language as string | undefined,
 					);
 
-					if (semanticResults.length === 0) {
+					if (!Array.isArray(semanticResults)) {
+						// Not "no matches": the index cannot be searched yet,
+						// and saying nothing matched would be a confident
+						// wrong answer (Fizzy #2578).
+						result = codeIndexUnavailableResult(
+							semanticResults.unavailableStatus,
+						).message;
+					} else if (semanticResults.length === 0) {
 						result = `No semantic code matches found for "${query}".`;
 					} else {
 						result = `Found ${semanticResults.length} semantic code matches:\n\n${semanticResults.join("\n\n")}`;

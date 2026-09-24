@@ -11,16 +11,30 @@ const PROJECT_CONTEXT_TOOLS = [
 	"fabric_list_meeting_transcripts",
 	"fabric_list_project_features",
 	"fabric_get_project_feature",
+	"fabric_list_project_documents",
+	"fabric_get_project_document",
+	"fabric_list_project_sources",
+	"fabric_get_project_source",
 ];
 
 describe("BUILT_IN_TO_FABRIC_TOOLS", () => {
 	it("registers project-context as a built-in capability backed by project_rag_query", () => {
-		expect(BUILT_IN_TO_FABRIC_TOOLS["project-context"]).toEqual([
-			"project_rag_query",
-			"fabric_list_meeting_transcripts",
-			"fabric_list_project_features",
-			"fabric_get_project_feature",
-		]);
+		expect(BUILT_IN_TO_FABRIC_TOOLS["project-context"]).toEqual(
+			PROJECT_CONTEXT_TOOLS,
+		);
+	});
+
+	// Fizzy #2578: RAG returns a similarity sample, so "list the documents"
+	// or "which files are on the Context tab" needs the exact live listings.
+	it("ships the live document and source reads alongside project RAG", () => {
+		expect(BUILT_IN_TO_FABRIC_TOOLS["project-context"]).toEqual(
+			expect.arrayContaining([
+				"fabric_list_project_documents",
+				"fabric_get_project_document",
+				"fabric_list_project_sources",
+				"fabric_get_project_source",
+			]),
+		);
 	});
 
 	// Fizzy #2309: RAG cannot answer "what is In Review?" or "status of F-040";

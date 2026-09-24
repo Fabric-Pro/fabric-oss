@@ -491,6 +491,72 @@ export const ALWAYS_AVAILABLE_CAPABILITIES: CapabilityWithKeywords[] = [
 			"meetings on",
 		],
 	},
+	// Project documents and Context-tab sources - exact live listings and a
+	// paged read of one item. Keywords lean on "list", "which" and "how many",
+	// the questions semantic search answers with a sample (Fizzy #2578).
+	{
+		id: "fabric_list_project_documents",
+		type: "mcp_tool",
+		name: "List Project Documents",
+		description:
+			"List every document on the attached project's Documents tab (PRDs, technical specs, architecture docs, proposals, test plans) with title, type, status and dates. Use instead of semantic search to say which documents exist or how many. KEYWORDS: list documents, project documents, documents tab, which documents, how many documents, PRD, product requirements document, technical spec, architecture document, proposal, specs.",
+		keywords: [
+			"list documents",
+			"project documents",
+			"documents tab",
+			"which documents",
+			"how many documents",
+			"PRD",
+			"product requirements",
+			"technical spec",
+			"architecture document",
+		],
+	},
+	{
+		id: "fabric_get_project_document",
+		type: "mcp_tool",
+		name: "Read Project Document",
+		description:
+			"Read one document of the attached project in full, in pages for long documents. KEYWORDS: read document, open PRD, what does the PRD say, document content, spec content, read the spec.",
+		keywords: [
+			"read document",
+			"open document",
+			"what does the PRD say",
+			"document content",
+			"read the spec",
+		],
+	},
+	{
+		id: "fabric_list_project_sources",
+		type: "mcp_tool",
+		name: "List Context Sources",
+		description:
+			"List every source on the attached project's Context tab — uploaded files, web links, notes, meeting transcripts and integration sources — with title, kind and dates. Use instead of semantic search to say which files or links the project has. KEYWORDS: context tab, list files, uploaded files, attachments, links, sources, which files, how many files, project context sources.",
+		keywords: [
+			"context tab",
+			"list files",
+			"uploaded files",
+			"attachments",
+			"project links",
+			"which files",
+			"how many files",
+			"context sources",
+		],
+	},
+	{
+		id: "fabric_get_project_source",
+		type: "mcp_tool",
+		name: "Read Context Source",
+		description:
+			"Read one Context-tab source of the attached project in full: an uploaded file's text, a link's crawled text, a note or a transcript. KEYWORDS: read file, open attachment, file content, read link, read source.",
+		keywords: [
+			"read file",
+			"open attachment",
+			"file content",
+			"read link",
+			"read source",
+		],
+	},
 	// Architecture decisions - reads the project's Decisions tab (ADR log)
 	{
 		id: "fabric_list_architecture_decisions",

@@ -4195,6 +4195,46 @@ export function FabricTemporalOrchestratorChat({
 									</div>
 								))}
 
+							{/* Failed turn — the run ended with an error. The
+							 * streaming branch hides once `isRunning` flips to
+							 * false and the direct-response branch needs a
+							 * `response`, which a failed run does not have, so
+							 * the error reached the page and was saved but only
+							 * showed after a reload (Fizzy #2578). Until the
+							 * turn moves into `completedExecutions`, show it
+							 * here. */}
+							{!isRunning &&
+								state.status === "failed" &&
+								state.result?.error &&
+								!completedExecutions.some(
+									(e) =>
+										e != null && e.id === state.executionId,
+								) && (
+									<div
+										className="flex gap-3"
+										data-testid="failed-turn"
+									>
+										<div className="shrink-0">
+											<FabricLogo
+												className="h-8 w-8"
+												size={32}
+											/>
+										</div>
+										<div
+											className="flex-1 min-w-0"
+											role="alert"
+										>
+											<Response
+												className={
+													ASSISTANT_RESPONSE_SHELL_CLASSNAME
+												}
+											>
+												{state.result.error}
+											</Response>
+										</div>
+									</div>
+								)}
+
 							{/* The live answer stopped at the output ceiling
 							    (review F25). Once the turn moves into the
 							    completed list, that entry shows it instead. */}

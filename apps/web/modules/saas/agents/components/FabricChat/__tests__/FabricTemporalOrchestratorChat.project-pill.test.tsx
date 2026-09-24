@@ -289,3 +289,61 @@ describe("FabricTemporalOrchestratorChat — project pill after New", () => {
 		expect(pill()).toBe("project_picked");
 	});
 });
+
+// Shares this file's harness. A run that ended with an error sent its message
+// to the page and saved it, but nothing drew it until a reload: the streaming
+// branch needs `isRunning`, the direct-response branch a `response` (Fizzy
+// #2578).
+describe("FabricTemporalOrchestratorChat — a failed turn", () => {
+	const failure =
+		"I couldn't complete this: `code_search` kept failing (Code index offline). Try again, or ask differently.";
+
+	function failedStream(overrides: Record<string, unknown> = {}) {
+		return idleStream({
+			messages: [
+				{ id: "u1", role: "user", content: "How is auth wired?" },
+				{
+					id: "a1",
+					role: "assistant",
+					content: `Error: ${failure}`,
+					isError: true,
+					isStreaming: false,
+				},
+			],
+			state: {
+				...idleStream().state,
+				status: "failed",
+				executionId: "exec_1",
+				result: { error: failure },
+			},
+			currentPhase: "error",
+			...overrides,
+		});
+	}
+
+	it("shows the error live, without a reload", () => {
+		streamState.current = failedStream();
+		render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId={null}
+				attachedProjectId={null}
+			/>,
+		);
+		expect(screen.getByTestId("failed-turn").textContent).toContain(
+			"kept failing (Code index offline)",
+		);
+	});
+
+	it("shows nothing while the run is still going", () => {
+		streamState.current = failedStream({ isRunning: true });
+		render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId={null}
+				attachedProjectId={null}
+			/>,
+		);
+		expect(screen.queryByTestId("failed-turn")).toBeNull();
+	});
+});

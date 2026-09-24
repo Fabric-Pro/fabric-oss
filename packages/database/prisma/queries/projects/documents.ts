@@ -302,15 +302,18 @@ export async function listDocuments(options: {
 	projectId: string;
 	type?: ProjectDocumentType;
 	status?: ProjectDocumentStatus;
+	/** Case-insensitive substring of the title. */
+	search?: string;
 	limit?: number;
 	offset?: number;
 }) {
-	const { projectId, type, status, limit = 50, offset = 0 } = options;
+	const { projectId, type, status, search, limit = 50, offset = 0 } = options;
 
 	const where: Prisma.ProjectDocumentWhereInput = {
 		projectId,
 		...(type ? { type } : {}),
 		...(status ? { status } : {}),
+		...(search ? { title: { contains: search, mode: "insensitive" } } : {}),
 	};
 
 	const [documents, total] = await Promise.all([

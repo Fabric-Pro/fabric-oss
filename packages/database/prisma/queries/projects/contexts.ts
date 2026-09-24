@@ -834,6 +834,12 @@ export async function listProjectContextSummaries(options: {
 	projectId: string;
 	type?: ProjectContextType;
 	includeCodeContexts?: boolean;
+	/**
+	 * Case-insensitive substring of the title, original filename or URL. The
+	 * code-index count (`excludedCodeContexts`) ignores it: it reports what the
+	 * default hides, not what matched.
+	 */
+	search?: string;
 	limit?: number;
 	offset?: number;
 }): Promise<{
@@ -846,6 +852,7 @@ export async function listProjectContextSummaries(options: {
 		projectId,
 		type,
 		includeCodeContexts = false,
+		search,
 		limit = 50,
 		offset = 0,
 	} = options;
@@ -860,6 +867,30 @@ export async function listProjectContextSummaries(options: {
 		...(type ? { type } : {}),
 		...(hidesCodeContexts
 			? { type: { notIn: CODE_INDEX_CONTEXT_TYPES } }
+			: {}),
+		...(search
+			? {
+					OR: [
+						{
+							sourceTitle: {
+								contains: search,
+								mode: "insensitive",
+							},
+						},
+						{
+							originalFilename: {
+								contains: search,
+								mode: "insensitive",
+							},
+						},
+						{
+							sourceUrl: {
+								contains: search,
+								mode: "insensitive",
+							},
+						},
+					],
+				}
 			: {}),
 	};
 
