@@ -100,6 +100,20 @@ const RESERVED_EXACT_PATHS = [
 ] as const;
 
 /**
+ * Basenames this feature refuses to own AT ANY DEPTH, unlike
+ * `RESERVED_EXACT_PATHS` above, which reserves exact root paths only.
+ *
+ * `CLAUDE.local.md` is Claude Code's convention for machine-personal notes,
+ * and Claude Code reads it in any directory it walks — a nested
+ * `packages/web/CLAUDE.local.md` is just as personal to one machine as a
+ * root one. A published manifest or lock entry naming it would let `sync`
+ * write, overwrite, or delete a file that was never meant to leave the
+ * machine it was written on, and `push --add` would publish it. Matched by
+ * basename, not by whole path, so it applies wherever the file appears.
+ */
+const RESERVED_BASENAMES = ["CLAUDE.local.md"] as const;
+
+/**
  * NUL and friends, found by character code rather than by a regular
  * expression.
  *
@@ -198,8 +212,17 @@ export function isReservedPath(input: string): boolean {
 	// filesystem `.claude/Settings.Local.json` is the same file, and a
 	// manifest that spells it differently must not slip past.
 	const key = collisionKey(input);
-	return RESERVED_EXACT_PATHS.some(
-		(reserved) => collisionKey(reserved) === key,
+	if (
+		RESERVED_EXACT_PATHS.some((reserved) => collisionKey(reserved) === key)
+	) {
+		return true;
+	}
+	// Basename, not whole path: `CLAUDE.local.md` is reserved wherever it
+	// appears, unlike the exact root paths above.
+	const segments = input.split("/");
+	const basenameKey = collisionKey(segments[segments.length - 1] ?? "");
+	return RESERVED_BASENAMES.some(
+		(reserved) => collisionKey(reserved) === basenameKey,
 	);
 }
 
@@ -260,7 +283,7 @@ export function describeRejection(rejection: PathRejection): string {
 		case "forbidden_character":
 			return `path contains a character Windows will not put in a filename (< > : " | ? *): ${rejection.detail}`;
 		case "reserved_path":
-			return `this tool never writes or deletes ${RESERVED_ROOTS.join(", ")} or ${RESERVED_EXACT_PATHS.join(", ")}: ${rejection.detail}`;
+			return `this tool never writes or deletes ${RESERVED_ROOTS.join(", ")}, ${RESERVED_EXACT_PATHS.join(", ")}, or a ${RESERVED_BASENAMES.join(", ")} at any depth: ${rejection.detail}`;
 		case "not_a_regular_file":
 			return `path is not a regular file: ${rejection.detail}`;
 		case "escapes_destination":

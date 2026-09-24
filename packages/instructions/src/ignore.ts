@@ -22,12 +22,20 @@ export type IgnoreMatch = { rule: string; layer: IgnoreLayer };
  * `.guild/` is Guild's local state folder (spec §5.8): it never holds
  * instructions, and it stays root-anchored like the hook paths because it
  * names one folder at the top of a tree.
+ *
+ * `**\/CLAUDE.local.md` is the odd one out among the file-specific rules: it
+ * is deliberately NOT root-anchored, unlike the two hook files and
+ * `.guild/`. Claude Code reads `CLAUDE.local.md` as machine-personal notes in
+ * ANY directory it walks, not only the repository root, so a nested
+ * `packages/web/CLAUDE.local.md` is just as personal to one machine as the
+ * root one and must be excluded at every depth, the same way `.git/` is.
  */
 export const ALWAYS_IGNORE_GLOBS: readonly string[] = [
 	"**/.git/**",
 	".claude/settings.local.json",
 	".codex/hooks.json",
 	".guild/**",
+	"**/CLAUDE.local.md",
 ];
 
 /**
