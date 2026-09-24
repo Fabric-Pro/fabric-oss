@@ -50,11 +50,59 @@ export function canonicalKey(path: string): string {
 		.toLowerCase();
 }
 
+/**
+ * Guild-shaped trees (spec §5.8): a team loadout kept in neutral top-level
+ * folders instead of an agent config dir. Recognised at the tree root or
+ * directly under `.claude/`, case-insensitively (segments are already
+ * lower-cased by `canonicalKey`). Inside these folders the folder decides the
+ * kind, ahead of the file-name and extension rules below, so
+ * `Knowledge/CLAUDE.md` is KNOWLEDGE and `Agents/tools/helper.py` is AGENT.
+ * Anything outside them keeps today's rules.
+ */
+const GUILD_KNOWLEDGE_DIRS = new Set([
+	"lessons",
+	"knowledge",
+	"userpreferences",
+]);
+
+function guildFolderKind(
+	segments: readonly string[],
+	ext: string,
+): InstructionFileKind | null {
+	const rel = segments[0] === ".claude" ? segments.slice(1) : segments;
+	if (rel.length < 2) {
+		return null;
+	}
+	const folder = rel[0] ?? "";
+	switch (folder) {
+		case "rules":
+			return "RULE";
+		case "agents":
+			return "AGENT";
+		case "skills":
+			// `Skills/<name>/**`, or a `SKILL.md` at any depth under Skills/.
+			return rel.length >= 3 || rel[rel.length - 1] === "skill.md"
+				? "SKILL"
+				: null;
+		case "mcp":
+			return rel.length === 2 && ext === "json" ? "SETTINGS" : null;
+		case "env":
+			return ext === "json" ? "SETTINGS" : null;
+		default:
+			return GUILD_KNOWLEDGE_DIRS.has(folder) ? "KNOWLEDGE" : null;
+	}
+}
+
 export function classifyPath(path: string): InstructionFileKind {
 	const key = canonicalKey(path);
 	const segments = key.split("/");
 	const base = segments[segments.length - 1] ?? "";
 	const ext = base.includes(".") ? base.slice(base.lastIndexOf(".") + 1) : "";
+
+	const guild = guildFolderKind(segments, ext);
+	if (guild) {
+		return guild;
+	}
 
 	// Skills: any file inside a <root>/skills/<name>/ directory under an agent config dir.
 	const skillsIdx = segments.indexOf("skills");

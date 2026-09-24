@@ -218,7 +218,19 @@ describe("audit.taxonomy handler", () => {
 		// file deleted by its path, only in the version the caller named — the
 		// `--prune` of `fabric context push` — with the path and the deleted
 		// hash, Fizzy #2636) = 139.
-		expect(result.actions).toHaveLength(139);
+		// + 4 project.instructions.repository_sync_{configured, started,
+		// completed, disabled} (a project's coding instructions pointed at a
+		// repository branch, a run requested, a run's outcome, and the source
+		// released by a member or by disconnecting the integration; repository
+		// and branch names and a commit SHA, never a credential or file
+		// content, Fizzy #2538) = 143.
+		expect(result.actions).toHaveLength(143);
+		expect(result.actions).toContain(
+			"project.instructions.repository_sync_configured",
+		);
+		expect(result.actions).toContain(
+			"project.instructions.repository_sync_completed",
+		);
 		// The To Do list's writes. Completion is one toggle key; unsnoozing is
 		// its own, because "returned this to everyone's open view" is not a
 		// weaker form of "hid it".

@@ -1,0 +1,305 @@
+import { describe, expect, it } from "vitest";
+import {
+	deriveSyncRunOutcome,
+	type SyncOutcomeInput,
+} from "../src/activities/lib/instruction-sync-outcome";
+
+const SHA = "c".repeat(40);
+const base: SyncOutcomeInput = {
+	trigger: "MANUAL",
+	skipped: false,
+	unchanged: false,
+	error: null,
+	commitSha: SHA,
+	snapshot: null,
+	publishReason: null,
+};
+const ready = {
+	status: "READY" as const,
+	publishedAt: null,
+	rejection: null,
+	isPublishedPointer: false,
+};
+const abandoned = [
+	{ path: "(upload)", reason: "abandoned", detail: "staging pending" },
+];
+
+describe("deriveSyncRunOutcome: the spec §5.4 outcome table", () => {
+	it.each([
+		[
+			"pointer is this snapshot",
+			{
+				snapshot: {
+					...ready,
+					publishedAt: new Date(),
+					isPublishedPointer: true,
+				},
+			},
+			{
+				status: "SUCCEEDED",
+				error: null,
+				note: null,
+				scheduling: { kind: "success", commitSha: SHA },
+			},
+		],
+		[
+			"published once, pointer elsewhere since",
+			{ snapshot: { ...ready, publishedAt: new Date() } },
+			{
+				status: "SUCCEEDED",
+				error: null,
+				note: "superseded",
+				scheduling: { kind: "success", commitSha: SHA },
+			},
+		],
+		[
+			"READY, fenced by a configuration change",
+			{ snapshot: ready, publishReason: "configuration_changed" },
+			{
+				status: "NOT_PUBLISHED",
+				error: "CONFIGURATION_CHANGED",
+				note: null,
+				scheduling: { kind: "none" },
+			},
+		],
+		[
+			"READY, a later version won",
+			{ snapshot: ready, publishReason: "older_than_current" },
+			{
+				status: "NOT_PUBLISHED",
+				error: null,
+				note: null,
+				scheduling: { kind: "none" },
+			},
+		],
+		[
+			"READY, permission revoked, manual",
+			{ snapshot: ready, publishReason: "permission_revoked" },
+			{
+				status: "NOT_PUBLISHED",
+				error: "PERMISSION_DENIED",
+				note: null,
+				scheduling: { kind: "none" },
+			},
+		],
+		[
+			"READY, permission revoked, automatic",
+			{
+				trigger: "POLL",
+				snapshot: ready,
+				publishReason: "permission_revoked",
+			},
+			{
+				status: "NOT_PUBLISHED",
+				error: "PERMISSION_DENIED",
+				note: null,
+				scheduling: { kind: "pause", reason: "PERMISSION_REVOKED" },
+			},
+		],
+		[
+			"READY, reason unknown (the child threw before reporting)",
+			{ snapshot: ready },
+			{
+				status: "FAILED",
+				error: "CHILD_ABORTED",
+				note: null,
+				scheduling: { kind: "backoff" },
+			},
+		],
+		[
+			"REJECTED with the abandoned marker, checked before the generic REJECTED row",
+			{
+				snapshot: {
+					...ready,
+					status: "REJECTED",
+					rejection: abandoned,
+				},
+			},
+			{
+				status: "FAILED",
+				error: "CHILD_ABORTED",
+				note: null,
+				scheduling: { kind: "backoff" },
+			},
+		],
+		[
+			"abandoned after the acquisition itself failed: its own error wins",
+			{
+				error: "STORAGE_FAILED",
+				snapshot: {
+					...ready,
+					status: "REJECTED",
+					rejection: abandoned,
+				},
+			},
+			{
+				status: "FAILED",
+				error: "STORAGE_FAILED",
+				note: null,
+				scheduling: { kind: "backoff" },
+			},
+		],
+		[
+			"REJECTED by the gate",
+			{
+				snapshot: {
+					...ready,
+					status: "REJECTED",
+					rejection: [{ path: "a.md", reason: "secret" }],
+				},
+			},
+			{
+				status: "REJECTED",
+				error: null,
+				note: null,
+				scheduling: { kind: "suppress", commitSha: SHA },
+			},
+		],
+		[
+			"FAILED",
+			{ snapshot: { ...ready, status: "FAILED" } },
+			{
+				status: "FAILED",
+				error: "CHILD_ABORTED",
+				note: null,
+				scheduling: { kind: "backoff" },
+			},
+		],
+		[
+			"still RECEIVING (child still unknown)",
+			{ snapshot: { ...ready, status: "RECEIVING" } },
+			{
+				status: "FAILED",
+				error: "CHILD_ABORTED",
+				note: null,
+				scheduling: { kind: "backoff" },
+			},
+		],
+		[
+			"no snapshot, unchanged",
+			{ unchanged: true },
+			{
+				status: "UNCHANGED",
+				error: null,
+				note: null,
+				scheduling: { kind: "success", commitSha: SHA },
+			},
+		],
+		[
+			"begin skipped",
+			{ skipped: true },
+			{
+				status: "SKIPPED",
+				error: null,
+				note: null,
+				scheduling: { kind: "none" },
+			},
+		],
+		[
+			"no snapshot, LIMITS_EXCEEDED",
+			{ error: "LIMITS_EXCEEDED" },
+			{
+				status: "FAILED",
+				error: "LIMITS_EXCEEDED",
+				note: null,
+				scheduling: { kind: "suppress", commitSha: SHA },
+			},
+		],
+		[
+			"no snapshot, LIMITS_EXCEEDED before the commit was known",
+			{ error: "LIMITS_EXCEEDED", commitSha: null },
+			{
+				status: "FAILED",
+				error: "LIMITS_EXCEEDED",
+				note: null,
+				scheduling: { kind: "backoff" },
+			},
+		],
+		[
+			"no snapshot, TREE_REFUSED",
+			{ error: "TREE_REFUSED" },
+			{
+				status: "FAILED",
+				error: "TREE_REFUSED",
+				note: null,
+				scheduling: { kind: "suppress", commitSha: SHA },
+			},
+		],
+		[
+			"no snapshot, PERMISSION_DENIED, manual",
+			{ error: "PERMISSION_DENIED" },
+			{
+				status: "FAILED",
+				error: "PERMISSION_DENIED",
+				note: null,
+				scheduling: { kind: "none" },
+			},
+		],
+		[
+			"no snapshot, PERMISSION_DENIED, automatic",
+			{ trigger: "WEBHOOK", error: "PERMISSION_DENIED" },
+			{
+				status: "FAILED",
+				error: "PERMISSION_DENIED",
+				note: null,
+				scheduling: { kind: "pause", reason: "PERMISSION_REVOKED" },
+			},
+		],
+		[
+			"no snapshot, REF_MISSING (any trigger)",
+			{ error: "REF_MISSING" },
+			{
+				status: "FAILED",
+				error: "REF_MISSING",
+				note: null,
+				scheduling: { kind: "pause", reason: "REF_MISSING" },
+			},
+		],
+		[
+			"no snapshot, ROOT_MISSING",
+			{ error: "ROOT_MISSING" },
+			{
+				status: "FAILED",
+				error: "ROOT_MISSING",
+				note: null,
+				scheduling: { kind: "pause", reason: "REF_MISSING" },
+			},
+		],
+		...(
+			[
+				"CLONE_FAILED",
+				"INTEGRATION_UNAVAILABLE",
+				"STORAGE_FAILED",
+			] as const
+		).map(
+			(error) =>
+				[
+					`no snapshot, ${error}`,
+					{ error },
+					{
+						status: "FAILED",
+						error,
+						note: null,
+						scheduling: { kind: "backoff" },
+					},
+				] as const,
+		),
+		[
+			"begin found its run under an older generation",
+			{ error: "CONFIGURATION_CHANGED" },
+			{
+				status: "FAILED",
+				error: "CONFIGURATION_CHANGED",
+				note: null,
+				scheduling: { kind: "none" },
+			},
+		],
+	] as const)("%s", (_label, overrides, expected) => {
+		expect(
+			deriveSyncRunOutcome({
+				...base,
+				...(overrides as Partial<SyncOutcomeInput>),
+			}),
+		).toEqual(expected);
+	});
+});

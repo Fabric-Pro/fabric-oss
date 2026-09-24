@@ -150,6 +150,7 @@ type StageSpec = {
 	/** Override the deterministic staging key (e.g. an already-promoted row). */
 	storageKey?: string;
 	mimeType?: string;
+	mode?: number | null;
 	/**
 	 * The BASE row this one was copied from, for a DERIVED snapshot. Set it
 	 * together with `storageKey` pointing at the base's promoted object to
@@ -184,6 +185,7 @@ async function stage(specs: StageSpec[]) {
 			name: null,
 			description: null,
 			mimeType: spec.mimeType ?? "text/markdown",
+			mode: spec.mode ?? null,
 		});
 		if (spec.listed !== false && isStagingKey(key)) {
 			objects.push({
@@ -1039,6 +1041,48 @@ describe("classification inside the gate (C1)", () => {
 				name: null,
 				description: null,
 			},
+		);
+	});
+
+	it("never rewrites a mode that came from git: a 0644 file that starts with #! stays 0644 (Review Focus 2)", async () => {
+		await stage([
+			{
+				id: "doc-1",
+				path: "scripts/notes.sh",
+				data: Buffer.from("#!/bin/sh\n# a sample, not meant to run\n"),
+				mode: 0o644,
+			},
+		]);
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		expect(m.updateInstructionFileMetadata).toHaveBeenCalledWith(
+			"doc-1",
+			"o",
+			expect.not.objectContaining({ mode: expect.anything() }),
+		);
+	});
+
+	it("still infers 0755 from a shebang when the row carries no mode (browser upload)", async () => {
+		await stage([
+			{
+				id: "up-1",
+				path: "scripts/run.sh",
+				data: Buffer.from("#!/bin/sh\necho hi\n"),
+				mode: null,
+			},
+		]);
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		expect(m.updateInstructionFileMetadata).toHaveBeenCalledWith(
+			"up-1",
+			"o",
+			expect.objectContaining({ mode: 0o755 }),
 		);
 	});
 });

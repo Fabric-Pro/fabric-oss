@@ -691,7 +691,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey:
 			"settings.auditLog.actions.project.instructions.upload_started",
 		description:
-			'Uploaded a coding-instructions folder for validation — written before checks run, so a rejected upload still leaves a trace. `metadata.keptCount` and `metadata.excludedCount` carry how many files were kept and skipped by the ignore rules (the excluded count includes files the dialog left out client-side and never sent; `metadata.serverExcludedCount` is the part the server itself skipped), and `metadata.layer` which ignore-glob layer applied. A single-file edit, deletion or addition made in the tab records the same action with `metadata.mode: "derived"`, the `metadata.baseSnapshotId`/`baseVersion` it was edited from, and `metadata.putCount`/`deleteCount`/`inheritedCount` — never a file path, which is user content.',
+			'Uploaded a coding-instructions folder for validation — written before checks run, so a rejected upload still leaves a trace. `metadata.keptCount` and `metadata.excludedCount` carry how many files were kept and skipped by the ignore rules (the excluded count includes files the dialog left out client-side and never sent; `metadata.serverExcludedCount` is the part the server itself skipped), and `metadata.layer` which ignore-glob layer applied. A single-file edit, deletion or addition made in the tab records the same action with `metadata.mode: "derived"`, the `metadata.baseSnapshotId`/`baseVersion` it was edited from, and `metadata.putCount`/`deleteCount`/`inheritedCount` — never a file path, which is user content. A repository sync that found changes records it with `metadata.mode: "repository"` and `metadata.trigger`, attributed to the member the run acted as.',
 	},
 	{
 		key: "project.instructions.published",
@@ -721,6 +721,38 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"settings.auditLog.actions.project.instructions.settings_updated",
 		description:
 			"Changed the project's coding-instructions ignore-glob override, which governs what the next upload silently excludes. `metadata.ignoreGlobCount` carries the new override's size — zero clears it back to the defaults.",
+	},
+	{
+		key: "project.instructions.repository_sync_configured",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.repository_sync_configured",
+		description:
+			"Pointed the project's coding instructions at a branch and folder of one of its connected repositories, making the repository the source of truth and this member the one sync runs act as. The branch was checked on the remote before anything was saved. The resource names the repository; `metadata.provider`, `metadata.refChanged` and `metadata.rootPathChanged` say what changed, and `metadata.generation` is the configuration version any run in flight is now fenced against.",
+	},
+	{
+		key: "project.instructions.repository_sync_started",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.repository_sync_started",
+		description:
+			'Asked Fabric to read the coding instructions from the configured repository now. Written only when a run actually started; a request made while one was already running is refused and writes nothing. `metadata.trigger` is "MANUAL".',
+	},
+	{
+		key: "project.instructions.repository_sync_completed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.repository_sync_completed",
+		description:
+			"A repository sync run finished, attributed to the member it acted as. `metadata.status` is the outcome (published, unchanged, not published, rejected, failed or skipped), with `metadata.error` and `metadata.note` naming why when it did not publish. `metadata.commitSha` is the commit it read and `metadata.snapshotId` the version it produced, if any. Written with warning severity when the run failed or its snapshot was rejected. Never a credential, file path or file content.",
+	},
+	{
+		key: "project.instructions.repository_sync_disabled",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.repository_sync_disabled",
+		description:
+			'The project\'s coding instructions stopped syncing from a repository and went back to upload mode. `metadata.reason` is "user" when a member switched it off, or "integration_disconnected" when the repository it read from was disconnected; `metadata.hadConfiguration` is false when the project was only flipped back from a repository mode with nothing configured.',
 	},
 	// ---- Feature / story ------------------------------------------------
 	{

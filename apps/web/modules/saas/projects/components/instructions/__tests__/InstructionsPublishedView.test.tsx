@@ -199,6 +199,19 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						},
 					),
 				},
+				repositorySync: {
+					listRuns: {
+						queryOptions: queryOptionsStub(async () => ({
+							runs: [],
+						})),
+					},
+					disable: {
+						mutationOptions: mutationOptionsStub(async () => ({
+							disabled: true,
+							hadConfiguration: true,
+						})),
+					},
+				},
 			},
 		},
 	},
@@ -982,5 +995,329 @@ describe("InstructionsPublishedView — changed in this version", () => {
 		await waitFor(() => expect(compareState.inputs).toHaveLength(1));
 		expect(screen.queryByText(/Changed from version/)).toBeNull();
 		expect(screen.queryByText(/No file changes from version/)).toBeNull();
+	});
+});
+
+describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
+	const configured = {
+		syncId: "sync_1",
+		repositoryIntegrationId: "int_1",
+		provider: "GITHUB",
+		repositoryOwner: "example-org",
+		repositoryName: "instructions",
+		integrationStatus: "ACTIVE",
+		ref: "main",
+		rootPath: "",
+		automatic: false,
+		automaticPausedReason: null,
+		automaticPausedAt: null,
+		delegateName: "A. Member",
+	};
+	function controls(state: Record<string, unknown> = {}) {
+		return {
+			state: {
+				sourceOfTruth: "REPOSITORY" as const,
+				canConfigure: true,
+				running: false,
+				configured,
+				latestRun: null,
+				availableIntegrations: [
+					{
+						id: "int_1",
+						provider: "GITHUB",
+						repositoryOwner: "example-org",
+						repositoryName: "instructions",
+						defaultBranch: "main",
+					},
+				],
+				...state,
+			},
+			onConfigure: vi.fn(),
+			onSyncNow: vi.fn(),
+			syncNowPending: false,
+			onChanged: vi.fn(),
+		};
+	}
+	function view(
+		repositorySync: ReturnType<typeof controls>,
+		props: Record<string, unknown> = {},
+	) {
+		return (
+			<InstructionsPublishedView
+				projectId="p"
+				projectName="Checkout Rewrite"
+				published={
+					{
+						id: "s7",
+						version: 7,
+						status: "READY",
+						fileCount: 4,
+						excludedCount: 1,
+						createdAt: new Date(),
+						source: "REPOSITORY",
+						sourceRef: "main",
+						sourceCommitSha:
+							"0123456789abcdef0123456789abcdef01234567",
+						repositoryIntegrationId: "int_1",
+						user: { id: "u", name: "A. Member" },
+					} as never
+				}
+				snapshots={[] as never}
+				onReplaceClick={() => undefined}
+				onChanged={() => undefined}
+				repositoryBacked
+				repositorySync={repositorySync}
+				{...props}
+			/>
+		);
+	}
+
+	it("offers Sync from repository to a configurer with an ACTIVE integration and nothing configured", async () => {
+		const c = controls({ sourceOfTruth: "UPLOAD", configured: null });
+		const user = userEvent.setup();
+		render(view(c, { repositoryBacked: false }), {
+			wrapper: TestQueryProvider,
+		});
+		await user.click(
+			screen.getByRole("button", { name: "Sync from repository" }),
+		);
+		expect(c.onConfigure).toHaveBeenCalled();
+		expect(screen.queryByRole("button", { name: "Sync now" })).toBeNull();
+	});
+
+	it("offers Sync now once configured, and holds it with a spinner while a run is open", async () => {
+		const c = controls();
+		const user = userEvent.setup();
+		const rendered = render(view(c), { wrapper: TestQueryProvider });
+		await user.click(screen.getByRole("button", { name: "Sync now" }));
+		expect(c.onSyncNow).toHaveBeenCalled();
+		expect(
+			document.querySelector(
+				'[data-onboarding-target="instructions-sync-now"]',
+			),
+		).not.toBeNull();
+		rendered.rerender(view(controls({ running: true })));
+		expect(screen.getByRole("button", { name: "Syncing…" })).toBeDisabled();
+	});
+
+	it("shows a reader the last sync but neither button", () => {
+		render(
+			view(
+				controls({
+					canConfigure: false,
+					latestRun: {
+						id: "sync_1:run_a",
+						trigger: "MANUAL",
+						startedAt: new Date(),
+						finishedAt: new Date(),
+						status: "SUCCEEDED",
+						error: null,
+						note: null,
+						commitSha: "0123456789abcdef0123456789abcdef01234567",
+						snapshotId: "s7",
+						snapshotVersion: 7,
+						userName: "A. Member",
+					},
+				}),
+			),
+			{ wrapper: TestQueryProvider },
+		);
+		expect(screen.queryByRole("button", { name: "Sync now" })).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Sync from repository" }),
+		).toBeNull();
+		expect(screen.getByText(/published version 7/)).toBeInTheDocument();
+	});
+
+	it("summarises a synced version by repository, branch and short commit", () => {
+		render(view(controls()), { wrapper: TestQueryProvider });
+		expect(
+			screen.getByText(
+				/^Synced from example-org\/instructions @ main \(0123456\) and published by A\. Member/,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("lets a reviewer publish a synced version from History, but not delete one", async () => {
+		const user = userEvent.setup();
+		render(
+			view(controls(), {
+				canEdit: true,
+				canReview: true,
+				snapshots: [
+					{
+						id: "s8",
+						version: 8,
+						status: "READY",
+						source: "REPOSITORY",
+						fileCount: 4,
+						excludedCount: 0,
+						createdAt: new Date(),
+						publishOnReady: false,
+					},
+				],
+			}),
+			{ wrapper: TestQueryProvider },
+		);
+		await user.click(screen.getByRole("button", { name: "History" }));
+		expect(
+			await screen.findByRole("button", { name: "Publish this version" }),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+		expect(await screen.findByText("Sync runs")).toBeInTheDocument();
+	});
+
+	it("sends a rejected sync back to the repository and offers Sync again", async () => {
+		const c = controls();
+		const user = userEvent.setup();
+		render(
+			view(c, {
+				snapshots: [
+					{
+						id: "s8",
+						version: 8,
+						status: "REJECTED",
+						source: "REPOSITORY",
+						fileCount: 1,
+						excludedCount: 0,
+						createdAt: new Date(),
+						rejection: [
+							{
+								path: "a.md",
+								reason: "secret",
+								detail: "github-token",
+							},
+						],
+					},
+				],
+			}),
+			{ wrapper: TestQueryProvider },
+		);
+		expect(
+			screen.getByText(
+				en.projects.codingInstructions.rejectedBanner.bodyRepository,
+			),
+		).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Sync again" }));
+		expect(c.onSyncNow).toHaveBeenCalled();
+	});
+
+	// Spec §4: while the repository is the source of truth, uploads are off
+	// and the server refuses them. A rejected upload left over from before
+	// the switch must not lead back to the upload dialog.
+	it("offers no Upload again for an upload rejected before the project switched to its repository", () => {
+		const c = controls();
+		render(
+			view(c, {
+				snapshots: [
+					{
+						id: "s8",
+						version: 8,
+						status: "REJECTED",
+						source: "UPLOAD",
+						fileCount: 1,
+						excludedCount: 0,
+						createdAt: new Date(),
+						rejection: [
+							{
+								path: "a.md",
+								reason: "secret",
+								detail: "github-token",
+							},
+						],
+					},
+				],
+			}),
+			{ wrapper: TestQueryProvider },
+		);
+		expect(
+			screen.getByRole("heading", {
+				name: "Upload rejected: 1 file contains secrets",
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Upload again" }),
+		).toBeNull();
+		expect(
+			screen.queryByText(
+				en.projects.codingInstructions.rejectedBanner.body,
+			),
+		).toBeNull();
+		expect(
+			screen.getByText(
+				en.projects.codingInstructions.rejectedBanner
+					.bodyUploadRepositoryBacked,
+			),
+		).toBeInTheDocument();
+	});
+
+	// While settings load the tab fails closed for actions
+	// (`repositoryBacked`) but has not confirmed repository mode, so the
+	// banner keeps the upload copy and still offers no upload.
+	it("keeps the upload copy for a rejected upload while repository mode is unconfirmed", () => {
+		const c = controls();
+		render(
+			view(c, {
+				repositoryConfirmed: false,
+				snapshots: [
+					{
+						id: "s8",
+						version: 8,
+						status: "REJECTED",
+						source: "UPLOAD",
+						fileCount: 1,
+						excludedCount: 0,
+						createdAt: new Date(),
+						rejection: [{ path: "a.md", reason: "missing" }],
+					},
+				],
+			}),
+			{ wrapper: TestQueryProvider },
+		);
+		const banner = en.projects.codingInstructions.rejectedBanner;
+		expect(screen.getByText(banner.body)).toBeInTheDocument();
+		expect(
+			screen.queryByText(banner.bodyUploadRepositoryBacked),
+		).toBeNull();
+		expect(screen.queryByText(banner.bodyRepository)).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Upload again" }),
+		).toBeNull();
+	});
+
+	// A sync abandoned before its checks ran (storage down through every
+	// attempt) says nothing about the files: no "fix these files" body and
+	// no file table, and it is named a sync, not an upload.
+	it("gives an abandoned sync a neutral banner rather than asking for files to be fixed", () => {
+		const c = controls();
+		render(
+			view(c, {
+				snapshots: [
+					{
+						id: "s8",
+						version: 8,
+						status: "REJECTED",
+						source: "REPOSITORY",
+						fileCount: 1,
+						excludedCount: 0,
+						createdAt: new Date(),
+						rejection: [{ path: "(upload)", reason: "abandoned" }],
+					},
+				],
+			}),
+			{ wrapper: TestQueryProvider },
+		);
+		const banner = en.projects.codingInstructions.rejectedBanner;
+		expect(
+			screen.getByRole("heading", {
+				name: banner.titleAbandonedRepository,
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(banner.bodyAbandonedRepository),
+		).toBeInTheDocument();
+		expect(screen.queryByText(banner.bodyRepository)).toBeNull();
+		expect(screen.queryByText("(upload)")).toBeNull();
+		expect(screen.queryByText(banner.reasonLabels.abandoned)).toBeNull();
 	});
 });

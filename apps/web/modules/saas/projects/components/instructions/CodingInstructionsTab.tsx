@@ -1,12 +1,24 @@
 "use client";
 
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
 	instructionsAwaitsPublish,
 	instructionsPollInterval,
 } from "../../lib/instructions-poll";
+import {
+	REPOSITORY_SYNC_POLL_MS,
+	type RepositorySyncControls,
+	type RepositorySyncState,
+	repositorySyncPollInterval,
+	type SyncNowResult,
+	syncNowResultMessage,
+	syncRunEnded,
+} from "../../lib/instructions-repository-sync";
+import { ConfigureRepositorySyncDialog } from "./ConfigureRepositorySyncDialog";
 import { InstructionsEmptyState } from "./InstructionsEmptyState";
 import {
 	InstructionsPublishedView,
@@ -51,6 +63,8 @@ export function CodingInstructionsTab({
 }) {
 	const queryClient = useQueryClient();
 	const [uploadOpen, setUploadOpen] = useState(false);
+	const [configureOpen, setConfigureOpen] = useState(false);
+	const tSync = useTranslations("projects.codingInstructions.repositorySync");
 	// When this tab was opened, so the poll can slow down rather than stay at
 	// 3s indefinitely. A ref, not state: changing it must never re-render.
 	const mountedAt = useRef(Date.now());
@@ -75,6 +89,12 @@ export function CodingInstructionsTab({
 	// does not re-render at all.
 	const snapshotsRef = useRef<PollSnapshot[] | undefined>(undefined);
 	const publishedIdRef = useRef<string | null>(null);
+	// Whether a repository sync run is open, for the list's own interval: a
+	// run creates its snapshot from a worker, and until that row exists
+	// nothing in the list is in flight to keep the poll going.
+	const syncRunningRef = useRef(false);
+	// The last `running` this tab saw, to notice a run closing.
+	const wasSyncRunningRef = useRef(false);
 
 	/**
 	 * Poll while validation is running, and then while auto-publication is
@@ -86,7 +106,7 @@ export function CodingInstructionsTab({
 	const pollInterval = (snapshots: PollSnapshot[] | undefined) => {
 		const now = Date.now();
 		const elapsedMs = now - mountedAt.current;
-		return instructionsPollInterval(snapshots, elapsedMs, {
+		const interval = instructionsPollInterval(snapshots, elapsedMs, {
 			now,
 			awaitingPublish: instructionsAwaitsPublish({
 				snapshots,
@@ -99,6 +119,9 @@ export function CodingInstructionsTab({
 				elapsedMs,
 			}),
 		});
+		return interval === false && syncRunningRef.current
+			? REPOSITORY_SYNC_POLL_MS
+			: interval;
 	};
 
 	const published = useQuery({
@@ -124,6 +147,31 @@ export function CodingInstructionsTab({
 	const settings = useQuery(
 		orpc.projects.instructions.getSettings.queryOptions({
 			input: { projectId },
+		}),
+	);
+	const syncQuery =
+		orpc.projects.instructions.repositorySync.get.queryOptions({
+			input: { projectId },
+		});
+	const repositorySync = useQuery({
+		...syncQuery,
+		// Every 3 s while a run is open, and not at all otherwise (§7.1).
+		refetchInterval: (query) =>
+			repositorySyncPollInterval(
+				query.state.data as RepositorySyncState | undefined,
+			),
+	});
+	const syncState = repositorySync.data as RepositorySyncState | undefined;
+	const syncRunning = syncState?.running ?? false;
+	syncRunningRef.current = syncRunning;
+	const syncNow = useMutation(
+		orpc.projects.instructions.repositorySync.syncNow.mutationOptions({
+			onSuccess: (result) => {
+				const announced = syncNowResultMessage(result as SyncNowResult);
+				toast[announced.tone](tSync(announced.key));
+				queryClient.invalidateQueries({ queryKey: syncQuery.queryKey });
+			},
+			onError: (error) => toast.error(error.message),
 		}),
 	);
 
@@ -168,6 +216,33 @@ export function CodingInstructionsTab({
 		});
 	}, [newestId, newestStatus, projectId, queryClient]);
 
+	useEffect(() => {
+		// A run closed. Whatever it produced (a new version, a rejected one,
+		// or nothing) is readable now, so read it rather than wait on a poll
+		// that has just been switched off.
+		if (syncRunEnded(wasSyncRunningRef.current, syncRunning)) {
+			queryClient.invalidateQueries({
+				queryKey: orpc.projects.instructions.list.queryOptions({
+					input: { projectId },
+				}).queryKey,
+			});
+			queryClient.invalidateQueries({
+				queryKey: orpc.projects.instructions.getPublished.queryOptions({
+					input: { projectId },
+				}).queryKey,
+			});
+			queryClient.invalidateQueries({
+				queryKey:
+					orpc.projects.instructions.repositorySync.listRuns.queryOptions(
+						{
+							input: { projectId },
+						},
+					).queryKey,
+			});
+		}
+		wasSyncRunningRef.current = syncRunning;
+	}, [syncRunning, projectId, queryClient]);
+
 	const invalidate = () => {
 		queryClient.invalidateQueries({
 			queryKey: orpc.projects.instructions.list.queryOptions({
@@ -186,6 +261,31 @@ export function CodingInstructionsTab({
 		});
 	};
 
+	const syncControls: RepositorySyncControls | undefined = syncState
+		? {
+				state: syncState,
+				onConfigure: () => setConfigureOpen(true),
+				onSyncNow: () => syncNow.mutate({ projectId }),
+				syncNowPending: syncNow.isPending,
+				onChanged: () => {
+					queryClient.invalidateQueries({
+						queryKey: syncQuery.queryKey,
+					});
+					// The mode flips with a configuration change, and
+					// `repositoryBacked` is read from the settings.
+					queryClient.invalidateQueries({
+						queryKey:
+							orpc.projects.instructions.getSettings.queryOptions(
+								{
+									input: { projectId },
+								},
+							).queryKey,
+					});
+					invalidate();
+				},
+			}
+		: undefined;
+
 	if (published.isLoading || latest.isLoading) {
 		return null;
 	}
@@ -200,11 +300,23 @@ export function CodingInstructionsTab({
 			settingsReady={!settings.isLoading}
 		/>
 	);
+	const configureDialog =
+		configureOpen && syncState?.canConfigure ? (
+			<ConfigureRepositorySyncDialog
+				projectId={projectId}
+				open
+				onOpenChange={setConfigureOpen}
+				integrations={syncState.availableIntegrations}
+				current={syncState.configured}
+				onSaved={() => syncControls?.onChanged()}
+			/>
+		) : null;
 
 	if (!published.data && snapshots.length === 0) {
 		return (
 			<>
 				{dialog}
+				{configureDialog}
 				<InstructionsEmptyState
 					projectId={projectId}
 					projectName={projectName}
@@ -223,6 +335,7 @@ export function CodingInstructionsTab({
 						settings.isSuccess &&
 						settings.data.sourceOfTruth !== "REPOSITORY"
 					}
+					repositorySync={syncControls}
 				/>
 			</>
 		);
@@ -234,6 +347,7 @@ export function CodingInstructionsTab({
 	return (
 		<>
 			{dialog}
+			{configureDialog}
 			<InstructionsPublishedView
 				projectId={projectId}
 				projectName={projectName}
@@ -261,6 +375,14 @@ export function CodingInstructionsTab({
 					!settings.isSuccess ||
 					settings.data.sourceOfTruth === "REPOSITORY"
 				}
+				// Copy, unlike the actions above, follows only a RESOLVED
+				// setting: a loading or failed settings request must not tell
+				// someone their files now live in the repository.
+				repositoryConfirmed={
+					settings.isSuccess &&
+					settings.data.sourceOfTruth === "REPOSITORY"
+				}
+				repositorySync={syncControls}
 			/>
 		</>
 	);

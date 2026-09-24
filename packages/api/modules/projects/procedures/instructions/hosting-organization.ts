@@ -1,8 +1,15 @@
 import { ORPCError } from "@orpc/client";
+import type { Permission } from "@repo/permissions";
+import type { EffectiveProjectAccess } from "../../../../lib/effective-project-permissions";
 import { resolveEffectiveProjectPermissions } from "../../../../lib/effective-project-permissions";
 
 /**
- * The organization that HOSTS a project, resolved server-side.
+ * The organization that HOSTS a project, resolved server-side, plus what the
+ * same resolution already knows about the caller's permissions — for a
+ * handler that answers differently per permission (the repository-sync `get`
+ * decides what to show a configurer without a second lookup). Authorization
+ * itself stays in the `requireProjectPermission` middleware; this only
+ * decides which organization the handler acts in and what it may show.
  *
  * Every coding-instructions procedure is project-scoped, so the only
  * organization any of them may act in is the project's own. That is NOT what
@@ -32,16 +39,36 @@ import { resolveEffectiveProjectPermissions } from "../../../../lib/effective-pr
  * organization is the only tenant context coding instructions support, and
  * the null arm is fail-closed, never a second tenancy branch.
  */
-export async function requireHostingOrganizationId(
+export async function resolveHostingOrganizationAccess(
 	projectId: string,
 	userId: string,
-): Promise<string> {
+): Promise<{
+	organizationId: string;
+	permissions: readonly Permission[];
+	source: EffectiveProjectAccess["source"];
+}> {
 	const access = await resolveEffectiveProjectPermissions(projectId, userId);
 	const organizationId = access?.organizationId ?? null;
-	if (!organizationId) {
+	if (!access || !organizationId) {
 		throw new ORPCError("FORBIDDEN", {
 			message: "Coding instructions require an organization project",
 		});
 	}
-	return organizationId;
+	return {
+		organizationId,
+		permissions: access.permissions,
+		source: access.source,
+	};
+}
+
+/**
+ * Just the organization id from `resolveHostingOrganizationAccess`, for the
+ * handlers that don't need the caller's permission set alongside it.
+ */
+export async function requireHostingOrganizationId(
+	projectId: string,
+	userId: string,
+): Promise<string> {
+	return (await resolveHostingOrganizationAccess(projectId, userId))
+		.organizationId;
 }

@@ -75,6 +75,15 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 						"A file proposal can only be published through proposal approval",
 				});
 			}
+			if (result.reason === "repository_backed") {
+				// Spec §4: while a repository is the source of truth, only a
+				// synced version may be published — the same refusal
+				// `derive-snapshot.ts` gives an edit.
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message:
+						"This project's coding instructions come from its repository. Change the files there and sync the project.",
+				});
+			}
 			// Kept as a fail-closed default, not as a case this handler can
 			// produce. `base_moved` is only ever derived under
 			// `requireBaseUnmoved`, which this call does not pass;

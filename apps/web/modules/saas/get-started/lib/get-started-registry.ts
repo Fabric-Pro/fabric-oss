@@ -384,7 +384,7 @@ const PROJECT_GROUP: GsGroup = {
 			id: "coding-instructions",
 			label: "Coding Instructions",
 			description:
-				"The skills, agents, rules and setup files your coding agents follow on this project, kept as one published version.",
+				"The skills, agents, rules and setup files your coding agents follow on this project, uploaded or synced from a connected repository, kept as one published version.",
 			icon: BookOpenCheckIcon,
 			projectTab: "coding-instructions",
 			anchor: anchorForProjectTab("coding-instructions"),
@@ -923,10 +923,24 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				conditional: true,
 			},
 			{
+				id: "instructions-sync-from-repository",
+				anchor: "instructions-sync-from-repository",
+				title: "Make the repository the source",
+				body: "Point this project's instructions at a branch and folder of a connected repository. Fabric checks the branch exists, reads the files, runs the same secret scan an upload gets, and publishes them as a new version.",
+				conditional: true,
+			},
+			{
+				id: "instructions-sync-now",
+				anchor: "instructions-sync-now",
+				title: "Pull the latest from the repository",
+				body: "Once the repository is the source, the files are edited there. Sync now reads the branch again and publishes a new version only when something changed; the last run shows under the summary and every run is listed in History.",
+				conditional: true,
+			},
+			{
 				id: "coding-instructions-history",
 				anchor: "coding-instructions-history",
 				title: "Every upload, kept",
-				body: "Every upload is kept as its own version, showing which one is published, when each was checked, and why a rejected upload failed — publish, download, or delete any version from here.",
+				body: "Every upload and repository sync is kept as its own version, showing which one is published, when each was checked, and why a rejected one failed — publish, download, or delete any version from here.",
 			},
 			{
 				id: "coding-instructions-connect",

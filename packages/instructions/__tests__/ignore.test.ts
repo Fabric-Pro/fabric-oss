@@ -187,3 +187,28 @@ describe("resolveIgnoreGlobs", () => {
 		expect(m("tasks/a.md")).toBeNull();
 	});
 });
+
+describe(".guild/ is local Guild state, never instructions (spec §5.8)", () => {
+	it.each([".guild/state.json", ".guild/cache/index.db", ".Guild/x"])(
+		"%s is excluded by the always layer under every configuration",
+		(path) => {
+			for (const input of [
+				{ fabricIgnoreText: null, projectGlobs: null },
+				{ fabricIgnoreText: null, projectGlobs: [] as string[] },
+				{ fabricIgnoreText: "docs/\n", projectGlobs: ["dist/**"] },
+			]) {
+				expect(
+					buildIgnoreMatcher(resolveIgnoreGlobs(input))(path),
+				).toEqual({
+					rule: ".guild/**",
+					layer: "always",
+				});
+			}
+		},
+	);
+
+	it("stays root-anchored like the other file-specific always-rules", () => {
+		const m = buildIgnoreMatcher(resolveIgnoreGlobs({}));
+		expect(m("docs/.guild/notes.md")).toBeNull();
+	});
+});

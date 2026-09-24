@@ -4,15 +4,12 @@ import {
 	getProjectInstructionSettings,
 } from "@repo/database";
 import {
-	buildIgnoreMatcher,
-	classifyPath,
-	createTreeCollisionGuard,
 	describePortableNameRefusal,
+	type PlanRefusal,
+	planSnapshotFiles,
 	resolveIgnoreGlobs,
 	SNAPSHOT_LIMITS,
 	stagingKey,
-	validatePortableName,
-	validateRelativePath,
 } from "@repo/instructions";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
@@ -21,8 +18,29 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { fileTypingFor } from "./file-typing";
 import { requireHostingOrganizationId } from "./hosting-organization";
+
+/** The sentence a person reads for each planner refusal. Unchanged from the inline loop it replaced. */
+function describePlanRefusal(refusal: PlanRefusal): string {
+	switch (refusal.code) {
+		case "invalid_path":
+			return `Path rejected (${refusal.reason}): ${refusal.path}`;
+		case "duplicate_path":
+			return `Duplicate path (same file on a case-insensitive filesystem): ${refusal.path}`;
+		case "file_directory_conflict":
+			return `A name cannot be both a file and a folder: ${refusal.conflictsWith} and ${refusal.path}`;
+		case "non_portable_name":
+			return describePortableNameRefusal(refusal.path, refusal.refusal);
+		case "file_too_large":
+			return `File too large (${refusal.size} bytes): ${refusal.path}`;
+		case "nothing_kept":
+			return "Every file was excluded; nothing to upload";
+		case "too_many_files":
+			return `Too many files (${refusal.count} > ${refusal.max})`;
+		case "total_too_large":
+			return `Upload too large (${refusal.totalBytes} bytes > ${refusal.max})`;
+	}
+}
 
 /**
  * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_CREATE).
@@ -102,108 +120,43 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 			input.projectId,
 			organizationId,
 		);
+		// Spec §4: one source of truth per project. While a repository is
+		// the source, an upload would publish files the repository never
+		// had and nothing would reconcile them until the next sync — the
+		// same refusal `derive-snapshot.ts` and `submit-change.ts` give.
+		if (settings.sourceOfTruth === "REPOSITORY") {
+			throw new ORPCError("PRECONDITION_FAILED", {
+				message:
+					"This project's coding instructions come from its repository. Change the files there and sync the project.",
+			});
+		}
 		const resolved = resolveIgnoreGlobs({
 			fabricIgnoreText: input.fabricIgnoreText ?? null,
 			projectGlobs: settings.ignoreGlobs,
 		});
-		const isIgnored = buildIgnoreMatcher(resolved);
-
-		const kept: Array<{
-			path: string;
-			size: number;
-			sha256: string;
-			mimeType: string;
-			isText: boolean;
-			kind: ReturnType<typeof classifyPath>;
-			storageKey: string;
-		}> = [];
-		const excluded: Array<{ path: string; rule: string; layer: string }> =
-			[];
-		const tree = createTreeCollisionGuard();
-		let totalBytes = 0;
-
-		for (const file of input.files) {
-			const v = validateRelativePath(file.path);
-			if (!v.ok) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: `Path rejected (${v.reason}): ${file.path}`,
-				});
-			}
-			const match = isIgnored(v.path);
-			if (match) {
-				excluded.push({
-					path: v.path,
-					rule: match.rule,
-					layer: match.layer,
-				});
-				continue;
-			}
-			// Everything below judges the RESULTING TREE, so all of it comes
-			// after ignore matching. A repository routinely contains names a
-			// Windows checkout cannot write and spellings that collide with
-			// each other — inside `generated/`, a vendored tree, build output
-			// — and every one of them is already excluded here. Judging them
-			// first would refuse the whole upload over files the version was
-			// never going to contain, which makes the ignore rules useless.
-			//
-			// `collisionKey`, not `toLowerCase`: two spellings that differ
-			// only in Unicode normalisation are ONE file on macOS, so a
-			// version carrying both would upload two rows and install one.
-			// The same guard refuses a name used as both a file and a
-			// directory (`docs` beside `docs/a.md`), which no checkout can
-			// write at all. It is the one the browser preview runs, so the
-			// dialog refuses exactly what this refuses.
-			const collision = tree.add(v.path);
-			if (collision?.kind === "duplicate") {
-				throw new ORPCError("BAD_REQUEST", {
-					message: `Duplicate path (same file on a case-insensitive filesystem): ${v.path}`,
-				});
-			}
-			if (collision?.kind === "file-directory") {
-				throw new ORPCError("BAD_REQUEST", {
-					message: `A name cannot be both a file and a folder: ${collision.conflictsWith} and ${collision.path}`,
-				});
-			}
-			const portable = validatePortableName(v.path);
-			if (!portable.ok) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: describePortableNameRefusal(v.path, portable),
-				});
-			}
-			if (file.size > SNAPSHOT_LIMITS.maxFileBytes) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: `File too large (${file.size} bytes): ${v.path}`,
-				});
-			}
-			totalBytes += file.size;
-			kept.push({
-				path: v.path,
-				size: file.size,
-				sha256: file.sha256,
-				...fileTypingFor(v.path),
-				kind: classifyPath(v.path),
-				storageKey: stagingKey(
-					input.projectId,
-					"pending",
-					String(kept.length),
-				),
-			});
-		}
-		if (kept.length === 0) {
+		// Which files this upload keeps is judged by the same planner a
+		// repository sync uses (`planSnapshotFiles`): path validation, then
+		// ignore matching, then collisions/portability/size on the KEPT
+		// paths only, so both paths judge a tree identically.
+		const plan = planSnapshotFiles({
+			files: input.files,
+			ignore: resolved,
+		});
+		if (!plan.ok) {
 			throw new ORPCError("BAD_REQUEST", {
-				message: "Every file was excluded; nothing to upload",
+				message: describePlanRefusal(plan.refusal),
 			});
 		}
-		if (kept.length > SNAPSHOT_LIMITS.maxFiles) {
-			throw new ORPCError("BAD_REQUEST", {
-				message: `Too many files (${kept.length} > ${SNAPSHOT_LIMITS.maxFiles})`,
-			});
-		}
-		if (totalBytes > SNAPSHOT_LIMITS.maxTotalBytes) {
-			throw new ORPCError("BAD_REQUEST", {
-				message: `Upload too large (${totalBytes} bytes > ${SNAPSHOT_LIMITS.maxTotalBytes})`,
-			});
-		}
+		const excluded = plan.excluded;
+		const kept = plan.kept.map((file, index) => ({
+			path: file.path,
+			size: file.source.size,
+			sha256: file.source.sha256,
+			mimeType: file.mimeType,
+			isText: file.isText,
+			kind: file.kind,
+			storageKey: stagingKey(input.projectId, "pending", String(index)),
+		}));
 
 		const excludedCount =
 			excluded.length + (input.clientExcludedCount ?? 0);

@@ -2,11 +2,11 @@
  * The MIME type and the `isText` RENDERING hint a registered file row carries,
  * decided from its extension alone.
  *
- * Extracted from `begin-snapshot.ts` when `derive-snapshot.ts` had to make the
- * same decision for a single edited file: two copies of this table would
- * silently disagree about what a `.mdc` is, and the disagreement would show up
- * as one file of a snapshot rendering as a download link while its siblings
- * render as markdown.
+ * Moved into `@repo/instructions` so repository sync (`@repo/temporal`) types
+ * its files with the same table as uploads: `packages/api` cannot be imported
+ * from the Temporal worker, and two copies of this table would silently
+ * disagree about what a `.mdc` is, showing up as one file of a snapshot
+ * rendering as a download link while its siblings render as markdown.
  *
  * `isText` is a hint for the reader UI (markdown vs preformatted vs "this is
  * a binary file") and nothing else. It is NOT a security decision and no gate

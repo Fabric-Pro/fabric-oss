@@ -1066,18 +1066,29 @@ describe("reapInstructionSnapshots: the liveness guard", () => {
 		});
 	});
 
-	it("skips a CLOSED execution too — the workflow owns that verdict", async () => {
-		// Closed means `finalize` was called and the run reached a verdict of
-		// its own. Writing REJECTED over it would be the reaper overruling a
-		// workflow that did its job.
-		mocks.listAbandoned.mockResolvedValue([abandonedRow("snap_done")]);
-		mocks.describe.mockResolvedValue({ status: { name: "COMPLETED" } });
+	it("abandons a closed-before-claim row: the workflow closed without ever claiming it (§5.7)", async () => {
+		mocks.listAbandoned.mockResolvedValue([
+			abandonedRow("snap_terminated"),
+		]);
+		mocks.describe.mockResolvedValue({ status: { name: "TERMINATED" } });
 
 		expect(await reapInstructionSnapshots()).toMatchObject({
-			rejected: 0,
-			skippedLive: 1,
+			rejected: 1,
+			skippedLive: 0,
 		});
-		expect(mocks.rejectAbandoned).not.toHaveBeenCalled();
+		expect(mocks.rejectAbandoned).toHaveBeenCalledWith(
+			expect.objectContaining({ snapshotId: "snap_terminated" }),
+		);
+	});
+
+	it("writes nothing for a closed execution that did claim the row: the conditional write matches nothing", async () => {
+		mocks.listAbandoned.mockResolvedValue([abandonedRow("snap_done")]);
+		mocks.describe.mockResolvedValue({ status: { name: "COMPLETED" } });
+		mocks.rejectAbandoned.mockResolvedValue({ changed: false });
+
+		expect(await reapInstructionSnapshots()).toMatchObject({ rejected: 0 });
+		expect(mocks.listObjects).not.toHaveBeenCalled();
+		expect(mocks.deleteObjects).not.toHaveBeenCalled();
 	});
 
 	it("proceeds to the conditional write only when Temporal has never heard of the id", async () => {

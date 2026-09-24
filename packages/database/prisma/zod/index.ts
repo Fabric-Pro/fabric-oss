@@ -1884,7 +1884,7 @@ export type DiagramScalarFieldEnum = z.infer<typeof DiagramScalarFieldEnumSchema
 
 // File: ProjectInstructionSnapshotScalarFieldEnum.schema.ts
 
-export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'changeSetDigest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'baseSnapshotId', 'baseVersion', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
+export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'changeSetDigest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'syncRunKey', 'baseSnapshotId', 'baseVersion', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
 
 export type ProjectInstructionSnapshotScalarFieldEnum = z.infer<typeof ProjectInstructionSnapshotScalarFieldEnumSchema>;
 
@@ -1893,6 +1893,18 @@ export type ProjectInstructionSnapshotScalarFieldEnum = z.infer<typeof ProjectIn
 export const ProjectInstructionFileScalarFieldEnumSchema = z.enum(['id', 'snapshotId', 'projectId', 'organizationId', 'userId', 'path', 'kind', 'name', 'description', 'storageKey', 'sha256', 'size', 'mimeType', 'isText', 'mode', 'inheritedFromFileId', 'createdAt'])
 
 export type ProjectInstructionFileScalarFieldEnum = z.infer<typeof ProjectInstructionFileScalarFieldEnumSchema>;
+
+// File: ProjectInstructionRepositorySyncScalarFieldEnum.schema.ts
+
+export const ProjectInstructionRepositorySyncScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'repositoryIntegrationId', 'ref', 'rootPath', 'automatic', 'generation', 'nextCheckAt', 'failureCount', 'automaticPausedReason', 'automaticPausedAt', 'suppressedCommitSha', 'suppressedGeneration', 'lastEvaluatedCommitSha', 'lastEvaluatedGeneration', 'createdAt', 'updatedAt'])
+
+export type ProjectInstructionRepositorySyncScalarFieldEnum = z.infer<typeof ProjectInstructionRepositorySyncScalarFieldEnumSchema>;
+
+// File: ProjectInstructionRepositorySyncRunScalarFieldEnum.schema.ts
+
+export const ProjectInstructionRepositorySyncRunScalarFieldEnumSchema = z.enum(['id', 'syncId', 'projectId', 'organizationId', 'userId', 'generation', 'trigger', 'startedAt', 'finishedAt', 'status', 'error', 'note', 'commitSha', 'snapshotId'])
+
+export type ProjectInstructionRepositorySyncRunScalarFieldEnum = z.infer<typeof ProjectInstructionRepositorySyncRunScalarFieldEnumSchema>;
 
 // File: ProjectRepositoryIntegrationScalarFieldEnum.schema.ts
 
@@ -3351,6 +3363,30 @@ export type ProjectInstructionProposalStatus = z.infer<typeof ProjectInstruction
 export const ProjectInstructionFileKindSchema = z.enum(['SKILL', 'AGENT', 'RULE', 'INSTRUCTIONS', 'SETTINGS', 'SCRIPT', 'KNOWLEDGE', 'OTHER'])
 
 export type ProjectInstructionFileKind = z.infer<typeof ProjectInstructionFileKindSchema>;
+
+// File: ProjectInstructionSyncPause.schema.ts
+
+export const ProjectInstructionSyncPauseSchema = z.enum(['PERMISSION_REVOKED', 'REF_MISSING'])
+
+export type ProjectInstructionSyncPause = z.infer<typeof ProjectInstructionSyncPauseSchema>;
+
+// File: ProjectInstructionSyncTrigger.schema.ts
+
+export const ProjectInstructionSyncTriggerSchema = z.enum(['MANUAL', 'POLL', 'WEBHOOK'])
+
+export type ProjectInstructionSyncTrigger = z.infer<typeof ProjectInstructionSyncTriggerSchema>;
+
+// File: ProjectInstructionSyncRunStatus.schema.ts
+
+export const ProjectInstructionSyncRunStatusSchema = z.enum(['SUCCEEDED', 'UNCHANGED', 'NOT_PUBLISHED', 'REJECTED', 'FAILED', 'SKIPPED'])
+
+export type ProjectInstructionSyncRunStatus = z.infer<typeof ProjectInstructionSyncRunStatusSchema>;
+
+// File: ProjectInstructionSyncError.schema.ts
+
+export const ProjectInstructionSyncErrorSchema = z.enum(['NOT_CONFIGURED', 'INTEGRATION_UNAVAILABLE', 'PERMISSION_DENIED', 'REF_MISSING', 'ROOT_MISSING', 'LIMITS_EXCEEDED', 'CLONE_FAILED', 'STORAGE_FAILED', 'CHILD_ABORTED', 'CONFIGURATION_CHANGED', 'TREE_REFUSED'])
+
+export type ProjectInstructionSyncError = z.infer<typeof ProjectInstructionSyncErrorSchema>;
 
 // File: RepositoryProvider.schema.ts
 
@@ -10715,6 +10751,7 @@ export const ProjectInstructionSnapshotSchema = z.object({
   repositoryIntegrationId: z.string().nullish(),
   sourceRef: z.string().nullish(),
   sourceCommitSha: z.string().nullish(),
+  syncRunKey: z.string().nullish(),
   baseSnapshotId: z.string().nullish(),
   baseVersion: z.number().int().nullish(),
   createdAt: z.date(),
@@ -10749,6 +10786,55 @@ export const ProjectInstructionFileSchema = z.object({
 });
 
 export type ProjectInstructionFileType = z.infer<typeof ProjectInstructionFileSchema>;
+
+
+// File: ProjectInstructionRepositorySync.schema.ts
+
+export const ProjectInstructionRepositorySyncSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  repositoryIntegrationId: z.string(),
+  ref: z.string(),
+  rootPath: z.string(),
+  automatic: z.boolean(),
+  generation: z.number().int().default(1),
+  nextCheckAt: z.date(),
+  failureCount: z.number().int(),
+  automaticPausedReason: ProjectInstructionSyncPauseSchema.nullish(),
+  automaticPausedAt: z.date().nullish(),
+  suppressedCommitSha: z.string().nullish(),
+  suppressedGeneration: z.number().int().nullish(),
+  lastEvaluatedCommitSha: z.string().nullish(),
+  lastEvaluatedGeneration: z.number().int().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectInstructionRepositorySyncType = z.infer<typeof ProjectInstructionRepositorySyncSchema>;
+
+
+// File: ProjectInstructionRepositorySyncRun.schema.ts
+
+export const ProjectInstructionRepositorySyncRunSchema = z.object({
+  id: z.string(),
+  syncId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  generation: z.number().int(),
+  trigger: ProjectInstructionSyncTriggerSchema,
+  startedAt: z.date(),
+  finishedAt: z.date().nullish(),
+  status: ProjectInstructionSyncRunStatusSchema.nullish(),
+  error: ProjectInstructionSyncErrorSchema.nullish(),
+  note: z.string().nullish(),
+  commitSha: z.string().nullish(),
+  snapshotId: z.string().nullish(),
+});
+
+export type ProjectInstructionRepositorySyncRunType = z.infer<typeof ProjectInstructionRepositorySyncRunSchema>;
 
 
 // File: ProjectRepositoryIntegration.schema.ts

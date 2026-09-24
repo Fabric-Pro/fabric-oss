@@ -10,19 +10,27 @@ const rls = readFileSync(
 );
 
 describe("Coding Instructions tables are registered on the tenant path", () => {
-	it.each(["ProjectInstructionSnapshot", "ProjectInstructionFile"])(
-		"%s is user-owned and project-scoped",
-		(model) => {
-			expect(tenantDb).toMatch(new RegExp(`"${model}",`));
-			expect(tenantDb).toMatch(new RegExp(`${model}: "projectId",`));
-		},
-	);
-	it.each(["project_instruction_snapshot", "project_instruction_file"])(
-		"%s has an RLS policy",
-		(table) => {
-			expect(rls).toContain(`{ name: "${table}", policy: "user_owned" }`);
-		},
-	);
+	it.each([
+		"ProjectInstructionSnapshot",
+		"ProjectInstructionFile",
+		"ProjectInstructionRepositorySync",
+		"ProjectInstructionRepositorySyncRun",
+	])("%s is user-owned and project-scoped", (model) => {
+		expect(tenantDb).toMatch(new RegExp(`"${model}",`));
+		expect(tenantDb).toMatch(new RegExp(`${model}: "projectId",`));
+	});
+	it.each([
+		"project_instruction_snapshot",
+		"project_instruction_file",
+		"project_instruction_repository_sync",
+		"project_instruction_repository_sync_run",
+	])("%s has an RLS policy", (table) => {
+		expect(rls).toMatch(
+			new RegExp(
+				`\\{\\s*name: "${table}",\\s*policy: "user_owned",?\\s*\\}`,
+			),
+		);
+	});
 });
 
 /**

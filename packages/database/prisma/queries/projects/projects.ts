@@ -1353,12 +1353,16 @@ export interface ProjectAccess {
  * round trip; a background caller runs once per job, where that trade buys
  * nothing — and `can-edit-project-precedence.test.ts` asserts the lookup does
  * not happen on the owner path.
+ *
+ * `client` lets a caller evaluate the ladder inside its own transaction, as
+ * the repository-sync publish fence does under the project row lock.
  */
 export async function resolveProjectAccess(
 	projectId: string,
 	userId: string,
+	client: Prisma.TransactionClient = db,
 ): Promise<ProjectAccess | null> {
-	const project = await db.project.findUnique({
+	const project = await client.project.findUnique({
 		where: { id: projectId },
 		select: { userId: true, organizationId: true },
 	});
@@ -1377,7 +1381,7 @@ export async function resolveProjectAccess(
 	}
 
 	// Path C — checked BEFORE Path B so a per-project demotion is honored.
-	const member = await db.projectMember.findUnique({
+	const member = await client.projectMember.findUnique({
 		where: { projectId_userId: { projectId, userId } },
 		select: { role: true, acceptedAt: true, expiresAt: true },
 	});
@@ -1396,7 +1400,7 @@ export async function resolveProjectAccess(
 
 	// Path B — fallback to org role when no active project-level row exists.
 	if (project.organizationId) {
-		const orgMember = await db.member.findFirst({
+		const orgMember = await client.member.findFirst({
 			where: { organizationId: project.organizationId, userId },
 			select: { role: true },
 		});
@@ -1450,8 +1454,9 @@ async function projectPermissionHolds(
 	projectId: string,
 	userId: string,
 	permission: Permission,
+	client: Prisma.TransactionClient = db,
 ): Promise<boolean> {
-	const access = await resolveProjectAccess(projectId, userId);
+	const access = await resolveProjectAccess(projectId, userId, client);
 	if (!access) {
 		return false;
 	}
@@ -1511,6 +1516,28 @@ export async function canReadProjectInstructions(
 		projectId,
 		userId,
 		Permissions.INSTRUCTION_READ,
+	);
+}
+
+/**
+ * Background counterpart of `requireProjectPermission(INSTRUCTION_CREATE)`:
+ * what a repository sync's acting user must hold when the run begins and
+ * again when its snapshot publishes (design 2026-09-23 §5.3.1, §5.6).
+ * `resolveEffectiveProjectPermissions` is the request-time authority but
+ * lives in `@repo/api`, which neither the Temporal worker nor this package
+ * may import; this walks the same ladder. `client` is the publish
+ * transaction's, so the check reads the same moment as the write it guards.
+ */
+export async function canCreateProjectInstructions(
+	projectId: string,
+	userId: string,
+	client: Prisma.TransactionClient = db,
+): Promise<boolean> {
+	return projectPermissionHolds(
+		projectId,
+		userId,
+		Permissions.INSTRUCTION_CREATE,
+		client,
 	);
 }
 

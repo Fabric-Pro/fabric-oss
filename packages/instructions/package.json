@@ -5,7 +5,8 @@
 	"type": "module",
 	"exports": {
 		".": "./src/index.ts",
-		"./export": "./src/export/index.ts"
+		"./export": "./src/export/index.ts",
+		"./workflow-ids": "./src/workflow-ids.ts"
 	},
 	"scripts": {
 		"type-check": "tsc --noEmit",

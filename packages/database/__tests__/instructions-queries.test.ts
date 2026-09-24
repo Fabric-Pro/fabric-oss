@@ -241,6 +241,36 @@ describe("instruction proposal decisions", () => {
 		);
 	});
 
+	it("refuses a pending proposal while the repository is the source of truth, and writes nothing", async () => {
+		mocks.$queryRaw.mockResolvedValue([
+			{
+				pointerId: "base",
+				pointerVersion: 8,
+				instructionSettings: { sourceOfTruth: "REPOSITORY" },
+			},
+		]);
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "proposal",
+			version: 9,
+			status: "READY",
+			proposalStatus: "PENDING",
+			baseSnapshotId: "base",
+		});
+
+		expect(
+			await approveInstructionProposal({
+				snapshotId: "proposal",
+				projectId: "p",
+				organizationId: "o",
+				reviewerUserId: "reviewer",
+				audit: proposalAudit,
+			}),
+		).toEqual({ ok: false, reason: "repository_backed" });
+		expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+		expect(mocks.project.updateMany).not.toHaveBeenCalled();
+		expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+	});
+
 	it("leaves a stale proposal pending and writes no audit or pointer", async () => {
 		lockedPointer("new-base");
 		mocks.snapshot.findFirst.mockResolvedValue({
@@ -569,6 +599,111 @@ describe("createInstructionSnapshot", () => {
 				/P2003/,
 			);
 			expect(mocks.snapshot.create).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe("repository sync rows (spec §4.2)", () => {
+		const syncInput = {
+			projectId: "proj_1",
+			organizationId: "org_1",
+			userId: "user_1",
+			source: "REPOSITORY" as const,
+			settingsFrozen: {
+				layer: "default",
+				syncId: "sync_1",
+				syncGeneration: 2,
+			},
+			publishOnReady: true,
+			excludedCount: 0,
+			repositoryIntegrationId: "int_1",
+			sourceRef: "main",
+			sourceCommitSha: "c0ffee",
+			syncRunKey: "sync_1:run_a",
+			files: [
+				{
+					path: "run.sh",
+					size: 10,
+					sha256: "ab",
+					mimeType: "text/x-shellscript",
+					isText: true,
+					kind: "SCRIPT" as const,
+					storageKey: "k1",
+					mode: 0o755,
+				},
+			],
+		};
+
+		it("writes the repository columns, the run key and each file's git mode", async () => {
+			mocks.snapshot.findFirst.mockResolvedValue({ version: 1 });
+			mocks.snapshot.create.mockResolvedValue({
+				id: "snap_2",
+				version: 2,
+			});
+			mocks.file.findMany.mockResolvedValue([]);
+
+			await createInstructionSnapshot(syncInput);
+
+			expect(mocks.snapshot.create).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						source: "REPOSITORY",
+						repositoryIntegrationId: "int_1",
+						sourceRef: "main",
+						sourceCommitSha: "c0ffee",
+						syncRunKey: "sync_1:run_a",
+					}),
+				}),
+			);
+			expect(mocks.file.createMany).toHaveBeenCalledWith({
+				data: [
+					expect.objectContaining({ path: "run.sh", mode: 0o755 }),
+				],
+			});
+		});
+
+		it("returns the row a concurrent attempt of the SAME run created instead of allocating another version", async () => {
+			mocks.snapshot.findFirst
+				.mockResolvedValueOnce({ version: 1 }) // version read in the losing transaction
+				.mockResolvedValueOnce({ id: "snap_winner", version: 2 }); // lookup by run key
+			mocks.snapshot.create.mockRejectedValueOnce(
+				new FakePrismaKnownRequestError("P2002"),
+			);
+			mocks.file.findMany.mockResolvedValueOnce([
+				{ id: "f1", path: "run.sh", storageKey: "k1" },
+			]);
+
+			expect(await createInstructionSnapshot(syncInput)).toEqual({
+				id: "snap_winner",
+				version: 2,
+				files: [{ id: "f1", path: "run.sh", storageKey: "k1" }],
+				existing: true,
+			});
+			expect(mocks.snapshot.create).toHaveBeenCalledTimes(1);
+			expect(mocks.snapshot.findFirst).toHaveBeenLastCalledWith({
+				where: {
+					syncRunKey: "sync_1:run_a",
+					projectId: "proj_1",
+					organizationId: "org_1",
+				},
+				select: { id: true, version: true },
+			});
+		});
+
+		it("treats a P2002 with no row under the run key as an ordinary version collision and retries", async () => {
+			mocks.snapshot.findFirst
+				.mockResolvedValueOnce({ version: 1 })
+				.mockResolvedValueOnce(null) // nothing under the run key
+				.mockResolvedValueOnce({ version: 2 });
+			mocks.snapshot.create
+				.mockRejectedValueOnce(new FakePrismaKnownRequestError("P2002"))
+				.mockResolvedValueOnce({ id: "snap_3", version: 3 });
+			mocks.file.findMany.mockResolvedValue([]);
+
+			expect(await createInstructionSnapshot(syncInput)).toEqual({
+				id: "snap_3",
+				version: 3,
+				files: [],
+			});
 		});
 	});
 });

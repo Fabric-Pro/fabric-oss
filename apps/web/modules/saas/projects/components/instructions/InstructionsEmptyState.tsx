@@ -7,6 +7,7 @@ import { Card } from "@ui/components/card";
 import {
 	FolderIcon,
 	GitBranchIcon,
+	Loader2Icon,
 	PlugIcon,
 	RefreshCwIcon,
 	ShieldCheckIcon,
@@ -15,6 +16,13 @@ import {
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
+import {
+	offersSyncFromRepository,
+	offersSyncNow,
+	type RepositorySyncControls,
+} from "../../lib/instructions-repository-sync";
+import { RepositorySyncSettingsSection } from "./RepositorySyncSettingsSection";
+import { RepositorySyncStatus } from "./RepositorySyncStatus";
 
 export function InstructionsEmptyState({
 	projectId,
@@ -23,6 +31,7 @@ export function InstructionsEmptyState({
 	canUpload = true,
 	repositoryName,
 	localSyncAvailable = false,
+	repositorySync,
 }: {
 	projectId: string;
 	/** Named in the "Connect your agent" starter instruction. */
@@ -38,6 +47,8 @@ export function InstructionsEmptyState({
 	 * nothing; the check then reports the first version when it arrives.
 	 */
 	localSyncAvailable?: boolean;
+	/** The tab's repository-sync state and actions (§7.1). Absent, no sync button renders. */
+	repositorySync?: RepositorySyncControls;
 }) {
 	const t = useTranslations("projects.codingInstructions.emptyState");
 	const [connectOpen, setConnectOpen] = useState(false);
@@ -50,6 +61,17 @@ export function InstructionsEmptyState({
 	const { organizationId, organizationSlug, isGuest } =
 		useOrganizationContext();
 	const canConnectAgent = Boolean(organizationId) && !isGuest;
+	// Spec §7.4: a project is never locked. A first sync can fail before any
+	// snapshot exists (ROOT_MISSING, LIMITS_EXCEEDED, TREE_REFUSED, or a
+	// vanished integration), which otherwise leaves this screen with only a
+	// failing "Sync now" and no route to change the folder or switch back to
+	// upload mode (Task 9 review finding B-1).
+	const syncState = repositorySync?.state;
+	const showRepositorySettings = Boolean(
+		syncState?.canConfigure &&
+			(syncState.configured !== null ||
+				syncState.sourceOfTruth === "REPOSITORY"),
+	);
 	return (
 		<div className="flex flex-col gap-6">
 			<div className="flex flex-col gap-1">
@@ -81,15 +103,66 @@ export function InstructionsEmptyState({
 							{t("uploadButton")}
 						</Button>
 					) : null}
-					<Button
-						variant="outline"
-						disabled
-						title={t("syncButtonTitle")}
-					>
-						<GitBranchIcon className="size-4" aria-hidden="true" />
-						{t("syncButton")}
-					</Button>
+					{repositorySync && offersSyncNow(repositorySync.state) ? (
+						<Button
+							variant="outline"
+							disabled={
+								repositorySync.state.running ||
+								repositorySync.syncNowPending
+							}
+							onClick={repositorySync.onSyncNow}
+						>
+							{repositorySync.state.running ||
+							repositorySync.syncNowPending ? (
+								<Loader2Icon
+									className="size-4 animate-spin"
+									aria-hidden="true"
+								/>
+							) : (
+								<RefreshCwIcon
+									className="size-4"
+									aria-hidden="true"
+								/>
+							)}
+							{t("syncNowButton")}
+						</Button>
+					) : repositorySync &&
+						offersSyncFromRepository(repositorySync.state) ? (
+						<Button
+							variant="outline"
+							onClick={repositorySync.onConfigure}
+						>
+							<GitBranchIcon
+								className="size-4"
+								aria-hidden="true"
+							/>
+							{t("syncButton")}
+						</Button>
+					) : null}
 				</div>
+				{repositorySync ? (
+					<RepositorySyncStatus
+						state={repositorySync.state}
+						onSyncNow={
+							repositorySync.state.canConfigure
+								? repositorySync.onSyncNow
+								: undefined
+						}
+						onConfigure={
+							repositorySync.state.canConfigure
+								? repositorySync.onConfigure
+								: undefined
+						}
+					/>
+				) : null}
+				{showRepositorySettings && repositorySync ? (
+					<RepositorySyncSettingsSection
+						projectId={projectId}
+						state={repositorySync.state}
+						onChange={repositorySync.onConfigure}
+						onChanged={repositorySync.onChanged}
+					/>
+				) : null}
 				{repositoryName ? (
 					<p className="text-muted-foreground text-xs">
 						{t.rich("connectedRepository", {

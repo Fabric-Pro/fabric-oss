@@ -18,11 +18,16 @@ export type IgnoreMatch = { rule: string; layer: IgnoreLayer };
  * root-anchored: they name one specific file at the top of a repository, not
  * a category of path, and a `docs/retro.md` is ordinary content. The two hook
  * paths are unconditional exclusions because `init` owns them locally.
+ *
+ * `.guild/` is Guild's local state folder (spec §5.8): it never holds
+ * instructions, and it stays root-anchored like the hook paths because it
+ * names one folder at the top of a tree.
  */
 export const ALWAYS_IGNORE_GLOBS: readonly string[] = [
 	"**/.git/**",
 	".claude/settings.local.json",
 	".codex/hooks.json",
+	".guild/**",
 ];
 
 /**

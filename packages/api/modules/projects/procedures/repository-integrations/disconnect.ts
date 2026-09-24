@@ -9,7 +9,7 @@
 import { ORPCError } from "@orpc/client";
 import {
 	cleanupCodeSearchOnRepoUnlink,
-	deleteProjectRepoIntegration,
+	deleteRepoIntegrationReleasingInstructionSync,
 	getProjectRepoIntegration,
 	logRepoIntegrationActivity,
 	syncLegacyProjectRepoOnDisconnect,
@@ -58,10 +58,28 @@ export const disconnectRepoIntegrationProcedure = tenantProtectedProcedure
 			});
 		}
 
-		await deleteProjectRepoIntegration(
-			input.integrationId,
-			input.projectId,
-		);
+		// The coding-instructions sync reads from this integration: release it
+		// and flip the project back to upload mode in the SAME transaction as
+		// the delete (design 2026-09-23 §5.1), so the project is never left in
+		// repository mode pointing at nothing.
+		const { releasedSync } =
+			await deleteRepoIntegrationReleasingInstructionSync({
+				integrationId: input.integrationId,
+				projectId: input.projectId,
+			});
+		if (releasedSync) {
+			recordAuditFromRequest(context, {
+				action: "project.instructions.repository_sync_disabled",
+				category: "project",
+				organizationId: releasedSync.organizationId,
+				projectId: input.projectId,
+				resource: { type: "project", id: input.projectId, name: null },
+				metadata: {
+					reason: "integration_disconnected",
+					hadConfiguration: true,
+				},
+			});
+		}
 
 		// Step 1: Cancel this repo's in-flight code indexing BEFORE destructive
 		// cleanup, so the workflow can't upsert vectors after we delete them.

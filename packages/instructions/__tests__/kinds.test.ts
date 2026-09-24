@@ -43,3 +43,45 @@ describe("classifyPath", () => {
 		expect(classifyPath(".claude\\agents\\a.md")).toBe("AGENT");
 	});
 });
+
+describe("classifyPath: Guild-shaped trees (spec §5.8)", () => {
+	it.each([
+		["Rules/typescript.md", "RULE"],
+		["rules/nested/deep.md", "RULE"],
+		[".claude/Rules/style.md", "RULE"],
+		["Skills/review/SKILL.md", "SKILL"],
+		["Skills/review/references/checklist.md", "SKILL"],
+		["Skills/SKILL.md", "SKILL"],
+		["skills/deep/nested/SKILL.md", "SKILL"],
+		[".claude/Skills/review/run.sh", "SKILL"],
+		["Agents/reviewer.md", "AGENT"],
+		["Agents/tools/helper.py", "AGENT"],
+		["Lessons/2026-09-01-retry.md", "KNOWLEDGE"],
+		["Knowledge/CLAUDE.md", "KNOWLEDGE"],
+		["UserPreferences/dev-example/style.md", "KNOWLEDGE"],
+		["UserPreferences/dev-example/settings.json", "KNOWLEDGE"],
+		["Mcp/servers.json", "SETTINGS"],
+		[".claude/mcp/servers.json", "SETTINGS"],
+		["Env/staging/vars.json", "SETTINGS"],
+		["Env/vars.json", "SETTINGS"],
+	] as const)("%s → %s", (path, kind) => {
+		expect(classifyPath(path)).toBe(kind);
+	});
+
+	it.each([
+		// A loose file directly in Skills/ is not inside a skill folder.
+		["Skills/notes.md", "KNOWLEDGE"],
+		// Only Mcp/*.json, one level deep.
+		["Mcp/nested/servers.json", "OTHER"],
+		["Mcp/README.md", "KNOWLEDGE"],
+		// Env/ maps JSON only.
+		["Env/setup.sh", "SCRIPT"],
+		// Only at the tree root or under .claude/.
+		["docs/Rules/old.md", "KNOWLEDGE"],
+		["tools/Agents/x.md", "KNOWLEDGE"],
+		// A root FILE named like a folder is untouched.
+		["AGENTS.md", "INSTRUCTIONS"],
+	] as const)("%s keeps today's rules → %s", (path, kind) => {
+		expect(classifyPath(path)).toBe(kind);
+	});
+});

@@ -143,4 +143,19 @@ describe("InstructionsSettingsDialog", () => {
 		await waitFor(() => expect(updateCalls).toHaveLength(1));
 		expect(updateCalls[0]).toEqual({ projectId: "p", ignoreGlobs: null });
 	});
+
+	it("renders the repository section it is given", async () => {
+		render(
+			<InstructionsSettingsDialog
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				repositorySection={<section data-testid="repository-section" />}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+		expect(
+			await screen.findByTestId("repository-section"),
+		).toBeInTheDocument();
+	});
 });

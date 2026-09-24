@@ -13,15 +13,23 @@ import {
 	ClipboardCheckIcon,
 	DownloadIcon,
 	FilePlusIcon,
+	GitBranchIcon,
 	HistoryIcon,
 	Loader2Icon,
 	PlugIcon,
+	RefreshCwIcon,
 	SettingsIcon,
 	UploadIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
+import {
+	offersSyncFromRepository,
+	offersSyncNow,
+	type RepositorySyncControls,
+	shortCommit,
+} from "../../lib/instructions-repository-sync";
 import { AddInstructionFileDialog } from "./AddInstructionFileDialog";
 import { InstructionFileView } from "./InstructionFileView";
 import { InstructionProposals } from "./InstructionProposals";
@@ -30,6 +38,9 @@ import { InstructionsHistory } from "./InstructionsHistory";
 import { InstructionsRejectedBanner } from "./InstructionsRejectedBanner";
 import { InstructionsSettingsDialog } from "./InstructionsSettingsDialog";
 import { InstructionsTree, type TreeFile } from "./InstructionsTree";
+import { RepositorySyncRuns } from "./RepositorySyncRuns";
+import { RepositorySyncSettingsSection } from "./RepositorySyncSettingsSection";
+import { RepositorySyncStatus } from "./RepositorySyncStatus";
 
 const RECEIVING_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
 
@@ -46,6 +57,10 @@ export type InstructionsSnapshot = {
 	version: number;
 	status: string;
 	source: string;
+	/** A synced version's branch and commit, and the integration it came from. */
+	sourceRef?: string | null;
+	sourceCommitSha?: string | null;
+	repositoryIntegrationId?: string | null;
 	fileCount: number;
 	excludedCount: number;
 	createdAt: string | Date;
@@ -106,6 +121,8 @@ export function InstructionsPublishedView({
 	canEdit = false,
 	canReview = false,
 	repositoryBacked = false,
+	repositoryConfirmed,
+	repositorySync,
 	publishedUnknown = false,
 }: {
 	projectId: string;
@@ -136,6 +153,19 @@ export function InstructionsPublishedView({
 	 * before someone tries.
 	 */
 	repositoryBacked?: boolean;
+	/**
+	 * The loaded settings name the repository as the source of truth.
+	 * `repositoryBacked` fails closed (true while settings load or after
+	 * they fail), which is right for hiding actions but not for copy: the
+	 * rejected banner only tells someone to change files in the repository
+	 * when this is known. Defaults to `repositoryBacked`.
+	 */
+	repositoryConfirmed?: boolean;
+	/**
+	 * The tab's repository-sync state and actions (design 2026-09-23 §7).
+	 * Absent, the view renders exactly as before.
+	 */
+	repositorySync?: RepositorySyncControls;
 }) {
 	const t = useTranslations("projects.codingInstructions.publishedView");
 	const [selected, setSelected] = useState<string | null>(null);
@@ -231,6 +261,19 @@ export function InstructionsPublishedView({
 			: null;
 	const rejectionRows = rejected?.rejection;
 	const settingsLayer = published?.settingsFrozen?.layer;
+	const syncConfigured = repositorySync?.state.configured ?? null;
+	const syncBusy = Boolean(
+		repositorySync &&
+			(repositorySync.state.running || repositorySync.syncNowPending),
+	);
+	// Named only when the published version came from the integration still
+	// configured; a version synced before a re-point says "the repository".
+	const summaryRepository =
+		syncConfigured &&
+		published?.repositoryIntegrationId ===
+			syncConfigured.repositoryIntegrationId
+			? `${syncConfigured.repositoryOwner}/${syncConfigured.repositoryName}`
+			: t("repositoryUnknown");
 
 	// listFiles is only ever queried here against the PUBLISHED snapshot,
 	// which is always READY, so the server always returns the full per-file
@@ -338,16 +381,44 @@ export function InstructionsPublishedView({
 					</div>
 					{published ? (
 						<p className="text-muted-foreground">
-							{t("publishedSummary", {
-								name:
-									published.user?.name ?? t("anonymousUser"),
-								time: formatRelativeTime(published.createdAt),
-								source: sourceLabel(published.source, t),
-								fileCount: published.fileCount.toLocaleString(),
-								excludedCount:
-									published.excludedCount.toLocaleString(),
-								reason: reasonLabel(settingsLayer, t),
-							})}
+							{published.source === "REPOSITORY" &&
+							published.sourceRef
+								? t("repositorySummary", {
+										repository: summaryRepository,
+										ref: published.sourceRef,
+										commit:
+											shortCommit(
+												published.sourceCommitSha,
+											) ?? "",
+										name:
+											published.user?.name ??
+											t("anonymousUser"),
+										time: formatRelativeTime(
+											published.createdAt,
+										),
+										fileCount:
+											published.fileCount.toLocaleString(),
+										excludedCount:
+											published.excludedCount.toLocaleString(),
+										reason: reasonLabel(settingsLayer, t),
+									})
+								: t("publishedSummary", {
+										name:
+											published.user?.name ??
+											t("anonymousUser"),
+										time: formatRelativeTime(
+											published.createdAt,
+										),
+										source: sourceLabel(
+											published.source,
+											t,
+										),
+										fileCount:
+											published.fileCount.toLocaleString(),
+										excludedCount:
+											published.excludedCount.toLocaleString(),
+										reason: reasonLabel(settingsLayer, t),
+									})}
 						</p>
 					) : checking ? null : (
 						<p className="text-muted-foreground">
@@ -418,6 +489,21 @@ export function InstructionsPublishedView({
 						) : null}
 						{checking ? t("checkingSummary") : ""}
 					</p>
+					{repositorySync ? (
+						<RepositorySyncStatus
+							state={repositorySync.state}
+							onSyncNow={
+								repositorySync.state.canConfigure
+									? repositorySync.onSyncNow
+									: undefined
+							}
+							onConfigure={
+								repositorySync.state.canConfigure
+									? repositorySync.onConfigure
+									: undefined
+							}
+						/>
+					) : null}
 				</div>
 				<div className="flex shrink-0 gap-2">
 					{canBrowseProposals ? (
@@ -460,6 +546,45 @@ export function InstructionsPublishedView({
 								aria-hidden="true"
 							/>
 							{t("downloadButton")}
+						</Button>
+					) : null}
+					{repositorySync && offersSyncNow(repositorySync.state) ? (
+						<Button
+							variant="outline"
+							data-onboarding-target="instructions-sync-now"
+							disabled={syncBusy}
+							onClick={repositorySync.onSyncNow}
+						>
+							{syncBusy ? (
+								<Loader2Icon
+									className="size-4 animate-spin"
+									aria-hidden="true"
+								/>
+							) : (
+								<RefreshCwIcon
+									className="size-4"
+									aria-hidden="true"
+								/>
+							)}
+							{t(
+								repositorySync.state.running
+									? "syncingButton"
+									: "syncNowButton",
+							)}
+						</Button>
+					) : null}
+					{repositorySync &&
+					offersSyncFromRepository(repositorySync.state) ? (
+						<Button
+							variant="outline"
+							data-onboarding-target="instructions-sync-from-repository"
+							onClick={repositorySync.onConfigure}
+						>
+							<GitBranchIcon
+								className="size-4"
+								aria-hidden="true"
+							/>
+							{t("syncFromRepositoryButton")}
 						</Button>
 					) : null}
 					<Button
@@ -508,7 +633,22 @@ export function InstructionsPublishedView({
 			{rejectionRows ? (
 				<InstructionsRejectedBanner
 					rejection={rejectionRows}
-					onUploadAgain={onReplaceClick}
+					// Spec §4: no uploads while a repository is the source of
+					// truth — the server refuses them, so never offer one.
+					onUploadAgain={
+						repositoryBacked ? undefined : onReplaceClick
+					}
+					repositoryBacked={repositoryConfirmed ?? repositoryBacked}
+					mode={
+						rejected?.source === "REPOSITORY"
+							? "repository"
+							: "upload"
+					}
+					onSyncAgain={
+						repositorySync && offersSyncNow(repositorySync.state)
+							? repositorySync.onSyncNow
+							: undefined
+					}
 				/>
 			) : null}
 			{failed ? (
@@ -652,6 +792,18 @@ export function InstructionsPublishedView({
 				publishedVersion={published?.version ?? null}
 				publishedUnknown={publishedUnknown}
 				canMutate={canMutateDirect}
+				canPublish={repositoryBacked ? canReview : canMutateDirect}
+				repositoryBacked={repositoryBacked}
+				syncRuns={
+					repositorySync &&
+					(repositorySync.state.configured ||
+						repositorySync.state.latestRun) ? (
+						<RepositorySyncRuns
+							projectId={projectId}
+							running={repositorySync.state.running}
+						/>
+					) : null
+				}
 				onChanged={onChanged}
 			/>
 			{canBrowseProposals ? (
@@ -667,6 +819,22 @@ export function InstructionsPublishedView({
 				projectId={projectId}
 				open={settingsOpen}
 				onOpenChange={setSettingsOpen}
+				repositorySection={
+					repositorySync ? (
+						<RepositorySyncSettingsSection
+							projectId={projectId}
+							state={repositorySync.state}
+							onChange={() => {
+								setSettingsOpen(false);
+								repositorySync.onConfigure();
+							}}
+							onChanged={() => {
+								setSettingsOpen(false);
+								repositorySync.onChanged();
+							}}
+						/>
+					) : null
+				}
 			/>
 			{canConnectAgent && organizationId ? (
 				<ConnectCliDialog
