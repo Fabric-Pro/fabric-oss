@@ -57,20 +57,81 @@ export type ContextSyncRunStatus =
 	| "UNCHANGED"
 	| "FAILED";
 
-/** `ProjectContextSyncTrigger`: this slice has manual runs only. */
-export type ContextSyncTrigger = "MANUAL";
+/**
+ * `ProjectContextSyncTrigger`, value for value (the activity module pins the
+ * two at compile time, as it pins the error codes): MANUAL is "Sync now";
+ * POLL and WEBHOOK are the shared repository-sync poll and push webhook
+ * (design §11.1, Fizzy #2673).
+ */
+export type ContextSyncTrigger = "MANUAL" | "POLL" | "WEBHOOK";
 
 /**
- * The workflow's input. MUST stay the shape
+ * The triggers whose eligibility and pause-on-failure rules apply, as
+ * `AUTOMATIC_INSTRUCTION_SYNC_TRIGGERS` for the instructions sync: `begin`
+ * refuses one of these while automatic sync is off or paused, and a
+ * delegate who lost CONTEXT_CREATE pauses the sync only for one of these.
+ * Any other trigger is treated like MANUAL for both.
+ */
+export const AUTOMATIC_CONTEXT_SYNC_TRIGGERS = [
+	"POLL",
+	"WEBHOOK",
+] as const satisfies readonly ContextSyncTrigger[];
+
+export type AutomaticContextSyncTrigger =
+	(typeof AUTOMATIC_CONTEXT_SYNC_TRIGGERS)[number];
+
+/** Tests membership in `AUTOMATIC_CONTEXT_SYNC_TRIGGERS`. */
+export function isAutomaticContextSyncTrigger(
+	trigger: ContextSyncTrigger,
+): trigger is AutomaticContextSyncTrigger {
+	return (
+		AUTOMATIC_CONTEXT_SYNC_TRIGGERS as readonly ContextSyncTrigger[]
+	).includes(trigger);
+}
+
+/**
+ * The row an automatic start was decided on (Decision 56 of the
+ * instructions sync, the same shape as its `RepositorySyncExpectation`):
+ * `begin` refuses the run with CONFIGURATION_CHANGED when the configuration
+ * it locks has another id or generation.
+ */
+export type ContextSyncExpectation = {
+	syncId: string;
+	generation: number;
+};
+
+/**
+ * The workflow's input. A MANUAL start MUST stay the shape
  * `packages/api/modules/projects/lib/context-repository-sync-workflow.ts`
- * starts it with (`ContextRepositorySyncWorkflowInput`).
+ * starts it with (`ContextRepositorySyncWorkflowInput`); an automatic one is
+ * `AutomaticContextSyncWorkflowInput`, from
+ * `activities/lib/context-sync-start.ts`.
  */
 export type ContextSyncWorkflowInput = {
 	projectId: string;
 	organizationId: string;
 	trigger: ContextSyncTrigger;
-	/** The member who pressed "Sync now"; the run acts as them. */
-	requesterUserId: string;
+	/**
+	 * MANUAL only: the member who pressed "Sync now"; the run acts as them.
+	 * An automatic run acts as the configuration's `userId`, read by `begin`.
+	 */
+	requesterUserId?: string;
+	/** Automatic starts: the row the start was decided on. */
+	expected?: ContextSyncExpectation;
+};
+
+/**
+ * What an automatic starter passes: an automatic trigger, no requester
+ * (the run acts as the configuration's member, read when it begins, so a
+ * run queued before a re-configure acts for the new configuration), and the
+ * row the start was decided on. No credential: the run resolves its own.
+ */
+export type AutomaticContextSyncWorkflowInput = {
+	projectId: string;
+	organizationId: string;
+	trigger: AutomaticContextSyncTrigger;
+	/** The claimed or pushed row; the poll and the webhook always pass it. */
+	expected?: ContextSyncExpectation;
 };
 
 /**
@@ -111,6 +172,12 @@ export type BeginContextSyncRunInput = ContextSyncWorkflowInput & {
  * `begin`'s answer. A refusal is a value, never a throw: `NOT_CONFIGURED`
  * carries no context (there is no configuration to key a receipt on); every
  * other refusal carries the context of the finished receipt it inserted.
+ *
+ * `skipped`: an automatic run found automatic sync off or paused under the
+ * lock (§11.1). Nothing was written — no receipt, no audit row, no
+ * scheduling — so it carries no context and no error, and `record` finds no
+ * receipt to complete. A run that did nothing leaves the tab's newest
+ * receipt and the schedule as they were.
  */
 export type BeginContextSyncRunResult =
 	| { ok: true; context: ContextSyncFrozenContext }
@@ -118,6 +185,13 @@ export type BeginContextSyncRunResult =
 			ok: false;
 			error: ProjectContextSyncError;
 			context?: ContextSyncFrozenContext;
+	  }
+	| {
+			ok: false;
+			error: null;
+			skipped: "automatic_disabled" | "paused";
+			/** Never set: the workflow reads `context` off every refusal. */
+			context?: undefined;
 	  };
 
 /**

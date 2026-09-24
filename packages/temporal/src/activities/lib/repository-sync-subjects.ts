@@ -4,18 +4,19 @@
  * the subject's sync workflow. The poll's activities, and the push webhook
  * in `@repo/api` (through the `@repo/temporal/repository-sync-subjects`
  * export), resolve a subject by kind here and reach its table and its
- * workflow only through it. This PR registers exactly one subject,
- * `instructions`.
+ * workflow only through it. Two subjects are registered: `instructions`
+ * (Coding Instructions) and `context` (Living Memory, Fizzy #2673).
  *
  * Lives in ./lib so the activities barrel never exposes it as an activity.
  */
 import {
-	type InstructionSyncTrigger,
+	type AutomaticRepositorySyncTrigger,
 	REPOSITORY_SYNC_SUBJECT_STORES,
 	type RepositorySyncSubjectKind,
 	type RepositorySyncSubjectStore,
 } from "@repo/database";
 import type { RepositorySyncExpectation } from "../../lib/instruction-sync-types";
+import { startAutomaticContextSync } from "./context-sync-start";
 import {
 	type RepositorySyncStartDecorator,
 	type RepositorySyncStartResult,
@@ -29,11 +30,12 @@ export interface RepositorySyncSubject extends RepositorySyncSubjectStore {
 	 * Starts the subject's sync workflow for one row's project: one workflow
 	 * id per project and `workflowIdConflictPolicy: "FAIL"`, so an open run
 	 * answers `already_running`. The workflow takes no run id: it records its
-	 * runs under its own (Decision 44). `trigger`'s type is any value of the
-	 * run row's enum but MANUAL; only a trigger in
-	 * `AUTOMATIC_INSTRUCTION_SYNC_TRIGGERS` is actually eligible for the
-	 * automatic-sync switches `begin` and `deriveSyncRunOutcome` enforce
-	 * (Decision 47). `options.expected` is the row the start was decided on,
+	 * runs under its own (Decision 44). `trigger` is
+	 * `AutomaticRepositorySyncTrigger`: the non-MANUAL triggers every
+	 * registered subject's run table can store, so a trigger only one
+	 * subject's enum carries never reaches this seam; each subject's own
+	 * automatic-trigger constant decides the automatic-sync switches its
+	 * `begin` enforces (Decision 47). `options.expected` is the row the start was decided on,
 	 * which `begin` refuses once it has moved; the poll and the webhook always
 	 * pass it (Decision 56). `options.decorate` adjusts the start options; the
 	 * webhook passes `withCorrelationMemo`. One attempt, and the result names
@@ -41,7 +43,7 @@ export interface RepositorySyncSubject extends RepositorySyncSubjectStore {
 	 */
 	startRun(
 		row: { id: string; projectId: string; organizationId: string },
-		trigger: Exclude<InstructionSyncTrigger, "MANUAL">,
+		trigger: AutomaticRepositorySyncTrigger,
 		options?: {
 			expected?: RepositorySyncExpectation;
 			decorate?: RepositorySyncStartDecorator;
@@ -56,6 +58,19 @@ export const REPOSITORY_SYNC_SUBJECTS: Readonly<
 		...REPOSITORY_SYNC_SUBJECT_STORES.instructions,
 		startRun: (row, trigger, options = {}) =>
 			startAutomaticInstructionSync(
+				{
+					projectId: row.projectId,
+					organizationId: row.organizationId,
+					trigger,
+					expected: options.expected,
+				},
+				options.decorate,
+			),
+	},
+	context: {
+		...REPOSITORY_SYNC_SUBJECT_STORES.context,
+		startRun: (row, trigger, options = {}) =>
+			startAutomaticContextSync(
 				{
 					projectId: row.projectId,
 					organizationId: row.organizationId,

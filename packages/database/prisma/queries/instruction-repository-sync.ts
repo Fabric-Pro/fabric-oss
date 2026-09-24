@@ -735,7 +735,7 @@ export function computeSchedulingPatch(
  * reached, integration ACTIVE), oldest due first, and leases them by moving
  * `nextCheckAt` to the database's clock plus `leaseMs` (Fizzy #2683). Both
  * the due predicate and the lease read `clock_timestamp()`, the clock the
- * fence (`leaseFenceSql`) judges the lease by, so the lease is born and ends
+ * fence (`repositorySyncLeaseFenceSql`) judges the lease by, so the lease is born and ends
  * on one clock: a worker whose clock drifts from the database's can neither
  * shorten nor stretch it. The caller passes a duration, never a date. A
  * lease that is never processed (budget ran out, tick crashed) comes due
@@ -853,8 +853,17 @@ export async function claimDueInstructionSyncRows(
  * inside the receipt's transaction; `AT TIME ZONE 'UTC'` because the columns
  * are `timestamp without time zone` holding UTC. Both as in
  * `publishingEmailClaimableSql` (projects/publishing-notification-delivery.ts).
+ *
+ * No tenant arm: the id comes only from the server-side claim, never from a
+ * request, and names exactly one row.
+ *
+ * Table-neutral: it names only the column contract (Decision 46), so every
+ * subject's store sends this one condition (the Living Memory store in
+ * `./projects/context-repository-sync-automatic` does).
  */
-function leaseFenceSql(fence: RepositorySyncFence): Prisma.Sql {
+export function repositorySyncLeaseFenceSql(
+	fence: RepositorySyncFence,
+): Prisma.Sql {
 	return Prisma.sql`"id" = ${fence.id}
 		AND "generation" = ${fence.generation}
 		AND "nextCheckAt" = ${fence.leaseUntil}
@@ -863,12 +872,35 @@ function leaseFenceSql(fence: RepositorySyncFence): Prisma.Sql {
 		AND "automaticPausedReason" IS NULL`;
 }
 
+/** The Postgres enum a subject's table types `automaticPausedReason` with. */
+export type RepositorySyncPauseEnum =
+	| "ProjectInstructionSyncPause"
+	| "ProjectContextSyncPause";
+
+/**
+ * The pause assignment, cast to the subject's own enum. One fixed fragment
+ * per enum rather than a raw identifier, so no caller-supplied text ever
+ * reaches the statement.
+ */
+function pauseAssignment(
+	reason: InstructionSyncPause,
+	pauseEnum: RepositorySyncPauseEnum,
+): Prisma.Sql {
+	return pauseEnum === "ProjectContextSyncPause"
+		? Prisma.sql`"automaticPausedReason" = ${reason}::"ProjectContextSyncPause"`
+		: Prisma.sql`"automaticPausedReason" = ${reason}::"ProjectInstructionSyncPause"`;
+}
+
 /**
  * The columns a patch names, as `SET` assignments in a fixed order, then
  * `updatedAt` from the database's clock, because a raw UPDATE bypasses
- * Prisma's `@updatedAt`. Only the column contract (Decision 46) can appear.
+ * Prisma's `@updatedAt`. Only the column contract (Decision 46) can appear,
+ * so every subject's fenced writer sends these, with its own pause enum.
  */
-function patchAssignments(patch: RepositorySyncSchedulingPatch): Prisma.Sql[] {
+export function repositorySyncPatchAssignments(
+	patch: RepositorySyncSchedulingPatch,
+	pauseEnum: RepositorySyncPauseEnum,
+): Prisma.Sql[] {
 	const set: Prisma.Sql[] = [];
 	if (patch.nextCheckAt !== undefined) {
 		set.push(Prisma.sql`"nextCheckAt" = ${patch.nextCheckAt}`);
@@ -877,9 +909,7 @@ function patchAssignments(patch: RepositorySyncSchedulingPatch): Prisma.Sql[] {
 		set.push(Prisma.sql`"failureCount" = ${patch.failureCount}`);
 	}
 	if (patch.automaticPausedReason !== undefined) {
-		set.push(
-			Prisma.sql`"automaticPausedReason" = ${patch.automaticPausedReason}::"ProjectInstructionSyncPause"`,
-		);
+		set.push(pauseAssignment(patch.automaticPausedReason, pauseEnum));
 	}
 	if (patch.automaticPausedAt !== undefined) {
 		set.push(Prisma.sql`"automaticPausedAt" = ${patch.automaticPausedAt}`);
@@ -924,7 +954,7 @@ export async function instructionSyncLeaseHeld(
 	fence: RepositorySyncFence,
 ): Promise<{ held: boolean; dbNow: Date }> {
 	const rows = await tx.$queryRaw<{ held: boolean; dbNow: Date }[]>(
-		Prisma.sql`SELECT (clock_timestamp() AT TIME ZONE 'UTC') AS "dbNow", EXISTS (SELECT 1 FROM "project_instruction_repository_sync" WHERE ${leaseFenceSql(fence)}) AS "held"`,
+		Prisma.sql`SELECT (clock_timestamp() AT TIME ZONE 'UTC') AS "dbNow", EXISTS (SELECT 1 FROM "project_instruction_repository_sync" WHERE ${repositorySyncLeaseFenceSql(fence)}) AS "held"`,
 	);
 	const [row] = rows;
 	if (row === undefined) {
@@ -955,8 +985,8 @@ export async function writeBackInstructionSync(
 ): Promise<{ applied: boolean }> {
 	const count = await tx.$executeRaw(
 		Prisma.sql`UPDATE "project_instruction_repository_sync"
-			SET ${Prisma.join(patchAssignments(patch), ", ")}
-			WHERE ${leaseFenceSql(fence)}`,
+			SET ${Prisma.join(repositorySyncPatchAssignments(patch, "ProjectInstructionSyncPause"), ", ")}
+			WHERE ${repositorySyncLeaseFenceSql(fence)}`,
 	);
 	return { applied: count > 0 };
 }
@@ -1120,7 +1150,7 @@ export async function findInstructionSyncsForPush(input: {
  *
  * The marker, not a `nextCheckAt` write, because the completion overwrites
  * `nextCheckAt` moments later, and because a write to `nextCheckAt` from
- * outside the writers `leaseFenceSql` names would end a poll check's lease.
+ * outside the writers `repositorySyncLeaseFenceSql` names would end a poll check's lease.
  * This write never touches `nextCheckAt`, so a held lease stays held.
  *
  * Fenced on the configuration's identity and tenant, `(id, generation)` plus
@@ -1176,7 +1206,7 @@ export async function recordPendingInstructionSyncHead(
  *   already applied it: `made_due`, nothing written.
  *
  * Making the row due moves `nextCheckAt`, so it ends any lease a poll check
- * holds, as a finishing run does (see `leaseFenceSql`); the check that
+ * holds, as a finishing run does (see `repositorySyncLeaseFenceSql`); the check that
  * called this then reschedules nothing, and the next tick re-checks.
  */
 export async function settlePendingInstructionSyncHead(

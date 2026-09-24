@@ -71,6 +71,13 @@ type Claim = (input: ClaimInput) => Promise<ClaimedInstructionSyncCheck[]>;
  */
 const FAKE = "fake" as unknown as Kind;
 
+/**
+ * The input of a case about one kind's lanes. The schedule sends none, so a
+ * run serves every registered kind (two since Fizzy #2673); these cases pin
+ * what one kind does with all four lanes, so they name it.
+ */
+const ONE_KIND: [InstructionSyncPollInput] = [{ kinds: ["instructions"] }];
+
 let env: TestWorkflowEnvironment;
 let workflowBundle: WorkflowBundleWithSourceMap;
 
@@ -240,7 +247,7 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 			checkInstructionSyncRemoteHead: check,
 		});
 		const startedAt = await env.currentTimeMs();
-		const { result, runId } = await run(mocks);
+		const { result, runId } = await run(mocks, ONE_KIND);
 
 		expect(result).toEqual({ ...ZERO, claimed: 2, evaluated: 2 });
 		expect(mocks.sweepInstructionSyncTempDirs).toHaveBeenCalledTimes(1);
@@ -291,7 +298,10 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 		const mocks = pollMocks();
 		const { result } = await run(mocks);
 		expect(result).toEqual(ZERO);
-		expect(mocks.claimDueInstructionSyncChecks).toHaveBeenCalledTimes(1);
+		// One claim per registered kind, each short, so each closes at once.
+		expect(mocks.claimDueInstructionSyncChecks).toHaveBeenCalledTimes(
+			REPOSITORY_SYNC_SUBJECT_KINDS.length,
+		);
 		expect(mocks.checkInstructionSyncRemoteHead).not.toHaveBeenCalled();
 	});
 
@@ -413,6 +423,7 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 					},
 				),
 			}),
+			ONE_KIND,
 		);
 		expect(result).toEqual(ZERO);
 		expect(calls).toBe(3);
@@ -426,6 +437,7 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 				claimDueInstructionSyncChecks: claim,
 				checkInstructionSyncRemoteHead: check,
 			}),
+			ONE_KIND,
 		);
 
 		// Lanes fill at about 0 s, 85 s and 170 s (70 s left, over the
@@ -489,6 +501,7 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 				claimDueInstructionSyncChecks: claim,
 				checkInstructionSyncRemoteHead: check,
 			}),
+			ONE_KIND,
 		);
 
 		expect(result).toEqual({
@@ -580,6 +593,50 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 		}
 		// Twelve slow checks fill the lanes until the reserve, as with one
 		// kind, plus the two fake rows.
+		expect(result).toEqual({ ...ZERO, claimed: 14, evaluated: 14 });
+		await expectReplays(workflowId);
+	});
+
+	it("shares the lanes between the two registered kinds by default: a Coding Instructions backlog never keeps Living Memory's due rows waiting (Fizzy #2673)", async () => {
+		expect(REPOSITORY_SYNC_SUBJECT_KINDS).toEqual([
+			"instructions",
+			"context",
+		]);
+		const instructions = backlog("i");
+		const context = due("c1", "c2");
+		const claim = byKind({ instructions, context });
+		const contextCheckedAt: number[] = [];
+		const check = vi.fn(
+			async (
+				input: InstructionSyncCheckInput,
+			): Promise<InstructionSyncCheckResult> => {
+				if (input.kind === "context") {
+					contextCheckedAt.push(await env.currentTimeMs());
+					return { outcome: "evaluated" };
+				}
+				return slowCheck(input);
+			},
+		);
+		const startedAt = await env.currentTimeMs();
+		// No input, as the schedule starts it.
+		const { result, workflowId } = await run(
+			pollMocks({
+				claimDueInstructionSyncChecks: claim,
+				checkInstructionSyncRemoteHead: check,
+			}),
+		);
+
+		expect(claim.mock.calls.slice(0, 2)).toEqual([
+			[{ kind: "instructions", limit: 2 }],
+			[{ kind: "context", limit: 2 }],
+		]);
+		expect(contextCheckedAt).toHaveLength(2);
+		for (const at of contextCheckedAt) {
+			expect(at - startedAt).toBeLessThan(85_000);
+		}
+		expect(check).toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "context", id: "c1" }),
+		);
 		expect(result).toEqual({ ...ZERO, claimed: 14, evaluated: 14 });
 		await expectReplays(workflowId);
 	});

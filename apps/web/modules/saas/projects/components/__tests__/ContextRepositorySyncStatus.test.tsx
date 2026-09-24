@@ -10,7 +10,13 @@
  *  - "Sync now" spins while running and is disabled meanwhile;
  *  - the menu's "Change branch or paths…" and "Disconnect" (behind a
  *    confirmation naming the repository);
- *  - a read-only member sees the status only — no button, no menu.
+ *  - a read-only member sees the status only — no button, no menu;
+ *  - automatic sync (design §11.1, Fizzy #2673): the status line names the
+ *    applied run's trigger, the menu's "Automatic sync" toggle calls
+ *    `configure` with the stored repository, branch and paths and the
+ *    flipped flag, a pause shows its reason and "Re-enable" (which reopens
+ *    the configure dialog) only while automatic sync is on, and a reader
+ *    sees the state as text.
  */
 
 import { render, screen, waitFor, within } from "@testing-library/react";
@@ -51,9 +57,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 			contexts: {
 				repositorySync: {
 					configure: {
-						mutationOptions: () => ({
+						mutationOptions: (
+							opts: Record<string, unknown> = {},
+						) => ({
 							mutationFn: (input: unknown) =>
 								configureMock(input),
+							...opts,
 						}),
 					},
 					syncNow: {
@@ -116,6 +125,7 @@ vi.mock("next-intl", () => {
 });
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { ContextRepositorySyncStatus } from "../ContextRepositorySyncStatus";
 
 function wrap(ui: React.ReactElement) {
@@ -146,6 +156,11 @@ const CONFIGURED_BASE: ContextSyncState["configured"] = {
 	repositoryIntegrationId: "int_1",
 	ref: "main",
 	paths: ["docs"],
+	automatic: false,
+	automaticPausedReason: null,
+	automaticPausedAt: null,
+	nextCheckAt: "2026-09-23T09:00:00.000Z",
+	failureCount: 0,
 	lastAppliedCommitSha: "abc1234def5678",
 	configuredByName: "Example Member",
 	createdAt: "2026-09-23T09:00:00.000Z",
@@ -523,6 +538,246 @@ describe("ContextRepositorySyncStatus — read-only member", () => {
 		).not.toBeInTheDocument();
 		expect(
 			screen.queryByTestId("context-sync-menu-trigger"),
+		).not.toBeInTheDocument();
+	});
+});
+
+const CONFIGURED = CONFIGURED_BASE as NonNullable<
+	ContextSyncState["configured"]
+>;
+
+describe("ContextRepositorySyncStatus — run trigger", () => {
+	it.each([
+		["MANUAL", "triggers.MANUAL"],
+		["POLL", "triggers.POLL"],
+		["WEBHOOK", "triggers.WEBHOOK"],
+	])("names a %s run on the status line", (trigger, key) => {
+		renderStatus({
+			state: baseState({
+				configured: CONFIGURED,
+				lastAppliedRun: { ...emptyRun(), trigger },
+			}),
+		});
+		expect(
+			screen.getByTestId("context-sync-status-line"),
+		).toHaveTextContent(`${NS}.${key}`);
+	});
+
+	it("names no trigger while nothing was applied, even after a run that never reached a commit", () => {
+		// The status line describes the last APPLIED run; a later run that
+		// failed before pinning a commit has not replaced it.
+		renderStatus({
+			state: baseState({
+				configured: CONFIGURED,
+				lastAppliedRun: null,
+				latestRun: {
+					...emptyRun(),
+					trigger: "POLL",
+					status: "FAILED",
+					error: "REF_MISSING",
+					commitSha: null,
+				},
+			}),
+		});
+		expect(
+			screen.getByTestId("context-sync-status-line"),
+		).not.toHaveTextContent(`${NS}.triggers.`);
+	});
+});
+
+describe("ContextRepositorySyncStatus — automatic sync toggle", () => {
+	beforeEach(() => {
+		syncNowMock.mockReset();
+		disableMock.mockReset();
+		configureMock.mockReset();
+		vi.mocked(toast.success).mockReset();
+		vi.mocked(toast.error).mockReset();
+	});
+
+	it("turns automatic sync on with the stored repository, branch and paths", async () => {
+		configureMock.mockResolvedValue({ syncId: "sync_1", generation: 2 });
+		const user = userEvent.setup();
+		const { onChanged } = renderStatus({
+			state: baseState({ configured: CONFIGURED }),
+		});
+
+		await user.click(screen.getByTestId("context-sync-menu-trigger"));
+		const toggle = await screen.findByTestId("context-sync-automatic");
+		expect(toggle).toHaveAttribute("role", "menuitemcheckbox");
+		expect(toggle).toHaveAttribute("aria-checked", "false");
+		await user.click(toggle);
+
+		await waitFor(() =>
+			expect(configureMock).toHaveBeenCalledWith({
+				projectId: "proj_1",
+				organizationId: "org_1",
+				repositoryIntegrationId: "int_1",
+				ref: "main",
+				paths: ["docs"],
+				automatic: true,
+			}),
+		);
+		await waitFor(() =>
+			expect(toast.success).toHaveBeenCalledWith(
+				`${NS}.settings.automaticTurnedOn`,
+			),
+		);
+		expect(onChanged).toHaveBeenCalled();
+	});
+
+	it("turns automatic sync off when it is on", async () => {
+		configureMock.mockResolvedValue({ syncId: "sync_1", generation: 2 });
+		const user = userEvent.setup();
+		renderStatus({
+			state: baseState({
+				configured: { ...CONFIGURED, automatic: true },
+			}),
+		});
+
+		await user.click(screen.getByTestId("context-sync-menu-trigger"));
+		const toggle = await screen.findByTestId("context-sync-automatic");
+		expect(toggle).toHaveAttribute("aria-checked", "true");
+		await user.click(toggle);
+
+		await waitFor(() =>
+			expect(configureMock).toHaveBeenCalledWith(
+				expect.objectContaining({ automatic: false }),
+			),
+		);
+		await waitFor(() =>
+			expect(toast.success).toHaveBeenCalledWith(
+				`${NS}.settings.automaticTurnedOff`,
+			),
+		);
+	});
+
+	it("toasts a refused toggle with the configure error copy", async () => {
+		configureMock.mockRejectedValue({
+			message: "server message",
+			data: { code: "BRANCH_NOT_FOUND" },
+		});
+		const user = userEvent.setup();
+		renderStatus({ state: baseState({ configured: CONFIGURED }) });
+
+		await user.click(screen.getByTestId("context-sync-menu-trigger"));
+		await user.click(await screen.findByTestId("context-sync-automatic"));
+
+		await waitFor(() =>
+			expect(toast.error).toHaveBeenCalledWith(
+				`${NS}.configureDialog.errors.BRANCH_NOT_FOUND${JSON.stringify({
+					path: "",
+					withPath: "",
+					managedCount: 0,
+				})}`,
+			),
+		);
+		expect(toast.success).not.toHaveBeenCalled();
+	});
+
+	it("shows a reader the state as text, with no toggle", () => {
+		renderStatus({
+			state: baseState({
+				configured: { ...CONFIGURED, automatic: true },
+				canConfigure: false,
+			}),
+		});
+		expect(
+			screen.getByTestId("context-sync-automatic-state"),
+		).toHaveTextContent(
+			`${NS}.settings.automaticState${JSON.stringify({
+				state: `${NS}.settings.automaticOn`,
+			})}`,
+		);
+		expect(
+			screen.queryByTestId("context-sync-automatic"),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("ContextRepositorySyncStatus — paused automatic sync", () => {
+	beforeEach(() => {
+		syncNowMock.mockReset();
+		disableMock.mockReset();
+		configureMock.mockReset();
+	});
+
+	it("names the pause and reopens the configure dialog from Re-enable", async () => {
+		const user = userEvent.setup();
+		renderStatus({
+			state: baseState({
+				configured: {
+					...CONFIGURED,
+					automatic: true,
+					automaticPausedReason: "REF_MISSING",
+					automaticPausedAt: "2026-09-23T11:00:00.000Z",
+				},
+			}),
+		});
+		expect(screen.getByTestId("context-sync-paused")).toHaveTextContent(
+			`${NS}.pausedLine${JSON.stringify({
+				reason: `${NS}.pausedReasons.REF_MISSING`,
+			})}`,
+		);
+		expect(
+			screen.queryByText(`${NS}.configureDialog.title`),
+		).not.toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("button", { name: `${NS}.reEnableButton` }),
+		);
+
+		expect(
+			await screen.findByText(`${NS}.configureDialog.title`),
+		).toBeInTheDocument();
+	});
+
+	it("names a revoked permission", () => {
+		renderStatus({
+			state: baseState({
+				configured: {
+					...CONFIGURED,
+					automatic: true,
+					automaticPausedReason: "PERMISSION_REVOKED",
+				},
+			}),
+		});
+		expect(screen.getByTestId("context-sync-paused")).toHaveTextContent(
+			`${NS}.pausedReasons.PERMISSION_REVOKED`,
+		);
+	});
+
+	it("keeps the pause line dormant while automatic sync is off", () => {
+		renderStatus({
+			state: baseState({
+				configured: {
+					...CONFIGURED,
+					automatic: false,
+					automaticPausedReason: "REF_MISSING",
+				},
+			}),
+		});
+		expect(
+			screen.queryByTestId("context-sync-paused"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: `${NS}.reEnableButton` }),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows a reader the pause without Re-enable", () => {
+		renderStatus({
+			state: baseState({
+				canConfigure: false,
+				configured: {
+					...CONFIGURED,
+					automatic: true,
+					automaticPausedReason: "REF_MISSING",
+				},
+			}),
+		});
+		expect(screen.getByTestId("context-sync-paused")).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: `${NS}.reEnableButton` }),
 		).not.toBeInTheDocument();
 	});
 });

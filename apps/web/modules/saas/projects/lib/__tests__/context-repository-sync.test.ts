@@ -8,14 +8,17 @@ import {
 	type ContextSyncRunView,
 	type ContextSyncState,
 	contextSyncAttentionMessageKey,
+	contextSyncAutomaticInput,
 	contextSyncConfigureErrorMessage,
 	contextSyncLastAppliedMessage,
 	contextSyncLastAppliedSummary,
 	contextSyncNowResultMessage,
 	contextSyncPathValidationMessage,
+	contextSyncPausedReason,
 	contextSyncPollInterval,
 	contextSyncRunEnded,
 	contextSyncTreeErrorMessage,
+	contextSyncTriggerLabelKey,
 	offersSyncFromRepository,
 	offersSyncNow,
 	shortCommit,
@@ -51,6 +54,11 @@ const CONFIGURED: ContextSyncState = {
 		repositoryIntegrationId: "int_1",
 		ref: "main",
 		paths: ["docs"],
+		automatic: false,
+		automaticPausedReason: null,
+		automaticPausedAt: null,
+		nextCheckAt: "2026-09-23T10:00:00.000Z",
+		failureCount: 0,
 		lastAppliedCommitSha: null,
 		configuredByName: "Example Member",
 		createdAt: "2026-09-23T10:00:00.000Z",
@@ -569,6 +577,88 @@ describe("Remove duplicates tallying (§6, §7.3)", () => {
 			skipped: 0,
 			failed: 0,
 		});
+	});
+});
+
+describe("automatic sync (§11.1, Fizzy #2673)", () => {
+	const configured = CONFIGURED.configured as NonNullable<
+		ContextSyncState["configured"]
+	>;
+
+	it("reports a pause only while automatic sync is on", () => {
+		expect(contextSyncPausedReason(null)).toBeNull();
+		expect(contextSyncPausedReason(configured)).toBeNull();
+		expect(
+			contextSyncPausedReason({ ...configured, automatic: true }),
+		).toBeNull();
+		// Dormant: a pause left on a row whose automatic sync is off says
+		// nothing, because nothing is waiting to resume.
+		expect(
+			contextSyncPausedReason({
+				...configured,
+				automaticPausedReason: "REF_MISSING",
+			}),
+		).toBeNull();
+		expect(
+			contextSyncPausedReason({
+				...configured,
+				automatic: true,
+				automaticPausedReason: "REF_MISSING",
+			}),
+		).toBe("REF_MISSING");
+		expect(
+			contextSyncPausedReason({
+				...configured,
+				automatic: true,
+				automaticPausedReason: "PERMISSION_REVOKED",
+			}),
+		).toBe("PERMISSION_REVOKED");
+	});
+
+	it.each([
+		["MANUAL", "triggers.MANUAL"],
+		["POLL", "triggers.POLL"],
+		["WEBHOOK", "triggers.WEBHOOK"],
+		["PULL_REQUEST_MERGED", "triggers.OTHER"],
+	])("labels a %s run with %s", (trigger, key) => {
+		expect(contextSyncTriggerLabelKey(trigger)).toBe(key);
+	});
+
+	it("always sends the checkbox on a first configure", () => {
+		expect(
+			contextSyncAutomaticInput({
+				current: null,
+				touched: false,
+				automatic: true,
+			}),
+		).toEqual({ automatic: true });
+		expect(
+			contextSyncAutomaticInput({
+				current: null,
+				touched: true,
+				automatic: false,
+			}),
+		).toEqual({ automatic: false });
+	});
+
+	it("omits automatic when changing a configuration without touching the checkbox, so the stored value stands", () => {
+		expect(
+			contextSyncAutomaticInput({
+				current: configured,
+				touched: false,
+				automatic: false,
+			}),
+		).toEqual({});
+	});
+
+	it("sends the checkbox when changing a configuration after touching it", () => {
+		expect(
+			contextSyncAutomaticInput({
+				current: configured,
+				touched: true,
+				automatic: true,
+			}),
+		).toEqual({ automatic: true });
 	});
 });
 

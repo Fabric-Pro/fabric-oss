@@ -2356,6 +2356,27 @@
 					},
 					"awaitingIndex": "{count, plural, one {# Datei wartet auf Indizierung} other {# Dateien warten auf Indizierung}}",
 					"cleanupPending": "{count, plural, one {# entfernte Datei wird noch bereinigt} other {# entfernte Dateien werden noch bereinigt}}",
+					"pausedLine": "Automatische Synchronisierung pausiert: {reason}",
+					"pausedReasons": {
+						"PERMISSION_REVOKED": "das Mitglied, als das sie läuft, darf diesem Projekt keinen Kontext mehr hinzufügen",
+						"REF_MISSING": "der Branch oder ein ausgewählter Ordner bzw. eine ausgewählte Datei existiert nicht mehr"
+					},
+					"reEnableButton": "Wieder aktivieren",
+					"triggers": {
+						"MANUAL": "Manuell",
+						"POLL": "Geplante Prüfung",
+						"WEBHOOK": "Push",
+						"OTHER": "Automatisch"
+					},
+					"settings": {
+						"automatic": "Automatische Synchronisierung",
+						"automaticOn": "An",
+						"automaticOff": "Aus",
+						"automaticState": "Automatische Synchronisierung: {state}",
+						"automaticHint": "Übernimmt eine gepushte Änderung direkt nach jedem Push zu GitHub, sonst normalerweise 15 bis 20 Minuten nach einem Push. Wenn Sie dies ändern, laufen automatische Synchronisierungen als Sie.",
+						"automaticTurnedOn": "Automatische Synchronisierung ist an.",
+						"automaticTurnedOff": "Automatische Synchronisierung ist aus."
+					},
 					"attention": {
 						"path-in-use": "„{key}“ existiert bereits mit anderem Inhalt und wurde nicht überschrieben.",
 						"too-large": "„{key}“ ist größer als von der Synchronisierung erlaubt und wurde übersprungen.",
@@ -2399,6 +2420,8 @@
 						"contextignoreNotice": "Die eigene .contextignore jedes ausgewählten Ordners wird berücksichtigt, genau wie `fabric context push` sie anwendet.",
 						"pruneNotice": "Eine nicht mehr ausgewählte oder aus dem Repository entfernte Datei wird bei der nächsten Synchronisierung aus Living Memory entfernt.",
 						"actingNotice": "Jede Synchronisierung nach dieser läuft als Sie, das Mitglied, das sie konfiguriert hat.",
+						"automaticLabel": "Automatisch synchron halten",
+						"automaticHint": "Fabric übernimmt eine gepushte Änderung direkt nach jedem Push zu einem GitHub-Repository, sonst normalerweise 15 bis 20 Minuten nach einem Push; länger, während die Abfrage einen Rückstau abarbeitet oder eine Synchronisierung nach Fehlern pausiert. Automatische Synchronisierungen laufen als Sie.",
 						"cancel": "Abbrechen",
 						"submit": "Speichern und synchronisieren",
 						"errors": {

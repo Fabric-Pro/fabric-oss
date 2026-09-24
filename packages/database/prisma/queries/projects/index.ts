@@ -18,6 +18,7 @@ export * from "./context-body";
 export * from "./context-content-hash";
 export * from "./context-duplicates";
 export * from "./context-repository-sync";
+export * from "./context-repository-sync-automatic";
 export * from "./context-source-path";
 export * from "./contexts";
 export * from "./conversation-bundles";

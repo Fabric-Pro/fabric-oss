@@ -43,6 +43,7 @@ import type {
 	BeginContextSyncRunInput,
 	BeginContextSyncRunResult,
 	ContextSyncFrozenContext,
+	ContextSyncWorkflowInput,
 	RecordContextSyncRunInput,
 	RecordContextSyncRunResult,
 	SyncContextTreeResult,
@@ -121,7 +122,7 @@ type Mocks = ReturnType<typeof syncMocks>;
 
 let seq = 0;
 
-async function run(mocks: Mocks) {
+async function run(mocks: Mocks, input: ContextSyncWorkflowInput = INPUT) {
 	const taskQueue = `context-sync-${seq++}`;
 	const workflowId = `${taskQueue}-wf`;
 	const workflowWorker = await Worker.create({
@@ -140,7 +141,7 @@ async function run(mocks: Mocks) {
 		activityWorker.runUntil(
 			(async () => {
 				const handle = await env.client.workflow.start(WORKFLOW_NAME, {
-					args: [INPUT],
+					args: [input],
 					taskQueue,
 					workflowId,
 				});
@@ -217,6 +218,43 @@ describe("projectContextRepositorySyncWorkflow", () => {
 			context: context(`sync_1:${outcome.runId}`),
 			error: "RUN_IN_PROGRESS",
 			cancelled: false,
+		});
+	}, 60_000);
+
+	it("ends an automatic run begin skipped without syncing, handing record nothing to complete (§11.1)", async () => {
+		// A POLL run as the shared poll starts it: no requester, the row it
+		// was decided on as `expected`.
+		const automatic: ContextSyncWorkflowInput = {
+			projectId: "proj_1",
+			organizationId: "org_1",
+			trigger: "POLL",
+			expected: { syncId: "sync_1", generation: 3 },
+		};
+		const mocks = syncMocks({
+			beginContextRepositorySyncRun: vi.fn(async () => ({
+				ok: false,
+				error: null,
+				skipped: "paused",
+			})),
+		});
+
+		const outcome = await run(mocks, automatic);
+
+		expect(outcome.ok).toBe(true);
+		expect(mocks.beginContextRepositorySyncRun).toHaveBeenCalledWith({
+			...automatic,
+			workflowRunId: outcome.runId,
+		});
+		expect(mocks.syncContextTreeFromRepository).not.toHaveBeenCalled();
+		expect(recorded(mocks)).toEqual({
+			projectId: "proj_1",
+			organizationId: "org_1",
+			trigger: "POLL",
+			workflowRunId: outcome.runId,
+			context: null,
+			error: null,
+			cancelled: false,
+			commitSha: null,
 		});
 	}, 60_000);
 

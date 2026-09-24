@@ -17,6 +17,11 @@
  * repository change while the sync still manages rows. The caller becomes
  * the member runs act as, the generation is bumped so an in-flight run is
  * fenced, and no run is started: the client calls `syncNow` after this.
+ *
+ * `automatic` (design §11.1, Fizzy #2673) turns the shared poll and push
+ * webhook on or off for this sync; omitted, the stored value is kept (off on
+ * the first configure). Every configure also resets the automatic schedule,
+ * as the coding-instructions configure does.
  */
 import { ORPCError } from "@orpc/client";
 import { verifyRepositoryBranch } from "@repo/connectors";
@@ -68,6 +73,7 @@ export const configureContextRepositorySyncProcedure = tenantProtectedProcedure
 				.array(z.string().max(MAX_CONTEXT_SYNC_PATH_LENGTH))
 				.min(1)
 				.max(200),
+			automatic: z.boolean().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -126,6 +132,9 @@ export const configureContextRepositorySyncProcedure = tenantProtectedProcedure
 			repositoryIntegrationId: integration.id,
 			ref: input.ref,
 			paths,
+			...(input.automatic === undefined
+				? {}
+				: { automatic: input.automatic }),
 		});
 		if (written.status === "integration-unavailable") {
 			throw repositoryUnavailable();
@@ -152,6 +161,7 @@ export const configureContextRepositorySyncProcedure = tenantProtectedProcedure
 			},
 			metadata: {
 				provider: integration.provider,
+				automatic: written.sync.automatic,
 				pathCount: written.sync.paths.length,
 				refChanged: written.previous
 					? written.previous.ref !== written.sync.ref

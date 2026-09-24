@@ -1,7 +1,8 @@
 /**
  * `projects.contexts.repositorySync.{get,listTree,configure,syncNow,disable}`
  * — the Living Memory repository sync procedures (design 2026-09-23 §5.1,
- * §5.6, §8, Fizzy #2657, #2674).
+ * §5.6, §8, Fizzy #2657, #2674), and the automatic-sync switch and state
+ * they carry (§11.1, Fizzy #2673).
  *
  * Each call runs the procedure's REAL middleware chain in its declared order
  * — `projectNotFoundUnlessVisible`, then the real `requireProjectPermission`
@@ -247,6 +248,14 @@ const syncRow = {
 	activeRunKey: null as string | null,
 	lastAppliedCommitSha: "abc1234",
 	lastAppliedRunId: "sync-1:run-0",
+	automatic: true,
+	automaticPausedReason: "REF_MISSING" as string | null,
+	automaticPausedAt: new Date("2026-09-22T12:00:00.000Z") as Date | null,
+	nextCheckAt: new Date("2026-09-22T12:15:00.000Z"),
+	failureCount: 2,
+	// The poll's cursors: never part of what `get` answers.
+	suppressedCommitSha: "sup1234",
+	lastEvaluatedCommitSha: "eva1234",
 	createdAt: new Date("2026-09-20T00:00:00.000Z"),
 	updatedAt: new Date("2026-09-22T00:00:00.000Z"),
 	user: { id: "user-2", name: "Configuring Member" },
@@ -334,6 +343,7 @@ beforeEach(() => {
 			repositoryIntegrationId: "int-1",
 			ref: "develop",
 			paths: ["docs", "notes/team.md"],
+			automatic: false,
 		},
 		previous: {
 			repositoryIntegrationId: "int-1",
@@ -539,6 +549,11 @@ describe("repositorySync.get", () => {
 				repositoryIntegrationId: "int-1",
 				ref: "main",
 				paths: ["docs", "notes/team.md"],
+				automatic: true,
+				automaticPausedReason: "REF_MISSING",
+				automaticPausedAt: syncRow.automaticPausedAt,
+				nextCheckAt: syncRow.nextCheckAt,
+				failureCount: 2,
 				lastAppliedCommitSha: "abc1234",
 				configuredByName: "Configuring Member",
 				createdAt: syncRow.createdAt,
@@ -606,6 +621,17 @@ describe("repositorySync.get", () => {
 				},
 			],
 		});
+		// Counted in the resolved tenant, never by project and sync id alone.
+		const tenant = { projectId: "proj-1", organizationId: "org-host" };
+		expect(m.countManagedContexts).toHaveBeenCalledWith(
+			expect.anything(),
+			tenant,
+			"sync-1",
+		);
+		expect(m.countAwaitingIndexContexts).toHaveBeenCalledWith(
+			tenant,
+			"sync-1",
+		);
 		// Reads bound to the hosting organization; the live cleanup count is
 		// asked about the LAST APPLIED run, by its key, project and tenant.
 		expect(m.getNewestContextRepositorySyncRun).toHaveBeenCalledWith(
@@ -632,6 +658,41 @@ describe("repositorySync.get", () => {
 		expect(text).not.toContain("keptKeys");
 		expect(text).not.toContain("protectedKeys");
 		expect(text).not.toContain("activeRunKey");
+		// The poll's cursors stay server-side.
+		for (const cursor of ["sup1234", "eva1234"]) {
+			expect(text).not.toContain(cursor);
+		}
+	});
+
+	it("answers automatic sync's state as stored: off, never paused, and every field present", async () => {
+		m.getContextRepositorySync.mockResolvedValue({
+			...syncRow,
+			automatic: false,
+			automaticPausedReason: null,
+			automaticPausedAt: null,
+			failureCount: 0,
+		});
+
+		const result = await call("get", inputs.get);
+		const configured = result.configured as Record<string, unknown>;
+
+		expect(configured).toMatchObject({
+			automatic: false,
+			automaticPausedReason: null,
+			automaticPausedAt: null,
+			nextCheckAt: syncRow.nextCheckAt,
+			failureCount: 0,
+		});
+		// Present as null, not missing: the tab reads "not paused" from it.
+		for (const field of [
+			"automatic",
+			"automaticPausedReason",
+			"automaticPausedAt",
+			"nextCheckAt",
+			"failureCount",
+		]) {
+			expect(configured).toHaveProperty(field);
+		}
 	});
 
 	it("shows a read-only member the status but no integrations", async () => {
@@ -1025,6 +1086,10 @@ describe("repositorySync.configure", () => {
 			ref: "develop",
 			paths: ["docs", "notes/team.md"],
 		});
+		// Omitted, the stored value is kept: the key is not sent at all.
+		expect(
+			m.upsertContextRepositorySync.mock.calls[0]?.[0],
+		).not.toHaveProperty("automatic");
 		expect(m.recordAuditFromRequest).toHaveBeenCalledTimes(1);
 		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
 			expect.objectContaining({ user: ctx.user }),
@@ -1040,6 +1105,7 @@ describe("repositorySync.configure", () => {
 				},
 				metadata: {
 					provider: "GITHUB",
+					automatic: false,
 					pathCount: 2,
 					refChanged: true,
 					pathsChanged: false,
@@ -1053,6 +1119,101 @@ describe("repositorySync.configure", () => {
 		}
 	});
 
+	it.each([true, false])(
+		"turns automatic sync %s when the caller says so, and audits the value stored",
+		async (automatic) => {
+			m.upsertContextRepositorySync.mockResolvedValue({
+				status: "configured",
+				sync: {
+					id: "sync-1",
+					generation: 5,
+					repositoryIntegrationId: "int-1",
+					ref: "develop",
+					paths: ["docs", "notes/team.md"],
+					automatic,
+				},
+				previous: null,
+			});
+
+			await call("configure", { ...configureInput, automatic });
+
+			expect(m.upsertContextRepositorySync).toHaveBeenCalledWith(
+				expect.objectContaining({ automatic }),
+			);
+			const audit = m.recordAuditFromRequest.mock.calls[0]?.[1];
+			expect(audit).toMatchObject({
+				action: "project.context.repository_sync_configured",
+				metadata: { automatic },
+			});
+			// Configure starts nothing, automatic or not: the poll or the
+			// client's `syncNow` does.
+			expect(m.startContextRepositorySync).not.toHaveBeenCalled();
+		},
+	);
+
+	it("audits the stored automatic value when the caller leaves it out", async () => {
+		m.upsertContextRepositorySync.mockResolvedValue({
+			status: "configured",
+			sync: {
+				id: "sync-1",
+				generation: 5,
+				repositoryIntegrationId: "int-1",
+				ref: "develop",
+				paths: ["docs", "notes/team.md"],
+				automatic: true,
+			},
+			previous: null,
+		});
+
+		await call("configure", configureInput);
+
+		expect(m.recordAuditFromRequest.mock.calls[0]?.[1]).toMatchObject({
+			metadata: { automatic: true },
+		});
+	});
+
+	it.each(["yes", 1, null])(
+		"refuses automatic: %j as input, before anything is read or written",
+		async (automatic) => {
+			await expect(
+				call("configure", { ...configureInput, automatic }),
+			).rejects.toMatchObject({ code: "BAD_REQUEST" });
+			expect(m.getProjectRepoIntegration).not.toHaveBeenCalled();
+			NO_WRITES();
+		},
+	);
+
+	it("refuses turning automatic sync on to a member without CONTEXT_CREATE", async () => {
+		m.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: VIEWER,
+			source: "project-member",
+			organizationId: "org-host",
+		});
+
+		await expect(
+			call("configure", { ...configureInput, automatic: true }),
+		).rejects.toMatchObject({
+			code: "FORBIDDEN",
+			message: "Missing required permission: context:create",
+		});
+		NO_WRITES();
+	});
+
+	it("answers turning automatic sync on in a project the caller cannot see NOT_FOUND", async () => {
+		// A member of another organization: the project is not visible.
+		m.hasProjectAccess.mockResolvedValue(false);
+
+		await expect(
+			call("configure", {
+				...configureInput,
+				automatic: true,
+				organizationId: "org-evil",
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(m.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+		NO_WRITES();
+	});
+
 	it("audits a first configuration as changing both ref and paths", async () => {
 		m.upsertContextRepositorySync.mockResolvedValue({
 			status: "configured",
@@ -1062,6 +1223,7 @@ describe("repositorySync.configure", () => {
 				repositoryIntegrationId: "int-1",
 				ref: "develop",
 				paths: ["docs"],
+				automatic: false,
 			},
 			previous: null,
 		});
@@ -1071,6 +1233,7 @@ describe("repositorySync.configure", () => {
 		expect(m.recordAuditFromRequest.mock.calls[0]?.[1]).toMatchObject({
 			metadata: {
 				provider: "GITHUB",
+				automatic: false,
 				pathCount: 1,
 				refChanged: true,
 				pathsChanged: true,

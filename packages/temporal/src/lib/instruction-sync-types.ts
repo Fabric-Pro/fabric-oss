@@ -231,10 +231,13 @@ export type RecordSyncRunResult = {
  * (Decision 46). The poll workflow claims per kind from this list, because a
  * workflow cannot import the adapters; the activities and the webhook
  * resolve each kind's adapter in activities/lib/repository-sync-subjects.ts.
- * One kind in this PR. `satisfies` keeps every listed kind a database kind.
+ * Coding Instructions, then Living Memory (Fizzy #2673); the poll's
+ * round-robin shares its lanes between them. `satisfies` keeps every listed
+ * kind a database kind.
  */
 export const REPOSITORY_SYNC_SUBJECT_KINDS = [
 	"instructions",
+	"context",
 ] as const satisfies readonly RepositorySyncSubjectKind[];
 
 /** Spec §6.1: one poll tick's whole budget. */

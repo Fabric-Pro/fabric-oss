@@ -4,6 +4,7 @@ import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
+import { Checkbox } from "@ui/components/checkbox";
 import {
 	Dialog,
 	DialogContent,
@@ -23,6 +24,7 @@ import {
 	type ContextSyncConfiguration,
 	type ContextSyncIntegration,
 	type ContextSyncNowResult,
+	contextSyncAutomaticInput,
 	contextSyncConfigureErrorMessage,
 	contextSyncNowResultMessage,
 	contextSyncPathValidationMessage,
@@ -43,6 +45,11 @@ import { ContextRepositorySyncTreeBrowser } from "./ContextRepositorySyncTreeBro
  *
  * Mounted only while open, so a background poll of the tab cannot overwrite
  * what someone is typing.
+ *
+ * "Keep in sync automatically" (§11.1, Fizzy #2673) is ticked for a new
+ * configuration and seeded from the stored value when changing one, as the
+ * coding-instructions dialog does. It is sent on a first configure, and
+ * afterwards only once touched (`contextSyncAutomaticInput`).
  */
 export function ConfigureContextRepositorySyncDialog({
 	projectId,
@@ -74,6 +81,8 @@ export function ConfigureContextRepositorySyncDialog({
 	const [paths, setPaths] = useState<string[]>(current?.paths ?? []);
 	const [pathInput, setPathInput] = useState("");
 	const [pathError, setPathError] = useState<string | null>(null);
+	const [automatic, setAutomatic] = useState(current?.automatic ?? true);
+	const [automaticTouched, setAutomaticTouched] = useState(false);
 	const [inlineError, setInlineError] = useState<string | null>(null);
 	const [inlineErrorField, setInlineErrorField] = useState<
 		"branch" | "paths" | null
@@ -127,6 +136,11 @@ export function ConfigureContextRepositorySyncDialog({
 				repositoryIntegrationId: integrationId,
 				ref: branch,
 				paths,
+				...contextSyncAutomaticInput({
+					current,
+					touched: automaticTouched,
+					automatic,
+				}),
 			});
 		} catch (error) {
 			const mapped = contextSyncConfigureErrorMessage(error);
@@ -344,6 +358,29 @@ export function ConfigureContextRepositorySyncDialog({
 							{inlineError}
 						</p>
 					) : null}
+					<div className="flex items-start gap-2">
+						<Checkbox
+							id="context-sync-automatic"
+							className="mt-0.5"
+							checked={automatic}
+							onCheckedChange={(value) => {
+								setAutomatic(value === true);
+								setAutomaticTouched(true);
+							}}
+							aria-describedby="context-sync-automatic-hint"
+						/>
+						<div className="flex flex-col gap-0.5">
+							<Label htmlFor="context-sync-automatic">
+								{t("configureDialog.automaticLabel")}
+							</Label>
+							<p
+								id="context-sync-automatic-hint"
+								className="text-muted-foreground text-xs"
+							>
+								{t("configureDialog.automaticHint")}
+							</p>
+						</div>
+					</div>
 					<p className="text-muted-foreground text-sm">
 						{t("configureDialog.contextignoreNotice")}
 					</p>

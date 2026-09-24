@@ -4,11 +4,16 @@
  *
  * What this pins: the workflow id literal and the start options (queue,
  * conflict policy, args, correlation memo) the workflow in `@repo/temporal`
- * must match; that only a duplicate-id refusal reads as "already running";
+ * must match — and, since the shared poll and the push webhook start the
+ * same workflow for the same project from `@repo/temporal` (§11.1, Fizzy
+ * #2673), that this id is the one `@repo/instructions/workflow-ids` builds
+ * for them, so an automatic run and a "Sync now" collapse onto one id; that
+ * only a duplicate-id refusal reads as "already running";
  * and the describe budget — each execution described by its exact run id,
  * 5 s each and 20 s in total, a failed or timed-out describe `unknown`,
  * never closed.
  */
+import { contextRepositorySyncWorkflowId as sharedContextRepositorySyncWorkflowId } from "@repo/instructions/workflow-ids";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
@@ -57,6 +62,14 @@ describe("contextRepositorySyncWorkflowId", () => {
 		expect(contextRepositorySyncWorkflowId("proj_1")).toBe(
 			"context-repository-sync-proj_1",
 		);
+	});
+
+	it("is the id the automatic starter and begin's describes use (@repo/instructions/workflow-ids)", () => {
+		for (const projectId of ["proj_1", "cm0example0000000000000000"]) {
+			expect(contextRepositorySyncWorkflowId(projectId)).toBe(
+				sharedContextRepositorySyncWorkflowId(projectId),
+			);
+		}
 	});
 });
 

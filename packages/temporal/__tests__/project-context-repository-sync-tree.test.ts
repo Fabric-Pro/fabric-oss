@@ -469,6 +469,24 @@ describe("syncContextTreeFromRepository — what a run applies", () => {
 		]);
 	});
 
+	it("never enumerates another organization's row for pruning, even with this project and sync id", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, [{ path: "docs/a.md", body: "a" }]);
+		seedContext("docs/a.md", "a");
+		seedContext("docs/foreign.md", "not in the commit", {
+			organizationId: "org-2",
+		});
+
+		await sync(ctx);
+
+		expect(contextRow("docs/foreign.md")).toMatchObject({
+			organizationId: "org-2",
+		});
+		expect(runRow().removedCount).toBe(0);
+		expect(runRow().pruneConflicts).toMatchObject({ keys: [] });
+		expect(store.log).not.toContain("delete:docs/foreign.md");
+	});
+
 	it("prunes excluded entries but protects too-large, binary and empty ones — and never reads the oversized file", async () => {
 		const ctx = configure(["docs"]);
 		serve(SHA_A, [
@@ -1031,6 +1049,20 @@ describe("syncContextTreeFromRepository — prune, permission and index", () => 
 				}),
 			},
 		]);
+	});
+
+	it("never starts an embedding for another organization's unindexed row, even with this project and sync id", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, [{ path: "docs/c.md", body: "indexed" }]);
+		seedContext("docs/c.md", "indexed");
+		seedContext("docs/foreign.md", "unindexed", {
+			organizationId: "org-2",
+			embeddedAt: null,
+		});
+
+		await sync(ctx);
+
+		expect(m.start).not.toHaveBeenCalled();
 	});
 
 	it("maps a failed embedding start to STORE_FAILED; the retry repeats only the index step", async () => {
