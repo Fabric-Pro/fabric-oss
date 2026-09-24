@@ -1,5 +1,6 @@
 "use client";
 
+import { promptContentProblem } from "@repo/utils/prompt-content";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -30,7 +31,7 @@ import {
 	XIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { PromptScopeBadge } from "./PromptScopeBadge";
 import { PromptTag } from "./PromptTag";
@@ -60,6 +61,7 @@ export function PromptPreviewSheet({
 	const { organizationId, basePath } = useOrganizationContext();
 	const [isEditing, setIsEditing] = useState(initialEditMode);
 	const [editContent, setEditContent] = useState("");
+	const contentErrorId = useId();
 
 	// Fetch full prompt details
 	// USER-scoped prompts are not visible when organizationId is set,
@@ -77,6 +79,7 @@ export function PromptPreviewSheet({
 
 	const latestVersion = prompt?.versions?.[0];
 	const content = latestVersion?.content ?? "";
+	const contentProblem = isEditing ? promptContentProblem(editContent) : null;
 	const isSystemPrompt = prompt?.scope === "SYSTEM";
 	const titleText = isLoading ? "Loading..." : (prompt?.name ?? "Prompt");
 
@@ -234,16 +237,35 @@ export function PromptPreviewSheet({
 						</div>
 
 						{/* Content area */}
-						<div className="flex-1 min-h-0">
+						<div className="flex-1 min-h-0 flex flex-col gap-2">
 							{isEditing ? (
-								<Textarea
-									value={editContent}
-									onChange={(e) =>
-										setEditContent(e.target.value)
-									}
-									className="h-full min-h-[300px] font-mono text-sm resize-none"
-									placeholder="Enter prompt content..."
-								/>
+								<>
+									<Textarea
+										value={editContent}
+										onChange={(e) =>
+											setEditContent(e.target.value)
+										}
+										className="h-full min-h-[300px] font-mono text-sm resize-none"
+										placeholder="Enter prompt content..."
+										aria-invalid={
+											contentProblem ? true : undefined
+										}
+										aria-describedby={
+											contentProblem
+												? contentErrorId
+												: undefined
+										}
+									/>
+									{contentProblem && (
+										<p
+											id={contentErrorId}
+											role="alert"
+											className="shrink-0 text-sm text-destructive"
+										>
+											{contentProblem}
+										</p>
+									)}
+								</>
 							) : (
 								<ScrollArea className="h-full">
 									<pre className="text-sm font-mono whitespace-pre-wrap break-words p-4 bg-muted rounded-lg">
@@ -260,7 +282,8 @@ export function PromptPreviewSheet({
 									<Button
 										onClick={handleSave}
 										disabled={
-											createVersionMutation.isPending
+											createVersionMutation.isPending ||
+											contentProblem !== null
 										}
 										size="sm"
 									>

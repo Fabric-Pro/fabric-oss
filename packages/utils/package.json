@@ -309,6 +309,11 @@
 			"import": "./lib/prompt-action-catalog.ts",
 			"default": "./lib/prompt-action-catalog.ts"
 		},
+		"./prompt-content": {
+			"types": "./lib/prompt-content.ts",
+			"import": "./lib/prompt-content.ts",
+			"default": "./lib/prompt-content.ts"
+		},
 		"./attachment-limits": {
 			"types": "./lib/attachment-limits.ts",
 			"import": "./lib/attachment-limits.ts",

@@ -25,22 +25,31 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
 	forkPrompt,
 	getPromptById,
-	updatePrompt,
+	updatePromptWithVersion,
 	verifyOrganizationMembership,
 } = vi.hoisted(() => ({
 	forkPrompt: vi.fn(),
 	getPromptById: vi.fn(),
-	updatePrompt: vi.fn(),
+	updatePromptWithVersion: vi.fn(),
 	verifyOrganizationMembership: vi.fn(),
 }));
 
-vi.mock("@repo/database", () => ({ forkPrompt, getPromptById, updatePrompt }));
+vi.mock("@repo/database", () => ({
+	forkPrompt,
+	getPromptById,
+	updatePromptWithVersion,
+}));
 
 vi.mock("../../organizations/lib/membership", () => ({
 	verifyOrganizationMembership,
 }));
 
+vi.mock("../lib/announce-default-change", () => ({
+	announceDefaultChangeForWinningActions: vi.fn(),
+}));
+
 vi.mock("../lib/assert-valid-template", () => ({
+	assertSavablePromptContent: vi.fn(),
 	assertValidTemplate: vi.fn(),
 }));
 
@@ -91,7 +100,10 @@ beforeEach(() => {
 		userId: null,
 		name: "The organization's default",
 	});
-	updatePrompt.mockResolvedValue({ id: "prompt-org-1" });
+	updatePromptWithVersion.mockResolvedValue({
+		prompt: { id: "prompt-org-1" },
+		version: null,
+	});
 	forkPrompt.mockResolvedValue({ id: "prompt-forked-1", scope: "ORG" });
 	// A plain member: a real membership row, without admin or owner.
 	verifyOrganizationMembership.mockResolvedValue({
@@ -105,7 +117,7 @@ describe("editing an organization's prompt", () => {
 		await expect(callUpdate()).rejects.toThrow(
 			/Only organization admins can update organization prompts/i,
 		);
-		expect(updatePrompt).not.toHaveBeenCalled();
+		expect(updatePromptWithVersion).not.toHaveBeenCalled();
 	});
 
 	it("allows an org admin", async () => {
@@ -116,7 +128,7 @@ describe("editing an organization's prompt", () => {
 
 		await callUpdate();
 
-		expect(updatePrompt).toHaveBeenCalled();
+		expect(updatePromptWithVersion).toHaveBeenCalled();
 	});
 });
 

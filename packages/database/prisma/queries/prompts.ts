@@ -1349,18 +1349,85 @@ export async function forkPrompt({
 	return prompt;
 }
 
+/** The parent-row tenancy columns a new version must mirror exactly (XOR). */
+type PromptVersionParent = {
+	id: string;
+	scope: PromptScope;
+	userId: string | null;
+	organizationId: string | null;
+};
+
 /**
- * Create a new prompt version.
+ * Insert the next version for `parent` and advance same-scope bindings that
+ * were pinned to the prior latest version, inside an already-open
+ * transaction. Shared by `createPromptVersion` (content-only save) and
+ * `updatePromptWithVersion` (metadata and content saved atomically), so the
+ * insert-then-cascade logic — and the concurrent-writer race it guards
+ * against — exists once.
  *
  * TENANT ISOLATION: scope, userId, and organizationId on the version row are
- * derived from the parent Prompt — never from the caller — so the version
- * always matches the parent's XOR tenancy.
+ * derived from `parent` — never from the caller — so the version always
+ * matches the parent's XOR tenancy.
  *
- * CONCURRENCY: Under Postgres READ COMMITTED two concurrent calls can read the
- * same latest version and both try to insert the same next number, which the
- * @@unique([promptId, version]) constraint rejects with P2002. We retry a few
- * times so spammed "Save" clicks don't surface as 500s.
+ * CONCURRENCY: Under Postgres READ COMMITTED two concurrent calls can read
+ * the same latest version and both try to insert the same next number, which
+ * the @@unique([promptId, version]) constraint rejects with P2002. Both
+ * callers retry a few times so spammed "Save" clicks don't surface as 500s.
  */
+async function insertPromptVersionAndAdvanceBindings(
+	tx: Prisma.TransactionClient,
+	parent: PromptVersionParent,
+	{
+		content,
+		variables,
+		changeNote,
+		createdBy,
+	}: {
+		content: string;
+		variables?: any;
+		changeNote?: string;
+		createdBy: string;
+	},
+) {
+	const latest = await tx.promptVersion.findFirst({
+		where: { promptId: parent.id },
+		orderBy: { version: "desc" },
+		select: { id: true, version: true },
+	});
+	const next = (latest?.version ?? 0) + 1;
+
+	const newVersion = await tx.promptVersion.create({
+		data: {
+			promptId: parent.id,
+			version: next,
+			content,
+			variables: variables ?? {},
+			changeNote,
+			createdBy,
+			scope: parent.scope,
+			userId: parent.userId,
+			organizationId: parent.organizationId,
+		},
+	});
+
+	// Advance same-scope bindings that were pinned to the prior latest
+	// version so admins editing a prompt in place don't leave stale bindings
+	// pointing at the old content. Forks (other scopes) have their own
+	// version chains and remain untouched.
+	if (latest) {
+		await tx.promptBinding.updateMany({
+			where: {
+				promptVersionId: latest.id,
+				scope: parent.scope,
+			},
+			data: { promptVersionId: newVersion.id },
+		});
+	}
+
+	return newVersion;
+}
+
+/** Save a new version for an existing prompt without touching its metadata. */
 export async function createPromptVersion({
 	promptId,
 	content,
@@ -1389,45 +1456,14 @@ export async function createPromptVersion({
 			// concurrent writer cannot insert a newer version between our
 			// create and our binding cascade — which would otherwise leave
 			// bindings pinned at a stale version.
-			return await db.$transaction(async (tx) => {
-				const latest = await tx.promptVersion.findFirst({
-					where: { promptId },
-					orderBy: { version: "desc" },
-					select: { id: true, version: true },
-				});
-				const next = (latest?.version ?? 0) + 1;
-
-				const newVersion = await tx.promptVersion.create({
-					data: {
-						promptId,
-						version: next,
-						content,
-						variables: variables ?? {},
-						changeNote,
-						createdBy,
-						scope: parent.scope,
-						userId: parent.userId,
-						organizationId: parent.organizationId,
-					},
-				});
-
-				// Advance same-scope bindings that were pinned to the prior
-				// latest version so admins editing a prompt in place don't
-				// leave stale bindings pointing at the old content. Forks
-				// (other scopes) have their own version chains and remain
-				// untouched.
-				if (latest) {
-					await tx.promptBinding.updateMany({
-						where: {
-							promptVersionId: latest.id,
-							scope: parent.scope,
-						},
-						data: { promptVersionId: newVersion.id },
-					});
-				}
-
-				return newVersion;
-			});
+			return await db.$transaction(async (tx) =>
+				insertPromptVersionAndAdvanceBindings(tx, parent, {
+					content,
+					variables,
+					changeNote,
+					createdBy,
+				}),
+			);
 		} catch (error) {
 			const isVersionCollision =
 				error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -1440,6 +1476,83 @@ export async function createPromptVersion({
 	}
 
 	throw new Error("Failed to create prompt version after concurrent retries");
+}
+
+/**
+ * Update a prompt's metadata and, when `content` is given, save a new
+ * version — in one transaction, so a rename can never persist while the
+ * body it was submitted with is rejected (Fizzy #2250).
+ *
+ * `content` undefined means "this save touches metadata only": no version is
+ * created and the prompt's existing latest body is left untouched, exactly
+ * like the plain `updatePrompt` this supersedes for the atomic save path.
+ */
+export async function updatePromptWithVersion({
+	id,
+	name,
+	description,
+	format,
+	category,
+	tags,
+	isPublic,
+	updatedBy,
+	content,
+	variables,
+	changeNote,
+}: {
+	id: string;
+	name?: string;
+	description?: string;
+	format?: PromptFormat;
+	category?: string;
+	tags?: string[];
+	isPublic?: boolean;
+	updatedBy: string;
+	content?: string;
+	variables?: any;
+	changeNote?: string;
+}) {
+	const MAX_ATTEMPTS = 5;
+	for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+		try {
+			return await db.$transaction(async (tx) => {
+				const prompt = await tx.prompt.update({
+					where: { id },
+					data: {
+						name,
+						description,
+						format,
+						category,
+						tags,
+						isPublic,
+						updatedBy,
+					},
+				});
+
+				if (content === undefined) {
+					return { prompt, version: null };
+				}
+
+				const version = await insertPromptVersionAndAdvanceBindings(
+					tx,
+					prompt,
+					{ content, variables, changeNote, createdBy: updatedBy },
+				);
+
+				return { prompt, version };
+			});
+		} catch (error) {
+			const isVersionCollision =
+				error instanceof Prisma.PrismaClientKnownRequestError &&
+				error.code === "P2002";
+			if (isVersionCollision && attempt < MAX_ATTEMPTS - 1) {
+				continue;
+			}
+			throw error;
+		}
+	}
+
+	throw new Error("Failed to update prompt after concurrent retries");
 }
 
 /**

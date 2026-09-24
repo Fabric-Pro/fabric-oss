@@ -10,7 +10,7 @@ import {
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 import { announceDefaultChangeForWinningActions } from "../lib/announce-default-change";
-import { assertValidTemplate } from "../lib/assert-valid-template";
+import { assertSavablePromptContent } from "../lib/assert-valid-template";
 
 export const versionProcedures = {
 	create: tenantProtectedProcedure
@@ -83,7 +83,10 @@ export const versionProcedures = {
 
 			// The body must render under the format the prompt row declares —
 			// content and format live on different rows, so they can drift apart.
-			assertValidTemplate(prompt.format as TemplateFormat, input.content);
+			assertSavablePromptContent(
+				prompt.format as TemplateFormat,
+				input.content,
+			);
 
 			const version = await createPromptVersion({
 				promptId: input.id,

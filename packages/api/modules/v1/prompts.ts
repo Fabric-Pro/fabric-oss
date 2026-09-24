@@ -4,6 +4,10 @@
  * GET /prompts/:id    get prompt with latest version content
  */
 import { createPrompt, db, listPrompts, updatePrompt } from "@repo/database";
+import {
+	PROMPT_CONTENT_MAX_LENGTH,
+	promptContentTooLongMessage,
+} from "@repo/utils/prompt-content";
 import type { Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
@@ -123,6 +127,17 @@ export function registerPromptRoutes(
 			return c.json(badRequest("name is required"), 400);
 		}
 
+		const initialContent = body.content?.trim();
+		if (
+			initialContent &&
+			initialContent.length > PROMPT_CONTENT_MAX_LENGTH
+		) {
+			return c.json(
+				badRequest(promptContentTooLongMessage(initialContent.length)),
+				400,
+			);
+		}
+
 		const scope = ctx.organizationId ? "ORG" : "USER";
 
 		const prompt = await createPrompt({
@@ -135,7 +150,7 @@ export function registerPromptRoutes(
 			category: body.category?.trim(),
 			tags: body.tags ?? [],
 			createdBy: ctx.userId,
-			initialContent: body.content?.trim(),
+			initialContent,
 		});
 
 		return c.json(

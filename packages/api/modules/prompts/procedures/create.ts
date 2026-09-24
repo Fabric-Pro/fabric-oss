@@ -11,7 +11,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
-import { assertValidTemplate } from "../lib/assert-valid-template";
+import { assertSavablePromptContent } from "../lib/assert-valid-template";
 
 const PromptFormatSchema = z.enum([
 	"PLAIN_TEXT",
@@ -103,7 +103,7 @@ export const createProcedure = tenantProtectedProcedure
 		// A body that cannot render under its own format is rejected here rather
 		// than at generation time, where it is a log line nobody is watching.
 		if (input.initialContent) {
-			assertValidTemplate(
+			assertSavablePromptContent(
 				input.format as TemplateFormat,
 				input.initialContent,
 			);

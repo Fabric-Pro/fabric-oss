@@ -7,6 +7,7 @@ import {
 	useCopilotReadable,
 } from "@copilotkit/react-core";
 import { CopilotSidebar } from "@copilotkit/react-ui";
+import { promptContentProblem } from "@repo/utils/prompt-content";
 import { CopilotAssistantMessageForPromptEnhancer } from "@saas/shared/components/copilot/CopilotAssistantMessage";
 import "@copilotkit/react-ui/styles.css";
 import "./PromptContentEnhancer.css";
@@ -20,7 +21,7 @@ import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
 import { Loader2, SaveIcon, X } from "lucide-react";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 
 type PromptFormat =
 	| "PLAIN_TEXT"
@@ -143,6 +144,8 @@ export function PromptContentEnhancer({
 		escapeForDisplay(initialContent),
 	);
 	const { isLoading: isAILoading } = useCopilotChat();
+	const contentErrorId = useId();
+	const contentProblem = promptContentProblem(currentContent);
 
 	// Refs to store latest values for callbacks
 	const currentContentRef = useRef<string>(currentContent);
@@ -518,7 +521,9 @@ export function PromptContentEnhancer({
 								</Button>
 								<Button
 									onClick={handleSave}
-									disabled={isLoading}
+									disabled={
+										isLoading || contentProblem !== null
+									}
 									size="sm"
 								>
 									{isLoading ? (
@@ -564,9 +569,22 @@ export function PromptContentEnhancer({
 							placeholder={`Enter your ${format.toLowerCase().replace("_", " ")} prompt here...`}
 							className="font-mono text-sm resize-none flex-1 min-h-0 w-full"
 							disabled={isAILoading}
+							aria-invalid={contentProblem ? true : undefined}
+							aria-describedby={
+								contentProblem ? contentErrorId : undefined
+							}
 						/>
 					)}
 					<div className="mt-4 space-y-2 shrink-0">
+						{contentProblem && !showDiffHighlighting && (
+							<p
+								id={contentErrorId}
+								role="alert"
+								className="text-sm text-destructive"
+							>
+								{contentProblem}
+							</p>
+						)}
 						<p className="text-xs text-muted-foreground">
 							{getFormatDescription(format)}
 						</p>
