@@ -18,13 +18,22 @@ const KIND_LABELS: Record<string, string> = {
 	FLAKY: "Flaky",
 };
 
-/** The `Expected:` / `Actual:` lines, or none when the message didn't parse. */
+/**
+ * The `Expected:` / `Actual:` lines, or none when the message didn't parse.
+ *
+ * A markdown list, not two plain lines: the body this feeds into is rendered
+ * markdown, where two consecutive lines with no blank line between them
+ * collapse into one paragraph — "Expected: 80 Actual: 90" on a single line,
+ * losing the two-line shape a reader needs to tell the sides apart at a
+ * glance. A `-` item forces its own line regardless of what comes before or
+ * after it.
+ */
 export function buildAssertionLines(
 	failureMessage: string | null | undefined,
 ): string[] {
 	const parsed = parseAssertionValues(failureMessage);
 	return parsed
-		? [`Expected: ${parsed.expected}`, `Actual: ${parsed.actual}`]
+		? [`- Expected: ${parsed.expected}`, `- Actual: ${parsed.actual}`]
 		: [];
 }
 

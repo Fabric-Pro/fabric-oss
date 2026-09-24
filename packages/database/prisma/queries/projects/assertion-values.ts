@@ -10,6 +10,19 @@
  * runner formats whose direction is unambiguous, and returns `null` for
  * everything else rather than guess: a wrong direction stated as fact is worse
  * than no direction stated at all.
+ *
+ * `failureMessage` is a `@db.Text` column with no size cap, and this runs
+ * synchronously on the request path (`buildFailureEvidence`) and the sync path
+ * (`promoteFindingToBug`, `openBugsForFailedCases`). Every parser below is
+ * therefore written to stay LINEAR in the length of its input: no two
+ * variable-length quantifiers ever sit adjacent over an overlapping character
+ * class (that shape is what makes a regex engine try every possible split
+ * between them — quadratic at best, exponential on a crafted input). Where a
+ * value has to be located, it is located with `indexOf`/`slice`, not a
+ * backtracking capture group. {@link MAX_INPUT_LENGTH} and
+ * {@link MAX_LINE_LENGTH} are a second, independent layer on top of that: even
+ * a parser this module gets wrong tomorrow can only ever pay for a few
+ * thousand characters of work.
  */
 
 /** One assertion's two sides, in the runner's own words. */
@@ -21,6 +34,31 @@ export interface ParsedAssertionValues {
 /** Long enough to show a real value, short enough that an object dump cannot
  * swallow the rest of a bug body or a model prompt. */
 const MAX_VALUE_LENGTH = 300;
+
+/**
+ * A generous ceiling on the RAW message, applied before ANSI codes are
+ * stripped — so a message padded with heavy colour escapes doesn't have its
+ * actual content trimmed away before cleaning gets a chance to remove the
+ * padding. {@link MAX_INPUT_LENGTH} is the real, tighter budget the parsers
+ * see after that cleanup.
+ */
+const MAX_RAW_LENGTH = 20_000;
+
+/**
+ * The budget every parser actually works with, after ANSI stripping. An
+ * assertion sits at the TOP of a failure message — the runner's summary line,
+ * then the diff, then (usually much later) a stack trace — so nothing past
+ * this point is worth the cost of looking at, and bounding it here is what
+ * turns "linear in a `@db.Text` column" into "linear in a small constant".
+ */
+const MAX_INPUT_LENGTH = 8_000;
+
+/**
+ * A single line longer than this is either a serialised object dump or an
+ * adversarial payload, never a runner's own value or label line. Parsers that
+ * scan line by line skip it rather than spend work on it.
+ */
+const MAX_LINE_LENGTH = 2_000;
 
 /** CI logs are routinely ANSI-coloured; stripped before any parser sees the
  * text so a colour code never lands inside a captured value or defeats a
@@ -36,6 +74,14 @@ function capValue(raw: string): string | null {
 	return trimmed.length <= MAX_VALUE_LENGTH
 		? trimmed
 		: `${trimmed.slice(0, MAX_VALUE_LENGTH)}…`;
+}
+
+/** The index one past the end of the line containing `fromIndex` — the next
+ * `\n`, or the end of the text when there is none. `indexOf` is linear, and
+ * called at most once per candidate line, so scanning stays linear overall. */
+function indexOfLineEnd(text: string, fromIndex: number): number {
+	const idx = text.indexOf("\n", fromIndex);
+	return idx === -1 ? text.length : idx;
 }
 
 /** One of these must be present for {@link parseLabeledProperties} to trust
@@ -89,44 +135,105 @@ function parseLabeledProperties(text: string): ParsedAssertionValues | null {
 	return actual && expected ? { actual, expected } : null;
 }
 
+/** The first line in `text` that isn't blank and isn't itself over
+ * {@link MAX_LINE_LENGTH} — an oversized "line" is never a runner's own value
+ * line, and scanning past it rather than into it is what keeps this bounded
+ * regardless of what an adversarial message puts there. */
+function firstNonEmptyLine(text: string): string | null {
+	let start = 0;
+	while (start <= text.length) {
+		const end = indexOfLineEnd(text, start);
+		const line = text.slice(start, end);
+		if (line.length <= MAX_LINE_LENGTH && line.trim().length > 0) {
+			return line;
+		}
+		if (end === text.length) {
+			return null;
+		}
+		start = end + 1;
+	}
+	return null;
+}
+
+/** Split `line` on the earliest occurrence of any token in `tokens`, tried
+ * left to right — `indexOf`, never a backtracking capture, so this is linear
+ * regardless of how the line is shaped. */
+function splitOnFirstToken(
+	line: string,
+	tokens: readonly string[],
+): [string, string] | null {
+	let bestIndex = -1;
+	let bestToken = "";
+	for (const token of tokens) {
+		const idx = line.indexOf(token);
+		if (idx !== -1 && (bestIndex === -1 || idx < bestIndex)) {
+			bestIndex = idx;
+			bestToken = token;
+		}
+	}
+	if (bestIndex === -1) {
+		return null;
+	}
+	return [line.slice(0, bestIndex), line.slice(bestIndex + bestToken.length)];
+}
+
+/** `node:assert`'s operators, longest first so `!==` is never mistaken for a
+ * prefix match of `!=`. */
+const NODE_ASSERT_OPERATORS = ["!==", "!="] as const;
+
 /**
  * `node:assert`'s one-line summary: `Expected values to be strictly equal:
  * \n\n90 !== 80\n`. Actual is always on the LEFT of the operator — that is
  * what `strictEqual(actual, expected)` throws — so this never needs to guess.
  *
- * Deliberately narrow: only the "equal" family that prints as `actual OP
- * expected` on one line. `deepStrictEqual`'s multi-line `+`/`-` diff is a
- * different shape entirely and is left unparsed rather than misread — and
- * both sides are held to a SINGLE line (`[^\n]`, not `[\s\S]`) so a `!==`
- * sitting in an unrelated stack-trace line further down the message can never
- * be mistaken for this one. `\s+` (not `\s*`) between each side and the
- * operator matters too: it can only bridge pure whitespace, never jump over
- * another line's actual content to reach a `!==` further down.
+ * Reads the FIRST NON-EMPTY LINE after the header and splits it on the
+ * operator, both by `indexOf` — never a capture group spanning arbitrary text,
+ * which is what let a crafted message walk this into quadratic-or-worse
+ * backtracking. Deliberately narrow: only the "equal" family that prints as
+ * `actual OP expected` on one line. `deepStrictEqual`'s multi-line `+`/`-`
+ * diff is a different shape entirely and is left unparsed rather than
+ * misread.
  */
 function parseNodeAssertOneLiner(text: string): ParsedAssertionValues | null {
-	const match = text.match(
-		/Expected values to be (?:strictly |loosely |deep-strictly |deeply )?equal:\s*([^\n]+?)\s+!==?\s+([^\n]+)/,
+	const header = text.match(
+		/Expected values to be (?:strictly |loosely |deep-strictly |deeply )?equal:/,
 	);
-	if (!match) {
+	if (!header || header.index === undefined) {
 		return null;
 	}
-	const actual = capValue(match[1]);
-	const expected = capValue(match[2]);
+	const line = firstNonEmptyLine(text.slice(header.index + header[0].length));
+	if (!line) {
+		return null;
+	}
+	const parts = splitOnFirstToken(line, NODE_ASSERT_OPERATORS);
+	if (!parts) {
+		return null;
+	}
+	const actual = capValue(parts[0]);
+	const expected = capValue(parts[1]);
 	return actual && expected ? { actual, expected } : null;
 }
 
-/** Where a captured value block ends — the next label, or the start of the
- * stack trace, whichever comes first. */
-function sliceUntilNextLabelOrStack(
+/** Where a captured value block ends: the first blank line or the first stack
+ * line, whichever comes first — a trailing value with nothing else to bound
+ * it (no next label) would otherwise run straight into the next section of
+ * the message. */
+function sliceValueBounded(
 	text: string,
 	start: number,
 	hardEnd: number,
 ): string {
 	const region = text.slice(start, hardEnd);
-	const stop = region.match(/\n\s*at\s/);
-	return stop && stop.index !== undefined
-		? region.slice(0, stop.index)
-		: region;
+	let end = region.length;
+	const blankLine = region.match(/\n[ \t]*\n/);
+	if (blankLine && blankLine.index !== undefined && blankLine.index < end) {
+		end = blankLine.index;
+	}
+	const stackLine = region.match(/\n[ \t]*at\s/);
+	if (stackLine && stackLine.index !== undefined && stackLine.index < end) {
+		end = stackLine.index;
+	}
+	return region.slice(0, end);
 }
 
 /**
@@ -138,17 +245,30 @@ function sliceUntilNextLabelOrStack(
  *
  * Leading whitespace before each label is allowed: this text routinely shows
  * up re-indented inside a JUnit wrapper or a CI log rather than at column 0.
+ *
+ * Refuses a message with MORE THAN ONE `Expected`/`Received` pair — a second
+ * failure's report concatenated below the first (Jest's own multi-failure
+ * output does exactly this) makes "which one broke" ambiguous, and this
+ * module's rule is null over a guess, not "pick the first one and hope".
  */
 function parseJestStyle(text: string): ParsedAssertionValues | null {
-	const expectedLabel = text.match(
-		/^[ \t]*Expected(?:\s+(?:string|pattern|substring))?:\s*/m,
-	);
-	const receivedLabel = text.match(
-		/^[ \t]*Received(?:\s+(?:string|pattern|substring))?:\s*/m,
-	);
+	const expectedMatches = [
+		...text.matchAll(
+			/^[ \t]*Expected(?:\s+(?:string|pattern|substring))?:\s*/gm,
+		),
+	];
+	const receivedMatches = [
+		...text.matchAll(
+			/^[ \t]*Received(?:\s+(?:string|pattern|substring))?:\s*/gm,
+		),
+	];
+	if (expectedMatches.length !== 1 || receivedMatches.length !== 1) {
+		return null;
+	}
+
+	const expectedLabel = expectedMatches[0];
+	const receivedLabel = receivedMatches[0];
 	if (
-		!expectedLabel ||
-		!receivedLabel ||
 		expectedLabel.index === undefined ||
 		receivedLabel.index === undefined
 	) {
@@ -161,11 +281,11 @@ function parseJestStyle(text: string): ParsedAssertionValues | null {
 	const expectedRaw =
 		expectedLabel.index < receivedLabel.index
 			? text.slice(expectedStart, receivedLabel.index)
-			: sliceUntilNextLabelOrStack(text, expectedStart, text.length);
+			: sliceValueBounded(text, expectedStart, text.length);
 	const receivedRaw =
 		receivedLabel.index < expectedLabel.index
 			? text.slice(receivedStart, expectedLabel.index)
-			: sliceUntilNextLabelOrStack(text, receivedStart, text.length);
+			: sliceValueBounded(text, receivedStart, text.length);
 
 	const expected = capValue(expectedRaw);
 	const actual = capValue(receivedRaw);
@@ -177,12 +297,13 @@ function parseJestStyle(text: string): ParsedAssertionValues | null {
  * brackets by some AssertJ/Hamcrest matchers). "Was" is what happened, so it
  * maps to `actual`.
  *
- * The bracketed and unbracketed forms are two separate patterns rather than
- * one with an optional `>?`: an optional closing bracket lets a value like
- * `3.14` stop at the FIRST thing that could end it — `.` was one of the old
- * terminators — truncating to `3`. Requiring the literal `>` for the
- * bracketed form, and running the unbracketed form to end-of-line instead,
- * means the only thing that ends a value is the actual end of it.
+ * The bracketed form stays a single small regex: each value is closed by a
+ * literal `>`, so there is no adjacent-quantifier ambiguity to backtrack over.
+ * The unbracketed form is `indexOf`/`slice` instead of a capture group — its
+ * old shape (`[^\n<]+?` right next to `\s*but was`) is exactly the pattern
+ * that makes a regex engine try every possible split when the input doesn't
+ * cleanly match, and this text comes from the same unbounded column the
+ * runner's own message does.
  */
 function parseJUnitStyle(text: string): ParsedAssertionValues | null {
 	const bracketed = text.match(
@@ -194,53 +315,116 @@ function parseJUnitStyle(text: string): ParsedAssertionValues | null {
 		return actual && expected ? { actual, expected } : null;
 	}
 
-	const unbracketed = text.match(
-		/expected:\s*([^\n<]+?)\s*but was:\s*([^\n]+?)\s*$/im,
-	);
-	if (!unbracketed) {
+	const lower = text.toLowerCase();
+	const expectedIdx = lower.indexOf("expected:");
+	if (expectedIdx === -1) {
 		return null;
 	}
-	const expected = capValue(unbracketed[1]);
-	const actual = capValue(unbracketed[2]);
+	const expectedValueStart = expectedIdx + "expected:".length;
+	const butWasIdx = lower.indexOf("but was:", expectedValueStart);
+	if (butWasIdx === -1) {
+		return null;
+	}
+	// "but was:" may sit on the line AFTER the value (AssertJ writes it that
+	// way) — that gap is fine. What must not happen is the CAPTURED VALUE
+	// itself running past its own line or into a stray "<": truncate at
+	// whichever of "\n" / "<" comes first, exactly what the old capture
+	// group's `[^\n<]` exclusion did by never matching past them.
+	const expectedRawSpan = text.slice(expectedValueStart, butWasIdx);
+	const cutCandidates = [
+		expectedRawSpan.indexOf("\n"),
+		expectedRawSpan.indexOf("<"),
+	].filter((i) => i !== -1);
+	const expectedRaw =
+		cutCandidates.length > 0
+			? expectedRawSpan.slice(0, Math.min(...cutCandidates))
+			: expectedRawSpan;
+	const actualValueStart = butWasIdx + "but was:".length;
+	const actualRaw = firstNonEmptyLine(text.slice(actualValueStart)) ?? "";
+
+	const expected = capValue(expectedRaw);
+	const actual = capValue(actualRaw);
 	return actual && expected ? { actual, expected } : null;
 }
+
+/** Chai/Vitest's "equal" family, longest phrase first so `equal` never
+ * pre-empts `strictly equal`/`deeply equal` at the same position. */
+const CHAI_EQUAL_TOKENS = [
+	" to strictly equal ",
+	" to deeply equal ",
+	" to equal ",
+] as const;
 
 /**
  * Chai's `expected X to equal Y` (from `expect(x).to.equal(y)` /
  * `assert.equal(x, y)`, also accepting `to strictly equal` / `to deeply
  * equal`), and Vitest's own `toBe` summary in the same shape — `expected 90
- * to be 80 // Object.is equality`. Runs to end-of-line rather than stopping
- * at `.`, so a decimal value is never cut at its own decimal point.
+ * to be 80 // Object.is equality`.
+ *
+ * Every boundary here is `indexOf`/`slice` on the ONE line containing
+ * "expected " — never a backtracking capture spanning arbitrary text, which
+ * is what turned this parser quadratic-to-exponential on a crafted message
+ * (padding between "expected" and "to equal" that never resolves to a match
+ * forces a regex engine to try every possible split of that padding between
+ * two adjacent variable-length groups).
  *
  * `to be` is accepted ONLY when Vitest's own trailing `// Object.is equality`
- * marker follows it — that marker is what `toBe` always prints, and nothing
- * else does. A bare `to be …` is Chai's own LANGUAGE CHAIN (`to be above`,
- * `to be true`, `to be an instance of`, …), not a value comparison, and
- * Cypress prints `expected '<el>' to be 'visible'` in the same bare shape —
- * neither carries a direction this can trust. (This also means the ordinary
- * "equal" family below can never accidentally match Node's own "Expected
- * values to be ... equal:" header, since that header's "be" is followed by
- * "strictly"/"deeply"/nothing, never by one of the literal alternatives this
- * regex requires — so no separate guard against that header is needed here.)
+ * marker ends the line — that marker is what `toBe` always prints, and
+ * nothing else does. A bare `to be …` is Chai's own LANGUAGE CHAIN (`to be
+ * above`, `to be true`, `to be an instance of`, …), not a value comparison,
+ * and Cypress prints `expected '<el>' to be 'visible'` in the same bare shape
+ * — neither carries a direction this can trust. (This also means the
+ * ordinary "equal" family can never accidentally match Node's own "Expected
+ * values to be ... equal:" header: that header's "be" is followed by
+ * "strictly"/"deeply"/nothing, never immediately by one of
+ * {@link CHAI_EQUAL_TOKENS}.)
  */
 function parseChaiStyle(text: string): ParsedAssertionValues | null {
-	const toBe = text.match(
-		/expected\s+([^\n]+?)\s+to\s+be\s+([^\n]+?)\s*\/\/\s*Object\.is equality\s*$/im,
-	);
-	if (toBe) {
-		const actual = capValue(toBe[1]);
-		const expected = capValue(toBe[2]);
+	const lower = text.toLowerCase();
+	const expectedIdx = lower.indexOf("expected ");
+	if (expectedIdx === -1) {
+		return null;
+	}
+
+	const lineEnd = indexOfLineEnd(text, expectedIdx);
+	const line = text.slice(expectedIdx, lineEnd);
+	if (line.length > MAX_LINE_LENGTH) {
+		return null;
+	}
+	const lineLower = line.toLowerCase();
+	const valueStart = "expected ".length;
+
+	let bestIndex = -1;
+	let bestToken = "";
+	for (const token of CHAI_EQUAL_TOKENS) {
+		const idx = lineLower.indexOf(token, valueStart);
+		if (idx !== -1 && (bestIndex === -1 || idx < bestIndex)) {
+			bestIndex = idx;
+			bestToken = token;
+		}
+	}
+	if (bestIndex !== -1) {
+		const actualRaw = line.slice(valueStart, bestIndex);
+		const rest = line.slice(bestIndex + bestToken.length);
+		const commentIdx = rest.indexOf("//");
+		const expectedRaw =
+			commentIdx === -1 ? rest : rest.slice(0, commentIdx);
+		const actual = capValue(actualRaw);
+		const expected = capValue(expectedRaw);
 		return actual && expected ? { actual, expected } : null;
 	}
 
-	const match = text.match(
-		/expected\s+([^\n]+?)\s+to\s+(?:strictly equal|deeply equal|equal)\s+([^\n]+?)(?:\s*\/\/.*)?$/im,
-	);
-	if (!match) {
+	const TO_BE = " to be ";
+	const OBJECT_IS_MARKER = "// object.is equality";
+	const toBeIdx = lineLower.indexOf(TO_BE, valueStart);
+	if (toBeIdx === -1 || !lineLower.trimEnd().endsWith(OBJECT_IS_MARKER)) {
 		return null;
 	}
-	const actual = capValue(match[1]);
-	const expected = capValue(match[2]);
+	const markerIdx = lineLower.lastIndexOf(OBJECT_IS_MARKER);
+	const actualRaw = line.slice(valueStart, toBeIdx);
+	const expectedRaw = line.slice(toBeIdx + TO_BE.length, markerIdx);
+	const actual = capValue(actualRaw);
+	const expected = capValue(expectedRaw);
 	return actual && expected ? { actual, expected } : null;
 }
 
@@ -261,7 +445,10 @@ export function parseAssertionValues(
 	if (!trimmed) {
 		return null;
 	}
-	const text = trimmed.replace(ANSI_PATTERN, "");
+	const text = trimmed
+		.slice(0, MAX_RAW_LENGTH)
+		.replace(ANSI_PATTERN, "")
+		.slice(0, MAX_INPUT_LENGTH);
 
 	return (
 		parseLabeledProperties(text) ??

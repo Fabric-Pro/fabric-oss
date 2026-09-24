@@ -83,6 +83,29 @@ export async function resolveSummaryInstructions({
 }
 
 /**
+ * Preserve-the-hedge clause (Fizzy #2225).
+ *
+ * A bug's AI Summary is produced by this digest path from its org-editable
+ * `bug_maturation_summary` instructions, and nothing in that prompt says a
+ * hedge must survive summarisation. A bug body that says a cause is "not
+ * established" and quotes an unverified hypothesis (see `buildCauseLines` in
+ * `@repo/database`) could otherwise come out of the summary as settled fact.
+ *
+ * Kept here, not in the org-editable prompt, for the same reason the
+ * locked-attachment rule above is: an org edit to `bug_maturation_summary`
+ * must not be able to remove it. Generic on purpose — it says nothing about
+ * bugs specifically, so it is equally correct (and harmless, since a feature
+ * spec rarely hedges) when `buildSummaryPrompt` composes a FEATURE summary.
+ */
+function getHedgePreservationClause(): string {
+	return `PRESERVE HOW CERTAIN THE SPECIFICATION IS
+When the specification presents a cause, diagnosis, or explanation as
+unconfirmed, a hypothesis, inconclusive, or not established, either say so or
+leave it out entirely — never restate it as settled fact. When it gives
+expected and actual values, keep them on the same sides you were given them.`;
+}
+
+/**
  * Compose the full digest prompt from resolved instructions + the spec. Kept
  * separate from the instructions so the spec is never baked into the editable
  * prompt template.
@@ -93,9 +116,16 @@ export function buildSummaryPrompt(instructions: string, spec: string): string {
 	// fabricate or claim to have analysed. Kept here (not in the org-editable
 	// `maturation_summary` prompt) so it holds regardless of prompt overrides.
 	// No-op today (no attachment metadata reaches the spec); forward-compatible.
+	//
+	// Neither locked clause below is part of `instructions` — the seed
+	// orchestrator's regeneration hash is `spec + resolveSummaryInstructions()`,
+	// computed BEFORE this function ever runs, so appending a clause here can
+	// never change what triggers a regeneration.
 	return `${instructions}
 
 ${getLockedAttachmentRulesClause()}
+
+${getHedgePreservationClause()}
 
 FEATURE SPECIFICATION:
 ${spec}`;

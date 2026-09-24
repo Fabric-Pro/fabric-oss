@@ -87,12 +87,15 @@ describe("buildCauseLines", () => {
 });
 
 describe("buildAssertionLines", () => {
-	it("adds Expected/Actual lines when the message parses", () => {
+	it("adds Expected/Actual as a markdown list, each on its own line", () => {
+		// A bare "Expected: X\nActual: Y" collapses into one paragraph in the
+		// markdown editor this body is rendered in — "Expected: X Actual: Y" on
+		// a single line. A `-` list item forces the line break.
 		expect(
 			buildAssertionLines(
 				"Expected values to be strictly equal:\n\n90 !== 80\n",
 			),
-		).toEqual(["Expected: 80", "Actual: 90"]);
+		).toEqual(["- Expected: 80", "- Actual: 90"]);
 	});
 
 	it("adds nothing when the message does not parse", () => {
