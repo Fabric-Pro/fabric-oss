@@ -15,3 +15,30 @@
 export function normalizeStoryIdentifierQuery(input: string): string {
 	return input.replace(/^(F-|B-|US-|TASK-)/i, "");
 }
+
+const IDENTIFIER_NUMBER = /^(?:([A-Z]+)-)?0*(\d+)$/i;
+
+/**
+ * Numeric-aware order for story identifiers, which mix legacy prefixed values
+ * (`F-094`, `B-002`) with new plain decimals (`100`). Sorting the column as
+ * text puts `F-100` before `F-094` and `100` before `99`; this compares the
+ * number first, then the prefix, and puts identifiers with no number last.
+ */
+export function compareStoryIdentifiers(a: string, b: string): number {
+	const ma = a.match(IDENTIFIER_NUMBER);
+	const mb = b.match(IDENTIFIER_NUMBER);
+	if (ma && mb) {
+		const byNumber = Number(ma[2]) - Number(mb[2]);
+		if (byNumber !== 0) {
+			return byNumber;
+		}
+		const pa = (ma[1] ?? "").toUpperCase();
+		const pb = (mb[1] ?? "").toUpperCase();
+		if (pa !== pb) {
+			return pa < pb ? -1 : 1;
+		}
+	} else if (ma || mb) {
+		return ma ? -1 : 1;
+	}
+	return a < b ? -1 : a > b ? 1 : 0;
+}

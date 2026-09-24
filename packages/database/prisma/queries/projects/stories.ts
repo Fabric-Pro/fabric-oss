@@ -287,9 +287,12 @@ export async function reorderStoryStatuses(
 // @prisma/adapter-pg, ...) into the browser when client code imports it.
 // Re-imported and re-exported here for backward compatibility with
 // server-side callers AND so internal calls below can still use it.
-import { normalizeStoryIdentifierQuery } from "./normalize-story-identifier-query";
+import {
+	compareStoryIdentifiers,
+	normalizeStoryIdentifierQuery,
+} from "./normalize-story-identifier-query";
 
-export { normalizeStoryIdentifierQuery };
+export { compareStoryIdentifiers, normalizeStoryIdentifierQuery };
 
 /**
  * Atomically allocate the next per-project story number.
@@ -441,6 +444,22 @@ export async function listStories(options: {
 	return { stories, total };
 }
 
+const STORY_SUMMARY_SELECT = {
+	id: true,
+	identifier: true,
+	title: true,
+	kind: true,
+	priority: true,
+	size: true,
+	storyPoints: true,
+	draftingStage: true,
+	assigneeId: true,
+	externalUrl: true,
+	createdAt: true,
+	updatedAt: true,
+	status: { select: { id: true, name: true, color: true } },
+} satisfies Prisma.UserStorySelect;
+
 /**
  * Narrow list shape for surfaces that render story metadata plus task counts.
  * Unlike {@link listStories}, this deliberately never loads task bodies,
@@ -456,6 +475,15 @@ export async function listStorySummaries(options: {
 	search?: string;
 	limit?: number;
 	offset?: number;
+	/** Drafting stages to leave out (ignored when `draftingStage` is set). */
+	excludeDraftingStages?: FeatureDraftingStage[];
+	/**
+	 * `board` (default): status column, then the column's own order.
+	 * `identifier`: numeric-aware identifier order ({@link compareStoryIdentifiers}),
+	 * so `F-094` comes before `F-100`. The column is text, so this sorts the
+	 * matching ids in memory before loading the page.
+	 */
+	orderBy?: "board" | "identifier";
 }) {
 	const {
 		projectId,
@@ -467,6 +495,8 @@ export async function listStorySummaries(options: {
 		search,
 		limit = 100,
 		offset = 0,
+		excludeDraftingStages,
+		orderBy = "board",
 	} = options;
 	const normalizedSearch = search
 		? normalizeStoryIdentifierQuery(search)
@@ -475,7 +505,11 @@ export async function listStorySummaries(options: {
 		projectId,
 		...(statusId ? { statusId } : {}),
 		...(priority ? { priority } : {}),
-		...(draftingStage ? { draftingStage } : {}),
+		...(draftingStage
+			? { draftingStage }
+			: excludeDraftingStages?.length
+				? { draftingStage: { notIn: excludeDraftingStages } }
+				: {}),
 		...(assigneeId ? { assigneeId } : {}),
 		...(kind ? { kind } : {}),
 		...(search
@@ -509,30 +543,19 @@ export async function listStorySummaries(options: {
 			: {}),
 	};
 
-	const [stories, total] = await Promise.all([
-		db.userStory.findMany({
-			where,
-			select: {
-				id: true,
-				identifier: true,
-				title: true,
-				kind: true,
-				priority: true,
-				size: true,
-				storyPoints: true,
-				draftingStage: true,
-				assigneeId: true,
-				externalUrl: true,
-				createdAt: true,
-				updatedAt: true,
-				status: { select: { id: true, name: true, color: true } },
-			},
-			orderBy: [{ statusId: "asc" }, { order: "asc" }],
-			take: limit,
-			skip: offset,
-		}),
-		db.userStory.count({ where }),
-	]);
+	const [stories, total] =
+		orderBy === "identifier"
+			? await loadSummaryPageByIdentifier(where, limit, offset)
+			: await Promise.all([
+					db.userStory.findMany({
+						where,
+						select: STORY_SUMMARY_SELECT,
+						orderBy: [{ statusId: "asc" }, { order: "asc" }],
+						take: limit,
+						skip: offset,
+					}),
+					db.userStory.count({ where }),
+				]);
 
 	const taskCounts = stories.length
 		? await db.storyTask.groupBy({
@@ -563,6 +586,32 @@ export async function listStorySummaries(options: {
 		})),
 		total,
 	};
+}
+
+async function loadSummaryPageByIdentifier(
+	where: Prisma.UserStoryWhereInput,
+	limit: number,
+	offset: number,
+) {
+	const keys = await db.userStory.findMany({
+		where,
+		select: { id: true, identifier: true },
+	});
+	keys.sort(
+		(a, b) =>
+			compareStoryIdentifiers(a.identifier, b.identifier) ||
+			(a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+	);
+	const pageIds = keys.slice(offset, offset + limit).map((row) => row.id);
+	const rows = pageIds.length
+		? await db.userStory.findMany({
+				where: { id: { in: pageIds } },
+				select: STORY_SUMMARY_SELECT,
+			})
+		: [];
+	const position = new Map(pageIds.map((id, index) => [id, index]));
+	rows.sort((a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0));
+	return [rows, keys.length] as const;
 }
 
 /**

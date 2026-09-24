@@ -331,3 +331,51 @@ describe("useDirectStream — history window (F32)", () => {
 		});
 	});
 });
+
+describe("useDirectStream — the first send after a reset", () => {
+	it("keeps the thread it is handed rather than starting fresh", async () => {
+		const { response, enqueueDone } = makeSseResponse();
+		vi.spyOn(global, "fetch").mockImplementation(((..._args: unknown[]) =>
+			Promise.resolve(response)) as unknown as typeof fetch);
+		const { result } = renderHook(() => useDirectStream());
+		const opened: DirectStreamMessage[] = [
+			{
+				id: "u0",
+				role: "user",
+				content: "old q",
+				timestamp: new Date(0),
+			},
+			{
+				id: "a0",
+				role: "assistant",
+				content: "old a",
+				timestamp: new Date(0),
+			},
+		];
+
+		// What opening a saved conversation does before the first send.
+		act(() => {
+			result.current.reset();
+		});
+		act(() => {
+			void result.current.sendMessage(
+				"new q",
+				opened.map(({ role, content }) => ({ role, content })),
+				false,
+				undefined,
+				undefined,
+				opened,
+			);
+		});
+
+		expect(result.current.messages.map((m) => m.content)).toEqual([
+			"old q",
+			"old a",
+			"new q",
+			"",
+		]);
+		await act(async () => {
+			enqueueDone();
+		});
+	});
+});
