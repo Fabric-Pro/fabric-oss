@@ -72,6 +72,8 @@ const ORGANIZATION_SLUG = "example-org";
 const PROJECT_NAME = "Checkout Rewrite";
 const PROJECT_ID = "project-checkout-rewrite";
 const RAW_KEY = "org_1a2b3c4d_ZXhhbXBsZS1zZWNyZXQtdmFsdWU";
+/** Mirrors `PLACEHOLDER_KEY` in the component under test. */
+const PLACEHOLDER_KEY = "YOUR_API_KEY";
 
 function issuedKeyFixture() {
 	return {
@@ -115,11 +117,13 @@ function Host({
 	eligible = true,
 	purpose,
 	localSyncAvailable,
+	onKeyIssued,
 }: {
 	startOpen?: boolean;
 	eligible?: boolean;
 	purpose?: ConnectCliPurpose;
 	localSyncAvailable?: boolean;
+	onKeyIssued?: () => void;
 }) {
 	const [open, setOpen] = useState(startOpen);
 
@@ -139,6 +143,7 @@ function Host({
 				purpose={purpose}
 				projectId={PROJECT_ID}
 				localSyncAvailable={localSyncAvailable}
+				onKeyIssued={onKeyIssued}
 			/>
 		</>
 	);
@@ -148,6 +153,7 @@ function renderHost(props?: {
 	startOpen?: boolean;
 	purpose?: ConnectCliPurpose;
 	localSyncAvailable?: boolean;
+	onKeyIssued?: () => void;
 }) {
 	return render(<Host {...props} />, { wrapper: Wrapper });
 }
@@ -170,6 +176,20 @@ function configurationText() {
 	return screen.getByTestId("connect-cli-configuration").textContent ?? "";
 }
 
+/**
+ * An externally-resolvable promise, for pinning `copy()`'s async ordering
+ * against a mint or a close: the test drives exactly when
+ * `navigator.clipboard.writeText()` settles relative to those, which a
+ * same-tick `mockResolvedValue` cannot do.
+ */
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((res) => {
+		resolve = res;
+	});
+	return { promise, resolve };
+}
+
 const clipboardWrite = vi.fn(async () => {});
 
 beforeEach(() => {
@@ -184,7 +204,7 @@ beforeEach(() => {
 });
 
 describe("ConnectCliDialog — minting", () => {
-	it("mints nothing when the dialog is merely opened", async () => {
+	it("mints nothing when the dialog is merely opened, and shows the placeholder-bearing configuration", async () => {
 		const user = setupUser();
 		renderHost();
 
@@ -196,9 +216,12 @@ describe("ConnectCliDialog — minting", () => {
 			await screen.findByRole("button", { name: /create the key/i }),
 		).toBeInTheDocument();
 		expect(createKeyMock).not.toHaveBeenCalled();
+		// Single screen from the first open (Fizzy #2702): the configuration
+		// block is on screen from the start, with the placeholder standing in.
 		expect(
-			screen.queryByTestId("connect-cli-configuration"),
-		).not.toBeInTheDocument();
+			screen.getByTestId("connect-cli-configuration"),
+		).toBeInTheDocument();
+		expect(configurationText()).toContain(PLACEHOLDER_KEY);
 	});
 
 	it("mints a key on the create control and renders the configuration with the gateway endpoint and the returned secret", async () => {
@@ -209,11 +232,10 @@ describe("ConnectCliDialog — minting", () => {
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
 
-		await waitFor(() =>
-			expect(
-				screen.getByTestId("connect-cli-configuration"),
-			).toBeInTheDocument(),
-		);
+		// The configuration node exists from the first open now, so waiting
+		// for its mere presence would resolve immediately — wait for the
+		// REAL secret to land in it instead.
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
 		expect(createKeyMock).toHaveBeenCalledTimes(1);
 
 		const rendered = configurationText();
@@ -221,6 +243,7 @@ describe("ConnectCliDialog — minting", () => {
 		expect(rendered).toContain(RAW_KEY);
 		expect(rendered).toContain(`Bearer ${RAW_KEY}`);
 		expect(rendered).toContain('"type": "http"');
+		expect(rendered).not.toContain(PLACEHOLDER_KEY);
 	});
 
 	it("sends exactly the read-only scope, the identifying name and the bounded expiry, and offers no scope picker", async () => {
@@ -264,10 +287,32 @@ describe("ConnectCliDialog — minting", () => {
 			organizationId: ORGANIZATION_ID,
 		});
 	});
+
+	it("fires onKeyIssued exactly once, on a successful mint only — never on open, never on a failed one", async () => {
+		const onKeyIssued = vi.fn();
+		const user = setupUser();
+		renderHost({ startOpen: true, onKeyIssued });
+
+		expect(onKeyIssued).not.toHaveBeenCalled();
+
+		createKeyMock.mockRejectedValueOnce(new Error("boom"));
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await screen.findByText(/the key could not be created/i);
+		expect(onKeyIssued).not.toHaveBeenCalled();
+
+		await user.click(
+			screen.getByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
+
+		expect(onKeyIssued).toHaveBeenCalledTimes(1);
+	});
 });
 
 describe("ConnectCliDialog — disclosure", () => {
-	it("renders the pre-mint disclosure above the create control", async () => {
+	it("orders the sections: disclosure, then the create control, then the configuration block", async () => {
 		renderHost({ startOpen: true });
 
 		const dialog = await screen.findByRole("dialog");
@@ -277,9 +322,19 @@ describe("ConnectCliDialog — disclosure", () => {
 		const createButton = within(dialog).getByRole("button", {
 			name: /create the key/i,
 		});
+		const configBlock = within(dialog).getByTestId(
+			"connect-cli-configuration",
+		);
 
 		expect(
 			disclosure.compareDocumentPosition(createButton) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		// The create control sits above every instruction block (Fizzy
+		// #2702, design point 2) — the configuration is shown from the
+		// first open, but nothing is minted before the disclosure is read.
+		expect(
+			createButton.compareDocumentPosition(configBlock) &
 				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 	});
@@ -295,13 +350,211 @@ describe("ConnectCliDialog — disclosure", () => {
 		expect(
 			within(dialog).getByText(/every project in it/i),
 		).toBeInTheDocument();
-		// Persists until revoked, and the configuration carries a live credential.
+		// Persists until revoked, and warns prospectively that creating a key
+		// will make the blocks below carry a live credential (Fizzy #2702
+		// review: the old wording asserted this was already true, which was
+		// false while the placeholder is on screen).
 		expect(
 			within(dialog).getByText(/until you revoke it/i),
 		).toBeInTheDocument();
 		expect(
 			within(dialog).getByText(/live credential/i),
 		).toBeInTheDocument();
+	});
+});
+
+describe("ConnectCliDialog — the placeholder key", () => {
+	it("replaces the placeholder with the returned secret in the same configuration node, and removes the placeholder note", async () => {
+		const user = setupUser();
+		renderHost({ startOpen: true });
+
+		const configNode = screen.getByTestId("connect-cli-configuration");
+		expect(configNode.textContent).toContain(PLACEHOLDER_KEY);
+		expect(
+			screen.getByText(/stands in for a key you already hold/i),
+		).toBeInTheDocument();
+
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+
+		// Same DOM node, updated content — not a different node appearing.
+		await waitFor(() => expect(configNode.textContent).toContain(RAW_KEY));
+		expect(configNode.textContent).not.toContain(PLACEHOLDER_KEY);
+		expect(
+			screen.queryByText(/stands in for a key you already hold/i),
+		).not.toBeInTheDocument();
+	});
+
+	it("replaces the placeholder in the local-sync commands node too, for the coding-instructions purpose with local sync available", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSyncAvailable: true,
+		});
+
+		const commandNode = screen.getByTestId(
+			"connect-cli-local-sync-command",
+		);
+		expect(commandNode.textContent).toContain(PLACEHOLDER_KEY);
+		expect(commandNode.textContent).not.toContain(RAW_KEY);
+
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+
+		await waitFor(() => expect(commandNode.textContent).toContain(RAW_KEY));
+		expect(commandNode.textContent).not.toContain(PLACEHOLDER_KEY);
+	});
+
+	it("removes the create control after minting, keeps the disclosure in place, and shows the shown-once notice", async () => {
+		const user = setupUser();
+		renderHost({ startOpen: true });
+
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
+
+		expect(
+			screen.queryByRole("button", { name: /create the key/i }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByText(/before you create the key/i),
+		).toBeInTheDocument();
+		expect(screen.getByText(/shown once/i)).toBeInTheDocument();
+	});
+
+	it("does not arm the dismissal guard when the placeholder configuration is copied", async () => {
+		const user = setupUser();
+		renderHost({ startOpen: true });
+
+		await user.click(
+			screen.getByRole("button", { name: /copy configuration/i }),
+		);
+		expect(clipboardWrite).toHaveBeenCalledWith(configurationText());
+		expect(
+			await screen.findByRole("button", { name: /^copied$/i }),
+		).toBeInTheDocument();
+
+		// No key exists yet, so there is nothing the guard could be
+		// protecting — Escape still closes the dialog.
+		await user.keyboard("{Escape}");
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+		expect(createKeyMock).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * Regression for a review finding on the placeholder work: `onSuccess`
+	 * set `rawKey` without clearing `copied`, so a placeholder copy taken
+	 * before minting left a stale "Copied" confirmation sitting beside the
+	 * real secret — the guard was still correctly armed (`keyCopied` stays
+	 * false for a placeholder copy), but the visible label contradicted it
+	 * and could read as "already saved, safe to close".
+	 */
+	it("clears a stale placeholder 'Copied' confirmation once a key is minted, and keeps the guard armed", async () => {
+		const user = setupUser();
+		renderHost({ startOpen: true });
+
+		await user.click(
+			screen.getByRole("button", { name: /copy configuration/i }),
+		);
+		expect(
+			await screen.findByRole("button", { name: /^copied$/i }),
+		).toBeInTheDocument();
+
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
+
+		expect(
+			screen.queryByRole("button", { name: /^copied$/i }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /copy configuration/i }),
+		).toBeInTheDocument();
+		// The guard is armed: the placeholder copy never counted as taking
+		// the real secret, so Escape is disarmed until the real one is
+		// copied.
+		await user.keyboard("{Escape}");
+		expect(screen.getByRole("dialog")).toBeInTheDocument();
+	});
+
+	it("clears a stale placeholder commands 'Copied' confirmation once a key is minted, for the coding-instructions purpose with local sync", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSyncAvailable: true,
+		});
+
+		await user.click(screen.getByRole("button", { name: "Copy commands" }));
+		expect(
+			await screen.findByRole("button", { name: "Copied" }),
+		).toBeInTheDocument();
+
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("connect-cli-local-sync-command"),
+			).toHaveTextContent(RAW_KEY),
+		);
+
+		expect(
+			screen.queryByRole("button", { name: "Copied" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Copy commands" }),
+		).toBeInTheDocument();
+		await user.keyboard("{Escape}");
+		expect(screen.getByRole("dialog")).toBeInTheDocument();
+	});
+
+	/**
+	 * Regression for a review finding on the stale-copy fix above: that fix
+	 * cleared `copied`/`announcement` in `onSuccess`, but `copy()` itself
+	 * still wrote them unconditionally after its own `await`. A placeholder
+	 * copy that is STILL PENDING when the mint lands resolves afterward and
+	 * reinstates "Copied" beside the real secret the mint's own clear just
+	 * removed — the async write, not just the synchronous state left behind
+	 * by an already-resolved one, has to be fenced.
+	 */
+	it("discards a placeholder copy that resolves after a mint has already landed", async () => {
+		const user = setupUser();
+		renderHost({ startOpen: true });
+
+		const { promise, resolve } = deferred<void>();
+		clipboardWrite.mockReturnValueOnce(promise);
+
+		await user.click(
+			screen.getByRole("button", { name: /copy configuration/i }),
+		);
+		// The clipboard write above is still pending — mint anyway.
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
+
+		// The stale placeholder copy resolves only now.
+		resolve();
+		await waitFor(() => expect(clipboardWrite).toHaveResolvedTimes(1));
+
+		expect(
+			screen.queryByRole("button", { name: /^copied$/i }),
+		).not.toBeInTheDocument();
+		expect(
+			document.querySelector('[aria-live="polite"]')?.textContent,
+		).toBe("");
+		// The guard is armed: the stale write must not have set `keyCopied`
+		// for the real secret that is now on screen uncopied.
+		await user.keyboard("{Escape}");
+		expect(screen.getByRole("dialog")).toBeInTheDocument();
 	});
 });
 
@@ -312,11 +565,12 @@ describe("ConnectCliDialog — the configuration", () => {
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
-		await waitFor(() =>
-			expect(
-				screen.getByTestId("connect-cli-configuration"),
-			).toBeInTheDocument(),
-		);
+		// The configuration node is present from the first open now (with a
+		// placeholder), so waiting for its mere presence would resolve
+		// immediately without waiting for the mint to actually finish. Wait
+		// for the REAL secret instead — every caller of this helper depends
+		// on `keyIssued` being genuinely true by the time it returns.
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
 		return user;
 	}
 
@@ -385,12 +639,14 @@ describe("ConnectCliDialog — the configuration", () => {
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
-		await waitFor(() =>
-			expect(
-				screen.getByTestId("connect-cli-configuration"),
-			).toBeInTheDocument(),
-		);
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
 
+		// Exactly one live region for both copy controls — not zero, and not
+		// a second one appearing per state change (the JSDoc above the
+		// component's own live-region element states this contract).
+		expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(
+			1,
+		);
 		const liveRegion = document.querySelector('[aria-live="polite"]');
 		expect(liveRegion).toBeTruthy();
 		expect(liveRegion?.textContent).toBe("");
@@ -403,6 +659,9 @@ describe("ConnectCliDialog — the configuration", () => {
 			expect(
 				document.querySelector('[aria-live="polite"]')?.textContent,
 			).toMatch(/copied to the clipboard/i),
+		);
+		expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(
+			1,
 		);
 	});
 
@@ -504,13 +763,24 @@ describe("ConnectCliDialog — the starter instruction", () => {
 			purpose: "coding-instructions",
 			localSyncAvailable: true,
 		});
+
+		// Present from the first open, with the placeholder standing in.
+		expect(
+			screen.getByTestId("connect-cli-local-sync-command"),
+		).toHaveTextContent(PLACEHOLDER_KEY);
+
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
-
-		const command = await screen.findByTestId(
-			"connect-cli-local-sync-command",
+		// The node already existed pre-mint, so waiting for its presence
+		// would not wait for the mint to finish — wait for the real key.
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("connect-cli-local-sync-command"),
+			).toHaveTextContent(RAW_KEY),
 		);
+
+		const command = screen.getByTestId("connect-cli-local-sync-command");
 		const applyUpdatesCheckbox = screen.getByRole("checkbox", {
 			name: "Automatically apply published updates at session start",
 		});
@@ -528,15 +798,19 @@ describe("ConnectCliDialog — the starter instruction", () => {
 			`fabric instructions init --project ${PROJECT_ID} --tool claude-code`,
 		);
 		expect(command).not.toHaveTextContent("--apply");
-		// The checkout route LEADS: its heading comes before the MCP
-		// route's, which is worded as the alternative.
+		// The checkout route LEADS the instruction blocks: its heading comes
+		// before the MCP route's, which is worded as the alternative. Not
+		// index 0 any more — the disclosure's own heading is now always
+		// first, since it stays on screen after minting too (Fizzy #2702).
 		const headings = screen
 			.getAllByRole("heading", { level: 3 })
 			.map((h) => h.textContent);
-		expect(
-			headings.indexOf("Recommended: keep the files in your checkout"),
-		).toBe(0);
-		expect(headings).toContain("Or read them live over MCP");
+		const checkoutIndex = headings.indexOf(
+			"Recommended: keep the files in your checkout",
+		);
+		const mcpIndex = headings.indexOf("Or read them live over MCP");
+		expect(checkoutIndex).toBeGreaterThanOrEqual(0);
+		expect(mcpIndex).toBeGreaterThan(checkoutIndex);
 		expect(
 			screen.getByRole("button", { name: "Copy commands" }),
 		).toBeInTheDocument();
@@ -551,8 +825,8 @@ describe("ConnectCliDialog — the starter instruction", () => {
 				`fabric instructions init --project ${PROJECT_ID} --tool claude-code`,
 			].join("\n"),
 		);
-		// The once-only warning sits under the first block that shows the
-		// key, and only once.
+		// The once-only warning has exactly one home, in the create-control
+		// slot under the disclosure — not repeated under either route.
 		expect(screen.getAllByText(/shown once/i)).toHaveLength(1);
 	});
 
@@ -565,6 +839,13 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		});
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		// The local-sync block exists pre-mint too (placeholder-bearing), so
+		// wait for the real key before relying on anything it carries below.
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("connect-cli-local-sync-command"),
+			).toHaveTextContent(RAW_KEY),
 		);
 
 		const claude = await screen.findByRole("radio", {
@@ -607,6 +888,11 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		});
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("connect-cli-local-sync-command"),
+			).toHaveTextContent(RAW_KEY),
 		);
 
 		const checkbox = await screen.findByRole("checkbox", {
@@ -660,6 +946,11 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("connect-cli-local-sync-command"),
+			).toHaveTextContent(RAW_KEY),
+		);
 
 		await user.click(screen.getByRole("button", { name: "Copy commands" }));
 		expect(
@@ -695,7 +986,14 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
-		await screen.findByTestId("connect-cli-local-sync-command");
+		// The local-sync node exists pre-mint too (placeholder-bearing), so
+		// its mere presence would not wait for the mint — wait for the real
+		// key: the guard below depends on `keyIssued` genuinely being true.
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("connect-cli-local-sync-command"),
+			).toHaveTextContent(RAW_KEY),
+		);
 
 		// Uncopied: Escape is disarmed.
 		await user.keyboard("{Escape}");
@@ -818,7 +1116,13 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
-		await screen.findByTestId("connect-cli-local-sync-command");
+		// The dismissal note only renders once a real key exists — wait for
+		// it rather than for the (always-present) local-sync node.
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("connect-cli-local-sync-command"),
+			).toHaveTextContent(RAW_KEY),
+		);
 		expect(
 			screen.getAllByTestId("connect-cli-dismissal-note"),
 		).toHaveLength(1);
@@ -840,7 +1144,11 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
-		await screen.findByTestId("connect-cli-local-sync-command");
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("connect-cli-local-sync-command"),
+			).toHaveTextContent(RAW_KEY),
+		);
 
 		clipboardWrite.mockRejectedValueOnce(new Error("denied"));
 		await user.click(screen.getByRole("button", { name: "Copy commands" }));
@@ -982,11 +1290,10 @@ describe("ConnectCliDialog — holding the only copy of the key", () => {
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
-		await waitFor(() =>
-			expect(
-				screen.getByTestId("connect-cli-configuration"),
-			).toBeInTheDocument(),
-		);
+		// The configuration node exists pre-mint too (placeholder-bearing),
+		// so waiting for its mere presence would not wait for the mint to
+		// finish — wait for the real secret, which every caller here needs.
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
 		return user;
 	}
 
@@ -1055,12 +1362,85 @@ describe("ConnectCliDialog — holding the only copy of the key", () => {
 		);
 	});
 
+	/**
+	 * Regression for a review finding on the stale-copy fix: `handleOpenChange`
+	 * resets `keyCopied` to `false` on close, but a `copy()` call that was
+	 * still in flight when Done was clicked used to write `keyCopied = true`
+	 * anyway once its clipboard write resolved — after the reset, and after a
+	 * brand-new key had been minted on reopen. That stale write must not arm
+	 * (or rather, disarm) the guard for a secret the pending copy never
+	 * actually touched.
+	 */
+	it("discards a real-key copy that resolves after Done has already closed and reset the dialog", async () => {
+		const user = setupUser();
+		renderHost();
+
+		await user.click(
+			screen.getByRole("button", { name: "Connect a coding tool" }),
+		);
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
+
+		const { promise, resolve } = deferred<void>();
+		clipboardWrite.mockReturnValueOnce(promise);
+		await user.click(
+			screen.getByRole("button", { name: /copy configuration/i }),
+		);
+		// Done is the deliberate exit and works even on an uncopied secret —
+		// it does not wait for the pending clipboard write below.
+		await user.click(screen.getByRole("button", { name: /^done$/i }));
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+
+		// The stale copy resolves only now, after the close has already reset.
+		resolve();
+		await waitFor(() => expect(clipboardWrite).toHaveResolvedTimes(1));
+
+		// Reopen and mint a brand-new key.
+		await user.click(
+			screen.getByRole("button", { name: "Connect a coding tool" }),
+		);
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
+
+		// The guard is armed for the NEW uncopied secret: the stale resolve
+		// above must not have set `keyCopied` for it.
+		const dialog = screen.getByRole("dialog");
+		expect(
+			within(dialog).queryByRole("button", { name: /^close$/i }),
+		).not.toBeInTheDocument();
+		await user.keyboard("{Escape}");
+		expect(screen.getByRole("dialog")).toBeInTheDocument();
+	});
+
 	it("still closes on Escape before any key has been minted", async () => {
 		const user = setupUser();
 		renderHost({ startOpen: true });
 		await screen.findByRole("dialog");
 
 		await user.keyboard("{Escape}");
+
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+		expect(createKeyMock).not.toHaveBeenCalled();
+	});
+
+	it("shows a working close button before any key has been minted", async () => {
+		const user = setupUser();
+		renderHost({ startOpen: true });
+
+		const dialog = await screen.findByRole("dialog");
+		// Nothing to guard yet: the close (X) button is offered, unlike the
+		// uncopied-secret state where it is withheld.
+		await user.click(
+			within(dialog).getByRole("button", { name: /^close$/i }),
+		);
 
 		await waitFor(() =>
 			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
@@ -1078,11 +1458,7 @@ describe("ConnectCliDialog — holding the only copy of the key", () => {
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
-		await waitFor(() =>
-			expect(
-				screen.getByTestId("connect-cli-configuration"),
-			).toBeInTheDocument(),
-		);
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
 
 		// Done is the deliberate exit, and it works even uncopied: the guards
 		// prevent an accident, they do not hold the reader hostage.
@@ -1093,7 +1469,9 @@ describe("ConnectCliDialog — holding the only copy of the key", () => {
 		);
 
 		// Reopening comes back to the pre-mint state: the secret is gone from
-		// the client, and nothing was refetched to bring it back.
+		// the client and nothing was refetched to bring it back — the
+		// configuration node is back to showing the placeholder, not
+		// absent (it is never absent now that the dialog is single-screen).
 		await user.click(
 			screen.getByRole("button", { name: "Connect a coding tool" }),
 		);
@@ -1101,9 +1479,8 @@ describe("ConnectCliDialog — holding the only copy of the key", () => {
 		expect(
 			await screen.findByRole("button", { name: /create the key/i }),
 		).toBeInTheDocument();
-		expect(
-			screen.queryByTestId("connect-cli-configuration"),
-		).not.toBeInTheDocument();
+		expect(configurationText()).toContain(PLACEHOLDER_KEY);
+		expect(configurationText()).not.toContain(RAW_KEY);
 		expect(createKeyMock).toHaveBeenCalledTimes(1);
 	});
 });
@@ -1118,11 +1495,10 @@ describe("ConnectCliDialog — resilience", () => {
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
-		await waitFor(() =>
-			expect(
-				screen.getByTestId("connect-cli-configuration"),
-			).toBeInTheDocument(),
-		);
+		// The configuration node exists pre-mint too (placeholder-bearing),
+		// so waiting for its mere presence would not wait for the mint —
+		// wait for the real secret this test asserts on below.
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
 
 		// What the readiness refetch does to the caller after a successful
 		// mutation: the opening control disappears out from under the dialog.
@@ -1155,9 +1531,11 @@ describe("ConnectCliDialog — resilience", () => {
 			screen.getByText(/something went wrong creating the key/i),
 		).toBeInTheDocument();
 		expect(screen.getByRole("dialog")).toBeInTheDocument();
-		expect(
-			screen.queryByTestId("connect-cli-configuration"),
-		).not.toBeInTheDocument();
+		// The configuration still shows the placeholder — a failed mint
+		// never produced a real key, and the block was never absent to
+		// begin with under the single-screen design.
+		expect(configurationText()).toContain(PLACEHOLDER_KEY);
+		expect(configurationText()).not.toContain(RAW_KEY);
 		// Still offered a retry rather than a dead end.
 		expect(
 			screen.getByRole("button", { name: /create the key/i }),
@@ -1201,6 +1579,24 @@ describe("ConnectCliDialog — resilience", () => {
 });
 
 describe("ConnectCliDialog — focus", () => {
+	it("puts initial focus on the create control when the dialog opens", async () => {
+		// Opened from closed via the invoking control, as production does —
+		// `startOpen` skips the real open transition Radix's own focus
+		// handling runs through.
+		const user = setupUser();
+		renderHost();
+
+		await user.click(
+			screen.getByRole("button", { name: "Connect a coding tool" }),
+		);
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: /create the key/i }),
+			).toHaveFocus(),
+		);
+	});
+
 	it("returns focus to the invoking control on close", async () => {
 		const user = setupUser();
 		renderHost();
@@ -1230,11 +1626,9 @@ describe("ConnectCliDialog — focus", () => {
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
-		await waitFor(() =>
-			expect(
-				screen.getByTestId("connect-cli-configuration"),
-			).toBeInTheDocument(),
-		);
+		// Wait for the real mint, not merely the (always-present) node, so
+		// Done is not clicked while the mutation is still in flight.
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
 
 		await user.click(screen.getByRole("button", { name: /^done$/i }));
 

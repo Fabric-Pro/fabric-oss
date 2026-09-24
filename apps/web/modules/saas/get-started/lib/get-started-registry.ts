@@ -950,7 +950,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "coding-instructions-connect",
 				anchor: "coding-instructions-connect",
 				title: "Point your coding agent here",
-				body: "Mints a read-only key scoped to this organization and hands you a ready-to-paste MCP configuration, plus a starter sentence telling your tool to load this project's published instructions.",
+				body: "Shows the ready-to-paste MCP configuration and a starter sentence right away, with a placeholder standing in for the key — mint a key scoped to this organization that can read the published instructions and suggest changes, on the same screen when you need one.",
 				conditional: true,
 			},
 		],
