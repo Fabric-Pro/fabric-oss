@@ -59,6 +59,15 @@ import { withCorrelationMemo } from "../../../../../lib/temporal-correlation";
 
 /** The most the hook adds to a push webhook's response time (Decision 36). */
 export const WEBHOOK_SYNC_START_BUDGET_MS = 5_000;
+/**
+ * The most sync runs one push delivery starts, across every subject kind
+ * (Fizzy #2700). The budget bounds the webhook's latency, not the load: a
+ * repository followed by many projects would otherwise start that many
+ * workflows from one request. Rows past the cap are not started here at
+ * all; the poll evaluates them on their own schedule, and the delivery
+ * logs how many it left to it.
+ */
+export const WEBHOOK_SYNC_START_CAP = 25;
 
 const BRANCH_REF_PREFIX = "refs/heads/";
 /** GitHub's `after` for a deleted branch. The poll reports the missing branch. */
@@ -73,8 +82,14 @@ export async function startInstructionSyncsForPush(push: {
 	repositoryUrl: string;
 	ref: string | undefined;
 	after: string | undefined;
-}): Promise<{ started: number; failed: number; deferred: number }> {
-	const outcome = { started: 0, failed: 0, deferred: 0 };
+}): Promise<{
+	started: number;
+	failed: number;
+	deferred: number;
+	/** Rows past `WEBHOOK_SYNC_START_CAP`, left to the poll unstarted. */
+	capped: number;
+}> {
+	const outcome = { started: 0, failed: 0, deferred: 0, capped: 0 };
 	if (!push.ref?.startsWith(BRANCH_REF_PREFIX)) {
 		return outcome;
 	}
@@ -90,6 +105,8 @@ export async function startInstructionSyncsForPush(push: {
 	// Lookups and starts not yet settled: one lookup per subject kind, then
 	// one start per row a lookup returned.
 	let unsettled = REPOSITORY_SYNC_SUBJECT_KINDS.length;
+	// Start slots left for this delivery, shared by every subject kind.
+	let slots = WEBHOOK_SYNC_START_CAP;
 	const startFor = async (
 		subject: RepositorySyncSubject,
 		row: RepositorySyncPushRow,
@@ -186,9 +203,25 @@ export async function startInstructionSyncsForPush(push: {
 			);
 			return;
 		}
+		// Rows past the cap are left to the poll, unstarted and unsettled.
+		const taken = rows.slice(0, Math.max(slots, 0));
+		slots -= taken.length;
+		const capped = rows.length - taken.length;
+		if (capped > 0) {
+			outcome.capped += capped;
+			logger.warn(
+				{
+					event: "instructions.sync.webhook_fanout_capped",
+					kind,
+					cap: WEBHOOK_SYNC_START_CAP,
+					capped,
+				},
+				"[RepositorySync] a GitHub push reaches more syncs than one delivery starts; the rest wait for the poll",
+			);
+		}
 		// This lookup settled; its rows' starts are now in flight.
-		unsettled += rows.length - 1;
-		await Promise.allSettled(rows.map((row) => startFor(subject, row)));
+		unsettled += taken.length - 1;
+		await Promise.allSettled(taken.map((row) => startFor(subject, row)));
 	};
 	const work = Promise.allSettled(REPOSITORY_SYNC_SUBJECT_KINDS.map(forKind));
 
