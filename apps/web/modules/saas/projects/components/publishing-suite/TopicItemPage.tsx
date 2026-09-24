@@ -1196,18 +1196,30 @@ export function TopicItemPage({
 					    full-width line of its own in the metadata block below.
 					    As a left-barred `rule` paragraph in the flow it read as
 					    a section opener and cost a whole band of vertical space
-					    for four words; beside the status chip it reads as what
+					    for four words; next to the status chip it reads as what
 					    it is — a note about why this topic surfaced. The block
 					    below is told not to render it again
 					    (`showRankReason={false}`), the same lift the Inbox row
-					    already does. */}
-					<div className="flex shrink-0 items-center gap-2">
+					    already does.
+
+					    Below `sm` the save note has no reserved slot, so the
+					    status cluster must have nothing but free space to its
+					    right. This cluster is therefore `w-full` there, as on the
+					    Inbox action cluster: a left-aligned line of its own, since
+					    right-anchored beside a short title the note appearing
+					    would pull the status control left. And it is a column,
+					    so the pill sits on the line above the status cluster:
+					    beside it, the pill (which can shrink, and a role reason
+					    joins every matched tag) would give up its width to the
+					    note, and the control would move left. A column rather
+					    than `flex-wrap`, which would let the note's growing
+					    width push the status cluster onto the next line
+					    mid-save. From `sm` up it is one row, and the note's
+					    fixed slot keeps that row's width constant. */}
+					<div className="flex w-full shrink-0 flex-col items-start gap-2 sm:w-auto sm:flex-row sm:items-center">
 						<TopicRankReason topic={topic} variant="pill" />
 						{canEdit ? (
 							<div className="flex shrink-0 items-center gap-2">
-								<TopicStatusSaveIndicator
-									state={statusOverlay.saveStateFor(topicId)}
-								/>
 								<Select
 									value={shown.status}
 									onValueChange={handleStatusValueChange}
@@ -1230,6 +1242,17 @@ export function TopicItemPage({
 										))}
 									</SelectContent>
 								</Select>
+								{/* AFTER the control, in a slot reserved from `sm`
+								    up: placed before it, the note's text pushed
+								    the control sideways under the pointer whenever
+								    this header wrapped. Below `sm` there is no
+								    slot; the outer cluster gives this one a
+								    left-aligned line of its own there, so the note
+								    only grows into free space on its right. */}
+								<TopicStatusSaveIndicator
+									state={statusOverlay.saveStateFor(topicId)}
+									reserveWidth
+								/>
 							</div>
 						) : (
 							<span

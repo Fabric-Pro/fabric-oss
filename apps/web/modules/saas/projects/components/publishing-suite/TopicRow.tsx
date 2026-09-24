@@ -1100,8 +1100,19 @@ export function TopicRow({
 							</TooltipContent>
 						</Tooltip>
 					) : null}
-					<TopicStatusSaveIndicator state={statusSaveState} />
 					{renderStatusSelect("w-full sm:w-[10rem]")}
+					{/* AFTER the control: placed before it, the note's text
+					    pushed the control sideways under the pointer that had
+					    just used it. Still rendered on a viewer's row — edit
+					    rights can be withdrawn while this row's save settles —
+					    but only an editor's row reserves its width, and only
+					    from `sm` up. Below `sm` this cluster is a full-width,
+					    left-aligned line, so the note narrows the full-width
+					    control from its right end instead. */}
+					<TopicStatusSaveIndicator
+						state={statusSaveState}
+						reserveWidth={canEdit}
+					/>
 				</div>
 			</div>
 			{expanded ? (

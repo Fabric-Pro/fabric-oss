@@ -2341,6 +2341,72 @@ describe("#2646 — status save feedback on the Inbox row", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Fizzy #2646 follow-up: "Saving… / Saved" appearing BEFORE the status control
+// pushed it sideways under the pointer the user had just used. jsdom has no
+// layout, so these pin the structure that keeps it still: the note comes after
+// the control, and an editor's row gives it a fixed-width slot from sm up.
+// ---------------------------------------------------------------------------
+
+describe("#2646 — the Inbox status control does not move while the save note shows", () => {
+	// Two rows, and every query scoped to one of them: with the fixture's
+	// second row in the DOM, a page-wide query could pair one row's control
+	// with the OTHER row's note and pass on document order alone.
+	const twoTopics = () => [
+		makeTopic({ id: "t1", title: "Alpha topic" }),
+		makeTopic({ id: "t2", title: "Beta topic", pitch: "Beta pitch" }),
+	];
+	const rowParts = (title: string) => {
+		const row = screen.getByText(title).closest("li") as HTMLElement;
+		return {
+			control: within(row).getByRole("combobox", {
+				name: `Status for ${title}`,
+			}),
+			note: within(row).getByTestId("topic-status-save-indicator"),
+		};
+	};
+
+	it("editor row: the note comes after the status control", () => {
+		state.topics = twoTopics();
+		renderList();
+
+		const { control, note } = rowParts("Alpha topic");
+		// In the control's own cluster — beside it, not merely later in the row.
+		expect(control.parentElement).toContainElement(note);
+		expect(
+			control.compareDocumentPosition(note) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+	});
+
+	it("editor row: the note holds a fixed-width slot from sm up", () => {
+		state.topics = twoTopics();
+		renderList();
+
+		const { note } = rowParts("Alpha topic");
+		expect(note).toHaveClass("sm:w-20");
+		// From sm up ONLY: below it the control is full-width, and a fixed
+		// slot would squeeze it too narrow for "In progress".
+		expect(note).not.toHaveClass("w-20");
+	});
+
+	it("viewer row: the note is still there, after the control, with no reserved slot", () => {
+		state.topics = twoTopics();
+		renderList({ canEdit: false });
+
+		// Still rendered: permission can be withdrawn while a save this row
+		// started is settling, and its outcome must still be said.
+		const { control, note } = rowParts("Alpha topic");
+		expect(control.parentElement).toContainElement(note);
+		expect(
+			control.compareDocumentPosition(note) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+		// A viewer's control is disabled, so a reserved slot is dead space.
+		expect(note).not.toHaveClass("sm:w-20");
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Fizzy #2646: the people on a collapsed row ARE the control that changes
 // them — an editor assigns and unassigns without expanding or leaving the list.
 // ---------------------------------------------------------------------------
