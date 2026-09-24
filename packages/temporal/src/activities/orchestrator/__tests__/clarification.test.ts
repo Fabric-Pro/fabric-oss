@@ -242,6 +242,28 @@ describe("analyzeIntentClarityActivity", () => {
 			expect(system).toContain("Never ask which project is meant");
 		});
 
+		it("tells the model that F-/US-/B- identifiers name the attached project's roadmap items", async () => {
+			generateText.mockResolvedValue({ text: clearResponse });
+
+			await analyzeIntentClarityActivity({
+				message: "compare F-003 and F-005",
+				userId: "u",
+				projectContext: "Attached project: Example Portal",
+			});
+
+			const { instructions: system } = promptFor(
+				generateText.mock.calls[0][0],
+			);
+			expect(system).toMatch(
+				/"F-12".*"US-7" \(features\).*"B-3" \(bugs\).*name items on that project's roadmap/,
+			);
+			expect(system).toContain(
+				"Never ask what such an identifier is, what kind of item it names or where it lives",
+			);
+			// The balance survives: a real gap is still asked.
+			expect(system).toContain("do NOT stay silent on a real gap");
+		});
+
 		it("still asks when the model judges the conversation insufficient", async () => {
 			generateText.mockResolvedValue({
 				text: JSON.stringify({

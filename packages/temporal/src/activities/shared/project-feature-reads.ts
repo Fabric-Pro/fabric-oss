@@ -192,6 +192,59 @@ async function resolveStatusId(
 	};
 }
 
+interface ListTotals {
+	total: number;
+	/** Undefined when closed items were included rather than counted apart. */
+	hiddenCount?: number;
+	filtered: boolean;
+	hasMore: boolean;
+}
+
+/**
+ * One sentence stating what `total` already is. Given only the two numbers,
+ * the model read "total 199, hiddenCount 8" as 191 visible — subtracting a
+ * count the total never contained.
+ */
+function describeListTotals(totals: ListTotals): string {
+	const items = (count: number) =>
+		`${count} ${count === 1 ? "item" : "items"}`;
+	const scope = totals.filtered ? " matching these filters" : "";
+	const pages = totals.hasMore
+		? " total covers every page, not just the items below."
+		: "";
+	if (totals.hiddenCount === undefined) {
+		return `${items(totals.total)}${scope}, closed items included; declined items are never listed.${pages}`;
+	}
+	return `${items(totals.total)} on the roadmap${scope}; ${items(totals.hiddenCount)} closed and hidden, already excluded from total — report ${totals.total}, never subtract the hidden count.${pages}`;
+}
+
+type HiddenReason = "declined" | "closed";
+
+const HIDDEN_REASON_BY_STAGE: Record<string, HiddenReason> = {
+	DECLINED: "declined",
+	CLOSED: "closed",
+};
+
+/**
+ * Whether the roadmap page shows an item, and if not why. The list leaves
+ * declined and closed items out, so a model that read one here and then did
+ * not find it in the list concluded the item did not exist.
+ */
+function roadmapVisibility(
+	identifier: string,
+	draftingStage: string,
+): Record<string, unknown> {
+	const hiddenReason = HIDDEN_REASON_BY_STAGE[draftingStage];
+	if (!hiddenReason) {
+		return { onRoadmap: true };
+	}
+	const note =
+		hiddenReason === "declined"
+			? `${identifier} exists but was declined: the roadmap page and fabric_list_project_features never show declined items.`
+			: `${identifier} exists but is closed: the roadmap page hides it until "Show hidden" is on, and fabric_list_project_features lists it only with includeHidden=true.`;
+	return { onRoadmap: false, hiddenReason, note };
+}
+
 export async function listProjectFeatures(
 	args: Record<string, unknown>,
 	context: FeatureReadContext,
@@ -279,7 +332,16 @@ export async function listProjectFeatures(
 		descriptions.map((row) => [row.id, row.description]),
 	);
 
+	const hasMore = offset + stories.length < total;
 	return {
+		summary: describeListTotals({
+			total,
+			hiddenCount: hidden?.total,
+			filtered: Boolean(
+				statusId || filters.priority || filters.kind || filters.search,
+			),
+			hasMore,
+		}),
 		features: stories.map((story) => ({
 			id: story.id,
 			identifier: story.identifier,
@@ -296,7 +358,7 @@ export async function listProjectFeatures(
 		})),
 		total,
 		...(hidden ? { hiddenCount: hidden.total } : {}),
-		hasMore: offset + stories.length < total,
+		hasMore,
 	};
 }
 
@@ -354,6 +416,7 @@ export async function getProjectFeature(
 		identifier: story.identifier,
 		title: story.title,
 		kind: story.kind,
+		...roadmapVisibility(story.identifier, story.draftingStage),
 		status: story.status.name,
 		statusIsFinal: story.status.isFinal,
 		priority: story.priority,

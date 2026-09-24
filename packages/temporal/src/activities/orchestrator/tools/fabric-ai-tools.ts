@@ -298,13 +298,19 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 				"List the attached project's roadmap items (features and bugs) LIVE from Fabric, with identifier (e.g. F-040), title, status, priority, drafting stage, task progress and a short description. " +
 				"Use this — not project_rag_query — for any question about what is on the roadmap, a feature's current status, or which features are in a given status/priority. " +
 				"Filter with status (the project's status column name, e.g. 'In Review'), priority, kind or search text; page with offset when hasMore is true. " +
-				"Lists the same set as the roadmap page: features and bugs, never declined items, closed items only with includeHidden=true; ordered by identifier number (F-094 before F-100). total counts that set and hiddenCount the closed items left out, so '199 items, 8 hidden' matches the page. " +
+				"Lists the same set as the roadmap page: features and bugs, never declined items, closed items only with includeHidden=true; ordered by identifier number (F-094 before F-100). total counts that set and hiddenCount the closed items left out, so '199 items, 8 hidden' matches the page: total ALREADY excludes hidden items — report total as is and never subtract hiddenCount from it; summary states the counts in words. " +
+				"An item missing from this list may still exist (declined, or closed without includeHidden) — read it with fabric_get_project_feature before saying it does not exist. " +
 				"Call fabric_get_project_feature for one feature's full description, acceptance criteria and tasks. " +
 				"KEYWORDS: roadmap, features, backlog, stories, work items, feature status, in progress, in review, what's next.",
 			inputSchema: PROJECT_FEATURE_LIST_INPUT_SCHEMA,
 			outputSchema: {
 				type: "object",
 				properties: {
+					summary: {
+						type: "string",
+						description:
+							"The totals in one sentence, e.g. '199 items on the roadmap; 8 closed items are hidden and already excluded from total'",
+					},
 					features: {
 						type: "array",
 						items: { type: "object" },
@@ -313,12 +319,12 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 					total: {
 						type: "number",
 						description:
-							"Total matching the filters, excluding declined items and (unless includeHidden) closed ones",
+							"Items the roadmap page shows for these filters, across every page — declined items and (unless includeHidden) closed ones are ALREADY excluded; never subtract hiddenCount",
 					},
 					hiddenCount: {
 						type: "number",
 						description:
-							"Closed items matching the filters that were left out (absent when includeHidden is true)",
+							"Closed items matching the filters that were left out and are NOT part of total (absent when includeHidden is true)",
 					},
 					hasMore: {
 						type: "boolean",
@@ -332,13 +338,25 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 			description:
 				"Read one feature (or bug) of the attached project LIVE from Fabric: full description, acceptance criteria, status, priority, drafting stage and every task with its completion. " +
 				"Pass the identifier the user mentions (e.g. 'F-040', 'F40', '40') or an id from fabric_list_project_features. " +
-				"A prefix is exact: 'F-001' matches F-001 or a feature numbered 1, never bug B-001; with no prefix a plain number is tried first, then F-, US-, B-. When nothing matches the tool returns an error — say the item does not exist rather than substituting another.",
+				"A prefix is exact: 'F-001' matches F-001 or a feature numbered 1, never bug B-001; with no prefix a plain number is tried first, then F-, US-, B-. When nothing matches the tool returns an error — say the item does not exist rather than substituting another. " +
+				"It also returns items the roadmap hides — declined ones (never listed) and closed ones (listed only with includeHidden). Those items exist: onRoadmap=false and hiddenReason say why the roadmap does not show them.",
 			inputSchema: PROJECT_FEATURE_GET_INPUT_SCHEMA,
 			outputSchema: {
 				type: "object",
 				properties: {
 					identifier: { type: "string" },
 					title: { type: "string" },
+					onRoadmap: {
+						type: "boolean",
+						description:
+							"Whether the roadmap page shows this item; false for declined and closed items, which still exist",
+					},
+					hiddenReason: {
+						type: "string",
+						enum: ["declined", "closed"],
+						description:
+							"Why the roadmap hides it (only when onRoadmap is false)",
+					},
 					status: { type: "string" },
 					description: { type: "string" },
 					acceptanceCriteria: { type: "string" },
