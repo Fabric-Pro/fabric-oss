@@ -24,6 +24,7 @@ describe("compileIgnore", () => {
 		[".claude/settings.local.json", "always"],
 		[".codex/hooks.json", "always"],
 		["areas/.DS_Store", "default"],
+		["CLAUDE.local.md", "always"],
 	] as const)("%s is ignored by the %s layer", (path, layer) => {
 		const m = isIgnored(path);
 		expect(m?.layer).toBe(layer);
@@ -35,6 +36,7 @@ describe("compileIgnore", () => {
 		"scripts/run-node.sh",
 		"retro-notes/index.md",
 		"my-tasks.md",
+		"claude.local.md.bak",
 	])("%s is kept", (path) => {
 		expect(isIgnored(path)).toBeNull();
 	});
@@ -49,6 +51,7 @@ describe("compileIgnore", () => {
 		["apps/api/tasks/2026/notes.md", "default"],
 		["services/worker/metrics/run.json", "default"],
 		["tools/.playwright-mcp/trace.zip", "default"],
+		["packages/x/CLAUDE.local.md", "always"],
 	] as const)("%s is ignored at depth by the %s layer", (path, layer) => {
 		expect(isIgnored(path)?.layer).toBe(layer);
 	});
@@ -185,6 +188,61 @@ describe("resolveIgnoreGlobs", () => {
 			layer: "fabricignore",
 		});
 		expect(m("tasks/a.md")).toBeNull();
+	});
+});
+
+describe("CLAUDE.local.md is machine-personal, excluded at any depth", () => {
+	it.each(["CLAUDE.local.md", "packages/x/CLAUDE.local.md"])(
+		"%s is excluded by the always layer under every configuration",
+		(path) => {
+			for (const input of [
+				{ fabricIgnoreText: null, projectGlobs: null },
+				{ fabricIgnoreText: null, projectGlobs: [] as string[] },
+				{ fabricIgnoreText: "docs/\n", projectGlobs: ["dist/**"] },
+			]) {
+				expect(
+					buildIgnoreMatcher(resolveIgnoreGlobs(input))(path),
+				).toEqual({
+					rule: "**/CLAUDE.local.md",
+					layer: "always",
+				});
+			}
+		},
+	);
+
+	// Unlike the root-anchored hook files and `.guild/`, this rule is
+	// `**/`-prefixed on purpose: Claude Code reads the file at every depth
+	// it walks, so a nested copy is just as personal as the root one.
+	it("stays excluded at depth, unlike a root-anchored built-in", () => {
+		const m = buildIgnoreMatcher(resolveIgnoreGlobs({}));
+		expect(m("docs/nested/CLAUDE.local.md")).toEqual({
+			rule: "**/CLAUDE.local.md",
+			layer: "always",
+		});
+	});
+
+	// `CLAUDE.md` (no `.local`) and a file that merely CONTAINS the name are
+	// ordinary content — only the exact basename Claude Code reads is
+	// excluded.
+	it.each(["CLAUDE.md", "packages/x/CLAUDE.md", "claude.local.md.bak"])(
+		"%s is kept",
+		(path) => {
+			expect(buildIgnoreMatcher(resolveIgnoreGlobs({}))(path)).toBeNull();
+		},
+	);
+
+	// The matcher is case-insensitive by construction (`globToRegExp` compiles
+	// every glob with the `i` flag), so a lowercase spelling is excluded too.
+	// This is not a targeted design choice for this rule; it is documented
+	// here rather than "fixed" because forcing case-sensitivity would be a
+	// behavior change for every other built-in glob, out of scope for Fizzy
+	// #2670.
+	it("is matched case-insensitively, like every other glob here", () => {
+		const m = buildIgnoreMatcher(resolveIgnoreGlobs({}));
+		expect(m("claude.local.md")).toEqual({
+			rule: "**/CLAUDE.local.md",
+			layer: "always",
+		});
 	});
 });
 

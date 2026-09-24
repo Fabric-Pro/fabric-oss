@@ -106,6 +106,11 @@ describe("isReservedPath", () => {
 		[".claude/Settings.Local.json"],
 		[".codex/hooks.json"],
 		[".codex/Hooks.json"],
+		// Fizzy #2670: reserved by BASENAME, at any depth, unlike the exact
+		// root paths above.
+		["CLAUDE.local.md"],
+		["packages/x/CLAUDE.local.md"],
+		["CLAUDE.LOCAL.MD"],
 	])("refuses to own %s", (input) => {
 		expect(isReservedPath(input)).toBe(true);
 	});
@@ -121,6 +126,10 @@ describe("isReservedPath", () => {
 		[".claude/commands/x.md"],
 		[".codex/skills/review/SKILL.md"],
 		[".codex/config.toml"],
+		// `CLAUDE.md` (no `.local`) and a name that merely contains the
+		// reserved basename are ordinary content.
+		["CLAUDE.md"],
+		["docs/CLAUDE.local.md.txt"],
 	])("leaves %s alone", (input) => {
 		expect(isReservedPath(input)).toBe(false);
 	});
