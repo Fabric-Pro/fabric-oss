@@ -20,6 +20,7 @@ import {
 	contextStorageKey,
 	hasTextExtension,
 	isExcludedDirectlySelectedFile,
+	isInFabricDirectory,
 	isRegularFileMode,
 	isUnderProtectedPrefix,
 	matchContextEntry,
@@ -180,7 +181,9 @@ export type ContextTreePlan = {
  * the mode (anything but a regular file is `excluded`), then the identity
  * (a backslash or a refused key is `invalid-path`), then the extension
  * (`excluded`). A directly selected file is judged by its basename against
- * the default exclusions instead of a folder's rules. Survivors whose keys
+ * the default exclusions instead of a folder's rules. Any entry with a
+ * `.fabric` segment in its repository path is `excluded`, whether selected
+ * directly or through a folder (Fizzy #2704). Survivors whose keys
  * collide byte for byte are `invalid-path`, both of them, and their key is
  * protected. A folder whose policy is unreadable contributes nothing but its
  * protected prefix and one attention item.
@@ -254,6 +257,13 @@ export function planContextTree(input: {
 			const rules = rulesByFolder.get(owner.path);
 			if (!rules) {
 				// Under a protected prefix: neither written nor excluded.
+				continue;
+			}
+			// A selected folder that is, or is inside, `.fabric`: the
+			// folder's rules match relative to it and cannot see that
+			// segment, so a stored selection fails closed here.
+			if (isInFabricDirectory(entry.path)) {
+				excludedCount++;
 				continue;
 			}
 			const relative = relativeToSelectedFolder(owner.path, entry.path);

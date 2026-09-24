@@ -133,6 +133,39 @@ describe("planContextTree", () => {
 		expect(result.excludedCount).toBe(1);
 	});
 
+	it("excludes a directly selected .fabric file, in any case, from a stored configuration", () => {
+		const result = plan(
+			[
+				".fabric/notes.md",
+				".FABRIC/x.md",
+				"docs/.Fabric/state.json",
+				"docs/guide.md",
+			],
+			[
+				file(".fabric/notes.md"),
+				file(".FABRIC/x.md"),
+				file("docs/.Fabric/state.json"),
+				file("docs/guide.md"),
+			],
+		);
+		expect(result.candidates.map((c) => c.key)).toEqual(["docs/guide.md"]);
+		expect(result.excludedCount).toBe(3);
+		expect(result.attention).toEqual([]);
+	});
+
+	it("excludes everything under a selected folder that is, or is inside, .fabric", () => {
+		const result = plan(
+			[".FABRIC", "docs/.fabric/state"],
+			[
+				file(".FABRIC/x.md"),
+				file(".FABRIC/sub/y.md"),
+				file("docs/.fabric/state/z.md"),
+			],
+		);
+		expect(result.candidates).toEqual([]);
+		expect(result.excludedCount).toBe(3);
+	});
+
 	it("an unreadable policy contributes its prefix and one attention item, and nothing under it", () => {
 		const result = plan(
 			["docs"],

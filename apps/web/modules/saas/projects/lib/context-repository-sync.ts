@@ -325,7 +325,7 @@ export function contextSyncConfigureErrorMessage(error: unknown): {
 	};
 	if (code && PATHS_FIELD_CODES.has(code)) {
 		return {
-			key: `configureDialog.errors.${code}`,
+			key: `configureDialog.errors.${excludedPathCopy(code, values.path)}`,
 			inline: true,
 			field: "paths",
 			values,
@@ -353,6 +353,44 @@ export function contextSyncConfigureErrorMessage(error: unknown): {
 		field: null,
 		values,
 	};
+}
+
+/**
+ * The `listTree` refusals whose `configure` copy reads the same for a
+ * listing: the fix (another branch, a reconnect) is the one `configure`
+ * would ask for. `REPOSITORY_UNREACHABLE` is left out on purpose: its
+ * `configure` copy is about saving, so it takes the tree's own fallback.
+ */
+const TREE_CONFIGURE_COPY_CODES = new Set([
+	"BRANCH_NOT_FOUND",
+	"REPOSITORY_NOT_FOUND",
+	"REPOSITORY_UNAVAILABLE",
+	"REPOSITORY_CREDENTIALS_EXPIRED",
+]);
+
+/**
+ * `listTree`'s failure → the tree area's inline message (Fizzy #2674),
+ * reusing `configure`'s copy for the codes both throw and a generic
+ * fallback for the rest. `ref` fills the branch name the
+ * `BRANCH_NOT_FOUND` copy names, which the error's data does not carry.
+ */
+export function contextSyncTreeErrorMessage(
+	error: unknown,
+	ref: string,
+): ContextSyncMessage {
+	const data = orpcErrorData(error);
+	const code = typeof data?.code === "string" ? data.code : undefined;
+	if (code && TREE_CONFIGURE_COPY_CODES.has(code)) {
+		const mapped = contextSyncConfigureErrorMessage(error);
+		return {
+			key: mapped.key,
+			values:
+				code === "BRANCH_NOT_FOUND"
+					? { ...mapped.values, path: ref }
+					: mapped.values,
+		};
+	}
+	return { key: "tree.error" };
 }
 
 export type ContextSyncNowResult =
@@ -383,6 +421,31 @@ export function contextSyncNowResultMessage(
 // this only catches the common mistakes before a round trip. ───────────────
 
 export const CONTEXT_SYNC_MAX_PATHS = 50;
+
+/**
+ * `path` has a `.fabric` segment, at any depth and in any case: the CLI's
+ * own state, which `paths.ts` refuses whatever the path names (Fizzy #2704).
+ */
+function isInContextSyncFabricDirectory(path: string): boolean {
+	return path
+		.split("/")
+		.some((segment) => segment.toLowerCase() === ".fabric");
+}
+
+/**
+ * An `EXCLUDED_PATH` refusal's copy: `.fabric` has its own, since it is not
+ * a coding-instructions file; the error's shape is the same either way.
+ */
+function excludedPathCopy(
+	code: string,
+	path: string | number | undefined,
+): string {
+	return code === "EXCLUDED_PATH" &&
+		typeof path === "string" &&
+		isInContextSyncFabricDirectory(path)
+		? "EXCLUDED_FABRIC_PATH"
+		: code;
+}
 
 /**
  * The default exclusions' FILE patterns only (`paths.ts` — a directly
@@ -458,6 +521,9 @@ export function validateContextSyncPathAddition(
 	if (!isCanonicalContextSyncPath(path)) {
 		return { ok: false, error: { code: "INVALID_PATH", path } };
 	}
+	if (isInContextSyncFabricDirectory(path)) {
+		return { ok: false, error: { code: "EXCLUDED_PATH", path } };
+	}
 	if (
 		path !== "" &&
 		EXCLUDED_CONTEXT_SYNC_BASENAMES.has(
@@ -498,7 +564,7 @@ export function contextSyncPathValidationMessage(
 			};
 		case "EXCLUDED_PATH":
 			return {
-				key: "pathErrors.EXCLUDED_PATH",
+				key: `pathErrors.${excludedPathCopy(error.code, error.path)}`,
 				values: { path: error.path },
 			};
 		case "TOO_MANY_PATHS":

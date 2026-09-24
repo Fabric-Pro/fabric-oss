@@ -9,7 +9,10 @@
  *  - submit calls `configure` then `syncNow`;
  *  - a server error code renders inline, and `configure`'s
  *    `REPOSITORY_CHANGE_REQUIRES_DISCONNECT` names the repository change it
- *    refuses.
+ *    refuses;
+ *  - the tree browser (Fizzy #2674) lists the branch through `listTree`,
+ *    writes to the same chips as the typed input, disables what the chip
+ *    validation would refuse, searches, and degrades to typed paths.
  */
 
 import { render, screen, waitFor, within } from "@testing-library/react";
@@ -37,9 +40,10 @@ beforeAll(() => {
 	}
 });
 
-const { configureMock, syncNowMock } = vi.hoisted(() => ({
+const { configureMock, syncNowMock, listTreeMock } = vi.hoisted(() => ({
 	configureMock: vi.fn(),
 	syncNowMock: vi.fn(),
+	listTreeMock: vi.fn(),
 }));
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
@@ -56,6 +60,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					syncNow: {
 						mutationOptions: () => ({
 							mutationFn: (input: unknown) => syncNowMock(input),
+						}),
+					},
+					listTree: {
+						queryOptions: (options: {
+							input: unknown;
+							[key: string]: unknown;
+						}) => ({
+							...options,
+							queryKey: ["listTree", options.input],
+							queryFn: () => listTreeMock(options.input),
 						}),
 					},
 				},
@@ -82,6 +96,14 @@ vi.mock("next-intl", () => {
 });
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+const EMPTY_TREE = { supported: true, entries: [], truncated: false };
+
+beforeEach(() => {
+	listTreeMock.mockReset();
+	listTreeMock.mockResolvedValue(EMPTY_TREE);
+});
+
 import { toast } from "sonner";
 import { ConfigureContextRepositorySyncDialog } from "../ConfigureContextRepositorySyncDialog";
 
@@ -409,5 +431,440 @@ describe("ConfigureContextRepositorySyncDialog — submit", () => {
 			),
 		).toBeInTheDocument();
 		expect(syncNowMock).not.toHaveBeenCalled();
+	});
+});
+
+// ── Tree browser (Fizzy #2674) ─────────────────────────────────────────────
+
+/** Provider order, deliberately unsorted; `src` is only implied by its file. */
+const TREE = {
+	supported: true,
+	truncated: false,
+	entries: [
+		{ path: "README.md", type: "file" },
+		{ path: "docs", type: "dir" },
+		{ path: "docs/guide.md", type: "file" },
+		{ path: "docs/api", type: "dir" },
+		{ path: "docs/api/ref.md", type: "file" },
+		{ path: "src/index.ts", type: "file" },
+		{ path: "assets", type: "dir" },
+	],
+};
+
+function treeList() {
+	return screen.getByRole("list", { name: `${NS}.tree.label` });
+}
+
+function visibleTreePaths(): string[] {
+	return within(treeList())
+		.getAllByRole("checkbox")
+		.map((box) => box.getAttribute("aria-label") ?? "");
+}
+
+function treeCheckbox(path: string) {
+	return within(treeList()).getByRole("checkbox", { name: path });
+}
+
+function chips() {
+	return screen.getByTestId("context-sync-paths-chips");
+}
+
+async function renderTree(
+	overrides: Parameters<typeof renderDialog>[0] = {},
+	listing: unknown = TREE,
+) {
+	listTreeMock.mockResolvedValue(listing);
+	const handles = renderDialog(overrides);
+	await screen.findByRole("list", { name: `${NS}.tree.label` });
+	return handles;
+}
+
+function configuration(paths: string[]) {
+	return {
+		syncId: "sync_1",
+		repositoryIntegrationId: "int_1",
+		ref: "main",
+		paths,
+		lastAppliedCommitSha: null,
+		configuredByName: null,
+		createdAt: "2026-09-01T00:00:00.000Z",
+		updatedAt: "2026-09-01T00:00:00.000Z",
+		integration: {
+			provider: "GITHUB",
+			repositoryOwner: "example-org",
+			repositoryName: "memory",
+			status: "ACTIVE",
+		},
+	};
+}
+
+describe("ConfigureContextRepositorySyncDialog — tree query", () => {
+	beforeEach(() => {
+		configureMock.mockReset();
+		syncNowMock.mockReset();
+	});
+
+	it("does not list anything until both the repository and the branch are set, then lists the settled branch once", async () => {
+		const user = userEvent.setup();
+		renderDialog({
+			integrations: [{ ...ONE_INTEGRATION[0], defaultBranch: "" }],
+		});
+		await new Promise((resolve) => setTimeout(resolve, 600));
+		expect(listTreeMock).not.toHaveBeenCalled();
+
+		await user.type(
+			screen.getByLabelText(`${NS}.configureDialog.branchLabel`),
+			"develop",
+		);
+		await waitFor(
+			() =>
+				expect(listTreeMock).toHaveBeenCalledWith({
+					projectId: "proj_1",
+					repositoryIntegrationId: "int_1",
+					ref: "develop",
+				}),
+			{ timeout: 2000 },
+		);
+		// Debounced: no request for a partial branch name.
+		expect(listTreeMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not list anything without an ACTIVE repository", async () => {
+		renderDialog({ integrations: [] });
+		await new Promise((resolve) => setTimeout(resolve, 600));
+		expect(listTreeMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("ConfigureContextRepositorySyncDialog — tree browsing", () => {
+	beforeEach(() => {
+		configureMock.mockReset();
+		syncNowMock.mockReset();
+	});
+
+	it("puts folders first, each group sorted, with root folders open and deeper ones closed", async () => {
+		await renderTree();
+		expect(visibleTreePaths()).toEqual([
+			"assets",
+			"docs",
+			"docs/api",
+			"docs/guide.md",
+			"src",
+			"src/index.ts",
+			"README.md",
+		]);
+		expect(
+			within(treeList()).getByRole("button", { name: "docs" }),
+		).toHaveAttribute("aria-expanded", "true");
+		expect(
+			within(treeList()).getByRole("button", { name: "api" }),
+		).toHaveAttribute("aria-expanded", "false");
+	});
+
+	it("reveals a folder's children when it is expanded", async () => {
+		const user = userEvent.setup();
+		await renderTree();
+		await user.click(
+			within(treeList()).getByRole("button", { name: "api" }),
+		);
+		expect(treeCheckbox("docs/api/ref.md")).toBeInTheDocument();
+		expect(
+			within(treeList()).getByRole("button", { name: "api" }),
+		).toHaveAttribute("aria-expanded", "true");
+	});
+
+	it("names every checkbox by its full path and gives every folder toggle aria-expanded", async () => {
+		await renderTree();
+		for (const box of within(treeList()).getAllByRole("checkbox")) {
+			expect(box).toHaveAccessibleName(
+				box.getAttribute("aria-label") ?? "",
+			);
+		}
+		expect(visibleTreePaths()).toContain("docs/guide.md");
+		for (const name of ["assets", "docs", "api", "src"]) {
+			expect(
+				within(treeList()).getByRole("button", { name }),
+			).toHaveAttribute("aria-expanded");
+		}
+	});
+});
+
+describe("ConfigureContextRepositorySyncDialog — tree selection", () => {
+	beforeEach(() => {
+		configureMock.mockReset();
+		syncNowMock.mockReset();
+	});
+
+	it("checking a folder adds its chip and covers its descendants; unchecking removes the chip", async () => {
+		const user = userEvent.setup();
+		await renderTree();
+		await user.click(treeCheckbox("docs"));
+
+		expect(within(chips()).getByText("docs")).toBeInTheDocument();
+		expect(treeCheckbox("docs")).toBeChecked();
+		expect(treeCheckbox("docs/guide.md")).toBeDisabled();
+		expect(treeCheckbox("docs/guide.md")).not.toBeChecked();
+		expect(treeCheckbox("docs/api")).toBeDisabled();
+		expect(
+			screen.getAllByText(`${NS}.tree.coveredByParent`).length,
+		).toBeGreaterThan(0);
+
+		await user.click(treeCheckbox("docs"));
+		expect(within(chips()).queryByText("docs")).not.toBeInTheDocument();
+		expect(treeCheckbox("docs/guide.md")).toBeEnabled();
+	});
+
+	it("checking a file adds its chip", async () => {
+		const user = userEvent.setup();
+		await renderTree();
+		await user.click(treeCheckbox("README.md"));
+		expect(within(chips()).getByText("README.md")).toBeInTheDocument();
+		expect(treeCheckbox("README.md")).toBeChecked();
+	});
+
+	it("removing a folder's chip unchecks it and re-enables its descendants", async () => {
+		const user = userEvent.setup();
+		await renderTree();
+		await user.click(treeCheckbox("docs"));
+		expect(treeCheckbox("docs/guide.md")).toBeDisabled();
+
+		await user.click(
+			within(chips()).getByLabelText(
+				`${NS}.configureDialog.removePath${JSON.stringify({ path: "docs" })}`,
+			),
+		);
+		expect(treeCheckbox("docs")).not.toBeChecked();
+		expect(treeCheckbox("docs/guide.md")).toBeEnabled();
+		expect(
+			screen.queryByText(`${NS}.tree.coveredByParent`),
+		).not.toBeInTheDocument();
+	});
+
+	it("disables a folder while a path inside it is selected, and says why", async () => {
+		const user = userEvent.setup();
+		await renderTree();
+		await user.click(treeCheckbox("docs/guide.md"));
+
+		expect(treeCheckbox("docs")).toBeDisabled();
+		expect(treeCheckbox("docs")).not.toBeChecked();
+		expect(
+			screen.getByText(`${NS}.tree.containsSelected`),
+		).toBeInTheDocument();
+		expect(within(chips()).queryByText("docs")).not.toBeInTheDocument();
+	});
+
+	it("still rejects an overlapping typed path after a tree selection", async () => {
+		const user = userEvent.setup();
+		await renderTree();
+		await user.click(treeCheckbox("docs"));
+		await addPath(user, "docs/guides");
+		expect(
+			screen.getByText(
+				`${NS}.pathErrors.PATH_PREFIX_OVERLAP${JSON.stringify({
+					path: "docs/guides",
+					withPath: "docs",
+				})}`,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("shows the cap message and leaves the box unchecked when 50 paths are already selected", async () => {
+		const user = userEvent.setup();
+		const fifty = Array.from({ length: 50 }, (_, i) => `selected-${i}`);
+		await renderTree({ current: configuration(fifty) });
+
+		await user.click(treeCheckbox("README.md"));
+		expect(
+			screen.getByText(
+				`${NS}.pathErrors.TOO_MANY_PATHS${JSON.stringify({ max: 50 })}`,
+			),
+		).toBeInTheDocument();
+		expect(treeCheckbox("README.md")).not.toBeChecked();
+		expect(
+			within(chips()).queryByText("README.md"),
+		).not.toBeInTheDocument();
+
+		await addPath(user, "notes.md");
+		expect(
+			screen.getByText(
+				`${NS}.pathErrors.TOO_MANY_PATHS${JSON.stringify({ max: 50 })}`,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("disables the whole tree while the whole repository is selected", async () => {
+		const user = userEvent.setup();
+		await renderTree();
+		await addPath(user, "");
+		expect(
+			screen.getByText(`${NS}.tree.wholeRepository`),
+		).toBeInTheDocument();
+		for (const box of within(treeList()).getAllByRole("checkbox")) {
+			expect(box).toBeDisabled();
+		}
+	});
+
+	it("submits the same paths whether they came from the tree or the input", async () => {
+		configureMock.mockResolvedValue({ syncId: "sync_1", generation: 1 });
+		syncNowMock.mockResolvedValue({ started: true });
+		const user = userEvent.setup();
+		await renderTree();
+
+		await user.click(treeCheckbox("README.md"));
+		await addPath(user, "docs");
+		await user.click(screen.getByText(`${NS}.configureDialog.submit`));
+
+		await waitFor(() =>
+			expect(configureMock).toHaveBeenCalledWith({
+				projectId: "proj_1",
+				organizationId: "org_1",
+				repositoryIntegrationId: "int_1",
+				ref: "main",
+				paths: ["README.md", "docs"],
+			}),
+		);
+		// The typed "docs" is the tree's "docs": its row reads as checked.
+		expect(treeCheckbox("docs")).toBeChecked();
+	});
+});
+
+describe("ConfigureContextRepositorySyncDialog — tree search", () => {
+	beforeEach(() => {
+		configureMock.mockReset();
+		syncNowMock.mockReset();
+	});
+
+	function searchBox() {
+		return screen.getByRole("searchbox", {
+			name: `${NS}.tree.searchPlaceholder`,
+		});
+	}
+
+	it("shows only matches with their ancestor folders, expanded, and restores the tree when cleared", async () => {
+		const user = userEvent.setup();
+		await renderTree();
+		// Collapse a root folder first: clearing the search must restore it.
+		await user.click(
+			within(treeList()).getByRole("button", { name: "src" }),
+		);
+		expect(visibleTreePaths()).not.toContain("src/index.ts");
+
+		await user.type(searchBox(), "REF");
+		expect(visibleTreePaths()).toEqual([
+			"docs",
+			"docs/api",
+			"docs/api/ref.md",
+		]);
+		expect(
+			within(treeList()).getByRole("button", { name: "api" }),
+		).toHaveAttribute("aria-expanded", "true");
+
+		await user.clear(searchBox());
+		expect(visibleTreePaths()).toEqual([
+			"assets",
+			"docs",
+			"docs/api",
+			"docs/guide.md",
+			"src",
+			"README.md",
+		]);
+		expect(
+			within(treeList()).getByRole("button", { name: "api" }),
+		).toHaveAttribute("aria-expanded", "false");
+	});
+
+	it("caps the matches at 200 and asks for a narrower search", async () => {
+		const user = userEvent.setup();
+		const entries = Array.from({ length: 201 }, (_, i) => ({
+			path: `notes/note-${String(i).padStart(3, "0")}.md`,
+			type: "file",
+		}));
+		await renderTree({}, { supported: true, truncated: false, entries });
+		expect(
+			screen.queryByText(
+				`${NS}.tree.refineSearch${JSON.stringify({ max: 200 })}`,
+			),
+		).not.toBeInTheDocument();
+
+		await user.type(searchBox(), "note-");
+		expect(
+			screen.getByText(
+				`${NS}.tree.refineSearch${JSON.stringify({ max: 200 })}`,
+			),
+		).toBeInTheDocument();
+		// 200 files plus their one folder.
+		expect(visibleTreePaths()).toHaveLength(201);
+		expect(visibleTreePaths()).not.toContain("notes/note-200.md");
+	});
+});
+
+describe("ConfigureContextRepositorySyncDialog — tree outcomes", () => {
+	beforeEach(() => {
+		configureMock.mockReset();
+		syncNowMock.mockReset();
+	});
+
+	it("hides the tree for a provider without a listing and keeps the typed input", async () => {
+		listTreeMock.mockResolvedValue({
+			supported: false,
+			entries: [],
+			truncated: false,
+		});
+		const user = userEvent.setup();
+		renderDialog();
+		expect(
+			await screen.findByText(`${NS}.tree.unsupported`),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("list", { name: `${NS}.tree.label` }),
+		).not.toBeInTheDocument();
+
+		await addPath(user, "docs");
+		expect(within(chips()).getByText("docs")).toBeInTheDocument();
+	});
+
+	it("says the branch has no files when the listing is empty", async () => {
+		renderDialog();
+		expect(await screen.findByText(`${NS}.tree.empty`)).toBeInTheDocument();
+	});
+
+	it("says only the first entries are shown when the listing is truncated", async () => {
+		await renderTree({}, { ...TREE, truncated: true });
+		expect(
+			screen.getByText(
+				`${NS}.tree.truncated${JSON.stringify({ max: 20_000 })}`,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("shows a listing refusal inline with configure's copy, and typing still adds a path", async () => {
+		listTreeMock.mockRejectedValue({
+			message: "server message",
+			data: { code: "BRANCH_NOT_FOUND" },
+		});
+		const user = userEvent.setup();
+		renderDialog();
+		expect(
+			await screen.findByText(
+				`${NS}.configureDialog.errors.BRANCH_NOT_FOUND${JSON.stringify({
+					path: "main",
+					withPath: "",
+					managedCount: 0,
+				})}`,
+			),
+		).toBeInTheDocument();
+
+		await addPath(user, "docs");
+		expect(within(chips()).getByText("docs")).toBeInTheDocument();
+	});
+
+	it("falls back to the tree's own message for an unreachable repository", async () => {
+		listTreeMock.mockRejectedValue({
+			message: "server message",
+			data: { code: "REPOSITORY_UNREACHABLE" },
+		});
+		renderDialog();
+		expect(await screen.findByText(`${NS}.tree.error`)).toBeInTheDocument();
 	});
 });

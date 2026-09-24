@@ -28,6 +28,7 @@ import {
 	contextSyncPathValidationMessage,
 	validateContextSyncPathAddition,
 } from "../lib/context-repository-sync";
+import { ContextRepositorySyncTreeBrowser } from "./ContextRepositorySyncTreeBrowser";
 
 /**
  * Points the project's Living Memory at selected folders and files of a
@@ -35,6 +36,10 @@ import {
  * (design 2026-09-23 §5.1, §7.2, Fizzy #2657). The server verifies the
  * branch and canonicalizes the paths before saving anything; what it refuses
  * is shown inline, beside the field it is about when it names one.
+ *
+ * Paths are picked from the branch's tree (`ContextRepositorySyncTreeBrowser`,
+ * Fizzy #2674) or typed; the chips are the one selection either writes to,
+ * and typing stays available whatever the tree can show.
  *
  * Mounted only while open, so a background poll of the tab cannot overwrite
  * what someone is typing.
@@ -84,16 +89,27 @@ export function ConfigureContextRepositorySyncDialog({
 	const selected = active.find((i) => i.id === integrationId) ?? null;
 	const branch = ref.trim();
 
-	function addPath() {
-		const result = validateContextSyncPathAddition(pathInput, paths);
+	/**
+	 * Add one chip, typed or picked in the tree: both go through the same
+	 * validation and show the same inline error, so the tree can never add
+	 * what typing could not.
+	 */
+	function selectPath(raw: string): boolean {
+		const result = validateContextSyncPathAddition(raw, paths);
 		if (!result.ok) {
 			const message = contextSyncPathValidationMessage(result.error);
 			setPathError(t(message.key, message.values));
-			return;
+			return false;
 		}
 		setPaths((prev) => [...prev, result.path]);
-		setPathInput("");
 		setPathError(null);
+		return true;
+	}
+
+	function addPath() {
+		if (selectPath(pathInput)) {
+			setPathInput("");
+		}
 	}
 
 	function removePath(path: string) {
@@ -219,6 +235,16 @@ export function ConfigureContextRepositorySyncDialog({
 							}
 						/>
 					</div>
+
+					<ContextRepositorySyncTreeBrowser
+						projectId={projectId}
+						repositoryIntegrationId={integrationId}
+						branch={branch}
+						paths={paths}
+						disabled={pending}
+						onSelect={selectPath}
+						onDeselect={removePath}
+					/>
 
 					<div className="flex flex-col gap-1.5">
 						<Label htmlFor="context-sync-path-input">

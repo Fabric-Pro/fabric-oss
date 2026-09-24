@@ -282,16 +282,37 @@ const EXCLUDED_FILE_NAMES: ReadonlySet<string> = new Set(
 	),
 );
 
+const FABRIC_DIRECTORY = ".fabric";
+
+/**
+ * `repositoryPath` has a `.fabric` segment, at any depth and in any case:
+ * the CLI's own state, which the sync never applies (Fizzy #2704), as
+ * `configure` refuses it (`paths.ts`). Needed beyond the `.fabric/` default
+ * because that pattern is matched relative to a selected folder, and so
+ * cannot see a `.fabric` that is, or is above, the selection itself.
+ */
+export function isInFabricDirectory(repositoryPath: string): boolean {
+	return repositoryPath
+		.split("/")
+		.some((segment) => segment.toLowerCase() === FABRIC_DIRECTORY);
+}
+
 /**
  * A directly selected FILE is judged by its basename against the default
  * exclusions (§5.3.1 step 6), exactly as `configure` judges it (`paths.ts`):
  * `CLAUDE.md`, `AGENTS.md`, `GEMINI.md` and `.contextignore`, any case, are
  * excluded; a directly selected `skills/x.md` is not — the folder patterns
- * apply only inside a selected folder, relative to it.
+ * apply only inside a selected folder, relative to it. The one exception is
+ * `.fabric`: a file with a `.fabric` segment anywhere in its path is
+ * excluded too, so a configuration stored before `configure` refused one
+ * fails closed.
  */
 export function isExcludedDirectlySelectedFile(
 	repositoryPath: string,
 ): boolean {
+	if (isInFabricDirectory(repositoryPath)) {
+		return true;
+	}
 	const slash = repositoryPath.lastIndexOf("/");
 	const basename =
 		slash === -1 ? repositoryPath : repositoryPath.slice(slash + 1);

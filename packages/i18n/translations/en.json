@@ -2609,6 +2609,7 @@
 						"errors": {
 							"INVALID_PATH": "“{path}” isn't a repository path in its plain form.",
 							"EXCLUDED_PATH": "“{path}” is a coding-instructions file, which Living Memory never syncs.",
+							"EXCLUDED_FABRIC_PATH": "“{path}” is in a .fabric folder, the Fabric CLI's own state, which Living Memory never syncs.",
 							"PATH_PREFIX_OVERLAP": "“{path}” overlaps another selected path.",
 							"TOO_MANY_PATHS": "Select at most 50 folders or files.",
 							"BRANCH_NOT_FOUND": "Branch \"{path}\" wasn't found on the remote.",
@@ -2622,9 +2623,24 @@
 					"pathErrors": {
 						"INVALID_PATH": "“{path}” isn't a repository path in its plain form: use '/' between folders, with no leading './' or '/', no trailing '/', no '.' or '..' segments and no surrounding spaces.",
 						"EXCLUDED_PATH": "“{path}” is a coding-instructions file, which Living Memory never syncs.",
+						"EXCLUDED_FABRIC_PATH": "“{path}” is in a .fabric folder, the Fabric CLI's own state, which Living Memory never syncs.",
 						"TOO_MANY_PATHS": "Select at most {max} folders or files.",
 						"PATH_PREFIX_OVERLAP": "“{path}” overlaps “{withPath}”, which is already selected.",
 						"DUPLICATE_PATH": "“{path}” is already selected."
+					},
+					"tree": {
+						"label": "Folders and files on this branch",
+						"searchPlaceholder": "Search folders and files",
+						"loading": "Loading the branch's folders and files…",
+						"empty": "No files on this branch.",
+						"noMatches": "No folders or files match this search.",
+						"unsupported": "This repository type doesn't support browsing. Type the paths to sync below.",
+						"truncated": "This branch is too large to list in full: only the first {max, number} entries are shown. Type any other path below.",
+						"error": "Couldn't list this branch's folders and files. Type the paths to sync below, or try again later.",
+						"coveredByParent": "Included by a selected parent folder",
+						"containsSelected": "A path inside this folder is selected",
+						"wholeRepository": "The whole repository is selected. Remove it to choose individual folders and files.",
+						"refineSearch": "Showing the first {max} matches. Refine the search to see others."
 					}
 				}
 			}

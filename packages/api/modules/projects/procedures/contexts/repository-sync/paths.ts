@@ -18,6 +18,13 @@
  * — so a coding-instructions file is refused here, while a folder selection
  * (`skills`, `.claude`, `docs/agents`) is not: the run applies the defaults
  * inside a selected folder, relative to it, as `fabric context push` does.
+ * The one exception is `.fabric`, the CLI's own state (Fizzy #2704): a path
+ * with a `.fabric` segment at any depth, in any case, is refused whatever
+ * it names, since inside a selected `.fabric` folder the defaults, applied
+ * relative to it, would no longer see it.
+ *
+ * Every per-path rule lives in `contextSyncPathSelectable`, which `listTree`
+ * applies to each tree entry, so the tree never offers what this refuses.
  *
  * The rest: duplicates dropped, sorted, at most 50, and none a prefix of
  * another by whole segments (`docs` and `docs/guides` overlap; `docs` and
@@ -53,12 +60,20 @@ const DEFAULT_CONTEXT_IGNORE_PATTERNS: readonly string[] = [
 	".contextignore",
 ];
 
+const FABRIC_DIRECTORY = ".fabric";
+
 /** The patterns that can match a file (no trailing slash), lower-cased. */
 const EXCLUDED_FILE_NAMES: ReadonlySet<string> = new Set(
 	DEFAULT_CONTEXT_IGNORE_PATTERNS.filter((p) => !p.endsWith("/")).map((p) =>
 		p.toLowerCase(),
 	),
 );
+
+/**
+ * The longest path `configure` accepts: its input schema's bound, applied
+ * here too so `listTree` never offers a path `configure` would refuse.
+ */
+export const MAX_CONTEXT_SYNC_PATH_LENGTH = 1024;
 
 type ContextSyncPathsError =
 	| { code: "INVALID_PATH"; path: string; message: string }
@@ -70,7 +85,8 @@ export type ContextSyncPathsResult =
 	| { ok: true; paths: string[] }
 	| ({ ok: false } & ContextSyncPathsError);
 
-function isCanonical(path: string): boolean {
+/** `path` is in the canonical spelling `configure` accepts (file comment). */
+function isCanonicalContextSyncPath(path: string): boolean {
 	if (path.trim() !== path || path.includes("\\") || path.endsWith("/")) {
 		return false;
 	}
@@ -89,6 +105,74 @@ function basename(path: string): string {
 	return slash === -1 ? path : path.slice(slash + 1);
 }
 
+/**
+ * `path` names a coding-instructions file the defaults always exclude, by
+ * its basename (the one file rule `configure` applies).
+ */
+function isExcludedContextSyncFile(path: string): boolean {
+	return EXCLUDED_FILE_NAMES.has(basename(path).toLowerCase());
+}
+
+/**
+ * `path` is the `.fabric` directory or lies under it, at any depth and in
+ * any case, as the `.fabric/` default exclusion matches: the CLI's own
+ * state, which a run never syncs (Fizzy #2704).
+ */
+function isInFabricDirectory(path: string): boolean {
+	return path
+		.split("/")
+		.some((segment) => segment.toLowerCase() === FABRIC_DIRECTORY);
+}
+
+export type ContextSyncPathVerdict =
+	| { ok: true }
+	| { ok: false; code: "INVALID_PATH" | "EXCLUDED_PATH"; message: string };
+
+/**
+ * Whether one path may be selected, on its own (file comment): at most
+ * `MAX_CONTEXT_SYNC_PATH_LENGTH` characters, in the canonical spelling, no
+ * `.fabric` segment, and no basename a default exclusion names. `""` (the
+ * whole repository) is selectable; whether it may stand with others is
+ * `canonicalizeContextSyncPaths`'s rule, not this one. The one per-path
+ * rule set for both `configure` and `listTree`.
+ */
+export function contextSyncPathSelectable(
+	path: string,
+): ContextSyncPathVerdict {
+	if (path === "") {
+		return { ok: true };
+	}
+	if (path.length > MAX_CONTEXT_SYNC_PATH_LENGTH) {
+		return {
+			ok: false,
+			code: "INVALID_PATH",
+			message: `A path is at most ${MAX_CONTEXT_SYNC_PATH_LENGTH} characters long.`,
+		};
+	}
+	if (!isCanonicalContextSyncPath(path)) {
+		return {
+			ok: false,
+			code: "INVALID_PATH",
+			message: `"${path}" is not a repository path in its plain form: use '/' between folders, with no leading './' or '/', no trailing '/', no '.' or '..' segments and no surrounding spaces.`,
+		};
+	}
+	if (isInFabricDirectory(path)) {
+		return {
+			ok: false,
+			code: "EXCLUDED_PATH",
+			message: `"${path}" is in a .fabric folder, the Fabric CLI's own state, which Living Memory never syncs.`,
+		};
+	}
+	if (isExcludedContextSyncFile(path)) {
+		return {
+			ok: false,
+			code: "EXCLUDED_PATH",
+			message: `"${path}" is a coding-instructions file, which Living Memory never syncs; manage it with coding instructions instead.`,
+		};
+	}
+	return { ok: true };
+}
+
 /** `a` is `b`'s ancestor (or equal), by whole segments. */
 function isSegmentPrefix(a: string, b: string): boolean {
 	return a === "" || b === a || b.startsWith(`${a}/`);
@@ -98,23 +182,13 @@ export function canonicalizeContextSyncPaths(
 	raw: readonly string[],
 ): ContextSyncPathsResult {
 	for (const path of raw) {
-		if (path === "") {
-			continue;
-		}
-		if (!isCanonical(path)) {
+		const verdict = contextSyncPathSelectable(path);
+		if (!verdict.ok) {
 			return {
 				ok: false,
-				code: "INVALID_PATH",
+				code: verdict.code,
 				path,
-				message: `"${path}" is not a repository path in its plain form: use '/' between folders, with no leading './' or '/', no trailing '/', no '.' or '..' segments and no surrounding spaces.`,
-			};
-		}
-		if (EXCLUDED_FILE_NAMES.has(basename(path).toLowerCase())) {
-			return {
-				ok: false,
-				code: "EXCLUDED_PATH",
-				path,
-				message: `"${path}" is a coding-instructions file, which Living Memory never syncs; manage it with coding instructions instead.`,
+				message: verdict.message,
 			};
 		}
 	}

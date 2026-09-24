@@ -2404,6 +2404,7 @@
 						"errors": {
 							"INVALID_PATH": "„{path}“ ist kein Repository-Pfad in seiner einfachen Form.",
 							"EXCLUDED_PATH": "„{path}“ ist eine Coding-Instructions-Datei, die Living Memory niemals synchronisiert.",
+							"EXCLUDED_FABRIC_PATH": "„{path}“ liegt in einem .fabric-Ordner, dem eigenen Zustand der Fabric-CLI, den Living Memory niemals synchronisiert.",
 							"PATH_PREFIX_OVERLAP": "„{path}“ überschneidet sich mit einem bereits ausgewählten Pfad.",
 							"TOO_MANY_PATHS": "Wählen Sie höchstens 50 Ordner oder Dateien aus.",
 							"BRANCH_NOT_FOUND": "Branch \"{path}\" wurde auf dem Remote nicht gefunden.",
@@ -2417,9 +2418,24 @@
 					"pathErrors": {
 						"INVALID_PATH": "„{path}“ ist kein Repository-Pfad in seiner einfachen Form: verwenden Sie '/' zwischen Ordnern, ohne führendes './' oder '/', ohne abschließendes '/', ohne '.'- oder '..'-Segmente und ohne umgebende Leerzeichen.",
 						"EXCLUDED_PATH": "„{path}“ ist eine Coding-Instructions-Datei, die Living Memory niemals synchronisiert.",
+						"EXCLUDED_FABRIC_PATH": "„{path}“ liegt in einem .fabric-Ordner, dem eigenen Zustand der Fabric-CLI, den Living Memory niemals synchronisiert.",
 						"TOO_MANY_PATHS": "Wählen Sie höchstens {max} Ordner oder Dateien aus.",
 						"PATH_PREFIX_OVERLAP": "„{path}“ überschneidet sich mit „{withPath}“, das bereits ausgewählt ist.",
 						"DUPLICATE_PATH": "„{path}“ ist bereits ausgewählt."
+					},
+					"tree": {
+						"label": "Ordner und Dateien in diesem Branch",
+						"searchPlaceholder": "Ordner und Dateien durchsuchen",
+						"loading": "Ordner und Dateien des Branches werden geladen…",
+						"empty": "Keine Dateien in diesem Branch.",
+						"noMatches": "Keine Ordner oder Dateien entsprechen dieser Suche.",
+						"unsupported": "Dieser Repository-Typ unterstützt das Durchsuchen nicht. Geben Sie die zu synchronisierenden Pfade unten ein.",
+						"truncated": "Dieser Branch ist zu groß, um ihn vollständig aufzulisten: Es werden nur die ersten {max, number} Einträge angezeigt. Geben Sie jeden anderen Pfad unten ein.",
+						"error": "Die Ordner und Dateien dieses Branches konnten nicht aufgelistet werden. Geben Sie die zu synchronisierenden Pfade unten ein oder versuchen Sie es später erneut.",
+						"coveredByParent": "Durch einen ausgewählten übergeordneten Ordner eingeschlossen",
+						"containsSelected": "Ein Pfad in diesem Ordner ist ausgewählt",
+						"wholeRepository": "Das gesamte Repository ist ausgewählt. Entfernen Sie diese Auswahl, um einzelne Ordner und Dateien zu wählen.",
+						"refineSearch": "Es werden die ersten {max} Treffer angezeigt. Verfeinern Sie die Suche, um weitere zu sehen."
 					}
 				}
 			}

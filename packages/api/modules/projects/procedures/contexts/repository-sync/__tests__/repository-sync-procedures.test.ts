@@ -1,15 +1,15 @@
 /**
- * `projects.contexts.repositorySync.{get,configure,syncNow,disable}` — the
- * Living Memory repository sync procedures (design 2026-09-23 §5.1, §5.6,
- * §8, Fizzy #2657).
+ * `projects.contexts.repositorySync.{get,listTree,configure,syncNow,disable}`
+ * — the Living Memory repository sync procedures (design 2026-09-23 §5.1,
+ * §5.6, §8, Fizzy #2657, #2674).
  *
  * Each call runs the procedure's REAL middleware chain in its declared order
  * — `projectNotFoundUnlessVisible`, then the real `requireProjectPermission`
  * — before the handler, so which gate answers first is part of what is
  * pinned: a project the caller cannot discover is NOT_FOUND before any
  * permission is evaluated; a read-only member may `get` and nothing else.
- * The database, the credential resolver, the branch check and Temporal are
- * mocked; reconciliation (`../reconcile`) and the path rules (`../paths`)
+ * The database, the credential resolver, the branch check, the tree read
+ * and Temporal are mocked; reconciliation (`../reconcile`) and the path rules (`../paths`)
  * are real.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,6 +32,7 @@ const m = vi.hoisted(() => ({
 	listUnfinishedContextRepositorySyncRuns: vi.fn(),
 	completeInterruptedContextRepositorySyncRuns: vi.fn(),
 	verifyRepositoryBranch: vi.fn(),
+	listRepositoryTree: vi.fn(),
 	resolveFreshRepoTokenForRow: vi.fn(),
 	startContextRepositorySync: vi.fn(),
 	isContextRepositorySyncRunning: vi.fn(),
@@ -66,8 +67,16 @@ vi.mock("@repo/database", async () => {
 			m.completeInterruptedContextRepositorySyncRuns,
 	};
 });
-vi.mock("@repo/connectors", () => ({
+vi.mock("@repo/connectors", async () => ({
 	verifyRepositoryBranch: m.verifyRepositoryBranch,
+	listRepositoryTree: m.listRepositoryTree,
+	// The real provider list: which providers `listTree` answers without a
+	// credential is part of what is pinned.
+	isRepositoryTreeProvider: (
+		await vi.importActual<typeof import("@repo/connectors")>(
+			"@repo/connectors",
+		)
+	).isRepositoryTreeProvider,
 }));
 vi.mock("@repo/integrations/repo-auth", () => ({
 	resolveFreshRepoTokenForRow: m.resolveFreshRepoTokenForRow,
@@ -118,6 +127,7 @@ vi.mock("../../../../../../orpc/procedures", async () => {
 import { configureContextRepositorySyncProcedure } from "../configure";
 import { disableContextRepositorySyncProcedure } from "../disable";
 import { getContextRepositorySyncProcedure } from "../get";
+import { listContextRepositoryTreeProcedure } from "../list-tree";
 import { syncContextRepositoryNowProcedure } from "../sync-now";
 
 type Ctx = {
@@ -143,10 +153,14 @@ type Middleware = (
 
 const procedures = {
 	get: getContextRepositorySyncProcedure,
+	listTree: listContextRepositoryTreeProcedure,
 	configure: configureContextRepositorySyncProcedure,
 	syncNow: syncContextRepositoryNowProcedure,
 	disable: disableContextRepositorySyncProcedure,
-} as unknown as Record<"get" | "configure" | "syncNow" | "disable", Built>;
+} as unknown as Record<
+	"get" | "listTree" | "configure" | "syncNow" | "disable",
+	Built
+>;
 
 // The caller's session sits in org-session; the project lives in org-host.
 const ctx: Ctx = {
@@ -304,6 +318,14 @@ beforeEach(() => {
 	m.getProjectRepoIntegration.mockResolvedValue(integration);
 	m.resolveFreshRepoTokenForRow.mockResolvedValue({ token: SECRET_TOKEN });
 	m.verifyRepositoryBranch.mockResolvedValue("exists");
+	m.listRepositoryTree.mockResolvedValue({
+		ok: true,
+		entries: [
+			{ path: "docs", type: "dir" },
+			{ path: "docs/guide.md", type: "file" },
+		],
+		truncated: false,
+	});
 	m.upsertContextRepositorySync.mockResolvedValue({
 		status: "configured",
 		sync: {
@@ -343,8 +365,15 @@ const configureInput = {
 	paths: ["notes/team.md", "docs"],
 };
 
+const listTreeInput = {
+	projectId: "proj-1",
+	repositoryIntegrationId: "int-1",
+	ref: "develop",
+};
+
 const inputs = {
 	get: { projectId: "proj-1" },
+	listTree: listTreeInput,
 	configure: configureInput,
 	syncNow: { projectId: "proj-1" },
 	disable: { projectId: "proj-1" },
@@ -377,7 +406,7 @@ describe("authorization: visibility first, then CONTEXT_READ / CONTEXT_CREATE", 
 		});
 	});
 
-	it.each(["configure", "syncNow", "disable"] as const)(
+	it.each(["listTree", "configure", "syncNow", "disable"] as const)(
 		"refuses %s to a member without CONTEXT_CREATE, before anything is read or written",
 		async (name) => {
 			m.resolveEffectiveProjectPermissions.mockResolvedValue({
@@ -392,11 +421,12 @@ describe("authorization: visibility first, then CONTEXT_READ / CONTEXT_CREATE", 
 			});
 			expect(m.getContextRepositorySync).not.toHaveBeenCalled();
 			expect(m.getProjectRepoIntegration).not.toHaveBeenCalled();
+			expect(m.listRepositoryTree).not.toHaveBeenCalled();
 			NO_WRITES();
 		},
 	);
 
-	it.each(["get", "configure", "syncNow", "disable"] as const)(
+	it.each(["get", "listTree", "configure", "syncNow", "disable"] as const)(
 		"answers %s on a project the caller cannot see NOT_FOUND, before any permission is evaluated",
 		async (name) => {
 			// An org member the org-role fallback would grant CONTEXT_CREATE
@@ -414,11 +444,12 @@ describe("authorization: visibility first, then CONTEXT_READ / CONTEXT_CREATE", 
 			});
 			expect(m.hasProjectAccess).toHaveBeenCalledWith("proj-1", "user-1");
 			expect(m.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+			expect(m.listRepositoryTree).not.toHaveBeenCalled();
 			NO_WRITES();
 		},
 	);
 
-	it.each(["get", "configure", "syncNow", "disable"] as const)(
+	it.each(["get", "listTree", "configure", "syncNow", "disable"] as const)(
 		"refuses %s on a personal project (no organization) rather than using the fail-closed arm",
 		async (name) => {
 			m.resolveEffectiveProjectPermissions.mockResolvedValue({
@@ -448,6 +479,10 @@ describe("authorization: visibility first, then CONTEXT_READ / CONTEXT_CREATE", 
 			organizationId: "org-evil",
 		});
 		await call("get", { projectId: "proj-1", organizationId: "org-evil" });
+		await call("listTree", {
+			...listTreeInput,
+			organizationId: "org-evil",
+		});
 
 		expect(m.upsertContextRepositorySync).toHaveBeenCalledWith(
 			expect.objectContaining({ organizationId: "org-host" }),
@@ -644,6 +679,321 @@ describe("repositorySync.get", () => {
 			m.countContextRepositorySyncRunCleanupPending,
 		).not.toHaveBeenCalled();
 	});
+});
+
+// =============================================================================
+// listTree
+// =============================================================================
+
+describe("repositorySync.listTree", () => {
+	it("lists the branch through the integration's fresh credential and returns the provider's entries", async () => {
+		const result = await call("listTree", listTreeInput);
+
+		expect(result).toEqual({
+			supported: true,
+			entries: [
+				{ path: "docs", type: "dir" },
+				{ path: "docs/guide.md", type: "file" },
+			],
+			truncated: false,
+		});
+		expect(m.getProjectRepoIntegration).toHaveBeenCalledWith(
+			"int-1",
+			"proj-1",
+		);
+		expect(m.resolveFreshRepoTokenForRow).toHaveBeenCalledWith(
+			expect.objectContaining({ integrationId: "int-1" }),
+			{ userId: "user-1", organizationId: "org-host" },
+		);
+		expect(m.listRepositoryTree).toHaveBeenCalledWith({
+			provider: "GITHUB",
+			token: SECRET_TOKEN,
+			repositoryUrl: "https://github.com/example-org/memory.git",
+			owner: "example-org",
+			repo: "memory",
+			azureOrganization: null,
+			branch: "develop",
+		});
+		// A read of structure: nothing written, nothing audited.
+		NO_WRITES();
+		expect(JSON.stringify(result)).not.toContain(SECRET_TOKEN);
+	});
+
+	it("refuses an integration that belongs to another project (tenant boundary) before any credential is read", async () => {
+		m.getProjectRepoIntegration.mockResolvedValue(null);
+
+		await expect(
+			call("listTree", {
+				...listTreeInput,
+				repositoryIntegrationId: "int-of-proj-2",
+			}),
+		).rejects.toMatchObject({
+			code: "NOT_FOUND",
+			data: { code: "REPOSITORY_NOT_FOUND" },
+		});
+		expect(m.getProjectRepoIntegration).toHaveBeenCalledWith(
+			"int-of-proj-2",
+			"proj-1",
+		);
+		expect(m.resolveFreshRepoTokenForRow).not.toHaveBeenCalled();
+		expect(m.listRepositoryTree).not.toHaveBeenCalled();
+	});
+
+	it("refuses an integration that is not ACTIVE before any credential is read", async () => {
+		m.getProjectRepoIntegration.mockResolvedValue({
+			...integration,
+			status: "TOKEN_EXPIRED",
+		});
+
+		await expect(call("listTree", listTreeInput)).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			data: { code: "REPOSITORY_UNAVAILABLE" },
+		});
+		expect(m.resolveFreshRepoTokenForRow).not.toHaveBeenCalled();
+		expect(m.listRepositoryTree).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		[
+			"an absent credential",
+			{ token: null },
+			"BAD_REQUEST",
+			"REPOSITORY_CREDENTIALS_EXPIRED",
+		],
+		[
+			"a credential that failed to decrypt",
+			{ token: null, credentialFault: "DECRYPT_FAILED" },
+			"INTERNAL_SERVER_ERROR",
+			"REPOSITORY_UNREACHABLE",
+		],
+	])(
+		"maps %s to %s/%s without reading the tree",
+		async (_label, resolved, code, dataCode) => {
+			m.resolveFreshRepoTokenForRow.mockResolvedValue(resolved);
+
+			await expect(call("listTree", listTreeInput)).rejects.toMatchObject(
+				{
+					code,
+					data: { code: dataCode },
+				},
+			);
+			expect(m.listRepositoryTree).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		["not-found", "BAD_REQUEST", "BRANCH_NOT_FOUND"],
+		["unauthorized", "BAD_REQUEST", "REPOSITORY_CREDENTIALS_EXPIRED"],
+		["unreachable", "INTERNAL_SERVER_ERROR", "REPOSITORY_UNREACHABLE"],
+	])(
+		"throws configure's %s error (%s/%s), never an empty listing",
+		async (outcome, code, dataCode) => {
+			m.listRepositoryTree.mockResolvedValue({ ok: false, outcome });
+
+			const caught = (await call("listTree", listTreeInput).then(
+				(value) => ({ resolvedWith: value }),
+				(error: unknown) => error,
+			)) as { code: string; message: string; data: unknown };
+
+			expect(caught).not.toHaveProperty("resolvedWith");
+			expect(caught).toMatchObject({ code, data: { code: dataCode } });
+			expect(caught.message).not.toContain(SECRET_TOKEN);
+			expect(JSON.stringify(caught.data)).not.toContain(SECRET_TOKEN);
+			NO_WRITES();
+		},
+	);
+
+	it("maps an unauthorized read after OUR failed refresh to REPOSITORY_UNREACHABLE, never 'reconnect'", async () => {
+		m.resolveFreshRepoTokenForRow.mockResolvedValue({
+			token: SECRET_TOKEN,
+			refreshFault: "PROVIDER_UNAVAILABLE",
+		});
+		m.listRepositoryTree.mockResolvedValue({
+			ok: false,
+			outcome: "unauthorized",
+		});
+
+		const caught = (await call("listTree", listTreeInput).catch(
+			(error: unknown) => error,
+		)) as { code: string; message: string; data: unknown };
+
+		expect(caught).toMatchObject({
+			code: "INTERNAL_SERVER_ERROR",
+			data: { code: "REPOSITORY_UNREACHABLE" },
+		});
+		expect(caught.message).not.toContain(SECRET_TOKEN);
+		expect(JSON.stringify(caught.data)).not.toContain(SECRET_TOKEN);
+	});
+
+	it.each(["GITLAB", "BITBUCKET"])(
+		"answers a %s integration supported: false with no error and no credential resolved, so the dialog keeps typed paths",
+		async (provider) => {
+			m.getProjectRepoIntegration.mockResolvedValue({
+				...integration,
+				provider,
+			});
+
+			expect(await call("listTree", listTreeInput)).toEqual({
+				supported: false,
+				entries: [],
+				truncated: false,
+			});
+			expect(m.getProjectRepoIntegration).toHaveBeenCalledWith(
+				"int-1",
+				"proj-1",
+			);
+			expect(m.resolveFreshRepoTokenForRow).not.toHaveBeenCalled();
+			expect(m.listRepositoryTree).not.toHaveBeenCalled();
+			NO_WRITES();
+		},
+	);
+
+	it("still refuses an inactive GitLab integration before answering unsupported", async () => {
+		m.getProjectRepoIntegration.mockResolvedValue({
+			...integration,
+			provider: "GITLAB",
+			status: "TOKEN_EXPIRED",
+		});
+
+		await expect(call("listTree", listTreeInput)).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			data: { code: "REPOSITORY_UNAVAILABLE" },
+		});
+		expect(m.resolveFreshRepoTokenForRow).not.toHaveBeenCalled();
+	});
+
+	it("answers the connector's own unsupported outcome supported: false too", async () => {
+		m.listRepositoryTree.mockResolvedValue({
+			ok: false,
+			outcome: "unsupported",
+		});
+
+		expect(await call("listTree", listTreeInput)).toEqual({
+			supported: false,
+			entries: [],
+			truncated: false,
+		});
+	});
+
+	it("leaves out the .fabric directory, everything under it and the coding-instructions files, keeping folders the defaults name", async () => {
+		m.listRepositoryTree.mockResolvedValue({
+			ok: true,
+			entries: [
+				{ path: ".fabric", type: "dir" },
+				{ path: ".fabric/instructions.lock", type: "file" },
+				{ path: "docs", type: "dir" },
+				{ path: "docs/.Fabric", type: "dir" },
+				{ path: "docs/.Fabric/state.json", type: "file" },
+				{ path: "docs/guide.md", type: "file" },
+				{ path: "docs/AGENTS.md", type: "file" },
+				{ path: "CLAUDE.md", type: "file" },
+				{ path: "notes/gemini.md", type: "file" },
+				{ path: "notes/.contextignore", type: "file" },
+				{ path: "skills", type: "dir" },
+				{ path: ".claude", type: "dir" },
+				{ path: "docs/fabric.md", type: "file" },
+				{ path: "docs/./odd.md", type: "file" },
+				{ path: ".FABRIC/x.md", type: "file" },
+			],
+			truncated: false,
+		});
+
+		const result = await call("listTree", listTreeInput);
+
+		expect(result.entries).toEqual([
+			{ path: "docs", type: "dir" },
+			{ path: "docs/guide.md", type: "file" },
+			{ path: "skills", type: "dir" },
+			{ path: ".claude", type: "dir" },
+			{ path: "docs/fabric.md", type: "file" },
+		]);
+	});
+
+	it("drops a directory named after an excluded file, with everything under it, listed or not", async () => {
+		m.listRepositoryTree.mockResolvedValue({
+			ok: true,
+			entries: [
+				{ path: "AGENTS.md", type: "dir" },
+				{ path: "AGENTS.md/notes.md", type: "file" },
+				{ path: "AGENTS.md/deep", type: "dir" },
+				{ path: "AGENTS.md/deep/more.md", type: "file" },
+				// The folder itself is not listed: its contents go all the same.
+				{ path: "docs/claude.md/inner.md", type: "file" },
+				{ path: "docs", type: "dir" },
+				{ path: "docs/guide.md", type: "file" },
+			],
+			truncated: false,
+		});
+
+		const result = await call("listTree", listTreeInput);
+
+		expect(result.entries).toEqual([
+			{ path: "docs", type: "dir" },
+			{ path: "docs/guide.md", type: "file" },
+		]);
+	});
+
+	it("drops a path longer than configure's 1024-character limit", async () => {
+		// The canonical spelling already stops at the storage key's 512
+		// characters, so that is the longest path offered.
+		const longest = `docs/${"a".repeat(512 - "docs/".length)}`;
+		const tooLong = `docs/${"b".repeat(1025 - "docs/".length)}`;
+		m.listRepositoryTree.mockResolvedValue({
+			ok: true,
+			entries: [
+				{ path: "docs", type: "dir" },
+				{ path: longest, type: "file" },
+				{ path: tooLong, type: "file" },
+			],
+			truncated: false,
+		});
+
+		const result = await call("listTree", listTreeInput);
+
+		expect(result.entries).toEqual([
+			{ path: "docs", type: "dir" },
+			{ path: longest, type: "file" },
+		]);
+	});
+
+	it("returns an empty repository's empty tree as a supported, empty listing", async () => {
+		m.listRepositoryTree.mockResolvedValue({
+			ok: true,
+			entries: [],
+			truncated: false,
+		});
+
+		expect(await call("listTree", listTreeInput)).toEqual({
+			supported: true,
+			entries: [],
+			truncated: false,
+		});
+	});
+
+	it("passes the listing's truncated flag through", async () => {
+		m.listRepositoryTree.mockResolvedValue({
+			ok: true,
+			entries: [{ path: "docs", type: "dir" }],
+			truncated: true,
+		});
+
+		expect(await call("listTree", listTreeInput)).toEqual({
+			supported: true,
+			entries: [{ path: "docs", type: "dir" }],
+			truncated: true,
+		});
+	});
+
+	it.each(["refs/heads/main", "feature branch", "a..b", ""])(
+		"refuses the branch name %j before the handler runs",
+		async (ref) => {
+			await expect(
+				call("listTree", { ...listTreeInput, ref }),
+			).rejects.toMatchObject({ code: "BAD_REQUEST" });
+			expect(m.getProjectRepoIntegration).not.toHaveBeenCalled();
+			expect(m.listRepositoryTree).not.toHaveBeenCalled();
+		},
+	);
 });
 
 // =============================================================================
@@ -883,8 +1233,12 @@ describe("repositorySync.configure", () => {
 			["docs/AGENTS.md"],
 			["notes/gemini.md"],
 			["docs/.contextignore"],
+			[".fabric"],
+			[".fabric/notes.md"],
+			[".FABRIC/x.md"],
+			["docs/.Fabric/state.json"],
 		])(
-			"refuses the directly selected coding-instructions file %j as EXCLUDED_PATH",
+			"refuses the directly selected coding-instructions file or .fabric path %j as EXCLUDED_PATH",
 			async (path) => {
 				expect(await refused(["docs", path])).toMatchObject({
 					code: "BAD_REQUEST",
