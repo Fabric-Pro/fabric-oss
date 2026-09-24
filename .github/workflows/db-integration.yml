@@ -834,7 +834,7 @@ jobs:
           console.log(`authority-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
           if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/authority.test.ts)"); process.exit(1); }
           if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite did not execute against Postgres`); process.exit(1); }
-          if (passed !== 48) { console.error(`::error::expected exactly 48 passing tests, got ${passed}`); process.exit(1); }
+          if (passed !== 49) { console.error(`::error::expected exactly 49 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
       - name: Run the chat-delivery kind-partitioning suite against real Postgres
