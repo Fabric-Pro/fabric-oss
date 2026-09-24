@@ -388,6 +388,11 @@ export async function upsertInstructionRepositorySync(input: {
  * `disable` / "Switch to upload mode" (spec §5.1, §7.4). Flips to UPLOAD even
  * when no row exists, which is the "Repository disconnected" recovery.
  * Not refused while a run is in flight: that run is fenced instead.
+ *
+ * Deletes the configuration row only. The run receipts are kept on purpose
+ * (Fizzy #2672): they carry no foreign key to this row, so History keeps
+ * them, and a run still in flight completes its own receipt and audit row
+ * (`completeInstructionRepositorySyncRun` with no row left to lock).
  */
 export async function deleteInstructionRepositorySync(input: {
 	projectId: string;
@@ -430,8 +435,9 @@ export async function deleteInstructionRepositorySync(input: {
  * (spec §5.1): when the integration being removed is the project's
  * instruction source, the sync row goes and the project flips to UPLOAD in
  * the caller's transaction, so both commit with the integration delete. The
- * FK cascade would remove the row anyway; doing it explicitly is what keeps
- * the mode flip atomic with it.
+ * integration FK's cascade would remove the row anyway; doing it explicitly
+ * is what keeps the mode flip atomic with it. The run receipts are kept on
+ * purpose, as `deleteInstructionRepositorySync` keeps them (Fizzy #2672).
  *
  * ASSUMES the caller already holds the project row lock, so a concurrent
  * `configure` cannot attach the integration between the read below and the
@@ -499,27 +505,119 @@ export async function insertInstructionRepositorySyncRun(input: {
 }
 
 /**
- * One run receipt by its run key, tenant-scoped. `record` reads it when the
- * workflow never learned `begin`'s context (begin failed or was cancelled
- * after inserting the receipt), to complete the receipt under the acting
- * user and generation it was inserted with rather than the configuration's
- * current ones.
+ * Every unfinished run receipt one workflow run began, tenant-scoped, newest
+ * first, whatever configuration each was begun under. `record` completes
+ * them under the acting user and generation each was inserted with rather
+ * than the configuration's current ones.
+ *
+ * There can be more than one. `begin` keys its receipt on the sync row it
+ * reads (`<syncId>:<workflow run id>`), and the receipt outlives that row
+ * (Fizzy #2672): an attempt that inserts under one configuration and then
+ * throws, followed by a switch to upload mode and a fresh configure before
+ * the retry, leaves a second receipt for the same run under the new row.
+ * Without the old row, the key's suffix is the only way to find the first.
+ * A workflow run id is unique, and a poll receipt's key ends in its numeric
+ * generation, never in one.
  */
-export function getInstructionRepositorySyncRunReceipt(
-	runKey: string,
+export function listUnfinishedInstructionRepositorySyncRunReceipts(
+	workflowRunId: string,
 	projectId: string,
 	organizationId: string,
 ) {
-	return db.projectInstructionRepositorySyncRun.findFirst({
-		where: { id: runKey, projectId, organizationId },
+	return db.projectInstructionRepositorySyncRun.findMany({
+		where: {
+			id: { endsWith: `:${workflowRunId}` },
+			projectId,
+			organizationId,
+			finishedAt: null,
+		},
+		orderBy: { startedAt: "desc" },
 		select: {
+			id: true,
 			syncId: true,
 			userId: true,
 			generation: true,
 			trigger: true,
-			finishedAt: true,
 		},
 	});
+}
+
+/**
+ * The reaper's candidates (Fizzy #2672): sync-run receipts still unfinished
+ * and begun before `startedBefore`, CLAIMED for one tick. At most `limit`,
+ * least recently checked first (never checked before any), then oldest.
+ *
+ * `record` is the fast path that completes a receipt, not the only one it
+ * needs. A receipt `record` never reaches stays open, unaudited, now that
+ * it outlives its configuration: the workflow was terminated, or a `begin`
+ * attempt timed out while its insert was still in flight and the insert
+ * committed after `record` had already run. The caller asks Temporal about
+ * each receipt's exact workflow run and completes only those whose run has
+ * ended.
+ *
+ * Claiming stamps `reapCheckedAt = checkedAt` on every row it returns, before
+ * the caller describes any of them, and a row is due again only once its
+ * stamp is older than `checkedBefore`. A receipt whose run is still open (a
+ * parent can stay open for weeks settling a child), or whose describe went
+ * unanswered, stays unfinished; ordered by age alone, a full batch of those
+ * was re-selected every tick and a later receipt whose run had ended was
+ * never examined. A completed receipt leaves the candidate set through
+ * `finishedAt`, so the stamp only orders the ones that stay open.
+ * `FOR UPDATE SKIP LOCKED` keeps two overlapping claims disjoint, although
+ * the reaper's schedule already skips an overlapping tick.
+ *
+ * UNSCOPED by design, like the reaper's other candidate queries: tenant
+ * context comes only from each row, and every completion is bound to that
+ * row's own project and organization. Only the sync workflow's receipts
+ * (`<syncId>:<workflow run id>`, two segments): a poll receipt
+ * (`<syncId>:<pollRunId>:<generation>`) is written already finished and is
+ * excluded by shape as well. The fixed predicates are the partial index
+ * `project_instruction_sync_run_reap_due_idx` (migration 20260924180100)
+ * word for word, which is what lets the planner use it: keep them literal
+ * and in step with it. adapter-pg sends a Date as UTC, which matches the
+ * TIMESTAMP(3) columns.
+ */
+export function claimStrandedInstructionSyncRunReceipts(input: {
+	startedBefore: Date;
+	checkedBefore: Date;
+	checkedAt: Date;
+	limit: number;
+}) {
+	return db.$queryRaw<
+		Array<{
+			id: string;
+			syncId: string;
+			projectId: string;
+			organizationId: string;
+			userId: string;
+			generation: number;
+			trigger: InstructionSyncTrigger;
+		}>
+	>`
+		WITH "due" AS (
+			SELECT "id", "reapCheckedAt" AS "previousCheckedAt"
+			FROM "project_instruction_repository_sync_run"
+			WHERE "finishedAt" IS NULL
+				AND "id" ~ '^[^:]+:[^:]+$'
+				AND "startedAt" < ${input.startedBefore}
+				AND ("reapCheckedAt" IS NULL OR "reapCheckedAt" < ${input.checkedBefore})
+			ORDER BY "reapCheckedAt" ASC NULLS FIRST, "startedAt" ASC, "id" ASC
+			LIMIT ${input.limit}
+			FOR UPDATE SKIP LOCKED
+		), "claimed" AS (
+			UPDATE "project_instruction_repository_sync_run" AS "run"
+			SET "reapCheckedAt" = ${input.checkedAt}
+			FROM "due"
+			WHERE "run"."id" = "due"."id"
+			RETURNING "run"."id", "run"."syncId", "run"."projectId",
+				"run"."organizationId", "run"."userId", "run"."generation",
+				"run"."trigger", "run"."startedAt", "due"."previousCheckedAt"
+		)
+		SELECT "id", "syncId", "projectId", "organizationId", "userId",
+			"generation", "trigger"
+		FROM "claimed"
+		ORDER BY "previousCheckedAt" ASC NULLS FIRST, "startedAt" ASC, "id" ASC
+	`;
 }
 
 /**
@@ -980,23 +1078,38 @@ function schedulingPatchOrBackoff(
 
 /**
  * `record`'s Part B (spec §5.4): locks the sync row FIRST, tenant-scoped,
- * before touching the run row — the same order `deleteInstructionRepositorySync`
- * and `releaseInstructionRepositorySyncForIntegration` use when they lock the
- * sync row and then cascade-delete its run rows. Locking the run row first
- * (as this used to) is the opposite order: a disable or disconnect racing a
- * completion can then deadlock, Postgres aborting one side with `40P01`
- * (design review B1). The lock query carries no generation predicate — the
- * row is locked whether or not its generation still matches — so the
- * `(syncId, generation)` fence is a comparison in code once the row (and its
- * `failureCount`) is in hand, and it is tenant-scoped: the caller's `syncId`
- * alone does not prove it belongs to this project and organization (design
- * review B2).
+ * before touching the run row, so every transaction that touches both takes
+ * them in one order. `deleteInstructionRepositorySync` and
+ * `releaseInstructionRepositorySyncForIntegration` lock and delete the sync
+ * row only: the run row carries no foreign key to it (Fizzy #2672), so they
+ * never touch a receipt. (The deadlock of design review B1 came from the
+ * cascade delete of the run rows that FK used to do: locking the run row
+ * first was the opposite order, and Postgres aborted one side with `40P01`.)
+ * The lock query carries no generation predicate — the row is locked whether
+ * or not its generation still matches — so the `(syncId, generation)` fence
+ * is a comparison in code once the row (and its `failureCount`) is in hand,
+ * and it is tenant-scoped: the caller's `syncId` alone does not prove it
+ * belongs to this project and organization (design review B2).
  *
  * Completes the run row once (`WHERE finishedAt IS NULL`); only the call
  * that completed it applies the scheduling effect and writes the audit row,
  * all in one transaction. A second delivery, or a late attempt of a
  * terminated workflow, matches nothing on the run row and writes nothing
- * beyond the sync-row lock.
+ * beyond the sync-row lock. When the sync row is gone (a disable or a
+ * disconnect committed first) there is nothing to lock or schedule, but the
+ * receipt survives: it is still completed and audited, with
+ * `configurationCurrent: false`, and nothing here reads the missing row.
+ *
+ * `classifyStaleAsConfigurationChanged` is for the callers with no fence of
+ * their own: context-less `record` and the reaper, which complete a receipt
+ * from the receipt alone. Whatever they read about the configuration before
+ * this transaction, a disable, a re-configure or a replacement can commit
+ * before its lock; with the flag, a receipt whose `(syncId, generation)` is
+ * not current under the lock is recorded FAILED / CONFIGURATION_CHANGED, the
+ * outcome `begin` itself reports for a changed configuration, whatever the
+ * caller passed. A stale fence already applies no scheduling effect. Never
+ * for the with-context `record`: a publish that succeeded under its own fence
+ * and was then followed by a configuration change is truthfully SUCCEEDED.
  */
 export async function completeInstructionRepositorySyncRun(input: {
 	runKey: string;
@@ -1012,6 +1125,7 @@ export async function completeInstructionRepositorySyncRun(input: {
 	commitSha: string | null;
 	snapshotId: string | null;
 	scheduling: InstructionSyncSchedulingEffect;
+	classifyStaleAsConfigurationChanged?: boolean;
 	now?: Date;
 }): Promise<{ completed: boolean; configurationCurrent: boolean }> {
 	const now = input.now ?? new Date();
@@ -1026,6 +1140,21 @@ export async function completeInstructionRepositorySyncRun(input: {
 				AND "organizationId" = ${input.organizationId}
 			FOR UPDATE
 		`;
+		const lockedRow = locked[0];
+		const outcome =
+			input.classifyStaleAsConfigurationChanged === true &&
+			(lockedRow === undefined ||
+				lockedRow.generation !== input.generation)
+				? {
+						status: "FAILED" as const,
+						error: "CONFIGURATION_CHANGED" as const,
+						note: null,
+					}
+				: {
+						status: input.status,
+						error: input.error,
+						note: input.note,
+					};
 		const { count } =
 			await tx.projectInstructionRepositorySyncRun.updateMany({
 				where: {
@@ -1036,9 +1165,9 @@ export async function completeInstructionRepositorySyncRun(input: {
 				},
 				data: {
 					finishedAt: now,
-					status: input.status,
-					error: input.error,
-					note: input.note,
+					status: outcome.status,
+					error: outcome.error,
+					note: outcome.note,
 					commitSha: input.commitSha,
 					snapshotId: input.snapshotId,
 				},
@@ -1066,7 +1195,8 @@ export async function completeInstructionRepositorySyncRun(input: {
 				});
 			}
 		}
-		const failed = input.status === "FAILED" || input.status === "REJECTED";
+		const failed =
+			outcome.status === "FAILED" || outcome.status === "REJECTED";
 		await recordAuditTx(tx, {
 			action: "project.instructions.repository_sync_completed",
 			category: "project",
@@ -1081,9 +1211,9 @@ export async function completeInstructionRepositorySyncRun(input: {
 			},
 			metadata: {
 				trigger: input.trigger,
-				status: input.status,
-				error: input.error,
-				note: input.note,
+				status: outcome.status,
+				error: outcome.error,
+				note: outcome.note,
 				commitSha: input.commitSha,
 				snapshotId: input.snapshotId,
 				generation: input.generation,
@@ -1095,6 +1225,8 @@ export async function completeInstructionRepositorySyncRun(input: {
 
 const runSelect = {
 	id: true,
+	/** The configuration the run was begun under, which may since be gone. */
+	syncId: true,
 	trigger: true,
 	generation: true,
 	startedAt: true,
@@ -1107,7 +1239,12 @@ const runSelect = {
 	user: { select: { id: true, name: true } },
 } satisfies Prisma.ProjectInstructionRepositorySyncRunSelect;
 
-/** History's "Sync runs" list, newest first, each with the version it produced (null when pruned or none). */
+/**
+ * History's "Sync runs" list, newest first, each with the version it produced
+ * (null when pruned or none). Every run of the project, including those of a
+ * configuration that was switched off or replaced (Fizzy #2672): the caller
+ * compares `syncId` with the current row to mark them.
+ */
 export async function listInstructionRepositorySyncRuns(
 	projectId: string,
 	organizationId: string,

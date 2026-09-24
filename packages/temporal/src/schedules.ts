@@ -738,6 +738,8 @@ async function registerDocumentEmbeddingSweepSchedule(
  * will ever move the row — and runs the retention prune that otherwise only
  * happens at the end of a SUCCESSFUL validation workflow, which is what let a
  * project with repeatedly failing uploads accumulate staged copies unbounded.
+ * Each tick then completes the repository-sync receipts whose workflow run
+ * ended without completing them (Fizzy #2672).
  *
  * On `TASK_QUEUE`, the general `fabric-worker` queue, NOT the
  * `project-instructions` queue: that queue's two activity slots are reserved
@@ -745,9 +747,10 @@ async function registerDocumentEmbeddingSweepSchedule(
  * on housekeeping. Every worker shares the same workflow bundle, so the
  * workflow type resolves wherever it is polled from.
  *
- * `overlap: "SKIP"` is safe because the run is bounded twice over: both
- * candidate queries take a capped batch, and the activity's start-to-close
- * timeout (15 minutes) is well under the hour between triggers.
+ * `overlap: "SKIP"` is safe because the run is bounded twice over: every
+ * candidate query takes a capped batch, and the two activities'
+ * start-to-close timeouts (15 and 5 minutes) are well under the hour between
+ * triggers.
  */
 export async function registerProjectInstructionReaperSchedule(
 	scheduleClient: ScheduleClient,

@@ -1914,7 +1914,7 @@ export type ProjectInstructionRepositorySyncScalarFieldEnum = z.infer<typeof Pro
 
 // File: ProjectInstructionRepositorySyncRunScalarFieldEnum.schema.ts
 
-export const ProjectInstructionRepositorySyncRunScalarFieldEnumSchema = z.enum(['id', 'syncId', 'projectId', 'organizationId', 'userId', 'generation', 'trigger', 'startedAt', 'finishedAt', 'status', 'error', 'note', 'commitSha', 'snapshotId'])
+export const ProjectInstructionRepositorySyncRunScalarFieldEnumSchema = z.enum(['id', 'syncId', 'projectId', 'organizationId', 'userId', 'generation', 'trigger', 'startedAt', 'finishedAt', 'status', 'error', 'note', 'commitSha', 'snapshotId', 'reapCheckedAt'])
 
 export type ProjectInstructionRepositorySyncRunScalarFieldEnum = z.infer<typeof ProjectInstructionRepositorySyncRunScalarFieldEnumSchema>;
 
@@ -10910,6 +10910,7 @@ export const ProjectInstructionRepositorySyncRunSchema = z.object({
   note: z.string().nullish(),
   commitSha: z.string().nullish(),
   snapshotId: z.string().nullish(),
+  reapCheckedAt: z.date().nullish(),
 });
 
 export type ProjectInstructionRepositorySyncRunType = z.infer<typeof ProjectInstructionRepositorySyncRunSchema>;

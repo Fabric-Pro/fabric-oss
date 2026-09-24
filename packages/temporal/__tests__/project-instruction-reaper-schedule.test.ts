@@ -129,6 +129,27 @@ describe("the Coding Instructions reaper schedule", () => {
 		// while type-checking still passes.
 		const activities = await import("../src/activities");
 		expect(Object.keys(activities)).toContain("reapInstructionSnapshots");
+		// The stranded sync-receipt pass (Fizzy #2672), and ONLY its activity:
+		// the module's constants must not become schedulable activities.
+		expect(Object.keys(activities)).toContain(
+			"reapStrandedInstructionSyncReceipts",
+		);
+		const receiptPass = await import(
+			"../src/activities/project-instruction-sync-receipt-reaper"
+		);
+		const constants = Object.keys(receiptPass).filter(
+			(name) => name !== "reapStrandedInstructionSyncReceipts",
+		);
+		expect(constants).toEqual(
+			expect.arrayContaining([
+				"STRANDED_SYNC_RECEIPT_AGE_MS",
+				"STRANDED_SYNC_RECEIPT_RECHECK_MS",
+				"MAX_STRANDED_SYNC_RECEIPTS_PER_RUN",
+			]),
+		);
+		for (const name of constants) {
+			expect(Object.keys(activities)).not.toContain(name);
+		}
 	});
 
 	it("runs on a queue a worker is actually listening to", async () => {

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Prisma } from "../prisma/client";
 
@@ -17,6 +19,10 @@ const m = vi.hoisted(() => ({
 		findUnique: vi.fn(),
 		updateMany: vi.fn(),
 		findMany: vi.fn(),
+		// Never called: a receipt outlives its configuration (Fizzy #2672).
+		// Present so the contract tests below can assert exactly that.
+		delete: vi.fn(),
+		deleteMany: vi.fn(),
 	},
 	project: { update: vi.fn(), findFirst: vi.fn() },
 	snapshot: { findMany: vi.fn(), findFirst: vi.fn() },
@@ -65,15 +71,16 @@ vi.mock("../prisma/queries/projects/projects", () => ({
 
 import {
 	claimDueInstructionSyncRows,
+	claimStrandedInstructionSyncRunReceipts,
 	completeInstructionRepositorySyncRun,
 	computeSchedulingPatch,
 	deleteInstructionRepositorySync,
 	findInstructionSyncsForPush,
-	getInstructionRepositorySyncRunReceipt,
 	insertInstructionRepositorySyncRun,
 	instructionSyncBackoffMs,
 	instructionSyncLeaseHeld,
 	listInstructionRepositorySyncRuns,
+	listUnfinishedInstructionRepositorySyncRunReceipts,
 	recordInstructionSyncCheckFailure,
 	upsertInstructionRepositorySync,
 	writeBackInstructionSync,
@@ -282,6 +289,55 @@ describe("deleteInstructionRepositorySync", () => {
 		).toEqual({ deleted: false, repositoryIntegrationId: null });
 		expect(m.project.update).toHaveBeenCalled();
 	});
+
+	it("keeps every run receipt: switching to upload mode touches no run row (Fizzy #2672)", async () => {
+		lockedSettings({ sourceOfTruth: "REPOSITORY" });
+		m.sync.findFirst.mockResolvedValue({
+			id: "sync_1",
+			repositoryIntegrationId: "int_1",
+		});
+		await deleteInstructionRepositorySync({
+			projectId: "proj_1",
+			organizationId: "org_1",
+		});
+		expect(m.sync.delete).toHaveBeenCalledTimes(1);
+		for (const fn of Object.values(m.run)) {
+			expect(fn).not.toHaveBeenCalled();
+		}
+	});
+});
+
+describe("ProjectInstructionRepositorySyncRun schema (Fizzy #2672)", () => {
+	const schema = readFileSync(
+		join(__dirname, "..", "prisma", "schema.prisma"),
+		"utf8",
+	);
+	const modelBody = (name: string) => {
+		const start = schema.indexOf(`model ${name} {`);
+		expect(start).toBeGreaterThanOrEqual(0);
+		const model = schema.slice(start);
+		return model.slice(0, model.indexOf("\n}"));
+	};
+
+	it("carries syncId as a plain column with NO foreign key, so a receipt outlives a disable or disconnect", () => {
+		const body = modelBody("ProjectInstructionRepositorySyncRun");
+		expect(body).toMatch(/\n\s+syncId\s+String\n/);
+		expect(body).not.toContain("@relation(fields: [syncId]");
+		// Still indexed for the per-configuration reads.
+		expect(body).toContain("@@index([syncId, startedAt])");
+	});
+
+	it("gives the configuration row no back-relation to its receipts", () => {
+		expect(modelBody("ProjectInstructionRepositorySync")).not.toContain(
+			"ProjectInstructionRepositorySyncRun[]",
+		);
+	});
+
+	it("matches the Living Memory receipt, which has never had one", () => {
+		expect(modelBody("ProjectContextRepositorySyncRun")).not.toContain(
+			"@relation(fields: [syncId]",
+		);
+	});
 });
 
 describe("deleteRepoIntegrationReleasingSyncs: the coding-instructions release", () => {
@@ -325,6 +381,10 @@ describe("deleteRepoIntegrationReleasingSyncs: the coding-instructions release",
 		expect(m.integration.deleteMany).toHaveBeenCalledWith({
 			where: { id: "int_1", projectId: "proj_1" },
 		});
+		// The run receipts stay: History keeps them (Fizzy #2672).
+		for (const fn of Object.values(m.run)) {
+			expect(fn).not.toHaveBeenCalled();
+		}
 	});
 
 	it("leaves a sync that reads from a different integration alone", async () => {
@@ -381,35 +441,125 @@ describe("insertInstructionRepositorySyncRun", () => {
 	});
 });
 
-describe("getInstructionRepositorySyncRunReceipt", () => {
-	it("reads one receipt by run key, scoped to the project and organization", async () => {
-		const receipt = {
-			syncId: "sync_1",
-			userId: "user_1",
-			generation: 3,
-			trigger: "MANUAL",
-			finishedAt: null,
-		};
-		m.run.findFirst.mockResolvedValue(receipt);
+describe("claimStrandedInstructionSyncRunReceipts (the reaper's candidates)", () => {
+	// The rotation itself (a still-open batch cannot starve a later receipt)
+	// is proven against Postgres in instruction-sync-receipt-claim.integration.test.ts;
+	// this pins the statement's shape and its agreement with the partial index.
+	it("protocol: one unscoped statement that claims unfinished sync-workflow receipts, least recently checked first, and stamps them", async () => {
+		const rows = [
+			{
+				id: "sync_1:run_a",
+				syncId: "sync_1",
+				projectId: "proj_1",
+				organizationId: "org_1",
+				userId: "user_1",
+				generation: 3,
+				trigger: "MANUAL",
+			},
+		];
+		m.$queryRaw.mockResolvedValueOnce(rows);
+		const startedBefore = new Date(NOW.getTime() - 15 * MIN);
+		const checkedBefore = new Date(NOW.getTime() - 50 * MIN);
+
 		expect(
-			await getInstructionRepositorySyncRunReceipt(
-				"sync_1:run_a",
+			await claimStrandedInstructionSyncRunReceipts({
+				startedBefore,
+				checkedBefore,
+				checkedAt: NOW,
+				limit: 100,
+			}),
+		).toEqual(rows);
+
+		expect(m.$queryRaw).toHaveBeenCalledTimes(1);
+		const [strings, ...values] = m.$queryRaw.mock.calls[0] as [
+			TemplateStringsArray,
+			...unknown[],
+		];
+		const sql = strings.join("?").replace(/\s+/g, " ");
+		expect(sql).toContain('FROM "project_instruction_repository_sync_run"');
+		expect(sql).toContain('"finishedAt" IS NULL');
+		// The sync workflow's receipts only (`<syncId>:<workflow run id>`); a
+		// poll receipt (`<syncId>:<pollRunId>:<generation>`) never matches.
+		expect(sql).toContain(`"id" ~ '^[^:]+:[^:]+$'`);
+		// The age bound, from the caller: well past begin's one-minute
+		// start-to-close, so a live begin's receipt is never a candidate.
+		expect(sql).toContain('"startedAt" < ?');
+		// Due again only once the last check is older than the interval.
+		expect(sql).toContain(
+			'("reapCheckedAt" IS NULL OR "reapCheckedAt" < ?)',
+		);
+		expect(sql).toContain(
+			'ORDER BY "reapCheckedAt" ASC NULLS FIRST, "startedAt" ASC, "id" ASC',
+		);
+		expect(sql).toContain("LIMIT ?");
+		expect(sql).toContain("FOR UPDATE SKIP LOCKED");
+		// Stamped in the same statement that selects them, before any describe.
+		expect(sql).toContain('SET "reapCheckedAt" = ?');
+		expect(values).toEqual([startedBefore, checkedBefore, 100, NOW]);
+		// No tenant arm: the reaper's scope is every tenant; each completion
+		// is bound to its own row's project and organization.
+		expect(sql).not.toContain('"organizationId" =');
+	});
+
+	it("keeps its fixed predicates word for word the partial index's, so the planner can use it", () => {
+		const migration = readFileSync(
+			join(
+				__dirname,
+				"../prisma/migrations/20260924180100_instruction_sync_run_reap_due_idx/migration.sql",
+			),
+			"utf8",
+		);
+		expect(migration).toContain(
+			`ON "project_instruction_repository_sync_run" ("reapCheckedAt" ASC NULLS FIRST, "startedAt", "id") WHERE "finishedAt" IS NULL AND "id" ~ '^[^:]+:[^:]+$';`,
+		);
+	});
+});
+
+describe("listUnfinishedInstructionRepositorySyncRunReceipts", () => {
+	it("lists EVERY unfinished receipt the workflow run began, newest first, scoped to the project and organization, whatever configuration each was begun under", async () => {
+		// A begin that inserted under sync_1 and threw, then a retry after
+		// the sync was switched off and set up again, which inserted under
+		// sync_2: one workflow run, two receipts, both to be closed.
+		const receipts = [
+			{
+				id: "sync_2:run_a",
+				syncId: "sync_2",
+				userId: "user_1",
+				generation: 1,
+				trigger: "MANUAL",
+			},
+			{
+				id: "sync_1:run_a",
+				syncId: "sync_1",
+				userId: "user_1",
+				generation: 3,
+				trigger: "MANUAL",
+			},
+		];
+		m.run.findMany.mockResolvedValue(receipts);
+		expect(
+			await listUnfinishedInstructionRepositorySyncRunReceipts(
+				"run_a",
 				"proj_1",
 				"org_1",
 			),
-		).toEqual(receipt);
-		expect(m.run.findFirst).toHaveBeenCalledWith({
+		).toEqual(receipts);
+		expect(m.run.findMany).toHaveBeenCalledWith({
 			where: {
-				id: "sync_1:run_a",
+				// A poll receipt's key ends in its numeric generation, so it
+				// never matches a workflow run id.
+				id: { endsWith: ":run_a" },
 				projectId: "proj_1",
 				organizationId: "org_1",
+				finishedAt: null,
 			},
+			orderBy: { startedAt: "desc" },
 			select: {
+				id: true,
 				syncId: true,
 				userId: true,
 				generation: true,
 				trigger: true,
-				finishedAt: true,
 			},
 		});
 	});
@@ -547,6 +697,195 @@ describe("completeInstructionRepositorySyncRun", () => {
 		expect(m.recordAuditTx).toHaveBeenCalledTimes(1);
 	});
 
+	it("finishes the receipt of a run whose sync was switched off mid-run, and writes its completion audit row (Fizzy #2672)", async () => {
+		// The disable (or the integration disconnect) committed first: no
+		// sync row is left to lock, but the receipt survives it.
+		m.$queryRaw.mockResolvedValueOnce([]);
+		m.run.updateMany.mockResolvedValue({ count: 1 });
+
+		expect(
+			await completeInstructionRepositorySyncRun({
+				...base,
+				status: "NOT_PUBLISHED",
+				error: "CONFIGURATION_CHANGED",
+				scheduling: { kind: "none" },
+			}),
+		).toEqual({ completed: true, configurationCurrent: false });
+
+		expect(m.run.updateMany).toHaveBeenCalledWith({
+			where: {
+				id: "sync_1:run_a",
+				projectId: "proj_1",
+				organizationId: "org_1",
+				finishedAt: null,
+			},
+			data: expect.objectContaining({
+				finishedAt: NOW,
+				status: "NOT_PUBLISHED",
+				error: "CONFIGURATION_CHANGED",
+			}),
+		});
+		expect(m.sync.update).not.toHaveBeenCalled();
+		expect(m.recordAuditTx).toHaveBeenCalledTimes(1);
+		expect(m.recordAuditTx).toHaveBeenCalledWith(
+			client,
+			expect.objectContaining({
+				action: "project.instructions.repository_sync_completed",
+				severity: "info",
+				outcome: "success",
+				actor: { type: "user", userId: "user_1" },
+				organizationId: "org_1",
+				projectId: "proj_1",
+				// The configuration the run belonged to, by its historical id.
+				resource: {
+					type: "project_instruction_repository_sync",
+					id: "sync_1",
+				},
+				metadata: expect.objectContaining({
+					status: "NOT_PUBLISHED",
+					error: "CONFIGURATION_CHANGED",
+					generation: 3,
+				}),
+			}),
+		);
+	});
+
+	describe("classifyStaleAsConfigurationChanged: the no-context callers classify under the lock (Fizzy #2672)", () => {
+		// What the reaper and context-less `record` pass: they have no snapshot
+		// and no fence of their own, only the receipt. Whatever they read
+		// before this transaction, a disable, a re-configure or a replacement
+		// can commit before its lock; the lock's answer is the one recorded.
+		const stranded = {
+			...base,
+			status: "FAILED" as const,
+			error: "CHILD_ABORTED" as const,
+			note: null,
+			commitSha: null,
+			snapshotId: null,
+			scheduling: { kind: "none" } as const,
+			classifyStaleAsConfigurationChanged: true,
+		};
+
+		it.each([
+			[
+				"is gone (switched off, replaced, or another tenant's: nothing to lock)",
+				[],
+			],
+			[
+				"was re-configured past the receipt's generation",
+				[{ generation: 4, failureCount: 0 }],
+			],
+		] as const)(
+			"records a receipt whose configuration %s by the time of the lock as FAILED / CONFIGURATION_CHANGED, although the caller read it as current",
+			async (_label, lockedRows) => {
+				m.$queryRaw.mockResolvedValueOnce([...lockedRows]);
+				m.run.updateMany.mockResolvedValue({ count: 1 });
+
+				expect(
+					await completeInstructionRepositorySyncRun(stranded),
+				).toEqual({ completed: true, configurationCurrent: false });
+
+				// Classified from the LOCKED read, taken before the receipt is
+				// written, never from the caller's earlier one.
+				expect(m.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+					m.run.updateMany.mock.invocationCallOrder[0],
+				);
+				expect(m.run.updateMany).toHaveBeenCalledWith({
+					where: {
+						id: "sync_1:run_a",
+						projectId: "proj_1",
+						organizationId: "org_1",
+						finishedAt: null,
+					},
+					data: {
+						finishedAt: NOW,
+						status: "FAILED",
+						error: "CONFIGURATION_CHANGED",
+						note: null,
+						commitSha: null,
+						snapshotId: null,
+					},
+				});
+				expect(m.sync.update).not.toHaveBeenCalled();
+				expect(m.recordAuditTx).toHaveBeenCalledTimes(1);
+				expect(m.recordAuditTx).toHaveBeenCalledWith(
+					client,
+					expect.objectContaining({
+						severity: "warning",
+						outcome: "failure",
+						metadata: expect.objectContaining({
+							status: "FAILED",
+							error: "CONFIGURATION_CHANGED",
+							generation: 3,
+						}),
+					}),
+				);
+			},
+		);
+
+		it("keeps the caller's outcome, and applies its scheduling effect, while the locked configuration is still the receipt's", async () => {
+			m.$queryRaw.mockResolvedValueOnce([
+				{ generation: 3, failureCount: 2 },
+			]);
+			m.run.updateMany.mockResolvedValue({ count: 1 });
+
+			expect(
+				await completeInstructionRepositorySyncRun({
+					...stranded,
+					error: "CLONE_FAILED",
+					scheduling: { kind: "backoff" },
+				}),
+			).toEqual({ completed: true, configurationCurrent: true });
+
+			expect(m.run.updateMany).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						status: "FAILED",
+						error: "CLONE_FAILED",
+					}),
+				}),
+			);
+			expect(m.sync.update).toHaveBeenCalledWith({
+				where: {
+					id: "sync_1",
+					projectId: "proj_1",
+					organizationId: "org_1",
+				},
+				data: {
+					failureCount: 3,
+					nextCheckAt: new Date(NOW.getTime() + 40 * MIN),
+				},
+			});
+		});
+
+		it("never reclassifies without the opt-in: a publish that succeeded under its own fence stays SUCCEEDED after the configuration changes", async () => {
+			m.$queryRaw.mockResolvedValueOnce([]);
+			m.run.updateMany.mockResolvedValue({ count: 1 });
+
+			await completeInstructionRepositorySyncRun(base);
+
+			expect(m.run.updateMany).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						status: "SUCCEEDED",
+						error: null,
+						commitSha: "c0ffee",
+						snapshotId: "snap_1",
+					}),
+				}),
+			);
+			expect(m.recordAuditTx).toHaveBeenCalledWith(
+				client,
+				expect.objectContaining({
+					metadata: expect.objectContaining({
+						status: "SUCCEEDED",
+						error: null,
+					}),
+				}),
+			);
+		});
+	});
+
 	it.each([
 		[
 			"suppress",
@@ -673,6 +1012,10 @@ describe("listInstructionRepositorySyncRuns", () => {
 				where: { projectId: "proj_1", organizationId: "org_1" },
 				orderBy: { startedAt: "desc" },
 				take: 20,
+				// Every run of the project, whichever configuration it came
+				// from; the caller marks the ones that are not the current
+				// configuration's by this id (Fizzy #2672).
+				select: expect.objectContaining({ syncId: true }),
 			}),
 		);
 		expect(m.snapshot.findMany).toHaveBeenCalledWith({

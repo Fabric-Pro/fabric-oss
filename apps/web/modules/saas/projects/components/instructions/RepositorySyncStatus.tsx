@@ -30,16 +30,30 @@ export function RepositorySyncStatus({
 	onConfigure?: () => void;
 }) {
 	const t = useTranslations("projects.codingInstructions.repositorySync");
-	const run = state.latestRun;
+	// A run of a sync that was switched off belongs to History, not to the
+	// line about this configuration: after a switch to upload mode it would
+	// describe a sync that no longer exists and offer to run it again.
+	const run =
+		state.latestRun?.fromCurrentConfiguration === false
+			? null
+			: state.latestRun;
 	const configuration = state.configured;
+	// `state.running` is the project's (a sync workflow is open), not this
+	// configuration's. A run left going by a switch to upload mode, or by a
+	// switch-off-and-set-up-again whose old receipt is still the latest, is
+	// the switched-off sync's: History shows it, this line does not.
+	const running =
+		state.running &&
+		configuration !== null &&
+		state.latestRun?.fromCurrentConfiguration !== false;
 	const paused =
 		configuration?.automatic && configuration.automaticPausedReason
 			? configuration.automaticPausedReason
 			: null;
-	if (!state.running && !run && !paused) {
+	if (!running && !run && !paused) {
 		return null;
 	}
-	const outcome = run ? syncRunOutcome(run, state.running) : null;
+	const outcome = run ? syncRunOutcome(run, running) : null;
 	const outcomeMessage = outcome ? syncOutcomeMessage(outcome) : null;
 	const errorMessage =
 		outcome?.kind === "failed"
@@ -51,7 +65,7 @@ export function RepositorySyncStatus({
 			aria-live="polite"
 			className="flex flex-col gap-1 text-sm"
 		>
-			{state.running ? (
+			{running ? (
 				<p className="inline-flex items-center gap-1.5 text-primary">
 					<Loader2Icon
 						className="size-3.5 animate-spin"
@@ -69,12 +83,12 @@ export function RepositorySyncStatus({
 					})}
 				</p>
 			) : null}
-			{!state.running && errorMessage ? (
+			{!running && errorMessage ? (
 				<p className="text-destructive">
 					{t(errorMessage.key, errorMessage.values)}
 				</p>
 			) : null}
-			{!state.running &&
+			{!running &&
 			outcome?.kind === "not_published" &&
 			outcome.reason === "configuration_changed" &&
 			onSyncNow ? (

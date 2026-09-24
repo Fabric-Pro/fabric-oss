@@ -67,6 +67,7 @@ function run(overrides: Partial<SyncRunView>): SyncRunView {
 		snapshotId: "snap_1",
 		snapshotVersion: 4,
 		userName: "Example Member",
+		fromCurrentConfiguration: true,
 		...overrides,
 	};
 }

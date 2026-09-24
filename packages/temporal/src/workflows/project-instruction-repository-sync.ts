@@ -53,8 +53,13 @@ const { beginInstructionRepositorySyncRun } = proxyActivities<
 	// default (TRY_CANCEL) a cancelled workflow would reach `record` while
 	// `begin` is still running, before its insert is visible, and leave the
 	// receipt unfinished. WAIT_CANCELLATION_COMPLETED holds the cancellation
-	// until `begin` has actually finished; it never heartbeats, so that is
-	// its own completion or failure, bounded by startToClose (1 min).
+	// until the current attempt has completed or failed; it never
+	// heartbeats, so at the latest that is its startToClose (1 min). That
+	// bounds what the WORKFLOW waits for, not the attempt's code: an attempt
+	// Temporal gives up on at startToClose keeps running on its worker, and
+	// its receipt insert can still commit after a retry has begun the run and
+	// `record` has swept. The hourly reaper closes such a receipt once this
+	// run has ended (`reapStrandedInstructionSyncReceipts`, Fizzy #2672).
 	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 	retry: {
 		initialInterval: "1s",

@@ -15,7 +15,7 @@
  */
 import en from "@repo/i18n/translations/en.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Fragment, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -113,14 +113,33 @@ function mutationOptionsStub(mutationFn: (input: unknown) => Promise<unknown>) {
 	) => ({ mutationFn, ...opts });
 }
 
-// Only `RepositorySyncSettingsSection`'s own procedures (disable, and the
-// automatic toggle's configure): it is the one real (unmocked)
-// query/mutation consumer this suite mounts, per B-1.
+const listRuns = vi.hoisted(() => vi.fn());
+
+// `RepositorySyncSettingsSection`'s own procedures (disable, and the
+// automatic toggle's configure), per B-1, and what the History dialog
+// mounts once opened: its snapshot mutations and the sync-runs list.
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
 			instructions: {
+				publish: {
+					mutationOptions: mutationOptionsStub(async () => ({})),
+				},
+				delete: {
+					mutationOptions: mutationOptionsStub(async () => ({})),
+				},
+				createDownloadUrl: {
+					mutationOptions: mutationOptionsStub(async () => ({
+						url: "https://example.com/download",
+					})),
+				},
 				repositorySync: {
+					listRuns: {
+						queryOptions: (o: { input: unknown }) => ({
+							queryKey: ["listRuns", o.input],
+							queryFn: () => listRuns(o.input),
+						}),
+					},
 					configure: {
 						mutationOptions: mutationOptionsStub(async () => ({
 							syncId: "sync_1",
@@ -189,6 +208,8 @@ beforeEach(() => {
 	orgContextState.isGuest = false;
 	connectCliDialogProps.length = 0;
 	disableCalls.length = 0;
+	listRuns.mockReset();
+	listRuns.mockResolvedValue({ runs: [] });
 });
 
 describe("InstructionsEmptyState — connect your agent", () => {
@@ -400,6 +421,7 @@ describe("InstructionsEmptyState — repository sync (§7.1)", () => {
 						snapshotId: null,
 						snapshotVersion: null,
 						userName: "Example Member",
+						fromCurrentConfiguration: true,
 					},
 				})}
 			/>,
@@ -411,6 +433,68 @@ describe("InstructionsEmptyState — repository sync (§7.1)", () => {
 		expect(
 			screen.getByRole("button", { name: "Switch to upload mode" }),
 		).toBeInTheDocument();
+	});
+
+	// Codex review of Fizzy #2672: a first sync failed, nothing was ever
+	// published, and the member switched to upload mode. The status line
+	// rightly leaves the old run out, so History is the only place the
+	// confirmation's "Sync history is kept." can be checked from here.
+	it("opens History with the kept sync runs, marked as from a switched-off sync, when nothing was ever published", async () => {
+		const user = userEvent.setup();
+		const keptRun = {
+			id: "sync_1:run_a",
+			trigger: "MANUAL",
+			startedAt: new Date(),
+			finishedAt: new Date(),
+			status: "FAILED",
+			error: "ROOT_MISSING",
+			note: null,
+			commitSha: null,
+			snapshotId: null,
+			snapshotVersion: null,
+			userName: "Example Member",
+			fromCurrentConfiguration: false,
+		};
+		listRuns.mockResolvedValue({ runs: [keptRun] });
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				repositorySync={controls({ latestRun: keptRun })}
+			/>,
+			{ wrapper: Providers },
+		);
+
+		await user.click(
+			screen.getByRole("button", { name: emptyStateCopy.historyButton }),
+		);
+
+		const dialog = await screen.findByRole("dialog");
+		expect(
+			await within(dialog).findByText(
+				en.projects.codingInstructions.repositorySync.runs
+					.previousConfiguration,
+			),
+		).toBeInTheDocument();
+		expect(listRuns).toHaveBeenCalledWith({ projectId: "p" });
+	});
+
+	it("offers no History before any sync has run", () => {
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				repositorySync={controls()}
+			/>,
+		);
+		expect(
+			screen.queryByRole("button", {
+				name: emptyStateCopy.historyButton,
+			}),
+		).toBeNull();
+		expect(listRuns).not.toHaveBeenCalled();
 	});
 
 	it("offers no sync button to a member who cannot configure, and no dead one without the controls", () => {

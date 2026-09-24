@@ -272,6 +272,53 @@ describe("repositorySync.get", () => {
 		expect(m.listProjectRepoIntegrations).not.toHaveBeenCalled();
 	});
 
+	it("marks the latest run by whether it came from the current configuration, never exposing its sync id (Fizzy #2672)", async () => {
+		const latest = {
+			id: "sync_1:run_a",
+			syncId: "sync_1",
+			trigger: "MANUAL",
+			generation: 2,
+			startedAt: new Date("2026-09-23T10:00:00.000Z"),
+			finishedAt: new Date("2026-09-23T10:01:00.000Z"),
+			status: "NOT_PUBLISHED",
+			error: "CONFIGURATION_CHANGED",
+			note: null,
+			commitSha: null,
+			snapshotId: null,
+			snapshotVersion: null,
+			user: { id: "user_1", name: "Example Member" },
+		};
+		m.getLatestInstructionRepositorySyncRun.mockResolvedValue(latest);
+		const current = (await handlers.get?.({
+			input: { projectId: "proj_1" },
+			context: ctx,
+		})) as { latestRun: Record<string, unknown> };
+		expect(current.latestRun).toMatchObject({
+			id: "sync_1:run_a",
+			fromCurrentConfiguration: true,
+		});
+		expect(current.latestRun).not.toHaveProperty("syncId");
+
+		// Switched to upload mode: the row is gone, the receipt is not.
+		m.getProjectInstructionSettings.mockResolvedValue({
+			ignoreGlobs: null,
+			sourceOfTruth: "UPLOAD",
+		});
+		m.getInstructionRepositorySync.mockResolvedValue(null);
+		const switchedOff = (await handlers.get?.({
+			input: { projectId: "proj_1" },
+			context: ctx,
+		})) as {
+			configured: unknown;
+			latestRun: Record<string, unknown>;
+		};
+		expect(switchedOff.configured).toBeNull();
+		expect(switchedOff.latestRun).toMatchObject({
+			id: "sync_1:run_a",
+			fromCurrentConfiguration: false,
+		});
+	});
+
 	it("treats a missing mode as upload mode", async () => {
 		m.getProjectInstructionSettings.mockResolvedValue({
 			ignoreGlobs: null,
@@ -295,6 +342,7 @@ describe("repositorySync.listRuns", () => {
 		m.listInstructionRepositorySyncRuns.mockResolvedValue([
 			{
 				id: "sync_1:run_a",
+				syncId: "sync_1",
 				trigger: "MANUAL",
 				generation: 2,
 				startedAt: new Date("2026-09-23T10:00:00.000Z"),
@@ -324,6 +372,64 @@ describe("repositorySync.listRuns", () => {
 			userName: "Example Member",
 		});
 		expect(result.runs[0]).not.toHaveProperty("user");
+	});
+
+	describe("runs of a switched-off configuration (Fizzy #2672)", () => {
+		const runOf = (id: string, syncId: string) => ({
+			id,
+			syncId,
+			trigger: "MANUAL",
+			generation: 1,
+			startedAt: new Date("2026-09-23T10:00:00.000Z"),
+			finishedAt: new Date("2026-09-23T10:01:00.000Z"),
+			status: "SUCCEEDED",
+			error: null,
+			note: null,
+			commitSha: null,
+			snapshotId: null,
+			snapshotVersion: null,
+			user: { id: "user_1", name: "Example Member" },
+		});
+
+		it("marks a run from the current configuration true and one from a replaced configuration false, reading the current row in the hosting organization", async () => {
+			m.listInstructionRepositorySyncRuns.mockResolvedValue([
+				runOf("sync_1:run_b", "sync_1"),
+				runOf("sync_old:run_a", "sync_old"),
+			]);
+			const result = (await handlers.listRuns?.({
+				input: { projectId: "proj_1" },
+				context: ctx,
+			})) as { runs: Array<Record<string, unknown>> };
+			expect(m.getInstructionRepositorySync).toHaveBeenCalledWith(
+				"proj_1",
+				"org_1",
+			);
+			expect(
+				result.runs.map((r) => [r.id, r.fromCurrentConfiguration]),
+			).toEqual([
+				["sync_1:run_b", true],
+				["sync_old:run_a", false],
+			]);
+			for (const run of result.runs) {
+				expect(run).not.toHaveProperty("syncId");
+			}
+		});
+
+		it("marks every run false once no configuration is left (upload mode)", async () => {
+			m.getInstructionRepositorySync.mockResolvedValue(null);
+			m.listInstructionRepositorySyncRuns.mockResolvedValue([
+				runOf("sync_1:run_b", "sync_1"),
+				runOf("sync_1:run_a", "sync_1"),
+			]);
+			const result = (await handlers.listRuns?.({
+				input: { projectId: "proj_1" },
+				context: ctx,
+			})) as { runs: Array<Record<string, unknown>> };
+			expect(result.runs.map((r) => r.fromCurrentConfiguration)).toEqual([
+				false,
+				false,
+			]);
+		});
 	});
 });
 

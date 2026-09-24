@@ -44,6 +44,12 @@ export type SyncRunView = {
 	snapshotId: string | null;
 	snapshotVersion: number | null;
 	userName: string | null;
+	/**
+	 * False for a run of a sync that was switched off (or switched off and
+	 * set up again): its receipt outlives the configuration. History marks
+	 * it; the status line leaves it out.
+	 */
+	fromCurrentConfiguration: boolean;
 };
 
 export type RepositorySyncIntegration = {

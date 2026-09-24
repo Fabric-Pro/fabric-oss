@@ -17280,7 +17280,6 @@ model ProjectInstructionRepositorySync {
   organization          Organization                        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user                  User                                @relation("InstructionRepositorySyncDelegate", fields: [userId], references: [id], onDelete: Cascade)
   repositoryIntegration ProjectRepositoryIntegration        @relation(fields: [repositoryIntegrationId], references: [id], onDelete: Cascade, map: "project_instruction_repository_sync_integration_fkey")
-  runs                  ProjectInstructionRepositorySyncRun[]
 
   @@index([automatic, nextCheckAt])
   @@index([organizationId])
@@ -17291,10 +17290,14 @@ model ProjectInstructionRepositorySync {
 
 /// One logical sync run: inserted by `begin` (status null), completed once by
 /// `record` with `UPDATE ... WHERE finishedAt IS NULL`. It is the run's
-/// completion receipt and the History "Sync runs" list.
+/// completion receipt and the History "Sync runs" list. Deliberately NO
+/// foreign key to the sync row, as on the Living Memory receipt: a receipt
+/// outlives a disable ("Switch to upload mode") or a disconnect, so `syncId`
+/// is a plain column holding the configuration the run was begun under.
 model ProjectInstructionRepositorySyncRun {
   /// runKey = `<syncId>:<workflow run id>`; unique by construction.
   id             String                           @id
+  /// The sync row's id when the run began; that row may since be gone.
   syncId         String
   projectId      String
   organizationId String
@@ -17311,12 +17314,22 @@ model ProjectInstructionRepositorySyncRun {
   commitSha      String?
   /// No foreign key: the snapshot may be pruned while the run stays in History.
   snapshotId     String?
+  /// When the instruction reaper last claimed this unfinished receipt to ask
+  /// Temporal whether its run has ended. Candidates are taken least recently
+  /// checked first, so receipts whose runs stay open cannot starve later ones.
+  /// Null until first claimed; irrelevant once `finishedAt` is set.
+  reapCheckedAt  DateTime?
 
-  sync         ProjectInstructionRepositorySync @relation(fields: [syncId], references: [id], onDelete: Cascade)
   project      Project                          @relation("ProjectInstructionRepositorySyncRuns", fields: [projectId], references: [id], onDelete: Cascade)
   organization Organization                     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User                             @relation("InstructionRepositorySyncRunActor", fields: [userId], references: [id], onDelete: Cascade)
 
+  // A FIFTH index exists that Prisma cannot express: the partial
+  // `project_instruction_sync_run_reap_due_idx` on ("reapCheckedAt" NULLS
+  // FIRST, "startedAt", "id") WHERE "finishedAt" IS NULL AND the key is a
+  // workflow run's `<syncId>:<run id>`, added in migration 20260924180100. It
+  // serves the reaper's unscoped candidate claim. Documented here because a
+  // shadow-database diff can read it as drift and try to DROP it.
   @@index([syncId, startedAt])
   @@index([projectId, startedAt])
   @@index([organizationId])

@@ -1123,6 +1123,7 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 						snapshotId: "s7",
 						snapshotVersion: 7,
 						userName: "A. Member",
+						fromCurrentConfiguration: true,
 					},
 				}),
 			),

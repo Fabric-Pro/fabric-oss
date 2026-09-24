@@ -15,6 +15,7 @@ import {
 /**
  * History's "Sync runs" list (design 2026-09-23 §7.3): time, trigger,
  * outcome, commit, version and the member each run acted as, newest first.
+ * Runs of a sync that was switched off stay listed, marked as such.
  * Rendered inside the History dialog, so it is queried only while History
  * is open.
  */
@@ -77,6 +78,14 @@ export function RepositorySyncRuns({
 								className="text-muted-foreground text-xs"
 							>
 								{parts.join(" · ")}
+								{run.fromCurrentConfiguration === false ? (
+									<>
+										{" · "}
+										<span className="italic">
+											{t("runs.previousConfiguration")}
+										</span>
+									</>
+								) : null}
 							</li>
 						);
 					})}
