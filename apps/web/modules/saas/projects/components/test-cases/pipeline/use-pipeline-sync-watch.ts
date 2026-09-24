@@ -91,10 +91,16 @@ export function usePipelineSyncWatch(
 }
 
 /**
- * A sync is over once every source row written before it has been written
- * again. Both terminal writers — `advancePipelineSyncState` and
+ * A sync is over once every source row the previous sync wrote has been
+ * written again. Both terminal writers — `advancePipelineSyncState` and
  * `recordPipelineSyncFailure` — touch the row, so a failing source counts as
  * finished rather than holding the poll open.
+ *
+ * A row the previous sync did not write (a repository disconnected since, a
+ * key the plan no longer derives) will not be written by this one either.
+ * Rows one sync writes land within its own time bound of each other, so a row
+ * older than that relative to the newest is not waited for: on staging one
+ * such row, ten hours stale, held every poll open to the ten-minute cap.
  */
 function isPipelineSyncSettled(
 	watch: PipelineSyncWatch,
@@ -103,9 +109,14 @@ function isPipelineSyncSettled(
 	if (!rows || rows.length === 0) {
 		return false;
 	}
+	const newestBefore = Math.max(0, ...watch.baseline.values());
 	return rows.every((row) => {
 		const before = watch.baseline.get(row.id);
-		return before === undefined || toMs(row.updatedAt) > before;
+		return (
+			before === undefined ||
+			newestBefore - before > SYNC_WATCH_LIMIT_MS ||
+			toMs(row.updatedAt) > before
+		);
 	});
 }
 
