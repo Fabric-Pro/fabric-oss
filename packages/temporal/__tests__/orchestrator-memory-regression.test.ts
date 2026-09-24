@@ -39,6 +39,7 @@ vi.mock("@temporalio/workflow", () => ({
 		debug: vi.fn(),
 	},
 	proxyActivities: vi.fn(() => activityStubs),
+	patched: vi.fn(() => true),
 	workflowInfo: vi.fn(() => ({ unsafe: { isReplaying: false } })),
 	startChild: vi.fn(),
 	ParentClosePolicy: {

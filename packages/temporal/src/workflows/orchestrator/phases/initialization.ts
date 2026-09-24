@@ -15,6 +15,7 @@ import type * as orchestratorActivities from "../../../activities/orchestrator";
 import type * as orchestratorMemoryActivities from "../../../activities/orchestrator-memory";
 import type * as projectMetadataActivities from "../../../activities/project-metadata";
 import type * as weaveActivities from "../../../activities/weave";
+import { orchestratorBasePrompt } from "../../../lib/assistant-identity";
 import { formatRepositoryRoleMap } from "../../../lib/repository-role-formatter";
 import type {
 	OrchestratorWorkflowInput,
@@ -323,8 +324,14 @@ export async function executeInitializationPhase(
 		updateProgress("routing", "Applying policy enrichment...");
 
 		let enrichedMessage = input.message;
-		// Start with custom system prompt from input (e.g., agent template instructions)
-		let enrichedSystemPrompt = input.systemPrompt || "";
+		// Start with the caller's own persona (agent template instructions, the
+		// drawer's framing) or, when it sent none, Advisor's identity — without
+		// one the model improvised a name from chat history and memory. Gated so
+		// a run recorded before the marker replays with the empty base it began
+		// with, rather than switching identity partway through one execution.
+		let enrichedSystemPrompt = patched("orchestrator-advisor-identity-v1")
+			? orchestratorBasePrompt(input.systemPrompt)
+			: input.systemPrompt || "";
 		let clarityProjectContext: string | undefined;
 
 		// Capture today's date so the LLM knows "today". Rendered date-only and

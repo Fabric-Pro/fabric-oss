@@ -4,7 +4,7 @@
  * Register External Agent
  *
  * Allows users to register external agents (A2A or MCP) to be used
- * by Fabric Loom for task delegation or tool access.
+ * by Advisor for task delegation or tool access.
  *
  * Agent Types:
  * - A2A: Full task-executing agents that support the A2A protocol
@@ -720,7 +720,7 @@ export function RegisterExternalAgent() {
 									</CardTitle>
 									<CardDescription>
 										Once registered, this agent will be
-										available to Fabric Loom for task
+										available to Advisor for task
 										delegation.
 									</CardDescription>
 								</CardHeader>

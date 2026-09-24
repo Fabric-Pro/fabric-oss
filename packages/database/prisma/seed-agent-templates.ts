@@ -1042,7 +1042,7 @@ const productivityTemplates: AgentTemplateData[] = [
 	{
 		slug: "manager-copilot",
 		name: "managerCopilot",
-		displayName: "Manager Nexus",
+		displayName: "Manager Assistant",
 		description:
 			"Assist managers in their daily tasks, finding relevant information, providing coaching or helping with write-ups.",
 		heroEmojis: ["👨‍💼", "📝", "🎯"],

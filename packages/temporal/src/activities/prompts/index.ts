@@ -184,23 +184,6 @@ export function clearPromptCache(): void {
 // ============================================================================
 
 /**
- * Loads the enhanced orchestrator system prompt with journey tracking.
- * This is the main Factory AI-style prompt for intelligent orchestration.
- */
-export function getOrchestratorSystemPrompt(variables: {
-	mcpToolDescriptions: string;
-	agentDescriptions: string;
-	workflowDescriptions?: string;
-}): string {
-	return loadAndRenderPrompt("orchestrator-system-prompt", {
-		mcpToolDescriptions: variables.mcpToolDescriptions,
-		agentDescriptions: variables.agentDescriptions,
-		workflowDescriptions:
-			variables.workflowDescriptions || "No workflows configured.",
-	});
-}
-
-/**
  * Loads the journey-aware planning prompt for adaptive task planning.
  */
 export function getJourneyPlanningPrompt(variables: {
