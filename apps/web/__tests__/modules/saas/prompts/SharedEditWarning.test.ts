@@ -19,7 +19,9 @@
 
 import {
 	needsSharedEditWarning,
+	needsUnknownReachWarning,
 	sharedEditWarning,
+	unknownReachWarning,
 } from "@saas/prompts/lib/shared-edit-warning";
 import { describe, expect, it } from "vitest";
 
@@ -85,5 +87,45 @@ describe("what the warning says", () => {
 		const { message } = sharedEditWarning(["A", "B"]);
 
 		expect(message).toMatch(/share one body/i);
+	});
+});
+
+describe("when the bound-actions read itself failed", () => {
+	it("warns when content changed and the read failed, whatever boundActionCount says", () => {
+		// `boundActionCount` is `[]` for a reason unrelated to how many actions
+		// this prompt really serves — reading that as "nothing bound" would
+		// silently skip the warning on exactly the save it exists to catch.
+		expect(
+			needsUnknownReachWarning({
+				contentChanged: true,
+				boundActionsFailed: true,
+			}),
+		).toBe(true);
+	});
+
+	it("stays quiet when only metadata changed, even if the read failed", () => {
+		expect(
+			needsUnknownReachWarning({
+				contentChanged: false,
+				boundActionsFailed: true,
+			}),
+		).toBe(false);
+	});
+
+	it("stays quiet when the read succeeded", () => {
+		// The ordinary shared-edit check owns this case.
+		expect(
+			needsUnknownReachWarning({
+				contentChanged: true,
+				boundActionsFailed: false,
+			}),
+		).toBe(false);
+	});
+
+	it("says plainly that the reach could not be checked", () => {
+		const { title, message } = unknownReachWarning();
+
+		expect(title).toMatch(/could not check which actions/i);
+		expect(message).toMatch(/saving may change it for other actions too/i);
 	});
 });

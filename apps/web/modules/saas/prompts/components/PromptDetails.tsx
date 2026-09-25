@@ -40,10 +40,13 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { forkTarget, isProposalCandidate } from "../lib/fork-scope";
+import { isPromptNotFound } from "../lib/prompt-not-found";
 import { savePromptAtomically } from "../lib/save-prompt-atomically";
 import {
 	needsSharedEditWarning,
+	needsUnknownReachWarning,
 	sharedEditWarning,
+	unknownReachWarning,
 } from "../lib/shared-edit-warning";
 import {
 	getUniqueVariables,
@@ -52,6 +55,7 @@ import {
 	replaceVariables,
 } from "../lib/variable-detection";
 import { DownloadDropdown } from "./DownloadDropdown";
+import { LoadFailure } from "./LoadFailure";
 import { PromptBindingManager } from "./PromptBindingManager";
 import { PromptEditor } from "./PromptEditor";
 import { PromptScopeBadge } from "./PromptScopeBadge";
@@ -98,11 +102,23 @@ export function PromptDetails({
 	const isAdmin = user?.role === "admin";
 	const { confirm } = useConfirmationAlert();
 
+	// Hoisted above the loading/error/not-found returns below: the Back button
+	// in every one of those branches needs the org-aware path, not the
+	// personal-context one.
+	const basePath = organizationSlug
+		? `/app/${organizationSlug}/prompts`
+		: "/app/prompts";
+
 	const promptQueryKey = orpc.prompts.get.byId.queryKey({
 		input: { id: promptId, organizationId: organizationId ?? null },
 	});
 
-	const { data: prompt, isLoading } = useQuery(
+	const {
+		data: prompt,
+		isLoading,
+		error,
+		refetch,
+	} = useQuery(
 		orpc.prompts.get.byId.queryOptions({
 			input: { id: promptId, organizationId: organizationId ?? null },
 		}),
@@ -110,8 +126,9 @@ export function PromptDetails({
 
 	// Which actions this prompt currently serves. Read so a save can say what
 	// it reaches; a failure here must not block editing, so it degrades to an
-	// empty list and the confirmation simply does not appear.
-	const { data: boundActionsData } = useQuery({
+	// empty list and the shared-edit warning simply does not appear on its
+	// own — `needsUnknownReachWarning` below is what replaces that silence.
+	const { data: boundActionsData, error: boundActionsError } = useQuery({
 		queryKey: ["prompt-bound-actions", promptId, organizationId],
 		queryFn: async () =>
 			await orpcClient.prompts.bindings.listForPrompt({
@@ -333,14 +350,54 @@ export function PromptDetails({
 		);
 	}
 
+	// NOT_FOUND covers both an absent id and a prompt outside the caller's
+	// tenant (the lookup is tenant-filtered) — the API deliberately does not
+	// say which, so the copy has to be true for either case. Any other error
+	// (transport, 5xx, 400) means the read failed, not that the prompt is
+	// gone, so it gets a retry instead of a dead end.
+	if (error) {
+		if (isPromptNotFound(error)) {
+			return (
+				<div className="container max-w-4xl py-8">
+					<div className="flex flex-col items-center justify-center py-12">
+						<p className="text-muted-foreground mb-4">
+							This prompt does not exist, or you do not have
+							access to it.
+						</p>
+						<Button onClick={() => router.push(basePath)}>
+							Back to Prompts
+						</Button>
+					</div>
+				</div>
+			);
+		}
+		return (
+			<div className="container max-w-4xl py-8">
+				<div className="flex flex-col items-center gap-4 py-12">
+					<LoadFailure
+						message="Could not load this prompt."
+						onRetry={() => refetch()}
+					/>
+					<Button
+						variant="outline"
+						onClick={() => router.push(basePath)}
+					>
+						Back to Prompts
+					</Button>
+				</div>
+			</div>
+		);
+	}
+
 	if (!prompt) {
 		return (
 			<div className="container max-w-4xl py-8">
 				<div className="flex flex-col items-center justify-center py-12">
 					<p className="text-muted-foreground mb-4">
-						Prompt not found
+						This prompt does not exist, or you do not have access to
+						it.
 					</p>
-					<Button onClick={() => router.push("/app/prompts")}>
+					<Button onClick={() => router.push(basePath)}>
 						Back to Prompts
 					</Button>
 				</div>
@@ -379,6 +436,32 @@ export function PromptDetails({
 		const contentChanged = Boolean(
 			data.content && data.content !== content,
 		);
+
+		// The bound-actions read itself failed, so `boundActions` is `[]` for a
+		// reason that has nothing to do with how many actions this prompt
+		// really serves — the shared-edit check below would read that as
+		// "nothing bound" and stay silent. Editing must stay unblocked, but
+		// saving over an unknown reach needs an honest confirmation instead.
+		if (
+			needsUnknownReachWarning({
+				contentChanged,
+				boundActionsFailed: Boolean(boundActionsError),
+			})
+		) {
+			confirm({
+				...unknownReachWarning(),
+				confirmLabel: "Save anyway",
+				cancelLabel: "Cancel",
+				onConfirm: save,
+			});
+			return;
+		}
+
+		// FR21: the content is shared, so an edit reaches every action bound to
+		// this prompt at once. Only worth interrupting for when there is more
+		// than one — with a single binding the reach is exactly what the user
+		// is looking at. Metadata-only saves are left alone: they change nothing
+		// any agent reads.
 		if (
 			needsSharedEditWarning({
 				contentChanged,
@@ -400,10 +483,6 @@ export function PromptDetails({
 	const handleCancel = () => {
 		setIsEditing(false);
 	};
-
-	const basePath = organizationSlug
-		? `/app/${organizationSlug}/prompts`
-		: "/app/prompts";
 
 	// Render content with inline variable highlighting
 	const renderContent = () => {

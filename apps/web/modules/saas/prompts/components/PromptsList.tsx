@@ -25,6 +25,7 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useDebounceValue } from "usehooks-ts";
+import { LoadFailure } from "./LoadFailure";
 import { PromptCard } from "./PromptCard";
 import { PromptCatalog } from "./PromptCatalog";
 import { PromptsHero } from "./PromptsHero";
@@ -298,17 +299,10 @@ export function PromptsList({ organizationId }: Props) {
 						// Distinct from the empty state below: a failed request
 						// telling someone to create their first prompt sends them
 						// to fix a library that may be full.
-						<div
-							className="space-y-4 py-12 text-center"
-							role="alert"
-						>
-							<p className="text-muted-foreground text-sm">
-								Could not load your prompts.
-							</p>
-							<Button variant="outline" onClick={() => refetch()}>
-								Try again
-							</Button>
-						</div>
+						<LoadFailure
+							message="Could not load your prompts."
+							onRetry={() => refetch()}
+						/>
 					) : prompts.length === 0 ? (
 						<div className="text-center py-12">
 							<p className="text-muted-foreground mb-4">

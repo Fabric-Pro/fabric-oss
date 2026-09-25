@@ -127,7 +127,11 @@ export function SetAsDefaultDialog({
 	// proposing it for those three, and re-ticking them by hand is where the
 	// fourth gets forgotten. Only while the dialog is open, and only for a
 	// prompt we were given an id for.
-	const { data: boundActions } = useQuery({
+	const {
+		data: boundActions,
+		error: boundActionsError,
+		refetch: refetchBoundActions,
+	} = useQuery({
 		queryKey: ["prompt-bound-actions", promptId, organizationId],
 		queryFn: async () =>
 			await orpcClient.prompts.bindings.listForPrompt({
@@ -401,20 +405,48 @@ export function SetAsDefaultDialog({
 
 					{/* FR22 / FR19: the other actions this applies to. */}
 					{primaryActionId && (
-						<ActionMultiSelect
-							id="set-default-also"
-							label="Also apply to"
-							alwaysIncluded={primaryActionId}
-							value={alsoApplyTo}
-							onChange={setAlsoApplyTo}
-							hint={
-								alsoApplyTo.length > 0
-									? `${
-											mustPropose ? "Proposed" : "Applies"
-										} for ${alsoApplyTo.length + 1} actions. They share one body, so editing it later changes all of them.`
-									: "Optional. The action selected above is always included."
-							}
-						/>
+						<div className="space-y-2">
+							{boundActionsError && (
+								// FR22's pre-fill silently comes up empty on this
+								// failure — say so, and offer a retry, without
+								// blocking the rest of the form on it.
+								<div
+									role="alert"
+									className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-highlight/40 bg-highlight/5 px-3 py-2 text-highlight-ink text-xs"
+								>
+									<span>
+										Could not load the actions this prompt
+										already serves, so none are
+										pre-selected.
+									</span>
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										className="h-auto p-0 text-xs underline underline-offset-2"
+										onClick={() => refetchBoundActions()}
+									>
+										Try again
+									</Button>
+								</div>
+							)}
+							<ActionMultiSelect
+								id="set-default-also"
+								label="Also apply to"
+								alwaysIncluded={primaryActionId}
+								value={alsoApplyTo}
+								onChange={setAlsoApplyTo}
+								hint={
+									alsoApplyTo.length > 0
+										? `${
+												mustPropose
+													? "Proposed"
+													: "Applies"
+											} for ${alsoApplyTo.length + 1} actions. They share one body, so editing it later changes all of them.`
+										: "Optional. The action selected above is always included."
+								}
+							/>
+						</div>
 					)}
 				</div>
 

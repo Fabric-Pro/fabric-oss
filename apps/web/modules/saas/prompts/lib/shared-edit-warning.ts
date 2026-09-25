@@ -51,3 +51,30 @@ export function sharedEditWarning(
 		)}. They share one body, so every one of them takes this edit.`,
 	};
 }
+
+/**
+ * FR21's warning depends on knowing which actions a prompt reaches. When that
+ * read itself FAILED, `boundActionCount` is 0 for a reason that has
+ * nothing to do with how many actions this prompt really serves — reading
+ * that as "nothing bound" would silently skip the warning on exactly the save
+ * it exists to catch. Editing must stay unblocked (a broken query must not
+ * become a lock), so the answer is an honest confirmation instead of silence.
+ */
+export function needsUnknownReachWarning({
+	contentChanged,
+	boundActionsFailed,
+}: {
+	contentChanged: boolean;
+	boundActionsFailed: boolean;
+}): boolean {
+	return contentChanged && boundActionsFailed;
+}
+
+/** What that honest confirmation says. */
+export function unknownReachWarning(): SharedEditWarning {
+	return {
+		title: "Could not check which actions use this prompt",
+		message:
+			"We could not confirm which actions this prompt serves, so saving may change it for other actions too. Save anyway?",
+	};
+}

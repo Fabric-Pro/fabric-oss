@@ -43,6 +43,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useDebounceValue } from "usehooks-ts";
 import { usePromptDeletion } from "../hooks/use-prompt-deletion";
+import { LoadFailure } from "./LoadFailure";
 import { PromptBindingManager } from "./PromptBindingManager";
 import { PromptFormatBadge } from "./PromptFormatBadge";
 import { PromptScopeBadge } from "./PromptScopeBadge";
@@ -92,7 +93,7 @@ export function PromptManagementPage({ organizationSlug }: Props) {
 
 	// Fetch prompts with filters
 	// IMPORTANT: Pass null for personal context to prevent session fallback
-	const { data, isLoading, refetch } = useQuery(
+	const { data, isLoading, error, refetch } = useQuery(
 		orpc.prompts.list.queryOptions({
 			input: {
 				organizationId: organizationId ?? null,
@@ -216,6 +217,11 @@ export function PromptManagementPage({ organizationSlug }: Props) {
 					<div className="flex items-center justify-center py-12">
 						<Spinner />
 					</div>
+				) : error ? (
+					<LoadFailure
+						message="Could not load your prompts."
+						onRetry={() => refetch()}
+					/>
 				) : prompts.length === 0 ? (
 					<div className="flex flex-col items-center justify-center py-12 text-center">
 						<p className="text-muted-foreground">

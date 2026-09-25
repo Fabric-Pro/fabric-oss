@@ -22,6 +22,8 @@ import { HomeIcon } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { isPromptNotFound } from "../lib/prompt-not-found";
+import { LoadFailure } from "./LoadFailure";
 import { PromptContentEnhancer } from "./PromptContentEnhancer";
 
 type Props = {
@@ -35,7 +37,12 @@ export function PromptEnhancePage({ promptId, organizationId }: Props) {
 	const queryClient = useQueryClient();
 	const onError = useCopilotErrorHandler();
 
-	const { data: prompt, isLoading } = useQuery(
+	const {
+		data: prompt,
+		isLoading,
+		error,
+		refetch,
+	} = useQuery(
 		orpc.prompts.get.byId.queryOptions({
 			input: { id: promptId, organizationId: organizationId ?? null },
 		}),
@@ -115,10 +122,37 @@ export function PromptEnhancePage({ promptId, organizationId }: Props) {
 		);
 	}
 
+	// Same NOT_FOUND-vs-failure split as PromptDetails: NOT_FOUND covers both
+	// an absent id and a prompt outside the caller's tenant, on purpose, so
+	// the copy has to be true for either. Any other error means the read
+	// failed, not that the prompt is gone.
+	if (error) {
+		if (isPromptNotFound(error)) {
+			return (
+				<div className="flex flex-col items-center justify-center py-12">
+					<p className="text-muted-foreground mb-4">
+						This prompt does not exist, or you do not have access to
+						it.
+					</p>
+				</div>
+			);
+		}
+		return (
+			<div className="flex flex-col items-center justify-center py-12">
+				<LoadFailure
+					message="Could not load this prompt."
+					onRetry={() => refetch()}
+				/>
+			</div>
+		);
+	}
+
 	if (!prompt) {
 		return (
 			<div className="flex flex-col items-center justify-center py-12">
-				<p className="text-muted-foreground mb-4">Prompt not found</p>
+				<p className="text-muted-foreground mb-4">
+					This prompt does not exist, or you do not have access to it.
+				</p>
 			</div>
 		);
 	}
