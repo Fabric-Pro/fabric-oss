@@ -2,6 +2,8 @@ import {
 	ActivityFailure,
 	ApplicationFailure,
 	RetryState,
+	TimeoutFailure,
+	TimeoutType,
 } from "@temporalio/common";
 import { describe, expect, it } from "vitest";
 import {
@@ -225,5 +227,49 @@ describe("describeScanFailureMessage", () => {
 			"Every scanner failed to complete (Security, Accessibility).",
 		);
 		expect(describeScanFailureMessage(thrown)).toBe(thrown.message);
+	});
+});
+
+/** The message the workflow's catch records: step message plus hint. */
+function recordedMessage(error: unknown): string {
+	return ensureScanFailureHint(describeScanFailureMessage(error), error);
+}
+
+describe("failed scan step message", () => {
+	it("says a timed-out step timed out, without blaming the AI model", () => {
+		const err = activityFailure(
+			"gatherScanContextActivity",
+			new TimeoutFailure(
+				"Activity task timed out",
+				undefined,
+				TimeoutType.START_TO_CLOSE,
+			),
+		);
+		expect(recordedMessage(err)).toBe(
+			"Gathering the project content timed out. This can happen on a large project or a busy worker and is usually temporary — please try again in a few minutes.",
+		);
+	});
+
+	it("gives an unavailable step a service hint, as its own sentence", () => {
+		const err = activityFailure(
+			"persistScanResultsActivity",
+			Object.assign(new Error("Connection reset by peer"), {
+				code: "ECONNRESET",
+			}),
+		);
+		expect(recordedMessage(err)).toBe(
+			"Saving the scan results failed: Connection reset by peer. A service the scan depends on was temporarily unavailable. This is usually temporary — please try again shortly.",
+		);
+	});
+
+	it("keeps the AI-model hint for the wholesale scanner failure", () => {
+		const rateHint = describeScanFailureReason([
+			new Error("429 rate limit"),
+		]) as string;
+		const thrown = new Error(
+			`Every scanner failed to complete (Security). ${rateHint}`,
+		);
+		expect(recordedMessage(thrown)).toBe(thrown.message);
+		expect(rateHint).toContain("The AI model was rate-limited");
 	});
 });
