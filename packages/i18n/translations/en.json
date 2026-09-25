@@ -5790,6 +5790,19 @@
 						"generic": "Could not save the sync settings."
 					}
 				},
+				"tree": {
+					"label": "Folders on this branch",
+					"hint": "Choose the folder that holds the instructions, or type it below. Files are shown for orientation and can't be chosen.",
+					"repositoryRoot": "Repository root",
+					"searchPlaceholder": "Search folders and files",
+					"loading": "Loading the branch's folders and files…",
+					"empty": "No files on this branch.",
+					"noMatches": "No folders or files match this search.",
+					"unsupported": "This repository type doesn't support browsing. Type the folder below.",
+					"truncated": "This branch is too large to list in full: only the first {max, number} entries are shown. Type any other folder below.",
+					"error": "Couldn't list this branch's folders and files. Type the folder below, or try again later.",
+					"refineSearch": "Showing the first {max} matches. Refine the search to see others."
+				},
 				"syncNowResult": {
 					"started": "Sync started.",
 					"already_running": "A sync is already running.",

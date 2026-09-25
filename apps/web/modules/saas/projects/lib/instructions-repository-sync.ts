@@ -9,7 +9,7 @@
  * the components read them as the closed sets they are.
  */
 
-import { SNAPSHOT_LIMITS } from "@repo/instructions";
+import { SNAPSHOT_LIMITS, validateRelativePath } from "@repo/instructions";
 
 type SyncRunStatus =
 	| "SUCCEEDED"
@@ -387,6 +387,38 @@ export function configureErrorMessage(error: unknown): {
 		};
 	}
 	return { key: "configureDialog.errors.generic", inline: false };
+}
+
+/**
+ * `listTree`'s refusal (Fizzy #2725) in the configure dialog's own words:
+ * `listTree` throws `configure`'s codes for the same outcome, so they read
+ * as `configureErrorMessage` words them. Its generic fallback is about
+ * saving, which a listing never does, so an unmapped failure gets the
+ * tree's own message instead.
+ */
+export function repositorySyncTreeErrorKey(error: unknown): string {
+	const mapped = configureErrorMessage(error);
+	return mapped.key === "configureDialog.errors.generic"
+		? "tree.error"
+		: mapped.key;
+}
+
+/**
+ * The folder the typed `rootPath` names, as the tree compares it with its
+ * rows: the path `configure` would store for it (`normalizeRootPath` on the
+ * server) — trimmed, trailing separators stripped, then canonicalised by the
+ * shared `validateRelativePath` (backslashes to `/`, a leading `./` dropped,
+ * repeated separators collapsed). `""` is the repository root. A value
+ * `configure` would refuse falls back to its trimmed spelling, which names
+ * no row.
+ */
+export function repositorySyncTreeSelection(rootPath: string): string {
+	const trimmed = rootPath.trim().replace(/[/\\]+$/, "");
+	if (trimmed === "") {
+		return "";
+	}
+	const canonical = validateRelativePath(trimmed);
+	return canonical.ok ? canonical.path : rootPath.trim();
 }
 
 export function syncNowResultMessage(result: SyncNowResult): {

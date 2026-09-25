@@ -44,6 +44,7 @@ import { configureRepositorySyncProcedure } from "../configure";
 import { disableRepositorySyncProcedure } from "../disable";
 import { getRepositorySyncProcedure } from "../get";
 import { listRepositorySyncRunsProcedure } from "../list-runs";
+import { listInstructionRepositoryTreeProcedure } from "../list-tree";
 import { syncRepositoryNowProcedure } from "../sync-now";
 import { updateRepositorySyncProposalSettingsProcedure } from "../update-proposal-settings";
 
@@ -68,8 +69,11 @@ const READ_PROCEDURES = [
 	["get", getRepositorySyncProcedure],
 	["listRuns", listRepositorySyncRunsProcedure],
 ] as const;
+// `listTree` writes nothing, but spends the integration's credential, so it
+// sits behind configure's own permission (Fizzy #2725).
 const MUTATING_PROCEDURES = [
 	["configure", configureRepositorySyncProcedure],
+	["listTree", listInstructionRepositoryTreeProcedure],
 	["syncNow", syncRepositoryNowProcedure],
 	["disable", disableRepositorySyncProcedure],
 	["updateProposalSettings", updateRepositorySyncProposalSettingsProcedure],

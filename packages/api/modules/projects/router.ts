@@ -220,6 +220,7 @@ import { configureRepositorySyncProcedure } from "./procedures/instructions/repo
 import { disableRepositorySyncProcedure } from "./procedures/instructions/repository-sync/disable";
 import { getRepositorySyncProcedure } from "./procedures/instructions/repository-sync/get";
 import { listRepositorySyncRunsProcedure } from "./procedures/instructions/repository-sync/list-runs";
+import { listInstructionRepositoryTreeProcedure } from "./procedures/instructions/repository-sync/list-tree";
 import { syncRepositoryNowProcedure } from "./procedures/instructions/repository-sync/sync-now";
 import { updateRepositorySyncProposalSettingsProcedure } from "./procedures/instructions/repository-sync/update-proposal-settings";
 import { updateSettingsProcedure as updateInstructionSettingsProcedure } from "./procedures/instructions/update-settings";
@@ -1981,6 +1982,8 @@ export const projectsRouter = {
 		repositorySync: {
 			get: getRepositorySyncProcedure,
 			listRuns: listRepositorySyncRunsProcedure,
+			// The configure dialog's folder browser (Fizzy #2725).
+			listTree: listInstructionRepositoryTreeProcedure,
 			configure: configureRepositorySyncProcedure,
 			syncNow: syncRepositoryNowProcedure,
 			disable: disableRepositorySyncProcedure,
