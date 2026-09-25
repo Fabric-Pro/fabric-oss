@@ -217,6 +217,8 @@ type PendingProposalDetail = PendingProposalRow & {
 	appliedChangeIndexes?: number[];
 	/** The indexes this proposal actually created, from the application table. */
 	createdChangeIndexes?: number[];
+	/** Graph chat id of a Teams chat proposal's source chat, while it is linked. */
+	teamsChatId?: string | null;
 	projectId: string;
 	proposal: unknown;
 	userId: string | null;
@@ -346,12 +348,29 @@ function formatMeetingBadgeDate(value: unknown): string | null {
 	});
 }
 
-/** The full transcript text the auto-analyze activity stores for in-app viewing. */
-function meetingTranscriptFromMetadata(
+/**
+ * The source text the analyze activity stored for in-app viewing: the meeting
+ * transcript, or the formatted Teams/Slack thread the proposal was drafted from.
+ */
+function transcriptFromMetadata(
 	metadata: Record<string, unknown> | null,
 ): string | null {
 	const v = metadata?.transcript;
 	return typeof v === "string" && v.trim().length > 0 ? v : null;
+}
+
+function SourceTranscript({ label, text }: { label: string; text: string }) {
+	return (
+		<details className="mt-2">
+			<summary className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-primary hover:underline">
+				<FileTextIcon className="size-3" aria-hidden="true" />
+				{label}
+			</summary>
+			<pre className="mt-2 max-h-64 overflow-auto overscroll-contain whitespace-pre-wrap rounded-md border border-foreground/10 bg-background p-2 text-xs text-foreground/80">
+				{text}
+			</pre>
+		</details>
+	);
 }
 
 /**
@@ -400,10 +419,51 @@ function channelNameFromMetadata(
 }
 
 /**
+ * Where a monitored conversation took place: the channel name for Teams and
+ * Slack channels, the chat topic for a Teams group chat (the chat monitor
+ * stores `chatTopic`, never a channel name).
+ */
+function conversationNameFromMetadata(
+	source: string,
+	metadata: Record<string, unknown> | null,
+): string | null {
+	if (source !== "TEAMS_CHAT") {
+		return channelNameFromMetadata(metadata);
+	}
+	const topic = metadata?.chatTopic;
+	return typeof topic === "string" && topic.length > 0 ? topic : null;
+}
+
+/**
+ * Teams deep link to one chat message, in the documented
+ * `https://teams.microsoft.com/l/message/<chatId>/<messageId>?context=…` form.
+ * Graph returns no `webUrl` for chat messages, so a chat proposal has no stored
+ * message link; the ids are checked against the shapes Graph issues (`19:…`
+ * chat ids, numeric message ids) before they go into the URL.
+ */
+function teamsChatMessageLink(
+	chatId: string | null,
+	messageId: unknown,
+): string | undefined {
+	if (
+		!chatId ||
+		!/^19:[^/?#\s]+$/.test(chatId) ||
+		typeof messageId !== "string" ||
+		!/^\d+$/.test(messageId)
+	) {
+		return undefined;
+	}
+	const context = encodeURIComponent(JSON.stringify({ contextType: "chat" }));
+	return `https://teams.microsoft.com/l/message/${chatId}/${messageId}?context=${context}`;
+}
+
+/**
  * Build a deep-link to the original message/thread for the proposal.
  *
  * - TEAMS_CHANNEL / TEAMS_CHAT: source metadata already holds a full
- *   `threadRootWebLink` (or `channelWebUrl` fallback).
+ *   `threadRootWebLink` for channel messages. A chat message has none, so a
+ *   chat proposal links to its root message through `teamsChatId` (resolved
+ *   server-side from the linked chat), then to the chat's `chatWebUrl`.
  * - SLACK_CHANNEL: metadata typically has `channelId` and Slack `ts`
  *   (and optionally `threadTs`). The Slack permalink format strips the
  *   `.` from `ts` and prefixes with `p`, e.g. `1715724000.123456` →
@@ -415,6 +475,7 @@ function channelNameFromMetadata(
 function threadLinkFromMetadata(
 	source: string,
 	metadata: Record<string, unknown> | null,
+	teamsChatId: string | null,
 ): string | null {
 	if (!metadata) {
 		return null;
@@ -450,6 +511,8 @@ function threadLinkFromMetadata(
 	// Default: Teams (channel + chat) — pre-built links live in metadata.
 	const link =
 		(metadata.threadRootWebLink as string | undefined) ??
+		teamsChatMessageLink(teamsChatId, metadata.threadRootId) ??
+		(metadata.chatWebUrl as string | undefined) ??
 		(metadata.channelWebUrl as string | undefined);
 	return typeof link === "string" && link.length > 0 ? link : null;
 }
@@ -535,12 +598,11 @@ function ProposalSourceBadge({
 	}
 
 	if (source === "TEAMS_CHAT") {
+		const chatTopic = conversationNameFromMetadata(source, sourceMetadata);
 		return (
 			<span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
 				<HashIcon className="size-3" />
-				{channelName
-					? `Posted in ${channelName}`
-					: "Posted in Teams chat"}
+				{chatTopic ? `Posted in ${chatTopic}` : "Posted in Teams chat"}
 			</span>
 		);
 	}
@@ -1417,13 +1479,29 @@ export function PendingBacklogProposalsInbox({
 		const visionSuggestions = proposalJson.visionSuggestions ?? null;
 		const metadata =
 			(detail.sourceMetadata as Record<string, unknown> | null) ?? null;
-		const channelName = channelNameFromMetadata(metadata);
-		const threadLink = threadLinkFromMetadata(detail.source, metadata);
+		const isTeamsChat = detail.source === "TEAMS_CHAT";
+		const isMeeting = detail.source === "MONITORED_MEETING";
+		const conversationName = conversationNameFromMetadata(
+			detail.source,
+			metadata,
+		);
+		const conversationLabel = isTeamsChat
+			? (conversationName ?? "a Teams chat")
+			: conversationName && `#${conversationName}`;
+		const threadLink = threadLinkFromMetadata(
+			detail.source,
+			metadata,
+			detail.teamsChatId ?? null,
+		);
 		const isFailed = detail.status === "FAILED";
 		const provider = providerLabel(detail.source);
 		const meetingSubject = meetingSubjectFromMetadata(metadata);
 		const meetingDate = formatMeetingBadgeDate(metadata?.meetingDate);
-		const meetingTranscript = meetingTranscriptFromMetadata(metadata);
+		const transcript = transcriptFromMetadata(metadata);
+		const conversationTranscript =
+			isChannelMonitorSource(detail.source) && !isMeeting
+				? transcript
+				: null;
 		// Async decision pre-check findings persisted alongside the proposal.
 		// A stale/absent/ok result yields null so the banner and the per-change
 		// notes render nothing.
@@ -1572,7 +1650,7 @@ export function PendingBacklogProposalsInbox({
 					</div>
 				)}
 
-				{(channelName || threadLink) && (
+				{(conversationName || threadLink || conversationTranscript) && (
 					<div className="rounded-lg border border-foreground/10 bg-muted/40 p-3 text-sm">
 						<div className="flex flex-wrap items-center gap-2">
 							{detail.source === "SLACK_CHANNEL" ? (
@@ -1583,11 +1661,13 @@ export function PendingBacklogProposalsInbox({
 							<span className="text-muted-foreground">
 								{detail.source === "SLACK_CHANNEL"
 									? "Posted in"
-									: "Based on a thread in"}
+									: isTeamsChat
+										? "Based on a conversation in"
+										: "Based on a thread in"}
 							</span>
-							{channelName && (
+							{conversationLabel && (
 								<span className="font-medium text-foreground">
-									#{channelName}
+									{conversationLabel}
 								</span>
 							)}
 							{threadLink && (
@@ -1614,10 +1694,16 @@ export function PendingBacklogProposalsInbox({
 								</TooltipProvider>
 							)}
 						</div>
+						{conversationTranscript && (
+							<SourceTranscript
+								label="See original conversation"
+								text={conversationTranscript}
+							/>
+						)}
 					</div>
 				)}
 
-				{detail.source === "MONITORED_MEETING" && (
+				{isMeeting && (
 					<div className="rounded-lg border border-foreground/10 bg-muted/40 p-3 text-sm">
 						<div className="flex flex-wrap items-center gap-2">
 							<CalendarIcon
@@ -1634,19 +1720,11 @@ export function PendingBacklogProposalsInbox({
 								</span>
 							)}
 						</div>
-						{meetingTranscript && (
-							<details className="mt-2">
-								<summary className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-primary hover:underline">
-									<FileTextIcon
-										className="size-3"
-										aria-hidden="true"
-									/>
-									See original transcript
-								</summary>
-								<pre className="mt-2 max-h-64 overflow-auto overscroll-contain whitespace-pre-wrap rounded-md border border-foreground/10 bg-background p-2 text-xs text-foreground/80">
-									{meetingTranscript}
-								</pre>
-							</details>
+						{transcript && (
+							<SourceTranscript
+								label="See original transcript"
+								text={transcript}
+							/>
 						)}
 					</div>
 				)}

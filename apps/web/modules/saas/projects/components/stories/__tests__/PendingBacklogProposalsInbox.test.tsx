@@ -1264,6 +1264,168 @@ describe("PendingBacklogProposalsInbox — forbidEpics source gating (Bug 1429 /
 	);
 });
 
+// The review panel links each monitored-conversation proposal back to where it
+// came from. A Teams group chat stores `chatTopic` + `chatWebUrl` (never a
+// channel name), and Graph can return no per-message link, so the panel must
+// fall back to the chat itself rather than render nothing.
+describe("PendingBacklogProposalsInbox — link back to the source conversation", () => {
+	const chatTranscript =
+		"[Reviewer] The provider settings page errors on save.";
+
+	beforeEach(() => {
+		pendingProposalsList.mockReset();
+		pendingProposalsGet.mockReset();
+		storiesCheckPmSyncConflicts.mockReset();
+		storiesCheckPmSyncConflicts.mockResolvedValue({ results: [] });
+	});
+
+	async function openProposal(
+		source: RowSource,
+		sourceMetadata: Record<string, unknown>,
+		teamsChatId: string | null = null,
+	) {
+		pendingProposalsList.mockResolvedValue([
+			makeListRow({ source, sourceMetadata }),
+		]);
+		pendingProposalsGet.mockResolvedValue({
+			...makeDetail({ source, sourceMetadata }),
+			teamsChatId,
+		});
+		renderInbox();
+		(await screen.findByText(/Captured from a Slack thread/)).click();
+		await screen.findByText(/Proposed Backlog Changes/);
+	}
+
+	it("TEAMS_CHAT without a message link: names the chat, links to the chat, and shows the conversation", async () => {
+		await openProposal("TEAMS_CHAT", {
+			linkedChatId: "linked_chat_1",
+			chatTopic: "Example Action Team",
+			chatWebUrl: "https://teams.example.com/chat/example-chat",
+			threadRootId: "msg_1",
+			threadRootWebLink: null,
+			transcript: chatTranscript,
+		});
+
+		expect(
+			screen.getByText("Based on a conversation in"),
+		).toBeInTheDocument();
+		expect(screen.getByText("Example Action Team")).toBeInTheDocument();
+		expect(
+			screen.getByRole("link", {
+				name: "Open original message in Microsoft Teams",
+			}),
+		).toHaveAttribute(
+			"href",
+			"https://teams.example.com/chat/example-chat",
+		);
+
+		fireEvent.click(screen.getByText("See original conversation"));
+		expect(screen.getByText(chatTranscript)).toBeVisible();
+	});
+
+	it("TEAMS_CHAT with no stored link: deep-links to the root message through the resolved chat id", async () => {
+		// The shape monitored chats actually produce: Graph returns no webUrl for
+		// chat messages and the chat's own webUrl was never captured.
+		await openProposal(
+			"TEAMS_CHAT",
+			{
+				linkedChatId: "linked_chat_1",
+				chatTopic: "Example Action Team",
+				chatWebUrl: null,
+				threadRootId: "1726000000000",
+				threadRootWebLink: null,
+				transcript: chatTranscript,
+			},
+			"19:example-chat@thread.v2",
+		);
+
+		expect(
+			screen.getByRole("link", {
+				name: "Open original message in Microsoft Teams",
+			}),
+		).toHaveAttribute(
+			"href",
+			"https://teams.microsoft.com/l/message/19:example-chat@thread.v2/1726000000000?context=%7B%22contextType%22%3A%22chat%22%7D",
+		);
+	});
+
+	it("TEAMS_CHAT: builds no deep link from a chat id Graph would not issue", async () => {
+		await openProposal(
+			"TEAMS_CHAT",
+			{
+				chatTopic: "Example Action Team",
+				threadRootId: "1726000000000",
+				transcript: chatTranscript,
+			},
+			"19:example/../../elsewhere",
+		);
+
+		expect(
+			screen.queryByRole("link", {
+				name: "Open original message in Microsoft Teams",
+			}),
+		).not.toBeInTheDocument();
+		expect(screen.getByText("Example Action Team")).toBeInTheDocument();
+	});
+
+	it("TEAMS_CHAT with a message link: prefers the thread link over the chat link", async () => {
+		await openProposal("TEAMS_CHAT", {
+			chatTopic: "Example Action Team",
+			chatWebUrl: "https://teams.example.com/chat/example-chat",
+			threadRootWebLink:
+				"https://teams.example.com/chat/example-chat/msg_1",
+			transcript: chatTranscript,
+		});
+
+		expect(
+			screen.getByRole("link", {
+				name: "Open original message in Microsoft Teams",
+			}),
+		).toHaveAttribute(
+			"href",
+			"https://teams.example.com/chat/example-chat/msg_1",
+		);
+	});
+
+	it("TEAMS_CHAT list row: badges the chat topic", async () => {
+		pendingProposalsList.mockResolvedValue([
+			makeListRow({
+				source: "TEAMS_CHAT",
+				sourceMetadata: { chatTopic: "Example Action Team" },
+			}),
+		]);
+		renderInbox();
+
+		expect(
+			await screen.findByText("Posted in Example Action Team"),
+		).toBeInTheDocument();
+	});
+
+	it("TEAMS_CHANNEL: keeps the #channel label and thread link, and shows the conversation", async () => {
+		await openProposal("TEAMS_CHANNEL", {
+			channelDisplayName: "general",
+			channelWebUrl: "https://teams.example.com/channel/general",
+			threadRootWebLink:
+				"https://teams.example.com/channel/general/msg_1",
+			transcript: chatTranscript,
+		});
+
+		expect(screen.getByText("Based on a thread in")).toBeInTheDocument();
+		expect(screen.getByText("#general")).toBeInTheDocument();
+		expect(
+			screen.getByRole("link", {
+				name: "Open original message in Microsoft Teams",
+			}),
+		).toHaveAttribute(
+			"href",
+			"https://teams.example.com/channel/general/msg_1",
+		);
+		expect(
+			screen.getByText("See original conversation"),
+		).toBeInTheDocument();
+	});
+});
+
 describe("PendingBacklogProposalsInbox — forwards projectId for in-review drafting", () => {
 	beforeEach(() => {
 		pendingProposalsList.mockReset();

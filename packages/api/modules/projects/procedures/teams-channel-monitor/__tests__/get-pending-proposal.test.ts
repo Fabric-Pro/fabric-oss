@@ -12,6 +12,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 	const mocks = {
 		getProposal: vi.fn(),
 		getAppliedChangeIndexes: vi.fn(),
+		getLinkedTeamsChatGraphId: vi.fn(),
 	};
 	return { handlers, mocks };
 });
@@ -19,6 +20,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 vi.mock("@repo/database", () => ({
 	getPendingBacklogProposal: mocks.getProposal,
 	getAppliedChangeIndexes: mocks.getAppliedChangeIndexes,
+	getLinkedTeamsChatGraphId: mocks.getLinkedTeamsChatGraphId,
 }));
 
 vi.mock("../../../../../orpc/procedures", () => {
@@ -60,6 +62,7 @@ function callGet() {
 beforeEach(() => {
 	mocks.getProposal.mockReset();
 	mocks.getAppliedChangeIndexes.mockReset();
+	mocks.getLinkedTeamsChatGraphId.mockReset();
 });
 
 describe("getPendingProposalProcedure", () => {
@@ -81,8 +84,63 @@ describe("getPendingProposalProcedure", () => {
 			projectId: "project-1",
 			appliedChangeIndexes: [3, 0, 2],
 			createdChangeIndexes: [0, 3],
+			teamsChatId: null,
 		});
 	});
+
+	it("resolves a Teams chat proposal's Graph chat id from its linked chat, in the same project", async () => {
+		mocks.getProposal.mockResolvedValue({
+			id: "proposal-1",
+			projectId: "project-1",
+			source: "TEAMS_CHAT",
+			sourceMetadata: {
+				linkedChatId: "linked-chat-1",
+				threadRootId: "1",
+			},
+			appliedChangeIndexes: [],
+		});
+		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set());
+		mocks.getLinkedTeamsChatGraphId.mockResolvedValue(
+			"19:example-chat@thread.v2",
+		);
+
+		const result = await callGet();
+
+		expect(mocks.getLinkedTeamsChatGraphId).toHaveBeenCalledWith(
+			"project-1",
+			"linked-chat-1",
+		);
+		expect(result).toMatchObject({
+			teamsChatId: "19:example-chat@thread.v2",
+		});
+	});
+
+	it.each([
+		[
+			"a channel proposal",
+			"TEAMS_CHANNEL",
+			{ linkedChatId: "linked-chat-1" },
+		],
+		["a chat proposal without a linked chat", "TEAMS_CHAT", {}],
+		["a chat proposal with no metadata", "TEAMS_CHAT", null],
+	])(
+		"returns no chat id for %s, without a lookup",
+		async (_label, source, sourceMetadata) => {
+			mocks.getProposal.mockResolvedValue({
+				id: "proposal-1",
+				projectId: "project-1",
+				source,
+				sourceMetadata,
+				appliedChangeIndexes: [],
+			});
+			mocks.getAppliedChangeIndexes.mockResolvedValue(new Set());
+
+			const result = await callGet();
+
+			expect(mocks.getLinkedTeamsChatGraphId).not.toHaveBeenCalled();
+			expect(result).toMatchObject({ teamsChatId: null });
+		},
+	);
 
 	it("is NOT_FOUND for another project's proposal, without reading its applications", async () => {
 		mocks.getProposal.mockResolvedValue({
