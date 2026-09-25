@@ -50,6 +50,7 @@ import {
 	computeFindingFingerprint,
 	isMetaContentFinding,
 	mapRawFindingToDraft,
+	redactSecrets,
 	type ScanFindingDraft,
 	type ScanKnowledgePackPrompt,
 	type ScanRequest,
@@ -1197,6 +1198,9 @@ async function estimateScanCostUsd(
 }
 
 export async function failScanActivity(input: FailScanInput): Promise<void> {
+	// The message carries the failed step's raw cause, which project members see
+	// in the banner and notification — scrub it like every stored finding field.
+	const message = redactSecrets(input.message);
 	// Record the failure server-side with enough detail to diagnose without a
 	// user repro (AC3) — this line lands in Application Insights / Log Analytics.
 	// Logged first so the failure is captured even if the DB write below throws.
@@ -1204,12 +1208,12 @@ export async function failScanActivity(input: FailScanInput): Promise<void> {
 		scanId: input.scanId,
 		projectId: input.projectId,
 		organizationId: input.organizationId ?? null,
-		error: input.message,
+		error: message,
 	});
 	await updateProjectScan(input.scanId, {
 		status: "FAILED",
 		completedAt: new Date(),
-		error: input.message.slice(0, 1000),
+		error: message.slice(0, 1000),
 	});
 	await emitScanNotification({
 		scanId: input.scanId,
@@ -1219,7 +1223,7 @@ export async function failScanActivity(input: FailScanInput): Promise<void> {
 		securityFindingCount: 0,
 		accessibilityFindingCount: 0,
 		failed: true,
-		errorMessage: input.message,
+		errorMessage: message,
 	});
 
 	await recordScanActivity({

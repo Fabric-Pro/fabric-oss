@@ -13,6 +13,7 @@ import { patched, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
 import type { ScanFindingDraft } from "../activities/security-scan/scan-schemas";
 import {
+	describeScanFailureMessage,
 	describeScanFailureReason,
 	ensureScanFailureHint,
 } from "./scan-failure-hint";
@@ -477,7 +478,7 @@ export async function securityAccessibilityScanWorkflow(
 			accessibilityFindingCount: counts.accessibilityFindingCount,
 		};
 	} catch (err) {
-		const raw = err instanceof Error ? err.message : String(err);
+		const raw = describeScanFailureMessage(err);
 		// Enrich EVERY failure path — not just the wholesale "every scanner
 		// failed" branch — with the transient-cause hint, so a FAILED scan always
 		// persists an actionable message the UI can show. The wholesale branch

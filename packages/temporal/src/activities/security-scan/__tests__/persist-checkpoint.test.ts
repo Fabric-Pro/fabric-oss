@@ -235,4 +235,19 @@ describe("failScanActivity — never advances a checkpoint", () => {
 		);
 		expect(m.upsertScanCheckpoint).not.toHaveBeenCalled();
 	});
+
+	it("redacts a secret carried in the failure cause before storing it", async () => {
+		const token = `ghp_${"A1".repeat(18)}`;
+		await failScanActivity({
+			scanId: "scan1",
+			projectId: "p1",
+			userId: "u1",
+			organizationId: null,
+			message: `Gathering the project content failed: clone with ${token} refused`,
+		});
+		const stored = m.updateProjectScan.mock.calls.at(-1)?.[1]?.error;
+		expect(stored).toContain("Gathering the project content failed");
+		expect(stored).toContain("[REDACTED]");
+		expect(stored).not.toContain(token);
+	});
 });
