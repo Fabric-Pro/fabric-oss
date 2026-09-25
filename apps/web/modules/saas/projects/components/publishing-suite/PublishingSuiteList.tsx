@@ -437,8 +437,14 @@ export function PublishingSuiteList({
 								input: { projectId, topicId, organizationId },
 							}),
 					});
-					// Selecting a topic auto-starts its planning analysis on
-					// the server: the page's cached "no analysis" read is stale.
+					// Selecting a topic also starts its planning analysis on
+					// the server, in the background once the status is saved,
+					// so the run may not exist yet when this write returns.
+					// Marking the topic page's cached read stale makes
+					// opening the topic next re-read it. If a cached "no
+					// analysis" is still held, the page's auto-starts can each
+					// fire once on it before that read lands (see `writeStatus`
+					// in TopicItemPage).
 					if (status === "SELECTED") {
 						void queryClient.invalidateQueries({
 							queryKey:

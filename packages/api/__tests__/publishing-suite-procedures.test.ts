@@ -85,6 +85,16 @@ const planningMocks = vi.hoisted(() => ({
 	workflowStart: vi.fn(),
 }));
 
+// Fizzy #2651: selecting a topic schedules its analysis start instead of
+// awaiting it. Both ends are mocked so a case can hold the start pending and
+// see whether the status response waits on it, and see what was handed to
+// `runInBackground` — a local wrapper precisely so "scheduled" can be asserted
+// without mocking `@vercel/functions`.
+const autostartMocks = vi.hoisted(() => ({
+	autoStartPlanningAnalysis: vi.fn(),
+	runInBackground: vi.fn(),
+}));
+
 const {
 	FakePrismaClientKnownRequestError,
 	FakePublishingTopicProjectNotFoundError,
@@ -285,6 +295,18 @@ vi.mock("../modules/projects/lib/request-publishing-generation", () => ({
 	requestPublishingGeneration: generateNowMocks.requestPublishingGeneration,
 }));
 
+// The helper's own paths (existing analysis, the per-project bound, a failed
+// start) are out of scope here, and no test pins them yet. What this file
+// checks is what `updateTopicStatus` owns: WHEN the helper is called, and
+// whether the response waits for it. See `autostartMocks` above.
+vi.mock("../modules/projects/lib/publishing-analysis-autostart", () => ({
+	autoStartPlanningAnalysis: autostartMocks.autoStartPlanningAnalysis,
+}));
+
+vi.mock("../modules/weave/lib/run-in-background", () => ({
+	runInBackground: autostartMocks.runInBackground,
+}));
+
 vi.mock("../orpc/procedures", () => {
 	const chain: Record<string, unknown> = {};
 	for (const m of ["use", "route", "output"]) {
@@ -437,6 +459,10 @@ beforeEach(() => {
 	vi.mocked(getPublishingSuiteSettings).mockResolvedValue({
 		chatChannels: [],
 	} as never);
+	// The real helper resolves void and never rejects. Re-set on every case:
+	// `vi.clearAllMocks()` keeps implementations, so a start one case holds
+	// pending would otherwise leak into the next.
+	autostartMocks.autoStartPlanningAnalysis.mockResolvedValue(undefined);
 });
 
 describe("publishing-suite procedures — permission gating", () => {
@@ -792,6 +818,134 @@ describe("updateTopicStatus", () => {
 			},
 		});
 	});
+
+	// Fizzy #2651: a change to SELECTED used to hold its response until the
+	// analysis start — database and Temporal round trips — had settled, which
+	// kept "Saving…" on screen for exactly that change.
+	it("SELECTED returns while the analysis start is still pending", async () => {
+		const pending = new Promise<void>(() => {});
+		autostartMocks.autoStartPlanningAnalysis.mockReturnValue(pending);
+		vi.mocked(updatePublishingTopicStatus).mockResolvedValue({
+			topic: { id: "t1", status: "SELECTED" },
+		} as never);
+
+		// Raced against a real timer, so a handler that waits on the start
+		// fails here instead of hanging until the test timeout.
+		const stillWaiting = Symbol("handler still waiting after 200 ms");
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const outcome = await Promise.race([
+			updateHandler({
+				input: { projectId: "p1", topicId: "t1", status: "SELECTED" },
+				context: ctx,
+			}),
+			new Promise((resolve) => {
+				timer = setTimeout(() => resolve(stillWaiting), 200);
+			}),
+		]);
+		clearTimeout(timer);
+
+		expect(outcome).toEqual({ topic: { id: "t1", status: "SELECTED" } });
+		expect(autostartMocks.autoStartPlanningAnalysis).toHaveBeenCalledTimes(
+			1,
+		);
+		expect(autostartMocks.autoStartPlanningAnalysis).toHaveBeenCalledWith({
+			projectId: "p1",
+			topicId: "t1",
+			requestedById: ctx.user.id,
+		});
+		// The helper's own promise, handed over as-is: the start is kept alive
+		// on Vercel, not merely fired and left floating.
+		expect(autostartMocks.runInBackground).toHaveBeenCalledTimes(1);
+		expect(autostartMocks.runInBackground.mock.calls[0]?.[0]).toBe(pending);
+	});
+
+	it("SELECTED schedules the start only after the status write has resolved", async () => {
+		let resolveWrite: (value: unknown) => void = () => {};
+		vi.mocked(updatePublishingTopicStatus).mockReturnValue(
+			new Promise((resolve) => {
+				resolveWrite = resolve;
+			}) as never,
+		);
+		autostartMocks.autoStartPlanningAnalysis.mockReturnValue(
+			Promise.resolve(),
+		);
+
+		const call = updateHandler({
+			input: { projectId: "p1", topicId: "t1", status: "SELECTED" },
+			context: ctx,
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		// Precondition: the handler is parked ON the write, not still before it.
+		expect(updatePublishingTopicStatus).toHaveBeenCalledTimes(1);
+		expect(autostartMocks.autoStartPlanningAnalysis).not.toHaveBeenCalled();
+		expect(autostartMocks.runInBackground).not.toHaveBeenCalled();
+
+		resolveWrite({ topic: { id: "t1", status: "SELECTED" } });
+		await expect(call).resolves.toEqual({
+			topic: { id: "t1", status: "SELECTED" },
+		});
+
+		expect(autostartMocks.autoStartPlanningAnalysis).toHaveBeenCalledTimes(
+			1,
+		);
+		expect(autostartMocks.runInBackground).toHaveBeenCalledTimes(1);
+	});
+
+	it("SELECTED on a topic that does not resolve is NOT_FOUND and starts nothing", async () => {
+		vi.mocked(updatePublishingTopicStatus).mockResolvedValue(null);
+
+		await expect(
+			updateHandler({
+				input: {
+					projectId: "p1",
+					topicId: "missing",
+					status: "SELECTED",
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+		expect(autostartMocks.autoStartPlanningAnalysis).not.toHaveBeenCalled();
+		expect(autostartMocks.runInBackground).not.toHaveBeenCalled();
+	});
+
+	it("SELECTED whose status write fails rethrows and starts nothing", async () => {
+		vi.mocked(updatePublishingTopicStatus).mockRejectedValue(
+			new Error("db down"),
+		);
+
+		await expect(
+			updateHandler({
+				input: { projectId: "p1", topicId: "t1", status: "SELECTED" },
+				context: ctx,
+			}),
+		).rejects.toThrow("db down");
+
+		expect(autostartMocks.autoStartPlanningAnalysis).not.toHaveBeenCalled();
+		expect(autostartMocks.runInBackground).not.toHaveBeenCalled();
+	});
+
+	it.each(["SUGGESTION", "IN_PROGRESS", "PUBLISHED", "DECLINED"] as const)(
+		"%s starts no analysis",
+		async (status) => {
+			vi.mocked(updatePublishingTopicStatus).mockResolvedValue({
+				topic: { id: "t1", status },
+			} as never);
+
+			await expect(
+				updateHandler({
+					input: { projectId: "p1", topicId: "t1", status },
+					context: ctx,
+				}),
+			).resolves.toEqual({ topic: { id: "t1", status } });
+
+			expect(
+				autostartMocks.autoStartPlanningAnalysis,
+			).not.toHaveBeenCalled();
+			expect(autostartMocks.runInBackground).not.toHaveBeenCalled();
+		},
+	);
 });
 
 describe("updateTopicPostTypes", () => {

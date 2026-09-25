@@ -6,6 +6,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { runInBackground } from "../../../weave/lib/run-in-background";
 import { autoStartPlanningAnalysis } from "../../lib/publishing-analysis-autostart";
 import { recordTopicStatusOutcome } from "../../lib/publishing-outcome";
 import { assertPublishingSuiteFeatureEnabled } from "../../lib/publishing-suite-feature";
@@ -62,16 +63,23 @@ export const updatePublishingTopicStatusProcedure = tenantProtectedProcedure
 			status: input.status,
 		});
 
-		// Selecting a topic starts its analysis, so it is running — or done —
-		// before anybody opens the page. Awaited but never fatal: the helper
-		// swallows its own failures, because the status change is what the user
-		// asked for and it has already happened.
+		// Selecting a topic starts its analysis once the status write has
+		// resolved (a failed or not-found write throws above and schedules
+		// nothing), so it is usually running before anybody opens the page. Not
+		// awaited: the response is the user's status change, and the start is
+		// database and Temporal round trips that held "Saving…" on screen (Fizzy
+		// #2651). Not a bare `void`: on Vercel a floating promise is not
+		// guaranteed to finish once the response is sent — `runInBackground`
+		// keeps the invocation alive and logs a rejection. The helper itself
+		// never rejects; it logs its own failures.
 		if (input.status === "SELECTED") {
-			await autoStartPlanningAnalysis({
-				projectId: input.projectId,
-				topicId: input.topicId,
-				requestedById: context.user.id,
-			});
+			runInBackground(
+				autoStartPlanningAnalysis({
+					projectId: input.projectId,
+					topicId: input.topicId,
+					requestedById: context.user.id,
+				}),
+			);
 		}
 
 		return { topic: result.topic };
