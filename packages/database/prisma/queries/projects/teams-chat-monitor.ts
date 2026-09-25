@@ -111,6 +111,22 @@ export async function getLinkedTeamsChatsForMonitor(projectId: string) {
 }
 
 /**
+ * The Microsoft Graph chat id behind one linked chat, scoped to its project.
+ * The review inbox deep-links a chat proposal to its source message with it;
+ * null once the chat is unlinked.
+ */
+export async function getLinkedTeamsChatGraphId(
+	projectId: string,
+	linkedChatId: string,
+): Promise<string | null> {
+	const linkedChat = await db.projectLinkedTeamsChat.findFirst({
+		where: { id: linkedChatId, projectId },
+		select: { chatId: true },
+	});
+	return linkedChat?.chatId ?? null;
+}
+
+/**
  * Stop scanning one linked chat without touching anything it has already
  * captured.
  *
