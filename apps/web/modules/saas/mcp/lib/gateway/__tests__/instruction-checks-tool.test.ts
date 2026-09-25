@@ -26,6 +26,8 @@ const m = vi.hoisted(() => ({
 	getPublishedInstructionSnapshot: vi.fn(),
 	getInstructionFileByPath: vi.fn(),
 	getProjectInstructionSettings: vi.fn(),
+	resolveInstructionSnapshotSource: vi.fn(),
+	resolveCurrentInstructionRepository: vi.fn(),
 	downloadFile: vi.fn(),
 }));
 
@@ -34,6 +36,8 @@ vi.mock("@repo/database", () => ({
 	getPublishedInstructionSnapshot: m.getPublishedInstructionSnapshot,
 	getInstructionFileByPath: m.getInstructionFileByPath,
 	getProjectInstructionSettings: m.getProjectInstructionSettings,
+	resolveInstructionSnapshotSource: m.resolveInstructionSnapshotSource,
+	resolveCurrentInstructionRepository: m.resolveCurrentInstructionRepository,
 }));
 
 vi.mock("@repo/storage", () => ({
@@ -181,6 +185,16 @@ beforeEach(() => {
 		sourceOfTruth: null,
 	});
 	m.getInstructionFileByPath.mockResolvedValue(null);
+	// Fizzy #2709: every existing fixture here is an UPLOAD snapshot in a
+	// project with no repository-sync configuration; the REPOSITORY-specific
+	// tests override this explicitly.
+	m.resolveInstructionSnapshotSource.mockResolvedValue({
+		source: { kind: "UPLOAD" },
+		repository: null,
+	});
+	// Fizzy #2709 review: a "nothing published" report also carries the
+	// project's current repository-sync configuration.
+	m.resolveCurrentInstructionRepository.mockResolvedValue(null);
 });
 
 describe("fabric_instruction_checks definition", () => {
@@ -425,12 +439,34 @@ describe("access and publication", () => {
 				description:
 					"publish a version from the project's Coding Instructions tab",
 			},
+			repository: null,
 		});
 		expect(check(report, "lock").status).toBe("skip");
 		expect(check(report, "environment").status).toBe("skip");
 		expect(check(report, "tools").status).toBe("skip");
 		expect(report.ok).toBe(true);
 		expect(m.getInstructionFileByPath).not.toHaveBeenCalled();
+	});
+
+	it("carries the project's current repository config in a 'nothing published' report (Fizzy #2709 review)", async () => {
+		m.getPublishedInstructionSnapshot.mockResolvedValue(null);
+		const repositoryConfig = {
+			provider: "GITHUB",
+			host: "github.com",
+			path: "example-org/example-repo",
+			ref: "main",
+			rootPath: "",
+			generation: 2,
+		};
+		m.resolveCurrentInstructionRepository.mockResolvedValue(
+			repositoryConfig,
+		);
+		const report = reportOf(await run({ projectId: PROJECT }));
+		expect(check(report, "published").repository).toEqual(repositoryConfig);
+		expect(m.resolveCurrentInstructionRepository).toHaveBeenCalledWith(
+			PROJECT,
+			"org_1",
+		);
 	});
 
 	it("fails the access check with the error class only when the lookup throws", async () => {

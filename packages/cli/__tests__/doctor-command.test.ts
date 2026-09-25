@@ -36,6 +36,8 @@ import {
 	FabricError,
 	FabricForbiddenError,
 	FabricNotFoundError,
+	type PublishedInstructionRepository,
+	type PublishedInstructionSource,
 } from "@fabricorg/sdk";
 import { Command } from "commander";
 import { zipSync } from "fflate";
@@ -221,7 +223,21 @@ type Entry = ReturnType<typeof manifestEntry>;
 
 function publishedFor(
 	manifest: Entry[],
-	options: { version?: number; repository?: boolean; id?: string } = {},
+	options: {
+		version?: number;
+		repository?: boolean;
+		id?: string;
+		/** Per-snapshot provenance (Fizzy #2709) — distinct from `sourceOfTruth` above. */
+		source?: PublishedInstructionSource;
+		/**
+		 * The project's CURRENT repository-sync configuration (Fizzy #2709),
+		 * a top-level sibling of `snapshot` — distinct from both `source`
+		 * (per-snapshot provenance) and the `repository` boolean above (which
+		 * only drives `sourceOfTruth`). Defaults to `null`, matching what the
+		 * real API always sends when the project has no current sync row.
+		 */
+		repositoryConfig?: PublishedInstructionRepository | null;
+	} = {},
 ) {
 	return {
 		published: true,
@@ -232,8 +248,10 @@ function publishedFor(
 			digest: computeSnapshotDigest(manifest),
 			fileCount: manifest.length,
 			publishedAt: null,
+			...(options.source ? { source: options.source } : {}),
 		},
 		manifest,
+		repository: options.repositoryConfig ?? null,
 	};
 }
 
@@ -645,6 +663,90 @@ describe("published, lock and drift", () => {
 		// The hook is still worth checking: `init` installs one before the
 		// first version exists.
 		expect(checkOf(report, "hook").status).toBe("fail");
+	});
+
+	// Fizzy #2709: the `published` check reports the snapshot's provenance —
+	// distinct from `sourceOfTruth`, which `publishedFor`'s `repository`
+	// option controls and which this test leaves at its UPLOAD default.
+	it("carries a REPOSITORY source on the published check, with its own detail", async () => {
+		const dest = await makeTree();
+		const manifest = [manifestEntry("AGENTS.md", "# a\n")];
+		mocks.getPublished.mockResolvedValue(
+			publishedFor(manifest, {
+				source: {
+					kind: "REPOSITORY",
+					ref: "main",
+					commitSha: `abc123def456${"0".repeat(28)}`,
+					current: true,
+				},
+			}),
+		);
+
+		const { report } = await doctorJson(dest);
+
+		const published = checkOf(report, "published");
+		expect(published.source).toEqual({
+			kind: "REPOSITORY",
+			ref: "main",
+			commitSha: `abc123def456${"0".repeat(28)}`,
+			current: true,
+		});
+		expect(published.detail).toContain("from abc123def456… on main");
+	});
+
+	it("carries an UPLOAD source with no extra detail text", async () => {
+		const dest = await makeTree();
+		const manifest = [manifestEntry("AGENTS.md", "# a\n")];
+		mocks.getPublished.mockResolvedValue(
+			publishedFor(manifest, { source: { kind: "UPLOAD" } }),
+		);
+
+		const { report } = await doctorJson(dest);
+
+		const published = checkOf(report, "published");
+		expect(published.source).toEqual({ kind: "UPLOAD" });
+		expect(published.detail).not.toContain("from");
+	});
+
+	it("carries the project's current repository-sync configuration on the published check", async () => {
+		const dest = await makeTree();
+		const manifest = [manifestEntry("AGENTS.md", "# a\n")];
+		const repositoryConfig: PublishedInstructionRepository = {
+			provider: "GITHUB",
+			host: "github.com",
+			path: "example-org/example-repo",
+			ref: "main",
+			rootPath: "",
+			generation: 3,
+		};
+		mocks.getPublished.mockResolvedValue(
+			publishedFor(manifest, {
+				repository: true,
+				source: {
+					kind: "REPOSITORY",
+					ref: "main",
+					commitSha: `abc123def456${"0".repeat(28)}`,
+					current: true,
+				},
+				repositoryConfig,
+			}),
+		);
+
+		const { report } = await doctorJson(dest);
+
+		expect(checkOf(report, "published").repository).toEqual(
+			repositoryConfig,
+		);
+	});
+
+	it("carries repository: null on the published check when the project has no current sync row", async () => {
+		const dest = await makeTree();
+		const manifest = [manifestEntry("AGENTS.md", "# a\n")];
+		mocks.getPublished.mockResolvedValue(publishedFor(manifest));
+
+		const { report } = await doctorJson(dest);
+
+		expect(checkOf(report, "published").repository).toBeNull();
 	});
 
 	it("fails a missing lock with the sync that fixes it, carrying --org and --dest", async () => {

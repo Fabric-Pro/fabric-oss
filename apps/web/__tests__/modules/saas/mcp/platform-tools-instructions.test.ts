@@ -21,6 +21,8 @@ const m = vi.hoisted(() => ({
 	getInstructionFileByPath: vi.fn(),
 	listProjects: vi.fn(),
 	getProjectSummaryById: vi.fn(),
+	resolveInstructionSnapshotSource: vi.fn(),
+	resolveCurrentInstructionRepository: vi.fn(),
 	downloadFile: vi.fn(),
 	getSignedUrl: vi.fn(),
 	buildInstructionSnapshotZip: vi.fn(),
@@ -36,6 +38,8 @@ vi.mock("@repo/database", () => ({
 	getInstructionFileByPath: m.getInstructionFileByPath,
 	listProjects: m.listProjects,
 	getProjectSummaryById: m.getProjectSummaryById,
+	resolveInstructionSnapshotSource: m.resolveInstructionSnapshotSource,
+	resolveCurrentInstructionRepository: m.resolveCurrentInstructionRepository,
 }));
 
 vi.mock("@repo/storage", () => ({
@@ -88,6 +92,17 @@ beforeEach(() => {
 	for (const fn of Object.values(m)) {
 		fn.mockReset();
 	}
+	// Fizzy #2709: every existing fixture here describes an UPLOAD snapshot
+	// (no repository-sync fields), so this is the shared default; the tests
+	// that cover a REPOSITORY-published snapshot override it explicitly.
+	m.resolveInstructionSnapshotSource.mockResolvedValue({
+		source: { kind: "UPLOAD" },
+		repository: null,
+	});
+	// Fizzy #2709 review: a "nothing published" response also reports the
+	// project's current repository-sync configuration; every existing
+	// fixture here is upload-sourced, so `null` is the shared default.
+	m.resolveCurrentInstructionRepository.mockResolvedValue(null);
 });
 
 describe("fabric_list_project_instructions", () => {
@@ -141,6 +156,7 @@ describe("fabric_list_project_instructions", () => {
 			version: 7,
 			digest: "d",
 			fileCount: 1,
+			source: { kind: "UPLOAD" },
 		});
 		expect(body.files[0]).toEqual({
 			path: ".claude/skills/x/SKILL.md",
@@ -219,9 +235,43 @@ describe("fabric_list_project_instructions", () => {
 		);
 		expect(JSON.parse(r.content[0]!.text)).toEqual({
 			snapshot: null,
+			repository: null,
 			files: [],
 			message: "This project has no published coding instructions yet.",
 		});
+	});
+
+	it("carries the project's current repository config in a 'nothing published' response (Fizzy #2709 review)", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.getPublishedInstructionSnapshot.mockResolvedValue(null);
+		const repositoryConfig = {
+			provider: "GITHUB",
+			host: "github.com",
+			path: "example-org/example-repo",
+			ref: "main",
+			rootPath: "",
+			generation: 2,
+		};
+		m.resolveCurrentInstructionRepository.mockResolvedValue(
+			repositoryConfig,
+		);
+		const r = await executePlatformTool(
+			"fabric_list_project_instructions",
+			{ projectId: "proj_1" },
+			session,
+		);
+		expect(JSON.parse(r.content[0]!.text)).toEqual({
+			snapshot: null,
+			repository: repositoryConfig,
+			files: [],
+			message: "This project has no published coding instructions yet.",
+		});
+		expect(m.resolveCurrentInstructionRepository).toHaveBeenCalledWith(
+			"proj_1",
+			"org_1",
+		);
 	});
 });
 
@@ -269,6 +319,75 @@ describe("fabric_get_project_instruction", () => {
 });
 
 describe("fabric_get_project_instruction_bundle", () => {
+	// Fizzy #2709: `repository` is the project's CURRENT sync configuration,
+	// a sibling of `snapshot` in the tool's result — never nested inside
+	// `source`, which stays this particular snapshot's ref, commit and
+	// whether it is still current.
+	it("carries the resolver's source and repository alongside the manifest", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.getPublishedInstructionSnapshot.mockResolvedValue({
+			id: "s",
+			version: 7,
+			status: "READY",
+			digest: "d",
+			fileCount: 1,
+			projectId: "proj_1",
+			organizationId: "org_1",
+		});
+		m.resolveInstructionSnapshotSource.mockResolvedValue({
+			source: {
+				kind: "REPOSITORY",
+				ref: "main",
+				commitSha: "a".repeat(40),
+				current: true,
+			},
+			repository: {
+				provider: "GITHUB",
+				host: "github.com",
+				path: "example-org/example-repo",
+				ref: "main",
+				rootPath: "",
+				generation: 2,
+			},
+		});
+		m.listInstructionFiles.mockResolvedValue([]);
+		m.buildInstructionSnapshotZip.mockResolvedValue({
+			url: "https://storage.example.com/signed-bundle",
+			key: "projects/proj_1/instructions/exports/s-123.zip",
+		});
+
+		const r = await executePlatformTool(
+			"fabric_get_project_instruction_bundle",
+			{ projectId: "proj_1" },
+			session,
+		);
+		const body = JSON.parse(r.content[0]!.text);
+
+		expect(body.snapshot.source).toEqual({
+			kind: "REPOSITORY",
+			ref: "main",
+			commitSha: "a".repeat(40),
+			current: true,
+		});
+		expect(body.repository).toEqual({
+			provider: "GITHUB",
+			host: "github.com",
+			path: "example-org/example-repo",
+			ref: "main",
+			rootPath: "",
+			generation: 2,
+		});
+		expect(
+			m.resolveInstructionSnapshotSource,
+		).toHaveBeenCalledExactlyOnceWith(
+			"proj_1",
+			"org_1",
+			expect.objectContaining({ id: "s" }),
+		);
+	});
+
 	it("returns the manifest and a signed URL, with no file bytes", async () => {
 		m.getProjectAccessContext.mockResolvedValue({
 			organizationId: "org_1",
@@ -309,7 +428,14 @@ describe("fabric_get_project_instruction_bundle", () => {
 		);
 		const body = JSON.parse(r.content[0]!.text);
 		expect(body).toEqual({
-			snapshot: { id: "s", version: 7, digest: "d", fileCount: 1 },
+			snapshot: {
+				id: "s",
+				version: 7,
+				digest: "d",
+				fileCount: 1,
+				source: { kind: "UPLOAD" },
+			},
+			repository: null,
 			manifest: [
 				{
 					path: "CLAUDE.md",
@@ -364,9 +490,18 @@ describe("organization resolution (R31 / spec \u00a76.5)", () => {
 		);
 		expect(JSON.parse(list.content[0]!.text)).toEqual({
 			snapshot: null,
+			repository: null,
 			files: [],
 			message: "This project has no published coding instructions yet.",
 		});
+		// Proven for THIS call, not just "at some point in the test": the
+		// list tool's own null-snapshot response used the project's HOSTING
+		// organization (Fizzy #2709 review), the same org the access check
+		// resolved, not the caller's session org.
+		expect(m.resolveCurrentInstructionRepository).toHaveBeenCalledWith(
+			"proj_1",
+			"org_1",
+		);
 
 		const get = await executePlatformTool(
 			"fabric_get_project_instruction",
@@ -378,6 +513,25 @@ describe("organization resolution (R31 / spec \u00a76.5)", () => {
 			error: "This project has no published coding instructions yet.",
 		});
 
+		// Reset the resolver's call history and give it a distinct,
+		// non-null return value so the bundle assertion below proves the
+		// BUNDLE tool's own null-snapshot path called it with the hosting
+		// organization — not that some earlier call (the list tool's, above)
+		// happened to satisfy a shared `toHaveBeenCalledWith` (Fizzy #2709
+		// review).
+		m.resolveCurrentInstructionRepository.mockClear();
+		const bundleRepositoryConfig = {
+			provider: "GITHUB",
+			host: "github.com",
+			path: "example-org/example-repo",
+			ref: "main",
+			rootPath: "",
+			generation: 2,
+		};
+		m.resolveCurrentInstructionRepository.mockResolvedValue(
+			bundleRepositoryConfig,
+		);
+
 		const bundle = await executePlatformTool(
 			"fabric_get_project_instruction_bundle",
 			{ projectId: "proj_1" },
@@ -386,7 +540,12 @@ describe("organization resolution (R31 / spec \u00a76.5)", () => {
 		expect(bundle.isError).toBe(true);
 		expect(JSON.parse(bundle.content[0]!.text)).toEqual({
 			error: "This project has no published coding instructions yet.",
+			repository: bundleRepositoryConfig,
 		});
+		expect(m.resolveCurrentInstructionRepository).toHaveBeenCalledWith(
+			"proj_1",
+			"org_1",
+		);
 
 		expect(m.listInstructionFiles).not.toHaveBeenCalled();
 		expect(m.getInstructionFileByPath).not.toHaveBeenCalled();
@@ -432,6 +591,7 @@ describe("organization resolution (R31 / spec \u00a76.5)", () => {
 			version: 7,
 			digest: "d",
 			fileCount: 1,
+			source: { kind: "UPLOAD" },
 		});
 		// The access check is made against the caller, never the session's
 		// organization: that is what makes the guest resolvable at all.
@@ -523,6 +683,7 @@ describe("organization resolution (R31 / spec \u00a76.5)", () => {
 			version: 4,
 			digest: "digest_parity",
 			fileCount: 2,
+			source: { kind: "UPLOAD" },
 		});
 	});
 });
@@ -585,6 +746,7 @@ describe("scope: instructions:read replaces projects:read", () => {
 			version: 7,
 			digest: "d",
 			fileCount: 0,
+			source: { kind: "UPLOAD" },
 		});
 	});
 });
@@ -675,7 +837,9 @@ describe("sinceDigest", () => {
 					version: 9,
 					digest: "digest_head",
 					fileCount: 2,
+					source: { kind: "UPLOAD" },
 				},
+				repository: null,
 				unchanged: true,
 				changes: { added: [], removed: [], changed: [] },
 			});
@@ -1035,6 +1199,7 @@ describe("a READY snapshot without a digest", () => {
 		);
 		expect(JSON.parse(list.content[0]!.text)).toEqual({
 			snapshot: null,
+			repository: null,
 			files: [],
 			message: "This project has no published coding instructions yet.",
 		});
@@ -1052,6 +1217,10 @@ describe("a READY snapshot without a digest", () => {
 			session,
 		);
 		expect(bundle.isError).toBe(true);
+		expect(JSON.parse(bundle.content[0]!.text)).toEqual({
+			error: "This project has no published coding instructions yet.",
+			repository: null,
+		});
 
 		// Refused before any of them touched storage or the file rows.
 		expect(m.listInstructionFiles).not.toHaveBeenCalled();

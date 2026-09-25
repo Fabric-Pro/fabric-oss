@@ -18,6 +18,8 @@ const { mocks } = vi.hoisted(() => ({
 		getInstructionManifestDiff: vi.fn(),
 		getProjectInstructionSettings: vi.fn(),
 		listInstructionFiles: vi.fn(),
+		resolveInstructionSnapshotSource: vi.fn(),
+		resolveCurrentInstructionRepository: vi.fn(),
 		resolveEffectiveProjectPermissions: vi.fn(),
 		buildInstructionSnapshotZip: vi.fn(),
 		submitInstructionChange: vi.fn(),
@@ -51,6 +53,9 @@ vi.mock("@repo/database", () => ({
 	getProjectInstructionSettings: mocks.getProjectInstructionSettings,
 	listInstructionFiles: mocks.listInstructionFiles,
 	getInstructionProposal: mocks.getInstructionProposal,
+	resolveInstructionSnapshotSource: mocks.resolveInstructionSnapshotSource,
+	resolveCurrentInstructionRepository:
+		mocks.resolveCurrentInstructionRepository,
 }));
 
 // Only the real pull-request service reaches for this, and only to start a
@@ -283,6 +288,11 @@ beforeEach(() => {
 	});
 	mocks.getPublishedInstructionSnapshot.mockResolvedValue(readySnapshot());
 	mocks.listInstructionFiles.mockResolvedValue(manifestRows());
+	mocks.resolveInstructionSnapshotSource.mockResolvedValue({
+		source: { kind: "UPLOAD" },
+		repository: null,
+	});
+	mocks.resolveCurrentInstructionRepository.mockResolvedValue(null);
 	mocks.findOrganization.mockResolvedValue({ id: ORG });
 	mocks.findUser.mockResolvedValue({
 		email: "dev@example.com",
@@ -617,12 +627,14 @@ describe("GET /projects/:projectId/instructions/published", () => {
 			data: {
 				published: true,
 				sourceOfTruth: "UPLOAD",
+				repository: null,
 				snapshot: {
 					id: "snap-2",
 					version: 7,
 					digest: "d".repeat(64),
 					fileCount: 2,
 					publishedAt: "2026-09-17T10:00:00.000Z",
+					source: { kind: "UPLOAD" },
 				},
 				manifest: [
 					{
@@ -662,6 +674,116 @@ describe("GET /projects/:projectId/instructions/published", () => {
 		expect(body.data.sourceOfTruth).toBe("REPOSITORY");
 	});
 
+	// Fizzy #2709: `source` is per-snapshot PROVENANCE, independent of
+	// `sourceOfTruth` above — this snapshot came from a repository sync
+	// while `sourceOfTruth` here is left at the default UPLOAD. `repository`
+	// is the project's CURRENT sync configuration, a top-level sibling of
+	// `snapshot`, not nested inside `source`.
+	it("carries a REPOSITORY source and the project's repository configuration", async () => {
+		mocks.resolveInstructionSnapshotSource.mockResolvedValue({
+			source: {
+				kind: "REPOSITORY",
+				ref: "main",
+				commitSha: "a".repeat(40),
+				current: true,
+			},
+			repository: {
+				provider: "GITHUB",
+				host: "github.com",
+				path: "example-org/example-repo",
+				ref: "main",
+				rootPath: "",
+				generation: 2,
+			},
+		});
+
+		const response = await buildApp().request(PUBLISHED_PATH);
+		const body = (await response.json()) as {
+			data: { snapshot: { source: unknown }; repository: unknown };
+		};
+
+		expect(body.data.snapshot.source).toEqual({
+			kind: "REPOSITORY",
+			ref: "main",
+			commitSha: "a".repeat(40),
+			current: true,
+		});
+		expect(body.data.repository).toEqual({
+			provider: "GITHUB",
+			host: "github.com",
+			path: "example-org/example-repo",
+			ref: "main",
+			rootPath: "",
+			generation: 2,
+		});
+		expect(
+			mocks.resolveInstructionSnapshotSource,
+		).toHaveBeenCalledExactlyOnceWith(
+			PROJECT,
+			ORG,
+			expect.objectContaining({ id: "snap-2" }),
+		);
+	});
+
+	it("carries a REPOSITORY source flagged not current, and repository: null when the resolver reports none", async () => {
+		mocks.resolveInstructionSnapshotSource.mockResolvedValue({
+			source: {
+				kind: "REPOSITORY",
+				ref: "main",
+				commitSha: "a".repeat(40),
+				current: false,
+			},
+			repository: null,
+		});
+
+		const response = await buildApp().request(PUBLISHED_PATH);
+		const body = (await response.json()) as {
+			data: {
+				snapshot: { source: { current: unknown } };
+				repository: unknown;
+			};
+		};
+
+		expect(body.data.snapshot.source.current).toBe(false);
+		expect(body.data.repository).toBeNull();
+	});
+
+	it("carries repository: null at the top level when nothing is published", async () => {
+		mocks.getPublishedInstructionSnapshot.mockResolvedValue(null);
+		mocks.resolveCurrentInstructionRepository.mockResolvedValue({
+			provider: "GITHUB",
+			host: "github.com",
+			path: "example-org/example-repo",
+			ref: "main",
+			rootPath: "",
+			generation: 1,
+		});
+
+		const response = await buildApp().request(PUBLISHED_PATH);
+		const body = (await response.json()) as {
+			data: { published: boolean; repository: unknown };
+		};
+
+		expect(body.data.published).toBe(false);
+		expect(body.data.repository).toEqual({
+			provider: "GITHUB",
+			host: "github.com",
+			path: "example-org/example-repo",
+			ref: "main",
+			rootPath: "",
+			generation: 1,
+		});
+	});
+
+	it("defaults to an UPLOAD source", async () => {
+		const response = await buildApp().request(PUBLISHED_PATH);
+		const body = (await response.json()) as {
+			data: { snapshot: { source: unknown } };
+		};
+
+		expect(body.data.snapshot.source).toEqual({ kind: "UPLOAD" });
+	});
+
 	it("short-circuits an equal digest without loading files", async () => {
 		const response = await buildApp().request(
 			`${PUBLISHED_PATH}?sinceDigest=${"d".repeat(64)}`,
@@ -672,12 +794,14 @@ describe("GET /projects/:projectId/instructions/published", () => {
 			data: {
 				published: true,
 				sourceOfTruth: "UPLOAD",
+				repository: null,
 				snapshot: {
 					id: "snap-2",
 					version: 7,
 					digest: "d".repeat(64),
 					fileCount: 2,
 					publishedAt: "2026-09-17T10:00:00.000Z",
+					source: { kind: "UPLOAD" },
 				},
 				unchanged: true,
 				changes: { added: [], removed: [], changed: [] },
@@ -797,7 +921,11 @@ describe("GET /projects/:projectId/instructions/published", () => {
 
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toEqual({
-			data: { published: false, sourceOfTruth: "UPLOAD" },
+			data: {
+				published: false,
+				sourceOfTruth: "UPLOAD",
+				repository: null,
+			},
 		});
 	});
 
@@ -810,7 +938,11 @@ describe("GET /projects/:projectId/instructions/published", () => {
 
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toEqual({
-			data: { published: false, sourceOfTruth: "UPLOAD" },
+			data: {
+				published: false,
+				sourceOfTruth: "UPLOAD",
+				repository: null,
+			},
 		});
 	});
 

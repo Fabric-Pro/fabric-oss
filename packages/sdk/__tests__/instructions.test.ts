@@ -104,6 +104,56 @@ describe("InstructionsResource.getPublished", () => {
 		expect(result.snapshot?.version).toBe(7);
 	});
 
+	// Fizzy #2709: a plain passthrough field, pinned so a later change to the
+	// resource cannot silently drop it.
+	it("passes the snapshot's source and the project's repository config through untouched", async () => {
+		const { client } = buildClient({
+			responseBody: {
+				published: true,
+				sourceOfTruth: "REPOSITORY",
+				snapshot: {
+					id: "snap-2",
+					version: 7,
+					digest: "abc",
+					fileCount: 2,
+					publishedAt: "2026-09-17T10:00:00.000Z",
+					source: {
+						kind: "REPOSITORY",
+						ref: "main",
+						commitSha: "a".repeat(40),
+						current: true,
+					},
+				},
+				repository: {
+					provider: "GITHUB",
+					host: "github.com",
+					path: "example-org/example-repo",
+					ref: "main",
+					rootPath: "",
+					generation: 3,
+				},
+				manifest: [],
+			},
+		});
+
+		const result = await client.instructions.getPublished("project-1");
+
+		expect(result.snapshot?.source).toEqual({
+			kind: "REPOSITORY",
+			ref: "main",
+			commitSha: "a".repeat(40),
+			current: true,
+		});
+		expect(result.repository).toEqual({
+			provider: "GITHUB",
+			host: "github.com",
+			path: "example-org/example-repo",
+			ref: "main",
+			rootPath: "",
+			generation: 3,
+		});
+	});
+
 	it("encodes sinceDigest as a query parameter", async () => {
 		const { client, captured } = buildClient({
 			responseBody: { published: true, sourceOfTruth: "UPLOAD" },

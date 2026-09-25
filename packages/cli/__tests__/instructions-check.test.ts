@@ -112,6 +112,189 @@ describe("fabric instructions check", () => {
 		});
 	});
 
+	// Fizzy #2709: `check --format json` already spreads `...published`, so
+	// once the SDK type carries `snapshot.source` it prints without any
+	// route-specific handling in this command — this pins that it actually
+	// does.
+	it("includes the published snapshot's source under --format json", async () => {
+		const dest = await makeTree();
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: {
+				id: "snap-2",
+				version: 7,
+				digest: "d".repeat(64),
+				fileCount: 2,
+				publishedAt: null,
+				source: {
+					kind: "REPOSITORY",
+					ref: "main",
+					commitSha: "a".repeat(40),
+					current: true,
+				},
+			},
+			repository: {
+				provider: "GITHUB",
+				host: "github.com",
+				path: "example-org/example-repo",
+				ref: "main",
+				rootPath: "",
+				generation: 2,
+			},
+			manifest: [],
+		});
+
+		const result = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--format",
+			"json",
+		]);
+
+		expect(result.code).toBe(0);
+		const body = JSON.parse(result.stdout);
+		expect(body.snapshot.source).toEqual({
+			kind: "REPOSITORY",
+			ref: "main",
+			commitSha: "a".repeat(40),
+			current: true,
+		});
+		expect(body.repository).toEqual({
+			provider: "GITHUB",
+			host: "github.com",
+			path: "example-org/example-repo",
+			ref: "main",
+			rootPath: "",
+			generation: 2,
+		});
+	});
+
+	it("adds one line naming the repository, ref and commit for a current REPOSITORY snapshot", async () => {
+		const dest = await makeTree();
+		await seedLock(dest, "d".repeat(64), {});
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "REPOSITORY",
+			snapshot: {
+				id: "snap-2",
+				version: 7,
+				digest: "d".repeat(64),
+				fileCount: 2,
+				publishedAt: null,
+				source: {
+					kind: "REPOSITORY",
+					ref: "main",
+					commitSha: `abc123def456${"0".repeat(28)}`,
+					current: true,
+				},
+			},
+			repository: {
+				provider: "GITHUB",
+				host: "github.com",
+				path: "example-org/example-repo",
+				ref: "main",
+				rootPath: "",
+				generation: 2,
+			},
+			unchanged: true,
+			changes: { added: [], removed: [], changed: [] },
+		});
+
+		const result = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(
+			"published from abc123def456… on main (example-org/example-repo)",
+		);
+	});
+
+	it("adds a caveat instead of a repository name when the snapshot is no longer current", async () => {
+		const dest = await makeTree();
+		await seedLock(dest, "d".repeat(64), {});
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "REPOSITORY",
+			snapshot: {
+				id: "snap-2",
+				version: 7,
+				digest: "d".repeat(64),
+				fileCount: 2,
+				publishedAt: null,
+				source: {
+					kind: "REPOSITORY",
+					ref: "old-branch",
+					commitSha: `abc123def456${"0".repeat(28)}`,
+					current: false,
+				},
+			},
+			repository: {
+				provider: "GITHUB",
+				host: "github.com",
+				path: "example-org/example-repo",
+				ref: "main",
+				rootPath: "",
+				generation: 3,
+			},
+			unchanged: true,
+			changes: { added: [], removed: [], changed: [] },
+		});
+
+		const result = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(
+			"published from abc123def456… on old-branch (not the project's current sync configuration)",
+		);
+	});
+
+	it("adds no extra line for an UPLOAD snapshot", async () => {
+		const dest = await makeTree();
+		await seedLock(dest, "d".repeat(64), {});
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: {
+				id: "snap-2",
+				version: 7,
+				digest: "d".repeat(64),
+				fileCount: 2,
+				publishedAt: null,
+				source: { kind: "UPLOAD" },
+			},
+			unchanged: true,
+			changes: { added: [], removed: [], changed: [] },
+		});
+
+		const result = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toBe(
+			"Published coding instructions unchanged (version 7).\n",
+		);
+	});
+
 	it("says nothing moved when the digest matches", async () => {
 		const dest = await makeTree();
 		await seedLock(dest, "d".repeat(64), {});

@@ -43,6 +43,34 @@ export interface InstructionChanges {
 	changed: string[];
 }
 
+/**
+ * Per-snapshot provenance: where THIS snapshot's files actually came from,
+ * not the project setting `sourceOfTruth` (where future changes should come
+ * from), which is reported alongside it and stays independent.
+ *
+ * `REPOSITORY` means the snapshot was published by a repository sync.
+ * `current` is true only when this snapshot's repository integration and
+ * branch both still equal the project's CURRENT sync configuration's — NOT
+ * the same sync row (its id, or a reconfigure that only flips a setting like
+ * `automatic`, never changes this) — and false when either has since been
+ * re-pointed at a different branch or repository, or the sync has been
+ * disconnected; `ref` and `commitSha` stay the ones this snapshot actually
+ * published from either way. Every other snapshot (a folder upload, a
+ * proposal, a CLI push) is `UPLOAD`.
+ *
+ * The repository itself (provider, host, path, root) is NOT here: it is the
+ * project's current configuration, not per-snapshot, and is reported once as
+ * `PublishedInstructions.repository`.
+ */
+export type PublishedInstructionSource =
+	| { kind: "UPLOAD" }
+	| {
+			kind: "REPOSITORY";
+			ref: string;
+			commitSha: string;
+			current: boolean;
+	  };
+
 export interface PublishedInstructionSnapshot {
 	id: string;
 	version: number;
@@ -56,6 +84,34 @@ export interface PublishedInstructionSnapshot {
 	fileCount: number;
 	/** ISO 8601, or null for a snapshot published before the column existed. */
 	publishedAt: string | null;
+	/** Absent when talking to a server that does not report it yet. */
+	source?: PublishedInstructionSource;
+}
+
+/** A provider a repository sync can be configured against. */
+export type InstructionRepositoryProvider =
+	| "GITHUB"
+	| "GITLAB"
+	| "AZURE_DEVOPS";
+
+/**
+ * The project's CURRENT repository-sync configuration — independent of any
+ * one snapshot, present only while `sourceOfTruth` is `REPOSITORY` and a
+ * sync row still exists (a disconnect or a switch back to upload leaves this
+ * `null` from then on, even though earlier snapshots may still say
+ * `source.kind === "REPOSITORY"`).
+ *
+ * `host` is the bare, lowercased hostname the sync reads from — never the
+ * full repository URL, and never any credential or userinfo it might carry.
+ * `path` is `"<owner>/<name>"`. `rootPath` is `""` for the repository root.
+ */
+export interface PublishedInstructionRepository {
+	provider: InstructionRepositoryProvider;
+	host: string;
+	path: string;
+	ref: string;
+	rootPath: string;
+	generation: number;
 }
 
 export interface PublishedInstructions {
@@ -76,6 +132,12 @@ export interface PublishedInstructions {
 	changes?: InstructionChanges | null;
 	/** Omitted when `unchanged` is true, and when nothing is published. */
 	manifest?: InstructionManifestEntry[];
+	/**
+	 * The project's current repository-sync configuration, or `null` when it
+	 * is not repository-backed (or the sync has been disconnected). Absent
+	 * when talking to a server that does not report it yet.
+	 */
+	repository?: PublishedInstructionRepository | null;
 }
 
 export interface InstructionDownload {

@@ -22,7 +22,11 @@ import { buildContextMetadataAuditEvent } from "@repo/api/modules/projects/lib/c
 // (and Prisma) into module scope the way a value import would. The runtime
 // binding is always the dynamic `await import("@repo/database")` used inside
 // each handler.
-import type { getPublishedInstructionSnapshot as GetPublishedInstructionSnapshotFn } from "@repo/database";
+import type {
+	getPublishedInstructionSnapshot as GetPublishedInstructionSnapshotFn,
+	PublishedInstructionRepositoryConfig,
+	PublishedInstructionSource as PublishedInstructionSourceType,
+} from "@repo/database";
 // How a context row reads to an agent — title, provider, why it has no text —
 // shared with the chat engines' live source reads and the export's
 // skip-reason taxonomy (Fizzy #2228, #2578). The last time this repo kept two
@@ -2142,6 +2146,27 @@ function jsonResult(data: unknown): ToolCallResult {
 function errorResult(message: string): ToolCallResult {
 	return {
 		content: [{ type: "text", text: JSON.stringify({ error: message }) }],
+		isError: true,
+	};
+}
+
+/**
+ * `errorResult`, plus the project's current repository-sync configuration
+ * (Fizzy #2709 review) — for a refusal that is specifically "nothing
+ * published", where the caller may still want to know what repository the
+ * project would publish from.
+ */
+function errorResultWithRepository(
+	message: string,
+	repository: PublishedInstructionRepositoryConfig | null,
+): ToolCallResult {
+	return {
+		content: [
+			{
+				type: "text",
+				text: JSON.stringify({ error: message, repository }),
+			},
+		],
 		isError: true,
 	};
 }
@@ -5053,7 +5078,12 @@ type PublishedInstructionSnapshot = NonNullable<
 // site and types `resolved.error` as `ToolCallResult | undefined`.
 type ResolvedInstructionSnapshot =
 	| { error: ToolCallResult }
-	| { projectId: string; snapshot: null }
+	// `organizationId` is the already-authorized value `resolveInstructionProjectAccess`
+	// resolved for this caller (Fizzy #2709 review) — carried here so a "nothing
+	// published" response can still report the project's current repository-sync
+	// configuration without a second, unscoped lookup. `null` for a personal
+	// project, which `resolveCurrentInstructionRepository` cannot be scoped to.
+	| { projectId: string; organizationId: string | null; snapshot: null }
 	| { projectId: string; snapshot: PublishedInstructionSnapshot };
 
 /** The one answer every coding-instructions refusal gives for a project this caller may not reach. */
@@ -5124,18 +5154,70 @@ async function resolvePublishedInstructionSnapshot(
 		// by a project this organization-only surface should not serve.
 		snapshot.organizationId !== access.organizationId
 	) {
-		return { projectId, snapshot: null };
+		return {
+			projectId,
+			organizationId: access.organizationId,
+			snapshot: null,
+		};
 	}
 	return { projectId, snapshot };
 }
 
-/** The snapshot header both instruction tools put on every response. */
-function instructionSnapshotSummary(snapshot: PublishedInstructionSnapshot) {
+/**
+ * The project's current repository-sync configuration for a "nothing
+ * published" result (Fizzy #2709 review) — `null` when the resolved access
+ * carries no organization (a personal project), since
+ * `resolveCurrentInstructionRepository` is organization-scoped and cannot
+ * answer for one.
+ */
+async function nullSnapshotRepository(
+	resolved: Extract<ResolvedInstructionSnapshot, { snapshot: null }>,
+): Promise<PublishedInstructionRepositoryConfig | null> {
+	if (!resolved.organizationId) {
+		return null;
+	}
+	const { resolveCurrentInstructionRepository } = await import(
+		"@repo/database"
+	);
+	return resolveCurrentInstructionRepository(
+		resolved.projectId,
+		resolved.organizationId,
+	);
+}
+
+/**
+ * The snapshot header both instruction tools put on every response, plus the
+ * project's current repository-sync configuration (Fizzy #2709) — a SIBLING
+ * of the snapshot header in the tool's result, not part of it, since it
+ * describes the project's present configuration rather than this snapshot.
+ */
+async function instructionSnapshotSummary(
+	snapshot: PublishedInstructionSnapshot,
+): Promise<{
+	summary: {
+		id: string;
+		version: number;
+		digest: string;
+		fileCount: number;
+		source: PublishedInstructionSourceType;
+	};
+	repository: PublishedInstructionRepositoryConfig | null;
+}> {
+	const { resolveInstructionSnapshotSource } = await import("@repo/database");
+	const { source, repository } = await resolveInstructionSnapshotSource(
+		snapshot.projectId,
+		snapshot.organizationId,
+		snapshot,
+	);
 	return {
-		id: snapshot.id,
-		version: snapshot.version,
-		digest: snapshot.digest,
-		fileCount: snapshot.fileCount,
+		summary: {
+			id: snapshot.id,
+			version: snapshot.version,
+			digest: snapshot.digest ?? "",
+			fileCount: snapshot.fileCount,
+			source,
+		},
+		repository,
 	};
 }
 
@@ -5251,6 +5333,7 @@ async function handleListProjectInstructions(
 	if (!resolved.snapshot) {
 		return jsonResult({
 			snapshot: null,
+			repository: await nullSnapshotRepository(resolved),
 			files: [],
 			message: "This project has no published coding instructions yet.",
 		});
@@ -5263,8 +5346,12 @@ async function handleListProjectInstructions(
 			resolved.snapshot,
 		);
 		if (delta.unchanged) {
+			const unchangedHeader = await instructionSnapshotSummary(
+				resolved.snapshot,
+			);
 			return jsonResult({
-				snapshot: instructionSnapshotSummary(resolved.snapshot),
+				snapshot: unchangedHeader.summary,
+				repository: unchangedHeader.repository,
 				...delta,
 			});
 		}
@@ -5289,8 +5376,10 @@ async function handleListProjectInstructions(
 		resolved.snapshot.organizationId,
 		{ kind: kind as InstructionFileKind | undefined, query },
 	);
+	const header = await instructionSnapshotSummary(resolved.snapshot);
 	return jsonResult({
-		snapshot: instructionSnapshotSummary(resolved.snapshot),
+		snapshot: header.summary,
+		repository: header.repository,
 		files: files.map((f) => ({
 			path: f.path,
 			kind: f.kind,
@@ -5402,8 +5491,9 @@ async function handleGetProjectInstructionBundle(
 		return resolved.error;
 	}
 	if (!resolved.snapshot) {
-		return errorResult(
+		return errorResultWithRepository(
 			"This project has no published coding instructions yet.",
+			await nullSnapshotRepository(resolved),
 		);
 	}
 	let delta: InstructionDelta | undefined;
@@ -5417,8 +5507,12 @@ async function handleGetProjectInstructionBundle(
 		// holds this content, so nothing is archived and no signed URL exists
 		// to leak or to pay for.
 		if (delta.unchanged) {
+			const unchangedHeader = await instructionSnapshotSummary(
+				resolved.snapshot,
+			);
 			return jsonResult({
-				snapshot: instructionSnapshotSummary(resolved.snapshot),
+				snapshot: unchangedHeader.summary,
+				repository: unchangedHeader.repository,
 				...delta,
 			});
 		}
@@ -5437,8 +5531,10 @@ async function handleGetProjectInstructionBundle(
 		snapshot: resolved.snapshot,
 		files,
 	});
+	const header = await instructionSnapshotSummary(resolved.snapshot);
 	return jsonResult({
-		snapshot: instructionSnapshotSummary(resolved.snapshot),
+		snapshot: header.summary,
+		repository: header.repository,
 		manifest: files.map((f) => ({
 			path: f.path,
 			sha256: f.sha256,
@@ -5551,7 +5647,10 @@ function instructionCheck(
 	status: CheckStatus,
 	evidence: CheckEvidence,
 	detail: string,
-	extra: Pick<InstructionCheck, "items" | "fix"> = {},
+	extra: Pick<
+		InstructionCheck,
+		"items" | "fix" | "source" | "repository"
+	> = {},
 ): InstructionCheck {
 	return { id, title: CHECK_TITLES[id], status, evidence, detail, ...extra };
 }
@@ -5916,6 +6015,7 @@ async function handleGetInstructionChecks(
 						description:
 							"publish a version from the project's Coding Instructions tab",
 					},
+					repository: await nullSnapshotRepository(resolved),
 				},
 			),
 			instructionCheck(
@@ -5935,12 +6035,24 @@ async function handleGetInstructionChecks(
 		return report(checks);
 	}
 
+	const { resolveInstructionSnapshotSource } = await import("@repo/database");
+	const { source: publishedSource, repository } =
+		await resolveInstructionSnapshotSource(
+			projectId,
+			snapshot.organizationId,
+			snapshot,
+		);
+	const publishedSourceDetail =
+		publishedSource.kind === "REPOSITORY"
+			? `, from ${sanitizeDisplayText(publishedSource.commitSha.slice(0, 12), 12)}… on ${sanitizeDisplayText(publishedSource.ref, 200)}`
+			: "";
 	checks.push(
 		instructionCheck(
 			"published",
 			"pass",
 			"server",
-			`version ${snapshot.version} (digest ${(snapshot.digest ?? "").slice(0, 12)}…, ${snapshot.fileCount} file(s))`,
+			`version ${snapshot.version} (digest ${(snapshot.digest ?? "").slice(0, 12)}…, ${snapshot.fileCount} file(s))${publishedSourceDetail}`,
+			{ source: publishedSource, repository },
 		),
 	);
 

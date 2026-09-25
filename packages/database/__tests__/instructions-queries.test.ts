@@ -42,6 +42,13 @@ const mocks = vi.hoisted(() => ({
 		update: vi.fn(),
 		updateMany: vi.fn(),
 	},
+	// `resolveInstructionSnapshotSource` / `resolveCurrentInstructionRepository`
+	// read the project's repository-sync row through `getInstructionRepositorySync`
+	// (Fizzy #2709), which selects the joined `repositoryIntegration` from the
+	// SAME query — no separate integration table mock is needed.
+	repositorySync: {
+		findFirst: vi.fn(),
+	},
 	$transaction: vi.fn(),
 	// The reaper's candidate query is raw SQL: one UNIONed relation, so the
 	// page is a window of ONE order rather than two separately-skipped ones.
@@ -62,6 +69,7 @@ vi.mock("../prisma/client", async () => {
 			projectInstructionSnapshot: mocks.snapshot,
 			projectInstructionFile: mocks.file,
 			project: mocks.project,
+			projectInstructionRepositorySync: mocks.repositorySync,
 			$transaction: mocks.$transaction,
 			$queryRaw: (...a: unknown[]) => mocks.$queryRaw(...a),
 		},
@@ -112,13 +120,20 @@ import {
 	publishInstructionSnapshot,
 	rejectAbandonedInstructionSnapshot,
 	rejectInstructionProposal,
+	resolveCurrentInstructionRepository,
+	resolveInstructionSnapshotSource,
 	rotateAbandonedInstructionSnapshot,
 	startInstructionSnapshotValidation,
 	updateInstructionFileMetadata,
 } from "../prisma/queries/instructions";
 
 beforeEach(() => {
-	for (const group of [mocks.snapshot, mocks.file, mocks.project]) {
+	for (const group of [
+		mocks.snapshot,
+		mocks.file,
+		mocks.project,
+		mocks.repositorySync,
+	]) {
 		for (const fn of Object.values(group)) fn.mockReset();
 	}
 	mocks.$transaction.mockReset();
@@ -3957,5 +3972,480 @@ describe("retention of pull-request operations", () => {
 			deleted: false,
 			reason: "active",
 		});
+	});
+});
+
+/**
+ * `resolveInstructionSnapshotSource` / `resolveCurrentInstructionRepository`
+ * (Fizzy #2709): the shared resolver the REST route and the MCP gateway both
+ * call for a published snapshot's `source` and the project's top-level
+ * `repository`, so the two surfaces cannot disagree.
+ */
+describe("resolveInstructionSnapshotSource and resolveCurrentInstructionRepository", () => {
+	function settingsOf(sourceOfTruth: "UPLOAD" | "REPOSITORY" | null) {
+		return { instructionSettings: { sourceOfTruth } };
+	}
+
+	function syncRowOf(overrides: Record<string, unknown> = {}) {
+		return {
+			id: "sync_1",
+			projectId: "p",
+			organizationId: "org_1",
+			repositoryIntegrationId: "int_1",
+			ref: "main",
+			rootPath: "",
+			automatic: false,
+			generation: 1,
+			automaticPausedReason: null,
+			automaticPausedAt: null,
+			user: { id: "u1", name: "Example Developer" },
+			repositoryIntegration: {
+				id: "int_1",
+				provider: "GITHUB",
+				repositoryUrl:
+					"https://github.com/example-org/example-repo.git",
+				repositoryOwner: "example-org",
+				repositoryName: "example-repo",
+				defaultBranch: "main",
+				status: "ACTIVE",
+			},
+			...overrides,
+		};
+	}
+
+	function snapshotOf(overrides: Record<string, unknown> = {}) {
+		return {
+			source: "UPLOAD",
+			repositoryIntegrationId: null,
+			sourceRef: null,
+			sourceCommitSha: null,
+			...overrides,
+		} as {
+			source: "UPLOAD" | "REPOSITORY";
+			repositoryIntegrationId: string | null;
+			sourceRef: string | null;
+			sourceCommitSha: string | null;
+		};
+	}
+
+	// Fizzy #2709 review: provenance is discriminated on the snapshot's own
+	// `source` column, so every REPOSITORY-provenance fixture below carries
+	// `source: "REPOSITORY"` explicitly rather than relying on the receipt
+	// fields' mere presence.
+	const REPO_SNAPSHOT_FIELDS = {
+		source: "REPOSITORY",
+		repositoryIntegrationId: "int_1",
+		sourceRef: "main",
+		sourceCommitSha: "a".repeat(40),
+	};
+
+	describe("resolveInstructionSnapshotSource", () => {
+		it("resolves REPOSITORY with current: true when the integration and ref match the current sync row", async () => {
+			mocks.project.findFirst.mockResolvedValue(settingsOf("REPOSITORY"));
+			mocks.repositorySync.findFirst.mockResolvedValue(syncRowOf());
+
+			const result = await resolveInstructionSnapshotSource(
+				"p",
+				"org_1",
+				snapshotOf(REPO_SNAPSHOT_FIELDS),
+			);
+
+			expect(result.source).toEqual({
+				kind: "REPOSITORY",
+				ref: "main",
+				commitSha: "a".repeat(40),
+				current: true,
+			});
+			expect(result.repository).toEqual({
+				provider: "GITHUB",
+				host: "github.com",
+				path: "example-org/example-repo",
+				ref: "main",
+				rootPath: "",
+				generation: 1,
+			});
+			expect(mocks.project.findFirst).toHaveBeenCalledExactlyOnceWith({
+				where: { id: "p", organizationId: "org_1" },
+				select: { instructionSettings: true },
+			});
+			expect(
+				mocks.repositorySync.findFirst,
+			).toHaveBeenCalledExactlyOnceWith({
+				where: { projectId: "p", organizationId: "org_1" },
+				select: expect.any(Object),
+			});
+		});
+
+		it("never puts the repository URL in the resolved config, only its bare lowercased hostname", async () => {
+			mocks.project.findFirst.mockResolvedValue(settingsOf("REPOSITORY"));
+			// Assembled at runtime, never a contiguous userinfo literal in
+			// source, so the OSS relay's publication scan does not read this
+			// fixture as a leaked credential.
+			const withUserinfo = new URL(
+				"https://GitHub.com/example-org/example-repo.git",
+			);
+			withUserinfo.username = "x-access-token";
+			withUserinfo.password = "secret";
+			mocks.repositorySync.findFirst.mockResolvedValue(
+				syncRowOf({
+					repositoryIntegration: {
+						...syncRowOf().repositoryIntegration,
+						repositoryUrl: withUserinfo.toString(),
+					},
+				}),
+			);
+
+			const result = await resolveInstructionSnapshotSource(
+				"p",
+				"org_1",
+				snapshotOf(REPO_SNAPSHOT_FIELDS),
+			);
+
+			expect(result.repository?.host).toBe("github.com");
+			expect(JSON.stringify(result)).not.toContain("secret");
+			expect(JSON.stringify(result)).not.toContain("x-access-token");
+		});
+
+		it("resolves current: false when the sync has moved to a different branch", async () => {
+			mocks.project.findFirst.mockResolvedValue(settingsOf("REPOSITORY"));
+			mocks.repositorySync.findFirst.mockResolvedValue(
+				syncRowOf({ ref: "develop" }),
+			);
+
+			const result = await resolveInstructionSnapshotSource(
+				"p",
+				"org_1",
+				snapshotOf(REPO_SNAPSHOT_FIELDS),
+			);
+
+			expect(result.source).toMatchObject({ current: false });
+		});
+
+		it("resolves current: false when the sync has moved to a different repository", async () => {
+			mocks.project.findFirst.mockResolvedValue(settingsOf("REPOSITORY"));
+			mocks.repositorySync.findFirst.mockResolvedValue(
+				syncRowOf({ repositoryIntegrationId: "int_2" }),
+			);
+
+			const result = await resolveInstructionSnapshotSource(
+				"p",
+				"org_1",
+				snapshotOf(REPO_SNAPSHOT_FIELDS),
+			);
+
+			expect(result.source).toMatchObject({ current: false });
+		});
+
+		it("resolves current: false when there is no sync row at all (disconnected)", async () => {
+			mocks.project.findFirst.mockResolvedValue(settingsOf("UPLOAD"));
+			mocks.repositorySync.findFirst.mockResolvedValue(null);
+
+			const result = await resolveInstructionSnapshotSource(
+				"p",
+				"org_1",
+				snapshotOf(REPO_SNAPSHOT_FIELDS),
+			);
+
+			expect(result.source).toMatchObject({ current: false });
+			expect(result.repository).toBeNull();
+		});
+
+		// The refinement that matters: a reconfigure that bumps the sync's
+		// generation without changing the integration or the branch (for
+		// example, flipping `automatic`) does not publish a new snapshot, so an
+		// older snapshot from before that reconfigure must still read current.
+		it("stays current: true across a generation bump when the integration and ref are unchanged", async () => {
+			mocks.project.findFirst.mockResolvedValue(settingsOf("REPOSITORY"));
+			mocks.repositorySync.findFirst.mockResolvedValue(
+				syncRowOf({ generation: 5, automatic: true }),
+			);
+
+			const result = await resolveInstructionSnapshotSource(
+				"p",
+				"org_1",
+				snapshotOf(REPO_SNAPSHOT_FIELDS),
+			);
+
+			expect(result.source).toMatchObject({ current: true });
+		});
+
+		// Fizzy #2709 review: provenance is discriminated on the snapshot's own
+		// `source` column, never on whether the three receipt fields happen to
+		// be populated — those are a snapshot's own history and can legitimately
+		// stay populated (or partially populated, from data before this design)
+		// on a row the writer marked UPLOAD.
+		it.each([
+			["nothing set", snapshotOf({ source: "UPLOAD" })],
+			[
+				"a stale, fully-populated receipt left from before this design",
+				snapshotOf({ ...REPO_SNAPSHOT_FIELDS, source: "UPLOAD" }),
+			],
+			[
+				"one stale receipt field set",
+				snapshotOf({
+					source: "UPLOAD",
+					repositoryIntegrationId: "int_1",
+				}),
+			],
+		])(
+			"resolves UPLOAD when source is UPLOAD and %s",
+			async (_label, snapshot) => {
+				mocks.project.findFirst.mockResolvedValue(settingsOf("UPLOAD"));
+
+				const result = await resolveInstructionSnapshotSource(
+					"p",
+					"org_1",
+					snapshot,
+				);
+
+				expect(result.source).toEqual({ kind: "UPLOAD" });
+				expect(mocks.repositorySync.findFirst).not.toHaveBeenCalled();
+			},
+		);
+
+		// The invariant every repository-sync write upholds (design 2026-09-23
+		// §4.2): a REPOSITORY-sourced snapshot always has all three receipt
+		// fields together. A row that violates it is a data-integrity failure,
+		// reported as one — never silently relabeled UPLOAD, which would tell a
+		// caller a repository-published snapshot has no known repository, ref
+		// or commit.
+		it.each([
+			[
+				"repositoryIntegrationId missing",
+				snapshotOf({
+					source: "REPOSITORY",
+					sourceRef: "main",
+					sourceCommitSha: "a".repeat(40),
+				}),
+			],
+			[
+				"sourceRef missing",
+				snapshotOf({
+					source: "REPOSITORY",
+					repositoryIntegrationId: "int_1",
+					sourceCommitSha: "a".repeat(40),
+				}),
+			],
+			[
+				"sourceCommitSha missing",
+				snapshotOf({
+					source: "REPOSITORY",
+					repositoryIntegrationId: "int_1",
+					sourceRef: "main",
+				}),
+			],
+			["nothing set", snapshotOf({ source: "REPOSITORY" })],
+		])(
+			"throws when source is REPOSITORY but %s, rather than relabeling UPLOAD",
+			async (_label, snapshot) => {
+				mocks.project.findFirst.mockResolvedValue(
+					settingsOf("REPOSITORY"),
+				);
+				mocks.repositorySync.findFirst.mockResolvedValue(syncRowOf());
+
+				await expect(
+					resolveInstructionSnapshotSource("p", "org_1", snapshot),
+				).rejects.toThrow(
+					/REPOSITORY-sourced snapshot is missing its repository receipt fields/,
+				);
+			},
+		);
+
+		it("still resolves the top-level repository for an UPLOAD snapshot in a REPOSITORY-backed project", async () => {
+			mocks.project.findFirst.mockResolvedValue(settingsOf("REPOSITORY"));
+			mocks.repositorySync.findFirst.mockResolvedValue(syncRowOf());
+
+			const result = await resolveInstructionSnapshotSource(
+				"p",
+				"org_1",
+				snapshotOf(),
+			);
+
+			expect(result.source).toEqual({ kind: "UPLOAD" });
+			expect(result.repository).toEqual({
+				provider: "GITHUB",
+				host: "github.com",
+				path: "example-org/example-repo",
+				ref: "main",
+				rootPath: "",
+				generation: 1,
+			});
+		});
+
+		it("resolves repository: null for an UPLOAD project without ever reading the sync row", async () => {
+			mocks.project.findFirst.mockResolvedValue(settingsOf("UPLOAD"));
+
+			const result = await resolveInstructionSnapshotSource(
+				"p",
+				"org_1",
+				snapshotOf(),
+			);
+
+			expect(result.repository).toBeNull();
+			expect(mocks.repositorySync.findFirst).not.toHaveBeenCalled();
+		});
+
+		it("scopes both reads by the caller's own project and organization, not the snapshot's", async () => {
+			mocks.project.findFirst.mockResolvedValue(settingsOf("REPOSITORY"));
+			mocks.repositorySync.findFirst.mockResolvedValue(syncRowOf());
+
+			await resolveInstructionSnapshotSource(
+				"other-project",
+				"other-org",
+				snapshotOf(REPO_SNAPSHOT_FIELDS),
+			);
+
+			expect(mocks.project.findFirst).toHaveBeenCalledExactlyOnceWith({
+				where: { id: "other-project", organizationId: "other-org" },
+				select: { instructionSettings: true },
+			});
+			expect(
+				mocks.repositorySync.findFirst,
+			).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({
+					where: {
+						projectId: "other-project",
+						organizationId: "other-org",
+					},
+				}),
+			);
+		});
+	});
+
+	describe("resolveCurrentInstructionRepository", () => {
+		it("returns null without reading the sync row when the project is not repository-backed", async () => {
+			mocks.project.findFirst.mockResolvedValue(settingsOf("UPLOAD"));
+
+			const repository = await resolveCurrentInstructionRepository(
+				"p",
+				"org_1",
+			);
+
+			expect(repository).toBeNull();
+			expect(mocks.repositorySync.findFirst).not.toHaveBeenCalled();
+		});
+
+		it("returns null when sourceOfTruth is REPOSITORY but the sync row is gone", async () => {
+			mocks.project.findFirst.mockResolvedValue(settingsOf("REPOSITORY"));
+			mocks.repositorySync.findFirst.mockResolvedValue(null);
+
+			const repository = await resolveCurrentInstructionRepository(
+				"p",
+				"org_1",
+			);
+
+			expect(repository).toBeNull();
+		});
+
+		it("returns the current configuration when repository-backed", async () => {
+			mocks.project.findFirst.mockResolvedValue(settingsOf("REPOSITORY"));
+			mocks.repositorySync.findFirst.mockResolvedValue(
+				syncRowOf({ rootPath: "services/api", generation: 4 }),
+			);
+
+			const repository = await resolveCurrentInstructionRepository(
+				"p",
+				"org_1",
+			);
+
+			expect(repository).toEqual({
+				provider: "GITHUB",
+				host: "github.com",
+				path: "example-org/example-repo",
+				ref: "main",
+				rootPath: "services/api",
+				generation: 4,
+			});
+		});
+
+		// Fizzy #2709 review: `new URL(repositoryUrl)` throws on a scp-style or
+		// malformed stored value, which would fail this read outright. The host
+		// extraction handles every shape a stored `repositoryUrl` legitimately
+		// takes, and degrades to `repository: null` — never a thrown error —
+		// for anything it cannot read as one.
+		//
+		// The ssh-URL fixture below is assembled at runtime (joined, not one
+		// literal) so its user-and-host shape never appears contiguous in
+		// source, which is what the OSS relay's publication scan would
+		// otherwise read as a leaked credential.
+		const sshUrlWithUserinfo = [
+			"ssh://git",
+			"git.example.com/example-org/example-repo.git",
+		].join("@");
+
+		it.each([
+			[
+				"a plain https URL",
+				"https://github.com/example-org/example-repo.git",
+				"github.com",
+			],
+			[
+				"a self-hosted https URL",
+				"https://git.example.com/example-org/example-repo.git",
+				"git.example.com",
+			],
+			["an ssh URL", sshUrlWithUserinfo, "git.example.com"],
+			["an ssh URL with a port", "ssh://user@host:2222/path", "host"],
+			[
+				"scp-style shorthand",
+				"git@github.com:example-org/example-repo.git",
+				"github.com",
+			],
+			["userless scp-style shorthand", "host:path", "host"],
+		])(
+			"reads the host from %s",
+			async (_label, repositoryUrl, expectedHost) => {
+				mocks.project.findFirst.mockResolvedValue(
+					settingsOf("REPOSITORY"),
+				);
+				mocks.repositorySync.findFirst.mockResolvedValue(
+					syncRowOf({
+						repositoryIntegration: {
+							...syncRowOf().repositoryIntegration,
+							repositoryUrl,
+						},
+					}),
+				);
+
+				const repository = await resolveCurrentInstructionRepository(
+					"p",
+					"org_1",
+				);
+
+				expect(repository?.host).toBe(expectedHost);
+			},
+		);
+
+		// Fizzy #2709 review: `repositoryHost` must reject every scheme besides
+		// `https:`/`ssh:` (a `file:` URL must never report its host), and must
+		// never misread a Windows drive-letter path or a plain filesystem path
+		// as scp-style `host:path` shorthand.
+		it.each([
+			["a value with no colon at all", "not a url at all"],
+			["a Windows drive path with a backslash", "C:\\path"],
+			["a Windows drive path with a forward slash", "C:/path"],
+			["a local filesystem path", "/local/path"],
+			["a file:// URL with an empty authority", "file:///local/path"],
+			["a file:// URL with a host", "file://server/share"],
+		])(
+			"resolves repository: null, never a thrown error, for %s",
+			async (_label, repositoryUrl) => {
+				mocks.project.findFirst.mockResolvedValue(
+					settingsOf("REPOSITORY"),
+				);
+				mocks.repositorySync.findFirst.mockResolvedValue(
+					syncRowOf({
+						repositoryIntegration: {
+							...syncRowOf().repositoryIntegration,
+							repositoryUrl,
+						},
+					}),
+				);
+
+				await expect(
+					resolveCurrentInstructionRepository("p", "org_1"),
+				).resolves.toBeNull();
+			},
+		);
 	});
 });

@@ -12,6 +12,7 @@ import path from "node:path";
 import type { InstructionManifestEntry } from "@fabricorg/sdk";
 import { describe, expect, it } from "vitest";
 import type { InstructionsLock } from "../src/lib/instructions/lock.js";
+import { LOCK_VERSION } from "../src/lib/instructions/lock.js";
 import {
 	computeSyncPlan,
 	findLedgerDrift,
@@ -491,7 +492,7 @@ describe("nextLock", () => {
 		});
 
 		expect(lock).toEqual({
-			version: 2,
+			version: 3,
 			projectId: "project-1",
 			snapshotId: "snap-2",
 			snapshotVersion: 7,
@@ -502,6 +503,44 @@ describe("nextLock", () => {
 				"script.sh": { sha256: sha256("#!"), mode: 33261 },
 			},
 		});
+	});
+
+	// Fizzy #2709: the lock carries the published snapshot's provenance
+	// through, unchanged, so a later sync can report it.
+	it("carries the snapshot's source into the lock", () => {
+		const lock = nextLock({
+			projectId: "project-1",
+			snapshot: {
+				id: "snap-2",
+				version: 7,
+				digest: "d".repeat(64),
+				source: {
+					kind: "REPOSITORY",
+					ref: "main",
+					commitSha: "a".repeat(40),
+					current: true,
+				},
+			},
+			manifest: [entry("AGENTS.md", "new")],
+			now: new Date("2026-09-17T10:00:00.000Z"),
+		});
+
+		expect(lock.source).toEqual({
+			kind: "REPOSITORY",
+			ref: "main",
+			commitSha: "a".repeat(40),
+			current: true,
+		});
+	});
+
+	it("omits source entirely when the snapshot has none", () => {
+		const lock = nextLock({
+			projectId: "project-1",
+			snapshot: { id: "snap-2", version: 7, digest: "d".repeat(64) },
+			manifest: [entry("AGENTS.md", "new")],
+		});
+
+		expect(lock).not.toHaveProperty("source");
 	});
 });
 
@@ -649,8 +688,8 @@ describe("keeping local edits", () => {
 			changed: true,
 			lock: {
 				...lock,
-				// Only a version 2 lock may carry a marker (Decision 38).
-				version: 2,
+				// Rewritten at the current lock version (Decision 38; Fizzy #2709).
+				version: LOCK_VERSION,
 				files: {
 					"AGENTS.md": {
 						sha256: sha256("published"),

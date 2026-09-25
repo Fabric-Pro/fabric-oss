@@ -15,6 +15,7 @@ import type {
 	ProjectInstructionProposalStatus,
 	ProjectInstructionSnapshotStatus,
 	ProjectInstructionSource,
+	RepositoryProvider,
 } from "../generated/client";
 import { type RecordAuditInput, recordAuditTx } from "./audit-log";
 import {
@@ -25,6 +26,7 @@ import {
 	transitionPullRequest,
 } from "./instruction-proposal-pull-requests";
 import {
+	getInstructionRepositorySync,
 	repositorySyncPublishRefusal,
 	writeProjectInstructionSettings,
 } from "./instruction-repository-sync";
@@ -1464,6 +1466,262 @@ export async function getPublishedInstructionSnapshot(projectId: string) {
 		select: { publishedInstructionSnapshot: { select: summarySelect } },
 	});
 	return project?.publishedInstructionSnapshot ?? null;
+}
+
+/**
+ * Per-snapshot provenance for a published Coding Instructions snapshot
+ * (Fizzy #2709). `kind` is per-snapshot PROVENANCE ("where did this
+ * snapshot's files come from"), not the project setting `sourceOfTruth`
+ * ("where should the next change come from") — the two are independent and
+ * both are reported alongside each other, `sourceOfTruth` at the top level
+ * of the published response and `source` on the snapshot.
+ *
+ * `current` says whether THIS snapshot's repository and branch still match
+ * the project's CURRENT repository-sync configuration: true only when the
+ * snapshot's `repositoryIntegrationId` and `sourceRef` both still equal the
+ * CURRENT sync row's `repositoryIntegrationId` and `ref`. False when either
+ * differs (the sync was re-pointed at another branch or repository since
+ * this snapshot published) or when no sync row exists at all (disconnected).
+ * Deliberately NOT keyed on the sync row's id or its `syncRunKey`/generation:
+ * a reconfigure that leaves the integration and branch unchanged (for
+ * example, only flipping `automatic`) does not publish a new snapshot, so an
+ * old snapshot from before that reconfigure must still count as current.
+ * Mirrors the `fromCurrentConfiguration` idea `toSyncRunView` reports for a
+ * sync run, but compares the configuration's content rather than its row id.
+ */
+export type PublishedInstructionSource =
+	| { kind: "UPLOAD" }
+	| {
+			kind: "REPOSITORY";
+			ref: string;
+			commitSha: string;
+			current: boolean;
+	  };
+
+/**
+ * The project's CURRENT repository-sync configuration, as every surface that
+ * reports a published snapshot also reports it — independent of any one
+ * snapshot, and present only while the project's `sourceOfTruth` setting is
+ * `REPOSITORY` and a sync row still exists (a disconnect or "switch to
+ * upload mode" leaves the receipt but this reads `null` from then on), AND
+ * the integration's stored `repositoryUrl` can be read as a host (see
+ * `repositoryHost` below) — a malformed or legacy stored value also reads as
+ * `null` here rather than throwing.
+ *
+ * `host` is the bare, lowercased hostname of the integration's
+ * `repositoryUrl` — never the URL itself, and never any userinfo it might
+ * carry. `path` is `"<owner>/<name>"`. `rootPath` is `""` for the repository
+ * root. `generation` is the sync's CURRENT generation counter (distinct from
+ * any one snapshot, which never recorded the generation it was produced
+ * under).
+ */
+export type PublishedInstructionRepositoryConfig = {
+	provider: RepositoryProvider;
+	host: string;
+	path: string;
+	ref: string;
+	rootPath: string;
+	generation: number;
+};
+
+/**
+ * Matches a Windows drive-letter path (`C:\path`, `C:/path`) so it is never
+ * misread as scp-style shorthand's `host:path` shape (Fizzy #2709 review).
+ */
+const WINDOWS_DRIVE_PATH = /^[A-Za-z]:[\\/]/;
+
+/**
+ * Matches scp-style shorthand (`[user@]host:path`, e.g.
+ * `git@github.com:owner/repo.git`, or the userless `host:path`) — never a
+ * schemed URL, since a schemed URL's first colon is immediately followed by
+ * `//`, which `scpStyleHost` rejects before applying this regex (making
+ * `user@` optional would otherwise also read a `file:///local/path`'s
+ * `file:` as a bare scp host).
+ */
+const SCP_STYLE_REPOSITORY_URL = /^(?:[\w.-]+@)?([\w.-]+):(.+)$/;
+
+/**
+ * The host from scp-style shorthand, or `null` when the value is not one:
+ * a Windows drive-letter path, a value with a `/` before its first `:`
+ * (never a host:path shape), or a schemed URL (`scheme://…`).
+ */
+function scpStyleHost(trimmed: string): string | null {
+	if (WINDOWS_DRIVE_PATH.test(trimmed)) {
+		return null;
+	}
+	const firstColon = trimmed.indexOf(":");
+	if (firstColon === -1) {
+		return null;
+	}
+	const firstSlash = trimmed.indexOf("/");
+	if (firstSlash !== -1 && firstSlash < firstColon) {
+		return null;
+	}
+	if (trimmed.slice(firstColon + 1).startsWith("//")) {
+		return null;
+	}
+	const match = SCP_STYLE_REPOSITORY_URL.exec(trimmed);
+	return match ? match[1].toLowerCase() : null;
+}
+
+/**
+ * The bare, lowercased hostname of a stored repository URL, or `null` when
+ * the value cannot be read as one — never the URL itself, and never any
+ * userinfo it might carry. Handles `https://host/…`, `ssh://[user@]host[:port]/…`
+ * (port stripped), and scp-style `[user@]host:path`. Rejects every other
+ * scheme explicitly (`file:`, `git:`, `http:`, …) rather than reporting
+ * whatever host it happens to parse to, and degrades a malformed or legacy
+ * stored value to `null` rather than throwing, since `new URL` throws on
+ * scp-style and on garbage input alike (Fizzy #2709 review). Never logs or
+ * reports the raw URL on failure — only the caller's own `repository: null`.
+ */
+function repositoryHost(repositoryUrl: string): string | null {
+	const trimmed = repositoryUrl.trim();
+	if (!trimmed) {
+		return null;
+	}
+	const scpHost = scpStyleHost(trimmed);
+	if (scpHost !== null) {
+		return scpHost;
+	}
+	try {
+		const url = new URL(trimmed);
+		if (url.protocol !== "https:" && url.protocol !== "ssh:") {
+			return null;
+		}
+		return url.hostname ? url.hostname.toLowerCase() : null;
+	} catch {
+		return null;
+	}
+}
+
+function toRepositoryConfig(
+	sync: NonNullable<Awaited<ReturnType<typeof getInstructionRepositorySync>>>,
+): PublishedInstructionRepositoryConfig | null {
+	const host = repositoryHost(sync.repositoryIntegration.repositoryUrl);
+	if (host === null) {
+		return null;
+	}
+	return {
+		provider: sync.repositoryIntegration.provider,
+		host,
+		path: `${sync.repositoryIntegration.repositoryOwner}/${sync.repositoryIntegration.repositoryName}`,
+		ref: sync.ref,
+		rootPath: sync.rootPath,
+		generation: sync.generation,
+	};
+}
+
+/**
+ * The project's current repository-sync configuration for the top-level
+ * `repository` field of a published response, independent of which (if any)
+ * snapshot is published. `null` whenever `sourceOfTruth` is not `REPOSITORY`
+ * or no sync row exists — the two are checked separately because a
+ * "switch to upload mode" leaves the sync row in place for its history
+ * (design 2026-09-23) while flipping the setting back.
+ */
+export async function resolveCurrentInstructionRepository(
+	projectId: string,
+	organizationId: string,
+): Promise<PublishedInstructionRepositoryConfig | null> {
+	const settings = await getProjectInstructionSettings(
+		projectId,
+		organizationId,
+	);
+	if (settings.sourceOfTruth !== "REPOSITORY") {
+		return null;
+	}
+	const sync = await getInstructionRepositorySync(projectId, organizationId);
+	return sync ? toRepositoryConfig(sync) : null;
+}
+
+/**
+ * Resolves the ONE `{ source, repository }` pair every surface that
+ * describes a published snapshot must carry — the REST route, the SDK/CLI
+ * lock, and the MCP gateway's bundle summary and doctor check all call this
+ * so they cannot disagree.
+ *
+ * Provenance is discriminated on the snapshot's own `source` COLUMN — never
+ * on whether the three receipt fields (`repositoryIntegrationId`, `sourceRef`,
+ * `sourceCommitSha`) happen to be populated (Fizzy #2709 review). `source`
+ * is the column every writer sets deliberately; the receipt fields can
+ * legitimately stay populated on a row the writer marked `UPLOAD` (they are a
+ * snapshot's own history, never cleared by a later change elsewhere), so
+ * keying off their presence would silently relabel a stale-but-populated
+ * UPLOAD snapshot as REPOSITORY, or the reverse. `source === "REPOSITORY"`
+ * with any of the three fields missing is a data-integrity invariant
+ * failure — every repository-sync write sets all three together (design
+ * 2026-09-23 §4.2) — and is thrown rather than silently relabeled as
+ * UPLOAD; the REST route's outer error handler and the MCP gateway's
+ * per-tool catch both turn an uncaught throw into a safe 500/error result
+ * without this function needing its own try/catch. `current` is computed
+ * against the sync row REGARDLESS of the project's present `sourceOfTruth`
+ * setting — a snapshot published while repository-backed stays truthfully
+ * reportable even after the project switches back to upload.
+ */
+export async function resolveInstructionSnapshotSource(
+	projectId: string,
+	organizationId: string,
+	snapshot: {
+		source: InstructionSource;
+		repositoryIntegrationId: string | null;
+		sourceRef: string | null;
+		sourceCommitSha: string | null;
+	},
+): Promise<{
+	source: PublishedInstructionSource;
+	repository: PublishedInstructionRepositoryConfig | null;
+}> {
+	const settings = await getProjectInstructionSettings(
+		projectId,
+		organizationId,
+	);
+	// The sync row is read whenever it could matter to either answer: to
+	// build the top-level `repository`, or to decide `current` for a
+	// REPOSITORY-provenance snapshot — the latter regardless of whether
+	// `sourceOfTruth` still says REPOSITORY.
+	const sync =
+		snapshot.source === "REPOSITORY" ||
+		settings.sourceOfTruth === "REPOSITORY"
+			? await getInstructionRepositorySync(projectId, organizationId)
+			: null;
+
+	const repository =
+		settings.sourceOfTruth === "REPOSITORY" && sync
+			? toRepositoryConfig(sync)
+			: null;
+
+	if (snapshot.source === "UPLOAD") {
+		// The receipt fields are a snapshot's own history and are never
+		// cleared by an unrelated later change; a row the `source` column
+		// itself calls UPLOAD is UPLOAD no matter what they still carry.
+		return { source: { kind: "UPLOAD" }, repository };
+	}
+
+	if (
+		snapshot.repositoryIntegrationId === null ||
+		snapshot.sourceRef === null ||
+		snapshot.sourceCommitSha === null
+	) {
+		throw new Error(
+			"resolveInstructionSnapshotSource: a REPOSITORY-sourced snapshot is missing its repository receipt fields",
+		);
+	}
+
+	const current =
+		sync !== null &&
+		snapshot.repositoryIntegrationId === sync.repositoryIntegrationId &&
+		snapshot.sourceRef === sync.ref;
+
+	return {
+		source: {
+			kind: "REPOSITORY",
+			ref: snapshot.sourceRef,
+			commitSha: snapshot.sourceCommitSha,
+			current,
+		},
+		repository,
+	};
 }
 
 /**

@@ -328,6 +328,42 @@ export interface CheckFix {
 	description: string;
 }
 
+/**
+ * Per-snapshot provenance for a published Coding Instructions snapshot
+ * (Fizzy #2709) — distinct from the project setting `sourceOfTruth`, which
+ * stays as it is. `current` is true only when this snapshot's repository and
+ * branch still match the project's CURRENT sync configuration. Structurally
+ * the same shape `@repo/database`'s `resolveInstructionSnapshotSource`
+ * returns and the SDK's `PublishedInstructionSnapshot.source` carries;
+ * repeated here rather than imported because this file has neither
+ * dependency.
+ */
+export type PublishedInstructionSource =
+	| { kind: "UPLOAD" }
+	| {
+			kind: "REPOSITORY";
+			ref: string;
+			commitSha: string;
+			current: boolean;
+	  };
+
+/**
+ * The project's CURRENT repository-sync configuration (Fizzy #2709),
+ * independent of any one snapshot. Structurally the same shape
+ * `@repo/database`'s `resolveCurrentInstructionRepository` returns and the
+ * SDK's `PublishedInstructions.repository` carries; repeated here for the
+ * same reason as `PublishedInstructionSource` above. `host` is a bare,
+ * lowercased hostname — never the repository URL, never userinfo.
+ */
+export type PublishedInstructionRepositoryConfig = {
+	provider: "GITHUB" | "GITLAB" | "AZURE_DEVOPS";
+	host: string;
+	path: string;
+	ref: string;
+	rootPath: string;
+	generation: number;
+};
+
 export interface InstructionCheck {
 	id: CheckId;
 	title: string;
@@ -337,6 +373,10 @@ export interface InstructionCheck {
 	detail: string;
 	items?: CheckItem[];
 	fix?: CheckFix;
+	/** Set on the `published` check only, when the server reported one. */
+	source?: PublishedInstructionSource;
+	/** Set on the `published` check only, alongside `source`. `null` when not repository-backed. */
+	repository?: PublishedInstructionRepositoryConfig | null;
 }
 
 export interface InstructionChecksReport {
