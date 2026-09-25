@@ -104,6 +104,7 @@ describe("prompts.bindings.setMany", () => {
 			scope: "SYSTEM",
 			userId: null,
 			organizationId: null,
+			content: "A system prompt",
 		});
 		requireOrganizationAdmin.mockReset();
 		requireOrganizationAdmin.mockResolvedValue(undefined);
@@ -154,6 +155,7 @@ describe("prompts.bindings.setMany", () => {
 			scope: "USER",
 			userId: "user-1",
 			organizationId: null,
+			content: "A personal prompt",
 		});
 
 		await expect(
@@ -167,6 +169,7 @@ describe("prompts.bindings.setMany", () => {
 			scope: "USER",
 			userId: "user-1",
 			organizationId: null,
+			content: "A personal prompt",
 		});
 
 		await expect(
@@ -180,6 +183,7 @@ describe("prompts.bindings.setMany", () => {
 			scope: "ORG",
 			userId: null,
 			organizationId: "org-SOMEONE-ELSE",
+			content: "Another organization's prompt",
 		});
 
 		await expect(
@@ -195,6 +199,7 @@ describe("prompts.bindings.setMany", () => {
 			scope: "USER",
 			userId: "user-1",
 			organizationId: null,
+			content: "A personal prompt",
 		});
 
 		await callSetMany({ scope: "USER" });

@@ -48,7 +48,9 @@ vi.mock("../lib/announce-default-change", () => ({
 	announceDefaultChangeForWinningActions: vi.fn(),
 }));
 
-vi.mock("../lib/assert-valid-template", () => ({
+// Template parsing is not this file's subject; the length limit on fork is.
+vi.mock("../lib/assert-valid-template", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../lib/assert-valid-template")>()),
 	assertSavablePromptContent: vi.fn(),
 	assertValidTemplate: vi.fn(),
 }));
@@ -179,5 +181,33 @@ describe("forking a system prompt to organization scope", () => {
 				userId: "member-1",
 			}),
 		);
+	});
+
+	// Fizzy #2250: a fork is new content, so a body saved before the length
+	// limit existed must not be copied into a fresh prompt past it.
+	it("refuses to fork a prompt whose latest body is over the length limit", async () => {
+		getPromptById.mockResolvedValue({
+			id: "prompt-system-1",
+			scope: "SYSTEM",
+			organizationId: null,
+			userId: null,
+			versions: [{ content: "x".repeat(50_001) }],
+		});
+
+		await expect(
+			(
+				forkProcedures.fork as unknown as (
+					a: unknown,
+				) => Promise<unknown>
+			)({
+				input: {
+					sourcePromptId: "prompt-system-1",
+					targetScope: "USER",
+					organizationId: "org-1",
+				},
+				context: { user: asMember, session: {} },
+			}),
+		).rejects.toThrow(/the maximum is 50,000/);
+		expect(forkPrompt).not.toHaveBeenCalled();
 	});
 });

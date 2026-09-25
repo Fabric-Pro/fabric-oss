@@ -56,6 +56,7 @@ vi.mock("@repo/database", () => ({
 				scope: "SYSTEM",
 				userId: null,
 				organizationId: null,
+				content: "A system prompt",
 			}),
 		},
 		// The FR16 deep-link resolves the org slug; no row → personal-context path.

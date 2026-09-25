@@ -19,6 +19,7 @@ import {
 } from "../../../orpc/procedures";
 import { announceDefaultChange } from "../lib/announce-default-change";
 import { announceNomination } from "../lib/announce-nomination";
+import { assertWithinPromptContentLimit } from "../lib/assert-valid-template";
 import { summariseNominationChange } from "../lib/nomination-summary";
 import {
 	assertNominatedVersionReachable,
@@ -187,6 +188,8 @@ export const nominateProcedures = {
 					message: "Prompt version not found",
 				});
 			}
+			// Before the summary: it sends this body to a model.
+			assertWithinPromptContentLimit(version.content);
 
 			// Summarise against the default the first proposed action currently
 			// resolves to. One comparison, not one per target: a nomination is a
@@ -325,10 +328,11 @@ export const nominateProcedures = {
 			// before this check existed, or a nominator who has since left the
 			// organization whose prompt they proposed, must not become a live
 			// binding on the strength of the reviewer's own access.
-			await assertNominatedVersionReachable({
+			const nominated = await assertNominatedVersionReachable({
 				promptVersionId: nomination.promptVersionId,
 				nominatedById: nomination.nominatedById,
 			});
+			assertWithinPromptContentLimit(nominated.content);
 
 			const proposed = Array.isArray(nomination.targets)
 				? (nomination.targets as z.infer<typeof targetSchema>[])

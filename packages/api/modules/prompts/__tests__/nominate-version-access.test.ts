@@ -95,6 +95,7 @@ vi.mock("../../../orpc/procedures", () => ({
 	},
 }));
 
+import { summariseNominationChange } from "../lib/nomination-summary";
 import { nominateProcedures } from "../procedures/nominate";
 
 type Handler = (a: unknown) => Promise<unknown>;
@@ -124,6 +125,7 @@ const create = (
 	});
 
 beforeEach(() => {
+	vi.mocked(summariseNominationChange).mockClear();
 	promptVersionFindUnique.mockReset();
 	createPromptNomination.mockReset();
 	createPromptNomination.mockResolvedValue({ id: "nom-1" });
@@ -217,6 +219,22 @@ describe("nominations.create — which versions the nominator may reach", () => 
 
 		expect(createPromptNomination).toHaveBeenCalledTimes(1);
 	});
+
+	// Fizzy #2250: refused before the summary, which sends the body to a model.
+	it("refuses a version over the length limit without summarising it", async () => {
+		promptVersionFindUnique.mockResolvedValue({
+			scope: "USER",
+			userId: "member-1",
+			organizationId: null,
+			content: "x".repeat(50_001),
+			id: "pv-1",
+			prompt: { id: "p-1", name: "Mine" },
+		});
+
+		await expect(create()).rejects.toThrow(/the maximum is 50,000/);
+		expect(vi.mocked(summariseNominationChange)).not.toHaveBeenCalled();
+		expect(createPromptNomination).not.toHaveBeenCalled();
+	});
 });
 
 describe("nominations.approve — the stored version id is re-checked", () => {
@@ -249,6 +267,7 @@ describe("nominations.approve — the stored version id is re-checked", () => {
 			scope: "ORG",
 			userId: null,
 			organizationId: "org-b",
+			content: "org B's private prompt",
 			id: "pv-1",
 		});
 		verifyOrganizationMembership.mockResolvedValue(null);
@@ -263,6 +282,7 @@ describe("nominations.approve — the stored version id is re-checked", () => {
 			scope: "USER",
 			userId: "member-1",
 			organizationId: null,
+			content: "my prompt",
 			id: "pv-1",
 		});
 
@@ -277,6 +297,7 @@ describe("nominations.approve — the stored version id is re-checked", () => {
 			scope: "ORG",
 			userId: null,
 			organizationId: "org-a",
+			content: "our prompt",
 			id: "pv-1",
 		});
 		verifyOrganizationMembership.mockResolvedValue({ role: "member" });
@@ -284,5 +305,21 @@ describe("nominations.approve — the stored version id is re-checked", () => {
 		await approve();
 
 		expect(approvePromptNomination).toHaveBeenCalledTimes(1);
+	});
+
+	// Fizzy #2250: a body saved before the length limit existed must not be
+	// promoted into a default, where it would ride every generation.
+	it("refuses to bind a nominated version over the length limit", async () => {
+		getNominationById.mockResolvedValue(pendingOrgNomination);
+		promptVersionFindUnique.mockResolvedValue({
+			scope: "USER",
+			userId: "member-1",
+			organizationId: null,
+			content: "x".repeat(50_001),
+			id: "pv-1",
+		});
+
+		await expect(approve()).rejects.toThrow(/the maximum is 50,000/);
+		expect(approvePromptNomination).not.toHaveBeenCalled();
 	});
 });

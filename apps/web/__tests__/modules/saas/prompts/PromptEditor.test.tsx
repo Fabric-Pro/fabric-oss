@@ -28,12 +28,12 @@ const initialData = {
 	content: "Write a concise agenda for {{topic}}.",
 };
 
-function renderEditor() {
+function renderEditor(data = initialData) {
 	const onSave = vi.fn();
 	const onCancel = vi.fn();
 	render(
 		<PromptEditor
-			initialData={initialData}
+			initialData={data}
 			onSave={onSave}
 			onCancel={onCancel}
 			canEditScope={false}
@@ -108,5 +108,41 @@ describe("PromptEditor content validation", () => {
 
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 		expect(textarea()).not.toHaveAttribute("aria-invalid");
+	});
+});
+
+// A body saved before the limit existed can be longer than it. The server
+// accepts a metadata-only save of such a prompt, so the editor must too: the
+// limit applies to the body a user is saving, not to one they left alone.
+describe("PromptEditor with a body already over the limit", () => {
+	const legacy = { ...initialData, content: "x".repeat(60_000) };
+
+	it("lets the prompt be renamed without touching the body", async () => {
+		const user = userEvent.setup();
+		const { onSave } = renderEditor(legacy);
+
+		await user.click(screen.getByRole("button", { name: /Details/ }));
+		await user.type(screen.getByLabelText("Name"), " v2");
+
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(saveButton()).toBeEnabled();
+		await user.click(saveButton());
+		expect(onSave).toHaveBeenCalledWith(
+			expect.objectContaining({
+				name: "Agenda generator v2",
+				content: legacy.content,
+			}),
+		);
+	});
+
+	it("still refuses an edit that leaves the body over the limit", async () => {
+		renderEditor(legacy);
+
+		fireEvent.change(textarea(), { target: { value: "y".repeat(55_000) } });
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Prompt content is 55,000 characters; the maximum is 50,000.",
+		);
+		expect(saveButton()).toBeDisabled();
 	});
 });

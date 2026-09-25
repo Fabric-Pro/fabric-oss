@@ -8,6 +8,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { assertWithinPromptContentLimit } from "../lib/assert-valid-template";
 
 export const forkProcedures = {
 	fork: tenantProtectedProcedure
@@ -80,6 +81,14 @@ export const forkProcedures = {
 							"Only organization admins can fork a prompt to organization scope",
 					});
 				}
+			}
+
+			// A fork is new content: a body saved before the length limit
+			// existed must not be copied into a fresh prompt past it.
+			// `versions` comes back ordered version-desc, so [0] is the latest.
+			const latest = source.versions?.[0];
+			if (latest) {
+				assertWithinPromptContentLimit(latest.content);
 			}
 
 			const prompt = await forkPrompt({
