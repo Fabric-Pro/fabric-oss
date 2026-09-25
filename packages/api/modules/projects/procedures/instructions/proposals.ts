@@ -15,6 +15,7 @@ import { warmInstructionSnapshotExport } from "@repo/instructions/export";
 import { getStorageProvider } from "@repo/storage";
 import { z } from "zod";
 import { auditRequestFields, resolveActor } from "../../../../lib/audit";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -92,6 +93,7 @@ const proposalInput = z.object({
 });
 
 export const listInstructionProposalsProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "GET",
@@ -271,6 +273,7 @@ async function buildProposalChanges(input: {
 }
 
 export const getInstructionProposalProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_UPDATE))
 	.route({
 		method: "GET",
@@ -309,6 +312,7 @@ export const getInstructionProposalProcedure = tenantProtectedProcedure
 	});
 
 export const getInstructionProposalFileProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_UPDATE))
 	.route({
 		method: "GET",
@@ -498,6 +502,7 @@ function decisionError(
 }
 
 export const approveInstructionProposalProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_UPDATE))
 	.route({
 		method: "POST",
@@ -556,6 +561,7 @@ export const approveInstructionProposalProcedure = tenantProtectedProcedure
 	});
 
 export const rejectInstructionProposalProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_UPDATE))
 	.route({
 		method: "POST",
@@ -596,6 +602,7 @@ export const rejectInstructionProposalProcedure = tenantProtectedProcedure
 	});
 
 export const cancelInstructionProposalProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "POST",
@@ -654,7 +661,8 @@ function requesterOf(
 }
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ),
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
+ * requireProjectPermission(INSTRUCTION_READ),
  * then the live proposer-or-reviewer check in the service (plan Decision 8).
  *
  * A REPOSITORY proposal's pull request as the row records it (spec §12): the
@@ -663,6 +671,7 @@ function requesterOf(
  */
 export const getInstructionProposalPullRequestProcedure =
 	tenantProtectedProcedure
+		.use(projectNotFoundUnlessVisible)
 		.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 		.route({
 			method: "GET",
@@ -687,7 +696,8 @@ export const getInstructionProposalPullRequestProcedure =
 		});
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ),
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
+ * requireProjectPermission(INSTRUCTION_READ),
  * then the live proposer-or-reviewer check in the service (plan Decision 8).
  *
  * Refresh (spec §12): the row's check time is cleared and a retryable
@@ -699,6 +709,7 @@ export const getInstructionProposalPullRequestProcedure =
  */
 export const refreshInstructionProposalPullRequestProcedure =
 	tenantProtectedProcedure
+		.use(projectNotFoundUnlessVisible)
 		.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 		.route({
 			method: "POST",
@@ -735,7 +746,8 @@ export const refreshInstructionProposalPullRequestProcedure =
 		});
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ),
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
+ * requireProjectPermission(INSTRUCTION_READ),
  * then the live proposer-or-reviewer check in the service: the spec's
  * "proposer or INSTRUCTION_UPDATE" (plan Decision 8).
  *
@@ -745,6 +757,7 @@ export const refreshInstructionProposalPullRequestProcedure =
  */
 export const retryInstructionProposalPullRequestProcedure =
 	tenantProtectedProcedure
+		.use(projectNotFoundUnlessVisible)
 		.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 		.route({
 			method: "POST",

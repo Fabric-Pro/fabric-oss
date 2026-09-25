@@ -6,6 +6,7 @@ import {
 } from "@repo/database";
 import { hasPermission } from "@repo/permissions";
 import { z } from "zod";
+import { projectNotFoundUnlessVisible } from "../../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -16,13 +17,15 @@ import { isInstructionRepositorySyncRunning } from "./start-sync-workflow";
 import { toSyncRunView } from "./views";
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
+ * requireProjectPermission(INSTRUCTION_READ).
  *
  * The tab's repository-sync state (design 2026-09-23 §5.1, §7). Read-only
  * members see the status; `availableIntegrations` goes only to members who
  * could act on it (instruction:create), and the delegate is a display name.
  */
 export const getRepositorySyncProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "GET",

@@ -3,6 +3,7 @@ import {
 	listInstructionRepositorySyncRuns,
 } from "@repo/database";
 import { z } from "zod";
+import { projectNotFoundUnlessVisible } from "../../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -14,13 +15,15 @@ import { toSyncRunView } from "./views";
 const MAX_RUNS = 50;
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
+ * requireProjectPermission(INSTRUCTION_READ).
  *
  * History's "Sync runs" list, newest first (design 2026-09-23 §7.3),
  * including the runs of a sync that was switched off, each marked by
  * whether it came from the current configuration (Fizzy #2672).
  */
 export const listRepositorySyncRunsProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "GET",

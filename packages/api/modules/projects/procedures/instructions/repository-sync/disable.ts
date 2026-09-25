@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/client";
 import { deleteInstructionRepositorySync } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../../lib/audit";
+import { projectNotFoundUnlessVisible } from "../../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -10,7 +11,8 @@ import {
 import { requireHostingOrganizationId } from "../hosting-organization";
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_CREATE).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
+ * requireProjectPermission(INSTRUCTION_CREATE).
  *
  * "Switch to upload mode" (design 2026-09-23 §5.1, §7.4): delete the
  * configuration and flip the project to UPLOAD in one transaction. NOT
@@ -19,6 +21,7 @@ import { requireHostingOrganizationId } from "../hosting-organization";
  * recovery for a project left in REPOSITORY with no row.
  */
 export const disableRepositorySyncProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_CREATE))
 	.route({
 		method: "DELETE",
