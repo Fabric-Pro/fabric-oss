@@ -24,6 +24,12 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import {
+	type LocalSetupRoute,
+	quoteShellArgIfNeeded,
+} from "../../lib/instructions-repository-sync";
+
+export type { LocalSetupRoute };
 
 /* -------------------------------------------------------------------------- */
 /* Copy                                                                        */
@@ -161,28 +167,42 @@ const INSTRUCTION_INTRO =
 	"Copy this sentence and send it in the tool you just configured. It only works there: the configuration above is what gives the tool access to this project.";
 
 /**
- * The local-checkout route. Shown only when this project's coding
- * instructions are authored in Fabric, and shown FIRST when it is.
+ * The local-checkout route. Shown only when `localSetup` names one, and
+ * shown FIRST when it does.
  *
- * A repository-backed project's instructions arrive with `git pull`, so a
- * sync hook would be a second writer with no merge between them — the CLI
- * refuses that project outright, and offering it here would send the reader
- * to a command that says no.
+ * Two variants, both driven by `localSetup: LocalSetupRoute`:
  *
- * Two routes, not three steps. The files can reach the tool on disk (the
- * CLI copies them into the checkout and Claude Code reads them natively) or
- * live over MCP (the configuration plus the sentence). Both need the key
- * this dialog just created; neither needs the other. The dialog said the
- * MCP route first and tacked the command on as a muted sentence, and read
- * as three things to do in order. Now the checkout route leads, because it
- * is the one to pick for Claude Code, and the MCP route follows as the
- * alternative.
+ * - `{ kind: "upload" }` — this project's instructions are authored in
+ *   Fabric. The CLI copies whatever is published into the checkout and
+ *   installs a hook that can keep applying updates automatically
+ *   (`--apply`), because Fabric is the only writer.
+ * - `{ kind: "repository", … }` — this project's instructions arrive with
+ *   `git pull`. The CLI never copies files here (a sync hook would be a
+ *   second writer with no merge against the developer's own pulls), so the
+ *   commands clone the repository and install a REPORT-ONLY hook: it says
+ *   when the synced branch has newer published instructions than the
+ *   checkout, and the developer's (or their agent's) `git pull` is what
+ *   actually updates it. `--apply` is therefore never offered in this
+ *   variant — automatic updates for repository checkouts are not available
+ *   yet (`docs/guides/coding-instructions-cli.md`, "Repository-sourced
+ *   projects").
  *
- * The sign-in line carries the key on purpose: the CLI stores it in its own
- * per-user config and the hook it installs never names it, so this is the
- * one place the key has to be typed — and copying this block is copying the
- * key, which is why it satisfies the dismissal guard exactly as the
- * configuration does.
+ * `localSetup: null` (settings still loading, or a repository project with
+ * no repository configured yet) renders neither variant: the CLI would
+ * refuse `init` for either case, and offering the command would send the
+ * reader to a refusal.
+ *
+ * Two routes, not three steps. The files can reach the tool on disk (this
+ * block) or live over MCP (the configuration plus the sentence below). Both
+ * need the key this dialog just created; neither needs the other. The
+ * checkout route leads, because it is the one to pick for Claude Code, and
+ * the MCP route follows as the alternative.
+ *
+ * The sign-in line carries the key on purpose in both variants: the CLI
+ * stores it in its own per-user config and the hook it installs never names
+ * it, so this is the one place the key has to be typed — and copying this
+ * block is copying the key, which is why it satisfies the dismissal guard
+ * exactly as the configuration does.
  */
 const ROUTES_INTRO =
 	"Two ways to give your tool these instructions. Use either; choose the coding tool you use in the checkout below.";
@@ -191,6 +211,18 @@ const LOCAL_SYNC_LABEL = "Recommended: keep the files in your checkout";
 
 const LOCAL_SYNC_INTRO =
 	"Run these once in the checkout. The first installs or updates the CLI. The second signs it in with this key and this deployment URL; the CLI keeps both in its own profile, never in the repository, though like any command the line may remain in your shell history. FABRIC_BASE_URL overrides the profile URL when it is set. The third copies whatever is published into the checkout and configures the session-start behavior below. If nothing is published yet, the hook checks for the first version at future session starts. Both tools read the files directly, so the sentence further down is not needed.";
+
+const LOCAL_SYNC_REPOSITORY_LABEL =
+	"Recommended: work in a checkout of the repository";
+
+/**
+ * The repository variant's intro, replacing `LOCAL_SYNC_INTRO` for that
+ * route. Names the branch the sync follows so the reader knows what the
+ * session-start hook is comparing the checkout against.
+ */
+function localSyncRepositoryIntro(ref: string): string {
+	return `Run these once. The first two clone the repository this project syncs from and enter the folder its instructions live in. The next installs or updates the CLI. The next signs it in with this key and this deployment URL; the CLI keeps both in its own profile, never in the repository, though like any command the line may remain in your shell history. The last installs a session-start hook that reports when ${ref} has newer published instructions than your checkout and never changes the checkout — git pull does that. Both tools read the files directly, so the sentence further down is not needed.`;
+}
 
 type LocalSetupTool = "claude-code" | "codex";
 
@@ -226,6 +258,36 @@ function buildLocalSyncCommands(
 		`fabric instructions init --project ${projectId} --tool ${tool}${
 			automaticallyApplyUpdates ? " --apply" : ""
 		}`,
+	].join("\n");
+}
+
+/**
+ * The repository variant's five lines: clone (with an explicit target
+ * directory), enter the folder the instructions live in, install/update the
+ * CLI, sign in, then `init` — never with `--apply` (see the doc comment above
+ * `ROUTES_INTRO`). Every argument drawn from server-held data — the clone URL,
+ * the directory, the root folder — is quoted with `quoteShellArgIfNeeded` and
+ * both `git clone` and `cd` use a `--` option terminator, so a stored path
+ * carrying a shell metacharacter (`parseRepoUrl` preserves path characters;
+ * it strips only userinfo, query and fragment) or a leading `-` can neither
+ * split the pasted block into extra commands nor be read as an option.
+ */
+function buildRepositorySetupCommands(
+	route: Extract<LocalSetupRoute, { kind: "repository" }>,
+	projectId: string,
+	rawKey: string,
+	baseUrl: string,
+	tool: LocalSetupTool,
+): string {
+	const cdTarget = route.rootPath
+		? `${route.directory}/${route.rootPath}`
+		: route.directory;
+	return [
+		`git clone -- ${quoteShellArgIfNeeded(route.cloneUrl)} ${quoteShellArgIfNeeded(route.directory)}`,
+		`cd -- ${quoteShellArgIfNeeded(cdTarget)}`,
+		"npm install -g @fabricorg/cli",
+		`fabric auth login --key ${rawKey} --base-url ${baseUrl}`,
+		`fabric instructions init --project ${projectId} --tool ${tool}`,
 	].join("\n");
 }
 
@@ -422,13 +484,14 @@ interface ConnectCliDialogProps {
 	 */
 	projectId?: string;
 	/**
-	 * Whether this project's instructions can be kept current in a local
-	 * checkout — true when Fabric is their source of truth, false when they
-	 * come from the project's repository. Defaults to false so a caller that
-	 * has not resolved the setting says nothing rather than saying something
-	 * that will be refused.
+	 * Which local-checkout route this project offers, if any — computed by
+	 * `localSetupRouteFor` in `lib/instructions-repository-sync.ts` from the
+	 * project's source-of-truth setting and (for a repository project) its
+	 * sync configuration. `null`/`undefined` renders neither variant: the
+	 * setting has not resolved yet, or a repository project has nothing
+	 * configured for the CLI to compare against.
 	 */
-	localSyncAvailable?: boolean;
+	localSetup?: LocalSetupRoute | null;
 	/**
 	 * Fired once, after a key is successfully issued.
 	 *
@@ -465,7 +528,7 @@ export function ConnectCliDialog({
 	projectName,
 	purpose = "project",
 	projectId,
-	localSyncAvailable = false,
+	localSetup = null,
 	onKeyIssued,
 }: ConnectCliDialogProps) {
 	const [rawKey, setRawKey] = useState<string | null>(null);
@@ -649,21 +712,29 @@ export function ConnectCliDialog({
 		rawKey ?? PLACEHOLDER_KEY,
 	);
 	const starterInstruction = buildStarterInstruction(projectName, purpose);
+	const isRepositoryRoute = localSetup?.kind === "repository";
 	const localSyncCommands =
-		purpose === "coding-instructions" && localSyncAvailable && projectId
-			? buildLocalSyncCommands(
-					projectId,
-					rawKey ?? PLACEHOLDER_KEY,
-					// `origin`, not `window.location.origin`: this block now
-					// renders unconditionally, including on the server pass,
-					// where `window` does not exist. Before the single-screen
-					// change, `rawKey` gated this branch so it only ran
-					// client-side after a mint; `buildMcpConfiguration` above
-					// already uses the hydration-safe state for the same reason.
-					origin,
-					automaticallyApplyUpdates,
-					localSetupTool,
-				)
+		purpose === "coding-instructions" && localSetup && projectId
+			? localSetup.kind === "repository"
+				? buildRepositorySetupCommands(
+						localSetup,
+						projectId,
+						rawKey ?? PLACEHOLDER_KEY,
+						// `origin`, not `window.location.origin`: this block now
+						// renders unconditionally, including on the server
+						// pass, where `window` does not exist.
+						// `buildMcpConfiguration` above uses the same
+						// hydration-safe state for the same reason.
+						origin,
+						localSetupTool,
+					)
+				: buildLocalSyncCommands(
+						projectId,
+						rawKey ?? PLACEHOLDER_KEY,
+						origin,
+						automaticallyApplyUpdates,
+						localSetupTool,
+					)
 			: null;
 	const cliFirst = localSyncCommands !== null;
 	const issueError = createKeyMutation.error;
@@ -909,10 +980,15 @@ export function ConnectCliDialog({
 								id="connect-cli-local-sync-label"
 								className="app-editorial-label"
 							>
-								{LOCAL_SYNC_LABEL}
+								{isRepositoryRoute
+									? LOCAL_SYNC_REPOSITORY_LABEL
+									: LOCAL_SYNC_LABEL}
 							</h3>
 							<p className="text-muted-foreground text-sm">
-								{LOCAL_SYNC_INTRO}
+								{isRepositoryRoute &&
+								localSetup?.kind === "repository"
+									? localSyncRepositoryIntro(localSetup.ref)
+									: LOCAL_SYNC_INTRO}
 							</p>
 							<div className="space-y-2">
 								<p
@@ -961,36 +1037,43 @@ export function ConnectCliDialog({
 									{CODEX_HOOK_TRUST_NOTE}
 								</p>
 							) : null}
-							<div className="flex items-start gap-3 rounded-lg border border-border bg-muted/40 p-3">
-								<Checkbox
-									aria-describedby={
-										APPLY_UPDATES_DESCRIPTION_ID
-									}
-									checked={automaticallyApplyUpdates}
-									id={APPLY_UPDATES_CHECKBOX_ID}
-									onCheckedChange={(checked) => {
-										setAutomaticallyApplyUpdates(
-											checked === true,
-										);
-										setCopied(null);
-										setAnnouncement("");
-									}}
-								/>
-								<div className="flex flex-col gap-1">
-									<Label
-										className="cursor-pointer"
-										htmlFor={APPLY_UPDATES_CHECKBOX_ID}
-									>
-										{APPLY_UPDATES_LABEL}
-									</Label>
-									<p
-										className="text-muted-foreground text-sm"
-										id={APPLY_UPDATES_DESCRIPTION_ID}
-									>
-										{APPLY_UPDATES_DESCRIPTION}
-									</p>
+							{/* Automatic updates are upload-only: Fabric is the
+							 * only writer there. A repository checkout's hook
+							 * is report-only (see the doc comment above
+							 * `ROUTES_INTRO`), so this option has nothing to
+							 * offer for that variant. */}
+							{isRepositoryRoute ? null : (
+								<div className="flex items-start gap-3 rounded-lg border border-border bg-muted/40 p-3">
+									<Checkbox
+										aria-describedby={
+											APPLY_UPDATES_DESCRIPTION_ID
+										}
+										checked={automaticallyApplyUpdates}
+										id={APPLY_UPDATES_CHECKBOX_ID}
+										onCheckedChange={(checked) => {
+											setAutomaticallyApplyUpdates(
+												checked === true,
+											);
+											setCopied(null);
+											setAnnouncement("");
+										}}
+									/>
+									<div className="flex flex-col gap-1">
+										<Label
+											className="cursor-pointer"
+											htmlFor={APPLY_UPDATES_CHECKBOX_ID}
+										>
+											{APPLY_UPDATES_LABEL}
+										</Label>
+										<p
+											className="text-muted-foreground text-sm"
+											id={APPLY_UPDATES_DESCRIPTION_ID}
+										>
+											{APPLY_UPDATES_DESCRIPTION}
+										</p>
+									</div>
 								</div>
-							</div>
+							)}
 							{/* Wraps rather than scrolls: a line longer
 							 * than the dialog is wide would otherwise hide
 							 * its end behind a scrollbar — the project id,

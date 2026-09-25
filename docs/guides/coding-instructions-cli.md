@@ -282,6 +282,10 @@ cd rules
 fabric instructions init --project <id> --tool claude-code
 ```
 
+The Coding Instructions tab's **Connect your agent** dialog prints this same
+block, filled in for the project, with the sign-in line naming the key it just
+created and this deployment's URL.
+
 Run `init` from the directory the project's instructions live in — the
 repository root, or the sync's root folder when it has one. `init` then writes
 the `SessionStart` hook exactly as it does for an uploaded project (`check`, or

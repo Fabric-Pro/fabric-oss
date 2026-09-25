@@ -74,6 +74,13 @@ export const getRepositorySyncProcedure = tenantProtectedProcedure
 							sync.repositoryIntegration.repositoryOwner,
 						repositoryName:
 							sync.repositoryIntegration.repositoryName,
+						// The canonical `https://host/owner/name` URL, with no
+						// userinfo (`parseRepoUrl` strips it on write) and no
+						// query or fragment (refused on write). Shown to every
+						// member who can read this state so the Connect dialog
+						// can print `git clone <repositoryUrl>` for a
+						// repository-sourced project (Fizzy #2721).
+						repositoryUrl: sync.repositoryIntegration.repositoryUrl,
 						integrationStatus: sync.repositoryIntegration.status,
 						ref: sync.ref,
 						rootPath: sync.rootPath,

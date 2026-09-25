@@ -130,6 +130,7 @@ const syncRow = {
 	repositoryIntegration: {
 		id: "int_1",
 		provider: "GITHUB",
+		repositoryUrl: "https://github.com/example-org/instructions.git",
 		repositoryOwner: "example-org",
 		repositoryName: "instructions",
 		defaultBranch: "main",
@@ -233,6 +234,10 @@ describe("repositorySync.get", () => {
 			input: { projectId: "proj_1" },
 			context: ctx,
 		})) as Record<string, unknown>;
+		// `toEqual` on the whole object, not `toMatchObject`, so a field added
+		// to `configured` without also being added here would fail rather
+		// than pass silently — the same reason `repositoryUrl` had to be
+		// added below when it joined the mapping (Fizzy #2721).
 		expect(result).toEqual({
 			sourceOfTruth: "REPOSITORY",
 			canConfigure: true,
@@ -243,6 +248,8 @@ describe("repositorySync.get", () => {
 				provider: "GITHUB",
 				repositoryOwner: "example-org",
 				repositoryName: "instructions",
+				repositoryUrl:
+					"https://github.com/example-org/instructions.git",
 				integrationStatus: "ACTIVE",
 				ref: "main",
 				rootPath: "agents",

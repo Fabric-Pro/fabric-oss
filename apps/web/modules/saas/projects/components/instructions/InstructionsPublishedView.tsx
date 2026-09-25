@@ -25,6 +25,7 @@ import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
+	localSetupRouteFor,
 	offersSyncFromRepository,
 	offersSyncNow,
 	type RepositorySyncControls,
@@ -312,6 +313,14 @@ export function InstructionsPublishedView({
 	const rejectionRows = rejected?.rejection;
 	const settingsLayer = published?.settingsFrozen?.layer;
 	const syncConfigured = repositorySync?.state.configured ?? null;
+	// The Connect dialog's local-checkout route: `null`/upload/repository,
+	// computed by the one helper the tab's empty-state call site also uses
+	// (Fizzy #2721) so both surfaces agree on when the CLI route is offered.
+	const localSetup = localSetupRouteFor({
+		repositoryBacked,
+		repositoryConfirmed: Boolean(repositoryConfirmed),
+		configured: syncConfigured,
+	});
 	const syncBusy = Boolean(
 		repositorySync &&
 			(repositorySync.state.running || repositorySync.syncNowPending),
@@ -922,11 +931,11 @@ export function InstructionsPublishedView({
 					projectName={projectName}
 					purpose="coding-instructions"
 					projectId={projectId}
-					// The `fabric instructions` line is offered only when
-					// Fabric authors these files. A repository-backed project
-					// refreshes them with `git pull`, and the CLI refuses to
-					// install a hook that would fight it.
-					localSyncAvailable={!repositoryBacked}
+					// `localSetupRouteFor` above: the upload route for an
+					// upload project, the repository's own `git clone` route
+					// once a sync names one, or nothing while that is not yet
+					// resolvable (Fizzy #2721).
+					localSetup={localSetup}
 				/>
 			) : null}
 		</div>
