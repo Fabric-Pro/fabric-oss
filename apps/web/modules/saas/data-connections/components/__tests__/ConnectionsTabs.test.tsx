@@ -28,14 +28,36 @@ import { ConnectionsTabs } from "../ConnectionsTabs";
 
 const state = vi.hoisted(() => ({ childFails: false, search: "" }));
 
+const mockReplace = vi.fn();
+
 vi.mock("next/navigation", () => ({
 	useRouter: () => ({
-		replace: vi.fn(),
+		replace: mockReplace,
 		push: vi.fn(),
 		prefetch: vi.fn(),
 	}),
 	usePathname: () => "/app/example-org/connections",
 	useSearchParams: () => new URLSearchParams(state.search),
+}));
+
+vi.mock("@saas/mcp/components/McpServersView", () => ({
+	McpServersView: ({
+		initialRegistrySearch,
+		onServerParamConsumed,
+	}: {
+		initialRegistrySearch?: string;
+		onServerParamConsumed?: () => void;
+	}) => (
+		<div data-testid="mcp-servers-view" data-search={initialRegistrySearch}>
+			<button
+				type="button"
+				data-testid="consume-btn"
+				onClick={() => onServerParamConsumed?.()}
+			>
+				Consume
+			</button>
+		</div>
+	),
 }));
 
 vi.mock("@saas/get-started/components/PageTourButton", () => ({
@@ -73,6 +95,7 @@ const introParagraph = () =>
 
 describe("ConnectionsTabs", () => {
 	beforeEach(() => {
+		mockReplace.mockReset();
 		state.childFails = false;
 		state.search = "";
 	});
@@ -257,5 +280,27 @@ describe("ConnectionsTabs", () => {
 		renderTabs();
 
 		expect(pageTourId()).toBe("mcp-servers");
+	});
+
+	it("passes server query parameter down to McpServersView", () => {
+		state.search = "tab=mcp&server=PostgreSQL";
+		renderTabs();
+
+		const mcpView = screen.getByTestId("mcp-servers-view");
+		expect(mcpView).toHaveAttribute("data-search", "PostgreSQL");
+	});
+
+	it("clears server query param with scroll: false when consumed", async () => {
+		const user = userEvent.setup();
+		state.search = "tab=mcp&server=PostgreSQL";
+		renderTabs();
+
+		const consumeBtn = screen.getByTestId("consume-btn");
+		await user.click(consumeBtn);
+
+		expect(mockReplace).toHaveBeenCalledWith(
+			"/app/example-org/connections?tab=mcp",
+			{ scroll: false },
+		);
 	});
 });

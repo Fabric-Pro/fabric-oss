@@ -25,6 +25,7 @@ import { cn } from "@ui/lib";
 import { InfoIcon } from "lucide-react";
 import dynamic from "next/dynamic";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useCallback } from "react";
 import { ConnectionsPageContent } from "./ConnectionsPageContent";
 
 const McpServersView = dynamic(
@@ -79,6 +80,17 @@ export function ConnectionsTabs({
 				? "integrations"
 				: "all";
 	const serverParam = params.get("server") ?? "";
+
+	const handleServerParamConsumed = useCallback(() => {
+		const query = new URLSearchParams(params.toString());
+		if (query.has("server")) {
+			query.delete("server");
+			const qs = query.toString();
+			router.replace(qs ? `${pathname}?${qs}` : pathname, {
+				scroll: false,
+			});
+		}
+	}, [params, pathname, router]);
 
 	const select = (next: Tab) => {
 		const query = new URLSearchParams(params.toString());
@@ -179,6 +191,7 @@ export function ConnectionsTabs({
 					<McpServersView
 						organizationId={organizationId}
 						initialRegistrySearch={serverParam}
+						onServerParamConsumed={handleServerParamConsumed}
 					/>
 				</div>
 			) : null}
