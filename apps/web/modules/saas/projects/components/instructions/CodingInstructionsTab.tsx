@@ -11,6 +11,7 @@ import {
 } from "../../lib/instructions-poll";
 import {
 	latestSyncRunChanged,
+	localSetupRouteFor,
 	REPOSITORY_SYNC_POLL_MS,
 	type RepositorySyncControls,
 	type RepositorySyncState,
@@ -325,6 +326,20 @@ export function CodingInstructionsTab({
 			}
 		: undefined;
 
+	// The empty state's Connect dialog needs the same route the published
+	// view computes for itself (`localSetupRouteFor`, Fizzy #2721):
+	// `repositoryBacked` fails closed until the setting has LOADED
+	// (`isSuccess`, not `!isLoading` — a failed settings request also stops
+	// loading, and the CLI would then be offered for a project it refuses);
+	// `repositoryConfirmed` follows only a RESOLVED setting.
+	const settingsNameRepository =
+		settings.isSuccess && settings.data.sourceOfTruth === "REPOSITORY";
+	const localSetup = localSetupRouteFor({
+		repositoryBacked: !settings.isSuccess || settingsNameRepository,
+		repositoryConfirmed: settingsNameRepository,
+		configured: syncState?.configured ?? null,
+	});
+
 	if (published.isLoading || latest.isLoading) {
 		return null;
 	}
@@ -365,15 +380,9 @@ export function CodingInstructionsTab({
 						settings.isSuccess &&
 						settings.data.sourceOfTruth !== "REPOSITORY"
 					}
-					// Same gate as the published view: fails closed until the
-					// setting has LOADED. `isSuccess`, not `!isLoading` — a
-					// failed settings request also stops loading, and the
-					// command would then be offered for a project the CLI
-					// refuses.
-					localSyncAvailable={
-						settings.isSuccess &&
-						settings.data.sourceOfTruth !== "REPOSITORY"
-					}
+					// `localSetupRouteFor` above, shared with the published
+					// view (Fizzy #2721).
+					localSetup={localSetup}
 					repositorySync={syncControls}
 				/>
 			</>

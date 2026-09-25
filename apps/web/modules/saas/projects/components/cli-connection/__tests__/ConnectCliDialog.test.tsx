@@ -64,7 +64,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	},
 }));
 
-import type { ConnectCliPurpose } from "../ConnectCliDialog";
+import type { ConnectCliPurpose, LocalSetupRoute } from "../ConnectCliDialog";
 import { ConnectCliDialog } from "../ConnectCliDialog";
 
 const ORGANIZATION_ID = "org-hosting-the-project";
@@ -116,13 +116,13 @@ function Host({
 	startOpen = false,
 	eligible = true,
 	purpose,
-	localSyncAvailable,
+	localSetup,
 	onKeyIssued,
 }: {
 	startOpen?: boolean;
 	eligible?: boolean;
 	purpose?: ConnectCliPurpose;
-	localSyncAvailable?: boolean;
+	localSetup?: LocalSetupRoute | null;
 	onKeyIssued?: () => void;
 }) {
 	const [open, setOpen] = useState(startOpen);
@@ -142,7 +142,7 @@ function Host({
 				projectName={PROJECT_NAME}
 				purpose={purpose}
 				projectId={PROJECT_ID}
-				localSyncAvailable={localSyncAvailable}
+				localSetup={localSetup}
 				onKeyIssued={onKeyIssued}
 			/>
 		</>
@@ -152,7 +152,7 @@ function Host({
 function renderHost(props?: {
 	startOpen?: boolean;
 	purpose?: ConnectCliPurpose;
-	localSyncAvailable?: boolean;
+	localSetup?: LocalSetupRoute | null;
 	onKeyIssued?: () => void;
 }) {
 	return render(<Host {...props} />, { wrapper: Wrapper });
@@ -391,7 +391,7 @@ describe("ConnectCliDialog — the placeholder key", () => {
 		renderHost({
 			startOpen: true,
 			purpose: "coding-instructions",
-			localSyncAvailable: true,
+			localSetup: { kind: "upload" },
 		});
 
 		const commandNode = screen.getByTestId(
@@ -489,7 +489,7 @@ describe("ConnectCliDialog — the placeholder key", () => {
 		renderHost({
 			startOpen: true,
 			purpose: "coding-instructions",
-			localSyncAvailable: true,
+			localSetup: { kind: "upload" },
 		});
 
 		await user.click(screen.getByRole("button", { name: "Copy commands" }));
@@ -761,7 +761,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		renderHost({
 			startOpen: true,
 			purpose: "coding-instructions",
-			localSyncAvailable: true,
+			localSetup: { kind: "upload" },
 		});
 
 		// Present from the first open, with the placeholder standing in.
@@ -835,7 +835,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		renderHost({
 			startOpen: true,
 			purpose: "coding-instructions",
-			localSyncAvailable: true,
+			localSetup: { kind: "upload" },
 		});
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
@@ -884,7 +884,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		renderHost({
 			startOpen: true,
 			purpose: "coding-instructions",
-			localSyncAvailable: true,
+			localSetup: { kind: "upload" },
 		});
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
@@ -941,7 +941,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		renderHost({
 			startOpen: true,
 			purpose: "coding-instructions",
-			localSyncAvailable: true,
+			localSetup: { kind: "upload" },
 		});
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
@@ -981,7 +981,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		renderHost({
 			startOpen: true,
 			purpose: "coding-instructions",
-			localSyncAvailable: true,
+			localSetup: { kind: "upload" },
 		});
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
@@ -1016,7 +1016,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		renderHost({
 			startOpen: true,
 			purpose: "coding-instructions",
-			localSyncAvailable: true,
+			localSetup: { kind: "upload" },
 		});
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
@@ -1077,7 +1077,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		renderHost({
 			startOpen: true,
 			purpose: "coding-instructions",
-			localSyncAvailable: true,
+			localSetup: { kind: "upload" },
 		});
 
 		expect(
@@ -1111,7 +1111,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		renderHost({
 			startOpen: true,
 			purpose: "coding-instructions",
-			localSyncAvailable: true,
+			localSetup: { kind: "upload" },
 		});
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
@@ -1139,7 +1139,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		renderHost({
 			startOpen: true,
 			purpose: "coding-instructions",
-			localSyncAvailable: true,
+			localSetup: { kind: "upload" },
 		});
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
@@ -1171,7 +1171,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		renderHost({
 			startOpen: true,
 			purpose: "coding-instructions",
-			localSyncAvailable: true,
+			localSetup: { kind: "upload" },
 		});
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
@@ -1183,12 +1183,12 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		);
 	});
 
-	it("says nothing about local sync for a repository-backed project", async () => {
+	it("renders no CLI route when localSetup is null", async () => {
 		const user = setupUser();
 		renderHost({
 			startOpen: true,
 			purpose: "coding-instructions",
-			localSyncAvailable: false,
+			localSetup: null,
 		});
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
@@ -1207,7 +1207,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 
 	it("says nothing about local sync on the project purpose", async () => {
 		const user = setupUser();
-		renderHost({ startOpen: true, localSyncAvailable: true });
+		renderHost({ startOpen: true, localSetup: { kind: "upload" } });
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
@@ -1269,6 +1269,210 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		expect(
 			await screen.findByText(/send it in the tool you just configured/i),
 		).toBeInTheDocument();
+	});
+});
+
+/**
+ * The repository variant of the local-checkout route (Fizzy #2721):
+ * `localSetup: { kind: "repository", … }` clones the repository the project
+ * syncs from and installs a REPORT-ONLY hook, rather than copying published
+ * files the way the upload variant does. `--apply` never applies here — there
+ * is nothing for it to apply — so it never renders in this variant.
+ */
+describe("ConnectCliDialog — repository local setup", () => {
+	const REPOSITORY_ROUTE: LocalSetupRoute = {
+		kind: "repository",
+		cloneUrl: "https://github.com/example-org/instructions.git",
+		directory: "instructions",
+		ref: "main",
+		rootPath: "agents",
+	};
+
+	it("renders the five repository lines in order, with an explicit clone target and -- terminators", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSetup: REPOSITORY_ROUTE,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("connect-cli-local-sync-command"),
+			).toHaveTextContent(RAW_KEY),
+		);
+
+		const claudeCodeLines = [
+			"git clone -- https://github.com/example-org/instructions.git instructions",
+			"cd -- instructions/agents",
+			"npm install -g @fabricorg/cli",
+			`fabric auth login --key ${RAW_KEY} --base-url ${window.location.origin}`,
+			`fabric instructions init --project ${PROJECT_ID} --tool claude-code`,
+		];
+		expect(
+			screen.getByTestId("connect-cli-local-sync-command").textContent,
+		).toBe(claudeCodeLines.join("\n"));
+
+		await user.click(screen.getByRole("radio", { name: "Codex" }));
+		// The FULL block, not a substring check on the new line alone: a
+		// substring match would miss a regression to the clone, cd, install
+		// or sign-in lines (Codex review finding #4). Only the tool name in
+		// the last line differs.
+		const codexLines = [
+			...claudeCodeLines.slice(0, 4),
+			`fabric instructions init --project ${PROJECT_ID} --tool codex`,
+		];
+		expect(
+			screen.getByTestId("connect-cli-local-sync-command").textContent,
+		).toBe(codexLines.join("\n"));
+	});
+
+	it("quotes a clone URL and directory containing a shell metacharacter, so the pasted block cannot be split into extra commands", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSetup: {
+				kind: "repository",
+				cloneUrl: "https://git.example.com/example-org/rules&x.git",
+				directory: "rules&x",
+				ref: "main",
+				rootPath: null,
+			},
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("connect-cli-local-sync-command"),
+			).toHaveTextContent(RAW_KEY),
+		);
+
+		expect(
+			screen.getByTestId("connect-cli-local-sync-command").textContent,
+		).toBe(
+			[
+				"git clone -- 'https://git.example.com/example-org/rules&x.git' 'rules&x'",
+				"cd -- 'rules&x'",
+				"npm install -g @fabricorg/cli",
+				`fabric auth login --key ${RAW_KEY} --base-url ${window.location.origin}`,
+				`fabric instructions init --project ${PROJECT_ID} --tool claude-code`,
+			].join("\n"),
+		);
+	});
+
+	it("prints cd -- <directory> only when the sync has no root folder", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSetup: { ...REPOSITORY_ROUTE, rootPath: null },
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("connect-cli-local-sync-command"),
+			).toHaveTextContent(RAW_KEY),
+		);
+
+		expect(
+			screen.getByTestId("connect-cli-local-sync-command"),
+		).toHaveTextContent("cd -- instructions");
+		expect(
+			screen.getByTestId("connect-cli-local-sync-command"),
+		).not.toHaveTextContent("cd -- instructions/");
+	});
+
+	it("never offers the --apply checkbox in the repository variant, unlike the upload variant", async () => {
+		const user = setupUser();
+		const repo = renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSetup: REPOSITORY_ROUTE,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		expect(
+			screen.queryByRole("checkbox", {
+				name: "Automatically apply published updates at session start",
+			}),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText(/automatically apply published updates/i),
+		).not.toBeInTheDocument();
+		repo.unmount();
+
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSetup: { kind: "upload" },
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		expect(
+			screen.getByRole("checkbox", {
+				name: "Automatically apply published updates at session start",
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("names the branch in the repository intro, and does not describe copying files", async () => {
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSetup: REPOSITORY_ROUTE,
+		});
+		expect(
+			await screen.findByText(/reports when main has newer published/i),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(/copies whatever is published/i),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("heading", {
+				level: 3,
+				name: "Recommended: work in a checkout of the repository",
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("treats copying the repository commands as copying the key, so the dialog can close", async () => {
+		const user = setupUser();
+		renderHost({
+			startOpen: true,
+			purpose: "coding-instructions",
+			localSetup: REPOSITORY_ROUTE,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("connect-cli-local-sync-command"),
+			).toHaveTextContent(RAW_KEY),
+		);
+
+		// Uncopied: Escape is disarmed.
+		await user.keyboard("{Escape}");
+		expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "Copy commands" }));
+		await waitFor(() => expect(clipboardWrite).toHaveBeenCalledTimes(1));
+		expect(clipboardWrite.mock.calls[0]?.[0]).toContain(
+			`fabric auth login --key ${RAW_KEY}`,
+		);
+
+		await user.keyboard("{Escape}");
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
 	});
 });
 

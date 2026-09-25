@@ -18,6 +18,7 @@ import {
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import {
+	type LocalSetupRoute,
 	offersSyncFromRepository,
 	offersSyncNow,
 	type RepositorySyncControls,
@@ -33,7 +34,7 @@ export function InstructionsEmptyState({
 	onUploadClick,
 	canUpload = true,
 	repositoryName,
-	localSyncAvailable = false,
+	localSetup = null,
 	repositorySync,
 }: {
 	projectId: string;
@@ -44,12 +45,13 @@ export function InstructionsEmptyState({
 	canUpload?: boolean;
 	repositoryName?: string | null;
 	/**
-	 * Whether the Connect dialog offers `fabric instructions init`. True when
-	 * Fabric authors this project's instructions. Before anything is
-	 * published the command installs the session-start check and copies
-	 * nothing; the check then reports the first version when it arrives.
+	 * Which local-checkout route the Connect dialog offers, computed by
+	 * `localSetupRouteFor` (`../../lib/instructions-repository-sync`) from
+	 * this project's source-of-truth setting and, for a repository project,
+	 * its sync configuration. `null` says nothing rather than something the
+	 * CLI would refuse.
 	 */
-	localSyncAvailable?: boolean;
+	localSetup?: LocalSetupRoute | null;
 	/** The tab's repository-sync state and actions (§7.1). Absent, no sync button renders. */
 	repositorySync?: RepositorySyncControls;
 }) {
@@ -269,7 +271,7 @@ export function InstructionsEmptyState({
 					projectName={projectName}
 					purpose="coding-instructions"
 					projectId={projectId}
-					localSyncAvailable={localSyncAvailable}
+					localSetup={localSetup}
 				/>
 			) : null}
 		</div>

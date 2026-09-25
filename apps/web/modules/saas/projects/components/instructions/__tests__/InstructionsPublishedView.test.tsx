@@ -625,7 +625,47 @@ describe("InstructionsPublishedView — connect your agent", () => {
 			organizationSlug: "example-org",
 			projectName: "Checkout Rewrite",
 			purpose: "coding-instructions",
+			// `localSetupRouteFor` (Fizzy #2721): an upload project (the
+			// default here — `repositoryBacked` is unset) offers the upload
+			// route.
+			localSetup: { kind: "upload" },
 		});
+	});
+
+	it("offers no CLI route while repository settings have not loaded", async () => {
+		const user = userEvent.setup();
+		render(
+			<InstructionsPublishedView
+				projectId="p"
+				projectName="Checkout Rewrite"
+				published={
+					{
+						id: "s7",
+						version: 7,
+						status: "READY",
+						fileCount: 4,
+						excludedCount: 0,
+						createdAt: new Date(),
+						source: "UPLOAD",
+						user: { id: "u", name: "A. Member" },
+					} as never
+				}
+				snapshots={[] as never}
+				onReplaceClick={() => undefined}
+				onChanged={() => undefined}
+				// `repositoryBacked` fails closed while settings load, and
+				// `repositoryConfirmed` is left unset the same way a caller
+				// whose settings query has not resolved yet would leave it.
+				repositoryBacked
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+		await user.click(
+			screen.getByRole("button", { name: "Connect your agent" }),
+		);
+		expect(
+			connectCliDialogProps[connectCliDialogProps.length - 1],
+		).toMatchObject({ localSetup: null });
 	});
 
 	it("does not render the button when there is no organization id", () => {
@@ -1017,6 +1057,7 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 		provider: "GITHUB",
 		repositoryOwner: "example-org",
 		repositoryName: "instructions",
+		repositoryUrl: "https://github.com/example-org/instructions.git",
 		integrationStatus: "ACTIVE",
 		ref: "main",
 		rootPath: "",
@@ -1230,6 +1271,46 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 		);
 		expect(c.onConfigure).toHaveBeenCalled();
 		expect(screen.queryByRole("button", { name: "Sync now" })).toBeNull();
+	});
+
+	// `localSetupRouteFor` (Fizzy #2721): the Connect dialog's CLI route for a
+	// repository-backed project.
+	it("computes the repository local-setup route from the configured sync", async () => {
+		const user = userEvent.setup();
+		render(view(controls(), { canEdit: true, repositoryConfirmed: true }), {
+			wrapper: TestQueryProvider,
+		});
+		await user.click(
+			screen.getByRole("button", { name: "Connect your agent" }),
+		);
+		const lastProps =
+			connectCliDialogProps[connectCliDialogProps.length - 1];
+		expect(lastProps).toMatchObject({
+			localSetup: {
+				kind: "repository",
+				cloneUrl: "https://github.com/example-org/instructions.git",
+				directory: "instructions",
+				ref: "main",
+				rootPath: null,
+			},
+		});
+	});
+
+	it("offers no CLI route for a repository project with nothing configured", async () => {
+		const user = userEvent.setup();
+		render(
+			view(controls({ configured: null }), {
+				canEdit: true,
+				repositoryConfirmed: true,
+			}),
+			{ wrapper: TestQueryProvider },
+		);
+		await user.click(
+			screen.getByRole("button", { name: "Connect your agent" }),
+		);
+		expect(
+			connectCliDialogProps[connectCliDialogProps.length - 1],
+		).toMatchObject({ localSetup: null });
 	});
 
 	it("offers Sync now once configured, and holds it with a spinner while a run is open", async () => {

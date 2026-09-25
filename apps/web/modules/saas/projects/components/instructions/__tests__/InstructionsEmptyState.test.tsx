@@ -233,7 +233,7 @@ describe("InstructionsEmptyState — connect your agent", () => {
 				projectId="p"
 				projectName="Checkout Rewrite"
 				onUploadClick={() => undefined}
-				localSyncAvailable={true}
+				localSetup={{ kind: "upload" }}
 			/>,
 		);
 
@@ -261,11 +261,11 @@ describe("InstructionsEmptyState — connect your agent", () => {
 			// state too: it needs the project to name and the gate the tab
 			// computed from the source-of-truth setting.
 			projectId: "p",
-			localSyncAvailable: true,
+			localSetup: { kind: "upload" },
 		});
 	});
 
-	it("passes the local-sync gate through unchanged, and it is off by default", async () => {
+	it("passes the local-setup route through unchanged, and it is null by default", async () => {
 		const user = userEvent.setup();
 		render(
 			<InstructionsEmptyState
@@ -279,7 +279,7 @@ describe("InstructionsEmptyState — connect your agent", () => {
 		);
 		expect(
 			connectCliDialogProps[connectCliDialogProps.length - 1],
-		).toMatchObject({ localSyncAvailable: false });
+		).toMatchObject({ localSetup: null });
 	});
 
 	it("does not render the button when there is no organization id", () => {
@@ -339,6 +339,7 @@ describe("InstructionsEmptyState — repository sync (§7.1)", () => {
 		provider: "GITHUB",
 		repositoryOwner: "example-org",
 		repositoryName: "instructions",
+		repositoryUrl: "https://github.com/example-org/instructions.git",
 		integrationStatus: "ACTIVE",
 		ref: "main",
 		rootPath: "",

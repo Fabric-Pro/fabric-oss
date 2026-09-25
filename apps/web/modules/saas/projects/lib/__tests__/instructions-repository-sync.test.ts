@@ -1,11 +1,16 @@
 import { SNAPSHOT_LIMITS } from "@repo/instructions";
 import { describe, expect, it } from "vitest";
 import {
+	cloneDirectoryName,
 	configureErrorMessage,
+	type LocalSetupRoute,
 	latestSyncRunChanged,
+	localSetupRouteFor,
 	offersSyncFromRepository,
 	offersSyncNow,
+	quoteShellArgIfNeeded,
 	REPOSITORY_SYNC_IDLE_POLL_MS,
+	type RepositorySyncConfiguration,
 	type RepositorySyncState,
 	repositorySyncPollInterval,
 	type SyncRunView,
@@ -44,6 +49,7 @@ const CONFIGURED: RepositorySyncState = {
 		provider: "GITHUB",
 		repositoryOwner: "example-org",
 		repositoryName: "instructions",
+		repositoryUrl: "https://github.com/example-org/instructions.git",
 		integrationStatus: "ACTIVE",
 		ref: "main",
 		rootPath: "agents",
@@ -360,5 +366,248 @@ describe("idle discovery of automatic runs (Decision 39)", () => {
 		// Not loaded yet: the first read is never a change.
 		expect(latestSyncRunChanged(undefined, "sync_1:run_a")).toBe(false);
 		expect(latestSyncRunChanged("sync_1:run_a", undefined)).toBe(false);
+	});
+});
+
+describe("cloneDirectoryName (Fizzy #2721)", () => {
+	it("takes the last path segment and drops a trailing .git", () => {
+		expect(
+			cloneDirectoryName(
+				"https://github.com/example-org/instructions.git",
+			),
+		).toBe("instructions");
+		expect(
+			cloneDirectoryName("https://github.com/example-org/instructions"),
+		).toBe("instructions");
+	});
+
+	it("ignores a trailing slash", () => {
+		expect(
+			cloneDirectoryName(
+				"https://github.com/example-org/instructions.git/",
+			),
+		).toBe("instructions");
+	});
+
+	it("returns null when the URL has no usable segment", () => {
+		expect(cloneDirectoryName("")).toBeNull();
+		expect(cloneDirectoryName("   ")).toBeNull();
+		expect(cloneDirectoryName("https://github.com/")).toBeNull();
+		expect(cloneDirectoryName("https://github.com/.git")).toBeNull();
+	});
+});
+
+describe("quoteShellArgIfNeeded (Fizzy #2721)", () => {
+	it("returns a plain path unchanged", () => {
+		expect(quoteShellArgIfNeeded("instructions")).toBe("instructions");
+		expect(quoteShellArgIfNeeded("instructions/agents")).toBe(
+			"instructions/agents",
+		);
+	});
+
+	it("single-quotes a path with whitespace or a shell metacharacter", () => {
+		expect(quoteShellArgIfNeeded("my project")).toBe("'my project'");
+		expect(quoteShellArgIfNeeded("agents$HOME")).toBe("'agents$HOME'");
+		expect(quoteShellArgIfNeeded("agents;rm")).toBe("'agents;rm'");
+	});
+
+	it("escapes an embedded single quote as '\\''", () => {
+		expect(quoteShellArgIfNeeded("agent's rules")).toBe(
+			"'agent'\\''s rules'",
+		);
+	});
+});
+
+describe("localSetupRouteFor (Fizzy #2721)", () => {
+	const configured: RepositorySyncConfiguration = {
+		syncId: "sync_1",
+		repositoryIntegrationId: "int_1",
+		provider: "GITHUB",
+		repositoryOwner: "example-org",
+		repositoryName: "instructions",
+		repositoryUrl: "https://github.com/example-org/instructions.git",
+		integrationStatus: "ACTIVE",
+		ref: "main",
+		rootPath: "agents",
+		automatic: false,
+		automaticPausedReason: null,
+		automaticPausedAt: null,
+		delegateName: "Example Member",
+	};
+
+	it("returns null while a repository project's settings have not been confirmed yet", () => {
+		expect(
+			localSetupRouteFor({
+				repositoryBacked: true,
+				repositoryConfirmed: false,
+				configured,
+			}),
+		).toBeNull();
+	});
+
+	it("offers the upload route for an upload project", () => {
+		const route = localSetupRouteFor({
+			repositoryBacked: false,
+			repositoryConfirmed: false,
+			configured: null,
+		});
+		expect(route).toEqual<LocalSetupRoute>({ kind: "upload" });
+	});
+
+	it("offers the repository route once a sync names a repository", () => {
+		const route = localSetupRouteFor({
+			repositoryBacked: true,
+			repositoryConfirmed: true,
+			configured,
+		});
+		expect(route).toEqual<LocalSetupRoute>({
+			kind: "repository",
+			cloneUrl: "https://github.com/example-org/instructions.git",
+			directory: "instructions",
+			ref: "main",
+			rootPath: "agents",
+		});
+	});
+
+	it("falls back to the repository's own name when the URL has no usable segment", () => {
+		const route = localSetupRouteFor({
+			repositoryBacked: true,
+			repositoryConfirmed: true,
+			configured: {
+				...configured,
+				repositoryUrl: "https://github.com/",
+			},
+		});
+		expect(route).toMatchObject({ directory: "instructions" });
+	});
+
+	it("normalises an empty, '.' or '/' rootPath to null", () => {
+		for (const rootPath of ["", ".", "/", "  "]) {
+			const route = localSetupRouteFor({
+				repositoryBacked: true,
+				repositoryConfirmed: true,
+				configured: { ...configured, rootPath },
+			});
+			expect(route).toMatchObject({ rootPath: null });
+		}
+	});
+
+	it("strips leading and trailing slashes from a real rootPath", () => {
+		const route = localSetupRouteFor({
+			repositoryBacked: true,
+			repositoryConfirmed: true,
+			configured: { ...configured, rootPath: "/agents/" },
+		});
+		expect(route).toMatchObject({ rootPath: "agents" });
+	});
+
+	it("returns null for a repository project with no configured sync", () => {
+		expect(
+			localSetupRouteFor({
+				repositoryBacked: true,
+				repositoryConfirmed: true,
+				configured: null,
+			}),
+		).toBeNull();
+	});
+
+	it("returns null for a repository project whose sync carries no clone URL", () => {
+		expect(
+			localSetupRouteFor({
+				repositoryBacked: true,
+				repositoryConfirmed: true,
+				configured: { ...configured, repositoryUrl: "" },
+			}),
+		).toBeNull();
+	});
+
+	it("offers the repository route for GITHUB and GITLAB", () => {
+		for (const provider of ["GITHUB", "GITLAB"]) {
+			expect(
+				localSetupRouteFor({
+					repositoryBacked: true,
+					repositoryConfirmed: true,
+					configured: { ...configured, provider },
+				}),
+			).toMatchObject({ kind: "repository" });
+		}
+	});
+
+	it("returns null for AZURE_DEVOPS: the CLI classifies it as unsupported and refuses init", () => {
+		expect(
+			localSetupRouteFor({
+				repositoryBacked: true,
+				repositoryConfirmed: true,
+				configured: { ...configured, provider: "AZURE_DEVOPS" },
+			}),
+		).toBeNull();
+	});
+
+	it("returns null for a provider string this build does not recognise", () => {
+		expect(
+			localSetupRouteFor({
+				repositoryBacked: true,
+				repositoryConfirmed: true,
+				configured: { ...configured, provider: "BITBUCKET" },
+			}),
+		).toBeNull();
+	});
+
+	it("offers the route when the derived directory starts with a dash", () => {
+		const route = localSetupRouteFor({
+			repositoryBacked: true,
+			repositoryConfirmed: true,
+			configured: {
+				...configured,
+				repositoryUrl: "https://github.com/example-org/-rules.git",
+			},
+		});
+		// A leading `-` is not rejected here — the dialog's `--` terminators
+		// are what make it safe to paste, not this check.
+		expect(route).toMatchObject({ directory: "-rules" });
+	});
+
+	// `cloneDirectoryName` reads a URL's normalised `pathname`, so a literal
+	// `.` or `..` path segment can never survive to become its own return
+	// value — the platform `URL` parser removes dot segments before this
+	// code ever sees them. The real source of an empty/`.`/`..` directory is
+	// the defensive `repositoryName` FALLBACK (used only when the URL has no
+	// usable segment at all, e.g. a bare host with nothing after it), so
+	// these three hold `repositoryUrl` at that shape and vary `repositoryName`.
+	it.each(["", ".", ".."])(
+		"returns null when the repositoryName fallback is %j",
+		(repositoryName) => {
+			expect(
+				localSetupRouteFor({
+					repositoryBacked: true,
+					repositoryConfirmed: true,
+					configured: {
+						...configured,
+						repositoryUrl: "https://github.com/",
+						repositoryName,
+					},
+				}),
+			).toBeNull();
+		},
+	);
+
+	it("returns null when rootPath is exactly '..'", () => {
+		expect(
+			localSetupRouteFor({
+				repositoryBacked: true,
+				repositoryConfirmed: true,
+				configured: { ...configured, rootPath: ".." },
+			}),
+		).toBeNull();
+	});
+
+	it("returns null when rootPath contains a '..' segment", () => {
+		expect(
+			localSetupRouteFor({
+				repositoryBacked: true,
+				repositoryConfirmed: true,
+				configured: { ...configured, rootPath: "agents/../etc" },
+			}),
+		).toBeNull();
 	});
 });

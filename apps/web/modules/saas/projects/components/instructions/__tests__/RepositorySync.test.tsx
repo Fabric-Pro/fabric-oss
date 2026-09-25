@@ -150,6 +150,7 @@ const CONFIGURED: RepositorySyncState = {
 		provider: "GITHUB",
 		repositoryOwner: "example-org",
 		repositoryName: "instructions",
+		repositoryUrl: "https://github.com/example-org/instructions.git",
 		integrationStatus: "ACTIVE",
 		ref: "main",
 		rootPath: "agents",

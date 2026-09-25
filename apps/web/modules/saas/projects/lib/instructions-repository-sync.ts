@@ -66,6 +66,14 @@ export type RepositorySyncConfiguration = {
 	provider: string;
 	repositoryOwner: string;
 	repositoryName: string;
+	/**
+	 * The canonical `https://host/owner/name` clone URL (`get.ts` forwards
+	 * `repositoryIntegration.repositoryUrl` unchanged; `parseRepoUrl`
+	 * guarantees it carries no userinfo, query or fragment). What
+	 * `localSetupRouteFor` below turns into the Connect dialog's
+	 * `git clone` line for a repository-sourced project (Fizzy #2721).
+	 */
+	repositoryUrl: string;
 	integrationStatus: string;
 	ref: string;
 	rootPath: string;
@@ -391,5 +399,180 @@ export function syncNowResultMessage(result: SyncNowResult): {
 	return {
 		key: `syncNowResult.${result.reason}`,
 		tone: result.reason === "already_running" ? "info" : "error",
+	};
+}
+
+/* -------------------------------------------------------------------------- */
+/* The Connect dialog's local-checkout route (Fizzy #2721)                    */
+/*                                                                             */
+/* `ConnectCliDialog`'s "keep the files in your checkout" block used to be a  */
+/* single boolean: Fabric authors the files, or the CLI refuses the project   */
+/* outright. A repository-sourced project now has a real command too — a      */
+/* checkout of the repository the sync follows — so the gate is a discriminated */
+/* route instead. Declared here, not in the dialog itself, so the tab and the */
+/* empty state compute the SAME answer from the SAME state (mirrors why      */
+/* `RepositorySyncState` and the outcome/message helpers above live here).   */
+/* -------------------------------------------------------------------------- */
+
+/** Which local-checkout route the Connect dialog offers, if any. */
+export type LocalSetupRoute =
+	| { kind: "upload" }
+	| {
+			kind: "repository";
+			cloneUrl: string;
+			/** The directory `git clone <cloneUrl>` creates. */
+			directory: string;
+			ref: string;
+			/** The sync's root folder, normalised; `null` for "the checkout root". */
+			rootPath: string | null;
+	  };
+
+/**
+ * The last path segment of a clone URL, with a trailing `.git` removed —
+ * the directory `git clone <cloneUrl>` creates. `null` when the URL has no
+ * usable segment (empty, or a bare scheme/host with nothing after it), so the
+ * caller falls back to the repository's own name.
+ *
+ * Reads the URL's `pathname` rather than splitting the raw string on `/`: the
+ * scheme's own `//` (as in `https://`) is not a path separator, and a naive
+ * split would misread a bare `https://host/` as ending in the segment `host`.
+ * `repositoryUrl` is always `https://host/owner/name` in practice
+ * (`parseRepoUrl` guarantees the shape on write), so `URL` never throws here;
+ * the fallback below is defensive only.
+ */
+export function cloneDirectoryName(cloneUrl: string): string | null {
+	const trimmed = cloneUrl.trim();
+	if (!trimmed) {
+		return null;
+	}
+	let pathname = trimmed;
+	try {
+		pathname = new URL(trimmed).pathname;
+	} catch {
+		// Not a URL the platform parser accepts — read the raw string as-is.
+	}
+	const withoutTrailingSlashes = pathname.replace(/\/+$/, "");
+	const lastSlash = withoutTrailingSlashes.lastIndexOf("/");
+	const segment =
+		lastSlash === -1
+			? withoutTrailingSlashes
+			: withoutTrailingSlashes.slice(lastSlash + 1);
+	const withoutGit = segment.replace(/\.git$/i, "").trim();
+	return withoutGit.length > 0 ? withoutGit : null;
+}
+
+/** The last non-empty `/`-separated segment of `value`, or `value` itself. */
+function lastPathSegment(value: string): string {
+	const trimmed = value.trim().replace(/\/+$/, "");
+	const lastSlash = trimmed.lastIndexOf("/");
+	return lastSlash === -1 ? trimmed : trimmed.slice(lastSlash + 1);
+}
+
+/**
+ * `rootPath` as the sync configuration stores it, normalised for the
+ * Connect dialog's `cd` line: `null` for "no subfolder" (empty, `"."`, or
+ * `"/"`), otherwise stripped of leading/trailing slashes.
+ */
+function normalizeRootPath(rootPath: string): string | null {
+	const trimmed = rootPath.trim().replace(/^\/+|\/+$/g, "");
+	return trimmed === "" || trimmed === "." ? null : trimmed;
+}
+
+/**
+ * Shell metacharacters that make an argument unsafe to paste unquoted into
+ * the commands the Connect dialog prints: whitespace and
+ * `` $ ` " ' ; & | < > ( ) * ? [ ] { } \ ! # ~ ``.
+ */
+const SHELL_METACHARACTERS = /[\s$`"';&|<>()*?[\]{}\\!#~]/;
+
+/**
+ * Wraps `value` in single quotes (with embedded single quotes escaped as
+ * `'\''`) when it contains whitespace or a shell metacharacter; returns it
+ * unchanged otherwise. The clone directory and the sync's root folder are the
+ * only arguments in the repository setup commands this repo does not fully
+ * control, since both come from data a repository owner chose.
+ */
+export function quoteShellArgIfNeeded(value: string): string {
+	return SHELL_METACHARACTERS.test(value)
+		? `'${value.replace(/'/g, "'\\''")}'`
+		: value;
+}
+
+/**
+ * Providers the CLI actually compares a checkout against. `init` classifies
+ * Azure DevOps as an "unsupported provider" and refuses outright
+ * (`docs/guides/coding-instructions-cli.md`, "Repository-sourced projects"),
+ * so offering the repository route for it would be a "Recommended" command
+ * that cannot succeed. `RepositoryProvider` in `schema.prisma` also has
+ * `AZURE_DEVOPS`; an unrecognised future value is refused the same way,
+ * matching the CLI's own closed set.
+ */
+const SUPPORTED_REPOSITORY_PROVIDERS = new Set(["GITHUB", "GITLAB"]);
+
+/**
+ * `false` for a checkout directory or root-folder segment that would break or
+ * mislead the printed commands: empty, `.` (the shell would `cd` to nowhere
+ * new) or `..` (a path escape). A leading `-` is deliberately NOT rejected
+ * here — `buildRepositorySetupCommands`'s `--` terminators are what make that
+ * safe, not this check.
+ */
+function isUsableCheckoutSegment(segment: string): boolean {
+	return segment !== "" && segment !== "." && segment !== "..";
+}
+
+/** Whether any `/`-separated segment of `path` is literally `..`. */
+function hasParentSegment(path: string): boolean {
+	return path.split("/").some((segment) => segment === "..");
+}
+
+/**
+ * Maps the tab's repository-sync state to the local-checkout route the
+ * Connect dialog offers:
+ *
+ * - settings not yet confirmed (`repositoryBacked` while `!repositoryConfirmed`,
+ *   which fails closed while they load or after they fail) → `null`;
+ * - an upload project → `{ kind: "upload" }`;
+ * - a repository project with a configured sync naming a repository on a
+ *   provider the CLI compares against → the `git clone` route;
+ * - a repository project with no configured sync, no clone URL, an
+ *   unsupported provider, or a derived checkout directory/root folder the
+ *   printed commands could not use safely → `null`. The CLI would refuse
+ *   `init` in a checkout, or the block would be unsafe to paste, so offering
+ *   it would send the reader to a refusal (or worse).
+ */
+export function localSetupRouteFor(args: {
+	repositoryBacked: boolean;
+	repositoryConfirmed: boolean;
+	configured: RepositorySyncConfiguration | null;
+}): LocalSetupRoute | null {
+	const { repositoryBacked, repositoryConfirmed, configured } = args;
+	if (repositoryBacked && !repositoryConfirmed) {
+		return null;
+	}
+	if (!repositoryBacked) {
+		return { kind: "upload" };
+	}
+	if (!configured || !configured.repositoryUrl) {
+		return null;
+	}
+	if (!SUPPORTED_REPOSITORY_PROVIDERS.has(configured.provider)) {
+		return null;
+	}
+	const directory =
+		cloneDirectoryName(configured.repositoryUrl) ??
+		lastPathSegment(configured.repositoryName);
+	if (!isUsableCheckoutSegment(directory)) {
+		return null;
+	}
+	const rootPath = normalizeRootPath(configured.rootPath);
+	if (rootPath !== null && hasParentSegment(rootPath)) {
+		return null;
+	}
+	return {
+		kind: "repository",
+		cloneUrl: configured.repositoryUrl,
+		directory,
+		ref: configured.ref,
+		rootPath,
 	};
 }
