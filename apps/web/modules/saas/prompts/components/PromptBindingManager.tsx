@@ -140,7 +140,12 @@ export function PromptBindingManager({
 	const [alsoApplyTo, setAlsoApplyTo] = useState<string[]>([]);
 
 	// Fetch prompt details to get versions
-	const { data: promptDetails, isLoading: isLoadingDetails } = useQuery({
+	const {
+		data: promptDetails,
+		isLoading: isLoadingDetails,
+		error: promptDetailsError,
+		refetch: refetchPromptDetails,
+	} = useQuery({
 		queryKey: ["prompt", promptId, organizationId],
 		queryFn: async () =>
 			await orpcClient.prompts.get.byId({
@@ -152,6 +157,10 @@ export function PromptBindingManager({
 
 	// Get latest version
 	const latestVersion = promptDetails?.versions?.[0];
+	// The Set as Default button is silently disabled on `!latestVersion`
+	// below — this is what tells the user WHY, rather than leaving a
+	// disabled button with no explanation.
+	const promptDetailsFailed = Boolean(promptDetailsError) && !promptDetails;
 
 	// Reset state when dialog opens
 	useEffect(() => {
@@ -490,6 +499,27 @@ export function PromptBindingManager({
 								? "This prompt will be automatically selected when creating new documents of this type"
 								: "This prompt will be available but not automatically selected"}
 						</p>
+
+						{promptDetailsFailed && (
+							<div
+								role="alert"
+								className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-highlight/40 bg-highlight/5 px-3 py-2 text-highlight-ink text-xs"
+							>
+								<span>
+									Could not load this prompt's latest version,
+									so it cannot be set as default yet.
+								</span>
+								<Button
+									type="button"
+									variant="ghost"
+									size="sm"
+									className="h-auto p-0 text-xs underline underline-offset-2"
+									onClick={() => refetchPromptDetails()}
+								>
+									Try again
+								</Button>
+							</div>
+						)}
 					</div>
 
 					<DialogFooter className="shrink-0 border-t pt-4">

@@ -139,7 +139,7 @@ export function PromptSelector({
 
 	// Fetch available prompts for this agent
 	// Uses binding-first architecture: only bound prompts are returned
-	const { data, isLoading } = useQuery(
+	const { data, isLoading, error, refetch } = useQuery(
 		orpc.prompts.agents.available.queryOptions({
 			input: {
 				agentName,
@@ -152,6 +152,9 @@ export function PromptSelector({
 			},
 		}),
 	);
+	// A failed background refetch keeps the list already loaded; the failure
+	// state only replaces the picker when nothing has loaded at all.
+	const loadFailed = Boolean(error) && !data;
 
 	// Deduplicate prompts by ID (API may return the same prompt via multiple bindings)
 	const prompts = (data?.prompts ?? []).filter(
@@ -343,6 +346,14 @@ export function PromptSelector({
 											</Badge>
 										)}
 									</>
+								) : loadFailed && effectiveValue ? (
+									// There IS a selection (bound elsewhere, or
+									// passed in as `value`) — the read just
+									// failed to resolve its name. Falling back
+									// to the placeholder here would read as "use
+									// default", which is false: something is
+									// selected, we just don't know what.
+									"Could not load prompt"
 								) : (
 									placeholder
 								)}
@@ -470,11 +481,32 @@ export function PromptSelector({
 							</SelectGroup>
 						)}
 
-						{/* Empty state */}
-						{prompts.length === 0 && !isLoading && (
-							<div className="px-2 py-6 text-center text-sm text-muted-foreground">
-								No custom prompts available
+						{/* A failed read leaves `prompts` empty exactly like a
+						    genuinely empty library — say which one this is. */}
+						{loadFailed ? (
+							<div
+								role="alert"
+								className="flex flex-col items-center gap-2 px-2 py-6 text-center text-sm"
+							>
+								<p className="text-muted-foreground">
+									Could not load prompts.
+								</p>
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									onClick={() => refetch()}
+								>
+									Try again
+								</Button>
 							</div>
+						) : (
+							prompts.length === 0 &&
+							!isLoading && (
+								<div className="px-2 py-6 text-center text-sm text-muted-foreground">
+									No custom prompts available
+								</div>
+							)
 						)}
 					</SelectContent>
 				</Select>

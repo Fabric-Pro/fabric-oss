@@ -22,7 +22,7 @@ import { HomeIcon } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { isPromptNotFound } from "../lib/prompt-not-found";
+import { isPromptInaccessible } from "../lib/prompt-inaccessible";
 import { LoadFailure } from "./LoadFailure";
 import { PromptContentEnhancer } from "./PromptContentEnhancer";
 
@@ -122,12 +122,13 @@ export function PromptEnhancePage({ promptId, organizationId }: Props) {
 		);
 	}
 
-	// Same NOT_FOUND-vs-failure split as PromptDetails: NOT_FOUND covers both
-	// an absent id and a prompt outside the caller's tenant, on purpose, so
-	// the copy has to be true for either. Any other error means the read
-	// failed, not that the prompt is gone.
-	if (error) {
-		if (isPromptNotFound(error)) {
+	// Same NOT_FOUND/FORBIDDEN-vs-failure split as PromptDetails: both codes
+	// mean the prompt is not there for this caller to see, on purpose, so the
+	// copy has to be true for either. Any other error means the read failed,
+	// not that the prompt is gone. A failed background refetch keeps the
+	// loaded prompt on screen.
+	if (error && !prompt) {
+		if (isPromptInaccessible(error)) {
 			return (
 				<div className="flex flex-col items-center justify-center py-12">
 					<p className="text-muted-foreground mb-4">

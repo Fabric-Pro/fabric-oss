@@ -327,6 +327,27 @@ describe("PromptCatalog", () => {
 			await screen.findByText(/quality & testing/i),
 		).toBeInTheDocument();
 	});
+
+	it("keeps the loaded catalog when a background refetch fails", async () => {
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		render(
+			<QueryClientProvider client={client}>
+				<PromptCatalog />
+			</QueryClientProvider>,
+		);
+		expect(
+			await screen.findByText(/quality & testing/i),
+		).toBeInTheDocument();
+
+		catalogList.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+		await client.refetchQueries({ queryKey: ["prompt-catalog"] });
+		await waitFor(() => expect(catalogList).toHaveBeenCalledTimes(2));
+
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(screen.getByText(/quality & testing/i)).toBeInTheDocument();
+	});
 });
 
 /**

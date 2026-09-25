@@ -194,8 +194,9 @@ export function PromptCatalog() {
 	// A failed catalog read leaves every action's `entry` undefined, which
 	// would otherwise render as "No prompt bound — uses the built-in default"
 	// on all sixty-odd rows — the same fabricated picture the governance
-	// dashboard used to show for the same failure.
-	if (error) {
+	// dashboard used to show for the same failure. A failed background refetch
+	// keeps the catalog it already loaded.
+	if (error && !data) {
 		return (
 			<LoadFailure
 				message="Could not load the prompt catalog."

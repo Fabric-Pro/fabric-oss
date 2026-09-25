@@ -198,8 +198,8 @@ export function PromptGovernanceDashboard() {
 	// A failed catalog read leaves every action in the fallback bucket, which
 	// would render as the confident claim that the organization has configured
 	// nothing. Say we could not check instead — this page is read as a
-	// governance audit.
-	if (error) {
+	// governance audit. A failed background refetch keeps what it loaded.
+	if (error && !data) {
 		return (
 			<LoadFailure
 				message="Could not load your organization's prompt configuration."

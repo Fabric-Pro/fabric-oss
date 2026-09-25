@@ -5,8 +5,10 @@
  *
  * NOT_FOUND covers both an absent id and a prompt outside the caller's tenant
  * on purpose (the lookup is tenant-filtered, so disclosing which would leak
- * tenancy); every other error means the read failed, not that the prompt is
- * gone, and gets a retry instead.
+ * tenancy); FORBIDDEN (`requireInputOrgPermission`, not a member of the
+ * prompt's organization) is the same underlying fact told a different way and
+ * gets the identical copy. Every other error means the read failed, not that
+ * the prompt is inaccessible, and gets a retry instead.
  *
  * Run with:
  *   pnpm --filter web test __tests__/modules/saas/prompts/PromptDetails.test.tsx
@@ -198,6 +200,27 @@ describe("PromptDetails — load failure vs not found", () => {
 
 		expect(push).toHaveBeenCalledWith("/app/acme/prompts");
 	});
+
+	it("says the same thing for FORBIDDEN as for NOT_FOUND, with no dead-end retry", async () => {
+		// `requireInputOrgPermission` throws FORBIDDEN when the caller is not
+		// a member of the prompt's organization — a different code for the
+		// same fact NOT_FOUND already covers honestly: this prompt is not
+		// something you can see. Retrying either can never succeed.
+		getById.mockRejectedValue(new ORPCError("FORBIDDEN"));
+
+		wrap(<PromptDetails promptId="p-1" />);
+
+		await screen.findByText(
+			/does not exist, or you do not have access to it/i,
+		);
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Try again" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Back to Prompts" }),
+		).toBeInTheDocument();
+	});
 });
 
 describe("PromptDetails — saving over an unknown bound-actions read", () => {
@@ -251,6 +274,31 @@ describe("PromptDetails — saving over an unknown bound-actions read", () => {
 		expect(createVersion).not.toHaveBeenCalled();
 	});
 
+	it("confirms honestly when content is saved before the bound-actions read has landed", async () => {
+		// Never resolves during this test: the reach is unknown because the
+		// read hasn't settled yet, not because it failed.
+		listForPrompt.mockReturnValue(new Promise(() => {}));
+		const user = userEvent.setup();
+
+		wrap(<PromptDetails promptId="p-1" />);
+
+		await screen.findByText("Test Case Drafter Prompt");
+		await user.click(screen.getByRole("button", { name: "Edit" }));
+
+		const contentBox = await screen.findByLabelText("Prompt content");
+		await user.clear(contentBox);
+		await user.type(contentBox, "Edited before load");
+
+		await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+		await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1));
+		const options = confirmMock.mock.calls[0][0];
+		expect(options.title).toMatch(
+			/could not check which actions use this prompt/i,
+		);
+		expect(updatePrompt).not.toHaveBeenCalled();
+	});
+
 	it("does not warn at all when only metadata changes, even if the bound-actions read failed", async () => {
 		listForPrompt.mockRejectedValue(new Error("network error"));
 		const user = userEvent.setup();
@@ -270,5 +318,44 @@ describe("PromptDetails — saving over an unknown bound-actions read", () => {
 
 		await waitFor(() => expect(updatePrompt).toHaveBeenCalledTimes(1));
 		expect(confirmMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("PromptDetails — a failed background refetch keeps the loaded prompt", () => {
+	beforeEach(() => {
+		getById.mockReset();
+		getById.mockResolvedValue(basePrompt);
+		listForPrompt.mockReset();
+		listForPrompt.mockResolvedValue({ actions: [] });
+		confirmMock.mockReset();
+	});
+
+	it("does not replace the editor, or its unsaved text, when a refetch fails", async () => {
+		const user = userEvent.setup();
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		render(
+			<QueryClientProvider client={client}>
+				<PromptDetails promptId="p-1" />
+			</QueryClientProvider>,
+		);
+
+		await screen.findByText("Test Case Drafter Prompt");
+		await user.click(screen.getByRole("button", { name: "Edit" }));
+		const contentBox = await screen.findByLabelText("Prompt content");
+		await user.clear(contentBox);
+		await user.type(contentBox, "Unsaved edit");
+
+		// A window refocus after the prompt went stale refetches it; this one
+		// hits a network blip. The prompt on screen is still the right one.
+		getById.mockRejectedValue(new TypeError("Failed to fetch"));
+		await client.refetchQueries({ queryKey: ["prompts.get.byId"] });
+		await waitFor(() => expect(getById).toHaveBeenCalledTimes(2));
+
+		expect(screen.queryByText("Could not load this prompt.")).toBeNull();
+		expect(screen.getByLabelText("Prompt content")).toHaveValue(
+			"Unsaved edit",
+		);
 	});
 });
