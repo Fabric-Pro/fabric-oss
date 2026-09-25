@@ -775,7 +775,9 @@ resource circuitBreakerOpenedAlert 'Microsoft.Insights/scheduledQueryRules@2022-
     severity: 0
     enabled: true
     scopes: [appInsightsId]
-    evaluationFrequency: 'PT1M'
+    // PT5M, not PT1M: the query unions customEvents and traces, and Azure's
+    // one-minute evaluation optimizer does not support union.
+    evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     criteria: {
       allOf: [
@@ -964,12 +966,15 @@ resource collectorHeartbeatMissingAlert 'Microsoft.Insights/scheduledQueryRules@
             expected
             | join kind=leftanti observed on role
           ''', string(expectedTelemetryRoles))
+          // One period, not 2-of-2: multiple violation periods need a datetime
+          // column in the result, and the query already proves 15 minutes of
+          // continuous absence on its own.
           timeAggregation: 'Count'
           threshold: 0
           operator: 'GreaterThan'
           failingPeriods: {
-            numberOfEvaluationPeriods: 2
-            minFailingPeriodsToAlert: 2
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
           }
         }
       ]

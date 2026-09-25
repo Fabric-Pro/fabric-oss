@@ -5,7 +5,7 @@
 		"_generator": {
 			"name": "bicep",
 			"version": "0.43.1.21952",
-			"templateHash": "15646268316808229813"
+			"templateHash": "13703549800876889809"
 		}
 	},
 	"parameters": {
@@ -590,7 +590,7 @@
 				"severity": 0,
 				"enabled": true,
 				"scopes": ["[parameters('appInsightsId')]"],
-				"evaluationFrequency": "PT1M",
+				"evaluationFrequency": "PT5M",
 				"windowSize": "PT5M",
 				"criteria": {
 					"allOf": [
@@ -729,8 +729,8 @@
 							"threshold": 0,
 							"operator": "GreaterThan",
 							"failingPeriods": {
-								"numberOfEvaluationPeriods": 2,
-								"minFailingPeriodsToAlert": 2
+								"numberOfEvaluationPeriods": 1,
+								"minFailingPeriodsToAlert": 1
 							}
 						}
 					]
