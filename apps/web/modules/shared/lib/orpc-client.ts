@@ -1,4 +1,4 @@
-import { createORPCClient, onError } from "@orpc/client";
+import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { ApiRouterClient } from "@repo/api/orpc/router";
 import { getBaseUrl } from "@repo/utils";
@@ -6,6 +6,7 @@ import {
 	captureResponseCorrelationId,
 	generateClientCorrelationId,
 } from "./correlation-id";
+import { logRpcFailure } from "./rpc-failure-log";
 
 /**
  * Custom fetch that converts non-JSON responses (e.g. HTML error pages) into
@@ -106,35 +107,14 @@ const link = new RPCLink({
 		};
 	},
 	interceptors: [
-		onError((error) => {
-			if (error instanceof Error && error.name === "AbortError") {
-				return;
+		async ({ next, path }) => {
+			try {
+				return await next();
+			} catch (error) {
+				logRpcFailure(error, path);
+				throw error;
 			}
-
-			// Don't noise the dev console with expected 4xx responses.
-			// Permission denials, auth failures, missing resources, and
-			// validation errors are routinely surfaced to consumers via
-			// useQuery's `error` field — logging them here turns each one
-			// into a Next.js dev-overlay "Console Error" even though the
-			// consumer is handling them gracefully. Common case today:
-			// non-admin members hitting billing-gated endpoints (FORBIDDEN
-			// from ORG_BILLING_READ). Only log unexpected server errors.
-			const expected4xxCodes = new Set([
-				"BAD_REQUEST",
-				"UNAUTHORIZED",
-				"FORBIDDEN",
-				"NOT_FOUND",
-				"CONFLICT",
-				"UNPROCESSABLE_ENTITY",
-				"TOO_MANY_REQUESTS",
-			]);
-			const code = (error as { code?: unknown } | undefined)?.code;
-			if (typeof code === "string" && expected4xxCodes.has(code)) {
-				return;
-			}
-
-			console.error(error);
-		}),
+		},
 	],
 });
 
