@@ -3,6 +3,8 @@
 import {
 	FABRIC_IGNORE_FILE,
 	isSecretFileName,
+	type ProposalNote,
+	proposalNoteSchema,
 	SNAPSHOT_LIMITS,
 	validatePortableName,
 	validateRelativePath,
@@ -21,9 +23,63 @@ import {
 } from "@ui/components/dialog";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
+import { Textarea } from "@ui/components/textarea";
 import { useTranslations } from "next-intl";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
+
+/** The admission refusals the dialog names with its own copy (spec §5.3). */
+const ADMISSION_REFUSALS = new Set([
+	"REPOSITORY_UNAVAILABLE",
+	"REPOSITORY_BASE_UNAVAILABLE",
+	"REPOSITORY_SOURCE_OF_TRUTH",
+]);
+
+type NoteField = "title" | "body";
+
+/**
+ * The note as the proposer typed it, or undefined when both fields are
+ * empty. The title is trimmed (a title of spaces is no title); the body is
+ * kept as written, since its line breaks are the point.
+ */
+function noteFrom(title: string, body: string): ProposalNote | undefined {
+	const trimmedTitle = title.trim();
+	const note: ProposalNote = {
+		...(trimmedTitle ? { title: trimmedTitle } : {}),
+		...(body.trim() ? { body } : {}),
+	};
+	return note.title === undefined && note.body === undefined
+		? undefined
+		: note;
+}
+
+/**
+ * Which field the shared note schema refuses, previewed client-side. The
+ * server re-checks with the same schema and also scans for credentials,
+ * which only it can do (`NOTE_REJECTED`, shown under its field).
+ */
+function noteRefusalField(note: ProposalNote | undefined): NoteField | null {
+	if (!note) {
+		return null;
+	}
+	const parsed = proposalNoteSchema.safeParse(note);
+	if (parsed.success) {
+		return null;
+	}
+	return parsed.error.issues[0]?.path[0] === "body" ? "body" : "title";
+}
+
+function refusalData(
+	error: unknown,
+): { reason?: string; field?: string } | undefined {
+	if (error && typeof error === "object" && "data" in error) {
+		const data = (error as { data?: unknown }).data;
+		return data && typeof data === "object"
+			? (data as { reason?: string; field?: string })
+			: undefined;
+	}
+	return undefined;
+}
 
 /**
  * The destination path this dialog proposes for a picked file.
@@ -83,6 +139,12 @@ function pathRefusal(
  *
  * It is also how a BINARY file is replaced, since the in-place editor is text
  * only: pick the new file, keep the existing path.
+ *
+ * A proposal carries an optional note (title and description, Fizzy #2563
+ * spec §5.1 step 6). On a repository-backed project the dialog is "Suggest a
+ * change": it names the repository and branch the pull request opens
+ * against, and says the branch is pushed with the connection's credentials
+ * and can start CI before review (spec §12).
  */
 export function AddInstructionFileDialog({
 	projectId,
@@ -92,6 +154,7 @@ export function AddInstructionFileDialog({
 	folder,
 	proposalOnly = false,
 	canPropose = false,
+	repositoryTarget = null,
 	onAdded,
 }: {
 	projectId: string;
@@ -105,6 +168,12 @@ export function AddInstructionFileDialog({
 	proposalOnly?: boolean;
 	/** Editors may also choose review instead of a direct version. */
 	canPropose?: boolean;
+	/**
+	 * The repository a suggestion opens its pull request in, and the branch
+	 * it targets, on a repository-backed project. Null for an upload-backed
+	 * one.
+	 */
+	repositoryTarget?: { repository: string; ref: string } | null;
 	onAdded: () => void;
 }) {
 	const t = useTranslations("projects.codingInstructions.addFileDialog");
@@ -112,16 +181,29 @@ export function AddInstructionFileDialog({
 	const [file, setFile] = useState<File | null>(null);
 	const [path, setPath] = useState("");
 	const [publishOnReady, setPublishOnReady] = useState(true);
+	const [noteTitle, setNoteTitle] = useState("");
+	const [noteBody, setNoteBody] = useState("");
+	// The server's NOTE_REJECTED, shown under the field it names until that
+	// field is edited.
+	const [serverNoteRefusal, setServerNoteRefusal] = useState<{
+		field: NoteField;
+		message: string;
+	} | null>(null);
+	const offersProposal = proposalOnly || canPropose;
 
 	function reset() {
 		setFile(null);
 		setPath("");
 		setPublishOnReady(true);
+		setNoteTitle("");
+		setNoteBody("");
+		setServerNoteRefusal(null);
 		if (inputRef.current) {
 			inputRef.current.value = "";
 		}
 	}
 
+	const note = noteFrom(noteTitle, noteBody);
 	const add = useMutation({
 		mutationFn: ({
 			picked,
@@ -135,25 +217,65 @@ export function AddInstructionFileDialog({
 				baseSnapshotId,
 				publishOnReady: proposal ? false : publishOnReady,
 				proposal,
+				// A direct version stores no note, so none is sent with one.
+				...(proposal && note ? { note } : {}),
 				edits: [{ op: "put", path: path.trim(), body: picked }],
 			}),
 		onSuccess: (_result, input) => {
-			toast.success(input.proposal ? t("proposalSubmitted") : t("added"));
+			toast.success(
+				input.proposal
+					? t(
+							repositoryTarget
+								? "pullRequestSubmitted"
+								: "proposalSubmitted",
+						)
+					: t("added"),
+			);
 			reset();
 			onOpenChange(false);
 			onAdded();
 		},
-		onError: (error: Error) => toast.error(error.message),
+		onError: (error: Error) => {
+			const data = refusalData(error);
+			if (data?.reason === "NOTE_REJECTED") {
+				setServerNoteRefusal({
+					field: data.field === "body" ? "body" : "title",
+					message: error.message,
+				});
+				return;
+			}
+			toast.error(
+				data?.reason && ADMISSION_REFUSALS.has(data.reason)
+					? t(`refusals.${data.reason}`)
+					: error.message,
+			);
+		},
 	});
 
 	const tooLarge = file !== null && file.size > SNAPSHOT_LIMITS.maxFileBytes;
 	const refusal = path.trim().length > 0 ? pathRefusal(path.trim(), t) : null;
+	const noteField = offersProposal ? noteRefusalField(note) : null;
+	const titleError =
+		noteField === "title"
+			? t("noteTitleInvalid")
+			: serverNoteRefusal?.field === "title"
+				? serverNoteRefusal.message
+				: null;
+	const bodyError =
+		noteField === "body"
+			? t("noteBodyInvalid")
+			: serverNoteRefusal?.field === "body"
+				? serverNoteRefusal.message
+				: null;
 	const canSubmit =
 		file !== null &&
 		path.trim().length > 0 &&
 		!tooLarge &&
 		refusal === null &&
 		!add.isPending;
+	// The note only rides with a proposal, so only the proposal button waits
+	// on it.
+	const canSubmitProposal = canSubmit && noteField === null;
 
 	return (
 		<Dialog
@@ -167,8 +289,14 @@ export function AddInstructionFileDialog({
 		>
 			<DialogContent>
 				<DialogHeader>
-					<DialogTitle>{t("title")}</DialogTitle>
-					<DialogDescription>{t("description")}</DialogDescription>
+					<DialogTitle>
+						{repositoryTarget ? t("repositoryTitle") : t("title")}
+					</DialogTitle>
+					<DialogDescription>
+						{repositoryTarget
+							? t("repositoryDescription", repositoryTarget)
+							: t("description")}
+					</DialogDescription>
 				</DialogHeader>
 				<div className="flex flex-col gap-4">
 					<div className="flex flex-col gap-1.5">
@@ -219,6 +347,90 @@ export function AddInstructionFileDialog({
 					{refusal ? (
 						<p className="text-destructive text-sm">{refusal}</p>
 					) : null}
+					{offersProposal ? (
+						<>
+							<div className="flex flex-col gap-1.5">
+								<Label htmlFor="add-instruction-note-title">
+									{t("noteTitleLabel")}
+								</Label>
+								<Input
+									id="add-instruction-note-title"
+									value={noteTitle}
+									aria-invalid={titleError ? true : undefined}
+									aria-describedby={
+										titleError
+											? "add-instruction-note-title-hint add-instruction-note-title-error"
+											: "add-instruction-note-title-hint"
+									}
+									onChange={(e) => {
+										setNoteTitle(e.target.value);
+										if (
+											serverNoteRefusal?.field === "title"
+										) {
+											setServerNoteRefusal(null);
+										}
+									}}
+								/>
+								<p
+									id="add-instruction-note-title-hint"
+									className="text-muted-foreground text-xs"
+								>
+									{t("noteTitleHint")}
+								</p>
+								{titleError ? (
+									<p
+										id="add-instruction-note-title-error"
+										className="text-destructive text-sm"
+									>
+										{titleError}
+									</p>
+								) : null}
+							</div>
+							<div className="flex flex-col gap-1.5">
+								<Label htmlFor="add-instruction-note-body">
+									{t("noteBodyLabel")}
+								</Label>
+								<Textarea
+									id="add-instruction-note-body"
+									value={noteBody}
+									rows={3}
+									aria-invalid={bodyError ? true : undefined}
+									aria-describedby={
+										bodyError
+											? "add-instruction-note-body-hint add-instruction-note-body-error"
+											: "add-instruction-note-body-hint"
+									}
+									onChange={(e) => {
+										setNoteBody(e.target.value);
+										if (
+											serverNoteRefusal?.field === "body"
+										) {
+											setServerNoteRefusal(null);
+										}
+									}}
+								/>
+								<p
+									id="add-instruction-note-body-hint"
+									className="text-muted-foreground text-xs"
+								>
+									{t("noteBodyHint")}
+								</p>
+								{bodyError ? (
+									<p
+										id="add-instruction-note-body-error"
+										className="text-destructive text-sm"
+									>
+										{bodyError}
+									</p>
+								) : null}
+							</div>
+							{!proposalOnly ? (
+								<p className="text-muted-foreground text-xs">
+									{t("noteProposalOnly")}
+								</p>
+							) : null}
+						</>
+					) : null}
 					{!proposalOnly ? (
 						<label
 							htmlFor="add-instruction-publish"
@@ -258,10 +470,10 @@ export function AddInstructionFileDialog({
 							{t("addButton")}
 						</Button>
 					) : null}
-					{proposalOnly || canPropose ? (
+					{offersProposal ? (
 						<Button
 							variant={proposalOnly ? "default" : "outline"}
-							disabled={!canSubmit}
+							disabled={!canSubmitProposal}
 							onClick={() => {
 								if (file) {
 									add.mutate({
@@ -271,7 +483,11 @@ export function AddInstructionFileDialog({
 								}
 							}}
 						>
-							{t("submitProposalButton")}
+							{t(
+								repositoryTarget
+									? "submitPullRequestButton"
+									: "submitProposalButton",
+							)}
 						</Button>
 					) : null}
 				</DialogFooter>

@@ -466,6 +466,50 @@ describe("beginInstructionRepositorySyncRun (spec §5.3.1)", () => {
 		},
 	);
 
+	describe("a merge-triggered run (Fizzy #2563 spec §9)", () => {
+		const merged = {
+			...input,
+			trigger: "PULL_REQUEST_MERGED" as const,
+			requesterUserId: undefined,
+		};
+
+		it("runs with automatic sync off: the toggle does not apply", async () => {
+			m.getInstructionRepositorySyncForRun.mockResolvedValue({
+				...row,
+				automatic: false,
+			});
+			expect(
+				await beginInstructionRepositorySyncRun(merged),
+			).toMatchObject({
+				ok: true,
+				context: {
+					actingUserId: "delegate_1",
+					trigger: "PULL_REQUEST_MERGED",
+				},
+			});
+			expect(m.canCreateProjectInstructions).toHaveBeenCalledWith(
+				"proj_1",
+				"delegate_1",
+			);
+		});
+
+		it("is skipped while the sync is paused", async () => {
+			m.getInstructionRepositorySyncForRun.mockResolvedValue({
+				...row,
+				automatic: false,
+				automaticPausedReason: "PERMISSION_REVOKED",
+			});
+			expect(
+				await beginInstructionRepositorySyncRun(merged),
+			).toMatchObject({
+				ok: false,
+				skipped: "paused",
+				context: { trigger: "PULL_REQUEST_MERGED" },
+			});
+			expect(m.canCreateProjectInstructions).not.toHaveBeenCalled();
+		});
+	});
+
 	it("never skips a manual run for the automatic switches", async () => {
 		m.getInstructionRepositorySyncForRun.mockResolvedValue({
 			...row,

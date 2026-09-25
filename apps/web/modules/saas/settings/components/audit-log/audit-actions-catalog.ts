@@ -786,6 +786,46 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		description:
 			'The project\'s coding instructions stopped syncing from a repository and went back to upload mode. `metadata.reason` is "user" when a member switched it off, or "integration_disconnected" when the repository it read from was disconnected; `metadata.hadConfiguration` is false when the project was only flipped back from a repository mode with nothing configured.',
 	},
+	{
+		key: "project.instructions.pull_request_opened",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.pull_request_opened",
+		description:
+			"A suggested change to a repository-backed project's coding instructions opened a pull request in the connected repository, attributed to the member who proposed it. `metadata.adopted` is true when Fabric found a pull request it had already opened rather than creating one. `metadata.operationId` names the proposal's pull-request operation, with `metadata.provider`, `metadata.version` and the provider's `metadata.externalId`. Never a URL or file content.",
+	},
+	{
+		key: "project.instructions.pull_request_reconciled",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.pull_request_reconciled",
+		description:
+			'A suggestion\'s pull request reached a final state. `metadata.outcome` is "merged" or "closed" as the repository reported it, or "canceled" when the suggestion was withdrawn, rejected by validation or abandoned before any pull request existed; `metadata.code` names why, and `metadata.targetMismatch` is true when the pull request had been retargeted away from the branch Fabric syncs. Merged does not mean published in Fabric: the merged content arrives through repository sync.',
+	},
+	{
+		key: "project.instructions.pull_request_close_requested",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.pull_request_close_requested",
+		description:
+			"The author withdrew a suggestion whose pull request was queued or already opened, attributed to the member who withdrew it. `metadata.stateBefore` is the operation's state at that moment; Fabric then closes any pull request and deletes only the branch it provably owns. `metadata.operationId` names the operation.",
+	},
+	{
+		key: "project.instructions.pull_request_retry_requested",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.pull_request_retry_requested",
+		description:
+			'A member pressed "Retry opening" on a suggestion whose pull request could not be confirmed or was refused. Fabric first adopts any pull request it finds for the operation and only otherwise opens one on a new branch. `metadata.operationId` names the operation.',
+	},
+	{
+		key: "project.instructions.pull_request_merge_sync_requested",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.pull_request_merge_sync_requested",
+		description:
+			"A merged suggestion's repository sync was acknowledged: a sync run Fabric started for the merge, on the repository configuration it dispatched for, finished with an outcome a second run could not change. `metadata.syncRunKey` names that run and `metadata.operationId` the operation.",
+	},
 	// ---- Feature / story ------------------------------------------------
 	{
 		key: "story.created",

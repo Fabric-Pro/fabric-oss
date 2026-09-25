@@ -241,6 +241,7 @@ const syncViewSelect = {
 	generation: true,
 	automaticPausedReason: true,
 	automaticPausedAt: true,
+	allowReaderProposals: true,
 	user: { select: { id: true, name: true } },
 	repositoryIntegration: {
 		select: {
@@ -286,6 +287,46 @@ export function getInstructionRepositorySyncForRun(projectId: string) {
 			automaticPausedReason: true,
 			repositoryIntegration: {
 				select: { id: true, projectId: true, status: true },
+			},
+		},
+	});
+}
+
+/**
+ * The destination a REPOSITORY proposal's admission (Fizzy #2563 spec §5.1
+ * steps 2 and 3) and its merge-sync re-read (§9.1 step 1) compare:
+ * `getInstructionRepositorySyncForRun`'s fields plus the proposal ones,
+ * scoped to the caller's organization (spec §13.5), so another tenant's row
+ * never matches and no caller depends on a post-read comparison. The
+ * integration's own `projectId` is selected for the caller to compare.
+ * `begin`'s read is deliberately left as it is.
+ */
+export function getInstructionRepositorySyncForProposal(
+	projectId: string,
+	organizationId: string,
+) {
+	return db.projectInstructionRepositorySync.findFirst({
+		where: { projectId, organizationId },
+		select: {
+			id: true,
+			projectId: true,
+			organizationId: true,
+			userId: true,
+			repositoryIntegrationId: true,
+			ref: true,
+			rootPath: true,
+			automatic: true,
+			generation: true,
+			automaticPausedReason: true,
+			allowReaderProposals: true,
+			repositoryIntegration: {
+				select: {
+					id: true,
+					projectId: true,
+					status: true,
+					provider: true,
+					repositoryUrl: true,
+				},
 			},
 		},
 	});
@@ -387,6 +428,52 @@ export async function upsertInstructionRepositorySync(input: {
 					}
 				: null,
 		};
+	});
+}
+
+/**
+ * "Let read-only members propose changes as pull requests" (Fizzy #2563
+ * spec §12, §16.1; plan Decision 4). Writes `allowReaderProposals` and
+ * nothing else of the configuration: not the delegate, the branch, the
+ * folder or the scheduling columns, and never `generation`, so a toggle
+ * never fails an in-flight proposal with CONFIGURATION_CHANGED (its frozen
+ * destination names the generation). Scoped to the caller's organization;
+ * null when the project has no repository configuration there.
+ */
+export async function updateInstructionRepositorySyncProposalSettings(input: {
+	projectId: string;
+	organizationId: string;
+	allowReaderProposals: boolean;
+}) {
+	return db.$transaction(async (tx) => {
+		const { count } = await tx.projectInstructionRepositorySync.updateMany({
+			where: {
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+			},
+			data: { allowReaderProposals: input.allowReaderProposals },
+		});
+		if (count !== 1) {
+			return null;
+		}
+		return tx.projectInstructionRepositorySync.findFirst({
+			where: {
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+			},
+			select: {
+				id: true,
+				generation: true,
+				allowReaderProposals: true,
+				repositoryIntegration: {
+					select: {
+						provider: true,
+						repositoryOwner: true,
+						repositoryName: true,
+					},
+				},
+			},
+		});
 	});
 }
 

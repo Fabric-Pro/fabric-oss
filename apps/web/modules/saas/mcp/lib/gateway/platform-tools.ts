@@ -1181,6 +1181,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		description:
 			"Suggests an edit to a project's published coding instructions. Use this when working on a project turns up something its instructions get wrong, leave out, or no longer describe — a rule that has changed, a skill that needs a correction, a missing entry file. " +
 			"This does NOT change anything a project reads: it opens a proposal that somebody with permission to edit the instructions approves or rejects in Fabric's Coding Instructions tab. Say so when you report back, and do not describe the change as applied. " +
+			"On a project whose coding instructions come from its repository (changed in git and synced), the proposal becomes a pull request in that repository instead, reviewed and merged there: report it the same way, as a pull request awaiting review. " +
+			"Pass note with a short title and a description of why the change is needed; on a repository-backed project they become the pull request's title and description. " +
 			"Send the file's whole new content, not a patch: each change is 'put' (create or replace the file at that path) or 'delete'. Paths are the ones fabric_list_project_instructions reports. At most 50 changes in one call; for a wholesale replacement the folder is uploaded from the tab instead. " +
 			"baseSnapshotId is REQUIRED: pass the snapshot.id value that fabric_get_project_instruction_bundle or fabric_list_project_instructions returned — the version you actually read. A change written against a version that has since moved is refused rather than silently rebased; read the instructions again and redo the edit if it is.",
 		inputSchema: {
@@ -1229,6 +1231,23 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					minLength: 1,
 					maxLength: 128,
 				},
+				note: {
+					type: "object",
+					description:
+						"Optional title and description for the proposal. The title is one line of at most 120 characters and the body at most 4096 bytes; never put a credential in either. On a repository-backed project they become the pull request's title and description.",
+					properties: {
+						title: {
+							type: "string",
+							description:
+								"One line, at most 120 characters: what the change does.",
+						},
+						body: {
+							type: "string",
+							description:
+								"Why the change is needed, as markdown. At most 4096 bytes.",
+						},
+					},
+				},
 			},
 			required: ["projectId", "changes", "baseSnapshotId"],
 		},
@@ -1244,7 +1263,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 			"Use it when the work just showed something went wrong: a check that was skipped, an assumption that turned out false, a fix for a bug that could recur. Write what happened, why it was a mistake, and what to do instead. " +
 			"This does NOT change anything a project reads: like fabric_propose_project_instruction_change, it opens a proposal that somebody with permission to edit the instructions approves or rejects in Fabric's Coding Instructions tab. Say so when you report back, and do not describe the lesson as recorded or applied — it is awaiting review. " +
 			"The file is created at Lessons/<today's date>-<a slug of the title>.md; a title that collides with an existing file on the same day is suffixed -2, -3, and so on. " +
-			"On a project whose coding instructions come from its repository (source of truth is REPOSITORY, changed in git and synced), this tool is refused — add the lesson as a file there instead.",
+			"On a project whose coding instructions come from its repository (changed in git and synced), the proposal becomes a pull request in that repository, reviewed and merged there: report it the same way, as a pull request awaiting review. " +
+			"note is the proposal's optional title and description, which on such a project become the pull request's.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1272,6 +1292,23 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						type: "string",
 						minLength: 1,
 						maxLength: 512,
+					},
+				},
+				note: {
+					type: "object",
+					description:
+						"Optional title and description for the proposal. The title is one line of at most 120 characters and the body at most 4096 bytes; never put a credential in either. On a repository-backed project they become the pull request's title and description.",
+					properties: {
+						title: {
+							type: "string",
+							description:
+								"One line, at most 120 characters: what the change does.",
+						},
+						body: {
+							type: "string",
+							description:
+								"Why the change is needed, as markdown. At most 4096 bytes.",
+						},
 					},
 				},
 			},
@@ -6139,7 +6176,32 @@ function proposalOutcomeMessage(result: {
 	baseVersion: number;
 	proposalStatus: string | null;
 	status: string;
+	pullRequest?: {
+		state: string;
+		failure: { code: string } | null;
+	} | null;
 }): string {
+	// A repository-backed project (Fizzy #2563 spec §12): the proposal is a
+	// pull request in the repository, reviewed and merged there, and the
+	// agent reports it as awaiting review exactly as it would a proposal.
+	// Checked first because a pull request that could not be opened at all
+	// (its admission blocked it) must not be announced as awaiting anyone.
+	if (result.proposalStatus === "PENDING" && result.pullRequest) {
+		if (result.pullRequest.state === "BLOCKED") {
+			return (
+				`Proposed version ${result.version}, but Fabric could not open a pull request for it (${result.pullRequest.failure?.code ?? "unknown"}). ` +
+				"Tell the user nothing has changed and that the reason, and what to do about it, is shown in Fabric's Coding Instructions tab."
+			);
+		}
+		if (result.status !== "RECEIVING" && result.status !== "FAILED") {
+			return (
+				`Proposed version ${result.version} of this project's coding instructions, based on version ${result.baseVersion}. ` +
+				"This project's coding instructions come from its repository, so Fabric opens a pull request there once the files pass their checks; it is reviewed and merged in the repository. " +
+				"It is a pull request awaiting review: nothing has changed for anyone reading the instructions until it is merged and synced. " +
+				"Tell the user you suggested the change as a pull request that is awaiting review; its link appears in Fabric's Coding Instructions tab."
+			);
+		}
+	}
 	// Still RECEIVING: an earlier attempt at this same change is mid-flight.
 	// No call closes it out at any age — the browser tab opens proposals
 	// through the same query and keeps its upload capabilities for an hour,
@@ -6189,6 +6251,41 @@ function proposalOutcomeMessage(result: {
 		`Version ${result.version} of this project's coding instructions is no longer open for review (${result.proposalStatus ?? result.status}): an earlier attempt at this same change was closed out. ` +
 		"Tell the user the suggestion did not stick, and send it again."
 	);
+}
+
+/**
+ * The optional `note` both proposal tools accept (Fizzy #2563 spec §12): its
+ * SHAPE only, since the gateway does not enforce a tool's `inputSchema`. The
+ * length, line and credential rules are the shared admission's, which refuses
+ * a bad note as UNPROCESSABLE_CONTENT naming the field.
+ */
+function readProposalNote(
+	args: Record<string, unknown>,
+): { note?: { title?: string; body?: string } } | { error: ToolCallResult } {
+	const raw = args.note;
+	if (raw === undefined || raw === null) {
+		return {};
+	}
+	if (typeof raw !== "object" || Array.isArray(raw)) {
+		return {
+			error: errorResult(
+				"note must be an object with an optional string title and body.",
+			),
+		};
+	}
+	const { title, body } = raw as { title?: unknown; body?: unknown };
+	if (title !== undefined && typeof title !== "string") {
+		return { error: errorResult("note.title must be a string.") };
+	}
+	if (body !== undefined && typeof body !== "string") {
+		return { error: errorResult("note.body must be a string.") };
+	}
+	return {
+		note: {
+			...(typeof title === "string" ? { title } : {}),
+			...(typeof body === "string" ? { body } : {}),
+		},
+	};
 }
 
 /**
@@ -6246,6 +6343,10 @@ async function handleProposeProjectInstructionChange(
 	if ("error" in parsed) {
 		return parsed.error;
 	}
+	const noted = readProposalNote(args);
+	if ("error" in noted) {
+		return noted.error;
+	}
 
 	// Live access check first, unconditional (wildcard keys included), and the
 	// organization-key binding with it — the same shared gate the read tools
@@ -6265,6 +6366,7 @@ async function handleProposeProjectInstructionChange(
 			projectId,
 			baseSnapshotId,
 			changes: parsed.changes,
+			...(noted.note ? { note: noted.note } : {}),
 			// A CONSTANT, never `args.mode`. This tool sits behind
 			// `instructions:write`, the review-gated scope, and publishing has
 			// a scope of its own that no MCP tool asks for: an agent must not
@@ -6298,6 +6400,8 @@ async function handleProposeProjectInstructionChange(
 				deletedFiles: result.deleteCount,
 				fileCount: result.fileCount,
 			},
+			// A repository-backed project's pull request; null otherwise.
+			pullRequest: result.pullRequest ?? null,
 			message: proposalOutcomeMessage(result),
 		});
 	} catch (error) {
@@ -6478,6 +6582,10 @@ async function handleAddInstructionLesson(
 	if ("error" in parsed) {
 		return parsed.error;
 	}
+	const noted = readProposalNote(args);
+	if ("error" in noted) {
+		return noted.error;
+	}
 
 	try {
 		// Live access check plus the org-scoped snapshot match, unconditional
@@ -6528,6 +6636,7 @@ async function handleAddInstructionLesson(
 			projectId,
 			baseSnapshotId: base.id,
 			changes: [{ op: "put", path, content, encoding: "utf8" }],
+			...(noted.note ? { note: noted.note } : {}),
 			// A CONSTANT, never `args.mode` — there is no `mode` argument on
 			// this tool at all, the same as the proposal tool: this surface
 			// proposes, full stop.
@@ -6560,6 +6669,7 @@ async function handleAddInstructionLesson(
 				deletedFiles: result.deleteCount,
 				fileCount: result.fileCount,
 			},
+			pullRequest: result.pullRequest ?? null,
 			message: `Lesson drafted as ${path}. ${proposalOutcomeMessage(result)}`,
 		});
 	} catch (error) {
@@ -6599,6 +6709,9 @@ function instructionRefusalMessage(error: unknown): string | null {
 		"FORBIDDEN",
 		"NOT_FOUND",
 		"PRECONDITION_FAILED",
+		// A note the admission refused (Fizzy #2563 spec §5.3); its message
+		// names the field, never the note's content.
+		"UNPROCESSABLE_CONTENT",
 	]);
 	if (typeof error !== "object" || error === null) {
 		return null;

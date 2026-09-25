@@ -20,7 +20,12 @@
  * than instructions that are one version stale.
  */
 import path from "node:path";
-import type { FabricClient, PublishedInstructions } from "@fabricorg/sdk";
+import type {
+	FabricClient,
+	ProposalPullRequest,
+	ProposalPullRequestFailure,
+	PublishedInstructions,
+} from "@fabricorg/sdk";
 import { Command } from "commander";
 import { getClient } from "../../lib/client.js";
 import {
@@ -74,6 +79,11 @@ import {
 	reconcileKeptInLock,
 	type SyncPlan,
 } from "../../lib/instructions/plan.js";
+import {
+	type PullRequestWait,
+	splitMessage,
+	waitForPullRequest,
+} from "../../lib/instructions/pull-request-wait.js";
 import {
 	computePushPlan,
 	MAX_PUSH_CHANGES,
@@ -245,6 +255,14 @@ export function buildInstructionsCommand(): Command {
 			"--publish",
 			"Publish the change as a new version instead of proposing it (needs a key with instructions:publish)",
 		)
+		.option(
+			"--message <text>",
+			"Title (first line) and description of the suggested change",
+		)
+		.option(
+			"--no-wait",
+			"Return as soon as the suggestion is accepted, without waiting for its pull request",
+		)
 		.option("--dry-run", "Print the change set and send nothing")
 		.option("--format <format>", "Output format: text|json")
 		.action(async function (
@@ -252,6 +270,8 @@ export function buildInstructionsCommand(): Command {
 			opts: CommonOptions & {
 				add?: string[];
 				publish?: boolean;
+				message?: string;
+				wait?: boolean;
 				dryRun?: boolean;
 			},
 		) {
@@ -1175,6 +1195,19 @@ interface PushOutcome {
 	 * still land after the command has already returned.
 	 */
 	published: boolean | null;
+	/**
+	 * A repository-backed project's suggestion becomes a pull request in the
+	 * repository (Fizzy #2563 spec §12): where it stood when the command
+	 * stopped waiting. `timedOut` means the 60 s wait ended first. Null for a
+	 * suggestion Fabric reviews itself, a publish and a dry run.
+	 */
+	pullRequest: {
+		operationId: string;
+		state: string;
+		url: string | null;
+		failure: ProposalPullRequestFailure | null;
+		timedOut: boolean;
+	} | null;
 }
 
 /**
@@ -1224,10 +1257,24 @@ async function runPush(
 	opts: CommonOptions & {
 		add?: string[];
 		publish?: boolean;
+		message?: string;
+		wait?: boolean;
 		dryRun?: boolean;
 	},
 	format: OutputFormat,
 ): Promise<void> {
+	// A usage error, decided before anything is read: a publish makes a
+	// version with nobody to review it, so it has no title or description to
+	// carry, and dropping the message silently would lose what was written.
+	if (opts.message !== undefined && opts.publish) {
+		throw new CliFailure(
+			"--message describes a suggestion for review; --publish makes a version directly, which carries no message. Drop one of them.",
+			2,
+		);
+	}
+	const note =
+		opts.message !== undefined ? splitMessage(opts.message) : undefined;
+
 	// Canonical but NOT created: push reads the tree, and a command that makes
 	// a directory in order to discover it is empty is doing the wrong thing.
 	const destination = destinationOf(opts);
@@ -1308,6 +1355,7 @@ async function runPush(
 		proposalStatus: null,
 		status: null,
 		published: null,
+		pullRequest: null,
 	};
 
 	if (!opts.dryRun) {
@@ -1327,23 +1375,183 @@ async function runPush(
 						opts.project,
 						lock.snapshotId,
 						plan.changes,
-						{ org: orgSlugFor(opts) },
+						{ org: orgSlugFor(opts), ...(note ? { note } : {}) },
 					);
 			outcome.snapshotId = submitted.snapshotId;
 			outcome.version = submitted.version;
 			outcome.proposalStatus = submitted.proposalStatus;
 			outcome.status = submitted.status;
 			outcome.published = submitted.published;
+			outcome.pullRequest = submitted.pullRequest
+				? pushPullRequest(submitted.pullRequest, false)
+				: null;
 		} catch (error) {
 			throw asPushFailure(error);
 		}
 	}
 
+	// The suggestion is accepted; for a repository-backed project it becomes
+	// a pull request once its files pass their checks, and the push waits a
+	// bounded while to say where it stands (spec §12). A failure to READ the
+	// status does not undo the suggestion, so it is reported as that.
+	if (outcome.pullRequest && outcome.snapshotId && opts.wait !== false) {
+		let waited: PullRequestWait;
+		try {
+			waited = await waitForPullRequest(
+				client,
+				opts.project,
+				outcome.snapshotId,
+				{ org: orgSlugFor(opts) },
+			);
+		} catch (error) {
+			const failure = asCliFailure(error);
+			throw new CliFailure(
+				`Suggested as version ${outcome.version}, but its pull request could not be checked (${failure.message}); see the project's Coding Instructions tab.`,
+				failure.exitCode,
+			);
+		}
+		if (waited.kind === "settled") {
+			outcome.pullRequest = pushPullRequest(waited.pullRequest, false);
+		} else if (waited.kind === "timed_out") {
+			outcome.pullRequest = {
+				...(waited.pullRequest
+					? pushPullRequest(waited.pullRequest, true)
+					: outcome.pullRequest),
+				timedOut: true,
+			};
+		}
+	}
+
+	const verdict = outcome.pullRequest
+		? pullRequestVerdict(outcome.pullRequest, opts.wait !== false)
+		: null;
 	if (format === "json") {
 		printOutput(outcome, { format: "json" });
-		return;
+	} else {
+		reportPush(outcome);
+		if (verdict && !verdict.fails) {
+			line(verdict.text);
+		}
 	}
-	reportPush(outcome);
+	if (verdict?.fails) {
+		throw new CliFailure(verdict.text, 7);
+	}
+}
+
+function pushPullRequest(
+	pullRequest: ProposalPullRequest,
+	timedOut: boolean,
+): NonNullable<PushOutcome["pullRequest"]> {
+	return {
+		operationId: pullRequest.operationId,
+		state: pullRequest.state,
+		url: pullRequest.url,
+		failure: pullRequest.failure,
+		timedOut,
+	};
+}
+
+/**
+ * Why Fabric could not open the pull request, by the stored failure's code.
+ * The codes are the server's (`INSTRUCTION_PULL_REQUEST_FAILURE_CODES`); an
+ * unlisted one is named rather than guessed at.
+ */
+const BLOCKED_REASONS: Record<string, string> = {
+	ATTRIBUTION_REJECTED:
+		"the project's name or your display name looks like an address, a link or a credential, so the commit could not name you safely",
+	PERMISSION_REVOKED:
+		"you no longer have permission to suggest changes to this project's repository",
+	CONFIGURATION_CHANGED:
+		"the project's repository settings changed after you suggested this; push again",
+	TARGET_BRANCH_MISSING:
+		"the repository branch the project syncs from no longer exists",
+	BASE_COMMIT_UNAVAILABLE:
+		"the commit this suggestion was based on is no longer in the repository; sync and push again",
+	TREE_CONFLICT:
+		"the repository changed the same files since your last sync; sync and push again",
+	AUTHENTICATION_FAILED:
+		"the project's repository connection needs to be reconnected",
+	REPOSITORY_UNAVAILABLE: "the repository could not be reached",
+	BRANCH_WRITE_REFUSED: "the repository refused the new branch",
+	PR_CREATION_REFUSED: "the repository refused to open the pull request",
+	REMOTE_REF_CONFLICT:
+		"a branch with the same name already exists in the repository",
+	CREATE_OUTCOME_UNKNOWN:
+		"Fabric could not confirm whether the pull request was created",
+	VALIDATION_TIMEOUT: "the files' checks did not finish in time",
+	LIMITS_EXCEEDED:
+		"the change is larger than Fabric can open as a pull request",
+	PROVIDER_RATE_LIMITED: "the repository's provider is limiting requests",
+	PROVIDER_TEMPORARY: "the repository's provider had a temporary problem",
+};
+
+/**
+ * The sentence a push ends on for its pull request, and whether it is a
+ * failure. `OPEN`, `MERGED`, `CLOSED` and a wait that ran out exit 0;
+ * `BLOCKED`, `CANCELED` and an earlier attempt's pending close exit 7.
+ */
+function pullRequestVerdict(
+	pullRequest: NonNullable<PushOutcome["pullRequest"]>,
+	waited: boolean,
+): { text: string; fails: boolean } {
+	const url = pullRequest.url ? `: ${pullRequest.url}` : "";
+	if (!waited) {
+		return {
+			text: "Follow its pull request in the project's Coding Instructions tab.",
+			fails: false,
+		};
+	}
+	if (pullRequest.timedOut) {
+		return {
+			text: "The pull request is being opened; see the project's Coding Instructions tab.",
+			fails: false,
+		};
+	}
+	switch (pullRequest.state) {
+		case "OPEN":
+			return { text: `Pull request opened${url}`, fails: false };
+		case "MERGED":
+			return {
+				text: `Its pull request was already merged${url}. Run \`fabric instructions sync\` once the project has synced it.`,
+				fails: false,
+			};
+		case "CLOSED":
+			return {
+				text: `Its pull request was closed without merging${url}.`,
+				fails: false,
+			};
+		case "CANCELED":
+			return {
+				text:
+					pullRequest.failure?.code === "VALIDATION_REJECTED"
+						? "The suggestion did not pass Fabric's checks, so no pull request was opened; see the project's Coding Instructions tab."
+						: "The suggestion was withdrawn before a pull request was opened.",
+				fails: true,
+			};
+		case "CLOSE_REQUESTED":
+			return {
+				text: "An earlier attempt at this change was withdrawn and its pull request is being closed; push again once it has closed.",
+				fails: true,
+			};
+		case "BLOCKED": {
+			const code = pullRequest.failure?.code;
+			const reason =
+				(code && BLOCKED_REASONS[code]) ??
+				`it stopped with ${code ?? "an unknown failure"}`;
+			const next = pullRequest.failure?.retryable
+				? "Fabric will try again on its own; see"
+				: "See";
+			return {
+				text: `Fabric could not open the pull request: ${reason}. ${next} the project's Coding Instructions tab.`,
+				fails: true,
+			};
+		}
+		default:
+			return {
+				text: "The pull request is being opened; see the project's Coding Instructions tab.",
+				fails: false,
+			};
+	}
 }
 
 /**
@@ -1375,6 +1583,22 @@ function asPushFailure(error: unknown): CliFailure {
 		case "PROPOSAL_PROPOSER_LIMIT":
 		case "PROPOSAL_PROJECT_LIMIT":
 			return new CliFailure(`${message} Nothing was sent.`, 7);
+		// A repository-backed project's admission (Fizzy #2563 spec §5.3).
+		case "REPOSITORY_UNAVAILABLE":
+			return new CliFailure(
+				`this project's repository connection needs attention before a change can be suggested to it (${message}); nothing was sent`,
+				7,
+			);
+		case "REPOSITORY_BASE_UNAVAILABLE":
+			return new CliFailure(
+				"this project's published instructions are not a sync of its repository as it is configured now; sync the project from its Coding Instructions tab, run `fabric instructions sync`, then push again; nothing was sent",
+				7,
+			);
+		case "NOTE_REJECTED":
+			return new CliFailure(
+				`${message} Change --message and push again; nothing was sent.`,
+				7,
+			);
 		default:
 			return asCliFailure(error);
 	}
@@ -1452,6 +1676,11 @@ function pushVerdict(outcome: PushOutcome): string {
 		// dedup matches, so the advice has to be the thing that clears it.
 		if (outcome.status === "REJECTED") {
 			return `Version ${outcome.version} was rejected by its checks — cancel it in the project's Coding Instructions tab before proposing this change again.`;
+		}
+		// A repository-backed project: reviewed as a pull request in the
+		// repository, not in the tab (Fizzy #2563 spec §12).
+		if (outcome.pullRequest) {
+			return `Suggested as version ${outcome.version}. This project's coding instructions come from its repository, so Fabric opens a pull request there once the files pass their checks, and it is reviewed and merged in the repository.`;
 		}
 		return `Proposed as version ${outcome.version}. It is pending review — nothing is published until somebody who can edit this project's coding instructions approves it in the Coding Instructions tab.`;
 	}

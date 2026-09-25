@@ -73,6 +73,12 @@ export type RepositorySyncConfiguration = {
 	automaticPausedReason: string | null;
 	automaticPausedAt: string | Date | null;
 	delegateName: string | null;
+	/**
+	 * Whether read-only members may propose changes as pull requests (Fizzy
+	 * #2563 spec §12). Absent reads as off: the tab offers a reader nothing
+	 * it has not been told it may do.
+	 */
+	allowReaderProposals?: boolean;
 };
 
 export type RepositorySyncState = {
@@ -300,8 +306,12 @@ export function syncErrorMessage(
 	}
 }
 
-/** The triggers this build has a label for (spec §6): "Sync now", the scheduled check, a GitHub push. */
-type SyncTrigger = "MANUAL" | "POLL" | "WEBHOOK";
+/**
+ * The triggers this build has a label for (spec §6): "Sync now", the
+ * scheduled check, a GitHub push, and a merged suggestion's pull request
+ * (Fizzy #2563 spec §9).
+ */
+type SyncTrigger = "MANUAL" | "POLL" | "WEBHOOK" | "PULL_REQUEST_MERGED";
 
 /**
  * History and the status line name what started each run (spec §7.3). The
@@ -312,7 +322,12 @@ type SyncTrigger = "MANUAL" | "POLL" | "WEBHOOK";
  */
 export function triggerLabelKey(
 	trigger: string,
-): "triggers.MANUAL" | "triggers.POLL" | "triggers.WEBHOOK" | "triggers.OTHER" {
+):
+	| "triggers.MANUAL"
+	| "triggers.POLL"
+	| "triggers.WEBHOOK"
+	| "triggers.PULL_REQUEST_MERGED"
+	| "triggers.OTHER" {
 	const known = trigger as SyncTrigger;
 	switch (known) {
 		case "MANUAL":
@@ -321,6 +336,8 @@ export function triggerLabelKey(
 			return "triggers.POLL";
 		case "WEBHOOK":
 			return "triggers.WEBHOOK";
+		case "PULL_REQUEST_MERGED":
+			return "triggers.PULL_REQUEST_MERGED";
 		default:
 			return unlabelledTrigger(known);
 	}

@@ -62,6 +62,16 @@ export interface RequestOptions {
 	 * the ones that remembered to build a client with retries off.
 	 */
 	retry?: { maxRetries: number };
+	/**
+	 * The caller's cancellation. When it aborts — during the fetch, during
+	 * the body read, during a retry backoff, or before an attempt starts —
+	 * the request rejects with `signal.reason` itself, never a `FabricError`,
+	 * so a caller waiting against its own deadline can tell that deadline
+	 * from a failure. The client's own timeout still applies alongside it and
+	 * still reports `TIMEOUT`. Absent, a request behaves exactly as it did
+	 * before this option existed.
+	 */
+	signal?: AbortSignal;
 }
 
 /** Read an env var safely across Node / edge / browser. */
@@ -92,8 +102,30 @@ function randomId(): string {
 	return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * The retry backoff. With a caller signal it rejects with the signal's
+ * reason the moment it aborts, rather than holding the caller for the rest
+ * of the delay.
+ */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	if (!signal) {
+		return new Promise((resolve) => setTimeout(resolve, ms));
+	}
+	return new Promise((resolve, reject) => {
+		if (signal.aborted) {
+			reject(signal.reason);
+			return;
+		}
+		const onAbort = () => {
+			clearTimeout(handle);
+			reject(signal.reason);
+		};
+		const handle = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
 }
 
 export class FabricHttpClient {
@@ -210,6 +242,11 @@ export class FabricHttpClient {
 
 		let lastError: unknown;
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+			// Checked before every attempt, so no request starts after the
+			// caller has given up.
+			if (options.signal?.aborted) {
+				throw options.signal.reason;
+			}
 			const start = Date.now();
 			this.emit({ kind: "request", method, path, attempt });
 
@@ -258,7 +295,7 @@ export class FabricHttpClient {
 						this.retry.multiplier ** (attempt - 1),
 					this.retry.maxDelayMs,
 				);
-				await sleep(delay);
+				await sleep(delay, options.signal);
 			}
 		}
 
@@ -288,6 +325,12 @@ export class FabricHttpClient {
 			() => controller.abort(),
 			this.timeoutMs,
 		);
+		// Only a request that carries a caller signal gets a combined one; a
+		// request without one hands fetch exactly the timeout signal it
+		// always did.
+		const signal = options.signal
+			? AbortSignal.any([controller.signal, options.signal])
+			: controller.signal;
 
 		let res: Response;
 		try {
@@ -298,10 +341,15 @@ export class FabricHttpClient {
 					options.body !== undefined
 						? JSON.stringify(options.body)
 						: undefined,
-				signal: controller.signal,
+				signal,
 			});
 		} catch (err) {
 			clearTimeout(timeoutHandle);
+			// The caller's own cancellation first, unwrapped: an AbortError
+			// here is theirs, not the client's timeout.
+			if (options.signal?.aborted) {
+				throw options.signal.reason;
+			}
 			if (err instanceof Error && err.name === "AbortError") {
 				throw new FabricError(
 					`Request timed out after ${this.timeoutMs}ms`,
@@ -321,6 +369,9 @@ export class FabricHttpClient {
 		try {
 			json = await res.json();
 		} catch {
+			if (options.signal?.aborted) {
+				throw options.signal.reason;
+			}
 			throw new FabricError(
 				`Unexpected response from server (status ${res.status})`,
 				res.status,
@@ -414,8 +465,12 @@ export class FabricHttpClient {
 		}
 	}
 
-	get<T>(path: string) {
-		return this.request<T>("GET", path);
+	get<T>(path: string, options: { signal?: AbortSignal } = {}) {
+		return this.request<T>(
+			"GET",
+			path,
+			options.signal ? { signal: options.signal } : {},
+		);
 	}
 
 	post<T>(

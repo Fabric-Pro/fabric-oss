@@ -640,3 +640,114 @@ describe("publishChange is its own route", () => {
 		).rejects.toThrow("Missing required scope: instructions:publish");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// A REPOSITORY proposal's pull request (Fizzy #2563 spec §12)
+// ---------------------------------------------------------------------------
+
+describe("submitChange with a note (note parity)", () => {
+	it("sends the note in the body, never in the query, and returns the pull-request block", async () => {
+		const pullRequest = {
+			operationId: "op-1",
+			state: "QUEUED",
+			url: null,
+			externalId: null,
+			failure: null,
+			lastCheckedAt: null,
+		};
+		const { client, captured } = buildClient({
+			responseBody: { snapshotId: "snap-8", pullRequest },
+		});
+
+		const result = await client.instructions.submitChange(
+			"project-1",
+			"snap-7",
+			[{ op: "delete", path: "old.md" }],
+			{
+				org: "example-org",
+				note: {
+					title: "Tighten the lint rule",
+					body: "Why it matters.",
+				},
+			},
+		);
+
+		expect(result.pullRequest).toEqual(pullRequest);
+		expect(captured[0]?.body).toEqual({
+			baseSnapshotId: "snap-7",
+			changes: [{ op: "delete", path: "old.md" }],
+			note: { title: "Tighten the lint rule", body: "Why it matters." },
+		});
+		expect(captured[0]?.url).toContain("org=example-org");
+		expect(captured[0]?.url).not.toContain("note");
+	});
+
+	it("surfaces a rejected note's code and field", async () => {
+		const { client } = buildClient({
+			status: 422,
+			rawBody: {
+				error: {
+					message: "The title must be one line.",
+					code: "NOTE_REJECTED",
+					data: { field: "title" },
+				},
+			},
+		});
+
+		await expect(
+			client.instructions.submitChange(
+				"project-1",
+				"snap-7",
+				[{ op: "delete", path: "old.md" }],
+				{ note: { title: "two\nlines" } },
+			),
+		).rejects.toMatchObject({
+			status: 422,
+			code: "NOTE_REJECTED",
+			data: { field: "title" },
+		});
+	});
+});
+
+describe("getProposalPullRequest", () => {
+	it("GETs the proposal's pull request, escaping both ids, and returns the block", async () => {
+		const block = {
+			operationId: "op-1",
+			state: "OPEN",
+			url: "https://example.com/example-org/example-repo/pull/7",
+			externalId: "7",
+			failure: null,
+			lastCheckedAt: "2026-09-24T12:05:00.000Z",
+			attempt: 1,
+			observation: null,
+			mergeSync: null,
+		};
+		const { client, captured } = buildClient({
+			responseBody: { pullRequest: block },
+		});
+		const controller = new AbortController();
+
+		const pullRequest = await client.instructions.getProposalPullRequest(
+			"project 1",
+			"snap/8",
+			{ org: "example-org", signal: controller.signal },
+		);
+
+		expect(pullRequest).toEqual(block);
+		expect(captured[0]?.method).toBe("GET");
+		expect(captured[0]?.url).toBe(
+			"https://test.fabric/api/v1/projects/project%201/instructions/proposals/snap%2F8/pull-request?org=example-org",
+		);
+	});
+
+	it("is null for a proposal Fabric reviews itself", async () => {
+		const { client } = buildClient({ responseBody: { pullRequest: null } });
+
+		expect(
+			await client.instructions.getProposalPullRequest(
+				"project-1",
+				"snap-8",
+			),
+		).toBeNull();
+	});
+});

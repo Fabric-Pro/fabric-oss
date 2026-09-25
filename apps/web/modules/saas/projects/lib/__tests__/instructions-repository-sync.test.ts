@@ -267,6 +267,8 @@ describe("automatic sync copy (§7.3, PR 2)", () => {
 		["MANUAL", "triggers.MANUAL"],
 		["POLL", "triggers.POLL"],
 		["WEBHOOK", "triggers.WEBHOOK"],
+		// Fizzy #2563: a merged suggestion's pull request starts its own run.
+		["PULL_REQUEST_MERGED", "triggers.PULL_REQUEST_MERGED"],
 	] as const)("labels a %s run with %s", (trigger, key) => {
 		expect(triggerLabelKey(trigger)).toBe(key);
 	});

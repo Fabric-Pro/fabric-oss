@@ -104,6 +104,7 @@ vi.mock("next-intl", () => ({
 }));
 
 const disableCalls: Array<Record<string, unknown>> = [];
+const proposalSettingsCalls: Array<Record<string, unknown>> = [];
 function mutationOptionsStub(mutationFn: (input: unknown) => Promise<unknown>) {
 	return (
 		opts: {
@@ -115,9 +116,10 @@ function mutationOptionsStub(mutationFn: (input: unknown) => Promise<unknown>) {
 
 const listRuns = vi.hoisted(() => vi.fn());
 
-// `RepositorySyncSettingsSection`'s own procedures (disable, and the
-// automatic toggle's configure), per B-1, and what the History dialog
-// mounts once opened: its snapshot mutations and the sync-runs list.
+// `RepositorySyncSettingsSection`'s own procedures (disable, the automatic
+// toggle's configure, and the read-only proposal toggle's
+// updateProposalSettings), per B-1, and what the History dialog mounts once
+// opened: its snapshot mutations and the sync-runs list.
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
@@ -150,6 +152,17 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						mutationOptions: mutationOptionsStub(async (input) => {
 							disableCalls.push(input as Record<string, unknown>);
 							return { disabled: true, hadConfiguration: true };
+						}),
+					},
+					updateProposalSettings: {
+						mutationOptions: mutationOptionsStub(async (input) => {
+							proposalSettingsCalls.push(
+								input as Record<string, unknown>,
+							);
+							return {
+								allowReaderProposals: false,
+								generation: 1,
+							};
 						}),
 					},
 				},
@@ -495,6 +508,35 @@ describe("InstructionsEmptyState — repository sync (§7.1)", () => {
 			}),
 		).toBeNull();
 		expect(listRuns).not.toHaveBeenCalled();
+	});
+
+	// Fizzy #2563 spec §12: the read-only proposal setting belongs to the
+	// Repository section, so it is reachable before the first version is
+	// published too. Nothing on this screen offers a suggestion itself:
+	// a proposal needs a published version to change.
+	it("keeps the read-only proposal setting reachable before anything is published, and offers no suggestion", async () => {
+		proposalSettingsCalls.length = 0;
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				repositorySync={controls({
+					configured: { ...configured, allowReaderProposals: true },
+					sourceOfTruth: "REPOSITORY",
+				})}
+			/>,
+			{ wrapper: Providers },
+		);
+		const toggle = screen.getByRole("switch", {
+			name: "Let read-only members propose changes as pull requests",
+		});
+		expect(toggle).toBeChecked();
+		await userEvent.click(toggle);
+		expect(proposalSettingsCalls).toEqual([
+			{ projectId: "p", allowReaderProposals: false },
+		]);
+		expect(screen.queryByRole("button", { name: /suggest/i })).toBeNull();
 	});
 
 	it("offers no sync button to a member who cannot configure, and no dead one without the controls", () => {

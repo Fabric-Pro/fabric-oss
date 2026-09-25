@@ -471,6 +471,35 @@ describe("projects.instructions.delete", () => {
 			expect(m.deleteObjects).not.toHaveBeenCalled();
 		});
 
+		it("refuses an unresolved pull-request operation before touching storage", async () => {
+			m.getInstructionSnapshot.mockResolvedValue({
+				id: "s",
+				version: 4,
+				status: "READY",
+			});
+			m.getPublishedInstructionSnapshot.mockResolvedValue({
+				id: "other",
+			});
+			m.listInstructionFiles.mockResolvedValue([
+				{ storageKey: `${OWN_PREFIX}f1` },
+			]);
+			// The row survived the DELETE: its operation is unresolved.
+			m.deleteInstructionSnapshot.mockResolvedValue({
+				deleted: false,
+				reason: "pull_request_unresolved",
+			});
+
+			await expect(
+				m.handlers.delete!({ input: baseInput, context: ctx }),
+			).rejects.toMatchObject({
+				code: "CONFLICT",
+				data: { reason: "PULL_REQUEST_UNRESOLVED" },
+			});
+			expect(m.deleteObjects).not.toHaveBeenCalled();
+			expect(m.listObjects).not.toHaveBeenCalled();
+			expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		});
+
 		it("reports the same conflict when a derivation starts after the check", async () => {
 			m.getInstructionSnapshot.mockResolvedValue({
 				id: "s",

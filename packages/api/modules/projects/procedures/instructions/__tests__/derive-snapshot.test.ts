@@ -27,6 +27,8 @@ const m = vi.hoisted(() => ({
 	resolveEffectiveProjectPermissions: vi.fn(),
 	permissionMiddleware: vi.fn(),
 	assertInstructionDeriveAccess: vi.fn(),
+	admit: vi.fn(),
+	startAdmittedProposalPullRequest: vi.fn(),
 	requestedPermission: undefined as string | undefined,
 }));
 
@@ -41,6 +43,31 @@ vi.mock("@repo/database", () => ({
 }));
 vi.mock("../../../../../lib/audit", () => ({
 	recordAuditFromRequest: (...a: unknown[]) => m.recordAuditFromRequest(...a),
+	// The template builder's two inputs, reduced to what a synthetic context
+	// carries.
+	resolveActor: (context: { user?: { id: string } }) => ({
+		type: "user",
+		userId: context.user?.id ?? null,
+	}),
+	auditRequestFields: () => ({
+		impersonatedById: null,
+		ipAddress: "203.0.113.7",
+		userAgent: null,
+		requestId: "req_1",
+		sessionId: null,
+		correlationId: null,
+	}),
+}));
+// Admission is its own suite (`proposal-admission.test.ts`); here it is the
+// seam, so each test states the destination it decided. The pure helpers
+// that turn an admission into the create's input stay real.
+vi.mock("../proposal-admission", async (importOriginal) => ({
+	...((await importOriginal()) as Record<string, unknown>),
+	admitInstructionProposal: (...a: unknown[]) => m.admit(...a),
+}));
+vi.mock("../proposal-pull-request", () => ({
+	startAdmittedProposalPullRequest: (...a: unknown[]) =>
+		m.startAdmittedProposalPullRequest(...a),
 }));
 vi.mock("../../../../../lib/effective-project-permissions", () => ({
 	resolveEffectiveProjectPermissions: (...a: unknown[]) =>
@@ -115,9 +142,13 @@ beforeEach(() => {
 		m.resolveEffectiveProjectPermissions,
 		m.permissionMiddleware,
 		m.assertInstructionDeriveAccess,
+		m.admit,
+		m.startAdmittedProposalPullRequest,
 	]) {
 		f.mockReset();
 	}
+	m.admit.mockResolvedValue({ destination: "FABRIC", note: null });
+	m.startAdmittedProposalPullRequest.mockResolvedValue(undefined);
 	m.permissionMiddleware.mockResolvedValue(undefined);
 	m.resolveEffectiveProjectPermissions.mockResolvedValue({
 		permissions: ["instruction:create"],
@@ -223,6 +254,7 @@ describe("projects.instructions.derive", () => {
 			inheritedCount: 11,
 			proposalStatus: null,
 			staged: [{ fileId: "f_new", path: "CLAUDE.md" }],
+			pullRequest: null,
 		});
 	});
 
@@ -275,33 +307,236 @@ describe("projects.instructions.derive", () => {
 	});
 
 	describe("source of truth", () => {
-		it("refuses a repository-backed project and names git", async () => {
-			m.getProjectInstructionSettings.mockResolvedValue({
-				ignoreGlobs: null,
-				sourceOfTruth: "REPOSITORY",
-			});
+		it("asks admission in direct mode and passes its refusal through with data.reason", async () => {
+			// Plan R16: the tab's derive used to refuse without `data.reason`,
+			// unlike the inline entry point; one admission gives both the code.
+			m.admit.mockRejectedValue(
+				new ORPCError("PRECONDITION_FAILED", {
+					message:
+						"This project's coding instructions come from its repository. Change the files there and sync the project.",
+					data: { reason: "REPOSITORY_SOURCE_OF_TRUTH" },
+				}),
+			);
 
 			const error = await m.handlers.derive!({
 				input: deriveInput(editOneFile),
 				context: ctx,
 			}).catch((e: ORPCError<string, unknown>) => e);
 
-			expect(error).toMatchObject({ code: "PRECONDITION_FAILED" });
+			expect(error).toMatchObject({
+				code: "PRECONDITION_FAILED",
+				data: { reason: "REPOSITORY_SOURCE_OF_TRUTH" },
+			});
 			expect((error as Error).message).toContain("repository");
+			expect(m.admit).toHaveBeenCalledWith(
+				expect.objectContaining({ mode: "direct" }),
+			);
 			expect(m.createDerivedInstructionSnapshot).not.toHaveBeenCalled();
 		});
 
 		it("allows an upload-backed project", async () => {
-			m.getProjectInstructionSettings.mockResolvedValue({
-				ignoreGlobs: null,
-				sourceOfTruth: "UPLOAD",
-			});
-
 			await m.handlers.derive!({
 				input: deriveInput(editOneFile),
 				context: ctx,
 			});
 			expect(m.createDerivedInstructionSnapshot).toHaveBeenCalled();
+		});
+	});
+
+	describe("repository proposals (Fizzy #2563)", () => {
+		const NOTE = { title: "Tighten the review skill", body: "Why: flaky" };
+		const CONTEXT = {
+			v: 1,
+			syncId: "sync_1",
+			syncGeneration: 4,
+			branch: "fabric/instructions/op_1",
+		};
+
+		function repositoryAdmission(overrides: Record<string, unknown> = {}) {
+			return {
+				destination: "REPOSITORY",
+				note: NOTE,
+				operationId: "op_1",
+				context: CONTEXT,
+				syncId: "sync_1",
+				syncGeneration: 4,
+				...overrides,
+			};
+		}
+
+		function proposeInput() {
+			return {
+				...deriveInput([
+					...editOneFile,
+					{ op: "delete", path: "AGENTS.md" },
+				]),
+				proposal: true,
+				note: NOTE,
+			};
+		}
+
+		const proposer = {
+			...ctx,
+			user: { id: "u", email: "", name: "Pat Example" },
+		};
+
+		it("asks admission with the proposal mode, the raw note, the proposer's name and the change count", async () => {
+			await m.handlers.derive!({
+				input: proposeInput(),
+				context: proposer,
+			});
+
+			expect(m.admit).toHaveBeenCalledWith({
+				projectId: "p",
+				organizationId: "org_1",
+				userId: "u",
+				mode: "proposal",
+				note: NOTE,
+				proposerName: "Pat Example",
+				fileCount: 2,
+			});
+		});
+
+		it("creates the row with the frozen destination and writes upload_started only inside the create", async () => {
+			m.admit.mockResolvedValue(repositoryAdmission());
+			m.createDerivedInstructionSnapshot.mockResolvedValue({
+				ok: true,
+				id: "snap_new",
+				version: 8,
+				fileCount: 12,
+				inheritedCount: 11,
+				staged: [{ id: "f_new", path: "CLAUDE.md" }],
+				auditWritten: true,
+			});
+
+			const result = await m.handlers.derive!({
+				input: proposeInput(),
+				context: proposer,
+			});
+
+			const call = m.createDerivedInstructionSnapshot.mock.calls[0]![0];
+			expect(call).toMatchObject({
+				proposal: true,
+				publishOnReady: false,
+				note: NOTE,
+				destination: {
+					kind: "REPOSITORY",
+					operationId: "op_1",
+					context: CONTEXT,
+					syncId: "sync_1",
+					syncGeneration: 4,
+					branch: "fabric/instructions/op_1",
+					uploadStartedAudit: {
+						actor: { type: "user", userId: "u" },
+						organizationId: "org_1",
+						projectId: "p",
+						ipAddress: "203.0.113.7",
+						requestId: "req_1",
+						metadata: {
+							mode: "proposal",
+							baseSnapshotId: "base",
+							baseVersion: 7,
+							putCount: 1,
+							deleteCount: 1,
+						},
+					},
+				},
+			});
+			expect(call.destination).not.toHaveProperty("blocked");
+			// One upload_started, the one the create transaction writes.
+			expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+			expect(result).toMatchObject({
+				snapshotId: "snap_new",
+				proposalStatus: "PENDING",
+				pullRequest: {
+					operationId: "op_1",
+					state: "QUEUED",
+					url: null,
+					externalId: null,
+					failure: null,
+					lastCheckedAt: null,
+				},
+			});
+		});
+
+		it("starts the operation's workflow after the row commits", async () => {
+			m.admit.mockResolvedValue(repositoryAdmission());
+
+			await m.handlers.derive!({
+				input: proposeInput(),
+				context: proposer,
+			});
+
+			expect(m.startAdmittedProposalPullRequest).toHaveBeenCalledTimes(1);
+			expect(m.startAdmittedProposalPullRequest).toHaveBeenCalledWith({
+				snapshotId: "snap_new",
+				projectId: "p",
+				organizationId: "org_1",
+				operationId: "op_1",
+			});
+			expect(
+				m.createDerivedInstructionSnapshot.mock.invocationCallOrder[0],
+			).toBeLessThan(
+				m.startAdmittedProposalPullRequest.mock.invocationCallOrder[0]!,
+			);
+		});
+
+		it("admits an attribution-refused row BLOCKED and starts no workflow", async () => {
+			const blocked = {
+				phase: "admission",
+				code: "ATTRIBUTION_REJECTED",
+				retryable: false,
+				at: "2026-09-24T12:00:00.000Z",
+				params: {},
+			};
+			m.admit.mockResolvedValue(repositoryAdmission({ blocked }));
+
+			const result = await m.handlers.derive!({
+				input: proposeInput(),
+				context: proposer,
+			});
+
+			expect(
+				m.createDerivedInstructionSnapshot.mock.calls[0]![0],
+			).toMatchObject({ destination: { blocked } });
+			expect(m.startAdmittedProposalPullRequest).not.toHaveBeenCalled();
+			expect(result).toMatchObject({
+				pullRequest: { state: "BLOCKED", failure: blocked },
+			});
+		});
+
+		it("starts nothing for a duplicate", async () => {
+			m.admit.mockResolvedValue(repositoryAdmission());
+			m.createDerivedInstructionSnapshot.mockResolvedValue({
+				ok: false,
+				reason: "duplicate_proposal",
+				existing: { id: "snap_existing", version: 8 },
+			});
+
+			await expect(
+				m.handlers.derive!({
+					input: proposeInput(),
+					context: proposer,
+				}),
+			).rejects.toMatchObject({ code: "CONFLICT" });
+			expect(m.startAdmittedProposalPullRequest).not.toHaveBeenCalled();
+			expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		});
+
+		it("a FABRIC proposal keeps its note and its post-commit audit, and has no pull request", async () => {
+			m.admit.mockResolvedValue({ destination: "FABRIC", note: NOTE });
+
+			const result = await m.handlers.derive!({
+				input: proposeInput(),
+				context: proposer,
+			});
+
+			const call = m.createDerivedInstructionSnapshot.mock.calls[0]![0];
+			expect(call).toMatchObject({ note: NOTE });
+			expect(call).not.toHaveProperty("destination");
+			expect(m.recordAuditFromRequest).toHaveBeenCalledTimes(1);
+			expect(m.startAdmittedProposalPullRequest).not.toHaveBeenCalled();
+			expect(result).toMatchObject({ pullRequest: null });
 		});
 	});
 

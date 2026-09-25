@@ -32,6 +32,7 @@ const { mocks } = vi.hoisted(() => ({
 		submitChange: vi.fn(),
 		publishChange: vi.fn(),
 		getPublished: vi.fn(),
+		getProposalPullRequest: vi.fn(),
 		getApiKey: vi.fn<() => string | undefined>(),
 		getConfigPath: vi.fn<() => string>(),
 		/** The overrides `instructionsClient` handed `getClient`. */
@@ -54,6 +55,7 @@ vi.mock("../src/lib/client.js", () => {
 			createDownloadUrl: vi.fn(),
 			submitChange: mocks.submitChange,
 			publishChange: mocks.publishChange,
+			getProposalPullRequest: mocks.getProposalPullRequest,
 		},
 		withoutContext: () => client,
 	};
@@ -223,6 +225,7 @@ beforeEach(() => {
 	mocks.submitChange.mockReset();
 	mocks.publishChange.mockReset();
 	mocks.getPublished.mockReset();
+	mocks.getProposalPullRequest.mockReset();
 	mocks.clientOverrides.mockReset();
 	mocks.getApiKey.mockReset().mockReturnValue("fab_test");
 	mocks.getConfigPath.mockReset().mockReturnValue(OUTSIDE_CONFIG_PATH);
@@ -1132,5 +1135,383 @@ describe("what push checks before it reads a file", () => {
 
 		expect(result.code).toBe(4);
 		expect(mocks.submitChange).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// A repository-backed project: the suggestion becomes a pull request
+// (Fizzy #2563 spec §12)
+// ---------------------------------------------------------------------------
+
+function pullRequest(state: string, overrides: Record<string, unknown> = {}) {
+	return {
+		operationId: "op-1",
+		state,
+		url: null,
+		externalId: null,
+		failure: null,
+		lastCheckedAt: null,
+		...overrides,
+	};
+}
+
+function failure(code: string, retryable = false) {
+	return {
+		phase: "create",
+		code,
+		retryable,
+		at: "2026-09-24T12:00:00.000Z",
+		params: {},
+	};
+}
+
+async function repositoryTree(): Promise<string> {
+	const dest = await syncedTree(
+		{ "AGENTS.md": "one\n" },
+		{ "AGENTS.md": "edited\n" },
+	);
+	mocks.getPublished.mockResolvedValue(
+		publishedFor({ "AGENTS.md": "one\n" }, { sourceOfTruth: "REPOSITORY" }),
+	);
+	mocks.submitChange.mockResolvedValue(
+		accepted({ pullRequest: pullRequest("QUEUED") }),
+	);
+	return dest;
+}
+
+const PUSH = (dest: string, ...extra: string[]) => [
+	"push",
+	"--project",
+	"proj-1",
+	"--dest",
+	dest,
+	...extra,
+];
+
+describe("--message", () => {
+	it("sends the first line as the title and the rest as the body", async () => {
+		mocks.submitChange.mockResolvedValue(accepted());
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli(
+			PUSH(dest, "--message", "Tighten the lint rule\n\nWhy.\nMore."),
+		);
+
+		expect(result.code).toBe(0);
+		expect(mocks.submitChange.mock.calls[0]?.[3]).toEqual({
+			org: undefined,
+			note: { title: "Tighten the lint rule", body: "Why.\nMore." },
+		});
+	});
+
+	it("splits a CRLF message like an LF one", async () => {
+		mocks.submitChange.mockResolvedValue(accepted());
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		await runCli(
+			PUSH(
+				dest,
+				"--message",
+				"Tighten the lint rule\r\n\r\nWhy.\r\nMore.",
+			),
+		);
+
+		expect(mocks.submitChange.mock.calls[0]?.[3]).toEqual({
+			org: undefined,
+			note: { title: "Tighten the lint rule", body: "Why.\nMore." },
+		});
+	});
+
+	it("is refused with --publish, which makes a version with no note, and sends nothing", async () => {
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli(
+			PUSH(dest, "--publish", "--message", "Tighten the lint rule"),
+		);
+
+		expect(result.code).toBe(2);
+		expect(result.stderr).toContain("--message");
+		expect(mocks.publishChange).not.toHaveBeenCalled();
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+	});
+});
+
+describe("waiting for the pull request", () => {
+	it("prints the pull request's URL and exits 0 once it opens", async () => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest("OPEN", {
+				url: "https://example.com/example-org/example-repo/pull/7",
+			}),
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(
+			"https://example.com/example-org/example-repo/pull/7",
+		);
+		// Not the in-Fabric review copy: this one is reviewed in the repository.
+		expect(result.stdout).not.toContain(
+			"approves it in the Coding Instructions tab",
+		);
+		const [projectId, snapshotId, options] =
+			mocks.getProposalPullRequest.mock.calls[0] ?? [];
+		expect(projectId).toBe("proj-1");
+		expect(snapshotId).toBe("snap-8");
+		expect(options).toMatchObject({ org: undefined });
+		expect(options.signal).toBeInstanceOf(AbortSignal);
+	});
+
+	it("exits 7 with the failure's copy when the pull request is BLOCKED", async () => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest("BLOCKED", { failure: failure("PR_CREATION_REFUSED") }),
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain("refused");
+		expect(result.stderr).toContain("Coding Instructions tab");
+	});
+
+	it("exits 7 when the suggestion was canceled before a pull request opened", async () => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest("CANCELED", {
+				failure: failure("VALIDATION_REJECTED", false),
+			}),
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain("checks");
+	});
+
+	it.each([
+		["MERGED", "merged"],
+		["CLOSED", "closed without merging"],
+	])("exits 0 for %s with its copy", async (state, copy) => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest(state, { url: "https://example.com/pull/7" }),
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(copy);
+	});
+
+	it("makes no status call with --no-wait", async () => {
+		const dest = await repositoryTree();
+
+		const result = await runCli(PUSH(dest, "--no-wait"));
+
+		expect(result.code).toBe(0);
+		expect(mocks.getProposalPullRequest).not.toHaveBeenCalled();
+		expect(result.stdout).toContain("pull request");
+	});
+
+	it("waits for nothing when the suggestion has no pull request", async () => {
+		mocks.submitChange.mockResolvedValue(accepted({ pullRequest: null }));
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(0);
+		expect(mocks.getProposalPullRequest).not.toHaveBeenCalled();
+		expect(result.stdout).toContain("pending review");
+	});
+
+	it("adds operationId, state, url and failure to --format json", async () => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest("OPEN", { url: "https://example.com/pull/7" }),
+		);
+
+		const result = await runCli([...PUSH(dest), "--format", "json"]);
+
+		expect(result.code).toBe(0);
+		expect(JSON.parse(result.stdout).pullRequest).toEqual({
+			operationId: "op-1",
+			state: "OPEN",
+			url: "https://example.com/pull/7",
+			failure: null,
+			timedOut: false,
+		});
+	});
+
+	it("still prints the JSON, then exits 7, for a BLOCKED pull request", async () => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest("BLOCKED", {
+				failure: failure("AUTHENTICATION_FAILED", true),
+			}),
+		);
+
+		const result = await runCli([...PUSH(dest), "--format", "json"]);
+
+		expect(result.code).toBe(7);
+		expect(JSON.parse(result.stdout).pullRequest).toMatchObject({
+			state: "BLOCKED",
+			failure: { code: "AUTHENTICATION_FAILED" },
+		});
+	});
+
+	it("reports an accepted suggestion whose pull request could not be checked", async () => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest.mockRejectedValue(
+			refusal("Proposal not found", 404),
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(4);
+		expect(result.stderr).toContain("version 8");
+		expect(result.stderr).toContain("Coding Instructions tab");
+	});
+});
+
+/**
+ * The absolute deadline, end to end. `setTimeout` and `Date` are faked; real
+ * I/O (the temp tree) still runs, so the clock is advanced in small steps
+ * with a real I/O turn between them.
+ */
+describe("the 60 s deadline", () => {
+	async function runCliOnFakeClock(argv: string[]) {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		try {
+			let settled = false;
+			const pending = runCli(argv).finally(() => {
+				settled = true;
+			});
+			for (let i = 0; i < 5_000 && !settled; i++) {
+				await new Promise((resolve) => setImmediate(resolve));
+				await vi.advanceTimersByTimeAsync(250);
+			}
+			return await pending;
+		} finally {
+			vi.useRealTimers();
+		}
+	}
+
+	it("does not wait past the deadline on a hanging status request, and exits 0 saying so", async () => {
+		const dest = await repositoryTree();
+		const seen: Array<{
+			at: number;
+			signal: AbortSignal;
+			abortedAt?: number;
+		}> = [];
+		mocks.getProposalPullRequest.mockImplementation(
+			(
+				_projectId: string,
+				_snapshotId: string,
+				options: { signal: AbortSignal },
+			) => {
+				const call = { at: Date.now(), signal: options.signal } as {
+					at: number;
+					signal: AbortSignal;
+					abortedAt?: number;
+				};
+				seen.push(call);
+				return new Promise((_resolve, reject) => {
+					options.signal.addEventListener(
+						"abort",
+						() => {
+							call.abortedAt = Date.now();
+							reject(options.signal.reason);
+						},
+						{ once: true },
+					);
+				});
+			},
+		);
+
+		const result = await runCliOnFakeClock(PUSH(dest));
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(
+			"The pull request is being opened; see the project's Coding Instructions tab",
+		);
+		expect(seen).toHaveLength(1);
+		expect(seen[0]?.signal.aborted).toBe(true);
+		expect((seen[0]?.abortedAt ?? 0) - (seen[0]?.at ?? 0)).toBe(60_000);
+	});
+
+	it("polls every 2 s and starts no request after the deadline", async () => {
+		const dest = await repositoryTree();
+		const at: number[] = [];
+		mocks.getProposalPullRequest.mockImplementation(async () => {
+			at.push(Date.now());
+			return pullRequest("QUEUED");
+		});
+
+		const result = await runCliOnFakeClock(PUSH(dest));
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("The pull request is being opened");
+		const offsets = at.map((t) => t - (at[0] ?? 0));
+		expect(offsets.slice(0, 3)).toEqual([0, 2_000, 4_000]);
+		expect(offsets.at(-1)).toBeLessThan(60_000);
+	});
+});
+
+describe("admission refusals become sentences", () => {
+	it.each([
+		["REPOSITORY_UNAVAILABLE", 412, "repository connection"],
+		["REPOSITORY_BASE_UNAVAILABLE", 412, "sync"],
+		["NOTE_REJECTED", 422, "--message"],
+	])("maps %s to exit 7 with advice", async (code, status, advice) => {
+		mocks.submitChange.mockRejectedValue(
+			refusal(
+				"The note's title looks like it contains a credential.",
+				status,
+				code,
+			),
+		);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain(advice);
+		expect(result.stderr).toContain("nothing was sent");
+	});
+
+	it("still names the repository for a --publish to a repository-backed project", async () => {
+		mocks.publishChange.mockRejectedValue(
+			refusal(
+				"This project's coding instructions come from its repository.",
+				412,
+				"REPOSITORY_SOURCE_OF_TRUTH",
+			),
+		);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "x\n" },
+		);
+
+		const result = await runCli(PUSH(dest, "--publish"));
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain("repository");
 	});
 });

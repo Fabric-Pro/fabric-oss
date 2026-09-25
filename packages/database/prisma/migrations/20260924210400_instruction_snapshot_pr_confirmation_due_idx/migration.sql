@@ -1,0 +1,16 @@
+-- The ("pullRequestConfirmationDueAt") index on project_instruction_snapshot
+-- (Fizzy #2563 plan Decision 1, spec §6.2 step 4, §9): the earliest due
+-- settlement confirmation, maintained from the attempt records, which the
+-- sweeper's Close sub-batch selects on in any state.
+--
+-- CONCURRENTLY because project_instruction_snapshot is populated and a plain
+-- build takes a write lock on it for the length of the build. NO `IF NOT
+-- EXISTS`: a failed concurrent build leaves an invalid index behind under this
+-- name, and the clause would then skip the rebuild and record the migration as
+-- applied with no index. Recovery per docs/database-promotion.md: find it with
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+-- then DROP INDEX that name before re-running the migration.
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT: CONCURRENTLY cannot run inside the
+-- transaction Prisma wraps a multi-statement migration in.
+CREATE INDEX CONCURRENTLY "project_instruction_snapshot_pr_confirmation_due_idx" ON "project_instruction_snapshot"("pullRequestConfirmationDueAt");

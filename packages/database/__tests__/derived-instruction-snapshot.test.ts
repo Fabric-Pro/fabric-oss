@@ -51,7 +51,16 @@ vi.mock("../prisma/client", () => ({
 	Prisma: {
 		PrismaClientKnownRequestError: FakePrismaKnownRequestError,
 		JsonNull: "JsonNull",
+		DbNull: "DbNull",
 	},
+}));
+
+// A REPOSITORY proposal writes its `upload_started` row inside the create
+// transaction (Fizzy #2563 Decision 11). Mocked so the assertions are about
+// WHETHER it is written, with which client and naming which row.
+const auditMocks = vi.hoisted(() => ({ recordAuditTx: vi.fn() }));
+vi.mock("../prisma/queries/audit-log", () => ({
+	recordAuditTx: auditMocks.recordAuditTx,
 }));
 
 import {
@@ -122,6 +131,7 @@ beforeEach(() => {
 			fn.mockReset();
 		}
 	}
+	auditMocks.recordAuditTx.mockReset();
 	mocks.$transaction.mockReset();
 	mocks.$transaction.mockImplementation(
 		async (cb: (tx: unknown) => unknown) =>
@@ -407,6 +417,9 @@ describe("createDerivedInstructionSnapshot", () => {
 			expect(result).toEqual({
 				ok: false,
 				reason: "duplicate_proposal",
+				// A duplicate writes nothing, its admission audit included
+				// (Fizzy #2563 Decision 11).
+				auditWritten: false,
 				existing: {
 					id: "snap_existing",
 					version: 8,
@@ -1097,6 +1110,401 @@ describe("createDerivedInstructionSnapshot", () => {
 
 		expect(result).toMatchObject({ ok: true, version: 9 });
 		expect(mocks.snapshot.create).toHaveBeenCalledTimes(2);
+	});
+});
+
+/**
+ * Proposal destinations (Fizzy #2563 spec §5.1 steps 6 to 8).
+ *
+ * A REPOSITORY proposal is admitted in the same one transaction as any other
+ * derivation, and three things are added to it: the frozen pull-request
+ * state on the row, a dedup identity that includes the configuration the
+ * proposal was frozen against, and the `upload_started` audit row, which for
+ * this destination is written INSIDE the transaction because only the
+ * transaction knows the id and version it allocated (Decision 11).
+ */
+describe("proposal destinations", () => {
+	const NOTE = { title: "Tighten the review skill", body: "Why: flaky" };
+	const CONTEXT = {
+		v: 1,
+		syncId: "sync_1",
+		syncGeneration: 3,
+		branch: "fabric/instructions/op_1",
+	};
+
+	function repository(
+		overrides: Record<string, unknown> = {},
+	): NonNullable<
+		Parameters<typeof createDerivedInstructionSnapshot>[0]["destination"]
+	> {
+		return {
+			kind: "REPOSITORY",
+			operationId: "op_1",
+			context: CONTEXT,
+			syncId: "sync_1",
+			syncGeneration: 3,
+			branch: "fabric/instructions/op_1",
+			uploadStartedAudit: {
+				actor: { type: "user", userId: "user_1" },
+				organizationId: ORG,
+				projectId: PROJECT,
+				requestId: "req_1",
+				metadata: {
+					mode: "proposal",
+					baseSnapshotId: BASE,
+					baseVersion: 7,
+					putCount: 1,
+					deleteCount: 0,
+				},
+			},
+			...overrides,
+		};
+	}
+
+	function createdData() {
+		return (
+			mocks.snapshot.create.mock.calls[0]![0] as {
+				data: Record<string, unknown>;
+			}
+		).data;
+	}
+
+	it("writes the destination, note, operation, QUEUED state and frozen context on the row it creates", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+		const result = await createDerivedInstructionSnapshot(
+			input([put("README.md")], {
+				proposal: true,
+				note: NOTE,
+				destination: repository(),
+			}),
+		);
+
+		expect(result).toMatchObject({ ok: true, auditWritten: true });
+		expect(createdData()).toMatchObject({
+			proposalStatus: "PENDING",
+			publishOnReady: false,
+			proposalDestination: "REPOSITORY",
+			proposalNote: NOTE,
+			pullRequestOperationId: "op_1",
+			pullRequestState: "QUEUED",
+			pullRequestContext: CONTEXT,
+			// The attempt-1 branch is the operation's current ref from the
+			// moment it exists; nothing later has to infer it (Fizzy #2563).
+			pullRequestRef: "fabric/instructions/op_1",
+		});
+		expect(createdData()).not.toHaveProperty("pullRequestFailure");
+		// In the create transaction: the row and its files are written by
+		// the transaction client the callback was handed.
+		expect(mocks.$transaction).toHaveBeenCalledTimes(1);
+	});
+
+	it("admits an attribution-refused row as BLOCKED with its failure, still PENDING", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+		const blocked = {
+			phase: "admission" as const,
+			code: "ATTRIBUTION_REJECTED" as const,
+			retryable: false,
+			at: "2026-09-24T12:00:00.000Z",
+			params: {},
+		};
+
+		await createDerivedInstructionSnapshot(
+			input([put("README.md")], {
+				proposal: true,
+				destination: repository({ blocked }),
+			}),
+		);
+
+		expect(createdData()).toMatchObject({
+			proposalStatus: "PENDING",
+			pullRequestState: "BLOCKED",
+			pullRequestFailure: blocked,
+		});
+	});
+
+	it("keeps the note on a FABRIC proposal, which gets no pull-request state", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+		const result = await createDerivedInstructionSnapshot(
+			input([put("README.md")], { proposal: true, note: NOTE }),
+		);
+
+		expect(result).toMatchObject({ ok: true, auditWritten: false });
+		expect(createdData()).toMatchObject({
+			proposalStatus: "PENDING",
+			proposalDestination: "FABRIC",
+			proposalNote: NOTE,
+		});
+		for (const column of [
+			"pullRequestOperationId",
+			"pullRequestState",
+			"pullRequestContext",
+			"pullRequestFailure",
+			"pullRequestRef",
+		]) {
+			expect(createdData()).not.toHaveProperty(column);
+		}
+		// FABRIC keeps today's post-commit audit, written by the caller.
+		expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+	});
+
+	it("writes no note and no destination on a derivation that is not a proposal", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+		await createDerivedInstructionSnapshot(
+			input([put("README.md")], { note: NOTE }),
+		);
+
+		expect(createdData()).not.toHaveProperty("proposalNote");
+		expect(createdData()).not.toHaveProperty("proposalDestination");
+		expect(createdData()).toMatchObject({ proposalStatus: null });
+	});
+
+	it("refuses a REPOSITORY destination on a derivation that is not a proposal", async () => {
+		await expect(
+			createDerivedInstructionSnapshot(
+				input([put("README.md")], { destination: repository() }),
+			),
+		).rejects.toThrow(/REPOSITORY/);
+		expect(mocks.snapshot.create).not.toHaveBeenCalled();
+	});
+
+	it("writes exactly one upload_started row in the create transaction, naming the committed row and its counts", async () => {
+		withBaseFiles([
+			baseFile("bf1", "CLAUDE.md"),
+			baseFile("bf2", "AGENTS.md"),
+		]);
+
+		const result = await createDerivedInstructionSnapshot(
+			input([put("README.md")], {
+				proposal: true,
+				destination: repository(),
+			}),
+		);
+
+		expect(result).toMatchObject({
+			ok: true,
+			id: "snap_new",
+			version: 8,
+			fileCount: 3,
+			inheritedCount: 2,
+			auditWritten: true,
+		});
+		expect(auditMocks.recordAuditTx).toHaveBeenCalledTimes(1);
+		const [client, row] = auditMocks.recordAuditTx.mock.calls[0]!;
+		// The transaction client, not a fresh connection.
+		expect(client).toMatchObject({
+			projectInstructionSnapshot: mocks.snapshot,
+		});
+		expect(row).toEqual({
+			actor: { type: "user", userId: "user_1" },
+			organizationId: ORG,
+			projectId: PROJECT,
+			requestId: "req_1",
+			action: "project.instructions.upload_started",
+			category: "project",
+			resource: {
+				type: "project_instruction_snapshot",
+				id: "snap_new",
+				name: "v8",
+			},
+			metadata: {
+				mode: "proposal",
+				baseSnapshotId: BASE,
+				baseVersion: 7,
+				putCount: 1,
+				deleteCount: 0,
+				// The authoritative creation counts, the fields
+				// `derive-snapshot.ts` writes after commit for FABRIC.
+				inheritedCount: 2,
+				keptCount: 3,
+			},
+		});
+		// After the row exists: the audit names an allocated id.
+		expect(
+			auditMocks.recordAuditTx.mock.invocationCallOrder[0]!,
+		).toBeGreaterThan(mocks.snapshot.create.mock.invocationCallOrder[0]!);
+	});
+
+	// What this proves is that the audit failure is raised from inside the
+	// one transaction callback and is not retried as a version collision.
+	// That the rows then roll back is proven on Postgres by "admission
+	// rollback" in instruction-proposal-pull-requests.integration.test.ts.
+	it("raises an upload_started write failure from inside the one create transaction, without retrying the create", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+		auditMocks.recordAuditTx.mockRejectedValueOnce(new Error("audit down"));
+
+		await expect(
+			createDerivedInstructionSnapshot(
+				input([put("README.md")], {
+					proposal: true,
+					destination: repository(),
+				}),
+			),
+		).rejects.toThrow("audit down");
+		// The error surfaced from INSIDE the one transaction callback, which
+		// is what rolls its writes back; it is not a version collision, so
+		// nothing retried the create.
+		expect(mocks.$transaction).toHaveBeenCalledTimes(1);
+		expect(mocks.snapshot.create).toHaveBeenCalledTimes(1);
+	});
+
+	describe("dedup", () => {
+		function lookupWhere() {
+			const call = mocks.snapshot.findFirst.mock.calls.find(
+				(c) =>
+					"changeSetDigest" in
+					((c[0] as { where: Record<string, unknown> }).where ?? {}),
+			);
+			return (call![0] as { where: Record<string, unknown> }).where;
+		}
+
+		it("matches the destination and, for REPOSITORY, the frozen sync id and generation", async () => {
+			withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+			await createDerivedInstructionSnapshot(
+				input([put("README.md")], {
+					proposal: true,
+					destination: repository(),
+				}),
+			);
+
+			expect(lookupWhere()).toMatchObject({
+				projectId: PROJECT,
+				organizationId: ORG,
+				userId: "user_1",
+				baseSnapshotId: BASE,
+				proposalStatus: "PENDING",
+				proposalDestination: "REPOSITORY",
+				AND: [
+					{
+						pullRequestContext: {
+							path: ["syncId"],
+							equals: "sync_1",
+						},
+					},
+					{
+						pullRequestContext: {
+							path: ["syncGeneration"],
+							equals: 3,
+						},
+					},
+				],
+			});
+		});
+
+		it("matches a FABRIC proposal only against FABRIC rows, with no configuration filter", async () => {
+			withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+			await createDerivedInstructionSnapshot(
+				input([put("README.md")], { proposal: true }),
+			);
+
+			expect(lookupWhere()).toMatchObject({
+				proposalDestination: "FABRIC",
+			});
+			expect(lookupWhere()).not.toHaveProperty("AND");
+		});
+
+		/**
+		 * The stored REPOSITORY proposal was frozen against generation 3. The
+		 * fake answers the lookup the way Postgres would evaluate the JSON
+		 * path filters, so the same change set is the same proposal under
+		 * generation 3 and a new one after a re-configure moved it to 4.
+		 */
+		function storedRepositoryProposalAtGeneration(generation: number) {
+			mocks.snapshot.findFirst.mockImplementation(
+				async (args: unknown) => {
+					const where =
+						(args as { where?: Record<string, unknown> }).where ??
+						{};
+					if ("changeSetDigest" in where) {
+						const and = (where.AND ?? []) as Array<{
+							pullRequestContext: {
+								path: string[];
+								equals: unknown;
+							};
+						}>;
+						const frozen: Record<string, unknown> = {
+							syncId: "sync_1",
+							syncGeneration: generation,
+						};
+						const matches =
+							where.proposalDestination === "REPOSITORY" &&
+							and.every(
+								(c) =>
+									frozen[c.pullRequestContext.path[0]!] ===
+									c.pullRequestContext.equals,
+							);
+						return matches
+							? {
+									id: "snap_existing",
+									version: 8,
+									status: "READY",
+									proposalStatus: "PENDING",
+									fileCount: 1,
+								}
+							: null;
+					}
+					if ("id" in where) {
+						return {
+							id: BASE,
+							status: "READY",
+							source: "UPLOAD",
+							version: 7,
+							settingsFrozen: {
+								layer: "default",
+								ignoreGlobs: [],
+							},
+							excludedCount: 0,
+						};
+					}
+					return { version: 8 };
+				},
+			);
+		}
+
+		it("answers a retry under the same generation with the existing row and writes no audit", async () => {
+			storedRepositoryProposalAtGeneration(3);
+			mocks.file.findMany.mockResolvedValue([]);
+
+			const result = await createDerivedInstructionSnapshot(
+				input([put("README.md")], {
+					proposal: true,
+					destination: repository(),
+				}),
+			);
+
+			expect(result).toMatchObject({
+				ok: false,
+				reason: "duplicate_proposal",
+				auditWritten: false,
+				existing: { id: "snap_existing" },
+			});
+			expect(mocks.snapshot.create).not.toHaveBeenCalled();
+			expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+		});
+
+		it("dedup after re-configure: a new generation creates a new row", async () => {
+			storedRepositoryProposalAtGeneration(3);
+			mocks.file.findMany
+				.mockResolvedValueOnce([baseFile("bf1", "CLAUDE.md")])
+				.mockResolvedValueOnce([{ id: "new_1", path: "README.md" }]);
+
+			const result = await createDerivedInstructionSnapshot(
+				input([put("README.md")], {
+					proposal: true,
+					destination: repository({
+						syncGeneration: 4,
+						context: { ...CONTEXT, syncGeneration: 4 },
+					}),
+				}),
+			);
+
+			expect(result).toMatchObject({ ok: true, auditWritten: true });
+			expect(mocks.snapshot.create).toHaveBeenCalledTimes(1);
+		});
 	});
 });
 

@@ -46,6 +46,7 @@ vi.mock("next-intl", () => ({
 
 const m = vi.hoisted(() => ({
 	configure: vi.fn(),
+	updateProposalSettings: vi.fn(),
 	syncNow: vi.fn(),
 	disable: vi.fn(),
 	listRuns: vi.fn(),
@@ -84,6 +85,11 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					syncNow: {
 						mutationOptions: mutationOptionsStub((i) =>
 							m.syncNow(i),
+						),
+					},
+					updateProposalSettings: {
+						mutationOptions: mutationOptionsStub((i) =>
+							m.updateProposalSettings(i),
 						),
 					},
 					disable: {
@@ -183,6 +189,12 @@ beforeEach(() => {
 		fn.mockReset();
 	}
 	m.configure.mockResolvedValue({ syncId: "sync_1", generation: 1 });
+	m.updateProposalSettings.mockImplementation(
+		async (i: { allowReaderProposals: boolean }) => ({
+			allowReaderProposals: i.allowReaderProposals,
+			generation: 1,
+		}),
+	);
 	m.syncNow.mockResolvedValue({ started: true });
 	m.disable.mockResolvedValue({ disabled: true, hadConfiguration: true });
 	m.listRuns.mockResolvedValue({ runs: [] });
@@ -1145,6 +1157,136 @@ describe("RepositorySyncSettingsSection (§7.4)", () => {
 			).toBeEnabled(),
 		);
 		expect(m.configure).not.toHaveBeenCalled();
+	});
+
+	// Fizzy #2563 spec §12, §16.1-§16.2: an owner lets read-only members
+	// propose as pull requests. Its own procedure, which never bumps the
+	// generation, so turning it on or off never fails an in-flight proposal.
+	it("lets a configurer allow read-only members to propose as pull requests, saying a merged proposal syncs even with automatic sync off", async () => {
+		const user = userEvent.setup();
+		const { onChanged } = renderSection(CONFIGURED);
+		const toggle = screen.getByRole("switch", {
+			name: copy.settings.readerProposalsLabel,
+		});
+		expect(toggle).not.toBeChecked();
+		expect(toggle).toHaveAccessibleDescription(
+			copy.settings.readerProposalsHint,
+		);
+		expect(copy.settings.readerProposalsHint).toContain(
+			"A merged suggestion syncs even while automatic sync is off.",
+		);
+
+		await user.click(toggle);
+
+		await waitFor(() =>
+			expect(m.updateProposalSettings).toHaveBeenCalledWith({
+				projectId: "proj_1",
+				allowReaderProposals: true,
+			}),
+		);
+		await waitFor(() =>
+			expect(m.toastSuccess).toHaveBeenCalledWith(
+				copy.settings.readerProposalsTurnedOn,
+			),
+		);
+		expect(onChanged).toHaveBeenCalled();
+		// Not through configure: that would bump the generation.
+		expect(m.configure).not.toHaveBeenCalled();
+	});
+
+	it("turns read-only proposals off the same way", async () => {
+		const configured = CONFIGURED.configured as NonNullable<
+			RepositorySyncState["configured"]
+		>;
+		const user = userEvent.setup();
+		renderSection({
+			...CONFIGURED,
+			configured: { ...configured, allowReaderProposals: true },
+		});
+		const toggle = screen.getByRole("switch", {
+			name: copy.settings.readerProposalsLabel,
+		});
+		expect(toggle).toBeChecked();
+		await user.click(toggle);
+		await waitFor(() =>
+			expect(m.updateProposalSettings).toHaveBeenCalledWith({
+				projectId: "proj_1",
+				allowReaderProposals: false,
+			}),
+		);
+		await waitFor(() =>
+			expect(m.toastSuccess).toHaveBeenCalledWith(
+				copy.settings.readerProposalsTurnedOff,
+			),
+		);
+	});
+
+	it("reports a refused reader-proposal toggle and re-reads nothing", async () => {
+		m.updateProposalSettings.mockRejectedValue(new Error("Not configured"));
+		const user = userEvent.setup();
+		const { onChanged } = renderSection(CONFIGURED);
+		await user.click(
+			screen.getByRole("switch", {
+				name: copy.settings.readerProposalsLabel,
+			}),
+		);
+		await waitFor(() =>
+			expect(m.toastError).toHaveBeenCalledWith("Not configured"),
+		);
+		expect(onChanged).not.toHaveBeenCalled();
+	});
+
+	it("disables every settings action while the reader-proposal toggle saves (Decision 40)", async () => {
+		let finish: (value: unknown) => void = () => {};
+		m.updateProposalSettings.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					finish = resolve;
+				}),
+		);
+		const user = userEvent.setup();
+		renderSection(CONFIGURED);
+		await user.click(
+			screen.getByRole("switch", {
+				name: copy.settings.readerProposalsLabel,
+			}),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("switch", { name: copy.settings.automatic }),
+			).toBeDisabled(),
+		);
+		expect(
+			screen.getByRole("switch", {
+				name: copy.settings.readerProposalsLabel,
+			}),
+		).toBeDisabled();
+		expect(
+			screen.getByRole("button", { name: copy.settings.changeButton }),
+		).toBeDisabled();
+		finish({ allowReaderProposals: true, generation: 1 });
+		await waitFor(() =>
+			expect(
+				screen.getByRole("switch", {
+					name: copy.settings.readerProposalsLabel,
+				}),
+			).toBeEnabled(),
+		);
+	});
+
+	it("shows a reader whether read-only members may propose, as text", () => {
+		const configured = CONFIGURED.configured as NonNullable<
+			RepositorySyncState["configured"]
+		>;
+		renderSection({
+			...CONFIGURED,
+			canConfigure: false,
+			configured: { ...configured, allowReaderProposals: true },
+		});
+		expect(
+			screen.getByText(copy.settings.readerProposalsOn),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("switch")).not.toBeInTheDocument();
 	});
 
 	it("shows a reader the configuration and the automatic state without the actions", () => {

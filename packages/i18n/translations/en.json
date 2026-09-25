@@ -1631,7 +1631,12 @@
 						"repository_sync_configured": "Coding-instructions repository sync configured",
 						"repository_sync_started": "Coding-instructions repository sync started",
 						"repository_sync_completed": "Coding-instructions repository sync finished",
-						"repository_sync_disabled": "Coding-instructions repository sync turned off"
+						"repository_sync_disabled": "Coding-instructions repository sync turned off",
+						"pull_request_opened": "Coding-instructions pull request opened",
+						"pull_request_reconciled": "Coding-instructions pull request reconciled",
+						"pull_request_close_requested": "Coding-instructions pull request close requested",
+						"pull_request_retry_requested": "Coding-instructions pull request retry requested",
+						"pull_request_merge_sync_requested": "Coding-instructions merge sync requested"
 					}
 				},
 				"story": {
@@ -5567,7 +5572,11 @@
 					"SCRIPT": "Script",
 					"KNOWLEDGE": "Knowledge",
 					"OTHER": "File"
-				}
+				},
+				"repositoryProposalNotice": "Submitting opens a pull request in {repository} against {ref}. The branch is pushed with the repository connection's credentials, and pushing it can start the repository's CI before anyone reviews it. The commit names you as author with a Fabric no-reply address.",
+				"deleteSuggestionConfirm": "Suggest deleting {path}? Once the change passes its checks, Fabric opens a pull request in {repository} against {ref}.",
+				"submitSuggestionButton": "Suggest as a pull request",
+				"suggestionSubmitted": "Suggestion submitted. Fabric opens the pull request once the files pass their checks."
 			},
 			"rejectedBanner": {
 				"titleSecretsSingular": "Upload rejected: {count} file contains secrets",
@@ -5686,7 +5695,9 @@
 				"supersededHistoryButton": "Open History",
 				"changedInThisVersion": "Changed from version {baseVersion}: {added} added, {removed} removed, {changed} changed.",
 				"noChangesFromBase": "No file changes from version {baseVersion}.",
-				"compareButton": "See what changed"
+				"compareButton": "See what changed",
+				"suggestChangeButton": "Suggest a change",
+				"suggestionsButton": "Suggested changes"
 			},
 			"repositorySync": {
 				"running": "Syncing from the repository…",
@@ -5703,6 +5714,7 @@
 					"MANUAL": "Sync now",
 					"POLL": "Scheduled",
 					"WEBHOOK": "Push",
+					"PULL_REQUEST_MERGED": "Merged pull request",
 					"OTHER": "Automatic"
 				},
 				"outcomes": {
@@ -5796,7 +5808,13 @@
 					"switchConfirmRunning": "Stop syncing from {repository}? A sync is running now and will finish without publishing. The published files stay as they are, and editing and uploading in Fabric come back. Sync history is kept.",
 					"switchConfirmDisconnected": "Switch this project back to upload mode? The published files stay as they are, and editing and uploading in Fabric come back.",
 					"disconnected": "Repository disconnected. The repository these instructions synced from is no longer connected to this project.",
-					"switched": "Switched to upload mode."
+					"switched": "Switched to upload mode.",
+					"readerProposalsLabel": "Let read-only members propose changes as pull requests",
+					"readerProposalsHint": "A suggestion pushes a branch to the repository, which can start the repository's CI before anyone reviews it. A merged suggestion syncs even while automatic sync is off.",
+					"readerProposalsOn": "Read-only members can propose changes",
+					"readerProposalsOff": "Only members who can change coding instructions can propose changes",
+					"readerProposalsTurnedOn": "Read-only members can now propose changes as pull requests.",
+					"readerProposalsTurnedOff": "Read-only members can no longer propose changes."
 				}
 			},
 			"addFileDialog": {
@@ -5815,7 +5833,23 @@
 				"tooLarge": "This file is larger than {limit} MB.",
 				"pathInvalid": "That path cannot be used ({reason}).",
 				"pathSecret": "Fabric never stores credential files ({rule}).",
-				"pathFabricignore": "The .fabricignore file can only be changed by uploading the folder again."
+				"pathFabricignore": "The .fabricignore file can only be changed by uploading the folder again.",
+				"repositoryTitle": "Suggest a change",
+				"repositoryDescription": "This opens a pull request in {repository} against {ref}. The branch is pushed with the repository connection's credentials, and pushing it can start the repository's CI before anyone reviews it. The commit names you as author with a Fabric no-reply address.",
+				"noteTitleLabel": "Title",
+				"noteTitleHint": "Optional. One line, up to 120 characters.",
+				"noteBodyLabel": "Description",
+				"noteBodyHint": "Optional. Say why the change is needed.",
+				"noteProposalOnly": "The title and description go with a proposal, not with a file added directly.",
+				"submitPullRequestButton": "Suggest as a pull request",
+				"pullRequestSubmitted": "Suggestion submitted. Fabric opens the pull request once the files pass their checks.",
+				"refusals": {
+					"REPOSITORY_UNAVAILABLE": "The repository connection for this project is not available. Reconnect it in the project's repository settings, then try again.",
+					"REPOSITORY_BASE_UNAVAILABLE": "Sync the repository before suggesting a change.",
+					"REPOSITORY_SOURCE_OF_TRUTH": "This project's coding instructions come from its repository. Change the files there and sync the project."
+				},
+				"noteTitleInvalid": "Keep the title to one line of at most 120 characters.",
+				"noteBodyInvalid": "Keep the description to 4,096 bytes of plain text."
 			},
 			"proposalReview": {
 				"title": "Review proposals",
@@ -5863,7 +5897,95 @@
 				"rejectedBody": "This proposal was rejected.",
 				"lineCounts": "+{added} −{removed}",
 				"noTextualChanges": "The text of this file did not change.",
-				"emptyFile": "This file is empty."
+				"emptyFile": "This file is empty.",
+				"repositoryTitle": "Suggested changes",
+				"repositoryDescription": "Each suggestion opens a pull request in the project's repository once its files pass the same checks as a direct edit. Review, merge or close it there.",
+				"merged": "Merged",
+				"closed": "Closed",
+				"repositoryProposalBody": "This suggestion is a pull request in the project's repository. Review and merge or close it there.",
+				"withdraw": "Withdraw suggestion",
+				"withdrawConfirm": "Withdraw this suggestion? If Fabric already pushed its branch or opened its pull request, Fabric closes the pull request and deletes the branch it created.",
+				"withdrawSuccess": "Suggestion withdrawn.",
+				"withdrawClosing": "Suggestion withdrawn. Fabric is closing its pull request.",
+				"pullRequest": {
+					"states": {
+						"QUEUED": "Checking files",
+						"validationFailed": "Checks could not finish",
+						"OPENING": "Opening pull request",
+						"OPEN": "Pull request open",
+						"CLOSE_REQUESTED": "Closing pull request",
+						"BLOCKED": "Pull request not opened yet",
+						"blockedFinal": "Pull request not opened",
+						"MERGED": "Merged",
+						"mergedSyncing": "Merged. Syncing the repository…",
+						"mergedElsewhere": "Merged into {branch}, a different branch; Fabric did not sync it",
+						"CLOSED": "Closed without merging",
+						"CANCELED": "Withdrawn",
+						"rejectedByValidation": "Rejected by validation"
+					},
+					"mergeSyncOutcomes": {
+						"SUCCEEDED": "Merged and synced: the repository sync published it.",
+						"UNCHANGED": "Merged. The repository sync found nothing new to publish.",
+						"REJECTED": "Merged, but the repository sync's checks rejected the merged files.",
+						"FAILED": "Merged, but the repository sync failed.",
+						"NOT_PUBLISHED": "Merged, but the repository sync did not publish it.",
+						"SKIPPED": "Merged, but the repository sync was skipped."
+					},
+					"failures": {
+						"VALIDATION_REJECTED": "The proposed files did not pass validation.",
+						"VALIDATION_FAILED": "Validation could not finish. Try again to continue; the pull request opens once it passes.",
+						"VALIDATION_TIMEOUT": "Fabric is still checking the proposed files and will try again.",
+						"ATTRIBUTION_REJECTED": "Fabric could not attribute this change safely. Withdraw it and ask an owner to check the project name.",
+						"PERMISSION_REVOKED": "Your project access no longer permits this action.",
+						"CONFIGURATION_CHANGED": "The repository connection or instruction location changed. Sync and submit again.",
+						"TARGET_BRANCH_MISSING": "The branch this proposal targets no longer exists. Sync and submit again.",
+						"BASE_COMMIT_UNAVAILABLE": "The repository no longer provides the commit this proposal was based on. Sync and submit again.",
+						"TREE_CONFLICT": "A proposed file collides with a repository entry Fabric does not manage. Make this change in the repository.",
+						"AUTHENTICATION_FAILED": "The repository connection could not authenticate. Reconnect it; Fabric will retry.",
+						"REPOSITORY_UNAVAILABLE": "The connection cannot access this repository.",
+						"BRANCH_WRITE_REFUSED": "The repository refused the proposal branch. Check the connection's permissions and repository rules.",
+						"PR_CREATION_REFUSED": "The proposal branch exists, but the repository refused the pull request.",
+						"REMOTE_REF_CONFLICT": "The proposal branch was created or changed outside Fabric. Fabric did not overwrite or delete it.",
+						"LOOKUP_INCONCLUSIVE": "Fabric could not confirm the pull request's state and will check again.",
+						"CREATE_OUTCOME_UNKNOWN": "Fabric is checking whether the pull request was created.",
+						"PROVIDER_RATE_LIMITED": "The repository provider is temporarily unavailable. Fabric will retry.",
+						"PROVIDER_TEMPORARY": "The repository provider is temporarily unavailable. Fabric will retry.",
+						"CLOSE_REFUSED": "The repository refused to close the pull request. Close it there, or Fabric will retry.",
+						"CLOSE_CREDENTIALS_UNAVAILABLE": "Reconnect the repository to close this pull request.",
+						"STORAGE_FAILED": "Fabric could not read the proposed files. It will retry.",
+						"GIT_FAILED": "Fabric could not prepare the proposal branch.",
+						"LIMITS_EXCEEDED": "The repository is too large to prepare this proposal.",
+						"SYNC_START_FAILED": "The pull request merged; Fabric will sync the repository shortly.",
+						"MERGE_SYNC_FAILED": "The pull request merged, but Fabric could not sync it. Sync the repository manually.",
+						"UNEXPECTED": "Something went wrong. Fabric will retry."
+					},
+					"createOutcomeUnknownFinal": "Fabric could not confirm whether the pull request was created.",
+					"mergeSyncConfigurationChanged": "Merged; the repository configuration changed, sync it manually.",
+					"viewPullRequest": "View pull request",
+					"checkedAt": "Checked {time}",
+					"failureAt": "Recorded {time}",
+					"refresh": "Refresh",
+					"refreshIn": "Refresh in {seconds} s",
+					"refreshSuccess": "Fabric will check this pull request again shortly.",
+					"refreshSettled": "This pull request is already settled.",
+					"retryOpening": "Retry opening the pull request",
+					"retryConfirm": "Fabric will delete the earlier proposal branch if it created it, close any pull request opened from it, and open the pull request again from a new branch.",
+					"retrySuccess": "Fabric is opening the pull request again.",
+					"tryAgain": "Try again",
+					"tryAgainSuccess": "Checking the proposed files again.",
+					"reconnect": "Reconnect the repository",
+					"openRepositorySettings": "Open repository settings",
+					"refusals": {
+						"REPOSITORY_PROPOSAL": "This suggestion is a pull request in the project's repository. Review and merge or close it there.",
+						"PULL_REQUEST_NOT_RETRYABLE": "Only a pull request Fabric could not open, and will not retry by itself, can be retried.",
+						"PULL_REQUEST_CHANGED": "This pull request changed since it was shown. Its latest state is shown now; try again if it still applies.",
+						"PULL_REQUEST_BUSY": "Fabric is still working on this pull request. Try again in a minute.",
+						"PULL_REQUEST_START_FAILED": "Fabric could not start opening the pull request again. Try again.",
+						"PULL_REQUEST_REFRESH_COOLDOWN": "This pull request was refreshed a moment ago. You can refresh it again in {seconds} seconds.",
+						"PULL_REQUEST_PROVIDER_RATE_LIMITED": "The repository's provider asked Fabric to wait. Fabric will try again by itself; you can refresh in {seconds} seconds.",
+						"NOT_FOUND": "This suggestion could not be found."
+					}
+				}
 			},
 			"compare": {
 				"title": "Compare versions",

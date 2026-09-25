@@ -14,14 +14,19 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import type { Dirent } from "node:fs";
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, mkdtemp, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { SNAPSHOT_LIMITS } from "@repo/instructions";
+import { isGitAuthError } from "@repo/integrations";
 import {
 	createLsTreeParser,
+	createRawLsTreeParser,
 	type LsTreeSummary,
+	type RawTreeEntry,
 	sparsePatternFor,
 } from "./instruction-sync-tree";
+
+export type { RawTreeEntry } from "./instruction-sync-tree";
 
 /** Inventory cap, checked while `ls-tree` streams (spec §5.3.2 step 5). */
 export const MAX_INVENTORY_ENTRIES = 200_000;
@@ -34,6 +39,8 @@ const WATCHDOG_SAMPLE_MS = 250;
 export const MAX_FABRICIGNORE_BYTES = 64 * 1024;
 /** Stderr kept for classification and debug logs; never returned. */
 const STDERR_TAIL_BYTES = 8 * 1024;
+/** Stdout kept on a failed exit, for `push --porcelain` (Fizzy #2563). */
+const STDOUT_TAIL_BYTES = 8 * 1024;
 
 export const GIT_ASKPASS_PATH = path.join(__dirname, "git-askpass.sh");
 
@@ -76,6 +83,14 @@ type GitCommandErrorKind =
  * quote it. `stderrTail` is for classification and redacted debug logs.
  */
 export class GitCommandError extends Error {
+	/**
+	 * The last 8 KiB of collected stdout, redacted like `stderrTail`, set by
+	 * `runBoundedProcess` after construction on a non-zero exit only (Fizzy
+	 * #2563: `git push --porcelain` reports a refused ref on stdout and exits
+	 * 1). Never part of the message.
+	 */
+	stdoutTail?: string;
+
 	constructor(
 		readonly kind: GitCommandErrorKind,
 		readonly exitCode: number | null,
@@ -97,7 +112,8 @@ type BoundedProcessOptions = {
 	watchDir?: string;
 	maxDirBytes?: number;
 	sampleMs?: number;
-	stdin?: string;
+	/** Bytes are written as given, never decoded (Fizzy #2563 spec §7: file bytes reach `hash-object`). */
+	stdin?: string | Buffer | Uint8Array;
 	/** Collected stdout cap; passing it kills the group with `output_limit`. */
 	maxStdoutBytes?: number;
 	/** Streaming consumer instead of collection; "stop" ends the command early and resolves. */
@@ -263,7 +279,22 @@ export function runBoundedProcess(
 				return;
 			}
 			if (code !== 0) {
-				reject(new GitCommandError("exit", code, tail, options.label));
+				const error = new GitCommandError(
+					"exit",
+					code,
+					tail,
+					options.label,
+				);
+				const collected = Buffer.concat(stdout);
+				error.stdoutTail = redactSecrets(
+					collected
+						.subarray(
+							Math.max(0, collected.length - STDOUT_TAIL_BYTES),
+						)
+						.toString("utf8"),
+					options.secrets ?? [],
+				);
+				reject(error);
 				return;
 			}
 			resolve({ stdout: Buffer.concat(stdout), stoppedEarly: false });
@@ -361,35 +392,12 @@ export function gitUsernameFor(provider: string): string {
 }
 
 /**
- * The integration's URL as `origin + pathname` with any userinfo stripped, or
- * null when it is not HTTPS or carries a query or a fragment.
- *
- * Userinfo is stripped, not refused: Azure DevOps' own "Clone" button hands
- * out `https://<org>@<ado host>/<org>/<project>/_git/<repo>` (the host is
- * dev.azure.com; it is not spelled out beside the `@` so the publication
- * scan does not read the pair as an email address), and members
- * connect with exactly that URL. The credential git uses always comes from
- * the askpass helper, never from the URL. A query or fragment
- * (`…/repo.git?access_token=…`, `…/_git/repo#token`) is not part of a
- * repository URL and may carry a secret, so it is refused and the run fails
- * closed (INTEGRATION_UNAVAILABLE). The result has no component other than
- * origin and path, so nothing else can reach git's argv, `.git/config` on
- * disk, or git's own stderr; `assertNoUrlCredentials` re-checks that at the
- * sink.
+ * The integration's URL as `origin + pathname`, userinfo stripped, or null
+ * when it is not HTTPS or carries a query or a fragment. Defined beside the
+ * repository identity parsed from it, so the sync, the proposal activities
+ * and proposal admission share one reading of a stored URL.
  */
-export function credentialFreeUrl(repositoryUrl: string): string | null {
-	let url: URL;
-	try {
-		url = new URL(repositoryUrl);
-	} catch {
-		return null;
-	}
-	if (url.protocol !== "https:" || url.search !== "" || url.hash !== "") {
-		return null;
-	}
-	// `origin` never includes userinfo, so this also strips it.
-	return `${url.origin}${url.pathname}`;
-}
+export { credentialFreeUrl } from "@repo/integrations/instruction-pull-requests";
 
 export function cloneArgs(input: {
 	url: string;
@@ -445,6 +453,49 @@ export function classifyGitFailure(
 		return "commit_missing";
 	}
 	return "other";
+}
+
+/**
+ * Wordings with which a provider refuses a push for want of write permission
+ * at the HTTP level, before git reports any ref (Fizzy #2563). Matched on the
+ * lower-cased, redacted `stderrTail`.
+ */
+const PUSH_WRITE_REFUSAL_WORDINGS: readonly RegExp[] = [
+	// GitHub: an App installation whose Contents permission is read-only.
+	/write access to repository not granted/,
+	// GitHub: a user or token without push rights ("Permission to o/r.git denied to u").
+	/permission to \S+ denied to/,
+	// GitLab: no push rights on the project, or a protected branch.
+	/you are not allowed to push code to this project/,
+	/you are not allowed to push code to protected branches/,
+	// Azure DevOps: TF401027 names the missing Git permission
+	// ('GenericContribute' to push, 'ForcePush' to delete a branch); TF402455
+	// is a branch policy that allows updates only through a pull request.
+	/\btf401027\b/,
+	/\btf402455\b/,
+];
+
+/**
+ * Whether a failed push was refused for want of write permission rather than
+ * failing to run (Fizzy #2563). Such a refusal arrives as an HTTP error before
+ * any ref negotiation, so `git push --porcelain` prints no ref line and only
+ * stderr says why; the ref was never touched.
+ *
+ * Authentication is excluded first: an error carrying `isGitAuthError`
+ * wording is a credential failure (a re-exchange can cure it), even beside a
+ * 403. Only a provider's explicit write-refusal wording then counts; a bare
+ * `returned error: 403` does not. A 403 also answers a GitHub organization's
+ * SAML SSO wall (a credential the user must re-authorize), a rate limit, or
+ * wording a provider may add later, and reading any of those as a refusal
+ * would block the proposal with BRANCH_WRITE_REFUSED instead of routing it
+ * to credential recovery or a retry. An unrecognised 403 is rethrown.
+ */
+export function isPushWriteRefusal(error: GitCommandError): boolean {
+	if (error.kind !== "exit" || isGitAuthError(new Error(error.stderrTail))) {
+		return false;
+	}
+	const s = error.stderrTail.toLowerCase();
+	return PUSH_WRITE_REFUSAL_WORDINGS.some((wording) => wording.test(s));
 }
 
 /** For debug logs only: removes the given secrets and any URL userinfo. */
@@ -734,6 +785,526 @@ export async function lsRemoteHead(
 		args: ["ls-remote", "--", input.url, wanted],
 		env: input.env,
 		signal,
+		label: "ls-remote",
+		maxStdoutBytes: LS_REMOTE_MAX_STDOUT_BYTES,
+	});
+	for (const line of stdout.toString("utf8").split("\n")) {
+		const tab = line.indexOf("\t");
+		if (tab === -1 || line.slice(tab + 1).trimEnd() !== wanted) {
+			continue;
+		}
+		const sha = line.slice(0, tab);
+		if (!OBJECT_ID_PATTERN.test(sha)) {
+			throw new GitCommandError("exit", 0, "", "ls-remote");
+		}
+		return { kind: "found", sha };
+	}
+	return { kind: "missing" };
+}
+
+// ---------------------------------------------------------------------------
+// Proposal pull requests (Fizzy #2563 spec §7 table). Every command below runs
+// through `runGit`: the safe config, the askpass env, redaction and the
+// process-group watchdog of the sync. Every object id is `assertObjectId`'d,
+// every URL `assertNoUrlCredentials`'d and every branch
+// `assertOperationBranch`'d before anything spawns.
+// ---------------------------------------------------------------------------
+
+/**
+ * The only refs Fabric ever writes (spec §2.7, §13.3; plan Decision 13):
+ * `fabric/instructions/<cuid2>` for attempt 1 and `-<n>` (n >= 2) for a
+ * re-issue. A cuid2 id is 24 lowercase characters starting with a letter
+ * (R20). Anything else, including a leading `-`, `..` or a full `refs/`
+ * name, is refused before git runs.
+ */
+const OPERATION_BRANCH_PATTERN =
+	/^fabric\/instructions\/[a-z][a-z0-9]{23}(?:-[2-9]|-[1-9][0-9]{1,3})?$/;
+
+export function assertOperationBranch(branch: string): void {
+	if (!OPERATION_BRANCH_PATTERN.test(branch)) {
+		throw new GitCommandError("invalid_argument", null, "", "branch");
+	}
+}
+
+/**
+ * A repository path for `update-index -z --index-info`: non-empty, relative,
+ * no empty, `.` or `..` segment, and no NUL (the record terminator). git's own
+ * `verify_path` also refuses `.git` components; this guard keeps the framing
+ * and the tree's shape out of a caller's hands.
+ */
+function assertTreePath(value: string): void {
+	if (
+		value === "" ||
+		value.includes("\0") ||
+		value.split("/").some((s) => s === "" || s === "." || s === "..")
+	) {
+		throw new GitCommandError("invalid_argument", null, "", "update-index");
+	}
+}
+
+/** Bounded `ls-tree` output: the inventory cap bounds the entry count, this the bytes of a diff. */
+const DIFF_TREE_MAX_STDOUT_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Spec §7 step 2: `ls-tree -r -z <sha>` under `rootPath`, keeping mode, type,
+ * object id and the byte-exact path of every blob, symlink and gitlink.
+ * `listTree` beside it is unchanged. Over `maxEntries` entries is
+ * `{ ok: false }` (LIMITS_EXCEEDED); a record git should never print with
+ * `-r` throws.
+ */
+export async function listTreeRaw(
+	input: GitCallBase & {
+		dir: string;
+		sha: string;
+		rootPath: string;
+		maxEntries: number;
+	},
+): Promise<{ ok: true; entries: RawTreeEntry[] } | { ok: false }> {
+	assertObjectId(input.sha, "ls-tree");
+	const parser = createRawLsTreeParser({
+		rootPath: input.rootPath,
+		maxEntries: input.maxEntries,
+	});
+	// Assigned in the stdout callback, so declared wide: TS would narrow a
+	// plain initialiser to "ok" for the checks below.
+	let verdict = "ok" as "ok" | "limit" | "invalid";
+	await runGit({
+		cwd: input.dir,
+		args: [
+			"ls-tree",
+			"-r",
+			"-z",
+			input.sha,
+			...(input.rootPath === "" ? [] : ["--", input.rootPath]),
+		],
+		env: input.env,
+		signal: input.signal,
+		label: "ls-tree",
+		onStdout: (chunk) => {
+			verdict = parser.push(chunk);
+			return verdict === "ok" ? "continue" : "stop";
+		},
+	});
+	const { entries, invalid } = parser.finish();
+	if (verdict === "invalid" || invalid) {
+		throw new GitCommandError("exit", 0, "", "ls-tree");
+	}
+	if (verdict === "limit" || entries.length > input.maxEntries) {
+		return { ok: false };
+	}
+	return { ok: true, entries };
+}
+
+/** Spec §7 step 6: the base commit's tree into a private index file. */
+export async function readBaseTree(
+	input: GitCallBase & { dir: string; sha: string; indexFile: string },
+): Promise<void> {
+	assertObjectId(input.sha, "read-tree");
+	await runGit({
+		cwd: input.dir,
+		args: ["read-tree", input.sha],
+		env: { ...input.env, GIT_INDEX_FILE: input.indexFile },
+		signal: input.signal,
+		label: "read-tree",
+		...watched(input.dir),
+	});
+}
+
+export type TreeDeltaEntry =
+	| { path: string; mode: "100644" | "100755"; bytes: Buffer }
+	| { path: string; delete: true };
+
+/**
+ * Spec §7 step 6: one `hash-object -w --no-filters --stdin` per changed blob
+ * (the bytes as a Buffer, never decoded), one `update-index -z --index-info`
+ * applying the whole delta to the index `readBaseTree` filled (a deletion is
+ * a mode-0 entry), then `write-tree --missing-ok`: the inherited entries come
+ * from the base commit's own tree, so their blobs need not be local, and the
+ * new blobs were just written. `blobIds` maps each written path to its blob id.
+ */
+export async function writeProposalTree(
+	input: GitCallBase & {
+		dir: string;
+		indexFile: string;
+		delta: readonly TreeDeltaEntry[];
+	},
+): Promise<{ tree: string; blobIds: Map<string, string> }> {
+	for (const entry of input.delta) {
+		assertTreePath(entry.path);
+		if (
+			!("delete" in entry) &&
+			entry.mode !== "100644" &&
+			entry.mode !== "100755"
+		) {
+			throw new GitCommandError(
+				"invalid_argument",
+				null,
+				"",
+				"update-index",
+			);
+		}
+	}
+	const env = { ...input.env, GIT_INDEX_FILE: input.indexFile };
+	const call = { cwd: input.dir, env, signal: input.signal };
+	const { stdout: format } = await runGit({
+		...call,
+		args: ["rev-parse", "--show-object-format"],
+		label: "rev-parse",
+		maxStdoutBytes: 64,
+	});
+	const zeroOid = "0".repeat(
+		format.toString("utf8").trim() === "sha256" ? 64 : 40,
+	);
+	const blobIds = new Map<string, string>();
+	const records: Buffer[] = [];
+	for (const entry of input.delta) {
+		if ("delete" in entry) {
+			records.push(Buffer.from(`0 ${zeroOid}\t${entry.path}\0`, "utf8"));
+			continue;
+		}
+		const { stdout } = await runGit({
+			...call,
+			args: ["hash-object", "-w", "--no-filters", "--stdin"],
+			stdin: entry.bytes,
+			label: "hash-object",
+			maxStdoutBytes: 256,
+			...watched(input.dir),
+		});
+		const oid = stdout.toString("utf8").trim();
+		assertObjectId(oid, "hash-object");
+		blobIds.set(entry.path, oid);
+		records.push(
+			Buffer.from(`${entry.mode} ${oid}\t${entry.path}\0`, "utf8"),
+		);
+	}
+	await runGit({
+		...call,
+		args: ["update-index", "-z", "--index-info"],
+		stdin: Buffer.concat(records),
+		label: "update-index",
+		...watched(input.dir),
+	});
+	const { stdout } = await runGit({
+		...call,
+		args: ["write-tree", "--missing-ok"],
+		label: "write-tree",
+		maxStdoutBytes: 256,
+		...watched(input.dir),
+	});
+	const tree = stdout.toString("utf8").trim();
+	assertObjectId(tree, "write-tree");
+	return { tree, blobIds };
+}
+
+/**
+ * Spec §7 step 7: the commit, reproducible from frozen metadata (author,
+ * committer, date and message all come from the context), unsigned whatever
+ * the environment says, with the message on stdin.
+ */
+export async function commitTree(
+	input: GitCallBase & {
+		dir: string;
+		tree: string;
+		parent: string;
+		author: { name: string; email: string };
+		committer: { name: string; email: string };
+		message: string;
+		date: string;
+	},
+): Promise<string> {
+	assertObjectId(input.tree, "commit-tree");
+	assertObjectId(input.parent, "commit-tree");
+	const { stdout } = await runGit({
+		cwd: input.dir,
+		args: [
+			"-c",
+			"commit.gpgSign=false",
+			"commit-tree",
+			input.tree,
+			"-p",
+			input.parent,
+			"-F",
+			"-",
+		],
+		env: {
+			...input.env,
+			GIT_AUTHOR_NAME: input.author.name,
+			GIT_AUTHOR_EMAIL: input.author.email,
+			GIT_AUTHOR_DATE: input.date,
+			GIT_COMMITTER_NAME: input.committer.name,
+			GIT_COMMITTER_EMAIL: input.committer.email,
+			GIT_COMMITTER_DATE: input.date,
+		},
+		stdin: input.message,
+		signal: input.signal,
+		label: "commit-tree",
+		maxStdoutBytes: 256,
+		...watched(input.dir),
+	});
+	const sha = stdout.toString("utf8").trim();
+	assertObjectId(sha, "commit-tree");
+	return sha;
+}
+
+export type DiffTreeEntry = {
+	status: "A" | "M" | "D";
+	path: string;
+	oldMode: string;
+	newMode: string;
+	newOid: string;
+};
+
+const DIFF_RAW_HEADER =
+	/^:(\d{6}) (\d{6}) ([0-9a-f]{40}|[0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) ([A-Z])$/;
+
+/**
+ * Spec §7 step 8, the verifier: `diff-tree -r -z --raw --no-renames`. Any
+ * status other than added, modified or deleted (a type change, say) throws,
+ * because the builder never produces one and the verifier must not
+ * silently accept it.
+ */
+export async function diffTreeEntries(
+	input: GitCallBase & { dir: string; from: string; to: string },
+): Promise<DiffTreeEntry[]> {
+	assertObjectId(input.from, "diff-tree");
+	assertObjectId(input.to, "diff-tree");
+	const { stdout } = await runGit({
+		cwd: input.dir,
+		args: [
+			"diff-tree",
+			"-r",
+			"-z",
+			"--raw",
+			"--no-renames",
+			input.from,
+			input.to,
+		],
+		env: input.env,
+		signal: input.signal,
+		label: "diff-tree",
+		maxStdoutBytes: DIFF_TREE_MAX_STDOUT_BYTES,
+	});
+	const fields = stdout.toString("utf8").split("\0");
+	const out: DiffTreeEntry[] = [];
+	for (let i = 0; i + 1 < fields.length; i += 2) {
+		const header = DIFF_RAW_HEADER.exec(fields[i] as string);
+		const status = header?.[5];
+		if (!header || (status !== "A" && status !== "M" && status !== "D")) {
+			throw new GitCommandError("exit", 0, "", "diff-tree");
+		}
+		out.push({
+			status,
+			path: fields[i + 1] as string,
+			oldMode: header[1] as string,
+			newMode: header[2] as string,
+			newOid: header[4] as string,
+		});
+	}
+	if (fields.length % 2 !== 1 || fields[fields.length - 1] !== "") {
+		throw new GitCommandError("exit", 0, "", "diff-tree");
+	}
+	return out;
+}
+
+/** `git push --porcelain` prints `<flag>\t<from>:<to>\t<summary>` per ref. */
+function porcelainFlag(
+	stdout: Buffer,
+	ref: string,
+): { flag: string; summary: string } | null {
+	for (const line of stdout.toString("utf8").split("\n")) {
+		const [flag, spec, summary = ""] = line.split("\t");
+		if (
+			flag !== undefined &&
+			spec !== undefined &&
+			spec.endsWith(`:${ref}`)
+		) {
+			return { flag: flag.trim(), summary };
+		}
+	}
+	return null;
+}
+
+/** Runs a push and returns its stdout whether or not git exited 0; any other failure rethrows. */
+async function runPush(
+	options: BoundedProcessOptions,
+): Promise<{ stdout: Buffer; error: GitCommandError | null }> {
+	try {
+		const { stdout } = await runGit(options);
+		return { stdout, error: null };
+	} catch (error) {
+		if (!(error instanceof GitCommandError) || error.kind !== "exit") {
+			throw error;
+		}
+		return { stdout: Buffer.from(error.stdoutTail ?? "", "utf8"), error };
+	}
+}
+
+/**
+ * Spec §6.1 step 6: push `sha` to `refs/heads/<branch>` only if the ref does
+ * not exist (an empty lease). `created` only on git's own `*` for exactly
+ * that ref. A ref that already exists, even at our own SHA, is `exists`: git
+ * reports an equal ref as up to date (`=`) before it checks the lease (R21;
+ * git 2.39 prints `=`, Task 1), and ownership never comes from a matching SHA.
+ * Any other refused ref is `refused`, and so is a push the remote refused
+ * for want of write permission before reporting any ref
+ * (`isPushWriteRefusal`, Fizzy #2563): in both the ref was never written. Any
+ * other failure that reports no ref at all (authentication, an unreachable
+ * remote) rethrows the original error.
+ */
+export async function pushCreateOnly(
+	input: GitCallBase & { dir: string; sha: string; branch: string },
+): Promise<{ kind: "created" } | { kind: "exists" } | { kind: "refused" }> {
+	assertObjectId(input.sha, "push");
+	assertOperationBranch(input.branch);
+	const ref = `refs/heads/${input.branch}`;
+	const { stdout, error } = await runPush({
+		cwd: input.dir,
+		env: input.env,
+		signal: input.signal,
+		label: "push",
+		...watched(input.dir),
+		args: [
+			"push",
+			"--porcelain",
+			"--no-follow-tags",
+			`--force-with-lease=${ref}:`,
+			"origin",
+			`${input.sha}:${ref}`,
+		],
+	});
+	const line = porcelainFlag(stdout, ref);
+	if (line?.flag === "*" && error === null) {
+		return { kind: "created" };
+	}
+	if (
+		line?.flag === "=" ||
+		(line?.flag === "!" &&
+			/stale info|already exists|fetch first/.test(line.summary))
+	) {
+		return { kind: "exists" };
+	}
+	if (line?.flag === "!") {
+		return { kind: "refused" };
+	}
+	if (line === null && error !== null && isPushWriteRefusal(error)) {
+		return { kind: "refused" };
+	}
+	throw error ?? new GitCommandError("exit", 0, "", "push");
+}
+
+/**
+ * Spec §6.2 step 2 (R9): delete `refs/heads/<branch>` on `url` only while its
+ * tip is `sha`, from a fresh bare repository under `cwd` (a push needs a
+ * repository; a temporary directory has no `origin`). git reports a lease
+ * mismatch and an absent ref alike as `stale info`, so a refusal of that kind
+ * is resolved by one exact `ls-remote`: absent is `absent`, present is
+ * `stale`. Any other refusal is `refused`; `activePullRequest` says the
+ * remote named a pull request as the reason (Azure DevOps refuses deleting a
+ * branch an active pull request uses), which settlement answers with a
+ * lookup rather than a failure. A push the remote refused for want of write
+ * permission before reporting any ref (`isPushWriteRefusal`, Fizzy #2563) is
+ * `refused` without an active pull request: closing one would not grant the
+ * permission.
+ */
+export async function deleteBranch(
+	input: GitCallBase & {
+		cwd: string;
+		url: string;
+		branch: string;
+		sha: string;
+	},
+): Promise<
+	| { kind: "deleted" }
+	| { kind: "absent" }
+	| { kind: "stale" }
+	| { kind: "refused"; activePullRequest: boolean }
+> {
+	assertNoUrlCredentials(input.url, "push");
+	assertOperationBranch(input.branch);
+	assertObjectId(input.sha, "push");
+	const ref = `refs/heads/${input.branch}`;
+	const bare = await mkdtemp(path.join(input.cwd, "delete-"));
+	try {
+		await runGit({
+			cwd: bare,
+			args: ["init", "--bare", "-q"],
+			env: input.env,
+			signal: input.signal,
+			label: "init",
+		});
+		const { stdout, error } = await runPush({
+			cwd: bare,
+			env: input.env,
+			signal: input.signal,
+			label: "push",
+			args: [
+				"push",
+				"--porcelain",
+				`--force-with-lease=${ref}:${input.sha}`,
+				"--",
+				input.url,
+				`:${ref}`,
+			],
+		});
+		const line = porcelainFlag(stdout, ref);
+		if (line?.flag === "-" && error === null) {
+			return { kind: "deleted" };
+		}
+		if (line?.flag === "!" && /stale info/.test(line.summary)) {
+			const now = await lsRemoteRef({
+				cwd: input.cwd,
+				url: input.url,
+				branch: input.branch,
+				env: input.env,
+				signal: input.signal,
+			});
+			return now.kind === "missing"
+				? { kind: "absent" }
+				: { kind: "stale" };
+		}
+		if (line?.flag === "!") {
+			const reason = `${line.summary}\n${error?.stderrTail ?? ""}`;
+			return {
+				kind: "refused",
+				activePullRequest: /\bpull request\b/i.test(reason),
+			};
+		}
+		if (line === null && error !== null && isPushWriteRefusal(error)) {
+			return { kind: "refused", activePullRequest: false };
+		}
+		throw error ?? new GitCommandError("exit", 0, "", "push");
+	} finally {
+		await rm(bare, { recursive: true, force: true });
+	}
+}
+
+/**
+ * Spec §6.1 step 3 (c), §6.2 step 2 (R10): the tip of exactly
+ * `refs/heads/<branch>` on `url`, without a clone. `--refs` drops peeled
+ * tags; `ls-remote` still matches from the tail, so only the exact line
+ * counts, as in `lsRemoteHead`. Bounded to 30 s.
+ */
+export async function lsRemoteRef(
+	input: GitCallBase & {
+		cwd: string;
+		url: string;
+		branch: string;
+		timeoutMs?: number;
+	},
+): Promise<RemoteHead> {
+	assertNoUrlCredentials(input.url, "ls-remote");
+	assertOperationBranch(input.branch);
+	const wanted = `refs/heads/${input.branch}`;
+	const timeout = AbortSignal.timeout(
+		input.timeoutMs ?? LS_REMOTE_TIMEOUT_MS,
+	);
+	const { stdout } = await runGit({
+		cwd: input.cwd,
+		args: ["ls-remote", "--refs", "--", input.url, wanted],
+		env: input.env,
+		signal: input.signal
+			? AbortSignal.any([timeout, input.signal])
+			: timeout,
 		label: "ls-remote",
 		maxStdoutBytes: LS_REMOTE_MAX_STDOUT_BYTES,
 	});

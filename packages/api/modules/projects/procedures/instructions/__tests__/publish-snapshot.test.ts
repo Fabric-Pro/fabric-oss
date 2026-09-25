@@ -82,6 +82,28 @@ describe("projects.instructions.publish", () => {
 		expect(m.runInBackground).not.toHaveBeenCalled();
 	});
 
+	// Fizzy #2563 spec §12: History publish refuses a REPOSITORY proposal,
+	// which is decided on its pull request, with the same reason approve and
+	// reject give.
+	it("maps a repository_proposal refusal to PRECONDITION_FAILED REPOSITORY_PROPOSAL and audits nothing", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: false,
+			changed: false,
+			reason: "repository_proposal",
+		});
+		await expect(
+			m.handlers.publish!({
+				input: { projectId: "p", snapshotId: "s" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			data: { reason: "REPOSITORY_PROPOSAL" },
+		});
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		expect(m.runInBackground).not.toHaveBeenCalled();
+	});
+
 	it("publishes and audits the call that moved the pointer", async () => {
 		m.publishInstructionSnapshot.mockResolvedValue({
 			published: true,

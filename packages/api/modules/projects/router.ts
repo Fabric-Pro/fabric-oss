@@ -208,8 +208,11 @@ import {
 	cancelInstructionProposalProcedure,
 	getInstructionProposalFileProcedure,
 	getInstructionProposalProcedure,
+	getInstructionProposalPullRequestProcedure,
 	listInstructionProposalsProcedure,
+	refreshInstructionProposalPullRequestProcedure,
 	rejectInstructionProposalProcedure,
+	retryInstructionProposalPullRequestProcedure,
 } from "./procedures/instructions/proposals";
 import { publishSnapshotProcedure } from "./procedures/instructions/publish-snapshot";
 import { configureRepositorySyncProcedure } from "./procedures/instructions/repository-sync/configure";
@@ -217,6 +220,7 @@ import { disableRepositorySyncProcedure } from "./procedures/instructions/reposi
 import { getRepositorySyncProcedure } from "./procedures/instructions/repository-sync/get";
 import { listRepositorySyncRunsProcedure } from "./procedures/instructions/repository-sync/list-runs";
 import { syncRepositoryNowProcedure } from "./procedures/instructions/repository-sync/sync-now";
+import { updateRepositorySyncProposalSettingsProcedure } from "./procedures/instructions/repository-sync/update-proposal-settings";
 import { updateSettingsProcedure as updateInstructionSettingsProcedure } from "./procedures/instructions/update-settings";
 import {
 	getKanbanUserPreferenceProcedure,
@@ -1966,6 +1970,10 @@ export const projectsRouter = {
 			approve: approveInstructionProposalProcedure,
 			reject: rejectInstructionProposalProcedure,
 			cancel: cancelInstructionProposalProcedure,
+			// A REPOSITORY proposal's pull request (Fizzy #2563 spec §12).
+			getPullRequestStatus: getInstructionProposalPullRequestProcedure,
+			refreshPullRequest: refreshInstructionProposalPullRequestProcedure,
+			retryPullRequest: retryInstructionProposalPullRequestProcedure,
 		},
 		// Repository as the source of truth (design 2026-09-23 §5.1).
 		repositorySync: {
@@ -1974,6 +1982,10 @@ export const projectsRouter = {
 			configure: configureRepositorySyncProcedure,
 			syncNow: syncRepositoryNowProcedure,
 			disable: disableRepositorySyncProcedure,
+			// "Let read-only members propose changes as pull requests"
+			// (Fizzy #2563 Decision 4): never bumps the generation.
+			updateProposalSettings:
+				updateRepositorySyncProposalSettingsProcedure,
 		},
 	},
 

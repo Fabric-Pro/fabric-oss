@@ -2,7 +2,6 @@ import { ORPCError } from "@orpc/client";
 import {
 	createDerivedInstructionSnapshot,
 	getInstructionSnapshot,
-	getProjectInstructionSettings,
 	getPublishedInstructionSnapshot,
 } from "@repo/database";
 import { SNAPSHOT_LIMITS, snapshotPrefix } from "@repo/instructions";
@@ -19,7 +18,13 @@ import {
 	validateInstructionChanges,
 } from "./change-set";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import {
+	admitInstructionProposal,
+	repositoryDestination,
+	uploadStartedAuditTemplate,
+} from "./proposal-admission";
 import { assertInstructionDeriveAccess } from "./proposal-authorization";
+import { startAdmittedProposalPullRequest } from "./proposal-pull-request";
 
 /**
  * AUTHORIZATION: tenantProtectedProcedure plus a dynamic project permission:
@@ -61,6 +66,12 @@ import { assertInstructionDeriveAccess } from "./proposal-authorization";
  * a snapshot the gate is right to reject. Changing the exclusion rules is a
  * settings change plus a folder re-upload, which is the operation that
  * re-freezes them.
+ *
+ * A repository-backed project (Fizzy #2563) accepts a PROPOSAL, which opens
+ * a pull request once validation passes: `admitInstructionProposal` freezes
+ * its destination, the create transaction writes it with its
+ * `upload_started` row, and the operation's workflow starts after commit.
+ * A direct save there is still refused with `REPOSITORY_SOURCE_OF_TRUTH`.
  */
 export const deriveSnapshotProcedure = tenantProtectedProcedure
 	// Every proposal author needs READ. Direct derives retain CREATE through
@@ -81,6 +92,17 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 			baseSnapshotId: z.string(),
 			publishOnReady: z.boolean().default(true),
 			proposal: z.boolean().default(false),
+			/**
+			 * A proposal's title and description (spec §5.1 step 6). Shape
+			 * only here: the limits are `proposalNoteSchema`'s, applied by
+			 * admission so a violation is `NOTE_REJECTED` naming its field.
+			 */
+			note: z
+				.object({
+					title: z.string().optional(),
+					body: z.string().optional(),
+				})
+				.optional(),
 			changes: z
 				.array(
 					z.discriminatedUnion("op", [
@@ -112,20 +134,19 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 		);
 
 		// Spec §6.12: one source of truth per project. A repository-backed
-		// project's instructions are changed in git and refreshed by sync;
-		// accepting an edit here would fork Fabric away from the repository
-		// with no way to reconcile, which is the case the whole setting
-		// exists to prevent.
-		const settings = await getProjectInstructionSettings(
-			input.projectId,
+		// project's instructions are changed in git and refreshed by sync, so
+		// a direct save there would fork Fabric away from the repository; a
+		// proposal is admitted as a pull request into it instead (Fizzy
+		// #2563 spec §5.1), which is the one change git can receive from here.
+		const admission = await admitInstructionProposal({
+			projectId: input.projectId,
 			organizationId,
-		);
-		if (settings.sourceOfTruth === "REPOSITORY") {
-			throw new ORPCError("PRECONDITION_FAILED", {
-				message:
-					"This project's coding instructions come from its repository. Change the files there and sync the project.",
-			});
-		}
+			userId: context.user.id,
+			mode: input.proposal ? "proposal" : "direct",
+			note: input.note,
+			proposerName: context.user.name,
+			fileCount: input.changes.length,
+		});
 
 		const base = await getInstructionSnapshot(
 			input.baseSnapshotId,
@@ -188,6 +209,25 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 				maxTotalBytes: SNAPSHOT_LIMITS.maxTotalBytes,
 			},
 			baseKeyPrefix: snapshotPrefix(input.projectId, base.id),
+			note: admission.note,
+			// A REPOSITORY proposal's `upload_started` row is written INSIDE
+			// the create transaction, which alone knows the id and version it
+			// allocates (plan Decision 11); the outer audit below is skipped.
+			...(admission.destination === "REPOSITORY"
+				? {
+						destination: repositoryDestination(
+							admission,
+							uploadStartedAuditTemplate(context, {
+								organizationId,
+								projectId: input.projectId,
+								baseSnapshotId: base.id,
+								baseVersion: base.version,
+								putCount,
+								deleteCount,
+							}),
+						),
+					}
+				: {}),
 		});
 		if (!created.ok) {
 			// The tab REFUSES an identical pending proposal rather than
@@ -218,6 +258,33 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 			throw derivedSnapshotRefusal(created.reason, created.detail);
 		}
 
+		if (admission.destination === "REPOSITORY") {
+			// After commit (spec §5.1 step 9), and never for a row admitted
+			// BLOCKED: nothing is pushed for one. A failed start is logged,
+			// not thrown; the sweeper restarts a queued row with no workflow.
+			if (!admission.blocked) {
+				await startAdmittedProposalPullRequest({
+					snapshotId: created.id,
+					projectId: input.projectId,
+					organizationId,
+					operationId: admission.operationId,
+				});
+			}
+			return {
+				...derivedResult(created, base.version, input.proposal),
+				pullRequest: {
+					operationId: admission.operationId,
+					state: admission.blocked
+						? ("BLOCKED" as const)
+						: ("QUEUED" as const),
+					url: null,
+					externalId: null,
+					failure: admission.blocked ?? null,
+					lastCheckedAt: null,
+				},
+			};
+		}
+
 		// The same action an upload records — this IS an upload, of a smaller
 		// set of files — with the provenance and the shape of the change in
 		// metadata. Counts and the base id only: a path is user content and
@@ -244,15 +311,33 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 		});
 
 		return {
-			snapshotId: created.id,
-			version: created.version,
-			baseVersion: base.version,
-			fileCount: created.fileCount,
-			inheritedCount: created.inheritedCount,
-			proposalStatus: input.proposal ? ("PENDING" as const) : null,
-			// Exactly the rows the client has to PUT. It must not ask
-			// `listFiles` instead: that returns the inherited rows too, and
-			// `createUploadUrls` refuses every one of them.
-			staged: created.staged.map((f) => ({ fileId: f.id, path: f.path })),
+			...derivedResult(created, base.version, input.proposal),
+			pullRequest: null,
 		};
 	});
+
+/** The response both destinations share. */
+function derivedResult(
+	row: {
+		id: string;
+		version: number;
+		fileCount: number;
+		inheritedCount: number;
+		staged: ReadonlyArray<{ id: string; path: string }>;
+	},
+	baseVersion: number,
+	proposal: boolean,
+) {
+	return {
+		snapshotId: row.id,
+		version: row.version,
+		baseVersion,
+		fileCount: row.fileCount,
+		inheritedCount: row.inheritedCount,
+		proposalStatus: proposal ? ("PENDING" as const) : null,
+		// Exactly the rows the client has to PUT. It must not ask
+		// `listFiles` instead: that returns the inherited rows too, and
+		// `createUploadUrls` refuses every one of them.
+		staged: row.staged.map((f) => ({ fileId: f.id, path: f.path })),
+	};
+}

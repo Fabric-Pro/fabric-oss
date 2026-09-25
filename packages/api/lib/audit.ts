@@ -208,8 +208,12 @@ export function auditRequestFields(
  * assume the logged-in user from `context.user` made the action. If
  * there is no user (e.g. unauthenticated callsite that somehow
  * reaches this helper), the actor falls back to `type: "system"`.
+ *
+ * Exported for a row written somewhere else with this request's actor: a
+ * repository proposal's `upload_started`, which the create transaction
+ * completes and writes (Fizzy #2563 Decision 11).
  */
-function resolveActor(
+export function resolveActor(
 	context: AuditRequestContext,
 	override: Partial<RecordAuditInput["actor"]> | undefined,
 ): RecordAuditInput["actor"] {

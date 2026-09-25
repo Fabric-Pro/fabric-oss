@@ -58,7 +58,19 @@
  *    auth-error classifier both clone paths use.
  *
  * The recovery helpers are best-effort and NEVER throw — a recovery attempt
- * must never mask the underlying clone failure with an error of its own.
+ * must never mask the underlying clone failure with an error of its own. The
+ * one exception is a caller's own `signal`: `resolveFreshRepoToken`,
+ * `forceReExchangeRepoCredentials` and `markRepoReauthRequired` accept one,
+ * check it between their steps, and throw its `reason` once it has aborted,
+ * so a cancelled or out-of-time caller starts no refresh, status write or
+ * notification (see `stopIfAborted`). An exchange and the write persisting
+ * it, or a status write, already under way runs to its end first; the reason
+ * is thrown after it. The reauth notification starts only after the
+ * post-write signal check and is waited for only within its own bound. The
+ * token helpers also
+ * accept a pre-exchange gate (`BeforeExchange`), consulted under the
+ * provider's lock immediately before an exchange; what it throws is thrown
+ * unchanged.
  */
 import {
 	createRepoIntegrationCredentialNotification,
@@ -70,6 +82,11 @@ import type {
 	RepositoryProvider,
 } from "@repo/database/prisma/zod";
 import { decryptApiKey } from "@repo/utils";
+import {
+	type BeforeExchange,
+	isExchangeRefusal,
+	runExchangeGate,
+} from "./exchange-gate";
 import { refreshProjectRepoGitHubTokenWithOutcome } from "./github/index";
 import {
 	GitLabReauthRequiredError,
@@ -104,6 +121,12 @@ export function buildAuthCloneUrl(
  * cancel. Matched on the message text simple-git surfaces from the underlying
  * `git` process. Deliberately excludes rate-limit 403s (which carry no auth
  * wording) so a quota wall is never mistaken for a dead credential.
+ *
+ * A GitHub organization's SAML SSO wall arrives as a 403 whose `remote:`
+ * lines say "enabled or enforced SAML SSO", "Resource protected by
+ * organization SAML enforcement" or "you must re-authorize the OAuth
+ * Application": the credential must be re-authorized, so it counts as an
+ * authentication failure here (Fizzy #2563), never as a write refusal.
  */
 export function isGitAuthError(error: unknown): boolean {
 	const message = (
@@ -116,7 +139,10 @@ export function isGitAuthError(error: unknown): boolean {
 		message.includes("terminal prompts disabled") ||
 		message.includes("invalid username or password") ||
 		message.includes("invalid username or token") ||
-		message.includes("http basic: access denied")
+		message.includes("http basic: access denied") ||
+		message.includes("saml sso") ||
+		message.includes("saml enforcement") ||
+		message.includes("must re-authorize the oauth application")
 	);
 }
 
@@ -160,11 +186,41 @@ function decryptedField(encrypted: string | null): {
 }
 
 /**
+ * Throws the caller's abort reason once `signal` has aborted. The repo-auth
+ * helpers call it between steps: a step already under way is left to finish
+ * (a token exchange spends a single-use refresh token, so abandoning one
+ * after it was sent can lose the rotated grant), but none starts after.
+ */
+function stopIfAborted(signal: AbortSignal | undefined): void {
+	if (signal?.aborted) {
+		throw signal.reason;
+	}
+}
+
+/** True when `error` is the abort reason of the caller's own signal. */
+function isCallerAbort(
+	signal: AbortSignal | undefined,
+	error: unknown,
+): boolean {
+	return signal?.aborted === true && error === signal.reason;
+}
+
+/**
+ * The caller's gate as handed to a provider refresh: consulted through
+ * `runExchangeGate` so its refusal is recognized at this layer whatever the
+ * refresh does with it.
+ */
+function gated(gate: BeforeExchange | undefined): BeforeExchange | undefined {
+	return gate && (() => runExchangeGate(gate));
+}
+
+/**
  * Resolve a currently-valid GitLab OAuth access token for a project-repo
  * integration, refreshing through the shared single-flight helper when the
  * stored token is near expiry. Requires env-configured client credentials;
  * returns a null token when they're missing or the exchange fails (caller falls
- * back to the stored token). Never throws.
+ * back to the stored token). Never throws, except the caller's own `signal`
+ * reason and what its `beforeExchange` throws to refuse an exchange.
  *
  * The GitLab path carries the SAME hazard as GitHub's (see
  * `RepoTokenRefreshFault`): missing `GITLAB_CLIENT_ID` / `GITLAB_CLIENT_SECRET`
@@ -177,10 +233,18 @@ function decryptedField(encrypted: string | null): {
  * else reaching this catch — a network failure, a 5xx, a database error — is
  * ours.
  */
-async function resolveValidGitLabToken(integrationId: string): Promise<{
+async function resolveValidGitLabToken(
+	integrationId: string,
+	signal?: AbortSignal,
+	beforeExchange?: BeforeExchange,
+): Promise<{
 	token: string | null;
 	platformFault?: RepoTokenRefreshFault;
 }> {
+	// The GitLab refresh is a single-flight shared by every concurrent caller
+	// in this process, so one caller's signal is checked before it and never
+	// passed into it; its gate is consulted only if it leads the flight.
+	stopIfAborted(signal);
 	const clientId = process.env.GITLAB_CLIENT_ID;
 	const clientSecret = process.env.GITLAB_CLIENT_SECRET;
 	if (!clientId || !clientSecret) {
@@ -199,9 +263,13 @@ async function resolveValidGitLabToken(integrationId: string): Promise<{
 				clientSecret,
 				source: "project",
 				refresh: refreshGitLabToken,
+				beforeExchange: gated(beforeExchange),
 			}),
 		};
 	} catch (error) {
+		if (isExchangeRefusal(error)) {
+			throw error;
+		}
 		console.warn("[repo-auth] GitLab token resolution failed", {
 			integrationId,
 			error: error instanceof Error ? error.message : String(error),
@@ -339,11 +407,21 @@ function isHardExpired(row: { tokenExpiresAt: Date | null }): boolean {
  * fails but the stored token has not *actually* expired yet — we were only
  * inside the proactive buffer — the stored token is reused, so a transient
  * GitHub 5xx or a missing app credential does not yank access away up to a
- * minute early. Never throws.
+ * minute early. Never throws, except the caller's own `signal` reason once it
+ * has aborted: checked before a refresh starts and again after it ends (an
+ * exchange already sent runs to its end and persists its result first), and
+ * passed into GitHub's; and what `beforeExchange` throws to refuse an
+ * exchange. A PAT or still-fresh token never consults it.
  */
 export async function resolveFreshRepoTokenForRow(
 	row: RepoCredentialRow,
-	ctx?: { userId?: string | null; organizationId?: string | null },
+	ctx?: {
+		userId?: string | null;
+		organizationId?: string | null;
+		signal?: AbortSignal;
+		/** Consulted immediately before an exchange; see `BeforeExchange`. */
+		beforeExchange?: BeforeExchange;
+	},
 ): Promise<ResolvedRepoToken> {
 	const { provider, authMethod } = row;
 
@@ -359,14 +437,21 @@ export async function resolveFreshRepoTokenForRow(
 				provider,
 			};
 		}
-		// Never throws (reports a null token on failure).
+		// Never throws (reports a null token on failure), except the caller's
+		// own abort reason.
+		stopIfAborted(ctx?.signal);
 		const refreshed = await refreshProjectRepoGitHubTokenWithOutcome({
+			signal: ctx?.signal,
+			beforeExchange: gated(ctx?.beforeExchange),
 			integrationId: row.integrationId,
 			encryptedRefreshToken: row.encryptedRefreshToken,
 			expectedUpdatedAt: row.updatedAt,
 			userId: ctx?.userId ?? undefined,
 			organizationId: ctx?.organizationId ?? undefined,
 		});
+		// The refresh ran to its end and persisted what it rotated; a caller
+		// that aborted meanwhile gets its reason, not a token.
+		stopIfAborted(ctx?.signal);
 		if (refreshed.token) {
 			return { token: refreshed.token, authMethod, provider };
 		}
@@ -399,7 +484,12 @@ export async function resolveFreshRepoTokenForRow(
 				provider,
 			};
 		}
-		const gitlab = await resolveValidGitLabToken(row.integrationId);
+		const gitlab = await resolveValidGitLabToken(
+			row.integrationId,
+			ctx?.signal,
+			ctx?.beforeExchange,
+		);
+		stopIfAborted(ctx?.signal);
 		if (gitlab.token) {
 			return { token: gitlab.token, authMethod, provider };
 		}
@@ -432,7 +522,12 @@ export async function resolveFreshRepoToken(input: {
 	projectId: string;
 	userId?: string | null;
 	organizationId?: string | null;
+	/** Checked between steps; its reason is thrown once it has aborted. */
+	signal?: AbortSignal;
+	/** Consulted immediately before an exchange; see `BeforeExchange`. */
+	beforeExchange?: BeforeExchange;
 }): Promise<ResolvedRepoToken> {
+	stopIfAborted(input.signal);
 	const row = await db.projectRepositoryIntegration.findFirst({
 		where: { id: input.integrationId, projectId: input.projectId },
 		select: {
@@ -445,12 +540,18 @@ export async function resolveFreshRepoToken(input: {
 			updatedAt: true,
 		},
 	});
+	stopIfAborted(input.signal);
 	if (!row) {
 		return { token: null, authMethod: null, provider: null };
 	}
 	return resolveFreshRepoTokenForRow(
 		{ ...row, integrationId: input.integrationId },
-		{ userId: input.userId, organizationId: input.organizationId },
+		{
+			userId: input.userId,
+			organizationId: input.organizationId,
+			signal: input.signal,
+			beforeExchange: input.beforeExchange,
+		},
 	);
 }
 
@@ -461,14 +562,21 @@ export async function resolveFreshRepoToken(input: {
  * GitHub OAuth rows re-exchange via `refreshProjectRepoGitHubToken`
  * (`forceReExchange: true`); GitLab OAuth rows resolve a valid token via the
  * shared GitLab helper; every other shape (PAT, missing refresh token) resolves
- * `{ refreshed: false }`. Best-effort: never throws.
+ * `{ refreshed: false }`. Best-effort: never throws, except the caller's own
+ * `signal` reason once it has aborted (checked before the read, before the
+ * exchange and after it has ended and persisted, and passed into GitHub's
+ * refresh), and what `beforeExchange` throws to refuse the exchange.
  */
 export async function forceReExchangeRepoCredentials(input: {
 	integrationId: string;
 	userId: string;
 	organizationId?: string | null;
+	signal?: AbortSignal;
+	/** Consulted immediately before the exchange; see `BeforeExchange`. */
+	beforeExchange?: BeforeExchange;
 }): Promise<{ refreshed: boolean }> {
 	try {
+		stopIfAborted(input.signal);
 		const row = await db.projectRepositoryIntegration.findUnique({
 			where: { id: input.integrationId },
 			select: {
@@ -478,11 +586,14 @@ export async function forceReExchangeRepoCredentials(input: {
 				updatedAt: true,
 			},
 		});
+		stopIfAborted(input.signal);
 		if (!row || row.authMethod !== "OAUTH" || !row.encryptedRefreshToken) {
 			return { refreshed: false };
 		}
 		if (row.provider === "GITHUB") {
 			const { token } = await refreshProjectRepoGitHubTokenWithOutcome({
+				signal: input.signal,
+				beforeExchange: gated(input.beforeExchange),
 				integrationId: input.integrationId,
 				encryptedRefreshToken: row.encryptedRefreshToken,
 				expectedUpdatedAt: row.updatedAt,
@@ -492,16 +603,23 @@ export async function forceReExchangeRepoCredentials(input: {
 				// not-yet-elapsed `tokenExpiresAt` must not short-circuit the exchange.
 				forceReExchange: true,
 			});
+			stopIfAborted(input.signal);
 			return { refreshed: Boolean(token) };
 		}
 		if (row.provider === "GITLAB") {
 			const { token } = await resolveValidGitLabToken(
 				input.integrationId,
+				input.signal,
+				input.beforeExchange,
 			);
+			stopIfAborted(input.signal);
 			return { refreshed: Boolean(token) };
 		}
 		return { refreshed: false };
 	} catch (error) {
+		if (isCallerAbort(input.signal, error) || isExchangeRefusal(error)) {
+			throw error;
+		}
 		console.warn("[repo-auth] forced credential re-exchange failed", {
 			integrationId: input.integrationId,
 			error: error instanceof Error ? error.message : String(error),
@@ -510,77 +628,220 @@ export async function forceReExchangeRepoCredentials(input: {
 	}
 }
 
+/** Pool admission for the reauth status write's transaction. */
+const REAUTH_WRITE_MAX_WAIT_MS = 5_000;
+/** The reauth status write's transaction: a read and a conditional update. */
+const REAUTH_WRITE_TIMEOUT_MS = 5_000;
+/**
+ * Each statement inside that transaction. Under its timeout, so the server
+ * stops a stuck statement itself instead of leaving it to the rollback.
+ */
+const REAUTH_STATEMENT_TIMEOUT_MS = 4_000;
+
+/**
+ * The longest `markRepoReauthRequired`'s status write can take once begun:
+ * pool admission plus its transaction, after which it has committed or
+ * rolled back.
+ */
+export const REPO_REAUTH_WRITE_BOUND_MS =
+	REAUTH_WRITE_MAX_WAIT_MS + REAUTH_WRITE_TIMEOUT_MS;
+
+/**
+ * The longest the notification after a transition is waited for: its
+ * integration read, recipient resolution, preference lookup and fan-out
+ * together. Past it (or once the caller stops) the notification is skipped.
+ */
+export const REPO_REAUTH_NOTIFY_BOUND_MS = 10_000;
+
+/**
+ * The longest `markRepoReauthRequired` can take once begun: the bounded
+ * status write, then the bounded notification. A caller with a deadline
+ * starts it only with this much left.
+ */
+export const REPO_REAUTH_STEP_BOUND_MS =
+	REPO_REAUTH_WRITE_BOUND_MS + REPO_REAUTH_NOTIFY_BOUND_MS;
+
 /**
  * Flag a project-repo integration as needing a user reconnect (TOKEN_EXPIRED)
  * and fire the credential-expiry notification ONCE, on a genuine transition INTO
  * that state. Mirrors the dead-token branch in the on-demand refresh helper —
  * same per-integration dedupe-keyed notification, so racing paths never double
- * a row. Best-effort: never throws.
+ * a row. The whole step is bounded by `REPO_REAUTH_STEP_BOUND_MS`.
+ *
+ * The status write commits or rolls back within `REPO_REAUTH_WRITE_BOUND_MS`.
+ * The notification is owned by the transition that write made, and is
+ * best-effort: the committed status row is what drives the UI's reconnect
+ * prompt. It starts only if the caller has not stopped meanwhile, is waited
+ * for at most `REPO_REAUTH_NOTIFY_BOUND_MS`, and when cut short is skipped
+ * with one info event rather than retried or queued.
+ *
+ * Never throws, except the caller's own `signal` reason once it has aborted:
+ * before the write, between the committed write and the notification, or by
+ * the time the step ends.
  */
 export async function markRepoReauthRequired(input: {
 	integrationId: string;
 	reason: string;
+	signal?: AbortSignal;
 }): Promise<void> {
+	stopIfAborted(input.signal);
+	let transitioned = false;
 	try {
-		const statusResult = await setIntegrationStatus(
-			input.integrationId,
-			"TOKEN_EXPIRED",
-			input.reason,
+		// Bounded: committed within REPO_REAUTH_WRITE_BOUND_MS of starting or
+		// rolled back, so nothing lands after a caller's deadline that sized
+		// its reserve to it.
+		const statusResult = await db.$transaction(
+			async (tx) => {
+				await tx.$executeRaw`SELECT set_config('statement_timeout', ${`${REAUTH_STATEMENT_TIMEOUT_MS}ms`}, true)`;
+				return setIntegrationStatus(
+					input.integrationId,
+					"TOKEN_EXPIRED",
+					input.reason,
+					undefined,
+					undefined,
+					tx,
+				);
+			},
+			{
+				timeout: REAUTH_WRITE_TIMEOUT_MS,
+				maxWait: REAUTH_WRITE_MAX_WAIT_MS,
+			},
 		);
 		// The scheduled health check notifies on transition only; this path
-		// consumed the ACTIVE→TOKEN_EXPIRED flip, so it must own the notification
-		// or the configuring user would never hear about it.
-		if (
+		// consumed the ACTIVE→TOKEN_EXPIRED flip, so it owns the notification.
+		transitioned =
 			statusResult.statusChanged &&
-			statusResult.previousStatus !== "TOKEN_EXPIRED"
-		) {
-			await notifyReauthRequired(input.integrationId);
-		}
+			statusResult.previousStatus !== "TOKEN_EXPIRED";
 	} catch (error) {
 		console.warn("[repo-auth] mark-reauth-required failed", {
 			integrationId: input.integrationId,
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
+	// The transition, if any, is durable. A caller that stopped meanwhile
+	// gets its reason and starts no notification.
+	stopIfAborted(input.signal);
+	if (transitioned) {
+		await notifyReauthRequired(input.integrationId, input.signal);
+	}
+	// A caller that stopped during the notification (which was then cut and
+	// logged) still gets its reason.
+	stopIfAborted(input.signal);
+}
+
+/** Why a reauth notification was skipped: the only detail its event logs. */
+type NotificationSkip = "timeout" | "aborted";
+
+/**
+ * Starts `start()` only while `bound` is live, then races it against the
+ * bound: rejects with the bound's reason once it aborts, leaving the work
+ * unobserved. Prisma's reads and the notification fan-out take no signal,
+ * so the race is what enforces the bound, and the lazy start is what keeps
+ * any of them from beginning once it is spent.
+ */
+function withinBound<T>(
+	start: () => Promise<T>,
+	bound: AbortSignal,
+): Promise<T> {
+	if (bound.aborted) {
+		return Promise.reject(bound.reason);
+	}
+	const work = start();
+	// A result or failure that lands after the bound must not surface as an
+	// unhandled rejection.
+	work.catch(() => {});
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(bound.reason);
+		bound.addEventListener("abort", onAbort, { once: true });
+		work.then(
+			(value) => {
+				bound.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				bound.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
 }
 
 /**
  * Best-effort credential-expiry notification to the configuring user — same
  * recipient, deep link, and dedupe-keyed helper the repo health check and the
- * on-demand refresh use. Never throws.
+ * on-demand refresh use. Bounded: every step runs under one
+ * `REPO_REAUTH_NOTIFY_BOUND_MS` deadline combined with the caller's signal,
+ * and a notification cut short is skipped with one info event. Never throws.
  */
-async function notifyReauthRequired(integrationId: string): Promise<void> {
+async function notifyReauthRequired(
+	integrationId: string,
+	signal: AbortSignal | undefined,
+): Promise<void> {
+	// A timer rather than `AbortSignal.timeout`: the same deadline, and one
+	// the tests' fake clock controls.
+	const deadline = new AbortController();
+	const timer = setTimeout(
+		() => deadline.abort(new Error("reauth notification bound")),
+		REPO_REAUTH_NOTIFY_BOUND_MS,
+	);
+	const bound = signal
+		? AbortSignal.any([deadline.signal, signal])
+		: deadline.signal;
 	try {
-		const integration = await db.projectRepositoryIntegration.findUnique({
-			where: { id: integrationId },
-			select: {
-				projectId: true,
-				provider: true,
-				repositoryOwner: true,
-				repositoryName: true,
-				configuredByUserId: true,
-				project: { select: { name: true, organizationId: true } },
-			},
-		});
+		const integration = await withinBound(
+			() =>
+				db.projectRepositoryIntegration.findUnique({
+					where: { id: integrationId },
+					select: {
+						projectId: true,
+						provider: true,
+						repositoryOwner: true,
+						repositoryName: true,
+						configuredByUserId: true,
+						project: {
+							select: { name: true, organizationId: true },
+						},
+					},
+				}),
+			bound,
+		);
 		// No configuring user (removed) ⇒ no actionable recipient.
-		if (!integration?.configuredByUserId) {
+		const recipientUserId = integration?.configuredByUserId;
+		if (!integration || !recipientUserId) {
 			return;
 		}
-		await createRepoIntegrationCredentialNotification({
-			recipientUserId: integration.configuredByUserId,
-			organizationId: integration.project.organizationId ?? null,
-			integrationId,
-			projectId: integration.projectId,
-			projectName: integration.project.name,
-			provider: integration.provider,
-			repositoryOwner: integration.repositoryOwner,
-			repositoryName: integration.repositoryName,
-			status: "TOKEN_EXPIRED",
-			// Context-relative deep link to the project's Settings tab — the same
-			// target the health-check + on-demand-refresh notifications use.
-			link: `projects/${integration.projectId}?tab=settings`,
-		});
+		await withinBound(
+			() =>
+				createRepoIntegrationCredentialNotification({
+					recipientUserId,
+					organizationId: integration.project.organizationId ?? null,
+					integrationId,
+					projectId: integration.projectId,
+					projectName: integration.project.name,
+					provider: integration.provider,
+					repositoryOwner: integration.repositoryOwner,
+					repositoryName: integration.repositoryName,
+					status: "TOKEN_EXPIRED",
+					// Context-relative deep link to the project's Settings tab — the same
+					// target the health-check + on-demand-refresh notifications use.
+					link: `projects/${integration.projectId}?tab=settings`,
+				}),
+			bound,
+		);
 	} catch (error) {
+		if (bound.aborted) {
+			const reason: NotificationSkip = signal?.aborted
+				? "aborted"
+				: "timeout";
+			// The committed status row already drives the reconnect prompt;
+			// only the id and why are logged, never recipients or tokens.
+			console.info("[repo-auth] repo_auth.reauth_notification_skipped", {
+				event: "repo_auth.reauth_notification_skipped",
+				integrationId,
+				reason,
+			});
+			return;
+		}
 		console.warn(
 			"[repo-auth] reauth-required notification dispatch failed",
 			{
@@ -588,5 +849,7 @@ async function notifyReauthRequired(integrationId: string): Promise<void> {
 				error: error instanceof Error ? error.message : String(error),
 			},
 		);
+	} finally {
+		clearTimeout(timer);
 	}
 }

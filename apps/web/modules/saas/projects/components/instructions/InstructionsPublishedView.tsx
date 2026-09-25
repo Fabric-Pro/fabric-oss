@@ -84,8 +84,17 @@ export type InstructionsSnapshot = {
 	 * — which is what the superseded line below turns on.
 	 */
 	publishedAt?: string | Date | null;
-	/** Proposal lifecycle is rendered in the proposal review dialog. */
-	proposalStatus?: "PENDING" | "APPROVED" | "REJECTED" | null;
+	/**
+	 * Proposal lifecycle is rendered in the proposal review dialog. A
+	 * suggestion's pull request settles as MERGED or CLOSED (Fizzy #2563).
+	 */
+	proposalStatus?:
+		| "PENDING"
+		| "APPROVED"
+		| "REJECTED"
+		| "MERGED"
+		| "CLOSED"
+		| null;
 };
 
 function sourceLabel(source: string, t: (key: string) => string): string {
@@ -120,6 +129,7 @@ export function InstructionsPublishedView({
 	onChanged,
 	canEdit = false,
 	canReview = false,
+	canRead = false,
 	repositoryBacked = false,
 	repositoryConfirmed,
 	repositorySync,
@@ -146,6 +156,12 @@ export function InstructionsPublishedView({
 	canEdit?: boolean;
 	/** Whether this viewer may approve or reject file proposals. */
 	canReview?: boolean;
+	/**
+	 * Whether this viewer may read the project's coding instructions
+	 * (INSTRUCTION_READ). On a repository-backed project a reader may suggest
+	 * a change once `allowReaderProposals` is on (Fizzy #2563 spec §12).
+	 */
+	canRead?: boolean;
 	/**
 	 * The project's instructions come from its repository (spec §6.12), so
 	 * they are changed in git and refreshed by sync. The server refuses an
@@ -190,9 +206,43 @@ export function InstructionsPublishedView({
 	// the published one's tree.
 	const canMutateDirect = canEdit && !repositoryBacked;
 	const editable = canMutateDirect && Boolean(published);
+	// Approve and Reject stay FABRIC-only: a repository-backed project's
+	// suggestions are decided on their pull requests (Fizzy #2563 spec §12).
 	const canReviewProposals = Boolean(canReview) && !repositoryBacked;
-	const canPropose = !repositoryBacked && Boolean(published);
-	const canBrowseProposals = canReviewProposals || canPropose;
+	// A repository-backed proposal opens a pull request into the configured
+	// repository, so it is offered only once repository mode is CONFIRMED and
+	// a configuration names that repository: `repositoryBacked` fails closed
+	// while settings load, which is right for hiding direct edits but would
+	// offer a suggestion nobody can yet say the target of. CREATE proposes by
+	// default; a reader needs the project's opt-in (spec §16.1). The server
+	// re-checks all of it at admission.
+	const repositoryModeConfirmed =
+		repositoryBacked && (repositoryConfirmed ?? repositoryBacked);
+	const repositoryConfiguration = repositoryModeConfirmed
+		? (repositorySync?.state.configured ?? null)
+		: null;
+	const repositoryTarget = repositoryConfiguration
+		? {
+				repository: `${repositoryConfiguration.repositoryOwner}/${repositoryConfiguration.repositoryName}`,
+				ref: repositoryConfiguration.ref,
+			}
+		: null;
+	const canPropose =
+		Boolean(published) &&
+		(repositoryBacked
+			? repositoryTarget !== null &&
+				(Boolean(canEdit) ||
+					(Boolean(canRead) &&
+						Boolean(repositoryConfiguration?.allowReaderProposals)))
+			: true);
+	// A reader keeps their own earlier suggestions in view after the opt-in
+	// is turned off, and after the sync configuration is removed while
+	// repository mode remains: only proposing needs a configured target.
+	// The list only ever shows a non-reviewer their own rows.
+	const canBrowseProposals =
+		Boolean(canReview) ||
+		canPropose ||
+		(repositoryModeConfirmed && Boolean(canRead));
 
 	// Proposal lifecycle uses its own review UI. Feeding a proposal into the
 	// direct-upload banners would call it "your upload" and could offer the
@@ -516,9 +566,11 @@ export function InstructionsPublishedView({
 								aria-hidden="true"
 							/>
 							{t(
-								canReviewProposals
-									? "reviewProposalsButton"
-									: "proposalsButton",
+								repositoryBacked
+									? "suggestionsButton"
+									: canReviewProposals
+										? "reviewProposalsButton"
+										: "proposalsButton",
 							)}
 						</Button>
 					) : null}
@@ -608,7 +660,23 @@ export function InstructionsPublishedView({
 							{t("connectButton")}
 						</Button>
 					) : null}
-					{editable || canPropose ? (
+					{canPropose && repositoryTarget ? (
+						// A repository-backed project is never `editable`,
+						// so this is its only add button. The page tour's
+						// "Suggest a change as a pull request" step points
+						// here.
+						<Button
+							variant="outline"
+							data-onboarding-target="instructions-propose-pull-request"
+							onClick={() => setAddFileOpen(true)}
+						>
+							<FilePlusIcon
+								className="size-4"
+								aria-hidden="true"
+							/>
+							{t("suggestChangeButton")}
+						</Button>
+					) : editable || canPropose ? (
 						<Button
 							variant="outline"
 							onClick={() => setAddFileOpen(true)}
@@ -732,6 +800,7 @@ export function InstructionsPublishedView({
 								path={selectedFile}
 								canEdit={editable}
 								canPropose={canPropose}
+								repositoryTarget={repositoryTarget}
 								onChanged={onChanged}
 							/>
 						) : fileListLoaded ? (
@@ -764,6 +833,7 @@ export function InstructionsPublishedView({
 					folder={selectedFolder}
 					proposalOnly={!editable}
 					canPropose={editable}
+					repositoryTarget={repositoryTarget}
 					onAdded={onChanged}
 				/>
 			) : null}
@@ -812,7 +882,14 @@ export function InstructionsPublishedView({
 					open={proposalsOpen}
 					onOpenChange={setProposalsOpen}
 					onChanged={onChanged}
-					canReview={canReviewProposals}
+					// Every card and its diff for a reviewer; Approve and
+					// Reject only where this project can still publish them.
+					canReview={Boolean(canReview)}
+					canDecide={canReviewProposals}
+					repositoryBacked={repositoryBacked}
+					repositoryProvider={
+						repositoryConfiguration?.provider ?? null
+					}
 				/>
 			) : null}
 			<InstructionsSettingsDialog

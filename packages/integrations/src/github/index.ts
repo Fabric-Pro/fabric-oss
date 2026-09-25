@@ -18,7 +18,10 @@ import { db } from "@repo/database";
 import { withRefreshLock } from "@repo/database/prisma/queries/lib/refresh-lock";
 import {
 	advisoryObjectKey,
+	assertRefreshLockBudget,
 	REFRESH_ADVISORY_CLASS,
+	REFRESH_LOCK_MAX_WAIT_MS,
+	REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
 	repoIntegrationLockKey,
 } from "@repo/database/prisma/queries/lib/refresh-lock-key";
 import { decryptApiKey, encryptApiKey } from "@repo/utils";
@@ -26,6 +29,11 @@ import {
 	refreshOAuthToken,
 	sanitizeCredential,
 } from "@repo/utils/oauth-refresh";
+import {
+	type BeforeExchange,
+	isExchangeRefusal,
+	runExchangeGate,
+} from "../exchange-gate";
 import {
 	isGrantRejected,
 	isRefreshTokenRejected,
@@ -455,6 +463,13 @@ export async function refreshProjectRepoGitHubToken(input: {
 }
 
 /**
+ * Deadline for one project-repo token exchange with GitHub, covering the
+ * whole request. The exchange runs inside the refresh lock's transaction,
+ * which starts it only when this plus database headroom still fits.
+ */
+const GITHUB_TOKEN_EXCHANGE_TIMEOUT_MS = 10_000;
+
+/**
  * {@link refreshProjectRepoGitHubToken}, but reporting WHY a null token came
  * back when the reason is a platform fault rather than the customer's grant.
  *
@@ -476,6 +491,22 @@ export async function refreshProjectRepoGitHubToken(input: {
  * already replaced — returns a bare `{ token: null }`, meaning "retry, blame
  * nobody". Callers must branch on all three: only `grantRejected` justifies
  * expiring the connection or telling the user to reconnect.
+ *
+ * `beforeExchange` is the caller's pre-exchange gate (see `BeforeExchange`):
+ * consulted under the lock immediately before the exchange, after every
+ * return that sends nothing; what it throws is thrown unchanged.
+ *
+ * `signal` is the caller's: once it has aborted, no exchange starts and its
+ * `reason` is thrown. It is checked before the credential lookup, before the
+ * transaction, and under the lock just before the exchange. The exchange and the write that persists its
+ * result are NOT abandoned once under way: GitHub's refresh token is
+ * single-use, so dropping a response already sent would lose the rotated
+ * grant and force a reconnect. That step is bounded instead: the exchange
+ * has its own GITHUB_TOKEN_EXCHANGE_TIMEOUT_MS deadline and starts only when
+ * that plus database headroom still fits the transaction's remaining
+ * `timeout` (see `assertRefreshLockBudget`). Once it
+ * has committed, an abort that arrived meanwhile is thrown in place of the
+ * outcome, so the caller still learns it was stopped.
  */
 export async function refreshProjectRepoGitHubTokenWithOutcome(input: {
 	integrationId: string;
@@ -484,6 +515,9 @@ export async function refreshProjectRepoGitHubTokenWithOutcome(input: {
 	userId?: string;
 	organizationId?: string;
 	forceReExchange?: boolean;
+	signal?: AbortSignal;
+	/** Consulted under the lock immediately before the exchange; see `BeforeExchange`. */
+	beforeExchange?: BeforeExchange;
 }): Promise<{
 	token: string | null;
 	platformFault?: RepoTokenRefreshFault;
@@ -496,10 +530,17 @@ export async function refreshProjectRepoGitHubTokenWithOutcome(input: {
 	 */
 	rejectedRefreshToken?: string;
 }> {
+	const stopIfAborted = () => {
+		if (input.signal?.aborted) {
+			throw input.signal.reason;
+		}
+	};
+	stopIfAborted();
 	const creds = await getGitHubClientCredentials(
 		input.userId,
 		input.organizationId,
 	);
+	stopIfAborted();
 	if (!creds) {
 		console.warn(
 			`[GitHub] Cannot refresh project repo token for ${input.integrationId} — no client credentials (checked env vars and GITHUB_OAUTH_APP workflow_integration records)`,
@@ -515,8 +556,13 @@ export async function refreshProjectRepoGitHubTokenWithOutcome(input: {
 	// latest stored token inside the lock so a caller that lost the race reuses
 	// the winner's freshly rotated token instead of exchanging again.
 	try {
-		return await db.$transaction(
+		const outcome = await db.$transaction(
 			async (tx) => {
+				// Measured from the first statement in the callback, the
+				// instant closest to when Prisma arms `timeout` (`maxWait`
+				// covers only connection acquisition, never the lock wait
+				// below). Monotonic, so a wall-clock step cannot shrink it.
+				const lockStartedAt = performance.now();
 				// MUST be $executeRaw, NOT $queryRaw: pg_advisory_xact_lock()
 				// returns `void`, which the Postgres driver adapter's $queryRaw
 				// cannot deserialize ("Failed to deserialize column of type
@@ -569,15 +615,38 @@ export async function refreshProjectRepoGitHubTokenWithOutcome(input: {
 					return { token: decryptApiKey(row.encryptedAccessToken) };
 				}
 
+				// The last point at which the caller's abort stops this refresh:
+				// throwing here rolls the transaction back before anything was
+				// sent. From the exchange on, the step runs to its end.
+				stopIfAborted();
+				// The exchange must fit what is LEFT of the transaction's
+				// timeout: a caller queued behind another refresh's own
+				// exchange can hold the lock with most of it already spent,
+				// and an exchange it cannot finish rotates GitHub's single-use
+				// refresh token after Prisma has rolled back, with nothing left
+				// to persist it. Gated only here, after every return that
+				// sends nothing, so a caller that finds the token already
+				// refreshed is never rejected for the wait. Thrown, it rolls
+				// the transaction back as a transient platform fault, never a
+				// verdict on the grant (see RefreshLockBudgetExhaustedError).
+				assertRefreshLockBudget({
+					elapsedMs: performance.now() - lockStartedAt,
+					requiredMs: GITHUB_TOKEN_EXCHANGE_TIMEOUT_MS,
+				});
 				// Exchange the CURRENT stored refresh token — the caller's
 				// snapshot (`input.encryptedRefreshToken`) may already be stale.
 				const refreshToken = decryptApiKey(row.encryptedRefreshToken);
+				// The caller's own reserve, judged after the lock wait and the
+				// re-read have been spent. A refusal rolls the transaction back
+				// with nothing sent and reaches the caller unchanged.
+				runExchangeGate(input.beforeExchange);
 				const result = await refreshOAuthToken({
 					tokenEndpoint:
 						"https://github.com/login/oauth/access_token",
 					refreshToken,
 					clientId: creds.clientId,
 					clientSecret: creds.clientSecret,
+					timeoutMs: GITHUB_TOKEN_EXCHANGE_TIMEOUT_MS,
 				});
 				if (!result.ok) {
 					console.warn(
@@ -692,9 +761,22 @@ export async function refreshProjectRepoGitHubTokenWithOutcome(input: {
 				}
 				return { token: result.accessToken };
 			},
-			{ timeout: 20_000, maxWait: 10_000 },
+			{
+				timeout: REFRESH_LOCK_TRANSACTION_TIMEOUT_MS,
+				maxWait: REFRESH_LOCK_MAX_WAIT_MS,
+			},
 		);
+		// The transaction has committed whatever the exchange rotated; a
+		// caller that aborted meanwhile now gets its reason, not the token.
+		stopIfAborted();
+		return outcome;
 	} catch (error) {
+		if (
+			(input.signal?.aborted && error === input.signal.reason) ||
+			isExchangeRefusal(error)
+		) {
+			throw error;
+		}
 		console.warn(
 			`[GitHub] Project repo token refresh exchange failed for ${input.integrationId}: ${error instanceof Error ? error.message : String(error)}`,
 		);

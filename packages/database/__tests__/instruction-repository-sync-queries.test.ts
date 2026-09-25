@@ -76,6 +76,7 @@ import {
 	computeSchedulingPatch,
 	deleteInstructionRepositorySync,
 	findInstructionSyncsForPush,
+	getInstructionRepositorySyncForProposal,
 	insertInstructionRepositorySyncRun,
 	instructionSyncBackoffMs,
 	instructionSyncLeaseHeld,
@@ -2111,5 +2112,57 @@ describe("settlePendingInstructionSyncHead (Fizzy #2682)", () => {
 		});
 		expect(m.run.findFirst).not.toHaveBeenCalled();
 		expect(m.sync.updateMany).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * The destination read of a REPOSITORY proposal (Fizzy #2563 spec §5.1
+ * steps 2 and 3, §9.1 step 1): `begin`'s fields plus what admission and the
+ * merge-sync re-read compare, scoped to the caller's organization (spec
+ * §13.5) so another tenant's row never matches.
+ */
+describe("getInstructionRepositorySyncForProposal", () => {
+	it("selects exactly begin's fields plus the proposal ones, by project and organization", async () => {
+		m.sync.findFirst.mockResolvedValue({ id: "sync_1" });
+
+		expect(
+			await getInstructionRepositorySyncForProposal("p", "org_1"),
+		).toEqual({
+			id: "sync_1",
+		});
+		expect(m.sync.findUnique).not.toHaveBeenCalled();
+		expect(m.sync.findFirst).toHaveBeenCalledWith({
+			where: { projectId: "p", organizationId: "org_1" },
+			select: {
+				id: true,
+				projectId: true,
+				organizationId: true,
+				userId: true,
+				repositoryIntegrationId: true,
+				ref: true,
+				rootPath: true,
+				automatic: true,
+				generation: true,
+				automaticPausedReason: true,
+				allowReaderProposals: true,
+				repositoryIntegration: {
+					select: {
+						id: true,
+						projectId: true,
+						status: true,
+						provider: true,
+						repositoryUrl: true,
+					},
+				},
+			},
+		});
+	});
+
+	it("returns null for a project without a sync row in that organization", async () => {
+		m.sync.findFirst.mockResolvedValue(null);
+
+		expect(
+			await getInstructionRepositorySyncForProposal("p", "org_1"),
+		).toBeNull();
 	});
 });

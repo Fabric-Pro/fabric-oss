@@ -2310,6 +2310,9 @@ importers:
       archiver:
         specifier: ^7.0.1
         version: 7.0.1
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
     devDependencies:
       '@repo/tsconfig':
         specifier: workspace:*

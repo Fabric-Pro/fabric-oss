@@ -21,6 +21,13 @@ const { mocks } = vi.hoisted(() => ({
 		resolveEffectiveProjectPermissions: vi.fn(),
 		buildInstructionSnapshotZip: vi.fn(),
 		submitInstructionChange: vi.fn(),
+		getProposalPullRequestStatus: vi.fn(),
+		/** The real service behind the route, for the cases that run it whole. */
+		realProposalPullRequestStatus: null as
+			| null
+			| ((...args: unknown[]) => Promise<unknown>),
+		/** `getInstructionProposal`, which the real service reads through. */
+		getInstructionProposal: vi.fn(),
 		/** `db.organization.findFirst`, for the explicit `?org=` binding. */
 		findOrganization: vi.fn(),
 		/** `db.user.findUnique`, for the audit actor snapshot on a write. */
@@ -43,7 +50,12 @@ vi.mock("@repo/database", () => ({
 	getInstructionManifestDiff: mocks.getInstructionManifestDiff,
 	getProjectInstructionSettings: mocks.getProjectInstructionSettings,
 	listInstructionFiles: mocks.listInstructionFiles,
+	getInstructionProposal: mocks.getInstructionProposal,
 }));
+
+// Only the real pull-request service reaches for this, and only to start a
+// workflow, which the status read never does.
+vi.mock("@repo/temporal", () => ({ getTemporalClient: vi.fn() }));
 
 vi.mock("../../../lib/effective-project-permissions", () => ({
 	resolveEffectiveProjectPermissions:
@@ -62,6 +74,26 @@ vi.mock("../../projects/procedures/instructions/build-zip", () => ({
 vi.mock("../../projects/procedures/instructions/submit-change", () => ({
 	submitInstructionChange: mocks.submitInstructionChange,
 }));
+// Likewise the pull-request read: the proposer-or-reviewer check and the row
+// read are the service's (`proposal-pull-request.test.ts`); the route owns
+// the key's scope, the creator's live read permission and the tenant. The
+// real service is kept to hand for the cases that pin the two together.
+vi.mock(
+	"../../projects/procedures/instructions/proposal-pull-request",
+	async (importOriginal) => {
+		const actual =
+			await importOriginal<
+				typeof import("../../projects/procedures/instructions/proposal-pull-request")
+			>();
+		mocks.realProposalPullRequestStatus =
+			actual.getProposalPullRequestStatus as (
+				...args: unknown[]
+			) => Promise<unknown>;
+		return {
+			getProposalPullRequestStatus: mocks.getProposalPullRequestStatus,
+		};
+	},
+);
 
 /**
  * A faithful stand-in for the real middleware, not a no-op: the scope refusal
@@ -1617,5 +1649,308 @@ describe("POST instructions/versions", () => {
 		expect(response.status).toBe(400);
 		expect(mocks.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
 		expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// A REPOSITORY proposal's pull request (Fizzy #2563 spec §12)
+// ---------------------------------------------------------------------------
+
+function pullRequestBlock(overrides: Record<string, unknown> = {}) {
+	return {
+		operationId: "op-1",
+		state: "QUEUED",
+		url: null,
+		externalId: null,
+		failure: null,
+		lastCheckedAt: null,
+		...overrides,
+	};
+}
+
+describe("POST instructions/changes with a note (note parity)", () => {
+	beforeEach(() => {
+		mocks.scopes = ["instructions:write"];
+	});
+
+	it("passes the note through and returns the pull-request block", async () => {
+		mocks.submitInstructionChange.mockResolvedValue(
+			submitted({ pullRequest: pullRequestBlock() }),
+		);
+
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+				note: {
+					title: "Tighten the lint rule",
+					body: "Why it matters.",
+				},
+			}),
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			data: submitted({ pullRequest: pullRequestBlock() }),
+		});
+		expect(mocks.submitInstructionChange).toHaveBeenCalledWith(
+			expect.objectContaining({
+				mode: "proposal",
+				note: {
+					title: "Tighten the lint rule",
+					body: "Why it matters.",
+				},
+			}),
+		);
+	});
+
+	it("sends no note when the body has none", async () => {
+		await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+			}),
+		);
+
+		expect(
+			mocks.submitInstructionChange.mock.calls[0]?.[0],
+		).not.toHaveProperty("note");
+	});
+
+	it.each([
+		["a string", "Tighten the lint rule"],
+		["an array", ["Tighten"]],
+		["a non-string title", { title: 7 }],
+		["a non-string body", { body: { text: "x" } }],
+	])(
+		"refuses a note that is %s, before resolving the project",
+		async (_label, note) => {
+			const response = await buildApp().request(
+				postJson(CHANGES_PATH, {
+					baseSnapshotId: BASE,
+					changes: [putChange()],
+					note,
+				}),
+			);
+
+			expect(response.status).toBe(400);
+			expect(
+				mocks.resolveEffectiveProjectPermissions,
+			).not.toHaveBeenCalled();
+			expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+		},
+	);
+
+	it("maps a note the admission rejects to 422 NOTE_REJECTED naming the field", async () => {
+		mocks.submitInstructionChange.mockRejectedValue(
+			Object.assign(new Error("The title must be one line."), {
+				code: "UNPROCESSABLE_CONTENT",
+				message: "The title must be one line.",
+				data: { reason: "NOTE_REJECTED", field: "title" },
+			}),
+		);
+
+		const response = await buildApp().request(
+			postJson(CHANGES_PATH, {
+				baseSnapshotId: BASE,
+				changes: [putChange()],
+				note: { title: "two\nlines" },
+			}),
+		);
+
+		expect(response.status).toBe(422);
+		await expect(response.json()).resolves.toEqual({
+			error: {
+				message: "The title must be one line.",
+				code: "NOTE_REJECTED",
+				data: { field: "title" },
+			},
+		});
+	});
+
+	it.each(["REPOSITORY_UNAVAILABLE", "REPOSITORY_BASE_UNAVAILABLE"])(
+		"maps an admission refusal %s to 412 with its code",
+		async (reason) => {
+			mocks.submitInstructionChange.mockRejectedValue(
+				orpcRefusal("PRECONDITION_FAILED", "Refused.", reason),
+			);
+
+			const response = await buildApp().request(
+				postJson(CHANGES_PATH, {
+					baseSnapshotId: BASE,
+					changes: [putChange()],
+				}),
+			);
+
+			expect(response.status).toBe(412);
+			await expect(response.json()).resolves.toMatchObject({
+				error: { code: reason },
+			});
+		},
+	);
+});
+
+describe("GET instructions/proposals/:snapshotId/pull-request", () => {
+	const STATUS_PATH = `/projects/${PROJECT}/instructions/proposals/snap-3/pull-request`;
+
+	it("returns the pull request, read in the project's organization as the key's creator", async () => {
+		mocks.getProposalPullRequestStatus.mockResolvedValue(
+			pullRequestBlock({
+				state: "OPEN",
+				url: "https://example.com/pr/7",
+			}),
+		);
+
+		const response = await buildApp().request(STATUS_PATH);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			data: {
+				pullRequest: pullRequestBlock({
+					state: "OPEN",
+					url: "https://example.com/pr/7",
+				}),
+			},
+		});
+		expect(
+			mocks.getProposalPullRequestStatus,
+		).toHaveBeenCalledExactlyOnceWith({
+			snapshotId: "snap-3",
+			projectId: PROJECT,
+			organizationId: ORG,
+			userId: "user-1",
+		});
+	});
+
+	it("refuses a key without instructions:read with the scope refusal, before any lookup", async () => {
+		mocks.scopes = ["instructions:write"];
+
+		const response = await buildApp().request(STATUS_PATH);
+
+		expect(response.status).toBe(403);
+		await expect(response.json()).resolves.toEqual({
+			error: "Missing required scope: instructions:read",
+		});
+		expect(mocks.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+		expect(mocks.getProposalPullRequestStatus).not.toHaveBeenCalled();
+	});
+
+	it("refuses a key whose creator lost read access with the permission refusal, a different shape", async () => {
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: ["project:read"],
+			source: "org",
+			organizationId: ORG,
+		});
+
+		const response = await buildApp().request(STATUS_PATH);
+
+		expect(response.status).toBe(403);
+		await expect(response.json()).resolves.toEqual({
+			error: {
+				message:
+					"No coding-instructions read permission for this project",
+			},
+		});
+		expect(mocks.getProposalPullRequestStatus).not.toHaveBeenCalled();
+	});
+
+	it("still runs the live check for a wildcard key", async () => {
+		mocks.scopes = ["*"];
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: [],
+			source: "org",
+			organizationId: ORG,
+		});
+
+		const response = await buildApp().request(STATUS_PATH);
+
+		expect(response.status).toBe(403);
+		await expect(response.json()).resolves.toMatchObject({
+			error: { message: expect.any(String) },
+		});
+		expect(mocks.getProposalPullRequestStatus).not.toHaveBeenCalled();
+	});
+
+	it("answers another member's proposal exactly as one that does not exist, through the real service", async () => {
+		// The key's creator can read the project and cannot review
+		// suggestions: an invited guest. The service and its reviewer check
+		// are real; the database answers as Postgres would, narrowed to the
+		// proposer when asked.
+		const service = mocks.realProposalPullRequestStatus;
+		if (!service) {
+			throw new Error("the real pull-request service was not captured");
+		}
+		mocks.getProposalPullRequestStatus.mockImplementation(service);
+		mocks.getInstructionProposal.mockImplementation(
+			async (
+				id: string,
+				projectId: string,
+				organizationId: string,
+				options: { proposerUserId?: string } = {},
+			) =>
+				id === "snap-3" &&
+				projectId === PROJECT &&
+				organizationId === ORG &&
+				(options.proposerUserId === undefined ||
+					options.proposerUserId === "someone-else")
+					? { id: "snap-3", userId: "someone-else" }
+					: null,
+		);
+
+		const hidden = await buildApp().request(STATUS_PATH);
+		const absent = await buildApp().request(
+			`/projects/${PROJECT}/instructions/proposals/snap-absent/pull-request`,
+		);
+
+		expect(hidden.status).toBe(404);
+		expect(absent.status).toBe(404);
+		const body = await hidden.json();
+		expect(body).toEqual(await absent.json());
+		expect(body).toMatchObject({
+			error: { message: "Proposal not found" },
+		});
+		expect(mocks.getInstructionProposal).toHaveBeenCalledWith(
+			"snap-3",
+			PROJECT,
+			ORG,
+			{ proposerUserId: "user-1" },
+		);
+	});
+
+	it("404s a proposal the service cannot find, and an organization key naming another tenant's project", async () => {
+		mocks.getProposalPullRequestStatus.mockRejectedValue(
+			orpcRefusal("NOT_FOUND", "Proposal not found"),
+		);
+		expect((await buildApp().request(STATUS_PATH)).status).toBe(404);
+
+		apiContext = organizationKey("org-2");
+		mocks.getProposalPullRequestStatus.mockReset();
+		expect((await buildApp().request(STATUS_PATH)).status).toBe(404);
+		expect(mocks.getProposalPullRequestStatus).not.toHaveBeenCalled();
+	});
+
+	it("answers a FABRIC proposal with a null pull request", async () => {
+		mocks.getProposalPullRequestStatus.mockResolvedValue(null);
+
+		const response = await buildApp().request(STATUS_PATH);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			data: { pullRequest: null },
+		});
+	});
+
+	it("refuses ?personal=1 and an over-long snapshot id before the service", async () => {
+		expect(
+			(await buildApp().request(`${STATUS_PATH}?personal=1`)).status,
+		).toBe(403);
+		expect(
+			(
+				await buildApp().request(
+					`/projects/${PROJECT}/instructions/proposals/${"s".repeat(129)}/pull-request`,
+				)
+			).status,
+		).toBe(400);
+		expect(mocks.getProposalPullRequestStatus).not.toHaveBeenCalled();
 	});
 });
