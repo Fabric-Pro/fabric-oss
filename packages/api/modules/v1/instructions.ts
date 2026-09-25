@@ -22,10 +22,9 @@
 import {
 	db,
 	getInstructionManifestDiff,
-	getProjectInstructionSettings,
 	getPublishedInstructionSnapshot,
 	listInstructionFiles,
-	resolveCurrentInstructionRepository,
+	resolveCurrentInstructionSource,
 	resolveInstructionSnapshotSource,
 } from "@repo/database";
 import { hasPermission, Permissions } from "@repo/permissions";
@@ -434,18 +433,6 @@ function readChangeBody(body: unknown):
 	};
 }
 
-/** The settings query stores nothing until someone sets it; absent means UPLOAD, as the tab reads it. */
-async function resolveSourceOfTruth(
-	projectId: string,
-	organizationId: string,
-): Promise<"UPLOAD" | "REPOSITORY"> {
-	const settings = await getProjectInstructionSettings(
-		projectId,
-		organizationId,
-	);
-	return settings.sourceOfTruth === "REPOSITORY" ? "REPOSITORY" : "UPLOAD";
-}
-
 export function registerInstructionRoutes(
 	app: Hono<{ Variables: ExternalApiVariables }>,
 ) {
@@ -494,25 +481,29 @@ export function registerInstructionRoutes(
 				return c.json({ error: resolved.error }, resolved.status);
 			}
 
-			const sourceOfTruth = await resolveSourceOfTruth(
-				projectId,
-				resolved.organizationId,
-			);
+			// `sourceOfTruth` and `repository` come from ONE read of the
+			// project's settings, in both branches (Fizzy #2708 review): read
+			// separately, a switch landing between the two reads answered
+			// `UPLOAD` beside a repository block, and a CLI that classifies a
+			// checkout against that block would act on a contradiction.
+			// (The settings column stores nothing until someone sets it; absent
+			// reads as UPLOAD, as the tab reads it.)
 			const snapshot = await resolvePublishedSnapshot(
 				projectId,
 				resolved.organizationId,
 			);
 			if (!snapshot) {
-				const repository = await resolveCurrentInstructionRepository(
-					projectId,
-					resolved.organizationId,
-				);
+				const { sourceOfTruth, repository } =
+					await resolveCurrentInstructionSource(
+						projectId,
+						resolved.organizationId,
+					);
 				return c.json(
 					ok({ published: false, sourceOfTruth, repository }),
 				);
 			}
 
-			const { source, repository } =
+			const { sourceOfTruth, source, repository } =
 				await resolveInstructionSnapshotSource(
 					projectId,
 					resolved.organizationId,

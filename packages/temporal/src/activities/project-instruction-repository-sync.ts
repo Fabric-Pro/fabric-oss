@@ -397,6 +397,7 @@ async function acquireOnce(input: {
 	if (
 		published &&
 		published.sourceCommitSha === commitSha &&
+		provenanceMatches(published, context) &&
 		frozenPairMatches(published.settingsFrozen, context) &&
 		!publishedTreeNeedsRepair(published.files)
 	) {
@@ -473,6 +474,7 @@ async function acquireOnce(input: {
 	} else {
 		if (
 			published &&
+			provenanceMatches(published, context) &&
 			treesEqual(
 				measured.map(({ path: p, sha256, mode }) => ({
 					path: p,
@@ -607,6 +609,35 @@ function publishedTreeNeedsRepair(files: readonly { path: string }[]): boolean {
 		}
 	}
 	return stale && kept;
+}
+
+/**
+ * Whether the published snapshot was published by a repository sync from
+ * THIS sync's integration and branch (Fizzy #2708 review).
+ *
+ * Identical bytes are not enough to call a run "unchanged": after the sync is
+ * re-pointed at another branch or repository, or after an upload is replaced
+ * by a sync, the published snapshot's provenance still names the old source,
+ * so the API reports it `current: false` (or not repository-built at all) and
+ * every checkout of the new branch is told nothing has been published from
+ * it. Publishing a new snapshot with the same bytes and the new provenance is
+ * what makes that true. `rootPath` is deliberately not compared: a snapshot
+ * does not record it, and the published commit is still on the same branch,
+ * so `current` stays correct across a root-path change.
+ */
+function provenanceMatches(
+	published: {
+		source: string;
+		repositoryIntegrationId: string | null;
+		sourceRef: string | null;
+	},
+	context: SyncRunContext,
+): boolean {
+	return (
+		published.source === "REPOSITORY" &&
+		published.repositoryIntegrationId === context.repositoryIntegrationId &&
+		published.sourceRef === context.ref
+	);
 }
 
 function frozenPairMatches(

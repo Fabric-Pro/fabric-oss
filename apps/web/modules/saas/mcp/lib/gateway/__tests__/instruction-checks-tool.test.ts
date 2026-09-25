@@ -189,6 +189,7 @@ beforeEach(() => {
 	// project with no repository-sync configuration; the REPOSITORY-specific
 	// tests override this explicitly.
 	m.resolveInstructionSnapshotSource.mockResolvedValue({
+		sourceOfTruth: "UPLOAD",
 		source: { kind: "UPLOAD" },
 		repository: null,
 	});
@@ -530,26 +531,31 @@ describe("lock", () => {
 		expect(lock.fix?.command).not.toContain("--apply");
 	});
 
-	it("fails with the error class and a generic fix when the settings lookup throws", async () => {
-		m.getProjectInstructionSettings.mockRejectedValue(
-			new RangeError("row for projects/secret-key unreadable"),
-		);
-		const r = await run({ projectId: PROJECT, lockDigest: DIGEST });
-		expect(check(reportOf(r), "lock")).toEqual({
-			id: "lock",
-			title: expect.any(String),
-			status: "fail",
-			evidence: "server",
-			detail: "check could not run (RangeError)",
-			fix: RERUN_FIX,
-		});
-		expect(text(r)).not.toContain("secret-key");
-	});
-
-	it("skips for a repository-backed project, whatever digest is sent", async () => {
+	/**
+	 * Fizzy #2708 review: the lock check takes `sourceOfTruth` from the same
+	 * settings read that produced the `published` check's `repository`,
+	 * never from a second read of its own — a switch between two reads made
+	 * one report call the project repository-sourced in one check and not in
+	 * the other.
+	 */
+	it("takes the source of truth from the resolver's one read, not a second settings read", async () => {
 		m.getProjectInstructionSettings.mockResolvedValue({
 			ignoreGlobs: null,
 			sourceOfTruth: "REPOSITORY",
+		});
+		const lock = check(
+			reportOf(await run({ projectId: PROJECT, lockDigest: DIGEST })),
+			"lock",
+		);
+		expect(lock.status).toBe("pass");
+		expect(m.getProjectInstructionSettings).not.toHaveBeenCalled();
+	});
+
+	it("skips for a repository-backed project, whatever digest is sent", async () => {
+		m.resolveInstructionSnapshotSource.mockResolvedValue({
+			sourceOfTruth: "REPOSITORY",
+			source: { kind: "UPLOAD" },
+			repository: null,
 		});
 		const lock = check(
 			reportOf(await run({ projectId: PROJECT, lockDigest: "00ff" })),
@@ -557,11 +563,12 @@ describe("lock", () => {
 		);
 		expect(lock.status).toBe("skip");
 		expect(lock.detail).toBe(
-			"repository-backed project: files and hooks are managed by git",
+			"repository-sourced project: the lock is not used in a checkout of the repository",
 		);
-		expect(m.getProjectInstructionSettings).toHaveBeenCalledWith(
+		expect(m.resolveInstructionSnapshotSource).toHaveBeenCalledWith(
 			PROJECT,
 			"org_1",
+			expect.anything(),
 		);
 	});
 });
@@ -830,9 +837,10 @@ describe("environment declaration", () => {
 	});
 
 	it("reads the declaration of a repository-backed project from its published snapshot", async () => {
-		m.getProjectInstructionSettings.mockResolvedValue({
-			ignoreGlobs: null,
+		m.resolveInstructionSnapshotSource.mockResolvedValue({
 			sourceOfTruth: "REPOSITORY",
+			source: { kind: "UPLOAD" },
+			repository: null,
 		});
 		publishDeclaration(DECLARATION);
 		const report = reportOf(

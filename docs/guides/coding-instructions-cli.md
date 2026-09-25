@@ -117,13 +117,34 @@ line on stderr, which also names the local-notes files:
   `CLAUDE.local.md` at any depth), and `fabric instructions` never writes,
   deletes or pushes either one.
 
-Every response is checked for the project's source of truth, not just the
-first one, so a project switched to a repository while a sync was already in
-flight stops that hook too. A repository-backed project (source of truth
-`REPOSITORY`) can still be synced by hand — for someone without access to that repository, a download is the
-only way to read the instructions at all. A `--hook` sync stops instead, with
-one line on stderr, because a hook writing into a checkout that `git pull`
-also writes is the second writer `init` refuses to create.
+For a repository-sourced project (source of truth `REPOSITORY`), what `sync`
+does depends on the directory it runs in; see
+[Repository-sourced projects](#repository-sourced-projects). In a checkout of
+the project's repository it only reports — by hand or as a hook, it downloads
+nothing and writes no lock, and `--dry-run` and `--repair` are ignored because
+there is no download for them to shape. Outside any git checkout it syncs the
+way it does for an uploaded project. In a checkout of some *other* repository
+a sync run by hand still downloads, because for someone without access to the
+project's repository a download is the only way to read the instructions at
+all; a hook there stops with one line. Everywhere this cannot tell whether
+the directory is a checkout of the project's repository — git could not
+answer, the server reports no repository, an unsupported provider, two
+matching remotes, or the right repository in the wrong directory — `sync`
+fails closed: a hook prints one line, and by hand it exits 7 with that line.
+Nothing is written in either case.
+
+The lock is read only once the directory is classified, and only where it is
+used: a malformed, symlinked, unsupported or other project's lock left in a
+checkout of the repository does not stop the report there. Its digest is
+still sent with the first request as a hint when it can be read safely, so a
+session start stays one request.
+
+Every response a command acts on is held to the first one: when a later
+response names a different source of truth or a different repository
+configuration (provider, host, path, branch, root path or generation) — a
+project switched while a sync was in flight — the command stops before it
+plans, downloads or writes anything, exit 7 by hand and one skip line on
+stderr under `--hook`.
 
 `--format json` prints one JSON object instead of prose. Any other value —
 `table`, `yaml`, `csv`, the defaults the rest of the CLI uses — prints text,
@@ -236,14 +257,137 @@ After starting Codex in the checkout, use `/hooks` to review and trust its
 project hook. `init` does not change that trust decision, and the hook's stdout
 becomes developer context in Codex.
 
-It refuses a project whose source of truth is `REPOSITORY`: those instructions
-arrive with `git pull`, and a sync hook would fight it. If the project is
-switched to a repository later, the installed hook stops applying anything and
-says so rather than becoming that second writer.
+For a repository-sourced project `init` classifies the directory once; see
+[Repository-sourced projects](#repository-sourced-projects) below.
 
 An explicit `--org <slug>` is carried into the generated hook command. These
 commands read no stored default context, so a slug supplied once on the
 command line has nowhere else to live.
+
+#### Repository-sourced projects
+
+A project whose source of truth is `REPOSITORY` publishes each snapshot from
+one commit on the branch its repository sync follows. In a checkout of that
+repository the instruction files already arrive with `git pull`, so the
+session hook's job there is to say when the branch has newer published
+instructions than the checkout — never to download them, write a lock, or
+change the checkout. Updating the checkout stays the developer's `git pull`;
+automatic updates for repository checkouts are not available yet.
+
+Developer setup:
+
+```bash
+git clone https://git.example.com/example-org/rules.git
+cd rules
+fabric instructions init --project <id> --tool claude-code
+```
+
+Run `init` from the directory the project's instructions live in — the
+repository root, or the sync's root folder when it has one. `init` then writes
+the `SessionStart` hook exactly as it does for an uploaded project (`check`, or
+`sync` with `--apply`; no matcher; timeout 15 seconds), copies nothing, and
+prints
+`installed; this checkout is <host>/<path>: the hook reports when <ref> has newer instructions and never changes the checkout`.
+With `--apply` it adds
+`— automatic updates are not available for repository checkouts yet; the hook reports and you (or your agent) run the pull`:
+the `sync` hook reports exactly as `check` does here. When nothing has been
+published from the repository yet, the hook is still written and `init` says
+so.
+
+**How the directory is classified.** From the first response of each run, the
+CLI asks git (read-only, see below) where the directory's work tree is and
+which URL each remote actually fetches from — after any `insteadOf` rewrite,
+so a remote rewritten to a local mirror is not taken for the repository. A URL
+matches when it is `https://host/path`, `ssh://[user@]host/path` or scp-like
+`[user@]host:path` (optional `.git`, no port), the host equals the project's,
+and the path equals the project's (case-insensitively on GitHub, exactly on
+GitLab; every GitLab subgroup segment counts).
+
+| Class | When | `check --hook` / `sync --hook` | `init` |
+|---|---|---|---|
+| matching | exactly one remote fetches from the repository, and the directory is the sync's root folder in that work tree | the report line below, or nothing when current | writes the hook, copies nothing |
+| not a git checkout | no work tree at or above the directory | unchanged: `check` reports, `sync` downloads and writes the lock | unchanged: first copy, then the hook |
+| foreign | no remote fetches from the repository | `fabric: coding instructions: no remote of this checkout fetches from <host>/<path> (foreign checkout); nothing was checked or changed` | refused, exit 7, with that line (a manual `sync` still downloads here) |
+| ambiguous | two or more remotes fetch from it | `fabric: coding instructions: remotes <a>, <b> all fetch from <host>/<path> (ambiguous checkout); nothing was checked or changed` | refused |
+| unmapped | the right repository, the wrong directory | `fabric: coding instructions: this checkout is <host>/<path>, but the project's instructions are at <root folder>, not this directory (unmapped checkout); nothing was checked or changed` | refused |
+| unknown | git could not answer: not installed (in a directory that does have a `.git` above it), timed out, an untrusted owner, a bare repository, a `.git` that points nowhere; or a branch name or root folder the CLI will not use | `fabric: coding instructions: this git checkout could not be read (<reason>; unknown checkout); nothing was checked or changed` | refused |
+| unknown repository | the server reports no repository configuration | `fabric: coding instructions: the project is repository-sourced but reports no repository to compare with (unknown repository); nothing was checked or changed` | refused |
+| unsupported provider | Azure DevOps, which is not compared yet | `fabric: coding instructions: AZURE_DEVOPS repositories are not compared yet (unsupported provider); nothing was checked or changed` | refused |
+
+**The report in a matching checkout.** The published commit is the snapshot's
+`source.commitSha`; the question is whether it is in `HEAD`'s history
+(`git merge-base --is-ancestor`):
+
+| Situation | Line |
+|---|---|
+| it is | nothing at all |
+| nothing published from the repository yet | `fabric: coding instructions: the project is repository-sourced but nothing has been published from <host>/<path> yet` |
+| the published snapshot came from an earlier branch or repository | `fabric: coding instructions v<n> was published from <source.ref>; the project now syncs <ref> of <host>/<path> — pull <ref> to pick up the next publication` |
+| behind, on `<ref>`, clean | `fabric: coding instructions v<n> (<sha7>) is published on <ref> of <host>/<path>; this checkout is behind — run: git pull --ff-only <remote> <ref>` |
+| behind, working tree has changes (untracked files included; the hook's own `.claude/settings.local.json` or `.codex/hooks.json` is excepted only while untracked — a committed copy that was modified counts) | `…; this checkout is behind; your working tree has changes — pull when it is clean` |
+| behind, a merge, rebase, cherry-pick, revert or bisect in progress | `…; this checkout is behind; a <operation> is in progress` |
+| behind, detached `HEAD` | `…; this checkout is behind; HEAD is detached — check out <ref> and pull` |
+| behind, on another branch | `…; this checkout is behind; you are on <branch> — pull <ref> when you switch to it` |
+
+When the published commit is not in the clone at all, "this checkout is
+behind" reads "this checkout has not fetched it yet". A shallow clone, a
+sparse checkout and a submodule add `(shallow clone)`, `(sparse checkout)` and
+`(inside a superproject)` to the line; they change nothing else.
+
+**The output contract.** Every one of these lines goes to stdout — Claude Code
+discards a successful hook's stderr and gives its stdout to the session as
+context — with nothing on stderr and exit 0. Every interpolated name (branch,
+remote, path, commit prefix) has control characters removed and a length
+limit applied, and the suggested `git pull` is shell-quoted. A remote URL,
+and any credential in one, is never printed. A manual `check` prints the same
+line after its usual report; a manual `sync` in a matching checkout prints it
+(or `… is already in this checkout's history; nothing to sync`) and writes
+nothing.
+
+`check --format json` adds a `checkout` block — `null` for a project that is
+not repository-sourced:
+
+```json
+{
+  "class": "matching",
+  "remote": "origin",
+  "branch": "main",
+  "head": "<40-hex HEAD>",
+  "clean": true,
+  "operation": null,
+  "contains": false,
+  "traits": ["shallow"],
+  "line": "fabric: coding instructions v7 (abc1234) is published on main of git.example.com/example-org/rules; this checkout is behind — run: git pull --ff-only origin main (shallow clone)"
+}
+```
+
+`contains` is `null` when git could not say (usually: not fetched yet) and is
+absent when there was no current repository-built snapshot to look for. The
+other classes carry only `class`, `traits: []` and `line`.
+
+**How git is run.** Only through a fixed set of read-only questions
+(`packages/cli/src/lib/instructions/git.ts`): `rev-parse`, `remote`,
+`ls-remote --get-url` (which contacts no server), `symbolic-ref`,
+`merge-base --is-ancestor`, `status --porcelain`, `config --get
+core.sparseCheckout` and `check-ref-format`. Nothing fetches, pulls, merges,
+checks out, stashes or writes. git is spawned without a shell, with stdin
+closed, `-c core.fsmonitor=false`, prompts disabled (`GIT_TERMINAL_PROMPT=0`,
+no `GIT_ASKPASS`/`SSH_ASKPASS`), optional locks and lazy fetches off, and an
+environment without every `FABRIC_*` variable; without `GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_COMMON_DIR` and
+`GIT_NAMESPACE`, so an inherited value cannot point it at another repository;
+and without `GIT_CONFIG_COUNT`, every `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`,
+`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and
+`GIT_CONFIG_NOSYSTEM`, so injected configuration such as an `insteadOf` cannot
+change which repository a remote fetches from. Names are compared
+case-insensitively. Under a hook every git command must be done 750 ms before
+the hook's 10-second deadline (shared with the server call); one that runs out
+makes the checkout `unknown`, and that line still reaches stdout rather than
+losing a race with the deadline's generic stderr line. By hand the git
+commands get 10 seconds together. Output is capped, and git's stderr is never
+printed. The branch name must pass both a conservative
+literal check and `git check-ref-format --branch`, so `@{-1}` and friends are
+never expanded.
 
 #### `--lessons`: a Stop hook that asks for a lesson
 
@@ -322,11 +466,28 @@ after printing the whole report. A missing or refused key does not crash the
 command. The `auth` check fails, the checks that need the server skip, and
 `mcp-servers` still runs because it needs nothing from the server.
 
-**A repository-backed project** (source of truth `REPOSITORY`) skips `lock`,
-`drift` and `hook`, because git manages those files and a hook would fight
-`git pull`. The environment declaration is read from the checkout, and every
-detail that depends on it starts with "from the local checkout". Doctor never
-proposes `init` for such a project.
+**A repository-sourced project** (source of truth `REPOSITORY`) is checked
+according to the directory's class (see
+[Repository-sourced projects](#repository-sourced-projects)), classified once
+with the same read-only git questions the hook asks:
+
+- In a **matching** checkout, `lock` is skipped ("not used in a checkout of
+  the repository"). `drift` passes when the published commit is in `HEAD`'s
+  history — "history contains the published commit <sha7> (ancestry, not a
+  file comparison)" — and otherwise warns with the hook's report line. The
+  environment declaration is read from the checkout, and every detail that
+  depends on it starts with "from the local checkout".
+- **Outside any git checkout** every check runs as it does for an uploaded
+  project.
+- In any **other** class, `drift` is skipped with the class line and a local
+  `fabric.environment.json` is never read as this project's declaration —
+  only a published one, verified as below. `lock` is checked as for an
+  uploaded project in a checkout of some other repository, where a manual
+  `sync` still copies; everywhere else `sync` refuses, so `lock` is skipped
+  with the class line.
+- `hook` is checked in every class. It proposes `init` only in a matching
+  checkout or outside any checkout; elsewhere `init` would refuse, and the fix
+  says so instead.
 
 **Where the declaration is read from.** If the published manifest lists
 `fabric.environment.json`, the lock names the published digest, and the local
@@ -398,12 +559,14 @@ for it. With `--probe-network`:
 
 #### What doctor will not do
 
-- **Execute anything.** Tools named by the declaration and commands named by
-  `.mcp.json` are found with `stat`. A candidate counts when it is a regular
-  file with an execute bit, or has a `PATHEXT` extension on Windows. Only
-  absolute PATH entries are searched. Running `<tool> --version` would be code
-  execution chosen by whoever can publish the instructions or commit to the
-  repository.
+- **Execute anything a project names.** Tools named by the declaration and
+  commands named by `.mcp.json` are found with `stat`. A candidate counts when
+  it is a regular file with an execute bit, or has a `PATHEXT` extension on
+  Windows. Only absolute PATH entries are searched. Running `<tool> --version`
+  would be code execution chosen by whoever can publish the instructions or
+  commit to the repository. The one program doctor runs is `git`, for a
+  repository-sourced project only, and only the read-only questions listed
+  under [Repository-sourced projects](#repository-sourced-projects).
 - **Read a declared variable's value.** Declared variables are checked by
   name, against the names in the environment. Doctor necessarily uses its own
   settings (`FABRIC_API_KEY`, `FABRIC_BASE_URL` and the other `FABRIC_*`
@@ -596,6 +759,9 @@ stays small, and Claude Code's own hook timeout is the hard stop for it.
 
 ## The lock
 
+A checkout of a repository-sourced project's own repository has no lock:
+nothing is copied into it, so there is no ledger to keep (see
+[Repository-sourced projects](#repository-sourced-projects)). Everywhere else,
 `<dest>/.fabric/instructions.lock` records the snapshot that was applied and
 every path it wrote or verified:
 
@@ -760,6 +926,7 @@ the checks.
 | The one guarded writer | `packages/cli/src/lib/instructions/safe-write.ts` |
 | Push plan (local diff against the lock) | `packages/cli/src/lib/instructions/push.ts` |
 | `doctor` checks, PATH lookup, `.mcp.json` reader | `packages/cli/src/lib/instructions/doctor.ts`, `path-lookup.ts`, `mcp-config.ts` |
+| Repository-sourced checkouts: read-only git questions, remote URL matching, classification and report lines | `packages/cli/src/lib/instructions/git.ts`, `repository-identity.ts`, `checkout.ts` |
 | Shared report vocabulary and declaration parser | `packages/cli/src/lib/instructions/checks.ts`, byte-identical after its header to `apps/web/modules/saas/mcp/lib/gateway/instruction-checks.ts`; `packages/cli/__tests__/checks-agree-with-gateway.test.ts` fails on any divergence |
 | SDK resource | `packages/sdk/src/resources/instructions.ts` |
 | REST routes | `packages/api/modules/v1/instructions.ts` |

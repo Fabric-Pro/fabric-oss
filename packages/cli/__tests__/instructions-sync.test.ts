@@ -11,6 +11,7 @@
 import {
 	mkdir,
 	mkdtemp,
+	readdir,
 	readFile,
 	stat,
 	unlink,
@@ -603,12 +604,28 @@ describe("a lock from another project", () => {
 	 * A's digest, receive B's manifest, and then use A's ledger to decide
 	 * what to delete — classifying every A-only file as "the sync wrote this,
 	 * remove it".
+	 *
+	 * Since Fizzy #2708 the lock is validated after the published answer
+	 * says what kind of project this is (a checkout of a repository-sourced
+	 * project's repository never uses one), so the refusal comes after one
+	 * request — which carries no digest, never project A's — and before any
+	 * download or write.
 	 */
+	function serveUpload(): void {
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: snapshotFor([]),
+			manifest: [],
+		});
+	}
+
 	it.each([["check"], ["sync"]])(
-		"refuses %s before any network call",
+		"refuses %s before sending its digest or writing anything",
 		async (verb) => {
 			const dest = await makeTree();
 			await seedLock(dest, "d".repeat(64), {}, "project-A");
+			serveUpload();
 
 			const result = await runCli([
 				verb,
@@ -621,13 +638,20 @@ describe("a lock from another project", () => {
 			expect(result.code).toBe(7);
 			expect(result.stderr).toContain("belongs to project project-A");
 			expect(result.stderr).toContain("project-B");
-			expect(mocks.getPublished).not.toHaveBeenCalled();
+			expect(mocks.getPublished).toHaveBeenCalledTimes(1);
+			expect(mocks.getPublished).toHaveBeenCalledWith("project-B", {
+				org: undefined,
+				sinceDigest: undefined,
+			});
+			expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+			expect(await readdir(dest)).toEqual([".fabric"]);
 		},
 	);
 
 	it("refuses init before the hook is written", async () => {
 		const dest = await makeTree();
 		await seedLock(dest, "d".repeat(64), {}, "project-A");
+		serveUpload();
 
 		const result = await runCli([
 			"init",
@@ -640,7 +664,8 @@ describe("a lock from another project", () => {
 		]);
 
 		expect(result.code).toBe(7);
-		expect(mocks.getPublished).not.toHaveBeenCalled();
+		expect(result.stderr).toContain("belongs to project project-A");
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 		await expect(
 			stat(path.join(dest, ".claude", "settings.local.json")),
 		).rejects.toThrow();
@@ -649,6 +674,7 @@ describe("a lock from another project", () => {
 	it("becomes one quiet line under --hook", async () => {
 		const dest = await makeTree();
 		await seedLock(dest, "d".repeat(64), {}, "project-A");
+		serveUpload();
 
 		const result = await runCli([
 			"check",

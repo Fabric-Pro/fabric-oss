@@ -121,6 +121,7 @@ import {
 	rejectAbandonedInstructionSnapshot,
 	rejectInstructionProposal,
 	resolveCurrentInstructionRepository,
+	resolveCurrentInstructionSource,
 	resolveInstructionSnapshotSource,
 	rotateAbandonedInstructionSnapshot,
 	startInstructionSnapshotValidation,
@@ -4309,6 +4310,67 @@ describe("resolveInstructionSnapshotSource and resolveCurrentInstructionReposito
 					},
 				}),
 			);
+		});
+	});
+
+	/**
+	 * Fizzy #2708 review: one settings read decides both `sourceOfTruth` and
+	 * `repository`. The settings mock flips on every read; each resolver must
+	 * read it once and answer consistently from that one read, so no result
+	 * pairs `UPLOAD` with a repository (or `REPOSITORY` from a later read).
+	 */
+	describe("a settings flip between reads", () => {
+		it.each([
+			["REPOSITORY", "UPLOAD"],
+			["UPLOAD", "REPOSITORY"],
+		] as const)(
+			"resolveCurrentInstructionSource answers from its one read (%s, then %s)",
+			async (first, second) => {
+				mocks.project.findFirst
+					.mockResolvedValueOnce(settingsOf(first))
+					.mockResolvedValue(settingsOf(second));
+				mocks.repositorySync.findFirst.mockResolvedValue(syncRowOf());
+
+				const result = await resolveCurrentInstructionSource(
+					"p",
+					"org_1",
+				);
+
+				expect(result.sourceOfTruth).toBe(first);
+				expect(result.repository === null).toBe(first === "UPLOAD");
+				expect(mocks.project.findFirst).toHaveBeenCalledTimes(1);
+			},
+		);
+
+		it.each([
+			["REPOSITORY", "UPLOAD"],
+			["UPLOAD", "REPOSITORY"],
+		] as const)(
+			"resolveInstructionSnapshotSource answers from its one read (%s, then %s)",
+			async (first, second) => {
+				mocks.project.findFirst
+					.mockResolvedValueOnce(settingsOf(first))
+					.mockResolvedValue(settingsOf(second));
+				mocks.repositorySync.findFirst.mockResolvedValue(syncRowOf());
+
+				const result = await resolveInstructionSnapshotSource(
+					"p",
+					"org_1",
+					snapshotOf(REPO_SNAPSHOT_FIELDS),
+				);
+
+				expect(result.sourceOfTruth).toBe(first);
+				expect(result.repository === null).toBe(first === "UPLOAD");
+				expect(mocks.project.findFirst).toHaveBeenCalledTimes(1);
+			},
+		);
+
+		it("reports an absent setting as UPLOAD, with no repository", async () => {
+			mocks.project.findFirst.mockResolvedValue(settingsOf(null));
+
+			await expect(
+				resolveCurrentInstructionSource("p", "org_1"),
+			).resolves.toEqual({ sourceOfTruth: "UPLOAD", repository: null });
 		});
 	});
 

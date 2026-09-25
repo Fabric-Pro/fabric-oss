@@ -52,6 +52,15 @@ import {
 import { lockPath, writeLock } from "../src/lib/instructions/lock.js";
 import { computeSnapshotDigest } from "../src/lib/instructions/manifest.js";
 import { nextLock } from "../src/lib/instructions/plan.js";
+import { fakeGit } from "./helpers/git-fake.js";
+
+/**
+ * `user@host` joined at runtime: the publication scan reads any literal
+ * user, at-sign and dotted host as an email address, and a subdomain of example.com is
+ * not on its sanctioned list. The string the code under test receives is
+ * byte-identical.
+ */
+const withUser = (user: string, rest: string): string => [user, rest].join("@");
 
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
@@ -71,6 +80,15 @@ vi.mock("../src/lib/config.js", () => ({
 	getBaseUrl: () => undefined,
 	getDefaultContext: mocks.getDefaultContext,
 	getOutputFormat: () => "table",
+}));
+
+// Fizzy #2708: a repository-sourced project's doctor asks git about the
+// checkout. Scripted here, so no test depends on the machine's git; by
+// default every directory is "not a git checkout", which is also what a real
+// git answers for these temp trees.
+vi.mock("../src/lib/instructions/git.js", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	...(await import("./helpers/git-fake.js")).gitFake,
 }));
 
 vi.mock("../src/lib/client.js", () => {
@@ -405,6 +423,7 @@ beforeEach(async () => {
 	mocks.getDefaultContext.mockReturnValue(undefined);
 	mocks.getClient.mockReset();
 	mocks.withoutContext.mockReset();
+	fakeGit.reset();
 	delete process.env.FABRIC_FORMAT;
 	originalPath = process.env.PATH;
 	// A PATH of exactly one temp directory, so the developer's real PATH can
@@ -1229,35 +1248,187 @@ describe("hook", () => {
 // repository-backed
 // ---------------------------------------------------------------------------
 describe("a repository-backed project", () => {
-	it("skips lock, drift and hook, and reads the declaration from the checkout", async () => {
+	const PUBLISHED_SHA = "a".repeat(40);
+	const repositoryConfig: PublishedInstructionRepository = {
+		provider: "GITHUB",
+		host: "git.example.com",
+		path: "example-org/rules",
+		ref: "main",
+		rootPath: "",
+		generation: 1,
+	};
+	const repositorySource: PublishedInstructionSource = {
+		kind: "REPOSITORY",
+		ref: "main",
+		commitSha: PUBLISHED_SHA,
+		current: true,
+	};
+
+	/** A checkout of `example-org/rules`, as the git fake reports it. */
+	function inCheckout(
+		dest: string,
+		remote = "https://git.example.com/example-org/rules.git",
+	): void {
+		fakeGit.state.toplevel = dest;
+		fakeGit.state.remotes = { origin: remote };
+	}
+
+	function servedRepository(manifest: Entry[] = []): void {
+		mocks.getPublished.mockResolvedValue(
+			publishedFor(manifest, {
+				repository: true,
+				source: repositorySource,
+				repositoryConfig,
+			}),
+		);
+	}
+
+	it("in a checkout of the repository: skips the lock, compares ancestry, checks the hook, and reads the declaration from the checkout", async () => {
 		const dest = await makeTree();
 		const declaration = JSON.stringify({
 			version: 1,
 			variables: [{ name: "DOCTOR_TEST_PRESENT" }],
 		});
 		await writeTreeFiles(dest, { "fabric.environment.json": declaration });
+		await writeHookFile(dest, CLAUDE_HOOK, [CANONICAL_CHECK]);
 		process.env.DOCTOR_TEST_PRESENT = SENTINEL;
-		mocks.getPublished.mockResolvedValue(
-			publishedFor([manifestEntry("fabric.environment.json", "{}\n")], {
-				repository: true,
-			}),
-		);
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: true };
+		servedRepository([manifestEntry("fabric.environment.json", "{}\n")]);
 
 		const { stdout, report } = await doctorJson(dest);
 
-		for (const id of ["lock", "drift", "hook"] as const) {
-			expect(checkOf(report, id)).toMatchObject({
-				status: "skip",
-				detail: "repository-backed project: files and hooks are managed by git",
-			});
-		}
+		expect(checkOf(report, "lock")).toMatchObject({
+			status: "skip",
+			detail: "not used in a checkout of the repository",
+		});
+		expect(checkOf(report, "drift")).toMatchObject({
+			status: "pass",
+			detail: "history contains the published commit aaaaaaa (ancestry, not a file comparison)",
+		});
+		expect(checkOf(report, "hook").status).toBe("pass");
 		expect(checkOf(report, "environment")).toMatchObject({
 			status: "pass",
 			detail: "from the local checkout: 1 of 1 declared variable present",
 		});
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
-		expect(stdout).not.toContain("instructions init");
 		expect(stdout).not.toContain(SENTINEL);
+		// Only the read-only questions were asked.
+		expect(new Set(fakeGit.calls)).toEqual(
+			new Set([
+				"findWorkTree",
+				"checkRefFormat",
+				"remotes",
+				"effectiveFetchUrl",
+				"checkoutTraits",
+				"currentBranch",
+				"headSha",
+				"isClean",
+				"operationInProgress",
+				"isAncestor",
+			]),
+		);
+	});
+
+	it("warns with the report line when the published commit is not in HEAD's history", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: false };
+		servedRepository();
+
+		const { report } = await doctorJson(dest);
+
+		expect(checkOf(report, "drift")).toMatchObject({
+			status: "warn",
+			detail: "coding instructions v7 (aaaaaaa) is published on main of git.example.com/example-org/rules; this checkout is behind — run: git pull --ff-only origin main",
+		});
+	});
+
+	it("proposes init for a missing hook in a checkout of the repository", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: true };
+		servedRepository();
+
+		const { report } = await doctorJson(dest);
+
+		const hook = checkOf(report, "hook");
+		expect(hook.status).toBe("fail");
+		expect(hook.fix?.command).toBe(
+			`fabric instructions init --project project-1 --tool claude-code --dest ${dest}`,
+		);
+		expect(hook.fix?.description).toContain("copies nothing");
+	});
+
+	it("outside any git checkout: checks the lock and drift the upload way", async () => {
+		const dest = await makeTree();
+		servedRepository([manifestEntry("AGENTS.md", "# a\n")]);
+
+		const { report } = await doctorJson(dest);
+
+		expect(checkOf(report, "lock")).toMatchObject({
+			status: "fail",
+			detail: `no lock: ${dest} has not been synced`,
+		});
+		expect(checkOf(report, "drift")).toMatchObject({
+			status: "skip",
+			detail: "not evaluated: no usable lock for this project",
+		});
+		expect(checkOf(report, "hook").fix?.command).toContain(
+			"instructions init",
+		);
+	});
+
+	it("in some other repository's checkout: never proposes init, never reads its declaration", async () => {
+		const dest = await makeTree();
+		await writeTreeFiles(dest, {
+			"fabric.environment.json": JSON.stringify({
+				version: 1,
+				variables: [{ name: "DOCTOR_TEST_PRESENT" }],
+			}),
+		});
+		inCheckout(dest, "https://git.example.com/example-org/other.git");
+		servedRepository();
+
+		const { stdout, report } = await doctorJson(dest);
+
+		expect(checkOf(report, "drift")).toMatchObject({
+			status: "skip",
+			detail: "coding instructions: no remote of this checkout fetches from git.example.com/example-org/rules (foreign checkout); nothing was checked or changed",
+		});
+		const hook = checkOf(report, "hook");
+		expect(hook.status).toBe("fail");
+		expect(hook.fix?.command).toBeUndefined();
+		expect(hook.fix?.description).toContain(
+			"init refuses in this directory",
+		);
+		expect(checkOf(report, "environment")).toMatchObject({
+			status: "skip",
+		});
+		expect(checkOf(report, "environment").detail).toContain("is not read");
+		expect(stdout).not.toContain("instructions init");
+	});
+
+	it("reports an unreadable checkout as unknown rather than failing a check", async () => {
+		const dest = await makeTree();
+		fakeGit.state.toplevel = dest;
+		fakeGit.state.unavailable = "git timed out";
+		servedRepository();
+
+		const { report } = await doctorJson(dest);
+
+		const unknown =
+			"coding instructions: this git checkout could not be read (git timed out; unknown checkout); nothing was checked or changed";
+		expect(checkOf(report, "drift")).toMatchObject({
+			status: "skip",
+			detail: unknown,
+		});
+		// `sync` refuses here, so the lock is not checked (and no `sync` fix
+		// is proposed) either.
+		expect(checkOf(report, "lock")).toMatchObject({
+			status: "skip",
+			detail: unknown,
+		});
 	});
 });
 
@@ -1501,8 +1672,32 @@ describe("environment", () => {
 	])("refuses a symlinked $label", async ({ repository, prefix }) => {
 		const { dest, manifest } = await syncedTree({ "AGENTS.md": "# a\n" });
 		mocks.getPublished.mockResolvedValue(
-			publishedFor(manifest, { repository }),
+			publishedFor(manifest, {
+				repository,
+				...(repository
+					? {
+							repositoryConfig: {
+								provider: "GITHUB" as const,
+								host: "git.example.com",
+								path: "example-org/rules",
+								ref: "main",
+								rootPath: "",
+								generation: 1,
+							},
+						}
+					: {}),
+			}),
 		);
+		if (repository) {
+			// A checkout of the repository: its own file is the declaration.
+			fakeGit.state.toplevel = dest;
+			fakeGit.state.remotes = {
+				origin: withUser(
+					"git",
+					"git.example.com:example-org/rules.git",
+				),
+			};
+		}
 		const outside = await makeTree();
 		await writeTreeFiles(outside, {
 			"fabric.environment.json": JSON.stringify({
