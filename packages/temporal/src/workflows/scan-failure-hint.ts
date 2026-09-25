@@ -120,12 +120,33 @@ export function describeScanFailureReason(reasons: unknown[]): string | null {
 	return kind === "unknown" ? null : HINTS[kind];
 }
 
+/**
+ * Hints for a failed scan step. These steps read and write the database and
+ * never call the AI model, so the AI-worded {@link HINTS} would mislead.
+ */
+const STEP_HINTS: Record<Exclude<ScanFailureKind, "unknown">, string> = {
+	rate_limit:
+		"A service the scan depends on was rate-limited. This is usually temporary — please try again in a few minutes.",
+	timeout:
+		"This can happen on a large project or a busy worker and is usually temporary — please try again in a few minutes.",
+	unavailable:
+		"A service the scan depends on was temporarily unavailable. This is usually temporary — please try again shortly.",
+};
+
 /** The scan steps whose exhausted retries fail the whole run. */
 const SCAN_STEP_LABELS: Record<string, string> = {
 	markScanRunningActivity: "Starting the scan",
 	gatherScanContextActivity: "Gathering the project content",
 	persistScanResultsActivity: "Saving the scan results",
 };
+
+function scanStepOf(error: unknown): string | undefined {
+	const activityType = (error as { activityType?: unknown } | null)
+		?.activityType;
+	return typeof activityType === "string"
+		? SCAN_STEP_LABELS[activityType]
+		: undefined;
+}
 
 /**
  * The failure message a scan run records: the real cause from the `.cause`
@@ -135,13 +156,13 @@ const SCAN_STEP_LABELS: Record<string, string> = {
  */
 export function describeScanFailureMessage(error: unknown): string {
 	const { message } = unwrapPmSyncError(error);
-	const activityType = (error as { activityType?: unknown } | null)
-		?.activityType;
-	const step =
-		typeof activityType === "string"
-			? SCAN_STEP_LABELS[activityType]
-			: undefined;
-	return step ? `${step} failed: ${message}` : message;
+	const step = scanStepOf(error);
+	if (!step) {
+		return message;
+	}
+	return message === "Activity task timed out"
+		? `${step} timed out.`
+		: `${step} failed: ${message}`;
 }
 
 /**
@@ -152,11 +173,16 @@ export function describeScanFailureMessage(error: unknown): string {
  * OTHER failure path (context gather, commit resolve, persist) reaches the catch
  * with no hint yet, so this classifies the caught error's `.cause` chain and
  * appends one, making the actionable message universal rather than wholesale-only.
+ * A failed scan step gets a step hint rather than an AI-model one.
  */
 export function ensureScanFailureHint(message: string, error: unknown): string {
-	const hint = describeScanFailureReason([error]);
-	if (!hint) {
+	const kind = classifyScanFailure([error]);
+	if (kind === "unknown") {
 		return message;
 	}
-	return message.includes(hint) ? message : `${message} ${hint}`;
+	const hint = scanStepOf(error) ? STEP_HINTS[kind] : HINTS[kind];
+	if (message.includes(hint)) {
+		return message;
+	}
+	return `${/[.!?]$/.test(message) ? message : `${message}.`} ${hint}`;
 }
