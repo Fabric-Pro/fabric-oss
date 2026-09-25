@@ -12,13 +12,15 @@
  * the user that (and that it's usually temporary) is far more useful than a
  * generic failure string.
  *
- * Zero imports on purpose: the deterministic scan workflow imports this, and a
- * workflow bundle must not pull in Node built-ins. Mirrors the cause-walking in
- * `unwrapPmSyncError` — Temporal wraps activity throws in `ActivityFailure`
- * whose own `.message` is generic ("Activity task failed" / "Activity task
- * timed out"), while the real reason (a 429, a gateway 503, a chunk timeout)
- * lives deeper in the `.cause` chain.
+ * No package imports on purpose: the deterministic scan workflow imports this,
+ * and a workflow bundle must not pull in Node built-ins (`unwrapPmSyncError` is
+ * import-free too). Mirrors its cause-walking — Temporal wraps activity throws
+ * in `ActivityFailure` whose own `.message` is generic ("Activity task failed"
+ * / "Activity task timed out"), while the real reason (a 429, a gateway 503, a
+ * chunk timeout) lives deeper in the `.cause` chain.
  */
+
+import { unwrapPmSyncError } from "./pm-sync-error-unwrap";
 
 export type ScanFailureKind =
 	| "rate_limit"
@@ -116,6 +118,30 @@ const HINTS: Record<Exclude<ScanFailureKind, "unknown">, string> = {
 export function describeScanFailureReason(reasons: unknown[]): string | null {
 	const kind = classifyScanFailure(reasons);
 	return kind === "unknown" ? null : HINTS[kind];
+}
+
+/** The scan steps whose exhausted retries fail the whole run. */
+const SCAN_STEP_LABELS: Record<string, string> = {
+	markScanRunningActivity: "Starting the scan",
+	gatherScanContextActivity: "Gathering the project content",
+	persistScanResultsActivity: "Saving the scan results",
+};
+
+/**
+ * The failure message a scan run records: the real cause from the `.cause`
+ * chain, prefixed with the step that failed. Without this, a step's exhausted
+ * retries persist Temporal's generic "Activity task failed" wrapper text, which
+ * tells neither the user nor the server log what went wrong.
+ */
+export function describeScanFailureMessage(error: unknown): string {
+	const { message } = unwrapPmSyncError(error);
+	const activityType = (error as { activityType?: unknown } | null)
+		?.activityType;
+	const step =
+		typeof activityType === "string"
+			? SCAN_STEP_LABELS[activityType]
+			: undefined;
+	return step ? `${step} failed: ${message}` : message;
 }
 
 /**

@@ -1,6 +1,12 @@
+import {
+	ActivityFailure,
+	ApplicationFailure,
+	RetryState,
+} from "@temporalio/common";
 import { describe, expect, it } from "vitest";
 import {
 	classifyScanFailure,
+	describeScanFailureMessage,
 	describeScanFailureReason,
 	ensureScanFailureHint,
 } from "../scan-failure-hint";
@@ -154,5 +160,70 @@ describe("ensureScanFailureHint", () => {
 		expect(ensureScanFailureHint(thrown.message, thrown)).toBe(
 			thrown.message,
 		);
+	});
+});
+
+/** The failure a scan step's exhausted retries hand the workflow's catch. */
+function activityFailure(activityType: string, cause: Error): ActivityFailure {
+	return new ActivityFailure(
+		"Activity task failed",
+		activityType,
+		"7",
+		RetryState.MAXIMUM_ATTEMPTS_REACHED,
+		"worker@host",
+		cause,
+	);
+}
+
+describe("describeScanFailureMessage", () => {
+	it("names the failed step and its real cause instead of Temporal's wrapper text", () => {
+		const err = activityFailure(
+			"persistScanResultsActivity",
+			ApplicationFailure.create({
+				message:
+					"Unique constraint failed on the fields: (`fingerprint`)",
+				type: "PrismaClientKnownRequestError",
+			}),
+		);
+		expect(describeScanFailureMessage(err)).toBe(
+			"Saving the scan results failed: Unique constraint failed on the fields: (`fingerprint`)",
+		);
+	});
+
+	it("labels the context-gather and mark-running steps", () => {
+		expect(
+			describeScanFailureMessage(
+				activityFailure(
+					"gatherScanContextActivity",
+					ApplicationFailure.create({ message: "Project not found" }),
+				),
+			),
+		).toBe("Gathering the project content failed: Project not found");
+		expect(
+			describeScanFailureMessage(
+				activityFailure(
+					"markScanRunningActivity",
+					ApplicationFailure.create({ message: "Scan row missing" }),
+				),
+			),
+		).toBe("Starting the scan failed: Scan row missing");
+	});
+
+	it("keeps the cause alone for an activity it has no step label for", () => {
+		expect(
+			describeScanFailureMessage(
+				activityFailure(
+					"someOtherActivity",
+					ApplicationFailure.create({ message: "boom" }),
+				),
+			),
+		).toBe("boom");
+	});
+
+	it("passes the wholesale 'every scanner failed' error through unchanged", () => {
+		const thrown = new Error(
+			"Every scanner failed to complete (Security, Accessibility).",
+		);
+		expect(describeScanFailureMessage(thrown)).toBe(thrown.message);
 	});
 });
