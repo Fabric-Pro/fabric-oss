@@ -55,6 +55,7 @@ export function IntegrationTile({
 	partial = false,
 	pip,
 	testId,
+	scroll,
 }: {
 	href: string;
 	icon: React.ReactNode;
@@ -64,10 +65,12 @@ export function IntegrationTile({
 	partial?: boolean;
 	pip?: { class: string; label: string } | null;
 	testId?: string;
+	scroll?: boolean;
 }) {
 	return (
 		<Link
 			href={href}
+			scroll={scroll}
 			data-testid={testId}
 			className="group flex flex-col gap-2 rounded-[10px] border border-border bg-card px-4 py-3.5 transition-colors hover:bg-accent"
 		>

@@ -49,7 +49,7 @@ import {
 	SearchIcon,
 	TestTube2Icon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useDebounceValue } from "usehooks-ts";
 import { useMcpConnection } from "../hooks/useMcpConnection";
@@ -63,8 +63,10 @@ type ViewMode = "grid" | "list";
 
 type McpServersViewProps = {
 	organizationId?: string | null;
-	/** Prefill the registry search, e.g. from a tile on the Connections page. */
+	/** Server name, key, or ID to auto-open from a tile on the Connections page. */
 	initialRegistrySearch?: string;
+	/** Callback invoked once initialRegistrySearch has been acted upon (e.g. to clear query params) */
+	onServerParamConsumed?: () => void;
 };
 
 function getDefaultSemanticMetadata(server: {
@@ -228,6 +230,7 @@ function getDefaultSemanticMetadata(server: {
 export function McpServersView({
 	organizationId,
 	initialRegistrySearch = "",
+	onServerParamConsumed,
 }: McpServersViewProps = {}) {
 	const qc = useQueryClient();
 	const [searchQuery, setSearchQuery] = useState("");
@@ -281,9 +284,7 @@ export function McpServersView({
 
 	// Registry selection dialog state
 	const [openRegistryDialog, setOpenRegistryDialog] = useState(false);
-	const [registrySearchQuery, setRegistrySearchQuery] = useState(
-		initialRegistrySearch,
-	);
+	const [registrySearchQuery, setRegistrySearchQuery] = useState("");
 	const [debouncedRegistrySearch] = useDebounceValue(
 		registrySearchQuery,
 		300,
@@ -324,20 +325,25 @@ export function McpServersView({
 
 	const linearIntegrationEnabled = useFeatureFlag("LINEAR_INTEGRATION");
 
+	const shouldIncludeAll =
+		debouncedRegistrySearch.length > 0 ||
+		registrySearchQuery.length > 0 ||
+		Boolean(initialRegistrySearch);
+
 	// Fetch servers for add dialog — staleTime prevents re-fetching on every dialog open
 	// since registry servers change infrequently (seeded data)
-	const { data: rawServers = [] } = useQuery({
+	const { data: rawServers = [], isLoading: isServersLoading } = useQuery({
 		queryKey: [
 			"mcp-servers",
 			{
 				organizationId: organizationId ?? "user",
-				includeAll: debouncedRegistrySearch.length > 0,
+				includeAll: shouldIncludeAll,
 			},
 		],
 		queryFn: async () => {
 			const result = await orpcClient.mcp.registry.list({
 				organizationId,
-				includeAll: debouncedRegistrySearch.length > 0,
+				includeAll: shouldIncludeAll,
 			});
 			return result;
 		},
@@ -550,7 +556,10 @@ export function McpServersView({
 	}
 
 	// Handle installing a server from the registry dialog
-	const handleRegistryInstall = async (s: any) => {
+	const handleRegistryInstall = async (
+		s: any,
+		{ fromTile = false }: { fromTile?: boolean } = {},
+	) => {
 		if (s.key === "gitlab") {
 			const reconciled = await tryGitLabReconcile();
 			if (reconciled) {
@@ -561,16 +570,20 @@ export function McpServersView({
 
 		const semanticDefaults = getDefaultSemanticMetadata(s);
 		if (s.transport === "STDIO" && !s.command) {
+			const docsUrl = s.docsUrl || s.repositoryUrl;
+			const openDocs = () =>
+				docsUrl &&
+				window.open(docsUrl, "_blank", "noopener,noreferrer");
 			toast.info("This server requires local setup", {
 				description:
 					"STDIO servers run via command line and cannot be configured from the web UI. Use Claude Desktop or view the docs.",
+				action:
+					fromTile && docsUrl
+						? { label: "View docs", onClick: openDocs }
+						: undefined,
 			});
-			if (s.docsUrl || s.repositoryUrl) {
-				window.open(
-					s.docsUrl || s.repositoryUrl,
-					"_blank",
-					"noopener,noreferrer",
-				);
+			if (!fromTile) {
+				openDocs();
 			}
 			return;
 		}
@@ -605,6 +618,45 @@ export function McpServersView({
 			});
 		}
 	}, [openRegistryDialog]);
+
+	// Auto-open server configuration flow or registry dialog when initialRegistrySearch is provided
+	const lastHandledServerRef = useRef<string | null>(null);
+	useEffect(() => {
+		if (!initialRegistrySearch) {
+			lastHandledServerRef.current = null;
+			return;
+		}
+		if (lastHandledServerRef.current === initialRegistrySearch) {
+			return;
+		}
+		if (isServersLoading) {
+			return;
+		}
+
+		lastHandledServerRef.current = initialRegistrySearch;
+		const searchLower = initialRegistrySearch.toLowerCase();
+		const matched =
+			servers.find((s: any) => s.id === initialRegistrySearch) ||
+			servers.find((s: any) => s.key?.toLowerCase() === searchLower) ||
+			servers.find((s: any) => s.name?.toLowerCase() === searchLower);
+
+		if (matched?.defaultEnabled) {
+			toast.info(
+				`${matched.name || "This server"} is managed and always enabled for your organization.`,
+			);
+		} else if (matched) {
+			handleRegistryInstall(matched, { fromTile: true });
+		} else {
+			setRegistrySearchQuery(initialRegistrySearch);
+			setOpenRegistryDialog(true);
+		}
+		onServerParamConsumed?.();
+	}, [
+		initialRegistrySearch,
+		servers,
+		isServersLoading,
+		onServerParamConsumed,
+	]);
 
 	// Filter and sort configs by name
 	const filteredConfigs = configs

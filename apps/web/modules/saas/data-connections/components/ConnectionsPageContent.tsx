@@ -336,7 +336,7 @@ export function ConnectionsPageContent({
 	/*
 	 * MCP servers from the registry, as tiles beside the integrations, so
 	 * the page is one catalogue the way cosmos.augmentcode.com/connector is.
-	 * A tile links to the MCP tab with the search prefilled to that server.
+	 * A tile links to the MCP tab to open that server's setup dialog directly.
 	 */
 	const { data: mcpServers = [] } = useQuery({
 		queryKey: ["connections", "mcp-registry", organizationId ?? "user"],
@@ -635,7 +635,8 @@ export function ConnectionsPageContent({
 							{servers.map((server) => (
 								<IntegrationTile
 									key={server.id}
-									href={`${basePath}?tab=mcp&server=${encodeURIComponent(server.name ?? "")}`}
+									scroll={false}
+									href={`${basePath}?tab=mcp&server=${encodeURIComponent(server.name ?? server.key ?? server.id)}`}
 									icon={
 										<McpServerIcon
 											name={server.name}
