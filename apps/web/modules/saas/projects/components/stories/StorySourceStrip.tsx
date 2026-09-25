@@ -30,11 +30,15 @@ export function StorySourceStrip({
 	return (
 		// One line at every width: when the story column narrows (the AI panel
 		// opening), wrapping would grow the strip and shift the editor below it,
-		// so parts truncate instead.
+		// so parts truncate instead. The link keeps its full width; the chip and
+		// reporter name give way first.
 		<div className="flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap px-6 py-1 border-b bg-muted/30 text-xs text-muted-foreground">
 			{story.reporterSource && (
-				<span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-background px-2 py-0.5 font-medium uppercase tracking-wider text-[10px]">
-					{isBug ? "Reported" : "Proposed"} via {story.reporterSource}
+				<span className="inline-flex min-w-0 items-center gap-1 rounded-full bg-background px-2 py-0.5 font-medium uppercase tracking-wider text-[10px]">
+					<span className="truncate">
+						{isBug ? "Reported" : "Proposed"} via{" "}
+						{story.reporterSource}
+					</span>
 				</span>
 			)}
 			{story.reporterName && (
@@ -50,9 +54,9 @@ export function StorySourceStrip({
 					href={story.reporterSourceUrl}
 					target="_blank"
 					rel="noreferrer"
-					className="inline-flex min-h-6 min-w-0 items-center text-primary hover:underline"
+					className="inline-flex min-h-6 shrink-0 items-center text-primary hover:underline"
 				>
-					<span className="truncate">View source conversation →</span>
+					View source conversation →
 				</a>
 			)}
 		</div>
