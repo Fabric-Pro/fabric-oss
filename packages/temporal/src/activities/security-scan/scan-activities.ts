@@ -175,7 +175,7 @@ export interface GatheredScanContext {
 	 */
 	items: ScanContentItem[];
 	itemCount: number;
-	/** Items dropped by the high total-items ceiling (0 in the normal case). */
+	/** Items dropped by the item-count or size ceiling (0 in the normal case). */
 	truncatedItemCount: number;
 	/** Identifiers/titles of items included this run (drives carry-forward). */
 	scannedItemKeys: string[];
@@ -339,7 +339,7 @@ export async function gatherScanContextActivity(
 	});
 	if (content.truncatedItemCount > 0) {
 		logger.warn(
-			`[SecurityScan] Scanned ${content.itemCount} items; ${content.truncatedItemCount} dropped by the total-items ceiling`,
+			`[SecurityScan] Scanned ${content.itemCount} items; ${content.truncatedItemCount} dropped by the item-count or size ceiling`,
 			{ projectId: input.projectId },
 		);
 	}
