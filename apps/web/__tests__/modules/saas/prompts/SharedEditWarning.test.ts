@@ -90,34 +90,36 @@ describe("what the warning says", () => {
 	});
 });
 
-describe("when the bound-actions read itself failed", () => {
-	it("warns when content changed and the read failed, whatever boundActionCount says", () => {
-		// `boundActionCount` is `[]` for a reason unrelated to how many actions
-		// this prompt really serves — reading that as "nothing bound" would
-		// silently skip the warning on exactly the save it exists to catch.
+describe("when the bound-actions read has not settled", () => {
+	it("warns when content changed and the reach is unknown, whatever boundActionCount says", () => {
+		// The bound-actions list reads `[]` both while the read is still
+		// pending and after it failed, for a reason unrelated to how many
+		// actions this prompt really serves — reading that as "nothing
+		// bound" would silently skip the warning on exactly the save it
+		// exists to catch.
 		expect(
 			needsUnknownReachWarning({
 				contentChanged: true,
-				boundActionsFailed: true,
+				reachUnknown: true,
 			}),
 		).toBe(true);
 	});
 
-	it("stays quiet when only metadata changed, even if the read failed", () => {
+	it("stays quiet when only metadata changed, even if the reach is unknown", () => {
 		expect(
 			needsUnknownReachWarning({
 				contentChanged: false,
-				boundActionsFailed: true,
+				reachUnknown: true,
 			}),
 		).toBe(false);
 	});
 
-	it("stays quiet when the read succeeded", () => {
+	it("stays quiet once the reach is known", () => {
 		// The ordinary shared-edit check owns this case.
 		expect(
 			needsUnknownReachWarning({
 				contentChanged: true,
-				boundActionsFailed: false,
+				reachUnknown: false,
 			}),
 		).toBe(false);
 	});

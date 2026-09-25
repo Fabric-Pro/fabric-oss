@@ -295,7 +295,7 @@ export function PromptsList({ organizationId }: Props) {
 						<div className="flex items-center justify-center py-12">
 							<Spinner />
 						</div>
-					) : error ? (
+					) : error && !data ? (
 						// Distinct from the empty state below: a failed request
 						// telling someone to create their first prompt sends them
 						// to fix a library that may be full.

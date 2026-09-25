@@ -40,7 +40,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { forkTarget, isProposalCandidate } from "../lib/fork-scope";
-import { isPromptNotFound } from "../lib/prompt-not-found";
+import { isPromptInaccessible } from "../lib/prompt-inaccessible";
 import { savePromptAtomically } from "../lib/save-prompt-atomically";
 import {
 	needsSharedEditWarning,
@@ -125,10 +125,11 @@ export function PromptDetails({
 	);
 
 	// Which actions this prompt currently serves. Read so a save can say what
-	// it reaches; a failure here must not block editing, so it degrades to an
-	// empty list and the shared-edit warning simply does not appear on its
-	// own — `needsUnknownReachWarning` below is what replaces that silence.
-	const { data: boundActionsData, error: boundActionsError } = useQuery({
+	// it reaches; before it settles — pending or failed — this must not block
+	// editing, so it degrades to an empty list and the shared-edit warning
+	// simply does not appear on its own — `needsUnknownReachWarning` below is
+	// what replaces that silence.
+	const { data: boundActionsData } = useQuery({
 		queryKey: ["prompt-bound-actions", promptId, organizationId],
 		queryFn: async () =>
 			await orpcClient.prompts.bindings.listForPrompt({
@@ -352,11 +353,15 @@ export function PromptDetails({
 
 	// NOT_FOUND covers both an absent id and a prompt outside the caller's
 	// tenant (the lookup is tenant-filtered) — the API deliberately does not
-	// say which, so the copy has to be true for either case. Any other error
+	// say which, so the copy has to be true for either case. FORBIDDEN (not a
+	// member of the prompt's organization) is the same underlying fact told a
+	// different way, and the same copy is true for it too. Any other error
 	// (transport, 5xx, 400) means the read failed, not that the prompt is
-	// gone, so it gets a retry instead of a dead end.
-	if (error) {
-		if (isPromptNotFound(error)) {
+	// gone — a retry can actually succeed there, unlike NOT_FOUND or FORBIDDEN.
+	// Only when nothing is loaded: a failed background refetch must not
+	// unmount an open editor.
+	if (error && !prompt) {
+		if (isPromptInaccessible(error)) {
 			return (
 				<div className="container max-w-4xl py-8">
 					<div className="flex flex-col items-center justify-center py-12">
@@ -437,15 +442,16 @@ export function PromptDetails({
 			data.content && data.content !== content,
 		);
 
-		// The bound-actions read itself failed, so `boundActions` is `[]` for a
-		// reason that has nothing to do with how many actions this prompt
-		// really serves — the shared-edit check below would read that as
-		// "nothing bound" and stay silent. Editing must stay unblocked, but
-		// saving over an unknown reach needs an honest confirmation instead.
+		// The bound-actions read hasn't landed — still loading, or it failed —
+		// so `boundActions` is `[]` for a reason that has nothing to do with
+		// how many actions this prompt really serves. The shared-edit check
+		// below would read that as "nothing bound" and stay silent. Editing
+		// must stay unblocked, but saving over an unknown reach needs an
+		// honest confirmation instead.
 		if (
 			needsUnknownReachWarning({
 				contentChanged,
-				boundActionsFailed: Boolean(boundActionsError),
+				reachUnknown: !boundActionsData,
 			})
 		) {
 			confirm({

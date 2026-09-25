@@ -217,7 +217,7 @@ export function PromptManagementPage({ organizationSlug }: Props) {
 					<div className="flex items-center justify-center py-12">
 						<Spinner />
 					</div>
-				) : error ? (
+				) : error && !data ? (
 					<LoadFailure
 						message="Could not load your prompts."
 						onRetry={() => refetch()}

@@ -53,21 +53,21 @@ export function sharedEditWarning(
 }
 
 /**
- * FR21's warning depends on knowing which actions a prompt reaches. When that
- * read itself FAILED, `boundActionCount` is 0 for a reason that has
- * nothing to do with how many actions this prompt really serves — reading
- * that as "nothing bound" would silently skip the warning on exactly the save
- * it exists to catch. Editing must stay unblocked (a broken query must not
- * become a lock), so the answer is an honest confirmation instead of silence.
+ * FR21's warning depends on knowing which actions a prompt reaches. Until that
+ * read has returned — still loading, or it failed — `boundActionCount` is 0
+ * for a reason unrelated to how many actions the prompt serves, and reading
+ * that as "nothing bound" would skip the warning on exactly the save it exists
+ * to catch. Editing must stay unblocked, so the answer is an honest
+ * confirmation instead of silence.
  */
 export function needsUnknownReachWarning({
 	contentChanged,
-	boundActionsFailed,
+	reachUnknown,
 }: {
 	contentChanged: boolean;
-	boundActionsFailed: boolean;
+	reachUnknown: boolean;
 }): boolean {
-	return contentChanged && boundActionsFailed;
+	return contentChanged && reachUnknown;
 }
 
 /** What that honest confirmation says. */
