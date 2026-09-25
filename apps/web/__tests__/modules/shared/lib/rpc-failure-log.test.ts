@@ -77,4 +77,78 @@ describe("logRpcFailure", () => {
 		);
 		fetchSpy.mockRestore();
 	});
+
+	it("logs a proxy error page's text, while the error message stays the generic one", async () => {
+		const { orpcClient } = await import("@shared/lib/orpc-client");
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response("<html><body>502 Bad Gateway upstream</body></html>", {
+				status: 502,
+				headers: { "Content-Type": "text/html" },
+			}),
+		);
+
+		const call = orpcClient.prompts.list({ organizationId: null });
+		await expect(call).rejects.toMatchObject({
+			code: "BAD_GATEWAY",
+			message: "Bad Gateway",
+		});
+
+		expect(consoleError).toHaveBeenCalledWith(
+			"oRPC prompts/list failed:",
+			expect.objectContaining({ code: "BAD_GATEWAY" }),
+			"Server response: <html><body>502 Bad Gateway upstream</body></html>",
+		);
+		fetchSpy.mockRestore();
+	});
+
+	it("keeps the API's own error message, with no extra response text", async () => {
+		const { orpcClient } = await import("@shared/lib/orpc-client");
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					json: {
+						defined: false,
+						code: "INTERNAL_SERVER_ERROR",
+						status: 500,
+						message: "Failed to list prompts: db timeout",
+					},
+					meta: [],
+				}),
+				{
+					status: 500,
+					headers: { "Content-Type": "application/json" },
+				},
+			),
+		);
+
+		await expect(
+			orpcClient.prompts.list({ organizationId: null }),
+		).rejects.toMatchObject({
+			message: "Failed to list prompts: db timeout",
+		});
+
+		expect(consoleError).toHaveBeenCalledWith(
+			"oRPC prompts/list failed:",
+			expect.objectContaining({
+				message: "Failed to list prompts: db timeout",
+			}),
+		);
+		fetchSpy.mockRestore();
+	});
+
+	it("still resolves a successful response untouched", async () => {
+		const { orpcClient } = await import("@shared/lib/orpc-client");
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify({ json: { entries: [] }, meta: [] }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+
+		await expect(
+			orpcClient.prompts.catalog.list({ organizationId: null }),
+		).resolves.toEqual({ entries: [] });
+		expect(consoleError).not.toHaveBeenCalled();
+		fetchSpy.mockRestore();
+	});
 });
