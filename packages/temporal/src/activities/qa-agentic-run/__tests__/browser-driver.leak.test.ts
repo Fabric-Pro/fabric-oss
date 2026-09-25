@@ -27,11 +27,20 @@ vi.mock("playwright", () => ({
 	firefox: { launch: (...a: unknown[]) => launch(...(a as [])) },
 	webkit: { launch: (...a: unknown[]) => launch(...(a as [])) },
 }));
-vi.mock("@repo/utils/url-security", () => ({
-	safeFetchOutbound: (...args: unknown[]) => safeFetchOutbound(...args),
-}));
+vi.mock("@repo/utils/url-security", async () => {
+	// `getBlockedOutboundReason` is real: it is a pure classifier over an
+	// error shape, and the refusal-kind tests below need its actual logic to
+	// tell "unsafe-address" apart from a plain "fetch-failed".
+	const actual = await vi.importActual<
+		typeof import("@repo/utils/url-security")
+	>("@repo/utils/url-security");
+	return {
+		safeFetchOutbound: (...args: unknown[]) => safeFetchOutbound(...args),
+		getBlockedOutboundReason: actual.getBlockedOutboundReason,
+	};
+});
 
-import { openBrowser } from "../browser-driver";
+import { explainBlockedNavigation, openBrowser } from "../browser-driver";
 
 const OPTIONS = {
 	browser: "chromium",
@@ -120,6 +129,130 @@ describe("openBrowser cleans up after itself", () => {
 
 		expect(abort).toHaveBeenCalledWith("blockedbyclient");
 		expect(safeFetchOutbound).not.toHaveBeenCalled();
+	});
+
+	it("records an off-origin refusal with its own kind and URL", async () => {
+		const runner = await openBrowser(OPTIONS);
+		const handler = route.mock.calls[0]?.[1] as
+			| ((routeValue: {
+					request: () => { url: () => string };
+					abort: (reason: string) => Promise<void>;
+			  }) => Promise<void>)
+			| undefined;
+
+		await handler?.({
+			request: () => ({ url: () => "https://evil.test/collect" }),
+			abort: vi.fn(async () => {}),
+		});
+
+		expect(runner.refusals).toEqual([
+			expect.objectContaining({
+				kind: "off-origin",
+				url: "https://evil.test/collect",
+			}),
+		]);
+	});
+
+	it("never keeps a refused redirect's query or fragment, which can carry an OAuth code", async () => {
+		const runner = await openBrowser(OPTIONS);
+		const handler = route.mock.calls[0]?.[1] as
+			| ((routeValue: {
+					request: () => { url: () => string };
+					abort: (reason: string) => Promise<void>;
+			  }) => Promise<void>)
+			| undefined;
+
+		await handler?.({
+			request: () => ({
+				url: () =>
+					"https://sso.example.org/authorize?code=secret-code&state=s1#access_token=t1",
+			}),
+			abort: vi.fn(async () => {}),
+		});
+
+		const explanation = explainBlockedNavigation(runner.refusals);
+		expect(runner.refusals[0]?.url).toBe(
+			"https://sso.example.org/authorize",
+		);
+		expect(explanation).toContain("https://sso.example.org/authorize");
+		expect(explanation).not.toMatch(/secret-code|state=|access_token/);
+	});
+
+	it("records a fetch failure as fetch-failed, not off-origin", async () => {
+		safeFetchOutbound.mockRejectedValueOnce(new TypeError("fetch failed"));
+		const runner = await openBrowser(OPTIONS);
+		const handler = route.mock.calls[0]?.[1] as
+			| ((routeValue: {
+					request: () => {
+						url: () => string;
+						method: () => string;
+						headers: () => Record<string, string>;
+						postData: () => string | null;
+					};
+					abort: (reason: string) => Promise<void>;
+					fulfill: (response: unknown) => Promise<void>;
+			  }) => Promise<void>)
+			| undefined;
+
+		await handler?.({
+			request: () => ({
+				url: () => "https://example.com/api/me",
+				method: () => "GET",
+				headers: () => ({}),
+				postData: () => null,
+			}),
+			abort: vi.fn(async () => {}),
+			fulfill: vi.fn(async () => {}),
+		});
+
+		expect(runner.refusals).toEqual([
+			expect.objectContaining({
+				kind: "fetch-failed",
+				url: "https://example.com/api/me",
+			}),
+		]);
+	});
+
+	it("records a same-origin address rebind as unsafe-address, not fetch-failed", async () => {
+		const cause: NodeJS.ErrnoException = new Error(
+			"Blocked outbound connection to example.com: Private network access (10.x.x.x) is not allowed",
+		);
+		cause.code = "EACCES";
+		const fetchFailed = new TypeError("fetch failed");
+		(fetchFailed as { cause?: unknown }).cause = cause;
+		safeFetchOutbound.mockRejectedValueOnce(fetchFailed);
+		const runner = await openBrowser(OPTIONS);
+		const handler = route.mock.calls[0]?.[1] as
+			| ((routeValue: {
+					request: () => {
+						url: () => string;
+						method: () => string;
+						headers: () => Record<string, string>;
+						postData: () => string | null;
+					};
+					abort: (reason: string) => Promise<void>;
+					fulfill: (response: unknown) => Promise<void>;
+			  }) => Promise<void>)
+			| undefined;
+
+		await handler?.({
+			request: () => ({
+				url: () => "https://example.com/api/me",
+				method: () => "GET",
+				headers: () => ({}),
+				postData: () => null,
+			}),
+			abort: vi.fn(async () => {}),
+			fulfill: vi.fn(async () => {}),
+		});
+
+		expect(runner.refusals).toEqual([
+			expect.objectContaining({
+				kind: "unsafe-address",
+				url: "https://example.com/api/me",
+				detail: expect.stringContaining("Private network access"),
+			}),
+		]);
 	});
 
 	it("routes target-origin traffic through the DNS-pinned safe fetch", async () => {

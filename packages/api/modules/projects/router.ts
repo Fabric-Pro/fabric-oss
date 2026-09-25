@@ -10,6 +10,7 @@ import {
 	listAgenticRunsPageProcedure,
 	listAgenticRunsProcedure,
 	listRunConfigurationsProcedure,
+	quoteAgenticRunProcedure,
 	updateRunConfigurationProcedure,
 } from "./procedures/agentic-runs";
 // AI-recommended item lifecycle (Fizzy #2211)
@@ -1480,6 +1481,7 @@ export const projectsRouter = {
 	 */
 	agenticRuns: {
 		dispatch: dispatchAgenticRunProcedure,
+		quote: quoteAgenticRunProcedure,
 		list: listAgenticRunsProcedure,
 		listPage: listAgenticRunsPageProcedure,
 		get: getAgenticRunProcedure,

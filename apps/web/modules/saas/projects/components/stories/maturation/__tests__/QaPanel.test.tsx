@@ -28,6 +28,10 @@ vi.mock("@tanstack/react-query", () => ({
 		invalidateQueries: vi.fn(),
 		setQueryData: vi.fn(),
 	}),
+	// The run-configuration dialog's quote query passes this as `input` when
+	// there is nothing to ask yet — `useQuery` is fully mocked here, so the
+	// dialog never inspects the real value, only passes it through.
+	skipToken: Symbol("skipToken"),
 }));
 
 vi.mock("sonner", () => ({
@@ -51,14 +55,27 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 			// dialog, which queries these as soon as the panel mounts — so the
 			// mock needs them even for tests that never press the button.
 			agenticRuns: {
+				// Router-level key: the dispatch success handler invalidates
+				// this rather than `.list.key()` (Fizzy #2233), so it must
+				// exist here even though this suite never asserts on it.
+				key: () => ["agenticRuns"],
 				dispatch: { mutationOptions: (o: unknown) => o },
-				list: { key: () => ["agenticRuns"] },
+				list: { key: () => ["agenticRuns", "list"] },
 				get: {
 					queryOptions: (o: unknown) => ({
 						...(o as object),
 						__key: "agenticRunDetail",
 					}),
 					key: () => ["agenticRunDetail"],
+				},
+				// The run-configuration dialog's pre-dispatch quote — queried
+				// as soon as the dialog mounts, same reasoning as
+				// `configurations.list` below.
+				quote: {
+					queryOptions: (o: unknown) => ({
+						...(o as object),
+						__key: "agenticRunQuote",
+					}),
 				},
 				cancel: { mutationOptions: (o: unknown) => o },
 				configurations: {
@@ -424,6 +441,11 @@ beforeEach(() => {
 			// whole panel down — the same trap the triggerablePipelines branch
 			// below exists to avoid.
 			return { data: [], isLoading: false, isError: false };
+		}
+		if (opts?.__key === "agenticRunQuote") {
+			// Never loaded in this suite — matches a real disabled/not-yet-
+			// answered query, which the dialog already renders around.
+			return { data: undefined, isLoading: false, isError: false };
 		}
 		if (opts?.__key === "triggerablePipelines") {
 			// Also an array. Without this branch it falls through to the

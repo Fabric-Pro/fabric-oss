@@ -3553,8 +3553,21 @@
 							"save": "Save",
 							"saved": "Saved “{name}”",
 							"saveHint": "Saves the runner, environment, browser and resolution — not the selected cases, so it keeps covering cases you add later.",
-							"costHintAgentic": "Fabric calculates the final token estimate from the selected cases and their actual steps at dispatch.",
-							"costHintScripted": "Scripted runs make no model calls.",
+							"estimating": "Estimating…",
+							"estimateUnavailable": "Estimate unavailable — the server still enforces the cost cap.",
+							"estimateAgentic": "About {cost} for {stepCount, plural, one {# step} other {# steps}} · limit {cap} per run",
+							"estimateAgenticShort": "~{cost} for {stepCount} steps",
+							"estimateScripted": "Scripted runs make no model calls.",
+							"estimateScriptedShort": "no model calls",
+							"scriptedNotPermittedShort": "admin only",
+							"scriptedNotPermittedWarning": "Only project admins or owners can run scripted tests. Choose Agentic, or ask an admin to run this one.",
+							"overCapWarning": "This run would cost about {cost} ({caseCount, plural, one {# case} other {# cases}}, {stepCount, plural, one {# step} other {# steps}}), over the {cap} per-run limit. Select fewer cases.",
+							"confirmTitle": "Confirm this run",
+							"confirmBody": "This run will spend about {cost} in model tokens (limit {cap}).",
+							"back": "Back",
+							"confirmAndStart": "Confirm and start",
+							"dispatchedAgentic": "Started an Agentic run on {count, plural, one {# case} other {# cases}} — about {cost} estimated.",
+							"dispatchedScripted": "Started a Scripted run on {count, plural, one {# case} other {# cases}}.",
 							"cancel": "Cancel",
 							"start": "Start run"
 						}
@@ -3610,7 +3623,6 @@
 						}
 					},
 					"runTests": "Run tests ({count})",
-					"runStarted": "Run started",
 					"runRefused": "The run was refused.",
 					"matrixExport": "Export",
 					"unmatchedTests": {

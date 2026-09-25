@@ -88,6 +88,16 @@ describe("runScriptedCase", () => {
 		const result = await runScriptedCase(input);
 
 		expect(result.result).toBe("PASSED");
+		// A runner build that reports no per-step outcomes falls back to the
+		// pre-#2234 single row rather than inventing per-step data it never
+		// received.
+		expect(result.steps).toEqual([
+			expect.objectContaining({
+				order: 1,
+				action: "Execute the saved declarative Playwright script",
+				status: "PASSED",
+			}),
+		]);
 		expect(result.scriptRevisionId).toBe("revision-1");
 		expect(mocks.getRevision).toHaveBeenCalledWith({
 			projectId: "project-1",
@@ -130,7 +140,94 @@ describe("runScriptedCase", () => {
 
 		expect(result.result).toBe("BLOCKED");
 		expect(result.failureMessage).toContain("worker unavailable");
+		expect(result.steps).toEqual([
+			expect.objectContaining({
+				order: 1,
+				action: "Prepare the scripted run",
+				status: "BLOCKED",
+			}),
+		]);
 		expect(mocks.destroySession).toHaveBeenCalledOnce();
+	});
+
+	it("reports one evidence row per plan action when the runner sends per-step results", async () => {
+		mocks.getRevision.mockResolvedValue({
+			id: "revision-1",
+			script: JSON.stringify({
+				version: 1,
+				steps: [
+					{ action: "goto", path: "/dashboard" },
+					{
+						action: "click",
+						locator: {
+							by: "role",
+							role: "button",
+							name: "Sign in",
+						},
+					},
+					{ action: "assertUrl", path: "/dashboard/home" },
+				],
+			}),
+		});
+		mocks.exec.mockResolvedValue({
+			stdout: 'FABRIC_QA_RESULT:{"status":"FAILED","message":"Step 2 failed: no such button","steps":[{"index":1,"status":"PASSED","message":null},{"index":2,"status":"FAILED","message":"Step 2 failed: no such button"}]}\n',
+			stderr: "",
+			exitCode: 0,
+		});
+
+		const result = await runScriptedCase(input);
+
+		expect(result.result).toBe("FAILED");
+		expect(result.steps).toEqual([
+			expect.objectContaining({
+				order: 1,
+				action: "Go to /dashboard",
+				status: "PASSED",
+			}),
+			expect.objectContaining({
+				order: 2,
+				action: 'Click button "Sign in"',
+				status: "FAILED",
+				observation: "Step 2 failed: no such button",
+			}),
+			expect.objectContaining({
+				order: 3,
+				action: "Assert URL is /dashboard/home",
+				status: "SKIPPED",
+				observation:
+					"Not attempted — an earlier step in this case did not pass.",
+			}),
+		]);
+	});
+
+	it("falls back to a single row when the reported steps do not line up with the plan", async () => {
+		mocks.getRevision.mockResolvedValue({
+			id: "revision-1",
+			script: JSON.stringify({
+				version: 1,
+				steps: [
+					{ action: "goto", path: "/dashboard" },
+					{ action: "assertUrl", path: "/dashboard/home" },
+				],
+			}),
+		});
+		mocks.exec.mockResolvedValue({
+			stdout:
+				// index 1, then 3 — a gap a well-formed report never has.
+				'FABRIC_QA_RESULT:{"status":"FAILED","message":"desync","steps":[{"index":1,"status":"PASSED","message":null},{"index":3,"status":"FAILED","message":"desync"}]}\n',
+			stderr: "",
+			exitCode: 0,
+		});
+
+		const result = await runScriptedCase(input);
+
+		expect(result.steps).toEqual([
+			expect.objectContaining({
+				order: 1,
+				action: "Execute the saved declarative Playwright script",
+				status: "FAILED",
+			}),
+		]);
 	});
 
 	it("rejects a cross-origin sign-in target before creating a sandbox", async () => {

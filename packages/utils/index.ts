@@ -28,9 +28,13 @@ export {
 } from "./lib/operation-result-message";
 export * from "./lib/pm-tool-patterns";
 export {
+	describeQaScriptStep,
+	expectedForQaScriptStep,
 	normalizeQaPlaywrightScript,
 	parseQaPlaywrightScript,
 	type QaPlaywrightScript,
+	type QaPlaywrightScriptLocator,
+	type QaPlaywrightScriptStep,
 	qaPlaywrightScriptSchema,
 } from "./lib/qa-script";
 // NOTE: project-context is intentionally NOT re-exported from this barrel — it

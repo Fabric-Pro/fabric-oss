@@ -18,7 +18,10 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { BulkSelection } from "../BulkActionsBar";
 import { formatAbsoluteTime, timeAgo } from "./pipeline-run";
-import { RunConfigurationDialog } from "./RunConfigurationDialog";
+import {
+	RunConfigurationDialog,
+	useDescribeDispatchedRun,
+} from "./RunConfigurationDialog";
 
 /**
  * Runs Fabric orchestrated itself — as opposed to the CI runs it ingested, which
@@ -272,6 +275,7 @@ export function AgenticRunsPanel({
 	selectionCount?: number;
 	canRun: boolean;
 }) {
+	const describeDispatchedRun = useDescribeDispatchedRun();
 	const queryClient = useQueryClient();
 	const [openRunId, setOpenRunId] = useState<string | null>(null);
 	const detailPollState = useRef<RunDetailPollState>({
@@ -381,7 +385,7 @@ export function AgenticRunsPanel({
 			onSuccess: (result) => {
 				setConfiguring(false);
 				if (result.dispatched) {
-					toast.success("Run started");
+					toast.success(describeDispatchedRun(result.run));
 					setOpenRunId(result.run.id);
 				} else {
 					// A refusal is not an error toast — it is an answer, and it
@@ -398,8 +402,16 @@ export function AgenticRunsPanel({
 						duration: 12_000,
 					});
 				}
+				// The ROUTER-level key, not `.list.key()`: this panel renders
+				// `agenticRuns.listPage` (an infinite query), which a narrower
+				// invalidation left stale — a just-dispatched run did not appear
+				// until the next poll or reload. `@orpc/tanstack-query` builds
+				// every node's key from its own path (`createGeneralUtils` /
+				// `createRouterUtils`), so the router-level key is a genuine
+				// PREFIX of every leaf under it and invalidates `list`,
+				// `listPage` and `get` together.
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.agenticRuns.list.key(),
+					queryKey: orpc.projects.agenticRuns.key(),
 				});
 			},
 			onError: (error) => toast.error(error.message),
@@ -411,7 +423,7 @@ export function AgenticRunsPanel({
 			onSuccess: () => {
 				toast.success("Cancelling — steps already run are kept");
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.agenticRuns.list.key(),
+					queryKey: orpc.projects.agenticRuns.key(),
 				});
 			},
 			onError: (error) => toast.error(error.message),
@@ -445,6 +457,7 @@ export function AgenticRunsPanel({
 				open={configuring}
 				onOpenChange={setConfiguring}
 				caseCount={caseCount}
+				selection={selection}
 				dispatching={dispatchMutation.isPending}
 				onDispatch={(overrides) =>
 					selection &&
@@ -727,7 +740,7 @@ export function AgenticRunsPanel({
 																	// the page never loaded — otherwise renders as a
 																	// bare verdict with the reason left in the
 																	// database, which is how the first real run looked.
-																	<p className="mt-1 text-muted-foreground text-xs">
+																	<p className="mt-1 whitespace-pre-wrap text-muted-foreground text-xs">
 																		{
 																			c.failureMessage
 																		}
@@ -755,7 +768,7 @@ export function AgenticRunsPanel({
 																				}
 																			</span>
 																			{step.observation && (
-																				<p className="mt-0.5 text-muted-foreground">
+																				<p className="mt-0.5 whitespace-pre-wrap text-muted-foreground">
 																					{
 																						step.observation
 																					}

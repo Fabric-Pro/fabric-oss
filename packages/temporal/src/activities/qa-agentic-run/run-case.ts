@@ -42,6 +42,7 @@ import {
 	type BrowserOperation,
 	captureScreenshot,
 	closeBrowser,
+	explainBlockedNavigation,
 	openBrowser,
 	performOperation,
 	type RunnerBrowser,
@@ -131,6 +132,24 @@ export interface RunAgenticCaseInput {
 		| { kind: "FORM"; username: string; secret: string }
 		| { kind: "TOKEN"; secret: string }
 		| { kind: "HEADER"; headerName: string; secret: string };
+}
+
+/**
+ * When a navigation failure's message is a bare `net::ERR_BLOCKED_BY_CLIENT`,
+ * a leading-space sentence naming which side must act, taken from the
+ * runner's most recent recorded refusal — or `""` when the failure has
+ * nothing to do with a blocked request, or no refusal was recorded to explain
+ * it. Appended directly onto the failure message being built.
+ */
+export function blockedNavigationSuffix(
+	message: string,
+	runner: Pick<RunnerBrowser, "refusals">,
+): string {
+	if (!message.includes("ERR_BLOCKED_BY_CLIENT")) {
+		return "";
+	}
+	const explanation = explainBlockedNavigation(runner.refusals);
+	return explanation ? ` ${explanation}` : "";
 }
 
 type RunnerAuth = NonNullable<RunAgenticCaseInput["auth"]>;
@@ -645,7 +664,7 @@ export async function runAgenticCase(
 				return {
 					testCaseId: input.testCaseId,
 					result: "BLOCKED",
-					failureMessage: `Sign-in failed: ${signIn.detail}`,
+					failureMessage: `Sign-in failed: ${signIn.detail}${blockedNavigationSuffix(signIn.detail, runner)}`,
 					durationMs: Date.now() - startedAt,
 					steps: [],
 					modelCalls,
@@ -657,12 +676,12 @@ export async function runAgenticCase(
 					waitUntil: "domcontentloaded",
 				});
 			} catch (err) {
+				const message =
+					err instanceof Error ? err.message : String(err);
 				return {
 					testCaseId: input.testCaseId,
 					result: "BLOCKED",
-					failureMessage: `Could not open ${targetBaseUrl}: ${
-						err instanceof Error ? err.message : String(err)
-					}`,
+					failureMessage: `Could not open ${targetBaseUrl}: ${message}${blockedNavigationSuffix(message, runner)}`,
 					durationMs: Date.now() - startedAt,
 					steps: [],
 					modelCalls,

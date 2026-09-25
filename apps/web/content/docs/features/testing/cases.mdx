@@ -199,13 +199,22 @@ Nothing is discarded and nothing joins your suite unasked. Cases a sceptic role 
 
 ## Read a run's evidence
 
-Open a run in the **Runs** segment and each case expands into its step log: what
-the runner did, what it observed, and the screenshot it captured where your
-evidence policy asks for one.
+Open a run in the **Runs** segment and each case expands into its step log. What
+it records depends on which runner produced it:
 
-The screenshot is shown **under the step it belongs to**, not behind a link, so
-finding the frame where a run went wrong is a matter of scrolling rather than
-opening every step in a new tab. Two controls sit beneath it:
+- **Agentic runs** record one row per authored step, with what the runner
+  observed and — where your evidence policy asks for one — the screenshot it
+  captured.
+- **Scripted runs** record one row per action in the saved plan: PASSED,
+  FAILED (with the expected and received values, when the failing step was an
+  assertion) or SKIPPED for the actions after it. Scripted runs capture no
+  screenshots — a saved plan is deterministic, so the observation text is the
+  full record.
+
+Where a screenshot exists, it is shown **under the step it belongs to**, not
+behind a link, so finding the frame where a run went wrong is a matter of
+scrolling rather than opening every step in a new tab. Two controls sit
+beneath it:
 
 - **Open full size** — the whole frame, in a new tab.
 - **Download** — saves it as `TC-014-step-3.png`, named after the case and step.
