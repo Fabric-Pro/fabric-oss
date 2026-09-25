@@ -19,7 +19,7 @@ const { mocks } = vi.hoisted(() => ({
 		getProjectInstructionSettings: vi.fn(),
 		listInstructionFiles: vi.fn(),
 		resolveInstructionSnapshotSource: vi.fn(),
-		resolveCurrentInstructionRepository: vi.fn(),
+		resolveCurrentInstructionSource: vi.fn(),
 		resolveEffectiveProjectPermissions: vi.fn(),
 		buildInstructionSnapshotZip: vi.fn(),
 		submitInstructionChange: vi.fn(),
@@ -54,8 +54,7 @@ vi.mock("@repo/database", () => ({
 	listInstructionFiles: mocks.listInstructionFiles,
 	getInstructionProposal: mocks.getInstructionProposal,
 	resolveInstructionSnapshotSource: mocks.resolveInstructionSnapshotSource,
-	resolveCurrentInstructionRepository:
-		mocks.resolveCurrentInstructionRepository,
+	resolveCurrentInstructionSource: mocks.resolveCurrentInstructionSource,
 }));
 
 // Only the real pull-request service reaches for this, and only to start a
@@ -289,10 +288,14 @@ beforeEach(() => {
 	mocks.getPublishedInstructionSnapshot.mockResolvedValue(readySnapshot());
 	mocks.listInstructionFiles.mockResolvedValue(manifestRows());
 	mocks.resolveInstructionSnapshotSource.mockResolvedValue({
+		sourceOfTruth: "UPLOAD",
 		source: { kind: "UPLOAD" },
 		repository: null,
 	});
-	mocks.resolveCurrentInstructionRepository.mockResolvedValue(null);
+	mocks.resolveCurrentInstructionSource.mockResolvedValue({
+		sourceOfTruth: "UPLOAD",
+		repository: null,
+	});
 	mocks.findOrganization.mockResolvedValue({ id: ORG });
 	mocks.findUser.mockResolvedValue({
 		email: "dev@example.com",
@@ -661,9 +664,10 @@ describe("GET /projects/:projectId/instructions/published", () => {
 	});
 
 	it("reports REPOSITORY when the project's instructions come from git", async () => {
-		mocks.getProjectInstructionSettings.mockResolvedValue({
-			ignoreGlobs: null,
+		mocks.resolveInstructionSnapshotSource.mockResolvedValue({
 			sourceOfTruth: "REPOSITORY",
+			source: { kind: "UPLOAD" },
+			repository: null,
 		});
 
 		const response = await buildApp().request(PUBLISHED_PATH);
@@ -681,6 +685,7 @@ describe("GET /projects/:projectId/instructions/published", () => {
 	// `snapshot`, not nested inside `source`.
 	it("carries a REPOSITORY source and the project's repository configuration", async () => {
 		mocks.resolveInstructionSnapshotSource.mockResolvedValue({
+			sourceOfTruth: "REPOSITORY",
 			source: {
 				kind: "REPOSITORY",
 				ref: "main",
@@ -727,6 +732,7 @@ describe("GET /projects/:projectId/instructions/published", () => {
 
 	it("carries a REPOSITORY source flagged not current, and repository: null when the resolver reports none", async () => {
 		mocks.resolveInstructionSnapshotSource.mockResolvedValue({
+			sourceOfTruth: "UPLOAD",
 			source: {
 				kind: "REPOSITORY",
 				ref: "main",
@@ -750,13 +756,16 @@ describe("GET /projects/:projectId/instructions/published", () => {
 
 	it("carries repository: null at the top level when nothing is published", async () => {
 		mocks.getPublishedInstructionSnapshot.mockResolvedValue(null);
-		mocks.resolveCurrentInstructionRepository.mockResolvedValue({
-			provider: "GITHUB",
-			host: "github.com",
-			path: "example-org/example-repo",
-			ref: "main",
-			rootPath: "",
-			generation: 1,
+		mocks.resolveCurrentInstructionSource.mockResolvedValue({
+			sourceOfTruth: "REPOSITORY",
+			repository: {
+				provider: "GITHUB",
+				host: "github.com",
+				path: "example-org/example-repo",
+				ref: "main",
+				rootPath: "",
+				generation: 1,
+			},
 		});
 
 		const response = await buildApp().request(PUBLISHED_PATH);
@@ -773,6 +782,73 @@ describe("GET /projects/:projectId/instructions/published", () => {
 			rootPath: "",
 			generation: 1,
 		});
+	});
+
+	/**
+	 * Fizzy #2708 review: `sourceOfTruth` and `repository` used to come from
+	 * two reads of the settings — the route's own, then the resolver's — so a
+	 * switch landing between them answered `UPLOAD` beside a repository block.
+	 * The route now takes both from the resolver's ONE read. The settings
+	 * mock flips on every call to prove the route never reads it itself.
+	 */
+	describe("a settings flip between reads", () => {
+		const REPOSITORY = {
+			provider: "GITHUB",
+			host: "github.com",
+			path: "example-org/example-repo",
+			ref: "main",
+			rootPath: "",
+			generation: 1,
+		};
+
+		function flipSettings(): void {
+			mocks.getProjectInstructionSettings
+				.mockResolvedValueOnce({
+					ignoreGlobs: null,
+					sourceOfTruth: "REPOSITORY",
+				})
+				.mockResolvedValue({ ignoreGlobs: null, sourceOfTruth: null });
+		}
+
+		it.each([
+			["published", true],
+			["unpublished", false],
+		])(
+			"never pairs UPLOAD with a repository (%s)",
+			async (_label, published) => {
+				flipSettings();
+				if (!published) {
+					mocks.getPublishedInstructionSnapshot.mockResolvedValue(
+						null,
+					);
+				}
+				mocks.resolveInstructionSnapshotSource.mockResolvedValue({
+					sourceOfTruth: "REPOSITORY",
+					source: { kind: "UPLOAD" },
+					repository: REPOSITORY,
+				});
+				mocks.resolveCurrentInstructionSource.mockResolvedValue({
+					sourceOfTruth: "REPOSITORY",
+					repository: REPOSITORY,
+				});
+
+				const response = await buildApp().request(PUBLISHED_PATH);
+				const body = (await response.json()) as {
+					data: { sourceOfTruth: string; repository: unknown };
+				};
+
+				expect(body.data.sourceOfTruth).toBe("REPOSITORY");
+				expect(body.data.repository).toEqual(REPOSITORY);
+				expect(
+					mocks.getProjectInstructionSettings,
+				).not.toHaveBeenCalled();
+				expect(
+					published
+						? mocks.resolveInstructionSnapshotSource
+						: mocks.resolveCurrentInstructionSource,
+				).toHaveBeenCalledTimes(1);
+			},
+		);
 	});
 
 	it("defaults to an UPLOAD source", async () => {

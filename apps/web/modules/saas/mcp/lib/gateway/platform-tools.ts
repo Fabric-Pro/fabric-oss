@@ -6036,12 +6036,15 @@ async function handleGetInstructionChecks(
 	}
 
 	const { resolveInstructionSnapshotSource } = await import("@repo/database");
-	const { source: publishedSource, repository } =
-		await resolveInstructionSnapshotSource(
-			projectId,
-			snapshot.organizationId,
-			snapshot,
-		);
+	const {
+		sourceOfTruth,
+		source: publishedSource,
+		repository,
+	} = await resolveInstructionSnapshotSource(
+		projectId,
+		snapshot.organizationId,
+		snapshot,
+	);
 	const publishedSourceDetail =
 		publishedSource.kind === "REPOSITORY"
 			? `, from ${sanitizeDisplayText(publishedSource.commitSha.slice(0, 12), 12)}… on ${sanitizeDisplayText(publishedSource.ref, 200)}`
@@ -6056,7 +6059,9 @@ async function handleGetInstructionChecks(
 		),
 	);
 
-	checks.push(await instructionLockCheck(projectId, snapshot, lockDigest));
+	checks.push(
+		instructionLockCheck(projectId, snapshot, lockDigest, sourceOfTruth),
+	);
 
 	const load = await loadPublishedEnvironmentDeclaration(projectId, snapshot);
 	if (load.state === "absent") {
@@ -6118,37 +6123,27 @@ async function handleGetInstructionChecks(
 /**
  * The `lock` check: the caller's lock digest against the published one.
  *
- * A repository-backed project is read the way the REST surface the CLI uses
- * reads it (`getProjectInstructionSettings`, absent meaning UPLOAD): its files
- * live in git, so there is no synced lock to compare.
+ * `sourceOfTruth` is the value `resolveInstructionSnapshotSource` read in the
+ * SAME settings read that produced the `published` check's `repository`
+ * (Fizzy #2708 review), so the two checks in one report can never disagree
+ * about whether the project is repository-sourced. In a checkout of that
+ * repository the files arrive with git and the CLI writes no lock, so there
+ * is no synced lock to compare. The server cannot see which kind of
+ * directory the caller is in, so it does not guess.
  */
-async function instructionLockCheck(
+function instructionLockCheck(
 	projectId: string,
 	snapshot: PublishedInstructionSnapshot,
 	lockDigest: string | undefined,
-): Promise<InstructionCheck> {
-	try {
-		const { getProjectInstructionSettings } = await import(
-			"@repo/database"
+	sourceOfTruth: "UPLOAD" | "REPOSITORY",
+): InstructionCheck {
+	if (sourceOfTruth === "REPOSITORY") {
+		return instructionCheck(
+			"lock",
+			"skip",
+			"server",
+			"repository-sourced project: the lock is not used in a checkout of the repository",
 		);
-		const settings = await getProjectInstructionSettings(
-			projectId,
-			snapshot.organizationId,
-		);
-		if (settings.sourceOfTruth === "REPOSITORY") {
-			return instructionCheck(
-				"lock",
-				"skip",
-				"server",
-				"repository-backed project: files and hooks are managed by git",
-			);
-		}
-	} catch (error) {
-		console.error(
-			"[MCP Gateway] fabric_instruction_checks: lock check failed",
-			error,
-		);
-		return instructionCheckCouldNotRun("lock", error);
 	}
 	if (lockDigest === undefined) {
 		return instructionCheck(

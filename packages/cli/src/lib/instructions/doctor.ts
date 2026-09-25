@@ -8,11 +8,15 @@
  *
  * What this module will not do, and why each line matters:
  *
- *   - It never EXECUTES anything. Tools named by the published
- *     `fabric.environment.json` and commands named by a repository's
- *     `.mcp.json` are checked by PATH lookup (`stat`) only. Running
- *     `<tool> --version` would be code execution chosen by whoever can
- *     publish the instruction set or commit to the repository.
+ *   - It never EXECUTES anything a project names. Tools named by the
+ *     published `fabric.environment.json` and commands named by a
+ *     repository's `.mcp.json` are checked by PATH lookup (`stat`) only.
+ *     Running `<tool> --version` would be code execution chosen by whoever
+ *     can publish the instruction set or commit to the repository. The one
+ *     program it does run is `git`, and only for a repository-sourced
+ *     project, through `git.ts`'s fixed read-only questions (which remote,
+ *     which branch, is the published commit in HEAD's history) with prompts
+ *     disabled — nothing that fetches or changes the checkout (Fizzy #2708).
  *   - It never reads, prints or sends a DECLARED environment variable's
  *     VALUE. A declaration names variables; presence is `Object.keys(env)`.
  *     The only values this module reads are `PATH` and `PATHEXT`, for the
@@ -45,6 +49,12 @@ import type {
 	WhoamiResult,
 } from "@fabricorg/sdk";
 import { extractBundle } from "./bundle.js";
+import {
+	type CheckoutReport,
+	downloadsIn,
+	inspectCheckout as inspectCheckoutWithGit,
+	reportFor,
+} from "./checkout.js";
 import {
 	buildChecksReport,
 	CHECK_TITLES,
@@ -133,6 +143,14 @@ export interface DoctorInput {
 	fetchArchive: (url: string, maxBytes: number) => Promise<Uint8Array>;
 	/** The fetch `--probe-network` uses; the global one when omitted. */
 	fetchImpl?: typeof fetch;
+	/**
+	 * What kind of directory `root` is for a repository-sourced project
+	 * (Fizzy #2708); `checkout.ts`'s read-only git inspection when omitted.
+	 */
+	inspectCheckout?: (input: {
+		repository: PublishedInstructionRepository | null | undefined;
+		snapshot: PublishedInstructionSnapshot | undefined;
+	}) => Promise<CheckoutReport>;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,8 +178,9 @@ const PROBE_CONCURRENCY = 4;
 
 const LOGIN_COMMAND = "fabric auth login --key <api-key>";
 const CLI_INSTALL_COMMAND = "npm install -g @fabricorg/cli";
-const REPOSITORY_SKIP =
-	"repository-backed project: files and hooks are managed by git";
+/** The read-only git inspection's whole budget. */
+const GIT_BUDGET_MS = 10_000;
+const LOCK_NOT_USED = "not used in a checkout of the repository";
 const SKIP_AFTER_AUTH = "not evaluated: the API key check failed";
 const SKIP_AFTER_ACCESS = "not evaluated: the project could not be read";
 const SKIP_AFTER_PUBLISHED =
@@ -456,13 +475,34 @@ type AccessState =
 
 type SnapshotState =
 	| { kind: "unavailable"; reason: string }
-	| { kind: "unpublished"; repository: boolean }
+	| { kind: "unpublished" }
 	| {
 			kind: "published";
-			repository: boolean;
 			snapshot: PublishedInstructionSnapshot;
 			manifest: InstructionManifestEntry[];
 	  };
+
+/**
+ * A repository-sourced project's checkout, as `check` and the hook see it
+ * (Fizzy #2708). `null` for a project that is not repository-sourced, and
+ * when the published answer could not be read.
+ */
+type CheckoutState = CheckoutReport | null;
+
+/** `not-git` and `null` both mean "the upload behaviour applies here". */
+function checkoutClass(
+	checkout: CheckoutState,
+): "upload" | "matching" | "other" {
+	if (checkout === null || checkout.classification.class === "not-git") {
+		return "upload";
+	}
+	return checkout.classification.class === "matching" ? "matching" : "other";
+}
+
+/** A class line as a check detail: the same words, without the prefix. */
+function checkoutDetail(checkout: CheckoutReport): string {
+	return (checkout.line ?? "").replace(/^fabric: /, "");
+}
 
 type LockState =
 	| { kind: "not-evaluated" }
@@ -528,17 +568,18 @@ export async function runDoctor(
 		{ kind: "unavailable", reason: SKIP_AFTER_PUBLISHED },
 		async () => checkPublished(accessState),
 	);
+	const checkout = await resolveCheckout(input, accessState);
 	const [lock, lockState] = await guardedWithState<LockState>(
 		"lock",
 		"machine",
 		{ kind: "not-evaluated" },
-		() => checkLock(input, commands, snapshot),
+		() => checkLock(input, commands, snapshot, checkout),
 	);
 	const drift = await guarded("drift", "machine", () =>
-		checkDrift(input, commands, snapshot, lockState),
+		checkDrift(input, commands, snapshot, lockState, checkout),
 	);
 	const hook = await guarded("hook", "machine", () =>
-		checkHook(input, commands, snapshot),
+		checkHook(input, commands, snapshot, checkout),
 	);
 
 	let declaration: DeclarationState;
@@ -549,6 +590,7 @@ export async function runDoctor(
 			client,
 			snapshot,
 			lockState,
+			checkout,
 		);
 	} catch (error) {
 		declaration = {
@@ -579,6 +621,39 @@ export async function runDoctor(
 		tools,
 		mcpServers,
 	]);
+}
+
+/**
+ * Classify the directory for a repository-sourced project, once, so the lock,
+ * drift, hook and declaration checks all read the same answer. Never throws:
+ * a failure is the `unknown` class.
+ */
+async function resolveCheckout(
+	input: DoctorInput,
+	access: AccessState,
+): Promise<CheckoutState> {
+	if (
+		access.kind !== "ok" ||
+		access.published.sourceOfTruth !== "REPOSITORY"
+	) {
+		return null;
+	}
+	const { repository, snapshot } = access.published;
+	try {
+		return input.inspectCheckout
+			? await input.inspectCheckout({ repository, snapshot })
+			: await inspectCheckoutWithGit({
+					destination: input.root,
+					repository,
+					snapshot,
+					deadline: Date.now() + GIT_BUDGET_MS,
+				});
+	} catch {
+		return reportFor(repository, {
+			class: "unknown",
+			reason: "the checkout could not be read",
+		});
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -858,7 +933,7 @@ function checkPublished(
 					repository: repositoryConfig,
 				},
 			),
-			{ kind: "unpublished", repository },
+			{ kind: "unpublished" },
 		];
 	}
 	if (!answer.snapshot || !Array.isArray(answer.manifest)) {
@@ -891,7 +966,6 @@ function checkPublished(
 		}),
 		{
 			kind: "published",
-			repository,
 			snapshot,
 			manifest: answer.manifest,
 		},
@@ -977,6 +1051,7 @@ async function checkLock(
 	input: DoctorInput,
 	commands: Commands,
 	snapshot: SnapshotState,
+	checkout: CheckoutState,
 ): Promise<[InstructionCheck, LockState]> {
 	const id = "lock";
 	const notEvaluated: LockState = { kind: "not-evaluated" };
@@ -986,9 +1061,20 @@ async function checkLock(
 			notEvaluated,
 		];
 	}
-	if (snapshot.repository) {
+	// A lock exists only where `sync` copies: outside any git checkout, and
+	// in a checkout of some other repository when a person syncs by hand. In
+	// a checkout of the repository the files arrive with git; in every other
+	// class `sync` refuses, so a lock fix there would be one that fails.
+	if (checkout !== null && !downloadsIn(checkout.classification, true)) {
 		return [
-			makeCheck(id, "machine", "skip", REPOSITORY_SKIP),
+			makeCheck(
+				id,
+				"machine",
+				"skip",
+				checkoutClass(checkout) === "matching"
+					? LOCK_NOT_USED
+					: checkoutDetail(checkout),
+			),
 			notEvaluated,
 		];
 	}
@@ -1160,16 +1246,17 @@ async function checkDrift(
 	commands: Commands,
 	snapshot: SnapshotState,
 	lockState: LockState,
+	checkout: CheckoutState,
 ): Promise<InstructionCheck> {
 	const id = "drift";
 	if (snapshot.kind === "unavailable") {
 		return makeCheck(id, "machine", "skip", snapshot.reason);
 	}
-	if (snapshot.repository) {
-		return makeCheck(id, "machine", "skip", REPOSITORY_SKIP);
-	}
 	if (snapshot.kind === "unpublished") {
 		return makeCheck(id, "machine", "skip", NOTHING_PUBLISHED);
+	}
+	if (checkout !== null && checkoutClass(checkout) !== "upload") {
+		return checkoutDrift(snapshot.snapshot, checkout);
 	}
 	if (lockState.kind !== "usable") {
 		return makeCheck(
@@ -1264,6 +1351,41 @@ async function checkDrift(
 	);
 }
 
+/**
+ * A repository-sourced project's "local files" in a checkout of its
+ * repository: whether the published commit is in HEAD's history. Ancestry
+ * says the checkout has caught up with that commit, not that its files are
+ * byte-for-byte the published ones — the detail says so. Anywhere that might
+ * be a checkout but is not this one is not compared at all.
+ */
+function checkoutDrift(
+	snapshot: PublishedInstructionSnapshot,
+	checkout: CheckoutReport,
+): InstructionCheck {
+	const id = "drift";
+	if (checkoutClass(checkout) !== "matching") {
+		return makeCheck(id, "machine", "skip", checkoutDetail(checkout));
+	}
+	if (checkout.line === null) {
+		const source = snapshot.source;
+		const sha7 =
+			source?.kind === "REPOSITORY"
+				? sanitizeDisplayText(String(source.commitSha).slice(0, 7), 7)
+				: "";
+		return makeCheck(
+			id,
+			"machine",
+			"pass",
+			`history contains the published commit ${sha7} (ancestry, not a file comparison)`,
+		);
+	}
+	return makeCheck(id, "machine", "warn", checkoutDetail(checkout), {
+		fix: fixOf(
+			"bring the checkout up to the published commit with git; Fabric does not change a checkout of the repository",
+		),
+	});
+}
+
 // ---------------------------------------------------------------------------
 // hook
 // ---------------------------------------------------------------------------
@@ -1286,14 +1408,22 @@ async function checkHook(
 	input: DoctorInput,
 	commands: Commands,
 	snapshot: SnapshotState,
+	checkout: CheckoutState,
 ): Promise<InstructionCheck> {
 	const id = "hook";
 	if (snapshot.kind === "unavailable") {
 		return makeCheck(id, "machine", "skip", snapshot.reason);
 	}
-	if (snapshot.repository) {
-		return makeCheck(id, "machine", "skip", REPOSITORY_SKIP);
-	}
+	// `init` installs a hook only where it will: a checkout of the
+	// repository, or a directory that is not a checkout at all. Elsewhere it
+	// refuses, so a fix never proposes running it there.
+	const mode = checkoutClass(checkout);
+	const init = (tool: InstructionsHookTool): string | undefined =>
+		mode === "other" ? undefined : commands.init(tool);
+	const initRefused =
+		checkout !== null && mode === "other"
+			? `; init refuses in this directory (${checkoutDetail(checkout)})`
+			: "";
 
 	const reportOnly = buildHookCommand(input.projectId, false, input.org);
 	const applies = buildHookCommand(input.projectId, true, input.org);
@@ -1395,8 +1525,8 @@ async function checkHook(
 			{
 				items,
 				fix: fixOf(
-					"rewrites this project's hook in the canonical form (init also syncs the published version first)",
-					commands.init(tool),
+					`rewrites this project's hook in the canonical form (init also syncs the published version first, except in a checkout of the repository)${initRefused}`,
+					init(tool),
 				),
 			},
 		);
@@ -1411,8 +1541,8 @@ async function checkHook(
 			{
 				items,
 				fix: fixOf(
-					"fix the settings file so it parses as JSON (init refuses to rewrite a file it cannot read), then run this",
-					commands.init(tool),
+					`fix the settings file so it parses as JSON (init refuses to rewrite a file it cannot read), then run this${initRefused}`,
+					init(tool),
 				),
 			},
 		);
@@ -1425,8 +1555,12 @@ async function checkHook(
 		{
 			items,
 			fix: fixOf(
-				"installs the SessionStart hook for Claude Code and, when a version is published, takes a first sync; use --tool codex for Codex",
-				commands.init("claude-code"),
+				`${
+					mode === "matching"
+						? "installs the SessionStart hook for Claude Code; in a checkout of the repository it reports when the published commit is newer and copies nothing"
+						: "installs the SessionStart hook for Claude Code and, when a version is published, takes a first sync"
+				}; use --tool codex for Codex${initRefused}`,
+				init("claude-code"),
 			),
 		},
 	);
@@ -1534,11 +1668,13 @@ async function resolveDeclaration(
 	client: () => DoctorClient,
 	snapshot: SnapshotState,
 	lockState: LockState,
+	checkout: CheckoutState,
 ): Promise<DeclarationState> {
 	if (snapshot.kind === "unavailable") {
 		return { kind: "skip", detail: snapshot.reason };
 	}
-	if (snapshot.repository) {
+	const mode = checkoutClass(checkout);
+	if (mode === "matching") {
 		return declarationFromDisk(input, "checkout");
 	}
 	if (snapshot.kind === "published") {
@@ -1555,6 +1691,14 @@ async function resolveDeclaration(
 				entry,
 			);
 		}
+	}
+	if (mode === "other") {
+		// Maybe a checkout of some other repository: its file is not this
+		// project's declaration, so it is treated as absent rather than read.
+		return {
+			kind: "skip",
+			detail: `no environment declaration published (a local ${INSTRUCTION_ENVIRONMENT_FILE} here is not read: this directory is not a checkout of the project's repository)`,
+		};
 	}
 	return declarationFromDisk(input, "local-unpublished");
 }

@@ -1691,6 +1691,9 @@ export async function getPublishedInstructionTree(
 					id: true,
 					projectId: true,
 					organizationId: true,
+					source: true,
+					repositoryIntegrationId: true,
+					sourceRef: true,
 					sourceCommitSha: true,
 					settingsFrozen: true,
 					files: { select: { path: true, sha256: true, mode: true } },
@@ -1709,6 +1712,11 @@ export async function getPublishedInstructionTree(
 	}
 	return {
 		snapshotId: snapshot.id,
+		// Provenance, so an identical tree is "unchanged" only when it was
+		// published from the same integration and branch (Fizzy #2708 review).
+		source: snapshot.source,
+		repositoryIntegrationId: snapshot.repositoryIntegrationId,
+		sourceRef: snapshot.sourceRef,
 		sourceCommitSha: snapshot.sourceCommitSha,
 		settingsFrozen: snapshot.settingsFrozen,
 		files: snapshot.files,

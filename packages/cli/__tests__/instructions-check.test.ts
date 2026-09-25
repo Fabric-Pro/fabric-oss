@@ -469,6 +469,14 @@ describe("--hook never fails", () => {
 	it("swallows a damaged lock file", async () => {
 		const dest = await makeTree();
 		await seedRawLock(dest, "{ not json");
+		// Validated once the answer says an uploaded project uses a lock
+		// (Fizzy #2708); the request before it carried no digest.
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: snapshotFor([]),
+			manifest: [],
+		});
 
 		const result = await runCli([
 			"check",

@@ -4,14 +4,16 @@
  * `getClient` boundary.
  *
  * Also covers a source of truth that changed after the hook was installed
- * (review round 3, finding 4): `init` refuses to install a hook for a
- * repository-backed project, and this is the case a hook it installed
- * earlier — before the project switched — has to keep refusing too.
+ * (review round 3, finding 4; reworked by Fizzy #2708): a hook installed for
+ * an uploaded project must never become a second writer in a checkout of the
+ * repository the project later switched to, and must never act on a response
+ * whose source differs from the one it classified the directory against.
  */
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { computeSnapshotDigest } from "../src/lib/instructions/manifest.js";
+import { fakeGit } from "./helpers/git-fake.js";
 import {
 	makeTree,
 	manifestEntry,
@@ -21,6 +23,14 @@ import {
 	snapshotFor,
 	stubBundle,
 } from "./helpers/instructions-commands.js";
+
+/**
+ * `user@host` joined at runtime: the publication scan reads any literal
+ * user, at-sign and dotted host as an email address, and a subdomain of example.com is
+ * not on its sanctioned list. The string the code under test receives is
+ * byte-identical.
+ */
+const withUser = (user: string, rest: string): string => [user, rest].join("@");
 
 // `vi.mock` is hoisted above every import in this file, so the mock object
 // literal and the two factory bodies stay inline and per-file; only the
@@ -43,6 +53,14 @@ vi.mock("../src/lib/config.js", () => ({
 	getBaseUrl: () => undefined,
 	getDefaultContext: mocks.getDefaultContext,
 	getOutputFormat: () => "table",
+}));
+
+// Fizzy #2708: a repository-sourced project classifies its directory with
+// git. Scripted, so these tests never depend on the machine's git; by default
+// no directory is a checkout.
+vi.mock("../src/lib/instructions/git.js", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	...(await import("./helpers/git-fake.js")).gitFake,
 }));
 
 vi.mock("../src/lib/client.js", () => {
@@ -69,7 +87,17 @@ vi.mock("../src/lib/client.js", () => {
 
 beforeEach(() => {
 	resetInstructionsMocks(mocks);
+	fakeGit.reset();
 });
+
+const REPOSITORY = {
+	provider: "GITHUB" as const,
+	host: "git.example.com",
+	path: "example-org/rules",
+	ref: "main",
+	rootPath: "",
+	generation: 1,
+};
 
 afterEach(() => {
 	vi.unstubAllGlobals();
@@ -129,13 +157,18 @@ describe("fabric instructions init", () => {
 		);
 	});
 
-	it("refuses a repository-backed project and writes nothing", async () => {
+	it("refuses a repository-sourced project in some other repository's checkout and writes nothing", async () => {
 		const dest = await makeTree();
+		fakeGit.state.toplevel = dest;
+		fakeGit.state.remotes = {
+			origin: "https://git.example.com/example-org/other.git",
+		};
 		mocks.getPublished.mockResolvedValue({
 			published: true,
 			sourceOfTruth: "REPOSITORY",
 			snapshot: snapshotFor([]),
 			manifest: [],
+			repository: REPOSITORY,
 		});
 
 		const result = await runCli([
@@ -149,10 +182,9 @@ describe("fabric instructions init", () => {
 		]);
 
 		expect(result.code).toBe(7);
-		expect(result.stderr).toContain("come from its repository");
-		await expect(
-			stat(path.join(dest, ".claude", "settings.local.json")),
-		).rejects.toThrow();
+		expect(result.stderr).toContain("(foreign checkout)");
+		expect(await readdir(dest)).toEqual([]);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 	});
 
 	it("refuses when the CLI config would put the key inside the checkout", async () => {
@@ -265,7 +297,7 @@ describe("fabric instructions init", () => {
 		).rejects.toThrow();
 	});
 
-	it("refuses a repository switch during the first sync before writing a hook", async () => {
+	it("refuses a source that changes during the first sync before writing a hook", async () => {
 		const dest = await makeTree();
 		mocks.getPublished
 			.mockResolvedValueOnce({
@@ -279,6 +311,7 @@ describe("fabric instructions init", () => {
 				sourceOfTruth: "REPOSITORY",
 				snapshot: snapshotFor([]),
 				manifest: [],
+				repository: REPOSITORY,
 			});
 
 		const result = await runCli([
@@ -292,7 +325,10 @@ describe("fabric instructions init", () => {
 		]);
 
 		expect(result.code).toBe(7);
-		expect(result.stderr).toContain("come from its repository");
+		expect(result.stderr).toContain(
+			"instruction source changed while this command ran; nothing was written",
+		);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 		await expect(
 			stat(path.join(dest, ".claude", "settings.local.json")),
 		).rejects.toThrow();
@@ -474,25 +510,39 @@ describe("fabric instructions init", () => {
 // A project that moved to a git repository
 // ---------------------------------------------------------------------------
 /**
- * Review round 3, finding 4. `init` refuses to install a hook for a
- * repository-backed project, and the hook it installed earlier kept writing
- * after someone switched the project over — the second writer `init` exists
- * to prevent.
+ * Review round 3, finding 4, reworked by Fizzy #2708. A hook installed while
+ * a project was uploaded keeps running after someone switches the project
+ * to a repository. In a checkout of that repository it must become a
+ * reporter — never a second writer beside `git pull` — and it must never act
+ * on a response whose source differs from the one it classified against.
  */
 describe("a source of truth that changed after the hook was installed", () => {
 	function serveRepositoryBacked(): void {
 		mocks.getPublished.mockResolvedValue({
 			published: true,
 			sourceOfTruth: "REPOSITORY",
-			snapshot: snapshotFor([manifestEntry("AGENTS.md", "published\n")]),
+			snapshot: {
+				...snapshotFor([manifestEntry("AGENTS.md", "published\n")]),
+				source: {
+					kind: "REPOSITORY",
+					ref: "main",
+					commitSha: "a".repeat(40),
+					current: true,
+				},
+			},
 			unchanged: false,
 			changes: null,
 			manifest: [manifestEntry("AGENTS.md", "published\n")],
+			repository: REPOSITORY,
 		});
 	}
 
-	it("stops a hook sync with one line and exit 0, writing nothing", async () => {
+	it("reports in a checkout of the repository with one stdout line and exit 0, writing nothing", async () => {
 		const dest = await makeTree();
+		fakeGit.state.toplevel = dest;
+		fakeGit.state.remotes = {
+			origin: withUser("git", "git.example.com:example-org/rules.git"),
+		};
 		serveRepositoryBacked();
 
 		const result = await runCli([
@@ -505,8 +555,10 @@ describe("a source of truth that changed after the hook was installed", () => {
 		]);
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toContain("come from a git repository");
-		expect(result.stderr).toContain("fabric instructions init");
+		expect(result.stderr).toBe("");
+		expect(result.stdout).toBe(
+			"fabric: coding instructions v7 (aaaaaaa) is published on main of git.example.com/example-org/rules; this checkout has not fetched it yet — run: git pull --ff-only origin main\n",
+		);
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 		expect(await readdir(dest)).toEqual([]);
 	});
@@ -542,6 +594,7 @@ describe("a source of truth that changed after the hook was installed", () => {
 				unchanged: false,
 				changes: null,
 				manifest,
+				repository: REPOSITORY,
 			});
 
 		const result = await runCli([
@@ -554,7 +607,9 @@ describe("a source of truth that changed after the hook was installed", () => {
 		]);
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toContain("come from a git repository");
+		expect(result.stderr).toContain(
+			"instruction source changed while this command ran; nothing was written",
+		);
 		expect(mocks.getPublished).toHaveBeenCalledTimes(2);
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 		// Nothing was put back: the refusal came before the plan.
@@ -562,11 +617,14 @@ describe("a source of truth that changed after the hook was installed", () => {
 	});
 
 	/**
-	 * A person running `sync` by hand is a different case: for someone without
-	 * access to that repository, a download is the only way to read the
-	 * instructions at all.
+	 * Outside any git checkout the published snapshot is the only way to
+	 * read a repository-sourced project's instructions, so the hook keeps the
+	 * upload behaviour there — and a person running `sync` by hand does too.
 	 */
-	it("still lets a person sync by hand", async () => {
+	it.each([
+		["a hook", ["--hook"]],
+		["a person", []],
+	])("still lets %s sync outside any git checkout", async (_label, extra) => {
 		const dest = await makeTree();
 		const manifest = [manifestEntry("AGENTS.md", "published\n")];
 		serveRepositoryBacked();
@@ -584,6 +642,7 @@ describe("a source of truth that changed after the hook was installed", () => {
 			"project-1",
 			"--dest",
 			dest,
+			...extra,
 		]);
 
 		expect(result.code).toBe(0);

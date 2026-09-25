@@ -174,6 +174,13 @@ const CONTEXT: SyncRunContext = {
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
+/** A published snapshot this sync (integration `int_1`, branch `main`) published. */
+const PUBLISHED_HERE = {
+	source: "REPOSITORY",
+	repositoryIntegrationId: "int_1",
+	sourceRef: "main",
+} as const;
+
 type RepoFile = { path: string; body: string; mode?: "100644" | "100755" };
 
 /**
@@ -728,6 +735,7 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 		serveRepo([{ path: "CLAUDE.md", body: "x" }]);
 		m.getPublishedInstructionTree.mockResolvedValue({
 			snapshotId: "snap_0",
+			...PUBLISHED_HERE,
 			sourceCommitSha: SHA,
 			settingsFrozen: { syncId: "sync_1", syncGeneration: 3 },
 			files: [],
@@ -750,6 +758,7 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 		]);
 		m.getPublishedInstructionTree.mockResolvedValue({
 			snapshotId: "snap_0",
+			...PUBLISHED_HERE,
 			sourceCommitSha: SHA,
 			settingsFrozen: { syncId: "sync_1", syncGeneration: 3 },
 			files: [
@@ -774,6 +783,7 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 		serveRepo([{ path: "CLAUDE.local.md", body: "mine" }]);
 		m.getPublishedInstructionTree.mockResolvedValue({
 			snapshotId: "snap_0",
+			...PUBLISHED_HERE,
 			sourceCommitSha: SHA,
 			settingsFrozen: { syncId: "sync_1", syncGeneration: 3 },
 			files: [
@@ -794,6 +804,7 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 		]);
 		m.getPublishedInstructionTree.mockResolvedValue({
 			snapshotId: "snap_0",
+			...PUBLISHED_HERE,
 			sourceCommitSha: OLD_SHA,
 			settingsFrozen: { syncId: "sync_1", syncGeneration: 3 },
 			files: [
@@ -812,10 +823,95 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
 	});
 
+	/**
+	 * Fizzy #2708 review: identical bytes are "unchanged" only when the
+	 * published snapshot came from THIS sync's integration and branch;
+	 * otherwise its provenance is stale (`current: false`, or not
+	 * repository-built at all) and a new snapshot must carry the new one.
+	 */
+	describe("the same bytes from a different source", () => {
+		const SAME = [
+			{ path: "CLAUDE.md", sha256: sha256("same"), mode: null },
+		];
+
+		it.each([
+			["the branch changed", { ...PUBLISHED_HERE, sourceRef: "release" }],
+			[
+				"the integration changed",
+				{ ...PUBLISHED_HERE, repositoryIntegrationId: "int_0" },
+			],
+			[
+				"the published snapshot was an upload",
+				{
+					source: "UPLOAD",
+					repositoryIntegrationId: null,
+					sourceRef: null,
+				},
+			],
+		])("stages a new snapshot when %s", async (_label, provenance) => {
+			serveRepo([{ path: "CLAUDE.md", body: "same" }]);
+			m.getPublishedInstructionTree.mockResolvedValue({
+				snapshotId: "snap_0",
+				...provenance,
+				sourceCommitSha: OLD_SHA,
+				settingsFrozen: { syncId: "sync_1", syncGeneration: 3 },
+				files: SAME,
+			});
+
+			expect(
+				await acquireInstructionTreeFromRepository(CONTEXT),
+			).toMatchObject({ outcome: "staged" });
+			expect(m.createInstructionSnapshot).toHaveBeenCalledWith(
+				expect.objectContaining({
+					source: "REPOSITORY",
+					repositoryIntegrationId: "int_1",
+					sourceRef: "main",
+					sourceCommitSha: SHA,
+				}),
+			);
+		});
+
+		it("stages a new snapshot for the same commit when the branch changed", async () => {
+			serveRepo([{ path: "CLAUDE.md", body: "same" }]);
+			m.getPublishedInstructionTree.mockResolvedValue({
+				snapshotId: "snap_0",
+				...PUBLISHED_HERE,
+				sourceRef: "release",
+				sourceCommitSha: SHA,
+				settingsFrozen: { syncId: "sync_1", syncGeneration: 3 },
+				files: SAME,
+			});
+
+			expect(
+				await acquireInstructionTreeFromRepository(CONTEXT),
+			).toMatchObject({ outcome: "staged" });
+		});
+
+		it("stays unchanged with the same integration and branch", async () => {
+			serveRepo([{ path: "CLAUDE.md", body: "same" }]);
+			m.getPublishedInstructionTree.mockResolvedValue({
+				snapshotId: "snap_0",
+				...PUBLISHED_HERE,
+				sourceCommitSha: OLD_SHA,
+				settingsFrozen: { syncId: "sync_1", syncGeneration: 3 },
+				files: SAME,
+			});
+
+			expect(await acquireInstructionTreeFromRepository(CONTEXT)).toEqual(
+				{
+					outcome: "unchanged",
+					commitSha: SHA,
+				},
+			);
+			expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
+		});
+	});
+
 	it("stages a mode-only change, which the digest cannot see", async () => {
 		serveRepo([{ path: "run.sh", body: "#!/bin/sh\n", mode: "100755" }]);
 		m.getPublishedInstructionTree.mockResolvedValue({
 			snapshotId: "snap_0",
+			...PUBLISHED_HERE,
 			sourceCommitSha: OLD_SHA,
 			settingsFrozen: { syncId: "sync_1", syncGeneration: 3 },
 			files: [

@@ -1624,15 +1624,47 @@ export async function resolveCurrentInstructionRepository(
 	projectId: string,
 	organizationId: string,
 ): Promise<PublishedInstructionRepositoryConfig | null> {
+	return (await resolveCurrentInstructionSource(projectId, organizationId))
+		.repository;
+}
+
+/** `sourceOfTruth` as every response reports it: absent reads as `UPLOAD`. */
+function reportedSourceOfTruth(
+	sourceOfTruth: string | null,
+): "UPLOAD" | "REPOSITORY" {
+	return sourceOfTruth === "REPOSITORY" ? "REPOSITORY" : "UPLOAD";
+}
+
+/**
+ * The project's `sourceOfTruth` AND its current repository-sync
+ * configuration, from ONE read of the settings (Fizzy #2708 review).
+ *
+ * A caller that read the setting on its own and then asked
+ * `resolveCurrentInstructionRepository` made two reads of the same column: a
+ * switch landing between them produced a response that said `UPLOAD` and
+ * still carried a repository (or `REPOSITORY` with none). Here the one value
+ * decides both, so `repository` is non-null only beside `REPOSITORY`.
+ */
+export async function resolveCurrentInstructionSource(
+	projectId: string,
+	organizationId: string,
+): Promise<{
+	sourceOfTruth: "UPLOAD" | "REPOSITORY";
+	repository: PublishedInstructionRepositoryConfig | null;
+}> {
 	const settings = await getProjectInstructionSettings(
 		projectId,
 		organizationId,
 	);
-	if (settings.sourceOfTruth !== "REPOSITORY") {
-		return null;
+	const sourceOfTruth = reportedSourceOfTruth(settings.sourceOfTruth);
+	if (sourceOfTruth !== "REPOSITORY") {
+		return { sourceOfTruth, repository: null };
 	}
 	const sync = await getInstructionRepositorySync(projectId, organizationId);
-	return sync ? toRepositoryConfig(sync) : null;
+	return {
+		sourceOfTruth,
+		repository: sync ? toRepositoryConfig(sync) : null,
+	};
 }
 
 /**
@@ -1658,6 +1690,10 @@ export async function resolveCurrentInstructionRepository(
  * against the sync row REGARDLESS of the project's present `sourceOfTruth`
  * setting — a snapshot published while repository-backed stays truthfully
  * reportable even after the project switches back to upload.
+ *
+ * `sourceOfTruth` is returned from the SAME settings read that decides
+ * `repository` (Fizzy #2708 review), so a caller never pairs a setting it read
+ * separately with a repository block derived from a different read.
  */
 export async function resolveInstructionSnapshotSource(
 	projectId: string,
@@ -1669,6 +1705,7 @@ export async function resolveInstructionSnapshotSource(
 		sourceCommitSha: string | null;
 	},
 ): Promise<{
+	sourceOfTruth: "UPLOAD" | "REPOSITORY";
 	source: PublishedInstructionSource;
 	repository: PublishedInstructionRepositoryConfig | null;
 }> {
@@ -1676,6 +1713,7 @@ export async function resolveInstructionSnapshotSource(
 		projectId,
 		organizationId,
 	);
+	const sourceOfTruth = reportedSourceOfTruth(settings.sourceOfTruth);
 	// The sync row is read whenever it could matter to either answer: to
 	// build the top-level `repository`, or to decide `current` for a
 	// REPOSITORY-provenance snapshot — the latter regardless of whether
@@ -1695,7 +1733,7 @@ export async function resolveInstructionSnapshotSource(
 		// The receipt fields are a snapshot's own history and are never
 		// cleared by an unrelated later change; a row the `source` column
 		// itself calls UPLOAD is UPLOAD no matter what they still carry.
-		return { source: { kind: "UPLOAD" }, repository };
+		return { sourceOfTruth, source: { kind: "UPLOAD" }, repository };
 	}
 
 	if (
@@ -1714,6 +1752,7 @@ export async function resolveInstructionSnapshotSource(
 		snapshot.sourceRef === sync.ref;
 
 	return {
+		sourceOfTruth,
 		source: {
 			kind: "REPOSITORY",
 			ref: snapshot.sourceRef,

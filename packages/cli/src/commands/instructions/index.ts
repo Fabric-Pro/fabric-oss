@@ -9,6 +9,11 @@
  *   fabric instructions init  --project <id> --tool claude-code|codex
  *                                             Take the first copy, then write the session hook.
  *
+ * A repository-sourced project is the exception (Fizzy #2708): in a checkout
+ * of its own repository `check`, `sync` and the hook only REPORT whether the
+ * published commit is in HEAD's history, and `init` writes the hook without a
+ * copy. `lib/instructions/checkout.ts` decides which directory is which.
+ *
  * The first file-writing commands in this CLI. Everything that touches the
  * filesystem lives in `lib/instructions/` as small testable modules; this
  * file is argument parsing, the sequence, and the words a developer reads.
@@ -42,6 +47,17 @@ import { getApiKey, getConfigPath } from "../../lib/config.js";
 import { applyPlan } from "../../lib/instructions/apply.js";
 import { extractBundle, fetchBundle } from "../../lib/instructions/bundle.js";
 import {
+	type CheckoutClassification,
+	type CheckoutJson,
+	classifyCheckout,
+	classLine,
+	currentLine,
+	downloadsIn,
+	installedLine,
+	nothingPublishedLine,
+	reportForClassification,
+} from "../../lib/instructions/checkout.js";
+import {
 	buildFabricCommand,
 	formatDoctorText,
 	runDoctor,
@@ -57,6 +73,7 @@ import {
 	mergeSessionStartHook,
 	removeCommandHook,
 } from "../../lib/instructions/hook.js";
+import { hookTiming } from "../../lib/instructions/hook-timing.js";
 import {
 	readAllStdin,
 	runLessonPrompt,
@@ -66,6 +83,7 @@ import {
 	LOCK_DIRECTORY,
 	lockPath,
 	readLock,
+	readLockSafely,
 	writeLock,
 } from "../../lib/instructions/lock.js";
 import {
@@ -103,9 +121,19 @@ import { printOutput } from "../../lib/output.js";
  * per attempt and it retries twice by default, so three "5 second" calls
  * plus backoff is about 15.75 seconds — past the point where Claude Code
  * kills the hook itself, possibly mid-write. Retries are off in hook mode
- * and this bound covers everything.
+ * and this bound covers everything. The value lives in `hookTiming`
+ * (`lib/instructions/hook-timing.ts`) so a test can shorten it.
  */
-const HOOK_DEADLINE_MS = 10_000;
+function hookDeadlineMs(): number {
+	return hookTiming.deadlineMs;
+}
+
+/**
+ * The read-only git commands a manual run makes to classify a checkout of a
+ * repository-sourced project (Fizzy #2708), all together. Hook mode uses what
+ * is left of the hook deadline, less `hookTiming.gitMarginMs`, instead.
+ */
+const GIT_BUDGET_MS = 10_000;
 
 /** A manual check: no writes, so one short request and no more. */
 const CHECK_TIMEOUT_MS = 5_000;
@@ -370,11 +398,14 @@ async function run(
 			// The deadline's signal is published for the bundle download
 			// (`activeDeadline`) and withdrawn the moment the race settles,
 			// whichever side won it.
-			await withDeadline(HOOK_DEADLINE_MS, (signal) => {
+			const totalMs = hookDeadlineMs();
+			activeDeadlineAt = Date.now() + totalMs;
+			await withDeadline(totalMs, (signal) => {
 				activeDeadline = signal;
 				return body();
 			}).finally(() => {
 				activeDeadline = undefined;
+				activeDeadlineAt = undefined;
 			});
 		} else {
 			await body();
@@ -399,6 +430,27 @@ async function run(
  * one process.
  */
 let activeDeadline: AbortSignal | undefined;
+
+/**
+ * The same deadline as an absolute time, for the git commands a
+ * repository-sourced project's hook runs.
+ */
+let activeDeadlineAt: number | undefined;
+
+/**
+ * When the git commands this run makes must be done by. Under a hook that is
+ * `hookTiming.gitMarginMs` BEFORE the outer deadline, never at it: a git call
+ * that runs out answers "unavailable", the checkout is `unknown`, and that
+ * line reaches stdout with time to spare — rather than racing the outer
+ * timer, whose generic "skipped" line goes to stderr, which a successful
+ * hook's session never sees. A margin already spent makes every git call
+ * answer "timed out" at once, with the same result.
+ */
+function gitDeadline(): number {
+	return activeDeadlineAt === undefined
+		? Date.now() + GIT_BUDGET_MS
+		: activeDeadlineAt - hookTiming.gitMarginMs;
+}
 
 // ---------------------------------------------------------------------------
 // Shared steps
@@ -439,7 +491,7 @@ function instructionsClient(
 					// call it makes, so it cannot spend it on retries: a
 					// session that will not start is worse than instructions
 					// one version stale.
-					timeoutMs: Math.min(timeoutMs, HOOK_DEADLINE_MS),
+					timeoutMs: Math.min(timeoutMs, hookDeadlineMs()),
 					retry: { maxRetries: 0 },
 				}
 			: neverRetry
@@ -469,7 +521,7 @@ function instructionsClient(
 function downloadUrlClient(opts: { hook?: boolean }): FabricClient {
 	return instructionsClient(
 		opts,
-		opts.hook ? HOOK_DEADLINE_MS : BUNDLE_TIMEOUT_MS,
+		opts.hook ? hookDeadlineMs() : BUNDLE_TIMEOUT_MS,
 		{ neverRetry: true },
 	);
 }
@@ -499,6 +551,7 @@ async function fetchPublished(
 	client: FabricClient,
 	opts: CommonOptions,
 	sinceDigest?: string,
+	guard?: SourceGuard,
 ): Promise<PublishedInstructions> {
 	const org = orgSlugFor(opts);
 	let published: PublishedInstructions;
@@ -510,33 +563,71 @@ async function fetchPublished(
 	} catch (error) {
 		throw asCliFailure(error);
 	}
-	assertHookMayAct(opts, published);
+	await guard?.admit(published);
 	return published;
 }
 
 /**
- * A hook may not act on a project whose instructions come from git.
+ * Where a command's instructions come from, decided once and then held to
+ * (Fizzy #2708).
  *
- * Asserted on EVERY response rather than on the first one, because a command
- * can make two calls: a delta answer, and then — when the local tree has
- * drifted — a full refetch. Checking only the first meant a project switched
- * to `REPOSITORY` between the two was planned, downloaded and applied by a
- * hook, which is the second writer `init` refuses to create.
- *
- * `init` refuses such a project outright; a person running `sync` or `check`
- * by hand is unaffected, because for someone without access to that
- * repository a download is the only way to read the instructions at all.
+ * The FIRST response decides: for a repository-sourced project it classifies
+ * the directory against that response's `repository` block, and that
+ * classification governs the whole command — report only in a checkout of the
+ * repository, the upload behaviour in a directory that is not a checkout at
+ * all. Every LATER response (`sync`'s drift refetch, `init`'s first-copy
+ * sync) must then name the same source: a `sourceOfTruth` or repository
+ * configuration that moved between two calls means the classification may be
+ * wrong for what is now being applied, so the command stops before it plans,
+ * downloads or writes anything. Checking only the first response let a
+ * project switched between the two be planned, downloaded and applied — a
+ * second writer in a checkout that git already keeps current.
  */
-function assertHookMayAct(
-	opts: { hook?: boolean },
-	published: PublishedInstructions,
-): void {
-	if (opts.hook && published.sourceOfTruth === "REPOSITORY") {
-		throw new CliFailure(
-			"this project's instructions now come from a git repository; run `fabric instructions init` again or remove the hook",
-			4,
-		);
+class SourceGuard {
+	private first: string | undefined;
+	/** `null` until admitted, and for a project that is not repository-sourced. */
+	checkout: CheckoutClassification | null = null;
+
+	constructor(private readonly destination: string) {}
+
+	async admit(published: PublishedInstructions): Promise<void> {
+		const identity = sourceIdentity(published);
+		if (this.first === undefined) {
+			this.first = identity;
+			if (published.sourceOfTruth === "REPOSITORY") {
+				this.checkout = await classifyCheckout({
+					destination: this.destination,
+					repository: published.repository,
+					deadline: gitDeadline(),
+				});
+			}
+			return;
+		}
+		if (identity !== this.first) {
+			throw new CliFailure(
+				"this project's instruction source changed while this command ran; nothing was written — run it again",
+				7,
+			);
+		}
 	}
+}
+
+/** The fields whose change between two responses stops a command. */
+function sourceIdentity(published: PublishedInstructions): string {
+	const repository = published.repository ?? null;
+	return JSON.stringify([
+		published.sourceOfTruth,
+		repository === null
+			? null
+			: [
+					repository.provider,
+					repository.host,
+					repository.path,
+					repository.ref,
+					repository.rootPath,
+					repository.generation,
+				],
+	]);
 }
 
 /**
@@ -561,6 +652,84 @@ async function readLockForProject(
 		);
 	}
 	return lock;
+}
+
+/**
+ * The lock's digest as a HINT for the first request, or `undefined` — never a
+ * failure (Fizzy #2708 review).
+ *
+ * The lock is validated only once the directory has been classified, and only
+ * where this run may use it: a checkout of a repository-sourced project's own
+ * repository never has one, so a malformed, symlinked, unsupported or other
+ * project's lock left there must not stop the report. The hint keeps the
+ * one-request session start for everyone else: when the validated lock later
+ * turns out to carry a different digest (or none), `validatedLock` asks again.
+ */
+async function lockDigestHint(
+	root: string,
+	projectId: string,
+): Promise<string | undefined> {
+	try {
+		// The guarded, bounded reader: a symlinked `.fabric` or lock is
+		// refused rather than followed out of the checkout.
+		const lock = await readLockSafely(root, {
+			maxBytes: MAX_HINT_LOCK_BYTES,
+		});
+		return lock !== null && lock.projectId === projectId
+			? lock.digest
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** A 5000-file lock is about a megabyte; a hint is not worth reading more. */
+const MAX_HINT_LOCK_BYTES = 16 * 1024 * 1024;
+
+/** Whether this run may use the lock: an uploaded project, or a class that downloads. */
+function usesLock(guard: SourceGuard, manual: boolean): boolean {
+	return guard.checkout === null || downloadsIn(guard.checkout, manual);
+}
+
+/**
+ * The lock, validated, and the response to act on: the one already fetched
+ * when it was asked with this lock's digest, otherwise a second request —
+ * held to the first by the same guard.
+ */
+async function validatedLock(
+	client: FabricClient,
+	opts: CommonOptions,
+	destination: string,
+	guard: SourceGuard,
+	hint: string | undefined,
+	published: PublishedInstructions,
+): Promise<{
+	lock: InstructionsLock | null;
+	published: PublishedInstructions;
+}> {
+	const lock = await readLockForProject(destination, opts.project);
+	if (lock?.digest === hint) {
+		return { lock, published };
+	}
+	return {
+		lock,
+		published: await fetchPublished(client, opts, lock?.digest, guard),
+	};
+}
+
+/**
+ * A person's manual `sync` in a directory that may be a checkout of the
+ * repository but cannot be shown to be a safe place to copy into: refused,
+ * with the class line (Fizzy #2708 review — fail closed).
+ */
+function refuseManualSync(
+	checkout: CheckoutClassification,
+	repository: PublishedInstructions["repository"],
+): CliFailure | null {
+	if (checkout.class === "matching" || checkout.class === "not-git") {
+		return null;
+	}
+	return new CliFailure(classLine(checkout, repository ?? null), 7);
 }
 
 function line(text: string): void {
@@ -591,9 +760,49 @@ async function runCheck(
 	// and a literal path would refuse legitimately — `/tmp` is a symlink on
 	// macOS, so the string a user passes and the directory they mean differ.
 	const root = await resolveExistingRoot(destination);
-	const lock = await readLockForProject(destination, opts.project);
 	const client = instructionsClient(opts, CHECK_TIMEOUT_MS);
-	const published = await fetchPublished(client, opts, lock?.digest);
+	const guard = new SourceGuard(destination);
+	const hint = await lockDigestHint(root, opts.project);
+	let published = await fetchPublished(client, opts, hint, guard);
+
+	// A repository-sourced project (Fizzy #2708): what this directory is
+	// decides what the check says. Outside any git checkout nothing changes;
+	// in a checkout of the repository — or anything that might be one — a
+	// hook prints only the one line below, and nothing at all when current.
+	const checkout =
+		guard.checkout === null
+			? null
+			: await reportForClassification({
+					classification: guard.checkout,
+					repository: published.repository,
+					snapshot: published.snapshot,
+					deadline: gitDeadline(),
+				});
+	if (
+		opts.hook &&
+		format !== "json" &&
+		checkout !== null &&
+		checkout.classification.class !== "not-git"
+	) {
+		if (checkout.line !== null) {
+			line(checkout.line);
+		}
+		return;
+	}
+
+	// The lock only where this run may use it; elsewhere the report reads as
+	// "not synced here", which is what such a directory is.
+	let lock: InstructionsLock | null = null;
+	if (usesLock(guard, !opts.hook)) {
+		({ lock, published } = await validatedLock(
+			client,
+			opts,
+			destination,
+			guard,
+			hint,
+			published,
+		));
+	}
 
 	// Deliberately NOT validated against `assertValidManifest`: `check`
 	// writes nothing, so a skewed manifest here can only produce a less
@@ -624,6 +833,7 @@ async function runCheck(
 					.filter((entry) => entry.reason === "edited" && entry.kept)
 					.map((entry) => entry.path),
 				...published,
+				checkout: checkout?.json ?? null,
 			},
 			{ format: "json" },
 		);
@@ -637,6 +847,9 @@ async function runCheck(
 	// used to return before saying a word about it.
 	if (opts.verify) {
 		reportDrift(opts, destination, drift);
+	}
+	if (checkout?.line) {
+		line(checkout.line);
 	}
 }
 
@@ -812,7 +1025,32 @@ async function runSync(
 	opts: CommonOptions & { dryRun?: boolean; repair?: boolean },
 	format: OutputFormat,
 ): Promise<void> {
-	const result = await syncOnce(opts);
+	const synced = await syncOnce(opts);
+	if (synced.kind === "reported") {
+		// A checkout of the repository (Fizzy #2708): the files arrive with
+		// git, so this reports and writes nothing. `--dry-run` and `--repair`
+		// describe a download, and there is none to shape.
+		if (format === "json") {
+			printOutput(
+				{
+					projectId: opts.project,
+					destination: synced.destination,
+					published: synced.published,
+					reportOnly: true,
+					version: synced.version,
+					checkout: synced.checkout,
+				},
+				{ format: "json" },
+			);
+		} else if (synced.checkout.line !== null) {
+			line(synced.checkout.line);
+		} else if (!opts.hook && synced.current !== null) {
+			// The hook's silence means "current"; a person gets it in words.
+			line(synced.current);
+		}
+		return;
+	}
+	const result = synced.outcome;
 	if (format === "json") {
 		printOutput(result, { format: "json" });
 	} else {
@@ -887,31 +1125,92 @@ function emptyOutcome(
 	};
 }
 
+/**
+ * What `syncOnce` did: applied the published snapshot, or — in a checkout of
+ * a repository-sourced project's repository, or under a hook anywhere that
+ * might be one — only reported, writing nothing (Fizzy #2708).
+ */
+type SyncResult =
+	| { kind: "synced"; outcome: SyncOutcome }
+	| {
+			kind: "reported";
+			destination: string;
+			published: boolean;
+			version: number | null;
+			checkout: CheckoutJson;
+			/** A manual run's words for "already current"; the hook says nothing. */
+			current: string | null;
+	  };
+
 async function syncOnce(
 	opts: CommonOptions & {
 		dryRun?: boolean;
 		repair?: boolean;
-		rejectRepository?: boolean;
+		/**
+		 * `init`'s guard, already holding the response it classified the
+		 * checkout from, so this sync's own responses are held to it.
+		 */
+		guard?: SourceGuard;
 	},
-): Promise<SyncOutcome> {
-	// Canonical from here on: every write resolves against this, so a
-	// symlinked `--dest` (or `/tmp` on macOS) is decided once rather than at
-	// each write.
-	const root = await resolveDestinationRoot(destinationOf(opts));
-	const outcome = emptyOutcome(opts, root);
+): Promise<SyncResult> {
+	const destination = destinationOf(opts);
+	// Canonical, but not created yet: a run that only reports must not make
+	// a directory. The lock is read from the same canonical path the writes
+	// below resolve against.
+	const existing = await resolveExistingRoot(destination);
 	// Spec §6.4: a local edit to a synced file is the developer's, and only
 	// `--repair` replaces it. `init`'s first sync keeps too: it never passes
 	// `repair`.
 	const keepLocalEdits = !opts.repair;
 
-	const lock = await readLockForProject(root, opts.project);
 	const client = instructionsClient(opts, SYNC_TIMEOUT_MS);
-	let published = await fetchPublished(client, opts, lock?.digest);
-	assertInitSyncMayAct(opts, published);
+	const guard = opts.guard ?? new SourceGuard(destination);
+	const hint = await lockDigestHint(existing, opts.project);
+	let published = await fetchPublished(client, opts, hint, guard);
 
-	// Hook mode rejects repository-backed instructions in `fetchPublished`;
-	// init's first sync performs the same check above so its drift refetch does
-	// not trust only the first response.
+	if (guard.checkout !== null && !downloadsIn(guard.checkout, !opts.hook)) {
+		const refused = opts.hook
+			? null
+			: refuseManualSync(guard.checkout, published.repository);
+		if (refused !== null) {
+			throw refused;
+		}
+		const report = await reportForClassification({
+			classification: guard.checkout,
+			repository: published.repository,
+			snapshot: published.snapshot,
+			deadline: gitDeadline(),
+		});
+		return {
+			kind: "reported",
+			destination: existing,
+			published: published.published,
+			version: published.snapshot?.version ?? null,
+			checkout: report.json,
+			current:
+				report.line === null &&
+				published.repository &&
+				published.snapshot
+					? currentLine(published.repository, published.snapshot)
+					: null,
+		};
+	}
+
+	let lock: InstructionsLock | null;
+	({ lock, published } = await validatedLock(
+		client,
+		opts,
+		existing,
+		guard,
+		hint,
+		published,
+	));
+
+	// Canonical from here on: every write resolves against this, so a
+	// symlinked `--dest` (or `/tmp` on macOS) is decided once rather than at
+	// each write.
+	const root = await resolveDestinationRoot(destination);
+	const outcome = emptyOutcome(opts, root);
 
 	if (!published.published || !published.snapshot) {
 		// A real failure for a person who asked for a copy; the `--hook`
@@ -957,15 +1256,14 @@ async function syncOnce(
 					await writeLock(root, reconciled.lock);
 				}
 			}
-			return outcome;
+			return { kind: "synced", outcome };
 		}
 
 		outcome.drifted = drift.map(describeLedgerDrift);
 		// The first call answered with a delta and therefore carries no
 		// manifest. Ask again without a base digest: the plan needs the whole
 		// published list to put the tree back.
-		published = await fetchPublished(client, opts);
-		assertInitSyncMayAct(opts, published);
+		published = await fetchPublished(client, opts, undefined, guard);
 		if (!published.published || !published.snapshot) {
 			throw new CliFailure(
 				"This project has no published coding instructions yet.",
@@ -994,7 +1292,7 @@ async function syncOnce(
 	if (opts.dryRun) {
 		// The plan is computable from the manifest alone, so a dry run
 		// downloads nothing at all.
-		return outcome;
+		return { kind: "synced", outcome };
 	}
 
 	let contents = new Map<string, Uint8Array>();
@@ -1012,7 +1310,7 @@ async function syncOnce(
 			manifest.map((entry) => [entry.path, entry.size] as const),
 		);
 		const archive = await fetchBundle(download.url, {
-			timeoutMs: opts.hook ? HOOK_DEADLINE_MS : BUNDLE_TIMEOUT_MS,
+			timeoutMs: opts.hook ? hookDeadlineMs() : BUNDLE_TIMEOUT_MS,
 			// Bounded by what this manifest says it holds, not by what the
 			// response claims. The manifest has already been checked against
 			// the published snapshot limits, so this is a number the client
@@ -1069,24 +1367,7 @@ async function syncOnce(
 	});
 	await writeLock(root, lockToWrite);
 
-	return outcome;
-}
-
-/**
- * `init` uses a manual sync for its first copy, but it must still reject a
- * project that switches to repository-backed instructions during that sync.
- * Keeping this distinct from hook mode preserves manual `sync` behavior.
- */
-function assertInitSyncMayAct(
-	opts: { rejectRepository?: boolean },
-	published: PublishedInstructions,
-): void {
-	if (opts.rejectRepository && published.sourceOfTruth === "REPOSITORY") {
-		throw new CliFailure(
-			"This project's coding instructions come from its repository, so they arrive with `git pull`. A session hook would fight it; nothing was written.",
-			7,
-		);
-	}
+	return { kind: "synced", outcome };
 }
 
 function fillPlanPaths(outcome: SyncOutcome, plan: SyncPlan): void {
@@ -1771,39 +2052,67 @@ async function runInit(
 		);
 	}
 
-	const root = await resolveDestinationRoot(destinationOf(opts));
+	const destination = destinationOf(opts);
+	// Not created yet: a refusal below must leave nothing behind.
+	const existing = await resolveExistingRoot(destination);
 
-	// Two local preconditions, both answered before any network call: a lock
-	// that belongs to another project, and a credential file that would end
-	// up inside the checkout. Neither needs the server to decide, and making
-	// a reader wait on a request to learn about them is backwards.
-	await readLockForProject(root, opts.project);
-	try {
-		await assertKeyStaysOutside(root, getConfigPath());
-	} catch (error) {
-		throw new CliFailure(describeError(error), 7);
-	}
+	// A local precondition answered before any network call: a credential
+	// file that would end up inside the checkout.
+	await assertKeyOutside(existing);
 
 	const client = instructionsClient(opts, SYNC_TIMEOUT_MS);
-	const published = await fetchPublished(client, opts);
+	const guard = new SourceGuard(destination);
+	const published = await fetchPublished(client, opts, undefined, guard);
 
-	if (published.sourceOfTruth === "REPOSITORY") {
-		// A sync hook on a repository-backed project would fight `git pull`:
-		// the files arrive through the repository, and two writers with no
-		// merge between them is worse than one.
+	// A repository-sourced project (Fizzy #2708), classified once, here. In a
+	// checkout of the repository the files arrive with git: the hook is
+	// written and reports, and nothing is copied. Outside any checkout the
+	// upload behaviour applies. Anywhere in between, nothing is written.
+	const checkout = guard.checkout;
+	if (
+		checkout !== null &&
+		checkout.class !== "matching" &&
+		checkout.class !== "not-git"
+	) {
 		throw new CliFailure(
-			"This project's coding instructions come from its repository, so they arrive with `git pull`. A session hook would fight it; nothing was written.",
+			classLine(checkout, published.repository ?? null),
 			7,
 		);
 	}
+	const repositoryCheckout =
+		checkout?.class === "matching" && published.repository
+			? published.repository
+			: null;
+	// A lock that belongs to another project, checked only where a lock is
+	// used: a checkout of the repository never has one, and whatever is left
+	// there must not stop the hook being installed (Fizzy #2708 review).
+	if (repositoryCheckout === null) {
+		await readLockForProject(existing, opts.project);
+	}
 
-	const outcome = published.published
-		? // A second manifest call, deliberately: the one above answered "may
-			// a hook be installed for this project at all", and this one is the
-			// sync's own. Do it before the hook write: a failed first copy must
-			// not leave a new or updated hook behind.
-			await syncOnce({ ...opts, hook: false, rejectRepository: true })
-		: null;
+	const root = await resolveDestinationRoot(destination);
+	if (root !== existing) {
+		// The directory did not exist a moment ago; the key check is about
+		// real paths, so it is asked again of the one that now does.
+		await assertKeyOutside(root);
+	}
+
+	let outcome: SyncOutcome | null = null;
+	if (repositoryCheckout === null && published.published) {
+		// A second manifest call, deliberately: the one above answered "may a
+		// hook be installed for this project at all", and this one is the
+		// sync's own — held to the first by the same guard. Do it before the
+		// hook write: a failed first copy must not leave a new or updated
+		// hook behind.
+		const synced = await syncOnce({ ...opts, hook: false, guard });
+		if (synced.kind !== "synced") {
+			throw new CliFailure(
+				"the first copy was not taken; nothing else was written",
+				7,
+			);
+		}
+		outcome = synced.outcome;
+	}
 
 	const command = buildHookCommand(
 		opts.project,
@@ -1859,6 +2168,12 @@ async function runInit(
 				replacedHooks: merged.replacedCount,
 				lessonsHook,
 				sync: outcome,
+				checkout:
+					checkout === null
+						? null
+						: checkout.class === "matching"
+							? { class: checkout.class, remote: checkout.remote }
+							: { class: checkout.class },
 			},
 			{ format: "json" },
 		);
@@ -1871,11 +2186,15 @@ async function runInit(
 			: `Added a SessionStart hook to ${merged.settingsPath}.`,
 	);
 	line(`  ${command}`);
-	line(
-		opts.apply
-			? "  It applies changes at session start."
-			: "  It only reports changes; add --apply to init to have it apply them.",
-	);
+	if (repositoryCheckout !== null) {
+		line(`  ${installedLine(repositoryCheckout, Boolean(opts.apply))}`);
+	} else {
+		line(
+			opts.apply
+				? "  It applies changes at session start."
+				: "  It only reports changes; add --apply to init to have it apply them.",
+		);
+	}
 	if (lessonsHookLine !== null) {
 		line(lessonsHookLine);
 	}
@@ -1883,6 +2202,18 @@ async function runInit(
 		line(
 			"  Start Codex in this checkout, then use `/hooks` to review and trust the project hook.",
 		);
+	}
+
+	if (repositoryCheckout !== null) {
+		if (published.snapshot?.source?.kind !== "REPOSITORY") {
+			line(nothingPublishedLine(repositoryCheckout));
+		}
+		line("");
+		// No lock in a checkout of the repository: nothing is copied into it.
+		line(
+			`${hookPathFor(tool)} is local to this machine. If this repository does not ignore it already, add it to your own ignore rules — this command does not edit .gitignore.`,
+		);
+		return;
 	}
 
 	if (outcome === null) {
@@ -1898,6 +2229,14 @@ async function runInit(
 	line(
 		`${hookPathFor(tool)} and ${LOCK_DIRECTORY}/ are local to this machine. If this repository does not ignore them already, add them to your own ignore rules — this command does not edit .gitignore.`,
 	);
+}
+
+async function assertKeyOutside(root: string): Promise<void> {
+	try {
+		await assertKeyStaysOutside(root, getConfigPath());
+	} catch (error) {
+		throw new CliFailure(describeError(error), 7);
+	}
 }
 
 function isInstructionsHookTool(tool: string): tool is InstructionsHookTool {
