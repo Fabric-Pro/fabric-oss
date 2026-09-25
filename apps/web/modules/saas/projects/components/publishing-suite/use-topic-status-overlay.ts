@@ -444,8 +444,8 @@ export function useTopicStatusOverlay(
 							})
 						: prev,
 				);
-				// A request can fail after the server committed (e.g. a timeout
-				// while it waits on the planning-analysis start): let the cache
+				// A request can fail after the server committed (e.g. the
+				// connection drops before the response arrives): let the cache
 				// catch up rather than trust the failure.
 				refresh();
 				throw error;

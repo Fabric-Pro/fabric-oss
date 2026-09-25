@@ -33,12 +33,12 @@ import { requireEligibleProjectForTopic } from "../../lib/publishing-topic-proje
  * Start a planning-analysis run for a topic.
  *
  * Lifted out of the procedure because there are now two ways in: the reader
- * pressing Generate, and a topic being marked SELECTED, which starts one before
- * anybody opens the page. Two copies of the Temporal-availability check, the
- * attempt row and its rollback would be two chances for the rollback to be
- * forgotten in one of them — and a forgotten rollback leaves a GENERATING row
- * holding the partial unique index, refusing every retry until the deadline
- * sweep.
+ * pressing Generate, and a topic being marked SELECTED, which starts one just
+ * after the status change is saved — usually before anybody opens the page.
+ * Two copies of the Temporal-availability check, the attempt row and its
+ * rollback would be two chances for the rollback to be forgotten in one of
+ * them — and a forgotten rollback leaves a GENERATING row holding the partial
+ * unique index, refusing every retry until the deadline sweep.
  */
 export async function startPlanningAnalysisRun(input: {
 	projectId: string;

@@ -947,8 +947,23 @@ export function TopicItemPage({
 	 * Every status write on this page — the header control and Edit URL — so
 	 * the page shows the pending value at once and the two cannot overlap
 	 * (the overlay refuses a second write while the first is unconfirmed).
-	 * Selecting a topic auto-starts its planning analysis on the server;
-	 * refreshing that read is what lets the page find the run and poll it.
+	 *
+	 * Selecting a topic also starts its planning analysis on the server, in
+	 * the background once the status is saved — so the SELECTED re-read of
+	 * `getPlanningAnalysis` below can land before the run's attempt row does.
+	 * Normally harmless: by then the page holds an attempt already, found on
+	 * load or made by its own load-time auto-start. If it holds none (that
+	 * start was refused, say because Temporal was unavailable at page load),
+	 * the re-read can store "no attempt" as fresh data, and the page polls
+	 * only a GENERATING attempt, so no poll finds the run. A window refocus
+	 * once the read is past its 60-second `staleTime` re-reads it and finds
+	 * the run, with no bound on how long that takes. Pressing Generate, or a
+	 * remount that still holds the cached read (both auto-starts fire on it
+	 * before any refetch): while the run is still GENERATING the server
+	 * refuses them (`in-progress`, or `unavailable` if that request cannot
+	 * reach Temporal) and the refresh that follows finds it; once the run has
+	 * finished, nothing is GENERATING to refuse them, so either can start a
+	 * second run.
 	 */
 	const writeStatus = (
 		status: TopicStatus,

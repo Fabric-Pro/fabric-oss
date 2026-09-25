@@ -1,8 +1,14 @@
 import { logger } from "@repo/logs";
 
 /**
- * Kick a planning analysis when a topic is SELECTED, so it is running before
- * anybody opens the page.
+ * Kick a planning analysis when a topic is SELECTED, so it is usually running
+ * before anybody opens the page. Usually, not always: a page opened straight
+ * after the change can get there first, and its own start then races this one.
+ * Attempts are claimed under a Project-row lock and a partial unique index over
+ * GENERATING rows, so while one is GENERATING the other is refused and at most
+ * one runs — unless this start stalls between its existence check and its
+ * claim for as long as a whole run takes, finds nothing GENERATING, and starts
+ * a second.
  *
  * "As soon as the user clicks selected, then do the analysis — they don't even
  * have to open this page. So theoretically they could select a few, and by the
@@ -14,8 +20,17 @@ import { logger } from "@repo/logs";
  *
  * FIRE AND FORGET, deliberately. Marking a topic Selected is the user's action
  * and it succeeded; a Temporal outage must not turn that into a failed status
- * change. The page-mount fallback is what makes that safe — anything not
- * started here starts when somebody opens the topic.
+ * change. The page-mount fallback is what makes that safe — a topic this
+ * leaves with no attempt at all is tried again when somebody who can edit it
+ * opens it. One this did claim is not: an attempt that failed, or was left
+ * GENERATING by a continuation killed mid-start, waits for a person to retry
+ * it, because both page auto-starts skip any existing attempt.
+ *
+ * The caller keeps it fire-and-forget: `update-topic-status.ts` hands this
+ * promise to `runInBackground` once the status write has resolved. Never
+ * awaited, because the status response must not wait on Temporal; never a bare
+ * `void`, because on Vercel a floating promise is not guaranteed to finish once
+ * the response has been sent.
  */
 const MAX_CONCURRENT_ANALYSES_PER_PROJECT = 5;
 
