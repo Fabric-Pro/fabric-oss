@@ -184,7 +184,9 @@ export function PromptPreviewSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="w-[500px] sm:w-[600px] flex flex-col">
+			{/* Full width below `sm`: a fixed 500px sheet anchored right on a
+			    390px phone put its left edge — and the Edit button — off screen. */}
+			<SheetContent className="w-full sm:w-[600px] flex flex-col">
 				<SheetHeader className="shrink-0">
 					<div className="flex items-center gap-2">
 						<SheetTitle className="min-w-0 flex-1">
