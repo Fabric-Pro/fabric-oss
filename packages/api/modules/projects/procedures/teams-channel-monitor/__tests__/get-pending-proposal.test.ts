@@ -84,18 +84,18 @@ describe("getPendingProposalProcedure", () => {
 			projectId: "project-1",
 			appliedChangeIndexes: [3, 0, 2],
 			createdChangeIndexes: [0, 3],
-			teamsChatId: null,
+			teamsChatSourceLink: null,
 		});
 	});
 
-	it("resolves a Teams chat proposal's Graph chat id from its linked chat, in the same project", async () => {
+	it("deep-links a Teams chat proposal to its root message through its linked chat, in the same project", async () => {
 		mocks.getProposal.mockResolvedValue({
 			id: "proposal-1",
 			projectId: "project-1",
 			source: "TEAMS_CHAT",
 			sourceMetadata: {
 				linkedChatId: "linked-chat-1",
-				threadRootId: "1",
+				threadRootId: "1726000000000",
 			},
 			appliedChangeIndexes: [],
 		});
@@ -111,20 +111,48 @@ describe("getPendingProposalProcedure", () => {
 			"linked-chat-1",
 		);
 		expect(result).toMatchObject({
-			teamsChatId: "19:example-chat@thread.v2",
+			teamsChatSourceLink:
+				"https://teams.microsoft.com/l/message/19:example-chat@thread.v2/1726000000000?context=%7B%22contextType%22%3A%22chat%22%7D",
 		});
+	});
+
+	it.each([
+		["the chat is no longer linked", null],
+		["the chat id is not one Graph issues", "19:example/../../elsewhere"],
+	])("builds no link when %s", async (_label, graphChatId) => {
+		mocks.getProposal.mockResolvedValue({
+			id: "proposal-1",
+			projectId: "project-1",
+			source: "TEAMS_CHAT",
+			sourceMetadata: {
+				linkedChatId: "linked-chat-1",
+				threadRootId: "1726000000000",
+			},
+			appliedChangeIndexes: [],
+		});
+		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set());
+		mocks.getLinkedTeamsChatGraphId.mockResolvedValue(graphChatId);
+
+		const result = await callGet();
+
+		expect(result).toMatchObject({ teamsChatSourceLink: null });
 	});
 
 	it.each([
 		[
 			"a channel proposal",
 			"TEAMS_CHANNEL",
-			{ linkedChatId: "linked-chat-1" },
+			{ linkedChatId: "linked-chat-1", threadRootId: "1726000000000" },
 		],
 		["a chat proposal without a linked chat", "TEAMS_CHAT", {}],
 		["a chat proposal with no metadata", "TEAMS_CHAT", null],
+		[
+			"a chat proposal with a non-numeric root message id",
+			"TEAMS_CHAT",
+			{ linkedChatId: "linked-chat-1", threadRootId: "../elsewhere" },
+		],
 	])(
-		"returns no chat id for %s, without a lookup",
+		"returns no link for %s, without a lookup",
 		async (_label, source, sourceMetadata) => {
 			mocks.getProposal.mockResolvedValue({
 				id: "proposal-1",
@@ -138,7 +166,7 @@ describe("getPendingProposalProcedure", () => {
 			const result = await callGet();
 
 			expect(mocks.getLinkedTeamsChatGraphId).not.toHaveBeenCalled();
-			expect(result).toMatchObject({ teamsChatId: null });
+			expect(result).toMatchObject({ teamsChatSourceLink: null });
 		},
 	);
 

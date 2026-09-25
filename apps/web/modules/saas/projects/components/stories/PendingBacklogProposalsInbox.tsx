@@ -217,8 +217,8 @@ type PendingProposalDetail = PendingProposalRow & {
 	appliedChangeIndexes?: number[];
 	/** The indexes this proposal actually created, from the application table. */
 	createdChangeIndexes?: number[];
-	/** Graph chat id of a Teams chat proposal's source chat, while it is linked. */
-	teamsChatId?: string | null;
+	/** Teams deep link to a chat proposal's source message, while the chat is linked. */
+	teamsChatSourceLink?: string | null;
 	projectId: string;
 	proposal: unknown;
 	userId: string | null;
@@ -435,35 +435,12 @@ function conversationNameFromMetadata(
 }
 
 /**
- * Teams deep link to one chat message, in the documented
- * `https://teams.microsoft.com/l/message/<chatId>/<messageId>?context=…` form.
- * Graph returns no `webUrl` for chat messages, so a chat proposal has no stored
- * message link; the ids are checked against the shapes Graph issues (`19:…`
- * chat ids, numeric message ids) before they go into the URL.
- */
-function teamsChatMessageLink(
-	chatId: string | null,
-	messageId: unknown,
-): string | undefined {
-	if (
-		!chatId ||
-		!/^19:[^/?#\s]+$/.test(chatId) ||
-		typeof messageId !== "string" ||
-		!/^\d+$/.test(messageId)
-	) {
-		return undefined;
-	}
-	const context = encodeURIComponent(JSON.stringify({ contextType: "chat" }));
-	return `https://teams.microsoft.com/l/message/${chatId}/${messageId}?context=${context}`;
-}
-
-/**
  * Build a deep-link to the original message/thread for the proposal.
  *
  * - TEAMS_CHANNEL / TEAMS_CHAT: source metadata already holds a full
  *   `threadRootWebLink` for channel messages. A chat message has none, so a
- *   chat proposal links to its root message through `teamsChatId` (resolved
- *   server-side from the linked chat), then to the chat's `chatWebUrl`.
+ *   chat proposal links to its root message through `teamsChatSourceLink`
+ *   (built server-side from the linked chat), then to the chat's `chatWebUrl`.
  * - SLACK_CHANNEL: metadata typically has `channelId` and Slack `ts`
  *   (and optionally `threadTs`). The Slack permalink format strips the
  *   `.` from `ts` and prefixes with `p`, e.g. `1715724000.123456` →
@@ -475,7 +452,7 @@ function teamsChatMessageLink(
 function threadLinkFromMetadata(
 	source: string,
 	metadata: Record<string, unknown> | null,
-	teamsChatId: string | null,
+	teamsChatSourceLink: string | null,
 ): string | null {
 	if (!metadata) {
 		return null;
@@ -511,7 +488,7 @@ function threadLinkFromMetadata(
 	// Default: Teams (channel + chat) — pre-built links live in metadata.
 	const link =
 		(metadata.threadRootWebLink as string | undefined) ??
-		teamsChatMessageLink(teamsChatId, metadata.threadRootId) ??
+		teamsChatSourceLink ??
 		(metadata.chatWebUrl as string | undefined) ??
 		(metadata.channelWebUrl as string | undefined);
 	return typeof link === "string" && link.length > 0 ? link : null;
@@ -1491,7 +1468,7 @@ export function PendingBacklogProposalsInbox({
 		const threadLink = threadLinkFromMetadata(
 			detail.source,
 			metadata,
-			detail.teamsChatId ?? null,
+			detail.teamsChatSourceLink ?? null,
 		);
 		const isFailed = detail.status === "FAILED";
 		const provider = providerLabel(detail.source);
