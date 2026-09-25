@@ -1,5 +1,6 @@
 "use client";
 
+import { promptContentProblem } from "@repo/utils/prompt-content";
 import { prefixDiffPart } from "@shared/lib/line-diff";
 import { Button } from "@ui/components/button";
 import {
@@ -13,7 +14,7 @@ import {
 import { cn } from "@ui/lib";
 import { diffLines } from "diff";
 import { Loader2Icon, RotateCcwIcon } from "lucide-react";
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 
 type ComparableVersion = {
 	id: string;
@@ -60,6 +61,11 @@ export function PromptVersionCompareDialog({
 	);
 
 	const isIdentical = version.content === currentContent;
+	// An old version can predate the rules a save now enforces — saved blank
+	// before the blank check, or longer than the length limit. Restoring it is
+	// a save, and would be refused; say why here instead of in a toast after.
+	const restoreProblem = promptContentProblem(version.content);
+	const restoreProblemId = useId();
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
@@ -101,6 +107,16 @@ export function PromptVersionCompareDialog({
 					))}
 				</pre>
 
+				{canRestore && restoreProblem && (
+					<p
+						id={restoreProblemId}
+						role="alert"
+						className="text-sm text-destructive"
+					>
+						This version can't be restored. {restoreProblem}
+					</p>
+				)}
+
 				<DialogFooter>
 					<Button
 						variant="outline"
@@ -110,7 +126,14 @@ export function PromptVersionCompareDialog({
 					</Button>
 					{canRestore && (
 						<Button
-							disabled={isIdentical || isRestoring}
+							disabled={
+								isIdentical ||
+								isRestoring ||
+								restoreProblem !== null
+							}
+							aria-describedby={
+								restoreProblem ? restoreProblemId : undefined
+							}
 							onClick={() =>
 								onRestore(version.content, version.version)
 							}

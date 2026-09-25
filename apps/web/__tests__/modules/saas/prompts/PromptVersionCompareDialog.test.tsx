@@ -84,4 +84,43 @@ describe("PromptVersionCompareDialog", () => {
 		renderDialog({ canRestore: false });
 		expect(screen.queryByRole("button", { name: /restore/i })).toBeNull();
 	});
+
+	// Fizzy #2250: a version saved before today's save rules — over the length
+	// limit, or blank — would be refused on restore. The reason belongs next to
+	// the disabled button, not in a toast after a failed request.
+	it.each([
+		[
+			"over the length limit",
+			"x".repeat(50_001),
+			"Prompt content is 50,001 characters; the maximum is 50,000.",
+		],
+		["blank", "  ​ \n", "Prompt content cannot be empty"],
+	])(
+		"explains why a version %s cannot be restored and disables Restore",
+		(_label, content, message) => {
+			const { onRestore } = renderDialog({
+				version: { ...OLD_VERSION, content },
+			});
+
+			const restore = screen.getByRole("button", { name: /restore/i });
+			expect(restore.hasAttribute("disabled")).toBe(true);
+			// Announced: a disabled button is not focusable, so its description
+			// alone may never be read.
+			const reason = screen.getByRole("alert");
+			expect(reason.textContent).toContain(message);
+			expect(reason.textContent).toContain("can't be restored");
+			expect(restore.getAttribute("aria-describedby")).toBe(reason.id);
+			expect(onRestore).not.toHaveBeenCalled();
+		},
+	);
+
+	it("shows no restore warning for a version that can be saved", () => {
+		renderDialog();
+		expect(screen.queryByText(/can't be restored/)).toBeNull();
+		expect(
+			screen
+				.getByRole("button", { name: /restore/i })
+				.hasAttribute("aria-describedby"),
+		).toBe(false);
+	});
 });
