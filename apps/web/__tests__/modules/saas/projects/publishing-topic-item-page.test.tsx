@@ -111,6 +111,21 @@ const {
 		// newer, so none of them gains a busy tail. A case that HOLDS the
 		// confirming refetch sets 0 and later bumps it.
 		topicUpdatedAt: Number.MAX_SAFE_INTEGER as number,
+		// Fizzy #2647: a failed BACKGROUND re-read of `getTopic` — distinct
+		// from `error` above, which is a failed FIRST load with no topic to
+		// show. Default null: most cases never see one, and `getTopic`'s
+		// `data` stays `{ topic }` exactly as today while this is set,
+		// mirroring TanStack Query keeping the last SUCCESSFUL data on a
+		// failed refetch rather than clearing it. Shape is `{ code?: string }`
+		// so a case can pin the access-refusal codes (NOT_FOUND, FORBIDDEN,
+		// UNAUTHORIZED).
+		topicRefetchError: null as null | { code?: string },
+		// `getTopic`'s `errorUpdatedAt`, paired with `topicRefetchError`
+		// above. The overlay unlocks a write when this is strictly newer
+		// than the write's own settle time, so a case that sets a refetch
+		// error must also bump this past `Date.now()` for the overlay to
+		// treat it as a NEW failure rather than a stale one.
+		topicErrorUpdatedAt: 0 as number,
 	},
 	refetchTopic: vi.fn(),
 	setReadStateMutate: vi.fn(),
@@ -190,9 +205,14 @@ vi.mock("@tanstack/react-query", () => ({
 						: { topic: state.topic },
 				isPending: state.pending,
 				isLoading: state.pending,
-				isError: state.error,
+				// Fizzy #2647: a set `topicRefetchError` is a failed BACKGROUND
+				// re-read — `data` above stays `{ topic }`, mirroring TanStack
+				// Query keeping the last successful data on a failed refetch
+				// rather than clearing it.
+				isError: state.error || state.topicRefetchError !== null,
+				error: state.topicRefetchError,
 				dataUpdatedAt: state.topicUpdatedAt,
-				errorUpdatedAt: 0,
+				errorUpdatedAt: state.topicErrorUpdatedAt,
 				refetch: refetchTopic,
 			};
 		}
@@ -795,6 +815,8 @@ beforeEach(() => {
 	state.updateStatusRejects = false;
 	state.updateStatusGate = null;
 	state.topicUpdatedAt = Number.MAX_SAFE_INTEGER;
+	state.topicRefetchError = null;
+	state.topicErrorUpdatedAt = 0;
 	refetchTopic.mockReset();
 	setReadStateMutate.mockReset();
 	updatePostTypesMutate.mockReset();
@@ -3684,4 +3706,206 @@ describe("#2646 — the header status control does not move while the save note 
 		expect(outer.children[0]).toBe(pill);
 		expect(outer.children[1]).toBe(cluster);
 	});
+});
+
+// Fizzy #2647: a loaded topic page must survive a FAILED background
+// re-read. The topic is re-read often, not only after a status change:
+// every write that touches its metadata (status, per Fizzy #2646's
+// `writeStatus`; post types, contributors, assignees, the summary, the
+// private notes) invalidates and refetches it, and so do TanStack Query's
+// own refetch-on-focus and refetch-on-reconnect. `retry: false` is the
+// global default (`query-client.ts`), so one failed refetch is enough.
+// Before this fix the page's not-found branch fired on
+// `topicQuery.isError || !topic`, and TanStack Query keeps the last
+// SUCCESSFUL data on a failed refetch rather than clearing it — so a good
+// topic, with its status control and save note, vanished under "Topic not
+// found" instead of staying on screen (Fizzy #2647).
+describe("#2647 — a topic on screen survives a failed background re-read", () => {
+	const statusControl = () =>
+		screen.getByRole("combobox", { name: /^Status for / });
+	const alertText =
+		/we couldn't refresh this topic, so what you see may be out of date/i;
+
+	// R1 (AC3): a write that SUCCEEDED must not be undone by its own
+	// confirming read failing.
+	it("R1: after a successful write, a failed confirming re-read keeps the control on the new value, Saved, and shows the alert", async () => {
+		const user = userEvent.setup();
+		state.topicUpdatedAt = 0; // the confirming refetch has not landed
+		state.topic = topic({ status: "SUGGESTION" });
+		const { rerender } = renderPage();
+
+		await user.click(statusControl());
+		await user.click(
+			await screen.findByRole("option", { name: "Selected" }),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("topic-status-save-indicator"),
+			).toHaveTextContent("Saved"),
+		);
+
+		// The confirming read comes back FAILED rather than never arriving —
+		// stamped strictly after the write settled, per the overlay's own
+		// contract (use-topic-status-overlay.ts: `serverErrorAt > settledAt`).
+		state.topicRefetchError = {};
+		state.topicErrorUpdatedAt = Date.now() + 60_000;
+		rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+
+		expect(statusControl()).toHaveTextContent("Selected");
+		expect(statusControl()).toBeEnabled();
+		expect(
+			screen.getByTestId("topic-status-save-indicator"),
+		).toHaveTextContent("Saved");
+		expect(screen.getByText(alertText)).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Try again" }),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/topic not found/i)).not.toBeInTheDocument();
+	});
+
+	// R2 (AC5, the card's own example): a write that FAILED, followed by a
+	// read that fails for the same reason (e.g. the network dropped) — the
+	// common case the bug report describes.
+	it("R2: after a failed write, a failed confirming re-read keeps the control on the old value, Not saved, and shows the alert", async () => {
+		const user = userEvent.setup();
+		state.updateStatusRejects = true;
+		state.topic = topic({ status: "SUGGESTION" });
+		const { rerender } = renderPage();
+
+		await user.click(statusControl());
+		await user.click(
+			await screen.findByRole("option", { name: "Selected" }),
+		);
+		await waitFor(() => expect(toastError).toHaveBeenCalled());
+
+		state.topicRefetchError = {};
+		state.topicErrorUpdatedAt = Date.now() + 60_000;
+		rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+
+		expect(statusControl()).toHaveTextContent("Suggestion");
+		expect(statusControl()).toBeEnabled();
+		expect(
+			screen.getByTestId("topic-status-save-indicator"),
+		).toHaveTextContent("Not saved");
+		expect(screen.getByText(alertText)).toBeInTheDocument();
+		expect(screen.queryByText(/topic not found/i)).not.toBeInTheDocument();
+	});
+
+	it("R3: clicking Try again in the alert calls the topic refetch", async () => {
+		const user = userEvent.setup();
+		state.topicRefetchError = {};
+		state.topicErrorUpdatedAt = Date.now() + 60_000;
+		renderPage();
+
+		await user.click(screen.getByRole("button", { name: "Try again" }));
+		expect(refetchTopic).toHaveBeenCalled();
+	});
+
+	it("R4: the alert clears as soon as a re-read succeeds, with the page still shown", () => {
+		state.topicRefetchError = {};
+		state.topicErrorUpdatedAt = Date.now() + 60_000;
+		const { rerender } = renderPage();
+
+		expect(screen.getByText(alertText)).toBeInTheDocument();
+
+		state.topicRefetchError = null;
+		rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+
+		expect(screen.queryByText(alertText)).not.toBeInTheDocument();
+		expect(statusControl()).toBeInTheDocument();
+	});
+
+	// G1 (AC5 traceability, the direct path with NO read failure): pins that
+	// the fix does not touch the pre-existing failed-write behaviour when the
+	// confirming re-read succeeds normally.
+	it("G1: a rejected write with a normal confirming re-read keeps the old status, enabled, Not saved, and toasts", async () => {
+		const user = userEvent.setup();
+		state.updateStatusRejects = true;
+		state.topic = topic({ status: "SUGGESTION" });
+		renderPage();
+
+		await user.click(statusControl());
+		await user.click(
+			await screen.findByRole("option", { name: "Selected" }),
+		);
+
+		await waitFor(() => expect(toastError).toHaveBeenCalled());
+		expect(statusControl()).toHaveTextContent("Suggestion");
+		expect(statusControl()).toBeEnabled();
+		expect(
+			screen.getByTestId("topic-status-save-indicator"),
+		).toHaveTextContent("Not saved");
+		const keys = invalidateQueries.mock.calls.map((c) =>
+			JSON.stringify(c[0]),
+		);
+		expect(keys.some((k) => k.includes("getTopic"))).toBe(true);
+	});
+
+	it("G2: a healthy page shows no refresh alert", () => {
+		renderPage();
+		expect(screen.queryByText(alertText)).not.toBeInTheDocument();
+	});
+
+	// G3: the denylist. A refetch error carrying an access-refusal code must
+	// keep hiding an on-screen topic behind "Topic not found" — these mean
+	// the reader cannot see the topic at all, not merely that a read failed.
+	it.each(["NOT_FOUND", "FORBIDDEN", "UNAUTHORIZED"] as const)(
+		"G3: a %s refetch error still shows Topic not found for a topic already on screen",
+		(code) => {
+			state.topicRefetchError = { code };
+			state.topicErrorUpdatedAt = Date.now() + 60_000;
+			renderPage();
+
+			expect(screen.getByText(/topic not found/i)).toBeInTheDocument();
+			expect(
+				screen.queryByRole("combobox", { name: /^Status for / }),
+			).not.toBeInTheDocument();
+		},
+	);
+
+	// G4: the OTHER side of the denylist. A code that is NOT an access
+	// refusal must keep the page up with the alert, exactly like the
+	// uncoded case R1-R4 exercise — this guards against a "tidy-up" that
+	// would treat ANY coded error as a refusal (e.g. `code !== undefined`),
+	// which would bring back "Topic not found" for every 5xx.
+	it.each([
+		"INTERNAL_SERVER_ERROR",
+		"SERVICE_UNAVAILABLE",
+		"TOO_MANY_REQUESTS",
+		"BAD_GATEWAY",
+	] as const)(
+		"G4: a %s refetch error keeps a topic already on screen, with the alert, not Topic not found",
+		(code) => {
+			state.topicRefetchError = { code };
+			state.topicErrorUpdatedAt = Date.now() + 60_000;
+			renderPage();
+
+			expect(statusControl()).toBeInTheDocument();
+			expect(screen.getByText(alertText)).toBeInTheDocument();
+			expect(
+				screen.queryByText(/topic not found/i),
+			).not.toBeInTheDocument();
+		},
+	);
 });
