@@ -115,6 +115,8 @@ describe("isFullBleedRoute", () => {
 		`${org}/agents/task-planner`,
 		`${org}/agents/fabric-ai`,
 		`${org}/agents/agent-1/try`,
+		`${org}/agents/agent-1/enhance`,
+		`${org}/prompts/prompt-1/enhance`,
 	])("matches the viewport-fixed route %s", (pathname) => {
 		expect(isFullBleedRoute(pathname)).toBe(true);
 	});
@@ -143,6 +145,7 @@ describe("isFullBleedRoute", () => {
 		`${org}/projects/proj-1`,
 		`${org}/agents`,
 		`${org}/start`,
+		`${org}/prompts/prompt-1`,
 	])("rejects the ordinary route %s", (pathname) => {
 		expect(isFullBleedRoute(pathname)).toBe(false);
 	});

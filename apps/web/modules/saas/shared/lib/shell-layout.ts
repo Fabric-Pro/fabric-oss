@@ -77,8 +77,10 @@ const FULL_BLEED_ROUTE_PATTERNS = [
 	/\/projects\/[^/]+\/stories\/[^/]+$/,
 	/\/agents\/document-generator$/,
 	/\/agents\/[^/]+\/try$/,
+	/\/agents\/[^/]+\/enhance$/,
 	/\/agents\/task-planner$/,
 	/\/agents\/fabric-ai$/,
+	/\/prompts\/[^/]+\/enhance$/,
 ];
 
 /**

@@ -3,8 +3,13 @@
 import { CopilotKit } from "@copilotkit/react-core";
 import "@copilotkit/react-ui/styles.css";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import {
+	AI_SIDEBAR_CONTENT_SHIFT_CLASS,
+	useAiSidebarExpanded,
+} from "@saas/shared/components/copilot/ai-sidebar-layout";
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
+import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -21,6 +26,7 @@ import { Skeleton } from "@ui/components/skeleton";
 import { HomeIcon } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 import { toast } from "sonner";
 import { isPromptInaccessible } from "../lib/prompt-inaccessible";
 import { LoadFailure } from "./LoadFailure";
@@ -36,6 +42,19 @@ export function PromptEnhancePage({ promptId, organizationId }: Props) {
 	const { basePath } = useOrganizationContext();
 	const queryClient = useQueryClient();
 	const onError = useCopilotErrorHandler();
+
+	// A full-bleed CopilotSidebar host, like the document and story editors:
+	// collapse the app sidebar to its rail, and reserve the docked assistant
+	// panel's width (it mounts `defaultOpen`). Without both, the fixed page sat
+	// under the sidebar on the left and under the panel on the right, hiding the
+	// title and the inline reason Save is disabled. See
+	// docs/solutions/ui-bugs/copilotkit-sidebar-editor-overlap.md.
+	const { setIsFullscreen } = useFullscreen();
+	useEffect(() => {
+		setIsFullscreen(true);
+		return () => setIsFullscreen(false);
+	}, [setIsFullscreen]);
+	const isAiSidebarExpanded = useAiSidebarExpanded(true);
 
 	const {
 		data: prompt,
@@ -169,9 +188,14 @@ export function PromptEnhancePage({ promptId, organizationId }: Props) {
 	};
 
 	return (
-		<div className="fixed inset-0 bg-background">
-			{/* Breadcrumbs - Compact header */}
-			<div className="flex items-center gap-3 px-6 py-2.5 border-b bg-background">
+		<div
+			className={`fixed inset-y-0 left-0 right-0 md:left-[72px] bg-background flex flex-col transition-[right] duration-300 ${
+				isAiSidebarExpanded ? AI_SIDEBAR_CONTENT_SHIFT_CLASS : ""
+			}`}
+		>
+			{/* Breadcrumbs - Compact header. Scrolls within the reserved column
+			    rather than spilling under the assistant panel. */}
+			<div className="flex min-w-0 shrink-0 items-center gap-3 overflow-x-auto border-b bg-background px-6 py-2.5">
 				<Button
 					variant="ghost"
 					size="icon"
@@ -212,8 +236,12 @@ export function PromptEnhancePage({ promptId, organizationId }: Props) {
 				</Breadcrumb>
 			</div>
 
-			{/* Content Enhancer with CopilotKit - Full height */}
-			<div className="h-[calc(100vh-53px)]">
+			{/* Content Enhancer with CopilotKit - fills the rest of the column.
+			    The direct-child selectors give the two wrappers CopilotKit
+			    injects (`.copilotKitSidebarContentWrapper` and, inside it,
+			    `.copilotKitModalChildrenWrapper`) a definite height, so the
+			    enhancer's `h-full` resolves instead of collapsing. */}
+			<div className="flex-1 min-h-0 overflow-hidden [&>.copilotKitSidebarContentWrapper]:h-full [&>.copilotKitSidebarContentWrapper>.copilotKitModalChildrenWrapper]:h-full">
 				<CopilotKit
 					runtimeUrl={
 						organizationId

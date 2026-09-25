@@ -1,7 +1,7 @@
 ---
 title: AI assistant sidebar overlaps the editor (CopilotKit dock vs page-chrome reservation)
 date: 2026-07-23
-last_updated: 2026-07-28
+last_updated: 2026-09-26
 category: ui-bugs
 module: apps/web AI assistant sidebar host pages
 problem_type: ui_bug
@@ -60,7 +60,7 @@ className={`fixed inset-y-0 left-0 right-0 md:left-[72px] bg-background transiti
 }`}
 ```
 
-Four host pages must stay in sync: `StoryWorkspacePage.tsx`, `DocumentEditorPage.tsx`, `app/(saas)/app/agents/document-generator/page.tsx`, and `app/(saas)/app/agents/task-planner/page.tsx`. `task-planner` additionally needed the whole reservation machinery added because it never had it.
+Six host pages must stay in sync: `StoryWorkspacePage.tsx`, `DocumentEditorPage.tsx`, `app/(saas)/app/agents/document-generator/page.tsx`, `app/(saas)/app/agents/task-planner/page.tsx`, and the two prompt-enhancer hosts `PromptEnhancePage.tsx` and `app/(saas)/app/(organizations)/[organizationSlug]/agents/[agentId]/enhance/page.tsx`. `task-planner` additionally needed the whole reservation machinery added because it never had it; so did both enhancer hosts (2026-09-26), which also sat under the expanded app sidebar and sized their editor `h-screen` beneath a breadcrumb row — clipping it on the left, the right and the bottom (Fizzy #2250, where it hid the inline reason Save was disabled).
 
 ## Why This Works
 `sm` = `min-width: 640px` is a superset of `md`'s 768px, so at >=768px the computed `right: 28rem` is unchanged (no regression), and the 640-767px gap now reserves the 28rem the panel occupies. Below 640px neither prefix applies and the panel is a full-screen mobile overlay (intended). The `sm` boundary coincides exactly with CopilotKit's `@media (min-width: 640px)` dock point, so there is no off-by-one gap. Tailwind v4 auto-detects the complete static literal `"sm:right-[28rem]"` in the `.ts` constant, so the utility is still generated.

@@ -14,7 +14,14 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getById } = vi.hoisted(() => ({ getById: vi.fn() }));
+const { getById, setIsFullscreen } = vi.hoisted(() => ({
+	getById: vi.fn(),
+	setIsFullscreen: vi.fn(),
+}));
+
+vi.mock("@saas/shared/contexts/FullscreenContext", () => ({
+	useFullscreen: () => ({ isFullscreen: false, setIsFullscreen }),
+}));
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
@@ -130,5 +137,52 @@ describe("PromptEnhancePage — load failure vs not found", () => {
 			/does not exist, or you do not have access to it/i,
 		);
 		expect(getById).toHaveBeenCalledTimes(2);
+	});
+});
+
+// Fizzy #2250: the page painted `fixed inset-0` over the whole viewport, under
+// the expanded app sidebar on the left and the docked assistant panel on the
+// right, so the editor's title and inline error were cut off. It now follows
+// the full-bleed CopilotSidebar host pattern the document and story editors
+// use (docs/solutions/ui-bugs/copilotkit-sidebar-editor-overlap.md).
+describe("PromptEnhancePage — full-bleed CopilotSidebar host", () => {
+	beforeEach(() => {
+		getById.mockReset();
+		setIsFullscreen.mockReset();
+	});
+
+	it("collapses the app sidebar while mounted and restores it on leave", async () => {
+		getById.mockResolvedValue({
+			id: "p-1",
+			name: "Meeting summary",
+			format: "PLAIN_TEXT",
+			tags: [],
+			versions: [{ content: "Summarise the notes." }],
+		});
+
+		const { unmount } = wrap(<PromptEnhancePage promptId="p-1" />);
+		await screen.findByText("Enhance Content");
+
+		expect(setIsFullscreen).toHaveBeenCalledWith(true);
+		unmount();
+		expect(setIsFullscreen).toHaveBeenLastCalledWith(false);
+	});
+
+	it("starts its fixed chrome at the collapsed rail instead of the viewport edge", async () => {
+		getById.mockResolvedValue({
+			id: "p-1",
+			name: "Meeting summary",
+			format: "PLAIN_TEXT",
+			tags: [],
+			versions: [{ content: "Summarise the notes." }],
+		});
+
+		const { container } = wrap(<PromptEnhancePage promptId="p-1" />);
+		await screen.findByText("Enhance Content");
+
+		const shell = container.querySelector("div.fixed");
+		expect(shell?.className).toContain("md:left-[72px]");
+		expect(shell?.className).not.toContain("inset-0");
+		expect(shell?.className).toContain("transition-[right]");
 	});
 });
