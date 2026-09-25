@@ -25,12 +25,19 @@ import {
 	type SyncNowResult,
 	syncNowResultMessage,
 } from "../../lib/instructions-repository-sync";
+import { InstructionsRepositorySyncTreeBrowser } from "./InstructionsRepositorySyncTreeBrowser";
 
 /**
  * Points the project's coding instructions at a branch and folder of one of
  * its connected repositories, then starts the first sync (design 2026-09-23
  * §7.2). The server verifies the branch before saving anything; what it
  * refuses is shown inline, beside the field that needs changing.
+ *
+ * The folder can be picked from a browser over the chosen branch
+ * (`InstructionsRepositorySyncTreeBrowser`, Fizzy #2725) or typed. The typed
+ * field stays the one selection state: picking a folder writes to it, and
+ * typing a listed folder selects its row. A provider without a listing, or
+ * a listing that fails, leaves the typed field working as before.
  *
  * Mounted only while open, so the fields are seeded once from the props and a
  * background poll of the tab cannot overwrite what someone is typing.
@@ -205,6 +212,18 @@ export function ConfigureRepositorySyncDialog({
 							}
 						/>
 					</div>
+					<InstructionsRepositorySyncTreeBrowser
+						projectId={projectId}
+						repositoryIntegrationId={integrationId}
+						branch={branch}
+						rootPath={rootPath}
+						disabled={pending}
+						onSelect={(path) => {
+							setRootPath(path);
+							setInlineError(null);
+							setInlineErrorField(null);
+						}}
+					/>
 					<div className="flex flex-col gap-1.5">
 						<Label htmlFor="instructions-sync-root">
 							{t("configureDialog.rootPathLabel")}

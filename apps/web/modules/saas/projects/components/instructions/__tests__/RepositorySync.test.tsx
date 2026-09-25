@@ -6,7 +6,7 @@
  */
 import en from "@repo/i18n/translations/en.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -50,6 +50,7 @@ const m = vi.hoisted(() => ({
 	syncNow: vi.fn(),
 	disable: vi.fn(),
 	listRuns: vi.fn(),
+	listTree: vi.fn(),
 	toastSuccess: vi.fn(),
 	toastInfo: vi.fn(),
 	toastError: vi.fn(),
@@ -101,6 +102,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						queryOptions: (o: { input: unknown }) => ({
 							queryKey: ["listRuns", o.input],
 							queryFn: () => m.listRuns(o.input),
+						}),
+					},
+					listTree: {
+						queryOptions: (o: {
+							input: unknown;
+							[key: string]: unknown;
+						}) => ({
+							...o,
+							queryKey: ["listTree", o.input],
+							queryFn: () => m.listTree(o.input),
 						}),
 					},
 				},
@@ -199,6 +210,11 @@ beforeEach(() => {
 	m.syncNow.mockResolvedValue({ started: true });
 	m.disable.mockResolvedValue({ disabled: true, hadConfiguration: true });
 	m.listRuns.mockResolvedValue({ runs: [] });
+	m.listTree.mockResolvedValue({
+		supported: true,
+		entries: [],
+		truncated: false,
+	});
 });
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -490,6 +506,137 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 				copy.syncNowResult.integration_unavailable,
 			),
 		);
+	});
+
+	describe("folder browser (Fizzy #2725)", () => {
+		const TREE = {
+			supported: true,
+			truncated: false,
+			entries: [
+				{ path: "agents", type: "dir" },
+				{ path: "agents/CLAUDE.md", type: "file" },
+				{ path: "tools", type: "dir" },
+				{ path: "tools/claude", type: "dir" },
+			],
+		};
+
+		async function treeGroup() {
+			return screen.findByRole("radiogroup", { name: copy.tree.label });
+		}
+
+		it("lists the chosen repository's branch between the branch and folder fields", async () => {
+			m.listTree.mockResolvedValue(TREE);
+			renderDialog();
+			const group = await treeGroup();
+			expect(m.listTree).toHaveBeenCalledWith({
+				projectId: "proj_1",
+				repositoryIntegrationId: "int_1",
+				ref: "develop",
+			});
+			const branch = screen.getByLabelText(
+				copy.configureDialog.branchLabel,
+			);
+			const folder = screen.getByLabelText(
+				copy.configureDialog.rootPathLabel,
+			);
+			expect(
+				branch.compareDocumentPosition(group) &
+					Node.DOCUMENT_POSITION_FOLLOWING,
+			).toBeTruthy();
+			expect(
+				group.compareDocumentPosition(folder) &
+					Node.DOCUMENT_POSITION_FOLLOWING,
+			).toBeTruthy();
+		});
+
+		it("writes a picked folder to the folder field, clears the inline error, and saves it", async () => {
+			m.listTree.mockResolvedValue(TREE);
+			m.configure.mockRejectedValueOnce(orpcError("INVALID_ROOT_PATH"));
+			const user = userEvent.setup();
+			const { onOpenChange } = renderDialog();
+			const group = await treeGroup();
+
+			await user.click(
+				screen.getByRole("button", {
+					name: copy.configureDialog.submit,
+				}),
+			);
+			await screen.findByRole("alert");
+
+			await user.click(
+				within(group).getByRole("radio", { name: "tools/claude" }),
+			);
+			expect(
+				screen.getByLabelText(copy.configureDialog.rootPathLabel),
+			).toHaveValue("tools/claude");
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			expect(
+				screen.getByLabelText(copy.configureDialog.rootPathLabel),
+			).not.toHaveAttribute("aria-invalid");
+
+			await user.click(
+				screen.getByRole("button", {
+					name: copy.configureDialog.submit,
+				}),
+			);
+			await waitFor(() =>
+				expect(onOpenChange).toHaveBeenCalledWith(false),
+			);
+			expect(m.configure).toHaveBeenLastCalledWith(
+				expect.objectContaining({ rootPath: "tools/claude" }),
+			);
+		});
+
+		it("selects the stored folder's row when changing a configuration, and typing moves the selection", async () => {
+			m.listTree.mockResolvedValue(TREE);
+			const user = userEvent.setup();
+			renderDialog({ current: CONFIGURED.configured });
+			const group = await treeGroup();
+			expect(
+				within(group).getByRole("radio", { name: "agents" }),
+			).toBeChecked();
+
+			const folder = screen.getByLabelText(
+				copy.configureDialog.rootPathLabel,
+			);
+			await user.clear(folder);
+			expect(
+				within(group).getByRole("radio", {
+					name: copy.tree.repositoryRoot,
+				}),
+			).toBeChecked();
+			await user.type(folder, "tools/claude/");
+			expect(
+				within(group).getByRole("radio", { name: "tools/claude" }),
+			).toBeChecked();
+		});
+
+		it("keeps the typed folder working when the provider has no listing", async () => {
+			m.listTree.mockResolvedValue({
+				supported: false,
+				entries: [],
+				truncated: false,
+			});
+			const user = userEvent.setup();
+			renderDialog();
+			expect(
+				await screen.findByText(copy.tree.unsupported),
+			).toBeInTheDocument();
+			await user.type(
+				screen.getByLabelText(copy.configureDialog.rootPathLabel),
+				"agents",
+			);
+			await user.click(
+				screen.getByRole("button", {
+					name: copy.configureDialog.submit,
+				}),
+			);
+			await waitFor(() =>
+				expect(m.configure).toHaveBeenCalledWith(
+					expect.objectContaining({ rootPath: "agents" }),
+				),
+			);
+		});
 	});
 });
 

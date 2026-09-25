@@ -13,6 +13,8 @@ import {
 	type RepositorySyncConfiguration,
 	type RepositorySyncState,
 	repositorySyncPollInterval,
+	repositorySyncTreeErrorKey,
+	repositorySyncTreeSelection,
 	type SyncRunView,
 	shortCommit,
 	syncErrorMessage,
@@ -236,6 +238,49 @@ describe("configure errors (§7.2: branch verification renders inline)", () => {
 			key: "configureDialog.errors.generic",
 			inline: false,
 		});
+	});
+});
+
+describe("folder browser (Fizzy #2725)", () => {
+	const orpcError = (code: string) =>
+		Object.assign(new Error(code), { data: { code } });
+
+	it.each([
+		"BRANCH_NOT_FOUND",
+		"REPOSITORY_CREDENTIALS_EXPIRED",
+		"REPOSITORY_UNAVAILABLE",
+		"REPOSITORY_NOT_FOUND",
+		"REPOSITORY_UNREACHABLE",
+	])("words a listing refused with %s as configure does", (code) => {
+		expect(repositorySyncTreeErrorKey(orpcError(code))).toBe(
+			`configureDialog.errors.${code}`,
+		);
+	});
+
+	it("gives an unmapped listing failure the tree's own message, not the save failure", () => {
+		expect(repositorySyncTreeErrorKey(new Error("boom"))).toBe(
+			"tree.error",
+		);
+	});
+
+	it.each([
+		["", ""],
+		["   ", ""],
+		["agents", "agents"],
+		["  agents/  ", "agents"],
+		["tools/claude//", "tools/claude"],
+		// Canonicalised as configure stores it (`validateRelativePath`).
+		["tools\\claude\\", "tools/claude"],
+		["tools\\claude", "tools/claude"],
+		["./agents", "agents"],
+		["././agents/skills", "agents/skills"],
+		["tools//claude", "tools/claude"],
+		[" ./tools//claude\\ ", "tools/claude"],
+		// Refused by configure: the trimmed spelling, which names no row.
+		["  ../escape  ", "../escape"],
+		["/abs", "/abs"],
+	])("reads the typed folder %j as the row %j", (typed, row) => {
+		expect(repositorySyncTreeSelection(typed)).toBe(row);
 	});
 });
 
