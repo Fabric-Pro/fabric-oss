@@ -80,6 +80,10 @@
 		"./shared/attachment-constants": {
 			"types": "./src/shared/attachment-constants.ts",
 			"default": "./src/shared/attachment-constants.ts"
+		},
+		"./instruction-pull-requests": {
+			"types": "./src/instruction-pull-requests/index.ts",
+			"default": "./src/instruction-pull-requests/index.ts"
 		}
 	},
 	"scripts": {

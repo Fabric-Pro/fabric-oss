@@ -267,3 +267,207 @@ describe("AddInstructionFileDialog", () => {
 		);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// A suggestion on a repository-backed project (Fizzy #2563 spec §12)
+// ---------------------------------------------------------------------------
+
+const addCopy = en.projects.codingInstructions.addFileDialog;
+const REPOSITORY_TARGET = {
+	repository: "example-org/example-repo",
+	ref: "main",
+};
+
+function renderSuggestion(
+	props: Partial<ComponentProps<typeof AddInstructionFileDialog>> = {},
+) {
+	return renderDialog(null, {
+		proposalOnly: true,
+		canPropose: true,
+		repositoryTarget: REPOSITORY_TARGET,
+		...props,
+	});
+}
+
+describe("AddInstructionFileDialog — suggesting a change as a pull request", () => {
+	it("says where the pull request opens, how the branch is pushed and whom the commit names", () => {
+		renderSuggestion();
+		expect(
+			screen.getByRole("heading", { name: addCopy.repositoryTitle }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				"This opens a pull request in example-org/example-repo against main. The branch is pushed with the repository connection's credentials, and pushing it can start the repository's CI before anyone reviews it. The commit names you as author with a Fabric no-reply address.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", {
+				name: addCopy.submitPullRequestButton,
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("sends the title and description with the suggestion", async () => {
+		const user = userEvent.setup();
+		renderSuggestion();
+		await user.upload(screen.getByLabelText("File"), pick("CLAUDE.md"));
+		await user.type(
+			screen.getByLabelText(addCopy.noteTitleLabel),
+			"Tighten the lint rule",
+		);
+		await user.type(
+			screen.getByLabelText(addCopy.noteBodyLabel),
+			"Why it matters.",
+		);
+		await user.click(
+			screen.getByRole("button", {
+				name: addCopy.submitPullRequestButton,
+			}),
+		);
+		await waitFor(() =>
+			expect(m.editInstructionSnapshot).toHaveBeenCalledWith(
+				expect.objectContaining({
+					proposal: true,
+					note: {
+						title: "Tighten the lint rule",
+						body: "Why it matters.",
+					},
+				}),
+			),
+		);
+		expect(m.toastSuccess).toHaveBeenCalledWith(
+			addCopy.pullRequestSubmitted,
+		);
+	});
+
+	it("sends no note when both fields are left empty", async () => {
+		const user = userEvent.setup();
+		renderSuggestion();
+		await user.upload(screen.getByLabelText("File"), pick("CLAUDE.md"));
+		await user.click(
+			screen.getByRole("button", {
+				name: addCopy.submitPullRequestButton,
+			}),
+		);
+		await waitFor(() =>
+			expect(m.editInstructionSnapshot).toHaveBeenCalled(),
+		);
+		expect(m.editInstructionSnapshot.mock.calls[0]?.[0]).not.toHaveProperty(
+			"note",
+		);
+	});
+
+	it("refuses a title longer than 120 characters before anything is sent", async () => {
+		const user = userEvent.setup();
+		renderSuggestion();
+		await user.upload(screen.getByLabelText("File"), pick("CLAUDE.md"));
+		await user.type(
+			screen.getByLabelText(addCopy.noteTitleLabel),
+			"x".repeat(121),
+		);
+		expect(screen.getByText(addCopy.noteTitleInvalid)).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", {
+				name: addCopy.submitPullRequestButton,
+			}),
+		).toBeDisabled();
+	});
+
+	it("shows a note the server refused under the field it names", async () => {
+		const user = userEvent.setup();
+		m.editInstructionSnapshot.mockRejectedValue(
+			Object.assign(
+				new Error(
+					"The note's description looks like it contains a credential. Remove it and try again.",
+				),
+				{ data: { reason: "NOTE_REJECTED", field: "body" } },
+			),
+		);
+		renderSuggestion();
+		await user.upload(screen.getByLabelText("File"), pick("CLAUDE.md"));
+		await user.type(
+			screen.getByLabelText(addCopy.noteBodyLabel),
+			"a pasted secret",
+		);
+		await user.click(
+			screen.getByRole("button", {
+				name: addCopy.submitPullRequestButton,
+			}),
+		);
+		const description = screen.getByLabelText(addCopy.noteBodyLabel);
+		await waitFor(() =>
+			expect(description).toHaveAccessibleDescription(
+				expect.stringContaining("looks like it contains a credential"),
+			),
+		);
+		expect(description).toHaveAttribute("aria-invalid", "true");
+		expect(m.toastError).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		"REPOSITORY_UNAVAILABLE",
+		"REPOSITORY_BASE_UNAVAILABLE",
+		"REPOSITORY_SOURCE_OF_TRUTH",
+	] as const)(
+		"names the admission refusal %s with its copy",
+		async (reason) => {
+			const user = userEvent.setup();
+			m.editInstructionSnapshot.mockRejectedValue(
+				Object.assign(new Error("Refused."), { data: { reason } }),
+			);
+			renderSuggestion();
+			await user.upload(screen.getByLabelText("File"), pick("CLAUDE.md"));
+			await user.click(
+				screen.getByRole("button", {
+					name: addCopy.submitPullRequestButton,
+				}),
+			);
+			await waitFor(() =>
+				expect(m.toastError).toHaveBeenCalledWith(
+					addCopy.refusals[reason],
+				),
+			);
+		},
+	);
+
+	it("keeps an upload-backed editor's direct add free of the note", async () => {
+		const user = userEvent.setup();
+		renderDialog(null, { canPropose: true });
+		await user.upload(screen.getByLabelText("File"), pick("CLAUDE.md"));
+		await user.type(
+			screen.getByLabelText(addCopy.noteTitleLabel),
+			"Only for a proposal",
+		);
+		await user.click(screen.getByRole("button", { name: "Add file" }));
+		await waitFor(() =>
+			expect(m.editInstructionSnapshot).toHaveBeenCalled(),
+		);
+		const call = m.editInstructionSnapshot.mock.calls[0]?.[0] as Record<
+			string,
+			unknown
+		>;
+		expect(call.proposal).toBe(false);
+		expect(call).not.toHaveProperty("note");
+	});
+
+	it("sends an upload-backed proposal's note too", async () => {
+		const user = userEvent.setup();
+		renderDialog(null, { proposalOnly: true, canPropose: true });
+		await user.upload(screen.getByLabelText("File"), pick("CLAUDE.md"));
+		await user.type(
+			screen.getByLabelText(addCopy.noteTitleLabel),
+			"Add the review skill",
+		);
+		await user.click(
+			screen.getByRole("button", { name: "Submit proposal" }),
+		);
+		await waitFor(() =>
+			expect(m.editInstructionSnapshot).toHaveBeenCalledWith(
+				expect.objectContaining({
+					proposal: true,
+					note: { title: "Add the review skill" },
+				}),
+			),
+		);
+	});
+});

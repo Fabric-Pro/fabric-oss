@@ -84,6 +84,16 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 						"This project's coding instructions come from its repository. Change the files there and sync the project.",
 				});
 			}
+			if (result.reason === "repository_proposal") {
+				// Fizzy #2563 spec §12: a REPOSITORY proposal is decided on its
+				// pull request, so History cannot publish it; the same refusal
+				// approve and reject give.
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message:
+						"This suggestion is a pull request in the project's repository. Review and merge or close it there.",
+					data: { reason: "REPOSITORY_PROPOSAL" },
+				});
+			}
 			// Kept as a fail-closed default, not as a case this handler can
 			// produce. `base_moved` is only ever derived under
 			// `requireBaseUnmoved`, which this call does not pass;

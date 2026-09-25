@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
@@ -21,6 +22,11 @@ const m = vi.hoisted(() => ({
 	canReviewInstructionProposals: vi.fn(),
 	runInBackground: vi.fn(),
 	warmInstructionSnapshotExport: vi.fn(),
+	getSyncRunReceiptByRunId: vi.fn(),
+	getSyncRunReceiptsByRunIds: vi.fn(),
+	getProposalPullRequestStatus: vi.fn(),
+	refreshProposalPullRequest: vi.fn(),
+	retryProposalPullRequest: vi.fn(),
 	requiredPermissions: [] as string[],
 }));
 
@@ -41,6 +47,37 @@ vi.mock("@repo/database", () => ({
 		m.rejectInstructionProposal(...args),
 	cancelInstructionProposal: (...args: unknown[]) =>
 		m.cancelInstructionProposal(...args),
+	getSyncRunReceiptByRunId: (...args: unknown[]) =>
+		m.getSyncRunReceiptByRunId(...args),
+	getSyncRunReceiptsByRunIds: (...args: unknown[]) =>
+		m.getSyncRunReceiptsByRunIds(...args),
+}));
+// The list rows' `pullRequest` block is built by the real
+// `pullRequestStatusOf`; the status, refresh and retry procedures delegate to
+// the service, whose own suite (`proposal-pull-request.test.ts`) covers it.
+vi.mock("@repo/temporal", () => ({ getTemporalClient: vi.fn() }));
+vi.mock("../proposal-pull-request", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../proposal-pull-request")>()),
+	getProposalPullRequestStatus: (...args: unknown[]) =>
+		m.getProposalPullRequestStatus(...args),
+	refreshProposalPullRequest: (...args: unknown[]) =>
+		m.refreshProposalPullRequest(...args),
+	retryProposalPullRequest: (...args: unknown[]) =>
+		m.retryProposalPullRequest(...args),
+}));
+vi.mock("../../../../../lib/audit", () => ({
+	resolveActor: (context: { user: { id: string } }) => ({
+		type: "user",
+		userId: context.user.id,
+	}),
+	auditRequestFields: () => ({
+		impersonatedById: null,
+		ipAddress: "203.0.113.7",
+		userAgent: null,
+		requestId: "req_1",
+		sessionId: "sess_1",
+		correlationId: "corr_1",
+	}),
 }));
 vi.mock("@repo/storage", () => ({
 	getStorageProvider: () => ({ downloadFile: m.downloadFile }),
@@ -100,6 +137,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 });
 
 import "../proposals";
+import { pullRequestStatusOf } from "../proposal-pull-request";
 
 const LIST = "/projects/:projectId/instructions/proposals";
 const GET = "/projects/:projectId/instructions/proposals/:snapshotId";
@@ -108,6 +146,12 @@ const APPROVE =
 	"/projects/:projectId/instructions/proposals/:snapshotId/approve";
 const REJECT = "/projects/:projectId/instructions/proposals/:snapshotId/reject";
 const CANCEL = "/projects/:projectId/instructions/proposals/:snapshotId/cancel";
+const PR_STATUS =
+	"/projects/:projectId/instructions/proposals/:snapshotId/pull-request";
+const PR_REFRESH =
+	"/projects/:projectId/instructions/proposals/:snapshotId/pull-request/refresh";
+const PR_RETRY =
+	"/projects/:projectId/instructions/proposals/:snapshotId/pull-request/retry";
 const context = {
 	user: { id: "reviewer_1", email: "reviewer@example.com", name: "Reviewer" },
 	session: { activeOrganizationId: "wrong_org", impersonatedBy: null },
@@ -153,6 +197,11 @@ describe("projects.instructions.proposals", () => {
 			"instruction:update",
 			"instruction:update",
 			"instruction:update",
+			"instruction:read",
+			// The pull request's status, refresh and retry: read, plus the
+			// live proposer-or-reviewer check in the service (Decision 8).
+			"instruction:read",
+			"instruction:read",
 			"instruction:read",
 		]);
 	});
@@ -558,5 +607,316 @@ describe("projects.instructions.proposals", () => {
 		// Nothing took the pointer, so there is no new version to build for.
 		expect(m.warmInstructionSnapshotExport).not.toHaveBeenCalled();
 		expect(m.runInBackground).not.toHaveBeenCalled();
+	});
+});
+
+describe("repository proposals (Fizzy #2563 spec §12)", () => {
+	const repositoryProposal = {
+		...proposal,
+		status: "READY",
+		proposalDestination: "REPOSITORY",
+		proposalNote: { title: "Tighten the lint rule", body: "Why." },
+		pullRequestOperationId: "op_1",
+		pullRequestState: "MERGED",
+		proposalStatus: "MERGED",
+		pullRequestAttempt: 4,
+		pullRequestUrl: "https://example.com/example-org/example-repo/pull/7",
+		pullRequestExternalId: "7",
+		pullRequestFailure: null,
+		pullRequestLastCheckedAt: new Date("2026-09-24T12:05:00.000Z"),
+		pullRequestObservation: { targetRef: "main", targetMismatch: false },
+		mergeSyncRequestedAt: null,
+		mergeSyncRunId: "run_1",
+	};
+	const fabricProposal = {
+		...proposal,
+		proposalDestination: "FABRIC",
+		proposalNote: null,
+		pullRequestOperationId: null,
+		pullRequestState: null,
+		pullRequestAttempt: 0,
+		pullRequestUrl: null,
+		pullRequestExternalId: null,
+		pullRequestFailure: null,
+		pullRequestLastCheckedAt: null,
+		pullRequestObservation: null,
+		mergeSyncRequestedAt: null,
+		mergeSyncRunId: null,
+	};
+
+	it("lists each row's destination, note and pull request, with the merge sync's run status", async () => {
+		m.listInstructionProposals.mockResolvedValue({
+			items: [repositoryProposal, fabricProposal],
+			nextCursor: null,
+		});
+		m.getSyncRunReceiptsByRunIds.mockResolvedValue(
+			new Map([["run_1", { id: "sync_1:run_1", status: "SUCCEEDED" }]]),
+		);
+
+		const listed = (await run(LIST, { projectId: "project_1" })) as {
+			items: Array<Record<string, unknown>>;
+		};
+
+		expect(listed.items[0]).toMatchObject({
+			id: "proposal_1",
+			proposalStatus: "MERGED",
+			destination: "REPOSITORY",
+			note: { title: "Tighten the lint rule", body: "Why." },
+			canCancel: false,
+			pullRequest: {
+				operationId: "op_1",
+				state: "MERGED",
+				url: "https://example.com/example-org/example-repo/pull/7",
+				externalId: "7",
+				failure: null,
+				lastCheckedAt: new Date("2026-09-24T12:05:00.000Z"),
+				attempt: 4,
+				observation: {
+					targetRef: "main",
+					targetMismatch: false,
+					mergedAt: null,
+					closedAt: null,
+				},
+				mergeSync: {
+					requestedAt: null,
+					runId: "run_1",
+					runStatus: "SUCCEEDED",
+				},
+			},
+		});
+		expect(listed.items[1]).toMatchObject({
+			destination: "FABRIC",
+			note: null,
+			pullRequest: null,
+		});
+		// The page's receipts are read once, in the hosting organization,
+		// never the input's, and only for the operation with a run id.
+		expect(m.getSyncRunReceiptsByRunIds).toHaveBeenCalledExactlyOnceWith({
+			projectId: "project_1",
+			organizationId: "org_1",
+			runIds: ["run_1"],
+		});
+		expect(m.getSyncRunReceiptByRunId).not.toHaveBeenCalled();
+	});
+
+	it("reads a page of merged rows' receipts in one query, each row as the single-row read shows it, a missing receipt included", async () => {
+		const merged = (runId: string, id: string) => ({
+			...repositoryProposal,
+			id,
+			pullRequestOperationId: `op_${id}`,
+			mergeSyncRunId: runId,
+		});
+		const requested = {
+			...repositoryProposal,
+			id: "proposal_requested",
+			pullRequestOperationId: "op_requested",
+			mergeSyncRequestedAt: new Date("2026-09-24T12:10:00.000Z"),
+			mergeSyncRunId: null,
+		};
+		const items = [
+			merged("run_1", "proposal_1"),
+			merged("run_2", "proposal_2"),
+			// No receipt recorded for this run yet.
+			merged("run_3", "proposal_3"),
+			merged("run_4", "proposal_4"),
+			requested,
+			fabricProposal,
+		];
+		const receipts: Record<string, { id: string; status: string }> = {
+			run_1: { id: "sync_1:run_1", status: "SUCCEEDED" },
+			run_2: { id: "sync_1:run_2", status: "FAILED" },
+			run_4: { id: "sync_2:run_4", status: "RUNNING" },
+		};
+		m.listInstructionProposals.mockResolvedValue({
+			items,
+			nextCursor: null,
+		});
+		m.getSyncRunReceiptsByRunIds.mockResolvedValue(
+			new Map(Object.entries(receipts)),
+		);
+
+		const listed = (await run(LIST, { projectId: "project_1" })) as {
+			items: Array<{ pullRequest: unknown }>;
+		};
+
+		expect(m.getSyncRunReceiptsByRunIds).toHaveBeenCalledExactlyOnceWith({
+			projectId: "project_1",
+			organizationId: "org_1",
+			runIds: ["run_1", "run_2", "run_3", "run_4"],
+		});
+		expect(m.getSyncRunReceiptByRunId).not.toHaveBeenCalled();
+
+		// The single-row read, one receipt query per row, is the reference.
+		m.getSyncRunReceiptByRunId.mockImplementation(
+			async ({ runId }: { runId: string }) => receipts[runId] ?? null,
+		);
+		const scope = { projectId: "project_1", organizationId: "org_1" };
+		const expected = await Promise.all(
+			items.map((row) => pullRequestStatusOf(row as never, scope)),
+		);
+		expect(listed.items.map((item) => item.pullRequest)).toEqual(expected);
+		expect(m.getSyncRunReceiptByRunId).toHaveBeenCalledTimes(4);
+		expect(
+			(listed.items[2]?.pullRequest as { mergeSync: unknown }).mergeSync,
+		).toEqual({ requestedAt: null, runId: "run_3", runStatus: null });
+		expect(
+			(listed.items[4]?.pullRequest as { mergeSync: unknown }).mergeSync,
+		).toEqual({
+			requestedAt: new Date("2026-09-24T12:10:00.000Z"),
+			runId: null,
+			runStatus: null,
+		});
+	});
+
+	it("offers the proposer a cancel on an open pull request, and none once closing is requested", async () => {
+		const own = {
+			...repositoryProposal,
+			user: { id: "reviewer_1", name: "Reviewer" },
+			proposalStatus: "PENDING",
+			pullRequestState: "OPEN",
+			mergeSyncRunId: null,
+		};
+		m.listInstructionProposals.mockResolvedValue({
+			items: [own, { ...own, pullRequestState: "CLOSE_REQUESTED" }],
+			nextCursor: null,
+		});
+
+		const listed = (await run(LIST, { projectId: "project_1" })) as {
+			items: Array<{ canCancel: boolean }>;
+		};
+
+		expect(listed.items.map((item) => item.canCancel)).toEqual([
+			true,
+			false,
+		]);
+	});
+
+	it.each([
+		["approve", APPROVE],
+		["reject", REJECT],
+	])(
+		"refuses to %s a REPOSITORY proposal: its pull request decides it",
+		async (_verb, path) => {
+			m.getInstructionProposal.mockResolvedValue(repositoryProposal);
+			m.approveInstructionProposal.mockResolvedValue({
+				ok: false,
+				reason: "repository_proposal",
+			});
+			m.rejectInstructionProposal.mockResolvedValue({
+				ok: false,
+				reason: "repository_proposal",
+			});
+
+			await expect(
+				run(path, { projectId: "project_1", snapshotId: "proposal_1" }),
+			).rejects.toMatchObject({
+				code: "PRECONDITION_FAILED",
+				data: { reason: "REPOSITORY_PROPOSAL" },
+			});
+			expect(m.runInBackground).not.toHaveBeenCalled();
+		},
+	);
+
+	it("reports what a cancel did to the pull request, auditing the requester with the request", async () => {
+		m.getInstructionProposal.mockResolvedValue(repositoryProposal);
+		m.cancelInstructionProposal.mockResolvedValue({
+			ok: true,
+			changed: true,
+			version: 8,
+			pullRequest: "close_requested",
+		});
+
+		await expect(
+			run(CANCEL, { projectId: "project_1", snapshotId: "proposal_1" }),
+		).resolves.toEqual({ canceled: true, pullRequest: "close_requested" });
+		expect(m.cancelInstructionProposal).toHaveBeenCalledWith({
+			snapshotId: "proposal_1",
+			projectId: "project_1",
+			organizationId: "org_1",
+			proposerUserId: "reviewer_1",
+			audit: expect.objectContaining({
+				actor: expect.objectContaining({ userId: "reviewer_1" }),
+				ipAddress: "203.0.113.7",
+				requestId: "req_1",
+				sessionId: "sess_1",
+				correlationId: "corr_1",
+			}),
+		});
+	});
+
+	it("refuses a cancel from anyone but the proposer", async () => {
+		m.getInstructionProposal.mockResolvedValue(repositoryProposal);
+		m.cancelInstructionProposal.mockResolvedValue({
+			ok: false,
+			reason: "not_found",
+		});
+
+		await expect(
+			run(CANCEL, { projectId: "project_1", snapshotId: "proposal_1" }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+	});
+
+	it("sends Retry-After with a Refresh the service refused, and passes the refusal through", async () => {
+		const refusal = new ORPCError("TOO_MANY_REQUESTS", {
+			message:
+				"This pull request was refreshed a moment ago. Try again in 42 seconds.",
+			data: { reason: "PULL_REQUEST_REFRESH_COOLDOWN", retryAfter: 42 },
+		});
+		m.refreshProposalPullRequest.mockRejectedValue(refusal);
+		const resHeaders = new Headers();
+		const handler = m.handlers[PR_REFRESH];
+		if (!handler) {
+			throw new Error(`Missing captured handler for ${PR_REFRESH}`);
+		}
+
+		await expect(
+			handler({
+				input: { projectId: "project_1", snapshotId: "proposal_1" },
+				context: { ...context, resHeaders },
+			}),
+		).rejects.toBe(refusal);
+		expect(resHeaders.get("Retry-After")).toBe("42");
+	});
+
+	it("reads, refreshes and retries in the hosting organization as the caller", async () => {
+		const caller = {
+			snapshotId: "proposal_1",
+			projectId: "project_1",
+			organizationId: "org_1",
+			userId: "reviewer_1",
+		};
+		m.getProposalPullRequestStatus.mockResolvedValue({ state: "BLOCKED" });
+		m.refreshProposalPullRequest.mockResolvedValue({ refreshed: true });
+		m.retryProposalPullRequest.mockResolvedValue({ retried: true });
+		const input = {
+			projectId: "project_1",
+			organizationId: "attacker_org",
+			snapshotId: "proposal_1",
+		};
+
+		await expect(run(PR_STATUS, input)).resolves.toEqual({
+			pullRequest: { state: "BLOCKED" },
+		});
+		await expect(run(PR_REFRESH, input)).resolves.toEqual({
+			refreshed: true,
+		});
+		await expect(
+			run(PR_RETRY, { ...input, expectedAttempt: 4 }),
+		).resolves.toEqual({ retried: true });
+
+		expect(m.getProposalPullRequestStatus).toHaveBeenCalledWith(caller);
+		expect(m.refreshProposalPullRequest).toHaveBeenCalledWith(caller);
+		expect(m.retryProposalPullRequest).toHaveBeenCalledWith({
+			...caller,
+			expectedAttempt: 4,
+			requester: {
+				actor: { type: "user", userId: "reviewer_1" },
+				ipAddress: "203.0.113.7",
+				userAgent: null,
+				requestId: "req_1",
+				sessionId: "sess_1",
+				correlationId: "corr_1",
+			},
+		});
 	});
 });

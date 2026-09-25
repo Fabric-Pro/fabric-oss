@@ -223,6 +223,16 @@ export const deleteSnapshotProcedure = tenantProtectedProcedure
 					"An edit of this version is unfinished, so it cannot be deleted yet. Delete that edit first if you are not going to retry it",
 			});
 		}
+		// A proposal whose pull request may still be pushed, opened, closed or
+		// settled (Fizzy #2563 spec §4.3). Refused before storage: falling
+		// through would delete the bytes of a row the DELETE kept.
+		if (removal.reason === "pull_request_unresolved") {
+			throw new ORPCError("CONFLICT", {
+				message:
+					"This proposal's pull request is still open or being closed, so it cannot be deleted yet",
+				data: { reason: "PULL_REQUEST_UNRESOLVED" },
+			});
+		}
 
 		recordAuditFromRequest(context, {
 			action: "project.instructions.deleted",

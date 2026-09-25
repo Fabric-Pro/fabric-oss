@@ -9,6 +9,7 @@
  * for why.
  */
 
+import { INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_ID } from "@repo/instructions/workflow-ids";
 import { ScheduleAlreadyRunning, ScheduleClient } from "@temporalio/client";
 import { createConnection, getTemporalConfig } from "./client";
 import { ensureAiUsageSchedules } from "./scripts/ensure-ai-usage-schedules";
@@ -338,6 +339,22 @@ export const PROJECT_INSTRUCTION_REPOSITORY_POLL_CRON_SCHEDULE = "*/5 * * * *";
 // schedule test derives the interval from the cron and asserts both sides.
 export const PROJECT_INSTRUCTION_REPOSITORY_POLL_EXECUTION_TIMEOUT_MS = 270_000;
 
+// Exported for the same reason as the poll's: the registration test asserts
+// the COMPLETE create() payload (Fizzy #2563 spec §9).
+export const INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_SCHEDULE_ID =
+	"instruction-proposal-pull-request-sweep";
+export const INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_NAME =
+	"instructionProposalPullRequestSweepWorkflow";
+// Every five minutes (spec §9): Observe revisits an open pull request about
+// every 10 to 15 minutes, and a crashed open is recovered within a tick or
+// two.
+export const INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_CRON_SCHEDULE =
+	"*/5 * * * *";
+// 30 s over the sweeper's 4-minute budget, as the poll's (plan Decision 16):
+// a wedged run is terminated before the next trigger, so overlap SKIP never
+// swallows two ticks in a row.
+export const INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_EXECUTION_TIMEOUT_MS = 270_000;
+
 const ATTACHMENT_TEMP_ORPHAN_SWEEP_SCHEDULE_ID = "attachment-temp-orphan-sweep";
 const ATTACHMENT_TEMP_ORPHAN_SWEEP_WORKFLOW_NAME =
 	"attachmentTempOrphanSweepWorkflow";
@@ -418,6 +435,9 @@ export async function registerSystemSchedules(): Promise<void> {
 		await registerBackgroundJobWatchdogSchedule(scheduleClient);
 		await registerProjectInstructionReaperSchedule(scheduleClient);
 		await registerProjectInstructionRepositoryPollSchedule(scheduleClient);
+		await registerInstructionProposalPullRequestSweepSchedule(
+			scheduleClient,
+		);
 		await registerAttachmentTempOrphanSweepSchedule(scheduleClient);
 		await registerAttachmentFinalOrphanSweepSchedule(scheduleClient);
 		await registerAttachmentRetentionPurgeSchedule(scheduleClient);
@@ -844,6 +864,66 @@ export async function registerProjectInstructionRepositoryPollSchedule(
 		if (error instanceof ScheduleAlreadyRunning) {
 			console.log(
 				`[Worker] Schedule "${PROJECT_INSTRUCTION_REPOSITORY_POLL_SCHEDULE_ID}" already exists, skipping`,
+			);
+		} else {
+			throw error;
+		}
+	}
+}
+
+/**
+ * Register the Coding Instructions proposal pull-request sweeper (Fizzy
+ * #2563 spec §9).
+ *
+ * On `TASK_QUEUE` (`fabric-worker`), like the poll: the sweeper's activities
+ * inherit it, and the `project-instructions` queue's two slots stay reserved
+ * for uploads. `overlap: "SKIP"` is safe because the workflow keeps to its
+ * four-minute budget and the 270 s execution timeout terminates a run that
+ * does not before the next trigger; every action is fenced by the attempt
+ * read at selection, so a terminated tick leaves nothing half-claimed. The
+ * workflow id is the sweeper's own (`@repo/instructions/workflow-ids`);
+ * Temporal suffixes each run's start time. It ignores every project's
+ * `automatic` setting. The catchup window is one interval: after an outage
+ * one tick runs, not a backlog.
+ */
+export async function registerInstructionProposalPullRequestSweepSchedule(
+	scheduleClient: ScheduleClient,
+): Promise<void> {
+	try {
+		await scheduleClient.create({
+			scheduleId: INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_SCHEDULE_ID,
+			spec: {
+				cronExpressions: [
+					INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_CRON_SCHEDULE,
+				],
+			},
+			action: {
+				type: "startWorkflow",
+				workflowType:
+					INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_NAME,
+				workflowId: INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_ID,
+				taskQueue: TASK_QUEUE,
+				args: [],
+				workflowExecutionTimeout:
+					INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_EXECUTION_TIMEOUT_MS,
+			},
+			policies: {
+				overlap: "SKIP",
+				catchupWindow: "5 minutes",
+			},
+			state: {
+				paused: false,
+				note: "Moves Coding Instructions proposal pull requests along: closes cancelled ones and confirms their settlement, recovers an interrupted open, observes open pull requests for a merge or close, starts the repository sync after a merge, and restarts an operation whose workflow is gone.",
+			},
+		});
+
+		console.log(
+			`[Worker] Schedule "${INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_SCHEDULE_ID}" registered (every 5 minutes)`,
+		);
+	} catch (error) {
+		if (error instanceof ScheduleAlreadyRunning) {
+			console.log(
+				`[Worker] Schedule "${INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_SCHEDULE_ID}" already exists, skipping`,
 			);
 		} else {
 			throw error;

@@ -225,7 +225,7 @@ describe("audit.taxonomy handler", () => {
 		// by a member or by disconnecting the integration; repository, branch,
 		// commit and counts, never a credential, file path or file content,
 		// Fizzy #2657) = 143.
-		expect(result.actions).toHaveLength(147);
+		expect(result.actions).toHaveLength(152);
 		expect(result.actions).toContain(
 			"project.context.repository_sync_configured",
 		);
@@ -249,6 +249,27 @@ describe("audit.taxonomy handler", () => {
 		);
 		expect(result.actions).toContain(
 			"project.instructions.repository_sync_completed",
+		);
+		// + 5 project.instructions.pull_request_{opened, reconciled,
+		// close_requested, retry_requested, merge_sync_requested} (a
+		// suggestion's pull request opened or adopted, reconciled to merged,
+		// closed or canceled, closure requested by its author, re-issued by a
+		// human retry, and the merge sync it triggered acknowledged; operation
+		// id, provider, external id and codes, never a URL, Fizzy #2563) = 152.
+		expect(result.actions).toContain(
+			"project.instructions.pull_request_opened",
+		);
+		expect(result.actions).toContain(
+			"project.instructions.pull_request_reconciled",
+		);
+		expect(result.actions).toContain(
+			"project.instructions.pull_request_close_requested",
+		);
+		expect(result.actions).toContain(
+			"project.instructions.pull_request_retry_requested",
+		);
+		expect(result.actions).toContain(
+			"project.instructions.pull_request_merge_sync_requested",
 		);
 		// The To Do list's writes. Completion is one toggle key; unsnoozing is
 		// its own, because "returned this to everyone's open view" is not a

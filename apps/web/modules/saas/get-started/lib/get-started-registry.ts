@@ -937,7 +937,14 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "instructions-sync-now",
 				anchor: "instructions-sync-now",
 				title: "Pull the latest from the repository",
-				body: "Once the repository is the source, the files are edited there. With automatic sync on, Fabric picks up a pushed change right after each push to GitHub, and otherwise normally 15 to 20 minutes after a push; longer while the poll works through a backlog or a sync is backing off after failures. Sync now reads the branch at once. A new version is published only when something changed; the last run shows under the summary and every run, with what started it, is listed in History.",
+				body: "Once the repository is the source, the files are edited there. With automatic sync on, Fabric picks up a pushed change right after each push to GitHub, and otherwise normally 15 to 20 minutes after a push; longer while the poll works through a backlog or a sync is backing off after failures. Sync now reads the branch at once, and a merged suggestion syncs on its own, even with automatic sync off. A new version is published only when something changed; the last run shows under the summary and every run, with what started it, is listed in History.",
+				conditional: true,
+			},
+			{
+				id: "instructions-propose-pull-request",
+				anchor: "instructions-propose-pull-request",
+				title: "Suggest a change as a pull request",
+				body: "On a repository-backed project, a suggested change opens a pull request in the connected repository once its files pass the same checks an upload gets. The card follows the pull request until it is merged, closed or withdrawn, and a merged one syncs automatically. Pushing the branch can start the repository's CI before anyone reviews it. Members who can only read propose too once a member who can configure coding instructions turns that on in the Repository settings.",
 				conditional: true,
 			},
 			{

@@ -432,3 +432,249 @@ describe("refreshProjectRepoGitHubToken — serialized refresh", () => {
 		);
 	});
 });
+
+// The exchange must fit what is LEFT of the lock transaction's timeout
+// (Fizzy #2563): Prisma rolls the transaction back at its deadline while the
+// JS callback may still be awaiting the provider, so an exchange started too
+// late can rotate GitHub's single-use refresh token with nothing left to
+// persist it. The lock wait below is charged against that timeout.
+describe("refreshProjectRepoGitHubTokenWithOutcome — the lock transaction's budget", () => {
+	const staleRow = {
+		encryptedAccessToken: "enc:stale-access",
+		encryptedRefreshToken: "enc:current-refresh",
+		tokenExpiresAt: new Date(Date.now() - HOUR_MS),
+	};
+	let clock = 0;
+	beforeEach(() => {
+		clock = 0;
+		vi.spyOn(performance, "now").mockImplementation(() => clock);
+		mockTxFindUnique.mockResolvedValue(staleRow);
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("starts no exchange when the lock wait left less than the exchange plus database headroom", async () => {
+		// Queued behind another refresh's own exchange: 5.001 s of the 20 s
+		// transaction are gone by the time the lock is held, leaving less than
+		// the 10 s exchange plus 5 s of database headroom.
+		mockTxExecuteRaw.mockImplementationOnce(async () => {
+			clock += 5_001;
+			return 1;
+		});
+		const outcome =
+			await refreshProjectRepoGitHubTokenWithOutcome(baseInput);
+		expect(mockRefreshOAuthToken).not.toHaveBeenCalled();
+		expect(mockTxUpdateMany).not.toHaveBeenCalled();
+		expect(outcome).toEqual({ token: null, platformFault: "INTERNAL" });
+	});
+
+	it("counts the in-lock re-read against the same budget", async () => {
+		mockTxFindUnique.mockImplementationOnce(async () => {
+			clock += 6_000;
+			return staleRow;
+		});
+		await refreshProjectRepoGitHubTokenWithOutcome(baseInput);
+		expect(mockRefreshOAuthToken).not.toHaveBeenCalled();
+	});
+
+	it("exchanges, bounded to 10 s, when exactly the exchange plus headroom is left", async () => {
+		mockTxExecuteRaw.mockImplementationOnce(async () => {
+			clock += 5_000;
+			return 1;
+		});
+		const outcome =
+			await refreshProjectRepoGitHubTokenWithOutcome(baseInput);
+		expect(outcome).toEqual({ token: "fresh-token" });
+		expect(mockRefreshOAuthToken).toHaveBeenCalledWith(
+			expect.objectContaining({ timeoutMs: 10_000 }),
+		);
+	});
+
+	it("never gates a caller that finds the token already refreshed, however long it waited", async () => {
+		mockTxExecuteRaw.mockImplementationOnce(async () => {
+			clock += 19_000;
+			return 1;
+		});
+		mockTxFindUnique.mockResolvedValue({
+			encryptedAccessToken: "enc:current-access",
+			encryptedRefreshToken: "enc:current-refresh",
+			tokenExpiresAt: new Date(Date.now() + HOUR_MS),
+		});
+		const outcome =
+			await refreshProjectRepoGitHubTokenWithOutcome(baseInput);
+		expect(outcome).toEqual({ token: "reused-access" });
+		expect(mockRefreshOAuthToken).not.toHaveBeenCalled();
+	});
+});
+
+// A caller's pre-exchange gate (Fizzy #2563): consulted under the lock,
+// after the lock wait and the re-read and immediately before the exchange, so
+// time those consumed counts against the caller's reserve. A refusal starts no
+// request and reaches the caller unchanged; a path that sends nothing never
+// consults it.
+describe("refreshProjectRepoGitHubTokenWithOutcome — a caller's pre-exchange gate", () => {
+	const refused = new Error("too little time left to exchange");
+	const staleRow = {
+		encryptedAccessToken: "enc:stale-access",
+		encryptedRefreshToken: "enc:current-refresh",
+		tokenExpiresAt: new Date(Date.now() - HOUR_MS),
+	};
+	let left = 0;
+	const gate = vi.fn(() => {
+		if (left < 30_000) {
+			throw refused;
+		}
+	});
+	beforeEach(() => {
+		left = 35_000;
+		mockTxFindUnique.mockResolvedValue(staleRow);
+	});
+
+	it.each([
+		[
+			"the lock wait",
+			() =>
+				mockTxExecuteRaw.mockImplementationOnce(async () => {
+					left -= 10_000;
+					return 1;
+				}),
+		],
+		[
+			"the in-lock re-read",
+			() =>
+				mockTxFindUnique.mockImplementationOnce(async () => {
+					left -= 10_000;
+					return staleRow;
+				}),
+		],
+	])(
+		"a reserve consumed by %s starts no exchange, and the refusal is thrown unchanged",
+		async (_step, consume) => {
+			consume();
+			await expect(
+				refreshProjectRepoGitHubTokenWithOutcome({
+					...baseInput,
+					beforeExchange: gate,
+				}),
+			).rejects.toBe(refused);
+			expect(gate).toHaveBeenCalledTimes(1);
+			expect(mockRefreshOAuthToken).not.toHaveBeenCalled();
+			expect(mockTxUpdateMany).not.toHaveBeenCalled();
+		},
+	);
+
+	it("consults the gate after the locks and the re-read, immediately before the exchange", async () => {
+		const order: string[] = [];
+		mockTxExecuteRaw.mockImplementation(async () => {
+			order.push("lock");
+			return 1;
+		});
+		mockTxFindUnique.mockImplementation(async () => {
+			order.push("re-read");
+			return staleRow;
+		});
+		gate.mockImplementationOnce(() => {
+			order.push("gate");
+		});
+		mockRefreshOAuthToken.mockImplementationOnce(async () => {
+			order.push("exchange");
+			return {
+				ok: true,
+				accessToken: "fresh-token",
+				refreshToken: "rotated-refresh",
+				expiresIn: 28800,
+			};
+		});
+		const outcome = await refreshProjectRepoGitHubTokenWithOutcome({
+			...baseInput,
+			beforeExchange: gate,
+		});
+		expect(outcome).toEqual({ token: "fresh-token" });
+		expect(order).toEqual(["lock", "lock", "re-read", "gate", "exchange"]);
+	});
+
+	it("never consults the gate when the re-read finds the token already refreshed", async () => {
+		left = 0;
+		mockTxFindUnique.mockResolvedValue({
+			encryptedAccessToken: "enc:current-access",
+			encryptedRefreshToken: "enc:current-refresh",
+			tokenExpiresAt: new Date(Date.now() + HOUR_MS),
+		});
+		const outcome = await refreshProjectRepoGitHubTokenWithOutcome({
+			...baseInput,
+			beforeExchange: gate,
+		});
+		expect(outcome).toEqual({ token: "reused-access" });
+		expect(gate).not.toHaveBeenCalled();
+	});
+});
+
+// A caller's signal (Fizzy #2563): once it has aborted no exchange starts and
+// its reason is thrown; an exchange already under way runs to its end, since
+// GitHub's refresh token is single-use and a dropped response loses the grant.
+describe("refreshProjectRepoGitHubTokenWithOutcome — a caller's signal", () => {
+	const stop = new Error("caller stopped");
+	const staleRow = {
+		encryptedAccessToken: "enc:stale-access",
+		encryptedRefreshToken: "enc:current-refresh",
+		tokenExpiresAt: new Date(Date.now() - HOUR_MS),
+	};
+
+	it("throws an already-aborted signal's reason and opens no transaction", async () => {
+		const controller = new AbortController();
+		controller.abort(stop);
+		await expect(
+			refreshProjectRepoGitHubTokenWithOutcome({
+				...baseInput,
+				signal: controller.signal,
+			}),
+		).rejects.toBe(stop);
+		expect(mockTransaction).not.toHaveBeenCalled();
+		expect(mockRefreshOAuthToken).not.toHaveBeenCalled();
+	});
+
+	it("stops under the lock before the exchange: the reason, not a platform fault, and nothing written", async () => {
+		const controller = new AbortController();
+		mockTxFindUnique.mockImplementation(async () => {
+			controller.abort(stop);
+			return staleRow;
+		});
+		await expect(
+			refreshProjectRepoGitHubTokenWithOutcome({
+				...baseInput,
+				signal: controller.signal,
+			}),
+		).rejects.toBe(stop);
+		expect(mockRefreshOAuthToken).not.toHaveBeenCalled();
+		expect(mockTxUpdateMany).not.toHaveBeenCalled();
+	});
+
+	it("persists an exchange that was already under way when the signal aborted, then throws the reason", async () => {
+		const controller = new AbortController();
+		mockTxFindUnique.mockResolvedValue(staleRow);
+		mockRefreshOAuthToken.mockImplementation(async () => {
+			controller.abort(stop);
+			return {
+				ok: true,
+				accessToken: "fresh-token",
+				refreshToken: "rotated-refresh",
+				expiresIn: 28800,
+			};
+		});
+		await expect(
+			refreshProjectRepoGitHubTokenWithOutcome({
+				...baseInput,
+				signal: controller.signal,
+			}),
+		).rejects.toBe(stop);
+		expect(mockRefreshOAuthToken).toHaveBeenCalledTimes(1);
+		expect(mockTxUpdateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					encryptedRefreshToken: "enc(rotated-refresh)",
+				}),
+			}),
+		);
+	});
+});

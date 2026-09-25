@@ -1,4 +1,6 @@
+import { sqltag } from "@prisma/client/runtime/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolvedPullRequestOperation } from "../prisma/queries/instruction-proposal-pull-requests";
 
 // Declared inside `vi.hoisted` because `vi.mock` factories are hoisted above
 // the module body: a class declared at the top level of this file would not
@@ -48,21 +50,35 @@ const mocks = vi.hoisted(() => ({
 
 const auditMocks = vi.hoisted(() => ({ recordAuditTx: vi.fn() }));
 
-vi.mock("../prisma/client", () => ({
-	db: {
-		projectInstructionSnapshot: mocks.snapshot,
-		projectInstructionFile: mocks.file,
-		project: mocks.project,
-		$transaction: mocks.$transaction,
-		$queryRaw: (...a: unknown[]) => mocks.$queryRaw(...a),
-	},
-	// Only the error class is used by the module under test, and only for
-	// the `instanceof` + `.code` check that recognizes a version collision.
-	Prisma: {
-		PrismaClientKnownRequestError: FakePrismaKnownRequestError,
-		JsonNull: "JsonNull",
-	},
-}));
+vi.mock("../prisma/client", async () => {
+	// The real tagged-template builders, so a composed fragment (the
+	// retention predicate's SQL form, Fizzy #2563) reaches the fake client
+	// exactly as Postgres would get it.
+	const { empty, join, raw, sqltag } = await vi.importActual<
+		typeof import("@prisma/client/runtime/client")
+	>("@prisma/client/runtime/client");
+	return {
+		db: {
+			projectInstructionSnapshot: mocks.snapshot,
+			projectInstructionFile: mocks.file,
+			project: mocks.project,
+			$transaction: mocks.$transaction,
+			$queryRaw: (...a: unknown[]) => mocks.$queryRaw(...a),
+		},
+		// The error class is used for the `instanceof` + `.code` check that
+		// recognizes a version collision.
+		Prisma: {
+			PrismaClientKnownRequestError: FakePrismaKnownRequestError,
+			JsonNull: "JsonNull",
+			DbNull: "DbNull",
+			AnyNull: "AnyNull",
+			empty,
+			join,
+			raw,
+			sql: sqltag,
+		},
+	};
+});
 
 // The rejection verdict and its audit row commit in ONE transaction, so the
 // query module now reaches into `audit-log`. Mocked here to keep this a unit
@@ -123,7 +139,10 @@ beforeEach(() => {
 });
 
 describe("listInstructionSnapshots proposal visibility", () => {
-	it("limits non-reviewers to direct, approved, and their own undecided history", async () => {
+	// Fizzy #2563: a REPOSITORY proposal ends MERGED or CLOSED on its pull
+	// request, and its proposer follows it to that end in History; other
+	// non-reviewers still see only direct and approved versions.
+	it("limits non-reviewers to direct, approved, and their own proposals in every status", async () => {
 		mocks.snapshot.findMany.mockResolvedValue([]);
 
 		await listInstructionSnapshots("p", "org_1", {
@@ -139,10 +158,7 @@ describe("listInstructionSnapshots proposal visibility", () => {
 					OR: [
 						{ proposalStatus: null },
 						{ proposalStatus: "APPROVED" },
-						{
-							userId: "reader",
-							proposalStatus: { in: ["PENDING", "REJECTED"] },
-						},
+						{ userId: "reader" },
 					],
 				},
 			}),
@@ -414,7 +430,13 @@ describe("instruction proposal decisions", () => {
 					action: "project.instructions.rejected",
 				},
 			}),
-		).resolves.toEqual({ ok: true, changed: true, version: 8 });
+		).resolves.toEqual({
+			ok: true,
+			changed: true,
+			version: 8,
+			// A FABRIC proposal has no pull request (Fizzy #2563).
+			pullRequest: null,
+		});
 		expect(mocks.snapshot.updateMany).toHaveBeenLastCalledWith(
 			expect.objectContaining({
 				where: expect.objectContaining({
@@ -2678,13 +2700,20 @@ describe("rejectAbandonedInstructionSnapshot", () => {
  * deduplicate them there, unbounded, before any per-run budget applied.
  */
 describe("listProjectsWithPrunableInstructionSnapshots", () => {
-	/** The one statement the query makes: its SQL text and its bound values. */
+	/**
+	 * The one statement the query makes: its SQL text and its bound values,
+	 * with composed fragments flattened the way Prisma flattens them.
+	 */
 	function lastStatement(): { sql: string; values: unknown[] } {
 		const [strings, ...values] = mocks.$queryRaw.mock.calls.at(-1) as [
 			TemplateStringsArray,
 			...unknown[],
 		];
-		return { sql: strings.join(" ? ").replace(/\s+/g, " "), values };
+		const statement = sqltag(strings, ...values);
+		return {
+			sql: statement.sql.replace(/\?/g, " ? ").replace(/\s+/g, " "),
+			values: statement.values,
+		};
 	}
 
 	it("binds the thresholds, the offset and the limit — it interpolates nothing", async () => {
@@ -2988,9 +3017,13 @@ describe.each([
 		// The `UNION`ed relation: a project is a candidate when EITHER arm's
 		// unpublished row count is over its threshold, and it appears once.
 		mocks.$queryRaw.mockImplementation(
-			async (_sql: TemplateStringsArray, ...values: unknown[]) => {
-				const [keepReady, keepRejected, offset, limit] =
-					values as number[];
+			async (sql: TemplateStringsArray, ...fragments: unknown[]) => {
+				// The bound values once composed fragments are flattened, as
+				// Prisma binds them.
+				const [keepReady, keepRejected, offset, limit] = sqltag(
+					sql,
+					...fragments,
+				).values as number[];
 				const window = (where: SnapshotWhere) =>
 					rows.filter((r) =>
 						matchesWhere(
@@ -3042,5 +3075,887 @@ describe.each([
 		// to delete. Too strict and a prunable snapshot is never visited;
 		// too loose and the project is a permanent no-op candidate.
 		expect(candidates.length > 0).toBe(prunable.length > 0);
+	});
+});
+
+/**
+ * REPOSITORY proposals in the existing writers (Fizzy #2563 spec §2.5, §4.4).
+ *
+ * A REPOSITORY row's proposal status is derived from its delivery state, so
+ * no writer here may set `proposalStatus` on one directly: every change goes
+ * through the fenced `transitionPullRequest`, which writes both columns or
+ * neither. The fake below evaluates each statement's WHERE against one row
+ * and applies its data only when it matches, so "left alone" is observed on
+ * the row rather than inferred from which mock was called.
+ */
+describe("REPOSITORY proposals in the existing writers", () => {
+	type Row = Record<string, unknown>;
+	const HEAD = "a".repeat(40);
+
+	function matches(row: Row, where: Record<string, unknown>): boolean {
+		return Object.entries(where).every(([key, cond]) => {
+			if (key === "AND") {
+				return (cond as Row[]).every((w) => matches(row, w));
+			}
+			if (key === "OR") {
+				return (cond as Row[]).some((w) => matches(row, w));
+			}
+			const value = row[key];
+			if (
+				cond !== null &&
+				typeof cond === "object" &&
+				!(cond instanceof Date)
+			) {
+				const c = cond as Record<string, unknown>;
+				if ("path" in c) {
+					const json = value as Record<string, unknown> | null;
+					return (
+						json !== null &&
+						json !== undefined &&
+						json[(c.path as string[])[0]!] === c.equals
+					);
+				}
+				if ("not" in c) {
+					return c.not === null
+						? value !== null && value !== undefined
+						: value !== c.not;
+				}
+				if ("in" in c) {
+					return (c.in as unknown[]).includes(value);
+				}
+				if ("notIn" in c) {
+					return !(c.notIn as unknown[]).includes(value);
+				}
+				if ("lt" in c) {
+					return (value as Date) < (c.lt as Date);
+				}
+				throw new Error(`Unsupported filter on ${key}`);
+			}
+			return value === cond;
+		});
+	}
+
+	function apply(row: Row, data: Record<string, unknown>) {
+		for (const [key, value] of Object.entries(data)) {
+			if (
+				value !== null &&
+				typeof value === "object" &&
+				"increment" in (value as object)
+			) {
+				row[key] =
+					(row[key] as number) +
+					(value as { increment: number }).increment;
+			} else if (value !== undefined) {
+				row[key] = value;
+			}
+		}
+	}
+
+	/** Serves every read and conditional write from `row`, which it mutates. */
+	function fakeRow(overrides: Row = {}): Row {
+		const row: Row = {
+			id: "s",
+			projectId: "p",
+			organizationId: "org_1",
+			userId: "author",
+			version: 8,
+			status: "VALIDATING",
+			rejection: null,
+			createdAt: new Date("2026-09-17T05:00:00.000Z"),
+			proposalStatus: "PENDING",
+			proposalDestination: "REPOSITORY",
+			pullRequestOperationId: "op_1",
+			pullRequestState: "QUEUED",
+			pullRequestAttempt: 2,
+			pullRequestHeadSha: null,
+			pullRequestObligationOpen: false,
+			pullRequestFailure: null,
+			pullRequestNextAttemptAt: null,
+			...overrides,
+		};
+		mocks.snapshot.findFirst.mockImplementation(
+			async (args: { where: Record<string, unknown> }) =>
+				matches(row, args.where) ? { ...row } : null,
+		);
+		mocks.snapshot.updateMany.mockImplementation(
+			async (args: {
+				where: Record<string, unknown>;
+				data: Record<string, unknown>;
+			}) => {
+				if (!matches(row, args.where)) {
+					return { count: 0 };
+				}
+				apply(row, args.data);
+				return { count: 1 };
+			},
+		);
+		// The row lock a REPOSITORY cancel or verdict takes before it reads;
+		// the verdict fences on the attempt this returns.
+		mocks.$queryRaw.mockImplementation(async () => [
+			{ id: row.id, attempt: row.pullRequestAttempt },
+		]);
+		return row;
+	}
+
+	function failure(phase: string, code = "VALIDATION_FAILED") {
+		return {
+			phase,
+			code,
+			retryable: true,
+			at: "2026-09-24T10:00:00.000Z",
+			params: {},
+		};
+	}
+
+	function auditActions(): string[] {
+		return auditMocks.recordAuditTx.mock.calls.map(
+			(call) => (call[1] as { action: string }).action,
+		);
+	}
+
+	function auditRow(action: string) {
+		return auditMocks.recordAuditTx.mock.calls.find(
+			(call) => (call[1] as { action: string }).action === action,
+		)?.[1] as Record<string, unknown> | undefined;
+	}
+
+	/** Spec §4.4: the pre-create states a verdict or abandonment cancels. */
+	const CANCELED_BY_VERDICT: Array<[string, Row]> = [
+		["QUEUED", {}],
+		["OPENING with no head SHA", { pullRequestState: "OPENING" }],
+		[
+			"BLOCKED in validation",
+			{
+				pullRequestState: "BLOCKED",
+				pullRequestFailure: failure("validation"),
+			},
+		],
+		[
+			"BLOCKED at admission",
+			{
+				pullRequestState: "BLOCKED",
+				pullRequestFailure: failure(
+					"admission",
+					"ATTRIBUTION_REJECTED",
+				),
+			},
+		],
+	];
+	/** Every other state a PENDING REPOSITORY row can be in. */
+	const LEFT_ALONE_BY_VERDICT: Array<[string, Row]> = [
+		["OPEN", { pullRequestState: "OPEN", pullRequestHeadSha: HEAD }],
+		[
+			"OPENING with a head SHA",
+			{ pullRequestState: "OPENING", pullRequestHeadSha: HEAD },
+		],
+		[
+			"BLOCKED in push",
+			{
+				pullRequestState: "BLOCKED",
+				pullRequestHeadSha: HEAD,
+				pullRequestFailure: failure("push", "BRANCH_WRITE_REFUSED"),
+			},
+		],
+		["CLOSE_REQUESTED", { pullRequestState: "CLOSE_REQUESTED" }],
+	];
+
+	describe("gate rejection (markInstructionSnapshotRejected)", () => {
+		const rejections = [{ path: "a", reason: "secret", detail: "jwt" }];
+		const audit = {
+			action: "project.instructions.rejected",
+			category: "project" as const,
+			actor: { type: "user" as const, userId: "author" },
+			organizationId: "org_1",
+			projectId: "p",
+		};
+		const input = {
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "org_1",
+			rejections,
+			audit,
+		};
+
+		it.each(CANCELED_BY_VERDICT)(
+			"moves %s to CANCELED with VALIDATION_REJECTED and a reconciled audit row",
+			async (_, overrides) => {
+				const row = fakeRow(overrides);
+
+				expect(await markInstructionSnapshotRejected(input)).toEqual({
+					changed: true,
+				});
+
+				expect(row).toMatchObject({
+					status: "REJECTED",
+					pullRequestState: "CANCELED",
+					proposalStatus: "REJECTED",
+					pullRequestAttempt: 3,
+					pullRequestNextAttemptAt: null,
+					pullRequestFailure: {
+						phase: "validation",
+						code: "VALIDATION_REJECTED",
+						retryable: false,
+						at: expect.any(String),
+						params: {},
+					},
+				});
+				expect(auditActions()).toEqual([
+					"project.instructions.pull_request_reconciled",
+					"project.instructions.rejected",
+				]);
+				expect(
+					auditRow("project.instructions.pull_request_reconciled"),
+				).toMatchObject({
+					organizationId: "org_1",
+					projectId: "p",
+					resource: {
+						type: "project_instruction_snapshot",
+						id: "s",
+						name: "v8",
+					},
+					metadata: {
+						outcome: "canceled",
+						operationId: "op_1",
+						code: "VALIDATION_REJECTED",
+						targetMismatch: false,
+					},
+				});
+			},
+		);
+
+		it.each(LEFT_ALONE_BY_VERDICT)(
+			"leaves %s alone: both status columns unchanged, the verdict still written",
+			async (_, overrides) => {
+				const row = fakeRow(overrides);
+				const before = {
+					pullRequestState: row.pullRequestState,
+					pullRequestAttempt: row.pullRequestAttempt,
+				};
+
+				expect(await markInstructionSnapshotRejected(input)).toEqual({
+					changed: true,
+				});
+
+				expect(row).toMatchObject({
+					...before,
+					status: "REJECTED",
+					proposalStatus: "PENDING",
+				});
+				expect(auditActions()).toEqual([
+					"project.instructions.rejected",
+				]);
+			},
+		);
+
+		it("fences the cancel on the attempt it reads under the row lock", async () => {
+			fakeRow({ pullRequestAttempt: 6 });
+
+			await markInstructionSnapshotRejected(input);
+
+			const lock = mocks.$queryRaw.mock.calls
+				.map((call) => (call[0] as string[]).join("?"))
+				.find((sql) => sql.includes("FOR UPDATE"));
+			expect(lock).toContain('"pullRequestAttempt"');
+			const transition = mocks.snapshot.updateMany.mock.calls
+				.map(
+					([args]) =>
+						args as {
+							where: Record<string, unknown>;
+							data: Record<string, unknown>;
+						},
+				)
+				.find((args) => "pullRequestState" in args.data);
+			expect(JSON.stringify(transition?.where)).toContain(
+				'"pullRequestAttempt":6',
+			);
+		});
+
+		it("never writes proposalStatus on a REPOSITORY row outside the transition", async () => {
+			fakeRow();
+
+			await markInstructionSnapshotRejected(input);
+
+			// The FABRIC statement (`proposalStatus: PENDING` → REJECTED with
+			// nothing else in its data) is not issued for this destination.
+			for (const [args] of mocks.snapshot.updateMany.mock.calls) {
+				const data = (args as { data: Record<string, unknown> }).data;
+				if ("proposalStatus" in data) {
+					expect(data).toHaveProperty("pullRequestState");
+				}
+			}
+		});
+	});
+
+	describe("abandonment (rejectAbandonedInstructionSnapshot)", () => {
+		const input = {
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "org_1",
+			cutoff: new Date("2026-09-17T06:00:00.000Z"),
+		};
+
+		it.each(CANCELED_BY_VERDICT)(
+			"moves %s to CANCELED with params { reason: abandoned }",
+			async (_, overrides) => {
+				const row = fakeRow({ status: "RECEIVING", ...overrides });
+
+				expect(await rejectAbandonedInstructionSnapshot(input)).toEqual(
+					{
+						changed: true,
+					},
+				);
+
+				expect(row).toMatchObject({
+					status: "REJECTED",
+					pullRequestState: "CANCELED",
+					proposalStatus: "REJECTED",
+					pullRequestAttempt: 3,
+					pullRequestFailure: {
+						phase: "validation",
+						code: "VALIDATION_REJECTED",
+						retryable: false,
+						params: { reason: "abandoned" },
+					},
+				});
+				expect(auditActions()).toEqual([
+					"project.instructions.pull_request_reconciled",
+					"project.instructions.rejected",
+				]);
+				expect(
+					auditRow("project.instructions.pull_request_reconciled"),
+				).toMatchObject({
+					actor: { type: "user", userId: "author" },
+					metadata: {
+						outcome: "canceled",
+						operationId: "op_1",
+						code: "VALIDATION_REJECTED",
+						targetMismatch: false,
+					},
+				});
+			},
+		);
+
+		it.each(LEFT_ALONE_BY_VERDICT)(
+			"leaves %s alone while still closing out the upload",
+			async (_, overrides) => {
+				const row = fakeRow({ status: "RECEIVING", ...overrides });
+				const state = row.pullRequestState;
+
+				expect(await rejectAbandonedInstructionSnapshot(input)).toEqual(
+					{
+						changed: true,
+					},
+				);
+
+				expect(row).toMatchObject({
+					status: "REJECTED",
+					pullRequestState: state,
+					proposalStatus: "PENDING",
+					pullRequestAttempt: 2,
+				});
+				expect(auditActions()).toEqual([
+					"project.instructions.rejected",
+				]);
+			},
+		);
+	});
+
+	describe("review decisions", () => {
+		const audit = {
+			...proposalAudit,
+			action: "project.instructions.rejected",
+		};
+
+		for (const [label, settings] of [
+			[
+				"while the repository is the source of truth",
+				{ sourceOfTruth: "REPOSITORY" },
+			],
+			[
+				"after the project flipped to UPLOAD",
+				{ sourceOfTruth: "UPLOAD" },
+			],
+		] as const) {
+			it(`approve refuses a REPOSITORY proposal ${label}`, async () => {
+				mocks.$queryRaw.mockResolvedValue([
+					{ pointerId: "base", instructionSettings: settings },
+				]);
+				mocks.snapshot.findFirst.mockResolvedValue({
+					id: "proposal",
+					version: 9,
+					status: "READY",
+					proposalStatus: "PENDING",
+					proposalDestination: "REPOSITORY",
+					baseSnapshotId: "base",
+				});
+
+				expect(
+					await approveInstructionProposal({
+						snapshotId: "proposal",
+						projectId: "p",
+						organizationId: "o",
+						reviewerUserId: "reviewer",
+						audit: proposalAudit,
+					}),
+				).toEqual({ ok: false, reason: "repository_proposal" });
+				expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+				expect(mocks.project.updateMany).not.toHaveBeenCalled();
+				expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+			});
+		}
+
+		it("reject refuses a REPOSITORY proposal", async () => {
+			mocks.snapshot.findFirst.mockResolvedValue({
+				id: "proposal",
+				version: 9,
+				status: "READY",
+				proposalStatus: "PENDING",
+				proposalDestination: "REPOSITORY",
+			});
+
+			expect(
+				await rejectInstructionProposal({
+					snapshotId: "proposal",
+					projectId: "p",
+					organizationId: "o",
+					reviewerUserId: "reviewer",
+					audit,
+				}),
+			).toEqual({ ok: false, reason: "repository_proposal" });
+			expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+			expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("publishInstructionSnapshot", () => {
+		it.each(["PENDING", "APPROVED", "REJECTED", "MERGED", "CLOSED"])(
+			"refuses a REPOSITORY proposal in status %s on both paths",
+			async (proposalStatus) => {
+				for (const allowRollback of [true, false]) {
+					lockedPointer("base", 7);
+					mocks.snapshot.findFirst.mockResolvedValueOnce({
+						id: "proposal",
+						status: "READY",
+						proposalStatus,
+						proposalDestination: "REPOSITORY",
+						version: 8,
+						baseSnapshotId: "base",
+						baseVersion: 7,
+						publishedAt: null,
+						source: "UPLOAD",
+					});
+					expect(
+						await publishInstructionSnapshot({
+							snapshotId: "proposal",
+							projectId: "p",
+							organizationId: "o",
+							allowRollback,
+						}),
+					).toEqual({
+						published: false,
+						changed: false,
+						reason: "repository_proposal",
+					});
+				}
+				expect(mocks.project.updateMany).not.toHaveBeenCalled();
+			},
+		);
+
+		// R14: the check was a denylist of PENDING and REJECTED, which the two
+		// new statuses would have slipped through.
+		it.each(["MERGED", "CLOSED"])(
+			"refuses any proposal status that is not APPROVED, including %s",
+			async (proposalStatus) => {
+				lockedPointer("base", 7);
+				mocks.snapshot.findFirst.mockResolvedValueOnce({
+					id: "proposal",
+					status: "READY",
+					proposalStatus,
+					version: 8,
+					baseSnapshotId: "base",
+					baseVersion: 7,
+					publishedAt: null,
+				});
+				expect(
+					await publishInstructionSnapshot({
+						snapshotId: "proposal",
+						projectId: "p",
+						organizationId: "o",
+						allowRollback: true,
+					}),
+				).toEqual({
+					published: false,
+					changed: false,
+					reason: "proposal_not_approved",
+				});
+				expect(mocks.project.updateMany).not.toHaveBeenCalled();
+			},
+		);
+	});
+
+	describe("cancelInstructionProposal", () => {
+		const audit = {
+			...proposalAudit,
+			action: "project.instructions.rejected",
+			actor: { type: "user" as const, userId: "author" },
+		};
+		const input = {
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "org_1",
+			proposerUserId: "author",
+			audit,
+		};
+
+		it.each<[string, Row]>([
+			["QUEUED while uploading", { status: "RECEIVING" }],
+			["QUEUED once validated", { status: "READY" }],
+			[
+				"BLOCKED at admission",
+				{
+					status: "READY",
+					pullRequestState: "BLOCKED",
+					pullRequestFailure: failure(
+						"admission",
+						"ATTRIBUTION_REJECTED",
+					),
+				},
+			],
+			[
+				"BLOCKED in validation",
+				{
+					status: "FAILED",
+					pullRequestState: "BLOCKED",
+					pullRequestFailure: failure(
+						"validation",
+						"VALIDATION_TIMEOUT",
+					),
+				},
+			],
+		])(
+			"cancels %s before anything was created, in the existing transaction",
+			async (_, overrides) => {
+				const row = fakeRow(overrides);
+				const stateBefore = row.pullRequestState;
+				const statusBefore = row.status;
+
+				expect(await cancelInstructionProposal(input)).toEqual({
+					ok: true,
+					changed: true,
+					version: 8,
+					pullRequest: "canceled",
+				});
+
+				expect(row).toMatchObject({
+					pullRequestState: "CANCELED",
+					proposalStatus: "REJECTED",
+					pullRequestAttempt: 3,
+					pullRequestNextAttemptAt: null,
+					// The existing cancellation's own writes.
+					status: statusBefore === "READY" ? "READY" : "REJECTED",
+					reviewedAt: expect.any(Date),
+				});
+				if (statusBefore !== "READY") {
+					expect(row.rejection).toEqual(
+						expect.arrayContaining([
+							expect.objectContaining({
+								path: "(proposal staging)",
+								detail: "staging pending",
+							}),
+						]),
+					);
+				}
+				expect(
+					auditRow(
+						"project.instructions.pull_request_close_requested",
+					),
+				).toMatchObject({
+					actor: { type: "user", userId: "author" },
+					metadata: { operationId: "op_1", stateBefore },
+				});
+				// The withdrawal itself is recorded as today's cancel is.
+				expect(auditRow("project.instructions.rejected")).toEqual(
+					audit,
+				);
+			},
+		);
+
+		it.each<[string, Row]>([
+			["OPENING", { status: "READY", pullRequestState: "OPENING" }],
+			[
+				"OPEN",
+				{
+					status: "READY",
+					pullRequestState: "OPEN",
+					pullRequestHeadSha: HEAD,
+				},
+			],
+			[
+				"BLOCKED in push",
+				{
+					status: "READY",
+					pullRequestState: "BLOCKED",
+					pullRequestHeadSha: HEAD,
+					pullRequestFailure: failure("push", "BRANCH_WRITE_REFUSED"),
+				},
+			],
+			[
+				"BLOCKED in validation after a push",
+				{
+					status: "READY",
+					pullRequestState: "BLOCKED",
+					pullRequestObligationOpen: true,
+					pullRequestFailure: failure("validation"),
+				},
+			],
+		])(
+			"asks settlement to close %s: CLOSE_REQUESTED, attempt + 1, failure cleared",
+			async (_, overrides) => {
+				const row = fakeRow(overrides);
+				const stateBefore = row.pullRequestState;
+
+				expect(await cancelInstructionProposal(input)).toEqual({
+					ok: true,
+					changed: true,
+					version: 8,
+					pullRequest: "close_requested",
+				});
+
+				expect(row).toMatchObject({
+					pullRequestState: "CLOSE_REQUESTED",
+					proposalStatus: "PENDING",
+					pullRequestAttempt: 3,
+					pullRequestFailure: "DbNull",
+					pullRequestNextAttemptAt: null,
+					status: "READY",
+				});
+				expect(row).not.toHaveProperty("reviewedAt");
+				expect(auditActions()).toEqual([
+					"project.instructions.pull_request_close_requested",
+				]);
+				expect(
+					auditRow(
+						"project.instructions.pull_request_close_requested",
+					),
+				).toMatchObject({
+					metadata: { operationId: "op_1", stateBefore },
+				});
+			},
+		);
+
+		it("refuses validating work as today, and writes nothing", async () => {
+			const row = fakeRow({ status: "VALIDATING" });
+
+			expect(await cancelInstructionProposal(input)).toEqual({
+				ok: false,
+				reason: "in_progress",
+			});
+			expect(row).toMatchObject({
+				pullRequestState: "QUEUED",
+				pullRequestAttempt: 2,
+			});
+			expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+		});
+
+		it("answers a repeated cancel idempotently from CLOSE_REQUESTED and CANCELED", async () => {
+			fakeRow({ status: "READY", pullRequestState: "CLOSE_REQUESTED" });
+			expect(await cancelInstructionProposal(input)).toEqual({
+				ok: true,
+				changed: false,
+				version: 8,
+				pullRequest: "close_requested",
+			});
+
+			fakeRow({
+				status: "READY",
+				pullRequestState: "CANCELED",
+				proposalStatus: "REJECTED",
+			});
+			expect(await cancelInstructionProposal(input)).toEqual({
+				ok: true,
+				changed: false,
+				version: 8,
+				pullRequest: "canceled",
+			});
+			expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+			expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+		});
+
+		it.each(["MERGED", "CLOSED"])(
+			"refuses a proposal whose pull request is already %s",
+			async (state) => {
+				fakeRow({
+					status: "READY",
+					pullRequestState: state,
+					proposalStatus: state,
+				});
+				expect(await cancelInstructionProposal(input)).toEqual({
+					ok: false,
+					reason: "already_decided",
+				});
+				expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+			},
+		);
+
+		it("only the proposer may cancel", async () => {
+			fakeRow({ status: "READY", userId: "someone-else" });
+			mocks.$queryRaw.mockResolvedValue([]);
+
+			expect(await cancelInstructionProposal(input)).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
+			expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+		});
+	});
+});
+
+/**
+ * Retention never deletes an unresolved pull-request operation (Fizzy #2563
+ * spec §4.3). The predicate is added to all five sites, in their WHERE and
+ * ahead of `skip`, and the decided-status filters gain MERGED and CLOSED.
+ * `instruction-proposal-retention.integration.test.ts` runs the same
+ * predicate on Postgres; these pin that every site carries it.
+ */
+describe("retention of pull-request operations", () => {
+	const RESOLVED_SQL =
+		'(s."pullRequestState" IS NULL OR s."pullRequestState" IN (\'MERGED\', \'CLOSED\', \'CANCELED\')) AND s."mergeSyncRequestedAt" IS NULL AND NOT s."pullRequestObligationOpen"';
+	const DECIDED = {
+		OR: [
+			{ proposalStatus: null },
+			{
+				proposalStatus: {
+					in: ["APPROVED", "REJECTED", "MERGED", "CLOSED"],
+				},
+			},
+		],
+	};
+
+	it("both selection windows exclude unresolved operations ahead of skip, and admit MERGED and CLOSED", async () => {
+		mocks.project.findUnique.mockResolvedValue({
+			publishedInstructionSnapshotId: null,
+		});
+		mocks.snapshot.findMany.mockResolvedValue([]);
+
+		await listPrunableInstructionSnapshots("p", "org_1", {
+			ready: 5,
+			rejected: 2,
+		});
+
+		expect(mocks.snapshot.findMany).toHaveBeenCalledTimes(2);
+		for (const [args] of mocks.snapshot.findMany.mock.calls) {
+			const where = (args as { where: { AND: unknown[] } }).where;
+			expect(where.AND).toContainEqual(resolvedPullRequestOperation());
+			expect(where.AND).toContainEqual(DECIDED);
+			// The PENDING-base and cleanup-marker clauses stay.
+			expect(where.AND).toContainEqual({
+				derivedSnapshots: { none: { proposalStatus: "PENDING" } },
+			});
+			expect(JSON.stringify(where.AND)).toContain("(proposal staging)");
+			// Null-safe: a row with no `rejection` (JSON null or SQL NULL)
+			// carries no marker and stays prunable.
+			expect(where.AND).toContainEqual({
+				OR: [
+					{ rejection: { equals: "AnyNull" } },
+					{ NOT: expect.objectContaining({ OR: expect.any(Array) }) },
+				],
+			});
+		}
+	});
+
+	it("both candidate windows exclude unresolved operations, with every value still bound", async () => {
+		mocks.$queryRaw.mockResolvedValue([]);
+
+		await listProjectsWithPrunableInstructionSnapshots(
+			{ ready: 5, rejected: 2 },
+			25,
+			0,
+		);
+
+		const [strings, ...values] = mocks.$queryRaw.mock.calls.at(-1) as [
+			TemplateStringsArray,
+			...unknown[],
+		];
+		const statement = sqltag(strings, ...values);
+		const sql = statement.sql.replace(/\s+/g, " ");
+		expect(sql.split(`AND ${RESOLVED_SQL}`)).toHaveLength(3);
+		// The fragment adds text, never a parameter.
+		expect(statement.values).toEqual([5, 2, 0, 25]);
+	});
+
+	it("the DELETE refuses unresolved operations and admits MERGED and CLOSED", async () => {
+		mocks.file.deleteMany.mockResolvedValue({ count: 1 });
+		mocks.snapshot.deleteMany.mockResolvedValue({ count: 1 });
+
+		await deleteInstructionSnapshot("s", "p", "org_1");
+
+		const where = mocks.snapshot.deleteMany.mock.calls[0]![0].where as {
+			AND: unknown[];
+		};
+		expect(where.AND).toContainEqual(resolvedPullRequestOperation());
+		expect(where.AND).toContainEqual(DECIDED);
+		expect(where.AND).toContainEqual({
+			derivedSnapshots: { none: { proposalStatus: "PENDING" } },
+		});
+		expect(where.AND).toContainEqual({
+			OR: [
+				{ rejection: { equals: "AnyNull" } },
+				{ NOT: expect.objectContaining({ OR: expect.any(Array) }) },
+			],
+		});
+	});
+
+	it.each([
+		["an OPEN pull request", { pullRequestState: "OPEN" }],
+		[
+			"a merge sync still owed",
+			{
+				pullRequestState: "MERGED",
+				mergeSyncRequestedAt: new Date("2026-09-24T10:00:00.000Z"),
+			},
+		],
+		[
+			"a record obligation",
+			{ pullRequestState: "CANCELED", pullRequestObligationOpen: true },
+		],
+	])(
+		"a manual delete of %s is refused as pull_request_unresolved and undoes the file delete",
+		async (_, columns) => {
+			mocks.file.deleteMany.mockResolvedValue({ count: 2 });
+			mocks.snapshot.deleteMany.mockResolvedValue({ count: 0 });
+			mocks.snapshot.findFirst.mockResolvedValue({
+				id: "s",
+				status: "READY",
+				pullRequestObligationOpen: false,
+				mergeSyncRequestedAt: null,
+				...columns,
+			});
+			mocks.snapshot.count.mockResolvedValue(0);
+
+			expect(await deleteInstructionSnapshot("s", "p", "org_1")).toEqual({
+				deleted: false,
+				reason: "pull_request_unresolved",
+			});
+			// Thrown inside the transaction, so the file delete rolled back.
+			expect(mocks.$transaction).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it("keeps answering active for a FABRIC row with no operation", async () => {
+		mocks.file.deleteMany.mockResolvedValue({ count: 2 });
+		mocks.snapshot.deleteMany.mockResolvedValue({ count: 0 });
+		mocks.snapshot.findFirst.mockResolvedValue({
+			id: "s",
+			status: "READY",
+			pullRequestState: null,
+			pullRequestObligationOpen: false,
+			mergeSyncRequestedAt: null,
+		});
+		mocks.snapshot.count.mockResolvedValue(0);
+
+		expect(await deleteInstructionSnapshot("s", "p", "org_1")).toEqual({
+			deleted: false,
+			reason: "active",
+		});
 	});
 });

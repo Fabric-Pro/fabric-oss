@@ -18,6 +18,13 @@ import type {
 } from "../generated/client";
 import { type RecordAuditInput, recordAuditTx } from "./audit-log";
 import {
+	isUnresolvedPullRequestOperation,
+	type PullRequestFailure,
+	resolvedPullRequestOperation,
+	resolvedPullRequestOperationSql,
+	transitionPullRequest,
+} from "./instruction-proposal-pull-requests";
+import {
 	repositorySyncPublishRefusal,
 	writeProjectInstructionSettings,
 } from "./instruction-repository-sync";
@@ -68,6 +75,25 @@ function pendingCleanupFilter() {
 		OR: [
 			cleanupMarkerFilter(abandonedStagingPendingRejection),
 			cleanupMarkerFilter(proposalStagingPendingRejection),
+		],
+	};
+}
+
+/**
+ * "Carries no pending cleanup marker", null-safe. `NOT` over
+ * `pendingCleanupFilter()` alone is wrong for a row whose `rejection` is not
+ * an array: Prisma's `array_contains` is NULL there rather than false, so the
+ * negation dropped every READY or FAILED upload (both store a JSON null,
+ * `markInstructionSnapshotReady` and `failInstructionSnapshot`) from both
+ * selection windows and from the DELETE, while the raw candidate query's
+ * `NOT COALESCE(... @> ..., FALSE)` still nominated the project. A row with
+ * no `rejection` at all carries no marker.
+ */
+function noPendingCleanupFilter() {
+	return {
+		OR: [
+			{ rejection: { equals: Prisma.AnyNull } },
+			{ NOT: pendingCleanupFilter() },
 		],
 	};
 }
@@ -137,6 +163,28 @@ const summarySelect = {
 	publishedAt: true,
 	user: { select: { id: true, name: true } },
 	reviewer: { select: { id: true, name: true } },
+} satisfies Prisma.ProjectInstructionSnapshotSelect;
+
+/**
+ * A proposal's metadata plus where it goes and what its pull request is
+ * (Fizzy #2563 spec §12): the destination, the note, and the operation's
+ * status columns the card and CLI show. Never the frozen context, the
+ * attempt records or the merge-sync tuple: those are the workflow's.
+ */
+const proposalSelect = {
+	...summarySelect,
+	proposalDestination: true,
+	proposalNote: true,
+	pullRequestOperationId: true,
+	pullRequestState: true,
+	pullRequestAttempt: true,
+	pullRequestUrl: true,
+	pullRequestExternalId: true,
+	pullRequestFailure: true,
+	pullRequestLastCheckedAt: true,
+	pullRequestObservation: true,
+	mergeSyncRequestedAt: true,
+	mergeSyncRunId: true,
 } satisfies Prisma.ProjectInstructionSnapshotSelect;
 
 // ---------------------------------------------------------------------------
@@ -541,6 +589,12 @@ export type CreateDerivedInstructionSnapshotResult =
 			 * refuses to point a non-staging key back at writable storage.
 			 */
 			staged: Array<{ id: string; path: string }>;
+			/**
+			 * Whether this transaction wrote the `upload_started` audit row:
+			 * true for a REPOSITORY proposal (Fizzy #2563 Decision 11), false
+			 * for FABRIC, whose caller still writes it after commit.
+			 */
+			auditWritten: boolean;
 	  }
 	/**
 	 * This exact change set is ALREADY an active proposal of this proposer's
@@ -557,6 +611,8 @@ export type CreateDerivedInstructionSnapshotResult =
 			ok: false;
 			reason: "duplicate_proposal";
 			existing: DuplicateInstructionProposal;
+			/** Always false: a duplicate writes nothing, its audit included. */
+			auditWritten: false;
 	  }
 	| { ok: false; reason: DerivedInstructionRefusal; detail?: string };
 
@@ -609,6 +665,68 @@ type CreateDerivedInstructionSnapshotInput = {
 	 * only ever name the base's own immutable prefix.
 	 */
 	baseKeyPrefix: string;
+	/**
+	 * The proposer's note, already parsed by `proposalNoteSchema`
+	 * (`@repo/instructions`). Stored on proposals of either destination and
+	 * ignored for any other derivation (Fizzy #2563 spec §5.1 step 6).
+	 */
+	note?: ProposalNoteJson | null;
+	/**
+	 * Absent for FABRIC. REPOSITORY admits the proposal as a pull-request
+	 * operation (spec §5.1 step 8) and is refused unless `proposal` is set.
+	 */
+	destination?: RepositoryProposalDestination;
+};
+
+/** `proposalNote`: the shape `proposalNoteSchema` produces. */
+export type ProposalNoteJson = { title?: string; body?: string };
+
+/**
+ * The caller-known half of a REPOSITORY proposal's `upload_started` row
+ * (Fizzy #2563 Decision 11). The id, version and creation counts exist only
+ * inside the create transaction, which completes and writes the row there.
+ * `impersonatedById` travels inside `actor`, where `RecordAuditInput`
+ * declares it. `via` is the surface `submit-change.ts` records.
+ */
+export type UploadStartedAuditTemplate = Pick<
+	RecordAuditInput,
+	| "actor"
+	| "organizationId"
+	| "projectId"
+	| "ipAddress"
+	| "userAgent"
+	| "requestId"
+	| "sessionId"
+	| "correlationId"
+> & {
+	metadata: {
+		mode: "proposal";
+		baseSnapshotId: string;
+		baseVersion: number;
+		putCount: number;
+		deleteCount: number;
+		via?: string;
+	};
+};
+
+export type RepositoryProposalDestination = {
+	kind: "REPOSITORY";
+	/** `pullRequestOperationId`: the operation's durable id. */
+	operationId: string;
+	/** `pullRequestContextSchema`-valid frozen context (spec §5.2). */
+	context: Prisma.InputJsonValue;
+	/** The context's `syncId` and `syncGeneration`: the dedup identity. */
+	syncId: string;
+	syncGeneration: number;
+	/**
+	 * The context's `branch`, attempt 1's ref: written as `pullRequestRef` in
+	 * the create, so the operation's current branch is a stored fact from the
+	 * moment the row exists rather than something a later writer infers.
+	 */
+	branch: string;
+	/** Admission attribution refused (spec §5.2 step 4): admitted BLOCKED. */
+	blocked?: PullRequestFailure;
+	uploadStartedAudit: UploadStartedAuditTemplate;
 };
 
 /**
@@ -642,6 +760,13 @@ type CreateDerivedInstructionSnapshotInput = {
 export async function createDerivedInstructionSnapshot(
 	input: CreateDerivedInstructionSnapshotInput,
 ): Promise<CreateDerivedInstructionSnapshotResult> {
+	if (input.destination?.kind === "REPOSITORY" && !input.proposal) {
+		// A programming error: a pull request is only ever a proposal's
+		// delivery, and a non-proposal derivation may publish itself.
+		throw new Error(
+			"createDerivedInstructionSnapshot: a REPOSITORY destination requires proposal mode",
+		);
+	}
 	let lastError: unknown;
 	for (let attempt = 0; attempt < VERSION_ALLOCATION_ATTEMPTS; attempt++) {
 		try {
@@ -746,6 +871,7 @@ function allocateAndCreateDerivedSnapshot(
 				// `status` is returned rather than assumed because PENDING
 				// says nothing about how far the upload got: the caller
 				// decides what to do from the snapshot's own status.
+				const destination = input.destination;
 				const existing = await tx.projectInstructionSnapshot.findFirst({
 					where: {
 						projectId: input.projectId,
@@ -756,6 +882,32 @@ function allocateAndCreateDerivedSnapshot(
 						baseSnapshotId: input.baseSnapshotId,
 						changeSetDigest: digest,
 						proposalStatus: "PENDING",
+						// The same destination and, for a pull request, the
+						// same frozen configuration (Fizzy #2563 spec §5.1
+						// step 7): after a re-configure moved the generation,
+						// the same edit is a new operation against the new
+						// configuration, not a replay of the old one.
+						proposalDestination: destination
+							? "REPOSITORY"
+							: "FABRIC",
+						...(destination
+							? {
+									AND: [
+										{
+											pullRequestContext: {
+												path: ["syncId"],
+												equals: destination.syncId,
+											},
+										},
+										{
+											pullRequestContext: {
+												path: ["syncGeneration"],
+												equals: destination.syncGeneration,
+											},
+										},
+									],
+								}
+							: {}),
 					},
 					// Newest first: if an older release left more than one
 					// identical row behind, the one to finish or report is
@@ -785,6 +937,7 @@ function allocateAndCreateDerivedSnapshot(
 					return {
 						ok: false,
 						reason: "duplicate_proposal",
+						auditWritten: false,
 						existing: {
 							id: existing.id,
 							version: existing.version,
@@ -1027,6 +1180,40 @@ function allocateAndCreateDerivedSnapshot(
 						? false
 						: input.publishOnReady,
 					proposalStatus: input.proposal ? "PENDING" : null,
+					...(input.proposal
+						? {
+								proposalDestination: input.destination
+									? ("REPOSITORY" as const)
+									: ("FABRIC" as const),
+								...(input.note
+									? {
+											proposalNote:
+												input.note as Prisma.InputJsonValue,
+										}
+									: {}),
+							}
+						: {}),
+					// A REPOSITORY proposal is admitted as a pull-request
+					// operation in this same transaction (spec §5.1 step 8):
+					// QUEUED, or BLOCKED when admission refused its
+					// attribution, which nothing then pushes.
+					...(input.destination
+						? {
+								pullRequestOperationId:
+									input.destination.operationId,
+								pullRequestContext: input.destination.context,
+								pullRequestRef: input.destination.branch,
+								...(input.destination.blocked
+									? {
+											pullRequestState:
+												"BLOCKED" as const,
+											pullRequestFailure: input
+												.destination
+												.blocked as unknown as Prisma.InputJsonValue,
+										}
+									: { pullRequestState: "QUEUED" as const }),
+							}
+						: {}),
 					excludedCount: base.excludedCount,
 					fileCount,
 				},
@@ -1085,6 +1272,30 @@ function allocateAndCreateDerivedSnapshot(
 				},
 				select: { id: true, path: true },
 			});
+			// A REPOSITORY proposal's admission audit commits with the row
+			// (Fizzy #2563 Decision 11): the operation starts a workflow after
+			// commit, and a committed operation without its audit row would be
+			// a pull request nobody is recorded as having asked for. The id,
+			// version and counts are only known here. A throw rolls the row
+			// back with the audit.
+			const template = input.destination?.uploadStartedAudit;
+			if (template) {
+				await recordAuditTx(tx, {
+					...template,
+					action: "project.instructions.upload_started",
+					category: "project",
+					resource: {
+						type: "project_instruction_snapshot",
+						id: snapshot.id,
+						name: `v${snapshot.version}`,
+					},
+					metadata: {
+						...template.metadata,
+						inheritedCount: inherited.length,
+						keptCount: fileCount,
+					},
+				});
+			}
 			return {
 				ok: true,
 				id: snapshot.id,
@@ -1092,6 +1303,7 @@ function allocateAndCreateDerivedSnapshot(
 				fileCount,
 				inheritedCount: inherited.length,
 				staged,
+				auditWritten: template !== undefined,
 			};
 		},
 	);
@@ -1135,15 +1347,14 @@ export function listInstructionSnapshots(
 			...(visibility.canReviewProposals
 				? {}
 				: {
+						// Direct and approved versions for everyone; a
+						// proposer's own rows in every status, so a REPOSITORY
+						// proposal stays in its proposer's History once its
+						// pull request is MERGED or CLOSED (Fizzy #2563).
 						OR: [
 							{ proposalStatus: null },
 							{ proposalStatus: "APPROVED" as const },
-							{
-								userId: visibility.viewerUserId,
-								proposalStatus: {
-									in: ["PENDING", "REJECTED"] as const,
-								},
-							},
+							{ userId: visibility.viewerUserId },
 						],
 					}),
 		},
@@ -1180,7 +1391,7 @@ export async function listInstructionProposals(
 			cursor: options.cursor ? { id: options.cursor } : undefined,
 			skip: options.cursor ? 1 : undefined,
 			take: options.limit + 1,
-			select: summarySelect,
+			select: proposalSelect,
 		}),
 	]);
 	if (!project) {
@@ -1200,11 +1411,20 @@ export async function listInstructionProposals(
 	};
 }
 
-/** Tenant-scoped proposal lookup. Returns metadata only, never file bytes. */
+/**
+ * Tenant-scoped proposal lookup. Returns metadata only, never file bytes.
+ *
+ * `proposerUserId` narrows it to that member's own proposals, the view a
+ * caller who cannot review has (as `listInstructionProposals`): another
+ * member's proposal is then null exactly as a missing one is, so a caller
+ * cannot learn from the answer that someone else's id is real (Fizzy #2563
+ * spec §12).
+ */
 export async function getInstructionProposal(
 	id: string,
 	projectId: string,
 	organizationId: string,
+	options: { proposerUserId?: string } = {},
 ) {
 	const [project, proposal] = await Promise.all([
 		db.project.findFirst({
@@ -1217,8 +1437,13 @@ export async function getInstructionProposal(
 				projectId,
 				organizationId,
 				proposalStatus: { not: null },
+				// Present means narrowed, even to a value no row carries: an
+				// empty id must not read as "no narrowing".
+				...(options.proposerUserId !== undefined
+					? { userId: options.proposerUserId }
+					: {}),
 			},
-			select: summarySelect,
+			select: proposalSelect,
 		}),
 	]);
 	if (!project || !proposal) {
@@ -1844,6 +2069,89 @@ export async function authorizeInstructionProposalUploadUrls(input: {
 }
 
 /**
+ * Closes a REPOSITORY proposal whose snapshot the gate rejected or the reaper
+ * abandoned (Fizzy #2563 spec §4.4): `QUEUED`, `OPENING` with no head SHA and
+ * `BLOCKED` in validation or admission become `CANCELED` with
+ * `VALIDATION_REJECTED`, through the fenced transition on the caller's
+ * transaction, with its `pull_request_reconciled` row. Any other state is
+ * left exactly as it is, both status columns included: something may already
+ * have been pushed or opened, and only settlement may close that.
+ *
+ * The verdict is authoritative over whichever attempt owns the row, so it
+ * fences on the attempt it reads under the row lock: a claim that commits
+ * first is seen (and its still-unpushed OPENING row canceled), and one that
+ * commits later waits for this transaction and then finds CANCELED.
+ */
+async function cancelRepositoryProposalForVerdict(
+	tx: Prisma.TransactionClient,
+	i: {
+		event: "validation_rejected" | "abandoned";
+		snapshotId: string;
+		organizationId: string;
+		projectId: string;
+		version: number | null;
+		operationId: string | null;
+		actor: RecordAuditInput["actor"];
+		params: PullRequestFailure["params"];
+	},
+): Promise<boolean> {
+	// The caller's verdict UPDATE already holds this lock; taking it here
+	// keeps the attempt read current whatever the caller did first.
+	const [locked] = await tx.$queryRaw<Array<{ attempt: number }>>`
+		SELECT s."pullRequestAttempt" AS attempt
+		FROM "project_instruction_snapshot" s
+		WHERE s."id" = ${i.snapshotId}
+			AND s."organizationId" = ${i.organizationId}
+		FOR UPDATE
+	`;
+	if (!locked) {
+		return false;
+	}
+	const failure: PullRequestFailure = {
+		phase: "validation",
+		code: "VALIDATION_REJECTED",
+		retryable: false,
+		at: new Date().toISOString(),
+		params: i.params,
+	};
+	const moved = await transitionPullRequest(
+		{
+			snapshotId: i.snapshotId,
+			organizationId: i.organizationId,
+			event: i.event,
+			from: ["QUEUED", "OPENING", "BLOCKED"],
+			expectedAttempt: locked.attempt,
+			to: "CANCELED",
+			bumpAttempt: true,
+			data: {
+				pullRequestFailure: failure as unknown as Prisma.InputJsonValue,
+				pullRequestNextAttemptAt: null,
+			},
+			audit: {
+				action: "project.instructions.pull_request_reconciled",
+				category: "project",
+				actor: i.actor,
+				organizationId: i.organizationId,
+				projectId: i.projectId,
+				resource: {
+					type: "project_instruction_snapshot",
+					id: i.snapshotId,
+					name: i.version === null ? undefined : `v${i.version}`,
+				},
+				metadata: {
+					outcome: "canceled",
+					operationId: i.operationId,
+					code: "VALIDATION_REJECTED",
+					targetMismatch: false,
+				},
+			},
+		},
+		tx,
+	);
+	return moved.ok;
+}
+
+/**
  * The REJECTED transition and its audit row, as ONE idempotent unit.
  *
  * Same at-least-once problem as `markInstructionSnapshotReady`, with a worse
@@ -1878,7 +2186,12 @@ export async function markInstructionSnapshotRejected(input: {
 				organizationId: input.organizationId,
 				status: { notIn: VERDICT_STATUSES },
 			},
-			select: { proposalStatus: true },
+			select: {
+				proposalStatus: true,
+				proposalDestination: true,
+				pullRequestOperationId: true,
+				version: true,
+			},
 		});
 		if (!snapshot) {
 			return { changed: false };
@@ -1906,15 +2219,31 @@ export async function markInstructionSnapshotRejected(input: {
 		// reviewable. Close its proposal state in the same transaction as the
 		// validation verdict and audit row so it releases its base and cannot
 		// sit in the review queue forever.
-		await tx.projectInstructionSnapshot.updateMany({
-			where: {
-				id: input.snapshotId,
-				projectId: input.projectId,
+		if (snapshot.proposalDestination === "REPOSITORY") {
+			// A REPOSITORY proposal's status follows its delivery state, so
+			// only the fenced transition may close it (Fizzy #2563 spec §4.4),
+			// and only from a state in which nothing was pushed or created.
+			await cancelRepositoryProposalForVerdict(tx, {
+				event: "validation_rejected",
+				snapshotId: input.snapshotId,
 				organizationId: input.organizationId,
-				proposalStatus: "PENDING",
-			},
-			data: { proposalStatus: "REJECTED" },
-		});
+				projectId: input.projectId,
+				version: snapshot.version,
+				operationId: snapshot.pullRequestOperationId,
+				actor: input.audit.actor,
+				params: {},
+			});
+		} else {
+			await tx.projectInstructionSnapshot.updateMany({
+				where: {
+					id: input.snapshotId,
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+					proposalStatus: "PENDING",
+				},
+				data: { proposalStatus: "REJECTED" },
+			});
+		}
 		await recordAuditTx(tx, input.audit);
 		return { changed: true };
 	});
@@ -2102,18 +2431,40 @@ export async function failStaleValidatingInstructionSnapshot(input: {
 // Publish
 // ---------------------------------------------------------------------------
 
+type InstructionProposalRefusal =
+	| "not_found"
+	| "not_ready"
+	| "in_progress"
+	| "stale"
+	| "already_decided"
+	| "repository_backed";
+
+/**
+ * `repository_proposal`: a REPOSITORY proposal is decided on its pull
+ * request, never in Fabric (Fizzy #2563 spec §2.5), whatever the project's
+ * source of truth is now.
+ */
 export type InstructionProposalDecisionResult =
 	| { ok: true; changed: boolean; version: number }
 	| {
 			ok: false;
-			reason:
-				| "not_found"
-				| "not_ready"
-				| "in_progress"
-				| "stale"
-				| "already_decided"
-				| "repository_backed";
+			reason: InstructionProposalRefusal | "repository_proposal";
 	  };
+
+/**
+ * `pullRequest` says what a cancel did to a REPOSITORY proposal's operation
+ * (Fizzy #2563 spec §4.4): `canceled` when nothing had been pushed or
+ * created, `close_requested` when settlement now has to close what Fabric
+ * opened, and null for a FABRIC proposal.
+ */
+export type InstructionProposalCancelResult =
+	| {
+			ok: true;
+			changed: boolean;
+			version: number;
+			pullRequest: "canceled" | "close_requested" | null;
+	  }
+	| { ok: false; reason: InstructionProposalRefusal };
 
 /**
  * Approves and publishes one validated proposal in the same transaction.
@@ -2166,12 +2517,21 @@ export async function approveInstructionProposal(input: {
 				version: true,
 				status: true,
 				proposalStatus: true,
+				proposalDestination: true,
 				rejection: true,
 				baseSnapshotId: true,
 			},
 		});
 		if (!proposal) {
 			return { ok: false as const, reason: "not_found" as const };
+		}
+		if (proposal.proposalDestination === "REPOSITORY") {
+			// Decided on its pull request, even after the project flipped
+			// back to UPLOAD (Fizzy #2563 spec §2.5).
+			return {
+				ok: false as const,
+				reason: "repository_proposal" as const,
+			};
 		}
 		if (proposal.proposalStatus === "APPROVED") {
 			return {
@@ -2298,11 +2658,20 @@ export async function rejectInstructionProposal(input: {
 				version: true,
 				status: true,
 				proposalStatus: true,
+				proposalDestination: true,
 				rejection: true,
 			},
 		});
 		if (!proposal) {
 			return { ok: false as const, reason: "not_found" as const };
+		}
+		if (proposal.proposalDestination === "REPOSITORY") {
+			// A reviewer rejects a pull request on its provider; its author
+			// withdraws it with cancel (Fizzy #2563 spec §2.5).
+			return {
+				ok: false as const,
+				reason: "repository_proposal" as const,
+			};
 		}
 		if (proposal.proposalStatus === "REJECTED") {
 			return {
@@ -2372,14 +2741,19 @@ export async function rejectInstructionProposal(input: {
 	});
 }
 
-/** Owner-only withdrawal with the same stable-state interlock as rejection. */
+/**
+ * Owner-only withdrawal with the same stable-state interlock as rejection.
+ *
+ * A REPOSITORY proposal withdraws its pull-request operation instead
+ * (Fizzy #2563 spec §4.4): see `cancelRepositoryProposal`.
+ */
 export async function cancelInstructionProposal(input: {
 	snapshotId: string;
 	projectId: string;
 	organizationId: string;
 	proposerUserId: string;
 	audit: RecordAuditInput;
-}): Promise<InstructionProposalDecisionResult> {
+}): Promise<InstructionProposalCancelResult> {
 	return db.$transaction(async (tx) => {
 		const proposal = await tx.projectInstructionSnapshot.findFirst({
 			where: {
@@ -2394,17 +2768,22 @@ export async function cancelInstructionProposal(input: {
 				version: true,
 				status: true,
 				proposalStatus: true,
+				proposalDestination: true,
 				rejection: true,
 			},
 		});
 		if (!proposal) {
 			return { ok: false as const, reason: "not_found" as const };
 		}
+		if (proposal.proposalDestination === "REPOSITORY") {
+			return cancelRepositoryProposal(tx, input);
+		}
 		if (proposal.proposalStatus === "REJECTED") {
 			return {
 				ok: true as const,
 				changed: false,
 				version: proposal.version,
+				pullRequest: null,
 			};
 		}
 		if (proposal.proposalStatus !== "PENDING") {
@@ -2450,6 +2829,7 @@ export async function cancelInstructionProposal(input: {
 					ok: true as const,
 					changed: false,
 					version: proposal.version,
+					pullRequest: null,
 				};
 			}
 			if (
@@ -2465,8 +2845,203 @@ export async function cancelInstructionProposal(input: {
 			ok: true as const,
 			changed: true,
 			version: proposal.version,
+			pullRequest: null,
 		};
 	});
+}
+
+/**
+ * The author's cancel of a REPOSITORY proposal (Fizzy #2563 spec §4.4).
+ *
+ * Under the snapshot's row lock, so the state read here, the fenced
+ * transition and the snapshot's own cancellation write describe one moment.
+ * Before anything was pushed or created (`QUEUED`, or `BLOCKED` in
+ * validation or admission) the operation is `CANCELED` in today's
+ * cancellation transaction: the snapshot write and the withdrawal's
+ * `project.instructions.rejected` row are the FABRIC path's. Later
+ * (`OPENING`, `OPEN`, any other `BLOCKED`) it becomes `CLOSE_REQUESTED`, due
+ * now, and settlement closes and deletes what Fabric owns; the proposal
+ * stays PENDING until it does. Both write `pull_request_close_requested`
+ * with the state they started from. A VALIDATING snapshot is refused as
+ * today, and a repeated cancel is answered from the state it left.
+ */
+async function cancelRepositoryProposal(
+	tx: Prisma.TransactionClient,
+	input: {
+		snapshotId: string;
+		projectId: string;
+		organizationId: string;
+		proposerUserId: string;
+		audit: RecordAuditInput;
+	},
+): Promise<InstructionProposalCancelResult> {
+	const locked = await tx.$queryRaw<Array<{ id: string }>>`
+		SELECT s."id"
+		FROM "project_instruction_snapshot" s
+		WHERE s."id" = ${input.snapshotId}
+			AND s."projectId" = ${input.projectId}
+			AND s."organizationId" = ${input.organizationId}
+			AND s."userId" = ${input.proposerUserId}
+		FOR UPDATE
+	`;
+	if (locked.length === 0) {
+		return { ok: false, reason: "not_found" };
+	}
+	const row = await tx.projectInstructionSnapshot.findFirst({
+		where: {
+			id: input.snapshotId,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			userId: input.proposerUserId,
+		},
+		select: {
+			id: true,
+			version: true,
+			status: true,
+			proposalStatus: true,
+			rejection: true,
+			pullRequestState: true,
+			pullRequestAttempt: true,
+			pullRequestOperationId: true,
+		},
+	});
+	if (!row) {
+		return { ok: false, reason: "not_found" };
+	}
+	if (row.pullRequestState === "CANCELED") {
+		return {
+			ok: true,
+			changed: false,
+			version: row.version,
+			pullRequest: "canceled",
+		};
+	}
+	if (row.pullRequestState === "CLOSE_REQUESTED") {
+		return {
+			ok: true,
+			changed: false,
+			version: row.version,
+			pullRequest: "close_requested",
+		};
+	}
+	if (row.proposalStatus !== "PENDING" || row.pullRequestState === null) {
+		return { ok: false, reason: "already_decided" };
+	}
+	if (!REJECTABLE_PROPOSAL_STATUSES.includes(row.status)) {
+		return { ok: false, reason: "in_progress" };
+	}
+	const stateBefore = row.pullRequestState;
+	const closeRequested: RecordAuditInput = {
+		action: "project.instructions.pull_request_close_requested",
+		category: "project",
+		actor: input.audit.actor,
+		organizationId: input.organizationId,
+		projectId: input.projectId,
+		resource: {
+			type: "project_instruction_snapshot",
+			id: row.id,
+			name: `v${row.version}`,
+		},
+		metadata: { operationId: row.pullRequestOperationId, stateBefore },
+		ipAddress: input.audit.ipAddress,
+		userAgent: input.audit.userAgent,
+		requestId: input.audit.requestId,
+		sessionId: input.audit.sessionId,
+		correlationId: input.audit.correlationId,
+	};
+
+	if (stateBefore === "QUEUED" || stateBefore === "BLOCKED") {
+		const canceled = await transitionPullRequest(
+			{
+				snapshotId: row.id,
+				organizationId: input.organizationId,
+				event: "cancel_pre_create",
+				from: [stateBefore],
+				expectedAttempt: row.pullRequestAttempt,
+				to: "CANCELED",
+				bumpAttempt: true,
+				data: { pullRequestNextAttemptAt: null },
+				audit: closeRequested,
+			},
+			tx,
+		);
+		if (canceled.ok) {
+			// Today's cancellation writes, less `proposalStatus`, which the
+			// transition has already derived from CANCELED.
+			const { count } = await tx.projectInstructionSnapshot.updateMany({
+				where: {
+					id: row.id,
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+					userId: input.proposerUserId,
+					status: row.status,
+				},
+				data: {
+					status: row.status === "READY" ? "READY" : "REJECTED",
+					...(row.status === "READY"
+						? {}
+						: {
+								rejection: rejectionsWithProposalCleanupMarker(
+									row.rejection,
+								) as unknown as Prisma.InputJsonValue,
+							}),
+					reviewedAt: new Date(),
+				},
+			});
+			if (count !== 1) {
+				// The row lock makes this unreachable; throwing rolls the
+				// transition back rather than committing half a cancel.
+				throw new Error(
+					"Instruction proposal cancellation lost its row",
+				);
+			}
+			await recordAuditTx(tx, input.audit);
+			return {
+				ok: true,
+				changed: true,
+				version: row.version,
+				pullRequest: "canceled",
+			};
+		}
+	}
+	if (
+		stateBefore === "OPENING" ||
+		stateBefore === "OPEN" ||
+		stateBefore === "BLOCKED"
+	) {
+		const requested = await transitionPullRequest(
+			{
+				snapshotId: row.id,
+				organizationId: input.organizationId,
+				event: "cancel_later",
+				from: [stateBefore],
+				expectedAttempt: row.pullRequestAttempt,
+				to: "CLOSE_REQUESTED",
+				bumpAttempt: true,
+				// Failure cleared and due now: the sweeper's Close sub-batch
+				// selects on `pullRequestNextAttemptAt IS NULL OR <= now()`.
+				data: {
+					pullRequestFailure: Prisma.DbNull,
+					pullRequestNextAttemptAt: null,
+				},
+				audit: closeRequested,
+			},
+			tx,
+		);
+		if (requested.ok) {
+			return {
+				ok: true,
+				changed: true,
+				version: row.version,
+				pullRequest: "close_requested",
+			};
+		}
+	}
+	// Under the row lock neither transition can lose a race, so a row that
+	// neither accepts (a QUEUED row with a push recorded) breaks an invariant.
+	throw new Error(
+		`Instruction proposal cancel found no transition from ${stateBefore}`,
+	);
 }
 
 type PublishInstructionSnapshotResult =
@@ -2484,6 +3059,7 @@ type PublishInstructionSnapshotResult =
 				| "not_found"
 				| "not_ready"
 				| "proposal_not_approved"
+				| "repository_proposal"
 				| "older_than_current"
 				| "base_moved"
 				| "configuration_changed"
@@ -2669,6 +3245,7 @@ export async function publishInstructionSnapshot(input: {
 				id: true,
 				status: true,
 				proposalStatus: true,
+				proposalDestination: true,
 				version: true,
 				baseSnapshotId: true,
 				baseVersion: true,
@@ -2685,6 +3262,17 @@ export async function publishInstructionSnapshot(input: {
 				reason: "not_found" as const,
 			};
 		}
+		// A REPOSITORY proposal reaches agents only by being merged in the
+		// repository and synced back (Fizzy #2563 spec §2.5). No path here
+		// may publish it, in any status and on either path: MERGED and
+		// CLOSED are not approvals.
+		if (snapshot.proposalDestination === "REPOSITORY") {
+			return {
+				published: false as const,
+				changed: false as const,
+				reason: "repository_proposal" as const,
+			};
+		}
 		if (snapshot.status !== "READY") {
 			return {
 				published: false as const,
@@ -2697,10 +3285,11 @@ export async function publishInstructionSnapshot(input: {
 		// reviewer rejection must never be bypassed from History. An approved
 		// proposal remains a legitimate historical snapshot and may be chosen
 		// again by the manual rollback path.
-		if (
-			snapshot.proposalStatus === "PENDING" ||
-			snapshot.proposalStatus === "REJECTED"
-		) {
+		//
+		// An allowlist, not a denylist (Fizzy #2563 R14): a status added
+		// later, as MERGED and CLOSED were, must not pass by default.
+		const proposalStatus = snapshot.proposalStatus ?? null;
+		if (proposalStatus !== null && proposalStatus !== "APPROVED") {
 			return {
 				published: false as const,
 				changed: false as const,
@@ -3060,17 +3649,26 @@ export async function listPrunableInstructionSnapshots(
 							{ proposalStatus: null },
 							{
 								proposalStatus: {
-									in: ["APPROVED", "REJECTED"],
+									in: [
+										"APPROVED",
+										"REJECTED",
+										"MERGED",
+										"CLOSED",
+									],
 								},
 							},
 						],
 					},
+					// Never an unresolved pull-request operation (Fizzy #2563
+					// spec §4.3), and in the WHERE ahead of `skip` like the
+					// clauses around it, so a kept row holds no slot.
+					resolvedPullRequestOperation(),
 					{
 						derivedSnapshots: {
 							none: { proposalStatus: "PENDING" },
 						},
 					},
-					{ NOT: pendingCleanupFilter() },
+					noPendingCleanupFilter(),
 					{
 						derivedSnapshots: {
 							none: pendingCleanupFilter(),
@@ -3094,17 +3692,26 @@ export async function listPrunableInstructionSnapshots(
 							{ proposalStatus: null },
 							{
 								proposalStatus: {
-									in: ["APPROVED", "REJECTED"],
+									in: [
+										"APPROVED",
+										"REJECTED",
+										"MERGED",
+										"CLOSED",
+									],
 								},
 							},
 						],
 					},
+					// Never an unresolved pull-request operation (Fizzy #2563
+					// spec §4.3), and in the WHERE ahead of `skip` like the
+					// clauses around it, so a kept row holds no slot.
+					resolvedPullRequestOperation(),
 					{
 						derivedSnapshots: {
 							none: { proposalStatus: "PENDING" },
 						},
 					},
-					{ NOT: pendingCleanupFilter() },
+					noPendingCleanupFilter(),
 					{
 						derivedSnapshots: {
 							none: pendingCleanupFilter(),
@@ -3219,6 +3826,7 @@ export async function listProjectsWithPrunableInstructionSnapshots(
 			WHERE s."status" = 'READY' AND p."id" IS NULL
 				AND s."proposalStatus" IS DISTINCT FROM 'PENDING'::"ProjectInstructionProposalStatus"
 				AND NOT COALESCE(s."rejection" @> '[{"path":"(proposal staging)","reason":"abandoned","detail":"staging pending"}]'::jsonb, FALSE)
+				AND ${resolvedPullRequestOperationSql("s")}
 				AND NOT EXISTS (
 					SELECT 1 FROM "project_instruction_snapshot" d
 					WHERE d."baseSnapshotId" = s."id"
@@ -3244,6 +3852,7 @@ export async function listProjectsWithPrunableInstructionSnapshots(
 			WHERE s."status" IN ('REJECTED', 'FAILED') AND p."id" IS NULL
 				AND s."proposalStatus" IS DISTINCT FROM 'PENDING'::"ProjectInstructionProposalStatus"
 				AND NOT COALESCE(s."rejection" @> '[{"path":"(proposal staging)","reason":"abandoned","detail":"staging pending"}]'::jsonb, FALSE)
+				AND ${resolvedPullRequestOperationSql("s")}
 				AND NOT EXISTS (
 					SELECT 1 FROM "project_instruction_snapshot" d
 					WHERE d."baseSnapshotId" = s."id"
@@ -3461,26 +4070,46 @@ export async function rejectAbandonedInstructionSnapshot(input: {
 		if (count === 0) {
 			return { changed: false };
 		}
-		await tx.projectInstructionSnapshot.updateMany({
-			where: {
-				id: input.snapshotId,
-				projectId: input.projectId,
-				organizationId: input.organizationId,
-				proposalStatus: "PENDING",
-			},
-			data: { proposalStatus: "REJECTED" },
-		});
-		// Read AFTER the write and inside the same transaction, purely to
-		// name the actor and the version in the audit row. The verdict is
-		// still the one conditional statement above; nothing here decides it.
+		// Read AFTER the verdict write and inside the same transaction, to
+		// name the actor and the version in the audit row and to tell the two
+		// destinations apart. The verdict is still the one conditional
+		// statement above; nothing here decides it.
 		const snapshot = await tx.projectInstructionSnapshot.findFirst({
 			where: {
 				id: input.snapshotId,
 				projectId: input.projectId,
 				organizationId: input.organizationId,
 			},
-			select: { userId: true, version: true },
+			select: {
+				userId: true,
+				version: true,
+				proposalDestination: true,
+				pullRequestOperationId: true,
+			},
 		});
+		if (snapshot?.proposalDestination === "REPOSITORY") {
+			// Fizzy #2563 spec §4.4: the fenced transition, or nothing.
+			await cancelRepositoryProposalForVerdict(tx, {
+				event: "abandoned",
+				snapshotId: input.snapshotId,
+				organizationId: input.organizationId,
+				projectId: input.projectId,
+				version: snapshot.version,
+				operationId: snapshot.pullRequestOperationId,
+				actor: { type: "user", userId: snapshot.userId },
+				params: { reason: "abandoned" },
+			});
+		} else {
+			await tx.projectInstructionSnapshot.updateMany({
+				where: {
+					id: input.snapshotId,
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+					proposalStatus: "PENDING",
+				},
+				data: { proposalStatus: "REJECTED" },
+			});
+		}
 		await recordAuditTx(tx, {
 			action: "project.instructions.rejected",
 			category: "project",
@@ -3770,7 +4399,12 @@ export async function countInFlightDerivedSnapshots(
  * survived, which is worse than either outcome it is reporting.
  */
 class InstructionSnapshotNotDeleted extends Error {
-	constructor(readonly snapshotReason?: "active" | "base_in_flight") {
+	constructor(
+		readonly snapshotReason?:
+			| "active"
+			| "base_in_flight"
+			| "pull_request_unresolved",
+	) {
 		super("instruction snapshot not deleted");
 	}
 }
@@ -3816,7 +4450,11 @@ export async function deleteInstructionSnapshot(
 	organizationId: string,
 ): Promise<{
 	deleted: boolean;
-	reason?: "published" | "active" | "base_in_flight";
+	reason?:
+		| "published"
+		| "active"
+		| "base_in_flight"
+		| "pull_request_unresolved";
 }> {
 	try {
 		return await db.$transaction(async (tx) => {
@@ -3873,17 +4511,26 @@ export async function deleteInstructionSnapshot(
 								{ proposalStatus: null },
 								{
 									proposalStatus: {
-										in: ["APPROVED", "REJECTED"],
+										in: [
+											"APPROVED",
+											"REJECTED",
+											"MERGED",
+											"CLOSED",
+										],
 									},
 								},
 							],
 						},
+						// The guard the prune and the manual delete share
+						// (Fizzy #2563 spec §4.3): a row whose operation may
+						// still push, create, close or settle keeps its bytes.
+						resolvedPullRequestOperation(),
 						{
 							derivedSnapshots: {
 								none: { proposalStatus: "PENDING" },
 							},
 						},
-						{ NOT: pendingCleanupFilter() },
+						noPendingCleanupFilter(),
 						{
 							derivedSnapshots: {
 								none: pendingCleanupFilter(),
@@ -3902,11 +4549,28 @@ export async function deleteInstructionSnapshot(
 				const surviving = await tx.projectInstructionSnapshot.findFirst(
 					{
 						where: { id, projectId, organizationId },
-						select: { id: true, status: true },
+						select: {
+							id: true,
+							status: true,
+							pullRequestState: true,
+							mergeSyncRequestedAt: true,
+							pullRequestObligationOpen: true,
+						},
 					},
 				);
 				if (!surviving) {
 					throw new InstructionSnapshotNotDeleted();
+				}
+				// A terminal row whose pull-request operation is unresolved
+				// (Fizzy #2563 spec §4.3): its bytes are what the open,
+				// recovery or settlement still reads.
+				if (
+					DELETABLE_STATUSES.includes(surviving.status) &&
+					isUnresolvedPullRequestOperation(surviving)
+				) {
+					throw new InstructionSnapshotNotDeleted(
+						"pull_request_unresolved",
+					);
 				}
 				const deriving = DELETABLE_STATUSES.includes(surviving.status)
 					? await tx.projectInstructionSnapshot.count({

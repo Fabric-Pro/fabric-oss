@@ -64,6 +64,12 @@ vi.mock("../finalize", () => ({
 	finalizeInstructionSnapshot: (...a: unknown[]) =>
 		m.finalizeInstructionSnapshot(...a),
 }));
+// Nothing here reaches a repository destination; the Temporal client stays
+// out of this suite's module graph, as `../finalize`'s mock keeps it out.
+vi.mock("../proposal-pull-request", () => ({
+	startAdmittedProposalPullRequest: vi.fn(),
+	readProposalPullRequest: vi.fn(),
+}));
 
 import { submitInstructionChange } from "../submit-change";
 

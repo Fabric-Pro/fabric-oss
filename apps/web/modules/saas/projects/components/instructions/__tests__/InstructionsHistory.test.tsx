@@ -165,6 +165,47 @@ describe("InstructionsHistory", () => {
 			screen.queryByRole("button", { name: "publishAction" }),
 		).toBeNull();
 	});
+
+	// Fizzy #2563 spec §2.5: a suggestion that became a pull request reaches
+	// agents only by being merged in the repository and synced back, so the
+	// server refuses to publish it in any status (`repository_proposal`).
+	// A MERGED or CLOSED row stays in its proposer's History, and after a
+	// switch back to upload mode nothing else would hide Publish on it.
+	it.each([["MERGED"], ["CLOSED"]] as const)(
+		"never offers Publish for a suggestion whose pull request is %s, even in upload mode",
+		(proposalStatus) => {
+			render(
+				<InstructionsHistory
+					projectId="p"
+					open
+					onOpenChange={() => undefined}
+					snapshots={[
+						{
+							id: "suggestion",
+							version: 8,
+							status: "READY",
+							source: "UPLOAD",
+							fileCount: 1,
+							createdAt: new Date(),
+							proposalStatus,
+						},
+					]}
+					publishedId="published"
+					publishedVersion={7}
+					canPublish
+					onChanged={() => undefined}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+
+			expect(
+				screen.queryByRole("button", { name: "publishAction" }),
+			).toBeNull();
+			expect(
+				screen.queryByRole("button", { name: "rollbackAction" }),
+			).toBeNull();
+		},
+	);
 	beforeEach(() => {
 		vi.clearAllMocks();
 		compareInputs.length = 0;

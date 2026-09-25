@@ -195,3 +195,124 @@ export function treesEqual(
 		);
 	});
 }
+
+/**
+ * One `ls-tree -r -z` record, kept byte-exact for the proposal commit (Fizzy
+ * #2563 spec §7 step 2). Unlike `TreeEntry`, nothing is dropped: symlinks and
+ * gitlinks are what collision checks must see, and a non-UTF-8 name keeps its
+ * raw bytes with `path: null`.
+ */
+export type RawTreeEntry = {
+	mode: "100644" | "100755" | "120000" | "160000";
+	type: "blob" | "commit";
+	oid: string;
+	/** The repository path exactly as git stores it. */
+	rawPath: Buffer;
+	/** `rawPath` decoded as UTF-8, or null when it is not valid UTF-8. */
+	path: string | null;
+};
+
+const RAW_KINDS: Record<string, RawTreeEntry["type"]> = {
+	"100644": "blob",
+	"100755": "blob",
+	"120000": "blob",
+	"160000": "commit",
+};
+
+/**
+ * A streaming parser for `ls-tree -r -z <sha> [-- <root>]`, keeping every
+ * entry at or under `rootPath` (compared as bytes, so a non-UTF-8 name is
+ * still placed correctly). "invalid" means a record git should never print
+ * with `-r` (a tree, or an unknown mode or type): the caller fails rather
+ * than let an unseen entry escape the collision checks. "limit" means more
+ * than `maxEntries` entries, or one record longer than any legal one.
+ */
+export function createRawLsTreeParser(input: {
+	rootPath: string;
+	maxEntries: number;
+}): {
+	push(chunk: Buffer): "ok" | "limit" | "invalid";
+	finish(): { entries: RawTreeEntry[]; invalid: boolean };
+} {
+	const root = Buffer.from(input.rootPath, "utf8");
+	const prefix = Buffer.from(
+		input.rootPath === "" ? "" : `${input.rootPath}/`,
+		"utf8",
+	);
+	const entries: RawTreeEntry[] = [];
+	let pending: Buffer = Buffer.alloc(0);
+	let invalid = false;
+
+	const underRoot = (rawPath: Buffer): boolean =>
+		prefix.length === 0 ||
+		rawPath.equals(root) ||
+		(rawPath.length > prefix.length &&
+			rawPath.subarray(0, prefix.length).equals(prefix));
+
+	const consume = (record: Buffer): void => {
+		if (record.length === 0) {
+			return;
+		}
+		const tab = record.indexOf(0x09);
+		const header =
+			tab < 0
+				? null
+				: /^(\d{6}) (\w+) ([0-9a-f]{40}|[0-9a-f]{64})$/.exec(
+						record.subarray(0, tab).toString("latin1"),
+					);
+		if (!header) {
+			invalid = true;
+			return;
+		}
+		const [, mode, type, oid] = header;
+		if (RAW_KINDS[mode as string] !== type) {
+			invalid = true;
+			return;
+		}
+		const rawPath = Buffer.from(record.subarray(tab + 1));
+		if (!underRoot(rawPath)) {
+			return;
+		}
+		let decoded: string | null;
+		try {
+			decoded = UTF8.decode(rawPath);
+		} catch {
+			decoded = null;
+		}
+		entries.push({
+			mode: mode as RawTreeEntry["mode"],
+			type: type as RawTreeEntry["type"],
+			oid: oid as string,
+			rawPath,
+			path: decoded,
+		});
+	};
+
+	return {
+		push(chunk) {
+			const previousLength = pending.length;
+			pending =
+				previousLength === 0 ? chunk : Buffer.concat([pending, chunk]);
+			let nul = pending.indexOf(0, previousLength);
+			while (nul >= 0) {
+				consume(pending.subarray(0, nul));
+				pending = pending.subarray(nul + 1);
+				if (invalid) {
+					return "invalid";
+				}
+				if (entries.length > input.maxEntries) {
+					return "limit";
+				}
+				nul = pending.indexOf(0);
+			}
+			return pending.length > MAX_RECORD_BYTES ? "limit" : "ok";
+		},
+		finish() {
+			if (pending.length > 0) {
+				consume(pending);
+				pending = Buffer.alloc(0);
+			}
+			return { entries, invalid };
+		},
+	};
+}

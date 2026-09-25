@@ -1104,6 +1104,11 @@ export {
 } from "./project-deletion";
 export * from "./project-document-generation";
 export * from "./project-instructions";
+// Coding Instructions proposal pull requests (Fizzy #2563 spec §6, §9). The
+// module exports only activities (its helpers live in ./lib), so `export *`
+// registers exactly its readiness, open, recover, close, reconcile,
+// merge-sync dispatch, selection, deferral and restart activities.
+export * from "./instruction-proposal-pull-requests";
 // Automatic repository sync poll (spec §6.1, §8.2). Named, so a future
 // export of that module cannot become a schedulable activity by accident.
 export {

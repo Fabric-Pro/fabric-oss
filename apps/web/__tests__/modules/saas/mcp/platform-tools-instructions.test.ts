@@ -2410,3 +2410,226 @@ describe("fabric_add_instruction_lesson", () => {
 		});
 	});
 });
+
+// ---------------------------------------------------------------------------
+// A repository-backed project: the proposal becomes a pull request
+// (Fizzy #2563 spec §12)
+// ---------------------------------------------------------------------------
+
+describe("note parity and the pull-request block (Fizzy #2563)", () => {
+	const change = { op: "put", path: "AGENTS.md", content: "# Updated\n" };
+	const queued = {
+		operationId: "op_1",
+		state: "QUEUED",
+		url: null,
+		externalId: null,
+		failure: null,
+		lastCheckedAt: null,
+	};
+	function accepted(overrides: Record<string, unknown> = {}) {
+		return {
+			snapshotId: "snap_new",
+			version: 8,
+			baseSnapshotId: "snap_1",
+			baseVersion: 7,
+			fileCount: 12,
+			inheritedCount: 11,
+			putCount: 1,
+			deleteCount: 0,
+			proposalStatus: "PENDING",
+			mode: "proposal",
+			status: "VALIDATING",
+			pullRequest: queued,
+			...overrides,
+		};
+	}
+	const publishedSnapshot = {
+		id: "snap_1",
+		organizationId: "org_1",
+		version: 7,
+		status: "READY",
+		digest: "d",
+		fileCount: 3,
+		projectId: "proj_1",
+	};
+
+	beforeEach(() => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.getPublishedInstructionSnapshot.mockResolvedValue(publishedSnapshot);
+		m.listInstructionFiles.mockResolvedValue([]);
+	});
+
+	function propose(extra: Record<string, unknown> = {}) {
+		return executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [change],
+				baseSnapshotId: "snap_1",
+				...extra,
+			},
+			writeSession,
+		);
+	}
+
+	it("passes the proposal tool's note through and reports the pull request as awaiting review", async () => {
+		m.submitInstructionChange.mockResolvedValue(accepted());
+
+		const r = await propose({
+			note: { title: "Tighten the lint rule", body: "Why it matters." },
+		});
+
+		expect(r.isError).toBeFalsy();
+		expect(m.submitInstructionChange).toHaveBeenCalledWith(
+			expect.objectContaining({
+				mode: "proposal",
+				note: {
+					title: "Tighten the lint rule",
+					body: "Why it matters.",
+				},
+			}),
+		);
+		const body = JSON.parse(r.content[0]!.text);
+		expect(body.pullRequest).toEqual(queued);
+		expect(body.message).toContain("pull request");
+		expect(body.message).toContain("awaiting review");
+		expect(body.message).not.toContain("approves it in Fabric");
+	});
+
+	it("sends no note when the call has none, and returns a null block for a FABRIC proposal", async () => {
+		m.submitInstructionChange.mockResolvedValue(
+			accepted({ pullRequest: null }),
+		);
+
+		const r = await propose();
+
+		expect(m.submitInstructionChange.mock.calls[0]?.[0]).not.toHaveProperty(
+			"note",
+		);
+		const body = JSON.parse(r.content[0]!.text);
+		expect(body.pullRequest).toBeNull();
+		expect(body.message).toContain("approves it");
+	});
+
+	it.each([
+		["a string", "Tighten the lint rule"],
+		["an array", ["Tighten"]],
+		["a non-string title", { title: 7 }],
+		["a non-string body", { body: false }],
+	])(
+		"refuses a note that is %s, before proposing anything",
+		async (_label, note) => {
+			const r = await propose({ note });
+
+			expect(r.isError).toBe(true);
+			expect(JSON.stringify(r)).toContain("note");
+			expect(m.submitInstructionChange).not.toHaveBeenCalled();
+		},
+	);
+
+	it("quotes a rejected note back to the agent", async () => {
+		m.submitInstructionChange.mockRejectedValue(
+			Object.assign(
+				new Error(
+					"The note's title looks like it contains a credential. Remove it and try again.",
+				),
+				{
+					code: "UNPROCESSABLE_CONTENT",
+					data: { reason: "NOTE_REJECTED", field: "title" },
+				},
+			),
+		);
+
+		const r = await propose({ note: { title: "x" } });
+
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r)).toContain(
+			"looks like it contains a credential",
+		);
+	});
+
+	it("says so when Fabric could not open the pull request at all", async () => {
+		m.submitInstructionChange.mockResolvedValue(
+			accepted({
+				pullRequest: {
+					...queued,
+					state: "BLOCKED",
+					failure: {
+						phase: "admission",
+						code: "ATTRIBUTION_REJECTED",
+						retryable: false,
+						at: "2026-09-24T12:00:00.000Z",
+						params: {},
+					},
+				},
+			}),
+		);
+
+		const r = await propose();
+
+		const body = JSON.parse(r.content[0]!.text);
+		expect(body.pullRequest.state).toBe("BLOCKED");
+		expect(body.message).toContain("could not open");
+		expect(body.message).toContain("Coding Instructions tab");
+		expect(body.message).not.toContain("awaiting review");
+	});
+
+	it("passes the lesson tool's note through and returns its pull request", async () => {
+		m.submitInstructionChange.mockResolvedValue(accepted());
+
+		const r = await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{
+				projectId: "proj_1",
+				title: "Never skip the migration check",
+				body: "Run pnpm migrate before every deploy.",
+				note: { title: "Lesson: never skip the migration check" },
+			},
+			writeSession,
+		);
+
+		expect(r.isError).toBeFalsy();
+		expect(m.submitInstructionChange).toHaveBeenCalledWith(
+			expect.objectContaining({
+				note: { title: "Lesson: never skip the migration check" },
+			}),
+		);
+		const body = JSON.parse(r.content[0]!.text);
+		expect(body.pullRequest).toEqual(queued);
+		expect(body.message).toContain("Lesson drafted as Lessons/");
+		expect(body.message).toContain("awaiting review");
+	});
+
+	it.each([
+		"fabric_propose_project_instruction_change",
+		"fabric_add_instruction_lesson",
+	])(
+		"%s declares an optional note and says a repository-backed project gets a pull request",
+		(name) => {
+			const tool = PLATFORM_TOOL_DEFINITIONS.find((t) => t.name === name);
+			const schema = tool?.inputSchema as {
+				properties?: Record<string, unknown>;
+				required?: string[];
+			};
+			expect(schema.properties?.note).toMatchObject({
+				type: "object",
+				properties: {
+					title: { type: "string" },
+					body: { type: "string" },
+				},
+			});
+			expect(schema.required).not.toContain("note");
+			expect(tool?.description).toContain("pull request");
+			expect(tool?.description).toContain("awaiting review");
+		},
+	);
+
+	it("no longer tells an agent the lesson tool is refused on a repository-backed project", () => {
+		const tool = PLATFORM_TOOL_DEFINITIONS.find(
+			(t) => t.name === "fabric_add_instruction_lesson",
+		);
+		expect(tool?.description).not.toContain("refused");
+	});
+});

@@ -12,6 +12,7 @@ const m = vi.hoisted(() => ({
 	getProjectRepoIntegration: vi.fn(),
 	upsertInstructionRepositorySync: vi.fn(),
 	deleteInstructionRepositorySync: vi.fn(),
+	updateInstructionRepositorySyncProposalSettings: vi.fn(),
 	verifyRepositoryBranch: vi.fn(),
 	resolveFreshRepoTokenForRow: vi.fn(),
 	startInstructionRepositorySync: vi.fn(),
@@ -28,6 +29,8 @@ vi.mock("@repo/database", () => ({
 	getProjectRepoIntegration: m.getProjectRepoIntegration,
 	upsertInstructionRepositorySync: m.upsertInstructionRepositorySync,
 	deleteInstructionRepositorySync: m.deleteInstructionRepositorySync,
+	updateInstructionRepositorySyncProposalSettings:
+		m.updateInstructionRepositorySyncProposalSettings,
 }));
 vi.mock("@repo/connectors", () => ({
 	verifyRepositoryBranch: m.verifyRepositoryBranch,
@@ -76,6 +79,7 @@ beforeAll(async () => {
 		["configure", () => import("../configure")],
 		["syncNow", () => import("../sync-now")],
 		["disable", () => import("../disable")],
+		["updateProposalSettings", () => import("../update-proposal-settings")],
 	] as const) {
 		const before = m.requireProjectPermission.mock.calls.length;
 		const mod = (await load()) as Record<string, unknown>;
@@ -121,6 +125,7 @@ const syncRow = {
 	generation: 2,
 	automaticPausedReason: null,
 	automaticPausedAt: null,
+	allowReaderProposals: false,
 	user: { id: "user_2", name: "Delegate Person" },
 	repositoryIntegration: {
 		id: "int_1",
@@ -184,6 +189,7 @@ describe("declared permissions (spec §8.5)", () => {
 			configure: "instruction:create",
 			syncNow: "instruction:create",
 			disable: "instruction:create",
+			updateProposalSettings: "instruction:create",
 		});
 	});
 });
@@ -205,10 +211,14 @@ describe("resolveHostingOrganizationAccess FORBIDDEN arm (a personal project, or
 				"configure",
 				"syncNow",
 				"disable",
+				"updateProposalSettings",
 			] as const) {
 				await expect(
 					handlers[name]?.({
-						input: { projectId: "proj_1" },
+						input: {
+							projectId: "proj_1",
+							allowReaderProposals: true,
+						},
 						context: ctx,
 					}),
 				).rejects.toMatchObject({ code: "FORBIDDEN" });
@@ -239,6 +249,7 @@ describe("repositorySync.get", () => {
 				automatic: false,
 				automaticPausedReason: null,
 				automaticPausedAt: null,
+				allowReaderProposals: false,
 				delegateName: "Delegate Person",
 			},
 			latestRun: null,
@@ -753,6 +764,77 @@ describe("repositorySync.disable", () => {
 		await expect(
 			handlers.disable?.({
 				input: { projectId: "proj_1" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+	});
+});
+
+describe("repositorySync.updateProposalSettings (Fizzy #2563 Decision 4)", () => {
+	const written = {
+		id: "sync_1",
+		generation: 2,
+		allowReaderProposals: true,
+		repositoryIntegration: {
+			provider: "GITHUB",
+			repositoryOwner: "example-org",
+			repositoryName: "instructions",
+		},
+	};
+
+	it("writes only allowReaderProposals in the hosting organization, leaves the generation, and audits the change", async () => {
+		m.updateInstructionRepositorySyncProposalSettings.mockResolvedValue(
+			written,
+		);
+
+		expect(
+			await handlers.updateProposalSettings?.({
+				input: {
+					projectId: "proj_1",
+					organizationId: "attacker_org",
+					allowReaderProposals: true,
+				},
+				context: ctx,
+			}),
+		).toEqual({ allowReaderProposals: true, generation: 2 });
+		expect(
+			m.updateInstructionRepositorySyncProposalSettings,
+		).toHaveBeenCalledWith({
+			projectId: "proj_1",
+			organizationId: "org_1",
+			allowReaderProposals: true,
+		});
+		// Nothing that re-points the configuration or bumps the generation.
+		expect(m.upsertInstructionRepositorySync).not.toHaveBeenCalled();
+		expect(m.startInstructionRepositorySync).not.toHaveBeenCalled();
+		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(ctx, {
+			action: "project.instructions.repository_sync_configured",
+			category: "project",
+			organizationId: "org_1",
+			projectId: "proj_1",
+			resource: {
+				type: "project_instruction_repository_sync",
+				id: "sync_1",
+				name: "example-org/instructions",
+			},
+			metadata: {
+				change: "allow_reader_proposals",
+				allowReaderProposals: true,
+				provider: "GITHUB",
+				generation: 2,
+			},
+		});
+	});
+
+	it("is NOT_FOUND when the project has no repository configuration in this organization", async () => {
+		m.updateInstructionRepositorySyncProposalSettings.mockResolvedValue(
+			null,
+		);
+
+		await expect(
+			handlers.updateProposalSettings?.({
+				input: { projectId: "proj_1", allowReaderProposals: false },
 				context: ctx,
 			}),
 		).rejects.toMatchObject({ code: "NOT_FOUND" });

@@ -400,6 +400,13 @@ export function CodingInstructionsTab({
 				onChanged={invalidate}
 				canEdit={canEdit}
 				canReview={canReview}
+				// INSTRUCTION_READ, answered by the read-gated sync state
+				// loading at all: the project row carries CREATE and UPDATE
+				// flags only. A reader may suggest a change on a
+				// repository-backed project once the project allows it
+				// (Fizzy #2563 spec §12); until the state loads, or if it
+				// fails, the view offers them nothing.
+				canRead={repositorySync.isSuccess}
 				// A FAILED pointer query, not an empty one. Both leave
 				// `published` null, and History has to distinguish them: with
 				// no pointer it cannot tell a publish from a rollback, so it

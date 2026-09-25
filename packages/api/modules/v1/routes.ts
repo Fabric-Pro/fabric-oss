@@ -14,6 +14,7 @@
  *   GET  /orgs               → List orgs the caller belongs to
  *   POST /projects/:id/instructions/changes  → Propose a coding-instructions change, for review
  *   POST /projects/:id/instructions/versions → Publish a coding-instructions change directly
+ *   GET  /projects/:id/instructions/proposals/:snapshotId/pull-request → A repository proposal's pull request
  *   PUT  /projects/:id/contexts/synced-files → Push one knowledge file into the project's Context by path
  *   DELETE /projects/:id/contexts/synced-files → Delete one synced knowledge file by path, in the version named
  */

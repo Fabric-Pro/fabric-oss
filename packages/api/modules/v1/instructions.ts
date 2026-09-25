@@ -5,6 +5,8 @@
  *   POST /projects/:projectId/instructions/published/download   signed zip URL
  *   POST /projects/:projectId/instructions/changes              propose a change, for review
  *   POST /projects/:projectId/instructions/versions             publish a change directly
+ *   GET  /projects/:projectId/instructions/proposals/:snapshotId/pull-request
+ *                                                               a repository proposal's pull request
  *
  * These exist so `@fabricorg/cli` can keep a working tree current
  * (`fabric instructions check | sync | init | push`). The oRPC twins under
@@ -277,9 +279,10 @@ function isOrpcNotFound(error: unknown): boolean {
  * the tab's copy speaks about reloading a page there is none of here.
  */
 function submitChangeFailure(error: unknown): {
-	status: 400 | 403 | 404 | 409 | 412;
+	status: 400 | 403 | 404 | 409 | 412 | 422;
 	message: string;
 	code?: string;
+	field?: string;
 } | null {
 	if (typeof error !== "object" || error === null || !("code" in error)) {
 		return null;
@@ -287,7 +290,7 @@ function submitChangeFailure(error: unknown): {
 	const orpc = error as {
 		code?: unknown;
 		message?: unknown;
-		data?: { reason?: unknown };
+		data?: { reason?: unknown; field?: unknown };
 	};
 	const message =
 		typeof orpc.message === "string" ? orpc.message : "Request refused";
@@ -295,6 +298,19 @@ function submitChangeFailure(error: unknown): {
 		typeof orpc.data?.reason === "string" ? orpc.data.reason : undefined;
 	const code = rawReason === "BASE_NOT_PUBLISHED" ? "PULL_FIRST" : rawReason;
 	switch (orpc.code) {
+		// A note the admission refuses (Fizzy #2563 spec §5.3): `field` names
+		// which of title or body, never its content. It travels as
+		// `error.data.field`, the structured half the SDK already hands back
+		// as `FabricError.data`.
+		case "UNPROCESSABLE_CONTENT":
+			return {
+				status: 422,
+				message,
+				code,
+				...(typeof orpc.data?.field === "string"
+					? { field: orpc.data.field }
+					: {}),
+			};
 		case "BAD_REQUEST":
 			return { status: 400, message, code };
 		case "FORBIDDEN":
@@ -326,6 +342,7 @@ function readChangeBody(body: unknown):
 	| {
 			baseSnapshotId: string;
 			changes: InlineInstructionChange[];
+			note?: { title?: string; body?: string };
 	  }
 	| { error: string } {
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -386,7 +403,33 @@ function readChangeBody(body: unknown):
 			encoding,
 		});
 	}
-	return { baseSnapshotId, changes };
+
+	// Optional (Fizzy #2563 spec §12): the proposal's title and description,
+	// for both destinations. Only the SHAPE is checked here; the length,
+	// line and credential rules are the admission's, which answer 422
+	// NOTE_REJECTED naming the field. `null` means none, as absent does.
+	if (raw.note === undefined || raw.note === null) {
+		return { baseSnapshotId, changes };
+	}
+	if (typeof raw.note !== "object" || Array.isArray(raw.note)) {
+		return {
+			error: "note must be an object with an optional string title and body.",
+		};
+	}
+	const note = raw.note as Record<string, unknown>;
+	for (const field of ["title", "body"] as const) {
+		if (note[field] !== undefined && typeof note[field] !== "string") {
+			return { error: `note.${field} must be a string.` };
+		}
+	}
+	return {
+		baseSnapshotId,
+		changes,
+		note: {
+			...(typeof note.title === "string" ? { title: note.title } : {}),
+			...(typeof note.body === "string" ? { body: note.body } : {}),
+		},
+	};
 }
 
 /** The settings query stores nothing until someone sets it; absent means UPLOAD, as the tab reads it. */
@@ -671,6 +714,7 @@ export function registerInstructionRoutes(
 					projectId,
 					baseSnapshotId: body.baseSnapshotId,
 					changes: body.changes,
+					...(body.note ? { note: body.note } : {}),
 					// The route's own constant, closed over above. Nothing
 					// from the request reaches this field.
 					mode,
@@ -699,6 +743,9 @@ export function registerInstructionRoutes(
 						error: {
 							message: failure.message,
 							...(failure.code ? { code: failure.code } : {}),
+							...(failure.field
+								? { data: { field: failure.field } }
+								: {}),
 						},
 					},
 					failure.status,
@@ -807,5 +854,88 @@ export function registerInstructionRoutes(
 		requireScope("instructions:publish"),
 		requireOrganizationKeyForPublish,
 		handleChangeSubmission("publish"),
+	);
+
+	/**
+	 * GET /projects/:projectId/instructions/proposals/:snapshotId/pull-request
+	 *
+	 * A REPOSITORY proposal's pull request as Fabric last recorded it (Fizzy
+	 * #2563 spec §12): what `fabric instructions push` polls after a
+	 * suggestion is accepted. Never asks the provider; the row is the answer.
+	 * `pullRequest: null` for a proposal Fabric reviews itself.
+	 *
+	 * THREE gates, in order, each with its own refusal (AGENTS.md: an API key
+	 * never grants more than the UI):
+	 * 1. the key's declared scope, `instructions:read` — the flat
+	 *    `{ error: "Missing required scope: …" }` from the middleware;
+	 * 2. the creator's live `INSTRUCTION_READ` and the organization binding,
+	 *    `resolveInstructionProject`, as every route here — a wildcard `*` key
+	 *    passes gate 1 and still meets this one;
+	 * 3. the live proposer-or-reviewer check inside
+	 *    `getProposalPullRequestStatus`, the same function the tab's procedure
+	 *    calls: it looks the proposal up through the caller's visibility, so
+	 *    an invited guest who can read the project but neither suggested this
+	 *    change nor may review suggestions gets the 404 a missing id gets,
+	 *    here as there, and cannot tell another member's id from none.
+	 *    Gate 2 answers `{ error: { message } }` with 403.
+	 *
+	 * The implementation is imported lazily, as the write routes do, so the
+	 * read routes never pull the Temporal client into their module graph.
+	 */
+	app.get(
+		"/projects/:projectId/instructions/proposals/:snapshotId/pull-request",
+		requireScope("instructions:read"),
+		async (c) => {
+			const apiCtx = c.get("externalApiContext");
+			const projectId = c.req.param("projectId")!;
+			const snapshotId = c.req.param("snapshotId")!;
+			if (snapshotId.length > SNAPSHOT_ID_MAX_LENGTH) {
+				return c.json(
+					badRequest(
+						`snapshotId must be at most ${SNAPSHOT_ID_MAX_LENGTH} characters.`,
+					),
+					400,
+				);
+			}
+
+			const resolved = await resolveInstructionProject(
+				projectId,
+				apiCtx,
+				{
+					org: c.req.query("org"),
+					personal: c.req.query("personal") === "1",
+				},
+			);
+			if ("error" in resolved) {
+				return c.json({ error: resolved.error }, resolved.status);
+			}
+
+			const { getProposalPullRequestStatus } = await import(
+				"../projects/procedures/instructions/proposal-pull-request"
+			);
+			try {
+				const pullRequest = await getProposalPullRequestStatus({
+					snapshotId,
+					projectId,
+					organizationId: resolved.organizationId,
+					userId: resolved.userId,
+				});
+				return c.json(ok({ pullRequest }));
+			} catch (error) {
+				const failure = submitChangeFailure(error);
+				if (!failure) {
+					throw error;
+				}
+				return c.json(
+					{
+						error: {
+							message: failure.message,
+							...(failure.code ? { code: failure.code } : {}),
+						},
+					},
+					failure.status,
+				);
+			}
+		},
 	);
 }

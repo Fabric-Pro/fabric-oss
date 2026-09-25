@@ -1,0 +1,16 @@
+-- Unique index for project_instruction_snapshot."pullRequestOperationId"
+-- (Fizzy #2563 spec §2.7, §4.5 step 3): one proposal per pull-request
+-- operation, the id that names its branch. NULLs do not collide, so every
+-- existing row (all NULL) is unaffected.
+--
+-- CONCURRENTLY because project_instruction_snapshot is populated and a plain
+-- build takes a write lock on it for the length of the build. NO `IF NOT
+-- EXISTS`: a failed concurrent build leaves an invalid index behind under this
+-- name, and the clause would then skip the rebuild and record the migration as
+-- applied with no index. Recovery per docs/database-promotion.md: find it with
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+-- then DROP INDEX that name before re-running the migration.
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT: CONCURRENTLY cannot run inside the
+-- transaction Prisma wraps a multi-statement migration in.
+CREATE UNIQUE INDEX CONCURRENTLY "project_instruction_snapshot_pullRequestOperationId_key" ON "project_instruction_snapshot"("pullRequestOperationId");

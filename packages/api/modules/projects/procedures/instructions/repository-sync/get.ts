@@ -80,6 +80,10 @@ export const getRepositorySyncProcedure = tenantProtectedProcedure
 						automatic: sync.automatic,
 						automaticPausedReason: sync.automaticPausedReason,
 						automaticPausedAt: sync.automaticPausedAt,
+						// Fizzy #2563 spec §12: whether read-only members may
+						// propose as pull requests; the tab's `canPropose`
+						// reads it for a reader.
+						allowReaderProposals: sync.allowReaderProposals,
 						delegateName: sync.user.name,
 					}
 				: null,

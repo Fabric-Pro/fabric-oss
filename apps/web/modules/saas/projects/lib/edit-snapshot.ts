@@ -47,6 +47,11 @@ export async function editInstructionSnapshot(input: {
 	publishOnReady: boolean;
 	/** Submit the derived snapshot for editor review instead of direct publication. */
 	proposal?: boolean;
+	/**
+	 * A proposal's title and description (Fizzy #2563 spec §5.1 step 6).
+	 * Sent only with a proposal: a direct version stores no note.
+	 */
+	note?: { title?: string; body?: string };
 	edits: InstructionEdit[];
 }): Promise<EditInstructionSnapshotResult> {
 	const puts = new Map<string, Blob>();
@@ -77,6 +82,7 @@ export async function editInstructionSnapshot(input: {
 		// future proposal caller from accidentally requesting auto-publish.
 		publishOnReady: input.proposal ? false : input.publishOnReady,
 		proposal: input.proposal ?? false,
+		...(input.proposal && input.note ? { note: input.note } : {}),
 		changes,
 	});
 

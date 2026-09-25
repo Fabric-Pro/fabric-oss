@@ -150,6 +150,21 @@ describe("initialize instructions", () => {
 		expect(section).toContain("proposal");
 	});
 
+	// Fizzy #2563: on a repository-backed project the same tools open a pull
+	// request in the repository, and the agent must still report it as a
+	// suggestion awaiting review, not as a change it made.
+	it("says a repository-backed project gets a pull request, reported as awaiting review", async () => {
+		const instructions = await initialize();
+		const section = instructions.slice(
+			instructions.indexOf("## Coding instructions"),
+			instructions.indexOf("## Bootstrap a project"),
+		);
+
+		expect(section).toContain("pull request");
+		expect(section).toMatch(/repository/);
+		expect(section).toContain("awaiting review");
+	});
+
 	// Bootstrapping a thin project (Fizzy #2459). The handshake is the only
 	// place an agent learns that it can seed a project's Context from the
 	// working tree, and it must learn the routing rule with it: knowledge

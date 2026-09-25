@@ -179,16 +179,23 @@ export {
 export type { ListFramesOptions } from "./resources/frames.js";
 export type {
 	CreateInstructionDownloadOptions,
+	GetProposalPullRequestOptions,
 	GetPublishedInstructionsOptions,
 	InstructionChange,
+	InstructionChangeNote,
 	InstructionChanges,
 	InstructionDownload,
 	InstructionFileKind,
 	InstructionManifestEntry,
 	InstructionSourceOfTruth,
+	ProposalPullRequest,
+	ProposalPullRequestFailure,
+	ProposalPullRequestState,
+	ProposalPullRequestStatus,
 	PublishedInstructionSnapshot,
 	PublishedInstructions,
 	SubmitInstructionChangeOptions,
+	SubmitInstructionProposalOptions,
 	SubmittedInstructionChange,
 } from "./resources/instructions.js";
 export type {

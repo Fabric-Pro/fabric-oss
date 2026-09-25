@@ -193,6 +193,16 @@ export async function beginInstructionRepositorySyncRun(
 		}
 	}
 	if (
+		input.trigger === "PULL_REQUEST_MERGED" &&
+		row.automaticPausedReason !== null
+	) {
+		// A merged proposal's sync bypasses the automatic toggle but not a
+		// pause (Fizzy #2563 spec §9, plan R3): the pause is a failure a
+		// member must clear, and the merge-sync dispatcher retries until the
+		// request is acknowledged or given up.
+		return { ok: false, skipped: "paused", context };
+	}
+	if (
 		input.expected !== undefined &&
 		(input.expected.syncId !== row.id ||
 			input.expected.generation !== row.generation)

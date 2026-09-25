@@ -27,6 +27,12 @@ import {
  * upload mode" are all disabled, so a second change cannot be built from
  * the configuration the first is replacing.
  *
+ * "Let read-only members propose changes as pull requests" (Fizzy #2563
+ * spec §12, §16.1) has its own procedure, `updateProposalSettings`, which
+ * never bumps the configuration's generation, so flipping it never fails a
+ * proposal in flight. It is one more change under the same one-at-a-time
+ * rule.
+ *
  * In flight lasts until the tab has re-read what the change moved
  * (Decision 53). Each mutation's own `onSuccess` awaits `onChanged()`, and
  * TanStack Query keeps a mutation pending until that settles
@@ -78,7 +84,27 @@ export function RepositorySyncSettingsSection({
 			},
 		}),
 	);
-	const busy = configure.isPending || disable.isPending;
+	const updateProposalSettings = useMutation(
+		orpc.projects.instructions.repositorySync.updateProposalSettings.mutationOptions(
+			{
+				onSuccess: async (_result, variables) => {
+					toast.success(
+						t(
+							variables.allowReaderProposals
+								? "readerProposalsTurnedOn"
+								: "readerProposalsTurnedOff",
+						),
+					);
+					await onChanged();
+				},
+				onError: (error) => toast.error(error.message),
+			},
+		),
+	);
+	const busy =
+		configure.isPending ||
+		disable.isPending ||
+		updateProposalSettings.isPending;
 	const configured = state.configured;
 	if (!configured && state.sourceOfTruth !== "REPOSITORY") {
 		return null;
@@ -171,6 +197,46 @@ export function RepositorySyncSettingsSection({
 				>
 					{t("automaticHint")}
 				</p>
+			) : null}
+			{configured ? (
+				<div className="flex items-start justify-between gap-3">
+					<div className="flex flex-col gap-1">
+						<p
+							id="instructions-sync-reader-proposals"
+							className="text-sm"
+						>
+							{t("readerProposalsLabel")}
+						</p>
+						<p
+							id="instructions-sync-reader-proposals-hint"
+							className="text-muted-foreground text-xs"
+						>
+							{t("readerProposalsHint")}
+						</p>
+					</div>
+					{state.canConfigure ? (
+						<Switch
+							aria-labelledby="instructions-sync-reader-proposals"
+							aria-describedby="instructions-sync-reader-proposals-hint"
+							checked={configured.allowReaderProposals === true}
+							disabled={busy}
+							onCheckedChange={(next) =>
+								updateProposalSettings.mutate({
+									projectId,
+									allowReaderProposals: next,
+								})
+							}
+						/>
+					) : (
+						<p className="shrink-0 text-sm">
+							{t(
+								configured.allowReaderProposals
+									? "readerProposalsOn"
+									: "readerProposalsOff",
+							)}
+						</p>
+					)}
+				</div>
 			) : null}
 			{state.canConfigure ? (
 				<div className="flex flex-wrap gap-2">

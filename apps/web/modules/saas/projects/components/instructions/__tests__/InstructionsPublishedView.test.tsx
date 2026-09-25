@@ -230,8 +230,13 @@ vi.mock("../InstructionFileView", () => ({
 		<div data-testid="file-view">{path}</div>
 	),
 }));
+/** The props the proposals dialog was last mounted with. */
+const proposalsProps: Array<Record<string, unknown>> = [];
 vi.mock("../InstructionProposals", () => ({
-	InstructionProposals: () => null,
+	InstructionProposals: (props: Record<string, unknown>) => {
+		proposalsProps.push(props);
+		return null;
+	},
 }));
 
 import { InstructionsPublishedView } from "../InstructionsPublishedView";
@@ -254,6 +259,7 @@ beforeEach(() => {
 	compareState.result = null;
 	compareState.error = null;
 	compareState.inputs = [];
+	proposalsProps.length = 0;
 });
 
 function treeFile(id: string, path: string): Record<string, unknown> {
@@ -1077,6 +1083,141 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 			/>
 		);
 	}
+
+	// Fizzy #2563 spec §12: on a repository-backed project a proposal opens a
+	// pull request, so proposing comes back — for a member holding
+	// INSTRUCTION_CREATE, or a reader once the project allows it — while
+	// direct mutation stays off.
+	it("offers an editor Suggest a change, anchored for the page tour, and no direct edit", () => {
+		render(view(controls(), { canEdit: true, canRead: true }), {
+			wrapper: TestQueryProvider,
+		});
+		const suggest = screen.getByRole("button", {
+			name: "Suggest a change",
+		});
+		expect(suggest).toHaveAttribute(
+			"data-onboarding-target",
+			"instructions-propose-pull-request",
+		);
+		expect(screen.queryByRole("button", { name: "Add file" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Replace" })).toBeNull();
+	});
+
+	it("offers a reader Suggest a change only once read-only members may propose", () => {
+		const off = render(view(controls(), { canRead: true }), {
+			wrapper: TestQueryProvider,
+		});
+		expect(
+			screen.queryByRole("button", { name: "Suggest a change" }),
+		).toBeNull();
+		off.unmount();
+		render(
+			view(
+				controls({
+					canConfigure: false,
+					configured: { ...configured, allowReaderProposals: true },
+				}),
+				{ canRead: true },
+			),
+			{ wrapper: TestQueryProvider },
+		);
+		expect(
+			screen.getByRole("button", { name: "Suggest a change" }),
+		).toBeInTheDocument();
+	});
+
+	it("offers no suggestion while repository mode is unconfirmed or nothing is configured", () => {
+		const unconfirmed = render(
+			view(controls(), { canEdit: true, repositoryConfirmed: false }),
+			{ wrapper: TestQueryProvider },
+		);
+		expect(
+			screen.queryByRole("button", { name: "Suggest a change" }),
+		).toBeNull();
+		unconfirmed.unmount();
+		render(view(controls({ configured: null }), { canEdit: true }), {
+			wrapper: TestQueryProvider,
+		});
+		expect(
+			screen.queryByRole("button", { name: "Suggest a change" }),
+		).toBeNull();
+	});
+
+	it("opens the suggestion dialog naming the repository and branch the pull request targets", async () => {
+		const user = userEvent.setup();
+		render(view(controls(), { canEdit: true }), {
+			wrapper: TestQueryProvider,
+		});
+		await user.click(
+			screen.getByRole("button", { name: "Suggest a change" }),
+		);
+		expect(
+			await screen.findByText(
+				/This opens a pull request in example-org\/instructions against main\./,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("lets a reviewer browse suggestions, but never decide them here", () => {
+		render(view(controls(), { canEdit: true, canReview: true }), {
+			wrapper: TestQueryProvider,
+		});
+		expect(
+			screen.getByRole("button", { name: "Suggested changes" }),
+		).toBeInTheDocument();
+		const last = proposalsProps.at(-1);
+		expect(last).toMatchObject({
+			canReview: true,
+			canDecide: false,
+			repositoryBacked: true,
+			repositoryProvider: "GITHUB",
+		});
+	});
+
+	it("keeps a reader's own suggestions browsable after read-only proposals are turned off", () => {
+		render(view(controls({ canConfigure: false }), { canRead: true }), {
+			wrapper: TestQueryProvider,
+		});
+		expect(
+			screen.getByRole("button", { name: "Suggested changes" }),
+		).toBeInTheDocument();
+		expect(proposalsProps.at(-1)).toMatchObject({ canReview: false });
+	});
+
+	// Repository mode can outlive its configuration (the
+	// integration was disconnected, or its delegate deleted). A reader who
+	// suggested under the opt-in keeps "Suggested changes" (status, Refresh,
+	// Retry, Withdraw) then; only proposing needs a configured target. The
+	// server lists a non-reviewer only their own rows either way.
+	it("keeps a reader's suggestions browsable once the sync configuration is gone, with no Suggest", () => {
+		const gone = render(
+			view(controls({ canConfigure: false, configured: null }), {
+				canRead: true,
+			}),
+			{ wrapper: TestQueryProvider },
+		);
+		expect(
+			screen.getByRole("button", { name: "Suggested changes" }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Suggest a change" }),
+		).toBeNull();
+		expect(proposalsProps.at(-1)).toMatchObject({ canReview: false });
+		gone.unmount();
+
+		// Only CONFIRMED repository mode: while settings load (or fail),
+		// `repositoryBacked` alone offers a reader nothing.
+		render(
+			view(controls({ canConfigure: false, configured: null }), {
+				canRead: true,
+				repositoryConfirmed: false,
+			}),
+			{ wrapper: TestQueryProvider },
+		);
+		expect(
+			screen.queryByRole("button", { name: "Suggested changes" }),
+		).toBeNull();
+	});
 
 	it("offers Sync from repository to a configurer with an ACTIVE integration and nothing configured", async () => {
 		const c = controls({ sourceOfTruth: "UPLOAD", configured: null });

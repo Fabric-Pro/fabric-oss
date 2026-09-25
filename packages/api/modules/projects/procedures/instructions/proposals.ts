@@ -14,6 +14,7 @@ import { SNAPSHOT_LIMITS } from "@repo/instructions";
 import { warmInstructionSnapshotExport } from "@repo/instructions/export";
 import { getStorageProvider } from "@repo/storage";
 import { z } from "zod";
+import { auditRequestFields, resolveActor } from "../../../../lib/audit";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -22,14 +23,44 @@ import {
 import { runInBackground } from "../../../weave/lib/run-in-background";
 import { requireHostingOrganizationId } from "./hosting-organization";
 import { canReviewInstructionProposals } from "./proposal-authorization";
+import {
+	getProposalPullRequestStatus,
+	type MergeSyncReceipts,
+	type ProposalPullRequestRequester,
+	pullRequestStatusOf,
+	readMergeSyncReceipts,
+	refreshProposalPullRequest,
+	retryProposalPullRequest,
+} from "./proposal-pull-request";
 
 const BUCKET = config.storage.bucketNames.skills;
 const PROPOSAL_FILE_DEFAULT_MAX = 50_000;
 const PROPOSAL_FILE_MAX = 200_000;
 
-function proposalRow(
+/** The stored note's two fields, as the admission schema wrote them. */
+function noteOf(value: unknown): { title?: string; body?: string } | null {
+	if (typeof value !== "object" || value === null) {
+		return null;
+	}
+	const { title, body } = value as { title?: unknown; body?: unknown };
+	const note = {
+		...(typeof title === "string" ? { title } : {}),
+		...(typeof body === "string" ? { body } : {}),
+	};
+	return Object.keys(note).length > 0 ? note : null;
+}
+
+/**
+ * One proposal as the tab and the CLI show it. A REPOSITORY proposal adds
+ * where it goes, its note and its pull request (Fizzy #2563 spec §12); a
+ * FABRIC one has `pullRequest: null`. `canCancel` stays false once closing
+ * is requested: a second cancel would change nothing.
+ */
+async function proposalRow(
 	proposal: NonNullable<Awaited<ReturnType<typeof getInstructionProposal>>>,
+	scope: { projectId: string; organizationId: string },
 	viewerUserId?: string,
+	receipts?: MergeSyncReceipts,
 ) {
 	return {
 		id: proposal.id,
@@ -46,7 +77,11 @@ function proposalRow(
 		canCancel:
 			proposal.user.id === viewerUserId &&
 			proposal.proposalStatus === "PENDING" &&
+			proposal.pullRequestState !== "CLOSE_REQUESTED" &&
 			["RECEIVING", "FAILED", "READY"].includes(proposal.status),
+		destination: proposal.proposalDestination,
+		note: noteOf(proposal.proposalNote),
+		pullRequest: await pullRequestStatusOf(proposal, scope, receipts),
 	};
 }
 
@@ -90,9 +125,15 @@ export const listInstructionProposalsProcedure = tenantProtectedProcedure
 				proposerUserId: canReview ? undefined : context.user.id,
 			},
 		);
+		const scope = { projectId: input.projectId, organizationId };
+		// One receipt query for the page, not one per merged row: the tab
+		// polls this list while a dialog is open.
+		const receipts = await readMergeSyncReceipts(proposals.items, scope);
 		return {
-			items: proposals.items.map((proposal) =>
-				proposalRow(proposal, context.user.id),
+			items: await Promise.all(
+				proposals.items.map((proposal) =>
+					proposalRow(proposal, scope, context.user.id, receipts),
+				),
 			),
 			nextCursor: proposals.nextCursor,
 		};
@@ -252,7 +293,10 @@ export const getInstructionProposalProcedure = tenantProtectedProcedure
 			throw new ORPCError("NOT_FOUND", { message: "Proposal not found" });
 		}
 		return {
-			...proposalRow(proposal),
+			...(await proposalRow(proposal, {
+				projectId: input.projectId,
+				organizationId,
+			})),
 			changes:
 				proposal.status === "READY"
 					? await buildProposalChanges({
@@ -403,10 +447,20 @@ function decisionError(
 		| "in_progress"
 		| "stale"
 		| "already_decided"
-		| "repository_backed",
+		| "repository_backed"
+		| "repository_proposal",
 ): never {
 	if (reason === "not_found") {
 		throw new ORPCError("NOT_FOUND", { message: "Proposal not found" });
+	}
+	if (reason === "repository_proposal") {
+		// Fizzy #2563 spec §12: a REPOSITORY proposal is decided on its pull
+		// request, in the repository, never here.
+		throw new ORPCError("PRECONDITION_FAILED", {
+			message:
+				"This suggestion is a pull request in the project's repository. Review and merge or close it there.",
+			data: { reason: "REPOSITORY_PROPOSAL" },
+		});
 	}
 	if (reason === "repository_backed") {
 		// Spec §4: the same refusal `derive-snapshot.ts` gives an edit.
@@ -560,23 +614,161 @@ export const cancelInstructionProposalProcedure = tenantProtectedProcedure
 			input.projectId,
 			organizationId,
 		);
+		// A REPOSITORY cancel also writes `pull_request_close_requested` from
+		// this row's actor and request fields (spec §13.4), so the request
+		// half rides along; the actor stays `decisionAudit`'s.
+		const { actor: _actor, ...request } = requesterOf(context);
 		const result = await cancelInstructionProposal({
 			snapshotId: input.snapshotId,
 			projectId: input.projectId,
 			organizationId,
 			proposerUserId: context.user.id,
-			audit: decisionAudit({
-				action: "project.instructions.rejected",
-				context,
-				organizationId,
-				projectId: input.projectId,
-				snapshotId: input.snapshotId,
-				version: metadata?.version ?? null,
-				decision: "canceled",
-			}),
+			audit: {
+				...decisionAudit({
+					action: "project.instructions.rejected",
+					context,
+					organizationId,
+					projectId: input.projectId,
+					snapshotId: input.snapshotId,
+					version: metadata?.version ?? null,
+					decision: "canceled",
+				}),
+				...request,
+			},
 		});
 		if (!result.ok) {
 			return decisionError(result.reason);
 		}
-		return { canceled: true as const };
+		// `canceled` when nothing had been pushed or created, `close_requested`
+		// when Fabric now closes what it opened, null for a FABRIC proposal.
+		return { canceled: true as const, pullRequest: result.pullRequest };
 	});
+
+/** The retry's and cancel's audit request half, from this request. */
+function requesterOf(
+	context: Parameters<typeof auditRequestFields>[0],
+): ProposalPullRequestRequester {
+	const { impersonatedById: _impersonatedById, ...request } =
+		auditRequestFields(context);
+	return { actor: resolveActor(context, undefined), ...request };
+}
+
+/**
+ * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ),
+ * then the live proposer-or-reviewer check in the service (plan Decision 8).
+ *
+ * A REPOSITORY proposal's pull request as the row records it (spec §12): the
+ * card polls this. Never asks the provider. `pullRequest: null` for a FABRIC
+ * proposal.
+ */
+export const getInstructionProposalPullRequestProcedure =
+	tenantProtectedProcedure
+		.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
+		.route({
+			method: "GET",
+			path: "/projects/:projectId/instructions/proposals/:snapshotId/pull-request",
+			tags: ["Projects", "Instructions"],
+			summary: "Get a coding-instructions proposal's pull request",
+		})
+		.input(proposalInput)
+		.handler(async ({ input, context }) => {
+			const organizationId = await requireHostingOrganizationId(
+				input.projectId,
+				context.user.id,
+			);
+			return {
+				pullRequest: await getProposalPullRequestStatus({
+					snapshotId: input.snapshotId,
+					projectId: input.projectId,
+					organizationId,
+					userId: context.user.id,
+				}),
+			};
+		});
+
+/**
+ * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ),
+ * then the live proposer-or-reviewer check in the service (plan Decision 8).
+ *
+ * Refresh (spec §12): the row's check time is cleared and a retryable
+ * BLOCKED row made due, and the operation's workflow is started or adopted
+ * for a row it moves. `refreshed: false` for a settled row. Admitted once a
+ * minute per operation and never over a provider's rate-limit deadline; a
+ * refused Refresh is TOO_MANY_REQUESTS with `data.retryAfter` and the same
+ * `Retry-After` header the RPC rate limiter sends.
+ */
+export const refreshInstructionProposalPullRequestProcedure =
+	tenantProtectedProcedure
+		.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
+		.route({
+			method: "POST",
+			path: "/projects/:projectId/instructions/proposals/:snapshotId/pull-request/refresh",
+			tags: ["Projects", "Instructions"],
+			summary:
+				"Check a coding-instructions proposal's pull request again",
+		})
+		.input(proposalInput)
+		.handler(async ({ input, context }) => {
+			const organizationId = await requireHostingOrganizationId(
+				input.projectId,
+				context.user.id,
+			);
+			try {
+				return await refreshProposalPullRequest({
+					snapshotId: input.snapshotId,
+					projectId: input.projectId,
+					organizationId,
+					userId: context.user.id,
+				});
+			} catch (error) {
+				const retryAfter =
+					error instanceof ORPCError &&
+					error.code === "TOO_MANY_REQUESTS"
+						? (error.data as { retryAfter?: unknown } | undefined)
+								?.retryAfter
+						: undefined;
+				if (typeof retryAfter === "number") {
+					context.resHeaders?.set("Retry-After", String(retryAfter));
+				}
+				throw error;
+			}
+		});
+
+/**
+ * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ),
+ * then the live proposer-or-reviewer check in the service: the spec's
+ * "proposer or INSTRUCTION_UPDATE" (plan Decision 8).
+ *
+ * "Retry opening the pull request" (spec §12) on a BLOCKED row only a human
+ * may re-issue. `expectedAttempt` is the attempt the card showed; a row that
+ * moved since is a CONFLICT.
+ */
+export const retryInstructionProposalPullRequestProcedure =
+	tenantProtectedProcedure
+		.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
+		.route({
+			method: "POST",
+			path: "/projects/:projectId/instructions/proposals/:snapshotId/pull-request/retry",
+			tags: ["Projects", "Instructions"],
+			summary:
+				"Retry opening a coding-instructions proposal's pull request",
+		})
+		.input(
+			proposalInput.extend({
+				expectedAttempt: z.number().int().min(0),
+			}),
+		)
+		.handler(async ({ input, context }) => {
+			const organizationId = await requireHostingOrganizationId(
+				input.projectId,
+				context.user.id,
+			);
+			return retryProposalPullRequest({
+				snapshotId: input.snapshotId,
+				projectId: input.projectId,
+				organizationId,
+				userId: context.user.id,
+				expectedAttempt: input.expectedAttempt,
+				requester: requesterOf(context),
+			});
+		});

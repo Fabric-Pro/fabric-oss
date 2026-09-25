@@ -344,6 +344,40 @@ describe("refreshOAuthToken", () => {
 		});
 	});
 
+	it("sends no signal when the caller sets no timeoutMs", async () => {
+		mockNextFetch(jsonResponse(200, { access_token: "fresh" }));
+
+		await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "old-refresh",
+			clientId: "client-1",
+		});
+
+		expect(captured[0]?.init?.signal).toBeUndefined();
+	});
+
+	it("bounds the whole exchange by timeoutMs and reports a stalled one as network_error", async () => {
+		safeFetchSpy.mockImplementationOnce(
+			(_input: string | URL, init?: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () =>
+						reject(init.signal?.reason),
+					);
+				}),
+		);
+
+		const started = Date.now();
+		const result = await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "old-refresh",
+			clientId: "client-1",
+			timeoutMs: 25,
+		});
+
+		expect(Date.now() - started).toBeLessThan(5_000);
+		expect(result).toMatchObject({ ok: false, errorCode: "network_error" });
+	});
+
 	it("returns invalid_response when access_token is missing on 200", async () => {
 		mockNextFetch(jsonResponse(200, { token_type: "Bearer" }));
 

@@ -290,6 +290,20 @@ export const AUDIT_ACTIONS = [
 	"project.instructions.repository_sync_started",
 	"project.instructions.repository_sync_completed",
 	"project.instructions.repository_sync_disabled",
+	// Proposal pull requests (Fizzy #2563 spec §13.4): a suggestion on a
+	// repository-backed project opens a pull request in the connected
+	// repository, and review and merge happen there. Each row is written by
+	// `recordAuditTx` in its transition's transaction: the pull request
+	// opened (or adopted by recovery), reconciled to merged, closed or
+	// canceled, its closure requested by the author's cancel, re-issued by a
+	// human "Retry opening", and the merge sync it triggered acknowledged by a
+	// consuming run receipt. Operation id, provider, external id and codes
+	// only, never a URL or file content.
+	"project.instructions.pull_request_opened",
+	"project.instructions.pull_request_reconciled",
+	"project.instructions.pull_request_close_requested",
+	"project.instructions.pull_request_retry_requested",
+	"project.instructions.pull_request_merge_sync_requested",
 	// story (11)
 	"story.created",
 	"story.updated",

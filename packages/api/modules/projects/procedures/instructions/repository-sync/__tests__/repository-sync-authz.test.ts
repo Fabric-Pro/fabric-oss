@@ -45,6 +45,7 @@ import { disableRepositorySyncProcedure } from "../disable";
 import { getRepositorySyncProcedure } from "../get";
 import { listRepositorySyncRunsProcedure } from "../list-runs";
 import { syncRepositoryNowProcedure } from "../sync-now";
+import { updateRepositorySyncProposalSettingsProcedure } from "../update-proposal-settings";
 
 type TaggedMiddleware = ((
 	options: { context: unknown; next: () => unknown },
@@ -71,6 +72,7 @@ const MUTATING_PROCEDURES = [
 	["configure", configureRepositorySyncProcedure],
 	["syncNow", syncRepositoryNowProcedure],
 	["disable", disableRepositorySyncProcedure],
+	["updateProposalSettings", updateRepositorySyncProposalSettingsProcedure],
 ] as const;
 const ALL_PROCEDURES = [...READ_PROCEDURES, ...MUTATING_PROCEDURES] as const;
 

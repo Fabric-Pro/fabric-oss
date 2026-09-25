@@ -162,11 +162,13 @@ vi.mock("../InstructionsPublishedView", async () => {
 			repositoryBacked,
 			repositoryConfirmed,
 			repositorySync,
+			canRead,
 		}: {
 			projectId: string;
 			published: { id?: string } | null;
 			repositoryBacked?: boolean;
 			repositoryConfirmed?: boolean;
+			canRead?: boolean;
 			repositorySync?: {
 				state: { latestRun: { id: string } | null };
 				onChanged: () => Promise<void> | void;
@@ -198,6 +200,7 @@ vi.mock("../InstructionsPublishedView", async () => {
 				<div data-testid="repository-confirmed">
 					{String(repositoryConfirmed)}
 				</div>
+				<div data-testid="can-read">{String(canRead)}</div>
 			</>
 		),
 	};
@@ -619,5 +622,30 @@ describe("CodingInstructionsTab source-of-truth while settings load", () => {
 		expect(screen.getByTestId("repository-confirmed")).toHaveTextContent(
 			"false",
 		);
+	});
+});
+
+// Fizzy #2563 spec §12: a reader may suggest a change on a repository-backed
+// project once the project allows it. Whether the viewer can read is what the
+// INSTRUCTION_READ-gated sync state answers by loading at all; the project's
+// `canEditInstructions` flag says nothing about READ.
+describe("CodingInstructionsTab reader proposals", () => {
+	it("tells the published view the viewer can read only once the read-gated sync state has loaded", async () => {
+		let open: () => void = () => undefined;
+		state.syncGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+		expect(screen.getByTestId("can-read")).toHaveTextContent("false");
+		open();
+		await tick(0);
+		expect(screen.getByTestId("can-read")).toHaveTextContent("true");
 	});
 });

@@ -10,6 +10,11 @@ import {
 } from "@repo/database/prisma/queries/lib/refresh-lock-key";
 import { decryptApiKey, encryptApiKey } from "@repo/utils";
 import {
+	type BeforeExchange,
+	isExchangeRefusal,
+	runExchangeGate,
+} from "../exchange-gate";
+import {
 	GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
 	GitLabReauthRequiredError,
 	type GitLabRefreshResponse,
@@ -153,11 +158,27 @@ export async function getValidGitLabAccessToken(args: {
 	 * production.
 	 */
 	prisma?: PrismaForLock;
+	/**
+	 * The caller's pre-exchange gate (see `BeforeExchange`), consulted under
+	 * the lock immediately before the exchange. Only a caller that starts an
+	 * exchange is gated: one that joins a flight already under way waits for
+	 * it and never attaches its gate to it.
+	 */
+	beforeExchange?: BeforeExchange;
 }): Promise<string> {
 	const cacheKey = `${args.source ?? "user"}:${args.integrationId}`;
 	const existing = inflight.get(cacheKey);
 	if (existing) {
-		return existing;
+		// Another caller leads this flight under its own gate. When that gate
+		// refused, nothing was sent and the refusal is not this caller's:
+		// run a flight of its own (the entry is gone by the time the leader's
+		// promise settles) rather than inherit it.
+		return existing.catch((error: unknown) => {
+			if (isExchangeRefusal(error)) {
+				return getValidGitLabAccessToken(args);
+			}
+			throw error;
+		});
 	}
 
 	// Local helper to avoid duplicating the try/catch + markNeedsReauth dance
@@ -167,6 +188,11 @@ export async function getValidGitLabAccessToken(args: {
 	const refreshOrMarkReauth = async (
 		refreshToken: string,
 	): Promise<GitLabRefreshResponse> => {
+		// Every exchange passes here, under the lock on the locked paths and
+		// after the lock budget check, so this is immediately before the
+		// request. A refusal is thrown before the try: it is never a refresh
+		// failure.
+		runExchangeGate(args.beforeExchange);
 		try {
 			return await args.refresh(
 				refreshToken,

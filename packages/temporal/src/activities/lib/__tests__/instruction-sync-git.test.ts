@@ -15,6 +15,7 @@ import {
 	GIT_SAFE_CONFIG,
 	GitCommandError,
 	gitUsernameFor,
+	isPushWriteRefusal,
 	MAX_CLONE_BYTES,
 	readBlobCapped,
 	redactSecrets,
@@ -257,6 +258,63 @@ describe("classifyGitFailure", () => {
 		],
 	])("%j -> %s", (stderr, expected) => {
 		expect(classifyGitFailure(stderr)).toBe(expected);
+	});
+});
+
+describe("isPushWriteRefusal", () => {
+	const url = "https://github.com/example-org/r.git/";
+	const http403 = `fatal: unable to access '${url}': The requested URL returned error: 403`;
+	const exit = (stderr: string) =>
+		new GitCommandError("exit", 128, stderr, "push");
+
+	it.each([
+		// GitHub: an App whose Contents permission is read-only (Fizzy #2563).
+		`remote: Write access to repository not granted.\n${http403}`,
+		"remote: Write access to repository not granted.",
+		// GitHub: a user or token without push rights.
+		`remote: Permission to example-org/r.git denied to example-user.\n${http403}`,
+		"remote: Permission to example-org/r.git denied to example-user.",
+		// GitLab.
+		`remote: You are not allowed to push code to this project.\n${http403}`,
+		"remote: You are not allowed to push code to this project.",
+		"remote: GitLab: You are not allowed to push code to protected branches on this project.",
+		// Azure DevOps.
+		"remote: TF401027: You need the Git 'GenericContribute' permission to perform this action. Details: identity 'Example Person', scope 'repository'.",
+		"remote: TF401027: You need the Git 'ForcePush' permission to perform this action.",
+		"remote: TF402455: Pushes to this branch are not permitted; you must use a pull request to update this branch.",
+	])("classifies %j as a write refusal", (stderr) => {
+		expect(isPushWriteRefusal(exit(stderr))).toBe(true);
+	});
+
+	it.each([
+		// Authentication wording wins, even beside a 403: a credential failure.
+		`remote: Invalid username or token. Password authentication is not supported for Git operations.\nfatal: Authentication failed for '${url}'`,
+		`remote: HTTP Basic: Access denied.\n${http403}`,
+		`fatal: could not read Username for '${url}': terminal prompts disabled`,
+		`fatal: unable to access '${url}': The requested URL returned error: 401`,
+		// GitHub SAML SSO: a credential failure, not a write refusal.
+		`remote: The 'example-org' organization has enabled or enforced SAML SSO.\nremote: To access this repository, you must re-authorize the OAuth Application.\n${http403}`,
+		// A bare 403 names no write refusal: a quota, an SSO wall or a
+		// provider's unrecognised wording is not read as one.
+		http403,
+		"error: The requested URL returned error: 403 while accessing https://git.example.com/r.git/info/refs",
+		`remote: Repository not found.\nfatal: repository '${url}' not found`,
+		`fatal: unable to access '${url}': The requested URL returned error: 404`,
+		`fatal: unable to access '${url}': The requested URL returned error: 500`,
+		`fatal: unable to access '${url}': Could not resolve host: github.com`,
+		"",
+	])("does not classify %j", (stderr) => {
+		expect(isPushWriteRefusal(exit(stderr))).toBe(false);
+	});
+
+	it("only classifies a git exit", () => {
+		for (const kind of ["timeout", "cancelled", "spawn"] as const) {
+			expect(
+				isPushWriteRefusal(
+					new GitCommandError(kind, null, http403, "push"),
+				),
+			).toBe(false);
+		}
 	});
 });
 

@@ -405,6 +405,10 @@ export interface SetIntegrationStatusResult {
  * from a snapshot must not land on a row whose credentials changed after the
  * snapshot (e.g. attachPat flipping authMethod mid-cycle). Pass the snapshot's
  * `updatedAt`; any intervening write makes the CAS miss and nothing is written.
+ *
+ * `client` runs the read and the write on a caller's transaction instead of
+ * the pool, so a caller can bound the step (a transaction timeout, a
+ * statement timeout) and have it commit whole or not at all.
  */
 export async function setIntegrationStatus(
 	integrationId: string,
@@ -412,14 +416,15 @@ export async function setIntegrationStatus(
 	lastError?: string,
 	expectedRefreshToken?: string | null,
 	expectedUpdatedAt?: Date,
+	client: Prisma.TransactionClient = db,
 ): Promise<SetIntegrationStatusResult> {
-	const prior = await db.projectRepositoryIntegration.findUnique({
+	const prior = await client.projectRepositoryIntegration.findUnique({
 		where: { id: integrationId },
 		select: { status: true },
 	});
 	const previousStatus = prior?.status ?? null;
 
-	const result = await db.projectRepositoryIntegration.updateMany({
+	const result = await client.projectRepositoryIntegration.updateMany({
 		where: {
 			id: integrationId,
 			status: { not: "DISCONNECTED" },

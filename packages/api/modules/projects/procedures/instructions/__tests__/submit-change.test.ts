@@ -40,6 +40,9 @@ const m = vi.hoisted(() => ({
 	finalizeInstructionSnapshot: vi.fn(),
 	uploadFile: vi.fn(),
 	rejectAbandonedInstructionSnapshot: vi.fn(),
+	admit: vi.fn(),
+	startAdmittedProposalPullRequest: vi.fn(),
+	readProposalPullRequest: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -63,6 +66,30 @@ vi.mock("@repo/storage", () => ({
 }));
 vi.mock("../../../../../lib/audit", () => ({
 	recordAuditFromRequest: (...a: unknown[]) => m.recordAuditFromRequest(...a),
+	resolveActor: (context: { user?: { id: string } }) => ({
+		type: "user",
+		userId: context.user?.id ?? null,
+	}),
+	auditRequestFields: () => ({
+		impersonatedById: null,
+		ipAddress: null,
+		userAgent: null,
+		requestId: null,
+		sessionId: null,
+		correlationId: null,
+	}),
+}));
+// Admission is its own suite (`proposal-admission.test.ts`); here it is the
+// seam, and each test states the destination it decided.
+vi.mock("../proposal-admission", async (importOriginal) => ({
+	...((await importOriginal()) as Record<string, unknown>),
+	admitInstructionProposal: (...a: unknown[]) => m.admit(...a),
+}));
+vi.mock("../proposal-pull-request", () => ({
+	startAdmittedProposalPullRequest: (...a: unknown[]) =>
+		m.startAdmittedProposalPullRequest(...a),
+	readProposalPullRequest: (...a: unknown[]) =>
+		m.readProposalPullRequest(...a),
 }));
 vi.mock("../proposal-authorization", () => ({
 	assertInstructionDeriveAccess: (...a: unknown[]) =>
@@ -184,6 +211,9 @@ beforeEach(() => {
 	m.claimInstructionFileStagingKey.mockResolvedValue({ moved: true });
 	m.finalizeInstructionSnapshot.mockResolvedValue({ status: "VALIDATING" });
 	m.rejectAbandonedInstructionSnapshot.mockResolvedValue({ changed: true });
+	m.admit.mockResolvedValue({ destination: "FABRIC", note: null });
+	m.startAdmittedProposalPullRequest.mockResolvedValue(undefined);
+	m.readProposalPullRequest.mockResolvedValue(null);
 });
 
 describe("authorization", () => {
@@ -306,15 +336,22 @@ describe("authorization", () => {
 });
 
 describe("preconditions", () => {
-	it("refuses a repository-backed project with a code the CLI can branch on", async () => {
-		m.getProjectInstructionSettings.mockResolvedValue({
-			sourceOfTruth: "REPOSITORY",
-		});
+	it("passes admission's repository refusal through with a code the CLI can branch on", async () => {
+		m.admit.mockRejectedValue(
+			new ORPCError("PRECONDITION_FAILED", {
+				message:
+					"This project's coding instructions come from its repository. Change the files there and sync the project.",
+				data: { reason: "REPOSITORY_SOURCE_OF_TRUTH" },
+			}),
+		);
 
-		await expect(submit()).rejects.toMatchObject({
+		await expect(submit({ mode: "publish" })).rejects.toMatchObject({
 			code: "PRECONDITION_FAILED",
 			data: { reason: "REPOSITORY_SOURCE_OF_TRUTH" },
 		});
+		expect(m.admit).toHaveBeenCalledWith(
+			expect.objectContaining({ mode: "publish" }),
+		);
 		expect(m.createDerivedInstructionSnapshot).not.toHaveBeenCalled();
 	});
 
@@ -1158,5 +1195,239 @@ describe("portable file names", () => {
 			}),
 		).rejects.toMatchObject({ code: "BAD_REQUEST" });
 		expect(m.createDerivedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * A repository-backed project's proposal opens a pull request (Fizzy #2563
+ * spec §5.1): admission freezes the destination, the create transaction
+ * writes it with its one `upload_started` row, and the operation's workflow
+ * starts after commit. The response carries the row's `pullRequest` block.
+ */
+describe("repository proposals", () => {
+	const NOTE = { title: "Tighten the review skill", body: "Why: flaky" };
+	const CONTEXT = {
+		v: 1,
+		syncId: "sync_1",
+		syncGeneration: 4,
+		branch: "fabric/instructions/op_1",
+	};
+	const PULL_REQUEST = {
+		operationId: "op_1",
+		state: "QUEUED",
+		url: null,
+		externalId: null,
+		failure: null,
+		lastCheckedAt: null,
+	};
+
+	function repositoryAdmission(overrides: Record<string, unknown> = {}) {
+		return {
+			destination: "REPOSITORY",
+			note: NOTE,
+			operationId: "op_1",
+			context: CONTEXT,
+			syncId: "sync_1",
+			syncGeneration: 4,
+			...overrides,
+		};
+	}
+
+	beforeEach(() => {
+		m.admit.mockResolvedValue(repositoryAdmission());
+		m.createDerivedInstructionSnapshot.mockResolvedValue(
+			created({ auditWritten: true }),
+		);
+		m.readProposalPullRequest.mockResolvedValue(PULL_REQUEST);
+	});
+
+	it("asks admission with the mode, the raw note, the proposer's name and the change count", async () => {
+		await submit({
+			note: NOTE,
+			audit: { user: { id: USER, email: "", name: "Pat Example" } },
+			changes: [put("new\n"), { op: "delete", path: "old.md" }],
+		});
+
+		expect(m.admit).toHaveBeenCalledWith({
+			projectId: PROJECT,
+			organizationId: ORG,
+			userId: USER,
+			mode: "proposal",
+			note: NOTE,
+			proposerName: "Pat Example",
+			fileCount: 2,
+		});
+	});
+
+	it("creates the row with the frozen destination and writes upload_started only inside the create", async () => {
+		const result = await submit({ note: NOTE, via: "mcp-gateway" });
+
+		expect(m.createDerivedInstructionSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proposal: true,
+				note: NOTE,
+				destination: expect.objectContaining({
+					kind: "REPOSITORY",
+					operationId: "op_1",
+					context: CONTEXT,
+					syncId: "sync_1",
+					syncGeneration: 4,
+					branch: "fabric/instructions/op_1",
+					uploadStartedAudit: expect.objectContaining({
+						actor: { type: "user", userId: USER },
+						organizationId: ORG,
+						projectId: PROJECT,
+						metadata: {
+							mode: "proposal",
+							baseSnapshotId: BASE_ID,
+							baseVersion: 7,
+							putCount: 1,
+							deleteCount: 0,
+							via: "mcp-gateway",
+						},
+					}),
+				}),
+			}),
+		);
+		// None from the outer call: the transaction wrote the one row.
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		// The upload and the validation run are the same as any proposal's.
+		expect(m.uploadFile).toHaveBeenCalled();
+		expect(m.finalizeInstructionSnapshot).toHaveBeenCalled();
+		expect(result.pullRequest).toEqual(PULL_REQUEST);
+		// Read from the row, tenant-scoped, after the validation run started.
+		expect(m.readProposalPullRequest).toHaveBeenCalledWith({
+			snapshotId: "snap_new",
+			projectId: PROJECT,
+			organizationId: ORG,
+		});
+	});
+
+	it("starts the operation's workflow after the row commits", async () => {
+		await submit();
+
+		expect(m.startAdmittedProposalPullRequest).toHaveBeenCalledTimes(1);
+		expect(m.startAdmittedProposalPullRequest).toHaveBeenCalledWith({
+			snapshotId: "snap_new",
+			projectId: PROJECT,
+			organizationId: ORG,
+			operationId: "op_1",
+		});
+		expect(
+			m.createDerivedInstructionSnapshot.mock.invocationCallOrder[0],
+		).toBeLessThan(
+			m.startAdmittedProposalPullRequest.mock.invocationCallOrder[0]!,
+		);
+	});
+
+	it("starts the pull-request workflow before the upload and compensates with inline_submit_compensation when the upload fails", async () => {
+		m.uploadFile.mockRejectedValue(new Error("storage unavailable"));
+
+		await expect(submit()).rejects.toThrow("storage unavailable");
+
+		// The pull-request workflow had already started, before any byte was
+		// written; the validation workflow never did.
+		expect(m.startAdmittedProposalPullRequest).toHaveBeenCalledTimes(1);
+		expect(
+			m.startAdmittedProposalPullRequest.mock.invocationCallOrder[0],
+		).toBeLessThan(m.uploadFile.mock.invocationCallOrder[0]!);
+		expect(m.finalizeInstructionSnapshot).not.toHaveBeenCalled();
+		// The failed upload is compensated all the same, through the
+		// conditional write that, for a repository proposal, also cancels its
+		// operation in the same transaction. This suite mocks that write; what
+		// it leaves on Postgres (a REJECTED snapshot and a CANCELED operation)
+		// is pinned in instruction-proposal-pull-requests.integration.test.ts.
+		// Neither test runs the readiness activity.
+		expect(m.rejectAbandonedInstructionSnapshot).toHaveBeenCalledTimes(1);
+		expect(m.rejectAbandonedInstructionSnapshot).toHaveBeenCalledWith({
+			snapshotId: "snap_new",
+			projectId: PROJECT,
+			organizationId: ORG,
+			source: "inline_submit_compensation",
+		});
+		expect(m.uploadFile.mock.invocationCallOrder[0]).toBeLessThan(
+			m.rejectAbandonedInstructionSnapshot.mock.invocationCallOrder[0]!,
+		);
+	});
+
+	it("admits an attribution-refused row BLOCKED and starts no workflow", async () => {
+		const blocked = {
+			phase: "admission",
+			code: "ATTRIBUTION_REJECTED",
+			retryable: false,
+			at: "2026-09-24T12:00:00.000Z",
+			params: {},
+		};
+		m.admit.mockResolvedValue(repositoryAdmission({ blocked }));
+		m.readProposalPullRequest.mockResolvedValue({
+			...PULL_REQUEST,
+			state: "BLOCKED",
+			failure: blocked,
+		});
+
+		const result = await submit();
+
+		expect(m.createDerivedInstructionSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				destination: expect.objectContaining({ blocked }),
+			}),
+		);
+		expect(m.startAdmittedProposalPullRequest).not.toHaveBeenCalled();
+		expect(result.pullRequest).toMatchObject({
+			state: "BLOCKED",
+			failure: blocked,
+		});
+	});
+
+	it("returns a duplicate's existing proposal and pull request and starts nothing", async () => {
+		m.createDerivedInstructionSnapshot.mockResolvedValue({
+			ok: false,
+			reason: "duplicate_proposal",
+			existing: {
+				id: "snap_existing",
+				version: 8,
+				status: "READY",
+				proposalStatus: "PENDING",
+				fileCount: 3,
+				inheritedCount: 2,
+				staged: [],
+			},
+		});
+		m.readProposalPullRequest.mockResolvedValue({
+			...PULL_REQUEST,
+			operationId: "op_earlier",
+			state: "OPEN",
+		});
+
+		const result = await submit();
+
+		expect(result).toMatchObject({
+			snapshotId: "snap_existing",
+			pullRequest: { operationId: "op_earlier", state: "OPEN" },
+		});
+		expect(m.readProposalPullRequest).toHaveBeenCalledWith({
+			snapshotId: "snap_existing",
+			projectId: PROJECT,
+			organizationId: ORG,
+		});
+		expect(m.startAdmittedProposalPullRequest).not.toHaveBeenCalled();
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		expect(m.uploadFile).not.toHaveBeenCalled();
+		expect(m.finalizeInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("a FABRIC proposal keeps its note and its post-commit audit, and has no pull request", async () => {
+		m.admit.mockResolvedValue({ destination: "FABRIC", note: NOTE });
+		m.createDerivedInstructionSnapshot.mockResolvedValue(created());
+
+		const result = await submit({ note: NOTE });
+
+		const call = m.createDerivedInstructionSnapshot.mock.calls[0]![0];
+		expect(call).toMatchObject({ note: NOTE });
+		expect(call).not.toHaveProperty("destination");
+		expect(m.recordAuditFromRequest).toHaveBeenCalledTimes(1);
+		expect(m.startAdmittedProposalPullRequest).not.toHaveBeenCalled();
+		expect(m.readProposalPullRequest).not.toHaveBeenCalled();
+		expect(result.pullRequest).toBeNull();
 	});
 });

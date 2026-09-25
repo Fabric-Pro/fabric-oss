@@ -21,6 +21,13 @@ export type OAuthRefreshRequest = {
 	clientSecret?: string;
 	/** Some providers require echoing scope on refresh. */
 	scope?: string;
+	/**
+	 * One deadline for the whole exchange (connection, headers and body).
+	 * Set it whenever the exchange runs inside a bounded budget, such as a
+	 * lock transaction whose timeout rolls back regardless of the request.
+	 * Omitted, the request has no deadline of its own.
+	 */
+	timeoutMs?: number;
 };
 
 export type OAuthRefreshSuccess = {
@@ -162,6 +169,9 @@ export async function refreshOAuthToken(
 				accept: "application/json",
 			},
 			body,
+			...(request.timeoutMs === undefined
+				? {}
+				: { signal: AbortSignal.timeout(request.timeoutMs) }),
 		});
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);

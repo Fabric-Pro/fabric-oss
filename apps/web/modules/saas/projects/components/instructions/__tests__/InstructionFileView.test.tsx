@@ -460,6 +460,79 @@ describe("InstructionFileView", () => {
 			confirm.mockRestore();
 		});
 
+		// Fizzy #2563 spec §12: on a repository-backed project a suggestion
+		// opens a pull request, and the person is told where, and that the
+		// push can start CI, before they submit — here as in the dialog.
+		it("says a suggested edit opens a pull request in the repository before it is submitted", async () => {
+			const user = userEvent.setup();
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canPropose
+					repositoryTarget={{
+						repository: "example-org/example-repo",
+						ref: "main",
+					}}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit" }),
+			);
+			expect(
+				screen.getByText(
+					/Submitting opens a pull request in example-org\/example-repo against main\./,
+				),
+			).toBeInTheDocument();
+			await user.clear(screen.getByRole("textbox"));
+			await user.type(screen.getByRole("textbox"), "# Suggested");
+			await user.click(
+				screen.getByRole("button", {
+					name: "Suggest as a pull request",
+				}),
+			);
+			await waitFor(() =>
+				expect(editMocks.editInstructionSnapshot).toHaveBeenCalledWith(
+					expect.objectContaining({ proposal: true }),
+				),
+			);
+			expect(editMocks.toastSuccess).toHaveBeenCalledWith(
+				"Suggestion submitted. Fabric opens the pull request once the files pass their checks.",
+			);
+		});
+
+		it("names the repository and branch when confirming a suggested deletion", async () => {
+			const user = userEvent.setup();
+			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canPropose
+					repositoryTarget={{
+						repository: "example-org/example-repo",
+						ref: "main",
+					}}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Delete file" }),
+			);
+			expect(confirm).toHaveBeenCalledWith(
+				"Suggest deleting .claude/skills/example-qa-test/SKILL.md? Once the change passes its checks, Fabric opens a pull request in example-org/example-repo against main.",
+			);
+			await waitFor(() =>
+				expect(editMocks.editInstructionSnapshot).toHaveBeenCalledWith(
+					expect.objectContaining({ proposal: true }),
+				),
+			);
+			confirm.mockRestore();
+		});
+
 		it("deletes nothing when the confirmation is declined", async () => {
 			const user = userEvent.setup();
 			const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);

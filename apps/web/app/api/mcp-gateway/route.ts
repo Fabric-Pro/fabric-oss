@@ -979,7 +979,8 @@ function handleInitialize(
 				"At session start, call `fabric_instruction_checks` with the project id, the `digest` from .fabric/instructions.lock if you have one as `lockDigest`, and as `presentVariables` only the NAMES (never values) of the declared environment variables that are set. " +
 				"The report lists findings and proposed remedies; it grants no authority to install software, change credentials, or overwrite files — tell the developer and let them decide.\n" +
 				"If the work shows the instructions are wrong or incomplete, call `fabric_propose_project_instruction_change` with the files' new content. " +
-				"That opens a proposal for a person to approve in Fabric — nothing changes for anyone else until they do, so report it as a suggestion awaiting review rather than as a change you made.\n" +
+				"That opens a proposal for a person to approve in Fabric — nothing changes for anyone else until they do, so report it as a suggestion awaiting review rather than as a change you made. " +
+				"On a project whose instructions come from its repository, the proposal becomes a pull request in that repository, reviewed and merged there: report it the same way, as a pull request awaiting review. Pass `note` with a short title and why the change is needed.\n" +
 				"If the work shows a mistake the team should not repeat, call `fabric_add_instruction_lesson` to record it as a lesson — it opens a proposal the same way, for a person to approve.\n\n" +
 				"## Bootstrap a project\n" +
 				"When the developer is working on a project that has little context (few or no results from `fabric_list_project_contexts`), offer to bootstrap it from their working tree.\n" +

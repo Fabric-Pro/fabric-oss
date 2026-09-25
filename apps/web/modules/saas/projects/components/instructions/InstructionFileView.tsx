@@ -131,6 +131,7 @@ export function InstructionFileView({
 	path,
 	canEdit = false,
 	canPropose = false,
+	repositoryTarget = null,
 	onChanged,
 }: {
 	projectId: string;
@@ -144,6 +145,12 @@ export function InstructionFileView({
 	canEdit?: boolean;
 	/** Whether this reader may submit a version for an editor to review. */
 	canPropose?: boolean;
+	/**
+	 * On a repository-backed project, the repository a suggestion opens its
+	 * pull request in and the branch it targets (Fizzy #2563 spec §12). The
+	 * editor says so before anything is submitted, as the dialog does.
+	 */
+	repositoryTarget?: { repository: string; ref: string } | null;
 	/** Refresh the tab's snapshot list and published pointer after a save. */
 	onChanged?: () => void;
 }) {
@@ -210,7 +217,15 @@ export function InstructionFileView({
 			}),
 		onSuccess: (_result, input) => {
 			setDraft(null);
-			toast.success(input.proposal ? t("proposalSubmitted") : t("saved"));
+			toast.success(
+				input.proposal
+					? t(
+							repositoryTarget
+								? "suggestionSubmitted"
+								: "proposalSubmitted",
+						)
+					: t("saved"),
+			);
 			onChanged?.();
 		},
 		onError: (error: Error) => toast.error(error.message),
@@ -352,10 +367,13 @@ export function InstructionFileView({
 										!window.confirm(
 											t(
 												proposal
-													? "deleteProposalConfirm"
+													? repositoryTarget
+														? "deleteSuggestionConfirm"
+														: "deleteProposalConfirm"
 													: "deleteConfirm",
 												{
 													path: f.path,
+													...(repositoryTarget ?? {}),
 												},
 											),
 										)
@@ -416,44 +434,60 @@ export function InstructionFileView({
 							</Button>
 						</div>
 					) : (
-						<div className="flex items-center gap-2">
-							{canEdit ? (
-								<>
-									<Button
-										size="sm"
-										disabled={save.isPending}
-										onClick={() => saveDraft(true)}
-									>
-										{t("saveAndPublishButton")}
-									</Button>
-									<Button
-										size="sm"
-										variant="outline"
-										disabled={save.isPending}
-										onClick={() => saveDraft(false)}
-									>
-										{t("saveAsVersionButton")}
-									</Button>
-								</>
+						<div className="flex flex-col gap-2">
+							{canPropose && !canEdit && repositoryTarget ? (
+								<p className="text-muted-foreground text-sm">
+									{t(
+										"repositoryProposalNotice",
+										repositoryTarget,
+									)}
+								</p>
 							) : null}
-							{canPropose ? (
+							<div className="flex items-center gap-2">
+								{canEdit ? (
+									<>
+										<Button
+											size="sm"
+											disabled={save.isPending}
+											onClick={() => saveDraft(true)}
+										>
+											{t("saveAndPublishButton")}
+										</Button>
+										<Button
+											size="sm"
+											variant="outline"
+											disabled={save.isPending}
+											onClick={() => saveDraft(false)}
+										>
+											{t("saveAsVersionButton")}
+										</Button>
+									</>
+								) : null}
+								{canPropose ? (
+									<Button
+										size="sm"
+										variant={
+											canEdit ? "outline" : "default"
+										}
+										disabled={save.isPending}
+										onClick={() => saveDraft(false, true)}
+									>
+										{t(
+											repositoryTarget
+												? "submitSuggestionButton"
+												: "submitProposalButton",
+										)}
+									</Button>
+								) : null}
 								<Button
 									size="sm"
-									variant={canEdit ? "outline" : "default"}
+									variant="ghost"
 									disabled={save.isPending}
-									onClick={() => saveDraft(false, true)}
+									onClick={() => setDraft(null)}
 								>
-									{t("submitProposalButton")}
+									{t("cancelButton")}
 								</Button>
-							) : null}
-							<Button
-								size="sm"
-								variant="ghost"
-								disabled={save.isPending}
-								onClick={() => setDraft(null)}
-							>
-								{t("cancelButton")}
-							</Button>
+							</div>
 						</div>
 					)}
 				</div>

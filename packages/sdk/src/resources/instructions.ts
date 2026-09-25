@@ -125,6 +125,91 @@ export interface SubmitInstructionChangeOptions {
 	personal?: boolean;
 }
 
+/**
+ * The suggestion's title and description (Fizzy #2563 spec §5.2). Both
+ * optional. The title is one line of at most 120 characters and the body at
+ * most 4096 bytes; a note that breaks a rule, or that looks like it carries
+ * a credential, is refused as a 422 whose `FabricError.code` is
+ * `NOTE_REJECTED` and whose `data.field` names `title` or `body`.
+ */
+export interface InstructionChangeNote {
+	title?: string;
+	body?: string;
+}
+
+export interface SubmitInstructionProposalOptions
+	extends SubmitInstructionChangeOptions {
+	/** Sent in the request body; never in the query. */
+	note?: InstructionChangeNote;
+}
+
+/**
+ * Where a REPOSITORY proposal's pull request stands (Fizzy #2563 spec §4.2).
+ * `OPEN` has a `url`; `MERGED`, `CLOSED` and `CANCELED` are final; `BLOCKED`
+ * carries a `failure` saying why Fabric could not open it.
+ */
+export type ProposalPullRequestState =
+	| "QUEUED"
+	| "OPENING"
+	| "OPEN"
+	| "CLOSE_REQUESTED"
+	| "BLOCKED"
+	| "MERGED"
+	| "CLOSED"
+	| "CANCELED";
+
+/** Why a pull request is blocked. `params` holds safe values only. */
+export interface ProposalPullRequestFailure {
+	phase: string;
+	code: string;
+	retryable: boolean;
+	/** ISO 8601. */
+	at: string;
+	params: Record<string, unknown>;
+}
+
+/**
+ * The pull request a suggestion to a repository-backed project opens.
+ * Everything here is what Fabric last recorded; nothing is read from the
+ * provider on request.
+ */
+export interface ProposalPullRequest {
+	operationId: string;
+	state: ProposalPullRequestState;
+	url: string | null;
+	externalId: string | null;
+	failure: ProposalPullRequestFailure | null;
+	/** ISO 8601, or null before Fabric first checked it. */
+	lastCheckedAt: string | null;
+}
+
+/** `getProposalPullRequest`'s answer: the block plus what the tab's card shows. */
+export interface ProposalPullRequestStatus extends ProposalPullRequest {
+	attempt: number;
+	observation: {
+		targetRef: string | null;
+		targetMismatch: boolean;
+		mergedAt: string | null;
+		closedAt: string | null;
+	} | null;
+	mergeSync: {
+		requestedAt: string | null;
+		runId: string | null;
+		runStatus: string | null;
+	} | null;
+}
+
+export interface GetProposalPullRequestOptions {
+	org?: string;
+	personal?: boolean;
+	/**
+	 * Cancels the request: the fetch, the body read and any retry backoff.
+	 * The call then rejects with the signal's own `reason`, never a
+	 * `FabricError`.
+	 */
+	signal?: AbortSignal;
+}
+
 export interface SubmittedInstructionChange {
 	/**
 	 * Which route answered: `proposal` from `submitChange`, `publish` from
@@ -142,10 +227,18 @@ export interface SubmittedInstructionChange {
 	deleteCount: number;
 	/**
 	 * The review state. `PENDING` for a proposal — a later state means an
-	 * earlier attempt at the same change set was already decided. Always
-	 * `null` for a publish: there is nobody to review it.
+	 * earlier attempt at the same change set was already decided. `MERGED`
+	 * and `CLOSED` belong to a repository-backed project's suggestion, decided
+	 * on its pull request. Always `null` for a publish: there is nobody to
+	 * review it.
 	 */
-	proposalStatus: "PENDING" | "APPROVED" | "REJECTED" | null;
+	proposalStatus:
+		| "PENDING"
+		| "APPROVED"
+		| "REJECTED"
+		| "MERGED"
+		| "CLOSED"
+		| null;
 	/**
 	 * The snapshot's status once its validation run was started, normally
 	 * `VALIDATING`. A publish is NOT finished at this point, and `READY` here
@@ -165,6 +258,14 @@ export interface SubmittedInstructionChange {
 	 * — nothing about that call ever asks the workflow to publish one.
 	 */
 	published: boolean;
+	/**
+	 * For a project whose instructions come from its repository, the pull
+	 * request this suggestion opens (normally `QUEUED` here: it is opened
+	 * after the files pass the same checks). `null` for a suggestion Fabric
+	 * reviews itself, and for a publish. Follow it with
+	 * `getProposalPullRequest`.
+	 */
+	pullRequest?: ProposalPullRequest | null;
 }
 
 export class InstructionsResource {
@@ -230,8 +331,15 @@ export class InstructionsResource {
 	 * again. It has no default on purpose: falling back to whatever is
 	 * published now would silently rebase an edit onto a version the caller
 	 * never read. The other codes this call can answer with are
-	 * `REPOSITORY_SOURCE_OF_TRUTH`, `NOTHING_PUBLISHED`,
-	 * `PROPOSAL_PROPOSER_LIMIT` and `PROPOSAL_PROJECT_LIMIT`.
+	 * `NOTHING_PUBLISHED`, `PROPOSAL_PROPOSER_LIMIT`, `PROPOSAL_PROJECT_LIMIT`,
+	 * `NOTE_REJECTED` (422, `data.field` names the field) and, for a project
+	 * whose instructions come from its repository, `REPOSITORY_UNAVAILABLE`
+	 * and `REPOSITORY_BASE_UNAVAILABLE` (412).
+	 *
+	 * For such a project the suggestion becomes a pull request in the
+	 * repository, reported as awaiting review: the result's `pullRequest`
+	 * names it, and `getProposalPullRequest` follows it. `options.note` is the
+	 * suggestion's title and description, for both kinds of project.
 	 *
 	 * Requires a key with `instructions:write`. The key's creator must still
 	 * hold the project permission the tab requires to propose — the scope is a
@@ -249,12 +357,43 @@ export class InstructionsResource {
 		projectId: string,
 		baseSnapshotId: string,
 		changes: InstructionChange[],
-		options: SubmitInstructionChangeOptions = {},
+		options: SubmitInstructionProposalOptions = {},
 	): Promise<SubmittedInstructionChange> {
+		// The note is body, not query: `buildQuery` serialises every key it
+		// is given.
+		const { note, ...context } = options;
 		return this.http.post<SubmittedInstructionChange>(
-			`/projects/${encodeURIComponent(projectId)}/instructions/changes${buildQuery(options)}`,
-			{ baseSnapshotId, changes },
+			`/projects/${encodeURIComponent(projectId)}/instructions/changes${buildQuery(context)}`,
+			{ baseSnapshotId, changes, ...(note ? { note } : {}) },
 		);
+	}
+
+	/**
+	 * A repository-backed project's suggestion: its pull request as Fabric
+	 * last recorded it (Fizzy #2563 spec §12). `null` for a suggestion Fabric
+	 * reviews itself.
+	 *
+	 * Requires a key with `instructions:read`, and its creator must be the
+	 * member who made the suggestion or someone who can review suggestions,
+	 * checked live on every call.
+	 *
+	 * `options.signal` cancels the request, including the client's retry
+	 * backoff, and the call then rejects with the signal's own reason: a
+	 * caller waiting against a deadline can tell its deadline from a failure.
+	 */
+	async getProposalPullRequest(
+		projectId: string,
+		snapshotId: string,
+		options: GetProposalPullRequestOptions = {},
+	): Promise<ProposalPullRequestStatus | null> {
+		const { signal, ...context } = options;
+		const result = await this.http.get<{
+			pullRequest: ProposalPullRequestStatus | null;
+		}>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/proposals/${encodeURIComponent(snapshotId)}/pull-request${buildQuery(context)}`,
+			{ signal },
+		);
+		return result.pullRequest;
 	}
 
 	/**

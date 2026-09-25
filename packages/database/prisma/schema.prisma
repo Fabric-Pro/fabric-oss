@@ -17077,6 +17077,31 @@ enum ProjectInstructionProposalStatus {
   PENDING
   APPROVED
   REJECTED
+  /// A REPOSITORY proposal whose pull request the provider reports merged
+  /// (Fizzy #2563 spec §4.2). Derived from `pullRequestState`, never set alone.
+  MERGED
+  /// A REPOSITORY proposal whose pull request was confirmed closed unmerged.
+  CLOSED
+}
+
+/// Where a proposal lands (Fizzy #2563 spec §2.1): frozen from the project's
+/// `sourceOfTruth` at admission and never converted by a later mode change.
+enum ProjectInstructionProposalDestination {
+  FABRIC
+  REPOSITORY
+}
+
+/// The pull-request operation of a REPOSITORY proposal (spec §4.2). The one
+/// pure mapping `proposalStatusForPullRequestState` derives `proposalStatus`.
+enum ProjectInstructionPullRequestState {
+  QUEUED
+  OPENING
+  OPEN
+  CLOSE_REQUESTED
+  MERGED
+  CLOSED
+  BLOCKED
+  CANCELED
 }
 
 enum ProjectInstructionFileKind {
@@ -17095,6 +17120,9 @@ enum ProjectInstructionSyncTrigger {
   MANUAL
   POLL
   WEBHOOK
+  /// A proposal's pull request merged on its frozen target (Fizzy #2563
+  /// spec §9.1). Not an automatic trigger: it bypasses the automatic toggle.
+  PULL_REQUEST_MERGED
 }
 
 /// A finished run's outcome. Null on the run row while the run is in flight.
@@ -17196,6 +17224,54 @@ model ProjectInstructionSnapshot {
   /// cleared `baseSnapshotId`.
   baseVersion    Int?
 
+  /// Proposal pull requests (Fizzy #2563 spec §4.1). `FABRIC` for every row
+  /// that predates them and for every non-proposal snapshot.
+  proposalDestination          ProjectInstructionProposalDestination @default(FABRIC)
+  /// proposalNoteSchema: { title?, body? }, both destinations.
+  proposalNote                 Json?
+  /// Allocated at admission; names the branch `fabric/instructions/<id>`.
+  pullRequestOperationId       String?                               @unique(map: "project_instruction_snapshot_pullRequestOperationId_key")
+  pullRequestState             ProjectInstructionPullRequestState?
+  /// Incremented by every claim; fences that attempt's writes.
+  pullRequestAttempt           Int                                   @default(0)
+  /// The frozen destination and rendered outbound text (spec §5.2).
+  pullRequestContext           Json?
+  /// The frozen commit, identical for every branch, stored before the first push.
+  pullRequestHeadSha           String?
+  /// The current operation branch.
+  pullRequestRef               String?
+  /// One record per branch: { attempt, ref, sha, pushIssuedAt, pushAckedAt?,
+  /// createIssuedAt?, settledAt?, confirmations, outcome? }.
+  pullRequestAttempts          Json[]                                @default([])
+  pullRequestUrl               String?
+  /// GitHub number, GitLab iid, Azure DevOps pullRequestId.
+  pullRequestExternalId        String?
+  /// { targetRef, headSha, mergedAt, closedAt, mergeCommitSha, targetMismatch }.
+  pullRequestObservation       Json?
+  /// { phase, code, retryable, at, params }.
+  pullRequestFailure           Json?
+  /// The last successful provider observation.
+  pullRequestLastCheckedAt     DateTime?
+  /// The earliest next sweeper action.
+  pullRequestNextAttemptAt     DateTime?
+  /// When a person's Refresh was last admitted, on the database clock: the
+  /// per-operation cooldown that stops Refresh from overriding a backoff
+  /// (Fizzy #2563 spec §12). Written only by the admitting update.
+  pullRequestRefreshAdmittedAt DateTime?
+  /// Maintained from `summarizeAttempts(pullRequestAttempts)` by every record
+  /// write, in the same transaction (plan Decision 1): Prisma cannot filter a
+  /// `Json[]` element, and retention and the Close sub-batch must.
+  pullRequestObligationOpen    Boolean                               @default(false)
+  /// The earliest due settlement confirmation (plan Decision 1).
+  pullRequestConfirmationDueAt DateTime?
+  mergeSyncRequestedAt         DateTime?
+  /// Set before the starter is called.
+  mergeSyncDispatchedAt        DateTime?
+  /// The Temporal run id of the dispatched merge sync (never trusted as a run key).
+  mergeSyncRunId               String?
+  /// { syncId, generation } passed as `expected` at dispatch.
+  mergeSyncExpected            Json?
+
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   readyAt     DateTime?
@@ -17224,6 +17300,11 @@ model ProjectInstructionSnapshot {
   /// the delete procedure and the retention prune ask before they remove a
   /// snapshot whose objects an in-flight derived snapshot still reads.
   @@index([baseSnapshotId])
+  /// The sweeper's due clock (Fizzy #2563 spec §9). Explicit names: Prisma's
+  /// defaults exceed Postgres's 63 characters (plan R18).
+  @@index([pullRequestState, pullRequestNextAttemptAt], map: "project_instruction_snapshot_pr_due_idx")
+  /// The Close sub-batch's settlement-confirmation clock (plan Decision 1).
+  @@index([pullRequestConfirmationDueAt], map: "project_instruction_snapshot_pr_confirmation_due_idx")
   @@map("project_instruction_snapshot")
 }
 
@@ -17317,6 +17398,10 @@ model ProjectInstructionRepositorySync {
   /// finished, the writer's settle under the row lock does the same. A
   /// re-configure clears it too.
   pendingCommitSha        String?
+  /// Lets members with INSTRUCTION_READ propose to the repository (Fizzy
+  /// #2563 spec §2.4, §16.1). Its own procedure writes it and never bumps
+  /// `generation`, so a toggle never fails in-flight proposals.
+  allowReaderProposals    Boolean  @default(false)
 
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt

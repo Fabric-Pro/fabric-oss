@@ -72,8 +72,19 @@ export type HistorySnapshot = {
 	 * from exactly the rows whose provenance is hardest to guess.
 	 */
 	baseVersion?: number | null;
-	/** Pending and rejected proposals must go through proposal review, not History. */
-	proposalStatus?: "PENDING" | "APPROVED" | "REJECTED" | null;
+	/**
+	 * Pending and rejected proposals must go through proposal review, not
+	 * History. MERGED and CLOSED belong to a suggestion that became a pull
+	 * request (Fizzy #2563): it stays in its proposer's History and is never
+	 * published from here.
+	 */
+	proposalStatus?:
+		| "PENDING"
+		| "APPROVED"
+		| "REJECTED"
+		| "MERGED"
+		| "CLOSED"
+		| null;
 };
 
 /**
@@ -221,6 +232,12 @@ export function InstructionsHistory({
 							const awaitingProposalDecision =
 								s.proposalStatus === "PENDING" ||
 								s.proposalStatus === "REJECTED";
+							// The server refuses to publish a pull-request
+							// suggestion in any status (spec §2.5): it
+							// reaches agents by merging and syncing.
+							const pullRequestSuggestion =
+								s.proposalStatus === "MERGED" ||
+								s.proposalStatus === "CLOSED";
 							const badge = statusBadge(s, isPublished);
 							const rejectionRows =
 								s.rejection?.filter(
@@ -270,6 +287,7 @@ export function InstructionsHistory({
 											{s.status === "READY" &&
 											!isPublished &&
 											!awaitingProposalDecision &&
+											!pullRequestSuggestion &&
 											publishAllowed &&
 											(!repositoryBacked ||
 												s.source === "REPOSITORY") &&

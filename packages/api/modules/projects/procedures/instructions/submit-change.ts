@@ -85,6 +85,16 @@
  * `requireScope` at the route; this is the live per-call permission check that
  * must happen in addition to it, never instead of it. It runs for every key
  * type, wildcard ones included.
+ *
+ * ## A repository-backed project (Fizzy #2563)
+ *
+ * A proposal there opens a pull request in the connected repository once
+ * validation passes. `admitInstructionProposal` decides the destination and,
+ * for a repository, freezes it and checks the stricter authority (CREATE, or
+ * READ with the project's opt-in); the create transaction writes the row and
+ * its one `upload_started` audit; the operation's workflow starts after
+ * commit; and the response carries the row's `pullRequest` block. Publish
+ * mode is still refused with `REPOSITORY_SOURCE_OF_TRUTH`.
  */
 import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/client";
@@ -95,7 +105,6 @@ import {
 	type DuplicateInstructionProposal,
 	getInstructionSnapshot,
 	getInstructionSnapshotWithPublishedPointer,
-	getProjectInstructionSettings,
 	getPublishedInstructionSnapshot,
 	type InstructionProposalStatus,
 	listInstructionFiles,
@@ -124,7 +133,17 @@ import {
 	isInstructionWorkflowNotStarted,
 	unwrapInstructionWorkflowError,
 } from "./instruction-workflow-start";
+import {
+	admitInstructionProposal,
+	repositoryDestination,
+	uploadStartedAuditTemplate,
+} from "./proposal-admission";
 import { assertInstructionDeriveAccess } from "./proposal-authorization";
+import {
+	type ProposalPullRequestView,
+	readProposalPullRequest,
+	startAdmittedProposalPullRequest,
+} from "./proposal-pull-request";
 
 // Same source `SKILLS_BUCKET_NAME` feeds (config/index.ts), imported the way
 // `create-upload-urls.ts` does.
@@ -214,6 +233,12 @@ export type SubmitInstructionChangeInput = {
 	audit: AuditRequestContext;
 	/** Which surface filed the change, for the audit row. */
 	via: string;
+	/**
+	 * A proposal's `{ title?, body? }` (Fizzy #2563 spec §5.1 step 6), as the
+	 * caller sent it: admission parses it and refuses a bad one as
+	 * `NOTE_REJECTED` naming the field. Ignored in publish mode.
+	 */
+	note?: unknown;
 };
 
 export type SubmitInstructionChangeResult = {
@@ -264,6 +289,13 @@ export type SubmitInstructionChangeResult = {
 	 * pointer match or a stray `publishedAt` is not this request's doing.
 	 */
 	published: boolean;
+	/**
+	 * A repository-backed proposal's pull request as its row says now
+	 * (spec §5.3): `QUEUED` until validation passes and the workflow opens
+	 * it, or `BLOCKED` with the failure that stopped it. Null for a FABRIC
+	 * proposal and for a publish.
+	 */
+	pullRequest: ProposalPullRequestView | null;
 };
 
 /**
@@ -373,20 +405,28 @@ export async function submitInstructionChange(
 	);
 
 	// Spec §6.12: one source of truth per project. A repository-backed
-	// project's instructions are changed in git and refreshed by sync;
-	// accepting an edit here would fork Fabric away from the repository with
-	// no way to reconcile. Same refusal the tab gets.
-	const settings = await getProjectInstructionSettings(
-		input.projectId,
+	// project's instructions are changed in git and refreshed by sync, so a
+	// publish there would fork Fabric away from the repository; a proposal is
+	// admitted as a pull request into it (Fizzy #2563 spec §5.1). Same
+	// admission the tab's derive runs.
+	const admission = await admitInstructionProposal({
+		projectId: input.projectId,
 		organizationId,
-	);
-	if (settings.sourceOfTruth === "REPOSITORY") {
-		throw new ORPCError("PRECONDITION_FAILED", {
-			message:
-				"This project's coding instructions come from its repository. Change the files there and sync the project.",
-			data: { reason: "REPOSITORY_SOURCE_OF_TRUTH" },
-		});
-	}
+		userId: input.userId,
+		mode,
+		note: input.note,
+		proposerName: input.audit.user?.name,
+		fileCount: input.changes.length,
+	});
+	const repository = admission.destination === "REPOSITORY";
+	const pullRequestOf = (snapshotId: string) =>
+		repository
+			? readProposalPullRequest({
+					snapshotId,
+					projectId: input.projectId,
+					organizationId,
+				})
+			: Promise.resolve(null);
 
 	// The base is ALWAYS the currently published snapshot: a proposal is a
 	// fast-forward claim on the published pointer (§6.12), so any other base
@@ -451,9 +491,9 @@ export async function submitInstructionChange(
 	 * set, which is identical to the one that opened the proposal — that is
 	 * what the digest the query matched on means.
 	 */
-	const duplicateResult = (
+	const duplicateResult = async (
 		existing: DuplicateInstructionProposal,
-	): SubmitInstructionChangeResult => ({
+	): Promise<SubmitInstructionChangeResult> => ({
 		mode,
 		snapshotId: existing.id,
 		version: existing.version,
@@ -471,6 +511,9 @@ export async function submitInstructionChange(
 		// so never matches it. Nothing here has asked the workflow to publish
 		// this row.
 		published: false,
+		// The earlier attempt's operation, as its row says now. Nothing is
+		// started for a replay: that attempt started its own workflow.
+		pullRequest: await pullRequestOf(existing.id),
 	});
 
 	const created = await createDerivedInstructionSnapshot({
@@ -491,6 +534,26 @@ export async function submitInstructionChange(
 			maxTotalBytes: SNAPSHOT_LIMITS.maxTotalBytes,
 		},
 		baseKeyPrefix: snapshotPrefix(input.projectId, base.id),
+		note: admission.note,
+		// A REPOSITORY proposal's `upload_started` row is written INSIDE the
+		// create transaction, which alone knows the id and version it
+		// allocates (plan Decision 11); the outer audit below is skipped.
+		...(admission.destination === "REPOSITORY"
+			? {
+					destination: repositoryDestination(
+						admission,
+						uploadStartedAuditTemplate(input.audit, {
+							organizationId,
+							projectId: input.projectId,
+							baseSnapshotId: base.id,
+							baseVersion: base.version,
+							putCount,
+							deleteCount,
+							via: input.via,
+						}),
+					),
+				}
+			: {}),
 	});
 
 	if (!created.ok) {
@@ -503,7 +566,26 @@ export async function submitInstructionChange(
 		throw derivedSnapshotRefusal(created.reason, created.detail);
 	}
 
-	// Everything from here to the workflow start is COMPENSATED on failure.
+	// After commit (spec §5.1 step 9), and never for a row admitted BLOCKED:
+	// nothing is pushed for one. The PULL-REQUEST workflow starts HERE, before
+	// the bytes below are written and before the validation workflow exists.
+	// It does not own the snapshot: it waits on the snapshot's readiness on
+	// its own timers and acts only once validation has made the row READY. A
+	// failed start is logged, not thrown; the sweeper restarts a queued row
+	// with no workflow.
+	if (admission.destination === "REPOSITORY" && !admission.blocked) {
+		await startAdmittedProposalPullRequest({
+			snapshotId: created.id,
+			projectId: input.projectId,
+			organizationId,
+			operationId: admission.operationId,
+		});
+	}
+
+	// Everything from here to the VALIDATION workflow's start is COMPENSATED
+	// on failure. "The workflow" below means that one, which the finalizer
+	// starts; a repository proposal's pull-request workflow has already
+	// started above and is only waiting for readiness.
 	//
 	// The snapshot row exists now, RECEIVING and — for a proposal — PENDING,
 	// and a proposal in that state counts against both admission caps (five
@@ -516,18 +598,24 @@ export async function submitInstructionChange(
 	// failed pushes would lock the proposer out of the feature entirely with
 	// nothing to cancel in the tab.
 	//
-	// So a failure BEFORE the workflow start is closed out here, through the
-	// same conditional write the reaper uses: REJECTED, carrying the
-	// "staging pending" mark so the reaper's second phase still sweeps
-	// whatever bytes did land. The compare-and-set on `status: "RECEIVING"`
-	// is what makes it safe to do from here, and the row is always one THIS
-	// request created: a duplicate returned above never reaches this section.
+	// So a failure BEFORE the validation workflow's start is closed out
+	// here, through the same conditional write the reaper uses: REJECTED,
+	// carrying the "staging pending" mark so the reaper's second phase still
+	// sweeps whatever bytes did land. The compare-and-set on `status:
+	// "RECEIVING"` is what makes it safe to do from here, and the row is
+	// always one THIS request created: a duplicate returned above never
+	// reaches this section. For a repository proposal the same transaction
+	// moves its operation to CANCELED (`rejectAbandonedInstructionSnapshot`),
+	// and the waiting pull-request workflow's next readiness check reads the
+	// REJECTED, CANCELED row and stops without pushing anything.
 	// Flipped immediately before the finalizer is called. Everything up to
 	// that line is this request's own work — an audit row, a staging claim, an
-	// object write — and none of it can have handed the snapshot to a
-	// workflow. `startWasNeverAttempted` covers the one failure INSIDE the
-	// finalizer that is still on this side of the line; the flag covers
-	// everything before it, without depending on any error's shape.
+	// object write — and none of it can have handed the snapshot to the
+	// validation workflow, the only one that takes it over; the pull-request
+	// workflow never moves a snapshot that is not READY.
+	// `startWasNeverAttempted` covers the one failure INSIDE the finalizer
+	// that is still on this side of the line; the flag covers everything
+	// before it, without depending on any error's shape.
 	let finalizerWasEntered = false;
 	let finalized: Awaited<ReturnType<typeof finalizeInstructionSnapshot>>;
 	try {
@@ -539,37 +627,40 @@ export async function submitInstructionChange(
 		//
 		// One row per snapshot CREATED, which is what this request has just
 		// done: a duplicate returned above records nothing, because the
-		// request that wrote that row already recorded it.
-		recordAuditFromRequest(input.audit, {
-			action: "project.instructions.upload_started",
-			category: "project",
-			organizationId,
-			projectId: input.projectId,
-			resource: {
-				type: "project_instruction_snapshot",
-				id: created.id,
-				name: `v${created.version}`,
-			},
-			metadata: {
-				// The TAB's vocabulary, not this file's. `derive-snapshot.ts`
-				// records `"proposal"` or `"derived"` for the same two
-				// outcomes, and an audit reader looking for direct versions
-				// has to find the ones made from here as well; `via` is what
-				// says which surface each one came through. The publish
-				// itself is audited separately, as
-				// `project.instructions.published`, by the workflow activity
-				// that moves the pointer — the same row the tab produces,
-				// because it IS the same activity.
-				mode: proposal ? "proposal" : "derived",
-				via: input.via,
-				baseSnapshotId: base.id,
-				baseVersion: base.version,
-				putCount,
-				deleteCount,
-				inheritedCount: created.inheritedCount,
-				keptCount: created.fileCount,
-			},
-		});
+		// request that wrote that row already recorded it. A REPOSITORY
+		// proposal's row was written by the create transaction itself.
+		if (!repository) {
+			recordAuditFromRequest(input.audit, {
+				action: "project.instructions.upload_started",
+				category: "project",
+				organizationId,
+				projectId: input.projectId,
+				resource: {
+					type: "project_instruction_snapshot",
+					id: created.id,
+					name: `v${created.version}`,
+				},
+				metadata: {
+					// The TAB's vocabulary, not this file's. `derive-snapshot.ts`
+					// records `"proposal"` or `"derived"` for the same two
+					// outcomes, and an audit reader looking for direct versions
+					// has to find the ones made from here as well; `via` is what
+					// says which surface each one came through. The publish
+					// itself is audited separately, as
+					// `project.instructions.published`, by the workflow activity
+					// that moves the pointer — the same row the tab produces,
+					// because it IS the same activity.
+					mode: proposal ? "proposal" : "derived",
+					via: input.via,
+					baseSnapshotId: base.id,
+					baseVersion: base.version,
+					putCount,
+					deleteCount,
+					inheritedCount: created.inheritedCount,
+					keptCount: created.fileCount,
+				},
+			});
+		}
 
 		// The same rewrite `createUploadUrls` performs before it signs: the row's
 		// provisional `stagingKey(projectId, "pending", <index>)` becomes the real
@@ -649,9 +740,11 @@ export async function submitInstructionChange(
 			userId: input.userId,
 		});
 	} catch (error) {
-		// Compensate unless the workflow start was actually reached: either
-		// this failed before the finalizer was entered at all, or the
-		// finalizer says it never got as far as calling `workflow.start`.
+		// Compensate unless the validation workflow's start was actually
+		// reached: either this failed before the finalizer was entered at
+		// all, or the finalizer says it never got as far as calling
+		// `workflow.start`. An already-started pull-request workflow does not
+		// change this; it stops once the row it waits on is closed out.
 		//
 		// Always a row THIS request created — a duplicate returned above
 		// never reaches here — so the RECEIVING compare-and-set inside it is
@@ -734,13 +827,19 @@ export async function submitInstructionChange(
 		proposalStatus: current?.proposalStatus ?? null,
 		status: current?.status ?? finalized.status,
 		published,
+		pullRequest: await pullRequestOf(created.id),
 	};
 }
 /**
- * Close out a snapshot row that no workflow ever took ownership of, through
- * the same conditional write the reaper uses: REJECTED, carrying the
- * "staging pending" mark so the reaper's sweep phase still removes whatever
- * bytes did land.
+ * Close out a snapshot row that no validation workflow ever took ownership
+ * of, through the same conditional write the reaper uses: REJECTED, carrying
+ * the "staging pending" mark so the reaper's sweep phase still removes
+ * whatever bytes did land.
+ *
+ * A repository proposal's pull-request workflow may already be running. It
+ * does not own the row: it is waiting on readiness. The same transaction
+ * cancels the proposal's operation, and that workflow's next readiness check
+ * stops on the REJECTED, CANCELED row.
  *
  * What this buys is TIME, not an instant free slot. The row stays inside
  * `activeProposalFilter` until that sweep clears the marker, which is the

@@ -51,3 +51,21 @@ export function instructionSnapshotWorkflowId(snapshotId: string): string {
 export function instructionRepositorySyncWorkflowId(projectId: string): string {
 	return `project-instruction-repository-sync-${projectId}`;
 }
+
+/**
+ * The Temporal workflow id of one proposal's pull-request operation (Fizzy
+ * #2563 spec §6): one per operation, started with
+ * `workflowIdConflictPolicy: "FAIL"`, so a second start while it runs is
+ * adoption rather than a second opener. The admission, retry and refresh
+ * starts in `@repo/api` and the sweeper's restart in `@repo/temporal` all
+ * build it here.
+ */
+export function instructionProposalPullRequestWorkflowId(
+	operationId: string,
+): string {
+	return `project-instruction-proposal-pull-request-${operationId}`;
+}
+
+/** The one proposal pull-request sweeper (spec §9), started by its schedule. */
+export const INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_ID =
+	"instruction-proposal-pull-request-sweep";
