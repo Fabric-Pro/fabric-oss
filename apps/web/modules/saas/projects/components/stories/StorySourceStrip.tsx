@@ -30,11 +30,12 @@ export function StorySourceStrip({
 	return (
 		// One line at every width: when the story column narrows (the AI panel
 		// opening), wrapping would grow the strip and shift the editor below it,
-		// so parts truncate instead. The link keeps its full width; the chip and
-		// reporter name give way first.
-		<div className="flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap px-6 py-1 border-b bg-muted/30 text-xs text-muted-foreground">
+		// so parts truncate instead. The link keeps its full width; the reporter
+		// name truncates, and the chip only shows once the strip has room for it
+		// (a squeezed chip collapses to an empty pill).
+		<div className="@container flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap px-6 py-1 border-b bg-muted/30 text-xs text-muted-foreground">
 			{story.reporterSource && (
-				<span className="inline-flex min-w-0 items-center gap-1 rounded-full bg-background px-2 py-0.5 font-medium uppercase tracking-wider text-[10px]">
+				<span className="hidden @xs:inline-flex min-w-0 items-center gap-1 rounded-full bg-background px-2 py-0.5 font-medium uppercase tracking-wider text-[10px]">
 					<span className="truncate">
 						{isBug ? "Reported" : "Proposed"} via{" "}
 						{story.reporterSource}
