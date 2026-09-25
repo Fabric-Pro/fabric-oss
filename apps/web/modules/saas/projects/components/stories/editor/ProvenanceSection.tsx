@@ -46,6 +46,9 @@ export function ProvenanceSection({
 	const creatorUnresolved = !creatorName && !creatorEmail;
 	const creatorDisplay = creatorName ?? creatorEmail ?? "Unknown user";
 	const pmHref = getValidExternalUrl(story.externalUrl);
+	const reporterLabel = story.reporterSource
+		? REPORTER_LABEL[story.reporterSource]
+		: "an external source";
 
 	return (
 		<section className="space-y-3">
@@ -96,11 +99,11 @@ export function ProvenanceSection({
 					<SourceChip source={story.source} className="text-xs" />
 				</dd>
 
-				{story.reporterName ? (
+				{story.reporterName || story.reporterSourceUrl ? (
 					<>
 						<dt className="text-muted-foreground">Proposed</dt>
 						<dd>
-							{story.reporterSourceUrl ? (
+							{story.reporterName && story.reporterSourceUrl ? (
 								<>
 									Originally proposed by{" "}
 									<a
@@ -111,19 +114,27 @@ export function ProvenanceSection({
 									>
 										{story.reporterName}
 									</a>{" "}
-									via{" "}
-									{story.reporterSource
-										? REPORTER_LABEL[story.reporterSource]
-										: "an external source"}
+									via {reporterLabel}
 								</>
-							) : (
+							) : story.reporterName ? (
 								<span>
 									Originally proposed by {story.reporterName}{" "}
-									via{" "}
-									{story.reporterSource
-										? REPORTER_LABEL[story.reporterSource]
-										: "an external source"}
+									via {reporterLabel}
 								</span>
+							) : (
+								<>
+									Originally proposed via {reporterLabel}{" "}
+									<a
+										href={
+											story.reporterSourceUrl ?? undefined
+										}
+										target="_blank"
+										rel="noopener noreferrer"
+										className="underline hover:text-foreground"
+									>
+										View source conversation
+									</a>
+								</>
 							)}
 						</dd>
 					</>

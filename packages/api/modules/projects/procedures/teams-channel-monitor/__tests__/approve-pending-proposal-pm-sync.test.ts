@@ -33,6 +33,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		featureFindFirst: vi.fn(),
 		// External services
 		createStoryFromProposal: vi.fn(),
+		getLinkedTeamsChatGraphId: vi.fn(),
 		attachPendingMediaToStory: vi.fn(),
 		getMicrosoftAccessToken: vi.fn(),
 		uploadFile: vi.fn(),
@@ -60,6 +61,7 @@ vi.mock("@repo/database", () => ({
 	setPendingProposalAttachmentResult:
 		mocks.setPendingProposalAttachmentResult,
 	markPendingProposalRejected: mocks.markPendingProposalRejected,
+	getLinkedTeamsChatGraphId: mocks.getLinkedTeamsChatGraphId,
 	updateStory: vi.fn().mockResolvedValue(undefined),
 	db: {
 		project: { findUnique: mocks.projectFindUnique },
@@ -482,5 +484,80 @@ describe("approvePendingProposal (Teams) — ROADMAP_RECOMMENDATION refusal", ()
 			}),
 		).rejects.toMatchObject({ code: "BAD_REQUEST" });
 		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+	});
+});
+
+// A Teams chat proposal stores no link of its own (Graph gives chat messages no
+// webUrl), so the created work item's "View source" link comes from the deep
+// link resolved through the linked chat.
+describe("approvePendingProposal (Teams) — source link on the created work item", () => {
+	it("stamps a Teams chat proposal's root-message deep link as the story's reporterSourceUrl", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValueOnce({
+			...makeProposalRow({ changes: [CHANGE_FEATURE] }),
+			source: "TEAMS_CHAT",
+			sourceMetadata: {
+				linkedChatId: "linked-chat-1",
+				chatTopic: "Example Action Team",
+				chatWebUrl: null,
+				threadRootId: "1726000000000",
+				threadRootWebLink: null,
+			},
+		});
+		mocks.getLinkedTeamsChatGraphId.mockResolvedValue(
+			"19:example-chat@thread.v2",
+		);
+
+		await handlers.approve?.({
+			input: {
+				projectId: PROJECT_ID,
+				organizationId: ORG_ID,
+				proposalId: PROPOSAL_ID,
+				approvedChanges: [CHANGE_FEATURE],
+			},
+			context: APPROVAL_CTX,
+		});
+
+		expect(mocks.getLinkedTeamsChatGraphId).toHaveBeenCalledWith(
+			PROJECT_ID,
+			"linked-chat-1",
+		);
+		expect(mocks.createStoryFromProposal).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reporterSource: "TEAMS",
+				reporterSourceUrl:
+					"https://teams.microsoft.com/l/message/19:example-chat@thread.v2/1726000000000?context=%7B%22contextType%22%3A%22chat%22%7D",
+			}),
+		);
+	});
+
+	it("keeps a Teams channel proposal's stored thread link, without a chat lookup", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValueOnce({
+			...makeProposalRow({ changes: [CHANGE_FEATURE] }),
+			source: "TEAMS_CHANNEL",
+			sourceMetadata: {
+				channelDisplayName: "general",
+				threadRootId: "1726000000000",
+				threadRootWebLink:
+					"https://teams.example.com/channel/general/1",
+			},
+		});
+
+		await handlers.approve?.({
+			input: {
+				projectId: PROJECT_ID,
+				organizationId: ORG_ID,
+				proposalId: PROPOSAL_ID,
+				approvedChanges: [CHANGE_FEATURE],
+			},
+			context: APPROVAL_CTX,
+		});
+
+		expect(mocks.getLinkedTeamsChatGraphId).not.toHaveBeenCalled();
+		expect(mocks.createStoryFromProposal).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reporterSourceUrl:
+					"https://teams.example.com/channel/general/1",
+			}),
+		);
 	});
 });

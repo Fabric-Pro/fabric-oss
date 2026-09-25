@@ -93,6 +93,27 @@ describe("ProvenanceSection", () => {
 		).toBeInTheDocument();
 	});
 
+	it("links to the source conversation of a Teams story that has no reporter name", () => {
+		// Teams proposals never record who reported them, so the source link is
+		// the only provenance a Teams-created feature or bug carries.
+		const story = {
+			...base,
+			reporterSource: "TEAMS",
+			reporterSourceUrl:
+				"https://teams.microsoft.com/l/message/19:example-chat@thread.v2/1726000000000",
+		} as unknown as UserStory;
+		render(<ProvenanceSection story={story} creatorName="Dave" />);
+		expect(
+			screen.getByText(/Originally proposed via Teams/),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("link", { name: "View source conversation" }),
+		).toHaveAttribute(
+			"href",
+			"https://teams.microsoft.com/l/message/19:example-chat@thread.v2/1726000000000",
+		);
+	});
+
 	it("omits the PM row when externalUrl is null", () => {
 		render(<ProvenanceSection story={base} creatorName="Dave" />);
 		expect(screen.queryByText(/View in/)).toBeNull();

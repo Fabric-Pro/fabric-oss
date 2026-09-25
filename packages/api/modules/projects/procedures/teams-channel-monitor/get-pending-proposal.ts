@@ -1,7 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import {
 	getAppliedChangeIndexes,
-	getLinkedTeamsChatGraphId,
 	getPendingBacklogProposal,
 } from "@repo/database";
 import { z } from "zod";
@@ -10,6 +9,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolveTeamsChatSourceLink } from "../../lib/teams-chat-source-link";
 
 /**
  * Returns the full PendingBacklogProposal record (including the `proposal`
@@ -51,33 +51,7 @@ export const getPendingProposalProcedure = tenantProtectedProcedure
 		const createdChangeIndexes = Array.from(
 			await getAppliedChangeIndexes(proposal.id),
 		).sort((a, b) => a - b);
-		const teamsChatId = await resolveTeamsChatId(proposal);
+		const teamsChatSourceLink = await resolveTeamsChatSourceLink(proposal);
 
-		return { ...proposal, createdChangeIndexes, teamsChatId };
+		return { ...proposal, createdChangeIndexes, teamsChatSourceLink };
 	});
-
-/**
- * The Graph chat id a Teams chat proposal came from. Graph returns no `webUrl`
- * for chat messages and the chat monitor stores only the Fabric-side
- * `linkedChatId`, so the inbox needs this to deep-link to the source message.
- */
-async function resolveTeamsChatId(proposal: {
-	source: string;
-	projectId: string;
-	sourceMetadata: unknown;
-}): Promise<string | null> {
-	const metadata = proposal.sourceMetadata;
-	if (
-		proposal.source !== "TEAMS_CHAT" ||
-		typeof metadata !== "object" ||
-		metadata === null ||
-		!("linkedChatId" in metadata) ||
-		typeof metadata.linkedChatId !== "string"
-	) {
-		return null;
-	}
-	return await getLinkedTeamsChatGraphId(
-		proposal.projectId,
-		metadata.linkedChatId,
-	);
-}

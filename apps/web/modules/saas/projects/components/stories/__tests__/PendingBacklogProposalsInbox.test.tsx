@@ -1282,14 +1282,14 @@ describe("PendingBacklogProposalsInbox — link back to the source conversation"
 	async function openProposal(
 		source: RowSource,
 		sourceMetadata: Record<string, unknown>,
-		teamsChatId: string | null = null,
+		teamsChatSourceLink: string | null = null,
 	) {
 		pendingProposalsList.mockResolvedValue([
 			makeListRow({ source, sourceMetadata }),
 		]);
 		pendingProposalsGet.mockResolvedValue({
 			...makeDetail({ source, sourceMetadata }),
-			teamsChatId,
+			teamsChatSourceLink,
 		});
 		renderInbox();
 		(await screen.findByText(/Captured from a Slack thread/)).click();
@@ -1323,9 +1323,11 @@ describe("PendingBacklogProposalsInbox — link back to the source conversation"
 		expect(screen.getByText(chatTranscript)).toBeVisible();
 	});
 
-	it("TEAMS_CHAT with no stored link: deep-links to the root message through the resolved chat id", async () => {
+	it("TEAMS_CHAT with no stored link: links to the root message through the server-built deep link", async () => {
 		// The shape monitored chats actually produce: Graph returns no webUrl for
 		// chat messages and the chat's own webUrl was never captured.
+		const deepLink =
+			"https://teams.microsoft.com/l/message/19:example-chat@thread.v2/1726000000000?context=%7B%22contextType%22%3A%22chat%22%7D";
 		await openProposal(
 			"TEAMS_CHAT",
 			{
@@ -1336,36 +1338,14 @@ describe("PendingBacklogProposalsInbox — link back to the source conversation"
 				threadRootWebLink: null,
 				transcript: chatTranscript,
 			},
-			"19:example-chat@thread.v2",
+			deepLink,
 		);
 
 		expect(
 			screen.getByRole("link", {
 				name: "Open original message in Microsoft Teams",
 			}),
-		).toHaveAttribute(
-			"href",
-			"https://teams.microsoft.com/l/message/19:example-chat@thread.v2/1726000000000?context=%7B%22contextType%22%3A%22chat%22%7D",
-		);
-	});
-
-	it("TEAMS_CHAT: builds no deep link from a chat id Graph would not issue", async () => {
-		await openProposal(
-			"TEAMS_CHAT",
-			{
-				chatTopic: "Example Action Team",
-				threadRootId: "1726000000000",
-				transcript: chatTranscript,
-			},
-			"19:example/../../elsewhere",
-		);
-
-		expect(
-			screen.queryByRole("link", {
-				name: "Open original message in Microsoft Teams",
-			}),
-		).not.toBeInTheDocument();
-		expect(screen.getByText("Example Action Team")).toBeInTheDocument();
+		).toHaveAttribute("href", deepLink);
 	});
 
 	it("TEAMS_CHAT with a message link: prefers the thread link over the chat link", async () => {

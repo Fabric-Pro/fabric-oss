@@ -48,6 +48,7 @@ import {
 } from "../../lib/decision-override-audit";
 import { enqueuePmSync } from "../../lib/enqueue-pm-sync";
 import { resolveMeetingTranscriptForProposal } from "../../lib/meeting-provenance";
+import { resolveTeamsChatSourceLink } from "../../lib/teams-chat-source-link";
 import {
 	type ChangeItem,
 	changeItemSchema,
@@ -255,11 +256,16 @@ function redactErrorName(err: unknown): string {
 /**
  * F-171 reporter tracking: extract `reporterSourceUrl` + `reporterName` from
  * the proposal's Teams source metadata so the created bug carries an
- * audit trail back to the originating thread/chat (REQ-8, AC13). Falls back
- * to nulls when the metadata is missing the fields. The reporterSource is
- * always "TEAMS" for this path.
+ * audit trail back to the originating thread/chat (REQ-8, AC13). A chat
+ * message has no stored link, so a chat proposal passes the deep link
+ * `resolveTeamsChatSourceLink` built for it. Falls back to nulls when the
+ * metadata is missing the fields. The reporterSource is always "TEAMS" for
+ * this path.
  */
-function buildTeamsReporterInfo(sourceMetadata: unknown): {
+function buildTeamsReporterInfo(
+	sourceMetadata: unknown,
+	teamsChatSourceLink: string | null,
+): {
 	reporterSourceUrl: string | null;
 	reporterName: string | null;
 } {
@@ -268,12 +274,13 @@ function buildTeamsReporterInfo(sourceMetadata: unknown): {
 			? (sourceMetadata as Record<string, unknown>)
 			: {};
 
+	const storedLink = (value: unknown): string | null =>
+		typeof value === "string" && value ? value : null;
 	const reporterSourceUrl =
-		typeof meta.threadRootWebLink === "string" && meta.threadRootWebLink
-			? meta.threadRootWebLink
-			: typeof meta.channelWebUrl === "string" && meta.channelWebUrl
-				? meta.channelWebUrl
-				: null;
+		storedLink(meta.threadRootWebLink) ??
+		teamsChatSourceLink ??
+		storedLink(meta.chatWebUrl) ??
+		storedLink(meta.channelWebUrl);
 
 	// Best-effort reporter name: prefer an explicit reporterName field
 	// emitted by the analyzer; otherwise grab the first message author.
@@ -713,6 +720,9 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 				proposalSource: proposal.source,
 				sourceMetadata: proposal.sourceMetadata,
 			});
+		// Resolved once per approval, like the meeting provenance above: every
+		// story this proposal creates links back to the same source message.
+		const teamsChatSourceLink = await resolveTeamsChatSourceLink(proposal);
 
 		for (const { change, index } of creates) {
 			try {
@@ -756,7 +766,10 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 					change.reasoning ?? proposal.summary ?? "",
 				);
 				const { reporterSourceUrl, reporterName } =
-					buildTeamsReporterInfo(proposal.sourceMetadata);
+					buildTeamsReporterInfo(
+						proposal.sourceMetadata,
+						teamsChatSourceLink,
+					);
 				// When the PM picks a kind in the approval UI we honor it
 				// verbatim and skip the F-171 classifier. Otherwise we keep
 				// the legacy behavior of letting the classifier decide.
