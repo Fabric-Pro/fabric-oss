@@ -6,6 +6,7 @@ import {
 	captureResponseCorrelationId,
 	generateClientCorrelationId,
 } from "./correlation-id";
+import { isRpcErrorEnvelope, rpcErrorResponse } from "./rpc-error-envelope";
 import { logRpcFailure } from "./rpc-failure-log";
 
 /**
@@ -39,22 +40,21 @@ async function orpcFetch(
 
 	const text = await response.text();
 
+	// The API's own errors arrive as oRPC's error envelope, message included.
+	// Anything else with an error status — a proxy's HTML page, a platform's
+	// JSON error, malformed JSON — is rewrapped as one.
+	if (response.status >= 400 && !isRpcErrorEnvelope(text)) {
+		return rpcErrorResponse(response.status, text);
+	}
+
 	// Validate JSON for responses that claim to be JSON
 	if (contentType.includes("application/json")) {
 		try {
 			JSON.parse(text);
 		} catch {
-			// Malformed JSON - return parseable error
-			return new Response(
-				JSON.stringify({
-					error: "Internal Server Error",
-					message: `Server returned invalid JSON: ${text.slice(0, 200)}${text.length > 200 ? "…" : ""}`,
-					status: response.status,
-				}),
-				{
-					status: response.status >= 400 ? response.status : 500,
-					headers: { "Content-Type": "application/json" },
-				},
+			return rpcErrorResponse(
+				500,
+				`Server returned invalid JSON: ${text}`,
 			);
 		}
 		return new Response(text, {
@@ -64,14 +64,11 @@ async function orpcFetch(
 		});
 	}
 
-	// Non-JSON response (e.g. HTML error page) - convert to JSON error
+	// Non-JSON response with a success status - convert to JSON error
 	return new Response(
 		JSON.stringify({
 			error: "Internal Server Error",
-			message:
-				response.status >= 400
-					? `Server returned ${response.status}: ${text.slice(0, 200)}${text.length > 200 ? "…" : ""}`
-					: "Invalid response format from server",
+			message: "Invalid response format from server",
 			status: response.status,
 		}),
 		{

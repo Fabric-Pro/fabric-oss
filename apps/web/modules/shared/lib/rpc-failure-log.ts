@@ -18,9 +18,12 @@ const EXPECTED_4XX_CODES = new Set([
  * Log a failed oRPC call that the consumer is not expected to handle: a server
  * error or a transport failure. Names the procedure, because a transport
  * failure on its own logs only "TypeError: Failed to fetch" and does not say
- * which request failed (Fizzy #2249).
+ * which request failed (Fizzy #2249). When the failure was not the API's own
+ * error — a proxy page, a platform error — the server's text is printed too;
+ * the error's message is only the generic one for its status.
  */
 export function logRpcFailure(error: unknown, path: readonly string[]): void {
+	let responseText: string | undefined;
 	if (typeof error === "object" && error !== null) {
 		if ("name" in error && error.name === "AbortError") {
 			return;
@@ -32,6 +35,20 @@ export function logRpcFailure(error: unknown, path: readonly string[]): void {
 		) {
 			return;
 		}
+		if (
+			"data" in error &&
+			typeof error.data === "object" &&
+			error.data !== null &&
+			"responseText" in error.data &&
+			typeof error.data.responseText === "string"
+		) {
+			responseText = error.data.responseText;
+		}
 	}
-	console.error(`oRPC ${path.join("/")} failed:`, error);
+	const label = `oRPC ${path.join("/")} failed:`;
+	if (responseText) {
+		console.error(label, error, `Server response: ${responseText}`);
+	} else {
+		console.error(label, error);
+	}
 }
