@@ -4,6 +4,11 @@ import {
 	type TemplateFormat,
 	validateTemplate,
 } from "@repo/utils";
+import {
+	PROMPT_CONTENT_EMPTY_MESSAGE,
+	PROMPT_CONTENT_MAX_LENGTH,
+	promptContentTooLongMessage,
+} from "@repo/utils/prompt-content";
 
 /**
  * Reject a prompt body that cannot render under its declared format, or that
@@ -31,7 +36,7 @@ export function assertValidTemplate(
 	// through exactly this check (Fizzy #2178 QA).
 	if (isEffectivelyBlank(template)) {
 		throw new ORPCError("BAD_REQUEST", {
-			message: "Prompt content cannot be empty",
+			message: PROMPT_CONTENT_EMPTY_MESSAGE,
 		});
 	}
 
@@ -41,4 +46,26 @@ export function assertValidTemplate(
 			message: `Template is not valid ${format}: ${result.error ?? "unknown error"}`,
 		});
 	}
+}
+
+/**
+ * The full save-time guard for a prompt body: reject one over the product
+ * length limit before even trying to render it, then apply the ordinary
+ * blank/parse checks `assertValidTemplate` already does.
+ *
+ * Kept as its own function rather than folded into `assertValidTemplate`:
+ * that function also re-validates a prompt's EXISTING latest body on a
+ * format-change-only edit (see `update.ts`), and a legacy body saved before
+ * this limit existed must not start blocking an unrelated metadata edit.
+ */
+export function assertSavablePromptContent(
+	format: TemplateFormat,
+	content: string,
+): void {
+	if (content.length > PROMPT_CONTENT_MAX_LENGTH) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: promptContentTooLongMessage(content.length),
+		});
+	}
+	assertValidTemplate(format, content);
 }

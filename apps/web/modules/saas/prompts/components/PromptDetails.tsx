@@ -40,6 +40,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { forkTarget, isProposalCandidate } from "../lib/fork-scope";
+import { savePromptAtomically } from "../lib/save-prompt-atomically";
 import {
 	needsSharedEditWarning,
 	sharedEditWarning,
@@ -193,7 +194,7 @@ export function PromptDetails({
 	}, []);
 
 	const updateMutation = useMutation({
-		mutationFn: async (updateData: {
+		mutationFn: (updateData: {
 			name?: string;
 			description?: string;
 			format?: PromptFormatValue;
@@ -202,30 +203,7 @@ export function PromptDetails({
 			isPublic?: boolean;
 			content?: string;
 			changeNote?: string;
-		}) => {
-			const {
-				content: newContent,
-				changeNote,
-				...metadataUpdate
-			} = updateData;
-
-			// Update metadata
-			const result = await orpcClient.prompts.update({
-				id: promptId,
-				...metadataUpdate,
-			});
-
-			// If content changed, create a new version
-			if (newContent && newContent !== content) {
-				await orpcClient.prompts.version.create({
-					id: promptId,
-					content: newContent,
-					changeNote,
-				});
-			}
-
-			return result;
-		},
+		}) => savePromptAtomically(promptId, updateData, content),
 		onSuccess: () => {
 			toast.success("Prompt updated successfully");
 			queryClient.invalidateQueries({ queryKey: promptQueryKey });

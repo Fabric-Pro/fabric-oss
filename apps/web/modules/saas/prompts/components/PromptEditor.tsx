@@ -1,5 +1,9 @@
 "use client";
 
+import {
+	PROMPT_CONTENT_MAX_LENGTH,
+	promptContentProblem,
+} from "@repo/utils/prompt-content";
 import { Button } from "@ui/components/button";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
@@ -94,6 +98,7 @@ export function PromptEditor({
 	const [changeNote, setChangeNote] = useState("");
 	const [detailsOpen, setDetailsOpen] = useState(false);
 	const detailsId = useId();
+	const contentErrorId = useId();
 	const contentRef = useRef<HTMLTextAreaElement>(null);
 
 	// The prompt is the point of the page: focus it on open, and size the box
@@ -117,7 +122,9 @@ export function PromptEditor({
 		scope !== initialData.scope ||
 		category !== (initialData.category ?? "") ||
 		JSON.stringify(tags) !== JSON.stringify(initialData.tags);
-	const canSave = !isLoading && name.trim().length > 0 && content.length > 0;
+	const contentProblem = promptContentProblem(content);
+	const canSave =
+		!isLoading && name.trim().length > 0 && contentProblem === null;
 
 	const handleAddTag = () => {
 		const trimmedTag = tagInput.trim();
@@ -173,8 +180,17 @@ export function PromptEditor({
 					<p className="app-editorial-label">Editing</p>
 					<p className="fab-label">
 						{FORMAT_LABELS[format]} · {lineCount}{" "}
-						{lineCount === 1 ? "line" : "lines"} · {content.length}{" "}
-						characters
+						{lineCount === 1 ? "line" : "lines"} ·{" "}
+						<span
+							className={cn(
+								content.length > PROMPT_CONTENT_MAX_LENGTH &&
+									"text-destructive",
+							)}
+						>
+							{content.length.toLocaleString("en-US")} /{" "}
+							{PROMPT_CONTENT_MAX_LENGTH.toLocaleString("en-US")}{" "}
+							characters
+						</span>
 					</p>
 				</div>
 				<button
@@ -206,9 +222,19 @@ export function PromptEditor({
 				}}
 				placeholder="Write the prompt here"
 				aria-label="Prompt content"
+				aria-invalid={contentProblem ? true : undefined}
+				aria-describedby={contentProblem ? contentErrorId : undefined}
 				className="min-h-[60vh] resize-y rounded-xl border-border bg-muted/30 px-5 py-4 font-mono text-sm leading-7 shadow-none focus-visible:ring-1"
-				required
 			/>
+			{contentProblem && (
+				<p
+					id={contentErrorId}
+					role="alert"
+					className="text-sm text-destructive"
+				>
+					{contentProblem}
+				</p>
+			)}
 
 			{/* Details: name, description and the rest, only when asked for.
 			    The header above the editor already says what they are. */}

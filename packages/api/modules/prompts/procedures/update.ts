@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/server";
-import { getPromptById, updatePrompt } from "@repo/database";
+import { getPromptById, updatePromptWithVersion } from "@repo/database";
 import type { TemplateFormat } from "@repo/utils";
 import { z } from "zod";
 import { INPUT_BOUNDS, labelArray } from "../../..//lib/zod-bounds";
@@ -9,7 +9,11 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
-import { assertValidTemplate } from "../lib/assert-valid-template";
+import { announceDefaultChangeForWinningActions } from "../lib/announce-default-change";
+import {
+	assertSavablePromptContent,
+	assertValidTemplate,
+} from "../lib/assert-valid-template";
 
 const PromptFormatSchema = z.enum([
 	"PLAIN_TEXT",
@@ -28,7 +32,7 @@ export const updateProcedure = tenantProtectedProcedure
 		tags: ["Prompts"],
 		summary: "Update a prompt",
 		description:
-			"Update prompt metadata (not content - use version creation for that)",
+			"Update prompt metadata, optionally saving a new content version in the same request so a rename and a body edit either both land or both fail",
 	})
 	.input(
 		z.object({
@@ -39,6 +43,8 @@ export const updateProcedure = tenantProtectedProcedure
 			category: z.string().max(INPUT_BOUNDS.name).optional(),
 			tags: labelArray().optional(),
 			isPublic: z.boolean().optional(),
+			content: z.string().max(INPUT_BOUNDS.text).optional(),
+			changeNote: z.string().max(500).optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -95,20 +101,27 @@ export const updateProcedure = tenantProtectedProcedure
 			}
 		}
 
-		// A format change re-interprets the CURRENT body without touching it, so
-		// a working Handlebars prompt can silently become an unrenderable Liquid
-		// one. `versions` comes back ordered version-desc, so [0] is the latest.
-		if (input.format && input.format !== existing.format) {
+		const effectiveFormat = (input.format ??
+			existing.format) as TemplateFormat;
+
+		if (input.content !== undefined) {
+			// Validate the NEW body against the NEW format. This also fixes the
+			// ordering bug a separate format-change check would have: editing the
+			// format and the body in the same save must not validate the body
+			// being replaced against the format it is leaving.
+			assertSavablePromptContent(effectiveFormat, input.content);
+		} else if (input.format && input.format !== existing.format) {
+			// A format change re-interprets the CURRENT body without touching
+			// it, so a working Handlebars prompt can silently become an
+			// unrenderable Liquid one. `versions` comes back ordered
+			// version-desc, so [0] is the latest.
 			const latest = existing.versions?.[0];
 			if (latest) {
-				assertValidTemplate(
-					input.format as TemplateFormat,
-					latest.content,
-				);
+				assertValidTemplate(effectiveFormat, latest.content);
 			}
 		}
 
-		const prompt = await updatePrompt({
+		const { prompt, version } = await updatePromptWithVersion({
 			id: input.id,
 			name: input.name,
 			description: input.description,
@@ -117,7 +130,23 @@ export const updateProcedure = tenantProtectedProcedure
 			tags: input.tags,
 			isPublic: input.isPublic,
 			updatedBy: user.id,
+			content: input.content,
+			changeNote: input.changeNote,
 		});
 
-		return { prompt };
+		// FR6: a new version repoints this prompt's same-scope bindings, so
+		// everyone subject to it starts running different text the moment it
+		// saves — the same event as a new default being published, from the
+		// reader's side. See `version.ts`, which announces the same way.
+		if (version) {
+			await announceDefaultChangeForWinningActions({
+				promptId: input.id,
+				scope: existing.scope,
+				organizationId: existing.organizationId,
+				promptVersionId: version.id,
+				actorUserId: user.id,
+			});
+		}
+
+		return { prompt, version };
 	});
