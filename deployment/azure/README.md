@@ -4,6 +4,8 @@ This directory contains the infrastructure-as-code and deployment configurations
 
 > Resource names below (`<resource-group>`, `<key-vault>`, `<registry>`, `<container-app-env>`, `<log-analytics-workspace>`) are placeholders — substitute your own environment's names wherever they appear.
 
+> **These templates are not what Fabric's hosted environments deploy.** Fabric's own staging and production environments are deployed by a pipeline outside this repository, from its own copy of these templates. A change merged here reaches those environments only after it is ported to that copy, so an infrastructure fix for a hosted environment is not done when it merges here. The deployer in this repository is `deploy.sh`.
+
 ## Architecture Overview
 
 ```
