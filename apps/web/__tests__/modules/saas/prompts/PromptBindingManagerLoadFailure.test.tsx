@@ -78,6 +78,14 @@ describe("PromptBindingManager — prompt-details load failure", () => {
 			name: "Set as Default",
 		});
 		expect(submit).toBeDisabled();
+
+		// Above the form, not under it: at the bottom of the scroll area it was
+		// clipped out of view on a phone.
+		const agentLabel = screen.getByText("Agent", { selector: "label" });
+		expect(
+			alert.compareDocumentPosition(agentLabel) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 	});
 
 	it("retries the read from the notice", async () => {

@@ -421,9 +421,9 @@ export function SetAsDefaultDialog({
 									</span>
 									<Button
 										type="button"
-										variant="ghost"
+										variant="outline"
 										size="sm"
-										className="h-auto p-0 text-xs underline underline-offset-2"
+										className="text-xs"
 										onClick={() => refetchBoundActions()}
 									>
 										Try again
