@@ -8,7 +8,7 @@ import { resolveEffectiveProjectPermissions } from "../../../../lib/effective-pr
  * same resolution already knows about the caller's permissions — for a
  * handler that answers differently per permission (the repository-sync `get`
  * decides what to show a configurer without a second lookup). Authorization
- * itself stays in the `requireProjectPermission` middleware; this only
+ * itself stays in the procedure's middleware; this only
  * decides which organization the handler acts in and what it may show.
  *
  * Every coding-instructions procedure is project-scoped, so the only
@@ -29,11 +29,13 @@ import { resolveEffectiveProjectPermissions } from "../../../../lib/effective-pr
  * of stranding a row.
  *
  * This is the SAME resolver `requireProjectPermission` ran for this caller a
- * moment ago (`lib/effective-project-permissions.ts`), so it cannot narrow
- * who may call anything — including an organization-role admin with no
+ * moment ago (`lib/effective-project-permissions.ts`), so it does not itself
+ * narrow who may call anything: it admits an organization-role admin with no
  * ProjectMember row, whom an object-level check would refuse. It only decides
- * which organization the handler acts in. The permission guard stays where it
- * is; this answers a different question.
+ * which organization the handler acts in. Who gets that far is the
+ * procedure's middleware: the permission guard, and on the repository-sync
+ * and proposal procedures `projectNotFoundUnlessVisible` ahead of it, which
+ * refuses that admin (Fizzy #2727).
  *
  * Throws FORBIDDEN for a personal project (`organizationId: null`): an
  * organization is the only tenant context coding instructions support, and

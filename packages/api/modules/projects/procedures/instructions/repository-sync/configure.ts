@@ -3,6 +3,7 @@ import { verifyRepositoryBranch } from "@repo/connectors";
 import { upsertInstructionRepositorySync } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../../lib/audit";
+import { projectNotFoundUnlessVisible } from "../../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -19,7 +20,8 @@ import {
 } from "./repository";
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_CREATE).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
+ * requireProjectPermission(INSTRUCTION_CREATE).
  *
  * Points the project's coding instructions at a branch and optional folder
  * of one of its repository integrations (design 2026-09-23 §5.1). The caller
@@ -28,6 +30,7 @@ import {
  * start a run: the client calls `syncNow` after this.
  */
 export const configureRepositorySyncProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_CREATE))
 	.route({
 		method: "PUT",

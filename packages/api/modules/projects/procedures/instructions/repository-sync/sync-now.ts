@@ -1,6 +1,7 @@
 import { getInstructionRepositorySync } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../../lib/audit";
+import { projectNotFoundUnlessVisible } from "../../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -10,12 +11,14 @@ import { requireHostingOrganizationId } from "../hosting-organization";
 import { startInstructionRepositorySync } from "./start-sync-workflow";
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_CREATE).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
+ * requireProjectPermission(INSTRUCTION_CREATE).
  *
  * "Sync now" (design 2026-09-23 §5.1): a MANUAL run that acts as the caller.
  * The workflow re-resolves everything else from the row when it begins.
  */
 export const syncRepositoryNowProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_CREATE))
 	.route({
 		method: "POST",

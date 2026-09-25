@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/client";
 import { updateInstructionRepositorySyncProposalSettings } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../../lib/audit";
+import { projectNotFoundUnlessVisible } from "../../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -10,7 +11,8 @@ import {
 import { requireHostingOrganizationId } from "../hosting-organization";
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_CREATE).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
+ * requireProjectPermission(INSTRUCTION_CREATE).
  *
  * "Let read-only members propose changes as pull requests" (Fizzy #2563
  * spec §12, §16.1; plan Decision 4). Its own procedure, not a `configure`
@@ -23,6 +25,7 @@ import { requireHostingOrganizationId } from "../hosting-organization";
  */
 export const updateRepositorySyncProposalSettingsProcedure =
 	tenantProtectedProcedure
+		.use(projectNotFoundUnlessVisible)
 		.use(requireProjectPermission(Permissions.INSTRUCTION_CREATE))
 		.route({
 			method: "PATCH",
