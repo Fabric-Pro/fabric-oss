@@ -127,26 +127,64 @@ function parseScriptSteps(raw: unknown): ScriptStepReport[] | undefined {
 	return steps;
 }
 
+/**
+ * Credential material ONLY — everything the sandbox output masking must
+ * cover.
+ *
+ * The remote sandbox masks the VALUE of every env var passed to
+ * `client.exec`, wherever it appears in the command's stdout — exactly right
+ * for `FABRIC_QA_AUTH_SECRET`, and exactly wrong for a plain setting like the
+ * base URL: staging evidence showed every scripted-run failure message
+ * reading `[REDACTED]` in place of the environment's own base URL, because it
+ * used to travel as `FABRIC_QA_BASE_URL`. Everything that is not credential
+ * material now travels in `config.json` instead (see {@link commandConfig}),
+ * which the sandbox does not mask. Keep this map to values that must NEVER
+ * appear unmasked in output — adding a plain setting here silently masks it
+ * everywhere the runner might legitimately echo it back.
+ */
 function commandEnvironment(
-	input: RunScriptedCaseInput,
 	environment: NonNullable<
 		Awaited<ReturnType<typeof resolveEnvironmentAuth>>
 	>,
 	snapshot: EnvironmentSnapshot,
-	resolvedAddress: string,
 ): Record<string, string> {
 	return {
-		FABRIC_QA_BASE_URL: input.targetBaseUrl,
-		FABRIC_QA_SIGN_IN_URL: snapshot.signInUrl ?? "",
-		FABRIC_QA_BROWSER: input.browser,
-		FABRIC_QA_RESOLUTION: input.resolution,
-		FABRIC_QA_AUTH_KIND: snapshot.authKind,
 		FABRIC_QA_AUTH_USERNAME: snapshot.authUsername ?? "",
 		FABRIC_QA_AUTH_HEADER_NAME: snapshot.authHeaderName ?? "",
 		FABRIC_QA_AUTH_SECRET: environment.secret ?? "",
-		FABRIC_QA_PINNED_HOST: new URL(input.targetBaseUrl).hostname,
-		FABRIC_QA_PINNED_ADDRESS: resolvedAddress,
 		NODE_PATH: "/usr/local/lib/node_modules",
+	};
+}
+
+/**
+ * The run's non-secret settings, written to `${workDir}/config.json` rather
+ * than passed as env — see {@link commandEnvironment} for why the split
+ * exists. `runner.cjs` (the `TRUSTED_RUNNER` string below) is written fresh
+ * into the sandbox on every run from the SAME worker image this function
+ * ships in, so there is no version skew between what this writes and what
+ * `main()` there reads.
+ */
+function commandConfig(
+	input: RunScriptedCaseInput,
+	snapshot: EnvironmentSnapshot,
+	resolvedAddress: string,
+): {
+	baseUrl: string;
+	signInUrl: string;
+	browser: string;
+	resolution: string;
+	authKind: EnvironmentSnapshot["authKind"];
+	pinnedHost: string;
+	pinnedAddress: string;
+} {
+	return {
+		baseUrl: input.targetBaseUrl,
+		signInUrl: snapshot.signInUrl ?? "",
+		browser: input.browser,
+		resolution: input.resolution,
+		authKind: snapshot.authKind,
+		pinnedHost: new URL(input.targetBaseUrl).hostname,
+		pinnedAddress: resolvedAddress,
 	};
 }
 
@@ -537,16 +575,21 @@ async function executeStep(page, baseUrl, step) {
 }
 
 async function main() {
-  const baseUrl = process.env.FABRIC_QA_BASE_URL;
-  const signInUrl = process.env.FABRIC_QA_SIGN_IN_URL;
-  const browserName = process.env.FABRIC_QA_BROWSER || "chromium";
-  const resolution = process.env.FABRIC_QA_RESOLUTION || "1920x1080";
-  const authKind = process.env.FABRIC_QA_AUTH_KIND || "NONE";
+  // Non-secret settings arrive as a FILE, not env — the sandbox masks every
+  // env var's value wherever it appears in this process's own stdout, which
+  // is wrong for a plain setting like the base URL. Only credential material
+  // stays in env; see \`commandEnvironment\` on the activity side.
+  const config = JSON.parse(fs.readFileSync("./config.json", "utf8"));
+  const baseUrl = config.baseUrl;
+  const signInUrl = config.signInUrl;
+  const browserName = config.browser || "chromium";
+  const resolution = config.resolution || "1920x1080";
+  const authKind = config.authKind || "NONE";
   const username = process.env.FABRIC_QA_AUTH_USERNAME || "";
   const headerName = process.env.FABRIC_QA_AUTH_HEADER_NAME || "";
   const secret = process.env.FABRIC_QA_AUTH_SECRET || "";
-  const pinnedHost = process.env.FABRIC_QA_PINNED_HOST || "";
-  const pinnedAddress = process.env.FABRIC_QA_PINNED_ADDRESS || "";
+  const pinnedHost = config.pinnedHost || "";
+  const pinnedAddress = config.pinnedAddress || "";
   let browser;
   let stage = "setup";
   // The most recent off-origin request the route handler refused, so a
@@ -809,6 +852,13 @@ export async function runScriptedCase(
 				`${session.workDir}/case.json`,
 				normalizedScript,
 			),
+			client.writeFile(
+				session.sessionId,
+				input.userId,
+				input.organizationId ?? undefined,
+				`${session.workDir}/config.json`,
+				JSON.stringify(commandConfig(input, snapshot, resolvedAddress)),
+			),
 		]);
 		const execution = await client.exec(
 			session.sessionId,
@@ -818,12 +868,7 @@ export async function runScriptedCase(
 				command: "node runner.cjs",
 				cwd: session.workDir,
 				timeout: SCRIPT_TIMEOUT_SECONDS,
-				env: commandEnvironment(
-					input,
-					environment,
-					snapshot,
-					resolvedAddress,
-				),
+				env: commandEnvironment(environment, snapshot),
 			},
 		);
 		const parsed = parseScriptResult(execution.stdout);

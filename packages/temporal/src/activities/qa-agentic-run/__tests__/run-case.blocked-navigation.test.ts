@@ -47,6 +47,10 @@ describe("blockedNavigationSuffix", () => {
 		);
 		expect(suffix).toContain("https://other.example.com/redirected");
 		expect(suffix).toContain("environment's base URL");
+		// On its own line, not a leading space: the failure message this is
+		// appended to is often Playwright's own multi-line call log, and a
+		// single space glued the explanation onto the end of its last line.
+		expect(suffix.startsWith("\n")).toBe(true);
 	});
 
 	it("names both possible sides, and blames neither, for an ambiguous fetch failure", () => {

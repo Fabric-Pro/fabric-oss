@@ -163,6 +163,14 @@ export function RunConfigurationDialog({
 		browser?: Browser;
 		resolution?: string;
 		runMode: RunMode;
+		/**
+		 * One dispatch ATTEMPT (Fizzy #2233 follow-up). Stable across a
+		 * same-tick double click or the mutation's own retry, so the server
+		 * can collapse a repeat into the run it already started rather than
+		 * billing a second one. See the `idempotencyKey` state below for when
+		 * it changes.
+		 */
+		idempotencyKey: string;
 	}) => void;
 	dispatching: boolean;
 }) {
@@ -228,6 +236,32 @@ export function RunConfigurationDialog({
 	 * themselves, so this can never override an explicit choice.
 	 */
 	const [awaitingDefaultRunner, setAwaitingDefaultRunner] = useState(false);
+	/**
+	 * One dispatch ATTEMPT (Fizzy #2233 follow-up: "Why it compounds" —
+	 * dispatch used to hand the server a fresh run id on every call, so a
+	 * same-tick double click or a network retry created a second run, and a
+	 * second bill). Regenerated below whenever anything that defines what
+	 * would run changes; held steady across everything else, in particular
+	 * two rapid presses of Start (Scripted) or of "Confirm and start" for
+	 * Agentic, which must reach the server as the SAME attempt.
+	 */
+	const [idempotencyKey, setIdempotencyKey] = useState(() =>
+		crypto.randomUUID(),
+	);
+	// Compared by VALUE, not object identity: a parent re-render that rebuilds
+	// an equal selection object must not mint a new key mid-double-click.
+	const selectionKey = selection ? JSON.stringify(selection) : "none";
+	useEffect(() => {
+		setIdempotencyKey(crypto.randomUUID());
+	}, [
+		open,
+		runMode,
+		environmentId,
+		browser,
+		resolution,
+		selectionKey,
+		caseCount,
+	]);
 
 	const adoptSystemConfiguration = (config: {
 		id: string;
@@ -366,6 +400,7 @@ export function RunConfigurationDialog({
 				: BROWSERS.find((b) => b === browser),
 		resolution: asOverride(resolution),
 		runMode,
+		idempotencyKey,
 	};
 
 	// The cap refusal only applies to Agentic — Scripted costs nothing, so it
@@ -582,14 +617,15 @@ export function RunConfigurationDialog({
 								}}
 							>
 								<SelectTrigger id="run-mode">
-									{/* The runner's name only: the options carry a
-									    cost suffix for comparison, and mirroring it
-									    here truncated the label before the suffix
-									    was ever visible. The footer states it. */}
+									{/* The SHORT name only: the full "Agentic — uses
+									    authored steps and AI" label truncated at
+									    375px even without the cost suffix the options
+									    carry for comparison. The hint line below
+									    states what the runner does either way. */}
 									<SelectValue>
 										{runMode === "MODE_B"
-											? t("runnerScripted")
-											: t("runnerAgentic")}
+											? t("runnerScriptedShort")
+											: t("runnerAgenticShort")}
 									</SelectValue>
 								</SelectTrigger>
 								<SelectContent>
@@ -611,6 +647,16 @@ export function RunConfigurationDialog({
 									? t("runnerHintScripted")
 									: t("runnerHintAgentic")}
 							</p>
+							{quote?.scripted.permitted === false && (
+								// Radix Select skips a disabled item in keyboard
+								// navigation, so the "admin only" suffix ON that
+								// item is not reliably perceivable to keyboard or
+								// screen-reader use — stated again here, always
+								// visible, regardless of which runner is selected.
+								<p className="text-muted-foreground text-xs">
+									{t("scriptedNotPermittedHint")}
+								</p>
+							)}
 						</div>
 
 						<div className="space-y-1.5">

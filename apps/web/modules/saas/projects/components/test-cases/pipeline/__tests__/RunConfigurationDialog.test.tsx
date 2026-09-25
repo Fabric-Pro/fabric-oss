@@ -188,7 +188,10 @@ describe("RunConfigurationDialog — the pre-dispatch figure", () => {
 		);
 	});
 
-	it("shows only the runner's name in the closed picker, not its cost suffix", () => {
+	it("shows only the runner's SHORT name in the closed picker, not its cost suffix", () => {
+		// The full "runnerAgentic" label ("Agentic — uses authored steps and
+		// AI") truncates at 375px even without a cost suffix — the trigger
+		// renders the short key instead; the full label stays in the options.
 		quoteData = quote({
 			resolvedCaseCount: 2,
 			agenticRunnable: 2,
@@ -201,7 +204,7 @@ describe("RunConfigurationDialog — the pre-dispatch figure", () => {
 		renderDialog();
 
 		const trigger = screen.getByRole("combobox", { name: "runner" });
-		expect(trigger).toHaveTextContent("runnerAgentic");
+		expect(trigger).toHaveTextContent("runnerAgenticShort");
 		expect(trigger).not.toHaveTextContent("estimateAgenticShort");
 	});
 
@@ -620,5 +623,228 @@ describe("RunConfigurationDialog — the scripted permission gate", () => {
 			screen.getByText("scriptedNotPermittedWarning"),
 		).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "start" })).toBeDisabled();
+	});
+
+	it("renders a muted hint under the Runner select when Scripted is not permitted", () => {
+		// Radix skips a disabled SelectItem in keyboard navigation, so the
+		// "admin only" suffix ON that item is not reliably perceivable — this
+		// hint restates it, always visible, next to the select itself.
+		quoteData = quote({
+			resolvedCaseCount: 2,
+			agenticRunnable: 2,
+			stepCount: 6,
+			estimatedCostUsd: 0.3,
+			capUsd: 5,
+			withinCap: true,
+			scriptedRunnable: 2,
+			scriptedPermitted: false,
+		});
+		renderDialog();
+
+		expect(
+			screen.getByText("scriptedNotPermittedHint"),
+		).toBeInTheDocument();
+	});
+
+	it("says nothing about permission when Scripted IS permitted", () => {
+		quoteData = quote({
+			resolvedCaseCount: 2,
+			agenticRunnable: 2,
+			stepCount: 6,
+			estimatedCostUsd: 0.3,
+			capUsd: 5,
+			withinCap: true,
+			scriptedRunnable: 2,
+			scriptedPermitted: true,
+		});
+		renderDialog();
+
+		expect(
+			screen.queryByText("scriptedNotPermittedHint"),
+		).not.toBeInTheDocument();
+	});
+
+	it("says nothing about permission before the quote has answered", () => {
+		quoteData = undefined;
+		renderDialog();
+
+		expect(
+			screen.queryByText("scriptedNotPermittedHint"),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("RunConfigurationDialog — the idempotency key (Fizzy #2233 follow-up)", () => {
+	it("sends the SAME key across two rapid Start (Scripted) presses", async () => {
+		configurationsData = [{ ...SYSTEM_CONFIG, runMode: "MODE_B" }];
+		quoteData = quote({
+			resolvedCaseCount: 2,
+			agenticRunnable: 0,
+			stepCount: 0,
+			estimatedCostUsd: 0,
+			capUsd: 5,
+			withinCap: true,
+			scriptedRunnable: 2,
+		});
+		const onDispatch = vi.fn();
+		const user = userEvent.setup();
+		renderDialog({ onDispatch });
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("combobox", { name: "runner" }),
+			).toHaveTextContent("runnerScriptedShort"),
+		);
+		const startButton = screen.getByRole("button", { name: "start" });
+		await user.click(startButton);
+		await user.click(startButton);
+
+		expect(onDispatch).toHaveBeenCalledTimes(2);
+		const [firstKey, secondKey] = onDispatch.mock.calls.map(
+			(c) => (c[0] as { idempotencyKey: string }).idempotencyKey,
+		);
+		expect(firstKey).toBeTruthy();
+		expect(secondKey).toBe(firstKey);
+	});
+
+	it("sends the SAME key across two rapid 'Confirm and start' presses", async () => {
+		// `dispatching` only reflects `false` in this harness — the real
+		// component relies on the PARENT re-rendering it `true` (from the
+		// mutation's `isPending`) to disable the button after the first
+		// press. What must hold regardless is the key itself: two presses in
+		// the same "confirm" stage carry the SAME value.
+		quoteData = quote({
+			resolvedCaseCount: 2,
+			agenticRunnable: 2,
+			stepCount: 6,
+			estimatedCostUsd: 0.3,
+			capUsd: 5,
+			withinCap: true,
+			scriptedRunnable: 0,
+		});
+		const onDispatch = vi.fn();
+		const user = userEvent.setup();
+		renderDialog({ onDispatch });
+
+		await user.click(screen.getByRole("button", { name: "start" }));
+		const confirmButton = screen.getByRole("button", {
+			name: "confirmAndStart",
+		});
+		await user.click(confirmButton);
+		await user.click(confirmButton);
+
+		expect(onDispatch).toHaveBeenCalledTimes(2);
+		const [firstKey, secondKey] = onDispatch.mock.calls.map(
+			(c) => (c[0] as { idempotencyKey: string }).idempotencyKey,
+		);
+		expect(firstKey).toBeTruthy();
+		expect(secondKey).toBe(firstKey);
+	});
+
+	it("changes the key after the dialog closes and reopens", async () => {
+		configurationsData = [{ ...SYSTEM_CONFIG, runMode: "MODE_B" }];
+		quoteData = quote({
+			resolvedCaseCount: 2,
+			agenticRunnable: 0,
+			stepCount: 0,
+			estimatedCostUsd: 0,
+			capUsd: 5,
+			withinCap: true,
+			scriptedRunnable: 2,
+		});
+		const onDispatch = vi.fn();
+		const user = userEvent.setup();
+		const props = {
+			projectId: "p1",
+			caseCount: 2,
+			selection: { mode: "ids" as const, ids: ["c1", "c2"] },
+			dispatching: false,
+			onDispatch,
+		};
+		const { rerender } = render(
+			<RunConfigurationDialog
+				{...props}
+				open={true}
+				onOpenChange={() => undefined}
+			/>,
+		);
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("combobox", { name: "runner" }),
+			).toHaveTextContent("runnerScriptedShort"),
+		);
+		await user.click(screen.getByRole("button", { name: "start" }));
+
+		rerender(
+			<RunConfigurationDialog
+				{...props}
+				open={false}
+				onOpenChange={() => undefined}
+			/>,
+		);
+		rerender(
+			<RunConfigurationDialog
+				{...props}
+				open={true}
+				onOpenChange={() => undefined}
+			/>,
+		);
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("combobox", { name: "runner" }),
+			).toHaveTextContent("runnerScriptedShort"),
+		);
+		await user.click(screen.getByRole("button", { name: "start" }));
+
+		expect(onDispatch).toHaveBeenCalledTimes(2);
+		const [firstKey, secondKey] = onDispatch.mock.calls.map(
+			(c) => (c[0] as { idempotencyKey: string }).idempotencyKey,
+		);
+		expect(secondKey).not.toBe(firstKey);
+	});
+
+	it("changes the key when the runner changes", async () => {
+		quoteData = quote({
+			resolvedCaseCount: 2,
+			agenticRunnable: 2,
+			stepCount: 6,
+			estimatedCostUsd: 0.3,
+			capUsd: 5,
+			withinCap: true,
+			// Kept below resolvedCaseCount so the dialog does not auto-default
+			// to Scripted — this test switches runner by hand.
+			scriptedRunnable: 0,
+		});
+		const onDispatch = vi.fn();
+		const user = userEvent.setup();
+		renderDialog({ onDispatch });
+
+		// First attempt: Agentic, through its confirm step.
+		await user.click(screen.getByRole("button", { name: "start" }));
+		await user.click(
+			screen.getByRole("button", { name: "confirmAndStart" }),
+		);
+		const firstCall = onDispatch.mock.calls[0][0] as {
+			idempotencyKey: string;
+			runMode: string;
+		};
+
+		// Switch to Scripted, then dispatch again.
+		await user.click(screen.getByRole("button", { name: "back" }));
+		await user.click(screen.getByRole("combobox", { name: "runner" }));
+		await user.click(
+			screen.getByRole("option", { name: /runnerScripted/ }),
+		);
+		await user.click(screen.getByRole("button", { name: "start" }));
+		const secondCall = onDispatch.mock.calls[1][0] as {
+			idempotencyKey: string;
+			runMode: string;
+		};
+
+		expect(firstCall.runMode).toBe("MODE_A");
+		expect(secondCall.runMode).toBe("MODE_B");
+		expect(secondCall.idempotencyKey).not.toBe(firstCall.idempotencyKey);
 	});
 });
