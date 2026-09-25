@@ -166,16 +166,32 @@ export interface GatherScanContextInput {
 	mode?: "FULL" | "INCREMENTAL";
 }
 
+/**
+ * The arguments that reproduce a gather's `getProjectScanContent` call. Scanners
+ * load their items with it instead of receiving the item text through Temporal:
+ * 200 items of a large project exceed Temporal's 2 MB payload limit, which
+ * failed every retry of a prod scan (Fizzy #2502).
+ */
+export interface ScanContentQuery {
+	projectId: string;
+	storyId?: string | null;
+	targetType: "PROJECT" | "FEATURE";
+	mode?: "FULL" | "INCREMENTAL";
+	/** ISO timestamp of the incremental window's start; null scans everything. */
+	sinceCompletedAt: string | null;
+}
+
 export interface GatheredScanContext {
 	projectName: string;
+	/** How the scanners load the discrete items to scan. */
+	contentQuery: ScanContentQuery;
 	/**
-	 * Discrete items to scan (project meta + each feature + each document). The
-	 * scanner chunks these and runs the chunks in parallel (G3); no single-blob
-	 * coverage cap.
+	 * The items themselves — only on gather results recorded before
+	 * `contentQuery` existed, which an in-flight execution may still replay.
 	 */
-	items: ScanContentItem[];
+	items?: ScanContentItem[];
 	itemCount: number;
-	/** Items dropped by the item-count or size ceiling (0 in the normal case). */
+	/** Items dropped by the high total-items ceiling (0 in the normal case). */
 	truncatedItemCount: number;
 	/** Identifiers/titles of items included this run (drives carry-forward). */
 	scannedItemKeys: string[];
@@ -202,8 +218,10 @@ export interface RunScanInput {
 	userId: string;
 	organizationId?: string | null;
 	projectName: string;
-	/** Discrete items to scan — chunked + parallelized inside runScan (G3). */
-	items: ScanContentItem[];
+	/** Loads the discrete items to scan — chunked + parallelized inside runScan (G3). */
+	contentQuery?: ScanContentQuery;
+	/** The items themselves, from an execution whose gather predates `contentQuery`. */
+	items?: ScanContentItem[];
 	customRules: ScanRulePrompt[];
 	/** Severity rubric injected into the prompt (seeded defaults when empty). */
 	severityRubric?: ScanSeverityRubricPrompt[];
@@ -339,7 +357,7 @@ export async function gatherScanContextActivity(
 	});
 	if (content.truncatedItemCount > 0) {
 		logger.warn(
-			`[SecurityScan] Scanned ${content.itemCount} items; ${content.truncatedItemCount} dropped by the item-count or size ceiling`,
+			`[SecurityScan] Scanned ${content.itemCount} items; ${content.truncatedItemCount} dropped by the total-items ceiling`,
 			{ projectId: input.projectId },
 		);
 	}
@@ -352,7 +370,13 @@ export async function gatherScanContextActivity(
 
 	return {
 		projectName: content.projectName,
-		items: content.items,
+		contentQuery: {
+			projectId: input.projectId,
+			storyId: input.storyId,
+			targetType: input.targetType,
+			mode: input.mode,
+			sinceCompletedAt: sinceCompletedAt?.toISOString() ?? null,
+		},
 		itemCount: content.itemCount,
 		truncatedItemCount: content.truncatedItemCount,
 		scannedItemKeys: content.scannedItemKeys,
@@ -373,6 +397,24 @@ export async function gatherScanContextActivity(
 	};
 }
 
+async function loadScanItems(input: RunScanInput): Promise<ScanContentItem[]> {
+	if (input.items) {
+		return input.items;
+	}
+	if (!input.contentQuery) {
+		return [];
+	}
+	const { projectId, storyId, targetType, mode, sinceCompletedAt } =
+		input.contentQuery;
+	const content = await getProjectScanContent(projectId, {
+		storyId,
+		targetType,
+		mode,
+		sinceCompletedAt: sinceCompletedAt ? new Date(sinceCompletedAt) : null,
+	});
+	return content.items;
+}
+
 async function runScan(
 	category: "SECURITY" | "ACCESSIBILITY",
 	input: RunScanInput,
@@ -382,7 +424,7 @@ async function runScan(
 	// Map-reduce over content chunks: pack items into ~14k-char chunks (item
 	// boundaries respected; a giant item is its own chunk) and scan them with
 	// bounded parallelism — the "multiple parallel scan agents per project".
-	const chunks = chunkScanItems(input.items);
+	const chunks = chunkScanItems(await loadScanItems(input));
 	if (chunks.length === 0) {
 		// Nothing to scan (empty project / fully-filtered incremental run).
 		return {

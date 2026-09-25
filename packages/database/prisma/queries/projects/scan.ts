@@ -1173,16 +1173,9 @@ export async function updateScanFinding(
  * these guards only stop a single pathological item, or a runaway item count,
  * from blowing up the worker. When either trips we LOG it and report a count so
  * nothing is silently dropped.
- *
- * The byte budget exists because the gathered items travel through Temporal:
- * as the gather activity's result, then as the input of BOTH AI scanner
- * activities, which are scheduled in the same workflow task. Temporal rejects a
- * payload over 2 MB (TMPRL1103) and a request over the 4 MB gRPC limit; 200
- * items of ~12 KB (2.34 MB) failed every retry of a prod scan (Fizzy #2502).
  */
 const MAX_SINGLE_ITEM_CHARS = 16_000;
 const MAX_TOTAL_ITEMS = 200;
-const MAX_TOTAL_ITEM_BYTES = 1_200_000;
 
 function capItem(text: string): { text: string; truncated: boolean } {
 	if (text.length <= MAX_SINGLE_ITEM_CHARS) {
@@ -1191,32 +1184,6 @@ function capItem(text: string): { text: string; truncated: boolean } {
 	return {
 		text: `${text.slice(0, MAX_SINGLE_ITEM_CHARS)}\n…[truncated]`,
 		truncated: true,
-	};
-}
-
-/**
- * Keep the leading items (already in priority order) that fit both the item
- * ceiling and the serialized byte budget; everything after the first overflow is
- * dropped and counted.
- */
-export function applyScanItemCeilings(items: ScanContentItem[]): {
-	items: ScanContentItem[];
-	truncatedItemCount: number;
-} {
-	const encoder = new TextEncoder();
-	let kept = 0;
-	let bytes = 0;
-	for (const item of items) {
-		const size = encoder.encode(JSON.stringify(item)).length;
-		if (kept === MAX_TOTAL_ITEMS || bytes + size > MAX_TOTAL_ITEM_BYTES) {
-			break;
-		}
-		bytes += size;
-		kept += 1;
-	}
-	return {
-		items: items.slice(0, kept),
-		truncatedItemCount: items.length - kept,
 	};
 }
 
@@ -1248,9 +1215,8 @@ export type ScanContent = {
 	 */
 	scannedItemKeys: string[];
 	/**
-	 * How many items were dropped by the item-count or byte ceiling (0 in the
-	 * normal case). Surfaced + logged so a truncated scan never reads as full
-	 * coverage.
+	 * How many items were dropped by the total-items ceiling (0 in the normal
+	 * case). Surfaced + logged so a truncated scan never reads as full coverage.
 	 */
 	truncatedItemCount: number;
 };
@@ -1351,7 +1317,7 @@ export async function getProjectScanContent(
 		},
 		...(opts.storyId ? { take: 1 } : {}),
 	});
-	// The size ceilings below decide which features get scanned at all, so
+	// The total-items ceiling below decides which features get scanned at all, so
 	// the order has to be true activity. A compound `lastEditedAt desc nulls
 	// last, createdAt desc` would rank EVERY edited feature above every
 	// never-edited one, so a feature added today would be dropped in favour of
@@ -1404,12 +1370,14 @@ export async function getProjectScanContent(
 		}
 	}
 
-	// Size safety ceilings. Keep project meta + the most-recent story edits
+	// Total-items safety ceiling. Keep project meta + the most-recent story edits
 	// items (the query already ordered desc); drop the overflow and COUNT it so
 	// the activity can log "scanned X of Y items" — never a silent cap.
-	const { items: finalItems, truncatedItemCount } =
-		applyScanItemCeilings(items);
-	if (truncatedItemCount > 0) {
+	let truncatedItemCount = 0;
+	let finalItems = items;
+	if (items.length > MAX_TOTAL_ITEMS) {
+		truncatedItemCount = items.length - MAX_TOTAL_ITEMS;
+		finalItems = items.slice(0, MAX_TOTAL_ITEMS);
 		// Re-derive the carry-forward keys from the kept finding-bearing items.
 		scannedItemKeys.length = 0;
 		for (const item of finalItems) {
