@@ -50,6 +50,14 @@ vi.mock("@tanstack/react-query", () => ({
 vi.mock("../../../lib/plugins", () => ({
 	getAllIntegrations: () => [
 		{
+			type: "GITHUB",
+			label: "GitHub",
+			description: "Source code management",
+			category: "web",
+			actions: [],
+			formFields: [],
+		},
+		{
 			type: "LINEAR",
 			label: "Linear",
 			description: "Issue tracking",
@@ -60,14 +68,23 @@ vi.mock("../../../lib/plugins", () => ({
 	],
 }));
 
+import type { FeatureFlagKey } from "@repo/utils/feature-flag-registry";
+import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
 import { WorkflowIntegrationSettingsPageContent } from "../WorkflowIntegrationSettingsPageContent";
 
-function renderPage(settingsBasePath: string) {
+function renderPage(
+	settingsBasePath: string,
+	flags: Partial<Record<FeatureFlagKey, boolean>> = {
+		LINEAR_INTEGRATION: false,
+	},
+) {
 	return render(
-		<WorkflowIntegrationSettingsPageContent
-			organizationId="org-example"
-			settingsBasePath={settingsBasePath}
-		/>,
+		<FeatureFlagProvider value={flags as Record<FeatureFlagKey, boolean>}>
+			<WorkflowIntegrationSettingsPageContent
+				organizationId="org-example"
+				settingsBasePath={settingsBasePath}
+			/>
+		</FeatureFlagProvider>,
 	);
 }
 
@@ -93,5 +110,24 @@ describe("WorkflowIntegrationSettingsPageContent — header back link", () => {
 		expect(
 			screen.getByRole("link", { name: /Back to Connections/i }),
 		).toHaveAttribute("href", "/app/other-org/settings/integrations");
+	});
+});
+
+describe("WorkflowIntegrationSettingsPageContent — Linear visibility", () => {
+	it("hides Linear from integrations list when LINEAR_INTEGRATION is false", () => {
+		renderPage("/app/example-org/settings/integrations", {
+			LINEAR_INTEGRATION: false,
+		});
+
+		expect(screen.queryByText("Linear")).not.toBeInTheDocument();
+		expect(screen.getAllByText("GitHub").length).toBeGreaterThan(0);
+	});
+
+	it("shows Linear when LINEAR_INTEGRATION is true", () => {
+		renderPage("/app/example-org/settings/integrations", {
+			LINEAR_INTEGRATION: true,
+		});
+
+		expect(screen.getAllByText("Linear").length).toBeGreaterThan(0);
 	});
 });

@@ -865,6 +865,28 @@ describe("TODO_LIST (#2340)", () => {
 		expect(FEATURE_FLAG_REGISTRY.TODO_LIST.orgScopable).toBe(true);
 	});
 
+	// Stated as relative order rather than as the tail, for the reason the
+	// #1930 block above records: #2628's LINEAR_INTEGRATION has since been
+	// appended after this entry, so a block pinning the tail by name would fail
+	// for its neighbour rather than for itself.
+	it("is appended after every org-scopable flag that preceded it", () => {
+		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
+		expect(ORG_SCOPABLE_FLAG_KEYS.indexOf("TODO_LIST")).toBeGreaterThan(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("AI_RECOMMENDED_LIFECYCLE"),
+		);
+	});
+});
+
+describe("LINEAR_INTEGRATION (#2628)", () => {
+	it("is registered off by default, on its own env var, and org-scopable", () => {
+		expect(isFeatureFlagKey("LINEAR_INTEGRATION")).toBe(true);
+		expect(FEATURE_FLAG_REGISTRY.LINEAR_INTEGRATION.default).toBe(false);
+		expect(FEATURE_FLAG_REGISTRY.LINEAR_INTEGRATION.envVar).toBe(
+			"FABRIC_FEATURE_LINEAR_INTEGRATION",
+		);
+		expect(FEATURE_FLAG_REGISTRY.LINEAR_INTEGRATION.orgScopable).toBe(true);
+	});
+
 	// The newest org-scopable entry is the tail, and PUBLISHING_SUITE stays the
 	// head that two API tests use as their fixture flag. When the next entry
 	// lands it takes over this assertion, and this block restates itself as
@@ -872,7 +894,7 @@ describe("TODO_LIST (#2340)", () => {
 	it("is appended after every existing org-scopable flag", () => {
 		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
 		expect(ORG_SCOPABLE_FLAG_KEYS[ORG_SCOPABLE_FLAG_KEYS.length - 1]).toBe(
-			"TODO_LIST",
+			"LINEAR_INTEGRATION",
 		);
 	});
 });
