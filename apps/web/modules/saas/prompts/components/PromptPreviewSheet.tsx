@@ -33,6 +33,8 @@ import {
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useState } from "react";
 import { toast } from "sonner";
+import { isPromptNotFound } from "../lib/prompt-not-found";
+import { LoadFailure } from "./LoadFailure";
 import { PromptScopeBadge } from "./PromptScopeBadge";
 import { PromptTag } from "./PromptTag";
 
@@ -67,7 +69,12 @@ export function PromptPreviewSheet({
 	// USER-scoped prompts are not visible when organizationId is set,
 	// so pass null to ensure the backend includes them.
 	const queryOrganizationId = promptScope === "USER" ? null : organizationId;
-	const { data: prompt, isLoading } = useQuery({
+	const {
+		data: prompt,
+		isLoading,
+		error,
+		refetch,
+	} = useQuery({
 		...orpc.prompts.get.byId.queryOptions({
 			input: {
 				id: promptId,
@@ -81,7 +88,13 @@ export function PromptPreviewSheet({
 	const content = latestVersion?.content ?? "";
 	const contentProblem = isEditing ? promptContentProblem(editContent) : null;
 	const isSystemPrompt = prompt?.scope === "SYSTEM";
-	const titleText = isLoading ? "Loading..." : (prompt?.name ?? "Prompt");
+	const titleText = isLoading
+		? "Loading..."
+		: error
+			? isPromptNotFound(error)
+				? "Prompt not found"
+				: "Could not load prompt"
+			: (prompt?.name ?? "Prompt");
 
 	// Reset edit state when prompt changes or sheet opens
 	useEffect(() => {
@@ -205,6 +218,23 @@ export function PromptPreviewSheet({
 				{isLoading ? (
 					<div className="flex items-center justify-center py-12">
 						<Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
+					</div>
+				) : error ? (
+					// Otherwise this rendered as a prompt with no content — the
+					// title fell back to "Prompt" and the body read "No content
+					// available", both of which are confidently wrong.
+					<div className="flex flex-1 flex-col items-center justify-center gap-4 py-12">
+						{isPromptNotFound(error) ? (
+							<p className="text-muted-foreground text-sm">
+								This prompt does not exist, or you do not have
+								access to it.
+							</p>
+						) : (
+							<LoadFailure
+								message="Could not load this prompt."
+								onRetry={() => refetch()}
+							/>
+						)}
 					</div>
 				) : (
 					<div className="flex flex-col flex-1 mt-4 min-h-0">

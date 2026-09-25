@@ -75,7 +75,9 @@ describe("PromptGovernanceDashboard (Org Overrides)", () => {
 		wrap(<PromptGovernanceDashboard />);
 
 		expect(
-			screen.getByRole("button", { name: /organization overrides/i }),
+			await screen.findByRole("button", {
+				name: /organization overrides/i,
+			}),
 		).toHaveAttribute("aria-expanded", "true");
 		expect(
 			screen.getByRole("button", { name: /no organization override/i }),
@@ -93,7 +95,7 @@ describe("PromptGovernanceDashboard (Org Overrides)", () => {
 		const user = userEvent.setup();
 		wrap(<PromptGovernanceDashboard />);
 
-		const before = screen.getAllByRole("listitem").length;
+		const before = (await screen.findAllByRole("listitem")).length;
 		await user.click(
 			screen.getByRole("button", { name: /organization overrides/i }),
 		);
@@ -110,9 +112,11 @@ describe("PromptGovernanceDashboard (Org Overrides)", () => {
 
 		wrap(<PromptGovernanceDashboard />);
 
-		const section = screen
-			.getByRole("button", { name: /organization overrides/i })
-			.closest("section");
+		const section = (
+			await screen.findByRole("button", {
+				name: /organization overrides/i,
+			})
+		).closest("section");
 		expect(section).not.toBeNull();
 		expect(
 			await within(section as HTMLElement).findAllByText("Organization"),
@@ -152,6 +156,30 @@ describe("PromptGovernanceDashboard (Org Overrides)", () => {
 			"href",
 			expect.stringContaining("/prompts/catalog?action="),
 		);
+	});
+
+	it("renders no actions while the catalog read is still in flight", async () => {
+		// React Query retries a few times before `error` flips, so a naive
+		// isLoading-only render fabricates the whole "no organization
+		// override" bucket (all 61 actions) for the seconds that takes.
+		let resolveCatalog: (value: unknown) => void = () => {};
+		catalogList.mockReturnValue(
+			new Promise((resolve) => {
+				resolveCatalog = resolve;
+			}),
+		);
+
+		wrap(<PromptGovernanceDashboard />);
+
+		expect(screen.getByText(/checking every action/i)).toBeInTheDocument();
+		expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
+		expect(screen.queryByText("Built-in")).not.toBeInTheDocument();
+		expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+
+		resolveCatalog({ entries: [] });
+
+		await screen.findByText(/actions have no organization prompt/i);
+		expect(screen.getAllByRole("listitem").length).toBeGreaterThan(0);
 	});
 
 	it("announces a stable error and lets the user retry", async () => {

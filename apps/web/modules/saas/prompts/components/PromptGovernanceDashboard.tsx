@@ -7,12 +7,14 @@ import {
 	promptActionId,
 } from "@repo/utils/prompt-action-catalog";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { ChevronRightIcon } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { LoadFailure } from "./LoadFailure";
 
 /**
  * Where an organization's prompt configuration stands, in one view (FR24).
@@ -199,18 +201,11 @@ export function PromptGovernanceDashboard() {
 	// governance audit.
 	if (error) {
 		return (
-			<div className="space-y-4 py-8 text-center" role="alert">
-				<p className="text-muted-foreground text-sm">
-					Could not load your organization's prompt configuration.
-				</p>
-				<button
-					type="button"
-					onClick={() => refetch()}
-					className="font-medium text-primary-ink text-sm underline-offset-4 hover:underline"
-				>
-					Try again
-				</button>
-			</div>
+			<LoadFailure
+				message="Could not load your organization's prompt configuration."
+				onRetry={() => refetch()}
+				className="space-y-4 py-8 text-center"
+			/>
 		);
 	}
 
@@ -222,23 +217,34 @@ export function PromptGovernanceDashboard() {
 					: `${fallbacks.length} of ${ALL_ACTIONS.length} actions have no organization prompt.`}
 			</p>
 
-			<Section
-				title="Organization overrides"
-				count={overridden.length}
-				expanded={overridesOpen}
-				onToggle={() => setOverridesOpen((v) => !v)}
-			>
-				{overridden.map(renderRow)}
-			</Section>
+			{isLoading ? (
+				// Every action starts in tierByAction's empty NONE bucket, so
+				// rendering the sections here would show all 61 actions as having
+				// no organization override before the read has said so.
+				<div className="flex items-center justify-center py-8">
+					<Spinner />
+				</div>
+			) : (
+				<>
+					<Section
+						title="Organization overrides"
+						count={overridden.length}
+						expanded={overridesOpen}
+						onToggle={() => setOverridesOpen((v) => !v)}
+					>
+						{overridden.map(renderRow)}
+					</Section>
 
-			<Section
-				title="No organization override"
-				count={fallbacks.length}
-				expanded={fallbacksOpen}
-				onToggle={() => setFallbacksOpen((v) => !v)}
-			>
-				{fallbacks.map(renderRow)}
-			</Section>
+					<Section
+						title="No organization override"
+						count={fallbacks.length}
+						expanded={fallbacksOpen}
+						onToggle={() => setFallbacksOpen((v) => !v)}
+					>
+						{fallbacks.map(renderRow)}
+					</Section>
+				</>
+			)}
 		</div>
 	);
 }

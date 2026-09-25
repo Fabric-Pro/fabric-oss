@@ -9,7 +9,7 @@
 
 import { PromptCatalog } from "@saas/prompts/components/PromptCatalog";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -298,6 +298,34 @@ describe("PromptCatalog", () => {
 					.length,
 			).toBeGreaterThan(0),
 		);
+	});
+
+	it("shows a retry state on a failed catalog read, not a page of built-in defaults", async () => {
+		// Every action's `entry` is undefined on a failed read, which — before
+		// this fix — rendered as "No prompt bound — uses the built-in default"
+		// on all sixty-odd rows (Fizzy #2249).
+		catalogList.mockRejectedValueOnce(new Error("database unavailable"));
+		const user = userEvent.setup();
+		wrap(<PromptCatalog />);
+
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent("Could not load the prompt catalog.");
+		expect(alert).not.toHaveTextContent("database unavailable");
+		expect(
+			screen.queryByText(/uses the built-in default/i),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText(/quality & testing/i),
+		).not.toBeInTheDocument();
+
+		catalogList.mockResolvedValueOnce({ entries: [] });
+		await user.click(
+			within(alert).getByRole("button", { name: "Try again" }),
+		);
+
+		expect(
+			await screen.findByText(/quality & testing/i),
+		).toBeInTheDocument();
 	});
 });
 

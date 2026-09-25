@@ -19,6 +19,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActionPromptList } from "./ActionPromptList";
+import { LoadFailure } from "./LoadFailure";
 import { PromptDefaultBadge } from "./PromptDefaultBadge";
 
 /**
@@ -107,7 +108,7 @@ export function PromptCatalog() {
 	const [openFeatureType, setOpenFeatureType] =
 		useState<PromptFeatureTypeKey | null>(null);
 
-	const { data, isLoading, refetch } = useQuery({
+	const { data, isLoading, error, refetch } = useQuery({
 		queryKey: ["prompt-catalog", organizationId],
 		queryFn: async () =>
 			await orpcClient.prompts.catalog.list({
@@ -189,6 +190,19 @@ export function PromptCatalog() {
 		}
 		return map;
 	}, [matching]);
+
+	// A failed catalog read leaves every action's `entry` undefined, which
+	// would otherwise render as "No prompt bound — uses the built-in default"
+	// on all sixty-odd rows — the same fabricated picture the governance
+	// dashboard used to show for the same failure.
+	if (error) {
+		return (
+			<LoadFailure
+				message="Could not load the prompt catalog."
+				onRetry={() => refetch()}
+			/>
+		);
+	}
 
 	return (
 		<div className="space-y-6">
