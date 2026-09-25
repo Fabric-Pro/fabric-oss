@@ -450,9 +450,12 @@ export function PromptContentEnhancer({
 				},
 			]}
 		>
-			<div className="flex flex-col h-screen bg-background">
+			{/* `h-full`, not `h-screen`: both host pages give this a definite
+			    height below their breadcrumb row. `h-screen` overflowed that
+			    column by the row's height and clipped the bottom of the editor. */}
+			<div className="flex flex-col h-full bg-background">
 				{/* Top Bar with Actions */}
-				<div className="flex items-center justify-between px-6 py-3 border-b bg-background gap-4">
+				<div className="flex min-w-0 shrink-0 items-center justify-between gap-4 overflow-x-auto border-b bg-background px-6 py-3">
 					{/* AI Generating Indicator - Centered when active */}
 					{isAILoading ? (
 						<>

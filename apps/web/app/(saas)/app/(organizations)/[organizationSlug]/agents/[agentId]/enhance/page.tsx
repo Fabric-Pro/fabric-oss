@@ -8,12 +8,17 @@
  */
 
 import { CopilotKit } from "@copilotkit/react-core";
+import {
+	AI_SIDEBAR_CONTENT_SHIFT_CLASS,
+	useAiSidebarExpanded,
+} from "@saas/shared/components/copilot/ai-sidebar-layout";
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
+import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "@copilotkit/react-ui/styles.css";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { PromptContentEnhancer } from "@saas/prompts/components/PromptContentEnhancer";
@@ -41,6 +46,16 @@ export default function OrganizationPromptEnhancerAgentPage() {
 	);
 	const { basePath } = useOrganizationContext();
 	const onError = useCopilotErrorHandler();
+
+	// A full-bleed CopilotSidebar host: collapse the app sidebar to its rail and
+	// reserve the docked assistant panel's width (it mounts `defaultOpen`). See
+	// docs/solutions/ui-bugs/copilotkit-sidebar-editor-overlap.md.
+	const { setIsFullscreen } = useFullscreen();
+	useEffect(() => {
+		setIsFullscreen(true);
+		return () => setIsFullscreen(false);
+	}, [setIsFullscreen]);
+	const isAiSidebarExpanded = useAiSidebarExpanded(true);
 
 	// Organization-aware paths
 	const agentsPath = `${basePath}/agents`;
@@ -109,9 +124,14 @@ export default function OrganizationPromptEnhancerAgentPage() {
 	};
 
 	return (
-		<div className="fixed inset-0 bg-background">
-			{/* Breadcrumbs - Compact header */}
-			<div className="flex items-center gap-3 px-6 py-2.5 border-b bg-background">
+		<div
+			className={`fixed inset-y-0 left-0 right-0 md:left-[72px] bg-background flex flex-col transition-[right] duration-300 ${
+				isAiSidebarExpanded ? AI_SIDEBAR_CONTENT_SHIFT_CLASS : ""
+			}`}
+		>
+			{/* Breadcrumbs - Compact header. Scrolls within the reserved column
+			    rather than spilling under the assistant panel. */}
+			<div className="flex min-w-0 shrink-0 items-center gap-3 overflow-x-auto border-b bg-background px-6 py-2.5">
 				<Button
 					variant="ghost"
 					size="icon"
@@ -152,8 +172,10 @@ export default function OrganizationPromptEnhancerAgentPage() {
 				</Breadcrumb>
 			</div>
 
-			{/* Content Enhancer with CopilotKit - Full height */}
-			<div className="h-[calc(100vh-53px)]">
+			{/* Content Enhancer with CopilotKit - fills the rest of the column.
+			    The direct-child selectors give CopilotKit's injected wrappers a
+			    definite height, so the enhancer's `h-full` resolves. */}
+			<div className="flex-1 min-h-0 overflow-hidden [&>.copilotKitSidebarContentWrapper]:h-full [&>.copilotKitSidebarContentWrapper>.copilotKitModalChildrenWrapper]:h-full">
 				<CopilotKit
 					runtimeUrl="/api/copilotkit"
 					useSingleEndpoint
