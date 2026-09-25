@@ -49,7 +49,7 @@ describe("blockedNavigationSuffix", () => {
 		expect(suffix).toContain("environment's base URL");
 	});
 
-	it("names the runner's own network when the most recent refusal is a fetch failure", () => {
+	it("names both possible sides, and blames neither, for an ambiguous fetch failure", () => {
 		const suffix = blockedNavigationSuffix(
 			"page.goto: net::ERR_BLOCKED_BY_CLIENT at https://app.example.com/",
 			{
@@ -62,8 +62,29 @@ describe("blockedNavigationSuffix", () => {
 				],
 			},
 		);
-		expect(suffix).toContain("Fabric's runner could not reach");
-		expect(suffix).toContain("not your environment");
+		// A reset or timeout on one request cannot say whose network failed
+		// (Fizzy #2232): telling the customer "not your environment" when their
+		// host is down or firewalled sends them to debug the wrong side.
+		expect(suffix).toContain("environment is down or not reachable");
+		expect(suffix).toContain("runner's own network");
+		expect(suffix).not.toContain("not your environment");
+	});
+
+	it("points at the environment when its own host refused the connection", () => {
+		const suffix = blockedNavigationSuffix(
+			"page.goto: net::ERR_BLOCKED_BY_CLIENT at https://app.example.com/",
+			{
+				refusals: [
+					{
+						kind: "connection-refused",
+						url: "https://app.example.com/",
+						detail: "fetch failed: connect ECONNREFUSED 203.0.113.10:443",
+					},
+				],
+			},
+		);
+		expect(suffix).toContain("refused the connection");
+		expect(suffix).toContain("check that the environment is running");
 	});
 
 	it("uses the LAST refusal when several were recorded", () => {

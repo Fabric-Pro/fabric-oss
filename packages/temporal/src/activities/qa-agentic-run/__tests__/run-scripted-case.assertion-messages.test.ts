@@ -127,6 +127,52 @@ describe("TRUSTED_RUNNER assertion failure messages", () => {
 		});
 	});
 
+	it("assertUrl never records query or fragment values, which can carry an OAuth code", async () => {
+		const executeStep = loadExecuteStep();
+		const page = fakePage({
+			url: () =>
+				"https://example.com/auth/callback?code=secret-code&state=s1#access_token=t1",
+		});
+
+		let thrown: Error | undefined;
+		try {
+			await executeStep(page, BASE_URL, {
+				action: "assertUrl",
+				path: "/dashboard",
+			});
+		} catch (error) {
+			thrown = error as Error;
+		}
+
+		expect(thrown?.message).not.toMatch(
+			/secret-code|state=s1|access_token/,
+		);
+		expect(parseAssertionValues(thrown?.message)).toEqual({
+			expected: "https://example.com/dashboard",
+			actual: "https://example.com/auth/callback?code=…&state=…#…",
+		});
+	});
+
+	it("assertUrl says so when the URLs differ only in masked values", async () => {
+		const executeStep = loadExecuteStep();
+		const page = fakePage({ url: () => "https://example.com/list?tab=b" });
+
+		let thrown: Error | undefined;
+		try {
+			await executeStep(page, BASE_URL, {
+				action: "assertUrl",
+				path: "/list?tab=a",
+			});
+		} catch (error) {
+			thrown = error as Error;
+		}
+
+		expect(thrown?.message).toContain(
+			"differ only in query or fragment values",
+		);
+		expect(thrown?.message).not.toMatch(/tab=a|tab=b/);
+	});
+
 	it("assertText reports the expected substring and what the element actually had", async () => {
 		const executeStep = loadExecuteStep();
 		const page = fakePage({

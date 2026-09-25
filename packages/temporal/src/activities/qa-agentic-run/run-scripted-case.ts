@@ -350,6 +350,28 @@ function urlForDisplay(urlString) {
   }
 }
 
+/** A URL as an assertion message may record it: origin, path and the NAMES of
+ * any query parameters, with every value and any fragment masked. An
+ * assertUrl failure right after sign-in routinely lands on an OAuth/SSO
+ * callback whose \`code\`, \`state\` or token sits in exactly those values, and
+ * this message is persisted, shown to every project reader, sent to the RCA
+ * model and copied into bug bodies. The parameter names keep the useful half
+ * of the evidence — "it stopped on ?code=…&state=…" is the diagnosis. */
+function urlForAssertion(urlString) {
+  try {
+    const parsed = new URL(urlString);
+    const names = [...parsed.searchParams.keys()];
+    const query = names.length
+      ? "?" + names.map((name) => name + "=…").join("&")
+      : "";
+    return truncateValue(
+      parsed.origin + parsed.pathname + query + (parsed.hash ? "#…" : ""),
+    );
+  } catch {
+    return truncateValue(urlForDisplay(urlString));
+  }
+}
+
 /** The plain-language explanation for a navigation that failed with
  * ERR_BLOCKED_BY_CLIENT, from the most recent off-origin request the route
  * handler itself refused — or "" when there is nothing to explain. A named
@@ -495,11 +517,16 @@ async function executeStep(page, baseUrl, step) {
       const expectedUrl = sameOriginUrl(baseUrl, step.path);
       const actualUrl = page.url();
       if (actualUrl !== expectedUrl) {
+        const expectedShown = urlForAssertion(expectedUrl);
+        const actualShown = urlForAssertion(actualUrl);
         throw new Error(
-          "Page URL did not match the expected path.\nExpected: " +
-            expectedUrl +
+          (expectedShown === actualShown
+            ? "Page URL did not match the expected path; the two differ only in query or fragment values, which are not recorded."
+            : "Page URL did not match the expected path.") +
+            "\nExpected: " +
+            expectedShown +
             "\nReceived: " +
-            actualUrl,
+            actualShown,
         );
       }
       return;

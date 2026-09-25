@@ -28,7 +28,7 @@ import {
 import { cn } from "@ui/lib";
 import { ArrowLeftIcon, Loader2Icon, PlayIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	BROWSER_LABEL,
@@ -382,6 +382,28 @@ export function RunConfigurationDialog({
 	const scriptedNotPermitted =
 		runMode === "MODE_B" && quote != null && !quote.scripted.permitted;
 
+	// Nothing about the run is known until the quote answers — not the figure
+	// the confirm step has to state, not whether it is over the cap, not
+	// whether this viewer may run Scripted. Start waits for it; a FAILED quote
+	// does not block, since the server enforces both gates regardless.
+	const quotePending = quoteQuery.isLoading;
+
+	// The two stages swap the dialog's whole body while Radix keeps the same
+	// content mounted, so its open-autofocus never fires again and the button
+	// that had focus simply disappears — dropping keyboard focus to <body>.
+	// Move it deliberately instead. Confirm lands on Back, not on "Confirm and
+	// start": a double-pressed Enter must not spend money.
+	const backButtonRef = useRef<HTMLButtonElement>(null);
+	const startButtonRef = useRef<HTMLButtonElement>(null);
+	const previousStage = useRef(stage);
+	useEffect(() => {
+		if (previousStage.current === stage) {
+			return;
+		}
+		previousStage.current = stage;
+		(stage === "confirm" ? backButtonRef : startButtonRef).current?.focus();
+	}, [stage]);
+
 	const dispatchNow = () => {
 		rememberRunner(projectId, runMode);
 		onDispatch(overrides);
@@ -458,6 +480,7 @@ export function RunConfigurationDialog({
 					</DialogHeader>
 					<DialogFooter>
 						<Button
+							ref={backButtonRef}
 							type="button"
 							variant="ghost"
 							disabled={dispatching}
@@ -471,7 +494,7 @@ export function RunConfigurationDialog({
 						</Button>
 						<Button
 							type="button"
-							disabled={dispatching}
+							disabled={dispatching || overCap}
 							onClick={dispatchNow}
 						>
 							{dispatching ? (
@@ -559,7 +582,15 @@ export function RunConfigurationDialog({
 								}}
 							>
 								<SelectTrigger id="run-mode">
-									<SelectValue />
+									{/* The runner's name only: the options carry a
+									    cost suffix for comparison, and mirroring it
+									    here truncated the label before the suffix
+									    was ever visible. The footer states it. */}
+									<SelectValue>
+										{runMode === "MODE_B"
+											? t("runnerScripted")
+											: t("runnerAgentic")}
+									</SelectValue>
 								</SelectTrigger>
 								<SelectContent>
 									<SelectItem value="MODE_A">
@@ -713,6 +744,7 @@ export function RunConfigurationDialog({
 
 				<DialogFooter>
 					<p
+						aria-live="polite"
 						className={cn(
 							"mr-auto text-xs",
 							overCap || scriptedNotPermitted
@@ -730,10 +762,12 @@ export function RunConfigurationDialog({
 						{t("cancel")}
 					</Button>
 					<Button
+						ref={startButtonRef}
 						type="button"
 						disabled={
 							dispatching ||
 							caseCount === 0 ||
+							quotePending ||
 							overCap ||
 							scriptedNotPermitted
 						}

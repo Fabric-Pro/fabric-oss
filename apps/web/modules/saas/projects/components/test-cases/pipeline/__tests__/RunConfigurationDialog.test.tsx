@@ -168,11 +168,41 @@ beforeEach(() => {
 });
 
 describe("RunConfigurationDialog — the pre-dispatch figure", () => {
-	it("shows the loading state while the quote is in flight", () => {
+	it("shows the loading state, and holds Start, while the quote is in flight", () => {
 		quoteIsLoading = true;
 		renderDialog();
 
 		expect(screen.getByText("estimating")).toBeInTheDocument();
+		// Otherwise the confirm step could open with no figure to state, or
+		// confirm a run the quote is about to report as over the cap.
+		expect(screen.getByRole("button", { name: "start" })).toBeDisabled();
+	});
+
+	it("announces the footer's changing figure to assistive technology", () => {
+		quoteIsLoading = true;
+		renderDialog();
+
+		expect(screen.getByText("estimating")).toHaveAttribute(
+			"aria-live",
+			"polite",
+		);
+	});
+
+	it("shows only the runner's name in the closed picker, not its cost suffix", () => {
+		quoteData = quote({
+			resolvedCaseCount: 2,
+			agenticRunnable: 2,
+			stepCount: 6,
+			estimatedCostUsd: 0.3,
+			capUsd: 5,
+			withinCap: true,
+			scriptedRunnable: 0,
+		});
+		renderDialog();
+
+		const trigger = screen.getByRole("combobox", { name: "runner" });
+		expect(trigger).toHaveTextContent("runnerAgentic");
+		expect(trigger).not.toHaveTextContent("estimateAgenticShort");
 	});
 
 	it("shows the Agentic figure once the quote answers", () => {
@@ -303,6 +333,34 @@ describe("RunConfigurationDialog — confirmation before a billed run", () => {
 		await user.click(screen.getByRole("button", { name: "back" }));
 
 		expect(screen.getByText("title")).toBeInTheDocument();
+		expect(onDispatch).not.toHaveBeenCalled();
+	});
+
+	it("keeps keyboard focus on a control across both stage changes", async () => {
+		quoteData = quote({
+			resolvedCaseCount: 2,
+			agenticRunnable: 2,
+			stepCount: 6,
+			estimatedCostUsd: 0.3,
+			capUsd: 5,
+			withinCap: true,
+			scriptedRunnable: 0,
+		});
+		const onDispatch = vi.fn();
+		const user = userEvent.setup();
+		renderDialog({ onDispatch });
+
+		screen.getByRole("button", { name: "start" }).focus();
+		await user.keyboard("{Enter}");
+		// Back, not "Confirm and start": a second Enter must not spend money.
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: "back" })).toHaveFocus(),
+		);
+
+		await user.keyboard("{Enter}");
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: "start" })).toHaveFocus(),
+		);
 		expect(onDispatch).not.toHaveBeenCalled();
 	});
 
