@@ -228,26 +228,33 @@ export async function securityAccessibilityScanWorkflow(
 			ctx.gitHistoryEnabled &&
 			targetType === "PROJECT";
 
-		// Resolve the items to scan for BOTH paths. On the patched (new) path the
-		// context already carries discrete `items` (chunked + parallelized in the
-		// activity). On the legacy path — only ever hit when REPLAYING an
-		// execution started before this change — the recorded context has the old
-		// single `content` blob and no `items`; wrap it as one synthetic item so
-		// the scan input shape is uniform. (The scan activity result on that path
-		// also comes from history, so the input only needs to be deterministic.)
+		// Resolve what the scanners read for BOTH paths. On the patched (new) path
+		// each scanner loads the discrete items itself from `contentQuery`, so no
+		// item text crosses Temporal (Fizzy #2502: a large project's items exceeded
+		// the 2 MB payload limit); a gather result recorded before `contentQuery`
+		// existed still carries `items`, which are passed through as before. On the
+		// legacy path — only ever hit when REPLAYING an execution started before
+		// the signal-quality change — the recorded context has the old single
+		// `content` blob; wrap it as one synthetic item so the scan input shape is
+		// uniform. (The scan activity result on that path also comes from history,
+		// so the input only needs to be deterministic.)
 		const legacyCtx = ctx as unknown as {
 			content?: string;
 			projectName: string;
 		};
-		const scanItems = signalQuality
-			? ctx.items
-			: [
-					{
-						key: "__legacy_content__",
-						label: legacyCtx.projectName,
-						text: legacyCtx.content ?? "",
-					},
-				];
+		const scanContent = !signalQuality
+			? {
+					items: [
+						{
+							key: "__legacy_content__",
+							label: legacyCtx.projectName,
+							text: legacyCtx.content ?? "",
+						},
+					],
+				}
+			: ctx.items
+				? { items: ctx.items }
+				: { contentQuery: ctx.contentQuery };
 		const severityRubric = signalQuality ? ctx.severityRubric : undefined;
 		// Knowledge packs go to the SECURITY prompt only, filtered by appliesTo
 		// (absent ⇒ security, the default). Knowledge text — never executed.
@@ -270,7 +277,7 @@ export async function securityAccessibilityScanWorkflow(
 					userId,
 					organizationId,
 					projectName: ctx.projectName,
-					items: scanItems,
+					...scanContent,
 					customRules: ctx.securityRules,
 					severityRubric,
 					knowledgePacks,
@@ -282,7 +289,7 @@ export async function securityAccessibilityScanWorkflow(
 					userId,
 					organizationId,
 					projectName: ctx.projectName,
-					items: scanItems,
+					...scanContent,
 					customRules: ctx.accessibilityRules,
 					severityRubric,
 				})

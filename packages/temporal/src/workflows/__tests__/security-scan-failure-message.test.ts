@@ -7,12 +7,13 @@
  * said what broke. These run the real workflow and assert on the message
  * `failScanActivity` receives, which is what the banner and the log line show.
  *
- * The cause was the gathered content outgrowing Temporal's payload limits, so
- * the last case runs a prod-sized project's budgeted content end to end.
+ * The cause was the gathered item text outgrowing Temporal's payload limits, so
+ * the last cases check that the scanners are handed a content query instead of
+ * the text, and that a gather result recorded before that still works.
  */
 
 import { resolve } from "node:path";
-import { applyScanItemCeilings, type ScanContentItem } from "@repo/database";
+import type { ScanContentItem } from "@repo/database";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import {
 	bundleWorkflowCode,
@@ -49,34 +50,38 @@ function failWith(error: string) {
 	};
 }
 
-/** 458 features of ~11.7 KB, the shape of the prod project whose scan failed. */
-function prodSizedItems(): ScanContentItem[] {
-	return Array.from({ length: 458 }, (_, i) => ({
-		key: `F-${i + 1}`,
-		label: `Feature F-${i + 1} (FEATURE): Item ${i + 1}`,
-		text: "x".repeat(11_600),
-	}));
-}
+const CONTENT_QUERY = {
+	projectId: "proj-1",
+	targetType: "PROJECT",
+	mode: "FULL",
+	sinceCompletedAt: null,
+};
+
+type ScannerInput = { contentQuery?: unknown; items?: ScanContentItem[] };
 
 async function runScan(
 	overrides: Record<string, (...args: never[]) => Promise<unknown>>,
-	items: ScanContentItem[] = [
-		{ key: "doc:1", label: "Doc", text: "Some content" },
-	],
+	gathered: { contentQuery: unknown } | { items: ScanContentItem[] } = {
+		contentQuery: CONTENT_QUERY,
+	},
 ): Promise<{
 	failMessage: string | undefined;
-	scannedItemCount: number | undefined;
+	scannerInputs: ScannerInput[];
 	result: SecurityAccessibilityScanOutput;
 }> {
 	let failMessage: string | undefined;
-	let scannedItemCount: number | undefined;
+	const scannerInputs: ScannerInput[] = [];
+	const scanner = async (input: ScannerInput) => {
+		scannerInputs.push(input);
+		return { findings: [] };
+	};
 
 	const activities = {
 		markScanRunningActivity: async () => undefined,
 		gatherScanContextActivity: async () => ({
 			projectName: "Example project",
-			items,
-			scannedItemKeys: items.map((item) => item.key),
+			...gathered,
+			scannedItemKeys: ["doc:1"],
 			securityRules: [],
 			accessibilityRules: [],
 			severityRubric: undefined,
@@ -90,11 +95,8 @@ async function runScan(
 			baseSha: null,
 			targetSha: null,
 		}),
-		runSecurityScanActivity: async (input: { items: unknown[] }) => {
-			scannedItemCount = input.items.length;
-			return { findings: [] };
-		},
-		runAccessibilityScanActivity: async () => ({ findings: [] }),
+		runSecurityScanActivity: scanner,
+		runAccessibilityScanActivity: scanner,
 		persistScanResultsActivity: async () => ({
 			securityFindingCount: 0,
 			accessibilityFindingCount: 0,
@@ -135,7 +137,7 @@ async function runScan(
 	);
 	return {
 		failMessage,
-		scannedItemCount,
+		scannerInputs,
 		result: result as SecurityAccessibilityScanOutput,
 	};
 }
@@ -166,20 +168,28 @@ describe("securityAccessibilityScanWorkflow failure message", () => {
 	}, 60_000);
 });
 
-describe("securityAccessibilityScanWorkflow content size", () => {
-	// Without the byte budget, the 200 items the item ceiling kept (2.34 MB) were
-	// rejected at the gather result on Temporal Cloud; on the local test server
-	// the two scanner inputs then overflow the 4 MB gRPC limit and the workflow
-	// task retries forever. This runs the budgeted content through both hops.
-	it("completes a prod-sized project once the content passes through the scan size ceilings", async () => {
-		const { items } = applyScanItemCeilings(prodSizedItems());
-		const { failMessage, scannedItemCount, result } = await runScan(
-			{},
-			items,
-		);
+describe("securityAccessibilityScanWorkflow scan content", () => {
+	// The item text used to ride the gather result and both scanner inputs; 200
+	// items of ~12 KB (2.34 MB) were rejected by Temporal's 2 MB payload limit.
+	it("hands both scanners the content query, never the item text", async () => {
+		const { scannerInputs, result } = await runScan({});
 
-		expect(failMessage).toBeUndefined();
 		expect(result.success).toBe(true);
-		expect(scannedItemCount).toBe(items.length);
-	}, 120_000);
+		expect(scannerInputs).toHaveLength(2);
+		for (const input of scannerInputs) {
+			expect(input.contentQuery).toEqual(CONTENT_QUERY);
+			expect(input.items).toBeUndefined();
+		}
+	}, 60_000);
+
+	it("passes the items through from a gather result recorded before the content query", async () => {
+		const items = [{ key: "doc:1", label: "Doc", text: "Some content" }];
+		const { scannerInputs, result } = await runScan({}, { items });
+
+		expect(result.success).toBe(true);
+		for (const input of scannerInputs) {
+			expect(input.items).toEqual(items);
+			expect(input.contentQuery).toBeUndefined();
+		}
+	}, 60_000);
 });
