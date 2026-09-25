@@ -247,6 +247,7 @@ const syncViewSelect = {
 		select: {
 			id: true,
 			provider: true,
+			repositoryUrl: true,
 			repositoryOwner: true,
 			repositoryName: true,
 			defaultBranch: true,

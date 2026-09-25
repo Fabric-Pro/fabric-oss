@@ -24,6 +24,8 @@ import type {
 	FabricClient,
 	ProposalPullRequest,
 	ProposalPullRequestFailure,
+	PublishedInstructionRepository,
+	PublishedInstructionSource,
 	PublishedInstructions,
 } from "@fabricorg/sdk";
 import { Command } from "commander";
@@ -651,6 +653,10 @@ function reportPublishedState(
 	}
 
 	const version = published.snapshot?.version;
+	const source = published.snapshot?.source;
+	if (source?.kind === "REPOSITORY") {
+		line(describeRepositorySource(source, published.repository ?? null));
+	}
 
 	if (!lock) {
 		line(
@@ -690,6 +696,29 @@ function reportPublishedState(
 	line(
 		`Run \`fabric instructions sync --project ${opts.project}\` to apply.`,
 	);
+}
+
+/**
+ * The one extra line `check`'s text report adds for a repository-published
+ * snapshot; nothing is added for `UPLOAD` (Fizzy #2709). The commit sha is
+ * truncated to the same 12 characters this CLI already uses for a digest
+ * prefix, with the same `…` marking it as shortened.
+ *
+ * `repository` is the project's CURRENT sync configuration, not necessarily
+ * the one this particular snapshot published from — it is shown only when
+ * `source.current` says this snapshot still matches it; otherwise the line
+ * says so instead of naming a repository that may no longer apply.
+ */
+function describeRepositorySource(
+	source: Extract<PublishedInstructionSource, { kind: "REPOSITORY" }>,
+	repository: PublishedInstructionRepository | null,
+): string {
+	const commit = `${source.commitSha.slice(0, 12)}…`;
+	const base = `published from ${commit} on ${source.ref}`;
+	if (!source.current) {
+		return `${base} (not the project's current sync configuration)`;
+	}
+	return repository ? `${base} (${repository.path})` : base;
 }
 
 /** What `--verify` found, in the two places the report can end. */
@@ -1031,6 +1060,7 @@ async function syncOnce(
 			id: published.snapshot.id,
 			version: published.snapshot.version,
 			digest: published.snapshot.digest,
+			source: published.snapshot.source,
 		},
 		manifest,
 		// Published hash plus `kept: true`: `push` diffs the edit against the

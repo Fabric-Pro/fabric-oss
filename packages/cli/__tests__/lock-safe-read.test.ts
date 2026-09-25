@@ -148,6 +148,39 @@ describe("readLockSafely", () => {
 		const error = await refusal(root);
 		expect(isTooLarge(error.cause)).toBe(true);
 	});
+
+	// Fizzy #2709: the safe reader must see a version 3 lock, with or
+	// without `source`, exactly as `readLock` does.
+	it("reads a version 3 lock with a source exactly as readLock does", async () => {
+		const root = await makeTree();
+		const lock: InstructionsLock = {
+			...sampleLock(),
+			version: 3,
+			source: {
+				kind: "REPOSITORY",
+				ref: "main",
+				commitSha: "a".repeat(40),
+				current: true,
+			},
+		};
+		await writeLock(root, lock);
+
+		await expect(readLockSafely(root, BOUND)).resolves.toEqual(
+			await readLock(root),
+		);
+		await expect(readLockSafely(root, BOUND)).resolves.toEqual(lock);
+	});
+
+	it("reads a version 3 lock with no source exactly as readLock does", async () => {
+		const root = await makeTree();
+		const lock: InstructionsLock = { ...sampleLock(), version: 3 };
+		await writeLock(root, lock);
+
+		await expect(readLockSafely(root, BOUND)).resolves.toEqual(
+			await readLock(root),
+		);
+		await expect(readLockSafely(root, BOUND)).resolves.toEqual(lock);
+	});
 });
 
 describe("parseLock", () => {

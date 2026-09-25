@@ -25,6 +25,8 @@ import {
 	getProjectInstructionSettings,
 	getPublishedInstructionSnapshot,
 	listInstructionFiles,
+	resolveCurrentInstructionRepository,
+	resolveInstructionSnapshotSource,
 } from "@repo/database";
 import { hasPermission, Permissions } from "@repo/permissions";
 import type { Context, Hono, Next } from "hono";
@@ -501,15 +503,28 @@ export function registerInstructionRoutes(
 				resolved.organizationId,
 			);
 			if (!snapshot) {
-				return c.json(ok({ published: false, sourceOfTruth }));
+				const repository = await resolveCurrentInstructionRepository(
+					projectId,
+					resolved.organizationId,
+				);
+				return c.json(
+					ok({ published: false, sourceOfTruth, repository }),
+				);
 			}
 
+			const { source, repository } =
+				await resolveInstructionSnapshotSource(
+					projectId,
+					resolved.organizationId,
+					snapshot,
+				);
 			const summary = {
 				id: snapshot.id,
 				version: snapshot.version,
 				digest: snapshot.digest,
 				fileCount: snapshot.fileCount,
 				publishedAt: snapshot.publishedAt?.toISOString() ?? null,
+				source,
 			};
 
 			if (sinceDigest !== undefined && sinceDigest === snapshot.digest) {
@@ -517,6 +532,7 @@ export function registerInstructionRoutes(
 					ok({
 						published: true,
 						sourceOfTruth,
+						repository,
 						snapshot: summary,
 						unchanged: true,
 						changes: { added: [], removed: [], changed: [] },
@@ -555,6 +571,7 @@ export function registerInstructionRoutes(
 				ok({
 					published: true,
 					sourceOfTruth,
+					repository,
 					snapshot: summary,
 					...(sinceDigest === undefined
 						? {}

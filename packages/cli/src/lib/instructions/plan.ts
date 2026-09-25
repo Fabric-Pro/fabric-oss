@@ -35,7 +35,10 @@
  * would most want to name.
  */
 import { createHash } from "node:crypto";
-import type { InstructionManifestEntry } from "@fabricorg/sdk";
+import type {
+	InstructionManifestEntry,
+	PublishedInstructionSource,
+} from "@fabricorg/sdk";
 import { type InstructionsLock, LOCK_VERSION } from "./lock.js";
 import {
 	checkRelativePath,
@@ -437,7 +440,12 @@ export async function computeSyncPlan(
 /** The lock the sync should leave behind once `plan` has been applied. */
 export function nextLock(input: {
 	projectId: string;
-	snapshot: { id: string; version: number; digest: string };
+	snapshot: {
+		id: string;
+		version: number;
+		digest: string;
+		source?: PublishedInstructionSource;
+	};
 	manifest: InstructionManifestEntry[];
 	/**
 	 * Paths the plan kept as local edits. Their entries still carry the
@@ -473,6 +481,7 @@ export function nextLock(input: {
 		digest: input.snapshot.digest,
 		syncedAt: (input.now ?? new Date()).toISOString(),
 		files,
+		...(input.snapshot.source ? { source: input.snapshot.source } : {}),
 	};
 }
 

@@ -24,6 +24,7 @@
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import type { PublishedInstructionSource } from "@fabricorg/sdk";
 import { readFileSafely, writeFileSafely } from "./safe-write.js";
 
 export const LOCK_DIRECTORY = ".fabric";
@@ -31,15 +32,19 @@ export const LOCK_FILENAME = "instructions.lock";
 
 /**
  * The version this build writes. Version 2 adds `LockFileEntry.kept` (spec
- * §6.4, Decision 38). Every released build reads only version 1 and refuses
- * anything else whole, so a lock carrying a kept marker is never acted on,
- * and a kept edit never overwritten, by a build that cannot see the marker.
- * This build reads both.
+ * §6.4, Decision 38). Version 3 adds `InstructionsLock.source` (Fizzy #2709):
+ * the published snapshot's provenance (a repository sync's ref, commit and
+ * whether it is still the project's CURRENT sync configuration, or plain
+ * `UPLOAD`), absent when the server did not report one. Every released build
+ * reads only the versions it knows and refuses anything else whole, so a
+ * marker or field a build cannot see is never acted on, and never silently
+ * overwritten, by one that cannot see it. This build reads versions 1
+ * through 3.
  */
-export const LOCK_VERSION = 2;
+export const LOCK_VERSION = 3;
 
 /** Every lock version this build reads. It writes only `LOCK_VERSION`. */
-const READABLE_LOCK_VERSIONS: readonly number[] = [1, LOCK_VERSION];
+const READABLE_LOCK_VERSIONS: readonly number[] = [1, 2, LOCK_VERSION];
 
 /** The lock's own path, relative to the destination — never from a manifest. */
 const LOCK_RELATIVE_PATH = `${LOCK_DIRECTORY}/${LOCK_FILENAME}`;
@@ -69,6 +74,15 @@ export interface InstructionsLock {
 	syncedAt: string;
 	/** Every path that sync wrote or verified — the manifest at that time. */
 	files: Record<string, LockFileEntry>;
+	/**
+	 * The published snapshot's provenance, as `getPublished` reported it at
+	 * sync time. Absent when the server did not report one (an older server) —
+	 * never defaulted, so an absent value is never mistaken for `UPLOAD`. Only
+	 * a version 3 lock may carry it. The repository itself (owner/name, host,
+	 * root path) is NOT recorded here: it is the project's current
+	 * configuration, not this snapshot's, and is not part of the lock.
+	 */
+	source?: PublishedInstructionSource;
 }
 
 export function lockPath(destination: string): string {
@@ -271,6 +285,68 @@ function lockProblem(value: unknown): string | null {
 				return `its entry for ${JSON.stringify(filePath)} has a "kept" marker, which a version 1 lock cannot carry`;
 			}
 		}
+	}
+
+	if (candidate.source !== undefined) {
+		// Same precedent as `kept` above: a marker introduced by a later
+		// version must not be silently accepted from an earlier one, whether
+		// or not this build itself understands it — a version 1 or 2 lock
+		// carrying `source` is not a lock this tool wrote.
+		if (candidate.version !== 3) {
+			return `it carries a "source", which only a version 3 lock can carry (this one is version ${candidate.version})`;
+		}
+		const problem = sourceProblem(candidate.source);
+		if (problem !== null) {
+			return `its "source" ${problem}`;
+		}
+	}
+	return null;
+}
+
+/** Lowercase hex, 7 to 64 characters — a short or full git commit sha. */
+const COMMIT_SHA_HEX = /^[0-9a-f]{7,64}$/;
+
+/**
+ * Why `value` is not a valid `PublishedInstructionSource`, or `null` when it
+ * is one. Each arm's key set is exact, not merely a minimum: an "UPLOAD"
+ * source carries only `kind`, a "REPOSITORY" one exactly `kind`, `ref`,
+ * `commitSha` and `current` — an extra key is refused rather than ignored,
+ * since a future version of this shape would otherwise be silently
+ * misread by a build that only checks for the keys it knows (Fizzy #2709
+ * review).
+ */
+function sourceProblem(value: unknown): string | null {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		return "is not an object";
+	}
+	const source = value as Record<string, unknown>;
+	const keys = Object.keys(source);
+	if (source.kind === "UPLOAD") {
+		const extra = keys.filter((key) => key !== "kind");
+		if (extra.length > 0) {
+			return `has a key besides "kind" on an "UPLOAD" source: ${extra.join(", ")}`;
+		}
+		return null;
+	}
+	if (source.kind !== "REPOSITORY") {
+		return 'has a "kind" that is neither "UPLOAD" nor "REPOSITORY"';
+	}
+	if (typeof source.ref !== "string" || source.ref.length === 0) {
+		return 'has a "ref" that is not a non-empty string';
+	}
+	if (
+		typeof source.commitSha !== "string" ||
+		!COMMIT_SHA_HEX.test(source.commitSha)
+	) {
+		return 'has a "commitSha" that is not 7 to 64 lowercase hex characters';
+	}
+	if (typeof source.current !== "boolean") {
+		return 'has a "current" that is not a boolean';
+	}
+	const allowed = new Set(["kind", "ref", "commitSha", "current"]);
+	const extra = keys.filter((key) => !allowed.has(key));
+	if (extra.length > 0) {
+		return `has a key besides "kind", "ref", "commitSha" and "current" on a "REPOSITORY" source: ${extra.join(", ")}`;
 	}
 	return null;
 }

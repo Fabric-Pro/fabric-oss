@@ -295,7 +295,7 @@ whether or not a declaration also names them.
 |---|---|---|---|
 | API key (`auth`) | A key is configured, `GET /auth/whoami` accepts it, and its scopes include `instructions:read` (or a legacy `*`). The detail names the key type, its prefix and the scope that satisfied the check. | server | `fabric auth login --key <api-key>`. A personal key without the scope is pointed at an organization key, because personal keys cannot carry `instructions:*` scopes. |
 | Project access (`access`) | `GET .../instructions/published` succeeds for this project. A missing scope (403 `MISSING_SCOPE`), a missing project permission (other 403) and an unknown project (404) are reported as three different failures. | server | Ask a project maintainer for access, or check the project id and `--org`. |
-| Published instructions (`published`) | A version is published. The detail gives its version, a digest prefix and its file count. Nothing published is a warning. | server | Publish a version from the project's Coding Instructions tab. |
+| Published instructions (`published`) | A version is published. The detail gives its version, a digest prefix and its file count, and — for a repository-mirrored snapshot — the commit and branch it was published from (`source.commitSha`/`source.ref`, the snapshot's OWN provenance). Nothing published is a warning. The check also carries the project's CURRENT repository host, path, branch and root path (`repository`, `null` for an upload-sourced or disconnected project — no commit here, since that is per-snapshot, not the project's present configuration), and, for the snapshot's own provenance, whether it still matches that current configuration (`source.current`). | server | Publish a version from the project's Coding Instructions tab. |
 | Lock (`lock`) | `.fabric/instructions.lock` exists, belongs to this project, names the published digest, and its ledger matches the published manifest path for path, hash for hash and mode for mode. | machine | `fabric instructions sync --project <id>`. A lock written for another project gets no command, because `sync` refuses such a lock. The fix says to rerun doctor with the `--dest` that was synced for this project. |
 | Local files (`drift`) | Every file the lock names still hashes to what the lock recorded, and still has the recorded mode. Each drifted file is listed. Edits alone are a warning, because `sync` keeps them; an edit a sync already kept reads `edited (kept by sync)`. A missing file, a changed mode or a path that is not a regular file fails. | machine | `sync --repair` to replace edits with the published bytes, `sync` to restore anything else, or `fabric instructions push` to propose the edits instead. |
 | Hook configuration (`hook`) | `.claude/settings.local.json` and `.codex/hooks.json` are checked separately. A hook passes when a `SessionStart` entry for this project runs exactly one of the two commands `init` writes today (`check` or `sync`, with the same `--org`). A Fabric entry for the project under another event, or running another subcommand, is ignored. Also looks `fabric` up on PATH. | machine | `fabric instructions init --project <id> --tool claude-code`, which also takes a first sync (`--tool codex` for Codex); `npm install -g @fabricorg/cli` when `fabric` is not on PATH. |
@@ -601,7 +601,7 @@ every path it wrote or verified:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "projectId": "project-id",
   "snapshotId": "snapshot-id",
   "snapshotVersion": 7,
@@ -610,6 +610,12 @@ every path it wrote or verified:
   "files": {
     "AGENTS.md": { "sha256": "…", "mode": 33188 },
     "CLAUDE.md": { "sha256": "…", "mode": 33188, "kept": true }
+  },
+  "source": {
+    "kind": "REPOSITORY",
+    "ref": "main",
+    "commitSha": "0123456789abcdef0123456789abcdef01234567",
+    "current": true
   }
 }
 ```
@@ -624,15 +630,30 @@ Its `sha256` and `mode` are still the published values. That is what lets
 against the published file. `--repair` drops the marker along with the edit,
 and so does a sync that finds the file matching the published version again.
 
-**Lock version 2.** The marker is why this build writes version 2. It still
-reads version 1, so an existing checkout needs nothing. An older `fabric`
-reads only version 1 and refuses a version 2 lock whole ("its version is 2
-and this build writes version 1"), writing nothing, so it never overwrites a
-kept edit it cannot see. Deleting the lock is the one way around that: the
-next sync, by any build, then starts from no ledger at all. That also ends
-the fail-closed protection for edits made before the delete — an older CLI
-can no longer see they were kept and plans a plain replacement over them, so
-the safe move on a refused lock is to upgrade the CLI rather than delete it.
+**`source`** records the published snapshot's own provenance: `{ "kind":
+"UPLOAD" }` when someone uploaded it directly, or `{ "kind": "REPOSITORY",
+ref, commitSha, current }` when it was mirrored from a repository sync.
+`current` reports whether that snapshot still matches the project's present
+sync configuration — the same integration and the same branch — as of the
+sync that wrote the lock; it goes `false` once the project moves to a
+different repository or branch, even though the snapshot's own `ref` and
+`commitSha` never change. The field is absent, not defaulted, when an older
+server did not report a source. The repository itself — its host, owner/name,
+and root path — is the project's CURRENT configuration, not this snapshot's,
+and is deliberately not recorded in the lock; `fabric instructions check` and
+`doctor` read it live from the server instead.
+
+**Lock version 3.** Version 2 added the `kept` marker; version 3 adds
+`source`. Both are additive, so this build still reads version 1 and version
+2 locks (a version 1 or 2 lock simply carries no `source`). An older `fabric`
+that only reads version 1 refuses a version 2 or 3 lock whole ("its version
+is 3 and this build writes version 1"), writing nothing, so it never
+overwrites a kept edit it cannot see. Deleting the lock is the one way around
+that: the next sync, by any build, then starts from no ledger at all. That
+also ends the fail-closed protection for edits made before the delete — an
+older CLI can no longer see they were kept and plans a plain replacement over
+them, so the safe move on a refused lock is to upgrade the CLI rather than
+delete it.
 
 ### The lock is a content ledger, not an authenticated one
 

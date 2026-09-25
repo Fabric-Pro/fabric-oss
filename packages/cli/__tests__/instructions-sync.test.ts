@@ -19,7 +19,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readLock } from "../src/lib/instructions/lock.js";
+import { LOCK_VERSION, readLock } from "../src/lib/instructions/lock.js";
 import { computeSnapshotDigest } from "../src/lib/instructions/manifest.js";
 import {
 	makeTree,
@@ -483,7 +483,7 @@ describe("fabric instructions sync", () => {
 		expect(result.stdout).toContain("    AGENTS.md");
 		expect(result.stdout).toContain("    rules/new.md");
 		const lock = await readLock(dest);
-		expect(lock?.version).toBe(2);
+		expect(lock?.version).toBe(LOCK_VERSION);
 		expect(lock?.files).toEqual({
 			"AGENTS.md": {
 				sha256: sha256("published v8\n"),

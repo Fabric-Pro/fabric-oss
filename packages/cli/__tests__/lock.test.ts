@@ -141,8 +141,8 @@ describe("a lock that does not validate", () => {
 	it.each([
 		[
 			"a version this build does not read",
-			JSON.stringify({ ...sampleLock(), version: 3 }),
-			/its version is 3 and this build reads versions 1 and 2/,
+			JSON.stringify({ ...sampleLock(), version: 4 }),
+			/its version is 4 and this build reads versions 1 and 2 and 3/,
 		],
 		[
 			"a missing projectId",
@@ -214,6 +214,21 @@ function releasedV1Refusal(text: string): string | null {
 	return version === 1
 		? null
 		: `.fabric/instructions.lock is unreadable: its version is ${JSON.stringify(version)} and this build writes version 1. Delete it to start from a clean sync.`;
+}
+
+/**
+ * What the version-2 build (reads versions 1 and 2, writes 2 — the build
+ * released just before this version 3 change) does with a lock this build
+ * writes. Simulated rather than frozen like `releasedV1Refusal`, because v2's
+ * wording is this same template with a shorter `READABLE_LOCK_VERSIONS`
+ * (`[1, 2]`) — the shape `lockProblem`'s refusal has used ever since the
+ * `kept` marker introduced multi-version reading (Decision 38).
+ */
+function releasedV2Refusal(text: string): string | null {
+	const { version } = JSON.parse(text) as { version?: unknown };
+	return version === 1 || version === 2
+		? null
+		: `.fabric/instructions.lock is unreadable: its version is ${JSON.stringify(version)} and this build reads versions 1 and 2. Delete it to start from a clean sync.`;
 }
 
 /**
@@ -301,9 +316,201 @@ describe("lock version 2 and the kept marker", () => {
 			}),
 		);
 
-		expect(LOCK_VERSION).toBe(2);
+		expect(LOCK_VERSION).toBe(3);
 		expect(releasedV1Refusal(await readFile(lockPath(root), "utf8"))).toBe(
-			".fabric/instructions.lock is unreadable: its version is 2 and this build writes version 1. Delete it to start from a clean sync.",
+			".fabric/instructions.lock is unreadable: its version is 3 and this build writes version 1. Delete it to start from a clean sync.",
+		);
+	});
+});
+
+/**
+ * Fizzy #2709. Version 3 adds one optional field, `source`: the published
+ * snapshot's provenance. This build reads versions 1 through 3 and writes 3,
+ * so a released build that cannot see the field refuses the whole file
+ * rather than silently dropping it, exactly like `kept` above.
+ */
+describe("lock version 3 and the source field", () => {
+	it("round-trips a version 3 lock with an UPLOAD source", async () => {
+		const root = await makeTree();
+		const lock = sampleLock({ version: 3, source: { kind: "UPLOAD" } });
+
+		await writeLock(root, lock);
+
+		await expect(readLock(root)).resolves.toEqual(lock);
+	});
+
+	it("round-trips a version 3 lock with a current REPOSITORY source", async () => {
+		const root = await makeTree();
+		const lock = sampleLock({
+			version: 3,
+			source: {
+				kind: "REPOSITORY",
+				ref: "main",
+				commitSha: "a".repeat(40),
+				current: true,
+			},
+		});
+
+		await writeLock(root, lock);
+
+		await expect(readLock(root)).resolves.toEqual(lock);
+	});
+
+	it("round-trips a REPOSITORY source that is no longer current", async () => {
+		const root = await makeTree();
+		const lock = sampleLock({
+			version: 3,
+			source: {
+				kind: "REPOSITORY",
+				ref: "main",
+				commitSha: "a".repeat(40),
+				current: false,
+			},
+		});
+
+		await writeLock(root, lock);
+
+		await expect(readLock(root)).resolves.toEqual(lock);
+	});
+
+	it("still reads a version 3 lock with no source at all", async () => {
+		const root = await makeTree();
+		const lock = sampleLock({ version: 3 });
+
+		await writeLock(root, lock);
+
+		await expect(readLock(root)).resolves.toEqual(lock);
+	});
+
+	it.each([
+		[
+			"an unknown kind",
+			{ kind: "OTHER" },
+			/"source" has a "kind" that is neither "UPLOAD" nor "REPOSITORY"/,
+		],
+		[
+			"an empty ref",
+			{
+				kind: "REPOSITORY",
+				ref: "",
+				commitSha: "a".repeat(40),
+				current: true,
+			},
+			/"source" has a "ref" that is not a non-empty string/,
+		],
+		[
+			"a commitSha that is too short",
+			{
+				kind: "REPOSITORY",
+				ref: "main",
+				commitSha: "abc123",
+				current: true,
+			},
+			/"source" has a "commitSha" that is not 7 to 64 lowercase hex characters/,
+		],
+		[
+			"a commitSha with uppercase hex",
+			{
+				kind: "REPOSITORY",
+				ref: "main",
+				commitSha: "A".repeat(40),
+				current: true,
+			},
+			/"source" has a "commitSha" that is not 7 to 64 lowercase hex characters/,
+		],
+		[
+			"a current that is a string",
+			{
+				kind: "REPOSITORY",
+				ref: "main",
+				commitSha: "a".repeat(40),
+				current: "true",
+			},
+			/"source" has a "current" that is not a boolean/,
+		],
+		[
+			"a current that is missing",
+			{ kind: "REPOSITORY", ref: "main", commitSha: "a".repeat(40) },
+			/"source" has a "current" that is not a boolean/,
+		],
+		[
+			"a source that is not an object",
+			"REPOSITORY",
+			/"source" is not an object/,
+		],
+		[
+			"an UPLOAD source carrying an extra key",
+			{ kind: "UPLOAD", ref: "main" },
+			/"source" has a key besides "kind" on an "UPLOAD" source: ref/,
+		],
+		[
+			"a REPOSITORY source carrying an extra key",
+			{
+				kind: "REPOSITORY",
+				ref: "main",
+				commitSha: "a".repeat(40),
+				current: true,
+				repository: "example-org/example-repo",
+			},
+			/"source" has a key besides "kind", "ref", "commitSha" and "current" on a "REPOSITORY" source: repository/,
+		],
+	])("refuses a version 3 lock with %s", async (_label, source, matcher) => {
+		const root = await makeTree();
+		await writeRawLock(
+			root,
+			JSON.stringify({ ...sampleLock(), version: 3, source }),
+		);
+
+		await expect(readLock(root)).rejects.toThrow(matcher);
+	});
+
+	it("refuses a source field on a version 1 lock", async () => {
+		const root = await makeTree();
+		await writeRawLock(
+			root,
+			JSON.stringify({
+				...sampleLock(),
+				source: { kind: "UPLOAD" },
+			}),
+		);
+
+		await expect(readLock(root)).rejects.toThrow(
+			/it carries a "source", which only a version 3 lock can carry \(this one is version 1\)/,
+		);
+	});
+
+	it("refuses a source field on a version 2 lock", async () => {
+		const root = await makeTree();
+		await writeRawLock(
+			root,
+			JSON.stringify({
+				...sampleLock(),
+				version: 2,
+				source: { kind: "UPLOAD" },
+			}),
+		);
+
+		await expect(readLock(root)).rejects.toThrow(
+			/it carries a "source", which only a version 3 lock can carry \(this one is version 2\)/,
+		);
+	});
+
+	it("is refused whole by every released build (v1 and v2), which therefore never mistakes a repository-published snapshot for an upload", async () => {
+		const root = await makeTree();
+		await writeLock(
+			root,
+			sampleLock({
+				version: LOCK_VERSION,
+				source: { kind: "UPLOAD" },
+			}),
+		);
+
+		const text = await readFile(lockPath(root), "utf8");
+		expect(releasedV1Refusal(text)).toBe(
+			".fabric/instructions.lock is unreadable: its version is 3 and this build writes version 1. Delete it to start from a clean sync.",
+		);
+		expect(releasedV2Refusal(text)).toBe(
+			".fabric/instructions.lock is unreadable: its version is 3 and this build reads versions 1 and 2. Delete it to start from a clean sync.",
 		);
 	});
 });

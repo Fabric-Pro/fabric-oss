@@ -38,7 +38,9 @@ import path from "node:path";
 import type {
 	InstructionDownload,
 	InstructionManifestEntry,
+	PublishedInstructionRepository,
 	PublishedInstructionSnapshot,
+	PublishedInstructionSource,
 	PublishedInstructions,
 	WhoamiResult,
 } from "@fabricorg/sdk";
@@ -180,7 +182,19 @@ function makeCheck(
 	evidence: CheckEvidence,
 	status: CheckStatus,
 	detail: string,
-	extra: { items?: CheckItem[]; fix?: CheckFix } = {},
+	extra: {
+		items?: CheckItem[];
+		fix?: CheckFix;
+		source?: PublishedInstructionSource;
+		/**
+		 * The project's CURRENT repository-sync configuration (Fizzy #2709) —
+		 * a sibling of `source`, which is the per-snapshot provenance. `null`
+		 * means the project is UPLOAD-sourced, or is REPOSITORY-sourced with
+		 * no sync row; `undefined` (the field left out entirely) means the
+		 * caller has nothing to report for this check.
+		 */
+		repository?: PublishedInstructionRepository | null;
+	} = {},
 ): InstructionCheck {
 	return {
 		id,
@@ -192,6 +206,10 @@ function makeCheck(
 			? { items: extra.items }
 			: {}),
 		...(extra.fix !== undefined ? { fix: extra.fix } : {}),
+		...(extra.source !== undefined ? { source: extra.source } : {}),
+		...(extra.repository !== undefined
+			? { repository: extra.repository }
+			: {}),
 	};
 }
 
@@ -819,6 +837,13 @@ function checkPublished(
 	}
 	const answer = access.published;
 	const repository = answer.sourceOfTruth === "REPOSITORY";
+	// The project's CURRENT repository-sync configuration (Fizzy #2709); the
+	// API returns it regardless of whether anything is published. Named
+	// distinctly from the `repository` boolean above, which answers a
+	// different question ("is this project repository-backed at all") and
+	// flows into `SnapshotState`.
+	const repositoryConfig: PublishedInstructionRepository | null =
+		answer.repository ?? null;
 	if (answer.published !== true) {
 		return [
 			makeCheck(
@@ -830,6 +855,7 @@ function checkPublished(
 					fix: fixOf(
 						"publish a version from the project's Coding Instructions tab",
 					),
+					repository: repositoryConfig,
 				},
 			),
 			{ kind: "unpublished", repository },
@@ -852,9 +878,17 @@ function checkPublished(
 		String(snapshot.digest).slice(0, 12),
 		12,
 	);
-	const detail = `version ${Number(snapshot.version)} (digest ${digest}…, ${plural(Number(snapshot.fileCount), "file")})${repository ? ", mirrored from the project's repository" : ""}`;
+	const source = snapshot.source;
+	const sourceDetail =
+		source?.kind === "REPOSITORY"
+			? `, from ${sanitizeDisplayText(String(source.commitSha).slice(0, 12), 12)}… on ${sanitizeDisplayText(String(source.ref), 200)}`
+			: "";
+	const detail = `version ${Number(snapshot.version)} (digest ${digest}…, ${plural(Number(snapshot.fileCount), "file")})${repository ? ", mirrored from the project's repository" : ""}${sourceDetail}`;
 	return [
-		makeCheck(id, "server", "pass", detail),
+		makeCheck(id, "server", "pass", detail, {
+			...(source !== undefined ? { source } : {}),
+			repository: repositoryConfig,
+		}),
 		{
 			kind: "published",
 			repository,

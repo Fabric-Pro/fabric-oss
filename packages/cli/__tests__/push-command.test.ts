@@ -22,7 +22,10 @@ import path from "node:path";
 import { Command } from "commander";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildInstructionsCommand } from "../src/commands/instructions/index.js";
-import type { InstructionsLock } from "../src/lib/instructions/lock.js";
+import {
+	type InstructionsLock,
+	LOCK_VERSION,
+} from "../src/lib/instructions/lock.js";
 import { nextLock } from "../src/lib/instructions/plan.js";
 
 const OUTSIDE_CONFIG_PATH = path.join(tmpdir(), "fabricai", "config.json");
@@ -816,7 +819,7 @@ describe("the request", () => {
 			>[0]["manifest"],
 			kept: ["AGENTS.md"],
 		});
-		expect(lock.version).toBe(2);
+		expect(lock.version).toBe(LOCK_VERSION);
 		await mkdir(path.join(dest, ".fabric"), { recursive: true });
 		await writeFile(
 			path.join(dest, ".fabric", "instructions.lock"),
