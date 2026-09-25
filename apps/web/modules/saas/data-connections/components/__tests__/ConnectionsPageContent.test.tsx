@@ -67,23 +67,43 @@ vi.mock("@shared/lib/orpc-client", () => ({
 				listStatus: vi.fn(),
 			},
 		},
+		mcp: {
+			registry: {
+				list: vi.fn(),
+			},
+		},
 	},
 }));
 
+import type { FeatureFlagKey } from "@repo/utils/feature-flag-registry";
+import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { ConnectionsPageContent } from "../ConnectionsPageContent";
 
 const listIntegrationsMock = orpcClient.workflows.integrations
 	.listStatus as unknown as ReturnType<typeof vi.fn>;
+const listMcpRegistryMock = orpcClient.mcp.registry
+	.list as unknown as ReturnType<typeof vi.fn>;
 
-function renderWithClient(ui: ReactNode) {
+function renderWithClient(
+	ui: ReactNode,
+	flags: Partial<Record<FeatureFlagKey, boolean>> = {
+		LINEAR_INTEGRATION: false,
+	},
+) {
 	const client = new QueryClient({
 		defaultOptions: {
 			queries: { retry: false, refetchOnWindowFocus: false },
 		},
 	});
 	return render(
-		<QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+		<QueryClientProvider client={client}>
+			<FeatureFlagProvider
+				value={flags as Record<FeatureFlagKey, boolean>}
+			>
+				{ui}
+			</FeatureFlagProvider>
+		</QueryClientProvider>,
 	);
 }
 
@@ -124,6 +144,9 @@ function renderPage(
 		isLoading: boolean;
 		error: unknown;
 	} = { data: [], isLoading: false, error: null },
+	flags: Partial<Record<FeatureFlagKey, boolean>> = {
+		LINEAR_INTEGRATION: false,
+	},
 ) {
 	mockUseOrganizationContext.mockReturnValue({ organizationId: null });
 	mockUseMonitoringFeatureFlag.mockReturnValue(false);
@@ -141,6 +164,7 @@ function renderPage(
 			addHref="/app/settings/integrations/add"
 			settingsBasePath="/app/settings/integrations"
 		/>,
+		flags,
 	);
 }
 
@@ -344,5 +368,58 @@ describe("ConnectionsPageContent — toolbar placement", () => {
 			slot.compareDocumentPosition(search) &
 				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
+	});
+});
+
+describe("ConnectionsPageContent — Linear visibility", () => {
+	const TEST_REGISTRY_SERVERS = [
+		{
+			id: "srv-example",
+			key: "example-remote",
+			name: "Example MCP",
+			category: "Project Management",
+		},
+		{
+			id: "srv-linear",
+			key: "linear-remote",
+			name: "Linear Remote",
+			category: "Project Management",
+		},
+	];
+
+	it("hides Linear from the connections grid when LINEAR_INTEGRATION is false", async () => {
+		listMcpRegistryMock.mockResolvedValue(TEST_REGISTRY_SERVERS);
+
+		renderPage(
+			[],
+			{ data: [], isLoading: false, error: null },
+			{
+				LINEAR_INTEGRATION: false,
+			},
+		);
+
+		await screen.findByRole("link", { name: /GitHub/i });
+		await screen.findByText("Example MCP");
+		expect(
+			screen.queryByRole("link", { name: /Linear/i }),
+		).not.toBeInTheDocument();
+		expect(screen.queryByText("Linear Remote")).not.toBeInTheDocument();
+	});
+
+	it("shows Linear in the connections grid when LINEAR_INTEGRATION is true", async () => {
+		listMcpRegistryMock.mockResolvedValue(TEST_REGISTRY_SERVERS);
+
+		renderPage(
+			[],
+			{ data: [], isLoading: false, error: null },
+			{
+				LINEAR_INTEGRATION: true,
+			},
+		);
+
+		await screen.findByRole("link", {
+			name: /Linear/i,
+		});
+		await screen.findByText("Linear Remote");
 	});
 });

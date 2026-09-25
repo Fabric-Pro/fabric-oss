@@ -250,6 +250,15 @@ export const FEATURE_FLAG_REGISTRY = {
 		orgScopable: true,
 		note: "Fizzy #2340. This is a Rollout gate, not a Kill switch: off means the capability is absent — the navigation entry does not render, the page is unreachable, and the owner matcher writes nothing — rather than present and failing. It gates reads, writes and navigation together on purpose, so a surface can never render against a backend that refuses it. Turning it on does not populate history by itself: a meeting whose insights were already extracted does not re-extract, so nothing re-starts the owner matcher for it. The page catches those up rather than backfilling — opening it calls `todos.catchUp` (packages/api/modules/todos/procedures/catch-up.ts), which starts the matcher for the meetings of projects the viewer can reach whose `todosMatchedAt` is unset or whose `todoMatchVersion` is superseded. That call is capped per open and ordered newest meeting first, so a long history drains over several opens instead of all at once, and to-dos appear as each run finishes rather than in the same response. Turning it off again leaves rows already written in place; they simply stop being read. The non-member contact register in Members settings is deliberately outside this gate, because a contact outlives the page that motivated it.",
 	},
+	LINEAR_INTEGRATION: {
+		label: "Linear integration",
+		description:
+			"Shows the Linear integration across Workflow Builder, MCP servers, and Data Connections.",
+		envVar: "FABRIC_FEATURE_LINEAR_INTEGRATION",
+		default: false,
+		orgScopable: true,
+		note: "Fizzy #2628. Hides Linear from integration catalogs and pickers while keeping underlying code and configurations intact.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;

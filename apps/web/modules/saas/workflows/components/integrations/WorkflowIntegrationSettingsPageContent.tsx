@@ -2,6 +2,7 @@
 
 import type { WorkflowIntegrationProvider } from "@repo/database";
 import { toFriendlyPermissionError } from "@saas/data-connections/lib/permission-error-copy";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -167,7 +168,14 @@ export function WorkflowIntegrationSettingsPageContent({
 }) {
 	const router = useRouter();
 	const queryClient = useQueryClient();
-	const allIntegrations = getAllIntegrations();
+	const linearIntegrationEnabled = useFeatureFlag("LINEAR_INTEGRATION");
+	const allIntegrations = useMemo(() => {
+		const raw = getAllIntegrations();
+		if (linearIntegrationEnabled) {
+			return raw;
+		}
+		return raw.filter((plugin) => plugin.type !== "LINEAR");
+	}, [linearIntegrationEnabled]);
 	const [searchQuery, setSearchQuery] = useState("");
 	const [isSearchArmed, setIsSearchArmed] = useState(false);
 	const [showPassword, setShowPassword] = useState<Record<string, boolean>>(
@@ -184,7 +192,7 @@ export function WorkflowIntegrationSettingsPageContent({
 	} | null>(null);
 
 	const fallbackIntegration =
-		initialIntegration ?? allIntegrations[0]?.type ?? "LINEAR";
+		initialIntegration ?? allIntegrations[0]?.type ?? "GITHUB";
 	const [activeIntegration, setActiveIntegration] =
 		useState<IntegrationType>(fallbackIntegration);
 

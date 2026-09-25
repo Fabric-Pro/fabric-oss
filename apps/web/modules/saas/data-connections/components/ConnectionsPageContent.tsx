@@ -2,6 +2,7 @@
 
 import { McpServerIcon } from "@saas/mcp/components/McpServerIcon";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { useMonitoringFeatureFlag } from "@saas/shared/lib/use-monitoring-feature-flag";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
@@ -246,9 +247,14 @@ export function ConnectionsPageContent({
 		return types;
 	}, [actionIntegrations]);
 
+	const linearIntegrationEnabled = useFeatureFlag("LINEAR_INTEGRATION");
+
 	const allProviders = useMemo(
-		() => PROVIDER_CATEGORIES.flatMap((category) => category.providers),
-		[],
+		() =>
+			PROVIDER_CATEGORIES.flatMap((c) => c.providers).filter(
+				(p) => linearIntegrationEnabled || p !== "LINEAR",
+			),
+		[linearIntegrationEnabled],
 	);
 
 	const filteredProviders = useMemo(() => {
@@ -346,13 +352,16 @@ export function ConnectionsPageContent({
 		const normalizedQuery = query.trim().toLowerCase();
 		return (mcpServers as McpRegistryServer[]).filter(
 			(server) =>
-				!normalizedQuery ||
-				(server.name ?? "").toLowerCase().includes(normalizedQuery) ||
-				(server.description ?? "")
-					.toLowerCase()
-					.includes(normalizedQuery),
+				(!normalizedQuery ||
+					(server.name ?? "")
+						.toLowerCase()
+						.includes(normalizedQuery) ||
+					(server.description ?? "")
+						.toLowerCase()
+						.includes(normalizedQuery)) &&
+				(linearIntegrationEnabled || server.key !== "linear-remote"),
 		);
-	}, [mcpServers, query, view]);
+	}, [linearIntegrationEnabled, mcpServers, query, view]);
 
 	/* MCP servers under their registry category, as Cosmos groups its connectors. */
 	const mcpGroups = useMemo(() => {

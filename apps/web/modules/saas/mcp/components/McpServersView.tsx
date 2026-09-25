@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -48,7 +49,7 @@ import {
 	SearchIcon,
 	TestTube2Icon,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useDebounceValue } from "usehooks-ts";
 import { useMcpConnection } from "../hooks/useMcpConnection";
@@ -321,9 +322,11 @@ export function McpServersView({
 		},
 	});
 
+	const linearIntegrationEnabled = useFeatureFlag("LINEAR_INTEGRATION");
+
 	// Fetch servers for add dialog — staleTime prevents re-fetching on every dialog open
 	// since registry servers change infrequently (seeded data)
-	const { data: servers = [] } = useQuery({
+	const { data: rawServers = [] } = useQuery({
 		queryKey: [
 			"mcp-servers",
 			{
@@ -341,6 +344,13 @@ export function McpServersView({
 		staleTime: 5 * 60 * 1000, // 5 minutes — registry data rarely changes
 		gcTime: 10 * 60 * 1000, // keep in cache for 10 minutes
 	});
+
+	const servers = useMemo(() => {
+		if (linearIntegrationEnabled) {
+			return rawServers;
+		}
+		return rawServers.filter((s: any) => s.key !== "linear-remote");
+	}, [rawServers, linearIntegrationEnabled]);
 
 	// Check OAuth statuses when configs load
 	// checkOAuthStatuses is memoized in the hook, so it's safe to include in deps

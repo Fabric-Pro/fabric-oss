@@ -19,6 +19,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import "../styles/reactflow-overrides.css";
 import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { FullscreenToggle } from "@saas/shared/components/FullscreenToggle";
 import { ThemeToggle } from "@saas/shared/components/ThemeToggle";
 import { Button } from "@ui/components/button";
@@ -778,19 +779,30 @@ function WorkflowBuilderInner({
 		(n) => n.type !== "add" && n.type !== "empty-action",
 	);
 
+	const linearIntegrationEnabled = useFeatureFlag("LINEAR_INTEGRATION");
+
+	const availableNodeDefinitions = useMemo(() => {
+		if (linearIntegrationEnabled) {
+			return nodeDefinitions;
+		}
+		return nodeDefinitions.filter(
+			(node) => !node.type.startsWith("linear-"),
+		);
+	}, [linearIntegrationEnabled]);
+
 	// Filter node definitions based on search
 	const filteredNodes = useMemo(() => {
 		if (!searchQuery) {
-			return nodeDefinitions;
+			return availableNodeDefinitions;
 		}
 		const query = searchQuery.toLowerCase();
-		return nodeDefinitions.filter(
+		return availableNodeDefinitions.filter(
 			(node) =>
 				node.label.toLowerCase().includes(query) ||
 				node.description.toLowerCase().includes(query) ||
 				node.category.toLowerCase().includes(query),
 		);
-	}, [searchQuery]);
+	}, [availableNodeDefinitions, searchQuery]);
 
 	// Group the palette by category, preserving nodeDefinitions' order so
 	// system nodes stay at the top.
