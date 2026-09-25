@@ -362,7 +362,7 @@ function transcriptFromMetadata(
 function SourceTranscript({ label, text }: { label: string; text: string }) {
 	return (
 		<details className="mt-2">
-			<summary className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-primary hover:underline">
+			<summary className="inline-flex min-h-6 cursor-pointer items-center gap-1.5 text-xs text-primary hover:underline">
 				<FileTextIcon className="size-3" aria-hidden="true" />
 				{label}
 			</summary>
@@ -1655,7 +1655,7 @@ export function PendingBacklogProposalsInbox({
 												href={threadLink}
 												target="_blank"
 												rel="noopener noreferrer"
-												className="inline-flex items-center gap-1 text-primary hover:underline"
+												className="inline-flex min-h-6 items-center gap-1 text-primary hover:underline"
 												aria-label={`Open original message in ${provider}`}
 											>
 												<span className="text-xs">
