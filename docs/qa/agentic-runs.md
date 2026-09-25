@@ -116,6 +116,13 @@ Mode B is estimated and billed at `$0` model cost. Creating its reusable plan ca
 use repository embedding lookup and one model-assisted generation call, but
 executing that saved plan does not.
 
+The run-configuration dialog shows this figure before dispatch, through a
+read-only `agenticRuns.quote` procedure that resolves the same selection the
+same way dispatch itself does — so the number a user confirms is the number
+dispatch will actually enforce. Mode A additionally requires an explicit
+"Confirm and start" step naming the figure; Mode B dispatches directly, since
+it has nothing to confirm.
+
 ## Creating a reusable Mode B script
 
 Open a test case and use **Create script**. There are three authoring paths:
@@ -164,14 +171,22 @@ lists are paginated, so older executions and versions remain selectable.
 
 ## What a run records
 
-- **Per-step observations** (`TestAgenticStepLog`) for Mode A — what the model
-  saw and what it concluded, in order, including the step that ended the case.
+- **Per-step observations** (`TestAgenticStepLog`) for both modes — one row per
+  step, in order, including the step that ended the case:
+  - **Mode A** — what the model saw and what it concluded.
+  - **Mode B** — the sandboxed runner's own PASSED/FAILED verdict for that
+    plan action. A failing assertion (`assertUrl`/`assertText`) carries the
+    expected and received values in its message; steps after the failure are
+    recorded SKIPPED. A run blocked before it reached the plan (sign-in
+    failed, the environment could not be opened) records a single BLOCKED row
+    rather than one per action, since none were attempted.
 - **A deterministic sandbox verdict** for Mode B, with model calls fixed at zero.
 - **Screenshots for Mode A**, when the project's evidence policy asks for them.
-  Mode B currently records its deterministic verdict without screenshots. Mode A
-  images are uploaded privately under the tenant's own storage prefix and handed back
-  through a signed URL valid for **300 seconds**, re-checked per request against
-  the tenant that owns the run.
+  Mode B currently records its deterministic verdict without screenshots — a
+  saved plan is deterministic, so the per-step observation text is the full
+  record. Mode A images are uploaded privately under the tenant's own storage
+  prefix and handed back through a signed URL valid for **300 seconds**,
+  re-checked per request against the tenant that owns the run.
 - **Cost and model calls**, so a run's price is attributable rather than
   aggregate.
 - **A finding for each failure**, sharing the fingerprint, recurrence counting and

@@ -18,7 +18,11 @@
  * observation.
  */
 
-import { safeFetchOutbound } from "@repo/utils/url-security";
+import { logger } from "@repo/logs";
+import {
+	getBlockedOutboundReason,
+	safeFetchOutbound,
+} from "@repo/utils/url-security";
 import type { Browser, BrowserContext, Page } from "playwright";
 
 type BrowserCookie = Parameters<BrowserContext["addCookies"]>[0][number];
@@ -46,10 +50,120 @@ export interface OpenBrowserOptions {
 	};
 }
 
+/**
+ * Why the browser's own route handler refused to let a request through —
+ * recorded so a later "could not open the page" failure can say WHICH side
+ * must act, instead of the bare `net::ERR_BLOCKED_BY_CLIENT` every refusal
+ * collapses to at the Playwright layer.
+ *
+ * - `off-origin` — the request targeted a host outside the environment's
+ *   configured origin (including a redirect that left it). Something about
+ *   the ENVIRONMENT needs fixing — its base URL, or where it sends the
+ *   browser.
+ * - `unsafe-address` — the request stayed on the configured origin, but that
+ *   host resolved to a private/loopback/link-local address. Also an
+ *   environment configuration problem, not a Fabric outage.
+ * - `fetch-failed` — the request was allowed through the origin and address
+ *   checks and the proxying fetch itself failed (network error, timeout,
+ *   TLS). This is Fabric's runner failing to reach a legitimate target.
+ */
+export type BrowserRefusalKind =
+	| "off-origin"
+	| "unsafe-address"
+	| "fetch-failed";
+
+export interface BrowserRefusal {
+	url: string;
+	kind: BrowserRefusalKind;
+	detail: string;
+}
+
+/** Last N refusals kept per run — enough to explain the failure that follows
+ * without letting an adversarial page turn this into unbounded memory. */
+const MAX_TRACKED_REFUSALS = 20;
+
+/**
+ * Origin + pathname only — never the query string or fragment.
+ *
+ * A refused off-origin redirect is routinely an OAuth or SSO hop, and its
+ * query string or fragment can carry a `code`, `state`, or an access token
+ * for the site it was refused reaching. This is the only form a refusal's
+ * URL is ever stored, logged, or shown in — `recordRefusal` sanitizes at the
+ * point of capture, so nothing downstream (the case's `failureMessage`,
+ * persisted and later read by the RCA model) can leak what a page redirected
+ * with.
+ */
+export function urlForDisplay(urlString: string): string {
+	try {
+		const url = new URL(urlString);
+		return `${url.origin}${url.pathname}`;
+	} catch {
+		// Unparseable input: never echo it raw. Strip from the first
+		// `?`/`#` — the only place a query or fragment could start — rather
+		// than trust an origin that failed to parse.
+		return urlString.split(/[?#]/)[0] ?? "";
+	}
+}
+
+function recordRefusal(
+	refusals: BrowserRefusal[],
+	kind: BrowserRefusalKind,
+	url: string,
+	detail: string,
+): void {
+	refusals.push({ url: urlForDisplay(url), kind, detail });
+	if (refusals.length > MAX_TRACKED_REFUSALS) {
+		refusals.shift();
+	}
+	// Origin and kind only — never headers, cookies, or query strings, which
+	// can carry a session token or another credential the log must not hold.
+	let origin: string | null = null;
+	try {
+		origin = new URL(url).origin;
+	} catch {
+		origin = null;
+	}
+	logger.warn("qa.agentic_run.browser_request_blocked", { kind, origin });
+}
+
+/**
+ * The plain-language explanation for one refusal, naming which side must act.
+ * Exported so a caller building a user-facing "could not open the page"
+ * message can append it without duplicating the wording per refusal kind.
+ */
+export function describeBrowserRefusal(refusal: BrowserRefusal): string {
+	switch (refusal.kind) {
+		case "off-origin":
+			return `The page redirected to ${refusal.url}, outside this environment's origin — check the environment's base URL.`;
+		case "unsafe-address":
+			return `${refusal.url} resolved to a non-public address (${refusal.detail}) — this is an environment configuration problem, not a Fabric outage.`;
+		case "fetch-failed":
+			return `Fabric's runner could not reach ${refusal.url} from its network (${refusal.detail}). This is a runner connectivity problem, not your environment.`;
+		default: {
+			const never: never = refusal.kind;
+			return String(never);
+		}
+	}
+}
+
+/**
+ * The explanation for the MOST RECENT refusal, or `null` when none was
+ * recorded — the shape a caller wants when it already knows a navigation
+ * failed with `ERR_BLOCKED_BY_CLIENT` and just needs to know why.
+ */
+export function explainBlockedNavigation(
+	refusals: readonly BrowserRefusal[],
+): string | null {
+	const last = refusals.at(-1);
+	return last ? describeBrowserRefusal(last) : null;
+}
+
 export interface RunnerBrowser {
 	browser: Browser;
 	context: BrowserContext;
 	page: Page;
+	/** Bounded log of requests the route handler refused, most recent last. */
+	refusals: BrowserRefusal[];
 }
 
 /**
@@ -238,6 +352,7 @@ export async function openBrowser(
 	// Context or page creation can fail after launch because the browser process
 	// exits, the worker loses resources, or Playwright rejects an option. Temporal
 	// retries the activity, so an unclosed process would repeat per attempt.
+	const refusals: BrowserRefusal[] = [];
 	try {
 		const context = await browser.newContext({
 			viewport: parseResolution(options.resolution),
@@ -260,6 +375,12 @@ export async function openBrowser(
 				return;
 			}
 			if (parsedUrl.origin !== options.targetOrigin) {
+				recordRefusal(
+					refusals,
+					"off-origin",
+					requestUrl,
+					`Request to ${parsedUrl.origin} is outside the environment origin ${options.targetOrigin}.`,
+				);
 				await route.abort("blockedbyclient");
 				return;
 			}
@@ -301,13 +422,25 @@ export async function openBrowser(
 					headers: responseHeaders,
 					body: Buffer.from(await response.arrayBuffer()),
 				});
-			} catch {
+			} catch (err) {
+				const blockedReason = getBlockedOutboundReason(err);
+				const kind: BrowserRefusalKind = blockedReason
+					? "unsafe-address"
+					: "fetch-failed";
+				const detail =
+					blockedReason ??
+					(err instanceof Error
+						? err.cause instanceof Error
+							? `${err.message}: ${err.cause.message}`
+							: err.message
+						: String(err));
+				recordRefusal(refusals, kind, requestUrl, detail);
 				await route.abort("blockedbyclient");
 			}
 		});
 		const page = await context.newPage();
 		page.setDefaultTimeout(options.timeoutMs);
-		return { browser, context, page };
+		return { browser, context, page, refusals };
 	} catch (err) {
 		// Closing the browser closes any context it already owns, so this one call
 		// covers both the `newContext` and the `newPage` failure. Best-effort: the

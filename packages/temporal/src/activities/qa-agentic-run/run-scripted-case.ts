@@ -3,7 +3,12 @@ import {
 	resolveEnvironmentAuth,
 } from "@repo/database";
 import { createSandboxClient } from "@repo/sandbox";
-import { parseQaPlaywrightScript } from "@repo/utils";
+import {
+	describeQaScriptStep,
+	expectedForQaScriptStep,
+	parseQaPlaywrightScript,
+	type QaPlaywrightScriptStep,
+} from "@repo/utils";
 import { resolveSafeOutboundAddresses } from "@repo/utils/url-security";
 import type { AgenticStepResult, RunAgenticCaseResult } from "./run-case";
 
@@ -58,9 +63,68 @@ export interface RunScriptedCaseInput {
 	resolution: string;
 }
 
+/** One plan action's own outcome, as `TRUSTED_RUNNER` reports it. Only ever
+ * PASSED or FAILED — a step the runner never reached (because an earlier one
+ * failed, or the run never left setup) simply has no entry. */
+interface ScriptStepReport {
+	index: number;
+	status: "PASSED" | "FAILED";
+	message: string | null;
+}
+
 interface ScriptResult {
 	status: "PASSED" | "FAILED" | "BLOCKED";
 	message: string | null;
+	steps?: ScriptStepReport[];
+}
+
+/**
+ * A sanity ceiling on the reported step count, independent of any particular
+ * plan's length — {@link qaPlaywrightScriptSchema} in `@repo/utils` caps a
+ * plan at 100 steps, and `runner.cjs`'s stdout is untrusted output from a
+ * sandboxed process, so this parser never allocates more than that cap no
+ * matter what the process claims.
+ */
+const MAX_REPORTED_STEPS = 100;
+
+/**
+ * Validate the untrusted `steps` array from the runner's own JSON line.
+ * Returns `undefined` — never a partial or best-effort array — for anything
+ * that does not look exactly like a well-formed report, so a malformed or
+ * tampered payload falls back to the single-row behaviour rather than being
+ * rendered as if it were trustworthy.
+ */
+function parseScriptSteps(raw: unknown): ScriptStepReport[] | undefined {
+	if (!Array.isArray(raw) || raw.length === 0) {
+		return undefined;
+	}
+	const steps: ScriptStepReport[] = [];
+	for (const entry of raw.slice(0, MAX_REPORTED_STEPS)) {
+		if (typeof entry !== "object" || entry === null) {
+			return undefined;
+		}
+		const candidate = entry as {
+			index?: unknown;
+			status?: unknown;
+			message?: unknown;
+		};
+		if (
+			typeof candidate.index !== "number" ||
+			!Number.isInteger(candidate.index) ||
+			(candidate.status !== "PASSED" && candidate.status !== "FAILED")
+		) {
+			return undefined;
+		}
+		steps.push({
+			index: candidate.index,
+			status: candidate.status,
+			message:
+				typeof candidate.message === "string"
+					? candidate.message.slice(0, 2_000)
+					: null,
+		});
+	}
+	return steps;
 }
 
 function commandEnvironment(
@@ -98,6 +162,7 @@ function parseScriptResult(stdout: string): ScriptResult | null {
 		const parsed = JSON.parse(line.slice(RESULT_PREFIX.length)) as {
 			status?: unknown;
 			message?: unknown;
+			steps?: unknown;
 		};
 		if (
 			parsed.status !== "PASSED" &&
@@ -112,25 +177,123 @@ function parseScriptResult(stdout: string): ScriptResult | null {
 				typeof parsed.message === "string"
 					? parsed.message.slice(0, 2_000)
 					: null,
+			steps: parseScriptSteps(parsed.steps),
 		};
 	} catch {
 		return null;
 	}
 }
 
-function resultStep(result: ScriptResult): AgenticStepResult {
+/** A single evidence row, used wherever the plan was never reached — before
+ * (or without) any per-step report, so there is nothing to break out. */
+function singleRow(
+	status: ScriptResult["status"],
+	action: string,
+	observation: string,
+): AgenticStepResult {
 	return {
-		order: 0,
-		action: "Execute the saved declarative Playwright script",
+		order: 1,
+		action,
 		expected: "Every action and assertion completes",
-		status: result.status,
-		observation:
-			result.message ??
+		status,
+		observation,
+		evidenceKey: null,
+	};
+}
+
+/**
+ * The one-row shape this activity always used before per-step reporting
+ * existed. Still the right shape for a setup/sign-in failure — the plan was
+ * never reached, so there is nothing to break into rows — and the fallback
+ * for a runner build (or a malformed report) that did not send one.
+ */
+function fallbackSingleRow(result: ScriptResult): AgenticStepResult {
+	return singleRow(
+		result.status,
+		// A BLOCKED result with no per-step report never left setup: it is
+		// either opening the environment or signing in, never "running the
+		// script" — the wording the old single row used regardless of status.
+		result.status === "BLOCKED"
+			? "Open the environment and sign in"
+			: "Execute the saved declarative Playwright script",
+		result.message ??
 			(result.status === "PASSED"
 				? "The scripted case completed successfully."
 				: "The scripted case did not complete successfully."),
-		evidenceKey: null,
-	};
+	);
+}
+
+/** Is `steps` a well-formed, in-order report the plan can be broken out
+ * against? Anything else — empty, gappy, out of range, tampered — is treated
+ * as absent rather than rendered as if it were trustworthy. */
+function isUsableStepReport(
+	steps: ScriptStepReport[] | undefined,
+	planStepCount: number,
+): steps is ScriptStepReport[] {
+	return (
+		steps !== undefined &&
+		steps.length > 0 &&
+		steps.length <= planStepCount &&
+		steps.every((step, index) => step.index === index + 1)
+	);
+}
+
+/**
+ * One evidence row per plan action: PASSED for every step the runner
+ * completed, the single FAILED step that stopped it (with its own
+ * expected/received message), and SKIPPED for the rest of the plan — the
+ * runner never attempted them, so the run cannot say anything happened.
+ *
+ * Falls back to {@link fallbackSingleRow} whenever the runner's report does
+ * not line up with the plan it was given: the untrusted process's stdout
+ * cannot be allowed to desync from `@repo/utils`'s own parse of the same
+ * script.
+ */
+function buildScriptStepResults(
+	result: ScriptResult,
+	planSteps: QaPlaywrightScriptStep[],
+): AgenticStepResult[] {
+	if (!isUsableStepReport(result.steps, planSteps.length)) {
+		return [fallbackSingleRow(result)];
+	}
+	const reported = result.steps;
+	const rows: AgenticStepResult[] = [];
+	let ended = false;
+	for (let index = 0; index < planSteps.length; index += 1) {
+		const order = index + 1;
+		const planStep = planSteps[index];
+		const action = describeQaScriptStep(planStep);
+		const expected = expectedForQaScriptStep(planStep);
+		const step = reported[index];
+		if (ended || !step) {
+			rows.push({
+				order,
+				action,
+				expected,
+				status: "SKIPPED",
+				observation:
+					"Not attempted — an earlier step in this case did not pass.",
+				evidenceKey: null,
+			});
+			continue;
+		}
+		rows.push({
+			order,
+			action,
+			expected,
+			status: step.status,
+			observation:
+				step.message ??
+				(step.status === "PASSED"
+					? "Passed."
+					: "The step did not complete successfully."),
+			evidenceKey: null,
+		});
+		if (step.status !== "PASSED") {
+			ended = true;
+		}
+	}
+	return rows;
 }
 
 function blockedResult(
@@ -138,22 +301,24 @@ function blockedResult(
 	startedAt: number,
 	message: string,
 ): RunAgenticCaseResult {
-	const result: ScriptResult = {
-		status: "BLOCKED",
-		message: message.slice(0, 2_000),
-	};
+	const trimmedMessage = message.slice(0, 2_000);
 	return {
 		testCaseId: input.testCaseId,
 		scriptRevisionId: input.scriptRevisionId,
-		result: result.status,
-		failureMessage: result.message,
+		result: "BLOCKED",
+		failureMessage: trimmedMessage,
 		durationMs: Date.now() - startedAt,
-		steps: [resultStep(result)],
+		steps: [
+			singleRow("BLOCKED", "Prepare the scripted run", trimmedMessage),
+		],
 		modelCalls: 0,
 	};
 }
 
-const TRUSTED_RUNNER = String.raw`
+// Exported (only) so its own tests can isolate and execute the pure helper
+// functions it defines — see `__tests__/run-scripted-case.assertion-messages.test.ts`.
+// It is never imported for anything but its text; nothing runs it directly.
+export const TRUSTED_RUNNER = String.raw`
 "use strict";
 
 const fs = require("node:fs");
@@ -169,6 +334,61 @@ function viewport(value) {
 function safeMessage(error) {
   const value = error instanceof Error ? error.message : String(error);
   return value.slice(0, 2000);
+}
+
+/** Origin + pathname only — never the query string or fragment, which a
+ * refused off-origin redirect (an OAuth/SSO hop, typically) can carry a
+ * \`code\`, \`state\`, or a token in. This is the only form a blocked URL is
+ * ever kept in \`lastBlockedUrl\` or shown in a result message. */
+function urlForDisplay(urlString) {
+  try {
+    const parsed = new URL(urlString);
+    return parsed.origin + parsed.pathname;
+  } catch {
+    const cut = urlString.search(/[?#]/);
+    return cut === -1 ? urlString : urlString.slice(0, cut);
+  }
+}
+
+/** The plain-language explanation for a navigation that failed with
+ * ERR_BLOCKED_BY_CLIENT, from the most recent off-origin request the route
+ * handler itself refused — or "" when there is nothing to explain. A named
+ * function so it can be isolated and tested the same way \`executeStep\` is. */
+function describeBlockedNavigation(blockedUrl) {
+  return blockedUrl
+    ? "The page redirected to " +
+        blockedUrl +
+        ", outside this environment's origin — check the environment's base URL."
+    : "";
+}
+
+/** Long enough to show a real value, short enough that several capped values
+ * still fit the 2,000-char message cap alongside the surrounding sentences. */
+const MAX_ASSERTION_VALUE_LENGTH = 300;
+
+function truncateValue(value) {
+  return value.length > MAX_ASSERTION_VALUE_LENGTH
+    ? value.slice(0, MAX_ASSERTION_VALUE_LENGTH) + "…"
+    : value;
+}
+
+/** A readable name for a step's target, so a failure never reports on an
+ * anonymous element — e.g. \`role=button "Sign in"\` or \`label "Email"\`. */
+function describeLocator(locator) {
+  switch (locator.by) {
+    case "role":
+      return "role=" + locator.role + (locator.name ? ' "' + locator.name + '"' : "");
+    case "label":
+      return 'label "' + locator.value + '"';
+    case "text":
+      return 'text "' + locator.value + '"';
+    case "placeholder":
+      return 'placeholder "' + locator.value + '"';
+    case "testId":
+      return 'testId "' + locator.value + '"';
+    default:
+      return "the located element";
+  }
 }
 
 function sameOriginUrl(baseUrl, path) {
@@ -254,21 +474,36 @@ async function executeStep(page, baseUrl, step) {
       return;
     case "assertVisible":
       if (!(await locate(page, step.locator).isVisible({ timeout }))) {
-        throw new Error("Expected element to be visible.");
+        throw new Error(
+          "Expected element to be visible: " + describeLocator(step.locator),
+        );
       }
       return;
     case "assertText": {
       const text = await locate(page, step.locator).textContent({ timeout });
       if (!text || !text.includes(step.value)) {
-        throw new Error("Expected element text was not found.");
+        throw new Error(
+          "Expected element text was not found.\nExpected substring: " +
+            truncateValue(step.value) +
+            "\nReceived: " +
+            (text ? truncateValue(text) : "(the element had no text)"),
+        );
       }
       return;
     }
-    case "assertUrl":
-      if (page.url() !== sameOriginUrl(baseUrl, step.path)) {
-        throw new Error("Page URL did not match the expected path.");
+    case "assertUrl": {
+      const expectedUrl = sameOriginUrl(baseUrl, step.path);
+      const actualUrl = page.url();
+      if (actualUrl !== expectedUrl) {
+        throw new Error(
+          "Page URL did not match the expected path.\nExpected: " +
+            expectedUrl +
+            "\nReceived: " +
+            actualUrl,
+        );
       }
       return;
+    }
     default:
       throw new Error("Unsupported scripted action.");
   }
@@ -287,6 +522,15 @@ async function main() {
   const pinnedAddress = process.env.FABRIC_QA_PINNED_ADDRESS || "";
   let browser;
   let stage = "setup";
+  // The most recent off-origin request the route handler refused, so a
+  // navigation that then fails with ERR_BLOCKED_BY_CLIENT can say WHICH side
+  // must act: the environment redirected somewhere outside its own origin.
+  let lastBlockedUrl = null;
+  // One entry per plan step actually executed (PASSED, or the single FAILED
+  // step that stopped the run) — never one for a step never reached. The
+  // caller fills in SKIPPED rows for the remainder from the plan it already
+  // has, and a BLOCKED run before the loop starts reports no steps at all.
+  const steps = [];
 
   try {
     if (!baseUrl) {
@@ -317,6 +561,7 @@ async function main() {
         (url.protocol === "http:" || url.protocol === "https:") &&
         url.origin !== targetOrigin
       ) {
+        lastBlockedUrl = urlForDisplay(url.toString());
         await route.abort("blockedbyclient");
         return;
       }
@@ -346,15 +591,25 @@ async function main() {
     for (let index = 0; index < script.steps.length; index += 1) {
       try {
         await executeStep(page, baseUrl, script.steps[index]);
+        steps.push({ index: index + 1, status: "PASSED", message: null });
       } catch (error) {
-        throw new Error("Step " + (index + 1) + " failed: " + safeMessage(error));
+        const message =
+          "Step " + (index + 1) + " failed: " + safeMessage(error);
+        steps.push({ index: index + 1, status: "FAILED", message: message });
+        throw new Error(message);
       }
     }
-    return { status: "PASSED", message: null };
+    return { status: "PASSED", message: null, steps: steps };
   } catch (error) {
+    const message = safeMessage(error);
+    const explanation =
+      message.indexOf("ERR_BLOCKED_BY_CLIENT") !== -1
+        ? describeBlockedNavigation(lastBlockedUrl)
+        : "";
     return {
       status: stage === "test" ? "FAILED" : "BLOCKED",
-      message: safeMessage(error),
+      message: explanation ? message + "\n" + explanation : message,
+      steps: steps,
     };
   } finally {
     if (browser) {
@@ -472,6 +727,7 @@ export async function runScriptedCase(
 	}
 
 	let normalizedScript: string;
+	let planSteps: QaPlaywrightScriptStep[];
 	let resolvedAddress: string;
 	try {
 		const addresses = await resolveSafeOutboundAddresses(
@@ -491,11 +747,9 @@ export async function runScriptedCase(
 				throw new Error("Sign-in origin mismatch");
 			}
 		}
-		normalizedScript = JSON.stringify(
-			parseQaPlaywrightScript(revision.script),
-			null,
-			2,
-		);
+		const parsedScript = parseQaPlaywrightScript(revision.script);
+		planSteps = parsedScript.steps;
+		normalizedScript = JSON.stringify(parsedScript, null, 2);
 	} catch {
 		return blockedResult(
 			input,
@@ -558,7 +812,7 @@ export async function runScriptedCase(
 			result: parsed.status,
 			failureMessage: parsed.status === "PASSED" ? null : parsed.message,
 			durationMs: Date.now() - startedAt,
-			steps: [resultStep(parsed)],
+			steps: buildScriptStepResults(parsed, planSteps),
 			modelCalls: 0,
 		};
 	} catch (error) {

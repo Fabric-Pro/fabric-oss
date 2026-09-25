@@ -46,7 +46,10 @@ import {
 	type TestResult,
 } from "../../test-cases/constants";
 import { isDraftJobActive } from "../../test-cases/draft-jobs";
-import { RunConfigurationDialog } from "../../test-cases/pipeline/RunConfigurationDialog";
+import {
+	RunConfigurationDialog,
+	useDescribeDispatchedRun,
+} from "../../test-cases/pipeline/RunConfigurationDialog";
 import { TestCaseDraftJobWatcher } from "../../test-cases/TestCaseDraftJobWatcher";
 import { TestCaseStatusChip } from "../../test-cases/TestCaseStatusChip";
 import { CoverageMatrixTable } from "./CoverageMatrixTable";
@@ -188,6 +191,7 @@ export function QaPanel({
 }: Props) {
 	const t = useTranslations("projects.stories.maturation.qa");
 	const tTestCases = useTranslations("projects.testCases");
+	const describeDispatchedRun = useDescribeDispatchedRun();
 	const pathname = usePathname();
 	const queryClient = useQueryClient();
 
@@ -491,7 +495,7 @@ export function QaPanel({
 				setConfiguringRun(false);
 				setStartedRunId(result.run?.id ?? null);
 				if (result.dispatched) {
-					toast.success(t("runStarted"));
+					toast.success(describeDispatchedRun(result.run));
 				} else {
 					toast.warning(result.reason ?? t("runRefused"));
 				}
@@ -500,8 +504,11 @@ export function QaPanel({
 						duration: 12_000,
 					});
 				}
+				// Router-level key: covers `list`, `listPage` and `get`
+				// together, the same fix AgenticRunsPanel needed for its own
+				// `listPage`-rendered view.
 				queryClient.invalidateQueries({
-					queryKey: orpc.projects.agenticRuns.list.key(),
+					queryKey: orpc.projects.agenticRuns.key(),
 				});
 			},
 			onError: (error) => toast.error(error.message),
@@ -556,6 +563,7 @@ export function QaPanel({
 					open={configuringRun}
 					onOpenChange={setConfiguringRun}
 					caseCount={runnableCaseIds.length}
+					selection={{ mode: "ids", ids: runnableCaseIds }}
 					dispatching={dispatchRunMutation.isPending}
 					onDispatch={(overrides) =>
 						dispatchRunMutation.mutate({

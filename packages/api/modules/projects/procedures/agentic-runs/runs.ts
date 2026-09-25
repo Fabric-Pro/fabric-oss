@@ -10,27 +10,24 @@ import {
 	listAgenticRuns,
 	listAgenticRunsPage,
 	listAgenticStepLogs,
-	listCasesForAgenticRun,
-	listTestCaseIdsForSelection,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import { hasPermission } from "@repo/permissions";
 import { getSignedUrl, isTenantOwnedKey } from "@repo/storage";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
-import { resolveEffectiveProjectPermissions } from "../../../../lib/effective-project-permissions";
 import {
 	Permissions,
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import {
-	describeCostRefusal,
-	estimateRunCost,
-	MAX_CASES_PER_RUN,
-} from "../../lib/agentic-run-cost";
+import { describeCostRefusal } from "../../lib/agentic-run-cost";
 import { describeProductionRunWarning } from "../../lib/agentic-run-production";
 import { assertPipelineResultsEnabled } from "../../lib/pipeline-results-feature";
+import {
+	isScriptedRunPermitted,
+	resolveAgenticRunMode,
+	resolveSelectedTestCaseIds,
+} from "../../lib/agentic-run-selection";
 import { testCaseSelectionSchema } from "../../lib/test-case-selection";
 
 /**
@@ -100,6 +97,79 @@ async function requireProjectTenant(
 }
 
 /**
+ * What dispatch WOULD decide for a selection, without creating anything — the
+ * figure the run-configuration dialog shows before Start (product ruling:
+ * "an estimate shown before dispatch").
+ *
+ * Read-level (TEST_CASE_READ), like the sibling list/get procedures: this
+ * changes nothing, and asking what a run would cost needs no more than
+ * reading the project's cases. Resolves through the exact same helpers
+ * dispatch uses ({@link resolveSelectedTestCaseIds},
+ * {@link resolveAgenticRunMode}) so quote and dispatch can never disagree
+ * about what a selection would run or what it would cost.
+ */
+export const quoteAgenticRunProcedure = tenantProtectedProcedure
+	.use(requireProjectPermission(Permissions.TEST_CASE_READ))
+	.route({
+		method: "POST",
+		path: "/projects/{projectId}/qa/agentic-runs/quote",
+		tags: ["Projects", "Test Cases"],
+		summary: "Estimate what dispatching a selection would run and cost",
+		description:
+			"Read-only: resolves a selection for both runners without creating a run, so the run-configuration dialog can show a figure before Start.",
+	})
+	.input(
+		z.object({
+			projectId: z.string(),
+			selection: testCaseSelectionSchema,
+		}),
+	)
+	.handler(async ({ input, context }) => {
+		assertPipelineResultsEnabled();
+		const testCaseIds = await resolveSelectedTestCaseIds({
+			projectId: input.projectId,
+			selection: input.selection,
+		});
+		const [agentic, scripted, scriptedPermitted] = await Promise.all([
+			resolveAgenticRunMode({
+				projectId: input.projectId,
+				testCaseIds,
+				runMode: "MODE_A",
+			}),
+			resolveAgenticRunMode({
+				projectId: input.projectId,
+				testCaseIds,
+				runMode: "MODE_B",
+			}),
+			// The same gate `dispatch` enforces for MODE_B, answered here so the
+			// dialog never defaults, restores, or offers a runner this caller
+			// cannot actually start (Fizzy #2233 follow-up: an EDITOR with only
+			// `TEST_CASE_UPDATE` could be defaulted into Scripted and then see
+			// Start come back FORBIDDEN).
+			isScriptedRunPermitted({
+				projectId: input.projectId,
+				userId: context.user.id,
+			}),
+		]);
+		return {
+			resolvedCaseCount: testCaseIds.length,
+			agentic: {
+				runnableCaseCount: agentic.cases.length,
+				stepCount: agentic.stepCount,
+				estimatedCostUsd: agentic.estimate.estimatedCostUsd,
+				capUsd: agentic.estimate.capUsd,
+				withinCap: agentic.estimate.withinCap,
+			},
+			// A scripted run makes no model calls, so there is nothing to cost —
+			// only whether the selection is runnable AND permitted matters here.
+			scripted: {
+				runnableCaseCount: scripted.cases.length,
+				permitted: scriptedPermitted,
+			},
+		};
+	});
+
+/**
  * Start a run.
  *
  * Gated by TEST_CASE_UPDATE, matching the CI-trigger procedure: the people this
@@ -159,24 +229,17 @@ export const dispatchAgenticRunProcedure = tenantProtectedProcedure
 	.handler(async ({ input, context }) => {
 		assertPipelineResultsEnabled();
 		const user = context.user;
-		if (input.runMode === "MODE_B") {
-			const access = await resolveEffectiveProjectPermissions(
-				input.projectId,
-				user.id,
-			);
-			const canRunCredentialedScript =
-				access?.source === "owner" ||
-				(access != null &&
-					hasPermission(
-						access.permissions,
-						Permissions.PROJECT_SETTINGS_EDIT,
-					));
-			if (!canRunCredentialedScript) {
-				throw new ORPCError("FORBIDDEN", {
-					message:
-						"Only project admins or owners can run credentialed scripted tests.",
-				});
-			}
+		if (
+			input.runMode === "MODE_B" &&
+			!(await isScriptedRunPermitted({
+				projectId: input.projectId,
+				userId: user.id,
+			}))
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message:
+					"Only project admins or owners can run credentialed scripted tests.",
+			});
 		}
 		const tenant = await requireProjectTenant(input.projectId);
 		const settings = await getProjectQaSettings(input.projectId);
@@ -220,27 +283,12 @@ export const dispatchAgenticRunProcedure = tenantProtectedProcedure
 		// Resolve WHICH cases before anything is judged on their number: the
 		// estimate, the cap and the audit trail all count cases, and a filter
 		// selection does not know its own size until the database answers.
-		const testCaseIds = await listTestCaseIdsForSelection({
+		// Shared with `quote` so the two paths cannot resolve a selection
+		// differently.
+		const testCaseIds = await resolveSelectedTestCaseIds({
 			projectId: input.projectId,
 			selection: input.selection,
 		});
-		if (testCaseIds.length === 0) {
-			throw new ORPCError("BAD_REQUEST", {
-				message:
-					input.selection.mode === "filter"
-						? "No cases match the current filters, so there is nothing to run."
-						: "Select at least one case to run.",
-			});
-		}
-		// The cap applies to the RESOLVED set, not the request. A filter is
-		// allowed to name thousands — what cannot happen is a run holding
-		// thousands of browser sessions open, so the refusal says how many were
-		// matched rather than "input validation failed".
-		if (testCaseIds.length > MAX_CASES_PER_RUN) {
-			throw new ORPCError("BAD_REQUEST", {
-				message: `That selection matches ${testCaseIds.length} cases; a single run can cover at most ${MAX_CASES_PER_RUN}. Narrow the filters and try again.`,
-			});
-		}
 
 		const auditAttempt = (
 			outcome: "success" | "failure",
@@ -280,7 +328,9 @@ export const dispatchAgenticRunProcedure = tenantProtectedProcedure
 
 		// Steps are counted from the REAL cases, not assumed, so the estimate the
 		// user is refused on is the one their run would actually have cost.
-		const cases = await listCasesForAgenticRun({
+		// Shared with `quote` so the figure shown before Start is the figure
+		// dispatch actually enforces.
+		const { cases, stepCount, estimate } = await resolveAgenticRunMode({
 			projectId: input.projectId,
 			testCaseIds,
 			runMode: input.runMode,
@@ -314,18 +364,6 @@ export const dispatchAgenticRunProcedure = tenantProtectedProcedure
 				scriptRevisionIds[testCase.id] = testCase.scriptRevisionId;
 			}
 		}
-		const stepCount = cases.reduce((n, c) => n + c.steps.length, 0);
-		const estimate =
-			input.runMode === "MODE_B"
-				? estimateRunCost({
-						caseCount: cases.length,
-						stepCount: 0,
-					})
-				: estimateRunCost({
-						caseCount: cases.length,
-						stepCount,
-					});
-
 		// --- Guard 1: cost refuses, it does not warn -------------------------
 		if (!estimate.withinCap) {
 			const reason = describeCostRefusal(estimate);

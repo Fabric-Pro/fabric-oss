@@ -35,6 +35,12 @@ const useQueryMock = vi.fn((options?: { __query?: string }) => {
 	if (options?.__query === "runConfigurations") {
 		return { data: [], isLoading: false };
 	}
+	if (options?.__query === "quote") {
+		// Never loaded in these tests — none of them open the run dialog —
+		// and the dialog's own render must tolerate that, not just its
+		// gated-open state.
+		return { data: undefined, isLoading: false };
+	}
 	return { data: [], isLoading: false };
 });
 
@@ -52,6 +58,10 @@ vi.mock("@tanstack/react-query", () => ({
 	}),
 	useMutation: () => ({ mutate: vi.fn(), isPending: false }),
 	useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+	// The run-configuration dialog's quote query passes this as `input` when
+	// there is nothing to ask yet — `useQuery` is fully mocked here, so the
+	// dialog never inspects the real value, only passes it through.
+	skipToken: Symbol("skipToken"),
 }));
 
 vi.mock("sonner", () => ({
@@ -62,15 +72,24 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
 			agenticRuns: {
+				key: () => ["agenticRuns"],
 				list: {
 					queryOptions: (o: unknown) => ({ ...(o as object) }),
-					key: () => ["agenticRuns"],
+					key: () => ["agenticRuns", "list"],
 				},
 				listPage: {
 					infiniteOptions: (o: unknown) => ({ ...(o as object) }),
-					key: () => ["agenticRunsPage"],
+					key: () => ["agenticRuns", "listPage"],
 				},
 				get: { queryOptions: (o: unknown) => ({ ...(o as object) }) },
+				// The run-configuration dialog's pre-dispatch quote (Fizzy #2233) —
+				// queried as soon as the dialog renders, same as configurations.
+				quote: {
+					queryOptions: (o: unknown) => ({
+						...(o as object),
+						__query: "quote",
+					}),
+				},
 				dispatch: { mutationOptions: (o: unknown) => o },
 				cancel: { mutationOptions: (o: unknown) => o },
 				// The run-configuration dialog (mocks C2) queries these as soon as
