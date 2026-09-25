@@ -61,6 +61,7 @@ import { StoryDetailsButton } from "./StoryDetailsButton";
 import { StoryDownloadDropdown } from "./StoryDownloadDropdown";
 import { StoryKindIcon } from "./StoryKindIcon";
 import { StoryMeetingReferencesButton } from "./StoryMeetingReferencesButton";
+import { StorySourceStrip } from "./StorySourceStrip";
 import { StoryWorkspace } from "./StoryWorkspace";
 
 type Props = {
@@ -708,41 +709,7 @@ export function StoryWorkspacePage({
 				/>
 			)}
 
-			{/* F-171 reporter strip (REQ-8, REQ-15). Bug detail pages only —
-			  shows where the bug came from and who reported it. Placement is
-			  a dev decision per Gap 1; a slim strip below the action bar is
-			  unobtrusive and easy to scan. Hidden when none of the fields
-			  are populated (legacy bugs created before the F-171 migration). */}
-			{story.kind === "BUG" &&
-				(story.reporterName ||
-					story.reporterSource ||
-					story.reporterSourceUrl) && (
-					<div className="flex items-center gap-3 px-6 py-1.5 border-b bg-muted/30 text-xs text-muted-foreground">
-						{story.reporterSource && (
-							<span className="inline-flex items-center gap-1 rounded-full bg-background px-2 py-0.5 font-medium uppercase tracking-wider text-[10px]">
-								Reported via {story.reporterSource}
-							</span>
-						)}
-						{story.reporterName && (
-							<span>
-								by{" "}
-								<span className="text-foreground">
-									{story.reporterName}
-								</span>
-							</span>
-						)}
-						{story.reporterSourceUrl && (
-							<a
-								href={story.reporterSourceUrl}
-								target="_blank"
-								rel="noreferrer"
-								className="text-primary hover:underline"
-							>
-								View source thread →
-							</a>
-						)}
-					</div>
-				)}
+			<StorySourceStrip story={story} />
 
 			{/* Editor body fills the remaining viewport. `overflow-hidden`
 			  prevents the body from leaking. The Tailwind arbitrary
