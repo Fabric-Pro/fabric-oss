@@ -24,7 +24,13 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
-import { Loader2Icon, PencilIcon, PlusIcon, SparklesIcon } from "lucide-react";
+import {
+	AlertTriangleIcon,
+	Loader2Icon,
+	PencilIcon,
+	PlusIcon,
+	SparklesIcon,
+} from "lucide-react";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -148,6 +154,24 @@ const EDITOR_MEASURE_CLASS = "w-full";
 const REVIEW_TAB_VALUES: ReadonlySet<string> = new Set(
 	REVIEW_TABS.map((t) => t.value),
 );
+
+/**
+ * `getTopic` error codes that mean "this reader cannot see this topic at
+ * all" — as opposed to a background re-read that merely failed to confirm a
+ * topic already on screen (Fizzy #2647).
+ *
+ * A DENYLIST on purpose: any code NOT in this set — no code at all (a
+ * network drop is an uncoded `TypeError`), a 5xx, a timeout — keeps the page
+ * up instead of hiding a topic the reader can already see. oRPC also maps a
+ * non-oRPC HTTP 401/403/404 (an edge/HTML error page) to one of these three
+ * by status, so that case still lands here too — unchanged from before this
+ * set existed.
+ */
+const TOPIC_ACCESS_REFUSAL_CODES: ReadonlySet<string> = new Set([
+	"NOT_FOUND",
+	"FORBIDDEN",
+	"UNAUTHORIZED",
+]);
 
 /**
  * Topic Item Page — review, planning and decision capture for ONE publishing
@@ -283,6 +307,13 @@ export function TopicItemPage({
 		}),
 	);
 	const topic = topicQuery.data?.topic;
+	// Fizzy #2647: same idiom as `mapBranchSaveErrorKey` in
+	// AtlasStatusBar.tsx — read the oRPC error code without assuming the
+	// shape of what threw, and narrow it (below, at the point of use)
+	// rather than here. Read unconditionally; it is `undefined` whenever
+	// there is no error.
+	const topicErrorCode = (topicQuery.error as { code?: unknown } | null)
+		?.code;
 
 	// One topic, the same overlay the list uses (Fizzy #2646). Memoised so
 	// the hook's tidy step runs when the topic changes, not on every render.
@@ -1121,11 +1152,32 @@ export function TopicItemPage({
 		);
 	}
 
-	if (topicQuery.isError || !topic) {
+	if (
+		!topic ||
+		(topicQuery.isError &&
+			typeof topicErrorCode === "string" &&
+			TOPIC_ACCESS_REFUSAL_CODES.has(topicErrorCode))
+	) {
 		// UC1 alternate flow. A topic in ANOTHER project produces the same
 		// NOT_FOUND the API gives a missing one, so this state deliberately
 		// cannot distinguish the two — saying "you lack access" would confirm
-		// the topic exists.
+		// the topic exists. FORBIDDEN and UNAUTHORIZED are access refusals of
+		// the same shape and are treated identically (Fizzy #2647).
+		//
+		// This is NOT simply "the query errored": TanStack Query keeps the
+		// last SUCCESSFUL data when a background refetch fails — nothing is
+		// cleared — so a topic already on screen must not vanish just because
+		// a later re-read failed. That re-read is triggered often: every
+		// write that touches this topic's metadata (status — Fizzy #2646 —
+		// post types, contributors, assignees, the summary, the private
+		// notes) invalidates and refetches it, and TanStack Query's own
+		// refetch-on-focus and refetch-on-reconnect do too; this page never
+		// disables either. Only a genuine access refusal (the code set
+		// above) or the total absence of topic data — the first load itself
+		// failed, or came back empty — lands here. Any OTHER error while a
+		// topic is on screen (a dropped connection, a 5xx, a timeout, or no
+		// code at all) keeps the page up instead, with the inline alert
+		// below offering "Try again".
 		return (
 			<div className="space-y-4">
 				<h1 className="font-serif text-2xl">Topic not found</h1>
@@ -1268,6 +1320,37 @@ export function TopicItemPage({
 					<p className="border-destructive border-l-2 pl-3 text-muted-foreground text-sm">
 						{shown.declineReason}
 					</p>
+				) : null}
+				{/* Fizzy #2647: a background re-read failed, but the topic
+				    already on screen is NOT hidden for it (the not-found
+				    branch above only fires for an access refusal or no data
+				    at all) — the reader is told what they see may be stale
+				    instead. Present exactly while `topicQuery.isError` is
+				    true, so it clears the moment a re-read succeeds; `topic`
+				    is necessarily defined here, this branch having already
+				    returned otherwise. */}
+				{topicQuery.isError ? (
+					<div
+						role="alert"
+						className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-2.5 text-sm"
+					>
+						<p className="flex items-center gap-2">
+							<AlertTriangleIcon
+								className="size-4 shrink-0 text-destructive"
+								aria-hidden="true"
+							/>
+							We couldn't refresh this topic, so what you see may
+							be out of date.
+						</p>
+						<Button
+							variant="outline"
+							size="sm"
+							className="shrink-0"
+							onClick={() => void topicQuery.refetch()}
+						>
+							Try again
+						</Button>
+					</div>
 				) : null}
 				{/* Who was in the room, in the header rather than down in the
 				    metadata block — "that kind of stuff feels like it goes in
