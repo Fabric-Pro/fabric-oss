@@ -107,6 +107,40 @@ function truncateForLabel(value: string): string {
 }
 
 /**
+ * Mask a same-origin path's query VALUES and any fragment, keeping the path
+ * and the query's parameter NAMES.
+ *
+ * `goto` and `assertUrl` steps navigate to an author-supplied path, and an
+ * OAuth/SSO callback routinely lands one right on `?code=…&state=…` — exactly
+ * where a live token sits. This label is persisted and shown to every project
+ * reader, so it follows the same rule a `fill` step's value already does
+ * here (never echoed) and the rule the scripted runner's OWN `urlForAssertion`
+ * applies to the runtime URL it reports back on a failed `assertUrl`
+ * (`run-scripted-case.ts`): the AUTHORED label must never show more than the
+ * runner ever echoes at runtime.
+ *
+ * `sameOriginPathSchema` already guarantees a leading `/`, but `URL` still
+ * needs a base to resolve a relative path against — an inert one, since only
+ * the path/query/fragment it parses out are ever used.
+ */
+function maskQueryAndFragment(path: string): string {
+	try {
+		const parsed = new URL(path, "https://example.invalid");
+		const names = [...parsed.searchParams.keys()];
+		const query = names.length
+			? `?${names.map((name) => `${name}=…`).join("&")}`
+			: "";
+		return `${parsed.pathname}${query}${parsed.hash ? "#…" : ""}`;
+	} catch {
+		// Unreachable for a schema-validated path, but a masking helper must
+		// fail closed rather than echo an unparseable value verbatim — cut at
+		// the first `?` or `#` instead of showing whatever followed it.
+		const cut = path.search(/[?#]/);
+		return cut === -1 ? path : path.slice(0, cut);
+	}
+}
+
+/**
  * A readable name for a step's target — the same vocabulary a person reads in
  * the run's evidence, e.g. `button "Sign in"` or `label "Email"`.
  */
@@ -143,7 +177,7 @@ function describeQaLocator(locator: QaPlaywrightScriptLocator): string {
 export function describeQaScriptStep(step: QaPlaywrightScriptStep): string {
 	switch (step.action) {
 		case "goto":
-			return `Go to ${step.path}`;
+			return `Go to ${maskQueryAndFragment(step.path)}`;
 		case "click":
 			return `Click ${describeQaLocator(step.locator)}`;
 		case "fill":
@@ -161,7 +195,7 @@ export function describeQaScriptStep(step: QaPlaywrightScriptStep): string {
 		case "assertText":
 			return `Assert text "${truncateForLabel(step.value)}" in ${describeQaLocator(step.locator)}`;
 		case "assertUrl":
-			return `Assert URL is ${step.path}`;
+			return `Assert URL is ${maskQueryAndFragment(step.path)}`;
 		default: {
 			const never: never = step;
 			return String(never);
@@ -181,7 +215,7 @@ export function expectedForQaScriptStep(step: QaPlaywrightScriptStep): string {
 		case "assertText":
 			return `${describeQaLocator(step.locator)} contains "${truncateForLabel(step.value)}"`;
 		case "assertUrl":
-			return `The page URL is ${step.path}`;
+			return `The page URL is ${maskQueryAndFragment(step.path)}`;
 		case "goto":
 		case "click":
 		case "fill":

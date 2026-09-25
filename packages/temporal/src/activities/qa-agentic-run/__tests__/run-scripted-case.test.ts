@@ -104,7 +104,7 @@ describe("runScriptedCase", () => {
 			testCaseId: "case-1",
 			revisionId: "revision-1",
 		});
-		expect(mocks.writeFile).toHaveBeenCalledTimes(2);
+		expect(mocks.writeFile).toHaveBeenCalledTimes(3);
 		for (const call of mocks.writeFile.mock.calls) {
 			expect(String(call[4])).not.toContain("credential-value");
 		}
@@ -131,6 +131,45 @@ describe("runScriptedCase", () => {
 		);
 		expect(caseFileCall?.[4]).toContain('"action": "goto"');
 		expect(caseFileCall?.[4]).not.toContain("module.exports");
+	});
+
+	it("writes non-secret settings to config.json, and keeps them OUT of env", async () => {
+		// The remote sandbox masks every env var's VALUE wherever it appears
+		// in stdout — right for a secret, wrong for a plain setting like the
+		// base URL (staging evidence: every scripted-run failure message read
+		// `[REDACTED]` in its place). Only credential material may travel as
+		// env; everything else goes through the file the sandbox does not mask.
+		await runScriptedCase(input);
+
+		const configFileCall = mocks.writeFile.mock.calls.find((call) =>
+			String(call[3]).endsWith("/config.json"),
+		);
+		expect(configFileCall).toBeDefined();
+		const config = JSON.parse(String(configFileCall?.[4]));
+		expect(config).toMatchObject({
+			baseUrl: "https://app.example.com",
+			signInUrl: "https://app.example.com/login",
+			browser: "chromium",
+			resolution: "1920x1080",
+			authKind: "FORM",
+			pinnedHost: "app.example.com",
+			pinnedAddress: "203.0.113.10",
+		});
+
+		const execCall = mocks.exec.mock.calls[0];
+		const env = (execCall?.[3] as { env: Record<string, string> }).env;
+		expect(Object.keys(env).sort()).toEqual(
+			[
+				"FABRIC_QA_AUTH_HEADER_NAME",
+				"FABRIC_QA_AUTH_SECRET",
+				"FABRIC_QA_AUTH_USERNAME",
+				"NODE_PATH",
+			].sort(),
+		);
+		const envValues = JSON.stringify(env);
+		expect(envValues).not.toContain("app.example.com");
+		expect(envValues).not.toContain("203.0.113.10");
+		expect(envValues).not.toContain("chromium");
 	});
 
 	it("destroys the sandbox and returns BLOCKED when execution fails", async () => {

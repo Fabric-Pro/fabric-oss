@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/client";
 import { config } from "@repo/config";
 import {
+	type CreateAgenticRunInput,
 	cancelAgenticRun,
 	createAgenticRun,
 	db,
@@ -10,6 +11,7 @@ import {
 	listAgenticRuns,
 	listAgenticRunsPage,
 	listAgenticStepLogs,
+	Prisma,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { getSignedUrl, isTenantOwnedKey } from "@repo/storage";
@@ -21,6 +23,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { describeCostRefusal } from "../../lib/agentic-run-cost";
+import { deriveIdempotentRunId } from "../../lib/agentic-run-idempotency";
 import { describeProductionRunWarning } from "../../lib/agentic-run-production";
 import { assertPipelineResultsEnabled } from "../../lib/pipeline-results-feature";
 import {
@@ -29,6 +32,49 @@ import {
 	resolveSelectedTestCaseIds,
 } from "../../lib/agentic-run-selection";
 import { testCaseSelectionSchema } from "../../lib/test-case-selection";
+
+/**
+ * Create an agentic run, or — when the caller supplied a deterministic id
+ * (from {@link deriveIdempotentRunId}) that already belongs to a row THIS
+ * project created — return that row instead of a duplicate.
+ *
+ * The P2002 branch only ever fires for a deterministic id: `input.id` is
+ * otherwise absent, leaving Prisma's own `cuid()` default to assign one, and
+ * a collision on THAT would be a genuine bug rather than a retried dispatch.
+ * Guarding on `input.id` first is what keeps an unrelated primary-key
+ * collision from being silently swallowed as "someone's retry".
+ */
+async function createOrReuseAgenticRun(input: CreateAgenticRunInput): Promise<{
+	run: Awaited<ReturnType<typeof createAgenticRun>>;
+	deduplicated: boolean;
+}> {
+	try {
+		return { run: await createAgenticRun(input), deduplicated: false };
+	} catch (err) {
+		if (
+			!input.id ||
+			!(err instanceof Prisma.PrismaClientKnownRequestError) ||
+			err.code !== "P2002"
+		) {
+			throw err;
+		}
+		const existing = await getAgenticRun({
+			projectId: input.projectId,
+			runId: input.id,
+		});
+		if (!existing) {
+			// The id collided but no row FOR THIS PROJECT answers to it — an
+			// astronomically unlikely sha256 collision with a different
+			// dispatch's key, or a read racing an in-flight write. Either way,
+			// there is nothing here this request actually caused, so it must
+			// not be reported as one.
+			throw new ORPCError("CONFLICT", {
+				message: "Could not start or find this run. Try again.",
+			});
+		}
+		return { run: existing, deduplicated: true };
+	}
+}
 
 /**
  * Fabric-orchestrated test runs — dispatching one, and reading what it did.
@@ -94,6 +140,63 @@ async function requireProjectTenant(
 		throw new ORPCError("NOT_FOUND", { message: "Project not found" });
 	}
 	return project;
+}
+
+/**
+ * Start the Temporal workflow behind one run. Factored out of `dispatch`
+ * because it is called from two places: the ordinary path, and a
+ * deduplicated retry that reuses the SAME workflow id (`USE_EXISTING`) —
+ * which is what lets a first request that created the row but crashed
+ * before this call ever ran get completed by the retry, while a genuinely
+ * concurrent first request just gets its own workflow handle back.
+ */
+async function startAgenticRunWorkflow(input: {
+	projectId: string;
+	organizationId: string | null;
+	userId: string;
+	runId: string;
+	environmentId: string;
+	targetBaseUrl: string;
+	testCaseIds: string[];
+	runMode: "MODE_A" | "MODE_B";
+	scriptRevisionIds?: Record<string, string>;
+	environmentSnapshot: {
+		signInUrl: string | null;
+		authKind: string;
+		authUsername: string | null;
+		authHeaderName: string | null;
+	};
+	browser: string;
+	resolution: string;
+	costPerModelCallUsd: number;
+}): Promise<void> {
+	const { getTemporalClient } = await import("@repo/temporal");
+	const client = await getTemporalClient();
+	await client.workflow.start("qaAgenticRunWorkflow", {
+		taskQueue: "ai-chat",
+		// The run id IS the workflow id: one workflow per run, and a
+		// retried dispatch cannot start a second browser for the same run.
+		workflowId: `qa-agentic-run-${input.runId}`,
+		workflowIdReusePolicy: "ALLOW_DUPLICATE" as const,
+		workflowIdConflictPolicy: "USE_EXISTING" as const,
+		args: [
+			{
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				userId: input.userId,
+				runId: input.runId,
+				environmentId: input.environmentId,
+				targetBaseUrl: input.targetBaseUrl,
+				testCaseIds: input.testCaseIds,
+				runMode: input.runMode,
+				scriptRevisionIds: input.scriptRevisionIds,
+				environmentSnapshot: input.environmentSnapshot,
+				browser: input.browser,
+				resolution: input.resolution,
+				costPerModelCallUsd: input.costPerModelCallUsd,
+			},
+		],
+	});
 }
 
 /**
@@ -224,6 +327,16 @@ export const dispatchAgenticRunProcedure = tenantProtectedProcedure
 			 * it is the difference between the customer choosing to store a
 			 * credential and Fabric choosing to spend it on their live system.
 			 */
+			/**
+			 * One dispatch ATTEMPT, from the client's perspective (Fizzy #2233
+			 * follow-up). `RunConfigurationDialog` mints one when the dialog opens
+			 * and again whenever anything that defines the run changes, and reuses
+			 * it across a same-tick double click or a network retry — the reason
+			 * this exists. Optional: an absent key falls back to today's behavior,
+			 * a fresh row on every call, which is what every non-UI caller (the
+			 * public API) still gets.
+			 */
+			idempotencyKey: z.string().uuid().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -241,6 +354,17 @@ export const dispatchAgenticRunProcedure = tenantProtectedProcedure
 					"Only project admins or owners can run credentialed scripted tests.",
 			});
 		}
+		// Absent for every non-UI caller, which keeps today's behavior: a fresh
+		// row every call. Scoped to THIS project and THIS user, so nobody else's
+		// key — replayed, guessed, or coincidentally identical — can ever
+		// address a run it did not create.
+		const idempotentRunId = input.idempotencyKey
+			? deriveIdempotentRunId({
+					projectId: input.projectId,
+					userId: user.id,
+					idempotencyKey: input.idempotencyKey,
+				})
+			: undefined;
 		const tenant = await requireProjectTenant(input.projectId);
 		const settings = await getProjectQaSettings(input.projectId);
 		const selectedBrowser =
@@ -370,38 +494,50 @@ export const dispatchAgenticRunProcedure = tenantProtectedProcedure
 			// Recorded as a REFUSED run, not merely thrown: "we asked, at this
 			// price, and were told no" is the record that makes the cap
 			// reviewable rather than folklore.
-			const refused = await createAgenticRun({
-				projectId: input.projectId,
-				organizationId: tenant.organizationId,
-				userId: tenant.userId,
-				environmentId: environment.id,
-				targetBaseUrl: environment.baseUrl,
-				environmentType: environment.type,
-				estimatedCostUsd: estimate.estimatedCostUsd,
-				costCapUsd: estimate.capUsd,
-				browser: selectedBrowser,
-				resolution:
-					input.resolution ?? settings.resolutions[0] ?? "1920x1080",
-				caseCount: cases.length,
-				triggeredByUserId: user.id,
-				runMode: input.runMode,
-				refusal: { reason },
-			});
-			auditAttempt("failure", {
-				refusal: "COST_CAP",
-				estimatedCostUsd: estimate.estimatedCostUsd,
-				capUsd: estimate.capUsd,
-				runId: refused.id,
-			});
+			const { run: refused, deduplicated } =
+				await createOrReuseAgenticRun({
+					id: idempotentRunId,
+					projectId: input.projectId,
+					organizationId: tenant.organizationId,
+					userId: tenant.userId,
+					environmentId: environment.id,
+					targetBaseUrl: environment.baseUrl,
+					environmentType: environment.type,
+					estimatedCostUsd: estimate.estimatedCostUsd,
+					costCapUsd: estimate.capUsd,
+					browser: selectedBrowser,
+					resolution:
+						input.resolution ??
+						settings.resolutions[0] ??
+						"1920x1080",
+					caseCount: cases.length,
+					triggeredByUserId: user.id,
+					runMode: input.runMode,
+					refusal: { reason },
+				});
+			// A deduplicated dispatch writes no audit row of its own, success or
+			// refusal: the click that produced this request performed no action —
+			// it landed on the SAME row the original attempt of this key already
+			// recorded, and that attempt's row is what the ledger describes.
+			if (!deduplicated) {
+				auditAttempt("failure", {
+					refusal: "COST_CAP",
+					estimatedCostUsd: estimate.estimatedCostUsd,
+					capUsd: estimate.capUsd,
+					runId: refused.id,
+				});
+			}
 			return {
 				dispatched: false as const,
 				run: refused,
-				reason,
+				reason: refused.refusalReason ?? reason,
 				productionWarning,
+				deduplicated,
 			};
 		}
 
-		const run = await createAgenticRun({
+		const { run, deduplicated } = await createOrReuseAgenticRun({
+			id: idempotentRunId,
 			projectId: input.projectId,
 			organizationId: tenant.organizationId,
 			userId: tenant.userId,
@@ -420,49 +556,65 @@ export const dispatchAgenticRunProcedure = tenantProtectedProcedure
 			runMode: input.runMode,
 		});
 
+		if (run.status === "REFUSED") {
+			// The SAME key dedup here lands on a run recorded REFUSED by an
+			// earlier submission of it — e.g. the cost cap tightened between
+			// the two submissions. Nothing was ever dispatched for that row and
+			// nothing starts now; report it exactly as the cost guard above
+			// would have.
+			return {
+				dispatched: false as const,
+				run,
+				reason: run.refusalReason ?? "This run was refused.",
+				productionWarning,
+				deduplicated,
+			};
+		}
+
+		// A retry of this key only needs to START the workflow while the row is
+		// still QUEUED — no worker has claimed it, so the first attempt may have
+		// crashed before starting it. Once a worker has claimed it (RUNNING or
+		// finished), starting again is not a no-op: `ALLOW_DUPLICATE` lets a
+		// COMPLETED workflow id run a second time, and the workflow does not
+		// stop when its start claim fails, so a late retry would re-run and
+		// re-bill the cases. Return the run as it is instead.
+		if (deduplicated && run.status !== "QUEUED") {
+			return {
+				dispatched: true as const,
+				run,
+				reason: null,
+				productionWarning,
+				deduplicated,
+			};
+		}
+
 		try {
-			const { getTemporalClient } = await import("@repo/temporal");
-			const client = await getTemporalClient();
-			await client.workflow.start("qaAgenticRunWorkflow", {
-				taskQueue: "ai-chat",
-				// The run id IS the workflow id: one workflow per run, and a
-				// retried dispatch cannot start a second browser for the same run.
-				workflowId: `qa-agentic-run-${run.id}`,
-				workflowIdReusePolicy: "ALLOW_DUPLICATE" as const,
-				workflowIdConflictPolicy: "USE_EXISTING" as const,
-				args: [
-					{
-						projectId: input.projectId,
-						organizationId: tenant.organizationId,
-						userId: user.id,
-						runId: run.id,
-						environmentId: environment.id,
-						targetBaseUrl: environment.baseUrl,
-						testCaseIds: cases.map((c) => c.id),
-						runMode: input.runMode,
-						scriptRevisionIds:
-							input.runMode === "MODE_B"
-								? scriptRevisionIds
-								: undefined,
-						environmentSnapshot: {
-							signInUrl: environment.signInUrl,
-							authKind: environment.authKind,
-							authUsername: environment.authUsername,
-							authHeaderName: environment.authHeaderName,
-						},
-						browser: selectedBrowser,
-						resolution:
-							input.resolution ??
-							settings.resolutions[0] ??
-							"1920x1080",
-						// Half a step's estimate — the runner bills per model call
-						// and a step is two calls.
-						costPerModelCallUsd:
-							input.runMode === "MODE_B"
-								? 0
-								: estimate.estimatedCostUsd / (stepCount * 2),
-					},
-				],
+			await startAgenticRunWorkflow({
+				projectId: input.projectId,
+				organizationId: tenant.organizationId,
+				userId: user.id,
+				runId: run.id,
+				environmentId: environment.id,
+				targetBaseUrl: environment.baseUrl,
+				testCaseIds: cases.map((c) => c.id),
+				runMode: input.runMode,
+				scriptRevisionIds:
+					input.runMode === "MODE_B" ? scriptRevisionIds : undefined,
+				environmentSnapshot: {
+					signInUrl: environment.signInUrl,
+					authKind: environment.authKind,
+					authUsername: environment.authUsername,
+					authHeaderName: environment.authHeaderName,
+				},
+				browser: selectedBrowser,
+				resolution:
+					input.resolution ?? settings.resolutions[0] ?? "1920x1080",
+				// Half a step's estimate — the runner bills per model call
+				// and a step is two calls.
+				costPerModelCallUsd:
+					input.runMode === "MODE_B"
+						? 0
+						: estimate.estimatedCostUsd / (stepCount * 2),
 			});
 		} catch (err) {
 			// The row exists but nothing is driving it. Left visible as a failed
@@ -473,36 +625,41 @@ export const dispatchAgenticRunProcedure = tenantProtectedProcedure
 				runId: run.id,
 				error: err instanceof Error ? err.message : String(err),
 			});
-			auditAttempt("failure", {
-				refusal: "DISPATCH_FAILED",
-				runId: run.id,
-			});
+			if (!deduplicated) {
+				auditAttempt("failure", {
+					refusal: "DISPATCH_FAILED",
+					runId: run.id,
+				});
+			}
 			throw new ORPCError("INTERNAL_SERVER_ERROR", {
 				message:
 					"Fabric could not start the run. The run is recorded as not started — try again.",
 			});
 		}
 
-		auditAttempt("success", {
-			runId: run.id,
-			estimatedCostUsd: estimate.estimatedCostUsd,
-			stepCount,
-			runMode: input.runMode,
-			testCaseIds: cases.map((c) => c.id),
-			// The ruling made legible in the ledger: this run went ahead against a
-			// live system on a warning alone, with no confirmation step. The
-			// severity is already raised for a production target; this says WHY
-			// there is no matching confirmation to point at.
-			...(productionWarning
-				? { productionAcknowledged: false as const }
-				: {}),
-		});
+		if (!deduplicated) {
+			auditAttempt("success", {
+				runId: run.id,
+				estimatedCostUsd: estimate.estimatedCostUsd,
+				stepCount,
+				runMode: input.runMode,
+				testCaseIds: cases.map((c) => c.id),
+				// The ruling made legible in the ledger: this run went ahead against a
+				// live system on a warning alone, with no confirmation step. The
+				// severity is already raised for a production target; this says WHY
+				// there is no matching confirmation to point at.
+				...(productionWarning
+					? { productionAcknowledged: false as const }
+					: {}),
+			});
+		}
 
 		return {
 			dispatched: true as const,
 			run,
 			reason: null,
 			productionWarning,
+			deduplicated,
 		};
 	});
 

@@ -115,6 +115,15 @@ function toView(row: RunRow): AgenticRunView {
 }
 
 export interface CreateAgenticRunInput {
+	/**
+	 * Deterministic id for an idempotent dispatch (Fizzy #2233 follow-up).
+	 * Omitted for every ordinary call, which leaves Prisma's own `cuid()`
+	 * default to assign one. When present, a retried dispatch that reuses the
+	 * same id collides on the primary key (P2002) instead of creating a
+	 * second run — the caller catches that and loads the row this created
+	 * instead of making another one.
+	 */
+	id?: string;
 	projectId: string;
 	organizationId: string | null;
 	userId: string | null;
@@ -142,6 +151,7 @@ export async function createAgenticRun(
 	const refused = input.refusal != null;
 	const row = await db.testAgenticRun.create({
 		data: {
+			id: input.id,
 			projectId: input.projectId,
 			organizationId: input.organizationId,
 			userId: input.userId,

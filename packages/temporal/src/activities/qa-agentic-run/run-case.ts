@@ -136,10 +136,17 @@ export interface RunAgenticCaseInput {
 
 /**
  * When a navigation failure's message is a bare `net::ERR_BLOCKED_BY_CLIENT`,
- * a leading-space sentence naming which side must act, taken from the
+ * a sentence on its own line naming which side must act, taken from the
  * runner's most recent recorded refusal — or `""` when the failure has
  * nothing to do with a blocked request, or no refusal was recorded to explain
  * it. Appended directly onto the failure message being built.
+ *
+ * On its own line, not merely a leading space: the message it is appended to
+ * is often Playwright's own multi-line call log ("waiting until
+ * \"domcontentloaded\"\n…"), and a single space glued the explanation onto
+ * the end of that log's last line instead of setting it apart. The UI already
+ * renders these messages with `whitespace-pre-wrap`, so a newline here is
+ * enough.
  */
 export function blockedNavigationSuffix(
 	message: string,
@@ -149,7 +156,7 @@ export function blockedNavigationSuffix(
 		return "";
 	}
 	const explanation = explainBlockedNavigation(runner.refusals);
-	return explanation ? ` ${explanation}` : "";
+	return explanation ? `\n${explanation}` : "";
 }
 
 type RunnerAuth = NonNullable<RunAgenticCaseInput["auth"]>;
