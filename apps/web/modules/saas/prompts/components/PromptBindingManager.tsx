@@ -319,6 +319,29 @@ export function PromptBindingManager({
 							</div>
 						</div>
 
+						{/* At the top of the scroll area, not above the footer: below the
+						    fold on a short viewport, it was clipped out of view. */}
+						{promptDetailsFailed && (
+							<div
+								role="alert"
+								className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-highlight/40 bg-highlight/5 px-3 py-2 text-highlight-ink text-xs"
+							>
+								<span>
+									Could not load this prompt's latest version,
+									so it cannot be set as default yet.
+								</span>
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									className="text-xs"
+									onClick={() => refetchPromptDetails()}
+								>
+									Try again
+								</Button>
+							</div>
+						)}
+
 						{/* Agent Selection */}
 						<div className="space-y-2">
 							<Label htmlFor="prompt-binding-agent">Agent</Label>
@@ -499,27 +522,6 @@ export function PromptBindingManager({
 								? "This prompt will be automatically selected when creating new documents of this type"
 								: "This prompt will be available but not automatically selected"}
 						</p>
-
-						{promptDetailsFailed && (
-							<div
-								role="alert"
-								className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-highlight/40 bg-highlight/5 px-3 py-2 text-highlight-ink text-xs"
-							>
-								<span>
-									Could not load this prompt's latest version,
-									so it cannot be set as default yet.
-								</span>
-								<Button
-									type="button"
-									variant="ghost"
-									size="sm"
-									className="h-auto p-0 text-xs underline underline-offset-2"
-									onClick={() => refetchPromptDetails()}
-								>
-									Try again
-								</Button>
-							</div>
-						)}
 					</div>
 
 					<DialogFooter className="shrink-0 border-t pt-4">
