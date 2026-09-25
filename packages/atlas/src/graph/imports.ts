@@ -160,20 +160,75 @@ function candidatesFor(basePath: string): string[] {
 }
 
 /**
+ * The analysable file keys, indexed for {@link resolveImport}. Build it once
+ * per graph: a bare specifier then costs one map lookup per candidate instead
+ * of a scan of every key. Most imports in a large repo are external packages
+ * that match nothing, so the scan ran to the end every time — on an 8.7k-file
+ * monorepo that was tens of minutes of synchronous work on the worker's event
+ * loop, long enough to starve its database connections.
+ */
+export interface FileKeyIndex {
+	keys: ReadonlySet<string>;
+	/** Each key's "/"-aligned suffixes of up to MAX_INDEXED_SUFFIX_SEGMENTS
+	 * segments, the key itself included when it is that short, mapped to the
+	 * first key in iteration order that ends with it. */
+	bySuffix: ReadonlyMap<string, string>;
+}
+
+/**
+ * Deepest suffix the index holds. Indexing every suffix would size the index
+ * by total path segments, which a deliberately nested repository controls;
+ * capping it keeps the index linear in the file count (MAX_FILES).
+ */
+const MAX_INDEXED_SUFFIX_SEGMENTS = 32;
+
+export function indexFileKeys(fileKeys: Iterable<string>): FileKeyIndex {
+	const keys = new Set(fileKeys);
+	const bySuffix = new Map<string, string>();
+	for (const key of keys) {
+		// Walk slashes from the end: suffixes of 1, 2, … segments.
+		let end = key.length;
+		for (let n = 0; n < MAX_INDEXED_SUFFIX_SEGMENTS; n++) {
+			const slash = end > 0 ? key.lastIndexOf("/", end - 1) : -1;
+			const suffix = key.slice(slash + 1);
+			if (!bySuffix.has(suffix)) {
+				bySuffix.set(suffix, key);
+			}
+			if (slash === -1) {
+				break;
+			}
+			end = slash;
+		}
+	}
+	return { keys, bySuffix };
+}
+
+/** The first key that equals `cand` or ends with `/cand`, for candidates of
+ * up to MAX_INDEXED_SUFFIX_SEGMENTS segments; a deeper candidate matches only
+ * an exact key. The caller's later candidates (alias root dropped) still run. */
+function lookupSuffix(index: FileKeyIndex, cand: string): string | undefined {
+	const hit = index.bySuffix.get(cand);
+	if (hit !== undefined) {
+		return hit;
+	}
+	return index.keys.has(cand) ? cand : undefined;
+}
+
+/**
  * Resolve an import specifier to a repo-relative file key, or null if it is
- * external / unresolvable. `fileKeys` is the set of all analysable file keys.
+ * external / unresolvable. `index` covers all analysable file keys.
  */
 export function resolveImport(
 	spec: string,
 	fromPath: string,
-	fileKeys: Set<string>,
+	index: FileKeyIndex,
 ): string | null {
 	const from = normalizePath(fromPath);
 
 	if (isRelativeSpec(spec)) {
 		const joined = normalizeJoin(dirname(from), spec);
 		for (const cand of candidatesFor(joined)) {
-			if (fileKeys.has(cand)) {
+			if (index.keys.has(cand)) {
 				return cand;
 			}
 		}
@@ -194,12 +249,13 @@ export function resolveImport(
 	const suffixes = [cleaned, cleaned.split("/").slice(1).join("/")].filter(
 		(s) => s.length >= 3,
 	);
+	// A key matches when it equals the candidate or ends with `/candidate`;
+	// the index holds the first such key per candidate, as the scan returned.
 	for (const suffix of suffixes) {
 		for (const cand of candidatesFor(suffix)) {
-			for (const key of fileKeys) {
-				if (key === cand || key.endsWith(`/${cand}`)) {
-					return key;
-				}
+			const key = lookupSuffix(index, cand);
+			if (key !== undefined) {
+				return key;
 			}
 		}
 	}

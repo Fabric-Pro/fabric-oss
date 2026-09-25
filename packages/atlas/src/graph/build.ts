@@ -23,6 +23,7 @@ import { hashContent } from "./hash";
 import {
 	extractImports,
 	extractNamespace,
+	indexFileKeys,
 	resolveImport,
 	resolveNamespaceImport,
 } from "./imports";
@@ -314,7 +315,7 @@ async function assembleGraph(
 	manifest: Record<string, string>,
 	maxModules: number,
 ): Promise<BuiltTechnicalGraph> {
-	const fileKeys = new Set(files.map((f) => f.path));
+	const fileKeys = indexFileKeys(files.map((f) => f.path));
 	const depth = selectModuleDepthFromPaths(
 		files.map((f) => f.path),
 		maxModules,
