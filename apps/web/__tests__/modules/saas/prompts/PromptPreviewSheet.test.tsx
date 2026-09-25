@@ -1,6 +1,6 @@
 import { PromptPreviewSheet } from "@saas/prompts/components/PromptPreviewSheet";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -201,5 +201,88 @@ describe("PromptPreviewSheet — cropped-preview fix", () => {
 		expect(
 			screen.getByRole("button", { name: /^Cancel$/ }),
 		).toBeInTheDocument();
+	});
+});
+
+// Fizzy #2250 (defect 3), the preview Sheet's edit mode: an empty, blank or
+// over-length body is refused inline — a `role="alert"` the textarea points at
+// with `aria-describedby` — with Save disabled, instead of a toast after the
+// request.
+describe("PromptPreviewSheet — content validation in edit mode", () => {
+	beforeEach(() => {
+		getById.mockReset();
+		getById.mockResolvedValue(basePrompt);
+	});
+
+	async function openInEditMode() {
+		wrap(
+			<PromptPreviewSheet
+				open
+				onOpenChange={vi.fn()}
+				promptId="p1"
+				promptScope="USER"
+				initialEditMode
+			/>,
+		);
+		await screen.findByText(LONG_TITLE);
+		return screen.getByPlaceholderText("Enter prompt content...");
+	}
+	const saveButton = () =>
+		screen.getByRole("button", { name: /Save as New Version/ });
+
+	it("shows no alert for the loaded, valid body", async () => {
+		const textarea = await openInEditMode();
+
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(textarea).not.toHaveAttribute("aria-invalid");
+		expect(saveButton()).toBeEnabled();
+	});
+
+	it("shows the blank-body alert, associates it, and disables Save when cleared", async () => {
+		const user = userEvent.setup();
+		const textarea = await openInEditMode();
+
+		await user.clear(textarea);
+
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent("Prompt content cannot be empty");
+		expect(textarea).toHaveAttribute("aria-invalid", "true");
+		expect(textarea).toHaveAttribute("aria-describedby", alert.id);
+		expect(saveButton()).toBeDisabled();
+	});
+
+	it("treats a body of only invisible characters as blank", async () => {
+		const textarea = await openInEditMode();
+
+		fireEvent.change(textarea, { target: { value: " ​\n\t " } });
+
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Prompt content cannot be empty",
+		);
+		expect(saveButton()).toBeDisabled();
+	});
+
+	it("shows the too-long alert and disables Save over 50,000 characters", async () => {
+		const textarea = await openInEditMode();
+
+		fireEvent.change(textarea, { target: { value: "x".repeat(50_001) } });
+
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Prompt content is 50,001 characters; the maximum is 50,000.",
+		);
+		expect(textarea).toHaveAttribute("aria-invalid", "true");
+		expect(saveButton()).toBeDisabled();
+	});
+
+	it("clears the alert once the body is fixed", async () => {
+		const user = userEvent.setup();
+		const textarea = await openInEditMode();
+
+		await user.clear(textarea);
+		expect(await screen.findByRole("alert")).toBeInTheDocument();
+		await user.type(textarea, "A valid prompt.");
+
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(saveButton()).toBeEnabled();
 	});
 });
