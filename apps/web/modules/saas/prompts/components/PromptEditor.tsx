@@ -122,7 +122,12 @@ export function PromptEditor({
 		scope !== initialData.scope ||
 		category !== (initialData.category ?? "") ||
 		JSON.stringify(tags) !== JSON.stringify(initialData.tags);
-	const contentProblem = promptContentProblem(content);
+	// Judged only once edited: a body saved before the length limit existed can
+	// exceed it, and renaming that prompt must not require shortening it first.
+	// The server applies the same rule — it validates content only when a save
+	// carries new content.
+	const contentProblem =
+		content === initialData.content ? null : promptContentProblem(content);
 	const canSave =
 		!isLoading && name.trim().length > 0 && contentProblem === null;
 

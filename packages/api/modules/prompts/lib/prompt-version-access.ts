@@ -26,12 +26,18 @@ type ReachableVersion = {
 	scope: string | null;
 	userId: string | null;
 	organizationId: string | null;
+	content: string;
 };
 
 async function loadVersion(promptVersionId: string) {
 	const pv = await db.promptVersion.findUnique({
 		where: { id: promptVersionId },
-		select: { scope: true, userId: true, organizationId: true },
+		select: {
+			scope: true,
+			userId: true,
+			organizationId: true,
+			content: true,
+		},
 	});
 	if (!pv) {
 		throw new ORPCError("NOT_FOUND", {

@@ -106,6 +106,7 @@ describe("prompts.bindings.set authorization by scope", () => {
 			scope: "SYSTEM",
 			userId: null,
 			organizationId: null,
+			content: "A system prompt",
 		});
 		projectFindFirst.mockReset();
 		projectFindFirst.mockImplementation(async ({ where }) =>
@@ -153,6 +154,7 @@ describe("prompts.bindings.set authorization by scope", () => {
 				scope: "USER",
 				userId: "user-1",
 				organizationId: null,
+				content: "A personal prompt",
 			});
 
 			await expect(
@@ -201,6 +203,7 @@ describe("prompts.bindings.set authorization by scope", () => {
 				scope: "USER",
 				userId: "user-1",
 				organizationId: null,
+				content: "A personal prompt",
 			});
 
 			await expect(
@@ -218,6 +221,7 @@ describe("prompts.bindings.set authorization by scope", () => {
 				scope: "ORG",
 				userId: null,
 				organizationId: "org-1",
+				content: "An organization prompt",
 			});
 
 			await callSet({
@@ -287,6 +291,24 @@ describe("prompts.bindings.set authorization by scope", () => {
 			expect(bindPromptVersion).toHaveBeenCalledWith(
 				expect.objectContaining({ scope: "USER", userId: "user-1" }),
 			);
+		});
+	});
+
+	// Fizzy #2250: a body saved before the length limit existed keeps working
+	// where it already runs, but must not become a new default.
+	describe("content length", () => {
+		it("refuses a version over the length limit", async () => {
+			promptVersionFindUnique.mockResolvedValue({
+				scope: "SYSTEM",
+				userId: null,
+				organizationId: null,
+				content: "x".repeat(50_001),
+			});
+
+			await expect(
+				callSet({ scope: "SYSTEM", role: "admin" }),
+			).rejects.toThrow(/the maximum is 50,000/);
+			expect(bindPromptVersion).not.toHaveBeenCalled();
 		});
 	});
 

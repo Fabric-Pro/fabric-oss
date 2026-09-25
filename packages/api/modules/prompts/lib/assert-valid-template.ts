@@ -49,6 +49,23 @@ export function assertValidTemplate(
 }
 
 /**
+ * Reject a body over the product length limit.
+ *
+ * Applied wherever content is saved, and also where EXISTING content is put
+ * to new use — forked into a new prompt, or bound or nominated as a default.
+ * A body saved before the limit existed can exceed it; it keeps working where
+ * it already runs, but must not be copied or promoted into a default, where
+ * its tokens would ride every generation that resolves to it.
+ */
+export function assertWithinPromptContentLimit(content: string): void {
+	if (content.length > PROMPT_CONTENT_MAX_LENGTH) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: promptContentTooLongMessage(content.length),
+		});
+	}
+}
+
+/**
  * The full save-time guard for a prompt body: reject one over the product
  * length limit before even trying to render it, then apply the ordinary
  * blank/parse checks `assertValidTemplate` already does.
@@ -62,10 +79,6 @@ export function assertSavablePromptContent(
 	format: TemplateFormat,
 	content: string,
 ): void {
-	if (content.length > PROMPT_CONTENT_MAX_LENGTH) {
-		throw new ORPCError("BAD_REQUEST", {
-			message: promptContentTooLongMessage(content.length),
-		});
-	}
+	assertWithinPromptContentLimit(content);
 	assertValidTemplate(format, content);
 }

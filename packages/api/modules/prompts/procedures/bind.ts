@@ -22,6 +22,7 @@ import {
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 import { announceDefaultChange } from "../lib/announce-default-change";
+import { assertWithinPromptContentLimit } from "../lib/assert-valid-template";
 import { assertPromptVersionReachable } from "../lib/prompt-version-access";
 import { resolveProjectForOrg } from "../lib/resolve-project-for-org";
 
@@ -173,6 +174,7 @@ export const bindProcedures = {
 				userId: user.id,
 			});
 			assertVersionSuitsScope(input.scope, pv.scope);
+			assertWithinPromptContentLimit(pv.content);
 
 			const record = await bindPromptVersion({
 				targetType: input.targetType,
@@ -399,6 +401,7 @@ export const bindProcedures = {
 				userId: user.id,
 			});
 			assertVersionSuitsScope(input.scope, pv.scope);
+			assertWithinPromptContentLimit(pv.content);
 
 			const result = await bindPromptVersionToTargets({
 				targets: input.targets.map((t) => ({
