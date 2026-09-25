@@ -40,7 +40,37 @@ vi.mock("@repo/utils/url-security", async () => {
 	};
 });
 
-import { explainBlockedNavigation, openBrowser } from "../browser-driver";
+import {
+	classifyFetchFailure,
+	explainBlockedNavigation,
+	openBrowser,
+} from "../browser-driver";
+
+describe("classifyFetchFailure", () => {
+	const fetchFailed = (code: string) =>
+		new TypeError("fetch failed", {
+			cause: Object.assign(new Error(`connect ${code}`), { code }),
+		});
+
+	it.each([
+		["ECONNREFUSED", "connection-refused"],
+		["ENOTFOUND", "host-not-found"],
+		["CERT_HAS_EXPIRED", "certificate-invalid"],
+		["DEPTH_ZERO_SELF_SIGNED_CERT", "certificate-invalid"],
+		["ERR_TLS_CERT_ALTNAME_INVALID", "certificate-invalid"],
+		["ECONNRESET", "fetch-failed"],
+		["UND_ERR_CONNECT_TIMEOUT", "fetch-failed"],
+		["EAI_AGAIN", "fetch-failed"],
+	])("classifies %s as %s", (code, kind) => {
+		expect(classifyFetchFailure(fetchFailed(code))).toBe(kind);
+	});
+
+	it("treats a failure with no system code as ambiguous", () => {
+		expect(classifyFetchFailure(new TypeError("fetch failed"))).toBe(
+			"fetch-failed",
+		);
+	});
+});
 
 const OPTIONS = {
 	browser: "chromium",
@@ -211,6 +241,48 @@ describe("openBrowser cleans up after itself", () => {
 				url: "https://example.com/api/me",
 			}),
 		]);
+	});
+
+	it("records a refused connection to the environment's own host as connection-refused", async () => {
+		safeFetchOutbound.mockRejectedValueOnce(
+			new TypeError("fetch failed", {
+				cause: Object.assign(
+					new Error("connect ECONNREFUSED 203.0.113.10:443"),
+					{ code: "ECONNREFUSED" },
+				),
+			}),
+		);
+		const runner = await openBrowser(OPTIONS);
+		const handler = route.mock.calls[0]?.[1] as
+			| ((routeValue: {
+					request: () => {
+						url: () => string;
+						method: () => string;
+						headers: () => Record<string, string>;
+						postData: () => string | null;
+					};
+					abort: (reason: string) => Promise<void>;
+					fulfill: (response: unknown) => Promise<void>;
+			  }) => Promise<void>)
+			| undefined;
+
+		await handler?.({
+			request: () => ({
+				url: () => "https://example.com/",
+				method: () => "GET",
+				headers: () => ({}),
+				postData: () => null,
+			}),
+			abort: vi.fn(async () => {}),
+			fulfill: vi.fn(async () => {}),
+		});
+
+		expect(runner.refusals).toEqual([
+			expect.objectContaining({ kind: "connection-refused" }),
+		]);
+		expect(explainBlockedNavigation(runner.refusals)).toContain(
+			"check that the environment is running",
+		);
 	});
 
 	it("records a same-origin address rebind as unsafe-address, not fetch-failed", async () => {

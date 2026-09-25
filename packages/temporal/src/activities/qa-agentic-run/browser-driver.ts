@@ -63,14 +63,73 @@ export interface OpenBrowserOptions {
  * - `unsafe-address` — the request stayed on the configured origin, but that
  *   host resolved to a private/loopback/link-local address. Also an
  *   environment configuration problem, not a Fabric outage.
- * - `fetch-failed` — the request was allowed through the origin and address
- *   checks and the proxying fetch itself failed (network error, timeout,
- *   TLS). This is Fabric's runner failing to reach a legitimate target.
+ * - `connection-refused`, `host-not-found`, `certificate-invalid` — the
+ *   proxying fetch reached far enough to get a definite answer from the
+ *   environment's own host or its DNS: nothing listening, no such name, or a
+ *   certificate that does not verify. These are the environment's to fix.
+ * - `fetch-failed` — every other proxy failure (timeout, reset, unreachable
+ *   network). One request cannot tell a host that is down or firewalled off
+ *   from the public internet apart from a failure of the runner's own
+ *   network, so this kind names both and blames neither.
  */
 export type BrowserRefusalKind =
 	| "off-origin"
 	| "unsafe-address"
+	| "connection-refused"
+	| "host-not-found"
+	| "certificate-invalid"
 	| "fetch-failed";
+
+/** Node/undici codes for a TLS certificate the environment presented and the
+ * runner could not verify. */
+const CERTIFICATE_ERROR_CODES = new Set([
+	"CERT_HAS_EXPIRED",
+	"CERT_NOT_YET_VALID",
+	"CERT_UNTRUSTED",
+	"DEPTH_ZERO_SELF_SIGNED_CERT",
+	"SELF_SIGNED_CERT_IN_CHAIN",
+	"UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+	"UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+	"ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+
+/** The system error code behind a failed fetch: undici wraps the socket or
+ * DNS error as `cause` of a generic `TypeError("fetch failed")`. */
+function fetchFailureCode(err: unknown): string | null {
+	const cause = err instanceof Error ? err.cause : undefined;
+	for (const candidate of [cause, err]) {
+		if (
+			typeof candidate === "object" &&
+			candidate !== null &&
+			"code" in candidate &&
+			typeof candidate.code === "string"
+		) {
+			return candidate.code;
+		}
+	}
+	return null;
+}
+
+/**
+ * Which kind of refusal a failed proxy fetch is. Exported for its tests: the
+ * wording a user reads depends entirely on this split, and getting it wrong
+ * sends someone to debug the wrong side (Fizzy #2232).
+ */
+export function classifyFetchFailure(
+	err: unknown,
+): Exclude<BrowserRefusalKind, "off-origin" | "unsafe-address"> {
+	const code = fetchFailureCode(err);
+	if (code === "ECONNREFUSED") {
+		return "connection-refused";
+	}
+	if (code === "ENOTFOUND") {
+		return "host-not-found";
+	}
+	if (code !== null && CERTIFICATE_ERROR_CODES.has(code)) {
+		return "certificate-invalid";
+	}
+	return "fetch-failed";
+}
 
 export interface BrowserRefusal {
 	url: string;
@@ -137,8 +196,14 @@ export function describeBrowserRefusal(refusal: BrowserRefusal): string {
 			return `The page redirected to ${refusal.url}, outside this environment's origin — check the environment's base URL.`;
 		case "unsafe-address":
 			return `${refusal.url} resolved to a non-public address (${refusal.detail}) — this is an environment configuration problem, not a Fabric outage.`;
+		case "connection-refused":
+			return `${refusal.url} refused the connection (${refusal.detail}) — check that the environment is running and accepting connections.`;
+		case "host-not-found":
+			return `${refusal.url} does not resolve (${refusal.detail}) — check the environment's base URL.`;
+		case "certificate-invalid":
+			return `${refusal.url} presented a certificate the runner could not verify (${refusal.detail}) — check the environment's TLS certificate.`;
 		case "fetch-failed":
-			return `Fabric's runner could not reach ${refusal.url} from its network (${refusal.detail}). This is a runner connectivity problem, not your environment.`;
+			return `The runner's request to ${refusal.url} failed before any response (${refusal.detail}). Either the environment is down or not reachable from the public internet, or the runner's own network failed — if the URL opens from outside your network, report it to Fabric support.`;
 		default: {
 			const never: never = refusal.kind;
 			return String(never);
@@ -426,7 +491,7 @@ export async function openBrowser(
 				const blockedReason = getBlockedOutboundReason(err);
 				const kind: BrowserRefusalKind = blockedReason
 					? "unsafe-address"
-					: "fetch-failed";
+					: classifyFetchFailure(err);
 				const detail =
 					blockedReason ??
 					(err instanceof Error
