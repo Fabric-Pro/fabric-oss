@@ -549,6 +549,18 @@ export function PromptContentEnhancer({
 
 				{/* Editor Area */}
 				<div className="flex-1 overflow-hidden bg-background p-6 flex flex-col">
+					{/* Above the textarea, not below it: this area does not scroll,
+					    and a long body pushes whatever follows the textarea out of
+					    view — the reason Save is disabled must stay on screen. */}
+					{contentProblem && !showDiffHighlighting && (
+						<p
+							id={contentErrorId}
+							role="alert"
+							className="mb-3 shrink-0 text-sm text-destructive"
+						>
+							{contentProblem}
+						</p>
+					)}
 					{showDiffHighlighting ? (
 						// Show diff-highlighted content during AI streaming.
 						// displayContent carries the <ins>/<del> tags diffToHtml
@@ -576,15 +588,6 @@ export function PromptContentEnhancer({
 						/>
 					)}
 					<div className="mt-4 space-y-2 shrink-0">
-						{contentProblem && !showDiffHighlighting && (
-							<p
-								id={contentErrorId}
-								role="alert"
-								className="text-sm text-destructive"
-							>
-								{contentProblem}
-							</p>
-						)}
 						<p className="text-xs text-muted-foreground">
 							{getFormatDescription(format)}
 						</p>
