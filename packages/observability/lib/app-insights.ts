@@ -47,6 +47,20 @@ import { isMonitoringFeatureEnabled } from "./feature-flags";
  * `unknown` is the right shape here because we only ever shape the
  * client at the public-surface boundary; internal lookups go through
  * the typed helpers in this file.
+ *
+ * `trackTrace`/`trackException` and the `context` cloud-role tag are
+ * verified against the installed 3.15 shim:
+ *   - trackTrace: node_modules/applicationinsights/out/src/shim/telemetryClient.d.ts:47
+ *   - trackException: node_modules/applicationinsights/out/src/shim/telemetryClient.d.ts:52
+ *   - trackException's own `severity` field: node_modules/applicationinsights/
+ *     out/src/declarations/contracts/telemetryTypes/exceptionTelemetry.d.ts:17-20
+ *   - context: node_modules/applicationinsights/out/src/shim/telemetryClient.d.ts:12
+ *   - context.keys/tags shape: node_modules/applicationinsights/out/src/shim/context.d.ts:3-6
+ *   - cloudRole key + the SDK's own usage example:
+ *     node_modules/applicationinsights/out/src/shared/util/contextTagKeys.d.ts:79-81
+ *   - severity strings ("Warning"/"Error"/"Critical"):
+ *     node_modules/applicationinsights/out/src/declarations/generated/models/index.d.ts:296-302
+ *     (`KnownSeverityLevel`, re-exported from the package root at out/src/index.d.ts:3)
  */
 type TelemetryClient = {
 	initialize: () => void;
@@ -59,6 +73,20 @@ type TelemetryClient = {
 		value: number;
 		properties?: Record<string, unknown>;
 	}) => void;
+	trackTrace: (telemetry: {
+		message: string;
+		severity?: string;
+		properties?: Record<string, unknown>;
+	}) => void;
+	trackException: (telemetry: {
+		exception: Error;
+		severity?: string;
+		properties?: Record<string, unknown>;
+	}) => void;
+	context: {
+		tags: Record<string, string>;
+		keys: { cloudRole: string };
+	};
 	flush: () => Promise<void>;
 	shutdown: () => Promise<void>;
 };
@@ -74,6 +102,17 @@ type TelemetryClientFactory = (
  * circuit before doing any work.
  */
 let CLIENT: TelemetryClient | null = null;
+
+/**
+ * True once `ensureDirectClient()` has resolved once, successfully or not.
+ * Distinct from `CLIENT === null` (which also means "not initialized yet")
+ * so a failed/absent connection string is not re-validated and re-warned on
+ * every subsequent `trackLog`/`trackLogException` call.
+ */
+let CLIENT_INIT_ATTEMPTED = false;
+
+/** Resolution state — true once `initAppInsightsLogs()` has been called. */
+let LOGS_INITIALIZED = false;
 
 type CustomTelemetryTransport = "disabled" | "direct" | "otel";
 let TRANSPORT: CustomTelemetryTransport = "disabled";
@@ -195,6 +234,53 @@ function loadApplicationInsights(
 }
 
 /**
+ * Lazily create (or return the cached) isolated direct client, independent
+ * of `feature-burn-rate-alerts` — that flag gates only whether
+ * `trackEvent`/`trackMetric` EMIT anything, never whether a client exists.
+ * `initAppInsights()` and `initAppInsightsLogs()` both call this, so a
+ * process that boots only one of them (e.g. the web app calling only the
+ * latter) still gets a real, shared client.
+ *
+ * Idempotent and memoized: once a connection-string attempt has resolved
+ * (to a client, or to nothing), later calls return the cached outcome
+ * without re-validating or re-warning. Returns `null` — silently for an
+ * absent connection string, with a warning for an invalid or
+ * failed-to-construct one — exactly as `initAppInsights()` always has.
+ */
+function ensureDirectClient(): TelemetryClient | null {
+	if (CLIENT) {
+		return CLIENT;
+	}
+	if (CLIENT_INIT_ATTEMPTED) {
+		return null;
+	}
+	CLIENT_INIT_ATTEMPTED = true;
+
+	const connectionString = readConnectionString();
+	if (!connectionString) {
+		return null;
+	}
+	if (!isValidConnectionString(connectionString)) {
+		console.warn(
+			"[app-insights] invalid connection string; direct exporter disabled",
+		);
+		return null;
+	}
+	try {
+		const client = createDirectClient(connectionString);
+		client.initialize();
+		CLIENT = client;
+		return CLIENT;
+	} catch (err) {
+		console.warn(
+			"[app-insights] init failed",
+			err instanceof Error ? err.message : err,
+		);
+		return null;
+	}
+}
+
+/**
  * Initialize custom telemetry against a direct App Insights client or OTel.
  *
  * Idempotent: subsequent calls become no-ops. Safe to call from every
@@ -208,7 +294,8 @@ function loadApplicationInsights(
  * flowing through its collector but `trackEvent` / `trackMetric` emit
  * nothing. This lets operators kill
  * custom-event-driven alert rules (CircuitBreakerStateChange,
- * SyntheticProbeResult) without redeploying.
+ * SyntheticProbeResult) without redeploying. It does NOT gate log
+ * forwarding — see `initAppInsightsLogs()`.
  */
 export function initAppInsights(): void {
 	if (INITIALIZED) {
@@ -223,30 +310,48 @@ export function initAppInsights(): void {
 		return;
 	}
 
-	const connectionString = readConnectionString();
-	if (connectionString && !isValidConnectionString(connectionString)) {
-		console.warn(
-			"[app-insights] invalid connection string; direct exporter disabled",
-		);
-	} else if (connectionString) {
-		try {
-			CLIENT = createDirectClient(connectionString);
-			CLIENT.initialize();
-			TRANSPORT = "direct";
-			return;
-		} catch (err) {
-			// Fall through to the process's existing OTel pipeline when it is
-			// configured. A broken optional direct exporter must not mute alerts.
-			console.warn(
-				"[app-insights] init failed",
-				err instanceof Error ? err.message : err,
-			);
-			CLIENT = null;
-		}
+	const client = ensureDirectClient();
+	if (client) {
+		TRANSPORT = "direct";
+		return;
 	}
 
 	if (isOtelConfigured()) {
 		TRANSPORT = "otel";
+	}
+}
+
+/**
+ * Initialize log forwarding to App Insights — independent of
+ * `feature-burn-rate-alerts` and of `initAppInsights()`. A service that
+ * never boots the burn-rate custom-event path (the web app) still wants its
+ * `logger.warn`/`error`/`fatal` calls to reach App Insights.
+ *
+ * Idempotent and a no-op without a valid connection string, exactly like
+ * `initAppInsights()`. Sets the App Insights cloud-role-name tag so traces
+ * and exceptions from this process are attributable in the portal (see the
+ * SDK's own usage example cited on `TelemetryClient` above).
+ */
+export function initAppInsightsLogs({
+	cloudRoleName,
+}: {
+	cloudRoleName: string;
+}): void {
+	if (LOGS_INITIALIZED) {
+		return;
+	}
+	LOGS_INITIALIZED = true;
+	try {
+		const client = ensureDirectClient();
+		if (client) {
+			client.context.tags[client.context.keys.cloudRole] = cloudRoleName;
+		}
+	} catch (err) {
+		// Swallow — see file header.
+		console.warn(
+			"[app-insights] initAppInsightsLogs failed",
+			err instanceof Error ? err.message : err,
+		);
 	}
 }
 
@@ -271,7 +376,7 @@ export function getAppInsightsClient(): TelemetryClient | null {
  * cardinality bomb in disguise).
  */
 function sanitizeProperties(
-	props: Record<string, string | number | boolean> | undefined,
+	props: Record<string, unknown> | undefined,
 ): Record<string, string> | undefined {
 	if (!props) {
 		return undefined;
@@ -398,10 +503,254 @@ export function trackMetric(
 	}
 }
 
+// ============================================================================
+// Log forwarding (independent of `feature-burn-rate-alerts`)
+// ============================================================================
+
+/** Matches consola's warn/error/fatal `LogType` — the levels `@repo/logs`
+ *  forwards to a sink. */
+export type LogSeverity = "warn" | "error" | "fatal";
+
+/** App Insights' own severity strings — see the citation on `TelemetryClient`. */
+const SEVERITY_BY_LOG_LEVEL: Record<LogSeverity, string> = {
+	warn: "Warning",
+	error: "Error",
+	fatal: "Critical",
+};
+
+const SAMPLING_WINDOW_MS = 60_000;
+const DEFAULT_SAMPLING_LIMIT = 20;
+
+type SamplingBucket = {
+	windowStart: number;
+	tokens: number;
+	suppressed: number;
+	severity: LogSeverity;
+};
+
+/** Per-key token bucket, one entry per distinct sampling key per process. */
+const SAMPLING_BUCKETS = new Map<string, SamplingBucket>();
+let SAMPLING_LIMIT = DEFAULT_SAMPLING_LIMIT;
+
+/** Bounded discriminators worth their own sampling bucket even under the
+ *  same `event` — a fixed, small-cardinality set (route names, oRPC error
+ *  codes, HTTP statuses, the client-report `kind` enum), never arbitrary
+ *  free text. Without these, every `rpc.error` record from every procedure
+ *  shares ONE 20/min budget, and one noisy 403 on one route starves 5xx
+ *  alerting for every other route. */
+const SAMPLING_KEY_DISCRIMINANT_FIELDS = [
+	"procedure",
+	"code",
+	"status",
+	"kind",
+] as const;
+
+/**
+ * The record's sampling identity: `properties.event` when the caller set
+ * one (the structured discriminator most call sites already pass — see
+ * `packages/api/orpc/rpc-error-logging.ts`), combined with whichever of
+ * `SAMPLING_KEY_DISCRIMINANT_FIELDS` are present, so distinct routes/codes/
+ * statuses under the same event get separate budgets. Without an `event`,
+ * falls back to the severity plus a normalized message prefix, so near-
+ * identical unstructured lines (a stack trace's leading words, say) still
+ * bucket together.
+ */
+function samplingKey(
+	severity: LogSeverity,
+	message: string,
+	properties: Record<string, unknown> | undefined,
+): string {
+	const event = properties?.event;
+	if (typeof event !== "string" || event.length === 0) {
+		const prefix = message.slice(0, 60).trim().toLowerCase();
+		return `${severity}:${prefix}`;
+	}
+	const parts = [event];
+	for (const field of SAMPLING_KEY_DISCRIMINANT_FIELDS) {
+		const value = properties?.[field];
+		if (
+			typeof value === "string" ||
+			typeof value === "number" ||
+			typeof value === "boolean"
+		) {
+			parts.push(String(value));
+		}
+	}
+	return parts.join(":");
+}
+
+/**
+ * Token-bucket sampling, 20/min per key by default. Returns `true` when this
+ * record should actually be forwarded. When a key's window rolls over (the
+ * first record for that key after >= 60s) and the PREVIOUS window suppressed
+ * anything, emits one "suppressed N similar records" trace for it before
+ * evaluating the new window — never a running total, never per-suppression.
+ */
+function shouldForward(key: string, severity: LogSeverity): boolean {
+	const now = Date.now();
+	let bucket = SAMPLING_BUCKETS.get(key);
+	if (!bucket || now - bucket.windowStart >= SAMPLING_WINDOW_MS) {
+		if (bucket && bucket.suppressed > 0) {
+			emitSuppressedTrace(key, bucket.suppressed, bucket.severity);
+		}
+		bucket = {
+			windowStart: now,
+			tokens: SAMPLING_LIMIT,
+			suppressed: 0,
+			severity,
+		};
+		SAMPLING_BUCKETS.set(key, bucket);
+	}
+	bucket.severity = severity;
+	if (bucket.tokens > 0) {
+		bucket.tokens--;
+		return true;
+	}
+	bucket.suppressed++;
+	return false;
+}
+
+/** The one-line summary emitted when a sampling window rolls over. Bypasses
+ *  `shouldForward` itself — a summary of suppressions is never suppressed. */
+function emitSuppressedTrace(
+	key: string,
+	suppressed: number,
+	severity: LogSeverity,
+): void {
+	const client = CLIENT;
+	if (!client) {
+		return;
+	}
+	try {
+		client.trackTrace({
+			message: `Suppressed ${suppressed} similar records for key "${key}"`,
+			severity: SEVERITY_BY_LOG_LEVEL[severity],
+			properties: { event: "app-insights.log-sampling-suppressed" },
+		});
+	} catch {
+		// Swallow — see file header.
+	}
+}
+
+/**
+ * Forward one log record to App Insights as a `trackTrace`. No-op when no
+ * direct client is configured (absent/invalid connection string) — this is
+ * the log-forwarding half of the pipeline `@repo/logs` attaches via
+ * `addLogSink`; it never throws into the logger it is attached to.
+ */
+export function trackLog(
+	severity: LogSeverity,
+	message: string,
+	properties?: Record<string, unknown>,
+): void {
+	try {
+		const client = ensureDirectClient();
+		if (!client) {
+			return;
+		}
+		const key = samplingKey(severity, message, properties);
+		if (!shouldForward(key, severity)) {
+			return;
+		}
+		client.trackTrace({
+			message,
+			severity: SEVERITY_BY_LOG_LEVEL[severity],
+			properties: sanitizeProperties(properties),
+		});
+	} catch (err) {
+		// Swallow — see file header.
+		console.warn(
+			"[app-insights] trackLog failed",
+			err instanceof Error ? err.message : err,
+		);
+	}
+}
+
+/**
+ * Forward an exception to App Insights as a `trackException`. Sampled under
+ * the same per-key token bucket as `trackLog`, keyed the same way (bounded
+ * discriminators plus `properties.event` when set, else severity + message
+ * prefix) so a hot-path exception and its own log line about the same event
+ * share one budget rather than each getting 20/min independently.
+ *
+ * `severity` defaults to `"error"` — the level almost every caller already
+ * has (`@repo/logs`'s `LogSinkRecord.level` for an entry that carries an
+ * `error`), and matters because a `fatal`-level exception should read as
+ * Critical in the portal, not Error. `ExceptionTelemetry.severity` is a real
+ * field on the installed shim: node_modules/applicationinsights/out/src/
+ * declarations/contracts/telemetryTypes/exceptionTelemetry.d.ts:17-20.
+ */
+export function trackLogException(
+	error: Error,
+	properties?: Record<string, unknown>,
+	severity: LogSeverity = "error",
+): void {
+	try {
+		const client = ensureDirectClient();
+		if (!client) {
+			return;
+		}
+		const key = samplingKey(severity, error.message, properties);
+		if (!shouldForward(key, severity)) {
+			return;
+		}
+		client.trackException({
+			exception: error,
+			severity: SEVERITY_BY_LOG_LEVEL[severity],
+			properties: sanitizeProperties(properties),
+		});
+	} catch (err) {
+		// Swallow — see file header.
+		console.warn(
+			"[app-insights] trackLogException failed",
+			err instanceof Error ? err.message : err,
+		);
+	}
+}
+
+/**
+ * Flush pending log/trace telemetry without shutting the client down.
+ * Vercel Fluid Compute freezes the process between requests, so batched
+ * telemetry must be flushed inside `after()` on every request — see
+ * `apps/web/app/api/[[...rest]]/route.ts`. Unlike `shutdownAppInsights()`,
+ * this keeps the client alive for the next request.
+ */
+export async function flushAppInsights(): Promise<void> {
+	const client = CLIENT;
+	if (!client) {
+		return;
+	}
+	try {
+		// A key that goes quiet (no new record after its window rolled over)
+		// never gets another `shouldForward` call to lazily emit its
+		// summary — the only other place that happens. Every scheduled flush
+		// (Vercel's `after()`, this process's own periodic flush) is also a
+		// chance to catch up on any bucket sitting on an elapsed window.
+		const now = Date.now();
+		for (const [key, bucket] of SAMPLING_BUCKETS) {
+			if (
+				bucket.suppressed > 0 &&
+				now - bucket.windowStart >= SAMPLING_WINDOW_MS
+			) {
+				emitSuppressedTrace(key, bucket.suppressed, bucket.severity);
+				bucket.suppressed = 0;
+			}
+		}
+		await client.flush();
+	} catch (err) {
+		console.warn(
+			"[app-insights] flush failed",
+			err instanceof Error ? err.message : err,
+		);
+	}
+}
+
 /** Flush and release an isolated direct client without failing shutdown. */
 export async function shutdownAppInsights(): Promise<void> {
 	const client = CLIENT;
 	CLIENT = null;
+	CLIENT_INIT_ATTEMPTED = false;
+	LOGS_INITIALIZED = false;
 	TRANSPORT = "disabled";
 	INITIALIZED = false;
 	if (!client) {
@@ -432,10 +781,20 @@ export async function shutdownAppInsights(): Promise<void> {
  */
 export function __resetAppInsightsForTests(): void {
 	CLIENT = null;
+	CLIENT_INIT_ATTEMPTED = false;
+	LOGS_INITIALIZED = false;
 	TRANSPORT = "disabled";
 	INITIALIZED = false;
 	TEST_CLIENT_FACTORY = undefined;
 	requireFromObservability = undefined;
+	SAMPLING_BUCKETS.clear();
+	SAMPLING_LIMIT = DEFAULT_SAMPLING_LIMIT;
+}
+
+/** Test-only: shrink the per-key sampling budget so a test does not need to
+ *  fire 20+ records (or wait 60s for a window to roll) to exercise it. */
+export function __setAppInsightsSamplingLimitForTests(limit: number): void {
+	SAMPLING_LIMIT = limit;
 }
 
 /** Install a deterministic manual-client factory without loading the SDK. */

@@ -1,7 +1,8 @@
 import { appendFileSync } from "node:fs";
 import { getCorrelationIdFromContext } from "@repo/utils/correlation-id";
+import { redactLogEntry, redactLogText } from "@repo/utils/log-redaction";
 import { getOrganizationIdFromLogContext } from "@repo/utils/organization-log-context";
-import { createConsola } from "consola";
+import { createConsola, type LogObject } from "consola";
 
 // One log call, one line — in every environment.
 //
@@ -143,6 +144,123 @@ if (isServerSide && process.env.LOG_FILE) {
 				// Swallow — file logging is best-effort and must never break
 				// the actual log call. Errors here would loop forever via the
 				// reporter itself.
+			}
+		},
+	});
+}
+
+/** A warn/error/fatal log line, redacted and ready to hand to an external
+ *  sink (an APM/log platform). `@repo/logs` never talks to one directly —
+ *  see `addLogSink` below. */
+export type LogSinkLevel = "warn" | "error" | "fatal";
+
+export interface LogSinkRecord {
+	level: LogSinkLevel;
+	message: string;
+	properties: Record<string, unknown>;
+	/** The `Error` instance passed as one of the call's args, if any. Its
+	 *  `message` has already been redacted the same way `properties` has;
+	 *  its `stack` is untouched (stack frames name files, not secrets). */
+	error?: Error;
+}
+
+export type LogSink = (record: LogSinkRecord) => void;
+
+const SINK_LEVELS: ReadonlySet<string> = new Set<LogSinkLevel>([
+	"warn",
+	"error",
+	"fatal",
+]);
+
+/**
+ * Pull `{ message, properties, error }` out of a raw consola call. The
+ * codebase mixes two call conventions — `logger.warn("msg", { ...meta })`
+ * and `logger.warn({ err }, "msg")` — so this scans every arg rather than
+ * assuming positions: the first string is the message, the first `Error`
+ * instance is the error, and every plain object (order-independent) merges
+ * into `properties`. Reporters registered before this one (correlationId,
+ * organizationId) have already merged their fields into a trailing meta
+ * object by the time this runs, so those land in `properties` for free.
+ */
+function extractSinkFields(args: unknown[]): {
+	message: string;
+	properties: Record<string, unknown>;
+	error?: Error;
+} {
+	let message: string | undefined;
+	let error: Error | undefined;
+	let properties: Record<string, unknown> | undefined;
+	for (const arg of args) {
+		if (typeof arg === "string" && message === undefined) {
+			message = arg;
+		} else if (arg instanceof Error) {
+			error ??= arg;
+		} else if (arg && typeof arg === "object" && !Array.isArray(arg)) {
+			properties = { ...properties, ...(arg as Record<string, unknown>) };
+		}
+	}
+	return { message: message ?? "", properties: properties ?? {}, error };
+}
+
+/** Redact an Error's message the same way log text is redacted, without
+ *  mutating the original (other code may still hold and inspect it). */
+function redactError(error: Error): Error {
+	const { text, redactionCount } = redactLogText(error.message);
+	if (redactionCount === 0) {
+		return error;
+	}
+	const redacted = new Error(text);
+	redacted.name = error.name;
+	redacted.stack = error.stack;
+	return redacted;
+}
+
+/**
+ * Attach a generic sink that receives every warn/error/fatal log line, in
+ * ADDITION to (never instead of) the normal console output — this never
+ * removes or replaces a reporter, so stdout stays byte-identical.
+ *
+ * Exists so an external platform (Application Insights) can receive this
+ * process's logs without `@repo/logs` depending on the package that talks to
+ * it (that dependency would run through `@repo/database`, which already
+ * depends on `@repo/logs` — a cycle). The caller wires the two together
+ * (see `apps/web/instrumentation.ts`).
+ *
+ * Every field the sink receives has gone through the shared sensitive-key +
+ * value-shape redactor (`@repo/utils/log-redaction`, the canonical one
+ * AGENTS.md mandates — reachable here without a cycle, unlike
+ * `redactSensitiveKeys` in `@repo/database`). Redaction failing closed means
+ * the entry is DROPPED, never forwarded unredacted; the sink itself is also
+ * wrapped so it can never throw back into the log call that triggered it.
+ * Server-only, matching the rest of this file.
+ */
+export function addLogSink(sink: LogSink): void {
+	if (!isServerSide) {
+		return;
+	}
+	logger.addReporter({
+		log: (entry: LogObject) => {
+			if (!SINK_LEVELS.has(entry.type)) {
+				return;
+			}
+			try {
+				const raw = extractSinkFields(entry.args);
+				const redacted = redactLogEntry({
+					message: raw.message,
+					properties: raw.properties,
+				});
+				if (!redacted) {
+					// Fail closed — never forward what could not be redacted.
+					return;
+				}
+				sink({
+					level: entry.type as LogSinkLevel,
+					message: redacted.message,
+					properties: redacted.properties ?? {},
+					error: raw.error ? redactError(raw.error) : undefined,
+				});
+			} catch {
+				// The sink, or redaction, must never break the log call.
 			}
 		},
 	});

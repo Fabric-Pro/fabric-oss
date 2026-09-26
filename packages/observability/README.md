@@ -238,6 +238,52 @@ All `console.log`, `console.info`, `console.warn`, `console.error`, and `console
 2. Logs appear in the Aspire Dashboard "Console logs" section
 3. Logs appear in Azure Log Analytics (when deployed)
 
+## Direct Log Forwarding (`initAppInsightsLogs`)
+
+The section above assumes a process running the full OTel pipeline (a
+collector reachable via `OTEL_EXPORTER_OTLP_ENDPOINT`). A service that only
+holds a direct App Insights connection string — Vercel deployments cannot
+run a collector sidecar — needs a separate, minimal path from its
+`@repo/logs` calls straight to App Insights, independent of the
+`feature-burn-rate-alerts` kill switch that gates `trackEvent`/`trackMetric`
+above.
+
+```typescript
+// Once at process boot (e.g. apps/web/instrumentation.ts):
+import { initAppInsightsLogs, trackLog, trackLogException } from '@repo/observability';
+import { addLogSink } from '@repo/logs';
+
+initAppInsightsLogs({ cloudRoleName: 'fabric.web' });
+addLogSink((record) => {
+  if (record.error) {
+    trackLogException(record.error, record.properties);
+  } else {
+    trackLog(record.level, record.message, record.properties);
+  }
+});
+```
+
+- `@repo/logs` never imports this package — `addLogSink` is a generic hook
+  (consola `addReporter` under the hood); the caller wires the two together,
+  so `@repo/logs` stays free of the `applicationinsights` dependency and its
+  transitive graph, and free of the cycle that importing `@repo/database`'s
+  `redactSensitiveKeys` from inside `@repo/logs` would create.
+- Every record `addLogSink` hands to a sink has already been through the
+  shared sensitive-key + value-shape redactor
+  (`@repo/utils/log-redaction`) — message and structured properties alike.
+- `trackLog`/`trackLogException` map warn/error/fatal to App Insights'
+  Warning/Error/Critical severities via `trackTrace`/`trackException`, and
+  sample per key (20/min by default, keyed on `properties.event` when
+  present) so a hot-path failure cannot flood the workspace — a single
+  "suppressed N similar records" trace marks each window that dropped any.
+- A process that only ever calls `initAppInsightsLogs()` (never
+  `initAppInsights()`) still gets a real, shared direct client — the two
+  entry points are independent, and calling both is safe.
+- On a platform that freezes the process between requests (Vercel Fluid
+  Compute), call `flushAppInsights()` — e.g. via Next's `after()` on every
+  request — so batched telemetry is not stranded unflushed when the process
+  is frozen before its own batching interval fires.
+
 ## Architecture
 
 ```
