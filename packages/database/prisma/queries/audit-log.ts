@@ -304,6 +304,15 @@ export const AUDIT_ACTIONS = [
 	"project.instructions.pull_request_close_requested",
 	"project.instructions.pull_request_retry_requested",
 	"project.instructions.pull_request_merge_sync_requested",
+	// Publish first, scan afterwards (Fizzy #2737): a version published before
+	// its content secret scan ran, at the member's acknowledged request
+	// (written in the same transaction as the pointer move), and the scan's
+	// verdict when it is not clean — possible secrets found, or a scan that
+	// could not finish. A clean scan writes no row; History shows it. Counts
+	// and rule ids only, never a path or matched text.
+	"project.instructions.published_unscanned",
+	"project.instructions.deferred_scan_issues_found",
+	"project.instructions.deferred_scan_incomplete",
 	// story (11)
 	"story.created",
 	"story.updated",

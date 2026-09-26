@@ -177,16 +177,51 @@ export const SECRET_RULES: ReadonlyArray<{
 	},
 ];
 
-export function scanTextForSecrets(text: string): SecretHit[] {
+/** A bounded scan's result: the hits it kept, and how many it found in all. */
+export type SecretScan = { hits: SecretHit[]; total: number };
+
+/**
+ * One hit per matching line: the first rule that matches it, with its
+ * 1-based line number — never the matched text.
+ *
+ * With `limit`, the scan keeps at most that many hits and only COUNTS the
+ * rest (`total`). That is the bound a caller holding a budget needs: a dense
+ * file — a credential assignment on every short line of a few megabytes —
+ * would otherwise materialise hundreds of thousands of hit objects before
+ * any cap downstream could drop them, and a worker scanning several such
+ * files can run out of memory on every retry. `limit` may be 0, which still
+ * answers whether the text has any hit at all, and how many. Without it the
+ * scan keeps every hit, as it always has, for callers whose input is small.
+ *
+ * The overload without `limit` is declared LAST on purpose: `Parameters<>`
+ * and `ReturnType<>` read the last signature, so a mock typed from this
+ * function (`vi.mocked(scanTextForSecrets)`) keeps the original shape.
+ */
+export function scanTextForSecrets(
+	text: string,
+	options: { limit: number },
+): SecretScan;
+export function scanTextForSecrets(text: string): SecretHit[];
+export function scanTextForSecrets(
+	text: string,
+	options?: { limit: number },
+): SecretHit[] | SecretScan {
+	const limit = options
+		? Math.max(0, options.limit)
+		: Number.POSITIVE_INFINITY;
 	const hits: SecretHit[] = [];
+	let total = 0;
 	const lines = text.split(/\r?\n/);
 	for (const [index, line] of lines.entries()) {
 		for (const rule of SECRET_RULES) {
 			if (rule.pattern.test(line)) {
-				hits.push({ rule: rule.id, line: index + 1 });
+				total++;
+				if (hits.length < limit) {
+					hits.push({ rule: rule.id, line: index + 1 });
+				}
 				break;
 			}
 		}
 	}
-	return hits;
+	return options ? { hits, total } : hits;
 }

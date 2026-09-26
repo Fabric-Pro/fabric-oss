@@ -225,7 +225,12 @@ describe("audit.taxonomy handler", () => {
 		// by a member or by disconnecting the integration; repository, branch,
 		// commit and counts, never a credential, file path or file content,
 		// Fizzy #2657) = 143.
-		expect(result.actions).toHaveLength(152);
+		// + 3 project.instructions.{published_unscanned,
+		// deferred_scan_issues_found, deferred_scan_incomplete} (a version
+		// published before its secret scan at the member's acknowledged
+		// request, and that scan's verdict when it is not clean; counts and
+		// rule ids only, Fizzy #2737) = 152 + 3 = 155.
+		expect(result.actions).toHaveLength(155);
 		expect(result.actions).toContain(
 			"project.context.repository_sync_configured",
 		);

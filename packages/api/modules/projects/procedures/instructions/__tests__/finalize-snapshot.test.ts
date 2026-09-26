@@ -19,6 +19,7 @@
  * `contexts/add-google-docs-context.ts`.
  */
 
+import { ORPCError } from "@orpc/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
@@ -29,6 +30,7 @@ const m = vi.hoisted(() => ({
 	getTemporalClient: vi.fn(),
 	workflowStart: vi.fn(),
 	assertInstructionSnapshotMutationAccess: vi.fn(),
+	assertProjectPermission: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -63,7 +65,13 @@ vi.mock("../../../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: builder,
 		requireProjectPermission: () => ({}),
-		Permissions: { INSTRUCTION_READ: "instruction:read" },
+		// The handler-side check a publish-first row adds (Fizzy #2737).
+		assertProjectPermission: (...a: unknown[]) =>
+			m.assertProjectPermission(...a),
+		Permissions: {
+			INSTRUCTION_READ: "instruction:read",
+			INSTRUCTION_UPDATE: "instruction:update",
+		},
 	};
 });
 
@@ -401,5 +409,73 @@ describe("projects.instructions.finalize", () => {
 			m.handlers.finalize!({ input: baseInput, context: ctx }),
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
 		expect(m.getInstructionSnapshot).not.toHaveBeenCalled();
+	});
+});
+
+describe("projects.instructions.finalize: publish first, scan afterwards (Fizzy #2737)", () => {
+	beforeEach(() => {
+		m.getInstructionSnapshot.mockResolvedValue({
+			id: "snap_1",
+			status: "RECEIVING",
+			userId: "user_1",
+			proposalStatus: null,
+			publishBeforeScan: true,
+		});
+	});
+
+	it("requires the finisher's publish permission and hands the row's opt-in to the workflow", async () => {
+		m.assertProjectPermission.mockResolvedValue(undefined);
+
+		await m.handlers.finalize!({ input: baseInput, context: ctx });
+
+		expect(m.assertProjectPermission).toHaveBeenCalledWith(
+			"proj_1",
+			"user_1",
+			"instruction:update",
+		);
+		const [, options] = m.workflowStart.mock.calls[0]! as [
+			string,
+			{ args: Array<Record<string, unknown>> },
+		];
+		expect(options.args[0]).toEqual({
+			snapshotId: "snap_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+			userId: "user_1",
+			publishBeforeScan: true,
+		});
+	});
+
+	it("refuses a finisher without the publish permission, and starts nothing", async () => {
+		m.assertProjectPermission.mockRejectedValue(
+			new ORPCError("FORBIDDEN", {
+				message: "Missing required permission: instruction:update",
+			}),
+		);
+
+		await expect(
+			m.handlers.finalize!({ input: baseInput, context: ctx }),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(m.workflowStart).not.toHaveBeenCalled();
+		expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
+	});
+
+	it("asks for nothing extra for an ordinary row", async () => {
+		m.getInstructionSnapshot.mockResolvedValue({
+			id: "snap_1",
+			status: "RECEIVING",
+			userId: "user_1",
+			proposalStatus: null,
+			publishBeforeScan: false,
+		});
+
+		await m.handlers.finalize!({ input: baseInput, context: ctx });
+
+		expect(m.assertProjectPermission).not.toHaveBeenCalled();
+		const [, options] = m.workflowStart.mock.calls[0]! as [
+			string,
+			{ args: Array<Record<string, unknown>> },
+		];
+		expect(options.args[0]).not.toHaveProperty("publishBeforeScan");
 	});
 });

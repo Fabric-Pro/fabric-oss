@@ -34,6 +34,19 @@ const RECEIVING_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
  */
 const DELETABLE_STATUSES = new Set(["READY", "REJECTED", "FAILED"]);
 
+/**
+ * The deferred-scan states (Fizzy #2737) in which History may not publish a
+ * version that went out before its secret scan: the server refuses these
+ * with `deferred_scan_unresolved`, so the row explains instead of offering a
+ * button that can only fail. Rolling back AWAY from such a version is a
+ * different row's button, and is unaffected.
+ */
+const SCAN_UNRESOLVED_STATUSES = new Set([
+	"PENDING",
+	"ISSUES_FOUND",
+	"INCOMPLETE",
+]);
+
 // `capRejections` (packages/temporal/src/activities/project-instructions.ts)
 // caps a gate's rejection list at 100 and appends this sentinel row instead
 // of an unbounded array — recognizable by `reason`, never a real file.
@@ -85,6 +98,19 @@ export type HistorySnapshot = {
 		| "MERGED"
 		| "CLOSED"
 		| null;
+	/**
+	 * Publish first, scan afterwards (Fizzy #2737): the member's opt-in, the
+	 * scan's state (null for every ordinary version), and its findings in the
+	 * same shape as `rejection`.
+	 */
+	publishBeforeScan?: boolean;
+	deferredScanStatus?:
+		| "PENDING"
+		| "PASSED"
+		| "ISSUES_FOUND"
+		| "INCOMPLETE"
+		| null;
+	deferredScanFindings?: InstructionRejection[] | null;
 };
 
 /**
@@ -206,6 +232,69 @@ export function InstructionsHistory({
 		return { label: t("readyPill"), variant: "secondary" as const };
 	}
 
+	/**
+	 * A publish-first version's scan outcome (Fizzy #2737), shown next to its
+	 * status badge; null for every ordinary version.
+	 */
+	function scanBadge(snapshot: HistorySnapshot) {
+		switch (snapshot.deferredScanStatus ?? null) {
+			case "PENDING":
+				return {
+					label: t("scanPendingPill"),
+					variant: "outline" as const,
+				};
+			case "PASSED":
+				return {
+					label: t("scanPassedPill"),
+					variant: "secondary" as const,
+				};
+			case "ISSUES_FOUND":
+				return {
+					label: t("scanIssuesPill"),
+					variant: "destructive" as const,
+				};
+			case "INCOMPLETE":
+				return {
+					label: t("scanIncompletePill"),
+					variant: "outline" as const,
+				};
+			default:
+				return null;
+		}
+	}
+
+	/** One line per rejection or finding, as the "See why" list has always shown them. */
+	function reasonRows(rows: InstructionRejection[]) {
+		const shown = rows.filter((r) => r.reason !== TRUNCATED_REASON);
+		const truncatedRow = rows.find((r) => r.reason === TRUNCATED_REASON);
+		return (
+			<div className="flex flex-col gap-1 rounded-md border border-border bg-muted/30 p-2 text-xs">
+				{shown.map((r, i) => (
+					<div
+						key={`${r.path}-${i}`}
+						className="flex items-center justify-between gap-2"
+					>
+						<code>{r.path}</code>
+						<span className="text-muted-foreground">
+							{r.reason === "secret"
+								? r.detail?.startsWith("filename:")
+									? tReason("credentialFile")
+									: (secretLabels[r.detail ?? ""] ?? r.detail)
+								: (reasonLabels[r.reason] ?? r.reason)}
+						</span>
+					</div>
+				))}
+				{truncatedRow ? (
+					<p className="text-muted-foreground">
+						{tReason("truncatedSummary", {
+							detail: truncatedRow.detail ?? "",
+						})}
+					</p>
+				) : null}
+			</div>
+		);
+	}
+
 	return (
 		<>
 			<Dialog open={open} onOpenChange={onOpenChange}>
@@ -239,13 +328,31 @@ export function InstructionsHistory({
 								s.proposalStatus === "MERGED" ||
 								s.proposalStatus === "CLOSED";
 							const badge = statusBadge(s, isPublished);
-							const rejectionRows =
-								s.rejection?.filter(
-									(r) => r.reason !== TRUNCATED_REASON,
-								) ?? [];
-							const truncatedRow = s.rejection?.find(
-								(r) => r.reason === TRUNCATED_REASON,
-							);
+							const scan = scanBadge(s);
+							// Everything else that decides the publish button,
+							// so the scan's own refusal is said only where the
+							// button would otherwise have been offered.
+							const publishable =
+								s.status === "READY" &&
+								!isPublished &&
+								!awaitingProposalDecision &&
+								!pullRequestSuggestion &&
+								publishAllowed &&
+								(!repositoryBacked ||
+									s.source === "REPOSITORY") &&
+								!publishedUnknown;
+							const scanBlocksPublish =
+								SCAN_UNRESOLVED_STATUSES.has(
+									s.deferredScanStatus ?? "",
+								);
+							// ISSUES_FOUND's findings, and an INCOMPLETE
+							// scan's when it found something before a file
+							// defeated its last attempt.
+							const findings =
+								s.deferredScanStatus === "ISSUES_FOUND" ||
+								s.deferredScanStatus === "INCOMPLETE"
+									? (s.deferredScanFindings ?? [])
+									: [];
 							return (
 								<div
 									key={s.id}
@@ -262,6 +369,22 @@ export function InstructionsHistory({
 												<Badge variant={badge.variant}>
 													{badge.label}
 												</Badge>
+												{s.publishBeforeScan && scan ? (
+													<>
+														<Badge variant="outline">
+															{t(
+																"publishedBeforeScanPill",
+															)}
+														</Badge>
+														<Badge
+															variant={
+																scan.variant
+															}
+														>
+															{scan.label}
+														</Badge>
+													</>
+												) : null}
 											</div>
 											<p className="text-muted-foreground text-xs">
 												{s.user?.name ??
@@ -284,14 +407,8 @@ export function InstructionsHistory({
 											</p>
 										</div>
 										<div className="flex shrink-0 gap-2">
-											{s.status === "READY" &&
-											!isPublished &&
-											!awaitingProposalDecision &&
-											!pullRequestSuggestion &&
-											publishAllowed &&
-											(!repositoryBacked ||
-												s.source === "REPOSITORY") &&
-											!publishedUnknown ? (
+											{publishable &&
+											!scanBlocksPublish ? (
 												<Button
 													size="sm"
 													variant="outline"
@@ -385,10 +502,31 @@ export function InstructionsHistory({
 													{t("seeWhyAction")}
 												</Button>
 											) : null}
+											{findings.length > 0 ? (
+												<Button
+													size="sm"
+													variant="ghost"
+													onClick={() =>
+														setExpandedId(
+															expandedId === s.id
+																? null
+																: s.id,
+														)
+													}
+												>
+													{t("seeFindingsAction")}
+												</Button>
+											) : null}
+											{/* Not while its scan is still running: the
+											    scan reads this version's rows, and
+											    deleting them mid-scan only turns a
+											    verdict into "could not finish". */}
 											{!isPublished &&
 											!awaitingProposalDecision &&
 											canMutate &&
-											DELETABLE_STATUSES.has(s.status) ? (
+											DELETABLE_STATUSES.has(s.status) &&
+											s.deferredScanStatus !==
+												"PENDING" ? (
 												<Button
 													size="sm"
 													variant="ghost"
@@ -419,46 +557,23 @@ export function InstructionsHistory({
 											) : null}
 										</div>
 									</div>
-									{expandedId === s.id && s.rejection ? (
-										<div className="flex flex-col gap-1 rounded-md border border-border bg-muted/30 p-2 text-xs">
-											{rejectionRows.map((r, i) => (
-												<div
-													key={`${r.path}-${i}`}
-													className="flex items-center justify-between gap-2"
-												>
-													<code>{r.path}</code>
-													<span className="text-muted-foreground">
-														{r.reason === "secret"
-															? r.detail?.startsWith(
-																	"filename:",
-																)
-																? tReason(
-																		"credentialFile",
-																	)
-																: (secretLabels[
-																		r.detail ??
-																			""
-																	] ??
-																	r.detail)
-															: (reasonLabels[
-																	r.reason
-																] ?? r.reason)}
-													</span>
-												</div>
-											))}
-											{truncatedRow ? (
-												<p className="text-muted-foreground">
-													{tReason(
-														"truncatedSummary",
-														{
-															detail:
-																truncatedRow.detail ??
-																"",
-														},
-													)}
-												</p>
-											) : null}
-										</div>
+									{publishable && scanBlocksPublish ? (
+										<p className="text-muted-foreground text-xs">
+											{t("publishBlockedByScan")}
+										</p>
+									) : null}
+									{expandedId === s.id && s.rejection
+										? reasonRows(s.rejection)
+										: null}
+									{expandedId === s.id && findings.length > 0
+										? reasonRows(findings)
+										: null}
+									{expandedId === s.id &&
+									findings.length > 0 &&
+									s.deferredScanStatus === "INCOMPLETE" ? (
+										<p className="text-muted-foreground text-xs">
+											{t("scanIncompleteFindingsNote")}
+										</p>
 									) : null}
 								</div>
 							);

@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
 	listPendingAbandoned: vi.fn(),
 	listStaleValidating: vi.fn(),
 	failStaleValidating: vi.fn(),
+	listStaleDeferredScans: vi.fn(),
+	markDeferredScanIncomplete: vi.fn(),
 	rejectAbandoned: vi.fn(),
 	markSwept: vi.fn(),
 	rotateAbandoned: vi.fn(),
@@ -42,6 +44,10 @@ vi.mock("@repo/database", () => ({
 		mocks.listStaleValidating(...a),
 	failStaleValidatingInstructionSnapshot: (...a: unknown[]) =>
 		mocks.failStaleValidating(...a),
+	listStaleDeferredScanInstructionSnapshots: (...a: unknown[]) =>
+		mocks.listStaleDeferredScans(...a),
+	markStaleDeferredScanIncomplete: (...a: unknown[]) =>
+		mocks.markDeferredScanIncomplete(...a),
 	rejectAbandonedInstructionSnapshot: (...a: unknown[]) =>
 		mocks.rejectAbandoned(...a),
 	markAbandonedInstructionSnapshotSwept: (...a: unknown[]) =>
@@ -92,6 +98,7 @@ vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 
 // Imported AFTER the mocks so the activity captures them.
 import {
+	DEFERRED_SCAN_STALE_AFTER_MS,
 	RECEIVING_ABANDON_AFTER_MS,
 	VALIDATING_STALE_AFTER_MS,
 } from "@repo/instructions";
@@ -126,6 +133,27 @@ function servePrunePopulation(population: PruneCandidate[]): void {
 	);
 }
 
+/**
+ * Serves phase 0b's candidate query from a fixed population, with the
+ * query's own OFFSET/LIMIT/total semantics, as `servePrunePopulation` does
+ * for the prune.
+ */
+function serveDeferredScanPopulation(
+	population: Array<{
+		id: string;
+		projectId: string;
+		organizationId: string;
+		updatedAt: Date;
+	}>,
+): void {
+	mocks.listStaleDeferredScans.mockImplementation(
+		async (_cutoff: Date, limit: number, offset: number) => ({
+			candidates: population.slice(offset, offset + limit),
+			total: population.length,
+		}),
+	);
+}
+
 beforeEach(() => {
 	for (const m of Object.values(mocks)) {
 		m.mockReset();
@@ -134,6 +162,8 @@ beforeEach(() => {
 	mocks.listPendingAbandoned.mockResolvedValue([]);
 	mocks.listStaleValidating.mockResolvedValue([]);
 	mocks.failStaleValidating.mockResolvedValue({ changed: true });
+	serveDeferredScanPopulation([]);
+	mocks.markDeferredScanIncomplete.mockResolvedValue({ changed: true });
 	mocks.rejectAbandoned.mockResolvedValue({ changed: true });
 	mocks.markSwept.mockResolvedValue({ changed: true });
 	mocks.rotateAbandoned.mockResolvedValue({ rotated: true });
@@ -1460,5 +1490,267 @@ describe("reapInstructionSnapshots: the global run budgets", () => {
 			storageTruncated: true,
 			hitCap: true,
 		});
+	});
+});
+
+/**
+ * PHASE 0b (Fizzy #2737). A version published before its secret scan whose
+ * workflow is gone before it recorded a verdict: READY, scan PENDING, and
+ * nothing else would ever move it. Modelled on phase 0 — decided on the
+ * EXECUTION, never on age alone, and written as a compare-and-set on the row
+ * version the sweep described.
+ */
+describe("reapInstructionSnapshots: stranded deferred scans", () => {
+	function pendingRow(
+		id: string,
+		projectId = "p1",
+		organizationId = "o1",
+		updatedAt = new Date("2026-09-26T10:00:00.000Z"),
+	) {
+		return { id, projectId, organizationId, updatedAt };
+	}
+
+	it("asks for candidates older than the shared deferred-scan threshold", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-26T12:00:00.000Z"));
+
+		await reapInstructionSnapshots();
+
+		const [cutoff, limit, offset] =
+			mocks.listStaleDeferredScans.mock.calls[0] ?? [];
+		// Shared with the tab's polling decision, like phase 0's threshold.
+		expect((cutoff as Date).getTime()).toBe(
+			Date.now() - DEFERRED_SCAN_STALE_AFTER_MS,
+		);
+		expect(limit).toBe(100);
+		// The head page first: it is where the population's size comes from.
+		expect(offset).toBe(0);
+	});
+
+	/**
+	 * The rotation (Fizzy #2737 review). A RUNNING or unknown row is skipped
+	 * without being written, so it keeps its place; with a fixed oldest page,
+	 * a hundred such rows at the head were re-selected every hour and a dead
+	 * row behind them stayed PENDING forever.
+	 */
+	describe("the candidate rotation", () => {
+		const SLICE = 100;
+		/** `size` pending rows in the query's order; ids `snap_000`… */
+		function pendingPopulation(size: number) {
+			return Array.from({ length: size }, (_, i) =>
+				pendingRow(`snap_${String(i).padStart(3, "0")}`),
+			);
+		}
+
+		/** Every execution RUNNING except the ones named, which have closed. */
+		function closedOnly(...ids: string[]) {
+			mocks.getHandle.mockImplementation((workflowId: string) => ({
+				describe: async () => ({
+					status: {
+						name: ids.some(
+							(id) =>
+								workflowId ===
+								`project-instruction-snapshot-${id}`,
+						)
+							? "FAILED"
+							: "RUNNING",
+					},
+				}),
+			}));
+		}
+
+		function markedIds(): string[] {
+			return mocks.markDeferredScanIncomplete.mock.calls.map(
+				(call) => (call[0] as { snapshotId: string }).snapshotId,
+			);
+		}
+
+		it("advances one whole slice per hour, from the run's own clock", async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date(Date.UTC(1970, 0, 1, 3)));
+			serveDeferredScanPopulation(pendingPopulation(1_000));
+			closedOnly();
+
+			await reapInstructionSnapshots();
+
+			expect(
+				mocks.listStaleDeferredScans.mock.calls.map((call) => call[2]),
+			).toEqual([0, (3 * SLICE) % 1_000]);
+		});
+
+		it("reaches a dead row behind a full page of RUNNING rows within ceil(total / slice) runs", async () => {
+			vi.useFakeTimers();
+			const population = pendingPopulation(SLICE + 1);
+			serveDeferredScanPopulation(population);
+			// The whole first page is live; only the row behind it is dead.
+			closedOnly("snap_100");
+
+			vi.setSystemTime(new Date(Date.UTC(1970, 0, 1, 0)));
+			const first = await reapInstructionSnapshots();
+			// Hour 0's window is the head page: the dead row is not in it.
+			expect(markedIds()).toEqual([]);
+			expect(first.skippedLive).toBe(SLICE);
+
+			vi.setSystemTime(new Date(Date.UTC(1970, 0, 1, 1)));
+			await reapInstructionSnapshots();
+
+			// Within ceil(101 / 100) = 2 runs it was inspected and closed out,
+			// bound to the version it was listed with.
+			expect(markedIds()).toEqual(["snap_100"]);
+			expect(mocks.markDeferredScanIncomplete).toHaveBeenCalledWith({
+				snapshotId: "snap_100",
+				projectId: "p1",
+				organizationId: "o1",
+				observedUpdatedAt: population[100]?.updatedAt,
+			});
+		});
+
+		it("fills a rotated page that reached the END from the head, without inspecting a row twice", async () => {
+			vi.useFakeTimers();
+			// Hour 1 and 150 rows: offset 100, so the rotated page is 50 rows
+			// and the other 50 wrap to the start of the order.
+			vi.setSystemTime(new Date(Date.UTC(1970, 0, 1, 1)));
+			const population = pendingPopulation(150);
+			serveDeferredScanPopulation(population);
+			closedOnly();
+
+			await reapInstructionSnapshots();
+
+			const inspected = mocks.getHandle.mock.calls.map(
+				(call) => call[0] as string,
+			);
+			expect(inspected).toEqual(
+				[...population.slice(100), ...population.slice(0, 50)].map(
+					(row) => `project-instruction-snapshot-${row.id}`,
+				),
+			);
+		});
+	});
+
+	it.each([
+		[
+			"has CLOSED",
+			() =>
+				mocks.describe.mockResolvedValue({
+					status: { name: "FAILED" },
+				}),
+		],
+		[
+			"is unknown to Temporal",
+			() =>
+				mocks.describe.mockRejectedValue(
+					new WorkflowNotFoundError("not found"),
+				),
+		],
+	])(
+		"records INCOMPLETE when the execution %s, bound to the row's tenant and version",
+		async (_l, arrange) => {
+			serveDeferredScanPopulation([
+				pendingRow(
+					"snap_pending",
+					"p7",
+					"o7",
+					new Date("2026-09-26T09:00:00.000Z"),
+				),
+			]);
+			arrange();
+
+			const result = await reapInstructionSnapshots();
+
+			expect(mocks.getHandle).toHaveBeenCalledWith(
+				"project-instruction-snapshot-snap_pending",
+			);
+			expect(mocks.markDeferredScanIncomplete).toHaveBeenCalledWith({
+				snapshotId: "snap_pending",
+				projectId: "p7",
+				organizationId: "o7",
+				observedUpdatedAt: new Date("2026-09-26T09:00:00.000Z"),
+			});
+			// NO storage work: the objects are the version's published bytes.
+			expect(mocks.listObjects).not.toHaveBeenCalled();
+			expect(mocks.deleteObjects).not.toHaveBeenCalled();
+			expect(result).toMatchObject({
+				staleDeferredScans: 1,
+				incompleteDeferredScans: 1,
+				skippedLive: 0,
+				errorCount: 0,
+			});
+		},
+	);
+
+	it("leaves a row whose workflow is still RUNNING to that workflow", async () => {
+		serveDeferredScanPopulation([pendingRow("snap_live")]);
+		mocks.describe.mockResolvedValue({ status: { name: "RUNNING" } });
+
+		const result = await reapInstructionSnapshots();
+
+		expect(mocks.markDeferredScanIncomplete).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			staleDeferredScans: 1,
+			incompleteDeferredScans: 0,
+			skippedLive: 1,
+		});
+	});
+
+	it("counts a row whose liveness cannot be established, and writes nothing", async () => {
+		serveDeferredScanPopulation([pendingRow("snap_unknown")]);
+		mocks.describe.mockRejectedValue(
+			Object.assign(new Error("deadline exceeded"), { code: 4 }),
+		);
+
+		const result = await reapInstructionSnapshots();
+
+		expect(mocks.markDeferredScanIncomplete).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			incompleteDeferredScans: 0,
+			errorCount: 1,
+		});
+	});
+
+	it("does not count a compare-and-set that matched nothing", async () => {
+		// The workflow recorded its verdict between the describe and the write.
+		serveDeferredScanPopulation([pendingRow("snap_raced")]);
+		mocks.describe.mockResolvedValue({ status: { name: "COMPLETED" } });
+		mocks.markDeferredScanIncomplete.mockResolvedValue({ changed: false });
+
+		const result = await reapInstructionSnapshots();
+
+		expect(mocks.markDeferredScanIncomplete).toHaveBeenCalledTimes(1);
+		expect(result).toMatchObject({
+			staleDeferredScans: 1,
+			incompleteDeferredScans: 0,
+			errorCount: 0,
+		});
+	});
+
+	it("asks Temporal about a deferred-scan candidate even when no other phase has one", async () => {
+		serveDeferredScanPopulation([pendingRow("snap_only")]);
+		mocks.describe.mockResolvedValue({ status: { name: "TERMINATED" } });
+
+		await reapInstructionSnapshots();
+
+		expect(mocks.getTemporalClient).toHaveBeenCalledTimes(1);
+		expect(mocks.markDeferredScanIncomplete).toHaveBeenCalledTimes(1);
+	});
+
+	it("logs counts only, and reports hitCap when the candidate page comes back full", async () => {
+		serveDeferredScanPopulation(
+			Array.from({ length: 100 }, (_, i) => pendingRow(`snap_${i}`)),
+		);
+		mocks.describe.mockResolvedValue({ status: { name: "RUNNING" } });
+
+		const result = await reapInstructionSnapshots();
+
+		const [logged] = mocks.loggerInfo.mock.calls.find(
+			([fields]) =>
+				(fields as { event?: string }).event ===
+				"instructions.reaper.deferred_scans_closed",
+		)!;
+		expect(logged).toEqual({
+			event: "instructions.reaper.deferred_scans_closed",
+			scanned: 100,
+			incomplete: 0,
+		});
+		expect(result.hitCap).toBe(true);
 	});
 });

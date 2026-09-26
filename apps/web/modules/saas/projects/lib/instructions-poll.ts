@@ -13,10 +13,13 @@
  * It also answers when to KEEP polling past a terminal status: READY is
  * written one activity before the project's published pointer moves, so
  * stopping on READY alone left the tab showing the previous tree — see
- * `instructionsAwaitsPublish`.
+ * `instructionsAwaitsPublish`. And a version published before its secret scan
+ * (Fizzy #2737) is READY while that scan is still PENDING, so READY alone is
+ * not "nothing left to watch" either — see `isInFlight`.
  */
 
 import {
+	DEFERRED_SCAN_STALE_AFTER_MS,
 	RECEIVING_ABANDON_AFTER_MS,
 	VALIDATING_STALE_AFTER_MS,
 } from "@repo/instructions";
@@ -25,7 +28,14 @@ import {
 const ACTIVE_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
 
 /** The fields the "is this still in flight" decision reads off a snapshot. */
-type PollRow = { status: string; createdAt?: string | Date | null };
+type PollRow = {
+	status: string;
+	createdAt?: string | Date | null;
+	/** Fizzy #2737: a READY version whose deferred secret scan is running. */
+	deferredScanStatus?: string | null;
+	/** When the version became readable; what a pending scan is dated from. */
+	readyAt?: string | Date | null;
+};
 
 /** One pass of the hourly reaper schedule, as the tab's slack allowance. */
 const ONE_REAPER_CYCLE_MS = 60 * 60 * 1000;
@@ -57,6 +67,22 @@ const VALIDATING_ABANDON_AFTER_MS =
 	RECEIVING_ABANDON_AFTER_MS +
 	VALIDATING_STALE_AFTER_MS +
 	ONE_REAPER_CYCLE_MS;
+
+/**
+ * How old — by `readyAt` — a READY version's PENDING deferred scan (Fizzy
+ * #2737) has to be before the tab stops waiting for its verdict: the reaper's
+ * own threshold, `DEFERRED_SCAN_STALE_AFTER_MS`, measured from the same
+ * column, plus one full cycle for the hourly sweep to record INCOMPLETE. Same
+ * reasoning as above: erring long only costs a slow poll, and the verdict
+ * stops it on its own.
+ */
+const DEFERRED_SCAN_ABANDON_AFTER_MS =
+	DEFERRED_SCAN_STALE_AFTER_MS + ONE_REAPER_CYCLE_MS;
+
+/** The time at `value`, or NaN when there is no usable one. */
+function timeOf(value: string | Date | null | undefined): number {
+	return value == null ? Number.NaN : new Date(value).getTime();
+}
 
 /**
  * Whether a snapshot is still work in progress.
@@ -94,8 +120,23 @@ const VALIDATING_ABANDON_AFTER_MS =
  * A row with no usable `createdAt` counts as active. The age is the only
  * thing that can retire it, so no age means the conservative answer — the
  * bounded fast/slow backoff still applies.
+ *
+ * A READY row whose deferred secret scan is PENDING (Fizzy #2737) is in flight
+ * too: the version is readable, and the tab has a verdict to show when the
+ * scan lands. The same rule, by `readyAt` against the reaper's
+ * `DEFERRED_SCAN_STALE_AFTER_MS`, retires one whose workflow died.
  */
 function isInFlight(snapshot: PollRow, now: number): boolean {
+	if (
+		snapshot.status === "READY" &&
+		snapshot.deferredScanStatus === "PENDING"
+	) {
+		const readyAt = timeOf(snapshot.readyAt);
+		return (
+			Number.isNaN(readyAt) ||
+			now - readyAt <= DEFERRED_SCAN_ABANDON_AFTER_MS
+		);
+	}
 	if (!ACTIVE_STATUSES.has(snapshot.status)) {
 		return false;
 	}
@@ -217,13 +258,26 @@ export function instructionsAwaitsPublish(input: {
  * `now` is an argument rather than a `Date.now()` inside this function: the
  * caller already reads the clock once per decision, and a pure helper is what
  * makes the age boundary testable at all.
+ *
+ * `published` is the pointer query's own row. A version published before its
+ * scan can be the pointer without being in the list's first page of rows the
+ * tab happens to hold, and the published view renders its alert off THAT row,
+ * so both queries keep polling while it is pending (Fizzy #2737).
  */
 export function instructionsPollInterval(
 	snapshots: ReadonlyArray<PollRow> | undefined,
 	elapsedMs: number,
-	options: { awaitingPublish?: boolean; now: number },
+	options: {
+		awaitingPublish?: boolean;
+		now: number;
+		published?: PollRow | null;
+	},
 ): number | false {
-	const active = snapshots?.some((s) => isInFlight(s, options.now));
+	const active =
+		snapshots?.some((s) => isInFlight(s, options.now)) ||
+		(options.published
+			? isInFlight(options.published, options.now)
+			: false);
 	if (!active && !options.awaitingPublish) {
 		return false;
 	}

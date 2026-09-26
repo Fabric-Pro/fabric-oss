@@ -27,6 +27,7 @@ import { Textarea } from "@ui/components/textarea";
 import { useTranslations } from "next-intl";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
+import { PublishBeforeScanOption } from "./PublishBeforeScanOption";
 
 /** The admission refusals the dialog names with its own copy (spec §5.3). */
 const ADMISSION_REFUSALS = new Set([
@@ -155,6 +156,7 @@ export function AddInstructionFileDialog({
 	proposalOnly = false,
 	canPropose = false,
 	repositoryTarget = null,
+	canPublishBeforeScan = false,
 	onAdded,
 }: {
 	projectId: string;
@@ -174,6 +176,12 @@ export function AddInstructionFileDialog({
 	 * one.
 	 */
 	repositoryTarget?: { repository: string; ref: string } | null;
+	/**
+	 * Offer "publish now and scan afterwards" on a direct version (Fizzy
+	 * #2737): only for a member who may publish (INSTRUCTION_UPDATE), never on
+	 * a proposal. A UI gate; `derive` re-checks it.
+	 */
+	canPublishBeforeScan?: boolean;
 	onAdded: () => void;
 }) {
 	const t = useTranslations("projects.codingInstructions.addFileDialog");
@@ -181,6 +189,8 @@ export function AddInstructionFileDialog({
 	const [file, setFile] = useState<File | null>(null);
 	const [path, setPath] = useState("");
 	const [publishOnReady, setPublishOnReady] = useState(true);
+	const [publishBeforeScan, setPublishBeforeScan] = useState(false);
+	const [acknowledged, setAcknowledged] = useState(false);
 	const [noteTitle, setNoteTitle] = useState("");
 	const [noteBody, setNoteBody] = useState("");
 	// The server's NOTE_REJECTED, shown under the field it names until that
@@ -190,11 +200,20 @@ export function AddInstructionFileDialog({
 		message: string;
 	} | null>(null);
 	const offersProposal = proposalOnly || canPropose;
+	// A direct version only: the option is not rendered in reader mode, and a
+	// proposal never sends it.
+	const fastPath =
+		canPublishBeforeScan &&
+		!proposalOnly &&
+		publishOnReady &&
+		publishBeforeScan;
 
 	function reset() {
 		setFile(null);
 		setPath("");
 		setPublishOnReady(true);
+		setPublishBeforeScan(false);
+		setAcknowledged(false);
 		setNoteTitle("");
 		setNoteBody("");
 		setServerNoteRefusal(null);
@@ -219,6 +238,7 @@ export function AddInstructionFileDialog({
 				proposal,
 				// A direct version stores no note, so none is sent with one.
 				...(proposal && note ? { note } : {}),
+				...(!proposal && fastPath ? { publishBeforeScan: true } : {}),
 				edits: [{ op: "put", path: path.trim(), body: picked }],
 			}),
 		onSuccess: (_result, input) => {
@@ -446,6 +466,17 @@ export function AddInstructionFileDialog({
 							{t("publishOnReady")}
 						</label>
 					) : null}
+					{!proposalOnly && canPublishBeforeScan ? (
+						<PublishBeforeScanOption
+							idPrefix="add-instruction"
+							publishOnReady={publishOnReady}
+							checked={publishBeforeScan}
+							onCheckedChange={setPublishBeforeScan}
+							acknowledged={acknowledged}
+							onAcknowledgedChange={setAcknowledged}
+							disabled={add.isPending}
+						/>
+					) : null}
 				</div>
 				<DialogFooter>
 					<Button
@@ -457,7 +488,7 @@ export function AddInstructionFileDialog({
 					</Button>
 					{!proposalOnly ? (
 						<Button
-							disabled={!canSubmit}
+							disabled={!canSubmit || (fastPath && !acknowledged)}
 							onClick={() => {
 								if (file) {
 									add.mutate({

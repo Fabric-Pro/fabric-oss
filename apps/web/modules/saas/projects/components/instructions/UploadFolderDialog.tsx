@@ -21,6 +21,7 @@ import {
 	readFolderFiles,
 } from "../../lib/read-folder";
 import { uploadSnapshot } from "../../lib/upload-snapshot";
+import { PublishBeforeScanOption } from "./PublishBeforeScanOption";
 
 type Row = {
 	path: string;
@@ -95,6 +96,7 @@ export function UploadFolderDialog({
 	onUploaded,
 	projectGlobs,
 	settingsReady = true,
+	canPublishBeforeScan = false,
 }: {
 	projectId: string;
 	open: boolean;
@@ -112,6 +114,11 @@ export function UploadFolderDialog({
 	 * this component's own test) keep picking immediately.
 	 */
 	settingsReady?: boolean;
+	/**
+	 * Offer "publish now and scan afterwards" (Fizzy #2737): only for a member
+	 * who may publish (INSTRUCTION_UPDATE). A UI gate; `begin` re-checks it.
+	 */
+	canPublishBeforeScan?: boolean;
 }) {
 	const t = useTranslations("projects.codingInstructions.uploadDialog");
 	const folderInputRef = useRef<HTMLInputElement>(null);
@@ -137,6 +144,16 @@ export function UploadFolderDialog({
 	// mid-read would be computed from a list missing the first one.
 	const [reading, setReading] = useState(false);
 	const [publishOnReady, setPublishOnReady] = useState(true);
+	// The publish-first choice and its acknowledgement. Reset on close: the
+	// acknowledgement is for this upload, not for the dialog's lifetime.
+	const [publishBeforeScan, setPublishBeforeScan] = useState(false);
+	const [acknowledged, setAcknowledged] = useState(false);
+	const fastPath =
+		canPublishBeforeScan && publishOnReady && publishBeforeScan;
+	// Which choice the pending snapshot was registered with. The server freezes
+	// it at `begin`, so a retry may resume that snapshot only while the choice
+	// is unchanged; a changed one starts a fresh upload, as a changed pick does.
+	const pendingFastPath = useRef(false);
 	const [progress, setProgress] = useState<{
 		done: number;
 		total: number;
@@ -205,6 +222,8 @@ export function UploadFolderDialog({
 
 	function close() {
 		resetPicked();
+		setPublishBeforeScan(false);
+		setAcknowledged(false);
 		onOpenChange(false);
 	}
 
@@ -372,8 +391,16 @@ export function UploadFolderDialog({
 				entries,
 				fabricIgnoreText,
 				publishOnReady,
-				resumeSnapshotId: pendingSnapshotId ?? undefined,
-				onSnapshotStarted: setPendingSnapshotId,
+				publishBeforeScan: fastPath,
+				resumeSnapshotId:
+					pendingSnapshotId !== null &&
+					pendingFastPath.current === fastPath
+						? pendingSnapshotId
+						: undefined,
+				onSnapshotStarted: (id) => {
+					pendingFastPath.current = fastPath;
+					setPendingSnapshotId(id);
+				},
 				onProgress: (done, total) => setProgress({ done, total }),
 			});
 			onUploaded(snapshotId);
@@ -717,6 +744,17 @@ export function UploadFolderDialog({
 							/>
 							{t("publishOnReady")}
 						</label>
+						{canPublishBeforeScan ? (
+							<PublishBeforeScanOption
+								idPrefix="upload"
+								publishOnReady={publishOnReady}
+								checked={publishBeforeScan}
+								onCheckedChange={setPublishBeforeScan}
+								acknowledged={acknowledged}
+								onAcknowledgedChange={setAcknowledged}
+								disabled={progress !== null}
+							/>
+						) : null}
 						{progress ? (
 							<p aria-live="polite" className="text-sm">
 								{t("progress", {
@@ -760,7 +798,8 @@ export function UploadFolderDialog({
 										progress !== null ||
 										reading ||
 										tooManyFiles ||
-										tooManyBytes
+										tooManyBytes ||
+										(fastPath && !acknowledged)
 									}
 								>
 									<UploadIcon

@@ -35,13 +35,17 @@ import { UploadFolderDialog } from "./UploadFolderDialog";
  *
  * `createdAt` is what retires a RECEIVING row whose upload was abandoned:
  * `finalize` was never called, so no workflow will ever move it and there is
- * nothing to wait for (see `instructions-poll.ts`).
+ * nothing to wait for (see `instructions-poll.ts`). `deferredScanStatus` and
+ * `readyAt` keep the poll going while a version published before its secret
+ * scan waits for that scan's verdict (Fizzy #2737).
  */
 type PollSnapshot = {
 	id: string;
 	status: string;
 	publishOnReady?: boolean;
 	createdAt?: string | Date | null;
+	deferredScanStatus?: string | null;
+	readyAt?: string | Date | null;
 };
 
 export function CodingInstructionsTab({
@@ -91,6 +95,9 @@ export function CodingInstructionsTab({
 	// does not re-render at all.
 	const snapshotsRef = useRef<PollSnapshot[] | undefined>(undefined);
 	const publishedIdRef = useRef<string | null>(null);
+	// The pointer row itself, for the same reason: its own pending deferred
+	// scan keeps both queries polling (`instructionsPollInterval`).
+	const publishedRowRef = useRef<PollSnapshot | null>(null);
 	// Whether a repository sync run is open, for the list's own interval: a
 	// run creates its snapshot from a worker, and until that row exists
 	// nothing in the list is in flight to keep the poll going.
@@ -114,6 +121,7 @@ export function CodingInstructionsTab({
 		const elapsedMs = now - mountedAt.current;
 		const interval = instructionsPollInterval(snapshots, elapsedMs, {
 			now,
+			published: publishedRowRef.current,
 			awaitingPublish: instructionsAwaitsPublish({
 				snapshots,
 				publishedId: publishedIdRef.current,
@@ -189,6 +197,38 @@ export function CodingInstructionsTab({
 	snapshotsRef.current = latest.data as PollSnapshot[] | undefined;
 	publishedIdRef.current =
 		(published.data as { id?: string } | null | undefined)?.id ?? null;
+	publishedRowRef.current =
+		(published.data as PollSnapshot | null | undefined) ?? null;
+
+	// The two queries are polled separately, so when a deferred scan's verdict
+	// lands (Fizzy #2737) one of them can hold it a tick before the other. The
+	// published view renders its alert off the POINTER row and History off the
+	// list, so a disagreement between the two about the same version is
+	// re-read at once rather than left on screen until the next tick.
+	const publishedRow = publishedRowRef.current;
+	const listedPublished = publishedRow
+		? snapshotsRef.current?.find((s) => s.id === publishedRow.id)
+		: undefined;
+	const deferredScanDisagrees =
+		publishedRow !== null &&
+		listedPublished !== undefined &&
+		(listedPublished.deferredScanStatus ?? null) !==
+			(publishedRow.deferredScanStatus ?? null);
+	useEffect(() => {
+		if (!deferredScanDisagrees) {
+			return;
+		}
+		queryClient.invalidateQueries({
+			queryKey: orpc.projects.instructions.getPublished.queryOptions({
+				input: { projectId },
+			}).queryKey,
+		});
+		queryClient.invalidateQueries({
+			queryKey: orpc.projects.instructions.list.queryOptions({
+				input: { projectId },
+			}).queryKey,
+		});
+	}, [deferredScanDisagrees, projectId, queryClient]);
 
 	const newest = snapshotsRef.current?.[0];
 	const newestId = newest?.id;
@@ -352,6 +392,9 @@ export function CodingInstructionsTab({
 			onUploaded={invalidate}
 			projectGlobs={settings.data?.ignoreGlobs ?? null}
 			settingsReady={!settings.isLoading}
+			// Publishing before the scan (Fizzy #2737) needs the publish
+			// permission as well as the upload one; `begin` re-checks both.
+			canPublishBeforeScan={canEdit && canReview}
 		/>
 	);
 	const configureDialog =

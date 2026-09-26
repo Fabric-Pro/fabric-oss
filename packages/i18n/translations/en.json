@@ -1636,7 +1636,10 @@
 						"pull_request_reconciled": "Coding-instructions pull request reconciled",
 						"pull_request_close_requested": "Coding-instructions pull request close requested",
 						"pull_request_retry_requested": "Coding-instructions pull request retry requested",
-						"pull_request_merge_sync_requested": "Coding-instructions merge sync requested"
+						"pull_request_merge_sync_requested": "Coding-instructions merge sync requested",
+						"published_unscanned": "Coding instructions published before secret scan",
+						"deferred_scan_issues_found": "Coding-instructions secret scan found issues after publishing",
+						"deferred_scan_incomplete": "Coding-instructions secret scan could not finish"
 					}
 				},
 				"story": {
@@ -5559,6 +5562,13 @@
 				"serverExcludedNotice": "{count} files were left out because they match the project's current settings and were not uploaded.",
 				"done": "Done"
 			},
+			"publishBeforeScan": {
+				"label": "Publish now and scan afterwards",
+				"requiresPublishOnReady": "Only available when the version publishes as soon as it passes checks.",
+				"warningTitle": "These files will be published before they are scanned for secrets",
+				"warningBody": "Until the scan finishes, a secret in these files may be visible to project members and synced to their machines by the Fabric CLI. If the scan finds one, this version stays published until a fixed or earlier version is published, and files already synced stay on those machines.",
+				"acknowledge": "I understand the risk and want to publish before the scan"
+			},
 			"tree": {
 				"searchLabel": "Search files",
 				"searchPlaceholder": "Search by path, name or description",
@@ -5682,7 +5692,15 @@
 				"anonymousUser": "a member",
 				"filesStored": "{count} files stored",
 				"editedFrom": "edited from version {version}",
-				"compareAction": "Compare with published"
+				"compareAction": "Compare with published",
+				"publishedBeforeScanPill": "Published before scan",
+				"scanPendingPill": "Scan pending",
+				"scanPassedPill": "Scan passed",
+				"scanIssuesPill": "Issues found",
+				"scanIncompletePill": "Scan incomplete",
+				"seeFindingsAction": "See findings",
+				"publishBlockedByScan": "This version was published before its secret scan, and it can be published from History only once that scan has passed.",
+				"scanIncompleteFindingsNote": "The scan also could not check every file, so files not listed here may hold more."
 			},
 			"settingsDialog": {
 				"title": "Coding-instructions settings",
@@ -5731,7 +5749,16 @@
 				"noChangesFromBase": "No file changes from version {baseVersion}.",
 				"compareButton": "See what changed",
 				"suggestChangeButton": "Suggest a change",
-				"suggestionsButton": "Suggested changes"
+				"suggestionsButton": "Suggested changes",
+				"deferredScanPendingTitle": "Version {version} was published before its secret scan finished",
+				"deferredScanPendingBody": "The scan is running now. Until it finishes, anything in these files is visible to project members and may be synced to their machines by the Fabric CLI.",
+				"deferredScanIssuesTitle": "The secret scan found possible secrets in published version {version}",
+				"deferredScanIssuesBody": "Version {version} was published before its scan and stays published until it is replaced. Fix the files and publish a new version, or publish an earlier version from History. Copies already synced to members' machines stay there, so rotate any real credential.",
+				"deferredScanIncompleteTitle": "The secret scan of version {version} could not finish",
+				"deferredScanIncompleteBody": "Nothing was found, but this version has not been checked. Edit or re-upload the files to scan them again.",
+				"deferredScanHistoryButton": "Open History",
+				"deferredScanIncompleteFindingsTitle": "The secret scan found possible secrets in published version {version} but could not check every file",
+				"deferredScanIncompleteFindingsBody": "Version {version} stays published until it is replaced. Below is what the scan found before it stopped; the files it could not check may hold more. Fix the files and publish a new version, or publish an earlier version from History. Copies already synced to members' machines stay there, so rotate any real credential."
 			},
 			"repositorySync": {
 				"running": "Syncing from the repository…",

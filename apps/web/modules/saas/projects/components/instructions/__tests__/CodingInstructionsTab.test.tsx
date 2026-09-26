@@ -649,3 +649,110 @@ describe("CodingInstructionsTab reader proposals", () => {
 		expect(screen.getByTestId("can-read")).toHaveTextContent("true");
 	});
 });
+
+/**
+ * Publish first, scan afterwards (Fizzy #2737). A version published before
+ * its secret scan is READY and IS the pointer while that scan runs, so
+ * neither the list's terminal status nor the convergence rule keeps the tab
+ * polling; the pending scan has to, until its verdict lands.
+ */
+describe("CodingInstructionsTab deferred secret scan", () => {
+	function scanned(deferredScanStatus: string) {
+		return {
+			...snapshot("snap_2", "READY"),
+			publishBeforeScan: true,
+			deferredScanStatus,
+			readyAt: new Date(Date.now()),
+		};
+	}
+
+	it("keeps polling both queries while the published version's scan is pending, and stops on its verdict", async () => {
+		state.snapshots = [scanned("PENDING")];
+		state.published = scanned("PENDING");
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+		expect(screen.getByTestId("published-id")).toHaveTextContent("snap_2");
+
+		const before = {
+			list: state.listCalls,
+			published: state.publishedCalls,
+		};
+		for (let i = 0; i < 3; i++) {
+			await tick(POLL_MS);
+		}
+		expect(state.listCalls).toBeGreaterThan(before.list);
+		expect(state.publishedCalls).toBeGreaterThan(before.published);
+
+		state.snapshots = [scanned("PASSED")];
+		state.published = scanned("PASSED");
+		await tick(POLL_MS);
+		await tick(POLL_MS);
+		const settled = {
+			list: state.listCalls,
+			published: state.publishedCalls,
+		};
+		for (let i = 0; i < 5; i++) {
+			await tick(POLL_MS);
+		}
+		expect(state.listCalls).toBe(settled.list);
+		expect(state.publishedCalls).toBe(settled.published);
+	});
+
+	// The published version need not be in the list the tab holds (a newer
+	// version saved without publishing sits above it), and the published view
+	// renders its alert off the pointer row: that row alone keeps the poll.
+	it("keeps polling on the pointer row's pending scan when the list holds nothing in flight", async () => {
+		state.snapshots = [
+			{
+				id: "snap_3",
+				version: 3,
+				status: "READY",
+				publishOnReady: false,
+			},
+		];
+		state.published = scanned("PENDING");
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+		const before = {
+			list: state.listCalls,
+			published: state.publishedCalls,
+		};
+		for (let i = 0; i < 3; i++) {
+			await tick(POLL_MS);
+		}
+		expect(state.listCalls).toBeGreaterThan(before.list);
+		expect(state.publishedCalls).toBeGreaterThan(before.published);
+	});
+
+	// The two queries poll separately, so a verdict can reach one a tick
+	// before the other. The tab re-reads both at once rather than showing
+	// the published view and History disagreeing until the next interval.
+	it("re-reads both queries at once when the list and the pointer disagree about the scan", async () => {
+		state.snapshots = [scanned("ISSUES_FOUND")];
+		state.published = scanned("PENDING");
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		// Well inside the first interval: only the mount reads and the
+		// disagreement's re-reads can have happened.
+		await tick(10);
+		expect(state.listCalls).toBe(2);
+		expect(state.publishedCalls).toBe(2);
+	});
+});

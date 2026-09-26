@@ -8,6 +8,7 @@ import { SNAPSHOT_LIMITS, snapshotPrefix } from "@repo/instructions";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
+	assertProjectPermission,
 	Permissions,
 	requireProjectPermission,
 	tenantProtectedProcedure,
@@ -72,6 +73,15 @@ import { startAdmittedProposalPullRequest } from "./proposal-pull-request";
  * its destination, the create transaction writes it with its
  * `upload_started` row, and the operation's workflow starts after commit.
  * A direct save there is still refused with `REPOSITORY_SOURCE_OF_TRUTH`.
+ *
+ * `publishBeforeScan` (Fizzy #2737) is the member's acknowledged choice to
+ * have the edit published as soon as its integrity checks pass, with the
+ * content secret scan running afterwards. A direct, publishing save only:
+ * it requires `publishOnReady`, refuses `proposal` (a proposal publishes
+ * through review, never by itself), and needs the publish permission
+ * (INSTRUCTION_UPDATE) on top of the direct derive's INSTRUCTION_CREATE. A
+ * repository-backed project never reaches it, because its only admissible
+ * derive is a proposal.
  */
 export const deriveSnapshotProcedure = tenantProtectedProcedure
 	// Every proposal author needs READ. Direct derives retain CREATE through
@@ -92,6 +102,7 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 			baseSnapshotId: z.string(),
 			publishOnReady: z.boolean().default(true),
 			proposal: z.boolean().default(false),
+			publishBeforeScan: z.boolean().default(false),
 			/**
 			 * A proposal's title and description (spec §5.1 step 6). Shape
 			 * only here: the limits are `proposalNoteSchema`'s, applied by
@@ -123,11 +134,32 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
+		// Payload refusals before any permission is resolved, so a caller is
+		// told the combination is invalid rather than that it lacks a grant.
+		if (
+			input.publishBeforeScan &&
+			(input.proposal || !input.publishOnReady)
+		) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: input.proposal
+					? "A proposal cannot be published before its secret scan; it publishes only when it is approved."
+					: "Publishing before the secret scan also requires publishing when the change passes its checks.",
+			});
+		}
 		await assertInstructionDeriveAccess({
 			projectId: input.projectId,
 			userId: context.user.id,
 			proposal: input.proposal,
 		});
+		if (input.publishBeforeScan) {
+			// On top of the direct derive's CREATE, answered as `publish`
+			// answers it. The workflow re-checks it before the version moves.
+			await assertProjectPermission(
+				input.projectId,
+				context.user.id,
+				Permissions.INSTRUCTION_UPDATE,
+			);
+		}
 		const organizationId = await requireHostingOrganizationId(
 			input.projectId,
 			context.user.id,
@@ -203,6 +235,7 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 			baseSnapshotId: base.id,
 			publishOnReady: input.proposal ? false : input.publishOnReady,
 			proposal: input.proposal,
+			...(input.publishBeforeScan ? { publishBeforeScan: true } : {}),
 			changes,
 			limits: {
 				maxFiles: SNAPSHOT_LIMITS.maxFiles,
@@ -307,6 +340,7 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 				deleteCount,
 				inheritedCount: created.inheritedCount,
 				keptCount: created.fileCount,
+				...(input.publishBeforeScan ? { publishBeforeScan: true } : {}),
 			},
 		});
 

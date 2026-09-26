@@ -12,6 +12,7 @@
  * exercise the actual server-side exclusion logic.
  */
 
+import { ORPCError } from "@orpc/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
@@ -20,6 +21,7 @@ const m = vi.hoisted(() => ({
 	getProjectInstructionSettings: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
 	recordAuditFromRequest: vi.fn(),
+	assertProjectPermission: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -48,7 +50,13 @@ vi.mock("../../../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: builder,
 		requireProjectPermission: () => ({}),
-		Permissions: { INSTRUCTION_CREATE: "instruction:create" },
+		// The handler-side check `publishBeforeScan` adds (Fizzy #2737).
+		assertProjectPermission: (...a: unknown[]) =>
+			m.assertProjectPermission(...a),
+		Permissions: {
+			INSTRUCTION_CREATE: "instruction:create",
+			INSTRUCTION_UPDATE: "instruction:update",
+		},
 	};
 });
 
@@ -422,5 +430,104 @@ describe("projects.instructions.begin", () => {
 			files: Array<{ path: string }>;
 		};
 		expect(call.files.map((f) => f.path)).toEqual(["tasks/x.md"]);
+	});
+});
+
+describe("projects.instructions.begin: publish first, scan afterwards (Fizzy #2737)", () => {
+	const files = [{ path: "CLAUDE.md", size: 10, sha256: "a".repeat(64) }];
+
+	it("requires the publish permission, freezes the opt-in onto the row, and says so in the audit row", async () => {
+		m.assertProjectPermission.mockResolvedValue(undefined);
+
+		await m.handlers.begin!({
+			input: {
+				projectId: "proj_1",
+				publishOnReady: true,
+				publishBeforeScan: true,
+				files,
+			},
+			context: ctx,
+		});
+
+		expect(m.assertProjectPermission).toHaveBeenCalledWith(
+			"proj_1",
+			"user_1",
+			"instruction:update",
+		);
+		expect(m.createInstructionSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				publishOnReady: true,
+				publishBeforeScan: true,
+			}),
+		);
+		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+			ctx,
+			expect.objectContaining({
+				action: "project.instructions.upload_started",
+				metadata: expect.objectContaining({ publishBeforeScan: true }),
+			}),
+		);
+	});
+
+	it("refuses a member without the publish permission and writes nothing", async () => {
+		m.assertProjectPermission.mockRejectedValue(
+			new ORPCError("FORBIDDEN", {
+				message: "Missing required permission: instruction:update",
+			}),
+		);
+
+		await expect(
+			m.handlers.begin!({
+				input: {
+					projectId: "proj_1",
+					publishOnReady: true,
+					publishBeforeScan: true,
+					files,
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+	});
+
+	it("refuses publishBeforeScan without publishOnReady as a bad request, before any permission check", async () => {
+		await expect(
+			m.handlers.begin!({
+				input: {
+					projectId: "proj_1",
+					publishOnReady: false,
+					publishBeforeScan: true,
+					files,
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(m.assertProjectPermission).not.toHaveBeenCalled();
+		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("asks for nothing extra, and stores nothing extra, for an ordinary upload", async () => {
+		await m.handlers.begin!({
+			input: {
+				projectId: "proj_1",
+				publishOnReady: true,
+				publishBeforeScan: false,
+				files,
+			},
+			context: ctx,
+		});
+
+		expect(m.assertProjectPermission).not.toHaveBeenCalled();
+		const call = m.createInstructionSnapshot.mock.calls[0]![0] as Record<
+			string,
+			unknown
+		>;
+		expect(call).not.toHaveProperty("publishBeforeScan");
+		const [, row] = m.recordAuditFromRequest.mock.calls[0]! as [
+			unknown,
+			{ metadata: Record<string, unknown> },
+		];
+		expect(row.metadata).not.toHaveProperty("publishBeforeScan");
 	});
 });

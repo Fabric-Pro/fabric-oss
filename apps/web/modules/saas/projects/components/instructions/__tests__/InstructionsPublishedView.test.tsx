@@ -1550,3 +1550,228 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 		expect(screen.queryByText(banner.reasonLabels.abandoned)).toBeNull();
 	});
 });
+
+/**
+ * Publish first, scan afterwards (Fizzy #2737). The published pointer row
+ * carries its own deferred scan, and the view says what that scan means for
+ * the version members are reading: running, found something, or could not
+ * finish. Nothing is withdrawn automatically, so each alert sits above a
+ * version that stays published.
+ */
+describe("InstructionsPublishedView — deferred secret scan", () => {
+	const copy = en.projects.codingInstructions.publishedView;
+
+	function renderScanned(
+		published: Record<string, unknown>,
+		props: Record<string, unknown> = {},
+	) {
+		return render(
+			<InstructionsPublishedView
+				projectId="p"
+				projectName="Checkout Rewrite"
+				published={
+					{
+						id: "s7",
+						version: 7,
+						status: "READY",
+						fileCount: 4,
+						excludedCount: 0,
+						createdAt: new Date(),
+						source: "UPLOAD",
+						user: { id: "u", name: "A. Member" },
+						publishBeforeScan: true,
+						...published,
+					} as never
+				}
+				snapshots={[] as never}
+				onReplaceClick={() => undefined}
+				onChanged={() => undefined}
+				{...props}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+	}
+
+	it("says the published version is still being scanned, as a status rather than an alert", () => {
+		renderScanned({ deferredScanStatus: "PENDING" });
+		const title = copy.deferredScanPendingTitle.replace("{version}", "7");
+		const status = screen.getByText(title).closest('[role="status"]');
+		expect(status).not.toBeNull();
+		expect(
+			screen.getByText(copy.deferredScanPendingBody),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(
+				copy.deferredScanIssuesTitle.replace("{version}", "7"),
+			),
+		).toBeNull();
+	});
+
+	it("shows the scan's findings in the rejected-upload file table and opens History", async () => {
+		const user = userEvent.setup();
+		const findings: InstructionRejection[] = [
+			{
+				path: "rules/deploy.md",
+				reason: "secret",
+				detail: "aws-access-key",
+				line: 12,
+			},
+			{ path: "notes.md", reason: "missing" },
+		];
+		renderScanned({
+			deferredScanStatus: "ISSUES_FOUND",
+			deferredScanFindings: findings,
+		});
+		expect(
+			screen.getByText(
+				copy.deferredScanIssuesTitle.replace("{version}", "7"),
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				copy.deferredScanIssuesBody.replace("{version}", "7"),
+			),
+		).toBeInTheDocument();
+		const banner = en.projects.codingInstructions.rejectedBanner;
+		expect(screen.getByText("rules/deploy.md")).toBeInTheDocument();
+		expect(
+			screen.getByText(banner.secretLabels["aws-access-key"]),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(banner.lineLabel.replace("{line}", "12")),
+		).toBeInTheDocument();
+		expect(screen.getByText("notes.md")).toBeInTheDocument();
+		expect(
+			screen.getByText(banner.reasonLabels.missing),
+		).toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("button", {
+				name: copy.deferredScanHistoryButton,
+			}),
+		);
+		expect(
+			await screen.findByText(
+				en.projects.codingInstructions.history.title,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("says a scan that could not finish left the version unchecked, not clean", () => {
+		renderScanned({
+			deferredScanStatus: "INCOMPLETE",
+			deferredScanFindings: null,
+		});
+		expect(
+			screen.queryByText(
+				copy.deferredScanIncompleteFindingsTitle.replace(
+					"{version}",
+					"7",
+				),
+			),
+		).toBeNull();
+		expect(
+			screen.getByText(
+				copy.deferredScanIncompleteTitle.replace("{version}", "7"),
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(copy.deferredScanIncompleteBody),
+		).toBeInTheDocument();
+	});
+
+	// A scan that could not check every file but established findings before
+	// it stopped keeps them (Fizzy #2737 review): they are shown in the same
+	// table, and the copy says the rest was not checked.
+	it("shows an incomplete scan's findings, and says the scan could not check every file", async () => {
+		const user = userEvent.setup();
+		renderScanned({
+			deferredScanStatus: "INCOMPLETE",
+			deferredScanFindings: [
+				{
+					path: "rules/deploy.md",
+					reason: "secret",
+					detail: "aws-access-key",
+					line: 12,
+				},
+			],
+		});
+		expect(
+			screen.getByText(
+				copy.deferredScanIncompleteFindingsTitle.replace(
+					"{version}",
+					"7",
+				),
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				copy.deferredScanIncompleteFindingsBody.replace(
+					"{version}",
+					"7",
+				),
+			),
+		).toBeInTheDocument();
+		expect(screen.getByText("rules/deploy.md")).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				en.projects.codingInstructions.rejectedBanner.secretLabels[
+					"aws-access-key"
+				],
+			),
+		).toBeInTheDocument();
+		// Not the "nothing was found" copy of an incomplete scan without any.
+		expect(screen.queryByText(copy.deferredScanIncompleteBody)).toBeNull();
+
+		await user.click(
+			screen.getByRole("button", {
+				name: copy.deferredScanHistoryButton,
+			}),
+		);
+		expect(
+			await screen.findByText(
+				en.projects.codingInstructions.history.title,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("says nothing once the scan passed, or for an ordinary version", () => {
+		const titles = [
+			copy.deferredScanPendingTitle,
+			copy.deferredScanIssuesTitle,
+			copy.deferredScanIncompleteTitle,
+			copy.deferredScanIncompleteFindingsTitle,
+		].map((title) => title.replace("{version}", "7"));
+		const { unmount } = renderScanned({ deferredScanStatus: "PASSED" });
+		for (const title of titles) {
+			expect(screen.queryByText(title)).toBeNull();
+		}
+		unmount();
+		renderScanned({ publishBeforeScan: false, deferredScanStatus: null });
+		for (const title of titles) {
+			expect(screen.queryByText(title)).toBeNull();
+		}
+	});
+
+	// The add-file option publishes before the scan, so it needs the publish
+	// permission (`canReview`) as well as direct editing.
+	it("offers publish-before-scan in Add file only to an editor who can also publish", async () => {
+		const user = userEvent.setup();
+		const label = en.projects.codingInstructions.publishBeforeScan.label;
+		const { unmount } = renderScanned(
+			{ publishBeforeScan: false, deferredScanStatus: null },
+			{ canEdit: true, canReview: true },
+		);
+		await user.click(screen.getByRole("button", { name: "Add file" }));
+		expect(await screen.findByLabelText(label)).toBeInTheDocument();
+		unmount();
+
+		renderScanned(
+			{ publishBeforeScan: false, deferredScanStatus: null },
+			{ canEdit: true, canReview: false },
+		);
+		await user.click(screen.getByRole("button", { name: "Add file" }));
+		await screen.findByRole("dialog");
+		expect(screen.queryByLabelText(label)).toBeNull();
+	});
+});
