@@ -677,6 +677,7 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 		);
 	});
 
+	// The time-skipping server can exceed Vitest's 20 s default under the full CI shard.
 	it("ends at its budget when checks outlast it, because each check's schedule-to-close is the budget left, and the run replays (Decision 32)", async () => {
 		// Checks that would run 1 s past the budget's end, as a check whose
 		// JavaScript Temporal cannot stop might (Decision 50).
@@ -715,5 +716,5 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 		expect(elapsed).toBeGreaterThanOrEqual(INSTRUCTION_SYNC_POLL_BUDGET_MS);
 		expect(elapsed).toBeLessThan(INSTRUCTION_SYNC_POLL_BUDGET_MS + 5_000);
 		await expectReplays(workflowId);
-	});
+	}, 60_000);
 });

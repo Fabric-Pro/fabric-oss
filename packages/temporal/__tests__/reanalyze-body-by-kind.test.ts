@@ -388,6 +388,48 @@ describe("reanalyzeBodyByKind — markdown entity cleanup", () => {
 		).not.toContain("&#x27;");
 	});
 
+	it("shows the model the ticket text verbatim, not HTML-escaped", async () => {
+		// Arrange
+		// The bound prompts use double-stache. Rendered with escaping, the model
+		// was shown `Feed Generation &amp; Access` and copied the entity into the
+		// merged acceptance criteria written back to the ticket.
+		const { renderTemplate: realRenderTemplate } =
+			await vi.importActual<typeof import("@repo/utils")>("@repo/utils");
+		mocks.renderTemplate.mockImplementation(realRenderTemplate);
+		mocks.getBoundPromptForAgent.mockResolvedValue({
+			version: {
+				content:
+					"BODY:\n{{existing_feature_markdown}}\nAC:\n{{existing_acceptance_criteria}}\nNEW:\n{{new_info_from_user_or_thread}}",
+			},
+			format: "HANDLEBARS",
+		});
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				description: "## Story\nR&D <team> body.",
+				acceptanceCriteria: "### Feed Generation & Access",
+			},
+			usage: {},
+		});
+
+		// Act
+		await reanalyzeBodyByKind({
+			...BASE,
+			kind: "FEATURE",
+			existingDescription: "## Story\nR&D <team> body.",
+			existingAcceptanceCriteria:
+				'### Feed Generation & Access\nGIVEN a "valid" feed',
+			newInfo: "Apple & Google calendars",
+		});
+
+		// Assert
+		const prompt = JSON.stringify(mocks.generateObject.mock.calls[0]?.[0]);
+		expect(prompt).toContain("Feed Generation & Access");
+		expect(prompt).toContain("R&D <team> body.");
+		expect(prompt).toContain('GIVEN a \\"valid\\" feed');
+		expect(prompt).toContain("Apple & Google calendars");
+		expect(prompt).not.toMatch(/&amp;|&lt;|&gt;|&quot;/);
+	});
+
 	it("leaves a literal ampersand in the body alone", async () => {
 		const merged = BUG_BODY.replace(
 			"Unknown.",

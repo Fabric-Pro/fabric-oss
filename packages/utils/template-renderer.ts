@@ -27,6 +27,13 @@ export interface RenderOptions {
 	format: TemplateFormat;
 	template: string;
 	variables: Record<string, any>;
+	/**
+	 * HTML-escape double-stache values in HANDLEBARS and MUSTACHE templates.
+	 * Defaults to true. Pass false when the output is plain text for a model and
+	 * the variables carry ticket or user text, so `&`, `<` and quotes reach the
+	 * model verbatim instead of as entities it may echo back.
+	 */
+	escape?: boolean;
 }
 
 export interface RenderResult {
@@ -41,6 +48,7 @@ export async function renderTemplate({
 	format,
 	template,
 	variables,
+	escape = true,
 }: RenderOptions): Promise<RenderResult> {
 	try {
 		switch (format) {
@@ -50,10 +58,10 @@ export async function renderTemplate({
 				return { rendered: template };
 
 			case "HANDLEBARS":
-				return renderHandlebars(template, variables);
+				return renderHandlebars(template, variables, escape);
 
 			case "MUSTACHE":
-				return renderMustache(template, variables);
+				return renderMustache(template, variables, escape);
 
 			case "LIQUID":
 				return await renderLiquid(template, variables);
@@ -81,9 +89,10 @@ export async function renderTemplate({
 function renderHandlebars(
 	template: string,
 	variables: Record<string, any>,
+	escape: boolean,
 ): RenderResult {
 	try {
-		const compiled = Handlebars.compile(template);
+		const compiled = Handlebars.compile(template, { noEscape: !escape });
 		const rendered = compiled(variables);
 		return { rendered };
 	} catch (error) {
@@ -100,9 +109,14 @@ function renderHandlebars(
 function renderMustache(
 	template: string,
 	variables: Record<string, any>,
+	escape: boolean,
 ): RenderResult {
 	try {
-		const rendered = Mustache.render(template, variables);
+		const rendered = escape
+			? Mustache.render(template, variables)
+			: Mustache.render(template, variables, undefined, {
+					escape: (value: string) => value,
+				});
 		return { rendered };
 	} catch (error) {
 		return {
