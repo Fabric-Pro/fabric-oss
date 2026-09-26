@@ -237,7 +237,7 @@ export function CreateStoryDuplicateWarning({
 			</Alert>
 
 			{alternatives.length > 1 ? (
-				<fieldset className="space-y-2">
+				<fieldset className="min-w-0 space-y-2">
 					<legend className="text-sm font-medium">
 						{t("whichItem")}
 					</legend>
@@ -252,7 +252,7 @@ export function CreateStoryDuplicateWarning({
 						{alternatives.map((alt) => (
 							<div
 								key={alt.storyId}
-								className="flex items-center gap-2 rounded-md border p-2 text-sm"
+								className="flex min-w-0 items-center gap-2 rounded-md border p-2 text-sm"
 							>
 								<RadioGroupItem
 									value={alt.storyId}
