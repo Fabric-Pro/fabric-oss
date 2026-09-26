@@ -39,9 +39,15 @@ variable "public_access_cidrs" {
 }
 
 variable "node_instance_types" {
-  description = "EC2 instance types for managed node group"
+  description = "EC2 instance types for managed node group. Each must encrypt traffic between instances unless require_encryption_in_transit is false."
   type        = list(string)
-  default     = ["t3.medium"]
+  default     = ["m6i.large"]
+}
+
+variable "require_encryption_in_transit" {
+  description = "Fail the plan when a node instance type cannot encrypt traffic between instances. The chart's pod-to-pod calls are plain HTTP/gRPC, so on such a type they cross the VPC unencrypted (SOC 2 CC6.7). Set false only for a throwaway cluster."
+  type        = bool
+  default     = true
 }
 
 variable "node_desired_size" {

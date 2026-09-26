@@ -36,7 +36,7 @@ enable_k8s_addons = false
 #   node_desired_size           = 3      # one node per AZ (HA)
 #   node_min_size               = 3
 #   node_max_size               = 6
-#   node_instance_types         = ["t3.xlarge"]
+#   node_instance_types         = ["m6i.xlarge"] # must encrypt traffic between instances (CC6.7)
 
 tags = {
   Project = "fabric"

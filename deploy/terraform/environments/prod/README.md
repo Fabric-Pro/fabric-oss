@@ -30,7 +30,7 @@ logic never drifts between environments — only the *composition values* differ
 | RDS changes | apply immediately | **maintenance window** |
 | EKS endpoint | open (`0.0.0.0/0`) | **restricted (required)** |
 | Domain / TLS | optional (HTTP-only allowed) | **required (HTTPS)** |
-| Nodes | 2 × t3.large | **3 × t3.xlarge (AZ-spread)** |
+| Nodes | 2 × m6i.large | **3 × m6i.xlarge (AZ-spread)** |
 | ECR `force_delete` / S3 `force_destroy` | true | **false** |
 | Secrets recovery window | 0 (immediate) | **7 days** |
 

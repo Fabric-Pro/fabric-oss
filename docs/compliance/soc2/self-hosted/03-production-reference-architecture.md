@@ -61,7 +61,30 @@
 ### Ingress / TLS (CC6.6)
 - ALB terminates TLS with an ACM certificate; HTTP is redirected to HTTPS
   (`ssl-redirect: 443`). No HTTP-only listener in production (`values-prod.yaml`).
-- Internal Postgres/Temporal connections use TLS (fail-closed in production).
+- Temporal Cloud and ElastiCache connections use TLS; the Temporal client refuses
+  plaintext in production. Every internal path is listed under *Internal traffic*.
+
+### Internal traffic (CC6.7)
+Services call each other on cluster DNS over plain HTTP/gRPC: the chart ships no
+service mesh and no per-service certificates. The traffic is encrypted by the node
+hardware instead. The `eks` module accepts only node types that encrypt traffic
+between instances (Nitro, 256-bit AEAD, AWS-managed keys, so there is nothing to
+rotate) and fails `terraform plan` on any other type (`require_encryption_in_transit`,
+default `true`). Two pods on the same node never put their traffic on the network.
+
+| Path | Protocol | Protection |
+|---|---|---|
+| web ↔ agents, web → MCP wrapper, worker → agents, agents → web | HTTP, cluster DNS | Nitro encryption between nodes; bearer keys authenticate the call |
+| app pods → Qdrant | HTTP/gRPC 6333/6334, API key | Nitro encryption between nodes |
+| app pods → OTel collector | OTLP gRPC to the pod's own node (`hostPort`) | Node-local; never crosses the VPC |
+| ALB → web and PartyKit pods | HTTP | **Not covered.** A load balancer hop is outside instance-to-instance encryption. **[customer]** enable VPC Encryption Controls (ALBs move to encrypting hardware; enforce mode refuses unencrypted resources), or terminate TLS in the pod behind an HTTPS target group |
+| pods → RDS Postgres | TLS (RDS 16 rejects plaintext; `PGSSLMODE=no-verify`) | Encrypted, but the server certificate is **not verified**. Moving to `sslmode=verify-full` with the RDS CA bundle mounted is an open item; the Terraform-built `DATABASE_URL` also carries no `sslmode`, which the application's production guard requires |
+| pods → ElastiCache Redis | `rediss://` + AUTH token | TLS (transit encryption on) |
+| pods → Temporal Cloud | gRPC | TLS, fail-closed in production |
+| pods → S3, Secrets Manager, CloudWatch | HTTPS | TLS |
+
+A requirement for TLS on every service-to-service call, rather than encryption on
+the wire, needs a service mesh (for example Linkerd or Istio); none is shipped.
 
 ### Compute (EKS)
 - Managed node group with autoscaling (`min/desired/max`), spread across AZs.

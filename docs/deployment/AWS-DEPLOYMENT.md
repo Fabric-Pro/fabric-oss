@@ -28,7 +28,7 @@ A single AWS account is sufficient. You need permissions to create and manage:
 | Service | Why |
 |---|---|
 | IAM | OIDC provider, GitLab deployer role, IRSA roles for ALB / ESO / External DNS / GitLab Runner |
-| EKS | Kubernetes control plane + managed node group (dev: `t3.large` ×2, min 2 / max 4, 40Gi root volumes — plan quota/cost accordingly) |
+| EKS | Kubernetes control plane + managed node group (dev: `m6i.large` ×2, min 2 / max 4, 40Gi root volumes — plan quota/cost accordingly; node types must encrypt traffic between instances, see `modules/eks`) |
 | EC2 / VPC | VPC, subnets, NAT GW, security groups, ALB |
 | RDS | Postgres 16 instance for the application database |
 | ElastiCache | Redis 7.1 for caching and Better Auth sessions |
