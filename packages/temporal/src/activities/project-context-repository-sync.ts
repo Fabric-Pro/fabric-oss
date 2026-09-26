@@ -33,6 +33,7 @@ import {
 	getProjectRepoIntegration,
 	getUserById,
 	hashContextContent,
+	type InstructionSyncSchedulingEffect,
 	insertContextRepositorySyncRun,
 	type LockedContextRepositorySync,
 	listContextRepositorySyncAwaitingIndex,
@@ -441,9 +442,11 @@ async function beginUnderLock(
 
 	// A new run. An automatic one is eligible only while automatic sync is on
 	// and unpaused (§11.1). Checked before `expected`, as the instructions
-	// sync does: turning automatic sync off re-configures the row, and that
-	// must read as a skip, not as a warning-severity configuration change.
-	// A skip writes nothing: the run did nothing.
+	// sync does: a configure that turns automatic sync off may also re-point
+	// the row (a new branch or paths bump the generation; the toggle alone
+	// keeps it, Fizzy #2713), and either must read as a skip, not as a
+	// warning-severity configuration change. A skip writes nothing: the run
+	// did nothing.
 	if (isAutomaticContextSyncTrigger(input.trigger)) {
 		if (!sync.automatic) {
 			return {
@@ -1576,7 +1579,9 @@ type RecordTarget = { runKey: string; syncId: string; begun: boolean };
  * configuration at its generation, the configuration names it as last
  * applied. While the configuration is still at the run's generation, the
  * verdict's scheduling effect (`deriveContextSyncScheduling`, §11.1) is
- * written under the same lock, as the instructions sync's completion does.
+ * written under the same lock, as the instructions sync's completion does —
+ * except a PERMISSION_REVOKED pause the configuration's current member
+ * already disproves (`withoutStalePermissionPause`, Fizzy #2713).
  * The completed audit row, with the run's own trigger, commits with the
  * receipt.
  *
@@ -1661,6 +1666,32 @@ async function recordTarget(
 	return { runKey: receipt.id, syncId: receipt.syncId, begun: false };
 }
 
+/**
+ * A run's PERMISSION_DENIED pauses automatic sync as PERMISSION_REVOKED
+ * because the member it acted as lost CONTEXT_CREATE. That verdict can be
+ * stale by the time the run records (Fizzy #2713): an automatic-sync toggle
+ * or "Re-enable" keeps the generation, so it no longer fences the run, and
+ * meanwhile another member may have become the configuration's member, or
+ * the same member may have had the permission restored, and re-enabled it.
+ * So the pause stands only while the member the locked configuration names
+ * NOW still lacks CONTEXT_CREATE, read through the transaction under lock 1;
+ * otherwise it becomes `none`. The receipt still completes FAILED, the key
+ * is still released, and a re-check request is still folded by the
+ * scheduling write. Every other effect passes through unread.
+ */
+async function withoutStalePermissionPause(
+	tx: Prisma.TransactionClient,
+	sync: LockedContextRepositorySync,
+	effect: InstructionSyncSchedulingEffect,
+): Promise<InstructionSyncSchedulingEffect> {
+	if (effect.kind !== "pause" || effect.reason !== "PERMISSION_REVOKED") {
+		return effect;
+	}
+	return (await canCreateProjectContexts(sync.projectId, sync.userId, tx))
+		? { kind: "none" }
+		: effect;
+}
+
 async function recordUnderLock(
 	tx: Prisma.TransactionClient,
 	input: RecordContextSyncRunInput,
@@ -1721,12 +1752,16 @@ async function recordUnderLock(
 		await writeContextRepositorySyncScheduling(tx, {
 			sync,
 			generation: run.generation,
-			effect: deriveContextSyncScheduling({
-				trigger,
-				status: verdict.status,
-				error: verdict.error,
-				commitSha,
-			}),
+			effect: await withoutStalePermissionPause(
+				tx,
+				sync,
+				deriveContextSyncScheduling({
+					trigger,
+					status: verdict.status,
+					error: verdict.error,
+					commitSha,
+				}),
+			),
 		});
 		if (sync.activeRunKey === run.id) {
 			await releaseContextRepositorySyncRunKey(tx, sync.id, run.id);

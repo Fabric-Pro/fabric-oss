@@ -1107,6 +1107,7 @@ describe("repositorySync.configure", () => {
 					provider: "GITHUB",
 					automatic: false,
 					pathCount: 2,
+					repositoryChanged: false,
 					refChanged: true,
 					pathsChanged: false,
 					generation: 5,
@@ -1150,6 +1151,64 @@ describe("repositorySync.configure", () => {
 			expect(m.startContextRepositorySync).not.toHaveBeenCalled();
 		},
 	);
+
+	it("audits the automatic toggle as a configure that changed nothing synced, with the generation it kept (Fizzy #2713)", async () => {
+		const stored = {
+			repositoryIntegrationId: "int-1",
+			ref: "develop",
+			paths: ["docs", "notes/team.md"],
+		};
+		m.upsertContextRepositorySync.mockResolvedValue({
+			status: "configured",
+			sync: { id: "sync-1", generation: 5, automatic: true, ...stored },
+			previous: stored,
+		});
+
+		expect(
+			await call("configure", { ...configureInput, automatic: true }),
+		).toEqual({ syncId: "sync-1", generation: 5 });
+
+		expect(m.recordAuditFromRequest).toHaveBeenCalledTimes(1);
+		expect(m.recordAuditFromRequest.mock.calls[0]?.[1]).toMatchObject({
+			action: "project.context.repository_sync_configured",
+			metadata: {
+				automatic: true,
+				repositoryChanged: false,
+				refChanged: false,
+				pathsChanged: false,
+				generation: 5,
+			},
+		});
+	});
+
+	it("audits a repository change", async () => {
+		m.upsertContextRepositorySync.mockResolvedValue({
+			status: "configured",
+			sync: {
+				id: "sync-1",
+				generation: 6,
+				repositoryIntegrationId: "int-1",
+				ref: "develop",
+				paths: ["docs", "notes/team.md"],
+				automatic: false,
+			},
+			previous: {
+				repositoryIntegrationId: "int-0",
+				ref: "develop",
+				paths: ["docs", "notes/team.md"],
+			},
+		});
+
+		await call("configure", configureInput);
+
+		expect(m.recordAuditFromRequest.mock.calls[0]?.[1]).toMatchObject({
+			metadata: {
+				repositoryChanged: true,
+				refChanged: false,
+				pathsChanged: false,
+			},
+		});
+	});
 
 	it("audits the stored automatic value when the caller leaves it out", async () => {
 		m.upsertContextRepositorySync.mockResolvedValue({

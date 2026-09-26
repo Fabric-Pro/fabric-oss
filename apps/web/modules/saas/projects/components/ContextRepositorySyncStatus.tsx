@@ -60,6 +60,14 @@ import { ConfigureContextRepositorySyncDialog } from "./ConfigureContextReposito
  * While the toggle or a disconnect is in flight, the other menu actions are
  * disabled, so a second change is not built from the configuration the
  * first is replacing.
+ *
+ * Neither the toggle nor a "Re-enable" that keeps the repository, branch
+ * and paths changes what is synced, so the server keeps the last applied
+ * run and the generation (Fizzy #2713): this status line still reports the
+ * files that run applied, and a run already open finishes normally.
+ * `state` comes from `ProjectContextsList`'s `repositorySync.get` read,
+ * which also polls every 60 s while automatic sync is on and not paused, so
+ * a run the scheduled check or a push started shows without navigating.
  */
 export function ContextRepositorySyncStatus({
 	projectId,

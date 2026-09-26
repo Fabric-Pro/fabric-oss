@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	activeContextSyncIntegrations,
+	CONTEXT_SYNC_IDLE_POLL_MS,
 	CONTEXT_SYNC_INDEXING_POLL_BUDGET_MS,
 	CONTEXT_SYNC_INDEXING_POLL_MS,
 	CONTEXT_SYNC_MAX_PATHS,
@@ -12,6 +13,8 @@ import {
 	contextSyncConfigureErrorMessage,
 	contextSyncLastAppliedMessage,
 	contextSyncLastAppliedSummary,
+	contextSyncLatestRunChanged,
+	contextSyncLatestRunFingerprint,
 	contextSyncNowResultMessage,
 	contextSyncPathValidationMessage,
 	contextSyncPausedReason,
@@ -267,6 +270,114 @@ describe("polling (§7.1)", () => {
 			),
 		).toBe(false);
 		expect(contextSyncPollInterval(undefined, 0)).toBe(false);
+	});
+
+	describe("while automatic sync is on (Fizzy #2713)", () => {
+		const automatic = (
+			configured: {
+				automatic: boolean;
+				automaticPausedReason:
+					| "PERMISSION_REVOKED"
+					| "REF_MISSING"
+					| null;
+			} | null,
+			overrides: { running?: boolean; awaitingIndexCount?: number } = {},
+		) => ({
+			running: false,
+			awaitingIndexCount: 0,
+			configured,
+			...overrides,
+		});
+		const on = { automatic: true, automaticPausedReason: null };
+
+		it("re-reads every 60 s with nothing open, to find a run the scheduled check or a push started", () => {
+			expect(CONTEXT_SYNC_IDLE_POLL_MS).toBe(60_000);
+			expect(contextSyncPollInterval(automatic(on), 0)).toBe(
+				CONTEXT_SYNC_IDLE_POLL_MS,
+			);
+			// Once the indexing budget is spent, the idle poll carries on.
+			expect(
+				contextSyncPollInterval(
+					automatic(on, { awaitingIndexCount: 3 }),
+					CONTEXT_SYNC_INDEXING_POLL_BUDGET_MS,
+				),
+			).toBe(CONTEXT_SYNC_IDLE_POLL_MS);
+		});
+
+		it("still polls faster while a run is open or files await indexing", () => {
+			expect(
+				contextSyncPollInterval(automatic(on, { running: true }), 0),
+			).toBe(CONTEXT_SYNC_RUNNING_POLL_MS);
+			expect(
+				contextSyncPollInterval(
+					automatic(on, { awaitingIndexCount: 3 }),
+					0,
+				),
+			).toBe(CONTEXT_SYNC_INDEXING_POLL_MS);
+		});
+
+		it.each([
+			[
+				"automatic sync is off",
+				{ automatic: false, automaticPausedReason: null },
+			],
+			[
+				"it is paused",
+				{
+					automatic: true,
+					automaticPausedReason: "REF_MISSING" as const,
+				},
+			],
+			["nothing is configured", null],
+		])("does not poll idle when %s", (_label, configured) => {
+			expect(contextSyncPollInterval(automatic(configured), 0)).toBe(
+				false,
+			);
+		});
+	});
+
+	it("reports a latest run that changed between two reads, never on the first read", () => {
+		expect(contextSyncLatestRunChanged("run-1", "run-2")).toBe(true);
+		// A sync's first run is noticed.
+		expect(contextSyncLatestRunChanged(null, "run-1")).toBe(true);
+		expect(contextSyncLatestRunChanged("run-1", "run-1")).toBe(false);
+		expect(contextSyncLatestRunChanged(undefined, "run-1")).toBe(false);
+		expect(contextSyncLatestRunChanged("run-1", undefined)).toBe(false);
+	});
+
+	it("fingerprints the newest run by its id and whether it finished, so one receipt finishing counts as a change", () => {
+		const open = { id: "sync_1:run_a", finishedAt: null };
+		const done = {
+			id: "sync_1:run_a",
+			finishedAt: "2026-09-23T10:01:00.000Z",
+		};
+		expect(contextSyncLatestRunFingerprint(null)).toBeNull();
+		expect(
+			contextSyncLatestRunChanged(
+				contextSyncLatestRunFingerprint(open),
+				contextSyncLatestRunFingerprint(done),
+			),
+		).toBe(true);
+		// Finished is final: the same finished receipt read twice is no change,
+		// whatever form its time arrives in.
+		expect(
+			contextSyncLatestRunChanged(
+				contextSyncLatestRunFingerprint(done),
+				contextSyncLatestRunFingerprint({
+					...done,
+					finishedAt: new Date(done.finishedAt),
+				}),
+			),
+		).toBe(false);
+		expect(
+			contextSyncLatestRunChanged(
+				contextSyncLatestRunFingerprint(done),
+				contextSyncLatestRunFingerprint({
+					id: "sync_1:run_b",
+					finishedAt: null,
+				}),
+			),
+		).toBe(true);
 	});
 
 	it("reports the end of a run exactly on the running → idle transition", () => {

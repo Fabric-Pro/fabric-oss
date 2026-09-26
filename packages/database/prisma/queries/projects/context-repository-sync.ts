@@ -406,19 +406,39 @@ export type UpsertContextRepositorySyncResult =
  * `configure` (§5.1): one transaction under lock 1. Re-reads the stored
  * integration and the managed-row count INSIDE the lock, refuses a
  * repository change while managed rows exist (a typed result, not a throw),
- * then creates or re-points the configuration: the caller becomes its
- * `userId`, `generation` is bumped, `lastApplied*` is cleared, and
- * `activeRunKey` is left alone (an in-flight run is fenced by the bump
- * instead). Paths are stored as given; the procedure canonicalizes them.
+ * then creates or updates the configuration. The caller always becomes its
+ * `userId`, and `activeRunKey` is always left alone. Paths are stored as
+ * given; the procedure canonicalizes them.
  *
- * Automatic sync (§11.1), exactly as `upsertInstructionRepositorySync`: every
- * configure clears the pause, the suppression, the poll cursor and the
- * failure count and makes the sync due now, so the next poll tick evaluates
- * the new configuration. `automatic` is kept when omitted, and `false` on
- * insert.
+ * What the update does depends on whether it changes what is synced, which
+ * is decided under the lock against the stored row (Fizzy #2713):
+ *
+ *  - The repository integration, the branch or the paths change: the
+ *    configuration is re-pointed. `generation` is bumped, so an in-flight
+ *    run is fenced (`CONFIGURATION_CHANGED`) rather than released;
+ *    `lastApplied*` is cleared, since that run applied another selection;
+ *    and the whole automatic schedule is reset as
+ *    `upsertInstructionRepositorySync` resets it — pause, suppression, poll
+ *    cursor, re-check request and failure count cleared, due now — so the
+ *    next poll tick evaluates the new configuration.
+ *  - None of them changes (the "Automatic sync" toggle, "Re-enable" after a
+ *    pause, a re-save of the same settings): only `automatic` (kept when
+ *    omitted), the pause and the failure count are written, and the sync is
+ *    made due now. `generation`, `lastApplied*`, the generation-bound
+ *    cursors (`lastEvaluated*`, `suppressed*`) and the re-check request are
+ *    kept: the managed files the last run applied are still the ones the
+ *    configuration selects, an open run's plan is unaffected and it
+ *    finishes normally (its completion consumes the re-check request), and
+ *    a head this configuration already evaluated or suppressed is not
+ *    re-run. The due time is the database's clock the lock read, which no
+ *    lease a poll check holds can equal: without a generation bump, moving
+ *    `nextCheckAt` is what ends such a lease, as the lease fence's writer
+ *    contract requires (`repositorySyncLeaseFenceSql`, Fizzy #2689).
+ *
+ * `automatic` is `false` on insert when omitted.
  *
  * Two first configures of one project race on the `projectId` unique index;
- * the loser re-runs once and re-points the winner's row.
+ * the loser re-runs once and updates the winner's row.
  */
 export async function upsertContextRepositorySync(input: {
 	projectId: string;
@@ -500,6 +520,31 @@ function runUpsertContextRepositorySync(input: {
 				paths: true,
 				automatic: true,
 			} as const;
+			const previous = existing
+				? {
+						repositoryIntegrationId:
+							existing.repositoryIntegrationId,
+						ref: existing.ref,
+						paths: existing.paths,
+					}
+				: null;
+
+			if (existing && !changesWhatIsSynced(existing, input)) {
+				const sync = await tx.projectContextRepositorySync.update({
+					where: { id: existing.id },
+					data: {
+						userId: input.userId,
+						automatic: input.automatic ?? existing.automatic,
+						automaticPausedReason: null,
+						automaticPausedAt: null,
+						failureCount: 0,
+						nextCheckAt: existing.now ?? new Date(),
+					},
+					select,
+				});
+				return { status: "configured", sync, previous };
+			}
+
 			// The scheduling reset `upsertInstructionRepositorySync` applies:
 			// a new configuration is evaluated afresh, now.
 			const reset = {
@@ -544,20 +589,28 @@ function runUpsertContextRepositorySync(input: {
 						},
 						select,
 					});
-			return {
-				status: "configured",
-				sync,
-				previous: existing
-					? {
-							repositoryIntegrationId:
-								existing.repositoryIntegrationId,
-							ref: existing.ref,
-							paths: existing.paths,
-						}
-					: null,
-			};
+			return { status: "configured", sync, previous };
 		},
 		{ timeout: CONTEXT_SYNC_TRANSACTION_TIMEOUT_MS },
+	);
+}
+
+/**
+ * Whether a configure changes what the sync reads (Fizzy #2713): the
+ * repository integration, the branch or the paths. Both path lists are
+ * canonical (sorted, deduplicated) when the procedure wrote them, so they are
+ * compared in order; a list that differs only in order counts as a change,
+ * which fences more than it must but never less.
+ */
+function changesWhatIsSynced(
+	stored: { repositoryIntegrationId: string; ref: string; paths: string[] },
+	next: { repositoryIntegrationId: string; ref: string; paths: string[] },
+): boolean {
+	return (
+		stored.repositoryIntegrationId !== next.repositoryIntegrationId ||
+		stored.ref !== next.ref ||
+		stored.paths.length !== next.paths.length ||
+		stored.paths.some((path, i) => path !== next.paths[i])
 	);
 }
 

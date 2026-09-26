@@ -84,6 +84,8 @@ import { toast } from "sonner";
 import {
 	type ContextDeleteOutcome,
 	type ContextSyncState,
+	contextSyncLatestRunChanged,
+	contextSyncLatestRunFingerprint,
 	contextSyncPollInterval,
 	contextSyncRunEnded,
 	offersSyncFromRepository,
@@ -1532,7 +1534,9 @@ export function ProjectContextsList({ projectId }: Props) {
 	// indexing, for up to 10 minutes of that state — `indexingSinceRef` marks
 	// when awaiting-index was first observed, mutated during render like
 	// `wasSyncRunningRef` below, so the interval callback (evaluated by
-	// react-query's own scheduler) always reads the latest elapsed time.
+	// react-query's own scheduler) always reads the latest elapsed time —
+	// and otherwise every 60s while automatic sync is on and not paused, to
+	// find a run the scheduled check or a push started (Fizzy #2713).
 	const repositorySyncQueryOptions =
 		orpc.projects.contexts.repositorySync.get.queryOptions({
 			input: { projectId, organizationId },
@@ -1559,11 +1563,21 @@ export function ProjectContextsList({ projectId }: Props) {
 		| ContextSyncState
 		| undefined;
 	const syncRunning = repositorySyncState?.running ?? false;
-	// A run just closed: whatever it produced (new/changed/removed files) is
-	// readable now, so read it rather than wait on a poll that may have just
-	// switched off.
+	const latestSyncRun = repositorySyncState
+		? contextSyncLatestRunFingerprint(repositorySyncState.latestRun)
+		: undefined;
+	const lastSyncRunRef = useRef<string | null | undefined>(undefined);
+	// A run just closed, or the newest run appeared or finished between two
+	// idle reads (an automatic run that started and finished unseen, or one
+	// whose finish the spinner missed because `running` could not be read,
+	// Fizzy #2713): whatever it produced (new/changed/removed files) is
+	// readable now, so read it rather than wait on a poll that is off or a
+	// minute away.
 	useEffect(() => {
-		if (contextSyncRunEnded(wasSyncRunningRef.current, syncRunning)) {
+		if (
+			contextSyncRunEnded(wasSyncRunningRef.current, syncRunning) ||
+			contextSyncLatestRunChanged(lastSyncRunRef.current, latestSyncRun)
+		) {
 			queryClient.invalidateQueries({
 				queryKey: orpc.projects.contexts.list.queryOptions({
 					input: { projectId, organizationId },
@@ -1571,7 +1585,10 @@ export function ProjectContextsList({ projectId }: Props) {
 			});
 		}
 		wasSyncRunningRef.current = syncRunning;
-	}, [syncRunning, projectId, organizationId, queryClient]);
+		if (latestSyncRun !== undefined) {
+			lastSyncRunRef.current = latestSyncRun;
+		}
+	}, [syncRunning, latestSyncRun, projectId, organizationId, queryClient]);
 	// Configure / syncNow / disable all changed the configuration or started
 	// a run: re-read both the sync status and the contexts list right away.
 	const onRepositorySyncChanged = () => {
