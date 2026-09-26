@@ -32,6 +32,7 @@ import type {
 	GateResult,
 	SnapshotRef,
 } from "../src/activities/project-instructions";
+import { DEFERRED_SCAN_MAX_ATTEMPTS } from "../src/lib/instruction-deferred-scan-retry";
 
 const WORKFLOWS_PATH = resolve(__dirname, "..", "src", "workflows");
 const WORKFLOW_NAME = "projectInstructionSnapshotWorkflow";
@@ -74,15 +75,32 @@ type Mocks = {
 	pruneInstructionSnapshots: (
 		ref: SnapshotRef,
 	) => Promise<{ deleted: number }>;
+	// Publish first, scan afterwards (Fizzy #2737). Optional so the ordinary
+	// path's cases register exactly the activities they always did.
+	promoteUnscannedInstructionSnapshot?: (
+		ref: SnapshotRef,
+	) => Promise<GateResult>;
+	scanPublishedInstructionSnapshot?: (ref: SnapshotRef) => Promise<{
+		outcome: "PASSED" | "ISSUES_FOUND" | "INCOMPLETE";
+		findings: unknown[];
+	}>;
+	recordDeferredScanOutcome?: (
+		input: SnapshotRef & {
+			outcome: string;
+			findings: unknown[];
+			failure?: string;
+		},
+	) => Promise<{ changed: boolean }>;
 };
 
 async function runWorkflow(
-	input: SnapshotRef,
+	input: SnapshotRef & { publishBeforeScan?: boolean },
 	mocks: Mocks,
 ): Promise<{
 	status: "READY" | "REJECTED";
 	published: boolean;
 	publishReason?: string;
+	deferredScan?: string;
 }> {
 	const taskQueue = `project-instruction-snapshot-${taskQueueSeq++}`;
 	const worker = await Worker.create({
@@ -102,6 +120,7 @@ async function runWorkflow(
 		status: "READY" | "REJECTED";
 		published: boolean;
 		publishReason?: string;
+		deferredScan?: string;
 	};
 }
 
@@ -400,4 +419,322 @@ describe("projectInstructionSnapshotWorkflow", () => {
 		expect(result).toEqual({ status: "REJECTED", published: false });
 		expect(markFailed).not.toHaveBeenCalled();
 	});
+});
+
+describe("projectInstructionSnapshotWorkflow: publish first, scan afterwards (Fizzy #2737)", () => {
+	const FAST_INPUT = { ...INPUT, publishBeforeScan: true };
+
+	/** The ordinary path's activities, each failing loudly if it runs. */
+	function ordinaryMustNotRun() {
+		return {
+			verifyAndScanInstructionFiles: vi.fn(async () => {
+				throw new Error(
+					"the ordinary gate must not run on the fast path",
+				);
+			}),
+			finalizeInstructionSnapshot: vi.fn(async () => {
+				throw new Error(
+					"the ordinary promotion must not run on the fast path",
+				);
+			}),
+		};
+	}
+
+	it("promotes, publishes, scans, records PASSED and prunes, in that order", async () => {
+		const order: string[] = [];
+		const ordinary = ordinaryMustNotRun();
+		const record = vi.fn(async () => {
+			order.push("record");
+			return { changed: true };
+		});
+		const mocks = happyMocks({
+			...ordinary,
+			promoteUnscannedInstructionSnapshot: async () => {
+				order.push("promote");
+				return { ok: true, rejections: [] };
+			},
+			publishInstructionSnapshotActivity: async () => {
+				order.push("publish");
+				return { published: true };
+			},
+			scanPublishedInstructionSnapshot: async () => {
+				order.push("scan");
+				return { outcome: "PASSED", findings: [] };
+			},
+			recordDeferredScanOutcome: record,
+			pruneInstructionSnapshots: async () => {
+				order.push("prune");
+				return { deleted: 0 };
+			},
+		});
+
+		const result = await runWorkflow(FAST_INPUT, mocks);
+
+		expect(result).toEqual({
+			status: "READY",
+			published: true,
+			deferredScan: "PASSED",
+		});
+		expect(order).toEqual([
+			"promote",
+			"publish",
+			"scan",
+			"record",
+			"prune",
+		]);
+		expect(record).toHaveBeenCalledWith({
+			...FAST_INPUT,
+			outcome: "PASSED",
+			findings: [],
+		});
+		expect(ordinary.verifyAndScanInstructionFiles).not.toHaveBeenCalled();
+		expect(ordinary.finalizeInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("records ISSUES_FOUND with the findings and leaves the version published", async () => {
+		const findings = [
+			{ path: "CLAUDE.md", reason: "secret", detail: "jwt", line: 4 },
+		];
+		const record = vi.fn(async () => ({ changed: true }));
+		const reject = vi.fn();
+		const mocks = happyMocks({
+			...ordinaryMustNotRun(),
+			promoteUnscannedInstructionSnapshot: async () => ({
+				ok: true,
+				rejections: [],
+			}),
+			scanPublishedInstructionSnapshot: async () => ({
+				outcome: "ISSUES_FOUND",
+				findings,
+			}),
+			recordDeferredScanOutcome: record,
+			rejectInstructionSnapshot: reject,
+		});
+
+		const result = await runWorkflow(FAST_INPUT, mocks);
+
+		expect(result).toEqual({
+			status: "READY",
+			published: true,
+			deferredScan: "ISSUES_FOUND",
+		});
+		expect(record).toHaveBeenCalledWith({
+			...FAST_INPUT,
+			outcome: "ISSUES_FOUND",
+			findings,
+		});
+		// A finding is shown, never acted on: nothing rejects or withdraws.
+		expect(reject).not.toHaveBeenCalled();
+	});
+
+	it("records INCOMPLETE, with the error's type only, when the scan still fails after its retries — and the workflow succeeds", async () => {
+		let scanAttempts = 0;
+		const record = vi.fn(async () => ({ changed: true }));
+		const markFailed = vi.fn(async () => ({ marked: false }));
+		const mocks = happyMocks({
+			...ordinaryMustNotRun(),
+			promoteUnscannedInstructionSnapshot: async () => ({
+				ok: true,
+				rejections: [],
+			}),
+			scanPublishedInstructionSnapshot: async () => {
+				scanAttempts++;
+				throw new TypeError("storage unreachable at s3://bucket/key");
+			},
+			recordDeferredScanOutcome: record,
+			markInstructionSnapshotFailed: markFailed,
+		});
+
+		const result = await runWorkflow(FAST_INPUT, mocks);
+
+		expect(result).toEqual({
+			status: "READY",
+			published: true,
+			deferredScan: "INCOMPLETE",
+		});
+		// Its own, longer retry budget — the one the activity reads to know
+		// its final attempt.
+		expect(scanAttempts).toBe(DEFERRED_SCAN_MAX_ATTEMPTS);
+		expect(record).toHaveBeenCalledWith({
+			...FAST_INPUT,
+			outcome: "INCOMPLETE",
+			findings: [],
+			failure: "TypeError",
+		});
+		expect(JSON.stringify(record.mock.calls[0])).not.toContain(
+			"s3://bucket",
+		);
+		expect(markFailed).not.toHaveBeenCalled();
+	});
+
+	// The scan settles its own INCOMPLETE on its final attempt, with what it
+	// found before a file defeated it; the workflow records that as it
+	// stands, with no failure label of its own.
+	it("records a scan's own INCOMPLETE with the findings it established", async () => {
+		const findings = [
+			{
+				path: "A.md",
+				reason: "secret",
+				detail: "aws-access-key",
+				line: 1,
+			},
+		];
+		const record = vi.fn(async () => ({ changed: true }));
+		const mocks = happyMocks({
+			...ordinaryMustNotRun(),
+			promoteUnscannedInstructionSnapshot: async () => ({
+				ok: true,
+				rejections: [],
+			}),
+			scanPublishedInstructionSnapshot: async () => ({
+				outcome: "INCOMPLETE" as const,
+				findings,
+			}),
+			recordDeferredScanOutcome: record,
+		});
+
+		const result = await runWorkflow(FAST_INPUT, mocks);
+
+		expect(result).toMatchObject({ deferredScan: "INCOMPLETE" });
+		expect(record).toHaveBeenCalledWith({
+			...FAST_INPUT,
+			outcome: "INCOMPLETE",
+			findings,
+		});
+	});
+
+	it("rejects exactly as today when the pre-publish pass refuses, and never publishes or scans", async () => {
+		const rejections = [
+			{ path: ".env", reason: "secret", detail: "filename:.env" },
+		];
+		const reject = vi.fn();
+		const publish = vi.fn();
+		const scan = vi.fn();
+		const record = vi.fn();
+		const prune = vi.fn();
+		const mocks = happyMocks({
+			...ordinaryMustNotRun(),
+			promoteUnscannedInstructionSnapshot: async () => ({
+				ok: false,
+				rejections,
+			}),
+			rejectInstructionSnapshot: reject,
+			publishInstructionSnapshotActivity: publish,
+			scanPublishedInstructionSnapshot: scan,
+			recordDeferredScanOutcome: record,
+			pruneInstructionSnapshots: prune,
+		});
+
+		const result = await runWorkflow(FAST_INPUT, mocks);
+
+		expect(result).toEqual({ status: "REJECTED", published: false });
+		expect(reject).toHaveBeenCalledWith({ ...FAST_INPUT, rejections });
+		expect(publish).not.toHaveBeenCalled();
+		expect(scan).not.toHaveBeenCalled();
+		expect(record).not.toHaveBeenCalled();
+		expect(prune).not.toHaveBeenCalled();
+	});
+
+	it("still scans and records when the automatic publish was refused", async () => {
+		const record = vi.fn(async () => ({ changed: true }));
+		const mocks = happyMocks({
+			...ordinaryMustNotRun(),
+			promoteUnscannedInstructionSnapshot: async () => ({
+				ok: true,
+				rejections: [],
+			}),
+			publishInstructionSnapshotActivity: async () => ({
+				published: false,
+				reason: "fast_path_not_authorized",
+			}),
+			scanPublishedInstructionSnapshot: async () => ({
+				outcome: "PASSED",
+				findings: [],
+			}),
+			recordDeferredScanOutcome: record,
+		});
+
+		const result = await runWorkflow(FAST_INPUT, mocks);
+
+		expect(result).toEqual({
+			status: "READY",
+			published: false,
+			publishReason: "fast_path_not_authorized",
+			deferredScan: "PASSED",
+		});
+		expect(record).toHaveBeenCalledTimes(1);
+	});
+
+	it("fails the workflow when the verdict cannot be recorded, leaving it to the reaper", async () => {
+		const prune = vi.fn();
+		const mocks = happyMocks({
+			...ordinaryMustNotRun(),
+			promoteUnscannedInstructionSnapshot: async () => ({
+				ok: true,
+				rejections: [],
+			}),
+			scanPublishedInstructionSnapshot: async () => ({
+				outcome: "PASSED",
+				findings: [],
+			}),
+			recordDeferredScanOutcome: async () => {
+				throw new Error("database unavailable");
+			},
+			pruneInstructionSnapshots: prune,
+		});
+
+		const failure = await runWorkflow(FAST_INPUT, mocks).then(
+			() => {
+				throw new Error(
+					"expected the workflow to fail, but it completed",
+				);
+			},
+			(error: unknown) => error,
+		);
+
+		expect(failure).toBeInstanceOf(WorkflowFailedError);
+		expect(prune).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["absent", INPUT],
+		["false", { ...INPUT, publishBeforeScan: false }],
+	])(
+		"takes the ordinary path, unchanged, when the flag is %s",
+		async (_l, input) => {
+			const order: string[] = [];
+			const promote = vi.fn();
+			const scan = vi.fn();
+			const record = vi.fn();
+			const mocks = happyMocks({
+				verifyAndScanInstructionFiles: async () => {
+					order.push("gate");
+					return { ok: true, rejections: [] };
+				},
+				finalizeInstructionSnapshot: async () => {
+					order.push("promote");
+					return { ok: true, rejections: [] };
+				},
+				publishInstructionSnapshotActivity: async () => {
+					order.push("publish");
+					return { published: true };
+				},
+				pruneInstructionSnapshots: async () => {
+					order.push("prune");
+					return { deleted: 0 };
+				},
+				promoteUnscannedInstructionSnapshot: promote,
+				scanPublishedInstructionSnapshot: scan,
+				recordDeferredScanOutcome: record,
+			});
+
+			const result = await runWorkflow(input, mocks);
+
+			expect(result).toEqual({ status: "READY", published: true });
+			expect(order).toEqual(["gate", "promote", "publish", "prune"]);
+			expect(promote).not.toHaveBeenCalled();
+			expect(scan).not.toHaveBeenCalled();
+			expect(record).not.toHaveBeenCalled();
+		},
+	);
 });

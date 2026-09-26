@@ -19,6 +19,9 @@ const m = vi.hoisted(() => ({
 	deleteObjects: vi.fn(),
 	listObjects: vi.fn(),
 	getFileMetadata: vi.fn(),
+	// Publish first, scan afterwards (Fizzy #2737).
+	recordInstructionDeferredScanOutcome: vi.fn(),
+	getPublishedInstructionSnapshot: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({ ...m }));
 vi.mock("@repo/storage", () => ({
@@ -59,7 +62,11 @@ vi.mock("@repo/instructions/export", () => warmMocks);
 // Separate hoisted holder for the `@temporalio/activity` mock so the
 // heartbeat spy (Important 3) can be asserted on from test bodies, without
 // mixing it into `m` (which mirrors `@repo/database`/`@repo/storage` only).
-const activityMocks = vi.hoisted(() => ({ heartbeat: vi.fn() }));
+//
+// `attempt` is what `Context.current().info.attempt` reports: the deferred
+// scan (Fizzy #2737) behaves differently on its final attempt, and every
+// other case runs as a first attempt.
+const activityMocks = vi.hoisted(() => ({ heartbeat: vi.fn(), attempt: 1 }));
 // R16 relies on `ApplicationFailure.nonRetryable` to signal a tenant
 // mismatch as a non-retryable Temporal failure; the real class lives in
 // `@temporalio/common` and is re-exported here, so the mock must carry a
@@ -69,6 +76,9 @@ const activityMocks = vi.hoisted(() => ({ heartbeat: vi.fn() }));
 // the two is the whole point of that branch.
 vi.mock("@temporalio/activity", () => ({
 	heartbeat: activityMocks.heartbeat,
+	Context: {
+		current: () => ({ info: { attempt: activityMocks.attempt } }),
+	},
 	ApplicationFailure: {
 		nonRetryable: (message?: string | null, type?: string | null) => {
 			const error = new Error(message ?? undefined) as Error & {
@@ -91,15 +101,37 @@ vi.mock("@temporalio/activity", () => ({
 	},
 }));
 
-import { isStagingKey, snapshotKey, stagingKey } from "@repo/instructions";
+// The real secret scanner, wrapped so the bounded-collection cases can see
+// what each call was ALLOWED to keep and what it actually built: the point
+// of those cases is the retained collection, not only the returned list.
+vi.mock("@repo/instructions", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@repo/instructions")>();
+	return {
+		...actual,
+		scanTextForSecrets: vi.fn(actual.scanTextForSecrets),
+	};
+});
+
+import {
+	computeSnapshotDigest,
+	isStagingKey,
+	type SecretScan,
+	scanTextForSecrets,
+	snapshotKey,
+	stagingKey,
+} from "@repo/instructions";
 import {
 	finalizeInstructionSnapshot,
 	markInstructionSnapshotFailed,
+	promoteUnscannedInstructionSnapshot,
 	pruneInstructionSnapshots,
 	publishInstructionSnapshotActivity,
+	recordDeferredScanOutcome,
 	rejectInstructionSnapshot,
+	scanPublishedInstructionSnapshot,
 	verifyAndScanInstructionFiles,
 } from "../src/activities/project-instructions";
+import { DEFERRED_SCAN_MAX_ATTEMPTS } from "../src/lib/instruction-deferred-scan-retry";
 
 const snap = {
 	snapshotId: "s",
@@ -232,6 +264,8 @@ beforeEach(() => {
 		fn.mockReset();
 	}
 	activityMocks.heartbeat.mockReset();
+	activityMocks.attempt = 1;
+	vi.mocked(scanTextForSecrets).mockClear();
 	warmMocks.warmInstructionSnapshotExport.mockReset();
 	warmMocks.warmInstructionSnapshotExport.mockResolvedValue(undefined);
 	logMocks.warn.mockReset();
@@ -2787,5 +2821,1133 @@ describe("derived snapshots (Fizzy #2546)", () => {
 		for (const call of m.deleteObjects.mock.calls) {
 			expect(call[0]).not.toContain(BASE_KEY);
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Publish first, scan afterwards (Fizzy #2737).
+//
+// The pre-publish pass keeps every check the gate makes EXCEPT the content
+// scan, and writes the buffer it hashed to the immutable key. The post-publish
+// scan reads only this snapshot's own promoted objects. The verdict is stored
+// with its audit row, attributed to the member who acknowledged the risk.
+// ---------------------------------------------------------------------------
+describe("publish first, scan afterwards (Fizzy #2737)", () => {
+	/** A publish-first snapshot row, before promotion. */
+	function fastRow(overrides: Record<string, unknown> = {}) {
+		m.getInstructionSnapshotById.mockResolvedValue({
+			id: "s",
+			projectId: "p",
+			organizationId: "o",
+			userId: "acknowledger",
+			// `finalize` starts the workflow before it writes VALIDATING, so
+			// the pass can find either; RECEIVING is the one it must claim.
+			status: "RECEIVING",
+			publishOnReady: true,
+			publishBeforeScan: true,
+			deferredScanStatus: null,
+			version: 7,
+			fileCount: 1,
+			baseSnapshotId: null,
+			settingsFrozen: {
+				layer: "default",
+				ignoreGlobs: ["**/node_modules/**"],
+				limits: {},
+			},
+			...overrides,
+		});
+	}
+
+	/**
+	 * Stages `specs` for the pass, and has the SECOND `listInstructionFiles`
+	 * read — the one the promotion makes after its writes — return the rows
+	 * as the writes left them: at their own snapshot key, with any mode the
+	 * shebang inference wrote.
+	 */
+	async function stageForPromotion(
+		specs: StageSpec[],
+		modes: Record<string, number> = {},
+	) {
+		const rows = await stage(specs);
+		const promoted: Array<Record<string, unknown>> = rows.map((row) => ({
+			...row,
+			storageKey: snapshotKey("p", "s", row.id as string),
+			mode: modes[row.id as string] ?? row.mode,
+		}));
+		m.listInstructionFiles.mockReset();
+		m.listInstructionFiles
+			.mockResolvedValueOnce(rows)
+			.mockResolvedValueOnce(promoted);
+		return { rows, promoted };
+	}
+
+	describe("promoteUnscannedInstructionSnapshot", () => {
+		it("refuses, non-retryably and before touching anything, a row that did not opt in", async () => {
+			fastRow({ publishBeforeScan: false });
+
+			await expect(
+				promoteUnscannedInstructionSnapshot(snap),
+			).rejects.toMatchObject({
+				nonRetryable: true,
+				type: "INSTRUCTION_SNAPSHOT_NOT_PUBLISH_BEFORE_SCAN",
+			});
+			expect(m.claimInstructionSnapshotValidation).not.toHaveBeenCalled();
+			expect(m.listObjects).not.toHaveBeenCalled();
+			expect(m.downloadFile).not.toHaveBeenCalled();
+		});
+
+		it("refuses a row that opted in but does not publish itself", async () => {
+			fastRow({ publishOnReady: false });
+
+			await expect(
+				promoteUnscannedInstructionSnapshot(snap),
+			).rejects.toMatchObject({
+				nonRetryable: true,
+				type: "INSTRUCTION_SNAPSHOT_NOT_PUBLISH_BEFORE_SCAN",
+			});
+		});
+
+		it("does NOT reject secret-bearing content, and writes the ONE hashed buffer to the snapshot key", async () => {
+			fastRow();
+			const content = Buffer.from(
+				`aws_access_key_id = ${AWS_EXAMPLE_ACCESS_KEY}\n`,
+			);
+			await stageForPromotion([
+				{ id: "f1", path: "CLAUDE.md", data: content },
+			]);
+
+			expect(await promoteUnscannedInstructionSnapshot(snap)).toEqual({
+				ok: true,
+				rejections: [],
+			});
+			// The claim, as the gate makes it.
+			expect(m.claimInstructionSnapshotValidation).toHaveBeenCalledWith({
+				snapshotId: "s",
+				projectId: "p",
+				organizationId: "o",
+			});
+			// One download, and the bytes it returned are the bytes written.
+			expect(m.downloadFile).toHaveBeenCalledTimes(1);
+			expect(m.copyFile).not.toHaveBeenCalled();
+			expect(m.uploadFile).toHaveBeenCalledWith(
+				snapshotKey("p", "s", "f1"),
+				content,
+				{ bucket: "skills", contentType: "text/markdown" },
+			);
+			// Metadata and the move off staging are ONE write.
+			expect(m.updateInstructionFileMetadata).toHaveBeenCalledTimes(1);
+			expect(m.updateInstructionFileMetadata).toHaveBeenCalledWith(
+				"f1",
+				"o",
+				expect.objectContaining({
+					kind: "INSTRUCTIONS",
+					storageKey: snapshotKey("p", "s", "f1"),
+				}),
+			);
+			// Staging is cleaned before READY, and READY carries the pending scan.
+			expect(m.deleteObjects).toHaveBeenCalledWith(
+				[stagingKey("p", "s", "f1")],
+				{ bucket: "skills" },
+			);
+			expect(m.markInstructionSnapshotReady).toHaveBeenCalledWith({
+				snapshotId: "s",
+				projectId: "p",
+				organizationId: "o",
+				fileCount: 1,
+				storedBytes: content.length,
+				digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+				readyAt: expect.any(Date),
+				deferredScan: true,
+			});
+		});
+
+		it("computes the digest from the rows AFTER the metadata writes, so an inferred 0755 is in it (R6)", async () => {
+			fastRow();
+			const script = Buffer.from("#!/bin/sh\necho hi\n");
+			const { promoted } = await stageForPromotion(
+				[
+					{
+						id: "f1",
+						path: "scripts/run.sh",
+						data: script,
+						mimeType: "text/x-sh",
+					},
+				],
+				{ f1: 0o755 },
+			);
+
+			await promoteUnscannedInstructionSnapshot(snap);
+
+			// The inference wrote the mode...
+			expect(m.updateInstructionFileMetadata).toHaveBeenCalledWith(
+				"f1",
+				"o",
+				expect.objectContaining({ mode: 0o755 }),
+			);
+			// ...and the digest is the one over the re-listed rows, not the
+			// null-mode rows read before the write.
+			const expected = await computeSnapshotDigest(
+				promoted.map((f) => ({
+					path: f.path as string,
+					sha256: f.sha256 as string,
+					mode: f.mode as number | null,
+				})),
+			);
+			const stale = await computeSnapshotDigest(
+				promoted.map((f) => ({
+					path: f.path as string,
+					sha256: f.sha256 as string,
+					mode: null,
+				})),
+			);
+			expect(expected).not.toBe(stale);
+			expect(m.markInstructionSnapshotReady).toHaveBeenCalledWith(
+				expect.objectContaining({ digest: expected }),
+			);
+		});
+
+		it("still refuses a credential file on its name alone, before anything is written", async () => {
+			fastRow();
+			await stageForPromotion([
+				{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+				{ id: "f2", path: ".env", data: Buffer.from("A=1") },
+			]);
+
+			const r = await promoteUnscannedInstructionSnapshot(snap);
+
+			expect(r.ok).toBe(false);
+			expect(r.rejections).toEqual([
+				expect.objectContaining({
+					path: ".env",
+					reason: "secret",
+					detail: expect.stringMatching(/^filename:/),
+				}),
+			]);
+			expect(m.downloadFile).not.toHaveBeenCalledWith(
+				stagingKey("p", "s", "f2"),
+				expect.anything(),
+			);
+			expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
+		});
+
+		it("rejects a hash mismatch and writes nothing after it", async () => {
+			fastRow();
+			await stageForPromotion([
+				{
+					id: "f1",
+					path: "A.md",
+					data: Buffer.from("swapped"),
+					sha256: "0".repeat(64),
+				},
+				{ id: "f2", path: "B.md", data: Buffer.from("fine") },
+			]);
+
+			const r = await promoteUnscannedInstructionSnapshot(snap);
+
+			expect(r).toEqual({
+				ok: false,
+				rejections: [{ path: "A.md", reason: "hash_mismatch" }],
+			});
+			expect(m.uploadFile).not.toHaveBeenCalled();
+			expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+			expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
+		});
+
+		it("rejects a stored .fabricignore that contradicts the frozen rules", async () => {
+			fastRow({
+				settingsFrozen: {
+					layer: "fabricignore",
+					ignoreGlobs: ["docs/**"],
+				},
+			});
+			await stageForPromotion([
+				{
+					id: "ign",
+					path: ".fabricignore",
+					data: Buffer.from("*.log\n"),
+				},
+			]);
+
+			const r = await promoteUnscannedInstructionSnapshot(snap);
+
+			expect(r.ok).toBe(false);
+			expect(r.rejections).toEqual([
+				expect.objectContaining({
+					path: ".fabricignore",
+					reason: "ignore_mismatch",
+				}),
+			]);
+			expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
+		});
+
+		it("rejects a missing .fabricignore, and writes no file at all because that is known up front", async () => {
+			fastRow({
+				settingsFrozen: {
+					layer: "fabricignore",
+					ignoreGlobs: ["docs/**"],
+				},
+			});
+			await stageForPromotion([
+				{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+			]);
+
+			const r = await promoteUnscannedInstructionSnapshot(snap);
+
+			expect(r).toEqual({
+				ok: false,
+				rejections: [
+					{
+						path: ".fabricignore",
+						reason: "ignore_mismatch",
+						detail: "1 rules frozen, file missing",
+					},
+				],
+			});
+			expect(m.uploadFile).not.toHaveBeenCalled();
+		});
+
+		it("returns the same success, without touching storage, on a retry after READY committed", async () => {
+			fastRow({ status: "READY", deferredScanStatus: "PENDING" });
+
+			expect(await promoteUnscannedInstructionSnapshot(snap)).toEqual({
+				ok: true,
+				rejections: [],
+			});
+			expect(m.claimInstructionSnapshotValidation).not.toHaveBeenCalled();
+			expect(m.downloadFile).not.toHaveBeenCalled();
+			expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
+		});
+
+		it("refuses READY, retryably, while any row is not at its own snapshot key (R8)", async () => {
+			fastRow();
+			const rows = await stage([
+				{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+			]);
+			// The write did not land: the re-read still names staging.
+			m.listInstructionFiles.mockReset();
+			m.listInstructionFiles.mockResolvedValue(rows);
+
+			await expect(
+				promoteUnscannedInstructionSnapshot(snap),
+			).rejects.toMatchObject({
+				nonRetryable: false,
+				type: "INSTRUCTION_SNAPSHOT_PROMOTION_INCOMPLETE",
+			});
+			expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
+		});
+
+		it("copies an inherited file into THIS snapshot's prefix from the base's object", async () => {
+			const BASE_KEY = "projects/p/instructions/snapshots/base/bf1";
+			fastRow({ baseSnapshotId: "base" });
+			const inherited = Buffer.from("# inherited");
+			await stageForPromotion([
+				{
+					id: "inh1",
+					path: "AGENTS.md",
+					data: inherited,
+					storageKey: BASE_KEY,
+					inheritedFromFileId: "bf1",
+				},
+			]);
+
+			expect((await promoteUnscannedInstructionSnapshot(snap)).ok).toBe(
+				true,
+			);
+			expect(m.downloadFile).toHaveBeenCalledWith(BASE_KEY, {
+				bucket: "skills",
+			});
+			expect(m.uploadFile).toHaveBeenCalledWith(
+				snapshotKey("p", "s", "inh1"),
+				inherited,
+				expect.objectContaining({ bucket: "skills" }),
+			);
+			for (const call of m.deleteObjects.mock.calls) {
+				expect(call[0]).not.toContain(BASE_KEY);
+			}
+		});
+	});
+
+	describe("scanPublishedInstructionSnapshot", () => {
+		function publishedRow(overrides: Record<string, unknown> = {}) {
+			fastRow({
+				status: "READY",
+				deferredScanStatus: "PENDING",
+				...overrides,
+			});
+		}
+
+		it("finds a secret in the promoted object and reports rule and line, never the text", async () => {
+			publishedRow();
+			await stage([
+				{
+					id: "f1",
+					path: "CLAUDE.md",
+					data: Buffer.from(
+						`# notes\naws_access_key_id = ${AWS_EXAMPLE_ACCESS_KEY}\n`,
+					),
+					storageKey: snapshotKey("p", "s", "f1"),
+				},
+			]);
+
+			const r = await scanPublishedInstructionSnapshot(snap);
+
+			expect(r.outcome).toBe("ISSUES_FOUND");
+			expect(r.findings).toEqual([
+				expect.objectContaining({
+					path: "CLAUDE.md",
+					reason: "secret",
+					line: 2,
+				}),
+			]);
+			expect(JSON.stringify(r)).not.toContain(AWS_EXAMPLE_ACCESS_KEY);
+			expect(m.downloadFile).toHaveBeenCalledWith(
+				snapshotKey("p", "s", "f1"),
+				{ bucket: "skills" },
+			);
+			// Read-only.
+			expect(m.uploadFile).not.toHaveBeenCalled();
+			expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+		});
+
+		it("passes clean content", async () => {
+			publishedRow();
+			await stage([
+				{
+					id: "f1",
+					path: "CLAUDE.md",
+					data: Buffer.from("# nothing to see"),
+					storageKey: snapshotKey("p", "s", "f1"),
+				},
+			]);
+
+			expect(await scanPublishedInstructionSnapshot(snap)).toEqual({
+				outcome: "PASSED",
+				findings: [],
+			});
+		});
+
+		it("reports a hash mismatch, a size mismatch and a missing object as findings", async () => {
+			publishedRow();
+			await stage([
+				{
+					id: "f1",
+					path: "A.md",
+					data: Buffer.from("changed"),
+					sha256: "0".repeat(64),
+					storageKey: snapshotKey("p", "s", "f1"),
+				},
+				{
+					id: "f2",
+					path: "B.md",
+					data: Buffer.from("grew"),
+					headSize: 999,
+					storageKey: snapshotKey("p", "s", "f2"),
+				},
+				{
+					id: "f3",
+					path: "C.md",
+					data: Buffer.from("gone"),
+					headPresent: false,
+					storageKey: snapshotKey("p", "s", "f3"),
+				},
+			]);
+
+			const r = await scanPublishedInstructionSnapshot(snap);
+
+			expect(r.outcome).toBe("ISSUES_FOUND");
+			expect(r.findings).toEqual([
+				{ path: "A.md", reason: "hash_mismatch" },
+				{ path: "B.md", reason: "size_mismatch", detail: "999 != 4" },
+				{ path: "C.md", reason: "missing" },
+			]);
+		});
+
+		it("never reads a staging key or another snapshot's object: a row not at its own key is `missing`", async () => {
+			publishedRow();
+			await stage([
+				{ id: "f1", path: "A.md", data: Buffer.from("staged") },
+				{
+					id: "f2",
+					path: "B.md",
+					data: Buffer.from("inherited"),
+					storageKey: "projects/p/instructions/snapshots/base/bf1",
+					inheritedFromFileId: "bf1",
+				},
+			]);
+
+			const r = await scanPublishedInstructionSnapshot(snap);
+
+			expect(r.findings).toEqual([
+				{ path: "A.md", reason: "missing" },
+				{ path: "B.md", reason: "missing" },
+			]);
+			expect(m.getFileMetadata).not.toHaveBeenCalled();
+			expect(m.downloadFile).not.toHaveBeenCalled();
+		});
+
+		it("heartbeats once per file", async () => {
+			publishedRow();
+			await stage([
+				{
+					id: "f1",
+					path: "A.md",
+					data: Buffer.from("a"),
+					storageKey: snapshotKey("p", "s", "f1"),
+				},
+				{
+					id: "f2",
+					path: "B.md",
+					data: Buffer.from("b"),
+					storageKey: snapshotKey("p", "s", "f2"),
+				},
+			]);
+
+			await scanPublishedInstructionSnapshot(snap);
+
+			expect(activityMocks.heartbeat).toHaveBeenCalledTimes(2);
+		});
+
+		it("scans even after the submitting member lost read access: tenant check only", async () => {
+			publishedRow();
+			m.canReadProjectInstructions.mockResolvedValue(false);
+			await stage([
+				{
+					id: "f1",
+					path: "A.md",
+					data: Buffer.from("fine"),
+					storageKey: snapshotKey("p", "s", "f1"),
+				},
+			]);
+
+			expect((await scanPublishedInstructionSnapshot(snap)).outcome).toBe(
+				"PASSED",
+			);
+		});
+
+		it.each([
+			["not READY", { status: "VALIDATING" }],
+			["an ordinary snapshot", { deferredScanStatus: null }],
+		])("refuses non-retryably for %s", async (_l, o) => {
+			publishedRow(o);
+
+			await expect(
+				scanPublishedInstructionSnapshot(snap),
+			).rejects.toMatchObject({
+				nonRetryable: true,
+				type: "INSTRUCTION_SNAPSHOT_NO_DEFERRED_SCAN",
+			});
+			expect(m.downloadFile).not.toHaveBeenCalled();
+		});
+
+		it("still refuses another tenant's snapshot", async () => {
+			publishedRow({ organizationId: "other" });
+
+			await expect(
+				scanPublishedInstructionSnapshot(snap),
+			).rejects.toMatchObject({
+				nonRetryable: true,
+				type: "INSTRUCTION_SNAPSHOT_TENANT_MISMATCH",
+			});
+		});
+	});
+
+	/**
+	 * A later file's storage error must not throw away what earlier files
+	 * established (Fizzy #2737 review). Before the last attempt the error
+	 * still propagates, so Temporal retries the whole scan; on the last one
+	 * there is nothing left to wait for, so the file is passed over, the rest
+	 * are still scanned, and the verdict is INCOMPLETE with every finding.
+	 */
+	describe("scanPublishedInstructionSnapshot on its final attempt", () => {
+		const unreadableKey = snapshotKey("p", "s", "f2");
+
+		async function stageWithUnreadableMiddle(
+			failing: "download" | "head" = "download",
+		) {
+			fastRow({ status: "READY", deferredScanStatus: "PENDING" });
+			await stage([
+				{
+					id: "f1",
+					path: "A.md",
+					data: Buffer.from(
+						`aws_access_key_id = ${AWS_EXAMPLE_ACCESS_KEY}\n`,
+					),
+					storageKey: snapshotKey("p", "s", "f1"),
+				},
+				{
+					id: "f2",
+					path: "B.md",
+					data: Buffer.from("never readable"),
+					storageKey: unreadableKey,
+				},
+				{
+					id: "f3",
+					path: "C.md",
+					data: Buffer.from(
+						`# setup\n\npassword: ${["123abcd", "raja"].join("")}\n`,
+					),
+					storageKey: snapshotKey("p", "s", "f3"),
+				},
+			]);
+			const storageDown = new TypeError(
+				`socket hang up reading ${unreadableKey}`,
+			);
+			if (failing === "download") {
+				const download = m.downloadFile.getMockImplementation();
+				m.downloadFile.mockImplementation(async (key: string) => {
+					if (key === unreadableKey) {
+						throw storageDown;
+					}
+					return download?.(key);
+				});
+			} else {
+				const head = m.getFileMetadata.getMockImplementation();
+				m.getFileMetadata.mockImplementation(async (key: string) => {
+					if (key === unreadableKey) {
+						throw storageDown;
+					}
+					return head?.(key);
+				});
+			}
+		}
+
+		it.each(["download", "head"] as const)(
+			"keeps an earlier file's secret, scans the files after it, and returns INCOMPLETE when a %s fails on the last attempt",
+			async (failing) => {
+				await stageWithUnreadableMiddle(failing);
+				activityMocks.attempt = DEFERRED_SCAN_MAX_ATTEMPTS;
+
+				const r = await scanPublishedInstructionSnapshot(snap);
+
+				expect(r).toEqual({
+					outcome: "INCOMPLETE",
+					findings: [
+						{
+							path: "A.md",
+							reason: "secret",
+							detail: "aws-access-key",
+							line: 1,
+						},
+						// The file AFTER the unreadable one was still scanned.
+						{
+							path: "C.md",
+							reason: "secret",
+							detail: "short-credential-assignment",
+							line: 3,
+						},
+					],
+				});
+			},
+		);
+
+		it("logs the unreadable file by its error class only, never the message, key or path", async () => {
+			await stageWithUnreadableMiddle();
+			activityMocks.attempt = DEFERRED_SCAN_MAX_ATTEMPTS;
+
+			await scanPublishedInstructionSnapshot(snap);
+
+			const logged = logMocks.warn.mock.calls.find(
+				([fields]) =>
+					(fields as { event?: string }).event ===
+					"project.instructions.deferred_scan_file_unreadable",
+			);
+			expect(logged?.[0]).toEqual({
+				event: "project.instructions.deferred_scan_file_unreadable",
+				snapshotId: "s",
+				projectId: "p",
+				organizationId: "o",
+				failure: "TypeError",
+			});
+			const serialized = JSON.stringify(logMocks.warn.mock.calls);
+			expect(serialized).not.toContain("socket hang up");
+			expect(serialized).not.toContain("B.md");
+		});
+
+		it.each([1, DEFERRED_SCAN_MAX_ATTEMPTS - 1])(
+			"rethrows the storage error on attempt %i, so Temporal retries the whole scan",
+			async (attempt) => {
+				await stageWithUnreadableMiddle();
+				activityMocks.attempt = attempt;
+
+				await expect(
+					scanPublishedInstructionSnapshot(snap),
+				).rejects.toThrow(TypeError);
+			},
+		);
+
+		it("returns INCOMPLETE with no findings when the only problem was a file it could not read", async () => {
+			fastRow({ status: "READY", deferredScanStatus: "PENDING" });
+			await stage([
+				{
+					id: "f2",
+					path: "B.md",
+					data: Buffer.from("fine"),
+					storageKey: unreadableKey,
+				},
+			]);
+			m.downloadFile.mockRejectedValue(new Error("storage down"));
+			activityMocks.attempt = DEFERRED_SCAN_MAX_ATTEMPTS;
+
+			expect(await scanPublishedInstructionSnapshot(snap)).toEqual({
+				outcome: "INCOMPLETE",
+				findings: [],
+			});
+		});
+
+		it("does not change a clean or a flagged verdict on the last attempt when every file was read", async () => {
+			fastRow({ status: "READY", deferredScanStatus: "PENDING" });
+			await stage([
+				{
+					id: "f1",
+					path: "A.md",
+					data: Buffer.from("# clean"),
+					storageKey: snapshotKey("p", "s", "f1"),
+				},
+			]);
+			activityMocks.attempt = DEFERRED_SCAN_MAX_ATTEMPTS;
+
+			expect((await scanPublishedInstructionSnapshot(snap)).outcome).toBe(
+				"PASSED",
+			);
+		});
+	});
+
+	describe("recordDeferredScanOutcome", () => {
+		beforeEach(() => {
+			fastRow({ status: "READY", deferredScanStatus: "PENDING" });
+			m.recordInstructionDeferredScanOutcome.mockResolvedValue({
+				changed: true,
+			});
+			m.getPublishedInstructionSnapshot.mockResolvedValue({ id: "s" });
+		});
+
+		it("records ISSUES_FOUND with an audit row as the acknowledger: counts and rule ids, no paths", async () => {
+			const findings = [
+				{
+					path: "clients/acme/CLAUDE.md",
+					reason: "secret",
+					detail: "aws-access-key",
+					line: 3,
+				},
+				{ path: "docs/b.md", reason: "hash_mismatch" },
+			];
+
+			expect(
+				await recordDeferredScanOutcome({
+					...snap,
+					outcome: "ISSUES_FOUND",
+					findings,
+				}),
+			).toEqual({ changed: true });
+
+			const [call] = m.recordInstructionDeferredScanOutcome.mock
+				.calls[0] as [
+				{
+					outcome: string;
+					findings: unknown[];
+					audit: Record<string, unknown> & {
+						metadata: Record<string, unknown>;
+					};
+				},
+			];
+			expect(call).toMatchObject({
+				snapshotId: "s",
+				projectId: "p",
+				organizationId: "o",
+				outcome: "ISSUES_FOUND",
+				findings,
+			});
+			expect(call.audit).toMatchObject({
+				action: "project.instructions.deferred_scan_issues_found",
+				outcome: "failure",
+				// The member who acknowledged the risk, not the workflow's
+				// submitting user.
+				actor: { type: "user", userId: "acknowledger" },
+				resource: {
+					type: "project_instruction_snapshot",
+					id: "s",
+					name: "v7",
+				},
+			});
+			expect(call.audit.metadata).toEqual({
+				version: 7,
+				findingCount: 2,
+				reasonCounts: { secret: 1, hash_mismatch: 1 },
+				rules: ["aws-access-key"],
+			});
+			const serialized = JSON.stringify(call.audit);
+			expect(serialized).not.toContain("acme");
+			expect(serialized).not.toContain("docs/b.md");
+			// Design R5: a flagged version stays published and CLI-syncable
+			// until it is replaced, so its archive is pre-built like any
+			// other's rather than built inside the first sync's request.
+			expect(
+				warmMocks.warmInstructionSnapshotExport,
+			).toHaveBeenCalledWith({
+				projectId: "p",
+				organizationId: "o",
+				snapshotId: "s",
+			});
+		});
+
+		it("keeps an INCOMPLETE scan's findings, and summarises them on its audit row", async () => {
+			const findings = [
+				{
+					path: "A.md",
+					reason: "secret",
+					detail: "aws-access-key",
+					line: 1,
+				},
+			];
+
+			await recordDeferredScanOutcome({
+				...snap,
+				outcome: "INCOMPLETE",
+				findings,
+			});
+
+			const [call] = m.recordInstructionDeferredScanOutcome.mock
+				.calls[0] as [
+				{
+					findings: unknown[];
+					audit: { metadata: Record<string, unknown> };
+				},
+			];
+			expect(call.findings).toEqual(findings);
+			expect(call.audit.metadata).toEqual({
+				version: 7,
+				reason: "scan_failed",
+				findingCount: 1,
+				reasonCounts: { secret: 1 },
+				rules: ["aws-access-key"],
+			});
+			expect(JSON.stringify(call.audit)).not.toContain("A.md");
+			expect(
+				warmMocks.warmInstructionSnapshotExport,
+			).toHaveBeenCalledTimes(1);
+		});
+
+		it("stores a list that already ends in its truncation sentinel as it came", async () => {
+			const findings = [
+				...Array.from({ length: 100 }, (_, i) => ({
+					path: `f${i}.md`,
+					reason: "secret",
+					detail: "aws-access-key",
+					line: 1,
+				})),
+				{
+					path: "(truncated)",
+					reason: "truncated",
+					detail: "250 more",
+				},
+			];
+
+			await recordDeferredScanOutcome({
+				...snap,
+				outcome: "ISSUES_FOUND",
+				findings,
+			});
+
+			const [call] = m.recordInstructionDeferredScanOutcome.mock
+				.calls[0] as [{ findings: unknown[] }];
+			// Re-capping it would drop the real sentinel for a "1 more".
+			expect(call.findings).toEqual(findings);
+		});
+
+		it("still caps a list longer than the bound", async () => {
+			const findings = Array.from({ length: 150 }, (_, i) => ({
+				path: `f${i}.md`,
+				reason: "missing",
+			}));
+
+			await recordDeferredScanOutcome({
+				...snap,
+				outcome: "ISSUES_FOUND",
+				findings,
+			});
+
+			const [call] = m.recordInstructionDeferredScanOutcome.mock
+				.calls[0] as [{ findings: Array<{ detail?: string }> }];
+			expect(call.findings).toHaveLength(101);
+			expect(call.findings[100]?.detail).toBe("50 more");
+		});
+
+		it("records INCOMPLETE with its own audit row, and logs the failure class without persisting it", async () => {
+			await recordDeferredScanOutcome({
+				...snap,
+				outcome: "INCOMPLETE",
+				findings: [],
+				failure: "TypeError",
+			});
+
+			const [call] = m.recordInstructionDeferredScanOutcome.mock
+				.calls[0] as [{ audit: Record<string, unknown> }];
+			expect(call.audit).toMatchObject({
+				action: "project.instructions.deferred_scan_incomplete",
+				actor: { type: "user", userId: "acknowledger" },
+				metadata: { version: 7, reason: "scan_failed" },
+			});
+			expect(JSON.stringify(call.audit)).not.toContain("TypeError");
+			expect(logMocks.warn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					event: "project.instructions.deferred_scan_recorded",
+					outcome: "INCOMPLETE",
+					failure: "TypeError",
+				}),
+				expect.any(String),
+			);
+		});
+
+		it("records PASSED with no audit row, and warms the export while the version is the pointer", async () => {
+			await recordDeferredScanOutcome({
+				...snap,
+				outcome: "PASSED",
+				findings: [],
+			});
+
+			const [call] = m.recordInstructionDeferredScanOutcome.mock
+				.calls[0] as [Record<string, unknown>];
+			expect(call).not.toHaveProperty("audit");
+			expect(
+				warmMocks.warmInstructionSnapshotExport,
+			).toHaveBeenCalledWith({
+				projectId: "p",
+				organizationId: "o",
+				snapshotId: "s",
+			});
+		});
+
+		it("warms nothing once another version holds the pointer", async () => {
+			m.getPublishedInstructionSnapshot.mockResolvedValue({
+				id: "other",
+			});
+
+			await recordDeferredScanOutcome({
+				...snap,
+				outcome: "PASSED",
+				findings: [],
+			});
+
+			expect(
+				warmMocks.warmInstructionSnapshotExport,
+			).not.toHaveBeenCalled();
+		});
+
+		it("never fails the activity because the warm did", async () => {
+			warmMocks.warmInstructionSnapshotExport.mockRejectedValue(
+				new Error("storage down"),
+			);
+
+			await expect(
+				recordDeferredScanOutcome({
+					...snap,
+					outcome: "PASSED",
+					findings: [],
+				}),
+			).resolves.toEqual({ changed: true });
+		});
+	});
+
+	describe("publishInstructionSnapshotActivity for a publish-first snapshot", () => {
+		beforeEach(() => {
+			fastRow({
+				status: "READY",
+				deferredScanStatus: "PENDING",
+				fileCount: 2,
+			});
+		});
+
+		it("hands published_unscanned to the publish transaction, attributed to the acknowledger, and neither fires the ordinary audit nor warms", async () => {
+			m.publishInstructionSnapshot.mockResolvedValue({
+				published: true,
+				changed: true,
+			});
+
+			expect(await publishInstructionSnapshotActivity(snap)).toEqual({
+				published: true,
+			});
+			expect(m.publishInstructionSnapshot).toHaveBeenCalledWith({
+				snapshotId: "s",
+				projectId: "p",
+				organizationId: "o",
+				requireBaseUnmoved: true,
+				audit: {
+					action: "project.instructions.published_unscanned",
+					category: "project",
+					severity: "warning",
+					actor: { type: "user", userId: "acknowledger" },
+					organizationId: "o",
+					projectId: "p",
+					resource: {
+						type: "project_instruction_snapshot",
+						id: "s",
+						name: "v7",
+					},
+					metadata: {
+						version: 7,
+						fileCount: 2,
+						source: "auto_publish_before_scan",
+					},
+				},
+			});
+			expect(m.recordAudit).not.toHaveBeenCalled();
+			// Warmed after the scan instead, so it cannot delay it (R5).
+			expect(
+				warmMocks.warmInstructionSnapshotExport,
+			).not.toHaveBeenCalled();
+		});
+
+		it("passes a refusal back as the reason", async () => {
+			m.publishInstructionSnapshot.mockResolvedValue({
+				published: false,
+				changed: false,
+				reason: "fast_path_not_authorized",
+			});
+
+			expect(await publishInstructionSnapshotActivity(snap)).toEqual({
+				published: false,
+				reason: "fast_path_not_authorized",
+			});
+			expect(m.recordAudit).not.toHaveBeenCalled();
+		});
+	});
+});
+
+/**
+ * Bounded while collecting (Fizzy #2737 review). A secret scan yields one hit
+ * per matching LINE, so a few megabytes of credential assignments used to be
+ * hundreds of thousands of hit objects, all allocated before the cap could
+ * drop them — enough to exhaust a worker on every retry. The scan is now
+ * given only the room left in the list, the budget carries across files, and
+ * the truncation sentinel is written from the running total.
+ *
+ * What is asserted is the RETAINED collection: every scanner call was told
+ * how much it may keep, and never built more than that — not just that the
+ * list the activity returned was capped afterwards.
+ */
+describe("secret findings are bounded while they are collected", () => {
+	/** `lines` credential assignments, assembled so no literal trips gitleaks. */
+	function dense(lines: number): Buffer {
+		return Buffer.from(
+			Array.from(
+				{ length: lines },
+				(_, i) =>
+					`password: ${["123abcd", "raja", String(i)].join("")}`,
+			).join("\n"),
+		);
+	}
+
+	/**
+	 * Every scanner call: the limit it was given and what it built. The mock
+	 * is typed from the scanner's LAST overload (text only), so the options
+	 * argument is read through `unknown[]`.
+	 */
+	function scannerCalls(): Array<{ limit: number; scan: SecretScan }> {
+		const mock = vi.mocked(scanTextForSecrets);
+		return mock.mock.calls.map((call, i) => ({
+			limit:
+				((call as unknown[])[1] as { limit: number } | undefined)
+					?.limit ?? Number.POSITIVE_INFINITY,
+			scan: mock.mock.results[i]?.value as SecretScan,
+		}));
+	}
+
+	function expectBoundedScans(): void {
+		const calls = scannerCalls();
+		expect(calls.length).toBeGreaterThan(0);
+		let kept = 0;
+		for (const { limit, scan } of calls) {
+			// Told how much it may keep, and kept no more.
+			expect(limit).toBeLessThanOrEqual(100);
+			expect(scan.hits.length).toBeLessThanOrEqual(limit);
+			kept += scan.hits.length;
+		}
+		// And across every file together, never more than the list keeps.
+		expect(kept).toBeLessThanOrEqual(100);
+	}
+
+	it("the ordinary gate keeps 100 hits across two dense files and counts the rest into the sentinel", async () => {
+		await stage([
+			{ id: "f1", path: "a.md", data: dense(5_000) },
+			{ id: "f2", path: "b.md", data: dense(3_000) },
+		]);
+
+		const r = await verifyAndScanInstructionFiles(snap);
+
+		expect(r.ok).toBe(false);
+		expect(r.rejections).toHaveLength(101);
+		expect(r.rejections[99]).toMatchObject({ path: "a.md", line: 100 });
+		expect(r.rejections[100]).toEqual({
+			path: "(truncated)",
+			reason: "truncated",
+			detail: `${8_000 - 100} more`,
+		});
+		expectBoundedScans();
+		// The second file's scan had no room left: it counted, kept nothing.
+		expect(scannerCalls()[1]).toEqual({
+			limit: 0,
+			scan: { hits: [], total: 3_000 },
+		});
+		// Both files were refused on their hit COUNT: no metadata for either,
+		// including the one whose hits all fell past the cap.
+		expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+	});
+
+	it("the ordinary gate still counts rejections pushed after the cap", async () => {
+		await stage([
+			{ id: "f1", path: "a.md", data: dense(100) },
+			// Refused on its name alone, after the list is already full.
+			{ id: "f2", path: ".env", data: Buffer.from("A=1") },
+		]);
+
+		const r = await verifyAndScanInstructionFiles(snap);
+
+		expect(r.rejections).toHaveLength(101);
+		expect(r.rejections[100]).toMatchObject({
+			reason: "truncated",
+			detail: "1 more",
+		});
+	});
+
+	it("the deferred scan keeps 100 findings across dense files and reports ISSUES_FOUND", async () => {
+		m.getInstructionSnapshotById.mockResolvedValue({
+			id: "s",
+			projectId: "p",
+			organizationId: "o",
+			userId: "acknowledger",
+			status: "READY",
+			publishOnReady: true,
+			publishBeforeScan: true,
+			deferredScanStatus: "PENDING",
+			version: 7,
+			fileCount: 2,
+			baseSnapshotId: null,
+			settingsFrozen: { layer: "default", ignoreGlobs: [], limits: {} },
+		});
+		await stage([
+			{
+				id: "f1",
+				path: "a.md",
+				data: dense(4_000),
+				storageKey: snapshotKey("p", "s", "f1"),
+			},
+			{
+				id: "f2",
+				path: "b.md",
+				data: dense(2_500),
+				storageKey: snapshotKey("p", "s", "f2"),
+			},
+		]);
+
+		const r = await scanPublishedInstructionSnapshot(snap);
+
+		expect(r.outcome).toBe("ISSUES_FOUND");
+		expect(r.findings).toHaveLength(101);
+		expect(r.findings[100]).toEqual({
+			path: "(truncated)",
+			reason: "truncated",
+			detail: `${6_500 - 100} more`,
+		});
+		expectBoundedScans();
 	});
 });

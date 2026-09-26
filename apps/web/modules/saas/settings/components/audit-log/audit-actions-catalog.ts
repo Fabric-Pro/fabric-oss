@@ -826,6 +826,30 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		description:
 			"A merged suggestion's repository sync was acknowledged: a sync run Fabric started for the merge, on the repository configuration it dispatched for, finished with an outcome a second run could not change. `metadata.syncRunKey` names that run and `metadata.operationId` the operation.",
 	},
+	{
+		key: "project.instructions.published_unscanned",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.published_unscanned",
+		description:
+			"A coding-instructions version was published before its content secret scan ran, because the member who uploaded or edited it chose to and acknowledged the risk. The actor is that member; `metadata.version` and `metadata.fileCount` describe the version.",
+	},
+	{
+		key: "project.instructions.deferred_scan_issues_found",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.deferred_scan_issues_found",
+		description:
+			"The secret scan of a version published before its scan found possible secrets. The version stays published until a member publishes a fixed or earlier one. Counts and rule ids only (`metadata.findingCount`, `metadata.reasonCounts`, `metadata.rules`), never file content.",
+	},
+	{
+		key: "project.instructions.deferred_scan_incomplete",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.deferred_scan_incomplete",
+		description:
+			"The secret scan of a version published before its scan could not finish, so the version was never checked. `metadata.reason` says whether the scan failed after its retries or its workflow stopped before recording a result.",
+	},
 	// ---- Feature / story ------------------------------------------------
 	{
 		key: "story.created",

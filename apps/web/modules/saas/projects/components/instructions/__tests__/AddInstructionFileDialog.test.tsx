@@ -471,3 +471,98 @@ describe("AddInstructionFileDialog — suggesting a change as a pull request", (
 		);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Publish now and scan afterwards (Fizzy #2737)
+// ---------------------------------------------------------------------------
+
+describe("AddInstructionFileDialog — publish now and scan afterwards", () => {
+	const copy = en.projects.codingInstructions.publishBeforeScan;
+
+	it("is not offered without the publish permission", () => {
+		renderDialog(null);
+
+		expect(
+			screen.queryByRole("checkbox", { name: copy.label }),
+		).not.toBeInTheDocument();
+	});
+
+	it("is never offered in reader (proposal-only) mode", () => {
+		renderDialog(null, {
+			proposalOnly: true,
+			canPropose: true,
+			canPublishBeforeScan: true,
+		});
+
+		expect(
+			screen.queryByRole("checkbox", { name: copy.label }),
+		).not.toBeInTheDocument();
+	});
+
+	it("blocks the direct add until the risk is acknowledged, then sends the flag", async () => {
+		const user = userEvent.setup();
+		renderDialog(null, { canPublishBeforeScan: true });
+		await user.upload(screen.getByLabelText("File"), pick("CLAUDE.md"));
+		const add = screen.getByRole("button", { name: "Add file" });
+
+		await user.click(screen.getByRole("checkbox", { name: copy.label }));
+
+		expect(screen.getByRole("alert")).toHaveTextContent(copy.warningBody);
+		expect(add).toBeDisabled();
+
+		await user.click(
+			screen.getByRole("checkbox", { name: copy.acknowledge }),
+		);
+		expect(add).toBeEnabled();
+		await user.click(add);
+
+		await waitFor(() =>
+			expect(m.editInstructionSnapshot).toHaveBeenCalledWith(
+				expect.objectContaining({
+					publishOnReady: true,
+					proposal: false,
+					publishBeforeScan: true,
+				}),
+			),
+		);
+	});
+
+	it("never sends the flag with a proposal, even when it is ticked", async () => {
+		const user = userEvent.setup();
+		renderDialog(null, { canPropose: true, canPublishBeforeScan: true });
+		await user.upload(screen.getByLabelText("File"), pick("CLAUDE.md"));
+		await user.click(screen.getByRole("checkbox", { name: copy.label }));
+
+		await user.click(
+			screen.getByRole("button", {
+				name: en.projects.codingInstructions.addFileDialog
+					.submitProposalButton,
+			}),
+		);
+
+		await waitFor(() =>
+			expect(m.editInstructionSnapshot).toHaveBeenCalled(),
+		);
+		const [call] = m.editInstructionSnapshot.mock.calls[0]! as [
+			Record<string, unknown>,
+		];
+		expect(call.proposal).toBe(true);
+		expect(call).not.toHaveProperty("publishBeforeScan");
+	});
+
+	it("sends nothing extra for an ordinary direct add", async () => {
+		const user = userEvent.setup();
+		renderDialog(null, { canPublishBeforeScan: true });
+		await user.upload(screen.getByLabelText("File"), pick("CLAUDE.md"));
+
+		await user.click(screen.getByRole("button", { name: "Add file" }));
+
+		await waitFor(() =>
+			expect(m.editInstructionSnapshot).toHaveBeenCalled(),
+		);
+		const [call] = m.editInstructionSnapshot.mock.calls[0]! as [
+			Record<string, unknown>,
+		];
+		expect(call).not.toHaveProperty("publishBeforeScan");
+	});
+});

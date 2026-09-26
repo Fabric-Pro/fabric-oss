@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/client";
 import { getInstructionSnapshot } from "@repo/database";
 import { z } from "zod";
 import {
+	assertProjectPermission,
 	Permissions,
 	requireProjectPermission,
 	tenantProtectedProcedure,
@@ -25,6 +26,11 @@ import { assertInstructionSnapshotMutationAccess } from "./proposal-authorizatio
  * — lives in `finalizeInstructionSnapshot` (`./finalize.ts`), shared with the
  * inline-content entry point in `submit-change.ts` so the CLI and the MCP
  * proposal tool finish an upload exactly the way the browser does.
+ *
+ * A snapshot opted into publishing before its secret scan (Fizzy #2737) also
+ * needs the publish permission (INSTRUCTION_UPDATE) from whoever finishes it:
+ * finishing it is what publishes it, and a CREATE-only member must not be able
+ * to set off the publication of someone else's acknowledged upload.
  */
 // The baseline middleware proves project visibility. The snapshot-aware guard
 // below then requires CREATE for direct versions, or READ plus proposer
@@ -62,6 +68,13 @@ export const finalizeSnapshotProcedure = tenantProtectedProcedure
 			userId: context.user.id,
 			snapshot,
 		});
+		if (snapshot.publishBeforeScan) {
+			await assertProjectPermission(
+				input.projectId,
+				context.user.id,
+				Permissions.INSTRUCTION_UPDATE,
+			);
+		}
 		try {
 			return await finalizeInstructionSnapshot({
 				snapshot,

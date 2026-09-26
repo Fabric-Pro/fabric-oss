@@ -7,6 +7,7 @@
  */
 
 import {
+	DEFERRED_SCAN_STALE_AFTER_MS,
 	RECEIVING_ABANDON_AFTER_MS,
 	VALIDATING_STALE_AFTER_MS,
 } from "@repo/instructions";
@@ -383,5 +384,102 @@ describe("instructionsAwaitsPublish", () => {
 		expect(
 			instructionsAwaitsPublish({ ...base, snapshots: undefined }),
 		).toBe(false);
+	});
+});
+
+/**
+ * Publish first, scan afterwards (Fizzy #2737). A version published before
+ * its secret scan is READY while the scan is PENDING, and the tab has a
+ * verdict still to show — so READY alone is not "nothing left to watch".
+ * The same age rule as the active statuses retires one whose workflow died:
+ * the reaper's `DEFERRED_SCAN_STALE_AFTER_MS`, by `readyAt`, plus one hourly
+ * cycle for the sweep to record INCOMPLETE.
+ */
+describe("instructionsPollInterval — deferred secret scan", () => {
+	const HOUR = 60 * 60 * 1000;
+	const bound = DEFERRED_SCAN_STALE_AFTER_MS + HOUR;
+	const pending = (readyAgoMs: number | null) => ({
+		status: "READY",
+		deferredScanStatus: "PENDING",
+		readyAt: readyAgoMs === null ? null : new Date(NOW - readyAgoMs),
+	});
+
+	it("keeps polling while a READY version's scan is pending", () => {
+		expect(instructionsPollInterval([pending(0)], 0, { now: NOW })).toBe(
+			INSTRUCTIONS_FAST_POLL_MS,
+		);
+	});
+
+	it("keeps polling up to and including the bound, and stops past it", () => {
+		expect(
+			instructionsPollInterval([pending(bound)], 0, { now: NOW }),
+		).toBe(INSTRUCTIONS_FAST_POLL_MS);
+		expect(
+			instructionsPollInterval([pending(bound + 1)], 0, { now: NOW }),
+		).toBe(false);
+	});
+
+	it("keeps polling a pending scan with no usable readyAt", () => {
+		expect(instructionsPollInterval([pending(null)], 0, { now: NOW })).toBe(
+			INSTRUCTIONS_FAST_POLL_MS,
+		);
+	});
+
+	it.each(["PASSED", "ISSUES_FOUND", "INCOMPLETE"])(
+		"stops once the scan's verdict is %s",
+		(deferredScanStatus) => {
+			expect(
+				instructionsPollInterval(
+					[{ ...pending(0), deferredScanStatus }],
+					0,
+					{ now: NOW },
+				),
+			).toBe(false);
+		},
+	);
+
+	// A pending marker on a row that is not READY is not this case; the
+	// row's own status decides.
+	it("does not treat a pending marker on a terminal non-READY row as in flight", () => {
+		expect(
+			instructionsPollInterval(
+				[{ ...pending(0), status: "REJECTED" }],
+				0,
+				{ now: NOW },
+			),
+		).toBe(false);
+	});
+
+	// The published view renders its alert off the pointer row, which need
+	// not be in the list the tab holds.
+	it("keeps polling on the published row's pending scan alone", () => {
+		expect(
+			instructionsPollInterval([{ status: "READY" }], 0, {
+				now: NOW,
+				published: pending(0),
+			}),
+		).toBe(INSTRUCTIONS_FAST_POLL_MS);
+		expect(
+			instructionsPollInterval([{ status: "READY" }], 0, {
+				now: NOW,
+				published: pending(bound + 1),
+			}),
+		).toBe(false);
+		expect(
+			instructionsPollInterval([{ status: "READY" }], 0, {
+				now: NOW,
+				published: null,
+			}),
+		).toBe(false);
+	});
+
+	it("backs off to the slow interval like any other in-flight row", () => {
+		expect(
+			instructionsPollInterval(
+				[pending(0)],
+				INSTRUCTIONS_FAST_POLL_WINDOW_MS,
+				{ now: NOW },
+			),
+		).toBe(INSTRUCTIONS_SLOW_POLL_MS);
 	});
 });

@@ -94,6 +94,17 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 					data: { reason: "REPOSITORY_PROPOSAL" },
 				});
 			}
+			if (result.reason === "deferred_scan_unresolved") {
+				// Fizzy #2737: this version went out before its secret scan,
+				// and History may not choose it again until that scan has
+				// passed. Publishing some other version is unaffected — that is
+				// the remedy for a finding.
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message:
+						"This version was published before its secret scan and that scan has not passed. Publish a version whose scan passed, or edit the files and publish a new version.",
+					data: { reason: "DEFERRED_SCAN_UNRESOLVED" },
+				});
+			}
 			// Kept as a fail-closed default, not as a case this handler can
 			// produce. `base_moved` is only ever derived under
 			// `requireBaseUnmoved`, which this call does not pass;

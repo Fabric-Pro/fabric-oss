@@ -48,6 +48,12 @@ export async function editInstructionSnapshot(input: {
 	/** Submit the derived snapshot for editor review instead of direct publication. */
 	proposal?: boolean;
 	/**
+	 * Publish as soon as the integrity checks pass and run the secret scan
+	 * afterwards — the member's acknowledged choice (Fizzy #2737). Never with
+	 * a proposal, which publishes only through review; only sent when true.
+	 */
+	publishBeforeScan?: boolean;
+	/**
 	 * A proposal's title and description (Fizzy #2563 spec §5.1 step 6).
 	 * Sent only with a proposal: a direct version stores no note.
 	 */
@@ -83,6 +89,9 @@ export async function editInstructionSnapshot(input: {
 		publishOnReady: input.proposal ? false : input.publishOnReady,
 		proposal: input.proposal ?? false,
 		...(input.proposal && input.note ? { note: input.note } : {}),
+		...(input.publishBeforeScan && !input.proposal
+			? { publishBeforeScan: true }
+			: {}),
 		changes,
 	});
 

@@ -832,3 +832,167 @@ describe("InstructionsHistory", () => {
 		expect(screen.getByText("versionLabel:8")).toBeTruthy();
 	});
 });
+
+/**
+ * Publish first, scan afterwards (Fizzy #2737). A version that went out
+ * before its secret scan carries a "published before scan" badge and the
+ * scan's outcome; History refuses to publish it again (the server's
+ * `deferred_scan_unresolved`) until that scan has passed, and says why
+ * instead of offering a button that can only fail.
+ */
+describe("InstructionsHistory — deferred secret scan", () => {
+	function renderScanned(
+		scanned: Record<string, unknown>,
+		props: Record<string, unknown> = {},
+	) {
+		return render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={[
+					{
+						id: "scanned",
+						version: 6,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 2,
+						createdAt: new Date(),
+						publishBeforeScan: true,
+						...scanned,
+					} as never,
+				]}
+				publishedId="published"
+				publishedVersion={7}
+				canPublish
+				onChanged={() => undefined}
+				{...props}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+	}
+
+	it.each([
+		["PENDING", "scanPendingPill"],
+		["ISSUES_FOUND", "scanIssuesPill"],
+		["INCOMPLETE", "scanIncompletePill"],
+	] as const)(
+		"badges a %s scan and explains instead of offering to publish it again",
+		(deferredScanStatus, pill) => {
+			renderScanned({ deferredScanStatus });
+			expect(screen.getByText("publishedBeforeScanPill")).toBeTruthy();
+			expect(screen.getByText(pill)).toBeTruthy();
+			expect(
+				screen.queryByRole("button", { name: "rollbackAction" }),
+			).toBeNull();
+			expect(screen.getByText("publishBlockedByScan")).toBeTruthy();
+		},
+	);
+
+	it("offers to publish a version again once its scan passed", () => {
+		renderScanned({ deferredScanStatus: "PASSED" });
+		expect(screen.getByText("scanPassedPill")).toBeTruthy();
+		expect(
+			screen.getByRole("button", { name: "rollbackAction" }),
+		).toBeTruthy();
+		expect(screen.queryByText("publishBlockedByScan")).toBeNull();
+	});
+
+	// The refusal is explained only where the button would have been
+	// offered: a member who cannot publish at all is not told the scan is
+	// what stops them.
+	it("says nothing about the scan to a member who cannot publish", () => {
+		renderScanned(
+			{ deferredScanStatus: "ISSUES_FOUND" },
+			{ canPublish: false, canMutate: false },
+		);
+		expect(screen.queryByText("publishBlockedByScan")).toBeNull();
+	});
+
+	it("badges nothing for an ordinary version", () => {
+		renderScanned({ publishBeforeScan: false, deferredScanStatus: null });
+		expect(screen.queryByText("publishedBeforeScanPill")).toBeNull();
+		expect(screen.queryByText("publishBlockedByScan")).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "rollbackAction" }),
+		).toBeTruthy();
+	});
+
+	it("lists the scan's findings behind See findings, with the rejected-upload labels", async () => {
+		const user = userEvent.setup();
+		renderScanned({
+			deferredScanStatus: "ISSUES_FOUND",
+			deferredScanFindings: [
+				{
+					path: "rules/deploy.md",
+					reason: "secret",
+					detail: "aws-access-key",
+					line: 3,
+				},
+				{ path: "(truncated)", reason: "truncated", detail: "40" },
+			],
+		});
+		expect(screen.queryByText("rules/deploy.md")).toBeNull();
+		await user.click(
+			screen.getByRole("button", { name: "seeFindingsAction" }),
+		);
+		expect(screen.getByText("rules/deploy.md")).toBeTruthy();
+		expect(
+			screen.getByText(
+				en.projects.codingInstructions.rejectedBanner.secretLabels[
+					"aws-access-key"
+				],
+			),
+		).toBeTruthy();
+		expect(screen.getByText("truncatedSummary:40")).toBeTruthy();
+		expect(screen.queryByText("(truncated)")).toBeNull();
+	});
+
+	// An INCOMPLETE scan keeps what it found before a file defeated its last
+	// attempt (Fizzy #2737 review), behind the same button, with a line
+	// saying the scan could not check every file.
+	it("lists an incomplete scan's findings behind See findings, and says the rest was not checked", async () => {
+		const user = userEvent.setup();
+		renderScanned({
+			deferredScanStatus: "INCOMPLETE",
+			deferredScanFindings: [
+				{
+					path: "rules/deploy.md",
+					reason: "secret",
+					detail: "aws-access-key",
+					line: 3,
+				},
+			],
+		});
+		expect(screen.queryByText("scanIncompleteFindingsNote")).toBeNull();
+		await user.click(
+			screen.getByRole("button", { name: "seeFindingsAction" }),
+		);
+		expect(screen.getByText("rules/deploy.md")).toBeTruthy();
+		expect(screen.getByText("scanIncompleteFindingsNote")).toBeTruthy();
+	});
+
+	it("offers no findings for an incomplete scan that established none", () => {
+		renderScanned({
+			deferredScanStatus: "INCOMPLETE",
+			deferredScanFindings: null,
+		});
+		expect(
+			screen.queryByRole("button", { name: "seeFindingsAction" }),
+		).toBeNull();
+	});
+
+	// Deleting a version mid-scan removes the rows the scan reads, which only
+	// turns its verdict into "could not finish".
+	it("hides Delete while the scan is running, and offers it once it finished", () => {
+		const { unmount } = renderScanned({ deferredScanStatus: "PENDING" });
+		expect(
+			screen.queryByRole("button", { name: "deleteAction" }),
+		).toBeNull();
+		unmount();
+		renderScanned({ deferredScanStatus: "INCOMPLETE" });
+		expect(
+			screen.getByRole("button", { name: "deleteAction" }),
+		).toBeTruthy();
+	});
+});

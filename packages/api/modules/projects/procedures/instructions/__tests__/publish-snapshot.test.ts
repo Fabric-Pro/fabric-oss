@@ -332,3 +332,30 @@ describe("pre-building the export archive on publish", () => {
 		expect(m.runInBackground).not.toHaveBeenCalled();
 	});
 });
+
+describe("projects.instructions.publish: publish first, scan afterwards (Fizzy #2737)", () => {
+	it("maps deferred_scan_unresolved to PRECONDITION_FAILED DEFERRED_SCAN_UNRESOLVED, and audits and warms nothing", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: false,
+			changed: false,
+			reason: "deferred_scan_unresolved",
+		});
+
+		await expect(
+			m.handlers.publish!({
+				input: { projectId: "p", snapshotId: "s" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			message: expect.stringContaining("secret scan"),
+			data: { reason: "DEFERRED_SCAN_UNRESOLVED" },
+		});
+		// The manual path, which is what the refusal applies to.
+		expect(m.publishInstructionSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({ allowRollback: true }),
+		);
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		expect(m.runInBackground).not.toHaveBeenCalled();
+	});
+});

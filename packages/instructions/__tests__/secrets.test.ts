@@ -89,6 +89,55 @@ describe("scanTextForSecrets", () => {
 	});
 });
 
+/**
+ * The bounded form (Fizzy #2737 review). A dense file — a credential
+ * assignment on every short line — used to materialise one hit object per
+ * line before any cap downstream could drop them. With `limit` the scan keeps
+ * at most that many and only counts the rest, so the array it builds IS the
+ * retained collection, and its length is the bound.
+ */
+describe("scanTextForSecrets with a limit", () => {
+	const DENSE_LINES = 20_000;
+	const dense = Array.from(
+		{ length: DENSE_LINES },
+		(_, i) => `password: ${join("123abcd", "raja", String(i))}`,
+	).join("\n");
+
+	it("keeps no more than the limit, in line order, and counts every hit", () => {
+		const scan = scanTextForSecrets(dense, { limit: 100 });
+		expect(scan.hits).toHaveLength(100);
+		expect(scan.hits[0]).toEqual({
+			rule: "short-credential-assignment",
+			line: 1,
+		});
+		expect(scan.hits[99]?.line).toBe(100);
+		expect(scan.total).toBe(DENSE_LINES);
+	});
+
+	it("keeps nothing at a limit of zero but still says how many there are", () => {
+		expect(scanTextForSecrets(dense, { limit: 0 })).toEqual({
+			hits: [],
+			total: DENSE_LINES,
+		});
+	});
+
+	it("treats a negative limit as zero", () => {
+		expect(scanTextForSecrets(dense, { limit: -5 }).hits).toEqual([]);
+	});
+
+	it("keeps every hit when the text has fewer than the limit", () => {
+		const text = `line one\n${SECRET_LINES[0]?.[1]}\nline three`;
+		expect(scanTextForSecrets(text, { limit: 100 })).toEqual({
+			hits: [{ rule: SECRET_LINES[0]?.[0], line: 2 }],
+			total: 1,
+		});
+	});
+
+	it("leaves the unbounded form's result unchanged", () => {
+		expect(scanTextForSecrets(dense)).toHaveLength(DENSE_LINES);
+	});
+});
+
 describe("isSecretFileName", () => {
 	it.each([
 		".env.example",

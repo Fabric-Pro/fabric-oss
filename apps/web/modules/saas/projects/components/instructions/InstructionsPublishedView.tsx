@@ -7,8 +7,10 @@ import { ConnectCliDialog } from "@saas/projects/components/cli-connection/Conne
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
 import {
+	AlertTriangleIcon,
 	CheckIcon,
 	ClipboardCheckIcon,
 	DownloadIcon,
@@ -33,6 +35,7 @@ import {
 } from "../../lib/instructions-repository-sync";
 import { AddInstructionFileDialog } from "./AddInstructionFileDialog";
 import { InstructionFileView } from "./InstructionFileView";
+import { InstructionFindingsTable } from "./InstructionFindingsTable";
 import { InstructionProposals } from "./InstructionProposals";
 import { InstructionsCompareDialog } from "./InstructionsCompareDialog";
 import { InstructionsHistory } from "./InstructionsHistory";
@@ -96,6 +99,22 @@ export type InstructionsSnapshot = {
 		| "MERGED"
 		| "CLOSED"
 		| null;
+	/**
+	 * Publish first, scan afterwards (Fizzy #2737). `publishBeforeScan` is the
+	 * member's opt-in; `deferredScanStatus` is null for every ordinary version
+	 * and otherwise the scan's state, and `deferredScanFindings` carries its
+	 * findings in the same shape as `rejection`.
+	 */
+	publishBeforeScan?: boolean;
+	deferredScanStatus?:
+		| "PENDING"
+		| "PASSED"
+		| "ISSUES_FOUND"
+		| "INCOMPLETE"
+		| null;
+	deferredScanFindings?: InstructionRejection[] | null;
+	/** When the version became readable; what a pending scan is dated from. */
+	readyAt?: string | Date | null;
 };
 
 function sourceLabel(source: string, t: (key: string) => string): string {
@@ -210,6 +229,19 @@ export function InstructionsPublishedView({
 	// Approve and Reject stay FABRIC-only: a repository-backed project's
 	// suggestions are decided on their pull requests (Fizzy #2563 spec §12).
 	const canReviewProposals = Boolean(canReview) && !repositoryBacked;
+	// Publishing before the scan (Fizzy #2737) is a direct, publishing save,
+	// so it needs both what an edit needs and the publish permission, which
+	// is what `canReview` carries (INSTRUCTION_UPDATE).
+	const canPublishBeforeScan = editable && Boolean(canReview);
+	// The published version's own deferred scan, read off the pointer row so
+	// the alert follows the query that polls it (see `CodingInstructionsTab`).
+	const deferredScan = published?.deferredScanStatus ?? null;
+	// An INCOMPLETE scan keeps whatever it established before a file defeated
+	// its last attempt, and those findings are shown like ISSUES_FOUND's.
+	const incompleteFindings =
+		deferredScan === "INCOMPLETE"
+			? (published?.deferredScanFindings ?? [])
+			: [];
 	// A repository-backed proposal opens a pull request into the configured
 	// repository, so it is offered only once repository mode is CONFIRMED and
 	// a configuration names that repository: `repositoryBacked` fails closed
@@ -760,6 +792,110 @@ export function InstructionsPublishedView({
 					) : null}
 				</div>
 			) : null}
+			{published && deferredScan === "PENDING" ? (
+				// `status`, not `alert`: the scan is running and nothing is
+				// wrong yet. It appears on a poll, with nothing to announce it.
+				<Alert variant="warning" role="status">
+					<AlertTriangleIcon aria-hidden="true" />
+					<AlertTitle>
+						{t("deferredScanPendingTitle", {
+							version: published.version,
+						})}
+					</AlertTitle>
+					<AlertDescription>
+						{t("deferredScanPendingBody")}
+					</AlertDescription>
+				</Alert>
+			) : null}
+			{published && deferredScan === "ISSUES_FOUND" ? (
+				<Alert variant="error">
+					<AlertTriangleIcon aria-hidden="true" />
+					<AlertTitle>
+						{t("deferredScanIssuesTitle", {
+							version: published.version,
+						})}
+					</AlertTitle>
+					<AlertDescription className="flex flex-col gap-3">
+						<p>
+							{t("deferredScanIssuesBody", {
+								version: published.version,
+							})}
+						</p>
+						{published.deferredScanFindings &&
+						published.deferredScanFindings.length > 0 ? (
+							<InstructionFindingsTable
+								findings={published.deferredScanFindings}
+								className="text-foreground"
+							/>
+						) : null}
+						<div>
+							<Button
+								variant="outline"
+								onClick={() => setHistoryOpen(true)}
+							>
+								<HistoryIcon
+									className="size-4"
+									aria-hidden="true"
+								/>
+								{t("deferredScanHistoryButton")}
+							</Button>
+						</div>
+					</AlertDescription>
+				</Alert>
+			) : null}
+			{published &&
+			deferredScan === "INCOMPLETE" &&
+			incompleteFindings.length > 0 ? (
+				// A scan that could not check every file but found something
+				// before it stopped: what it found is shown, as for
+				// ISSUES_FOUND, and the copy says the rest was not checked.
+				<Alert variant="error">
+					<AlertTriangleIcon aria-hidden="true" />
+					<AlertTitle>
+						{t("deferredScanIncompleteFindingsTitle", {
+							version: published.version,
+						})}
+					</AlertTitle>
+					<AlertDescription className="flex flex-col gap-3">
+						<p>
+							{t("deferredScanIncompleteFindingsBody", {
+								version: published.version,
+							})}
+						</p>
+						<InstructionFindingsTable
+							findings={incompleteFindings}
+							className="text-foreground"
+						/>
+						<div>
+							<Button
+								variant="outline"
+								onClick={() => setHistoryOpen(true)}
+							>
+								<HistoryIcon
+									className="size-4"
+									aria-hidden="true"
+								/>
+								{t("deferredScanHistoryButton")}
+							</Button>
+						</div>
+					</AlertDescription>
+				</Alert>
+			) : null}
+			{published &&
+			deferredScan === "INCOMPLETE" &&
+			incompleteFindings.length === 0 ? (
+				<Alert variant="warning">
+					<AlertTriangleIcon aria-hidden="true" />
+					<AlertTitle>
+						{t("deferredScanIncompleteTitle", {
+							version: published.version,
+						})}
+					</AlertTitle>
+					<AlertDescription>
+						{t("deferredScanIncompleteBody")}
+					</AlertDescription>
+				</Alert>
+			) : null}
 			{superseded && published ? (
 				// `role="status"`, not `alert`: nothing was lost and there is
 				// nothing to do urgently. It appears on a poll, with no
@@ -843,6 +979,7 @@ export function InstructionsPublishedView({
 					proposalOnly={!editable}
 					canPropose={editable}
 					repositoryTarget={repositoryTarget}
+					canPublishBeforeScan={canPublishBeforeScan}
 					onAdded={onChanged}
 				/>
 			) : null}

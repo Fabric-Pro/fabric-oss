@@ -19,6 +19,10 @@
  *     that writes its verdict either way — until that workflow is gone and
  *     its failure marker never landed. Nothing else will ever move such a
  *     row: the tab polls it forever and never offers "Try again".
+ *  4. **Stranded deferred scans** (Fizzy #2737). A version published before
+ *     its secret scan is READY with the scan PENDING until its own workflow
+ *     records a verdict. When that workflow is gone first, nothing else ever
+ *     would, and the version reads "scan pending" forever (phase 0b).
  *
  * Modelled on the attachment sweeps: bounded per-run budgets, structured
  * `instructions.reaper.*` events, a result object of counts, and no tenant in
@@ -87,10 +91,13 @@ import {
 	listAbandonedReceivingInstructionSnapshots,
 	listPendingAbandonedInstructionSnapshots,
 	listProjectsWithPrunableInstructionSnapshots,
+	listStaleDeferredScanInstructionSnapshots,
 	listStaleValidatingInstructionSnapshots,
+	markStaleDeferredScanIncomplete,
 	rejectAbandonedInstructionSnapshot,
 } from "@repo/database";
 import {
+	DEFERRED_SCAN_STALE_AFTER_MS,
 	PROPOSAL_UPLOAD_SIGNING_WINDOW_MS,
 	RECEIVING_ABANDON_AFTER_MS,
 	VALIDATING_STALE_AFTER_MS,
@@ -135,6 +142,11 @@ const MAX_RESWEPT_ABANDONED_PER_RUN = 200;
  * backlog, and it is still reported through `hitCap`.
  */
 const MAX_STALE_VALIDATING_PER_RUN = 100;
+/**
+ * Phase 0b's slice, sized like phase 0's and for the same reasons: every row
+ * costs a `describe`, and a healthy deployment has none.
+ */
+const MAX_STALE_DEFERRED_SCAN_PER_RUN = 100;
 
 /**
  * The two GLOBAL budgets, spent across every phase rather than per phase.
@@ -155,30 +167,34 @@ const MAX_STALE_VALIDATING_PER_RUN = 100;
 const MAX_STORAGE_OBJECTS_PER_RUN = 20_000;
 const RUN_TIME_BUDGET_MS = 10 * 60 * 1000;
 
-/** How far the prune rotation advances per hour: one full slice. */
-const PRUNE_ROTATION_PERIOD_MS = 60 * 60 * 1000;
+/** How far a rotation advances per hour: one full slice. */
+const ROTATION_PERIOD_MS = 60 * 60 * 1000;
 
 /**
- * One run's slice of the prune candidate population: a window of
- * `MAX_PRUNE_PROJECTS_PER_RUN` projects that moves by exactly one slice per
- * hour and wraps at the end of the population.
+ * One run's slice of a candidate population: a window of `slice` candidates
+ * that moves by exactly one slice per hour and wraps at the end of the
+ * population. Used by every phase whose candidates can be passed over without
+ * being written — the prune, whose per-project failures do not clear, and
+ * phase 0b, whose RUNNING or unknown rows keep their place — because a fixed
+ * first page lets those rows be re-selected every hour and starves every
+ * candidate behind them indefinitely.
  *
- * The candidate query returns ONE ordered, deduplicated relation and the
+ * `fetchPage` returns ONE ordered relation's page at `offset` and the
  * population's size with it, so the rotation is a window over a single
- * canonical order rather than two independently-skipped lists. That is the
- * whole point of the raw SQL behind it: skipping the READY and REJECTED
- * windows separately and interleaving the results is not a window of anything
- * — twenty-five sticky READY-only projects and twenty-five sticky
- * rejected-only ones left half of each starved at offset 0 and the whole
- * population unvisited at offset 25, every hour, indefinitely.
+ * canonical order. For the prune that is the whole point of the raw SQL
+ * behind it: skipping the READY and REJECTED windows separately and
+ * interleaving the results is not a window of anything — twenty-five sticky
+ * READY-only projects and twenty-five sticky rejected-only ones left half of
+ * each starved at offset 0 and the whole population unvisited at offset 25,
+ * every hour, indefinitely.
  *
  * TWO queries at most, each returning at most one slice:
  *
- *  1. The HEAD page, always. It is where `total` comes from — the population
- *     size rides on the page's rows, so only a page that HAS rows reports it,
- *     and offset 0 is the one page that is non-empty whenever the population
- *     is. It is also this run's page outright when the population fits in one
- *     slice, or when the hour's offset is zero.
+ *  1. The HEAD page, always. It is where `total` comes from — for the prune
+ *     the population size rides on the page's rows, so only a page that HAS
+ *     rows reports it, and offset 0 is the one page that is non-empty
+ *     whenever the population is. It is also this run's page outright when
+ *     the population fits in one slice, or when the hour's offset is zero.
  *  2. The rotated page, when the offset is past zero. If it comes back short
  *     it reached the END of the ordering, and the remainder wraps to the
  *     start of the population — which is the head page this run already
@@ -186,52 +202,65 @@ const PRUNE_ROTATION_PERIOD_MS = 60 * 60 * 1000;
  *
  * COVERAGE: the offset advances by exactly one slice per hour modulo `total`,
  * so consecutive runs walk adjacent windows of one circular order. With the
- * population stable, every candidate project is reached within
- * `ceil(total / MAX_PRUNE_PROJECTS_PER_RUN)` runs from any starting hour.
+ * population stable, every candidate is reached within `ceil(total / slice)`
+ * runs from any starting hour.
  *
  * The two ranges cannot overlap while the population is stable — a page short
  * by `missing` rows ends at `total`, and `missing` is `offset - (total -
  * slice)`, which is below `offset` whenever `total` exceeds one slice. The
- * dedup is for the case where the population SHRANK between the two
- * statements: pruning one project twice in a run is harmless, but it would
- * spend a slot on a no-op.
+ * dedup (by `keyOf`) is for the case where the population SHRANK between the
+ * two statements: handling one candidate twice in a run is harmless, but it
+ * would spend a slot on a no-op.
  */
-async function selectPruneCandidates(
-	keep: { ready: number; rejected: number },
+async function selectRotatedSlice<T>(
+	fetchPage: (
+		limit: number,
+		offset: number,
+	) => Promise<{ candidates: T[]; total: number }>,
+	slice: number,
 	startedAtMs: number,
-): Promise<Array<{ projectId: string; organizationId: string }>> {
-	const head = await listProjectsWithPrunableInstructionSnapshots(
-		keep,
-		MAX_PRUNE_PROJECTS_PER_RUN,
-		0,
-	);
+	keyOf: (candidate: T) => string,
+): Promise<T[]> {
+	const head = await fetchPage(slice, 0);
 	const offset =
-		(Math.floor(startedAtMs / PRUNE_ROTATION_PERIOD_MS) *
-			MAX_PRUNE_PROJECTS_PER_RUN) %
+		(Math.floor(startedAtMs / ROTATION_PERIOD_MS) * slice) %
 		// `% 0` is NaN, which is not an offset. An empty population has
 		// nothing to rotate through anyway.
 		Math.max(1, head.total);
-	if (head.total <= MAX_PRUNE_PROJECTS_PER_RUN || offset === 0) {
+	if (head.total <= slice || offset === 0) {
 		return head.candidates;
 	}
-	const rotated = await listProjectsWithPrunableInstructionSnapshots(
-		keep,
-		MAX_PRUNE_PROJECTS_PER_RUN,
-		offset,
-	);
-	const missing = MAX_PRUNE_PROJECTS_PER_RUN - rotated.candidates.length;
+	const rotated = await fetchPage(slice, offset);
+	const missing = slice - rotated.candidates.length;
 	if (missing <= 0) {
 		return rotated.candidates;
 	}
-	// `projectId` alone is the dedup key: it is a primary key of `project`,
-	// so the pair cannot disagree about which project a row names.
-	const taken = new Set(rotated.candidates.map((c) => c.projectId));
+	const taken = new Set(rotated.candidates.map(keyOf));
 	return [
 		...rotated.candidates,
 		...head.candidates
-			.filter((c) => !taken.has(c.projectId))
+			.filter((c) => !taken.has(keyOf(c)))
 			.slice(0, missing),
 	];
+}
+
+/**
+ * One run's slice of the prune candidate population (`selectRotatedSlice`
+ * over `listProjectsWithPrunableInstructionSnapshots`). `projectId` alone is
+ * the dedup key: it is a primary key of `project`, so the pair cannot
+ * disagree about which project a row names.
+ */
+function selectPruneCandidates(
+	keep: { ready: number; rejected: number },
+	startedAtMs: number,
+): Promise<Array<{ projectId: string; organizationId: string }>> {
+	return selectRotatedSlice(
+		(limit, offset) =>
+			listProjectsWithPrunableInstructionSnapshots(keep, limit, offset),
+		MAX_PRUNE_PROJECTS_PER_RUN,
+		startedAtMs,
+		(c) => c.projectId,
+	);
 }
 
 export interface ReapInstructionSnapshotsResult {
@@ -248,12 +277,22 @@ export interface ReapInstructionSnapshotsResult {
 	 * an operator's attention even though the row is now recovered.
 	 */
 	healedValidating: number;
+	/** Stale pending deferred scans phase 0b's candidate query returned. */
+	staleDeferredScans: number;
 	/**
-	 * Rows either phase left alone because Temporal still knows of an
+	 * Of those, how many THIS run recorded as INCOMPLETE because no execution
+	 * stood behind them any more: a published version whose scan will now
+	 * never run, which the tab shows as not checked. Worth an operator's
+	 * attention for the same reason `healedValidating` is.
+	 */
+	incompleteDeferredScans: number;
+	/**
+	 * Rows any phase left alone because Temporal still knows of an
 	 * execution for their validation workflow. In phase 1 that is a RECEIVING
 	 * row whose `finalize` started one and whose status write was lost or is
 	 * still in flight; in phase 0 it is a VALIDATING row whose execution is
-	 * genuinely still RUNNING. Not an error either way — these rows belong to
+	 * genuinely still RUNNING, and in phase 0b a pending deferred scan whose
+	 * workflow is still working through it. Not an error either way — these rows belong to
 	 * a workflow, and it owns their verdict. A phase-1 count that stays high
 	 * across runs means status writes are failing, which is a different bug
 	 * from the one this sweep exists for.
@@ -302,6 +341,9 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 		startedAtMs - PROPOSAL_UPLOAD_SIGNING_WINDOW_MS,
 	);
 	const validatingCutoff = new Date(startedAtMs - VALIDATING_STALE_AFTER_MS);
+	const deferredScanCutoff = new Date(
+		startedAtMs - DEFERRED_SCAN_STALE_AFTER_MS,
+	);
 	// Spent across all phases, not per phase.
 	const objectBudget: StorageBudget = {
 		remaining: MAX_STORAGE_OBJECTS_PER_RUN,
@@ -343,8 +385,10 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 			event: "instructions.reaper.started",
 			cutoffAt: cutoff.toISOString(),
 			validatingCutoffAt: validatingCutoff.toISOString(),
+			deferredScanCutoffAt: deferredScanCutoff.toISOString(),
 			maxAbandoned: MAX_ABANDONED_PER_RUN,
 			maxStaleValidating: MAX_STALE_VALIDATING_PER_RUN,
+			maxStaleDeferredScans: MAX_STALE_DEFERRED_SCAN_PER_RUN,
 			maxPruneProjects: MAX_PRUNE_PROJECTS_PER_RUN,
 			maxStorageObjects: MAX_STORAGE_OBJECTS_PER_RUN,
 			runTimeBudgetMs: RUN_TIME_BUDGET_MS,
@@ -356,24 +400,40 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 		validatingCutoff,
 		MAX_STALE_VALIDATING_PER_RUN,
 	);
+	// ROTATED, unlike phase 0's page: see `selectRotatedSlice`. A row this
+	// phase skips (RUNNING, or liveness unknown) is not written and keeps its
+	// place, so a fixed oldest page could be the same hundred rows every hour.
+	const staleDeferredScans = await selectRotatedSlice(
+		(limit, offset) =>
+			listStaleDeferredScanInstructionSnapshots(
+				deferredScanCutoff,
+				limit,
+				offset,
+			),
+		MAX_STALE_DEFERRED_SCAN_PER_RUN,
+		startedAtMs,
+		(row) => row.id,
+	);
 	const abandoned = await listAbandonedReceivingInstructionSnapshots(
 		cutoff,
 		MAX_ABANDONED_PER_RUN,
 	);
-	// Acquired once per run, and only because phases 0 and 1 need it — phases
-	// 1b and 3 work on rows whose verdict is already written. A client that
-	// will not construct is an UNKNOWN, not a licence to write a verdict: every
-	// candidate of either phase is then counted in `errorCount` and left for
-	// the next run, exactly as an unreachable `describe` would be.
+	// Acquired once per run, and only because phases 0, 0b and 1 need it —
+	// phases 1b and 3 work on rows whose verdict is already written. A client
+	// that will not construct is an UNKNOWN, not a licence to write a verdict:
+	// every candidate of those phases is then counted in `errorCount` and left
+	// for the next run, exactly as an unreachable `describe` would be.
+	const livenessCandidates =
+		staleValidating.length + staleDeferredScans.length + abandoned.length;
 	let temporalClient: Client | null = null;
-	if (staleValidating.length + abandoned.length > 0) {
+	if (livenessCandidates > 0) {
 		try {
 			temporalClient = await getTemporalClient();
 		} catch (err) {
 			logger.warn(
 				{
 					event: "instructions.reaper.temporal_unavailable",
-					candidates: staleValidating.length + abandoned.length,
+					candidates: livenessCandidates,
 					...errorFacts(err),
 				},
 				"[InstructionReaper] Temporal client unavailable; no row can be proven dead this run",
@@ -382,6 +442,7 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 	}
 	let rejected = 0;
 	let healedValidating = 0;
+	let incompleteDeferredScans = 0;
 	let skippedLive = 0;
 	let stagingObjectsDeleted = 0;
 	let storageTruncated = false;
@@ -471,6 +532,69 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 			skippedLive,
 		},
 		`[InstructionReaper] Healed ${healedValidating} snapshot(s) stranded in VALIDATING`,
+	);
+
+	// PHASE 0b: publish-first versions whose deferred secret scan will never
+	// report (Fizzy #2737).
+	//
+	// The same shape as phase 0, for the same kind of row: one whose owner is
+	// a workflow that records a verdict whichever way the scan goes — until
+	// that workflow is gone. A publish step that exhausted its retries, an
+	// outcome write that failed, a termination or an execution timeout all
+	// leave the version READY with its scan PENDING, readable and never
+	// checked, and nothing else would ever move it.
+	//
+	// The verdict written is INCOMPLETE, never PASSED: nothing was found
+	// because nothing looked, and the tab says exactly that. Nothing is
+	// withdrawn or unpublished — the version stays as it is, and the member
+	// decides (spec decision).
+	//
+	// The evidence is the EXECUTION, never the age alone, exactly as in phase
+	// 0: `readyAt` older than `DEFERRED_SCAN_STALE_AFTER_MS` only makes a row
+	// worth asking about; a running execution is skipped, an unreachable
+	// Temporal is counted and left, and only a closed or unknown-to-Temporal
+	// execution is closed out. The write is a compare-and-set on the
+	// `updatedAt` the candidate was listed with AND on the scan still being
+	// PENDING, so a verdict the workflow recorded after `describe` answered
+	// makes it match nothing. Its audit row commits with it.
+	//
+	// NO storage work: the version's objects are its published bytes.
+	for (const row of staleDeferredScans) {
+		if (outOfBudget("close-deferred-scan")) {
+			break;
+		}
+		safeHeartbeat({ phase: "close-deferred-scan", snapshotId: row.id });
+		const liveness =
+			temporalClient === null
+				? "unknown"
+				: await describeSnapshotWorkflow(temporalClient, row.id);
+		if (liveness === "running") {
+			skippedLive++;
+			continue;
+		}
+		if (liveness === "unknown") {
+			errorCount++;
+			continue;
+		}
+		const { changed } = await markStaleDeferredScanIncomplete({
+			snapshotId: row.id,
+			projectId: row.projectId,
+			organizationId: row.organizationId,
+			observedUpdatedAt: row.updatedAt,
+		});
+		if (changed) {
+			incompleteDeferredScans++;
+		}
+	}
+
+	logger.info(
+		{
+			event: "instructions.reaper.deferred_scans_closed",
+			// Counts only, as above.
+			scanned: staleDeferredScans.length,
+			incomplete: incompleteDeferredScans,
+		},
+		`[InstructionReaper] Recorded ${incompleteDeferredScans} stranded deferred scan(s) as incomplete`,
 	);
 	// Every id phase 1 closed out in THIS run, swept or not. Phase 1b selects
 	// on the pending mark the rejection above just wrote, so without this the
@@ -700,6 +824,8 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 		rejected,
 		staleValidating: staleValidating.length,
 		healedValidating,
+		staleDeferredScans: staleDeferredScans.length,
+		incompleteDeferredScans,
 		skippedLive,
 		resweptAbandoned,
 		stagingObjectsDeleted,
@@ -716,6 +842,7 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 		hitCap:
 			budgetStopped ||
 			staleValidating.length >= MAX_STALE_VALIDATING_PER_RUN ||
+			staleDeferredScans.length >= MAX_STALE_DEFERRED_SCAN_PER_RUN ||
 			abandoned.length >= MAX_ABANDONED_PER_RUN ||
 			pending.length >= MAX_RESWEPT_ABANDONED_PER_RUN ||
 			projects.length >= MAX_PRUNE_PROJECTS_PER_RUN,

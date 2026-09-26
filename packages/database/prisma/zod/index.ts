@@ -1896,7 +1896,7 @@ export type DiagramScalarFieldEnum = z.infer<typeof DiagramScalarFieldEnumSchema
 
 // File: ProjectInstructionSnapshotScalarFieldEnum.schema.ts
 
-export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'changeSetDigest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'syncRunKey', 'baseSnapshotId', 'baseVersion', 'proposalDestination', 'proposalNote', 'pullRequestOperationId', 'pullRequestState', 'pullRequestAttempt', 'pullRequestContext', 'pullRequestHeadSha', 'pullRequestRef', 'pullRequestAttempts', 'pullRequestUrl', 'pullRequestExternalId', 'pullRequestObservation', 'pullRequestFailure', 'pullRequestLastCheckedAt', 'pullRequestNextAttemptAt', 'pullRequestRefreshAdmittedAt', 'pullRequestObligationOpen', 'pullRequestConfirmationDueAt', 'mergeSyncRequestedAt', 'mergeSyncDispatchedAt', 'mergeSyncRunId', 'mergeSyncExpected', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
+export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'publishBeforeScan', 'deferredScanStatus', 'deferredScanFindings', 'deferredScanCompletedAt', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'changeSetDigest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'syncRunKey', 'baseSnapshotId', 'baseVersion', 'proposalDestination', 'proposalNote', 'pullRequestOperationId', 'pullRequestState', 'pullRequestAttempt', 'pullRequestContext', 'pullRequestHeadSha', 'pullRequestRef', 'pullRequestAttempts', 'pullRequestUrl', 'pullRequestExternalId', 'pullRequestObservation', 'pullRequestFailure', 'pullRequestLastCheckedAt', 'pullRequestNextAttemptAt', 'pullRequestRefreshAdmittedAt', 'pullRequestObligationOpen', 'pullRequestConfirmationDueAt', 'mergeSyncRequestedAt', 'mergeSyncDispatchedAt', 'mergeSyncRunId', 'mergeSyncExpected', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
 
 export type ProjectInstructionSnapshotScalarFieldEnum = z.infer<typeof ProjectInstructionSnapshotScalarFieldEnumSchema>;
 
@@ -3393,6 +3393,12 @@ export type ProjectInstructionSnapshotStatus = z.infer<typeof ProjectInstruction
 export const ProjectInstructionProposalStatusSchema = z.enum(['PENDING', 'APPROVED', 'REJECTED', 'MERGED', 'CLOSED'])
 
 export type ProjectInstructionProposalStatus = z.infer<typeof ProjectInstructionProposalStatusSchema>;
+
+// File: ProjectInstructionDeferredScanStatus.schema.ts
+
+export const ProjectInstructionDeferredScanStatusSchema = z.enum(['PENDING', 'PASSED', 'ISSUES_FOUND', 'INCOMPLETE'])
+
+export type ProjectInstructionDeferredScanStatus = z.infer<typeof ProjectInstructionDeferredScanStatusSchema>;
 
 // File: ProjectInstructionProposalDestination.schema.ts
 
@@ -10849,6 +10855,10 @@ export const ProjectInstructionSnapshotSchema = z.object({
   rejection: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   settingsFrozen: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
   publishOnReady: z.boolean().default(true),
+  publishBeforeScan: z.boolean(),
+  deferredScanStatus: ProjectInstructionDeferredScanStatusSchema.nullish(),
+  deferredScanFindings: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  deferredScanCompletedAt: z.date().nullish(),
   fileCount: z.number().int(),
   storedBytes: z.number().int(),
   excludedCount: z.number().int(),

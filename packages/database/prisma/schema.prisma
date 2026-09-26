@@ -17123,6 +17123,20 @@ enum ProjectInstructionSnapshotStatus {
   FAILED
 }
 
+/// The content secret scan of a snapshot a member chose to publish BEFORE
+/// that scan ran (Fizzy #2737). Null for every ordinary snapshot, whose scan
+/// is part of reaching READY at all. The snapshot stays READY whatever this
+/// says: a finding is shown, never acted on automatically.
+enum ProjectInstructionDeferredScanStatus {
+  /// Promoted and published; the scan has not recorded a verdict yet.
+  PENDING
+  PASSED
+  ISSUES_FOUND
+  /// The scan could not finish (retries exhausted, or its workflow died and
+  /// the reaper closed it out). Nothing was found, and nothing was checked.
+  INCOMPLETE
+}
+
 enum ProjectInstructionProposalStatus {
   PENDING
   APPROVED
@@ -17237,6 +17251,19 @@ model ProjectInstructionSnapshot {
   settingsFrozen Json
   /// Whether to publish automatically once READY (from the upload dialog).
   publishOnReady Boolean @default(true)
+
+  /// The member's acknowledged opt-in to publish before the content secret
+  /// scan (Fizzy #2737), frozen at begin/derive. Requires `publishOnReady`
+  /// and is never set on a proposal or a repository sync.
+  publishBeforeScan       Boolean                               @default(false)
+  /// Written PENDING together with READY by the publish-first promotion, and
+  /// moved exactly once from PENDING to its verdict. Null for every ordinary
+  /// snapshot.
+  deferredScanStatus      ProjectInstructionDeferredScanStatus?
+  /// Same element shape as `rejection` ({ path, reason, detail?, line? }),
+  /// capped. Set only with ISSUES_FOUND.
+  deferredScanFindings    Json?
+  deferredScanCompletedAt DateTime?
 
   fileCount     Int     @default(0)
   storedBytes   Int     @default(0)

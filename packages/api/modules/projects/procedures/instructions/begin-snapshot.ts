@@ -14,6 +14,7 @@ import {
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
+	assertProjectPermission,
 	Permissions,
 	requireProjectPermission,
 	tenantProtectedProcedure,
@@ -54,6 +55,13 @@ function describePlanRefusal(refusal: PlanRefusal): string {
  * snapshot id does not exist until `createInstructionSnapshot` returns.
  * `create-upload-urls.ts` rewrites each file's key to the real
  * `(projectId, snapshotId, fileId)` form before minting its signed URL.
+ *
+ * `publishBeforeScan` (Fizzy #2737) is the member's acknowledged choice to
+ * have this upload published as soon as its integrity checks pass, with the
+ * content secret scan running afterwards. It is a way of publishing, so it
+ * requires `publishOnReady` and the publish permission (INSTRUCTION_UPDATE)
+ * on top of INSTRUCTION_CREATE, and it is frozen onto the row: `finalize`
+ * starts the workflow from the row, never from a later request.
  */
 export const beginSnapshotProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.INSTRUCTION_CREATE))
@@ -72,6 +80,7 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 			// that sends it keeps working rather than failing validation.
 			organizationId: z.string().nullable().optional(),
 			publishOnReady: z.boolean().default(true),
+			publishBeforeScan: z.boolean().default(false),
 			fabricIgnoreText: z
 				.string()
 				.max(64 * 1024)
@@ -104,6 +113,23 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
+		// Checked before anything is read or written, as a payload refusal
+		// first and then the extra permission, answered as `publish` answers
+		// it. The acknowledgement is the member's own, so it is THEIR publish
+		// permission — and the workflow re-checks it before the version moves.
+		if (input.publishBeforeScan) {
+			if (!input.publishOnReady) {
+				throw new ORPCError("BAD_REQUEST", {
+					message:
+						"Publishing before the secret scan also requires publishing when the upload passes its checks.",
+				});
+			}
+			await assertProjectPermission(
+				input.projectId,
+				context.user.id,
+				Permissions.INSTRUCTION_UPDATE,
+			);
+		}
 		// The organization these rows are TAGGED with is the project's own
 		// hosting organization, re-derived here rather than taken from the
 		// request — a REST/API-key caller could otherwise name any
@@ -172,6 +198,7 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 				limits: SNAPSHOT_LIMITS,
 			},
 			publishOnReady: input.publishOnReady,
+			...(input.publishBeforeScan ? { publishBeforeScan: true } : {}),
 			excludedCount,
 			files: kept,
 		});
@@ -193,6 +220,7 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 				// the server applied from a count the client reported.
 				serverExcludedCount: excluded.length,
 				layer: resolved.layer,
+				...(input.publishBeforeScan ? { publishBeforeScan: true } : {}),
 			},
 		});
 

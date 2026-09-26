@@ -58,6 +58,14 @@ export type UploadSnapshotInput = {
 	entries: FolderEntry[];
 	fabricIgnoreText: string | null;
 	publishOnReady: boolean;
+	/**
+	 * Publish as soon as the integrity checks pass and run the secret scan
+	 * afterwards — the member's acknowledged choice (Fizzy #2737). Only sent
+	 * when true, and only meaningful with `publishOnReady`; the server refuses
+	 * it otherwise and freezes it onto the snapshot at `begin`, so a resumed
+	 * upload keeps whatever the first attempt chose.
+	 */
+	publishBeforeScan?: boolean;
 	onProgress?: (done: number, total: number) => void;
 	/**
 	 * Fired as soon as the upload's snapshot id is known (right after
@@ -108,6 +116,7 @@ export async function uploadSnapshot(
 			await orpcClient.projects.instructions.begin({
 				projectId: input.projectId,
 				publishOnReady: input.publishOnReady,
+				...(input.publishBeforeScan ? { publishBeforeScan: true } : {}),
 				fabricIgnoreText: input.fabricIgnoreText,
 				// Only what the preview kept. Sending excluded paths made every
 				// `node_modules/` or build-output file count against the

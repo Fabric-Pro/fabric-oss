@@ -30,6 +30,7 @@ const m = vi.hoisted(() => ({
 	admit: vi.fn(),
 	startAdmittedProposalPullRequest: vi.fn(),
 	requestedPermission: undefined as string | undefined,
+	assertProjectPermission: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -103,9 +104,13 @@ vi.mock("../../../../../orpc/procedures", () => {
 			m.requestedPermission = permission;
 			return (args: unknown) => m.permissionMiddleware(args);
 		},
+		// The handler-side check `publishBeforeScan` adds (Fizzy #2737).
+		assertProjectPermission: (...a: unknown[]) =>
+			m.assertProjectPermission(...a),
 		Permissions: {
 			INSTRUCTION_READ: "instruction:read",
 			INSTRUCTION_CREATE: "instruction:create",
+			INSTRUCTION_UPDATE: "instruction:update",
 		},
 	};
 });
@@ -857,5 +862,114 @@ describe("projects.instructions.derive", () => {
 			}),
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
 		expect(m.createDerivedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+});
+
+describe("projects.instructions.derive: publish first, scan afterwards (Fizzy #2737)", () => {
+	beforeEach(() => {
+		m.assertProjectPermission.mockReset();
+		m.assertProjectPermission.mockResolvedValue(undefined);
+	});
+
+	it("requires the publish permission on top of the derive access, and freezes the opt-in", async () => {
+		await m.handlers.derive!({
+			input: { ...deriveInput(editOneFile), publishBeforeScan: true },
+			context: ctx,
+		});
+
+		expect(m.assertInstructionDeriveAccess).toHaveBeenCalledWith({
+			projectId: "p",
+			userId: "u",
+			proposal: false,
+		});
+		expect(m.assertProjectPermission).toHaveBeenCalledWith(
+			"p",
+			"u",
+			"instruction:update",
+		);
+		expect(m.createDerivedInstructionSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				publishOnReady: true,
+				proposal: false,
+				publishBeforeScan: true,
+			}),
+		);
+		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+			ctx,
+			expect.objectContaining({
+				action: "project.instructions.upload_started",
+				metadata: expect.objectContaining({
+					mode: "derived",
+					publishBeforeScan: true,
+				}),
+			}),
+		);
+	});
+
+	it("refuses a member without the publish permission and writes nothing", async () => {
+		m.assertProjectPermission.mockRejectedValue(
+			new ORPCError("FORBIDDEN", {
+				message: "Missing required permission: instruction:update",
+			}),
+		);
+
+		await expect(
+			m.handlers.derive!({
+				input: { ...deriveInput(editOneFile), publishBeforeScan: true },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(m.createDerivedInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["a proposal", { proposal: true }],
+		["a version that does not publish itself", { publishOnReady: false }],
+	])(
+		"refuses publishBeforeScan on %s as a bad request, before anything else",
+		async (_l, o) => {
+			await expect(
+				m.handlers.derive!({
+					input: {
+						...deriveInput(editOneFile),
+						...o,
+						publishBeforeScan: true,
+					},
+					context: ctx,
+				}),
+			).rejects.toMatchObject({ code: "BAD_REQUEST" });
+			expect(m.assertInstructionDeriveAccess).not.toHaveBeenCalled();
+			expect(m.assertProjectPermission).not.toHaveBeenCalled();
+			expect(m.createDerivedInstructionSnapshot).not.toHaveBeenCalled();
+		},
+	);
+
+	it("never reaches a repository-backed project: its direct derive is refused at admission", async () => {
+		m.admit.mockRejectedValue(
+			new ORPCError("PRECONDITION_FAILED", {
+				data: { reason: "REPOSITORY_SOURCE_OF_TRUTH" },
+			}),
+		);
+
+		await expect(
+			m.handlers.derive!({
+				input: { ...deriveInput(editOneFile), publishBeforeScan: true },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+		expect(m.createDerivedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("asks for nothing extra, and stores nothing extra, for an ordinary edit", async () => {
+		await m.handlers.derive!({
+			input: deriveInput(editOneFile),
+			context: ctx,
+		});
+
+		expect(m.assertProjectPermission).not.toHaveBeenCalled();
+		const call = m.createDerivedInstructionSnapshot.mock
+			.calls[0]![0] as Record<string, unknown>;
+		expect(call).not.toHaveProperty("publishBeforeScan");
 	});
 });

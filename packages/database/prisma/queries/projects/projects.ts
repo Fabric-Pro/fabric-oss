@@ -1542,6 +1542,27 @@ export async function canCreateProjectInstructions(
 }
 
 /**
+ * Background counterpart of `requireProjectPermission(INSTRUCTION_UPDATE)`,
+ * the publish permission: what the member who opted a snapshot into
+ * publishing before its secret scan (Fizzy #2737) must STILL hold when that
+ * snapshot's automatic publication commits. Same ladder, and the same reason
+ * it lives here, as `canCreateProjectInstructions`; pass the publish
+ * transaction's client so the check reads the moment of the write.
+ */
+export async function canUpdateProjectInstructions(
+	projectId: string,
+	userId: string,
+	client: Prisma.TransactionClient = db,
+): Promise<boolean> {
+	return projectPermissionHolds(
+		projectId,
+		userId,
+		Permissions.INSTRUCTION_UPDATE,
+		client,
+	);
+}
+
+/**
  * Returns `true` if `userId` may create stories on `projectId`, matching the
  * authorization paths of `requireProjectPermission(STORY_CREATE)`.
  *

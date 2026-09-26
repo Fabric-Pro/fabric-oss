@@ -13,6 +13,10 @@ const uploadDialogCopy = en.projects.codingInstructions.uploadDialog as Record<
 	string,
 	string
 >;
+// The publish-first option's own namespace (Fizzy #2737), shared with the
+// add-file dialog.
+const publishBeforeScanCopy = en.projects.codingInstructions
+	.publishBeforeScan as Record<string, string>;
 
 function interpolate(template: string, values?: Record<string, unknown>) {
 	if (!values) {
@@ -57,14 +61,17 @@ function richRender(
 }
 
 vi.mock("next-intl", () => ({
-	useTranslations: () => {
+	useTranslations: (namespace?: string) => {
+		const copy = namespace?.endsWith(".publishBeforeScan")
+			? publishBeforeScanCopy
+			: uploadDialogCopy;
 		const t = (key: string, values?: Record<string, unknown>) =>
-			interpolate(uploadDialogCopy[key] ?? key, values);
+			interpolate(copy[key] ?? key, values);
 		t.rich = (
 			key: string,
 			tags: Record<string, (chunks: string) => ReactNode>,
-		) => richRender(uploadDialogCopy[key] ?? key, tags);
-		t.raw = (key: string) => uploadDialogCopy[key] ?? key;
+		) => richRender(copy[key] ?? key, tags);
+		t.raw = (key: string) => copy[key] ?? key;
 		return t;
 	},
 }));
@@ -463,5 +470,148 @@ describe("UploadFolderDialog", () => {
 		expect(
 			screen.getByText(uploadDialogCopy.pickTitle),
 		).toBeInTheDocument();
+	});
+});
+
+describe("UploadFolderDialog: publish now and scan afterwards (Fizzy #2737)", () => {
+	beforeEach(() => {
+		uploadSnapshot.mockClear();
+	});
+
+	async function pickAndReview(canPublishBeforeScan: boolean) {
+		const onUploaded = vi.fn();
+		render(
+			<UploadFolderDialog
+				projectId="proj_1"
+				open
+				onOpenChange={() => undefined}
+				onUploaded={onUploaded}
+				canPublishBeforeScan={canPublishBeforeScan}
+			/>,
+		);
+		await userEvent.upload(
+			screen.getByLabelText("Choose folder") as HTMLInputElement,
+			[pick("repo/CLAUDE.md", "# x")],
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: /Upload 1 files/ }),
+			).toBeInTheDocument(),
+		);
+		return onUploaded;
+	}
+
+	it("is not offered to a member who cannot publish", async () => {
+		await pickAndReview(false);
+
+		expect(
+			screen.queryByRole("checkbox", {
+				name: publishBeforeScanCopy.label,
+			}),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows the risk and blocks the upload until the member acknowledges it, then sends the flag", async () => {
+		const onUploaded = await pickAndReview(true);
+		const option = screen.getByRole("checkbox", {
+			name: publishBeforeScanCopy.label,
+		});
+		const upload = screen.getByRole("button", { name: /Upload 1 files/ });
+		expect(upload).toBeEnabled();
+
+		await userEvent.click(option);
+
+		const alert = screen.getByRole("alert");
+		expect(alert).toHaveTextContent(publishBeforeScanCopy.warningTitle);
+		expect(alert).toHaveTextContent(publishBeforeScanCopy.warningBody);
+		expect(upload).toBeDisabled();
+
+		await userEvent.click(
+			screen.getByRole("checkbox", {
+				name: publishBeforeScanCopy.acknowledge,
+			}),
+		);
+		expect(upload).toBeEnabled();
+		await userEvent.click(upload);
+
+		await waitFor(() => expect(onUploaded).toHaveBeenCalledWith("snap_1"));
+		expect(uploadSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				publishOnReady: true,
+				publishBeforeScan: true,
+			}),
+		);
+	});
+
+	it("is unavailable while publishing is off, and never sends the flag then", async () => {
+		const onUploaded = await pickAndReview(true);
+		await userEvent.click(
+			screen.getByRole("checkbox", {
+				name: publishBeforeScanCopy.label,
+			}),
+		);
+		// Turning publishing off turns the option off with it.
+		await userEvent.click(
+			screen.getByRole("checkbox", {
+				name: uploadDialogCopy.publishOnReady,
+			}),
+		);
+
+		const option = screen.getByRole("checkbox", {
+			name: publishBeforeScanCopy.label,
+		});
+		expect(option).toBeDisabled();
+		expect(option).not.toBeChecked();
+		expect(
+			screen.getByText(publishBeforeScanCopy.requiresPublishOnReady),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /Upload 1 files/ }),
+		);
+		await waitFor(() => expect(onUploaded).toHaveBeenCalled());
+		expect(uploadSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				publishOnReady: false,
+				publishBeforeScan: false,
+			}),
+		);
+	});
+
+	it("starts a fresh upload, instead of resuming, when the choice changed after a failed attempt", async () => {
+		uploadSnapshot.mockImplementationOnce(
+			async (input: { onSnapshotStarted?: (id: string) => void }) => {
+				input.onSnapshotStarted?.("snap_failed");
+				throw new Error("network down");
+			},
+		);
+		await pickAndReview(true);
+		const upload = screen.getByRole("button", { name: /Upload 1 files/ });
+
+		// First attempt: ordinary, and it fails after `begin`.
+		await userEvent.click(upload);
+		await waitFor(() =>
+			expect(screen.getByText("network down")).toBeInTheDocument(),
+		);
+
+		// The member now opts in; the registered snapshot froze the old choice.
+		await userEvent.click(
+			screen.getByRole("checkbox", {
+				name: publishBeforeScanCopy.label,
+			}),
+		);
+		await userEvent.click(
+			screen.getByRole("checkbox", {
+				name: publishBeforeScanCopy.acknowledge,
+			}),
+		);
+		await userEvent.click(upload);
+
+		await waitFor(() => expect(uploadSnapshot).toHaveBeenCalledTimes(2));
+		expect(uploadSnapshot.mock.calls[1]![0]).toMatchObject({
+			publishBeforeScan: true,
+			resumeSnapshotId: undefined,
+		});
 	});
 });

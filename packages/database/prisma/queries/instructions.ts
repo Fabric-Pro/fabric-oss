@@ -30,6 +30,7 @@ import {
 	repositorySyncPublishRefusal,
 	writeProjectInstructionSettings,
 } from "./instruction-repository-sync";
+import { canUpdateProjectInstructions } from "./projects/projects";
 
 export type InstructionSnapshotStatus = ProjectInstructionSnapshotStatus;
 export type InstructionProposalStatus = ProjectInstructionProposalStatus;
@@ -165,6 +166,15 @@ const summarySelect = {
 	publishedAt: true,
 	user: { select: { id: true, name: true } },
 	reviewer: { select: { id: true, name: true } },
+	// Publish first, scan afterwards (Fizzy #2737). On the summary rather than
+	// on a detail read because BOTH of the tab's polled queries (`list` and
+	// `getPublished`) have to see a pending scan to keep polling until its
+	// verdict lands, and History and the published view render the verdict.
+	// The findings are the same capped rule-id/line shape as `rejection`.
+	publishBeforeScan: true,
+	deferredScanStatus: true,
+	deferredScanFindings: true,
+	deferredScanCompletedAt: true,
 } satisfies Prisma.ProjectInstructionSnapshotSelect;
 
 /**
@@ -200,6 +210,11 @@ type CreateInstructionSnapshotInput = {
 	source: InstructionSource;
 	settingsFrozen: unknown;
 	publishOnReady: boolean;
+	/**
+	 * The member's acknowledged opt-in to publish before the content secret
+	 * scan (Fizzy #2737). Requires `publishOnReady`; absent means false.
+	 */
+	publishBeforeScan?: boolean;
 	excludedCount: number;
 	/** Repository sync only (design 2026-09-23 §4.2). */
 	repositoryIntegrationId?: string | null;
@@ -274,6 +289,14 @@ function isVersionCollision(error: unknown): boolean {
 export async function createInstructionSnapshot(
 	input: CreateInstructionSnapshotInput,
 ): Promise<CreatedInstructionSnapshot> {
+	if (input.publishBeforeScan === true && !input.publishOnReady) {
+		// A programming error: publishing before the scan is a way of
+		// publishing, so a snapshot that will not publish itself cannot ask
+		// for it. The procedure refuses the combination before it gets here.
+		throw new Error(
+			"createInstructionSnapshot: publishBeforeScan requires publishOnReady",
+		);
+	}
 	let lastError: unknown;
 	for (let attempt = 0; attempt < VERSION_ALLOCATION_ATTEMPTS; attempt++) {
 		try {
@@ -343,6 +366,10 @@ function allocateAndCreateSnapshot(input: CreateInstructionSnapshotInput) {
 				status: "RECEIVING",
 				settingsFrozen: input.settingsFrozen as Prisma.InputJsonValue,
 				publishOnReady: input.publishOnReady,
+				// Written only when set, so every other create is unchanged.
+				...(input.publishBeforeScan === true
+					? { publishBeforeScan: true }
+					: {}),
 				excludedCount: input.excludedCount,
 				fileCount: input.files.length,
 				repositoryIntegrationId: input.repositoryIntegrationId ?? null,
@@ -652,6 +679,12 @@ type CreateDerivedInstructionSnapshotInput = {
 	baseSnapshotId: string;
 	publishOnReady: boolean;
 	proposal: boolean;
+	/**
+	 * The member's acknowledged opt-in to publish before the content secret
+	 * scan (Fizzy #2737). Requires `publishOnReady` and refuses `proposal`;
+	 * absent means false.
+	 */
+	publishBeforeScan?: boolean;
 	changes: DerivedInstructionChange[];
 	/**
 	 * `SNAPSHOT_LIMITS.maxFiles` / `maxTotalBytes`, passed in rather than
@@ -767,6 +800,16 @@ export async function createDerivedInstructionSnapshot(
 		// delivery, and a non-proposal derivation may publish itself.
 		throw new Error(
 			"createDerivedInstructionSnapshot: a REPOSITORY destination requires proposal mode",
+		);
+	}
+	if (
+		input.publishBeforeScan === true &&
+		(input.proposal || !input.publishOnReady)
+	) {
+		// Also a programming error: a proposal publishes only through review,
+		// and publishing before the scan is a way of publishing itself.
+		throw new Error(
+			"createDerivedInstructionSnapshot: publishBeforeScan requires publishOnReady and no proposal",
 		);
 	}
 	let lastError: unknown;
@@ -1181,6 +1224,11 @@ function allocateAndCreateDerivedSnapshot(
 					publishOnReady: input.proposal
 						? false
 						: input.publishOnReady,
+					// Never on a proposal (refused above); written only when
+					// set, so every other derivation is unchanged.
+					...(input.publishBeforeScan === true && !input.proposal
+						? { publishBeforeScan: true }
+						: {}),
 					proposalStatus: input.proposal ? "PENDING" : null,
 					...(input.proposal
 						? {
@@ -2300,6 +2348,14 @@ export async function markInstructionSnapshotReady(input: {
 	storedBytes: number;
 	digest: string;
 	readyAt: Date;
+	/**
+	 * The publish-first promotion (Fizzy #2737): READY without the content
+	 * secret scan, which runs after publication. Writes `deferredScanStatus:
+	 * PENDING` in the SAME conditional statement as READY, so there is no
+	 * moment at which the row is READY and could be read as scanned — and a
+	 * retry that finds the row already READY writes neither.
+	 */
+	deferredScan?: boolean;
 }): Promise<{ changed: boolean }> {
 	const snapshot = await db.projectInstructionSnapshot.findFirst({
 		where: {
@@ -2332,6 +2388,9 @@ export async function markInstructionSnapshotReady(input: {
 					: ([
 							proposalStagingPendingRejection,
 						] as unknown as Prisma.InputJsonValue),
+			...(input.deferredScan === true
+				? { deferredScanStatus: "PENDING" as const }
+				: {}),
 		},
 	});
 	return { changed: count > 0 };
@@ -3361,7 +3420,18 @@ type PublishInstructionSnapshotResult =
 				| "base_moved"
 				| "configuration_changed"
 				| "permission_revoked"
-				| "repository_backed";
+				| "repository_backed"
+				/**
+				 * Manual path: the target was published before its secret
+				 * scan and that scan has not PASSED (Fizzy #2737).
+				 */
+				| "deferred_scan_unresolved"
+				/**
+				 * Automatic path: the member who opted this snapshot into
+				 * publishing before its scan no longer holds the publish
+				 * permission (Fizzy #2737).
+				 */
+				| "fast_path_not_authorized";
 	  };
 
 /**
@@ -3472,6 +3542,26 @@ type PublishInstructionSnapshotResult =
  * locked pointer read, so the procedure's audit row names the transition that
  * actually happened. Those values are for REPORTING alone and never enter a
  * predicate.
+ *
+ * A snapshot promoted by the publish-first path (Fizzy #2737) — one whose
+ * `deferredScanStatus` is set — adds two rules, both read off the snapshot
+ * row under the lock like the fast-forward's:
+ *
+ *  - Automatic path: the member who opted it in (`userId`, who acknowledged
+ *    the risk) must still hold the publish permission at this moment.
+ *    Checked after the `publishedAt` arm, so a retry of a publication that
+ *    already happened stays idempotent even if that member has since lost
+ *    it. The same honest limit as the repository fence applies: membership
+ *    writes do not take the project row lock.
+ *  - Manual path: History may not publish it while its scan is PENDING,
+ *    ISSUES_FOUND or INCOMPLETE. Publishing some OTHER version away from it
+ *    is untouched — that is how a member remedies a finding.
+ *
+ * `audit`, when given, is written with `recordAuditTx` in THIS transaction and
+ * only when the pointer actually moved, so the publication and its record
+ * commit together or not at all and a retry that finds `publishedAt` set
+ * writes neither. The publish-first path passes it; the ordinary automatic
+ * path keeps its own best-effort row.
  */
 export async function publishInstructionSnapshot(input: {
 	snapshotId: string;
@@ -3479,6 +3569,7 @@ export async function publishInstructionSnapshot(input: {
 	organizationId: string;
 	requireBaseUnmoved?: boolean;
 	allowRollback?: boolean;
+	audit?: RecordAuditInput;
 }): Promise<PublishInstructionSnapshotResult> {
 	if (input.requireBaseUnmoved === true && input.allowRollback === true) {
 		// A programming error, not a runtime condition: one asks the write to
@@ -3550,6 +3641,7 @@ export async function publishInstructionSnapshot(input: {
 				source: true,
 				userId: true,
 				settingsFrozen: true,
+				deferredScanStatus: true,
 			},
 		});
 		if (!snapshot) {
@@ -3593,6 +3685,25 @@ export async function publishInstructionSnapshot(input: {
 				reason: "proposal_not_approved" as const,
 			};
 		}
+		// History may not choose a version that went out before its secret
+		// scan until that scan has PASSED (Fizzy #2737). The automatic path is
+		// exactly how a PENDING version publishes, so this is manual-only; and
+		// only the TARGET is judged, so rolling back AWAY from such a version
+		// is the remedy it has always been. An allowlist of the unresolved
+		// verdicts rather than "not PASSED": null is every ordinary snapshot.
+		const deferredScan = snapshot.deferredScanStatus ?? null;
+		if (
+			input.allowRollback === true &&
+			(deferredScan === "PENDING" ||
+				deferredScan === "ISSUES_FOUND" ||
+				deferredScan === "INCOMPLETE")
+		) {
+			return {
+				published: false as const,
+				changed: false as const,
+				reason: "deferred_scan_unresolved" as const,
+			};
+		}
 		// An AUTOMATIC publication is applied AT MOST ONCE per snapshot, and
 		// `publishedAt` is the durable record that it already was. Nothing in
 		// the lifecycle ever clears that column — the only write to it is the
@@ -3613,6 +3724,27 @@ export async function publishInstructionSnapshot(input: {
 		// published before is the whole point of History.
 		if (input.allowRollback !== true && snapshot.publishedAt !== null) {
 			return { published: true as const, changed: false as const };
+		}
+		// Publish-first fence (Fizzy #2737). Automatic path only, after the
+		// `publishedAt` arm for the same reason as the repository fence below.
+		// The member who acknowledged publishing before the scan is the one
+		// whose authority this publication rests on, whoever finished the
+		// upload, so it is THEIR publish permission that is read — on this
+		// transaction's client, under the project row lock it holds.
+		if (
+			input.allowRollback !== true &&
+			deferredScan !== null &&
+			!(await canUpdateProjectInstructions(
+				input.projectId,
+				snapshot.userId,
+				tx,
+			))
+		) {
+			return {
+				published: false as const,
+				changed: false as const,
+				reason: "fast_path_not_authorized" as const,
+			};
 		}
 		// Repository sync fence (design 2026-09-23 §5.6). Automatic path only:
 		// a snapshot a sync produced may take the pointer only while the
@@ -3744,6 +3876,12 @@ export async function publishInstructionSnapshot(input: {
 				where: { id: snapshot.id },
 				data: { publishedAt: new Date() },
 			});
+			// With the pointer move and the `publishedAt` stamp, or not at
+			// all: a crash after this commit leaves a retry that sees
+			// `publishedAt` and writes nothing, and the row is already here.
+			if (input.audit) {
+				await recordAuditTx(tx, input.audit);
+			}
 			return {
 				published: true as const,
 				changed: true as const,
@@ -4947,4 +5085,213 @@ export async function updateProjectInstructionSettings(
 		),
 	);
 	return { syncGenerationBumped: result.syncGenerationBumped };
+}
+
+// ---------------------------------------------------------------------------
+// Deferred content scan (Fizzy #2737)
+// ---------------------------------------------------------------------------
+
+/** A deferred scan's verdict: every value `deferredScanStatus` moves to. */
+export type InstructionDeferredScanOutcome =
+	| "PASSED"
+	| "ISSUES_FOUND"
+	| "INCOMPLETE";
+
+/**
+ * Records a publish-first snapshot's scan verdict, and its audit row, as ONE
+ * idempotent unit.
+ *
+ * The predicate is the whole guard: READY and `deferredScanStatus: PENDING`,
+ * tenant-bound, in the UPDATE's own WHERE clause. PENDING -> verdict happens
+ * exactly once, whichever writer gets there first — the snapshot's own
+ * workflow, a retry of its activity after a lost acknowledgement, or the
+ * reaper closing out a scan whose workflow died — and every later attempt
+ * matches nothing and writes nothing, its audit row included. That is the
+ * same at-least-once argument as `markInstructionSnapshotRejected`, and the
+ * audit is transactional for the same reason: gating a best-effort write on
+ * `changed` loses the row when the process dies between the two.
+ *
+ * The status stays READY whatever the verdict (spec decision: a finding is
+ * shown, never acted on). `findings` is stored only when there are any, so a
+ * PASSED row, or an INCOMPLETE one that established nothing, carries a JSON
+ * null rather than an empty list; an INCOMPLETE scan that found something
+ * before a file defeated its last attempt keeps what it found.
+ */
+export async function recordInstructionDeferredScanOutcome(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+	outcome: InstructionDeferredScanOutcome;
+	findings: InstructionRejection[];
+	/** Written only when this call made the transition. */
+	audit?: RecordAuditInput;
+}): Promise<{ changed: boolean }> {
+	return db.$transaction(async (tx) => {
+		const { count } = await tx.projectInstructionSnapshot.updateMany({
+			where: {
+				id: input.snapshotId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				status: "READY",
+				deferredScanStatus: "PENDING",
+			},
+			data: {
+				deferredScanStatus: input.outcome,
+				deferredScanFindings:
+					input.findings.length > 0
+						? (input.findings as unknown as Prisma.InputJsonValue)
+						: Prisma.JsonNull,
+				deferredScanCompletedAt: new Date(),
+			},
+		});
+		if (count === 0) {
+			return { changed: false };
+		}
+		if (input.audit) {
+			await recordAuditTx(tx, input.audit);
+		}
+		return { changed: true };
+	});
+}
+
+/**
+ * Publish-first snapshots whose scan is still PENDING long after they became
+ * readable: the reaper's candidates for a scan whose workflow is gone (see
+ * `DEFERRED_SCAN_STALE_AFTER_MS` in `@repo/instructions`). One page of them at
+ * `offset`, and the size of the whole population.
+ *
+ * The query only narrows the population to rows old enough to be worth
+ * asking Temporal about; the caller decides row by row. `readyAt`, not
+ * `updatedAt`, is the age: the publication stamp moves `updatedAt` after
+ * READY, and what matters is how long the version has been readable
+ * unscanned. `updatedAt` is SELECTED so the caller's write can put the exact
+ * version it described back into its own WHERE clause.
+ *
+ * `offset`/`limit` are the ROTATION and the per-run budget, exactly as for
+ * `listProjectsWithPrunableInstructionSnapshots`. A row whose execution is
+ * still RUNNING, or whose liveness cannot be established, is skipped without
+ * being written, so it keeps its place in the order; with a fixed first page,
+ * a hundred such rows at the head would be re-selected every hour and a dead
+ * row behind them would stay PENDING forever. The caller advances the offset
+ * one slice per hour and wraps it at `total` (the reaper's
+ * `selectRotatedSlice`), so with the population stable every candidate is
+ * reached within `ceil(total / limit)` runs. `id` breaks `readyAt` ties so the
+ * order is total and a page is a window of it.
+ *
+ * Two Prisma statements, where the prune query uses one raw one: that query
+ * needs raw SQL for its `UNION`, and a single table filter needs nothing of
+ * the kind. They can disagree if the population changes between them; the
+ * caller dedupes by id, and the next hour's window corrects the total.
+ *
+ * SYSTEM-WIDE, with no tenant in scope, like the other sweep queries; each
+ * row carries its own `projectId`/`organizationId` for every write that
+ * follows.
+ */
+export async function listStaleDeferredScanInstructionSnapshots(
+	cutoff: Date,
+	limit: number,
+	offset: number,
+): Promise<{
+	candidates: Array<{
+		id: string;
+		projectId: string;
+		organizationId: string;
+		updatedAt: Date;
+	}>;
+	total: number;
+}> {
+	const where = {
+		status: "READY",
+		deferredScanStatus: "PENDING",
+		readyAt: { lt: cutoff },
+	} satisfies Prisma.ProjectInstructionSnapshotWhereInput;
+	const [candidates, total] = await Promise.all([
+		db.projectInstructionSnapshot.findMany({
+			where,
+			orderBy: [{ readyAt: "asc" }, { id: "asc" }],
+			skip: offset,
+			take: limit,
+			select: {
+				id: true,
+				projectId: true,
+				organizationId: true,
+				updatedAt: true,
+			},
+		}),
+		db.projectInstructionSnapshot.count({ where }),
+	]);
+	return { candidates, total };
+}
+
+/**
+ * The reaper's INCOMPLETE verdict for a pending scan with no execution behind
+ * it, and its audit row, in ONE transaction.
+ *
+ * A compare-and-set on the version the sweep described, exactly as
+ * `failStaleValidatingInstructionSnapshot` is: `describe()` and this write are
+ * two operations, so the WHERE clause carries the `updatedAt` the candidate
+ * query returned as well as `deferredScanStatus: PENDING`. A verdict the
+ * workflow recorded in between (or any other write to the row) moves one or
+ * the other and this matches nothing — the reaper never overwrites a verdict
+ * it did not look at, and the workflow's own conditional write can never
+ * overwrite the reaper's.
+ *
+ * The audit row names the member who opted the snapshot in, read inside the
+ * transaction after the write, as `rejectAbandonedInstructionSnapshot` does;
+ * `metadata.source` says the sweep is what closed it out.
+ */
+export async function markStaleDeferredScanIncomplete(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+	observedUpdatedAt: Date;
+}): Promise<{ changed: boolean }> {
+	return db.$transaction(async (tx) => {
+		const { count } = await tx.projectInstructionSnapshot.updateMany({
+			where: {
+				id: input.snapshotId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				status: "READY",
+				deferredScanStatus: "PENDING",
+				updatedAt: input.observedUpdatedAt,
+			},
+			data: {
+				deferredScanStatus: "INCOMPLETE",
+				deferredScanFindings: Prisma.JsonNull,
+				deferredScanCompletedAt: new Date(),
+			},
+		});
+		if (count === 0) {
+			return { changed: false };
+		}
+		const snapshot = await tx.projectInstructionSnapshot.findFirst({
+			where: {
+				id: input.snapshotId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+			},
+			select: { userId: true, version: true },
+		});
+		await recordAuditTx(tx, {
+			action: "project.instructions.deferred_scan_incomplete",
+			category: "project",
+			severity: "warning",
+			outcome: "failure",
+			actor: { type: "user", userId: snapshot?.userId ?? null },
+			organizationId: input.organizationId,
+			projectId: input.projectId,
+			resource: {
+				type: "project_instruction_snapshot",
+				id: input.snapshotId,
+				name: snapshot === null ? undefined : `v${snapshot.version}`,
+			},
+			metadata: {
+				version: snapshot?.version ?? null,
+				reason: "workflow_not_running",
+				source: "deferred_scan_reaper",
+			},
+		});
+		return { changed: true };
+	});
 }

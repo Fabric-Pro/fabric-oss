@@ -81,9 +81,18 @@ function isWorkflowAlreadyStartedError(error: unknown): boolean {
  * allows, and the snapshot's staging objects are still there
  * (`markInstructionSnapshotFailed` deliberately leaves them), so the new run's
  * integrity/secret gate has the bytes it needs.
+ *
+ * `snapshot.publishBeforeScan` (Fizzy #2737) is read off the row the caller
+ * loaded and handed to the workflow, which takes its publish-first path only
+ * for an explicit `true`. It is added to the arguments only when set, so every
+ * other start is byte-for-byte what it was.
  */
 export async function finalizeInstructionSnapshot(input: {
-	snapshot: { id: string; status: InstructionSnapshotStatus };
+	snapshot: {
+		id: string;
+		status: InstructionSnapshotStatus;
+		publishBeforeScan?: boolean;
+	};
 	projectId: string;
 	organizationId: string;
 	userId: string;
@@ -136,6 +145,9 @@ export async function finalizeInstructionSnapshot(input: {
 						projectId,
 						organizationId,
 						userId,
+						...(snapshot.publishBeforeScan === true
+							? { publishBeforeScan: true }
+							: {}),
 					},
 				],
 			}),

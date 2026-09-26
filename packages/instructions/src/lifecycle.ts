@@ -76,3 +76,27 @@ export const PROPOSAL_UPLOAD_SIGNING_WINDOW_MS = 60 * 60 * 1000;
  * and the tab have to agree about which rows are still worth watching.
  */
 export const VALIDATING_STALE_AFTER_MS = 60 * 60 * 1000;
+
+/**
+ * How long a publish-first snapshot (Fizzy #2737) may stay READY with its
+ * deferred secret scan still PENDING before the reaper considers the row worth
+ * INSPECTING.
+ *
+ * A pending scan is owned by the snapshot's own workflow, which records a
+ * verdict whichever way the scan goes — INCOMPLETE included, when the scan
+ * exhausts its retries. What this bounds is the case where that workflow is
+ * GONE: the publish activity or the outcome write failed past its retries,
+ * the execution was terminated or timed out, or a worker died. Nothing else
+ * would ever move such a row, and a version that published unscanned would
+ * read "scan pending" forever.
+ *
+ * Measured from `readyAt`, the moment the version could first be read. Half an
+ * hour is several times what the scan of a maximum-size snapshot takes with
+ * all of its retries. As with `VALIDATING_STALE_AFTER_MS`, nothing is decided
+ * on age alone: the reaper still asks Temporal whether the workflow is
+ * running, and a row whose workflow is live is left to it.
+ *
+ * A CONSTANT for the same reason as the two above: the reaper and the tab's
+ * polling decision have to agree about which pending scans are still alive.
+ */
+export const DEFERRED_SCAN_STALE_AFTER_MS = 30 * 60 * 1000;
