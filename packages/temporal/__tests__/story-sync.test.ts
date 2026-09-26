@@ -1014,6 +1014,42 @@ function wrapMcpJson(payload: unknown) {
 	};
 }
 
+/**
+ * `wit_get_work_item_type` as `@azure-devops/mcp` 2.8.0 declares it. Every
+ * release checked from 1.3.0 requires `workItemType`; the server rejects a call
+ * without it with MCP -32602 before calling Azure DevOps.
+ */
+const ADO_GET_WORK_ITEM_TYPE_TOOL = {
+	description: "Get a specific work item type.",
+	inputSchema: {
+		type: "object",
+		properties: {
+			project: { type: "string" },
+			workItemType: { type: "string" },
+		},
+		required: ["workItemType"],
+	},
+};
+
+/** The server-side input validation the real tool applies to its args. */
+function rejectsMissingWorkItemType(args: Record<string, unknown>) {
+	return typeof args.workItemType !== "string"
+		? {
+				success: false,
+				output: {
+					isError: true,
+					content: [
+						{
+							type: "text",
+							text: "MCP error -32602: Input validation error: workItemType Required",
+						},
+					],
+				},
+				durationMs: 0,
+			}
+		: null;
+}
+
 describe("listWorkItemsFromPM: availableWorkItemTypes + availableStates", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -1181,22 +1217,12 @@ describe("listWorkItemsFromPM: availableWorkItemTypes + availableStates", () => 
 					required: ["project"],
 				},
 			},
-			wit_get_work_item_type: {
-				description: "Get ADO work item type",
-				inputSchema: {
-					type: "object",
-					properties: {
-						project: { type: "string" },
-						type: { type: "string" },
-					},
-					required: ["project", "type"],
-				},
-			},
+			wit_get_work_item_type: ADO_GET_WORK_ITEM_TYPE_TOOL,
 		});
 
 		const exec = vi.mocked(executeMcpTool);
 		// First call: the list tool; second call: wit_get_work_item_type.
-		exec.mockImplementation(async ({ toolName }) => {
+		exec.mockImplementation(async ({ toolName, args }) => {
 			if (toolName === "wit_list_work_items") {
 				return {
 					success: true,
@@ -1225,20 +1251,22 @@ describe("listWorkItemsFromPM: availableWorkItemTypes + availableStates", () => 
 				};
 			}
 			if (toolName === "wit_get_work_item_type") {
-				return {
-					success: true,
-					output: wrapMcpJson({
-						name: "User Story",
-						states: [
-							{ name: "New", category: "Proposed" },
-							{ name: "Active", category: "InProgress" },
-							{ name: "Resolved", category: "Resolved" },
-							{ name: "Closed", category: "Completed" },
-							{ name: "Removed", category: "Removed" },
-						],
-					}),
-					durationMs: 10,
-				};
+				return (
+					rejectsMissingWorkItemType(args) ?? {
+						success: true,
+						output: wrapMcpJson({
+							name: "User Story",
+							states: [
+								{ name: "New", category: "Proposed" },
+								{ name: "Active", category: "InProgress" },
+								{ name: "Resolved", category: "Resolved" },
+								{ name: "Closed", category: "Completed" },
+								{ name: "Removed", category: "Removed" },
+							],
+						}),
+						durationMs: 10,
+					}
+				);
 			}
 			return { success: false, output: null, durationMs: 0 };
 		});
@@ -1265,6 +1293,90 @@ describe("listWorkItemsFromPM: availableWorkItemTypes + availableStates", () => 
 				"wit_get_work_item_type",
 		);
 		expect(typeCalls).toHaveLength(1);
+		expect(typeCalls[0]?.[0].args).toEqual({
+			project: "MyProject",
+			workItemType: "User Story",
+		});
+	});
+
+	it("derives ADO terminal flags from the consolidated wit_work_item tool (>= 2.9)", async () => {
+		setupToolsMock({
+			wit_list_work_items: {
+				description: "List ADO work items",
+				inputSchema: {
+					type: "object",
+					properties: { project: { type: "string" } },
+					required: ["project"],
+				},
+			},
+			wit_work_item: {
+				description: "Read work items.",
+				inputSchema: {
+					type: "object",
+					properties: {
+						action: { type: "string" },
+						project: { type: "string" },
+						workItemType: { type: "string" },
+					},
+					required: ["action"],
+				},
+			},
+		});
+
+		const exec = vi.mocked(executeMcpTool);
+		exec.mockImplementation(async ({ toolName, args }) => {
+			if (toolName === "wit_list_work_items") {
+				return {
+					success: true,
+					output: wrapMcpJson({
+						workItems: [
+							{
+								id: 1,
+								fields: {
+									"System.Title": "t1",
+									"System.WorkItemType": "Bug",
+									"System.State": "Done",
+								},
+							},
+						],
+					}),
+					durationMs: 10,
+				};
+			}
+			if (toolName === "wit_work_item" && args.action === "get_type") {
+				return (
+					rejectsMissingWorkItemType(args) ?? {
+						success: true,
+						output: wrapMcpJson({
+							name: "Bug",
+							states: [{ name: "Done", category: "Completed" }],
+						}),
+						durationMs: 10,
+					}
+				);
+			}
+			return { success: false, output: null, durationMs: 0 };
+		});
+
+		const result = await listWorkItemsFromPM({
+			mcpConfigId: "cfg-ado",
+			containerId: "MyProject",
+			userId: "user-1",
+		});
+
+		expect(result.availableStates).toEqual([
+			{ name: "Done", isTerminal: true },
+		]);
+		expect(exec).toHaveBeenCalledWith(
+			expect.objectContaining({
+				toolName: "wit_work_item",
+				args: {
+					action: "get_type",
+					project: "MyProject",
+					workItemType: "Bug",
+				},
+			}),
+		);
 	});
 
 	it("falls back to isTerminal: false when ADO wit_get_work_item_type is unavailable", async () => {
@@ -1342,17 +1454,7 @@ function setupAdoBatchTools() {
 				required: ["project", "ids"],
 			},
 		},
-		wit_get_work_item_type: {
-			description: "Get ADO work item type",
-			inputSchema: {
-				type: "object",
-				properties: {
-					project: { type: "string" },
-					type: { type: "string" },
-				},
-				required: ["project", "type"],
-			},
-		},
+		wit_get_work_item_type: ADO_GET_WORK_ITEM_TYPE_TOOL,
 	});
 }
 
@@ -1718,17 +1820,7 @@ describe("adapter parity: ADO / Jira / GitHub / Fizzy (AC-5)", () => {
 					required: ["project"],
 				},
 			},
-			wit_get_work_item_type: {
-				description: "Get ADO work item type",
-				inputSchema: {
-					type: "object",
-					properties: {
-						project: { type: "string" },
-						type: { type: "string" },
-					},
-					required: ["project", "type"],
-				},
-			},
+			wit_get_work_item_type: ADO_GET_WORK_ITEM_TYPE_TOOL,
 		});
 		vi.mocked(executeMcpTool).mockImplementation(async ({ toolName }) => {
 			if (toolName === "wit_list_work_items") {
