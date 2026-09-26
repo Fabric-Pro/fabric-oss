@@ -22,6 +22,7 @@ import {
 	screen,
 	waitFor,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -179,8 +180,10 @@ describe("MeetingDigestTab — poll budget is scoped per occurrence, not per com
 	});
 
 	it("does not carry meeting A's stalled poll budget over to a freshly-opened meeting B", async () => {
+		const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 		renderTab();
 
+		await user.click(screen.getByRole("tab", { name: "Upcoming" }));
 		fireEvent.click(screen.getByRole("button", { name: "Show A" }));
 
 		await waitFor(() =>

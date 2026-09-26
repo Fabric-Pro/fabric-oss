@@ -120,46 +120,40 @@ beforeEach(() => {
 });
 
 describe("MeetingDigestTab — #2143 tab split", () => {
-	it("defaults to the Upcoming tab and keeps calendar content off-DOM", () => {
+	it("defaults to the Calendar tab and keeps upcoming content off-DOM", () => {
 		renderTab();
+
+		expect(
+			screen.getByRole("tab", { name: "Calendar", selected: true }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("tab", { name: "Upcoming", selected: false }),
+		).toBeInTheDocument();
+		expect(screen.getByText(monthLabel())).toBeInTheDocument();
+		expect(
+			screen.queryByTestId("upcoming-meetings-section"),
+		).not.toBeInTheDocument();
+	});
+
+	it("switches to Upcoming on click and shows the upcoming view", async () => {
+		const user = userEvent.setup();
+		renderTab();
+
+		await user.click(screen.getByRole("tab", { name: "Upcoming" }));
 
 		expect(
 			screen.getByRole("tab", { name: "Upcoming", selected: true }),
 		).toBeInTheDocument();
 		expect(
-			screen.getByRole("tab", { name: "Calendar", selected: false }),
-		).toBeInTheDocument();
-		expect(
 			screen.getByTestId("upcoming-meetings-section"),
 		).toBeInTheDocument();
-		// The month toolbar lives on the Calendar tab, which is unmounted.
 		expect(screen.queryByText(monthLabel())).not.toBeInTheDocument();
-	});
-
-	it("switches to Calendar on click and shows the calendar view", async () => {
-		const user = userEvent.setup();
-		renderTab();
-
-		await user.click(screen.getByRole("tab", { name: "Calendar" }));
-
-		expect(
-			screen.getByRole("tab", { name: "Calendar", selected: true }),
-		).toBeInTheDocument();
-		expect(screen.getByText(monthLabel())).toBeInTheDocument();
-		// Empty digest → the calendar-side empty state, on this tab.
-		expect(
-			screen.getByText(/no meetings in the digest yet/i),
-		).toBeInTheDocument();
-		expect(
-			screen.queryByTestId("upcoming-meetings-section"),
-		).not.toBeInTheDocument();
 	});
 
 	it("preserves calendar month state across a tab round trip", async () => {
 		const user = userEvent.setup();
 		renderTab();
 
-		await user.click(screen.getByRole("tab", { name: "Calendar" }));
 		await user.click(
 			screen.getByRole("button", { name: /previous month/i }),
 		);
@@ -177,14 +171,16 @@ describe("MeetingDigestTab — #2143 tab split", () => {
 		const user = userEvent.setup();
 		renderTab();
 
-		await user.click(screen.getByRole("tab", { name: "Upcoming" }));
-		await user.keyboard("{ArrowRight}");
+		await user.click(screen.getByRole("tab", { name: "Calendar" }));
+		await user.keyboard("{ArrowLeft}");
 
 		// Radix automatic activation: arrow moves focus AND selects.
 		expect(
-			screen.getByRole("tab", { name: "Calendar", selected: true }),
+			screen.getByRole("tab", { name: "Upcoming", selected: true }),
 		).toBeInTheDocument();
-		expect(screen.getByText(monthLabel())).toBeInTheDocument();
+		expect(
+			screen.getByTestId("upcoming-meetings-section"),
+		).toBeInTheDocument();
 	});
 
 	it("renders no tabs and the calendar directly when MEETING_AGENDA is off", () => {
@@ -206,14 +202,14 @@ describe("MeetingDigestTab — #2143 tab split", () => {
 		const user = userEvent.setup();
 		renderTab();
 
-		// Upcoming tab: empty state is unmounted, header button must show.
+		// Calendar tab: empty state's own button shows, header button yields.
 		expect(
 			screen.getAllByRole("button", { name: /add meeting/i }),
 		).toHaveLength(1);
 
-		await user.click(screen.getByRole("tab", { name: "Calendar" }));
+		await user.click(screen.getByRole("tab", { name: "Upcoming" }));
 
-		// Calendar tab: empty state's own button shows, header button yields.
+		// Upcoming tab: empty state is unmounted, header button must show.
 		expect(
 			screen.getAllByRole("button", { name: /add meeting/i }),
 		).toHaveLength(1);
@@ -223,7 +219,7 @@ describe("MeetingDigestTab — #2143 tab split", () => {
 		const user = userEvent.setup();
 		renderTab();
 
-		await user.click(screen.getByRole("tab", { name: "Calendar" }));
+		await user.click(screen.getByRole("tab", { name: "Upcoming" }));
 		await user.click(
 			screen.getByRole("button", { name: /configure meetings/i }),
 		);
@@ -235,24 +231,43 @@ describe("MeetingDigestTab — #2143 tab split", () => {
 		await user.click(screen.getByRole("button", { name: /^done$/i }));
 
 		// digestTab is controlled state in the parent, so remounting the Tabs
-		// must restore Calendar — defaultValue would silently reset here.
+		// must restore Upcoming — defaultValue would silently reset here.
 		expect(
-			screen.getByRole("tab", { name: "Calendar", selected: true }),
+			screen.getByRole("tab", { name: "Upcoming", selected: true }),
 		).toBeInTheDocument();
-		expect(screen.getByText(monthLabel())).toBeInTheDocument();
+		expect(
+			screen.getByTestId("upcoming-meetings-section"),
+		).toBeInTheDocument();
 	});
 
 	// #1902: a work item's back-reference deep-links into the digest with
 	// ?meeting=<transcriptRef>. The detail sheet mounts at the component root
-	// — outside the Tabs — so it must open even though the default tab is
-	// Upcoming and the calendar is unmounted. Pins the sheet's placement:
-	// moving it inside the calendar TabsContent would break every work-item
-	// back-reference for flag-on orgs.
-	it("opens the deep-linked meeting sheet while the Upcoming tab is active", () => {
+	// — outside the Tabs — so it must open on the default Calendar tab, and
+	// stay open even while the Upcoming tab is active and the calendar is unmounted.
+	// Pins the sheet's placement: moving it inside the calendar TabsContent would
+	// break every work-item back-reference for flag-on orgs.
+	it("opens the deep-linked meeting sheet on the default Calendar tab", () => {
 		searchParams.current = new URLSearchParams(
 			"meeting=graph-transcript-1&actionItem=item-key-1",
 		);
 		renderTab();
+
+		expect(
+			screen.getByRole("tab", { name: "Calendar", selected: true }),
+		).toBeInTheDocument();
+		expect(screen.getByTestId("meeting-detail-sheet")).toHaveTextContent(
+			"graph-transcript-1",
+		);
+	});
+
+	it("opens the deep-linked meeting sheet while the Upcoming tab is active", async () => {
+		const user = userEvent.setup();
+		searchParams.current = new URLSearchParams(
+			"meeting=graph-transcript-1&actionItem=item-key-1",
+		);
+		renderTab();
+
+		await user.click(screen.getByRole("tab", { name: "Upcoming" }));
 
 		expect(
 			screen.getByRole("tab", { name: "Upcoming", selected: true }),
