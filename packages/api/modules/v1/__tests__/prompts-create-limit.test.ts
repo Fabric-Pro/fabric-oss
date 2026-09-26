@@ -24,6 +24,15 @@ vi.mock("../../external-api/middleware/api-key-auth", () => ({
 		next(),
 }));
 
+// The caller is an organization admin: the role check is not this file's
+// subject (see prompts-write-permissions.test.ts), the body limit is.
+vi.mock("../../organizations/lib/membership", () => ({
+	verifyOrganizationMembership: async () => ({
+		organization: { id: "org-1" },
+		role: "admin",
+	}),
+}));
+
 vi.mock("../helpers", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../helpers")>()),
 	resolveV1Context: async () => ({

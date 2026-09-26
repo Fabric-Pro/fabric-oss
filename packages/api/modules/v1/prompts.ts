@@ -11,7 +11,33 @@ import {
 import type { Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
-import { badRequest, notFound, ok, resolveV1Context } from "./helpers";
+import { verifyOrganizationMembership } from "../organizations/lib/membership";
+import {
+	badRequest,
+	forbidden,
+	notFound,
+	ok,
+	resolveV1Context,
+} from "./helpers";
+
+/**
+ * In the app only an organization's admins and owners may create or change its
+ * prompts (`prompts.create`, `prompts.update`). A key's `prompts:write` scope is
+ * a ceiling, not that permission, so the key owner's live role is re-read on
+ * every write — a wildcard key included. Without it any member holding a
+ * `prompts:write` key could publish or rewrite organization prompts the app
+ * would refuse them; the same class as the v1 write-permission fix (#2380).
+ */
+async function isOrganizationPromptAdmin(
+	organizationId: string,
+	userId: string,
+): Promise<boolean> {
+	const membership = await verifyOrganizationMembership(
+		organizationId,
+		userId,
+	);
+	return membership?.role === "admin" || membership?.role === "owner";
+}
 
 export function registerPromptRoutes(
 	app: Hono<{ Variables: ExternalApiVariables }>,
@@ -140,6 +166,18 @@ export function registerPromptRoutes(
 
 		const scope = ctx.organizationId ? "ORG" : "USER";
 
+		if (
+			ctx.organizationId &&
+			!(await isOrganizationPromptAdmin(ctx.organizationId, ctx.userId))
+		) {
+			return c.json(
+				forbidden(
+					"Only organization admins can create organization prompts",
+				),
+				403,
+			);
+		}
+
 		const prompt = await createPrompt({
 			key,
 			name,
@@ -209,6 +247,22 @@ export function registerPromptRoutes(
 		});
 		if (!existing) {
 			return c.json(notFound("Prompt"), 404);
+		}
+
+		if (
+			existing.scope === "ORG" &&
+			existing.organizationId &&
+			!(await isOrganizationPromptAdmin(
+				existing.organizationId,
+				ctx.userId,
+			))
+		) {
+			return c.json(
+				forbidden(
+					"Only organization admins can update organization prompts",
+				),
+				403,
+			);
 		}
 
 		const updated = await updatePrompt({
