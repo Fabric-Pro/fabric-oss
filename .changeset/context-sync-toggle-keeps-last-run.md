@@ -1,7 +1,0 @@
----
-"fabric-app": patch
----
-
-Turning Living Memory's automatic sync on or off, or re-enabling it after a pause, no longer resets the Context tab to "Not synced yet" or cancels a sync that is already running, and the tab now shows an automatic sync that finishes while it is open.
-
-Configuring the repository sync now tells a change to what is synced (the repository, branch or paths) apart from one that is not. Only the first bumps the configuration's generation, which fences an open run as `CONFIGURATION_CHANGED` and clears the last applied run. The "Automatic sync" toggle and "Re-enable" keep both: they clear the pause and the failure count and make the sync due now, dated on the database clock the configuration lock read, so any poll check's lease still ends. Because a re-enable no longer fences an open run, a run that later records a permission failure pauses automatic sync again only while the configuration's current member still lacks permission to add context, so it never undoes a re-enable by another member or by one whose permission was restored. The audit row stays `project.context.repository_sync_configured`, now with a `repositoryChanged` flag beside `refChanged` and `pathsChanged`. The Context card re-reads the sync state every 60 seconds while automatic sync is on and not paused, as the Coding Instructions tab does, and re-reads the files when the newest run appears or finishes between two reads, including when the sync's running state could not be read.

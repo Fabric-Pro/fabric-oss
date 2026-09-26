@@ -1,7 +1,0 @@
----
-"fabric-app": patch
----
-
-Fixes slow parsing of long test-failure messages and keeps an AI-summarized bug cause properly hedged.
-
-A post-ship review of the assertion-direction parser (Fizzy #2225) found three defects. First, a handful of its regexes placed two variable-length quantifiers directly next to each other over an overlapping character class, which — on a crafted or simply large `failureMessage` (an unbounded text column) — made matching take quadratic-to-exponential time; every affected parser is now written with `indexOf`/`slice` boundary-finding instead of backtracking capture groups, and the whole message is additionally capped before any parser runs. Second, a trailing `Expected:`/`Received:` value with nothing after it to bound it (no next label) could run into a following stack trace or a second concatenated failure report; it now stops at the first blank line or stack line, and a message with more than one such pair is treated as ambiguous and returns no parse rather than guessing which one failed. Third, the bug-summarization prompt (`bug_maturation_summary`, org-editable) had no instruction to preserve an unconfirmed cause as unconfirmed; a second, code-owned clause — alongside the existing locked-attachment rule — now tells the model to keep a hedge a hedge and never flip which side of a comparison is which. A markdown-rendering follow-up also turned the parsed Expected/Actual lines into a two-item list, since two plain consecutive lines were collapsing into one paragraph in the rendered bug body.

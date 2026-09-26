@@ -1,5 +1,28 @@
 # @fabricorg/cli
 
+## 0.4.0
+
+### Minor Changes
+
+- eed28ee: Coding instructions synced from a repository now stay current on their own: Fabric picks up a pushed change right after each push to GitHub, and otherwise normally 15 to 20 minutes after a push (longer while the poll works through a backlog or a sync is backing off after failures), publishes a new version only when the files changed, and pauses with a message in the tab if the branch is deleted or the member it publishes as can no longer publish.
+- aa7dcff: `fabric instructions doctor` reports whether a machine is set up the way a project's published coding instructions expect, and the MCP gateway gains a `fabric_instruction_checks` tool that returns the same checks so an agent can self-diagnose at session start.
+- f2040ef: The `fabric instructions` session hook and `init` now work in a checkout of a project's instruction repository, reporting when the configured branch has newer published instructions instead of refusing.
+
+### Patch Changes
+
+- ad1e1c1: A project's Living Memory can now be synced from selected folders and files of a repository connected to the project: Sync from repository picks the repository, a branch and the paths to read, checks that the branch and paths exist, and Sync now reads them again at the branch's current commit, creates, updates and removes knowledge files to match, and reports what it kept, what it skipped and why.
+- c44f8e4: A coding-instructions version that only changes a file's executable bit now gets a new digest, so `sinceDigest` callers and `fabric instructions sync` pick it up instead of reporting no change. The CLI still installs versions published before this change; an older CLI release refuses a newly published version that contains an executable file until it is upgraded.
+- 17dc24e: Coding Instructions now exclude `CLAUDE.local.md` at any depth from every snapshot, whether it arrives by folder upload or by repository sync, and the CLI never writes, deletes, or pushes that file, matching how `.claude/settings.local.json` is already kept out. Claude Code reads `CLAUDE.local.md` as machine-personal notes in any directory, so publishing one shared a file that was only ever meant for the machine it was written on.
+- d279597: A coding agent can now record a lesson from a session — a mistake the team should not repeat — as a proposed coding-instructions file with the new MCP tool `fabric_add_instruction_lesson`, and `fabric instructions init --lessons` installs a Claude Code Stop hook that asks the developer once per session whether there is one worth keeping.
+- bab1886: Suggesting a change to coding instructions on a repository-backed project now opens a pull request in the connected repository.
+- 8f45162: The published-instructions API, SDK, CLI lock file, `check`/`doctor` commands and MCP gateway now report the repository, branch, root path and commit a repository-published snapshot came from.
+- 2a8962e: `fabric instructions push` no longer sends a change again when one of your open proposals already carries it, listing each file it leaves out with that proposal's version and pull request, and a new `--include-proposed` flag sends them anyway.
+- Updated dependencies [bab1886]
+- Updated dependencies [8f45162]
+- Updated dependencies [2a8962e]
+  - @fabricorg/sdk@0.4.1
+  - @fabricorg/sdk-mcp@0.1.9
+
 ## 0.3.7
 
 ### Patch Changes

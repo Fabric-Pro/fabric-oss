@@ -1,5 +1,13 @@
 # @fabricorg/sdk
 
+## 0.4.1
+
+### Patch Changes
+
+- bab1886: Suggesting a change to coding instructions on a repository-backed project now opens a pull request in the connected repository.
+- 8f45162: The published-instructions API, SDK, CLI lock file, `check`/`doctor` commands and MCP gateway now report the repository, branch, root path and commit a repository-published snapshot came from.
+- 2a8962e: `fabric instructions push` no longer sends a change again when one of your open proposals already carries it, listing each file it leaves out with that proposal's version and pull request, and a new `--include-proposed` flag sends them anyway.
+
 ## 0.4.0
 
 ### Minor Changes

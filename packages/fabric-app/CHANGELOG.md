@@ -1,5 +1,115 @@
 # fabric-app
 
+## 1.16.12
+
+### Patch Changes
+
+- fa0436a: Azure DevOps sync now sends a valid work item type lookup, so state polls no longer fail one request for every work item type.
+- c1a2666: The AI assistant now introduces itself as Advisor on both its Direct and Orchestrator engines, and the AI Agents page, agent registration, MCP chat dialog and agent template gallery no longer use the retired "Fabric Loom" and "Nexus" names.
+- 15711a0: Atlas can analyse large repositories without blocking the shared background worker: import resolution now looks candidates up in a prebuilt file-path index instead of scanning every file for each one.
+- eb1d71a: Two Azure Monitor alert rules in the Azure deployment templates now satisfy Azure's scheduled-query rules: the circuit-breaker alert evaluates every five minutes instead of every minute, and the collector-heartbeat alert fires on a single violating period.
+- 98e1511: The AI assistant lists and reads a project's documents and Context-tab sources, and no longer asks approval for read-only searches.
+- 5b07134: Organization admins can clear their organization's prompt override even when their own personal default is in force, and overrides saved for actions no longer listed can now be cleared from the Actions tab.
+- af5d0f1: The Connect your agent dialog now shows the setup instructions from the start with a placeholder key, and creating a key on the same screen fills the real key in, so members who already hold a key can read the steps without minting another.
+- 9f93836: The Coding Instructions tab's "Connect your agent" dialog now offers the CLI setup for repository-sourced projects too: clone the repository, sign in, and run `fabric instructions init` in the checkout to install the session-start hook that reports newer published instructions.
+- 494eec7: A project's Living Memory repository sync can now keep itself up to date: with "Keep in sync automatically" on, Fabric checks the branch every few minutes and also reacts to a GitHub push right away, running the same sync a manual Sync now performs and recording each run with what triggered it.
+- 69245b1: Fix URL context crawl notification links and add web redirects to open the project Context tab directly.
+- ad1e1c1: A project's Living Memory can now be synced from selected folders and files of a repository connected to the project: Sync from repository picks the repository, a branch and the paths to read, checks that the branch and paths exist, and Sync now reads them again at the branch's current commit, creates, updates and removes knowledge files to match, and reports what it kept, what it skipped and why.
+- edbc4db: The Living Memory repository-sync dialog can now list a repository's folders and files for GitHub and Azure DevOps repositories.
+- 63310e1: Turning Living Memory's automatic sync on or off, or re-enabling it after a pause, no longer resets the Context tab to "Not synced yet" or cancels a sync that is already running, and the tab now shows an automatic sync that finishes while it is open.
+- cd3f0c1: A document created from pasted text no longer leaves its project showing "Processing your sources" and "Add context" in progress.
+- 31c421e: The duplicate check now starts while the user is still filling in the form, so creating a work item usually doesn't wait on it.
+- 96f1a76: The duplicate check now gives up after a fixed time so creating a work item never waits on a slow AI provider.
+- 30bb1ff: Long work item titles in the duplicate warning now truncate inside the create dialog instead of running past its edge.
+- fecded9: Creating a work item from the roadmap now checks it against existing items first, and warns before creating a likely duplicate so it can be merged into the existing one instead.
+- 905a29f: Self-hosted AWS deployments now encrypt service-to-service traffic inside the cluster: the Terraform profiles default to node types that encrypt traffic between instances, and `terraform plan` refuses node types that do not.
+- f87d5d3: Features created from a Teams or Slack proposal now show a "Proposed via" strip with a link to the source conversation, like bugs already do.
+- 9de97b0: A coding-instructions file whose frontmatter double-quotes a value containing a `"` or `\` now reads back with those characters decoded, so a lesson or skill title written with correct YAML escaping shows the title itself rather than the escape sequences.
+- eed28ee: Coding instructions synced from a repository now stay current on their own: Fabric picks up a pushed change right after each push to GitHub, and otherwise normally 15 to 20 minutes after a push (longer while the poll works through a backlog or a sync is backing off after failures), publishes a new version only when the files changed, and pauses with a message in the tab if the branch is deleted or the member it publishes as can no longer publish.
+- ecfac82: Coding Instructions now refuses a single-file add or edit whose name is already a folder in the published version, or that sits under a name stored as a file, instead of publishing a version the CLI sync cannot install.
+- c44f8e4: A coding-instructions version that only changes a file's executable bit now gets a new digest, so `sinceDigest` callers and `fabric instructions sync` pick it up instead of reporting no change. The CLI still installs versions published before this change; an older CLI release refuses a newly published version that contains an executable file until it is upgraded.
+- aa7dcff: `fabric instructions doctor` reports whether a machine is set up the way a project's published coding instructions expect, and the MCP gateway gains a `fabric_instruction_checks` tool that returns the same checks so an agent can self-diagnose at session start.
+- 17dc24e: Coding Instructions now exclude `CLAUDE.local.md` at any depth from every snapshot, whether it arrives by folder upload or by repository sync, and the CLI never writes, deletes, or pushes that file, matching how `.claude/settings.local.json` is already kept out. Claude Code reads `CLAUDE.local.md` as machine-personal notes in any directory, so publishing one shared a file that was only ever meant for the machine it was written on.
+- fde7a2f: Coding-instruction uploads and repository syncs never publish the `.fabric/` directory, so a repository that commits the CLI's `.fabric/instructions.lock` still publishes a bundle that `fabric instructions sync` accepts.
+- 85ff6ae: Coding Instructions keeps the repository-sync run history when a project switches back to upload mode or its repository is disconnected, and marks runs that came from a switched-off configuration.
+- af0b2d2: Automatic coding-instructions sync now leases its poll checks on the database clock and dates their schedule writes from it, so a worker whose clock drifts no longer stalls or floods the schedule.
+- d279597: A coding agent can now record a lesson from a session — a mistake the team should not repeat — as a proposed coding-instructions file with the new MCP tool `fabric_add_instruction_lesson`, and `fabric instructions init --lessons` installs a Claude Code Stop hook that asks the developer once per session whether there is one worth keeping.
+- e69988c: A manual "Sync now" of coding instructions that fails no longer pauses or delays the project's automatic repository sync; the failure stays on that run's own row and polling continues on its schedule.
+- 54eae05: The Coding Instructions upload dialog now accepts several folders and individual root files in one upload, lets you choose per folder whether its name stays in the stored paths, and no longer counts excluded files against the upload limit.
+- b3456d3: A coding-instructions repository sync that pauses (missing branch or revoked delegate) no longer keeps a stale next-check time from the poll's expired lease; the schedule is cleared until the sync is configured again.
+- 78240cd: The automatic coding-instructions poll now claims at most 400 syncs in one five-minute tick; a larger backlog is spread over the following ticks, which keeps each run's workflow history small and quick to replay.
+- 1656825: An uncaught coding-instructions automatic-check failure now logs the stage that failed, the sync and project identifiers, and the error's class before the check rethrows it.
+- bab1886: Suggesting a change to coding instructions on a repository-backed project now opens a pull request in the connected repository.
+- 4b3978d: Members who can publish coding instructions can now choose to publish an upload or an added file immediately and have its secret scan run afterwards, with the scan's findings shown on the Coding Instructions page.
+- 8f45162: The published-instructions API, SDK, CLI lock file, `check`/`doctor` commands and MCP gateway now report the repository, branch, root path and commit a repository-published snapshot came from.
+- 8f43ec1: A push that arrives while a coding-instructions repository sync is already running is now re-checked at the next poll tick after that run finishes, instead of waiting for the 15-minute schedule.
+- 2a8962e: `fabric instructions push` no longer sends a change again when one of your open proposals already carries it, listing each file it leaves out with that proposal's version and pull request, and a new `--include-proposed` flag sends them anyway.
+- f2040ef: The `fabric instructions` session hook and `init` now work in a checkout of a project's instruction repository, reporting when the configured branch has newer published instructions instead of refusing.
+- 736f668: A project's coding instructions can now be synced from a branch and folder of a repository connected to the project: Sync from repository checks that the branch exists, reads the files, runs the same secret scan an upload gets and publishes them as a new version, and Sync now reads the branch again and publishes only when something changed.
+- bf32ef8: A repository-backed coding-instructions sync of an unchanged commit now republishes when the published version still contains a path the server no longer publishes, such as a machine-local `CLAUDE.local.md` or a committed `.fabric/instructions.lock`, instead of keeping that version until the next commit.
+- 88087e9: A coding-instructions sync that finishes with a scheduling effect the server does not recognise now records an error and backs off the next check instead of silently skipping the schedule write.
+- 02c9e3d: Coding Instructions repository sync now lets you pick the instructions folder from the branch's file tree instead of typing it.
+- 2a77936: Coding Instructions repository sync now lets you exclude folders under the synced folder from its tree, and shows which folders and files the sync will skip and why.
+- 8ca9875: Coding Instructions repository sync and change proposals now answer "Project not found" to an organization member who cannot see the project, instead of showing or changing its sync or its proposals.
+- 95bb46b: The coding-instructions History list of sync runs now refreshes as soon as the repository sync is reconfigured or switched to upload mode, so each run's "from an earlier configuration" marking is current when History is next opened rather than up to a minute stale.
+- e4c2ab8: A GitHub push that reaches many projects' coding-instructions syncs now starts at most a fixed number of them from the webhook; the rest are picked up by the automatic poll on their own schedule, and the delivery logs how many it left to it.
+- f986401: Clicking the add action on an MCP server tile on the Connections page now opens the configuration dialog directly for that server with parameters pre-filled, or opens the registry search dialog when the server is not an exact match.
+- 2c77329: Azure DevOps connections now start in seconds, so hourly project-management polls no longer time out before reaching Azure DevOps.
+- 224c21d: Meeting Digest now opens to the Calendar view by default instead of the Upcoming list view.
+- 0c174c6: Adding new detail to an existing work item no longer turns characters such as &, < and quotes into HTML codes like &amp; in its description or acceptance criteria.
+- b2e9d2d: Prompt catalog action rows keep all their buttons on the card at phone width, and the "No longer listed" label now matches the groups above it.
+- b6aa1e3: After "Sync now" finishes, the failure list and each test case's latest result update on their own instead of waiting for a page reload.
+- 84fb5d9: After "Sync now", the Testing tab's case results, feature coverage and plan pass rates also update without a reload, even if you switch views mid-sync or the sync takes a while.
+- 0abfe81: The Testing tab stops checking for sync progress as soon as a sync finishes, even when a disconnected repository left an old sync record behind.
+- 4925fb6: The Set as Default dialog's "could not load this prompt's latest version" notice now appears at the top of the dialog, where it is visible on a phone.
+- ef5273c: Prompt bodies are now capped at 50,000 characters, a rename and a body edit save together or not at all, and an empty or over-long body shows an inline error.
+- d5d156e: The reason a prompt body cannot be saved is now always visible in the prompt enhancer, and the prompt preview panel fits on phone screens.
+- e9e0535: The prompt enhancer page no longer hides its title and editor behind the navigation sidebar or the AI assistant panel.
+- 94d1bea: A prompt longer than 50,000 characters can no longer be forked, bound as a default, or nominated, and one saved before the limit can still be renamed in the editor.
+- 1779858: Prompt pages keep what they already loaded when a refresh fails, and the prompt picker says when it could not load instead of claiming no prompts exist.
+- 083f4ef: Prompt pages now say when they could not load and offer a retry, instead of showing an empty library, "not found", or a false "no organization prompt" picture.
+- 424bea8: The prompt preview panel's close button no longer sits on top of the prompt's scope badge.
+- 513ac62: The prompt preview panel now opens at its intended 600px width on desktop instead of a cramped 384px.
+- e6790d9: Restoring a prompt version that is blank or over 50,000 characters is now disabled in the version comparison, with the reason shown beside the button.
+- 2a101a4: Proposals from monitored Teams chats now link back to the chat message they came from, and Teams and Slack proposals show the original conversation.
+- 7f2db3e: Publishing Suite: marking a topic Selected no longer waits for its planning analysis to start, so the status saves as quickly as any other.
+- 725ad1d: A topic's status control in the Publishing Suite list and on the topic page no longer jumps sideways while its "Saving…", "Saved" or "Not saved" note is shown; the note now appears after the control.
+- b0ee27d: Publishing Suite: editors can assign people and scan for topics straight from the topic list, change a topic's status from its own page, and see each status change saved as soon as it is made.
+- ebb2b2c: Publishing Suite: a topic page whose background refresh fails now keeps the topic on screen with Try again, instead of saying it was not found.
+- eac5aef: A double-clicked or retried Start on a QA test run no longer dispatches a second run or spends a second bill.
+- 775d281: Scripted URL assertions no longer record query or fragment values, and a blocked navigation now says which side to check only when it can tell.
+- fba1872: Test runs show per-step evidence for scripted cases, a cost estimate before an Agentic run, and a clearer reason when a navigation is blocked.
+- cfaae31: Test-failure analysis and bugs filed from failures now read expected vs actual correctly and never state a firmer cause than the analysis did.
+- 0d2bd54: Fixes slow parsing of long test-failure messages and keeps an AI-summarized bug cause properly hedged.
+- b511976: Long feature titles no longer push the Remove AI Recommended Items dialog wider than the screen and hide its confirm button.
+- f79e9c2: Repository connections now store a canonical repository URL: user credentials in the URL are stripped (so Azure DevOps Clone-button URLs connect), and URLs carrying a query string, a fragment, or a non-default port are rejected with a clear error, as is a GitHub/GitLab OAuth connection whose repository URL names a different repository than the one selected.
+- 1c24a70: The Pipeline tab is retired: feature recommendations now live in Roadmap, and Features documents are marked deprecated, historical snapshots.
+- 0ba4e6e: Roadmaps on maturation boards stop showing Start Building once an item moves past To Do, and several Roadmap review surfaces read more clearly.
+- d8b6c98: The AI assistant now reports roadmap totals as shown on the page and recognizes declined or closed work items as existing rather than missing.
+- 368b453: When an API call fails with a proxy or platform error page, the browser console now shows the server's own text instead of a bare "Internal Server Error".
+- 6818272: Failed API calls in the browser console now name the request that failed, so a network error is traceable instead of a bare "Failed to fetch".
+- 5ee520b: Security & Accessibility scans of large projects cover up to 200 items again: the AI scanners now read the project content themselves instead of receiving it through the workflow.
+- 3d5e756: A failed Security & Accessibility scan now says which step failed and why, instead of the generic "Activity task failed".
+- 58b79eb: Security & Accessibility scans of large projects no longer fail every time: the scanned content now stays within Temporal's payload limits.
+- 5a838a3: A security scan that fails at a non-AI step no longer blames the AI model: a timed-out step now reads "Gathering the project content timed out." with a retry hint.
+- bd06a26: The work item source strip hides its "Proposed via" label in a narrow story column instead of showing an empty badge.
+- 0885f8a: Phones show the "Reported via" and "Proposed via" label on the work item source strip again.
+- 5ede1ed: The work item source strip keeps its "View source conversation" link readable when the story column is narrow.
+- 7d60418: The source strip on work items stays on one line, so opening the AI assistant no longer shifts the page, and source links are easier to tap.
+- a6dbdd8: QA's "Sync now" now reliably shows the results it ingested — findings, case results, and section badges — without a page reload.
+- 7fa5906: QA's "Sync now" now catches up its results even when a sync runs long, instead of only when it closes cleanly.
+- 23ce09a: Features and bugs approved from a monitored Teams chat now link back to the chat message they came from, and Teams features show that link in their details.
+- 8636460: Fabric AI can read the project's live roadmap, flags cut-off answers with a Continue button, and keeps long chats, images and diagrams working.
+- e7e4ef4: Fabric AI's Simple mode and the ⌘J drawer now run on the same orchestrator engine as the full page, with inline approval for write actions.
+- 97a3215: Fabric AI no longer answers a feature lookup with a bug of the same number, its feature lists match the roadmap, and opened chats keep their history on screen.
+- 790a697: The public API now lets only organization admins and owners create or rename organization prompts, matching the app.
+- 7563ce3: Web deployments now include application source files whose names start with `check-`, which the deployment upload had been skipping.
+- 805e353: Self-hosted AWS deployments now start in production and verify the database's TLS certificate: the Terraform-built database URLs require verified TLS against the Amazon RDS certificate authorities, which the Helm chart now mounts in every pod.
+- 3817e79: Hide the Linear integration from active integration and workflow catalogs behind a feature flag.
+- 7f5d38d: Fix web app logs and RPC failures never reaching Application Insights, and fix the reported AppRoleName defaulting to "unknown_service".
+- 7b8dbc8: The web app now forwards its server logs and unexpected client-side oRPC failures to Application Insights, like every other backend service.
+- 5633e51: A CI run with no test results yet now shows a muted "No test results" badge instead of "0/0 passed", in the run list and in the run detail.
+
 ## 1.16.11
 
 ### Patch Changes
