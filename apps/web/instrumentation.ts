@@ -76,6 +76,11 @@ export async function register() {
 		// every OTHER Azure service already reports to the same workspace.
 		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
 		const { addLogSink } = await import("@repo/logs");
+		// The "app-insights" id makes this idempotent across register()
+		// re-running, and across register() and a route handler resolving
+		// different module instances of @repo/logs -- both now share the
+		// one global registry keyed by this id, so re-registration replaces
+		// rather than piling up duplicate forwarders.
 		addLogSink((record) => {
 			if (record.error) {
 				// `trackException` carries no message field of its own (only
@@ -96,7 +101,7 @@ export async function register() {
 			} else {
 				trackLog(record.level, record.message, record.properties);
 			}
-		});
+		}, "app-insights");
 
 		// Surface a non-fatal warning if the audit-log retention window
 		// is set below the 90-day documented floor. Mirrors the worker
