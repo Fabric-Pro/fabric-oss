@@ -4370,6 +4370,12 @@ type RoadmapCreateStoryDialogResult = {
 		| null;
 };
 
+/** Client-side abort for `checkDuplicate`. Wider than the server's own
+ * `DUPLICATE_CHECK_TIMEOUT_MS` (20s default) so the server's own deadline is
+ * always what actually fires; this is the backstop for everything ahead of
+ * that deadline — connection setup, a stalled response, network latency. */
+const CHECK_DUPLICATE_CLIENT_TIMEOUT_MS = 30_000;
+
 function CreateStoryDialog({
 	open,
 	onOpenChange,
@@ -4571,11 +4577,18 @@ function CreateStoryDialog({
 
 		setIsCheckingDuplicate(true);
 		const outcome = await checkBeforeCreate(() =>
-			orpcClient.projects.stories.checkDuplicate({
-				projectId,
-				organizationId,
-				description: description.trim(),
-			}),
+			orpcClient.projects.stories.checkDuplicate(
+				{
+					projectId,
+					organizationId,
+					description: description.trim(),
+				},
+				{
+					signal: AbortSignal.timeout(
+						CHECK_DUPLICATE_CLIENT_TIMEOUT_MS,
+					),
+				},
+			),
 		);
 		setIsCheckingDuplicate(false);
 
