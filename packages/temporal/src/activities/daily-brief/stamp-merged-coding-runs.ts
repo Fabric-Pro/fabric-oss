@@ -37,14 +37,28 @@ export function normalizePullRequestUrl(url: string): string {
 	const trimmed = url.trim();
 	try {
 		const parsed = new URL(trimmed);
-		let path = parsed.pathname.replace(/\/+$/, "");
+		let path = stripTrailingSlashes(parsed.pathname);
 		if (path.endsWith(".git")) {
 			path = path.slice(0, -4);
 		}
 		return `${parsed.protocol.toLowerCase()}//${parsed.host.toLowerCase()}${path}`;
 	} catch {
-		return trimmed.replace(/\/+$/, "");
+		return stripTrailingSlashes(trimmed);
 	}
+}
+
+/**
+ * `value.replace(/\/+$/, "")` without the regex, which retries every `/` of
+ * an interior run against the end of the string and so goes quadratic on a
+ * long one (CodeQL js/polynomial-redos). The URL comes from the GitHub
+ * collector's payload.
+ */
+function stripTrailingSlashes(value: string): string {
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === 0x2f) {
+		end--;
+	}
+	return value.slice(0, end);
 }
 
 export async function stampMergedCodingRuns(

@@ -6,7 +6,12 @@ export type ParsedFrontmatter = {
 };
 
 const BLOCK = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
-const TOP_LEVEL_KEY = /^([A-Za-z0-9_-]+):\s*(.*)$/;
+// The value starts at its first non-space character. `:\s*(.*)$` let `\s*`
+// and `.*` split a long whitespace run every possible way whenever `.` then
+// met a lone `\r` or U+2028, which is quadratic in the line's length (CodeQL
+// js/polynomial-redos); `\S` gives the run a single split and captures the
+// same value (none when the line ends at the colon).
+const TOP_LEVEL_KEY = /^([A-Za-z0-9_-]+):\s*(\S.*)?$/;
 
 function unquote(value: string): string {
 	const trimmed = value.trim();

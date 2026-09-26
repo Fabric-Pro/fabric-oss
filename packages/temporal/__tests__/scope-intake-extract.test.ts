@@ -287,6 +287,66 @@ describe("scope intake — helpers", () => {
 	});
 });
 
+describe("scope intake — pre-pass on hostile line shapes", () => {
+	// Each line below used to take seconds: a trailing `\s+(.+)$` or a
+	// leading unanchored `\s*` rescanned the whitespace run from every
+	// position once a lone `\r` stopped `.` short of the end.
+	const runs = "\t".repeat(60_000);
+	const timed = (text: string) => {
+		const started = performance.now();
+		const result = prePassScopeDocument(text);
+		return { result, ms: performance.now() - started };
+	};
+
+	it("reads a table row padded with a long whitespace run in linear time", () => {
+		const { result, ms } = timed(`ZAP-01${runs}Probe\rtail  Must`);
+		expect(ms).toBeLessThan(1000);
+		expect(result.rows).toEqual([]);
+		expect(
+			prePassScopeDocument(`ZAP-01${runs}Probe  Must`).rows[0]?.title,
+		).toBe("Probe");
+	});
+
+	it("strips an area header's continuation marker in linear time", () => {
+		const header = "DEVELOPER SCOPE  ·  PHASE 1";
+		const { result, ms } = timed(
+			`${header}\nArea${runs}x\n  ZAP-01  Probe  Must`,
+		);
+		expect(ms).toBeLessThan(1000);
+		expect(result.rows[0]?.area).toBe(`Area${runs}x`);
+		const marked = prePassScopeDocument(
+			`${header}\nPool design ( 2 of 3 )\n  ZAP-01  Probe  Must\n` +
+				`${header}\nSite (survey) (1 OF 2)  \n  ZAP-02  Probe  Must\n` +
+				`${header}\nPool design (draft)\n  ZAP-03  Probe  Must`,
+		);
+		expect(marked.rows.map((r) => r.area)).toEqual([
+			"Pool design ( 2 of 3 )",
+			"Site (survey)",
+			"Pool design (draft)",
+		]);
+	});
+
+	it("reads dependency lines with long whitespace runs in linear time", () => {
+		const section = "DEVELOPER SCOPE  ·  DEPENDENCIES";
+		const loose = timed(`${section}\n1.${runs}ZAP-01 feeds ZAP-02\rx`);
+		expect(loose.ms).toBeLessThan(1000);
+		expect(loose.result.dependencies).toEqual([]);
+		const row = timed(`${section}\n01  ${"a  ".repeat(40_000)}x\ry`);
+		expect(row.ms).toBeLessThan(1000);
+		expect(row.result.dependencies).toHaveLength(1);
+
+		const parsed = prePassScopeDocument(
+			`${section}\n01  Core → all  ZAP-01 feeds ZAP-02\n2)\tZAP-03 feeds ZAP-04`,
+		).dependencies;
+		expect(
+			parsed.map((d) => [d.label, d.upstreamRefs, d.downstreamRefs]),
+		).toEqual([
+			["Core → all", ["ZAP-01"], ["ZAP-02"]],
+			["2", ["ZAP-03"], ["ZAP-04"]],
+		]);
+	});
+});
+
 describe("scope intake — seed proposal", () => {
 	const prePass = prePassScopeDocument(fixture);
 	const proposal = buildSeedProposal({

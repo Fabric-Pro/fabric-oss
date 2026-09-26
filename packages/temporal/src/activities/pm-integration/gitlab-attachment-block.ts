@@ -60,16 +60,49 @@ export function renderAttachmentBlock(input: {
  * block (from an older buggy push) is cleaned up rather than left to grow.
  * An unterminated open marker is left alone — eating to end-of-string would
  * silently delete a user's description.
+ *
+ * The result feeds the PM change-detection digest, so it is exactly what the
+ * global replace of `\n*OPEN[\s\S]*?CLOSE\n*` with `"\n\n"` returned: each
+ * block with the newlines on either side becomes one blank line. It is scanned by hand
+ * because that pattern restarted its leading `\n*` from every newline of a
+ * long run, and rescanned to the end from every open marker with no close
+ * after it — quadratic on a description a third party writes (CodeQL
+ * js/polynomial-redos). An open marker with no close after it means no
+ * later one has a close either, so the scan stops there.
  */
 export function stripAttachmentBlock(description: string): string {
 	if (!description) {
 		return description;
 	}
-	const pattern = new RegExp(
-		`\\n*${ATTACHMENT_BLOCK_OPEN}[\\s\\S]*?${ATTACHMENT_BLOCK_CLOSE}\\n*`,
-		"g",
-	);
-	return description.replace(pattern, "\n\n");
+	let out = "";
+	let kept = 0;
+	for (;;) {
+		const open = description.indexOf(ATTACHMENT_BLOCK_OPEN, kept);
+		if (open === -1) {
+			break;
+		}
+		const close = description.indexOf(
+			ATTACHMENT_BLOCK_CLOSE,
+			open + ATTACHMENT_BLOCK_OPEN.length,
+		);
+		if (close === -1) {
+			break;
+		}
+		let start = open;
+		while (start > kept && description.charCodeAt(start - 1) === 0x0a) {
+			start--;
+		}
+		let end = close + ATTACHMENT_BLOCK_CLOSE.length;
+		while (
+			end < description.length &&
+			description.charCodeAt(end) === 0x0a
+		) {
+			end++;
+		}
+		out += `${description.slice(kept, start)}\n\n`;
+		kept = end;
+	}
+	return out + description.slice(kept);
 }
 
 export function appendAttachmentBlock(
@@ -79,5 +112,7 @@ export function appendAttachmentBlock(
 	if (!block) {
 		return description;
 	}
-	return `${description.replace(/\s+$/, "")}\n\n${block}`;
+	// `trimEnd()` removes exactly what `/\s+$/` did, without retrying every
+	// whitespace run in the description against the end.
+	return `${description.trimEnd()}\n\n${block}`;
 }
