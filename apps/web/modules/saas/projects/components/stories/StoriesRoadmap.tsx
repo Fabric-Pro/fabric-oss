@@ -223,6 +223,7 @@ import { StoryKindIcon } from "./StoryKindIcon";
 import { StoryTile } from "./StoryTile";
 import { useSyncLogDeepLink } from "./sync-log-deep-link";
 import { useConsumeSearchParam } from "./use-consume-search-param";
+import { useDuplicateCheckPrefetch } from "./useDuplicateCheckPrefetch";
 
 // The AI Backlog chat pulls in the full CopilotKit runtime (react-core +
 // react-ui). Load it lazily on first open so it stays out of the roadmap's
@@ -4370,12 +4371,6 @@ type RoadmapCreateStoryDialogResult = {
 		| null;
 };
 
-/** Client-side abort for `checkDuplicate`. Wider than the server's own
- * `DUPLICATE_CHECK_TIMEOUT_MS` (20s default) so the server's own deadline is
- * always what actually fires; this is the backstop for everything ahead of
- * that deadline — connection setup, a stalled response, network latency. */
-const CHECK_DUPLICATE_CLIENT_TIMEOUT_MS = 30_000;
-
 function CreateStoryDialog({
 	open,
 	onOpenChange,
@@ -4450,12 +4445,6 @@ function CreateStoryDialog({
 		}
 	}, [duplicateResult]);
 
-	useEffect(() => {
-		if (!open) {
-			setDuplicateResult(null);
-		}
-	}, [open]);
-
 	// Preflight: verify an AI provider is configured for the current context.
 	// The server-side feature-creation flow eventually calls the CopilotKit
 	// runtime at /api/copilotkit which returns `{ code: "AI_GATEWAY_MISSING" }`
@@ -4463,6 +4452,18 @@ function CreateStoryDialog({
 	// 400 in the dev console (or a bubbled CopilotKit `useAgent` error). We
 	// surface a clear inline Alert *before* the user spends time on the form.
 	const { organizationId, basePath } = useOrganizationContext();
+	const duplicateCheckPrefetch = useDuplicateCheckPrefetch({
+		projectId,
+		organizationId,
+	});
+
+	useEffect(() => {
+		if (!open) {
+			setDuplicateResult(null);
+			duplicateCheckPrefetch.reset();
+		}
+	}, [open, duplicateCheckPrefetch]);
+
 	const { data: aiConfigStatus, isLoading: isLoadingAiConfig } = useQuery({
 		queryKey: ["aiConfigStatus", organizationId],
 		queryFn: async () =>
@@ -4562,6 +4563,7 @@ function CreateStoryDialog({
 
 			resetFormState();
 			setDuplicateResult(null);
+			duplicateCheckPrefetch.reset();
 		} catch {
 			toast.error(tCreate("titleGenerationFailed"), { id: toastId });
 		} finally {
@@ -4576,19 +4578,8 @@ function CreateStoryDialog({
 		}
 
 		setIsCheckingDuplicate(true);
-		const outcome = await checkBeforeCreate(() =>
-			orpcClient.projects.stories.checkDuplicate(
-				{
-					projectId,
-					organizationId,
-					description: description.trim(),
-				},
-				{
-					signal: AbortSignal.timeout(
-						CHECK_DUPLICATE_CLIENT_TIMEOUT_MS,
-					),
-				},
-			),
+		const outcome = await checkBeforeCreate(
+			duplicateCheckPrefetch.getCheckRun(description),
 		);
 		setIsCheckingDuplicate(false);
 
@@ -4646,6 +4637,7 @@ function CreateStoryDialog({
 							});
 							resetFormState();
 							setDuplicateResult(null);
+							duplicateCheckPrefetch.reset();
 							onOpenChange(false);
 							router.push(
 								buildStoryDetailsRoute(
@@ -4700,7 +4692,17 @@ function CreateStoryDialog({
 							id="create-description"
 							placeholder="Describe what's needed or what's broken…"
 							value={description}
-							onChange={(e) => setDescription(e.target.value)}
+							onChange={(e) => {
+								setDescription(e.target.value);
+								duplicateCheckPrefetch.onDescriptionChange(
+									e.target.value,
+								);
+							}}
+							onBlur={(e) =>
+								duplicateCheckPrefetch.onDescriptionBlur(
+									e.target.value,
+								)
+							}
 							rows={3}
 							required
 						/>
