@@ -186,6 +186,11 @@ import { BacklogSessionHistoryDialog } from "./BacklogSessionHistoryDialog";
 import { BulkUndoToast } from "./BulkUndoToast";
 import { ClassifyTracksButton } from "./ClassifyTracksButton";
 import { CreateStoryDocAttachmentsField } from "./CreateStoryDocAttachmentsField";
+import {
+	CreateStoryDuplicateWarning,
+	checkBeforeCreate,
+	type DuplicateWarningResult,
+} from "./CreateStoryDuplicateWarning";
 import { ExportEstimateButton } from "./ExportEstimateButton";
 import { pullLifecycleSuffix } from "./lib/pull-lifecycle-suffix";
 import { PendingBacklogProposalsInbox } from "./PendingBacklogProposalsInbox";
@@ -4418,6 +4423,32 @@ function CreateStoryDialog({
 	// flight (Codex review of PR 1: double-submit guard).
 	const [isOrchestrating, setIsOrchestrating] = useState(false);
 	const dialogContentRef = useRef<HTMLDivElement>(null);
+	const descriptionRef = useRef<HTMLTextAreaElement>(null);
+	const router = useRouter();
+	const queryClient = useQueryClient();
+
+	// Fizzy #2180: the duplicate-detection warning step. Form state
+	// (description, attachments, etc.) is left untouched so "Back" restores
+	// it exactly.
+	const [duplicateResult, setDuplicateResult] =
+		useState<DuplicateWarningResult | null>(null);
+	const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false);
+	// Set right before a "Back" that will restore the form, so the effect
+	// below focuses the description textarea only for that transition — not
+	// on the dialog's initial open, when Radix already handles focus.
+	const focusDescriptionPending = useRef(false);
+	useEffect(() => {
+		if (!duplicateResult && focusDescriptionPending.current) {
+			focusDescriptionPending.current = false;
+			descriptionRef.current?.focus();
+		}
+	}, [duplicateResult]);
+
+	useEffect(() => {
+		if (!open) {
+			setDuplicateResult(null);
+		}
+	}, [open]);
 
 	// Preflight: verify an AI provider is configured for the current context.
 	// The server-side feature-creation flow eventually calls the CopilotKit
@@ -4460,12 +4491,21 @@ function CreateStoryDialog({
 		setSelectedPromptVersionId(undefined);
 	}, [draftingStage]);
 
-	const handleSubmit = async (e: React.FormEvent) => {
-		e.preventDefault();
-		if (!description.trim() || isAiNotConfigured) {
-			return;
-		}
+	const resetFormState = () => {
+		setDescription("");
+		setPriority("P2_MEDIUM");
+		setSize("");
+		setPendingFiles([]);
+		setPendingDocs([]);
+		setDraftingStage("PLACEHOLDER");
+		setSelectedPromptId(undefined);
+		setSelectedPromptVersionId(undefined);
+	};
 
+	// `checkFailed` adds a description line to the SAME success toast (never a
+	// second toast) so "could not check" stays distinguishable from "checked,
+	// found nothing" without adding UI chrome to the happy path.
+	const runCreate = async (checkFailed: boolean) => {
 		// F-171: NEVER submit promptId/promptVersionId from this dialog.
 		// The PromptSelector below is hardcoded to storyKind=FEATURE
 		// (visible to the user for transparency), but the classifier may
@@ -4496,7 +4536,12 @@ function CreateStoryDialog({
 		setIsOrchestrating(true);
 		try {
 			const result = await onSubmit(payload, pendingFiles, pendingDocs);
-			toast.success(tCreate("titleGenerated"), { id: toastId });
+			toast.success(tCreate("titleGenerated"), {
+				id: toastId,
+				...(checkFailed
+					? { description: tCreate("checkFailedToastLine") }
+					: {}),
+			});
 
 			// Wire-shape tolerance: helper emits kebab-case, Prisma enum emits
 			// SCREAMING_SNAKE. Accept both so a future procedure-return change
@@ -4509,19 +4554,36 @@ function CreateStoryDialog({
 				toast.warning(tCreate("titleInsufficient"));
 			}
 
-			setDescription("");
-			setPriority("P2_MEDIUM");
-			setSize("");
-			setPendingFiles([]);
-			setPendingDocs([]);
-			setDraftingStage("PLACEHOLDER");
-			setSelectedPromptId(undefined);
-			setSelectedPromptVersionId(undefined);
+			resetFormState();
+			setDuplicateResult(null);
 		} catch {
 			toast.error(tCreate("titleGenerationFailed"), { id: toastId });
 		} finally {
 			setIsOrchestrating(false);
 		}
+	};
+
+	const handleSubmit = async (e: React.FormEvent) => {
+		e.preventDefault();
+		if (!description.trim() || isAiNotConfigured) {
+			return;
+		}
+
+		setIsCheckingDuplicate(true);
+		const outcome = await checkBeforeCreate(() =>
+			orpcClient.projects.stories.checkDuplicate({
+				projectId,
+				organizationId,
+				description: description.trim(),
+			}),
+		);
+		setIsCheckingDuplicate(false);
+
+		if (outcome.kind === "warn") {
+			setDuplicateResult(outcome.result);
+			return;
+		}
+		await runCreate(outcome.checkFailed);
 	};
 
 	return (
@@ -4539,7 +4601,51 @@ function CreateStoryDialog({
 					</DialogDescription>
 				</DialogHeader>
 
-				{isAiNotConfigured && (
+				{duplicateResult && (
+					<CreateStoryDuplicateWarning
+						result={duplicateResult}
+						projectId={projectId}
+						organizationId={organizationId}
+						basePath={basePath}
+						description={description.trim()}
+						files={pendingFiles}
+						docAttachments={pendingDocs}
+						deps={{
+							uploadStoryImage,
+							uploadStoryAttachment,
+							updateStoryMutateAsync: (input) =>
+								orpcClient.projects.stories.update(input),
+						}}
+						onBack={() => {
+							focusDescriptionPending.current = true;
+							setDuplicateResult(null);
+						}}
+						onCreateAnyway={() => {
+							setDuplicateResult(null);
+							void runCreate(false);
+						}}
+						onEnriched={(storyId) => {
+							queryClient.invalidateQueries({
+								queryKey: getStoriesQueryKey(
+									projectId,
+									organizationId,
+								),
+							});
+							resetFormState();
+							setDuplicateResult(null);
+							onOpenChange(false);
+							router.push(
+								buildStoryDetailsRoute(
+									basePath,
+									projectId,
+									storyId,
+								),
+							);
+						}}
+					/>
+				)}
+
+				{isAiNotConfigured && !duplicateResult && (
 					<Alert
 						variant="error"
 						data-testid="ai-provider-required-alert"
@@ -4567,12 +4673,17 @@ function CreateStoryDialog({
 					</Alert>
 				)}
 
-				<form onSubmit={handleSubmit} className="space-y-4 min-w-0">
+				<form
+					onSubmit={handleSubmit}
+					className="space-y-4 min-w-0"
+					hidden={duplicateResult !== null}
+				>
 					<div className="space-y-2">
 						<Label htmlFor="create-description">
 							{tCreate("descriptionLabel")}
 						</Label>
 						<Textarea
+							ref={descriptionRef}
 							id="create-description"
 							placeholder="Describe what's needed or what's broken…"
 							value={description}
@@ -4586,26 +4697,34 @@ function CreateStoryDialog({
 						files={pendingFiles}
 						onChange={setPendingFiles}
 						onValidationError={(msg) => toast.error(msg)}
-						disabled={isSubmitting || isOrchestrating}
+						disabled={
+							isSubmitting ||
+							isOrchestrating ||
+							isCheckingDuplicate
+						}
 					/>
 
 					<CreateStoryDocAttachmentsField
 						items={pendingDocs}
 						onChange={setPendingDocs}
 						onValidationError={(msg) => toast.error(msg)}
-						disabled={isSubmitting || isOrchestrating}
+						disabled={
+							isSubmitting ||
+							isOrchestrating ||
+							isCheckingDuplicate
+						}
 					/>
 
 					<div className="space-y-2">
 						<Label>Prompt (default for features)</Label>
 						{/* F-171: kind isn't known until the classifier runs server-side.
-						    This selector only manages the FEATURE-stage default
-						    binding (via "Bind as default") — it does NOT drive this
-						    particular submission. The server-side classifier picks
-						    the BUG or FEATURE prompt at submit time based on the
-						    description. Power-user prompt overrides for this story
-						    happen post-creation in the story workspace where kind is
-						    known. */}
+				    This selector only manages the FEATURE-stage default
+				    binding (via "Bind as default") — it does NOT drive this
+				    particular submission. The server-side classifier picks
+				    the BUG or FEATURE prompt at submit time based on the
+				    description. Power-user prompt overrides for this story
+				    happen post-creation in the story workspace where kind is
+				    known. */}
 						<PromptSelector
 							agentName="project_document_generator"
 							documentType={draftingStage}
@@ -4729,11 +4848,17 @@ function CreateStoryDialog({
 							disabled={
 								isSubmitting ||
 								isOrchestrating ||
+								isCheckingDuplicate ||
 								!description.trim() ||
 								isAiNotConfigured
 							}
 						>
-							{isSubmitting || isOrchestrating ? (
+							{isCheckingDuplicate ? (
+								<>
+									<Loader2Icon className="mr-2 size-4 motion-safe:animate-spin" />
+									Checking for similar work items…
+								</>
+							) : isSubmitting || isOrchestrating ? (
 								<>
 									<Loader2Icon className="mr-2 size-4 animate-spin motion-safe:animate-spin" />
 									{selectedPromptId

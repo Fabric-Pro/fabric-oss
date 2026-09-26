@@ -523,6 +523,7 @@ import { listAttachmentsProcedure } from "./procedures/stories/attachments/list-
 import { promoteAttachmentProcedure } from "./procedures/stories/attachments/promote-attachment";
 import { removeAttachmentProcedure } from "./procedures/stories/attachments/remove-attachment";
 import { setAttachmentDesignationProcedure } from "./procedures/stories/attachments/set-attachment-designation";
+import { checkDuplicateProcedure } from "./procedures/stories/check-duplicate";
 import { classificationProgressProcedure } from "./procedures/stories/classification-progress";
 import { classifyTracksProcedure } from "./procedures/stories/classify-tracks";
 import {
@@ -1756,6 +1757,10 @@ export const projectsRouter = {
 		listMeetingReferences: listMeetingReferencesProcedure,
 		listDuplicates: listDuplicatesProcedure,
 		scanDuplicates: scanDuplicatesProcedure,
+		// Fizzy #2180: the same duplicate-detection engine the feature-proposal
+		// review flow uses, run against one manually typed description before
+		// the roadmap "Add" dialog creates it.
+		checkDuplicate: checkDuplicateProcedure,
 		semanticSearch: semanticSearchProcedure,
 		proposeDuplicateMerge: proposeDuplicateMergeProcedure,
 		mergeDuplicate: mergeDuplicateProcedure,
