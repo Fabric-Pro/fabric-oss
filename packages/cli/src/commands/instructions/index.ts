@@ -90,6 +90,7 @@ import {
 	assertValidManifest,
 	maxArchiveBytes,
 } from "../../lib/instructions/manifest.js";
+import { lookUpOpenProposals } from "../../lib/instructions/open-proposals.js";
 import {
 	computeSyncPlan,
 	describeLedgerDrift,
@@ -105,8 +106,10 @@ import {
 	waitForPullRequest,
 } from "../../lib/instructions/pull-request-wait.js";
 import {
+	type AlreadyProposed,
 	computePushPlan,
 	MAX_PUSH_CHANGES,
+	setAsideProposed,
 } from "../../lib/instructions/push.js";
 import {
 	resolveDestinationRoot,
@@ -293,6 +296,10 @@ export function buildInstructionsCommand(): Command {
 			"--no-wait",
 			"Return as soon as the suggestion is accepted, without waiting for its pull request",
 		)
+		.option(
+			"--include-proposed",
+			"Also send changes your open proposals already carry (left out by default)",
+		)
 		.option("--dry-run", "Print the change set and send nothing")
 		.option("--format <format>", "Output format: text|json")
 		.action(async function (
@@ -302,6 +309,7 @@ export function buildInstructionsCommand(): Command {
 				publish?: boolean;
 				message?: string;
 				wait?: boolean;
+				includeProposed?: boolean;
 				dryRun?: boolean;
 			},
 		) {
@@ -1492,6 +1500,27 @@ interface PushOutcome {
 	put: string[];
 	deleted: string[];
 	unchanged: number;
+	/**
+	 * Changes left out because one of the caller's open proposals already
+	 * carries them (Fizzy #2739), each with the newest proposal that does.
+	 */
+	alreadyProposed: Array<{
+		path: string;
+		action: "put" | "delete";
+		snapshotId: string;
+		version: number;
+		pullRequestState: string | null;
+		pullRequestUrl: string | null;
+	}>;
+	/**
+	 * Whether open proposals were checked: `skipped` under
+	 * `--include-proposed`, `unavailable` (with the reason) when the lookup
+	 * failed and every change was sent.
+	 */
+	openProposalCheck: {
+		state: "checked" | "skipped" | "unavailable";
+		reason: string | null;
+	};
 	/** Null on a dry run; otherwise what the server made of it. */
 	snapshotId: string | null;
 	version: number | null;
@@ -1554,6 +1583,15 @@ interface PushOutcome {
  * to it — and a command that read its ledger on trust would read and upload
  * whatever was added. See `computePushPlan`.
  *
+ * A change one of the caller's OPEN proposals already carries — same path,
+ * same bytes — is left out and reported (Fizzy #2739): the lock names the
+ * published version, which a proposal does not move, so without this a
+ * second session on the same checkout re-sent the first one's change.
+ * `--publish` follows the same rule: publishing a change that is waiting for
+ * review would skip that review, under this push's name. `--include-proposed`
+ * sends everything, as before. When the lookup is unavailable everything is
+ * sent with a warning; see `lib/instructions/open-proposals.ts`.
+ *
  * The lock is NOT rewritten, on any outcome, `--publish` included. A proposal
  * changes nothing about what is published, so a lock claiming otherwise would
  * make the next `sync` believe this checkout already held a version nobody has
@@ -1570,6 +1608,7 @@ async function runPush(
 		publish?: boolean;
 		message?: string;
 		wait?: boolean;
+		includeProposed?: boolean;
 		dryRun?: boolean;
 	},
 	format: OutputFormat,
@@ -1627,19 +1666,48 @@ async function runPush(
 		);
 	}
 
-	const plan = await computePushPlan({
+	const computed = await computePushPlan({
 		root,
 		lock,
 		manifest: published.manifest ?? [],
 		added: opts.add,
 	});
 
-	if (plan.changes.length === 0) {
+	if (computed.changes.length === 0) {
 		throw new CliFailure(
 			`Nothing to push: every file the last sync wrote still matches version ${lock.snapshotVersion}. Add a new file with --add <path> if you meant to suggest one.`,
 			7,
 		);
 	}
+
+	// What the caller's open proposals already carry is left out (Fizzy
+	// #2739). Asked only once there is something to send, and never under
+	// --include-proposed, which sends everything exactly as before.
+	let plan = computed;
+	let alreadyProposed: AlreadyProposed[] = [];
+	let openProposalCheck: PushOutcome["openProposalCheck"] = {
+		state: "skipped",
+		reason: null,
+	};
+	if (!opts.includeProposed) {
+		const lookup = await lookUpOpenProposals(client, opts.project, {
+			org: orgSlugFor(opts),
+		});
+		if (lookup.kind === "found") {
+			({ plan, alreadyProposed } = setAsideProposed(
+				computed,
+				lookup.proposals,
+				lock.snapshotId,
+			));
+			openProposalCheck = { state: "checked", reason: null };
+		} else {
+			openProposalCheck = { state: "unavailable", reason: lookup.reason };
+			process.stderr.write(
+				`Could not check your open proposals (${lookup.reason}), so nothing was left out: a change one of them already carries ${opts.dryRun ? "would be" : "is"} sent again.\n`,
+			);
+		}
+	}
+
 	if (plan.changes.length > MAX_PUSH_CHANGES) {
 		throw new CliFailure(
 			`Too many changes to push (${plan.changes.length} > ${MAX_PUSH_CHANGES}). A change set this large is a replacement rather than an edit — upload the folder from the project's Coding Instructions tab, which is also the only path that re-reads the project's exclusion rules.`,
@@ -1661,6 +1729,15 @@ async function runPush(
 			.filter((entry) => entry.action === "delete")
 			.map((entry) => entry.path),
 		unchanged: plan.unchanged.length,
+		alreadyProposed: alreadyProposed.map((entry) => ({
+			path: entry.path,
+			action: entry.action,
+			snapshotId: entry.proposal.snapshotId,
+			version: entry.proposal.version,
+			pullRequestState: entry.proposal.pullRequest?.state ?? null,
+			pullRequestUrl: entry.proposal.pullRequest?.url ?? null,
+		})),
+		openProposalCheck,
 		snapshotId: null,
 		version: null,
 		proposalStatus: null,
@@ -1669,7 +1746,23 @@ async function runPush(
 		pullRequest: null,
 	};
 
-	if (!opts.dryRun) {
+	// Everything left was already proposed. For a proposal that is the state
+	// the developer wanted, and what repeating an identical push used to
+	// answer, so it is reported and exits 0; a publish has not done what it
+	// was asked, as "Nothing to push" has not, and exits 7 — after printing
+	// the outcome under --format json, so a script still gets
+	// `alreadyProposed` and `openProposalCheck` saying why.
+	if (plan.changes.length === 0 && opts.publish) {
+		if (format === "json") {
+			printOutput(outcome, { format: "json" });
+		}
+		throw new CliFailure(
+			`Nothing new to publish: every change here is already in an open proposal of yours (${proposalReferences(alreadyProposed)}), and publishing it from here would skip that proposal's review. Add --include-proposed to publish it anyway; nothing was sent.`,
+			7,
+		);
+	}
+
+	if (!opts.dryRun && plan.changes.length > 0) {
 		try {
 			// Two methods, not one method with a flag: they are two routes
 			// behind two scopes, and choosing between them here is what makes
@@ -2002,12 +2095,27 @@ function pushVerdict(outcome: PushOutcome): string {
 }
 
 function reportPush(outcome: PushOutcome): void {
+	// Only reachable for a proposal whose every change is already proposed:
+	// nothing was sent, on a dry run or not.
+	if (outcome.put.length === 0 && outcome.deleted.length === 0) {
+		line(
+			"Nothing new to push: every change here is already in your open proposals.",
+		);
+		reportAlreadyProposed(outcome);
+		return;
+	}
+
 	const prefix = outcome.dryRun ? "Would send" : "Sent";
+	const proposed =
+		outcome.alreadyProposed.length > 0
+			? `, ${outcome.alreadyProposed.length} already proposed`
+			: "";
 	line(
-		`${prefix} ${outcome.put.length} changed file(s) and ${outcome.deleted.length} deletion(s) against version ${outcome.baseVersion} (${outcome.unchanged} unchanged).`,
+		`${prefix} ${outcome.put.length} changed file(s) and ${outcome.deleted.length} deletion(s) against version ${outcome.baseVersion} (${outcome.unchanged} unchanged${proposed}).`,
 	);
 	listPaths("changed", outcome.put);
 	listPaths("deleted", outcome.deleted);
+	reportAlreadyProposed(outcome);
 
 	if (outcome.dryRun) {
 		line(
@@ -2023,6 +2131,61 @@ function reportPush(outcome: PushOutcome): void {
 		outcome.publish
 			? `Your lock was not changed: it still names version ${outcome.baseVersion}, which is what \`fabric instructions sync\` compares against.`
 			: "Your lock was not changed: it still names the published version, which is what `fabric instructions sync` compares against.",
+	);
+}
+
+/**
+ * Which open proposal carries a change, in the words a developer can find it
+ * by: its version, and its pull request when it has one.
+ */
+function proposalReference(proposal: {
+	version: number;
+	pullRequestState: string | null;
+	pullRequestUrl: string | null;
+}): string {
+	if (proposal.pullRequestUrl) {
+		return `version ${proposal.version}, pull request ${proposal.pullRequestUrl}`;
+	}
+	if (proposal.pullRequestState) {
+		return `version ${proposal.version}, whose pull request is being opened`;
+	}
+	return `version ${proposal.version}`;
+}
+
+/** Every proposal named in `alreadyProposed`, once each, newest first. */
+function proposalReferences(alreadyProposed: AlreadyProposed[]): string {
+	const byVersion = new Map<number, string>();
+	for (const entry of alreadyProposed) {
+		byVersion.set(
+			entry.proposal.version,
+			proposalReference({
+				version: entry.proposal.version,
+				pullRequestState: entry.proposal.pullRequest?.state ?? null,
+				pullRequestUrl: entry.proposal.pullRequest?.url ?? null,
+			}),
+		);
+	}
+	return [...byVersion.entries()]
+		.sort(([a], [b]) => b - a)
+		.map(([, reference]) => reference)
+		.join("; ");
+}
+
+function reportAlreadyProposed(outcome: PushOutcome): void {
+	if (outcome.alreadyProposed.length === 0) {
+		return;
+	}
+	line("  already proposed, not sent:");
+	for (const entry of outcome.alreadyProposed) {
+		const what = entry.action === "delete" ? "deletion already" : "already";
+		line(
+			`    ${entry.path} — ${what} proposed in ${proposalReference(entry)}`,
+		);
+	}
+	line(
+		outcome.publish
+			? "Left out because an open proposal of yours already carries the same change, and publishing it from here would skip that proposal's review; add --include-proposed to publish it anyway. Once this version publishes, that proposal is stated against an older version and can no longer be approved: run `fabric instructions sync`, then push again to propose those files afresh."
+			: "Left out because an open proposal of yours already carries the same change; add --include-proposed to send it anyway.",
 	);
 }
 

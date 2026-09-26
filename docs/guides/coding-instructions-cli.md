@@ -153,7 +153,7 @@ Commander resolves it: `fabric --format table instructions check` beats
 `FABRIC_FORMAT=json`, because the environment is the root option's default and
 an explicit flag replaces a default.
 
-### `fabric instructions push --project <id> [--dest <dir>] [--add <path>] [--publish] [--dry-run]`
+### `fabric instructions push --project <id> [--dest <dir>] [--add <path>] [--publish] [--include-proposed] [--dry-run]`
 
 Suggests this checkout's edits back to the project. By default it opens a
 **proposal**: nothing changes for anybody reading the instructions until
@@ -164,7 +164,7 @@ sends the same change set as a new version with nobody in between — see
 
 The diff is computed against `<dest>/.fabric/instructions.lock`, so `sync` has
 to have run here first — without that ledger there is nothing to diff against,
-and the command says so rather than guessing. Three outcomes per locked path,
+and the command says so rather than guessing. Four outcomes per locked path,
 and nothing else is ever sent:
 
 | Outcome | What happened |
@@ -172,6 +172,46 @@ and nothing else is ever sent:
 | sent as a change | the local bytes differ from the hash the lock recorded |
 | sent as a deletion | the lock names the file and nothing is there any more |
 | skipped | the local bytes still equal the lock |
+| left out as already proposed | one of your open proposals already makes this change: the same path with the same bytes, or the same deletion |
+
+**A change you have already proposed is not sent again.** The lock names the
+*published* version, and a proposal does not change what is published, so the
+diff alone cannot tell an edit you already proposed from a new one. Without
+this, a second session on the same checkout that edits another file would send
+the first session's change as well, and its proposal (or pull request) would
+carry that change twice. So before sending, `push` asks the server for your own
+open proposals on the project (`GET .../instructions/proposals/open`, hashes
+only) and leaves out every change one of them already carries. Each one is
+listed as `<path> — already proposed in version <N>`, followed by the pull
+request's URL when the proposal has one; `--dry-run` lists them the same way.
+A file whose bytes differ from what the proposal carries is a new edit and is
+sent as usual.
+
+Only a proposal that can still reach review counts. It has to be stated
+against the version your lock names, its checks have to be running or passed,
+and on a repository-sourced project its pull request has to be queued, opening
+or open. A proposal against an older version can no longer be approved, and a
+failed, rejected or withdrawn one lands nothing, so their changes are sent
+again. That costs a duplicate, whereas leaving them out could lose the edit.
+
+`--include-proposed` sends every change, including ones your open proposals
+already carry, without asking the server. If everything was already proposed,
+a proposal push sends nothing, says so, and exits 0, because what you wanted
+is already under review. The same case under `--publish` exits 7, because
+nothing was published.
+
+If the lookup cannot be made (a server that does not offer it yet answers
+404, or the request fails or takes longer than 15 seconds), `push` prints
+`Could not check your open proposals (<reason>)` on stderr and sends every
+change. The server handles a duplicate correctly, since each proposal is
+diffed against its own base, so the worst case is the extra copy this check
+exists to avoid, never a lost edit. The answer is read strictly: a
+malformed one, or one naming a proposal or pull-request state this CLI does
+not know, counts as unavailable as a whole rather than being read in part.
+`--format json` reports what was left out in `alreadyProposed` and whether the
+check ran in `openProposalCheck` (`checked`, `skipped` under
+`--include-proposed`, or `unavailable` with the reason). A `--publish` whose
+every change was already proposed prints that JSON too, and then exits 7.
 
 **A file the lock does not name is sent only when you name it**, with `--add
 <path>` (repeatable). That is the one case the ledger cannot discover, and the
@@ -217,6 +257,15 @@ version that landed.
 `--dry-run` prints the change set and sends nothing; with `--publish` it says
 so, because the two do different things.
 
+**`--publish` leaves out already-proposed changes too.** Publishing a change
+that is still waiting for review would skip that review and ship it in this
+push's version, so the rule is the same in both modes. Once the version you publish
+lands, the proposal that carries the left-out change is stated against an
+older version and can no longer be approved; run `fabric instructions sync`
+(which keeps your local edits) and push again to propose that change against
+the new version. Add `--include-proposed` to publish it along with everything
+else.
+
 **Nothing is read until the lock is verified against the server.** `push` fetches
 the published manifest first and refuses before opening a single file if the
 lock names a version that is no longer published, or if its ledger is not that
@@ -238,9 +287,18 @@ Two refusals are worth recognising:
   while you were working. The server refuses rather than rebasing your change
   onto a version you never saw (the spec's `PULL_FIRST` rule; there is no
   server-side merge in any version). Run `sync`, re-apply the edit, push again.
-- *the project's instructions come from its repository* — source of truth is
-  `REPOSITORY`, so the files are changed in git and mirrored into Fabric. Commit
-  and push to the repository instead. Nothing was sent.
+- *the project's instructions come from its repository* — `--publish` on a
+  project whose source of truth is `REPOSITORY`, where the files are changed in
+  git and mirrored into Fabric. Commit and push to the repository instead.
+  Nothing was sent.
+
+On a repository-sourced project a push without `--publish` is a suggestion
+that Fabric opens as a pull request in the repository once the files pass
+their checks, and it is reviewed and merged there. The already-proposed rule
+applies to those suggestions as well, and the line for a left-out change
+names the pull request (`already proposed in version <N>, pull request
+<url>`). That keeps a second session's pull request free of the first
+session's change.
 
 ### `fabric instructions init --project <id> --tool <claude-code|codex> [--dest <dir>] [--apply] [--lessons]`
 
@@ -928,7 +986,8 @@ the checks.
 | CLI commands | `packages/cli/src/commands/instructions/index.ts` |
 | Filesystem modules | `packages/cli/src/lib/instructions/` |
 | The one guarded writer | `packages/cli/src/lib/instructions/safe-write.ts` |
-| Push plan (local diff against the lock) | `packages/cli/src/lib/instructions/push.ts` |
+| Push plan (local diff against the lock, and what open proposals already carry) | `packages/cli/src/lib/instructions/push.ts` |
+| Push's open-proposal lookup (deadline, warn-and-send) | `packages/cli/src/lib/instructions/open-proposals.ts` |
 | `doctor` checks, PATH lookup, `.mcp.json` reader | `packages/cli/src/lib/instructions/doctor.ts`, `path-lookup.ts`, `mcp-config.ts` |
 | Repository-sourced checkouts: read-only git questions, remote URL matching, classification and report lines | `packages/cli/src/lib/instructions/git.ts`, `repository-identity.ts`, `checkout.ts` |
 | Shared report vocabulary and declaration parser | `packages/cli/src/lib/instructions/checks.ts`, byte-identical after its header to `apps/web/modules/saas/mcp/lib/gateway/instruction-checks.ts`; `packages/cli/__tests__/checks-agree-with-gateway.test.ts` fails on any divergence |
@@ -943,7 +1002,7 @@ Three scopes, one per authority:
 
 | Scope | Reaches | Live permission re-checked per call |
 |---|---|---|
-| `instructions:read` | `GET .../instructions/published`, `POST .../published/download` — `check`, `sync`, `init`, `doctor`, and the MCP tool `fabric_instruction_checks` | `INSTRUCTION_READ` |
+| `instructions:read` | `GET .../instructions/published`, `POST .../published/download` — `check`, `sync`, `init`, `doctor`, and the MCP tool `fabric_instruction_checks`; `GET .../instructions/proposals/open` — the open-proposal check `push` makes before sending | `INSTRUCTION_READ` |
 | `instructions:write` | `POST .../instructions/changes` — `push`, and the MCP tools `fabric_propose_project_instruction_change` and `fabric_add_instruction_lesson` | `INSTRUCTION_READ` |
 | `instructions:publish` | `POST .../instructions/versions` — `push --publish` | `INSTRUCTION_CREATE` |
 

@@ -15,10 +15,16 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { InstructionManifestEntry } from "@fabricorg/sdk";
+import type {
+	InstructionManifestEntry,
+	OpenInstructionProposal,
+} from "@fabricorg/sdk";
 import { describe, expect, it } from "vitest";
 import type { InstructionsLock } from "../src/lib/instructions/lock.js";
-import { computePushPlan } from "../src/lib/instructions/push.js";
+import {
+	computePushPlan,
+	setAsideProposed,
+} from "../src/lib/instructions/push.js";
 import { resolveExistingRoot } from "../src/lib/instructions/safe-write.js";
 
 function sha256(text: string): string {
@@ -109,7 +115,12 @@ describe("the push plan against the lock's ledger", () => {
 			},
 		]);
 		expect(plan.entries).toEqual([
-			{ path: "AGENTS.md", action: "put", size: 7 },
+			{
+				path: "AGENTS.md",
+				action: "put",
+				size: 7,
+				sha256: sha256("edited\n"),
+			},
 		]);
 	});
 
@@ -429,5 +440,275 @@ describe("a lock that does not match the published manifest", () => {
 				encoding: "utf8",
 			},
 		]);
+	});
+});
+
+/**
+ * What an open proposal of the caller's already carries is set aside, not
+ * sent (Fizzy #2739).
+ *
+ * The lock names the PUBLISHED version and a proposal does not change what is
+ * published, so the diff above cannot tell an edit somebody already proposed
+ * from a new one. These pin the rule that can: the same path with the same
+ * bytes, in a proposal that is still live and is stated against the version
+ * this push is.
+ */
+describe("changes an open proposal already carries", () => {
+	/** The lock's snapshot, as `lockOf` writes it. */
+	const BASE = "snap-7";
+
+	function proposal(
+		overrides: Partial<OpenInstructionProposal> = {},
+	): OpenInstructionProposal {
+		return {
+			snapshotId: "snap-8",
+			version: 8,
+			baseSnapshotId: BASE,
+			status: "READY",
+			pullRequest: null,
+			changes: [
+				{ path: "AGENTS.md", op: "put", sha256: sha256("proposed\n") },
+			],
+			...overrides,
+		};
+	}
+
+	/** Session A proposed AGENTS.md; session B has since edited rules.md. */
+	async function secondSessionPlan() {
+		const root = await makeTree({
+			"AGENTS.md": "proposed\n",
+			"rules.md": "edited\n",
+		});
+		return computePushPlan({
+			root,
+			...lockAndManifest({ "AGENTS.md": "one\n", "rules.md": "two\n" }),
+		});
+	}
+
+	function sentPaths(plan: { changes: { path: string }[] }): string[] {
+		return plan.changes.map((change) => change.path);
+	}
+
+	// The defect itself: the diff alone sends the first session's edit again.
+	it("the lock diff alone still names a change an open proposal carries", async () => {
+		const plan = await secondSessionPlan();
+
+		expect(sentPaths(plan)).toEqual(["AGENTS.md", "rules.md"]);
+	});
+
+	it("sets aside a put with the same bytes, and names the proposal", async () => {
+		const set = setAsideProposed(
+			await secondSessionPlan(),
+			[proposal()],
+			BASE,
+		);
+
+		expect(sentPaths(set.plan)).toEqual(["rules.md"]);
+		expect(set.plan.entries.map((entry) => entry.path)).toEqual([
+			"rules.md",
+		]);
+		expect(set.alreadyProposed).toEqual([
+			{
+				path: "AGENTS.md",
+				action: "put",
+				proposal: {
+					snapshotId: "snap-8",
+					version: 8,
+					pullRequest: null,
+				},
+			},
+		]);
+	});
+
+	it("sends a put whose bytes differ from the proposal's", async () => {
+		const set = setAsideProposed(
+			await secondSessionPlan(),
+			[
+				proposal({
+					changes: [
+						{
+							path: "AGENTS.md",
+							op: "put",
+							sha256: sha256("an earlier draft\n"),
+						},
+					],
+				}),
+			],
+			BASE,
+		);
+
+		expect(sentPaths(set.plan)).toEqual(["AGENTS.md", "rules.md"]);
+		expect(set.alreadyProposed).toEqual([]);
+	});
+
+	it("does not match a put against a proposed delete of the same path", async () => {
+		const set = setAsideProposed(
+			await secondSessionPlan(),
+			[
+				proposal({
+					changes: [
+						{ path: "AGENTS.md", op: "delete", sha256: null },
+					],
+				}),
+			],
+			BASE,
+		);
+
+		expect(sentPaths(set.plan)).toEqual(["AGENTS.md", "rules.md"]);
+	});
+
+	it("sets aside a delete the proposal also makes", async () => {
+		const root = await makeTree({ "rules.md": "edited\n" });
+		const plan = await computePushPlan({
+			root,
+			...lockAndManifest({ "gone.md": "one\n", "rules.md": "two\n" }),
+		});
+
+		const set = setAsideProposed(
+			plan,
+			[
+				proposal({
+					changes: [{ path: "gone.md", op: "delete", sha256: null }],
+				}),
+			],
+			BASE,
+		);
+
+		expect(sentPaths(set.plan)).toEqual(["rules.md"]);
+		expect(set.alreadyProposed.map((entry) => entry.action)).toEqual([
+			"delete",
+		]);
+	});
+
+	it("sets aside an --add of a file the proposal already adds", async () => {
+		const root = await makeTree({
+			"AGENTS.md": "one\n",
+			"new.md": "added\n",
+		});
+		const plan = await computePushPlan({
+			root,
+			...lockAndManifest({ "AGENTS.md": "one\n" }),
+			added: ["new.md"],
+		});
+
+		const set = setAsideProposed(
+			plan,
+			[
+				proposal({
+					changes: [
+						{
+							path: "new.md",
+							op: "put",
+							sha256: sha256("added\n"),
+						},
+					],
+				}),
+			],
+			BASE,
+		);
+
+		expect(sentPaths(set.plan)).toEqual([]);
+		expect(set.alreadyProposed.map((entry) => entry.path)).toEqual([
+			"new.md",
+		]);
+	});
+
+	// A proposal stated against an older version is stale: it cannot be
+	// approved, so it carries nothing that will land.
+	it("ignores a proposal stated against another version", async () => {
+		const set = setAsideProposed(
+			await secondSessionPlan(),
+			[proposal({ baseSnapshotId: "snap-6" })],
+			BASE,
+		);
+
+		expect(sentPaths(set.plan)).toEqual(["AGENTS.md", "rules.md"]);
+	});
+
+	// Only a proposal whose checks are running or passed carries its change.
+	// One still receiving may never finish, and a failed or rejected one
+	// lands nothing until somebody acts on it; sending again costs a
+	// duplicate, setting aside wrongly costs the edit.
+	it.each(["RECEIVING", "FAILED", "REJECTED"] as const)(
+		"ignores a proposal whose snapshot is %s",
+		async (status) => {
+			const set = setAsideProposed(
+				await secondSessionPlan(),
+				[proposal({ status })],
+				BASE,
+			);
+
+			expect(sentPaths(set.plan)).toEqual(["AGENTS.md", "rules.md"]);
+		},
+	);
+
+	it.each(["VALIDATING", "READY"] as const)(
+		"counts a proposal whose snapshot is %s",
+		async (status) => {
+			const set = setAsideProposed(
+				await secondSessionPlan(),
+				[proposal({ status })],
+				BASE,
+			);
+
+			expect(sentPaths(set.plan)).toEqual(["rules.md"]);
+		},
+	);
+
+	it.each([
+		"BLOCKED",
+		"CLOSE_REQUESTED",
+		"CANCELED",
+		"MERGED",
+		"CLOSED",
+	] as const)(
+		"ignores a proposal whose pull request is %s",
+		async (state) => {
+			const set = setAsideProposed(
+				await secondSessionPlan(),
+				[proposal({ pullRequest: { state, url: null } })],
+				BASE,
+			);
+
+			expect(sentPaths(set.plan)).toEqual(["AGENTS.md", "rules.md"]);
+		},
+	);
+
+	it.each(["QUEUED", "OPENING", "OPEN"] as const)(
+		"counts a proposal whose pull request is %s",
+		async (state) => {
+			const url =
+				state === "OPEN"
+					? "https://example.com/example-org/example-repo/pull/7"
+					: null;
+			const set = setAsideProposed(
+				await secondSessionPlan(),
+				[proposal({ pullRequest: { state, url } })],
+				BASE,
+			);
+
+			expect(sentPaths(set.plan)).toEqual(["rules.md"]);
+			expect(set.alreadyProposed[0]?.proposal.pullRequest).toEqual({
+				state,
+				url,
+			});
+		},
+	);
+
+	it("names the newest proposal when two carry the same change", async () => {
+		const set = setAsideProposed(
+			await secondSessionPlan(),
+			[proposal(), proposal({ snapshotId: "snap-9", version: 9 })],
+			BASE,
+		);
+
+		expect(set.alreadyProposed[0]?.proposal.version).toBe(9);
+	});
+
+	it("sends everything when there is no open proposal", async () => {
+		const set = setAsideProposed(await secondSessionPlan(), [], BASE);
+
+		expect(sentPaths(set.plan)).toEqual(["AGENTS.md", "rules.md"]);
+		expect(set.alreadyProposed).toEqual([]);
 	});
 });

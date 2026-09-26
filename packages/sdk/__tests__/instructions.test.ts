@@ -801,3 +801,67 @@ describe("getProposalPullRequest", () => {
 		).toBeNull();
 	});
 });
+
+describe("getOpenProposals", () => {
+	it("GETs the caller's open proposals, escaping the project id, and returns the list", async () => {
+		const proposals = [
+			{
+				snapshotId: "snap-8",
+				version: 8,
+				baseSnapshotId: "snap-7",
+				status: "READY",
+				pullRequest: {
+					state: "OPEN",
+					url: "https://example.com/example-org/example-repo/pull/7",
+				},
+				changes: [
+					{ path: "AGENTS.md", op: "put", sha256: "a".repeat(64) },
+					{ path: "old.md", op: "delete", sha256: null },
+				],
+			},
+		];
+		const { client, captured } = buildClient({
+			responseBody: { proposals },
+		});
+
+		const result = await client.instructions.getOpenProposals("project 1", {
+			org: "example-org",
+		});
+
+		expect(result).toEqual(proposals);
+		expect(captured[0]?.method).toBe("GET");
+		expect(captured[0]?.url).toBe(
+			"https://test.fabric/api/v1/projects/project%201/instructions/proposals/open?org=example-org",
+		);
+	});
+
+	// Coding instructions have no personal arm, so nothing but the
+	// organization reaches the query, whatever else a caller passes.
+	it("sends only the organization in its query", async () => {
+		const { client, captured } = buildClient({
+			responseBody: { proposals: [] },
+		});
+
+		await client.instructions.getOpenProposals("project-1", {
+			org: "example-org",
+			personal: true,
+		} as Parameters<typeof client.instructions.getOpenProposals>[1]);
+
+		expect(lastRequest(captured).url).toBe(
+			"https://test.fabric/api/v1/projects/project-1/instructions/proposals/open?org=example-org",
+		);
+	});
+
+	it("rejects with the signal's own reason when it is cancelled", async () => {
+		const { client } = buildClient({ responseBody: { proposals: [] } });
+		const controller = new AbortController();
+		const reason = new Error("deadline");
+		controller.abort(reason);
+
+		await expect(
+			client.instructions.getOpenProposals("project-1", {
+				signal: controller.signal,
+			}),
+		).rejects.toBe(reason);
+	});
+});
