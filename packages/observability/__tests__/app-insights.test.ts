@@ -5,6 +5,11 @@ const captured = vi.hoisted(() => ({
 	events: [] as Array<Record<string, unknown>>,
 	metrics: [] as Array<Record<string, unknown>>,
 	logs: [] as Array<Record<string, unknown>>,
+	traces: [] as Array<Record<string, unknown>>,
+	exceptions: [] as Array<Record<string, unknown>>,
+	clients: [] as Array<{
+		context: { tags: Record<string, string>; keys: { cloudRole: string } };
+	}>,
 	recordings: [] as Array<{
 		name: string;
 		value: number;
@@ -52,18 +57,37 @@ const originalEnv: Partial<Record<(typeof envKeys)[number], string>> = {};
 const validConnectionString =
 	"InstrumentationKey=00000000-0000-0000-0000-000000000001";
 
-async function installDirectClientFactory() {
+async function installDirectClientFactory({
+	samplingLimit,
+}: {
+	samplingLimit?: number;
+} = {}) {
 	const telemetry = await import("../lib/app-insights");
+	if (samplingLimit !== undefined) {
+		telemetry.__setAppInsightsSamplingLimitForTests(samplingLimit);
+	}
 	telemetry.__setAppInsightsClientFactoryForTests(
 		(connectionString, options) => {
 			captured.constructorArgs.push([connectionString, options]);
-			return {
+			const client = {
 				initialize() {},
-				trackEvent(event) {
+				trackEvent(event: Record<string, unknown>) {
 					captured.events.push(event);
 				},
-				trackMetric(metric) {
+				trackMetric(metric: Record<string, unknown>) {
 					captured.metrics.push(metric);
+				},
+				trackTrace(trace: Record<string, unknown>) {
+					captured.traces.push(trace);
+				},
+				trackException(exception: Record<string, unknown>) {
+					captured.exceptions.push(exception);
+				},
+				// Mirrors the real shim's context/keys/tags shape (see the
+				// citation on `TelemetryClient` in app-insights.ts).
+				context: {
+					tags: {} as Record<string, string>,
+					keys: { cloudRole: "ai.cloud.role" },
 				},
 				async flush() {
 					captured.flushCalls++;
@@ -78,6 +102,8 @@ async function installDirectClientFactory() {
 					}
 				},
 			};
+			captured.clients.push(client);
+			return client;
 		},
 	);
 	return telemetry;
@@ -92,6 +118,9 @@ beforeEach(() => {
 	captured.events = [];
 	captured.metrics = [];
 	captured.logs = [];
+	captured.traces = [];
+	captured.exceptions = [];
+	captured.clients = [];
 	captured.recordings = [];
 	captured.flushError = undefined;
 	captured.shutdownError = undefined;
@@ -338,5 +367,403 @@ describe("direct Application Insights transport", () => {
 			"[app-insights] shutdown failed",
 			"shutdown failed",
 		);
+	});
+});
+
+describe("log forwarding (independent of feature-burn-rate-alerts)", () => {
+	it("is a no-op without a connection string", async () => {
+		const { initAppInsightsLogs, trackLog } =
+			await installDirectClientFactory();
+
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+		trackLog("warn", "no client configured");
+
+		expect(captured.constructorArgs).toHaveLength(0);
+		expect(captured.traces).toHaveLength(0);
+	});
+
+	it("sets the cloud-role tag on the shared client", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const { initAppInsightsLogs, getAppInsightsClient } =
+			await installDirectClientFactory();
+
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		// `getAppInsightsClient()` just returns the shared `CLIENT`, which
+		// `ensureDirectClient()` sets regardless of `TRANSPORT` — so it is
+		// populated here even though `initAppInsights()`/`TRANSPORT` were
+		// never touched.
+		expect(getAppInsightsClient()).not.toBeNull();
+		expect(captured.clients).toHaveLength(1);
+		expect(captured.clients[0]?.context.tags["ai.cloud.role"]).toBe(
+			"fabric.web",
+		);
+	});
+
+	it("forwards warn/error/fatal through trackTrace with the mapped severity", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const { initAppInsightsLogs, trackLog } =
+			await installDirectClientFactory();
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		trackLog("warn", "warn message", { event: "test.warn" });
+		trackLog("error", "error message", { event: "test.error" });
+		trackLog("fatal", "fatal message", { event: "test.fatal" });
+
+		expect(captured.traces).toEqual([
+			{
+				message: "warn message",
+				severity: "Warning",
+				properties: { event: "test.warn" },
+			},
+			{
+				message: "error message",
+				severity: "Error",
+				properties: { event: "test.error" },
+			},
+			{
+				message: "fatal message",
+				severity: "Critical",
+				properties: { event: "test.fatal" },
+			},
+		]);
+	});
+
+	it("forwards through trackException, exception included, severity defaulted to Error", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const { initAppInsightsLogs, trackLogException } =
+			await installDirectClientFactory();
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		const error = new Error("boom");
+		trackLogException(error, { event: "test.exception" });
+
+		expect(captured.exceptions).toEqual([
+			{
+				exception: error,
+				severity: "Error",
+				properties: { event: "test.exception" },
+			},
+		]);
+	});
+
+	it("uses the passed severity for trackException (Critical for fatal)", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const { initAppInsightsLogs, trackLogException } =
+			await installDirectClientFactory();
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		const error = new Error("fatal boom");
+		trackLogException(error, { event: "test.fatal" }, "fatal");
+
+		expect(captured.exceptions).toEqual([
+			{
+				exception: error,
+				severity: "Critical",
+				properties: { event: "test.fatal" },
+			},
+		]);
+	});
+
+	it("forwards logs even when feature-burn-rate-alerts is explicitly off", async () => {
+		// The flag gates trackEvent/trackMetric only — log forwarding must not
+		// notice it at all, whether or not initAppInsights() ever runs.
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		process.env.FABRIC_FEATURE_BURN_RATE_ALERTS = "false";
+		const { initAppInsights, initAppInsightsLogs, trackLog, trackEvent } =
+			await installDirectClientFactory();
+
+		initAppInsights();
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+		trackEvent("SyntheticProbeResult");
+		trackLog("warn", "still forwarded");
+
+		expect(captured.events).toHaveLength(0);
+		expect(captured.traces).toHaveLength(1);
+	});
+
+	it("does not create a client at all when the connection string is invalid", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING = "garbage";
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { initAppInsightsLogs, trackLog } =
+			await installDirectClientFactory();
+
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+		trackLog("warn", "unreachable");
+
+		expect(captured.constructorArgs).toHaveLength(0);
+		expect(captured.traces).toHaveLength(0);
+		expect(warn).toHaveBeenCalledWith(
+			"[app-insights] invalid connection string; direct exporter disabled",
+		);
+	});
+
+	it("never throws into the caller when the client itself throws", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const telemetry = await import("../lib/app-insights");
+		telemetry.__setAppInsightsClientFactoryForTests(() => ({
+			initialize() {},
+			trackEvent() {},
+			trackMetric() {},
+			trackTrace() {
+				throw new Error("SDK is down");
+			},
+			trackException() {
+				throw new Error("SDK is down");
+			},
+			context: { tags: {}, keys: { cloudRole: "ai.cloud.role" } },
+			async flush() {},
+			async shutdown() {},
+		}));
+
+		telemetry.initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		expect(() =>
+			telemetry.trackLog("error", "will throw internally"),
+		).not.toThrow();
+		expect(() =>
+			telemetry.trackLogException(new Error("boom")),
+		).not.toThrow();
+		expect(warn).toHaveBeenCalledWith(
+			"[app-insights] trackLog failed",
+			"SDK is down",
+		);
+		expect(warn).toHaveBeenCalledWith(
+			"[app-insights] trackLogException failed",
+			"SDK is down",
+		);
+	});
+});
+
+describe("per-key sampling", () => {
+	it("forwards up to the per-key limit and suppresses the rest of the window", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const { initAppInsightsLogs, trackLog } =
+			await installDirectClientFactory({ samplingLimit: 2 });
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		trackLog("warn", "line 1", { event: "hot.path" });
+		trackLog("warn", "line 2", { event: "hot.path" });
+		trackLog("warn", "line 3", { event: "hot.path" });
+		trackLog("warn", "line 4", { event: "hot.path" });
+
+		expect(captured.traces).toHaveLength(2);
+		expect(captured.traces.map((t) => t.message)).toEqual([
+			"line 1",
+			"line 2",
+		]);
+	});
+
+	it("buckets by properties.event, ignoring the message text", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const { initAppInsightsLogs, trackLog } =
+			await installDirectClientFactory({ samplingLimit: 1 });
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		trackLog("warn", "first distinct message", { event: "shared.key" });
+		trackLog("warn", "second distinct message", { event: "shared.key" });
+
+		expect(captured.traces).toHaveLength(1);
+	});
+
+	it("buckets an unkeyed record by severity + normalized message prefix", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const { initAppInsightsLogs, trackLog } =
+			await installDirectClientFactory({ samplingLimit: 1 });
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		// Identical for the first 60 characters (the normalized-prefix
+		// window); only the trailing connection id differs.
+		const prefix =
+			"database timeout while querying the primary db replica, conn=";
+		trackLog("warn", `${prefix}aaaa1111`);
+		trackLog("warn", `${prefix}bbbb2222`);
+		// A different severity is a different bucket even with the same text.
+		trackLog("error", `${prefix}aaaa1111`);
+
+		expect(captured.traces).toHaveLength(2);
+	});
+
+	it("emits exactly one suppressed-summary trace when the window rolls over", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		vi.useFakeTimers();
+		try {
+			const { initAppInsightsLogs, trackLog } =
+				await installDirectClientFactory({ samplingLimit: 1 });
+			initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+			trackLog("warn", "kept", { event: "rolling.key" });
+			trackLog("warn", "suppressed 1", { event: "rolling.key" });
+			trackLog("warn", "suppressed 2", { event: "rolling.key" });
+
+			expect(captured.traces).toHaveLength(1);
+
+			vi.advanceTimersByTime(60_000);
+			trackLog("warn", "first of new window", { event: "rolling.key" });
+
+			expect(captured.traces).toHaveLength(3);
+			expect(captured.traces[1]).toMatchObject({
+				message: 'Suppressed 2 similar records for key "rolling.key"',
+				severity: "Warning",
+				properties: {
+					event: "app-insights.log-sampling-suppressed",
+				},
+			});
+			expect(captured.traces[2]).toMatchObject({
+				message: "first of new window",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("tracks each key's budget independently", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const { initAppInsightsLogs, trackLog } =
+			await installDirectClientFactory({ samplingLimit: 1 });
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		trackLog("warn", "a", { event: "key.a" });
+		trackLog("warn", "a again — suppressed", { event: "key.a" });
+		trackLog("warn", "b", { event: "key.b" });
+
+		expect(captured.traces.map((t) => t.message)).toEqual(["a", "b"]);
+	});
+
+	it("does not let one noisy procedure starve another's budget under the same event", async () => {
+		// The regression this guards: keying purely on `properties.event`
+		// put every "rpc.error" record — every procedure, every status —
+		// in ONE 20/min bucket, so a hot 403 on one route silently dropped
+		// 5xx alerting for every other route.
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const { initAppInsightsLogs, trackLog } =
+			await installDirectClientFactory({ samplingLimit: 20 });
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		for (let i = 0; i < 30; i++) {
+			trackLog("warn", `noisy call ${i}`, {
+				event: "rpc.error",
+				procedure: "billing/status",
+				code: "FORBIDDEN",
+				status: 403,
+			});
+		}
+		for (let i = 0; i < 30; i++) {
+			trackLog("error", `db call ${i}`, {
+				event: "rpc.error",
+				procedure: "prompts/list",
+				code: "INTERNAL_SERVER_ERROR",
+				status: 500,
+			});
+		}
+
+		const byProcedure = (procedure: string) =>
+			captured.traces.filter(
+				(t) =>
+					(t.properties as Record<string, unknown>)?.procedure ===
+					procedure,
+			);
+		expect(byProcedure("billing/status")).toHaveLength(20);
+		expect(byProcedure("prompts/list")).toHaveLength(20);
+	});
+
+	it("still buckets by event alone when no discriminant fields are present", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const { initAppInsightsLogs, trackLog } =
+			await installDirectClientFactory({ samplingLimit: 1 });
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		trackLog("warn", "first", { event: "shared.key" });
+		trackLog("warn", "second — suppressed", { event: "shared.key" });
+
+		expect(captured.traces).toHaveLength(1);
+	});
+});
+
+describe("flushAppInsights and suppressed summaries", () => {
+	it("emits a suppressed summary on flush for a key that went quiet, without waiting for a new record", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		vi.useFakeTimers();
+		try {
+			const { initAppInsightsLogs, trackLog, flushAppInsights } =
+				await installDirectClientFactory({ samplingLimit: 1 });
+			initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+			trackLog("warn", "kept", { event: "quiet.key" });
+			trackLog("warn", "suppressed 1", { event: "quiet.key" });
+			trackLog("warn", "suppressed 2", { event: "quiet.key" });
+			expect(captured.traces).toHaveLength(1);
+
+			vi.advanceTimersByTime(60_000);
+			// No new `trackLog` call for this key — a flush alone (Vercel's
+			// `after()`, this process's own periodic flush) is the only
+			// other place the summary can come from.
+			await flushAppInsights();
+
+			expect(captured.traces).toHaveLength(2);
+			expect(captured.traces[1]).toMatchObject({
+				message: 'Suppressed 2 similar records for key "quiet.key"',
+				severity: "Warning",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not repeat a summary on a second flush with nothing new suppressed", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		vi.useFakeTimers();
+		try {
+			const { initAppInsightsLogs, trackLog, flushAppInsights } =
+				await installDirectClientFactory({ samplingLimit: 1 });
+			initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+			trackLog("warn", "kept", { event: "quiet.key" });
+			trackLog("warn", "suppressed", { event: "quiet.key" });
+			vi.advanceTimersByTime(60_000);
+
+			await flushAppInsights();
+			expect(captured.traces).toHaveLength(2);
+
+			await flushAppInsights();
+			expect(captured.traces).toHaveLength(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does nothing on flush for a key whose window has not yet elapsed", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const {
+			initAppInsightsLogs,
+			trackLog,
+			flushAppInsights,
+			__setAppInsightsSamplingLimitForTests,
+		} = await installDirectClientFactory();
+		__setAppInsightsSamplingLimitForTests(1);
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		trackLog("warn", "kept", { event: "fresh.key" });
+		trackLog("warn", "suppressed", { event: "fresh.key" });
+		await flushAppInsights();
+
+		expect(captured.traces).toHaveLength(1);
 	});
 });

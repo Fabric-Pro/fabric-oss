@@ -54,7 +54,12 @@ export async function register() {
 		);
 		validatePartykitConfig();
 
-		const { initObservability } = await import("@repo/observability");
+		const {
+			initObservability,
+			initAppInsightsLogs,
+			trackLog,
+			trackLogException,
+		} = await import("@repo/observability");
 
 		initObservability({
 			serviceName: process.env.OTEL_SERVICE_NAME || "fabric-web",
@@ -62,6 +67,35 @@ export async function register() {
 			environment: process.env.NODE_ENV,
 			// Use 30 second metric export for better visibility
 			metricExportInterval: 30000,
+		});
+
+		// Forward warn/error/fatal logs to App Insights — independent of the
+		// `feature-burn-rate-alerts` flag `initObservability` above never
+		// touches for this. The web app is the one service whose backend logs
+		// otherwise reach only Vercel runtime logs (Fizzy #2249 follow-up):
+		// every OTHER Azure service already reports to the same workspace.
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+		const { addLogSink } = await import("@repo/logs");
+		addLogSink((record) => {
+			if (record.error) {
+				// `trackException` carries no message field of its own (only
+				// the Error's) — fold the log call's own text and level into
+				// properties so what was actually said (e.g. "rpc.error")
+				// and its level survive alongside the exception, and pass
+				// the level through as the exception's own severity (Critical
+				// for fatal) rather than defaulting every exception to Error.
+				trackLogException(
+					record.error,
+					{
+						...record.properties,
+						logMessage: record.message,
+						logLevel: record.level,
+					},
+					record.level,
+				);
+			} else {
+				trackLog(record.level, record.message, record.properties);
+			}
 		});
 
 		// Surface a non-fatal warning if the audit-log retention window
