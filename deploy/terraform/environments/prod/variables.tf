@@ -99,9 +99,9 @@ variable "rds_apply_immediately" {
 }
 
 variable "node_instance_types" {
-  description = "EC2 instance types for the EKS managed node group."
+  description = "EC2 instance types for the EKS managed node group. Each must encrypt traffic between instances (Nitro, e.g. m6i/m7i) — the eks module refuses other types."
   type        = list(string)
-  default     = ["t3.xlarge"]
+  default     = ["m6i.xlarge"]
 }
 
 variable "node_desired_size" {

@@ -28,7 +28,7 @@ web:
   resources:
     # The Next.js 16 standalone server (next-server) OOM-crashes (V8 heap
     # "Allocation failed") under a 512Mi cap — it boots then gets OOM-killed into
-    # CrashLoopBackOff. t3.xlarge nodes (16Gi) have ample room; give it 1.5Gi.
+    # CrashLoopBackOff. m6i.large nodes (8Gi) have room; give it 1.5Gi.
     requests: { cpu: 200m, memory: 512Mi }
     limits:   { cpu: 1000m, memory: 1536Mi }
 

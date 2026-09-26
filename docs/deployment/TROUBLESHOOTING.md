@@ -231,7 +231,7 @@ Events:
 
 > **Note.** The weave agents (`weave-readers`/`weave-shuttle`/`weave-planners`) and `fluentbit` are disabled in the dev profile (`values-dev.yaml:44-57,71-75`), so a missing weave Service is expected — not a scheduling failure.
 
-**Cause.** Sum of pod CPU/memory requests exceeds what the nodes have. The dev node group is 2 × t3.large (2 vCPU / node = 4 vCPU = 4000m total, scalable 2–4) with 40Gi root volumes — see `deploy/terraform/environments/dev/main.tf:64-67`. The dev profile runs ~12 pods (web + temporal-worker + mcp-stdio-wrapper + qdrant + 8 agents) at ~50m each ≈ 600m, plus `web`/`temporal-worker` at higher requests and the DaemonSets (~200m); you're still comfortably under 4000m, so this shouldn't happen unless someone increased a request without increasing node capacity.
+**Cause.** Sum of pod CPU/memory requests exceeds what the nodes have. The dev node group is 2 × m6i.large (2 vCPU / node = 4 vCPU = 4000m total, scalable 2–4) with 40Gi root volumes — see `deploy/terraform/environments/dev/main.tf:65-68`. The dev profile runs ~12 pods (web + temporal-worker + mcp-stdio-wrapper + qdrant + 8 agents) at ~50m each ≈ 600m, plus `web`/`temporal-worker` at higher requests and the DaemonSets (~200m); you're still comfortably under 4000m, so this shouldn't happen unless someone increased a request without increasing node capacity.
 
 **Fix options.**
 - Reduce requests in `values-dev.yaml`.

@@ -58,10 +58,11 @@ module "eks" {
   kms_key_arn        = module.kms.key_arns["eks"]
   # Builds run on GitLab SaaS now (not in-cluster), so the node group is sized for the
   # APP workload alone. Live pod requests total ~2.4 vCPU / ~5Gi and real usage ~8-10Gi
-  # (web + temporal-worker at ~1.5Gi each dominate). 2 x t3.large (~3.9 vCPU / ~14Gi
+  # (web + temporal-worker at ~1.5Gi each dominate). 2 x m6i.large (~3.9 vCPU / ~14Gi
   # allocatable) fits with headroom; max=4 lets the managed node group surge during
-  # rolling updates and leaves room for a future cluster-autoscaler.
-  node_instance_types = ["t3.large"]
+  # rolling updates and leaves room for a future cluster-autoscaler. m6i rather than the
+  # same-sized t3: t3 does not encrypt traffic between instances (see modules/eks).
+  node_instance_types = ["m6i.large"]
   node_desired_size   = 2
   node_min_size       = 2
   node_max_size       = 4
@@ -366,7 +367,7 @@ module "gitlab_oidc" {
 
 # In-cluster GitLab Runner removed: CI image builds moved to GitLab SaaS shared runners
 # (ci/gitlab/40-build.yml), so the cluster no longer hosts the build storm — which is
-# why the node group could shrink to 2 x t3.large. The module code is retained under
+# why the node group could shrink to 2 x m6i.large. The module code is retained under
 # modules/gitlab-runner for re-enabling if builds ever move back in-cluster.
 
 # --- Cost guardrails ---

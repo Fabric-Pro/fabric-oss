@@ -121,7 +121,7 @@ git clone <this-repo-url> fabric
 cd fabric
 git remote rename origin upstream
 # Create an empty project on gitlab.com first (UI: New project → Create blank project), then:
-git remote add origin git@gitlab.com:youruser/fabric-test.git
+git remote add origin https://gitlab.com/youruser/fabric-test.git
 git push -u origin master
 ```
 
@@ -265,7 +265,7 @@ aws eks update-kubeconfig --name fabric-dev --region us-east-1
 kubectl get nodes
 ```
 
-You should see 2 nodes in `Ready` state (node_desired_size = 2, t3.large). If you see `error: You must be logged in to the server (Unauthorized)`, the EKS Access Entry for your IAM principal isn't configured — see `TROUBLESHOOTING.md`.
+You should see 2 nodes in `Ready` state (node_desired_size = 2, m6i.large). If you see `error: You must be logged in to the server (Unauthorized)`, the EKS Access Entry for your IAM principal isn't configured — see `TROUBLESHOOTING.md`.
 
 End of Day 0. Optional resting point — you can `terraform destroy` and resume tomorrow, or push on into Day 1.
 

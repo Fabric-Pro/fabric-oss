@@ -44,7 +44,9 @@ customer fills in and runs — different audience, different artifact, no overla
 ## Summary of current state
 
 The self-hosted path is materially more hardened than early framing assumed.
-**Already shipped:** TLS-only prod ingress, ≥2 replicas across the Fabric
+**Already shipped:** TLS-only prod ingress, hardware-encrypted service-to-service
+traffic (Terraform refuses node types that cannot encrypt between instances; the
+ALB-to-pod hop is the customer's to encrypt), ≥2 replicas across the Fabric
 application tier, a production Terraform profile that defaults RDS to Multi-AZ,
 customer-managed KMS encryption at rest (RDS/EKS-secrets/S3/ECR/Secrets Manager),
 automated RDS backups + deletion protection, Secrets Manager + external-secrets

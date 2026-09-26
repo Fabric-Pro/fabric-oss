@@ -81,6 +81,25 @@ module "eks" {
   tags = var.tags
 }
 
+# --- Encryption in transit between nodes (SOC 2 CC6.7) ---
+# The chart's in-cluster calls (web <-> agents, the MCP wrapper, Qdrant) are plain
+# HTTP/gRPC on cluster DNS. Nitro instance types encrypt all traffic between instances
+# in hardware (256-bit AEAD, AWS-managed keys, no certificates to rotate), so those calls
+# are encrypted wherever they cross nodes; other types carry them in clear. Refuse such a
+# type at plan time instead of relying on whoever picks the node size to know this.
+# https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/data-protection.html#encryption-transit
+data "aws_ec2_instance_type" "node" {
+  for_each      = toset(var.node_instance_types)
+  instance_type = each.value
+
+  lifecycle {
+    postcondition {
+      condition     = self.encryption_in_transit_supported || !var.require_encryption_in_transit
+      error_message = "Node instance type ${each.value} does not encrypt traffic between instances, so pod-to-pod traffic would cross the VPC in clear. Use a supported type (for example m6i, m7i, c6i, r6i) or set require_encryption_in_transit = false for a throwaway cluster."
+    }
+  }
+}
+
 # --- EBS CSI driver IRSA role ---
 # The aws-ebs-csi-driver add-on's controller (Deployment ebs-csi-controller in
 # kube-system, ServiceAccount ebs-csi-controller-sa) needs AmazonEBSCSIDriverPolicy

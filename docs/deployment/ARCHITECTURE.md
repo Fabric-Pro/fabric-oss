@@ -83,7 +83,7 @@ How the pieces fit together. Topology, request flow, build flow, and the rationa
 | Component | Purpose | Provisioned by |
 |---|---|---|
 | VPC | 3 public + 3 private subnets, single NAT GW (dev) | `module.vpc` |
-| EKS | Kubernetes 1.35 (standard support — avoids the extended-support surcharge), managed node group (t3.large ×2 dev; 40Gi root volumes; autoscale 2-4) | `module.eks` |
+| EKS | Kubernetes 1.35 (standard support — avoids the extended-support surcharge), managed node group (m6i.large ×2 dev — a type that encrypts traffic between instances; 40Gi root volumes; autoscale 2-4) | `module.eks` |
 | RDS | Postgres 16, db.t4g.micro, 20 GB gp3 (dev); SG ingress wired to the EKS **node** security group, not the cluster SG | `module.rds` |
 | ElastiCache | Redis 7.1, cache.t4g.micro single AZ (dev); SG ingress wired to the EKS **node** security group, not the cluster SG | `module.elasticache` |
 | ECR | 14 private repos with image scanning | `module.ecr` |

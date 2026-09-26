@@ -48,6 +48,9 @@ param enableMonitoring bool = true
 @description('Deploy the SOC 2 CC5.3/CC7.1 Azure Policy guardrails (audit effect). Requires the deploy identity to hold Resource Policy Contributor or equivalent — plain Contributor CANNOT create policy assignments. See modules/governance-policy.bicep.')
 param enablePolicyGuardrails bool = false
 
+@description('Encrypt all traffic inside the Container Apps environment (SOC 2 CC6.7). Without it, TLS ends at the environment edge and the edge-to-replica hop is plaintext HTTP. Certificates are platform-managed and rotated by Azure; callers need no change. Turning it on restarts every replica in the environment once.')
+param enablePeerTrafficEncryption bool = false
+
 @description('DEPRECATED: This parameter is no longer used. Azure Container Apps now uses a managed OpenTelemetry agent configured in the environment. Telemetry is automatically routed to Application Insights.')
 param enableMultiDestinationOtlp bool = false
 
@@ -282,6 +285,11 @@ resource containerEnv 'Microsoft.App/managedEnvironments@2024-10-02-preview' = {
     }
     // Zone redundancy requires InfrastructureSubnetId (VNet). Disabled until VNet is provisioned.
     zoneRedundant: false
+    peerTrafficConfiguration: {
+      encryption: {
+        enabled: enablePeerTrafficEncryption
+      }
+    }
   }
 }
 
