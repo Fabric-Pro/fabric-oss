@@ -26,10 +26,15 @@
 // Replaces the deleted self-hosted Prometheus + Alertmanager stack.
 export {
 	__resetAppInsightsForTests,
+	flushAppInsights,
 	getAppInsightsClient,
 	initAppInsights,
+	initAppInsightsLogs,
+	type LogSeverity,
 	shutdownAppInsights,
 	trackEvent,
+	trackLog,
+	trackLogException,
 	trackMetric,
 } from "./lib/app-insights";
 // Application error-rate + integration metrics

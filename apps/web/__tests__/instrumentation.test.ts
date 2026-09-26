@@ -15,14 +15,22 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { validatePartykitConfigMock } = vi.hoisted(() => ({
-	validatePartykitConfigMock: vi.fn(),
-}));
+const { validatePartykitConfigMock, initAppInsightsLogsMock } = vi.hoisted(
+	() => ({
+		validatePartykitConfigMock: vi.fn(),
+		initAppInsightsLogsMock: vi.fn(),
+	}),
+);
 
 vi.mock("@shared/lib/partykit-config", () => ({
 	validatePartykitConfig: validatePartykitConfigMock,
 }));
-vi.mock("@repo/observability", () => ({ initObservability: vi.fn() }));
+vi.mock("@repo/observability", () => ({
+	initObservability: vi.fn(),
+	initAppInsightsLogs: initAppInsightsLogsMock,
+	trackLog: vi.fn(),
+	trackLogException: vi.fn(),
+}));
 vi.mock("@repo/utils", () => ({
 	describeEncryptionKeyMisconfiguration: vi.fn(() => null),
 }));
@@ -92,5 +100,18 @@ describe("register — CRON_SECRET startup diagnostic", () => {
 
 		expect(cronErrorCalls(errorSpy)).toEqual([]);
 		expect(validatePartykitConfigMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("register — Application Insights log forwarding", () => {
+	it("starts forwarding the web app's logs under its own cloud role", async () => {
+		vi.stubEnv("CRON_SECRET", "a-real-cron-secret");
+		initAppInsightsLogsMock.mockClear();
+
+		await register();
+
+		expect(initAppInsightsLogsMock).toHaveBeenCalledWith({
+			cloudRoleName: "fabric.web",
+		});
 	});
 });
