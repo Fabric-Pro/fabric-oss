@@ -230,6 +230,27 @@ describe("PromptPreviewSheet — desktop width", () => {
 		expect(sheet.className).not.toContain("sm:max-w-sm");
 		expect(sheet.className).toContain("w-full");
 	});
+
+	// The Sheet's close button is absolutely positioned at `top-4 right-4`; the
+	// header row ran under it and the scope badge sat 8px beneath the button
+	// (measured on staging at every width). The header reserves that corner.
+	it("keeps the header clear of the absolutely positioned close button", async () => {
+		wrap(
+			<PromptPreviewSheet
+				open
+				onOpenChange={vi.fn()}
+				promptId="p1"
+				promptScope="USER"
+			/>,
+		);
+		await screen.findByText(LONG_TITLE);
+
+		// SheetHeader is the header div wrapping the title row.
+		const header = screen
+			.getByRole("heading", { name: LONG_TITLE })
+			.closest("div.space-y-2");
+		expect(header?.className).toContain("pr-8");
+	});
 });
 
 // Fizzy #2250 (defect 3), the preview Sheet's edit mode: an empty, blank or
