@@ -160,6 +160,10 @@ export function TestPlanDetail({
 				queryClient.invalidateQueries({
 					queryKey: orpc.projects.testCases.plans.list.key(),
 				});
+				// A deleted plan changes the Plans section badge too.
+				queryClient.invalidateQueries({
+					queryKey: orpc.projects.testCases.sectionCounts.key(),
+				});
 				onBack();
 			},
 			onError: (e) =>

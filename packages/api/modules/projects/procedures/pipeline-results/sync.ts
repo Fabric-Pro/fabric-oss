@@ -10,6 +10,15 @@ import {
 import { assertPipelineResultsEnabled } from "../../lib/pipeline-results-feature";
 
 /**
+ * Shared by `sync` (which starts or joins a run) and `syncRun` (which describes
+ * one): both MUST derive the same id from a projectId, or the describe would be
+ * asking about a workflow the start never touched.
+ */
+export function pipelineResultsSyncWorkflowId(projectId: string): string {
+	return `pipeline-results-sync-${projectId}`;
+}
+
+/**
  * Start a Temporal `syncPipelineResultsWorkflow` — the live "pull" that fetches
  * new CI Test Runs (Azure DevOps) for a project, ingests them, and (when the
  * project opted in) opens BUGs for cases left FAILED. Write-gated by
@@ -19,6 +28,11 @@ import { assertPipelineResultsEnabled } from "../../lib/pipeline-results-feature
  * USE_EXISTING conflict policy, so two rapid "Sync now" clicks (or a click during
  * an in-flight sync) collapse onto ONE run instead of racing — which also prevents
  * concurrent RCA passes from double-opening the same bug.
+ *
+ * Returns the RUN id Temporal actually started or joined (`firstExecutionRunId`)
+ * so the caller can watch that exact run close, rather than guessing completion
+ * from a source row's timestamp — a row another writer touched looks identical
+ * to one this sync wrote (Fizzy #2722).
  */
 export const syncPipelineResultsProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.TEST_CASE_UPDATE))
@@ -84,7 +98,7 @@ export const syncPipelineResultsProcedure = tenantProtectedProcedure
 			const { getTemporalClient } = await import("@repo/temporal");
 			const client = await getTemporalClient();
 
-			const workflowId = `pipeline-results-sync-${input.projectId}`;
+			const workflowId = pipelineResultsSyncWorkflowId(input.projectId);
 			const handle = await client.workflow.start(
 				"syncPipelineResultsWorkflow",
 				withCorrelationMemo({
@@ -108,6 +122,7 @@ export const syncPipelineResultsProcedure = tenantProtectedProcedure
 
 			return {
 				workflowId: handle.workflowId,
+				runId: handle.firstExecutionRunId,
 				status: "started" as const,
 				message: "Pipeline-results sync started",
 			};

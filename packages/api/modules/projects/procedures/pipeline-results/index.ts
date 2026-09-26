@@ -15,6 +15,7 @@ export {
 export { pipelineRunDetailProcedure } from "./run-detail";
 export { syncPipelineResultsProcedure } from "./sync";
 export { getProjectRepositoryPipelineSyncHealthProcedure } from "./sync-health";
+export { syncRunStateProcedure } from "./sync-run";
 export { listPipelineSyncStatesProcedure } from "./sync-states";
 export {
 	listTriggerablePipelinesProcedure,
