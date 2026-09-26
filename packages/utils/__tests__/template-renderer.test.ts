@@ -56,4 +56,27 @@ describe("renderTemplate — escaping contract", () => {
 		expect(double.rendered).toBe("A &amp; B &lt;c&gt; &quot;q&quot;");
 		expect(triple.rendered).toBe('A & B <c> "q"');
 	});
+
+	it("renders double-stache verbatim when escape is false", async () => {
+		const vars = { a: 'A & B <c> "q"' };
+		for (const format of ["HANDLEBARS", "MUSTACHE"] as const) {
+			const result = await renderTemplate({
+				format,
+				template: "{{a}}",
+				variables: vars,
+				escape: false,
+			});
+			expect(result.error).toBeUndefined();
+			expect(result.rendered).toBe('A & B <c> "q"');
+		}
+	});
+
+	it("still escapes MUSTACHE double-stache by default", async () => {
+		const result = await renderTemplate({
+			format: "MUSTACHE",
+			template: "{{a}}",
+			variables: { a: "A & B" },
+		});
+		expect(result.rendered).toBe("A &amp; B");
+	});
 });

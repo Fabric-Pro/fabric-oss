@@ -197,10 +197,14 @@ export async function reanalyzeBodyByKind(
 					connected_context_items: connectedContext ?? "",
 				};
 
+	// Unescaped: the bound prompts use double-stache, and HTML-escaping the
+	// ticket body here hands the model `&amp;` / `&lt;` / `&quot;`, which it
+	// copies into the merged body that gets written back to the ticket.
 	const rendered = await renderTemplate({
 		format: boundPrompt.format as TemplateFormat,
 		template: boundPrompt.version.content,
 		variables,
+		escape: false,
 	});
 	if (rendered.error) {
 		logger.warn(
