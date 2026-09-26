@@ -45,7 +45,15 @@ spec:
               value: {{ .Values.seed.orgSlug | quote }}
             - name: SEED_ORG_NAME
               value: {{ .Values.seed.orgName | quote }}
+          volumeMounts:
+            - name: rds-ca
+              mountPath: /etc/fabric/rds
+              readOnly: true
           resources:
             requests: { cpu: 100m, memory: 256Mi }
             limits:   { cpu: 1000m, memory: 1Gi }
+      volumes:
+        - name: rds-ca
+          configMap:
+            name: fabric-rds-ca
 {{- end }}

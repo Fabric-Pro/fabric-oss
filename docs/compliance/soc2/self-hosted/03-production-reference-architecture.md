@@ -80,7 +80,7 @@ default `true`). Two pods on the same node never put their traffic on the networ
 | worker → PartyKit broadcasts, when `partykit.enabled` | HTTPS to the public host, `AGENT_SERVICE_SECRET` | TLS to the ALB; the ALB → pod hop is not covered (below) |
 | app pods → OTel collector | OTLP gRPC to the pod's own node (`hostPort`) | Node-local; never crosses the VPC |
 | ALB → web and PartyKit pods | HTTP | **Not covered.** A load balancer hop is outside instance-to-instance encryption. **[customer]** enable VPC Encryption Controls (ALBs move to encrypting hardware; enforce mode refuses unencrypted resources), or terminate TLS in the pod behind an HTTPS target group |
-| pods → RDS Postgres | TLS (RDS 16 rejects plaintext; `PGSSLMODE=no-verify`) | Encrypted, but the server certificate is **not verified**. Moving to `sslmode=verify-full` with the RDS CA bundle mounted is an open item; the Terraform-built `DATABASE_URL` also carries no `sslmode`, which the application's production guard requires |
+| pods and migrate/seed jobs → RDS Postgres | TLS 1.2+ (RDS 16 rejects plaintext) | TLS that verifies the RDS certificate and hostname: the Terraform-built URLs use `sslmode=verify-full` against the Amazon RDS CA bundle the chart mounts at `/etc/fabric/rds` (Prisma migrations: `sslcert` + `sslaccept=strict`). A secret written before this change needs the same URL update (`docs/deployment/ENVIRONMENT-VARIABLES.md` §3.1) |
 | pods → ElastiCache Redis | `rediss://` + AUTH token | TLS (transit encryption on) |
 | pods → Temporal Cloud | gRPC | TLS, fail-closed in production |
 | pods → S3, Secrets Manager, CloudWatch | HTTPS | TLS |

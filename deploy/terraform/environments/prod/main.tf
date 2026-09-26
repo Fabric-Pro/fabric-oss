@@ -155,13 +155,29 @@ module "secrets" {
 
 # --- RDS-derived DATABASE_URL population in Secrets Manager ---
 # Without this the fabric/prod/database secret stays {} and every pod CrashLoops.
+# Postgres TLS verifies the RDS certificate and hostname against the Amazon RDS
+# CAs the Helm chart mounts at this path (templates/platform/rds-ca-bundle.yaml).
+# The app's node-postgres driver takes libpq's verify-full + sslrootcert, which
+# also satisfies its production TLS guard. Prisma's migration engine ignores
+# those and verifies only with its own sslcert + sslaccept=strict, so
+# DIRECT_URL (read only by `prisma migrate`) uses that form.
 locals {
+  rds_ca_bundle = "/etc/fabric/rds/global-bundle.pem"
   database_url = format(
-    "postgresql://%s:%s@%s/%s?schema=public",
+    "postgresql://%s:%s@%s/%s?schema=public&sslmode=verify-full&sslrootcert=%s",
     module.rds.username,
     module.rds.password,
     module.rds.endpoint,
     module.rds.db_name,
+    local.rds_ca_bundle,
+  )
+  database_direct_url = format(
+    "postgresql://%s:%s@%s/%s?schema=public&sslmode=require&sslcert=%s&sslaccept=strict",
+    module.rds.username,
+    module.rds.password,
+    module.rds.endpoint,
+    module.rds.db_name,
+    local.rds_ca_bundle,
   )
 }
 
@@ -169,8 +185,7 @@ resource "aws_secretsmanager_secret_version" "database" {
   secret_id = module.secrets.secret_arns["database"]
   secret_string = jsonencode({
     DATABASE_URL = local.database_url
-    # Prisma requires DIRECT_URL too; identical to DATABASE_URL for non-pgbouncer setups.
-    DIRECT_URL = local.database_url
+    DIRECT_URL   = local.database_direct_url
   })
 
   lifecycle {
@@ -195,10 +210,11 @@ resource "aws_secretsmanager_secret_version" "database_worker" {
   secret_id = module.secrets.secret_arns["database-worker"]
   secret_string = jsonencode({
     WORKER_DATABASE_URL = format(
-      "postgresql://fabric_worker:%s@%s/%s?schema=public",
+      "postgresql://fabric_worker:%s@%s/%s?schema=public&sslmode=verify-full&sslrootcert=%s",
       random_password.worker_db.result,
       module.rds.endpoint,
       module.rds.db_name,
+      local.rds_ca_bundle,
     )
     WORKER_DB_PASSWORD = random_password.worker_db.result
   })

@@ -106,11 +106,10 @@ spec:
           args:
             - "cd /app/packages/database && pnpm exec prisma migrate deploy && pnpm exec tsx ./scripts/apply-rls-direct.ts"
           env:
-            # The RLS step (tsx apply-rls-direct.ts) connects via the
-            # node-postgres PrismaClient, which needs SSL for RDS (see
-            # config-map.yaml). `prisma migrate deploy` ignores PGSSLMODE and is
-            # unaffected. Without this the RLS step fails: "no pg_hba.conf entry
-            # for host ... no encryption" (SQLSTATE 28000).
+            # Fallback only for a database secret written before the Terraform
+            # URLs carried sslmode (see config-map.yaml): a URL's own sslmode
+            # always wins over PGSSLMODE. `prisma migrate deploy` ignores
+            # PGSSLMODE and verifies via DIRECT_URL's sslcert/sslaccept.
             - name: PGSSLMODE
               value: "no-verify"
             # WORKER_RLS_MODE selects bypassrls vs policy for apply-rls-direct.ts.
@@ -144,7 +143,17 @@ spec:
             # fabric-app-secrets is a normal resource applied after hooks.
             - secretRef:
                 name: fabric-migrate-secrets
+          # Amazon RDS CAs for verify-full Postgres TLS (platform/rds-ca-bundle.yaml,
+          # a weight -20 hook, so it exists before this Job runs).
+          volumeMounts:
+            - name: rds-ca
+              mountPath: /etc/fabric/rds
+              readOnly: true
           resources:
             requests: { cpu: 100m, memory: 256Mi }
             limits:   { cpu: 1000m, memory: 1Gi }
+      volumes:
+        - name: rds-ca
+          configMap:
+            name: fabric-rds-ca
 {{- end }}
