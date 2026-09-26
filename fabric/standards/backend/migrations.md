@@ -31,3 +31,33 @@ migration history with the local database. Never delete rows from
 `_prisma_migrations`, remove deployed migration directories, or reset shared
 data as routine recovery. Diagnose the exact drift first and ask before any
 destructive repair.
+
+## Hand-written SQL must still match the datamodel
+
+`prisma migrate dev` replays the migration chain and turns every difference
+from `schema.prisma` into a new migration. When a migration creates an object
+by hand, declare it in `schema.prisma` too, or every later `migrate dev`
+proposes dropping or recreating it — and fails outright when that SQL is
+invalid for the real object.
+
+- A hand-picked or truncated name: pin it with `map:`.
+- A descending index column: `sort: Desc`.
+- A column default set in SQL: `@default(...)`; a generated column's
+  expression: `@default(dbgenerated("..."))`.
+- A composite foreign key Prisma Client must not expose: an `@ignore`d
+  relation, plus the `@@unique` it references. Migrate keeps the constraint;
+  the client never sees it.
+- Partial indexes and CHECK constraints: leave them out and document them on
+  the model. Prisma does not read either, and an `@@index` standing in for a
+  partial index makes every `migrate dev` try to create it again.
+
+The DB Integration workflow fails when the replayed chain and the datamodel
+differ. To check locally, run this from `packages/database` with the URL of an
+empty, disposable database — Prisma wipes the shadow database it is given:
+
+```bash
+npx prisma migrate diff --from-migrations ./prisma/migrations --to-schema-datamodel ./prisma/schema.prisma --shadow-database-url "postgresql://postgres:postgres@localhost:5432/shadow" --script --exit-code
+```
+
+Exit code 0 means no drift; 2 means drift, and the printed SQL is what
+`migrate dev` would generate.
