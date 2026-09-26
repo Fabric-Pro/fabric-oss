@@ -1,7 +1,12 @@
 "use client";
 
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { skipToken, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	type QueryClient,
+	skipToken,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useRef, useSyncExternalStore } from "react";
 
 /**
@@ -57,8 +62,21 @@ export function watchPipelineSync(projectId: string, runId: string): void {
 	notifySubscribers();
 }
 
-function unwatchPipelineSync(projectId: string): void {
-	if (!watches.has(projectId)) {
+/**
+ * Ends a watch — but only the one for THIS run. A second "Sync now" click
+ * that landed while the first run was closing (server-side) can start a
+ * genuinely NEW run and replace the watch before the old run's own "it
+ * closed" or "it timed out" handling gets to run; ending the watch here by
+ * project alone would drop that newer run's watch out from under it.
+ *
+ * Exported as a test seam: the exact React passive-effect-timing window this
+ * guards against (a stale effect closure finishing after a newer watch has
+ * already replaced it) cannot be forced deterministically through the
+ * rendered hook, only reasoned about and exercised at the store level.
+ */
+export function unwatchPipelineSyncRun(projectId: string, runId: string): void {
+	const current = watches.get(projectId);
+	if (!current || current.runId !== runId) {
 		return;
 	}
 	watches = new Map(watches);
@@ -119,6 +137,33 @@ function ingestionProductKeys() {
 	];
 }
 
+function invalidateIngestionProducts(queryClient: QueryClient): void {
+	for (const key of ingestionProductKeys()) {
+		queryClient.invalidateQueries({ queryKey: key });
+	}
+}
+
+/**
+ * The final re-read a watch does when it ends — whether because the run
+ * closed or because it hit the ten-minute cap without closing. Re-reads
+ * syncStates too, not just the ingestion products: once this returns,
+ * polling stops, so a write that landed after the last poll (in the final
+ * gap before closing, or anywhere before an unclosed run gets capped) would
+ * otherwise never be seen without a reload. Ends the watch last, and only
+ * the one for THIS run (`unwatchPipelineSyncRun`).
+ */
+function finishPipelineSyncWatch(
+	queryClient: QueryClient,
+	projectId: string,
+	runId: string,
+): void {
+	queryClient.invalidateQueries({
+		queryKey: orpc.projects.pipelineResults.syncStates.key(),
+	});
+	invalidateIngestionProducts(queryClient);
+	unwatchPipelineSyncRun(projectId, runId);
+}
+
 /**
  * Mount once per surface that shows ingestion products, ABOVE its sub-tabs.
  * Polls the watched run while a requested sync is in flight, and re-reads
@@ -146,34 +191,28 @@ export function usePipelineIngestionRefresh(projectId: string): void {
 
 	const closed = watch !== null && runStateQuery.data?.state === "closed";
 	useEffect(() => {
-		if (!closed) {
+		if (!closed || !watch) {
 			return;
 		}
-		// Re-read syncStates too, not just the ingestion products: polling
-		// stops right after this, so if the last syncStates poll landed just
-		// before the run's final row write, "Last synced" and the failure
-		// banner (both read from it) would otherwise stay pre-sync forever.
-		queryClient.invalidateQueries({
-			queryKey: orpc.projects.pipelineResults.syncStates.key(),
-		});
-		for (const key of ingestionProductKeys()) {
-			queryClient.invalidateQueries({ queryKey: key });
-		}
-		unwatchPipelineSync(projectId);
-	}, [closed, projectId, queryClient]);
+		finishPipelineSyncWatch(queryClient, projectId, watch.runId);
+	}, [closed, watch, projectId, queryClient]);
 
-	// A run that never closes (a stuck worker, a Temporal outage) must not
-	// hold the poll open forever.
+	// A run that never closes (a stuck worker, a Temporal outage, or one
+	// still `running`/`unknown` past the bound) must not hold the poll open
+	// forever — but ending the watch here still needs the SAME final re-read
+	// the closed path does: a write that landed in the last poll gap before
+	// the cap fires would otherwise never be seen without a reload.
 	useEffect(() => {
 		if (!watch) {
 			return;
 		}
+		const { runId } = watch;
 		const timer = setTimeout(
-			() => unwatchPipelineSync(projectId),
+			() => finishPipelineSyncWatch(queryClient, projectId, runId),
 			watch.startedAt + SYNC_WATCH_LIMIT_MS - Date.now(),
 		);
 		return () => clearTimeout(timer);
-	}, [watch, projectId]);
+	}, [watch, projectId, queryClient]);
 
 	// Progressive refresh: re-read ingestion products as each source finishes
 	// an attempt, even before the run itself closes — earlier signal per
@@ -192,8 +231,6 @@ export function usePipelineIngestionRefresh(projectId: string): void {
 		if (previous === null || latestAttemptMs <= previous) {
 			return;
 		}
-		for (const key of ingestionProductKeys()) {
-			queryClient.invalidateQueries({ queryKey: key });
-		}
+		invalidateIngestionProducts(queryClient);
 	}, [latestAttemptMs, queryClient]);
 }

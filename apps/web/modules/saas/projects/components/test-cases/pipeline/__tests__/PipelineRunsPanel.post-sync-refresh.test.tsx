@@ -25,7 +25,13 @@ import {
 	skipToken,
 	useQuery,
 } from "@tanstack/react-query";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	renderHook,
+	screen,
+} from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -199,7 +205,10 @@ import { orpc } from "@shared/lib/orpc-query-utils";
 import { PipelineRunsPanel } from "../PipelineRunsPanel";
 import {
 	resetPipelineSyncWatches,
+	unwatchPipelineSyncRun,
 	usePipelineIngestionRefresh,
+	usePipelineSyncWatch,
+	watchPipelineSync,
 } from "../use-pipeline-sync-watch";
 
 /**
@@ -639,6 +648,45 @@ describe("Testing tab — what a completed sync produced is visible without a re
 		expect(server.syncStateReads).toBe(syncStateReadsPastCap);
 	});
 
+	it("re-reads the views at the ten-minute cap when the run never closes, even with no syncStates row advance (Fizzy #2722 post-ship review)", async () => {
+		server.runState = "unknown";
+		renderTab();
+		expect(await screen.findByText("Seen 1")).toBeInTheDocument();
+
+		await clickSync();
+		// Server-side data changes, but nothing touches a syncStates row, so
+		// nothing progressive can pick it up — only the cap's own final
+		// re-read can, the same one the closed path does.
+		server.findingsSeen = 2;
+		await advance(590_000);
+		expect(screen.getByTestId("findings")).toHaveTextContent("Seen 1");
+
+		await advance(15_000);
+		expect(await screen.findByText("Seen 2")).toBeInTheDocument();
+
+		const readsAfterCap = server.syncStateReads;
+		await advance(60_000);
+		expect(server.syncStateReads).toBe(readsAfterCap);
+	});
+
+	it("still ends the watch on close after a re-click joins the same in-flight run (USE_EXISTING)", async () => {
+		renderTab();
+		expect(await screen.findByText("Seen 1")).toBeInTheDocument();
+
+		await clickSync();
+		// A second click while run-1 is still in flight joins it — the server
+		// returns the SAME runId — and only restarts the watch's own clock.
+		await clickSync();
+		ingestLands();
+		closeRun();
+		await advance(3100);
+
+		expect(await screen.findByText("Seen 2")).toBeInTheDocument();
+		const readsWhenClosed = server.syncStateReads;
+		await advance(60_000);
+		expect(server.syncStateReads).toBe(readsWhenClosed);
+	});
+
 	it("re-reads the Runs section badge and the QA matrix once the run closes (Fizzy #2723)", async () => {
 		renderTab();
 		expect(await screen.findByText("Runs 10")).toBeInTheDocument();
@@ -658,5 +706,65 @@ describe("Testing tab — what a completed sync produced is visible without a re
 
 		expect(await screen.findByText("Runs 11")).toBeInTheDocument();
 		expect(await screen.findByText("Evidence 1")).toBeInTheDocument();
+	});
+});
+
+describe("run-scoped unwatch", () => {
+	// The window this guards — a run's own "it closed" or "it timed out"
+	// effect finishing after a SECOND run's watch has already replaced it
+	// (a genuinely new run started because the server closed the first one
+	// before the client's next poll saw it) — depends on React's passive
+	// effects lagging behind a later synchronous update. That exact
+	// interleaving cannot be forced deterministically through the rendered
+	// hook with the tools available here (`act`/fake timers), so this
+	// exercises the store-level primitive itself, via the one export added
+	// for this reason (`unwatchPipelineSyncRun` — everything else this file
+	// needs is already exported for other tests).
+	beforeEach(() => {
+		resetPipelineSyncWatches();
+	});
+
+	it("does not drop a newer run's watch when an older run's finish arrives late", () => {
+		const { result } = renderHook(() => usePipelineSyncWatch("p1"));
+
+		act(() => {
+			watchPipelineSync("p1", "run-1");
+		});
+		// A second "Sync now" succeeds — server-side, run-1 had already
+		// closed, so this is a genuinely different run — before run-1's own
+		// finish handler gets to run.
+		act(() => {
+			watchPipelineSync("p1", "run-2");
+		});
+
+		act(() => {
+			unwatchPipelineSyncRun("p1", "run-1");
+		});
+
+		expect(result.current?.runId).toBe("run-2");
+	});
+
+	it("still ends the watch when the SAME run finishes (a re-click had joined it)", () => {
+		const { result } = renderHook(() => usePipelineSyncWatch("p1"));
+
+		act(() => {
+			watchPipelineSync("p1", "run-1");
+		});
+
+		act(() => {
+			unwatchPipelineSyncRun("p1", "run-1");
+		});
+
+		expect(result.current).toBeNull();
+	});
+
+	it("does nothing for a project with no current watch", () => {
+		const { result } = renderHook(() => usePipelineSyncWatch("p1"));
+
+		act(() => {
+			unwatchPipelineSyncRun("p1", "run-1");
+		});
+
+		expect(result.current).toBeNull();
 	});
 });
