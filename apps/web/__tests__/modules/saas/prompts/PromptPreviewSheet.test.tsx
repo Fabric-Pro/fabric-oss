@@ -204,6 +204,34 @@ describe("PromptPreviewSheet — cropped-preview fix", () => {
 	});
 });
 
+// The Sheet primitive's right side carries `sm:max-w-sm` (384px); tailwind-merge
+// keeps width and max-width in separate groups, so `sm:w-[600px]` alone was
+// silently clamped to 384px on desktop. The panel must override the cap too.
+describe("PromptPreviewSheet — desktop width", () => {
+	beforeEach(() => {
+		getById.mockReset();
+		getById.mockResolvedValue(basePrompt);
+	});
+
+	it("replaces the primitive's 384px cap with the panel's own 600px", async () => {
+		wrap(
+			<PromptPreviewSheet
+				open
+				onOpenChange={vi.fn()}
+				promptId="p1"
+				promptScope="USER"
+			/>,
+		);
+		await screen.findByText(LONG_TITLE);
+
+		const sheet = screen.getByRole("dialog");
+		expect(sheet.className).toContain("sm:w-[600px]");
+		expect(sheet.className).toContain("sm:max-w-[600px]");
+		expect(sheet.className).not.toContain("sm:max-w-sm");
+		expect(sheet.className).toContain("w-full");
+	});
+});
+
 // Fizzy #2250 (defect 3), the preview Sheet's edit mode: an empty, blank or
 // over-length body is refused inline — a `role="alert"` the textarea points at
 // with `aria-describedby` — with Save disabled, instead of a toast after the
