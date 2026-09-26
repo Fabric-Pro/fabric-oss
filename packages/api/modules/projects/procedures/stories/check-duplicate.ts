@@ -123,6 +123,17 @@ function deriveTitleSegment(description: string): string {
 	return (firstLine ?? description.trim()).slice(0, TITLE_SEGMENT_MAX_CHARS);
 }
 
+/** Per-stage elapsed time, for the decision log and the deadline-exceeded
+ * warn. Fields are filled in as each stage settles, so a log written before
+ * every stage has run (an early failure, or the deadline firing) simply omits
+ * whichever ones haven't happened yet. */
+type StageTimings = {
+	embeddingCheckMs?: number;
+	corpusMs?: number;
+	modelMs?: number;
+	judgeMs?: number;
+};
+
 function logDecision(
 	projectId: string,
 	detail: {
@@ -132,11 +143,13 @@ function logDecision(
 		matchedIdentifier?: string;
 		source?: "decision_evaluation" | "language_model";
 	},
+	ms: StageTimings & { totalMs: number },
 ): void {
 	logger.info(`${LOG_PREFIX} decision`, {
 		projectId,
 		surface: "manual-create",
 		...detail,
+		...ms,
 	});
 }
 
@@ -203,6 +216,7 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 			() => deadlineController.abort(),
 			deadlineMs,
 		);
+		const stageTimings: StageTimings = {};
 		let timedOut = false;
 		const timeoutResult = new Promise<CheckDuplicateResult>((resolve) => {
 			deadlineController.signal.addEventListener("abort", () => {
@@ -218,6 +232,7 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 			// nothing resolves; it returns `{ apiKey: null, _error }` (see
 			// `semantic-search.ts`), so this has to be checked explicitly
 			// rather than left to a downstream throw.
+			const embeddingCheckStart = Date.now();
 			try {
 				const resolved = await resolveModelWithProvider("EMBEDDING", {
 					userId: user.id,
@@ -237,20 +252,41 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 						error instanceof Error ? error.message : String(error),
 				});
 				return unavailable(UNAVAILABLE_MESSAGE);
+			} finally {
+				stageTimings.embeddingCheckMs =
+					Date.now() - embeddingCheckStart;
 			}
 
-			let corpus: Awaited<ReturnType<typeof loadRoutingCorpus>>;
-			try {
-				corpus = await loadRoutingCorpus({
-					projectId,
-					userId: user.id,
-					organizationId,
-					itemTexts: [itemText],
-					logPrefix: LOG_PREFIX,
-					maxStaleEmbeds: MAX_INLINE_EMBEDS,
-					abortSignal: deadlineController.signal,
-				});
-			} catch (error) {
+			// Corpus load and judge-model resolution depend on nothing from
+			// each other, so they run concurrently rather than one after the
+			// other — on the warm path this is most of the request's latency.
+			const corpusModelsStart = Date.now();
+			const corpusPromise = loadRoutingCorpus({
+				projectId,
+				userId: user.id,
+				organizationId,
+				itemTexts: [itemText],
+				logPrefix: LOG_PREFIX,
+				maxStaleEmbeds: MAX_INLINE_EMBEDS,
+				abortSignal: deadlineController.signal,
+			}).finally(() => {
+				stageTimings.corpusMs = Date.now() - corpusModelsStart;
+			});
+			const modelsPromise = resolveRoutingModels({
+				userId: user.id,
+				organizationId,
+				projectId,
+				logPrefix: LOG_PREFIX,
+			}).finally(() => {
+				stageTimings.modelMs = Date.now() - corpusModelsStart;
+			});
+			const [corpusOutcome, modelsOutcome] = await Promise.allSettled([
+				corpusPromise,
+				modelsPromise,
+			]);
+
+			if (corpusOutcome.status === "rejected") {
+				const error = corpusOutcome.reason;
 				if (error instanceof AIProviderNotConfiguredError) {
 					return unavailable(UNAVAILABLE_MESSAGE);
 				}
@@ -261,25 +297,22 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 				});
 				return unavailable(UNAVAILABLE_MESSAGE);
 			}
+			const corpus = corpusOutcome.value;
 
 			if (corpus.kind === "empty") {
-				logDecision(projectId, {
-					decision: "create",
-					confidence: 1,
-					candidates: 0,
-				});
+				// A legitimate, fully-evaluated outcome regardless of whether
+				// model resolution (run concurrently, for nothing) succeeded
+				// — there was never going to be a judge call either way.
+				logDecision(
+					projectId,
+					{ decision: "create", confidence: 1, candidates: 0 },
+					{ ...stageTimings, totalMs: Date.now() - startedAt },
+				);
 				return { decision: "create", confidence: 1, alternatives: [] };
 			}
 
-			let models: Awaited<ReturnType<typeof resolveRoutingModels>>;
-			try {
-				models = await resolveRoutingModels({
-					userId: user.id,
-					organizationId,
-					projectId,
-					logPrefix: LOG_PREFIX,
-				});
-			} catch (error) {
+			if (modelsOutcome.status === "rejected") {
+				const error = modelsOutcome.reason;
 				logger.warn(`${LOG_PREFIX} could not resolve the judge model`, {
 					projectId,
 					error:
@@ -287,7 +320,9 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 				});
 				return unavailable(UNAVAILABLE_MESSAGE);
 			}
+			const models = modelsOutcome.value;
 
+			const judgeStart = Date.now();
 			const judgement = await judgeRoutingItem({
 				itemText,
 				// The dialog captures no reasoning of its own; tell the judge
@@ -309,6 +344,7 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 				logPrefix: LOG_PREFIX,
 				abortSignal: deadlineController.signal,
 			});
+			stageTimings.judgeMs = Date.now() - judgeStart;
 
 			if (judgement.kind === "failed") {
 				logger.warn(`${LOG_PREFIX} judge failed`, {
@@ -324,13 +360,17 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 			}
 
 			if (judgement.kind === "enrich") {
-				logDecision(projectId, {
-					decision: "enrich",
-					confidence: judgement.confidence,
-					candidates: judgement.alternatives.length,
-					matchedIdentifier: judgement.target.identifier,
-					source: judgement.source,
-				});
+				logDecision(
+					projectId,
+					{
+						decision: "enrich",
+						confidence: judgement.confidence,
+						candidates: judgement.alternatives.length,
+						matchedIdentifier: judgement.target.identifier,
+						source: judgement.source,
+					},
+					{ ...stageTimings, totalMs: Date.now() - startedAt },
+				);
 				return {
 					decision: "enrich",
 					confidence: judgement.confidence,
@@ -342,12 +382,16 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 				};
 			}
 
-			logDecision(projectId, {
-				decision: "create",
-				confidence: judgement.confidence,
-				candidates: judgement.alternatives.length,
-				source: judgement.source,
-			});
+			logDecision(
+				projectId,
+				{
+					decision: "create",
+					confidence: judgement.confidence,
+					candidates: judgement.alternatives.length,
+					source: judgement.source,
+				},
+				{ ...stageTimings, totalMs: Date.now() - startedAt },
+			);
 			return {
 				decision: "create",
 				confidence: judgement.confidence,
@@ -362,6 +406,7 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 			logger.warn(`${LOG_PREFIX} request deadline exceeded`, {
 				projectId,
 				deadlineMs,
+				...stageTimings,
 				elapsedMs: Date.now() - startedAt,
 			});
 		}

@@ -100,8 +100,13 @@ vi.mock("@repo/payments/lib/ai-usage-limit-error", () => ({
 	AiUsageLimitExceededError,
 }));
 
+const { mockLoggerInfo, mockLoggerWarn } = vi.hoisted(() => ({
+	mockLoggerInfo: vi.fn(),
+	mockLoggerWarn: vi.fn(),
+}));
+
 vi.mock("@repo/logs", () => ({
-	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+	logger: { info: mockLoggerInfo, warn: mockLoggerWarn, error: vi.fn() },
 }));
 
 vi.mock("@repo/database", async () => {
@@ -408,6 +413,89 @@ describe("checkDuplicateProcedure — decision outcomes", () => {
 		const embedded = mockGenerateEmbeddings.mock.calls[0][0] as string[];
 		expect(embedded[0]).toContain("Export jobs stall");
 		expect(embedded[0]).toContain("Large exports lock the worker.");
+	});
+
+	it("logs per-stage timings on the decision line", async () => {
+		arrange({ decision: "create", confidence: 1 });
+
+		await runCheck();
+
+		const call = mockLoggerInfo.mock.calls.find(
+			([message]) => message === "[Duplicate Check] decision",
+		);
+		expect(call).toBeDefined();
+		const [, detail] = call as [string, Record<string, unknown>];
+		expect(detail.embeddingCheckMs).toBeGreaterThanOrEqual(0);
+		expect(detail.corpusMs).toBeGreaterThanOrEqual(0);
+		expect(detail.modelMs).toBeGreaterThanOrEqual(0);
+		expect(detail.judgeMs).toBeGreaterThanOrEqual(0);
+		expect(detail.totalMs).toBeGreaterThanOrEqual(0);
+	});
+
+	it("resolves the judge model concurrently with the corpus, not sequentially", async () => {
+		let resolveCorpusStories: (() => void) | undefined;
+		let resolveModel: (() => void) | undefined;
+		mockListActiveStories.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					resolveCorpusStories = () => resolve([TICKET]);
+				}),
+		);
+		mockGetAIModelWithMetadata.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					resolveModel = () =>
+						resolve({
+							model: { id: "judge-model" },
+							trackUsage: vi.fn(),
+						});
+				}),
+		);
+
+		const resultPromise = runCheck();
+		// Let the embedding-credentials pre-check settle and both the corpus
+		// and the model call actually fire, without letting either resolve.
+		for (let i = 0; i < 10; i++) {
+			await Promise.resolve();
+		}
+
+		// Both calls fired while the OTHER was still pending — sequential
+		// code could never reach the model call while blocked awaiting the
+		// still-unresolved corpus.
+		expect(mockListActiveStories).toHaveBeenCalled();
+		expect(mockGetAIModelWithMetadata).toHaveBeenCalled();
+
+		mockGenerateEmbeddings.mockResolvedValue({
+			embeddings: [[1, 0, 0]],
+			model: "text-embedding-3-small",
+		});
+		mockGenerateObject.mockResolvedValue({
+			object: { decision: "create", confidence: 1 },
+		});
+		resolveModel?.();
+		resolveCorpusStories?.();
+
+		const result = await resultPromise;
+		expect(result.decision).toBe("create");
+	});
+
+	it("returns a clean create for an empty backlog even when model resolution fails", async () => {
+		mockListActiveStories.mockResolvedValue([]);
+		mockGetAIModelWithMetadata.mockRejectedValue(
+			new Error("no COMPLEX model configured"),
+		);
+
+		const result = await runCheck();
+
+		expect(result.decision).toBe("create");
+		expect(result.confidence).toBe(1);
+		expect(result.alternatives).toEqual([]);
+		expect(result.error).toBeUndefined();
+		expect(
+			mockLoggerInfo.mock.calls.some(
+				([message]) => message === "[Duplicate Check] decision",
+			),
+		).toBe(true);
 	});
 });
 
