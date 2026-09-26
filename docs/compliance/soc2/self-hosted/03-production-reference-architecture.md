@@ -76,6 +76,8 @@ default `true`). Two pods on the same node never put their traffic on the networ
 |---|---|---|
 | web ↔ agents, web → MCP wrapper, worker → agents, agents → web | HTTP, cluster DNS | Nitro encryption between nodes; bearer keys authenticate the call |
 | app pods → Qdrant | HTTP/gRPC 6333/6334, API key | Nitro encryption between nodes |
+| PartyKit → web (`/api/collab/verify`), when `partykit.enabled` | HTTP, cluster DNS | Nitro encryption between nodes |
+| worker → PartyKit broadcasts, when `partykit.enabled` | HTTPS to the public host, `AGENT_SERVICE_SECRET` | TLS to the ALB; the ALB → pod hop is not covered (below) |
 | app pods → OTel collector | OTLP gRPC to the pod's own node (`hostPort`) | Node-local; never crosses the VPC |
 | ALB → web and PartyKit pods | HTTP | **Not covered.** A load balancer hop is outside instance-to-instance encryption. **[customer]** enable VPC Encryption Controls (ALBs move to encrypting hardware; enforce mode refuses unencrypted resources), or terminate TLS in the pod behind an HTTPS target group |
 | pods → RDS Postgres | TLS (RDS 16 rejects plaintext; `PGSSLMODE=no-verify`) | Encrypted, but the server certificate is **not verified**. Moving to `sslmode=verify-full` with the RDS CA bundle mounted is an open item; the Terraform-built `DATABASE_URL` also carries no `sslmode`, which the application's production guard requires |
@@ -85,6 +87,10 @@ default `true`). Two pods on the same node never put their traffic on the networ
 
 A requirement for TLS on every service-to-service call, rather than encryption on
 the wire, needs a service mesh (for example Linkerd or Istio); none is shipped.
+
+Moving an existing cluster to an encrypting node type replaces the managed node
+group. While old and new nodes run side by side, traffic between them is not
+encrypted, so drain the old group promptly.
 
 ### Compute (EKS)
 - Managed node group with autoscaling (`min/desired/max`), spread across AZs.
