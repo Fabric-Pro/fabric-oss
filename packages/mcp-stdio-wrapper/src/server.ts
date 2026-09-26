@@ -30,6 +30,7 @@ import {
 	internalApiKeyMiddleware,
 	internalOnlyMiddleware,
 } from "./middleware/internal-only";
+import { resolvePreinstalledCommand } from "./preinstalled-command";
 import {
 	getProcessPool,
 	type ProcessPoolConfig,
@@ -119,6 +120,14 @@ async function materializeCredentialFiles(
 		throw error;
 	}
 }
+
+/**
+ * Deadline for the handshake with a freshly spawned server. It covers process
+ * startup — npx resolution, a first download, module loading — which on a
+ * 0.5 vCPU replica with several cold spawns at once runs well past the
+ * ordinary 30 s request timeout. A server that exits still fails at once.
+ */
+const INITIALIZE_TIMEOUT_MS = 120_000;
 
 // =============================================================================
 // Server Factory
@@ -268,8 +277,19 @@ export function createServer(config: ServerConfig = {}): Hono {
 					const commandParts = parsedCommand.filter(
 						(part): part is string => typeof part === "string",
 					);
-					const executable = commandParts[0];
-					const commandArgs = [...commandParts.slice(1), ...args];
+					const preinstalled =
+						await resolvePreinstalledCommand(commandParts);
+					if (preinstalled) {
+						console.log(
+							`[MCP Call] Running preinstalled ${preinstalled.packageName}@${preinstalled.version} instead of npx`,
+						);
+					}
+					const executable =
+						preinstalled?.executable ?? commandParts[0];
+					const commandArgs = [
+						...(preinstalled?.args ?? commandParts.slice(1)),
+						...args,
+					];
 
 					let cleanupPaths: string[] = [];
 					let newTransport: Awaited<
@@ -290,17 +310,21 @@ export function createServer(config: ServerConfig = {}): Hono {
 						});
 
 						// MCP connections must initialize successfully before use.
-						await newTransport.request("initialize", {
-							protocolVersion: "2025-03-26",
-							capabilities: {
-								tools: {},
-								elicitation: {},
+						await newTransport.request(
+							"initialize",
+							{
+								protocolVersion: "2025-03-26",
+								capabilities: {
+									tools: {},
+									elicitation: {},
+								},
+								clientInfo: {
+									name: "fabric-mcp-stdio-wrapper",
+									version: "1.0.0",
+								},
 							},
-							clientInfo: {
-								name: "fabric-mcp-stdio-wrapper",
-								version: "1.0.0",
-							},
-						});
+							INITIALIZE_TIMEOUT_MS,
+						);
 						await newTransport.notify("notifications/initialized");
 					} catch (error) {
 						await newTransport?.close().catch(() => {});
