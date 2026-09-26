@@ -169,8 +169,14 @@ export function routingBlocker(
 	return null;
 }
 
-/** Three coarse bands — a raw 0..1 score reads as false precision. */
-function confidenceBand(value: number): {
+/**
+ * Three coarse bands — a raw 0..1 score reads as false precision.
+ *
+ * Exported so the roadmap create dialog's duplicate-warning step
+ * (`CreateStoryDuplicateWarning.tsx`, Fizzy #2180) reuses the SAME bands
+ * rather than a second copy that could silently drift from this one.
+ */
+export function confidenceBand(value: number): {
 	label: string;
 	className: string;
 } {

@@ -9,6 +9,7 @@
 		".": "./index.ts",
 		"./activities": "./src/activities/index.ts",
 		"./activities/publishing-suggestion": "./src/activities/publishing-suggestion/index.ts",
+		"./backlog-routing-core": "./src/lib/backlog-routing-core.ts",
 		"./clean-spec-agent-for-kind": "./src/lib/clean-spec-agent-for-kind.ts",
 		"./context-embedding-start": "./src/lib/context-embedding-start.ts",
 		"./delete-channel-context": "./src/lib/delete-channel-context.ts",
