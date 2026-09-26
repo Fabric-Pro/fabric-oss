@@ -104,7 +104,12 @@ function report() {
 			total += sizeOf(absolutePath);
 		}
 		routes.push({
-			route: relativeTrace.replace(/\.nft\.json$/, ""),
+			// A route is a URL-shaped name, so print it with `/` on every OS —
+			// `fs.globSync` returns `\`-separated paths on Windows.
+			route: relativeTrace
+				.split(path.sep)
+				.join("/")
+				.replace(/\.nft\.json$/, ""),
 			bytes: total,
 			fileCount: unique.size,
 		});
