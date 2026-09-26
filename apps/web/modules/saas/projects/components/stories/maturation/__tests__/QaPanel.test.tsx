@@ -241,6 +241,17 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					key: () => ["pipelineSources"],
 				},
 				sync: { mutationOptions: (opts: unknown) => opts },
+				// Polled by the ingestion-refresh watch to tell this sync's run
+				// apart from another writer's rows (Fizzy #2722) — constructed on
+				// every render of `usePipelineIngestionRefresh` even with no watch
+				// active, when its `input` is `skipToken`.
+				syncRun: {
+					queryOptions: (opts: unknown) => ({
+						...(opts as object),
+						__key: "pipelineSyncRun",
+					}),
+					key: () => ["pipelineSyncRun"],
+				},
 				// "Run tests" — the trigger dialog is mounted (closed) with the
 				// panel, so its query options are constructed on every render even
 				// though the query itself only runs once the dialog opens.
@@ -419,6 +430,11 @@ beforeEach(() => {
 		}
 		if (opts?.__key === "pipelineSyncStates") {
 			return { data: syncStatesData, isLoading: false, isError: false };
+		}
+		if (opts?.__key === "pipelineSyncRun") {
+			// No sync is ever triggered in this suite, so the watch never
+			// exists and this matches a real disabled (skipToken) query.
+			return { data: undefined, isLoading: false, isError: false };
 		}
 		if (opts?.__key === "unmatchedTests") {
 			return { data: unmatchedData, isLoading: false, isError: false };

@@ -324,6 +324,10 @@ function CreatePlanDialog({
 				queryClient.invalidateQueries({
 					queryKey: orpc.projects.testCases.plans.list.key(),
 				});
+				// A new plan changes the Plans section badge too.
+				queryClient.invalidateQueries({
+					queryKey: orpc.projects.testCases.sectionCounts.key(),
+				});
 				onOpenChange(false);
 				onCreated(data.plan.id);
 			},

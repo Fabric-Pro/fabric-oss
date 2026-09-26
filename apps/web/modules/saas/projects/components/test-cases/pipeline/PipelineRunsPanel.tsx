@@ -86,8 +86,8 @@ export function PipelineRunsPanel({
 	const [runOpen, setRunOpen] = useState(false);
 
 	// Poll while a requested sync is still running so freshly-ingested runs
-	// appear without a manual refresh. The watch ends when every source has
-	// finished, not after a fixed delay, so a slow CI is not cut off.
+	// appear without a manual refresh. The watch ends when the Temporal run it
+	// named closes, not after a fixed delay, so a slow CI is not cut off.
 	// A triggered CI run keeps its own short window: nothing about it ends a
 	// sync, so it cannot use the watch's completion signal.
 	const syncWatch = usePipelineSyncWatch(projectId);
@@ -178,9 +178,9 @@ export function PipelineRunsPanel({
 
 	const syncMutation = useMutation(
 		orpc.projects.pipelineResults.sync.mutationOptions({
-			onSuccess: () => {
+			onSuccess: (data) => {
 				toast.success(t("syncStarted"));
-				watchPipelineSync(projectId, syncStatesQuery.data ?? []);
+				watchPipelineSync(projectId, data.runId);
 				for (const key of [
 					orpc.projects.pipelineResults.listRuns.key(),
 					orpc.projects.pipelineResults.listRunsPage.key(),

@@ -327,6 +327,7 @@ import {
 	promoteQaFindingProcedure,
 	setQaPipelineBranchProcedure,
 	syncPipelineResultsProcedure,
+	syncRunStateProcedure,
 	triggerPipelineProcedure,
 } from "./procedures/pipeline-results";
 import {
@@ -1508,6 +1509,8 @@ export const projectsRouter = {
 		/** Per-repository sync health for Settings ▸ Development (card #2383). */
 		syncHealth: getProjectRepositoryPipelineSyncHealthProcedure,
 		sync: syncPipelineResultsProcedure,
+		/** Whether the exact run `sync` started or joined has closed (Fizzy #2722). */
+		syncRun: syncRunStateProcedure,
 		sources: listQaPipelineSourcesProcedure,
 		setBranch: setQaPipelineBranchProcedure,
 		/** Start a run in the customer's existing CI. */

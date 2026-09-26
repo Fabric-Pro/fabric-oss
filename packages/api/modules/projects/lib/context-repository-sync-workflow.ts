@@ -12,6 +12,10 @@
  */
 import { getTemporalClient } from "@repo/temporal";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
+import {
+	CLOSED_WORKFLOW_STATUSES,
+	withTimeout,
+} from "../../../lib/temporal-describe";
 
 /** The registered workflow type name (T3 registers the function under it). */
 const CONTEXT_REPOSITORY_SYNC_WORKFLOW = "projectContextRepositorySyncWorkflow";
@@ -100,25 +104,6 @@ export type ContextSyncExecutionState =
 const CONTEXT_SYNC_DESCRIBE_TIMEOUT_MS = 5_000;
 const CONTEXT_SYNC_DESCRIBE_BUDGET_MS = 20_000;
 
-const CLOSED_STATUSES: ReadonlySet<string> = new Set([
-	"COMPLETED",
-	"FAILED",
-	"CANCELLED",
-	"TERMINATED",
-	"TIMED_OUT",
-	"CONTINUED_AS_NEW",
-]);
-
-class DescribeTimeout extends Error {}
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const timeout = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => reject(new DescribeTimeout()), ms);
-	});
-	return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
-
 /**
  * The workflow run id a run key names: `<syncId>:<workflow run id>`. `null`
  * for a key of another shape, which the caller treats as `unknown`.
@@ -179,7 +164,7 @@ export async function describeContextSyncExecutions(input: {
 				runKey,
 				status === "RUNNING"
 					? "running"
-					: CLOSED_STATUSES.has(status)
+					: CLOSED_WORKFLOW_STATUSES.has(status)
 						? "closed"
 						: "unknown",
 			);
