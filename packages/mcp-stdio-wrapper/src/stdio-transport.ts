@@ -189,7 +189,11 @@ export class StdioTransport {
 	/**
 	 * Send a JSON-RPC request to the MCP server and wait for response.
 	 */
-	async request(method: string, params?: unknown): Promise<unknown> {
+	async request(
+		method: string,
+		params?: unknown,
+		timeoutMs = this.requestTimeoutMs,
+	): Promise<unknown> {
 		if (!this.process || this.isClosing) {
 			throw new Error("Transport not connected");
 		}
@@ -205,12 +209,8 @@ export class StdioTransport {
 		return new Promise((resolve, reject) => {
 			const timeout = setTimeout(() => {
 				this.pendingRequests.delete(id);
-				reject(
-					new Error(
-						`Request timeout after ${this.requestTimeoutMs}ms`,
-					),
-				);
-			}, this.requestTimeoutMs);
+				reject(new Error(`Request timeout after ${timeoutMs}ms`));
+			}, timeoutMs);
 
 			this.pendingRequests.set(id, { resolve, reject, timeout });
 
