@@ -2581,6 +2581,11 @@ model ProjectContextConversationBundle {
   id              String         @id @default(cuid())
   parentContextId String
   parentContext   ProjectContext @relation(fields: [parentContextId], references: [id], onDelete: Cascade)
+  // Do not edit this relation. Prisma cannot express MATCH FULL, so changing
+  // its fields or referential actions makes `migrate dev` recreate the
+  // constraint without it. If `migrate dev` ever proposes altering this
+  // constraint, delete that statement. scripts/assert-handwritten-constraints.sql,
+  // run by the required unit-tests check, fails if the constraint loses its shape.
   ownerParent     ProjectContext? @relation("ProjectContextConversationBundleOwner", fields: [parentContextId, projectId, ownerKey], references: [id, projectId, ownerKey], onDelete: Cascade, onUpdate: NoAction, map: "project_context_conversation_bundle_owner_fkey") @ignore
 
   /// Denormalized from parent.projectId so project-scoped filters and RLS apply
@@ -2670,6 +2675,7 @@ model ProjectContextConversationClaim {
   id              String         @id @default(cuid())
   parentContextId String
   parentContext   ProjectContext @relation(fields: [parentContextId], references: [id], onDelete: Cascade)
+  // Do not edit this relation; see the note on the bundle model's ownerParent.
   ownerParent     ProjectContext? @relation("ProjectContextConversationClaimOwner", fields: [parentContextId, projectId, ownerKey], references: [id, projectId, ownerKey], onDelete: Cascade, onUpdate: NoAction, map: "project_context_conversation_claim_owner_fkey") @ignore
 
   /// Denormalized from parent.projectId; held there by the composite FK.
@@ -8446,6 +8452,12 @@ model PublishingTopicWorkingDraft {
   user         User?           @relation("PublishingWorkingDraftTenant", fields: [userId], references: [id], onDelete: Cascade)
   updatedBy    User?           @relation("PublishingWorkingDraftUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   topicInProject PublishingTopic       @relation("PublishingTopicWorkingDraftTopicProject", fields: [topicId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: Cascade, map: "publishing_topic_working_draft_topic_project_fkey") @ignore
+  // Do not edit this relation. Changing its fields or referential actions
+  // makes `migrate dev` recreate the constraint as a plain ON DELETE SET NULL
+  // over all three columns; Postgres accepts that, and deleting a candidate
+  // then fails on NOT NULL `topicId`. If `migrate dev` ever proposes altering
+  // this constraint, delete that statement. scripts/assert-handwritten-constraints.sql,
+  // run by the required unit-tests check, fails if the constraint loses its shape.
   sourceDraft    PublishingTopicDraft? @relation("PublishingTopicWorkingDraftSourceDraft", fields: [sourceDraftId, topicId, postType], references: [id, topicId, postType], onDelete: SetNull, onUpdate: Cascade, map: "publishing_topic_working_draft_source_draft_fkey") @ignore
 
   @@unique([topicId, postType]) // at most one working draft per content type

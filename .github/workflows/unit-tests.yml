@@ -121,6 +121,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      migrations: ${{ steps.filter.outputs.migrations }}
     steps:
       # On pull_request events dorny/paths-filter detects changed files via
       # the Pulls API (the `pull-requests: read` permission above) and does
@@ -159,6 +160,14 @@ jobs:
               - 'pnpm-workspace.yaml'
               - 'turbo.json'
               - 'packages/database/prisma/schema.prisma'
+              - '.github/workflows/unit-tests.yml'
+            # Everything the migration-drift job's verdict depends on. A
+            # migration is .sql, which no `code` glob above covers.
+            migrations:
+              - 'packages/database/prisma/schema.prisma'
+              - 'packages/database/prisma/migrations/**'
+              - 'packages/database/scripts/assert-handwritten-constraints.sql'
+              - 'packages/database/package.json'
               - '.github/workflows/unit-tests.yml'
 
   # Resolves the set of packages whose `test` task Turbo would actually run,
@@ -662,6 +671,94 @@ jobs:
       - name: Run browser relay security suite
         run: pnpm --filter @repo/temporal exec vitest run __tests__/browser-automation-redirect-credentials.e2e.test.ts
 
+  # The migration chain, replayed into an empty database, must match
+  # schema.prisma exactly (Fizzy #2268). `prisma migrate dev` diffs that
+  # replay against the datamodel and turns every difference into a
+  # migration it writes and applies on each fresh database; when the
+  # difference is an object Prisma cannot model, that generated SQL fails.
+  # `migrate deploy` never diffs, so nothing else in CI notices. It lives in
+  # this workflow because `unit-tests` is the required check: in
+  # db-integration.yml, which is not required, a red verdict blocked nothing.
+  # Runs only when a path in the `migrations` filter changed.
+  migration-drift:
+    name: Migration drift
+    needs: changes
+    if: >-
+      (github.repository != 'Fabric-Pro/fabric-dev' ||
+       github.event_name == 'workflow_dispatch') &&
+      github.event_name != 'push' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.migrations == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: migration_drift
+        ports:
+          - 5432:5432
+        # A TCP probe with a start period, for the reasons given on the
+        # identical service in db-integration.yml.
+        options: >-
+          --health-cmd "pg_isready -U postgres -h 127.0.0.1 -p 5432"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 15s
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/migration_drift
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/migration_drift
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        # Version is read from root package.json's `packageManager` field.
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          # Same npm audit stall as the shards: skip it.
+          npm_config_audit: "false"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply the migration chain to an empty database
+        working-directory: packages/database
+        run: pnpm exec prisma migrate deploy --schema=./prisma/schema.prisma
+
+      # Exit code 2 means drift; the printed SQL is what `migrate dev` would
+      # generate. Plain `pnpm exec`, because `pnpm --filter ... exec` reports
+      # every child failure as exit code 1 and would hide the drift signal.
+      - name: Replayed migrations match schema.prisma
+        working-directory: packages/database
+        run: |
+          set +e
+          pnpm exec prisma migrate diff \
+            --from-url "$DATABASE_URL" \
+            --to-schema-datamodel ./prisma/schema.prisma \
+            --script --exit-code
+          status=$?
+          set -e
+          if [ "$status" -eq 2 ]; then
+            echo "::error::schema.prisma does not match the replayed migration chain; the SQL above is what 'prisma migrate dev' would generate on a fresh database. Declare hand-written objects in schema.prisma (map:, sort:, @default, or an @ignore'd relation for a composite foreign key). Objects Prisma does not read, such as partial indexes and CHECK constraints, must stay out of it."
+          fi
+          exit "$status"
+
+      # The drift check cannot see what Prisma does not compare. See the
+      # script's header for why these constraints need their own assertion.
+      - name: Hand-written constraints keep the shape Prisma cannot express
+        working-directory: packages/database
+        run: pnpm exec prisma db execute --file ./scripts/assert-handwritten-constraints.sql --schema=./prisma/schema.prisma
+
   # Seeds the caches a relay PR's one and only run restores (see header).
   # Installs and generates; runs no tests, so it takes minutes rather than
   # the sweep's wall clock. Not run in the staging repo: nothing there
@@ -729,7 +826,7 @@ jobs:
   # touched, and which are conditionally skipped altogether.
   unit-tests:
     name: unit-tests
-    needs: [changes, plan, vitest, browser-security]
+    needs: [changes, plan, vitest, browser-security, migration-drift]
     # Not on push: the master run warms caches and runs no tests, so it has
     # no verdict to report (and `changes` is skipped there, which the
     # fail-closed check below would otherwise flag). Skipped entirely in the
@@ -747,6 +844,8 @@ jobs:
       HAS_SHARDS: ${{ needs.plan.outputs.has_shards }}
       VITEST_RESULT: ${{ needs.vitest.result }}
       BROWSER_SECURITY_RESULT: ${{ needs.browser-security.result }}
+      MIGRATIONS_CHANGED: ${{ needs.changes.outputs.migrations }}
+      MIGRATION_DRIFT_RESULT: ${{ needs.migration-drift.result }}
     steps:
       - name: Aggregate
         env:
@@ -758,6 +857,17 @@ jobs:
           if [[ "$CHANGES_RESULT" != "success" ]]; then
             echo "::error::Path-filter job did not succeed (result: $CHANGES_RESULT). Cannot determine whether unit tests are required."
             exit 1
+          fi
+
+          # Checked before the early exits below: a migration-only PR changes
+          # no test-relevant path, and its verdict is exactly this job's. A
+          # skip when it was required means its condition drifted from this
+          # one, which is a failure, not a pass.
+          if [[ "$EVENT_NAME" != "pull_request" || "$MIGRATIONS_CHANGED" == "true" ]]; then
+            if [[ "$MIGRATION_DRIFT_RESULT" != "success" ]]; then
+              echo "::error::Migration drift job did not succeed (result: $MIGRATION_DRIFT_RESULT). See its log for the drifted SQL or the constraint that lost its shape."
+              exit 1
+            fi
           fi
 
           # On PRs: tests are required only when test-relevant paths changed.

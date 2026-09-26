@@ -262,32 +262,6 @@ jobs:
         # revalidation for that migration's offline authoring.
         run: pnpm --filter @repo/database exec prisma migrate deploy --schema=./prisma/schema.prisma
 
-      # The database above is the migration chain replayed from empty, which
-      # is exactly what `prisma migrate dev` builds before it diffs against
-      # schema.prisma. Any difference here becomes a migration that `migrate
-      # dev` writes and applies on every fresh local database — and when the
-      # difference is an object Prisma cannot model, that generated SQL fails
-      # (Fizzy #2268: a duplicate partial index, a DROP DEFAULT on a generated
-      # column, a DROP INDEX under a constraint). `migrate deploy` never
-      # diffs, so nothing else in CI notices. Exit code 2 means drift; the
-      # printed SQL is what `migrate dev` would generate. Plain `pnpm exec`
-      # from the package directory, because `pnpm --filter ... exec` reports
-      # every child failure as exit code 1 and would hide the drift signal.
-      - name: 'Guard: replayed migrations match schema.prisma (no drift)'
-        working-directory: packages/database
-        run: |
-          set +e
-          pnpm exec prisma migrate diff \
-            --from-url "$DATABASE_URL" \
-            --to-schema-datamodel ./prisma/schema.prisma \
-            --script --exit-code
-          status=$?
-          set -e
-          if [ "$status" -eq 2 ]; then
-            echo "::error::schema.prisma does not match the replayed migration chain; the SQL above is what 'prisma migrate dev' would generate on a fresh database. Declare hand-written objects in schema.prisma (map:, sort:, @default, or an @ignore'd relation for a composite foreign key). Objects Prisma does not read, such as partial indexes and CHECK constraints, must stay out of it."
-          fi
-          exit "$status"
-
       - name: Apply RLS policies
         # Invoked directly (not via the `apply:rls` npm script) because that
         # script is wrapped in `dotenv -c -e ../../.env.local --`, and
