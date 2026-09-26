@@ -46,14 +46,20 @@ invalid for the real object.
   expression: `@default(dbgenerated("..."))`.
 - A composite foreign key Prisma Client must not expose: an `@ignore`d
   relation, plus the `@@unique` it references. Migrate keeps the constraint;
-  the client never sees it.
+  the client never sees it. Its columns drop out of the client's checked
+  create and update inputs, so write them as plain scalar fields. Prisma
+  compares neither MATCH FULL nor an ON DELETE SET NULL column list: when the
+  constraint uses either, add it to
+  `packages/database/scripts/assert-handwritten-constraints.sql`.
 - Partial indexes and CHECK constraints: leave them out and document them on
   the model. Prisma does not read either, and an `@@index` standing in for a
   partial index makes every `migrate dev` try to create it again.
 
-The DB Integration workflow fails when the replayed chain and the datamodel
-differ. To check locally, run this from `packages/database` with the URL of an
-empty, disposable database — Prisma wipes the shadow database it is given:
+The `Migration drift` job fails the required `unit-tests` check when the
+replayed chain and the datamodel differ, or when one of those constraints
+loses its shape. To check locally, run this from `packages/database` with the
+URL of an empty, disposable database — Prisma wipes the shadow database it is
+given:
 
 ```bash
 npx prisma migrate diff --from-migrations ./prisma/migrations --to-schema-datamodel ./prisma/schema.prisma --shadow-database-url "postgresql://postgres:postgres@localhost:5432/shadow" --script --exit-code
