@@ -87,12 +87,12 @@ export function MeetingDigestTab({
 		setHighlightItemKey(itemKey);
 	}, [searchParams]);
 	const [view, setView] = useState<"month" | "agenda">("month");
-	// #2143: which of the two digest tabs is active. Deliberately plain state —
-	// the card settled on "Upcoming default, no persistence". Held here rather
-	// than as Tabs defaultValue so opening and closing the Configure panel
-	// (which unmounts the tab area) doesn't silently reset the selection.
+	// #2143 / #2663: which of the two digest tabs is active. Settled on
+	// "Calendar default, no persistence". Held here rather than as Tabs
+	// defaultValue so opening and closing the Configure panel (which
+	// unmounts the tab area) doesn't silently reset the selection.
 	const [digestTab, setDigestTab] = useState<"upcoming" | "calendar">(
-		"upcoming",
+		"calendar",
 	);
 	const [agendaTarget, setAgendaTarget] = useState<UpcomingMeeting | null>(
 		null,
@@ -384,7 +384,7 @@ export function MeetingDigestTab({
 	// #2143: the empty state moved inside calendarContent, so on the tabbed
 	// layout it is only actually on screen while the Calendar tab is active.
 	// The header button must key off mounted-ness, not eligibility — an empty
-	// digest viewed from the default Upcoming tab would otherwise have no
+	// digest viewed from the Upcoming tab would otherwise have no
 	// one-click add affordance at all (the same stranding #1898 review
 	// finding 1 guarded against, reintroduced across the tab boundary).
 	const genericEmptyStateOnScreen =
