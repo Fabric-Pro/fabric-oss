@@ -185,8 +185,11 @@ export function PromptPreviewSheet({
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			{/* Full width below `sm`: a fixed 500px sheet anchored right on a
-			    390px phone put its left edge — and the Edit button — off screen. */}
-			<SheetContent className="w-full sm:w-[600px] flex flex-col">
+			    390px phone put its left edge — and the Edit button — off screen.
+			    `sm:max-w-[600px]` alongside `sm:w-[600px]`: the Sheet primitive's
+			    right side carries `sm:max-w-sm` (384px), and tailwind-merge keeps
+			    width and max-width apart, so the width alone was clamped to 384px. */}
+			<SheetContent className="w-full sm:w-[600px] sm:max-w-[600px] flex flex-col">
 				<SheetHeader className="shrink-0">
 					<div className="flex items-center gap-2">
 						<SheetTitle className="min-w-0 flex-1">
