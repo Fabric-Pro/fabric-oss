@@ -128,3 +128,39 @@ describe("round trip", () => {
 		expect(twice).toBe(once);
 	});
 });
+
+describe("stripAttachmentBlock on hostile descriptions", () => {
+	const OPEN = "<!-- fabric:attachments -->";
+	const CLOSE = "<!-- /fabric:attachments -->";
+
+	it("folds each block and the newlines around it into one blank line", () => {
+		expect(
+			stripAttachmentBlock(
+				`a\n\n\n${OPEN}x${CLOSE}\n\n${OPEN}y${CLOSE}b\n${OPEN}z`,
+			),
+		).toBe(`a\n\n\n\nb\n${OPEN}z`);
+		expect(stripAttachmentBlock(`\n${OPEN}${CLOSE}\n`)).toBe("\n\n");
+	});
+
+	it("strips in linear time", () => {
+		// The pattern restarted its leading `\n*` from every newline of a run,
+		// and rescanned to the end from every open marker with no close.
+		for (const description of [
+			`${"\n".repeat(100_000)}x`,
+			OPEN.repeat(20_000),
+		]) {
+			const started = performance.now();
+			expect(stripAttachmentBlock(description)).toBe(description);
+			expect(performance.now() - started).toBeLessThan(1000);
+		}
+	});
+
+	it("appends after a long interior whitespace run in linear time", () => {
+		const body = `a${" ".repeat(100_000)}b  \n`;
+		const started = performance.now();
+		expect(appendAttachmentBlock(body, "BLOCK")).toBe(
+			`a${" ".repeat(100_000)}b\n\nBLOCK`,
+		);
+		expect(performance.now() - started).toBeLessThan(1000);
+	});
+});

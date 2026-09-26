@@ -4,12 +4,13 @@
  * Renders frame content to PDF using Playwright.
  *
  * The content is tenant-authored and `html` blocks are rendered as HTML,
- * so the page is treated as hostile: it is rendered in a context with
- * JavaScript disabled, offline, with every outbound request aborted before
- * it leaves the browser, and after `sanitizeFrameHtml` has stripped script,
- * frames, handlers and script URLs. The export is a static rendering of
- * what the tenant wrote; it is never a way to run code or reach a network
- * from the worker's host.
+ * so the page is treated as hostile. The control is the render context:
+ * JavaScript disabled, offline, and every outbound request aborted before
+ * it leaves the browser. On top of that, `sanitizeFrameHtml` strips script,
+ * frames, handlers and script URLs from the rendered blocks; it does not
+ * sanitise CSS, whose fetches only the render context stops. The export is
+ * a static rendering of what the tenant wrote; it is never a way to run
+ * code or reach a network from the worker's host.
  */
 
 import type { FrameDocument } from "@repo/database";
@@ -38,24 +39,35 @@ export interface GeneratePDFInput {
  * Render frame document to HTML
  */
 function renderFrameToHTML(document: FrameDocument): string {
-	const blocks = document.blocks
-		.map((block) => {
-			switch (block.type) {
-				case "html":
-					return sanitizeFrameHtml(block.content);
-				case "markdown":
-					// Simple markdown to HTML (in production, use a proper converter)
-					return `<div class="markdown-content">${escapeHtml(block.content)}</div>`;
-				case "json":
-					return `<pre><code>${escapeHtml(JSON.stringify(JSON.parse(block.content), null, 2))}</code></pre>`;
-				case "mermaid":
-					// Mermaid diagrams would need client-side rendering
-					return `<div class="mermaid">${escapeHtml(block.content)}</div>`;
-				default:
-					return `<div>${escapeHtml(block.content)}</div>`;
-			}
-		})
-		.join("\n");
+	// Sanitised once, over the joined blocks, not block by block: a construct
+	// split across two `html` blocks — `<img src=x` then `onerror=…>`, or
+	// `<a href="java` then `script:…">` — only exists once the blocks are
+	// joined, so a per-block pass never sees it. The fragment reaches
+	// `page.setContent` unchanged inside the template, whose text before it
+	// ends in closed markup and whose text after it is only closing tags,
+	// with no quote or `=` to join with what the fragment leaves open.
+	// Escaped blocks hold no `<` or `=` (see `escapeHtml`), so nothing in
+	// them is read as a tag or an attribute.
+	const blocks = sanitizeFrameHtml(
+		document.blocks
+			.map((block) => {
+				switch (block.type) {
+					case "html":
+						return block.content;
+					case "markdown":
+						// Simple markdown to HTML (in production, use a proper converter)
+						return `<div class="markdown-content">${escapeHtml(block.content)}</div>`;
+					case "json":
+						return `<pre><code>${escapeHtml(JSON.stringify(JSON.parse(block.content), null, 2))}</code></pre>`;
+					case "mermaid":
+						// Mermaid diagrams would need client-side rendering
+						return `<div class="mermaid">${escapeHtml(block.content)}</div>`;
+					default:
+						return `<div>${escapeHtml(block.content)}</div>`;
+				}
+			})
+			.join("\n"),
+	);
 
 	const isDark = document.theme?.mode === "dark";
 	// The accent colour is written into the style block, so only a hex
@@ -144,13 +156,17 @@ function safeHexColor(value: string | undefined): string | undefined {
 
 function escapeHtml(text: string): string {
 	const _div = { toString: () => text };
-	// Simple HTML escaping
+	// Simple HTML escaping. `=` is escaped too, though it renders the same:
+	// escaped text then holds nothing `sanitizeFrameHtml` matches, so a line
+	// such as `online = true` in a markdown block is not read as an
+	// attribute and removed.
 	return text
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;")
 		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#x27;");
+		.replace(/'/g, "&#x27;")
+		.replace(/=/g, "&#61;");
 }
 
 function orientationToPageSize(_document: FrameDocument): string {

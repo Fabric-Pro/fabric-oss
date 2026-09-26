@@ -52,8 +52,31 @@ export function spikeDemoPath(codingRunId: string): string {
  * cannot terminate the block early.
  */
 export function untrustedBlock(source: string, text: string): string {
-	const safe = text.replace(/<\/?untrusted-data[^>]*>/gi, "");
+	const safe = stripUntrustedDataMarkers(text);
 	return `<untrusted-data source="${source}">\n${safe}\n</untrusted-data>`;
+}
+
+/**
+ * The same result as `text.replace(/<\/?untrusted-data[^>]*>/gi, "")`, in
+ * one pass. That regex rescans to the end of the text for every marker with
+ * no `>` after it, so a payload of repeated unterminated markers took
+ * quadratic time (CodeQL js/polynomial-redos). A marker with no `>` after it
+ * means no later marker has one either, so the scan stops there.
+ */
+function stripUntrustedDataMarkers(text: string): string {
+	const marker = /<\/?untrusted-data/gi;
+	let out = "";
+	let kept = 0;
+	for (let open = marker.exec(text); open; open = marker.exec(text)) {
+		const close = text.indexOf(">", marker.lastIndex);
+		if (close === -1) {
+			break;
+		}
+		out += text.slice(kept, open.index);
+		kept = close + 1;
+		marker.lastIndex = kept;
+	}
+	return out + text.slice(kept);
 }
 
 // -- Types ------------------------------------------------------------------

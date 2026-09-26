@@ -49,6 +49,30 @@ describe("normalizePullRequestUrl", () => {
 	it("falls back to a trimmed string for non-URLs", () => {
 		expect(normalizePullRequestUrl("  not-a-url/ ")).toBe("not-a-url");
 	});
+
+	it("strips every trailing slash and only trailing ones", () => {
+		expect(
+			normalizePullRequestUrl("https://github.com/a/b/pull/1///"),
+		).toBe("https://github.com/a/b/pull/1");
+		expect(normalizePullRequestUrl("https://github.com/")).toBe(
+			"https://github.com",
+		);
+		expect(normalizePullRequestUrl("not-a-url//x///")).toBe("not-a-url//x");
+		expect(normalizePullRequestUrl("///")).toBe("");
+	});
+
+	it("handles a long interior run of slashes in linear time", () => {
+		// `/\/+$/` retried every slash of the run against the end.
+		const run = "/".repeat(100_000);
+		const started = performance.now();
+		expect(normalizePullRequestUrl(`not-a-url${run}x`)).toBe(
+			`not-a-url${run}x`,
+		);
+		expect(normalizePullRequestUrl(`https://github.com/${run}x`)).toBe(
+			`https://github.com/${run}x`,
+		);
+		expect(performance.now() - started).toBeLessThan(500);
+	});
 });
 
 describe("stampMergedCodingRuns", () => {

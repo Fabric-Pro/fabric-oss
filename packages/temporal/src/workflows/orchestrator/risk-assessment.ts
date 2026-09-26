@@ -144,8 +144,15 @@ const RISK_EXEMPT_TOOLS = new Set([
  * `http`, `delete` and `removeAll` gives `remove`, `all`.
  */
 function wordsOf(text: string): string[] {
+	// The acronym split marks the one capital that is followed by a capital
+	// and then a lower-case letter: the same `_` that
+	// `/([A-Z]+)([A-Z][a-z])/g` → `$1_$2` inserts, without that pattern
+	// rescanning a long capital run from each of its letters. This runs in
+	// the workflow over model-authored arguments, where a quadratic stall
+	// would time out the workflow task on every retry (CodeQL
+	// js/polynomial-redos).
 	return text
-		.replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+		.replace(/([A-Z])(?=[A-Z][a-z])/g, "$1_")
 		.replace(/([a-z0-9])([A-Z])/g, "$1_$2")
 		.toLowerCase()
 		.split(/[^a-z0-9]+/)

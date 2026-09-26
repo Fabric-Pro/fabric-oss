@@ -353,4 +353,21 @@ describe("buildMcpToolName", () => {
 	it("still yields a usable name when nothing survives repair", () => {
 		expect(buildMcpToolName("***", "***")).toMatch(MCP_TOOL_NAME_PATTERN);
 	});
+
+	it("trims the underscores a repair leaves at either end", () => {
+		expect(buildMcpToolName("(Slack)", "(list)")).toBe("slack_list");
+		expect(buildMcpToolName("__Slack__", "__list__!")).toBe("slack_list");
+		expect(buildMcpToolName("!", "_")).toBe("mcp_tool");
+	});
+
+	it("repairs a tool name made of long underscore runs in linear time", () => {
+		// A server's own tool list is third-party input. Trimming `_+$` over an
+		// uncollapsed run is quadratic; collapsing first leaves the trim at most
+		// one `_` at either end, which this pins.
+		const toolName = `${"_".repeat(200_000)}!${"_".repeat(200_000)}`;
+		const started = performance.now();
+		const name = buildMcpToolName("Slack (Official)", toolName);
+		expect(performance.now() - started).toBeLessThan(500);
+		expect(name).toBe("slack_official");
+	});
 });

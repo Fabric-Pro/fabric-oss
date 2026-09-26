@@ -2142,6 +2142,33 @@ describe("fabric_add_instruction_lesson", () => {
 		expect(m.getProjectAccessContext).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		["a newline", "\n"],
+		["a C1 control (NEL)", "\u0085"],
+		["a C1 control (CSI)", "\u009b"],
+		["a line separator", "\u2028"],
+		["a paragraph separator", "\u2029"],
+	])(
+		"refuses a title holding %s, before touching the project",
+		async (_name, separator) => {
+			// The title reaches the error `lessonPath` throws, which is logged; a
+			// line break of any kind in it would forge a log line.
+			const r = await executePlatformTool(
+				"fabric_add_instruction_lesson",
+				{
+					projectId: "proj_1",
+					title: `Alpha${separator}FORGED`,
+					body: "Body.",
+				},
+				writeSession,
+			);
+
+			expect(r.isError).toBe(true);
+			expect(JSON.stringify(r)).toContain("no control characters");
+			expect(m.getProjectAccessContext).not.toHaveBeenCalled();
+		},
+	);
+
 	it("refuses an empty body", async () => {
 		const r = await executePlatformTool(
 			"fabric_add_instruction_lesson",

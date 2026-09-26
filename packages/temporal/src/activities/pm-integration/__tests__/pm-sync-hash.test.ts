@@ -146,4 +146,39 @@ describe("computePmHash", () => {
 		expect(computePmHash("ab", "cd")).not.toBe(computePmHash("a", "bcd"));
 		expect(computePmHash("ab", "cd")).not.toBe(computePmHash("abcd", ""));
 	});
+
+	// Digests recorded from the regex implementation before its linear-time
+	// rewrite. Stored baselines were computed the same way, so any change here
+	// would read as drift on every synced item.
+	it.each([
+		{
+			title: "Title  ",
+			description: "line one \t\n\n  \nline two \n　",
+			hash: "3878dc1739f05aafa04ad52fc12c4c89dee99d47dac2d107114ab5b9cc0d5573",
+		},
+		{
+			title: "a<b",
+			description: "x <> y <<b>c> 1 < 2 and 3 > 2",
+			hash: "81b37590aa18d04104469cc35625519ead99d99d8f8321e3335e163da21c685e",
+		},
+		{
+			title: "",
+			description: "<p>para</p>\r\n<br/>tail    next ",
+			hash: "22b7f779650307f5f77c127fdbfcca1e0416ad43913551cf308fe64f99c9796d",
+		},
+	])(
+		"keeps the recorded digest for $title",
+		({ title, description, hash }) => {
+			expect(computePmHash(title, description)).toBe(hash);
+		},
+	);
+
+	it("hashes hostile PM text in linear time", () => {
+		// `/\s+$/gm` rescanned a whitespace run that does not end a line from
+		// each of its positions; `/<[^>]+>/g` rescanned to the end from each
+		// `<` with no `>` after it.
+		const started = performance.now();
+		computePmHash(`${" ".repeat(100_000)}x`, "<".repeat(100_000));
+		expect(performance.now() - started).toBeLessThan(1000);
+	});
 });

@@ -75,6 +75,30 @@ describe("parseFrontmatter", () => {
 	});
 });
 
+describe("parseFrontmatter on hostile key lines", () => {
+	it("reads a value after any whitespace and an empty value as none", () => {
+		const fm = parseFrontmatter(
+			"---\nname:\t \tspaced out\ndescription:   \n  continued\nempty:\n---\n",
+		);
+		expect(fm.fields).toEqual({
+			name: "spaced out",
+			description: "continued",
+			empty: "",
+		});
+	});
+
+	it("reads a key line with a long whitespace run in linear time", () => {
+		// `:\s*(.*)$` split the run every possible way once `.` stopped at the
+		// lone `\r`; instruction files come from customer repositories.
+		const line = `name:${"\t".repeat(60_000)}x\ry`;
+		const started = performance.now();
+		const fm = parseFrontmatter(`---\n${line}\n---\nBody\n`);
+		expect(performance.now() - started).toBeLessThan(500);
+		expect(fm.name).toBeNull();
+		expect(fm.body).toBe("Body\n");
+	});
+});
+
 describe("parseFrontmatter keeps keys it has no special meaning for (spec §5.8)", () => {
 	it("returns Guild's owner/tags/tools/status/since/areas in `fields`", () => {
 		const fm = parseFrontmatter(

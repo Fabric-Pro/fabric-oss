@@ -75,14 +75,29 @@ export function buildCodeSearchRepositories(
 }
 
 function normalizeRepositoryRef(value: string): string {
-	return value
-		.trim()
-		.toLowerCase()
-		.replace(/^[a-z]+:\/\//, "")
-		.replace(/^[^@/]+@/, "")
-		.replace(/^www\./, "")
-		.replace(/\.git$/, "")
-		.replace(/\/+$/, "");
+	return stripTrailingSlashes(
+		value
+			.trim()
+			.toLowerCase()
+			.replace(/^[a-z]+:\/\//, "")
+			.replace(/^[^@/]+@/, "")
+			.replace(/^www\./, "")
+			.replace(/\.git$/, ""),
+	);
+}
+
+/**
+ * `value.replace(/\/+$/, "")` without the regex, which retries every `/` of
+ * an interior run against the end of the string and so goes quadratic on a
+ * long one (CodeQL js/polynomial-redos). The ref can be a project's stored
+ * repository URL, which is not length-bounded.
+ */
+function stripTrailingSlashes(value: string): string {
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === 0x2f) {
+		end--;
+	}
+	return value.slice(0, end);
 }
 
 /**

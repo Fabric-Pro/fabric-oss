@@ -6543,8 +6543,15 @@ const MAX_LESSON_TITLE_LENGTH = 120;
 const MAX_LESSON_BODY_LENGTH = 20000;
 const MAX_LESSON_RELATED_PATHS = 20;
 const MAX_LESSON_RELATED_PATH_LENGTH = 512;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters (including the newlines a "single line" title forbids) is the point.
-const LESSON_TITLE_CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
+/**
+ * What a single-line lesson title may not hold: any control character (C0
+ * with its newlines, DEL, and C1 with NEL) and the Unicode line and paragraph
+ * separators U+2028 and U+2029. The title is logged inside the error
+ * `lessonPath` throws and written into the lesson's front matter and heading,
+ * so it must hold nothing a log viewer or YAML reader can take as a line
+ * break.
+ */
+const LESSON_TITLE_CONTROL_CHAR = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 
 /**
  * Read and validate `fabric_add_instruction_lesson`'s arguments, the way
