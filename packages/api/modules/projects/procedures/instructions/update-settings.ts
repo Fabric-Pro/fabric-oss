@@ -7,6 +7,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import { projectIgnoreGlobsSchema } from "./ignore-globs-input";
 
 /**
  * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_UPDATE).
@@ -28,10 +29,7 @@ export const updateSettingsProcedure = tenantProtectedProcedure
 		z.object({
 			projectId: z.string(),
 			organizationId: z.string().nullable().optional(),
-			ignoreGlobs: z
-				.array(z.string().min(1).max(256))
-				.max(200)
-				.nullable(),
+			ignoreGlobs: projectIgnoreGlobsSchema.nullable(),
 		}),
 	)
 	.handler(async ({ input, context }) => {

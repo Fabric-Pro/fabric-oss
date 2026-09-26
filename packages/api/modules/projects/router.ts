@@ -221,6 +221,7 @@ import { disableRepositorySyncProcedure } from "./procedures/instructions/reposi
 import { getRepositorySyncProcedure } from "./procedures/instructions/repository-sync/get";
 import { listRepositorySyncRunsProcedure } from "./procedures/instructions/repository-sync/list-runs";
 import { listInstructionRepositoryTreeProcedure } from "./procedures/instructions/repository-sync/list-tree";
+import { readInstructionRepositoryIgnoreFileProcedure } from "./procedures/instructions/repository-sync/read-ignore-file";
 import { syncRepositoryNowProcedure } from "./procedures/instructions/repository-sync/sync-now";
 import { updateRepositorySyncProposalSettingsProcedure } from "./procedures/instructions/repository-sync/update-proposal-settings";
 import { updateSettingsProcedure as updateInstructionSettingsProcedure } from "./procedures/instructions/update-settings";
@@ -1984,6 +1985,9 @@ export const projectsRouter = {
 			listRuns: listRepositorySyncRunsProcedure,
 			// The configure dialog's folder browser (Fizzy #2725).
 			listTree: listInstructionRepositoryTreeProcedure,
+			// The folder's .fabricignore rules, for the browser's
+			// exclusions (Fizzy #2726).
+			readIgnoreFile: readInstructionRepositoryIgnoreFileProcedure,
 			configure: configureRepositorySyncProcedure,
 			syncNow: syncRepositoryNowProcedure,
 			disable: disableRepositorySyncProcedure,

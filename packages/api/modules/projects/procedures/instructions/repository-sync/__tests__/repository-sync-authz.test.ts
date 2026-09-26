@@ -54,6 +54,7 @@ import { disableRepositorySyncProcedure } from "../disable";
 import { getRepositorySyncProcedure } from "../get";
 import { listRepositorySyncRunsProcedure } from "../list-runs";
 import { listInstructionRepositoryTreeProcedure } from "../list-tree";
+import { readInstructionRepositoryIgnoreFileProcedure } from "../read-ignore-file";
 import { syncRepositoryNowProcedure } from "../sync-now";
 import { updateRepositorySyncProposalSettingsProcedure } from "../update-proposal-settings";
 
@@ -81,11 +82,13 @@ const READ_PROCEDURES = [
 	["get", getRepositorySyncProcedure],
 	["listRuns", listRepositorySyncRunsProcedure],
 ] as const;
-// `listTree` writes nothing, but spends the integration's credential, so it
-// sits behind configure's own permission (Fizzy #2725).
+// `listTree` and `readIgnoreFile` write nothing, but spend the integration's
+// credential, so they sit behind configure's own permission (Fizzy #2725,
+// Fizzy #2726).
 const MUTATING_PROCEDURES = [
 	["configure", configureRepositorySyncProcedure],
 	["listTree", listInstructionRepositoryTreeProcedure],
+	["readIgnoreFile", readInstructionRepositoryIgnoreFileProcedure],
 	["syncNow", syncRepositoryNowProcedure],
 	["disable", disableRepositorySyncProcedure],
 	["updateProposalSettings", updateRepositorySyncProposalSettingsProcedure],
@@ -201,7 +204,7 @@ describe("repositorySync procedures: project visibility (Fizzy #2727)", () => {
 	const visibility =
 		projectNotFoundUnlessVisible as unknown as TaggedMiddleware;
 
-	it("decides visibility before permission on every one of the seven", () => {
+	it("decides visibility before permission on every one of the eight", () => {
 		for (const [name, procedure] of ALL_PROCEDURES) {
 			const middlewares = chain(procedure);
 			const visibilityAt = middlewares.indexOf(visibility);

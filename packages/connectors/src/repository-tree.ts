@@ -36,6 +36,12 @@ import {
  * provider path that cannot be put in that form is left out rather than
  * offered for a selection `configure` would refuse.
  *
+ * A file that is not a REGULAR file — a symbolic link: GitHub's blob mode
+ * `120000` (or any blob mode other than `100644`/`100755`), Azure DevOps's
+ * `isSymLink` — is listed as a file with `regular: false`. Both syncs keep
+ * regular files only, so a preview must not count it as synced; a caller
+ * that does not read the marker lists it exactly as before (Fizzy #2726).
+ *
  * SECURITY: the token is request-scoped — NEVER logged, NEVER returned — and
  * raw provider response bodies are never surfaced. The helper never throws.
  */
@@ -68,7 +74,18 @@ export function isRepositoryTreeProvider(provider: string): boolean {
 	return REPOSITORY_TREE_PROVIDERS.has(provider);
 }
 
-export type RepositoryTreeEntry = { path: string; type: "file" | "dir" };
+export type RepositoryTreeEntry = {
+	path: string;
+	type: "file" | "dir";
+	/**
+	 * Present, and `false`, only on a file that is not a regular file (a
+	 * symbolic link), which no sync reads. Absent on every other entry.
+	 */
+	regular?: false;
+};
+
+/** Git's modes for a regular file (`git ls-tree`): plain and executable. */
+const REGULAR_FILE_MODES: ReadonlySet<string> = new Set(["100644", "100755"]);
 
 export type ListRepositoryTreeOutcome =
 	| "not-found"
@@ -176,7 +193,11 @@ async function listGitHubTree(
 		return { ok: false, outcome: "unreachable" };
 	}
 	const entries: RepositoryTreeEntry[] = [];
-	for (const item of data.tree as Array<{ path?: unknown; type?: unknown }>) {
+	for (const item of data.tree as Array<{
+		path?: unknown;
+		type?: unknown;
+		mode?: unknown;
+	}>) {
 		// `commit` is a submodule: neither a folder nor a file the sync reads.
 		const type =
 			item?.type === "blob"
@@ -188,9 +209,16 @@ async function listGitHubTree(
 			continue;
 		}
 		const path = plainTreePath(item.path);
-		if (path !== null) {
-			entries.push({ path, type });
+		if (path === null) {
+			continue;
 		}
+		// A blob's mode says what it is: `120000` is a symbolic link. A blob
+		// with no mode at all is taken as a file, as it always was.
+		const regular =
+			type !== "file" ||
+			typeof item.mode !== "string" ||
+			REGULAR_FILE_MODES.has(item.mode);
+		entries.push(regular ? { path, type } : { path, type, regular: false });
 	}
 	return capped(entries, data.truncated === true);
 }
@@ -249,6 +277,7 @@ async function listAzureDevOpsTree(
 	for (const item of data.value as Array<{
 		path?: unknown;
 		isFolder?: unknown;
+		isSymLink?: unknown;
 		gitObjectType?: unknown;
 	}>) {
 		if (typeof item?.path !== "string" || item.gitObjectType === "commit") {
@@ -257,12 +286,19 @@ async function listAzureDevOpsTree(
 		// ADO spells every path from the root (`/docs/guide.md`) and lists
 		// the root itself as `/`, which `plainTreePath` leaves out.
 		const path = plainTreePath(item.path);
-		if (path !== null) {
-			entries.push({
-				path,
-				type: item.isFolder === true ? "dir" : "file",
-			});
+		if (path === null) {
+			continue;
 		}
+		// A symbolic link is a blob in git, never a folder, whatever else
+		// the item says.
+		if (item.isSymLink === true) {
+			entries.push({ path, type: "file", regular: false });
+			continue;
+		}
+		entries.push({
+			path,
+			type: item.isFolder === true ? "dir" : "file",
+		});
 	}
 	return capped(entries, false);
 }

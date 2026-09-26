@@ -5787,7 +5787,8 @@
 						"REPOSITORY_NOT_FOUND": "This repository is no longer connected to the project.",
 						"INVALID_ROOT_PATH": "Enter a folder inside the repository, such as agents or tools/claude.",
 						"REPOSITORY_UNREACHABLE": "Couldn't reach the repository. Try again in a moment.",
-						"generic": "Could not save the sync settings."
+						"generic": "Could not save the sync settings.",
+						"ignoreRulesUnavailable": "Couldn't read the project's current ignore rules, so nothing was saved. Try again."
 					}
 				},
 				"tree": {
@@ -5801,7 +5802,31 @@
 					"unsupported": "This repository type doesn't support browsing. Type the folder below.",
 					"truncated": "This branch is too large to list in full: only the first {max, number} entries are shown. Type any other folder below.",
 					"error": "Couldn't list this branch's folders and files. Type the folder below, or try again later.",
-					"refineSearch": "Showing the first {max} matches. Refine the search to see others."
+					"refineSearch": "Showing the first {max} matches. Refine the search to see others.",
+					"exclusions": {
+						"hint": "Exclude leaves a folder under the chosen one out of the sync. Exclusions are saved to the project's ignore rules when you save, and folder uploads and the Coding Instructions settings use the same rules.",
+						"toggle": "Exclude",
+						"toggleLabel": "Exclude {path} from the sync",
+						"excluded": "Excluded",
+						"cause": {
+							"always": "Always skipped by the built-in rule {rule}.",
+							"default": "Skipped by the default rule {rule}, which applies while the project has no ignore rules of its own.",
+							"project": "Skipped by the project's ignore rule {rule}.",
+							"fabricignore": "Skipped by the rule {rule} in this folder's .fabricignore file.",
+							"ancestor": "Skipped because {path} is excluded.",
+							"notRegular": "Not a regular file. Symbolic links are never synced, whatever the ignore rules say."
+						},
+						"block": {
+							"wildcard": "A folder whose path contains * or ? can't be excluded here.",
+							"tooLong": "This folder's path is too long for an ignore rule.",
+							"full": "The project already has {max, number} ignore rules, the most it can keep. Remove one in the Coding Instructions settings to exclude another folder."
+						},
+						"fabricignore": "This folder's .fabricignore file replaces the project's ignore rules, so the sync skips what it lists. Edit that file in the repository to change what is excluded.",
+						"ignoreFileLoading": "Reading this folder's .fabricignore file…",
+						"ignoreFileError": "Couldn't read this folder's .fabricignore file, so what the sync skips can't be shown or changed here. Try again later.",
+						"ignoreFileTooLarge": "This folder's .fabricignore file is larger than 64 KiB, so the sync ignores it and applies the project's rules.",
+						"settingsError": "Couldn't load the project's ignore rules, so folders can't be excluded here."
+					}
 				},
 				"syncNowResult": {
 					"started": "Sync started.",

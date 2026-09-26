@@ -109,13 +109,21 @@ function sameGlobs(
  * procedure exposes `ignoreGlobs` alone. An `ignoreGlobs` change bumps the
  * sync generation, clears the poll cursor and makes the sync due now,
  * because it changes what the next run would produce (spec §4.4, Decision 9).
+ *
+ * `ignoreGlobsChanged` says whether the stored rules actually changed, which
+ * `syncGenerationBumped` does not: a project with no sync row yet (a first
+ * `configure`) changes its rules without bumping anything.
  */
 export async function writeProjectInstructionSettings(
 	tx: Prisma.TransactionClient,
 	projectId: string,
 	organizationId: string,
 	patch: { ignoreGlobs?: string[] | null; sourceOfTruth?: SourceOfTruth },
-): Promise<{ written: boolean; syncGenerationBumped: boolean }> {
+): Promise<{
+	written: boolean;
+	syncGenerationBumped: boolean;
+	ignoreGlobsChanged: boolean;
+}> {
 	const rows = await tx.$queryRaw<Array<{ instructionSettings: unknown }>>`
 		SELECT "instructionSettings"
 		FROM "project"
@@ -124,7 +132,11 @@ export async function writeProjectInstructionSettings(
 	`;
 	const row = rows[0];
 	if (row === undefined) {
-		return { written: false, syncGenerationBumped: false };
+		return {
+			written: false,
+			syncGenerationBumped: false,
+			ignoreGlobsChanged: false,
+		};
 	}
 	const current: InstructionSettingsRecord =
 		row.instructionSettings !== null &&
@@ -142,10 +154,10 @@ export async function writeProjectInstructionSettings(
 		},
 	});
 	let syncGenerationBumped = false;
-	if (
+	const ignoreGlobsChanged =
 		patch.ignoreGlobs !== undefined &&
-		!sameGlobs(current.ignoreGlobs ?? null, patch.ignoreGlobs)
-	) {
+		!sameGlobs(current.ignoreGlobs ?? null, patch.ignoreGlobs);
+	if (ignoreGlobsChanged) {
 		// Due now (Decision 9): a run in flight under the old generation will
 		// land NOT_PUBLISHED, and the next poll tick must re-evaluate the head
 		// under the new rules so its run replaces that line on the tab. A
@@ -162,7 +174,7 @@ export async function writeProjectInstructionSettings(
 		});
 		syncGenerationBumped = count > 0;
 	}
-	return { written: true, syncGenerationBumped };
+	return { written: true, syncGenerationBumped, ignoreGlobsChanged };
 }
 
 /**
@@ -340,6 +352,14 @@ export function getInstructionRepositorySyncForProposal(
  * pending head and the failure count, and flips the project to REPOSITORY.
  * Run history is kept.
  * `automatic` is kept when omitted, and `false` on insert.
+ *
+ * `ignoreGlobs`, when given, is the project's ignore list written in the SAME
+ * transaction (`null` clears it; omitted leaves it alone), so the configure
+ * dialog's folder exclusions (Fizzy #2726) land with the folder they are
+ * relative to or not at all: rules saved ahead of a `configure` that then
+ * failed would re-plan the configuration still in place under patterns
+ * written for another folder. `ignoreGlobsChanged` reports whether the
+ * stored list actually changed, for the caller's audit.
  */
 export async function upsertInstructionRepositorySync(input: {
 	projectId: string;
@@ -349,13 +369,19 @@ export async function upsertInstructionRepositorySync(input: {
 	ref: string;
 	rootPath: string;
 	automatic?: boolean;
+	ignoreGlobs?: string[] | null;
 }) {
 	return db.$transaction(async (tx) => {
 		const written = await writeProjectInstructionSettings(
 			tx,
 			input.projectId,
 			input.organizationId,
-			{ sourceOfTruth: "REPOSITORY" },
+			{
+				sourceOfTruth: "REPOSITORY",
+				...(input.ignoreGlobs === undefined
+					? {}
+					: { ignoreGlobs: input.ignoreGlobs }),
+			},
 		);
 		if (!written.written) {
 			return null;
@@ -428,6 +454,7 @@ export async function upsertInstructionRepositorySync(input: {
 							existing.repositoryIntegrationId,
 					}
 				: null,
+			ignoreGlobsChanged: written.ignoreGlobsChanged,
 		};
 	});
 }

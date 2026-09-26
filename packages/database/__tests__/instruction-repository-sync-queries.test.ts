@@ -178,6 +178,7 @@ describe("upsertInstructionRepositorySync", () => {
 				automatic: false,
 			},
 			previous: null,
+			ignoreGlobsChanged: false,
 		});
 	});
 
@@ -258,6 +259,192 @@ describe("upsertInstructionRepositorySync", () => {
 		};
 		expect(nextCheckAt.getTime()).toBeGreaterThanOrEqual(before);
 		expect(nextCheckAt.getTime()).toBeLessThanOrEqual(after);
+	});
+
+	describe("the ignore rules the configure dialog's exclusions stage (Fizzy #2726)", () => {
+		/**
+		 * Record, for every write, whether it ran inside the transaction's
+		 * callback: the rules and the configuration must commit together.
+		 */
+		function trackTransaction() {
+			const writes: Array<{ write: string; inTransaction: boolean }> = [];
+			let inTransaction = false;
+			m.$transaction.mockImplementation(
+				async (cb: (tx: unknown) => unknown) => {
+					inTransaction = true;
+					try {
+						return await cb(client);
+					} finally {
+						inTransaction = false;
+					}
+				},
+			);
+			for (const [write, fn, value] of [
+				["project.update", m.project.update, {}],
+				["sync.updateMany", m.sync.updateMany, { count: 1 }],
+				[
+					"sync.update",
+					m.sync.update,
+					{
+						id: "sync_1",
+						generation: 7,
+						ref: "main",
+						rootPath: "agents",
+						automatic: false,
+					},
+				],
+				[
+					"sync.create",
+					m.sync.create,
+					{
+						id: "sync_1",
+						generation: 1,
+						ref: "main",
+						rootPath: "agents",
+						automatic: false,
+					},
+				],
+			] as const) {
+				fn.mockImplementation(async () => {
+					writes.push({ write, inTransaction });
+					return value;
+				});
+			}
+			return writes;
+		}
+
+		it("writes the rules and re-points the configuration in ONE transaction, and says the rules changed", async () => {
+			const writes = trackTransaction();
+			lockedSettings({ ignoreGlobs: null, sourceOfTruth: "REPOSITORY" });
+			m.sync.findFirst.mockResolvedValue({
+				id: "sync_1",
+				ref: "main",
+				rootPath: "",
+				repositoryIntegrationId: "int_1",
+				automatic: false,
+			});
+
+			const result = await upsertInstructionRepositorySync({
+				...input,
+				ignoreGlobs: ["skills/**"],
+			});
+
+			expect(m.$transaction).toHaveBeenCalledTimes(1);
+			expect(m.project.update).toHaveBeenCalledWith({
+				where: { id: "proj_1", organizationId: "org_1" },
+				data: {
+					instructionSettings: {
+						ignoreGlobs: ["skills/**"],
+						sourceOfTruth: "REPOSITORY",
+					},
+				},
+			});
+			expect(writes.map((w) => w.write)).toEqual([
+				"project.update",
+				"sync.updateMany",
+				"sync.update",
+			]);
+			expect(writes.every((w) => w.inTransaction)).toBe(true);
+			expect(result?.ignoreGlobsChanged).toBe(true);
+		});
+
+		it("writes the rules with a FIRST configuration too, and says they changed though no sync row existed to bump", async () => {
+			const writes = trackTransaction();
+			m.sync.updateMany.mockImplementation(async () => {
+				writes.push({ write: "sync.updateMany", inTransaction: true });
+				return { count: 0 };
+			});
+			lockedSettings({});
+			m.sync.findFirst.mockResolvedValue(null);
+
+			const result = await upsertInstructionRepositorySync({
+				...input,
+				ignoreGlobs: ["skills/**"],
+			});
+
+			expect(m.project.update).toHaveBeenCalledWith({
+				where: { id: "proj_1", organizationId: "org_1" },
+				data: {
+					instructionSettings: {
+						ignoreGlobs: ["skills/**"],
+						sourceOfTruth: "REPOSITORY",
+					},
+				},
+			});
+			expect(m.sync.create).toHaveBeenCalled();
+			expect(writes.every((w) => w.inTransaction)).toBe(true);
+			expect(result?.ignoreGlobsChanged).toBe(true);
+		});
+
+		it("clears the rules for null", async () => {
+			trackTransaction();
+			lockedSettings({ ignoreGlobs: ["dist/**"] });
+			m.sync.findFirst.mockResolvedValue(null);
+
+			const result = await upsertInstructionRepositorySync({
+				...input,
+				ignoreGlobs: null,
+			});
+
+			expect(m.project.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: {
+						instructionSettings: {
+							ignoreGlobs: null,
+							sourceOfTruth: "REPOSITORY",
+						},
+					},
+				}),
+			);
+			expect(result?.ignoreGlobsChanged).toBe(true);
+		});
+
+		it("says the rules did not change when the same list is written, and bumps nothing for them", async () => {
+			trackTransaction();
+			lockedSettings({ ignoreGlobs: ["skills/**"] });
+			m.sync.findFirst.mockResolvedValue(null);
+
+			const result = await upsertInstructionRepositorySync({
+				...input,
+				ignoreGlobs: ["skills/**"],
+			});
+
+			expect(result?.ignoreGlobsChanged).toBe(false);
+			expect(m.sync.updateMany).not.toHaveBeenCalled();
+		});
+
+		it("leaves the rules alone when omitted", async () => {
+			trackTransaction();
+			lockedSettings({ ignoreGlobs: ["dist/**"] });
+			m.sync.findFirst.mockResolvedValue(null);
+
+			const result = await upsertInstructionRepositorySync(input);
+
+			expect(m.project.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: {
+						instructionSettings: {
+							ignoreGlobs: ["dist/**"],
+							sourceOfTruth: "REPOSITORY",
+						},
+					},
+				}),
+			);
+			expect(result?.ignoreGlobsChanged).toBe(false);
+		});
+
+		it("writes neither the rules nor the configuration for a project outside the organization", async () => {
+			lockedSettings(null);
+			expect(
+				await upsertInstructionRepositorySync({
+					...input,
+					ignoreGlobs: ["skills/**"],
+				}),
+			).toBeNull();
+			expect(m.project.update).not.toHaveBeenCalled();
+			expect(m.sync.create).not.toHaveBeenCalled();
+			expect(m.sync.update).not.toHaveBeenCalled();
+		});
 	});
 });
 

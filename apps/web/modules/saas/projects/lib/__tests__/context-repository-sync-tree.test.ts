@@ -55,6 +55,24 @@ describe("buildRepositoryTree", () => {
 	it("never turns the whole-repository path into a node", () => {
 		expect(buildRepositoryTree([{ path: "", type: "dir" }])).toEqual([]);
 	});
+
+	it("keeps a file's regular: false, and drops it from a path that is also a folder (Fizzy #2726)", () => {
+		const roots = buildRepositoryTree([
+			{ path: "linked.md", type: "file", regular: false },
+			{ path: "plain.md", type: "file" },
+			{ path: "both", type: "file", regular: false },
+			{ path: "both/inner.md", type: "file" },
+			{ path: "listed", type: "file", regular: false },
+			{ path: "listed", type: "dir" },
+		]);
+		const byPath = new Map(roots.map((node) => [node.path, node]));
+		expect(byPath.get("linked.md")?.regular).toBe(false);
+		expect(byPath.get("plain.md")).not.toHaveProperty("regular");
+		expect(byPath.get("both")).toMatchObject({ type: "dir" });
+		expect(byPath.get("both")).not.toHaveProperty("regular");
+		expect(byPath.get("listed")).toMatchObject({ type: "dir" });
+		expect(byPath.get("listed")).not.toHaveProperty("regular");
+	});
 });
 
 describe("searchRepositoryTreeEntries", () => {

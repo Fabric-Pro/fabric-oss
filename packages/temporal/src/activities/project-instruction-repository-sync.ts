@@ -32,6 +32,9 @@ import {
 	type InstructionFileKind,
 	instructionSnapshotWorkflowId,
 	isStagingKey,
+	// The `.fabricignore` read limit, the same 64 KiB `begin` accepts (spec
+	// §5.3.2 step 6), shared with the configure dialog's preview (Fizzy #2726).
+	MAX_FABRICIGNORE_BYTES,
 	planSnapshotFiles,
 	resolveIgnoreGlobs,
 	SNAPSHOT_LIMITS,
@@ -69,7 +72,6 @@ import {
 	credentialFreeUrl,
 	fetchPinnedCommit,
 	listTree,
-	MAX_FABRICIGNORE_BYTES,
 	MAX_INVENTORY_ENTRIES,
 	readBlobCapped,
 	revParseHead,

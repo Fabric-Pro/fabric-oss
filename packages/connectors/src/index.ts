@@ -78,6 +78,13 @@ export {
 	resolveDefaultBranch,
 	verifyRepositoryBranch,
 } from "./repository-branch";
+// Capped single-file read (request-path helper)
+export type {
+	ReadRepositoryFileInput,
+	ReadRepositoryFileOutcome,
+	ReadRepositoryFileResult,
+} from "./repository-file";
+export { readRepositoryFile } from "./repository-file";
 // GitHub / GitLab PAT validation (request-path helpers)
 export type { ValidateRepoPatResult } from "./repository-pat";
 export { validateGitHubPat, validateGitLabPat } from "./repository-pat";
