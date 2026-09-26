@@ -19,15 +19,7 @@
 
 import { runWithCorrelationId } from "@repo/utils/correlation-id";
 import type { ConsolaReporter } from "consola";
-import {
-	afterAll,
-	afterEach,
-	beforeAll,
-	describe,
-	expect,
-	it,
-	vi,
-} from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { addLogSink, type LogSinkRecord, logger } from "../lib/logger";
 
 const originalLevel = logger.level;
@@ -40,30 +32,16 @@ afterAll(() => {
 
 function withSink(fn: (records: LogSinkRecord[]) => void) {
 	const records: LogSinkRecord[] = [];
+	// `addLogSink` with no `id` registers an always-distinct anonymous sink
+	// (a fresh Symbol per call) in the shared registry — see `singleton.test.ts`
+	// for the registry's re-evaluation/idempotency guarantees. It has no
+	// removal handle, so within this file sinks from earlier `it` blocks stay
+	// registered; each keeps writing into its own now-unread `records` array,
+	// which is harmless — every assertion below only reads the array `fn`
+	// was given.
 	addLogSink((record) => records.push(record));
-	// `addLogSink` has no removal handle — it is meant to be attached once,
-	// for the process's whole life. Tests instead snapshot the reporter
-	// count via a plain passthrough reporter added/removed around the call,
-	// so a run's sink additions do not accumulate across `it` blocks.
 	fn(records);
 }
-
-// `addLogSink` itself never returns a handle to remove — each call adds one
-// more reporter for the rest of the suite. Reset by tracking how many
-// reporters existed before this file ran and trimming back to that count
-// after every test, so later tests are not double-counted by earlier sinks.
-let baselineReporterCount: number;
-beforeAll(() => {
-	baselineReporterCount = (
-		logger as unknown as { options: { reporters: ConsolaReporter[] } }
-	).options.reporters.length;
-});
-afterEach(() => {
-	const opts = (
-		logger as unknown as { options: { reporters: ConsolaReporter[] } }
-	).options;
-	opts.reporters.length = baselineReporterCount;
-});
 
 describe("addLogSink", () => {
 	it("forwards warn, error and fatal", () => {
@@ -171,6 +149,24 @@ describe("addLogSink", () => {
 	});
 
 	it("drops the entry rather than forwarding it when redaction fails", async () => {
+		// The logger and its sink registry are process-wide singletons on
+		// `globalThis` (see `singleton.test.ts`), so a plain `vi.resetModules()`
+		// + re-import would hand back the SAME logger this file already
+		// imported — including its reporters, already bound to the real
+		// (unmocked) `redactLogEntry`. To exercise the mocked redaction this
+		// test needs a genuinely fresh logger, so it clears the shared
+		// singleton's well-known `Symbol.for` slots first, forcing the next
+		// import to build a new one from scratch, then restores the originals
+		// afterward so later tests in this file keep using the `logger` /
+		// `addLogSink` bindings captured at the top of the file.
+		const g = globalThis as Record<PropertyKey, unknown>;
+		const loggerKey = Symbol.for("fabric.repo-logs.logger");
+		const sinksKey = Symbol.for("fabric.repo-logs.log-sinks");
+		const savedLogger = g[loggerKey];
+		const savedSinks = g[sinksKey];
+		delete g[loggerKey];
+		delete g[sinksKey];
+
 		vi.doMock("@repo/utils/log-redaction", () => ({
 			redactLogEntry: () => null,
 			redactLogText: (text: string) => ({ text, redactionCount: 0 }),
@@ -184,8 +180,11 @@ describe("addLogSink", () => {
 		fresh.logger.error("would have been forwarded");
 
 		expect(records).toHaveLength(0);
+
 		vi.doUnmock("@repo/utils/log-redaction");
 		vi.resetModules();
+		g[loggerKey] = savedLogger;
+		g[sinksKey] = savedSinks;
 	});
 
 	it("never throws into the log call when the sink itself throws", () => {

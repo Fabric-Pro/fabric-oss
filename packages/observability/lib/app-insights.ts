@@ -30,12 +30,26 @@
  * here wraps the SDK invocation in a try/catch so an instrumentation
  * outage never breaks the hot path. App Insights is observability, not a
  * correctness gate.
+ *
+ * ALL MUTABLE STATE lives on `globalThis`, under the well-known `STATE_KEY`
+ * (a `Symbol.for(...)`; see `getState()`), not in module-scoped `let`s.
+ * Bundlers (Next/Turbopack
+ * in particular) can compile this module into more than one chunk/module
+ * layer for a single running process — `instrumentation.ts`'s `register()`
+ * and an API route handler observably import DIFFERENT instances of this
+ * module in staging, confirmed by log forwarding from `apps/web` never
+ * reaching App Insights despite `initAppInsightsLogs()` running and the SDK
+ * itself working in isolation. Two module instances with two separate
+ * `let CLIENT`s meant `register()`'s client was never the one
+ * `trackLog`/`flushAppInsights` (called from route handlers) ever saw.
+ * `globalThis` is the one thing every module instance in a process shares.
  */
 
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { metrics } from "@opentelemetry/api";
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { isMonitoringFeatureEnabled } from "./feature-flags";
 
 /**
@@ -48,22 +62,40 @@ import { isMonitoringFeatureEnabled } from "./feature-flags";
  * client at the public-surface boundary; internal lookups go through
  * the typed helpers in this file.
  *
- * `trackTrace`/`trackException` and the `context` cloud-role tag are
- * verified against the installed 3.15 shim:
+ * `trackTrace`/`trackException` and `config.azureMonitorOpenTelemetryOptions`
+ * are verified against the installed 3.15 shim:
  *   - trackTrace: node_modules/applicationinsights/out/src/shim/telemetryClient.d.ts:47
  *   - trackException: node_modules/applicationinsights/out/src/shim/telemetryClient.d.ts:52
  *   - trackException's own `severity` field: node_modules/applicationinsights/
  *     out/src/declarations/contracts/telemetryTypes/exceptionTelemetry.d.ts:17-20
- *   - context: node_modules/applicationinsights/out/src/shim/telemetryClient.d.ts:12
- *   - context.keys/tags shape: node_modules/applicationinsights/out/src/shim/context.d.ts:3-6
- *   - cloudRole key + the SDK's own usage example:
- *     node_modules/applicationinsights/out/src/shared/util/contextTagKeys.d.ts:79-81
  *   - severity strings ("Warning"/"Error"/"Critical"):
  *     node_modules/applicationinsights/out/src/declarations/generated/models/index.d.ts:296-302
  *     (`KnownSeverityLevel`, re-exported from the package root at out/src/index.d.ts:3)
+ *   - `config.azureMonitorOpenTelemetryOptions` is how the shim's
+ *     `TelemetryClient.initialize()` resolves the OTel `Resource` it hands
+ *     to its exporters — `Config.parseConfig()`
+ *     (out/src/shim/shim-config.js:71-95) merges
+ *     `this.azureMonitorOpenTelemetryOptions` (an own property on
+ *     `client.config`) into the options object, and
+ *     `TelemetryClientProvider` (out/src/shim/telemetryClientProvider.js:26)
+ *     reads `this._options.resource ?? defaultResource()` from exactly that
+ *     merged result. `defaultResource()` is where the observed
+ *     `AppRoleName = "unknown_service:...node.exe"` came from — setting
+ *     `client.context.tags[client.context.keys.cloudRole]` (the SDK's own
+ *     documented pattern for the OLDER, non-OTel-based SDK versions) has NO
+ *     EFFECT on 3.15's OTel-based `AppRoleName`, confirmed by an isolated
+ *     probe against the same connection string, whether set before or after
+ *     `initialize()` — this file no longer does that. The role must be set
+ *     via `config.azureMonitorOpenTelemetryOptions.resource` BEFORE
+ *     `initialize()` — see `applyCloudRole`.
  */
 type TelemetryClient = {
 	initialize: () => void;
+	config: {
+		azureMonitorOpenTelemetryOptions?: {
+			resource?: unknown;
+		};
+	};
 	trackEvent: (telemetry: {
 		name: string;
 		properties?: Record<string, unknown>;
@@ -83,10 +115,6 @@ type TelemetryClient = {
 		severity?: string;
 		properties?: Record<string, unknown>;
 	}) => void;
-	context: {
-		tags: Record<string, string>;
-		keys: { cloudRole: string };
-	};
 	flush: () => Promise<void>;
 	shutdown: () => Promise<void>;
 };
@@ -96,35 +124,77 @@ type TelemetryClientFactory = (
 	options: { useGlobalProviders: false },
 ) => TelemetryClient;
 
-/**
- * Module-scoped client cache. `null` means "not initialized" (or the env
- * var was unset). The reader path uses this same nullable to short-
- * circuit before doing any work.
- */
-let CLIENT: TelemetryClient | null = null;
-
-/**
- * True once `ensureDirectClient()` has resolved once, successfully or not.
- * Distinct from `CLIENT === null` (which also means "not initialized yet")
- * so a failed/absent connection string is not re-validated and re-warned on
- * every subsequent `trackLog`/`trackLogException` call.
- */
-let CLIENT_INIT_ATTEMPTED = false;
-
-/** Resolution state — true once `initAppInsightsLogs()` has been called. */
-let LOGS_INITIALIZED = false;
+type PackageRequire = (specifier: string) => unknown;
 
 type CustomTelemetryTransport = "disabled" | "direct" | "otel";
-let TRANSPORT: CustomTelemetryTransport = "disabled";
 
-/** Test seam for the late-bound CommonJS Application Insights package. */
-let TEST_CLIENT_FACTORY: TelemetryClientFactory | undefined;
+export type LogSeverity = "warn" | "error" | "fatal";
 
-type PackageRequire = (specifier: string) => unknown;
+type SamplingBucket = {
+	windowStart: number;
+	tokens: number;
+	suppressed: number;
+	severity: LogSeverity;
+};
+
+/**
+ * Every mutable field this module owns, in one place, on `globalThis` — see
+ * the file header for why. `client`/`clientRoleName` travel together: the
+ * role is baked into the client at construction time (AppRoleName cannot be
+ * changed on a live client — see the `TelemetryClient` type's citation), so
+ * whenever the DESIRED role stops matching the role the current client was
+ * actually built with, `ensureDirectClient()` discards it and builds a new
+ * one. That mismatch is exactly what happens when `initAppInsights()` (the
+ * flag path, no role of its own) constructs the client first and
+ * `initAppInsightsLogs({cloudRoleName})` supplies the real role afterward.
+ */
+interface AppInsightsState {
+	client: TelemetryClient | null;
+	clientRoleName: string | undefined;
+	clientInitAttempted: boolean;
+	initialized: boolean;
+	logsBootDiagnosticEmitted: boolean;
+	transport: CustomTelemetryTransport;
+	cloudRoleName: string | undefined;
+	testClientFactory: TelemetryClientFactory | undefined;
+	requireFromObservability: PackageRequire | undefined;
+	samplingBuckets: Map<string, SamplingBucket>;
+	samplingLimit: number;
+}
+
+const DEFAULT_SAMPLING_LIMIT = 20;
+const STATE_KEY = Symbol.for("fabric.observability.app-insights");
+
+function createState(): AppInsightsState {
+	return {
+		client: null,
+		clientRoleName: undefined,
+		clientInitAttempted: false,
+		initialized: false,
+		logsBootDiagnosticEmitted: false,
+		transport: "disabled",
+		cloudRoleName: undefined,
+		testClientFactory: undefined,
+		requireFromObservability: undefined,
+		samplingBuckets: new Map(),
+		samplingLimit: DEFAULT_SAMPLING_LIMIT,
+	};
+}
+
+/** The one shared state object for this process, created on first access
+ *  and shared by every module instance thereafter — see the file header. */
+function getState(): AppInsightsState {
+	const target = globalThis as Record<PropertyKey, unknown>;
+	let state = target[STATE_KEY] as AppInsightsState | undefined;
+	if (!state) {
+		state = createState();
+		target[STATE_KEY] = state;
+	}
+	return state;
+}
 
 /** ESM-safe require rooted at the emitted bundle or source module. */
 const bundleRequire = createRequire(import.meta.url);
-let requireFromObservability: PackageRequire | undefined;
 
 /**
  * Resolve the service-bundle fallback lazily. Next/Vercel deployments carry an
@@ -133,14 +203,12 @@ let requireFromObservability: PackageRequire | undefined;
  * dependency as the node_modules resolution boundary.
  */
 function loadFromObservabilityPackage(specifier: string): unknown {
-	requireFromObservability ??= createRequire(
+	const state = getState();
+	state.requireFromObservability ??= createRequire(
 		bundleRequire.resolve("@repo/observability"),
 	);
-	return requireFromObservability(specifier);
+	return state.requireFromObservability(specifier);
 }
-
-/** Resolution state — true once `initAppInsights()` has been called. */
-let INITIALIZED = false;
 
 /**
  * Resolve the App Insights connection string from the standard env var
@@ -190,8 +258,9 @@ function isOtelConfigured(): boolean {
 }
 
 function createDirectClient(connectionString: string): TelemetryClient {
-	if (TEST_CLIENT_FACTORY) {
-		return TEST_CLIENT_FACTORY(connectionString, {
+	const state = getState();
+	if (state.testClientFactory) {
+		return state.testClientFactory(connectionString, {
 			useGlobalProviders: false,
 		});
 	}
@@ -234,6 +303,29 @@ function loadApplicationInsights(
 }
 
 /**
+ * The AppRoleName App Insights will show for this process: the role
+ * `initAppInsightsLogs()` was given, else `OTEL_SERVICE_NAME`, else
+ * `"fabric"`. Read fresh on every `ensureDirectClient()` call so a role
+ * supplied after the client already exists is noticed.
+ */
+function resolveRoleName(state: AppInsightsState): string {
+	return state.cloudRoleName ?? process.env.OTEL_SERVICE_NAME ?? "fabric";
+}
+
+/**
+ * Set the OTel `Resource` App Insights will report AppRoleName from. MUST
+ * run before `client.initialize()` — see the `TelemetryClient` type's
+ * citation for exactly why `initialize()` is where this gets read, and why
+ * nothing set afterward (this function's old approach, `context.tags`) has
+ * any effect.
+ */
+function applyCloudRole(client: TelemetryClient, roleName: string): void {
+	client.config.azureMonitorOpenTelemetryOptions = {
+		resource: resourceFromAttributes({ "service.name": roleName }),
+	};
+}
+
+/**
  * Lazily create (or return the cached) isolated direct client, independent
  * of `feature-burn-rate-alerts` — that flag gates only whether
  * `trackEvent`/`trackMetric` EMIT anything, never whether a client exists.
@@ -246,15 +338,31 @@ function loadApplicationInsights(
  * without re-validating or re-warning. Returns `null` — silently for an
  * absent connection string, with a warning for an invalid or
  * failed-to-construct one — exactly as `initAppInsights()` always has.
+ *
+ * Re-creates the client (fire-and-forget shutdown of the stale one) when the
+ * desired role has changed since the current client was built — see
+ * `AppInsightsState`'s doc comment.
  */
 function ensureDirectClient(): TelemetryClient | null {
-	if (CLIENT) {
-		return CLIENT;
+	const state = getState();
+	const desiredRole = resolveRoleName(state);
+
+	if (state.client) {
+		if (state.clientRoleName === desiredRole) {
+			return state.client;
+		}
+		const stale = state.client;
+		state.client = null;
+		state.clientInitAttempted = false;
+		void stale.shutdown().catch(() => {
+			// Best-effort — the stale client is being replaced regardless.
+		});
 	}
-	if (CLIENT_INIT_ATTEMPTED) {
+
+	if (state.clientInitAttempted) {
 		return null;
 	}
-	CLIENT_INIT_ATTEMPTED = true;
+	state.clientInitAttempted = true;
 
 	const connectionString = readConnectionString();
 	if (!connectionString) {
@@ -268,9 +376,11 @@ function ensureDirectClient(): TelemetryClient | null {
 	}
 	try {
 		const client = createDirectClient(connectionString);
+		applyCloudRole(client, desiredRole);
 		client.initialize();
-		CLIENT = client;
-		return CLIENT;
+		state.client = client;
+		state.clientRoleName = desiredRole;
+		return state.client;
 	} catch (err) {
 		console.warn(
 			"[app-insights] init failed",
@@ -298,10 +408,11 @@ function ensureDirectClient(): TelemetryClient | null {
  * forwarding — see `initAppInsightsLogs()`.
  */
 export function initAppInsights(): void {
-	if (INITIALIZED) {
+	const state = getState();
+	if (state.initialized) {
 		return;
 	}
-	INITIALIZED = true;
+	state.initialized = true;
 
 	if (!isMonitoringFeatureEnabled("feature-burn-rate-alerts")) {
 		// Emergency-mute path — leave both custom transports disabled. The
@@ -312,12 +423,12 @@ export function initAppInsights(): void {
 
 	const client = ensureDirectClient();
 	if (client) {
-		TRANSPORT = "direct";
+		state.transport = "direct";
 		return;
 	}
 
 	if (isOtelConfigured()) {
-		TRANSPORT = "otel";
+		state.transport = "otel";
 	}
 }
 
@@ -327,24 +438,28 @@ export function initAppInsights(): void {
  * never boots the burn-rate custom-event path (the web app) still wants its
  * `logger.warn`/`error`/`fatal` calls to reach App Insights.
  *
- * Idempotent and a no-op without a valid connection string, exactly like
- * `initAppInsights()`. Sets the App Insights cloud-role-name tag so traces
- * and exceptions from this process are attributable in the portal (see the
- * SDK's own usage example cited on `TelemetryClient` above).
+ * Safe to call repeatedly — cheap when the role has not changed
+ * (`ensureDirectClient()` short-circuits) and correct when it has (see
+ * `AppInsightsState`'s doc comment: the client is rebuilt). A no-op without
+ * a valid connection string, exactly like `initAppInsights()`. Emits one
+ * `console.info` boot diagnostic, ever, the first time a client actually
+ * exists as a result of this call — silent when there is no connection
+ * string to forward to.
  */
 export function initAppInsightsLogs({
 	cloudRoleName,
 }: {
 	cloudRoleName: string;
 }): void {
-	if (LOGS_INITIALIZED) {
-		return;
-	}
-	LOGS_INITIALIZED = true;
+	const state = getState();
 	try {
+		state.cloudRoleName = cloudRoleName;
 		const client = ensureDirectClient();
-		if (client) {
-			client.context.tags[client.context.keys.cloudRole] = cloudRoleName;
+		if (client && !state.logsBootDiagnosticEmitted) {
+			state.logsBootDiagnosticEmitted = true;
+			console.info("[app-insights] log forwarding enabled", {
+				cloudRoleName,
+			});
 		}
 	} catch (err) {
 		// Swallow — see file header.
@@ -364,7 +479,7 @@ export function initAppInsightsLogs({
  * Most callers should use {@link trackEvent} / {@link trackMetric} instead.
  */
 export function getAppInsightsClient(): TelemetryClient | null {
-	return CLIENT;
+	return getState().client;
 }
 
 /**
@@ -428,13 +543,14 @@ export function trackEvent(
 	name: string,
 	properties?: Record<string, string | number | boolean>,
 ): void {
-	if (TRANSPORT === "disabled") {
+	const state = getState();
+	if (state.transport === "disabled") {
 		return;
 	}
 	try {
 		const eventId = randomUUID();
-		if (TRANSPORT === "direct") {
-			CLIENT?.trackEvent({
+		if (state.transport === "direct") {
+			state.client?.trackEvent({
 				name,
 				properties: {
 					...sanitizeProperties(properties),
@@ -478,12 +594,13 @@ export function trackMetric(
 	value: number,
 	properties?: Record<string, string | number | boolean>,
 ): void {
-	if (TRANSPORT === "disabled") {
+	const state = getState();
+	if (state.transport === "disabled") {
 		return;
 	}
 	try {
-		if (TRANSPORT === "direct") {
-			CLIENT?.trackMetric({
+		if (state.transport === "direct") {
+			state.client?.trackMetric({
 				name,
 				value,
 				properties: sanitizeProperties(properties),
@@ -507,10 +624,6 @@ export function trackMetric(
 // Log forwarding (independent of `feature-burn-rate-alerts`)
 // ============================================================================
 
-/** Matches consola's warn/error/fatal `LogType` — the levels `@repo/logs`
- *  forwards to a sink. */
-export type LogSeverity = "warn" | "error" | "fatal";
-
 /** App Insights' own severity strings — see the citation on `TelemetryClient`. */
 const SEVERITY_BY_LOG_LEVEL: Record<LogSeverity, string> = {
 	warn: "Warning",
@@ -519,18 +632,6 @@ const SEVERITY_BY_LOG_LEVEL: Record<LogSeverity, string> = {
 };
 
 const SAMPLING_WINDOW_MS = 60_000;
-const DEFAULT_SAMPLING_LIMIT = 20;
-
-type SamplingBucket = {
-	windowStart: number;
-	tokens: number;
-	suppressed: number;
-	severity: LogSeverity;
-};
-
-/** Per-key token bucket, one entry per distinct sampling key per process. */
-const SAMPLING_BUCKETS = new Map<string, SamplingBucket>();
-let SAMPLING_LIMIT = DEFAULT_SAMPLING_LIMIT;
 
 /** Bounded discriminators worth their own sampling bucket even under the
  *  same `event` — a fixed, small-cardinality set (route names, oRPC error
@@ -587,19 +688,20 @@ function samplingKey(
  * evaluating the new window — never a running total, never per-suppression.
  */
 function shouldForward(key: string, severity: LogSeverity): boolean {
+	const state = getState();
 	const now = Date.now();
-	let bucket = SAMPLING_BUCKETS.get(key);
+	let bucket = state.samplingBuckets.get(key);
 	if (!bucket || now - bucket.windowStart >= SAMPLING_WINDOW_MS) {
 		if (bucket && bucket.suppressed > 0) {
 			emitSuppressedTrace(key, bucket.suppressed, bucket.severity);
 		}
 		bucket = {
 			windowStart: now,
-			tokens: SAMPLING_LIMIT,
+			tokens: state.samplingLimit,
 			suppressed: 0,
 			severity,
 		};
-		SAMPLING_BUCKETS.set(key, bucket);
+		state.samplingBuckets.set(key, bucket);
 	}
 	bucket.severity = severity;
 	if (bucket.tokens > 0) {
@@ -617,7 +719,7 @@ function emitSuppressedTrace(
 	suppressed: number,
 	severity: LogSeverity,
 ): void {
-	const client = CLIENT;
+	const client = getState().client;
 	if (!client) {
 		return;
 	}
@@ -716,7 +818,8 @@ export function trackLogException(
  * this keeps the client alive for the next request.
  */
 export async function flushAppInsights(): Promise<void> {
-	const client = CLIENT;
+	const state = getState();
+	const client = state.client;
 	if (!client) {
 		return;
 	}
@@ -727,7 +830,7 @@ export async function flushAppInsights(): Promise<void> {
 		// (Vercel's `after()`, this process's own periodic flush) is also a
 		// chance to catch up on any bucket sitting on an elapsed window.
 		const now = Date.now();
-		for (const [key, bucket] of SAMPLING_BUCKETS) {
+		for (const [key, bucket] of state.samplingBuckets) {
 			if (
 				bucket.suppressed > 0 &&
 				now - bucket.windowStart >= SAMPLING_WINDOW_MS
@@ -747,12 +850,14 @@ export async function flushAppInsights(): Promise<void> {
 
 /** Flush and release an isolated direct client without failing shutdown. */
 export async function shutdownAppInsights(): Promise<void> {
-	const client = CLIENT;
-	CLIENT = null;
-	CLIENT_INIT_ATTEMPTED = false;
-	LOGS_INITIALIZED = false;
-	TRANSPORT = "disabled";
-	INITIALIZED = false;
+	const state = getState();
+	const client = state.client;
+	state.client = null;
+	state.clientRoleName = undefined;
+	state.clientInitAttempted = false;
+	state.logsBootDiagnosticEmitted = false;
+	state.transport = "disabled";
+	state.initialized = false;
 	if (!client) {
 		return;
 	}
@@ -775,33 +880,27 @@ export async function shutdownAppInsights(): Promise<void> {
 }
 
 /**
- * Test-only hook. Drops the cached client + resets the initialized flag
- * so the next `initAppInsights()` call performs a fresh setup. Not part
- * of the public API surface — guarded by the leading `__`.
+ * Test-only hook. Drops the cached client + resets every field so the next
+ * `initAppInsights()` call performs a fresh setup. Not part of the public
+ * API surface — guarded by the leading `__`. Resets the SHARED `globalThis`
+ * state, not a module-local copy — see the file header.
  */
 export function __resetAppInsightsForTests(): void {
-	CLIENT = null;
-	CLIENT_INIT_ATTEMPTED = false;
-	LOGS_INITIALIZED = false;
-	TRANSPORT = "disabled";
-	INITIALIZED = false;
-	TEST_CLIENT_FACTORY = undefined;
-	requireFromObservability = undefined;
-	SAMPLING_BUCKETS.clear();
-	SAMPLING_LIMIT = DEFAULT_SAMPLING_LIMIT;
+	const target = globalThis as Record<PropertyKey, unknown>;
+	target[STATE_KEY] = createState();
 }
 
 /** Test-only: shrink the per-key sampling budget so a test does not need to
  *  fire 20+ records (or wait 60s for a window to roll) to exercise it. */
 export function __setAppInsightsSamplingLimitForTests(limit: number): void {
-	SAMPLING_LIMIT = limit;
+	getState().samplingLimit = limit;
 }
 
 /** Install a deterministic manual-client factory without loading the SDK. */
 export function __setAppInsightsClientFactoryForTests(
 	factory: TelemetryClientFactory,
 ): void {
-	TEST_CLIENT_FACTORY = factory;
+	getState().testClientFactory = factory;
 }
 
 /** Load the compatibility SDK without constructing providers or exporters. */

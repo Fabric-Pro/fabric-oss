@@ -8,8 +8,16 @@ const captured = vi.hoisted(() => ({
 	traces: [] as Array<Record<string, unknown>>,
 	exceptions: [] as Array<Record<string, unknown>>,
 	clients: [] as Array<{
-		context: { tags: Record<string, string>; keys: { cloudRole: string } };
+		config: {
+			azureMonitorOpenTelemetryOptions?: {
+				resource?: { attributes: Record<string, unknown> };
+			};
+		};
 	}>,
+	// Snapshots, in call order, of whether `config.azureMonitorOpenTelemetryOptions`
+	// was already populated at the moment each client's `initialize()` ran —
+	// proves the resource is set BEFORE `initialize()`, not after.
+	initializeSnapshots: [] as Array<{ hadResource: boolean; role?: unknown }>,
 	recordings: [] as Array<{
 		name: string;
 		value: number;
@@ -70,7 +78,24 @@ async function installDirectClientFactory({
 		(connectionString, options) => {
 			captured.constructorArgs.push([connectionString, options]);
 			const client = {
-				initialize() {},
+				// Mirrors the real shim's `config` shape (see the citation on
+				// `TelemetryClient` in app-insights.ts): an empty object until
+				// `ensureDirectClient` sets `azureMonitorOpenTelemetryOptions`
+				// on it, which must happen before `initialize()` runs.
+				config: {} as {
+					azureMonitorOpenTelemetryOptions?: {
+						resource?: { attributes: Record<string, unknown> };
+					};
+				},
+				initialize() {
+					const resource =
+						client.config.azureMonitorOpenTelemetryOptions
+							?.resource;
+					captured.initializeSnapshots.push({
+						hadResource: resource !== undefined,
+						role: resource?.attributes["service.name"],
+					});
+				},
 				trackEvent(event: Record<string, unknown>) {
 					captured.events.push(event);
 				},
@@ -82,12 +107,6 @@ async function installDirectClientFactory({
 				},
 				trackException(exception: Record<string, unknown>) {
 					captured.exceptions.push(exception);
-				},
-				// Mirrors the real shim's context/keys/tags shape (see the
-				// citation on `TelemetryClient` in app-insights.ts).
-				context: {
-					tags: {} as Record<string, string>,
-					keys: { cloudRole: "ai.cloud.role" },
 				},
 				async flush() {
 					captured.flushCalls++;
@@ -121,6 +140,7 @@ beforeEach(() => {
 	captured.traces = [];
 	captured.exceptions = [];
 	captured.clients = [];
+	captured.initializeSnapshots = [];
 	captured.recordings = [];
 	captured.flushError = undefined;
 	captured.shutdownError = undefined;
@@ -382,7 +402,13 @@ describe("log forwarding (independent of feature-burn-rate-alerts)", () => {
 		expect(captured.traces).toHaveLength(0);
 	});
 
-	it("sets the cloud-role tag on the shared client", async () => {
+	it("sets the OTel resource (AppRoleName) on the shared client BEFORE initialize()", async () => {
+		// `context.tags[cloudRole]` — the SDK's older, non-OTel-based pattern —
+		// is proven ineffective for AppRoleName against the installed 3.15
+		// shim, whether set before or after `initialize()` (see the citation
+		// on `TelemetryClient`/`applyCloudRole` in app-insights.ts). Only
+		// `config.azureMonitorOpenTelemetryOptions.resource`, set before
+		// `initialize()` runs, actually takes effect.
 		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
 			validConnectionString;
 		const { initAppInsightsLogs, getAppInsightsClient } =
@@ -390,14 +416,46 @@ describe("log forwarding (independent of feature-burn-rate-alerts)", () => {
 
 		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
 
-		// `getAppInsightsClient()` just returns the shared `CLIENT`, which
+		// `getAppInsightsClient()` just returns the shared client, which
 		// `ensureDirectClient()` sets regardless of `TRANSPORT` — so it is
 		// populated here even though `initAppInsights()`/`TRANSPORT` were
 		// never touched.
 		expect(getAppInsightsClient()).not.toBeNull();
 		expect(captured.clients).toHaveLength(1);
-		expect(captured.clients[0]?.context.tags["ai.cloud.role"]).toBe(
-			"fabric.web",
+		expect(
+			captured.clients[0]?.config.azureMonitorOpenTelemetryOptions
+				?.resource?.attributes["service.name"],
+		).toBe("fabric.web");
+		// The mock's own `initialize()` reads `config` at the moment it runs —
+		// this proves the resource was already there, not set afterward.
+		expect(captured.initializeSnapshots).toEqual([
+			{ hadResource: true, role: "fabric.web" },
+		]);
+	});
+
+	it("stays silent (no boot diagnostic) without a connection string configured", async () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		const { initAppInsightsLogs } = await installDirectClientFactory();
+
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		expect(info).not.toHaveBeenCalled();
+	});
+
+	it("emits exactly one boot diagnostic across repeated calls once log forwarding actually initializes", async () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const { initAppInsightsLogs } = await installDirectClientFactory();
+
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		expect(info).toHaveBeenCalledTimes(1);
+		expect(info).toHaveBeenCalledWith(
+			"[app-insights] log forwarding enabled",
+			{ cloudRoleName: "fabric.web" },
 		);
 	});
 
@@ -509,6 +567,7 @@ describe("log forwarding (independent of feature-burn-rate-alerts)", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const telemetry = await import("../lib/app-insights");
 		telemetry.__setAppInsightsClientFactoryForTests(() => ({
+			config: {},
 			initialize() {},
 			trackEvent() {},
 			trackMetric() {},
@@ -518,7 +577,6 @@ describe("log forwarding (independent of feature-burn-rate-alerts)", () => {
 			trackException() {
 				throw new Error("SDK is down");
 			},
-			context: { tags: {}, keys: { cloudRole: "ai.cloud.role" } },
 			async flush() {},
 			async shutdown() {},
 		}));
@@ -539,6 +597,86 @@ describe("log forwarding (independent of feature-burn-rate-alerts)", () => {
 			"[app-insights] trackLogException failed",
 			"SDK is down",
 		);
+	});
+});
+
+describe("process-wide shared state across a module re-evaluation", () => {
+	// Bundlers (Next/Turbopack in particular) can compile app-insights.ts into
+	// more than one module instance for one running process — confirmed as
+	// the root cause of zero records reaching App Insights from apps/web in
+	// staging: `instrumentation.ts`'s `register()` and a route handler ended
+	// up with separate `CLIENT`/`TRANSPORT`/etc. Simulating that here with
+	// `vi.resetModules()` (which clears the module cache but never touches
+	// `globalThis`, where all state now lives) is the direct regression test.
+	it("keeps the same client across a re-evaluation when the role does not change", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const first = await installDirectClientFactory();
+		first.initAppInsightsLogs({ cloudRoleName: "fabric-api" });
+		expect(captured.clients).toHaveLength(1);
+
+		vi.resetModules();
+		const second = await import("../lib/app-insights");
+		second.initAppInsightsLogs({ cloudRoleName: "fabric-api" });
+		second.trackLog("warn", "logged via the re-evaluated module instance");
+
+		// No second client was constructed, and the trace landed on the one
+		// client instance 1 created — proving instance 2 shares it rather
+		// than starting from its own, empty module-scoped state.
+		expect(captured.constructorArgs).toHaveLength(1);
+		expect(captured.traces).toHaveLength(1);
+		expect(second.getAppInsightsClient()).toBe(captured.clients[0]);
+	});
+
+	it("delivers a log through flushAppInsights() called from a re-evaluated module instance", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const first = await installDirectClientFactory();
+		first.initAppInsightsLogs({ cloudRoleName: "fabric-api" });
+		first.trackLog("warn", "queued before the re-evaluation");
+
+		vi.resetModules();
+		const second = await import("../lib/app-insights");
+		await second.flushAppInsights();
+
+		// Vercel's `after(() => flushAppInsights())` runs in the route
+		// handler's module instance — this is what proves that call reaches
+		// the SAME client `initAppInsightsLogs` (called from instrumentation's
+		// instance) actually wrote to.
+		expect(captured.flushCalls).toBe(1);
+	});
+
+	it("recreates the client — discarding the stale one — so a role supplied later still takes effect", async () => {
+		// This is the exact staging sequence: `initObservability`/`initAppInsights()`
+		// (the feature-burn-rate-alerts path) runs first and has no role of its
+		// own, so it would otherwise leave the client stuck reporting
+		// AppRoleName "fabric" — a role the WEB app never wanted. This is how
+		// `initAppInsightsLogs`, called afterward with the real role (possibly
+		// from a re-evaluated module instance), still gets that role applied:
+		// `ensureDirectClient` notices the desired role no longer matches the
+		// role the cached client was built with, shuts the stale client down,
+		// and builds a new one with the correct resource.
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const first = await installDirectClientFactory();
+		first.initAppInsights();
+		expect(captured.clients).toHaveLength(1);
+		expect(
+			captured.clients[0]?.config.azureMonitorOpenTelemetryOptions
+				?.resource?.attributes["service.name"],
+		).toBe("fabric");
+
+		vi.resetModules();
+		const second = await import("../lib/app-insights");
+		second.initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		expect(captured.constructorArgs).toHaveLength(2);
+		expect(captured.shutdownCalls).toBe(1);
+		expect(second.getAppInsightsClient()).toBe(captured.clients[1]);
+		expect(
+			captured.clients[1]?.config.azureMonitorOpenTelemetryOptions
+				?.resource?.attributes["service.name"],
+		).toBe("fabric.web");
 	});
 });
 
