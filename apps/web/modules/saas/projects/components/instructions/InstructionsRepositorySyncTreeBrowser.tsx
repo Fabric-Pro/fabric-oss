@@ -1,7 +1,13 @@
 "use client";
 
+import {
+	FABRIC_IGNORE_FILE,
+	PROJECT_IGNORE_GLOB_LIMITS,
+} from "@repo/instructions";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
+import { Badge } from "@ui/components/badge";
+import { Checkbox } from "@ui/components/checkbox";
 import {
 	Collapsible,
 	CollapsibleContent,
@@ -31,6 +37,15 @@ import {
 	repositorySyncTreeErrorKey,
 	repositorySyncTreeSelection,
 } from "../../lib/instructions-repository-sync";
+import {
+	describeExclusionRow,
+	type ExcludedAncestor,
+	type ExclusionCause,
+	type ExclusionRow,
+	excludedAncestorForChildren,
+	projectIgnoreListFull,
+	syncExclusionMatcher,
+} from "../../lib/instructions-sync-exclusions";
 
 /** How long the branch must stay unchanged before the listing is fetched. */
 const BRANCH_DEBOUNCE_MS = 500;
@@ -52,6 +67,64 @@ function ancestorsOf(path: string): string[] {
 }
 
 /**
+ * The dialog's folder exclusions (Fizzy #2726), when it offers them: the
+ * project's own ignore list with the staged edits applied, and the callback
+ * that stages one more. Nothing here is saved; the dialog saves on submit.
+ */
+export type RepositorySyncTreeExclusions = {
+	/**
+	 * The project's own list with the staged edits applied: `null` for a
+	 * project with no setting, `undefined` until the saved list has loaded.
+	 */
+	projectGlobs: readonly string[] | null | undefined;
+	/** The saved list could not be loaded. */
+	settingsFailed: boolean;
+	/** Stage `pattern` (`F/**`) as excluded or not. */
+	onToggle: (pattern: string, exclude: boolean) => void;
+};
+
+/** The chosen folder's `.fabricignore`, as far as the preview knows it. */
+type IgnoreFileState =
+	| { kind: "none" }
+	| { kind: "loading" }
+	| { kind: "error" }
+	| { kind: "tooLarge" }
+	| { kind: "rules"; rules: readonly string[] };
+
+/**
+ * What the preview knows of the chosen folder's `.fabricignore`. Only a
+ * file with rules changes anything: no file, one with no rules, and one
+ * over the sync's limit all leave the project's rules in force, as in the
+ * sync.
+ */
+function ignoreFileStateOf(input: {
+	read: boolean;
+	failed: boolean;
+	data:
+		| { supported: boolean; state: string; rules: readonly string[] }
+		| undefined;
+}): IgnoreFileState {
+	if (!input.read) {
+		return { kind: "none" };
+	}
+	if (input.failed) {
+		return { kind: "error" };
+	}
+	if (!input.data) {
+		return { kind: "loading" };
+	}
+	if (!input.data.supported) {
+		return { kind: "none" };
+	}
+	if (input.data.state === "tooLarge") {
+		return { kind: "tooLarge" };
+	}
+	return input.data.state === "rules" && input.data.rules.length > 0
+		? { kind: "rules", rules: input.data.rules }
+		: { kind: "none" };
+}
+
+/**
  * The Coding Instructions configure dialog's browser over one branch of the
  * chosen repository (Fizzy #2725, after Living Memory's #2674): one radio
  * per folder plus "Repository root", with the branch's files shown muted
@@ -62,6 +135,19 @@ function ancestorsOf(path: string): string[] {
  * that input (`onSelect`), so the two can never disagree. Whatever the
  * listing's outcome, the typed input keeps working; this only renders what
  * the listing allows.
+ *
+ * Folder exclusions (Fizzy #2726): under the chosen folder, every row the
+ * sync would skip says so in words, with the rule that skips it, and every
+ * folder has an "Exclude" toggle that stages `F/**` in the project's own
+ * ignore list (`exclusions`). What is skipped is computed by the sync's own
+ * `resolveIgnoreGlobs` + `buildIgnoreMatcher` — every file row on its own
+ * path, exactly as the sync plans it (`describeExclusionRow`) — so the chosen folder's
+ * `.fabricignore` is read (`repositorySync.readIgnoreFile`) when the listing
+ * has one — or might have one beyond a truncated listing. A file with rules
+ * replaces the project's rules, so every toggle is then disabled and the
+ * tree shows the file's exclusions. A failed read disables every toggle and
+ * shows no exclusions rather than showing the project's rules as if they
+ * applied.
  *
  * Laziness by expansion is the performance strategy: a folder's children
  * are rendered only while it is expanded, and a search shows at most
@@ -74,6 +160,7 @@ export function InstructionsRepositorySyncTreeBrowser({
 	rootPath,
 	disabled,
 	onSelect,
+	exclusions,
 }: {
 	projectId: string;
 	repositoryIntegrationId: string;
@@ -84,6 +171,8 @@ export function InstructionsRepositorySyncTreeBrowser({
 	disabled: boolean;
 	/** A folder's path, or `""` for the repository root. */
 	onSelect: (rootPath: string) => void;
+	/** Folder exclusions; without it the browser only picks a folder. */
+	exclusions?: RepositorySyncTreeExclusions;
 }) {
 	const t = useTranslations("projects.codingInstructions.repositorySync");
 	const hintId = useId();
@@ -144,6 +233,77 @@ export function InstructionsRepositorySyncTreeBrowser({
 		[searchResult],
 	);
 
+	// Folder exclusions: offered once the listing is in and the project's
+	// saved list has loaded.
+	const selection = repositorySyncTreeSelection(rootPath);
+	const projectGlobs = exclusions?.projectGlobs;
+	const exclusionsOn =
+		exclusions !== undefined &&
+		projectGlobs !== undefined &&
+		listing?.supported === true;
+	const ignoreFilePath =
+		selection === ""
+			? FABRIC_IGNORE_FILE
+			: `${selection}/${FABRIC_IGNORE_FILE}`;
+	const ignoreFileLookup = useMemo(() => {
+		if (!entries) {
+			return { rootListed: false, entry: undefined };
+		}
+		return {
+			rootListed:
+				selection === "" ||
+				entries.some((e) => e.type === "dir" && e.path === selection),
+			entry: entries.find((e) => e.path === ignoreFilePath),
+		};
+	}, [entries, selection, ignoreFilePath]);
+	// Only the exact root-level file counts, as in the sync, and only a
+	// regular one: a `.fabricignore` that is a symbolic link is no file to
+	// the sync, so there is nothing to read. A truncated listing may have
+	// stopped before it, so the file is read then too (a 404 is simply
+	// "absent").
+	const readsIgnoreFile =
+		exclusionsOn &&
+		ignoreFileLookup.rootListed &&
+		((ignoreFileLookup.entry?.type === "file" &&
+			ignoreFileLookup.entry.regular !== false) ||
+			(listing?.truncated === true &&
+				ignoreFileLookup.entry === undefined));
+	const ignoreFileQuery = useQuery(
+		orpc.projects.instructions.repositorySync.readIgnoreFile.queryOptions({
+			input: {
+				projectId,
+				repositoryIntegrationId,
+				ref: debouncedBranch,
+				rootPath: selection,
+			},
+			enabled: readsIgnoreFile,
+			staleTime: LIST_TREE_STALE_MS,
+			retry: false,
+		}),
+	);
+	const ignoreFileData = ignoreFileQuery.data;
+	const ignoreFile = ignoreFileStateOf({
+		read: readsIgnoreFile,
+		failed: ignoreFileQuery.isError,
+		data: ignoreFileData,
+	});
+	const fabricIgnoreRules =
+		ignoreFile.kind === "rules" ? ignoreFile.rules : null;
+	const rulesKnown =
+		ignoreFile.kind !== "loading" && ignoreFile.kind !== "error";
+	// Stable while the project list and the file's rules are: every row
+	// runs this matcher.
+	const matcher = useMemo(
+		() =>
+			exclusionsOn && rulesKnown
+				? syncExclusionMatcher({
+						fabricIgnoreRules,
+						projectGlobs: projectGlobs ?? null,
+					})
+				: null,
+		[exclusionsOn, rulesKnown, fabricIgnoreRules, projectGlobs],
+	);
+
 	if (repositoryIntegrationId === "" || branch === "") {
 		return null;
 	}
@@ -184,7 +344,6 @@ export function InstructionsRepositorySyncTreeBrowser({
 		);
 	}
 
-	const selection = repositorySyncTreeSelection(rootPath);
 	const roots = searching ? searchRoots : browseRoots;
 
 	function isExpanded(path: string, depth: number): boolean {
@@ -222,8 +381,39 @@ export function InstructionsRepositorySyncTreeBrowser({
 		});
 	}
 
-	const rowContext: TreeRowContext = { isExpanded, toggle };
+	const exclusionIds = {
+		fabricIgnore: `${hintId}-fabricignore`,
+		status: `${hintId}-exclusions-status`,
+		full: `${hintId}-exclusions-full`,
+	};
+	const exclusionContext: TreeRowExclusions | null =
+		exclusionsOn && exclusions
+			? {
+					describe: (node, excludedAncestor) =>
+						describeExclusionRow({
+							path: node.path,
+							type: node.type,
+							regular: node.regular,
+							root: selection,
+							excludedAncestor,
+							matcher,
+							projectGlobs: projectGlobs ?? null,
+						}),
+					onToggle: exclusions.onToggle,
+					disabled,
+					ids: exclusionIds,
+				}
+			: null;
+	const rowContext: TreeRowContext = {
+		isExpanded,
+		toggle,
+		exclusions: exclusionContext,
+	};
 	const rootRadioId = `${hintId}-root`;
+	const projectListFull =
+		exclusionsOn &&
+		ignoreFile.kind !== "rules" &&
+		projectIgnoreListFull(projectGlobs ?? null);
 
 	return (
 		<div className="flex flex-col gap-1.5">
@@ -243,6 +433,18 @@ export function InstructionsRepositorySyncTreeBrowser({
 			<p id={hintId} className="text-muted-foreground text-xs">
 				{t("tree.hint")}
 			</p>
+			{exclusions?.settingsFailed ? (
+				<p role="alert" className="text-destructive text-xs">
+					{t("tree.exclusions.settingsError")}
+				</p>
+			) : null}
+			{exclusionsOn ? (
+				<ExclusionNotices
+					ignoreFile={ignoreFile}
+					projectListFull={projectListFull}
+					ids={exclusionIds}
+				/>
+			) : null}
 			<RadioGroup
 				value={selection === "" ? ROOT_OPTION_VALUE : selection}
 				onValueChange={(value) =>
@@ -279,6 +481,7 @@ export function InstructionsRepositorySyncTreeBrowser({
 								key={node.path}
 								node={node}
 								depth={0}
+								excludedAncestor={null}
 								context={rowContext}
 							/>
 						))}
@@ -296,21 +499,215 @@ export function InstructionsRepositorySyncTreeBrowser({
 	);
 }
 
+type ExclusionNoticeIds = {
+	fabricIgnore: string;
+	status: string;
+	full: string;
+};
+
+/**
+ * What applies to the chosen folder's exclusions as a whole: the shared
+ * rules hint, then whichever of the `.fabricignore` states or the full
+ * project list the toggles defer to (each toggle it disables points here).
+ */
+function ExclusionNotices({
+	ignoreFile,
+	projectListFull,
+	ids,
+}: {
+	ignoreFile: IgnoreFileState;
+	projectListFull: boolean;
+	ids: ExclusionNoticeIds;
+}) {
+	const t = useTranslations(
+		"projects.codingInstructions.repositorySync.tree.exclusions",
+	);
+	return (
+		<>
+			<p className="text-muted-foreground text-xs">{t("hint")}</p>
+			{ignoreFile.kind === "loading" ? (
+				<output
+					id={ids.status}
+					className="flex items-center gap-2 text-muted-foreground text-xs"
+				>
+					<Loader2Icon
+						className="size-3 animate-spin"
+						aria-hidden="true"
+					/>
+					{t("ignoreFileLoading")}
+				</output>
+			) : null}
+			{ignoreFile.kind === "error" ? (
+				<p
+					id={ids.status}
+					role="alert"
+					className="text-destructive text-xs"
+				>
+					{t("ignoreFileError")}
+				</p>
+			) : null}
+			{ignoreFile.kind === "rules" ? (
+				<p id={ids.fabricIgnore} className="text-xs">
+					{t("fabricignore")}
+				</p>
+			) : null}
+			{ignoreFile.kind === "tooLarge" ? (
+				<p className="text-muted-foreground text-xs">
+					{t("ignoreFileTooLarge")}
+				</p>
+			) : null}
+			{projectListFull ? (
+				<p id={ids.full} className="text-muted-foreground text-xs">
+					{t("block.full", {
+						max: PROJECT_IGNORE_GLOB_LIMITS.maxGlobs,
+					})}
+				</p>
+			) : null}
+		</>
+	);
+}
+
+type TreeRowExclusions = {
+	describe: (
+		node: RepositoryTreeNode,
+		excludedAncestor: ExcludedAncestor | null,
+	) => ExclusionRow;
+	onToggle: (pattern: string, exclude: boolean) => void;
+	disabled: boolean;
+	ids: ExclusionNoticeIds;
+};
+
 type TreeRowContext = {
 	isExpanded: (path: string, depth: number) => boolean;
 	toggle: (path: string) => void;
+	/** Folder exclusions, when the dialog offers them. */
+	exclusions: TreeRowExclusions | null;
 };
+
+/** The translation key and values that say why a row is skipped. */
+function causeMessage(cause: ExclusionCause): {
+	key: string;
+	values: Record<string, string>;
+} {
+	if (cause.via === "ancestor") {
+		return { key: "cause.ancestor", values: { path: cause.ancestor } };
+	}
+	if (cause.via === "notRegular") {
+		return { key: "cause.notRegular", values: {} };
+	}
+	return { key: `cause.${cause.layer}`, values: { rule: cause.rule } };
+}
+
+/**
+ * "Excluded", in words, with the rule that skips the row for a screen
+ * reader and on hover. `id` names the reason for a toggle to point at.
+ */
+function ExcludedBadge({ cause, id }: { cause: ExclusionCause; id: string }) {
+	const t = useTranslations(
+		"projects.codingInstructions.repositorySync.tree.exclusions",
+	);
+	const message = causeMessage(cause);
+	const reason = t(message.key, message.values);
+	return (
+		<Badge status="info" title={reason}>
+			{t("excluded")}
+			<span id={id} className="sr-only">
+				{reason}
+			</span>
+		</Badge>
+	);
+}
+
+/** A folder's "Exclude" toggle; a disabled one points at why. */
+function ExclusionToggle({
+	node,
+	row,
+	exclusions,
+	causeId,
+}: {
+	node: RepositoryTreeNode;
+	row: Exclude<ExclusionRow, { kind: "outside" }>;
+	exclusions: TreeRowExclusions;
+	causeId: string;
+}) {
+	const t = useTranslations(
+		"projects.codingInstructions.repositorySync.tree.exclusions",
+	);
+	const id = useId();
+	const toggle = row.toggle;
+	if (!toggle) {
+		return null;
+	}
+	const blockId = `${id}-block`;
+	const ownReason =
+		toggle.block === "wildcard" || toggle.block === "tooLong"
+			? t(`block.${toggle.block}`)
+			: null;
+	// Why the row is skipped, then why the toggle cannot change it.
+	const blockReasonId =
+		toggle.block === "fabricignore"
+			? exclusions.ids.fabricIgnore
+			: toggle.block === "unknown"
+				? exclusions.ids.status
+				: toggle.block === "full"
+					? exclusions.ids.full
+					: ownReason
+						? blockId
+						: null;
+	const describedBy =
+		[row.kind === "excluded" ? causeId : null, blockReasonId]
+			.filter((part): part is string => part !== null)
+			.join(" ") || undefined;
+	const checkboxId = `${id}-exclude`;
+	return (
+		<span
+			className="flex items-center gap-1"
+			title={ownReason ?? undefined}
+		>
+			<Checkbox
+				id={checkboxId}
+				checked={toggle.checked}
+				disabled={exclusions.disabled || toggle.block !== null}
+				onCheckedChange={(value) =>
+					exclusions.onToggle(toggle.pattern, value === true)
+				}
+				aria-label={t("toggleLabel", { path: node.path })}
+				aria-describedby={describedBy}
+			/>
+			<label
+				htmlFor={checkboxId}
+				className="text-muted-foreground text-xs"
+			>
+				{t("toggle")}
+			</label>
+			{ownReason ? (
+				<span id={blockId} className="sr-only">
+					{ownReason}
+				</span>
+			) : null}
+		</span>
+	);
+}
 
 function TreeRow({
 	node,
 	depth,
+	excludedAncestor,
 	context,
 }: {
 	node: RepositoryTreeNode;
 	depth: number;
+	/** The nearest skipped folder this row sits in, when there is one. */
+	excludedAncestor: ExcludedAncestor | null;
 	context: TreeRowContext;
 }) {
 	const id = useId();
+	const row = context.exclusions?.describe(node, excludedAncestor) ?? null;
+	const causeId = `${id}-cause`;
+	const badge =
+		row?.kind === "excluded" ? (
+			<ExcludedBadge cause={row.cause} id={causeId} />
+		) : null;
 
 	if (node.type !== "dir") {
 		// Orientation only: the sync reads a folder, so a file is text, with
@@ -320,15 +717,26 @@ function TreeRow({
 				<span className="size-4 shrink-0" aria-hidden="true" />
 				<span className="size-4 shrink-0" aria-hidden="true" />
 				<FileIcon className="size-4 shrink-0" aria-hidden="true" />
-				<span className="truncate font-mono text-xs" title={node.path}>
+				<span
+					className="min-w-0 truncate font-mono text-xs"
+					title={node.path}
+				>
 					{node.name}
 				</span>
+				{badge ? (
+					<span className="ml-auto shrink-0">{badge}</span>
+				) : null}
 			</li>
 		);
 	}
 
 	const expanded = context.isExpanded(node.path, depth);
 	const radioId = `${id}-radio`;
+	// Children are judged on their own paths; this only tells them which
+	// skipped folder, and rule, they sit in.
+	const childAncestor = row
+		? excludedAncestorForChildren(row, node.path, excludedAncestor)
+		: null;
 	return (
 		<li>
 			<Collapsible
@@ -362,11 +770,22 @@ function TreeRow({
 					/>
 					<label
 						htmlFor={radioId}
-						className="truncate font-mono text-xs"
+						className="min-w-0 truncate font-mono text-xs"
 						title={node.path}
 					>
 						{node.name}
 					</label>
+					{row && row.kind !== "outside" && context.exclusions ? (
+						<span className="ml-auto flex shrink-0 items-center gap-2">
+							{badge}
+							<ExclusionToggle
+								node={node}
+								row={row}
+								exclusions={context.exclusions}
+								causeId={causeId}
+							/>
+						</span>
+					) : null}
 				</div>
 				<CollapsibleContent>
 					<ul className="flex flex-col pl-4">
@@ -375,6 +794,7 @@ function TreeRow({
 								key={child.path}
 								node={child}
 								depth={depth + 1}
+								excludedAncestor={childAncestor}
 								context={context}
 							/>
 						))}

@@ -35,8 +35,6 @@ export const MAX_CLONE_BYTES =
 	2 * SNAPSHOT_LIMITS.maxTotalBytes + 64 * 1024 * 1024;
 /** How often the watchdog measures the clone directory (spec §8.4). */
 const WATCHDOG_SAMPLE_MS = 250;
-/** The `.fabricignore` read limit, the same 64 KiB `begin` accepts (spec §5.3.2 step 6). */
-export const MAX_FABRICIGNORE_BYTES = 64 * 1024;
 /** Stderr kept for classification and debug logs; never returned. */
 const STDERR_TAIL_BYTES = 8 * 1024;
 /** Stdout kept on a failed exit, for `push --porcelain` (Fizzy #2563). */

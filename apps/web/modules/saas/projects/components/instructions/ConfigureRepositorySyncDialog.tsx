@@ -1,7 +1,7 @@
 "use client";
 
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Checkbox } from "@ui/components/checkbox";
 import {
@@ -16,15 +16,24 @@ import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
 import { Loader2Icon } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
 	configureErrorMessage,
 	type RepositorySyncConfiguration,
 	type RepositorySyncIntegration,
+	repositorySyncTreeSelection,
 	type SyncNowResult,
 	syncNowResultMessage,
 } from "../../lib/instructions-repository-sync";
+import {
+	type ExclusionEdits,
+	hasExclusionEdits,
+	NO_EXCLUSION_EDITS,
+	projectGlobsChanged,
+	stagedProjectGlobs,
+	toggleExclusion,
+} from "../../lib/instructions-sync-exclusions";
 import { InstructionsRepositorySyncTreeBrowser } from "./InstructionsRepositorySyncTreeBrowser";
 
 /**
@@ -38,6 +47,18 @@ import { InstructionsRepositorySyncTreeBrowser } from "./InstructionsRepositoryS
  * field stays the one selection state: picking a folder writes to it, and
  * typing a listed folder selects its row. A provider without a listing, or
  * a listing that fails, leaves the typed field working as before.
+ *
+ * Folders under the chosen one can be excluded from the sync (Fizzy #2726).
+ * A toggle only stages an edit to the project's own ignore rules — the
+ * rules folder uploads and the settings dialog share — kept here as
+ * additions and removals and dropped when the repository, the branch or the
+ * folder changes, since each pattern is relative to the folder of the tree
+ * it was staged in. Save re-reads the saved rules, applies the staged edits
+ * to that fresh list (so a rule someone else saved meanwhile survives), and
+ * sends the result WITH the configuration, only when it differs:
+ * `configure` writes both in one transaction, so the rules never land
+ * without the folder they are relative to, and the sync `syncNow` then
+ * starts plans under them.
  *
  * Mounted only while open, so the fields are seeded once from the props and a
  * background poll of the tab cannot overwrite what someone is typing.
@@ -86,19 +107,99 @@ export function ConfigureRepositorySyncDialog({
 	const [inlineErrorField, setInlineErrorField] = useState<
 		"branch" | "root" | null
 	>(null);
+	const queryClient = useQueryClient();
+	const settingsQuery = orpc.projects.instructions.getSettings.queryOptions({
+		input: { projectId },
+	});
+	const settings = useQuery(settingsQuery);
+	const savedGlobs = settings.isSuccess
+		? settings.data.ignoreGlobs
+		: undefined;
+	const [exclusionEdits, setExclusionEdits] =
+		useState<ExclusionEdits>(NO_EXCLUSION_EDITS);
+	// `undefined` until the saved list has loaded; stable between edits,
+	// since every row of the browser matches against it.
+	const stagedGlobs = useMemo(
+		() =>
+			savedGlobs === undefined
+				? undefined
+				: stagedProjectGlobs(savedGlobs, exclusionEdits),
+		[savedGlobs, exclusionEdits],
+	);
+	// Re-reading the saved rules before a save (`submit`).
+	const [readingRules, setReadingRules] = useState(false);
 	const configure = useMutation(
 		orpc.projects.instructions.repositorySync.configure.mutationOptions(),
 	);
 	const syncNow = useMutation(
 		orpc.projects.instructions.repositorySync.syncNow.mutationOptions(),
 	);
-	const pending = configure.isPending || syncNow.isPending;
+	const pending = readingRules || configure.isPending || syncNow.isPending;
 	const selected = integrations.find((i) => i.id === integrationId) ?? null;
 	const branch = ref.trim();
+
+	/**
+	 * The folder field's new value. Staged exclusions are patterns relative
+	 * to the folder they were staged under, so a different folder starts
+	 * again from the saved rules.
+	 */
+	function changeRootPath(next: string) {
+		if (
+			repositorySyncTreeSelection(next) !==
+			repositorySyncTreeSelection(rootPath)
+		) {
+			setExclusionEdits(NO_EXCLUSION_EDITS);
+		}
+		setRootPath(next);
+		setInlineError(null);
+		setInlineErrorField(null);
+	}
+
+	/** The branch field's new value; another branch is another tree. */
+	function changeRef(next: string) {
+		if (next.trim() !== branch) {
+			setExclusionEdits(NO_EXCLUSION_EDITS);
+		}
+		setRef(next);
+		setInlineError(null);
+		setInlineErrorField(null);
+	}
+
+	/**
+	 * The project's ignore list to send with the configuration, or
+	 * `undefined` to leave it alone: the staged edits applied to the rules
+	 * as saved NOW, not as this dialog last read them, so a rule saved
+	 * elsewhere in the meantime is kept. Throws when they cannot be read.
+	 */
+	async function rulesToSave(): Promise<string[] | null | undefined> {
+		if (!hasExclusionEdits(exclusionEdits)) {
+			return undefined;
+		}
+		setReadingRules(true);
+		try {
+			const fresh = await queryClient.fetchQuery({
+				...settingsQuery,
+				staleTime: 0,
+			});
+			const next = stagedProjectGlobs(fresh.ignoreGlobs, exclusionEdits);
+			return projectGlobsChanged(fresh.ignoreGlobs, next)
+				? next
+				: undefined;
+		} finally {
+			setReadingRules(false);
+		}
+	}
 
 	async function submit() {
 		setInlineError(null);
 		setInlineErrorField(null);
+		let ignoreGlobs: string[] | null | undefined;
+		try {
+			ignoreGlobs = await rulesToSave();
+		} catch {
+			toast.error(t("configureDialog.errors.ignoreRulesUnavailable"));
+			return;
+		}
 		try {
 			await configure.mutateAsync({
 				projectId,
@@ -106,6 +207,9 @@ export function ConfigureRepositorySyncDialog({
 				ref: branch,
 				rootPath: rootPath.trim(),
 				automatic,
+				// Written with the configuration, in one transaction, or not
+				// at all.
+				...(ignoreGlobs === undefined ? {} : { ignoreGlobs }),
 			});
 		} catch (error) {
 			const mapped = configureErrorMessage(error);
@@ -124,6 +228,13 @@ export function ConfigureRepositorySyncDialog({
 				toast.error(message);
 			}
 			return;
+		}
+		if (ignoreGlobs !== undefined) {
+			// Saved with the configuration: the saved list is the sent one.
+			queryClient.setQueryData(settingsQuery.queryKey, (old) =>
+				old ? { ...old, ignoreGlobs } : old,
+			);
+			setExclusionEdits(NO_EXCLUSION_EDITS);
 		}
 		// Saved. The first sync starts now (§7.2); a refusal to start is
 		// reported, and the configuration stands either way.
@@ -171,6 +282,9 @@ export function ConfigureRepositorySyncDialog({
 									if (next) {
 										setRef(next.defaultBranch);
 									}
+									// Another repository's folders: start
+									// again from the saved rules.
+									setExclusionEdits(NO_EXCLUSION_EDITS);
 									setInlineError(null);
 									setInlineErrorField(null);
 								}}
@@ -197,11 +311,7 @@ export function ConfigureRepositorySyncDialog({
 						<Input
 							id="instructions-sync-branch"
 							value={ref}
-							onChange={(e) => {
-								setRef(e.target.value);
-								setInlineError(null);
-								setInlineErrorField(null);
-							}}
+							onChange={(e) => changeRef(e.target.value)}
 							aria-invalid={
 								inlineErrorField === "branch" ? true : undefined
 							}
@@ -218,10 +328,14 @@ export function ConfigureRepositorySyncDialog({
 						branch={branch}
 						rootPath={rootPath}
 						disabled={pending}
-						onSelect={(path) => {
-							setRootPath(path);
-							setInlineError(null);
-							setInlineErrorField(null);
+						onSelect={changeRootPath}
+						exclusions={{
+							projectGlobs: stagedGlobs,
+							settingsFailed: settings.isError,
+							onToggle: (pattern, exclude) =>
+								setExclusionEdits((prev) =>
+									toggleExclusion(prev, pattern, exclude),
+								),
 						}}
 					/>
 					<div className="flex flex-col gap-1.5">
@@ -234,11 +348,7 @@ export function ConfigureRepositorySyncDialog({
 							placeholder={t(
 								"configureDialog.rootPathPlaceholder",
 							)}
-							onChange={(e) => {
-								setRootPath(e.target.value);
-								setInlineError(null);
-								setInlineErrorField(null);
-							}}
+							onChange={(e) => changeRootPath(e.target.value)}
 							aria-invalid={
 								inlineErrorField === "root" ? true : undefined
 							}

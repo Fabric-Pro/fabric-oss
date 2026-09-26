@@ -5,6 +5,7 @@
  * key nobody wrote fails here rather than rendering the key.
  */
 import en from "@repo/i18n/translations/en.json";
+import { DEFAULT_IGNORE_GLOBS } from "@repo/instructions";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -51,6 +52,9 @@ const m = vi.hoisted(() => ({
 	disable: vi.fn(),
 	listRuns: vi.fn(),
 	listTree: vi.fn(),
+	readIgnoreFile: vi.fn(),
+	getSettings: vi.fn(),
+	updateSettings: vi.fn(),
 	toastSuccess: vi.fn(),
 	toastInfo: vi.fn(),
 	toastError: vi.fn(),
@@ -77,6 +81,17 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
 			instructions: {
+				getSettings: {
+					queryOptions: (o: { input: unknown }) => ({
+						queryKey: ["getSettings", o.input],
+						queryFn: () => m.getSettings(o.input),
+					}),
+				},
+				updateSettings: {
+					mutationOptions: mutationOptionsStub((i) =>
+						m.updateSettings(i),
+					),
+				},
 				repositorySync: {
 					configure: {
 						mutationOptions: mutationOptionsStub((i) =>
@@ -112,6 +127,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 							...o,
 							queryKey: ["listTree", o.input],
 							queryFn: () => m.listTree(o.input),
+						}),
+					},
+					readIgnoreFile: {
+						queryOptions: (o: {
+							input: unknown;
+							[key: string]: unknown;
+						}) => ({
+							...o,
+							queryKey: ["readIgnoreFile", o.input],
+							queryFn: () => m.readIgnoreFile(o.input),
 						}),
 					},
 				},
@@ -215,6 +240,17 @@ beforeEach(() => {
 		entries: [],
 		truncated: false,
 	});
+	m.readIgnoreFile.mockResolvedValue({
+		supported: true,
+		state: "absent",
+		rules: [],
+	});
+	m.getSettings.mockResolvedValue({
+		ignoreGlobs: null,
+		defaultIgnoreGlobs: [],
+		sourceOfTruth: "REPOSITORY",
+	});
+	m.updateSettings.mockResolvedValue({ ok: true });
 });
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -636,6 +672,327 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 					expect.objectContaining({ rootPath: "agents" }),
 				),
 			);
+		});
+	});
+
+	describe("folder exclusions (Fizzy #2726)", () => {
+		const TREE = {
+			supported: true,
+			truncated: false,
+			entries: [
+				{ path: "agents", type: "dir" },
+				{ path: "agents/skills", type: "dir" },
+				{ path: "agents/drafts", type: "dir" },
+				{ path: "tools", type: "dir" },
+				{ path: "tools/claude", type: "dir" },
+			],
+		};
+		const ex = copy.tree.exclusions;
+		const exclude = (path: string) =>
+			screen.getByRole("checkbox", {
+				name: ex.toggleLabel.replace("{path}", path),
+			});
+		const submit = () =>
+			screen.getByRole("button", { name: copy.configureDialog.submit });
+		const treeGroup = () =>
+			screen.getByRole("radiogroup", { name: copy.tree.label });
+
+		/**
+		 * The project's settings row as the server keeps it: a re-read
+		 * answers what is stored, and only a successful `configure` that
+		 * carried rules stores them (one transaction).
+		 */
+		let stored: string[] | null;
+		beforeEach(() => {
+			stored = null;
+			m.getSettings.mockImplementation(async () => ({
+				ignoreGlobs: stored,
+				defaultIgnoreGlobs: [],
+				sourceOfTruth: "REPOSITORY",
+			}));
+			m.configure.mockImplementation(
+				async (i: { ignoreGlobs?: string[] | null }) => {
+					if (i.ignoreGlobs !== undefined) {
+						stored = i.ignoreGlobs;
+					}
+					return { syncId: "sync_1", generation: 2 };
+				},
+			);
+		});
+
+		/** The configure input of call `n` (0-based). */
+		const configured = (n = 0) =>
+			m.configure.mock.calls[n]?.[0] as Record<string, unknown>;
+
+		/** The dialog on the stored folder `agents`, its browser listed. */
+		async function renderOnAgents(
+			props: Partial<
+				Parameters<typeof ConfigureRepositorySyncDialog>[0]
+			> = {},
+		) {
+			m.listTree.mockResolvedValue(TREE);
+			const rendered = renderDialog({
+				current: CONFIGURED.configured,
+				...props,
+			});
+			await screen.findByRole("radiogroup", { name: copy.tree.label });
+			await waitFor(() => expect(exclude("agents/skills")).toBeEnabled());
+			return rendered;
+		}
+
+		it("sends the staged exclusions WITH the configuration, never as a separate write, then starts the sync", async () => {
+			const user = userEvent.setup();
+			const { onOpenChange, onSaved } = await renderOnAgents();
+
+			await user.click(exclude("agents/skills"));
+			await user.click(submit());
+
+			await waitFor(() =>
+				expect(onOpenChange).toHaveBeenCalledWith(false),
+			);
+			expect(m.updateSettings).not.toHaveBeenCalled();
+			expect(m.configure).toHaveBeenCalledTimes(1);
+			// A project with no rules of its own keeps the defaults it had.
+			expect(configured()).toEqual({
+				projectId: "proj_1",
+				repositoryIntegrationId: "int_1",
+				ref: "main",
+				rootPath: "agents",
+				automatic: false,
+				ignoreGlobs: [...DEFAULT_IGNORE_GLOBS, "skills/**"],
+			});
+			expect(m.syncNow).toHaveBeenCalledWith({ projectId: "proj_1" });
+			expect(m.configure.mock.invocationCallOrder[0]).toBeLessThan(
+				m.syncNow.mock.invocationCallOrder[0] ?? 0,
+			);
+			expect(onSaved).toHaveBeenCalled();
+		});
+
+		it("removes a turned-off folder's own rule from the project's list", async () => {
+			stored = ["dist/**", "skills/**"];
+			const user = userEvent.setup();
+			const { onOpenChange } = await renderOnAgents();
+			expect(exclude("agents/skills")).toBeChecked();
+
+			await user.click(exclude("agents/skills"));
+			await user.click(submit());
+
+			await waitFor(() =>
+				expect(onOpenChange).toHaveBeenCalledWith(false),
+			);
+			expect(configured().ignoreGlobs).toEqual(["dist/**"]);
+		});
+
+		it("applies the staged edits to the rules as saved at Save, keeping a rule saved elsewhere meanwhile", async () => {
+			stored = ["dist/**"];
+			const user = userEvent.setup();
+			const { onOpenChange } = await renderOnAgents();
+			await user.click(exclude("agents/skills"));
+			// Another member saves a rule while this dialog is open.
+			stored = ["dist/**", "concurrent/**"];
+
+			await user.click(submit());
+
+			await waitFor(() =>
+				expect(onOpenChange).toHaveBeenCalledWith(false),
+			);
+			expect(configured().ignoreGlobs).toEqual([
+				"dist/**",
+				"concurrent/**",
+				"skills/**",
+			]);
+		});
+
+		it("sends no rules when none changed, a toggle turned on and back off included", async () => {
+			const user = userEvent.setup();
+			const { onOpenChange } = await renderOnAgents();
+
+			await user.click(exclude("agents/skills"));
+			await user.click(exclude("agents/skills"));
+			await user.click(submit());
+
+			await waitFor(() =>
+				expect(onOpenChange).toHaveBeenCalledWith(false),
+			);
+			expect(configured()).not.toHaveProperty("ignoreGlobs");
+			expect(m.syncNow).toHaveBeenCalled();
+		});
+
+		it("sends no rules when the fresh list already has the staged change", async () => {
+			const user = userEvent.setup();
+			const { onOpenChange } = await renderOnAgents();
+			await user.click(exclude("agents/skills"));
+			// Someone else saved exactly this change meanwhile.
+			stored = [...DEFAULT_IGNORE_GLOBS, "skills/**"];
+
+			await user.click(submit());
+
+			await waitFor(() =>
+				expect(onOpenChange).toHaveBeenCalledWith(false),
+			);
+			expect(configured()).not.toHaveProperty("ignoreGlobs");
+		});
+
+		it("saves nothing when the saved rules cannot be re-read at Save, and stays open", async () => {
+			const user = userEvent.setup();
+			const { onOpenChange, onSaved } = await renderOnAgents();
+			await user.click(exclude("agents/skills"));
+			m.getSettings.mockRejectedValue(new Error("boom"));
+
+			await user.click(submit());
+
+			await waitFor(() =>
+				expect(m.toastError).toHaveBeenCalledWith(
+					copy.configureDialog.errors.ignoreRulesUnavailable,
+				),
+			);
+			expect(m.configure).not.toHaveBeenCalled();
+			expect(m.syncNow).not.toHaveBeenCalled();
+			expect(onOpenChange).not.toHaveBeenCalled();
+			expect(onSaved).not.toHaveBeenCalled();
+		});
+
+		it("leaves the rules unchanged and claims nothing when a configure for ANOTHER folder fails", async () => {
+			m.configure.mockRejectedValue(orpcError("BRANCH_NOT_FOUND"));
+			const user = userEvent.setup();
+			// Configured on `agents`; the member moves to `tools`.
+			const { onOpenChange, onSaved } = await renderOnAgents();
+			await user.click(
+				within(treeGroup()).getByRole("radio", { name: "tools" }),
+			);
+			await waitFor(() => expect(exclude("tools/claude")).toBeEnabled());
+			await user.click(exclude("tools/claude"));
+
+			await user.click(submit());
+
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				copy.configureDialog.errors.BRANCH_NOT_FOUND.replace(
+					"{ref}",
+					"main",
+				),
+			);
+			// The rules went only with the configuration that failed.
+			expect(m.configure).toHaveBeenCalledTimes(1);
+			expect(configured()).toMatchObject({
+				rootPath: "tools",
+				ignoreGlobs: [...DEFAULT_IGNORE_GLOBS, "claude/**"],
+			});
+			expect(m.updateSettings).not.toHaveBeenCalled();
+			expect(stored).toBeNull();
+			// Nothing says it saved.
+			expect(m.toastSuccess).not.toHaveBeenCalled();
+			expect(m.toastInfo).not.toHaveBeenCalled();
+			expect(m.syncNow).not.toHaveBeenCalled();
+			expect(onSaved).not.toHaveBeenCalled();
+			expect(onOpenChange).not.toHaveBeenCalled();
+			// Still staged, to retry.
+			expect(exclude("tools/claude")).toBeChecked();
+		});
+
+		it("sends the staged rules again on a retry after a failed configure", async () => {
+			m.configure.mockRejectedValueOnce(
+				orpcError("REPOSITORY_UNREACHABLE"),
+			);
+			const user = userEvent.setup();
+			const { onOpenChange } = await renderOnAgents();
+			await user.click(exclude("agents/skills"));
+
+			await user.click(submit());
+			await waitFor(() => expect(m.toastError).toHaveBeenCalled());
+			await user.click(submit());
+
+			await waitFor(() =>
+				expect(onOpenChange).toHaveBeenCalledWith(false),
+			);
+			expect(configured(0).ignoreGlobs).toEqual([
+				...DEFAULT_IGNORE_GLOBS,
+				"skills/**",
+			]);
+			expect(configured(1).ignoreGlobs).toEqual(
+				configured(0).ignoreGlobs,
+			);
+			expect(stored).toEqual([...DEFAULT_IGNORE_GLOBS, "skills/**"]);
+		});
+
+		it("drops the staged exclusions when another folder is chosen, from the browser or typed", async () => {
+			const user = userEvent.setup();
+			await renderOnAgents();
+
+			await user.click(exclude("agents/skills"));
+			await user.click(
+				within(treeGroup()).getByRole("radio", { name: "tools" }),
+			);
+			await user.click(
+				within(treeGroup()).getByRole("radio", { name: "agents" }),
+			);
+			expect(exclude("agents/skills")).not.toBeChecked();
+
+			await user.click(exclude("agents/skills"));
+			const folder = screen.getByLabelText(
+				copy.configureDialog.rootPathLabel,
+			);
+			await user.clear(folder);
+			await user.type(folder, "agents");
+			expect(exclude("agents/skills")).not.toBeChecked();
+
+			// Re-spelling the same folder keeps them.
+			await user.click(exclude("agents/skills"));
+			await user.type(folder, "/");
+			expect(exclude("agents/skills")).toBeChecked();
+		});
+
+		it("drops the staged exclusions when the branch changes", async () => {
+			const user = userEvent.setup();
+			const { onOpenChange } = await renderOnAgents();
+			await user.click(exclude("agents/skills"));
+
+			const branchField = screen.getByLabelText(
+				copy.configureDialog.branchLabel,
+			);
+			await user.type(branchField, "-next");
+			await waitFor(() =>
+				expect(m.listTree).toHaveBeenCalledWith(
+					expect.objectContaining({ ref: "main-next" }),
+				),
+			);
+			await waitFor(() => expect(exclude("agents/skills")).toBeEnabled());
+			expect(exclude("agents/skills")).not.toBeChecked();
+
+			// Trailing spaces are the same branch: the edits stay.
+			await user.click(exclude("agents/skills"));
+			await user.type(branchField, "  ");
+			expect(exclude("agents/skills")).toBeChecked();
+			await user.clear(branchField);
+			await user.type(branchField, "main-next");
+			await waitFor(() => expect(exclude("agents/skills")).toBeEnabled());
+			expect(exclude("agents/skills")).not.toBeChecked();
+
+			await user.click(submit());
+			await waitFor(() =>
+				expect(onOpenChange).toHaveBeenCalledWith(false),
+			);
+			expect(configured()).not.toHaveProperty("ignoreGlobs");
+		});
+
+		it("drops the staged exclusions when another repository is chosen", async () => {
+			const user = userEvent.setup();
+			const { onOpenChange } = await renderOnAgents({
+				integrations: [INTEGRATION, SECOND],
+			});
+
+			await user.click(exclude("agents/skills"));
+			await user.selectOptions(
+				screen.getByLabelText(copy.configureDialog.repositoryLabel),
+				"int_2",
+			);
+			await waitFor(() => expect(exclude("agents/skills")).toBeEnabled());
+			expect(exclude("agents/skills")).not.toBeChecked();
+
+			await user.click(submit());
+			await waitFor(() =>
+				expect(onOpenChange).toHaveBeenCalledWith(false),
+			);
+			expect(configured()).not.toHaveProperty("ignoreGlobs");
 		});
 	});
 });

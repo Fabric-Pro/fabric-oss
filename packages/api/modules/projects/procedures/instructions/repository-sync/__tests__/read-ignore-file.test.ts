@@ -1,17 +1,20 @@
 /**
- * `projects.instructions.repositorySync.listTree` — the Coding Instructions
- * configure dialog's folder browser (Fizzy #2725).
+ * `projects.instructions.repositorySync.readIgnoreFile` — the rules of the
+ * chosen folder's `.fabricignore`, for the configure dialog's folder
+ * exclusions (Fizzy #2726).
  *
  * Each call runs the procedure's REAL middleware chain in its declared order
  * — `projectNotFoundUnlessVisible`, then the real `requireProjectPermission`
- * — before the handler, so the refusals (NOT_FOUND for a project the caller
- * cannot discover, even one the org-role fallback would admit; FORBIDDEN for
- * a member without INSTRUCTION_CREATE) are what is pinned, not a mocked
- * stand-in.
- * The database, the credential resolver and the tree read are mocked;
- * `isRepositoryTreeProvider` and the folder rule (`validateRelativePath`
- * behind `normalizeRootPath`) are real.
+ * — before the handler, exactly as `list-tree.test.ts` does, so the refusals
+ * (NOT_FOUND for a project the caller cannot discover, even one the org-role
+ * fallback would admit; FORBIDDEN for a member without INSTRUCTION_CREATE)
+ * are what is pinned, not a mocked stand-in.
+ * The database, the credential resolver and the file read are mocked;
+ * `isRepositoryTreeProvider`, the folder rule (`validateRelativePath` behind
+ * `normalizeRootPath`), `parseFabricIgnore` and `MAX_FABRICIGNORE_BYTES` are
+ * real.
  */
+import { MAX_FABRICIGNORE_BYTES } from "@repo/instructions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
@@ -20,7 +23,7 @@ const m = vi.hoisted(() => ({
 	grantProjectAccess: vi.fn(),
 	getProjectRepoIntegration: vi.fn(),
 	resolveFreshRepoTokenForRow: vi.fn(),
-	listRepositoryTree: vi.fn(),
+	readRepositoryFile: vi.fn(),
 	recordAuditFromRequest: vi.fn(),
 }));
 
@@ -33,8 +36,8 @@ vi.mock("@repo/database", () => ({
 	getProjectRepoIntegration: m.getProjectRepoIntegration,
 }));
 vi.mock("@repo/connectors", async () => ({
-	listRepositoryTree: m.listRepositoryTree,
-	// The real provider list: which providers `listTree` answers without a
+	readRepositoryFile: m.readRepositoryFile,
+	// The real provider list: which providers are answered without a
 	// credential is part of what is pinned.
 	isRepositoryTreeProvider: (
 		await vi.importActual<typeof import("@repo/connectors")>(
@@ -82,7 +85,8 @@ vi.mock("../../../../../../orpc/procedures", async () => {
 	};
 });
 
-import { listInstructionRepositoryTreeProcedure } from "../list-tree";
+import { projectNotFoundUnlessVisible } from "../../../../../../orpc/middleware/project-visibility";
+import { readInstructionRepositoryIgnoreFileProcedure } from "../read-ignore-file";
 
 type Ctx = {
 	user: { id: string; name: string; email: string };
@@ -105,7 +109,8 @@ type Built = {
 	};
 };
 
-const procedure = listInstructionRepositoryTreeProcedure as unknown as Built;
+const procedure =
+	readInstructionRepositoryIgnoreFileProcedure as unknown as Built;
 
 // The caller's session sits in org-session; the project lives in org-host.
 const ctx: Ctx = {
@@ -181,12 +186,13 @@ const input = {
 	projectId: "proj-1",
 	repositoryIntegrationId: "int-1",
 	ref: "develop",
+	rootPath: "agents",
 };
 
 const NOTHING_READ = () => {
 	expect(m.getProjectRepoIntegration).not.toHaveBeenCalled();
 	expect(m.resolveFreshRepoTokenForRow).not.toHaveBeenCalled();
-	expect(m.listRepositoryTree).not.toHaveBeenCalled();
+	expect(m.readRepositoryFile).not.toHaveBeenCalled();
 };
 
 beforeEach(() => {
@@ -199,22 +205,20 @@ beforeEach(() => {
 	});
 	m.getProjectRepoIntegration.mockResolvedValue(integration);
 	m.resolveFreshRepoTokenForRow.mockResolvedValue({ token: SECRET_TOKEN });
-	m.listRepositoryTree.mockResolvedValue({
+	m.readRepositoryFile.mockResolvedValue({
 		ok: true,
-		entries: [
-			{ path: "agents", type: "dir" },
-			{ path: "agents/CLAUDE.md", type: "file" },
-			{ path: "AGENTS.md", type: "file" },
-		],
-		truncated: false,
+		state: "found",
+		text: "# generated\nbuild/\n\n!keep.md\n  dist/**  \n",
 	});
 });
 
-describe("authorization: visibility first, then INSTRUCTION_CREATE in the hosting organization", () => {
+describe("authorization: visibility first, then INSTRUCTION_CREATE in the hosting organization, as listTree", () => {
+	it("composes listTree's chain in listTree's order: visibility, then the INSTRUCTION_CREATE gate", () => {
+		expect(procedure.middlewares).toHaveLength(2);
+		expect(procedure.middlewares[0]).toBe(projectNotFoundUnlessVisible);
+	});
+
 	it("answers a project the caller cannot discover NOT_FOUND, even when the org-role fallback would grant INSTRUCTION_CREATE", async () => {
-		// A host-organization member with no ProjectMember row who did not
-		// create the project: the permission gate would admit them, but
-		// browsing the repository is limited to what they can see.
 		m.hasProjectAccess.mockResolvedValue(false);
 		m.resolveEffectiveProjectPermissions.mockResolvedValue({
 			permissions: EDITOR,
@@ -285,24 +289,22 @@ describe("authorization: visibility first, then INSTRUCTION_CREATE in the hostin
 	});
 });
 
-describe("repositorySync.listTree (instructions)", () => {
-	it("lists the branch through the integration's fresh credential, folders and files alike, auditing nothing", async () => {
+describe("repositorySync.readIgnoreFile (instructions)", () => {
+	it("reads the folder's own .fabricignore through the integration's fresh credential, capped as the sync reads it, and returns its parsed rules, auditing nothing", async () => {
 		const result = await call(input);
 
+		// `parseFabricIgnore`: comments, blank lines and `!` negations are
+		// dropped, surrounding whitespace trimmed.
 		expect(result).toEqual({
 			supported: true,
-			entries: [
-				{ path: "agents", type: "dir" },
-				{ path: "agents/CLAUDE.md", type: "file" },
-				{ path: "AGENTS.md", type: "file" },
-			],
-			truncated: false,
+			state: "rules",
+			rules: ["build/", "dist/**"],
 		});
 		expect(m.getProjectRepoIntegration).toHaveBeenCalledWith(
 			"int-1",
 			"proj-1",
 		);
-		expect(m.listRepositoryTree).toHaveBeenCalledWith({
+		expect(m.readRepositoryFile).toHaveBeenCalledWith({
 			provider: "GITHUB",
 			token: SECRET_TOKEN,
 			repositoryUrl: "https://github.com/example-org/instructions.git",
@@ -310,9 +312,89 @@ describe("repositorySync.listTree (instructions)", () => {
 			repo: "instructions",
 			azureOrganization: null,
 			branch: "develop",
+			path: "agents/.fabricignore",
+			maxBytes: MAX_FABRICIGNORE_BYTES,
 		});
+		expect(MAX_FABRICIGNORE_BYTES).toBe(64 * 1024);
 		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
 		expect(JSON.stringify(result)).not.toContain(SECRET_TOKEN);
+	});
+
+	it("reads the repository root's .fabricignore for the repository root", async () => {
+		await call({ ...input, rootPath: "" });
+
+		expect(m.readRepositoryFile).toHaveBeenCalledWith(
+			expect.objectContaining({ path: ".fabricignore" }),
+		);
+	});
+
+	it.each([
+		["agents/", "agents/.fabricignore"],
+		["  agents/skills//  ", "agents/skills/.fabricignore"],
+		["agents\\skills", "agents/skills/.fabricignore"],
+		["./agents", "agents/.fabricignore"],
+		["/", ".fabricignore"],
+	])(
+		"normalizes the folder %j as configure stores it, reading %s",
+		async (rootPath, path) => {
+			await call({ ...input, rootPath });
+
+			expect(m.readRepositoryFile).toHaveBeenCalledWith(
+				expect.objectContaining({ path }),
+			);
+		},
+	);
+
+	it.each(["../outside", "a/../../b", "/etc/passwd"])(
+		"refuses the folder %j INVALID_ROOT_PATH, as configure does, before anything is read",
+		async (rootPath) => {
+			await expect(call({ ...input, rootPath })).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+				data: { code: "INVALID_ROOT_PATH" },
+			});
+			NOTHING_READ();
+		},
+	);
+
+	it("refuses a folder longer than configure accepts before the handler runs", async () => {
+		await expect(
+			call({ ...input, rootPath: "a".repeat(513) }),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		NOTHING_READ();
+	});
+
+	it("answers a file with no rules as rules: [], which the dialog reads as no file", async () => {
+		m.readRepositoryFile.mockResolvedValue({
+			ok: true,
+			state: "found",
+			text: "# only a comment\n\n",
+		});
+
+		expect(await call(input)).toEqual({
+			supported: true,
+			state: "rules",
+			rules: [],
+		});
+	});
+
+	it("answers an absent file absent", async () => {
+		m.readRepositoryFile.mockResolvedValue({ ok: true, state: "absent" });
+
+		expect(await call(input)).toEqual({
+			supported: true,
+			state: "absent",
+			rules: [],
+		});
+	});
+
+	it("answers a file over the sync's cap tooLarge, returning none of its rules", async () => {
+		m.readRepositoryFile.mockResolvedValue({ ok: true, state: "tooLarge" });
+
+		expect(await call(input)).toEqual({
+			supported: true,
+			state: "tooLarge",
+			rules: [],
+		});
 	});
 
 	it("refuses another project's integration (tenant boundary) NOT_FOUND before any credential is read", async () => {
@@ -329,7 +411,7 @@ describe("repositorySync.listTree (instructions)", () => {
 			"proj-1",
 		);
 		expect(m.resolveFreshRepoTokenForRow).not.toHaveBeenCalled();
-		expect(m.listRepositoryTree).not.toHaveBeenCalled();
+		expect(m.readRepositoryFile).not.toHaveBeenCalled();
 	});
 
 	it("refuses an integration that is not ACTIVE before any credential is read", async () => {
@@ -343,7 +425,7 @@ describe("repositorySync.listTree (instructions)", () => {
 			data: { code: "REPOSITORY_UNAVAILABLE" },
 		});
 		expect(m.resolveFreshRepoTokenForRow).not.toHaveBeenCalled();
-		expect(m.listRepositoryTree).not.toHaveBeenCalled();
+		expect(m.readRepositoryFile).not.toHaveBeenCalled();
 	});
 
 	it.each(["GITLAB", "BITBUCKET"])(
@@ -356,11 +438,11 @@ describe("repositorySync.listTree (instructions)", () => {
 
 			expect(await call(input)).toEqual({
 				supported: false,
-				entries: [],
-				truncated: false,
+				state: "absent",
+				rules: [],
 			});
 			expect(m.resolveFreshRepoTokenForRow).not.toHaveBeenCalled();
-			expect(m.listRepositoryTree).not.toHaveBeenCalled();
+			expect(m.readRepositoryFile).not.toHaveBeenCalled();
 		},
 	);
 
@@ -379,15 +461,15 @@ describe("repositorySync.listTree (instructions)", () => {
 	});
 
 	it("answers the connector's own unsupported outcome supported: false too", async () => {
-		m.listRepositoryTree.mockResolvedValue({
+		m.readRepositoryFile.mockResolvedValue({
 			ok: false,
 			outcome: "unsupported",
 		});
 
 		expect(await call(input)).toEqual({
 			supported: false,
-			entries: [],
-			truncated: false,
+			state: "absent",
+			rules: [],
 		});
 	});
 
@@ -405,7 +487,7 @@ describe("repositorySync.listTree (instructions)", () => {
 			"REPOSITORY_UNREACHABLE",
 		],
 	])(
-		"maps %s to %s/%s without reading the tree",
+		"maps %s to %s/%s without reading the file",
 		async (_label, resolved, code, dataCode) => {
 			m.resolveFreshRepoTokenForRow.mockResolvedValue(resolved);
 
@@ -413,18 +495,17 @@ describe("repositorySync.listTree (instructions)", () => {
 				code,
 				data: { code: dataCode },
 			});
-			expect(m.listRepositoryTree).not.toHaveBeenCalled();
+			expect(m.readRepositoryFile).not.toHaveBeenCalled();
 		},
 	);
 
 	it.each([
-		["not-found", "BAD_REQUEST", "BRANCH_NOT_FOUND"],
 		["unauthorized", "BAD_REQUEST", "REPOSITORY_CREDENTIALS_EXPIRED"],
 		["unreachable", "INTERNAL_SERVER_ERROR", "REPOSITORY_UNREACHABLE"],
 	])(
-		"throws configure's %s error (%s/%s), never an empty listing",
+		"throws configure's %s error (%s/%s), never an absent file",
 		async (outcome, code, dataCode) => {
-			m.listRepositoryTree.mockResolvedValue({ ok: false, outcome });
+			m.readRepositoryFile.mockResolvedValue({ ok: false, outcome });
 
 			const caught = (await call(input).then(
 				(value) => ({ resolvedWith: value }),
@@ -439,23 +520,12 @@ describe("repositorySync.listTree (instructions)", () => {
 		},
 	);
 
-	it("names the missing branch in BRANCH_NOT_FOUND's message, as configure does", async () => {
-		m.listRepositoryTree.mockResolvedValue({
-			ok: false,
-			outcome: "not-found",
-		});
-
-		await expect(call(input)).rejects.toMatchObject({
-			message: 'Branch "develop" wasn\'t found on the remote.',
-		});
-	});
-
 	it("maps an unauthorized read after OUR failed refresh to REPOSITORY_UNREACHABLE, never 'reconnect'", async () => {
 		m.resolveFreshRepoTokenForRow.mockResolvedValue({
 			token: SECRET_TOKEN,
 			refreshFault: "PROVIDER_UNAVAILABLE",
 		});
-		m.listRepositoryTree.mockResolvedValue({
+		m.readRepositoryFile.mockResolvedValue({
 			ok: false,
 			outcome: "unauthorized",
 		});
@@ -463,94 +533,6 @@ describe("repositorySync.listTree (instructions)", () => {
 		await expect(call(input)).rejects.toMatchObject({
 			code: "INTERNAL_SERVER_ERROR",
 			data: { code: "REPOSITORY_UNREACHABLE" },
-		});
-	});
-
-	it("keeps only paths configure would store as a rootPath, dropping a rejected folder with everything under it", async () => {
-		const deepest = Array.from({ length: 32 }, (_, i) => `d${i}`).join("/");
-		const tooDeep = `${deepest}/d32`;
-		const tooLong = `long/${"a".repeat(600)}`;
-		m.listRepositoryTree.mockResolvedValue({
-			ok: true,
-			entries: [
-				{ path: "agents", type: "dir" },
-				{ path: "agents/skills", type: "dir" },
-				{ path: "agents/CLAUDE.md", type: "file" },
-				// Not in configure's stored spelling: dropped, and so is
-				// everything under it, even what would pass on its own.
-				{ path: "trailing ", type: "dir" },
-				{ path: "trailing /inner", type: "dir" },
-				{ path: "trailing /inner/AGENTS.md", type: "file" },
-				{ path: "back\\slash", type: "dir" },
-				{ path: "back\\slash/notes.md", type: "file" },
-				// A rejected folder the provider did not list itself.
-				{ path: "odd//x/file.md", type: "file" },
-				{ path: "ctl\u0001dir", type: "dir" },
-				{ path: tooLong, type: "dir" },
-				{ path: deepest, type: "dir" },
-				{ path: tooDeep, type: "dir" },
-				{ path: "README.md", type: "file" },
-			],
-			truncated: false,
-		});
-
-		const result = await call(input);
-
-		expect(result.entries).toEqual([
-			{ path: "agents", type: "dir" },
-			{ path: "agents/skills", type: "dir" },
-			{ path: "agents/CLAUDE.md", type: "file" },
-			{ path: deepest, type: "dir" },
-			{ path: "README.md", type: "file" },
-		]);
-	});
-
-	it("passes a file's regular: false marker through, so the dialog never counts a symbolic link as synced (Fizzy #2726)", async () => {
-		m.listRepositoryTree.mockResolvedValue({
-			ok: true,
-			entries: [
-				{ path: "agents", type: "dir" },
-				{ path: "agents/CLAUDE.md", type: "file" },
-				{ path: "agents/linked.md", type: "file", regular: false },
-			],
-			truncated: false,
-		});
-
-		const result = await call(input);
-
-		expect(result.entries).toEqual([
-			{ path: "agents", type: "dir" },
-			{ path: "agents/CLAUDE.md", type: "file" },
-			{ path: "agents/linked.md", type: "file", regular: false },
-		]);
-		expect(result.entries[1]).not.toHaveProperty("regular");
-	});
-
-	it("returns an empty repository's empty tree as a supported, empty listing", async () => {
-		m.listRepositoryTree.mockResolvedValue({
-			ok: true,
-			entries: [],
-			truncated: false,
-		});
-
-		expect(await call(input)).toEqual({
-			supported: true,
-			entries: [],
-			truncated: false,
-		});
-	});
-
-	it("passes the listing's truncated flag through", async () => {
-		m.listRepositoryTree.mockResolvedValue({
-			ok: true,
-			entries: [{ path: "agents", type: "dir" }],
-			truncated: true,
-		});
-
-		expect(await call(input)).toEqual({
-			supported: true,
-			entries: [{ path: "agents", type: "dir" }],
-			truncated: true,
 		});
 	});
 

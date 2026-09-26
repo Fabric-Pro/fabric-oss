@@ -110,6 +110,37 @@ describe("listRepositoryTree — GitHub", () => {
 		expect(init.signal).toBeInstanceOf(AbortSignal);
 	});
 
+	it("marks a blob that is not a regular file — a symbolic link — regular: false (Fizzy #2726)", async () => {
+		mockFetch.mockResolvedValue(
+			jsonResponse(200, {
+				truncated: false,
+				tree: [
+					{ path: "docs", type: "tree", mode: "040000" },
+					{ path: "docs/guide.md", type: "blob", mode: "100644" },
+					{ path: "run.sh", type: "blob", mode: "100755" },
+					{ path: "linked.md", type: "blob", mode: "120000" },
+					{ path: "docs/odd-mode.md", type: "blob", mode: "100664" },
+					{ path: "vendor/lib", type: "commit", mode: "160000" },
+					// No mode at all: a file, as before the marker.
+					{ path: "legacy.md", type: "blob" },
+				],
+			}),
+		);
+
+		expect(await listRepositoryTree(githubInput)).toEqual({
+			ok: true,
+			entries: [
+				{ path: "docs", type: "dir" },
+				{ path: "docs/guide.md", type: "file" },
+				{ path: "run.sh", type: "file" },
+				{ path: "linked.md", type: "file", regular: false },
+				{ path: "docs/odd-mode.md", type: "file", regular: false },
+				{ path: "legacy.md", type: "file" },
+			],
+			truncated: false,
+		});
+	});
+
 	it("carries the provider's own truncated flag", async () => {
 		mockFetch.mockResolvedValue(
 			jsonResponse(200, {
@@ -366,6 +397,45 @@ describe("listRepositoryTree — Azure DevOps", () => {
 		expect(result.truncated).toBe(true);
 		expect(result.entries).toHaveLength(MAX_REPOSITORY_TREE_ENTRIES);
 		expect(result.entries[0]).toEqual({ path: "docs/f0.md", type: "file" });
+	});
+
+	it("marks a symbolic link regular: false, as a file even when it also claims to be a folder (Fizzy #2726)", async () => {
+		mockFetch.mockResolvedValue(
+			jsonResponse(200, {
+				value: [
+					{ path: "/", isFolder: true, gitObjectType: "tree" },
+					{ path: "/docs", isFolder: true, gitObjectType: "tree" },
+					{ path: "/docs/guide.md", gitObjectType: "blob" },
+					{
+						path: "/linked.md",
+						gitObjectType: "blob",
+						isSymLink: true,
+					},
+					{
+						path: "/linked-folder",
+						isFolder: true,
+						isSymLink: true,
+					},
+					{
+						path: "/plain.md",
+						gitObjectType: "blob",
+						isSymLink: false,
+					},
+				],
+			}),
+		);
+
+		expect(await listRepositoryTree(adoInput)).toEqual({
+			ok: true,
+			entries: [
+				{ path: "docs", type: "dir" },
+				{ path: "docs/guide.md", type: "file" },
+				{ path: "linked.md", type: "file", regular: false },
+				{ path: "linked-folder", type: "file", regular: false },
+				{ path: "plain.md", type: "file" },
+			],
+			truncated: false,
+		});
 	});
 
 	it("answers the 203 sign-in page unauthorized", async () => {

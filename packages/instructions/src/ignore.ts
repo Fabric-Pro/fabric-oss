@@ -72,6 +72,30 @@ export const ALWAYS_IGNORE_GLOBS: readonly string[] = [
  */
 export const FABRIC_IGNORE_FILE = ".fabricignore";
 
+/**
+ * The most bytes of a repository's `.fabricignore` a repository sync reads
+ * (design 2026-09-23 §5.3.2 step 6), the same 64 KiB an upload's `begin`
+ * accepts. A larger file is dropped and the project's rules apply instead.
+ *
+ * Shared by the sync activity that reads the blob
+ * (`packages/temporal/.../project-instruction-repository-sync.ts`) and the
+ * configure dialog's preview of it (`repositorySync.readIgnoreFile`, Fizzy
+ * #2726), so the preview never applies a file the sync would drop.
+ */
+export const MAX_FABRICIGNORE_BYTES = 64 * 1024;
+
+/**
+ * `updateSettings`' bounds on a project's own ignore list
+ * (`packages/api/.../instructions/update-settings.ts`): at most `maxGlobs`
+ * rules of at most `maxGlobLength` characters each. The configure dialog's
+ * folder exclusions (Fizzy #2726) refuse a toggle that would break either
+ * before anything is sent.
+ */
+export const PROJECT_IGNORE_GLOB_LIMITS = {
+	maxGlobs: 200,
+	maxGlobLength: 256,
+} as const;
+
 export const DEFAULT_IGNORE_GLOBS: readonly string[] = [
 	"**/node_modules/**",
 	"**/.playwright-mcp/**",

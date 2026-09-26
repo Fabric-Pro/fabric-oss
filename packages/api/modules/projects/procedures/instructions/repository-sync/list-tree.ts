@@ -42,7 +42,10 @@
  * WITH its descendants, even those that would pass alone, so the tree never
  * shows a folder's contents without the folder. Files are returned for
  * orientation only — a member can see where CLAUDE.md or AGENTS.md live —
- * and the dialog does not let one be chosen.
+ * and the dialog does not let one be chosen. A file the listing marks
+ * `regular: false` (a symbolic link, which the sync never reads) keeps the
+ * marker, so the dialog's exclusion preview shows it as skipped (Fizzy
+ * #2726).
  *
  * Not audited: it returns structure, not content, and writes nothing — as
  * `configure`'s own branch check is not audited apart from the write it

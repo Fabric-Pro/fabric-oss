@@ -8,13 +8,24 @@
  * disable what that validation would refuse.
  */
 
-/** One entry as `listTree` returns it, in the sync's plain path spelling. */
-export type RepositoryTreeEntry = { path: string; type: "file" | "dir" };
+/**
+ * One entry as `listTree` returns it, in the sync's plain path spelling.
+ * `regular: false` marks a file that is not a regular file (a symbolic
+ * link), which no sync reads; only the Coding Instructions exclusion
+ * preview reads the marker (Fizzy #2726).
+ */
+export type RepositoryTreeEntry = {
+	path: string;
+	type: "file" | "dir";
+	regular?: false;
+};
 
 export type RepositoryTreeNode = {
 	path: string;
 	name: string;
 	type: "file" | "dir";
+	/** The entry's `regular: false`, kept on a file node only. */
+	regular?: false;
 	children: RepositoryTreeNode[];
 };
 
@@ -52,6 +63,7 @@ function sortTreeLevel(nodes: RepositoryTreeNode[]): void {
  * files, each sorted by name. A folder the provider did not list (only its
  * contents) is created, since its contents are only reachable through it;
  * an entry listed twice keeps one node, a folder if either listing says so.
+ * A file node keeps its entry's `regular: false`; a folder never has one.
  */
 export function buildRepositoryTree(
 	entries: readonly RepositoryTreeEntry[],
@@ -71,6 +83,7 @@ export function buildRepositoryTree(
 		const existing = byPath.get(path);
 		if (existing) {
 			existing.type = "dir";
+			delete existing.regular;
 			return existing;
 		}
 		const slash = path.lastIndexOf("/");
@@ -92,6 +105,7 @@ export function buildRepositoryTree(
 		if (existing) {
 			if (entry.type === "dir") {
 				existing.type = "dir";
+				delete existing.regular;
 			}
 			continue;
 		}
@@ -100,6 +114,9 @@ export function buildRepositoryTree(
 			path: entry.path,
 			name: slash === -1 ? entry.path : entry.path.slice(slash + 1),
 			type: entry.type,
+			...(entry.type === "file" && entry.regular === false
+				? { regular: false as const }
+				: {}),
 			children: [],
 		});
 	}
