@@ -272,6 +272,58 @@ export interface GetProposalPullRequestOptions {
 	signal?: AbortSignal;
 }
 
+/**
+ * Coding instructions are an organization surface with no personal arm, so
+ * there is no `personal` option: the request names an organization or none.
+ */
+export interface GetOpenProposalsOptions {
+	org?: string;
+	/**
+	 * Cancels the request: the fetch, the body read and any retry backoff.
+	 * The call then rejects with the signal's own `reason`, never a
+	 * `FabricError`.
+	 */
+	signal?: AbortSignal;
+}
+
+/** A coding-instructions snapshot's validation state. */
+export type InstructionSnapshotStatus =
+	| "RECEIVING"
+	| "VALIDATING"
+	| "READY"
+	| "REJECTED"
+	| "FAILED";
+
+/**
+ * One path an open proposal changes, stated against that proposal's own base:
+ * `put` with the proposed file's sha256, or `delete` with `sha256: null`.
+ */
+export interface OpenInstructionProposalChange {
+	path: string;
+	op: "put" | "delete";
+	sha256: string | null;
+}
+
+/**
+ * One of the caller's own proposals that is still open (`PENDING`), with the
+ * hashes of what it changes and never the bytes. `fabric instructions push`
+ * reads these so it does not send a change the caller has already proposed.
+ */
+export interface OpenInstructionProposal {
+	snapshotId: string;
+	version: number;
+	/** The published snapshot the proposal is stated against. */
+	baseSnapshotId: string;
+	/** The proposal snapshot's validation state. */
+	status: InstructionSnapshotStatus;
+	/** A repository-backed project's pull request; null for a proposal Fabric reviews itself. */
+	pullRequest: {
+		state: ProposalPullRequestState;
+		url: string | null;
+	} | null;
+	changes: OpenInstructionProposalChange[];
+}
+
 export interface SubmittedInstructionChange {
 	/**
 	 * Which route answered: `proposal` from `submitChange`, `publish` from
@@ -456,6 +508,34 @@ export class InstructionsResource {
 			{ signal },
 		);
 		return result.pullRequest;
+	}
+
+	/**
+	 * The caller's own proposals that are still open (`PENDING`), each with
+	 * the paths it changes against its base and the proposed files' sha256.
+	 * Hashes only: no bytes, and never another member's proposal, whatever
+	 * the caller may review.
+	 *
+	 * Requires a key with `instructions:read`, and its creator must still
+	 * hold read permission on the project's coding instructions, checked
+	 * live on every call. A server that predates this route answers 404.
+	 *
+	 * `options.signal` cancels the request, including the client's retry
+	 * backoff, and the call then rejects with the signal's own reason.
+	 */
+	async getOpenProposals(
+		projectId: string,
+		options: GetOpenProposalsOptions = {},
+	): Promise<OpenInstructionProposal[]> {
+		// Named field by field rather than spread: a key that is not part of
+		// this request's context never reaches the query.
+		const result = await this.http.get<{
+			proposals: OpenInstructionProposal[];
+		}>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/proposals/open${buildQuery({ org: options.org })}`,
+			{ signal: options.signal },
+		);
+		return result.proposals;
 	}
 
 	/**

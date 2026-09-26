@@ -179,6 +179,7 @@ export {
 export type { ListFramesOptions } from "./resources/frames.js";
 export type {
 	CreateInstructionDownloadOptions,
+	GetOpenProposalsOptions,
 	GetProposalPullRequestOptions,
 	GetPublishedInstructionsOptions,
 	InstructionChange,
@@ -188,7 +189,10 @@ export type {
 	InstructionFileKind,
 	InstructionManifestEntry,
 	InstructionRepositoryProvider,
+	InstructionSnapshotStatus,
 	InstructionSourceOfTruth,
+	OpenInstructionProposal,
+	OpenInstructionProposalChange,
 	ProposalPullRequest,
 	ProposalPullRequestFailure,
 	ProposalPullRequestState,

@@ -28,6 +28,15 @@
  * one does — no traversal, no reserved root, no symlinked component — and must
  * actually be a regular file.
  *
+ * ## What an open proposal already carries is not sent again
+ *
+ * The lock names the PUBLISHED version, and a proposal does not change what
+ * is published. So the diff above cannot tell an edit this checkout already
+ * proposed from a new one: a second session pushing an unrelated edit would
+ * send the first session's change again, and its proposal (or pull request)
+ * would carry it twice (Fizzy #2739). `setAsideProposed` takes those out of
+ * the plan, by the rule on `carryingProposals`; `--include-proposed` skips it.
+ *
  * ## Reads are guarded exactly as writes are
  *
  * Every read goes through `readFileSafely`, the same per-segment walk `sync`
@@ -41,6 +50,8 @@ import { createHash } from "node:crypto";
 import type {
 	InstructionChange,
 	InstructionManifestEntry,
+	OpenInstructionProposal,
+	ProposalPullRequestState,
 } from "@fabricorg/sdk";
 import type { InstructionsLock } from "./lock.js";
 import {
@@ -61,6 +72,8 @@ interface PushPlanEntry {
 	action: PushChangeAction;
 	/** Present on a `put`: the size of the bytes to send. */
 	size?: number;
+	/** Present on a `put`: the sha256 of the bytes to send, hex. */
+	sha256?: string;
 }
 
 export interface PushPlan {
@@ -125,6 +138,10 @@ function encodeContent(bytes: Uint8Array): {
 		content: Buffer.from(bytes).toString("base64"),
 		encoding: "base64",
 	};
+}
+
+function sha256Of(bytes: Uint8Array): string {
+	return createHash("sha256").update(bytes).digest("hex");
 }
 
 /**
@@ -276,7 +293,7 @@ export async function computePushPlan(input: {
 			changes.push({ op: "delete", path: lockedPath });
 			continue;
 		}
-		const actual = createHash("sha256").update(read.bytes).digest("hex");
+		const actual = sha256Of(read.bytes);
 		if (actual === lock.files[lockedPath]?.sha256) {
 			unchanged.push(lockedPath);
 			continue;
@@ -286,6 +303,7 @@ export async function computePushPlan(input: {
 			path: lockedPath,
 			action: "put",
 			size: read.bytes.length,
+			sha256: actual,
 		});
 		changes.push({ op: "put", path: lockedPath, ...encoded });
 	}
@@ -298,9 +316,136 @@ export async function computePushPlan(input: {
 			);
 		}
 		const encoded = encodeContent(read.bytes);
-		entries.push({ path: newPath, action: "put", size: read.bytes.length });
+		entries.push({
+			path: newPath,
+			action: "put",
+			size: read.bytes.length,
+			sha256: sha256Of(read.bytes),
+		});
 		changes.push({ op: "put", path: newPath, ...encoded });
 	}
 
 	return { entries, changes, unchanged };
+}
+
+/** A change left out of the plan because an open proposal already carries it. */
+export interface AlreadyProposed {
+	path: string;
+	action: PushChangeAction;
+	/** The newest open proposal that carries it. */
+	proposal: {
+		snapshotId: string;
+		version: number;
+		pullRequest: {
+			state: ProposalPullRequestState;
+			url: string | null;
+		} | null;
+	};
+}
+
+/**
+ * Pull-request states in which a repository-sourced proposal is still on its
+ * way to review. `BLOCKED` needs a person before it goes anywhere,
+ * `CLOSE_REQUESTED` and `CANCELED` are withdrawals, and `MERGED` and `CLOSED`
+ * are decided — none of those is carrying a change towards review any more.
+ */
+const LIVE_PULL_REQUEST_STATES: ReadonlySet<string> = new Set([
+	"QUEUED",
+	"OPENING",
+	"OPEN",
+]);
+
+/**
+ * Snapshot states in which a proposal's files are complete and its checks
+ * are running or have passed. `RECEIVING` may never finish; `FAILED` and
+ * `REJECTED` land nothing until somebody acts on them.
+ */
+const LIVE_SNAPSHOT_STATUSES: ReadonlySet<string> = new Set([
+	"VALIDATING",
+	"READY",
+]);
+
+/**
+ * The open proposals whose changes a push may leave out, newest first.
+ *
+ * Only a proposal that will reach review as it stands counts, because the
+ * two ways of being wrong cost very different things. Sending a change a
+ * proposal already carries costs a duplicate, which the server handles
+ * correctly; leaving out a change whose proposal will never be approved
+ * loses the edit from the only proposal that could have carried it. So:
+ *
+ * - stated against `baseSnapshotId`, the version this push is stated against
+ *   and has already confirmed is the published one. A proposal against an
+ *   older version is stale, and a stale proposal cannot be approved;
+ * - its files complete and its checks running or passed;
+ * - and, for a repository-sourced project, its pull request queued, being
+ *   opened, or open.
+ */
+function carryingProposals(
+	proposals: readonly OpenInstructionProposal[],
+	baseSnapshotId: string,
+): OpenInstructionProposal[] {
+	return proposals
+		.filter(
+			(proposal) =>
+				proposal.baseSnapshotId === baseSnapshotId &&
+				LIVE_SNAPSHOT_STATUSES.has(proposal.status) &&
+				(proposal.pullRequest === null ||
+					LIVE_PULL_REQUEST_STATES.has(proposal.pullRequest.state)),
+		)
+		.sort((a, b) => b.version - a.version);
+}
+
+/**
+ * Take out of `plan` every change one of the caller's open proposals already
+ * carries: the same path with the same bytes (sha256) for a put, the same
+ * path for a delete. Everything else stays exactly as computed — an edit that
+ * differs from what the proposal carries is a new edit, and is sent.
+ */
+export function setAsideProposed(
+	plan: PushPlan,
+	proposals: readonly OpenInstructionProposal[],
+	baseSnapshotId: string,
+): { plan: PushPlan; alreadyProposed: AlreadyProposed[] } {
+	const carrying = carryingProposals(proposals, baseSnapshotId);
+	const carriedBy = (entry: PushPlanEntry) =>
+		carrying.find((proposal) =>
+			proposal.changes.some(
+				(change) =>
+					change.path === entry.path &&
+					change.op === entry.action &&
+					(entry.action === "delete" ||
+						change.sha256 === entry.sha256),
+			),
+		);
+
+	const setAside = new Set<string>();
+	const alreadyProposed: AlreadyProposed[] = [];
+	for (const entry of plan.entries) {
+		const proposal = carriedBy(entry);
+		if (proposal === undefined) {
+			continue;
+		}
+		setAside.add(entry.path);
+		alreadyProposed.push({
+			path: entry.path,
+			action: entry.action,
+			proposal: {
+				snapshotId: proposal.snapshotId,
+				version: proposal.version,
+				pullRequest: proposal.pullRequest,
+			},
+		});
+	}
+
+	return {
+		plan: {
+			entries: plan.entries.filter((entry) => !setAside.has(entry.path)),
+			changes: plan.changes.filter(
+				(change) => !setAside.has(change.path),
+			),
+			unchanged: plan.unchanged,
+		},
+		alreadyProposed,
+	};
 }

@@ -16,7 +16,13 @@
  *    believe this checkout already held a version nobody has approved.
  */
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	realpath,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Command } from "commander";
@@ -26,6 +32,7 @@ import {
 	type InstructionsLock,
 	LOCK_VERSION,
 } from "../src/lib/instructions/lock.js";
+import { openProposalTiming } from "../src/lib/instructions/open-proposals.js";
 import { nextLock } from "../src/lib/instructions/plan.js";
 
 const OUTSIDE_CONFIG_PATH = path.join(tmpdir(), "fabricai", "config.json");
@@ -36,6 +43,7 @@ const { mocks } = vi.hoisted(() => ({
 		publishChange: vi.fn(),
 		getPublished: vi.fn(),
 		getProposalPullRequest: vi.fn(),
+		getOpenProposals: vi.fn(),
 		getApiKey: vi.fn<() => string | undefined>(),
 		getConfigPath: vi.fn<() => string>(),
 		/** The overrides `instructionsClient` handed `getClient`. */
@@ -59,6 +67,7 @@ vi.mock("../src/lib/client.js", () => {
 			submitChange: mocks.submitChange,
 			publishChange: mocks.publishChange,
 			getProposalPullRequest: mocks.getProposalPullRequest,
+			getOpenProposals: mocks.getOpenProposals,
 		},
 		withoutContext: () => client,
 	};
@@ -229,6 +238,9 @@ beforeEach(() => {
 	mocks.publishChange.mockReset();
 	mocks.getPublished.mockReset();
 	mocks.getProposalPullRequest.mockReset();
+	// No open proposals unless a test says otherwise: every other case here
+	// is about a checkout with nothing already under review.
+	mocks.getOpenProposals.mockReset().mockResolvedValue([]);
 	mocks.clientOverrides.mockReset();
 	mocks.getApiKey.mockReset().mockReturnValue("fab_test");
 	mocks.getConfigPath.mockReset().mockReturnValue(OUTSIDE_CONFIG_PATH);
@@ -1516,5 +1528,635 @@ describe("admission refusals become sentences", () => {
 
 		expect(result.code).toBe(7);
 		expect(result.stderr).toContain("repository");
+	});
+});
+
+/**
+ * A push leaves out what the caller's own open proposals already carry
+ * (Fizzy #2739).
+ *
+ * The lock names the PUBLISHED version, and a proposal does not change what
+ * is published. So one session proposing an edit to AGENTS.md and a second
+ * session on the same checkout then pushing an edit to rules.md used to send
+ * AGENTS.md again: the second proposal (and, on a repository-sourced project,
+ * its pull request) carried the first one's change a second time.
+ */
+describe("changes an open proposal already carries", () => {
+	/** One of the caller's open proposals, as the server lists it. */
+	function openProposal(overrides: Record<string, unknown> = {}) {
+		return {
+			snapshotId: "snap-8",
+			version: 8,
+			baseSnapshotId: "snap-7",
+			status: "READY",
+			pullRequest: null,
+			changes: [
+				{ path: "AGENTS.md", op: "put", sha256: sha256("proposed\n") },
+			],
+			...overrides,
+		};
+	}
+
+	/** Session A proposed AGENTS.md; session B has since edited rules.md. */
+	function secondSessionTree(): Promise<string> {
+		return syncedTree(
+			{ "AGENTS.md": "one\n", "rules.md": "two\n" },
+			{ "AGENTS.md": "proposed\n", "rules.md": "edited\n" },
+		);
+	}
+
+	function sentPaths(mock: ReturnType<typeof vi.fn>): string[] {
+		const changes = (mock.mock.calls[0]?.[2] ?? []) as Array<{
+			path: string;
+		}>;
+		return changes.map((change) => change.path);
+	}
+
+	it("does not send a change again that an open proposal already carries", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal()]);
+		mocks.submitChange.mockResolvedValue(accepted({ version: 9 }));
+		const dest = await secondSessionTree();
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(sentPaths(mocks.submitChange)).toEqual(["rules.md"]);
+		expect(mocks.getOpenProposals).toHaveBeenCalledWith(
+			"proj-1",
+			expect.objectContaining({ org: undefined }),
+		);
+		expect(result.stdout).toContain(
+			"AGENTS.md — already proposed in version 8",
+		);
+		expect(result.stdout).toContain("--include-proposed");
+	});
+
+	it("sends an edit whose content differs from what the proposal carries", async () => {
+		mocks.getOpenProposals.mockResolvedValue([
+			openProposal({
+				changes: [
+					{
+						path: "AGENTS.md",
+						op: "put",
+						sha256: sha256("an earlier draft\n"),
+					},
+				],
+			}),
+		]);
+		mocks.submitChange.mockResolvedValue(accepted({ version: 9 }));
+		const dest = await secondSessionTree();
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(sentPaths(mocks.submitChange)).toEqual([
+			"AGENTS.md",
+			"rules.md",
+		]);
+		expect(result.stdout).not.toContain("already proposed");
+	});
+
+	it("sends it anyway with --include-proposed, without looking anything up", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal()]);
+		mocks.submitChange.mockResolvedValue(accepted({ version: 9 }));
+		const dest = await secondSessionTree();
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--include-proposed",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.getOpenProposals).not.toHaveBeenCalled();
+		expect(sentPaths(mocks.submitChange)).toEqual([
+			"AGENTS.md",
+			"rules.md",
+		]);
+	});
+
+	it("shows what it would leave out on --dry-run, and sends nothing", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal()]);
+		const dest = await secondSessionTree();
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--dry-run",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+		expect(result.stdout).toContain(
+			"Would send 1 changed file(s) and 0 deletion(s) against version 7 (0 unchanged, 1 already proposed).",
+		);
+		expect(result.stdout).toContain(
+			"AGENTS.md — already proposed in version 8",
+		);
+	});
+
+	it("sends everything, and says nothing about proposals, when none is open", async () => {
+		mocks.submitChange.mockResolvedValue(accepted({ version: 9 }));
+		const dest = await secondSessionTree();
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(sentPaths(mocks.submitChange)).toEqual([
+			"AGENTS.md",
+			"rules.md",
+		]);
+		expect(result.stdout).not.toContain("already proposed");
+		expect(result.stderr).toBe("");
+	});
+
+	// Warn and send rather than refuse: what an unchecked push costs is the
+	// duplicate this change exists to avoid, which the server handles
+	// correctly per proposal. Refusing would make every push against a
+	// server without the lookup fail outright.
+	it("warns and sends everything when the server has no open-proposals lookup", async () => {
+		mocks.getOpenProposals.mockRejectedValue(refusal("Not Found", 404));
+		mocks.submitChange.mockResolvedValue(accepted({ version: 9 }));
+		const dest = await secondSessionTree();
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(sentPaths(mocks.submitChange)).toEqual([
+			"AGENTS.md",
+			"rules.md",
+		]);
+		expect(result.stderr).toContain(
+			"Could not check your open proposals (this Fabric server does not list open proposals",
+		);
+		expect(result.stderr).toContain("sent again");
+	});
+
+	it("warns and sends everything when the lookup fails", async () => {
+		mocks.getOpenProposals.mockRejectedValue(
+			refusal("upstream exploded", 500),
+		);
+		mocks.submitChange.mockResolvedValue(accepted({ version: 9 }));
+		const dest = await secondSessionTree();
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(sentPaths(mocks.submitChange)).toEqual([
+			"AGENTS.md",
+			"rules.md",
+		]);
+		expect(result.stderr).toContain(
+			"Could not check your open proposals (upstream exploded)",
+		);
+	});
+
+	it("warns and sends everything when the answer is not a list of proposals", async () => {
+		mocks.getOpenProposals.mockResolvedValue([
+			{ ...openProposal(), changes: "all of them" },
+		]);
+		mocks.submitChange.mockResolvedValue(accepted({ version: 9 }));
+		const dest = await secondSessionTree();
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(sentPaths(mocks.submitChange)).toEqual([
+			"AGENTS.md",
+			"rules.md",
+		]);
+		expect(result.stderr).toContain("Could not check your open proposals");
+	});
+
+	it("warns and sends everything when the lookup does not answer in time", async () => {
+		const saved = openProposalTiming.deadlineMs;
+		openProposalTiming.deadlineMs = 50;
+		try {
+			mocks.getOpenProposals.mockImplementation(
+				(_projectId: string, options: { signal: AbortSignal }) =>
+					new Promise((_resolve, reject) => {
+						options.signal.addEventListener("abort", () =>
+							reject(options.signal.reason),
+						);
+					}),
+			);
+			mocks.submitChange.mockResolvedValue(accepted({ version: 9 }));
+			const dest = await secondSessionTree();
+
+			const result = await runCli([
+				"push",
+				"--project",
+				"proj-1",
+				"--dest",
+				dest,
+			]);
+
+			expect(result.code).toBe(0);
+			expect(sentPaths(mocks.submitChange)).toEqual([
+				"AGENTS.md",
+				"rules.md",
+			]);
+			expect(result.stderr).toContain("did not answer within");
+		} finally {
+			openProposalTiming.deadlineMs = saved;
+		}
+	});
+
+	it("names the pull request when the proposal carrying it has one", async () => {
+		mocks.getOpenProposals.mockResolvedValue([
+			openProposal({
+				pullRequest: {
+					state: "OPEN",
+					url: "https://example.com/example-org/example-repo/pull/7",
+				},
+			}),
+		]);
+		mocks.submitChange.mockResolvedValue(
+			accepted({ version: 9, pullRequest: null }),
+		);
+		const dest = await secondSessionTree();
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.stdout).toContain(
+			"AGENTS.md — already proposed in version 8, pull request https://example.com/example-org/example-repo/pull/7",
+		);
+	});
+
+	it("leaves out a deletion an open proposal already carries", async () => {
+		mocks.getOpenProposals.mockResolvedValue([
+			openProposal({
+				changes: [{ path: "gone.md", op: "delete", sha256: null }],
+			}),
+		]);
+		mocks.submitChange.mockResolvedValue(accepted({ version: 9 }));
+		const dest = await syncedTree(
+			{ "gone.md": "one\n", "rules.md": "two\n" },
+			{ "rules.md": "edited\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(sentPaths(mocks.submitChange)).toEqual(["rules.md"]);
+		expect(result.stdout).toContain(
+			"gone.md — deletion already proposed in version 8",
+		);
+	});
+
+	// Nothing failed: what the developer wanted under review already is. It
+	// is also what repeating an identical push used to answer — the server's
+	// dedup returned the same proposal with exit 0.
+	it("sends nothing and exits 0 when every change is already proposed", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal()]);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n", "rules.md": "two\n" },
+			{ "AGENTS.md": "proposed\n", "rules.md": "two\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+		expect(result.stdout).toContain(
+			"Nothing new to push: every change here is already in your open proposals.",
+		);
+		expect(result.stdout).toContain(
+			"AGENTS.md — already proposed in version 8",
+		);
+	});
+
+	it("leaves the proposed change out of a --publish too", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal()]);
+		mocks.publishChange.mockResolvedValue(
+			accepted({ mode: "publish", proposalStatus: null, version: 9 }),
+		);
+		const dest = await secondSessionTree();
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--publish",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(sentPaths(mocks.publishChange)).toEqual(["rules.md"]);
+		expect(result.stdout).toContain(
+			"AGENTS.md — already proposed in version 8",
+		);
+		expect(result.stdout).toContain("--include-proposed");
+	});
+
+	it("publishes the proposed change too with --publish --include-proposed", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal()]);
+		mocks.publishChange.mockResolvedValue(
+			accepted({ mode: "publish", proposalStatus: null, version: 9 }),
+		);
+		const dest = await secondSessionTree();
+
+		await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--publish",
+			"--include-proposed",
+		]);
+
+		expect(sentPaths(mocks.publishChange)).toEqual([
+			"AGENTS.md",
+			"rules.md",
+		]);
+	});
+
+	// A publish that would send nothing has not done what was asked, which
+	// is the same answer "Nothing to push" gives.
+	it("refuses a --publish whose every change is already proposed", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal()]);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n" },
+			{ "AGENTS.md": "proposed\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--publish",
+		]);
+
+		expect(result.code).toBe(7);
+		expect(mocks.publishChange).not.toHaveBeenCalled();
+		expect(result.stderr).toContain("Nothing new to publish");
+		expect(result.stderr).toContain("version 8");
+		expect(result.stderr).toContain("--include-proposed");
+	});
+
+	it("reports what it left out, and why, in --format json", async () => {
+		mocks.getOpenProposals.mockResolvedValue([
+			openProposal({
+				pullRequest: {
+					state: "OPEN",
+					url: "https://example.com/example-org/example-repo/pull/7",
+				},
+			}),
+		]);
+		mocks.submitChange.mockResolvedValue(
+			accepted({ version: 9, pullRequest: null }),
+		);
+		const dest = await secondSessionTree();
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--format",
+			"json",
+		]);
+
+		expect(result.code).toBe(0);
+		const outcome = JSON.parse(result.stdout);
+		expect(outcome.put).toEqual(["rules.md"]);
+		expect(outcome.alreadyProposed).toEqual([
+			{
+				path: "AGENTS.md",
+				action: "put",
+				snapshotId: "snap-8",
+				version: 8,
+				pullRequestState: "OPEN",
+				pullRequestUrl:
+					"https://example.com/example-org/example-repo/pull/7",
+			},
+		]);
+		expect(outcome.openProposalCheck).toEqual({
+			state: "checked",
+			reason: null,
+		});
+	});
+
+	it("says in --format json why the check did not run", async () => {
+		mocks.getOpenProposals.mockRejectedValue(refusal("Not Found", 404));
+		mocks.submitChange.mockResolvedValue(accepted({ version: 9 }));
+		const dest = await secondSessionTree();
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--format",
+			"json",
+		]);
+
+		const outcome = JSON.parse(result.stdout);
+		expect(outcome.alreadyProposed).toEqual([]);
+		expect(outcome.openProposalCheck.state).toBe("unavailable");
+		expect(outcome.openProposalCheck.reason).toContain(
+			"does not list open proposals",
+		);
+	});
+
+	// A deletion whose hash is absent rather than null is a server that has
+	// drifted from the contract. Read leniently, it would leave a local
+	// deletion out with exit 0 and no warning, the one outcome the lookup's
+	// fail-open rule exists to prevent.
+	it("warns and sends a deletion when the proposal's delete omits its sha256", async () => {
+		mocks.getOpenProposals.mockResolvedValue([
+			openProposal({ changes: [{ path: "gone.md", op: "delete" }] }),
+		]);
+		mocks.submitChange.mockResolvedValue(accepted({ version: 9 }));
+		const dest = await syncedTree(
+			{ "gone.md": "one\n", "rules.md": "two\n" },
+			{ "rules.md": "edited\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(sentPaths(mocks.submitChange)).toEqual(["gone.md", "rules.md"]);
+		expect(result.stderr).toContain(
+			"Could not check your open proposals (the server's answer was not a list of proposals)",
+		);
+		expect(result.stdout).not.toContain("already proposed");
+	});
+
+	// One unknown value anywhere makes the whole answer unavailable, even
+	// beside a proposal that is perfectly valid: a list read partially is a
+	// list whose omissions nobody was told about.
+	it.each([
+		["a snapshot status", { status: "ARCHIVED" }],
+		[
+			"a pull-request state",
+			{ pullRequest: { state: "DRAFT", url: null } },
+		],
+	])(
+		"warns and sends everything when one proposal has an unknown %s",
+		async (_label, unknown) => {
+			mocks.getOpenProposals.mockResolvedValue([
+				openProposal(),
+				openProposal({ snapshotId: "snap-9", version: 9, ...unknown }),
+			]);
+			mocks.submitChange.mockResolvedValue(accepted({ version: 10 }));
+			const dest = await secondSessionTree();
+
+			const result = await runCli([
+				"push",
+				"--project",
+				"proj-1",
+				"--dest",
+				dest,
+			]);
+
+			expect(result.code).toBe(0);
+			expect(sentPaths(mocks.submitChange)).toEqual([
+				"AGENTS.md",
+				"rules.md",
+			]);
+			expect(result.stderr).toContain(
+				"Could not check your open proposals (the server's answer was not a list of proposals)",
+			);
+			expect(result.stdout).not.toContain("already proposed");
+		},
+	);
+
+	it("prints the outcome, then exits 7, for a --publish --format json whose every change is already proposed", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal()]);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "one\n", "rules.md": "two\n" },
+			{ "AGENTS.md": "proposed\n", "rules.md": "two\n" },
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+			"--publish",
+			"--format",
+			"json",
+		]);
+
+		expect(result.code).toBe(7);
+		expect(mocks.publishChange).not.toHaveBeenCalled();
+		expect(JSON.parse(result.stdout)).toEqual({
+			projectId: "proj-1",
+			destination: await realpath(dest),
+			dryRun: false,
+			publish: true,
+			baseSnapshotId: "snap-7",
+			baseVersion: 7,
+			put: [],
+			deleted: [],
+			unchanged: 1,
+			alreadyProposed: [
+				{
+					path: "AGENTS.md",
+					action: "put",
+					snapshotId: "snap-8",
+					version: 8,
+					pullRequestState: null,
+					pullRequestUrl: null,
+				},
+			],
+			openProposalCheck: { state: "checked", reason: null },
+			snapshotId: null,
+			version: null,
+			proposalStatus: null,
+			status: null,
+			published: null,
+			pullRequest: null,
+		});
+		expect(result.stderr).toContain("Nothing new to publish");
+	});
+
+	it("makes no lookup when there is nothing to push", async () => {
+		const dest = await syncedTree({ "AGENTS.md": "one\n" });
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(7);
+		expect(mocks.getOpenProposals).not.toHaveBeenCalled();
 	});
 });
