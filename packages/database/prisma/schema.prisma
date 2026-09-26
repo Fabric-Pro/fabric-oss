@@ -885,7 +885,7 @@ model Member {
   // it — organizationId leads, and this predicate supplies only userId. Since
   // Fizzy #2403 that resolution runs on the session-creation path, so the scan it
   // used to pay for after the response is now in front of every sign-in.
-  @@index([userId])
+  @@index([userId], map: "member_user_idx")
   @@map("member")
 }
 
@@ -2346,12 +2346,13 @@ model ProjectContext {
   /// never be enforced at all, since MATCH SIMPLE skips any row with a NULL in
   /// the referencing columns and the XOR guarantees one of them always is.
   ///
-  /// Prisma cannot express generation, so it is declared here as an ordinary
-  /// nullable column purely so the schema and the database agree; a
-  /// shadow-database diff sees a matching TEXT column and reports no drift.
-  /// Postgres rejects any INSERT or UPDATE that supplies a value.
+  /// Prisma cannot express generation. It reads the generation expression as
+  /// the column's default, so the expression is declared here as a
+  /// `dbgenerated` default: without it every `migrate dev` proposes
+  /// `DROP DEFAULT`, which Postgres refuses on a generated column. Postgres
+  /// rejects any INSERT or UPDATE that supplies a value.
   /// Added by migration 20260826120000.
-  ownerKey String?
+  ownerKey String? @default(dbgenerated("COALESCE(\"organizationId\", \"userId\")"))
 
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
@@ -2372,6 +2373,8 @@ model ProjectContext {
   // Captured conversation bundles and the per-message claims that key them
   conversationBundles ProjectContextConversationBundle[]
   conversationClaims  ProjectContextConversationClaim[]
+  ownedConversationBundles ProjectContextConversationBundle[] @relation("ProjectContextConversationBundleOwner") @ignore
+  ownedConversationClaims  ProjectContextConversationClaim[]  @relation("ProjectContextConversationClaimOwner") @ignore
 
   /// The owner-inclusive identity a conversation child's composite foreign key
   /// points at. Unique rather than a plain index because a foreign key needs a
@@ -2563,21 +2566,22 @@ model ProjectContextUrlPage {
 // ProjectContext for why a normalized owner identity is what makes that
 // enforceable. Ownership disagreement cannot be expressed.
 //
-// TWO CONSTRAINTS BELOW ARE RAW SQL, because Prisma cannot express either:
-//   - `project_context_conversation_bundle_owner_fkey`, the composite FK above
-//     (modelling it as a Prisma relation would put the generated `ownerKey`
-//     into every INSERT, which Postgres rejects);
+// TWO CONSTRAINTS BELOW ARE HAND-WRITTEN SQL, in migration 20260826120200:
+//   - `project_context_conversation_bundle_owner_fkey`, the composite FK above.
+//     It is declared as `ownerParent`, an `@ignore`d relation: Prisma Migrate
+//     sees it and keeps it, while Prisma Client never exposes it, so no write
+//     can route the generated `ownerKey` through a relation (Postgres rejects
+//     any INSERT that supplies it). Prisma cannot express its MATCH FULL; the
+//     migration is the authority for that;
 //   - `project_context_conversation_bundle_tenant_xor`, the CHECK enforcing
 //     that exactly one of `userId` / `organizationId` is set — the generated
-//     column depends on it, since COALESCE over two NULLs is NULL.
-// Both live in migration 20260826120200. A shadow-database diff cannot see them
-// in this file and may read them as drift and try to DROP them; they are not
-// drift. (Same situation as the partial index documented on
-// ProjectReadinessItemState.)
+//     column depends on it, since COALESCE over two NULLs is NULL. Prisma does
+//     not read CHECK constraints, so it lives only in the migration.
 model ProjectContextConversationBundle {
   id              String         @id @default(cuid())
   parentContextId String
   parentContext   ProjectContext @relation(fields: [parentContextId], references: [id], onDelete: Cascade)
+  ownerParent     ProjectContext? @relation("ProjectContextConversationBundleOwner", fields: [parentContextId, projectId, ownerKey], references: [id, projectId, ownerKey], onDelete: Cascade, onUpdate: NoAction, map: "project_context_conversation_bundle_owner_fkey") @ignore
 
   /// Denormalized from parent.projectId so project-scoped filters and RLS apply
   /// without a join. Held to the parent's value by the composite FK, not by
@@ -2620,7 +2624,7 @@ model ProjectContextConversationBundle {
 
   /// DATABASE-GENERATED — never write this from application code. See
   /// `ProjectContext.ownerKey`.
-  ownerKey String?
+  ownerKey String? @default(dbgenerated("COALESCE(\"organizationId\", \"userId\")"))
 
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
@@ -2659,12 +2663,14 @@ model ProjectContextConversationBundle {
 // uniqueness conflict without ever touching content.
 //
 // `project_context_conversation_claim_owner_fkey` and
-// `project_context_conversation_claim_tenant_xor` are raw SQL in migration
-// 20260826120200 for the same reasons given on the bundle model.
+// `project_context_conversation_claim_tenant_xor` are hand-written in migration
+// 20260826120200, and the FK is declared as the `@ignore`d `ownerParent`
+// relation, for the reasons given on the bundle model.
 model ProjectContextConversationClaim {
   id              String         @id @default(cuid())
   parentContextId String
   parentContext   ProjectContext @relation(fields: [parentContextId], references: [id], onDelete: Cascade)
+  ownerParent     ProjectContext? @relation("ProjectContextConversationClaimOwner", fields: [parentContextId, projectId, ownerKey], references: [id, projectId, ownerKey], onDelete: Cascade, onUpdate: NoAction, map: "project_context_conversation_claim_owner_fkey") @ignore
 
   /// Denormalized from parent.projectId; held there by the composite FK.
   projectId String
@@ -2688,7 +2694,7 @@ model ProjectContextConversationClaim {
 
   /// DATABASE-GENERATED — never write this from application code. See
   /// `ProjectContext.ownerKey`.
-  ownerKey String?
+  ownerKey String? @default(dbgenerated("COALESCE(\"organizationId\", \"userId\")"))
 
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
@@ -7480,7 +7486,7 @@ model DecisionLogEntryAssignee {
   user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization Organization?    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  @@unique([decisionLogEntryId, assigneeUserId])
+  @@unique([decisionLogEntryId, assigneeUserId], map: "decision_log_entry_assignee_decisionLogEntryId_assigneeUse_key")
   @@index([decisionLogEntryId])
   @@index([assigneeUserId])
   @@index([organizationId])
@@ -7972,7 +7978,12 @@ model PublishingTopic {
   workingDrafts PublishingTopicWorkingDraft[]
   analysisRevisions PublishingTopicAnalysisRevision[]
   draftRevisions PublishingTopicDraftRevision[]
+  draftsInProject            PublishingTopicDraft[]            @relation("PublishingTopicDraftTopicProject") @ignore
+  workingDraftsInProject     PublishingTopicWorkingDraft[]     @relation("PublishingTopicWorkingDraftTopicProject") @ignore
+  analysisRevisionsInProject PublishingTopicAnalysisRevision[] @relation("PublishingTopicAnalysisRevisionTopicProject") @ignore
+  draftRevisionsInProject    PublishingTopicDraftRevision[]    @relation("PublishingTopicDraftRevisionTopicProject") @ignore
 
+  @@unique([id, projectId], map: "publishing_topic_id_project_key")
   @@unique([projectId, dedupeKey]) // project-wide dedup across ALL statuses (dedupeKey is non-null)
   @@index([projectId, status])
   @@index([cycleId])
@@ -8073,14 +8084,16 @@ enum PublishingPlanningAnalysisStatus {
 /// newest READY version onto a body seeded from an older one, which reads as
 /// "already reconciled" and permanently suppresses the stale banner.
 ///
-/// Two things Prisma cannot express, both in the migration:
+/// Two constraints written by hand in the migration:
 ///   - a composite FK `(topicId, projectId)` onto `publishing_topic (id, projectId)`.
 ///     The single-column FKs prove each id names a real row and nothing about the
 ///     two AGREEING, so a revision could otherwise attach to a topic in a
-///     different project;
+///     different project. Declared below as the `@ignore`d `topicInProject`
+///     relation, so Prisma Migrate keeps it and Prisma Client never exposes it;
 ///   - `CHECK (("organizationId" IS NULL) <> ("userId" IS NULL))` — strict XOR,
 ///     matching `publishing_topic_tenant_xor`. RLS does NOT substitute: its org
-///     branch permits any `userId`, it does not require null.
+///     branch permits any `userId`, it does not require null. Prisma does not
+///     read CHECK constraints, so it lives only in the migration.
 model PublishingTopicAnalysisRevision {
   id                    String   @id @default(cuid())
   topicId               String
@@ -8099,6 +8112,7 @@ model PublishingTopicAnalysisRevision {
   organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User?           @relation("PublishingAnalysisRevisionTenant", fields: [userId], references: [id], onDelete: Cascade)
   author       User?           @relation("PublishingAnalysisRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  topicInProject PublishingTopic @relation("PublishingTopicAnalysisRevisionTopicProject", fields: [topicId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: Cascade, map: "publishing_topic_analysis_revision_topic_project_fkey") @ignore
 
   @@unique([topicId, version])
   @@index([topicId, createdAt])
@@ -8129,10 +8143,13 @@ model PublishingTopicAnalysisRevision {
 /// Phase 2C activates Case Study and Stakeholder Email by adding a prompt
 /// rather than a migration.
 ///
-/// Five things this model needs that Prisma cannot express, all created in
-/// `20260901120000_add_publishing_topic_drafts`:
+/// Five things this model needs, all written by hand in
+/// `20260901120000_add_publishing_topic_drafts`. The FK and the UNIQUE are
+/// declared below so Prisma Migrate keeps them; Prisma cannot express the
+/// partial index or read the CHECKs, so those live only in the migration:
 ///   - a composite FK `(topicId, projectId)` onto `publishing_topic (id,
-///     projectId)`. The single-column FKs below prove each id names a real row
+///     projectId)`, declared as the `@ignore`d `topicInProject` relation. The
+///     single-column FKs below prove each id names a real row
 ///     and nothing about the two AGREEING, so a draft could otherwise be
 ///     attached to a topic in a different project — and `listTopicDrafts`
 ///     authorizes on `projectId` and then reads by exactly these two columns;
@@ -8145,7 +8162,8 @@ model PublishingTopicAnalysisRevision {
 ///   - `CHECK ("status" <> 'GENERATING' OR "executionTimeoutAt" IS NOT NULL)` —
 ///     without it the partial index becomes a PERMANENT lock the moment a
 ///     worker dies between the insert and the terminal marker;
-///   - `UNIQUE ("id", "topicId", "postType")` — redundant on its own (`id` is
+///   - `UNIQUE ("id", "topicId", "postType")`, declared as the matching
+///     `@@unique` — redundant on its own (`id` is
 ///     the primary key) and required anyway, because Postgres accepts the
 ///     composite foreign key on `publishing_topic_working_draft` only if the
 ///     referenced column list carries a unique constraint.
@@ -8185,7 +8203,10 @@ model PublishingTopicDraft {
   organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User?           @relation("PublishingTopicDraftTenant", fields: [userId], references: [id], onDelete: Cascade)
   requestedBy  User?           @relation("PublishingTopicDraftRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  topicInProject      PublishingTopic               @relation("PublishingTopicDraftTopicProject", fields: [topicId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: Cascade, map: "publishing_topic_draft_topic_project_fkey") @ignore
+  citingWorkingDrafts PublishingTopicWorkingDraft[] @relation("PublishingTopicWorkingDraftSourceDraft") @ignore
 
+  @@unique([id, topicId, postType], map: "publishing_topic_draft_id_topic_post_type_key")
   @@unique([topicId, postType, version])
   @@index([topicId, postType, createdAt])
   @@index([projectId])
@@ -8227,8 +8248,8 @@ enum PublishingDraftStatus {
 /// `publishing_topic_draft`, so it cannot reach this row at all. A rule a later
 /// change can forget is not the same guarantee as one it cannot express.
 ///
-/// `sourceDraftId` is a PLAIN COLUMN, not a Prisma relation, and that is
-/// deliberate. The real constraint is composite — it must prove the cited
+/// `sourceDraftId` is a PLAIN COLUMN to Prisma Client, and that is deliberate.
+/// The real constraint is composite — it must prove the cited
 /// candidate belongs to the SAME topic and post type, not merely that it
 /// exists — and its delete action must null only `sourceDraftId`:
 ///
@@ -8236,17 +8257,22 @@ enum PublishingDraftStatus {
 ///     REFERENCES "publishing_topic_draft" ("id", "topicId", "postType")
 ///     ON DELETE SET NULL ("sourceDraftId") ON UPDATE CASCADE
 ///
-/// Prisma cannot express that subset action; declaring the relation would
-/// generate the all-columns form, which tries to null NOT NULL `topicId` and
-/// `postType` and makes deleting a candidate FAIL instead of preserving the
-/// body. Declaring it as a single-column relation would be worse still — the
-/// schema and the database would disagree about the constraint's shape.
+/// Prisma cannot express that subset action; generating the constraint from a
+/// relation would produce the all-columns form, which tries to null NOT NULL
+/// `topicId` and `postType` and makes deleting a candidate FAIL instead of
+/// preserving the body. Declaring it as a single-column relation would be
+/// worse still — the schema and the database would disagree about the
+/// constraint's shape.
 ///
 /// So the constraint is hand-written in
-/// `20260901120000_add_publishing_topic_drafts` and documented here for the
-/// same reason `PublishingTopicDecisionEntry` documents its partial unique
-/// index: a shadow-database diff can read it as drift and try to DROP it. The
-/// subset syntax requires PostgreSQL 15+ (dev runs 15, CI 16).
+/// `20260901120000_add_publishing_topic_drafts` (the subset syntax requires
+/// PostgreSQL 15+), and that migration is the authority for its shape. It is
+/// also declared below as the `@ignore`d `sourceDraft` relation, because
+/// Prisma Migrate otherwise proposes dropping it: Prisma reads the action as a
+/// plain SET NULL, so the declaration matches the database for diffing, while
+/// Prisma Client never exposes it. That declaration is why `prisma validate`
+/// warns about SetNull on required fields; the database nulls only
+/// `sourceDraftId`, so the warning does not apply.
 ///
 /// Deleting a CANDIDATE keeps this row and nulls its provenance; deleting the
 /// TOPIC or the PROJECT deletes it outright. That asymmetry is intended: a
@@ -8419,6 +8445,8 @@ model PublishingTopicWorkingDraft {
   organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User?           @relation("PublishingWorkingDraftTenant", fields: [userId], references: [id], onDelete: Cascade)
   updatedBy    User?           @relation("PublishingWorkingDraftUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  topicInProject PublishingTopic       @relation("PublishingTopicWorkingDraftTopicProject", fields: [topicId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: Cascade, map: "publishing_topic_working_draft_topic_project_fkey") @ignore
+  sourceDraft    PublishingTopicDraft? @relation("PublishingTopicWorkingDraftSourceDraft", fields: [sourceDraftId, topicId, postType], references: [id, topicId, postType], onDelete: SetNull, onUpdate: Cascade, map: "publishing_topic_working_draft_source_draft_fkey") @ignore
 
   @@unique([topicId, postType]) // at most one working draft per content type
   @@index([projectId])
@@ -8449,15 +8477,17 @@ model PublishingTopicWorkingDraft {
 /// `sourceDraftVersion` cannot discriminate, because an edit inherits whatever
 /// seeded the working draft and so carries one exactly as a restore does.
 ///
-/// Two things Prisma cannot express, both written by hand in the migration and
-/// both copied from the precedent:
+/// Two constraints written by hand in the migration, both copied from the
+/// precedent:
 ///   - a composite FK `(topicId, projectId)` onto `publishing_topic (id, projectId)`.
 ///     The single-column FKs prove each id names a real row and nothing about
 ///     the two AGREEING, so a revision could otherwise attach to a topic in a
-///     different project;
+///     different project. Declared below as the `@ignore`d `topicInProject`
+///     relation, so Prisma Migrate keeps it and Prisma Client never exposes it;
 ///   - `CHECK (("organizationId" IS NULL) <> ("userId" IS NULL))` — strict XOR.
 ///     RLS does NOT substitute: its org branch permits any `userId`, it does
-///     not require null.
+///     not require null. Prisma does not read CHECK constraints, so it lives
+///     only in the migration.
 model PublishingTopicDraftRevision {
   id                 String                       @id @default(cuid())
   topicId            String
@@ -8482,6 +8512,7 @@ model PublishingTopicDraftRevision {
   organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User?           @relation("PublishingDraftRevisionTenant", fields: [userId], references: [id], onDelete: Cascade)
   author       User?           @relation("PublishingDraftRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  topicInProject PublishingTopic @relation("PublishingTopicDraftRevisionTopicProject", fields: [topicId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: Cascade, map: "publishing_topic_draft_revision_topic_project_fkey") @ignore
 
   @@unique([topicId, postType, version])
   @@index([topicId, postType, createdAt])
@@ -9089,7 +9120,7 @@ model TestCaseWorkItemLink {
   /// resolved by counting rather than by key. Empty means the case names no
   /// criterion at all, which the matrix reports differently from a reference it
   /// cannot place (see `qa-traceability.ts`).
-  acceptanceCriterionRefs String[]
+  acceptanceCriterionRefs String[] @default([])
 
   /// DEAD — awaiting its contract migration. Superseded by
   /// `acceptanceCriterionRefs` on 2026-07-31 and read by nothing; it remains
@@ -9852,7 +9883,7 @@ model ProjectQaSettings {
   /// keeps tracking its tier as the tier changes instead of freezing whatever
   /// the default happened to be the day this column shipped. Always read
   /// through `resolveRequiredTestTypes` in @repo/utils/qa-test-types.
-  requiredTestTypes   String[]
+  requiredTestTypes   String[]        @default([])
   /// Minimum AI confidence (0–100) before a verdict is recorded.
   ///
   /// The runner asks the model how sure it is about each step it judges. A step
@@ -10091,8 +10122,8 @@ model PullRequestReview {
 
   /// Re-reviewing a PR replaces the previous read for that head commit rather
   /// than accumulating duplicates; a NEW commit is a genuinely new review.
-  @@unique([projectId, provider, repoOwner, repoName, prNumber, headSha])
-  @@index([projectId, createdAt])
+  @@unique([projectId, provider, repoOwner, repoName, prNumber, headSha], map: "pull_request_review_identity_key")
+  @@index([projectId, createdAt(sort: Desc)])
   @@index([userId])
   @@index([organizationId])
   @@map("pull_request_review")
@@ -10197,6 +10228,8 @@ model PullRequestReviewFinding {
   @@index([projectId, status, createdAt])
   @@index([userId])
   @@index([organizationId])
+  @@index([storyId])
+  @@index([promotedStoryId])
   @@map("pull_request_review_finding")
 }
 
@@ -10298,7 +10331,7 @@ model QaSignOff {
   /// One approval per person per feature — the control, see the doc comment.
   @@unique([userStoryId, signedById])
   /// The count read on every DONE attempt, and the feature QA tab's list.
-  @@index([userStoryId, createdAt])
+  @@index([userStoryId, createdAt(sort: Desc)])
   @@index([projectId])
   @@index([userId])
   @@index([organizationId])
@@ -10746,10 +10779,15 @@ model MCPServer {
   @@unique([key, isSystemProvided, userId, organizationId])
   @@index([userId])
   @@index([organizationId])
-  // Partial index — the set of default-enabled servers is tiny (1 today,
-  // projected <= 10) so a partial-on-true makes `getDefaultEnabledMcpConfigIds`
-  // and the workflow's eager-routing scan an index seek, not a sequential scan.
-  @@index([defaultEnabled], map: "mcp_server_default_enabled_idx")
+  // A partial index Prisma cannot express also exists:
+  // `mcp_server_default_enabled_idx` on ("defaultEnabled") WHERE
+  // "defaultEnabled" = true, added in migration
+  // 20260511072912_backfill_default_excalidraw_mcp_config. The set of
+  // default-enabled servers is tiny, so it makes
+  // `getDefaultEnabledMcpConfigIds` and the workflow's eager-routing scan an
+  // index seek. Do not declare it here: Prisma does not read partial indexes,
+  // so an `@@index` of that name makes every `migrate dev` propose creating it
+  // again, which fails with "relation already exists".
   @@map("mcp_server")
 }
 
@@ -16996,7 +17034,7 @@ model CodingRun {
   @@index([organizationId])
   @@index([status])
   @@index([weaveExecutionId])
-  @@index([status, startedAt])
+  @@index([status, startedAt], map: "coding_run_status_startedAt_idx")
   @@index([kind])
   @@map("coding_run")
 }
