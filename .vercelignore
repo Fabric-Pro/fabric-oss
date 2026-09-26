@@ -12,7 +12,9 @@
 # ...except the Ignored Build Step script, which Vercel must be able to run
 # before `vercel build` (referenced by ignoreCommand in apps/web/vercel.json)
 !apps/web/scripts/vercel-ignore.sh
-check-*.ts
+# Anchored to the tooling scripts: a bare check-*.ts also drops app source such as
+# packages/api/modules/projects/procedures/stories/check-duplicate.ts from the build
+/tooling/scripts/src/check-*.ts
 check-*.sql
 
 # Docker and deployment configs for other platforms
