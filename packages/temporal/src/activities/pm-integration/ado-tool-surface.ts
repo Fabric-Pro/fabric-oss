@@ -4,10 +4,10 @@
  * Microsoft's `@azure-devops/mcp` 2.9.0 (2026-07-29) consolidated ~90 granular
  * tools into ~40 action-dispatched ones. `wit_get_work_item_type` became
  * `wit_work_item { action: "get_type" }`, `wit_get_work_items_batch_by_ids`
- * became `{ action: "get_batch" }`, and so on. The catalog spawns the server
- * unpinned (`npx -y @azure-devops/mcp`), so a given connection may be on either
- * surface — re-creating a server (e.g. after a PAT expiry) pulls whichever is
- * `latest`.
+ * became `{ action: "get_batch" }`, and so on. The catalog and the wrapper
+ * image pin a pre-2.9 release (`ado-mcp-version-pin.test.ts`) because most sync
+ * call sites still match the granular names; the call sites that resolve here
+ * keep working on either surface when the pin moves.
  *
  * Rather than hardcode one surface's names at every call site, callers resolve
  * a LOGICAL operation here and get back the right `{ toolName, args }` pair for

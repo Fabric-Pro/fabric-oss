@@ -98,7 +98,12 @@ COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
 #
 # The Azure DevOps pin matches the catalog command seeded in
 # `packages/database/prisma/seed.ts`: 2.9.0 consolidated the granular tool
-# surface our PM call sites resolve by name, so both must move together.
+# surface our PM call sites resolve by name, so both must move together
+# (`packages/temporal/__tests__/ado-mcp-version-pin.test.ts` enforces it). npx
+# resolves an unversioned catalog command to this global install, so this line
+# also holds the pin for catalog rows seeded before it existed. 2.10.0 wraps
+# every tool result in untrusted-content delimiters, and imports keytar at
+# startup, which exits on this base image without libsecret-1-0.
 RUN npm install -g \
     @azure-devops/mcp@2.8.0 \
     @modelcontextprotocol/server-github@latest \

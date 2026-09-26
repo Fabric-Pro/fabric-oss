@@ -93,6 +93,7 @@ import {
 	GITLAB_REST_CAPABILITIES,
 } from "../pm-tool-fallback";
 import { descriptionToText } from "./adf";
+import { resolveAdoTool } from "./ado-tool-surface";
 import { refreshAtlassianCloudToken } from "./atlassian-cloud-refresh";
 import { runBoundedWorkerPool } from "./bounded-worker-pool";
 import {
@@ -5248,8 +5249,9 @@ function extractJiraStatusCategoryKey(
 /**
  * Fetch ADO `StateCategory` mapping for a single work-item type.
  *
- * Uses `mcp__azure-devops__wit_get_work_item_type` (or the bare
- * `wit_get_work_item_type` alias) which returns
+ * Resolves the work-item-type lookup on whichever tool surface the server
+ * exposes (`wit_get_work_item_type`, or `wit_work_item` with action
+ * `get_type` from 2.9.0), which returns
  * `states: [{ name, category: "Proposed" | "InProgress" | "Resolved" | "Completed" | "Removed" }]`.
  * Per spec, terminal = `Completed | Removed`.
  *
@@ -5264,16 +5266,17 @@ async function fetchAdoStateCategoryMap(params: {
 	organizationId?: string;
 	availableTools: string[];
 }): Promise<Map<string, boolean> | null> {
-	const toolName = params.availableTools.find((t) =>
-		/wit_get_work_item_type$/i.test(t),
-	);
-	if (!toolName) {
+	const typeCall = resolveAdoTool(params.availableTools, "get_type", {
+		project: params.project,
+		workItemType: params.workItemType,
+	});
+	if (!typeCall) {
 		return null;
 	}
 	try {
 		const result = await executeMcpTool({
-			toolName,
-			args: { project: params.project, type: params.workItemType },
+			toolName: typeCall.toolName,
+			args: typeCall.args,
 			userId: params.userId,
 			organizationId: params.organizationId,
 			mcpConfigId: params.mcpConfigId,

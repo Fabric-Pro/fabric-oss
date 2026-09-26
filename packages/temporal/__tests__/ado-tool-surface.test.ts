@@ -2,10 +2,10 @@
  * Contract tests for the Azure DevOps MCP tool-surface resolver.
  *
  * `@azure-devops/mcp` 2.9.0 consolidated the granular per-operation tools into
- * action-dispatched ones. Because the catalog spawns the server unpinned, a
- * connection may be on either surface, so every dispatch has to resolve the
- * right tool name AND the right argument shape. These assert the exact args —
- * the thing a mocked MCP layer otherwise hides.
+ * action-dispatched ones. A call site that resolves here has to work on either
+ * surface, so every dispatch has to resolve the right tool name AND the right
+ * argument shape. These assert the exact args — the thing a mocked MCP layer
+ * otherwise hides.
  */
 import { describe, expect, it } from "vitest";
 import {
