@@ -72,6 +72,14 @@ describe("checkBeforeCreate", () => {
 		expect(outcome).toEqual({ kind: "create", checkFailed: true });
 	});
 
+	it("proceeds to create with checkFailed on a client-side abort (timeout)", async () => {
+		const outcome = await checkBeforeCreate(async () => {
+			throw new DOMException("The operation was aborted.", "AbortError");
+		});
+
+		expect(outcome).toEqual({ kind: "create", checkFailed: true });
+	});
+
 	it("degrades to a plain create when an enrich decision names no target", async () => {
 		const outcome = await checkBeforeCreate(async () =>
 			result({

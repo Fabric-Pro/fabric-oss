@@ -46,8 +46,15 @@ import {
  *     (`buildDetectionText` returns "" without a title);
  *   - inline stale re-embeds are capped per request, mirroring
  *     `semantic-search.ts`'s `MAX_INLINE_EMBEDS`;
- *   - the language judge carries an overall time budget so a slow provider
- *     degrades this into an unchecked create rather than stalling the dialog;
+ *   - ONE request deadline, `DUPLICATE_CHECK_TIMEOUT_MS` after the auth
+ *     check, bounds the whole embed-and-judge pipeline (not just the language
+ *     judge): the handler races that work against the deadline, so a slow
+ *     embedding provider, a stalled decision evaluation, or a stalled
+ *     language judge all degrade this into an unchecked create rather than
+ *     stalling the dialog. A DB read or `resolveModelWithProvider` call ahead
+ *     of the first abortable step cannot itself be cancelled, so the race is
+ *     what still bounds the RESPONSE even then — the abandoned call keeps
+ *     running server-side, exactly as any other orphaned request would;
  *   - THIS CHECK NEVER BLOCKS CREATION: any failure, timeout, or usage-limit
  *     rejection returns a "create" decision with `error` set, distinguishing
  *     "checked, found nothing" from "could not check" for the UI. Only an
@@ -61,11 +68,21 @@ const LOG_PREFIX = "[Duplicate Check]";
  * backlog rather than blocking the dialog on it. */
 const MAX_INLINE_EMBEDS = 200;
 
-/** Overall budget for the language judge. The decision fast path already
- * carries its own fixed 10s timeout inside the shared core; this bounds the
- * COMPLEX `generateObject` fallback so a slow provider degrades the dialog
- * into an unchecked create rather than stalling it. */
-const LANGUAGE_JUDGE_TIMEOUT_MS = 20_000;
+/**
+ * Default request deadline for the whole embed-and-judge pipeline, from right
+ * after the auth check. Overridable via `DUPLICATE_CHECK_TIMEOUT_MS` for
+ * tuning without a redeploy, mirroring `DECISION_PRECHECK_TIMEOUT_MS`
+ * (`packages/temporal/src/lib/decision-precheck/judge.ts`).
+ */
+const DUPLICATE_CHECK_TIMEOUT_MS = 20_000;
+
+function resolveDuplicateCheckTimeoutMs(): number {
+	const raw = Number.parseInt(
+		process.env.DUPLICATE_CHECK_TIMEOUT_MS ?? "",
+		10,
+	);
+	return Number.isFinite(raw) && raw > 0 ? raw : DUPLICATE_CHECK_TIMEOUT_MS;
+}
 
 /** Cap on the description's first line used as the detection text's title
  * segment — generous enough to carry real signal, short enough that a
@@ -175,140 +192,178 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 			error,
 		});
 
-		// A tenant with no configured embedding provider is not a server
-		// error and not this check's private problem — it simply could not
-		// run. `resolveModelWithProvider` does NOT throw when nothing
-		// resolves; it returns `{ apiKey: null, _error }` (see
-		// `semantic-search.ts`), so this has to be checked explicitly rather
-		// than left to a downstream throw.
-		try {
-			const resolved = await resolveModelWithProvider("EMBEDDING", {
-				userId: user.id,
-				organizationId,
+		// ONE deadline for the whole pipeline below, not just the language
+		// judge — see the module doc. `resolveDuplicateCheckTimeoutMs` reads
+		// the override once per request, not once per process, so a changed
+		// env var takes effect on the very next call.
+		const deadlineMs = resolveDuplicateCheckTimeoutMs();
+		const startedAt = Date.now();
+		const deadlineController = new AbortController();
+		const deadlineTimer = setTimeout(
+			() => deadlineController.abort(),
+			deadlineMs,
+		);
+		let timedOut = false;
+		const timeoutResult = new Promise<CheckDuplicateResult>((resolve) => {
+			deadlineController.signal.addEventListener("abort", () => {
+				timedOut = true;
+				resolve(unavailable(UNAVAILABLE_MESSAGE));
 			});
-			if (!hasProviderCredentials(resolved)) {
-				logger.info(`${LOG_PREFIX} no embedding provider configured`, {
+		});
+
+		const runCheck = async (): Promise<CheckDuplicateResult> => {
+			// A tenant with no configured embedding provider is not a server
+			// error and not this check's private problem — it simply could
+			// not run. `resolveModelWithProvider` does NOT throw when
+			// nothing resolves; it returns `{ apiKey: null, _error }` (see
+			// `semantic-search.ts`), so this has to be checked explicitly
+			// rather than left to a downstream throw.
+			try {
+				const resolved = await resolveModelWithProvider("EMBEDDING", {
+					userId: user.id,
+					organizationId,
+				});
+				if (!hasProviderCredentials(resolved)) {
+					logger.info(
+						`${LOG_PREFIX} no embedding provider configured`,
+						{ projectId },
+					);
+					return unavailable(UNAVAILABLE_MESSAGE);
+				}
+			} catch (error) {
+				logger.warn(`${LOG_PREFIX} embedding model resolution failed`, {
 					projectId,
+					error:
+						error instanceof Error ? error.message : String(error),
 				});
 				return unavailable(UNAVAILABLE_MESSAGE);
 			}
-		} catch (error) {
-			logger.warn(`${LOG_PREFIX} embedding model resolution failed`, {
-				projectId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return unavailable(UNAVAILABLE_MESSAGE);
-		}
 
-		let corpus: Awaited<ReturnType<typeof loadRoutingCorpus>>;
-		try {
-			corpus = await loadRoutingCorpus({
-				projectId,
-				userId: user.id,
-				organizationId,
-				itemTexts: [itemText],
-				logPrefix: LOG_PREFIX,
-				maxStaleEmbeds: MAX_INLINE_EMBEDS,
-			});
-		} catch (error) {
-			if (error instanceof AIProviderNotConfiguredError) {
+			let corpus: Awaited<ReturnType<typeof loadRoutingCorpus>>;
+			try {
+				corpus = await loadRoutingCorpus({
+					projectId,
+					userId: user.id,
+					organizationId,
+					itemTexts: [itemText],
+					logPrefix: LOG_PREFIX,
+					maxStaleEmbeds: MAX_INLINE_EMBEDS,
+					abortSignal: deadlineController.signal,
+				});
+			} catch (error) {
+				if (error instanceof AIProviderNotConfiguredError) {
+					return unavailable(UNAVAILABLE_MESSAGE);
+				}
+				logger.warn(`${LOG_PREFIX} could not load the routing corpus`, {
+					projectId,
+					error:
+						error instanceof Error ? error.message : String(error),
+				});
 				return unavailable(UNAVAILABLE_MESSAGE);
 			}
-			logger.warn(`${LOG_PREFIX} could not load the routing corpus`, {
-				projectId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return unavailable(UNAVAILABLE_MESSAGE);
-		}
 
-		if (corpus.kind === "empty") {
-			logDecision(projectId, {
-				decision: "create",
-				confidence: 1,
-				candidates: 0,
-			});
-			return { decision: "create", confidence: 1, alternatives: [] };
-		}
+			if (corpus.kind === "empty") {
+				logDecision(projectId, {
+					decision: "create",
+					confidence: 1,
+					candidates: 0,
+				});
+				return { decision: "create", confidence: 1, alternatives: [] };
+			}
 
-		let models: Awaited<ReturnType<typeof resolveRoutingModels>>;
-		try {
-			models = await resolveRoutingModels({
+			let models: Awaited<ReturnType<typeof resolveRoutingModels>>;
+			try {
+				models = await resolveRoutingModels({
+					userId: user.id,
+					organizationId,
+					projectId,
+					logPrefix: LOG_PREFIX,
+				});
+			} catch (error) {
+				logger.warn(`${LOG_PREFIX} could not resolve the judge model`, {
+					projectId,
+					error:
+						error instanceof Error ? error.message : String(error),
+				});
+				return unavailable(UNAVAILABLE_MESSAGE);
+			}
+
+			const judgement = await judgeRoutingItem({
+				itemText,
+				// The dialog captures no reasoning of its own; tell the judge
+				// how this item was captured through the SAME `reasoning`
+				// parameter the judge prompt already renders as "Why it was
+				// captured: …" — never forking the prompt for this surface.
+				analyzerReasoning:
+					"Entered manually as a new roadmap work item.",
+				itemEmbedding: corpus.itemEmbeddings[0],
+				candidateVectors: corpus.candidateVectors,
+				storyById: corpus.storyById,
+				textByStoryId: corpus.textByStoryId,
+				judge: models.judge,
+				decisionModel: models.decisionModel,
+				threshold: routingConfidenceThreshold(),
 				userId: user.id,
 				organizationId,
 				projectId,
 				logPrefix: LOG_PREFIX,
+				abortSignal: deadlineController.signal,
 			});
-		} catch (error) {
-			logger.warn(`${LOG_PREFIX} could not resolve the judge model`, {
-				projectId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return unavailable(UNAVAILABLE_MESSAGE);
-		}
 
-		const judgement = await judgeRoutingItem({
-			itemText,
-			// The dialog captures no reasoning of its own; tell the judge how
-			// this item was captured through the SAME `reasoning` parameter
-			// the judge prompt already renders as "Why it was captured: …" —
-			// never forking the prompt for this surface.
-			analyzerReasoning: "Entered manually as a new roadmap work item.",
-			itemEmbedding: corpus.itemEmbeddings[0],
-			candidateVectors: corpus.candidateVectors,
-			storyById: corpus.storyById,
-			textByStoryId: corpus.textByStoryId,
-			judge: models.judge,
-			decisionModel: models.decisionModel,
-			threshold: routingConfidenceThreshold(),
-			userId: user.id,
-			organizationId,
-			projectId,
-			logPrefix: LOG_PREFIX,
-			abortSignal: AbortSignal.timeout(LANGUAGE_JUDGE_TIMEOUT_MS),
-		});
+			if (judgement.kind === "failed") {
+				logger.warn(`${LOG_PREFIX} judge failed`, {
+					projectId,
+					error: judgement.error,
+				});
+				return {
+					decision: "create",
+					confidence: 0,
+					alternatives: judgement.alternatives,
+					error: UNAVAILABLE_MESSAGE,
+				};
+			}
 
-		if (judgement.kind === "failed") {
-			logger.warn(`${LOG_PREFIX} judge failed`, {
-				projectId,
-				error: judgement.error,
-			});
-			return {
-				decision: "create",
-				confidence: 0,
-				alternatives: judgement.alternatives,
-				error: UNAVAILABLE_MESSAGE,
-			};
-		}
+			if (judgement.kind === "enrich") {
+				logDecision(projectId, {
+					decision: "enrich",
+					confidence: judgement.confidence,
+					candidates: judgement.alternatives.length,
+					matchedIdentifier: judgement.target.identifier,
+					source: judgement.source,
+				});
+				return {
+					decision: "enrich",
+					confidence: judgement.confidence,
+					matchedStoryId: judgement.target.storyId,
+					matchedIdentifier: judgement.target.identifier,
+					matchedTitle: judgement.target.title,
+					reasoning: judgement.reasoning,
+					alternatives: judgement.alternatives,
+				};
+			}
 
-		if (judgement.kind === "enrich") {
 			logDecision(projectId, {
-				decision: "enrich",
+				decision: "create",
 				confidence: judgement.confidence,
 				candidates: judgement.alternatives.length,
-				matchedIdentifier: judgement.target.identifier,
 				source: judgement.source,
 			});
 			return {
-				decision: "enrich",
+				decision: "create",
 				confidence: judgement.confidence,
-				matchedStoryId: judgement.target.storyId,
-				matchedIdentifier: judgement.target.identifier,
-				matchedTitle: judgement.target.title,
 				reasoning: judgement.reasoning,
 				alternatives: judgement.alternatives,
 			};
-		}
-
-		logDecision(projectId, {
-			decision: "create",
-			confidence: judgement.confidence,
-			candidates: judgement.alternatives.length,
-			source: judgement.source,
-		});
-		return {
-			decision: "create",
-			confidence: judgement.confidence,
-			reasoning: judgement.reasoning,
-			alternatives: judgement.alternatives,
 		};
+
+		const result = await Promise.race([runCheck(), timeoutResult]);
+		clearTimeout(deadlineTimer);
+		if (timedOut) {
+			logger.warn(`${LOG_PREFIX} request deadline exceeded`, {
+				projectId,
+				deadlineMs,
+				elapsedMs: Date.now() - startedAt,
+			});
+		}
+		return result;
 	});

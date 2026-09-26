@@ -277,6 +277,7 @@ beforeEach(() => {
 			"Decision evaluation requires this organization's configured Vercel AI Gateway provider.",
 		),
 	);
+	delete process.env.DUPLICATE_CHECK_TIMEOUT_MS;
 });
 
 describe("checkDuplicateProcedure — auth and gating", () => {
@@ -513,6 +514,44 @@ describe("checkDuplicateProcedure — never blocks creation", () => {
 
 		const result = await runCheck();
 
+		expect(result.decision).toBe("create");
+		expect(result.error).toBeTruthy();
+	});
+
+	it("returns an error result within the request deadline when embeddings never resolve", async () => {
+		process.env.DUPLICATE_CHECK_TIMEOUT_MS = "50";
+		mockListActiveStories.mockResolvedValue([TICKET]);
+		// Never settles — simulates a stalled embedding provider. Without a
+		// request-wide deadline this would hang for the full default 20s.
+		mockGenerateEmbeddings.mockImplementation(() => new Promise(() => {}));
+
+		const startedAt = Date.now();
+		const result = await runCheck();
+
+		expect(Date.now() - startedAt).toBeLessThan(2_000);
+		expect(result.decision).toBe("create");
+		expect(result.confidence).toBe(0);
+		expect(result.error).toBeTruthy();
+		expect(mockGenerateObject).not.toHaveBeenCalled();
+	});
+
+	it("returns an error result within the request deadline when the decision evaluation never resolves", async () => {
+		process.env.DUPLICATE_CHECK_TIMEOUT_MS = "50";
+		arrange({ decision: "create", confidence: 1 });
+		mockGetDecisionModel.mockResolvedValue({
+			model: { modelId: "typesafe-ai/jev" },
+			metadata: { provider: "VERCEL_GATEWAY" },
+			trackUsage: vi.fn(),
+		});
+		// Never settles — simulates a provider that does not honour the
+		// abort signal it was given. The REQUEST still has to return on
+		// time, which is exactly what the outer deadline race is for.
+		mockEvaluate.mockImplementation(() => new Promise(() => {}));
+
+		const startedAt = Date.now();
+		const result = await runCheck();
+
+		expect(Date.now() - startedAt).toBeLessThan(2_000);
 		expect(result.decision).toBe("create");
 		expect(result.error).toBeTruthy();
 	});

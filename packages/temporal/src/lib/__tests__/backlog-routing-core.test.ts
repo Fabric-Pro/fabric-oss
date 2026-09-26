@@ -252,6 +252,29 @@ describe("loadRoutingCorpus", () => {
 		).rejects.toThrow("embedding outage");
 	});
 
+	it("forwards abortSignal to generateEmbeddings", async () => {
+		mockListActiveStories.mockResolvedValue([TICKET_A]);
+		mockGenerateEmbeddings.mockResolvedValue({
+			embeddings: [[1, 0, 0]],
+			model: "text-embedding-3-small",
+		});
+		const controller = new AbortController();
+
+		await loadRoutingCorpus({
+			...BASE,
+			itemTexts: ["x"],
+			abortSignal: controller.signal,
+		});
+
+		expect(mockGenerateEmbeddings).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.objectContaining({ projectId: "proj-1" }),
+			undefined,
+			controller.signal,
+			undefined,
+		);
+	});
+
 	it("calls onEmbedProgress through to generateEmbeddings' batch callback", async () => {
 		mockListActiveStories.mockResolvedValue([TICKET_A]);
 		mockGenerateEmbeddings.mockImplementation(
@@ -467,6 +490,56 @@ describe("judgeRoutingItem", () => {
 
 		expect(judgement.kind).toBe("failed");
 		expect(mockGenerateObject).not.toHaveBeenCalled();
+	});
+
+	it("aborts the decision fast path when the caller's signal aborts, falling through to the language judge", async () => {
+		mockGetDecisionModel.mockResolvedValue({
+			model: { modelId: "typesafe-ai/jev" },
+			trackUsage: mockDecisionTrackUsage,
+		});
+		let receivedSignal: AbortSignal | undefined;
+		mockEvaluate.mockImplementation(
+			(params: { abortSignal?: AbortSignal }) =>
+				new Promise((_resolve, reject) => {
+					receivedSignal = params.abortSignal;
+					const onAbort = () =>
+						reject(
+							new DOMException(
+								"The operation was aborted.",
+								"AbortError",
+							),
+						);
+					if (params.abortSignal?.aborted) {
+						onAbort();
+					} else {
+						params.abortSignal?.addEventListener("abort", onAbort);
+					}
+				}),
+		);
+		mockGenerateObject.mockResolvedValue({
+			object: { decision: "create", confidence: 1 },
+		});
+		const { decisionModel } = await resolveRoutingModels(BASE);
+		const controller = new AbortController();
+
+		const judgementPromise = judgeRoutingItem({
+			itemText: "Export throttling detail",
+			itemEmbedding: [1, 0],
+			...corpusOf([1, 0]),
+			judge: await getJudge(),
+			decisionModel,
+			threshold: 0.7,
+			...BASE,
+			abortSignal: controller.signal,
+		});
+		controller.abort();
+		const judgement = await judgementPromise;
+
+		expect(receivedSignal?.aborted).toBe(true);
+		// The aborted fast path falls through rather than failing the whole
+		// judgement — the language judge still gets a chance to answer.
+		expect(judgement.kind).toBe("create");
+		expect(mockGenerateObject).toHaveBeenCalledOnce();
 	});
 
 	it("calls onBeforeLanguageJudge and forwards abortSignal to generateObject", async () => {

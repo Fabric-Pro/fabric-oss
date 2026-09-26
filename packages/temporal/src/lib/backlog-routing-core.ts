@@ -219,6 +219,10 @@ async function evaluateRouting(params: {
 	projectId: string;
 	title?: string;
 	logPrefix: string;
+	/** The caller's own deadline, combined with the fixed decision timeout
+	 * below so a request-level budget aborts the fast path too, not just the
+	 * language judge that might follow it. */
+	abortSignal?: AbortSignal;
 }): Promise<DecisionFastPath | null> {
 	const { decisionModel, candidates, projectId, title, logPrefix } = params;
 
@@ -262,7 +266,12 @@ async function evaluateRouting(params: {
 				},
 			},
 			maxRetries: DECISION_MAX_RETRIES,
-			abortSignal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
+			abortSignal: params.abortSignal
+				? AbortSignal.any([
+						AbortSignal.timeout(DECISION_TIMEOUT_MS),
+						params.abortSignal,
+					])
+				: AbortSignal.timeout(DECISION_TIMEOUT_MS),
 		});
 	} catch (error) {
 		if (error instanceof AiUsageLimitExceededError) {
@@ -426,6 +435,10 @@ export interface LoadRoutingCorpusParams {
 	 * mirroring `semantic-search.ts`'s `MAX_INLINE_EMBEDS`. Omitted (the
 	 * Temporal caller) re-embeds every stale candidate. */
 	maxStaleEmbeds?: number;
+	/** Aborts the embedding call. `generateEmbeddings` has no internal
+	 * timeout, so an interactive caller with a request deadline passes this
+	 * through; the Temporal activity omits it. */
+	abortSignal?: AbortSignal;
 }
 
 /**
@@ -451,6 +464,7 @@ export async function loadRoutingCorpus(
 		logPrefix,
 		onEmbedProgress,
 		maxStaleEmbeds,
+		abortSignal,
 	} = params;
 
 	const candidates = await listActiveStoriesForDetection(projectId);
@@ -531,7 +545,7 @@ export async function loadRoutingCorpus(
 		[...itemTexts, ...embedCandidates.map((entry) => entry.text)],
 		{ userId, organizationId, projectId },
 		undefined,
-		undefined,
+		abortSignal,
 		onEmbedProgress,
 	);
 	const itemEmbeddings = embeddings.slice(0, itemTexts.length);
@@ -720,9 +734,11 @@ export interface JudgeRoutingItemParams {
 	 * the Temporal activity's extra heartbeat for a decision evaluation that
 	 * ran its full timeout before falling through. Omitted by the API caller. */
 	onBeforeLanguageJudge?: () => void;
-	/** Optional abort signal for the language judge only — the decision fast
-	 * path already carries its own fixed timeout. An interactive caller uses
-	 * this for its overall request budget; the Temporal activity omits it. */
+	/** Optional abort signal for the request's overall budget — combined with
+	 * the decision fast path's own fixed timeout (so a request deadline can
+	 * cut that path short too) and passed straight through to the language
+	 * judge. An interactive caller uses this for its request budget; the
+	 * Temporal activity omits it. */
 	abortSignal?: AbortSignal;
 }
 
@@ -819,6 +835,7 @@ export async function judgeRoutingItem(
 				projectId,
 				title,
 				logPrefix,
+				abortSignal,
 			});
 			if (fastPath?.decision === "create") {
 				return {
