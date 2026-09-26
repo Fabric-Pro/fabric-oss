@@ -1,0 +1,24 @@
+# Amazon RDS certificate authorities (public certificates, not secrets),
+# mounted read-only at /etc/fabric/rds in every Fabric pod and in the
+# migrate/seed jobs. The Terraform-built database URLs point at
+# /etc/fabric/rds/global-bundle.pem so Postgres TLS verifies the RDS server
+# certificate and hostname instead of accepting any certificate.
+# Source: https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+#
+# Created as an early pre-install/pre-upgrade hook (weight -20) because the
+# migrate Job is itself a hook and runs before the chart's normal resources
+# exist. Unlike the migrate prerequisites it is NOT deleted after the hook —
+# the app pods mount it too — only replaced on the next install/upgrade.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fabric-rds-ca
+  labels:
+{{- include "fabric.labels" (dict "name" "fabric-rds-ca" "Release" .Release "component" "config") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  global-bundle.pem: |
+{{ .Files.Get "files/rds-global-bundle.crt" | indent 4 }}

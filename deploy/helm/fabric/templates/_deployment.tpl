@@ -65,6 +65,11 @@ spec:
 {{- if .extraEnv }}
 {{- toYaml .extraEnv | nindent 12 }}
 {{- end }}
+          # Amazon RDS CAs for verify-full Postgres TLS (platform/rds-ca-bundle.yaml).
+          volumeMounts:
+            - name: rds-ca
+              mountPath: /etc/fabric/rds
+              readOnly: true
 {{- if .probes }}
 {{- toYaml .probes | nindent 10 }}
 {{- end }}
@@ -72,4 +77,8 @@ spec:
           resources:
 {{- toYaml .resources | nindent 12 }}
 {{- end }}
+      volumes:
+        - name: rds-ca
+          configMap:
+            name: fabric-rds-ca
 {{- end }}

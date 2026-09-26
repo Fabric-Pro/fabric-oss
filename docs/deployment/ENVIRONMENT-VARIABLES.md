@@ -34,8 +34,8 @@ The table below lists the **functional consumer** for each variable: where the v
 |---|---|---|---|
 | `NODE_ENV` | ConfigMap | yes | Fixed at `"production"` |
 | `NEXT_PUBLIC_SITE_URL` | ConfigMap | yes (HTTPS) | Rendered from `global.siteUrl` if set (explicit override, precedence over domain; ingress stays host-less), else `https://<global.domain>` when domain set, else empty. |
-| `DATABASE_URL` | Secret | yes | Auto-populated by Terraform (`aws_secretsmanager_secret_version.database`) |
-| `DIRECT_URL` | Secret | yes | Same as DATABASE_URL for non-PgBouncer setups |
+| `DATABASE_URL` | Secret | yes | Auto-populated by Terraform (`aws_secretsmanager_secret_version.database`); verify-full TLS against the mounted RDS CA bundle (§3.1) |
+| `DIRECT_URL` | Secret | yes | Same database as `DATABASE_URL`, in Prisma's TLS form; read only by `prisma migrate` (§3.1) |
 | `BETTER_AUTH_SECRET` | Secret | yes | `openssl rand -base64 48` |
 | `BRUTE_FORCE_IP_LOCKOUT_CAP` | ConfigMap | no | Default `3` |
 | `REDIS_URL` | Secret (`redis` group) | yes | `rediss://default:<token>@<endpoint>:6379` — Terraform-managed |
@@ -215,7 +215,7 @@ Each agent (`document-generator`, `project-document-generator`, `task-planner`, 
 
 Runs `prisma migrate deploy --schema=./prisma/schema.prisma` against the live DB before the rolling update proceeds. Uses the `temporal-worker` image because that image ships the full pnpm workspace (the `web` image is a Next.js standalone build and does not contain `packages/database`).
 
-Runs under a dedicated `fabric-migrate` SA with its own DB-only `fabric-migrate-secrets` ExternalSecret (hook weights -20/-10), because on a fresh install the app SA and `fabric-app-secrets` do not exist yet. The Job also sets `PGSSLMODE=no-verify` explicitly so node-postgres negotiates TLS to RDS (see §4).
+Runs under a dedicated `fabric-migrate` SA with its own DB-only `fabric-migrate-secrets` ExternalSecret (hook weights -20/-10), because on a fresh install the app SA and `fabric-app-secrets` do not exist yet. The Job mounts the RDS CA bundle at `/etc/fabric/rds` like every app pod. It also sets `PGSSLMODE=no-verify` as a fallback for a database secret that predates the verify-full URLs (§3.1). A URL's own `sslmode` wins over it.
 
 ### 2.6 `seed` Job (opt-in)
 
@@ -246,12 +246,20 @@ The JSON contract for every key the External Secrets Operator pulls from AWS Sec
 
 ```json
 {
-  "DATABASE_URL": "postgresql://<user>:<pass>@<host>:5432/<db>?schema=public",
-  "DIRECT_URL":   "postgresql://<user>:<pass>@<host>:5432/<db>?schema=public"
+  "DATABASE_URL": "postgresql://<user>:<pass>@<host>:5432/<db>?schema=public&sslmode=verify-full&sslrootcert=/etc/fabric/rds/global-bundle.pem",
+  "DIRECT_URL":   "postgresql://<user>:<pass>@<host>:5432/<db>?schema=public&sslmode=require&sslcert=/etc/fabric/rds/global-bundle.pem&sslaccept=strict"
 }
 ```
 
-Populated by `aws_secretsmanager_secret_version.database` in `environments/dev/main.tf` from the RDS module outputs. The resource has `ignore_changes = [secret_string]` so subsequent edits (via console or CLI) are not reverted on `terraform apply`. **Do not edit unless you know what you're doing** — the application uses `DIRECT_URL` for migrations and `DATABASE_URL` for runtime queries; they must point at the same database.
+Populated by `aws_secretsmanager_secret_version.database` in `environments/<env>/main.tf` from the RDS module outputs. The resource has `ignore_changes = [secret_string]` so subsequent edits (via console or CLI) are not reverted on `terraform apply`. **Do not edit unless you know what you're doing** — the application uses `DIRECT_URL` for migrations and `DATABASE_URL` for runtime queries; they must point at the same database.
+
+Both URLs verify the RDS server certificate and hostname against the Amazon RDS CA bundle the chart mounts at `/etc/fabric/rds/global-bundle.pem` (`templates/platform/rds-ca-bundle.yaml`). They use different forms because the two drivers read different parameters:
+- The app's node-postgres driver honours libpq's `sslmode=verify-full` + `sslrootcert`, which also satisfies its production TLS guard.
+- Prisma's migration engine ignores those and verifies only with its own `sslcert` + `sslaccept=strict`.
+
+`WORKER_DATABASE_URL` in the `database-worker` group uses the `DATABASE_URL` form.
+
+**Existing installs.** Because of `ignore_changes`, a database secret written before these forms stays as it was: `?schema=public` with no `sslmode`. With `NODE_ENV=production` the application refuses to start on such a URL unless `FABRIC_ALLOW_INSECURE_DB=true`. Add the two query strings above to `DATABASE_URL`, `DIRECT_URL` and `WORKER_DATABASE_URL` in Secrets Manager, then `helm upgrade` so the pods mount the bundle.
 
 ### 3.2 `auth`
 
@@ -436,7 +444,7 @@ Rendered into `<release>-config` by `templates/secrets/config-map.yaml`. Pure no
 | `TEMPORAL_NAMESPACE` | `temporal.namespace` | |
 | `TEMPORAL_ADDRESS` | `temporal.address` | |
 <!-- REDIS_URL moved out of ConfigMap — see §3.6 (Secret, Terraform-managed). -->
-| `PGSSLMODE` | hardcoded | `no-verify` — forces TLS to RDS for node-postgres which defaults to no SSL; prod follow-up: verify-full + RDS CA bundle |
+| `PGSSLMODE` | hardcoded | `no-verify` — fallback only, for a `DATABASE_URL` without `sslmode` (a secret written before §3.1's verify-full forms); a URL's own `sslmode` wins |
 | `S3_ENDPOINT` | `global.region` | `https://s3.<region>.amazonaws.com` |
 | `S3_REGION` | `global.region` | |
 | `NEXT_PUBLIC_AVATARS_BUCKET_NAME` | `s3.buckets.avatars` | |
