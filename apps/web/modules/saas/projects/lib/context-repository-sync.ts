@@ -315,16 +315,29 @@ export function contextSyncAttentionMessageKey(reason: string): string {
 export const CONTEXT_SYNC_RUNNING_POLL_MS = 3_000;
 export const CONTEXT_SYNC_INDEXING_POLL_MS = 15_000;
 export const CONTEXT_SYNC_INDEXING_POLL_BUDGET_MS = 10 * 60 * 1000;
+/**
+ * While automatic sync is on and not paused, the tab reads the sync state
+ * once a minute even with no run open, so a run the scheduled check or a
+ * push started, or a pause the check recorded, shows without navigating
+ * (Fizzy #2713): the coding-instructions tab's `REPOSITORY_SYNC_IDLE_POLL_MS`.
+ */
+export const CONTEXT_SYNC_IDLE_POLL_MS = 60_000;
 
 /**
  * `refetchInterval` for `repositorySync.get`: every 3 s while a run is open;
  * otherwise every 15 s while files still await indexing, for up to 10
  * minutes of that state (`indexingElapsedMs`, tracked by the caller from the
- * moment `awaitingIndexCount` first became positive); otherwise no poll.
+ * moment `awaitingIndexCount` first became positive); otherwise every 60 s
+ * while automatic sync is on and not paused; otherwise no poll.
  */
 export function contextSyncPollInterval(
 	state:
-		| Pick<ContextSyncState, "running" | "awaitingIndexCount">
+		| (Pick<ContextSyncState, "running" | "awaitingIndexCount"> & {
+				configured?: Pick<
+					ContextSyncConfiguration,
+					"automatic" | "automaticPausedReason"
+				> | null;
+		  })
 		| null
 		| undefined,
 	indexingElapsedMs: number,
@@ -338,7 +351,10 @@ export function contextSyncPollInterval(
 	) {
 		return CONTEXT_SYNC_INDEXING_POLL_MS;
 	}
-	return false;
+	const configured = state?.configured;
+	return configured?.automatic && !configured.automaticPausedReason
+		? CONTEXT_SYNC_IDLE_POLL_MS
+		: false;
 }
 
 /** A run closed on this poll: whatever it produced is readable now. */
@@ -347,6 +363,39 @@ export function contextSyncRunEnded(
 	running: boolean,
 ): boolean {
 	return wasRunning && !running;
+}
+
+/**
+ * The newest run as the tab compares it between two reads: its receipt id
+ * and whether it has finished. A receipt finishing is a change on its own:
+ * `running` reads false whenever Temporal could not be asked, so the tab can
+ * see the newest receipt open with nothing running and then finished, and
+ * neither the id nor a running → idle transition would move. Finished is
+ * final, so the finish time itself is not part of it. `null` when there is
+ * no run yet.
+ */
+export function contextSyncLatestRunFingerprint(
+	run: Pick<ContextSyncRunView, "id" | "finishedAt"> | null,
+): string | null {
+	if (!run) {
+		return null;
+	}
+	return `${run.id}:${run.finishedAt === null ? "open" : "finished"}`;
+}
+
+/**
+ * The newest run changed between two reads (compare
+ * `contextSyncLatestRunFingerprint`s): a run the scheduled check or a push
+ * started or finished without the tab seeing it open, or a failure the
+ * check recorded (the coding-instructions tab's `latestSyncRunChanged`).
+ * `undefined` means not loaded yet, so the first read never counts; `null`
+ * (no run yet) does, so a sync's first run is noticed.
+ */
+export function contextSyncLatestRunChanged(
+	seen: string | null | undefined,
+	current: string | null | undefined,
+): boolean {
+	return seen !== undefined && current !== undefined && seen !== current;
 }
 
 // ── Configure dialog: server error → inline / toast (§5.1, §7.2) ───────────

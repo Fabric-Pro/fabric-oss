@@ -31,7 +31,14 @@
  *    context, when the current configuration holds no receipt for the run,
  *    finds it by the workflow's run id and completes one whose configuration
  *    is gone or replaced as FAILED / CONFIGURATION_CHANGED, with its audit
- *    row and no schedule (the instructions sync's twin, Fizzy #2672).
+ *    row and no schedule (the instructions sync's twin, Fizzy #2672);
+ *  - an automatic-sync toggle, which keeps the generation (Fizzy #2713),
+ *    neither skips nor fences a run already begun: a retried `begin`
+ *    answers its frozen context and `record` names it last applied; and a
+ *    PERMISSION_DENIED it records pauses automatic sync only while the
+ *    configuration's current member still lacks CONTEXT_CREATE, so it never
+ *    undoes a re-enable by another member or by one whose permission was
+ *    restored.
  *
  * The database is an in-memory fake of exactly the `@repo/database` helpers
  * the activities call, with the semantics their own tests pin
@@ -1921,6 +1928,192 @@ describe("recordContextRepositorySyncRun, automatic sync", () => {
 				h.TX,
 				expect.objectContaining({ effect: { kind: "none" } }),
 			);
+
+			expect(committed().schedule).toEqual([
+				{
+					syncId: SYNC,
+					generation: 3,
+					effect: { kind: "none" },
+					recheck: "due_now",
+				},
+			]);
+			expect(syncRow()?.pendingCommitSha).toBeNull();
+		});
+	});
+});
+
+// =============================================================================
+// an open run and an automatic-sync toggle (Fizzy #2713)
+// =============================================================================
+
+describe("an open automatic run and an automatic-sync toggle (Fizzy #2713)", () => {
+	/**
+	 * What `configure` writes when the repository, branch and paths are the
+	 * stored ones: the flag, the pause and the schedule move; the generation,
+	 * the key and the last applied run do not.
+	 */
+	function toggleAutomatic(automatic: boolean) {
+		const row = syncRow() as Row;
+		row.automatic = automatic;
+		row.automaticPausedReason = null;
+		row.failureCount = 0;
+	}
+
+	function seedOpenPollRun(overrides: Row = {}) {
+		seedSync({ activeRunKey: RUN, automatic: true });
+		seedIntegration();
+		seedRun({
+			trigger: "POLL",
+			userId: DELEGATE,
+			context: {
+				ref: "main",
+				paths: ["docs", "notes/glossary.md"],
+				repositoryIntegrationId: "int-1",
+				actingUserId: DELEGATE,
+			},
+			...overrides,
+		});
+	}
+
+	const pollContext = () =>
+		context({ trigger: "POLL", actingUserId: DELEGATE });
+
+	it("a retried begin after automatic sync was switched off answers the context it froze: the run is not skipped or fenced", async () => {
+		seedOpenPollRun();
+		toggleAutomatic(false);
+		const before = structuredClone(committed());
+
+		expect(await beginContextRepositorySyncRun(AUTOMATIC)).toEqual({
+			ok: true,
+			context: pollContext(),
+		});
+		expect(committed()).toEqual(before);
+	});
+
+	it.each([
+		["off", false],
+		["on", true],
+	])(
+		"record after automatic sync was switched %s completes the run, names it last applied and writes its schedule",
+		async (_label, automatic) => {
+			seedOpenPollRun({
+				commitSha: SHA,
+				plan: PLAN,
+				outcomes: { "docs/a.md": "created" },
+			});
+			toggleAutomatic(automatic);
+
+			expect(
+				await recordContextRepositorySyncRun(
+					recordInput({ trigger: "POLL", context: pollContext() }),
+				),
+			).toEqual({ recorded: true, status: "SUCCEEDED", error: null });
+
+			expect(syncRow()).toMatchObject({
+				generation: 3,
+				activeRunKey: null,
+				lastAppliedCommitSha: SHA,
+				lastAppliedRunId: RUN,
+			});
+			expect(committed().schedule).toEqual([
+				{
+					syncId: SYNC,
+					generation: 3,
+					effect: { kind: "success", commitSha: SHA },
+				},
+			]);
+		},
+	);
+
+	describe("a PERMISSION_DENIED recorded after a re-enable", () => {
+		/** The run acted as DELEGATE and failed its CONTEXT_CREATE re-check. */
+		async function recordDenied() {
+			return recordContextRepositorySyncRun(
+				recordInput({
+					trigger: "POLL",
+					context: pollContext(),
+					error: "PERMISSION_DENIED",
+				}),
+			);
+		}
+
+		it("still pauses automatic sync while the configuration's member lacks CONTEXT_CREATE", async () => {
+			seedOpenPollRun({ commitSha: SHA });
+
+			await recordDenied();
+
+			expect(h.api.canCreateProjectContexts).toHaveBeenCalledWith(
+				PROJECT,
+				DELEGATE,
+				h.TX,
+			);
+			expect(committed().schedule).toEqual([
+				{
+					syncId: SYNC,
+					generation: 3,
+					effect: { kind: "pause", reason: "PERMISSION_REVOKED" },
+				},
+			]);
+		});
+
+		it.each([
+			["another member re-enabled it", "user-7"],
+			[
+				"its member's permission was restored and they re-enabled it",
+				DELEGATE,
+			],
+		])(
+			"does not pause it again when %s: the receipt still completes FAILED and releases the key",
+			async (_label, member) => {
+				seedOpenPollRun({ commitSha: SHA });
+				// What the re-enable wrote while the run waited to record.
+				(syncRow() as Row).userId = member;
+				h.state.permitted.add(member);
+
+				expect(await recordDenied()).toEqual({
+					recorded: true,
+					status: "FAILED",
+					error: "PERMISSION_DENIED",
+				});
+
+				expect(h.api.canCreateProjectContexts).toHaveBeenCalledWith(
+					PROJECT,
+					member,
+					h.TX,
+				);
+				expect(
+					h.api.writeContextRepositorySyncScheduling,
+				).toHaveBeenCalledWith(
+					h.TX,
+					expect.objectContaining({ effect: { kind: "none" } }),
+				);
+				expect(committed().schedule).toEqual([]);
+				expect(runRow()).toMatchObject({
+					status: "FAILED",
+					error: "PERMISSION_DENIED",
+				});
+				expect(syncRow()).toMatchObject({
+					activeRunKey: null,
+					automaticPausedReason: null,
+				});
+				expect(committed().audit).toEqual([
+					expect.objectContaining({
+						actor: { type: "user", userId: DELEGATE },
+						metadata: expect.objectContaining({
+							error: "PERMISSION_DENIED",
+						}),
+					}),
+				]);
+			},
+		);
+
+		it("still folds a re-check request left while the run was open: due now", async () => {
+			seedOpenPollRun({ commitSha: SHA });
+			(syncRow() as Row).userId = "user-7";
+			(syncRow() as Row).pendingCommitSha = "e".repeat(40);
+			h.state.permitted.add("user-7");
+
+			await recordDenied();
 
 			expect(committed().schedule).toEqual([
 				{

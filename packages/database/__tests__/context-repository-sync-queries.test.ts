@@ -6,8 +6,11 @@
  * What this pins:
  *  - `configure` locks the configuration row FIRST and reads the managed-row
  *    count under that lock; it refuses a repository change while managed
- *    rows exist (a typed result), bumps the generation and clears
- *    `lastApplied*`, and leaves `activeRunKey` alone;
+ *    rows exist (a typed result); a change of repository, branch or paths
+ *    bumps the generation and clears `lastApplied*`, while one that leaves
+ *    them alone (the automatic toggle, "Re-enable") keeps both, so an open
+ *    run passes the fence and is still named last applied (Fizzy #2713);
+ *    either leaves `activeRunKey` alone;
  *  - the fence locks the configuration row, then the run row, and answers
  *    `configuration-changed` for a moved generation or a missing
  *    configuration, `superseded` for a foreign `activeRunKey` or a finished
@@ -26,8 +29,10 @@
  *    coding-instructions sync and the Living Memory sync that read from the
  *    integration, and deletes it, all in one transaction;
  *  - automatic sync (§11.1, Fizzy #2673): `configure` keeps `automatic`
- *    when omitted (off on insert) and resets the whole schedule on every
- *    configure, as the coding-instructions configure does; `record` without
+ *    when omitted (off on insert); a change of what is synced resets the
+ *    whole schedule, as the coding-instructions configure does, and one
+ *    that is not clears the pause and the failures and makes the sync due on
+ *    the lock's clock, keeping the generation-bound cursors; `record` without
  *    a frozen context finds its receipt by the workflow run id alone, in the
  *    caller's tenant, whether or not the configuration survives.
  *
@@ -71,6 +76,8 @@ const h = vi.hoisted(() => {
 		log: [] as string[],
 		transactionOptions: [] as unknown[],
 		nextId: 1,
+		/** The database's clock, as a lock statement reads it. */
+		dbNow: new Date("2026-09-23T12:30:00.000Z"),
 	};
 	const tables = () => state.current ?? state.committed;
 
@@ -387,20 +394,25 @@ const h = vi.hoisted(() => {
 				const row = tables().sync.find((r) => matches(r, where));
 				return row
 					? [
-							pick(row, {
-								id: 1,
-								projectId: 1,
-								organizationId: 1,
-								userId: 1,
-								repositoryIntegrationId: 1,
-								ref: 1,
-								paths: 1,
-								generation: 1,
-								activeRunKey: 1,
-								automatic: 1,
-								automaticPausedReason: 1,
-								failureCount: 1,
-							}),
+							{
+								...pick(row, {
+									id: 1,
+									projectId: 1,
+									organizationId: 1,
+									userId: 1,
+									repositoryIntegrationId: 1,
+									ref: 1,
+									paths: 1,
+									generation: 1,
+									activeRunKey: 1,
+									automatic: 1,
+									automaticPausedReason: 1,
+									failureCount: 1,
+									pendingCommitSha: 1,
+								}),
+								// The lock statement's `clock_timestamp()`.
+								now: new Date(state.dbNow),
+							},
 						]
 					: [];
 			}
@@ -476,6 +488,7 @@ const h = vi.hoisted(() => {
 			state.log = [];
 			state.transactionOptions = [];
 			state.nextId = 1;
+			state.dbNow = new Date("2026-09-23T12:30:00.000Z");
 		},
 		insert,
 	};
@@ -896,6 +909,141 @@ describe("upsertContextRepositorySync (configure, §5.1)", () => {
 		});
 	});
 
+	describe("a change that leaves what is synced alone (Fizzy #2713)", () => {
+		/** The stored repository, branch and paths, as the menu toggle sends them. */
+		const same = { ...input, ref: "main", paths: ["docs"] };
+		/** A paused, backed-off schedule with every generation-bound cursor set. */
+		const schedule = {
+			automatic: false,
+			failureCount: 4,
+			nextCheckAt: null,
+			automaticPausedReason: "REF_MISSING",
+			automaticPausedAt: new Date("2026-09-23T10:00:00Z"),
+			suppressedCommitSha: "a".repeat(40),
+			suppressedGeneration: 3,
+			lastEvaluatedCommitSha: "b".repeat(40),
+			lastEvaluatedGeneration: 3,
+			pendingCommitSha: "e".repeat(40),
+		};
+
+		it("the automatic toggle keeps the generation and the last applied run, re-delegates to the caller, clears the pause and the failures, and makes the sync due on the lock's clock", async () => {
+			seedIntegration();
+			seedSync(schedule);
+			h.state.dbNow = new Date("2026-09-23T12:34:56.789Z");
+
+			const result = await upsertContextRepositorySync({
+				...same,
+				automatic: true,
+			});
+
+			expect(result).toEqual({
+				status: "configured",
+				sync: {
+					id: SYNC,
+					generation: 3,
+					repositoryIntegrationId: "int-1",
+					ref: "main",
+					paths: ["docs"],
+					automatic: true,
+				},
+				previous: {
+					repositoryIntegrationId: "int-1",
+					ref: "main",
+					paths: ["docs"],
+				},
+			});
+			expect(committed().sync[0]).toMatchObject({
+				generation: 3,
+				userId: "user-9",
+				automatic: true,
+				// What the Context card reports stays: the managed files
+				// from that run are still there and unchanged.
+				lastAppliedCommitSha: "c0ffee",
+				lastAppliedRunId: "sync-1:run-0",
+				activeRunKey: RUN,
+				automaticPausedReason: null,
+				automaticPausedAt: null,
+				failureCount: 0,
+				// The database's clock, never a held lease's value: moving
+				// `nextCheckAt` is what ends a poll check's lease here.
+				nextCheckAt: new Date("2026-09-23T12:34:56.789Z"),
+				// Bound to a generation that did not move: they still say
+				// what this configuration did with those heads.
+				suppressedCommitSha: "a".repeat(40),
+				suppressedGeneration: 3,
+				lastEvaluatedCommitSha: "b".repeat(40),
+				lastEvaluatedGeneration: 3,
+				// The open run survives, and its completion consumes it.
+				pendingCommitSha: "e".repeat(40),
+			});
+		});
+
+		it("switching automatic sync off keeps the generation and the last applied run too", async () => {
+			seedIntegration();
+			seedSync({ automatic: true });
+
+			const result = await upsertContextRepositorySync({
+				...same,
+				automatic: false,
+			});
+
+			expect(result).toMatchObject({
+				sync: { generation: 3, automatic: false },
+			});
+			expect(committed().sync[0]).toMatchObject({
+				generation: 3,
+				automatic: false,
+				lastAppliedRunId: "sync-1:run-0",
+			});
+		});
+
+		it("re-enabling after a pause with the stored settings keeps automatic sync on, the generation and the last applied run", async () => {
+			seedIntegration();
+			seedSync({ ...schedule, automatic: true });
+
+			await upsertContextRepositorySync(same);
+
+			expect(committed().sync[0]).toMatchObject({
+				generation: 3,
+				automatic: true,
+				automaticPausedReason: null,
+				automaticPausedAt: null,
+				failureCount: 0,
+				nextCheckAt: h.state.dbNow,
+				lastAppliedCommitSha: "c0ffee",
+				lastAppliedRunId: "sync-1:run-0",
+			});
+		});
+
+		it.each([
+			["the branch", { ref: "release" }],
+			["a path", { paths: ["docs", "notes"] }],
+			["the repository", { repositoryIntegrationId: "int-2" }],
+		])(
+			"changing %s still bumps the generation and clears the last applied run",
+			async (_label, change) => {
+				seedIntegration();
+				seedIntegration({ id: "int-2" });
+				seedSync(schedule);
+
+				const result = await upsertContextRepositorySync({
+					...same,
+					...change,
+				});
+
+				expect(result).toMatchObject({ sync: { generation: 4 } });
+				expect(committed().sync[0]).toMatchObject({
+					generation: 4,
+					lastAppliedCommitSha: null,
+					lastAppliedRunId: null,
+					suppressedCommitSha: null,
+					lastEvaluatedCommitSha: null,
+					pendingCommitSha: null,
+				});
+			},
+		);
+	});
+
 	it("a concurrent first configure that loses the project's unique key re-points the winner's row", async () => {
 		seedIntegration();
 		h.models.projectContextRepositorySync.create.mockImplementationOnce(
@@ -1155,6 +1303,99 @@ describe("withContextRepositorySyncRunFence (§4.5)", () => {
 		).rejects.toThrow("vector queue unavailable");
 
 		expect(committed().context).toHaveLength(1);
+	});
+
+	describe("an open run and a configure (Fizzy #2713)", () => {
+		const configure = {
+			projectId: PROJECT,
+			organizationId: ORG,
+			userId: "user-9",
+			repositoryIntegrationId: "int-1",
+			ref: "main",
+			paths: ["docs"],
+		};
+
+		it.each([
+			["switched on", { automatic: false }, true],
+			["switched off", { automatic: true }, false],
+			[
+				"re-enabled after a pause",
+				{ automatic: true, automaticPausedReason: "REF_MISSING" },
+				undefined,
+			],
+		])(
+			"an open run survives automatic sync %s: every fenced step still runs, and record still names it last applied",
+			async (_label, stored, automatic) => {
+				seedIntegration();
+				seedSync(stored);
+				seedRun({ plan: PLAN, commitSha: "d".repeat(40) });
+
+				await upsertContextRepositorySync({
+					...configure,
+					...(automatic === undefined ? {} : { automatic }),
+				});
+
+				// Its plan is unaffected: the repository, branch and paths it
+				// froze are still the configuration's.
+				const fenced = await withContextRepositorySyncRunFence(
+					FENCE,
+					async (_tx, locked) => locked.run.plan,
+				);
+				expect(fenced).toEqual({ status: "ok", value: PLAN });
+				expect(
+					await inTx((tx) =>
+						recordContextRepositorySyncLastApplied(tx, {
+							syncId: SYNC,
+							generation: FENCE.generation,
+							runKey: RUN,
+							commitSha: "d".repeat(40),
+						}),
+					),
+				).toBe(true);
+				expect(
+					await inTx((tx) =>
+						releaseContextRepositorySyncRunKey(tx, SYNC, RUN),
+					),
+				).toBe(true);
+				expect(committed().sync[0]).toMatchObject({
+					generation: 3,
+					lastAppliedCommitSha: "d".repeat(40),
+					lastAppliedRunId: RUN,
+					activeRunKey: null,
+				});
+			},
+		);
+
+		it("a branch change fences the open run: configuration-changed, and it is never named last applied", async () => {
+			seedIntegration();
+			seedSync();
+			seedRun({ plan: PLAN, commitSha: "d".repeat(40) });
+
+			await upsertContextRepositorySync({
+				...configure,
+				ref: "release",
+			});
+
+			const fn = vi.fn();
+			expect(
+				await withContextRepositorySyncRunFence(FENCE, fn as never),
+			).toEqual({ status: "configuration-changed" });
+			expect(fn).not.toHaveBeenCalled();
+			expect(
+				await inTx((tx) =>
+					recordContextRepositorySyncLastApplied(tx, {
+						syncId: SYNC,
+						generation: FENCE.generation,
+						runKey: RUN,
+						commitSha: "d".repeat(40),
+					}),
+				),
+			).toBe(false);
+			expect(committed().sync[0]).toMatchObject({
+				generation: 4,
+				lastAppliedRunId: null,
+			});
+		});
 	});
 });
 

@@ -912,6 +912,35 @@ describe("syncContextTreeFromRepository — retries", () => {
 			expect(db.pruneRepositoryContextBatch).not.toHaveBeenCalled();
 		},
 	);
+
+	it("keeps applying when automatic sync is switched on or off mid-run: the generation holds, so its plan is unaffected (Fizzy #2713)", async () => {
+		const ctx = configure(["docs"]);
+		serve(
+			SHA_A,
+			Array.from({ length: 60 }, (_, i) => ({
+				path: `docs/f-${String(i).padStart(2, "0")}.md`,
+				body: `file ${i}`,
+			})),
+		);
+		// Fences: 1 pin, 2 plan, 3 apply (50), 4 apply (10). Between the two
+		// apply batches, `configure` flips the flag with the stored branch
+		// and paths, which moves the schedule and not the generation.
+		store.beforeFence = (call) => {
+			if (call === 4) {
+				const row = committed().sync[0] as Row;
+				row.automatic = !row.automatic;
+				row.automaticPausedReason = null;
+				row.failureCount = 0;
+			}
+		};
+
+		expect(await sync(ctx)).toEqual({
+			outcome: "applied",
+			commitSha: SHA_A,
+		});
+		expect(Object.keys(outcomes())).toHaveLength(60);
+		expect(managedKeys()).toHaveLength(60);
+	});
 });
 
 // =============================================================================

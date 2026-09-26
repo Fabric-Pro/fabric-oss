@@ -15,13 +15,22 @@
  * `upsertContextRepositorySync` run its one transaction under the
  * configuration lock, which re-checks the integration and refuses a
  * repository change while the sync still manages rows. The caller becomes
- * the member runs act as, the generation is bumped so an in-flight run is
- * fenced, and no run is started: the client calls `syncNow` after this.
+ * the member runs act as, and no run is started: the client calls `syncNow`
+ * after this.
  *
  * `automatic` (design §11.1, Fizzy #2673) turns the shared poll and push
  * webhook on or off for this sync; omitted, the stored value is kept (off on
- * the first configure). Every configure also resets the automatic schedule,
- * as the coding-instructions configure does.
+ * the first configure). Every configure clears a pause and makes the sync
+ * due now.
+ *
+ * Only a change to what is synced — the repository, the branch or the
+ * paths — bumps the generation (fencing an in-flight run) and clears the
+ * last applied run and the rest of the automatic schedule. The "Automatic
+ * sync" toggle and "Re-enable" send the stored repository, branch and paths,
+ * so they keep both, and a run already open finishes normally (Fizzy #2713).
+ * The query decides which under its lock. Either is audited as
+ * `project.context.repository_sync_configured`; the `*Changed` flags say
+ * which it was.
  */
 import { ORPCError } from "@orpc/client";
 import { verifyRepositoryBranch } from "@repo/connectors";
@@ -163,6 +172,10 @@ export const configureContextRepositorySyncProcedure = tenantProtectedProcedure
 				provider: integration.provider,
 				automatic: written.sync.automatic,
 				pathCount: written.sync.paths.length,
+				repositoryChanged: written.previous
+					? written.previous.repositoryIntegrationId !==
+						written.sync.repositoryIntegrationId
+					: true,
 				refChanged: written.previous
 					? written.previous.ref !== written.sync.ref
 					: true,
