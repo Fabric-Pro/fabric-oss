@@ -118,6 +118,41 @@ describe("plain prose in arguments is not destructive", () => {
 		},
 	);
 
+	it("splits acronyms and camelCase words where it always did", () => {
+		// `XML_Delete_All`: an acronym, then camelCase.
+		expect(
+			assessToolCallRisk(
+				{ name: "jira_update", args: { note: "XMLDeleteAll" } },
+				"BALANCED",
+				THIRD_PARTY,
+			).riskLevel,
+		).toBe("critical");
+		// `API_Keys`: the split never lands inside a word.
+		expect(
+			assessToolCallRisk(
+				{ name: "jira_lookup", args: { note: "APIKeys" } },
+				"CONSERVATIVE",
+				THIRD_PARTY,
+			).riskLevel,
+		).toBe("low");
+	});
+
+	it("reads an argument holding a long capital run in linear time", () => {
+		// The acronym split used to rescan the run from each of its letters;
+		// in the workflow that stalls the task past its timeout.
+		const call = {
+			name: "jira_lookup",
+			args: { text: `${"A".repeat(60_000)}!` },
+		};
+		const started = performance.now();
+		const result = assessToolCallRisk(call, "CONSERVATIVE", THIRD_PARTY);
+		expect(performance.now() - started).toBeLessThan(1000);
+		expect(result).toMatchObject({
+			riskLevel: "low",
+			requiresApproval: false,
+		});
+	});
+
 	it("the legacy rules keep substring matching for recorded histories", () => {
 		expect(
 			assessToolCallRisk(

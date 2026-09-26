@@ -112,12 +112,15 @@ export function buildMcpToolName(
 	taken?: Set<string>,
 ): string {
 	const legacy = `${serverName.toLowerCase().replace(/\s+/g, "_")}_${toolName}`;
+	// After the collapse at most one `_` sits at either end, so trimming
+	// exactly one returns the same name. `_+$` is quadratic on an uncollapsed
+	// run, and CodeQL (js/polynomial-redos) cannot see the collapse before it.
 	let name = ALLOWED_CHARACTERS_ONLY.test(legacy)
 		? legacy
 		: legacy
 				.replace(/[^a-zA-Z0-9_-]+/g, "_")
 				.replace(/_+/g, "_")
-				.replace(/^_+|_+$/g, "");
+				.replace(/^_|_$/g, "");
 	if (!name) {
 		name = "mcp_tool";
 	}

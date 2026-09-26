@@ -146,4 +146,23 @@ describe("compareStoryIdentifiers", () => {
 			"abc",
 		]);
 	});
+
+	it("ignores leading zeros, including an all-zero number", () => {
+		expect(compareStoryIdentifiers("F-0007", "7")).toBeGreaterThan(0);
+		expect(compareStoryIdentifiers("B-0007", "F-7")).toBeLessThan(0);
+		expect(compareStoryIdentifiers("000", "1")).toBeLessThan(0);
+		expect(compareStoryIdentifiers("F-000", "0")).toBeGreaterThan(0);
+	});
+
+	it("compares identifiers with a long run of zeros in linear time", () => {
+		// `0*(\d+)$` retried every split of the zeros once the run was
+		// followed by a non-digit; identifiers can arrive from a PM sync.
+		const zeros = "0".repeat(100_000);
+		const started = performance.now();
+		expect(compareStoryIdentifiers(`F-${zeros}x`, "F-1")).toBeGreaterThan(
+			0,
+		);
+		expect(compareStoryIdentifiers(`${zeros}5`, "F-4")).toBeGreaterThan(0);
+		expect(performance.now() - started).toBeLessThan(500);
+	});
 });

@@ -246,6 +246,22 @@ function splitCells(rest: string): string[] {
 }
 
 /**
+ * An area header without its trailing `(2 of 3)` continuation marker.
+ *
+ * The marker holds no `(`, so it can only begin at the line's last one;
+ * testing that tail with an anchored pattern gives the same result as
+ * `/\s*\(\d+\s+of\s+\d+\)\s*$/` without rescanning a long whitespace run
+ * from every position in it (CodeQL js/polynomial-redos).
+ */
+function stripContinuationMarker(line: string): string {
+	const open = line.lastIndexOf("(");
+	if (open === -1 || !/^\(\d+\s+of\s+\d+\)\s*$/i.test(line.slice(open))) {
+		return line.trim();
+	}
+	return line.slice(0, open).trim();
+}
+
+/**
  * Deterministic pre-pass over the extracted document text. Recognises phase
  * headers, area headers, table rows keyed by a scope id, and the
  * cross-phase dependency section.
@@ -296,15 +312,30 @@ export function prePassScopeDocument(text: string): ScopePrePass {
 		}
 
 		// Dependency section: "01  Core platform → all  FND-01/02/03 must be ..."
+		//
+		// These patterns run over one line of an uploaded document, so they
+		// must stay linear in its length (CodeQL js/polynomial-redos). A
+		// trailing `\s+(.+)$` is quadratic when `.` meets a lone `\r`, U+2028
+		// or U+2029 mid-line: the match fails and every split of the
+		// whitespace run is retried. A trimmed line never ends in whitespace,
+		// so `\s+(\S.*)$` matches exactly what `\s+(.+)$` did with nothing to
+		// retry. The dependency row keeps its lazy middle cell and lets both
+		// cells take any character, line terminators included, so its last
+		// cell always reaches the end; the one difference is that a row
+		// holding a lone CR, U+2028 or U+2029 now parses instead of being
+		// skipped. `[\s\S]` rather than the `s` flag: apps/web compiles this
+		// file and targets ES6, where the flag is a type error.
 		if (inDependencies) {
-			const depMatch = line.match(/^(\d{1,2})\s{2,}(.+?)\s{2,}(.+)$/);
+			const depMatch = line.match(
+				/^(\d{1,2})\s{2,}([\s\S]+?)\s{2,}([\s\S]+)$/,
+			);
 			if (depMatch) {
 				dependencies.push(
 					parseDependencyLine(depMatch[2], depMatch[3], i),
 				);
 				continue;
 			}
-			const looseMatch = line.match(/^(\d{1,2})[.)]?\s+(.+)$/);
+			const looseMatch = line.match(/^(\d{1,2})[.)]?\s+(\S.*)$/);
 			if (looseMatch && SCOPE_ID_SCAN.test(looseMatch[2])) {
 				SCOPE_ID_SCAN.lastIndex = 0;
 				dependencies.push(
@@ -317,7 +348,7 @@ export function prePassScopeDocument(text: string): ScopePrePass {
 		}
 
 		// Table row keyed by a scope id
-		const rowMatch = line.match(/^([A-Z]{2,4}-\d{2,3})\s+(.+)$/);
+		const rowMatch = line.match(/^([A-Z]{2,4}-\d{2,3})\s+(\S.*)$/);
 		if (rowMatch && SCOPE_ID_REGEX.test(rowMatch[1])) {
 			const sourceRef = rowMatch[1];
 			const cells = splitCells(rowMatch[2]);
@@ -378,7 +409,7 @@ export function prePassScopeDocument(text: string): ScopePrePass {
 
 		// First non-table line after a phase header is the area header
 		if (expectAreaHeader && !/^[A-Z]{2,4}-\d{2,3}\b/.test(line)) {
-			currentArea = line.replace(/\s*\(\d+\s+of\s+\d+\)\s*$/i, "").trim();
+			currentArea = stripContinuationMarker(line);
 			expectAreaHeader = false;
 		}
 	}

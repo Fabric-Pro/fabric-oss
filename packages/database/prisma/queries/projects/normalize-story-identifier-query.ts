@@ -16,7 +16,10 @@ export function normalizeStoryIdentifierQuery(input: string): string {
 	return input.replace(/^(F-|B-|US-|TASK-)/i, "");
 }
 
-const IDENTIFIER_NUMBER = /^(?:([A-Z]+)-)?0*(\d+)$/i;
+// No separate `0*` before the digits: it and `\d+` both match `0`, so a long
+// run of zeros followed by a non-digit was retried at every split
+// (CodeQL js/polynomial-redos). `Number()` already ignores leading zeros.
+const IDENTIFIER_NUMBER = /^(?:([A-Z]+)-)?(\d+)$/i;
 
 /**
  * Numeric-aware order for story identifiers, which mix legacy prefixed values
