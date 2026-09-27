@@ -11,6 +11,12 @@ const NOW_ISO = "2026-09-23T12:00:00.000Z";
 /** The lease the claim wrote, as it travels through a Temporal payload. */
 const LEASE_ISO = "2026-09-23T12:02:00.000Z";
 const LATER_LEASE_ISO = "2026-09-23T12:07:00.000Z";
+/**
+ * What a check dates its next check from (Fizzy #2712): its claim, which is
+ * the lease less the two-minute lease, less the one-minute allowance. On the
+ * database's clock, because the lease is.
+ */
+const SCHEDULE_FROM = new Date(Date.parse(LEASE_ISO) - 3 * 60 * 1000);
 /** The poll's budget end. The check stops 5 s before the lease, 12:01:55. */
 const DEADLINE_ISO = "2026-09-23T12:04:00.000Z";
 /** Just past that stop. */
@@ -338,7 +344,12 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 		expect(result).toEqual({ outcome: "evaluated" });
 		expect(m.patch).toHaveBeenCalledWith(
 			{ kind: "success", commitSha: OLD_SHA },
-			{ now: expect.any(Date), failureCount: 2, generation: 3 },
+			{
+				now: expect.any(Date),
+				failureCount: 2,
+				generation: 3,
+				scheduleFrom: SCHEDULE_FROM,
+			},
 		);
 		expect(m.subject.writeBack).toHaveBeenCalledWith(
 			m.db,
@@ -1202,7 +1213,12 @@ describe("the check on the database's clock, measured by its own lease read (Fiz
 			expect(m.lsRemoteHead).toHaveBeenCalledTimes(1);
 			expect(m.patch).toHaveBeenCalledWith(
 				{ kind: "success", commitSha: OLD_SHA },
-				{ now: DB_NOW, failureCount: 2, generation: 3 },
+				{
+					now: DB_NOW,
+					failureCount: 2,
+					generation: 3,
+					scheduleFrom: SCHEDULE_FROM,
+				},
 			);
 			expect(m.subject.writeBack).toHaveBeenCalledTimes(1);
 		},
@@ -1220,7 +1236,12 @@ describe("the check on the database's clock, measured by its own lease read (Fiz
 			});
 			expect(m.patch).toHaveBeenCalledWith(
 				{ kind: "reschedule", delayMs: 15 * MIN },
-				{ now: DB_NOW, failureCount: 2, generation: 3 },
+				{
+					now: DB_NOW,
+					failureCount: 2,
+					generation: 3,
+					scheduleFrom: SCHEDULE_FROM,
+				},
 			);
 		},
 	);

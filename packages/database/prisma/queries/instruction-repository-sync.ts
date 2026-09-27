@@ -870,6 +870,14 @@ type SchedulingPatchInput = {
 	failureCount: number;
 	/** The generation the effect belongs to; the cursors record it. */
 	generation: number;
+	/**
+	 * What `success`, `suppress` and `backoff` date the next check from,
+	 * when not `now` (Fizzy #2712). A poll check passes its claim time less
+	 * a small allowance, so the next check lands on the poll tick the
+	 * interval names rather than one tick after it; a finishing run passes
+	 * nothing. `reschedule` and `pause` always use `now`.
+	 */
+	scheduleFrom?: Date;
 };
 
 /**
@@ -888,9 +896,10 @@ export function computeSchedulingPatch(
 ): RepositorySyncSchedulingPatch | null;
 export function computeSchedulingPatch(
 	effect: InstructionSyncSchedulingEffect,
-	{ now, failureCount, generation }: SchedulingPatchInput,
+	{ now, failureCount, generation, scheduleFrom }: SchedulingPatchInput,
 ): RepositorySyncSchedulingPatch | null {
-	const nextCheckAt = new Date(now.getTime() + NEXT_CHECK_AFTER_MS);
+	const from = (scheduleFrom ?? now).getTime();
+	const nextCheckAt = new Date(from + NEXT_CHECK_AFTER_MS);
 	switch (effect.kind) {
 		case "none":
 			return null;
@@ -918,9 +927,7 @@ export function computeSchedulingPatch(
 			const next = failureCount + 1;
 			return {
 				failureCount: next,
-				nextCheckAt: new Date(
-					now.getTime() + instructionSyncBackoffMs(next),
-				),
+				nextCheckAt: new Date(from + instructionSyncBackoffMs(next)),
 			};
 		}
 		case "pause":

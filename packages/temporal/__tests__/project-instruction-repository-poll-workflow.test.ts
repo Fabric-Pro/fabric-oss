@@ -37,6 +37,7 @@ import {
 	type InstructionSyncCheckInput,
 	type InstructionSyncCheckOutcome,
 	type InstructionSyncCheckResult,
+	type InstructionSyncPollCounts,
 	type InstructionSyncPollInput,
 	type InstructionSyncPollResult,
 	REPOSITORY_SYNC_SUBJECT_KINDS,
@@ -46,7 +47,7 @@ const WORKFLOWS_PATH = resolve(__dirname, "..", "src", "workflows");
 const WORKFLOW_NAME = "projectInstructionRepositoryPollWorkflow";
 /** The lease the claim query writes (Decision 31). */
 const LEASE_MS = 2 * 60 * 1000;
-const ZERO: InstructionSyncPollResult = {
+const ZERO: InstructionSyncPollCounts = {
 	claimed: 0,
 	started: 0,
 	alreadyRunning: 0,
@@ -60,6 +61,12 @@ const ZERO: InstructionSyncPollResult = {
 	deferred: 0,
 	claimFailed: 0,
 };
+
+/** The tick's totals, without the per-kind breakdown (Fizzy #2712). */
+function totals(result: InstructionSyncPollResult): InstructionSyncPollCounts {
+	const { byKind: _perKind, ...counts } = result;
+	return counts;
+}
 
 type Kind = ClaimedInstructionSyncCheck["kind"];
 type ClaimInput = { kind: Kind; limit: number };
@@ -249,7 +256,7 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 		const startedAt = await env.currentTimeMs();
 		const { result, runId } = await run(mocks, ONE_KIND);
 
-		expect(result).toEqual({ ...ZERO, claimed: 2, evaluated: 2 });
+		expect(totals(result)).toEqual({ ...ZERO, claimed: 2, evaluated: 2 });
 		expect(mocks.sweepInstructionSyncTempDirs).toHaveBeenCalledTimes(1);
 		expect(
 			mocks.sweepInstructionSyncTempDirs.mock.invocationCallOrder[0],
@@ -297,7 +304,8 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 	it("only sweeps when nothing is due", async () => {
 		const mocks = pollMocks();
 		const { result } = await run(mocks);
-		expect(result).toEqual(ZERO);
+		expect(totals(result)).toEqual(ZERO);
+		expect(result.byKind).toEqual({ instructions: ZERO, context: ZERO });
 		// One claim per registered kind, each short, so each closes at once.
 		expect(mocks.claimDueInstructionSyncChecks).toHaveBeenCalledTimes(
 			REPOSITORY_SYNC_SUBJECT_KINDS.length,
@@ -344,7 +352,7 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 			}),
 		);
 
-		expect(result).toEqual({
+		expect(totals(result)).toEqual({
 			claimed: 9,
 			started: 1,
 			alreadyRunning: 1,
@@ -405,7 +413,7 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 				claimDueInstructionSyncChecks: due("a"),
 			}),
 		);
-		expect(result).toEqual({ ...ZERO, claimed: 1, evaluated: 1 });
+		expect(totals(result)).toEqual({ ...ZERO, claimed: 1, evaluated: 1 });
 		expect(sweep).toHaveBeenCalledTimes(1);
 	});
 
@@ -425,7 +433,7 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 			}),
 			ONE_KIND,
 		);
-		expect(result).toEqual(ZERO);
+		expect(totals(result)).toEqual(ZERO);
 		expect(calls).toBe(3);
 	});
 
@@ -443,7 +451,7 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 		// Lanes fill at about 0 s, 85 s and 170 s (70 s left, over the
 		// reserve; those checks end at about 230 s, 10 s before the deadline).
 		// At 230 s only 10 s remain, so nothing more is claimed.
-		expect(result).toEqual({ ...ZERO, claimed: 12, evaluated: 12 });
+		expect(totals(result)).toEqual({ ...ZERO, claimed: 12, evaluated: 12 });
 		expect(check).toHaveBeenCalledTimes(12);
 		const limits = claim.mock.calls.map(([input]) => input.limit);
 		expect(limits[0]).toBe(4);
@@ -463,7 +471,7 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 		);
 		const elapsed = (await env.currentTimeMs()) - startedAt;
 
-		expect(result).toEqual({
+		expect(totals(result)).toEqual({
 			...ZERO,
 			claimed: INSTRUCTION_SYNC_POLL_CLAIM_CAP,
 			evaluated: INSTRUCTION_SYNC_POLL_CLAIM_CAP,
@@ -504,11 +512,15 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 			ONE_KIND,
 		);
 
-		expect(result).toEqual({
+		expect(totals(result)).toEqual({
 			...ZERO,
 			claimed: 2,
 			evaluated: 1,
 			deferred: 1,
+		});
+		// Deferred is counted against the kind of the row it left behind.
+		expect(result.byKind).toEqual({
+			instructions: { ...ZERO, claimed: 2, evaluated: 1, deferred: 1 },
 		});
 		expect(check).toHaveBeenCalledTimes(1);
 		expect(check).toHaveBeenCalledWith(
@@ -593,7 +605,7 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 		}
 		// Twelve slow checks fill the lanes until the reserve, as with one
 		// kind, plus the two fake rows.
-		expect(result).toEqual({ ...ZERO, claimed: 14, evaluated: 14 });
+		expect(totals(result)).toEqual({ ...ZERO, claimed: 14, evaluated: 14 });
 		await expectReplays(workflowId);
 	});
 
@@ -637,7 +649,12 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 		expect(check).toHaveBeenCalledWith(
 			expect.objectContaining({ kind: "context", id: "c1" }),
 		);
-		expect(result).toEqual({ ...ZERO, claimed: 14, evaluated: 14 });
+		expect(totals(result)).toEqual({ ...ZERO, claimed: 14, evaluated: 14 });
+		// Fizzy #2712: the tick's log and result say which kind did what.
+		expect(result.byKind).toEqual({
+			instructions: { ...ZERO, claimed: 12, evaluated: 12 },
+			context: { ...ZERO, claimed: 2, evaluated: 2 },
+		});
 		await expectReplays(workflowId);
 	});
 
@@ -661,11 +678,15 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 			[{ kinds: ["instructions", FAKE] }],
 		);
 
-		expect(result).toEqual({
+		expect(totals(result)).toEqual({
 			...ZERO,
 			claimed: 2,
 			evaluated: 2,
 			claimFailed: 1,
+		});
+		expect(result.byKind).toEqual({
+			instructions: { ...ZERO, claimFailed: 1 },
+			[FAKE]: { ...ZERO, claimed: 2, evaluated: 2 },
 		});
 		// Three attempts, then the kind is closed for the tick.
 		expect(instructions).toHaveBeenCalledTimes(3);
@@ -701,7 +722,7 @@ describe("projectInstructionRepositoryPollWorkflow (spec §6.1, §8.2)", () => {
 		// The lanes dispatched at about 170 s had 70 s of budget left as their
 		// schedule-to-close. Temporal failed them at the budget's end, before
 		// they answered, and nothing was left to claim with.
-		expect(result).toEqual({
+		expect(totals(result)).toEqual({
 			...ZERO,
 			claimed: 12,
 			evaluated: 8,
