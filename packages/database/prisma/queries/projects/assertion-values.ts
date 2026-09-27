@@ -51,7 +51,7 @@ const MAX_RAW_LENGTH = 20_000;
  * this point is worth the cost of looking at, and bounding it here is what
  * turns "linear in a `@db.Text` column" into "linear in a small constant".
  */
-const MAX_INPUT_LENGTH = 8_000;
+const MAX_INPUT_LENGTH = 8_001;
 
 /**
  * A single line longer than this is either a serialised object dump or an
@@ -66,9 +66,21 @@ const MAX_LINE_LENGTH = 2_000;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching the ESC control character is the point — it's what strips ANSI codes.
 const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
 
+function capInput(text: string): string {
+	if (text.length <= MAX_INPUT_LENGTH) {
+		return text;
+	}
+	const capped = text.slice(0, MAX_INPUT_LENGTH);
+	if (capped.endsWith("\n") || text[MAX_INPUT_LENGTH] === "\n") {
+		return capped;
+	}
+	const lastNewline = capped.lastIndexOf("\n");
+	return lastNewline === -1 ? "" : capped.slice(0, lastNewline);
+}
+
 function capValue(raw: string): string | null {
 	const trimmed = raw.trim().replace(/,$/, "").trim();
-	if (!trimmed) {
+	if (!trimmed || trimmed.includes("\n")) {
 		return null;
 	}
 	return trimmed.length <= MAX_VALUE_LENGTH
@@ -84,12 +96,18 @@ function indexOfLineEnd(text: string, fromIndex: number): number {
 	return idx === -1 ? text.length : idx;
 }
 
-/** One of these must be present for {@link parseLabeledProperties} to trust
- * `actual:`/`expected:` as Node's own inspected AssertionError properties
- * rather than two words that happen to appear, colon-suffixed, in free-form
- * text — "Unexpected actual: none. expected: something" has both, in order,
- * and is not an assertion. */
-const NODE_ASSERTION_MARKER = /ERR_ASSERTION|AssertionError|\boperator:\s*/;
+/** Node's own inspected assertion properties always carry this code. A generic
+ * `AssertionError` or an `operator:` note can appear in runner output and does
+ * not establish that a later `actual:`/`expected:` pair is Node's. */
+const NODE_ASSERTION_MARKER = /\bERR_ASSERTION\b/;
+
+const NODE_EQUAL_OPERATORS = new Set([
+	"strictEqual",
+	"deepStrictEqual",
+	"equal",
+	"deepEqual",
+	"==",
+]);
 
 /**
  * Node's own inspected `AssertionError` properties — `actual: 90,` /
@@ -104,15 +122,15 @@ const NODE_ASSERTION_MARKER = /ERR_ASSERTION|AssertionError|\boperator:\s*/;
  * both words. {@link NODE_ASSERTION_MARKER} is the confirmation.
  */
 function parseLabeledProperties(text: string): ParsedAssertionValues | null {
-	const actualMatch = text.match(/\bactual:\s*/);
-	const expectedMatch = text.match(/\bexpected:\s*/);
+	const actualMatch = text.match(/^[ \t]*actual:\s*/m);
+	const expectedMatch = text.match(/^[ \t]*expected:\s*/m);
 	if (
 		!actualMatch ||
 		!expectedMatch ||
 		actualMatch.index === undefined ||
 		expectedMatch.index === undefined ||
 		actualMatch.index >= expectedMatch.index ||
-		!NODE_ASSERTION_MARKER.test(text)
+		!NODE_ASSERTION_MARKER.test(text.slice(0, actualMatch.index))
 	) {
 		return null;
 	}
@@ -132,7 +150,23 @@ function parseLabeledProperties(text: string): ParsedAssertionValues | null {
 
 	const actual = capValue(actualRaw);
 	const expected = capValue(expectedRaw);
-	return actual && expected ? { actual, expected } : null;
+	const operatorMatch = text
+		.slice(expectedEnd)
+		.match(/\n\s*operator:\s*['"]?([^,'"\n]+)['"]?\s*,?/);
+	const operator = operatorMatch?.[1]?.trim();
+	if (
+		!actual ||
+		!expected ||
+		!operator ||
+		!NODE_EQUAL_OPERATORS.has(operator) ||
+		actual === "[Object]" ||
+		actual === "[Array]" ||
+		expected === "[Object]" ||
+		expected === "[Array]"
+	) {
+		return null;
+	}
+	return { actual, expected };
 }
 
 /** The first line in `text` that isn't blank and isn't itself over
@@ -158,28 +192,62 @@ function firstNonEmptyLine(text: string): string | null {
 /** Split `line` on the earliest occurrence of any token in `tokens`, tried
  * left to right — `indexOf`, never a backtracking capture, so this is linear
  * regardless of how the line is shaped. */
-function splitOnFirstToken(
+function splitOnFirstUnquotedToken(
 	line: string,
 	tokens: readonly string[],
 ): [string, string] | null {
-	let bestIndex = -1;
-	let bestToken = "";
-	for (const token of tokens) {
-		const idx = line.indexOf(token);
-		if (idx !== -1 && (bestIndex === -1 || idx < bestIndex)) {
-			bestIndex = idx;
-			bestToken = token;
+	let quote: string | null = null;
+	let escaped = false;
+	for (let index = 0; index < line.length; index += 1) {
+		const char = line[index];
+		if (quote) {
+			if (escaped) {
+				escaped = false;
+			} else if (char === "\\") {
+				escaped = true;
+			} else if (char === quote) {
+				quote = null;
+			}
+			continue;
+		}
+		if (char === "'" || char === '"' || char === "`") {
+			quote = char;
+			continue;
+		}
+		for (const token of tokens) {
+			if (line.startsWith(token, index)) {
+				return [line.slice(0, index), line.slice(index + token.length)];
+			}
 		}
 	}
-	if (bestIndex === -1) {
-		return null;
-	}
-	return [line.slice(0, bestIndex), line.slice(bestIndex + bestToken.length)];
+	return null;
 }
 
-/** `node:assert`'s operators, longest first so `!==` is never mistaken for a
- * prefix match of `!=`. */
-const NODE_ASSERT_OPERATORS = ["!==", "!="] as const;
+/** `node:assert` prints these operators with a space on both sides. */
+const NODE_ASSERT_OPERATORS = [" !== ", " != "] as const;
+const NODE_PROPERTY_LABEL = /(?:^|[\s,])(?:actual|expected|operator)\s*:/i;
+
+function firstNodeAssertionLine(text: string): string | null {
+	let start = 0;
+	while (start <= text.length) {
+		const end = indexOfLineEnd(text, start);
+		const line = text.slice(start, end);
+		if (line.trim().length > 0) {
+			if (
+				line.length > MAX_LINE_LENGTH ||
+				line.trimStart().startsWith("at ")
+			) {
+				return null;
+			}
+			return line;
+		}
+		if (end === text.length) {
+			return null;
+		}
+		start = end + 1;
+	}
+	return null;
+}
 
 /**
  * `node:assert`'s one-line summary: `Expected values to be strictly equal:
@@ -196,16 +264,21 @@ const NODE_ASSERT_OPERATORS = ["!==", "!="] as const;
  */
 function parseNodeAssertOneLiner(text: string): ParsedAssertionValues | null {
 	const header = text.match(
-		/Expected values to be (?:strictly |loosely |deep-strictly |deeply )?equal:/,
+		/Expected values to be (?:strictly |loosely |deeply )?(?:deep-)?equal:/,
 	);
 	if (!header || header.index === undefined) {
 		return null;
 	}
-	const line = firstNonEmptyLine(text.slice(header.index + header[0].length));
+	const line = firstNodeAssertionLine(
+		text.slice(header.index + header[0].length),
+	);
 	if (!line) {
 		return null;
 	}
-	const parts = splitOnFirstToken(line, NODE_ASSERT_OPERATORS);
+	if (NODE_PROPERTY_LABEL.test(line)) {
+		return null;
+	}
+	const parts = splitOnFirstUnquotedToken(line, NODE_ASSERT_OPERATORS);
 	if (!parts) {
 		return null;
 	}
@@ -214,10 +287,36 @@ function parseNodeAssertOneLiner(text: string): ParsedAssertionValues | null {
 	return actual && expected ? { actual, expected } : null;
 }
 
-/** Where a captured value block ends: the first blank line or the first stack
- * line, whichever comes first — a trailing value with nothing else to bound
- * it (no next label) would otherwise run straight into the next section of
- * the message. */
+function parseLegacyNodeAssertOneLiner(
+	text: string,
+): ParsedAssertionValues | null {
+	const line = firstNodeAssertionLine(text);
+	if (!line) {
+		return null;
+	}
+	const parts = splitOnFirstUnquotedToken(line, [" == "]);
+	if (!parts) {
+		return null;
+	}
+	const lineEnd = indexOfLineEnd(text, 0);
+	const errorLine = firstNodeAssertionLine(text.slice(lineEnd + 1));
+	const prefix = "AssertionError [ERR_ASSERTION]:";
+	if (
+		!errorLine ||
+		!errorLine.startsWith(prefix) ||
+		errorLine.slice(prefix.length).trim() !== line.trim()
+	) {
+		return null;
+	}
+	const actual = capValue(parts[0]);
+	const expected = capValue(parts[1]);
+	return actual && expected ? { actual, expected } : null;
+}
+
+/** Where a captured value block ends: the first blank line, stack line, or
+ * error header, whichever comes first — a trailing value with nothing else to
+ * bound it (no next label) would otherwise run straight into the next section
+ * of the message. */
 function sliceValueBounded(
 	text: string,
 	start: number,
@@ -232,6 +331,18 @@ function sliceValueBounded(
 	const stackLine = region.match(/\n[ \t]*at\s/);
 	if (stackLine && stackLine.index !== undefined && stackLine.index < end) {
 		end = stackLine.index;
+	}
+	const assertionErrorLine = region.match(/\n[ \t]*AssertionError\b/);
+	if (
+		assertionErrorLine &&
+		assertionErrorLine.index !== undefined &&
+		assertionErrorLine.index < end
+	) {
+		end = assertionErrorLine.index;
+	}
+	const nextLabel = region.match(/\n[ \t]*[A-Z][A-Za-z ]*:/);
+	if (nextLabel && nextLabel.index !== undefined && nextLabel.index < end) {
+		end = nextLabel.index;
 	}
 	return region.slice(0, end);
 }
@@ -322,7 +433,9 @@ function parseJUnitStyle(text: string): ParsedAssertionValues | null {
 	}
 	const expectedValueStart = expectedIdx + "expected:".length;
 	const butWasIdx = lower.indexOf("but was:", expectedValueStart);
-	if (butWasIdx === -1) {
+	const expectedLineEnd = indexOfLineEnd(text, expectedIdx);
+	const nextLineEnd = indexOfLineEnd(text, expectedLineEnd + 1);
+	if (butWasIdx === -1 || butWasIdx > nextLineEnd) {
 		return null;
 	}
 	// "but was:" may sit on the line AFTER the value (AssertJ writes it that
@@ -379,39 +492,76 @@ const CHAI_EQUAL_TOKENS = [
  * "strictly"/"deeply"/nothing, never immediately by one of
  * {@link CHAI_EQUAL_TOKENS}.)
  */
-function parseChaiStyle(text: string): ParsedAssertionValues | null {
-	const lower = text.toLowerCase();
-	const expectedIdx = lower.indexOf("expected ");
-	if (expectedIdx === -1) {
-		return null;
+function isChaiLiteral(value: string): boolean {
+	const trimmed = value.trim();
+	if (trimmed.length < 1) {
+		return false;
 	}
+	const quote = trimmed[0];
+	if (
+		(quote === "'" || quote === '"' || quote === "`") &&
+		trimmed.endsWith(quote)
+	) {
+		return true;
+	}
+	return (
+		/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?$/i.test(trimmed) ||
+		(trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+		(trimmed.startsWith("{") && trimmed.endsWith("}"))
+	);
+}
 
-	const lineEnd = indexOfLineEnd(text, expectedIdx);
-	const line = text.slice(expectedIdx, lineEnd);
-	if (line.length > MAX_LINE_LENGTH) {
+function findChaiMessageLine(text: string): string | null {
+	let start = 0;
+	while (start <= text.length) {
+		const end = indexOfLineEnd(text, start);
+		const fullLine = text.slice(start, end);
+		if (fullLine.length <= MAX_LINE_LENGTH) {
+			const expectedIndex = fullLine.toLowerCase().indexOf("expected ");
+			if (expectedIndex !== -1) {
+				const prefix = fullLine.slice(0, expectedIndex);
+				if (
+					prefix.trim().length === 0 ||
+					/^AssertionError:\s*$/i.test(prefix) ||
+					/^Timed out retrying after \d+ms:\s*$/i.test(prefix)
+				) {
+					return fullLine.slice(expectedIndex);
+				}
+			}
+		}
+		if (end === text.length) {
+			return null;
+		}
+		start = end + 1;
+	}
+	return null;
+}
+
+function parseChaiStyle(text: string): ParsedAssertionValues | null {
+	const line = findChaiMessageLine(text);
+	if (!line) {
 		return null;
 	}
 	const lineLower = line.toLowerCase();
 	const valueStart = "expected ".length;
-
-	let bestIndex = -1;
-	let bestToken = "";
-	for (const token of CHAI_EQUAL_TOKENS) {
-		const idx = lineLower.indexOf(token, valueStart);
-		if (idx !== -1 && (bestIndex === -1 || idx < bestIndex)) {
-			bestIndex = idx;
-			bestToken = token;
-		}
-	}
-	if (bestIndex !== -1) {
-		const actualRaw = line.slice(valueStart, bestIndex);
-		const rest = line.slice(bestIndex + bestToken.length);
-		const commentIdx = rest.indexOf("//");
+	const equalParts = splitOnFirstUnquotedToken(
+		line.slice(valueStart),
+		CHAI_EQUAL_TOKENS,
+	);
+	if (equalParts) {
+		const commentIndex = equalParts[1].search(/\s\/\//);
 		const expectedRaw =
-			commentIdx === -1 ? rest : rest.slice(0, commentIdx);
-		const actual = capValue(actualRaw);
+			commentIndex === -1
+				? equalParts[1]
+				: equalParts[1].slice(0, commentIndex);
+		const actual = capValue(equalParts[0]);
 		const expected = capValue(expectedRaw);
-		return actual && expected ? { actual, expected } : null;
+		return actual &&
+			expected &&
+			isChaiLiteral(actual) &&
+			isChaiLiteral(expected)
+			? { actual, expected }
+			: null;
 	}
 
 	const TO_BE = " to be ";
@@ -421,22 +571,24 @@ function parseChaiStyle(text: string): ParsedAssertionValues | null {
 		return null;
 	}
 	const markerIdx = lineLower.lastIndexOf(OBJECT_IS_MARKER);
-	const actualRaw = line.slice(valueStart, toBeIdx);
-	const expectedRaw = line.slice(toBeIdx + TO_BE.length, markerIdx);
-	const actual = capValue(actualRaw);
-	const expected = capValue(expectedRaw);
-	return actual && expected ? { actual, expected } : null;
+	const actual = capValue(line.slice(valueStart, toBeIdx));
+	const expected = capValue(line.slice(toBeIdx + TO_BE.length, markerIdx));
+	return actual &&
+		expected &&
+		isChaiLiteral(actual) &&
+		isChaiLiteral(expected)
+		? { actual, expected }
+		: null;
 }
 
 /**
  * Recover `{ expected, actual }` from a failure message, or `null` when the
  * format is not one of the handful this recognises unambiguously.
  *
- * Tried most-explicit format first: Node's labelled `actual:`/`expected:`
- * properties beat its own one-line summary (which the labelled properties
- * often sit right beside, in a `node:test` JUnit report), which beats the
- * other runners' formats. The first match wins — this never tries to combine
- * or cross-check formats, only to recognise one cleanly.
+ * Every recognised format must agree. A `node:test` JUnit report carries both
+ * Node's one-line summary and its labelled properties, so matching values are
+ * normal; a disagreement means surrounding text has introduced a second claim
+ * and this parser must not choose a side.
  */
 export function parseAssertionValues(
 	message: string | null | undefined,
@@ -445,16 +597,30 @@ export function parseAssertionValues(
 	if (!trimmed) {
 		return null;
 	}
-	const text = trimmed
-		.slice(0, MAX_RAW_LENGTH)
-		.replace(ANSI_PATTERN, "")
-		.slice(0, MAX_INPUT_LENGTH);
-
-	return (
-		parseLabeledProperties(text) ??
-		parseNodeAssertOneLiner(text) ??
-		parseJestStyle(text) ??
-		parseJUnitStyle(text) ??
-		parseChaiStyle(text)
+	const text = capInput(
+		trimmed.slice(0, MAX_RAW_LENGTH).replace(ANSI_PATTERN, ""),
 	);
+
+	const candidates = [
+		parseLabeledProperties(text),
+		parseNodeAssertOneLiner(text),
+		parseLegacyNodeAssertOneLiner(text),
+		parseJestStyle(text),
+		parseJUnitStyle(text),
+		parseChaiStyle(text),
+	].filter(
+		(candidate): candidate is ParsedAssertionValues => candidate !== null,
+	);
+	const first = candidates[0];
+	if (
+		!first ||
+		candidates.some(
+			(candidate) =>
+				candidate.expected !== first.expected ||
+				candidate.actual !== first.actual,
+		)
+	) {
+		return null;
+	}
+	return first;
 }

@@ -18,6 +18,21 @@ const KIND_LABELS: Record<string, string> = {
 	FLAKY: "Flaky",
 };
 
+function formatInlineCode(value: string): string {
+	const renderedValue = value.replace(/\\`/g, "`");
+	const longestBacktickRun = Math.max(
+		0,
+		...Array.from(
+			renderedValue.matchAll(/`+/g),
+			(match) => match[0].length,
+		),
+	);
+	const delimiter = "`".repeat(longestBacktickRun + 1);
+	const padding =
+		renderedValue.startsWith("`") || renderedValue.endsWith("`") ? " " : "";
+	return `${delimiter}${padding}${renderedValue}${padding}${delimiter}`;
+}
+
 /**
  * The `Expected:` / `Actual:` lines, or none when the message didn't parse.
  *
@@ -32,9 +47,38 @@ export function buildAssertionLines(
 	failureMessage: string | null | undefined,
 ): string[] {
 	const parsed = parseAssertionValues(failureMessage);
-	return parsed
-		? [`- Expected: ${parsed.expected}`, `- Actual: ${parsed.actual}`]
-		: [];
+	if (!parsed) {
+		return [];
+	}
+	return [
+		`- Expected: ${formatInlineCode(parsed.expected)}`,
+		`- Actual: ${formatInlineCode(parsed.actual)}`,
+	];
+}
+
+export function formatFailureOutput(failureMessage: string): string {
+	const longestTildeRun = Math.max(
+		0,
+		...Array.from(
+			failureMessage.matchAll(/~+/g),
+			(match) => match[0].length,
+		),
+	);
+	const fence = "~".repeat(Math.max(4, longestTildeRun + 1));
+	return `\nWhat CI reported:\n\n${fence}text\n${failureMessage}\n${fence}`;
+}
+
+function formatHypothesisText(value: string): string {
+	return value
+		.replace(/\s+/g, " ")
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll("`", "&#96;")
+		.replaceAll("[", "&#91;")
+		.replaceAll("]", "&#93;")
+		.replaceAll("*", "&#42;")
+		.replaceAll("_", "&#95;");
 }
 
 /** What an AI analysis found, in the terms {@link buildCauseLines} needs — a
@@ -83,7 +127,7 @@ export function buildCauseLines(analysis: FindingCauseAnalysis): string[] {
 		];
 		if (analysis.suspectedCause) {
 			lines.push(
-				`Unverified AI hypothesis${modelSuffix}: ${analysis.suspectedCause}`,
+				`Unverified AI hypothesis${modelSuffix}: ${formatHypothesisText(analysis.suspectedCause)}`,
 			);
 		}
 		return lines;
@@ -91,10 +135,12 @@ export function buildCauseLines(analysis: FindingCauseAnalysis): string[] {
 
 	const humanKind = KIND_LABELS[analysis.suspectedKind as string];
 	const lines = [
-		`AI hypothesis — not a verified diagnosis (suspected kind: ${humanKind}${modelSuffix}):`,
+		"Cause: not established — the AI analysis has not verified this diagnosis.",
 	];
 	if (analysis.suspectedCause) {
-		lines.push(analysis.suspectedCause);
+		lines.push(
+			`Unverified AI hypothesis (suspected kind: ${humanKind}${modelSuffix}): ${formatHypothesisText(analysis.suspectedCause)}`,
+		);
 	}
 	return lines;
 }

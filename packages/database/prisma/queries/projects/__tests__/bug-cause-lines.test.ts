@@ -6,7 +6,11 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { buildAssertionLines, buildCauseLines } from "../bug-cause-lines";
+import {
+	buildAssertionLines,
+	buildCauseLines,
+	formatFailureOutput,
+} from "../bug-cause-lines";
 
 describe("buildCauseLines", () => {
 	it("states plainly that no analysis ran", () => {
@@ -39,6 +43,25 @@ describe("buildCauseLines", () => {
 		);
 	});
 
+	it("keeps a null suspected kind inconclusive", () => {
+		// Arrange
+		const analysis = {
+			analysedAt: new Date("2026-09-01T00:00:00Z"),
+			suspectedCause: "the runner may have timed out",
+			suspectedKind: null,
+			analysisModel: "gpt-test",
+		};
+
+		// Act
+		const lines = buildCauseLines(analysis);
+
+		// Assert
+		expect(lines).toEqual([
+			"Cause: not established — the AI analysis of this failure was inconclusive.",
+			"Unverified AI hypothesis (gpt-test): the runner may have timed out",
+		]);
+	});
+
 	it("never states a cause more strongly than Inconclusive allows", () => {
 		// The exact defect the card reports: an Inconclusive verdict rendered
 		// as "the discount calculation is off by 10 units" — a firm cause.
@@ -49,22 +72,34 @@ describe("buildCauseLines", () => {
 			analysisModel: null,
 		});
 
-		expect(lines.join("\n")).not.toMatch(/^the discount calculation/);
+		expect(lines.join("\n")).not.toMatch(/^the discount calculation/m);
 		expect(lines[0]).toContain("not established");
 	});
 
-	it("labels a confident kind as an AI hypothesis, not a verified diagnosis", () => {
+	it.each([
+		["PRODUCT_BUG", "Product bug"],
+		["TEST_DEFECT", "Test defect"],
+		["ENVIRONMENT", "Environment"],
+		["FLAKY", "Flaky"],
+	])("keeps a named %s verdict unverified", (suspectedKind, label) => {
+		// Arrange
 		const lines = buildCauseLines({
 			analysedAt: new Date("2026-09-01T00:00:00Z"),
 			suspectedCause: "the discount logic dropped the percentage sign",
-			suspectedKind: "PRODUCT_BUG",
+			suspectedKind,
 			analysisModel: "gpt-test",
 		});
 
-		expect(lines[0]).toContain("AI hypothesis");
-		expect(lines[0]).toContain("not a verified diagnosis");
-		expect(lines[0]).toContain("Product bug");
-		expect(lines[1]).toBe("the discount logic dropped the percentage sign");
+		// Act
+		const [causeLine, hypothesisLine] = lines;
+
+		// Assert
+		expect(causeLine).toBe(
+			"Cause: not established — the AI analysis has not verified this diagnosis.",
+		);
+		expect(hypothesisLine).toBe(
+			`Unverified AI hypothesis (suspected kind: ${label} (gpt-test)): the discount logic dropped the percentage sign`,
+		);
 	});
 
 	it("treats a verdict this code cannot name as inconclusive, not a confident finding", () => {
@@ -95,11 +130,77 @@ describe("buildAssertionLines", () => {
 			buildAssertionLines(
 				"Expected values to be strictly equal:\n\n90 !== 80\n",
 			),
-		).toEqual(["- Expected: 80", "- Actual: 90"]);
+		).toEqual(["- Expected: `80`", "- Actual: `90`"]);
+	});
+
+	it("adds no list when a Node property value spans multiple lines", () => {
+		// Arrange
+		const message = [
+			"AssertionError [ERR_ASSERTION]: values differ",
+			"  actual: 90,",
+			"  detail: unexpected extra context,",
+			"  expected: 80,",
+			"  operator: 'strictEqual',",
+		].join("\n");
+
+		// Act
+		const lines = buildAssertionLines(message);
+
+		// Assert
+		expect(lines).toEqual([]);
 	});
 
 	it("adds nothing when the message does not parse", () => {
 		expect(buildAssertionLines("exit code 1")).toEqual([]);
 		expect(buildAssertionLines(null)).toEqual([]);
+	});
+
+	it("uses a code-span delimiter that contains backticks in parsed values", () => {
+		// Arrange
+		const message =
+			"AssertionError: expected 'actual' to equal 'expected ` ## injected heading ![injected image](https://example.com/pixel)'";
+
+		// Act
+		const lines = buildAssertionLines(message);
+
+		// Assert
+		expect(lines).toEqual([
+			"- Expected: ``'expected ` ## injected heading ![injected image](https://example.com/pixel)'``",
+			"- Actual: `'actual'`",
+		]);
+	});
+
+	it("adds nothing when Node's labelled properties disagree with its one-line summary", () => {
+		// Arrange
+		const message = [
+			"AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
+			"",
+			"90 !== 80",
+			"",
+			"  actual: 80,",
+			"  expected: 90,",
+			"  operator: 'strictEqual',",
+		].join("\n");
+
+		// Act
+		const lines = buildAssertionLines(message);
+
+		// Assert
+		expect(lines).toEqual([]);
+	});
+});
+
+describe("formatFailureOutput", () => {
+	it("uses a text fence that stays closed when CI output contains backticks", () => {
+		// Arrange
+		const failureMessage = "Expected: 80\n```\n## injected heading";
+
+		// Act
+		const output = formatFailureOutput(failureMessage);
+
+		// Assert
+		expect(output).toContain("~~~~text");
+		expect(output).toContain("\n```\n");
+		expect(output.endsWith("~~~~")).toBe(true);
 	});
 });

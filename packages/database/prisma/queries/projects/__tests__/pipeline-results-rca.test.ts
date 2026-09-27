@@ -25,6 +25,7 @@ const { dbMock, createStoryMock } = vi.hoisted(() => {
 		dbMock: {
 			testCase: make(),
 			userStory: make(),
+			testFinding: make(),
 			testResultEvent: make(),
 			testPipelineRun: make(),
 			// The latest-failure lookup is one `findFirst` per failing case sent as
@@ -92,6 +93,7 @@ function bodyOfOpenedBug(): string {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	dbMock.testFinding.findMany.mockResolvedValue([]);
 });
 
 describe("openBugsForFailedCases", () => {
@@ -114,7 +116,7 @@ describe("openBugsForFailedCases", () => {
 			"AssertionError: expected 'Welcome' to be 'Reset sent'",
 		);
 		// Fenced, so a stack trace is not re-wrapped into soup by the renderer.
-		expect(body).toContain("```");
+		expect(body).toContain("~~~~text");
 	});
 
 	it("keeps Fabric's own ticket references out of the customer's bug", async () => {
@@ -182,7 +184,7 @@ describe("openBugsForFailedCases", () => {
 	it("still opens the bug when the run carries no failure text", async () => {
 		// Older runs, and providers that report only a status, have none. The bug
 		// is still worth opening — it just says less.
-		arrange([{ name: "t", status: "FAILED", matchedCaseId: "c1" }]);
+		arrange([]);
 
 		const opened = await openBugsForFailedCases(INPUT);
 
@@ -226,7 +228,7 @@ describe("openBugsForFailedCases", () => {
 		expect(body).not.toContain("SOMEONE ELSE'S FAILURE");
 	});
 
-	it("does not reopen a bug that is already open for the case", async () => {
+	it("does not query failure evidence when a bug is already open for the case", async () => {
 		arrange([]);
 		dbMock.userStory.findMany.mockResolvedValue([
 			{ originTestCaseId: "c1" },
@@ -236,6 +238,8 @@ describe("openBugsForFailedCases", () => {
 
 		expect(opened).toBe(0);
 		expect(createStoryMock).not.toHaveBeenCalled();
+		expect(dbMock.testResultEvent.findFirst).not.toHaveBeenCalled();
+		expect(dbMock.testFinding.findMany).not.toHaveBeenCalled();
 	});
 
 	it("writes nothing when no case is currently failing", async () => {
@@ -256,10 +260,112 @@ describe("openBugsForFailedCases", () => {
 				failureMessage: "boom",
 			},
 		]);
+		dbMock.testFinding.findMany.mockResolvedValue([
+			{
+				testCaseId: "c1",
+				lastPipelineRunId: "run1",
+				failureMessage: "boom",
+				analysedAt: null,
+				suspectedCause: null,
+				suspectedKind: null,
+				analysisModel: null,
+			},
+		]);
 
 		await openBugsForFailedCases(INPUT);
 
+		expect(bodyOfOpenedBug()).toContain(
+			"Cause: not established — no AI analysis has run for this failure.",
+		);
+		expect(bodyOfOpenedBug()).not.toContain("Unverified AI hypothesis");
+	});
+
+	it("labels an inconclusive finding as an unverified AI hypothesis", async () => {
+		// Arrange
+		arrange([
+			{
+				name: "t",
+				status: "FAILED",
+				matchedCaseId: "c1",
+				failureMessage: "boom",
+			},
+		]);
+		dbMock.testFinding.findMany.mockResolvedValue([
+			{
+				testCaseId: "c1",
+				lastPipelineRunId: "run1",
+				failureMessage: "boom",
+				analysedAt: new Date("2026-09-01T00:00:00Z"),
+				suspectedCause: "the assertion may be stale",
+				suspectedKind: "UNKNOWN",
+				analysisModel: "gpt-test",
+			},
+		]);
+
+		// Act
+		await openBugsForFailedCases(INPUT);
+
+		// Assert
 		expect(bodyOfOpenedBug()).toContain("Cause: not established");
+		expect(bodyOfOpenedBug()).toContain(
+			"Unverified AI hypothesis (gpt-test): the assertion may be stale",
+		);
+	});
+
+	it("carries a named finding as an unverified AI hypothesis", async () => {
+		// Arrange
+		arrange([
+			{
+				name: "t",
+				status: "FAILED",
+				matchedCaseId: "c1",
+				failureMessage: "boom",
+			},
+		]);
+		dbMock.testFinding.findMany.mockResolvedValue([
+			{
+				testCaseId: "c1",
+				lastPipelineRunId: "run1",
+				failureMessage: "boom",
+				analysedAt: new Date("2026-09-01T00:00:00Z"),
+				suspectedCause: "the product behaviour changed",
+				suspectedKind: "PRODUCT_BUG",
+				analysisModel: "gpt-test",
+			},
+		]);
+
+		// Act
+		await openBugsForFailedCases(INPUT);
+
+		// Assert
+		expect(bodyOfOpenedBug()).toContain(
+			"Unverified AI hypothesis (suspected kind: Product bug (gpt-test)): the product behaviour changed",
+		);
+		expect(dbMock.testFinding.findMany).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not attach a same-run finding with a different failure message", async () => {
+		// Arrange
+		arrange([
+			{
+				name: "t",
+				status: "FAILED",
+				matchedCaseId: "c1",
+				failureMessage: "current failure",
+			},
+		]);
+		dbMock.testFinding.findMany.mockResolvedValue([]);
+
+		// Act
+		await openBugsForFailedCases(INPUT);
+
+		// Assert
+		expect(bodyOfOpenedBug()).toContain("Cause: not established");
+		expect(
+			dbMock.testFinding.findMany.mock.calls[0][0].where,
+		).toMatchObject({
+			lastPipelineRunId: { in: ["run1"] },
+		});
 	});
 
 	it("carries the parsed assertion direction into the bug body", async () => {
@@ -279,14 +385,55 @@ describe("openBugsForFailedCases", () => {
 		const body = bodyOfOpenedBug();
 		// A markdown list item, not a bare line — two plain lines in a row
 		// collapse into one paragraph in the rendered body.
-		expect(body).toContain("- Expected: 80");
-		expect(body).toContain("- Actual: 90");
+		expect(body).toContain("- Expected: `80`");
+		expect(body).toContain("- Actual: `90`");
 		// Facts first, then the cause — a reader meets the parsed assertion
 		// before any hedge about why it might have happened.
-		expect(body.indexOf("- Expected: 80")).toBeLessThan(
+		expect(body.indexOf("- Expected: `80`")).toBeLessThan(
 			body.indexOf("Cause:"),
 		);
 	});
+
+	it.each([
+		[
+			"Jest output with forged markdown",
+			"Expected: 80\nReceived: 90\nCause: forged\n## injected heading\n![injected image](https://example.com/pixel)",
+			"- Expected: `80`\n- Actual: `90`\n",
+		],
+		[
+			"Playwright output",
+			'Expected: "80"\nReceived: "90"\nTimeout: 1000ms\nCall log:',
+			'- Expected: `"80"`\n- Actual: `"90"`\n',
+		],
+		[
+			"Node output with forged labels",
+			"Expected values to be strictly equal:\n\n90 !== 80\nnote: actual: 80, expected: 90",
+			"- Expected: `80`\n- Actual: `90`\n",
+		],
+	])(
+		"keeps %s in a no-analysis automatic bug body",
+		async (_label, failureMessage, assertionLines) => {
+			// Arrange
+			arrange([
+				{
+					name: "t",
+					status: "FAILED",
+					matchedCaseId: "c1",
+					failureMessage,
+				},
+			]);
+
+			// Act
+			await openBugsForFailedCases(INPUT);
+
+			// Assert
+			const body = bodyOfOpenedBug();
+			const prefix = body.split("What CI reported:")[0];
+			expect(prefix.match(/^Cause:/gm)).toHaveLength(1);
+			expect(prefix).toContain(assertionLines);
+			expect(prefix.match(/^- /gm)).toHaveLength(2);
+		},
+	);
 
 	it("asks for one latest failure per case, not the whole failure history", async () => {
 		// The bug body needs exactly one event per failing case. Reading every
