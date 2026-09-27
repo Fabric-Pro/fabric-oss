@@ -977,6 +977,8 @@ describe("publishInstructionSnapshot with allowRollback", () => {
 			changed: true,
 			version: 7,
 			previousVersion: 9,
+			// null: this snapshot has no deferred scan at all (Fizzy #2760).
+			deferredScanStatus: null,
 		});
 		// The predicate is "anything but this snapshot", still one conditional
 		// write. The null arm is load-bearing: `{ not: id }` does not match a
@@ -1026,6 +1028,7 @@ describe("publishInstructionSnapshot with allowRollback", () => {
 			changed: false,
 			version: 7,
 			previousVersion: 7,
+			deferredScanStatus: null,
 		});
 		expect(mocks.snapshot.update).not.toHaveBeenCalled();
 	});
@@ -1065,6 +1068,7 @@ describe("publishInstructionSnapshot with allowRollback", () => {
 			changed: true,
 			version: 1,
 			previousVersion: null,
+			deferredScanStatus: null,
 		});
 	});
 
@@ -1243,6 +1247,7 @@ describe("publishInstructionSnapshot: an automatic publish applies at most once"
 			changed: true,
 			version: 7,
 			previousVersion: 9,
+			deferredScanStatus: null,
 		});
 	});
 });

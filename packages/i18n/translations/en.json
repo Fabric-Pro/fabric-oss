@@ -5755,9 +5755,14 @@
 				"scanIssuesPill": "Issues found",
 				"scanIncompletePill": "Scan incomplete",
 				"seeFindingsAction": "See findings",
-				"publishBlockedByScan": "This version was published before its secret scan, and it can be published from History only once that scan has passed.",
 				"scanIncompleteFindingsNote": "The scan also could not check every file, so files not listed here may hold more.",
-				"scanUnreadableNote": "A file marked “Could not be checked” was not scanned and may hold secrets."
+				"scanUnreadableNote": "A file marked “Could not be checked” was not scanned and may hold secrets.",
+				"flaggedDialogTitle": "Publish this version anyway?",
+				"flaggedScanIssuesSentence": "This version's secret scan found possible secrets.",
+				"flaggedScanIncompleteSentence": "This version's secret scan could not check every file.",
+				"publishBlockedByScan": "This version's secret scan is still running. It can be published from History once the scan finishes.",
+				"cancelAction": "Cancel",
+				"confirmAction": "Confirm"
 			},
 			"settingsDialog": {
 				"title": "Coding-instructions settings",

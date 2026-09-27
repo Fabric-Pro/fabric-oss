@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import { db, Prisma } from "../client";
 import type {
+	ProjectInstructionDeferredScanStatus,
 	ProjectInstructionFileKind,
 	ProjectInstructionProposalStatus,
 	ProjectInstructionPullRequestState,
@@ -4571,6 +4572,21 @@ type PublishInstructionSnapshotResult =
 			/** Manual publishes only — see `allowRollback` below. */
 			version?: number;
 			previousVersion?: number | null;
+			/**
+			 * Manual publishes only, reported alongside `version` /
+			 * `previousVersion` for the same reason: the target's
+			 * `deferredScanStatus` (null for an ordinary version), the same
+			 * read the `deferred_scan_unresolved` refusal was decided on —
+			 * so the procedure's audit row can name a flagged scan the
+			 * caller chose to publish through anyway (Fizzy #2760). Only
+			 * ISSUES_FOUND and INCOMPLETE can reach that acknowledgement
+			 * (PENDING stays refused unconditionally, below), and neither is
+			 * a verdict any concurrent writer moves a snapshot OUT of — a
+			 * scan's outcome write lands exactly once, on PENDING — so this
+			 * read, taken under the project lock rather than the snapshot's,
+			 * is exact for what it reports here.
+			 */
+			deferredScanStatus?: ProjectInstructionDeferredScanStatus | null;
 	  }
 	| {
 			published: false;
@@ -4587,7 +4603,10 @@ type PublishInstructionSnapshotResult =
 				| "repository_backed"
 				/**
 				 * Manual path: the target was published before its secret
-				 * scan and that scan has not PASSED (Fizzy #2737).
+				 * scan (Fizzy #2737). A scan still PENDING always refuses —
+				 * there is no acknowledgement for it. A scan that finished
+				 * flagged (ISSUES_FOUND or INCOMPLETE) refuses unless the
+				 * caller acknowledges publishing it anyway (Fizzy #2760).
 				 */
 				| "deferred_scan_unresolved"
 				/**
@@ -4701,11 +4720,14 @@ type PublishInstructionSnapshotResult =
  * construction — the Temporal activity passes one, the oRPC procedure the
  * other — and passing both throws rather than silently letting one win.
  *
- * Under `allowRollback` only, the published result also carries `version` and
- * `previousVersion` (null when nothing was published before), taken from the
- * locked pointer read, so the procedure's audit row names the transition that
- * actually happened. Those values are for REPORTING alone and never enter a
- * predicate.
+ * Under `allowRollback` only, the published result also carries `version`,
+ * `previousVersion` (null when nothing was published before) and the target's
+ * `deferredScanStatus`, so the procedure's audit row names the transition
+ * that actually happened and, when the caller's acknowledgement moved a
+ * flagged version into place, which terminal verdict it flagged as. The
+ * versions come from the locked pointer read and are for REPORTING alone;
+ * the scan status is the one the manual refusal below was decided on, read
+ * under the PROJECT lock rather than the snapshot's own (see there for why).
  *
  * A snapshot promoted by the publish-first path (Fizzy #2737) — one whose
  * `deferredScanStatus` is set — adds two rules, both read off the snapshot
@@ -4717,9 +4739,15 @@ type PublishInstructionSnapshotResult =
  *    already happened stays idempotent even if that member has since lost
  *    it. The same honest limit as the repository fence applies: membership
  *    writes do not take the project row lock.
- *  - Manual path: History may not publish it while its scan is PENDING,
- *    ISSUES_FOUND or INCOMPLETE. Publishing some OTHER version away from it
- *    is untouched — that is how a member remedies a finding.
+ *  - Manual path: History may not publish a target whose scan is PENDING —
+ *    waiting the short remainder of a running scan is always the answer, and
+ *    no acknowledgement skips it. A target whose scan finished flagged
+ *    (ISSUES_FOUND or INCOMPLETE) — "a version flagged by the after-publish
+ *    scan", in the product decision's own words — may be published anyway
+ *    when the caller sets `acknowledgeDeferredScan`, History's own "publish
+ *    anyway" choice (Fizzy #2760), which skips exactly this refusal and
+ *    nothing else. Publishing some OTHER version away from either remains the
+ *    other remedy, untouched either way.
  *
  * `audit`, when given, is written with `recordAuditTx` in THIS transaction and
  * only when the pointer actually moved, so the publication and its record
@@ -4733,6 +4761,17 @@ export async function publishInstructionSnapshot(input: {
 	organizationId: string;
 	requireBaseUnmoved?: boolean;
 	allowRollback?: boolean;
+	/**
+	 * History's "publish anyway" acknowledgement (Fizzy #2760): skips the
+	 * `deferred_scan_unresolved` refusal below for a target whose scan
+	 * finished flagged — ISSUES_FOUND or INCOMPLETE. It does nothing for a
+	 * target whose scan is still PENDING, which stays refused either way
+	 * (see the refusal site for why). Meaningful only alongside
+	 * `allowRollback: true` — passing it on the automatic path is a
+	 * programming error, not a choice this call can honor, since that path's
+	 * fence is `fast_path_not_authorized`, not this one.
+	 */
+	acknowledgeDeferredScan?: boolean;
 	audit?: RecordAuditInput;
 }): Promise<PublishInstructionSnapshotResult> {
 	if (input.requireBaseUnmoved === true && input.allowRollback === true) {
@@ -4742,6 +4781,18 @@ export async function publishInstructionSnapshot(input: {
 		// make an automatic publish silently able to roll the pointer back.
 		throw new Error(
 			"publishInstructionSnapshot: requireBaseUnmoved and allowRollback are mutually exclusive",
+		);
+	}
+	if (
+		input.acknowledgeDeferredScan !== undefined &&
+		input.allowRollback !== true
+	) {
+		// Same kind of mistake as above: the acknowledgement only means
+		// anything against the manual refusal a few lines down, which never
+		// runs outside `allowRollback`. Failing here beats silently ignoring
+		// a flag the caller thought was doing something.
+		throw new Error(
+			"publishInstructionSnapshot: acknowledgeDeferredScan is meaningful only with allowRollback",
 		);
 	}
 	return db.$transaction(async (tx) => {
@@ -4853,14 +4904,34 @@ export async function publishInstructionSnapshot(input: {
 		// scan until that scan has PASSED (Fizzy #2737). The automatic path is
 		// exactly how a PENDING version publishes, so this is manual-only; and
 		// only the TARGET is judged, so rolling back AWAY from such a version
-		// is the remedy it has always been. An allowlist of the unresolved
-		// verdicts rather than "not PASSED": null is every ordinary snapshot.
+		// is the remedy it has always been.
+		//
+		// Read under the PROJECT lock only, deliberately (Fizzy #2760 review):
+		// the scan's outcome write (`recordInstructionDeferredScanOutcome`, and
+		// the reaper's INCOMPLETE write) locks a PENDING snapshot row and then
+		// inserts an audit row whose foreign key share-locks this project row,
+		// so locking the snapshot row here too, after the project lock, would
+		// deadlock against either of them.
+		//
+		// A PENDING target is refused UNCONDITIONALLY — no acknowledgement
+		// skips it — which is exactly what keeps this read safe without the
+		// snapshot's own lock: waiting out the rest of a running scan is
+		// short, and the only writers that could race this read are the two
+		// PENDING-only outcome writers above, so publishing a PENDING target
+		// through an acknowledgement would be racing them on the very rows
+		// this read cannot lock. ISSUES_FOUND and INCOMPLETE are terminal —
+		// "a version flagged by the after-publish scan" (the product
+		// decision's words) — and no writer ever moves a snapshot OUT of
+		// either, so a caller who sets `acknowledgeDeferredScan` may publish
+		// through one of THOSE two, and the `deferredScanStatus` this read
+		// reports for it is exact, not a moment that may have already passed.
 		const deferredScan = snapshot.deferredScanStatus ?? null;
 		if (
 			input.allowRollback === true &&
 			(deferredScan === "PENDING" ||
-				deferredScan === "ISSUES_FOUND" ||
-				deferredScan === "INCOMPLETE")
+				((deferredScan === "ISSUES_FOUND" ||
+					deferredScan === "INCOMPLETE") &&
+					input.acknowledgeDeferredScan !== true))
 		) {
 			return {
 				published: false as const,
@@ -4994,7 +5065,11 @@ export async function publishInstructionSnapshot(input: {
 			? (pointer.pointerVersion ?? null)
 			: null;
 		const moved = rollback
-			? { version: snapshot.version, previousVersion }
+			? {
+					version: snapshot.version,
+					previousVersion,
+					deferredScanStatus: deferredScan,
+				}
 			: {};
 		// The version arm is the automatic path's race guard. The rollback arm
 		// replaces it with the only condition a deliberate publish actually

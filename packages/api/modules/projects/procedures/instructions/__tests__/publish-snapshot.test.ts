@@ -150,6 +150,7 @@ describe("projects.instructions.publish", () => {
 			projectId: "p",
 			organizationId: "org_1",
 			allowRollback: true,
+			acknowledgeDeferredScan: false,
 		});
 		// Both ends of the move and the direction, so the row reads as a
 		// rollback rather than as a publication whose order has to be
@@ -357,5 +358,121 @@ describe("projects.instructions.publish: publish first, scan afterwards (Fizzy #
 		);
 		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
 		expect(m.runInBackground).not.toHaveBeenCalled();
+	});
+});
+
+describe("projects.instructions.publish: publish anyway (Fizzy #2760)", () => {
+	it("forwards publishBeforeScan as acknowledgeDeferredScan", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: true,
+			version: 6,
+			previousVersion: 9,
+			deferredScanStatus: "ISSUES_FOUND",
+		});
+		await m.handlers.publish!({
+			input: { projectId: "p", snapshotId: "s", publishBeforeScan: true },
+			context: ctx,
+		});
+		expect(m.publishInstructionSnapshot).toHaveBeenCalledWith({
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "org_1",
+			allowRollback: true,
+			acknowledgeDeferredScan: true,
+		});
+	});
+
+	it("forwards acknowledgeDeferredScan: false when publishBeforeScan is not sent", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: false,
+		});
+		await m.handlers.publish!({
+			input: { projectId: "p", snapshotId: "s" },
+			context: ctx,
+		});
+		expect(m.publishInstructionSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({ acknowledgeDeferredScan: false }),
+		);
+	});
+
+	it.each(["ISSUES_FOUND", "INCOMPLETE"] as const)(
+		"audits publishBeforeScan and deferredScanStatus for a %s target that moved the pointer",
+		async (deferredScanStatus) => {
+			m.publishInstructionSnapshot.mockResolvedValue({
+				published: true,
+				changed: true,
+				version: 6,
+				previousVersion: 9,
+				deferredScanStatus,
+			});
+			await m.handlers.publish!({
+				input: {
+					projectId: "p",
+					snapshotId: "s",
+					publishBeforeScan: true,
+				},
+				context: ctx,
+			});
+			expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+				ctx,
+				expect.objectContaining({
+					action: "project.instructions.published",
+					metadata: {
+						version: 6,
+						previousVersion: 9,
+						rollback: true,
+						publishBeforeScan: true,
+						deferredScanStatus,
+					},
+				}),
+			);
+		},
+	);
+
+	// PENDING never actually reaches a `changed: true` result (the query
+	// refuses it unconditionally), but the procedure's own metadata gate is
+	// tested directly here rather than only through that indirection.
+	it.each(["PASSED", "PENDING", null] as const)(
+		"adds no publishBeforeScan/deferredScanStatus metadata for a resolved or PENDING target (%s)",
+		async (deferredScanStatus) => {
+			m.publishInstructionSnapshot.mockResolvedValue({
+				published: true,
+				changed: true,
+				version: 9,
+				previousVersion: 8,
+				deferredScanStatus,
+			});
+			await m.handlers.publish!({
+				input: { projectId: "p", snapshotId: "s" },
+				context: ctx,
+			});
+			expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+				ctx,
+				expect.objectContaining({
+					metadata: {
+						version: 9,
+						previousVersion: 8,
+						rollback: false,
+					},
+				}),
+			);
+		},
+	);
+
+	// `changed` still gates the audit row entirely: an idempotent republish
+	// of an already-flagged pointer writes nothing, flag or no flag.
+	it("audits nothing for an idempotent republish, even of a flagged target", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: false,
+			deferredScanStatus: "ISSUES_FOUND",
+		});
+		await m.handlers.publish!({
+			input: { projectId: "p", snapshotId: "s", publishBeforeScan: true },
+			context: ctx,
+		});
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
 	});
 });

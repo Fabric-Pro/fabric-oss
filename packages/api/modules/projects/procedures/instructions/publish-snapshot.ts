@@ -44,6 +44,16 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 			projectId: z.string(),
 			organizationId: z.string().nullable().optional(),
 			snapshotId: z.string(),
+			/**
+			 * History's "publish anyway" acknowledgement (Fizzy #2760): the
+			 * same choice, in the same words, as the upload dialog's
+			 * publish-before-scan option. Forwarded as
+			 * `acknowledgeDeferredScan`, which the query only honors
+			 * alongside `allowRollback`, and only for a target whose scan
+			 * finished flagged (ISSUES_FOUND/INCOMPLETE) — a target whose
+			 * scan is still PENDING refuses regardless.
+			 */
+			publishBeforeScan: z.boolean().default(false),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -56,6 +66,7 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 			projectId: input.projectId,
 			organizationId,
 			allowRollback: true,
+			acknowledgeDeferredScan: input.publishBeforeScan ?? false,
 		});
 		if (!result.published) {
 			if (result.reason === "not_found") {
@@ -95,13 +106,23 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 				});
 			}
 			if (result.reason === "deferred_scan_unresolved") {
-				// Fizzy #2737: this version went out before its secret scan,
-				// and History may not choose it again until that scan has
-				// passed. Publishing some other version is unaffected — that is
-				// the remedy for a finding.
+				// Fizzy #2737: this version went out before its secret scan.
+				// A scan still PENDING always refuses — waiting out the rest
+				// of a short-lived scan is the only remedy, and no
+				// acknowledgement skips it (see the query: this refusal is
+				// read under the project lock only, because taking a
+				// snapshot-row lock for it would deadlock against the scan's
+				// own outcome write, and publishing a PENDING target would
+				// race that write the same way). Fizzy #2760: once
+				// the scan has FLAGGED the version (ISSUES_FOUND or
+				// INCOMPLETE — a terminal, never-reopened verdict), it can be
+				// published anyway by choosing to publish before its scan,
+				// the same acknowledgement the upload dialog asks for.
+				// Publishing some other version is unaffected either way —
+				// that is the remedy for a finding.
 				throw new ORPCError("PRECONDITION_FAILED", {
 					message:
-						"This version was published before its secret scan and that scan has not passed. Publish a version whose scan passed, or edit the files and publish a new version.",
+						"This version was published before its secret scan and that scan has not passed. Wait for the scan to finish, or, once it has flagged the version, publish it anyway by choosing to publish before its scan. Publish a version whose scan passed, or edit the files and publish a new version.",
 					data: { reason: "DEFERRED_SCAN_UNRESOLVED" },
 				});
 			}
@@ -139,6 +160,16 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 			// file content, which is user data the audit log must not repeat.
 			const version = result.version ?? null;
 			const previousVersion = result.previousVersion ?? null;
+			const targetDeferredScan = result.deferredScanStatus ?? null;
+			// Fizzy #2760: the flag History sent is only worth recording when
+			// it actually did something — the target's scan had FLAGGED it
+			// (ISSUES_FOUND or INCOMPLETE) and this call moved the pointer
+			// onto it anyway. A PENDING target never reaches here at all (the
+			// query refuses it unconditionally), and an ordinary or PASSED
+			// version's row stays exactly as it was.
+			const publishedThroughFlaggedScan =
+				targetDeferredScan === "ISSUES_FOUND" ||
+				targetDeferredScan === "INCOMPLETE";
 			recordAuditFromRequest(context, {
 				action: "project.instructions.published",
 				category: "project",
@@ -156,6 +187,12 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 						typeof version === "number" &&
 						typeof previousVersion === "number" &&
 						version < previousVersion,
+					...(publishedThroughFlaggedScan
+						? {
+								publishBeforeScan: true,
+								deferredScanStatus: targetDeferredScan,
+							}
+						: {}),
 				},
 			});
 		}

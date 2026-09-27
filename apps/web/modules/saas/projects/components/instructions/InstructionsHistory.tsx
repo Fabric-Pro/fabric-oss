@@ -19,6 +19,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { SCAN_FAILED_REASON } from "./InstructionFindingsTable";
 import { InstructionsCompareDialog } from "./InstructionsCompareDialog";
+import { PublishFlaggedVersionDialog } from "./PublishFlaggedVersionDialog";
 
 const RECEIVING_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
 
@@ -36,17 +37,29 @@ const RECEIVING_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
 const DELETABLE_STATUSES = new Set(["READY", "REJECTED", "FAILED"]);
 
 /**
- * The deferred-scan states (Fizzy #2737) in which History may not publish a
- * version that went out before its secret scan: the server refuses these
- * with `deferred_scan_unresolved`, so the row explains instead of offering a
- * button that can only fail. Rolling back AWAY from such a version is a
- * different row's button, and is unaffected.
+ * The scan state (Fizzy #2737) in which History's ordinary publish is
+ * refused UNCONDITIONALLY — no acknowledgement skips it (Fizzy #2760 review:
+ * the query reads this decision under the project lock only, deliberately
+ * not the snapshot's, because also locking the snapshot row would deadlock
+ * against the scan's own outcome write; a PENDING target is what keeps that
+ * read safe, since waiting out the rest of a short-lived scan is the answer
+ * either way). The row offers no publish/rollback button at all, and
+ * explains why instead.
  */
-const SCAN_UNRESOLVED_STATUSES = new Set([
-	"PENDING",
-	"ISSUES_FOUND",
-	"INCOMPLETE",
-]);
+const SCAN_PENDING_STATUS = "PENDING";
+
+/**
+ * The scan verdicts (Fizzy #2737) that terminate with the version FLAGGED —
+ * found possible secrets, or could not finish checking every file. History's
+ * ordinary publish of such a row is refused with `deferred_scan_unresolved`
+ * unless the caller acknowledges publishing it anyway; the row's button
+ * opens `PublishFlaggedVersionDialog` instead of the plain `window.confirm`
+ * used everywhere else (Fizzy #2760). Neither verdict is ever revisited by a
+ * later scan, so the acknowledgement is always answering the version's real,
+ * final state. Rolling back AWAY from such a version is a different row's
+ * button, and is unaffected.
+ */
+const SCAN_FLAGGED_STATUSES = new Set(["ISSUES_FOUND", "INCOMPLETE"]);
 
 // `capRejections` (packages/temporal/src/activities/project-instructions.ts)
 // caps a gate's rejection list at 100 and appends this sentinel row instead
@@ -193,11 +206,24 @@ export function InstructionsHistory({
 	// mounted, and so closing it cannot leave a stale query mounted behind the
 	// row it was opened from.
 	const [compareId, setCompareId] = useState<string | null>(null);
+	// The row whose flagged-scan publish/rollback is being confirmed, if any
+	// (Fizzy #2760). Held here, like `compareId`, so only ONE such dialog is
+	// ever mounted and its ticks are discarded — never carried to the next
+	// row — simply by unmounting when it closes.
+	const [flaggedPublish, setFlaggedPublish] = useState<{
+		id: string;
+		version: number;
+		rollback: boolean;
+		scanStatus: "ISSUES_FOUND" | "INCOMPLETE";
+	} | null>(null);
 	const publishAllowed = canPublish ?? canMutate;
 
 	const publish = useMutation(
 		orpc.projects.instructions.publish.mutationOptions({
-			onSuccess: () => onChanged(),
+			onSuccess: () => {
+				onChanged();
+				setFlaggedPublish(null);
+			},
 			onError: (error) => toast.error(error.message),
 		}),
 	);
@@ -330,10 +356,11 @@ export function InstructionsHistory({
 								s.proposalStatus === "CLOSED";
 							const badge = statusBadge(s, isPublished);
 							const scan = scanBadge(s);
-							// Everything else that decides the publish button,
-							// so the scan's own refusal is said only where the
-							// button would otherwise have been offered.
-							const publishable =
+							// Everything else that decides whether a
+							// publish/rollback action could apply to this row
+							// at all, before the scan's own state narrows it
+							// further below.
+							const eligibleToPublish =
 								s.status === "READY" &&
 								!isPublished &&
 								!awaitingProposalDecision &&
@@ -342,10 +369,18 @@ export function InstructionsHistory({
 								(!repositoryBacked ||
 									s.source === "REPOSITORY") &&
 								!publishedUnknown;
-							const scanBlocksPublish =
-								SCAN_UNRESOLVED_STATUSES.has(
-									s.deferredScanStatus ?? "",
-								);
+							// A scan still PENDING refuses unconditionally: no
+							// button at all, explained instead.
+							const scanPending =
+								s.deferredScanStatus === SCAN_PENDING_STATUS;
+							const publishable =
+								eligibleToPublish && !scanPending;
+							// A scan that finished FLAGGED opens the
+							// acknowledgement dialog instead of a plain
+							// confirm (Fizzy #2760).
+							const scanFlagged = SCAN_FLAGGED_STATUSES.has(
+								s.deferredScanStatus ?? "",
+							);
 							// ISSUES_FOUND's findings, and an INCOMPLETE
 							// scan's: the files that defeated its last
 							// attempt, and anything it found in the rest.
@@ -408,13 +443,37 @@ export function InstructionsHistory({
 											</p>
 										</div>
 										<div className="flex shrink-0 gap-2">
-											{publishable &&
-											!scanBlocksPublish ? (
+											{publishable ? (
 												<Button
 													size="sm"
 													variant="outline"
 													disabled={publish.isPending}
 													onClick={() => {
+														// A flagged version's
+														// button opens the
+														// acknowledgement
+														// dialog instead of a
+														// plain confirm — the
+														// server refuses this
+														// publish without it
+														// (Fizzy #2760).
+														if (scanFlagged) {
+															setFlaggedPublish({
+																id: s.id,
+																version:
+																	s.version,
+																rollback:
+																	isRollback(
+																		s.version,
+																		publishedVersion,
+																	),
+																scanStatus:
+																	s.deferredScanStatus as
+																		| "ISSUES_FOUND"
+																		| "INCOMPLETE",
+															});
+															return;
+														}
 														if (
 															window.confirm(
 																t(
@@ -558,7 +617,7 @@ export function InstructionsHistory({
 											) : null}
 										</div>
 									</div>
-									{publishable && scanBlocksPublish ? (
+									{eligibleToPublish && scanPending ? (
 										<p className="text-muted-foreground text-xs">
 											{t("publishBlockedByScan")}
 										</p>
@@ -609,6 +668,27 @@ export function InstructionsHistory({
 							setCompareId(null);
 						}
 					}}
+				/>
+			) : null}
+			{flaggedPublish !== null ? (
+				<PublishFlaggedVersionDialog
+					open
+					onOpenChange={(next) => {
+						if (!next) {
+							setFlaggedPublish(null);
+						}
+					}}
+					version={flaggedPublish.version}
+					rollback={flaggedPublish.rollback}
+					scanStatus={flaggedPublish.scanStatus}
+					pending={publish.isPending}
+					onConfirm={() =>
+						publish.mutate({
+							projectId,
+							snapshotId: flaggedPublish.id,
+							publishBeforeScan: true,
+						})
+					}
 				/>
 			) : null}
 		</>
