@@ -1,6 +1,6 @@
 # This file is mirrored into the internal and public repositories. The internal
 # repository requests no reviewers automatically. In fabric-oss, the
-# "Request external review" workflow routes outside contributors to the
+# "Request OSS review" workflow routes public-repository PRs to the
 # designated maintainer. No ownership rules are declared here.
 #
 # See .github/workflows/request-external-review.yml.
