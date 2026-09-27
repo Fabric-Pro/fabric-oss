@@ -607,6 +607,8 @@ run().catch((err) => {
    - Problem: Workflow hangs or fails unexpectedly
    - Solution: Wrap activities in try-catch, implement compensation
 
+5. **Ignoring the cancellation/deadline signal after an `await`** — a stop that arrives mid-call is missed, so timed-out or cancelled work gets treated as complete; recheck the signal immediately after every await in a cancellable/deadline-bounded activity, before acting on the result.
+
 ## Resources
 
 - [Temporal TypeScript SDK](https://docs.temporal.io/develop/typescript)
