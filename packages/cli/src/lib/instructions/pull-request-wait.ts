@@ -13,6 +13,12 @@
  * Expiry is classified by the deadline signal's own `aborted` state, never by
  * an error's name: the SDK rejects a cancelled request with the signal's
  * reason, and any other failure is the caller's to report.
+ *
+ * A suggestion added to the member's own branch (Fizzy #2738 spec §10) is
+ * `OPEN` once its commit is on the branch, which for the branch's first
+ * change comes before the branch's pull request exists. So on a branch the
+ * wait goes on until the branch has its pull request, or has stopped
+ * somewhere no amount of waiting moves it.
  */
 import type { FabricClient, ProposalPullRequestStatus } from "@fabricorg/sdk";
 
@@ -33,6 +39,57 @@ const SETTLED_STATES = new Set([
 	"CANCELED",
 	"CLOSE_REQUESTED",
 ]);
+
+/**
+ * Branch states at which a suggestion that is `OPEN` on the branch stops
+ * waiting without a pull request: `BLOCKED` needs a person, the rest are the
+ * branch closing or closed.
+ */
+const STOPPED_BRANCH_STATES = new Set([
+	"BLOCKED",
+	"MERGED",
+	"CLOSED",
+	"CANCELED",
+	"CLOSE_REQUESTED",
+]);
+
+/**
+ * A failure the branch carries WITHOUT changing its state that still stops
+ * it (Fizzy #2738 spec Decision 19 and §14.2): `REPOSITORY_CHANGED` on any
+ * branch, and a failure Fabric will not retry on a branch whose pull request
+ * is not open yet, which only a person can clear.
+ */
+export function branchStoppedByFailure(
+	branch: NonNullable<ProposalPullRequestStatus["branch"]>,
+): boolean {
+	const failure = branch.failure;
+	if (failure === null) {
+		return false;
+	}
+	return (
+		failure.code === "REPOSITORY_CHANGED" ||
+		(branch.pullRequest === null && !failure.retryable)
+	);
+}
+
+function isSettled(pullRequest: ProposalPullRequestStatus): boolean {
+	if (!SETTLED_STATES.has(pullRequest.state)) {
+		return false;
+	}
+	const branch = pullRequest.branch;
+	if (pullRequest.state === "OPEN" && branch) {
+		// Only an OPEN pull request is one the change was added to: a merged
+		// or closed one is the branch settling while this change's own
+		// classification is still to come, and stops the wait as the
+		// branch's state.
+		return (
+			branch.pullRequest?.state === "OPEN" ||
+			STOPPED_BRANCH_STATES.has(branch.state) ||
+			branchStoppedByFailure(branch)
+		);
+	}
+	return true;
+}
 
 export type PullRequestWait =
 	| { kind: "settled"; pullRequest: ProposalPullRequestStatus }
@@ -66,7 +123,11 @@ export async function waitForPullRequest(
 	client: FabricClient,
 	projectId: string,
 	snapshotId: string,
-	options: { org?: string } = {},
+	options: {
+		org?: string;
+		/** Called with every status read, in order, before it is judged. */
+		observe?: (pullRequest: ProposalPullRequestStatus) => void;
+	} = {},
 ): Promise<PullRequestWait> {
 	const deadline = Date.now() + PULL_REQUEST_WAIT_MS;
 	let last: ProposalPullRequestStatus | null = null;
@@ -95,7 +156,8 @@ export async function waitForPullRequest(
 		if (pullRequest === null) {
 			return { kind: "none" };
 		}
-		if (SETTLED_STATES.has(pullRequest.state)) {
+		options.observe?.(pullRequest);
+		if (isSettled(pullRequest)) {
 			return { kind: "settled", pullRequest };
 		}
 		last = pullRequest;

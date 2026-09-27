@@ -293,8 +293,33 @@ Two refusals are worth recognising:
   Nothing was sent.
 
 On a repository-sourced project a push without `--publish` is a suggestion
-that Fabric opens as a pull request in the repository once the files pass
-their checks, and it is reviewed and merged there. The already-proposed rule
+that is reviewed and merged in the repository. Each member has one branch,
+`fabric/instructions/members/<name>-<id>/<n>`, with one pull request: once the
+files pass their checks Fabric adds the suggestion to that branch as one
+commit, and opens the pull request if the branch has none yet. After that
+pull request merges or closes, the next suggestion starts a new branch.
+
+Unless `--no-wait` is given, `push` then waits up to 60 seconds for the
+suggestion to reach the branch and for the branch's pull request to be open,
+and ends on one line:
+
+| Outcome | Line | Exit |
+|---|---|---|
+| First change on the branch | `Opened pull request <url>` | 0 |
+| Added to an open pull request | `Added to your pull request <url>` | 0 |
+| Every file already matched the branch | `Already on your branch; nothing to add.` | 0 |
+| A file on the branch was changed outside Fabric (`BRANCH_CONFLICT`) | names the paths; make the change on the branch in the repository, or wait for the merge | 7 |
+| A newer change of yours already edits the file (`SUPERSEDED_BY_LATER_CHANGE`) | names the paths; use Try again in the Coding Instructions tab, or withdraw it | 7 |
+| Any other blocked state | the reason, and whether Fabric retries on its own | 7 |
+| The pull request merged or closed while the change was being added | says so; the tab shows whether it carried the change | 0 |
+| The pull request is being closed | push again once it has closed | 7 |
+| The branch closed before its pull request opened | push again | 7 |
+| The repository connection now points at another repository | close the pull request there, then stop tracking it in the Coding Instructions tab | 7 |
+| The wait ran out | the pull request is being opened | 0 |
+
+`--format json` carries the same outcome in `pullRequest`: `state`, `url`,
+`failure` (with `params.paths` for the two conflicts), `timedOut`, and the
+`branch` and `append` blocks REST v1 returns for the proposal. The already-proposed rule
 applies to those suggestions as well, and the line for a left-out change
 names the pull request (`already proposed in version <N>, pull request
 <url>`). That keeps a second session's pull request free of the first

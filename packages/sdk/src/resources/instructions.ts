@@ -516,10 +516,13 @@ export class InstructionsResource {
 	 * whose instructions come from its repository, `REPOSITORY_UNAVAILABLE`
 	 * and `REPOSITORY_BASE_UNAVAILABLE` (412).
 	 *
-	 * For such a project the suggestion becomes a pull request in the
-	 * repository, reported as awaiting review: the result's `pullRequest`
-	 * names it, and `getProposalPullRequest` follows it. `options.note` is the
-	 * suggestion's title and description, for both kinds of project.
+	 * For such a project the suggestion is added as one commit to the
+	 * member's own branch and pull request in the repository, which Fabric
+	 * opens if the member has none, and is reported as awaiting review: the
+	 * result's `pullRequest` names it, with its `branch` and `append`, and
+	 * `getProposalPullRequest` follows it. `options.note` is the suggestion's
+	 * title and description; on such a project it describes the commit, and
+	 * the member's pull request keeps its own title and description.
 	 *
 	 * Requires a key with `instructions:write`. The key's creator must still
 	 * hold the project permission the tab requires to propose — the scope is a
