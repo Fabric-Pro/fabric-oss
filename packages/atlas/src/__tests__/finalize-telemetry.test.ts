@@ -92,6 +92,18 @@ describe("finalize — READY telemetry + cost", () => {
 			reasoning: "because",
 			appliedUserOverrides: true, // !fresh
 		});
+
+		// The audit row carries the same usage under a key the audit redactor
+		// leaves alone: anything containing "token" would read "[REDACTED]".
+		expect(mockRecordAudit).toHaveBeenCalledWith(
+			expect.objectContaining({
+				action: "atlas.analysis.completed",
+				metadata: expect.objectContaining({
+					usageTotal: 1_000_000,
+					costMicroUsd: 500_000,
+				}),
+			}),
+		);
 	});
 
 	it("marks appliedUserOverrides=false for a from-fresh run", async () => {

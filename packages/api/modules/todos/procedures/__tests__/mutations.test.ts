@@ -38,9 +38,8 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { clockFromProjectPredicate } from "./support/project-predicate-clock";
-
 import { MISSING_ORGANIZATION_CONTEXT_ERROR_CODE } from "../../../../lib/missing-organization-context";
+import { clockFromProjectPredicate } from "./support/project-predicate-clock";
 
 const mocks = vi.hoisted(() => ({
 	isFeatureEnabled: vi.fn(),
@@ -962,7 +961,7 @@ describe("todos.unsnooze", () => {
 			// "who hid this" must not also match whoever brought it back.
 			action: "org.todo.unsnoozed",
 			organizationId: ORG,
-			metadata: { previousSnoozedUntil: snoozedUntil.toISOString() },
+			metadata: { priorSnoozedUntil: snoozedUntil.toISOString() },
 		});
 	});
 

@@ -93,8 +93,10 @@ export const unsnoozeTodoProcedure = tenantProtectedProcedure
 			metadata: {
 				// What the snooze WAS. Without it the row says an item was
 				// brought back without saying from how far away, which is the
-				// only part of the act anyone would query for afterwards.
-				previousSnoozedUntil: todo.snoozedUntil?.toISOString() ?? null,
+				// only part of the act anyone would query for afterwards. "prior",
+				// not "previous": "previousSnoozed" contains "ssn", which the
+				// audit redactor treats as sensitive.
+				priorSnoozedUntil: todo.snoozedUntil?.toISOString() ?? null,
 			},
 		});
 

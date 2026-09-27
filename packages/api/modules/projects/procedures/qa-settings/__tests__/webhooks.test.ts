@@ -163,7 +163,7 @@ describe("project QA webhook secret lifecycle", () => {
 			expect.objectContaining({
 				action: "project.qa_webhook.rotated",
 				metadata: {
-					previousSecretRetiresAt:
+					overlapEndsAt:
 						rotation.previousSecretRetiresAt.toISOString(),
 				},
 			}),

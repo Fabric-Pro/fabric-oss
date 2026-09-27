@@ -157,7 +157,9 @@ export const rotateProjectQaWebhookProcedure = tenantProtectedProcedure
 			outcome: "success",
 			projectId: input.projectId,
 			resource: { type: "project_qa_webhook", id: row.id },
-			metadata: { previousSecretRetiresAt: retiresAt.toISOString() },
+			// When the previous secret stops being accepted. Not named after the
+			// secret: the audit redactor blanks any key containing "secret".
+			metadata: { overlapEndsAt: retiresAt.toISOString() },
 		});
 		return { ...toSummary(row), secret };
 	});

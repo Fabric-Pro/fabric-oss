@@ -111,7 +111,9 @@ export const snoozeTodoProcedure = tenantProtectedProcedure
 			resource: { type: "todo_item", id: todo.id, name: null },
 			metadata: {
 				snoozedUntil: input.snoozedUntil.toISOString(),
-				previousSnoozedUntil: todo.snoozedUntil?.toISOString() ?? null,
+				// "prior", not "previous": "previousSnoozed" contains "ssn", which
+				// the audit redactor treats as sensitive.
+				priorSnoozedUntil: todo.snoozedUntil?.toISOString() ?? null,
 			},
 		});
 
