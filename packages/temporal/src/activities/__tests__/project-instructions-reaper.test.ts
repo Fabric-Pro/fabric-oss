@@ -154,13 +154,49 @@ function serveDeferredScanPopulation(
 	);
 }
 
+/**
+ * Serves phase 0's and phase 1's candidate queries from a fixed population,
+ * with the same OFFSET/LIMIT/total semantics (Fizzy #2745: both rotate now).
+ */
+function serveValidatingPopulation(
+	population: Array<{
+		id: string;
+		projectId: string;
+		organizationId: string;
+		updatedAt: Date;
+	}>,
+): void {
+	mocks.listStaleValidating.mockImplementation(
+		async (_cutoff: Date, limit: number, offset: number) => ({
+			candidates: population.slice(offset, offset + limit),
+			total: population.length,
+		}),
+	);
+}
+
+function serveAbandonedPopulation(
+	population: Array<{
+		id: string;
+		projectId: string;
+		organizationId: string;
+		createdAt: Date;
+	}>,
+): void {
+	mocks.listAbandoned.mockImplementation(
+		async (_cutoff: Date, limit: number, offset: number) => ({
+			candidates: population.slice(offset, offset + limit),
+			total: population.length,
+		}),
+	);
+}
+
 beforeEach(() => {
 	for (const m of Object.values(mocks)) {
 		m.mockReset();
 	}
-	mocks.listAbandoned.mockResolvedValue([]);
+	serveAbandonedPopulation([]);
 	mocks.listPendingAbandoned.mockResolvedValue([]);
-	mocks.listStaleValidating.mockResolvedValue([]);
+	serveValidatingPopulation([]);
 	mocks.failStaleValidating.mockResolvedValue({ changed: true });
 	serveDeferredScanPopulation([]);
 	mocks.markDeferredScanIncomplete.mockResolvedValue({ changed: true });
@@ -242,7 +278,7 @@ describe("reapInstructionSnapshots: stranded VALIDATING rows", () => {
 	});
 
 	it("fails a stale row whose execution has CLOSED, bound to the row's own tenant", async () => {
-		mocks.listStaleValidating.mockResolvedValue([
+		serveValidatingPopulation([
 			validatingRow(
 				"snap_strand",
 				"p7",
@@ -282,9 +318,7 @@ describe("reapInstructionSnapshots: stranded VALIDATING rows", () => {
 	it("fails a stale row Temporal has never heard of", async () => {
 		// The start was lost outright, so nothing was ever going to write a
 		// verdict for this row.
-		mocks.listStaleValidating.mockResolvedValue([
-			validatingRow("snap_absent"),
-		]);
+		serveValidatingPopulation([validatingRow("snap_absent")]);
 		mocks.describe.mockRejectedValue(
 			new WorkflowNotFoundError("not found"),
 		);
@@ -301,9 +335,7 @@ describe("reapInstructionSnapshots: stranded VALIDATING rows", () => {
 	it("leaves a row whose execution is still RUNNING strictly alone", async () => {
 		// The whole reason a row is legitimately VALIDATING. Writing FAILED
 		// here would kill a live validation.
-		mocks.listStaleValidating.mockResolvedValue([
-			validatingRow("snap_live"),
-		]);
+		serveValidatingPopulation([validatingRow("snap_live")]);
 		mocks.describe.mockResolvedValue({ status: { name: "RUNNING" } });
 
 		expect(await reapInstructionSnapshots()).toMatchObject({
@@ -319,7 +351,7 @@ describe("reapInstructionSnapshots: stranded VALIDATING rows", () => {
 		// An unreachable Temporal proves nothing, and a wrongly-failed row is
 		// a validation killed mid-flight. Err toward live, count it so the
 		// outage is visible, and let the next run decide.
-		mocks.listStaleValidating.mockResolvedValue([
+		serveValidatingPopulation([
 			validatingRow("snap_unknown"),
 			validatingRow("snap_dead", "p2", "o2"),
 		]);
@@ -343,9 +375,7 @@ describe("reapInstructionSnapshots: stranded VALIDATING rows", () => {
 	it("does not count a row the compare-and-set did not move", async () => {
 		// A real verdict landed between the candidate query and the write:
 		// the predicate matches nothing, and nothing was healed.
-		mocks.listStaleValidating.mockResolvedValue([
-			validatingRow("snap_raced"),
-		]);
+		serveValidatingPopulation([validatingRow("snap_raced")]);
 		mocks.failStaleValidating.mockResolvedValue({ changed: false });
 
 		expect(await reapInstructionSnapshots()).toMatchObject({
@@ -363,7 +393,7 @@ describe("reapInstructionSnapshots: stranded VALIDATING rows", () => {
 	// re-read, no second write, no storage work, and nothing counted.
 	it("leaves a candidate alone when the compare-and-set loses to a newer generation", async () => {
 		const observedUpdatedAt = new Date("2026-09-17T09:30:00.000Z");
-		mocks.listStaleValidating.mockResolvedValue([
+		serveValidatingPopulation([
 			validatingRow("snap_regen", "p9", "o9", observedUpdatedAt),
 			validatingRow("snap_dead", "p2", "o2"),
 		]);
@@ -401,9 +431,7 @@ describe("reapInstructionSnapshots: stranded VALIDATING rows", () => {
 	});
 
 	it("heals nothing when the Temporal client will not construct", async () => {
-		mocks.listStaleValidating.mockResolvedValue([
-			validatingRow("snap_strand"),
-		]);
+		serveValidatingPopulation([validatingRow("snap_strand")]);
 		mocks.getTemporalClient.mockRejectedValue(new Error("no client"));
 
 		expect(await reapInstructionSnapshots()).toMatchObject({
@@ -414,9 +442,7 @@ describe("reapInstructionSnapshots: stranded VALIDATING rows", () => {
 	});
 
 	it("logs one line of counts and no identifiers", async () => {
-		mocks.listStaleValidating.mockResolvedValue([
-			validatingRow("snap_strand", "p7", "o7"),
-		]);
+		serveValidatingPopulation([validatingRow("snap_strand", "p7", "o7")]);
 		mocks.describe.mockResolvedValue({ status: { name: "TERMINATED" } });
 
 		await reapInstructionSnapshots();
@@ -436,7 +462,7 @@ describe("reapInstructionSnapshots: stranded VALIDATING rows", () => {
 	});
 
 	it("reports hitCap when phase 0's candidate query comes back full", async () => {
-		mocks.listStaleValidating.mockResolvedValue(
+		serveValidatingPopulation(
 			Array.from({ length: 100 }, (_, i) => validatingRow(`snap_${i}`)),
 		);
 		mocks.describe.mockResolvedValue({ status: { name: "RUNNING" } });
@@ -453,11 +479,11 @@ describe("reapInstructionSnapshots: stranded VALIDATING rows", () => {
 	it("stops mid-phase when the wall-clock budget is spent, and runs nothing after it", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-09-17T12:00:00.000Z"));
-		mocks.listStaleValidating.mockResolvedValue([
+		serveValidatingPopulation([
 			validatingRow("snap_1"),
 			validatingRow("snap_2", "p2", "o2"),
 		]);
-		mocks.listAbandoned.mockResolvedValue([abandonedRow("snap_3")]);
+		serveAbandonedPopulation([abandonedRow("snap_3")]);
 		mocks.describe.mockResolvedValue({ status: { name: "COMPLETED" } });
 		// The first row's write takes eleven minutes of the ten-minute budget.
 		mocks.failStaleValidating.mockImplementationOnce(async () => {
@@ -510,7 +536,7 @@ describe("reapInstructionSnapshots: abandoned RECEIVING uploads", () => {
 	});
 
 	it("closes the row out FIRST, then deletes its staging prefix", async () => {
-		mocks.listAbandoned.mockResolvedValue([abandonedRow("snap_1")]);
+		serveAbandonedPopulation([abandonedRow("snap_1")]);
 		mocks.listObjects.mockResolvedValue({
 			objects: [
 				{ key: "projects/p1/instructions/staging/snap_1/f1", size: 1 },
@@ -562,7 +588,7 @@ describe("reapInstructionSnapshots: abandoned RECEIVING uploads", () => {
 		// A `finalize` that arrived between the candidate query and the write
 		// moved the row to VALIDATING: that upload is alive, and its staged
 		// bytes are what its own workflow is about to verify.
-		mocks.listAbandoned.mockResolvedValue([abandonedRow("snap_racing")]);
+		serveAbandonedPopulation([abandonedRow("snap_racing")]);
 		mocks.rejectAbandoned.mockResolvedValue({ changed: false });
 
 		const result = await reapInstructionSnapshots();
@@ -582,7 +608,7 @@ describe("reapInstructionSnapshots: abandoned RECEIVING uploads", () => {
 		// The run must not abort on it: the other candidates are different
 		// tenants, and this row keeps its pending mark, so phase 1b of the
 		// next run finds it again.
-		mocks.listAbandoned.mockResolvedValue([
+		serveAbandonedPopulation([
 			abandonedRow("snap_bad"),
 			abandonedRow("snap_ok", "p2", "o2"),
 		]);
@@ -650,7 +676,7 @@ describe("reapInstructionSnapshots: abandoned RECEIVING uploads", () => {
 	});
 
 	it("carries on to the next candidate after one that changed nothing", async () => {
-		mocks.listAbandoned.mockResolvedValue([
+		serveAbandonedPopulation([
 			abandonedRow("snap_racing"),
 			abandonedRow("snap_dead", "p2", "o2"),
 		]);
@@ -835,7 +861,7 @@ describe("reapInstructionSnapshots: re-sweeping closed abandonments", () => {
 		// exists for the rows phase 1 could NOT finish. Skipping it after the
 		// query would also make a full page report a backlog that is not
 		// there, so the exclusion goes INTO the query.
-		mocks.listAbandoned.mockResolvedValue([
+		serveAbandonedPopulation([
 			abandonedRow("snap_fresh"),
 			abandonedRow("snap_racing", "p3", "o3"),
 		]);
@@ -954,7 +980,7 @@ describe("reapInstructionSnapshots: the failure-path prune", () => {
 
 describe("reapInstructionSnapshots: per-run budgets", () => {
 	it("reports hitCap when a candidate query comes back full", async () => {
-		mocks.listAbandoned.mockResolvedValue(
+		serveAbandonedPopulation(
 			Array.from({ length: 200 }, (_, i) => abandonedRow(`snap_${i}`)),
 		);
 		mocks.rejectAbandoned.mockResolvedValue({ changed: false });
@@ -1067,7 +1093,7 @@ describe("reapInstructionSnapshots: per-run budgets", () => {
  */
 describe("reapInstructionSnapshots: the liveness guard", () => {
 	it("asks Temporal about the snapshot's deterministic workflow id", async () => {
-		mocks.listAbandoned.mockResolvedValue([abandonedRow("snap_1")]);
+		serveAbandonedPopulation([abandonedRow("snap_1")]);
 
 		await reapInstructionSnapshots();
 
@@ -1079,7 +1105,7 @@ describe("reapInstructionSnapshots: the liveness guard", () => {
 	});
 
 	it("leaves a candidate whose execution still exists strictly alone", async () => {
-		mocks.listAbandoned.mockResolvedValue([abandonedRow("snap_live")]);
+		serveAbandonedPopulation([abandonedRow("snap_live")]);
 		mocks.describe.mockResolvedValue({ status: { name: "RUNNING" } });
 
 		const result = await reapInstructionSnapshots();
@@ -1097,9 +1123,7 @@ describe("reapInstructionSnapshots: the liveness guard", () => {
 	});
 
 	it("abandons a closed-before-claim row: the workflow closed without ever claiming it (§5.7)", async () => {
-		mocks.listAbandoned.mockResolvedValue([
-			abandonedRow("snap_terminated"),
-		]);
+		serveAbandonedPopulation([abandonedRow("snap_terminated")]);
 		mocks.describe.mockResolvedValue({ status: { name: "TERMINATED" } });
 
 		expect(await reapInstructionSnapshots()).toMatchObject({
@@ -1112,7 +1136,7 @@ describe("reapInstructionSnapshots: the liveness guard", () => {
 	});
 
 	it("writes nothing for a closed execution that did claim the row: the conditional write matches nothing", async () => {
-		mocks.listAbandoned.mockResolvedValue([abandonedRow("snap_done")]);
+		serveAbandonedPopulation([abandonedRow("snap_done")]);
 		mocks.describe.mockResolvedValue({ status: { name: "COMPLETED" } });
 		mocks.rejectAbandoned.mockResolvedValue({ changed: false });
 
@@ -1122,7 +1146,7 @@ describe("reapInstructionSnapshots: the liveness guard", () => {
 	});
 
 	it("proceeds to the conditional write only when Temporal has never heard of the id", async () => {
-		mocks.listAbandoned.mockResolvedValue([abandonedRow("snap_dead")]);
+		serveAbandonedPopulation([abandonedRow("snap_dead")]);
 		mocks.describe.mockRejectedValue(
 			new WorkflowNotFoundError("workflow not found"),
 		);
@@ -1140,7 +1164,7 @@ describe("reapInstructionSnapshots: the liveness guard", () => {
 		// from "the start succeeded", and a wrongly-rejected upload costs a
 		// user real work. Err toward live, count it so the outage is visible,
 		// and let the next run decide.
-		mocks.listAbandoned.mockResolvedValue([
+		serveAbandonedPopulation([
 			abandonedRow("snap_unknown"),
 			abandonedRow("snap_dead", "p2", "o2"),
 		]);
@@ -1163,7 +1187,7 @@ describe("reapInstructionSnapshots: the liveness guard", () => {
 	});
 
 	it("rejects nothing at all when the Temporal client will not construct", async () => {
-		mocks.listAbandoned.mockResolvedValue([abandonedRow("snap_1")]);
+		serveAbandonedPopulation([abandonedRow("snap_1")]);
 		mocks.getTemporalClient.mockRejectedValue(
 			Object.assign(
 				new Error("connect ECONNREFUSED temporal.example.com:7233"),
@@ -1361,6 +1385,116 @@ describe("reapInstructionSnapshots: the prune candidate rotation", () => {
  * timeout. A run that times out is retried FROM THE TOP, so an early phase
  * that cannot finish means the later phases never run at all.
  */
+/**
+ * Fizzy #2745. Phases 0 and 1 skip a RUNNING or indeterminate row without
+ * writing it, so it keeps its place in their candidate order. With a fixed
+ * oldest page, a full page of such rows was re-selected every hour and a row
+ * behind it whose execution had closed was never inspected. Both phases now
+ * walk a clock-rotated window, like phase 0b and the prune.
+ */
+describe("reapInstructionSnapshots: phase 0 and phase 1 candidate rotation", () => {
+	const workflowIdOf = (id: string) => `project-instruction-snapshot-${id}`;
+
+	/**
+	 * Every execution is `stuck` (RUNNING, or a describe that fails) except
+	 * the named ids, whose executions have closed.
+	 */
+	function closedOnly(stuck: "running" | "indeterminate", ...ids: string[]) {
+		mocks.getHandle.mockImplementation((workflowId: string) => ({
+			describe: async () => {
+				if (ids.some((id) => workflowId === workflowIdOf(id))) {
+					return { status: { name: "FAILED" } };
+				}
+				if (stuck === "indeterminate") {
+					throw new Error("temporal unreachable");
+				}
+				return { status: { name: "RUNNING" } };
+			},
+		}));
+	}
+
+	const ids = (size: number) =>
+		Array.from(
+			{ length: size },
+			(_, i) => `snap_${String(i).padStart(3, "0")}`,
+		);
+
+	describe.each(["running", "indeterminate"] as const)(
+		"behind a full page of %s rows",
+		(stuck) => {
+			it("phase 0 heals the closed VALIDATING row within ceil(total / slice) runs", async () => {
+				vi.useFakeTimers();
+				const SLICE = 100;
+				const population = ids(SLICE + 1).map((id) =>
+					validatingRow(id),
+				);
+				serveValidatingPopulation(population);
+				closedOnly(stuck, "snap_100");
+
+				vi.setSystemTime(new Date(Date.UTC(1970, 0, 1, 0)));
+				await reapInstructionSnapshots();
+				// Hour 0's window is the head page: the closed row is not in it.
+				expect(mocks.failStaleValidating).not.toHaveBeenCalled();
+
+				vi.setSystemTime(new Date(Date.UTC(1970, 0, 1, 1)));
+				await reapInstructionSnapshots();
+
+				expect(mocks.failStaleValidating).toHaveBeenCalledTimes(1);
+				expect(mocks.failStaleValidating).toHaveBeenCalledWith({
+					snapshotId: "snap_100",
+					projectId: "p1",
+					organizationId: "o1",
+					observedUpdatedAt: population[100]?.updatedAt,
+				});
+			});
+
+			it("phase 1 abandons the closed RECEIVING row within ceil(total / slice) runs", async () => {
+				vi.useFakeTimers();
+				const SLICE = 200;
+				serveAbandonedPopulation(
+					ids(SLICE + 1).map((id) => abandonedRow(id)),
+				);
+				closedOnly(stuck, "snap_200");
+
+				vi.setSystemTime(new Date(Date.UTC(1970, 0, 1, 0)));
+				await reapInstructionSnapshots();
+				expect(mocks.rejectAbandoned).not.toHaveBeenCalled();
+
+				vi.setSystemTime(new Date(Date.UTC(1970, 0, 1, 1)));
+				await reapInstructionSnapshots();
+
+				expect(mocks.rejectAbandoned).toHaveBeenCalledTimes(1);
+				expect(mocks.rejectAbandoned).toHaveBeenCalledWith(
+					expect.objectContaining({
+						snapshotId: "snap_200",
+						projectId: "p1",
+						organizationId: "o1",
+					}),
+				);
+			});
+		},
+	);
+
+	it("asks both queries for the head page, then the hour's rotated page", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date(Date.UTC(1970, 0, 1, 3)));
+		serveValidatingPopulation(ids(1_000).map((id) => validatingRow(id)));
+		serveAbandonedPopulation(ids(1_000).map((id) => abandonedRow(id)));
+		closedOnly("running");
+
+		await reapInstructionSnapshots();
+
+		expect(mocks.listStaleValidating.mock.calls.map((c) => c[2])).toEqual([
+			0,
+			(3 * 100) % 1_000,
+		]);
+		expect(mocks.listAbandoned.mock.calls.map((c) => c[2])).toEqual([
+			0,
+			(3 * 200) % 1_000,
+		]);
+	});
+});
+
 describe("reapInstructionSnapshots: the global run budgets", () => {
 	it("stops the prune mid-project when the object budget is spent", async () => {
 		servePrunePopulation([
@@ -1422,7 +1556,7 @@ describe("reapInstructionSnapshots: the global run budgets", () => {
 	it("stops between phases when the wall-clock budget is spent", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-09-17T12:00:00.000Z"));
-		mocks.listAbandoned.mockResolvedValue([
+		serveAbandonedPopulation([
 			abandonedRow("snap_1"),
 			abandonedRow("snap_2", "p2", "o2"),
 		]);

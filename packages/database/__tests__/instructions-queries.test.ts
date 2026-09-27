@@ -2332,19 +2332,31 @@ describe("listPrunableInstructionSnapshots", () => {
  * row that will never reach a verdict.
  */
 describe("listAbandonedReceivingInstructionSnapshots", () => {
-	it("selects only RECEIVING rows created before the cutoff, oldest first", async () => {
+	it("pages RECEIVING rows created before the cutoff in one total order, with the population's size", async () => {
 		const cutoff = new Date("2026-09-17T06:00:00.000Z");
-		mocks.snapshot.findMany.mockResolvedValue([]);
+		const row = {
+			id: "s1",
+			projectId: "p",
+			organizationId: "o",
+			createdAt: new Date("2026-09-17T00:00:00.000Z"),
+		};
+		mocks.snapshot.findMany.mockResolvedValue([row]);
+		mocks.snapshot.count.mockResolvedValue(450);
+		// A system-wide sweep: no tenant is in scope, and the per-row writes
+		// that follow are bound by the columns selected here.
+		const where = { status: "RECEIVING", createdAt: { lt: cutoff } };
 
-		await listAbandonedReceivingInstructionSnapshots(cutoff, 200);
+		expect(
+			await listAbandonedReceivingInstructionSnapshots(cutoff, 200, 400),
+		).toEqual({ candidates: [row], total: 450 });
 
 		expect(mocks.snapshot.findMany).toHaveBeenCalledWith({
-			// A system-wide sweep: no tenant is in scope, and the per-row
-			// writes that follow are bound by the columns selected here.
-			where: { status: "RECEIVING", createdAt: { lt: cutoff } },
-			// Oldest first, so a backlog larger than one run's budget drains
-			// in age order instead of re-scanning the same end every hour.
-			orderBy: { createdAt: "asc" },
+			where,
+			// Fizzy #2745: `id` breaks `createdAt` ties, so the order is total
+			// and a page at an offset is a window of it — what the reaper's
+			// rotation walks past a head of RUNNING rows it cannot write.
+			orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+			skip: 400,
 			take: 200,
 			select: {
 				id: true,
@@ -2353,6 +2365,8 @@ describe("listAbandonedReceivingInstructionSnapshots", () => {
 				createdAt: true,
 			},
 		});
+		// Over the SAME predicate: the size the reaper wraps its offset at.
+		expect(mocks.snapshot.count).toHaveBeenCalledWith({ where });
 	});
 });
 
@@ -2364,20 +2378,28 @@ describe("listAbandonedReceivingInstructionSnapshots", () => {
  * leaves the same. The reaper needs a bounded candidate population for it.
  */
 describe("listStaleValidatingInstructionSnapshots", () => {
-	it("selects only VALIDATING rows last touched before the cutoff, oldest first", async () => {
+	it("pages VALIDATING rows last touched before the cutoff in one total order, with the population's size", async () => {
 		const cutoff = new Date("2026-09-17T11:00:00.000Z");
 		mocks.snapshot.findMany.mockResolvedValue([]);
+		mocks.snapshot.count.mockResolvedValue(0);
+		// `updatedAt`, not `createdAt`: the age that matters is how long the
+		// row has been in VALIDATING, not how long ago its upload began. A
+		// system-wide sweep, so no tenant is in scope, and the per-row write
+		// that follows is bound by the columns selected here.
+		const where = { status: "VALIDATING", updatedAt: { lt: cutoff } };
 
-		await listStaleValidatingInstructionSnapshots(cutoff, 100);
+		expect(
+			await listStaleValidatingInstructionSnapshots(cutoff, 100, 0),
+		).toEqual({ candidates: [], total: 0 });
 
+		// Over the SAME predicate: the size the reaper wraps its offset at.
+		expect(mocks.snapshot.count).toHaveBeenCalledWith({ where });
 		expect(mocks.snapshot.findMany).toHaveBeenCalledWith({
-			// `updatedAt`, not `createdAt`: the age that matters is how long
-			// the row has been in VALIDATING, not how long ago its upload
-			// began. A system-wide sweep, so no tenant is in scope, and the
-			// per-row write that follows is bound by the columns selected
-			// here.
-			where: { status: "VALIDATING", updatedAt: { lt: cutoff } },
-			orderBy: { updatedAt: "asc" },
+			where,
+			// Fizzy #2745: `id` breaks `updatedAt` ties so the order is total
+			// and the reaper's rotation walks windows of it.
+			orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+			skip: 0,
 			take: 100,
 			select: {
 				id: true,
