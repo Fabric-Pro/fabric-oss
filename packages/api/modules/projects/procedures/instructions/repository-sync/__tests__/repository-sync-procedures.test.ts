@@ -1,3 +1,4 @@
+import { keyIsSensitive } from "@repo/utils/sensitive-keys";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
@@ -18,6 +19,25 @@ const m = vi.hoisted(() => ({
 	startInstructionRepositorySync: vi.fn(),
 	isInstructionRepositorySyncRunning: vi.fn(),
 }));
+
+/**
+ * Every key in `value`, at any depth, that the audit writer's key denylist
+ * would redact (Fizzy #2746). A content-free key that happens to contain a
+ * denylisted substring — `secret` as a reason, `otp` inside `rootPath` —
+ * silently becomes "[REDACTED]" in the stored row.
+ */
+function redactedKeys(value: unknown): string[] {
+	if (Array.isArray(value)) {
+		return value.flatMap(redactedKeys);
+	}
+	if (value === null || typeof value !== "object") {
+		return [];
+	}
+	return Object.entries(value).flatMap(([key, child]) => [
+		...(keyIsSensitive(key) ? [key] : []),
+		...redactedKeys(child),
+	]);
+}
 
 vi.mock("@repo/database", () => ({
 	getInstructionRepositorySync: m.getInstructionRepositorySync,
@@ -492,12 +512,18 @@ describe("repositorySync.configure", () => {
 					automatic: false,
 					repositoryChanged: false,
 					refChanged: true,
-					rootPathChanged: false,
+					rootChanged: false,
 					ignoreGlobsChanged: false,
 					generation: 3,
 				},
 			}),
 		);
+		// Fizzy #2746: every flag is stored as written, none as "[REDACTED]".
+		const [, auditRow] = m.recordAuditFromRequest.mock.calls[0] as [
+			unknown,
+			{ metadata: unknown },
+		];
+		expect(redactedKeys(auditRow.metadata)).toEqual([]);
 		expect(m.startInstructionRepositorySync).not.toHaveBeenCalled();
 		// The resolved credential must reach neither the response nor the
 		// audit row (review round 1, S2d).
@@ -533,7 +559,7 @@ describe("repositorySync.configure", () => {
 				automatic: true,
 				repositoryChanged: false,
 				refChanged: false,
-				rootPathChanged: false,
+				rootChanged: false,
 				ignoreGlobsChanged: false,
 				generation: 3,
 			},
@@ -564,7 +590,7 @@ describe("repositorySync.configure", () => {
 			metadata: {
 				repositoryChanged: true,
 				refChanged: false,
-				rootPathChanged: false,
+				rootChanged: false,
 			},
 		});
 	});
@@ -589,7 +615,7 @@ describe("repositorySync.configure", () => {
 			metadata: {
 				repositoryChanged: true,
 				refChanged: true,
-				rootPathChanged: true,
+				rootChanged: true,
 			},
 		});
 	});

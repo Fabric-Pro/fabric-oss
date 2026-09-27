@@ -1,3 +1,4 @@
+import { keyIsSensitive } from "@repo/utils/sensitive-keys";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
@@ -23,6 +24,25 @@ const m = vi.hoisted(() => ({
 	recordInstructionDeferredScanOutcome: vi.fn(),
 	getPublishedInstructionSnapshot: vi.fn(),
 }));
+/**
+ * Every key in `value`, at any depth, that the audit writer's key denylist
+ * would redact (Fizzy #2746). A content-free key that happens to contain a
+ * denylisted substring — `secret` as a reason, `otp` inside `rootPath` —
+ * silently becomes "[REDACTED]" in the stored row.
+ */
+function redactedKeys(value: unknown): string[] {
+	if (Array.isArray(value)) {
+		return value.flatMap(redactedKeys);
+	}
+	if (value === null || typeof value !== "object") {
+		return [];
+	}
+	return Object.entries(value).flatMap(([key, child]) => [
+		...(keyIsSensitive(key) ? [key] : []),
+		...redactedKeys(child),
+	]);
+}
+
 vi.mock("@repo/database", () => ({ ...m }));
 vi.mock("@repo/storage", () => ({
 	getStorageProvider: () => ({
@@ -1727,9 +1747,15 @@ describe("R29: audit rows from the workflow activities", () => {
 		expect(row.projectId).toBe("p");
 		expect(row.metadata).toEqual({
 			rejectionCount: 3,
-			reasonCounts: { secret: 2, hash_mismatch: 1 },
+			// Fizzy #2746: a list, sorted by reason, so the secret count is a
+			// value the audit writer keeps rather than a key it redacts.
+			reasons: [
+				{ reason: "hash_mismatch", count: 1 },
+				{ reason: "secret", count: 2 },
+			],
 			rules: ["aws-access-key", "filename:**/.env"],
 		});
+		expect(redactedKeys(row.metadata)).toEqual([]);
 		// The rejection list itself stays in the `rejection` column. Nothing
 		// a user named or wrote reaches the audit log.
 		const serialized = JSON.stringify(row);
@@ -3572,9 +3598,13 @@ describe("publish first, scan afterwards (Fizzy #2737)", () => {
 			expect(call.audit.metadata).toEqual({
 				version: 7,
 				findingCount: 2,
-				reasonCounts: { secret: 1, hash_mismatch: 1 },
+				reasons: [
+					{ reason: "hash_mismatch", count: 1 },
+					{ reason: "secret", count: 1 },
+				],
 				rules: ["aws-access-key"],
 			});
+			expect(redactedKeys(call.audit.metadata)).toEqual([]);
 			const serialized = JSON.stringify(call.audit);
 			expect(serialized).not.toContain("acme");
 			expect(serialized).not.toContain("docs/b.md");
@@ -3618,9 +3648,10 @@ describe("publish first, scan afterwards (Fizzy #2737)", () => {
 				version: 7,
 				reason: "scan_failed",
 				findingCount: 1,
-				reasonCounts: { secret: 1 },
+				reasons: [{ reason: "secret", count: 1 }],
 				rules: ["aws-access-key"],
 			});
+			expect(redactedKeys(call.audit.metadata)).toEqual([]);
 			expect(JSON.stringify(call.audit)).not.toContain("A.md");
 			expect(
 				warmMocks.warmInstructionSnapshotExport,
@@ -3649,9 +3680,21 @@ describe("publish first, scan afterwards (Fizzy #2737)", () => {
 			});
 
 			const [call] = m.recordInstructionDeferredScanOutcome.mock
-				.calls[0] as [{ findings: unknown[] }];
+				.calls[0] as [
+				{
+					findings: unknown[];
+					audit: { metadata: Record<string, unknown> };
+				},
+			];
 			// Re-capping it would drop the real sentinel for a "1 more".
 			expect(call.findings).toEqual(findings);
+			// The sentinel is counted as its own reason, beside the secret
+			// count the audit writer now keeps (Fizzy #2746).
+			expect(call.audit.metadata.reasons).toEqual([
+				{ reason: "secret", count: 100 },
+				{ reason: "truncated", count: 1 },
+			]);
+			expect(redactedKeys(call.audit.metadata)).toEqual([]);
 		});
 
 		it("still caps a list longer than the bound", async () => {

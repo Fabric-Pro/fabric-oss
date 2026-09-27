@@ -1426,6 +1426,12 @@ export async function promoteUnscannedInstructionSnapshot(
  * Summarises a rejection list for the audit row: how many of each reason,
  * and which rules fired.
  *
+ * `reasons` is a list of `{ reason, count }`, never a map keyed BY reason
+ * (Fizzy #2746). The audit writer redacts any metadata key containing a
+ * denylisted substring (`SENSITIVE_KEY_SUBSTRINGS`), and `secret` is both a
+ * reason and on that list, so a map stored the one count an operator most
+ * needs as "[REDACTED]". The reason is a value here, and values are kept.
+ *
  * Deliberately narrow. `path` is user content and never leaves the
  * `rejection` column; `detail` is carried ONLY for `reason: "secret"`, where
  * it is a rule id (`aws-access-key`) or `filename:` plus a
@@ -1438,20 +1444,22 @@ export async function promoteUnscannedInstructionSnapshot(
  */
 function summarizeRejections(rejections: InstructionRejection[]): {
 	rejectionCount: number;
-	reasonCounts: Record<string, number>;
+	reasons: Array<{ reason: string; count: number }>;
 	rules: string[];
 } {
-	const reasonCounts: Record<string, number> = {};
+	const counts = new Map<string, number>();
 	const rules = new Set<string>();
 	for (const r of rejections) {
-		reasonCounts[r.reason] = (reasonCounts[r.reason] ?? 0) + 1;
+		counts.set(r.reason, (counts.get(r.reason) ?? 0) + 1);
 		if (r.reason === "secret" && r.detail) {
 			rules.add(r.detail);
 		}
 	}
 	return {
 		rejectionCount: rejections.length,
-		reasonCounts,
+		reasons: [...counts.keys()]
+			.sort()
+			.map((reason) => ({ reason, count: counts.get(reason) ?? 0 })),
 		rules: [...rules].sort(),
 	};
 }
@@ -1948,7 +1956,7 @@ export async function recordDeferredScanOutcome(
 					metadata: {
 						version: snapshot.version,
 						findingCount: summary.rejectionCount,
-						reasonCounts: summary.reasonCounts,
+						reasons: summary.reasons,
 						rules: summary.rules,
 					},
 				}
@@ -1974,7 +1982,7 @@ export async function recordDeferredScanOutcome(
 							...(findings.length > 0
 								? {
 										findingCount: summary.rejectionCount,
-										reasonCounts: summary.reasonCounts,
+										reasons: summary.reasons,
 										rules: summary.rules,
 									}
 								: {}),
