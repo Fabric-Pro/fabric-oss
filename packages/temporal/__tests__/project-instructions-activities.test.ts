@@ -3454,6 +3454,8 @@ describe("publish first, scan afterwards (Fizzy #2737)", () => {
 							detail: "aws-access-key",
 							line: 1,
 						},
+						// The unreadable file is named, in scan order.
+						{ path: "B.md", reason: "scan_failed" },
 						// The file AFTER the unreadable one was still scanned.
 						{
 							path: "C.md",
@@ -3465,6 +3467,57 @@ describe("publish first, scan afterwards (Fizzy #2737)", () => {
 				});
 			},
 		);
+
+		// Fizzy #2759 review: a dense file that fills the bounded list before
+		// the unreadable one must not hide it — the unreadable file displaces
+		// the latest secret row, which the sentinel then counts.
+		it("names an unreadable file even when an earlier file filled the list", async () => {
+			fastRow({ status: "READY", deferredScanStatus: "PENDING" });
+			await stage([
+				{
+					id: "f1",
+					path: "A.md",
+					data: Buffer.from(
+						`aws_access_key_id = ${AWS_EXAMPLE_ACCESS_KEY}\n`.repeat(
+							120,
+						),
+					),
+					storageKey: snapshotKey("p", "s", "f1"),
+				},
+				{
+					id: "f2",
+					path: "B.md",
+					data: Buffer.from("never readable"),
+					storageKey: unreadableKey,
+				},
+			]);
+			const download = m.downloadFile.getMockImplementation();
+			m.downloadFile.mockImplementation(async (key: string) => {
+				if (key === unreadableKey) {
+					throw new TypeError("socket hang up");
+				}
+				return download?.(key);
+			});
+			activityMocks.attempt = DEFERRED_SCAN_MAX_ATTEMPTS;
+
+			const r = await scanPublishedInstructionSnapshot(snap);
+
+			expect(r.outcome).toBe("INCOMPLETE");
+			expect(r.findings).toHaveLength(101);
+			expect(r.findings.filter((f) => f.path === "A.md")).toHaveLength(
+				99,
+			);
+			expect(r.findings[99]).toEqual({
+				path: "B.md",
+				reason: "scan_failed",
+			});
+			// 120 hits + 1 unreadable file, 100 kept.
+			expect(r.findings[100]).toEqual({
+				path: "(truncated)",
+				reason: "truncated",
+				detail: "21 more",
+			});
+		});
 
 		it("logs the unreadable file by its error class only, never the message, key or path", async () => {
 			await stageWithUnreadableMiddle();
@@ -3501,7 +3554,7 @@ describe("publish first, scan afterwards (Fizzy #2737)", () => {
 			},
 		);
 
-		it("returns INCOMPLETE with no findings when the only problem was a file it could not read", async () => {
+		it("returns INCOMPLETE naming the file when the only problem was a file it could not read", async () => {
 			fastRow({ status: "READY", deferredScanStatus: "PENDING" });
 			await stage([
 				{
@@ -3516,7 +3569,7 @@ describe("publish first, scan afterwards (Fizzy #2737)", () => {
 
 			expect(await scanPublishedInstructionSnapshot(snap)).toEqual({
 				outcome: "INCOMPLETE",
-				findings: [],
+				findings: [{ path: "B.md", reason: "scan_failed" }],
 			});
 		});
 

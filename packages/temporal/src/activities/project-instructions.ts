@@ -118,6 +118,30 @@ class BoundedRejections {
 		}
 	}
 
+	/**
+	 * `push`, except that a FULL list still keeps this row, by displacing the
+	 * latest kept row of any other reason — which is then counted in the
+	 * sentinel like every other row the list left out. For a row the member
+	 * must always be shown: a deferred scan's `scan_failed` file (Fizzy #2759)
+	 * is the only statement that the file went unchecked, while a secret hit
+	 * the cap drops is still announced by the sentinel. Once every kept row
+	 * shares this reason, the row is only counted.
+	 */
+	pushKept(rejection: InstructionRejection): void {
+		if (this.kept.length < MAX_REJECTIONS) {
+			this.push(rejection);
+			return;
+		}
+		this.seen++;
+		for (let i = this.kept.length - 1; i >= 0; i--) {
+			if (this.kept[i]?.reason !== rejection.reason) {
+				this.kept.splice(i, 1);
+				this.kept.push(rejection);
+				return;
+			}
+		}
+	}
+
 	/** Rows that exist but were never materialised (a bounded scan's excess). */
 	countDropped(dropped: number): void {
 		this.seen += dropped;
@@ -1792,11 +1816,13 @@ export async function publishInstructionSnapshotActivity(
  * the whole scan again. On the last one there is no retry left to wait for,
  * and throwing would throw away every finding already established — a
  * credential found in the first file would vanish behind a storage error in
- * the tenth. So the error is logged by its class alone, the remaining files
- * are still scanned, and the verdict is INCOMPLETE WITH those findings: what
- * was found is shown, and the version is still reported as not fully
- * checked. The workflow's own INCOMPLETE stays the last resort for an attempt
- * that cannot return at all.
+ * the tenth. So the error is logged by its class alone, the file becomes a
+ * `scan_failed` finding under its path, the remaining files are still
+ * scanned, and the verdict is INCOMPLETE WITH those findings: what was found
+ * is shown, the files that could not be read are named, and the version is
+ * still reported as not fully checked. The workflow's own INCOMPLETE stays
+ * the last resort for an attempt that cannot return at all, and names no
+ * file because it has none to name.
  */
 export async function scanPublishedInstructionSnapshot(
 	ref: SnapshotRef,
@@ -1843,6 +1869,12 @@ export async function scanPublishedInstructionSnapshot(
 				throw error;
 			}
 			unreadable++;
+			// Named in the findings, so the member sees WHICH files went
+			// unchecked rather than only that some did. The path is what
+			// every finding already shows the member; the log below still
+			// carries neither it nor the error's message. `pushKept`, so a
+			// dense file that filled the list earlier cannot hide it.
+			findings.pushKept({ path: f.path, reason: "scan_failed" });
 			logger.warn(
 				{
 					event: "project.instructions.deferred_scan_file_unreadable",
@@ -1902,9 +1934,9 @@ export async function scanPublishedInstructionSnapshot(
  * logged, never persisted, for the reason on `markInstructionSnapshotFailed`.
  *
  * Findings are kept for every verdict that has them: ISSUES_FOUND, and an
- * INCOMPLETE scan that established some before a file defeated its last
- * attempt — a credential already found is shown, not dropped because a
- * later file could not be read. A PASSED verdict carries none. The list
+ * INCOMPLETE scan, which names each file that defeated its last attempt and
+ * keeps whatever it established around them — a credential already found is
+ * shown, not dropped because a later file could not be read. A PASSED verdict carries none. The list
  * arrives bounded (`BoundedRejections`); it is re-capped only when it is
  * LONGER than that bound, so a list that already ends in its truncation
  * sentinel is stored as it came and the sentinel keeps its real count.
@@ -1978,7 +2010,9 @@ export async function recordDeferredScanOutcome(
 							reason: "scan_failed",
 							// What the scan established before it stopped,
 							// in the same counts-and-rule-ids shape as
-							// the issues-found row; absent when nothing was.
+							// the issues-found row, with the files it could
+							// not read counted under `scan_failed`; absent
+							// when the workflow's last resort named no file.
 							...(findings.length > 0
 								? {
 										findingCount: summary.rejectionCount,
