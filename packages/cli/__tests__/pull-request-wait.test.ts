@@ -33,6 +33,27 @@ function block(state: string, overrides: Record<string, unknown> = {}) {
 	};
 }
 
+/** A member branch block (Fizzy #2738 spec §10). */
+function branch(overrides: Record<string, unknown> = {}) {
+	return {
+		id: "branch-1",
+		ref: "fabric/instructions/members/dev-user1/1",
+		number: 1,
+		state: "OPENING",
+		attempt: 1,
+		foreignCommits: false,
+		membership: null,
+		failure: null,
+		retired: false,
+		pullRequest: null,
+		...overrides,
+	};
+}
+
+function branchPullRequest(url: string) {
+	return { url, externalId: "7", state: "OPEN", lastCheckedAt: null };
+}
+
 /** A client whose status read answers from `answer`, recording each call's time and signal. */
 function fakeClient(
 	answer: (call: number, signal: AbortSignal) => Promise<unknown>,
@@ -134,6 +155,63 @@ describe("waitForPullRequest", () => {
 			expect(calls).toHaveLength(1);
 		},
 	);
+
+	it("on a member branch, waits past OPEN until the branch has its pull request", async () => {
+		const url = "https://example.com/example-org/example-repo/pull/7";
+		const onBranch = (pullRequest: unknown, state = "OPENING") =>
+			block("OPEN", { branch: branch({ state, pullRequest }) });
+		const { client, calls } = fakeClient(async (call) =>
+			call < 3
+				? onBranch(null)
+				: onBranch(branchPullRequest(url), "OPEN"),
+		);
+		const seen: unknown[] = [];
+
+		const { value } = await settle(
+			waitForPullRequest(client, "proj-1", "snap-8", {
+				observe: (pullRequest) => seen.push(pullRequest),
+			}),
+		);
+
+		expect(value).toEqual({
+			kind: "settled",
+			pullRequest: onBranch(branchPullRequest(url), "OPEN"),
+		});
+		expect(calls).toHaveLength(3);
+		expect(seen).toEqual([
+			onBranch(null),
+			onBranch(null),
+			onBranch(branchPullRequest(url), "OPEN"),
+		]);
+	});
+
+	it.each([
+		["BLOCKED", null],
+		["CLOSE_REQUESTED", "OPEN"],
+		["CANCELED", null],
+		["MERGED", "MERGED"],
+		["CLOSED", "CLOSED"],
+	])("stops at OPEN on a %s branch", async (state, prState) => {
+		const answer = block("OPEN", {
+			branch: branch({
+				state,
+				pullRequest: prState
+					? {
+							...branchPullRequest("https://example.com/pull/7"),
+							state: prState,
+						}
+					: null,
+			}),
+		});
+		const { client, calls } = fakeClient(async () => answer);
+
+		const { value } = await settle(
+			waitForPullRequest(client, "proj-1", "snap-8"),
+		);
+
+		expect(value).toEqual({ kind: "settled", pullRequest: answer });
+		expect(calls).toHaveLength(1);
+	});
 
 	it("answers none for a proposal with no pull request", async () => {
 		const { client } = fakeClient(async () => null);

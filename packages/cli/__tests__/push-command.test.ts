@@ -1260,6 +1260,34 @@ describe("--message", () => {
 	});
 });
 
+/** A member branch block (Fizzy #2738 spec §10). */
+function memberBranch(overrides: Record<string, unknown> = {}) {
+	return {
+		id: "branch-1",
+		ref: "fabric/instructions/members/dev-user1/1",
+		number: 1,
+		state: "OPEN",
+		attempt: 1,
+		foreignCommits: false,
+		membership: null,
+		failure: null,
+		retired: false,
+		pullRequest: {
+			url: BRANCH_PR_URL,
+			externalId: "7",
+			state: "OPEN",
+			lastCheckedAt: null,
+		},
+		...overrides,
+	};
+}
+
+const BRANCH_PR_URL = "https://example.com/example-org/example-repo/pull/7";
+
+function appended() {
+	return { outcome: "appended", commitSha: "c0ffee", membership: null };
+}
+
 describe("waiting for the pull request", () => {
 	it("prints the pull request's URL and exits 0 once it opens", async () => {
 		const dest = await repositoryTree();
@@ -1368,6 +1396,8 @@ describe("waiting for the pull request", () => {
 			url: "https://example.com/pull/7",
 			failure: null,
 			timedOut: false,
+			branch: null,
+			append: null,
 		});
 	});
 
@@ -1399,6 +1429,374 @@ describe("waiting for the pull request", () => {
 		expect(result.code).toBe(4);
 		expect(result.stderr).toContain("version 8");
 		expect(result.stderr).toContain("Coding Instructions tab");
+	});
+});
+
+describe("a suggestion added to the member's branch (Fizzy #2738)", () => {
+	it("says it opened the pull request when this push saw the branch without one", async () => {
+		const dest = await repositoryTree();
+		mocks.submitChange.mockResolvedValue(
+			accepted({
+				pullRequest: pullRequest("QUEUED", {
+					branch: memberBranch({
+						state: "PENDING",
+						pullRequest: null,
+					}),
+				}),
+			}),
+		);
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest("OPEN", {
+				url: BRANCH_PR_URL,
+				branch: memberBranch(),
+				append: appended(),
+			}),
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(`Opened pull request ${BRANCH_PR_URL}`);
+	});
+
+	it("says it was added to the pull request the branch already had", async () => {
+		const dest = await repositoryTree();
+		mocks.submitChange.mockResolvedValue(
+			accepted({
+				pullRequest: pullRequest("QUEUED", { branch: memberBranch() }),
+			}),
+		);
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest("OPEN", {
+				url: BRANCH_PR_URL,
+				branch: memberBranch(),
+				append: appended(),
+			}),
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(
+			`Added to your pull request ${BRANCH_PR_URL}`,
+		);
+		expect(result.stdout).not.toContain("Opened pull request");
+	});
+
+	it("keeps waiting while the suggestion is OPEN on a branch with no pull request yet", async () => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest
+			.mockResolvedValueOnce(
+				pullRequest("OPEN", {
+					branch: memberBranch({
+						state: "OPENING",
+						pullRequest: null,
+					}),
+				}),
+			)
+			.mockResolvedValue(
+				pullRequest("OPEN", {
+					url: BRANCH_PR_URL,
+					branch: memberBranch(),
+					append: appended(),
+				}),
+			);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(0);
+		expect(mocks.getProposalPullRequest).toHaveBeenCalledTimes(2);
+		expect(result.stdout).toContain(`Opened pull request ${BRANCH_PR_URL}`);
+	});
+
+	it("exits 0 with its copy when the change is already on the branch", async () => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest("CANCELED", {
+				url: BRANCH_PR_URL,
+				failure: failure("ALREADY_ON_BRANCH"),
+				branch: memberBranch(),
+				append: {
+					outcome: "already_on_branch",
+					commitSha: null,
+					membership: null,
+				},
+			}),
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(
+			"Already on your branch; nothing to add.",
+		);
+		expect(result.stdout).toContain(BRANCH_PR_URL);
+	});
+
+	it.each([
+		["BRANCH_CONFLICT", "changed outside Fabric"],
+		["SUPERSEDED_BY_LATER_CHANGE", "a newer change of yours"],
+	])("exits 7 naming the paths for %s", async (code, copy) => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest("BLOCKED", {
+				url: BRANCH_PR_URL,
+				failure: {
+					...failure(code),
+					phase: "append",
+					params: { paths: "AGENTS.md, rules/lint.md", count: 2 },
+				},
+				branch: memberBranch(),
+			}),
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain(
+			"Fabric could not add this change to your pull request",
+		);
+		expect(result.stderr).toContain(copy);
+		expect(result.stderr).toContain("AGENTS.md, rules/lint.md");
+	});
+
+	it("counts the conflicting paths the failure could not list, whatever they contain", async () => {
+		const dest = await repositoryTree();
+		// What the server's `pathParams` sends for 25 paths: the first 20,
+		// one of which contains the separator itself.
+		const listed = [
+			"docs/a, b.md",
+			...Array.from({ length: 19 }, (_, i) => `rules/r${i}.md`),
+		].join(", ");
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest("BLOCKED", {
+				failure: {
+					...failure("BRANCH_CONFLICT"),
+					params: { paths: listed, count: 25 },
+				},
+				branch: memberBranch(),
+			}),
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain(`${listed} and 5 more`);
+	});
+
+	it("exits 7 with the branch's failure when its pull request could not be opened", async () => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest("OPEN", {
+				branch: memberBranch({
+					state: "BLOCKED",
+					pullRequest: null,
+					failure: { code: "PR_CREATION_REFUSED", retryable: false },
+				}),
+				append: appended(),
+			}),
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain(
+			"the repository refused to open the pull request",
+		);
+	});
+
+	it.each([
+		["MERGED", "MERGED", 0, "was merged"],
+		["CLOSED", "CLOSED", 0, "closed without merging"],
+		["CLOSE_REQUESTED", "OPEN", 7, "is being closed"],
+		["CANCELED", null, 7, "closed before its pull request opened"],
+	])(
+		"does not claim an open pull request when the branch is %s",
+		async (state, prState, code, copy) => {
+			const dest = await repositoryTree();
+			mocks.getProposalPullRequest.mockResolvedValue(
+				pullRequest("OPEN", {
+					url: prState ? BRANCH_PR_URL : null,
+					branch: memberBranch({
+						state,
+						pullRequest: prState
+							? {
+									url: BRANCH_PR_URL,
+									externalId: "7",
+									state: prState,
+									lastCheckedAt: null,
+								}
+							: null,
+					}),
+					append: appended(),
+				}),
+			);
+
+			const result = await runCli(PUSH(dest));
+
+			expect(result.code).toBe(code);
+			expect(`${result.stdout}${result.stderr}`).toContain(copy);
+			expect(result.stdout).not.toContain("Added to your pull request");
+			expect(result.stdout).not.toContain("Opened pull request");
+			expect(mocks.getProposalPullRequest).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it.each([
+		[
+			"an open pull request",
+			"OPEN",
+			{
+				url: BRANCH_PR_URL,
+				externalId: "7",
+				state: "OPEN",
+				lastCheckedAt: null,
+			},
+			"can no longer update its pull request",
+		],
+		[
+			"no pull request yet",
+			"OPENING",
+			null,
+			"could not open its pull request",
+		],
+	])(
+		"exits 7 with REPOSITORY_CHANGED on a branch with %s, without waiting",
+		async (_label, state, branchPullRequest, copy) => {
+			const dest = await repositoryTree();
+			mocks.getProposalPullRequest.mockResolvedValue(
+				pullRequest("OPEN", {
+					url: branchPullRequest ? BRANCH_PR_URL : null,
+					branch: memberBranch({
+						state,
+						pullRequest: branchPullRequest,
+						failure: {
+							code: "REPOSITORY_CHANGED",
+							retryable: false,
+						},
+					}),
+					append: appended(),
+				}),
+			);
+
+			const result = await runCli(PUSH(dest));
+
+			expect(result.code).toBe(7);
+			expect(result.stderr).toContain(copy);
+			expect(result.stderr).toContain("stop tracking it");
+			expect(result.stdout).not.toContain("Added to your pull request");
+			expect(result.stdout).not.toContain("Opened pull request");
+			expect(mocks.getProposalPullRequest).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it.each([
+		["MERGED", "was merged"],
+		["CLOSED", "closed without merging"],
+	])(
+		"reports a %s branch as its outcome even with REPOSITORY_CHANGED",
+		async (state, copy) => {
+			const dest = await repositoryTree();
+			mocks.getProposalPullRequest.mockResolvedValue(
+				pullRequest("OPEN", {
+					url: BRANCH_PR_URL,
+					branch: memberBranch({
+						state,
+						pullRequest: {
+							url: BRANCH_PR_URL,
+							externalId: "7",
+							state,
+							lastCheckedAt: null,
+						},
+						failure: {
+							code: "REPOSITORY_CHANGED",
+							retryable: false,
+						},
+					}),
+					append: appended(),
+				}),
+			);
+
+			const result = await runCli(PUSH(dest));
+
+			expect(result.code).toBe(0);
+			expect(result.stdout).toContain(copy);
+			expect(result.stdout).not.toContain("stop tracking it");
+		},
+	);
+
+	it("stops at a failure Fabric will not retry on a branch whose pull request is not open yet", async () => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest("OPEN", {
+				branch: memberBranch({
+					state: "OPENING",
+					pullRequest: null,
+					failure: { code: "ATTRIBUTION_REJECTED", retryable: false },
+				}),
+				append: appended(),
+			}),
+		);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain("could not name you safely");
+		expect(mocks.getProposalPullRequest).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps waiting through a failure Fabric retries on its own", async () => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest
+			.mockResolvedValueOnce(
+				pullRequest("OPEN", {
+					branch: memberBranch({
+						state: "OPENING",
+						pullRequest: null,
+						failure: {
+							code: "PROVIDER_TEMPORARY",
+							retryable: true,
+						},
+					}),
+				}),
+			)
+			.mockResolvedValue(
+				pullRequest("OPEN", {
+					url: BRANCH_PR_URL,
+					branch: memberBranch(),
+					append: appended(),
+				}),
+			);
+
+		const result = await runCli(PUSH(dest));
+
+		expect(result.code).toBe(0);
+		expect(mocks.getProposalPullRequest).toHaveBeenCalledTimes(2);
+		expect(result.stdout).toContain(`Opened pull request ${BRANCH_PR_URL}`);
+	});
+
+	it("adds branch and append to --format json", async () => {
+		const dest = await repositoryTree();
+		mocks.getProposalPullRequest.mockResolvedValue(
+			pullRequest("OPEN", {
+				url: BRANCH_PR_URL,
+				branch: memberBranch(),
+				append: appended(),
+			}),
+		);
+
+		const result = await runCli([...PUSH(dest), "--format", "json"]);
+
+		expect(result.code).toBe(0);
+		expect(JSON.parse(result.stdout).pullRequest).toEqual({
+			operationId: "op-1",
+			state: "OPEN",
+			url: BRANCH_PR_URL,
+			failure: null,
+			timedOut: false,
+			branch: memberBranch(),
+			append: appended(),
+		});
 	});
 });
 
