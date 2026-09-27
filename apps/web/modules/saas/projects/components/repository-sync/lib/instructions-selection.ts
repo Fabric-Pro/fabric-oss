@@ -819,6 +819,28 @@ export function applyInstructionsAction(
 	}
 }
 
+/**
+ * What an action clears by moving the synced folder (Fizzy #2752): the
+ * staged edits, which were relative to the old folder. `null` when it
+ * moves nothing (the same folder, or no folder before or after) or there
+ * was nothing staged to clear.
+ */
+export function changesClearedByMove(
+	selection: InstructionsSelection,
+	action: InstructionsAction,
+): { from: string; changes: number } | null {
+	if (
+		action.type !== "setRoot" ||
+		action.root === null ||
+		selection.root === null ||
+		action.root === selection.root
+	) {
+		return null;
+	}
+	const changes = selection.edits.add.length + selection.edits.remove.length;
+	return changes > 0 ? { from: selection.root, changes } : null;
+}
+
 /** Select all: the repository root, the saved rules untouched. */
 export const SELECT_ALL_INSTRUCTIONS: InstructionsAction = {
 	type: "setRoot",

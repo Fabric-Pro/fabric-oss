@@ -2,7 +2,8 @@
  * The shared repository-sync selection tree (Fizzy #2750 §3, §9): the
  * listing states, the three box states and how a partial one is announced,
  * a row that cannot be clicked saying why through `aria-describedby`, the
- * click handed to the adapter, Select all / Select none, the keyboard order,
+ * click handed to the adapter, Select all / Select none, Collapse all and
+ * folders the dialog asks to open, the keyboard order,
  * a search that shows the adapter's verdict over the whole listing, and the
  * summary. Like the sibling suites, this resolves the REAL `en.json` copy
  * and throws on a missing key.
@@ -247,12 +248,16 @@ describe("RepositorySyncSelectionTree", () => {
 		expect(box("docs/old")).toBeDisabled();
 	});
 
-	it("puts the search, Select all and Select none before the rows in keyboard order", async () => {
+	it("puts the search, Collapse all, Select all and Select none before the rows in keyboard order", async () => {
 		const user = userEvent.setup();
 		renderTree();
 		await user.tab();
 		expect(
 			screen.getByRole("searchbox", { name: "Search folders and files" }),
+		).toHaveFocus();
+		await user.tab();
+		expect(
+			screen.getByRole("button", { name: "Collapse all" }),
 		).toHaveFocus();
 		await user.tab();
 		expect(
@@ -278,6 +283,111 @@ describe("RepositorySyncSelectionTree", () => {
 		unmount();
 		renderTree({ initiallyOpen: new Set(["docs/old"]) });
 		expect(box("docs/old/notes.md")).toBeInTheDocument();
+	});
+
+	it("opens a folder the dialog adds later, once, and leaves the member's other choices alone (Fizzy #2752)", async () => {
+		const user = userEvent.setup();
+		const handlers = {
+			onToggle: vi.fn(),
+			onSelectAll: vi.fn(),
+			onSelectNone: vi.fn(),
+		};
+		const tree = (initiallyOpen: ReadonlySet<string>) => (
+			<RepositorySyncSelectionTree
+				namespace={NAMESPACE}
+				listing={ready()}
+				row={rowOf}
+				disabled={false}
+				summary={null}
+				initiallyOpen={initiallyOpen}
+				{...handlers}
+			/>
+		);
+		const { rerender } = render(tree(new Set()));
+		// The member closes `tools`, which is open by default.
+		await user.click(screen.getByRole("button", { name: "tools" }));
+		expect(
+			screen.queryByRole("checkbox", { name: "tools/run.md" }),
+		).not.toBeInTheDocument();
+
+		// The way to something left out arrives once the rules load.
+		rerender(tree(new Set(["docs/old"])));
+		expect(box("docs/old/notes.md")).toBeInTheDocument();
+		// `tools` was not asked for: it stays as the member left it.
+		expect(
+			screen.queryByRole("checkbox", { name: "tools/run.md" }),
+		).not.toBeInTheDocument();
+
+		// Closed by the member afterwards, it stays closed while the set
+		// still holds it, and when it drops out.
+		await user.click(screen.getByRole("button", { name: "old" }));
+		rerender(tree(new Set(["docs/old"])));
+		rerender(tree(new Set()));
+		expect(
+			screen.queryByRole("checkbox", { name: "docs/old/notes.md" }),
+		).not.toBeInTheDocument();
+
+		// A folder the member closed BEFORE it arrived opens when it does…
+		rerender(tree(new Set(["tools"])));
+		expect(box("tools/run.md")).toBeInTheDocument();
+		// …and closed again, it stays closed on later renders.
+		await user.click(screen.getByRole("button", { name: "tools" }));
+		rerender(tree(new Set(["tools"])));
+		expect(
+			screen.queryByRole("checkbox", { name: "tools/run.md" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("Collapse all closes every folder down to the top-level rows, and is off once nothing is open", async () => {
+		const user = userEvent.setup();
+		renderTree({ initiallyOpen: new Set(["docs/old"]) });
+		const collapse = screen.getByRole("button", { name: "Collapse all" });
+		expect(box("docs/old/notes.md")).toBeInTheDocument();
+		expect(box("tools/run.md")).toBeInTheDocument();
+
+		await user.click(collapse);
+		expect(box("docs")).toBeInTheDocument();
+		expect(box("README.md")).toBeInTheDocument();
+		expect(box("tools")).toBeInTheDocument();
+		for (const hidden of ["docs/guide.md", "docs/old", "tools/run.md"]) {
+			expect(
+				screen.queryByRole("checkbox", { name: hidden }),
+			).not.toBeInTheDocument();
+		}
+		expect(collapse).toBeDisabled();
+
+		// Opening a folder again opens only that folder: the one inside it
+		// that was open before stays closed.
+		await user.click(screen.getByRole("button", { name: "docs" }));
+		expect(collapse).toBeEnabled();
+		expect(box("docs/old")).toBeInTheDocument();
+		expect(
+			screen.queryByRole("checkbox", { name: "docs/old/notes.md" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("Collapse all during a search closes the folders it shows, and leaves browsing as it was", async () => {
+		const user = userEvent.setup();
+		renderTree();
+		await user.type(screen.getByRole("searchbox"), "notes");
+		expect(box("docs/old/notes.md")).toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "Collapse all" }));
+		expect(box("docs")).toBeInTheDocument();
+		expect(
+			screen.queryByRole("checkbox", { name: "docs/old/notes.md" }),
+		).not.toBeInTheDocument();
+
+		await user.clear(screen.getByRole("searchbox"));
+		expect(box("docs/guide.md")).toBeInTheDocument();
+		expect(box("tools/run.md")).toBeInTheDocument();
+	});
+
+	it("offers Collapse all only when there are rows to collapse", () => {
+		renderTree({ listing: ready([]) });
+		expect(
+			screen.queryByRole("button", { name: "Collapse all" }),
+		).not.toBeInTheDocument();
 	});
 
 	it("shows the adapter's verdict for a search match, computed over the whole listing", async () => {

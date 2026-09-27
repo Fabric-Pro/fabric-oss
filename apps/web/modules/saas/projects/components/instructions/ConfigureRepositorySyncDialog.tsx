@@ -38,6 +38,7 @@ import {
 import { AddRepositoryPathInput } from "../repository-sync/AddRepositoryPathInput";
 import {
 	applyInstructionsAction,
+	changesClearedByMove,
 	type InstructionsAction,
 	type InstructionsIgnoreFile,
 	type InstructionsSelection,
@@ -171,9 +172,15 @@ export function ConfigureRepositorySyncDialog({
 		edits: NO_EXCLUSION_EDITS,
 	}));
 	// The way to the stored folder starts open, so it shows its selection.
-	const [initiallyOpen] = useState<ReadonlySet<string>>(
-		() => new Set(current ? ancestorsOf(current.rootPath) : []),
+	const [storedRootOpen] = useState<readonly string[]>(() =>
+		current ? ancestorsOf(current.rootPath) : [],
 	);
+	// What the last move of the synced folder cleared, said until the next
+	// change (Fizzy #2752).
+	const [movedCleared, setMovedCleared] = useState<{
+		from: string;
+		changes: number;
+	} | null>(null);
 	const [automatic, setAutomatic] = useState(current?.automatic ?? true);
 	const [inlineError, setInlineError] = useState<string | null>(null);
 	// Which field the inline error is ABOUT, derived from `mapped.key`
@@ -299,6 +306,17 @@ export function ConfigureRepositorySyncDialog({
 			}),
 		[treeIndex, selection, savedGlobs, settings.isError, modelIgnoreFile],
 	);
+	// And the way to every item left out inside it, once the listing and
+	// rules place them, as Living Memory's dialog opens to its exclusions
+	// (Fizzy #2752). The tree opens each path once, when it arrives.
+	const initiallyOpen = useMemo<ReadonlySet<string>>(
+		() =>
+			new Set([
+				...storedRootOpen,
+				...model.leftOut.flatMap((item) => ancestorsOf(item.path)),
+			]),
+		[storedRootOpen, model.leftOut],
+	);
 	const summary = instructionsSummary({
 		model,
 		listing: listing.status,
@@ -311,6 +329,7 @@ export function ConfigureRepositorySyncDialog({
 	}
 
 	function apply(action: InstructionsAction) {
+		setMovedCleared(changesClearedByMove(selection, action));
 		setSelection((prev) => applyInstructionsAction(prev, action));
 		clearInlineError();
 	}
@@ -319,6 +338,7 @@ export function ConfigureRepositorySyncDialog({
 	function changeRef(next: string) {
 		if (next.trim() !== branch) {
 			setSelection((prev) => ({ ...prev, edits: NO_EXCLUSION_EDITS }));
+			setMovedCleared(null);
 		}
 		setRef(next);
 		clearInlineError();
@@ -491,6 +511,7 @@ export function ConfigureRepositorySyncDialog({
 										...prev,
 										edits: NO_EXCLUSION_EDITS,
 									}));
+									setMovedCleared(null);
 									clearInlineError();
 								}}
 							>
@@ -542,14 +563,32 @@ export function ConfigureRepositorySyncDialog({
 						disabled={pending}
 						initiallyOpen={initiallyOpen}
 						notices={
-							<RulesNotices
-								settingsFailed={settings.isError}
-								ignoreFile={
-									root !== null && listing.status === "ready"
-										? ignoreFile
-										: { kind: "none" }
-								}
-							/>
+							<>
+								<RulesNotices
+									settingsFailed={settings.isError}
+									ignoreFile={
+										root !== null &&
+										listing.status === "ready"
+											? ignoreFile
+											: { kind: "none" }
+									}
+								/>
+								{movedCleared ? (
+									<output className="text-xs">
+										{t(
+											"configureDialog.movedClearedChanges",
+											{
+												changes: movedCleared.changes,
+												scope:
+													movedCleared.from === ""
+														? "root"
+														: "folder",
+												from: movedCleared.from,
+											},
+										)}
+									</output>
+								) : null}
+							</>
 						}
 						summary={
 							<SelectionSummary

@@ -1167,6 +1167,41 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			expect(box("agents/skills")).toBeChecked();
 		});
 
+		it("says inline when moving the folder clears the member's changes, until the next change (Fizzy #2752)", async () => {
+			const user = userEvent.setup();
+			await renderOnAgents();
+			const notice = () => screen.queryByText(/^Moving the sync cleared/);
+
+			await user.click(box("agents/skills"));
+			expect(notice()).not.toBeInTheDocument();
+			await user.click(box("tools"));
+			expect(notice()).toHaveTextContent("agents/");
+
+			// Moving back clears nothing more, and says nothing.
+			await user.click(box("agents"));
+			await waitFor(() => expect(box("agents/skills")).toBeEnabled());
+			expect(box("agents/skills")).toBeChecked();
+			expect(notice()).not.toBeInTheDocument();
+		});
+
+		it("opens the way to every item left out inside the stored folder (Fizzy #2752)", async () => {
+			stored = ["claude/settings.json"];
+			renderDialog({
+				current: {
+					...(CONFIGURED.configured as NonNullable<
+						RepositorySyncState["configured"]
+					>),
+					rootPath: "tools",
+				},
+			});
+			const leftOut = await screen.findByRole("checkbox", {
+				name: "tools/claude/settings.json",
+			});
+			expect(leftOut).not.toBeChecked();
+			// Its only file is out, so the folder is out too.
+			expect(box("tools/claude")).not.toBeChecked();
+		});
+
 		it("drops the staged rules when the branch changes", async () => {
 			const user = userEvent.setup();
 			const { onOpenChange } = await renderOnAgents();

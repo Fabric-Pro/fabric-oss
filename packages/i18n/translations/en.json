@@ -2684,6 +2684,7 @@
 						"selectNone": "Select none",
 						"selectionActions": "Select",
 						"searchPlaceholder": "Search folders and files",
+						"collapseAll": "Collapse all",
 						"loading": "Loading the branch's folders and files…",
 						"empty": "No files on this branch.",
 						"noMatches": "No folders or files match this search.",
@@ -5887,6 +5888,7 @@
 						"empty": "Type a folder, or use Select all to sync the whole repository."
 					},
 					"removalNotice": "Saving removes these project ignore rules, which folder uploads also use:",
+					"movedClearedChanges": "Moving the sync cleared {changes, plural, one {the change} other {the # changes}} you made under {scope, select, root {the whole repository} other {{from}/}}.",
 					"saveBlocked": {
 						"noRepository": "Choose a repository to sync from.",
 						"noBranch": "Enter the branch to sync from."
@@ -5914,6 +5916,7 @@
 					"selectNone": "Select none",
 					"selectionActions": "Select",
 					"searchPlaceholder": "Search folders and files",
+					"collapseAll": "Collapse all",
 					"loading": "Loading the branch's folders and files…",
 					"empty": "No files on this branch.",
 					"noMatches": "No folders or files match this search.",
