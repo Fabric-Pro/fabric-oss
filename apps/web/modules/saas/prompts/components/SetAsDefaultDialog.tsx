@@ -15,7 +15,7 @@ import { useSession } from "@saas/auth/hooks/use-session";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import {
 	Dialog,
@@ -80,6 +80,7 @@ export function SetAsDefaultDialog({
 	storyKind,
 	onSuccess,
 }: SetAsDefaultDialogProps) {
+	const queryClient = useQueryClient();
 	const { organizationId, isOrgContext } = useOrganizationContext();
 	const { user } = useSession();
 	const { isOrganizationAdmin } = useActiveOrganization();
@@ -130,6 +131,8 @@ export function SetAsDefaultDialog({
 	const {
 		data: boundActions,
 		error: boundActionsError,
+		isFetching: boundActionsFetching,
+		isPending: boundActionsPending,
 		refetch: refetchBoundActions,
 	} = useQuery({
 		queryKey: ["prompt-bound-actions", promptId, organizationId],
@@ -184,10 +187,16 @@ export function SetAsDefaultDialog({
 			)
 			.filter((id: string) => id !== primaryActionId);
 		if (ids.length > 0) {
-			setAlsoApplyTo([...new Set<string>(ids)]);
+			setAlsoApplyTo((current) => [
+				...new Set<string>([...current, ...ids]),
+			]);
 		}
 		prefilled.current = true;
 	}, [boundActions, primaryActionId]);
+
+	const handleAlsoApplyToChange = (next: string[]) => {
+		setAlsoApplyTo(next);
+	};
 
 	const documentTypeOptions = selectedAgentTarget
 		? bindableDocumentTypes(
@@ -289,6 +298,9 @@ export function SetAsDefaultDialog({
 					: `"${promptName}" set as default`,
 			);
 			onOpenChange(false);
+			queryClient.invalidateQueries({
+				queryKey: ["prompt-bound-actions", promptId],
+			});
 			onSuccess?.();
 		},
 		onError: (error) => {
@@ -406,6 +418,11 @@ export function SetAsDefaultDialog({
 					{/* FR22 / FR19: the other actions this applies to. */}
 					{primaryActionId && (
 						<div className="space-y-2">
+							{(boundActionsPending || boundActionsFetching) && (
+								<output className="text-muted-foreground text-xs">
+									Loading actions this prompt already serves…
+								</output>
+							)}
 							{boundActionsError && (
 								// FR22's pre-fill silently comes up empty on this
 								// failure — say so, and offer a retry, without
@@ -415,9 +432,10 @@ export function SetAsDefaultDialog({
 									className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-highlight/40 bg-highlight/5 px-3 py-2 text-highlight-ink text-xs"
 								>
 									<span>
-										Could not load the actions this prompt
-										already serves, so none are
-										pre-selected.
+										Could not refresh the actions this
+										prompt already serves. Your current
+										selection is kept, but it may be
+										incomplete.
 									</span>
 									<Button
 										type="button"
@@ -435,7 +453,7 @@ export function SetAsDefaultDialog({
 								label="Also apply to"
 								alwaysIncluded={primaryActionId}
 								value={alsoApplyTo}
-								onChange={setAlsoApplyTo}
+								onChange={handleAlsoApplyToChange}
 								hint={
 									alsoApplyTo.length > 0
 										? `${
@@ -459,7 +477,12 @@ export function SetAsDefaultDialog({
 					</Button>
 					<Button
 						onClick={() => bindMutation.mutate()}
-						disabled={bindMutation.isPending || !selectedDocType}
+						disabled={
+							bindMutation.isPending ||
+							boundActionsPending ||
+							boundActionsFetching ||
+							!selectedDocType
+						}
 					>
 						{bindMutation.isPending && (
 							<Loader2Icon className="mr-2 h-4 w-4 animate-spin" />

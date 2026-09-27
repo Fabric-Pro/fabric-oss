@@ -160,6 +160,7 @@ interface AppInsightsState {
 	requireFromObservability: PackageRequire | undefined;
 	samplingBuckets: Map<string, SamplingBucket>;
 	samplingLimit: number;
+	pendingDirectTelemetry: boolean;
 }
 
 const DEFAULT_SAMPLING_LIMIT = 20;
@@ -178,6 +179,7 @@ function createState(): AppInsightsState {
 		requireFromObservability: undefined,
 		samplingBuckets: new Map(),
 		samplingLimit: DEFAULT_SAMPLING_LIMIT,
+		pendingDirectTelemetry: false,
 	};
 }
 
@@ -557,6 +559,7 @@ export function trackEvent(
 					"event.id": eventId,
 				},
 			});
+			state.pendingDirectTelemetry = true;
 			return;
 		}
 
@@ -605,6 +608,7 @@ export function trackMetric(
 				value,
 				properties: sanitizeProperties(properties),
 			});
+			state.pendingDirectTelemetry = true;
 			return;
 		}
 		metrics
@@ -729,6 +733,7 @@ function emitSuppressedTrace(
 			severity: SEVERITY_BY_LOG_LEVEL[severity],
 			properties: { event: "app-insights.log-sampling-suppressed" },
 		});
+		getState().pendingDirectTelemetry = true;
 	} catch {
 		// Swallow — see file header.
 	}
@@ -759,6 +764,7 @@ export function trackLog(
 			severity: SEVERITY_BY_LOG_LEVEL[severity],
 			properties: sanitizeProperties(properties),
 		});
+		getState().pendingDirectTelemetry = true;
 	} catch (err) {
 		// Swallow — see file header.
 		console.warn(
@@ -801,6 +807,7 @@ export function trackLogException(
 			severity: SEVERITY_BY_LOG_LEVEL[severity],
 			properties: sanitizeProperties(properties),
 		});
+		getState().pendingDirectTelemetry = true;
 	} catch (err) {
 		// Swallow — see file header.
 		console.warn(
@@ -838,8 +845,15 @@ export async function flushAppInsights(): Promise<void> {
 				emitSuppressedTrace(key, bucket.suppressed, bucket.severity);
 				bucket.suppressed = 0;
 			}
+			if (now - bucket.windowStart >= SAMPLING_WINDOW_MS) {
+				state.samplingBuckets.delete(key);
+			}
+		}
+		if (!state.pendingDirectTelemetry) {
+			return;
 		}
 		await client.flush();
+		state.pendingDirectTelemetry = false;
 	} catch (err) {
 		console.warn(
 			"[app-insights] flush failed",
@@ -856,6 +870,7 @@ export async function shutdownAppInsights(): Promise<void> {
 	state.clientRoleName = undefined;
 	state.clientInitAttempted = false;
 	state.logsBootDiagnosticEmitted = false;
+	state.pendingDirectTelemetry = false;
 	state.transport = "disabled";
 	state.initialized = false;
 	if (!client) {
@@ -894,6 +909,11 @@ export function __resetAppInsightsForTests(): void {
  *  fire 20+ records (or wait 60s for a window to roll) to exercise it. */
 export function __setAppInsightsSamplingLimitForTests(limit: number): void {
 	getState().samplingLimit = limit;
+}
+
+/** Test-only: inspect whether elapsed sampling keys were evicted. */
+export function __samplingBucketCountForTests(): number {
+	return getState().samplingBuckets.size;
 }
 
 /** Install a deterministic manual-client factory without loading the SDK. */

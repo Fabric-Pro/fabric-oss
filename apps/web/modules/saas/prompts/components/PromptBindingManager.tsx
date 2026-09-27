@@ -142,7 +142,7 @@ export function PromptBindingManager({
 	// Fetch prompt details to get versions
 	const {
 		data: promptDetails,
-		isLoading: isLoadingDetails,
+		isPending: isLoadingDetails,
 		error: promptDetailsError,
 		refetch: refetchPromptDetails,
 	} = useQuery({
@@ -256,6 +256,9 @@ export function PromptBindingManager({
 			// Invalidate relevant queries
 			queryClient.invalidateQueries({ queryKey: ["prompts"] });
 			queryClient.invalidateQueries({ queryKey: ["prompt-bindings"] });
+			queryClient.invalidateQueries({
+				queryKey: ["prompt-bound-actions", promptId],
+			});
 		},
 		onError: (error) => {
 			toast.error("Failed to bind prompt", {

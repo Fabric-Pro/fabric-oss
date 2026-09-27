@@ -3,6 +3,7 @@
 import { CopilotKit } from "@copilotkit/react-core";
 import "@copilotkit/react-ui/styles.css";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import {
 	AI_SIDEBAR_CONTENT_SHIFT_CLASS,
 	useAiSidebarExpanded,
@@ -29,6 +30,7 @@ import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { toast } from "sonner";
 import { isPromptInaccessible } from "../lib/prompt-inaccessible";
+import { savePromptContentWithReachWarning } from "../lib/shared-edit-warning";
 import { LoadFailure } from "./LoadFailure";
 import { PromptContentEnhancer } from "./PromptContentEnhancer";
 
@@ -41,6 +43,7 @@ export function PromptEnhancePage({ promptId, organizationId }: Props) {
 	const router = useRouter();
 	const { basePath } = useOrganizationContext();
 	const queryClient = useQueryClient();
+	const { confirm } = useConfirmationAlert();
 	const onError = useCopilotErrorHandler();
 
 	// A full-bleed CopilotSidebar host, like the document and story editors:
@@ -58,7 +61,7 @@ export function PromptEnhancePage({ promptId, organizationId }: Props) {
 
 	const {
 		data: prompt,
-		isLoading,
+		isPending,
 		error,
 		refetch,
 	} = useQuery(
@@ -132,7 +135,7 @@ export function PromptEnhancePage({ promptId, organizationId }: Props) {
 		},
 	});
 
-	if (isLoading) {
+	if (isPending) {
 		return (
 			<div className="space-y-6">
 				<Skeleton className="h-32 w-full" />
@@ -179,8 +182,14 @@ export function PromptEnhancePage({ promptId, organizationId }: Props) {
 
 	const latestVersion = prompt.versions?.[0];
 
-	const handleSave = (content: string) => {
-		updateContentMutation.mutate(content);
+	const handleSave = async (nextContent: string) => {
+		const save = () => updateContentMutation.mutate(nextContent);
+		await savePromptContentWithReachWarning({
+			promptId,
+			organizationId: organizationId ?? null,
+			confirm,
+			save,
+		});
 	};
 
 	const handleCancel = () => {

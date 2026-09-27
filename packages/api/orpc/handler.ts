@@ -7,6 +7,7 @@ import { router } from "./router";
 import {
 	createRpcErrorCaptureInterceptor,
 	createRpcErrorLoggingInterceptor,
+	createRpcRouteTemplateCaptureInterceptor,
 } from "./rpc-error-logging";
 
 // `ResponseHeadersPlugin` injects `context.resHeaders` and merges it into
@@ -25,6 +26,7 @@ import {
 export const rpcHandler = new RPCHandler(router, {
 	plugins: [new ResponseHeadersPlugin()],
 	interceptors: [createRpcErrorCaptureInterceptor()],
+	clientInterceptors: [createRpcRouteTemplateCaptureInterceptor()],
 	rootInterceptors: [createRpcErrorLoggingInterceptor()],
 });
 
@@ -36,5 +38,6 @@ export const openApiHandler = new OpenAPIHandler(router, {
 		}),
 	],
 	interceptors: [createRpcErrorCaptureInterceptor()],
+	clientInterceptors: [createRpcRouteTemplateCaptureInterceptor()],
 	rootInterceptors: [createRpcErrorLoggingInterceptor()],
 });

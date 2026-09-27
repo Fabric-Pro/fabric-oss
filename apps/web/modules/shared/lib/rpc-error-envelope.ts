@@ -48,6 +48,9 @@ export function rpcErrorResponse(
 				status,
 				message: fallbackORPCErrorMessage(code, undefined),
 				data: {
+					// This marker survives an empty proxy body. Consumers must not
+					// mistake a rewrapped 403/404 for the API's own access decision.
+					isNonOrpcResponse: true,
 					responseText:
 						text.length > RESPONSE_TEXT_LIMIT
 							? `${text.slice(0, RESPONSE_TEXT_LIMIT)}…`

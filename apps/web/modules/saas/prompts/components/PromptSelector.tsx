@@ -139,7 +139,12 @@ export function PromptSelector({
 
 	// Fetch available prompts for this agent
 	// Uses binding-first architecture: only bound prompts are returned
-	const { data, isLoading, error, refetch } = useQuery(
+	const {
+		data,
+		isPending: isLoading,
+		error,
+		refetch,
+	} = useQuery(
 		orpc.prompts.agents.available.queryOptions({
 			input: {
 				agentName,
