@@ -1,7 +1,7 @@
-name: Request external review
+name: Request OSS review
 
 # Replaces native CODEOWNERS auto-review (see .github/CODEOWNERS).
-# This workflow requests the designated reviewer for outside contributors in
+# This workflow requests the designated reviewer for pull requests in
 # fabric-oss. It does not request reviews in the internal repository.
 #
 # pull_request_target (not pull_request) so the base repository's token can
@@ -23,47 +23,35 @@ jobs:
     # arm64: this job only runs `gh api` — architecture-neutral.
     runs-on: ubuntu-24.04-arm
     steps:
-      - name: Request review from the sanctioned maintainer for external authors
+      - name: Request review from the sanctioned maintainer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ASSOCIATION: ${{ github.event.pull_request.author_association }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
           NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          case "$ASSOCIATION" in
-            MEMBER|OWNER|COLLABORATOR)
-              echo "Internal author ($ASSOCIATION) — no review request."
-              exit 0
-              ;;
-          esac
-          # author_association under-reports on organization repos: outside
-          # collaborators and members with private org membership both come
-          # through as CONTRIBUTOR. Ask the repository itself whether the
-          # author holds write access before treating them as external. The
-          # login is validated before it enters the request path, and an API
-          # error deliberately falls through to requesting review — the safe
-          # direction for a routing control is extra noise, never a silently
-          # skipped external review.
-          if [[ "$AUTHOR" =~ ^[A-Za-z0-9-]+$ ]]; then
-            PERM=$(gh api "repos/${{ github.repository }}/collaborators/${AUTHOR}/permission"               --jq .permission 2>/dev/null) || PERM=""
-            case "$PERM" in
-              admin|maintain|write)
-                echo "Author has $PERM access — no review request."
-                exit 0
-                ;;
-            esac
+          if [[ "$AUTHOR" == preddy4690 ]]; then
+            echo "The designated reviewer authored this PR — self-review is unavailable."
+            exit 0
           fi
-          # Requesting an already-requested or already-reviewed reviewer, or
-          # the PR author themselves, returns 422 — a no-op for this
-          # workflow's purpose. Every other failure must fail the step so a
-          # dead routing control turns visibly red instead of silently
-          # stopping external review requests.
+          # Reopening a PR can return 422 after a request or review. Confirm
+          # that state before treating the response as a no-op.
           if ! ERR=$(gh api --method POST \
             "repos/${{ github.repository }}/pulls/${NUMBER}/requested_reviewers" \
             -f 'reviewers[]=preddy4690' 2>&1); then
             case "$ERR" in
               *422*|*Unprocessable*)
-                echo "Review request already present — ignoring"
+                REQUESTED=$(gh api \
+                  "repos/${{ github.repository }}/pulls/${NUMBER}/requested_reviewers" \
+                  --jq '[.users[].login] | index("preddy4690") != null')
+                REVIEWED=$(gh api \
+                  "repos/${{ github.repository }}/pulls/${NUMBER}/reviews" \
+                  --jq '[.[] | select(.user.login == "preddy4690")] | length')
+                if [[ "$REQUESTED" == true || "$REVIEWED" -gt 0 ]]; then
+                  echo "Review request or review already present."
+                else
+                  echo "$ERR" >&2
+                  exit 1
+                fi
                 ;;
               *)
                 echo "$ERR" >&2
