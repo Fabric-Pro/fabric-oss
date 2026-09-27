@@ -2625,14 +2625,26 @@
 						"description": "Point this at selected folders or files on one branch of a connected repository. Sync now pulls their content in from the pinned commit; the repository becomes the author of record for every file it produces.",
 						"repositoryLabel": "Repository",
 						"branchLabel": "Branch",
-						"pathsLabel": "Folders and files",
-						"pathsPlaceholder": "e.g. docs or docs/guide.md",
-						"pathsHint": "Press Enter or Add to select a folder or file. Leave blank and press Add to select the whole repository — only when nothing else is selected.",
-						"addPath": "Add",
-						"wholeRepo": "Whole repository",
-						"removePath": "Remove {path}",
+						"selectedPaths": {
+							"label": "Syncs",
+							"wholeRepository": "Whole repository",
+							"remove": "Stop syncing {path}",
+							"except": "except {path}",
+							"includeAgain": "Include {path} again"
+						},
+						"typedPath": {
+							"label": "Folder or file",
+							"placeholder": "e.g. docs or docs/guide.md",
+							"add": "Add",
+							"hint": "Press Enter or Add to sync a folder or file. Leaving something out inside a folder needs the tree, so it can't be done for paths the tree doesn't show.",
+							"empty": "Type a folder or file, or use Select all to sync the whole repository."
+						},
+						"saveBlocked": {
+							"noRepository": "Choose a repository to sync from.",
+							"noBranch": "Enter the branch to sync from."
+						},
 						"contextignoreNotice": "Each selected folder's own .contextignore is honored, the same way `fabric context push` applies it.",
-						"pruneNotice": "A file no longer selected, or removed from the repository, is pruned from Living Memory on the next sync.",
+						"pruneNotice": "A file no longer selected, left out, or removed from the repository is pruned from Living Memory on the next sync.",
 						"actingNotice": "Every sync after this one runs as you, the member who configured it.",
 						"automaticLabel": "Keep in sync automatically",
 						"automaticHint": "Fabric picks up a pushed change right after each push to a GitHub repository, and otherwise normally 15 to 20 minutes after a push; longer while the poll works through a backlog or a sync is backing off after failures. Automatic syncs run as you.",
@@ -2644,6 +2656,11 @@
 							"EXCLUDED_FABRIC_PATH": "“{path}” is in a .fabric folder, the Fabric CLI's own state, which Living Memory never syncs.",
 							"PATH_PREFIX_OVERLAP": "“{path}” overlaps another selected path.",
 							"TOO_MANY_PATHS": "Select at most 50 folders or files.",
+							"EXCLUDED_PATH_POLICY_FILE": "“{path}” is a folder's .contextignore, which the sync reads as that folder's policy, so it can't be left out.",
+							"TOO_MANY_EXCLUDED_PATHS": "Leave out at most 200 folders or files.",
+							"EXCLUDED_PATH_OUTSIDE_SELECTION": "“{path}” isn't inside a selected folder, so there is nothing to leave it out of.",
+							"EXCLUDED_PATH_OVERLAP": "“{path}” is inside “{withPath}”, which is already left out.",
+							"EXCLUDED_PATHS_STALE": "What this sync leaves out changed since this was opened. Reload and choose again.",
 							"BRANCH_NOT_FOUND": "Branch \"{path}\" wasn't found on the remote.",
 							"REPOSITORY_NOT_FOUND": "That repository connection wasn't found.",
 							"REPOSITORY_UNAVAILABLE": "This repository connection needs attention before it can be synced from.",
@@ -2657,11 +2674,15 @@
 						"EXCLUDED_PATH": "“{path}” is a coding-instructions file, which Living Memory never syncs.",
 						"EXCLUDED_FABRIC_PATH": "“{path}” is in a .fabric folder, the Fabric CLI's own state, which Living Memory never syncs.",
 						"TOO_MANY_PATHS": "Select at most {max} folders or files.",
-						"PATH_PREFIX_OVERLAP": "“{path}” overlaps “{withPath}”, which is already selected.",
+						"PATH_PREFIX_OVERLAP": "“{path}” is inside “{withPath}”, which is already selected.",
+						"INSIDE_WHOLE_REPOSITORY": "The whole repository is already selected, so “{path}” syncs already.",
 						"DUPLICATE_PATH": "“{path}” is already selected."
 					},
 					"tree": {
 						"label": "Folders and files on this branch",
+						"selectAll": "Select all",
+						"selectNone": "Select none",
+						"selectionActions": "Select",
 						"searchPlaceholder": "Search folders and files",
 						"loading": "Loading the branch's folders and files…",
 						"empty": "No files on this branch.",
@@ -2669,10 +2690,38 @@
 						"unsupported": "This repository type doesn't support browsing. Type the paths to sync below.",
 						"truncated": "This branch is too large to list in full: only the first {max, number} entries are shown. Type any other path below.",
 						"error": "Couldn't list this branch's folders and files. Type the paths to sync below, or try again later.",
-						"coveredByParent": "Included by a selected parent folder",
-						"containsSelected": "A path inside this folder is selected",
-						"wholeRepository": "The whole repository is selected. Remove it to choose individual folders and files.",
-						"refineSearch": "Showing the first {max} matches. Refine the search to see others."
+						"refineSearch": "Showing the first {max} matches. Refine the search to see others.",
+						"selection": {
+							"cantTellYet": "Can't tell yet",
+							"leftOutBecause": "Left out because {path} is unticked",
+							"fabric": "In a .fabric folder, the Fabric CLI's own state, which never syncs",
+							"symlink": "Symbolic links never sync",
+							"policyFile": "A folder's .contextignore is read as its policy, never synced",
+							"nonText": "Only text files sync (.md, .markdown, .txt, .json, .yaml, .yml)",
+							"invalidPath": "Not a repository path in its plain form",
+							"codingInstructionsFile": "A coding-instructions file, which Living Memory never syncs",
+							"defaultRule": "Skipped by the default rule {rule}",
+							"tooManyPaths": "At most {max} folders or files can be selected",
+							"tooManyExcluded": "At most {max} folders or files can be left out"
+						}
+					},
+					"summary": {
+						"nothingSelected": "Nothing selected yet. Tick a folder or file to sync it.",
+						"lead": "Syncs {what}.",
+						"leadExcept": "Syncs {what}, except {excluded, number} left out.",
+						"what": {
+							"wholeRepository": "the whole repository",
+							"paths": "{count, plural, one {# selected path} other {# selected paths}}",
+							"folders": "{folders, plural, one {# folder} other {# folders}}",
+							"files": "{files, plural, one {# file} other {# files}}",
+							"foldersAndFiles": "{folders, plural, one {# folder} other {# folders}} and {files, plural, one {# file} other {# files}}"
+						},
+						"later": "Files added later inside a ticked folder sync too; nothing else in the repository does.",
+						"counting": "Counting…",
+						"matchNow": "{count, plural, one {# file matches} other {# files match}} right now.",
+						"matchTruncated": "{count, plural, one {# file matches} other {# files match}} in the part of the branch shown; more may exist.",
+						"unreadable": "Files the sync can't read are skipped when it runs.",
+						"policyCaveat": "A ticked folder's .contextignore may leave out more."
 					}
 				}
 			}
@@ -5823,9 +5872,25 @@
 					"description": "Fabric reads the files from a branch of a repository connected to this project, checks them, and publishes them as a new version.",
 					"repositoryLabel": "Repository",
 					"branchLabel": "Branch",
-					"rootPathLabel": "Folder",
-					"rootPathPlaceholder": "repository root",
-					"rootPathHint": "Leave empty to use the whole repository.",
+					"selectedPaths": {
+						"label": "Syncs",
+						"wholeRepository": "Whole repository",
+						"remove": "Stop syncing {path}",
+						"except": "except {path}",
+						"includeAgain": "Include {path} again"
+					},
+					"typedPath": {
+						"label": "Folder",
+						"placeholder": "e.g. agents or tools/claude",
+						"add": "Use this folder",
+						"hint": "Type the folder that holds the instructions. Leaving something out inside it needs the tree, so it can't be done for folders the tree doesn't show.",
+						"empty": "Type a folder, or use Select all to sync the whole repository."
+					},
+					"removalNotice": "Saving removes these project ignore rules, which folder uploads also use:",
+					"saveBlocked": {
+						"noRepository": "Choose a repository to sync from.",
+						"noBranch": "Enter the branch to sync from."
+					},
 					"automaticLabel": "Keep in sync automatically",
 					"automaticHint": "Fabric picks up a pushed change right after each push to a GitHub repository, and otherwise normally 15 to 20 minutes after a push; longer while the poll works through a backlog or a sync is backing off after failures. It publishes what changed as you.",
 					"afterSyncNotice": "After this, change the files in the repository and sync again. Editing in Fabric and pushing from the CLI are turned off while the repository is the source.",
@@ -5844,9 +5909,10 @@
 					}
 				},
 				"tree": {
-					"label": "Folders on this branch",
-					"hint": "Choose the folder that holds the instructions, or type it below. Files are shown for orientation and can't be chosen.",
-					"repositoryRoot": "Repository root",
+					"label": "Folders and files on this branch",
+					"selectAll": "Select all",
+					"selectNone": "Select none",
+					"selectionActions": "Select",
 					"searchPlaceholder": "Search folders and files",
 					"loading": "Loading the branch's folders and files…",
 					"empty": "No files on this branch.",
@@ -5855,30 +5921,48 @@
 					"truncated": "This branch is too large to list in full: only the first {max, number} entries are shown. Type any other folder below.",
 					"error": "Couldn't list this branch's folders and files. Type the folder below, or try again later.",
 					"refineSearch": "Showing the first {max} matches. Refine the search to see others.",
-					"exclusions": {
-						"hint": "Exclude leaves a folder under the chosen one out of the sync. Exclusions are saved to the project's ignore rules when you save, and folder uploads and the Coding Instructions settings use the same rules.",
-						"toggle": "Exclude",
-						"toggleLabel": "Exclude {path} from the sync",
-						"excluded": "Excluded",
+					"selection": {
+						"cantTellYet": "Can't tell yet",
+						"syncsAFolder": "Coding Instructions syncs a folder",
+						"notRegular": "Symbolic links never sync",
+						"fabricignore": "Set by this folder's .fabricignore",
+						"wildcard": "A name with * or ? can't be left out here",
+						"tooLong": "This path is too long for an ignore rule",
+						"full": "The project already has {max, number} ignore rules, the most it can keep",
+						"leftOutBecause": "Left out because {path} is unticked",
+						"everythingListedLeftOut": "Everything listed in {path} is left out by the rules below",
+						"partlyLeftOut": {
+							"project": "Partly left out by the project's ignore rule {rule}, which ticking here can't remove",
+							"fabricignore": "Partly left out by {rule} in this folder's .fabricignore"
+						},
 						"cause": {
-							"always": "Always skipped by the built-in rule {rule}.",
-							"default": "Skipped by the default rule {rule}, which applies while the project has no ignore rules of its own.",
-							"project": "Skipped by the project's ignore rule {rule}.",
-							"fabricignore": "Skipped by the rule {rule} in this folder's .fabricignore file.",
-							"ancestor": "Skipped because {path} is excluded.",
-							"notRegular": "Not a regular file. Symbolic links are never synced, whatever the ignore rules say."
-						},
-						"block": {
-							"wildcard": "A folder whose path contains * or ? can't be excluded here.",
-							"tooLong": "This folder's path is too long for an ignore rule.",
-							"full": "The project already has {max, number} ignore rules, the most it can keep. Remove one in the Coding Instructions settings to exclude another folder."
-						},
-						"fabricignore": "This folder's .fabricignore file replaces the project's ignore rules, so the sync skips what it lists. Edit that file in the repository to change what is excluded.",
+							"always": "Always skipped by the built-in rule {rule}",
+							"default": "Skipped by the default rule {rule}",
+							"project": "Left out by the project's ignore rule {rule}",
+							"fabricignore": "Left out by {rule} in this folder's .fabricignore"
+						}
+					},
+					"notices": {
+						"settingsError": "Couldn't load the project's ignore rules, so what the sync leaves out can't be shown or changed here.",
 						"ignoreFileLoading": "Reading this folder's .fabricignore file…",
-						"ignoreFileError": "Couldn't read this folder's .fabricignore file, so what the sync skips can't be shown or changed here. Try again later.",
-						"ignoreFileTooLarge": "This folder's .fabricignore file is larger than 64 KiB, so the sync ignores it and applies the project's rules.",
-						"settingsError": "Couldn't load the project's ignore rules, so folders can't be excluded here."
+						"ignoreFileError": "Couldn't read this folder's .fabricignore file, so what the sync leaves out can't be shown or changed here. Try again later.",
+						"fabricignore": "This folder's .fabricignore file replaces the project's ignore rules, so the sync leaves out what it lists. Edit that file in the repository to change what is left out.",
+						"ignoreFileTooLarge": "This folder's .fabricignore file is larger than 64 KiB, so the sync ignores it and applies the project's rules."
 					}
+				},
+				"summary": {
+					"nothingSelected": "Nothing selected yet. Tick a folder to sync it.",
+					"lead": "Syncs {folder}/ and anything added there later.",
+					"leadExcept": "Syncs {folder}/ and anything added there later, except {excluded, number} left out.",
+					"leadRoot": "Syncs the whole repository and anything added later.",
+					"leadRootExcept": "Syncs the whole repository and anything added later, except {excluded, number} left out.",
+					"counting": "Counting…",
+					"cantCount": "Can't count yet.",
+					"matchNow": "{count, plural, one {# file matches} other {# files match}} right now.",
+					"matchTruncated": "{count, plural, one {# file matches} other {# files match}} in the part of the branch shown; more may exist.",
+					"installedAs": "Installed as one tree of instructions.",
+					"unreadable": "Files the sync can't read are skipped when it runs.",
+					"projectRulesLeaveOut": "The project's ignore rules leave some files out."
 				},
 				"syncNowResult": {
 					"started": "Sync started.",

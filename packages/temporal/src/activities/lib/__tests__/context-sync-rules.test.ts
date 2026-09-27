@@ -16,6 +16,10 @@
  */
 import { createHash } from "node:crypto";
 import { hashContextContent } from "@repo/database/prisma/queries/projects/context-content-hash";
+import {
+	CONTEXT_IGNORE_FILENAME as CANONICAL_CONTEXT_IGNORE_FILENAME,
+	DEFAULT_CONTEXT_IGNORE_PATTERNS as CANONICAL_DEFAULT_PATTERNS,
+} from "@repo/instructions/context-sync-rules";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock(
@@ -31,7 +35,6 @@ import {
 	CONTEXT_IGNORE_FILENAME,
 	classifyContextBytes,
 	contextStorageKey,
-	DEFAULT_CONTEXT_IGNORE_PATTERNS,
 	hasTextExtension,
 	isExcludedDirectlySelectedFile,
 	isRegularFileMode,
@@ -58,27 +61,18 @@ function sha256(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
 
-describe("the default exclusions (the CLI's, and paths.ts's)", () => {
-	it("are the CLI's list, in order", () => {
-		// packages/cli/src/lib/context-sync/ignore.ts DEFAULT_CONTEXT_IGNORE_PATTERNS
-		expect(DEFAULT_CONTEXT_IGNORE_PATTERNS).toEqual([
-			".git/",
-			".fabric/",
-			".claude/",
-			".cursor/",
-			".codex/",
-			"node_modules/",
-			"CLAUDE.md",
-			"AGENTS.md",
-			"GEMINI.md",
-			"skills/",
-			"agents/",
-			"hooks/",
-			"rules/",
-			"scripts/",
-			".contextignore",
-		]);
-		expect(CONTEXT_IGNORE_FILENAME).toBe(".contextignore");
+describe("the default exclusions (the canonical module's)", () => {
+	it("are @repo/instructions' canonical list, which the CLI's copy is pinned to", () => {
+		// Fizzy #2750 §7: one copy, in `@repo/instructions/context-sync-rules`;
+		// `context-sync-rules-agree-with-cli.test.ts` there pins the CLI's.
+		// Every pattern, applied inside a folder, leaves its own name out.
+		const rules = buildContextIgnoreRules();
+		for (const pattern of CANONICAL_DEFAULT_PATTERNS) {
+			const name = pattern.replace(/\/$/, "");
+			expect(rules.ignoresFile(`${name}/x.md`), pattern).toBe(true);
+			expect(rules.ignoresDirectory(`docs/${name}`), pattern).toBe(true);
+		}
+		expect(CONTEXT_IGNORE_FILENAME).toBe(CANONICAL_CONTEXT_IGNORE_FILENAME);
 	});
 
 	it("always leave out tool and coding-instruction paths, at any depth", () => {

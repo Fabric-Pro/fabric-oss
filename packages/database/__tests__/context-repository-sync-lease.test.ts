@@ -407,6 +407,11 @@ describe("the lease fence on a stateful row store (Decisions 31, 48 and 54)", ()
 
 describe("the poll's failure receipt on a stateful row store (Decisions 35 and 54)", () => {
 	it("commits the pause, the FAILED POLL run row and the completion audit together", async () => {
+		store.put({
+			id: "sync_1",
+			nextCheckAt: at("11:50"),
+			excludedPaths: ["docs/drafts"],
+		});
 		const row = await claimOne();
 		store.advance(MIN);
 
@@ -423,10 +428,12 @@ describe("the poll's failure receipt on a stateful row store (Decisions 35 and 5
 				trigger: "POLL",
 				status: "FAILED",
 				error: "REF_MISSING",
-				// The configuration the check claimed, frozen as a run's is.
+				// The configuration the check claimed, frozen as a run's is,
+				// with its left-out paths (Fizzy #2750 §5.4).
 				context: {
 					ref: "main",
 					paths: ["docs"],
+					excludedPaths: ["docs/drafts"],
 					repositoryIntegrationId: "int_1",
 					actingUserId: "user_1",
 				},

@@ -1,7 +1,8 @@
 /**
  * `syncContextTreeFromRepository` — the Living Memory repository sync's
  * clone-and-apply activity (design 2026-09-23 §4.3, §5.3.1, §5.3.2, §8,
- * Fizzy #2657), against mocked git and the in-memory database fake
+ * Fizzy #2657), and what it leaves out for the member (Fizzy #2750 §5.5,
+ * §5.6), against mocked git and the in-memory database fake
  * (`helpers/context-repository-sync-store.ts`).
  *
  * Git is a fake repository of commits: the clone lands on the remote's head,
@@ -241,7 +242,15 @@ function installGit(): void {
 // Setup
 // =============================================================================
 
-function context(paths: string[]): ContextSyncFrozenContext {
+/**
+ * The frozen context. Without `excludedPaths` it is the payload a `begin`
+ * written before left-out paths existed hands the activity (Fizzy #2750
+ * §5.4): the field is absent, not empty.
+ */
+function context(
+	paths: string[],
+	excludedPaths?: string[],
+): ContextSyncFrozenContext {
 	return {
 		projectId: PROJECT,
 		organizationId: ORG,
@@ -252,16 +261,26 @@ function context(paths: string[]): ContextSyncFrozenContext {
 		repositoryIntegrationId: "int-1",
 		ref: "main",
 		paths,
+		...(excludedPaths === undefined ? {} : { excludedPaths }),
 		actingUserId: "user-1",
 	};
 }
 
 /** The configuration, its running run and the integration, all at generation 3. */
-function configure(paths: string[]): ContextSyncFrozenContext {
+function configure(
+	paths: string[],
+	excludedPaths?: string[],
+): ContextSyncFrozenContext {
 	seedIntegration();
-	seedSync({ paths });
-	seedRun({ context: { paths, ref: "main" } });
-	return context(paths);
+	seedSync({ paths, excludedPaths: excludedPaths ?? [] });
+	seedRun({
+		context: {
+			paths,
+			ref: "main",
+			...(excludedPaths === undefined ? {} : { excludedPaths }),
+		},
+	});
+	return context(paths, excludedPaths);
 }
 
 const sync = (ctx: ContextSyncFrozenContext) =>
@@ -289,6 +308,7 @@ const plan = () =>
 		missingPaths: string[];
 		keptKeys: string[];
 		protectedKeys: string[];
+		excludedKeys?: string[];
 	};
 const outcomes = () => runRow().outcomes as Record<string, string>;
 const managedKeys = () =>
@@ -364,6 +384,8 @@ describe("syncContextTreeFromRepository — what a run applies", () => {
 				"notes/n.txt",
 			],
 			protectedKeys: [],
+			// Nothing left out (Fizzy #2750 §5.5).
+			excludedKeys: [],
 		});
 		expect(outcomes()).toEqual({
 			"README.md": "created",
@@ -940,6 +962,307 @@ describe("syncContextTreeFromRepository — retries", () => {
 		});
 		expect(Object.keys(outcomes())).toHaveLength(60);
 		expect(managedKeys()).toHaveLength(60);
+	});
+});
+
+// =============================================================================
+// The member's left-out paths (Fizzy #2750 §5.5, §5.6)
+// =============================================================================
+
+describe("syncContextTreeFromRepository — left-out paths", () => {
+	it("deletes the managed rows of a still-present folder whose contents are all left out — the folder is not missing", async () => {
+		const ctx = configure(["docs"], ["docs/drafts", "docs/old.md"]);
+		serve(SHA_A, [
+			{ path: "docs/drafts/x.md", body: "draft" },
+			{ path: "docs/old.md", body: "old" },
+		]);
+		seedContext("docs/drafts/x.md", "draft");
+		seedContext("docs/old.md", "old");
+
+		expect(await sync(ctx)).toEqual({
+			outcome: "applied",
+			commitSha: SHA_A,
+		});
+
+		expect(plan()).toMatchObject({
+			keptKeys: [],
+			excludedCount: 2,
+			missingPaths: [],
+			attention: [],
+			excludedKeys: ["docs/drafts", "docs/old.md"],
+		});
+		expect(managedKeys()).toEqual([]);
+		expect(runRow().removedCount).toBe(2);
+	});
+
+	it("prunes what is left out under an unreadable policy — even a row the inventory no longer has — and the rest of the folder stays protected", async () => {
+		const ctx = configure(["docs"], ["docs/drafts"]);
+		serve(SHA_A, [
+			{ path: "docs/.contextignore", body: "x", mode: "120000" },
+			{ path: "docs/a.md", body: "new a" },
+			{ path: "docs/drafts/x.md", body: "draft" },
+		]);
+		seedContext("docs/a.md", "old a");
+		seedContext("docs/gone.md", "not in the commit");
+		seedContext("docs/drafts/x.md", "draft");
+		seedContext("docs/drafts/gone.md", "not in the commit either");
+
+		await sync(ctx);
+
+		expect(managedKeys()).toEqual(["docs/a.md", "docs/gone.md"]);
+		expect(contextRow("docs/a.md")?.content).toBe("old a");
+		expect(outcomes()).toEqual({});
+		expect(runRow().removedCount).toBe(2);
+		expect(plan()).toMatchObject({
+			protectedPrefixes: ["docs/"],
+			excludedKeys: ["docs/drafts"],
+			excludedCount: 1,
+		});
+	});
+
+	it("leaves out NFC and NFD repository paths alike under one NFC exclusion, and prunes the managed row by its key", async () => {
+		const ctx = configure(["docs"], ["docs/café"]);
+		serve(SHA_A, [
+			{ path: "docs/café/a.md", body: "decomposed" },
+			{ path: "docs/keep.md", body: "keep" },
+		]);
+		seedContext("docs/café/a.md", "decomposed");
+
+		await sync(ctx);
+
+		expect(plan()).toMatchObject({
+			keptKeys: ["docs/keep.md"],
+			excludedCount: 1,
+			attention: [],
+		});
+		expect(managedKeys()).toEqual(["docs/keep.md"]);
+	});
+
+	it("keeps a colliding key's row under an exclusion, with attention, while the rest of what is left out is pruned", async () => {
+		const ctx = configure(["docs"], ["docs/drafts"]);
+		serve(SHA_A, [
+			{ path: "docs/.contextignore", body: "x", mode: "120000" },
+			{ path: "docs/drafts/café.md", body: "composed" },
+			{ path: "docs/drafts/café.md", body: "decomposed" },
+			{ path: "docs/drafts/x.md", body: "draft" },
+		]);
+		seedContext("docs/drafts/café.md", "last good");
+		seedContext("docs/drafts/x.md", "draft");
+
+		await sync(ctx);
+
+		expect(managedKeys()).toEqual(["docs/drafts/café.md"]);
+		expect(contextRow("docs/drafts/café.md")?.content).toBe("last good");
+		expect(plan()).toMatchObject({
+			protectedKeys: ["docs/drafts/café.md"],
+			attention: [
+				{ key: "docs", reason: "ignore-policy-unreadable" },
+				{ key: "docs/drafts/café.md", reason: "invalid-path" },
+				{ key: "docs/drafts/café.md", reason: "invalid-path" },
+			],
+		});
+	});
+
+	it("never leaves out a selected FILE for an exclusion under it: the exclusion is dormant and nothing is frozen", async () => {
+		const ctx = configure(["docs/a.md"], ["docs/a.md/x"]);
+		serve(SHA_A, [{ path: "docs/a.md", body: "now a file" }]);
+		// Rows from when docs/a.md was a folder are gone from the commit.
+		seedContext("docs/a.md/x/old.md", "when it was a folder");
+
+		await sync(ctx);
+
+		expect(outcomes()).toEqual({ "docs/a.md": "created" });
+		expect(plan()).toMatchObject({
+			keptKeys: ["docs/a.md"],
+			excludedCount: 0,
+			excludedKeys: [],
+		});
+		expect(managedKeys()).toEqual(["docs/a.md"]);
+	});
+
+	it("reads each selected folder's .contextignore as ever: it still governs what is not left out", async () => {
+		const ctx = configure(["docs"], ["docs/drafts"]);
+		const policy: RepoFile = {
+			path: "docs/.contextignore",
+			body: "*.tmp.md\n",
+		};
+		serve(SHA_A, [
+			policy,
+			{ path: "docs/a.md", body: "a" },
+			{ path: "docs/b.tmp.md", body: "ignored by the policy" },
+			{ path: "docs/drafts/c.md", body: "left out" },
+		]);
+
+		await sync(ctx);
+
+		expect(m.readBlobCapped).toHaveBeenCalledWith(
+			expect.objectContaining({ oid: oidOf(policy) }),
+		);
+		expect(plan()).toMatchObject({
+			keptKeys: ["docs/a.md"],
+			// The policy file, the file it ignores, the draft.
+			excludedCount: 3,
+		});
+	});
+
+	it("a retry prunes by the stored plan's left-out keys, not by re-reading the selection", async () => {
+		const ctx = configure(["docs"], ["docs/drafts"]);
+		serve(SHA_A, [
+			{ path: "docs/.contextignore", body: "x", mode: "120000" },
+			{ path: "docs/drafts/x.md", body: "draft" },
+		]);
+		seedContext("docs/drafts/x.md", "draft");
+		// Fences: 1 pin, 2 plan, 3 the first prune batch (nothing to apply).
+		store.beforeFence = (call) => {
+			if (call === 3) {
+				throw new Error("connection reset");
+			}
+		};
+		expect((await failed(ctx)).type).toBe("STORE_FAILED");
+		expect(plan().excludedKeys).toEqual(["docs/drafts"]);
+		expect(managedKeys()).toEqual(["docs/drafts/x.md"]);
+
+		store.beforeFence = null;
+		db.writeContextRepositorySyncRunPlan.mockClear();
+		// A context with nothing left out: only the stored plan can prune.
+		await sync(context(["docs"], []));
+
+		expect(db.writeContextRepositorySyncRunPlan).not.toHaveBeenCalled();
+		expect(managedKeys()).toEqual([]);
+		expect(runRow().removedCount).toBe(1);
+	});
+
+	it("a plan stored before left-out paths existed leaves nothing out, whatever the context says", async () => {
+		const ctx = configure(["docs"], ["docs/drafts"]);
+		serve(SHA_A, [
+			{ path: "docs/.contextignore", body: "x", mode: "120000" },
+			{ path: "docs/drafts/x.md", body: "draft" },
+		]);
+		seedContext("docs/drafts/x.md", "draft");
+		runRow().plan = {
+			keptCount: 0,
+			excludedCount: 0,
+			attentionCount: 1,
+			attention: [{ key: "docs", reason: "ignore-policy-unreadable" }],
+			protectedPrefixes: ["docs/"],
+			missingPaths: [],
+			keptKeys: [],
+			protectedKeys: [],
+		};
+
+		await sync(ctx);
+
+		expect(managedKeys()).toEqual(["docs/drafts/x.md"]);
+		expect(runRow().removedCount).toBe(0);
+	});
+
+	it("plans as before from a context written before left-out paths existed", async () => {
+		const ctx = configure(["docs"]);
+		expect(ctx).not.toHaveProperty("excludedPaths");
+		serve(SHA_A, [
+			{ path: "docs/a.md", body: "a" },
+			{ path: "docs/drafts/x.md", body: "draft" },
+		]);
+
+		await sync(ctx);
+
+		expect(plan()).toMatchObject({
+			keptKeys: ["docs/a.md", "docs/drafts/x.md"],
+			excludedCount: 0,
+			excludedKeys: [],
+		});
+	});
+
+	it.each([
+		["apply", 4, 50, 0],
+		["prune", 5, 11, 50],
+	] as const)(
+		"an exclusion-only re-configure during %s fences the run: CONFIGURATION_CHANGED, the first batch kept",
+		async (_phase, fence, keptRows, removed) => {
+			const ctx = configure(["docs"], ["docs/drafts"]);
+			const files: RepoFile[] = [];
+			if (_phase === "apply") {
+				for (let i = 0; i < 60; i++) {
+					files.push({
+						path: `docs/f-${String(i).padStart(2, "0")}.md`,
+						body: `file ${i}`,
+					});
+				}
+			} else {
+				files.push({ path: "docs/keep.md", body: "keep" });
+				for (let i = 0; i < 60; i++) {
+					const draft = `docs/drafts/d-${String(i).padStart(2, "0")}.md`;
+					files.push({ path: draft, body: `draft ${i}` });
+					seedContext(draft, `draft ${i}`);
+				}
+			}
+			serve(SHA_A, files);
+			// apply: 1 pin, 2 plan, 3 apply (50), 4 apply (10).
+			// prune: 1 pin, 2 plan, 3 apply (1), 4 prune (50), 5 prune (10).
+			// Between two batches, `configure` changes only what is left out,
+			// which bumps the generation (Fizzy #2750 §5.3).
+			store.beforeFence = (call) => {
+				if (call === fence) {
+					const row = committed().sync[0] as Row;
+					row.excludedPaths = ["docs/drafts", "docs/f-00.md"];
+					row.generation = 4;
+				}
+			};
+
+			const error = await failed(ctx);
+
+			expect(error.type).toBe("CONFIGURATION_CHANGED");
+			expect(error.details[0]).toEqual({ commitSha: SHA_A });
+			expect(managedKeys()).toHaveLength(keptRows);
+			expect(runRow().removedCount).toBe(removed);
+		},
+	);
+
+	it("records a left-out row changed since it was listed as a prune conflict, and keeps it", async () => {
+		const ctx = configure(["docs"], ["docs/drafts"]);
+		serve(SHA_A, [
+			{ path: "docs/keep.md", body: "keep" },
+			{ path: "docs/drafts/x.md", body: "draft" },
+		]);
+		seedContext("docs/drafts/x.md", "draft");
+		// Fences: 1 pin, 2 plan, 3 apply, 4 prune. The row is edited after the
+		// prune listed it and before its guarded delete.
+		store.beforeFence = (call) => {
+			if (call === 4) {
+				const row = contextRow("docs/drafts/x.md") as Row;
+				row.content = "edited by a member";
+				row.contentHash = sha256("edited by a member");
+			}
+		};
+
+		await sync(ctx);
+
+		expect(contextRow("docs/drafts/x.md")?.content).toBe(
+			"edited by a member",
+		);
+		expect(runRow()).toMatchObject({
+			removedCount: 0,
+			pruneConflicts: { keys: ["docs/drafts/x.md"], overflow: 0 },
+		});
+	});
+
+	it("keeps a left-out row's vector cleanup queued under the run's key when its drain fails", async () => {
+		const ctx = configure(["docs"], ["docs/drafts"]);
+		serve(SHA_A, [
+			{ path: "docs/keep.md", body: "keep" },
+			{ path: "docs/drafts/x.md", body: "draft" },
+		]);
+		seedContext("docs/drafts/x.md", "draft");
+		m.drain.mockRejectedValueOnce(new Error("vector store unavailable"));
+
+		expect(await sync(ctx)).toEqual({
+			outcome: "applied",
+			commitSha: SHA_A,
+		});
+
+		expect(contextRow("docs/drafts/x.md")).toBeUndefined();
+		expect(runRow().removedCount).toBe(1);
+		expect(queuedCleanupsOf(RUN)).toHaveLength(1);
 	});
 });
 

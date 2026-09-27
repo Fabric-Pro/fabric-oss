@@ -152,6 +152,12 @@ export type ContextSyncFrozenContext = {
 	ref: string;
 	/** Canonical selected paths; `[""]` is the whole repository. */
 	paths: string[];
+	/**
+	 * Canonical paths the member left out inside a selected folder (Fizzy
+	 * #2750 §5.4), frozen with `paths`. Absent from a payload a worker
+	 * wrote before left-out paths existed; read as `[]`.
+	 */
+	excludedPaths?: string[];
 	actingUserId: string;
 };
 

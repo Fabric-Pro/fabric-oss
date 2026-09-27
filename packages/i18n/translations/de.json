@@ -2411,14 +2411,26 @@
 						"description": "Wählen Sie ausgewählte Ordner oder Dateien auf einem Branch eines verbundenen Repositorys aus. „Jetzt synchronisieren“ übernimmt deren Inhalt vom festgelegten Commit; das Repository wird zur verantwortlichen Quelle für jede von ihm erzeugte Datei.",
 						"repositoryLabel": "Repository",
 						"branchLabel": "Branch",
-						"pathsLabel": "Ordner und Dateien",
-						"pathsPlaceholder": "z. B. docs oder docs/guide.md",
-						"pathsHint": "Enter oder Hinzufügen drücken, um einen Ordner oder eine Datei auszuwählen. Leer lassen und Hinzufügen drücken, um das gesamte Repository auszuwählen — nur wenn nichts anderes ausgewählt ist.",
-						"addPath": "Hinzufügen",
-						"wholeRepo": "Gesamtes Repository",
-						"removePath": "{path} entfernen",
+						"selectedPaths": {
+							"label": "Synchronisiert",
+							"wholeRepository": "Gesamtes Repository",
+							"remove": "{path} nicht mehr synchronisieren",
+							"except": "außer {path}",
+							"includeAgain": "{path} wieder einschließen"
+						},
+						"typedPath": {
+							"label": "Ordner oder Datei",
+							"placeholder": "z. B. docs oder docs/guide.md",
+							"add": "Hinzufügen",
+							"hint": "Enter oder Hinzufügen drücken, um einen Ordner oder eine Datei zu synchronisieren. Etwas in einem Ordner auszulassen geht nur im Baum, also nicht für Pfade, die der Baum nicht zeigt.",
+							"empty": "Geben Sie einen Ordner oder eine Datei ein, oder synchronisieren Sie mit „Alle auswählen“ das gesamte Repository."
+						},
+						"saveBlocked": {
+							"noRepository": "Wählen Sie ein Repository, aus dem synchronisiert wird.",
+							"noBranch": "Geben Sie den Branch ein, aus dem synchronisiert wird."
+						},
 						"contextignoreNotice": "Die eigene .contextignore jedes ausgewählten Ordners wird berücksichtigt, genau wie `fabric context push` sie anwendet.",
-						"pruneNotice": "Eine nicht mehr ausgewählte oder aus dem Repository entfernte Datei wird bei der nächsten Synchronisierung aus Living Memory entfernt.",
+						"pruneNotice": "Eine nicht mehr ausgewählte, ausgelassene oder aus dem Repository entfernte Datei wird bei der nächsten Synchronisierung aus Living Memory entfernt.",
 						"actingNotice": "Jede Synchronisierung nach dieser läuft als Sie, das Mitglied, das sie konfiguriert hat.",
 						"automaticLabel": "Automatisch synchron halten",
 						"automaticHint": "Fabric übernimmt eine gepushte Änderung direkt nach jedem Push zu einem GitHub-Repository, sonst normalerweise 15 bis 20 Minuten nach einem Push; länger, während die Abfrage einen Rückstau abarbeitet oder eine Synchronisierung nach Fehlern pausiert. Automatische Synchronisierungen laufen als Sie.",
@@ -2430,6 +2442,11 @@
 							"EXCLUDED_FABRIC_PATH": "„{path}“ liegt in einem .fabric-Ordner, dem eigenen Zustand der Fabric-CLI, den Living Memory niemals synchronisiert.",
 							"PATH_PREFIX_OVERLAP": "„{path}“ überschneidet sich mit einem bereits ausgewählten Pfad.",
 							"TOO_MANY_PATHS": "Wählen Sie höchstens 50 Ordner oder Dateien aus.",
+							"EXCLUDED_PATH_POLICY_FILE": "„{path}“ ist die .contextignore eines Ordners, die die Synchronisierung als Richtlinie dieses Ordners liest; sie kann nicht ausgelassen werden.",
+							"TOO_MANY_EXCLUDED_PATHS": "Lassen Sie höchstens 200 Ordner oder Dateien aus.",
+							"EXCLUDED_PATH_OUTSIDE_SELECTION": "„{path}“ liegt in keinem ausgewählten Ordner, also gibt es nichts, woraus es ausgelassen werden könnte.",
+							"EXCLUDED_PATH_OVERLAP": "„{path}“ liegt in „{withPath}“, das bereits ausgelassen ist.",
+							"EXCLUDED_PATHS_STALE": "Was diese Synchronisierung auslässt, hat sich geändert, seit dies geöffnet wurde. Laden Sie neu und wählen Sie erneut.",
 							"BRANCH_NOT_FOUND": "Branch \"{path}\" wurde auf dem Remote nicht gefunden.",
 							"REPOSITORY_NOT_FOUND": "Diese Repository-Verbindung wurde nicht gefunden.",
 							"REPOSITORY_UNAVAILABLE": "Diese Repository-Verbindung benötigt Aufmerksamkeit, bevor sie synchronisiert werden kann.",
@@ -2443,11 +2460,15 @@
 						"EXCLUDED_PATH": "„{path}“ ist eine Coding-Instructions-Datei, die Living Memory niemals synchronisiert.",
 						"EXCLUDED_FABRIC_PATH": "„{path}“ liegt in einem .fabric-Ordner, dem eigenen Zustand der Fabric-CLI, den Living Memory niemals synchronisiert.",
 						"TOO_MANY_PATHS": "Wählen Sie höchstens {max} Ordner oder Dateien aus.",
-						"PATH_PREFIX_OVERLAP": "„{path}“ überschneidet sich mit „{withPath}“, das bereits ausgewählt ist.",
+						"PATH_PREFIX_OVERLAP": "„{path}“ liegt in „{withPath}“, das bereits ausgewählt ist.",
+						"INSIDE_WHOLE_REPOSITORY": "Das gesamte Repository ist bereits ausgewählt, also wird „{path}“ schon synchronisiert.",
 						"DUPLICATE_PATH": "„{path}“ ist bereits ausgewählt."
 					},
 					"tree": {
 						"label": "Ordner und Dateien in diesem Branch",
+						"selectAll": "Alle auswählen",
+						"selectNone": "Keine auswählen",
+						"selectionActions": "Auswahl",
 						"searchPlaceholder": "Ordner und Dateien durchsuchen",
 						"loading": "Ordner und Dateien des Branches werden geladen…",
 						"empty": "Keine Dateien in diesem Branch.",
@@ -2455,10 +2476,38 @@
 						"unsupported": "Dieser Repository-Typ unterstützt das Durchsuchen nicht. Geben Sie die zu synchronisierenden Pfade unten ein.",
 						"truncated": "Dieser Branch ist zu groß, um ihn vollständig aufzulisten: Es werden nur die ersten {max, number} Einträge angezeigt. Geben Sie jeden anderen Pfad unten ein.",
 						"error": "Die Ordner und Dateien dieses Branches konnten nicht aufgelistet werden. Geben Sie die zu synchronisierenden Pfade unten ein oder versuchen Sie es später erneut.",
-						"coveredByParent": "Durch einen ausgewählten übergeordneten Ordner eingeschlossen",
-						"containsSelected": "Ein Pfad in diesem Ordner ist ausgewählt",
-						"wholeRepository": "Das gesamte Repository ist ausgewählt. Entfernen Sie diese Auswahl, um einzelne Ordner und Dateien zu wählen.",
-						"refineSearch": "Es werden die ersten {max} Treffer angezeigt. Verfeinern Sie die Suche, um weitere zu sehen."
+						"refineSearch": "Es werden die ersten {max} Treffer angezeigt. Verfeinern Sie die Suche, um weitere zu sehen.",
+						"selection": {
+							"cantTellYet": "Noch nicht bekannt",
+							"leftOutBecause": "Ausgelassen, weil {path} nicht angehakt ist",
+							"fabric": "In einem .fabric-Ordner, dem eigenen Zustand der Fabric-CLI, der niemals synchronisiert wird",
+							"symlink": "Symbolische Links werden niemals synchronisiert",
+							"policyFile": "Die .contextignore eines Ordners wird als dessen Richtlinie gelesen, nie synchronisiert",
+							"nonText": "Nur Textdateien werden synchronisiert (.md, .markdown, .txt, .json, .yaml, .yml)",
+							"invalidPath": "Kein Repository-Pfad in seiner einfachen Form",
+							"codingInstructionsFile": "Eine Coding-Instructions-Datei, die Living Memory niemals synchronisiert",
+							"defaultRule": "Von der Standardregel {rule} übersprungen",
+							"tooManyPaths": "Höchstens {max} Ordner oder Dateien können ausgewählt werden",
+							"tooManyExcluded": "Höchstens {max} Ordner oder Dateien können ausgelassen werden"
+						}
+					},
+					"summary": {
+						"nothingSelected": "Noch nichts ausgewählt. Haken Sie einen Ordner oder eine Datei an, um sie zu synchronisieren.",
+						"lead": "Synchronisiert {what}.",
+						"leadExcept": "Synchronisiert {what}, außer {excluded, number} ausgelassenen.",
+						"what": {
+							"wholeRepository": "das gesamte Repository",
+							"paths": "{count, plural, one {# ausgewählten Pfad} other {# ausgewählte Pfade}}",
+							"folders": "{folders, plural, one {# Ordner} other {# Ordner}}",
+							"files": "{files, plural, one {# Datei} other {# Dateien}}",
+							"foldersAndFiles": "{folders, plural, one {# Ordner} other {# Ordner}} und {files, plural, one {# Datei} other {# Dateien}}"
+						},
+						"later": "Dateien, die später in einem angehakten Ordner hinzukommen, werden ebenfalls synchronisiert; sonst nichts aus dem Repository.",
+						"counting": "Wird gezählt…",
+						"matchNow": "{count, plural, one {# Datei passt} other {# Dateien passen}} derzeit.",
+						"matchTruncated": "{count, plural, one {# Datei passt} other {# Dateien passen}} im angezeigten Teil des Branches; es kann weitere geben.",
+						"unreadable": "Dateien, die die Synchronisierung nicht lesen kann, werden beim Lauf übersprungen.",
+						"policyCaveat": "Die .contextignore eines angehakten Ordners kann weitere auslassen."
 					}
 				}
 			}

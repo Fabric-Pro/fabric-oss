@@ -257,6 +257,32 @@ afterEach(() => {
 });
 
 describe("ConfigureRepositorySyncDialog (§7.2)", () => {
+	/**
+	 * The branch as the provider lists it: `agents` holds instructions, a
+	 * skills folder and drafts; `tools/claude` is a second candidate root.
+	 */
+	const TREE = {
+		supported: true,
+		truncated: false,
+		entries: [
+			{ path: "agents", type: "dir" },
+			{ path: "agents/CLAUDE.md", type: "file" },
+			{ path: "agents/skills", type: "dir" },
+			{ path: "agents/skills/review.md", type: "file" },
+			{ path: "agents/drafts", type: "dir" },
+			{ path: "agents/drafts/idea.md", type: "file" },
+			{ path: "tools", type: "dir" },
+			{ path: "tools/claude", type: "dir" },
+			{ path: "tools/claude/settings.json", type: "file" },
+		],
+	};
+	const UNSUPPORTED = { supported: false, entries: [], truncated: false };
+	const sel = copy.tree.selection;
+
+	beforeEach(() => {
+		m.listTree.mockResolvedValue(TREE);
+	});
+
 	function renderDialog(
 		props: Partial<
 			Parameters<typeof ConfigureRepositorySyncDialog>[0]
@@ -279,7 +305,42 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		return { onOpenChange, onSaved };
 	}
 
-	it("seeds the branch from the integration, configures, starts the first sync, and closes", async () => {
+	const submit = () =>
+		screen.getByRole("button", { name: copy.configureDialog.submit });
+	const treeList = () => screen.getByRole("list", { name: copy.tree.label });
+	const box = (path: string) =>
+		within(treeList()).getByRole("checkbox", { name: path });
+	const syncsList = () =>
+		screen.getByRole("list", {
+			name: copy.configureDialog.selectedPaths.label,
+		});
+	const typedFolder = () =>
+		screen.getByLabelText(copy.configureDialog.typedPath.label);
+
+	/** Tick `agents` in the tree, once it is listed. */
+	async function pickAgents(user: ReturnType<typeof userEvent.setup>) {
+		await user.click(
+			await screen.findByRole("checkbox", { name: "agents" }),
+		);
+	}
+
+	/** Type a folder into the typed input and use it. */
+	async function typeFolder(
+		user: ReturnType<typeof userEvent.setup>,
+		folder: string,
+	) {
+		await user.clear(typedFolder());
+		if (folder !== "") {
+			await user.type(typedFolder(), folder);
+		}
+		await user.click(
+			screen.getByRole("button", {
+				name: copy.configureDialog.typedPath.add,
+			}),
+		);
+	}
+
+	it("seeds the branch from the integration, configures the ticked folder, starts the first sync, and closes", async () => {
 		const user = userEvent.setup();
 		const { onOpenChange, onSaved } = renderDialog();
 
@@ -299,20 +360,15 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			}),
 		).toBeChecked();
 
-		await user.type(
-			screen.getByLabelText(copy.configureDialog.rootPathLabel),
-			"agents/",
-		);
-		await user.click(
-			screen.getByRole("button", { name: copy.configureDialog.submit }),
-		);
+		await pickAgents(user);
+		await user.click(submit());
 
 		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
 		expect(m.configure).toHaveBeenCalledWith({
 			projectId: "proj_1",
 			repositoryIntegrationId: "int_1",
 			ref: "develop",
-			rootPath: "agents/",
+			rootPath: "agents",
 			automatic: true,
 		});
 		expect(m.syncNow).toHaveBeenCalledWith({ projectId: "proj_1" });
@@ -341,9 +397,8 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		m.configure.mockRejectedValue(orpcError("BRANCH_NOT_FOUND"));
 		const user = userEvent.setup();
 		const { onOpenChange } = renderDialog();
-		await user.click(
-			screen.getByRole("button", { name: copy.configureDialog.submit }),
-		);
+		await pickAgents(user);
+		await user.click(submit());
 
 		expect(await screen.findByRole("alert")).toHaveTextContent(
 			copy.configureDialog.errors.BRANCH_NOT_FOUND.replace(
@@ -359,9 +414,8 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		m.configure.mockRejectedValue(orpcError("REPOSITORY_UNREACHABLE"));
 		const user = userEvent.setup();
 		renderDialog();
-		await user.click(
-			screen.getByRole("button", { name: copy.configureDialog.submit }),
-		);
+		await pickAgents(user);
+		await user.click(submit());
 		await waitFor(() =>
 			expect(m.toastError).toHaveBeenCalledWith(
 				copy.configureDialog.errors.REPOSITORY_UNREACHABLE,
@@ -370,27 +424,27 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 	});
 
-	it("seeds from the current configuration when changing it", () => {
+	it("seeds from the current configuration when changing it", async () => {
 		renderDialog({ current: CONFIGURED.configured });
 		expect(
 			screen.getByLabelText(copy.configureDialog.branchLabel),
 		).toHaveValue("main");
 		expect(
-			screen.getByLabelText(copy.configureDialog.rootPathLabel),
-		).toHaveValue("agents");
+			await screen.findByRole("checkbox", { name: "agents" }),
+		).toBeChecked();
+		expect(within(syncsList()).getByText("agents/")).toBeInTheDocument();
 	});
 
 	it("sends automatic: false when the member unticks Keep in sync automatically", async () => {
 		const user = userEvent.setup();
 		const { onOpenChange } = renderDialog();
+		await pickAgents(user);
 		await user.click(
 			screen.getByRole("checkbox", {
 				name: copy.configureDialog.automaticLabel,
 			}),
 		);
-		await user.click(
-			screen.getByRole("button", { name: copy.configureDialog.submit }),
-		);
+		await user.click(submit());
 		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
 		expect(m.configure).toHaveBeenCalledWith(
 			expect.objectContaining({ automatic: false }),
@@ -416,9 +470,8 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		});
 		const user = userEvent.setup();
 		renderDialog();
-		await user.click(
-			screen.getByRole("button", { name: copy.configureDialog.submit }),
-		);
+		await pickAgents(user);
+		await user.click(submit());
 		await waitFor(() =>
 			expect(m.toastInfo).toHaveBeenCalledWith(
 				copy.syncNowResult.already_running,
@@ -439,9 +492,8 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		m.configure.mockRejectedValue(orpcError(code));
 		const user = userEvent.setup();
 		renderDialog();
-		await user.click(
-			screen.getByRole("button", { name: copy.configureDialog.submit }),
-		);
+		await pickAgents(user);
+		await user.click(submit());
 		const errors = copy.configureDialog.errors as Record<string, string>;
 		expect(await screen.findByRole("alert")).toHaveTextContent(
 			errors[code].replace("{ref}", "develop"),
@@ -450,78 +502,78 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 	});
 
 	// B-2 (Task 9 review): the inline error used to mark the branch field
-	// invalid no matter which field the error was actually about.
-	it("points the inline error at the folder field for INVALID_ROOT_PATH, leaving the branch field alone", async () => {
+	// invalid no matter which field the error was actually about. The folder
+	// is a field only where it is typed.
+	it("points the inline error at the typed folder for INVALID_ROOT_PATH, leaving the branch field alone", async () => {
+		m.listTree.mockResolvedValue(UNSUPPORTED);
 		m.configure.mockRejectedValue(orpcError("INVALID_ROOT_PATH"));
 		const user = userEvent.setup();
 		renderDialog();
-		await user.click(
-			screen.getByRole("button", { name: copy.configureDialog.submit }),
+		await screen.findByLabelText(copy.configureDialog.typedPath.label);
+		await typeFolder(user, "agents");
+		await user.click(submit());
+		const alert = await screen.findByRole("alert");
+		expect(typedFolder()).toHaveAttribute("aria-invalid", "true");
+		expect(typedFolder()).toHaveAccessibleDescription(
+			expect.stringContaining(alert.textContent ?? ""),
 		);
-		await screen.findByRole("alert");
-		expect(
-			screen.getByLabelText(copy.configureDialog.rootPathLabel),
-		).toHaveAttribute("aria-invalid", "true");
 		expect(
 			screen.getByLabelText(copy.configureDialog.branchLabel),
 		).not.toHaveAttribute("aria-invalid");
 	});
 
-	it("points the inline error at the branch field for BRANCH_NOT_FOUND, leaving the folder field alone", async () => {
+	it("points the inline error at the branch field for BRANCH_NOT_FOUND, leaving the typed folder alone", async () => {
+		m.listTree.mockResolvedValue(UNSUPPORTED);
 		m.configure.mockRejectedValue(orpcError("BRANCH_NOT_FOUND"));
 		const user = userEvent.setup();
 		renderDialog();
-		await user.click(
-			screen.getByRole("button", { name: copy.configureDialog.submit }),
-		);
+		await screen.findByLabelText(copy.configureDialog.typedPath.label);
+		await typeFolder(user, "agents");
+		await user.click(submit());
 		await screen.findByRole("alert");
 		expect(
 			screen.getByLabelText(copy.configureDialog.branchLabel),
 		).toHaveAttribute("aria-invalid", "true");
-		expect(
-			screen.getByLabelText(copy.configureDialog.rootPathLabel),
-		).not.toHaveAttribute("aria-invalid");
+		expect(typedFolder()).not.toHaveAttribute("aria-invalid");
 	});
 
 	it("leaves both fields unattached for a repository-level inline error", async () => {
+		m.listTree.mockResolvedValue(UNSUPPORTED);
 		m.configure.mockRejectedValue(orpcError("REPOSITORY_NOT_FOUND"));
 		const user = userEvent.setup();
 		renderDialog();
-		await user.click(
-			screen.getByRole("button", { name: copy.configureDialog.submit }),
-		);
+		await screen.findByLabelText(copy.configureDialog.typedPath.label);
+		await typeFolder(user, "agents");
+		await user.click(submit());
 		await screen.findByRole("alert");
 		expect(
 			screen.getByLabelText(copy.configureDialog.branchLabel),
 		).not.toHaveAttribute("aria-invalid");
-		expect(
-			screen.getByLabelText(copy.configureDialog.rootPathLabel),
-		).not.toHaveAttribute("aria-invalid");
+		expect(typedFolder()).not.toHaveAttribute("aria-invalid");
 	});
 
-	it("disables Submit while the branch is empty or whitespace", async () => {
+	it("disables Save while the branch is empty or whitespace, saying why", async () => {
 		const user = userEvent.setup();
 		renderDialog();
+		await pickAgents(user);
 		const branchInput = screen.getByLabelText(
 			copy.configureDialog.branchLabel,
 		);
 		await user.clear(branchInput);
-		expect(
-			screen.getByRole("button", { name: copy.configureDialog.submit }),
-		).toBeDisabled();
+		expect(submit()).toBeDisabled();
+		expect(submit()).toHaveAccessibleDescription(
+			copy.configureDialog.saveBlocked.noBranch,
+		);
 		await user.type(branchInput, "   ");
-		expect(
-			screen.getByRole("button", { name: copy.configureDialog.submit }),
-		).toBeDisabled();
+		expect(submit()).toBeDisabled();
 	});
 
 	it("still calls onSaved and closes when configure saves but syncNow rejects", async () => {
 		m.syncNow.mockRejectedValue(new Error("boom"));
 		const user = userEvent.setup();
 		const { onOpenChange, onSaved } = renderDialog();
-		await user.click(
-			screen.getByRole("button", { name: copy.configureDialog.submit }),
-		);
+		await pickAgents(user);
+		await user.click(submit());
 		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
 		expect(m.toastError).toHaveBeenCalledWith("boom");
 		expect(onSaved).toHaveBeenCalled();
@@ -534,9 +586,8 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		});
 		const user = userEvent.setup();
 		renderDialog();
-		await user.click(
-			screen.getByRole("button", { name: copy.configureDialog.submit }),
-		);
+		await pickAgents(user);
+		await user.click(submit());
 		await waitFor(() =>
 			expect(m.toastError).toHaveBeenCalledWith(
 				copy.syncNowResult.integration_unavailable,
@@ -544,26 +595,12 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		);
 	});
 
-	describe("folder browser (Fizzy #2725)", () => {
-		const TREE = {
-			supported: true,
-			truncated: false,
-			entries: [
-				{ path: "agents", type: "dir" },
-				{ path: "agents/CLAUDE.md", type: "file" },
-				{ path: "tools", type: "dir" },
-				{ path: "tools/claude", type: "dir" },
-			],
-		};
-
-		async function treeGroup() {
-			return screen.findByRole("radiogroup", { name: copy.tree.label });
-		}
-
-		it("lists the chosen repository's branch between the branch and folder fields", async () => {
-			m.listTree.mockResolvedValue(TREE);
+	describe("choosing the folder in the selection tree (Fizzy #2725, #2750 §4)", () => {
+		it("lists the chosen repository's branch under the branch field", async () => {
 			renderDialog();
-			const group = await treeGroup();
+			const list = await screen.findByRole("list", {
+				name: copy.tree.label,
+			});
 			expect(m.listTree).toHaveBeenCalledWith({
 				projectId: "proj_1",
 				repositoryIntegrationId: "int_1",
@@ -572,49 +609,71 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			const branch = screen.getByLabelText(
 				copy.configureDialog.branchLabel,
 			);
-			const folder = screen.getByLabelText(
-				copy.configureDialog.rootPathLabel,
-			);
 			expect(
-				branch.compareDocumentPosition(group) &
-					Node.DOCUMENT_POSITION_FOLLOWING,
-			).toBeTruthy();
-			expect(
-				group.compareDocumentPosition(folder) &
+				branch.compareDocumentPosition(list) &
 					Node.DOCUMENT_POSITION_FOLLOWING,
 			).toBeTruthy();
 		});
 
-		it("writes a picked folder to the folder field, clears the inline error, and saves it", async () => {
-			m.listTree.mockResolvedValue(TREE);
+		it("ticks nothing for a new configuration and keeps Save disabled, pointing at why", async () => {
+			renderDialog();
+			await screen.findByRole("list", { name: copy.tree.label });
+			for (const checkbox of within(treeList()).getAllByRole(
+				"checkbox",
+			)) {
+				expect(checkbox).not.toBeChecked();
+			}
+			expect(submit()).toBeDisabled();
+			expect(submit()).toHaveAccessibleDescription(
+				copy.summary.nothingSelected,
+			);
+			// Coding Instructions syncs one folder: a file can't be ticked.
+			expect(box("agents/CLAUDE.md")).toBeDisabled();
+			expect(box("agents/CLAUDE.md")).toHaveAccessibleDescription(
+				sel.syncsAFolder,
+			);
+			// No typed input while the tree lists the whole branch.
+			expect(
+				screen.queryByLabelText(copy.configureDialog.typedPath.label),
+			).not.toBeInTheDocument();
+		});
+
+		it("ticking a folder syncs it and everything inside, and says so", async () => {
+			const user = userEvent.setup();
+			renderDialog();
+			await pickAgents(user);
+			await waitFor(() => expect(box("agents/skills")).toBeEnabled());
+			expect(box("agents")).toBeChecked();
+			expect(box("agents/skills")).toBeChecked();
+			expect(box("agents/CLAUDE.md")).toBeChecked();
+			expect(
+				within(syncsList()).getByText("agents/"),
+			).toBeInTheDocument();
+			expect(
+				screen.getByText(
+					copy.summary.lead.replace("{folder}", "agents"),
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.getByText(copy.summary.installedAs),
+			).toBeInTheDocument();
+			expect(submit()).toBeEnabled();
+		});
+
+		it("ticking another folder moves the sync there and clears the inline error", async () => {
 			m.configure.mockRejectedValueOnce(orpcError("INVALID_ROOT_PATH"));
 			const user = userEvent.setup();
 			const { onOpenChange } = renderDialog();
-			const group = await treeGroup();
-
-			await user.click(
-				screen.getByRole("button", {
-					name: copy.configureDialog.submit,
-				}),
-			);
+			await pickAgents(user);
+			await user.click(submit());
 			await screen.findByRole("alert");
 
-			await user.click(
-				within(group).getByRole("radio", { name: "tools/claude" }),
-			);
-			expect(
-				screen.getByLabelText(copy.configureDialog.rootPathLabel),
-			).toHaveValue("tools/claude");
+			await user.click(box("tools/claude"));
+			expect(box("tools/claude")).toBeChecked();
+			expect(box("agents")).not.toBeChecked();
 			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-			expect(
-				screen.getByLabelText(copy.configureDialog.rootPathLabel),
-			).not.toHaveAttribute("aria-invalid");
 
-			await user.click(
-				screen.getByRole("button", {
-					name: copy.configureDialog.submit,
-				}),
-			);
+			await user.click(submit());
 			await waitFor(() =>
 				expect(onOpenChange).toHaveBeenCalledWith(false),
 			);
@@ -623,80 +682,138 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			);
 		});
 
-		it("selects the stored folder's row when changing a configuration, and typing moves the selection", async () => {
-			m.listTree.mockResolvedValue(TREE);
-			const user = userEvent.setup();
-			renderDialog({ current: CONFIGURED.configured });
-			const group = await treeGroup();
+		it("opens the way to a stored folder deep in the tree", async () => {
+			m.listTree.mockResolvedValue({
+				...TREE,
+				entries: [
+					...TREE.entries,
+					{ path: "tools/claude/skills", type: "dir" },
+					{ path: "tools/claude/skills/a.md", type: "file" },
+				],
+			});
+			renderDialog({
+				current: {
+					...(CONFIGURED.configured as NonNullable<
+						RepositorySyncState["configured"]
+					>),
+					rootPath: "tools/claude/skills",
+				},
+			});
 			expect(
-				within(group).getByRole("radio", { name: "agents" }),
-			).toBeChecked();
-
-			const folder = screen.getByLabelText(
-				copy.configureDialog.rootPathLabel,
-			);
-			await user.clear(folder);
-			expect(
-				within(group).getByRole("radio", {
-					name: copy.tree.repositoryRoot,
+				await screen.findByRole("checkbox", {
+					name: "tools/claude/skills",
 				}),
-			).toBeChecked();
-			await user.type(folder, "tools/claude/");
-			expect(
-				within(group).getByRole("radio", { name: "tools/claude" }),
 			).toBeChecked();
 		});
 
-		it("keeps the typed folder working when the provider has no listing", async () => {
-			m.listTree.mockResolvedValue({
-				supported: false,
-				entries: [],
-				truncated: false,
-			});
+		it("unticking the folder, or removing it from the list, selects nothing", async () => {
+			const user = userEvent.setup();
+			renderDialog({ current: CONFIGURED.configured });
+			await waitFor(() => expect(box("agents")).toBeChecked());
+			await user.click(box("agents"));
+			expect(box("agents")).not.toBeChecked();
+			expect(submit()).toBeDisabled();
+
+			await user.click(box("agents"));
+			await user.click(
+				within(syncsList()).getByRole("button", {
+					name: copy.configureDialog.selectedPaths.remove.replace(
+						"{path}",
+						"agents/",
+					),
+				}),
+			);
+			expect(box("agents")).not.toBeChecked();
+			expect(
+				screen.getByText(copy.summary.nothingSelected),
+			).toBeInTheDocument();
+		});
+
+		it("Select all syncs the whole repository; Select none clears it", async () => {
+			const user = userEvent.setup();
+			const { onOpenChange } = renderDialog();
+			await screen.findByRole("list", { name: copy.tree.label });
+			await user.click(
+				screen.getByRole("button", { name: copy.tree.selectNone }),
+			);
+			expect(submit()).toBeDisabled();
+			await user.click(
+				screen.getByRole("button", { name: copy.tree.selectAll }),
+			);
+			expect(
+				within(syncsList()).getByText(
+					copy.configureDialog.selectedPaths.wholeRepository,
+				),
+			).toBeInTheDocument();
+			expect(box("agents")).toBeChecked();
+			expect(box("tools")).toBeChecked();
+			expect(screen.getByText(copy.summary.leadRoot)).toBeInTheDocument();
+
+			await user.click(submit());
+			await waitFor(() =>
+				expect(onOpenChange).toHaveBeenCalledWith(false),
+			);
+			expect(m.configure).toHaveBeenCalledWith(
+				expect.objectContaining({ rootPath: "" }),
+			);
+		});
+
+		it("offers the folder as typed text when the provider has no listing", async () => {
+			m.listTree.mockResolvedValue(UNSUPPORTED);
 			const user = userEvent.setup();
 			renderDialog();
 			expect(
 				await screen.findByText(copy.tree.unsupported),
 			).toBeInTheDocument();
-			await user.type(
-				screen.getByLabelText(copy.configureDialog.rootPathLabel),
-				"agents",
+
+			await typeFolder(user, "");
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				copy.configureDialog.typedPath.empty,
 			);
-			await user.click(
-				screen.getByRole("button", {
-					name: copy.configureDialog.submit,
-				}),
-			);
+
+			await typeFolder(user, "agents/");
+			expect(
+				within(syncsList()).getByText("agents/"),
+			).toBeInTheDocument();
+			await user.click(submit());
 			await waitFor(() =>
 				expect(m.configure).toHaveBeenCalledWith(
 					expect.objectContaining({ rootPath: "agents" }),
 				),
 			);
 		});
+
+		it("offers the typed folder beside a truncated listing, and beside a failed one", async () => {
+			m.listTree.mockResolvedValue({ ...TREE, truncated: true });
+			const { unmount } = render(
+				<ConfigureRepositorySyncDialog
+					projectId="proj_1"
+					open
+					onOpenChange={vi.fn()}
+					integrations={[INTEGRATION]}
+					current={null}
+					onSaved={vi.fn()}
+				/>,
+				{ wrapper: Providers },
+			);
+			expect(
+				await screen.findByLabelText(
+					copy.configureDialog.typedPath.label,
+				),
+			).toBeInTheDocument();
+			unmount();
+
+			m.listTree.mockRejectedValue(orpcError("REPOSITORY_UNREACHABLE"));
+			renderDialog();
+			expect(
+				await screen.findByLabelText(
+					copy.configureDialog.typedPath.label,
+				),
+			).toBeInTheDocument();
+		});
 	});
 
-	describe("folder exclusions (Fizzy #2726)", () => {
-		const TREE = {
-			supported: true,
-			truncated: false,
-			entries: [
-				{ path: "agents", type: "dir" },
-				{ path: "agents/skills", type: "dir" },
-				{ path: "agents/drafts", type: "dir" },
-				{ path: "tools", type: "dir" },
-				{ path: "tools/claude", type: "dir" },
-			],
-		};
-		const ex = copy.tree.exclusions;
-		const exclude = (path: string) =>
-			screen.getByRole("checkbox", {
-				name: ex.toggleLabel.replace("{path}", path),
-			});
-		const submit = () =>
-			screen.getByRole("button", { name: copy.configureDialog.submit });
-		const treeGroup = () =>
-			screen.getByRole("radiogroup", { name: copy.tree.label });
-
+	describe("leaving things out by unticking them (Fizzy #2726, #2750 §4)", () => {
 		/**
 		 * The project's settings row as the server keeps it: a re-read
 		 * answers what is stored, and only a successful `configure` that
@@ -707,7 +824,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			stored = null;
 			m.getSettings.mockImplementation(async () => ({
 				ignoreGlobs: stored,
-				defaultIgnoreGlobs: [],
+				defaultIgnoreGlobs: [...DEFAULT_IGNORE_GLOBS],
 				sourceOfTruth: "REPOSITORY",
 			}));
 			m.configure.mockImplementation(
@@ -724,27 +841,36 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		const configured = (n = 0) =>
 			m.configure.mock.calls[n]?.[0] as Record<string, unknown>;
 
-		/** The dialog on the stored folder `agents`, its browser listed. */
+		/** The dialog on the stored folder `agents`, its rules known. */
 		async function renderOnAgents(
 			props: Partial<
 				Parameters<typeof ConfigureRepositorySyncDialog>[0]
 			> = {},
 		) {
-			m.listTree.mockResolvedValue(TREE);
 			const rendered = renderDialog({
 				current: CONFIGURED.configured,
 				...props,
 			});
-			await screen.findByRole("radiogroup", { name: copy.tree.label });
-			await waitFor(() => expect(exclude("agents/skills")).toBeEnabled());
+			await screen.findByRole("list", { name: copy.tree.label });
+			await waitFor(() => expect(box("agents/drafts")).toBeEnabled());
 			return rendered;
 		}
 
-		it("sends the staged exclusions WITH the configuration, never as a separate write, then starts the sync", async () => {
+		it("sends the staged rule WITH the configuration, never as a separate write, then starts the sync", async () => {
 			const user = userEvent.setup();
 			const { onOpenChange, onSaved } = await renderOnAgents();
 
-			await user.click(exclude("agents/skills"));
+			await user.click(box("agents/skills"));
+			expect(box("agents/skills")).not.toBeChecked();
+			expect(box("agents")).toHaveAttribute("aria-checked", "mixed");
+			expect(
+				within(syncsList()).getByText(
+					copy.configureDialog.selectedPaths.except.replace(
+						"{path}",
+						"agents/skills/",
+					),
+				),
+			).toBeInTheDocument();
 			await user.click(submit());
 
 			await waitFor(() =>
@@ -768,26 +894,133 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			expect(onSaved).toHaveBeenCalled();
 		});
 
-		it("removes a turned-off folder's own rule from the project's list", async () => {
+		it("stages a file's own path, relative to the folder", async () => {
+			const user = userEvent.setup();
+			const { onOpenChange } = await renderOnAgents();
+			await user.click(box("agents/CLAUDE.md"));
+			await user.click(submit());
+			await waitFor(() =>
+				expect(onOpenChange).toHaveBeenCalledWith(false),
+			);
+			expect(configured().ignoreGlobs).toEqual([
+				...DEFAULT_IGNORE_GLOBS,
+				"CLAUDE.md",
+			]);
+		});
+
+		it("says why a row inside an unticked folder can't be ticked", async () => {
+			const user = userEvent.setup();
+			await renderOnAgents();
+			await user.click(box("agents/skills"));
+			await user.click(
+				within(treeList()).getByRole("button", { name: "skills" }),
+			);
+			expect(box("agents/skills/review.md")).toBeDisabled();
+			expect(box("agents/skills/review.md")).toHaveAccessibleDescription(
+				sel.leftOutBecause.replace("{path}", "agents/skills"),
+			);
+		});
+
+		it("names the rule that leaves a row out when the tree can't change it", async () => {
+			m.listTree.mockResolvedValue({
+				...TREE,
+				entries: [
+					...TREE.entries,
+					{ path: "agents/tasks", type: "dir" },
+					{ path: "agents/tasks/todo.md", type: "file" },
+					{ path: "agents/link.md", type: "file", regular: false },
+					{ path: "agents/dr*fts", type: "dir" },
+					{ path: "agents/dr*fts/x.md", type: "file" },
+				],
+			});
+			await renderOnAgents();
+			expect(box("agents/tasks")).toBeDisabled();
+			expect(box("agents/tasks")).not.toBeChecked();
+			expect(box("agents/tasks")).toHaveAccessibleDescription(
+				sel.cause.default.replace("{rule}", "**/tasks/**"),
+			);
+			expect(box("agents/link.md")).toHaveAccessibleDescription(
+				sel.notRegular,
+			);
+			expect(box("agents/dr*fts")).toBeDisabled();
+			expect(box("agents/dr*fts")).toBeChecked();
+			expect(box("agents/dr*fts")).toHaveAccessibleDescription(
+				sel.wildcard,
+			);
+		});
+
+		it("disables every new rule once the project's list is full, saying so", async () => {
+			stored = Array.from({ length: 200 }, (_, i) => `rule-${i}/**`);
+			renderDialog({ current: CONFIGURED.configured });
+			await screen.findByRole("list", { name: copy.tree.label });
+			await waitFor(() =>
+				expect(box("agents/skills")).toHaveAccessibleDescription(
+					/already has .* ignore rules/,
+				),
+			);
+			expect(box("agents/skills")).toBeDisabled();
+			expect(box("agents/skills")).toBeChecked();
+		});
+
+		it("ticking a row the member left out removes its own rule, and lists the saved rule before Save", async () => {
 			stored = ["dist/**", "skills/**"];
 			const user = userEvent.setup();
 			const { onOpenChange } = await renderOnAgents();
-			expect(exclude("agents/skills")).toBeChecked();
+			expect(box("agents/skills")).not.toBeChecked();
+			expect(box("agents")).toHaveAttribute("aria-checked", "mixed");
+			expect(
+				screen.queryByText(copy.configureDialog.removalNotice),
+			).not.toBeInTheDocument();
 
-			await user.click(exclude("agents/skills"));
+			await user.click(box("agents/skills"));
+			expect(box("agents/skills")).toBeChecked();
+			const notice = screen.getByText(copy.configureDialog.removalNotice);
+			expect(notice.parentElement).toHaveTextContent("skills/**");
+			expect(submit()).toHaveAccessibleDescription(
+				expect.stringContaining(copy.configureDialog.removalNotice),
+			);
+
 			await user.click(submit());
-
 			await waitFor(() =>
 				expect(onOpenChange).toHaveBeenCalledWith(false),
 			);
 			expect(configured().ignoreGlobs).toEqual(["dist/**"]);
 		});
 
+		it("ticking a partial folder removes the member's rules inside it", async () => {
+			stored = ["skills/**", "drafts/**"];
+			const user = userEvent.setup();
+			await renderOnAgents();
+			expect(box("agents")).toHaveAttribute("aria-checked", "mixed");
+			await user.click(box("agents"));
+			expect(box("agents")).toBeChecked();
+			expect(box("agents/skills")).toBeChecked();
+			expect(box("agents/drafts")).toBeChecked();
+			const notice = screen.getByText(copy.configureDialog.removalNotice);
+			expect(notice.parentElement).toHaveTextContent("skills/**");
+			expect(notice.parentElement).toHaveTextContent("drafts/**");
+		});
+
+		it("includes a left-out row again from the list", async () => {
+			stored = ["skills/**"];
+			const user = userEvent.setup();
+			await renderOnAgents();
+			await user.click(
+				within(syncsList()).getByRole("button", {
+					name: copy.configureDialog.selectedPaths.includeAgain.replace(
+						"{path}",
+						"agents/skills/",
+					),
+				}),
+			);
+			expect(box("agents/skills")).toBeChecked();
+		});
+
 		it("applies the staged edits to the rules as saved at Save, keeping a rule saved elsewhere meanwhile", async () => {
 			stored = ["dist/**"];
 			const user = userEvent.setup();
 			const { onOpenChange } = await renderOnAgents();
-			await user.click(exclude("agents/skills"));
+			await user.click(box("agents/skills"));
 			// Another member saves a rule while this dialog is open.
 			stored = ["dist/**", "concurrent/**"];
 
@@ -803,12 +1036,12 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			]);
 		});
 
-		it("sends no rules when none changed, a toggle turned on and back off included", async () => {
+		it("sends no rules when none changed, an untick ticked back included", async () => {
 			const user = userEvent.setup();
 			const { onOpenChange } = await renderOnAgents();
 
-			await user.click(exclude("agents/skills"));
-			await user.click(exclude("agents/skills"));
+			await user.click(box("agents/skills"));
+			await user.click(box("agents/skills"));
 			await user.click(submit());
 
 			await waitFor(() =>
@@ -821,7 +1054,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		it("sends no rules when the fresh list already has the staged change", async () => {
 			const user = userEvent.setup();
 			const { onOpenChange } = await renderOnAgents();
-			await user.click(exclude("agents/skills"));
+			await user.click(box("agents/skills"));
 			// Someone else saved exactly this change meanwhile.
 			stored = [...DEFAULT_IGNORE_GLOBS, "skills/**"];
 
@@ -836,7 +1069,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		it("saves nothing when the saved rules cannot be re-read at Save, and stays open", async () => {
 			const user = userEvent.setup();
 			const { onOpenChange, onSaved } = await renderOnAgents();
-			await user.click(exclude("agents/skills"));
+			await user.click(box("agents/skills"));
 			m.getSettings.mockRejectedValue(new Error("boom"));
 
 			await user.click(submit());
@@ -857,11 +1090,9 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			const user = userEvent.setup();
 			// Configured on `agents`; the member moves to `tools`.
 			const { onOpenChange, onSaved } = await renderOnAgents();
-			await user.click(
-				within(treeGroup()).getByRole("radio", { name: "tools" }),
-			);
-			await waitFor(() => expect(exclude("tools/claude")).toBeEnabled());
-			await user.click(exclude("tools/claude"));
+			await user.click(box("tools"));
+			await waitFor(() => expect(box("tools/claude")).toBeEnabled());
+			await user.click(box("tools/claude"));
 
 			await user.click(submit());
 
@@ -886,7 +1117,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			expect(onSaved).not.toHaveBeenCalled();
 			expect(onOpenChange).not.toHaveBeenCalled();
 			// Still staged, to retry.
-			expect(exclude("tools/claude")).toBeChecked();
+			expect(box("tools/claude")).not.toBeChecked();
 		});
 
 		it("sends the staged rules again on a retry after a failed configure", async () => {
@@ -895,7 +1126,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			);
 			const user = userEvent.setup();
 			const { onOpenChange } = await renderOnAgents();
-			await user.click(exclude("agents/skills"));
+			await user.click(box("agents/skills"));
 
 			await user.click(submit());
 			await waitFor(() => expect(m.toastError).toHaveBeenCalled());
@@ -914,37 +1145,32 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			expect(stored).toEqual([...DEFAULT_IGNORE_GLOBS, "skills/**"]);
 		});
 
-		it("drops the staged exclusions when another folder is chosen, from the browser or typed", async () => {
+		it("drops the staged rules when another folder is ticked, and keeps them when the same folder is typed again", async () => {
+			m.listTree.mockResolvedValue({ ...TREE, truncated: true });
 			const user = userEvent.setup();
 			await renderOnAgents();
 
-			await user.click(exclude("agents/skills"));
-			await user.click(
-				within(treeGroup()).getByRole("radio", { name: "tools" }),
-			);
-			await user.click(
-				within(treeGroup()).getByRole("radio", { name: "agents" }),
-			);
-			expect(exclude("agents/skills")).not.toBeChecked();
+			await user.click(box("agents/skills"));
+			await user.click(box("tools"));
+			await user.click(box("agents"));
+			await waitFor(() => expect(box("agents/skills")).toBeEnabled());
+			expect(box("agents/skills")).toBeChecked();
 
-			await user.click(exclude("agents/skills"));
-			const folder = screen.getByLabelText(
-				copy.configureDialog.rootPathLabel,
-			);
-			await user.clear(folder);
-			await user.type(folder, "agents");
-			expect(exclude("agents/skills")).not.toBeChecked();
-
-			// Re-spelling the same folder keeps them.
-			await user.click(exclude("agents/skills"));
-			await user.type(folder, "/");
-			expect(exclude("agents/skills")).toBeChecked();
+			// Typed: the same folder, spelled otherwise, keeps them.
+			await user.click(box("agents/skills"));
+			await typeFolder(user, "agents/");
+			expect(box("agents/skills")).not.toBeChecked();
+			// Another folder, typed, drops them.
+			await typeFolder(user, "tools");
+			await typeFolder(user, "agents");
+			await waitFor(() => expect(box("agents/skills")).toBeEnabled());
+			expect(box("agents/skills")).toBeChecked();
 		});
 
-		it("drops the staged exclusions when the branch changes", async () => {
+		it("drops the staged rules when the branch changes", async () => {
 			const user = userEvent.setup();
 			const { onOpenChange } = await renderOnAgents();
-			await user.click(exclude("agents/skills"));
+			await user.click(box("agents/skills"));
 
 			const branchField = screen.getByLabelText(
 				copy.configureDialog.branchLabel,
@@ -955,17 +1181,17 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 					expect.objectContaining({ ref: "main-next" }),
 				),
 			);
-			await waitFor(() => expect(exclude("agents/skills")).toBeEnabled());
-			expect(exclude("agents/skills")).not.toBeChecked();
+			await waitFor(() => expect(box("agents/skills")).toBeEnabled());
+			expect(box("agents/skills")).toBeChecked();
 
 			// Trailing spaces are the same branch: the edits stay.
-			await user.click(exclude("agents/skills"));
+			await user.click(box("agents/skills"));
 			await user.type(branchField, "  ");
-			expect(exclude("agents/skills")).toBeChecked();
+			expect(box("agents/skills")).not.toBeChecked();
 			await user.clear(branchField);
 			await user.type(branchField, "main-next");
-			await waitFor(() => expect(exclude("agents/skills")).toBeEnabled());
-			expect(exclude("agents/skills")).not.toBeChecked();
+			await waitFor(() => expect(box("agents/skills")).toBeEnabled());
+			expect(box("agents/skills")).toBeChecked();
 
 			await user.click(submit());
 			await waitFor(() =>
@@ -974,25 +1200,231 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			expect(configured()).not.toHaveProperty("ignoreGlobs");
 		});
 
-		it("drops the staged exclusions when another repository is chosen", async () => {
+		it("drops the staged rules when another repository is chosen", async () => {
 			const user = userEvent.setup();
 			const { onOpenChange } = await renderOnAgents({
 				integrations: [INTEGRATION, SECOND],
 			});
 
-			await user.click(exclude("agents/skills"));
+			await user.click(box("agents/skills"));
 			await user.selectOptions(
 				screen.getByLabelText(copy.configureDialog.repositoryLabel),
 				"int_2",
 			);
-			await waitFor(() => expect(exclude("agents/skills")).toBeEnabled());
-			expect(exclude("agents/skills")).not.toBeChecked();
+			await waitFor(() => expect(box("agents/skills")).toBeEnabled());
+			expect(box("agents/skills")).toBeChecked();
 
 			await user.click(submit());
 			await waitFor(() =>
 				expect(onOpenChange).toHaveBeenCalledWith(false),
 			);
 			expect(configured()).not.toHaveProperty("ignoreGlobs");
+		});
+
+		it("can't tell what syncs while the project's rules could not be loaded, and says so", async () => {
+			m.getSettings.mockRejectedValue(new Error("boom"));
+			renderDialog({ current: CONFIGURED.configured });
+			expect(
+				await screen.findByText(copy.tree.notices.settingsError),
+			).toHaveAttribute("role", "alert");
+			await screen.findByRole("list", { name: copy.tree.label });
+			expect(box("agents/skills")).toBeDisabled();
+			expect(box("agents/skills")).toHaveAccessibleDescription(
+				sel.cantTellYet,
+			);
+			expect(
+				screen.getByText(copy.summary.cantCount),
+			).toBeInTheDocument();
+		});
+	});
+
+	describe("the synced folder's .fabricignore", () => {
+		const WITH_IGNORE_FILE = {
+			...TREE,
+			entries: [
+				...TREE.entries,
+				{ path: "agents/.fabricignore", type: "file" },
+			],
+		};
+
+		/** The dialog on the stored folder `agents`, the project rules saved. */
+		async function renderOnAgents(
+			saved: string[] | null,
+			listing: unknown = WITH_IGNORE_FILE,
+		) {
+			m.getSettings.mockResolvedValue({
+				ignoreGlobs: saved,
+				defaultIgnoreGlobs: [...DEFAULT_IGNORE_GLOBS],
+				sourceOfTruth: "REPOSITORY",
+			});
+			m.listTree.mockResolvedValue(listing);
+			renderDialog({ current: CONFIGURED.configured });
+			await screen.findByRole("list", { name: copy.tree.label });
+		}
+
+		it("reads it when the listing has it; with rules it replaces the project's and no row can be left out here", async () => {
+			m.readIgnoreFile.mockResolvedValue({
+				supported: true,
+				state: "rules",
+				rules: ["drafts/"],
+			});
+			await renderOnAgents(["skills/**"]);
+
+			expect(
+				await screen.findByText(copy.tree.notices.fabricignore),
+			).toBeInTheDocument();
+			expect(m.readIgnoreFile).toHaveBeenCalledWith({
+				projectId: "proj_1",
+				repositoryIntegrationId: "int_1",
+				ref: "main",
+				rootPath: "agents",
+			});
+			// The file's rule applies; the project's does not.
+			expect(box("agents/drafts")).not.toBeChecked();
+			expect(box("agents/drafts")).toHaveAccessibleDescription(
+				sel.cause.fabricignore.replace("{rule}", "drafts/"),
+			);
+			expect(box("agents/skills")).toBeChecked();
+			expect(box("agents/skills")).toBeDisabled();
+			expect(box("agents/skills")).toHaveAccessibleDescription(
+				sel.fabricignore,
+			);
+		});
+
+		it("keeps the project's rules, and unticking, when the file has no rules", async () => {
+			m.readIgnoreFile.mockResolvedValue({
+				supported: true,
+				state: "rules",
+				rules: [],
+			});
+			await renderOnAgents(["skills/**"]);
+			await waitFor(() => expect(box("agents/drafts")).toBeEnabled());
+			expect(box("agents/skills")).not.toBeChecked();
+			expect(box("agents/skills")).toBeEnabled();
+			expect(
+				screen.queryByText(copy.tree.notices.fabricignore),
+			).not.toBeInTheDocument();
+		});
+
+		it("says a file over the sync's limit is ignored, and keeps the project's rules", async () => {
+			m.readIgnoreFile.mockResolvedValue({
+				supported: true,
+				state: "tooLarge",
+				rules: [],
+			});
+			await renderOnAgents(["skills/**"]);
+			expect(
+				await screen.findByText(copy.tree.notices.ignoreFileTooLarge),
+			).toBeInTheDocument();
+			expect(box("agents/skills")).not.toBeChecked();
+			expect(box("agents/skills")).toBeEnabled();
+		});
+
+		it("shows a failed read, and can't tell what syncs rather than showing the project's rules", async () => {
+			m.readIgnoreFile.mockRejectedValue(new Error("network down"));
+			await renderOnAgents(["skills/**"]);
+			expect(
+				await screen.findByText(copy.tree.notices.ignoreFileError),
+			).toHaveAttribute("role", "alert");
+			for (const path of ["agents/skills", "agents/drafts"]) {
+				expect(box(path)).toBeDisabled();
+				expect(box(path)).toHaveAccessibleDescription(sel.cantTellYet);
+			}
+		});
+
+		it("can't tell what syncs while the file is being read", async () => {
+			m.readIgnoreFile.mockReturnValue(new Promise(() => {}));
+			await renderOnAgents(null);
+			expect(
+				await screen.findByText(copy.tree.notices.ignoreFileLoading),
+			).toBeInTheDocument();
+			expect(box("agents/skills")).toBeDisabled();
+			expect(box("agents/skills")).toHaveAccessibleDescription(
+				sel.cantTellYet,
+			);
+			expect(screen.getByText(copy.summary.counting)).toBeInTheDocument();
+		});
+
+		it("does not read a .fabricignore that is a symbolic link: the sync has no such file", async () => {
+			await renderOnAgents(null, {
+				...TREE,
+				entries: [
+					...TREE.entries,
+					{
+						path: "agents/.fabricignore",
+						type: "file",
+						regular: false,
+					},
+				],
+			});
+			await waitFor(() => expect(box("agents/skills")).toBeEnabled());
+			expect(m.readIgnoreFile).not.toHaveBeenCalled();
+			expect(box("agents/.fabricignore")).toHaveAccessibleDescription(
+				sel.notRegular,
+			);
+		});
+
+		it("reads only the synced folder's own file, not one elsewhere", async () => {
+			const user = userEvent.setup();
+			await renderOnAgents(null, {
+				...TREE,
+				entries: [
+					...TREE.entries,
+					{ path: "tools/.fabricignore", type: "file" },
+				],
+			});
+			await waitFor(() => expect(box("agents/skills")).toBeEnabled());
+			expect(m.readIgnoreFile).not.toHaveBeenCalled();
+			m.readIgnoreFile.mockResolvedValue({
+				supported: true,
+				state: "absent",
+				rules: [],
+			});
+			await user.click(box("tools"));
+			await waitFor(() =>
+				expect(m.readIgnoreFile).toHaveBeenCalledWith(
+					expect.objectContaining({ rootPath: "tools" }),
+				),
+			);
+		});
+
+		it("reads the repository root's file for the whole repository", async () => {
+			m.readIgnoreFile.mockResolvedValue({
+				supported: true,
+				state: "absent",
+				rules: [],
+			});
+			const user = userEvent.setup();
+			await renderOnAgents(null, {
+				...TREE,
+				entries: [
+					...TREE.entries,
+					{ path: ".fabricignore", type: "file" },
+				],
+			});
+			await user.click(
+				screen.getByRole("button", { name: copy.tree.selectAll }),
+			);
+			await waitFor(() =>
+				expect(m.readIgnoreFile).toHaveBeenCalledWith(
+					expect.objectContaining({ rootPath: "" }),
+				),
+			);
+		});
+
+		it("reads it from a truncated listing that may have stopped before it", async () => {
+			m.readIgnoreFile.mockResolvedValue({
+				supported: true,
+				state: "absent",
+				rules: [],
+			});
+			await renderOnAgents(null, { ...TREE, truncated: true });
+			await waitFor(() =>
+				expect(m.readIgnoreFile).toHaveBeenCalledWith(
+					expect.objectContaining({ rootPath: "agents" }),
+				),
+			);
+			await waitFor(() => expect(box("agents/skills")).toBeEnabled());
 		});
 	});
 });
@@ -1805,5 +2237,64 @@ describe("RepositorySyncSettingsSection (§7.4)", () => {
 		).toBeInTheDocument();
 		expect(screen.queryByRole("button")).not.toBeInTheDocument();
 		expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+	});
+});
+
+describe("RepositorySyncSettingsSection — what syncs (Fizzy #2750 §6)", () => {
+	function renderSection(state: RepositorySyncState = CONFIGURED) {
+		render(
+			<RepositorySyncSettingsSection
+				projectId="proj_1"
+				state={state}
+				onChange={vi.fn()}
+				onChanged={vi.fn(async (): Promise<void> => {})}
+			/>,
+			{ wrapper: Providers },
+		);
+		return screen.getByTestId("instructions-sync-selection-summary");
+	}
+
+	it("names the folder, without a count, since no listing is read here", async () => {
+		m.getSettings.mockResolvedValue({
+			ignoreGlobs: [],
+			defaultIgnoreGlobs: [...DEFAULT_IGNORE_GLOBS],
+			sourceOfTruth: "REPOSITORY",
+		});
+		const summary = renderSection();
+		await waitFor(() => expect(m.getSettings).toHaveBeenCalled());
+		expect(summary).toHaveTextContent(
+			copy.summary.lead.replace("{folder}", "agents"),
+		);
+		expect(summary).not.toHaveTextContent(
+			copy.summary.projectRulesLeaveOut,
+		);
+		expect(summary).not.toHaveTextContent(/match/);
+	});
+
+	it("says the project's rules leave some files out when it has any, its own or the defaults", async () => {
+		m.getSettings.mockResolvedValue({
+			ignoreGlobs: null,
+			defaultIgnoreGlobs: [...DEFAULT_IGNORE_GLOBS],
+			sourceOfTruth: "REPOSITORY",
+		});
+		const summary = renderSection();
+		await waitFor(() =>
+			expect(summary).toHaveTextContent(
+				copy.summary.projectRulesLeaveOut,
+			),
+		);
+	});
+
+	it("names the whole repository for the repository root", () => {
+		const summary = renderSection({
+			...CONFIGURED,
+			configured: {
+				...(CONFIGURED.configured as NonNullable<
+					RepositorySyncState["configured"]
+				>),
+				rootPath: "",
+			},
+		});
+		expect(summary).toHaveTextContent(copy.summary.leadRoot);
 	});
 });

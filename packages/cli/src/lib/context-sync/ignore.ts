@@ -27,7 +27,11 @@ type Ignore = ReturnType<typeof ignore>;
 
 export const CONTEXT_IGNORE_FILENAME = ".contextignore";
 
-const DEFAULT_CONTEXT_IGNORE_PATTERNS: readonly string[] = [
+/**
+ * The server keeps the canonical copy (`packages/instructions/src/context-sync-rules.ts`);
+ * `context-sync-rules-agree-with-cli.test.ts` there pins this one to it.
+ */
+export const DEFAULT_CONTEXT_IGNORE_PATTERNS: readonly string[] = [
 	".git/",
 	".fabric/",
 	".claude/",

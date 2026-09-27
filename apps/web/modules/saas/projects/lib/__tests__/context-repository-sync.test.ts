@@ -416,6 +416,11 @@ describe("configure dialog error mapping (§5.1, §7.2)", () => {
 		["EXCLUDED_PATH", "paths"],
 		["PATH_PREFIX_OVERLAP", "paths"],
 		["TOO_MANY_PATHS", "paths"],
+		["EXCLUDED_PATH_POLICY_FILE", "paths"],
+		["TOO_MANY_EXCLUDED_PATHS", "paths"],
+		["EXCLUDED_PATH_OUTSIDE_SELECTION", "paths"],
+		["EXCLUDED_PATH_OVERLAP", "paths"],
+		["EXCLUDED_PATHS_STALE", "paths"],
 		["BRANCH_NOT_FOUND", "branch"],
 	] as const)("%s is inline, attached to the %s field", (code, field) => {
 		const mapped = contextSyncConfigureErrorMessage(orpcLikeError(code));
@@ -450,6 +455,20 @@ describe("configure dialog error mapping (§5.1, §7.2)", () => {
 				orpcLikeError("EXCLUDED_PATH", { path: "docs/AGENTS.md" }),
 			).key,
 		).toBe("configureDialog.errors.EXCLUDED_PATH");
+	});
+
+	it("carries the path and the path it overlaps for EXCLUDED_PATH_OVERLAP (Fizzy #2750 §5.3)", () => {
+		const mapped = contextSyncConfigureErrorMessage(
+			orpcLikeError("EXCLUDED_PATH_OVERLAP", {
+				path: "docs/old/notes.md",
+				withPath: "docs/old",
+			}),
+		);
+		expect(mapped).toMatchObject({
+			key: "configureDialog.errors.EXCLUDED_PATH_OVERLAP",
+			field: "paths",
+			values: { path: "docs/old/notes.md", withPath: "docs/old" },
+		});
 	});
 
 	it("carries managedCount for REPOSITORY_CHANGE_REQUIRES_DISCONNECT", () => {
@@ -533,20 +552,31 @@ describe("paths editor validation (§2, §5.1)", () => {
 		});
 	});
 
-	it("accepts an empty string alone, but not alongside another path", () => {
+	it("accepts the whole repository, or a folder holding selected paths, which the reducer then absorbs (Fizzy #2750 §5.7)", () => {
 		expect(validateContextSyncPathAddition("", [])).toEqual({
 			ok: true,
 			path: "",
 		});
-		const result = validateContextSyncPathAddition("", ["docs"]);
-		expect(result.ok).toBe(false);
-		if (!result.ok) {
-			expect(result.error.code).toBe("PATH_PREFIX_OVERLAP");
-		}
+		// Adding "" or a folder that holds selected paths is the same
+		// transition as ticking a partial folder: it absorbs them.
+		expect(validateContextSyncPathAddition("", ["docs"])).toEqual({
+			ok: true,
+			path: "",
+		});
+		expect(
+			validateContextSyncPathAddition("docs", ["docs/guides", "notes"]),
+		).toEqual({ ok: true, path: "docs" });
+		// Anything is inside the whole repository, worded without an empty name.
 		const reverse = validateContextSyncPathAddition("docs", [""]);
-		expect(reverse.ok).toBe(false);
+		expect(reverse).toEqual({
+			ok: false,
+			error: { code: "PATH_PREFIX_OVERLAP", path: "docs", withPath: "" },
+		});
 		if (!reverse.ok) {
-			expect(reverse.error.code).toBe("PATH_PREFIX_OVERLAP");
+			expect(contextSyncPathValidationMessage(reverse.error)).toEqual({
+				key: "pathErrors.INSIDE_WHOLE_REPOSITORY",
+				values: { path: "docs" },
+			});
 		}
 	});
 
@@ -566,15 +596,17 @@ describe("paths editor validation (§2, §5.1)", () => {
 		).toEqual({ ok: true, path: "docs-archive" });
 	});
 
-	it("rejects a path once 50 are already selected", () => {
+	it("leaves the 50-path cap to the reducer, which checks it after absorbing", () => {
+		// Validation alone never refuses by count: a path that absorbs
+		// selected paths can be added to a full selection
+		// (`applyContextAction`, tested in context-selection.test.ts).
 		const existing = Array.from(
 			{ length: CONTEXT_SYNC_MAX_PATHS },
 			(_, i) => `folder-${i}`,
 		);
-		const result = validateContextSyncPathAddition("one-more", existing);
-		expect(result).toEqual({
-			ok: false,
-			error: { code: "TOO_MANY_PATHS" },
+		expect(validateContextSyncPathAddition("one-more", existing)).toEqual({
+			ok: true,
+			path: "one-more",
 		});
 	});
 

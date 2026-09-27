@@ -24,7 +24,7 @@
  * `contextSyncRowStore` (Fizzy #2673), so a `vi.mock` factory can import it
  * and hand out `root` as `db`. Call `reset()` in `beforeEach`. The Living
  * Memory store also answers the two reads its failure receipt makes: the
- * configuration's paths and the integration's name.
+ * configuration's paths and left-out paths, and the integration's name.
  */
 import type { Prisma } from "../../prisma/client";
 
@@ -53,6 +53,8 @@ type SyncRow = {
 	integrationStatus: "ACTIVE" | "TOKEN_EXPIRED";
 	/** Living Memory only: the selected paths a failure receipt freezes. */
 	paths: string[];
+	/** Living Memory only: the left-out paths it freezes with them (Fizzy #2750). */
+	excludedPaths: string[];
 };
 
 type RunRow = { id: string } & Record<string, unknown>;
@@ -98,6 +100,7 @@ const ROW_DEFAULTS: Omit<SyncRow, "id" | "nextCheckAt" | "updatedAt"> = {
 	pendingCommitSha: null,
 	integrationStatus: "ACTIVE",
 	paths: ["docs"],
+	excludedPaths: [],
 };
 
 function squash(text: string): string {
@@ -144,7 +147,8 @@ function column(row: SyncRow, name: string | undefined): keyof SyncRow {
 		name === undefined ||
 		!(name in row) ||
 		name === "integrationStatus" ||
-		name === "paths"
+		name === "paths" ||
+		name === "excludedPaths"
 	) {
 		throw new Error(`the row store has no column "${name}"`);
 	}
@@ -162,8 +166,8 @@ type RowStoreOptions = {
 	syncDelegate: string;
 	/**
 	 * Living Memory only: the two reads its failure receipt makes, the
-	 * configuration's paths (the sync delegate's `findFirst`) and the
-	 * integration's name.
+	 * configuration's paths and left-out paths (the sync delegate's
+	 * `findFirst`) and the integration's name.
 	 */
 	failureReceiptReads?: boolean;
 };
@@ -516,9 +520,11 @@ function createRepositorySyncRowStore(options: RowStoreOptions) {
 				usable();
 				if (
 					JSON.stringify(input.select) !==
-					JSON.stringify({ paths: true })
+					JSON.stringify({ paths: true, excludedPaths: true })
 				) {
-					throw new Error("the row store reads paths only");
+					throw new Error(
+						"the row store reads paths and excludedPaths only",
+					);
 				}
 				const row = [...rows.values()].find((candidate) =>
 					Object.entries(input.where).every(
@@ -527,7 +533,12 @@ function createRepositorySyncRowStore(options: RowStoreOptions) {
 							value,
 					),
 				);
-				return row ? { paths: [...row.paths] } : null;
+				return row
+					? {
+							paths: [...row.paths],
+							excludedPaths: [...row.excludedPaths],
+						}
+					: null;
 			};
 			api.projectRepositoryIntegration = {
 				findFirst: async () => {

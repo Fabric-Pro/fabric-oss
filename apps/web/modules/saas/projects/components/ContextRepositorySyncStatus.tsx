@@ -40,6 +40,8 @@ import {
 	offersSyncNow,
 } from "../lib/context-repository-sync";
 import { ConfigureContextRepositorySyncDialog } from "./ConfigureContextRepositorySyncDialog";
+import { contextSummaryLead } from "./repository-sync/lib/context-selection";
+import { translateSelectionMessage } from "./repository-sync/lib/selection-row";
 
 /**
  * Living Memory's repository sync entry point and status (design 2026-09-23
@@ -64,7 +66,14 @@ import { ConfigureContextRepositorySyncDialog } from "./ConfigureContextReposito
  * Neither the toggle nor a "Re-enable" that keeps the repository, branch
  * and paths changes what is synced, so the server keeps the last applied
  * run and the generation (Fizzy #2713): this status line still reports the
- * files that run applied, and a run already open finishes normally.
+ * files that run applied, and a run already open finishes normally. The
+ * toggle never sends `excludedPaths`, so the server keeps what the member
+ * left out (Fizzy #2750 §5.3); the summary under the repository line says
+ * what syncs ("Syncs 3 selected paths, except 2 left out"), without a count,
+ * since no listing is read here.
+ *
+ * The configure dialog is mounted only while open, so it seeds from the
+ * configuration as it stands when opened, and lists the branch only then.
  * `state` comes from `ProjectContextsList`'s `repositorySync.get` read,
  * which also polls every 60 s while automatic sync is on and not paused, so
  * a run the scheduled check or a push started shows without navigating.
@@ -152,15 +161,17 @@ export function ContextRepositorySyncStatus({
 					/>
 					{t("entry")}
 				</Button>
-				<ConfigureContextRepositorySyncDialog
-					projectId={projectId}
-					organizationId={organizationId}
-					open={dialogOpen}
-					onOpenChange={setDialogOpen}
-					integrations={state.availableIntegrations}
-					current={null}
-					onSaved={onChanged}
-				/>
+				{dialogOpen ? (
+					<ConfigureContextRepositorySyncDialog
+						projectId={projectId}
+						organizationId={organizationId}
+						open
+						onOpenChange={setDialogOpen}
+						integrations={state.availableIntegrations}
+						current={null}
+						onSaved={onChanged}
+					/>
+				) : null}
 			</>
 		);
 	}
@@ -192,6 +203,9 @@ export function ContextRepositorySyncStatus({
 		if (!configured) {
 			return;
 		}
+		// No `excludedPaths`: omitted, the server keeps the stored list, so
+		// the toggle can never clear what the member left out (Fizzy #2750
+		// §5.3).
 		configure.mutate({
 			projectId,
 			organizationId,
@@ -213,6 +227,21 @@ export function ContextRepositorySyncStatus({
 					aria-hidden="true"
 				/>
 				{t("repositoryLine", { repository, ref: configured.ref })}
+			</p>
+			<p
+				className="text-muted-foreground"
+				data-testid="context-sync-selection-summary"
+			>
+				{translateSelectionMessage(
+					t,
+					contextSummaryLead(
+						{
+							paths: configured.paths,
+							excludedPaths: configured.excludedPaths,
+						},
+						null,
+					),
+				)}
 			</p>
 			{/* biome-ignore lint/a11y/useSemanticElements: this is a status/log region announcing sync progress, not a form-derived value; <output> is for the latter, <div role="status"> is the WAI-ARIA-recommended pattern for the former. */}
 			<div
@@ -378,15 +407,17 @@ export function ContextRepositorySyncStatus({
 					</DropdownMenu>
 				</div>
 			) : null}
-			<ConfigureContextRepositorySyncDialog
-				projectId={projectId}
-				organizationId={organizationId}
-				open={dialogOpen}
-				onOpenChange={setDialogOpen}
-				integrations={state.availableIntegrations}
-				current={configured}
-				onSaved={onChanged}
-			/>
+			{dialogOpen ? (
+				<ConfigureContextRepositorySyncDialog
+					projectId={projectId}
+					organizationId={organizationId}
+					open
+					onOpenChange={setDialogOpen}
+					integrations={state.availableIntegrations}
+					current={configured}
+					onSaved={onChanged}
+				/>
+			) : null}
 			<AlertDialog
 				open={disconnectConfirmOpen}
 				onOpenChange={setDisconnectConfirmOpen}

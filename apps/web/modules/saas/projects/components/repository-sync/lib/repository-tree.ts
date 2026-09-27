@@ -1,18 +1,15 @@
 /**
- * The configure dialog's repository tree browser (Fizzy #2674): what
- * `projects.contexts.repositorySync.listTree`'s flat entries mean as a tree,
- * a search over them, and what one row may do given the chips already
- * selected. Pure, so the dialog's rendering and its tests share one answer;
- * the selection rules are the ones `validateContextSyncPathAddition` in
- * `./context-repository-sync` enforces, stated per row so the tree can
- * disable what that validation would refuse.
+ * A repository listing as the shared selection tree shows it (Fizzy #2674,
+ * #2725, #2750): what either `listTree` procedure's flat entries mean as a
+ * tree, and a search over them. Pure, so the tree's rendering, both feature
+ * adapters (`./instructions-selection`, `./context-selection`) and their
+ * tests share one answer.
  */
 
 /**
  * One entry as `listTree` returns it, in the sync's plain path spelling.
  * `regular: false` marks a file that is not a regular file (a symbolic
- * link), which no sync reads; only the Coding Instructions exclusion
- * preview reads the marker (Fizzy #2726).
+ * link), which no sync reads (Fizzy #2726).
  */
 export type RepositoryTreeEntry = {
 	path: string;
@@ -34,10 +31,10 @@ export type RepositoryTreeNode = {
  * Mirrors `MAX_REPOSITORY_TREE_ENTRIES` in `@repo/connectors`, which the web
  * app does not import; only the notice's copy depends on it.
  */
-export const CONTEXT_SYNC_TREE_ENTRY_LIMIT = 20_000;
+export const REPOSITORY_TREE_ENTRY_LIMIT = 20_000;
 
 /** Most matches a search shows before asking for a narrower query. */
-export const CONTEXT_SYNC_TREE_SEARCH_MAX_MATCHES = 200;
+export const REPOSITORY_TREE_SEARCH_MAX_MATCHES = 200;
 
 function compareTreeNodes(
 	a: RepositoryTreeNode,
@@ -133,7 +130,7 @@ export function buildRepositoryTree(
 export function searchRepositoryTreeEntries(
 	entries: readonly RepositoryTreeEntry[],
 	query: string,
-	maxMatches: number = CONTEXT_SYNC_TREE_SEARCH_MAX_MATCHES,
+	maxMatches: number = REPOSITORY_TREE_SEARCH_MAX_MATCHES,
 ): { entries: RepositoryTreeEntry[]; capped: boolean } {
 	const needle = query.trim().toLowerCase();
 	const matches: RepositoryTreeEntry[] = [];
@@ -149,37 +146,56 @@ export function searchRepositoryTreeEntries(
 	return { entries: matches, capped: false };
 }
 
-/**
- * What one tree row may do, given the selected chips:
- *  - `selected`: its path is a chip; unchecking removes it.
- *  - `whole-repository`: `""` is selected, which covers everything.
- *  - `covered`: an ancestor folder is selected.
- *  - `contains-selected`: a folder with a selected path inside it; selecting
- *    it would overlap, and the tree does not silently replace selections.
- *  - `available`: selectable, subject to the chip validation (the cap).
- */
-export type ContextSyncTreeRowState =
-	| "selected"
-	| "whole-repository"
-	| "covered"
-	| "contains-selected"
-	| "available";
+/** The folders on the way to `path`, outermost first (not `path` itself). */
+export function ancestorsOf(path: string): string[] {
+	const segments = path.split("/");
+	return segments
+		.slice(0, -1)
+		.map((_, i) => segments.slice(0, i + 1).join("/"));
+}
 
-export function contextSyncTreeRowState(
-	path: string,
-	selected: readonly string[],
-): ContextSyncTreeRowState {
-	if (selected.includes("")) {
-		return "whole-repository";
+/** `path` is strictly inside `folder`, by whole segments; `""` is the repository. */
+export function isStrictlyInside(folder: string, path: string): boolean {
+	return folder === "" ? path !== "" : path.startsWith(`${folder}/`);
+}
+
+/**
+ * A whole listing, nested once: the adapters judge every row against it,
+ * whatever the search shows or the member expanded (Fizzy #2750 §3.1).
+ * `nodes` holds every node by path, folders the provider only implied
+ * included; `files` every file node; `entryByPath` each listed entry as the
+ * provider returned it, with whatever the feature's `listTree` adds.
+ */
+export type RepositoryTreeIndex<
+	TEntry extends RepositoryTreeEntry = RepositoryTreeEntry,
+> = {
+	roots: RepositoryTreeNode[];
+	nodes: ReadonlyMap<string, RepositoryTreeNode>;
+	files: readonly RepositoryTreeNode[];
+	entryByPath: ReadonlyMap<string, TEntry>;
+};
+
+export function indexRepositoryTree<TEntry extends RepositoryTreeEntry>(
+	entries: readonly TEntry[],
+): RepositoryTreeIndex<TEntry> {
+	const roots = buildRepositoryTree(entries);
+	const nodes = new Map<string, RepositoryTreeNode>();
+	const files: RepositoryTreeNode[] = [];
+	const stack = [...roots];
+	while (stack.length > 0) {
+		const node = stack.pop() as RepositoryTreeNode;
+		nodes.set(node.path, node);
+		if (node.type === "file") {
+			files.push(node);
+		} else {
+			stack.push(...node.children);
+		}
 	}
-	if (selected.includes(path)) {
-		return "selected";
+	const entryByPath = new Map<string, TEntry>();
+	for (const entry of entries) {
+		if (!entryByPath.has(entry.path)) {
+			entryByPath.set(entry.path, entry);
+		}
 	}
-	if (selected.some((other) => path.startsWith(`${other}/`))) {
-		return "covered";
-	}
-	if (selected.some((other) => other.startsWith(`${path}/`))) {
-		return "contains-selected";
-	}
-	return "available";
+	return { roots, nodes, files, entryByPath };
 }

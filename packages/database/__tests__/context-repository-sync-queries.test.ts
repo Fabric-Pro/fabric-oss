@@ -392,24 +392,24 @@ const h = vi.hoisted(() => {
 						}
 					: { projectId: values[0], organizationId: values[1] };
 				const row = tables().sync.find((r) => matches(r, where));
+				// Exactly the columns the statement selects, so a column the
+				// SQL forgets is missing here too.
+				const selected = [
+					...sql
+						.slice(sql.indexOf("SELECT"), sql.indexOf(LOCK_SYNC))
+						.matchAll(/"(\w+)"/g),
+				]
+					.map((match) => match[1] as string)
+					.filter((column) => column !== "now");
 				return row
 					? [
 							{
-								...pick(row, {
-									id: 1,
-									projectId: 1,
-									organizationId: 1,
-									userId: 1,
-									repositoryIntegrationId: 1,
-									ref: 1,
-									paths: 1,
-									generation: 1,
-									activeRunKey: 1,
-									automatic: 1,
-									automaticPausedReason: 1,
-									failureCount: 1,
-									pendingCommitSha: 1,
-								}),
+								...pick(
+									row,
+									Object.fromEntries(
+										selected.map((column) => [column, 1]),
+									),
+								),
 								// The lock statement's `clock_timestamp()`.
 								now: new Date(state.dbNow),
 							},
@@ -572,6 +572,8 @@ function seedSync(overrides: Row = {}): Row {
 		repositoryIntegrationId: "int-1",
 		ref: "main",
 		paths: ["docs"],
+		// The column default every row has had since the migration.
+		excludedPaths: [],
 		generation: 3,
 		activeRunKey: RUN,
 		lastAppliedCommitSha: "c0ffee",
@@ -692,6 +694,7 @@ describe("upsertContextRepositorySync (configure, §5.1)", () => {
 				repositoryIntegrationId: "int-1",
 				ref: "release",
 				paths: ["docs", "notes/glossary.md"],
+				excludedPaths: [],
 				automatic: false,
 			},
 			previous: null,
@@ -944,12 +947,14 @@ describe("upsertContextRepositorySync (configure, §5.1)", () => {
 					repositoryIntegrationId: "int-1",
 					ref: "main",
 					paths: ["docs"],
+					excludedPaths: [],
 					automatic: true,
 				},
 				previous: {
 					repositoryIntegrationId: "int-1",
 					ref: "main",
 					paths: ["docs"],
+					excludedPaths: [],
 				},
 			});
 			expect(committed().sync[0]).toMatchObject({
@@ -1042,6 +1047,183 @@ describe("upsertContextRepositorySync (configure, §5.1)", () => {
 				});
 			},
 		);
+	});
+
+	describe("left-out paths (Fizzy #2750 §5.3)", () => {
+		/** The stored configuration, resent: what the menu toggle sends. */
+		const same = { ...input, ref: "main", paths: ["docs"] };
+		const stored = {
+			paths: ["docs"],
+			excludedPaths: ["docs/drafts", "docs/old.md"],
+			pendingCommitSha: "e".repeat(40),
+		};
+
+		it("creates with none when they are omitted, and stores a given list", async () => {
+			seedIntegration();
+
+			const omitted = await upsertContextRepositorySync(input);
+
+			expect(omitted).toMatchObject({ sync: { excludedPaths: [] } });
+			expect(committed().sync[0]?.excludedPaths).toEqual([]);
+
+			h.reset();
+			seedIntegration();
+			const given = await upsertContextRepositorySync({
+				...input,
+				excludedPaths: ["docs/drafts"],
+			});
+
+			expect(given).toMatchObject({
+				sync: { generation: 1, excludedPaths: ["docs/drafts"] },
+			});
+			expect(committed().sync[0]?.excludedPaths).toEqual(["docs/drafts"]);
+		});
+
+		it("an update that omits them keeps the stored list, read under the configuration lock: the toggle cannot erase them", async () => {
+			seedIntegration();
+			seedSync(stored);
+
+			const result = await upsertContextRepositorySync({
+				...same,
+				automatic: true,
+			});
+
+			expect(result).toMatchObject({
+				status: "configured",
+				sync: {
+					generation: 3,
+					excludedPaths: ["docs/drafts", "docs/old.md"],
+				},
+				previous: { excludedPaths: ["docs/drafts", "docs/old.md"] },
+			});
+			expect(committed().sync[0]).toMatchObject({
+				generation: 3,
+				excludedPaths: ["docs/drafts", "docs/old.md"],
+				lastAppliedRunId: "sync-1:run-0",
+				pendingCommitSha: "e".repeat(40),
+			});
+		});
+
+		it("resending the stored list is not a change either", async () => {
+			seedIntegration();
+			seedSync(stored);
+
+			await upsertContextRepositorySync({
+				...same,
+				excludedPaths: ["docs/drafts", "docs/old.md"],
+			});
+
+			expect(committed().sync[0]).toMatchObject({
+				generation: 3,
+				lastAppliedRunId: "sync-1:run-0",
+				pendingCommitSha: "e".repeat(40),
+			});
+		});
+
+		it.each([
+			["a changed list", ["docs/drafts"]],
+			["an explicit empty list, which clears them", []],
+		])(
+			"%s is a change of what is synced: the generation moves, the last applied run and the schedule reset",
+			async (_label, excludedPaths) => {
+				seedIntegration();
+				seedSync(stored);
+
+				const result = await upsertContextRepositorySync({
+					...same,
+					excludedPaths,
+				});
+
+				expect(result).toMatchObject({
+					sync: { generation: 4, excludedPaths },
+					previous: {
+						excludedPaths: ["docs/drafts", "docs/old.md"],
+					},
+				});
+				expect(committed().sync[0]).toMatchObject({
+					generation: 4,
+					excludedPaths,
+					lastAppliedCommitSha: null,
+					lastAppliedRunId: null,
+					pendingCommitSha: null,
+					// An open run is fenced by the bump, not released.
+					activeRunKey: RUN,
+				});
+			},
+		);
+
+		it("new paths with the list omitted keep a list that still fits them", async () => {
+			seedIntegration();
+			seedSync(stored);
+
+			const result = await upsertContextRepositorySync({
+				...same,
+				paths: ["docs", "notes"],
+			});
+
+			expect(result).toMatchObject({
+				sync: {
+					generation: 4,
+					paths: ["docs", "notes"],
+					excludedPaths: ["docs/drafts", "docs/old.md"],
+				},
+			});
+		});
+
+		it.each([
+			["no longer selects the folder they are in", ["notes"]],
+			[
+				"selects the left-out path itself",
+				["docs/drafts", "docs/old.md"],
+			],
+			["selects a folder inside a left-out one", ["docs/drafts/2026"]],
+		])(
+			"refuses, writing nothing, when new paths with the list omitted %s: the kept list is stale",
+			async (_label, paths) => {
+				seedIntegration();
+				seedSync(stored);
+				const before = structuredClone(committed().sync[0]);
+
+				const result = await upsertContextRepositorySync({
+					...same,
+					paths,
+				});
+
+				expect(result).toEqual({ status: "excluded-paths-stale" });
+				expect(committed().sync[0]).toEqual(before);
+			},
+		);
+
+		it("the whole repository contains every left-out path", async () => {
+			seedIntegration();
+			seedSync(stored);
+
+			const result = await upsertContextRepositorySync({
+				...same,
+				paths: [""],
+			});
+
+			expect(result).toMatchObject({
+				status: "configured",
+				sync: { excludedPaths: ["docs/drafts", "docs/old.md"] },
+			});
+		});
+
+		it("an explicit list with new paths is taken as given (the procedure validated it)", async () => {
+			seedIntegration();
+			seedSync(stored);
+
+			const result = await upsertContextRepositorySync({
+				...same,
+				paths: ["notes"],
+				excludedPaths: [],
+			});
+
+			expect(result).toMatchObject({
+				status: "configured",
+				sync: { paths: ["notes"], excludedPaths: [] },
+			});
+		});
 	});
 
 	it("a concurrent first configure that loses the project's unique key re-points the winner's row", async () => {
@@ -1430,6 +1612,67 @@ describe("getContextRepositorySyncRunForUpdate (lock 3)", () => {
 // =============================================================================
 // Receipts and the ledger
 // =============================================================================
+
+describe("the frozen run context's left-out paths (Fizzy #2750 §5.4)", () => {
+	it("reads a receipt written before exclusions existed as having none", async () => {
+		seedSync();
+		seedRun();
+
+		const lock = await inTx((tx) =>
+			getContextRepositorySyncRunForUpdate(tx, RUN),
+		);
+
+		expect(lock).toMatchObject({
+			status: "ok",
+			run: { context: { paths: ["docs"], excludedPaths: [] } },
+		});
+	});
+
+	it("reads the list a receipt froze", async () => {
+		seedSync();
+		seedRun({
+			context: {
+				ref: "main",
+				paths: ["docs"],
+				excludedPaths: ["docs/drafts"],
+				repositoryIntegrationId: "int-1",
+				actingUserId: "user-2",
+			},
+		});
+
+		const lock = await inTx((tx) =>
+			getContextRepositorySyncRunForUpdate(tx, RUN),
+		);
+
+		expect(lock).toMatchObject({
+			status: "ok",
+			run: { context: { excludedPaths: ["docs/drafts"] } },
+		});
+	});
+
+	it("both configuration locks read the stored list", async () => {
+		seedIntegration();
+		seedSync({ excludedPaths: ["docs/drafts"] });
+		seedRun();
+
+		const fenced = await withContextRepositorySyncRunFence(
+			FENCE,
+			async (_tx, locked) => locked.sync.excludedPaths,
+		);
+		expect(fenced).toEqual({ status: "ok", value: ["docs/drafts"] });
+
+		// The by-project lock (configure's): a resend keeps what it read.
+		await upsertContextRepositorySync({
+			projectId: PROJECT,
+			organizationId: ORG,
+			userId: "user-9",
+			repositoryIntegrationId: "int-1",
+			ref: "main",
+			paths: ["docs"],
+		});
+		expect(committed().sync[0]?.excludedPaths).toEqual(["docs/drafts"]);
+	});
+});
 
 describe("run receipts", () => {
 	it("inserts a receipt once, with ON CONFLICT DO NOTHING semantics", async () => {
