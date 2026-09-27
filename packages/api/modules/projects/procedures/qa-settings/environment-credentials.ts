@@ -128,7 +128,9 @@ export const setEnvironmentCredentialProcedure = tenantProtectedProcedure
 				metadata: {
 					failure,
 					authKind: input.authKind,
-					secretSupplied:
+					// "value", not "secret": the audit redactor blanks any key
+					// containing a denylisted word, and this boolean is not one.
+					valueSupplied:
 						input.secret !== undefined &&
 						input.secret !== null &&
 						input.secret !== "",
@@ -191,8 +193,11 @@ export const setEnvironmentCredentialProcedure = tenantProtectedProcedure
 		// stored a live-system password" is the entry an investigation looks for.
 		//
 		// Metadata carries the SHAPE of the change and never the value: which
-		// kind, whether a secret was written or cleared, and the username (which
-		// is not secret and is what identifies the account).
+		// kind, whether a secret value was written or cleared, and the username
+		// (which is not secret and is what identifies the account). The flags
+		// say "value" rather than "secret" because the audit redactor blanks any
+		// key containing a denylisted word, and would record them as
+		// "[REDACTED]" instead of true or false.
 		recordAuditFromRequest(context, {
 			action: "project.environment_credential.updated",
 			category: "project",
@@ -205,11 +210,11 @@ export const setEnvironmentCredentialProcedure = tenantProtectedProcedure
 				environmentType: env.type,
 				isProduction: env.type === "PRODUCTION",
 				authKind: input.authKind,
-				secretWritten:
+				valueWritten:
 					input.secret !== undefined &&
 					input.secret !== null &&
 					input.secret !== "",
-				secretCleared:
+				valueCleared:
 					input.authKind === "NONE" ||
 					input.secret === null ||
 					input.secret === "",

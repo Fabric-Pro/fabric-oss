@@ -475,7 +475,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.project.qa_webhook.rotated",
 		description:
-			"The testing webhook signing secret was rotated with a bounded overlap window for the previous secret.",
+			"The testing webhook signing secret was rotated with a bounded overlap window for the previous secret. `metadata.overlapEndsAt` is when the previous secret stops being accepted.",
 	},
 	{
 		key: "project.qa_webhook.expiry_updated",
@@ -1219,7 +1219,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.atlas.analysis.completed",
 		description:
-			"An Atlas analysis finished and its graph was published to the project.",
+			"An Atlas analysis finished and its graph was published to the project. `metadata.usageTotal` is the model tokens the run used and `metadata.costMicroUsd` what they cost.",
 	},
 	{
 		key: "atlas.analysis.failed",

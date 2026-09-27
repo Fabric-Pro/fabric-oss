@@ -1360,7 +1360,9 @@ export class AtlasService {
 				type: "repository_integration",
 				id: input.repositoryIntegrationId,
 			},
-			metadata: { pinnedBranches: saved },
+			// `branches`, not `pinnedBranches`: the audit redactor blanks any key
+			// containing "pin". The action already says they were pinned.
+			metadata: { branches: saved },
 		});
 		return { pinnedBranches: saved };
 	}
@@ -2637,7 +2639,9 @@ export class AtlasService {
 							modulesDescribed: input.modulesDescribed ?? null,
 							incremental: input.incremental ?? null,
 							model: input.model ?? null,
-							totalTokens: input.totalTokens ?? null,
+							// Model tokens. Not named `totalTokens`: the audit
+							// redactor blanks any key containing "token".
+							usageTotal: input.totalTokens ?? null,
 							costMicroUsd,
 							durationMs: runResult.durationMs,
 							fresh: Boolean(input.fresh),
