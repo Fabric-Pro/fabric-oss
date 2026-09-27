@@ -9,3 +9,4 @@
 - **Sanitize Input**: Sanitize user input to prevent injection attacks (SQL, XSS, command injection)
 - **Business Rule Validation**: Validate business rules (e.g., sufficient balance, valid dates) at the appropriate application layer
 - **Consistent Validation**: Apply validation consistently across all entry points (web forms, API endpoints, background jobs)
+- **Never Echo Untrusted Input to Logs/CI Output**: print a fixed message, length, or digest instead of the raw value — an unescaped rejected value can forge log annotations or inject workflow commands downstream
