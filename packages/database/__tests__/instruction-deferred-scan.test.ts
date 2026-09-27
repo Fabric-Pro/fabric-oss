@@ -369,6 +369,20 @@ describe("publishInstructionSnapshot: publish-first rules", () => {
 			},
 		]);
 	}
+	/**
+	 * The project lock read, but with the pointer's settings marking the
+	 * project repository-backed — what the `repository_backed`/
+	 * `configuration_changed` fence reads.
+	 */
+	function lockedRepositoryBacked() {
+		m.$queryRaw.mockResolvedValueOnce([
+			{
+				pointerId: "snap_8",
+				pointerVersion: 8,
+				instructionSettings: { sourceOfTruth: "REPOSITORY" },
+			},
+		]);
+	}
 	function snapshot(overrides: Record<string, unknown> = {}) {
 		m.snapshot.findFirst.mockResolvedValue({
 			id: "snap_9",
@@ -512,6 +526,206 @@ describe("publishInstructionSnapshot: publish-first rules", () => {
 		// permission is not its gate (the procedure's own is).
 		expect(m.canUpdateProjectInstructions).not.toHaveBeenCalled();
 	});
+
+	// Fizzy #2760: History's own "publish anyway" acknowledgement skips the
+	// refusal above for a scan that finished FLAGGED — ISSUES_FOUND or
+	// INCOMPLETE, a terminal verdict no concurrent writer moves a snapshot out
+	// of — and nothing else about the transaction changes.
+	it.each(["ISSUES_FOUND", "INCOMPLETE"])(
+		"publishes a version whose deferred scan is %s when the caller acknowledges it, and reports that status",
+		async (status) => {
+			locked();
+			snapshot({ deferredScanStatus: status });
+
+			expect(
+				await publishInstructionSnapshot({
+					...REF,
+					allowRollback: true,
+					acknowledgeDeferredScan: true,
+				}),
+			).toMatchObject({
+				published: true,
+				changed: true,
+				deferredScanStatus: status,
+			});
+			expect(m.project.updateMany).toHaveBeenCalled();
+			// The manual path's own permission check, not the automatic
+			// path's acknowledger fence.
+			expect(m.canUpdateProjectInstructions).not.toHaveBeenCalled();
+		},
+	);
+
+	// Fizzy #2760 review: a PENDING target stays refused even with the
+	// acknowledgement — waiting out the rest of a short-lived scan is the
+	// only remedy, and publishing it anyway would race the outcome writers'
+	// own snapshot-then-project locking, which is exactly what dropping the
+	// snapshot lock here depends on PENDING never doing.
+	it("still refuses a PENDING scan even when the caller acknowledges it, and writes nothing", async () => {
+		locked();
+		snapshot({ deferredScanStatus: "PENDING" });
+
+		expect(
+			await publishInstructionSnapshot({
+				...REF,
+				allowRollback: true,
+				acknowledgeDeferredScan: true,
+			}),
+		).toEqual({
+			published: false,
+			changed: false,
+			reason: "deferred_scan_unresolved",
+		});
+		expect(m.project.updateMany).not.toHaveBeenCalled();
+	});
+
+	// Reported for every manual publish, not only an acknowledged one — an
+	// ordinary or already-passed target's row carries `deferredScanStatus`
+	// too, and the procedure is what decides whether that is worth auditing.
+	it.each([
+		["PASSED", "PASSED"],
+		["an ordinary snapshot", null],
+	])(
+		"reports %s's deferredScanStatus on an unflagged manual publish",
+		async (_l, status) => {
+			locked();
+			snapshot({ deferredScanStatus: status });
+
+			expect(
+				await publishInstructionSnapshot({
+					...REF,
+					allowRollback: true,
+				}),
+			).toMatchObject({ deferredScanStatus: status });
+		},
+	);
+
+	it("still refuses without the acknowledgement, exactly as before", async () => {
+		locked();
+		snapshot({ deferredScanStatus: "ISSUES_FOUND" });
+
+		expect(
+			await publishInstructionSnapshot({
+				...REF,
+				allowRollback: true,
+				acknowledgeDeferredScan: false,
+			}),
+		).toEqual({
+			published: false,
+			changed: false,
+			reason: "deferred_scan_unresolved",
+		});
+		expect(m.project.updateMany).not.toHaveBeenCalled();
+	});
+
+	// Fizzy #2760 review: the acknowledgement only ever answers the
+	// `deferred_scan_unresolved` refusal. Every earlier refusal the query
+	// already had — none of them specific to a deferred scan — still wins,
+	// whether or not this target happens to have an unresolved one.
+	describe("acknowledgeDeferredScan does not override an earlier refusal", () => {
+		it("still refuses not_ready", async () => {
+			locked();
+			snapshot({
+				status: "VALIDATING",
+				deferredScanStatus: "PENDING",
+			});
+
+			expect(
+				await publishInstructionSnapshot({
+					...REF,
+					allowRollback: true,
+					acknowledgeDeferredScan: true,
+				}),
+			).toMatchObject({ published: false, reason: "not_ready" });
+			expect(m.$queryRaw).toHaveBeenCalledTimes(1);
+		});
+
+		it.each(["PENDING", "REJECTED"])(
+			"still refuses proposal_not_approved for a %s proposal",
+			async (proposalStatus) => {
+				locked();
+				snapshot({
+					proposalStatus,
+					deferredScanStatus: "PENDING",
+				});
+
+				expect(
+					await publishInstructionSnapshot({
+						...REF,
+						allowRollback: true,
+						acknowledgeDeferredScan: true,
+					}),
+				).toMatchObject({
+					published: false,
+					reason: "proposal_not_approved",
+				});
+				expect(m.$queryRaw).toHaveBeenCalledTimes(1);
+			},
+		);
+
+		it("still refuses repository_proposal", async () => {
+			locked();
+			snapshot({
+				proposalDestination: "REPOSITORY",
+				deferredScanStatus: "PENDING",
+			});
+
+			expect(
+				await publishInstructionSnapshot({
+					...REF,
+					allowRollback: true,
+					acknowledgeDeferredScan: true,
+				}),
+			).toMatchObject({
+				published: false,
+				reason: "repository_proposal",
+			});
+			expect(m.$queryRaw).toHaveBeenCalledTimes(1);
+		});
+
+		it("still refuses repository_backed for an uploaded snapshot", async () => {
+			lockedRepositoryBacked();
+			// ISSUES_FOUND, not PENDING: PENDING is refused unconditionally
+			// before this fence is ever reached (tested above), so only a
+			// terminal flagged verdict — the one the acknowledgement actually
+			// skips — can show repository_backed still winning underneath it.
+			snapshot({ source: "UPLOAD", deferredScanStatus: "ISSUES_FOUND" });
+
+			expect(
+				await publishInstructionSnapshot({
+					...REF,
+					allowRollback: true,
+					acknowledgeDeferredScan: true,
+				}),
+			).toMatchObject({
+				published: false,
+				reason: "repository_backed",
+			});
+		});
+	});
+
+	// A programming error, not a runtime condition — like the
+	// `requireBaseUnmoved`/`allowRollback` guard right above it in the
+	// source. The acknowledgement means nothing outside the manual path's own
+	// refusal, so honoring it silently there would let a caller believe it
+	// did something it cannot do.
+	it.each([
+		["the automatic path", { requireBaseUnmoved: true }],
+		["neither flag", {}],
+	])(
+		"throws when acknowledgeDeferredScan is passed without allowRollback (%s)",
+		async (_l, extra) => {
+			await expect(
+				publishInstructionSnapshot({
+					...REF,
+					...extra,
+					acknowledgeDeferredScan: true,
+				}),
+			).rejects.toThrow(
+				"acknowledgeDeferredScan is meaningful only with allowRollback",
+			);
+			expect(m.$transaction).not.toHaveBeenCalled();
+		},
+	);
 });
 
 describe("recordInstructionDeferredScanOutcome", () => {

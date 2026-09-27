@@ -57,9 +57,22 @@ vi.mock("next-intl", () => ({
 
 /** Every `compare` input the dialog asked for, in order. */
 const compareInputs = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+/** Every `publish` input sent, in order — whether it carried `publishBeforeScan`. */
+const publishInputs = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+/**
+ * A publish for snapshot id "pending" never resolves on its own — the test
+ * that uses it calls `pendingPublish.resolve()` itself, once it has asserted
+ * what stays disabled while the request is in flight.
+ */
+const pendingPublish = vi.hoisted(
+	() => ({ resolve: null }) as { resolve: (() => void) | null },
+);
 
 function mutationOptionsStub(
-	mutationFn: (input: { snapshotId: string }) => Promise<unknown>,
+	mutationFn: (input: {
+		snapshotId: string;
+		publishBeforeScan?: boolean;
+	}) => Promise<unknown>,
 ) {
 	return (
 		opts: {
@@ -78,10 +91,17 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 			instructions: {
 				publish: {
 					mutationOptions: mutationOptionsStub(async (input) => {
+						publishInputs.push(input);
 						if (input.snapshotId === "fail") {
 							throw new Error(
 								"A newer version is already published",
 							);
+						}
+						if (input.snapshotId === "pending") {
+							return new Promise((resolve) => {
+								pendingPublish.resolve = () =>
+									resolve({ published: true });
+							});
 						}
 						return { published: true };
 					}),
@@ -836,9 +856,11 @@ describe("InstructionsHistory", () => {
 /**
  * Publish first, scan afterwards (Fizzy #2737). A version that went out
  * before its secret scan carries a "published before scan" badge and the
- * scan's outcome; History refuses to publish it again (the server's
- * `deferred_scan_unresolved`) until that scan has passed, and says why
- * instead of offering a button that can only fail.
+ * scan's outcome. History still offers to publish or roll back such a
+ * version (Fizzy #2760), but the row's button opens
+ * `PublishFlaggedVersionDialog` instead of a plain `window.confirm`: the
+ * server's `deferred_scan_unresolved` refusal is what a plain confirm would
+ * hit, and the dialog is how the acknowledgement it needs gets sent.
  */
 describe("InstructionsHistory — deferred secret scan", () => {
 	function renderScanned(
@@ -872,50 +894,236 @@ describe("InstructionsHistory — deferred secret scan", () => {
 		);
 	}
 
+	beforeEach(() => {
+		vi.clearAllMocks();
+		publishInputs.length = 0;
+		pendingPublish.resolve = null;
+		vi.spyOn(window, "confirm").mockReturnValue(true);
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
 	it.each([
-		["PENDING", "scanPendingPill"],
 		["ISSUES_FOUND", "scanIssuesPill"],
 		["INCOMPLETE", "scanIncompletePill"],
 	] as const)(
-		"badges a %s scan and explains instead of offering to publish it again",
-		(deferredScanStatus, pill) => {
+		"badges a %s scan and still offers the button, opening the acknowledgement dialog instead of a plain confirm",
+		async (deferredScanStatus, pill) => {
+			const user = userEvent.setup();
 			renderScanned({ deferredScanStatus });
 			expect(screen.getByText("publishedBeforeScanPill")).toBeTruthy();
 			expect(screen.getByText(pill)).toBeTruthy();
-			expect(
-				screen.queryByRole("button", { name: "rollbackAction" }),
-			).toBeNull();
-			expect(screen.getByText("publishBlockedByScan")).toBeTruthy();
+			// Version 6 below the published version 7: a rollback.
+			await user.click(
+				screen.getByRole("button", { name: "rollbackAction" }),
+			);
+			expect(screen.getByText("flaggedDialogTitle")).toBeTruthy();
+			// Same version/direction copy the plain confirm would have shown.
+			expect(screen.getByText("rollbackConfirm:6")).toBeTruthy();
+			expect(window.confirm).not.toHaveBeenCalled();
+			expect(publishInputs).toHaveLength(0);
 		},
 	);
 
-	it("offers to publish a version again once its scan passed", () => {
-		renderScanned({ deferredScanStatus: "PASSED" });
-		expect(screen.getByText("scanPassedPill")).toBeTruthy();
+	// A scan still PENDING is refused unconditionally (no acknowledgement to
+	// offer), so the row gets no button at all — only the badge and a note
+	// explaining why (Fizzy #2760 review, deadlock avoidance).
+	it("badges a PENDING scan, offers no button, and explains why", () => {
+		renderScanned({ deferredScanStatus: "PENDING" });
+		expect(screen.getByText("publishedBeforeScanPill")).toBeTruthy();
+		expect(screen.getByText("scanPendingPill")).toBeTruthy();
 		expect(
-			screen.getByRole("button", { name: "rollbackAction" }),
-		).toBeTruthy();
-		expect(screen.queryByText("publishBlockedByScan")).toBeNull();
+			screen.queryByRole("button", { name: "rollbackAction" }),
+		).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "publishAction" }),
+		).toBeNull();
+		expect(screen.getByText("publishBlockedByScan")).toBeTruthy();
 	});
 
-	// The refusal is explained only where the button would have been
-	// offered: a member who cannot publish at all is not told the scan is
-	// what stops them.
-	it("says nothing about the scan to a member who cannot publish", () => {
+	it("keeps the dialog's confirm disabled until both the option and its acknowledgement are ticked, then sends publishBeforeScan: true", async () => {
+		const user = userEvent.setup();
+		renderScanned({ deferredScanStatus: "ISSUES_FOUND" });
+		await user.click(
+			screen.getByRole("button", { name: "rollbackAction" }),
+		);
+		const confirm = screen.getByRole("button", { name: "confirmAction" });
+		expect(confirm).toBeDisabled();
+
+		await user.click(screen.getByRole("checkbox", { name: "label" }));
+		expect(confirm).toBeDisabled();
+		await user.click(screen.getByRole("checkbox", { name: "acknowledge" }));
+		expect(confirm).toBeEnabled();
+
+		await user.click(confirm);
+		await waitFor(() => expect(publishInputs).toHaveLength(1));
+		expect(publishInputs[0]).toMatchObject({
+			projectId: "p",
+			snapshotId: "scanned",
+			publishBeforeScan: true,
+		});
+	});
+
+	it("closes the dialog and refreshes History once the acknowledged publish succeeds", async () => {
+		const user = userEvent.setup();
+		const onChanged = vi.fn();
+		renderScanned({ deferredScanStatus: "INCOMPLETE" }, { onChanged });
+		await user.click(
+			screen.getByRole("button", { name: "rollbackAction" }),
+		);
+		await user.click(screen.getByRole("checkbox", { name: "label" }));
+		await user.click(screen.getByRole("checkbox", { name: "acknowledge" }));
+		await user.click(screen.getByRole("button", { name: "confirmAction" }));
+		await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+		expect(screen.queryByText("flaggedDialogTitle")).toBeNull();
+	});
+
+	// The dialog is mounted only while a row is being confirmed, so closing
+	// it — cancel included — unmounts it; a later row's dialog is a fresh
+	// mount with fresh state, never the previous row's ticks.
+	it("resets both ticks when the dialog is cancelled, so a later row opens unchecked", async () => {
+		const user = userEvent.setup();
+		render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={[
+					{
+						id: "rowA",
+						version: 6,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 2,
+						createdAt: new Date(),
+						deferredScanStatus: "ISSUES_FOUND",
+					},
+					{
+						id: "rowB",
+						version: 5,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 2,
+						createdAt: new Date(),
+						deferredScanStatus: "INCOMPLETE",
+					},
+				]}
+				publishedId="published"
+				publishedVersion={7}
+				canPublish
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+		const [buttonA, buttonB] = screen.getAllByRole("button", {
+			name: "rollbackAction",
+		});
+		await user.click(buttonA);
+		await user.click(screen.getByRole("checkbox", { name: "label" }));
+		await user.click(screen.getByRole("checkbox", { name: "acknowledge" }));
+		await user.click(screen.getByRole("button", { name: "cancelAction" }));
+		expect(screen.queryByText("flaggedDialogTitle")).toBeNull();
+
+		await user.click(buttonB);
+		expect(
+			screen.getByRole("checkbox", { name: "label" }),
+		).not.toBeChecked();
+		// Not ticked yet, so the acknowledgement box is not even rendered.
+		expect(
+			screen.queryByRole("checkbox", { name: "acknowledge" }),
+		).toBeNull();
+	});
+
+	// A deferred mutation promise: the request that has not resolved yet is
+	// exactly what a fast double-click on Confirm would otherwise duplicate.
+	it("sends exactly one request when Confirm is clicked twice while a publish is pending, and disables the controls meanwhile", async () => {
+		const user = userEvent.setup();
+		renderScanned({ id: "pending", deferredScanStatus: "ISSUES_FOUND" });
+		await user.click(
+			screen.getByRole("button", { name: "rollbackAction" }),
+		);
+		await user.click(screen.getByRole("checkbox", { name: "label" }));
+		await user.click(screen.getByRole("checkbox", { name: "acknowledge" }));
+		const confirm = screen.getByRole("button", { name: "confirmAction" });
+
+		await user.click(confirm);
+		await user.click(confirm);
+
+		await waitFor(() => expect(confirm).toBeDisabled());
+		expect(publishInputs).toHaveLength(1);
+		expect(
+			screen.getByRole("button", { name: "cancelAction" }),
+		).toBeDisabled();
+		expect(screen.getByRole("checkbox", { name: "label" })).toBeDisabled();
+		expect(
+			screen.getByRole("checkbox", { name: "acknowledge" }),
+		).toBeDisabled();
+
+		pendingPublish.resolve?.();
+		await waitFor(() =>
+			expect(screen.queryByText("flaggedDialogTitle")).toBeNull(),
+		);
+	});
+
+	it("keeps the dialog open and shows the error toast when the acknowledged publish fails", async () => {
+		const user = userEvent.setup();
+		renderScanned({ id: "fail", deferredScanStatus: "ISSUES_FOUND" });
+		await user.click(
+			screen.getByRole("button", { name: "rollbackAction" }),
+		);
+		await user.click(screen.getByRole("checkbox", { name: "label" }));
+		await user.click(screen.getByRole("checkbox", { name: "acknowledge" }));
+		await user.click(screen.getByRole("button", { name: "confirmAction" }));
+
+		await waitFor(() =>
+			expect(toast.error).toHaveBeenCalledWith(
+				"A newer version is already published",
+			),
+		);
+		expect(screen.getByText("flaggedDialogTitle")).toBeTruthy();
+	});
+
+	it("publishes a passed scan through the ordinary confirm, with no flag sent", async () => {
+		const user = userEvent.setup();
+		renderScanned({ deferredScanStatus: "PASSED" });
+		expect(screen.getByText("scanPassedPill")).toBeTruthy();
+		await user.click(
+			screen.getByRole("button", { name: "rollbackAction" }),
+		);
+		// No dialog for a passed scan — the same window.confirm as any other
+		// row, and no flag sent.
+		expect(screen.queryByText("flaggedDialogTitle")).toBeNull();
+		expect(window.confirm).toHaveBeenCalled();
+		await waitFor(() => expect(publishInputs).toHaveLength(1));
+		expect(publishInputs[0]).not.toHaveProperty("publishBeforeScan");
+	});
+
+	// The button itself is what depended on the permission: a member who
+	// cannot publish at all sees no button, flagged row or not.
+	it("offers no publish/rollback button at all to a member who cannot publish", () => {
 		renderScanned(
 			{ deferredScanStatus: "ISSUES_FOUND" },
 			{ canPublish: false, canMutate: false },
 		);
-		expect(screen.queryByText("publishBlockedByScan")).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "rollbackAction" }),
+		).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "publishAction" }),
+		).toBeNull();
 	});
 
-	it("badges nothing for an ordinary version", () => {
+	it("badges nothing for an ordinary version, and sends no flag when published", async () => {
+		const user = userEvent.setup();
 		renderScanned({ publishBeforeScan: false, deferredScanStatus: null });
 		expect(screen.queryByText("publishedBeforeScanPill")).toBeNull();
-		expect(screen.queryByText("publishBlockedByScan")).toBeNull();
-		expect(
+		await user.click(
 			screen.getByRole("button", { name: "rollbackAction" }),
-		).toBeTruthy();
+		);
+		expect(screen.queryByText("flaggedDialogTitle")).toBeNull();
+		await waitFor(() => expect(publishInputs).toHaveLength(1));
+		expect(publishInputs[0]).not.toHaveProperty("publishBeforeScan");
 	});
 
 	it("lists the scan's findings behind See findings, with the rejected-upload labels", async () => {

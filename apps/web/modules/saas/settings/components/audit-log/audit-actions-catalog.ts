@@ -730,7 +730,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.project.instructions.published",
 		description:
-			"Published a coding-instructions snapshot as the version every coding agent on this project reads. Recorded only for the call that actually moved the pointer, so a retried request never doubles this row. `metadata.version` and `metadata.previousVersion` carry the version now published and the one it replaced, and `metadata.rollback` is true when someone chose an EARLIER version from History — a deliberate act, and the one this row would otherwise be read backwards. Version numbers only: never a file path or any file content.",
+			"Published a coding-instructions snapshot as the version every coding agent on this project reads. Recorded only for the call that actually moved the pointer, so a retried request never doubles this row. `metadata.version` and `metadata.previousVersion` carry the version now published and the one it replaced, and `metadata.rollback` is true when someone chose an EARLIER version from History — a deliberate act, and the one this row would otherwise be read backwards. When History republished a version whose secret scan found possible secrets or could not finish (ISSUES_FOUND/INCOMPLETE), `metadata.publishBeforeScan` is true and `metadata.deferredScanStatus` names that verdict; both are absent for an ordinary, already-passed, or still-running version. Version numbers and scan status only: never a file path or any file content.",
 	},
 	{
 		key: "project.instructions.rejected",
