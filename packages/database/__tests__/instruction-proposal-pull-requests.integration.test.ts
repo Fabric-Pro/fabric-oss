@@ -905,12 +905,22 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				rows.m = await seed("OPEN", {
 					pullRequestState: "CLOSE_REQUESTED",
 				});
+				// N: OPEN, checked 9 min 55 s ago — the tick ten minutes
+				// after a check whose stamp landed seconds into its own tick
+				// (Fizzy #2761): due. O: checked 4 minutes ago — the very
+				// next tick: not due.
+				rows.n = await seed("OPEN", {
+					pullRequestLastCheckedAt: ago(9 + 55 / 60),
+				});
+				rows.o = await seed("OPEN", {
+					pullRequestLastCheckedAt: ago(4),
+				});
 
 				const due = await selected();
 				expect(due.close).toEqual(["a", "d", "m"]);
 				expect(due.recover).toEqual(["f", "g"]);
 				expect(due.mergeSync).toEqual(["h"]);
-				expect(due.observe).toEqual(["b"]);
+				expect(due.observe).toEqual(["b", "n"]);
 				expect(due.restart).toEqual(["j", "k"]);
 				const clause = (id: string) =>
 					due.raw.recover.find((r) => r.snapshotId === id)
