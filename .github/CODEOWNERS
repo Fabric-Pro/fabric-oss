@@ -1,7 +1,8 @@
 # This file is mirrored into the internal and public repositories. The internal
 # repository requests no reviewers automatically. In fabric-oss, the
 # "Request OSS review" workflow routes public-repository PRs to the
-# designated maintainer. No ownership rules are declared here.
+# designated maintainer, or the owners team for that maintainer's PRs.
+# No ownership rules are declared here.
 #
 # See .github/workflows/request-external-review.yml.
 # The workflow requests reviews; it does not gate merges.

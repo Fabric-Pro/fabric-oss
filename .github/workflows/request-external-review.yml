@@ -2,7 +2,8 @@ name: Request OSS review
 
 # Replaces native CODEOWNERS auto-review (see .github/CODEOWNERS).
 # This workflow requests the designated reviewer for pull requests in
-# fabric-oss. It does not request reviews in the internal repository.
+# fabric-oss, or the owners team when that reviewer authored the PR. It does
+# not request reviews in the internal repository.
 #
 # pull_request_target (not pull_request) so the base repository's token can
 # write review requests even when the PR comes from a fork. Nothing is
@@ -29,23 +30,25 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          if [[ "$AUTHOR" == preddy4690 ]]; then
-            echo "The designated reviewer authored this PR — self-review is unavailable."
-            exit 0
+          REVIEWER=preddy4690
+          REVIEWER_FIELD=reviewers
+          if [[ "$AUTHOR" == "$REVIEWER" ]]; then
+            REVIEWER=owners
+            REVIEWER_FIELD=team_reviewers
           fi
           # Reopening a PR can return 422 after a request or review. Confirm
           # that state before treating the response as a no-op.
           if ! ERR=$(gh api --method POST \
             "repos/${{ github.repository }}/pulls/${NUMBER}/requested_reviewers" \
-            -f 'reviewers[]=preddy4690' 2>&1); then
+            -f "${REVIEWER_FIELD}[]=${REVIEWER}" 2>&1); then
             case "$ERR" in
               *422*|*Unprocessable*)
                 REQUESTED=$(gh api \
                   "repos/${{ github.repository }}/pulls/${NUMBER}/requested_reviewers" \
-                  --jq '[.users[].login] | index("preddy4690") != null')
+                  --jq "[.users[].login, .teams[].slug] | index(\"${REVIEWER}\") != null")
                 REVIEWED=$(gh api \
                   "repos/${{ github.repository }}/pulls/${NUMBER}/reviews" \
-                  --jq '[.[] | select(.user.login == "preddy4690")] | length')
+                  --jq "[.[] | select(.user.login == \"${REVIEWER}\")] | length")
                 if [[ "$REQUESTED" == true || "$REVIEWED" -gt 0 ]]; then
                   echo "Review request or review already present."
                 else
@@ -59,5 +62,5 @@ jobs:
                 ;;
             esac
           else
-            echo "Review requested from preddy4690"
+            echo "Review requested from ${REVIEWER}"
           fi
