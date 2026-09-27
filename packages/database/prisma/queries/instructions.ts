@@ -5499,31 +5499,47 @@ export async function listProjectsWithPrunableInstructionSnapshots(
  * the caller each row's own `projectId`/`organizationId` so that every write
  * that follows is bound to the tenant the ROW names.
  *
- * Oldest first so a backlog larger than one run's budget drains in age order
- * rather than being re-scanned from the same end every hour.
+ * One page of them at `offset`, and the size of the whole population, in
+ * one total order (oldest first, `id` breaking `createdAt` ties) — the shape
+ * `listStaleDeferredScanInstructionSnapshots` documents. A row whose
+ * execution is still RUNNING, or whose liveness cannot be established, is
+ * skipped without being written and keeps its place, so a fixed first page
+ * could be the same rows every hour and starve a dead row behind them. The
+ * caller rotates the offset (the reaper's `selectRotatedSlice`).
  */
 export async function listAbandonedReceivingInstructionSnapshots(
 	cutoff: Date,
 	limit: number,
-): Promise<
-	Array<{
+	offset: number,
+): Promise<{
+	candidates: Array<{
 		id: string;
 		projectId: string;
 		organizationId: string;
 		createdAt: Date;
-	}>
-> {
-	return db.projectInstructionSnapshot.findMany({
-		where: { status: "RECEIVING", createdAt: { lt: cutoff } },
-		orderBy: { createdAt: "asc" },
-		take: limit,
-		select: {
-			id: true,
-			projectId: true,
-			organizationId: true,
-			createdAt: true,
-		},
-	});
+	}>;
+	total: number;
+}> {
+	const where = {
+		status: "RECEIVING",
+		createdAt: { lt: cutoff },
+	} satisfies Prisma.ProjectInstructionSnapshotWhereInput;
+	const [candidates, total] = await Promise.all([
+		db.projectInstructionSnapshot.findMany({
+			where,
+			orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+			skip: offset,
+			take: limit,
+			select: {
+				id: true,
+				projectId: true,
+				organizationId: true,
+				createdAt: true,
+			},
+		}),
+		db.projectInstructionSnapshot.count({ where }),
+	]);
+	return { candidates, total };
 }
 
 /**
@@ -5553,6 +5569,12 @@ export async function listAbandonedReceivingInstructionSnapshots(
  * claim, any other write — no longer matches, so the sweep cannot land a
  * verdict on a row it never actually inspected.
  *
+ * One page at `offset`, and the size of the whole population, in one total
+ * order (`id` breaking `updatedAt` ties), for the same reason as
+ * `listAbandonedReceivingInstructionSnapshots`: a RUNNING or indeterminate
+ * row is skipped unwritten and keeps its place, so the caller rotates the
+ * offset rather than re-reading a fixed first page.
+ *
  * SYSTEM-WIDE, with no tenant in scope, like the other sweep queries here, and
  * it hands the caller each row's own `projectId`/`organizationId` so every
  * write that follows is bound to the tenant the ROW names.
@@ -5560,25 +5582,36 @@ export async function listAbandonedReceivingInstructionSnapshots(
 export async function listStaleValidatingInstructionSnapshots(
 	cutoff: Date,
 	limit: number,
-): Promise<
-	Array<{
+	offset: number,
+): Promise<{
+	candidates: Array<{
 		id: string;
 		projectId: string;
 		organizationId: string;
 		updatedAt: Date;
-	}>
-> {
-	return db.projectInstructionSnapshot.findMany({
-		where: { status: "VALIDATING", updatedAt: { lt: cutoff } },
-		orderBy: { updatedAt: "asc" },
-		take: limit,
-		select: {
-			id: true,
-			projectId: true,
-			organizationId: true,
-			updatedAt: true,
-		},
-	});
+	}>;
+	total: number;
+}> {
+	const where = {
+		status: "VALIDATING",
+		updatedAt: { lt: cutoff },
+	} satisfies Prisma.ProjectInstructionSnapshotWhereInput;
+	const [candidates, total] = await Promise.all([
+		db.projectInstructionSnapshot.findMany({
+			where,
+			orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+			skip: offset,
+			take: limit,
+			select: {
+				id: true,
+				projectId: true,
+				organizationId: true,
+				updatedAt: true,
+			},
+		}),
+		db.projectInstructionSnapshot.count({ where }),
+	]);
+	return { candidates, total };
 }
 
 /**

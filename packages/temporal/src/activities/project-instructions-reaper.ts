@@ -84,6 +84,11 @@
  * oldest pending rows first and re-dates a row that FAILED to the back, so a
  * single undeletable prefix cannot sit at the head of the queue every hour
  * and starve the rows behind it.
+ *
+ * ROTATION: phases 0, 0b and 1 skip a RUNNING or indeterminate row without
+ * writing it, and the prune carries a failed project past without clearing
+ * it, so none of them can re-date the rows they pass over. They select a
+ * clock-rotated window of their candidates instead (`selectRotatedSlice`).
  */
 
 import {
@@ -128,8 +133,8 @@ import {
  * The prune slice is deliberately the smallest of them. Its per-project cost
  * is the one that is genuinely unbounded — two retention windows of up to
  * fifty rows each, every row carrying its own file keys and its own export
- * prefix — and unlike the abandonment phases, a project it does not reach
- * this hour is reached the next, now that the candidate query rotates.
+ * prefix — and a project it does not reach this hour is reached a later one,
+ * because its candidate query rotates.
  */
 const MAX_ABANDONED_PER_RUN = 200;
 const MAX_PRUNE_PROJECTS_PER_RUN = 25;
@@ -175,9 +180,9 @@ const ROTATION_PERIOD_MS = 60 * 60 * 1000;
  * that moves by exactly one slice per hour and wraps at the end of the
  * population. Used by every phase whose candidates can be passed over without
  * being written — the prune, whose per-project failures do not clear, and
- * phase 0b, whose RUNNING or unknown rows keep their place — because a fixed
- * first page lets those rows be re-selected every hour and starves every
- * candidate behind them indefinitely.
+ * phases 0, 0b and 1, whose RUNNING or unknown rows keep their place — because
+ * a fixed first page lets those rows be re-selected every hour and starves
+ * every candidate behind them indefinitely.
  *
  * `fetchPage` returns ONE ordered relation's page at `offset` and the
  * population's size with it, so the rotation is a window over a single
@@ -396,13 +401,20 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 		"[InstructionReaper] Starting sweep run",
 	);
 
-	const staleValidating = await listStaleValidatingInstructionSnapshots(
-		validatingCutoff,
+	// ROTATED, all three liveness phases: see `selectRotatedSlice`. A row they
+	// skip (RUNNING, or liveness unknown) is not written and keeps its place,
+	// so a fixed oldest page could be the same rows every hour.
+	const staleValidating = await selectRotatedSlice(
+		(limit, offset) =>
+			listStaleValidatingInstructionSnapshots(
+				validatingCutoff,
+				limit,
+				offset,
+			),
 		MAX_STALE_VALIDATING_PER_RUN,
+		startedAtMs,
+		(row) => row.id,
 	);
-	// ROTATED, unlike phase 0's page: see `selectRotatedSlice`. A row this
-	// phase skips (RUNNING, or liveness unknown) is not written and keeps its
-	// place, so a fixed oldest page could be the same hundred rows every hour.
 	const staleDeferredScans = await selectRotatedSlice(
 		(limit, offset) =>
 			listStaleDeferredScanInstructionSnapshots(
@@ -414,9 +426,12 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 		startedAtMs,
 		(row) => row.id,
 	);
-	const abandoned = await listAbandonedReceivingInstructionSnapshots(
-		cutoff,
+	const abandoned = await selectRotatedSlice(
+		(limit, offset) =>
+			listAbandonedReceivingInstructionSnapshots(cutoff, limit, offset),
 		MAX_ABANDONED_PER_RUN,
+		startedAtMs,
+		(row) => row.id,
 	);
 	// Acquired once per run, and only because phases 0, 0b and 1 need it —
 	// phases 1b and 3 work on rows whose verdict is already written. A client
@@ -766,9 +781,8 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 	// page is the same page every hour. A project whose prune keeps failing,
 	// or whose backlog is deeper than one run can drain, stays a candidate
 	// forever — and every project sorting after the slice is then never
-	// visited at all, not slowly but NEVER. Unlike the abandonment phases,
-	// which drain in age order and re-date their failures to the back, this
-	// query has no cursor of its own.
+	// visited at all, not slowly but NEVER. Unlike phase 1b, which re-dates
+	// its failures to the back, this query has no cursor of its own.
 	//
 	// So the offset advances one whole slice per hour and wraps at the size of
 	// the candidate population (see `selectPruneCandidates`). It is derived
