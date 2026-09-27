@@ -190,16 +190,47 @@ describe("POST /api/client-errors", () => {
 		expect(logger.warn).not.toHaveBeenCalled();
 	});
 
-	it("rate-limits per user", async () => {
+	it("rate-limits each report with a hashed user identifier", async () => {
+		// Arrange
 		await POST(request({ reports: [validReport] }));
-		expect(mocks.checkRateLimit).toHaveBeenCalledWith(
-			"client-errors:user_1",
-			30,
-			60_000,
-		);
+
+		// Act
+		const key = mocks.checkRateLimit.mock.calls[0]?.[0];
+
+		// Assert
+		expect(key).toMatch(/^client-errors:[a-f0-9]{16}$/);
+		expect(key).not.toContain("user_1");
+		expect(mocks.checkRateLimit).toHaveBeenCalledWith(key, 30, 60_000);
+	});
+
+	it("limits a user to 30 reports per minute across multiple batches", async () => {
+		// Arrange
+		let acceptedReports = 0;
+		mocks.checkRateLimit.mockImplementation(async () => {
+			acceptedReports += 1;
+			return {
+				allowed: acceptedReports <= 30,
+				remaining: Math.max(0, 30 - acceptedReports),
+				resetInSeconds: 60,
+			};
+		});
+		const batch = (size: number) => ({
+			reports: Array.from({ length: size }, () => validReport),
+		});
+
+		// Act
+		const first = await POST(request(batch(20)));
+		const second = await POST(request(batch(11)));
+
+		// Assert
+		expect(first.status).toBe(204);
+		expect(second.status).toBe(429);
+		expect(mocks.checkRateLimit).toHaveBeenCalledTimes(31);
+		expect(logger.warn).toHaveBeenCalledTimes(20);
 	});
 
 	it("logs each report and returns 204 on a valid batch", async () => {
+		// Arrange
 		const secondReport = {
 			procedure: "prompts/catalog/list",
 			kind: "error-page" as const,
@@ -208,20 +239,75 @@ describe("POST /api/client-errors", () => {
 			route: "/app/prompts/:id",
 		};
 
+		// Act
 		const res = await POST(
 			request({ reports: [validReport, secondReport] }),
 		);
 
+		// Assert
 		expect(res.status).toBe(204);
 		expect(logger.warn).toHaveBeenCalledTimes(2);
 		expect(logger.warn).toHaveBeenNthCalledWith(
 			1,
-			{ event: "client.rpc_failure", ...validReport },
+			expect.objectContaining({
+				event: "client.rpc_failure",
+				procedure: validReport.procedure,
+				kind: validReport.kind,
+				code: "UNKNOWN",
+				userHash: expect.stringMatching(/^[a-f0-9]{16}$/),
+			}),
 			expect.any(String),
 		);
 		expect(logger.warn).toHaveBeenNthCalledWith(
 			2,
-			{ event: "client.rpc_failure", ...secondReport },
+			expect.objectContaining({
+				event: "client.rpc_failure",
+				procedure: secondReport.procedure,
+				kind: secondReport.kind,
+				status: secondReport.status,
+				code: "BAD_GATEWAY",
+				userHash: expect.stringMatching(/^[a-f0-9]{16}$/),
+			}),
+			expect.any(String),
+		);
+	});
+
+	it("drops a forged route before logging client report metadata", async () => {
+		// Arrange
+		const report = {
+			...validReport,
+			route: "/app/prompts/opaque-user-slug?untrusted=1",
+		};
+
+		// Act
+		const res = await POST(request({ reports: [report] }));
+
+		// Assert
+		expect(res.status).toBe(204);
+		expect(logger.warn.mock.calls[0]?.[0]).not.toHaveProperty("route");
+	});
+
+	it("normalizes unknown client fields into one sampling bucket", async () => {
+		// Arrange
+		const report = {
+			...validReport,
+			procedure: "future/client/procedure-123",
+			code: "FUTURE_CODE",
+		};
+
+		// Act
+		const res = await POST(request({ reports: [report, report] }));
+
+		// Assert
+		expect(res.status).toBe(204);
+		expect(mocks.checkRateLimit).toHaveBeenCalledTimes(2);
+		expect(logger.warn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event: "client.rpc_failure",
+				procedure: "unknown",
+				code: "UNKNOWN",
+				userHash: expect.stringMatching(/^[a-f0-9]{16}$/),
+			}),
 			expect.any(String),
 		);
 	});

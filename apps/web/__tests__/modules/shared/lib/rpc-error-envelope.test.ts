@@ -51,7 +51,10 @@ describe("rpcErrorResponse", () => {
 			code: "BAD_GATEWAY",
 			status: 502,
 			message: "Bad Gateway",
-			data: { responseText: "<html>502 Bad Gateway upstream</html>" },
+			data: {
+				isNonOrpcResponse: true,
+				responseText: "<html>502 Bad Gateway upstream</html>",
+			},
 		});
 		expect(isRpcErrorEnvelope(JSON.stringify(body))).toBe(true);
 	});

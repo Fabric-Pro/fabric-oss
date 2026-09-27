@@ -785,17 +785,18 @@ resource circuitBreakerOpenedAlert 'Microsoft.Insights/scheduledQueryRules@2022-
           query: '''
             let integration_events = union isfuzzy=true
               (customEvents
-                | project timestamp, operation_Id, event_name = name, customDimensions, source = "legacy"),
+                | project timestamp, operation_Id, event_name = name, customDimensions, role = tolower(coalesce(cloud_RoleName, "unknown")), source = "legacy"),
               (traces
                 | extend event_name = tostring(customDimensions["event.name"])
                 | where isnotempty(event_name)
-                | project timestamp, operation_Id, event_name, customDimensions, source = "otel")
+                | project timestamp, operation_Id, event_name, customDimensions, role = tolower(coalesce(cloud_RoleName, "unknown")), source = "otel")
               | extend event_id = tostring(customDimensions["event.id"])
               | extend event_key = iff(isempty(event_id), strcat(source, "|", operation_Id, "|", tostring(timestamp)), event_id)
               | summarize arg_max(timestamp, *) by event_key;
             integration_events
             | where timestamp > ago(5m)
             | where event_name == "CircuitBreakerStateChange"
+            | where role != "fabric.web"
             | where tostring(customDimensions["newState"]) == "open"
             | summarize count() by provider = tostring(customDimensions["provider"])
           '''
@@ -837,17 +838,18 @@ resource syntheticProbeFailingAlert 'Microsoft.Insights/scheduledQueryRules@2022
           query: '''
             let integration_events = union isfuzzy=true
               (customEvents
-                | project timestamp, operation_Id, event_name = name, customDimensions, source = "legacy"),
+                | project timestamp, operation_Id, event_name = name, customDimensions, role = tolower(coalesce(cloud_RoleName, "unknown")), source = "legacy"),
               (traces
                 | extend event_name = tostring(customDimensions["event.name"])
                 | where isnotempty(event_name)
-                | project timestamp, operation_Id, event_name, customDimensions, source = "otel")
+                | project timestamp, operation_Id, event_name, customDimensions, role = tolower(coalesce(cloud_RoleName, "unknown")), source = "otel")
               | extend event_id = tostring(customDimensions["event.id"])
               | extend event_key = iff(isempty(event_id), strcat(source, "|", operation_Id, "|", tostring(timestamp)), event_id)
               | summarize arg_max(timestamp, *) by event_key;
             integration_events
             | where timestamp > ago(15m)
             | where event_name == "SyntheticProbeResult"
+            | where role != "fabric.web"
             | where tostring(customDimensions["outcome"]) == "failure"
               or tostring(customDimensions["outcome"]) == "timeout"
             | summarize failures = count() by provider = tostring(customDimensions["provider"])

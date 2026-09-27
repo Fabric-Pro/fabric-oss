@@ -37,6 +37,7 @@ const EXPECTED_4XX_CODES = new Set([
 export function logRpcFailure(error: unknown, path: readonly string[]): void {
 	const procedure = path.join("/");
 	let responseText: string | undefined;
+	let isNonOrpcResponse = false;
 	let code: string | undefined;
 	let status: number | undefined;
 	if (typeof error === "object" && error !== null) {
@@ -58,10 +59,19 @@ export function logRpcFailure(error: unknown, path: readonly string[]): void {
 		) {
 			responseText = error.data.responseText;
 		}
+		if (
+			"data" in error &&
+			typeof error.data === "object" &&
+			error.data !== null &&
+			"isNonOrpcResponse" in error.data &&
+			error.data.isNonOrpcResponse === true
+		) {
+			isNonOrpcResponse = true;
+		}
 	}
 
 	const label = `oRPC ${procedure} failed:`;
-	if (responseText) {
+	if (isNonOrpcResponse || responseText !== undefined) {
 		// A rewrapped proxy/platform page. Always the full console.error with
 		// the server's own text — its derived `code` reusing an "expected"
 		// value (a proxy 404 page, say) does not make it OUR NOT_FOUND.
@@ -76,7 +86,7 @@ export function logRpcFailure(error: unknown, path: readonly string[]): void {
 		typeof window !== "undefined"
 			? maskRoute(window.location.pathname)
 			: "";
-	if (responseText) {
+	if (isNonOrpcResponse || responseText !== undefined) {
 		// The API's own handler never ran for this one, so it has nothing
 		// logged for it.
 		queueRpcFailureReport({

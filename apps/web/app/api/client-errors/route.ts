@@ -12,6 +12,7 @@
  * open (CSP reports are already bounded by the pages that can trigger one).
  */
 
+import { createHash } from "node:crypto";
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
 import { logger } from "@repo/logs";
 import { getSession } from "@saas/auth/lib/server";
@@ -23,7 +24,25 @@ export const dynamic = "force-dynamic";
 
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_REPORTS_PER_BATCH = 20;
+/** Thirty reports per user per minute, including every item in a batch. */
 const RATE_LIMIT = { limit: 30, windowMs: 60_000 };
+
+const KNOWN_PROCEDURES = new Set([
+	"prompts/get/byId",
+	"prompts/list",
+	"prompts/catalog/list",
+	"prompts/agents/available",
+]);
+// Browser reports are untrusted input. Preserve the few prompt-read surfaces
+// that need diagnosis; collapse every other procedure and code into stable
+// buckets so a malformed client cannot create unbounded telemetry dimensions.
+const KNOWN_CODES = new Set([
+	"BAD_GATEWAY",
+	"FORBIDDEN",
+	"INTERNAL_SERVER_ERROR",
+	"NOT_FOUND",
+	"SERVICE_UNAVAILABLE",
+]);
 
 const reportSchema = z.object({
 	procedure: z.string().min(1).max(200),
@@ -57,6 +76,27 @@ function isCrossSitePost(request: Request): boolean {
 }
 
 const NO_CONTENT = { status: 204 } as const;
+
+function hashUserId(userId: string): string {
+	return createHash("sha256").update(userId).digest("hex").slice(0, 16);
+}
+
+// Browser reports cross an untrusted boundary. In particular, a route can
+// contain an opaque slug or query data, so retain only the bounded dimensions
+// used by the shared sampling bucket.
+function normalizeReport({
+	procedure,
+	kind,
+	status,
+	code,
+}: z.infer<typeof reportSchema>) {
+	return {
+		procedure: KNOWN_PROCEDURES.has(procedure) ? procedure : "unknown",
+		kind,
+		...(status === undefined ? {} : { status }),
+		code: code && KNOWN_CODES.has(code) ? code : "UNKNOWN",
+	};
+}
 
 export async function POST(request: Request): Promise<NextResponse> {
 	const session = await getSession();
@@ -121,32 +161,43 @@ export async function POST(request: Request): Promise<NextResponse> {
 		);
 	}
 
-	const rateLimitResult = await checkRateLimit(
-		`client-errors:${session.user.id}`,
-		RATE_LIMIT.limit,
-		RATE_LIMIT.windowMs,
-	);
-	if (!rateLimitResult.allowed) {
-		return new NextResponse(
-			JSON.stringify({
-				error: "Rate limit exceeded",
-				retryAfter: rateLimitResult.resetInSeconds,
-			}),
-			{
-				status: 429,
-				headers: {
-					"Content-Type": "application/json",
-					"Retry-After": rateLimitResult.resetInSeconds.toString(),
-				},
-			},
+	const userHash = hashUserId(session.user.id);
+	// Consume one distributed rate-limit token for every report, rather than
+	// every HTTP batch. Upstash's limiter evicts expired keys itself; its
+	// in-memory fallback does the same in `rate-limit.ts`.
+	for (const _report of parsed.data.reports) {
+		const rateLimitResult = await checkRateLimit(
+			`client-errors:${userHash}`,
+			RATE_LIMIT.limit,
+			RATE_LIMIT.windowMs,
 		);
+		if (!rateLimitResult.allowed) {
+			return new NextResponse(
+				JSON.stringify({
+					error: "Rate limit exceeded",
+					retryAfter: rateLimitResult.resetInSeconds,
+				}),
+				{
+					status: 429,
+					headers: {
+						"Content-Type": "application/json",
+						"Retry-After":
+							rateLimitResult.resetInSeconds.toString(),
+					},
+				},
+			);
+		}
 	}
 
 	for (const report of parsed.data.reports) {
 		// The sink attached in `instrumentation.ts` forwards this to App
 		// Insights — see `packages/logs/lib/logger.ts`'s `addLogSink`.
 		logger.warn(
-			{ event: "client.rpc_failure", ...report },
+			{
+				event: "client.rpc_failure",
+				userHash,
+				...normalizeReport(report),
+			},
 			"[client-errors] reported oRPC failure the server never saw",
 		);
 	}

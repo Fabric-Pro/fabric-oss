@@ -83,14 +83,35 @@ beforeEach(() => {
 });
 
 describe("SetAsDefaultDialog — bound-actions read failed", () => {
-	it("says the pre-fill could not run, without blocking the form", async () => {
-		listForPrompt.mockRejectedValue(new Error("network error"));
+	it("announces pending bound actions and prevents submit until they load", async () => {
+		// Arrange
+		listForPrompt.mockReturnValue(new Promise(() => {}));
 
+		// Act
 		openDialog();
 
+		// Assert
+		expect(
+			await screen.findByText(
+				"Loading actions this prompt already serves…",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /^set as default$/i }),
+		).toBeDisabled();
+	});
+
+	it("says the pre-fill could not run, without blocking the form", async () => {
+		// Arrange
+		listForPrompt.mockRejectedValue(new Error("network error"));
+
+		// Act
+		openDialog();
+
+		// Assert
 		const notice = await screen.findByRole("alert");
 		expect(notice).toHaveTextContent(
-			"Could not load the actions this prompt already serves, so none are pre-selected.",
+			"Could not refresh the actions this prompt already serves. Your current selection is kept, but it may be incomplete.",
 		);
 		expect(notice).not.toHaveTextContent("network error");
 
@@ -104,7 +125,49 @@ describe("SetAsDefaultDialog — bound-actions read failed", () => {
 		).not.toBeDisabled();
 	});
 
+	it("keeps cached actions and explains an incomplete selection after refetch failure", async () => {
+		// Arrange
+		listForPrompt
+			.mockResolvedValueOnce({
+				actions: [
+					{
+						targetKey: "test_case_step_reviser",
+						documentType: "GENERAL",
+						storyKind: null,
+					},
+				],
+			})
+			.mockRejectedValueOnce(new Error("network error"));
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		render(
+			<QueryClientProvider client={client}>
+				<SetAsDefaultDialog
+					open
+					onOpenChange={() => {}}
+					promptName="Test prompt"
+					promptVersionId="pv-1"
+					promptId="p-1"
+					initialDocumentType="GENERAL"
+				/>
+			</QueryClientProvider>,
+		);
+		await screen.findByText(/applies for 2 actions/i);
+
+		// Act
+		await client.refetchQueries({ queryKey: ["prompt-bound-actions"] });
+
+		// Assert
+		const notice = await screen.findByRole("alert");
+		expect(notice).toHaveTextContent(
+			"Your current selection is kept, but it may be incomplete.",
+		);
+		expect(screen.getByText(/applies for 2 actions/i)).toBeInTheDocument();
+	});
+
 	it("retries the bound-actions read from the notice", async () => {
+		// Arrange
 		listForPrompt.mockRejectedValueOnce(new Error("network error"));
 		listForPrompt.mockResolvedValueOnce({
 			actions: [
@@ -117,6 +180,7 @@ describe("SetAsDefaultDialog — bound-actions read failed", () => {
 		});
 		const user = userEvent.setup();
 
+		// Act
 		openDialog();
 
 		const notice = await screen.findByRole("alert");
@@ -124,6 +188,7 @@ describe("SetAsDefaultDialog — bound-actions read failed", () => {
 			within(notice).getByRole("button", { name: /try again/i }),
 		);
 
+		// Assert
 		await waitFor(() =>
 			expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
 		);
@@ -135,10 +200,54 @@ describe("SetAsDefaultDialog — bound-actions read failed", () => {
 		);
 	});
 
+	it("merges late server actions with the action selected during a failed read", async () => {
+		// Arrange
+		listForPrompt.mockRejectedValueOnce(new Error("network error"));
+		listForPrompt.mockResolvedValueOnce({
+			actions: [
+				{
+					targetKey: "test_case_step_reviser",
+					documentType: "GENERAL",
+					storyKind: null,
+				},
+			],
+		});
+		const user = userEvent.setup();
+
+		// Act
+		openDialog();
+		const notice = await screen.findByRole("alert");
+		await user.click(
+			screen.getByRole("checkbox", {
+				name: "Project Document Generator — PRD",
+			}),
+		);
+		await user.click(
+			within(notice).getByRole("button", { name: /try again/i }),
+		);
+
+		// Assert
+		await waitFor(() =>
+			expect(
+				screen.getByText(/applies for 3 actions/i),
+			).toBeInTheDocument(),
+		);
+		expect(
+			screen.getByRole("checkbox", {
+				name: "Project Document Generator — PRD",
+			}),
+		).toBeChecked();
+		expect(
+			screen.getByRole("checkbox", { name: "Test Case Step Reviser" }),
+		).toBeChecked();
+	});
+
 	it("pre-selects nothing when the read failed, rather than guessing", async () => {
+		// Arrange
 		listForPrompt.mockRejectedValue(new Error("network error"));
 		const user = userEvent.setup();
 
+		// Act
 		openDialog();
 
 		await screen.findByRole("alert");
@@ -146,6 +255,7 @@ describe("SetAsDefaultDialog — bound-actions read failed", () => {
 			screen.getByRole("button", { name: /^set as default$/i }),
 		);
 
+		// Assert
 		await waitFor(() => expect(bindSet).toHaveBeenCalledTimes(1));
 		// The single-action endpoint, not the batch one — nothing was added
 		// to the selection to batch.

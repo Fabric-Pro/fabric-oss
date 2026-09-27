@@ -10,7 +10,11 @@
  */
 
 import { PromptGovernanceDashboard } from "@saas/prompts/components/PromptGovernanceDashboard";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	onlineManager,
+	QueryClient,
+	QueryClientProvider,
+} from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -180,6 +184,26 @@ describe("PromptGovernanceDashboard (Org Overrides)", () => {
 
 		await screen.findByText(/actions have no organization prompt/i);
 		expect(screen.getAllByRole("listitem").length).toBeGreaterThan(0);
+	});
+
+	it("keeps an offline catalog read indeterminate and reloads on reconnect", async () => {
+		// Arrange
+		onlineManager.setOnline(false);
+
+		try {
+			// Act
+			wrap(<PromptGovernanceDashboard />);
+
+			// Assert
+			expect(
+				screen.getByText(/checking every action/i),
+			).toBeInTheDocument();
+			expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
+			onlineManager.setOnline(true);
+			await screen.findByText(/actions have no organization prompt/i);
+		} finally {
+			onlineManager.setOnline(true);
+		}
 	});
 
 	it("announces a stable error and lets the user retry", async () => {

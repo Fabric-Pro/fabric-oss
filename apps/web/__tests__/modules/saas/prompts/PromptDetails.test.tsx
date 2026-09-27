@@ -16,7 +16,11 @@
 
 import { ORPCError } from "@orpc/client";
 import { PromptDetails } from "@saas/prompts/components/PromptDetails";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	onlineManager,
+	QueryClient,
+	QueryClientProvider,
+} from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -150,6 +154,25 @@ describe("PromptDetails — load failure vs not found", () => {
 		).toBeInTheDocument();
 	});
 
+	it("keeps a paused initial read loading and resumes it on reconnect", async () => {
+		// Arrange
+		getById.mockResolvedValue(basePrompt);
+		onlineManager.setOnline(false);
+
+		try {
+			// Act
+			wrap(<PromptDetails promptId="p-1" />);
+
+			// Assert
+			expect(screen.queryByText("Test Case Drafter Prompt")).toBeNull();
+			expect(screen.queryByRole("alert")).toBeNull();
+			onlineManager.setOnline(true);
+			await screen.findByText("Test Case Drafter Prompt");
+		} finally {
+			onlineManager.setOnline(true);
+		}
+	});
+
 	it("retries the read when Try again is clicked", async () => {
 		getById
 			.mockRejectedValueOnce(new Error("upstream 500"))
@@ -179,6 +202,36 @@ describe("PromptDetails — load failure vs not found", () => {
 		expect(
 			screen.queryByRole("button", { name: "Try again" }),
 		).not.toBeInTheDocument();
+	});
+
+	it("retries a proxy HTML response even when its rewrapped code is NOT_FOUND", async () => {
+		// Arrange
+		const error = Object.assign(new ORPCError("NOT_FOUND"), {
+			data: { responseText: "<html>gateway error</html>" },
+		});
+		getById.mockRejectedValue(error);
+
+		// Act
+		wrap(<PromptDetails promptId="p-1" />);
+
+		// Assert
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent("Could not load this prompt.");
+	});
+
+	it("retries an empty proxy 404 marked as non-oRPC", async () => {
+		// Arrange
+		const error = Object.assign(new ORPCError("NOT_FOUND"), {
+			data: { isNonOrpcResponse: true, responseText: "" },
+		});
+		getById.mockRejectedValue(error);
+
+		// Act
+		wrap(<PromptDetails promptId="p-1" />);
+
+		// Assert
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent("Could not load this prompt.");
 	});
 
 	it("sends Back to Prompts through the organization's path, not the personal one", async () => {
@@ -274,10 +327,114 @@ describe("PromptDetails — saving over an unknown bound-actions read", () => {
 		expect(createVersion).not.toHaveBeenCalled();
 	});
 
-	it("confirms honestly when content is saved before the bound-actions read has landed", async () => {
-		// Never resolves during this test: the reach is unknown because the
-		// read hasn't settled yet, not because it failed.
-		listForPrompt.mockReturnValue(new Promise(() => {}));
+	it("rechecks failed bindings at save and warns with the fresh shared actions", async () => {
+		// Arrange
+		listForPrompt
+			.mockRejectedValueOnce(new Error("network error"))
+			.mockResolvedValueOnce({
+				actions: [
+					{
+						targetKey: "specs",
+						documentType: "PRD",
+						storyKind: null,
+					},
+					{
+						targetKey: "architecture",
+						documentType: "ARCHITECTURE",
+						storyKind: null,
+					},
+				],
+			});
+		const user = userEvent.setup();
+		wrap(<PromptDetails promptId="p-1" />);
+		await screen.findByText("Test Case Drafter Prompt");
+		await user.click(screen.getByRole("button", { name: "Edit" }));
+		const contentBox = await screen.findByLabelText("Prompt content");
+		await user.clear(contentBox);
+		await user.type(contentBox, "Edited content");
+
+		// Act
+		await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+		// Assert
+		await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1));
+		expect(confirmMock.mock.calls[0][0].title).toMatch(
+			/used by several actions/i,
+		);
+		expect(listForPrompt).toHaveBeenCalledTimes(2);
+	});
+
+	it("uses three fresh bindings after a binding changes before editing", async () => {
+		// Arrange
+		listForPrompt
+			.mockResolvedValueOnce({
+				actions: [
+					{
+						targetKey: "specs",
+						documentType: "PRD",
+						storyKind: null,
+					},
+				],
+			})
+			.mockResolvedValueOnce({
+				actions: [
+					{
+						targetKey: "specs",
+						documentType: "PRD",
+						storyKind: null,
+					},
+					{
+						targetKey: "architecture",
+						documentType: "ARCHITECTURE",
+						storyKind: null,
+					},
+					{
+						targetKey: "test_case_drafter",
+						documentType: "GENERAL",
+						storyKind: null,
+					},
+				],
+			});
+		const user = userEvent.setup();
+		wrap(<PromptDetails promptId="p-1" />);
+		await screen.findByText("Test Case Drafter Prompt");
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
+		await user.click(screen.getByRole("button", { name: "Edit" }));
+		const contentBox = await screen.findByLabelText("Prompt content");
+		await user.clear(contentBox);
+		await user.type(contentBox, "Edited after binding");
+
+		// Act
+		await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+		// Assert
+		await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1));
+		expect(confirmMock.mock.calls[0][0].message).toContain("all 3");
+		expect(listForPrompt).toHaveBeenCalledTimes(2);
+	});
+
+	it("uses a fresh shared-actions guard while the initial read is pending", async () => {
+		// Arrange
+		const pendingBindings = new Promise<{
+			actions: Array<{
+				targetKey: string;
+				documentType: string;
+				storyKind: null;
+			}>;
+		}>(() => {});
+		const sharedActions = {
+			actions: [
+				{ targetKey: "specs", documentType: "PRD", storyKind: null },
+				{
+					targetKey: "architecture",
+					documentType: "ARCHITECTURE",
+					storyKind: null,
+				},
+			],
+		};
+		listForPrompt
+			.mockReturnValueOnce(pendingBindings)
+			.mockResolvedValueOnce(sharedActions);
 		const user = userEvent.setup();
 
 		wrap(<PromptDetails promptId="p-1" />);
@@ -289,14 +446,47 @@ describe("PromptDetails — saving over an unknown bound-actions read", () => {
 		await user.clear(contentBox);
 		await user.type(contentBox, "Edited before load");
 
+		// Act
 		await user.click(screen.getByRole("button", { name: "Save changes" }));
 
+		// Assert
+		expect(
+			screen.getByText(
+				"Checking which actions use this prompt before save.",
+			),
+		).toBeInTheDocument();
 		await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1));
-		const options = confirmMock.mock.calls[0][0];
-		expect(options.title).toMatch(
-			/could not check which actions use this prompt/i,
+		expect(confirmMock.mock.calls[0][0].title).toMatch(
+			/used by several actions/i,
 		);
-		expect(updatePrompt).not.toHaveBeenCalled();
+		expect(listForPrompt).toHaveBeenCalledTimes(2);
+		await confirmMock.mock.calls[0][0].onConfirm();
+		await waitFor(() => expect(updatePrompt).toHaveBeenCalledTimes(1));
+		expect(updatePrompt).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: "p-1",
+				content: "Edited before load",
+			}),
+		);
+	});
+
+	it("retries a failed bound-actions read from the prompt read view", async () => {
+		// Arrange
+		listForPrompt
+			.mockRejectedValueOnce(new Error("network error"))
+			.mockResolvedValueOnce({ actions: [] });
+		const user = userEvent.setup();
+		wrap(<PromptDetails promptId="p-1" />);
+
+		// Act
+		const alert = await screen.findByRole("alert");
+		await user.click(
+			within(alert).getByRole("button", { name: "Try again" }),
+		);
+
+		// Assert
+		await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+		expect(listForPrompt).toHaveBeenCalledTimes(2);
 	});
 
 	it("does not warn at all when only metadata changes, even if the bound-actions read failed", async () => {

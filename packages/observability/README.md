@@ -273,16 +273,31 @@ addLogSink((record) => {
   (`@repo/utils/log-redaction`) — message and structured properties alike.
 - `trackLog`/`trackLogException` map warn/error/fatal to App Insights'
   Warning/Error/Critical severities via `trackTrace`/`trackException`, and
-  sample per key (20/min by default, keyed on `properties.event` when
-  present) so a hot-path failure cannot flood the workspace — a single
+  sample per key per process instance (20/min by default, keyed on
+  `properties.event` when present) so a hot-path failure cannot flood one
+  worker — a single
   "suppressed N similar records" trace marks each window that dropped any.
+- The web API deliberately emits one `HttpRequest` custom metric for each
+  oRPC procedure call and one `AppError` metric for each procedure failure.
+  At `R` average procedure calls per second and `F` failures per call, that is
+  `60 × R × (1 + F)` metric points per minute: 100 calls/second with 1% errors
+  emits about 6,060 points/minute; an all-failing 100 calls/second workload is
+  bounded at 12,000. They are metrics, not custom events. The SEV-1
+  integration-event query excludes `fabric.web` explicitly as well as filtering
+  on the named circuit breaker event, so future web custom events cannot page
+  that rule.
+- Dashboard owners: `fabric.web` is the web direct-client role. Other direct
+  clients may use a different role than the collector's `fabric.<app>` naming
+  convention, so a query that spans services must use each application's
+  configured `cloud_RoleName` rather than assuming the web role.
 - A process that only ever calls `initAppInsightsLogs()` (never
   `initAppInsights()`) still gets a real, shared direct client — the two
   entry points are independent, and calling both is safe.
 - On a platform that freezes the process between requests (Vercel Fluid
   Compute), call `flushAppInsights()` — e.g. via Next's `after()` on every
   request — so batched telemetry is not stranded unflushed when the process
-  is frozen before its own batching interval fires.
+  is frozen before its own batching interval fires. `flushAppInsights()` skips
+  the outbound SDK flush when this process has not queued direct telemetry.
 
 ## Architecture
 
