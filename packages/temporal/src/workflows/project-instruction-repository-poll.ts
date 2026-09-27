@@ -56,6 +56,7 @@ import {
 	INSTRUCTION_SYNC_POLL_BUDGET_MS,
 	INSTRUCTION_SYNC_POLL_CLAIM_CAP,
 	type InstructionSyncCheckOutcome,
+	type InstructionSyncPollCounts,
 	type InstructionSyncPollInput,
 	type InstructionSyncPollResult,
 	REPOSITORY_SYNC_SUBJECT_KINDS,
@@ -117,7 +118,7 @@ function checkActivity(budgetLeftMs: number) {
 
 const OUTCOME_COUNTER: Record<
 	InstructionSyncCheckOutcome,
-	keyof InstructionSyncPollResult
+	keyof InstructionSyncPollCounts
 > = {
 	started: "started",
 	already_running: "alreadyRunning",
@@ -150,7 +151,7 @@ export async function projectInstructionRepositoryPollWorkflow(
 	const deadlineAt = new Date(deadline).toISOString();
 	const budgetLeft = (): number => deadline - Date.now();
 	const pollRunId = workflowInfo().runId;
-	const result: InstructionSyncPollResult = {
+	const zero = (): InstructionSyncPollCounts => ({
 		claimed: 0,
 		started: 0,
 		alreadyRunning: 0,
@@ -163,6 +164,23 @@ export async function projectInstructionRepositoryPollWorkflow(
 		failed: 0,
 		deferred: 0,
 		claimFailed: 0,
+	});
+	// Every kind the tick walks starts at zero, so the per-kind breakdown
+	// (Fizzy #2712) has the same shape whether or not a kind had work.
+	const result: InstructionSyncPollResult = {
+		...zero(),
+		byKind: Object.fromEntries(kinds.map((kind) => [kind, zero()])),
+	};
+	/** Adds to the tick's total and to `kind`'s own count together. */
+	const count = (
+		kind: ClaimedInstructionSyncCheck["kind"],
+		counter: keyof InstructionSyncPollCounts,
+		n = 1,
+	): void => {
+		result[counter] += n;
+		const own = result.byKind[kind] ?? zero();
+		own[counter] += n;
+		result.byKind[kind] = own;
 	};
 
 	try {
@@ -192,9 +210,9 @@ export async function projectInstructionRepositoryPollWorkflow(
 				pollRunId,
 				deadlineAt,
 			});
-			result[OUTCOME_COUNTER[outcome]]++;
+			count(row.kind, OUTCOME_COUNTER[outcome]);
 		} catch (error) {
-			result.failed++;
+			count(row.kind, "failed");
 			log.warn("Repository sync check failed; its lease will expire", {
 				kind: row.kind,
 				id: row.id,
@@ -250,14 +268,14 @@ export async function projectInstructionRepositoryPollWorkflow(
 			const limit = Math.min(share, freeLanes - wave.length);
 			try {
 				const rows = await claimActivity(left)({ kind, limit });
-				result.claimed += rows.length;
+				count(kind, "claimed", rows.length);
 				wave.push(...rows);
 				if (rows.length < limit) {
 					open.delete(kind);
 				}
 			} catch (error) {
 				open.delete(kind);
-				result.claimFailed++;
+				count(kind, "claimFailed");
 				log.warn(
 					"Repository sync claim failed; skipping its kind for the rest of the tick",
 					{ kind, error: errorName(error) },
@@ -287,12 +305,14 @@ export async function projectInstructionRepositoryPollWorkflow(
 					{ cap: INSTRUCTION_SYNC_POLL_CLAIM_CAP },
 				);
 			}
-			const refused = wave.filter((row) => !dispatch(row)).length;
-			if (refused > 0) {
+			const refused = wave.filter((row) => !dispatch(row));
+			if (refused.length > 0) {
 				// Claimed too late to check in time. Their leases expire and they
 				// come due again first in the order; the next claim would be as
 				// late, so this tick claims nothing more (Decision 49).
-				result.deferred += refused;
+				for (const row of refused) {
+					count(row.kind, "deferred");
+				}
 				open.clear();
 			}
 			if (wave.length > 0) {

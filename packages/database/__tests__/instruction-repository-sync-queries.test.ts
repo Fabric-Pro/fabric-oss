@@ -1959,6 +1959,61 @@ describe("computeSchedulingPatch (spec §5.4, §6.1, Decision 46)", () => {
 		).toEqual(expected);
 	});
 
+	it.each([
+		[
+			"success",
+			{ kind: "success", commitSha: null },
+			{
+				failureCount: 0,
+				nextCheckAt: new Date(NOW.getTime() + 10 * MIN),
+			},
+		],
+		[
+			"suppress",
+			{ kind: "suppress", commitSha: HEAD },
+			{
+				failureCount: 0,
+				nextCheckAt: new Date(NOW.getTime() + 10 * MIN),
+				suppressedCommitSha: HEAD,
+				suppressedGeneration: 3,
+			},
+		],
+		[
+			"backoff",
+			{ kind: "backoff" },
+			{
+				failureCount: 3,
+				nextCheckAt: new Date(NOW.getTime() + 35 * MIN),
+			},
+		],
+		[
+			"reschedule, which still counts from now",
+			{ kind: "reschedule", delayMs: 2 * MIN },
+			{ nextCheckAt: new Date(NOW.getTime() + 2 * MIN) },
+		],
+		[
+			"pause, which still stamps now",
+			{ kind: "pause", reason: "REF_MISSING" },
+			{
+				nextCheckAt: null,
+				automaticPausedReason: "REF_MISSING",
+				automaticPausedAt: NOW,
+			},
+		],
+	] as const)(
+		"dates %s from scheduleFrom when a poll check passes one (Fizzy #2712)",
+		(_label, effect, expected) => {
+			expect(
+				computeSchedulingPatch(effect, {
+					now: NOW,
+					failureCount: 2,
+					generation: 3,
+					scheduleFrom: new Date(NOW.getTime() - 5 * MIN),
+				}),
+			).toEqual(expected);
+		},
+	);
+
 	it("throws on a kind it does not know, rather than writing nothing (Fizzy #2687)", () => {
 		expect(() =>
 			computeSchedulingPatch(

@@ -319,13 +319,12 @@ export type InstructionSyncCheckResult = {
 };
 
 /**
- * The poll workflow's result, summed over every subject kind: one count per
- * outcome, plus claims, thrown checks, `deferred` (rows claimed but left to
- * their leases, because the claim came back under the reserve or with too
- * little lease left to check them), and `claimFailed` (kinds whose claim
- * threw after its retries; Decision 52).
+ * One poll tick's counts: one per outcome, plus claims, thrown checks,
+ * `deferred` (rows claimed but left to their leases, because the claim came
+ * back under the reserve or with too little lease left to check them), and
+ * `claimFailed` (kinds whose claim threw after its retries; Decision 52).
  */
-export type InstructionSyncPollResult = {
+export type InstructionSyncPollCounts = {
 	claimed: number;
 	started: number;
 	alreadyRunning: number;
@@ -338,6 +337,18 @@ export type InstructionSyncPollResult = {
 	failed: number;
 	deferred: number;
 	claimFailed: number;
+};
+
+/**
+ * The poll workflow's result: the counts summed over every subject kind,
+ * and the same counts per kind the tick walked (Fizzy #2712), so a tick
+ * that claimed one instructions row and two Living Memory rows reads as
+ * that rather than as `claimed: 3`.
+ */
+export type InstructionSyncPollResult = InstructionSyncPollCounts & {
+	byKind: Partial<
+		Record<RepositorySyncSubjectKind, InstructionSyncPollCounts>
+	>;
 };
 
 /**

@@ -48,6 +48,18 @@ import { repositorySyncSubject } from "./lib/repository-sync-subjects";
 /** Spec §6.1: a claim leases the row for two minutes. */
 const CLAIM_LEASE_MS = 2 * 60 * 1000;
 /**
+ * How much earlier than its claim a check dates its next check (Fizzy
+ * #2712). The poll fires every five minutes and a row is claimed seconds
+ * into its tick. Dated from when the check finished, "15 minutes later" was
+ * always a few seconds past the tick 15 minutes on, so that tick skipped the
+ * row and the next one took it: every check came 20 minutes apart. Dated
+ * from the claim, less this, the tick 15 minutes on takes it as long as it
+ * claims no more than a minute earlier into its run than this tick did,
+ * and the tick 10 minutes on cannot unless it claims more than four minutes
+ * later, which only a backlog's later waves do.
+ */
+const SCHEDULE_ALLOWANCE_MS = 60 * 1000;
+/**
  * After a start: the run's own completion writes the real outcome, so this
  * is only the fallback clock (the same 15 minutes as `NEXT_CHECK_AFTER_MS`
  * in `@repo/database`).
@@ -260,6 +272,9 @@ async function runRemoteHeadCheck(
 			"[InstructionSync] the lease fence refused a check's write while the check was still in time",
 		);
 	};
+	// When the claim leased the row, on the database's clock: the lease is
+	// the claim's own `clock_timestamp()` plus exactly `CLAIM_LEASE_MS`.
+	const claimedAt = row.leaseUntil.getTime() - CLAIM_LEASE_MS;
 	// While the lease holds, the claimed failure count is the stored one:
 	// every writer of `failureCount` also moves the fence (Task 2).
 	const writeBack = (effect: WrittenEffect) =>
@@ -268,10 +283,13 @@ async function runRemoteHeadCheck(
 			fence,
 			// Dated on the database's clock: a worker behind it would
 			// otherwise write a next check that is already due (Fizzy #2683).
+			// The next check counts from the claim, not from now (Fizzy
+			// #2712, `SCHEDULE_ALLOWANCE_MS`).
 			computeSchedulingPatch(effect, {
 				now: dbNow(),
 				failureCount: row.failureCount,
 				generation: row.generation,
+				scheduleFrom: new Date(claimedAt - SCHEDULE_ALLOWANCE_MS),
 			}),
 		);
 	const settle = async (

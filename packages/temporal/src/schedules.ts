@@ -325,10 +325,12 @@ export const PROJECT_INSTRUCTION_REPOSITORY_POLL_SCHEDULE_ID =
 export const PROJECT_INSTRUCTION_REPOSITORY_POLL_WORKFLOW_NAME =
 	"projectInstructionRepositoryPollWorkflow";
 // Every five minutes (spec §6.1). The 15-minute interval is carried per sync
-// by `nextCheckAt`, not by this cron; the shorter cron drains a backlog, and
-// a branch that receives no webhook has a pushed change picked up normally
-// 15 to 20 minutes after the push, longer while the poll works through a
-// backlog or a sync is backing off after failures (Decision 55).
+// by `nextCheckAt`, not by this cron; the shorter cron drains a backlog.
+// Each sync is checked on every third tick, 15 minutes apart (Fizzy #2712:
+// dated from its claim, not from when its check finished), so a branch that
+// receives no webhook has a pushed change picked up normally within 15
+// minutes of the push, longer while the poll works through a backlog or a
+// sync is backing off after failures (Decision 55).
 export const PROJECT_INSTRUCTION_REPOSITORY_POLL_CRON_SCHEDULE = "*/5 * * * *";
 // overlap SKIP is safe only because a run is bounded STRICTLY below the
 // interval between triggers, as PUBLISHING_RECONCILE_EXECUTION_TIMEOUT_MS is
