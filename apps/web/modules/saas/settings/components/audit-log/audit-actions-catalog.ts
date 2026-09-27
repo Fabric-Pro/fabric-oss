@@ -737,7 +737,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.project.instructions.rejected",
 		description:
-			"A coding-instructions upload failed validation and was rejected. `metadata.reasonCounts` and `metadata.rules` carry the rejection reasons and the rule ids that fired — never the offending file paths or matched text, since a secret-scan hit is exactly what this row must not repeat.",
+			"A coding-instructions upload failed validation and was rejected. `metadata.reasons` (each `{ reason, count }`) and `metadata.rules` carry the rejection reasons and the rule ids that fired — never the offending file paths or matched text, since a secret-scan hit is exactly what this row must not repeat.",
 	},
 	{
 		key: "project.instructions.deleted",
@@ -760,7 +760,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey:
 			"settings.auditLog.actions.project.instructions.repository_sync_configured",
 		description:
-			"Pointed the project's coding instructions at a branch and folder of one of its connected repositories, making the repository the source of truth and this member the one sync runs act as. The branch was checked on the remote before anything was saved. The resource names the repository; `metadata.provider`, `metadata.refChanged` and `metadata.rootPathChanged` say what changed, and `metadata.generation` is the configuration version any run in flight is now fenced against.",
+			"Pointed the project's coding instructions at a branch and folder of one of its connected repositories, making the repository the source of truth and this member the one sync runs act as. The branch was checked on the remote before anything was saved. The resource names the repository; `metadata.provider`, `metadata.refChanged` and `metadata.rootChanged` say what changed, and `metadata.generation` is the configuration version any run in flight is now fenced against.",
 	},
 	{
 		key: "project.instructions.repository_sync_started",
@@ -840,7 +840,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey:
 			"settings.auditLog.actions.project.instructions.deferred_scan_issues_found",
 		description:
-			"The secret scan of a version published before its scan found possible secrets. The version stays published until a member publishes a fixed or earlier one. Counts and rule ids only (`metadata.findingCount`, `metadata.reasonCounts`, `metadata.rules`), never file content.",
+			"The secret scan of a version published before its scan found possible secrets. The version stays published until a member publishes a fixed or earlier one. Counts and rule ids only (`metadata.findingCount`, `metadata.reasons`, `metadata.rules`), never file content.",
 	},
 	{
 		key: "project.instructions.deferred_scan_incomplete",

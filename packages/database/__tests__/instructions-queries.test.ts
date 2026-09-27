@@ -2651,6 +2651,8 @@ describe("rejectAbandonedInstructionSnapshot", () => {
 					name: "v4",
 				},
 				metadata: expect.objectContaining({
+					// A list, never a map keyed by reason (Fizzy #2746).
+					reasons: [{ reason: "abandoned", count: 1 }],
 					source: "abandoned_receiving_reaper",
 				}),
 			}),

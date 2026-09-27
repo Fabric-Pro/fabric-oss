@@ -5760,7 +5760,8 @@ export async function rejectAbandonedInstructionSnapshot(input: {
 			},
 			metadata: {
 				rejectionCount: rejections.length,
-				reasonCounts: { abandoned: 1 },
+				// A list, never a map keyed by reason: see `summarizeRejections`.
+				reasons: [{ reason: "abandoned", count: 1 }],
 				rules: [],
 				source: input.source ?? "abandoned_receiving_reaper",
 			},

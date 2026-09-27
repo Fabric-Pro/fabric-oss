@@ -162,7 +162,9 @@ export const configureRepositorySyncProcedure = tenantProtectedProcedure
 				refChanged: written.previous
 					? written.previous.ref !== written.sync.ref
 					: true,
-				rootPathChanged: written.previous
+				// Not `rootPathChanged`: lowercased it contains `otp`, which the
+				// audit writer's key denylist redacts (Fizzy #2746).
+				rootChanged: written.previous
 					? written.previous.rootPath !== written.sync.rootPath
 					: true,
 				ignoreGlobsChanged: written.ignoreGlobsChanged,
