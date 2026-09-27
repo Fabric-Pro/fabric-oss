@@ -464,15 +464,22 @@ export function InstructionsPublishedView({
 
 	return (
 		<div className="flex h-full min-h-[600px] flex-col gap-4">
-			<div className="flex items-start justify-between gap-4">
-				<div className="flex flex-col gap-0.5">
-					<div className="flex items-center gap-2.5">
-						<h1 className="font-semibold text-xl">
+			{/* Wraps rather than squeezes: the action row outgrew the space
+			    beside the heading, and with the actions unshrinkable the
+			    heading column collapsed to its minimum width, breaking the
+			    title and the published badge over several lines. The
+			    heading keeps a 20rem basis, so once the actions no longer
+			    fit beside it they move to their own row (and wrap within
+			    it) instead. */}
+			<div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+				<div className="flex min-w-0 flex-1 basis-80 flex-col gap-0.5">
+					<div className="flex flex-wrap items-center gap-2.5">
+						<h1 className="whitespace-nowrap font-semibold text-xl">
 							{t("heading")}
 						</h1>
 						<PageTourButton pageId="coding-instructions" />
 						{published ? (
-							<span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-0.5 font-medium text-success text-xs">
+							<span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-success/10 px-2.5 py-0.5 font-medium text-success text-xs">
 								<CheckIcon
 									className="size-3"
 									aria-hidden="true"
@@ -609,7 +616,7 @@ export function InstructionsPublishedView({
 						/>
 					) : null}
 				</div>
-				<div className="flex shrink-0 gap-2">
+				<div className="flex flex-wrap gap-2">
 					{canBrowseProposals ? (
 						<Button
 							variant="outline"
