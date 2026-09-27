@@ -16,7 +16,8 @@ import { type ChildProcess, spawn } from "node:child_process";
 import type { Dirent } from "node:fs";
 import { lstat, mkdtemp, readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { SNAPSHOT_LIMITS } from "@repo/instructions";
+import { SNAPSHOT_LIMITS, type TreeEntry } from "@repo/instructions";
+import { MEMBER_BRANCH_PATTERN } from "@repo/instructions/proposal-branch-ref";
 import { isGitAuthError } from "@repo/integrations";
 import {
 	createLsTreeParser,
@@ -307,7 +308,15 @@ export function runBoundedProcess(
 	});
 }
 
-function runGit(options: BoundedProcessOptions): Promise<BoundedProcessResult> {
+/**
+ * The bounded runner with `GIT_SAFE_CONFIG` and credential redaction always
+ * applied. Exported (member proposal branch spec §7) so
+ * `instruction-branch-git.ts` and `instruction-proposal-commit.ts` reuse the
+ * exact same runner rather than a parallel copy that could drift.
+ */
+export function runGit(
+	options: BoundedProcessOptions,
+): Promise<BoundedProcessResult> {
 	// Derived from the child env rather than threaded through every one of
 	// this file's exported git operations (review N1): `FABRIC_GIT_CREDENTIAL`
 	// is already carried on `options.env` by `buildGitEnv`, so every call
@@ -541,7 +550,7 @@ async function directorySizeBytes(
 	return total;
 }
 
-type GitCallBase = { env: NodeJS.ProcessEnv; signal?: AbortSignal };
+export type GitCallBase = { env: NodeJS.ProcessEnv; signal?: AbortSignal };
 const watched = (dir: string) => ({
 	watchDir: dir,
 	maxDirBytes: MAX_CLONE_BYTES,
@@ -555,7 +564,7 @@ const watched = (dir: string) => ({
  */
 const OBJECT_ID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
-function assertObjectId(value: string, label: string): void {
+export function assertObjectId(value: string, label: string): void {
 	if (!OBJECT_ID_PATTERN.test(value)) {
 		throw new GitCommandError("invalid_argument", null, "", label);
 	}
@@ -578,7 +587,7 @@ function assertObjectId(value: string, label: string): void {
  * and Task 5's only caller passes `credentialFreeUrl`'s own (https) output,
  * so production behaviour is identical either way.
  */
-function assertNoUrlCredentials(url: string, label: string): void {
+export function assertNoUrlCredentials(url: string, label: string): void {
 	let parsed: URL;
 	try {
 		parsed = new URL(url);
@@ -825,12 +834,37 @@ export function assertOperationBranch(branch: string): void {
 }
 
 /**
+ * Which ref shape a caller expects (member proposal branch spec §7):
+ * `pushCreateOnly`, `deleteBranch` and `lsRemoteRef` write both the #2563
+ * per-proposal ref and the member proposal branch ref, and each call site
+ * names the one it means so a caller can never push a commit meant for one
+ * ref shape onto a ref of the other. `MEMBER_BRANCH_PATTERN`'s charset
+ * (`[a-z0-9/-]` only) already cannot produce anything `check-ref-format`
+ * would refuse, so the pattern alone is exactly `assertMemberBranch`'s
+ * decision (`instruction-branch-git.ts`, which also runs
+ * `check-ref-format` for defense in depth on its own, lower-volume call
+ * sites).
+ */
+function assertBranchFor(
+	validator: "operation" | "member",
+	branch: string,
+): void {
+	if (validator === "operation") {
+		assertOperationBranch(branch);
+		return;
+	}
+	if (!MEMBER_BRANCH_PATTERN.test(branch)) {
+		throw new GitCommandError("invalid_argument", null, "", "branch");
+	}
+}
+
+/**
  * A repository path for `update-index -z --index-info`: non-empty, relative,
  * no empty, `.` or `..` segment, and no NUL (the record terminator). git's own
  * `verify_path` also refuses `.git` components; this guard keeps the framing
  * and the tree's shape out of a caller's hands.
  */
-function assertTreePath(value: string): void {
+export function assertTreePath(value: string): void {
 	if (
 		value === "" ||
 		value.includes("\0") ||
@@ -994,6 +1028,84 @@ export async function writeProposalTree(
 	return { tree, blobIds };
 }
 
+const TREE_MODE_PATTERN = /^[0-7]{6}$/;
+
+/**
+ * Member proposal branch spec §6.4 steps 6-7 and §6.8 step 3: apply a write
+ * plan of already-resolved tree entries onto the base tree `readBaseTree`
+ * filled, then `write-tree --missing-ok`. Unlike `writeProposalTree`, no
+ * `hash-object` runs here: every `after` entry's object already exists (a
+ * newly hashed blob from an append's own hashing step, or an existing
+ * repository blob a revert restores), and `after: null` deletes the path.
+ * Purely additive beside `writeProposalTree`: v1's own tree-building path is
+ * unchanged.
+ */
+export async function writeResolvedTree(
+	input: GitCallBase & {
+		dir: string;
+		indexFile: string;
+		entries: readonly { rawPath: string; after: TreeEntry | null }[];
+	},
+): Promise<string> {
+	for (const entry of input.entries) {
+		assertTreePath(entry.rawPath);
+		if (entry.after !== null) {
+			assertObjectId(entry.after.oid, "update-index");
+			if (!TREE_MODE_PATTERN.test(entry.after.mode)) {
+				throw new GitCommandError(
+					"invalid_argument",
+					null,
+					"",
+					"update-index",
+				);
+			}
+		}
+	}
+	const env = { ...input.env, GIT_INDEX_FILE: input.indexFile };
+	const call = { cwd: input.dir, env, signal: input.signal };
+	const { stdout: format } = await runGit({
+		...call,
+		args: ["rev-parse", "--show-object-format"],
+		label: "rev-parse",
+		maxStdoutBytes: 64,
+	});
+	const zeroOid = "0".repeat(
+		format.toString("utf8").trim() === "sha256" ? 64 : 40,
+	);
+	const records: Buffer[] = [];
+	for (const entry of input.entries) {
+		if (entry.after === null) {
+			records.push(
+				Buffer.from(`0 ${zeroOid}\t${entry.rawPath}\0`, "utf8"),
+			);
+			continue;
+		}
+		records.push(
+			Buffer.from(
+				`${entry.after.mode} ${entry.after.oid}\t${entry.rawPath}\0`,
+				"utf8",
+			),
+		);
+	}
+	await runGit({
+		...call,
+		args: ["update-index", "-z", "--index-info"],
+		stdin: Buffer.concat(records),
+		label: "update-index",
+		...watched(input.dir),
+	});
+	const { stdout } = await runGit({
+		...call,
+		args: ["write-tree", "--missing-ok"],
+		label: "write-tree",
+		maxStdoutBytes: 256,
+		...watched(input.dir),
+	});
+	const tree = stdout.toString("utf8").trim();
+	assertObjectId(tree, "write-tree");
+	return tree;
+}
+
 /**
  * Spec §7 step 7: the commit, reproducible from frozen metadata (author,
  * committer, date and message all come from the context), unsigned whatever
@@ -1104,8 +1216,13 @@ export async function diffTreeEntries(
 	return out;
 }
 
-/** `git push --porcelain` prints `<flag>\t<from>:<to>\t<summary>` per ref. */
-function porcelainFlag(
+/**
+ * `git push --porcelain` prints `<flag>\t<from>:<to>\t<summary>` per ref.
+ * Exported (member proposal branch spec §7) so `pushFastForward`
+ * (`instruction-branch-git.ts`) classifies a push exactly as `pushCreateOnly`
+ * does, rather than a parallel parser that could drift.
+ */
+export function porcelainFlag(
 	stdout: Buffer,
 	ref: string,
 ): { flag: string; summary: string } | null {
@@ -1122,8 +1239,12 @@ function porcelainFlag(
 	return null;
 }
 
-/** Runs a push and returns its stdout whether or not git exited 0; any other failure rethrows. */
-async function runPush(
+/**
+ * Runs a push and returns its stdout whether or not git exited 0; any other
+ * failure rethrows. Exported (member proposal branch spec §7) for
+ * `pushFastForward` (`instruction-branch-git.ts`).
+ */
+export async function runPush(
 	options: BoundedProcessOptions,
 ): Promise<{ stdout: Buffer; error: GitCommandError | null }> {
 	try {
@@ -1148,12 +1269,21 @@ async function runPush(
  * (`isPushWriteRefusal`, Fizzy #2563): in both the ref was never written. Any
  * other failure that reports no ref at all (authentication, an unreachable
  * remote) rethrows the original error.
+ *
+ * `validator` (member proposal branch spec §7) picks the ref shape this call
+ * is allowed to write: `"operation"` for #2563's per-proposal ref, `"member"`
+ * for a member proposal branch ref.
  */
 export async function pushCreateOnly(
-	input: GitCallBase & { dir: string; sha: string; branch: string },
+	input: GitCallBase & {
+		dir: string;
+		sha: string;
+		branch: string;
+		validator: "operation" | "member";
+	},
 ): Promise<{ kind: "created" } | { kind: "exists" } | { kind: "refused" }> {
 	assertObjectId(input.sha, "push");
-	assertOperationBranch(input.branch);
+	assertBranchFor(input.validator, input.branch);
 	const ref = `refs/heads/${input.branch}`;
 	const { stdout, error } = await runPush({
 		cwd: input.dir,
@@ -1203,6 +1333,11 @@ export async function pushCreateOnly(
  * permission before reporting any ref (`isPushWriteRefusal`, Fizzy #2563) is
  * `refused` without an active pull request: closing one would not grant the
  * permission.
+ *
+ * `validator` (member proposal branch spec §7) picks the ref shape this call
+ * is allowed to delete, forwarded to the internal `lsRemoteRef` re-check
+ * below so a stale-info resolution never validates the branch against the
+ * other shape.
  */
 export async function deleteBranch(
 	input: GitCallBase & {
@@ -1210,6 +1345,7 @@ export async function deleteBranch(
 		url: string;
 		branch: string;
 		sha: string;
+		validator: "operation" | "member";
 	},
 ): Promise<
 	| { kind: "deleted" }
@@ -1218,7 +1354,7 @@ export async function deleteBranch(
 	| { kind: "refused"; activePullRequest: boolean }
 > {
 	assertNoUrlCredentials(input.url, "push");
-	assertOperationBranch(input.branch);
+	assertBranchFor(input.validator, input.branch);
 	assertObjectId(input.sha, "push");
 	const ref = `refs/heads/${input.branch}`;
 	const bare = await mkdtemp(path.join(input.cwd, "delete-"));
@@ -1253,6 +1389,7 @@ export async function deleteBranch(
 				cwd: input.cwd,
 				url: input.url,
 				branch: input.branch,
+				validator: input.validator,
 				env: input.env,
 				signal: input.signal,
 			});
@@ -1281,17 +1418,21 @@ export async function deleteBranch(
  * `refs/heads/<branch>` on `url`, without a clone. `--refs` drops peeled
  * tags; `ls-remote` still matches from the tail, so only the exact line
  * counts, as in `lsRemoteHead`. Bounded to 30 s.
+ *
+ * `validator` (member proposal branch spec §7) picks the ref shape this call
+ * is allowed to read.
  */
 export async function lsRemoteRef(
 	input: GitCallBase & {
 		cwd: string;
 		url: string;
 		branch: string;
+		validator: "operation" | "member";
 		timeoutMs?: number;
 	},
 ): Promise<RemoteHead> {
 	assertNoUrlCredentials(input.url, "ls-remote");
-	assertOperationBranch(input.branch);
+	assertBranchFor(input.validator, input.branch);
 	const wanted = `refs/heads/${input.branch}`;
 	const timeout = AbortSignal.timeout(
 		input.timeoutMs ?? LS_REMOTE_TIMEOUT_MS,

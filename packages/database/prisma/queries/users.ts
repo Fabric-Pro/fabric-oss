@@ -45,6 +45,25 @@ export async function getUserById(id: string) {
 	});
 }
 
+/**
+ * A batch name lookup for ids collected from a tenant-scoped query (e.g. a
+ * project's member proposal branch owners) — never a search surface of its
+ * own, so it takes no `where` beyond the id list the caller already resolved
+ * within its own tenant scope.
+ */
+export async function getUsersByIds(
+	ids: readonly string[],
+): Promise<Map<string, { id: string; name: string }>> {
+	if (ids.length === 0) {
+		return new Map();
+	}
+	const rows = await db.user.findMany({
+		where: { id: { in: [...ids] } },
+		select: { id: true, name: true },
+	});
+	return new Map(rows.map((row) => [row.id, row]));
+}
+
 export async function getUserByEmail(email: string) {
 	return await db.user.findUnique({
 		where: {

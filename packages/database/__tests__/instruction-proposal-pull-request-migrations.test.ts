@@ -47,6 +47,11 @@ const INDEXES = [
 ] as const;
 const REFRESH_ADMITTED_AT =
 	"20260924210500_instruction_snapshot_pr_refresh_admitted_at";
+/**
+ * Member proposal branches (Fizzy #2738): the branch table carries its own
+ * `pullRequestUrl`, `pullRequestExternalId` and `pullRequestObservation`.
+ */
+const MEMBER_BRANCHES = "20260927100000_instruction_proposal_branches";
 
 /** Every migration of the feature, in the order the deploy applies them. */
 const FEATURE_MIGRATIONS = [
@@ -54,6 +59,7 @@ const FEATURE_MIGRATIONS = [
 	COLUMNS,
 	...INDEXES.map(([migration]) => migration),
 	REFRESH_ADMITTED_AT,
+	MEMBER_BRANCHES,
 ];
 
 /**

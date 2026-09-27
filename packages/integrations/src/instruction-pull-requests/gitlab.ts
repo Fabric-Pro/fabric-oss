@@ -11,7 +11,14 @@ import {
 	MAX_PAGES,
 	OPEN_TIMEOUT_MS,
 } from "./classify";
-import { encodeSegment, isRecord, num, requestJson, str } from "./http";
+import {
+	encodeSegment,
+	isPositiveDecimalInteger,
+	isRecord,
+	num,
+	requestJson,
+	str,
+} from "./http";
 import {
 	type FindOperationResult,
 	type InstructionPullRequestAdapter,
@@ -298,5 +305,11 @@ export const gitlab: InstructionPullRequestAdapter = {
 			throw adapterError("close", "unknown");
 		}
 		return observe(t, mr, "close");
+	},
+
+	pullRequestHeadRef(externalId) {
+		return isPositiveDecimalInteger(externalId)
+			? `refs/merge-requests/${externalId}/head`
+			: null;
 	},
 };

@@ -10,9 +10,12 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { PullRequestContext } from "@repo/instructions";
+import type { PullRequestContextV1 } from "@repo/instructions";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { readTreeEntries } from "../instruction-branch-git";
 import {
+	type BranchWritePlanEntry,
+	buildBranchCommit,
 	buildProposalCommit,
 	computeEffectiveDelta,
 	type EffectiveDelta,
@@ -269,7 +272,7 @@ const BASE_ROWS = [
 	row(NFC, "nfd\n"),
 ];
 
-function context(): PullRequestContext {
+function context(): PullRequestContextV1 {
 	return {
 		v: 1,
 		integrationId: "int_1",
@@ -521,6 +524,7 @@ describe.skipIf(!hasGit)(
 			const { branch } = context();
 			expect(
 				await pushCreateOnly({
+					validator: "operation",
 					dir,
 					sha: result.sha,
 					branch,
@@ -573,6 +577,240 @@ describe.skipIf(!hasGit)(
 			} finally {
 				diffOverride.fn = null;
 			}
+		});
+	},
+);
+
+describe.skipIf(!hasGit)(
+	"buildBranchCommit against real git (member proposal branch spec §6.4 steps 6-7, §6.8 step 3)",
+	() => {
+		let branchWork: string;
+		let branchSource: string;
+		let branchBase: string;
+
+		function branchGit(cwd: string, args: string[]): string {
+			return execFileSync("git", args, {
+				cwd,
+				env: {
+					PATH: process.env.PATH,
+					HOME: branchWork,
+					GIT_CONFIG_NOSYSTEM: "1",
+					GIT_CONFIG_GLOBAL: "/dev/null",
+				},
+				encoding: "utf8",
+			}).trim();
+		}
+
+		async function branchWorkspace(name: string): Promise<{
+			dir: string;
+			env: NodeJS.ProcessEnv;
+		}> {
+			const run = path.join(branchWork, name);
+			await mkdir(run);
+			const dir = path.join(run, "repo");
+			const env = {
+				...buildGitEnv({ home: run }),
+				GIT_CONFIG_COUNT: "1",
+				GIT_CONFIG_KEY_0: "protocol.file.allow",
+				GIT_CONFIG_VALUE_0: "always",
+			};
+			await cloneTreeless({
+				cwd: run,
+				url: `file://${branchSource}`,
+				ref: "main",
+				dir,
+				env,
+			});
+			await fetchPinnedCommit({ dir, sha: branchBase, env });
+			return { dir, env };
+		}
+
+		/** A new blob's tree entry, hashed straight into the workspace's object store. */
+		function newBlobEntry(
+			dir: string,
+			content: string,
+			mode: "100644" | "100755" = "100644",
+		): { type: "blob"; mode: string; oid: string } {
+			const oid = execFileSync(
+				"git",
+				["-C", dir, "hash-object", "-w", "--no-filters", "--stdin"],
+				{ input: content, encoding: "utf8" },
+			).trim();
+			return { type: "blob", mode, oid };
+		}
+
+		beforeAll(async () => {
+			branchWork = await mkdtemp(path.join(tmpdir(), "branch-commit-"));
+			branchSource = path.join(branchWork, "source");
+			await mkdir(path.join(branchSource, "agents"), {
+				recursive: true,
+			});
+			await writeFile(path.join(branchSource, "agents/a.md"), "one\n");
+			await writeFile(
+				path.join(branchSource, "agents/keep.md"),
+				"keep\n",
+			);
+			branchGit(branchSource, ["init", "-q", "-b", "main"]);
+			branchGit(branchSource, [
+				"config",
+				"uploadpack.allowFilter",
+				"true",
+			]);
+			branchGit(branchSource, [
+				"config",
+				"uploadpack.allowAnySHA1InWant",
+				"true",
+			]);
+			branchGit(branchSource, ["add", "-A"]);
+			branchGit(branchSource, [
+				"-c",
+				"user.name=Example",
+				"-c",
+				`user.email=${MAIL}`,
+				"commit",
+				"-qm",
+				"base",
+			]);
+			branchBase = branchGit(branchSource, ["rev-parse", "HEAD"]);
+		});
+
+		afterAll(async () => {
+			await rm(branchWork, { recursive: true, force: true });
+		});
+
+		it("writes a new blob and modifies an existing one, exactly the plan, leaving other paths untouched", async () => {
+			const { dir, env } = await branchWorkspace("add-modify");
+			const plan: BranchWritePlanEntry[] = [
+				{
+					rawPath: "agents/a.md",
+					after: newBlobEntry(dir, "one changed\n"),
+				},
+				{
+					rawPath: "agents/new.md",
+					after: newBlobEntry(dir, "new\n", "100755"),
+				},
+			];
+			const result = await buildBranchCommit({
+				dir,
+				env,
+				signal: new AbortController().signal,
+				parent: branchBase,
+				plan,
+				author: { name: "Example Person", email: MAIL },
+				committer: { name: "Fabric", email: MAIL },
+				message: "append\n",
+				date: "2026-09-26T00:00:00Z",
+			});
+			expect(result.ok).toBe(true);
+			if (!result.ok) {
+				return;
+			}
+			const before = lsTree(dir, branchBase);
+			const after = lsTree(dir, result.sha);
+			expect(after.get("agents/a.md")).not.toBe(
+				before.get("agents/a.md"),
+			);
+			expect(after.get("agents/new.md")).toMatch(/^100755 blob /);
+			expect(after.get("agents/keep.md")).toBe(
+				before.get("agents/keep.md"),
+			);
+		});
+
+		it("deletes a path", async () => {
+			const { dir, env } = await branchWorkspace("delete");
+			const result = await buildBranchCommit({
+				dir,
+				env,
+				signal: new AbortController().signal,
+				parent: branchBase,
+				plan: [{ rawPath: "agents/a.md", after: null }],
+				author: { name: "Example Person", email: MAIL },
+				committer: { name: "Fabric", email: MAIL },
+				message: "withdraw\n",
+				date: "2026-09-26T00:00:00Z",
+			});
+			expect(result.ok).toBe(true);
+			if (!result.ok) {
+				return;
+			}
+			const after = lsTree(dir, result.sha);
+			expect(after.has("agents/a.md")).toBe(false);
+			expect(after.has("agents/keep.md")).toBe(true);
+		});
+
+		it("restores an existing tree entry read from history, without hashing new bytes", async () => {
+			const { dir, env } = await branchWorkspace("restore");
+			// The first commit deletes agents/a.md; the entry to restore comes
+			// from `readTreeEntries` against the base commit, never a fresh hash.
+			const deleted = await buildBranchCommit({
+				dir,
+				env,
+				signal: new AbortController().signal,
+				parent: branchBase,
+				plan: [{ rawPath: "agents/a.md", after: null }],
+				author: { name: "Example Person", email: MAIL },
+				committer: { name: "Fabric", email: MAIL },
+				message: "withdraw\n",
+				date: "2026-09-26T00:00:00Z",
+			});
+			expect(deleted.ok).toBe(true);
+			if (!deleted.ok) {
+				return;
+			}
+			const original = await readTreeEntries({
+				dir,
+				sha: branchBase,
+				rawPaths: ["agents/a.md"],
+				env,
+			});
+			const restored = await buildBranchCommit({
+				dir,
+				env,
+				signal: new AbortController().signal,
+				parent: deleted.sha,
+				plan: [
+					{
+						rawPath: "agents/a.md",
+						after: original.get("agents/a.md") ?? null,
+					},
+				],
+				author: { name: "Example Person", email: MAIL },
+				committer: { name: "Fabric", email: MAIL },
+				message: "Withdraw: restore\n",
+				date: "2026-09-26T00:00:00Z",
+			});
+			expect(restored.ok).toBe(true);
+			if (!restored.ok) {
+				return;
+			}
+			const before = lsTree(dir, branchBase);
+			const after = lsTree(dir, restored.sha);
+			expect(after.get("agents/a.md")).toBe(before.get("agents/a.md"));
+		});
+
+		it("reports GIT_FAILED when the plan names one path twice", async () => {
+			const { dir, env } = await branchWorkspace("duplicate");
+			const result = await buildBranchCommit({
+				dir,
+				env,
+				signal: new AbortController().signal,
+				parent: branchBase,
+				plan: [
+					{
+						rawPath: "agents/a.md",
+						after: newBlobEntry(dir, "first\n"),
+					},
+					{
+						rawPath: "agents/a.md",
+						after: newBlobEntry(dir, "second\n"),
+					},
+				],
+				author: { name: "Example Person", email: MAIL },
+				committer: { name: "Fabric", email: MAIL },
+				message: "append\n",
+				date: "2026-09-26T00:00:00Z",
+			});
+			expect(result).toEqual({ ok: false, code: "GIT_FAILED" });
 		});
 	},
 );

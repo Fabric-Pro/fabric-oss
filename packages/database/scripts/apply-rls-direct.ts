@@ -247,6 +247,21 @@ async function applyRLS() {
 				name: "project_instruction_repository_sync_run",
 				policy: "user_owned",
 			},
+			// Member proposal branches (Fizzy #2738): the branch row is the
+			// member's; the permanent ref reservation and the push journal
+			// carry no userId, so they are organization-only.
+			{
+				name: "project_instruction_proposal_branch",
+				policy: "user_owned",
+			},
+			{
+				name: "project_instruction_proposal_ref_reservation",
+				policy: "org_only",
+			},
+			{
+				name: "project_instruction_proposal_branch_operation",
+				policy: "org_only",
+			},
 			{ name: "project_document", policy: "user_owned" }, // Project documents
 			{ name: "project_document_asset", policy: "user_owned" }, // Binary/HTML artifacts attached to generated docs
 			{ name: "project_context", policy: "user_owned" }, // Project context files

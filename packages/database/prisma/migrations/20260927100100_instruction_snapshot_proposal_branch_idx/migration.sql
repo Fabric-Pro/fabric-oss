@@ -1,0 +1,15 @@
+-- The ("proposalBranchId") index on project_instruction_snapshot (Fizzy #2738
+-- spec §4.1, §4.6 step 2): a member branch's proposals, read by the join,
+-- the reducer and the branch view. The name matches the schema's `map:`.
+--
+-- CONCURRENTLY because project_instruction_snapshot is populated and a plain
+-- build takes a write lock on it for the length of the build. NO `IF NOT
+-- EXISTS`: a failed concurrent build leaves an invalid index behind under this
+-- name, and the clause would then skip the rebuild and record the migration as
+-- applied with no index. Recovery per docs/database-promotion.md: find it with
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+-- then DROP INDEX that name before re-running the migration.
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT: CONCURRENTLY cannot run inside the
+-- transaction Prisma wraps a multi-statement migration in.
+CREATE INDEX CONCURRENTLY "project_instruction_snapshot_proposalBranchId_idx" ON "project_instruction_snapshot"("proposalBranchId");

@@ -6,6 +6,7 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./export": "./src/export/index.ts",
+		"./proposal-branch-ref": "./src/proposal-branch-ref.ts",
 		"./workflow-ids": "./src/workflow-ids.ts"
 	},
 	"scripts": {

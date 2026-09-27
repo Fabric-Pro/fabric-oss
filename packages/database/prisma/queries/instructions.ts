@@ -13,11 +13,29 @@ import { db, Prisma } from "../client";
 import type {
 	ProjectInstructionFileKind,
 	ProjectInstructionProposalStatus,
+	ProjectInstructionPullRequestState,
 	ProjectInstructionSnapshotStatus,
 	ProjectInstructionSource,
 	RepositoryProvider,
 } from "../generated/client";
 import { type RecordAuditInput, recordAuditTx } from "./audit-log";
+import {
+	currentAppend,
+	type EvidenceOp,
+	isEstablished,
+	isLiveProposal,
+	lifecycleColumns,
+	lifecycleOfRow,
+	type OpOutcome,
+	type ProposalLifecycle,
+	reconcileProposalFromEvidence,
+	reduceProposalLifecycle,
+	sameLifecycle,
+} from "./instruction-proposal-branch-evidence";
+import {
+	transitionBranch,
+	withBranchLockOrder,
+} from "./instruction-proposal-branches";
 import {
 	isUnresolvedPullRequestOperation,
 	type PullRequestFailure,
@@ -101,6 +119,18 @@ function noPendingCleanupFilter() {
 	};
 }
 
+/**
+ * The proposals that hold an admission slot.
+ *
+ * A member branch proposal whose change is already on its branch no longer
+ * holds one (Fizzy #2738 spec Decision 16): it waits on the reviewer, not on
+ * Fabric. On a branch, `OPEN` and `CLOSE_REQUESTED` are exactly the states
+ * whose current append is established: `reconcileProposalFromEvidence` runs
+ * with every outcome write, and its rows 1-5 (an established current append)
+ * are the only ones that yield them, while rows 6-9 never do. So the state
+ * says it without a journal join. `proposalBranchId` is set only on v2 rows,
+ * so a #2563 row and a FABRIC row are counted as before.
+ */
 function activeProposalFilter() {
 	return {
 		OR: [
@@ -108,6 +138,21 @@ function activeProposalFilter() {
 			{
 				proposalStatus: { not: null },
 				...pendingCleanupFilter(),
+			},
+		],
+		AND: [
+			{
+				OR: [
+					{ proposalBranchId: null },
+					{
+						pullRequestState: {
+							notIn: [
+								"OPEN" as const,
+								"CLOSE_REQUESTED" as const,
+							],
+						},
+					},
+				],
 			},
 		],
 	};
@@ -602,6 +647,12 @@ export type DuplicateInstructionProposal = {
 	fileCount: number;
 	inheritedCount: number;
 	staged: Array<{ id: string; path: string }>;
+	/**
+	 * A member branch proposal's member-wide intent order (Fizzy #2738 spec
+	 * Decision 8): a duplicate admission answers with the existing value and
+	 * never draws a new one. Null for any other proposal.
+	 */
+	proposalIntentOrder?: bigint | null;
 };
 
 export type CreateDerivedInstructionSnapshotResult =
@@ -624,6 +675,12 @@ export type CreateDerivedInstructionSnapshotResult =
 			 * for FABRIC, whose caller still writes it after commit.
 			 */
 			auditWritten: boolean;
+			/**
+			 * The member-wide intent order drawn in this transaction for a
+			 * member branch proposal (Fizzy #2738 spec Decision 8); absent
+			 * for any other derivation.
+			 */
+			proposalIntentOrder?: bigint;
 	  }
 	/**
 	 * This exact change set is ALREADY an active proposal of this proposer's
@@ -754,15 +811,99 @@ export type RepositoryProposalDestination = {
 	syncId: string;
 	syncGeneration: number;
 	/**
-	 * The context's `branch`, attempt 1's ref: written as `pullRequestRef` in
-	 * the create, so the operation's current branch is a stored fact from the
-	 * moment the row exists rather than something a later writer infers.
+	 * A #2563 (v1) context's `branch`, attempt 1's ref: written as
+	 * `pullRequestRef` in the create, so the operation's current branch is a
+	 * stored fact from the moment the row exists rather than something a
+	 * later writer infers. Absent for a member branch proposal (v2, Fizzy
+	 * #2738 spec §4.2), whose ref is its branch's and whose
+	 * `pullRequestRef` stays null.
 	 */
-	branch: string;
+	branch?: string;
 	/** Admission attribution refused (spec §5.2 step 4): admitted BLOCKED. */
 	blocked?: PullRequestFailure;
 	uploadStartedAudit: UploadStartedAuditTemplate;
 };
+
+/** A member branch proposal's frozen context: `pullRequestContext.v = 2` (Fizzy #2738 Decision 4). */
+function isMemberBranchContext(context: unknown): boolean {
+	return (
+		context !== null &&
+		typeof context === "object" &&
+		(context as { v?: unknown }).v === 2
+	);
+}
+
+const DUPLICATE_PROPOSAL_SELECT = {
+	id: true,
+	version: true,
+	status: true,
+	proposalStatus: true,
+	fileCount: true,
+	proposalIntentOrder: true,
+} satisfies Prisma.ProjectInstructionSnapshotSelect;
+
+/**
+ * The v2 duplicate (Fizzy #2738 spec Decision 16): the same identity as
+ * #2605's lookup, and the same `pullRequestContext.v`, but only a proposal
+ * not yet appended, which is QUEUED, or BLOCKED with no journal operation.
+ * A proposal whose change reached the branch is not what a re-send replays:
+ * sending an older version again after a newer one is a real change (B, C,
+ * then B again). Newest first, as the #2605 lookup.
+ */
+async function findUnappendedBranchDuplicate(
+	tx: Prisma.TransactionClient,
+	where: Prisma.ProjectInstructionSnapshotWhereInput,
+	organizationId: string,
+) {
+	const candidates = await tx.projectInstructionSnapshot.findMany({
+		where: {
+			...where,
+			AND: [
+				...(Array.isArray(where.AND) ? where.AND : []),
+				{ pullRequestContext: { path: ["v"], equals: 2 } },
+			],
+			pullRequestState: { in: ["QUEUED", "BLOCKED"] },
+		},
+		orderBy: { version: "desc" },
+		select: { ...DUPLICATE_PROPOSAL_SELECT, pullRequestState: true },
+	});
+	const blocked = candidates
+		.filter((c) => c.pullRequestState === "BLOCKED")
+		.map((c) => c.id);
+	const journaled = new Set(
+		blocked.length === 0
+			? []
+			: (
+					await tx.projectInstructionProposalBranchOperation.findMany(
+						{
+							where: {
+								organizationId,
+								snapshotId: { in: blocked },
+							},
+							select: { snapshotId: true },
+						},
+					)
+				).map((op) => op.snapshotId),
+	);
+	const match = candidates.find(
+		(c) => c.pullRequestState === "QUEUED" || !journaled.has(c.id),
+	);
+	if (!match) {
+		return null;
+	}
+	const { pullRequestState: _state, ...row } = match;
+	return row;
+}
+
+/** The next member-wide intent order (spec Decision 8): a database sequence. */
+async function nextIntentOrder(tx: Prisma.TransactionClient): Promise<bigint> {
+	const [row] = await tx.$queryRaw<Array<{ v: bigint | number | string }>>`
+		SELECT nextval('project_instruction_proposal_intent_seq') AS "v"`;
+	if (row === undefined) {
+		throw new Error("The proposal intent sequence returned no value");
+	}
+	return BigInt(row.v);
+}
 
 /**
  * Creates a snapshot SEEDED from a READY one: the changed paths become
@@ -917,55 +1058,57 @@ function allocateAndCreateDerivedSnapshot(
 				// says nothing about how far the upload got: the caller
 				// decides what to do from the snapshot's own status.
 				const destination = input.destination;
-				const existing = await tx.projectInstructionSnapshot.findFirst({
-					where: {
-						projectId: input.projectId,
-						organizationId: input.organizationId,
-						// The PROPOSER's own. Two people sending the same
-						// edit are two proposals; the reviewer decides.
-						userId: input.userId,
-						baseSnapshotId: input.baseSnapshotId,
-						changeSetDigest: digest,
-						proposalStatus: "PENDING",
-						// The same destination and, for a pull request, the
-						// same frozen configuration (Fizzy #2563 spec §5.1
-						// step 7): after a re-configure moved the generation,
-						// the same edit is a new operation against the new
-						// configuration, not a replay of the old one.
-						proposalDestination: destination
-							? "REPOSITORY"
-							: "FABRIC",
-						...(destination
-							? {
-									AND: [
-										{
-											pullRequestContext: {
-												path: ["syncId"],
-												equals: destination.syncId,
-											},
+				const duplicateWhere = {
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+					// The PROPOSER's own. Two people sending the same
+					// edit are two proposals; the reviewer decides.
+					userId: input.userId,
+					baseSnapshotId: input.baseSnapshotId,
+					changeSetDigest: digest,
+					proposalStatus: "PENDING" as const,
+					// The same destination and, for a pull request, the
+					// same frozen configuration (Fizzy #2563 spec §5.1
+					// step 7): after a re-configure moved the generation,
+					// the same edit is a new operation against the new
+					// configuration, not a replay of the old one.
+					proposalDestination: destination
+						? ("REPOSITORY" as const)
+						: ("FABRIC" as const),
+					...(destination
+						? {
+								AND: [
+									{
+										pullRequestContext: {
+											path: ["syncId"],
+											equals: destination.syncId,
 										},
-										{
-											pullRequestContext: {
-												path: ["syncGeneration"],
-												equals: destination.syncGeneration,
-											},
+									},
+									{
+										pullRequestContext: {
+											path: ["syncGeneration"],
+											equals: destination.syncGeneration,
 										},
-									],
-								}
-							: {}),
-					},
-					// Newest first: if an older release left more than one
-					// identical row behind, the one to finish or report is
-					// the last one written.
-					orderBy: { version: "desc" },
-					select: {
-						id: true,
-						version: true,
-						status: true,
-						proposalStatus: true,
-						fileCount: true,
-					},
-				});
+									},
+								],
+							}
+						: {}),
+				} satisfies Prisma.ProjectInstructionSnapshotWhereInput;
+				const existing =
+					destination && isMemberBranchContext(destination.context)
+						? await findUnappendedBranchDuplicate(
+								tx,
+								duplicateWhere,
+								input.organizationId,
+							)
+						: await tx.projectInstructionSnapshot.findFirst({
+								where: duplicateWhere,
+								// Newest first: if an older release left more
+								// than one identical row behind, the one to
+								// finish or report is the last one written.
+								orderBy: { version: "desc" },
+								select: DUPLICATE_PROPOSAL_SELECT,
+							});
 				if (existing) {
 					// The same `inheritedFromFileId: null` discriminator the
 					// create path returns, so a caller resuming an unfinished
@@ -991,6 +1134,7 @@ function allocateAndCreateDerivedSnapshot(
 							fileCount: existing.fileCount,
 							inheritedCount: existing.fileCount - staged.length,
 							staged,
+							proposalIntentOrder: existing.proposalIntentOrder,
 						},
 					};
 				}
@@ -1191,6 +1335,16 @@ function allocateAndCreateDerivedSnapshot(
 				orderBy: { version: "desc" },
 				select: { version: true },
 			});
+			// A member branch proposal's member-wide intent order (Fizzy
+			// #2738 spec Decision 8), drawn inside this admission
+			// transaction, after the duplicate lookup answered: a duplicate
+			// keeps the value it has, and nothing but an explicit Try again
+			// or Propose again ever draws another.
+			const intentOrder =
+				input.destination &&
+				isMemberBranchContext(input.destination.context)
+					? await nextIntentOrder(tx)
+					: undefined;
 			const snapshot = await tx.projectInstructionSnapshot.create({
 				data: {
 					projectId: input.projectId,
@@ -1252,7 +1406,18 @@ function allocateAndCreateDerivedSnapshot(
 								pullRequestOperationId:
 									input.destination.operationId,
 								pullRequestContext: input.destination.context,
-								pullRequestRef: input.destination.branch,
+								// v1 only: a member branch proposal's ref is
+								// its branch's, so its `pullRequestRef` stays
+								// null (Fizzy #2738 spec §4.1).
+								...(input.destination.branch !== undefined
+									? {
+											pullRequestRef:
+												input.destination.branch,
+										}
+									: {}),
+								...(intentOrder !== undefined
+									? { proposalIntentOrder: intentOrder }
+									: {}),
 								...(input.destination.blocked
 									? {
 											pullRequestState:
@@ -1354,6 +1519,9 @@ function allocateAndCreateDerivedSnapshot(
 				inheritedCount: inherited.length,
 				staged,
 				auditWritten: template !== undefined,
+				...(intentOrder !== undefined
+					? { proposalIntentOrder: intentOrder }
+					: {}),
 			};
 		},
 	);
@@ -2819,8 +2987,25 @@ export type InstructionProposalCancelResult =
 			changed: boolean;
 			version: number;
 			pullRequest: "canceled" | "close_requested" | null;
+			/**
+			 * A member branch proposal's withdrawal (Fizzy #2738 spec §6.8):
+			 * `change` when its own commit is reverted, `branch` when branch
+			 * settlement carries it out (its last live change, or a Close).
+			 * Absent for every other proposal.
+			 */
+			scope?: "change" | "branch";
 	  }
-	| { ok: false; reason: InstructionProposalRefusal };
+	| {
+			ok: false;
+			reason: InstructionProposalRefusal;
+			/**
+			 * A member branch proposal's withdrawal refused because a later
+			 * change on the branch wrote one of its files (spec §6.8,
+			 * `WITHDRAW_BLOCKED_BY_LATER_CHANGE`, 409). `reason` is then
+			 * `already_decided` for a caller that does not read this.
+			 */
+			withdrawBlocked?: { paths: string[]; count: number };
+	  };
 
 /**
  * Approves and publishes one validated proposal in the same transaction.
@@ -3110,7 +3295,7 @@ export async function cancelInstructionProposal(input: {
 	proposerUserId: string;
 	audit: RecordAuditInput;
 }): Promise<InstructionProposalCancelResult> {
-	return db.$transaction(async (tx) => {
+	const result = await db.$transaction(async (tx) => {
 		const proposal = await tx.projectInstructionSnapshot.findFirst({
 			where: {
 				id: input.snapshotId,
@@ -3126,10 +3311,22 @@ export async function cancelInstructionProposal(input: {
 				proposalStatus: true,
 				proposalDestination: true,
 				rejection: true,
+				pullRequestContext: true,
+				proposalBranchId: true,
 			},
 		});
 		if (!proposal) {
 			return { ok: false as const, reason: "not_found" as const };
+		}
+		if (
+			proposal.proposalDestination === "REPOSITORY" &&
+			(isMemberBranchContext(proposal.pullRequestContext) ||
+				(proposal.proposalBranchId ?? null) !== null)
+		) {
+			// A member branch proposal (Fizzy #2738 spec §4.3, §6.8) takes
+			// the branch lock before its own (§4.7), so it withdraws in a
+			// transaction of its own. Nothing was written in this one.
+			return BRANCH_WITHDRAWAL;
 		}
 		if (proposal.proposalDestination === "REPOSITORY") {
 			return cancelRepositoryProposal(tx, input);
@@ -3204,6 +3401,58 @@ export async function cancelInstructionProposal(input: {
 			pullRequest: null,
 		};
 	});
+	if (result === BRANCH_WITHDRAWAL) {
+		return cancelResultOfWithdrawal(await withdrawBranchProposal(input));
+	}
+	return result;
+}
+
+/** `cancelInstructionProposal`'s hand-off to `withdrawBranchProposal`. */
+const BRANCH_WITHDRAWAL = Symbol("branch withdrawal");
+
+/**
+ * A withdrawal's answer as the cancel procedure reads it: `pullRequest`
+ * says what happened, `scope` which withdrawal it is, and a refusal by a
+ * later change carries `withdrawBlocked` beside the `already_decided`
+ * reason an older caller maps.
+ */
+function cancelResultOfWithdrawal(
+	w: WithdrawResult,
+): InstructionProposalCancelResult {
+	if (!("kind" in w)) {
+		return w;
+	}
+	switch (w.kind) {
+		case "canceled":
+			return {
+				ok: true,
+				changed: true,
+				version: w.version,
+				pullRequest: "canceled",
+				scope: "change",
+			};
+		case "already_canceled":
+			return {
+				ok: true,
+				changed: false,
+				version: w.version,
+				pullRequest: "canceled",
+			};
+		case "close_requested":
+			return {
+				ok: true,
+				changed: w.changed,
+				version: w.version,
+				pullRequest: "close_requested",
+				scope: w.scope,
+			};
+		case "blocked_by_later_change":
+			return {
+				ok: false,
+				reason: "already_decided",
+				withdrawBlocked: { paths: w.paths, count: w.count },
+			};
+	}
 }
 
 /**
@@ -3398,6 +3647,921 @@ async function cancelRepositoryProposal(
 	throw new Error(
 		`Instruction proposal cancel found no transition from ${stateBefore}`,
 	);
+}
+
+// ---------------------------------------------------------------------------
+// Member proposal branches: withdrawal (Fizzy #2738 spec Decision 10, §4.3
+// "Withdraw" rows, §6.8 "Request")
+// ---------------------------------------------------------------------------
+
+/**
+ * What a member branch proposal's withdrawal did. `version` is the
+ * proposal's; `changed` on `close_requested` is false for a repeat.
+ */
+export type WithdrawResult =
+	| { kind: "canceled"; version: number }
+	| {
+			kind: "close_requested";
+			scope: "change" | "branch";
+			changed: boolean;
+			version: number;
+	  }
+	| {
+			kind: "blocked_by_later_change";
+			paths: string[];
+			count: number;
+			version: number;
+	  }
+	| { kind: "already_canceled"; version: number }
+	| Extract<InstructionProposalCancelResult, { ok: false }>;
+
+/** How many paths a refusal names (spec §6.4 step 5: the first 20, and the count). */
+const WITHDRAW_BLOCKED_PATH_LIMIT = 20;
+
+/** One journal operation on the branch, as the withdrawal decision reads it. */
+export type WithdrawOp = EvidenceOp & {
+	snapshotId: string;
+	/** The root-relative paths the operation wrote. */
+	paths: readonly string[];
+};
+
+type BranchWithdrawDecision =
+	| { kind: "refuse"; reason: InstructionProposalRefusal }
+	| { kind: "already_canceled" }
+	| { kind: "already_close_requested"; scope: "change" | "branch" }
+	/** Not appended: CANCELED, intent `change`, command cleared. */
+	| { kind: "cancel" }
+	| { kind: "blocked_by_later_change"; paths: string[]; count: number }
+	/** Appended: CLOSE_REQUESTED, intent `change`, WITHDRAW at `seq`. */
+	| { kind: "request_change"; seq: number }
+	/** The branch's last live change: the branch closes with intent WITHDRAW. */
+	| { kind: "request_branch_close" };
+
+type WithdrawProposal = {
+	id: string;
+	state: ProjectInstructionPullRequestState | null;
+	proposalStatus: InstructionProposalStatus | null;
+	status: InstructionSnapshotStatus;
+	failure: unknown;
+	withdrawRequestedAt: Date | null;
+	withdrawScope: string | null;
+	branchId: string | null;
+	assignment: number;
+};
+
+/**
+ * The withdrawal decision (spec §4.3 "Withdraw" rows, §6.8 "Request"), pure.
+ * `ops` is every journal operation on the proposal's branch; `others` every
+ * other non-terminal proposal on it.
+ *
+ * - QUEUED, or BLOCKED without an established current append: `cancel`.
+ * - OPEN with an established current append, on a branch that is neither
+ *   terminal nor closing: refused when a later established operation of
+ *   another proposal wrote one of its paths; otherwise the branch's last
+ *   live change closes the branch, and any other change asks for its own
+ *   revert with a WITHDRAW command at the branch's `nextExecutionSeq`.
+ * - A repeat is answered from the state it left; OPENING (an append in
+ *   flight) and a validating snapshot are `in_progress`, as #2563's cancel
+ *   refuses validating work.
+ */
+export function decideBranchWithdraw(i: {
+	proposal: WithdrawProposal;
+	branch: {
+		state: string;
+		closeIntent: string | null;
+		untracked: boolean;
+		nextExecutionSeq: number;
+	} | null;
+	ops: readonly WithdrawOp[];
+	others: readonly Omit<WithdrawProposal, "proposalStatus" | "status">[];
+}): BranchWithdrawDecision {
+	const p = i.proposal;
+	if (p.state === "CANCELED") {
+		return { kind: "already_canceled" };
+	}
+	if (
+		p.state === null ||
+		p.state === "MERGED" ||
+		p.state === "CLOSED" ||
+		p.proposalStatus !== "PENDING"
+	) {
+		return { kind: "refuse", reason: "already_decided" };
+	}
+	if (p.state === "CLOSE_REQUESTED") {
+		return {
+			kind: "already_close_requested",
+			scope: p.withdrawScope === "branch" ? "branch" : "change",
+		};
+	}
+	if (!REJECTABLE_PROPOSAL_STATUSES.includes(p.status)) {
+		return { kind: "refuse", reason: "in_progress" };
+	}
+	if (p.state === "QUEUED") {
+		return { kind: "cancel" };
+	}
+	if (p.state === "OPENING") {
+		// The branch workflow holds a claim and may be pushing this very
+		// change; the answer is known once the append lands or fails.
+		return { kind: "refuse", reason: "in_progress" };
+	}
+	const own = ownOps(i.ops, p);
+	const append =
+		p.branchId === null
+			? null
+			: currentAppend(own, {
+					branchId: p.branchId,
+					assignment: p.assignment,
+				});
+	const appended = append !== null && isEstablished(append);
+	if (p.state === "BLOCKED") {
+		// A BLOCKED proposal with an established append is one a stale
+		// destination stopped where it stood; it is not withdrawn on its own.
+		return appended
+			? { kind: "refuse", reason: "already_decided" }
+			: { kind: "cancel" };
+	}
+	// OPEN.
+	if (!appended || append === null || i.branch === null) {
+		return { kind: "refuse", reason: "already_decided" };
+	}
+	if (p.withdrawRequestedAt !== null) {
+		return {
+			kind: "already_close_requested",
+			scope: p.withdrawScope === "branch" ? "branch" : "change",
+		};
+	}
+	if (
+		i.branch.untracked ||
+		i.branch.state === "MERGED" ||
+		i.branch.state === "CLOSED" ||
+		i.branch.state === "CANCELED"
+	) {
+		return { kind: "refuse", reason: "already_decided" };
+	}
+	if (i.branch.state === "CLOSE_REQUESTED") {
+		// A Close (WITHDRAW) withdraws everything already; a Start over is
+		// settling and moves live changes to a new branch.
+		return i.branch.closeIntent === "WITHDRAW"
+			? { kind: "already_close_requested", scope: "branch" }
+			: { kind: "refuse", reason: "in_progress" };
+	}
+	const mine = new Set(own.find((op) => op.id === append.id)?.paths ?? []);
+	const hit = new Set<string>();
+	for (const op of i.ops) {
+		if (
+			op.snapshotId !== p.id &&
+			op.branchId === p.branchId &&
+			op.executionSeq > append.executionSeq &&
+			isEstablished(op)
+		) {
+			for (const path of op.paths) {
+				if (mine.has(path)) {
+					hit.add(path);
+				}
+			}
+		}
+	}
+	if (hit.size > 0) {
+		const paths = [...hit].sort();
+		return {
+			kind: "blocked_by_later_change",
+			paths: paths.slice(0, WITHDRAW_BLOCKED_PATH_LIMIT),
+			count: paths.length,
+		};
+	}
+	const anotherLive = i.others.some(
+		(o) =>
+			o.id !== p.id &&
+			isLiveProposal({
+				state: o.state,
+				failure: o.failure,
+				withdrawRequestedAt: o.withdrawRequestedAt,
+				ops: ownOps(i.ops, o),
+				branchId: o.branchId,
+				assignment: o.assignment,
+			}),
+	);
+	return anotherLive
+		? { kind: "request_change", seq: i.branch.nextExecutionSeq }
+		: { kind: "request_branch_close" };
+}
+
+function ownOps(ops: readonly WithdrawOp[], p: { id: string }): WithdrawOp[] {
+	return ops.filter((op) => op.snapshotId === p.id);
+}
+
+/** The `path` of every entry an operation's `entries` column records. */
+function entryPaths(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	const out: string[] = [];
+	for (const entry of value) {
+		const path =
+			entry !== null && typeof entry === "object"
+				? (entry as { path?: unknown }).path
+				: undefined;
+		if (typeof path === "string" && path.length > 0) {
+			out.push(path);
+		}
+	}
+	return out;
+}
+
+/** Retries the lock-ordered transaction when the proposal moved branch while it waited. */
+class WithdrawRelock extends Error {
+	constructor() {
+		super("the proposal moved to another branch");
+	}
+}
+
+const WITHDRAW_RELOCKS = 3;
+
+const WITHDRAW_PROPOSAL_SELECT = {
+	id: true,
+	version: true,
+	status: true,
+	rejection: true,
+	proposalStatus: true,
+	pullRequestState: true,
+	pullRequestAttempt: true,
+	pullRequestFailure: true,
+	pullRequestOperationId: true,
+	withdrawRequestedAt: true,
+	withdrawScope: true,
+	proposalBranchId: true,
+	proposalAssignment: true,
+} satisfies Prisma.ProjectInstructionSnapshotSelect;
+
+/**
+ * A member branch proposal's withdrawal by its author (spec Decision 10,
+ * §4.3 "Withdraw" rows, §6.8 "Request"), in one transaction under the §4.7
+ * lock order: the proposal's branch, then the proposal. The procedure has
+ * already checked the proposer is live; this re-checks the row is theirs.
+ *
+ * The proposal's lifecycle is first reconciled from its evidence (§4.1: run
+ * before withdraw-again), then `decideBranchWithdraw` decides and exactly one
+ * fenced transition writes it:
+ *
+ * - not appended: CANCELED with intent `change`, in #2563's cancellation
+ *   transaction (the snapshot's own writes and the `rejected` row);
+ * - appended: CLOSE_REQUESTED, intent `change`, `pendingCommand = WITHDRAW`
+ *   at the branch's `nextExecutionSeq`, attempt + 1; the branch workflow's
+ *   revert carries it out;
+ * - the branch's last live change: the branch becomes CLOSE_REQUESTED with
+ *   `closeIntent = WITHDRAW`, attempt + 1, and the proposal keeps OPEN with
+ *   intent `branch` and no command; branch settlement carries it out.
+ *
+ * Each writes one `pull_request_close_requested` row with the scope. Nothing
+ * here starts or signals the branch workflow: the caller wakes it after
+ * commit, and the sweeper does when that is lost (spec §8).
+ */
+export async function withdrawBranchProposal(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+	proposerUserId: string;
+	audit: RecordAuditInput;
+}): Promise<WithdrawResult> {
+	const own = {
+		id: input.snapshotId,
+		projectId: input.projectId,
+		organizationId: input.organizationId,
+		userId: input.proposerUserId,
+	};
+	for (let relock = 0; ; relock++) {
+		const peek = await db.projectInstructionSnapshot.findFirst({
+			where: own,
+			select: { proposalBranchId: true },
+		});
+		if (!peek) {
+			return { ok: false, reason: "not_found" };
+		}
+		const branchId = peek.proposalBranchId;
+		try {
+			return await withBranchLockOrder(
+				{
+					organizationId: input.organizationId,
+					branchIds: branchId === null ? [] : [branchId],
+					snapshotIds: [input.snapshotId],
+				},
+				(tx) => withdrawLocked(tx, input, own, branchId),
+			);
+		} catch (error) {
+			if (error instanceof WithdrawRelock && relock < WITHDRAW_RELOCKS) {
+				continue;
+			}
+			throw error;
+		}
+	}
+}
+
+async function withdrawLocked(
+	tx: Prisma.TransactionClient,
+	input: Parameters<typeof withdrawBranchProposal>[0],
+	own: Prisma.ProjectInstructionSnapshotWhereInput,
+	branchId: string | null,
+): Promise<WithdrawResult> {
+	const read = () =>
+		tx.projectInstructionSnapshot.findFirst({
+			where: own,
+			select: WITHDRAW_PROPOSAL_SELECT,
+		});
+	let row = await read();
+	if (!row) {
+		return { ok: false, reason: "not_found" };
+	}
+	if (row.proposalBranchId !== branchId) {
+		// Joined or transferred between the peek and the locks: lock the
+		// branch it is on now.
+		throw new WithdrawRelock();
+	}
+	if (branchId !== null) {
+		const reconciled = await reconcileProposalFromEvidence(tx, {
+			snapshotId: row.id,
+			organizationId: input.organizationId,
+		});
+		if (reconciled.changed) {
+			row = await read();
+			if (!row) {
+				return { ok: false, reason: "not_found" };
+			}
+		}
+	}
+	const branch =
+		branchId === null
+			? null
+			: await tx.projectInstructionProposalBranch.findFirst({
+					where: {
+						id: branchId,
+						organizationId: input.organizationId,
+					},
+					select: {
+						id: true,
+						state: true,
+						attempt: true,
+						closeIntent: true,
+						untracked: true,
+						nextExecutionSeq: true,
+					},
+				});
+	const ops =
+		branchId === null
+			? []
+			: await tx.projectInstructionProposalBranchOperation.findMany({
+					where: { organizationId: input.organizationId, branchId },
+					select: {
+						id: true,
+						snapshotId: true,
+						kind: true,
+						executionSeq: true,
+						assignment: true,
+						branchId: true,
+						outcome: true,
+						entries: true,
+					},
+				});
+	const others =
+		branchId === null
+			? []
+			: await tx.projectInstructionSnapshot.findMany({
+					where: {
+						organizationId: input.organizationId,
+						proposalBranchId: branchId,
+						id: { not: row.id },
+						pullRequestState: {
+							in: [
+								"QUEUED",
+								"OPENING",
+								"OPEN",
+								"CLOSE_REQUESTED",
+								"BLOCKED",
+							],
+						},
+					},
+					select: {
+						id: true,
+						pullRequestState: true,
+						pullRequestFailure: true,
+						withdrawRequestedAt: true,
+						withdrawScope: true,
+						proposalBranchId: true,
+						proposalAssignment: true,
+					},
+				});
+	const decision = decideBranchWithdraw({
+		proposal: {
+			id: row.id,
+			state: row.pullRequestState,
+			proposalStatus: row.proposalStatus,
+			status: row.status,
+			failure: row.pullRequestFailure,
+			withdrawRequestedAt: row.withdrawRequestedAt,
+			withdrawScope: row.withdrawScope,
+			branchId: row.proposalBranchId,
+			assignment: row.proposalAssignment,
+		},
+		branch,
+		ops: ops.map((op) => ({
+			id: op.id,
+			snapshotId: op.snapshotId,
+			kind: op.kind,
+			executionSeq: op.executionSeq,
+			assignment: op.assignment,
+			branchId: op.branchId,
+			outcome: op.outcome as OpOutcome,
+			paths: entryPaths(op.entries),
+		})),
+		others: others.map((o) => ({
+			id: o.id,
+			state: o.pullRequestState,
+			failure: o.pullRequestFailure,
+			withdrawRequestedAt: o.withdrawRequestedAt,
+			withdrawScope: o.withdrawScope,
+			branchId: o.proposalBranchId,
+			assignment: o.proposalAssignment,
+		})),
+	});
+
+	const version = row.version;
+	const stateBefore = row.pullRequestState;
+	const fence =
+		row.proposalBranchId === null
+			? {}
+			: {
+					branch: {
+						id: row.proposalBranchId,
+						assignment: row.proposalAssignment,
+					},
+				};
+	const closeRequested = (scope: "change" | "branch"): RecordAuditInput => ({
+		action: "project.instructions.pull_request_close_requested",
+		category: "project",
+		actor: input.audit.actor,
+		organizationId: input.organizationId,
+		projectId: input.projectId,
+		resource: {
+			type: "project_instruction_snapshot",
+			id: row.id,
+			name: `v${version}`,
+		},
+		metadata: {
+			operationId: row.pullRequestOperationId,
+			stateBefore,
+			scope,
+			...(row.proposalBranchId === null
+				? {}
+				: { branchId: row.proposalBranchId }),
+		},
+		ipAddress: input.audit.ipAddress,
+		userAgent: input.audit.userAgent,
+		requestId: input.audit.requestId,
+		sessionId: input.audit.sessionId,
+		correlationId: input.audit.correlationId,
+	});
+
+	switch (decision.kind) {
+		case "refuse":
+			return { ok: false, reason: decision.reason };
+		case "already_canceled":
+			return { kind: "already_canceled", version };
+		case "already_close_requested":
+			return {
+				kind: "close_requested",
+				scope: decision.scope,
+				changed: false,
+				version,
+			};
+		case "blocked_by_later_change":
+			return {
+				kind: "blocked_by_later_change",
+				paths: decision.paths,
+				count: decision.count,
+				version,
+			};
+		case "cancel": {
+			if (stateBefore !== "QUEUED" && stateBefore !== "BLOCKED") {
+				throw new Error(
+					`A withdrawal cannot cancel from ${stateBefore}`,
+				);
+			}
+			const moved = await transitionPullRequest(
+				{
+					snapshotId: row.id,
+					organizationId: input.organizationId,
+					event: "branch_withdraw",
+					from: [stateBefore],
+					expectedAttempt: row.pullRequestAttempt,
+					to: "CANCELED",
+					bumpAttempt: true,
+					...fence,
+					data: {
+						pullRequestNextAttemptAt: null,
+						withdrawRequestedAt: await databaseClock(tx),
+						withdrawScope: "change",
+						pendingCommand: null,
+						pendingCommandSeq: null,
+					},
+					audit: closeRequested("change"),
+				},
+				tx,
+			);
+			if (!moved.ok) {
+				throw new Error("A locked proposal refused its withdrawal");
+			}
+			// #2563's cancellation writes, less `proposalStatus`, which the
+			// transition derived from CANCELED.
+			const { count } = await tx.projectInstructionSnapshot.updateMany({
+				where: { ...own, status: row.status },
+				data: {
+					status: row.status === "READY" ? "READY" : "REJECTED",
+					...(row.status === "READY"
+						? {}
+						: {
+								rejection: rejectionsWithProposalCleanupMarker(
+									row.rejection,
+								) as unknown as Prisma.InputJsonValue,
+							}),
+					reviewedAt: new Date(),
+				},
+			});
+			if (count !== 1) {
+				throw new Error("Instruction proposal withdrawal lost its row");
+			}
+			await recordAuditTx(tx, input.audit);
+			return { kind: "canceled", version };
+		}
+		case "request_change": {
+			if (branch === null) {
+				throw new Error("A change withdrawal needs its branch");
+			}
+			const moved = await transitionPullRequest(
+				{
+					snapshotId: row.id,
+					organizationId: input.organizationId,
+					event: "branch_withdraw",
+					from: ["OPEN"],
+					expectedAttempt: row.pullRequestAttempt,
+					to: "CLOSE_REQUESTED",
+					bumpAttempt: true,
+					...fence,
+					data: {
+						withdrawRequestedAt: await databaseClock(tx),
+						withdrawScope: "change",
+						pendingCommand: "WITHDRAW",
+						// Read under the branch lock (spec §4.1): the revert
+						// that satisfies this command is issued at or after it.
+						pendingCommandSeq: decision.seq,
+						// A new request replaces an earlier one's outcome
+						// (WITHDRAW_OUTCOME_UNKNOWN, WITHDRAW_CONFLICT).
+						pullRequestFailure: null,
+						pullRequestNextAttemptAt: null,
+					},
+					audit: closeRequested("change"),
+				},
+				tx,
+			);
+			if (!moved.ok) {
+				throw new Error("A locked proposal refused its withdrawal");
+			}
+			return {
+				kind: "close_requested",
+				scope: "change",
+				changed: true,
+				version,
+			};
+		}
+		case "request_branch_close": {
+			if (branch === null) {
+				throw new Error("A branch withdrawal needs its branch");
+			}
+			const closed = await transitionBranch(
+				{
+					branchId: branch.id,
+					organizationId: input.organizationId,
+					from: [branch.state],
+					expectedAttempt: branch.attempt,
+					to: "CLOSE_REQUESTED",
+					bumpAttempt: true,
+					data: { closeIntent: "WITHDRAW", nextAttemptAt: null },
+				},
+				tx,
+			);
+			if (!closed.ok) {
+				throw new Error("A locked proposal branch refused its close");
+			}
+			// Spec §4.3 "Branch close requested (WITHDRAW)", applied to every
+			// non-terminal proposal on the branch, this one included: it is
+			// OPEN with no intent, so it keeps OPEN with intent `branch` and
+			// its `pull_request_close_requested` row, as before.
+			await applyBranchCloseRequested(tx, {
+				branchId: branch.id,
+				organizationId: input.organizationId,
+				projectId: input.projectId,
+				requester: input.audit,
+			});
+			return {
+				kind: "close_requested",
+				scope: "branch",
+				changed: true,
+				version,
+			};
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Branch close requested (Fizzy #2738 spec §4.3 "Branch close requested
+// (WITHDRAW)"): what a Close, or the withdrawal of a branch's last live
+// change, does to every non-terminal proposal on the branch
+// ---------------------------------------------------------------------------
+
+/** What a branch close does to one proposal, decided purely. */
+export type BranchCloseProposalAction =
+	/** Not appended (QUEUED; BLOCKED without an established append): CANCELED. */
+	| { kind: "cancel"; intent: { at: Date; scope: "branch" } }
+	/** Its lifecycle with intent `branch` and no command, as the evidence reads it. */
+	| { kind: "lifecycle"; next: ProposalLifecycle }
+	/** Terminal, or nothing to change. */
+	| { kind: "none" };
+
+/**
+ * One proposal under a branch close (spec §4.3 "Branch close requested"):
+ * intent becomes `branch` and the pending command is cleared; QUEUED and
+ * pre-append BLOCKED (no established current append, as the Withdraw row
+ * reads "not appended") become CANCELED; every other state keeps what its
+ * evidence says under the new intent, so a CLOSE_REQUESTED proposal whose
+ * revert was never issued returns to OPEN (its change leaves with the
+ * branch) and one whose revert is issued stays CLOSE_REQUESTED until
+ * recovery, which precedes close in the loop, resolves it.
+ *
+ * `current` is the lifecycle after `reconcileProposalFromEvidence`, so the
+ * reducer here is only asked what the new intent and the cleared command
+ * change. An existing `branch` intent keeps its time.
+ */
+export function decideBranchCloseForProposal(i: {
+	current: ProposalLifecycle;
+	ops: readonly EvidenceOp[];
+	branchId: string;
+	assignment: number;
+	now: Date;
+}): BranchCloseProposalAction {
+	const { current } = i;
+	if (
+		current.state === "MERGED" ||
+		current.state === "CLOSED" ||
+		current.state === "CANCELED"
+	) {
+		return { kind: "none" };
+	}
+	const intent =
+		current.intent?.scope === "branch"
+			? { at: current.intent.at, scope: "branch" as const }
+			: { at: i.now, scope: "branch" as const };
+	const append = currentAppend(i.ops, {
+		branchId: i.branchId,
+		assignment: i.assignment,
+	});
+	const appended = append !== null && isEstablished(append);
+	if (
+		current.state === "QUEUED" ||
+		(current.state === "BLOCKED" && !appended)
+	) {
+		return { kind: "cancel", intent };
+	}
+	const reduced = reduceProposalLifecycle({
+		current: { ...current, intent, command: null },
+		ops: i.ops,
+		branchId: i.branchId,
+		assignment: i.assignment,
+		now: i.now,
+	});
+	// A CANCELED reduction is established withdrawal evidence, which the
+	// reconciliation already ran would have applied: nothing is left here.
+	if (reduced.next.state === "CANCELED") {
+		return { kind: "none" };
+	}
+	return sameLifecycle(reduced.next, current)
+		? { kind: "none" }
+		: { kind: "lifecycle", next: reduced.next };
+}
+
+/**
+ * Applies spec §4.3 "Branch close requested (WITHDRAW)" to every
+ * non-terminal proposal on `branchId`, inside the caller's transaction,
+ * which already holds the branch row lock (§4.7 step 2) and has moved the
+ * branch to CLOSE_REQUESTED. The proposals are locked here by id (§4.7 step
+ * 3), each first reconciled from its evidence, then written by exactly one
+ * fenced transition:
+ *
+ * - CANCELED (`branch_withdraw`), intent `branch`, command cleared, with a
+ *   `pull_request_close_requested` row (scope `branch`) and #2563's
+ *   cancellation writes to the snapshot (a validating snapshot keeps its
+ *   status for its validation to finish);
+ * - an OPEN proposal with no intent keeps OPEN with intent `branch`
+ *   (`branch_withdraw`, with its `pull_request_close_requested` row);
+ * - any other change (`branch_evidence`): the lifecycle the evidence gives
+ *   under intent `branch` and no command.
+ *
+ * `requester` carries the actor and request fields of the member's command.
+ * Returns how many proposals were canceled and how many kept on the branch
+ * with intent `branch`.
+ */
+export async function applyBranchCloseRequested(
+	tx: Prisma.TransactionClient,
+	i: {
+		branchId: string;
+		organizationId: string;
+		projectId: string;
+		requester: Pick<
+			RecordAuditInput,
+			| "actor"
+			| "ipAddress"
+			| "userAgent"
+			| "requestId"
+			| "sessionId"
+			| "correlationId"
+		>;
+	},
+): Promise<{ canceled: number; kept: number }> {
+	const locked = await tx.$queryRaw<Array<{ id: string }>>`
+		SELECT "id" FROM "project_instruction_snapshot"
+		WHERE "proposalBranchId" = ${i.branchId} AND "organizationId" = ${i.organizationId}
+			AND "pullRequestState" IN ('QUEUED', 'OPENING', 'OPEN', 'CLOSE_REQUESTED', 'BLOCKED')
+		ORDER BY "id" FOR UPDATE`;
+	let canceled = 0;
+	let kept = 0;
+	for (const { id } of locked) {
+		await reconcileProposalFromEvidence(tx, {
+			snapshotId: id,
+			organizationId: i.organizationId,
+		});
+		const row = await tx.projectInstructionSnapshot.findFirst({
+			where: { id, organizationId: i.organizationId },
+			select: {
+				...WITHDRAW_PROPOSAL_SELECT,
+				pendingCommand: true,
+				pendingCommandSeq: true,
+				userId: true,
+			},
+		});
+		if (
+			!row ||
+			row.pullRequestState === null ||
+			row.proposalBranchId !== i.branchId
+		) {
+			continue;
+		}
+		const ops = await tx.projectInstructionProposalBranchOperation.findMany(
+			{
+				where: {
+					organizationId: i.organizationId,
+					branchId: i.branchId,
+					snapshotId: id,
+				},
+				select: {
+					id: true,
+					kind: true,
+					executionSeq: true,
+					assignment: true,
+					branchId: true,
+					outcome: true,
+				},
+			},
+		);
+		const current = lifecycleOfRow({
+			state: row.pullRequestState,
+			failure: row.pullRequestFailure,
+			withdrawRequestedAt: row.withdrawRequestedAt,
+			withdrawScope: row.withdrawScope,
+			pendingCommand: row.pendingCommand,
+			pendingCommandSeq: row.pendingCommandSeq,
+		});
+		const action = decideBranchCloseForProposal({
+			current,
+			ops: ops.map((op) => ({ ...op, outcome: op.outcome as OpOutcome })),
+			branchId: i.branchId,
+			assignment: row.proposalAssignment,
+			now: await databaseClock(tx),
+		});
+		if (action.kind === "none") {
+			continue;
+		}
+		const stateBefore = row.pullRequestState;
+		const fence = { id: i.branchId, assignment: row.proposalAssignment };
+		const closeRequested: RecordAuditInput = {
+			action: "project.instructions.pull_request_close_requested",
+			category: "project",
+			actor: i.requester.actor,
+			organizationId: i.organizationId,
+			projectId: i.projectId,
+			resource: {
+				type: "project_instruction_snapshot",
+				id: row.id,
+				name: `v${row.version}`,
+			},
+			metadata: {
+				operationId: row.pullRequestOperationId,
+				stateBefore,
+				scope: "branch",
+				branchId: i.branchId,
+			},
+			ipAddress: i.requester.ipAddress,
+			userAgent: i.requester.userAgent,
+			requestId: i.requester.requestId,
+			sessionId: i.requester.sessionId,
+			correlationId: i.requester.correlationId,
+		};
+		if (action.kind === "cancel") {
+			if (stateBefore !== "QUEUED" && stateBefore !== "BLOCKED") {
+				throw new Error(
+					`A branch close cannot cancel from ${stateBefore}`,
+				);
+			}
+			const moved = await transitionPullRequest(
+				{
+					snapshotId: row.id,
+					organizationId: i.organizationId,
+					event: "branch_withdraw",
+					from: [stateBefore],
+					expectedAttempt: row.pullRequestAttempt,
+					to: "CANCELED",
+					bumpAttempt: true,
+					branch: fence,
+					data: {
+						pullRequestNextAttemptAt: null,
+						withdrawRequestedAt: action.intent.at,
+						withdrawScope: "branch",
+						pendingCommand: null,
+						pendingCommandSeq: null,
+					},
+					audit: closeRequested,
+				},
+				tx,
+			);
+			if (!moved.ok) {
+				throw new Error("A locked proposal refused its branch close");
+			}
+			if (REJECTABLE_PROPOSAL_STATUSES.includes(row.status)) {
+				// #2563's cancellation writes, less `proposalStatus`, which
+				// the transition derived from CANCELED.
+				await tx.projectInstructionSnapshot.updateMany({
+					where: {
+						id: row.id,
+						organizationId: i.organizationId,
+						status: row.status,
+					},
+					data: {
+						status: row.status === "READY" ? "READY" : "REJECTED",
+						...(row.status === "READY"
+							? {}
+							: {
+									rejection:
+										rejectionsWithProposalCleanupMarker(
+											row.rejection,
+										) as unknown as Prisma.InputJsonValue,
+								}),
+						reviewedAt: new Date(),
+					},
+				});
+			}
+			canceled += 1;
+			continue;
+		}
+		const next = action.next;
+		const keepOpen =
+			stateBefore === "OPEN" &&
+			next.state === "OPEN" &&
+			row.withdrawRequestedAt === null;
+		const moved = await transitionPullRequest(
+			{
+				snapshotId: row.id,
+				organizationId: i.organizationId,
+				event: keepOpen ? "branch_withdraw" : "branch_evidence",
+				from: [stateBefore],
+				expectedAttempt: row.pullRequestAttempt,
+				to: next.state === stateBefore ? "unchanged" : next.state,
+				bumpAttempt: true,
+				branch: fence,
+				data: lifecycleColumns(next),
+				...(keepOpen ? { audit: closeRequested } : {}),
+			},
+			tx,
+		);
+		if (!moved.ok) {
+			throw new Error("A locked proposal refused its branch close");
+		}
+		kept += 1;
+	}
+	return { canceled, kept };
+}
+
+/** The database clock, as the timestamp columns store it (UTC). */
+async function databaseClock(tx: Prisma.TransactionClient): Promise<Date> {
+	const [row] = await tx.$queryRaw<
+		Array<{ now: Date }>
+	>`SELECT (now() AT TIME ZONE 'UTC') AS "now"`;
+	return row?.now ?? new Date();
 }
 
 type PublishInstructionSnapshotResult =

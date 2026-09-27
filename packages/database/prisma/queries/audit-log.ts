@@ -313,6 +313,11 @@ export const AUDIT_ACTIONS = [
 	"project.instructions.published_unscanned",
 	"project.instructions.deferred_scan_issues_found",
 	"project.instructions.deferred_scan_incomplete",
+	// A member proposal branch (Fizzy #2738) changed state, head or pull
+	// request: the branch-level counterpart of the per-proposal rows above.
+	// Branch id, operation id, provider, external id and codes only, never a
+	// URL, ref content or file content.
+	"project.instructions.pull_request_branch_updated",
 	// story (11)
 	"story.created",
 	"story.updated",

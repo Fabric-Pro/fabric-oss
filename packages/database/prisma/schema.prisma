@@ -2041,6 +2041,7 @@ model Project {
   instructionSnapshots           ProjectInstructionSnapshot[] @relation("ProjectInstructionSnapshots")
   instructionRepositorySync      ProjectInstructionRepositorySync?     @relation("ProjectInstructionRepositorySync")
   instructionRepositorySyncRuns  ProjectInstructionRepositorySyncRun[] @relation("ProjectInstructionRepositorySyncRuns")
+  instructionProposalBranches    ProjectInstructionProposalBranch[]    @relation("ProjectInstructionProposalBranches")
 
   // Weave (multi-agent orchestration)
   weaveConfig ProjectWeaveConfig?
@@ -17168,6 +17169,24 @@ enum ProjectInstructionPullRequestState {
   CANCELED
 }
 
+/// A member proposal branch's state (member proposal branch spec §4.4).
+enum ProjectInstructionProposalBranchState {
+  PENDING
+  OPENING
+  OPEN
+  CLOSE_REQUESTED
+  BLOCKED
+  MERGED
+  CLOSED
+  CANCELED
+}
+
+/// What one journal operation pushed to a member proposal branch (spec §4.1).
+enum ProjectInstructionProposalBranchOpKind {
+  APPEND
+  REVERT
+}
+
 enum ProjectInstructionFileKind {
   SKILL
   AGENT
@@ -17349,6 +17368,25 @@ model ProjectInstructionSnapshot {
   /// { syncId, generation } passed as `expected` at dispatch.
   mergeSyncExpected            Json?
 
+  /// Member proposal branches (Fizzy #2738 spec §4.1). A v2 REPOSITORY
+  /// proposal's branch and its place on it; null for every other row.
+  proposalBranchId       String?
+  proposalBranchSequence Int?
+  /// Submission intent (spec Decision 10): set and cleared together with
+  /// `withdrawScope` (`change` | `branch`), enforced by a CHECK.
+  withdrawRequestedAt    DateTime?
+  withdrawScope          String?
+  /// A member command not yet satisfied (`APPEND` | `WITHDRAW`) and the
+  /// branch's `nextExecutionSeq` when it was accepted (spec §4.1); set and
+  /// cleared together, enforced by a CHECK.
+  pendingCommand         String?
+  pendingCommandSeq      Int?
+  /// Bumped by every join and transfer; each operation records it.
+  proposalAssignment     Int       @default(0)
+  /// Member-wide intent order (spec Decision 8), from the sequence
+  /// `project_instruction_proposal_intent_seq`.
+  proposalIntentOrder    BigInt?
+
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   readyAt     DateTime?
@@ -17364,10 +17402,18 @@ model ProjectInstructionSnapshot {
   baseSnapshot      ProjectInstructionSnapshot?  @relation("DerivedInstructionSnapshots", fields: [baseSnapshotId], references: [id], onDelete: SetNull)
   derivedSnapshots  ProjectInstructionSnapshot[] @relation("DerivedInstructionSnapshots")
 
+  /// SetNull: only a project cascade deletes a branch, and it deletes the
+  /// snapshots with it.
+  proposalBranch ProjectInstructionProposalBranch? @relation("ProjectInstructionProposalBranchProposals", fields: [proposalBranchId], references: [id], onDelete: SetNull)
+
   /// Target of the child's composite FK: a file can only point at a snapshot
   /// in its own project.
   @@unique([id, projectId])
   @@unique([projectId, version])
+  /// A proposal's place on its member branch (Fizzy #2738 spec §4.1). Both
+  /// built CONCURRENTLY in their own migrations; the unique's default name
+  /// exceeds Postgres's 63 characters.
+  @@unique([proposalBranchId, proposalBranchSequence], map: "project_instruction_snapshot_proposal_branch_seq_key")
   @@index([projectId, status])
   @@index([projectId, proposalStatus])
   @@index([organizationId])
@@ -17382,7 +17428,156 @@ model ProjectInstructionSnapshot {
   @@index([pullRequestState, pullRequestNextAttemptAt], map: "project_instruction_snapshot_pr_due_idx")
   /// The Close sub-batch's settlement-confirmation clock (plan Decision 1).
   @@index([pullRequestConfirmationDueAt], map: "project_instruction_snapshot_pr_confirmation_due_idx")
+  @@index([proposalBranchId], map: "project_instruction_snapshot_proposalBranchId_idx")
+  /// CHECK constraints (migration 20260927100000) that Prisma cannot express:
+  /// the withdraw pair, the pending-command pair and kind, and the two
+  /// null-safe implications between them (spec §4.1).
   @@map("project_instruction_snapshot")
+}
+
+/// One member's proposal branch in one project (Fizzy #2738 spec §4.1): the
+/// ref every one of the member's repository proposals is appended to until
+/// its pull request merges or closes. Fabric never deletes a row.
+///
+/// A FURTHER index exists that Prisma cannot express: the partial unique
+/// `project_instruction_proposal_branch_accepting_key` on
+/// (projectId, userId) WHERE retiredAt IS NULL AND NOT untracked AND state IN
+/// (PENDING, OPENING, OPEN, BLOCKED) — at most one accepting branch per
+/// member and project (spec Decision 2). It lives only in the migration, with
+/// the CHECKs on closeIntent, settlementPhase and retiredReason.
+model ProjectInstructionProposalBranch {
+  id                     String                                @id @default(cuid())
+  organizationId         String
+  projectId              String
+  /// The member; equals every proposal's userId on the branch.
+  userId                 String
+  repositoryKey          String
+  number                 Int
+  /// Reserved forever with repositoryKey.
+  ref                    String
+  state                  ProjectInstructionProposalBranchState @default(PENDING)
+  /// Fences branch-level writes.
+  attempt                Int                                   @default(0)
+  /// branchDestinationSchema, frozen at creation (spec Decision 15).
+  destination            Json
+  /// branchPresentationSchema: title and body, rendered at the first claim.
+  presentation           Json?
+  /// The first append's parent.
+  startSha               String?
+  /// The last established head.
+  headSha                String?
+  /// Monotonic.
+  foreignTipAt           DateTime?
+  nextSequence           Int                                   @default(1)
+  nextExecutionSeq       Int                                   @default(1)
+  /// executionSeq of the operation that set headSha.
+  headExecutionSeq       Int                                   @default(0)
+  /// Bumped when any operation becomes established (spec §6.6).
+  factsRevision          Int                                   @default(0)
+  /// WITHDRAW | START_OVER, persisted with CLOSE_REQUESTED.
+  closeIntent            String?
+  /// The one create marker.
+  createIssuedAt         DateTime?
+  pullRequestUrl         String?
+  pullRequestExternalId  String?
+  /// Includes the final headSha.
+  pullRequestObservation Json?
+  /// { status: pending | done | unverified, at, attempts }.
+  membership             Json?
+  failure                Json?
+  lastCheckedAt          DateTime?
+  nextAttemptAt          DateTime?
+  refreshAdmittedAt      DateTime?
+  settledAt              DateTime?
+  confirmations          Int                                   @default(0)
+  confirmationDueAt      DateTime?
+  mergeSyncRequestedAt   DateTime?
+  mergeSyncDispatchedAt  DateTime?
+  mergeSyncRunId         String?
+  mergeSyncExpected      Json?
+  retiredAt              DateTime?
+  /// CONFIGURATION_CHANGED | BRANCH_MISSING.
+  retiredReason          String?
+  /// A persisted Retry opening; cleared by the create it starts.
+  retryRequestedAt       DateTime?
+  untracked              Boolean                               @default(false)
+  /// null | deleted | recorded: the resumable settlement checkpoint.
+  settlementPhase        String?
+  /// Only from the leased delete command's own success.
+  deletedAt              DateTime?
+  createdAt              DateTime                              @default(now())
+  updatedAt              DateTime                              @updatedAt
+
+  project    Project                                     @relation("ProjectInstructionProposalBranches", fields: [projectId], references: [id], onDelete: Cascade)
+  operations ProjectInstructionProposalBranchOperation[]
+  proposals  ProjectInstructionSnapshot[]                @relation("ProjectInstructionProposalBranchProposals")
+
+  @@unique([projectId, userId, number])
+  /// The current ref; its reservation row is the permanent record.
+  @@unique([repositoryKey, ref])
+  @@index([organizationId])
+  @@index([state, nextAttemptAt])
+  @@index([confirmationDueAt])
+  @@map("project_instruction_proposal_branch")
+}
+
+/// A permanent reservation of one ref on one repository (Fizzy #2738 spec
+/// Decision 3). Never deleted and never reused, so two lifecycles never share
+/// a physical ref. `branchId` is deliberately NOT a foreign key: a reservation
+/// outlives even its project's deletion. `status` is current | refused |
+/// retired (a CHECK in the migration).
+model ProjectInstructionProposalRefReservation {
+  id             String   @id @default(cuid())
+  organizationId String
+  repositoryKey  String
+  ref            String
+  branchId       String
+  status         String
+  createdAt      DateTime @default(now())
+
+  @@unique([repositoryKey, ref], map: "project_instruction_proposal_ref_reservation_ref_key")
+  @@index([organizationId])
+  @@map("project_instruction_proposal_ref_reservation")
+}
+
+/// The immutable push journal of a member proposal branch (Fizzy #2738 spec
+/// §4.1): one row per append or revert Fabric issued. `outcome` is acked |
+/// observed | not_pushed | unknown and `membership` is included | unverified
+/// (CHECKs in the migration). `snapshotId` is a plain column: the journal is
+/// history and stays readable when a proposal row is gone.
+model ProjectInstructionProposalBranchOperation {
+  id             String                                 @id @default(cuid())
+  organizationId String
+  branchId       String
+  snapshotId     String
+  kind           ProjectInstructionProposalBranchOpKind
+  executionSeq   Int
+  /// The ref this operation pushed to.
+  ref            String
+  /// The proposal's proposalAssignment when issued.
+  assignment     Int
+  /// The proposal attempt that issued it.
+  attempt        Int
+  /// Null only for the ref's create-only push.
+  parentSha      String?
+  sha            String
+  /// branchOperationEntrySchema[].
+  entries        Json
+  pushIssuedAt   DateTime?
+  /// Only from the push command's own success.
+  pushAckedAt    DateTime?
+  /// Established by recovery (spec §6.2).
+  observedAt     DateTime?
+  outcome        String?
+  membership     String?
+  createdAt      DateTime                               @default(now())
+
+  branch ProjectInstructionProposalBranch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, executionSeq], map: "project_instruction_proposal_branch_op_seq_key")
+  @@index([organizationId], map: "project_instruction_proposal_branch_op_org_idx")
+  @@index([snapshotId], map: "project_instruction_proposal_branch_op_snapshot_idx")
+  @@map("project_instruction_proposal_branch_operation")
 }
 
 model ProjectInstructionFile {

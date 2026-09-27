@@ -150,3 +150,11 @@ export const str = (v: unknown): string | undefined =>
 
 export const num = (v: unknown): number | undefined =>
 	typeof v === "number" && Number.isFinite(v) ? v : undefined;
+
+/**
+ * `externalId` as it must look to be interpolated into a provider ref: a
+ * positive decimal integer, no sign, no leading zero, no whitespace. Guards
+ * `pullRequestHeadRef` against building a ref from an unexpected value.
+ */
+export const isPositiveDecimalInteger = (value: string): boolean =>
+	/^[1-9][0-9]*$/.test(value);

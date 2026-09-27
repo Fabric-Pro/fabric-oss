@@ -1896,9 +1896,27 @@ export type DiagramScalarFieldEnum = z.infer<typeof DiagramScalarFieldEnumSchema
 
 // File: ProjectInstructionSnapshotScalarFieldEnum.schema.ts
 
-export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'publishBeforeScan', 'deferredScanStatus', 'deferredScanFindings', 'deferredScanCompletedAt', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'changeSetDigest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'syncRunKey', 'baseSnapshotId', 'baseVersion', 'proposalDestination', 'proposalNote', 'pullRequestOperationId', 'pullRequestState', 'pullRequestAttempt', 'pullRequestContext', 'pullRequestHeadSha', 'pullRequestRef', 'pullRequestAttempts', 'pullRequestUrl', 'pullRequestExternalId', 'pullRequestObservation', 'pullRequestFailure', 'pullRequestLastCheckedAt', 'pullRequestNextAttemptAt', 'pullRequestRefreshAdmittedAt', 'pullRequestObligationOpen', 'pullRequestConfirmationDueAt', 'mergeSyncRequestedAt', 'mergeSyncDispatchedAt', 'mergeSyncRunId', 'mergeSyncExpected', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
+export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'publishBeforeScan', 'deferredScanStatus', 'deferredScanFindings', 'deferredScanCompletedAt', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'changeSetDigest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'syncRunKey', 'baseSnapshotId', 'baseVersion', 'proposalDestination', 'proposalNote', 'pullRequestOperationId', 'pullRequestState', 'pullRequestAttempt', 'pullRequestContext', 'pullRequestHeadSha', 'pullRequestRef', 'pullRequestAttempts', 'pullRequestUrl', 'pullRequestExternalId', 'pullRequestObservation', 'pullRequestFailure', 'pullRequestLastCheckedAt', 'pullRequestNextAttemptAt', 'pullRequestRefreshAdmittedAt', 'pullRequestObligationOpen', 'pullRequestConfirmationDueAt', 'mergeSyncRequestedAt', 'mergeSyncDispatchedAt', 'mergeSyncRunId', 'mergeSyncExpected', 'proposalBranchId', 'proposalBranchSequence', 'withdrawRequestedAt', 'withdrawScope', 'pendingCommand', 'pendingCommandSeq', 'proposalAssignment', 'proposalIntentOrder', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
 
 export type ProjectInstructionSnapshotScalarFieldEnum = z.infer<typeof ProjectInstructionSnapshotScalarFieldEnumSchema>;
+
+// File: ProjectInstructionProposalBranchScalarFieldEnum.schema.ts
+
+export const ProjectInstructionProposalBranchScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'projectId', 'userId', 'repositoryKey', 'number', 'ref', 'state', 'attempt', 'destination', 'presentation', 'startSha', 'headSha', 'foreignTipAt', 'nextSequence', 'nextExecutionSeq', 'headExecutionSeq', 'factsRevision', 'closeIntent', 'createIssuedAt', 'pullRequestUrl', 'pullRequestExternalId', 'pullRequestObservation', 'membership', 'failure', 'lastCheckedAt', 'nextAttemptAt', 'refreshAdmittedAt', 'settledAt', 'confirmations', 'confirmationDueAt', 'mergeSyncRequestedAt', 'mergeSyncDispatchedAt', 'mergeSyncRunId', 'mergeSyncExpected', 'retiredAt', 'retiredReason', 'retryRequestedAt', 'untracked', 'settlementPhase', 'deletedAt', 'createdAt', 'updatedAt'])
+
+export type ProjectInstructionProposalBranchScalarFieldEnum = z.infer<typeof ProjectInstructionProposalBranchScalarFieldEnumSchema>;
+
+// File: ProjectInstructionProposalRefReservationScalarFieldEnum.schema.ts
+
+export const ProjectInstructionProposalRefReservationScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'repositoryKey', 'ref', 'branchId', 'status', 'createdAt'])
+
+export type ProjectInstructionProposalRefReservationScalarFieldEnum = z.infer<typeof ProjectInstructionProposalRefReservationScalarFieldEnumSchema>;
+
+// File: ProjectInstructionProposalBranchOperationScalarFieldEnum.schema.ts
+
+export const ProjectInstructionProposalBranchOperationScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'branchId', 'snapshotId', 'kind', 'executionSeq', 'ref', 'assignment', 'attempt', 'parentSha', 'sha', 'entries', 'pushIssuedAt', 'pushAckedAt', 'observedAt', 'outcome', 'membership', 'createdAt'])
+
+export type ProjectInstructionProposalBranchOperationScalarFieldEnum = z.infer<typeof ProjectInstructionProposalBranchOperationScalarFieldEnumSchema>;
 
 // File: ProjectInstructionFileScalarFieldEnum.schema.ts
 
@@ -3411,6 +3429,18 @@ export type ProjectInstructionProposalDestination = z.infer<typeof ProjectInstru
 export const ProjectInstructionPullRequestStateSchema = z.enum(['QUEUED', 'OPENING', 'OPEN', 'CLOSE_REQUESTED', 'MERGED', 'CLOSED', 'BLOCKED', 'CANCELED'])
 
 export type ProjectInstructionPullRequestState = z.infer<typeof ProjectInstructionPullRequestStateSchema>;
+
+// File: ProjectInstructionProposalBranchState.schema.ts
+
+export const ProjectInstructionProposalBranchStateSchema = z.enum(['PENDING', 'OPENING', 'OPEN', 'CLOSE_REQUESTED', 'BLOCKED', 'MERGED', 'CLOSED', 'CANCELED'])
+
+export type ProjectInstructionProposalBranchState = z.infer<typeof ProjectInstructionProposalBranchStateSchema>;
+
+// File: ProjectInstructionProposalBranchOpKind.schema.ts
+
+export const ProjectInstructionProposalBranchOpKindSchema = z.enum(['APPEND', 'REVERT'])
+
+export type ProjectInstructionProposalBranchOpKind = z.infer<typeof ProjectInstructionProposalBranchOpKindSchema>;
 
 // File: ProjectInstructionFileKind.schema.ts
 
@@ -10892,6 +10922,14 @@ export const ProjectInstructionSnapshotSchema = z.object({
   mergeSyncDispatchedAt: z.date().nullish(),
   mergeSyncRunId: z.string().nullish(),
   mergeSyncExpected: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  proposalBranchId: z.string().nullish(),
+  proposalBranchSequence: z.number().int().nullish(),
+  withdrawRequestedAt: z.date().nullish(),
+  withdrawScope: z.string().nullish(),
+  pendingCommand: z.string().nullish(),
+  pendingCommandSeq: z.number().int().nullish(),
+  proposalAssignment: z.number().int(),
+  proposalIntentOrder: z.bigint().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
   readyAt: z.date().nullish(),
@@ -10899,6 +10937,98 @@ export const ProjectInstructionSnapshotSchema = z.object({
 });
 
 export type ProjectInstructionSnapshotType = z.infer<typeof ProjectInstructionSnapshotSchema>;
+
+
+// File: ProjectInstructionProposalBranch.schema.ts
+
+export const ProjectInstructionProposalBranchSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  userId: z.string(),
+  repositoryKey: z.string(),
+  number: z.number().int(),
+  ref: z.string(),
+  state: ProjectInstructionProposalBranchStateSchema.default("PENDING"),
+  attempt: z.number().int(),
+  destination: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  presentation: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  startSha: z.string().nullish(),
+  headSha: z.string().nullish(),
+  foreignTipAt: z.date().nullish(),
+  nextSequence: z.number().int().default(1),
+  nextExecutionSeq: z.number().int().default(1),
+  headExecutionSeq: z.number().int(),
+  factsRevision: z.number().int(),
+  closeIntent: z.string().nullish(),
+  createIssuedAt: z.date().nullish(),
+  pullRequestUrl: z.string().nullish(),
+  pullRequestExternalId: z.string().nullish(),
+  pullRequestObservation: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  membership: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  failure: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  lastCheckedAt: z.date().nullish(),
+  nextAttemptAt: z.date().nullish(),
+  refreshAdmittedAt: z.date().nullish(),
+  settledAt: z.date().nullish(),
+  confirmations: z.number().int(),
+  confirmationDueAt: z.date().nullish(),
+  mergeSyncRequestedAt: z.date().nullish(),
+  mergeSyncDispatchedAt: z.date().nullish(),
+  mergeSyncRunId: z.string().nullish(),
+  mergeSyncExpected: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  retiredAt: z.date().nullish(),
+  retiredReason: z.string().nullish(),
+  retryRequestedAt: z.date().nullish(),
+  untracked: z.boolean(),
+  settlementPhase: z.string().nullish(),
+  deletedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectInstructionProposalBranchType = z.infer<typeof ProjectInstructionProposalBranchSchema>;
+
+
+// File: ProjectInstructionProposalRefReservation.schema.ts
+
+export const ProjectInstructionProposalRefReservationSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  repositoryKey: z.string(),
+  ref: z.string(),
+  branchId: z.string(),
+  status: z.string(),
+  createdAt: z.date(),
+});
+
+export type ProjectInstructionProposalRefReservationType = z.infer<typeof ProjectInstructionProposalRefReservationSchema>;
+
+
+// File: ProjectInstructionProposalBranchOperation.schema.ts
+
+export const ProjectInstructionProposalBranchOperationSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  branchId: z.string(),
+  snapshotId: z.string(),
+  kind: ProjectInstructionProposalBranchOpKindSchema,
+  executionSeq: z.number().int(),
+  ref: z.string(),
+  assignment: z.number().int(),
+  attempt: z.number().int(),
+  parentSha: z.string().nullish(),
+  sha: z.string(),
+  entries: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  pushIssuedAt: z.date().nullish(),
+  pushAckedAt: z.date().nullish(),
+  observedAt: z.date().nullish(),
+  outcome: z.string().nullish(),
+  membership: z.string().nullish(),
+  createdAt: z.date(),
+});
+
+export type ProjectInstructionProposalBranchOperationType = z.infer<typeof ProjectInstructionProposalBranchOperationSchema>;
 
 
 // File: ProjectInstructionFile.schema.ts

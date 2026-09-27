@@ -100,3 +100,46 @@ describe("To Do list tables are registered on the tenant path", () => {
 		);
 	});
 });
+
+/**
+ * Member proposal branches (Fizzy #2738 spec §4.6). The branch row carries
+ * `organizationId`, `userId` and `projectId`; the reservation and the journal
+ * carry `organizationId` alone, so a user-owned policy would compare a column
+ * they do not have.
+ */
+describe("Member proposal branch tables are registered on the tenant path", () => {
+	it("ProjectInstructionProposalBranch is user-owned and project-scoped", () => {
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).toContain("ProjectInstructionProposalBranch");
+		expect(tenantDb).toMatch(
+			/\bProjectInstructionProposalBranch: "projectId",/,
+		);
+		expect(rls).toMatch(
+			/\{\s*name: "project_instruction_proposal_branch",\s*policy: "user_owned",?\s*\}/,
+		);
+	});
+
+	it.each([
+		[
+			"ProjectInstructionProposalRefReservation",
+			"project_instruction_proposal_ref_reservation",
+		],
+		[
+			"ProjectInstructionProposalBranchOperation",
+			"project_instruction_proposal_branch_operation",
+		],
+	])("%s is organization-only, never user-owned", (model, table) => {
+		expect(
+			setMembers(tenantDb, "const ORG_ONLY_TABLES = new Set(["),
+		).toContain(model);
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).not.toContain(model);
+		expect(rls).toMatch(
+			new RegExp(
+				`\\{\\s*name: "${table}",\\s*policy: "org_only",?\\s*\\}`,
+			),
+		);
+	});
+});

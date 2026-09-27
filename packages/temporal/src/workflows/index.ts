@@ -389,6 +389,13 @@ export {
 	statusQuery as goalOrientedStatusQuery,
 } from "./goal-oriented-agent";
 export * from "./hybrid-execution";
+// Member proposal branches (Fizzy #2738 spec §6): one workflow per branch,
+// signal-started by `wake`, owning every git write on that branch.
+export {
+	type ProposalBranchWorkflowInput,
+	projectInstructionProposalBranchWorkflow,
+	wakeSignal as proposalBranchWakeSignal,
+} from "./instruction-proposal-branch";
 // Coding Instructions proposal pull requests (Fizzy #2563 spec §6, §9): the
 // per-operation workflow and the five-minute sweeper. Named, like the sync.
 export { projectInstructionProposalPullRequestWorkflow } from "./instruction-proposal-pull-request";

@@ -1109,6 +1109,11 @@ export * from "./project-instructions";
 // registers exactly its readiness, open, recover, close, reconcile,
 // merge-sync dispatch, selection, deferral and restart activities.
 export * from "./instruction-proposal-pull-requests";
+// Member proposal branches (Fizzy #2738 spec §6). The module exports only
+// activities (its helpers live in ./lib/instruction-branch-*), so `export *`
+// registers exactly its claim, append, recovery, re-observation, create,
+// lookup, retry opening, release and revert activities.
+export * from "./instruction-proposal-branches";
 // Automatic repository sync poll (spec §6.1, §8.2). Named, so a future
 // export of that module cannot become a schedulable activity by accident.
 export {

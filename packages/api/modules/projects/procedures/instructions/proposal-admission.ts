@@ -9,9 +9,15 @@
  * changes except the note. A repository-backed project admits a proposal as a
  * pull-request operation: the destination is FROZEN here (spec §2.2) — the
  * sync row's id and current generation, the integration, the target ref and
- * root, the base commit, the repository identity and the rendered outbound
- * text — and creation-side steps later check the configuration still equals
- * it rather than re-resolving it. Direct derives and publish mode keep the
+ * root, the base commit, the repository identity and the rendered commit
+ * attribution and message — and creation-side steps later check the
+ * configuration still equals it rather than re-resolving it.
+ *
+ * Every new REPOSITORY admission is a member branch proposal: its frozen
+ * context is `pullRequestContext` v2 (Fizzy #2738 spec Decision 4, §4.2),
+ * which has no per-proposal branch, title or body, because the member's
+ * branch owns its ref and its pull request's title and description (spec
+ * Decision 13). Rows admitted before keep v1 and drain on the #2563 path. Direct derives and publish mode keep the
  * `REPOSITORY_SOURCE_OF_TRUTH` refusal: a repository-backed project changes
  * through git, and a proposal is the one way to ask git for a change.
  *
@@ -38,7 +44,8 @@ import {
 	FALLBACK_PROPOSER_NAME,
 	type ProposalNote,
 	PULL_REQUEST_COMMITTER_NAME,
-	type PullRequestContext,
+	type PullRequestContextV1,
+	type PullRequestContextV2,
 	proposalNoteSchema,
 	renderPullRequestText,
 } from "@repo/instructions";
@@ -74,8 +81,17 @@ export type AdmissionInput = {
 export type RepositoryAdmission = {
 	destination: "REPOSITORY";
 	note: ProposalNote | null;
+	/**
+	 * `pullRequestOperationId`: the proposal's durable id, and its commits'
+	 * `Fabric-Change` trailer (spec Decision 13).
+	 */
 	operationId: string;
-	context: PullRequestContext;
+	/**
+	 * v2 for every admission here. The union is `repositoryDestination`'s
+	 * input: a #2563 (v1) context still maps its `branch` to the row's
+	 * `pullRequestRef`.
+	 */
+	context: PullRequestContextV2 | PullRequestContextV1;
 	syncId: string;
 	syncGeneration: number;
 	/** Attribution refused at admission: the row is admitted BLOCKED and nothing is pushed. */
@@ -191,11 +207,6 @@ function wholeSecondsNow(): string {
 	return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-/** The operation's attempt-1 branch (spec §2.7). */
-function operationBranch(operationId: string): string {
-	return `fabric/instructions/${operationId}`;
-}
-
 /**
  * Spec §5.1 steps 1 to 6. Throws an `ORPCError` whose `data.reason` is one of
  * `REPOSITORY_SOURCE_OF_TRUTH`, `REPOSITORY_UNAVAILABLE`,
@@ -299,7 +310,7 @@ export async function admitInstructionProposal(
 	const operationId = createId();
 	const committedAt = wholeSecondsNow();
 	const shared = {
-		v: 1 as const,
+		v: 2 as const,
 		integrationId: sync.repositoryIntegrationId,
 		syncId: sync.id,
 		syncGeneration: sync.generation,
@@ -308,7 +319,6 @@ export async function admitInstructionProposal(
 		rootPath: sync.rootPath,
 		baseCommitSha: base.sourceCommitSha,
 		repository,
-		branch: operationBranch(operationId),
 		committedAt,
 	};
 	if (!text.ok) {
@@ -331,8 +341,6 @@ export async function admitInstructionProposal(
 					name: PULL_REQUEST_COMMITTER_NAME,
 					email: "unattributed",
 				},
-				title: "",
-				body: "",
 				message: "",
 			},
 			blocked: {
@@ -354,8 +362,6 @@ export async function admitInstructionProposal(
 			...shared,
 			author: text.author,
 			committer: text.committer,
-			title: text.title,
-			body: text.body,
 			message: text.message,
 		},
 	};
@@ -411,7 +417,10 @@ export function repositoryDestination(
 		context: admission.context,
 		syncId: admission.syncId,
 		syncGeneration: admission.syncGeneration,
-		branch: admission.context.branch,
+		// A member branch proposal (v2) has no ref of its own.
+		...(admission.context.v === 1
+			? { branch: admission.context.branch }
+			: {}),
 		...(admission.blocked ? { blocked: admission.blocked } : {}),
 		uploadStartedAudit,
 	};

@@ -53,6 +53,41 @@ const state = vi.hoisted(() => ({
 	toastSuccess: vi.fn(),
 	toastError: vi.fn(),
 	toastInfo: vi.fn(),
+	/** The member branch panel's own data (Fizzy #2738 spec §10 "Tab"); empty unless a test needs it. */
+	branches: [] as Array<Record<string, unknown>>,
+	/**
+	 * Spy on the `myBranch` queryFn — a reviewer panel now takes its owner's
+	 * view straight off `state.branchOwners` via `data`, never through this
+	 * query (round-3 finding: duplicate queries), so an integration test can
+	 * assert it only ever runs once, for the caller's own ownerless panel.
+	 */
+	myBranchQueryFn: vi.fn(),
+	/**
+	 * `proposals.branches`'s answer, one page at a time: every OTHER member
+	 * with a tracked branch, for a reviewer — independent of `state.rows`'
+	 * own pagination (Fizzy #2738 spec §10 "Reviewers see every member's
+	 * branches read-only"). Each entry already carries its full per-owner
+	 * view (`branch`/`liveChanges`/`files`/`branches`), exactly the shape
+	 * `InstructionProposalBranchPanel` takes as `data` — the aggregate read
+	 * builds it once, reviewer-side, so the panel never re-queries
+	 * `myBranch({userId})` for it (round-3 finding: duplicate queries).
+	 * `branchOwnersPageSize` bounds how many of these one page returns,
+	 * cursor-keyed on `userId` — a test proving pagination sets it below
+	 * `branchOwners.length`; every other test leaves it large enough that
+	 * everything comes back on page one, same as before this finding.
+	 */
+	branchOwners: [] as Array<Record<string, unknown> & { userId: string }>,
+	branchOwnersPageSize: Number.POSITIVE_INFINITY,
+	branchOwnersError: null as Error | null,
+	retryConflict: vi.fn(),
+	retryConflictError: null as Error | null,
+	proposeAgain: vi.fn(),
+	proposeAgainError: null as Error | null,
+	closeBranch: vi.fn(),
+	startOverBranch: vi.fn(),
+	retryBranch: vi.fn(),
+	stopTrackingBranch: vi.fn(),
+	branchCommandError: null as Error | null,
 }));
 
 function queryOptions(name: string, getData: (input: unknown) => unknown) {
@@ -68,6 +103,30 @@ function queryOptions(name: string, getData: (input: unknown) => unknown) {
 			return getData(input);
 		},
 	});
+}
+
+/**
+ * `proposals.branches`'s bounded page for one cursor: `state.branchOwners`
+ * ordered by `userId`, sliced to `state.branchOwnersPageSize` starting after
+ * `cursor`, with `nextCursor` set only when more remain — the same shape the
+ * real cursor-paginated procedure answers.
+ */
+function branchOwnersPage(input: unknown): {
+	owners: Array<Record<string, unknown>>;
+	nextCursor: string | null;
+} {
+	const cursor = (input as { cursor?: string } | undefined)?.cursor;
+	const all = state.branchOwners;
+	const startIndex = cursor
+		? all.findIndex((owner) => owner.userId === cursor) + 1
+		: 0;
+	const pageSize = state.branchOwnersPageSize;
+	const owners = all.slice(startIndex, startIndex + pageSize);
+	const nextCursor =
+		startIndex + pageSize < all.length
+			? (owners.at(-1)?.userId ?? null)
+			: null;
+	return { owners, nextCursor };
 }
 
 function mutationOptions(fn: (input: unknown) => Promise<unknown>) {
@@ -148,6 +207,112 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 							return { retried: true };
 						}),
 					},
+					myBranch: {
+						queryOptions: queryOptions("myBranch", (input) => {
+							state.myBranchQueryFn(input);
+							return {
+								branch: state.branches[0] ?? null,
+								liveChanges: 0,
+								files: [],
+								branches: state.branches,
+							};
+						}),
+					},
+					/**
+					 * `infiniteOptions`, written out rather than stubbed, the
+					 * same technique `TodoListPage.test.tsx` uses: `queryKey`
+					 * carries `input(pageParam)` so a cursor change is a
+					 * DIFFERENT key (an append via `fetchNextPage`, not a
+					 * fresh page-1 list), and `queryFn` receives the live
+					 * `pageParam` TanStack Query is asking for.
+					 */
+					branches: {
+						infiniteOptions: (options: {
+							input: (cursor: string | undefined) => unknown;
+							initialPageParam: string | undefined;
+							getNextPageParam: (lastPage: {
+								nextCursor: string | null;
+							}) => unknown;
+						}) => ({
+							queryKey: [
+								"branches",
+								{
+									input: options.input(
+										options.initialPageParam,
+									),
+									type: "infinite",
+								},
+							],
+							queryFn: async ({
+								pageParam,
+							}: {
+								pageParam: string | undefined;
+							}) => {
+								if (state.branchOwnersError) {
+									throw state.branchOwnersError;
+								}
+								return branchOwnersPage(
+									options.input(pageParam),
+								);
+							},
+							initialPageParam: options.initialPageParam,
+							getNextPageParam: options.getNextPageParam,
+						}),
+					},
+					retryConflict: {
+						mutationOptions: mutationOptions(async (input) => {
+							state.retryConflict(input);
+							if (state.retryConflictError) {
+								throw state.retryConflictError;
+							}
+							return { state: "QUEUED", attempt: 1 };
+						}),
+					},
+					proposeAgain: {
+						mutationOptions: mutationOptions(async (input) => {
+							state.proposeAgain(input);
+							if (state.proposeAgainError) {
+								throw state.proposeAgainError;
+							}
+							return { branchId: "branch_1", sequence: 2 };
+						}),
+					},
+					closeBranch: {
+						mutationOptions: mutationOptions(async (input) => {
+							state.closeBranch(input);
+							if (state.branchCommandError) {
+								throw state.branchCommandError;
+							}
+							return { changed: true, attempt: 1 };
+						}),
+					},
+					startOverBranch: {
+						mutationOptions: mutationOptions(async (input) => {
+							state.startOverBranch(input);
+							if (state.branchCommandError) {
+								throw state.branchCommandError;
+							}
+							return { changed: true, attempt: 1 };
+						}),
+					},
+					retryBranch: {
+						mutationOptions: mutationOptions(async (input) => {
+							state.retryBranch(input);
+							if (state.branchCommandError) {
+								throw state.branchCommandError;
+							}
+							return { changed: true, attempt: 1 };
+						}),
+					},
+					stopTrackingBranch: {
+						mutationOptions: mutationOptions(async (input) => {
+							state.stopTrackingBranch(input);
+							if (state.branchCommandError) {
+								throw state.branchCommandError;
+							}
+							return { changed: true, attempt: 1 };
+						}),
+					},
 				},
 				finalize: {
 					mutationOptions: mutationOptions(async (input) => {
@@ -202,7 +367,29 @@ function row(overrides: Record<string, unknown> = {}) {
 		reviewedAt: null,
 		isStale: false,
 		canCancel: false,
+		isProposer: false,
 		...overrides,
+	};
+}
+
+/**
+ * One `state.branchOwners` entry: `proposals.branches`' per-owner view,
+ * already the exact shape `InstructionProposalBranchPanel` takes as `data` —
+ * `userId`/`userName` plus its full `branch`/`liveChanges`/`files`/`branches`
+ * (round-3 finding: the panel never re-queries `myBranch({userId})` for it).
+ */
+function branchOwner(
+	userId: string,
+	userName: string | null,
+	entries: Array<{ branch: Record<string, unknown>; liveChanges: number }>,
+) {
+	return {
+		userId,
+		userName,
+		branch: entries[0]?.branch ?? null,
+		liveChanges: entries[0]?.liveChanges ?? 0,
+		files: [],
+		branches: entries,
 	};
 }
 
@@ -238,6 +425,20 @@ beforeEach(() => {
 	state.refreshError = null;
 	state.finalize.mockReset();
 	state.listCalls = 0;
+	state.branches = [];
+	state.myBranchQueryFn.mockReset();
+	state.branchOwners = [];
+	state.branchOwnersPageSize = Number.POSITIVE_INFINITY;
+	state.branchOwnersError = null;
+	state.retryConflict.mockReset();
+	state.retryConflictError = null;
+	state.proposeAgain.mockReset();
+	state.proposeAgainError = null;
+	state.closeBranch.mockReset();
+	state.startOverBranch.mockReset();
+	state.retryBranch.mockReset();
+	state.stopTrackingBranch.mockReset();
+	state.branchCommandError = null;
 	state.navigate.mockReset();
 	state.toastSuccess.mockReset();
 	state.toastError.mockReset();
@@ -1584,5 +1785,649 @@ describe("InstructionProposals — pull-request suggestions (Fizzy #2563 spec §
 		expect(
 			within(dialog).getByText(reviewCopy.repositoryTitle),
 		).toBeInTheDocument();
+	});
+});
+
+describe("member proposal branches (Fizzy #2738 spec §10)", () => {
+	const branchCopy = en.projects.codingInstructions.proposalReview.branch;
+	const memberBranch = {
+		id: "branch_1",
+		ref: "fabric/instructions/members/reader-ab12/1",
+	};
+
+	it.each([
+		["QUEUED", "READY", prCopy.states.queuedForBranch],
+		["OPENING", "READY", prCopy.states.addingToBranch],
+		["OPEN", "READY", prCopy.states.onBranch],
+		["CLOSE_REQUESTED", "READY", prCopy.states.withdrawingFromBranch],
+	] as const)(
+		"a branch proposal's %s card reads %s, not the #2563 copy",
+		async (prState, status, expected) => {
+			state.rows = [
+				repositoryRow(
+					{ state: prState, branch: memberBranch },
+					{ status },
+				),
+			];
+			renderList();
+			expect(await screen.findByText(expected)).toBeInTheDocument();
+		},
+	);
+
+	it("a branch proposal's BLOCKED card shows only the failure's own sentence, with its paths, and offers Try again", async () => {
+		const user = userEvent.setup();
+		state.rows = [
+			repositoryRow(
+				{
+					state: "BLOCKED",
+					branch: memberBranch,
+					failure: prFailure("BRANCH_CONFLICT", {
+						phase: "append",
+						retryable: false,
+						params: { paths: "CLAUDE.md, AGENTS.md", count: 2 },
+					}),
+					attempt: 5,
+				},
+				{ canCancel: true },
+			),
+		];
+		renderList();
+		expect(
+			await screen.findByText(
+				"Files on your branch were changed outside Fabric: CLAUDE.md, AGENTS.md. Fabric does not overwrite them while this pull request is open. Make this change on your branch in the repository, or wait until the pull request merges.",
+			),
+		).toBeInTheDocument();
+		// The generic v1 "Pull request not opened yet" headline never shows.
+		expect(
+			screen.queryByText(prCopy.states.BLOCKED),
+		).not.toBeInTheDocument();
+		await user.click(
+			await screen.findByRole("button", { name: prCopy.tryAgain }),
+		);
+		await waitFor(() =>
+			expect(state.retryConflict).toHaveBeenCalledWith({
+				projectId: "p",
+				snapshotId: "proposal-8",
+				expectedAttempt: 5,
+			}),
+		);
+	});
+
+	it("offers no Try again for a branch failure that is not one of the conflict codes", async () => {
+		state.rows = [
+			repositoryRow(
+				{
+					state: "BLOCKED",
+					branch: memberBranch,
+					failure: prFailure("WITHDRAW_CONFLICT", {
+						phase: "revert",
+						retryable: false,
+					}),
+				},
+				{ canCancel: true },
+			),
+		];
+		renderList();
+		await screen.findByText(prCopy.failures.WITHDRAW_CONFLICT);
+		expect(
+			screen.queryByRole("button", { name: prCopy.tryAgain }),
+		).not.toBeInTheDocument();
+	});
+
+	it("reads CANCELED as already-on-branch or withdrawn-from-branch by the append's outcome", async () => {
+		state.rows = [
+			repositoryRow({
+				state: "CANCELED",
+				branch: memberBranch,
+				append: {
+					outcome: "already_on_branch",
+					commitSha: null,
+					membership: null,
+				},
+			}),
+		];
+		renderList();
+		expect(
+			await screen.findByText(prCopy.states.alreadyOnBranch),
+		).toBeInTheDocument();
+	});
+
+	it("shows 'Withdrawn from your branch' once the change was appended before it was withdrawn", async () => {
+		state.rows = [
+			repositoryRow({
+				state: "CANCELED",
+				branch: memberBranch,
+				append: {
+					outcome: "appended",
+					commitSha: "abc",
+					membership: "included",
+				},
+			}),
+		];
+		renderList();
+		expect(
+			await screen.findByText(prCopy.states.withdrawnFromBranch),
+		).toBeInTheDocument();
+	});
+
+	it("MERGED with an unverified append shows the unverified note and offers Propose again to its owner", async () => {
+		const user = userEvent.setup();
+		state.rows = [
+			repositoryRow(
+				{
+					state: "MERGED",
+					branch: memberBranch,
+					append: {
+						outcome: "appended",
+						commitSha: "abc",
+						membership: "unverified",
+					},
+				},
+				// Production-consistent terminal row: `canCancel` is false
+				// once the branch proposal's pull request has settled
+				// (`proposalStatus` is then derived from `pullRequestState`,
+				// never `PENDING`). "Propose again" is gated on `isProposer`
+				// instead (Fizzy #2738 spec Decision 14), which stays true.
+				{ canCancel: false, isProposer: true },
+			),
+		];
+		renderList();
+		expect(
+			await screen.findByText(branchCopy.unverifiedNotice),
+		).toBeInTheDocument();
+		await user.click(
+			await screen.findByRole("button", {
+				name: branchCopy.proposeAgain,
+			}),
+		);
+		await waitFor(() =>
+			expect(state.proposeAgain).toHaveBeenCalledWith({
+				projectId: "p",
+				snapshotId: "proposal-8",
+			}),
+		);
+	});
+
+	it("offers no Propose again to a non-owner viewing another member's unverified branch proposal", async () => {
+		state.rows = [
+			repositoryRow(
+				{
+					state: "MERGED",
+					branch: memberBranch,
+					append: {
+						outcome: "appended",
+						commitSha: "abc",
+						membership: "unverified",
+					},
+				},
+				// A reviewer or another member sees the same terminal,
+				// unverified row but is never its proposer.
+				{ canCancel: false, isProposer: false },
+			),
+		];
+		renderList({ canReview: true });
+		expect(
+			await screen.findByText(branchCopy.unverifiedNotice),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: branchCopy.proposeAgain }),
+		).not.toBeInTheDocument();
+	});
+
+	it("offers no Propose again once the append is confirmed included", async () => {
+		state.rows = [
+			repositoryRow(
+				{
+					state: "MERGED",
+					branch: memberBranch,
+					append: {
+						outcome: "appended",
+						commitSha: "abc",
+						membership: "included",
+					},
+				},
+				{ canCancel: false, isProposer: true },
+			),
+		];
+		renderList();
+		await screen.findByText("Merged");
+		expect(
+			screen.queryByText(branchCopy.unverifiedNotice),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: branchCopy.proposeAgain }),
+		).not.toBeInTheDocument();
+	});
+
+	it("confirms Withdraw with the pending-append text before a branch proposal has been added to the branch", async () => {
+		const user = userEvent.setup();
+		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+		state.rows = [
+			repositoryRow(
+				{ state: "QUEUED", branch: memberBranch, append: null },
+				{ canCancel: true },
+			),
+		];
+		renderList();
+		await user.click(
+			await screen.findByRole("button", { name: reviewCopy.withdraw }),
+		);
+		expect(confirm).toHaveBeenCalledWith(branchCopy.withdrawConfirmPending);
+		confirm.mockRestore();
+	});
+
+	it("confirms Withdraw with the post-append text once the change is on the branch", async () => {
+		const user = userEvent.setup();
+		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+		state.rows = [
+			repositoryRow(
+				{
+					state: "OPEN",
+					branch: memberBranch,
+					append: {
+						outcome: "appended",
+						commitSha: "abc",
+						membership: "included",
+					},
+				},
+				{ canCancel: true },
+			),
+		];
+		renderList();
+		await user.click(
+			await screen.findByRole("button", { name: reviewCopy.withdraw }),
+		);
+		expect(confirm).toHaveBeenCalledWith(
+			branchCopy.withdrawConfirmAppended,
+		);
+		confirm.mockRestore();
+	});
+
+	it("still confirms Withdraw with the #2563 text for a non-branch repository proposal", async () => {
+		const user = userEvent.setup();
+		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+		state.rows = [repositoryRow({ state: "OPEN" }, { canCancel: true })];
+		renderList();
+		await user.click(
+			await screen.findByRole("button", { name: reviewCopy.withdraw }),
+		);
+		expect(confirm).toHaveBeenCalledWith(reviewCopy.withdrawConfirm);
+		confirm.mockRestore();
+	});
+
+	it("shows the 'Your branch' panel above the list once the member has a branch", async () => {
+		state.branches = [
+			{
+				branch: {
+					id: "branch_1",
+					ref: "fabric/instructions/members/reader-ab12/1",
+					state: "OPEN",
+					foreignCommits: false,
+					membership: "done",
+					failure: null,
+					retired: false,
+					// Production never returns OPEN with no pull request:
+					// the branch only reaches OPEN once one exists.
+					pullRequest: {
+						url: "https://github.com/example-org/example-repo/pull/9",
+						externalId: "9",
+						state: "OPEN",
+						lastCheckedAt: new Date().toISOString(),
+					},
+				},
+				liveChanges: 2,
+			},
+		];
+		renderList();
+		expect(
+			await screen.findByText(
+				"Branch fabric/instructions/members/reader-ab12/1",
+			),
+		).toBeInTheDocument();
+	});
+
+	/**
+	 * Spec §10: "Reviewers see every member's branches read-only, with
+	 * owner-or-reviewer visibility as `authorizedProposal`." The panel used
+	 * to call `myBranch` with no `userId`, so a reviewer only ever saw their
+	 * OWN branch (or none) — never the branches of the members whose
+	 * proposals they were reviewing.
+	 *
+	 * Round 2 review finding: owner discovery then moved to deriving the
+	 * distinct proposers from `state.rows`, capped at the proposal list's own
+	 * page size — so a member whose proposals were not on the CURRENT page
+	 * still got no panel. `proposals.branches` (`state.branchOwners` here) is
+	 * a separate, reviewer-only aggregate read, independent of that
+	 * pagination; these tests prove the panel now follows IT, not the rows.
+	 *
+	 * Round 3 review finding: that aggregate read used to load every tracked
+	 * branch and cap the owner list at 50 in memory, with the cap's
+	 * `truncated` flag never read by the UI — silently dropping the 51st
+	 * owner. It is now cursor-paginated, bounded in the database, with a
+	 * "Show more branches" button while `nextCursor` keeps coming back; the
+	 * pagination and visible-error-state tests below cover that, and each
+	 * owner's per-panel view now arrives pre-built as `data` rather than
+	 * through a second, discarded `myBranch({userId})` query per panel
+	 * (finding: duplicate queries).
+	 */
+	describe("reviewer visibility across members' branches", () => {
+		it("shows another member's branch read-only beside the reviewer's own, even when that member has no proposal on the current page", async () => {
+			// Deliberately NOT this member's proposal — a different row
+			// entirely, proving the panel does not come from the visible
+			// page of proposals.
+			state.rows = [row({ id: "proposal-unrelated", version: 3 })];
+			state.branchOwners = [
+				branchOwner("member_2", "Case Worker", [
+					{
+						branch: {
+							id: "branch_2",
+							ref: "fabric/instructions/members/case-worker-cd34/1",
+							state: "OPEN",
+							foreignCommits: false,
+							membership: "done",
+							failure: null,
+							retired: false,
+							// Production never returns OPEN with no pull
+							// request: the branch only reaches OPEN once one
+							// exists.
+							pullRequest: {
+								url: "https://github.com/example-org/example-repo/pull/9",
+								externalId: "9",
+								state: "OPEN",
+								lastCheckedAt: new Date().toISOString(),
+							},
+						},
+						liveChanges: 1,
+					},
+				]),
+			];
+			renderList({ canReview: true, repositoryBacked: true });
+			expect(
+				await screen.findByText(
+					"Branch fabric/instructions/members/case-worker-cd34/1",
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.getByText("Case Worker's branch"),
+			).toBeInTheDocument();
+			// Read-only headline, never the owner's "Your branch's pull
+			// request is open".
+			expect(
+				screen.getByText("The branch's pull request is open"),
+			).toBeInTheDocument();
+			// The panel rendered straight from `data` — never its own
+			// `myBranch({userId})` query (round-3 finding: duplicate
+			// queries). `repositoryBacked` also renders the caller's own
+			// ownerless panel above it, which legitimately queries
+			// `myBranch` once for ITS OWN branch — so proving no duplicate
+			// per-owner query is exactly one call total, not zero.
+			expect(state.myBranchQueryFn).toHaveBeenCalledTimes(1);
+		});
+
+		it("keeps re-reading another member's in-flight branch until it settles", async () => {
+			// Reviewer panels render from the aggregate and never poll on
+			// their own, so the aggregate itself must poll while a loaded
+			// branch is still in flight.
+			vi.useFakeTimers();
+			try {
+				const opening = {
+					id: "branch_2",
+					ref: "fabric/instructions/members/case-worker-cd34/1",
+					state: "OPENING",
+					foreignCommits: false,
+					membership: null,
+					failure: null,
+					retired: false,
+					pullRequest: null,
+				};
+				state.branchOwners = [
+					branchOwner("member_2", "Case Worker", [
+						{ branch: opening, liveChanges: 1 },
+					]),
+				];
+				renderList({ canReview: true, repositoryBacked: true });
+				await tick(0);
+				expect(
+					screen.getByText("Opening the branch's pull request"),
+				).toBeInTheDocument();
+
+				state.branchOwners = [
+					branchOwner("member_2", "Case Worker", [
+						{
+							branch: {
+								...opening,
+								state: "MERGED",
+								membership: "done",
+								pullRequest: {
+									url: "https://github.com/example-org/example-repo/pull/9",
+									externalId: "9",
+									state: "MERGED",
+									lastCheckedAt: null,
+								},
+							},
+							liveChanges: 0,
+						},
+					]),
+				];
+				await tick(10_000);
+				expect(
+					screen.queryByText("Opening the branch's pull request"),
+				).not.toBeInTheDocument();
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("shows no other member's branch panel for a non-reviewer, even when the aggregate would name one", async () => {
+			state.branchOwners = [
+				branchOwner("member_2", "Case Worker", [
+					{
+						branch: {
+							id: "branch_2",
+							ref: "fabric/instructions/members/case-worker-cd34/1",
+							state: "OPEN",
+							foreignCommits: false,
+							membership: "done",
+							failure: null,
+							retired: false,
+							pullRequest: {
+								url: "https://github.com/example-org/example-repo/pull/9",
+								externalId: "9",
+								state: "OPEN",
+								lastCheckedAt: new Date().toISOString(),
+							},
+						},
+						liveChanges: 1,
+					},
+				]),
+			];
+			renderList({ canReview: false, repositoryBacked: true });
+			await screen.findByRole("button", { name: "Proposal version 8" });
+			expect(
+				screen.queryByText("Case Worker's branch"),
+			).not.toBeInTheDocument();
+		});
+
+		it("renders no other member's branch panel when the reviewer aggregate names none", async () => {
+			// The server already excludes the viewer's own branch from this
+			// read (`readProposalBranchesForReviewer`), so an empty list here
+			// is the ordinary case for a reviewer with no one else's branch
+			// to show, including their own proposal rows.
+			state.branchOwners = [];
+			renderList({ canReview: true, repositoryBacked: true });
+			await screen.findByRole("button", { name: "Proposal version 8" });
+			expect(screen.queryByText(/'s branch$/)).not.toBeInTheDocument();
+		});
+
+		it("shows a visible error state when the reviewer aggregate read fails", async () => {
+			state.branchOwnersError = new Error("offline");
+			renderList({ canReview: true, repositoryBacked: true });
+			await screen.findByRole("button", { name: "Proposal version 8" });
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				branchCopy.other.listLoadError,
+			);
+		});
+
+		/**
+		 * Round-3 MUST-FIX: the aggregate used to load every tracked branch
+		 * and cap owners at 50 in memory, silently dropping the 51st. This
+		 * proves the replacement instead — three owners, a page size of two —
+		 * renders the first page, a "Show more branches" click loads the
+		 * next, and every owner ends up on screen with none missing.
+		 */
+		it("pages through more owners than fit on one page with Show more branches, and drops none", async () => {
+			state.branchOwnersPageSize = 2;
+			state.branchOwners = [
+				branchOwner("member_1", "Member One", [
+					{
+						branch: {
+							id: "branch_1",
+							ref: "fabric/instructions/members/member-one-aa11/1",
+							state: "OPEN",
+							foreignCommits: false,
+							membership: "done",
+							failure: null,
+							retired: false,
+							pullRequest: {
+								url: "https://github.com/example-org/example-repo/pull/21",
+								externalId: "21",
+								state: "OPEN",
+								lastCheckedAt: null,
+							},
+						},
+						liveChanges: 1,
+					},
+				]),
+				branchOwner("member_2", "Member Two", [
+					{
+						branch: {
+							id: "branch_2",
+							ref: "fabric/instructions/members/member-two-bb22/1",
+							state: "OPEN",
+							foreignCommits: false,
+							membership: "done",
+							failure: null,
+							retired: false,
+							pullRequest: {
+								url: "https://github.com/example-org/example-repo/pull/22",
+								externalId: "22",
+								state: "OPEN",
+								lastCheckedAt: null,
+							},
+						},
+						liveChanges: 1,
+					},
+				]),
+				branchOwner("member_3", "Member Three", [
+					{
+						branch: {
+							id: "branch_3",
+							ref: "fabric/instructions/members/member-three-cc33/1",
+							state: "OPEN",
+							foreignCommits: false,
+							membership: "done",
+							failure: null,
+							retired: false,
+							pullRequest: {
+								url: "https://github.com/example-org/example-repo/pull/23",
+								externalId: "23",
+								state: "OPEN",
+								lastCheckedAt: null,
+							},
+						},
+						liveChanges: 1,
+					},
+				]),
+			];
+			const user = userEvent.setup();
+			renderList({ canReview: true, repositoryBacked: true });
+			expect(
+				await screen.findByText(
+					"Branch fabric/instructions/members/member-one-aa11/1",
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.getByText(
+					"Branch fabric/instructions/members/member-two-bb22/1",
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByText(
+					"Branch fabric/instructions/members/member-three-cc33/1",
+				),
+			).not.toBeInTheDocument();
+			const showMore = screen.getByRole("button", {
+				name: branchCopy.other.showMoreBranches,
+			});
+			await user.click(showMore);
+			expect(
+				await screen.findByText(
+					"Branch fabric/instructions/members/member-three-cc33/1",
+				),
+			).toBeInTheDocument();
+			// The first page's owners are still there — appended to, not
+			// replaced.
+			expect(
+				screen.getByText(
+					"Branch fabric/instructions/members/member-one-aa11/1",
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.getByText(
+					"Branch fabric/instructions/members/member-two-bb22/1",
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", {
+					name: branchCopy.other.showMoreBranches,
+				}),
+			).not.toBeInTheDocument();
+			// Every owner rendered from `data` — no panel fell back to its
+			// own `myBranch({userId})` query; the caller's own ownerless
+			// panel above them still queries once, for its own branch.
+			expect(state.myBranchQueryFn).toHaveBeenCalledTimes(1);
+		});
+
+		it("refreshes the aggregate's other-member panels after Stop tracking on one of them", async () => {
+			const user = userEvent.setup();
+			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+			state.branchOwners = [
+				branchOwner("member_2", "Case Worker", [
+					{
+						branch: {
+							id: "branch_2",
+							ref: "fabric/instructions/members/case-worker-cd34/1",
+							state: "OPEN",
+							foreignCommits: false,
+							membership: "done",
+							// Stop tracking (Decision 19) is only offered on
+							// REPOSITORY_CHANGED.
+							failure: {
+								code: "REPOSITORY_CHANGED",
+								retryable: false,
+							},
+							retired: false,
+							attempt: 3,
+							pullRequest: null,
+						},
+						liveChanges: 1,
+					},
+				]),
+			];
+			renderList({ canReview: true, repositoryBacked: true });
+			await user.click(
+				await screen.findByRole("button", {
+					name: branchCopy.stopTracking,
+				}),
+			);
+			// `onChanged` fans out to `refreshState`, which refetches the
+			// aggregate (`branchOwners.refetch()`) — proven here by the list
+			// re-querying, since the mock's `queryFn` re-reads
+			// `state.branchOwners` fresh each time.
+			await waitFor(() =>
+				expect(state.stopTrackingBranch).toHaveBeenCalled(),
+			);
+			confirm.mockRestore();
+		});
 	});
 });

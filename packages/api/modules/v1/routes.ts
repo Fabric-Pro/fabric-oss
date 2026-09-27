@@ -15,6 +15,7 @@
  *   POST /projects/:id/instructions/changes  → Propose a coding-instructions change, for review
  *   POST /projects/:id/instructions/versions → Publish a coding-instructions change directly
  *   GET  /projects/:id/instructions/proposals/:snapshotId/pull-request → A repository proposal's pull request
+ *   GET  /projects/:id/instructions/proposals/open → The caller's open proposals' hashes
  *   PUT  /projects/:id/contexts/synced-files → Push one knowledge file into the project's Context by path
  *   DELETE /projects/:id/contexts/synced-files → Delete one synced knowledge file by path, in the version named
  */

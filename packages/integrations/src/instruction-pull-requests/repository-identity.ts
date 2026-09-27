@@ -100,6 +100,39 @@ const sameGitHubName = (a: string, b: string) =>
 	a.toLowerCase() === b.toLowerCase();
 
 /**
+ * The canonical text of an identity: two identities have the same key
+ * exactly when `sameRepository` says they name one repository. Member
+ * proposal branches key their permanent ref reservations on it (Fizzy #2738
+ * spec Decision 3), so its equality must never be looser or stricter than
+ * `sameRepository`'s. Azure DevOps segments are percent-encoded so a `/`
+ * inside a name cannot make two identities share a key.
+ */
+export function repositoryKey(identity: RepositoryIdentity): string {
+	switch (identity.provider) {
+		case "GITHUB":
+			return `github:${identity.owner.toLowerCase()}/${identity.repo.toLowerCase()}`;
+		case "GITLAB":
+			return `gitlab:${identity.projectPath}`;
+		case "AZURE_DEVOPS":
+			return `azure_devops:${identity.apiOrigin}/${[
+				identity.organization,
+				identity.project,
+				identity.repository,
+			]
+				.map(encodeURIComponent)
+				.join("/")}`;
+		default:
+			return unknownProvider(identity);
+	}
+}
+
+function unknownProvider(identity: never): never {
+	throw new Error(
+		`Unknown repository provider: ${String((identity as { provider?: unknown }).provider)}`,
+	);
+}
+
+/**
  * Equality of every field the adapters address. GitHub resolves an owner or
  * repository path case-insensitively (the OAuth identity check compares it
  * so too), so a URL whose case alone changed names the same repository;

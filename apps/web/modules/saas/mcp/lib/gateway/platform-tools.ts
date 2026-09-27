@@ -1185,8 +1185,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		description:
 			"Suggests an edit to a project's published coding instructions. Use this when working on a project turns up something its instructions get wrong, leave out, or no longer describe — a rule that has changed, a skill that needs a correction, a missing entry file. " +
 			"This does NOT change anything a project reads: it opens a proposal that somebody with permission to edit the instructions approves or rejects in Fabric's Coding Instructions tab. Say so when you report back, and do not describe the change as applied. " +
-			"On a project whose coding instructions come from its repository (changed in git and synced), the proposal becomes a pull request in that repository instead, reviewed and merged there: report it the same way, as a pull request awaiting review. " +
-			"Pass note with a short title and a description of why the change is needed; on a repository-backed project they become the pull request's title and description. " +
+			"On a project whose coding instructions come from its repository (changed in git and synced), the change is instead added to your own branch there, and Fabric opens a pull request for it if you do not already have one open; it is reviewed and merged in the repository. Report it the same way, as a pull request awaiting review. " +
+			"Pass note with a short title and a description of why the change is needed. On a repository-backed project, note becomes the message of the individual commit this change adds to your branch — not the pull request's title or description, which stay fixed ('Coding instruction changes from <you>' and a fixed paragraph) because that one pull request collects every change you propose there. " +
 			"Send the file's whole new content, not a patch: each change is 'put' (create or replace the file at that path) or 'delete'. Paths are the ones fabric_list_project_instructions reports. At most 50 changes in one call; for a wholesale replacement the folder is uploaded from the tab instead. " +
 			"baseSnapshotId is REQUIRED: pass the snapshot.id value that fabric_get_project_instruction_bundle or fabric_list_project_instructions returned — the version you actually read. A change written against a version that has since moved is refused rather than silently rebased; read the instructions again and redo the edit if it is.",
 		inputSchema: {
@@ -1238,7 +1238,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				note: {
 					type: "object",
 					description:
-						"Optional title and description for the proposal. The title is one line of at most 120 characters and the body at most 4096 bytes; never put a credential in either. On a repository-backed project they become the pull request's title and description.",
+						"Optional title and description for the proposal. The title is one line of at most 120 characters and the body at most 4096 bytes; never put a credential in either. On a repository-backed project, this becomes the message of the individual commit this change adds to your branch, not the pull request's title or description — those stay fixed because that one pull request collects every change you propose there.",
 					properties: {
 						title: {
 							type: "string",
@@ -1267,8 +1267,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 			"Use it when the work just showed something went wrong: a check that was skipped, an assumption that turned out false, a fix for a bug that could recur. Write what happened, why it was a mistake, and what to do instead. " +
 			"This does NOT change anything a project reads: like fabric_propose_project_instruction_change, it opens a proposal that somebody with permission to edit the instructions approves or rejects in Fabric's Coding Instructions tab. Say so when you report back, and do not describe the lesson as recorded or applied — it is awaiting review. " +
 			"The file is created at Lessons/<today's date>-<a slug of the title>.md; a title that collides with an existing file on the same day is suffixed -2, -3, and so on. " +
-			"On a project whose coding instructions come from its repository (changed in git and synced), the proposal becomes a pull request in that repository, reviewed and merged there: report it the same way, as a pull request awaiting review. " +
-			"note is the proposal's optional title and description, which on such a project become the pull request's.",
+			"On a project whose coding instructions come from its repository (changed in git and synced), the change is instead added to your own branch there, and Fabric opens a pull request for it if you do not already have one open; it is reviewed and merged in the repository. Report it the same way, as a pull request awaiting review. " +
+			"note is the proposal's optional title and description. On such a project, note becomes the message of the individual commit this lesson adds to your branch, not the pull request's title or description, which stay fixed because that one pull request collects every change you propose there.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1301,7 +1301,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				note: {
 					type: "object",
 					description:
-						"Optional title and description for the proposal. The title is one line of at most 120 characters and the body at most 4096 bytes; never put a credential in either. On a repository-backed project they become the pull request's title and description.",
+						"Optional title and description for the proposal. The title is one line of at most 120 characters and the body at most 4096 bytes; never put a credential in either. On a repository-backed project, this becomes the message of the individual commit this change adds to your branch, not the pull request's title or description — those stay fixed because that one pull request collects every change you propose there.",
 					properties: {
 						title: {
 							type: "string",
@@ -6285,6 +6285,10 @@ function proposalOutcomeMessage(result: {
 	status: string;
 	pullRequest?: {
 		state: string;
+		url: string | null;
+		// Non-null only for a member proposal branch (Fizzy #2738 spec §10);
+		// its own shape does not matter here, only whether there is one.
+		branch: unknown;
 		failure: { code: string } | null;
 	} | null;
 }): string {
@@ -6295,15 +6299,33 @@ function proposalOutcomeMessage(result: {
 	// (its admission blocked it) must not be announced as awaiting anyone.
 	if (result.proposalStatus === "PENDING" && result.pullRequest) {
 		if (result.pullRequest.state === "BLOCKED") {
+			const code = result.pullRequest.failure?.code ?? "unknown";
+			// A member proposal branch's BLOCKED (Fizzy #2738) is THIS
+			// change's own append/revert failure — never "no pull request
+			// was opened": the branch's one pull request can already be
+			// open, carrying other members' changes, while only this one
+			// change could not be added or confirmed on it. The legacy
+			// #2563 wording below is true only without a branch, where
+			// BLOCKED is that proposal's own, one-per-proposal pull request
+			// failing to open at all.
+			if (result.pullRequest.branch) {
+				const prLine = result.pullRequest.url
+					? ` Its pull request is ${result.pullRequest.url}.`
+					: "";
+				return (
+					`Proposed version ${result.version}, but Fabric could not add or confirm this change on your branch (${code}).${prLine} ` +
+					"Tell the user nothing has changed there yet and that the reason, and what to do about it, is shown in Fabric's Coding Instructions tab."
+				);
+			}
 			return (
-				`Proposed version ${result.version}, but Fabric could not open a pull request for it (${result.pullRequest.failure?.code ?? "unknown"}). ` +
+				`Proposed version ${result.version}, but Fabric could not open a pull request for it (${code}). ` +
 				"Tell the user nothing has changed and that the reason, and what to do about it, is shown in Fabric's Coding Instructions tab."
 			);
 		}
 		if (result.status !== "RECEIVING" && result.status !== "FAILED") {
 			return (
 				`Proposed version ${result.version} of this project's coding instructions, based on version ${result.baseVersion}. ` +
-				"This project's coding instructions come from its repository, so Fabric opens a pull request there once the files pass their checks; it is reviewed and merged in the repository. " +
+				"This project's coding instructions come from its repository, so Fabric adds the change to your own branch there once the files pass their checks, opening a pull request for it if you do not already have one open; it is reviewed and merged in the repository. " +
 				"It is a pull request awaiting review: nothing has changed for anyone reading the instructions until it is merged and synced. " +
 				"Tell the user you suggested the change as a pull request that is awaiting review; its link appears in Fabric's Coding Instructions tab."
 			);

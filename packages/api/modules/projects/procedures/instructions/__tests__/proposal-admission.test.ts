@@ -15,6 +15,7 @@
  * renderer and its secret scan — so every refusal here is the one that ships.
  */
 
+import { pullRequestContextSchemaV2 } from "@repo/instructions";
 import { Permissions } from "@repo/permissions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -479,7 +480,7 @@ describe("base", () => {
 });
 
 describe("the frozen destination", () => {
-	it("freezes the current generation, the sync's identity and the attempt-1 branch", async () => {
+	it("freezes the current generation and the sync's identity as a member branch context (v2)", async () => {
 		const admission = await admit({
 			note: { title: "Tighten the review skill", body: "Why: flaky" },
 		});
@@ -495,8 +496,11 @@ describe("the frozen destination", () => {
 			title: "Tighten the review skill",
 			body: "Why: flaky",
 		});
+		// Fizzy #2738 spec Decision 4, §4.2: every new REPOSITORY admission
+		// is a member branch proposal. Its branch owns the ref and the pull
+		// request's title and description, so the proposal freezes none.
 		expect(admission.context).toMatchObject({
-			v: 1,
+			v: 2,
 			integrationId: "int_1",
 			syncId: "sync_1",
 			syncGeneration: 4,
@@ -504,15 +508,17 @@ describe("the frozen destination", () => {
 			targetRef: "main",
 			rootPath: "instructions",
 			baseCommitSha: SHA,
-			branch: `fabric/instructions/${admission.operationId}`,
 			author: { name: "Pat Example", email: NOREPLY },
 			committer: { name: "Fabric", email: NOREPLY },
-			title: "Tighten the review skill",
 			message: "Tighten the review skill\n\nWhy: flaky",
 		});
-		expect(admission.context.body).toContain(
-			"Opened from Fabric project Example Project by Pat Example",
-		);
+		for (const dropped of ["branch", "title", "body"]) {
+			expect(admission.context).not.toHaveProperty(dropped);
+		}
+		// Strict: a v1-shaped value never parses as v2.
+		expect(
+			pullRequestContextSchemaV2.safeParse(admission.context).success,
+		).toBe(true);
 		expect(admission.context.committedAt).toMatch(
 			/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
 		);
@@ -523,11 +529,11 @@ describe("the frozen destination", () => {
 		});
 	});
 
-	it("titles a note-less proposal by its file count", async () => {
+	it("messages a note-less proposal's commit by its file count", async () => {
 		const admission = await admit({ fileCount: 3 });
 
 		expect(admission).toMatchObject({
-			context: { title: "Update coding instructions (3 files)" },
+			context: { message: "Update coding instructions (3 files)" },
 		});
 	});
 
@@ -638,8 +644,11 @@ describe("attribution", () => {
 		});
 		// Nothing about the refused attribution is frozen as if it were usable.
 		expect(
-			(admission as { context: { title: string } }).context.title,
+			(admission as { context: { message: string } }).context.message,
 		).toBe("");
+		expect(admission).toMatchObject({
+			context: { v: 2, author: { email: "unattributed" } },
+		});
 	});
 
 	it("an address-shaped proposer name falls back rather than reaching the author", async () => {

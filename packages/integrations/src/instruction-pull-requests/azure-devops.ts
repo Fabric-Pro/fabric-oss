@@ -347,4 +347,12 @@ export const azureDevOps: InstructionPullRequestAdapter = {
 		}
 		return observe(t, pull, "close");
 	},
+
+	pullRequestHeadRef() {
+		// Azure DevOps keeps no fetchable source-head ref: its build ref
+		// (`refs/pull/<id>/merge`) is a merge ref, and the source head is not
+		// retained after abandonment (plan Task 6 decision; spec §7). Every
+		// Azure DevOps operation is classified from the branch ref instead.
+		return null;
+	},
 };

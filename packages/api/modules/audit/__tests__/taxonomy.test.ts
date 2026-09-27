@@ -229,8 +229,10 @@ describe("audit.taxonomy handler", () => {
 		// deferred_scan_issues_found, deferred_scan_incomplete} (a version
 		// published before its secret scan at the member's acknowledged
 		// request, and that scan's verdict when it is not clean; counts and
-		// rule ids only, Fizzy #2737) = 152 + 3 = 155.
-		expect(result.actions).toHaveLength(155);
+		// rule ids only, Fizzy #2737) = 152 + 3 = 155,
+		// + 1 project.instructions.pull_request_branch_updated (a member
+		// proposal branch, Fizzy #2738) = 156.
+		expect(result.actions).toHaveLength(156);
 		expect(result.actions).toContain(
 			"project.context.repository_sync_configured",
 		);
@@ -261,6 +263,9 @@ describe("audit.taxonomy handler", () => {
 		// closed or canceled, closure requested by its author, re-issued by a
 		// human retry, and the merge sync it triggered acknowledged; operation
 		// id, provider, external id and codes, never a URL, Fizzy #2563) = 152.
+		// + 1 project.instructions.pull_request_branch_updated (a member
+		// proposal branch changed state, head or pull request; branch id,
+		// operation id and codes, never a URL, Fizzy #2738) = 153.
 		expect(result.actions).toContain(
 			"project.instructions.pull_request_opened",
 		);
@@ -275,6 +280,9 @@ describe("audit.taxonomy handler", () => {
 		);
 		expect(result.actions).toContain(
 			"project.instructions.pull_request_merge_sync_requested",
+		);
+		expect(result.actions).toContain(
+			"project.instructions.pull_request_branch_updated",
 		);
 		// The To Do list's writes. Completion is one toggle key; unsnoozing is
 		// its own, because "returned this to everyone's open view" is not a

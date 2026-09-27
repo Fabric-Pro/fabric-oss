@@ -850,6 +850,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		description:
 			"The secret scan of a version published before its scan could not finish, so the version was never checked. `metadata.reason` says whether the scan failed after its retries or its workflow stopped before recording a result.",
 	},
+	{
+		key: "project.instructions.pull_request_branch_updated",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.pull_request_branch_updated",
+		description:
+			"An established push on a member's proposal branch — a change added or withdrawn (`metadata.kind`), confirmed directly or by observing the pull request (`metadata.recovered: true`) — or the branch was retired or stopped being tracked (`metadata.change`). Never the pull request itself opening, merging or closing: those are separate actions. `metadata.branchId` names the branch.",
+	},
 	// ---- Feature / story ------------------------------------------------
 	{
 		key: "story.created",

@@ -8,6 +8,7 @@ import {
 	getInstructionSnapshot,
 	listInstructionFiles,
 	listInstructionProposals,
+	proposalBranchIdOf,
 	rejectInstructionProposal,
 } from "@repo/database";
 import { SNAPSHOT_LIMITS } from "@repo/instructions";
@@ -24,11 +25,14 @@ import {
 import { runInBackground } from "../../../weave/lib/run-in-background";
 import { requireHostingOrganizationId } from "./hosting-organization";
 import { canReviewInstructionProposals } from "./proposal-authorization";
+import { wakeBranchAfterCommand } from "./proposal-branch";
 import {
 	getProposalPullRequestStatus,
 	type MergeSyncReceipts,
+	type ProposalBranchAttachments,
 	type ProposalPullRequestRequester,
 	pullRequestStatusOf,
+	readBranchAttachments,
 	readMergeSyncReceipts,
 	refreshProposalPullRequest,
 	retryProposalPullRequest,
@@ -55,14 +59,26 @@ function noteOf(value: unknown): { title?: string; body?: string } | null {
  * One proposal as the tab and the CLI show it. A REPOSITORY proposal adds
  * where it goes, its note and its pull request (Fizzy #2563 spec §12); a
  * FABRIC one has `pullRequest: null`. `canCancel` stays false once closing
- * is requested: a second cancel would change nothing.
+ * is requested: a second cancel would change nothing, and it also reads
+ * false once a branch proposal's pull request settles (`proposalStatus`
+ * is then derived from the terminal `pullRequestState`, never `PENDING`).
+ *
+ * `isProposer` is the ownership half of that same rule, without the
+ * in-progress narrowing: it stays true on a settled row, so a terminal,
+ * unverified branch proposal can still offer "Propose again" (Fizzy #2738
+ * spec Decision 14) to its own author even though `canCancel` is false
+ * there. It mirrors the check `proposeAgain` enforces at
+ * `instruction-proposal-branch-commands.ts` (`snapshot.userId ===
+ * proposerUserId`).
  */
 async function proposalRow(
 	proposal: NonNullable<Awaited<ReturnType<typeof getInstructionProposal>>>,
 	scope: { projectId: string; organizationId: string },
 	viewerUserId?: string,
 	receipts?: MergeSyncReceipts,
+	attachments?: ProposalBranchAttachments,
 ) {
+	const isProposer = proposal.user.id === viewerUserId;
 	return {
 		id: proposal.id,
 		version: proposal.version,
@@ -76,13 +92,19 @@ async function proposalRow(
 		reviewedAt: proposal.reviewedAt,
 		isStale: proposal.isStale,
 		canCancel:
-			proposal.user.id === viewerUserId &&
+			isProposer &&
 			proposal.proposalStatus === "PENDING" &&
 			proposal.pullRequestState !== "CLOSE_REQUESTED" &&
 			["RECEIVING", "FAILED", "READY"].includes(proposal.status),
+		isProposer,
 		destination: proposal.proposalDestination,
 		note: noteOf(proposal.proposalNote),
-		pullRequest: await pullRequestStatusOf(proposal, scope, receipts),
+		pullRequest: await pullRequestStatusOf(
+			proposal,
+			scope,
+			receipts,
+			attachments,
+		),
 	};
 }
 
@@ -130,11 +152,23 @@ export const listInstructionProposalsProcedure = tenantProtectedProcedure
 		const scope = { projectId: input.projectId, organizationId };
 		// One receipt query for the page, not one per merged row: the tab
 		// polls this list while a dialog is open.
-		const receipts = await readMergeSyncReceipts(proposals.items, scope);
+		// The same for the member branch blocks (Fizzy #2738 spec §10).
+		const attachments = await readBranchAttachments(proposals.items, scope);
+		const receipts = await readMergeSyncReceipts(
+			proposals.items,
+			scope,
+			attachments,
+		);
 		return {
 			items: await Promise.all(
 				proposals.items.map((proposal) =>
-					proposalRow(proposal, scope, context.user.id, receipts),
+					proposalRow(
+						proposal,
+						scope,
+						context.user.id,
+						receipts,
+						attachments,
+					),
 				),
 			),
 			nextCursor: proposals.nextCursor,
@@ -296,10 +330,14 @@ export const getInstructionProposalProcedure = tenantProtectedProcedure
 			throw new ORPCError("NOT_FOUND", { message: "Proposal not found" });
 		}
 		return {
-			...(await proposalRow(proposal, {
-				projectId: input.projectId,
-				organizationId,
-			})),
+			...(await proposalRow(
+				proposal,
+				{
+					projectId: input.projectId,
+					organizationId,
+				},
+				context.user.id,
+			)),
 			changes:
 				proposal.status === "READY"
 					? await buildProposalChanges({
@@ -644,12 +682,55 @@ export const cancelInstructionProposalProcedure = tenantProtectedProcedure
 			},
 		});
 		if (!result.ok) {
+			if (result.withdrawBlocked) {
+				return withdrawBlockedError(result.withdrawBlocked);
+			}
 			return decisionError(result.reason);
+		}
+		// A member branch withdrawal (Fizzy #2738 spec §6.8) committed a
+		// command the branch workflow carries out: a revert, the branch's
+		// close, or a queue that moved on. Wake it; a lost wake is the
+		// sweeper's.
+		if (result.scope !== undefined && result.changed) {
+			await wakeBranchAfterCommand(
+				await proposalBranchIdOf({
+					snapshotId: input.snapshotId,
+					organizationId,
+				}),
+				{
+					projectId: input.projectId,
+					organizationId,
+					userId: context.user.id,
+				},
+			);
 		}
 		// `canceled` when nothing had been pushed or created, `close_requested`
 		// when Fabric now closes what it opened, null for a FABRIC proposal.
 		return { canceled: true as const, pullRequest: result.pullRequest };
 	});
+
+/**
+ * WITHDRAW_BLOCKED_BY_LATER_CHANGE (spec §6.8, §9): a later change on the
+ * member's branch wrote one of this change's files, so it cannot be
+ * withdrawn alone. 409, naming the paths (the first 20) and their count.
+ */
+function withdrawBlockedError(blocked: {
+	paths: string[];
+	count: number;
+}): never {
+	throw new ORPCError("CONFLICT", {
+		message: `A later change on your branch also edits ${blocked.paths.join(", ")}${
+			blocked.count > blocked.paths.length
+				? ` and ${blocked.count - blocked.paths.length} more`
+				: ""
+		}, so this change cannot be withdrawn on its own. Close the pull request to withdraw everything, or edit the branch in the repository.`,
+		data: {
+			reason: "WITHDRAW_BLOCKED_BY_LATER_CHANGE",
+			paths: blocked.paths,
+			count: blocked.count,
+		},
+	});
+}
 
 /** The retry's and cancel's audit request half, from this request. */
 function requesterOf(

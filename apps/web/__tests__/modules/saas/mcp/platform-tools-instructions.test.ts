@@ -2772,6 +2772,86 @@ describe("note parity and the pull-request block (Fizzy #2563)", () => {
 		expect(body.message).not.toContain("awaiting review");
 	});
 
+	/**
+	 * Fizzy #2738 spec §10: a member branch proposal's BLOCKED is that
+	 * CHANGE's own append/revert failure, never "no pull request was
+	 * opened" — the branch's one pull request can already be open, carrying
+	 * other changes, while only this one could not be added or confirmed on
+	 * it. `pullRequest.branch` (present only for a branch proposal) is the
+	 * discriminator between this wording and the legacy #2563 one above.
+	 */
+	it("says Fabric could not add or confirm the change on the branch, naming its pull request, for a member branch proposal", async () => {
+		m.submitInstructionChange.mockResolvedValue(
+			accepted({
+				pullRequest: {
+					...queued,
+					state: "BLOCKED",
+					url: "https://github.com/example-org/example-repo/pull/9",
+					externalId: "9",
+					branch: {
+						id: "branch_1",
+						ref: "fabric/instructions/members/reader-ab12/1",
+						state: "BLOCKED",
+					},
+					failure: {
+						phase: "append",
+						code: "BRANCH_CONFLICT",
+						retryable: false,
+						at: "2026-09-24T12:00:00.000Z",
+						params: { paths: "AGENTS.md" },
+					},
+				},
+			}),
+		);
+
+		const r = await propose();
+
+		const body = JSON.parse(r.content[0]!.text);
+		expect(body.pullRequest.state).toBe("BLOCKED");
+		expect(body.message).toContain(
+			"could not add or confirm this change on your branch",
+		);
+		expect(body.message).toContain(
+			"https://github.com/example-org/example-repo/pull/9",
+		);
+		expect(body.message).toContain("Coding Instructions tab");
+		expect(body.message).not.toContain(
+			"could not open a pull request for it",
+		);
+		expect(body.message).not.toContain("awaiting review");
+	});
+
+	it("gives the same branch wording, without a pull-request link, before that branch's pull request exists yet", async () => {
+		m.submitInstructionChange.mockResolvedValue(
+			accepted({
+				pullRequest: {
+					...queued,
+					state: "BLOCKED",
+					branch: {
+						id: "branch_1",
+						ref: "fabric/instructions/members/reader-ab12/1",
+						state: "BLOCKED",
+					},
+					failure: {
+						phase: "create",
+						code: "PR_CREATION_REFUSED",
+						retryable: false,
+						at: "2026-09-24T12:00:00.000Z",
+						params: {},
+					},
+				},
+			}),
+		);
+
+		const r = await propose();
+
+		const body = JSON.parse(r.content[0]!.text);
+		expect(body.message).toContain(
+			"could not add or confirm this change on your branch",
+		);
+		expect(body.message).not.toContain("Its pull request is");
+	});
+
 	it("passes the lesson tool's note through and returns its pull request", async () => {
 		m.submitInstructionChange.mockResolvedValue(accepted());
 
