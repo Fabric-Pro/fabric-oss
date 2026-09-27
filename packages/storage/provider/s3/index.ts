@@ -682,51 +682,56 @@ export const putObjectStream = async (
 export const ensureBuckets = async (bucketNames: string[]): Promise<void> => {
 	const client = getS3Client();
 
-	for (const bucket of bucketNames) {
-		try {
-			await withProviderBreaker("aws_s3", "head_bucket", () =>
-				client.send(new HeadBucketCommand({ Bucket: bucket })),
-			);
-		} catch (e: unknown) {
-			const httpStatus = (
-				e as { $metadata?: { httpStatusCode?: number } }
-			).$metadata?.httpStatusCode;
-			const name = (e as { name?: string }).name;
-			const code = httpStatus ?? name;
+	await Promise.all(
+		bucketNames.map(async (bucket) => {
+			try {
+				await withProviderBreaker("aws_s3", "head_bucket", () =>
+					client.send(new HeadBucketCommand({ Bucket: bucket })),
+				);
+			} catch (e: unknown) {
+				const httpStatus = (
+					e as { $metadata?: { httpStatusCode?: number } }
+				).$metadata?.httpStatusCode;
+				const name = (e as { name?: string }).name;
+				const code = httpStatus ?? name;
 
-			// Bucket doesn't exist (404) or we got NotFound/NoSuchBucket.
-			// S3-compatible endpoints (MinIO, R2) may return UnknownError when
-			// the 404 response body isn't parseable AWS XML — treat it the same.
-			if (
-				code === 404 ||
-				code === "NotFound" ||
-				code === "NoSuchBucket" ||
-				name === "UnknownError"
-			) {
-				logger.info(`Creating missing storage bucket: ${bucket}`);
-				try {
-					await withProviderBreaker("aws_s3", "create_bucket", () =>
-						client.send(
-							new CreateBucketCommand({ Bucket: bucket }),
-						),
-					);
-				} catch (createErr: unknown) {
-					// BucketAlreadyOwnedByYou is fine (race condition)
-					if (
-						(createErr as { name?: string }).name !==
-						"BucketAlreadyOwnedByYou"
-					) {
-						logger.error(
-							`Failed to create bucket ${bucket}:`,
-							createErr,
+				// Bucket doesn't exist (404) or we got NotFound/NoSuchBucket.
+				// S3-compatible endpoints (MinIO, R2) may return UnknownError when
+				// the 404 response body isn't parseable AWS XML — treat it the same.
+				if (
+					code === 404 ||
+					code === "NotFound" ||
+					code === "NoSuchBucket" ||
+					name === "UnknownError"
+				) {
+					logger.info(`Creating missing storage bucket: ${bucket}`);
+					try {
+						await withProviderBreaker(
+							"aws_s3",
+							"create_bucket",
+							() =>
+								client.send(
+									new CreateBucketCommand({ Bucket: bucket }),
+								),
 						);
+					} catch (createErr: unknown) {
+						// BucketAlreadyOwnedByYou is fine (race condition)
+						if (
+							(createErr as { name?: string }).name !==
+							"BucketAlreadyOwnedByYou"
+						) {
+							logger.error(
+								`Failed to create bucket ${bucket}:`,
+								createErr,
+							);
+						}
 					}
+				} else {
+					logger.error(`Failed to check bucket ${bucket}:`, e);
 				}
-			} else {
-				logger.error(`Failed to check bucket ${bucket}:`, e);
 			}
-		}
-	}
+		}),
+	);
 };
 
 /**
