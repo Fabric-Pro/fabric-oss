@@ -34,17 +34,23 @@ function wrap(ui: React.ReactElement) {
 	);
 }
 
-const { bindSet, nominate, sessionRole, orgAdmin } = vi.hoisted(() => ({
-	bindSet: vi.fn(),
-	nominate: vi.fn(),
-	sessionRole: { current: null as string | null },
-	orgAdmin: { current: false },
-}));
+const { bindSet, listForPrompt, nominate, sessionRole, orgAdmin } = vi.hoisted(
+	() => ({
+		bindSet: vi.fn(),
+		listForPrompt: vi.fn(),
+		nominate: vi.fn(),
+		sessionRole: { current: null as string | null },
+		orgAdmin: { current: false },
+	}),
+);
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		prompts: {
-			bindings: { set: (input: unknown) => bindSet(input) },
+			bindings: {
+				set: (input: unknown) => bindSet(input),
+				listForPrompt: (input: unknown) => listForPrompt(input),
+			},
 			nominations: { create: (input: unknown) => nominate(input) },
 		},
 	},
@@ -71,16 +77,20 @@ vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 	}),
 }));
 
-const openDialog = () =>
+const openDialog = async () => {
 	wrap(
 		<SetAsDefaultDialog
 			open
 			onOpenChange={() => {}}
 			promptName="Test prompt"
 			promptVersionId="pv-1"
+			promptId="p-1"
 			initialDocumentType="GENERAL"
 		/>,
 	);
+
+	await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
+};
 
 async function chooseScope(
 	user: ReturnType<typeof userEvent.setup>,
@@ -102,6 +112,8 @@ describe("SetAsDefaultDialog — set or propose", () => {
 	beforeEach(() => {
 		bindSet.mockReset();
 		bindSet.mockResolvedValue({ id: "binding-1" });
+		listForPrompt.mockReset();
+		listForPrompt.mockResolvedValue({ actions: [] });
 		nominate.mockReset();
 		nominate.mockResolvedValue({ id: "nom-1" });
 		sessionRole.current = null;
@@ -112,7 +124,7 @@ describe("SetAsDefaultDialog — set or propose", () => {
 		// Hiding it leaves a member no route to propose one, and no hint that
 		// proposing is possible at all.
 		const user = userEvent.setup();
-		openDialog();
+		await openDialog();
 
 		await user.click(
 			await screen.findByRole("combobox", { name: /scope/i }),
@@ -125,7 +137,7 @@ describe("SetAsDefaultDialog — set or propose", () => {
 
 	it("proposes when a member picks the organization tier", async () => {
 		const user = userEvent.setup();
-		openDialog();
+		await openDialog();
 
 		// Anchored: "System (every organization)" also contains the word.
 		await chooseScope(user, /^Organization \(/i);
@@ -150,7 +162,7 @@ describe("SetAsDefaultDialog — set or propose", () => {
 	it("sets directly when an org admin picks the organization tier", async () => {
 		orgAdmin.current = true;
 		const user = userEvent.setup();
-		openDialog();
+		await openDialog();
 
 		// Anchored: "System (every organization)" also contains the word.
 		await chooseScope(user, /^Organization \(/i);
@@ -173,7 +185,7 @@ describe("SetAsDefaultDialog — set or propose", () => {
 		// not thereby set the default every other tenant inherits.
 		orgAdmin.current = true;
 		const user = userEvent.setup();
-		openDialog();
+		await openDialog();
 
 		await chooseScope(user, /system/i);
 
@@ -192,7 +204,7 @@ describe("SetAsDefaultDialog — set or propose", () => {
 	it("sets directly when a platform admin picks the system tier", async () => {
 		sessionRole.current = "admin";
 		const user = userEvent.setup();
-		openDialog();
+		await openDialog();
 
 		await chooseScope(user, /system/i);
 
@@ -209,7 +221,7 @@ describe("SetAsDefaultDialog — set or propose", () => {
 		// The mirror of the case above: platform authority is not membership.
 		sessionRole.current = "admin";
 		const user = userEvent.setup();
-		openDialog();
+		await openDialog();
 
 		// Anchored: "System (every organization)" also contains the word.
 		await chooseScope(user, /^Organization \(/i);
@@ -223,7 +235,7 @@ describe("SetAsDefaultDialog — set or propose", () => {
 	it("never proposes a personal default", async () => {
 		// USER is the default scope. Nobody approves your own prompt for you.
 		const user = userEvent.setup();
-		openDialog();
+		await openDialog();
 
 		await submit(user);
 

@@ -65,16 +65,17 @@ function extractSinkFields(args: unknown[]): {
 	return { message: message ?? "", properties: properties ?? {}, error };
 }
 
-/** Redact an Error's message the same way log text is redacted, without
- *  mutating the original (other code may still hold and inspect it). */
+/** Redact an Error's message and stack the same way log text is redacted,
+ *  without mutating the original (other code may still hold and inspect it). */
 function redactError(error: Error): Error {
-	const { text, redactionCount } = redactLogText(error.message);
-	if (redactionCount === 0) {
+	const message = redactLogText(error.message);
+	const stack = error.stack ? redactLogText(error.stack) : undefined;
+	if (message.redactionCount === 0 && stack?.redactionCount === 0) {
 		return error;
 	}
-	const redacted = new Error(text);
+	const redacted = new Error(message.text);
 	redacted.name = error.name;
-	redacted.stack = error.stack;
+	redacted.stack = stack?.text ?? error.stack;
 	return redacted;
 }
 

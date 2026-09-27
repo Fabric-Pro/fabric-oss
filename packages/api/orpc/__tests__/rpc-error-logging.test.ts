@@ -14,14 +14,17 @@
  *   pnpm --filter @repo/api test orpc/__tests__/rpc-error-logging.test.ts
  */
 
+import { OpenAPIHandler } from "@orpc/openapi/fetch";
 import { ORPCError, os } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
 import { logger } from "@repo/logs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+	__resetAnonymous401BucketForTests,
 	createRpcErrorCaptureInterceptor,
 	createRpcErrorLoggingInterceptor,
+	createRpcRouteTemplateCaptureInterceptor,
 } from "../rpc-error-logging";
 
 // Reporter/log-entry types derived from `@repo/logs`'s own `logger` rather
@@ -52,6 +55,14 @@ const testRouter = {
 	forbidden: os.handler(() => {
 		throw new ORPCError("FORBIDDEN", { message: "not a member" });
 	}),
+	unauthorized: os.handler(() => {
+		throw new ORPCError("UNAUTHORIZED");
+	}),
+	openApiFailure: os
+		.route({ method: "GET", path: "/widgets/{slug}" })
+		.handler(() => {
+			throw new Error("unexpected openapi failure");
+		}),
 	// A procedure raising a raw SyntaxError itself (e.g. JSON.parse on stored
 	// data) — `createProcedureClient` rethrows a non-ORPCError unchanged
 	// (node_modules/@orpc/server/dist/shared/server.DEBcqOjg.mjs:104-109,
@@ -67,6 +78,7 @@ const testRouter = {
 function makeHandler() {
 	return new RPCHandler(testRouter, {
 		interceptors: [createRpcErrorCaptureInterceptor()],
+		clientInterceptors: [createRpcRouteTemplateCaptureInterceptor()],
 		rootInterceptors: [createRpcErrorLoggingInterceptor()],
 	});
 }
@@ -110,6 +122,62 @@ function rpcBody(input: unknown): string {
 }
 
 describe("createRpcErrorCaptureInterceptor + createRpcErrorLoggingInterceptor", () => {
+	it("uses the matched OpenAPI route template rather than a raw path value", async () => {
+		// Arrange
+		const handler = new OpenAPIHandler(testRouter, {
+			interceptors: [createRpcErrorCaptureInterceptor()],
+			clientInterceptors: [createRpcRouteTemplateCaptureInterceptor()],
+			rootInterceptors: [createRpcErrorLoggingInterceptor()],
+		});
+
+		// Act
+		await withCapturedLogs(async (entries) => {
+			const { response } = await handler.handle(
+				new Request("http://localhost/widgets/short-slug"),
+				{ context: {} },
+			);
+
+			// Assert
+			expect(response?.status).toBe(500);
+			expect(fieldsOf(entries[0])).toMatchObject({
+				procedure: "/widgets/{slug}",
+			});
+		});
+	});
+
+	it("bounds anonymous 401 logging before rpc.error is emitted", async () => {
+		// Arrange
+		__resetAnonymous401BucketForTests();
+		const handler = makeHandler();
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+
+		// Act
+		try {
+			for (let index = 0; index < 21; index++) {
+				await handler.handle(
+					new Request("http://localhost/unauthorized", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: rpcBody(undefined),
+					}),
+					{ context: {} },
+				);
+			}
+
+			// Assert
+			expect(warn).toHaveBeenCalledTimes(20);
+			expect(warn).toHaveBeenCalledWith(
+				"rpc.error",
+				expect.objectContaining({
+					event: "rpc.error",
+					procedure: "anonymous",
+				}),
+			);
+		} finally {
+			warn.mockRestore();
+			__resetAnonymous401BucketForTests();
+		}
+	});
 	it("logs exactly one warn line for a malformed request body (input-decode failure)", async () => {
 		await withCapturedLogs(async (entries) => {
 			const handler = makeHandler();

@@ -77,7 +77,12 @@ export function PromptsList({ organizationId }: Props) {
 
 	// Fetch prompts with optional scope filter
 	// IMPORTANT: Pass null for personal context to prevent session fallback
-	const { data, isLoading, error, refetch } = useQuery(
+	const {
+		data,
+		isPending: isLoading,
+		error,
+		refetch,
+	} = useQuery(
 		orpc.prompts.list.queryOptions({
 			input: {
 				organizationId: organizationId ?? null,

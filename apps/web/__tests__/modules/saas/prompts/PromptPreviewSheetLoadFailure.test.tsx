@@ -44,6 +44,10 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	}),
 }));
 
+vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
+	useConfirmationAlert: () => ({ confirm: vi.fn() }),
+}));
+
 vi.mock("sonner", () => ({
 	toast: { success: vi.fn(), error: vi.fn() },
 }));

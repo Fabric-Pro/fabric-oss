@@ -17,7 +17,7 @@
 
 import { SetAsDefaultDialog } from "@saas/prompts/components/SetAsDefaultDialog";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -33,11 +33,19 @@ function wrap(ui: React.ReactElement) {
 	);
 }
 
-const { bindSet } = vi.hoisted(() => ({ bindSet: vi.fn() }));
+const { bindSet, listForPrompt } = vi.hoisted(() => ({
+	bindSet: vi.fn(),
+	listForPrompt: vi.fn(),
+}));
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
-		prompts: { bindings: { set: (input: unknown) => bindSet(input) } },
+		prompts: {
+			bindings: {
+				set: (input: unknown) => bindSet(input),
+				listForPrompt: (input: unknown) => listForPrompt(input),
+			},
+		},
 	},
 }));
 
@@ -69,6 +77,8 @@ describe("SetAsDefaultDialog — persisted document type", () => {
 	beforeEach(() => {
 		bindSet.mockReset();
 		bindSet.mockResolvedValue({ id: "binding-1" });
+		listForPrompt.mockReset();
+		listForPrompt.mockResolvedValue({ actions: [] });
 	});
 
 	it("keeps the chosen document type for a multi-type agent", async () => {
@@ -79,8 +89,10 @@ describe("SetAsDefaultDialog — persisted document type", () => {
 				onOpenChange={() => {}}
 				promptName="Test prompt"
 				promptVersionId="pv-1"
+				promptId="p-1"
 			/>,
 		);
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
 
 		await pick(user, /agent/i, /^document generator$/i);
 		await pick(user, /document type/i, /^prd$/i);
@@ -89,11 +101,13 @@ describe("SetAsDefaultDialog — persisted document type", () => {
 			screen.getByRole("button", { name: /^set as default$/i }),
 		);
 
-		expect(bindSet).toHaveBeenCalledWith(
-			expect.objectContaining({
-				targetKey: "document_generator",
-				documentType: "PRD",
-			}),
+		await waitFor(() =>
+			expect(bindSet).toHaveBeenCalledWith(
+				expect.objectContaining({
+					targetKey: "document_generator",
+					documentType: "PRD",
+				}),
+			),
 		);
 	});
 
@@ -109,6 +123,7 @@ describe("SetAsDefaultDialog — persisted document type", () => {
 				onOpenChange={() => {}}
 				promptName="Test prompt"
 				promptVersionId="pv-1"
+				promptId="p-1"
 				storyKind="FEATURE"
 			/>,
 		);
@@ -136,8 +151,10 @@ describe("SetAsDefaultDialog — persisted document type", () => {
 				onOpenChange={() => {}}
 				promptName="Test prompt"
 				promptVersionId="pv-1"
+				promptId="p-1"
 			/>,
 		);
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
 
 		await pick(user, /agent/i, /^work item classifier$/i);
 
@@ -145,11 +162,13 @@ describe("SetAsDefaultDialog — persisted document type", () => {
 			screen.getByRole("button", { name: /^set as default$/i }),
 		);
 
-		expect(bindSet).toHaveBeenCalledWith(
-			expect.objectContaining({
-				targetKey: "work_item_classifier",
-				documentType: "GENERAL",
-			}),
+		await waitFor(() =>
+			expect(bindSet).toHaveBeenCalledWith(
+				expect.objectContaining({
+					targetKey: "work_item_classifier",
+					documentType: "GENERAL",
+				}),
+			),
 		);
 	});
 });

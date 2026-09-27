@@ -8,7 +8,11 @@
  */
 
 import { PromptManagementPage } from "@saas/prompts/components/PromptManagementPage";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	onlineManager,
+	QueryClient,
+	QueryClientProvider,
+} from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -105,5 +109,25 @@ describe("PromptManagementPage — list failure", () => {
 
 		await screen.findByText("No prompts found");
 		expect(listPrompts).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not render the empty library while offline and reloads on reconnect", async () => {
+		// Arrange
+		listPrompts.mockResolvedValue({ prompts: [] });
+		onlineManager.setOnline(false);
+
+		try {
+			// Act
+			wrap(<PromptManagementPage organizationSlug="acme" />);
+
+			// Assert
+			expect(
+				screen.queryByText("No prompts found"),
+			).not.toBeInTheDocument();
+			onlineManager.setOnline(true);
+			await screen.findByText("No prompts found");
+		} finally {
+			onlineManager.setOnline(true);
+		}
 	});
 });

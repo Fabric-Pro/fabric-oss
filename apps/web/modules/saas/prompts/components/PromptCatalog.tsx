@@ -108,7 +108,7 @@ export function PromptCatalog() {
 	const [openFeatureType, setOpenFeatureType] =
 		useState<PromptFeatureTypeKey | null>(null);
 
-	const { data, isLoading, error, refetch } = useQuery({
+	const { data, isPending, error, refetch } = useQuery({
 		queryKey: ["prompt-catalog", organizationId],
 		queryFn: async () =>
 			await orpcClient.prompts.catalog.list({
@@ -285,7 +285,7 @@ export function PromptCatalog() {
 													action.id,
 												)}
 												basePath={basePath}
-												isLoading={isLoading}
+												isLoading={isPending}
 												isFocused={focusedActionIds.has(
 													action.id,
 												)}
@@ -329,7 +329,7 @@ export function PromptCatalog() {
 									action={action}
 									entry={bindingsByAction.get(action.id)}
 									basePath={basePath}
-									isLoading={isLoading}
+									isLoading={isPending}
 									isFocused={focusedActionIds.has(action.id)}
 									actionsByPrompt={actionsByPrompt}
 									onChanged={() => {
@@ -350,7 +350,7 @@ function ActionRow({
 	action,
 	entry,
 	basePath,
-	isLoading,
+	isLoading: isPending,
 	isFocused,
 	actionsByPrompt,
 	onChanged,
@@ -418,7 +418,7 @@ function ActionRow({
 					<p className="truncate font-medium text-sm">
 						{action.label}
 					</p>
-					{isLoading ? (
+					{isPending ? (
 						<p className="text-muted-foreground text-xs">
 							Loading…
 						</p>
@@ -463,7 +463,7 @@ function ActionRow({
 						</p>
 					)}
 
-					{!isLoading && !effective && (
+					{!isPending && !effective && (
 						// Not an error state: plenty of actions ship with no bound
 						// prompt and fall back to the agent's in-code text.
 						<p className="text-muted-foreground text-xs">
@@ -472,7 +472,7 @@ function ActionRow({
 					)}
 				</div>
 
-				{!isLoading && (
+				{!isPending && (
 					<PromptDefaultBadge
 						isDefault={Boolean(effective)}
 						isBound={Boolean(entry?.prompts.length)}
@@ -482,7 +482,7 @@ function ActionRow({
 
 				{/* FR9/FR10: every prompt bound to this action, and a way to
 				    switch to one of them. */}
-				{expanded && !isLoading && (
+				{expanded && !isPending && (
 					<div className="w-full">
 						<ActionPromptList
 							targetKey={action.targetKey}

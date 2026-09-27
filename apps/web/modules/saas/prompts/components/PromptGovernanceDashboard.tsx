@@ -110,7 +110,12 @@ export function PromptGovernanceDashboard() {
 	const [overridesOpen, setOverridesOpen] = useState(true);
 	const [fallbacksOpen, setFallbacksOpen] = useState(true);
 
-	const { data, isLoading, error, refetch } = useQuery({
+	const {
+		data,
+		isPending: isLoading,
+		error,
+		refetch,
+	} = useQuery({
 		queryKey: ["prompt-catalog", organizationId],
 		queryFn: async () =>
 			await orpcClient.prompts.catalog.list({

@@ -51,7 +51,7 @@
  */
 
 import { ORPCError } from "@orpc/client";
-import type { Context } from "@orpc/server";
+import type { Context, ProcedureClientInterceptorOptions } from "@orpc/server";
 import type {
 	StandardHandleResult,
 	StandardHandlerInterceptorOptions,
@@ -73,7 +73,20 @@ type RpcInterceptor<T extends Context> = (
 	},
 ) => Promise<StandardHandleResult>;
 
+type RpcClientInterceptor<T extends Context> = (
+	options: ProcedureClientInterceptorOptions<
+		T,
+		Record<never, never>,
+		Record<never, never>
+	> & {
+		next: () => Promise<unknown>;
+	},
+) => Promise<unknown>;
+
 const MAX_MESSAGE_CHARS = 300;
+const ANONYMOUS_401_LIMIT = 20;
+const ANONYMOUS_401_WINDOW_MS = 60_000;
+let anonymous401Bucket = { windowStart: 0, count: 0 };
 
 function truncateMessage(message: string): string {
 	return message.length > MAX_MESSAGE_CHARS
@@ -82,18 +95,70 @@ function truncateMessage(message: string): string {
 }
 
 /**
- * The procedure path, computed the same way `StandardHandler.handle` itself
- * computes it before matching (`prefix2 ? url.pathname.replace(prefix2, "")
- * : url.pathname`, then trimmed). Recomputed from the URL rather than read
- * off the match (not available at either interception level) — identical
- * value for any request that matched a route, not an approximation.
+ * Safe fallback when a handler cannot expose a matched route template. The
+ * client interceptor records the authoritative template for matched procedures;
+ * this avoids leaking identifier-shaped path segments for pre-match failures.
  */
 function procedurePathFromRequest(
 	url: URL,
 	prefix: string | undefined,
 ): string {
 	const pathname = prefix ? url.pathname.replace(prefix, "") : url.pathname;
-	return pathname.replace(/^\/+|\/+$/g, "");
+	return pathname
+		.replace(/^\/+|\/+$/g, "")
+		.split("/")
+		.map((segment) =>
+			/^(?:\d+|[0-9a-f]{8}-[0-9a-f-]{27}|[a-z]+_[a-zA-Z0-9]{6,}|[a-zA-Z0-9]{20,})$/i.test(
+				segment,
+			)
+				? ":id"
+				: segment,
+		)
+		.join("/");
+}
+
+function routeTemplateFromContext(context: Context): string | undefined {
+	if (
+		typeof context === "object" &&
+		context !== null &&
+		"routeTemplate" in context &&
+		typeof context.routeTemplate === "string"
+	) {
+		return context.routeTemplate;
+	}
+	return undefined;
+}
+
+/** Captures the OpenAPI route template after matching, before execution. */
+export function createRpcRouteTemplateCaptureInterceptor<
+	T extends Context = Context,
+>(): RpcClientInterceptor<T> {
+	return async (options) => {
+		const template = options.procedure["~orpc"].route.path;
+		if (typeof template === "string") {
+			Object.assign(options.context, { routeTemplate: template });
+		}
+		return await options.next();
+	};
+}
+
+function shouldLogAnonymous401(now = Date.now()): boolean {
+	if (now - anonymous401Bucket.windowStart >= ANONYMOUS_401_WINDOW_MS) {
+		anonymous401Bucket = { windowStart: now, count: 0 };
+	}
+	if (anonymous401Bucket.count >= ANONYMOUS_401_LIMIT) {
+		return false;
+	}
+	anonymous401Bucket.count++;
+	return true;
+}
+
+function resetAnonymous401Bucket(): void {
+	anonymous401Bucket = { windowStart: 0, count: 0 };
+}
+
+export function __resetAnonymous401BucketForTests(): void {
+	resetAnonymous401Bucket();
 }
 
 /**
@@ -159,15 +224,22 @@ export function createRpcErrorLoggingInterceptor<
 		if (status === undefined || status < 400) {
 			return result;
 		}
+		if (status === 401 && !shouldLogAnonymous401()) {
+			return result;
+		}
 
 		const error = capturedErrors.get(options.request);
 		capturedErrors.delete(options.request);
 		const fields = {
 			event: "rpc.error" as const,
-			procedure: procedurePathFromRequest(
-				options.request.url,
-				options.prefix,
-			),
+			procedure:
+				status === 401
+					? "anonymous"
+					: (routeTemplateFromContext(options.context) ??
+						procedurePathFromRequest(
+							options.request.url,
+							options.prefix,
+						)),
 			code: deriveCode(error, status),
 			status,
 			message: truncateMessage(deriveMessage(error, status)),

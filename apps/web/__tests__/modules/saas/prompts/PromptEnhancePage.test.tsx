@@ -14,10 +14,14 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getById, setIsFullscreen } = vi.hoisted(() => ({
-	getById: vi.fn(),
-	setIsFullscreen: vi.fn(),
-}));
+const { getById, setIsFullscreen, listForPrompt, confirmMock } = vi.hoisted(
+	() => ({
+		getById: vi.fn(),
+		setIsFullscreen: vi.fn(),
+		listForPrompt: vi.fn(),
+		confirmMock: vi.fn(),
+	}),
+);
 
 vi.mock("@saas/shared/contexts/FullscreenContext", () => ({
 	useFullscreen: () => ({ isFullscreen: false, setIsFullscreen }),
@@ -43,7 +47,18 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 }));
 
 vi.mock("@shared/lib/orpc-client", () => ({
-	orpcClient: { prompts: { version: { create: vi.fn() } } },
+	orpcClient: {
+		prompts: {
+			version: { create: vi.fn() },
+			bindings: {
+				listForPrompt: (input: unknown) => listForPrompt(input),
+			},
+		},
+	},
+}));
+
+vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
+	useConfirmationAlert: () => ({ confirm: confirmMock }),
 }));
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
@@ -73,7 +88,15 @@ vi.mock("@saas/shared/components/copilot/CopilotChatSessionProvider", () => ({
 		children,
 }));
 vi.mock("@saas/prompts/components/PromptContentEnhancer", () => ({
-	PromptContentEnhancer: () => null,
+	PromptContentEnhancer: ({
+		onSave,
+	}: {
+		onSave: (content: string) => void;
+	}) => (
+		<button type="button" onClick={() => onSave("Changed body")}>
+			Save enhanced body
+		</button>
+	),
 }));
 
 function wrap(ui: React.ReactElement) {
@@ -184,5 +207,73 @@ describe("PromptEnhancePage — full-bleed CopilotSidebar host", () => {
 		expect(shell?.className).toContain("md:left-[72px]");
 		expect(shell?.className).not.toContain("inset-0");
 		expect(shell?.className).toContain("transition-[right]");
+	});
+});
+
+describe("PromptEnhancePage — shared-content save warning", () => {
+	beforeEach(() => {
+		getById.mockReset();
+		getById.mockResolvedValue({
+			id: "p-1",
+			name: "Meeting summary",
+			format: "PLAIN_TEXT",
+			tags: [],
+			versions: [{ content: "Original body" }],
+		});
+		listForPrompt.mockReset();
+		listForPrompt.mockResolvedValue({
+			actions: [
+				{ targetKey: "specs", documentType: "PRD", storyKind: null },
+				{
+					targetKey: "architecture",
+					documentType: "ARCHITECTURE",
+					storyKind: null,
+				},
+			],
+		});
+		confirmMock.mockReset();
+	});
+
+	it("checks current bindings before saving enhanced content", async () => {
+		// Arrange
+		const user = userEvent.setup();
+		wrap(<PromptEnhancePage promptId="p-1" />);
+		const save = await screen.findByRole("button", {
+			name: "Save enhanced body",
+		});
+
+		// Act
+		await user.click(save);
+
+		// Assert
+		expect(listForPrompt).toHaveBeenCalledWith({
+			promptId: "p-1",
+			organizationId: null,
+		});
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: "This prompt is used by several actions",
+			}),
+		);
+	});
+
+	it("asks before saving when the fresh bindings read fails", async () => {
+		// Arrange
+		listForPrompt.mockRejectedValue(new Error("network error"));
+		const user = userEvent.setup();
+		wrap(<PromptEnhancePage promptId="p-1" />);
+		const save = await screen.findByRole("button", {
+			name: "Save enhanced body",
+		});
+
+		// Act
+		await user.click(save);
+
+		// Assert
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: "Could not check which actions use this prompt",
+			}),
+		);
 	});
 });
