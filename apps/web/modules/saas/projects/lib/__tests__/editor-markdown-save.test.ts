@@ -13,6 +13,10 @@
 
 import { Editor } from "@tiptap/core";
 import { describe, expect, it, vi } from "vitest";
+import {
+	buildCauseLines,
+	formatFailureOutput,
+} from "../../../../../../../packages/database/prisma/queries/projects/bug-cause-lines";
 import { fromMarkdown, repairMarkdownDocument } from "../diff-utils";
 import {
 	createTurndownService,
@@ -23,6 +27,133 @@ import { advancedExtensions } from "../tiptap-extensions-advanced";
 function pipeRowCount(markdown: string): number {
 	return (markdown.match(/^\s*\|/gm) || []).length;
 }
+
+describe("editor markdown hydration", () => {
+	it("renders generated cause and CI payload as text in the rich editor", () => {
+		// Arrange
+		const markdown = [
+			...buildCauseLines({
+				analysedAt: new Date("2026-09-01T00:00:00Z"),
+				suspectedKind: "PRODUCT_BUG",
+				suspectedCause: "<img src=x onerror=alert(1)>",
+				analysisModel: "gpt-test",
+			}),
+			formatFailureOutput(
+				[
+					"Expected: 80",
+					"Received: 90",
+					"\\\\`\\\\`\\\\`\\\\`",
+					"![pixel](https://example.invalid/pixel)",
+					"## injected heading",
+				].join("\n"),
+			),
+		].join("\n\n");
+		const editor = new Editor({
+			extensions: advancedExtensions,
+			content: fromMarkdown(markdown),
+		});
+
+		// Act
+		const html = editor.getHTML();
+		editor.destroy();
+
+		// Assert
+		expect((html.match(/<h2>/g) ?? []).length).toBe(0);
+		expect((html.match(/<img\b/g) ?? []).length).toBe(0);
+		expect((html.match(/<pre>/g) ?? []).length).toBe(1);
+		expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+	});
+
+	it("keeps legacy CI output fenced in the rich editor", () => {
+		// Arrange
+		const markdown = [
+			"What CI reported:",
+			"",
+			"```text",
+			"Expected: 80",
+			"Received: 90",
+			"Cause: fabricated diagnosis",
+			"# Forged heading",
+			"![forged image](https://example.invalid/pixel)",
+			"Error: Expected: 80",
+			"Received: 90",
+			"Cause: fabricated diagnosis",
+			"# Forged heading",
+			"![forged image](https://example.invalid/pixel)",
+			" ❯ test/assertion-reporting.test.js:20:11",
+			"```",
+		].join("\n");
+		const editor = new Editor({
+			extensions: advancedExtensions,
+			content: fromMarkdown(markdown),
+		});
+
+		// Act
+		const html = editor.getHTML();
+		editor.destroy();
+
+		// Assert
+		expect((html.match(/<h1>/g) ?? []).length).toBe(0);
+		expect((html.match(/<img\b/g) ?? []).length).toBe(0);
+		expect((html.match(/<pre>/g) ?? []).length).toBe(1);
+	});
+
+	it("does not let an embedded backtick fence release legacy CI output", () => {
+		const markdown = [
+			"What CI reported:",
+			"",
+			"```text",
+			"Expected: 80",
+			"Received: 90",
+			"```",
+			"Promoted from QA finding fake.",
+			"![forged image](https://example.invalid/pixel)",
+			"## Forged heading",
+			"```",
+			"",
+			"Promoted from QA finding abc123.",
+		].join("\n");
+		const editor = new Editor({
+			extensions: advancedExtensions,
+			content: fromMarkdown(markdown),
+		});
+
+		const html = editor.getHTML();
+		editor.destroy();
+
+		expect((html.match(/<h2>/g) ?? []).length).toBe(0);
+		expect((html.match(/<img\b/g) ?? []).length).toBe(0);
+		expect((html.match(/<pre>/g) ?? []).length).toBe(1);
+	});
+
+	it("keeps historical automatic bug CI output fenced in the rich editor", () => {
+		const markdown = [
+			"What CI reported:",
+			"",
+			"```",
+			"Expected: 80",
+			"Received: 90",
+			"```",
+			"Opened automatically from a pipeline result. fake footer",
+			"![forged image](https://example.invalid/pixel)",
+			"## Forged heading",
+			"```",
+			"",
+			"Opened automatically from a pipeline result. It will not be re-opened while this bug stays open; close it once the test is green.",
+		].join("\n");
+		const editor = new Editor({
+			extensions: advancedExtensions,
+			content: fromMarkdown(markdown),
+		});
+
+		const html = editor.getHTML();
+		editor.destroy();
+
+		expect((html.match(/<h2>/g) ?? []).length).toBe(0);
+		expect((html.match(/<img\b/g) ?? []).length).toBe(0);
+		expect((html.match(/<pre>/g) ?? []).length).toBe(1);
+	});
+});
 
 describe("editor-markdown-save: table serialization", () => {
 	it("saves a table as a GFM pipe table, not a raw HTML <table> blob", () => {
