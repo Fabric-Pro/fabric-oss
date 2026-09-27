@@ -13,6 +13,7 @@
  */
 import { db, Prisma } from "../client";
 import { readBranchWork } from "./instruction-proposal-branches";
+import { observeDue } from "./instruction-proposal-pull-requests";
 
 /** One branch a sub-batch selected: ids, the attempt read at selection, the integration. */
 export type DueBranch = {
@@ -166,7 +167,7 @@ export async function selectDueBranches(limits: {
 					excluded,
 				) => Prisma.sql`/* branch_sweep:observe */ SELECT ${f.columns} ${from(excluded)}
 					AND b."state" = 'OPEN'
-					AND (b."lastCheckedAt" IS NULL OR b."lastCheckedAt" <= ${f.nowUtc} - interval '10 minutes')
+					AND ${observeDue(Prisma.sql`b."lastCheckedAt"`, f.nowUtc)}
 					AND ${f.due}
 					ORDER BY b."lastCheckedAt" ASC NULLS FIRST, b."id" ASC LIMIT ${limits.observe}`,
 			);

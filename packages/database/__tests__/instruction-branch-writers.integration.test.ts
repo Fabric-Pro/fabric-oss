@@ -1801,6 +1801,19 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					pullRequestExternalId: "8",
 					lastCheckedAt: ago(MINUTE_MS),
 				});
+				// Fizzy #2761: a check whose stamp landed seconds into its
+				// tick is due on the tick ten minutes later, and still not on
+				// the tick five minutes later.
+				await branch("observedTwoTicksAgo", {
+					state: "OPEN",
+					pullRequestExternalId: "9",
+					lastCheckedAt: ago(9 * MINUTE_MS + 55_000),
+				});
+				await branch("observedLastTick", {
+					state: "OPEN",
+					pullRequestExternalId: "10",
+					lastCheckedAt: ago(4 * MINUTE_MS),
+				});
 				const appendDue = await branch("restartAppend", {
 					state: "PENDING",
 				});
@@ -1877,7 +1890,9 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					].sort(),
 				);
 				expect(mine(due.mergeSync)).toEqual(["mergeSync"]);
-				expect(mine(due.observe)).toEqual(["observe"]);
+				expect(mine(due.observe)).toEqual(
+					["observe", "observedTwoTicksAgo"].sort(),
+				);
 				expect(mine(due.restart)).toEqual(
 					["restartAppend", "restartRehome"].sort(),
 				);

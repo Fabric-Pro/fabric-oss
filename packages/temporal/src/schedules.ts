@@ -345,9 +345,9 @@ export const INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_SCHEDULE_ID =
 	"instruction-proposal-pull-request-sweep";
 export const INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_NAME =
 	"instructionProposalPullRequestSweepWorkflow";
-// Every five minutes (spec §9): Observe revisits an open pull request about
-// every 10 to 15 minutes, and a crashed open is recovered within a tick or
-// two.
+// Every five minutes (spec §9): Observe revisits an open pull request every
+// 10 minutes, on every second tick (`PROPOSAL_OBSERVE_DUE_AFTER_SECONDS`,
+// Fizzy #2761), and a crashed open is recovered within a tick or two.
 export const INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_CRON_SCHEDULE =
 	"*/5 * * * *";
 // 30 s over the sweeper's 4-minute budget, as the poll's (plan Decision 16):

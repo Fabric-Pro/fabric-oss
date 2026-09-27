@@ -2864,7 +2864,7 @@ describe("selectDueProposalOperations (spec §9)", () => {
 		);
 		expect(observe).toContain(`s."pullRequestState" = 'OPEN'`);
 		expect(observe).toContain(
-			`(s."pullRequestLastCheckedAt" IS NULL OR s."pullRequestLastCheckedAt" <= (now() AT TIME ZONE 'UTC') - interval '10 minutes')`,
+			`(s."pullRequestLastCheckedAt" IS NULL OR s."pullRequestLastCheckedAt" <= (now() AT TIME ZONE 'UTC') - interval '330 seconds')`,
 		);
 	});
 

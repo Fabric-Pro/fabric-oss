@@ -38,6 +38,7 @@ vi.mock("../src/scripts/ensure-monitoring-schedules", () => ({
 	ensureMonitoringSchedules: vi.fn().mockResolvedValue(undefined),
 }));
 
+import { PROPOSAL_OBSERVE_DUE_AFTER_SECONDS } from "@repo/database";
 import { PROPOSAL_SWEEP_BUDGET_MS } from "../src/lib/instruction-proposal-pull-request-types";
 import {
 	INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_CRON_SCHEDULE,
@@ -178,6 +179,22 @@ describe("the proposal pull-request sweeper schedule", () => {
 		expect(
 			INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_EXECUTION_TIMEOUT_MS,
 		).toBeGreaterThan(PROPOSAL_SWEEP_BUDGET_MS);
+	});
+
+	it("makes a checked pull request due on the second tick after its check, never the first (Fizzy #2761)", () => {
+		// A check stamps its completion time, anywhere from the start of
+		// its tick to the end of the budget. Observe's due-after must skip
+		// the next tick even for a stamp at the very start, and catch the
+		// one after even for a stamp at the very end, each with 30 s of
+		// scheduling slack.
+		const interval = cronIntervalMs(
+			INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_CRON_SCHEDULE,
+		);
+		const dueAfter = PROPOSAL_OBSERVE_DUE_AFTER_SECONDS * 1000;
+		expect(dueAfter - interval).toBeGreaterThanOrEqual(30_000);
+		expect(
+			2 * interval - (PROPOSAL_SWEEP_BUDGET_MS + dueAfter),
+		).toBeGreaterThanOrEqual(30_000);
 	});
 });
 

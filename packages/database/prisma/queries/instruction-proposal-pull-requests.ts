@@ -1877,6 +1877,33 @@ export type DueProposalOperations = {
  * TIME ZONE 'UTC'` because the columns are `timestamp without time zone`
  * holding UTC, as `claimPullRequestOpen` explains.
  */
+/**
+ * Seconds after its last check that an OPEN pull request is due for Observe
+ * again (Fizzy #2761). The sweeper fires every five minutes and Observe is
+ * meant to revisit a pull request every ten, i.e. on every second tick. A
+ * check stamps its own completion time, which lands anywhere within its
+ * tick's four-minute budget, so "ten minutes since the stamp" was never true
+ * on the tick ten minutes later: a pull request checked at 18:10:05 was
+ * skipped at 18:20:00 and taken at 18:25, every time.
+ *
+ * Measured from the stamp, a row checked by one tick must be due on the
+ * tick ten minutes after it and not on the tick five minutes after it. With
+ * the stamp at most the 240 s budget into its tick, any value above 300 s
+ * and at most 360 s does both; 330 s leaves 30 s of scheduling slack on each
+ * side. The temporal sweep's own test pins this against its budget and
+ * cron.
+ */
+export const PROPOSAL_OBSERVE_DUE_AFTER_SECONDS = 330;
+
+/**
+ * Observe's due test on a last-checked column, shared by the #2563 rows and
+ * the member proposal branches so the two lanes cannot drift apart. Never
+ * checked is due at once.
+ */
+export function observeDue(lastCheckedAt: Prisma.Sql, nowUtc: Prisma.Sql) {
+	return Prisma.sql`(${lastCheckedAt} IS NULL OR ${lastCheckedAt} <= ${nowUtc} - ${Prisma.raw(`interval '${PROPOSAL_OBSERVE_DUE_AFTER_SECONDS} seconds'`)})`;
+}
+
 function sweepFragments() {
 	const nowUtc = Prisma.sql`(now() AT TIME ZONE 'UTC')`;
 	const retryableBlocked = Prisma.sql`(s."pullRequestState" = 'BLOCKED' AND (s."pullRequestFailure"->>'retryable') = 'true')`;
@@ -1999,7 +2026,7 @@ export async function selectDueProposalOperations(limits: {
 					excluded,
 				) => Prisma.sql`/* sweep:observe */ SELECT ${columns} ${from(excluded)}
 					AND s."pullRequestState" = 'OPEN'
-					AND (s."pullRequestLastCheckedAt" IS NULL OR s."pullRequestLastCheckedAt" <= ${nowUtc} - interval '10 minutes')
+					AND ${observeDue(Prisma.sql`s."pullRequestLastCheckedAt"`, nowUtc)}
 					AND ${due}
 					ORDER BY s."pullRequestLastCheckedAt" ASC NULLS FIRST, s."id" ASC LIMIT ${limits.observe}`,
 			);
