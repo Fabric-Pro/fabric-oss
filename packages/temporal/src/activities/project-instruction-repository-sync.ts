@@ -181,12 +181,14 @@ export async function beginInstructionRepositorySyncRun(
 		};
 	}
 	if (isAutomaticInstructionSyncTrigger(input.trigger)) {
-		// Eligibility is checked before `expected`: every writer of `automatic`
-		// bumps the generation, and the poll/webhook always pass `expected`
-		// from the row they read. Checking `expected` first would turn a
-		// member's automatic-off flip after a poll/webhook already started
-		// into a warning-severity CONFIGURATION_CHANGED failure instead of the
-		// intended SKIPPED outcome (plan Decision 47).
+		// Eligibility is checked before `expected`: a configure that turns
+		// automatic sync off may also re-point the row (a new repository,
+		// branch, folder or ignore rules bump the generation; the toggle alone
+		// keeps it, Fizzy #2744), and the poll/webhook always pass `expected`
+		// from the row they read. Checking `expected` first would turn such a
+		// flip after a poll/webhook already started into a warning-severity
+		// CONFIGURATION_CHANGED failure instead of the intended SKIPPED
+		// outcome (plan Decision 47).
 		if (!row.automatic) {
 			return { ok: false, skipped: "automatic_disabled", context };
 		}

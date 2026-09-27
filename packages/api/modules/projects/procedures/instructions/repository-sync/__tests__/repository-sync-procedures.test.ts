@@ -165,6 +165,7 @@ beforeEach(() => {
 		sync: {
 			id: "sync_1",
 			generation: 3,
+			repositoryIntegrationId: "int_1",
 			ref: "develop",
 			rootPath: "agents",
 			automatic: false,
@@ -174,6 +175,7 @@ beforeEach(() => {
 			rootPath: "agents",
 			repositoryIntegrationId: "int_1",
 		},
+		ignoreGlobsChanged: false,
 	});
 	m.startInstructionRepositorySync.mockResolvedValue(true);
 	m.deleteInstructionRepositorySync.mockResolvedValue({
@@ -488,8 +490,10 @@ describe("repositorySync.configure", () => {
 				metadata: {
 					provider: "GITHUB",
 					automatic: false,
+					repositoryChanged: false,
 					refChanged: true,
 					rootPathChanged: false,
+					ignoreGlobsChanged: false,
 					generation: 3,
 				},
 			}),
@@ -501,6 +505,93 @@ describe("repositorySync.configure", () => {
 		for (const call of m.recordAuditFromRequest.mock.calls) {
 			expect(JSON.stringify(call)).not.toContain(SECRET_TOKEN);
 		}
+	});
+
+	it("audits the automatic toggle as a configure that changed nothing synced, with the generation it kept (Fizzy #2744)", async () => {
+		const stored = {
+			repositoryIntegrationId: "int_1",
+			ref: "develop",
+			rootPath: "agents",
+		};
+		m.upsertInstructionRepositorySync.mockResolvedValue({
+			sync: { id: "sync_1", generation: 3, automatic: true, ...stored },
+			previous: stored,
+			ignoreGlobsChanged: false,
+		});
+
+		expect(
+			await handlers.configure?.({
+				input: { ...input, automatic: true },
+				context: ctx,
+			}),
+		).toEqual({ syncId: "sync_1", generation: 3 });
+
+		expect(m.recordAuditFromRequest).toHaveBeenCalledTimes(1);
+		expect(m.recordAuditFromRequest.mock.calls[0]?.[1]).toMatchObject({
+			action: "project.instructions.repository_sync_configured",
+			metadata: {
+				automatic: true,
+				repositoryChanged: false,
+				refChanged: false,
+				rootPathChanged: false,
+				ignoreGlobsChanged: false,
+				generation: 3,
+			},
+		});
+	});
+
+	it("audits a repository change", async () => {
+		m.upsertInstructionRepositorySync.mockResolvedValue({
+			sync: {
+				id: "sync_1",
+				generation: 4,
+				repositoryIntegrationId: "int_1",
+				ref: "develop",
+				rootPath: "agents",
+				automatic: false,
+			},
+			previous: {
+				repositoryIntegrationId: "int_0",
+				ref: "develop",
+				rootPath: "agents",
+			},
+			ignoreGlobsChanged: false,
+		});
+
+		await handlers.configure?.({ input, context: ctx });
+
+		expect(m.recordAuditFromRequest.mock.calls[0]?.[1]).toMatchObject({
+			metadata: {
+				repositoryChanged: true,
+				refChanged: false,
+				rootPathChanged: false,
+			},
+		});
+	});
+
+	it("audits a first configure as changing everything", async () => {
+		m.upsertInstructionRepositorySync.mockResolvedValue({
+			sync: {
+				id: "sync_1",
+				generation: 1,
+				repositoryIntegrationId: "int_1",
+				ref: "develop",
+				rootPath: "agents",
+				automatic: false,
+			},
+			previous: null,
+			ignoreGlobsChanged: false,
+		});
+
+		await handlers.configure?.({ input, context: ctx });
+
+		expect(m.recordAuditFromRequest.mock.calls[0]?.[1]).toMatchObject({
+			metadata: {
+				repositoryChanged: true,
+				refChanged: true,
+				rootPathChanged: true,
+			},
+		});
 	});
 
 	it("refuses an integration that is not this project's (tenant boundary)", async () => {

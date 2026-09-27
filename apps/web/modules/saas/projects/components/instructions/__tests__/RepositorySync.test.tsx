@@ -1695,7 +1695,8 @@ describe("RepositorySyncSettingsSection (§7.4)", () => {
 			),
 		);
 		expect(onChanged).toHaveBeenCalled();
-		// Not through configure: that would bump the generation.
+		// Not through configure, which re-delegates the sync to the caller
+		// and bumps the generation when what is synced changes.
 		expect(m.configure).not.toHaveBeenCalled();
 	});
 

@@ -17634,8 +17634,11 @@ model ProjectInstructionFile {
 
 /// A project's repository-sync configuration: at most one per project. The
 /// configuration identity is (id, generation); every change that alters what
-/// a run would produce, or whom it acts as, bumps `generation`, and every
-/// durable effect of a run is conditioned on the pair it captured.
+/// a run would produce (repository, branch, folder, ignore rules) bumps
+/// `generation`, and every durable effect of a run is conditioned on the pair
+/// it captured. A configure that changes only the flags or whom automatic
+/// runs act as (the automatic toggle, "Re-enable") keeps it; the publish
+/// fence re-checks the run's own member instead (Fizzy #2744).
 model ProjectInstructionRepositorySync {
   id                      String   @id @default(cuid())
   projectId               String   @unique
