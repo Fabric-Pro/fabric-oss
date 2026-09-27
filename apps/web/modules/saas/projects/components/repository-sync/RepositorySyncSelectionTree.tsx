@@ -11,6 +11,7 @@ import { SearchInput } from "@ui/components/search-input";
 import { cn } from "@ui/lib";
 import {
 	ChevronRightIcon,
+	ChevronsDownUpIcon,
 	FileIcon,
 	FolderIcon,
 	Loader2Icon,
@@ -50,10 +51,10 @@ const CANT_TELL_YET: SelectionMessage = { key: "tree.selection.cantTellYet" };
  * adapter's (`row`, `onToggle`); the tree only renders it, over the whole
  * listing whatever the search shows.
  *
- * Search, Select all and Select none come first, so they are reachable from
- * the keyboard before the rows. Every row that cannot be clicked says why
- * under it, and its box points at that reason (`aria-describedby`); a
- * partial box is announced as partially checked.
+ * Search, Collapse all, Select all and Select none come first, so they are
+ * reachable from the keyboard before the rows. Every row that cannot be
+ * clicked says why under it, and its box points at that reason
+ * (`aria-describedby`); a partial box is announced as partially checked.
  *
  * Laziness by expansion is the performance strategy (as in the browsers
  * this replaces, Fizzy #2674, #2725): a folder's children render only while
@@ -90,19 +91,34 @@ export function RepositorySyncSelectionTree({
 	notices?: ReactNode;
 	/**
 	 * Folders open from the start besides the top level (the way to a stored
-	 * selection). Seeded once: a default that followed later clicks would
-	 * flip folders the member already toggled.
+	 * selection). A path added later (the way to something the dialog could
+	 * place only once its listing and rules loaded, Fizzy #2752) opens when
+	 * it arrives, once. A path removed later stays as it is: a default that
+	 * followed every change would flip folders the member already toggled.
 	 */
 	initiallyOpen?: ReadonlySet<string>;
 }) {
 	const t = useTranslations(namespace);
 	const [search, setSearch] = useState("");
-	const [openedWith] = useState<ReadonlySet<string>>(
+	const [openedWith, setOpenedWith] = useState<ReadonlySet<string>>(
 		() => initiallyOpen ?? new Set(),
 	);
 	// Browse-mode expansion as the folders flipped from their default, so a
 	// new listing needs no reset.
 	const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());
+	// Paths that arrived since the last render open now, whatever the member
+	// did to them before; later clicks toggle them as usual.
+	const arrived = initiallyOpen
+		? [...initiallyOpen].filter((path) => !openedWith.has(path))
+		: [];
+	if (arrived.length > 0) {
+		setOpenedWith(new Set([...openedWith, ...arrived]));
+		if (arrived.some((path) => toggled.has(path))) {
+			setToggled(
+				new Set([...toggled].filter((path) => !arrived.includes(path))),
+			);
+		}
+	}
 	// Search-mode expansion: every folder open unless collapsed during this
 	// query. Kept apart so clearing the search restores `toggled` untouched.
 	const [searchCollapsed, setSearchCollapsed] = useState<{
@@ -168,6 +184,26 @@ export function RepositorySyncSelectionTree({
 		});
 	}
 
+	/**
+	 * Every folder closed, down to the top-level rows. The flipped set
+	 * becomes exactly the folders open by default, so a folder opened by a
+	 * click is closed too; during a search, every folder it shows.
+	 */
+	function collapseAll() {
+		if (searching) {
+			setSearchCollapsed({ query, paths: new Set(folderPaths(roots)) });
+			return;
+		}
+		setToggled(
+			new Set([
+				...browseRoots
+					.filter((node) => node.type === "dir")
+					.map((node) => node.path),
+				...openedWith,
+			]),
+		);
+	}
+
 	const context: TreeRowContext = {
 		namespace,
 		row,
@@ -178,6 +214,10 @@ export function RepositorySyncSelectionTree({
 	};
 	const roots = searching ? searchRoots : browseRoots;
 	const browsable = entries !== undefined && entries.length > 0;
+	// Nothing below the top level shows while every top-level folder is shut.
+	const anyExpanded = roots.some(
+		(node) => node.type === "dir" && isExpanded(node.path, 0),
+	);
 
 	return (
 		<div className="flex flex-col gap-1.5">
@@ -190,6 +230,21 @@ export function RepositorySyncSelectionTree({
 						placeholder={t("tree.searchPlaceholder")}
 						aria-label={t("tree.searchPlaceholder")}
 					/>
+				) : null}
+				{browsable ? (
+					<Button
+						type="button"
+						size="sm"
+						variant="ghost"
+						disabled={!anyExpanded}
+						onClick={collapseAll}
+					>
+						<ChevronsDownUpIcon
+							className="size-4"
+							aria-hidden="true"
+						/>
+						{t("tree.collapseAll")}
+					</Button>
 				) : null}
 				<fieldset
 					aria-label={t("tree.selectionActions")}
@@ -277,6 +332,13 @@ export function RepositorySyncSelectionTree({
 			) : null}
 			{summary}
 		</div>
+	);
+}
+
+/** Every folder in these trees, at any depth. */
+function folderPaths(nodes: readonly RepositoryTreeNode[]): string[] {
+	return nodes.flatMap((node) =>
+		node.type === "dir" ? [node.path, ...folderPaths(node.children)] : [],
 	);
 }
 

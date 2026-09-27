@@ -2,8 +2,8 @@
  * Coding Instructions' adapter for the shared selection tree (Fizzy #2750
  * §4, §6, §9): every row judged by the sync's own matcher, folders out as a
  * whole only when a rule provably covers them, per-operation editability,
- * the transition table, the removal notice, Select all / Select none and
- * the count — and, last, the file verdicts checked against the sync's own
+ * the transition table, the removal notice, Select all / Select none, what
+ * a move clears, and the count — and, last, the file verdicts checked against the sync's own
  * inventory and planner.
  */
 import {
@@ -20,6 +20,7 @@ import {
 } from "../../../../lib/instructions-sync-exclusions";
 import {
 	applyInstructionsAction,
+	changesClearedByMove,
 	type InstructionsAction,
 	type InstructionsIgnoreFile,
 	type InstructionsSelection,
@@ -850,6 +851,65 @@ describe("Select all and Select none", () => {
 				SELECT_NONE_INSTRUCTIONS,
 			),
 		).toEqual({ root: null, edits: NO_EXCLUSION_EDITS });
+	});
+});
+
+describe("what moving the synced folder clears (Fizzy #2752)", () => {
+	const staged: InstructionsSelection = {
+		root: "agents",
+		edits: { add: ["skills/**", "CLAUDE.md"], remove: ["drafts/**"] },
+	};
+
+	it("counts every staged edit, unticks and re-ticks alike, under the folder it left", () => {
+		expect(
+			changesClearedByMove(staged, { type: "setRoot", root: "tools" }),
+		).toEqual({ from: "agents", changes: 3 });
+		expect(
+			changesClearedByMove(
+				{ root: "", edits: { add: ["a.md"], remove: [] } },
+				SELECT_ALL_INSTRUCTIONS,
+			),
+		).toBeNull();
+		expect(
+			changesClearedByMove(
+				{ root: "", edits: { add: ["a.md"], remove: [] } },
+				{ type: "setRoot", root: "tools" },
+			),
+		).toEqual({ from: "", changes: 1 });
+		// Select all from a folder is a move to the repository root.
+		expect(changesClearedByMove(staged, SELECT_ALL_INSTRUCTIONS)).toEqual({
+			from: "agents",
+			changes: 3,
+		});
+	});
+
+	it("says nothing when nothing moves or nothing was staged", () => {
+		// Clearing the folder is no move: nothing is synced to point at.
+		expect(
+			changesClearedByMove(staged, SELECT_NONE_INSTRUCTIONS),
+		).toBeNull();
+		expect(
+			changesClearedByMove(staged, { type: "setRoot", root: "agents" }),
+		).toBeNull();
+		expect(
+			changesClearedByMove(
+				{ root: null, edits: NO_EXCLUSION_EDITS },
+				{ type: "setRoot", root: "tools" },
+			),
+		).toBeNull();
+		expect(
+			changesClearedByMove(
+				{ root: "agents", edits: NO_EXCLUSION_EDITS },
+				{ type: "setRoot", root: "tools" },
+			),
+		).toBeNull();
+		const edits: InstructionsAction[] = [
+			{ type: "addRule", pattern: "x.md", coveredFolder: null },
+			{ type: "removeRules", rules: ["drafts/**"] },
+		];
+		for (const action of edits) {
+			expect(changesClearedByMove(staged, action)).toBeNull();
+		}
 	});
 });
 

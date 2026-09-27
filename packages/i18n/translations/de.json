@@ -2470,6 +2470,7 @@
 						"selectNone": "Keine auswählen",
 						"selectionActions": "Auswahl",
 						"searchPlaceholder": "Ordner und Dateien durchsuchen",
+						"collapseAll": "Alle einklappen",
 						"loading": "Ordner und Dateien des Branches werden geladen…",
 						"empty": "Keine Dateien in diesem Branch.",
 						"noMatches": "Keine Ordner oder Dateien entsprechen dieser Suche.",
