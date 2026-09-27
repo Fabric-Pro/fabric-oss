@@ -1,9 +1,8 @@
 name: Request external review
 
 # Replaces native CODEOWNERS auto-review (see .github/CODEOWNERS).
-# Pull requests from outside contributors get @preddy4690 requested as
-# reviewer; pull requests from organization members, the repository owner,
-# and direct collaborators do not.
+# This workflow requests the designated reviewer for outside contributors in
+# fabric-oss. It does not request reviews in the internal repository.
 #
 # pull_request_target (not pull_request) so the base repository's token can
 # write review requests even when the PR comes from a fork. Nothing is
@@ -20,6 +19,7 @@ permissions:
 
 jobs:
   request-review:
+    if: github.repository == 'Fabric-Pro/fabric-oss'
     # arm64: this job only runs `gh api` — architecture-neutral.
     runs-on: ubuntu-24.04-arm
     steps:
