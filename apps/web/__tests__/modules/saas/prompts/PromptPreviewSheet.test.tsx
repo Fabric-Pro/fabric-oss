@@ -20,7 +20,11 @@ const LONG_TITLE =
 const LONG_DESCRIPTION =
 	"Combines the acceptance criteria of two confirmed-duplicate backlog items into one set, folding in anything unique either side adds and removing only true redundancy.";
 
-const { getById } = vi.hoisted(() => ({ getById: vi.fn() }));
+const { getById, listForPrompt, confirmMock } = vi.hoisted(() => ({
+	getById: vi.fn(),
+	listForPrompt: vi.fn(),
+	confirmMock: vi.fn(),
+}));
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
@@ -40,10 +44,17 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		prompts: {
+			bindings: {
+				listForPrompt: (input: unknown) => listForPrompt(input),
+			},
 			version: { create: vi.fn() },
 			fork: { fork: vi.fn() },
 		},
 	},
+}));
+
+vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
+	useConfirmationAlert: () => ({ confirm: confirmMock }),
 }));
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
@@ -86,6 +97,9 @@ describe("PromptPreviewSheet — cropped-preview fix", () => {
 	beforeEach(() => {
 		getById.mockReset();
 		getById.mockResolvedValue(basePrompt);
+		listForPrompt.mockReset();
+		listForPrompt.mockResolvedValue({ actions: [] });
+		confirmMock.mockReset();
 	});
 
 	it("reveals the full title via a hover-activated, non-native tooltip (AC1)", async () => {
@@ -201,6 +215,93 @@ describe("PromptPreviewSheet — cropped-preview fix", () => {
 		expect(
 			screen.getByRole("button", { name: /^Cancel$/ }),
 		).toBeInTheDocument();
+	});
+});
+
+describe("PromptPreviewSheet — shared-content save warning", () => {
+	beforeEach(() => {
+		getById.mockReset();
+		getById.mockResolvedValue(basePrompt);
+		listForPrompt.mockReset();
+		confirmMock.mockReset();
+	});
+
+	it("checks fresh bindings before saving edited content", async () => {
+		// Arrange
+		listForPrompt.mockResolvedValue({
+			actions: [
+				{ targetKey: "specs", documentType: "PRD", storyKind: null },
+				{
+					targetKey: "architecture",
+					documentType: "ARCHITECTURE",
+					storyKind: null,
+				},
+			],
+		});
+		const user = userEvent.setup();
+		wrap(
+			<PromptPreviewSheet
+				open
+				onOpenChange={vi.fn()}
+				promptId="p1"
+				promptScope="USER"
+				initialEditMode
+			/>,
+		);
+		const textarea = await screen.findByPlaceholderText(
+			"Enter prompt content...",
+		);
+		await user.clear(textarea);
+		await user.type(textarea, "Changed body");
+
+		// Act
+		await user.click(
+			screen.getByRole("button", { name: /save as new version/i }),
+		);
+
+		// Assert
+		await screen.findByRole("button", { name: /save as new version/i });
+		expect(listForPrompt).toHaveBeenCalledWith({
+			promptId: "p1",
+			organizationId: null,
+		});
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: "This prompt is used by several actions",
+			}),
+		);
+	});
+
+	it("asks before saving when the fresh bindings read fails", async () => {
+		// Arrange
+		listForPrompt.mockRejectedValue(new Error("network error"));
+		const user = userEvent.setup();
+		wrap(
+			<PromptPreviewSheet
+				open
+				onOpenChange={vi.fn()}
+				promptId="p1"
+				promptScope="USER"
+				initialEditMode
+			/>,
+		);
+		const textarea = await screen.findByPlaceholderText(
+			"Enter prompt content...",
+		);
+		await user.clear(textarea);
+		await user.type(textarea, "Changed body");
+
+		// Act
+		await user.click(
+			screen.getByRole("button", { name: /save as new version/i }),
+		);
+
+		// Assert
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: "Could not check which actions use this prompt",
+			}),
+		);
 	});
 });
 

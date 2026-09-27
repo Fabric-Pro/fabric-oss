@@ -1,9 +1,5 @@
 "use client";
 
-import {
-	findPromptAgentTarget,
-	promptDocumentTypeLabel,
-} from "@repo/utils/prompt-action-catalog";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
@@ -42,12 +38,7 @@ import { toast } from "sonner";
 import { forkTarget, isProposalCandidate } from "../lib/fork-scope";
 import { isPromptInaccessible } from "../lib/prompt-inaccessible";
 import { savePromptAtomically } from "../lib/save-prompt-atomically";
-import {
-	needsSharedEditWarning,
-	needsUnknownReachWarning,
-	sharedEditWarning,
-	unknownReachWarning,
-} from "../lib/shared-edit-warning";
+import { savePromptContentWithReachWarning } from "../lib/shared-edit-warning";
 import {
 	getUniqueVariables,
 	hasVariables,
@@ -115,7 +106,7 @@ export function PromptDetails({
 
 	const {
 		data: prompt,
-		isLoading,
+		isPending,
 		error,
 		refetch,
 	} = useQuery(
@@ -124,12 +115,14 @@ export function PromptDetails({
 		}),
 	);
 
-	// Which actions this prompt currently serves. Read so a save can say what
-	// it reaches; before it settles — pending or failed — this must not block
-	// editing, so it degrades to an empty list and the shared-edit warning
-	// simply does not appear on its own — `needsUnknownReachWarning` below is
-	// what replaces that silence.
-	const { data: boundActionsData } = useQuery({
+	// Which actions this prompt currently serves. It keeps the read view honest,
+	// while the save guard fetches the current set at the moment of a content
+	// change so cached or failed data cannot bypass the shared-reach warning.
+	const {
+		isPending: boundActionsPending,
+		error: boundActionsError,
+		refetch: refetchBoundActions,
+	} = useQuery({
 		queryKey: ["prompt-bound-actions", promptId, organizationId],
 		queryFn: async () =>
 			await orpcClient.prompts.bindings.listForPrompt({
@@ -137,25 +130,6 @@ export function PromptDetails({
 				organizationId: organizationId ?? null,
 			}),
 	});
-	const boundActions: Array<{
-		targetKey: string;
-		documentType: string;
-		storyKind: "FEATURE" | "BUG" | null;
-	}> = boundActionsData?.actions ?? [];
-	const boundActionLabels = useMemo(
-		() =>
-			boundActions.map((a) => {
-				const agent = findPromptAgentTarget(a.targetKey);
-				const docType = promptDocumentTypeLabel(a.documentType);
-				const kind = a.storyKind
-					? ` (${a.storyKind === "FEATURE" ? "Feature" : "Bug"})`
-					: "";
-				return agent
-					? `${agent.label} — ${docType}${kind}`
-					: `${a.targetKey} — ${docType}${kind}`;
-			}),
-		[boundActions],
-	);
 
 	// Variable state - must be before any conditional returns
 	const content = prompt?.versions?.[0]?.content || "";
@@ -336,7 +310,7 @@ export function PromptDetails({
 		}
 	};
 
-	if (isLoading) {
+	if (isPending) {
 		return (
 			<div className="container max-w-4xl py-8">
 				<div className="flex gap-4 mb-6">
@@ -420,7 +394,7 @@ export function PromptDetails({
 		? prompt.versions?.find((v: any) => v.id === compareVersionId)
 		: undefined;
 
-	const handleSave = (data: any) => {
+	const handleSave = async (data: any) => {
 		const save = () =>
 			updateMutation.mutate({
 				name: data.name,
@@ -442,43 +416,12 @@ export function PromptDetails({
 			data.content && data.content !== content,
 		);
 
-		// The bound-actions read hasn't landed — still loading, or it failed —
-		// so `boundActions` is `[]` for a reason that has nothing to do with
-		// how many actions this prompt really serves. The shared-edit check
-		// below would read that as "nothing bound" and stay silent. Editing
-		// must stay unblocked, but saving over an unknown reach needs an
-		// honest confirmation instead.
-		if (
-			needsUnknownReachWarning({
-				contentChanged,
-				reachUnknown: !boundActionsData,
-			})
-		) {
-			confirm({
-				...unknownReachWarning(),
-				confirmLabel: "Save anyway",
-				cancelLabel: "Cancel",
-				onConfirm: save,
-			});
-			return;
-		}
-
-		// FR21: the content is shared, so an edit reaches every action bound to
-		// this prompt at once. Only worth interrupting for when there is more
-		// than one — with a single binding the reach is exactly what the user
-		// is looking at. Metadata-only saves are left alone: they change nothing
-		// any agent reads.
-		if (
-			needsSharedEditWarning({
-				contentChanged,
-				boundActionCount: boundActions.length,
-			})
-		) {
-			confirm({
-				...sharedEditWarning(boundActionLabels),
-				confirmLabel: "Save for all",
-				cancelLabel: "Cancel",
-				onConfirm: save,
+		if (contentChanged) {
+			await savePromptContentWithReachWarning({
+				promptId,
+				organizationId: organizationId ?? null,
+				confirm,
+				save,
 			});
 			return;
 		}
@@ -861,9 +804,34 @@ export function PromptDetails({
 				</div>
 			)}
 
+			{boundActionsError && (
+				<div
+					role="alert"
+					className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-highlight/40 bg-highlight/5 px-3 py-2 text-highlight-ink text-sm"
+				>
+					<span>
+						Could not load the actions this prompt serves. Saving
+						will recheck them.
+					</span>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						onClick={() => refetchBoundActions()}
+					>
+						Try again
+					</Button>
+				</div>
+			)}
+
 			{/* Content */}
 			{isEditing ? (
 				<div>
+					{boundActionsPending && (
+						<output className="mb-2 text-muted-foreground text-sm">
+							Checking which actions use this prompt before save.
+						</output>
+					)}
 					<PromptEditor
 						initialData={{
 							name: prompt.name,

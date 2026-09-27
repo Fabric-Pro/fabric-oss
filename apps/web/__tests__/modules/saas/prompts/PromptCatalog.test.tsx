@@ -8,7 +8,11 @@
  */
 
 import { PromptCatalog } from "@saas/prompts/components/PromptCatalog";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	onlineManager,
+	QueryClient,
+	QueryClientProvider,
+} from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -347,6 +351,25 @@ describe("PromptCatalog", () => {
 
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 		expect(screen.getByText(/quality & testing/i)).toBeInTheDocument();
+	});
+
+	it("does not infer built-in defaults while offline and reads on reconnect", async () => {
+		// Arrange
+		onlineManager.setOnline(false);
+
+		try {
+			// Act
+			wrap(<PromptCatalog />);
+
+			// Assert
+			expect(
+				screen.queryByText(/uses the built-in default/i),
+			).not.toBeInTheDocument();
+			onlineManager.setOnline(true);
+			await waitFor(() => expect(catalogList).toHaveBeenCalledTimes(1));
+		} finally {
+			onlineManager.setOnline(true);
+		}
 	});
 });
 

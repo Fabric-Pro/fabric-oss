@@ -100,7 +100,11 @@ export function NominationQueue() {
 
 	const queryKey = ["prompt-nominations", targetScope, organizationId];
 
-	const { data, isLoading, error } = useQuery({
+	const {
+		data,
+		isPending: isLoading,
+		error,
+	} = useQuery({
 		queryKey,
 		queryFn: async () =>
 			(await orpcClient.prompts.nominations.listPending({

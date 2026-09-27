@@ -2,6 +2,7 @@
 
 import { promptContentProblem } from "@repo/utils/prompt-content";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -34,6 +35,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { isPromptInaccessible } from "../lib/prompt-inaccessible";
+import { savePromptContentWithReachWarning } from "../lib/shared-edit-warning";
 import { LoadFailure } from "./LoadFailure";
 import { PromptScopeBadge } from "./PromptScopeBadge";
 import { PromptTag } from "./PromptTag";
@@ -61,6 +63,7 @@ export function PromptPreviewSheet({
 	const router = useRouter();
 	const queryClient = useQueryClient();
 	const { organizationId, basePath } = useOrganizationContext();
+	const { confirm } = useConfirmationAlert();
 	const [isEditing, setIsEditing] = useState(initialEditMode);
 	const [editContent, setEditContent] = useState("");
 	const contentErrorId = useId();
@@ -71,7 +74,7 @@ export function PromptPreviewSheet({
 	const queryOrganizationId = promptScope === "USER" ? null : organizationId;
 	const {
 		data: prompt,
-		isLoading,
+		isPending,
 		error,
 		refetch,
 	} = useQuery({
@@ -90,7 +93,7 @@ export function PromptPreviewSheet({
 	const isSystemPrompt = prompt?.scope === "SYSTEM";
 	// A failed background refetch keeps the loaded prompt, and any open edit.
 	const loadError = prompt ? null : error;
-	const titleText = isLoading
+	const titleText = isPending
 		? "Loading..."
 		: loadError
 			? isPromptInaccessible(loadError)
@@ -155,13 +158,27 @@ export function PromptPreviewSheet({
 		},
 	});
 
-	const handleSave = useCallback(() => {
+	const handleSave = useCallback(async () => {
 		if (editContent.trim() === content.trim()) {
 			setIsEditing(false);
 			return;
 		}
-		createVersionMutation.mutate(editContent);
-	}, [editContent, content, createVersionMutation]);
+
+		const save = () => createVersionMutation.mutate(editContent);
+		await savePromptContentWithReachWarning({
+			promptId,
+			organizationId: queryOrganizationId,
+			confirm,
+			save,
+		});
+	}, [
+		editContent,
+		content,
+		createVersionMutation,
+		promptId,
+		queryOrganizationId,
+		confirm,
+	]);
 
 	const handleEditClick = useCallback(() => {
 		if (isSystemPrompt) {
@@ -224,7 +241,7 @@ export function PromptPreviewSheet({
 					)}
 				</SheetHeader>
 
-				{isLoading ? (
+				{isPending ? (
 					<div className="flex items-center justify-center py-12">
 						<Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
 					</div>

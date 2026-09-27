@@ -11,10 +11,46 @@
  * confirmation provider.
  */
 
+import {
+	findPromptAgentTarget,
+	promptDocumentTypeLabel,
+} from "@repo/utils/prompt-action-catalog";
+import { orpcClient } from "@shared/lib/orpc-client";
+
 export type SharedEditWarning = {
 	title: string;
 	message: string;
 };
+
+type Confirm = (
+	options: SharedEditWarning & {
+		confirmLabel: string;
+		cancelLabel: string;
+		onConfirm: () => void;
+	},
+) => void;
+
+type BoundAction = {
+	targetKey: string;
+	documentType: string;
+	storyKind: "FEATURE" | "BUG" | null;
+};
+
+/** Labels the current bindings consistently wherever an edit can save a body. */
+export function formatBoundActionLabels(
+	actions: readonly BoundAction[],
+): string[] {
+	return actions.map((action) => {
+		const agent = findPromptAgentTarget(action.targetKey);
+		const docType = promptDocumentTypeLabel(action.documentType);
+		const kind = action.storyKind
+			? ` (${action.storyKind === "FEATURE" ? "Feature" : "Bug"})`
+			: "";
+		return agent
+			? `${agent.label} — ${docType}${kind}`
+			: `${action.targetKey} — ${docType}${kind}`;
+	});
+}
 
 /**
  * Only interrupt when the edit actually reaches somewhere the user is not
@@ -77,4 +113,50 @@ export function unknownReachWarning(): SharedEditWarning {
 		message:
 			"We could not confirm which actions this prompt serves, so saving may change it for other actions too. Save anyway?",
 	};
+}
+
+/**
+ * Fetches bindings at the save boundary so cached default changes cannot skip
+ * FR21's shared-content warning. Every content editor calls this one guard.
+ */
+export async function savePromptContentWithReachWarning({
+	promptId,
+	organizationId,
+	confirm,
+	save,
+}: {
+	promptId: string;
+	organizationId: string | null;
+	confirm: Confirm;
+	save: () => void;
+}): Promise<void> {
+	try {
+		const fresh = await orpcClient.prompts.bindings.listForPrompt({
+			promptId,
+			organizationId,
+		});
+		if (
+			needsSharedEditWarning({
+				contentChanged: true,
+				boundActionCount: fresh.actions.length,
+			})
+		) {
+			confirm({
+				...sharedEditWarning(formatBoundActionLabels(fresh.actions)),
+				confirmLabel: "Save for all",
+				cancelLabel: "Cancel",
+				onConfirm: save,
+			});
+			return;
+		}
+	} catch {
+		confirm({
+			...unknownReachWarning(),
+			confirmLabel: "Save anyway",
+			cancelLabel: "Cancel",
+			onConfirm: save,
+		});
+		return;
+	}
+	save();
 }

@@ -19,6 +19,18 @@ import { ORPCError } from "@orpc/client";
 export function isPromptInaccessible(error: unknown): boolean {
 	return (
 		error instanceof ORPCError &&
+		!hasProxyResponse(error) &&
 		(error.code === "NOT_FOUND" || error.code === "FORBIDDEN")
+	);
+}
+
+/** A non-oRPC gateway response is rewrapped with a code but retains its body. */
+function hasProxyResponse(error: { data: unknown }): boolean {
+	const data = error.data;
+	return (
+		typeof data === "object" &&
+		data !== null &&
+		(("isNonOrpcResponse" in data && data.isNonOrpcResponse === true) ||
+			("responseText" in data && typeof data.responseText === "string"))
 	);
 }

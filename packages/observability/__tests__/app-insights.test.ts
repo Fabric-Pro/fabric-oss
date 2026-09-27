@@ -833,6 +833,48 @@ describe("per-key sampling", () => {
 });
 
 describe("flushAppInsights and suppressed summaries", () => {
+	it("evicts elapsed sampling buckets without another telemetry flush", async () => {
+		// Arrange
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		vi.useFakeTimers();
+		try {
+			const {
+				__samplingBucketCountForTests,
+				flushAppInsights,
+				initAppInsightsLogs,
+				trackLog,
+			} = await installDirectClientFactory();
+			initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+			trackLog("warn", "kept", { event: "quiet.key" });
+			await flushAppInsights();
+			vi.advanceTimersByTime(60_000);
+
+			// Act
+			await flushAppInsights();
+
+			// Assert
+			expect(__samplingBucketCountForTests()).toBe(0);
+			expect(captured.flushCalls).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not call the SDK flush without direct telemetry", async () => {
+		// Arrange
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const { initAppInsightsLogs, flushAppInsights } =
+			await installDirectClientFactory();
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		// Act
+		await flushAppInsights();
+
+		// Assert
+		expect(captured.flushCalls).toBe(0);
+	});
 	it("emits a suppressed summary on flush for a key that went quiet, without waiting for a new record", async () => {
 		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
 			validConnectionString;
