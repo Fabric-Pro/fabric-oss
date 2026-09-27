@@ -1,19 +1,29 @@
 /**
  * Behavioural tests for `instructionProposalPullRequestSweepWorkflow`
- * (Fizzy #2563 spec §9) on a time-skipping test server, bundling the REAL
- * workflows barrel (which also proves registration). The sweeper's
- * activities name no task queue of their own, so they run on the workflow's
- * queue (`fabric-worker` under the schedule) and one worker serves both.
+ * (Fizzy #2563 spec §9, member proposal branches Fizzy #2738 spec §8) on a
+ * time-skipping test server, bundling the REAL workflows barrel (which also
+ * proves registration). The sweeper's activities name no task queue of
+ * their own, so they run on the workflow's queue (`fabric-worker` under the
+ * schedule) and one worker serves both.
  *
- * The budget case advances server time from inside the activities with
+ * A new tick selects and runs the member proposal branch rows only: the
+ * #2563 (v1) operation lane was retired behind
+ * `patched("instruction-proposal-v1-lane-removed")` (Fizzy #2748). That
+ * lane's code stays in the workflow for one reason, replay: the last block
+ * records ticks with two frozen copies of the workflow (before the branch
+ * rows, and origin/master before the lane's removal) and replays each on
+ * the current one, command for command.
+ *
+ * The budget cases advance server time from inside the activities with
  * `env.sleep`, as the repository poll's tests do; every sleep stays under
  * the activity's heartbeat timeout.
  *
- * Run with:
- *   pnpm --filter @repo/temporal test __tests__/instruction-proposal-pull-request-sweep.test.ts
+ * Run with (from packages/temporal):
+ *   pnpm exec vitest run __tests__/instruction-proposal-pull-request-sweep.test.ts
  */
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { ApplicationFailure } from "@temporalio/activity";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import {
 	bundleWorkflowCode,
@@ -47,8 +57,24 @@ import type {
 	RecoverProposalInput,
 	RecoverProposalResult,
 } from "../src/lib/instruction-proposal-pull-request-types";
+import {
+	BRANCH_SWEEP_PATCH,
+	V1_LANE_REMOVED_PATCH,
+} from "../src/workflows/instruction-proposal-pull-request-sweep";
 
 const WORKFLOWS_PATH = resolve(__dirname, "..", "src", "workflows");
+/** The sweeper before the branch sub-batches (Fizzy #2738): no marker at all. */
+const PRE_BRANCH_SWEEP_PATH = resolve(
+	__dirname,
+	"helpers",
+	"legacy-proposal-sweep",
+);
+/** origin/master before the #2563 lane's removal: both lanes, one marker. */
+const PRE_V1_REMOVAL_SWEEP_PATH = resolve(
+	__dirname,
+	"helpers",
+	"legacy-proposal-sweep-with-branches",
+);
 const WORKFLOW_NAME = "instructionProposalPullRequestSweepWorkflow";
 const MINUTE_MS = 60 * 1000;
 const ZERO: ProposalSweepResult = {
@@ -60,6 +86,17 @@ const ZERO: ProposalSweepResult = {
 	failed: 0,
 	selectFailed: false,
 };
+
+/** The retired #2563 lane's activities: a new tick calls none of them. */
+const V1_LANE = [
+	"selectDueInstructionProposalOperations",
+	"closeInstructionProposalPullRequest",
+	"recoverInstructionProposalPullRequest",
+	"dispatchInstructionProposalMergeSync",
+	"reconcileInstructionProposalPullRequest",
+	"dispatchInstructionProposalPullRequest",
+	"deferInstructionProposalOperation",
+] as const;
 
 let env: TestWorkflowEnvironment;
 let workflowBundle: WorkflowBundleWithSourceMap;
@@ -88,15 +125,6 @@ function item(
 		integrationId: "int_1",
 		running: false,
 		...overrides,
-	};
-}
-
-function ids(row: ProposalSweepItem): ProposalOperationInput {
-	return {
-		snapshotId: row.snapshotId,
-		projectId: row.projectId,
-		organizationId: row.organizationId,
-		operationId: row.operationId,
 	};
 }
 
@@ -148,6 +176,11 @@ function branchSweep(due: Partial<DueBranchSweep>): DueBranchSweep {
 	};
 }
 
+/**
+ * Every activity the sweeper proxies. `due` is what the #2563 selection
+ * answers: only a tick recorded before `V1_LANE_REMOVED_PATCH` (the frozen
+ * copies) ever asks; a new tick must never call it or any #2563 action.
+ */
 function sweepMocks(
 	due:
 		| DueProposalSweep
@@ -219,9 +252,6 @@ function sweepMocks(
 			async (_input: DispatchProposalInput) => ({ deferred: true }),
 		),
 		// Never the sweeper's to call: registered so that a call would be seen.
-		openInstructionProposalPullRequest: vi.fn(async () => ({
-			kind: "open",
-		})),
 		checkInstructionProposalReadiness: vi.fn(async () => ({
 			kind: "stop",
 		})),
@@ -231,15 +261,17 @@ function sweepMocks(
 
 let seq = 0;
 
+/** One tick on `bundle`: the current workflow unless a frozen copy is named. */
 async function run(
 	activities: Record<string, unknown>,
+	bundle: WorkflowBundleWithSourceMap = workflowBundle,
 ): Promise<{ result: ProposalSweepResult; workflowId: string }> {
 	const taskQueue = `instruction-proposal-sweep-${seq++}`;
 	const workflowId = `${taskQueue}-wf`;
 	const worker = await Worker.create({
 		connection: env.nativeConnection,
 		taskQueue,
-		workflowBundle,
+		workflowBundle: bundle,
 		activities,
 	});
 	const result = await worker.runUntil(
@@ -375,96 +407,100 @@ async function expectReplays(workflowId: string): Promise<void> {
 	).resolves.toBeUndefined();
 }
 
-describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
-	it("selects with the spec's limits, then runs Close, Recover, Merge sync, Observe and Restart in that order", async () => {
-		const due = sweep({
-			close: [item("c")],
-			recover: [item("r")],
-			mergeSync: [item("m")],
-			observe: [item("o")],
-			restart: [item("s")],
-		});
-		const acts = sweepMocks(due);
-
-		const { result, workflowId } = await run(acts);
-
-		expect(
-			acts.selectDueInstructionProposalOperations,
-		).toHaveBeenCalledWith({
-			close: 10,
-			recover: 10,
-			mergeSync: 10,
-			observe: 20,
-			restart: 10,
-		});
-		expect((await scheduled(workflowId)).map((a) => a.type)).toEqual([
-			"selectDueInstructionProposalOperations",
-			"selectDueInstructionProposalBranches",
-			"closeInstructionProposalPullRequest",
-			"recoverInstructionProposalPullRequest",
-			"dispatchInstructionProposalMergeSync",
-			"reconcileInstructionProposalPullRequest",
-			"dispatchInstructionProposalPullRequest",
-		]);
-		const [c, r, m, o, s] = [
-			item("c"),
-			item("r"),
-			item("m"),
-			item("o"),
-			item("s"),
-		];
-		// Every action carries the tick's one absolute deadline: the end of
-		// its 4-minute budget, which the activity stops 10 s before.
-		const deadlineAt = (
-			acts.closeInstructionProposalPullRequest.mock.calls[0]?.[0] as {
-				deadlineAt?: string;
-			}
-		).deadlineAt as string;
-		const offset = await deadlineOffsetMs(workflowId, deadlineAt);
-		expect(offset).toBeGreaterThanOrEqual(4 * MINUTE_MS);
-		expect(offset).toBeLessThan(4 * MINUTE_MS + 2_000);
-		expect(acts.closeInstructionProposalPullRequest).toHaveBeenCalledWith({
-			...ids(c),
-			expectedAttempt: 3,
-			deadlineAt,
-		});
-		expect(acts.recoverInstructionProposalPullRequest).toHaveBeenCalledWith(
-			{
-				...ids(r),
-				expectedAttempt: 3,
-				deadlineAt,
-			},
-		);
-		expect(acts.dispatchInstructionProposalMergeSync).toHaveBeenCalledWith({
-			...ids(m),
-			deadlineAt,
-		});
-		expect(
-			acts.reconcileInstructionProposalPullRequest,
-		).toHaveBeenCalledWith({
-			...ids(o),
-			expectedAttempt: 3,
-			deadlineAt,
-		});
-		expect(
-			acts.dispatchInstructionProposalPullRequest,
-		).toHaveBeenCalledWith({
-			...ids(s),
-			attempt: 3,
-			deadlineAt,
-		});
-		expect(result).toEqual({ ...ZERO, selected: 5, processed: 5 });
-		await expectReplays(workflowId);
-	}, 60_000);
-
-	it("runs every call on the workflow's own queue with its spec §6 timeouts and heartbeat, retry 3 / 10 s / 2, inside the budget", async () => {
+describe("instructionProposalPullRequestSweepWorkflow (spec §9, Fizzy #2738 spec §8)", () => {
+	it("never selects or acts on a #2563 row: branch rows only, with their limits, in the table's order, Attach last", async () => {
 		const acts = sweepMocks(
+			// What a #2563 selection would answer; a new tick never asks.
 			sweep({
 				close: [item("c")],
 				recover: [item("r")],
 				mergeSync: [item("m")],
 				observe: [item("o")],
-				restart: [item("s"), item("x", { running: true })],
+				restart: [item("s")],
+			}),
+			{},
+			branchSweep({
+				close: [branchItem("c")],
+				recover: [branchItem("r")],
+				mergeSync: [branchItem("m")],
+				observe: [branchItem("o")],
+				restart: [branchItem("s")],
+				attach: [attachItem("a")],
+			}),
+		);
+
+		const { result, workflowId } = await run(acts);
+
+		for (const name of V1_LANE) {
+			expect(acts[name]).not.toHaveBeenCalled();
+		}
+		expect(acts.selectDueInstructionProposalBranches).toHaveBeenCalledWith({
+			close: 10,
+			recover: 10,
+			mergeSync: 10,
+			observe: 20,
+			restart: 10,
+			attach: 10,
+		});
+		// Four lanes start the first four in queue order, so the order of
+		// scheduling is the queue's.
+		expect((await scheduled(workflowId)).map((a) => a.type)).toEqual([
+			"selectDueInstructionProposalBranches",
+			"wakeInstructionProposalBranch",
+			"wakeInstructionProposalBranch",
+			"dispatchBranchMergeSync",
+			"reconcileInstructionProposalBranch",
+			"wakeInstructionProposalBranch",
+			"attachInstructionProposalToBranch",
+		]);
+		// Every action carries the tick's one absolute deadline: the end of
+		// its 4-minute budget, which the activity stops 10 s before.
+		const [firstWake] = (await scheduledInputs(
+			workflowId,
+			"wakeInstructionProposalBranch",
+		)) as Array<{ deadlineAt: string }>;
+		const deadlineAt = firstWake?.deadlineAt as string;
+		const offset = await deadlineOffsetMs(workflowId, deadlineAt);
+		expect(offset).toBeGreaterThanOrEqual(4 * MINUTE_MS);
+		expect(offset).toBeLessThan(4 * MINUTE_MS + 2_000);
+		const wake = (id: string) => ({
+			branchId: `branch_${id}`,
+			projectId: "proj_1",
+			organizationId: "org_1",
+			deadlineAt,
+		});
+		// Close's, Recover's, then Restart's, as scheduled.
+		expect(
+			await scheduledInputs(workflowId, "wakeInstructionProposalBranch"),
+		).toEqual([wake("c"), wake("r"), wake("s")]);
+		expect(acts.dispatchBranchMergeSync).toHaveBeenCalledWith({
+			branchId: "branch_m",
+			organizationId: "org_1",
+			deadlineAt,
+		});
+		expect(acts.reconcileInstructionProposalBranch).toHaveBeenCalledWith({
+			branchId: "branch_o",
+			organizationId: "org_1",
+			expectedAttempt: 4,
+			deadlineAt,
+		});
+		expect(acts.attachInstructionProposalToBranch).toHaveBeenCalledWith({
+			...attachItem("a"),
+			deadlineAt,
+		});
+		expect(result).toEqual({ ...ZERO, selected: 6, processed: 6 });
+		await expectReplays(workflowId);
+	}, 60_000);
+
+	it("runs every call on the workflow's own queue with its timeouts and heartbeat, retry 3 / 10 s / 2, inside the budget", async () => {
+		const acts = sweepMocks(
+			sweep({}),
+			{},
+			branchSweep({
+				close: [branchItem("c")],
+				mergeSync: [branchItem("m")],
+				observe: [branchItem("o")],
+				attach: [attachItem("a")],
 			}),
 		);
 		const { workflowId } = await run(acts);
@@ -472,14 +508,11 @@ describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
 		// Declared start-to-close and heartbeat, in seconds. The server caps
 		// a start-to-close at the call's schedule-to-close, the budget left.
 		const declared: Record<string, [number, number]> = {
-			selectDueInstructionProposalOperations: [60, 0],
 			selectDueInstructionProposalBranches: [60, 0],
-			closeInstructionProposalPullRequest: [10 * 60, 60],
-			recoverInstructionProposalPullRequest: [5 * 60, 60],
-			dispatchInstructionProposalMergeSync: [60, 30],
-			reconcileInstructionProposalPullRequest: [3 * 60, 60],
-			dispatchInstructionProposalPullRequest: [60, 30],
-			deferInstructionProposalOperation: [60, 0],
+			wakeInstructionProposalBranch: [60, 0],
+			dispatchBranchMergeSync: [60, 30],
+			reconcileInstructionProposalBranch: [3 * 60, 60],
+			attachInstructionProposalToBranch: [60, 0],
 		};
 		expect(new Set(calls.map((call) => call.type))).toEqual(
 			new Set(Object.keys(declared)),
@@ -505,18 +538,21 @@ describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
 		let inFlight = 0;
 		let most = 0;
 		const acts = sweepMocks(
-			sweep({
-				restart: Array.from({ length: 10 }, (_, i) => item(`s${i}`)),
-			}),
+			sweep({}),
 			{
-				dispatchInstructionProposalPullRequest: vi.fn(async () => {
+				wakeInstructionProposalBranch: vi.fn(async () => {
 					inFlight++;
 					most = Math.max(most, inFlight);
 					await env.sleep(5_000);
 					inFlight--;
-					return { kind: "started" };
+					return { woken: true };
 				}),
 			},
+			branchSweep({
+				restart: Array.from({ length: 10 }, (_, i) =>
+					branchItem(`s${i}`),
+				),
+			}),
 		);
 		const { result } = await run(acts);
 		expect(most).toBe(4);
@@ -524,26 +560,25 @@ describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
 	}, 60_000);
 
 	it("starts nothing new with under 30 s of its 4-minute budget left", async () => {
-		// Each item takes 25 s, inside the dispatch's 30 s heartbeat timeout
-		// (server time moves under `env.sleep`, the SDK's heartbeat throttle
-		// in real time, so a mock cannot heartbeat through a longer one):
-		// every lane starts items at 0, 25, ... 200 s (40 s left, so the
-		// call's schedule-to-close still fits it), and none at 225 s (15 s).
+		// Each wake takes 25 s, inside its 60 s start-to-close: every lane
+		// starts items at 0, 25, ... 200 s (40 s left, so the call's
+		// schedule-to-close still fits it), and none at 225 s (15 s).
 		const acts = sweepMocks(
-			sweep({
-				restart: Array.from({ length: 40 }, (_, i) => item(`s${i}`)),
-			}),
+			sweep({}),
 			{
-				dispatchInstructionProposalPullRequest: vi.fn(async () => {
+				wakeInstructionProposalBranch: vi.fn(async () => {
 					await env.sleep(25_000);
-					return { kind: "started" };
+					return { woken: true };
 				}),
 			},
+			branchSweep({
+				restart: Array.from({ length: 40 }, (_, i) =>
+					branchItem(`s${i}`),
+				),
+			}),
 		);
 		const { result } = await run(acts);
-		expect(
-			acts.dispatchInstructionProposalPullRequest,
-		).toHaveBeenCalledTimes(36);
+		expect(acts.wakeInstructionProposalBranch).toHaveBeenCalledTimes(36);
 		expect(result).toEqual({
 			...ZERO,
 			selected: 40,
@@ -552,279 +587,52 @@ describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
 		});
 	}, 120_000);
 
-	it("skips a rate-limited integration's later items for the rest of the tick", async () => {
-		// The first item answers with a rate limit at once; the three beside
-		// it hold their lanes a little longer, so the first lane takes every
-		// later item and must skip int_a's.
-		const slow = async () => {
-			await delay(500);
-			return { kind: "closed" } as CloseProposalResult;
-		};
-		const acts = sweepMocks(
-			sweep({
-				close: [
-					item("a1", { integrationId: "int_a" }),
-					item("b1", { integrationId: "int_b" }),
-					item("b2", { integrationId: "int_b" }),
-					item("b3", { integrationId: "int_b" }),
-				],
-				mergeSync: [item("a4", { integrationId: "int_a" })],
-				observe: [
-					item("a2", { integrationId: "int_a" }),
-					item("b4", { integrationId: "int_b" }),
-				],
-				restart: [
-					item("a3", { integrationId: "int_a" }),
-					item("n1", { integrationId: null }),
-				],
-			}),
-			{
-				closeInstructionProposalPullRequest: vi.fn(
-					async (
-						input: CloseProposalInput,
-					): Promise<CloseProposalResult> =>
-						input.snapshotId === "snap_a1"
-							? {
-									kind: "pending",
-									rateLimitedIntegrationId: "int_a",
-								}
-							: slow(),
-				),
-			},
-		);
-
-		const { result } = await run(acts);
-
-		expect(acts.closeInstructionProposalPullRequest).toHaveBeenCalledTimes(
-			4,
-		);
-		expect(
-			acts.reconcileInstructionProposalPullRequest.mock.calls.map(
-				([input]) => idOf(input),
-			),
-		).toEqual(["snap_b4"]);
-		expect(
-			acts.dispatchInstructionProposalMergeSync,
-		).not.toHaveBeenCalled();
-		expect(
-			acts.dispatchInstructionProposalPullRequest.mock.calls.map(
-				([input]) => idOf(input),
-			),
-		).toEqual(["snap_n1"]);
-		expect(result).toEqual({
-			...ZERO,
-			selected: 9,
-			processed: 6,
-			rateLimited: 3,
-		});
-	}, 60_000);
-
-	it("hands Recover's absent_handoff to Restart's action, and its close_requested to close, in the same item", async () => {
-		const answers: Record<string, RecoverProposalResult> = {
-			snap_r1: { kind: "absent_handoff" },
-			snap_r2: { kind: "close_requested" },
-			snap_r3: { kind: "unchanged" },
-		};
-		const acts = sweepMocks(
-			sweep({
-				recover: [
-					item("r1", { attempt: 5 }),
-					item("r2", { attempt: 6, recoverClause: 1 }),
-					item("r3"),
-				],
-			}),
-			{
-				recoverInstructionProposalPullRequest: vi.fn(
-					async (input: RecoverProposalInput) =>
-						answers[input.snapshotId] ?? { kind: "unchanged" },
-				),
-			},
-		);
-
-		const { result } = await run(acts);
-
-		const deadlineAt = expect.any(String);
-		expect(acts.dispatchInstructionProposalPullRequest.mock.calls).toEqual([
-			[{ ...ids(item("r1")), attempt: 5, deadlineAt }],
-		]);
-		expect(acts.closeInstructionProposalPullRequest.mock.calls).toEqual([
-			[{ ...ids(item("r2")), expectedAttempt: 6, deadlineAt }],
-		]);
-		expect(result).toEqual({ ...ZERO, selected: 3, processed: 3 });
-	}, 60_000);
-
-	it("dispatches the merge sync in the same item when Observe finds the pull request merged", async () => {
-		const acts = sweepMocks(
-			sweep({ observe: [item("o1"), item("o2"), item("o3")] }),
-			{
-				reconcileInstructionProposalPullRequest: vi.fn(
-					async (
-						input: ReconcileProposalInput,
-					): Promise<ReconcileProposalResult> =>
-						input.snapshotId === "snap_o1"
-							? { kind: "merged" }
-							: input.snapshotId === "snap_o2"
-								? { kind: "closed" }
-								: { kind: "open" },
-				),
-			},
-		);
-		await run(acts);
-		expect(acts.dispatchInstructionProposalMergeSync.mock.calls).toEqual([
-			[{ ...ids(item("o1")), deadlineAt: expect.any(String) }],
-		]);
-	}, 60_000);
-
-	it("defers a row whose operation workflow is running, conditional on the attempt read at selection, and does nothing else with it", async () => {
-		const running = { running: true, attempt: 8 };
-		const acts = sweepMocks(
-			sweep({
-				close: [item("c", running)],
-				recover: [item("r", running)],
-				mergeSync: [item("m", running)],
-				observe: [item("o", running)],
-				restart: [item("s", running)],
-			}),
-		);
-		const { result } = await run(acts);
-		expect(
-			acts.deferInstructionProposalOperation.mock.calls
-				.map(([input]) => input)
-				.sort((a, b) => a.snapshotId.localeCompare(b.snapshotId)),
-		).toEqual(
-			["c", "m", "o", "r", "s"].map((id) => ({
-				...ids(item(id)),
-				attempt: 8,
-			})),
-		);
-		for (const name of [
-			"closeInstructionProposalPullRequest",
-			"recoverInstructionProposalPullRequest",
-			"dispatchInstructionProposalMergeSync",
-			"reconcileInstructionProposalPullRequest",
-			"dispatchInstructionProposalPullRequest",
-		] as const) {
-			expect(acts[name]).not.toHaveBeenCalled();
-		}
-		expect(result).toEqual({
-			...ZERO,
-			selected: 5,
-			processed: 5,
-			deferred: 5,
-		});
-	}, 60_000);
-
-	it("never settles or re-issues: close only for the Close sub-batch and Recover's close_requested, never retryCreate, never open", async () => {
-		const recoverAnswers: Record<string, RecoverProposalResult> = {
-			snap_r1: { kind: "blocked" },
-			snap_r2: { kind: "failed" },
-			snap_r3: { kind: "adopted" },
-			snap_r4: { kind: "unchanged" },
-		};
-		const observeAnswers: Record<string, ReconcileProposalResult> = {
-			snap_o1: { kind: "open" },
-			snap_o2: { kind: "closed" },
-			snap_o3: { kind: "failed" },
-		};
-		const acts = sweepMocks(
-			sweep({
-				// A due confirmation on a row that is not CLOSE_REQUESTED.
-				close: [item("c1")],
-				recover: [
-					item("r1", { recoverClause: 1 }),
-					item("r2", { recoverClause: 2 }),
-					item("r3", { recoverClause: 1 }),
-					item("r4", { recoverClause: 2 }),
-				],
-				mergeSync: [item("m1")],
-				observe: [item("o1"), item("o2"), item("o3")],
-				restart: [item("s1")],
-			}),
-			{
-				recoverInstructionProposalPullRequest: vi.fn(
-					async (input: RecoverProposalInput) =>
-						recoverAnswers[input.snapshotId] ?? {
-							kind: "unchanged",
-						},
-				),
-				reconcileInstructionProposalPullRequest: vi.fn(
-					async (input: ReconcileProposalInput) =>
-						observeAnswers[input.snapshotId] ?? { kind: "open" },
-				),
-			},
-		);
-
-		const { workflowId } = await run(acts);
-
-		expect(
-			acts.closeInstructionProposalPullRequest.mock.calls.map(([input]) =>
-				idOf(input),
-			),
-		).toEqual(["snap_c1"]);
-		expect(acts.openInstructionProposalPullRequest).not.toHaveBeenCalled();
-		expect(acts.checkInstructionProposalReadiness).not.toHaveBeenCalled();
-		const history = await env.client.workflow
-			.getHandle(workflowId)
-			.fetchHistory();
-		expect(JSON.stringify(history)).not.toContain("retryCreate");
-		expect(
-			new Set((await scheduled(workflowId)).map((a) => a.type)),
-		).toEqual(
-			new Set([
-				"selectDueInstructionProposalOperations",
-				"selectDueInstructionProposalBranches",
-				"closeInstructionProposalPullRequest",
-				"recoverInstructionProposalPullRequest",
-				"dispatchInstructionProposalMergeSync",
-				"reconcileInstructionProposalPullRequest",
-				"dispatchInstructionProposalPullRequest",
-			]),
-		);
-	}, 60_000);
-
-	it("Observe visits every OPEN row within N ticks for 3N rows (limit 20, 60 rows, 3 ticks)", async () => {
-		// A model of the Observe selection (spec §9): OPEN rows last checked
-		// 10 min ago or never, oldest first, then by id, up to the limit; a
-		// reconcile stamps the row's check time.
-		const rows = Array.from({ length: 60 }, (_, i) => ({
+	it("Observe visits every OPEN branch within N ticks for 3N branches (limit 20, 60 branches, 3 ticks)", async () => {
+		// A model of the branch Observe selection (spec §8): branches last
+		// checked 10 min ago or never, oldest first, then by id, up to the
+		// limit; a reconcile stamps the branch's check time.
+		const branches = Array.from({ length: 60 }, (_, i) => ({
 			id: `o${String(i).padStart(2, "0")}`,
 			lastCheckedAt: null as number | null,
 		}));
 		const visits: string[] = [];
-		const acts = sweepMocks(
-			async (limits) => {
-				const now = await env.currentTimeMs();
-				const due = rows
-					.filter(
-						(row) =>
-							row.lastCheckedAt === null ||
-							now - row.lastCheckedAt >= 10 * MINUTE_MS,
-					)
-					.sort(
-						(a, b) =>
-							(a.lastCheckedAt ?? -1) - (b.lastCheckedAt ?? -1) ||
-							a.id.localeCompare(b.id),
-					)
-					.slice(0, limits.observe);
-				return sweep({ observe: due.map((row) => item(row.id)) });
-			},
-			{
-				reconcileInstructionProposalPullRequest: vi.fn(
-					async (
-						input: ReconcileProposalInput,
-					): Promise<ReconcileProposalResult> => {
-						const row = rows.find(
-							(r) => `snap_${r.id}` === input.snapshotId,
-						);
-						if (row) {
-							row.lastCheckedAt = await env.currentTimeMs();
-							visits.push(row.id);
-						}
-						return { kind: "open" };
-					},
-				),
-			},
-		);
+		const acts = sweepMocks(sweep({}), {
+			selectDueInstructionProposalBranches: vi.fn(
+				async (limits: BranchSweepLimits): Promise<DueBranchSweep> => {
+					const now = await env.currentTimeMs();
+					const due = branches
+						.filter(
+							(b) =>
+								b.lastCheckedAt === null ||
+								now - b.lastCheckedAt >= 10 * MINUTE_MS,
+						)
+						.sort(
+							(a, b) =>
+								(a.lastCheckedAt ?? -1) -
+									(b.lastCheckedAt ?? -1) ||
+								a.id.localeCompare(b.id),
+						)
+						.slice(0, limits.observe);
+					return branchSweep({
+						observe: due.map((b) => branchItem(b.id)),
+					});
+				},
+			),
+			reconcileInstructionProposalBranch: vi.fn(
+				async (
+					input: ReconcileBranchInput,
+				): Promise<ReconcileBranchResult> => {
+					const branch = branches.find(
+						(b) => `branch_${b.id}` === input.branchId,
+					);
+					if (branch) {
+						branch.lastCheckedAt = await env.currentTimeMs();
+						visits.push(branch.id);
+					}
+					return { state: "OPEN" };
+				},
+			),
+		});
 
 		for (let tick = 0; tick < 3; tick++) {
 			const { result } = await run(acts);
@@ -833,26 +641,30 @@ describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
 		}
 
 		expect(visits).toHaveLength(60);
-		expect(new Set(visits)).toEqual(new Set(rows.map((row) => row.id)));
+		expect(new Set(visits)).toEqual(new Set(branches.map((b) => b.id)));
 	}, 120_000);
 
 	it("counts an item whose activity keeps throwing as failed after three attempts, and carries on", async () => {
-		const acts = sweepMocks(sweep({ observe: [item("o1"), item("o2")] }), {
-			reconcileInstructionProposalPullRequest: vi.fn(
-				async (
-					input: ReconcileProposalInput,
-				): Promise<ReconcileProposalResult> => {
-					if (input.snapshotId === "snap_o1") {
-						throw new Error("provider exploded");
-					}
-					return { kind: "open" };
-				},
-			),
-		});
+		const acts = sweepMocks(
+			sweep({}),
+			{
+				reconcileInstructionProposalBranch: vi.fn(
+					async (
+						input: ReconcileBranchInput,
+					): Promise<ReconcileBranchResult> => {
+						if (input.branchId === "branch_o1") {
+							throw new Error("provider exploded");
+						}
+						return { state: "OPEN" };
+					},
+				),
+			},
+			branchSweep({ observe: [branchItem("o1"), branchItem("o2")] }),
+		);
 		const { result } = await run(acts);
 		expect(
-			acts.reconcileInstructionProposalPullRequest.mock.calls.filter(
-				([input]) => input.snapshotId === "snap_o1",
+			acts.reconcileInstructionProposalBranch.mock.calls.filter(
+				([input]) => input.branchId === "branch_o1",
 			),
 		).toHaveLength(3);
 		expect(result).toEqual({
@@ -863,98 +675,20 @@ describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
 		});
 	}, 60_000);
 
-	it("ends the tick when the selection keeps failing", async () => {
-		const acts = sweepMocks(sweep({}), {
-			selectDueInstructionProposalOperations: vi.fn(async () => {
+	it("ends the tick when the branch selection keeps failing", async () => {
+		const acts = sweepMocks(sweep({ restart: [item("s")] }), {
+			selectDueInstructionProposalBranches: vi.fn(async () => {
 				throw new Error("database unavailable");
 			}),
 		});
 		const { result } = await run(acts);
-		expect(
-			acts.selectDueInstructionProposalOperations,
-		).toHaveBeenCalledTimes(3);
-		expect(result).toEqual({ ...ZERO, selectFailed: true });
-	}, 60_000);
-	// -----------------------------------------------------------------------
-	// Member proposal branches (Fizzy #2738 spec §8), behind
-	// `patched("instruction-proposal-branch-sweep-v1")`
-	// -----------------------------------------------------------------------
-
-	it("selects the branch rows after #2563's, with their limits, and runs each sub-batch's branch rows after its #2563 rows, Attach last", async () => {
-		const acts = sweepMocks(
-			sweep({
-				close: [item("c")],
-				recover: [item("r")],
-				mergeSync: [item("m")],
-				observe: [item("o")],
-				restart: [item("s")],
-			}),
-			{},
-			branchSweep({
-				close: [branchItem("c")],
-				recover: [branchItem("r")],
-				mergeSync: [branchItem("m")],
-				observe: [branchItem("o")],
-				restart: [branchItem("s")],
-				attach: [attachItem("a")],
-			}),
+		expect(acts.selectDueInstructionProposalBranches).toHaveBeenCalledTimes(
+			3,
 		);
-		const { result, workflowId } = await run(acts);
-		expect(acts.selectDueInstructionProposalBranches).toHaveBeenCalledWith({
-			close: 10,
-			recover: 10,
-			mergeSync: 10,
-			observe: 20,
-			restart: 10,
-			attach: 10,
-		});
-		// One lane at a time would show the exact queue; four lanes start
-		// the first four in queue order, so the order of scheduling is the
-		// queue's.
-		expect((await scheduled(workflowId)).map((a) => a.type)).toEqual([
-			"selectDueInstructionProposalOperations",
-			"selectDueInstructionProposalBranches",
-			"closeInstructionProposalPullRequest",
-			"wakeInstructionProposalBranch",
-			"recoverInstructionProposalPullRequest",
-			"wakeInstructionProposalBranch",
-			"dispatchInstructionProposalMergeSync",
-			"dispatchBranchMergeSync",
-			"reconcileInstructionProposalPullRequest",
-			"reconcileInstructionProposalBranch",
-			"dispatchInstructionProposalPullRequest",
-			"wakeInstructionProposalBranch",
-			"attachInstructionProposalToBranch",
-		]);
-		const deadlineAt = expect.any(String);
-		const wake = (id: string) => ({
-			branchId: `branch_${id}`,
-			projectId: "proj_1",
-			organizationId: "org_1",
-			deadlineAt,
-		});
-		// Close's, Recover's, then Restart's, as scheduled.
-		expect(
-			await scheduledInputs(workflowId, "wakeInstructionProposalBranch"),
-		).toEqual([wake("c"), wake("r"), wake("s")]);
-		expect(acts.wakeInstructionProposalBranch).toHaveBeenCalledTimes(3);
-		expect(acts.dispatchBranchMergeSync).toHaveBeenCalledWith({
-			branchId: "branch_m",
-			organizationId: "org_1",
-			deadlineAt,
-		});
-		expect(acts.reconcileInstructionProposalBranch).toHaveBeenCalledWith({
-			branchId: "branch_o",
-			organizationId: "org_1",
-			expectedAttempt: 4,
-			deadlineAt,
-		});
-		expect(acts.attachInstructionProposalToBranch).toHaveBeenCalledWith({
-			...attachItem("a"),
-			deadlineAt,
-		});
-		expect(result).toEqual({ ...ZERO, selected: 11, processed: 11 });
-		await expectReplays(workflowId);
+		for (const name of V1_LANE) {
+			expect(acts[name]).not.toHaveBeenCalled();
+		}
+		expect(result).toEqual({ ...ZERO, selectFailed: true });
 	}, 60_000);
 
 	it("Observe wakes a branch whose pull request ended, so its workflow classifies it; an open one is not woken", async () => {
@@ -1011,68 +745,361 @@ describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
 		expect(acts.wakeInstructionProposalBranch).toHaveBeenCalledTimes(3);
 	}, 60_000);
 
-	it("skips a rate-limited integration's branch rows too, and runs Attach, which names no integration", async () => {
-		const acts = sweepMocks(
-			sweep({ close: [item("a1", { integrationId: "int_a" })] }),
-			{
-				closeInstructionProposalPullRequest: vi.fn(async () => ({
-					kind: "pending",
-					rateLimitedIntegrationId: "int_a",
-				})),
-				wakeInstructionProposalBranch: vi.fn(async () => {
-					await delay(300);
-					return { woken: true };
-				}),
+	it("records both patch markers on a new tick, the branch rows' first, and its history replays", async () => {
+		const acts = sweepMocks(sweep({}), {}, branchSweep({}));
+		const { workflowId } = await run(acts);
+		const history = await env.client.workflow
+			.getHandle(workflowId)
+			.fetchHistory();
+		const markers = patchMarkers(history);
+		expect(markers).toHaveLength(2);
+		expect(markers[0]).toContain(BRANCH_SWEEP_PATCH);
+		expect(markers[1]).toContain(V1_LANE_REMOVED_PATCH);
+		await expectReplays(workflowId);
+	}, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Replay: ticks recorded by earlier versions of the sweeper
+// ---------------------------------------------------------------------------
+
+/**
+ * One tick the origin/master sweeper records before the #2563 lane's
+ * removal. `check` pins that the tick took the path it is named for, so its
+ * replay proves that path.
+ */
+type MasterTick = {
+	acts: () => ReturnType<typeof sweepMocks>;
+	check: (
+		acts: ReturnType<typeof sweepMocks>,
+		result: ProposalSweepResult,
+	) => void;
+};
+
+const MASTER_TICKS: ReadonlyArray<[string, MasterTick]> = [
+	[
+		"every sub-batch of both lanes, the #2563 rows first, Attach last",
+		{
+			acts: () =>
+				sweepMocks(
+					sweep({
+						close: [item("c")],
+						recover: [item("r")],
+						mergeSync: [item("m")],
+						observe: [item("o")],
+						restart: [item("s")],
+					}),
+					{},
+					branchSweep({
+						close: [branchItem("c")],
+						recover: [branchItem("r")],
+						mergeSync: [branchItem("m")],
+						observe: [branchItem("o")],
+						restart: [branchItem("s")],
+						attach: [attachItem("a")],
+					}),
+				),
+			check: (acts, result) => {
+				for (const name of V1_LANE.filter(
+					(n) => n !== "deferInstructionProposalOperation",
+				)) {
+					expect(acts[name]).toHaveBeenCalledTimes(1);
+				}
+				expect(result).toEqual({
+					...ZERO,
+					selected: 11,
+					processed: 11,
+				});
 			},
-			branchSweep({
-				recover: [
-					branchItem("x", { integrationId: "int_b" }),
-					branchItem("y", { integrationId: "int_b" }),
-					branchItem("z", { integrationId: "int_b" }),
-				],
-				restart: [branchItem("a2", { integrationId: "int_a" })],
-				attach: [attachItem("n")],
-			}),
-		);
-		const { result } = await run(acts);
-		expect(
-			acts.wakeInstructionProposalBranch.mock.calls.map(
-				([i]) => i.branchId,
-			),
-		).not.toContain("branch_a2");
-		expect(acts.attachInstructionProposalToBranch).toHaveBeenCalledTimes(1);
-		expect(result).toEqual({
-			...ZERO,
-			selected: 6,
-			processed: 5,
-			rateLimited: 1,
-		});
-	}, 60_000);
+		},
+	],
+	[
+		"a row whose operation workflow is running is deferred in every sub-batch",
+		{
+			acts: () => {
+				const running = { running: true, attempt: 8 };
+				return sweepMocks(
+					sweep({
+						close: [item("c", running)],
+						recover: [item("r", running)],
+						mergeSync: [item("m", running)],
+						observe: [item("o", running)],
+						restart: [item("s", running)],
+					}),
+				);
+			},
+			check: (acts, result) => {
+				expect(
+					acts.deferInstructionProposalOperation,
+				).toHaveBeenCalledTimes(5);
+				expect(result).toEqual({
+					...ZERO,
+					selected: 5,
+					processed: 5,
+					deferred: 5,
+				});
+			},
+		},
+	],
+	[
+		"Recover hands off to close and to Restart's action, and Observe to the merge-sync dispatch, in the same item",
+		{
+			acts: () => {
+				const recovered: Record<string, RecoverProposalResult> = {
+					snap_r1: { kind: "absent_handoff" },
+					snap_r2: { kind: "close_requested" },
+				};
+				return sweepMocks(
+					sweep({
+						recover: [item("r1"), item("r2"), item("r3")],
+						observe: [item("o1"), item("o2")],
+					}),
+					{
+						recoverInstructionProposalPullRequest: vi.fn(
+							async (input: RecoverProposalInput) =>
+								recovered[input.snapshotId] ?? {
+									kind: "unchanged",
+								},
+						),
+						reconcileInstructionProposalPullRequest: vi.fn(
+							async (
+								input: ReconcileProposalInput,
+							): Promise<ReconcileProposalResult> =>
+								input.snapshotId === "snap_o1"
+									? { kind: "merged" }
+									: { kind: "open" },
+						),
+					},
+				);
+			},
+			check: (acts) => {
+				expect(
+					acts.dispatchInstructionProposalPullRequest.mock.calls.map(
+						([input]) => idOf(input),
+					),
+				).toEqual(["snap_r1"]);
+				expect(
+					acts.closeInstructionProposalPullRequest.mock.calls.map(
+						([input]) => idOf(input),
+					),
+				).toEqual(["snap_r2"]);
+				expect(
+					acts.dispatchInstructionProposalMergeSync.mock.calls.map(
+						([input]) => idOf(input),
+					),
+				).toEqual(["snap_o1"]);
+			},
+		},
+	],
+	[
+		"a rate-limited integration's later items are skipped, its branch rows too",
+		{
+			acts: () =>
+				sweepMocks(
+					sweep({ close: [item("a1", { integrationId: "int_a" })] }),
+					{
+						closeInstructionProposalPullRequest: vi.fn(
+							async () => ({
+								kind: "pending",
+								rateLimitedIntegrationId: "int_a",
+							}),
+						),
+						wakeInstructionProposalBranch: vi.fn(async () => {
+							await delay(300);
+							return { woken: true };
+						}),
+					},
+					branchSweep({
+						recover: [
+							branchItem("x", { integrationId: "int_b" }),
+							branchItem("y", { integrationId: "int_b" }),
+							branchItem("z", { integrationId: "int_b" }),
+						],
+						restart: [branchItem("a2", { integrationId: "int_a" })],
+						attach: [attachItem("n")],
+					}),
+				),
+			check: (acts, result) => {
+				expect(
+					acts.wakeInstructionProposalBranch.mock.calls.map(
+						([i]) => i.branchId,
+					),
+				).not.toContain("branch_a2");
+				expect(result).toEqual({
+					...ZERO,
+					selected: 6,
+					processed: 5,
+					rateLimited: 1,
+				});
+			},
+		},
+	],
+	[
+		"the #2563 selection keeps failing and ends the tick",
+		{
+			acts: () =>
+				sweepMocks(sweep({}), {
+					selectDueInstructionProposalOperations: vi.fn(async () => {
+						throw new Error("database unavailable");
+					}),
+				}),
+			check: (acts, result) => {
+				expect(
+					acts.selectDueInstructionProposalOperations,
+				).toHaveBeenCalledTimes(3);
+				expect(
+					acts.selectDueInstructionProposalBranches,
+				).not.toHaveBeenCalled();
+				expect(result).toEqual({ ...ZERO, selectFailed: true });
+			},
+		},
+	],
+	[
+		"the branch selection keeps failing and the #2563 rows still run",
+		{
+			acts: () =>
+				sweepMocks(sweep({ restart: [item("s")] }), {
+					selectDueInstructionProposalBranches: vi.fn(async () => {
+						throw new Error("database unavailable");
+					}),
+				}),
+			check: (acts, result) => {
+				expect(
+					acts.dispatchInstructionProposalPullRequest,
+				).toHaveBeenCalledTimes(1);
+				expect(result).toEqual({ ...ZERO, selected: 1, processed: 1 });
+			},
+		},
+	],
+	[
+		"a #2563 item whose activity keeps throwing is failed after three attempts",
+		{
+			acts: () =>
+				sweepMocks(sweep({ observe: [item("o1"), item("o2")] }), {
+					reconcileInstructionProposalPullRequest: vi.fn(
+						async (
+							input: ReconcileProposalInput,
+						): Promise<ReconcileProposalResult> => {
+							if (input.snapshotId === "snap_o1") {
+								throw new Error("provider exploded");
+							}
+							return { kind: "open" };
+						},
+					),
+				}),
+			check: (_acts, result) => {
+				expect(result).toEqual({
+					...ZERO,
+					selected: 2,
+					processed: 1,
+					failed: 1,
+				});
+			},
+		},
+	],
+	[
+		"a tick straddling the deploy meets the retired stubs: each #2563 action fails once, non-retryably, and the branch rows still run",
+		{
+			acts: () => {
+				// The selection ran before the deploy; every action after it
+				// runs on the new worker, whose stubs refuse non-retryably.
+				const retired = (name: string) =>
+					vi.fn(async () => {
+						throw ApplicationFailure.nonRetryable(
+							`${name} belongs to the retired per-proposal pull-request path; nothing is left for it to do`,
+							"PROPOSAL_OPERATION_LANE_RETIRED",
+						);
+					});
+				return sweepMocks(
+					sweep({
+						close: [item("c")],
+						recover: [item("r")],
+						mergeSync: [item("m")],
+						observe: [item("o")],
+						restart: [item("s")],
+					}),
+					{
+						closeInstructionProposalPullRequest: retired("close"),
+						recoverInstructionProposalPullRequest:
+							retired("recover"),
+						dispatchInstructionProposalMergeSync:
+							retired("mergeSync"),
+						reconcileInstructionProposalPullRequest:
+							retired("reconcile"),
+						dispatchInstructionProposalPullRequest:
+							retired("dispatch"),
+					},
+					branchSweep({ restart: [branchItem("s")] }),
+				);
+			},
+			check: (acts, result) => {
+				for (const name of [
+					"closeInstructionProposalPullRequest",
+					"recoverInstructionProposalPullRequest",
+					"dispatchInstructionProposalMergeSync",
+					"reconcileInstructionProposalPullRequest",
+					"dispatchInstructionProposalPullRequest",
+				] as const) {
+					expect(acts[name]).toHaveBeenCalledTimes(1);
+				}
+				expect(
+					acts.wakeInstructionProposalBranch,
+				).toHaveBeenCalledTimes(1);
+				expect(result).toEqual({
+					...ZERO,
+					selected: 6,
+					processed: 1,
+					failed: 5,
+				});
+			},
+		},
+	],
+	[
+		"the budget runs out: nothing new starts with under 30 s left",
+		{
+			acts: () =>
+				sweepMocks(
+					sweep({
+						restart: Array.from({ length: 40 }, (_, i) =>
+							item(`s${i}`),
+						),
+					}),
+					{
+						dispatchInstructionProposalPullRequest: vi.fn(
+							async () => {
+								await env.sleep(25_000);
+								return { kind: "started" };
+							},
+						),
+					},
+				),
+			check: (acts, result) => {
+				expect(
+					acts.dispatchInstructionProposalPullRequest,
+				).toHaveBeenCalledTimes(36);
+				expect(result).toEqual({
+					...ZERO,
+					selected: 40,
+					processed: 36,
+					outOfBudget: 4,
+				});
+			},
+		},
+	],
+];
 
-	it("a branch selection that keeps failing leaves #2563's rows to run", async () => {
-		const acts = sweepMocks(sweep({ restart: [item("s")] }), {
-			selectDueInstructionProposalBranches: vi.fn(async () => {
-				throw new Error("database unavailable");
-			}),
-		});
-		const { result } = await run(acts);
-		expect(acts.selectDueInstructionProposalBranches).toHaveBeenCalledTimes(
-			3,
-		);
-		expect(
-			acts.dispatchInstructionProposalPullRequest,
-		).toHaveBeenCalledTimes(1);
-		expect(result).toEqual({ ...ZERO, selected: 1, processed: 1 });
-	}, 60_000);
+describe("replaying ticks recorded before a patch", () => {
+	let preBranchBundle: WorkflowBundleWithSourceMap;
+	let preV1RemovalBundle: WorkflowBundleWithSourceMap;
 
-	it("replays a tick recorded before the patch on the pre-patch path: no marker, no branch selection", async () => {
-		const legacyBundle = await bundleWorkflowCode({
-			workflowsPath: resolve(
-				__dirname,
-				"helpers",
-				"legacy-proposal-sweep",
-			),
-		});
+	beforeAll(async () => {
+		[preBranchBundle, preV1RemovalBundle] = await Promise.all([
+			bundleWorkflowCode({ workflowsPath: PRE_BRANCH_SWEEP_PATH }),
+			bundleWorkflowCode({ workflowsPath: PRE_V1_REMOVAL_SWEEP_PATH }),
+		]);
+	}, 120_000);
+
+	it("replays a tick recorded before the branch sub-batches on the pre-patch path: no marker, no branch selection", async () => {
 		const acts = sweepMocks(
 			sweep({
 				close: [item("c")],
@@ -1084,21 +1111,7 @@ describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
 			{},
 			branchSweep({ restart: [branchItem("never")] }),
 		);
-		const taskQueue = `instruction-proposal-sweep-${seq++}`;
-		const workflowId = `${taskQueue}-legacy`;
-		const worker = await Worker.create({
-			connection: env.nativeConnection,
-			taskQueue,
-			workflowBundle: legacyBundle,
-			activities: acts,
-		});
-		await worker.runUntil(
-			env.client.workflow.execute(WORKFLOW_NAME, {
-				args: [],
-				taskQueue,
-				workflowId,
-			}),
-		);
+		const { workflowId } = await run(acts, preBranchBundle);
 		const history = await env.client.workflow
 			.getHandle(workflowId)
 			.fetchHistory();
@@ -1106,23 +1119,37 @@ describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
 		expect(
 			acts.selectDueInstructionProposalBranches,
 		).not.toHaveBeenCalled();
-		// The current workflow replays it: `patched` answers false on a
-		// history without the marker, so it schedules exactly what the
-		// legacy tick did.
+		// The current workflow replays it: both `patched` calls answer false
+		// on a history without their markers, so it takes the #2563 lane
+		// alone and schedules exactly what the legacy tick did.
 		await expect(
 			Worker.runReplayHistory({ workflowBundle }, history, workflowId),
 		).resolves.toBeUndefined();
 	}, 120_000);
 
-	it("records the patch marker on a new tick, and its history replays", async () => {
-		const acts = sweepMocks(sweep({}), {}, branchSweep({}));
-		const { workflowId } = await run(acts);
-		const history = await env.client.workflow
-			.getHandle(workflowId)
-			.fetchHistory();
-		const markers = patchMarkers(history);
-		expect(markers).toHaveLength(1);
-		expect(markers[0]).toContain("instruction-proposal-branch-sweep-v1");
-		await expectReplays(workflowId);
-	}, 60_000);
+	it.each(MASTER_TICKS)(
+		"replays a tick origin/master recorded before the #2563 lane's removal, command for command: %s",
+		async (_name, tick) => {
+			const acts = tick.acts();
+			const { result, workflowId } = await run(acts, preV1RemovalBundle);
+			tick.check(acts, result);
+			const history = await env.client.workflow
+				.getHandle(workflowId)
+				.fetchHistory();
+			// Recorded with the branch rows' marker only: the current
+			// workflow reads `V1_LANE_REMOVED_PATCH` as unpatched and takes
+			// the #2563 lane exactly as the tick did.
+			const markers = patchMarkers(history);
+			expect(markers).toHaveLength(1);
+			expect(markers[0]).toContain(BRANCH_SWEEP_PATCH);
+			await expect(
+				Worker.runReplayHistory(
+					{ workflowBundle },
+					history,
+					workflowId,
+				),
+			).resolves.toBeUndefined();
+		},
+		120_000,
+	);
 });

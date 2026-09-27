@@ -1,12 +1,10 @@
 /**
- * A REPOSITORY proposal's pull request as the API starts and reads it
- * (Fizzy #2563 spec §6, §12).
- *
- * The start is the operation workflow's, one per operation, on the
- * instructions queue, with `workflowIdConflictPolicy: "FAIL"` so a second
- * start is adoption; every start here originates in a request and carries
- * the request's correlation memo (plan Decision 12). Reads are the row's,
- * never the provider's.
+ * A REPOSITORY proposal's pull request as the API reads, reports and
+ * refreshes it (Fizzy #2563 spec §12). Reads are the row's, never the
+ * provider's. A refresh wakes the member branch a proposal is on (Fizzy
+ * #2738); #2563's per-proposal workflow, its starts and its Retry opening
+ * were retired with that path (Fizzy #2748), so nothing here starts one.
+ * The admission start is `proposal-branch-start.test.ts`'s.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,6 +16,8 @@ const m = vi.hoisted(() => ({
 	getSyncRunReceiptByRunId: vi.fn(),
 	requestPullRequestRefresh: vi.fn(),
 	transitionPullRequest: vi.fn(),
+	proposalBranchIdOf: vi.fn(),
+	wakeBranchAfterCommand: vi.fn(),
 	canReviewInstructionProposals: vi.fn(),
 	correlationId: null as string | null,
 }));
@@ -33,10 +33,14 @@ vi.mock("@repo/database", () => ({
 	requestPullRequestRefresh: (...a: unknown[]) =>
 		m.requestPullRequestRefresh(...a),
 	transitionPullRequest: (...a: unknown[]) => m.transitionPullRequest(...a),
-	// No row here is on a member branch (Fizzy #2738): those have their own
+	// Reads see no member branch here (Fizzy #2738): those have their own
 	// suite, `proposal-branch-procedures.test.ts`.
 	readProposalBranchAttachments: async () => new Map(),
-	proposalBranchIdOf: async () => null,
+	proposalBranchIdOf: (...a: unknown[]) => m.proposalBranchIdOf(...a),
+}));
+vi.mock("../proposal-branch", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../proposal-branch")>()),
+	wakeBranchAfterCommand: (...a: unknown[]) => m.wakeBranchAfterCommand(...a),
 }));
 vi.mock("../proposal-authorization", () => ({
 	canReviewInstructionProposals: (...a: unknown[]) =>
@@ -51,23 +55,7 @@ import {
 	pullRequestView,
 	readProposalPullRequest,
 	refreshProposalPullRequest,
-	retryProposalPullRequest,
-	startAdmittedProposalPullRequest,
-	startProposalPullRequestWorkflow,
 } from "../proposal-pull-request";
-
-const INPUT = {
-	snapshotId: "snap_1",
-	projectId: "proj_1",
-	organizationId: "org_1",
-	operationId: "op_1",
-};
-
-function alreadyStarted(): Error {
-	const error = new Error("Workflow execution already started");
-	error.name = "WorkflowExecutionAlreadyStartedError";
-	return error;
-}
 
 beforeEach(() => {
 	for (const fn of [
@@ -77,86 +65,17 @@ beforeEach(() => {
 		m.getSyncRunReceiptByRunId,
 		m.requestPullRequestRefresh,
 		m.transitionPullRequest,
+		m.proposalBranchIdOf,
+		m.wakeBranchAfterCommand,
 		m.canReviewInstructionProposals,
 	]) {
 		fn.mockReset();
 	}
 	m.correlationId = "corr_1";
 	m.start.mockResolvedValue({ workflowId: "wf" });
+	m.proposalBranchIdOf.mockResolvedValue(null);
+	m.wakeBranchAfterCommand.mockResolvedValue(undefined);
 	m.canReviewInstructionProposals.mockResolvedValue(false);
-});
-
-describe("startProposalPullRequestWorkflow", () => {
-	it("starts the operation's workflow with FAIL and the request's correlation memo", async () => {
-		expect(await startProposalPullRequestWorkflow(INPUT)).toBe("started");
-
-		expect(m.start).toHaveBeenCalledWith(
-			"projectInstructionProposalPullRequestWorkflow",
-			{
-				taskQueue: "project-instructions",
-				workflowId: "project-instruction-proposal-pull-request-op_1",
-				workflowIdConflictPolicy: "FAIL",
-				args: [INPUT],
-				memo: { correlationId: "corr_1" },
-			},
-		);
-	});
-
-	it("passes a human retry's observed attempt and nothing else", async () => {
-		await startProposalPullRequestWorkflow({
-			...INPUT,
-			retryCreate: { expectedAttempt: 3 },
-			// A starter never sets the workflow's own continue-as-new carry.
-			readiness: { deadlineMs: 1, wasFailed: true, pendingAnswers: 9 },
-		} as Parameters<typeof startProposalPullRequestWorkflow>[0]);
-
-		expect(m.start.mock.calls[0]![1].args).toEqual([
-			{ ...INPUT, retryCreate: { expectedAttempt: 3 } },
-		]);
-	});
-
-	it("reads an execution already running under the operation's id as adoption", async () => {
-		m.start.mockRejectedValue(alreadyStarted());
-
-		expect(await startProposalPullRequestWorkflow(INPUT)).toBe(
-			"already_running",
-		);
-	});
-
-	it("throws any other start failure", async () => {
-		m.start.mockRejectedValue(new Error("unreachable"));
-
-		await expect(startProposalPullRequestWorkflow(INPUT)).rejects.toThrow(
-			"unreachable",
-		);
-	});
-});
-
-describe("startAdmittedProposalPullRequest", () => {
-	it("logs a failed start and does not throw: the committed row is the durable intent", async () => {
-		const log = vi.spyOn(console, "error").mockImplementation(() => {});
-		m.start.mockRejectedValue(new Error("unreachable"));
-
-		await expect(startAdmittedProposalPullRequest(INPUT)).resolves.toBe(
-			undefined,
-		);
-		expect(log).toHaveBeenCalledWith(
-			expect.stringContaining("sweeper"),
-			{ snapshotId: "snap_1", operationId: "op_1" },
-			expect.any(Error),
-		);
-		log.mockRestore();
-	});
-
-	it("is quiet about adoption", async () => {
-		const log = vi.spyOn(console, "error").mockImplementation(() => {});
-		m.start.mockRejectedValue(alreadyStarted());
-
-		await startAdmittedProposalPullRequest(INPUT);
-
-		expect(log).not.toHaveBeenCalled();
-		log.mockRestore();
-	});
 });
 
 describe("reading the pull request", () => {
@@ -227,7 +146,7 @@ describe("reading the pull request", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Status, refresh and retry (plan Task 16; spec §12; Decision 8)
+// Status and refresh (plan Task 16; spec §12; Decision 8)
 // ---------------------------------------------------------------------------
 
 function failureOf(code: string, retryable: boolean, phase = "create") {
@@ -272,21 +191,6 @@ const PROPOSER = {
 };
 const REVIEWER = { ...PROPOSER, userId: "reviewer_1" };
 const GUEST = { ...PROPOSER, userId: "guest_1" };
-
-const REQUESTER = {
-	actor: {
-		type: "user" as const,
-		userId: "user_1",
-		emailSnapshot: ["pat", "example.com"].join("@"),
-		nameSnapshot: "Pat Example",
-		impersonatedById: null,
-	},
-	ipAddress: "203.0.113.7",
-	userAgent: null,
-	requestId: "req_1",
-	sessionId: "sess_1",
-	correlationId: "corr_1",
-};
 
 describe("getProposalPullRequestStatus", () => {
 	it("reports the row's pull request to its proposer, from the row alone", async () => {
@@ -452,15 +356,6 @@ describe("an invited guest who is neither proposer nor reviewer", () => {
 	const asks: Array<[string, (caller: typeof GUEST) => Promise<unknown>]> = [
 		["the status", (caller) => getProposalPullRequestStatus(caller)],
 		["a refresh", (caller) => refreshProposalPullRequest(caller)],
-		[
-			"a retry",
-			(caller) =>
-				retryProposalPullRequest({
-					...caller,
-					expectedAttempt: 3,
-					requester: REQUESTER,
-				}),
-		],
 	];
 
 	it.each(asks)(
@@ -488,6 +383,7 @@ describe("an invited guest who is neither proposer nor reviewer", () => {
 			);
 			expect(m.requestPullRequestRefresh).not.toHaveBeenCalled();
 			expect(m.transitionPullRequest).not.toHaveBeenCalled();
+			expect(m.wakeBranchAfterCommand).not.toHaveBeenCalled();
 			expect(m.start).not.toHaveBeenCalled();
 		},
 	);
@@ -504,12 +400,46 @@ describe("an invited guest who is neither proposer nor reviewer", () => {
 });
 
 describe("refreshProposalPullRequest", () => {
-	it.each([
+	const MOVABLE = [
 		["QUEUED", null],
 		["OPENING", null],
 		["BLOCKED", failureOf("PROVIDER_TEMPORARY", true)],
-	])(
-		"asks for a fresh look and starts the operation's workflow for a %s row",
+	] as const;
+
+	it.each(MOVABLE)(
+		"asks for a fresh look and wakes the member branch a %s row is on",
+		async (state, failure) => {
+			m.getInstructionProposal.mockResolvedValue(proposal());
+			m.requestPullRequestRefresh.mockResolvedValue({
+				admitted: true,
+				state,
+				attempt: 3,
+				failure,
+			});
+			m.proposalBranchIdOf.mockResolvedValue("branch_1");
+
+			expect(await refreshProposalPullRequest(PROPOSER)).toEqual({
+				refreshed: true,
+			});
+			expect(m.requestPullRequestRefresh).toHaveBeenCalledWith({
+				snapshotId: "snap_1",
+				projectId: "proj_1",
+				organizationId: "org_1",
+			});
+			expect(m.proposalBranchIdOf).toHaveBeenCalledWith({
+				snapshotId: "snap_1",
+				organizationId: "org_1",
+			});
+			expect(m.wakeBranchAfterCommand).toHaveBeenCalledWith(
+				"branch_1",
+				PROPOSER,
+			);
+			expect(m.start).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(MOVABLE)(
+		"leaves a %s row on no branch to the sweeper's Attach, starting nothing",
 		async (state, failure) => {
 			m.getInstructionProposal.mockResolvedValue(proposal());
 			m.requestPullRequestRefresh.mockResolvedValue({
@@ -522,19 +452,8 @@ describe("refreshProposalPullRequest", () => {
 			expect(await refreshProposalPullRequest(PROPOSER)).toEqual({
 				refreshed: true,
 			});
-			expect(m.requestPullRequestRefresh).toHaveBeenCalledWith({
-				snapshotId: "snap_1",
-				projectId: "proj_1",
-				organizationId: "org_1",
-			});
-			expect(m.start).toHaveBeenCalledWith(
-				"projectInstructionProposalPullRequestWorkflow",
-				expect.objectContaining({
-					workflowIdConflictPolicy: "FAIL",
-					args: [INPUT],
-					memo: { correlationId: "corr_1" },
-				}),
-			);
+			expect(m.wakeBranchAfterCommand).not.toHaveBeenCalled();
+			expect(m.start).not.toHaveBeenCalled();
 		},
 	);
 
@@ -556,6 +475,8 @@ describe("refreshProposalPullRequest", () => {
 			expect(await refreshProposalPullRequest(PROPOSER)).toEqual({
 				refreshed: true,
 			});
+			expect(m.proposalBranchIdOf).not.toHaveBeenCalled();
+			expect(m.wakeBranchAfterCommand).not.toHaveBeenCalled();
 			expect(m.start).not.toHaveBeenCalled();
 		},
 	);
@@ -570,24 +491,6 @@ describe("refreshProposalPullRequest", () => {
 			refreshed: false,
 		});
 		expect(m.start).not.toHaveBeenCalled();
-	});
-
-	it("logs a failed start and still answers: the row is due and the sweeper restarts it", async () => {
-		const log = vi.spyOn(console, "error").mockImplementation(() => {});
-		m.getInstructionProposal.mockResolvedValue(proposal());
-		m.requestPullRequestRefresh.mockResolvedValue({
-			admitted: true,
-			state: "QUEUED",
-			attempt: 3,
-			failure: null,
-		});
-		m.start.mockRejectedValue(new Error("unreachable"));
-
-		expect(await refreshProposalPullRequest(PROPOSER)).toEqual({
-			refreshed: true,
-		});
-		expect(log).toHaveBeenCalled();
-		log.mockRestore();
 	});
 
 	it("is NOT_FOUND for a proposal with no pull request, and writes nothing", async () => {
@@ -655,7 +558,7 @@ describe("refreshProposalPullRequest", () => {
 		expect(m.start).not.toHaveBeenCalled();
 	});
 
-	it("starts the workflow once for rapid refreshes the database admits one of", async () => {
+	it("wakes the branch once for rapid refreshes the database admits one of", async () => {
 		m.getInstructionProposal.mockResolvedValue(
 			proposal({
 				pullRequestFailure: failureOf("PROVIDER_TEMPORARY", true),
@@ -675,6 +578,7 @@ describe("refreshProposalPullRequest", () => {
 		m.requestPullRequestRefresh
 			.mockResolvedValueOnce(blocked)
 			.mockResolvedValue(cooling);
+		m.proposalBranchIdOf.mockResolvedValue("branch_1");
 
 		const answers = await Promise.allSettled([
 			refreshProposalPullRequest(PROPOSER),
@@ -691,179 +595,7 @@ describe("refreshProposalPullRequest", () => {
 			});
 		}
 		expect(m.requestPullRequestRefresh).toHaveBeenCalledTimes(3);
-		expect(m.start).toHaveBeenCalledTimes(1);
-	});
-});
-
-describe("retryProposalPullRequest", () => {
-	it.each([
-		[
-			"a non-retryable CREATE_OUTCOME_UNKNOWN",
-			failureOf("CREATE_OUTCOME_UNKNOWN", false),
-		],
-		["PR_CREATION_REFUSED", failureOf("PR_CREATION_REFUSED", false)],
-		[
-			"REMOTE_REF_CONFLICT",
-			failureOf("REMOTE_REF_CONFLICT", false, "push"),
-		],
-	])(
-		"records the request, then starts the workflow naming the attempt the card showed, on %s",
-		async (_label, failure) => {
-			m.getInstructionProposal.mockResolvedValue(
-				proposal({ pullRequestFailure: failure }),
-			);
-			m.transitionPullRequest.mockResolvedValue({ ok: true, attempt: 3 });
-
-			expect(
-				await retryProposalPullRequest({
-					...PROPOSER,
-					expectedAttempt: 3,
-					requester: REQUESTER,
-				}),
-			).toEqual({ retried: true });
-
-			expect(m.transitionPullRequest).toHaveBeenCalledWith({
-				snapshotId: "snap_1",
-				organizationId: "org_1",
-				event: "retry",
-				from: ["BLOCKED"],
-				expectedAttempt: 3,
-				to: "unchanged",
-				bumpAttempt: false,
-				audit: {
-					action: "project.instructions.pull_request_retry_requested",
-					category: "project",
-					actor: REQUESTER.actor,
-					organizationId: "org_1",
-					projectId: "proj_1",
-					resource: {
-						type: "project_instruction_snapshot",
-						id: "snap_1",
-						name: "v8",
-					},
-					metadata: { operationId: "op_1" },
-					ipAddress: "203.0.113.7",
-					userAgent: null,
-					requestId: "req_1",
-					sessionId: "sess_1",
-					correlationId: "corr_1",
-				},
-			});
-			expect(m.start).toHaveBeenCalledWith(
-				"projectInstructionProposalPullRequestWorkflow",
-				expect.objectContaining({
-					workflowIdConflictPolicy: "FAIL",
-					args: [{ ...INPUT, retryCreate: { expectedAttempt: 3 } }],
-					memo: { correlationId: "corr_1" },
-				}),
-			);
-			expect(
-				m.transitionPullRequest.mock.invocationCallOrder[0],
-			).toBeLessThan(m.start.mock.invocationCallOrder[0] as number);
-		},
-	);
-
-	it("lets a reviewer retry another member's pull request", async () => {
-		m.getInstructionProposal.mockResolvedValue(proposal());
-		m.canReviewInstructionProposals.mockResolvedValue(true);
-		m.transitionPullRequest.mockResolvedValue({ ok: true, attempt: 3 });
-
-		expect(
-			await retryProposalPullRequest({
-				...REVIEWER,
-				expectedAttempt: 3,
-				requester: REQUESTER,
-			}),
-		).toEqual({ retried: true });
-	});
-
-	it.each([
-		["an OPEN row", { pullRequestState: "OPEN", pullRequestFailure: null }],
-		[
-			"a retryable CREATE_OUTCOME_UNKNOWN",
-			{ pullRequestFailure: failureOf("CREATE_OUTCOME_UNKNOWN", true) },
-		],
-		[
-			"a failure the sweeper retries by itself",
-			{ pullRequestFailure: failureOf("AUTHENTICATION_FAILED", true) },
-		],
-		[
-			"a failure no retry can fix",
-			{
-				pullRequestFailure: failureOf(
-					"ATTRIBUTION_REJECTED",
-					false,
-					"admission",
-				),
-			},
-		],
-	])("refuses %s, recording and starting nothing", async (_label, row) => {
-		m.getInstructionProposal.mockResolvedValue(proposal(row));
-
-		await expect(
-			retryProposalPullRequest({
-				...PROPOSER,
-				expectedAttempt: 3,
-				requester: REQUESTER,
-			}),
-		).rejects.toMatchObject({
-			code: "PRECONDITION_FAILED",
-			data: { reason: "PULL_REQUEST_NOT_RETRYABLE" },
-		});
-		expect(m.transitionPullRequest).not.toHaveBeenCalled();
+		expect(m.wakeBranchAfterCommand).toHaveBeenCalledTimes(1);
 		expect(m.start).not.toHaveBeenCalled();
-	});
-
-	it("refuses a retry the row has moved past since the card was drawn", async () => {
-		m.getInstructionProposal.mockResolvedValue(proposal());
-		m.transitionPullRequest.mockResolvedValue({ ok: false });
-
-		await expect(
-			retryProposalPullRequest({
-				...PROPOSER,
-				expectedAttempt: 2,
-				requester: REQUESTER,
-			}),
-		).rejects.toMatchObject({
-			code: "CONFLICT",
-			data: { reason: "PULL_REQUEST_CHANGED" },
-		});
-		expect(m.start).not.toHaveBeenCalled();
-	});
-
-	it("surfaces a start that failed after the retry was recorded", async () => {
-		const log = vi.spyOn(console, "error").mockImplementation(() => {});
-		m.getInstructionProposal.mockResolvedValue(proposal());
-		m.transitionPullRequest.mockResolvedValue({ ok: true, attempt: 3 });
-		m.start.mockRejectedValue(new Error("unreachable"));
-
-		await expect(
-			retryProposalPullRequest({
-				...PROPOSER,
-				expectedAttempt: 3,
-				requester: REQUESTER,
-			}),
-		).rejects.toMatchObject({
-			code: "INTERNAL_SERVER_ERROR",
-			data: { reason: "PULL_REQUEST_START_FAILED" },
-		});
-		log.mockRestore();
-	});
-
-	it("reports a workflow still running for the operation as busy", async () => {
-		m.getInstructionProposal.mockResolvedValue(proposal());
-		m.transitionPullRequest.mockResolvedValue({ ok: true, attempt: 3 });
-		m.start.mockRejectedValue(alreadyStarted());
-
-		await expect(
-			retryProposalPullRequest({
-				...PROPOSER,
-				expectedAttempt: 3,
-				requester: REQUESTER,
-			}),
-		).rejects.toMatchObject({
-			code: "CONFLICT",
-			data: { reason: "PULL_REQUEST_BUSY" },
-		});
 	});
 });

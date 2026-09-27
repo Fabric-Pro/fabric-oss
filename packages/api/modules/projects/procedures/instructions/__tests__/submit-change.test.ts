@@ -1206,11 +1206,13 @@ describe("portable file names", () => {
  */
 describe("repository proposals", () => {
 	const NOTE = { title: "Tighten the review skill", body: "Why: flaky" };
+	// A member branch proposal's frozen context (Fizzy #2738): the only
+	// kind admission builds since #2563's per-proposal path was retired
+	// (Fizzy #2748).
 	const CONTEXT = {
-		v: 1,
+		v: 2,
 		syncId: "sync_1",
 		syncGeneration: 4,
-		branch: "fabric/instructions/op_1",
 	};
 	const PULL_REQUEST = {
 		operationId: "op_1",
@@ -1272,7 +1274,6 @@ describe("repository proposals", () => {
 					context: CONTEXT,
 					syncId: "sync_1",
 					syncGeneration: 4,
-					branch: "fabric/instructions/op_1",
 					uploadStartedAudit: expect.objectContaining({
 						actor: { type: "user", userId: USER },
 						organizationId: ORG,

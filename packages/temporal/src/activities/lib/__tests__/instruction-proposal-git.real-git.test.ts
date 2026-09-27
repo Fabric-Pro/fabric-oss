@@ -13,7 +13,6 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { isCredentialFailure } from "../instruction-proposal-credential";
 import {
-	assertOperationBranch,
 	buildGitEnv,
 	cloneTreeless,
 	commitTree,
@@ -54,9 +53,9 @@ const NON_UTF8 = Buffer.concat([
 	Buffer.from(".md"),
 ]);
 
-/** A branch the guard accepts: cuid2-shaped, 24 lowercase characters after the prefix. */
+/** A branch the guard accepts: a member proposal branch ref, one per test. */
 function branch(tag: string): string {
-	return `fabric/instructions/c${tag.padEnd(23, "0")}`;
+	return `fabric/instructions/members/${tag}-a1b2/1`;
 }
 
 let work: string;
@@ -454,7 +453,6 @@ describe.skipIf(!hasGit)(
 			const b = branch("push");
 			expect(
 				await pushCreateOnly({
-					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: b,
@@ -467,7 +465,6 @@ describe.skipIf(!hasGit)(
 			// "refuses a create-only push at our own SHA" (R21): never adopted by SHA.
 			expect(
 				await pushCreateOnly({
-					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: b,
@@ -476,7 +473,6 @@ describe.skipIf(!hasGit)(
 			).toEqual({ kind: "exists" });
 			expect(
 				await pushCreateOnly({
-					validator: "operation",
 					dir: built.dir,
 					sha: base,
 					branch: b,
@@ -488,7 +484,6 @@ describe.skipIf(!hasGit)(
 			);
 			expect(
 				await pushCreateOnly({
-					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: branch("hooked"),
@@ -507,7 +502,6 @@ describe.skipIf(!hasGit)(
 			]);
 			await expect(
 				pushCreateOnly({
-					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: branch("pushfail"),
@@ -523,7 +517,6 @@ describe.skipIf(!hasGit)(
 			const url = `file://${source}`;
 			expect(
 				await lsRemoteRef({
-					validator: "operation",
 					cwd: work,
 					url,
 					branch: b,
@@ -535,7 +528,6 @@ describe.skipIf(!hasGit)(
 			git(source, ["branch", b, tip]);
 			expect(
 				await lsRemoteRef({
-					validator: "operation",
 					cwd: work,
 					url,
 					branch: b,
@@ -555,7 +547,6 @@ describe.skipIf(!hasGit)(
 			// "refuses a leased delete at a moved tip"
 			expect(
 				await deleteBranch({
-					validator: "operation",
 					cwd: work,
 					url,
 					branch: ours,
@@ -566,7 +557,6 @@ describe.skipIf(!hasGit)(
 			expect(git(source, ["rev-parse", `refs/heads/${ours}`])).toBe(base);
 			expect(
 				await deleteBranch({
-					validator: "operation",
 					cwd: work,
 					url,
 					branch: ours,
@@ -576,7 +566,6 @@ describe.skipIf(!hasGit)(
 			).toEqual({ kind: "deleted" });
 			expect(
 				await lsRemoteRef({
-					validator: "operation",
 					cwd: work,
 					url,
 					branch: ours,
@@ -585,7 +574,6 @@ describe.skipIf(!hasGit)(
 			).toEqual({ kind: "missing" });
 			expect(
 				await deleteBranch({
-					validator: "operation",
 					cwd: work,
 					url,
 					branch: branch("neverpushed"),
@@ -597,7 +585,6 @@ describe.skipIf(!hasGit)(
 			git(source, ["branch", guarded, base]);
 			expect(
 				await deleteBranch({
-					validator: "operation",
 					cwd: work,
 					url,
 					branch: guarded,
@@ -627,7 +614,6 @@ describe.skipIf(!hasGit)(
 			const started = Date.now();
 			await expect(
 				pushCreateOnly({
-					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: branch("abort"),
@@ -648,7 +634,6 @@ describe.skipIf(!hasGit)(
 			const b = branch("token");
 			expect(
 				await pushCreateOnly({
-					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: b,
@@ -657,7 +642,6 @@ describe.skipIf(!hasGit)(
 			).toEqual({ kind: "created" });
 			expect(
 				await pushCreateOnly({
-					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: b,
@@ -667,7 +651,6 @@ describe.skipIf(!hasGit)(
 			const url = `file://${source}`;
 			expect(
 				await lsRemoteRef({
-					validator: "operation",
 					cwd: built.run,
 					url,
 					branch: b,
@@ -676,7 +659,6 @@ describe.skipIf(!hasGit)(
 			).toMatchObject({ kind: "found" });
 			expect(
 				await deleteBranch({
-					validator: "operation",
 					cwd: built.run,
 					url,
 					branch: b,
@@ -692,7 +674,6 @@ describe.skipIf(!hasGit)(
 			// A failing call with the trace on stderr: the token never reached it at
 			// all (not merely redacted), and neither tail carries it.
 			const failed = (await lsRemoteRef({
-				validator: "operation",
 				cwd: built.run,
 				url: `file://${path.join(work, "no-such-repo")}`,
 				branch: b,
@@ -710,35 +691,40 @@ describe.skipIf(!hasGit)(
 
 // Outside the skipIf: these refuse before anything spawns, or use only `sh`.
 describe("proposal plumbing guards", () => {
+	// Every ref-taking call accepts a member proposal branch alone: a #2563
+	// operation branch, retired with that path (Fizzy #2748), is refused like
+	// any other ref outside the pattern.
 	it.each([
 		"main",
 		"fabric/instructions/../x",
 		"-x",
 		"fabric/instructions/",
-		"fabric/instructions/C0000000000000000000000a",
-		"fabric/instructions/c000000000000000000000000",
-		"fabric/instructions/c00000000000000000000000-1",
-		"fabric/instructions/c00000000000000000000000-01",
-		"refs/heads/fabric/instructions/c00000000000000000000000",
-	])("assertOperationBranch refuses %s", (value) => {
-		expect(() => assertOperationBranch(value)).toThrow(GitCommandError);
-	});
-
-	it.each([
 		"fabric/instructions/c00000000000000000000000",
 		"fabric/instructions/cexample000000000000000a-2",
-		"fabric/instructions/cexample000000000000000a-10",
-		"fabric/instructions/cexample000000000000000a-9999",
-	])("assertOperationBranch accepts %s", (value) => {
-		expect(() => assertOperationBranch(value)).not.toThrow();
-	});
+		"refs/heads/fabric/instructions/members/dev-a1b2/1",
+	])(
+		"pushCreateOnly, deleteBranch and lsRemoteRef refuse %s before git spawns",
+		async (value) => {
+			const env = buildGitEnv({ home: tmpdir() });
+			const sha = "a".repeat(40);
+			const url = "https://example.com/example-org/example-repo";
+			await expect(
+				pushCreateOnly({ dir: tmpdir(), sha, branch: value, env }),
+			).rejects.toMatchObject({ kind: "invalid_argument" });
+			await expect(
+				deleteBranch({ cwd: tmpdir(), url, branch: value, sha, env }),
+			).rejects.toMatchObject({ kind: "invalid_argument" });
+			await expect(
+				lsRemoteRef({ cwd: tmpdir(), url, branch: value, env }),
+			).rejects.toMatchObject({ kind: "invalid_argument" });
+		},
+	);
 
 	it("refuses a bad branch, SHA or URL before git spawns", async () => {
 		const env = buildGitEnv({ home: tmpdir() });
 		const sha = "a".repeat(40);
 		await expect(
 			pushCreateOnly({
-				validator: "operation",
 				dir: tmpdir(),
 				sha,
 				branch: "main",
@@ -747,7 +733,6 @@ describe("proposal plumbing guards", () => {
 		).rejects.toMatchObject({ kind: "invalid_argument" });
 		await expect(
 			pushCreateOnly({
-				validator: "operation",
 				dir: tmpdir(),
 				sha: "--upload-pack=x",
 				branch: branch("x"),
@@ -756,7 +741,6 @@ describe("proposal plumbing guards", () => {
 		).rejects.toMatchObject({ kind: "invalid_argument" });
 		await expect(
 			deleteBranch({
-				validator: "operation",
 				cwd: tmpdir(),
 				url: `https://token@${"example.com"}/example-org/example-repo`,
 				branch: branch("x"),
@@ -766,7 +750,6 @@ describe("proposal plumbing guards", () => {
 		).rejects.toMatchObject({ kind: "invalid_argument" });
 		await expect(
 			lsRemoteRef({
-				validator: "operation",
 				cwd: tmpdir(),
 				url: "https://example.com/example-org/example-repo",
 				branch: "-x",
@@ -891,7 +874,6 @@ describe("proposal plumbing guards", () => {
 			async (_provider, stderr) => {
 				expect(
 					await pushCreateOnly({
-						validator: "operation",
 						dir: fake,
 						sha,
 						branch: branch("httprefused"),
@@ -906,7 +888,6 @@ describe("proposal plumbing guards", () => {
 			async (_provider, stderr) => {
 				expect(
 					await deleteBranch({
-						validator: "operation",
 						cwd: fake,
 						url,
 						branch: branch("httprefused"),
@@ -921,7 +902,6 @@ describe("proposal plumbing guards", () => {
 			"pushCreateOnly and deleteBranch rethrow %s as a credential failure",
 			async (_case, stderr) => {
 				const pushError = await pushCreateOnly({
-					validator: "operation",
 					dir: fake,
 					sha,
 					branch: branch("httpauth"),
@@ -933,7 +913,6 @@ describe("proposal plumbing guards", () => {
 				});
 				expect(isCredentialFailure(pushError)).toBe(true);
 				const deleteError = await deleteBranch({
-					validator: "operation",
 					cwd: fake,
 					url,
 					branch: branch("httpauth"),
@@ -950,7 +929,6 @@ describe("proposal plumbing guards", () => {
 
 		it("rethrows a bare 403 that names no write refusal", async () => {
 			const error = await pushCreateOnly({
-				validator: "operation",
 				dir: fake,
 				sha,
 				branch: branch("httpbare"),
@@ -966,7 +944,6 @@ describe("proposal plumbing guards", () => {
 		it("still rethrows an unreachable remote", async () => {
 			await expect(
 				pushCreateOnly({
-					validator: "operation",
 					dir: fake,
 					sha,
 					branch: branch("httpother"),

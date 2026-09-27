@@ -43,8 +43,9 @@ export const pullRequestRepositorySchema = z.discriminatedUnion("provider", [
 
 /**
  * The #2563 per-proposal context. Rows admitted before member proposal
- * branches keep it and drain on the #2563 workflow (member proposal branch
- * spec Decision 4).
+ * branches keep it (member proposal branch spec Decision 4). Nothing admits
+ * or acts on one any more: the #2563 workflow drained them and was retired
+ * (Fizzy #2748). It is kept so a stored row still parses for display.
  */
 export const pullRequestContextSchemaV1 = z
 	.object({

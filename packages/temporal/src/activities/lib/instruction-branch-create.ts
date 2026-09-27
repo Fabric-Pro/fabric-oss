@@ -683,7 +683,6 @@ export async function deleteIfFabricOwned(
 			url: credential.url,
 			branch: branch.ref,
 			sha: fetched.sha,
-			validator: "member",
 			env,
 			signal,
 		}),

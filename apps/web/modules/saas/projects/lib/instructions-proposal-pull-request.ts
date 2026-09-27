@@ -42,7 +42,7 @@ export type ProposalPullRequest = {
 	externalId: string | null;
 	failure: PullRequestFailure | null;
 	lastCheckedAt: string | Date | null;
-	/** The attempt a human "Retry opening" names (`expectedAttempt`). */
+	/** The row's pull-request attempt. */
 	attempt: number;
 	observation: {
 		targetRef: string | null;
@@ -319,31 +319,11 @@ function mergedLine(pr: ProposalPullRequest): PullRequestCardLine {
 }
 
 /**
- * "Retry opening the pull request" (spec §12): only on BLOCKED, only for the
- * failures Fabric will not retry by itself after a create it could not
- * account for. The server's guard is the same (`isHumanRetryable`).
- */
-export function canRetryOpening(pr: ProposalPullRequest): boolean {
-	const failure = pr.failure;
-	// A member branch proposal's "Retry opening" is a BRANCH command (spec
-	// §10 Actions), offered in the branch panel on the branch's own failure —
-	// never here, on the proposal's append/revert failure.
-	if (pr.branch || pr.state !== "BLOCKED" || !failure) {
-		return false;
-	}
-	return (
-		(failure.code === "CREATE_OUTCOME_UNKNOWN" && !failure.retryable) ||
-		failure.code === "PR_CREATION_REFUSED" ||
-		failure.code === "REMOTE_REF_CONFLICT"
-	);
-}
-
-/**
  * "Try again" on a member branch proposal's BLOCKED card (spec §10 Card:
  * "Try again on both conflict codes and on PUSH_OUTCOME_UNKNOWN"), by
- * `proposals.retryConflict`. Distinct from `canRetryOpening`'s v1 retry and
- * from the FABRIC "Try again" (`finalize`) offered on a QUEUED validation
- * failure.
+ * `proposals.retryConflict`. Distinct from the branch panel's "Retry
+ * opening", a branch command on the branch's own failure, and from the
+ * FABRIC "Try again" (`finalize`) offered on a QUEUED validation failure.
  */
 export function canRetryConflict(pr: ProposalPullRequest): boolean {
 	if (!pr.branch || pr.state !== "BLOCKED" || !pr.failure) {

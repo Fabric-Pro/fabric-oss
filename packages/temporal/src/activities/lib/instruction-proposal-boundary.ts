@@ -1,8 +1,8 @@
 /**
  * The proposal pull-request activities' failure plumbing (Fizzy #2563 spec
- * §6, §11): the typed failure a step throws, the one writer that records a
- * failure on the row (an open-failure move to BLOCKED at the claimed
- * attempt, or failure-only everywhere else, spec §4.4), and the boundary
+ * §6, §11): the typed failure a step throws, the cooperative deadline every
+ * readiness and member proposal branch activity runs under, the writer that
+ * records a failure on the row (failure-only, spec §4.4), and the boundary
  * that turns any unclassified exception into `UNEXPECTED`.
  *
  * Not re-exported from the activities barrel: every export of a module the
@@ -360,33 +360,20 @@ type FailureToRecord = Pick<
 >;
 
 /**
- * Records a failure (spec §4.4): with `claimedAttempt`, the open activity's
- * move from OPENING to BLOCKED at that attempt; otherwise failure-only at the
- * state and attempt the row holds now. False when the row moved first, which
- * writes nothing.
+ * Records a failure (spec §4.4): failure-only, at the state and attempt the
+ * row holds now. #2563's open activity also moved a row it had claimed from
+ * OPENING to BLOCKED here; that activity was retired (Fizzy #2748), and a
+ * member branch append records its own `open_failure`. False when the row
+ * moved first, which writes nothing.
  */
 export async function recordProposalFailure(
 	row: ProposalOperationRow,
 	failure: FailureToRecord,
-	mode: { claimedAttempt?: number },
 ): Promise<boolean> {
 	const data = {
 		pullRequestFailure: asJson(failureJson(failure)),
 		pullRequestNextAttemptAt: nextAttemptAt(row, failure),
 	};
-	if (mode.claimedAttempt !== undefined) {
-		const moved = await transitionPullRequest({
-			snapshotId: row.id,
-			organizationId: row.organizationId,
-			event: "open_failure",
-			from: ["OPENING"],
-			expectedAttempt: mode.claimedAttempt,
-			to: "BLOCKED",
-			bumpAttempt: false,
-			data,
-		});
-		return moved.ok;
-	}
 	if (row.pullRequestState === null) {
 		return false;
 	}
@@ -406,8 +393,6 @@ export async function recordProposalFailure(
 /** What the boundary knows about the activity it wraps, updated as it runs. */
 export type BoundaryScope = {
 	phase: PullRequestPhase;
-	/** Set once the open activity's claim succeeded. */
-	claimedAttempt?: number;
 };
 
 type OperationIds = {
@@ -474,7 +459,6 @@ export function proposalActivityBoundary<
 							retryable: true,
 							params: { phase: scope.phase },
 						}),
-						{ claimedAttempt: scope.claimedAttempt },
 					);
 				}
 			} catch (recordError) {

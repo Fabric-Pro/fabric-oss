@@ -43,7 +43,6 @@ import {
 	listInstructionProposalsProcedure,
 	refreshInstructionProposalPullRequestProcedure,
 	rejectInstructionProposalProcedure,
-	retryInstructionProposalPullRequestProcedure,
 } from "../proposals";
 
 type TaggedMiddleware = ((
@@ -74,7 +73,6 @@ const PROCEDURES = [
 	["cancel", cancelInstructionProposalProcedure],
 	["getPullRequest", getInstructionProposalPullRequestProcedure],
 	["refreshPullRequest", refreshInstructionProposalPullRequestProcedure],
-	["retryPullRequest", retryInstructionProposalPullRequestProcedure],
 ] as const;
 
 const visibility = projectNotFoundUnlessVisible as unknown as TaggedMiddleware;
@@ -87,7 +85,7 @@ beforeEach(() => {
 });
 
 describe("instruction proposal procedures: project visibility (Fizzy #2727)", () => {
-	it("decides visibility before permission on every one of the nine", () => {
+	it("decides visibility before permission on every one of the eight", () => {
 		for (const [name, procedure] of PROCEDURES) {
 			const middlewares = chain(procedure);
 			const visibilityAt = middlewares.indexOf(visibility);

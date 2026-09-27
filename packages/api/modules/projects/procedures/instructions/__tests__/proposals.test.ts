@@ -26,7 +26,6 @@ const m = vi.hoisted(() => ({
 	getSyncRunReceiptsByRunIds: vi.fn(),
 	getProposalPullRequestStatus: vi.fn(),
 	refreshProposalPullRequest: vi.fn(),
-	retryProposalPullRequest: vi.fn(),
 	proposalBranchIdOf: vi.fn(),
 	wakeBranchAfterCommand: vi.fn(),
 	requiredPermissions: [] as string[],
@@ -65,8 +64,8 @@ vi.mock("../proposal-branch", () => ({
 		m.wakeBranchAfterCommand(...args),
 }));
 // The list rows' `pullRequest` block is built by the real
-// `pullRequestStatusOf`; the status, refresh and retry procedures delegate to
-// the service, whose own suite (`proposal-pull-request.test.ts`) covers it.
+// `pullRequestStatusOf`; the status and refresh procedures delegate to the
+// service, whose own suite (`proposal-pull-request.test.ts`) covers it.
 vi.mock("@repo/temporal", () => ({ getTemporalClient: vi.fn() }));
 vi.mock("../proposal-pull-request", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../proposal-pull-request")>()),
@@ -74,8 +73,6 @@ vi.mock("../proposal-pull-request", async (importOriginal) => ({
 		m.getProposalPullRequestStatus(...args),
 	refreshProposalPullRequest: (...args: unknown[]) =>
 		m.refreshProposalPullRequest(...args),
-	retryProposalPullRequest: (...args: unknown[]) =>
-		m.retryProposalPullRequest(...args),
 }));
 vi.mock("../../../../../lib/audit", () => ({
 	resolveActor: (context: { user: { id: string } }) => ({
@@ -162,8 +159,6 @@ const PR_STATUS =
 	"/projects/:projectId/instructions/proposals/:snapshotId/pull-request";
 const PR_REFRESH =
 	"/projects/:projectId/instructions/proposals/:snapshotId/pull-request/refresh";
-const PR_RETRY =
-	"/projects/:projectId/instructions/proposals/:snapshotId/pull-request/retry";
 const context = {
 	user: { id: "reviewer_1", email: "reviewer@example.com", name: "Reviewer" },
 	session: { activeOrganizationId: "wrong_org", impersonatedBy: null },
@@ -212,9 +207,9 @@ describe("projects.instructions.proposals", () => {
 			"instruction:update",
 			"instruction:update",
 			"instruction:read",
-			// The pull request's status, refresh and retry: read, plus the
-			// live proposer-or-reviewer check in the service (Decision 8).
-			"instruction:read",
+			// The pull request's status and refresh: read, plus the live
+			// proposer-or-reviewer check in the service (Decision 8).
+			// #2563's Retry opening was retired with that path (Fizzy #2748).
 			"instruction:read",
 			"instruction:read",
 		]);
@@ -1011,7 +1006,7 @@ describe("repository proposals (Fizzy #2563 spec §12)", () => {
 		expect(resHeaders.get("Retry-After")).toBe("42");
 	});
 
-	it("reads, refreshes and retries in the hosting organization as the caller", async () => {
+	it("reads and refreshes in the hosting organization as the caller", async () => {
 		const caller = {
 			snapshotId: "proposal_1",
 			projectId: "project_1",
@@ -1020,7 +1015,6 @@ describe("repository proposals (Fizzy #2563 spec §12)", () => {
 		};
 		m.getProposalPullRequestStatus.mockResolvedValue({ state: "BLOCKED" });
 		m.refreshProposalPullRequest.mockResolvedValue({ refreshed: true });
-		m.retryProposalPullRequest.mockResolvedValue({ retried: true });
 		const input = {
 			projectId: "project_1",
 			organizationId: "attacker_org",
@@ -1033,23 +1027,13 @@ describe("repository proposals (Fizzy #2563 spec §12)", () => {
 		await expect(run(PR_REFRESH, input)).resolves.toEqual({
 			refreshed: true,
 		});
-		await expect(
-			run(PR_RETRY, { ...input, expectedAttempt: 4 }),
-		).resolves.toEqual({ retried: true });
 
 		expect(m.getProposalPullRequestStatus).toHaveBeenCalledWith(caller);
 		expect(m.refreshProposalPullRequest).toHaveBeenCalledWith(caller);
-		expect(m.retryProposalPullRequest).toHaveBeenCalledWith({
-			...caller,
-			expectedAttempt: 4,
-			requester: {
-				actor: { type: "user", userId: "reviewer_1" },
-				ipAddress: "203.0.113.7",
-				userAgent: null,
-				requestId: "req_1",
-				sessionId: "sess_1",
-				correlationId: "corr_1",
-			},
-		});
+		expect(
+			m.handlers[
+				"/projects/:projectId/instructions/proposals/:snapshotId/pull-request/retry"
+			],
+		).toBeUndefined();
 	});
 });

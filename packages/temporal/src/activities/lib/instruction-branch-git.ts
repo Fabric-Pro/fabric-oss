@@ -40,10 +40,9 @@ const watched = (dir: string) => ({
 });
 
 /**
- * Spec §7: the member proposal branch ref pattern (plan Global Constraints;
- * disjoint from `assertOperationBranch`'s #2563 per-proposal shape), plus
- * `check-ref-format --branch` for defense in depth. Synchronous, like every
- * other `assert*Branch` guard in this feature, so a caller can validate
+ * Spec §7: the member proposal branch ref pattern (plan Global Constraints),
+ * plus `check-ref-format --branch` for defense in depth. Synchronous, like
+ * every other `assert*Branch` guard in this feature, so a caller can validate
  * before any async git call is even scheduled. `check-ref-format` cannot
  * actually reject anything `MEMBER_BRANCH_PATTERN` accepts — the pattern's
  * charset (`[a-z0-9-]` segments joined by exactly one `/`, ending in a bare

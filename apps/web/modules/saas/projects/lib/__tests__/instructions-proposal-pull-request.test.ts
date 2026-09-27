@@ -1,8 +1,9 @@
 /**
  * The card policy for a proposal that opens a pull request (Fizzy #2563 spec
  * §12): which line a card shows for each delivery state, which failure copy a
- * stored failure reads as, when the card offers Retry opening, Refresh and
- * Reconnect, and when the list keeps polling. Pure, so the dialog and these
+ * stored failure reads as, when the card offers Refresh and Reconnect, and
+ * when the list keeps polling. #2563's own Retry opening, for a proposal on
+ * no branch, was retired with that path (Fizzy #2748). Pure, so the dialog and these
  * tests share one answer.
  */
 import {
@@ -14,7 +15,6 @@ import { describe, expect, it } from "vitest";
 import {
 	canProposeAgain,
 	canRetryConflict,
-	canRetryOpening,
 	offersPullRequestRefresh,
 	offersReconnect,
 	type ProposalPullRequest,
@@ -409,40 +409,6 @@ describe("the card line for every state (spec §12)", () => {
 
 describe("actions", () => {
 	it.each([
-		["CREATE_OUTCOME_UNKNOWN", false, true],
-		["CREATE_OUTCOME_UNKNOWN", true, false],
-		["PR_CREATION_REFUSED", false, true],
-		["REMOTE_REF_CONFLICT", false, true],
-		["BRANCH_WRITE_REFUSED", true, false],
-		["PERMISSION_REVOKED", false, false],
-	] as const)(
-		"Retry opening on BLOCKED %s (retryable %s): %s",
-		(code, retryable, offered) => {
-			expect(
-				canRetryOpening(
-					pr({
-						state: "BLOCKED",
-						failure: failure(code, { retryable }),
-					}),
-				),
-			).toBe(offered);
-		},
-	);
-
-	it("never offers Retry opening outside BLOCKED", () => {
-		expect(
-			canRetryOpening(
-				pr({
-					state: "CLOSE_REQUESTED",
-					failure: failure("REMOTE_REF_CONFLICT", {
-						retryable: false,
-					}),
-				}),
-			),
-		).toBe(false);
-	});
-
-	it.each([
 		["QUEUED", true],
 		["OPENING", true],
 		["OPEN", true],
@@ -626,18 +592,6 @@ describe("a member branch proposal (Fizzy #2738 spec §10 Card)", () => {
 		expect(
 			canRetryConflict(
 				pr({ state: "BLOCKED", failure: failure("BRANCH_CONFLICT") }),
-			),
-		).toBe(false);
-	});
-
-	it("never offers the v1 Retry opening on a branch proposal", () => {
-		expect(
-			canRetryOpening(
-				pr({
-					state: "BLOCKED",
-					branch: branch(),
-					failure: failure("PR_CREATION_REFUSED"),
-				}),
 			),
 		).toBe(false);
 	});

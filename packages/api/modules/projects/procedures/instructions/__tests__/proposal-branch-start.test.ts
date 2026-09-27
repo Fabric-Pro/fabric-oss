@@ -4,9 +4,9 @@
  *
  * The branch workflow does not exist yet, so the Temporal client is a mock:
  * what is pinned is the call the API makes. `startAdmittedProposalPullRequest`
- * keeps its signature and dispatches on the row's `pullRequestContext.v`: a
- * v2 row joins its member's branch and wakes it, a v1 row starts the #2563
- * operation workflow exactly as before (Review Focus 4).
+ * keeps its signature and joins the member's branch and wakes it; #2563's
+ * per-proposal workflow, which a v1 row once started, was retired with that
+ * path (Fizzy #2748).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,7 +16,6 @@ const m = vi.hoisted(() => ({
 	getHandle: vi.fn(),
 	signalWithStart: vi.fn(),
 	joinProposalBranch: vi.fn(),
-	getProposalOperation: vi.fn(),
 	correlationId: null as string | null,
 }));
 
@@ -31,7 +30,6 @@ vi.mock("@repo/temporal", () => ({
 }));
 vi.mock("@repo/database", () => ({
 	joinProposalBranch: (...a: unknown[]) => m.joinProposalBranch(...a),
-	getProposalOperation: (...a: unknown[]) => m.getProposalOperation(...a),
 }));
 vi.mock("../../../../../lib/correlation-id", () => ({
 	getCorrelationIdFromContext: () => m.correlationId,
@@ -76,7 +74,6 @@ beforeEach(() => {
 		m.getHandle,
 		m.signalWithStart,
 		m.joinProposalBranch,
-		m.getProposalOperation,
 	]) {
 		fn.mockReset();
 	}
@@ -261,13 +258,10 @@ describe("startAdmittedBranchProposal", () => {
 	);
 });
 
-describe("startAdmittedProposalPullRequest dispatches on pullRequestContext.v", () => {
+describe("startAdmittedProposalPullRequest", () => {
 	const INPUT = { ...PROPOSAL, operationId: "op_1" };
 
-	it("joins and wakes the member's branch for a v2 row, starting no #2563 workflow", async () => {
-		m.getProposalOperation.mockResolvedValue({
-			pullRequestContext: { v: 2 },
-		});
+	it("joins and wakes the member's branch, starting no #2563 workflow", async () => {
 		m.joinProposalBranch.mockResolvedValue({
 			kind: "joined",
 			branchId: "branch_1",
@@ -277,54 +271,37 @@ describe("startAdmittedProposalPullRequest dispatches on pullRequestContext.v", 
 
 		await startAdmittedProposalPullRequest(INPUT);
 
-		expect(m.getProposalOperation).toHaveBeenCalledWith(PROPOSAL);
-		expect(m.joinProposalBranch).toHaveBeenCalledTimes(1);
+		expect(m.joinProposalBranch).toHaveBeenCalledWith({
+			snapshotId: "snap_1",
+			organizationId: "org_1",
+			naming: proposalBranchNaming,
+		});
 		expect(m.signal).toHaveBeenCalledWith("wake");
 		expect(m.start).not.toHaveBeenCalled();
 	});
 
-	it("starts the #2563 operation workflow for a v1 row admitted before, unchanged", async () => {
-		m.getProposalOperation.mockResolvedValue({
-			pullRequestContext: { v: 1 },
-		});
+	it("starts nothing for a row the join refuses, a #2563 (v1) row included", async () => {
+		m.joinProposalBranch.mockResolvedValue({ kind: "not_joinable" });
 
 		await startAdmittedProposalPullRequest(INPUT);
 
-		expect(m.start).toHaveBeenCalledWith(
-			"projectInstructionProposalPullRequestWorkflow",
-			{
-				taskQueue: "project-instructions",
-				workflowId: "project-instruction-proposal-pull-request-op_1",
-				workflowIdConflictPolicy: "FAIL",
-				args: [INPUT],
-				memo: { correlationId: "corr_1" },
-			},
-		);
-		expect(m.joinProposalBranch).not.toHaveBeenCalled();
+		expect(m.joinProposalBranch).toHaveBeenCalledTimes(1);
+		expect(m.start).not.toHaveBeenCalled();
+		expect(m.signal).not.toHaveBeenCalled();
 		expect(m.signalWithStart).not.toHaveBeenCalled();
 	});
 
-	it("starts the #2563 workflow for a row with no readable version, as before", async () => {
-		m.getProposalOperation.mockResolvedValue(null);
-
-		await startAdmittedProposalPullRequest(INPUT);
-
-		expect(m.start).toHaveBeenCalledTimes(1);
-		expect(m.joinProposalBranch).not.toHaveBeenCalled();
-	});
-
-	it("starts neither when the row cannot be read, leaving it to the sweeper", async () => {
+	it("logs a failed join and does not throw, leaving the proposal to the sweeper's Attach", async () => {
 		const log = vi.spyOn(console, "error").mockImplementation(() => {});
-		m.getProposalOperation.mockRejectedValue(new Error("db down"));
+		m.joinProposalBranch.mockRejectedValue(new Error("db down"));
 
 		await expect(startAdmittedProposalPullRequest(INPUT)).resolves.toBe(
 			undefined,
 		);
 		expect(m.start).not.toHaveBeenCalled();
-		expect(m.joinProposalBranch).not.toHaveBeenCalled();
 		expect(log).toHaveBeenCalledWith(
 			expect.stringContaining("sweeper"),
-			{ snapshotId: "snap_1", operationId: "op_1" },
+			{ snapshotId: "snap_1" },
 			expect.any(Error),
 		);
 		log.mockRestore();
@@ -377,26 +354,5 @@ describe("repositoryDestination", () => {
 		);
 		expect(destination).not.toHaveProperty("branch");
 		expect(destination.context).toMatchObject({ v: 2 });
-	});
-
-	it("keeps a v1 context's branch as the row's ref", () => {
-		const destination = repositoryDestination(
-			{
-				destination: "REPOSITORY",
-				note: null,
-				operationId: "op_1",
-				context: {
-					v: 1,
-					...shared,
-					branch: "fabric/instructions/op_1",
-					title: "t",
-					body: "b",
-				},
-				syncId: "sync_1",
-				syncGeneration: 4,
-			},
-			audit,
-		);
-		expect(destination.branch).toBe("fabric/instructions/op_1");
 	});
 });

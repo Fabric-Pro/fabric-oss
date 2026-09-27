@@ -130,7 +130,9 @@ describe("the proposal pull-request sweeper schedule", () => {
 		expect(Object.keys(workflows)).toContain(
 			INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_NAME,
 		);
-		expect(Object.keys(workflows)).toContain(
+		// #2563's per-proposal workflow was retired with that path once its
+		// rows drained (Fizzy #2748); nothing starts it any more.
+		expect(Object.keys(workflows)).not.toContain(
 			"projectInstructionProposalPullRequestWorkflow",
 		);
 	});

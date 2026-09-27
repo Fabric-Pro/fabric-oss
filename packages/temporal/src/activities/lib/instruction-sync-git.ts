@@ -814,45 +814,21 @@ export async function lsRemoteHead(
 // through `runGit`: the safe config, the askpass env, redaction and the
 // process-group watchdog of the sync. Every object id is `assertObjectId`'d,
 // every URL `assertNoUrlCredentials`'d and every branch
-// `assertOperationBranch`'d before anything spawns.
+// `assertBranchRef`'d before anything spawns.
 // ---------------------------------------------------------------------------
 
 /**
- * The only refs Fabric ever writes (spec §2.7, §13.3; plan Decision 13):
- * `fabric/instructions/<cuid2>` for attempt 1 and `-<n>` (n >= 2) for a
- * re-issue. A cuid2 id is 24 lowercase characters starting with a letter
- * (R20). Anything else, including a leading `-`, `..` or a full `refs/`
- * name, is refused before git runs.
- */
-const OPERATION_BRANCH_PATTERN =
-	/^fabric\/instructions\/[a-z][a-z0-9]{23}(?:-[2-9]|-[1-9][0-9]{1,3})?$/;
-
-export function assertOperationBranch(branch: string): void {
-	if (!OPERATION_BRANCH_PATTERN.test(branch)) {
-		throw new GitCommandError("invalid_argument", null, "", "branch");
-	}
-}
-
-/**
- * Which ref shape a caller expects (member proposal branch spec §7):
- * `pushCreateOnly`, `deleteBranch` and `lsRemoteRef` write both the #2563
- * per-proposal ref and the member proposal branch ref, and each call site
- * names the one it means so a caller can never push a commit meant for one
- * ref shape onto a ref of the other. `MEMBER_BRANCH_PATTERN`'s charset
- * (`[a-z0-9/-]` only) already cannot produce anything `check-ref-format`
- * would refuse, so the pattern alone is exactly `assertMemberBranch`'s
- * decision (`instruction-branch-git.ts`, which also runs
- * `check-ref-format` for defense in depth on its own, lower-volume call
+ * The only refs Fabric ever writes are member proposal branch refs (member
+ * proposal branch spec §7); #2563's per-proposal ref shape was retired with
+ * that path (Fizzy #2748). Anything else, including a leading `-`, `..` or a
+ * full `refs/` name, is refused before git runs. `MEMBER_BRANCH_PATTERN`'s
+ * charset (`[a-z0-9/-]` only) already cannot produce anything
+ * `check-ref-format` would refuse, so the pattern alone is exactly
+ * `assertMemberBranch`'s decision (`instruction-branch-git.ts`, which also
+ * runs `check-ref-format` for defense in depth on its own, lower-volume call
  * sites).
  */
-function assertBranchFor(
-	validator: "operation" | "member",
-	branch: string,
-): void {
-	if (validator === "operation") {
-		assertOperationBranch(branch);
-		return;
-	}
+function assertBranchRef(branch: string): void {
 	if (!MEMBER_BRANCH_PATTERN.test(branch)) {
 		throw new GitCommandError("invalid_argument", null, "", "branch");
 	}
@@ -1037,8 +1013,6 @@ const TREE_MODE_PATTERN = /^[0-7]{6}$/;
  * `hash-object` runs here: every `after` entry's object already exists (a
  * newly hashed blob from an append's own hashing step, or an existing
  * repository blob a revert restores), and `after: null` deletes the path.
- * Purely additive beside `writeProposalTree`: v1's own tree-building path is
- * unchanged.
  */
 export async function writeResolvedTree(
 	input: GitCallBase & {
@@ -1269,21 +1243,16 @@ export async function runPush(
  * (`isPushWriteRefusal`, Fizzy #2563): in both the ref was never written. Any
  * other failure that reports no ref at all (authentication, an unreachable
  * remote) rethrows the original error.
- *
- * `validator` (member proposal branch spec §7) picks the ref shape this call
- * is allowed to write: `"operation"` for #2563's per-proposal ref, `"member"`
- * for a member proposal branch ref.
  */
 export async function pushCreateOnly(
 	input: GitCallBase & {
 		dir: string;
 		sha: string;
 		branch: string;
-		validator: "operation" | "member";
 	},
 ): Promise<{ kind: "created" } | { kind: "exists" } | { kind: "refused" }> {
 	assertObjectId(input.sha, "push");
-	assertBranchFor(input.validator, input.branch);
+	assertBranchRef(input.branch);
 	const ref = `refs/heads/${input.branch}`;
 	const { stdout, error } = await runPush({
 		cwd: input.dir,
@@ -1333,11 +1302,6 @@ export async function pushCreateOnly(
  * permission before reporting any ref (`isPushWriteRefusal`, Fizzy #2563) is
  * `refused` without an active pull request: closing one would not grant the
  * permission.
- *
- * `validator` (member proposal branch spec §7) picks the ref shape this call
- * is allowed to delete, forwarded to the internal `lsRemoteRef` re-check
- * below so a stale-info resolution never validates the branch against the
- * other shape.
  */
 export async function deleteBranch(
 	input: GitCallBase & {
@@ -1345,7 +1309,6 @@ export async function deleteBranch(
 		url: string;
 		branch: string;
 		sha: string;
-		validator: "operation" | "member";
 	},
 ): Promise<
 	| { kind: "deleted" }
@@ -1354,7 +1317,7 @@ export async function deleteBranch(
 	| { kind: "refused"; activePullRequest: boolean }
 > {
 	assertNoUrlCredentials(input.url, "push");
-	assertBranchFor(input.validator, input.branch);
+	assertBranchRef(input.branch);
 	assertObjectId(input.sha, "push");
 	const ref = `refs/heads/${input.branch}`;
 	const bare = await mkdtemp(path.join(input.cwd, "delete-"));
@@ -1389,7 +1352,6 @@ export async function deleteBranch(
 				cwd: input.cwd,
 				url: input.url,
 				branch: input.branch,
-				validator: input.validator,
 				env: input.env,
 				signal: input.signal,
 			});
@@ -1418,21 +1380,17 @@ export async function deleteBranch(
  * `refs/heads/<branch>` on `url`, without a clone. `--refs` drops peeled
  * tags; `ls-remote` still matches from the tail, so only the exact line
  * counts, as in `lsRemoteHead`. Bounded to 30 s.
- *
- * `validator` (member proposal branch spec §7) picks the ref shape this call
- * is allowed to read.
  */
 export async function lsRemoteRef(
 	input: GitCallBase & {
 		cwd: string;
 		url: string;
 		branch: string;
-		validator: "operation" | "member";
 		timeoutMs?: number;
 	},
 ): Promise<RemoteHead> {
 	assertNoUrlCredentials(input.url, "ls-remote");
-	assertBranchFor(input.validator, input.branch);
+	assertBranchRef(input.branch);
 	const wanted = `refs/heads/${input.branch}`;
 	const timeout = AbortSignal.timeout(
 		input.timeoutMs ?? LS_REMOTE_TIMEOUT_MS,

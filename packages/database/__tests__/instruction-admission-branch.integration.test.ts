@@ -738,22 +738,35 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			expect((await branchOf(branchId)).state).toBe("OPEN");
 		});
 
-		it("keeps the #2563 cancel for a v1 row", async () => {
-			const id = await seedProposal({
+		it("writes nothing for a v1 row, whose #2563 cancel was retired with that path (Fizzy #2748)", async () => {
+			const live = await seedProposal({
 				pullRequestContext: { v: 1 },
 				pullRequestRef: "fabric/instructions/op",
 			});
-			expect(await withdraw(id)).toEqual({
-				ok: true,
-				changed: true,
-				version: expect.any(Number),
-				pullRequest: "canceled",
+			expect(await withdraw(live)).toEqual({
+				ok: false,
+				reason: "already_decided",
 			});
-			expect(await proposalOf(id)).toMatchObject({
-				pullRequestState: "CANCELED",
+			expect(await proposalOf(live)).toMatchObject({
+				pullRequestState: "QUEUED",
+				pullRequestAttempt: 2,
 				withdrawRequestedAt: null,
 				withdrawScope: null,
 			});
+			// A cancel it already took is answered as a repeated one was.
+			const canceled = await seedProposal({
+				pullRequestContext: { v: 1 },
+				pullRequestState: "CANCELED",
+				proposalStatus: "REJECTED",
+			});
+			expect(await withdraw(canceled)).toEqual({
+				ok: true,
+				changed: false,
+				version: expect.any(Number),
+				pullRequest: "canceled",
+			});
+			expect(await auditsFor(live)).toEqual([]);
+			expect(await auditsFor(canceled)).toEqual([]);
 		});
 
 		// ---------------------------------------------------------------

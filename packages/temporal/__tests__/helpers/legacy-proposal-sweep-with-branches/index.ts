@@ -1,24 +1,47 @@
 /**
+ * FROZEN COPY, for replay only: the Coding Instructions proposal sweeper as
+ * it was before its #2563 lane was removed (Fizzy #2748,
+ * `patched("instruction-proposal-v1-lane-removed")`): the #2563 (v1)
+ * operation rows every tick, and the member proposal branch rows behind
+ * `patched("instruction-proposal-branch-sweep-v1")`. The sweep test runs
+ * this bundle to record a tick that took both lanes, then replays that
+ * history on the current workflow, which must take the same path. Never
+ * edit it to follow the live workflow; its imports are re-pointed at `src`,
+ * and nothing else changed.
+ */
+/**
  * Coding Instructions proposal pull requests: the five-minute sweeper
- * (Fizzy #2563 spec §9, member proposal branches Fizzy #2738 spec §8).
+ * (Fizzy #2563 spec §9).
  *
  * The `instruction-proposal-pull-request-sweep` schedule starts this every
  * five minutes on `fabric-worker` with overlap SKIP and a 270 s execution
  * timeout (plan Decision 16). One tick:
  *
- * - selects the member proposal branch rows once
- *   (`selectDueInstructionProposalBranches`: Close 10, Recover 10, Merge
- *   sync 10, Observe 20, Restart 10, Attach 10);
- * - runs them in the table's order (Close first) through four lanes pulling
- *   from one queue, with Attach last, and starts no item with under 30 s of
- *   its 4-minute budget left;
- * - ends the tick when that selection fails after its retries.
+ * - selects the five sub-batches once (Close 10, Recover 10, Merge sync 10,
+ *   Observe 20, Restart 10), each item carrying the attempt read at
+ *   selection and whether its operation workflow is running;
+ * - runs them in the table's order (Close first, so due confirmations
+ *   precede ordinary recovery) through four lanes pulling from one queue,
+ *   and starts no item with under 30 s of its 4-minute budget left;
+ * - defers a row whose operation workflow is running by 30 min, conditional
+ *   on that attempt, and does nothing else with it: the workflow finishes
+ *   its own work, and a sweeper action beside it would race it;
+ * - skips, for the rest of the tick, every later item of an integration an
+ *   answer reported rate limited (the activity already delayed that row by
+ *   `retryAfterSeconds`).
  *
- * Close, Recover and Restart wake the branch's workflow (`signalWithStart`),
- * which alone writes git; Merge sync runs the §9.1 dispatch on the branch;
- * Observe reconciles, and wakes the branch when its pull request ended, so
- * its workflow classifies it; Attach joins a v2 proposal left without a
- * branch, then wakes that branch.
+ * Actions: Close runs close (due confirmations, then settlement for a
+ * CLOSE_REQUESTED row, or the release of one acknowledged branch a BLOCKED
+ * row only a human may retry left without an owner), fenced by the attempt
+ * read at selection. Recover runs
+ * recovery; its `close_requested` runs close and its `absent_handoff` runs
+ * Restart's action in the same item. Merge sync runs the §9.1 dispatch.
+ * Observe runs reconcile, and a `merged` answer runs the merge-sync dispatch
+ * in the same item. Restart starts the operation workflow. The sweeper never
+ * opens, never passes `retryCreate`, and never settles a row that is not
+ * CLOSE_REQUESTED beyond that one release, which keeps the row's state:
+ * settlement and re-issue belong to the open activity and a human's retry. A follow-up the budget no longer allows is left to the next
+ * tick, whose Restart or Merge sync sub-batch selects the same row.
  *
  * Every call's schedule-to-close is the budget left, so a call no worker
  * serves cannot hold the run past it, and every action carries `deadlineAt`,
@@ -28,39 +51,28 @@
  * the pure proposal types and type-only activity signatures. The activities
  * name no task queue: they run on the workflow's own, `fabric-worker`.
  *
- * Two patch markers keep every recorded tick replayable (Temporal replays a
- * history against the current code, command for command):
- *
- * - `patched("instruction-proposal-branch-sweep-v1")` (`BRANCH_SWEEP_PATCH`)
- *   gates the branch rows: a tick recorded before them selects none.
- * - `patched("instruction-proposal-v1-lane-removed")`
- *   (`V1_LANE_REMOVED_PATCH`, Fizzy #2748) gates off the #2563 (v1)
- *   operation lane. A tick recorded before it takes that lane exactly as it
- *   did: #2563's selection first (a failure ends the tick), each
- *   sub-batch's #2563 rows ahead of its branch rows in the one queue, a
- *   branch selection failure leaving the #2563 rows to run, and each #2563
- *   row's action — a running operation workflow defers the row, Close runs
- *   close, Recover runs recovery (then close for `close_requested`, Restart's
- *   action for `absent_handoff`), Merge sync the §9.1 dispatch, Observe
- *   reconcile (then the merge-sync dispatch for `merged`), Restart the
- *   dispatch — skipping, for the rest of the tick, every later item of an
- *   integration an answer reported rate limited. That path's code below is
- *   kept only for such a replay; every new tick records the marker and never
- *   selects or acts on a #2563 row. The activities it names stay registered
- *   as retired stubs (`instruction-proposal-pull-requests.ts`, "The retired
- *   #2563 operation lane"), because a tick that straddles a deploy runs its
- *   next activity on the new worker.
+ * Member proposal branches (Fizzy #2738 spec §8), behind
+ * `patched("instruction-proposal-branch-sweep-v1")`, so a tick recorded
+ * before them replays unchanged: after #2563's selection the branch rows
+ * are selected too (`selectDueInstructionProposalBranches`), and each
+ * sub-batch's branch rows follow its #2563 rows in the one queue, with
+ * Attach after Restart. Close, Recover and Restart wake the branch's
+ * workflow (`signalWithStart`), which alone writes git; Merge sync runs the
+ * §9.1 dispatch on the branch; Observe reconciles, and wakes the branch
+ * when its pull request ended, so its workflow classifies it; Attach joins
+ * a v2 proposal left without a branch, then wakes that branch. A branch
+ * selection that fails leaves #2563's rows to run as before.
  */
 import { log, patched, proxyActivities } from "@temporalio/workflow";
-import type * as branchActivities from "../activities/instruction-proposal-branches";
-import type * as proposalActivities from "../activities/instruction-proposal-pull-requests";
+import type * as branchActivities from "../../../src/activities/instruction-proposal-branches";
+import type * as proposalActivities from "../../../src/activities/instruction-proposal-pull-requests";
 import {
 	BRANCH_SWEEP_LIMITS,
 	type BranchAttachItem,
 	type BranchSweepItem,
 	BRANCH_LOOP_ACTIVITY_TIMEOUTS as BT,
 	type DueBranchSweep,
-} from "../activities/lib/instruction-branch-types";
+} from "../../../src/activities/lib/instruction-branch-types";
 import {
 	type DispatchProposalInput,
 	type DueProposalSweep,
@@ -72,33 +84,18 @@ import {
 	type ProposalSweepItem,
 	type ProposalSweepResult,
 	PROPOSAL_ACTIVITY_TIMEOUTS as T,
-} from "../lib/instruction-proposal-pull-request-types";
+} from "../../../src/lib/instruction-proposal-pull-request-types";
 
 type SubBatch = keyof DueProposalSweep;
 
 /** The patch marker that gates the branch sub-batches (spec §8). */
 export const BRANCH_SWEEP_PATCH = "instruction-proposal-branch-sweep-v1";
 
-/**
- * The patch marker that retires the #2563 (v1) operation lane (Fizzy
- * #2748): a tick that records it selects and runs branch rows only.
- */
-export const V1_LANE_REMOVED_PATCH = "instruction-proposal-v1-lane-removed";
-
 /** One queued item: a #2563 row, a branch row, or an Attach proposal. */
 type Entry =
 	| { lane: "operation"; batch: SubBatch; item: ProposalSweepItem }
 	| { lane: "branch"; batch: SubBatch; item: BranchSweepItem }
 	| { lane: "attach"; item: BranchAttachItem };
-
-/** No #2563 row: what a tick past `V1_LANE_REMOVED_PATCH` queues of them. */
-const NO_OPERATIONS: DueProposalSweep = {
-	close: [],
-	recover: [],
-	mergeSync: [],
-	observe: [],
-	restart: [],
-};
 
 /** Spec §9's table order. */
 const ORDER: readonly SubBatch[] = [
@@ -116,12 +113,9 @@ const RETRY = {
 } as const;
 
 /**
- * The #2563 lane's proxies, for calls made now: the schedule-to-close is the
- * budget left at this moment, so it cannot be fixed at module load, and it
- * bounds every activity's own start-to-close (spec §6,
- * `PROPOSAL_ACTIVITY_TIMEOUTS`). Only a tick recorded before
- * `V1_LANE_REMOVED_PATCH` calls them, on replay or when it straddles a
- * deploy; their declarations must stay exactly as that tick scheduled them.
+ * Proxies for calls made now: the schedule-to-close is the budget left at
+ * this moment, so it cannot be fixed at module load, and it bounds every
+ * activity's own start-to-close (spec §6, `PROPOSAL_ACTIVITY_TIMEOUTS`).
  * Destructured, not read off the proxy object, so the activity-registration
  * parity guard (`workflows/__tests__/activity-registration-parity.test.ts`)
  * can see each name statically.
@@ -233,11 +227,9 @@ function errorName(error: unknown): string {
 }
 
 export async function instructionProposalPullRequestSweepWorkflow(): Promise<ProposalSweepResult> {
-	// Both recorded before any command, so a tick from before the branch
-	// sub-batches, or from before the #2563 lane's removal, replays on the
-	// path it took. A new tick records both: branch rows, and no #2563 lane.
+	// Recorded before any command, so a tick from before the branch
+	// sub-batches replays on the path it took.
 	const withBranches = patched(BRANCH_SWEEP_PATCH);
-	const withOperations = !patched(V1_LANE_REMOVED_PATCH);
 	const deadline = Date.now() + PROPOSAL_SWEEP_BUDGET_MS;
 	// Every action's absolute deadline (#2540's poll pattern): the attempt
 	// stops issuing effects 10 s before the budget ends.
@@ -254,22 +246,20 @@ export async function instructionProposalPullRequestSweepWorkflow(): Promise<Pro
 		selectFailed: false,
 	};
 
-	let due: DueProposalSweep = NO_OPERATIONS;
-	if (withOperations) {
-		try {
-			due = await sweepActivities(
-				budgetLeft(),
-			).selectDueInstructionProposalOperations(PROPOSAL_SWEEP_LIMITS);
-		} catch (error) {
-			result.selectFailed = true;
-			log.warn(
-				"Proposal pull-request sweep selection failed; ending the tick",
-				{
-					error: errorName(error),
-				},
-			);
-			return result;
-		}
+	let due: DueProposalSweep;
+	try {
+		due = await sweepActivities(
+			budgetLeft(),
+		).selectDueInstructionProposalOperations(PROPOSAL_SWEEP_LIMITS);
+	} catch (error) {
+		result.selectFailed = true;
+		log.warn(
+			"Proposal pull-request sweep selection failed; ending the tick",
+			{
+				error: errorName(error),
+			},
+		);
+		return result;
 	}
 
 	let dueBranches: DueBranchSweep | null = null;
@@ -279,15 +269,6 @@ export async function instructionProposalPullRequestSweepWorkflow(): Promise<Pro
 				budgetLeft(),
 			).selectDueInstructionProposalBranches(BRANCH_SWEEP_LIMITS);
 		} catch (error) {
-			if (!withOperations) {
-				// The branch rows are everything this tick selects.
-				result.selectFailed = true;
-				log.warn(
-					"Proposal branch sweep selection failed; ending the tick",
-					{ error: errorName(error) },
-				);
-				return result;
-			}
 			log.warn(
 				"Proposal branch sweep selection failed; the pull-request rows still run",
 				{ error: errorName(error) },
@@ -334,7 +315,6 @@ export async function instructionProposalPullRequestSweepWorkflow(): Promise<Pro
 		}
 	};
 
-	/** A #2563 row's action: reached only by a tick recorded before `V1_LANE_REMOVED_PATCH`. */
 	const act = async (batch: SubBatch, item: ProposalSweepItem) => {
 		const ids = { ...idsOf(item), deadlineAt };
 		const dispatchInput = { ...dispatchInputOf(item), deadlineAt };

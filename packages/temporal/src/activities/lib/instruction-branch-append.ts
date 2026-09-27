@@ -607,7 +607,6 @@ async function appendPass(
 				...git,
 				sha: built.sha,
 				branch: branch.ref,
-				validator: "member",
 			}),
 		);
 		if (pushed.kind === "exists") {

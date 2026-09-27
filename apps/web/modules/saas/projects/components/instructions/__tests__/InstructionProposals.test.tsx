@@ -44,8 +44,6 @@ const state = vi.hoisted(() => ({
 	/** What `cancel` answers for the pull request (Fizzy #2563 spec §12). */
 	cancelPullRequest: null as "canceled" | "close_requested" | null,
 	refresh: vi.fn(),
-	retry: vi.fn(),
-	retryError: null as Error | null,
 	refreshError: null as Error | null,
 	finalize: vi.fn(),
 	listCalls: 0,
@@ -196,15 +194,6 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 								throw state.refreshError;
 							}
 							return { refreshed: true };
-						}),
-					},
-					retryPullRequest: {
-						mutationOptions: mutationOptions(async (input) => {
-							state.retry(input);
-							if (state.retryError) {
-								throw state.retryError;
-							}
-							return { retried: true };
 						}),
 					},
 					myBranch: {
@@ -420,8 +409,6 @@ beforeEach(() => {
 	state.approveError = null;
 	state.cancelPullRequest = null;
 	state.refresh.mockReset();
-	state.retry.mockReset();
-	state.retryError = null;
 	state.refreshError = null;
 	state.finalize.mockReset();
 	state.listCalls = 0;
@@ -1461,57 +1448,41 @@ describe("InstructionProposals — pull-request suggestions (Fizzy #2563 spec §
 	);
 
 	// Phase C: a proposal the caller may not see (an invited guest who
-	// neither proposed nor reviews it) answers NOT_FOUND on refresh and
-	// retry, exactly as a missing one does. The card treats it as absent:
-	// the same neutral copy, and a re-read that drops it.
-	it.each([["refresh"], ["retry"]] as const)(
-		"treats a suggestion the server no longer shows as absent when %s answers NOT_FOUND",
-		async (action) => {
-			const user = userEvent.setup();
-			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-			const notFound = Object.assign(new Error("Proposal not found"), {
-				code: "NOT_FOUND",
-			});
-			state.rows = [
-				repositoryRow({
-					state: "BLOCKED",
-					failure: prFailure("PR_CREATION_REFUSED", {
-						retryable: false,
-					}),
+	// neither proposed nor reviews it) answers NOT_FOUND on refresh, exactly
+	// as a missing one does. The card treats it as absent: the same neutral
+	// copy, and a re-read that drops it.
+	it("treats a suggestion the server no longer shows as absent when refresh answers NOT_FOUND", async () => {
+		const user = userEvent.setup();
+		const notFound = Object.assign(new Error("Proposal not found"), {
+			code: "NOT_FOUND",
+		});
+		state.rows = [
+			repositoryRow({
+				state: "BLOCKED",
+				failure: prFailure("PR_CREATION_REFUSED", {
+					retryable: false,
 				}),
-			];
-			const gone = () => {
-				state.rows = [];
-			};
-			if (action === "refresh") {
-				state.refreshError = notFound;
-				state.refresh.mockImplementation(gone);
-			} else {
-				state.retryError = notFound;
-				state.retry.mockImplementation(gone);
-			}
-			renderList();
-			await user.click(
-				await screen.findByRole("button", {
-					name:
-						action === "refresh"
-							? prCopy.refresh
-							: prCopy.retryOpening,
-				}),
-			);
-			await waitFor(() =>
-				expect(state.toastError).toHaveBeenCalledWith(
-					prCopy.refusals.NOT_FOUND,
-				),
-			);
-			await waitFor(() =>
-				expect(
-					screen.queryByText(prCopy.states.blockedFinal),
-				).not.toBeInTheDocument(),
-			);
-			confirm.mockRestore();
-		},
-	);
+			}),
+		];
+		state.refreshError = notFound;
+		state.refresh.mockImplementation(() => {
+			state.rows = [];
+		});
+		renderList();
+		await user.click(
+			await screen.findByRole("button", { name: prCopy.refresh }),
+		);
+		await waitFor(() =>
+			expect(state.toastError).toHaveBeenCalledWith(
+				prCopy.refusals.NOT_FOUND,
+			),
+		);
+		await waitFor(() =>
+			expect(
+				screen.queryByText(prCopy.states.blockedFinal),
+			).not.toBeInTheDocument(),
+		);
+	});
 
 	it("offers no Refresh on a settled card", async () => {
 		state.rows = [
@@ -1524,120 +1495,34 @@ describe("InstructionProposals — pull-request suggestions (Fizzy #2563 spec §
 		).not.toBeInTheDocument();
 	});
 
-	it("retries opening only after the confirmation, naming the attempt the card showed", async () => {
-		const user = userEvent.setup();
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-		state.rows = [
-			repositoryRow({
-				state: "BLOCKED",
-				attempt: 5,
-				failure: prFailure("PR_CREATION_REFUSED", { retryable: false }),
-			}),
-		];
-		renderList();
-		await user.click(
-			await screen.findByRole("button", { name: prCopy.retryOpening }),
-		);
-		expect(confirm).toHaveBeenCalledWith(prCopy.retryConfirm);
-		await waitFor(() =>
-			expect(state.retry).toHaveBeenCalledWith({
-				projectId: "p",
-				snapshotId: "proposal-8",
-				expectedAttempt: 5,
-			}),
-		);
-		expect(state.toastSuccess).toHaveBeenCalledWith(prCopy.retrySuccess);
-		confirm.mockRestore();
-	});
-
-	it("does not retry when the confirmation is declined", async () => {
-		const user = userEvent.setup();
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-		state.rows = [
-			repositoryRow({
-				state: "BLOCKED",
-				failure: prFailure("REMOTE_REF_CONFLICT", { retryable: false }),
-			}),
-		];
-		renderList();
-		await user.click(
-			await screen.findByRole("button", { name: prCopy.retryOpening }),
-		);
-		expect(state.retry).not.toHaveBeenCalled();
-		confirm.mockRestore();
-	});
-
-	it("offers no Retry opening while Fabric is still retrying by itself", async () => {
-		state.rows = [
-			repositoryRow({
-				state: "BLOCKED",
-				failure: prFailure("CREATE_OUTCOME_UNKNOWN", {
-					retryable: true,
+	// #2563's Retry opening, for a suggestion on no branch, was retired with
+	// that per-proposal path (Fizzy #2748): no failure such a card can show
+	// offers it. A member branch's own Retry opening is the branch panel's.
+	it.each([
+		["PR_CREATION_REFUSED", false, prCopy.failures.PR_CREATION_REFUSED],
+		["REMOTE_REF_CONFLICT", false, prCopy.failures.REMOTE_REF_CONFLICT],
+		["CREATE_OUTCOME_UNKNOWN", false, prCopy.createOutcomeUnknownFinal],
+		[
+			"CREATE_OUTCOME_UNKNOWN",
+			true,
+			prCopy.failures.CREATE_OUTCOME_UNKNOWN,
+		],
+	] as const)(
+		"offers no Retry opening on a suggestion on no branch, BLOCKED %s (retryable %s)",
+		async (code, retryable, copy) => {
+			state.rows = [
+				repositoryRow({
+					state: "BLOCKED",
+					failure: prFailure(code, { retryable }),
 				}),
-			}),
-		];
-		renderList();
-		await screen.findByText(prCopy.failures.CREATE_OUTCOME_UNKNOWN);
-		expect(
-			screen.queryByRole("button", { name: prCopy.retryOpening }),
-		).not.toBeInTheDocument();
-	});
-
-	it("re-reads and re-renders the card when a retry is refused because the pull request changed", async () => {
-		const user = userEvent.setup();
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-		state.retryError = Object.assign(new Error("changed"), {
-			data: { reason: "PULL_REQUEST_CHANGED" },
-		});
-		state.rows = [
-			repositoryRow({
-				state: "BLOCKED",
-				failure: prFailure("PR_CREATION_REFUSED", { retryable: false }),
-			}),
-		];
-		// Someone else retried between the read and this request: the row is
-		// OPENING at a newer attempt by the time the refusal comes back.
-		state.retry.mockImplementation(() => {
-			state.rows = [repositoryRow({ state: "OPENING", attempt: 4 })];
-		});
-		renderList();
-		await user.click(
-			await screen.findByRole("button", { name: prCopy.retryOpening }),
-		);
-		await waitFor(() =>
-			expect(state.toastError).toHaveBeenCalledWith(
-				prCopy.refusals.PULL_REQUEST_CHANGED,
-			),
-		);
-		expect(
-			await screen.findByText(prCopy.states.OPENING),
-		).toBeInTheDocument();
-		confirm.mockRestore();
-	});
-
-	it("names a busy or unstartable retry with its own copy", async () => {
-		const user = userEvent.setup();
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-		state.retryError = Object.assign(new Error("busy"), {
-			data: { reason: "PULL_REQUEST_BUSY" },
-		});
-		state.rows = [
-			repositoryRow({
-				state: "BLOCKED",
-				failure: prFailure("REMOTE_REF_CONFLICT", { retryable: false }),
-			}),
-		];
-		renderList();
-		await user.click(
-			await screen.findByRole("button", { name: prCopy.retryOpening }),
-		);
-		await waitFor(() =>
-			expect(state.toastError).toHaveBeenCalledWith(
-				prCopy.refusals.PULL_REQUEST_BUSY,
-			),
-		);
-		confirm.mockRestore();
-	});
+			];
+			renderList();
+			await screen.findByText(copy);
+			expect(
+				screen.queryByRole("button", { name: /retry opening/i }),
+			).not.toBeInTheDocument();
+		},
+	);
 
 	it("offers Reconnect for an authentication failure and opens the repository settings", async () => {
 		const user = userEvent.setup();

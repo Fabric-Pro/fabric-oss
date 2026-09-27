@@ -32,7 +32,6 @@ import { toast } from "sonner";
 import {
 	canProposeAgain,
 	canRetryConflict,
-	canRetryOpening,
 	offersPullRequestRefresh,
 	offersReconnect,
 	type ProposalPullRequest,
@@ -122,13 +121,7 @@ const PAGE_SIZE = 25;
  * The refusals the pull-request procedures name in `data.reason` (phase C),
  * each with its own copy. Anything else falls back to the server's message.
  */
-const PULL_REQUEST_REFUSALS = new Set([
-	"REPOSITORY_PROPOSAL",
-	"PULL_REQUEST_NOT_RETRYABLE",
-	"PULL_REQUEST_CHANGED",
-	"PULL_REQUEST_BUSY",
-	"PULL_REQUEST_START_FAILED",
-]);
+const PULL_REQUEST_REFUSALS = new Set(["REPOSITORY_PROPOSAL"]);
 /** A refused Refresh (TOO_MANY_REQUESTS): its copy names the server's wait. */
 const REFRESH_WAIT_REFUSALS = new Set([
 	"PULL_REQUEST_REFRESH_COOLDOWN",
@@ -183,7 +176,6 @@ function PullRequestStatus({
 	refreshWaitSeconds,
 	reconnectLabel,
 	onRefresh,
-	onRetry,
 	onTryAgain,
 	onReconnect,
 	onRetryConflict,
@@ -205,7 +197,6 @@ function PullRequestStatus({
 	refreshWaitSeconds: number;
 	reconnectLabel: "reconnect" | "openRepositorySettings";
 	onRefresh: () => void;
-	onRetry: () => void;
 	onTryAgain: () => void;
 	onReconnect: () => void;
 	/** "Try again" on a branch BLOCKED conflict code (spec §10 Card). */
@@ -300,16 +291,6 @@ function PullRequestStatus({
 						onClick={onProposeAgain}
 					>
 						{tBranch("proposeAgain")}
-					</Button>
-				) : null}
-				{canRetryOpening(pr) ? (
-					<Button
-						size="sm"
-						variant="outline"
-						disabled={busy}
-						onClick={onRetry}
-					>
-						{t("retryOpening")}
 					</Button>
 				) : null}
 				{offersReconnect(pr) ? (
@@ -749,15 +730,6 @@ export function InstructionProposals({
 			},
 		),
 	);
-	const retry = useMutation(
-		orpc.projects.instructions.proposals.retryPullRequest.mutationOptions({
-			onSuccess: () => {
-				toast.success(tPr("retrySuccess"));
-				refreshState();
-			},
-			onError: pullRequestRefused,
-		}),
-	);
 	const tryAgain = useMutation(
 		orpc.projects.instructions.finalize.mutationOptions({
 			onSuccess: () => {
@@ -772,8 +744,8 @@ export function InstructionProposals({
 	);
 	/**
 	 * "Try again" on a member branch proposal's BLOCKED card (spec §10 Card:
-	 * both conflict codes and PUSH_OUTCOME_UNKNOWN), distinct from `retry`
-	 * (v1 "Retry opening") and `tryAgain` (FABRIC validation retry).
+	 * both conflict codes and PUSH_OUTCOME_UNKNOWN), distinct from `tryAgain`
+	 * (FABRIC validation retry).
 	 */
 	const retryConflict = useMutation(
 		orpc.projects.instructions.proposals.retryConflict.mutationOptions({
@@ -805,7 +777,6 @@ export function InstructionProposals({
 		approve.isPending ||
 		reject.isPending ||
 		cancel.isPending ||
-		retry.isPending ||
 		tryAgain.isPending ||
 		retryConflict.isPending ||
 		proposeAgain.isPending;
@@ -1076,24 +1047,6 @@ export function InstructionProposals({
 													projectId,
 													snapshotId: proposal.id,
 												});
-											}}
-											onRetry={() => {
-												if (
-													window.confirm(
-														tPr("retryConfirm"),
-													)
-												) {
-													// The attempt the card
-													// showed: a row that moved
-													// since is refused and
-													// re-read.
-													retry.mutate({
-														projectId,
-														snapshotId: proposal.id,
-														expectedAttempt:
-															pr.attempt,
-													});
-												}
 											}}
 											onTryAgain={() =>
 												tryAgain.mutate({

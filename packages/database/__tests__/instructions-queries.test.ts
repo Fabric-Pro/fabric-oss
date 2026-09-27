@@ -3234,8 +3234,8 @@ describe("REPOSITORY proposals in the existing writers", () => {
 				return { count: 1 };
 			},
 		);
-		// The row lock a REPOSITORY cancel or verdict takes before it reads;
-		// the verdict fences on the attempt this returns.
+		// The row lock a REPOSITORY verdict takes before it reads; it fences
+		// on the attempt this returns.
 		mocks.$queryRaw.mockImplementation(async () => [
 			{ id: row.id, attempt: row.pullRequestAttempt },
 		]);
@@ -3652,9 +3652,25 @@ describe("REPOSITORY proposals in the existing writers", () => {
 			audit,
 		};
 
+		// #2563's own cancel (CANCELED before anything was created, else
+		// CLOSE_REQUESTED for settlement to close) was retired with that
+		// per-proposal path (Fizzy #2748): nothing drives such a row any
+		// more, so a cancel writes nothing and a row still live answers as a
+		// decided one. The path drained before its retirement, so this is
+		// the answer for a row no author can reach.
 		it.each<[string, Row]>([
 			["QUEUED while uploading", { status: "RECEIVING" }],
+			["QUEUED and validating", { status: "VALIDATING" }],
 			["QUEUED once validated", { status: "READY" }],
+			["OPENING", { status: "READY", pullRequestState: "OPENING" }],
+			[
+				"OPEN",
+				{
+					status: "READY",
+					pullRequestState: "OPEN",
+					pullRequestHeadSha: HEAD,
+				},
+			],
 			[
 				"BLOCKED at admission",
 				{
@@ -3667,75 +3683,6 @@ describe("REPOSITORY proposals in the existing writers", () => {
 				},
 			],
 			[
-				"BLOCKED in validation",
-				{
-					status: "FAILED",
-					pullRequestState: "BLOCKED",
-					pullRequestFailure: failure(
-						"validation",
-						"VALIDATION_TIMEOUT",
-					),
-				},
-			],
-		])(
-			"cancels %s before anything was created, in the existing transaction",
-			async (_, overrides) => {
-				const row = fakeRow(overrides);
-				const stateBefore = row.pullRequestState;
-				const statusBefore = row.status;
-
-				expect(await cancelInstructionProposal(input)).toEqual({
-					ok: true,
-					changed: true,
-					version: 8,
-					pullRequest: "canceled",
-				});
-
-				expect(row).toMatchObject({
-					pullRequestState: "CANCELED",
-					proposalStatus: "REJECTED",
-					pullRequestAttempt: 3,
-					pullRequestNextAttemptAt: null,
-					// The existing cancellation's own writes.
-					status: statusBefore === "READY" ? "READY" : "REJECTED",
-					reviewedAt: expect.any(Date),
-				});
-				if (statusBefore !== "READY") {
-					expect(row.rejection).toEqual(
-						expect.arrayContaining([
-							expect.objectContaining({
-								path: "(proposal staging)",
-								detail: "staging pending",
-							}),
-						]),
-					);
-				}
-				expect(
-					auditRow(
-						"project.instructions.pull_request_close_requested",
-					),
-				).toMatchObject({
-					actor: { type: "user", userId: "author" },
-					metadata: { operationId: "op_1", stateBefore },
-				});
-				// The withdrawal itself is recorded as today's cancel is.
-				expect(auditRow("project.instructions.rejected")).toEqual(
-					audit,
-				);
-			},
-		);
-
-		it.each<[string, Row]>([
-			["OPENING", { status: "READY", pullRequestState: "OPENING" }],
-			[
-				"OPEN",
-				{
-					status: "READY",
-					pullRequestState: "OPEN",
-					pullRequestHeadSha: HEAD,
-				},
-			],
-			[
 				"BLOCKED in push",
 				{
 					status: "READY",
@@ -3744,63 +3691,23 @@ describe("REPOSITORY proposals in the existing writers", () => {
 					pullRequestFailure: failure("push", "BRANCH_WRITE_REFUSED"),
 				},
 			],
-			[
-				"BLOCKED in validation after a push",
-				{
-					status: "READY",
-					pullRequestState: "BLOCKED",
-					pullRequestObligationOpen: true,
-					pullRequestFailure: failure("validation"),
-				},
-			],
 		])(
-			"asks settlement to close %s: CLOSE_REQUESTED, attempt + 1, failure cleared",
+			"writes nothing for a #2563 proposal still %s, and refuses it as decided",
 			async (_, overrides) => {
 				const row = fakeRow(overrides);
-				const stateBefore = row.pullRequestState;
+				const before = { ...row };
 
 				expect(await cancelInstructionProposal(input)).toEqual({
-					ok: true,
-					changed: true,
-					version: 8,
-					pullRequest: "close_requested",
+					ok: false,
+					reason: "already_decided",
 				});
 
-				expect(row).toMatchObject({
-					pullRequestState: "CLOSE_REQUESTED",
-					proposalStatus: "PENDING",
-					pullRequestAttempt: 3,
-					pullRequestFailure: "DbNull",
-					pullRequestNextAttemptAt: null,
-					status: "READY",
-				});
-				expect(row).not.toHaveProperty("reviewedAt");
-				expect(auditActions()).toEqual([
-					"project.instructions.pull_request_close_requested",
-				]);
-				expect(
-					auditRow(
-						"project.instructions.pull_request_close_requested",
-					),
-				).toMatchObject({
-					metadata: { operationId: "op_1", stateBefore },
-				});
+				expect(row).toEqual(before);
+				expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+				expect(mocks.$queryRaw).not.toHaveBeenCalled();
+				expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
 			},
 		);
-
-		it("refuses validating work as today, and writes nothing", async () => {
-			const row = fakeRow({ status: "VALIDATING" });
-
-			expect(await cancelInstructionProposal(input)).toEqual({
-				ok: false,
-				reason: "in_progress",
-			});
-			expect(row).toMatchObject({
-				pullRequestState: "QUEUED",
-				pullRequestAttempt: 2,
-			});
-			expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
-		});
 
 		it("answers a repeated cancel idempotently from CLOSE_REQUESTED and CANCELED", async () => {
 			fakeRow({ status: "READY", pullRequestState: "CLOSE_REQUESTED" });

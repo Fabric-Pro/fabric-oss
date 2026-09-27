@@ -35,7 +35,6 @@ import {
 	readBranchAttachments,
 	readMergeSyncReceipts,
 	refreshProposalPullRequest,
-	retryProposalPullRequest,
 } from "./proposal-pull-request";
 
 const BUCKET = config.storage.bucketNames.skills;
@@ -732,7 +731,7 @@ function withdrawBlockedError(blocked: {
 	});
 }
 
-/** The retry's and cancel's audit request half, from this request. */
+/** The cancel's audit request half, from this request. */
 function requesterOf(
 	context: Parameters<typeof auditRequestFields>[0],
 ): ProposalPullRequestRequester {
@@ -782,8 +781,8 @@ export const getInstructionProposalPullRequestProcedure =
  * then the live proposer-or-reviewer check in the service (plan Decision 8).
  *
  * Refresh (spec §12): the row's check time is cleared and a retryable
- * BLOCKED row made due, and the operation's workflow is started or adopted
- * for a row it moves. `refreshed: false` for a settled row. Admitted once a
+ * BLOCKED row made due, and a member branch's workflow is woken for a row
+ * it moves. `refreshed: false` for a settled row. Admitted once a
  * minute per operation and never over a provider's rate-limit deadline; a
  * refused Refresh is TOO_MANY_REQUESTS with `data.retryAfter` and the same
  * `Retry-After` header the RPC rate limiter sends.
@@ -824,45 +823,4 @@ export const refreshInstructionProposalPullRequestProcedure =
 				}
 				throw error;
 			}
-		});
-
-/**
- * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
- * requireProjectPermission(INSTRUCTION_READ),
- * then the live proposer-or-reviewer check in the service: the spec's
- * "proposer or INSTRUCTION_UPDATE" (plan Decision 8).
- *
- * "Retry opening the pull request" (spec §12) on a BLOCKED row only a human
- * may re-issue. `expectedAttempt` is the attempt the card showed; a row that
- * moved since is a CONFLICT.
- */
-export const retryInstructionProposalPullRequestProcedure =
-	tenantProtectedProcedure
-		.use(projectNotFoundUnlessVisible)
-		.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
-		.route({
-			method: "POST",
-			path: "/projects/:projectId/instructions/proposals/:snapshotId/pull-request/retry",
-			tags: ["Projects", "Instructions"],
-			summary:
-				"Retry opening a coding-instructions proposal's pull request",
-		})
-		.input(
-			proposalInput.extend({
-				expectedAttempt: z.number().int().min(0),
-			}),
-		)
-		.handler(async ({ input, context }) => {
-			const organizationId = await requireHostingOrganizationId(
-				input.projectId,
-				context.user.id,
-			);
-			return retryProposalPullRequest({
-				snapshotId: input.snapshotId,
-				projectId: input.projectId,
-				organizationId,
-				userId: context.user.id,
-				expectedAttempt: input.expectedAttempt,
-				requester: requesterOf(context),
-			});
 		});

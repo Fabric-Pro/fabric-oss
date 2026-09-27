@@ -224,7 +224,6 @@ import {
 	listInstructionProposalsProcedure,
 	refreshInstructionProposalPullRequestProcedure,
 	rejectInstructionProposalProcedure,
-	retryInstructionProposalPullRequestProcedure,
 } from "./procedures/instructions/proposals";
 import { publishSnapshotProcedure } from "./procedures/instructions/publish-snapshot";
 import { configureRepositorySyncProcedure } from "./procedures/instructions/repository-sync/configure";
@@ -1996,7 +1995,6 @@ export const projectsRouter = {
 			// A REPOSITORY proposal's pull request (Fizzy #2563 spec §12).
 			getPullRequestStatus: getInstructionProposalPullRequestProcedure,
 			refreshPullRequest: refreshInstructionProposalPullRequestProcedure,
-			retryPullRequest: retryInstructionProposalPullRequestProcedure,
 			// The member's proposal branch (Fizzy #2738 spec §10).
 			myBranch: getMyProposalBranchProcedure,
 			myBranchFile: getMyProposalBranchFileProcedure,
