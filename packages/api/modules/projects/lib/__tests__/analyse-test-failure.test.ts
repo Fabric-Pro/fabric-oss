@@ -216,4 +216,25 @@ describe("buildFailureEvidence — assertion direction", () => {
 
 		expect(evidence).not.toContain("ASSERTION");
 	});
+
+	it("adds no ASSERTION block when Node's two trustworthy forms disagree", () => {
+		// Arrange
+		const failureMessage = [
+			"AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
+			"",
+			"90 !== 80",
+			"",
+			"  actual: 80,",
+			"  expected: 90,",
+			"  operator: 'strictEqual',",
+		].join("\n");
+
+		// Act
+		const evidence = buildFailureEvidence({ ...BASE, failureMessage });
+
+		// Assert
+		expect(evidence).not.toContain(
+			"ASSERTION (parsed from the runner's output",
+		);
+	});
 });

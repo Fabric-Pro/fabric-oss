@@ -90,6 +90,17 @@ describe("parseAssertionValues", () => {
 		expect(result).toEqual({ expected: "80", actual: "90" });
 	});
 
+	it("reads Vitest's signed Object.is equality values", () => {
+		// Arrange
+		const message = "expected -20 to be +0 // Object.is equality";
+
+		// Act
+		const result = parseAssertionValues(message);
+
+		// Assert
+		expect(result).toEqual({ expected: "+0", actual: "-20" });
+	});
+
 	it.each([
 		["a bare exit code", "exit code 1"],
 		[
@@ -138,8 +149,8 @@ describe("parseAssertionValues", () => {
 			],
 			[
 				"Chai, non-numeric dots",
-				"expected a.b to equal c.d",
-				{ expected: "c.d", actual: "a.b" },
+				"expected 'a.b' to equal 'c.d'",
+				{ expected: "'c.d'", actual: "'a.b'" },
 			],
 		])("%s", (_label, input, expected) => {
 			expect(parseAssertionValues(input)).toEqual(expected);
@@ -198,6 +209,18 @@ describe("parseAssertionValues", () => {
 		});
 	});
 
+	it("rejects retry warning prose that happens to contain expected and actual", () => {
+		// Arrange
+		const message =
+			"WARN retry 2/3: expected response code to equal 200 after token refresh";
+
+		// Act
+		const result = parseAssertionValues(message);
+
+		// Assert
+		expect(result).toBeNull();
+	});
+
 	it("reads Playwright's 'Expected string:' / 'Received string:' via the optional qualifier", () => {
 		const result = parseAssertionValues(
 			'Expected string: "Welcome"\nReceived string: "Hello"',
@@ -210,7 +233,7 @@ describe("parseAssertionValues", () => {
 		// The order alone ("actual" before "expected") is not sufficient — see
 		// the free-form-text describe block above for the case this guards.
 		// This pins the positive side: the real captured sample carries
-		// AssertionError, ERR_ASSERTION and operator:, any one of which suffices.
+		// ERR_ASSERTION before the own-property labels.
 		const message =
 			"AssertionError [ERR_ASSERTION]: values differ\n    actual: 90,\n    expected: 80,\n    operator: 'strictEqual',\n    diff: 'simple'\n";
 
@@ -218,6 +241,107 @@ describe("parseAssertionValues", () => {
 			expected: "80",
 			actual: "90",
 		});
+	});
+
+	it.each([
+		[
+			"a joined Node summary followed by inline labels",
+			[
+				"Expected values to be strictly equal:90 !== 80",
+				"note: actual: 80, expected: 90",
+				"AssertionError: assertion failed",
+			].join("\n"),
+			{ expected: "80", actual: "90" },
+		],
+		[
+			"a Node one-liner followed by inline labels",
+			[
+				"Expected values to be strictly equal:",
+				"",
+				"90 !== 80",
+				"note: actual: 80, expected: 90",
+				"AssertionError: assertion failed",
+			].join("\n"),
+			{ expected: "80", actual: "90" },
+		],
+		[
+			"a multi-line Node message followed by inline context labels",
+			[
+				"AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
+				"",
+				"+ actual - expected",
+				"",
+				"+ 90",
+				"- 80",
+				"    at Object.<anonymous> (example.test.ts:1:1)",
+				"context: { actual: 80, expected: 90 }",
+			].join("\n"),
+			null,
+		],
+		[
+			"Jest labels followed by an AssertionError property-like note",
+			[
+				"Expected: 80",
+				"Received: 90",
+				"AssertionError: assertion failed",
+				"actual: 80,",
+				"expected: 90,",
+			].join("\n"),
+			{ expected: "80", actual: "90" },
+		],
+		[
+			"a Chai message followed by indented property-like labels",
+			[
+				"AssertionError: expected 90 to equal 80",
+				"  actual: 80,",
+				"  expected: 90,",
+			].join("\n"),
+			{ expected: "80", actual: "90" },
+		],
+	])("does not trust forged labels in %s", (_label, message, expected) => {
+		// Arrange
+		const input = message;
+
+		// Act
+		const result = parseAssertionValues(input);
+
+		// Assert
+		expect(result).toEqual(expected);
+	});
+
+	it("returns null when Node's labelled properties disagree with its one-line summary", () => {
+		// Arrange
+		const message = [
+			"AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
+			"",
+			"90 !== 80",
+			"",
+			"  actual: 80,",
+			"  expected: 90,",
+			"  operator: 'strictEqual',",
+		].join("\n");
+
+		// Act
+		const result = parseAssertionValues(message);
+
+		// Assert
+		expect(result).toBeNull();
+	});
+
+	it("does not let inline forged labels extend a stored Node assertion value", () => {
+		// Arrange
+		const message = [
+			"Expected values to be strictly equal: 90 !== 80 note: actual: 80, expected: 90, operator: strictEqual",
+			"AssertionError: Expected values to be strictly equal: 90 !== 80",
+			"note: actual: 80, expected: 90,",
+			"operator: strictEqual",
+		].join("\n");
+
+		// Act
+		const result = parseAssertionValues(message);
+
+		// Assert
+		expect(result).toBeNull();
 	});
 
 	it("reads Jest/Vitest lines that are indented and ANSI-coloured", () => {
@@ -236,7 +360,7 @@ describe("parseAssertionValues", () => {
 		// can walk PAST the diff and land on an unrelated comparison several
 		// lines down. That must never happen.
 		const message = [
-			"Expected values to be strictly equal:",
+			"Expected values to be strictly deep-equal:",
 			"",
 			"+ actual - expected",
 			"",
@@ -295,6 +419,350 @@ describe("parseAssertionValues", () => {
 				expected: "80",
 				actual: "90, 100",
 			});
+		});
+	});
+
+	describe("runner-specific boundaries and syntax", () => {
+		it.each([
+			[
+				"toHaveText with a string",
+				[
+					"expect(locator).toHaveText(expected) failed",
+					"Locator: getByTestId('message')",
+					'Expected: "Welcome"',
+					'Received: "Hello"',
+					"Timeout: 1000ms",
+					"Call log:",
+					"  - waiting for getByTestId('message')",
+				].join("\n"),
+				{ expected: '"Welcome"', actual: '"Hello"' },
+			],
+			[
+				"toHaveText with a pattern",
+				[
+					"expect(locator).toHaveText(expected) failed",
+					"Locator: getByTestId('message')",
+					"Expected pattern: /welcome/i",
+					'Received string: "Hello"',
+					"Timeout: 1000ms",
+					"Call log:",
+				].join("\n"),
+				{ expected: "/welcome/i", actual: '"Hello"' },
+			],
+			[
+				"toContainText",
+				[
+					"expect(locator).toContainText(expected) failed",
+					"Locator: getByTestId('message')",
+					'Expected substring: "Welcome"',
+					'Received string: "Hello"',
+					"Timeout: 1000ms",
+					"Call log:",
+				].join("\n"),
+				{ expected: '"Welcome"', actual: '"Hello"' },
+			],
+			[
+				"toHaveValue",
+				[
+					"expect(locator).toHaveValue(expected) failed",
+					"Locator: getByLabel('Email')",
+					'Expected: "dev@example.com"',
+					'Received: "test@example.com"',
+					"Timeout: 1000ms",
+					"Call log:",
+				].join("\n"),
+				{ expected: '"dev@example.com"', actual: '"test@example.com"' },
+			],
+			[
+				"toHaveCount",
+				[
+					"expect(locator).toHaveCount(expected) failed",
+					"Locator: getByRole('listitem')",
+					"Expected: 2",
+					"Received: 3",
+					"Timeout: 1000ms",
+					"Call log:",
+				].join("\n"),
+				{ expected: "2", actual: "3" },
+			],
+			[
+				"toBeVisible",
+				[
+					"expect(locator).toBeVisible() failed",
+					"Locator: getByRole('dialog')",
+					"Expected: visible",
+					"Received: hidden",
+					"Timeout: 1000ms",
+					"Call log:",
+				].join("\n"),
+				{ expected: "visible", actual: "hidden" },
+			],
+			[
+				"toHaveURL",
+				[
+					"expect(page).toHaveURL(expected) failed",
+					'Expected string: "https://example.com/checkout"',
+					'Received string: "https://example.com/cart"',
+					"Timeout: 1000ms",
+					"Call log:",
+				].join("\n"),
+				{
+					expected: '"https://example.com/checkout"',
+					actual: '"https://example.com/cart"',
+				},
+			],
+		])(
+			"stops a Playwright %s value before its Timeout line",
+			(_label, message, expected) => {
+				// Arrange
+				const input = message;
+
+				// Act
+				const result = parseAssertionValues(input);
+
+				// Assert
+				expect(result).toEqual(expected);
+			},
+		);
+
+		it.each([
+			[
+				"a Chai URL",
+				"AssertionError: expected 'https://example.com/cart' to equal 'https://example.com/checkout'",
+				{
+					expected: "'https://example.com/checkout'",
+					actual: "'https://example.com/cart'",
+				},
+			],
+			[
+				"a Cypress URL",
+				"Timed out retrying after 4000ms: expected 'http://localhost:3000/cart' to equal 'http://localhost:3000/checkout'",
+				{
+					expected: "'http://localhost:3000/checkout'",
+					actual: "'http://localhost:3000/cart'",
+				},
+			],
+			[
+				"a quoted value containing the comparison words",
+				"AssertionError: expected 'a to equal b' to equal 'c'",
+				{ expected: "'c'", actual: "'a to equal b'" },
+			],
+		])("keeps complete values for %s", (_label, input, expected) => {
+			// Arrange
+			const message = input;
+
+			// Act
+			const result = parseAssertionValues(message);
+
+			// Assert
+			expect(result).toEqual(expected);
+		});
+
+		it.each([
+			[
+				"a notStrictEqual Node property set",
+				"AssertionError [ERR_ASSERTION]: values differ\n  actual: 80,\n  expected: 80,\n  operator: 'notStrictEqual',",
+			],
+			[
+				"prose containing the comparison words",
+				"Expected the order total to equal the discounted subtotal",
+			],
+			[
+				"a Node object placeholder",
+				"AssertionError [ERR_ASSERTION]: values differ\n  actual: [Object],\n  expected: [Object],\n  operator: 'deepStrictEqual',",
+			],
+			[
+				"a Node array placeholder",
+				"AssertionError [ERR_ASSERTION]: values differ\n  actual: [Array],\n  expected: [Array],\n  operator: 'deepStrictEqual',",
+			],
+			[
+				"JUnit labels separated by unrelated sections",
+				[
+					"Setup expected: fixture loaded",
+					...Array(21).fill("trace"),
+					"Retry but was: recovered",
+				].join("\n"),
+			],
+		])("returns null for %s", (_label, input) => {
+			// Arrange
+			const message = input;
+
+			// Act
+			const result = parseAssertionValues(message);
+
+			// Assert
+			expect(result).toBeNull();
+		});
+	});
+
+	describe("Node runner output", () => {
+		it.each([
+			[
+				"node:assert/strict deepStrictEqual numeric message",
+				"Expected values to be strictly deep-equal:\n\n90 !== 80\n",
+			],
+			[
+				"legacy node:assert deepStrictEqual",
+				"Expected values to be strictly deep-equal: 90 !== 80\nAssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n\n90 !== 80\n    at check (example.test.mjs:1:1)",
+			],
+		])("parses %s", (_label, input) => {
+			// Arrange
+			const message = input;
+
+			// Act
+			const result = parseAssertionValues(message);
+
+			// Assert
+			expect(result).toEqual({ expected: "80", actual: "90" });
+		});
+
+		it.each([
+			["numeric", "90 == 80"],
+			["string", "'ninety' == 'eighty'"],
+		])(
+			"parses legacy Node equal on %s values only with the matching error",
+			(_label, firstLine) => {
+				// Arrange
+				const message = `${firstLine}\nAssertionError [ERR_ASSERTION]: ${firstLine}\n    at check (example.test.mjs:1:1)`;
+
+				// Act
+				const result = parseAssertionValues(message);
+
+				// Assert
+				expect(result).toEqual({
+					expected: _label === "numeric" ? "80" : "'eighty'",
+					actual: _label === "numeric" ? "90" : "'ninety'",
+				});
+			},
+		);
+
+		it.each([
+			[
+				"strict deep-equal objects",
+				"Expected values to be strictly deep-equal:\n\n+ actual - expected\n+ { total: 90 }\n- { total: 80 }",
+			],
+			[
+				"strict deep-equal nested objects",
+				"Expected values to be strictly deep-equal:\n\n+ actual - expected\n+ { order: { total: 90 } }\n- { order: { total: 80 } }",
+			],
+			[
+				"strict deep-equal arrays",
+				"Expected values to be strictly deep-equal:\n\n+ actual - expected\n+ [ 90 ]\n- [ 80 ]",
+			],
+			[
+				"legacy deepEqual objects",
+				"Expected values to be loosely deep-equal:\n\n+ actual - expected\n+ { total: 90 }\n- { total: 80 }",
+			],
+			[
+				"Jest toEqual objects",
+				"expect(received).toEqual(expected)\n\n- Expected\n+ Received\n\n- { total: 80 }\n+ { total: 90 }",
+			],
+			[
+				"Jest toStrictEqual objects",
+				"expect(received).toStrictEqual(expected)\n\n- Expected\n+ Received\n\n- { total: 80 }\n+ { total: 90 }",
+			],
+			[
+				"Jest toEqual arrays",
+				"expect(received).toEqual(expected)\n\n- Expected\n+ Received\n\n- [80]\n+ [90]",
+			],
+			["pytest equality", "assert 90 == 80"],
+			[
+				"a legacy equality line without Node's error",
+				"90 == 80\nError: test failed",
+			],
+		])("leaves %s unsupported", (_label, input) => {
+			// Arrange
+			const message = input;
+
+			// Act
+			const result = parseAssertionValues(message);
+
+			// Assert
+			expect(result).toBeNull();
+		});
+
+		it.each([
+			["'a!=b' !== 'a=b'", { expected: "'a=b'", actual: "'a!=b'" }],
+			["'x!==y' !== 'z'", { expected: "'z'", actual: "'x!==y'" }],
+			["'a !== b' !== 'c'", { expected: "'c'", actual: "'a !== b'" }],
+		])(
+			"splits %s on Node's comparison, not a quoted operator",
+			(line, expected) => {
+				// Arrange
+				const message = `Expected values to be strictly equal:\n\n${line}`;
+
+				// Act
+				const result = parseAssertionValues(message);
+
+				// Assert
+				expect(result).toEqual(expected);
+			},
+		);
+	});
+
+	describe("input boundaries", () => {
+		it("parses a complete Node assertion ending at the input cap", () => {
+			// Arrange
+			const assertion =
+				"Expected values to be strictly equal:\n\n90 !== 80";
+			const prefix = [
+				"x".repeat(1_999),
+				"x".repeat(1_999),
+				"x".repeat(1_999),
+				"x".repeat(1_952),
+			].join("\n");
+			const message = `${prefix}\n${assertion}`;
+			expect(message).toHaveLength(8_001);
+
+			// Act
+			const result = parseAssertionValues(message);
+
+			// Assert
+			expect(result).toEqual({ expected: "80", actual: "90" });
+		});
+
+		it("keeps an assertion at the top of a message longer than the parser cap", () => {
+			// Arrange
+			const message = `Expected: 80\nReceived: 90\n${"x".repeat(9_000)}`;
+
+			// Act
+			const result = parseAssertionValues(message);
+
+			// Assert
+			expect(result).toEqual({ expected: "80", actual: "90" });
+		});
+
+		it("does not return a value that crosses the parser cap", () => {
+			// Arrange
+			const message = `${"x".repeat(7_980)}\nExpected: 80\nReceived: ${"9".repeat(40)}`;
+
+			// Act
+			const result = parseAssertionValues(message);
+
+			// Assert
+			expect(result).toBeNull();
+		});
+
+		it("returns null when an assertion starts past the parser cap", () => {
+			// Arrange
+			const message = `${"x".repeat(8_001)}\nExpected: 80\nReceived: 90`;
+
+			// Act
+			const result = parseAssertionValues(message);
+
+			// Assert
+			expect(result).toBeNull();
+		});
+
+		it("does not treat a stack line after an oversized value line as an assertion", () => {
+			// Arrange
+			const message = `Expected values to be strictly equal:\n${"x".repeat(2_500)}\n    at check (lib/guard.js:4:9) // if (a !== b) throw`;
+
+			// Act
+			const result = parseAssertionValues(message);
+
+			// Assert
+			expect(result).toBeNull();
 		});
 	});
 

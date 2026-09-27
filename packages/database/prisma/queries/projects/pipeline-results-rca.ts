@@ -12,7 +12,11 @@
 
 import { TERMINAL_DRAFTING_STAGES } from "../../../utils";
 import { db } from "../../client";
-import { buildAssertionLines, buildCauseLines } from "./bug-cause-lines";
+import {
+	buildAssertionLines,
+	buildCauseLines,
+	formatFailureOutput,
+} from "./bug-cause-lines";
 import { createStory } from "./stories";
 
 /**
@@ -123,6 +127,13 @@ export async function openBugsForFailedCases(
 			.map((e) => e.originTestCaseId)
 			.filter((id): id is string => id != null),
 	);
+	const candidates = failed.filter(
+		(testCase) => !alreadyOpen.has(testCase.id),
+	);
+	if (candidates.length === 0) {
+		return 0;
+	}
+	const candidateIds = candidates.map((testCase) => testCase.id);
 
 	// Latest FAILED event per case → the failing test, run link, and the run it
 	// came from (which carries the assertion text).
@@ -136,7 +147,7 @@ export async function openBugsForFailedCases(
 	// without capping the waste, and it can drop a case whose latest failure sits
 	// behind a noisier neighbour's history.
 	const latestEvents = await db.$transaction(
-		failedIds.map((testCaseId) =>
+		candidateIds.map((testCaseId) =>
 			db.testResultEvent.findFirst({
 				where: { testCaseId, result: "FAILED" },
 				orderBy: { occurredAt: "desc" },
@@ -186,32 +197,77 @@ export async function openBugsForFailedCases(
 		: [];
 	const runById = new Map(runs.map((r) => [r.id, r]));
 
-	let opened = 0;
-	for (const c of failed) {
-		if (alreadyOpen.has(c.id)) {
-			continue;
+	const failureMessageByCase = new Map(
+		candidates.map((testCase) => [
+			testCase.id,
+			findFailureMessage(
+				latestEventByCase.get(testCase.id)?.pipelineRunId
+					? runById.get(
+							latestEventByCase.get(testCase.id)?.pipelineRunId ??
+								"",
+						)?.results
+					: undefined,
+				testCase.id,
+			),
+		]),
+	);
+	const latestFindings = runIds.length
+		? await db.testFinding.findMany({
+				where: {
+					projectId: input.projectId,
+					deletedAt: null,
+					testCaseId: { in: candidateIds },
+					lastPipelineRunId: { in: runIds },
+				},
+				orderBy: { lastSeenAt: "desc" },
+				select: {
+					testCaseId: true,
+					lastPipelineRunId: true,
+					failureMessage: true,
+					analysedAt: true,
+					suspectedCause: true,
+					suspectedKind: true,
+					analysisModel: true,
+				},
+			})
+		: [];
+	const findingByCase = new Map<string, (typeof latestFindings)[number]>();
+	for (const finding of latestFindings) {
+		if (
+			finding.testCaseId &&
+			!findingByCase.has(finding.testCaseId) &&
+			finding.lastPipelineRunId ===
+				latestEventByCase.get(finding.testCaseId)?.pipelineRunId &&
+			finding.failureMessage ===
+				failureMessageByCase.get(finding.testCaseId)
+		) {
+			findingByCase.set(finding.testCaseId, finding);
 		}
+	}
+
+	let opened = 0;
+	for (const c of candidates) {
 		const evt = latestEventByCase.get(c.id);
 		const runLabel =
 			evt?.actorLabel ?? c.lastRunByLabel ?? "a CI pipeline run";
 		const run = evt?.pipelineRunId
 			? runById.get(evt.pipelineRunId)
 			: undefined;
-		const failureMessage = findFailureMessage(run?.results, c.id);
+		const failureMessage = failureMessageByCase.get(c.id);
 
 		// Facts first, then the cause — never the other way round, so a reader
 		// meets the parsed assertion before any hedge about why it might have
 		// happened.
 		const assertionLines = buildAssertionLines(failureMessage);
-		// This path never runs an AI analysis, so the cause line always reads
-		// "not established" — the same wording `promoteFindingToBug` falls back
-		// to, rather than silence a reader could mistake for "not yet looked at".
-		const causeLines = buildCauseLines({
-			analysedAt: null,
-			suspectedCause: null,
-			suspectedKind: null,
-			analysisModel: null,
-		});
+		const finding = findingByCase.get(c.id);
+		const causeLines = buildCauseLines(
+			finding ?? {
+				analysedAt: null,
+				suspectedCause: null,
+				suspectedKind: null,
+				analysisModel: null,
+			},
+		);
 
 		const lines = [
 			`The automated test linked to ${c.identifier} — “${c.title}” — is failing in ${runLabel}.`,
@@ -228,7 +284,9 @@ export async function openBugsForFailedCases(
 			// formatting instead of being re-wrapped into soup by the markdown
 			// renderer, and truncated because some runners emit whole log files.
 			failureMessage
-				? `\nWhat CI reported:\n\n\`\`\`\n${truncate(failureMessage, FAILURE_MESSAGE_LIMIT)}\n\`\`\``
+				? formatFailureOutput(
+						truncate(failureMessage, FAILURE_MESSAGE_LIMIT),
+					)
 				: null,
 			"",
 			// No internal ticket reference here: this text is persisted into the

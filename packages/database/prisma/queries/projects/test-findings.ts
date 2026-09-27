@@ -12,7 +12,12 @@
  */
 
 import { db, Prisma, type TestFailureKind } from "../../client";
-import { buildAssertionLines, buildCauseLines } from "./bug-cause-lines";
+import { parseAssertionValues } from "./assertion-values";
+import {
+	buildAssertionLines,
+	buildCauseLines,
+	formatFailureOutput,
+} from "./bug-cause-lines";
 import { FAILURE_MESSAGE_LIMIT } from "./pipeline-results-rca";
 import { createStory } from "./stories";
 
@@ -43,6 +48,18 @@ export interface RecordFindingsResult {
 	created: number;
 	/** Fingerprints that already existed and had their occurrence bumped. */
 	updated: number;
+}
+
+function assertionValuesChanged(
+	previousMessage: string | null | undefined,
+	currentMessage: string | null | undefined,
+): boolean {
+	const previous = parseAssertionValues(previousMessage);
+	const current = parseAssertionValues(currentMessage);
+	return (
+		previous?.expected !== current?.expected ||
+		previous?.actual !== current?.actual
+	);
 }
 
 /**
@@ -78,7 +95,7 @@ export async function recordFindingsForRun(
 			projectId: input.projectId,
 			fingerprint: { in: [...distinct.keys()] },
 		},
-		select: { fingerprint: true, status: true },
+		select: { fingerprint: true, status: true, failureMessage: true },
 	});
 	const existingByPrint = new Map(existing.map((e) => [e.fingerprint, e]));
 
@@ -99,6 +116,12 @@ export async function recordFindingsForRun(
 		// reopening would report the same problem twice.
 		const status =
 			prior && prior.status !== "PROMOTED" ? "OPEN" : prior?.status;
+		const shouldClearAnalysis =
+			prior &&
+			assertionValuesChanged(
+				prior.failureMessage,
+				failure.failureMessage,
+			);
 
 		writes.push(
 			db.testFinding.upsert({
@@ -129,6 +152,15 @@ export async function recordFindingsForRun(
 					// look at, and the fingerprint already guarantees it is the same
 					// fault despite the exact string differing (paths, line numbers).
 					failureMessage: failure.failureMessage ?? null,
+					...(shouldClearAnalysis
+						? {
+								analysedAt: null,
+								suspectedCause: null,
+								suspectedKind: null,
+								analysisModel: null,
+								analysisDiff: Prisma.DbNull,
+							}
+						: {}),
 					// The NAME is display text on the same terms, and was previously
 					// written once and never again — so a finding whose name improved
 					// (or was wrong) kept the original forever. That is not
@@ -264,7 +296,9 @@ export async function promoteFindingToBug(input: {
 		...(assertionLines.length > 0 ? [""] : []),
 		...causeLines,
 		finding.failureMessage
-			? `\nWhat CI reported:\n\n\`\`\`\n${finding.failureMessage.slice(0, FAILURE_MESSAGE_LIMIT)}\n\`\`\``
+			? formatFailureOutput(
+					finding.failureMessage.slice(0, FAILURE_MESSAGE_LIMIT),
+				)
 			: null,
 		"",
 		`Promoted from QA finding \`${finding.fingerprint}\`.`,

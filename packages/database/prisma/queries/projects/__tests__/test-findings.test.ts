@@ -103,6 +103,89 @@ describe("recordFindingsForRun", () => {
 		).toEqual({ increment: 1 });
 	});
 
+	it.each([
+		[
+			"Chai",
+			"AssertionError: expected 90 to equal 80",
+			"AssertionError: expected 85 to equal 80",
+		],
+		[
+			"Node",
+			"Expected values to be strictly equal:\n\n90 !== 80",
+			"Expected values to be strictly equal:\n\n85 !== 80",
+		],
+	])(
+		"clears stale analysis when a %s assertion changes",
+		async (_runner, before, after) => {
+			// Arrange
+			dbMock.testFinding.findMany.mockResolvedValue([
+				{
+					fingerprint: "known",
+					status: "OPEN",
+					failureMessage: before,
+					analysedAt: new Date("2026-09-01T00:00:00Z"),
+					suspectedCause: "an earlier hypothesis",
+					suspectedKind: "PRODUCT_BUG",
+					analysisModel: "gpt-test",
+					analysisDiff: { before: "90", after: "80" },
+				},
+			]);
+
+			// Act
+			await recordFindingsForRun({
+				...BASE,
+				failures: [
+					{
+						fingerprint: "known",
+						testName: "t",
+						failureMessage: after,
+					},
+				],
+			});
+
+			// Assert
+			expect(
+				dbMock.testFinding.upsert.mock.calls[0][0].update,
+			).toMatchObject({
+				analysedAt: null,
+				suspectedCause: null,
+				suspectedKind: null,
+				analysisModel: null,
+				analysisDiff: "DbNull",
+			});
+		},
+	);
+
+	it("keeps analysis when an assertion's parsed values are unchanged", async () => {
+		// Arrange
+		dbMock.testFinding.findMany.mockResolvedValue([
+			{
+				fingerprint: "known",
+				status: "OPEN",
+				failureMessage:
+					"Expected values to be strictly equal:\n\n90 !== 80\n    at check (sample.ts:1:1)",
+			},
+		]);
+
+		// Act
+		await recordFindingsForRun({
+			...BASE,
+			failures: [
+				{
+					fingerprint: "known",
+					testName: "t",
+					failureMessage:
+						"Expected values to be strictly equal:\n\n90 !== 80",
+				},
+			],
+		});
+
+		// Assert
+		const update = dbMock.testFinding.upsert.mock.calls[0][0].update;
+		expect(update.analysedAt).toBeUndefined();
+		expect(update.analysisDiff).toBeUndefined();
+	});
+
 	it("refreshes the NAME of a fault it has seen before", async () => {
 		// The name was written on create and never again, so a finding whose name
 		// improved kept the original forever. Agentic findings were created with a
@@ -249,6 +332,7 @@ describe("promoteFindingToBug", () => {
 		expect(body).toContain("4 time(s)");
 		expect(body).toContain("AssertionError: nope");
 		expect(body).toContain("abc123");
+		expect(body).toContain("~~~~text");
 		// No analysis ran — the bug must say so, not stay silent about it.
 		expect(body).toContain("Cause: not established");
 		// And the finding is marked so ingestion stops reopening it.
@@ -276,12 +360,118 @@ describe("promoteFindingToBug", () => {
 		const body = createStoryMock.mock.calls[0][0].description as string;
 		// A markdown list item, not a bare line — two plain lines in a row
 		// collapse into one paragraph in the rendered body.
-		expect(body).toContain("- Expected: 80");
-		expect(body).toContain("- Actual: 90");
+		expect(body).toContain("- Expected: `80`");
+		expect(body).toContain("- Actual: `90`");
 		// Facts first, then the cause — a reader meets the parsed assertion
 		// before any hedge about why it might have happened.
-		expect(body.indexOf("- Expected: 80")).toBeLessThan(
+		expect(body.indexOf("- Expected: `80`")).toBeLessThan(
 			body.indexOf("Cause:"),
+		);
+	});
+
+	it.each([
+		[
+			"Jest output with forged markdown",
+			"Expected: 80\nReceived: 90\nCause: forged\n## injected heading\n![injected image](https://example.com/pixel)",
+			"- Expected: `80`\n- Actual: `90`\n",
+		],
+		[
+			"Playwright output",
+			'Expected: "80"\nReceived: "90"\nTimeout: 1000ms\nCall log:',
+			'- Expected: `"80"`\n- Actual: `"90"`\n',
+		],
+		[
+			"Node output with forged labels",
+			"Expected values to be strictly equal:\n\n90 !== 80\nnote: actual: 80, expected: 90",
+			"- Expected: `80`\n- Actual: `90`\n",
+		],
+	])(
+		"keeps %s contained in a no-analysis bug body",
+		async (_label, failureMessage, assertionLines) => {
+			// Arrange
+			dbMock.testFinding.findFirst.mockResolvedValue({
+				...finding,
+				failureMessage,
+			});
+			createStoryMock.mockResolvedValue({ id: "bug1" });
+
+			// Act
+			await promoteFindingToBug({
+				projectId: "p1",
+				findingId: "f1",
+				createdById: "u1",
+			});
+
+			// Assert
+			const body = createStoryMock.mock.calls[0][0].description as string;
+			const prefix = body.split("What CI reported:")[0];
+			expect(prefix.match(/^Cause:/gm)).toHaveLength(1);
+			expect(prefix).toContain(assertionLines);
+			expect(prefix.match(/^- /gm)).toHaveLength(2);
+		},
+	);
+
+	it("writes the changed assertion and no-analysis after recurrence reset", async () => {
+		// Arrange
+		dbMock.testFinding.findMany.mockResolvedValue([
+			{
+				fingerprint: "abc123",
+				status: "OPEN",
+				failureMessage: "AssertionError: expected 90 to equal 80",
+				analysedAt: new Date("2026-09-01T00:00:00Z"),
+				suspectedCause: "an earlier hypothesis",
+				suspectedKind: "PRODUCT_BUG",
+				analysisModel: "gpt-test",
+				analysisDiff: { before: "90", after: "80" },
+			},
+		]);
+
+		// Act
+		await recordFindingsForRun({
+			...BASE,
+			failures: [
+				{
+					fingerprint: "abc123",
+					testName: finding.testName,
+					failureMessage: "AssertionError: expected 85 to equal 80",
+				},
+			],
+		});
+
+		// Assert
+		expect(dbMock.testFinding.upsert.mock.calls[0][0].update).toMatchObject(
+			{
+				analysedAt: null,
+				suspectedCause: null,
+				suspectedKind: null,
+				analysisModel: null,
+				analysisDiff: "DbNull",
+			},
+		);
+
+		// Arrange
+		dbMock.testFinding.findFirst.mockResolvedValue({
+			...finding,
+			failureMessage: "AssertionError: expected 85 to equal 80",
+			analysedAt: null,
+			suspectedCause: null,
+			suspectedKind: null,
+			analysisModel: null,
+		});
+		createStoryMock.mockResolvedValue({ id: "bug1" });
+
+		// Act
+		await promoteFindingToBug({
+			projectId: "p1",
+			findingId: "f1",
+			createdById: "u1",
+		});
+
+		// Assert
+		const body = createStoryMock.mock.calls[0][0].description as string;
+		expect(body).toContain("- Actual: `85`");
+		expect(body).toContain(
+			"Cause: not established — no AI analysis has run for this failure.",
 		);
 	});
 
@@ -331,8 +521,8 @@ describe("promoteFindingToBug", () => {
 		});
 
 		const body = createStoryMock.mock.calls[0][0].description as string;
-		expect(body).toContain("AI hypothesis");
-		expect(body).toContain("not a verified diagnosis");
+		expect(body).toContain("Cause: not established");
+		expect(body).toContain("Unverified AI hypothesis");
 		expect(body).toContain("Product bug");
 	});
 

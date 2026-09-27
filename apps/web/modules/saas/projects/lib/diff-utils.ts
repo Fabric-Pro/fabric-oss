@@ -725,6 +725,7 @@ function fixAIMarkdownIssues(text: string): string {
 		const lines = source.split("\n");
 		const output: string[] = [];
 		let inFence = false;
+		let fenceDelimiter = "```";
 		let fenceLanguage = "";
 		let fenceBody: string[] = [];
 
@@ -751,14 +752,16 @@ function fixAIMarkdownIssues(text: string): string {
 				fenceBody.every((bodyLine) => bodyLine.trim().length === 0)
 			) {
 				inFence = false;
+				fenceDelimiter = "```";
 				fenceLanguage = "";
 				fenceBody = [];
 				return;
 			}
-			output.push(`\`\`\`${fenceLanguage}`.trimEnd());
+			output.push(`${fenceDelimiter}${fenceLanguage}`.trimEnd());
 			output.push(...fenceBody);
-			output.push("```");
+			output.push(fenceDelimiter);
 			inFence = false;
+			fenceDelimiter = "```";
 			fenceLanguage = "";
 			fenceBody = [];
 		};
@@ -766,14 +769,16 @@ function fixAIMarkdownIssues(text: string): string {
 		for (const line of lines) {
 			const trimmed = line.trim();
 
-			if (!inFence && trimmed.startsWith("```")) {
+			const fenceMatch = trimmed.match(/^(`{3,}|~{3,})(.*)$/);
+			if (!inFence && fenceMatch) {
 				inFence = true;
-				fenceLanguage = trimmed.slice(3).trim().toLowerCase();
+				fenceDelimiter = fenceMatch[1];
+				fenceLanguage = fenceMatch[2].trim().toLowerCase();
 				fenceBody = [];
 				continue;
 			}
 
-			if (inFence && trimmed === "```") {
+			if (inFence && trimmed === fenceDelimiter) {
 				flushFence();
 				continue;
 			}
@@ -809,6 +814,7 @@ function fixAIMarkdownIssues(text: string): string {
 					);
 
 				if (
+					fenceDelimiter === "```" &&
 					jsonLikeFence &&
 					looksLikeStructuredLine(line) &&
 					(previousLooksLikePayload || fenceContainsStructuredPayload)
@@ -937,7 +943,7 @@ function fixAIMarkdownIssues(text: string): string {
 	// instead of nested code blocks. This is common when the model returns
 	// sections like ```markdown ... ``` inside an otherwise markdown document.
 	fixed = fixed.replace(
-		/```(?:md|markdown|mdx)\s*\n([\s\S]*?)\n```/gi,
+		/(?<!`)```(?!`)(?:md|markdown|mdx)\s*\n([\s\S]*?)\n```/gi,
 		(_match, content: string) => `\n${content.trim()}\n`,
 	);
 
@@ -945,7 +951,7 @@ function fixAIMarkdownIssues(text: string): string {
 	// If the content clearly looks like document structure rather than literal code,
 	// unwrap it so existing documents render as content instead of blue code panels.
 	fixed = fixed.replace(
-		/```(?:plaintext|text|txt)\s*\n([\s\S]*?)\n```/gi,
+		/(?<!`)```(?!`)(?:plaintext|text|txt)\s*\n([\s\S]*?)\n```/gi,
 		(match: string, content: string) =>
 			looksLikeStructuredMarkdown(content)
 				? `\n${content.trim()}\n`
@@ -969,10 +975,10 @@ function fixAIMarkdownIssues(text: string): string {
 	);
 
 	// Ensure code blocks have newlines before them
-	fixed = fixed.replace(/([^\n])```/g, "$1\n```");
+	fixed = fixed.replace(/([^\n`])```(?!`)/g, "$1\n```");
 
 	// Ensure code blocks have newlines after closing fence
-	fixed = fixed.replace(/```([^\n])/g, "```\n$1");
+	fixed = fixed.replace(/(?<!`)```(?!`)([^\n])/g, "```\n$1");
 
 	// Repair malformed fenced blocks where the model starts a code block but then
 	// continues with ordinary document structure without closing it.
@@ -992,7 +998,7 @@ function fixAIMarkdownIssues(text: string): string {
 	// fence before the heading and swallowing the rest of the document into a new
 	// (unclosed) code block.
 	fixed = fixed.replace(
-		/```(?:\s*\n)?(json|plaintext|text|txt)\s*\n((?:(?!```)[\s\S])*?)(\n(?:#{1,6}\s|[-*+]\s|\d+\.\s))/gi,
+		/(?<!`)```(?!`)(?:\s*\n)?(json|plaintext|text|txt)\s*\n((?:(?!```)[\s\S])*?)(\n(?:#{1,6}\s|[-*+]\s|\d+\.\s))/gi,
 		(_match, language: string, body: string, nextBlockStart: string) =>
 			`\`\`\`${language}\n${body.trimEnd()}\n\`\`\`\n${nextBlockStart.trimStart()}`,
 	);
@@ -1111,6 +1117,7 @@ function fixAIMarkdownIssues(text: string): string {
 		const spuriousFenceIndices = new Set<number>();
 		const pairedFenceIndices = new Set<number>();
 		let pendingOpener: number | null = null;
+		let pendingDelimiter: string | null = null;
 		// Only bare ``` openers are subject to the spurious-pair heuristic.
 		// Language-tagged fences (```bash, ```json, etc.) are explicit author
 		// intent that the body is code, regardless of how the lines look. The
@@ -1123,7 +1130,8 @@ function fixAIMarkdownIssues(text: string): string {
 		let bodyProse = 0;
 		for (let i = 0; i < lines.length; i++) {
 			const trimmed = lines[i].trim();
-			if (!trimmed.startsWith("```")) {
+			const fenceMatch = trimmed.match(/^(`{3,})(.*)$/);
+			if (!fenceMatch) {
 				if (pendingOpener !== null && trimmed.length > 0) {
 					bodyNonEmpty++;
 					if (looksLikeStructuredLine(lines[i])) {
@@ -1137,13 +1145,17 @@ function fixAIMarkdownIssues(text: string): string {
 			}
 			if (pendingOpener === null) {
 				pendingOpener = i;
-				pendingOpenerIsBare = trimmed === "```";
+				pendingDelimiter = fenceMatch[1];
+				pendingOpenerIsBare = trimmed === pendingDelimiter;
 				bodyNonEmpty = 0;
 				bodyStructured = 0;
 				bodyProse = 0;
 				continue;
 			}
-			if (trimmed === "```") {
+			if (
+				fenceMatch[1] === pendingDelimiter &&
+				fenceMatch[2].length === 0
+			) {
 				pairedFenceIndices.add(pendingOpener);
 				pairedFenceIndices.add(i);
 				if (
@@ -1165,6 +1177,7 @@ function fixAIMarkdownIssues(text: string): string {
 					spuriousFenceIndices.add(i);
 				}
 				pendingOpener = null;
+				pendingDelimiter = null;
 			}
 			// A second opener while one is pending is ignored (malformed input —
 			// the old opener stays pending until a bare ``` closer arrives).

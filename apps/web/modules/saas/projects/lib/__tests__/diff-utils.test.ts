@@ -7,6 +7,11 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	buildAssertionLines,
+	buildCauseLines,
+	formatFailureOutput,
+} from "../../../../../../../packages/database/prisma/queries/projects/bug-cause-lines";
+import {
 	diffPartialText,
 	fromMarkdown,
 	normalizeMarkdownContent,
@@ -97,6 +102,146 @@ describe("fromMarkdown - Basic Markdown", () => {
 		expect(html).toContain("<pre>");
 		expect(html).toContain("<code");
 		expect(html).toContain("const x = 1;");
+	});
+
+	it("keeps CI text inside a language-tagged fence even when it contains markdown", () => {
+		// Arrange
+		const markdown = [
+			"- Expected: `80`",
+			"- Actual: `90`",
+			"",
+			"Cause: not established — no AI analysis has run for this failure.",
+			"",
+			"What CI reported:",
+			"",
+			"````text",
+			"Expected: 80",
+			"Received: 90",
+			"```",
+			"## injected heading",
+			"![injected image](https://example.com/pixel)",
+			"````",
+		].join("\n");
+
+		// Act
+		const html = fromMarkdown(markdown);
+
+		// Assert
+		expect((html.match(/<h2>/g) ?? []).length).toBe(0);
+		expect((html.match(/<img\b/g) ?? []).length).toBe(0);
+		expect((html.match(/<pre>/g) ?? []).length).toBe(1);
+	});
+
+	it.each([
+		[
+			"Jest output with forged markdown",
+			"Expected: 80\nReceived: 90\n## injected heading\n![injected image](https://example.com/pixel)",
+			"- Expected: `80`\n- Actual: `90`",
+		],
+		[
+			"Playwright output",
+			'Expected: "80"\nReceived: "90"\nTimeout: 1000ms\nCall log:',
+			'- Expected: `"80"`\n- Actual: `"90"`',
+		],
+	])(
+		"keeps generated %s bug content inside one code block",
+		(_label, output, assertionLines) => {
+			// Arrange
+			const markdown = [
+				...assertionLines.split("\n"),
+				"",
+				"Cause: not established — no AI analysis has run for this failure.",
+				"",
+				formatFailureOutput(output),
+			].join("\n");
+
+			// Act
+			const html = fromMarkdown(markdown);
+
+			// Assert
+			expect((html.match(/<h2>/g) ?? []).length).toBe(0);
+			expect((html.match(/<img\b/g) ?? []).length).toBe(0);
+			expect((html.match(/<pre>/g) ?? []).length).toBe(1);
+		},
+	);
+
+	it("keeps backticks and markdown-shaped assertion values inside code spans", () => {
+		// Arrange
+		const markdown =
+			"- Expected: ``expected ` ## injected heading ![injected image](https://example.com/pixel)``";
+
+		// Act
+		const html = fromMarkdown(markdown);
+
+		// Assert
+		expect((html.match(/<h2>/g) ?? []).length).toBe(0);
+		expect((html.match(/<img\b/g) ?? []).length).toBe(0);
+		expect(html).toContain("<code>expected ` ## injected heading");
+	});
+
+	it("keeps escaped fence markers inside formatted CI output", () => {
+		// Arrange
+		const markdown = formatFailureOutput(
+			[
+				"Expected: 80",
+				"Received: 90",
+				"\\`\\`\\`\\`",
+				"![pixel](https://example.com/pixel)",
+				"## injected heading",
+			].join("\n"),
+		);
+
+		// Act
+		const html = fromMarkdown(markdown);
+
+		// Assert
+		expect((html.match(/<h2>/g) ?? []).length).toBe(0);
+		expect((html.match(/<img\b/g) ?? []).length).toBe(0);
+		expect((html.match(/<pre>/g) ?? []).length).toBe(1);
+	});
+
+	it("keeps escaped backticks in assertion values inside inline code", () => {
+		// Arrange
+		const markdown = buildAssertionLines(
+			"Expected: \\`\\`\\`\\` ![pixel](https://example.com/pixel)\nReceived: 90",
+		).join("\n");
+
+		// Act
+		const html = fromMarkdown(markdown);
+
+		// Assert
+		expect((html.match(/<img\b/g) ?? []).length).toBe(0);
+		expect(html).toContain(
+			"<code>```` ![pixel](https://example.com/pixel)</code>",
+		);
+	});
+
+	it("renders model hypotheses as text instead of raw HTML", () => {
+		// Arrange
+		const markdown = buildCauseLines({
+			analysedAt: new Date("2026-09-01T00:00:00Z"),
+			suspectedKind: "PRODUCT_BUG",
+			suspectedCause: "<img src=x onerror=alert(1)>",
+			analysisModel: "gpt-test",
+		}).join("\n");
+
+		// Act
+		const html = fromMarkdown(markdown);
+
+		// Assert
+		expect((html.match(/<img\b/g) ?? []).length).toBe(0);
+		expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+	});
+
+	it("preserves assertion values that start and end with backticks", () => {
+		// Arrange
+		const markdown = "- Expected: `` `value` ``";
+
+		// Act
+		const html = fromMarkdown(markdown);
+
+		// Assert
+		expect(html).toContain("<code>`value`</code>");
 	});
 
 	it("should unwrap fenced markdown blocks into rendered markdown", () => {
