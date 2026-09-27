@@ -972,6 +972,24 @@ describe("InstructionsHistory — deferred secret scan", () => {
 		expect(screen.getByText("scanIncompleteFindingsNote")).toBeTruthy();
 	});
 
+	// Fizzy #2759: the files an INCOMPLETE scan could not read are named, and
+	// the note speaks of THOSE rows rather than of unlisted files.
+	it("names the files an incomplete scan could not read, and says they were not scanned", async () => {
+		const user = userEvent.setup();
+		renderScanned({
+			deferredScanStatus: "INCOMPLETE",
+			deferredScanFindings: [
+				{ path: "rules/deploy.md", reason: "scan_failed" },
+			],
+		});
+		await user.click(
+			screen.getByRole("button", { name: "seeFindingsAction" }),
+		);
+		expect(screen.getByText("rules/deploy.md")).toBeTruthy();
+		expect(screen.getByText("scanUnreadableNote")).toBeTruthy();
+		expect(screen.queryByText("scanIncompleteFindingsNote")).toBeNull();
+	});
+
 	it("offers no findings for an incomplete scan that established none", () => {
 		renderScanned({
 			deferredScanStatus: "INCOMPLETE",

@@ -17,6 +17,7 @@ import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { SCAN_FAILED_REASON } from "./InstructionFindingsTable";
 import { InstructionsCompareDialog } from "./InstructionsCompareDialog";
 
 const RECEIVING_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
@@ -346,8 +347,8 @@ export function InstructionsHistory({
 									s.deferredScanStatus ?? "",
 								);
 							// ISSUES_FOUND's findings, and an INCOMPLETE
-							// scan's when it found something before a file
-							// defeated its last attempt.
+							// scan's: the files that defeated its last
+							// attempt, and anything it found in the rest.
 							const findings =
 								s.deferredScanStatus === "ISSUES_FOUND" ||
 								s.deferredScanStatus === "INCOMPLETE"
@@ -571,8 +572,20 @@ export function InstructionsHistory({
 									{expandedId === s.id &&
 									findings.length > 0 &&
 									s.deferredScanStatus === "INCOMPLETE" ? (
+										// A scan that names the files it could
+										// not read says so of THOSE rows; a
+										// list without them cannot say which,
+										// so it warns about every unlisted file.
 										<p className="text-muted-foreground text-xs">
-											{t("scanIncompleteFindingsNote")}
+											{findings.some(
+												(r) =>
+													r.reason ===
+													SCAN_FAILED_REASON,
+											)
+												? t("scanUnreadableNote")
+												: t(
+														"scanIncompleteFindingsNote",
+													)}
 										</p>
 									) : null}
 								</div>

@@ -8,6 +8,11 @@ import { useTranslations } from "next-intl";
 // of an unbounded array — recognizable by `reason`, never a real file.
 export const TRUNCATED_REASON = "truncated";
 
+// A deferred secret scan (Fizzy #2737) records a file it could not read on
+// its last attempt as a finding with this reason: the file WAS NOT checked,
+// which is different from a file in which something was found.
+export const SCAN_FAILED_REASON = "scan_failed";
+
 /**
  * One row per finding: the file, what was found, and where — the table the
  * rejected-upload banner has always shown, extracted so the published view

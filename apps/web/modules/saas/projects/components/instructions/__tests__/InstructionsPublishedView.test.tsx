@@ -1680,6 +1680,86 @@ describe("InstructionsPublishedView — deferred secret scan", () => {
 		).toBeInTheDocument();
 	});
 
+	// Fizzy #2759: a scan that found nothing but could not read some files
+	// names them, under the "could not finish" warning rather than the
+	// "found possible secrets" one.
+	it("lists the files an incomplete scan could not read, without claiming it found anything", () => {
+		renderScanned({
+			deferredScanStatus: "INCOMPLETE",
+			deferredScanFindings: [
+				{ path: "rules/deploy.md", reason: "scan_failed" },
+			],
+		});
+		expect(
+			screen.queryByText(
+				copy.deferredScanIncompleteFindingsTitle.replace(
+					"{version}",
+					"7",
+				),
+			),
+		).toBeNull();
+		expect(
+			screen.getByText(
+				copy.deferredScanIncompleteTitle.replace("{version}", "7"),
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(copy.deferredScanIncompleteUnreadableBody),
+		).toBeInTheDocument();
+		expect(screen.queryByText(copy.deferredScanIncompleteBody)).toBeNull();
+		expect(screen.getByText("rules/deploy.md")).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				en.projects.codingInstructions.rejectedBanner.reasonLabels
+					.scan_failed,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("shows the unreadable files among an incomplete scan's findings when it also found something", () => {
+		renderScanned({
+			deferredScanStatus: "INCOMPLETE",
+			deferredScanFindings: [
+				{
+					path: "rules/deploy.md",
+					reason: "secret",
+					detail: "aws-access-key",
+					line: 12,
+				},
+				{ path: "rules/other.md", reason: "scan_failed" },
+			],
+		});
+		expect(
+			screen.getByText(
+				copy.deferredScanIncompleteFindingsTitle.replace(
+					"{version}",
+					"7",
+				),
+			),
+		).toBeInTheDocument();
+		expect(screen.getByText("rules/deploy.md")).toBeInTheDocument();
+		expect(screen.getByText("rules/other.md")).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				copy.deferredScanIncompleteFindingsUnreadableBody.replace(
+					"{version}",
+					"7",
+				),
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(
+				copy.deferredScanIncompleteFindingsBody.replace(
+					"{version}",
+					"7",
+				),
+			),
+		).toBeNull();
+		expect(
+			screen.queryByText(copy.deferredScanIncompleteUnreadableBody),
+		).toBeNull();
+	});
+
 	// A scan that could not check every file but established findings before
 	// it stopped keeps them (Fizzy #2737 review): they are shown in the same
 	// table, and the copy says the rest was not checked.

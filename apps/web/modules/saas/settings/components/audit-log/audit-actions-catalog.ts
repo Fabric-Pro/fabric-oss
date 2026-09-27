@@ -848,7 +848,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey:
 			"settings.auditLog.actions.project.instructions.deferred_scan_incomplete",
 		description:
-			"The secret scan of a version published before its scan could not finish, so the version was never checked. `metadata.reason` says whether the scan failed after its retries or its workflow stopped before recording a result.",
+			"The secret scan of a version published before its scan could not finish, so the version was not fully checked. `metadata.reason` says whether the scan failed after its retries or its workflow stopped before recording a result. When the scan could not read some files, `metadata.reasons` counts them under `scan_failed`, next to anything it found in the rest (`metadata.findingCount`, `metadata.rules`); never a path or file content.",
 	},
 	{
 		key: "project.instructions.pull_request_branch_updated",

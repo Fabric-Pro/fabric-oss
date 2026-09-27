@@ -35,7 +35,10 @@ import {
 } from "../../lib/instructions-repository-sync";
 import { AddInstructionFileDialog } from "./AddInstructionFileDialog";
 import { InstructionFileView } from "./InstructionFileView";
-import { InstructionFindingsTable } from "./InstructionFindingsTable";
+import {
+	InstructionFindingsTable,
+	SCAN_FAILED_REASON,
+} from "./InstructionFindingsTable";
 import { InstructionProposals } from "./InstructionProposals";
 import { InstructionsCompareDialog } from "./InstructionsCompareDialog";
 import { InstructionsHistory } from "./InstructionsHistory";
@@ -236,12 +239,22 @@ export function InstructionsPublishedView({
 	// The published version's own deferred scan, read off the pointer row so
 	// the alert follows the query that polls it (see `CodingInstructionsTab`).
 	const deferredScan = published?.deferredScanStatus ?? null;
-	// An INCOMPLETE scan keeps whatever it established before a file defeated
-	// its last attempt, and those findings are shown like ISSUES_FOUND's.
+	// An INCOMPLETE scan names each file that defeated its last attempt
+	// (`scan_failed`) and keeps whatever it established around them.
 	const incompleteFindings =
 		deferredScan === "INCOMPLETE"
 			? (published?.deferredScanFindings ?? [])
 			: [];
+	// Whether it found anything besides the files it could not read, which is
+	// what decides between "found possible secrets" and "nothing was found".
+	// A truncation sentinel counts as found: the rows it stands for are not
+	// here to say otherwise, and the stronger warning is the safe mistake.
+	const incompleteFoundSomething = incompleteFindings.some(
+		(r) => r.reason !== SCAN_FAILED_REASON,
+	);
+	const incompleteNamesUnreadable = incompleteFindings.some(
+		(r) => r.reason === SCAN_FAILED_REASON,
+	);
 	// A repository-backed proposal opens a pull request into the configured
 	// repository, so it is offered only once repository mode is CONFIRMED and
 	// a configuration names that repository: `repositoryBacked` fails closed
@@ -845,10 +858,10 @@ export function InstructionsPublishedView({
 			) : null}
 			{published &&
 			deferredScan === "INCOMPLETE" &&
-			incompleteFindings.length > 0 ? (
+			incompleteFoundSomething ? (
 				// A scan that could not check every file but found something
-				// before it stopped: what it found is shown, as for
-				// ISSUES_FOUND, and the copy says the rest was not checked.
+				// in the rest: what it found is shown, as for ISSUES_FOUND,
+				// with the files it could not read among the rows.
 				<Alert variant="error">
 					<AlertTriangleIcon aria-hidden="true" />
 					<AlertTitle>
@@ -858,9 +871,15 @@ export function InstructionsPublishedView({
 					</AlertTitle>
 					<AlertDescription className="flex flex-col gap-3">
 						<p>
-							{t("deferredScanIncompleteFindingsBody", {
-								version: published.version,
-							})}
+							{/* "Marked" copy only when a row IS marked: a
+							    verdict recorded before the scan named its
+							    unreadable files has none to point at. */}
+							{t(
+								incompleteNamesUnreadable
+									? "deferredScanIncompleteFindingsUnreadableBody"
+									: "deferredScanIncompleteFindingsBody",
+								{ version: published.version },
+							)}
 						</p>
 						<InstructionFindingsTable
 							findings={incompleteFindings}
@@ -883,7 +902,10 @@ export function InstructionsPublishedView({
 			) : null}
 			{published &&
 			deferredScan === "INCOMPLETE" &&
-			incompleteFindings.length === 0 ? (
+			!incompleteFoundSomething ? (
+				// Nothing found. When the scan named the files it could not
+				// read, they are listed; a verdict with no file to name (the
+				// workflow's last resort, or the reaper's) keeps the plain copy.
 				<Alert variant="warning">
 					<AlertTriangleIcon aria-hidden="true" />
 					<AlertTitle>
@@ -891,9 +913,19 @@ export function InstructionsPublishedView({
 							version: published.version,
 						})}
 					</AlertTitle>
-					<AlertDescription>
-						{t("deferredScanIncompleteBody")}
-					</AlertDescription>
+					{incompleteFindings.length > 0 ? (
+						<AlertDescription className="flex flex-col gap-3">
+							<p>{t("deferredScanIncompleteUnreadableBody")}</p>
+							<InstructionFindingsTable
+								findings={incompleteFindings}
+								className="text-foreground"
+							/>
+						</AlertDescription>
+					) : (
+						<AlertDescription>
+							{t("deferredScanIncompleteBody")}
+						</AlertDescription>
+					)}
 				</Alert>
 			) : null}
 			{superseded && published ? (

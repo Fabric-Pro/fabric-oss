@@ -5756,7 +5756,8 @@
 				"scanIncompletePill": "Scan incomplete",
 				"seeFindingsAction": "See findings",
 				"publishBlockedByScan": "This version was published before its secret scan, and it can be published from History only once that scan has passed.",
-				"scanIncompleteFindingsNote": "The scan also could not check every file, so files not listed here may hold more."
+				"scanIncompleteFindingsNote": "The scan also could not check every file, so files not listed here may hold more.",
+				"scanUnreadableNote": "A file marked “Could not be checked” was not scanned and may hold secrets."
 			},
 			"settingsDialog": {
 				"title": "Coding-instructions settings",
@@ -5812,9 +5813,11 @@
 				"deferredScanIssuesBody": "Version {version} was published before its scan and stays published until it is replaced. Fix the files and publish a new version, or publish an earlier version from History. Copies already synced to members' machines stay there, so rotate any real credential.",
 				"deferredScanIncompleteTitle": "The secret scan of version {version} could not finish",
 				"deferredScanIncompleteBody": "Nothing was found, but this version has not been checked. Edit or re-upload the files to scan them again.",
+				"deferredScanIncompleteUnreadableBody": "Nothing was found in the files the scan could read, but it could not read the files below, so this version has not been fully checked. Edit or re-upload the files to scan them again.",
 				"deferredScanHistoryButton": "Open History",
 				"deferredScanIncompleteFindingsTitle": "The secret scan found possible secrets in published version {version} but could not check every file",
-				"deferredScanIncompleteFindingsBody": "Version {version} stays published until it is replaced. Below is what the scan found before it stopped; the files it could not check may hold more. Fix the files and publish a new version, or publish an earlier version from History. Copies already synced to members' machines stay there, so rotate any real credential."
+				"deferredScanIncompleteFindingsBody": "Version {version} stays published until it is replaced. Below is what the scan found before it stopped; the files it could not check may hold more. Fix the files and publish a new version, or publish an earlier version from History. Copies already synced to members' machines stay there, so rotate any real credential.",
+				"deferredScanIncompleteFindingsUnreadableBody": "Version {version} stays published until it is replaced. Below is what the scan found. A file marked “Could not be checked” was not scanned and may hold more. Fix the files and publish a new version, or publish an earlier version from History. Copies already synced to members' machines stay there, so rotate any real credential."
 			},
 			"repositorySync": {
 				"running": "Syncing from the repository…",
