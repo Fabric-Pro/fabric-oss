@@ -665,6 +665,24 @@ function normalizeTables(html: string): string {
 function fixAIMarkdownIssues(text: string): string {
 	let fixed = text;
 
+	// Legacy automatic bug bodies used a ```text fence for CI output. The
+	// generic document repair below intentionally unwraps text fences that hold
+	// document structure, which makes CI lines such as `# heading` and `![…]`
+	// live editor content. Convert only the known bug-body section to a tilde
+	// fence before those repairs; MarkdownIt treats it as code and the generic
+	// backtick-fence heuristics leave it alone.
+	fixed = fixed.replace(
+		/(^[ \t]*What CI reported:[ \t]*\r?\n(?:[ \t]*\r?\n)?)(`{3,})(?:plaintext|text|txt)[ \t]*\r?\n([\s\S]*?)\r?\n\2[ \t]*$/gim,
+		(_match, prefix: string, _delimiter: string, content: string) => {
+			const longestTildeRun = Math.max(
+				0,
+				...Array.from(content.matchAll(/~+/g), (run) => run[0].length),
+			);
+			const fence = "~".repeat(Math.max(3, longestTildeRun + 1));
+			return `${prefix}${fence}text\n${content}\n${fence}`;
+		},
+	);
+
 	const looksLikeStructuredMarkdown = (content: string): boolean => {
 		const trimmed = content.trim();
 		if (!trimmed) {
@@ -978,7 +996,10 @@ function fixAIMarkdownIssues(text: string): string {
 	fixed = fixed.replace(/([^\n`])```(?!`)/g, "$1\n```");
 
 	// Ensure code blocks have newlines after closing fence
-	fixed = fixed.replace(/(?<!`)```(?!`)([^\n])/g, "```\n$1");
+	fixed = fixed.replace(
+		/(?<!`)```(?!`)(?![a-zA-Z0-9_+-]*\r?\n)([^\n])/g,
+		"```\n$1",
+	);
 
 	// Repair malformed fenced blocks where the model starts a code block but then
 	// continues with ordinary document structure without closing it.

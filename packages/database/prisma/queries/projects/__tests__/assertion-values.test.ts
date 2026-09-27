@@ -375,7 +375,32 @@ describe("parseAssertionValues", () => {
 	});
 
 	describe("a trailing value is bounded, never running into the next section", () => {
-		it("returns null for more than one Expected/Received pair — which one failed is ambiguous", () => {
+		it("accepts the same Playwright pair repeated in a JUnit message and stack", () => {
+			const message = [
+				"expect(locator).toHaveText(expected) failed",
+				"Locator: getByTestId('order-total')",
+				'Expected: "80"',
+				'Received: "90"',
+				"Timeout: 5000ms",
+				"Call log:",
+				"- waiting for getByTestId('order-total')",
+				"Error: expect(locator).toHaveText(expected) failed",
+				"Locator: getByTestId('order-total')",
+				'Expected: "80"',
+				'Received: "90"',
+				"Timeout: 5000ms",
+				"Call log:",
+				"- waiting for getByTestId('order-total')",
+				" ❯ test/assertion-reporting.test.js:14:11",
+			].join("\n");
+
+			expect(parseAssertionValues(message)).toEqual({
+				expected: '"80"',
+				actual: '"90"',
+			});
+		});
+
+		it("returns null for differing Expected/Received pairs", () => {
 			// Jest's own multi-failure output concatenates a second report right
 			// below the first. Picking the first pair would silently report the
 			// wrong failure; this module's rule is null over a guess.
