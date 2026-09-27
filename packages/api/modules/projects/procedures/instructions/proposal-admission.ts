@@ -17,7 +17,9 @@
  * context is `pullRequestContext` v2 (Fizzy #2738 spec Decision 4, §4.2),
  * which has no per-proposal branch, title or body, because the member's
  * branch owns its ref and its pull request's title and description (spec
- * Decision 13). Rows admitted before keep v1 and drain on the #2563 path. Direct derives and publish mode keep the
+ * Decision 13). Rows admitted before keep their v1 context, which is read for
+ * display only: #2563's per-proposal path that acted on them was retired
+ * once they drained (Fizzy #2748). Direct derives and publish mode keep the
  * `REPOSITORY_SOURCE_OF_TRUTH` refusal: a repository-backed project changes
  * through git, and a proposal is the one way to ask git for a change.
  *
@@ -44,7 +46,6 @@ import {
 	FALLBACK_PROPOSER_NAME,
 	type ProposalNote,
 	PULL_REQUEST_COMMITTER_NAME,
-	type PullRequestContextV1,
 	type PullRequestContextV2,
 	proposalNoteSchema,
 	renderPullRequestText,
@@ -86,12 +87,8 @@ export type RepositoryAdmission = {
 	 * `Fabric-Change` trailer (spec Decision 13).
 	 */
 	operationId: string;
-	/**
-	 * v2 for every admission here. The union is `repositoryDestination`'s
-	 * input: a #2563 (v1) context still maps its `branch` to the row's
-	 * `pullRequestRef`.
-	 */
-	context: PullRequestContextV2 | PullRequestContextV1;
+	/** The frozen member branch context (spec Decision 4): v2 for every admission. */
+	context: PullRequestContextV2;
 	syncId: string;
 	syncGeneration: number;
 	/** Attribution refused at admission: the row is admitted BLOCKED and nothing is pushed. */
@@ -417,10 +414,6 @@ export function repositoryDestination(
 		context: admission.context,
 		syncId: admission.syncId,
 		syncGeneration: admission.syncGeneration,
-		// A member branch proposal (v2) has no ref of its own.
-		...(admission.context.v === 1
-			? { branch: admission.context.branch }
-			: {}),
 		...(admission.blocked ? { blocked: admission.blocked } : {}),
 		uploadStartedAudit,
 	};

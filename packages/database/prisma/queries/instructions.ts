@@ -811,15 +811,6 @@ export type RepositoryProposalDestination = {
 	/** The context's `syncId` and `syncGeneration`: the dedup identity. */
 	syncId: string;
 	syncGeneration: number;
-	/**
-	 * A #2563 (v1) context's `branch`, attempt 1's ref: written as
-	 * `pullRequestRef` in the create, so the operation's current branch is a
-	 * stored fact from the moment the row exists rather than something a
-	 * later writer infers. Absent for a member branch proposal (v2, Fizzy
-	 * #2738 spec §4.2), whose ref is its branch's and whose
-	 * `pullRequestRef` stays null.
-	 */
-	branch?: string;
 	/** Admission attribution refused (spec §5.2 step 4): admitted BLOCKED. */
 	blocked?: PullRequestFailure;
 	uploadStartedAudit: UploadStartedAuditTemplate;
@@ -1407,15 +1398,9 @@ function allocateAndCreateDerivedSnapshot(
 								pullRequestOperationId:
 									input.destination.operationId,
 								pullRequestContext: input.destination.context,
-								// v1 only: a member branch proposal's ref is
-								// its branch's, so its `pullRequestRef` stays
-								// null (Fizzy #2738 spec §4.1).
-								...(input.destination.branch !== undefined
-									? {
-											pullRequestRef:
-												input.destination.branch,
-										}
-									: {}),
+								// A member branch proposal's ref is its
+								// branch's, so its `pullRequestRef` stays null
+								// (Fizzy #2738 spec §4.1).
 								...(intentOrder !== undefined
 									? { proposalIntentOrder: intentOrder }
 									: {}),
@@ -3286,8 +3271,11 @@ export async function rejectInstructionProposal(input: {
 /**
  * Owner-only withdrawal with the same stable-state interlock as rejection.
  *
- * A REPOSITORY proposal withdraws its pull-request operation instead
- * (Fizzy #2563 spec §4.4): see `cancelRepositoryProposal`.
+ * A member branch REPOSITORY proposal withdraws through its branch
+ * (`withdrawBranchProposal`, Fizzy #2738 spec §6.8). Any other REPOSITORY
+ * proposal is #2563's, whose per-proposal path was retired once it drained
+ * (Fizzy #2748): its cancel writes nothing and is answered from the state
+ * the row holds (`retiredRepositoryCancel`).
  */
 export async function cancelInstructionProposal(input: {
 	snapshotId: string;
@@ -3314,6 +3302,7 @@ export async function cancelInstructionProposal(input: {
 				rejection: true,
 				pullRequestContext: true,
 				proposalBranchId: true,
+				pullRequestState: true,
 			},
 		});
 		if (!proposal) {
@@ -3330,7 +3319,7 @@ export async function cancelInstructionProposal(input: {
 			return BRANCH_WITHDRAWAL;
 		}
 		if (proposal.proposalDestination === "REPOSITORY") {
-			return cancelRepositoryProposal(tx, input);
+			return retiredRepositoryCancel(proposal);
 		}
 		if (proposal.proposalStatus === "REJECTED") {
 			return {
@@ -3457,63 +3446,17 @@ function cancelResultOfWithdrawal(
 }
 
 /**
- * The author's cancel of a REPOSITORY proposal (Fizzy #2563 spec §4.4).
- *
- * Under the snapshot's row lock, so the state read here, the fenced
- * transition and the snapshot's own cancellation write describe one moment.
- * Before anything was pushed or created (`QUEUED`, or `BLOCKED` in
- * validation or admission) the operation is `CANCELED` in today's
- * cancellation transaction: the snapshot write and the withdrawal's
- * `project.instructions.rejected` row are the FABRIC path's. Later
- * (`OPENING`, `OPEN`, any other `BLOCKED`) it becomes `CLOSE_REQUESTED`, due
- * now, and settlement closes and deletes what Fabric owns; the proposal
- * stays PENDING until it does. Both write `pull_request_close_requested`
- * with the state they started from. A VALIDATING snapshot is refused as
- * today, and a repeated cancel is answered from the state it left.
+ * The author's cancel of a #2563 REPOSITORY proposal, after that path's
+ * retirement (Fizzy #2748). Nothing drives such a row any more, so a cancel
+ * writes nothing: a row already CANCELED or CLOSE_REQUESTED answers as a
+ * repeated cancel did, and any other state (settled MERGED or CLOSED, which
+ * is every #2563 row once the path drained) is `already_decided`, as a
+ * decided FABRIC proposal is.
  */
-async function cancelRepositoryProposal(
-	tx: Prisma.TransactionClient,
-	input: {
-		snapshotId: string;
-		projectId: string;
-		organizationId: string;
-		proposerUserId: string;
-		audit: RecordAuditInput;
-	},
-): Promise<InstructionProposalCancelResult> {
-	const locked = await tx.$queryRaw<Array<{ id: string }>>`
-		SELECT s."id"
-		FROM "project_instruction_snapshot" s
-		WHERE s."id" = ${input.snapshotId}
-			AND s."projectId" = ${input.projectId}
-			AND s."organizationId" = ${input.organizationId}
-			AND s."userId" = ${input.proposerUserId}
-		FOR UPDATE
-	`;
-	if (locked.length === 0) {
-		return { ok: false, reason: "not_found" };
-	}
-	const row = await tx.projectInstructionSnapshot.findFirst({
-		where: {
-			id: input.snapshotId,
-			projectId: input.projectId,
-			organizationId: input.organizationId,
-			userId: input.proposerUserId,
-		},
-		select: {
-			id: true,
-			version: true,
-			status: true,
-			proposalStatus: true,
-			rejection: true,
-			pullRequestState: true,
-			pullRequestAttempt: true,
-			pullRequestOperationId: true,
-		},
-	});
-	if (!row) {
-		return { ok: false, reason: "not_found" };
-	}
+function retiredRepositoryCancel(row: {
+	version: number;
+	pullRequestState: ProjectInstructionPullRequestState | null;
+}): InstructionProposalCancelResult {
 	if (row.pullRequestState === "CANCELED") {
 		return {
 			ok: true,
@@ -3530,124 +3473,7 @@ async function cancelRepositoryProposal(
 			pullRequest: "close_requested",
 		};
 	}
-	if (row.proposalStatus !== "PENDING" || row.pullRequestState === null) {
-		return { ok: false, reason: "already_decided" };
-	}
-	if (!REJECTABLE_PROPOSAL_STATUSES.includes(row.status)) {
-		return { ok: false, reason: "in_progress" };
-	}
-	const stateBefore = row.pullRequestState;
-	const closeRequested: RecordAuditInput = {
-		action: "project.instructions.pull_request_close_requested",
-		category: "project",
-		actor: input.audit.actor,
-		organizationId: input.organizationId,
-		projectId: input.projectId,
-		resource: {
-			type: "project_instruction_snapshot",
-			id: row.id,
-			name: `v${row.version}`,
-		},
-		metadata: { operationId: row.pullRequestOperationId, stateBefore },
-		ipAddress: input.audit.ipAddress,
-		userAgent: input.audit.userAgent,
-		requestId: input.audit.requestId,
-		sessionId: input.audit.sessionId,
-		correlationId: input.audit.correlationId,
-	};
-
-	if (stateBefore === "QUEUED" || stateBefore === "BLOCKED") {
-		const canceled = await transitionPullRequest(
-			{
-				snapshotId: row.id,
-				organizationId: input.organizationId,
-				event: "cancel_pre_create",
-				from: [stateBefore],
-				expectedAttempt: row.pullRequestAttempt,
-				to: "CANCELED",
-				bumpAttempt: true,
-				data: { pullRequestNextAttemptAt: null },
-				audit: closeRequested,
-			},
-			tx,
-		);
-		if (canceled.ok) {
-			// Today's cancellation writes, less `proposalStatus`, which the
-			// transition has already derived from CANCELED.
-			const { count } = await tx.projectInstructionSnapshot.updateMany({
-				where: {
-					id: row.id,
-					projectId: input.projectId,
-					organizationId: input.organizationId,
-					userId: input.proposerUserId,
-					status: row.status,
-				},
-				data: {
-					status: row.status === "READY" ? "READY" : "REJECTED",
-					...(row.status === "READY"
-						? {}
-						: {
-								rejection: rejectionsWithProposalCleanupMarker(
-									row.rejection,
-								) as unknown as Prisma.InputJsonValue,
-							}),
-					reviewedAt: new Date(),
-				},
-			});
-			if (count !== 1) {
-				// The row lock makes this unreachable; throwing rolls the
-				// transition back rather than committing half a cancel.
-				throw new Error(
-					"Instruction proposal cancellation lost its row",
-				);
-			}
-			await recordAuditTx(tx, input.audit);
-			return {
-				ok: true,
-				changed: true,
-				version: row.version,
-				pullRequest: "canceled",
-			};
-		}
-	}
-	if (
-		stateBefore === "OPENING" ||
-		stateBefore === "OPEN" ||
-		stateBefore === "BLOCKED"
-	) {
-		const requested = await transitionPullRequest(
-			{
-				snapshotId: row.id,
-				organizationId: input.organizationId,
-				event: "cancel_later",
-				from: [stateBefore],
-				expectedAttempt: row.pullRequestAttempt,
-				to: "CLOSE_REQUESTED",
-				bumpAttempt: true,
-				// Failure cleared and due now: the sweeper's Close sub-batch
-				// selects on `pullRequestNextAttemptAt IS NULL OR <= now()`.
-				data: {
-					pullRequestFailure: Prisma.DbNull,
-					pullRequestNextAttemptAt: null,
-				},
-				audit: closeRequested,
-			},
-			tx,
-		);
-		if (requested.ok) {
-			return {
-				ok: true,
-				changed: true,
-				version: row.version,
-				pullRequest: "close_requested",
-			};
-		}
-	}
-	// Under the row lock neither transition can lose a race, so a row that
-	// neither accepts (a QUEUED row with a push recorded) breaks an invariant.
-	throw new Error(
-		`Instruction proposal cancel found no transition from ${stateBefore}`,
-	);
+	return { ok: false, reason: "already_decided" };
 }
 
 // ---------------------------------------------------------------------------

@@ -1,17 +1,17 @@
 /**
- * A REPOSITORY proposal's pull request, as the API starts, reads, refreshes,
- * retries and reports it (Fizzy #2563 spec §6, §12).
+ * A REPOSITORY proposal's pull request, as the API starts, reads, refreshes
+ * and reports it (Fizzy #2563 spec §6, §12).
  *
- * The workflow is one per operation, `projectInstructionProposalPullRequestWorkflow`,
- * started with `workflowIdConflictPolicy: "FAIL"` on the operation's own id,
- * so a start while one runs is ADOPTION, not a second opener. Every start
- * here originates in a request and carries its correlation memo (plan
- * Decision 12); the sweeper's restarts, which carry none, live in
- * `@repo/temporal`.
+ * Every admitted REPOSITORY proposal is a member branch proposal (Fizzy
+ * #2738): it starts by joining its member's branch and waking that branch's
+ * workflow (`startAdmittedBranchProposal`). #2563's per-proposal workflow,
+ * its starts and its "Retry opening" were retired once its rows drained
+ * (Fizzy #2748); a row it left is still read and reported here exactly as
+ * before.
  *
  * Reads never touch the provider (spec §2.13): the row is the answer.
  *
- * Status, refresh and retry are for the proposer or a reviewer (plan
+ * Status and refresh are for the proposer or a reviewer (plan
  * Decision 8), checked live here on every call, under whatever the surface
  * already checked: the procedure's `INSTRUCTION_READ` gate, or the REST
  * route's key scope and live read check. The lookup itself goes through the
@@ -33,15 +33,10 @@ import {
 	type RecordAuditInput,
 	readProposalBranchAttachments,
 	requestPullRequestRefresh,
-	transitionPullRequest,
 } from "@repo/database";
-import { instructionProposalPullRequestWorkflowId } from "@repo/instructions";
-import { getTemporalClient } from "@repo/temporal";
 import type { ProposalOperationInput } from "@repo/temporal/instruction-proposal-pull-request-types";
-import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import { canReviewInstructionProposals } from "./proposal-authorization";
 import {
-	PROPOSAL_WORKFLOW_TASK_QUEUE,
 	startAdmittedBranchProposal,
 	wakeBranchAfterCommand,
 } from "./proposal-branch";
@@ -79,131 +74,26 @@ export type ProposalPullRequestView = {
 };
 
 /**
- * Start (or adopt) the operation's workflow. `already_running` means a run
- * with this operation's id is open, which is the one this start would have
- * been. Any other failure is thrown for the caller to decide.
+ * The start right after an admission commits (spec §5.1 step 9). Every
+ * admitted REPOSITORY proposal is a member branch proposal (Fizzy #2738 spec
+ * Decision 4): it joins its member's branch and wakes that branch's workflow
+ * (`startAdmittedBranchProposal`). Never throws: the row is committed QUEUED,
+ * which is the durable intent, and the sweeper's Attach joins a proposal
+ * this start leaves unjoined. Failing the request here would tell the
+ * proposer their suggestion was refused when it was accepted.
  *
- * The input is rebuilt field by field so nothing but the ids and a human
- * retry's observed attempt reaches workflow history; the workflow's own
- * continue-as-new carry is never set by a starter.
- */
-export async function startProposalPullRequestWorkflow(
-	input: ProposalOperationInput,
-): Promise<"started" | "already_running"> {
-	const args: ProposalOperationInput = {
-		snapshotId: input.snapshotId,
-		projectId: input.projectId,
-		organizationId: input.organizationId,
-		operationId: input.operationId,
-		...(input.retryCreate
-			? {
-					retryCreate: {
-						expectedAttempt: input.retryCreate.expectedAttempt,
-					},
-				}
-			: {}),
-	};
-	const client = await getTemporalClient();
-	try {
-		await client.workflow.start(
-			"projectInstructionProposalPullRequestWorkflow",
-			withCorrelationMemo({
-				taskQueue: PROPOSAL_WORKFLOW_TASK_QUEUE,
-				workflowId: instructionProposalPullRequestWorkflowId(
-					input.operationId,
-				),
-				workflowIdConflictPolicy: "FAIL" as const,
-				args: [args],
-			}),
-		);
-		return "started";
-	} catch (error) {
-		// Matched by name: `@temporalio/client` is not a dependency of this
-		// package (the same rule `finalize.ts` follows).
-		if (
-			error instanceof Error &&
-			error.name === "WorkflowExecutionAlreadyStartedError"
-		) {
-			return "already_running";
-		}
-		throw error;
-	}
-}
-
-/**
- * The start right after an admission commits (spec §5.1 step 9). A failure is
- * logged and never thrown: the row is committed QUEUED, which is the durable
- * intent, and the sweeper's Restart starts a workflow for a queued row with
- * none running. Failing the request here would tell the proposer their
- * suggestion was refused when it was accepted.
- *
- * Dispatches on the row's frozen `pullRequestContext.v` (Fizzy #2738 spec
- * Decision 4): a member branch proposal (`v = 2`) joins its member's branch
- * and wakes that branch's workflow; every other row starts the #2563
- * operation workflow exactly as before. A row that cannot be read is left
- * to the sweeper rather than guessed at: its version decides which workflow
- * may own it.
+ * A row whose context is not v2 is never joined (`joinProposalBranch`
+ * answers `not_joinable`), so nothing here can act on a #2563 row: that
+ * path's per-proposal workflow was retired (Fizzy #2748).
  */
 export async function startAdmittedProposalPullRequest(
 	input: ProposalOperationInput,
 ): Promise<void> {
-	let version: number | null;
-	try {
-		version = contextVersion(
-			(
-				await getProposalOperation({
-					snapshotId: input.snapshotId,
-					projectId: input.projectId,
-					organizationId: input.organizationId,
-				})
-			)?.pullRequestContext,
-		);
-	} catch (error) {
-		console.error(
-			"[instructions] could not read the admitted proposal; the sweeper will start it",
-			{ snapshotId: input.snapshotId, operationId: input.operationId },
-			error,
-		);
-		return;
-	}
-	if (version === 2) {
-		await startAdmittedBranchProposal({
-			snapshotId: input.snapshotId,
-			projectId: input.projectId,
-			organizationId: input.organizationId,
-		});
-		return;
-	}
-	await startOrLeaveToSweeper(input);
-}
-
-/** A stored `pullRequestContext`'s `v`, or null when it has none. */
-function contextVersion(context: unknown): number | null {
-	if (context === null || typeof context !== "object") {
-		return null;
-	}
-	const v = (context as { v?: unknown }).v;
-	return typeof v === "number" ? v : null;
-}
-
-/**
- * A start whose durable intent is already committed (an admitted row, a
- * refreshed one): a failure is logged, and the sweeper's Restart starts the
- * workflow for a QUEUED, OPENING or due retryable BLOCKED row with none
- * running.
- */
-async function startOrLeaveToSweeper(
-	input: ProposalOperationInput,
-): Promise<void> {
-	try {
-		await startProposalPullRequestWorkflow(input);
-	} catch (error) {
-		console.error(
-			"[instructions] could not start the proposal pull-request workflow; the sweeper will start it",
-			{ snapshotId: input.snapshotId, operationId: input.operationId },
-			error,
-		);
-	}
+	await startAdmittedBranchProposal({
+		snapshotId: input.snapshotId,
+		projectId: input.projectId,
+		organizationId: input.organizationId,
+	});
 }
 
 function failureOf(value: unknown): PullRequestFailure | null {
@@ -292,7 +182,7 @@ export async function readProposalPullRequest(i: {
 }
 
 // ---------------------------------------------------------------------------
-// Status, refresh and retry (plan Task 16; spec §12)
+// Status and refresh (plan Task 16; spec §12)
 // ---------------------------------------------------------------------------
 
 /**
@@ -320,8 +210,8 @@ type ProposalMergeSync = {
 
 /**
  * The `pullRequest` block of a proposal row and of the status read: the
- * admission block plus the attempt a human retry names, the observation and
- * the merge sync.
+ * admission block plus the row's attempt, the observation and the merge
+ * sync.
  */
 export type ProposalPullRequestStatus = ProposalPullRequestView & {
 	attempt: number;
@@ -542,24 +432,24 @@ function refreshRefusal(refused: {
 /**
  * Refresh (spec §12): asks for a fresh look without touching the provider
  * here. The row's check time is nulled and a retryable BLOCKED row made due
- * (`requestPullRequestRefresh`); then, for a row the workflow itself moves
- * (QUEUED, OPENING, a retryable BLOCKED), the workflow is started or
- * adopted now rather than on the sweeper's next tick. An OPEN row is left to
+ * (`requestPullRequestRefresh`); then, for a row its branch's workflow
+ * moves (QUEUED, OPENING, a retryable BLOCKED) on a member branch, that
+ * workflow is woken now rather than on the sweeper's next tick. A proposal
+ * not yet on a branch is left to the sweeper's Attach, an OPEN row to
  * Observe, CLOSE_REQUESTED to Close, and a non-retryable BLOCKED row to a
- * human retry. `refreshed: false` means the row is already settled.
+ * human. `refreshed: false` means the row is already settled.
  *
  * Rationed on the server: the database admits one Refresh
  * per operation a minute, atomically, and never one that would override a
  * provider's rate-limit deadline. A refused Refresh is TOO_MANY_REQUESTS
- * with `retryAfter` and starts nothing; the workflow starts only for an
+ * with `retryAfter` and wakes nothing; a workflow is woken only for an
  * admitted one.
  */
 export async function refreshProposalPullRequest(
 	caller: ProposalPullRequestCaller,
 ): Promise<{ refreshed: boolean }> {
 	const proposal = await authorizedProposal(caller);
-	const operationId = proposal.pullRequestOperationId;
-	if (!operationId || !proposal.pullRequestState) {
+	if (!proposal.pullRequestOperationId || !proposal.pullRequestState) {
 		return withoutPullRequest();
 	}
 	const refreshed = await requestPullRequestRefresh({
@@ -579,45 +469,21 @@ export async function refreshProposalPullRequest(
 		isRetryableBlocked(refreshed.state, refreshed.failure)
 	) {
 		// A member branch proposal's git writes belong to its branch's
-		// workflow (Fizzy #2738 spec Decision 9), never to a #2563 operation
-		// workflow: wake that one instead.
+		// workflow (Fizzy #2738 spec Decision 9): wake it. A proposal on no
+		// branch yet is the sweeper's Attach to join; nothing else may act on
+		// it (#2563's per-proposal workflow was retired, Fizzy #2748).
 		const branchId = await proposalBranchIdOf({
 			snapshotId: caller.snapshotId,
 			organizationId: caller.organizationId,
 		});
 		if (branchId !== null) {
 			await wakeBranchAfterCommand(branchId, caller);
-			return { refreshed: true };
 		}
-		await startOrLeaveToSweeper({
-			snapshotId: caller.snapshotId,
-			projectId: caller.projectId,
-			organizationId: caller.organizationId,
-			operationId,
-		});
 	}
 	return { refreshed: true };
 }
 
-/**
- * The failures only a human may re-issue after (spec §4.4 "Retry opening"),
- * the same guard `transitionPullRequest`'s `retry` arm compiles, read here
- * first so an ineligible row gets a precise refusal rather than a conflict.
- */
-function isHumanRetryable(state: string | null, value: unknown): boolean {
-	const failure = failureOf(value);
-	if (state !== "BLOCKED" || !failure) {
-		return false;
-	}
-	return (
-		(failure.code === "CREATE_OUTCOME_UNKNOWN" &&
-			failure.retryable === false) ||
-		failure.code === "PR_CREATION_REFUSED" ||
-		failure.code === "REMOTE_REF_CONFLICT"
-	);
-}
-
-/** The request half of the retry's audit row, built by the surface from its request. */
+/** The request half of a cancel's audit rows, built by the surface from its request. */
 export type ProposalPullRequestRequester = Pick<
 	RecordAuditInput,
 	| "actor"
@@ -627,105 +493,3 @@ export type ProposalPullRequestRequester = Pick<
 	| "sessionId"
 	| "correlationId"
 >;
-
-/**
- * "Retry opening the pull request" (spec §12), for the proposer or a
- * reviewer (the spec's "proposer or INSTRUCTION_UPDATE", which is exactly
- * the reviewer check). `expectedAttempt` is the attempt the card showed.
- *
- * The request is recorded first: the `retry` transition, fenced on that
- * attempt, writes the one `pull_request_retry_requested` row and moves
- * nothing. Then the workflow starts with `retryCreate`, whose claim settles
- * the earlier records and re-issues from a new branch. A start that fails
- * after the request was recorded is surfaced, not swallowed: nothing else
- * starts a human retry (the sweeper never re-issues). The row is still
- * BLOCKED at the same attempt, so asking again is safe; each request is its
- * own audit row.
- */
-export async function retryProposalPullRequest(
-	caller: ProposalPullRequestCaller & {
-		expectedAttempt: number;
-		requester: ProposalPullRequestRequester;
-	},
-): Promise<{ retried: true }> {
-	const proposal = await authorizedProposal(caller);
-	const operationId = proposal.pullRequestOperationId;
-	if (!operationId || !proposal.pullRequestState) {
-		return withoutPullRequest();
-	}
-	if (
-		!isHumanRetryable(
-			proposal.pullRequestState,
-			proposal.pullRequestFailure,
-		)
-	) {
-		throw new ORPCError("PRECONDITION_FAILED", {
-			message:
-				"Only a pull request Fabric could not open, and will not retry by itself, can be retried",
-			data: { reason: "PULL_REQUEST_NOT_RETRYABLE" },
-		});
-	}
-	const recorded = await transitionPullRequest({
-		snapshotId: caller.snapshotId,
-		organizationId: caller.organizationId,
-		event: "retry",
-		from: ["BLOCKED"],
-		expectedAttempt: caller.expectedAttempt,
-		to: "unchanged",
-		bumpAttempt: false,
-		audit: {
-			action: "project.instructions.pull_request_retry_requested",
-			category: "project",
-			actor: caller.requester.actor,
-			organizationId: caller.organizationId,
-			projectId: caller.projectId,
-			resource: {
-				type: "project_instruction_snapshot",
-				id: caller.snapshotId,
-				name: `v${proposal.version}`,
-			},
-			metadata: { operationId },
-			ipAddress: caller.requester.ipAddress,
-			userAgent: caller.requester.userAgent,
-			requestId: caller.requester.requestId,
-			sessionId: caller.requester.sessionId,
-			correlationId: caller.requester.correlationId,
-		},
-	});
-	if (!recorded.ok) {
-		throw new ORPCError("CONFLICT", {
-			message:
-				"This pull request changed since the page was loaded. Refresh and try again.",
-			data: { reason: "PULL_REQUEST_CHANGED" },
-		});
-	}
-	let started: "started" | "already_running";
-	try {
-		started = await startProposalPullRequestWorkflow({
-			snapshotId: caller.snapshotId,
-			projectId: caller.projectId,
-			organizationId: caller.organizationId,
-			operationId,
-			retryCreate: { expectedAttempt: caller.expectedAttempt },
-		});
-	} catch (error) {
-		console.error(
-			"[instructions] could not start a retried proposal pull request",
-			{ snapshotId: caller.snapshotId, operationId },
-			error,
-		);
-		throw new ORPCError("INTERNAL_SERVER_ERROR", {
-			message:
-				"Fabric could not start opening the pull request again. Try again.",
-			data: { reason: "PULL_REQUEST_START_FAILED" },
-		});
-	}
-	if (started === "already_running") {
-		throw new ORPCError("CONFLICT", {
-			message:
-				"Fabric is still working on this pull request. Try again in a minute.",
-			data: { reason: "PULL_REQUEST_BUSY" },
-		});
-	}
-	return { retried: true };
-}

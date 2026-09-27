@@ -90,6 +90,15 @@ const INTENTIONAL_REWRITE_SKIP = new Set<string>([
 	// deploy that drops it. Remove this entry once those histories have aged out
 	// of the fetch window (--since-days).
 	"prdToTasksPipelineWorkflow",
+	// Fizzy #2748: the #2563 per-proposal pull-request workflow was retired
+	// once every proposal it served had drained (new proposals go through
+	// their member's branch since Fizzy #2738). It ran only in staging, never
+	// in prod, and a run lives at most through readiness (a 6 h clock), one
+	// open and one close, so every recorded history is of a finished run; none
+	// can replay against code that no longer defines the workflow. Remove this
+	// entry once those histories have aged out of the fetch window
+	// (--since-days).
+	"projectInstructionProposalPullRequestWorkflow",
 ]);
 
 /**

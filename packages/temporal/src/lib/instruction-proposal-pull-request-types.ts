@@ -1,20 +1,22 @@
 /**
- * The vocabulary the Coding Instructions proposal pull-request workflow and
- * its sweeper share with their activities (Fizzy #2563 spec §6, §9).
+ * The vocabulary the Coding Instructions proposal sweeper shares with its
+ * activities (Fizzy #2563 spec §6, §9), and the readiness vocabulary the
+ * member proposal branch reuses. #2563's per-proposal operation workflow was
+ * retired (Fizzy #2748); the operation-lane types below stay because a
+ * sweeper tick recorded before that retirement still replays through its
+ * lane (`V1_LANE_REMOVED_PATCH`), against the retired activities' stubs.
  *
  * The workflow bundle imports this file, so it must stay pure: no runtime
  * imports, no I/O, nothing that reads the clock or the environment.
  * Payloads carry ids, states and codes only (spec §6).
  */
 
-/** The operation workflow's input, and every operation activity's ids. */
+/** Every operation activity's ids. */
 export type ProposalOperationInput = {
 	snapshotId: string;
 	projectId: string;
 	organizationId: string;
 	operationId: string;
-	/** A human "Retry opening" (spec §12) names the attempt it observed. */
-	retryCreate?: { expectedAttempt: number };
 };
 
 /**
@@ -28,16 +30,8 @@ export type ProposalActivityDeadline = {
 	deadlineAt?: string;
 };
 
-/**
- * The open activity's input: the attempt readiness observed with its READY
- * verdict, which the claim compares under the row lock (plan Decision 7).
- */
-export type OpenProposalOperationInput = ProposalOperationInput & {
-	expectedAttempt: number;
-};
-
 export type ProposalReadinessInput = ProposalOperationInput & {
-	/** The workflow's 6 h validation clock ran out (spec §6 step 1). */
+	/** The 6 h validation clock ran out (spec §6 step 1). */
 	deadlineReached?: boolean;
 };
 
@@ -46,13 +40,9 @@ export type ProposalReadinessResult =
 	| { kind: "pending"; validationFailed: boolean }
 	| { kind: "stop" };
 
-export type OpenProposalResult = {
-	kind: "open" | "terminal" | "close_requested" | "blocked" | "not_claimable";
-};
-
 /**
  * The recover activity's input. The sweeper passes the attempt it read at
- * selection (`DueItem.attempt`); a row that moved since is left alone.
+ * selection; a row that moved since is left alone.
  */
 export type RecoverProposalInput = ProposalOperationInput &
 	ProposalActivityDeadline & {
@@ -76,10 +66,8 @@ export type RecoverProposalResult = {
 };
 
 /**
- * Close's input. The sweeper passes the attempt it read at selection
- * (`DueItem.attempt`), so two ticks holding one observation cannot both
- * claim; the operation workflow omits it and close uses the attempt it
- * reads.
+ * Close's input. The sweeper passes the attempt it read at selection, so
+ * two ticks holding one observation cannot both claim.
  */
 export type CloseProposalInput = ProposalOperationInput &
 	ProposalActivityDeadline & {
@@ -165,76 +153,38 @@ export type DispatchProposalResult = {
 };
 
 // ---------------------------------------------------------------------------
-// The operation workflow and the sweeper (spec §6, §9)
+// Readiness and the sweeper (spec §6, §9)
 // ---------------------------------------------------------------------------
 
 /**
- * The operation workflow's sleeps between `pending` readiness answers, in
- * seconds; the last repeats (spec §6 step 1).
+ * The sleeps between `pending` readiness answers, in seconds; the last
+ * repeats (spec §6 step 1). The member proposal branch workflow waits on
+ * these.
  */
 export const PROPOSAL_READINESS_SLEEPS_S: readonly number[] = [
 	5, 10, 20, 40, 60,
 ];
 
 /**
- * Readiness calls one run of the operation workflow makes before it
- * continues as new, so a long validation (the 6 h clock restarts on every
- * transition into FAILED) never grows one history without bound: about
- * 2,200 events a run, far under Temporal's limits.
- */
-export const PROPOSAL_READINESS_CALLS_PER_RUN = 200;
-
-/**
- * What a continued run of the operation workflow resumes readiness from:
- * the validation clock's absolute deadline (workflow time, epoch ms),
- * whether the last answer was FAILED (so the next FAILED answer is no new
- * transition), and how many `pending` answers came before (the sleep
- * index).
- */
-export type ProposalReadinessCarry = {
-	deadlineMs: number;
-	wasFailed: boolean;
-	pendingAnswers: number;
-};
-
-/**
- * The operation workflow's input: the operation's ids, and on a continued
- * run the readiness state it resumes from. Never passed to an activity.
- */
-export type ProposalOperationWorkflowInput = ProposalOperationInput & {
-	readiness?: ProposalReadinessCarry;
-};
-
-/**
- * The validation clock: 6 h from the workflow's start, restarted when the
- * workflow observes a transition into FAILED (spec §4.4).
+ * The validation clock: 6 h, restarted on every transition into FAILED
+ * (spec §4.4).
  */
 export const PROPOSAL_VALIDATION_CLOCK_MS = 6 * 60 * 60 * 1000;
 
 /**
- * Each activity's timeouts (spec §6), in ms, shared by the operation
- * workflow and the sweeper; retry is 3 attempts, 10 s, backoff 2
- * throughout. Every attempt also stops itself 10 s before its earliest
- * bound (`withProposalDeadline`), so no call outlives the attempt and a
- * retry never runs beside it. A declared heartbeat is kept by a ticker for
- * the whole attempt.
- *
- * Close is sized for the longest documented settlement at per-call
- * ceilings (lookup and close 20 s, ls-remote 30 s, delete 30 s, token
- * 20 s): due confirmations, three lookup passes (get, one `findOperation`
- * per record, a close per open pull request) and two deletion passes (an
- * ls-remote and a delete per record, the second for Azure DevOps's refusal)
- * come to about 320 s for one record and 520 s for two. Recover (due
- * confirmations, then get, lookups and ls-remote) and reconcile (due
- * confirmations, then one get) are smaller. An extra page, a hung delete
- * or the re-exchange's second credential pass can still reach the bound:
- * the attempt then stops at its deadline and the retry, or the next tick,
- * resumes from the row's fenced records. In the sweeper every call's
+ * The sweeper's activity timeouts (spec §6), in ms; retry is 3 attempts,
+ * 10 s, backoff 2 throughout. Every attempt also stops itself 10 s before
+ * its earliest bound (`withProposalDeadline`), so no call outlives the
+ * attempt and a retry never runs beside it. A declared heartbeat is kept by
+ * a ticker for the whole attempt. In the sweeper every call's
  * schedule-to-close is also the budget left, so none outlives the tick.
+ *
+ * The close, recover, reconcile, mergeSync, dispatch and defer entries size
+ * #2563's retired operation lane. They are unchanged so a tick recorded
+ * before that lane was retired (Fizzy #2748) schedules exactly what its
+ * history recorded when it replays.
  */
 export const PROPOSAL_ACTIVITY_TIMEOUTS = {
-	readiness: { startToCloseMs: 30_000 },
-	open: { startToCloseMs: 15 * 60_000, heartbeatMs: 60_000 },
 	close: { startToCloseMs: 10 * 60_000, heartbeatMs: 60_000 },
 	recover: { startToCloseMs: 5 * 60_000, heartbeatMs: 60_000 },
 	reconcile: { startToCloseMs: 3 * 60_000, heartbeatMs: 60_000 },
@@ -243,15 +193,6 @@ export const PROPOSAL_ACTIVITY_TIMEOUTS = {
 	select: { startToCloseMs: 60_000 },
 	defer: { startToCloseMs: 60_000 },
 } as const;
-
-/** How the operation workflow ended, for its history and its tests. */
-export type ProposalOperationWorkflowResult =
-	| { readiness: "stop" }
-	| {
-			readiness: "ready";
-			opened: OpenProposalResult["kind"];
-			closed?: CloseProposalResult["kind"];
-	  };
 
 /** The five sub-batch limits of one sweeper tick (spec §9 table). */
 export const PROPOSAL_SWEEP_LIMITS: ProposalSweepLimits = {

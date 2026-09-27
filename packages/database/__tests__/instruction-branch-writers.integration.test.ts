@@ -32,7 +32,6 @@ import {
 	releaseBlockedBranch,
 	releaseBranchClaim,
 	selectDueBranches,
-	selectDueProposalOperations,
 	setOperationMembership,
 	transitionPullRequest,
 } from "../index";
@@ -1718,7 +1717,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				attach: 10_000,
 			};
 
-			it("branch rows per the §8 table, each once, untracked never; #2563 rows only by #2563's clauses; Attach after 2 min", async () => {
+			it("branch rows per the §8 table, each once, untracked never; never a #2563 row; Attach after 2 min", async () => {
 				const named: Record<string, string> = {};
 				let member = 0;
 				const branch = async (
@@ -1851,16 +1850,18 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					createdAt: ago(3 * MINUTE_MS),
 				});
 				await seedProposal("QUEUED", null);
-				// #2563 rows: a v1 row due to close, and a v1 QUEUED row old
-				// enough to restart; a v2 row on a branch in the same state.
-				const v1Close = await seedProposal("CLOSE_REQUESTED", null, {
+				// #2563 rows, which no lane selects since that path's
+				// retirement (Fizzy #2748): a v1 row in a close state, and a
+				// v1 QUEUED row with no branch, old enough that Attach would
+				// take it were it v2; and a v2 row on a branch in that state.
+				await seedProposal("CLOSE_REQUESTED", null, {
 					pullRequestContext: { v: 1 },
 				});
 				const v1Restart = await seedProposal("QUEUED", null, {
 					pullRequestContext: { v: 1 },
 					createdAt: ago(3 * MINUTE_MS),
 				});
-				const v2OnBranch = await seedProposal(
+				await seedProposal(
 					"CLOSE_REQUESTED",
 					named.closeRequested as string,
 				);
@@ -1896,11 +1897,15 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				expect(mine(due.restart)).toEqual(
 					["restartAppend", "restartRehome"].sort(),
 				);
+				// Attach takes the v2 row with no branch, never the v1 one.
 				expect(
 					due.attach
 						.filter((a) => a.organizationId === ORGANIZATION_ID)
 						.map((a) => a.snapshotId),
 				).toEqual([attachOld]);
+				expect(due.attach.map((a) => a.snapshotId)).not.toContain(
+					v1Restart,
+				);
 				const closeItem = due.close.find(
 					(i) => i.branchId === named.closeRequested,
 				);
@@ -1911,22 +1916,6 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					attempt: 4,
 					integrationId: "int_example",
 				});
-
-				const v1 = await selectDueProposalOperations(LIMITS);
-				const snapshots = (items: Array<{ snapshotId: string }>) =>
-					items.map((i) => i.snapshotId);
-				const all = [
-					...v1.close,
-					...v1.recover,
-					...v1.mergeSync,
-					...v1.observe,
-					...v1.restart,
-				].map((i) => i.snapshotId);
-				expect(snapshots(v1.close)).toContain(v1Close);
-				expect(snapshots(v1.restart)).toContain(v1Restart);
-				expect(all).not.toContain(v2OnBranch);
-				expect(all).not.toContain(attachOld);
-				expect(all).not.toContain(issuedProposal);
 			});
 		});
 	},

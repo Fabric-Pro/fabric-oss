@@ -1,22 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-	chmod,
-	mkdir,
-	mkdtemp,
-	rm,
-	symlink,
-	writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { PullRequestContextV1 } from "@repo/instructions";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readTreeEntries } from "../instruction-branch-git";
 import {
 	type BranchWritePlanEntry,
 	buildBranchCommit,
-	buildProposalCommit,
 	computeEffectiveDelta,
 	type EffectiveDelta,
 	type FileRow,
@@ -27,13 +18,11 @@ import {
 	cloneTreeless,
 	type DiffTreeEntry,
 	fetchPinnedCommit,
-	listTreeRaw,
-	pushCreateOnly,
 	type RawTreeEntry,
 } from "../instruction-sync-git";
 
-// The verifier (spec §7 step 8) is stubbed per test through this switch; every
-// other call reaches real git.
+// The verifier (`buildBranchCommit`'s diff from the parent) is stubbed per
+// test through this switch; every other call reaches real git.
 const diffOverride = vi.hoisted(() => ({
 	fn: null as
 		| null
@@ -233,28 +222,16 @@ try {
 }
 
 const MAIL = ["dev", "example.com"].join("@");
-let work: string;
-let source: string;
-let base: string;
-
-function git(cwd: string, args: string[]): string {
-	return execFileSync("git", args, {
-		cwd,
-		env: {
-			PATH: process.env.PATH,
-			HOME: work,
-			GIT_CONFIG_NOSYSTEM: "1",
-			GIT_CONFIG_GLOBAL: "/dev/null",
-		},
-		encoding: "utf8",
-	}).trim();
-}
-
+/** A commit's tree, path to "mode type oid", read with `ls-tree -r`. */
 function lsTree(dir: string, rev: string): Map<string, string> {
 	const out = new Map<string, string>();
 	for (const record of execFileSync("git", ["ls-tree", "-r", "-z", rev], {
 		cwd: dir,
-		env: { PATH: process.env.PATH, HOME: work },
+		env: {
+			PATH: process.env.PATH,
+			GIT_CONFIG_NOSYSTEM: "1",
+			GIT_CONFIG_GLOBAL: "/dev/null",
+		},
 	})
 		.toString("utf8")
 		.split("\0")) {
@@ -265,321 +242,6 @@ function lsTree(dir: string, rev: string): Map<string, string> {
 	}
 	return out;
 }
-
-const BASE_ROWS = [
-	row("a.md", "one\n"),
-	row("run.sh", "#!/bin/sh\n", 0o755),
-	row(NFC, "nfd\n"),
-];
-
-function context(): PullRequestContextV1 {
-	return {
-		v: 1,
-		integrationId: "int_1",
-		syncId: "sync_1",
-		syncGeneration: 1,
-		provider: "GITHUB",
-		targetRef: "main",
-		rootPath: "agents",
-		baseCommitSha: base,
-		repository: {
-			provider: "GITHUB",
-			owner: "example-org",
-			repo: "example-repo",
-		},
-		branch: "fabric/instructions/c00000000000000000000000",
-		author: { name: "Example Person", email: MAIL },
-		committer: {
-			name: "Fabric",
-			email: ["noreply", "example.com"].join("@"),
-		},
-		title: "Update coding instructions (1 file)",
-		body: "",
-		message: "Update coding instructions (1 file)\n",
-		committedAt: "2026-09-24T00:00:00Z",
-	};
-}
-
-async function build(
-	name: string,
-	proposal: Array<FileRow & { content: string }>,
-	bytesFor: (r: FileRow & { content: string }) => Buffer = (r) =>
-		Buffer.from(r.content),
-) {
-	const run = path.join(work, name);
-	await mkdir(run);
-	const dir = path.join(run, "repo");
-	const env = {
-		...buildGitEnv({ home: run }),
-		GIT_CONFIG_COUNT: "1",
-		GIT_CONFIG_KEY_0: "protocol.file.allow",
-		GIT_CONFIG_VALUE_0: "always",
-	};
-	await cloneTreeless({
-		cwd: run,
-		url: `file://${source}`,
-		ref: "main",
-		dir,
-		env,
-	});
-	await fetchPinnedCommit({ dir, sha: base, env });
-	const listed = await listTreeRaw({
-		dir,
-		sha: base,
-		rootPath: "agents",
-		maxEntries: 1000,
-		env,
-	});
-	if (!listed.ok) {
-		throw new Error("listing failed");
-	}
-	const byKey = new Map(proposal.map((r) => [r.storageKey, r]));
-	const reads: string[] = [];
-	const result = await buildProposalCommit({
-		dir,
-		env,
-		signal: new AbortController().signal,
-		context: context(),
-		delta: computeEffectiveDelta(BASE_ROWS, proposal),
-		entries: listed.entries,
-		readBytes: async (key) => {
-			reads.push(key);
-			const r = byKey.get(key);
-			if (!r) {
-				throw new Error("no such object");
-			}
-			return bytesFor(r);
-		},
-	});
-	return { dir, env, result, reads };
-}
-
-describe.skipIf(!hasGit)(
-	"buildProposalCommit against real git (spec §7)",
-	() => {
-		beforeAll(async () => {
-			work = await mkdtemp(path.join(tmpdir(), "proposal-commit-"));
-			source = path.join(work, "source");
-			await mkdir(path.join(source, "agents", "docs"), {
-				recursive: true,
-			});
-			await writeFile(path.join(source, "agents/a.md"), "one\n");
-			await writeFile(path.join(source, "agents/run.sh"), "#!/bin/sh\n");
-			await chmod(path.join(source, "agents/run.sh"), 0o755);
-			await writeFile(path.join(source, "agents", NFD), "nfd\n");
-			await symlink("a.md", path.join(source, "agents/link.md"));
-			await writeFile(
-				path.join(source, "agents/ignored.md"),
-				"ignored\n",
-			);
-			await writeFile(
-				path.join(source, "agents/docs/x.md"),
-				"excluded\n",
-			);
-			await writeFile(path.join(source, "other.md"), "outside\n");
-			git(source, ["init", "-q", "-b", "main"]);
-			git(source, ["config", "uploadpack.allowFilter", "true"]);
-			git(source, ["config", "uploadpack.allowAnySHA1InWant", "true"]);
-			git(source, ["add", "-A"]);
-			git(source, [
-				"-c",
-				"user.name=Example",
-				"-c",
-				`user.email=${MAIL}`,
-				"commit",
-				"-qm",
-				"base",
-			]);
-			base = git(source, ["rev-parse", "HEAD"]);
-		});
-
-		afterAll(async () => {
-			await rm(work, { recursive: true, force: true });
-			diffOverride.fn = null;
-		});
-
-		it("builds exactly the delta, with base modes for existing paths and 0755 only when recorded, and keeps excluded entries", async () => {
-			const { dir, result, reads } = await build("delta", [
-				row("a.md", "one changed\n"),
-				row("run.sh", "#!/bin/sh\necho changed\n"),
-				row(NFC, "nfd\n"),
-				row("new.md", "new\n"),
-				row("tool.sh", "#!/bin/sh\necho tool\n", 0o755),
-				row("plain.sh", "#!/bin/sh\necho plain\n", 0o644),
-			]);
-			expect(result.ok).toBe(true);
-			if (!result.ok) {
-				return;
-			}
-			expect(reads.sort()).toEqual(
-				[
-					"k/one changed\n",
-					"k/#!/bin/sh\necho changed\n",
-					"k/new\n",
-					"k/#!/bin/sh\necho tool\n",
-					"k/#!/bin/sh\necho plain\n",
-				].sort(),
-			);
-			const before = lsTree(dir, base);
-			const after = lsTree(dir, result.sha);
-			expect(after.get("agents/run.sh")).toMatch(/^100755 blob /);
-			expect(after.get("agents/tool.sh")).toMatch(/^100755 blob /);
-			expect(after.get("agents/plain.sh")).toMatch(/^100644 blob /);
-			expect(after.get("agents/new.md")).toMatch(/^100644 blob /);
-			expect(after.get("agents/a.md")).not.toBe(
-				before.get("agents/a.md"),
-			);
-			for (const kept of [
-				"agents/link.md",
-				"agents/ignored.md",
-				"agents/docs/x.md",
-				`agents/${NFD}`,
-				"other.md",
-			]) {
-				expect(after.get(kept)).toBe(before.get(kept));
-			}
-			expect(git(dir, ["rev-parse", `${result.sha}^`])).toBe(base);
-		});
-
-		it("maps an NFD repository path to its NFC proposal row", async () => {
-			const { dir, result } = await build("nfd", [
-				...BASE_ROWS.filter((r) => r.path !== NFC),
-				row(NFC, "nfd changed\n"),
-			]);
-			expect(result.ok).toBe(true);
-			if (!result.ok) {
-				return;
-			}
-			const after = lsTree(dir, result.sha);
-			expect(after.has(`agents/${NFC}`)).toBe(false);
-			expect(after.get(`agents/${NFD}`)).not.toBe(
-				lsTree(dir, base).get(`agents/${NFD}`),
-			);
-			expect(
-				git(dir, ["cat-file", "blob", `${result.sha}:agents/${NFD}`]),
-			).toBe("nfd changed");
-			expect(after.size).toBe(lsTree(dir, base).size);
-		});
-
-		it("deletes a base row's file and produces the identical SHA on a second build", async () => {
-			const proposal = BASE_ROWS.filter((r) => r.path !== "a.md");
-			const one = await build("repro-1", proposal);
-			const two = await build("repro-2", proposal);
-			expect(one.result).toEqual(two.result);
-			expect(
-				one.result.ok &&
-					lsTree(one.dir, one.result.sha).has("agents/a.md"),
-			).toBe(false);
-		});
-
-		it("refuses a proposal that collides with an unmanaged entry", async () => {
-			const { result } = await build("conflict", [
-				...BASE_ROWS,
-				row("ignored.md", "x\n"),
-			]);
-			expect(result).toEqual({ ok: false, code: "TREE_CONFLICT" });
-		});
-
-		it("reports a storage re-hash mismatch as STORAGE_FAILED", async () => {
-			const { result } = await build(
-				"storage",
-				[...BASE_ROWS, row("new.md", "new\n")],
-				() => Buffer.from("not what the row recorded"),
-			);
-			expect(result).toEqual({ ok: false, code: "STORAGE_FAILED" });
-		});
-
-		it("reports a storage read failure as STORAGE_FAILED", async () => {
-			const { result } = await build(
-				"storage-read",
-				[...BASE_ROWS, row("new.md", "new\n")],
-				() => {
-					throw new Error("storage unavailable");
-				},
-			);
-			expect(result).toEqual({ ok: false, code: "STORAGE_FAILED" });
-		});
-
-		// Spec §13 content: the builder writes objects and never a ref, and the
-		// one ref a proposal ever writes is its own branch under
-		// refs/heads/fabric/instructions/.
-		it("writes only refs under fabric/instructions/", async () => {
-			const refs = (dir: string) =>
-				git(dir, ["for-each-ref", "--format=%(refname)"])
-					.split("\n")
-					.filter((r) => r !== "")
-					.sort();
-			const before = refs(source);
-			const { dir, env, result } = await build("refs", [
-				row("a.md", "one changed\n"),
-				row("run.sh", "#!/bin/sh\n"),
-				row(NFC, "nfd\n"),
-			]);
-			if (!result.ok) {
-				throw new Error("build failed");
-			}
-			expect(git(dir, ["for-each-ref", "--points-at", result.sha])).toBe(
-				"",
-			);
-			const { branch } = context();
-			expect(
-				await pushCreateOnly({
-					validator: "operation",
-					dir,
-					sha: result.sha,
-					branch,
-					env,
-					signal: new AbortController().signal,
-				}),
-			).toEqual({ kind: "created" });
-			const added = refs(source).filter((r) => !before.includes(r));
-			expect(added).toEqual([`refs/heads/${branch}`]);
-			for (const ref of added) {
-				expect(ref.startsWith("refs/heads/fabric/instructions/")).toBe(
-					true,
-				);
-			}
-			expect(git(source, ["rev-parse", `refs/heads/${branch}`])).toBe(
-				result.sha,
-			);
-		});
-
-		it("reports a verifier mismatch as GIT_FAILED", async () => {
-			diffOverride.fn = (real) => [
-				...real,
-				{
-					status: "A",
-					path: "agents/unexpected.md",
-					oldMode: "000000",
-					newMode: "100644",
-					newOid: "0".repeat(40),
-				},
-			];
-			try {
-				const { result } = await build("verifier", [
-					...BASE_ROWS,
-					row("new.md", "new\n"),
-				]);
-				expect(result).toEqual({ ok: false, code: "GIT_FAILED" });
-			} finally {
-				diffOverride.fn = null;
-			}
-		});
-
-		it("reports a verifier that lost a change as GIT_FAILED", async () => {
-			diffOverride.fn = (real) => real.slice(1);
-			try {
-				const { result } = await build("verifier-lost", [
-					...BASE_ROWS,
-					row("new.md", "new\n"),
-				]);
-				expect(result).toEqual({ ok: false, code: "GIT_FAILED" });
-			} finally {
-				diffOverride.fn = null;
-			}
-		});
-	},
-);
 
 describe.skipIf(!hasGit)(
 	"buildBranchCommit against real git (member proposal branch spec §6.4 steps 6-7, §6.8 step 3)",
@@ -811,6 +473,60 @@ describe.skipIf(!hasGit)(
 				date: "2026-09-26T00:00:00Z",
 			});
 			expect(result).toEqual({ ok: false, code: "GIT_FAILED" });
+		});
+
+		/** One modification on the base commit, verified through `diffOverride`. */
+		async function verified(name: string) {
+			const { dir, env } = await branchWorkspace(name);
+			return buildBranchCommit({
+				dir,
+				env,
+				signal: new AbortController().signal,
+				parent: branchBase,
+				plan: [
+					{
+						rawPath: "agents/a.md",
+						after: newBlobEntry(dir, "one changed\n"),
+					},
+				],
+				author: { name: "Example Person", email: MAIL },
+				committer: { name: "Fabric", email: MAIL },
+				message: "append\n",
+				date: "2026-09-26T00:00:00Z",
+			});
+		}
+
+		it("reports a verifier that finds a change the plan does not name as GIT_FAILED", async () => {
+			diffOverride.fn = (real) => [
+				...real,
+				{
+					status: "A",
+					path: "agents/unexpected.md",
+					oldMode: "000000",
+					newMode: "100644",
+					newOid: "0".repeat(40),
+				},
+			];
+			try {
+				expect(await verified("verifier-extra")).toEqual({
+					ok: false,
+					code: "GIT_FAILED",
+				});
+			} finally {
+				diffOverride.fn = null;
+			}
+		});
+
+		it("reports a verifier that lost a change as GIT_FAILED", async () => {
+			diffOverride.fn = (real) => real.slice(1);
+			try {
+				expect(await verified("verifier-lost")).toEqual({
+					ok: false,
+					code: "GIT_FAILED",
+				});
+			} finally {
+				diffOverride.fn = null;
+			}
 		});
 	},
 );

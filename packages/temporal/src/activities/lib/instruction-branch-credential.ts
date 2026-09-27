@@ -2,8 +2,8 @@
  * The recorded repository authority a member proposal branch activity acts
  * under (Fizzy #2738 spec Decision 15, 18, 19): the branch's organization and
  * project, the integration frozen in its destination, and a token resolved
- * into a local. It mirrors `withProposalRepoCredential` (#2563), which
- * refuses a v2 context: an authentication failure forces one credential
+ * into a local. It mirrors #2563's per-proposal credential, retired with that
+ * path (Fizzy #2748): an authentication failure forces one credential
  * re-exchange and one more run, and only then flags the integration for
  * reconnect. The refresh actor is the branch's member, for attribution only;
  * it grants nothing.

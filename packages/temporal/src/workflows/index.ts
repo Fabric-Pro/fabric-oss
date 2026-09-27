@@ -396,9 +396,8 @@ export {
 	projectInstructionProposalBranchWorkflow,
 	wakeSignal as proposalBranchWakeSignal,
 } from "./instruction-proposal-branch";
-// Coding Instructions proposal pull requests (Fizzy #2563 spec §6, §9): the
-// per-operation workflow and the five-minute sweeper. Named, like the sync.
-export { projectInstructionProposalPullRequestWorkflow } from "./instruction-proposal-pull-request";
+// Coding Instructions proposal pull requests (Fizzy #2563 spec §9): the
+// five-minute sweeper. Named, like the sync.
 export { instructionProposalPullRequestSweepWorkflow } from "./instruction-proposal-pull-request-sweep";
 // Meeting action item linking (fire-and-forget — matches one meeting's action
 // items to the project's work items once its insights are ready). #1902

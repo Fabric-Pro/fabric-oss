@@ -1151,7 +1151,6 @@ describe("proposal destinations", () => {
 			context: CONTEXT,
 			syncId: "sync_1",
 			syncGeneration: 3,
-			branch: "fabric/instructions/op_1",
 			uploadStartedAudit: {
 				actor: { type: "user", userId: "user_1" },
 				organizationId: ORG,
@@ -1197,10 +1196,11 @@ describe("proposal destinations", () => {
 			pullRequestOperationId: "op_1",
 			pullRequestState: "QUEUED",
 			pullRequestContext: CONTEXT,
-			// The attempt-1 branch is the operation's current ref from the
-			// moment it exists; nothing later has to infer it (Fizzy #2563).
-			pullRequestRef: "fabric/instructions/op_1",
 		});
+		// No per-proposal ref: #2563's attempt-1 branch write-through was
+		// retired with that path (Fizzy #2748), and a member branch
+		// proposal's ref is its branch's.
+		expect(createdData()).not.toHaveProperty("pullRequestRef");
 		expect(createdData()).not.toHaveProperty("pullRequestFailure");
 		// In the create transaction: the row and its files are written by
 		// the transaction client the callback was handed.
@@ -1788,14 +1788,11 @@ describe("member branch proposals", () => {
 				destination: {
 					...memberBranch(),
 					context: { v: 1, syncId: "sync_1", syncGeneration: 3 },
-					branch: "fabric/instructions/op_2",
 				},
 			}),
 		);
 		expect(createdData()).not.toHaveProperty("proposalIntentOrder");
-		expect(createdData()).toMatchObject({
-			pullRequestRef: "fabric/instructions/op_2",
-		});
+		expect(createdData()).not.toHaveProperty("pullRequestRef");
 		expect(nextvalCalls()).toHaveLength(0);
 		expect(mocks.snapshot.findMany).not.toHaveBeenCalled();
 	});

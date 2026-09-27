@@ -2,14 +2,15 @@
  * The sweeper's member proposal branch sub-batches (Fizzy #2738 spec §8).
  *
  * The five #2563 sub-batches keep their order and limits; each takes branch
- * rows too, and Restart is followed by Attach. `untracked` branches are
- * never selected. Every due test reads the database clock (#2563 Review
- * Focus 4), with `AT TIME ZONE 'UTC'` because the timestamp columns hold
- * UTC without a zone.
+ * rows, and Restart is followed by Attach. #2563's own per-proposal rows are
+ * no longer selected: that lane was retired (Fizzy #2748). `untracked`
+ * branches are never selected. Every due test reads the database clock
+ * (#2563 Review Focus 4), with `AT TIME ZONE 'UTC'` because the timestamp
+ * columns hold UTC without a zone.
  *
- * SYSTEM-WIDE by design, like `selectDueProposalOperations`: it returns ids
- * and each row's own tenant columns, and every action on an item runs under
- * that item's organization and fences on what it reads itself.
+ * SYSTEM-WIDE by design: it returns ids and each row's own tenant columns,
+ * and every action on an item runs under that item's organization and fences
+ * on what it reads itself.
  */
 import { db, Prisma } from "../client";
 import { readBranchWork } from "./instruction-proposal-branches";

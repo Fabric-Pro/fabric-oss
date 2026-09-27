@@ -1,21 +1,19 @@
 /**
- * The proposal commit (Fizzy #2563 spec §7 steps 2 to 8): the full base tree
- * at `baseCommitSha` plus one normalised effective delta under `rootPath`,
- * committed with the frozen context's metadata, so every build of one
- * proposal produces the same SHA.
+ * Proposal commits. The effective delta and the tree-conflict check (Fizzy
+ * #2563 spec §7 steps 2 to 4) decide whether a proposal's rows apply to a
+ * repository tree at all; a member proposal branch append (Fizzy #2738) runs
+ * both before it writes. `buildBranchCommit` builds and verifies the branch's
+ * commit. #2563's own per-proposal commit builder was retired with that path
+ * (Fizzy #2748).
  *
- * Step 1 (clone, pinned fetch, credentials) and step 9 (store, recheck,
- * push) belong to the open activity; this module never touches the network
- * and never pushes.
+ * Nothing here touches the network or pushes.
  *
  * Not re-exported from the activities barrel: every export of a module the
  * barrel re-exports becomes a schedulable Temporal activity.
  */
-import { createHash } from "node:crypto";
 import path from "node:path";
 import {
 	collisionKey,
-	type PullRequestContextV1,
 	type TreeEntry,
 	validateRelativePath,
 } from "@repo/instructions";
@@ -25,8 +23,6 @@ import {
 	diffTreeEntries,
 	type RawTreeEntry,
 	readBaseTree,
-	type TreeDeltaEntry,
-	writeProposalTree,
 	writeResolvedTree,
 } from "./instruction-sync-git";
 
@@ -252,158 +248,11 @@ export function findTreeConflicts(
 	return !planTree(entries, delta, rootPath).ok;
 }
 
-const sha256Hex = (bytes: Buffer): string =>
-	createHash("sha256").update(bytes).digest("hex");
-
-const byPath = (a: DiffTreeEntry, b: DiffTreeEntry): number =>
-	a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
-
-function sameEntries(
-	actual: readonly DiffTreeEntry[],
-	expected: readonly DiffTreeEntry[],
-): boolean {
-	if (actual.length !== expected.length) {
-		return false;
-	}
-	const a = [...actual].sort(byPath);
-	const e = [...expected].sort(byPath);
-	return a.every(
-		(entry, i) =>
-			entry.status === e[i]?.status &&
-			entry.path === e[i]?.path &&
-			entry.oldMode === e[i]?.oldMode &&
-			entry.newMode === e[i]?.newMode &&
-			entry.newOid === e[i]?.newOid,
-	);
-}
-
-export type ProposalCommitResult =
-	| { ok: true; sha: string }
-	| { ok: false; code: "TREE_CONFLICT" | "STORAGE_FAILED" | "GIT_FAILED" };
-
-/**
- * Spec §7 steps 2 to 8, in order. `entries` is `listTreeRaw` of the base
- * commit under `context.rootPath`, `dir` the clone at `context.baseCommitSha`.
- * `GIT_FAILED` here is the verifier's verdict (a commit that is not exactly
- * the delta), which is never retryable; a git command that fails throws
- * `GitCommandError` for the caller to classify. A storage read that fails
- * (other than by cancellation) or a re-hash mismatch is `STORAGE_FAILED`.
- */
-export async function buildProposalCommit(input: {
-	dir: string;
-	env: NodeJS.ProcessEnv;
-	signal: AbortSignal;
-	context: PullRequestContextV1;
-	delta: EffectiveDelta;
-	entries: readonly RawTreeEntry[];
-	readBytes(key: string): Promise<Buffer>;
-}): Promise<ProposalCommitResult> {
-	const { context, signal, env, dir } = input;
-	const plan = planTree(input.entries, input.delta, context.rootPath);
-	if (!plan.ok) {
-		return { ok: false, code: "TREE_CONFLICT" };
-	}
-
-	// Step 5: the promoted bytes, re-hashed. The snapshot's sha256 is never
-	// used as a git blob id; `hash-object` computes that below.
-	const bytes = new Map<FileRow, Buffer>();
-	for (const write of plan.writes) {
-		let data: Buffer;
-		try {
-			data = await input.readBytes(write.row.storageKey);
-		} catch (error) {
-			if (signal.aborted) {
-				throw error;
-			}
-			return { ok: false, code: "STORAGE_FAILED" };
-		}
-		if (sha256Hex(data) !== write.row.sha256) {
-			return { ok: false, code: "STORAGE_FAILED" };
-		}
-		bytes.set(write.row, data);
-	}
-
-	// Step 6: base tree into a private index, then the delta.
-	const indexFile = path.join(dir, ".git", "fabric-proposal-index");
-	await readBaseTree({
-		dir,
-		sha: context.baseCommitSha,
-		indexFile,
-		env,
-		signal,
-	});
-	const delta: TreeDeltaEntry[] = [
-		...plan.writes.map((w) => ({
-			path: w.repoPath,
-			mode: w.mode,
-			bytes: bytes.get(w.row) as Buffer,
-		})),
-		...plan.deletes.map((d) => ({
-			path: d.repoPath,
-			delete: true as const,
-		})),
-	];
-	const { tree, blobIds } = await writeProposalTree({
-		dir,
-		indexFile,
-		delta,
-		env,
-		signal,
-	});
-
-	// Step 7: frozen metadata only.
-	const sha = await commitTree({
-		dir,
-		tree,
-		parent: context.baseCommitSha,
-		author: context.author,
-		committer: context.committer,
-		message: context.message,
-		date: context.committedAt,
-		env,
-		signal,
-	});
-
-	// Step 8: the commit must be exactly the delta (status, raw path, mode,
-	// blob id), every path under the root; anything else is never pushed.
-	const zero = "0".repeat(context.baseCommitSha.length);
-	const expected: DiffTreeEntry[] = [
-		...plan.writes.map((w) => {
-			const oldMode = plan.modifiedModes.get(w.repoPath);
-			return {
-				status: oldMode === undefined ? ("A" as const) : ("M" as const),
-				path: w.repoPath,
-				oldMode: oldMode ?? "000000",
-				newMode: w.mode,
-				newOid: blobIds.get(w.repoPath) as string,
-			};
-		}),
-		...plan.deletes.map((d) => ({
-			status: "D" as const,
-			path: d.repoPath,
-			oldMode: d.mode,
-			newMode: "000000",
-			newOid: zero,
-		})),
-	];
-	const actual = await diffTreeEntries({
-		dir,
-		from: context.baseCommitSha,
-		to: sha,
-		env,
-		signal,
-	});
-	if (!sameEntries(actual, expected)) {
-		return { ok: false, code: "GIT_FAILED" };
-	}
-	return { ok: true, sha };
-}
-
 /**
  * One path a member proposal branch append or revert changes (member
  * proposal branch spec §6.4 step 6, §6.8 step 3): `rawPath` is the
  * repository path, and `after` is the exact tree entry to write there, or
- * `null` to delete it. Unlike `buildProposalCommit`'s `EffectiveDelta`, every
+ * `null` to delete it. Unlike an `EffectiveDelta` row, every
  * entry's object id is already known — a new blob an append already hashed,
  * or an existing repository blob a revert is restoring — so nothing here is
  * re-hashed from storage.
@@ -419,9 +268,7 @@ export type BranchCommitResult =
  * (revert): build one commit on an explicit `parent` (the branch's fetched
  * tip, or the branch's base commit on its first push) from a write plan of
  * already-resolved entries, then verify the built commit's diff from
- * `parent` is exactly the plan — the same "never push an unverified commit"
- * invariant `buildProposalCommit` enforces for the #2563 v1 path, kept as a
- * separate function so v1's own commit building is untouched.
+ * `parent` is exactly the plan: an unverified commit is never pushed.
  */
 export async function buildBranchCommit(input: {
 	dir: string;
@@ -474,9 +321,9 @@ const DELETED_MODE = "000000";
  * Whether `actual` (the built commit's diff from `parent`) is exactly `plan`:
  * the same path set, each written path at its plan entry's mode and object
  * id, each deleted path reported as a deletion. `plan` carries no `before`,
- * so this checks the resulting state rather than `buildProposalCommit`'s
- * full status/oldMode equality; the path-set-size check below rules out an
- * actual entry the plan does not account for.
+ * so this checks the resulting state rather than a full status/oldMode
+ * equality; the path-set-size check below rules out an actual entry the plan
+ * does not account for.
  */
 function matchesBranchWritePlan(
 	actual: readonly DiffTreeEntry[],

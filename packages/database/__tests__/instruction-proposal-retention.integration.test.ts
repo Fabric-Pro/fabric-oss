@@ -31,9 +31,9 @@ import {
 	type PullRequestAttemptRecord,
 	resolvedPullRequestOperation,
 	resolvedPullRequestOperationSql,
+	summarizeAttempts,
 	unresolvedPullRequestOperation,
 	unresolvedPullRequestOperationSql,
-	writeAttemptRecord,
 } from "../prisma/queries/instruction-proposal-pull-requests";
 import { hasReachableDatabaseUrl } from "./_helpers/db-availability";
 
@@ -121,18 +121,35 @@ async function seed(
 			isText: true,
 		},
 	});
-	// Through the real record writer, so the summary column is the one the
-	// application maintains, not one this test wrote.
-	for (const [n, record] of records.entries()) {
-		const written = await writeAttemptRecord({
-			snapshotId: row.id,
-			organizationId: ORGANIZATION_ID,
-			identity: { attempt: n + 1, ref: `fabric/instructions/r${n + 1}` },
-			expect: {},
-			patch: { sha: SHA, confirmations: 0, ...record },
-			append: true,
+	// A #2563 row's attempt records, with the two summary columns derived
+	// by `summarizeAttempts`, the derivation that path's retired record
+	// writer applied (Fizzy #2748): the summary is the application's, not a
+	// value this test chose. A null field is absent, as that writer left it.
+	if (records.length > 0) {
+		const attempts = records.map(
+			(record, n) =>
+				Object.fromEntries(
+					Object.entries({
+						attempt: n + 1,
+						ref: `fabric/instructions/r${n + 1}`,
+						sha: SHA,
+						confirmations: 0,
+						...record,
+					}).filter(
+						([, value]) => value !== null && value !== undefined,
+					),
+				) as PullRequestAttemptRecord,
+		);
+		const summary = summarizeAttempts(attempts);
+		await db.projectInstructionSnapshot.update({
+			where: { id: row.id },
+			data: {
+				pullRequestAttempts:
+					attempts as unknown as Prisma.InputJsonValue[],
+				pullRequestObligationOpen: summary.obligationOpen,
+				pullRequestConfirmationDueAt: summary.confirmationDueAt,
+			},
 		});
-		expect(written).toBe(true);
 	}
 	ids[name] = row.id;
 	return row.id;

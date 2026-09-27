@@ -43,7 +43,7 @@ function memberBranch(tag: string): string {
 	return `fabric/instructions/members/${tag}-a1b2/1`;
 }
 
-/** A well-formed #2563 operation branch ref (disjoint pattern). */
+/** A #2563 operation branch ref (disjoint pattern), which nothing pushes any more (Fizzy #2748). */
 function operationBranch(tag: string): string {
 	return `fabric/instructions/c${tag.padEnd(23, "0")}`;
 }
@@ -449,26 +449,19 @@ describe.skipIf(!hasGit)(
 			}
 		});
 
-		it("pushCreateOnly refuses a ref that does not match the validator it was given", async () => {
+		it("pushCreateOnly refuses a #2563 operation-shaped ref: only a member branch is pushed", async () => {
 			const env = sourceEnv();
 			await expect(
 				pushCreateOnly({
 					dir: source,
 					sha: base,
-					branch: memberBranch("mismatch"),
-					validator: "operation",
-					env,
-				}),
-			).rejects.toMatchObject({ kind: "invalid_argument" });
-			await expect(
-				pushCreateOnly({
-					dir: source,
-					sha: base,
 					branch: operationBranch("mismatch"),
-					validator: "member",
 					env,
 				}),
 			).rejects.toMatchObject({ kind: "invalid_argument" });
+			expect(
+				git(source, ["for-each-ref", "--format=%(refname)"]),
+			).not.toContain(operationBranch("mismatch"));
 		});
 
 		it("initBranchWorkspace clones full (never shallow)", async () => {

@@ -350,11 +350,13 @@ describe("projects.instructions.derive", () => {
 
 	describe("repository proposals (Fizzy #2563)", () => {
 		const NOTE = { title: "Tighten the review skill", body: "Why: flaky" };
+		// A member branch proposal's frozen context (Fizzy #2738): the only
+		// kind admission builds since #2563's per-proposal path was retired
+		// (Fizzy #2748).
 		const CONTEXT = {
-			v: 1,
+			v: 2,
 			syncId: "sync_1",
 			syncGeneration: 4,
-			branch: "fabric/instructions/op_1",
 		};
 
 		function repositoryAdmission(overrides: Record<string, unknown> = {}) {
@@ -430,7 +432,6 @@ describe("projects.instructions.derive", () => {
 					context: CONTEXT,
 					syncId: "sync_1",
 					syncGeneration: 4,
-					branch: "fabric/instructions/op_1",
 					uploadStartedAudit: {
 						actor: { type: "user", userId: "u" },
 						organizationId: "org_1",
@@ -448,6 +449,9 @@ describe("projects.instructions.derive", () => {
 				},
 			});
 			expect(call.destination).not.toHaveProperty("blocked");
+			// A member branch proposal's ref is its branch's: no per-proposal
+			// ref reaches the create.
+			expect(call.destination).not.toHaveProperty("branch");
 			// One upload_started, the one the create transaction writes.
 			expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
 			expect(result).toMatchObject({
