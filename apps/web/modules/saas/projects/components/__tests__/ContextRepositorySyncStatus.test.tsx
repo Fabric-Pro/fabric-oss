@@ -81,7 +81,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 							...opts,
 						}),
 					},
-					// The configure dialog's tree browser (Fizzy #2674); its
+					// The configure dialog's selection tree (Fizzy #2674, #2750); its
 					// behavior is covered by the dialog's own test.
 					listTree: {
 						queryOptions: (options: {
@@ -156,6 +156,8 @@ const CONFIGURED_BASE: ContextSyncState["configured"] = {
 	repositoryIntegrationId: "int_1",
 	ref: "main",
 	paths: ["docs"],
+	// `get` returns what the sync leaves out (Fizzy #2750 §5.5).
+	excludedPaths: [],
 	automatic: false,
 	automaticPausedReason: null,
 	automaticPausedAt: null,
@@ -290,6 +292,45 @@ describe("ContextRepositorySyncStatus — configured status line", () => {
 		syncNowMock.mockReset();
 		disableMock.mockReset();
 		configureMock.mockReset();
+	});
+
+	it("says what syncs under the repository line, without a count, since no listing is read here (Fizzy #2750 §6)", () => {
+		renderStatus({
+			state: baseState({
+				configured: {
+					...CONFIGURED_BASE,
+					paths: ["docs", "notes/today.md"],
+					excludedPaths: ["docs/old"],
+				} as NonNullable<ContextSyncState["configured"]>,
+			}),
+		});
+		expect(
+			screen.getByTestId("context-sync-selection-summary"),
+		).toHaveTextContent(
+			`${NS}.summary.leadExcept${JSON.stringify({
+				excluded: 1,
+				what: `${NS}.summary.what.paths${JSON.stringify({ count: 2 })}`,
+			})}`,
+		);
+		expect(screen.queryByText(/summary\.matchNow/)).not.toBeInTheDocument();
+	});
+
+	it("names the whole repository when that is what syncs", () => {
+		renderStatus({
+			state: baseState({
+				configured: {
+					...CONFIGURED_BASE,
+					paths: [""],
+				} as NonNullable<ContextSyncState["configured"]>,
+			}),
+		});
+		expect(
+			screen.getByTestId("context-sync-selection-summary"),
+		).toHaveTextContent(
+			`${NS}.summary.lead${JSON.stringify({
+				what: `${NS}.summary.what.wholeRepository`,
+			})}`,
+		);
 	});
 
 	it("shows the repository @ ref line", () => {
@@ -623,6 +664,26 @@ describe("ContextRepositorySyncStatus — automatic sync toggle", () => {
 			),
 		);
 		expect(onChanged).toHaveBeenCalled();
+	});
+
+	it("leaves out excludedPaths, so the stored exclusions stand (Fizzy #2750 §5.2)", async () => {
+		configureMock.mockResolvedValue({ syncId: "sync_1", generation: 2 });
+		const user = userEvent.setup();
+		renderStatus({
+			state: baseState({
+				configured: { ...CONFIGURED, excludedPaths: ["docs/old"] },
+			}),
+		});
+
+		await user.click(screen.getByTestId("context-sync-menu-trigger"));
+		await user.click(await screen.findByTestId("context-sync-automatic"));
+
+		await waitFor(() => expect(configureMock).toHaveBeenCalledTimes(1));
+		// Omitted, not `undefined` spelled out and not the stored list: an
+		// omitted field keeps what is stored, and `[]` would clear it.
+		expect(configureMock.mock.calls[0]?.[0]).not.toHaveProperty(
+			"excludedPaths",
+		);
 	});
 
 	it("turns automatic sync off when it is on", async () => {

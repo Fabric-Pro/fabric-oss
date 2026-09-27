@@ -426,6 +426,7 @@ describe("ProjectContextsList — the Context card's idle poll (Fizzy #2713)", (
 				repositoryIntegrationId: "int_1",
 				ref: "main",
 				paths: ["docs"],
+				excludedPaths: [],
 				automatic: true,
 				automaticPausedReason: null,
 				automaticPausedAt: null,

@@ -97,6 +97,8 @@ export function toContextSyncConfigurationView(
 		repositoryIntegrationId: sync.repositoryIntegrationId,
 		ref: sync.ref,
 		paths: sync.paths,
+		/** What the member left out inside a selected folder (Fizzy #2750). */
+		excludedPaths: sync.excludedPaths,
 		automatic: sync.automatic,
 		automaticPausedReason: sync.automaticPausedReason,
 		automaticPausedAt: sync.automaticPausedAt,

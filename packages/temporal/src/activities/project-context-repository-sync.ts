@@ -332,6 +332,8 @@ function frozenFromReceipt(
 		repositoryIntegrationId: run.context.repositoryIntegrationId,
 		ref: run.context.ref,
 		paths: [...run.context.paths],
+		// `[]` for a receipt written before left-out paths existed.
+		excludedPaths: [...run.context.excludedPaths],
 		actingUserId: run.context.actingUserId,
 	};
 }
@@ -364,6 +366,7 @@ function frozenFromConfiguration(
 		repositoryIntegrationId: sync.repositoryIntegrationId,
 		ref: sync.ref,
 		paths: [...sync.paths],
+		excludedPaths: [...sync.excludedPaths],
 		actingUserId,
 	};
 }
@@ -571,6 +574,7 @@ async function beginUnderLock(
 		context: {
 			ref: context.ref,
 			paths: context.paths,
+			excludedPaths: context.excludedPaths ?? [],
 			repositoryIntegrationId: context.repositoryIntegrationId,
 			actingUserId: context.actingUserId,
 		},
@@ -613,6 +617,7 @@ async function refuse(
 		context: {
 			ref: context.ref,
 			paths: context.paths,
+			excludedPaths: context.excludedPaths ?? [],
 			repositoryIntegrationId: context.repositoryIntegrationId,
 			actingUserId: context.actingUserId,
 		},
@@ -953,6 +958,8 @@ async function planFromInventory(
 	contentPaths: Map<string, string>;
 }> {
 	const { paths } = run.context;
+	// Presence is judged on the unfiltered inventory (Fizzy #2750 §5.5): a
+	// folder whose contents are all left out is still there.
 	const shapes = selectedPathShapes(paths, entries);
 	if (shapes.every((shape) => shape.kind === "missing")) {
 		// The circuit breaker: nothing selected is there, so nothing is
@@ -960,7 +967,14 @@ async function planFromInventory(
 		throw contextSyncFailure("PATHS_MISSING", run.details);
 	}
 	const policies = await readIgnorePolicies(run, shapes, entries);
-	const tree = planContextTree({ paths, entries, shapes, policies });
+	const tree = planContextTree({
+		paths,
+		// Absent from a context a worker froze before left-out paths existed.
+		excludedPaths: run.context.excludedPaths ?? [],
+		entries,
+		shapes,
+		policies,
+	});
 	if (tree.candidates.length > MAX_CONTEXT_SYNC_KEPT) {
 		throw contextSyncFailure("LIMITS_EXCEEDED", {
 			...run.details,
@@ -1017,6 +1031,7 @@ async function planFromInventory(
 			protectedKeys,
 			protectedPrefixes: tree.protectedPrefixes,
 			missingPaths: tree.missingPaths,
+			excludedKeys: tree.excludedKeys,
 		}),
 		contentPaths,
 	};
@@ -1205,8 +1220,10 @@ async function applyPlannedKeys(
 
 /**
  * Step 8: every managed row of this sync that the plan neither keeps nor
- * protects, paged by key and deleted in fenced batches of 50. No positional
- * ledger: a retry finds the rows an earlier attempt deleted already gone.
+ * protects — or that the member left out, even under a protected prefix
+ * (`createPruneEligibility`, Fizzy #2750 §5.5) — paged by key and deleted
+ * in fenced batches of 50. No positional ledger: a retry finds the rows an
+ * earlier attempt deleted already gone.
  */
 async function pruneManagedRows(
 	run: SyncAttempt,

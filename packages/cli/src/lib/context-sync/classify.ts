@@ -17,8 +17,12 @@ import path from "node:path";
  */
 export const MAX_CONTEXT_FILE_BYTES = 2 * 1024 * 1024;
 
-/** Compared lower-cased, so `README.MD` is text too. */
-const CONTEXT_TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
+/**
+ * Compared lower-cased, so `README.MD` is text too. The server's canonical
+ * copy is `packages/instructions/src/context-sync-rules.ts`, pinned to this
+ * one by `context-sync-rules-agree-with-cli.test.ts` there.
+ */
+export const CONTEXT_TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
 	".md",
 	".markdown",
 	".txt",

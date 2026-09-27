@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+	ancestorsOf,
 	buildRepositoryTree,
-	CONTEXT_SYNC_TREE_SEARCH_MAX_MATCHES,
-	contextSyncTreeRowState,
+	isStrictlyInside,
+	REPOSITORY_TREE_SEARCH_MAX_MATCHES,
 	type RepositoryTreeEntry,
 	type RepositoryTreeNode,
 	searchRepositoryTreeEntries,
-} from "../context-repository-sync-tree";
+} from "../repository-tree";
 
 function shape(nodes: RepositoryTreeNode[]): unknown[] {
 	return nodes.map((node) =>
@@ -95,36 +96,35 @@ describe("searchRepositoryTreeEntries", () => {
 
 	it("caps the matches and says so only past the cap", () => {
 		const many: RepositoryTreeEntry[] = Array.from(
-			{ length: CONTEXT_SYNC_TREE_SEARCH_MAX_MATCHES + 1 },
+			{ length: REPOSITORY_TREE_SEARCH_MAX_MATCHES + 1 },
 			(_, i) => ({ path: `n${i}.md`, type: "file" }),
 		);
 		const capped = searchRepositoryTreeEntries(many, "n");
 		expect(capped.capped).toBe(true);
-		expect(capped.entries).toHaveLength(
-			CONTEXT_SYNC_TREE_SEARCH_MAX_MATCHES,
-		);
+		expect(capped.entries).toHaveLength(REPOSITORY_TREE_SEARCH_MAX_MATCHES);
 
 		const exact = searchRepositoryTreeEntries(many.slice(1), "n");
 		expect(exact.capped).toBe(false);
-		expect(exact.entries).toHaveLength(
-			CONTEXT_SYNC_TREE_SEARCH_MAX_MATCHES,
-		);
+		expect(exact.entries).toHaveLength(REPOSITORY_TREE_SEARCH_MAX_MATCHES);
 	});
 });
 
-describe("contextSyncTreeRowState", () => {
+describe("path relations", () => {
+	it("lists a path's ancestors outermost first, never the path itself", () => {
+		expect(ancestorsOf("a/b/c.md")).toEqual(["a", "a/b"]);
+		expect(ancestorsOf("top")).toEqual([]);
+	});
+
 	it.each([
-		["docs", [], "available"],
-		["docs", ["docs"], "selected"],
-		["docs/a.md", ["docs"], "covered"],
-		["docs/deep/a.md", ["docs"], "covered"],
-		["docs", ["docs/a.md"], "contains-selected"],
+		["docs", "docs/a.md", true],
+		["docs", "docs/deep/a.md", true],
+		["docs", "docs", false],
 		// Whole segments only: `doc` is not an ancestor of `docs`.
-		["docs", ["doc"], "available"],
-		["doc", ["docs/a.md"], "available"],
-		["docs", [""], "whole-repository"],
-		["docs", ["", "docs"], "whole-repository"],
-	] as const)("%s with %j selected is %s", (path, selected, expected) => {
-		expect(contextSyncTreeRowState(path, selected)).toBe(expected);
+		["doc", "docs/a.md", false],
+		["docs", "docs-archive", false],
+		["", "docs", true],
+		["", "", false],
+	] as const)("%s strictly holds %s: %s", (folder, path, strictly) => {
+		expect(isStrictlyInside(folder, path)).toBe(strictly);
 	});
 });

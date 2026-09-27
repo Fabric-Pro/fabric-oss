@@ -513,6 +513,7 @@ export function seedSync(overrides: Row = {}): Row {
 		repositoryIntegrationId: "int-1",
 		ref: "main",
 		paths: ["docs"],
+		excludedPaths: [],
 		generation: 3,
 		activeRunKey: RUN,
 		...overrides,

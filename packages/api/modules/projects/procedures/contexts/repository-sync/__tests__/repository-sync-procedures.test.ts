@@ -46,8 +46,13 @@ vi.mock("@repo/database", async () => {
 	const path = await import(
 		"@repo/database/prisma/queries/projects/context-source-path"
 	);
+	// The left-out paths' containment rule is the real one too (Fizzy #2750).
+	const selection = await import(
+		"@repo/database/prisma/queries/projects/context-repository-sync-selection"
+	);
 	return {
 		...path,
+		...selection,
 		db: {},
 		hasProjectAccess: m.hasProjectAccess,
 		grantProjectAccess: m.grantProjectAccess,
@@ -244,6 +249,7 @@ const syncRow = {
 	repositoryIntegrationId: "int-1",
 	ref: "main",
 	paths: ["docs", "notes/team.md"],
+	excludedPaths: ["docs/drafts"],
 	generation: 4,
 	activeRunKey: null as string | null,
 	lastAppliedCommitSha: "abc1234",
@@ -343,12 +349,14 @@ beforeEach(() => {
 			repositoryIntegrationId: "int-1",
 			ref: "develop",
 			paths: ["docs", "notes/team.md"],
+			excludedPaths: ["docs/drafts"],
 			automatic: false,
 		},
 		previous: {
 			repositoryIntegrationId: "int-1",
 			ref: "main",
 			paths: ["docs", "notes/team.md"],
+			excludedPaths: ["docs/drafts"],
 		},
 	});
 	m.listUnfinishedContextRepositorySyncRuns.mockResolvedValue([]);
@@ -549,6 +557,7 @@ describe("repositorySync.get", () => {
 				repositoryIntegrationId: "int-1",
 				ref: "main",
 				paths: ["docs", "notes/team.md"],
+				excludedPaths: ["docs/drafts"],
 				automatic: true,
 				automaticPausedReason: "REF_MISSING",
 				automaticPausedAt: syncRow.automaticPausedAt,
@@ -936,7 +945,7 @@ describe("repositorySync.listTree", () => {
 		});
 	});
 
-	it("leaves out the .fabric directory, everything under it and the coding-instructions files, keeping folders the defaults name", async () => {
+	it("returns every entry, marking what configure would refuse to select or to leave out (Fizzy #2750 §5.7)", async () => {
 		m.listRepositoryTree.mockResolvedValue({
 			ok: true,
 			entries: [
@@ -955,6 +964,7 @@ describe("repositorySync.listTree", () => {
 				{ path: "docs/fabric.md", type: "file" },
 				{ path: "docs/./odd.md", type: "file" },
 				{ path: ".FABRIC/x.md", type: "file" },
+				{ path: "docs/link.md", type: "file", regular: false },
 			],
 			truncated: false,
 		});
@@ -962,41 +972,97 @@ describe("repositorySync.listTree", () => {
 		const result = await call("listTree", listTreeInput);
 
 		expect(result.entries).toEqual([
+			{
+				path: ".fabric",
+				type: "dir",
+				selectRefusal: "EXCLUDED_PATH",
+				excludeRefusal: "EXCLUDED_PATH",
+			},
+			{
+				path: ".fabric/instructions.lock",
+				type: "file",
+				selectRefusal: "EXCLUDED_PATH",
+				excludeRefusal: "EXCLUDED_PATH",
+			},
 			{ path: "docs", type: "dir" },
+			{
+				path: "docs/.Fabric",
+				type: "dir",
+				selectRefusal: "EXCLUDED_PATH",
+				excludeRefusal: "EXCLUDED_PATH",
+			},
+			{
+				path: "docs/.Fabric/state.json",
+				type: "file",
+				selectRefusal: "EXCLUDED_PATH",
+				excludeRefusal: "EXCLUDED_PATH",
+			},
 			{ path: "docs/guide.md", type: "file" },
+			// A coding-instructions file cannot be selected, but leaving
+			// one out is allowed (a no-op: the defaults skip it anyway).
+			{
+				path: "docs/AGENTS.md",
+				type: "file",
+				selectRefusal: "EXCLUDED_PATH",
+			},
+			{ path: "CLAUDE.md", type: "file", selectRefusal: "EXCLUDED_PATH" },
+			{
+				path: "notes/gemini.md",
+				type: "file",
+				selectRefusal: "EXCLUDED_PATH",
+			},
+			// A policy file is read as policy: never selected, never left out.
+			{
+				path: "notes/.contextignore",
+				type: "file",
+				selectRefusal: "EXCLUDED_PATH",
+				excludeRefusal: "EXCLUDED_PATH_POLICY_FILE",
+			},
 			{ path: "skills", type: "dir" },
 			{ path: ".claude", type: "dir" },
 			{ path: "docs/fabric.md", type: "file" },
+			{
+				path: "docs/./odd.md",
+				type: "file",
+				selectRefusal: "INVALID_PATH",
+				excludeRefusal: "INVALID_PATH",
+			},
+			{
+				path: ".FABRIC/x.md",
+				type: "file",
+				selectRefusal: "EXCLUDED_PATH",
+				excludeRefusal: "EXCLUDED_PATH",
+			},
+			// Whether a symlink syncs is the rules' business, not the path's.
+			{ path: "docs/link.md", type: "file", regular: false },
 		]);
 	});
 
-	it("drops a directory named after an excluded file, with everything under it, listed or not", async () => {
+	it("judges each entry by its own path: a folder named after an excluded file is refused, its contents are not", async () => {
 		m.listRepositoryTree.mockResolvedValue({
 			ok: true,
 			entries: [
 				{ path: "AGENTS.md", type: "dir" },
 				{ path: "AGENTS.md/notes.md", type: "file" },
-				{ path: "AGENTS.md/deep", type: "dir" },
-				{ path: "AGENTS.md/deep/more.md", type: "file" },
-				// The folder itself is not listed: its contents go all the same.
 				{ path: "docs/claude.md/inner.md", type: "file" },
-				{ path: "docs", type: "dir" },
-				{ path: "docs/guide.md", type: "file" },
 			],
 			truncated: false,
 		});
 
 		const result = await call("listTree", listTreeInput);
 
+		// `configure` accepts `AGENTS.md/notes.md` as a directly selected
+		// file (its basename is `notes.md`), and the run syncs it.
 		expect(result.entries).toEqual([
-			{ path: "docs", type: "dir" },
-			{ path: "docs/guide.md", type: "file" },
+			{ path: "AGENTS.md", type: "dir", selectRefusal: "EXCLUDED_PATH" },
+			{ path: "AGENTS.md/notes.md", type: "file" },
+			{ path: "docs/claude.md/inner.md", type: "file" },
 		]);
 	});
 
-	it("drops a path longer than configure's 1024-character limit", async () => {
+	it("marks a path longer than configure accepts, rather than dropping it", async () => {
 		// The canonical spelling already stops at the storage key's 512
-		// characters, so that is the longest path offered.
+		// characters, so that is the longest path configure accepts.
 		const longest = `docs/${"a".repeat(512 - "docs/".length)}`;
 		const tooLong = `docs/${"b".repeat(1025 - "docs/".length)}`;
 		m.listRepositoryTree.mockResolvedValue({
@@ -1014,6 +1080,12 @@ describe("repositorySync.listTree", () => {
 		expect(result.entries).toEqual([
 			{ path: "docs", type: "dir" },
 			{ path: longest, type: "file" },
+			{
+				path: tooLong,
+				type: "file",
+				selectRefusal: "INVALID_PATH",
+				excludeRefusal: "INVALID_PATH",
+			},
 		]);
 	});
 
@@ -1107,9 +1179,11 @@ describe("repositorySync.configure", () => {
 					provider: "GITHUB",
 					automatic: false,
 					pathCount: 2,
+					excludedPathCount: 1,
 					repositoryChanged: false,
 					refChanged: true,
 					pathsChanged: false,
+					excludedPathsChanged: false,
 					generation: 5,
 				},
 			},
@@ -1131,6 +1205,7 @@ describe("repositorySync.configure", () => {
 					repositoryIntegrationId: "int-1",
 					ref: "develop",
 					paths: ["docs", "notes/team.md"],
+					excludedPaths: [],
 					automatic,
 				},
 				previous: null,
@@ -1157,6 +1232,7 @@ describe("repositorySync.configure", () => {
 			repositoryIntegrationId: "int-1",
 			ref: "develop",
 			paths: ["docs", "notes/team.md"],
+			excludedPaths: [],
 		};
 		m.upsertContextRepositorySync.mockResolvedValue({
 			status: "configured",
@@ -1176,6 +1252,7 @@ describe("repositorySync.configure", () => {
 				repositoryChanged: false,
 				refChanged: false,
 				pathsChanged: false,
+				excludedPathsChanged: false,
 				generation: 5,
 			},
 		});
@@ -1190,12 +1267,14 @@ describe("repositorySync.configure", () => {
 				repositoryIntegrationId: "int-1",
 				ref: "develop",
 				paths: ["docs", "notes/team.md"],
+				excludedPaths: [],
 				automatic: false,
 			},
 			previous: {
 				repositoryIntegrationId: "int-0",
 				ref: "develop",
 				paths: ["docs", "notes/team.md"],
+				excludedPaths: [],
 			},
 		});
 
@@ -1219,6 +1298,7 @@ describe("repositorySync.configure", () => {
 				repositoryIntegrationId: "int-1",
 				ref: "develop",
 				paths: ["docs", "notes/team.md"],
+				excludedPaths: [],
 				automatic: true,
 			},
 			previous: null,
@@ -1282,6 +1362,7 @@ describe("repositorySync.configure", () => {
 				repositoryIntegrationId: "int-1",
 				ref: "develop",
 				paths: ["docs"],
+				excludedPaths: [],
 				automatic: false,
 			},
 			previous: null,
@@ -1534,6 +1615,179 @@ describe("repositorySync.configure", () => {
 				call("configure", { ...configureInput, paths: [] }),
 			).rejects.toMatchObject({ code: "BAD_REQUEST" });
 			NO_WRITES();
+		});
+	});
+
+	describe("left-out paths (Fizzy #2750 §5.2, §5.3)", () => {
+		async function refused(excludedPaths: unknown[], paths = ["docs"]) {
+			const caught = (await call("configure", {
+				...configureInput,
+				paths,
+				excludedPaths,
+			}).catch((error: unknown) => error)) as {
+				code: string;
+				data?: { code?: string; path?: string; withPath?: string };
+			};
+			// Pure validation: nothing reached the integration or the network.
+			expect(m.getProjectRepoIntegration).not.toHaveBeenCalled();
+			expect(m.verifyRepositoryBranch).not.toHaveBeenCalled();
+			NO_WRITES();
+			return caught;
+		}
+
+		it("sends no left-out paths to the write when the caller omits them, so the stored list is kept", async () => {
+			await call("configure", configureInput);
+
+			expect(
+				m.upsertContextRepositorySync.mock.calls[0]?.[0],
+			).not.toHaveProperty("excludedPaths");
+		});
+
+		it("stores the canonical sorted list and audits its size and whether it changed, never the paths", async () => {
+			m.upsertContextRepositorySync.mockResolvedValue({
+				status: "configured",
+				sync: {
+					id: "sync-1",
+					generation: 5,
+					repositoryIntegrationId: "int-1",
+					ref: "develop",
+					paths: ["docs", "notes/team.md"],
+					excludedPaths: ["docs/drafts", "docs/old.md"],
+					automatic: false,
+				},
+				previous: {
+					repositoryIntegrationId: "int-1",
+					ref: "develop",
+					paths: ["docs", "notes/team.md"],
+					excludedPaths: ["docs/drafts"],
+				},
+			});
+
+			await call("configure", {
+				...configureInput,
+				excludedPaths: ["docs/old.md", "docs/drafts", "docs/old.md"],
+			});
+
+			expect(m.upsertContextRepositorySync).toHaveBeenCalledWith(
+				expect.objectContaining({
+					paths: ["docs", "notes/team.md"],
+					excludedPaths: ["docs/drafts", "docs/old.md"],
+				}),
+			);
+			const audit = m.recordAuditFromRequest.mock.calls[0]?.[1];
+			expect(audit.metadata).toMatchObject({
+				excludedPathCount: 2,
+				excludedPathsChanged: true,
+				pathsChanged: false,
+			});
+			expect(JSON.stringify(audit)).not.toContain("docs/old.md");
+			expect(JSON.stringify(audit)).not.toContain("docs/drafts");
+		});
+
+		it("sends an explicit empty list, which clears them", async () => {
+			await call("configure", { ...configureInput, excludedPaths: [] });
+
+			expect(m.upsertContextRepositorySync).toHaveBeenCalledWith(
+				expect.objectContaining({ excludedPaths: [] }),
+			);
+		});
+
+		it("audits a first configuration as changing its left-out paths", async () => {
+			m.upsertContextRepositorySync.mockResolvedValue({
+				status: "configured",
+				sync: {
+					id: "sync-1",
+					generation: 1,
+					repositoryIntegrationId: "int-1",
+					ref: "develop",
+					paths: ["docs"],
+					excludedPaths: [],
+					automatic: false,
+				},
+				previous: null,
+			});
+
+			await call("configure", configureInput);
+
+			expect(
+				m.recordAuditFromRequest.mock.calls[0]?.[1].metadata,
+			).toMatchObject({
+				excludedPathCount: 0,
+				excludedPathsChanged: true,
+			});
+		});
+
+		it.each([
+			[
+				["docs/.contextignore"],
+				"EXCLUDED_PATH_POLICY_FILE",
+				"docs/.contextignore",
+			],
+			[["docs/.fabric"], "EXCLUDED_PATH", "docs/.fabric"],
+			[["docs/./a.md"], "INVALID_PATH", "docs/./a.md"],
+			[["notes/x.md"], "EXCLUDED_PATH_OUTSIDE_SELECTION", "notes/x.md"],
+			[["docs"], "EXCLUDED_PATH_OUTSIDE_SELECTION", "docs"],
+		])("refuses %j as %s", async (excludedPaths, code, path) => {
+			expect(await refused(excludedPaths)).toMatchObject({
+				code: "BAD_REQUEST",
+				data: { code, path },
+			});
+		});
+
+		it("refuses one left-out path inside another as EXCLUDED_PATH_OVERLAP, naming both", async () => {
+			expect(
+				await refused(["docs/drafts", "docs/drafts/a.md"]),
+			).toMatchObject({
+				code: "BAD_REQUEST",
+				data: {
+					code: "EXCLUDED_PATH_OVERLAP",
+					path: "docs/drafts/a.md",
+					withPath: "docs/drafts",
+				},
+			});
+		});
+
+		it("refuses more than 200 after duplicates are dropped, and more than 400 before", async () => {
+			const many = Array.from(
+				{ length: 200 },
+				(_, i) => `docs/f${String(i).padStart(3, "0")}.md`,
+			);
+
+			expect(await refused([...many, "docs/extra.md"])).toMatchObject({
+				code: "BAD_REQUEST",
+				data: { code: "TOO_MANY_EXCLUDED_PATHS" },
+			});
+			await expect(
+				call("configure", {
+					...configureInput,
+					paths: ["docs"],
+					excludedPaths: [...many, ...many, "docs/f000.md"],
+				}),
+			).rejects.toMatchObject({ code: "BAD_REQUEST" });
+			NO_WRITES();
+
+			await call("configure", {
+				...configureInput,
+				paths: ["docs"],
+				excludedPaths: [...many, ...many],
+			});
+			expect(
+				m.upsertContextRepositorySync.mock.calls[0]?.[0].excludedPaths,
+			).toHaveLength(200);
+		});
+
+		it("maps a kept list the new paths no longer contain to EXCLUDED_PATHS_STALE, and audits nothing", async () => {
+			m.upsertContextRepositorySync.mockResolvedValue({
+				status: "excluded-paths-stale",
+			});
+
+			await expect(
+				call("configure", { ...configureInput, paths: ["notes"] }),
+			).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+				data: { code: "EXCLUDED_PATHS_STALE" },
+			});
+			expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
 		});
 	});
 

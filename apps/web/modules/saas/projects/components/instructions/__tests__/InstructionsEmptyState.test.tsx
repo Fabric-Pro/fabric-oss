@@ -117,13 +117,24 @@ function mutationOptionsStub(mutationFn: (input: unknown) => Promise<unknown>) {
 const listRuns = vi.hoisted(() => vi.fn());
 
 // `RepositorySyncSettingsSection`'s own procedures (disable, the automatic
-// toggle's configure, and the read-only proposal toggle's
-// updateProposalSettings), per B-1, and what the History dialog mounts once
+// toggle's configure, the read-only proposal toggle's
+// updateProposalSettings, and getSettings for the line that says what
+// syncs, Fizzy #2750 §6), per B-1, and what the History dialog mounts once
 // opened: its snapshot mutations and the sync-runs list.
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
 			instructions: {
+				getSettings: {
+					queryOptions: (o: { input: unknown }) => ({
+						queryKey: ["getSettings", o.input],
+						queryFn: async () => ({
+							ignoreGlobs: null,
+							defaultIgnoreGlobs: [],
+							sourceOfTruth: "REPOSITORY",
+						}),
+					}),
+				},
 				publish: {
 					mutationOptions: mutationOptionsStub(async () => ({})),
 				},

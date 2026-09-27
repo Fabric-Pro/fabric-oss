@@ -22,15 +22,28 @@
  * loads and before any credential is resolved, and the dialog keeps typed
  * paths.
  *
- * Only selectable entries are returned: each entry, folder or file, must
- * pass `configure`'s own per-path rule (`contextSyncPathSelectable` in
- * `./paths`: length, canonical spelling, no `.fabric` segment, no excluded
- * basename). A rejected folder is dropped WITH its descendants, even those
- * that would pass alone, so the tree never shows a folder's contents
- * without the folder. Files are not filtered by extension:
- * that rule lives in `@repo/temporal`'s `context-sync-rules.ts`, which this
- * package does not reach into; a selected folder's non-text files are left
- * out by the run.
+ * EVERY entry the provider listed is returned, in its order (Fizzy #2750
+ * §5.7): the dialog shows rows that will never sync with the reason, rather
+ * than hiding them. Each entry is the provider's `{ path, type, regular? }`
+ * plus `configure`'s own verdict on its path in the two roles a tree row
+ * can play, each ABSENT when `configure` would accept the path in that role:
+ *
+ *  - `selectRefusal`: why `configure` would refuse the path as a selected
+ *    path (`contextSyncPathSelectable`): `INVALID_PATH` (too long, or not
+ *    its own canonical spelling) or `EXCLUDED_PATH` (a `.fabric` segment, or
+ *    a coding-instructions basename — `configure` cannot tell a file from a
+ *    folder, so a folder named `AGENTS.md` is refused too, while a file
+ *    inside it is judged by its own basename);
+ *  - `excludeRefusal`: why `configure` would refuse it as a left-out path
+ *    (`contextSyncExcludedPathAllowed`): `INVALID_PATH`, `EXCLUDED_PATH` (a
+ *    `.fabric` segment) or `EXCLUDED_PATH_POLICY_FILE` (a `.contextignore`).
+ *    A coding-instructions file may be left out (a no-op).
+ *
+ * Each entry is judged by its own path alone. Whether it would actually
+ * sync — the defaults applied relative to the folder that owns it, the text
+ * extensions, symbolic links — is the dialog's call, made with the rules
+ * the run itself uses (`@repo/instructions/context-sync-rules`), and so is
+ * whether a row sits inside a selected or left-out folder.
  *
  * Not audited: it returns structure, not content, and writes nothing — as
  * `configure`'s own branch check is not audited apart from the write it
@@ -49,7 +62,10 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
 import { resolveContextSyncAccess } from "./access";
-import { contextSyncPathSelectable } from "./paths";
+import {
+	contextSyncExcludedPathAllowed,
+	contextSyncPathSelectable,
+} from "./paths";
 import {
 	contextSyncRefSchema,
 	loadContextSyncIntegration,
@@ -57,28 +73,30 @@ import {
 	resolveContextSyncCredential,
 } from "./repository";
 
-/**
- * The entries whose path, and every ancestor folder's path, passes
- * `contextSyncPathSelectable`: a rejected folder takes its descendants
- * with it, whether or not the provider listed the folder itself.
- */
-function selectableEntries(
+/** One listed entry, with `configure`'s verdict on its path (file comment). */
+export type ContextRepositoryTreeEntry = RepositoryTreeEntry & {
+	/** Absent when the path may be selected. */
+	selectRefusal?: "INVALID_PATH" | "EXCLUDED_PATH";
+	/** Absent when the path may be left out. */
+	excludeRefusal?:
+		| "INVALID_PATH"
+		| "EXCLUDED_PATH"
+		| "EXCLUDED_PATH_POLICY_FILE";
+};
+
+/** Every entry, each with the verdicts its own path earns. */
+function withPathVerdicts(
 	entries: readonly RepositoryTreeEntry[],
-): RepositoryTreeEntry[] {
-	const verdicts = new Map<string, boolean>();
-	const selectable = (path: string): boolean => {
-		const known = verdicts.get(path);
-		if (known !== undefined) {
-			return known;
-		}
-		const slash = path.lastIndexOf("/");
-		const verdict =
-			contextSyncPathSelectable(path).ok &&
-			(slash === -1 || selectable(path.slice(0, slash)));
-		verdicts.set(path, verdict);
-		return verdict;
-	};
-	return entries.filter((entry) => selectable(entry.path));
+): ContextRepositoryTreeEntry[] {
+	return entries.map((entry) => {
+		const select = contextSyncPathSelectable(entry.path);
+		const exclude = contextSyncExcludedPathAllowed(entry.path);
+		return {
+			...entry,
+			...(select.ok ? {} : { selectRefusal: select.code }),
+			...(exclude.ok ? {} : { excludeRefusal: exclude.code }),
+		};
+	});
 }
 
 export const listContextRepositoryTreeProcedure = tenantProtectedProcedure
@@ -107,7 +125,7 @@ export const listContextRepositoryTreeProcedure = tenantProtectedProcedure
 			context,
 		}): Promise<{
 			supported: boolean;
-			entries: RepositoryTreeEntry[];
+			entries: ContextRepositoryTreeEntry[];
 			truncated: boolean;
 		}> => {
 			const { organizationId } = await resolveContextSyncAccess(
@@ -151,7 +169,7 @@ export const listContextRepositoryTreeProcedure = tenantProtectedProcedure
 			}
 			return {
 				supported: true,
-				entries: selectableEntries(result.entries),
+				entries: withPathVerdicts(result.entries),
 				truncated: result.truncated,
 			};
 		},

@@ -9,9 +9,9 @@ import { useEffect, useState } from "react";
  * synchronous stub, so the debounce a caller depends on would go
  * unverified. This timer is cleared on every change and on unmount.
  *
- * Shared by the repository-sync tree browsers of Living Memory (Fizzy #2674)
- * and Coding Instructions (Fizzy #2725), which list a branch only once its
- * name has settled.
+ * Shared by the two repository-sync configure dialogs, Living Memory's
+ * (Fizzy #2674) and Coding Instructions' (Fizzy #2725), which list a branch
+ * for the selection tree (Fizzy #2750) only once its name has settled.
  */
 export function useSettledValue<T>(value: T, delayMs: number): T {
 	const [settled, setSettled] = useState(value);

@@ -1,22 +1,26 @@
 /**
  * The Living Memory repository-sync configure dialog (design 2026-09-23
- * §5.1, §7.2, Fizzy #2657):
+ * §5.1, §7.2, Fizzy #2657; selection Fizzy #2750 §5.7, §6):
  *  - the integration select renders only when more than one ACTIVE
  *    integration exists, and the branch input seeds from the chosen
  *    integration's defaultBranch;
- *  - the paths chips editor validates each addition client-side, mirroring
- *    the server's `paths.ts` rules, with inline errors;
- *  - submit calls `configure` then `syncNow`;
- *  - a server error code renders inline, and `configure`'s
- *    `REPOSITORY_CHANGE_REQUIRES_DISCONNECT` names the repository change it
- *    refuses;
+ *  - what syncs is chosen in the shared selection tree over the branch's
+ *    `listTree`: a tick selects a folder or file, an untick inside a ticked
+ *    folder leaves it out, a partial folder shows a dash, and a row the run
+ *    would never sync says why;
+ *  - the typed "Add a path" input is offered only where the tree cannot
+ *    reach (no listing, a truncated one, or a failed one), validates as the
+ *    server does, and is the same transition as a tick;
+ *  - Save waits until something is selected and says why; it calls
+ *    `configure` with the paths and, always explicitly, `excludedPaths`,
+ *    then `syncNow`;
+ *  - a server error code renders inline, including the codes about what the
+ *    member left out, and `REPOSITORY_CHANGE_REQUIRES_DISCONNECT` names the
+ *    repository change it refuses;
  *  - "Keep in sync automatically" (design §11.1, Fizzy #2673) is ticked for
  *    a first configure and sent, is seeded from the stored value when
  *    changing one, and is sent then only when the member touched it —
  *    omitted, the server keeps the stored value.
- *  - the tree browser (Fizzy #2674) lists the branch through `listTree`,
- *    writes to the same chips as the typed input, disables what the chip
- *    validation would refuse, searches, and degrades to typed paths.
  */
 
 import { render, screen, waitFor, within } from "@testing-library/react";
@@ -171,13 +175,32 @@ function renderDialog(
 }
 
 async function addPath(user: ReturnType<typeof userEvent.setup>, path: string) {
-	const input = screen.getByLabelText(`${NS}.configureDialog.pathsLabel`);
+	const input = screen.getByLabelText(
+		`${NS}.configureDialog.typedPath.label`,
+	);
 	await user.clear(input);
 	if (path !== "") {
 		await user.type(input, path);
 	}
-	await user.click(screen.getByText(`${NS}.configureDialog.addPath`));
+	await user.click(
+		screen.getByRole("button", {
+			name: `${NS}.configureDialog.typedPath.add`,
+		}),
+	);
 }
+
+/** The "Syncs" list under the tree. */
+function syncsList() {
+	return screen.getByRole("list", {
+		name: `${NS}.configureDialog.selectedPaths.label`,
+	});
+}
+
+function saveButton() {
+	return screen.getByRole("button", { name: `${NS}.configureDialog.submit` });
+}
+
+const UNSUPPORTED = { supported: false, entries: [], truncated: false };
 
 describe("ConfigureContextRepositorySyncDialog — integration select", () => {
 	beforeEach(() => {
@@ -236,59 +259,74 @@ describe("ConfigureContextRepositorySyncDialog — integration select", () => {
 	});
 });
 
-describe("ConfigureContextRepositorySyncDialog — paths chips validation", () => {
+describe("ConfigureContextRepositorySyncDialog — typed paths", () => {
 	beforeEach(() => {
 		configureMock.mockReset();
 		syncNowMock.mockReset();
+		listTreeMock.mockResolvedValue(UNSUPPORTED);
 	});
 
-	it("adds a valid path as a chip and clears the input", async () => {
+	async function renderTyped(
+		overrides: Parameters<typeof renderDialog>[0] = {},
+	) {
+		const handles = renderDialog(overrides);
+		await screen.findByLabelText(`${NS}.configureDialog.typedPath.label`);
+		return handles;
+	}
+
+	it("adds a valid path to what syncs and clears the input", async () => {
 		const user = userEvent.setup();
-		renderDialog();
+		await renderTyped();
 		await addPath(user, "docs/guides");
-		const chips = screen.getByTestId("context-sync-paths-chips");
-		expect(within(chips).getByText("docs/guides")).toBeInTheDocument();
+		expect(
+			within(syncsList()).getByText("docs/guides"),
+		).toBeInTheDocument();
 		expect(
 			(
 				screen.getByLabelText(
-					`${NS}.configureDialog.pathsLabel`,
+					`${NS}.configureDialog.typedPath.label`,
 				) as HTMLInputElement
 			).value,
 		).toBe("");
 	});
 
-	it("removes a chip via its remove button", async () => {
+	it("removes a path via its remove button", async () => {
 		const user = userEvent.setup();
-		renderDialog();
+		await renderTyped();
 		await addPath(user, "docs");
-		const chips = screen.getByTestId("context-sync-paths-chips");
 		await user.click(
-			within(chips).getByLabelText(
-				`${NS}.configureDialog.removePath${JSON.stringify({ path: "docs" })}`,
-			),
+			within(syncsList()).getByRole("button", {
+				name: `${NS}.configureDialog.selectedPaths.remove${JSON.stringify({ path: "docs" })}`,
+			}),
 		);
-		expect(within(chips).queryByText("docs")).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("list", {
+				name: `${NS}.configureDialog.selectedPaths.label`,
+			}),
+		).not.toBeInTheDocument();
 	});
 
-	it("rejects a trailing slash inline, without adding a chip", async () => {
+	it("rejects a trailing slash inline, tied to the input, without adding it", async () => {
 		const user = userEvent.setup();
-		renderDialog();
+		await renderTyped();
 		await addPath(user, "docs/");
+		const error = screen.getByText(
+			`${NS}.pathErrors.INVALID_PATH${JSON.stringify({ path: "docs/" })}`,
+		);
+		expect(error).toHaveAttribute("role", "alert");
 		expect(
-			screen.getByText(
-				`${NS}.pathErrors.INVALID_PATH${JSON.stringify({ path: "docs/" })}`,
-			),
-		).toBeInTheDocument();
+			screen.getByLabelText(`${NS}.configureDialog.typedPath.label`),
+		).toHaveAccessibleDescription(error.textContent ?? "");
 		expect(
-			within(screen.getByTestId("context-sync-paths-chips")).queryByText(
-				"docs/",
-			),
+			screen.queryByRole("list", {
+				name: `${NS}.configureDialog.selectedPaths.label`,
+			}),
 		).not.toBeInTheDocument();
 	});
 
 	it("rejects a backslash inline", async () => {
 		const user = userEvent.setup();
-		renderDialog();
+		await renderTyped();
 		await addPath(user, "docs\\guides");
 		expect(
 			screen.getByText(
@@ -297,9 +335,51 @@ describe("ConfigureContextRepositorySyncDialog — paths chips validation", () =
 		).toBeInTheDocument();
 	});
 
+	it("rejects a decomposed (NFD) spelling inline, as configure would", async () => {
+		const user = userEvent.setup();
+		await renderTyped();
+		const decomposed = "docs/café.md";
+		await addPath(user, decomposed);
+		expect(
+			screen.getByText(
+				`${NS}.pathErrors.INVALID_PATH${JSON.stringify({ path: decomposed })}`,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("list", {
+				name: `${NS}.configureDialog.selectedPaths.label`,
+			}),
+		).not.toBeInTheDocument();
+	});
+
+	it("rejects a path longer than configure accepts inline", async () => {
+		const user = userEvent.setup();
+		await renderTyped();
+		const long = `docs/${"x".repeat(1024)}`;
+		await user.click(
+			screen.getByLabelText(`${NS}.configureDialog.typedPath.label`),
+		);
+		await user.paste(long);
+		await user.click(
+			screen.getByRole("button", {
+				name: `${NS}.configureDialog.typedPath.add`,
+			}),
+		);
+		expect(
+			screen.getByText(
+				`${NS}.pathErrors.INVALID_PATH${JSON.stringify({ path: long })}`,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("list", {
+				name: `${NS}.configureDialog.selectedPaths.label`,
+			}),
+		).not.toBeInTheDocument();
+	});
+
 	it("rejects an excluded basename (CLAUDE.md), case-insensitively", async () => {
 		const user = userEvent.setup();
-		renderDialog();
+		await renderTyped();
 		await addPath(user, "docs/claude.md");
 		expect(
 			screen.getByText(
@@ -308,9 +388,9 @@ describe("ConfigureContextRepositorySyncDialog — paths chips validation", () =
 		).toBeInTheDocument();
 	});
 
-	it("rejects a path that overlaps one already selected", async () => {
+	it("rejects a path inside one already selected", async () => {
 		const user = userEvent.setup();
-		renderDialog();
+		await renderTyped();
 		await addPath(user, "docs");
 		await addPath(user, "docs/guides");
 		expect(
@@ -321,34 +401,83 @@ describe("ConfigureContextRepositorySyncDialog — paths chips validation", () =
 				})}`,
 			),
 		).toBeInTheDocument();
-		const chips = screen.getByTestId("context-sync-paths-chips");
 		expect(
-			within(chips).queryByText("docs/guides"),
+			within(syncsList()).queryByText("docs/guides"),
 		).not.toBeInTheDocument();
 	});
 
-	it("only allows the whole-repository selection alone", async () => {
+	it("absorbs the selected paths inside a typed folder, as ticking a partial folder does", async () => {
 		const user = userEvent.setup();
-		renderDialog();
+		await renderTyped();
+		await addPath(user, "docs/guides");
+		await addPath(user, "docs/api");
 		await addPath(user, "docs");
+		expect(
+			within(syncsList())
+				.getAllByRole("listitem")
+				.map((item) => item.textContent),
+		).toEqual(["docs"]);
+	});
+
+	it("says what to do when nothing is typed, and names the whole repository when a path is inside it", async () => {
+		const user = userEvent.setup();
+		await renderTyped();
 		await addPath(user, "");
 		expect(
+			screen.getByText(`${NS}.configureDialog.typedPath.empty`),
+		).toBeInTheDocument();
+		await user.click(
+			screen.getByRole("button", { name: `${NS}.tree.selectAll` }),
+		);
+		await addPath(user, "docs");
+		expect(
 			screen.getByText(
-				`${NS}.pathErrors.PATH_PREFIX_OVERLAP${JSON.stringify({
-					path: "",
-					withPath: "docs",
-				})}`,
+				`${NS}.pathErrors.INSIDE_WHOLE_REPOSITORY${JSON.stringify({ path: "docs" })}`,
 			),
 		).toBeInTheDocument();
 	});
 
-	it("keeps Save disabled until at least one path is selected", async () => {
+	it("checks the 50-path cap after absorbing", async () => {
 		const user = userEvent.setup();
-		renderDialog();
-		const submit = screen.getByText(`${NS}.configureDialog.submit`);
-		expect(submit.closest("button")).toBeDisabled();
+		const fifty = Array.from({ length: 50 }, (_, i) => `docs/p${i}`);
+		await renderTyped({ current: configuration(fifty) });
+		await addPath(user, "notes.md");
+		expect(
+			screen.getByText(
+				`${NS}.pathErrors.TOO_MANY_PATHS${JSON.stringify({ max: 50 })}`,
+			),
+		).toBeInTheDocument();
 		await addPath(user, "docs");
-		expect(submit.closest("button")).toBeEnabled();
+		expect(
+			within(syncsList())
+				.getAllByRole("listitem")
+				.map((item) => item.textContent),
+		).toEqual(["docs"]);
+	});
+
+	it("keeps Save disabled until something is selected, pointing at the reason", async () => {
+		const user = userEvent.setup();
+		await renderTyped();
+		expect(saveButton()).toBeDisabled();
+		expect(saveButton()).toHaveAccessibleDescription(
+			`${NS}.summary.nothingSelected`,
+		);
+		await addPath(user, "docs");
+		expect(saveButton()).toBeEnabled();
+		expect(saveButton()).not.toHaveAttribute("aria-describedby");
+	});
+
+	it("says why Save is disabled without a branch", async () => {
+		const user = userEvent.setup();
+		await renderTyped();
+		await addPath(user, "docs");
+		await user.clear(
+			screen.getByLabelText(`${NS}.configureDialog.branchLabel`),
+		);
+		expect(saveButton()).toBeDisabled();
+		expect(saveButton()).toHaveAccessibleDescription(
+			`${NS}.configureDialog.saveBlocked.noBranch`,
+		);
 	});
 });
 
@@ -356,16 +485,22 @@ describe("ConfigureContextRepositorySyncDialog — submit", () => {
 	beforeEach(() => {
 		configureMock.mockReset();
 		syncNowMock.mockReset();
+		listTreeMock.mockResolvedValue(UNSUPPORTED);
 	});
 
-	it("calls configure then syncNow, then reports success and closes", async () => {
+	async function renderAndSelectDocs() {
+		const user = userEvent.setup();
+		const handles = renderDialog();
+		await screen.findByLabelText(`${NS}.configureDialog.typedPath.label`);
+		await addPath(user, "docs");
+		return { user, ...handles };
+	}
+
+	it("calls configure with the paths and an explicit empty excludedPaths, then syncNow, then reports success and closes", async () => {
 		configureMock.mockResolvedValue({ syncId: "sync_1", generation: 1 });
 		syncNowMock.mockResolvedValue({ started: true });
-		const user = userEvent.setup();
-		const { onOpenChange, onSaved } = renderDialog();
-
-		await addPath(user, "docs");
-		await user.click(screen.getByText(`${NS}.configureDialog.submit`));
+		const { user, onOpenChange, onSaved } = await renderAndSelectDocs();
+		await user.click(saveButton());
 
 		await waitFor(() =>
 			expect(configureMock).toHaveBeenCalledWith({
@@ -374,8 +509,13 @@ describe("ConfigureContextRepositorySyncDialog — submit", () => {
 				repositoryIntegrationId: "int_1",
 				ref: "main",
 				paths: ["docs"],
+				excludedPaths: [],
 				automatic: true,
 			}),
+		);
+		expect(configureMock.mock.calls[0]?.[0]).toHaveProperty(
+			"excludedPaths",
+			[],
 		);
 		await waitFor(() =>
 			expect(syncNowMock).toHaveBeenCalledWith({
@@ -395,10 +535,8 @@ describe("ConfigureContextRepositorySyncDialog — submit", () => {
 			message: "server message",
 			data: { code: "BRANCH_NOT_FOUND" },
 		});
-		const user = userEvent.setup();
-		renderDialog();
-		await addPath(user, "docs");
-		await user.click(screen.getByText(`${NS}.configureDialog.submit`));
+		const { user } = await renderAndSelectDocs();
+		await user.click(saveButton());
 
 		expect(
 			await screen.findByText(
@@ -415,6 +553,43 @@ describe("ConfigureContextRepositorySyncDialog — submit", () => {
 		expect(syncNowMock).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		["EXCLUDED_PATH_POLICY_FILE", { path: "docs/.contextignore" }],
+		["TOO_MANY_EXCLUDED_PATHS", {}],
+		["EXCLUDED_PATH_OUTSIDE_SELECTION", { path: "notes/old.md" }],
+		[
+			"EXCLUDED_PATH_OVERLAP",
+			{ path: "docs/old/a.md", withPath: "docs/old" },
+		],
+		["EXCLUDED_PATHS_STALE", {}],
+	] as const)(
+		"renders %s inline with its path, tied to the paths field, and does not start syncNow (Fizzy #2750 §5.3)",
+		async (code, data) => {
+			configureMock.mockRejectedValue({
+				message: "server message",
+				data: { code, ...data },
+			});
+			const { user } = await renderAndSelectDocs();
+			await user.click(saveButton());
+
+			const error = await screen.findByText(
+				`${NS}.configureDialog.errors.${code}${JSON.stringify({
+					path: "path" in data ? data.path : "",
+					withPath: "withPath" in data ? data.withPath : "",
+					managedCount: 0,
+				})}`,
+			);
+			expect(error).toHaveAttribute("role", "alert");
+			expect(
+				screen.getByLabelText(`${NS}.configureDialog.typedPath.label`),
+			).toHaveAttribute("aria-invalid", "true");
+			expect(syncNowMock).not.toHaveBeenCalled();
+			expect(toast.error).not.toHaveBeenCalledWith(
+				expect.stringContaining(code),
+			);
+		},
+	);
+
 	it("names the disconnect-first requirement for REPOSITORY_CHANGE_REQUIRES_DISCONNECT", async () => {
 		configureMock.mockRejectedValue({
 			message: "server message",
@@ -423,10 +598,8 @@ describe("ConfigureContextRepositorySyncDialog — submit", () => {
 				managedCount: 5,
 			},
 		});
-		const user = userEvent.setup();
-		renderDialog();
-		await addPath(user, "docs");
-		await user.click(screen.getByText(`${NS}.configureDialog.submit`));
+		const { user } = await renderAndSelectDocs();
+		await user.click(saveButton());
 
 		expect(
 			await screen.findByText(
@@ -444,6 +617,7 @@ const CURRENT = {
 	repositoryIntegrationId: "int_1",
 	ref: "release",
 	paths: ["docs"],
+	excludedPaths: ["docs/old"],
 	automatic: false,
 	automaticPausedReason: null,
 	automaticPausedAt: null,
@@ -490,9 +664,11 @@ describe("ConfigureContextRepositorySyncDialog — Keep in sync automatically", 
 	it("sends automatic: false when the member unticks it on a first configure", async () => {
 		const user = userEvent.setup();
 		const { onOpenChange } = renderDialog();
-		await addPath(user, "docs");
+		await user.click(
+			screen.getByRole("button", { name: `${NS}.tree.selectAll` }),
+		);
 		await user.click(automaticCheckbox());
-		await user.click(screen.getByText(`${NS}.configureDialog.submit`));
+		await user.click(saveButton());
 		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
 		expect(configureMock).toHaveBeenCalledWith(
 			expect.objectContaining({ automatic: false }),
@@ -517,12 +693,14 @@ describe("ConfigureContextRepositorySyncDialog — Keep in sync automatically", 
 		await user.click(screen.getByText(`${NS}.configureDialog.submit`));
 		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
 		expect(configureMock).toHaveBeenCalledTimes(1);
+		// What is left out is always sent, unchanged here (Fizzy #2750 §5.2).
 		expect(configureMock.mock.calls[0]?.[0]).toEqual({
 			projectId: "proj_1",
 			organizationId: "org_1",
 			repositoryIntegrationId: "int_1",
 			ref: "release",
 			paths: ["docs"],
+			excludedPaths: ["docs/old"],
 		});
 		expect(configureMock.mock.calls[0]?.[0]).not.toHaveProperty(
 			"automatic",
@@ -541,7 +719,7 @@ describe("ConfigureContextRepositorySyncDialog — Keep in sync automatically", 
 	});
 });
 
-// ── Tree browser (Fizzy #2674) ─────────────────────────────────────────────
+// ── The selection tree (Fizzy #2674, #2750) ────────────────────────────────
 
 /** Provider order, deliberately unsorted; `src` is only implied by its file. */
 const TREE = {
@@ -572,10 +750,6 @@ function treeCheckbox(path: string) {
 	return within(treeList()).getByRole("checkbox", { name: path });
 }
 
-function chips() {
-	return screen.getByTestId("context-sync-paths-chips");
-}
-
 async function renderTree(
 	overrides: Parameters<typeof renderDialog>[0] = {},
 	listing: unknown = TREE,
@@ -586,12 +760,18 @@ async function renderTree(
 	return handles;
 }
 
-function configuration(paths: string[]) {
+function configuration(paths: string[], excludedPaths: string[] = []) {
 	return {
 		syncId: "sync_1",
 		repositoryIntegrationId: "int_1",
 		ref: "main",
 		paths,
+		excludedPaths,
+		automatic: false,
+		automaticPausedReason: null,
+		automaticPausedAt: null,
+		nextCheckAt: null,
+		failureCount: 0,
 		lastAppliedCommitSha: null,
 		configuredByName: null,
 		createdAt: "2026-09-01T00:00:00.000Z",
@@ -702,124 +882,227 @@ describe("ConfigureContextRepositorySyncDialog — tree selection", () => {
 		syncNowMock.mockReset();
 	});
 
-	it("checking a folder adds its chip and covers its descendants; unchecking removes the chip", async () => {
-		const user = userEvent.setup();
+	it("starts with nothing ticked for a new configuration, and offers no typed input while the tree lists everything", async () => {
 		await renderTree();
-		await user.click(treeCheckbox("docs"));
-
-		expect(within(chips()).getByText("docs")).toBeInTheDocument();
-		expect(treeCheckbox("docs")).toBeChecked();
-		expect(treeCheckbox("docs/guide.md")).toBeDisabled();
-		expect(treeCheckbox("docs/guide.md")).not.toBeChecked();
-		expect(treeCheckbox("docs/api")).toBeDisabled();
+		for (const box of within(treeList()).getAllByRole("checkbox")) {
+			expect(box).toHaveAttribute("aria-checked", "false");
+		}
 		expect(
-			screen.getAllByText(`${NS}.tree.coveredByParent`).length,
-		).toBeGreaterThan(0);
-
-		await user.click(treeCheckbox("docs"));
-		expect(within(chips()).queryByText("docs")).not.toBeInTheDocument();
-		expect(treeCheckbox("docs/guide.md")).toBeEnabled();
-	});
-
-	it("checking a file adds its chip", async () => {
-		const user = userEvent.setup();
-		await renderTree();
-		await user.click(treeCheckbox("README.md"));
-		expect(within(chips()).getByText("README.md")).toBeInTheDocument();
-		expect(treeCheckbox("README.md")).toBeChecked();
-	});
-
-	it("removing a folder's chip unchecks it and re-enables its descendants", async () => {
-		const user = userEvent.setup();
-		await renderTree();
-		await user.click(treeCheckbox("docs"));
-		expect(treeCheckbox("docs/guide.md")).toBeDisabled();
-
-		await user.click(
-			within(chips()).getByLabelText(
-				`${NS}.configureDialog.removePath${JSON.stringify({ path: "docs" })}`,
-			),
-		);
-		expect(treeCheckbox("docs")).not.toBeChecked();
-		expect(treeCheckbox("docs/guide.md")).toBeEnabled();
+			screen.getByText(`${NS}.summary.nothingSelected`),
+		).toBeInTheDocument();
+		expect(saveButton()).toBeDisabled();
 		expect(
-			screen.queryByText(`${NS}.tree.coveredByParent`),
+			screen.queryByLabelText(`${NS}.configureDialog.typedPath.label`),
 		).not.toBeInTheDocument();
 	});
 
-	it("disables a folder while a path inside it is selected, and says why", async () => {
+	it("ticking a folder selects it, and everything inside it syncs and can be unticked", async () => {
+		const user = userEvent.setup();
+		await renderTree();
+		await user.click(treeCheckbox("docs"));
+
+		expect(treeCheckbox("docs")).toBeChecked();
+		expect(treeCheckbox("docs/guide.md")).toBeChecked();
+		expect(treeCheckbox("docs/guide.md")).toBeEnabled();
+		expect(treeCheckbox("docs/api")).toBeChecked();
+		expect(within(syncsList()).getByText("docs/")).toBeInTheDocument();
+		expect(saveButton()).toBeEnabled();
+
+		await user.click(treeCheckbox("docs"));
+		expect(treeCheckbox("docs")).not.toBeChecked();
+		expect(treeCheckbox("docs/guide.md")).not.toBeChecked();
+	});
+
+	it("unticking inside a ticked folder leaves it out, shows the folder as partial and lists the exception", async () => {
+		const user = userEvent.setup();
+		await renderTree();
+		await user.click(treeCheckbox("docs"));
+		await user.click(treeCheckbox("docs/guide.md"));
+
+		expect(treeCheckbox("docs/guide.md")).not.toBeChecked();
+		expect(treeCheckbox("docs")).toHaveAttribute("aria-checked", "mixed");
+		expect(
+			within(syncsList()).getByText(
+				`${NS}.configureDialog.selectedPaths.except${JSON.stringify({ path: "docs/guide.md" })}`,
+			),
+		).toBeInTheDocument();
+
+		// Ticking the partial folder clears what was left out inside it.
+		await user.click(treeCheckbox("docs"));
+		expect(treeCheckbox("docs")).toBeChecked();
+		expect(treeCheckbox("docs/guide.md")).toBeChecked();
+	});
+
+	it("a left-out folder's contents say why they can't be ticked", async () => {
+		const user = userEvent.setup();
+		await renderTree();
+		await user.click(treeCheckbox("docs"));
+		await user.click(treeCheckbox("docs/api"));
+		await user.click(
+			within(treeList()).getByRole("button", { name: "api" }),
+		);
+
+		expect(treeCheckbox("docs/api/ref.md")).toBeDisabled();
+		expect(treeCheckbox("docs/api/ref.md")).toHaveAccessibleDescription(
+			`${NS}.tree.selection.leftOutBecause${JSON.stringify({ path: "docs/api" })}`,
+		);
+	});
+
+	it("includes a left-out path again from the list", async () => {
+		const user = userEvent.setup();
+		await renderTree();
+		await user.click(treeCheckbox("docs"));
+		await user.click(treeCheckbox("docs/guide.md"));
+		await user.click(
+			within(syncsList()).getByRole("button", {
+				name: `${NS}.configureDialog.selectedPaths.includeAgain${JSON.stringify({ path: "docs/guide.md" })}`,
+			}),
+		);
+		expect(treeCheckbox("docs/guide.md")).toBeChecked();
+		expect(treeCheckbox("docs")).toBeChecked();
+	});
+
+	it("ticking a file outside every selection selects it, and its folder reads partial until ticked", async () => {
 		const user = userEvent.setup();
 		await renderTree();
 		await user.click(treeCheckbox("docs/guide.md"));
-
-		expect(treeCheckbox("docs")).toBeDisabled();
-		expect(treeCheckbox("docs")).not.toBeChecked();
+		expect(treeCheckbox("docs/guide.md")).toBeChecked();
+		expect(treeCheckbox("docs")).toHaveAttribute("aria-checked", "mixed");
 		expect(
-			screen.getByText(`${NS}.tree.containsSelected`),
+			within(syncsList()).getByText("docs/guide.md"),
 		).toBeInTheDocument();
-		expect(within(chips()).queryByText("docs")).not.toBeInTheDocument();
+
+		// Ticking the folder absorbs the file.
+		await user.click(treeCheckbox("docs"));
+		expect(
+			within(syncsList())
+				.getAllByRole("listitem")
+				.map((item) => item.textContent),
+		).toEqual(["docs/"]);
 	});
 
-	it("still rejects an overlapping typed path after a tree selection", async () => {
+	it("says why a row the run would never sync can't be ticked", async () => {
+		const user = userEvent.setup();
+		await renderTree(
+			{},
+			{
+				supported: true,
+				truncated: false,
+				entries: [
+					{ path: "docs", type: "dir" },
+					{
+						path: "docs/AGENTS.md",
+						type: "file",
+						selectRefusal: "EXCLUDED_PATH",
+					},
+					{ path: "docs/logo.png", type: "file" },
+					{ path: "docs/link.md", type: "file", regular: false },
+					{ path: "skills", type: "dir" },
+					{ path: "skills/x.md", type: "file" },
+				],
+			},
+		);
+		expect(treeCheckbox("docs/AGENTS.md")).toHaveAccessibleDescription(
+			`${NS}.tree.selection.codingInstructionsFile`,
+		);
+		expect(treeCheckbox("docs/logo.png")).toHaveAccessibleDescription(
+			`${NS}.tree.selection.nonText`,
+		);
+		expect(treeCheckbox("docs/link.md")).toHaveAccessibleDescription(
+			`${NS}.tree.selection.symlink`,
+		);
+		for (const path of [
+			"docs/AGENTS.md",
+			"docs/logo.png",
+			"docs/link.md",
+		]) {
+			expect(treeCheckbox(path), path).toBeDisabled();
+		}
+		// Inside the ticked whole repository, `skills/` is a default rule.
+		await user.click(
+			screen.getByRole("button", { name: `${NS}.tree.selectAll` }),
+		);
+		expect(treeCheckbox("skills")).toBeDisabled();
+		expect(treeCheckbox("skills")).toHaveAccessibleDescription(
+			`${NS}.tree.selection.defaultRule${JSON.stringify({ rule: "skills/" })}`,
+		);
+	});
+
+	it("disables a tick that would pass 50 selected paths, and says why", async () => {
+		const fifty = Array.from({ length: 50 }, (_, i) => `selected-${i}`);
+		await renderTree({ current: configuration(fifty) });
+		expect(treeCheckbox("README.md")).toBeDisabled();
+		expect(treeCheckbox("README.md")).toHaveAccessibleDescription(
+			`${NS}.tree.selection.tooManyPaths${JSON.stringify({ max: 50 })}`,
+		);
+	});
+
+	it("Select all syncs the whole repository; Select none clears it", async () => {
+		const user = userEvent.setup();
+		await renderTree();
+		await user.click(
+			screen.getByRole("button", { name: `${NS}.tree.selectAll` }),
+		);
+		expect(
+			within(syncsList()).getByText(
+				`${NS}.configureDialog.selectedPaths.wholeRepository`,
+			),
+		).toBeInTheDocument();
+		expect(treeCheckbox("docs")).toBeChecked();
+		expect(treeCheckbox("README.md")).toBeChecked();
+		await user.click(
+			screen.getByRole("button", { name: `${NS}.tree.selectNone` }),
+		);
+		expect(
+			screen.getByText(`${NS}.summary.nothingSelected`),
+		).toBeInTheDocument();
+		expect(saveButton()).toBeDisabled();
+	});
+
+	it("summarizes what syncs with a live count that never promises", async () => {
 		const user = userEvent.setup();
 		await renderTree();
 		await user.click(treeCheckbox("docs"));
-		await addPath(user, "docs/guides");
+		await user.click(treeCheckbox("docs/guide.md"));
 		expect(
 			screen.getByText(
-				`${NS}.pathErrors.PATH_PREFIX_OVERLAP${JSON.stringify({
-					path: "docs/guides",
-					withPath: "docs",
+				`${NS}.summary.leadExcept${JSON.stringify({
+					excluded: 1,
+					what: `${NS}.summary.what.folders${JSON.stringify({ folders: 1 })}`,
 				})}`,
 			),
 		).toBeInTheDocument();
-	});
-
-	it("shows the cap message and leaves the box unchecked when 50 paths are already selected", async () => {
-		const user = userEvent.setup();
-		const fifty = Array.from({ length: 50 }, (_, i) => `selected-${i}`);
-		await renderTree({ current: configuration(fifty) });
-
-		await user.click(treeCheckbox("README.md"));
+		// docs/api/ref.md is the one listed file left.
 		expect(
 			screen.getByText(
-				`${NS}.pathErrors.TOO_MANY_PATHS${JSON.stringify({ max: 50 })}`,
-			),
-		).toBeInTheDocument();
-		expect(treeCheckbox("README.md")).not.toBeChecked();
-		expect(
-			within(chips()).queryByText("README.md"),
-		).not.toBeInTheDocument();
-
-		await addPath(user, "notes.md");
-		expect(
-			screen.getByText(
-				`${NS}.pathErrors.TOO_MANY_PATHS${JSON.stringify({ max: 50 })}`,
+				`${NS}.summary.matchNow${JSON.stringify({ count: 1 })}`,
 			),
 		).toBeInTheDocument();
 	});
 
-	it("disables the whole tree while the whole repository is selected", async () => {
-		const user = userEvent.setup();
-		await renderTree();
-		await addPath(user, "");
-		expect(
-			screen.getByText(`${NS}.tree.wholeRepository`),
-		).toBeInTheDocument();
-		for (const box of within(treeList()).getAllByRole("checkbox")) {
-			expect(box).toBeDisabled();
-		}
+	it("opens the way to a stored selection and shows what it leaves out", async () => {
+		await renderTree({
+			current: configuration(["docs"], ["docs/api/ref.md"]),
+		});
+		expect(treeCheckbox("docs")).toHaveAttribute("aria-checked", "mixed");
+		expect(treeCheckbox("docs/api")).toHaveAttribute(
+			"aria-checked",
+			"mixed",
+		);
+		expect(treeCheckbox("docs/api/ref.md")).not.toBeChecked();
+		expect(treeCheckbox("docs/guide.md")).toBeChecked();
 	});
 
-	it("submits the same paths whether they came from the tree or the input", async () => {
+	it("submits the paths and what is left out, whatever chose them", async () => {
 		configureMock.mockResolvedValue({ syncId: "sync_1", generation: 1 });
 		syncNowMock.mockResolvedValue({ started: true });
 		const user = userEvent.setup();
 		await renderTree();
 
 		await user.click(treeCheckbox("README.md"));
-		await addPath(user, "docs");
-		await user.click(screen.getByText(`${NS}.configureDialog.submit`));
+		await user.click(treeCheckbox("docs"));
+		await user.click(treeCheckbox("docs/api"));
+		await user.click(saveButton());
 
 		await waitFor(() =>
 			expect(configureMock).toHaveBeenCalledWith({
@@ -828,13 +1111,26 @@ describe("ConfigureContextRepositorySyncDialog — tree selection", () => {
 				repositoryIntegrationId: "int_1",
 				ref: "main",
 				paths: ["README.md", "docs"],
+				excludedPaths: ["docs/api"],
 				// A first configure always sends the automatic checkbox, ticked
 				// by default (Fizzy #2673).
 				automatic: true,
 			}),
 		);
-		// The typed "docs" is the tree's "docs": its row reads as checked.
-		expect(treeCheckbox("docs")).toBeChecked();
+	});
+
+	it("clearing every exclusion sends an explicit empty list", async () => {
+		configureMock.mockResolvedValue({ syncId: "sync_1", generation: 2 });
+		syncNowMock.mockResolvedValue({ started: true });
+		const user = userEvent.setup();
+		await renderTree({ current: configuration(["docs"], ["docs/api"]) });
+		await user.click(treeCheckbox("docs"));
+		await user.click(saveButton());
+		await waitFor(() => expect(configureMock).toHaveBeenCalledTimes(1));
+		expect(configureMock.mock.calls[0]?.[0]).toMatchObject({
+			paths: ["docs"],
+			excludedPaths: [],
+		});
 	});
 });
 
@@ -931,7 +1227,7 @@ describe("ConfigureContextRepositorySyncDialog — tree outcomes", () => {
 		).not.toBeInTheDocument();
 
 		await addPath(user, "docs");
-		expect(within(chips()).getByText("docs")).toBeInTheDocument();
+		expect(within(syncsList()).getByText("docs")).toBeInTheDocument();
 	});
 
 	it("says the branch has no files when the listing is empty", async () => {
@@ -939,11 +1235,22 @@ describe("ConfigureContextRepositorySyncDialog — tree outcomes", () => {
 		expect(await screen.findByText(`${NS}.tree.empty`)).toBeInTheDocument();
 	});
 
-	it("says only the first entries are shown when the listing is truncated", async () => {
+	it("says only the first entries are shown when the listing is truncated, and offers the typed input", async () => {
+		const user = userEvent.setup();
 		await renderTree({}, { ...TREE, truncated: true });
 		expect(
 			screen.getByText(
 				`${NS}.tree.truncated${JSON.stringify({ max: 20_000 })}`,
+			),
+		).toBeInTheDocument();
+		// A path beyond the listing, typed: the same selection the tree shows.
+		await addPath(user, "notes/today.md");
+		expect(
+			within(syncsList()).getByText("notes/today.md"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				`${NS}.summary.matchTruncated${JSON.stringify({ count: 0 })}`,
 			),
 		).toBeInTheDocument();
 	});
@@ -966,7 +1273,7 @@ describe("ConfigureContextRepositorySyncDialog — tree outcomes", () => {
 		).toBeInTheDocument();
 
 		await addPath(user, "docs");
-		expect(within(chips()).getByText("docs")).toBeInTheDocument();
+		expect(within(syncsList()).getByText("docs")).toBeInTheDocument();
 	});
 
 	it("falls back to the tree's own message for an unreachable repository", async () => {

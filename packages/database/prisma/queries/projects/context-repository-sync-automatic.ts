@@ -165,7 +165,8 @@ export async function writeBackContextSync(
  * `<syncId>:<pollRunId>:<generation>`, as the instructions subject's is. The
  * receipt is inserted already finished, so no `begin` or reconciliation ever
  * reads it as a predecessor, and its frozen context is the configuration
- * the check claimed, its paths read under the lock the pause took.
+ * the check claimed, its paths and left-out paths (Fizzy #2750 §5.4) read
+ * under the lock the pause took.
  */
 export async function recordContextSyncCheckFailure(
 	tx: Prisma.TransactionClient,
@@ -190,7 +191,7 @@ export async function recordContextSyncCheckFailure(
 			projectId: row.projectId,
 			organizationId: row.organizationId,
 		},
-		select: { paths: true },
+		select: { paths: true, excludedPaths: true },
 	});
 	if (!configuration) {
 		// The pause just matched this row inside this transaction, so it
@@ -210,6 +211,7 @@ export async function recordContextSyncCheckFailure(
 				context: {
 					ref: row.ref,
 					paths: [...configuration.paths],
+					excludedPaths: [...configuration.excludedPaths],
 					repositoryIntegrationId: row.repositoryIntegrationId,
 					actingUserId: row.userId,
 				},

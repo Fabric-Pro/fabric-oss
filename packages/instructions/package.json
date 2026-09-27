@@ -5,6 +5,7 @@
 	"type": "module",
 	"exports": {
 		".": "./src/index.ts",
+		"./context-sync-rules": "./src/context-sync-rules.ts",
 		"./export": "./src/export/index.ts",
 		"./proposal-branch-ref": "./src/proposal-branch-ref.ts",
 		"./workflow-ids": "./src/workflow-ids.ts"
@@ -26,6 +27,7 @@
 		"@repo/logs": "workspace:*",
 		"@repo/storage": "workspace:*",
 		"archiver": "^7.0.1",
+		"ignore": "7.0.9",
 		"zod": "4.3.6"
 	}
 }

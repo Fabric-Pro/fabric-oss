@@ -11,6 +11,12 @@
  * snapshot version.
  */
 
+import {
+	contextSyncPathSpellingProblem,
+	defaultRuleForDirectlySelectedFile,
+	isInContextSyncFabricDirectory,
+} from "@repo/instructions/context-sync-rules";
+
 // Not exported: only used to shape `ContextSyncRunView.status`/`.error`
 // below; nothing outside this file matches on the enum itself.
 type ContextSyncRunStatus = "SUCCEEDED" | "PARTIAL" | "UNCHANGED" | "FAILED";
@@ -89,6 +95,11 @@ export type ContextSyncConfiguration = {
 	repositoryIntegrationId: string;
 	ref: string;
 	paths: string[];
+	/**
+	 * What the member left out inside the selected folders (Fizzy #2750
+	 * §5.3): canonical, sorted. `configure` keeps it when a call omits it.
+	 */
+	excludedPaths: string[];
 	/** The shared poll and the GitHub push webhook start runs (§11.1). */
 	automatic: boolean;
 	automaticPausedReason: ContextSyncPauseReason | null;
@@ -415,6 +426,12 @@ const PATHS_FIELD_CODES = new Set([
 	"EXCLUDED_PATH",
 	"PATH_PREFIX_OVERLAP",
 	"TOO_MANY_PATHS",
+	// What the member left out (Fizzy #2750 §5.2, §5.3).
+	"EXCLUDED_PATH_POLICY_FILE",
+	"TOO_MANY_EXCLUDED_PATHS",
+	"EXCLUDED_PATH_OUTSIDE_SELECTION",
+	"EXCLUDED_PATH_OVERLAP",
+	"EXCLUDED_PATHS_STALE",
 ]);
 const BRANCH_FIELD_CODES = new Set(["BRANCH_NOT_FOUND"]);
 /** Inline, but not attached to either field — a repository-level refusal. */
@@ -539,22 +556,14 @@ export function contextSyncNowResultMessage(
 	};
 }
 
-// ── Paths editor: client-side validation mirroring the server's
+// ── Typed paths: client-side validation mirroring the server's
 // `packages/api/modules/projects/procedures/contexts/repository-sync/paths.ts`
-// (design §2, §5.1). A twin, not a re-export: the server stays authoritative,
-// this only catches the common mistakes before a round trip. ───────────────
+// (design §2, §5.1). Every per-path rule (the spelling and length rule,
+// `.fabric`, the coding-instructions basenames) is the canonical module's,
+// which the server imports too, so the dialog refuses exactly what
+// `configure` would; the server stays authoritative either way. ──────────
 
 export const CONTEXT_SYNC_MAX_PATHS = 50;
-
-/**
- * `path` has a `.fabric` segment, at any depth and in any case: the CLI's
- * own state, which `paths.ts` refuses whatever the path names (Fizzy #2704).
- */
-function isInContextSyncFabricDirectory(path: string): boolean {
-	return path
-		.split("/")
-		.some((segment) => segment.toLowerCase() === ".fabric");
-}
 
 /**
  * An `EXCLUDED_PATH` refusal's copy: `.fabric` has its own, since it is not
@@ -571,54 +580,9 @@ function excludedPathCopy(
 		: code;
 }
 
-/**
- * The default exclusions' FILE patterns only (`paths.ts` — a directly
- * selected file's basename against these; a folder selection is not
- * excluded by name). Keep in sync with the server's twin and the CLI's.
- */
-const EXCLUDED_CONTEXT_SYNC_BASENAMES: ReadonlySet<string> = new Set([
-	"claude.md",
-	"agents.md",
-	"gemini.md",
-	".contextignore",
-]);
-
-function contextSyncPathBasename(path: string): string {
-	const slash = path.lastIndexOf("/");
-	return slash === -1 ? path : path.slice(slash + 1);
-}
-
-/**
- * A lighter canonical check than the server's `normalizeContextSourcePath`
- * (no Unicode-normalization comparison): no surrounding whitespace, no
- * backslash, no trailing slash, no leading slash, no empty/`.`/`..` segment,
- * no control character. Good enough to catch typing mistakes client-side;
- * the server re-validates authoritatively either way.
- */
-function isCanonicalContextSyncPath(path: string): boolean {
-	if (path === "") {
-		return true;
-	}
-	if (path.trim() !== path) {
-		return false;
-	}
-	if (path.includes("\\") || path.endsWith("/") || path.startsWith("/")) {
-		return false;
-	}
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: the class deliberately REJECTS control characters in a selected path.
-	if (/[\x00-\x1f]/.test(path)) {
-		return false;
-	}
-	return path
-		.split("/")
-		.every(
-			(segment) => segment !== "" && segment !== "." && segment !== "..",
-		);
-}
-
-/** `a` is `b`'s ancestor (or equal), by whole path segments. */
-function isContextSyncPathSegmentPrefix(a: string, b: string): boolean {
-	return a === "" || b === a || b.startsWith(`${a}/`);
+/** `b` is strictly inside `a`, by whole path segments. */
+function isStrictlyInsideContextSyncPath(a: string, b: string): boolean {
+	return a === "" ? b !== "" : b.startsWith(`${a}/`);
 }
 
 export type ContextSyncPathValidationError =
@@ -629,11 +593,15 @@ export type ContextSyncPathValidationError =
 	| { code: "DUPLICATE_PATH"; path: string };
 
 /**
- * Validate one candidate against the paths already in the chip list —
- * called when a chip is about to be added, so the list stays internally
- * consistent (no need to re-check the whole list on submit). `""` (the
- * whole repository) is only valid alone: adding it with others already
- * present, or adding another path once it is present, both overlap.
+ * Validate one typed path against the selected paths before the selection
+ * reducer adds it (`applyContextAction`'s `include`, Fizzy #2750 §5.7), so a
+ * typed path and a tree tick are the same transition: its canonical
+ * spelling, the per-path rules `configure` applies (a `.fabric` segment, a
+ * coding-instructions basename), not already selected, and not inside a
+ * selected path. A path that HOLDS selected paths is not an error: adding
+ * it absorbs them, as ticking a partial folder does, and the 50-path cap is
+ * checked after that absorption by the reducer. `""` (the whole repository)
+ * absorbs everything the same way.
  */
 export function validateContextSyncPathAddition(
 	raw: string,
@@ -642,31 +610,21 @@ export function validateContextSyncPathAddition(
 	| { ok: true; path: string }
 	| { ok: false; error: ContextSyncPathValidationError } {
 	const path = raw;
-	if (!isCanonicalContextSyncPath(path)) {
+	if (contextSyncPathSpellingProblem(path) !== null) {
 		return { ok: false, error: { code: "INVALID_PATH", path } };
-	}
-	if (isInContextSyncFabricDirectory(path)) {
-		return { ok: false, error: { code: "EXCLUDED_PATH", path } };
 	}
 	if (
 		path !== "" &&
-		EXCLUDED_CONTEXT_SYNC_BASENAMES.has(
-			contextSyncPathBasename(path).toLowerCase(),
-		)
+		(isInContextSyncFabricDirectory(path) ||
+			defaultRuleForDirectlySelectedFile(path) !== null)
 	) {
 		return { ok: false, error: { code: "EXCLUDED_PATH", path } };
 	}
 	if (existing.includes(path)) {
 		return { ok: false, error: { code: "DUPLICATE_PATH", path } };
 	}
-	if (existing.length >= CONTEXT_SYNC_MAX_PATHS) {
-		return { ok: false, error: { code: "TOO_MANY_PATHS" } };
-	}
 	for (const other of existing) {
-		if (
-			isContextSyncPathSegmentPrefix(other, path) ||
-			isContextSyncPathSegmentPrefix(path, other)
-		) {
+		if (isStrictlyInsideContextSyncPath(other, path)) {
 			return {
 				ok: false,
 				error: { code: "PATH_PREFIX_OVERLAP", path, withPath: other },
@@ -676,7 +634,7 @@ export function validateContextSyncPathAddition(
 	return { ok: true, path };
 }
 
-/** The paths editor's inline error, by translation key. */
+/** A typed path's inline error, by translation key. */
 export function contextSyncPathValidationMessage(
 	error: ContextSyncPathValidationError,
 ): ContextSyncMessage {
@@ -697,10 +655,16 @@ export function contextSyncPathValidationMessage(
 				values: { max: CONTEXT_SYNC_MAX_PATHS },
 			};
 		case "PATH_PREFIX_OVERLAP":
-			return {
-				key: "pathErrors.PATH_PREFIX_OVERLAP",
-				values: { path: error.path, withPath: error.withPath },
-			};
+			// Inside `""` is inside the whole repository, which has no name.
+			return error.withPath === ""
+				? {
+						key: "pathErrors.INSIDE_WHOLE_REPOSITORY",
+						values: { path: error.path },
+					}
+				: {
+						key: "pathErrors.PATH_PREFIX_OVERLAP",
+						values: { path: error.path, withPath: error.withPath },
+					};
 		case "DUPLICATE_PATH":
 			return {
 				key: "pathErrors.DUPLICATE_PATH",

@@ -29,6 +29,7 @@ import type {
 	ProjectContextSyncPause,
 	ProjectContextSyncTrigger,
 } from "../../generated/client";
+import { firstExcludedPathOutsideSelection } from "./context-repository-sync-selection";
 import { createPendingVectorCleanup } from "./pending-vector-cleanup";
 import {
 	buildSyncedContextCreateData,
@@ -106,8 +107,39 @@ export interface ContextSyncPruneConflicts {
 export interface ContextSyncRunContext {
 	ref: string;
 	paths: string[];
+	/**
+	 * The left-out paths frozen with `paths` (Fizzy #2750 §5.4), so a retry
+	 * never re-reads the mutable configuration. Absent from receipts written
+	 * before exclusions existed; every read (`readContextSyncRunContext`)
+	 * answers `[]` for those, which is what they meant.
+	 */
+	excludedPaths?: string[];
 	repositoryIntegrationId: string;
 	actingUserId: string;
+}
+
+/** A frozen run context as read back: its left-out paths always present. */
+export type ReadContextSyncRunContext = ContextSyncRunContext & {
+	excludedPaths: string[];
+};
+
+/**
+ * A receipt's stored `context` JSON, with `excludedPaths` read as `[]` when
+ * the receipt predates it (Fizzy #2750 §5.4).
+ */
+export function readContextSyncRunContext(
+	value: Prisma.JsonValue,
+): ReadContextSyncRunContext {
+	const context = value as unknown as ContextSyncRunContext;
+	const excluded: unknown = context.excludedPaths;
+	return {
+		...context,
+		excludedPaths: Array.isArray(excluded)
+			? excluded.filter(
+					(path): path is string => typeof path === "string",
+				)
+			: [],
+	};
 }
 
 /** Why a key needs a member's attention (§7.3). */
@@ -139,6 +171,13 @@ export interface ContextSyncPlan {
 	missingPaths: string[];
 	keptKeys: string[];
 	protectedKeys: string[];
+	/**
+	 * The member's left-out paths, frozen as storage keys (Fizzy #2750
+	 * §5.5): a managed row at or under one is prune-eligible even under a
+	 * protected prefix, unless it is kept or protected by key. Absent from
+	 * plans written before exclusions existed, which read as `[]`.
+	 */
+	excludedKeys?: string[];
 }
 
 /** Every transaction a run or a configuration change opens (§5.3.1, §8). */
@@ -166,6 +205,7 @@ const syncViewSelect = {
 	repositoryIntegrationId: true,
 	ref: true,
 	paths: true,
+	excludedPaths: true,
 	generation: true,
 	activeRunKey: true,
 	lastAppliedCommitSha: true,
@@ -219,6 +259,8 @@ export interface LockedContextRepositorySync {
 	repositoryIntegrationId: string;
 	ref: string;
 	paths: string[];
+	/** The member's left-out paths (Fizzy #2750), frozen by `begin` with `paths`. */
+	excludedPaths: string[];
 	generation: number;
 	activeRunKey: string | null;
 	/** `begin` refuses an automatic run while this is off (design §11.1). */
@@ -253,8 +295,9 @@ export async function getContextRepositorySyncForUpdate(
 ): Promise<LockedContextRepositorySync | null> {
 	const rows = await tx.$queryRaw<LockedContextRepositorySync[]>`
 		SELECT "id", "projectId", "organizationId", "userId",
-			"repositoryIntegrationId", "ref", "paths", "generation", "activeRunKey",
-			"automatic", "automaticPausedReason", "failureCount", "pendingCommitSha",
+			"repositoryIntegrationId", "ref", "paths", "excludedPaths", "generation",
+			"activeRunKey", "automatic", "automaticPausedReason", "failureCount",
+			"pendingCommitSha",
 			(clock_timestamp() AT TIME ZONE 'UTC') AS "now"
 		FROM "project_context_repository_sync"
 		WHERE "id" = ${syncId}
@@ -272,8 +315,9 @@ async function lockContextRepositorySyncByProject(
 ): Promise<LockedContextRepositorySync | null> {
 	const rows = await tx.$queryRaw<LockedContextRepositorySync[]>`
 		SELECT "id", "projectId", "organizationId", "userId",
-			"repositoryIntegrationId", "ref", "paths", "generation", "activeRunKey",
-			"automatic", "automaticPausedReason", "failureCount", "pendingCommitSha",
+			"repositoryIntegrationId", "ref", "paths", "excludedPaths", "generation",
+			"activeRunKey", "automatic", "automaticPausedReason", "failureCount",
+			"pendingCommitSha",
 			(clock_timestamp() AT TIME ZONE 'UTC') AS "now"
 		FROM "project_context_repository_sync"
 		WHERE "projectId" = ${scope.projectId}
@@ -377,6 +421,7 @@ export type UpsertContextRepositorySyncResult =
 				repositoryIntegrationId: string;
 				ref: string;
 				paths: string[];
+				excludedPaths: string[];
 				automatic: boolean;
 			};
 			/** What the configuration said before, or `null` on first configure. */
@@ -384,8 +429,16 @@ export type UpsertContextRepositorySyncResult =
 				repositoryIntegrationId: string;
 				ref: string;
 				paths: string[];
+				excludedPaths: string[];
 			} | null;
 	  }
+	/**
+	 * The update changed the paths and left `excludedPaths` out, and the
+	 * stored left-out paths no longer fit the new paths (Fizzy #2750 §5.3).
+	 * Nothing was written: the member reloads and chooses again, rather than
+	 * having exclusions they never saw cleared.
+	 */
+	| { status: "excluded-paths-stale" }
 	/**
 	 * The configuration reads from another integration and still manages
 	 * rows. Nothing was written. Changing the repository requires a
@@ -437,6 +490,15 @@ export type UpsertContextRepositorySyncResult =
  *
  * `automatic` is `false` on insert when omitted.
  *
+ * `excludedPaths` (Fizzy #2750 §5.3), canonicalized by the procedure like
+ * `paths`: omitted on insert, none; omitted on update, the STORED list is
+ * kept — read here, under the lock — so a client that does not know about
+ * exclusions (the automatic toggle) can never erase them; an explicit `[]`
+ * clears them. A changed list changes what is synced, as changed paths do.
+ * When the update changes the paths and omits the list, the kept list must
+ * still fit the new paths (`firstExcludedPathOutsideSelection`); otherwise
+ * nothing is written and the answer is `excluded-paths-stale`.
+ *
  * Two first configures of one project race on the `projectId` unique index;
  * the loser re-runs once and updates the winner's row.
  */
@@ -447,6 +509,7 @@ export async function upsertContextRepositorySync(input: {
 	repositoryIntegrationId: string;
 	ref: string;
 	paths: string[];
+	excludedPaths?: string[];
 	automatic?: boolean;
 }): Promise<UpsertContextRepositorySyncResult> {
 	try {
@@ -466,6 +529,7 @@ function runUpsertContextRepositorySync(input: {
 	repositoryIntegrationId: string;
 	ref: string;
 	paths: string[];
+	excludedPaths?: string[];
 	automatic?: boolean;
 }): Promise<UpsertContextRepositorySyncResult> {
 	const scope = {
@@ -512,12 +576,29 @@ function runUpsertContextRepositorySync(input: {
 				}
 			}
 
+			// Omitted: none on insert, the stored list on update (read under
+			// this lock), which must still fit the paths when they change.
+			const excludedPaths =
+				input.excludedPaths ?? existing?.excludedPaths ?? [];
+			if (
+				input.excludedPaths === undefined &&
+				existing &&
+				firstExcludedPathOutsideSelection(
+					input.paths,
+					excludedPaths,
+				) !== null
+			) {
+				return { status: "excluded-paths-stale" };
+			}
+			const next = { ...input, excludedPaths };
+
 			const select = {
 				id: true,
 				generation: true,
 				repositoryIntegrationId: true,
 				ref: true,
 				paths: true,
+				excludedPaths: true,
 				automatic: true,
 			} as const;
 			const previous = existing
@@ -526,10 +607,11 @@ function runUpsertContextRepositorySync(input: {
 							existing.repositoryIntegrationId,
 						ref: existing.ref,
 						paths: existing.paths,
+						excludedPaths: existing.excludedPaths,
 					}
 				: null;
 
-			if (existing && !changesWhatIsSynced(existing, input)) {
+			if (existing && !changesWhatIsSynced(existing, next)) {
 				const sync = await tx.projectContextRepositorySync.update({
 					where: { id: existing.id },
 					data: {
@@ -567,6 +649,7 @@ function runUpsertContextRepositorySync(input: {
 								input.repositoryIntegrationId,
 							ref: input.ref,
 							paths: input.paths,
+							excludedPaths,
 							automatic: input.automatic ?? existing.automatic,
 							generation: { increment: 1 },
 							lastAppliedCommitSha: null,
@@ -584,6 +667,7 @@ function runUpsertContextRepositorySync(input: {
 								input.repositoryIntegrationId,
 							ref: input.ref,
 							paths: input.paths,
+							excludedPaths,
 							automatic: input.automatic ?? false,
 							...reset,
 						},
@@ -597,21 +681,36 @@ function runUpsertContextRepositorySync(input: {
 
 /**
  * Whether a configure changes what the sync reads (Fizzy #2713): the
- * repository integration, the branch or the paths. Both path lists are
- * canonical (sorted, deduplicated) when the procedure wrote them, so they are
- * compared in order; a list that differs only in order counts as a change,
- * which fences more than it must but never less.
+ * repository integration, the branch, the paths or the left-out paths
+ * (Fizzy #2750). Every list is canonical (sorted, deduplicated) when the
+ * procedure wrote it, so lists are compared in order; a list that differs
+ * only in order counts as a change, which fences more than it must but never
+ * less.
  */
 function changesWhatIsSynced(
-	stored: { repositoryIntegrationId: string; ref: string; paths: string[] },
-	next: { repositoryIntegrationId: string; ref: string; paths: string[] },
+	stored: {
+		repositoryIntegrationId: string;
+		ref: string;
+		paths: string[];
+		excludedPaths: string[];
+	},
+	next: {
+		repositoryIntegrationId: string;
+		ref: string;
+		paths: string[];
+		excludedPaths: string[];
+	},
 ): boolean {
 	return (
 		stored.repositoryIntegrationId !== next.repositoryIntegrationId ||
 		stored.ref !== next.ref ||
-		stored.paths.length !== next.paths.length ||
-		stored.paths.some((path, i) => path !== next.paths[i])
+		!sameList(stored.paths, next.paths) ||
+		!sameList(stored.excludedPaths, next.excludedPaths)
 	);
+}
+
+function sameList(a: readonly string[], b: readonly string[]): boolean {
+	return a.length === b.length && a.every((value, i) => value === b[i]);
 }
 
 export interface DeleteContextRepositorySyncResult {
@@ -737,7 +836,7 @@ export interface ContextRepositorySyncRunLedger {
 	organizationId: string;
 	userId: string;
 	generation: number;
-	context: ContextSyncRunContext;
+	context: ReadContextSyncRunContext;
 	trigger: ContextSyncTrigger;
 	startedAt: Date;
 	commitSha: string | null;
@@ -799,7 +898,7 @@ export async function getContextRepositorySyncRunForUpdate(
 		status: "ok",
 		run: {
 			...row,
-			context: row.context as unknown as ContextSyncRunContext,
+			context: readContextSyncRunContext(row.context),
 			trigger: row.trigger as ContextSyncTrigger,
 			plan: (row.plan as unknown as ContextSyncPlan | null) ?? null,
 			outcomes: parseOutcomes(row.outcomes),

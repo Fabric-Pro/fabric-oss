@@ -38,7 +38,11 @@
  *    PERMISSION_DENIED it records pauses automatic sync only while the
  *    configuration's current member still lacks CONTEXT_CREATE, so it never
  *    undoes a re-enable by another member or by one whose permission was
- *    restored.
+ *    restored;
+ *  - left-out paths (Fizzy #2750 §5.4): `begin` freezes them beside the
+ *    paths into the receipt (a refusal's too) and the context, a retried
+ *    `begin` answers the ones it froze, and a receipt written before they
+ *    existed answers none.
  *
  * The database is an in-memory fake of exactly the `@repo/database` helpers
  * the activities call, with the semantics their own tests pin
@@ -90,7 +94,14 @@ const h = vi.hoisted(() => {
 		organizationId: row.organizationId,
 		userId: row.userId,
 		generation: row.generation,
-		context: clone(row.context),
+		// The helper's contract (`readContextSyncRunContext`): a receipt
+		// written before left-out paths existed reads as having none.
+		context: {
+			...clone(row.context as Row),
+			excludedPaths: Array.isArray((row.context as Row).excludedPaths)
+				? clone((row.context as Row).excludedPaths)
+				: [],
+		},
 		trigger: row.trigger,
 		startedAt: row.startedAt,
 		commitSha: row.commitSha,
@@ -484,6 +495,7 @@ function seedSync(overrides: Row = {}): Row {
 		repositoryIntegrationId: "int-1",
 		ref: "main",
 		paths: ["docs", "notes/glossary.md"],
+		excludedPaths: [],
 		generation: 3,
 		activeRunKey: null,
 		lastAppliedCommitSha: "0ld",
@@ -550,6 +562,7 @@ function context(overrides: Partial<ContextSyncFrozenContext> = {}) {
 		repositoryIntegrationId: "int-1",
 		ref: "main",
 		paths: ["docs", "notes/glossary.md"],
+		excludedPaths: [],
 		actingUserId: "user-1",
 		...overrides,
 	};
@@ -911,6 +924,81 @@ describe("beginContextRepositorySyncRun", () => {
 			nonRetryable: true,
 		});
 		expect(h.api.getContextRepositorySync).not.toHaveBeenCalled();
+	});
+});
+
+// =============================================================================
+// begin freezes the left-out paths (Fizzy #2750 §5.4)
+// =============================================================================
+
+describe("beginContextRepositorySyncRun, left-out paths", () => {
+	it("freezes the configuration's left-out paths into the receipt and the context, beside its paths", async () => {
+		seedSync({ excludedPaths: ["docs/drafts", "docs/old.md"] });
+		seedIntegration();
+
+		const result = await beginContextRepositorySyncRun(INPUT);
+
+		expect(result).toEqual({
+			ok: true,
+			context: context({ excludedPaths: ["docs/drafts", "docs/old.md"] }),
+		});
+		expect(runRow()?.context).toEqual({
+			ref: "main",
+			paths: ["docs", "notes/glossary.md"],
+			excludedPaths: ["docs/drafts", "docs/old.md"],
+			repositoryIntegrationId: "int-1",
+			actingUserId: "user-1",
+		});
+	});
+
+	it("a refusal's finished receipt carries them too", async () => {
+		seedSync({ excludedPaths: ["docs/drafts"] });
+		seedIntegration();
+		h.state.permitted = new Set();
+
+		const result = await beginContextRepositorySyncRun(INPUT);
+
+		expect(result).toEqual({
+			ok: false,
+			error: "PERMISSION_DENIED",
+			context: context({ excludedPaths: ["docs/drafts"] }),
+		});
+		expect(runRow()).toMatchObject({
+			status: "FAILED",
+			context: { excludedPaths: ["docs/drafts"] },
+		});
+	});
+
+	it("a retried begin answers the left-out paths it froze, not the configuration's", async () => {
+		seedSync({ activeRunKey: RUN, excludedPaths: ["docs/elsewhere"] });
+		seedIntegration();
+		seedRun({
+			context: {
+				ref: "main",
+				paths: ["docs", "notes/glossary.md"],
+				excludedPaths: ["docs/drafts"],
+				repositoryIntegrationId: "int-1",
+				actingUserId: "user-1",
+			},
+		});
+
+		const result = await beginContextRepositorySyncRun(INPUT);
+
+		expect(result).toEqual({
+			ok: true,
+			context: context({ excludedPaths: ["docs/drafts"] }),
+		});
+	});
+
+	it("a retried begin whose receipt predates left-out paths answers none", async () => {
+		seedSync({ activeRunKey: RUN, excludedPaths: ["docs/drafts"] });
+		seedIntegration();
+		seedRun();
+		expect(runRow()?.context).not.toHaveProperty("excludedPaths");
+
+		const result = await beginContextRepositorySyncRun(INPUT);
+
+		expect(result).toEqual({ ok: true, context: context() });
 	});
 });
 

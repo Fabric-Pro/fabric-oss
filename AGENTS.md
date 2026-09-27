@@ -185,7 +185,11 @@ sibling in the same task:
   and Living Memory
   ([queries](packages/database/prisma/queries/projects/context-repository-sync.ts))
   configure, run and schedule in parallel copies; a fix to one usually
-  applies to the other.
+  applies to the other. Both configure dialogs
+  ([Coding Instructions](apps/web/modules/saas/projects/components/instructions/ConfigureRepositorySyncDialog.tsx),
+  [Living Memory](apps/web/modules/saas/projects/components/ConfigureContextRepositorySyncDialog.tsx))
+  choose through the shared selection tree in
+  [`components/repository-sync/`](apps/web/modules/saas/projects/components/repository-sync/).
 
 When adding, renaming, removing, or feature-gating navigation, tabs, settings,
 or covered page components, update the

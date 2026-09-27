@@ -300,7 +300,7 @@ export type ProjectContextPendingVectorCleanupScalarFieldEnum = z.infer<typeof P
 
 // File: ProjectContextRepositorySyncScalarFieldEnum.schema.ts
 
-export const ProjectContextRepositorySyncScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'repositoryIntegrationId', 'ref', 'paths', 'generation', 'activeRunKey', 'lastAppliedCommitSha', 'lastAppliedRunId', 'automatic', 'nextCheckAt', 'failureCount', 'automaticPausedReason', 'automaticPausedAt', 'suppressedCommitSha', 'suppressedGeneration', 'lastEvaluatedCommitSha', 'lastEvaluatedGeneration', 'pendingCommitSha', 'createdAt', 'updatedAt'])
+export const ProjectContextRepositorySyncScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'repositoryIntegrationId', 'ref', 'paths', 'excludedPaths', 'generation', 'activeRunKey', 'lastAppliedCommitSha', 'lastAppliedRunId', 'automatic', 'nextCheckAt', 'failureCount', 'automaticPausedReason', 'automaticPausedAt', 'suppressedCommitSha', 'suppressedGeneration', 'lastEvaluatedCommitSha', 'lastEvaluatedGeneration', 'pendingCommitSha', 'createdAt', 'updatedAt'])
 
 export type ProjectContextRepositorySyncScalarFieldEnum = z.infer<typeof ProjectContextRepositorySyncScalarFieldEnumSchema>;
 
@@ -4716,6 +4716,7 @@ export const ProjectContextRepositorySyncSchema = z.object({
   repositoryIntegrationId: z.string(),
   ref: z.string(),
   paths: z.array(z.string()),
+  excludedPaths: z.array(z.string()),
   generation: z.number().int().default(1),
   activeRunKey: z.string().nullish(),
   lastAppliedCommitSha: z.string().nullish(),

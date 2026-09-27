@@ -278,6 +278,7 @@ describe("recordContextSyncCheckFailure (spec §6.1, Decision 35)", () => {
 		m.$executeRaw.mockResolvedValueOnce(1);
 		m.sync.findFirst.mockResolvedValue({
 			paths: ["docs", "notes/glossary.md"],
+			excludedPaths: ["docs/drafts"],
 		});
 		m.run.createMany.mockResolvedValue({ count: 1 });
 		m.integration.findFirst.mockResolvedValue({
@@ -299,14 +300,15 @@ describe("recordContextSyncCheckFailure (spec §6.1, Decision 35)", () => {
 		expect(m.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
 			m.run.createMany.mock.invocationCallOrder[0] ?? 0,
 		);
-		// The paths are read tenant-bound, after the pause locked the row.
+		// The paths and the left-out paths (Fizzy #2750 §5.4) are read
+		// tenant-bound, after the pause locked the row.
 		expect(m.sync.findFirst).toHaveBeenCalledWith({
 			where: {
 				id: "sync_1",
 				projectId: "proj_1",
 				organizationId: "org_1",
 			},
-			select: { paths: true },
+			select: { paths: true, excludedPaths: true },
 		});
 		expect(m.run.createMany).toHaveBeenCalledWith({
 			data: [
@@ -320,6 +322,7 @@ describe("recordContextSyncCheckFailure (spec §6.1, Decision 35)", () => {
 					context: {
 						ref: "main",
 						paths: ["docs", "notes/glossary.md"],
+						excludedPaths: ["docs/drafts"],
 						repositoryIntegrationId: "int_1",
 						actingUserId: "user_1",
 					},
@@ -375,7 +378,10 @@ describe("recordContextSyncCheckFailure (spec §6.1, Decision 35)", () => {
 
 	it("protocol: records a revoked delegate the same way, pausing with PERMISSION_REVOKED (Decision 33)", async () => {
 		m.$executeRaw.mockResolvedValueOnce(1);
-		m.sync.findFirst.mockResolvedValue({ paths: ["docs"] });
+		m.sync.findFirst.mockResolvedValue({
+			paths: ["docs"],
+			excludedPaths: [],
+		});
 		m.run.createMany.mockResolvedValue({ count: 1 });
 		m.integration.findFirst.mockResolvedValue(null);
 

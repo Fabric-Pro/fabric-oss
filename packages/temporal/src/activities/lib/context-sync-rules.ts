@@ -3,13 +3,14 @@
  * each is stored under (design 2026-09-23 §2, §5.3.1 steps 5–7, Fizzy #2657).
  * Pure: no I/O, no clock.
  *
- * The server's twin of `fabric context push`'s rules. The CLI keeps its copy
- * (`packages/cli/src/lib/context-sync/ignore.ts`, `classify.ts`, and the
- * path checks in `plan.ts`), and `configure` keeps the default exclusions in
- * `packages/api/modules/projects/procedures/contexts/repository-sync/paths.ts`.
- * The three must agree: a file the CLI would push and the sync would not (or
- * the reverse) is a file that flips between two owners. Change all three
- * together; `context-sync-rules.test.ts` carries the CLI's cases.
+ * The default exclusions, the text extensions, `.fabric`, the policy
+ * filename and the two ways the defaults apply (a directly selected file by
+ * its basename, a file inside a selected folder relative to it) come from
+ * the one canonical module, `@repo/instructions/context-sync-rules`, which
+ * `configure` imports too (Fizzy #2750 §7). The published CLI keeps its own
+ * copy, pinned to that module by its parity test. What stays here is the
+ * run's own: the folder's `.contextignore` layered over the defaults, git
+ * modes, byte classification, storage keys and protected prefixes.
  *
  * Paths here are git's: repository-relative, `/`-separated, exact bytes. The
  * rules of one selected folder F are matched against the path RELATIVE to F,
@@ -17,43 +18,23 @@
  * stores and compares is the storage key (`normalizeContextSourcePath` of the
  * repository path), so protection is expressed in storage-key coordinates.
  */
-import path from "node:path";
+
 import {
 	ContextSourcePathError,
 	normalizeContextSourcePath,
 } from "@repo/database";
+import {
+	CONTEXT_IGNORE_FILENAME,
+	createContextDefaultRules,
+	hasContextTextExtension,
+	isExcludedDirectlySelectedFile,
+	isInContextSyncFabricDirectory,
+} from "@repo/instructions/context-sync-rules";
 import ignore from "ignore";
 
 type Ignore = ReturnType<typeof ignore>;
 
-export const CONTEXT_IGNORE_FILENAME = ".contextignore";
-
-/**
- * `fabric context push`'s default exclusions, never overridable by a
- * `.contextignore`: version-control and tool state, and every
- * coding-instruction file or folder at any depth (instructions have their
- * own reviewed path into a project). Twins:
- * `packages/cli/src/lib/context-sync/ignore.ts` (DEFAULT_CONTEXT_IGNORE_PATTERNS)
- * and `packages/api/modules/projects/procedures/contexts/repository-sync/paths.ts`.
- * Change all three together.
- */
-export const DEFAULT_CONTEXT_IGNORE_PATTERNS: readonly string[] = [
-	".git/",
-	".fabric/",
-	".claude/",
-	".cursor/",
-	".codex/",
-	"node_modules/",
-	"CLAUDE.md",
-	"AGENTS.md",
-	"GEMINI.md",
-	"skills/",
-	"agents/",
-	"hooks/",
-	"rules/",
-	"scripts/",
-	CONTEXT_IGNORE_FILENAME,
-];
+export { CONTEXT_IGNORE_FILENAME, isExcludedDirectlySelectedFile };
 
 /** A selected folder's `.contextignore` counts only up to this size (§5.3.1 step 6). */
 export const MAX_CONTEXT_IGNORE_BYTES = 64 * 1024;
@@ -63,16 +44,6 @@ export const MAX_CONTEXT_IGNORE_BYTES = 64 * 1024;
  * API's `MAX_SYNCED_CONTEXT_BYTES`.
  */
 export const MAX_CONTEXT_FILE_BYTES = 2 * 1024 * 1024;
-
-/** Compared lower-cased, so `README.MD` is text too. */
-const CONTEXT_TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
-	".md",
-	".markdown",
-	".txt",
-	".json",
-	".yaml",
-	".yml",
-]);
 
 export interface ContextIgnoreRules {
 	/** Is this file (relative to the folder, `/`-separated) left out? */
@@ -95,7 +66,7 @@ export interface ContextIgnoreRules {
 export function buildContextIgnoreRules(
 	input: { contextIgnore?: string | null } = {},
 ): ContextIgnoreRules {
-	const defaults: Ignore = ignore().add([...DEFAULT_CONTEXT_IGNORE_PATTERNS]);
+	const defaults = createContextDefaultRules();
 	const user: Ignore = ignore();
 	if (input.contextIgnore) {
 		user.add(input.contextIgnore);
@@ -153,10 +124,9 @@ export function matchContextEntry(
 	}
 }
 
+/** One of the text extensions, in any case (the canonical module's rule). */
 export function hasTextExtension(relativePath: string): boolean {
-	return CONTEXT_TEXT_EXTENSIONS.has(
-		path.posix.extname(relativePath).toLowerCase(),
-	);
+	return hasContextTextExtension(relativePath);
 }
 
 const HAS_NON_WHITESPACE = /\S/;
@@ -275,14 +245,23 @@ export function isUnderProtectedPrefix(
 	);
 }
 
-/** The default exclusions that can match a file name, lower-cased. */
-const EXCLUDED_FILE_NAMES: ReadonlySet<string> = new Set(
-	DEFAULT_CONTEXT_IGNORE_PATTERNS.filter((p) => !p.endsWith("/")).map((p) =>
-		p.toLowerCase(),
-	),
-);
-
-const FABRIC_DIRECTORY = ".fabric";
+/**
+ * Is a storage key at or under one of the member's left-out keys (Fizzy
+ * #2750 §5.5)? Whole segments, case-sensitive, in storage-key coordinates:
+ * `docs/drafts` covers itself and `docs/drafts/x.md`, never
+ * `docs/drafts-2/x.md` or `docs/Drafts/x.md`. Left-out keys are never `""`
+ * (`configure` refuses it); one would cover nothing here.
+ */
+export function isAtOrUnderLeftOutKey(
+	storageKey: string,
+	leftOutKeys: readonly string[],
+): boolean {
+	return leftOutKeys.some(
+		(leftOut) =>
+			leftOut !== "" &&
+			(storageKey === leftOut || storageKey.startsWith(`${leftOut}/`)),
+	);
+}
 
 /**
  * `repositoryPath` has a `.fabric` segment, at any depth and in any case:
@@ -292,29 +271,5 @@ const FABRIC_DIRECTORY = ".fabric";
  * cannot see a `.fabric` that is, or is above, the selection itself.
  */
 export function isInFabricDirectory(repositoryPath: string): boolean {
-	return repositoryPath
-		.split("/")
-		.some((segment) => segment.toLowerCase() === FABRIC_DIRECTORY);
-}
-
-/**
- * A directly selected FILE is judged by its basename against the default
- * exclusions (§5.3.1 step 6), exactly as `configure` judges it (`paths.ts`):
- * `CLAUDE.md`, `AGENTS.md`, `GEMINI.md` and `.contextignore`, any case, are
- * excluded; a directly selected `skills/x.md` is not — the folder patterns
- * apply only inside a selected folder, relative to it. The one exception is
- * `.fabric`: a file with a `.fabric` segment anywhere in its path is
- * excluded too, so a configuration stored before `configure` refused one
- * fails closed.
- */
-export function isExcludedDirectlySelectedFile(
-	repositoryPath: string,
-): boolean {
-	if (isInFabricDirectory(repositoryPath)) {
-		return true;
-	}
-	const slash = repositoryPath.lastIndexOf("/");
-	const basename =
-		slash === -1 ? repositoryPath : repositoryPath.slice(slash + 1);
-	return EXCLUDED_FILE_NAMES.has(basename.toLowerCase());
+	return isInContextSyncFabricDirectory(repositoryPath);
 }

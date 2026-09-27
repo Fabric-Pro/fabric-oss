@@ -1,8 +1,7 @@
 "use client";
 
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation } from "@tanstack/react-query";
-import { Badge } from "@ui/components/badge";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Checkbox } from "@ui/components/checkbox";
 import {
@@ -15,12 +14,14 @@ import {
 } from "@ui/components/dialog";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
-import { Loader2Icon, XIcon } from "lucide-react";
+import { Loader2Icon } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { useSettledValue } from "../hooks/use-settled-value";
 import {
 	activeContextSyncIntegrations,
+	CONTEXT_SYNC_MAX_PATHS,
 	type ContextSyncConfiguration,
 	type ContextSyncIntegration,
 	type ContextSyncNowResult,
@@ -28,9 +29,36 @@ import {
 	contextSyncConfigureErrorMessage,
 	contextSyncNowResultMessage,
 	contextSyncPathValidationMessage,
+	contextSyncTreeErrorMessage,
 	validateContextSyncPathAddition,
 } from "../lib/context-repository-sync";
-import { ContextRepositorySyncTreeBrowser } from "./ContextRepositorySyncTreeBrowser";
+import { AddRepositoryPathInput } from "./repository-sync/AddRepositoryPathInput";
+import {
+	applyContextAction,
+	type ContextAction,
+	type ContextRepositoryTreeEntry,
+	type ContextSelection,
+	contextSelectionModel,
+	contextSummary,
+} from "./repository-sync/lib/context-selection";
+import {
+	ancestorsOf,
+	indexRepositoryTree,
+} from "./repository-sync/lib/repository-tree";
+import {
+	offersTypedPath,
+	type SelectionMessage,
+	selectionTreeListingOf,
+} from "./repository-sync/lib/selection-row";
+import { RepositorySyncSelectionTree } from "./repository-sync/RepositorySyncSelectionTree";
+import { SelectedPathsList } from "./repository-sync/SelectedPathsList";
+import { SelectionSummary } from "./repository-sync/SelectionSummary";
+
+const NAMESPACE = "projects.contexts.livingMemory.repositorySync";
+
+/** How long the branch must stay unchanged before the listing is fetched. */
+const BRANCH_DEBOUNCE_MS = 500;
+const LIST_TREE_STALE_MS = 5 * 60 * 1000;
 
 /**
  * Points the project's Living Memory at selected folders and files of a
@@ -39,12 +67,21 @@ import { ContextRepositorySyncTreeBrowser } from "./ContextRepositorySyncTreeBro
  * branch and canonicalizes the paths before saving anything; what it refuses
  * is shown inline, beside the field it is about when it names one.
  *
- * Paths are picked from the branch's tree (`ContextRepositorySyncTreeBrowser`,
- * Fizzy #2674) or typed; the chips are the one selection either writes to,
- * and typing stays available whatever the tree can show.
+ * What syncs is chosen in the shared selection tree over the chosen branch
+ * (`RepositorySyncSelectionTree`, Fizzy #2750 §5.7): ticking a folder or file
+ * selects it (a ticked folder is live: files added to it later sync too),
+ * and unticking something inside a ticked folder leaves it out, pruned from
+ * Living Memory on the next sync. The selection is the one reducer
+ * (`./repository-sync/lib/context-selection.ts`) the tree, the list under
+ * it and the typed "Add a path" input all use; the typed input is offered
+ * where the tree cannot reach (no listing, a truncated one, or a failed one).
+ * Nothing is ticked for a new configuration, and Save waits until something
+ * is. Save always sends `excludedPaths` explicitly — `[]` clears what was
+ * left out — since only a caller that omits it (the status card's toggle)
+ * relies on the server keeping the stored list.
  *
  * Mounted only while open, so a background poll of the tab cannot overwrite
- * what someone is typing.
+ * what someone is choosing.
  *
  * "Keep in sync automatically" (§11.1, Fizzy #2673) is ticked for a new
  * configuration and seeded from the stored value when changing one, as the
@@ -69,7 +106,8 @@ export function ConfigureContextRepositorySyncDialog({
 	current: ContextSyncConfiguration | null;
 	onSaved: () => void;
 }) {
-	const t = useTranslations("projects.contexts.livingMemory.repositorySync");
+	const t = useTranslations(NAMESPACE);
+	const id = useId();
 	const active = activeContextSyncIntegrations(integrations);
 	const seed =
 		(current &&
@@ -78,9 +116,21 @@ export function ConfigureContextRepositorySyncDialog({
 		null;
 	const [integrationId, setIntegrationId] = useState(seed?.id ?? "");
 	const [ref, setRef] = useState(current?.ref ?? seed?.defaultBranch ?? "");
-	const [paths, setPaths] = useState<string[]>(current?.paths ?? []);
-	const [pathInput, setPathInput] = useState("");
-	const [pathError, setPathError] = useState<string | null>(null);
+	const [selection, setSelection] = useState<ContextSelection>(() => ({
+		paths: current?.paths ?? [],
+		excludedPaths: current?.excludedPaths ?? [],
+	}));
+	// The way to what is stored, open from the start: the folders above every
+	// selected and left-out path.
+	const [initiallyOpen] = useState<ReadonlySet<string>>(
+		() =>
+			new Set(
+				[
+					...(current?.paths ?? []),
+					...(current?.excludedPaths ?? []),
+				].flatMap(ancestorsOf),
+			),
+	);
 	const [automatic, setAutomatic] = useState(current?.automatic ?? true);
 	const [automaticTouched, setAutomaticTouched] = useState(false);
 	const [inlineError, setInlineError] = useState<string | null>(null);
@@ -98,44 +148,100 @@ export function ConfigureContextRepositorySyncDialog({
 	const selected = active.find((i) => i.id === integrationId) ?? null;
 	const branch = ref.trim();
 
-	/**
-	 * Add one chip, typed or picked in the tree: both go through the same
-	 * validation and show the same inline error, so the tree can never add
-	 * what typing could not.
-	 */
-	function selectPath(raw: string): boolean {
-		const result = validateContextSyncPathAddition(raw, paths);
+	// The branch's listing: only a settled branch is listed, since a key per
+	// keystroke would be a request per keystroke.
+	const debouncedBranch = useSettledValue(branch, BRANCH_DEBOUNCE_MS);
+	const listingRequested = integrationId !== "" && branch !== "";
+	const listingEnabled =
+		open && listingRequested && debouncedBranch === branch;
+	const treeQuery = useQuery(
+		orpc.projects.contexts.repositorySync.listTree.queryOptions({
+			input: {
+				projectId,
+				repositoryIntegrationId: integrationId,
+				ref: debouncedBranch,
+			},
+			enabled: listingEnabled,
+			staleTime: LIST_TREE_STALE_MS,
+			retry: false,
+		}),
+	);
+	const listing = selectionTreeListingOf<ContextRepositoryTreeEntry>({
+		requested: listingRequested,
+		enabled: listingEnabled,
+		query: treeQuery,
+		errorMessage: (error) =>
+			contextSyncTreeErrorMessage(error, debouncedBranch),
+	});
+	const entries =
+		listing.status === "ready"
+			? (listing.entries as readonly ContextRepositoryTreeEntry[])
+			: undefined;
+	const treeIndex = useMemo(
+		() => (entries ? indexRepositoryTree(entries) : null),
+		[entries],
+	);
+	const truncated = listing.status === "ready" && listing.truncated;
+	const model = useMemo(
+		() => contextSelectionModel({ tree: treeIndex, selection }),
+		[treeIndex, selection],
+	);
+	const summary = contextSummary({
+		model,
+		tree: treeIndex,
+		listing: listing.status,
+		truncated,
+	});
+
+	function clearInlineError() {
+		setInlineError(null);
+		setInlineErrorField(null);
+	}
+
+	function apply(action: ContextAction) {
+		const result = applyContextAction(selection, action);
+		if (result.ok) {
+			setSelection(result.selection);
+			clearInlineError();
+		}
+	}
+
+	/** A typed path: the same transition as ticking it in the tree. */
+	function addTypedPath(raw: string): SelectionMessage | null {
+		// Nothing typed is not "the whole repository": Select all is.
+		if (raw.trim() === "") {
+			return { key: "configureDialog.typedPath.empty" };
+		}
+		const validated = validateContextSyncPathAddition(raw, selection.paths);
+		if (!validated.ok) {
+			return contextSyncPathValidationMessage(validated.error);
+		}
+		const result = applyContextAction(selection, {
+			type: "include",
+			path: validated.path,
+		});
 		if (!result.ok) {
-			const message = contextSyncPathValidationMessage(result.error);
-			setPathError(t(message.key, message.values));
-			return false;
+			return {
+				key: "pathErrors.TOO_MANY_PATHS",
+				values: { max: CONTEXT_SYNC_MAX_PATHS },
+			};
 		}
-		setPaths((prev) => [...prev, result.path]);
-		setPathError(null);
-		return true;
-	}
-
-	function addPath() {
-		if (selectPath(pathInput)) {
-			setPathInput("");
-		}
-	}
-
-	function removePath(path: string) {
-		setPaths((prev) => prev.filter((p) => p !== path));
-		setPathError(null);
+		setSelection(result.selection);
+		clearInlineError();
+		return null;
 	}
 
 	async function submit() {
-		setInlineError(null);
-		setInlineErrorField(null);
+		clearInlineError();
 		try {
 			await configure.mutateAsync({
 				projectId,
 				organizationId,
 				repositoryIntegrationId: integrationId,
 				ref: branch,
-				paths,
+				paths: [...selection.paths],
+				// Always explicit: `[]` clears what was left out.
+				excludedPaths: [...selection.excludedPaths],
 				...contextSyncAutomaticInput({
 					current,
 					touched: automaticTouched,
@@ -177,12 +283,33 @@ export function ConfigureContextRepositorySyncDialog({
 		onOpenChange(false);
 	}
 
-	const canSubmit =
-		!pending && integrationId !== "" && branch !== "" && paths.length > 0;
+	const ids = {
+		error: "context-sync-error",
+		nothingSelected: `${id}-nothing-selected`,
+		saveReason: `${id}-save-reason`,
+	};
+	const saveBlocked: "noRepository" | "noBranch" | "nothingSelected" | null =
+		pending
+			? null
+			: integrationId === ""
+				? "noRepository"
+				: branch === ""
+					? "noBranch"
+					: selection.paths.length === 0
+						? "nothingSelected"
+						: null;
+	const saveDescribedBy =
+		saveBlocked === "nothingSelected"
+			? ids.nothingSelected
+			: saveBlocked
+				? ids.saveReason
+				: undefined;
+	const listedType = (path: string) =>
+		path === "" ? "dir" : (treeIndex?.nodes.get(path)?.type ?? null);
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-w-lg">
+			<DialogContent className="max-w-2xl">
 				<DialogHeader>
 					<DialogTitle>{t("configureDialog.title")}</DialogTitle>
 					<DialogDescription>
@@ -207,8 +334,7 @@ export function ConfigureContextRepositorySyncDialog({
 									if (next) {
 										setRef(next.defaultBranch);
 									}
-									setInlineError(null);
-									setInlineErrorField(null);
+									clearInlineError();
 								}}
 							>
 								{active.map((i) => (
@@ -236,122 +362,72 @@ export function ConfigureContextRepositorySyncDialog({
 							value={ref}
 							onChange={(e) => {
 								setRef(e.target.value);
-								setInlineError(null);
-								setInlineErrorField(null);
+								clearInlineError();
 							}}
 							aria-invalid={
 								inlineErrorField === "branch" ? true : undefined
 							}
 							aria-describedby={
 								inlineErrorField === "branch"
-									? "context-sync-error"
+									? ids.error
 									: undefined
 							}
 						/>
 					</div>
 
-					<ContextRepositorySyncTreeBrowser
-						projectId={projectId}
-						repositoryIntegrationId={integrationId}
-						branch={branch}
-						paths={paths}
+					<RepositorySyncSelectionTree
+						namespace={NAMESPACE}
+						listing={listing}
+						row={model.row}
+						onToggle={(node) => {
+							const action = model.actionFor(node);
+							if (action) {
+								apply(action);
+							}
+						}}
+						onSelectAll={() => apply({ type: "selectAll" })}
+						onSelectNone={() => apply({ type: "selectNone" })}
 						disabled={pending}
-						onSelect={selectPath}
-						onDeselect={removePath}
-					/>
-
-					<div className="flex flex-col gap-1.5">
-						<Label htmlFor="context-sync-path-input">
-							{t("configureDialog.pathsLabel")}
-						</Label>
-						<div
-							className="flex flex-wrap gap-1.5"
-							data-testid="context-sync-paths-chips"
-						>
-							{paths.map((path) => (
-								<Badge
-									key={path}
-									variant="outline"
-									className="gap-1 font-mono text-xs"
-								>
-									{path === ""
-										? t("configureDialog.wholeRepo")
-										: path}
-									<button
-										type="button"
-										aria-label={t(
-											"configureDialog.removePath",
-											{
-												path:
-													path === ""
-														? t(
-																"configureDialog.wholeRepo",
-															)
-														: path,
-											},
-										)}
-										onClick={() => removePath(path)}
-										className="rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-									>
-										<XIcon
-											className="size-3"
-											aria-hidden="true"
-										/>
-									</button>
-								</Badge>
-							))}
-						</div>
-						<div className="flex gap-2">
-							<Input
-								id="context-sync-path-input"
-								value={pathInput}
-								placeholder={t(
-									"configureDialog.pathsPlaceholder",
-								)}
-								onChange={(e) => {
-									setPathInput(e.target.value);
-									setPathError(null);
-								}}
-								onKeyDown={(e) => {
-									if (e.key === "Enter") {
-										e.preventDefault();
-										addPath();
-									}
-								}}
-								aria-invalid={pathError ? true : undefined}
-								aria-describedby={
-									pathError
-										? "context-sync-path-error"
-										: undefined
-								}
+						initiallyOpen={initiallyOpen}
+						summary={
+							<SelectionSummary
+								namespace={NAMESPACE}
+								summary={summary}
+								nothingSelectedId={ids.nothingSelected}
 							/>
-							<Button
-								type="button"
-								variant="outline"
-								onClick={addPath}
-								disabled={pending}
-							>
-								{t("configureDialog.addPath")}
-							</Button>
-						</div>
-						{pathError ? (
-							<p
-								id="context-sync-path-error"
-								role="alert"
-								className="text-destructive text-xs"
-							>
-								{pathError}
-							</p>
-						) : (
-							<p className="text-muted-foreground text-xs">
-								{t("configureDialog.pathsHint")}
-							</p>
-						)}
-					</div>
+						}
+					/>
+					<SelectedPathsList
+						namespace={NAMESPACE}
+						disabled={pending}
+						included={selection.paths.map((path) => ({
+							path,
+							type: listedType(path),
+							onRemove: () => apply({ type: "unselect", path }),
+						}))}
+						excluded={selection.excludedPaths.map((path) => ({
+							path,
+							type: listedType(path),
+							onReinclude: () =>
+								apply({ type: "reinclude", path }),
+						}))}
+					/>
+					{offersTypedPath(listing) ? (
+						<AddRepositoryPathInput
+							namespace={NAMESPACE}
+							disabled={pending}
+							onAdd={addTypedPath}
+							serverErrorId={
+								inlineErrorField === "paths"
+									? ids.error
+									: undefined
+							}
+						/>
+					) : null}
 
 					{inlineError ? (
 						<p
-							id="context-sync-error"
+							id={ids.error}
 							role="alert"
 							className="text-destructive text-xs"
 						>
@@ -391,7 +467,16 @@ export function ConfigureContextRepositorySyncDialog({
 						{t("configureDialog.actingNotice")}
 					</p>
 				</div>
-				<DialogFooter>
+				<DialogFooter className="items-center">
+					{saveBlocked === "noRepository" ||
+					saveBlocked === "noBranch" ? (
+						<p
+							id={ids.saveReason}
+							className="mr-auto text-muted-foreground text-xs"
+						>
+							{t(`configureDialog.saveBlocked.${saveBlocked}`)}
+						</p>
+					) : null}
 					<Button
 						variant="outline"
 						onClick={() => onOpenChange(false)}
@@ -399,7 +484,11 @@ export function ConfigureContextRepositorySyncDialog({
 					>
 						{t("configureDialog.cancel")}
 					</Button>
-					<Button onClick={submit} disabled={!canSubmit}>
+					<Button
+						onClick={submit}
+						disabled={pending || saveBlocked !== null}
+						aria-describedby={saveDescribedBy}
+					>
 						{pending ? (
 							<Loader2Icon
 								className="size-4 animate-spin"

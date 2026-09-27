@@ -1,7 +1,7 @@
 "use client";
 
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Switch } from "@ui/components/switch";
 import { useTranslations } from "next-intl";
@@ -10,6 +10,8 @@ import {
 	configureErrorMessage,
 	type RepositorySyncState,
 } from "../../lib/instructions-repository-sync";
+import { instructionsSettingsSummary } from "../repository-sync/lib/instructions-selection";
+import { translateSelectionMessage } from "../repository-sync/lib/selection-row";
 
 /**
  * The Settings dialog's "Repository" section (design 2026-09-23 §7.4). It
@@ -28,6 +30,11 @@ import {
  * switch to upload mode is in flight, the toggle, "Change…" and "Switch to
  * upload mode" are all disabled, so a second change cannot be built from
  * the configuration the first is replacing.
+ *
+ * Under the configuration, the same summary the configure dialog shows
+ * says what syncs (Fizzy #2750 §6), without a count, since no listing is
+ * read here: the folder, and that the project's ignore rules leave some
+ * files out whenever `getSettings` (which the tab reads anyway) shows any.
  *
  * "Let read-only members propose changes as pull requests" (Fizzy #2563
  * spec §12, §16.1) has its own procedure, `updateProposalSettings`, which
@@ -102,6 +109,12 @@ export function RepositorySyncSettingsSection({
 				onError: (error) => toast.error(error.message),
 			},
 		),
+	);
+	// The tab reads the same query; without it the rules clause is left out.
+	const settings = useQuery(
+		orpc.projects.instructions.getSettings.queryOptions({
+			input: { projectId },
+		}),
 	);
 	const busy =
 		configure.isPending ||
@@ -192,6 +205,19 @@ export function RepositorySyncSettingsSection({
 					{t("disconnected")}
 				</p>
 			)}
+			{configured ? (
+				<p
+					className="text-muted-foreground text-sm"
+					data-testid="instructions-sync-selection-summary"
+				>
+					{instructionsSettingsSummary({
+						rootPath: configured.rootPath,
+						settings: settings.data,
+					})
+						.map((line) => translateSelectionMessage(tSync, line))
+						.join(" ")}
+				</p>
+			) : null}
 			{configured && state.canConfigure ? (
 				<p
 					id="instructions-sync-automatic-setting-hint"

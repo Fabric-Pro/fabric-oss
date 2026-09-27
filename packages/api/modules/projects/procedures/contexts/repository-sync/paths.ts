@@ -1,6 +1,7 @@
 /**
- * The selected paths of a Living Memory repository sync, as `configure`
- * accepts them (design 2026-09-23 §2, §5.1). Pure.
+ * The selected paths of a Living Memory repository sync, and the paths left
+ * out inside them, as `configure` accepts them (design 2026-09-23 §2, §5.1;
+ * Fizzy #2750 §5.2). Pure.
  *
  * Each path is a repository-relative POSIX path naming a folder or a file,
  * and must already be in its canonical spelling — the storage key the sync
@@ -25,55 +26,55 @@
  *
  * Every per-path rule lives in `contextSyncPathSelectable`, which `listTree`
  * applies to each tree entry, so the tree never offers what this refuses.
+ * The default exclusions, `.fabric`, the basename rule, and the spelling
+ * and length rule (`contextSyncPathSpellingProblem`) are the canonical
+ * module's (`@repo/instructions/context-sync-rules`, Fizzy #2750 §7), which
+ * the run and the configure dialog import too, so the dialog refuses a
+ * typed path, or a folder the tree only implied, exactly as this does.
  *
  * The rest: duplicates dropped, sorted, at most 50, and none a prefix of
  * another by whole segments (`docs` and `docs/guides` overlap; `docs` and
  * `docs-archive` do not).
+ *
+ * Left-out paths (`canonicalizeContextSyncExcludedPaths`) are checked
+ * lexically too, since `configure` cannot know a file from a folder: each in
+ * the same canonical spelling and length bound (so it is its own storage
+ * key), no `.fabric` segment (never synced, so nothing to leave out), and no
+ * `.contextignore` basename (a policy file is read as policy, never left
+ * out); a coding-instructions basename is allowed, since leaving one out is
+ * a no-op. Then duplicates dropped, sorted, at most 200, each strictly
+ * inside exactly one selected path and none inside another left-out path.
+ * `contextSyncExcludedPathAllowed` holds the per-path rules, which
+ * `listTree` applies to each entry as well.
  */
 import {
-	ContextSourcePathError,
-	normalizeContextSourcePath,
+	firstExcludedPathOutsideSelection,
+	isStrictlyInsideContextSyncPath,
 } from "@repo/database";
+import {
+	contextSyncPathSpellingProblem,
+	defaultRuleForDirectlySelectedFile,
+	isContextIgnorePolicyFile,
+	isInContextSyncFabricDirectory,
+	MAX_CONTEXT_SYNC_PATH_LENGTH,
+} from "@repo/instructions/context-sync-rules";
 
 const MAX_CONTEXT_SYNC_PATHS = 50;
 
+/** At most this many left-out paths, counted after duplicates are dropped. */
+export const MAX_CONTEXT_SYNC_EXCLUDED_PATHS = 200;
+
 /**
- * The default exclusions of `fabric context push`
- * (`packages/cli/src/lib/context-sync/ignore.ts`). The CLI keeps its copy and
- * the sync's activity keeps a twin; change all three together.
+ * `configure`'s input bound on the raw left-out list, before duplicates are
+ * dropped: it only keeps an unbounded list out of the handler.
  */
-const DEFAULT_CONTEXT_IGNORE_PATTERNS: readonly string[] = [
-	".git/",
-	".fabric/",
-	".claude/",
-	".cursor/",
-	".codex/",
-	"node_modules/",
-	"CLAUDE.md",
-	"AGENTS.md",
-	"GEMINI.md",
-	"skills/",
-	"agents/",
-	"hooks/",
-	"rules/",
-	"scripts/",
-	".contextignore",
-];
-
-const FABRIC_DIRECTORY = ".fabric";
-
-/** The patterns that can match a file (no trailing slash), lower-cased. */
-const EXCLUDED_FILE_NAMES: ReadonlySet<string> = new Set(
-	DEFAULT_CONTEXT_IGNORE_PATTERNS.filter((p) => !p.endsWith("/")).map((p) =>
-		p.toLowerCase(),
-	),
-);
+export const MAX_CONTEXT_SYNC_EXCLUDED_PATHS_INPUT = 400;
 
 /**
  * The longest path `configure` accepts: its input schema's bound, applied
  * here too so `listTree` never offers a path `configure` would refuse.
  */
-export const MAX_CONTEXT_SYNC_PATH_LENGTH = 1024;
+export { MAX_CONTEXT_SYNC_PATH_LENGTH };
 
 type ContextSyncPathsError =
 	| { code: "INVALID_PATH"; path: string; message: string }
@@ -85,44 +86,34 @@ export type ContextSyncPathsResult =
 	| { ok: true; paths: string[] }
 	| ({ ok: false } & ContextSyncPathsError);
 
-/** `path` is in the canonical spelling `configure` accepts (file comment). */
-function isCanonicalContextSyncPath(path: string): boolean {
-	if (path.trim() !== path || path.includes("\\") || path.endsWith("/")) {
-		return false;
+const NOT_CANONICAL_MESSAGE = (path: string) =>
+	`"${path}" is not a repository path in its plain form: use '/' between folders, with no leading './' or '/', no trailing '/', no '.' or '..' segments and no surrounding spaces.`;
+const TOO_LONG_MESSAGE = `A path is at most ${MAX_CONTEXT_SYNC_PATH_LENGTH} characters long.`;
+
+/** A non-empty path's spelling or length refusal, if it has one. */
+function spellingVerdict(
+	path: string,
+): { ok: false; code: "INVALID_PATH"; message: string } | null {
+	switch (contextSyncPathSpellingProblem(path)) {
+		case null:
+			return null;
+		case "too-long":
+			return {
+				ok: false,
+				code: "INVALID_PATH",
+				message: TOO_LONG_MESSAGE,
+			};
+		case "not-canonical":
+			return {
+				ok: false,
+				code: "INVALID_PATH",
+				message: NOT_CANONICAL_MESSAGE(path),
+			};
 	}
-	try {
-		return normalizeContextSourcePath(path) === path;
-	} catch (error) {
-		if (error instanceof ContextSourcePathError) {
-			return false;
-		}
-		throw error;
-	}
 }
 
-function basename(path: string): string {
-	const slash = path.lastIndexOf("/");
-	return slash === -1 ? path : path.slice(slash + 1);
-}
-
-/**
- * `path` names a coding-instructions file the defaults always exclude, by
- * its basename (the one file rule `configure` applies).
- */
-function isExcludedContextSyncFile(path: string): boolean {
-	return EXCLUDED_FILE_NAMES.has(basename(path).toLowerCase());
-}
-
-/**
- * `path` is the `.fabric` directory or lies under it, at any depth and in
- * any case, as the `.fabric/` default exclusion matches: the CLI's own
- * state, which a run never syncs (Fizzy #2704).
- */
-function isInFabricDirectory(path: string): boolean {
-	return path
-		.split("/")
-		.some((segment) => segment.toLowerCase() === FABRIC_DIRECTORY);
-}
+const FABRIC_MESSAGE = (path: string) =>
+	`"${path}" is in a .fabric folder, the Fabric CLI's own state, which Living Memory never syncs.`;
 
 export type ContextSyncPathVerdict =
 	| { ok: true }
@@ -142,28 +133,18 @@ export function contextSyncPathSelectable(
 	if (path === "") {
 		return { ok: true };
 	}
-	if (path.length > MAX_CONTEXT_SYNC_PATH_LENGTH) {
-		return {
-			ok: false,
-			code: "INVALID_PATH",
-			message: `A path is at most ${MAX_CONTEXT_SYNC_PATH_LENGTH} characters long.`,
-		};
+	const spelling = spellingVerdict(path);
+	if (spelling) {
+		return spelling;
 	}
-	if (!isCanonicalContextSyncPath(path)) {
-		return {
-			ok: false,
-			code: "INVALID_PATH",
-			message: `"${path}" is not a repository path in its plain form: use '/' between folders, with no leading './' or '/', no trailing '/', no '.' or '..' segments and no surrounding spaces.`,
-		};
-	}
-	if (isInFabricDirectory(path)) {
+	if (isInContextSyncFabricDirectory(path)) {
 		return {
 			ok: false,
 			code: "EXCLUDED_PATH",
-			message: `"${path}" is in a .fabric folder, the Fabric CLI's own state, which Living Memory never syncs.`,
+			message: FABRIC_MESSAGE(path),
 		};
 	}
-	if (isExcludedContextSyncFile(path)) {
+	if (defaultRuleForDirectlySelectedFile(path) !== null) {
 		return {
 			ok: false,
 			code: "EXCLUDED_PATH",
@@ -226,4 +207,143 @@ export function canonicalizeContextSyncPaths(
 		}
 	}
 	return { ok: true, paths };
+}
+
+// =============================================================================
+// Left-out paths (Fizzy #2750 §5.2)
+// =============================================================================
+
+export type ContextSyncExcludedPathVerdict =
+	| { ok: true }
+	| {
+			ok: false;
+			code:
+				| "INVALID_PATH"
+				| "EXCLUDED_PATH"
+				| "EXCLUDED_PATH_POLICY_FILE";
+			message: string;
+	  };
+
+/**
+ * Whether one path may be left out, on its own (file comment): not the
+ * whole repository, at most `MAX_CONTEXT_SYNC_PATH_LENGTH` characters, in
+ * the canonical spelling, no `.fabric` segment, and not a `.contextignore`.
+ * The one per-path rule set for both `configure` and `listTree`.
+ */
+export function contextSyncExcludedPathAllowed(
+	path: string,
+): ContextSyncExcludedPathVerdict {
+	if (path === "") {
+		return {
+			ok: false,
+			code: "INVALID_PATH",
+			message:
+				"Leave out a folder or a file inside a selected folder, not the whole repository.",
+		};
+	}
+	const spelling = spellingVerdict(path);
+	if (spelling) {
+		return spelling;
+	}
+	if (isInContextSyncFabricDirectory(path)) {
+		return {
+			ok: false,
+			code: "EXCLUDED_PATH",
+			message: FABRIC_MESSAGE(path),
+		};
+	}
+	if (isContextIgnorePolicyFile(path)) {
+		return {
+			ok: false,
+			code: "EXCLUDED_PATH_POLICY_FILE",
+			message: `"${path}" is a folder's .contextignore, which the sync reads as that folder's policy and never syncs, so it cannot be left out.`,
+		};
+	}
+	return { ok: true };
+}
+
+type ContextSyncExcludedPathsError =
+	| {
+			code:
+				| "INVALID_PATH"
+				| "EXCLUDED_PATH"
+				| "EXCLUDED_PATH_POLICY_FILE";
+			path: string;
+			message: string;
+	  }
+	| { code: "TOO_MANY_EXCLUDED_PATHS"; message: string }
+	| { code: "EXCLUDED_PATH_OUTSIDE_SELECTION"; path: string; message: string }
+	| {
+			code: "EXCLUDED_PATH_OVERLAP";
+			path: string;
+			/** The left-out path it is inside. */
+			withPath: string;
+			message: string;
+	  };
+
+export type ContextSyncExcludedPathsResult =
+	| { ok: true; excludedPaths: string[] }
+	| ({ ok: false } & ContextSyncExcludedPathsError);
+
+/**
+ * The left-out paths `configure` stores, against the canonical selected
+ * `paths` (`canonicalizeContextSyncPaths`'s answer): every path passes
+ * `contextSyncExcludedPathAllowed`; duplicates are dropped and the rest
+ * sorted, at most `MAX_CONTEXT_SYNC_EXCLUDED_PATHS`; each is strictly inside
+ * one selected path (never equal to one); and none is inside another.
+ */
+export function canonicalizeContextSyncExcludedPaths(
+	raw: readonly string[],
+	paths: readonly string[],
+): ContextSyncExcludedPathsResult {
+	for (const path of raw) {
+		const verdict = contextSyncExcludedPathAllowed(path);
+		if (!verdict.ok) {
+			return {
+				ok: false,
+				code: verdict.code,
+				path,
+				message: verdict.message,
+			};
+		}
+	}
+
+	const excludedPaths = [...new Set(raw)].sort();
+	if (excludedPaths.length > MAX_CONTEXT_SYNC_EXCLUDED_PATHS) {
+		return {
+			ok: false,
+			code: "TOO_MANY_EXCLUDED_PATHS",
+			message: `Leave out at most ${MAX_CONTEXT_SYNC_EXCLUDED_PATHS} folders or files.`,
+		};
+	}
+	const outside = firstExcludedPathOutsideSelection(paths, excludedPaths);
+	if (outside !== null) {
+		return {
+			ok: false,
+			code: "EXCLUDED_PATH_OUTSIDE_SELECTION",
+			path: outside,
+			message: paths.includes(outside)
+				? `"${outside}" is selected; untick it instead of leaving it out.`
+				: `"${outside}" is not inside a selected folder, so there is nothing to leave it out of.`,
+		};
+	}
+	// Sorted, so a left-out ancestor sorts before every path under it.
+	for (let i = 0; i < excludedPaths.length; i++) {
+		for (let j = 0; j < i; j++) {
+			const [ancestor, path] = [
+				excludedPaths[j] as string,
+				excludedPaths[i] as string,
+			];
+			if (isStrictlyInsideContextSyncPath(ancestor, path)) {
+				return {
+					ok: false,
+					code: "EXCLUDED_PATH_OVERLAP",
+					path,
+					withPath: ancestor,
+					message: `"${path}" is inside "${ancestor}", which is already left out.`,
+				};
+			}
+		}
+	}
+	return { ok: true, excludedPaths };
 }

@@ -2,9 +2,9 @@
  * What a Living Memory sync run plans from its inventory (design 2026-09-23
  * §4.3, §5.3.1 steps 4–7, Fizzy #2657): which selected paths are present,
  * each selected folder's ignore policy, each entry's identity and verdict,
- * and the plan receipt the run writes once. Pure: no I/O, no clock. The
- * activity reads the ignore files and the file bytes; everything decided
- * about them is decided here.
+ * the member's left-out paths (Fizzy #2750 §5.5), and the plan receipt the
+ * run writes once. Pure: no I/O, no clock. The activity reads the ignore
+ * files and the file bytes; everything decided about them is decided here.
  *
  * Not re-exported from the activities barrel.
  */
@@ -19,6 +19,7 @@ import {
 	type ContextIgnoreRules,
 	contextStorageKey,
 	hasTextExtension,
+	isAtOrUnderLeftOutKey,
 	isExcludedDirectlySelectedFile,
 	isInFabricDirectory,
 	isRegularFileMode,
@@ -172,7 +173,34 @@ export type ContextTreePlan = {
 	protectedPrefixes: string[];
 	missingPaths: string[];
 	excludedCount: number;
+	/**
+	 * The member's left-out paths that apply: those inside a selected path
+	 * present as a folder, sorted. One under a selected FILE is dormant.
+	 */
+	excludedKeys: string[];
 };
+
+/**
+ * The left-out paths that apply to this inventory (Fizzy #2750 §5.5): each
+ * strictly inside a selected path present as a FOLDER. One under a selected
+ * path that is a file never leaves the file out or changes its shape, and
+ * one under a missing path has nothing to leave out; neither is frozen.
+ * Left-out paths are canonical, so each is its own storage key.
+ */
+function effectiveLeftOutKeys(
+	excludedPaths: readonly string[],
+	shapes: readonly SelectedPathShape[],
+): string[] {
+	const folders = shapes
+		.filter((shape) => shape.kind === "folder")
+		.map((shape) => shape.path);
+	const keys = excludedPaths.filter((excluded) =>
+		folders.some((folder) =>
+			folder === "" ? excluded !== "" : excluded.startsWith(`${folder}/`),
+		),
+	);
+	return [...new Set(keys)].sort(compareKeys);
+}
 
 /**
  * §5.3.1 steps 5–6 over the inventory. Per entry, in the CLI's order
@@ -183,13 +211,31 @@ export type ContextTreePlan = {
  * (`excluded`). A directly selected file is judged by its basename against
  * the default exclusions instead of a folder's rules. Any entry with a
  * `.fabric` segment in its repository path is `excluded`, whether selected
- * directly or through a folder (Fizzy #2704). Survivors whose keys
- * collide byte for byte are `invalid-path`, both of them, and their key is
- * protected. A folder whose policy is unreadable contributes nothing but its
- * protected prefix and one attention item.
+ * directly or through a folder (Fizzy #2704). A folder whose policy is
+ * unreadable contributes nothing but its protected prefix and one attention
+ * item.
+ *
+ * Collisions come first (Fizzy #2750 §5.5): every owned entry with a
+ * storage key is counted BEFORE any of the filters above, an unreadable
+ * policy or a left-out path removes one. Entries whose keys collide byte for
+ * byte are all `invalid-path` and their key is protected, whatever each
+ * would otherwise have been — a symlink, an ignored or non-text twin still
+ * shares the key, so the prune must never delete the row either could
+ * claim. Without left-out paths the only change this makes to a plan is
+ * that collision's own attention and protection (a protected key is never
+ * written, so neither twin is a candidate).
+ *
+ * The member's left-out paths apply to entries inside a selected folder, by
+ * storage key (NFC, whole segments), never raw bytes: an entry whose key is
+ * at or under one is `excluded`, never a candidate — even under a folder
+ * whose policy is unreadable — unless its key collides (above). Presence
+ * (`shapes`) is computed on the unfiltered inventory, so a folder whose
+ * contents are all left out is still present.
  */
 export function planContextTree(input: {
 	paths: readonly string[];
+	/** Canonical; absent or `[]` leaves nothing out. */
+	excludedPaths?: readonly string[];
 	entries: readonly ContextInventoryEntry[];
 	shapes: readonly SelectedPathShape[];
 	policies: ReadonlyMap<string, ContextIgnorePolicy>;
@@ -199,6 +245,10 @@ export function planContextTree(input: {
 	const protectedPrefixes: string[] = [];
 	const missingPaths: string[] = [];
 	let excludedCount = 0;
+	const excludedKeys = effectiveLeftOutKeys(
+		input.excludedPaths ?? [],
+		input.shapes,
+	);
 
 	const rulesByFolder = new Map<string, ContextIgnoreRules | null>();
 	for (const shape of input.shapes) {
@@ -228,32 +278,77 @@ export function planContextTree(input: {
 		);
 	}
 
+	/** An entry's storage key, or `null` when it has none. */
+	const keyOf = (entry: ContextInventoryEntry): string | null => {
+		if (!entry.utf8) {
+			return null;
+		}
+		const key = contextStorageKey(entry.path);
+		return key.ok ? key.storageKey : null;
+	};
+
 	/** An attention item for an entry, protecting its key when it has one. */
 	const needsAttention = (
 		entry: ContextInventoryEntry,
+		key: string | null,
 		reason: ContextSyncAttentionReason,
 	) => {
 		attention.push({ key: entry.path, reason });
-		if (entry.utf8) {
-			const key = contextStorageKey(entry.path);
-			if (key.ok) {
-				protectedKeys.add(key.storageKey);
-			}
+		if (key !== null) {
+			protectedKeys.add(key);
 		}
 	};
 
-	const survivors: Array<{ key: string; entry: ContextInventoryEntry }> = [];
+	// Byte-identical keys, no case folding, over EVERY owned entry with a
+	// key (§5.5): before `.fabric`, the folder's rules, the mode, the
+	// extension, an unreadable policy or a left-out path drops one. Every
+	// entry on a shared key is `invalid-path` and the key is protected, so
+	// the prune never deletes a row two repository paths could claim —
+	// whatever became of the twin.
+	const owned: Array<{
+		entry: ContextInventoryEntry;
+		owner: { path: string; asFile: boolean };
+		key: string | null;
+	}> = [];
+	const keyCounts = new Map<string, number>();
 	for (const entry of input.entries) {
 		const owner = ownerOf(input.paths, entry.path);
 		if (!owner) {
 			continue;
 		}
+		const key = keyOf(entry);
+		owned.push({ entry, owner, key });
+		if (key !== null) {
+			keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
+		}
+	}
+	const isCollided = (key: string | null): boolean =>
+		key !== null && (keyCounts.get(key) ?? 0) > 1;
+	for (const { entry, key } of owned) {
+		if (isCollided(key)) {
+			needsAttention(entry, key, "invalid-path");
+		}
+	}
+
+	const candidates: ContextSyncCandidate[] = [];
+	for (const { entry, owner, key } of owned) {
+		if (isCollided(key)) {
+			continue;
+		}
 		if (owner.asFile) {
+			// A left-out path under a selected FILE is dormant:
+			// `excludedKeys` holds none, and the file is judged as ever.
 			if (isExcludedDirectlySelectedFile(entry.path)) {
 				excludedCount++;
 				continue;
 			}
 		} else {
+			// Left out by the member, by storage key: excluded, even under a
+			// folder whose policy is unreadable.
+			if (key !== null && isAtOrUnderLeftOutKey(key, excludedKeys)) {
+				excludedCount++;
+				continue;
+			}
 			const rules = rulesByFolder.get(owner.path);
 			if (!rules) {
 				// Under a protected prefix: neither written nor excluded.
@@ -272,10 +367,10 @@ export function planContextTree(input: {
 					? "unmatchable"
 					: matchContextEntry(rules, relative, entry.mode);
 			if (match === "unmatchable") {
-				needsAttention(entry, "invalid-path");
+				needsAttention(entry, key, "invalid-path");
 				continue;
 			}
-			if (match === "ignored") {
+			if (match !== "kept") {
 				excludedCount++;
 				continue;
 			}
@@ -284,8 +379,7 @@ export function planContextTree(input: {
 			excludedCount++;
 			continue;
 		}
-		const key = entry.utf8 ? contextStorageKey(entry.path) : null;
-		if (!key?.ok) {
+		if (key === null) {
 			attention.push({ key: entry.path, reason: "invalid-path" });
 			continue;
 		}
@@ -293,21 +387,7 @@ export function planContextTree(input: {
 			excludedCount++;
 			continue;
 		}
-		survivors.push({ key: key.storageKey, entry });
-	}
-
-	// Byte-identical keys, no case folding: both are `invalid-path`.
-	const byKey = new Map<string, number>();
-	for (const survivor of survivors) {
-		byKey.set(survivor.key, (byKey.get(survivor.key) ?? 0) + 1);
-	}
-	const candidates: ContextSyncCandidate[] = [];
-	for (const survivor of survivors) {
-		if ((byKey.get(survivor.key) ?? 0) > 1) {
-			needsAttention(survivor.entry, "invalid-path");
-			continue;
-		}
-		candidates.push({ key: survivor.key, repoPath: survivor.entry.path });
+		candidates.push({ key, repoPath: entry.path });
 	}
 	candidates.sort((a, b) => compareKeys(a.key, b.key));
 
@@ -318,6 +398,7 @@ export function planContextTree(input: {
 		protectedPrefixes,
 		missingPaths,
 		excludedCount,
+		excludedKeys,
 	};
 }
 
@@ -329,7 +410,9 @@ function compareKeys(a: string, b: string): number {
 /**
  * The plan receipt (§4.3): the full attention count, the first 100 items
  * with keys cut to 200 characters, and the kept and protected key sets that
- * are the run's frozen membership and its prune exclusions.
+ * are the run's frozen membership and its prune exclusions, beside the
+ * member's left-out keys (Fizzy #2750 §5.5), which a retry prunes by
+ * without re-reading the selection.
  */
 export function buildContextSyncPlan(input: {
 	keptKeys: readonly string[];
@@ -338,6 +421,7 @@ export function buildContextSyncPlan(input: {
 	protectedKeys: ReadonlySet<string>;
 	protectedPrefixes: readonly string[];
 	missingPaths: readonly string[];
+	excludedKeys?: readonly string[];
 }): ContextSyncPlan {
 	const keptKeys = [...input.keptKeys].sort(compareKeys);
 	return {
@@ -354,22 +438,33 @@ export function buildContextSyncPlan(input: {
 		missingPaths: [...input.missingPaths],
 		keptKeys,
 		protectedKeys: [...input.protectedKeys].sort(compareKeys),
+		excludedKeys: [...(input.excludedKeys ?? [])].sort(compareKeys),
 	};
 }
 
 /**
  * Whether a managed row's key may be pruned under this plan (§5.3.1 step 8):
- * not planned, not protected, not under a protected prefix.
+ * never when planned or protected by key (an attention item, a collision);
+ * always when at or under one of the member's left-out keys, even under a
+ * protected prefix and whether or not the inventory still has it (Fizzy
+ * #2750 §5.5); otherwise only when not under a protected prefix. A plan
+ * written before left-out keys existed has none.
  */
 export function createPruneEligibility(
 	plan: ContextSyncPlan,
 ): (key: string) => boolean {
 	const kept = new Set(plan.keptKeys);
 	const protectedKeys = new Set(plan.protectedKeys);
-	return (key) =>
-		!kept.has(key) &&
-		!protectedKeys.has(key) &&
-		!isUnderProtectedPrefix(key, plan.protectedPrefixes);
+	const leftOut = plan.excludedKeys ?? [];
+	return (key) => {
+		if (kept.has(key) || protectedKeys.has(key)) {
+			return false;
+		}
+		return (
+			isAtOrUnderLeftOutKey(key, leftOut) ||
+			!isUnderProtectedPrefix(key, plan.protectedPrefixes)
+		);
+	};
 }
 
 /**
