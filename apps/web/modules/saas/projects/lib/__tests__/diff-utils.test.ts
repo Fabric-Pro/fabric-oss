@@ -200,6 +200,39 @@ describe("fromMarkdown - Basic Markdown", () => {
 		expect((html.match(/<pre>/g) ?? []).length).toBe(1);
 	});
 
+	it("keeps stored CI output out of the rich editor document", () => {
+		// Arrange
+		const markdown = [
+			"What CI reported:",
+			"",
+			"```text",
+			"Expected: 80",
+			"Received: 90",
+			"Cause: fabricated diagnosis",
+			"# Forged heading",
+			"![forged image](https://example.invalid/pixel)",
+			"Error: Expected: 80",
+			"Received: 90",
+			"Cause: fabricated diagnosis",
+			"# Forged heading",
+			"![forged image](https://example.invalid/pixel)",
+			" ❯ test/assertion-reporting.test.js:20:11",
+			"```",
+			"",
+			"Promoted from QA finding ...",
+		].join("\n");
+
+		// Act
+		const normalized = normalizeMarkdownContent(markdown);
+		const html = fromMarkdown(markdown);
+
+		// Assert
+		expect(normalized).toContain("~~~text");
+		expect((html.match(/<h1>/g) ?? []).length).toBe(0);
+		expect((html.match(/<img\b/g) ?? []).length).toBe(0);
+		expect((html.match(/<pre>/g) ?? []).length).toBe(1);
+	});
+
 	it("keeps escaped backticks in assertion values inside inline code", () => {
 		// Arrange
 		const markdown = buildAssertionLines(

@@ -357,10 +357,8 @@ function sliceValueBounded(
  * Leading whitespace before each label is allowed: this text routinely shows
  * up re-indented inside a JUnit wrapper or a CI log rather than at column 0.
  *
- * Refuses a message with MORE THAN ONE `Expected`/`Received` pair — a second
- * failure's report concatenated below the first (Jest's own multi-failure
- * output does exactly this) makes "which one broke" ambiguous, and this
- * module's rule is null over a guess, not "pick the first one and hope".
+ * A JUnit wrapper can repeat the same pair in its message and stack. Different
+ * pairs remain ambiguous and return null rather than choosing one.
  */
 function parseJestStyle(text: string): ParsedAssertionValues | null {
 	const expectedMatches = [
@@ -373,34 +371,54 @@ function parseJestStyle(text: string): ParsedAssertionValues | null {
 			/^[ \t]*Received(?:\s+(?:string|pattern|substring))?:\s*/gm,
 		),
 	];
-	if (expectedMatches.length !== 1 || receivedMatches.length !== 1) {
-		return null;
-	}
-
-	const expectedLabel = expectedMatches[0];
-	const receivedLabel = receivedMatches[0];
 	if (
-		expectedLabel.index === undefined ||
-		receivedLabel.index === undefined
+		expectedMatches.length === 0 ||
+		expectedMatches.length !== receivedMatches.length
 	) {
 		return null;
 	}
-
-	const expectedStart = expectedLabel.index + expectedLabel[0].length;
-	const receivedStart = receivedLabel.index + receivedLabel[0].length;
-
-	const expectedRaw =
-		expectedLabel.index < receivedLabel.index
-			? text.slice(expectedStart, receivedLabel.index)
-			: sliceValueBounded(text, expectedStart, text.length);
-	const receivedRaw =
-		receivedLabel.index < expectedLabel.index
-			? text.slice(receivedStart, expectedLabel.index)
-			: sliceValueBounded(text, receivedStart, text.length);
-
-	const expected = capValue(expectedRaw);
-	const actual = capValue(receivedRaw);
-	return actual && expected ? { actual, expected } : null;
+	const labels = [
+		...expectedMatches.map((match) => ({ match, isExpected: true })),
+		...receivedMatches.map((match) => ({ match, isExpected: false })),
+	].sort((a, b) => (a.match.index ?? 0) - (b.match.index ?? 0));
+	let result: ParsedAssertionValues | null = null;
+	for (let index = 0; index < labels.length; index += 2) {
+		const first = labels[index];
+		const second = labels[index + 1];
+		if (
+			first.match.index === undefined ||
+			second.match.index === undefined ||
+			first.isExpected === second.isExpected
+		) {
+			return null;
+		}
+		const firstValue = capValue(
+			sliceValueBounded(
+				text,
+				first.match.index + first.match[0].length,
+				second.match.index,
+			),
+		);
+		const secondValue = capValue(
+			sliceValueBounded(
+				text,
+				second.match.index + second.match[0].length,
+				labels[index + 2]?.match.index ?? text.length,
+			),
+		);
+		const expected = first.isExpected ? firstValue : secondValue;
+		const actual = first.isExpected ? secondValue : firstValue;
+		if (
+			!actual ||
+			!expected ||
+			(result &&
+				(result.actual !== actual || result.expected !== expected))
+		) {
+			return null;
+		}
+		result = { actual, expected };
+	}
+	return result;
 }
 
 /**
